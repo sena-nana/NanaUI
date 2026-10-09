@@ -11027,6 +11027,9 @@ mod image_sampling_tests;
 #[path = "corner_shape_tests.rs"]
 mod corner_shape_tests;
 
+#[path = "natural_size_tests.rs"]
+mod natural_size_tests;
+
 /// Issue #217: one `Painter` on one node draws a non-rectangular outline —
 /// a raised step on the left, a slope down to the lower edge with its
 /// concave foot rounded — a layer *beneath* its own fill that the fill

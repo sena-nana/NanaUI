@@ -401,6 +401,20 @@ fn issue263_natural_sizes_match_a_full_layout_every_pass() {
     assert_matches_cold(&mut media.context, &mut cold.context, media.document);
 }
 
+/// A host reports only what a node shows: a resource is shown while one
+/// does, through the same index the reports travel.
+#[test]
+fn issue263_a_resource_is_shown_while_a_node_shows_it() {
+    let mut media = Media::new(400, &[]);
+    assert!(media.world().shows_replaced(&url("hero")));
+    assert!(media.world().shows_replaced(&url("shared")));
+    assert!(media.world().shows_replaced(&video_resource()));
+    assert!(!media.world().shows_replaced(&url("elsewhere")));
+    let hero = media.parts.hero;
+    media.commit(|queue| queue.set_style(hero, styled(LayoutStyle::default())));
+    assert!(!media.world().shows_replaced(&url("hero")));
+}
+
 /// A markdown image that resolves its size makes the document taller: the
 /// block list it projects moved, and layout hears of it.
 #[cfg(feature = "rich-text")]

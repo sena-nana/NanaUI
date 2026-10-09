@@ -533,14 +533,24 @@ impl QuadPipeline {
         surface: &QuadSurfacePaint,
         work: Option<&crate::gpu_work::GpuWorkSink>,
     ) -> Option<u32> {
+        if bounds.width <= 0.0 || bounds.height <= 0.0 {
+            // A replaced box with no area may be waiting for its image's
+            // natural size to get one (Issue #263): start the image where
+            // the box sits, though nothing is drawn.
+            if let Some(BackgroundImage::Url { url, sampling, .. }) = surface.content_image.as_ref()
+                && (self.motion_ids.0 != 0
+                    || super::clip::transformed_aabb_projective(bounds, affine, persp)
+                        .touches(clip))
+            {
+                url_cache.load_image(device, queue, url, *sampling, Demand::Waiting, work);
+            }
+            return None;
+        }
         if self.motion_ids.0 == 0 {
             let world = super::clip::transformed_aabb_projective(bounds, affine, persp);
             let _ = world.intersection(clip)?;
         } else {
             let _ = clip;
-        }
-        if bounds.width <= 0.0 || bounds.height <= 0.0 {
-            return None;
         }
         let translation =
             super::clip::is_translation_projective(affine, persp) && self.motion_ids.0 == 0;

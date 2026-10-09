@@ -439,6 +439,9 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
             self.graphics.apply_pending_reconfigure(&mut host.surface);
         }
         self.serve_frame_demand(id);
+        // Before any program callback can move the document away from the
+        // scene just painted.
+        self.commit_image_sizes(id, profile, [crate::RenderTargetId(id.0)]);
         // The one transaction boundary for this window's composition tree.
         // Backends stage; the host publishes, and only when something was
         // staged — a retained compositor does not follow the GPU's frame rate.
@@ -477,6 +480,41 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
         self.sync_appearance();
         self.apply_update(event_loop, update, None);
     }
+    /// Hands the natural sizes `targets` of the `profile` painter learned
+    /// while painting `id`'s scene to its document (Issue #263), once the
+    /// frame is presented. The boxes that read them lay out on the next
+    /// frame, which is asked for.
+    pub(super) fn commit_image_sizes(
+        &mut self,
+        id: WindowId,
+        profile: crate::ScenePresentationProfile,
+        targets: impl IntoIterator<Item = crate::RenderTargetId>,
+    ) {
+        let Some(painter) = self.painters.get_mut(&profile) else {
+            return;
+        };
+        let sizes: Vec<_> = targets
+            .into_iter()
+            .flat_map(|target| painter.take_image_natural_sizes(Some(target)))
+            .collect();
+        if sizes.is_empty() {
+            return;
+        }
+        let committed = self.program.write_document(id, |document| {
+            crate::commit_image_natural_sizes(document.context_mut(), &sizes)
+        });
+        match committed {
+            Some(Ok(true)) => self.request_redraw(id),
+            Some(Ok(false)) | None => {}
+            Some(Err(error)) => self
+                .program
+                .report_host_failure(HostFailure::ResourceProduction {
+                    window: id,
+                    error: error.to_string(),
+                }),
+        }
+    }
+
     /// Mirrors this frame's native-content regions into the window's
     /// composition tree, doing nothing when nothing they depend on moved.
     ///

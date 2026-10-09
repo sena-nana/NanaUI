@@ -17,10 +17,12 @@ mod image_resample;
 pub(crate) mod image_url;
 mod mesh;
 mod motion;
+mod natural_sizes;
 mod presentation_color;
 mod quad;
 mod text;
 
+pub use self::natural_sizes::{ImageNaturalSize, commit_image_natural_sizes};
 pub use self::text::SubpixelOrder;
 pub use self::text::TextGlyphCounters;
 pub(crate) mod url_texture_cache;
@@ -423,6 +425,9 @@ pub struct SceneWgpuPainter {
     /// Which host-texture slots the last fresh prepare of the active target
     /// drew, and how large; swapped per target like `painted`.
     painted_demand: crate::painted_demand::PaintedChannel,
+    /// Natural sizes of the content images the active target drew, for the
+    /// host to take; swapped per target like `painted`.
+    natural_sizes: natural_sizes::NaturalSizes,
     image_revision: u64,
     /// Egress for `url(...)` loads of the scenes painted next.
     fetch_host: Option<SharedFetchHost>,
@@ -473,6 +478,7 @@ struct TargetState {
     dest: Option<DestTarget>,
     painted: Option<PaintedDest>,
     painted_demand: crate::painted_demand::PaintedChannel,
+    natural_sizes: natural_sizes::NaturalSizes,
     image_revision: u64,
     bound_fetch_host: Option<SharedFetchHost>,
 }
@@ -684,6 +690,7 @@ impl SceneWgpuPainter {
             last_dest_pass_counts: None,
             painted: None,
             painted_demand: Default::default(),
+            natural_sizes: Default::default(),
             image_revision: 0,
             fetch_host: None,
             bound_fetch_host: None,
@@ -761,6 +768,29 @@ impl SceneWgpuPainter {
     /// Completion generation, used by layered snapshot hosts to repaint earlier layers.
     pub fn image_revision(&self) -> u64 {
         self.image_revision
+    }
+
+    /// The natural sizes of `url(...)` content images that `target` drew
+    /// since the last call (`None` is the target of [`Self::paint`]): an
+    /// image it started showing or that decoded at another size, and one it
+    /// drew into a box with no area yet. A box whose width or height is auto
+    /// takes that size once the document has it.
+    ///
+    /// Take them after presenting and hand them to the document painted, with
+    /// [`commit_image_natural_sizes`]; the built-in host does. Painting never
+    /// writes the document. Nothing new costs nothing.
+    pub fn take_image_natural_sizes(
+        &mut self,
+        target: Option<RenderTargetId>,
+    ) -> Vec<ImageNaturalSize> {
+        match target {
+            None => self.natural_sizes.take(),
+            Some(id) => self
+                .targets
+                .get_mut(&id)
+                .map(|state| state.natural_sizes.take())
+                .unwrap_or_default(),
+        }
     }
 
     /// GPU counters from the last `paint` that encoded a real command buffer.
@@ -906,6 +936,7 @@ impl SceneWgpuPainter {
         std::mem::swap(&mut self.dest, &mut state.dest);
         std::mem::swap(&mut self.painted, &mut state.painted);
         std::mem::swap(&mut self.painted_demand, &mut state.painted_demand);
+        std::mem::swap(&mut self.natural_sizes, &mut state.natural_sizes);
         std::mem::swap(&mut self.prepared_batch, &mut state.prepared_batch);
         std::mem::swap(&mut self.bound_fetch_host, &mut state.bound_fetch_host);
         self.quads.swap_target(&mut state.quads, &self.device);
@@ -1186,6 +1217,7 @@ impl SceneWgpuPainter {
         } else {
             let batch_started = Instant::now();
             self.url_cache.begin_frame();
+            self.natural_sizes.begin_pass();
             self.quads.begin_frame(scale);
             self.painted_demand.begin();
             self.meshes.begin_frame();
@@ -1479,6 +1511,8 @@ impl SceneWgpuPainter {
                                 );
                             }
                         }
+                        self.natural_sizes
+                            .note_quad(&self.url_cache, id, bounds, surface);
                     }
                     ScenePrimitiveKind::QuadBatch {
                         bounds: batch,
@@ -2089,6 +2123,7 @@ impl SceneWgpuPainter {
             self.chart_target.finish_frame();
             self.painted_demand.commit(host_textures);
             self.url_cache.commit_demand(self.painted_demand.id());
+            self.natural_sizes.end_pass();
             let batch = batch_started.elapsed();
 
             let upload_started = Instant::now();

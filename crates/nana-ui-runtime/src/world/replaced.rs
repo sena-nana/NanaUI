@@ -130,6 +130,11 @@ impl UiWorld {
         self.replaced.metadata.get(resource).copied()
     }
 
+    /// Whether a node shows `resource`, so that what it reports reaches a box.
+    pub fn shows_replaced(&self, resource: &ReplacedResource) -> bool {
+        self.replaced.dependents.contains_key(resource)
+    }
+
     /// The natural size of what `id` shows, once its resource reported one.
     pub(crate) fn replaced_natural_size(&self, id: StableNodeId) -> Option<ReplacedMetadata> {
         self.replaced.natural(id)

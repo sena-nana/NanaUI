@@ -48,6 +48,15 @@ impl LogicalRect {
         }
     }
 
+    /// Whether the two share a point, edges included: a rectangle with no
+    /// area still touches the one it sits in.
+    pub fn touches(self, other: Self) -> bool {
+        self.x <= other.x + other.width
+            && other.x <= self.x + self.width
+            && self.y <= other.y + other.height
+            && other.y <= self.y + self.height
+    }
+
     pub fn to_core(self) -> crate::LogicalRect {
         crate::LogicalRect::new(self.x, self.y, self.width, self.height)
     }

@@ -269,6 +269,14 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
             prepared.submitted(&submission);
         }
         let output = self.complete_window_output(id, recorded, &submission);
+        // Only the output painted the scene: its images' sizes are the
+        // window's too.
+        let targets = self
+            .window_outputs
+            .get(&id)
+            .map(WindowOutputState::target_ids)
+            .unwrap_or_default();
+        self.commit_image_sizes(id, output_profile(), targets);
         self.deliver_window_output(id, output);
         true
     }

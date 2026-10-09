@@ -470,6 +470,11 @@ cx.set_image_sampling(ImageSampling::Mipmap); // Painter 里之后的 cx.image
 重采样时复用已取回的字节。不再请求网络。自接事件循环的宿主照旧用 `set_image_waker` /
 `has_pending_images()` 等待这些后台结果。
 
+没写宽高的 `<img>`（`content_image`）按图片解码出的尺寸布局。只写了一边的，另一边按宽高比换算。
+尺寸到达前盒子没有面积，图片照样加载。内建宿主每帧 present 之后把新尺寸交给这个窗口的文档，
+下一帧重新布局。自接事件循环的宿主用 `SceneWgpuPainter::take_image_natural_sizes` 和
+`commit_image_natural_sizes` 做同一件事（见 [布局 · 替换内容](layout.md)）。
+
 HostTexture 的像素归宿主：默认仍只采样第 0 层。宿主按 `painted_extent` 准备尺寸（见
 [实时画面](gpu.md#按实际绘制像素准备内容)）。宿主自己上传了 mip 链时。在 `GpuTextureView` /
 `Thumbnail` / `Avatar` 上用 `.sampling(ImageSampling::Mipmap)`（`CustomRenderNode::with_sampling`）切到三线性采样。

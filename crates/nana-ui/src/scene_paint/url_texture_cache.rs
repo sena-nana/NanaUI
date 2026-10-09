@@ -98,6 +98,10 @@ pub(crate) enum Demand {
     /// A background or `<img>` layer; its drawn size depends on the natural
     /// size, which is not known before the image is decoded.
     Layer(LayerDemand),
+    /// A replaced box with no area yet, which may be waiting for this
+    /// image's natural size: the image loads whole and draws nothing, so it
+    /// counts toward no texture size.
+    Waiting,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -116,7 +120,7 @@ pub(crate) struct LayerDemand {
 impl Demand {
     fn resolve(&self, natural: (u32, u32)) -> [u32; 2] {
         match self {
-            Self::Full => [natural.0, natural.1],
+            Self::Full | Self::Waiting => [natural.0, natural.1],
             Self::Layer(layer) => {
                 let [box_w, box_h] = layer.box_size;
                 let dest = super::quad::url_dest_rect(
@@ -551,6 +555,18 @@ impl UrlTextureCache {
             .is_some_and(|bucket| bucket.entries.contains_key(key))
     }
 
+    /// The natural size `url` decoded at, through the egress of the document
+    /// painted now; `None` while it loads, or if it failed. Starts nothing.
+    pub(crate) fn natural_size(&self, url: &str, sampling: ImageSampling) -> Option<[u32; 2]> {
+        let entry = self
+            .buckets
+            .get(&self.egress(url))?
+            .entries
+            .get(cache_key(url, sampling).as_ref())?;
+        let (width, height) = entry.natural;
+        (width > 0 && height > 0).then_some([width, height])
+    }
+
     #[allow(dead_code)]
     pub(crate) fn load(
         &mut self,
@@ -605,7 +621,7 @@ impl UrlTextureCache {
                 entry.used.set(frame);
                 let natural = entry.natural;
                 entry.texture.as_ref()?;
-                if sampling == ImageSampling::Resample {
+                if sampling == ImageSampling::Resample && !matches!(demand, Demand::Waiting) {
                     self.note(&key, demand.resolve(natural));
                 }
                 return Some(natural);
@@ -684,7 +700,9 @@ impl UrlTextureCache {
         match sampling {
             ImageSampling::Resample => {
                 entry.source = Some(source);
-                self.note(&key, demand.resolve(natural));
+                if !matches!(demand, Demand::Waiting) {
+                    self.note(&key, demand.resolve(natural));
+                }
                 self.unfitted.push(key.to_string());
             }
             ImageSampling::Mipmap => {
