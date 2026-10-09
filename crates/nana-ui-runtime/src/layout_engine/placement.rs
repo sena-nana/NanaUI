@@ -1851,21 +1851,29 @@ fn place_positioned_child(
         .height
         .is_none_or(|height| height == LengthSpec::Auto || height.is_content_sized())
         && !(child_style.offset_top.is_some() && child_style.offset_bottom.is_some());
-    let measure_base = if auto_height {
-        Size::new(base.width, 0.0)
+    let mut child_size = if auto_height {
+        // Its own percentage min/max height read `base`; they apply below.
+        intrinsic_size_out_of_flow(
+            child,
+            Size::new(base.width, 0.0),
+            viewport,
+            child_font_px,
+            nodes,
+            intrinsic,
+            scope,
+        )?
     } else {
-        base
+        intrinsic_size_scoped(
+            child,
+            base,
+            None,
+            viewport,
+            child_font_px,
+            nodes,
+            intrinsic,
+            scope,
+        )?
     };
-    let mut child_size = intrinsic_size_scoped(
-        child,
-        measure_base,
-        None,
-        viewport,
-        child_font_px,
-        nodes,
-        intrinsic,
-        scope,
-    )?;
     let left = LayoutStyle::resolve_inset_fonts(child_style.offset_left, base.width, child_fonts);
     let right = LayoutStyle::resolve_inset_fonts(child_style.offset_right, base.width, child_fonts);
     let top = LayoutStyle::resolve_inset_fonts(child_style.offset_top, base.height, child_fonts);

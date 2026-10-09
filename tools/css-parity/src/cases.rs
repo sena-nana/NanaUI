@@ -15,8 +15,8 @@ pub const PRIORITY_CASE_IDS: &[&str] = &[
     "T-G23", "T-G24", "T-G25", "T-G26", "T-G27", "T-G28", "T-G29", "T-G30", "T-G31", "T-G32",
     "T-G33", "T-G34", "T-P01", "T-P02", "T-P03", "T-P04", "T-P05", "T-P06", "T-P07", "T-P08",
     "T-P09", "T-P10", "T-P11", "T-P12", "T-P13", "T-P14", "T-P15", "T-P16", "T-P17", "T-P18",
-    "T-P19", "T-I01", "T-I02", "T-I03", "T-I04", "T-FL01", "T-FL02", "T-FL03", "T-FL04", "T-FL05",
-    "T-FL06",
+    "T-P19", "T-P20", "T-I01", "T-I02", "T-I03", "T-I04", "T-FL01", "T-FL02", "T-FL03", "T-FL04",
+    "T-FL05", "T-FL06",
 ];
 
 /// `(id, status_pass, gap)` — `gap` 仅仍 ignore 的用例有值。
@@ -154,6 +154,7 @@ pub fn catalog() -> &'static [(&'static str, bool, Option<&'static str>)] {
         ("T-P17", true, None),  // fixed left+right/top+bottom 视口拉伸
         ("T-P18", true, None),  // sticky in-flow unstuck（无 overflow）
         ("T-P19", true, None),  // sticky inside overflow:auto still unstuck at rest
+        ("T-P20", true, None),  // fixed auto height + max-height% 相对视口，不压成 0
         ("T-I01", true, None),  // inline-block side by side
         ("T-I02", true, None),  // text-align:center on IFC
         ("T-I03", true, None),  // white-space:pre preserves newlines

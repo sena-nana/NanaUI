@@ -1,0 +1,38 @@
+{
+  "id": "T-P20",
+  "title": "position:fixed 自动高度 + 百分比 max-height 相对视口（内容测量不压成 0）",
+  "status": "pass",
+  "viewport": [800, 300],
+  "tolerance_px": 2,
+  "tree": {
+    "id": "root",
+    "style": "width:200px;height:100px",
+    "children": [
+      {
+        "id": "held",
+        "style": "position:fixed;left:10px;top:10px;width:120px;max-height:50%;display:flex;flex-direction:column",
+        "children": [
+          { "id": "a", "style": "width:100px;height:120px;flex-shrink:0" },
+          { "id": "b", "style": "width:100px;height:120px;flex-shrink:0" }
+        ]
+      },
+      {
+        "id": "grown",
+        "style": "position:fixed;left:200px;top:10px;width:120px;max-height:90%;display:flex;flex-direction:column",
+        "children": [
+          { "id": "c", "style": "width:100px;height:100px;flex-shrink:0" },
+          { "id": "d", "style": "width:100px;height:100px;flex-shrink:0" }
+        ]
+      }
+    ]
+  },
+  "expected": [
+    { "id": "root", "x": 0, "y": 0, "w": 200, "h": 100 },
+    { "id": "held", "x": 10, "y": 10, "w": 120, "h": 150 },
+    { "id": "a", "x": 10, "y": 10, "w": 100, "h": 120 },
+    { "id": "b", "x": 10, "y": 130, "w": 100, "h": 120 },
+    { "id": "grown", "x": 200, "y": 10, "w": 120, "h": 200 },
+    { "id": "c", "x": 200, "y": 10, "w": 100, "h": 100 },
+    { "id": "d", "x": 200, "y": 110, "w": 100, "h": 100 }
+  ]
+}

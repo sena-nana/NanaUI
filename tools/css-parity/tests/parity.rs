@@ -526,6 +526,10 @@ fn t_p19_sticky_in_overflow_unstuck_at_rest() {
     assert_pass_case("T-P19");
 }
 #[test]
+fn t_p20_fixed_auto_height_percent_max_height_reads_viewport() {
+    assert_pass_case("T-P20");
+}
+#[test]
 fn t_i01_inline_block_row() {
     assert_pass_case("T-I01");
 }

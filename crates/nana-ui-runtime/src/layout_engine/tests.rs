@@ -1251,6 +1251,100 @@ fn absolute_panel_children_resolve_fill_against_the_panel_content_box() {
     assert_eq!(layouts[&id(3)].width, 264.0);
 }
 
+/// An out-of-flow box with an auto height is as tall as its content, held
+/// under a percentage `max-height` that reads its containing block: the
+/// viewport for `fixed`, the positioned parent for `absolute`. The content
+/// is measured with no definite height, and that indefinite height must not
+/// be what the percentage resolves against, or the box measures 0 tall.
+#[test]
+fn out_of_flow_auto_height_resolves_percent_max_height_against_its_containing_block() {
+    let card = |position, max_height| StyleLayoutNode {
+        id: "card".into(),
+        style: LayoutStyle {
+            position,
+            offset_left: Some(LengthSpec::Px(10.0)),
+            offset_top: Some(LengthSpec::Px(10.0)),
+            width: Some(LengthSpec::Px(200.0)),
+            max_height: Some(LengthSpec::Percent(max_height)),
+            direction: Some(FlexDirection::Column),
+            ..LayoutStyle::default()
+        },
+        children: vec![px_box("a", 100.0, 120.0), px_box("b", 100.0, 120.0)],
+        text: None,
+    };
+    let page = |card| StyleLayoutNode {
+        id: "page".into(),
+        style: LayoutStyle {
+            position: PositionSpec::Relative,
+            width: Some(LengthSpec::Px(400.0)),
+            height: Some(LengthSpec::Px(300.0)),
+            ..LayoutStyle::default()
+        },
+        children: vec![card],
+        text: None,
+    };
+
+    // 80% of a 600 tall viewport leaves the content its 240.
+    let boxes = box_map(&page(card(PositionSpec::Fixed, 80.0)), 800.0, 600.0);
+    assert_eq!(boxes["card"].height, 240.0, "{:?}", boxes["card"]);
+    assert_eq!(boxes["b"].y, boxes["card"].y + 120.0);
+    // 50% of a 400 tall viewport holds it to 200.
+    let boxes = box_map(&page(card(PositionSpec::Fixed, 50.0)), 800.0, 400.0);
+    assert_eq!(boxes["card"].height, 200.0, "{:?}", boxes["card"]);
+    // An absolute box reads its positioned parent: 50% of 300.
+    let boxes = box_map(&page(card(PositionSpec::Absolute, 50.0)), 800.0, 600.0);
+    assert_eq!(boxes["card"].height, 150.0, "{:?}", boxes["card"]);
+    let boxes = box_map(&page(card(PositionSpec::Absolute, 90.0)), 800.0, 600.0);
+    assert_eq!(boxes["card"].height, 240.0, "{:?}", boxes["card"]);
+}
+
+/// The retained passes keep that: a fixed card under `max-height: 50%`
+/// follows the viewport it reads and the content it holds.
+#[test]
+fn a_fixed_card_under_a_percent_max_height_follows_the_viewport_and_its_content() {
+    use crate::{AppContext, Stack};
+    let document = DocumentId::new(1).unwrap();
+    let mut cx = AppContext::new();
+    let page = cx.create_component(document, Stack::column(0.0)).unwrap();
+    let card = cx
+        .create_component(
+            document,
+            Stack::column(0.0).with_layout(|layout| {
+                layout.position = PositionSpec::Fixed;
+                layout.offset_left = Some(LengthSpec::Px(10.0));
+                layout.offset_top = Some(LengthSpec::Px(10.0));
+                layout.width = Some(LengthSpec::Px(200.0));
+                layout.max_height = Some(LengthSpec::Percent(50.0));
+            }),
+        )
+        .unwrap();
+    cx.append_child(page, card).unwrap();
+    let row = |cx: &mut AppContext| {
+        let row = cx
+            .create_component(
+                document,
+                Stack::column(0.0).with_layout(|layout| {
+                    layout.width = Some(LengthSpec::Px(100.0));
+                    layout.height = Some(LengthSpec::Px(120.0));
+                }),
+            )
+            .unwrap();
+        cx.append_child(card, row).unwrap();
+    };
+    row(&mut cx);
+    row(&mut cx);
+    let height = |cx: &mut AppContext, width: f32, height: f32| {
+        cx.layout_document(document, LayoutViewport::new(width, height))
+            .unwrap();
+        cx.world().layout_box(card.stable_id()).unwrap().height
+    };
+    assert_eq!(height(&mut cx, 800.0, 600.0), 240.0);
+    assert_eq!(height(&mut cx, 800.0, 400.0), 200.0);
+    row(&mut cx);
+    assert_eq!(height(&mut cx, 800.0, 400.0), 200.0);
+    assert_eq!(height(&mut cx, 800.0, 900.0), 360.0);
+}
+
 #[test]
 fn fixed_content_shrink_accounts_for_flow_chrome_nesting_and_constraints() {
     let document = DocumentId::new(1).unwrap();

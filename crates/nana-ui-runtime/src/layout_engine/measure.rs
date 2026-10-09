@@ -260,6 +260,64 @@ pub(super) fn intrinsic_size_at_main(
     )
 }
 
+/// An out-of-flow box with an auto height, measured for its content at
+/// `available`: its containing block's width, and no definite height, so
+/// what it holds has no height to fill or take a percentage of.
+///
+/// Its own percentage `min-height` / `max-height` still read that
+/// containing block, whose height is definite for a positioned box (CSS 2.1
+/// §10.7): the viewport for `fixed`. The caller applies them against it, so
+/// they are left out here rather than resolved against the indefinite
+/// height, where `max-height: 80%` came to 0 and held the box at 0 tall.
+#[allow(clippy::too_many_arguments)]
+pub(super) fn intrinsic_size_out_of_flow(
+    id: StableNodeId,
+    available: Size,
+    viewport: LayoutViewport,
+    parent_font_px: f32,
+    nodes: &mut LayoutInputMap<'_>,
+    cache: &mut PassIntrinsicCache,
+    scope: Option<&ScopeContext<'_>>,
+) -> Result<Size, UiWorldError> {
+    let Some(style) = nodes.style(id) else {
+        return Ok(Size::default());
+    };
+    let (min_reads_block, max_reads_block) = (
+        spec_tracks_containing_block(style.min_height),
+        spec_tracks_containing_block(style.max_height),
+    );
+    if !min_reads_block && !max_reads_block {
+        return intrinsic_size_scoped(
+            id,
+            available,
+            None,
+            viewport,
+            parent_font_px,
+            nodes,
+            cache,
+            scope,
+        );
+    }
+    let mut forced = (*style).clone();
+    if min_reads_block {
+        forced.min_height = None;
+    }
+    if max_reads_block {
+        forced.max_height = None;
+    }
+    measure_node(
+        id,
+        Some(Arc::new(forced)),
+        available,
+        None,
+        viewport,
+        parent_font_px,
+        nodes,
+        cache,
+        scope,
+    )
+}
+
 /// Whether a flex item's cross size is its content's at its main size, so
 /// a line that gives it another main size than it was measured with must
 /// measure it again ([`intrinsic_size_at_main`]).
