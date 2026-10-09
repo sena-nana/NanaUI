@@ -457,13 +457,8 @@ pub(crate) fn modal_root_style() -> NodeStyle {
 
 pub(crate) const DRAWER_WIDTH: f32 = 360.0;
 pub(crate) const MODAL_PAD_X: f32 = nana_ui_core::space::XXXL;
-pub(crate) const MODAL_HEADER_PAD_TOP: f32 = nana_ui_core::space::XXL;
-pub(crate) const MODAL_HEADER_PAD_BOTTOM: f32 = nana_ui_core::space::MD;
 pub(crate) const DRAWER_HEADER_PAD_Y: f32 = nana_ui_core::space::XXL;
 pub(crate) const MODAL_BODY_PAD_TOP: f32 = nana_ui_core::space::MD;
-pub(crate) const MODAL_BODY_PAD_BOTTOM_WITH_FOOTER: f32 = nana_ui_core::space::LG;
-pub(crate) const MODAL_BODY_PAD_BOTTOM_NO_FOOTER: f32 = nana_ui_core::space::XXXL;
-pub(crate) const MODAL_FOOTER_PAD_BOTTOM: f32 = nana_ui_core::space::XXL;
 pub(crate) const DRAWER_FOOTER_PAD_Y: f32 = nana_ui_core::space::XL;
 pub(crate) const MODAL_TITLE_DESC_GAP: f32 = nana_ui_core::space::XS;
 pub(crate) const MODAL_CLOSE_SIZE: f32 = ControlSize::Small.height_in(UI_METRICS);
@@ -485,8 +480,13 @@ pub(crate) const DRAWER_ICON_SIZE: f32 = nana_ui_core::DialogRecipe::DEFAULT.ico
 /// always was. A dialog card's row is as tall as its title block, its icon
 /// and its recipe's least height, but not its close button: a busy
 /// confirmation hides that button, and the body must not jump when it
-/// does. The card takes the icon square, the close square, the gap and the
-/// least height from the theme's [`DialogRecipe`].
+/// does.
+///
+/// A dialog card takes everything else from the theme's [`DialogRecipe`]
+/// too: the icon and close squares and the gap between them, each section's
+/// insets, the gap between actions and the hairlines under the header and
+/// over the footer, which add to the band they close. A drawer keeps its
+/// own fixed chrome.
 ///
 /// [`DialogRecipe`]: nana_ui_core::DialogRecipe
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -495,32 +495,43 @@ pub(crate) struct ModalChrome {
     pub footer_height: f32,
     pub body_pad_top: f32,
     pub body_pad_bottom: f32,
-    pub pad_x: f32,
+    /// Left and right inset of the header row, the body and the footer.
+    pub header_x: f32,
+    pub body_x: f32,
+    pub footer_x: f32,
+    /// Space between the footer's actions.
+    pub action_gap: f32,
     row_top: f32,
     row_height: f32,
     text_height: f32,
     icon: Option<f32>,
     close: Option<f32>,
     gap: f32,
+    /// From the footer band's top to its content: divider and inset.
+    footer_top: f32,
+    /// Where the actions start below the band's top: a drawer centres
+    /// them in a band it gives the footer slot whole.
+    action_top: f32,
+    header_divider: f32,
+    footer_divider: f32,
+    drawer: bool,
 }
 
 impl ModalChrome {
+    /// `hairline` is the installed theme's stroke, the thickness of a
+    /// divider the recipe asks for.
     pub fn measure(
         kind: ModalSurfaceKind,
         title: crate::TextMetrics,
         description: Option<crate::TextMetrics>,
         slots: &ModalSlots,
         recipe: &nana_ui_core::DialogRecipe,
+        hairline: f32,
     ) -> Self {
         let has_footer = slots.footer.is_some() || !slots.actions.is_empty();
         let drawer = matches!(kind, ModalSurfaceKind::Drawer(_));
         let text_height =
             title.height + description.map_or(0.0, |metrics| MODAL_TITLE_DESC_GAP + metrics.height);
-        let (header_pad_top, header_pad_bottom) = if drawer {
-            (DRAWER_HEADER_PAD_Y, DRAWER_HEADER_PAD_Y)
-        } else {
-            (MODAL_HEADER_PAD_TOP, MODAL_HEADER_PAD_BOTTOM)
-        };
         let (icon_size, close_size, gap) = if drawer {
             (DRAWER_ICON_SIZE, MODAL_CLOSE_SIZE, DRAWER_CLOSE_GAP)
         } else {
@@ -533,31 +544,65 @@ impl ModalChrome {
         } else {
             recipe.header_min_height
         });
-        let header_height = header_pad_top + row_height + header_pad_bottom;
-        let footer_height = if !has_footer {
-            0.0
-        } else if drawer {
-            DRAWER_FOOTER_PAD_Y * 2.0 + MODAL_ACTION_HEIGHT
+        if drawer {
+            let footer_height = if has_footer {
+                DRAWER_FOOTER_PAD_Y * 2.0 + MODAL_ACTION_HEIGHT
+            } else {
+                0.0
+            };
+            return Self {
+                header_height: DRAWER_HEADER_PAD_Y * 2.0 + row_height,
+                footer_height,
+                body_pad_top: MODAL_BODY_PAD_TOP,
+                body_pad_bottom: MODAL_BODY_PAD_TOP,
+                header_x: MODAL_PAD_X,
+                body_x: MODAL_PAD_X,
+                footer_x: MODAL_PAD_X,
+                action_gap: MODAL_ACTION_GAP,
+                row_top: DRAWER_HEADER_PAD_Y,
+                row_height,
+                text_height,
+                icon,
+                close,
+                gap,
+                footer_top: 0.0,
+                action_top: DRAWER_FOOTER_PAD_Y,
+                header_divider: 0.0,
+                footer_divider: 0.0,
+                drawer,
+            };
+        }
+        let header_divider = recipe.header_divider.map_or(0.0, |_| hairline);
+        let footer_divider = if has_footer {
+            recipe.footer_divider.map_or(0.0, |_| hairline)
         } else {
-            MODAL_ACTION_HEIGHT + MODAL_FOOTER_PAD_BOTTOM
+            0.0
         };
-        let body_pad_bottom = match kind {
-            ModalSurfaceKind::Drawer(_) => MODAL_BODY_PAD_TOP,
-            _ if has_footer => MODAL_BODY_PAD_BOTTOM_WITH_FOOTER,
-            _ => MODAL_BODY_PAD_BOTTOM_NO_FOOTER,
-        };
+        let footer_top = footer_divider + recipe.footer.top;
         Self {
-            header_height,
-            footer_height,
-            body_pad_top: MODAL_BODY_PAD_TOP,
-            body_pad_bottom,
-            pad_x: MODAL_PAD_X,
-            row_top: header_pad_top,
+            header_height: recipe.header.top + row_height + recipe.header.bottom + header_divider,
+            footer_height: if has_footer {
+                footer_top + MODAL_ACTION_HEIGHT + recipe.footer.bottom
+            } else {
+                0.0
+            },
+            body_pad_top: recipe.body.top,
+            body_pad_bottom: recipe.body_bottom(has_footer),
+            header_x: recipe.header.inline,
+            body_x: recipe.body.inline,
+            footer_x: recipe.footer.inline,
+            action_gap: recipe.action_gap,
+            row_top: recipe.header.top,
             row_height,
             text_height,
             icon,
             close,
             gap,
+            footer_top,
+            action_top: footer_top,
+            header_divider,
+            footer_divider,
+            drawer,
         }
     }
 
@@ -566,13 +611,13 @@ impl ModalChrome {
     pub fn text_width(self, surface_width: f32) -> f32 {
         let icon = self.icon.map_or(0.0, |size| size + self.gap);
         let close = self.close.map_or(0.0, |size| self.gap + size);
-        (surface_width - self.pad_x * 2.0 - icon - close).max(0.0)
+        (surface_width - self.header_x * 2.0 - icon - close).max(0.0)
     }
 
     /// Where the title block starts: after the icon, centred in the row.
     pub fn title_origin(self, surface: crate::LayoutBox) -> (f32, f32) {
         (
-            surface.x + self.pad_x + self.icon.map_or(0.0, |size| size + self.gap),
+            surface.x + self.header_x + self.icon.map_or(0.0, |size| size + self.gap),
             surface.y + self.row_top + (self.row_height - self.text_height) / 2.0,
         )
     }
@@ -587,9 +632,9 @@ impl ModalChrome {
 
     pub fn body_box(self, surface: crate::LayoutBox) -> crate::LayoutBox {
         crate::LayoutBox {
-            x: surface.x + self.pad_x,
+            x: surface.x + self.body_x,
             y: surface.y + self.header_height + self.body_pad_top,
-            width: (surface.width - self.pad_x * 2.0).max(0.0),
+            width: (surface.width - self.body_x * 2.0).max(0.0),
             height: (surface.height
                 - self.header_height
                 - self.body_pad_top
@@ -603,7 +648,7 @@ impl ModalChrome {
     pub fn icon_box(self, surface: crate::LayoutBox) -> Option<crate::LayoutBox> {
         let size = self.icon?;
         Some(crate::LayoutBox {
-            x: surface.x + self.pad_x,
+            x: surface.x + self.header_x,
             y: surface.y + self.row_top + (self.row_height - size) / 2.0,
             width: size,
             height: size,
@@ -614,10 +659,53 @@ impl ModalChrome {
     pub fn close_box(self, surface: crate::LayoutBox) -> Option<crate::LayoutBox> {
         let size = self.close?;
         Some(crate::LayoutBox {
-            x: surface.x + surface.width - self.pad_x - size,
+            x: surface.x + surface.width - self.header_x - size,
             y: surface.y + self.row_top + (self.row_height - size) / 2.0,
             width: size,
             height: size,
+        })
+    }
+
+    /// The footer's content box, where its row of actions and its slot
+    /// sit: inside the divider and the insets. A drawer gives its footer
+    /// slot the whole band.
+    pub fn footer_box(self, surface: crate::LayoutBox) -> crate::LayoutBox {
+        let band_top = surface.y + surface.height - self.footer_height;
+        let (y, height) = if self.drawer {
+            (band_top, self.footer_height)
+        } else {
+            (band_top + self.footer_top, MODAL_ACTION_HEIGHT)
+        };
+        crate::LayoutBox {
+            x: surface.x + self.footer_x,
+            y,
+            width: (surface.width - self.footer_x * 2.0).max(0.0),
+            height,
+        }
+    }
+
+    /// The top of the footer's actions.
+    pub fn action_y(self, surface: crate::LayoutBox) -> f32 {
+        surface.y + surface.height - self.footer_height + self.action_top
+    }
+
+    /// The hairline under the header, when the recipe draws one.
+    pub fn header_divider_box(self, surface: crate::LayoutBox) -> Option<crate::LayoutBox> {
+        (self.header_divider > 0.0).then(|| crate::LayoutBox {
+            x: surface.x,
+            y: surface.y + self.header_height - self.header_divider,
+            width: surface.width,
+            height: self.header_divider,
+        })
+    }
+
+    /// The hairline over the footer, when the recipe draws one.
+    pub fn footer_divider_box(self, surface: crate::LayoutBox) -> Option<crate::LayoutBox> {
+        (self.footer_divider > 0.0).then(|| crate::LayoutBox {
+            x: surface.x,
+            y: surface.y + surface.height - self.footer_height,
+            width: surface.width,
+            height: self.footer_divider,
         })
     }
 }
@@ -693,6 +781,10 @@ pub(crate) fn modal_surface_bounds(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The built-in dialog card's header and body insets.
+    const HEADER: nana_ui_core::DialogInsets = nana_ui_core::DialogRecipe::DEFAULT.header;
+    const BODY: nana_ui_core::DialogInsets = nana_ui_core::DialogRecipe::DEFAULT.body;
     use crate::{AppContext, Button, DocumentId, MountState, StandardVisual};
     use std::sync::{Arc, Mutex};
     use unicode_segmentation::UnicodeSegmentation;
@@ -1257,11 +1349,7 @@ mod tests {
         }
         assert_eq!(
             body.y,
-            surface.y
-                + MODAL_HEADER_PAD_TOP
-                + title.bounds.height
-                + MODAL_HEADER_PAD_BOTTOM
-                + MODAL_BODY_PAD_TOP,
+            surface.y + HEADER.top + title.bounds.height + HEADER.bottom + BODY.top,
             "the close button does not grow the header row"
         );
 
@@ -1318,14 +1406,231 @@ mod tests {
         };
         assert_eq!(
             body.y,
-            surface.y + MODAL_HEADER_PAD_TOP + 40.0 + MODAL_HEADER_PAD_BOTTOM + MODAL_BODY_PAD_TOP
+            surface.y + HEADER.top + 40.0 + HEADER.bottom + BODY.top
         );
         assert!(
-            (title.bounds.y
-                - (surface.y + MODAL_HEADER_PAD_TOP + (40.0 - title.bounds.height) / 2.0))
-                .abs()
+            (title.bounds.y - (surface.y + HEADER.top + (40.0 - title.bounds.height) / 2.0)).abs()
                 < 0.01,
             "{title:?}"
+        );
+    }
+
+    /// A theme insets the card's three sections, divides them with
+    /// hairlines and rounds the card, the way a design writes them as CSS
+    /// `padding`, `border-bottom` / `border-top` and `border-radius`. The
+    /// footer's slot and its actions sit in its content box, inside the
+    /// divider and the insets, the actions `action_gap` apart.
+    #[test]
+    fn a_theme_insets_divides_and_rounds_the_dialog_card() {
+        use nana_ui_core::{DialogInsets, DialogRecipe, LengthSpec, RadiusTier, SemanticColorRole};
+        let mut cx = AppContext::new();
+        let document = DocumentId::new(1).unwrap();
+        let recipe = DialogRecipe {
+            radius: RadiusTier::Xl,
+            header: DialogInsets::symmetric(12.0, 14.0),
+            body: DialogInsets::symmetric(12.0, 14.0),
+            body_bottom_alone: None,
+            footer: DialogInsets::symmetric(10.0, 14.0),
+            action_gap: 8.0,
+            header_divider: Some(SemanticColorRole::BorderSoft),
+            footer_divider: Some(SemanticColorRole::BorderSoft),
+            ..DialogRecipe::DEFAULT
+        };
+        cx.set_theme_definition(&nana_ui_core::ThemeDefinition::NANA_DARK.with_dialog(recipe))
+            .unwrap();
+        let dialog = cx
+            .create_component(document, crate::Dialog::new("新建文件夹"))
+            .unwrap();
+        let body = cx
+            .create_detached_component(
+                document,
+                crate::Stack::column(0.0).height(LengthSpec::Px(40.0)),
+            )
+            .unwrap();
+        let footer = cx
+            .create_detached_component(document, crate::Stack::row(8.0))
+            .unwrap();
+        cx.set_modal_slots(
+            dialog,
+            ModalSlots {
+                body: Some(body.stable_id()),
+                footer: Some(footer.stable_id()),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let confirm = cx
+            .create_component(document, ConfirmDialog::new("删除", "不能恢复"))
+            .unwrap();
+        cx.assemble_confirm_dialog(confirm).unwrap();
+        shaped_layout(&mut cx, document, 800.0, 600.0);
+
+        let theme = cx.world().theme();
+        let hairline = theme.border().hairline;
+        let soft = theme
+            .style_model()
+            .color(SemanticColorRole::BorderSoft)
+            .as_rgba_array();
+        let radius_xl = theme.metrics().radius_xl;
+        let crate::ComponentGeometry::ModalFrame {
+            surface,
+            title,
+            corner_radius,
+            header_divider: Some((header_rule, header_color)),
+            footer_divider: Some((footer_rule, footer_color)),
+            ..
+        } = modal_geometry(&cx, dialog.stable_id())
+        else {
+            panic!("a divided dialog")
+        };
+        assert_eq!(corner_radius, radius_xl);
+        assert_eq!((header_color, footer_color), (soft, soft));
+        let header_bottom = surface.y + 12.0 + title.bounds.height + 12.0;
+        assert_eq!(
+            (header_rule.x, header_rule.width, header_rule.height),
+            (surface.x, surface.width, hairline)
+        );
+        assert!(
+            (header_rule.y - header_bottom).abs() < 0.01,
+            "{header_rule:?}"
+        );
+        let body_box = cx.world().canonical_layout_box(body.stable_id()).unwrap();
+        assert_eq!(body_box.x, surface.x + 14.0);
+        assert_eq!(body_box.width, surface.width - 28.0);
+        assert!(
+            (body_box.y - (header_bottom + hairline + 12.0)).abs() < 0.01,
+            "{body_box:?}"
+        );
+        assert!(
+            (footer_rule.y - (body_box.y + body_box.height + 12.0)).abs() < 0.01,
+            "{footer_rule:?}"
+        );
+        let footer_box = cx.world().canonical_layout_box(footer.stable_id()).unwrap();
+        assert_eq!(footer_box.x, surface.x + 14.0);
+        assert!(
+            (footer_box.y - (footer_rule.y + hairline + 10.0)).abs() < 0.01,
+            "{footer_box:?}"
+        );
+        assert_eq!(footer_box.height, MODAL_ACTION_HEIGHT);
+        assert!(
+            (surface.y + surface.height - (footer_box.y + footer_box.height + 10.0)).abs() < 0.01,
+            "the card ends at the footer's bottom inset"
+        );
+
+        let crate::ComponentGeometry::ModalFrame { surface, .. } =
+            modal_geometry(&cx, confirm.stable_id())
+        else {
+            panic!("confirm geometry")
+        };
+        let slots = cx
+            .read(confirm, |confirm| confirm.confirm_slots().cloned())
+            .unwrap()
+            .unwrap();
+        let cancel = cx.world().canonical_layout_box(slots.cancel).unwrap();
+        let accept = cx.world().canonical_layout_box(slots.confirm).unwrap();
+        assert!((accept.x + accept.width - (surface.x + surface.width - 14.0)).abs() < 0.01);
+        assert!((cancel.x + cancel.width - (accept.x - 8.0)).abs() < 0.01);
+        assert_eq!(cancel.y, accept.y);
+    }
+
+    /// A divided card's rule is as thick as the theme's hairline, and the
+    /// body sits under it: a theme that moves only the hairline moves the
+    /// body slot, on the host's incremental path too.
+    #[test]
+    fn a_theme_that_moves_only_the_hairline_moves_the_body_under_the_rule() {
+        use nana_ui_core::{DialogRecipe, LengthSpec, SemanticColorRole, ThemeDefinition};
+        let mut cx = AppContext::new();
+        let document = DocumentId::new(1).unwrap();
+        let divided = DialogRecipe {
+            header_divider: Some(SemanticColorRole::BorderSoft),
+            ..DialogRecipe::DEFAULT
+        };
+        cx.set_theme_definition(&ThemeDefinition::NANA_DARK.with_dialog(divided))
+            .unwrap();
+        // Nested the way an application nests it: under a host, under its page.
+        let page = cx
+            .create_component(document, crate::Stack::column(0.0))
+            .unwrap();
+        let host = cx
+            .create_detached_component(document, crate::OverlayHost::new())
+            .unwrap();
+        cx.append_child(page, host).unwrap();
+        let dialog = cx
+            .create_detached_component(document, crate::Dialog::new("新建文件夹"))
+            .unwrap();
+        cx.append_child(host, dialog).unwrap();
+        let body = cx
+            .create_detached_component(
+                document,
+                crate::Stack::column(0.0).height(LengthSpec::Px(40.0)),
+            )
+            .unwrap();
+        cx.set_modal_slots(
+            dialog,
+            ModalSlots {
+                body: Some(body.stable_id()),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert!(cx.activate_overlay(host, dialog).unwrap());
+        let viewport = crate::LayoutViewport::new(800.0, 600.0);
+        cx.layout_document(document, viewport).unwrap();
+        let hairline = cx.world().theme().border().hairline;
+        let before = cx.world().canonical_layout_box(body.stable_id()).unwrap();
+
+        let mut thicker = ThemeDefinition::NANA_DARK.with_dialog(divided);
+        thicker.tokens.border.hairline = hairline + 2.0;
+        cx.take_system_work();
+        cx.set_theme_definition(&thicker).unwrap();
+        let work = cx.take_system_work();
+        cx.layout_document_with_frontier(document, viewport, &work.layout_frontier_seeds)
+            .unwrap();
+        let after = cx.world().canonical_layout_box(body.stable_id()).unwrap();
+        assert!(
+            (after.y - before.y - 2.0).abs() < 0.01,
+            "{before:?} -> {after:?}"
+        );
+    }
+
+    /// The built-in recipe keeps the card as it was: no dividers, the card
+    /// radius, and a footer slot as tall as an action.
+    #[test]
+    fn the_built_in_dialog_card_has_no_dividers() {
+        let mut cx = AppContext::new();
+        let document = DocumentId::new(1).unwrap();
+        let dialog = cx
+            .create_component(document, crate::Dialog::new("重命名"))
+            .unwrap();
+        let footer = cx
+            .create_detached_component(document, crate::Stack::row(8.0))
+            .unwrap();
+        cx.set_modal_slots(
+            dialog,
+            ModalSlots {
+                footer: Some(footer.stable_id()),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        shaped_layout(&mut cx, document, 800.0, 600.0);
+        let crate::ComponentGeometry::ModalFrame {
+            surface,
+            corner_radius,
+            header_divider,
+            footer_divider,
+            ..
+        } = modal_geometry(&cx, dialog.stable_id())
+        else {
+            panic!("dialog geometry")
+        };
+        assert_eq!(corner_radius, cx.world().theme().metrics().radius_md);
+        assert_eq!((header_divider, footer_divider), (None, None));
+        let footer_box = cx.world().canonical_layout_box(footer.stable_id()).unwrap();
+        assert_eq!(footer_box.height, MODAL_ACTION_HEIGHT);
+        assert_eq!(
+            surface.y + surface.height,
+            footer_box.y + footer_box.height + nana_ui_core::DialogRecipe::DEFAULT.footer.bottom
         );
     }
 
@@ -1463,7 +1768,7 @@ mod tests {
             (open - busy).abs() < 0.01,
             "close slot must not change title-to-body gap: open={open} busy={busy}"
         );
-        assert!((open - (MODAL_HEADER_PAD_BOTTOM + MODAL_BODY_PAD_TOP)).abs() < 0.01);
+        assert!((open - (HEADER.bottom + BODY.top)).abs() < 0.01);
     }
 
     #[test]

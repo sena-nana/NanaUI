@@ -2397,6 +2397,7 @@ pub(super) fn place_modal_children(
         modal.description,
         &modal.slots,
         &recipe,
+        nodes.world.theme().border().hairline,
     );
     let body_copy = modal.body_text.map_or(0.0, |metrics| metrics.height);
     let body_gap = if body_copy > 0.0 && modal.slots.body.is_some() {
@@ -2415,7 +2416,7 @@ pub(super) fn place_modal_children(
             let provisional =
                 crate::overlay_surfaces::modal_surface_bounds(root, modal.kind, None, &recipe);
             let body_available = Size::new(
-                (provisional.width - chrome.pad_x * 2.0).max(0.0),
+                (provisional.width - chrome.body_x * 2.0).max(0.0),
                 (provisional.height
                     - chrome.header_height
                     - chrome.body_pad_top
@@ -2507,12 +2508,9 @@ pub(super) fn place_modal_children(
             scope,
         )?;
     }
-    let footer_y = surface.y + surface.height - chrome.footer_height;
-    let action_band = match modal.kind {
-        crate::ModalSurfaceKind::Drawer(_) => crate::overlay_surfaces::DRAWER_FOOTER_PAD_Y,
-        _ => 0.0,
-    };
-    let mut action_right = surface.x + surface.width - chrome.pad_x;
+    let footer = chrome.footer_box(surface);
+    let action_y = chrome.action_y(surface);
+    let mut action_right = footer.x + footer.width;
     let mut actions = Vec::new();
     for id in modal.slots.actions.iter().rev().copied() {
         if nodes.get(id)?.is_some() {
@@ -2522,7 +2520,7 @@ pub(super) fn place_modal_children(
     for id in actions {
         let measured = intrinsic_size_scoped(
             id,
-            Size::new(body.width, crate::overlay_surfaces::MODAL_ACTION_HEIGHT),
+            Size::new(footer.width, crate::overlay_surfaces::MODAL_ACTION_HEIGHT),
             Some(FlexDirection::Row),
             viewport,
             parent_font_px,
@@ -2531,7 +2529,7 @@ pub(super) fn place_modal_children(
             scope,
         )?;
         let action_size = Size::new(
-            measured.width.min(body.width),
+            measured.width.min(footer.width),
             measured
                 .height
                 .min(crate::overlay_surfaces::MODAL_ACTION_HEIGHT),
@@ -2541,10 +2539,10 @@ pub(super) fn place_modal_children(
             id,
             Point {
                 x: action_right,
-                y: footer_y + action_band,
+                y: action_y,
             },
             action_size,
-            Size::new(body.width, chrome.footer_height),
+            Size::new(footer.width, chrome.footer_height),
             viewport,
             parent_font_px,
             nodes,
@@ -2552,20 +2550,20 @@ pub(super) fn place_modal_children(
             output,
             scope,
         )?;
-        action_right -= crate::overlay_surfaces::MODAL_ACTION_GAP;
+        action_right -= chrome.action_gap;
     }
     if let Some(id) = modal.slots.footer
         && nodes.get(id)?.is_some()
     {
-        let width = (action_right - (surface.x + chrome.pad_x)).max(0.0);
+        let width = (action_right - footer.x).max(0.0);
         place_modal_slot(
             id,
             Point {
-                x: surface.x + chrome.pad_x,
-                y: footer_y,
+                x: footer.x,
+                y: footer.y,
             },
-            Size::new(width, chrome.footer_height),
-            Size::new(width, chrome.footer_height),
+            Size::new(width, footer.height),
+            Size::new(width, footer.height),
             viewport,
             parent_font_px,
             nodes,

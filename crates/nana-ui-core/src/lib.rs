@@ -173,7 +173,7 @@ pub use theme::{
     AccentRamp, BorderTokens, BorderWidth, ButtonRecipe, ButtonRecipeDraft, ButtonVariantDraft,
     ButtonVariantRecipe, ChromeRadii, CompiledRecipes, CompiledTheme, ComponentRecipe,
     ComponentRecipeDraft, ComponentRecipeId, ComponentThemeRegistry, ControlHeight, ControlPadding,
-    CornerShape, DesignTokens, DialogRecipe, EasingRole, EffectTokens, ElevationRole,
+    CornerShape, DesignTokens, DialogInsets, DialogRecipe, EasingRole, EffectTokens, ElevationRole,
     FoundationTokens, HAIRLINE, LineRole, MotionRole, MotionTokens, OpacityTokens, RadiusTier,
     SWITCH_METRICS, ShadowToken, SpacingStep, SpacingTokens, SquareSize, StateLayer, StatusRecipe,
     SurfaceMaterial, SurfacePadding, SurfaceRole, SurfaceSpec, SurfaceTokens, SwitchMetrics,

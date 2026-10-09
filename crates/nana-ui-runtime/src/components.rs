@@ -1349,6 +1349,14 @@ pub enum ComponentGeometry {
         background: [f32; 4],
         border: [f32; 4],
         elevation: ComponentElevation,
+        /// The card's corner radius: a dialog's recipe step, resolved.
+        corner_radius: f32,
+        /// The hairline under the header and its colour, when the recipe
+        /// draws one.
+        header_divider: Option<(LayoutBox, [f32; 4])>,
+        /// The hairline over the footer and its colour, when the recipe
+        /// draws one.
+        footer_divider: Option<(LayoutBox, [f32; 4])>,
     },
     Button {
         icon: Option<(nana_ui_core::Icon, LayoutBox)>,

@@ -18,6 +18,9 @@ pub(super) fn build(context: &GeometryPaintContext<'_>, emit: &mut impl FnMut(Sc
             body_text,
             background,
             elevation,
+            corner_radius,
+            header_divider,
+            footer_divider,
             ..
         }) => {
             emit(visual_quad(
@@ -33,7 +36,7 @@ pub(super) fn build(context: &GeometryPaintContext<'_>, emit: &mut impl FnMut(Sc
                 scene_rect(*scrim),
                 VisualQuadStyle::solid([0.0, 0.0, 0.0, 0.45]),
             ));
-            let radius = node.chrome_radii.md;
+            let radius = *corner_radius;
             let docked = match node.standard_visual.as_ref() {
                 Some(StandardVisual::ModalFrame {
                     kind: nana_ui_runtime::ModalSurfaceKind::Drawer(side),
@@ -77,6 +80,26 @@ pub(super) fn build(context: &GeometryPaintContext<'_>, emit: &mut impl FnMut(Sc
                     surface: QuadSurfacePaint::default(),
                 },
             });
+            // The card's section dividers: hairlines across the whole card,
+            // inside its edges, so the card's own clip trims them.
+            for (slot, divider) in [(15, header_divider), (16, footer_divider)] {
+                let Some((bounds, color)) = divider else {
+                    continue;
+                };
+                emit(visual_quad(
+                    &VisualPrimitiveContext {
+                        node: id,
+                        transform,
+                        clips,
+                        opacity,
+                        z_index: node.z_index,
+                        document_order: node_order,
+                    },
+                    slot,
+                    scene_rect(*bounds),
+                    VisualQuadStyle::solid(*color),
+                ));
+            }
             emit(component_text_primitive(
                 id,
                 12,

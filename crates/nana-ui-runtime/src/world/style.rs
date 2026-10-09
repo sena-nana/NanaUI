@@ -863,9 +863,11 @@ impl UiWorld {
             self.cancel_hover_transition(id);
         }
         let previous_metrics = self.style_model.metrics;
-        // A dialog card is placed from its recipe, which no layout input
-        // names; a change to it reaches only the modal frames.
-        let dialog_changed = self.theme.recipes().dialog() != next.recipes().dialog();
+        // A dialog card is placed from its recipe and the hairline its
+        // dividers take, which no layout input names; a change to either
+        // reaches only the modal frames.
+        let dialog_changed = self.theme.recipes().dialog() != next.recipes().dialog()
+            || self.theme.border().hairline != next.border().hairline;
         self.style_model = next.style_model();
         self.theme = next;
         self.palette_epoch = self.palette_epoch.wrapping_add(1).max(1);
@@ -890,9 +892,9 @@ impl UiWorld {
         }
         // Every live node paints against the new palette. Layout hears only
         // of the boxes whose design intent resolves differently against new
-        // metrics, each by what moved, and -- when the dialog recipe moved --
-        // of the modal frames, whose cards it places; the rest of a document
-        // lays nothing out again.
+        // metrics, each by what moved, and -- when the dialog recipe or the
+        // hairline moved -- of the modal frames, whose cards they place; the
+        // rest of a document lays nothing out again.
         let modal_frames = if dialog_changed {
             ids.iter()
                 .copied()

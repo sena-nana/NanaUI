@@ -12,7 +12,7 @@ pub use definition::{
     DesignTokens, FoundationTokens, ThemeCompileError, ThemeDefinition, ThemeGeneration, ThemeId,
     ThemeIdentity, ThemeSchemaVersion,
 };
-pub use dialog::DialogRecipe;
+pub use dialog::{DialogInsets, DialogRecipe};
 pub use recipe::{
     ButtonRecipe, ButtonRecipeDraft, ButtonVariantDraft, ButtonVariantRecipe, CompiledRecipes,
     ComponentRecipe, ComponentRecipeDraft, ComponentRecipeId, ComponentThemeRegistry, StatusRecipe,

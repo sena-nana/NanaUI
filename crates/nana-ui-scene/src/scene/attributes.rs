@@ -305,6 +305,9 @@ mod tests {
                 background: [0.0; 4],
                 border: [0.0; 4],
                 elevation: ComponentElevation::surface_shadow(nana_ui_core::ThemeAppearance::Light),
+                corner_radius: 10.0,
+                header_divider: None,
+                footer_divider: None,
             }
         } else {
             ComponentGeometry::EmptyState {

@@ -3865,6 +3865,7 @@ impl UiWorld {
                             None,
                             slots,
                             self.theme.recipes().dialog(),
+                            self.theme.border().hairline,
                         );
                         let wrap_width = chrome.text_width(surface.width);
                         let runs = shaper.runs;

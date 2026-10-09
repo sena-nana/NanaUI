@@ -5067,6 +5067,9 @@ fn modal_frame_emits_distinct_scrim_surface_and_intrinsic_text_slots() {
             spread_radius: 0.0,
             inset: false,
         },
+        corner_radius: 10.0,
+        header_divider: None,
+        footer_divider: None,
     }));
     let mut scene = UiScene::default();
     scene.apply_delta([modal], []);
@@ -5125,6 +5128,110 @@ fn modal_frame_emits_distinct_scrim_surface_and_intrinsic_text_slots() {
             })
             .is_some()
     );
+}
+
+/// A dialog card is rounded and divided as its geometry says: the radius
+/// the theme's recipe resolved, and a hairline quad per divider, in the
+/// divider's colour, over the card.
+#[test]
+fn modal_frame_paints_the_recipe_radius_and_section_dividers() {
+    let mut modal = node(51, None, &[]);
+    modal.standard_visual = Some(StandardVisual::ModalFrame {
+        title: Arc::from("新建文件夹"),
+        description: None,
+        body_text: None,
+        kind: nana_ui_runtime::ModalSurfaceKind::Dialog(nana_ui_core::DialogSize::Default),
+        busy: false,
+        danger: false,
+        slots: nana_ui_runtime::ModalSlots::default(),
+    });
+    let surface = LayoutBox {
+        x: 140.0,
+        y: 72.0,
+        width: 520.0,
+        height: 200.0,
+    };
+    let header_rule = LayoutBox {
+        y: 112.0,
+        height: 1.0,
+        ..surface
+    };
+    let footer_rule = LayoutBox {
+        y: 219.0,
+        height: 1.0,
+        ..surface
+    };
+    let rule_color = [0.2, 0.2, 0.2, 1.0];
+    modal.component_geometry = Some(Box::new(ComponentGeometry::ModalFrame {
+        scrim: LayoutBox {
+            x: 0.0,
+            y: 0.0,
+            width: 800.0,
+            height: 600.0,
+        },
+        surface,
+        body: LayoutBox {
+            y: 125.0,
+            height: 80.0,
+            ..surface
+        },
+        title: ComponentTextRegion {
+            bounds: LayoutBox {
+                x: 154.0,
+                y: 84.0,
+                width: 492.0,
+                height: 17.0,
+            },
+            content: nana_ui_runtime::TextValue::from("新建文件夹"),
+            color: Some([1.0; 4]),
+            font_size: 14.0,
+            font_weight: Some(600),
+        },
+        description: None,
+        body_text: None,
+        background: [0.1, 0.1, 0.1, 1.0],
+        border: [0.0; 4],
+        elevation: ComponentElevation {
+            color: nana_ui_core::PaintColor::Srgb {
+                rgba: [0.0, 0.0, 0.0, 0.45],
+            },
+            offset_x: 0.0,
+            offset_y: 14.0,
+            blur_radius: 40.0,
+            spread_radius: 0.0,
+            inset: false,
+        },
+        corner_radius: 20.0,
+        header_divider: Some((header_rule, rule_color)),
+        footer_divider: Some((footer_rule, rule_color)),
+    }));
+    let mut scene = UiScene::default();
+    scene.apply_delta([modal], []);
+    let quad = |slot| {
+        let primitive = scene
+            .primitive(PrimitiveId { node: id(51), slot })
+            .unwrap_or_else(|| panic!("slot {slot}"));
+        (primitive.bounds, primitive.kind.clone())
+    };
+    assert!(matches!(
+        quad(11).1,
+        ScenePrimitiveKind::Quad { corner_radius, .. }
+            if corner_radius.iter().all(|r| (*r - 20.0).abs() < f32::EPSILON)
+    ));
+    for (slot, rule) in [(15, header_rule), (16, footer_rule)] {
+        let (bounds, kind) = quad(slot);
+        assert_eq!(
+            (bounds.x, bounds.y, bounds.width, bounds.height),
+            (rule.x, rule.y, rule.width, rule.height)
+        );
+        assert!(matches!(
+            kind,
+            ScenePrimitiveKind::Quad {
+                background: Some(nana_ui_core::PaintColor::Srgb { rgba }),
+                ..
+            } if rgba == rule_color
+        ));
+    }
 }
 
 #[test]
@@ -5289,6 +5396,9 @@ fn docked_drawer_extends_the_flush_edge_so_clipping_squares_that_side() {
             spread_radius: 0.0,
             inset: false,
         },
+        corner_radius: 10.0,
+        header_divider: None,
+        footer_divider: None,
     }));
     let mut scene = UiScene::default();
     scene.apply_delta([drawer], []);

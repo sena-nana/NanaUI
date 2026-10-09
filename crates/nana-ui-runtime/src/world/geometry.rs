@@ -171,6 +171,7 @@ impl UiWorld {
                     presentation.description,
                     slots,
                     recipe,
+                    self.theme.border().hairline,
                 );
                 let body_copy = presentation.body.map_or(0.0, |metrics| metrics.height);
                 let body_slot = slots
@@ -274,6 +275,20 @@ impl UiWorld {
                         .as_rgba_array(),
                     border: [0.0; 4],
                     elevation: crate::ComponentElevation::from_shadow(overlay_shadow),
+                    corner_radius: match kind {
+                        crate::ModalSurfaceKind::Drawer(_) => self.style_model.metrics.radius_md,
+                        _ => recipe.radius.resolve(self.style_model.metrics),
+                    },
+                    header_divider: chrome.header_divider_box(surface).zip(
+                        recipe
+                            .header_divider
+                            .map(|role| self.style_model.color(role).as_rgba_array()),
+                    ),
+                    footer_divider: chrome.footer_divider_box(surface).zip(
+                        recipe
+                            .footer_divider
+                            .map(|role| self.style_model.color(role).as_rgba_array()),
+                    ),
                 })
             }
             StandardVisual::Button {

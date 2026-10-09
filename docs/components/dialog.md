@@ -104,6 +104,50 @@ widget(Dialog::new("删除资源库").danger(true))
 
 :::
 
+## 卡片的分区
+
+卡片分三段：标题行、正文、底栏。每段的内边距、标题行下和底栏上的分隔线、卡片圆角都归主题的 `DialogRecipe`，对话框上不写：
+
+| 配方字段 | 内置值 | 对应的 CSS |
+| --- | --- | --- |
+| `header: DialogInsets { top, bottom, inline }` | 14 / 8 / 16 | 标题行的 `padding` |
+| `body: DialogInsets` | 8 / 10 / 16 | 正文的 `padding` |
+| `body_bottom_alone: Option<f32>` | `Some(16.0)` | 没有底栏时正文的下内边距；`None` 照 CSS 沿用 `body.bottom` |
+| `footer: DialogInsets` | 0 / 14 / 16 | 底栏的 `padding`；底栏的内容盒是一个按钮的高度 |
+| `action_gap` | 8 | 底栏按钮之间的 `gap` |
+| `header_divider` / `footer_divider: Option<SemanticColorRole>` | `None` | 标题行的 `border-bottom`、底栏的 `border-top`，粗细是主题的 `border.hairline`，算进所在那一段的高度 |
+| `radius: RadiusTier` | `Md` | 卡片的 `border-radius` |
+
+`.footer` 槽和确认框的按钮都放在底栏的内容盒里：分隔线和上下内边距之内，高一个按钮。抽屉不读这份配方，保留自己的排法。
+
+照下面这份 CSS 写的设计：
+
+```css
+.dialog-card__header { padding: 12px 14px; border-bottom: 1px solid var(--border-soft); }
+.dialog-card__body { padding: 12px 14px; }
+.dialog-card__actions { gap: 8px; padding: 10px 14px; border-top: 1px solid var(--border-soft); }
+.modal-card { border-radius: var(--radius-xl); }
+```
+
+在主题里写成：
+
+```rust
+use nana_ui::runtime::SemanticColorRole;
+use nana_ui::theme::{DialogInsets, DialogRecipe, RadiusTier, ThemeDefinition};
+
+let theme = ThemeDefinition::NANA_DARK.with_dialog(DialogRecipe {
+    radius: RadiusTier::Xl,
+    header: DialogInsets::symmetric(12.0, 14.0),
+    body: DialogInsets::symmetric(12.0, 14.0),
+    body_bottom_alone: None,
+    footer: DialogInsets::symmetric(10.0, 14.0),
+    action_gap: 8.0,
+    header_divider: Some(SemanticColorRole::BorderSoft),
+    footer_divider: Some(SemanticColorRole::BorderSoft),
+    ..DialogRecipe::DEFAULT
+});
+```
+
 ## 由应用决定开合
 
 用户想关掉对话框有三种手势：按 Escape、在对话框外按下再松开、激活关闭位（`.close_action`）。每一种都先在对话框自己身上发一次 `DialogCloseRequested`，`trigger` 说是哪一种。然后才看 `.close_policy`：允许这个手势，框架接着关掉它，宿主随后发 `OverlayClosing`；不允许，它留着。Escape 和点外面只送到挂在 `OverlayHost` 下、用 `activate_overlay` 打开的对话框（浮层约定）；关闭位挂没挂都会发请求。
