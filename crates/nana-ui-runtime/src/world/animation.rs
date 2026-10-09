@@ -105,11 +105,29 @@ impl UiWorld {
                 component_updates.push(sample.target);
             }
             if crate::component_animation_id(
+                crate::component_animation_kinds::SURFACE_SCRIM,
+                sample.target,
+            ) == Some(sample.id)
+            {
+                let presence = match sample.value {
+                    crate::MotionValue::Scalar(value) => value.clamp(0.0, 1.0),
+                    _ => sample.progress,
+                };
+                self.scrim_presence.insert(sample.target, presence);
+                self.mark(sample.target, DirtyMask::RENDER);
+                self.account_animation_dirty(DirtyMask::RENDER);
+                component_updates.push(sample.target);
+            }
+            if crate::component_animation_id(
                 crate::component_animation_kinds::SURFACE,
                 sample.target,
             ) == Some(sample.id)
                 || crate::component_animation_id(
                     crate::component_animation_kinds::SURFACE_POP,
+                    sample.target,
+                ) == Some(sample.id)
+                || crate::component_animation_id(
+                    crate::component_animation_kinds::SURFACE_SCRIM,
                     sample.target,
                 ) == Some(sample.id)
             {

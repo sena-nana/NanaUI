@@ -317,7 +317,9 @@ impl UiWorld {
             return (IDENTITY_AFFINE, [0.0, 0.0]);
         }
         if let Some(transform) = self.sampled_compositor_transform(id) {
-            let [ox, oy] = style.resolved_transform_origin(bounds.width, bounds.height);
+            let [ox, oy] = self
+                .modal_pivot(id, bounds)
+                .unwrap_or_else(|| style.resolved_transform_origin(bounds.width, bounds.height));
             return (
                 transform.around_origin(bounds.x, bounds.y, ox, oy),
                 [0.0, 0.0],
@@ -326,6 +328,18 @@ impl UiWorld {
         style
             .world_scene_transform(bounds.x, bounds.y, bounds.width, bounds.height)
             .unwrap_or((IDENTITY_AFFINE, [0.0, 0.0]))
+    }
+
+    /// A modal frame's presentation pivot: its card's centre. Only a modal
+    /// frame is asked for its geometry here, and only while it moves.
+    fn modal_pivot(&self, id: StableNodeId, bounds: LayoutBox) -> Option<[f32; 2]> {
+        if !matches!(
+            self.nodes.visual(id),
+            Some(StandardVisual::ModalFrame { .. })
+        ) {
+            return None;
+        }
+        self.component_geometry(id)?.presentation_pivot(bounds)
     }
 
     /// Viewport AABB of the logical layout box after compositor presentation

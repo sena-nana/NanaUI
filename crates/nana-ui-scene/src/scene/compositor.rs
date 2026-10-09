@@ -567,6 +567,32 @@ impl UiScene {
 
     /// Logical primitive opacity multiplied by compositor layer factors.
     pub fn compositor_paint_opacity(&self, node: StableNodeId, logical_opacity: f32) -> f32 {
+        self.layered_paint_opacity(node, logical_opacity, true)
+    }
+
+    /// [`Self::compositor_paint_opacity`] for one primitive: a modal frame's
+    /// scrim leaves out its node's own layer, which fades the card; the
+    /// scrim fades on its own clock, and its ancestors' layers still reach it.
+    pub fn compositor_primitive_opacity(&self, primitive: &super::ScenePrimitive) -> f32 {
+        self.layered_paint_opacity(
+            primitive.node,
+            primitive.opacity,
+            !self.is_modal_scrim(primitive),
+        )
+    }
+
+    /// Whether `primitive` is a modal frame's scrim.
+    fn is_modal_scrim(&self, primitive: &super::ScenePrimitive) -> bool {
+        primitive.id.slot == super::MODAL_SCRIM_SLOT
+            && self.nodes.get(&primitive.node).is_some_and(|node| {
+                matches!(
+                    node.component_geometry.as_deref(),
+                    Some(nana_ui_runtime::ComponentGeometry::ModalFrame { .. })
+                )
+            })
+    }
+
+    fn layered_paint_opacity(&self, node: StableNodeId, logical_opacity: f32, own: bool) -> f32 {
         if self.compositor.layers.is_empty() {
             return logical_opacity.clamp(0.0, 1.0);
         }
@@ -574,7 +600,11 @@ impl UiScene {
         // is memoized the same way dest groups are: a container's factor is
         // its parent's times its own. The queried node's own factor is not
         // stored — every primitive names a different node.
-        let own = self.layer_opacity_factor(node);
+        let own = if own {
+            self.layer_opacity_factor(node)
+        } else {
+            1.0
+        };
         let inherited = match self.nodes.get(&node).and_then(|node| node.parent) {
             Some(parent) => {
                 let mut cache = self
@@ -668,6 +698,12 @@ impl UiScene {
     /// only the node's own layer so the painter can strip that overlay without
     /// double-applying ancestor presentation. Opacity walks ancestors.
     pub fn compositor_gpu_motion_ids(&self, node: StableNodeId) -> (u32, u32) {
+        self.gpu_motion_ids(node, true)
+    }
+
+    /// [`Self::compositor_gpu_motion_ids`], with or without the node's own
+    /// opacity overlay.
+    fn gpu_motion_ids(&self, node: StableNodeId, own_opacity: bool) -> (u32, u32) {
         let mut transform = self.gpu_motion_id_for(node, 0);
         // The shader evaluates the overlay in the node's own place, so it owes
         // the same refusal [`Self::resolved_local_transform`] makes, or the
@@ -681,7 +717,11 @@ impl UiScene {
         {
             transform = 0;
         }
-        let mut opacity = self.gpu_motion_id_for(node, 1);
+        let mut opacity = if own_opacity {
+            self.gpu_motion_id_for(node, 1)
+        } else {
+            0
+        };
         if opacity == 0
             && let Some(parent) = self.nodes.get(&node).and_then(|node| node.parent)
         {
@@ -711,16 +751,22 @@ impl UiScene {
         };
         let (parent, _, _, _) = self.draw_ancestor_state(extracted);
         let layout = extracted.layout;
-        let [ox, oy] = extracted
-            .source_style
-            .layout
-            .resolved_transform_origin(layout.width, layout.height);
+        let [ox, oy] = presentation_pivot(extracted).unwrap_or_else(|| {
+            extracted
+                .source_style
+                .layout
+                .resolved_transform_origin(layout.width, layout.height)
+        });
         (parent, [layout.x + ox, layout.y + oy])
     }
 
     /// Paint opacity with the GPU-evaluated overlay factored out.
     pub fn compositor_gpu_encode_opacity(&self, node: StableNodeId, paint_opacity: f32) -> f32 {
-        let (_, opacity_id) = self.compositor_gpu_motion_ids(node);
+        self.gpu_encode_opacity(node, paint_opacity, true)
+    }
+
+    fn gpu_encode_opacity(&self, node: StableNodeId, paint_opacity: f32, own: bool) -> f32 {
+        let (_, opacity_id) = self.gpu_motion_ids(node, own);
         if opacity_id == 0 {
             return paint_opacity;
         }
@@ -752,14 +798,43 @@ impl UiScene {
         composed: AffineTransform,
         paint_opacity: f32,
     ) -> CompositorPaintEncode {
+        self.paint_encode(node, kind, composed, paint_opacity, true)
+    }
+
+    /// [`Self::compositor_paint_encode`] for one primitive, which a modal
+    /// frame's scrim encodes without its node's own opacity overlay (see
+    /// [`Self::compositor_primitive_opacity`]).
+    pub fn compositor_primitive_encode(
+        &self,
+        primitive: &super::ScenePrimitive,
+        composed: AffineTransform,
+        paint_opacity: f32,
+    ) -> CompositorPaintEncode {
+        self.paint_encode(
+            primitive.node,
+            &primitive.kind,
+            composed,
+            paint_opacity,
+            !self.is_modal_scrim(primitive),
+        )
+    }
+
+    fn paint_encode(
+        &self,
+        node: StableNodeId,
+        kind: &super::ScenePrimitiveKind,
+        composed: AffineTransform,
+        paint_opacity: f32,
+        own_opacity: bool,
+    ) -> CompositorPaintEncode {
         if kind.evaluates_compositor_motion_on_gpu() {
             let (transform, transform_origin) =
                 self.compositor_gpu_encode_transform(node, composed);
             CompositorPaintEncode {
                 transform,
                 transform_origin,
-                opacity: self.compositor_gpu_encode_opacity(node, paint_opacity),
-                motion_ids: self.compositor_gpu_motion_ids(node),
+                opacity: self.gpu_encode_opacity(node, paint_opacity, own_opacity),
+                motion_ids: self.gpu_motion_ids(node, own_opacity),
             }
         } else {
             CompositorPaintEncode {
@@ -926,7 +1001,21 @@ fn layer_snapshot(
 fn affine_from_paint(node: &ExtractedNode, transform: PaintTransform) -> AffineTransform {
     let mut layout = (*node.source_style.layout).clone();
     layout.transform = Some(transform);
+    if let Some([x, y]) = presentation_pivot(node) {
+        layout.transform_origin = Some(nana_ui_core::TransformOrigin {
+            x: nana_ui_core::LengthSpec::Px(x),
+            y: nana_ui_core::LengthSpec::Px(y),
+        });
+    }
     node_scene_transform(&layout, node.layout, false)
+}
+
+/// Where a presentation transform of `node` pivots, when its geometry says
+/// so rather than its `transform-origin`: a modal frame turns about its card.
+fn presentation_pivot(node: &ExtractedNode) -> Option<[f32; 2]> {
+    node.component_geometry
+        .as_deref()?
+        .presentation_pivot(node.layout)
 }
 
 #[cfg(test)]

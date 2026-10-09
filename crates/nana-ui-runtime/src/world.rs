@@ -684,6 +684,12 @@ pub struct UiWorld {
     pending_animation_events: Vec<crate::AnimationEvent>,
     surface_motion: HashMap<StableNodeId, motion::SurfaceMotion, BuildIdHasher>,
     closing_surfaces: HashSet<StableNodeId, BuildIdHasher>,
+    /// How much of a modal frame's scrim shows while it fades, 0 to 1. A
+    /// frame with no entry shows its whole scrim.
+    scrim_presence: HashMap<StableNodeId, f32, BuildIdHasher>,
+    /// The reduce-motion preference the application context resolved:
+    /// surfaces open and close at once while it holds.
+    reduced_motion: bool,
     hover_transitions: HashMap<StableNodeId, style::HoverTransition, BuildIdHasher>,
     animation_deadlines: BTreeSet<(Duration, AnimationId)>,
     /// The installed design system. This is the authority; `style_model` below
@@ -934,6 +940,8 @@ impl UiWorld {
             pending_animation_events: Vec::new(),
             surface_motion: HashMap::default(),
             closing_surfaces: HashSet::default(),
+            scrim_presence: HashMap::default(),
+            reduced_motion: false,
             hover_transitions: HashMap::default(),
             animation_deadlines: BTreeSet::new(),
             theme: nana_ui_core::builtin_theme_arc(ThemeAppearance::default()),
@@ -4727,6 +4735,7 @@ impl UiWorld {
         for &id in subtree {
             self.surface_motion.remove(&id);
             self.closing_surfaces.remove(&id);
+            self.scrim_presence.remove(&id);
             self.hover_transitions.remove(&id);
             if self.overlay_host(id).is_some() {
                 self.write_overlay_host(id, Some(OverlayHostState::default()));

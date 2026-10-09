@@ -6248,6 +6248,70 @@ fn backdrop_blur_is_the_css_standard_deviation_and_does_not_band() {
     }
 }
 
+/// CSS applies an element's `opacity` to its backdrop-filter image as well
+/// as its background: a frosted surface at half opacity lays half its blur
+/// over what is behind it. A fading scrim blurs in as it darkens instead of
+/// snapping its blur on.
+#[test]
+fn a_surfaces_opacity_fades_its_backdrop_blur_too() {
+    let (device, queue) = test_device();
+    let format = wgpu::TextureFormat::Rgba8Unorm;
+    let (width, height) = (256u32, 64u32);
+    let edge = 128.0;
+    let radius = 6.0_f32;
+    let mut painter = SceneWgpuPainter::for_test(format);
+    let mut scene = UiScene::new();
+    let mut frost = frost_quad_node_with_fill(
+        3,
+        16.0,
+        16.0,
+        width as f32 - 32.0,
+        32.0,
+        [0.0, 0.0, 0.0, 0.0],
+        nana_ui_core::BackdropFilter {
+            blur_radius: radius,
+            saturate: 1.0,
+        },
+    );
+    Arc::make_mut(&mut frost.source_style.layout).opacity = Some(0.5);
+    scene.apply_delta(
+        [
+            colored_quad_node(1, 0.0, 0.0, edge, height as f32, [0.0, 0.0, 0.0, 1.0]),
+            colored_quad_node(2, edge, 0.0, edge, height as f32, [1.0, 1.0, 1.0, 1.0]),
+            frost,
+        ],
+        [],
+    );
+    let viewport = ScenePaintViewport {
+        logical_size: [width as f32, height as f32],
+        physical_size: [width, height],
+        scale_factor: 1.0,
+        scene_origin: [0.0, 0.0],
+        target_origin: [0.0, 0.0],
+        clear_color: [0.0, 0.0, 0.0, 1.0],
+        clear: true,
+    };
+    let (texture, view) = test_copy_target(&device, format, width, height);
+    let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+        label: Some("nana-ui frost at half opacity"),
+    });
+    painter
+        .paint_encoder(&scene, &mut encoder, &view, viewport, None, None)
+        .unwrap();
+    let pixels = readback_rgba(&device, &queue, encoder, &texture, width, height);
+    for x in [edge as u32 - radius as u32, edge as u32 + radius as u32 - 1] {
+        let sharp = if (x as f32) < edge { 0.0 } else { 1.0 };
+        let blurred = normal_cdf((x as f32 + 0.5 - edge) / radius);
+        let expected = 0.5 * blurred + 0.5 * sharp;
+        let actual = pixel(&pixels, width, x, 32)[0] as f32 / 255.0;
+        assert!(
+            (actual - expected).abs() <= 0.03,
+            "at {x}: {actual}, half the blur {blurred} over {sharp} is {expected}"
+        );
+    }
+    drop(texture);
+}
+
 #[test]
 fn backdrop_two_frost_panels_use_independent_regions() {
     let (device, queue) = test_device();

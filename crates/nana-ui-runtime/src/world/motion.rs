@@ -7,7 +7,11 @@ use crate::MotionTargetId;
 #[derive(Clone, Copy)]
 pub(super) struct SurfaceMotion {
     pub open: bool,
-    menu: bool,
+    /// The surface plays a transform with its fade: a menu's pop, a dialog
+    /// card's move.
+    moves: bool,
+    /// A modal frame's scrim fades on its own track.
+    scrim: bool,
     pub running: bool,
 }
 
@@ -45,7 +49,52 @@ fn scale_transform(scale: f32) -> PaintTransform {
     }
 }
 
+/// A dialog card's place at the start of its entrance: scaled about its own
+/// centre (the frame's presentation pivot) and moved down `offset_y`.
+fn card_entrance(scale: f32, offset_y: f32) -> PaintTransform {
+    PaintTransform {
+        f: offset_y,
+        ..scale_transform(scale)
+    }
+}
+
 impl UiWorld {
+    /// Follow the application's reduce-motion preference: while it holds,
+    /// surfaces open and close at once.
+    pub fn set_reduced_motion(&mut self, reduced: bool) {
+        self.reduced_motion = reduced;
+    }
+
+    /// How much of a modal frame's scrim shows: 1 at rest, less while it
+    /// fades in or out.
+    pub fn scrim_presence(&self, id: StableNodeId) -> f32 {
+        self.scrim_presence.get(&id).copied().unwrap_or(1.0)
+    }
+
+    /// The motion a modal frame comes and goes with: a dialog's from its
+    /// theme recipe, a drawer's the fade overlays have always had.
+    fn modal_motion(&self, id: StableNodeId) -> Option<(nana_ui_core::DialogMotion, bool)> {
+        match self.nodes.visual(id) {
+            Some(StandardVisual::ModalFrame {
+                kind: crate::ModalSurfaceKind::Drawer(_),
+                ..
+            }) => Some((nana_ui_core::DialogMotion::DEFAULT, false)),
+            Some(StandardVisual::ModalFrame { .. }) => {
+                Some((self.theme.recipes().dialog().motion, true))
+            }
+            _ => None,
+        }
+    }
+
+    /// `duration`, or none while motion is reduced.
+    fn surface_duration(&self, duration: Duration) -> Duration {
+        if self.reduced_motion {
+            Duration::ZERO
+        } else {
+            duration
+        }
+    }
+
     pub(super) fn set_surface_open(&mut self, id: StableNodeId, open: bool, menu: bool) {
         if !self.is_mounted(id) {
             return;
@@ -89,36 +138,108 @@ impl UiWorld {
             self.closing_surfaces.insert(id);
             self.clear_surface_pointer_interactions(id);
         }
+        let to_opacity = f32::from(open);
+        let modal = (!menu).then(|| self.modal_motion(id)).flatten();
+        let moves = menu || modal.is_some_and(|(motion, card)| card && motion.moves());
         self.surface_motion.insert(
             id,
             SurfaceMotion {
                 open,
-                menu,
+                moves,
+                scrim: modal.is_some(),
                 running: true,
             },
         );
-        let to_opacity = f32::from(open);
-        self.start_component_track(
-            id,
-            crate::component_animation_kinds::SURFACE,
-            if menu {
-                tokens::MENU_OPACITY
-            } else {
-                tokens::OVERLAY_FADE
-            },
-            crate::Easing::EaseOutCubic,
-            crate::AnimatableProperty::Opacity,
-            crate::MotionValue::Scalar(from_opacity),
-            crate::MotionValue::Scalar(to_opacity),
-            crate::MotionInterrupt::Retarget,
-            None,
-        );
+        if let Some((motion, card)) = modal {
+            // The card fades and moves on its node's own layers; the scrim
+            // fades on a track of its own, which the frame's geometry reads.
+            self.start_component_track(
+                id,
+                crate::component_animation_kinds::SURFACE,
+                self.surface_duration(motion.card_fade.duration()),
+                motion.card_fade.easing,
+                crate::AnimatableProperty::Opacity,
+                crate::MotionValue::Scalar(from_opacity),
+                crate::MotionValue::Scalar(to_opacity),
+                crate::MotionInterrupt::Retarget,
+                None,
+            );
+            if card && motion.moves() {
+                let entrance = card_entrance(motion.enter_scale, motion.enter_offset_y);
+                let from = MotionTargetId::new(id.get())
+                    .and_then(|target| {
+                        self.presentation.applied_value(
+                            target,
+                            crate::AnimatableProperty::Transform,
+                            self.animation_now,
+                        )
+                    })
+                    .and_then(|value| match value {
+                        crate::MotionValue::Transform(transform) => Some(transform),
+                        _ => None,
+                    })
+                    .unwrap_or(if open {
+                        entrance
+                    } else {
+                        PaintTransform::default()
+                    });
+                let to = if open {
+                    PaintTransform::default()
+                } else {
+                    entrance
+                };
+                self.start_component_track(
+                    id,
+                    crate::component_animation_kinds::SURFACE_POP,
+                    self.surface_duration(motion.card_move.duration()),
+                    motion.card_move.easing,
+                    crate::AnimatableProperty::Transform,
+                    crate::MotionValue::Transform(from),
+                    crate::MotionValue::Transform(to),
+                    crate::MotionInterrupt::Retarget,
+                    None,
+                );
+            }
+            let from_scrim = self
+                .scrim_presence
+                .get(&id)
+                .copied()
+                .unwrap_or(f32::from(!open));
+            self.scrim_presence.insert(id, from_scrim);
+            self.start_component_track(
+                id,
+                crate::component_animation_kinds::SURFACE_SCRIM,
+                self.surface_duration(motion.scrim.duration()),
+                motion.scrim.easing,
+                crate::AnimatableProperty::Progress,
+                crate::MotionValue::Scalar(from_scrim),
+                crate::MotionValue::Scalar(to_opacity),
+                crate::MotionInterrupt::Retarget,
+                None,
+            );
+        } else {
+            self.start_component_track(
+                id,
+                crate::component_animation_kinds::SURFACE,
+                self.surface_duration(if menu {
+                    tokens::MENU_OPACITY
+                } else {
+                    tokens::OVERLAY_FADE
+                }),
+                crate::Easing::EaseOutCubic,
+                crate::AnimatableProperty::Opacity,
+                crate::MotionValue::Scalar(from_opacity),
+                crate::MotionValue::Scalar(to_opacity),
+                crate::MotionInterrupt::Retarget,
+                None,
+            );
+        }
         if menu {
             let to_scale = if open { 1.0 } else { 0.9 };
             self.start_component_track(
                 id,
                 crate::component_animation_kinds::SURFACE_POP,
-                tokens::MENU_POP,
+                self.surface_duration(tokens::MENU_POP),
                 crate::Easing::MENU_POP,
                 crate::AnimatableProperty::Transform,
                 crate::MotionValue::Transform(scale_transform(from_pop)),
@@ -192,16 +313,14 @@ impl UiWorld {
         if !sample.finished {
             return;
         }
-        let opacity_done =
-            crate::component_animation_id(crate::component_animation_kinds::SURFACE, sample.target)
-                .is_none_or(|id| !self.animation_is_active(id) || sample.id == id);
-        let pop_done = !motion.menu
-            || crate::component_animation_id(
-                crate::component_animation_kinds::SURFACE_POP,
-                sample.target,
-            )
-            .is_none_or(|id| !self.animation_is_active(id) || sample.id == id);
-        if !(opacity_done && pop_done) {
+        let done = |kind| {
+            crate::component_animation_id(kind, sample.target)
+                .is_none_or(|id| !self.animation_is_active(id) || sample.id == id)
+        };
+        let opacity_done = done(crate::component_animation_kinds::SURFACE);
+        let pop_done = !motion.moves || done(crate::component_animation_kinds::SURFACE_POP);
+        let scrim_done = !motion.scrim || done(crate::component_animation_kinds::SURFACE_SCRIM);
+        if !(opacity_done && pop_done && scrim_done) {
             return;
         }
         let Some(motion) = self.surface_motion.get_mut(&sample.target) else {

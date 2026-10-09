@@ -94,6 +94,8 @@ Promotion 阈值：`LAYER_PROMOTE_HOLD` 是 16ms，`LAYER_DEMOTE_HOLD` 是 120ms
 
 `clear_compositor_layer_request` 经 extract 把 `request_layer=false` 写回 scene，摘掉 `requested`，再走 demote hold。
 
+模态框（对话框、确认框、抽屉）一个节点画遮罩和卡片，它的 motion layer 是**卡片的**：卡片和插槽内容跟着节点自己的 opacity / transform 层淡入、移动，transform 绕卡片中心（`ComponentGeometry::presentation_pivot`），命中测试、CPU 呈现和 GPU `evaluate()` 用同一个支点。遮罩那块 primitive 不吃节点自己的 opacity 层（祖先的照吃），按几何里的 `scrim_opacity` 淡入；它仍随卡片的位移走，所以卡片要动时遮罩往外多铺出位移和缩放能拉进来的那一圈，始终盖满窗口。查询用 `UiScene::compositor_primitive_opacity` / `compositor_primitive_encode`，按 primitive 而不是按节点。
+
 `OpacityGroup` 和 `FilterGroup` 仍是 dest 隔离组。它们不是 motion layer。
 
 Layer 上的 `CompositorMotionBinding { track_id, index, generation }` 对齐 D 的 `MotionHandle`。`generation == 0` 表示没有 live descriptor。
@@ -169,6 +171,8 @@ blur 半径的上限是 16px。多层 `drop-shadow`、spread 和 `inset` 仍 fai
 背后的内容是 document order 里排在该节点之前的 Quad、HostTexture、自定义 GPU 槽等。它们经 separable Gaussian 模糊，再合成回节点区域。圆角、clip-path 和 mask-image 仍然生效。最后才画半透明的 fill 或 gradient。
 
 `blur(r)` 照 CSS：`r` 是高斯的标准差（逻辑 px，乘缩放到设备 px），模糊伸到大约三倍远，采样范围也扩三倍。核读到三倍标准差以内的每一个纹素（相邻两个纹素合成一次双线性读取），不会跨着纹素取样，所以宽的模糊也不出条纹。标准差超过 8 个设备像素时，先把要模糊的区域按 2 的幂缩小，每个纹素是它代表的那一块设备像素的平均，再在缩小的副本上模糊、合成时双线性放大；最宽的 64px 在任何缩放下都只读几十个纹素。区域的边缘往外按边缘像素延伸，而不是淡成透明的黑。
+
+模糊后的背景是节点绘制的一部分，和填充一起吃节点的不透明度：CSS 的 `opacity` 连 `backdrop-filter` 的结果一起作用，半透明的毛玻璃只铺一半的模糊，完全透明就一点不画。淡入的遮罩因此是连模糊一起淡入，而不是一开始就整块模糊。
 
 这和 Windows `nana-window` 的整窗 Mica / Acrylic 无关。也和 Appearance 的 `backdrop_*` 无关。
 

@@ -1256,9 +1256,8 @@ impl SceneWgpuPainter {
                     }
                     skipped_layer = None;
                 }
-                let encode = scene.compositor_paint_encode(
-                    primitive.node,
-                    &primitive.kind,
+                let encode = scene.compositor_primitive_encode(
+                    primitive.primitive,
                     primitive.transform,
                     primitive.paint_opacity,
                 );
@@ -1438,8 +1437,9 @@ impl SceneWgpuPainter {
                             surface,
                             Some(&gpu_work),
                         ) {
-                            // A fully transparent surface shows nothing,
-                            // backdrop blur included.
+                            // The blurred backdrop is part of the surface's
+                            // paint and takes its opacity, as CSS's does: a
+                            // fully transparent surface shows none of it.
                             if let Some(filter) = surface
                                 .backdrop_filter
                                 .filter(|f| f.is_active() && opacity > 0.0)
@@ -1458,6 +1458,7 @@ impl SceneWgpuPainter {
                                     ],
                                     radii,
                                     filter,
+                                    opacity,
                                     frag_clip.for_physical_pixels(scale),
                                     scale,
                                     dest_physical,
@@ -1535,6 +1536,7 @@ impl SceneWgpuPainter {
                                         ],
                                         radii,
                                         filter,
+                                        opacity,
                                         frag_clip.for_physical_pixels(scale),
                                         scale,
                                         dest_physical,

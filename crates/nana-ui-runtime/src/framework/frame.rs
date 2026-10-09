@@ -699,6 +699,10 @@ impl AppContext {
                         || crate::component_animation_id(
                             crate::component_animation_kinds::SURFACE_POP,
                             sample.target,
+                        ) == Some(sample.id)
+                        || crate::component_animation_id(
+                            crate::component_animation_kinds::SURFACE_SCRIM,
+                            sample.target,
                         ) == Some(sample.id))
                     && !self.world.surface_closing(sample.target)
             })

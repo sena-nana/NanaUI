@@ -5072,6 +5072,7 @@ fn modal_frame_emits_distinct_scrim_surface_and_intrinsic_text_slots() {
         footer_divider: None,
         scrim_color: [0.0, 0.0, 0.0, 0.45],
         scrim_blur: 0.0,
+        scrim_opacity: 1.0,
     }));
     let mut scene = UiScene::default();
     scene.apply_delta([modal], []);
@@ -5208,6 +5209,7 @@ fn modal_frame_paints_the_recipe_radius_and_section_dividers() {
         footer_divider: Some((footer_rule, rule_color)),
         scrim_color: [0.0, 0.0, 0.0, 0.73],
         scrim_blur: 2.0,
+        scrim_opacity: 1.0,
     }));
     let mut scene = UiScene::default();
     scene.apply_delta([modal], []);
@@ -5248,6 +5250,147 @@ fn modal_frame_paints_the_recipe_radius_and_section_dividers() {
             } if rgba == rule_color
         ));
     }
+}
+
+/// A modal frame's node layer is its card's: the card and its text fade
+/// with it, the scrim shows by its own `scrim_opacity` instead, and the
+/// layer's transform turns about the card's centre, not the window's.
+#[test]
+fn a_modal_frames_layer_fades_and_turns_its_card_not_its_scrim() {
+    use nana_ui_core::motion::{
+        AnimationPlayback, Easing, MotionCurve, MotionTargetId, MotionTiming, MotionTrack,
+        MotionTrackId, MotionValue, PresentationStore,
+    };
+    let mut modal = node(52, None, &[]);
+    modal.layout = LayoutBox {
+        x: 0.0,
+        y: 0.0,
+        width: 800.0,
+        height: 600.0,
+    };
+    modal.standard_visual = Some(StandardVisual::ModalFrame {
+        title: Arc::from("导出"),
+        description: None,
+        body_text: None,
+        kind: nana_ui_runtime::ModalSurfaceKind::Dialog(nana_ui_core::DialogSize::Default),
+        busy: false,
+        danger: false,
+        slots: nana_ui_runtime::ModalSlots::default(),
+    });
+    let surface = LayoutBox {
+        x: 140.0,
+        y: 72.0,
+        width: 520.0,
+        height: 200.0,
+    };
+    modal.component_geometry = Some(Box::new(ComponentGeometry::ModalFrame {
+        scrim: modal.layout,
+        surface,
+        body: surface,
+        title: ComponentTextRegion {
+            bounds: surface,
+            content: nana_ui_runtime::TextValue::from("导出"),
+            color: Some([1.0; 4]),
+            font_size: 14.0,
+            font_weight: Some(600),
+        },
+        description: None,
+        body_text: None,
+        background: [0.1, 0.1, 0.1, 1.0],
+        border: [0.0; 4],
+        elevation: ComponentElevation {
+            color: nana_ui_core::PaintColor::Srgb {
+                rgba: [0.0, 0.0, 0.0, 0.45],
+            },
+            offset_x: 0.0,
+            offset_y: 14.0,
+            blur_radius: 40.0,
+            spread_radius: 0.0,
+            inset: false,
+        },
+        corner_radius: 10.0,
+        header_divider: None,
+        footer_divider: None,
+        scrim_color: [0.0, 0.0, 0.0, 0.45],
+        scrim_blur: 0.0,
+        scrim_opacity: 0.4,
+    }));
+    let mut scene = UiScene::default();
+    scene.apply_delta([modal], []);
+    let track = |track, property, from, to| {
+        MotionTrack::transition(
+            MotionTrackId::new(track).unwrap(),
+            MotionTargetId::new(52).unwrap(),
+            property,
+            from,
+            to,
+            MotionTiming::new(
+                std::time::Duration::ZERO,
+                std::time::Duration::from_millis(100),
+                std::time::Duration::from_millis(16),
+            ),
+            MotionCurve::Easing(Easing::Linear),
+            AnimationPlayback::default(),
+        )
+    };
+    let half = nana_ui_core::PaintTransform {
+        a: 0.5,
+        d: 0.5,
+        ..nana_ui_core::PaintTransform::default()
+    };
+    let mut store = PresentationStore::new();
+    store.insert(
+        track(
+            7,
+            nana_ui_core::motion::AnimatableProperty::Opacity,
+            MotionValue::Scalar(0.0),
+            MotionValue::Scalar(1.0),
+        ),
+        MotionValue::Scalar(1.0),
+    );
+    store.insert(
+        track(
+            8,
+            nana_ui_core::motion::AnimatableProperty::Transform,
+            MotionValue::Transform(half),
+            MotionValue::Transform(half),
+        ),
+        MotionValue::Transform(nana_ui_core::PaintTransform::default()),
+    );
+    scene.apply_presentation(&store, crate::LAYER_PROMOTE_HOLD, None);
+    let draw = |slot| {
+        scene
+            .draw_primitive(PrimitiveId { node: id(52), slot })
+            .unwrap_or_else(|| panic!("slot {slot}"))
+    };
+    let faded = 16.0 / 100.0;
+    assert!(
+        (draw(11).paint_opacity - faded).abs() < 1e-3,
+        "the card fades"
+    );
+    assert!(
+        (draw(12).paint_opacity - faded).abs() < 1e-3,
+        "its title too"
+    );
+    assert!(
+        (draw(10).paint_opacity - 0.4).abs() < 1e-6,
+        "the scrim fades by its own opacity, not the card's"
+    );
+    let scrim = draw(10);
+    let encode =
+        scene.compositor_primitive_encode(scrim.primitive, scrim.transform, scrim.paint_opacity);
+    assert!((encode.opacity - 0.4).abs() < 1e-6);
+    let layer = scene.compositor_layer(id(52)).expect("the card's layer");
+    let [a, b, c, d, e, f] = layer.transform.0;
+    let (cx, cy) = (
+        surface.x + surface.width / 2.0,
+        surface.y + surface.height / 2.0,
+    );
+    let (x, y) = (a * cx + c * cy + e, b * cx + d * cy + f);
+    assert!(
+        (x - cx).abs() < 1e-3 && (y - cy).abs() < 1e-3,
+        "the card's centre stays put: ({x}, {y})"
+    );
 }
 
 #[test]
@@ -5417,6 +5560,7 @@ fn docked_drawer_extends_the_flush_edge_so_clipping_squares_that_side() {
         footer_divider: None,
         scrim_color: [0.0, 0.0, 0.0, 0.45],
         scrim_blur: 0.0,
+        scrim_opacity: 1.0,
     }));
     let mut scene = UiScene::default();
     scene.apply_delta([drawer], []);

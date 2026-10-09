@@ -150,7 +150,7 @@ impl UiScene {
 
     pub fn draw_primitive(&self, id: PrimitiveId) -> Option<SceneDraw<'_>> {
         let (primitive, revision) = self.primitive_at(id)?;
-        let paint_opacity = self.compositor_paint_opacity(primitive.node, primitive.opacity);
+        let paint_opacity = self.compositor_primitive_opacity(primitive);
         match self.primitive_projection(primitive)? {
             NodeProjection::Retained => Some(SceneDraw {
                 primitive,
@@ -310,6 +310,7 @@ mod tests {
                 footer_divider: None,
                 scrim_color: [0.0, 0.0, 0.0, 0.45],
                 scrim_blur: 0.0,
+                scrim_opacity: 1.0,
             }
         } else {
             ComponentGeometry::EmptyState {

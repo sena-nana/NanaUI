@@ -64,6 +64,8 @@ pub mod component_animation_kinds {
     pub const LOADING: u64 = 9;
     /// TransitionGroup / list-move FLIP compositor transform.
     pub const FLIP: u64 = 10;
+    /// A modal frame's scrim fade, apart from its card's.
+    pub const SURFACE_SCRIM: u64 = 11;
 }
 
 /// Derives the animation ID for one component-owned timeline from the

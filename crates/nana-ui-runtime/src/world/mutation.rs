@@ -1407,6 +1407,7 @@ impl UiWorld {
                     self.cancel_animations_for_removed(id);
                     self.surface_motion.remove(&id);
                     self.closing_surfaces.remove(&id);
+                    self.scrim_presence.remove(&id);
                     self.hover_transitions.remove(&id);
                     self.intent_nodes.remove(&id);
                     self.forget_replaced(id);

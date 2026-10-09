@@ -1362,6 +1362,10 @@ pub enum ComponentGeometry {
         /// How much the scrim blurs what is behind it: CSS `blur(r)`, `r`
         /// the standard deviation in logical px.
         scrim_blur: f32,
+        /// How much of the scrim shows, 0 to 1: CSS `opacity` on the
+        /// overlay. It fades the scrim's colour and its blur together while
+        /// the frame comes and goes; 1 at rest.
+        scrim_opacity: f32,
     },
     Button {
         icon: Option<(nana_ui_core::Icon, LayoutBox)>,
@@ -2740,6 +2744,23 @@ pub struct TextOverlayMetrics {
     pub completion: Option<TextCompletionPopupMetrics>,
     /// hover 锚点（文本空间 `(x, y)`，`offset` 所在行的字形位置）。
     pub hover_anchor: Option<(f32, f32)>,
+}
+
+impl ComponentGeometry {
+    /// Where a presentation transform of this node pivots, from the corner
+    /// of its layout box `bounds`, when it is not the node's own
+    /// `transform-origin`: a modal frame's node is its whole scrim, and its
+    /// entrance scales and moves the card about the card's own centre, the
+    /// way CSS pivots a transform on the card.
+    pub fn presentation_pivot(&self, bounds: LayoutBox) -> Option<[f32; 2]> {
+        match self {
+            Self::ModalFrame { surface, .. } => Some([
+                surface.x + surface.width / 2.0 - bounds.x,
+                surface.y + surface.height / 2.0 - bounds.y,
+            ]),
+            _ => None,
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]

@@ -164,6 +164,41 @@ effects.modal_scrim_blur = 2.0;
 let theme = ThemeDefinition::NANA_DARK.with_effects(effects);
 ```
 
+## 进场和退场
+
+对话框怎么来、怎么走归主题的 `DialogRecipe::motion`（`DialogMotion`）：遮罩淡入（`scrim`），卡片淡入（`card_fade`），卡片从 `enter_offset_y`（向下为正的 px）和 `enter_scale` 移回原位（`card_move`）。每段是一个 `DialogTransition { millis, easing }`，就是 CSS 的 `transition: <属性> <时长> <缓动>`。位移和缩放绕卡片自己的中心，和 CSS 给卡片写 `transform` 一样，插槽里的内容跟着卡片一起淡入、移动。遮罩不跟卡片的淡入走，按自己的时长淡入，它的模糊也跟着淡入：CSS 的 `opacity` 连 `backdrop-filter` 一起作用。退场把同样的过渡倒着放一遍。
+
+内置是 140ms、ease-out 的淡入淡出，卡片不动。照这样的 CSS 写的设计：
+
+```css
+.modal-fade-enter-active { transition: opacity .16s ease }
+.modal-fade-enter-active .modal-card {
+  transition: transform .18s cubic-bezier(.2, .8, .2, 1), opacity .16s ease;
+}
+.modal-fade-enter-from .modal-card { transform: translateY(-8px) scale(.98) }
+```
+
+写成：
+
+```rust
+use nana_ui::runtime::Easing;
+use nana_ui::theme::{DialogMotion, DialogRecipe, DialogTransition, ThemeDefinition};
+
+let ease = Easing::CubicBezier([0.25, 0.1, 0.25, 1.0]); // CSS 的 `ease`
+let theme = ThemeDefinition::NANA_DARK.with_dialog(DialogRecipe {
+    motion: DialogMotion {
+        scrim: DialogTransition::new(160, ease),
+        card_fade: DialogTransition::new(160, ease),
+        card_move: DialogTransition::new(180, Easing::MENU_POP),
+        enter_offset_y: -8.0,
+        enter_scale: 0.98,
+    },
+    ..DialogRecipe::DEFAULT
+});
+```
+
+时长为 0、偏移或缩放不是有限值、缩放不是正数，主题拒装。应用或系统要求减弱动态效果时（`AppContext::set_reduced_motion`，或宿主报上来的系统偏好），对话框、抽屉和菜单都不放过渡：直接出现、直接消失，开合事件照常发。抽屉不读这份配方，保持内置的淡入淡出。
+
 ## 由应用决定开合
 
 用户想关掉对话框有三种手势：按 Escape、在对话框外按下再松开、激活关闭位（`.close_action`）。每一种都先在对话框自己身上发一次 `DialogCloseRequested`，`trigger` 说是哪一种。然后才看 `.close_policy`：允许这个手势，框架接着关掉它，宿主随后发 `OverlayClosing`；不允许，它留着。Escape 和点外面只送到挂在 `OverlayHost` 下、用 `activate_overlay` 打开的对话框（浮层约定）；关闭位挂没挂都会发请求。

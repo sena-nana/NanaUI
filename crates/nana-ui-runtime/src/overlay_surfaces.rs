@@ -1680,6 +1680,174 @@ mod tests {
         }
     }
 
+    fn moving_recipe() -> nana_ui_core::DialogRecipe {
+        use nana_ui_core::{DialogMotion, DialogTransition, motion::Easing};
+        nana_ui_core::DialogRecipe {
+            motion: DialogMotion {
+                scrim: DialogTransition::new(160, Easing::Linear),
+                card_fade: DialogTransition::new(120, Easing::Linear),
+                card_move: DialogTransition::new(200, Easing::Linear),
+                enter_offset_y: -8.0,
+                enter_scale: 0.98,
+            },
+            ..nana_ui_core::DialogRecipe::DEFAULT
+        }
+    }
+
+    fn hosted_dialog(
+        cx: &mut AppContext,
+        document: DocumentId,
+    ) -> (
+        crate::Entity<crate::OverlayHost>,
+        crate::Entity<crate::Dialog>,
+        StableNodeId,
+    ) {
+        let host = cx
+            .create_component(document, crate::OverlayHost::new())
+            .unwrap();
+        let dialog = cx
+            .create_detached_component(document, crate::Dialog::new("导出"))
+            .unwrap();
+        let body = cx
+            .create_detached_component(
+                document,
+                crate::Stack::column(0.0).height(LengthSpec::Px(40.0)),
+            )
+            .unwrap();
+        cx.set_modal_slots(
+            dialog,
+            ModalSlots {
+                body: Some(body.stable_id()),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        cx.append_child(host, dialog).unwrap();
+        (host, dialog, body.stable_id())
+    }
+
+    fn presented(
+        cx: &AppContext,
+        id: StableNodeId,
+        property: crate::AnimatableProperty,
+    ) -> Option<crate::MotionValue> {
+        cx.world()
+            .presentation_applied_value(id, property, cx.world().animation_now())
+    }
+
+    /// A dialog comes in the way its theme says: the scrim fades on its own
+    /// clock, the card fades on another and moves in from 8px above at 98%
+    /// about its own centre, slots and all; the exit plays the same back.
+    #[test]
+    fn a_dialog_enters_and_leaves_with_its_themes_motion() {
+        use crate::{AnimatableProperty, MotionValue};
+        use std::time::Duration;
+        let mut cx = AppContext::new();
+        let document = DocumentId::new(1).unwrap();
+        cx.set_theme_definition(
+            &nana_ui_core::ThemeDefinition::NANA_DARK.with_dialog(moving_recipe()),
+        )
+        .unwrap();
+        let (host, dialog, body) = hosted_dialog(&mut cx, document);
+        cx.advance_animations(Duration::from_millis(1000));
+        assert!(cx.activate_overlay(host, dialog).unwrap());
+        shaped_layout(&mut cx, document, 800.0, 600.0);
+        let id = dialog.stable_id();
+        assert_eq!(cx.world().scrim_presence(id), 0.0);
+        assert_eq!(
+            presented(&cx, id, AnimatableProperty::Opacity),
+            Some(MotionValue::Scalar(0.0))
+        );
+        let Some(MotionValue::Transform(start)) = presented(&cx, id, AnimatableProperty::Transform)
+        else {
+            panic!("the card moves in")
+        };
+        assert_eq!((start.a, start.d, start.f), (0.98, 0.98, -8.0));
+
+        // The body follows the card about the card's centre.
+        let crate::ComponentGeometry::ModalFrame {
+            surface,
+            scrim_opacity,
+            ..
+        } = modal_geometry(&cx, id)
+        else {
+            panic!("dialog geometry")
+        };
+        assert_eq!(scrim_opacity, 0.0, "the scrim starts unseen");
+        let logical = cx.world().canonical_layout_box(body).unwrap();
+        let shown = cx.world().presentation_input_bounds(body).unwrap();
+        let centre = surface.y + surface.height / 2.0;
+        let expected_top = centre + (logical.y - centre) * 0.98 - 8.0;
+        assert!(
+            (shown.y - expected_top).abs() < 0.05,
+            "{shown:?} against {expected_top}"
+        );
+
+        cx.advance_animations(Duration::from_millis(1080));
+        assert!((cx.world().scrim_presence(id) - 0.5).abs() < 0.01);
+        let crate::ComponentGeometry::ModalFrame { scrim_opacity, .. } = modal_geometry(&cx, id)
+        else {
+            panic!("dialog geometry")
+        };
+        assert!((scrim_opacity - 0.5).abs() < 0.01, "{scrim_opacity}");
+        let Some(MotionValue::Scalar(card)) = presented(&cx, id, AnimatableProperty::Opacity)
+        else {
+            panic!("the card fades in")
+        };
+        assert!((card - 80.0 / 120.0).abs() < 0.01, "{card}");
+        let Some(MotionValue::Transform(midway)) =
+            presented(&cx, id, AnimatableProperty::Transform)
+        else {
+            panic!("the card moves in")
+        };
+        assert!(
+            (midway.f - -8.0 * (1.0 - 80.0 / 200.0)).abs() < 0.01,
+            "{midway:?}"
+        );
+
+        cx.advance_animations(Duration::from_millis(1200));
+        assert_eq!(cx.world().scrim_presence(id), 1.0);
+        assert!(cx.world().overlay_host(host.stable_id()).unwrap().active == Some(id));
+
+        assert!(cx.dismiss_overlay(host).unwrap());
+        cx.advance_animations(Duration::from_millis(1280));
+        assert!((cx.world().scrim_presence(id) - 0.5).abs() < 0.01);
+        cx.advance_animations(Duration::from_millis(1400));
+        assert_eq!(cx.world().scrim_presence(id), 0.0);
+        assert_eq!(
+            cx.world().overlay_host(host.stable_id()).unwrap().active,
+            None
+        );
+    }
+
+    /// With reduced motion a dialog is simply there, and simply gone: every
+    /// track ends on the next advance, at the same time it began.
+    #[test]
+    fn reduced_motion_opens_and_closes_a_dialog_at_once() {
+        use std::time::Duration;
+        let mut cx = AppContext::new();
+        let document = DocumentId::new(1).unwrap();
+        cx.set_theme_definition(
+            &nana_ui_core::ThemeDefinition::NANA_DARK.with_dialog(moving_recipe()),
+        )
+        .unwrap();
+        cx.set_reduced_motion(true);
+        let (host, dialog, _) = hosted_dialog(&mut cx, document);
+        let now = Duration::from_millis(1000);
+        cx.advance_animations(now);
+        assert!(cx.activate_overlay(host, dialog).unwrap());
+        cx.advance_animations(now);
+        let id = dialog.stable_id();
+        assert_eq!(cx.world().scrim_presence(id), 1.0);
+        assert!(!cx.world().surface_closing(id));
+        assert!(cx.dismiss_overlay(host).unwrap());
+        cx.advance_animations(now);
+        assert_eq!(
+            cx.world().overlay_host(host.stable_id()).unwrap().active,
+            None
+        );
+    }
+
     #[test]
     fn dialog_wraps_against_final_surface_width_and_settles_at_top_inset() {
         let mut cx = AppContext::new();

@@ -33,6 +33,8 @@ struct CompositeUniforms {
     corner_exponent: f32,
     // Texels of the blurred copy per device pixel: one over its downsample.
     blur_scale: f32,
+    // The surface's paint opacity: the blurred backdrop is part of its paint.
+    opacity: f32,
 }
 
 @group(0) @binding(2)
@@ -141,7 +143,7 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
         local_dy,
         composite.corner_exponent,
     );
-    var alpha = clamp(0.5 - edge, 0.0, 1.0) * clip_cover;
+    var alpha = clamp(0.5 - edge, 0.0, 1.0) * clip_cover * composite.opacity;
 
     if ((paint.flags & PAINT_MASK) != 0u && (paint.flags & PAINT_MASK_URL) == 0u) {
         alpha *= mask_alpha(local_uv, paint);

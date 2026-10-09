@@ -188,6 +188,10 @@ fn tag_color(kind: u16) -> [f32; 4] {
     PALETTE[usize::from(kind) % PALETTE.len()]
 }
 
+/// The primitive slot a modal frame paints its scrim in. The scrim fades on
+/// its own clock: its node's own opacity layer is the card's.
+pub(crate) const MODAL_SCRIM_SLOT: u64 = 10;
+
 /// The surface of an open triggered menu (Popover, ActionMenu, HoverCard).
 /// It is the trigger's primitive, but it wraps content Runtime lays out
 /// viewport-fixed above the page, so it paints the way that content does: in

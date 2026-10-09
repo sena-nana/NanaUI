@@ -220,8 +220,29 @@ impl UiWorld {
                 // is an elevation token now, so each theme states it and a
                 // mid-grey background no longer picks the wrong branch.
                 let overlay_shadow = self.theme.shadow(nana_ui_core::ElevationRole::Overlay);
+                // The scrim rides the card's move on the frame's own layer,
+                // so it reaches past the frame by as much as the move and
+                // the entrance scale could pull its edge in: an even colour
+                // that still covers the window wherever the card is.
+                let motion = recipe.motion;
+                let scrim = match kind {
+                    crate::ModalSurfaceKind::Drawer(_) => bounds,
+                    _ if motion.moves() => {
+                        let scale = motion.enter_scale.max(f32::EPSILON);
+                        let reach = bounds.width.max(bounds.height) * (1.0 / scale - 1.0).max(0.0)
+                            + motion.enter_offset_y.abs() / scale
+                            + 1.0;
+                        LayoutBox {
+                            x: bounds.x - reach,
+                            y: bounds.y - reach,
+                            width: bounds.width + reach * 2.0,
+                            height: bounds.height + reach * 2.0,
+                        }
+                    }
+                    _ => bounds,
+                };
                 Some(crate::ComponentGeometry::ModalFrame {
-                    scrim: bounds,
+                    scrim,
                     surface,
                     body,
                     title: crate::ComponentTextRegion {
@@ -291,6 +312,7 @@ impl UiWorld {
                     ),
                     scrim_color: self.theme.effects().modal_scrim.as_rgba_array(),
                     scrim_blur: self.theme.effects().modal_scrim_blur,
+                    scrim_opacity: self.scrim_presence(id),
                 })
             }
             StandardVisual::Button {

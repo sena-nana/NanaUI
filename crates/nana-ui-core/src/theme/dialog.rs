@@ -29,7 +29,68 @@
 
 use super::RadiusTier;
 use crate::box_layout::LengthSpec;
+use crate::motion::Easing;
 use crate::style_model::SemanticColorRole;
+
+/// One transition of a dialog's entrance and exit: how long, along which
+/// curve. CSS `transition: <property> <duration> <timing-function>`.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct DialogTransition {
+    pub millis: u16,
+    pub easing: Easing,
+}
+
+impl DialogTransition {
+    pub const fn new(millis: u16, easing: Easing) -> Self {
+        Self { millis, easing }
+    }
+
+    pub const fn duration(self) -> std::time::Duration {
+        std::time::Duration::from_millis(self.millis as u64)
+    }
+}
+
+/// How a dialog comes and goes: the scrim fades, and the card fades and
+/// moves into place from a little above, a little smaller. The exit plays
+/// the same transitions back. With reduced motion on, none of it plays.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct DialogMotion {
+    /// The scrim's fade.
+    pub scrim: DialogTransition,
+    /// The card's fade, with its contents.
+    pub card_fade: DialogTransition,
+    /// The card's move, from [`Self::enter_offset_y`] and
+    /// [`Self::enter_scale`] to where it rests.
+    pub card_move: DialogTransition,
+    /// Where the card's entrance starts, in px below its place (CSS
+    /// `translateY`); negative is above.
+    pub enter_offset_y: f32,
+    /// The card's scale where its entrance starts, about its own centre.
+    pub enter_scale: f32,
+}
+
+impl DialogMotion {
+    /// The fade every overlay has always had: scrim and card together,
+    /// 140ms, easing out; the card does not move.
+    pub const DEFAULT: Self = Self {
+        scrim: DialogTransition::new(140, Easing::EaseOutCubic),
+        card_fade: DialogTransition::new(140, Easing::EaseOutCubic),
+        card_move: DialogTransition::new(140, Easing::EaseOutCubic),
+        enter_offset_y: 0.0,
+        enter_scale: 1.0,
+    };
+
+    /// Whether the card moves at all on its way in.
+    pub fn moves(&self) -> bool {
+        self.enter_offset_y != 0.0 || self.enter_scale != 1.0
+    }
+}
+
+impl Default for DialogMotion {
+    fn default() -> Self {
+        Self::DEFAULT
+    }
+}
 
 /// One section of a dialog card's insets: its CSS `padding`.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -91,6 +152,8 @@ pub struct DialogRecipe {
     pub header_divider: Option<SemanticColorRole>,
     /// A hairline over the footer, in this palette role; `None` draws none.
     pub footer_divider: Option<SemanticColorRole>,
+    /// How the dialog comes and goes.
+    pub motion: DialogMotion,
 }
 
 impl DialogRecipe {
@@ -113,6 +176,7 @@ impl DialogRecipe {
         action_gap: super::space::MD,
         header_divider: None,
         footer_divider: None,
+        motion: DialogMotion::DEFAULT,
     };
 
     /// The recipe's plain lengths with their token names, for validation.

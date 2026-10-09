@@ -768,6 +768,24 @@ impl ThemeDefinition {
         for (token, value) in dialog.lengths() {
             check.length(token, value);
         }
+        let motion = dialog.motion;
+        for (token, transition) in [
+            ("dialog.motion.scrim", motion.scrim),
+            ("dialog.motion.card_fade", motion.card_fade),
+            ("dialog.motion.card_move", motion.card_move),
+        ] {
+            check.duration(token, transition.millis);
+        }
+        let _ = check.finite("dialog.motion.enter_offset_y", motion.enter_offset_y);
+        if check.finite("dialog.motion.enter_scale", motion.enter_scale)
+            && motion.enter_scale <= 0.0
+        {
+            check.fail(ThemeCompileError::NegativeLength {
+                theme: self.id.clone(),
+                token: "dialog.motion.enter_scale",
+                value: thousandths(motion.enter_scale),
+            });
+        }
         if let Some(error) = error {
             return Err(error);
         }
@@ -1434,6 +1452,32 @@ mod tests {
                 Err(ThemeCompileError::NotFinite { token, .. }) if token == "dialog.top"
             ));
         }
+        let mut frozen_scrim = dark();
+        frozen_scrim.components.dialog = Some(super::super::DialogRecipe {
+            motion: super::super::DialogMotion {
+                scrim: super::super::DialogTransition::new(0, crate::motion::Easing::Linear),
+                ..super::super::DialogMotion::DEFAULT
+            },
+            ..super::super::DialogRecipe::DEFAULT
+        });
+        assert!(matches!(
+            frozen_scrim.compile(),
+            Err(ThemeCompileError::ZeroDuration { token, .. }) if token == "dialog.motion.scrim"
+        ));
+        let mut vanished = dark();
+        vanished.components.dialog = Some(super::super::DialogRecipe {
+            motion: super::super::DialogMotion {
+                enter_scale: 0.0,
+                ..super::super::DialogMotion::DEFAULT
+            },
+            ..super::super::DialogRecipe::DEFAULT
+        });
+        assert!(matches!(
+            vanished.compile(),
+            Err(ThemeCompileError::NegativeLength { token, .. })
+                if token == "dialog.motion.enter_scale"
+        ));
+
         let mut shrunk = dark();
         shrunk.components.dialog = Some(super::super::DialogRecipe {
             close_size: -4.0,

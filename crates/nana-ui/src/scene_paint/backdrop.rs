@@ -139,7 +139,9 @@ struct CompositeUniforms {
     corner_exponent: f32,
     /// Texels of the blurred copy per device pixel: one over its downsample.
     blur_scale: f32,
-    _pad_blur: [f32; 3],
+    /// The surface's paint opacity, which its blurred backdrop takes too.
+    opacity: f32,
+    _pad_blur: [f32; 2],
 }
 
 const COMPOSITE_UNIFORM_SIZE: usize = 240;
@@ -156,6 +158,9 @@ pub(super) struct BackdropRequest {
     /// Device pixels per texel of the blurred copy, along each axis.
     pub downsample: u32,
     pub saturate: f32,
+    /// The surface's paint opacity: CSS applies an element's `opacity` to
+    /// its backdrop-filter image as well as to its background.
+    pub opacity: f32,
     pub clip: FragmentClip,
     pub padded_origin: [f32; 2],
     pub padded_size: [u32; 2],
@@ -628,6 +633,7 @@ impl BackdropPipeline {
         physical_bounds: [f32; 4],
         corner_radius: [f32; 4],
         filter: BackdropFilter,
+        opacity: f32,
         clip: FragmentClip,
         scale: f32,
         dest_physical: [u32; 2],
@@ -661,6 +667,7 @@ impl BackdropPipeline {
             sigma,
             downsample,
             saturate: filter.saturate,
+            opacity: opacity.clamp(0.0, 1.0),
             clip,
             padded_origin: [padded_x as f32, padded_y as f32],
             padded_size: [padded_w, padded_h],
@@ -755,7 +762,8 @@ impl BackdropPipeline {
                 paint_index: request.paint_index,
                 corner_exponent: self.corner_exponent,
                 blur_scale: 1.0 / downsample,
-                _pad_blur: [0.0; 3],
+                opacity: request.opacity,
+                _pad_blur: [0.0; 2],
             };
             let composite_offset = Self::uniform_offset(slot, PASS_COMPOSITE);
             let composite_bytes = bytemuck::bytes_of(&composite_uniforms);

@@ -1535,11 +1535,13 @@ impl AppContext {
     /// drops it.
     pub fn set_reduced_motion(&mut self, reduced: bool) {
         self.reduced_motion_override = Some(reduced);
+        self.world.set_reduced_motion(self.reduced_motion());
     }
 
     /// Follow the system preference again.
     pub fn follow_system_reduced_motion(&mut self) {
         self.reduced_motion_override = None;
+        self.world.set_reduced_motion(self.reduced_motion());
     }
 
     /// The system's reduce-motion preference. The hosted runtime reports it
@@ -1547,6 +1549,7 @@ impl AppContext {
     /// embedding host calls this itself.
     pub fn set_system_reduced_motion(&mut self, reduced: bool) {
         self.system_reduced_motion = reduced;
+        self.world.set_reduced_motion(self.reduced_motion());
     }
 
     /// Whether the last layout pass dropped lines of this text to honour its

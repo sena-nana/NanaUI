@@ -23,18 +23,21 @@ pub(super) fn build(context: &GeometryPaintContext<'_>, emit: &mut impl FnMut(Sc
             footer_divider,
             scrim_color,
             scrim_blur,
+            scrim_opacity,
             ..
         }) => {
+            // The scrim fades by its own opacity, not its node's layer (the
+            // card's): see `UiScene::compositor_primitive_opacity`.
             let mut scrim_quad = visual_quad(
                 &VisualPrimitiveContext {
                     node: id,
                     transform,
                     clips,
-                    opacity,
+                    opacity: opacity * scrim_opacity.clamp(0.0, 1.0),
                     z_index: node.z_index,
                     document_order: node_order,
                 },
-                10,
+                crate::scene::MODAL_SCRIM_SLOT,
                 scene_rect(*scrim),
                 VisualQuadStyle::solid(*scrim_color),
             );
