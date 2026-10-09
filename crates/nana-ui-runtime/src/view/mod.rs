@@ -44,6 +44,8 @@ pub(crate) mod trace;
 mod transition;
 
 pub use crate::VirtualAlignment;
+#[doc(hidden)]
+pub use controls::__arg;
 pub use controls::{
     Px, StyledComponent, action_menu, action_menu_item, avatar, button, checkbox, chip,
     color_field, column, divider, empty_state, fields, icon_button, labeled_value, list_item,

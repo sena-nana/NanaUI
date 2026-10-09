@@ -769,7 +769,7 @@ let fixed = signal(7u64);
     has(
         r#"view::t(::nana_ui_runtime::view::Fixed(::nana_ui_runtime::LocalizedText::new("seven")
         .arg("count", fixed.get())
-        .arg("who", ::core::clone::Clone::clone(&owner))
+        .arg("who", ::nana_ui_runtime::view::__arg(&owner))
         .arg("label", "x")))"#,
     );
     has(r#"view::t(move || ::nana_ui_runtime::LocalizedText::new(&(choose(count.get()))))"#);

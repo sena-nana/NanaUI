@@ -640,7 +640,7 @@ mod tests {
         assert!(
             bound.contains(
                 "x::view::t(move||x::LocalizedText::new(\"files\").arg(\"count\",n.get())\
-                 .arg(\"who\",::core::clone::Clone::clone(&name)))"
+                 .arg(\"who\",x::view::__arg(&name)))"
             ),
             "an expression is read again, a path cloned: {bound}"
         );

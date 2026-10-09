@@ -185,7 +185,7 @@ pub fn localized_text(
         }
         let value = match &attr.value {
             AttrValue::Lit(literal) => quote!(#literal),
-            AttrValue::Expr(expr) => read(expr).unwrap_or_else(|| argument(expr)),
+            AttrValue::Expr(expr) => read(expr).unwrap_or_else(|| argument(krate, expr)),
             AttrValue::Verbatim(value) => value.clone(),
             AttrValue::None | AttrValue::For(..) | AttrValue::View(_) => {
                 return Err(syn::Error::new(
@@ -209,10 +209,10 @@ pub fn localized_text(
 
 /// A message argument as a value the closure it may sit in can give again:
 /// a path or a field cloned (`count`, `todo.title`), anything else as it is.
-fn argument(expr: &Expr) -> TokenStream {
+fn argument(krate: &TokenStream, expr: &Expr) -> TokenStream {
     match expr {
         Expr::Path(_) | Expr::Field(_) => {
-            quote_spanned!(expr.span()=> ::core::clone::Clone::clone(&#expr))
+            quote_spanned!(expr.span()=> #krate::view::__arg(&#expr))
         }
         _ => quote!(#expr),
     }

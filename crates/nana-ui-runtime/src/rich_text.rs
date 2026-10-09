@@ -2780,7 +2780,10 @@ mod tests {
         relayout(&mut context);
         let text = context.world().canonical_layout_box(id).unwrap();
         let selected = context.world().text_selection_bounds(id).unwrap();
-        assert!(selected.y > text.y + LINE_HEIGHT, "{selected:?} in {text:?}");
+        assert!(
+            selected.y > text.y + LINE_HEIGHT,
+            "{selected:?} in {text:?}"
+        );
         assert!(selected.x > text.x && selected.width > 0.0);
         assert!(selected.height <= LINE_HEIGHT + 1.0);
 
@@ -2789,7 +2792,10 @@ mod tests {
             .unwrap();
         relayout(&mut context);
         let scrolled = context.world().text_selection_bounds(id).unwrap();
-        assert!((scrolled.y - (selected.y - 60.0)).abs() < 0.5, "{scrolled:?}");
+        assert!(
+            (scrolled.y - (selected.y - 60.0)).abs() < 0.5,
+            "{scrolled:?}"
+        );
         assert_eq!(scrolled.x, selected.x);
     }
 

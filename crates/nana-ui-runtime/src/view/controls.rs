@@ -397,6 +397,15 @@ pub fn t(text: impl IntoProp<crate::LocalizedText>) -> El<Text> {
     widget(Text::new("")).prop::<crate::LocalizedText, Localized>(text)
 }
 
+/// A `<T>` argument written as a path or a field, cloned so the closure
+/// building the message can run again. A function rather than a written
+/// `Clone::clone`, which reads as a needless clone of a `Copy` argument at the
+/// template's own span.
+#[doc(hidden)]
+pub fn __arg<T: Clone>(value: &T) -> T {
+    value.clone()
+}
+
 /// The message a [`Text`] says, resolved in its scope's locale: what [`t`]
 /// binds. Writing one makes the text localized.
 pub struct Localized;

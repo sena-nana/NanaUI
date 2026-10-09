@@ -2081,6 +2081,7 @@ version = "0.1.0"
 dependencies = [
  "nana-diagnostics",
  "nana-text",
+ "nana-ui-charts",
  "nana-ui-core",
  "nana-ui-platform",
  "nana-ui-runtime",
@@ -2089,6 +2090,14 @@ dependencies = [
  "serde_json",
  "unicode-segmentation",
  "wgpu",
+]
+
+[[package]]
+name = "nana-ui-charts"
+version = "0.1.0"
+dependencies = [
+ "bytemuck",
+ "nana-ui-core",
 ]
 
 [[package]]
@@ -2150,6 +2159,7 @@ dependencies = [
  "icu_time",
  "nana-diagnostics",
  "nana-text",
+ "nana-ui-charts",
  "nana-ui-core",
  "nana-ui-input",
  "nana-ui-view-schema",
@@ -2168,6 +2178,7 @@ dependencies = [
  "i_overlay",
  "lyon_tessellation",
  "nana-diagnostics",
+ "nana-ui-charts",
  "nana-ui-core",
  "nana-ui-runtime",
  "unicode-segmentation",
