@@ -242,10 +242,7 @@ impl AppContext {
         };
         let hex = match snapshot.hex.filter(|id| self.world().contains(*id)) {
             Some(id) => Entity::<TextInput>::from_stable_id(id),
-            None => self.create_detached_component(
-                document,
-                TextInput::new(format_hex(snapshot.value)).size(snapshot.size),
-            )?,
+            None => self.create_detached_component(document, hex_input(&snapshot))?,
         };
         let pad = match snapshot.pad.filter(|id| self.world().contains(*id)) {
             Some(id) => Entity::<XYPad>::from_stable_id(id),
@@ -402,6 +399,18 @@ fn field_style(size: ControlSize) -> NodeStyle {
     style
 }
 
+/// The hex text takes the field's width beside the swatch, and gives it up
+/// in a narrow field instead of running past the frame: a text input's
+/// natural width is wider than a short hex needs.
+fn hex_input(field: &ColorField) -> TextInput {
+    let mut input = TextInput::new(format_hex(field.value)).size(field.size);
+    let layout = std::sync::Arc::make_mut(&mut input.style.layout);
+    layout.flex_grow = Some(1.0);
+    layout.flex_shrink = Some(1.0);
+    layout.min_width = Some(LengthSpec::Px(0.0));
+    input
+}
+
 fn swatch_button(value: [f32; 4]) -> Button {
     let mut button = Button::new("");
     let layout = std::sync::Arc::make_mut(&mut button.style.layout);
@@ -542,6 +551,43 @@ mod tests {
         assert!((s - 1.0).abs() < 1e-5);
         assert!((v - 1.0).abs() < 1e-5);
         let _ = h;
+    }
+
+    /// A field narrower than the hex text's natural width keeps the hex
+    /// input inside its frame: the input gives up width, the swatch keeps
+    /// its square.
+    #[test]
+    fn a_narrow_field_keeps_the_hex_input_inside_its_frame() {
+        let mut context = AppContext::new();
+        let document = DocumentId::new(1).unwrap();
+        let root = context
+            .create_component(
+                document,
+                crate::Stack::row(0.0).width(nana_ui_core::LengthSpec::Px(148.0)),
+            )
+            .unwrap();
+        let field = context
+            .create_component(document, ColorField::new([1.0, 1.0, 1.0, 1.0]))
+            .unwrap();
+        context.append_child(root, field).unwrap();
+        assert!(context.assemble_color_field(field).unwrap());
+        context
+            .layout_document(document, crate::LayoutViewport::new(400.0, 200.0))
+            .unwrap();
+        let snapshot = context.read(field, Clone::clone).unwrap();
+        let world = context.world();
+        let frame = world.layout_box(field.stable_id()).unwrap();
+        let swatch = world.layout_box(snapshot.swatch.unwrap()).unwrap();
+        let hex = world.layout_box(snapshot.hex.unwrap()).unwrap();
+        assert!(
+            hex.x + hex.width <= frame.x + frame.width + 0.5,
+            "hex {hex:?} runs past the field {frame:?}"
+        );
+        assert!(
+            (swatch.width - SWATCH_SIZE).abs() < 0.5,
+            "swatch {swatch:?}"
+        );
+        assert!(hex.width > 40.0, "the hex input still reads, {hex:?}");
     }
 
     #[test]
