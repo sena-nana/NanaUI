@@ -1,5 +1,5 @@
 import { defineConfig } from "vitepress";
-import { apiStylePlugin } from "./plugins/api-style";
+import { apiStylePlugin } from "./plugins/api-style.ts";
 
 const restoreStyle = `(function(){try{var s=localStorage.getItem('nanaui-docs-style');document.documentElement.classList.add(s==='rust'?'prefer-rust':'prefer-view')}catch(e){document.documentElement.classList.add('prefer-view')}})();`;
 
