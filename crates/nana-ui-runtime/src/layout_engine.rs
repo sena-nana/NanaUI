@@ -1,5 +1,12 @@
 mod grid;
 use grid::*;
+mod dynamic;
+/// Segments one line's cost class may share before its solve shares the
+/// class by capacity.
+#[cfg(test)]
+pub(crate) fn dynamic_line_max_states() -> usize {
+    dynamic::LINE_MAX_STATES
+}
 mod flow;
 use flow::*;
 mod measure;
@@ -467,6 +474,30 @@ impl RuntimeLayoutEngine {
                 slots.insert(plan);
             }
         }
+        retained
+            .envelopes
+            .extend(intrinsic.dynamic.take_envelopes());
+        for (id, solve) in intrinsic.dynamic.line_solves.drain() {
+            match solve {
+                Some(solve) => {
+                    retained.line_solves.insert(id, solve);
+                }
+                None => {
+                    retained.line_solves.remove(&id);
+                }
+            }
+        }
+        for (id, applied) in intrinsic.dynamic.applied.drain() {
+            match applied {
+                Some(applied) => {
+                    retained.applied_adjustments.insert(id, applied);
+                }
+                None => {
+                    retained.applied_adjustments.remove(&id);
+                }
+            }
+        }
+        intrinsic.execution_stats.dynamic = intrinsic.dynamic.counters;
         let intrinsic_counters = intrinsic.counters();
         retained.execution_stats = intrinsic.execution_stats;
         let universe = if force_full { nodes.len() } else { world.len() };
@@ -499,6 +530,11 @@ impl RuntimeLayoutEngine {
             retained.far_start.retain(|id, _| world.contains(*id));
             retained.container_plans.retain(|id, _| world.contains(*id));
             retained.measure_plans.retain(|id, _| world.contains(*id));
+            retained.envelopes.retain(|id, _| world.contains(*id));
+            retained.line_solves.retain(|id, _| world.contains(*id));
+            retained
+                .applied_adjustments
+                .retain(|id, _| world.contains(*id));
         }
         if retained.intrinsics.len() > universe.saturating_mul(2) {
             retained.intrinsics.retain(|id, _| world.contains(*id));
@@ -685,6 +721,9 @@ impl RetainedLayoutCache {
             cache.far_start.remove(&id);
             cache.container_plans.remove(&id);
             cache.measure_plans.remove(&id);
+            cache.envelopes.remove(&id);
+            cache.line_solves.remove(&id);
+            cache.applied_adjustments.remove(&id);
         }
     }
 
@@ -702,6 +741,30 @@ impl RetainedLayoutCache {
             .get(&document)
             .map(DocumentLayoutCache::footprint)
             .unwrap_or_default()
+    }
+
+    /// What Dynamic Layout kept for `id`: its envelope and the adjustment
+    /// its line last assigned it, for devtools.
+    pub(crate) fn dynamic_inspection(
+        &self,
+        document: DocumentId,
+        id: StableNodeId,
+    ) -> Option<crate::view::DynamicInspection> {
+        let cache = self.documents.get(&document)?;
+        let envelope = cache.envelopes.get(&id);
+        let applied = cache.applied_adjustments.get(&id);
+        if envelope.is_none() && applied.is_none() {
+            return None;
+        }
+        Some(crate::view::DynamicInspection {
+            generation: envelope.map_or(0, |envelope| envelope.shape.generation),
+            segments: envelope.map_or_else(Vec::new, |envelope| envelope.shape.segments().to_vec()),
+            applied: applied.map(|applied| crate::view::AppliedInspection {
+                inline: applied.inline,
+                amount: applied.amount,
+                padding: applied.padding,
+            }),
+        })
     }
 
     /// Structural counters from the most recent pass for `document`.
@@ -784,6 +847,12 @@ struct DocumentLayoutCache {
     /// Cached intrinsic measurement per content-sized container. See
     /// [`MeasurePlan`].
     measure_plans: HashMap<StableNodeId, MeasurePlanSlots>,
+    /// Dynamic Layout envelopes, by box (Issue #213).
+    envelopes: HashMap<StableNodeId, dynamic::RetainedEnvelope>,
+    /// Where each overflowing line's solve stopped, by container.
+    line_solves: HashMap<StableNodeId, dynamic::RetainedLineSolve>,
+    /// What each box a line shrank resolved inside itself.
+    applied_adjustments: HashMap<StableNodeId, dynamic::AppliedAdjustment>,
     frontier_stats: LayoutFrontierStats,
     /// The frontier of the most recent pass, so diagnostics can say why a
     /// node was laid out again. Empty after a full pass.
@@ -818,6 +887,12 @@ pub(crate) struct RetainedLayoutFootprint {
     pub full_snapshots: usize,
     /// Nodes of the last pass's frontier, kept for diagnostics.
     pub last_frontier: usize,
+    /// Dynamic Layout envelopes, line solves and the participants they
+    /// hold, and resolved adjustments.
+    pub envelopes: usize,
+    pub line_solves: usize,
+    pub line_solve_entries: usize,
+    pub applied_adjustments: usize,
 }
 
 struct FullLayoutSnapshot {
@@ -1017,6 +1092,14 @@ impl DocumentLayoutCache {
             plan_entries: self.retained_plan_entries(),
             full_snapshots: self.full_snapshots.iter().flatten().count(),
             last_frontier: self.last_frontier.nodes().len(),
+            envelopes: self.envelopes.len(),
+            line_solves: self.line_solves.len(),
+            line_solve_entries: self
+                .line_solves
+                .values()
+                .map(dynamic::RetainedLineSolve::participants)
+                .sum(),
+            applied_adjustments: self.applied_adjustments.len(),
         }
     }
 
@@ -1030,6 +1113,9 @@ impl DocumentLayoutCache {
         self.far_start.clear();
         self.container_plans.clear();
         self.measure_plans.clear();
+        self.envelopes.clear();
+        self.line_solves.clear();
+        self.applied_adjustments.clear();
         self.frontier_stats = LayoutFrontierStats::default();
         self.last_frontier = LayoutFrontier::default();
         self.execution_stats = LayoutExecutionStats::default();
@@ -1420,24 +1506,29 @@ impl ContainerPlan {
         children: &Arc<Vec<StableNodeId>>,
         writing: nana_ui_core::WritingContext,
     ) -> bool {
-        self.inputs_match(
-            origin,
-            size,
-            containing,
-            parent_font_px,
-            viewport,
-            style,
-            children,
-            writing,
-        ) || (self.flow_identity_holds(
-            origin,
-            containing,
-            parent_font_px,
-            viewport,
-            style,
-            children,
-            writing,
-        ) && self.flow_stable_under_own_size(content_origin))
+        // The content box's origin is not only the box's origin and its
+        // style's padding: a line that shrank the box may have closed its
+        // padding up (Issue #212), which moves every child.
+        (self.content_origin == content_origin
+            && self.inputs_match(
+                origin,
+                size,
+                containing,
+                parent_font_px,
+                viewport,
+                style,
+                children,
+                writing,
+            ))
+            || (self.flow_identity_holds(
+                origin,
+                containing,
+                parent_font_px,
+                viewport,
+                style,
+                children,
+                writing,
+            ) && self.flow_stable_under_own_size(content_origin))
     }
 
     /// A sequential plan places from the start edge. Its main size can grow
@@ -2443,6 +2534,8 @@ pub(crate) struct LayoutExecutionStats {
     pub local_context_fallbacks: usize,
     /// Retained-cache sweeps that dropped despawned ids.
     pub retain_sweeps: usize,
+    /// What Dynamic Layout did this pass.
+    pub dynamic: nana_ui_core::DynamicLayoutCounters,
 }
 
 /// Per-pass used-size memo.  The public [`crate::IntrinsicCache`] owns the
@@ -2470,6 +2563,8 @@ struct PassIntrinsicCache {
     seeded_intrinsic: HashSet<crate::IntrinsicCacheKey>,
     extra_counters: crate::IntrinsicCacheCounters,
     execution_stats: LayoutExecutionStats,
+    /// Dynamic Layout state for the pass.
+    dynamic: dynamic::DynamicPass,
 }
 
 impl PassIntrinsicCache {
@@ -2489,6 +2584,7 @@ impl PassIntrinsicCache {
             seeded_intrinsic: HashSet::with_capacity(capacity),
             extra_counters: crate::IntrinsicCacheCounters::default(),
             execution_stats: LayoutExecutionStats::default(),
+            dynamic: dynamic::DynamicPass::default(),
         }
     }
 

@@ -2118,6 +2118,7 @@ impl UiWorld {
                 stats.local_context_fallbacks,
                 stats.retain_sweeps,
             );
+            counters.dynamic.accumulate(stats.dynamic);
         });
     }
 
@@ -5557,6 +5558,12 @@ fn layout_style_invalidation(
     )
 }
 
+#[cfg(test)]
+mod issue212;
+#[cfg(test)]
+mod issue213;
+#[cfg(test)]
+mod issue214;
 mod issue255;
 mod issue256;
 #[cfg(test)]

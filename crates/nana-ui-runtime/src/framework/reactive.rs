@@ -634,6 +634,10 @@ impl AppContext {
             element: bindings.as_ref().map(|info| info.element),
             source_element: bindings.as_ref().and_then(|info| info.source),
             layout: self.layout_cause(node),
+            dynamic: self
+                .world
+                .document_of(node)
+                .and_then(|document| self.layout_cache.dynamic_inspection(document, node)),
         })
     }
 

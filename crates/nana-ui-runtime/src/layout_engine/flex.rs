@@ -1,6 +1,25 @@
 //! Shared Runtime layout flex algorithms.
 
+use nana_ui_core::dynamic_layout::{LayoutUnits, lower_box};
+
+use super::dynamic::{DynamicLine, LineChild};
 use super::*;
+
+/// What a line's Dynamic Layout solve changed: the gap its items now sit
+/// apart at, and what each item gave up (empty when nothing was solved).
+pub(super) struct LineAdjust {
+    pub(super) gap: f32,
+    pub(super) amounts: Vec<LayoutUnits>,
+}
+
+impl LineAdjust {
+    /// Whether the item at `index` gave up part of its preferred size.
+    pub(super) fn compressed(&self, index: usize) -> bool {
+        self.amounts
+            .get(index)
+            .is_some_and(|amount| amount.is_positive())
+    }
+}
 
 #[allow(clippy::too_many_arguments)]
 pub(super) fn distribute_flex_main(
@@ -14,13 +33,18 @@ pub(super) fn distribute_flex_main(
     viewport: LayoutViewport,
     parent_font_px: f32,
     nodes: &LayoutInputMap<'_>,
-) {
+    dynamic: Option<DynamicLine<'_>>,
+) -> LineAdjust {
+    let mut adjust = LineAdjust {
+        gap,
+        amounts: Vec::new(),
+    };
     let n = children.len();
     if n == 0 {
-        return;
+        return adjust;
     }
     let content_main = main_extent(content, direction);
-    let gap_total = gap * n.saturating_sub(1) as f32;
+    let mut gap_total = gap * n.saturating_sub(1) as f32;
     let vp = Some((viewport.width, viewport.height));
     let mut margin_mains = Vec::with_capacity(n);
     let mut fixed_or_fill: Vec<Option<f32>> = Vec::with_capacity(n);
@@ -28,6 +52,8 @@ pub(super) fn distribute_flex_main(
     let mut maxs = Vec::with_capacity(n);
     let mut grows = Vec::with_capacity(n);
     let mut shrinks = Vec::with_capacity(n);
+    // Items sized by their content: the only ones a line's solve may shrink.
+    let mut content_sized = Vec::with_capacity(n);
     for (index, child) in children.iter().enumerate() {
         let Some(style) = nodes.style(*child) else {
             margin_mains.push(0.0);
@@ -35,6 +61,7 @@ pub(super) fn distribute_flex_main(
             maxs.push(None);
             grows.push(0.0);
             shrinks.push(1.0);
+            content_sized.push(false);
             fixed_or_fill.push(Some(main_extent(sizes[index], direction)));
             continue;
         };
@@ -82,7 +109,9 @@ pub(super) fn distribute_flex_main(
         // omits shrink writes `Some(1.0)` (`flex: initial`, `flex: N`, `flex: N <basis>`).
         // css-parity T-F18/F19 set the longhand explicitly.
         shrinks.push(style.flex_shrink.unwrap_or(0.0).max(0.0));
-        match resolve_child_main(main, content_main, viewport, fonts) {
+        let resolved_main = resolve_child_main(main, content_main, viewport, fonts);
+        content_sized.push(resolved_main.is_none() && grow <= 0.0 && !fill_main);
+        match resolved_main {
             Some(value) => {
                 let mut value = value.max(min_main);
                 if let Some(max) = max_main {
@@ -130,6 +159,77 @@ pub(super) fn distribute_flex_main(
         &maxs,
         &grows,
     );
+    if let Some(line) = dynamic {
+        // A line that overflows gives up its items' declared elasticity,
+        // cheapest first, before any shrink factor clips them.
+        let inline = direction == FlexDirection::Row;
+        line.pass.counters.contexts_considered += 1;
+        let occupied = mains.iter().sum::<f32>() + margin_mains.iter().sum::<f32>() + gap_total;
+        let overflow = LayoutUnits::from_px(occupied - content_main);
+        if overflow.is_positive() {
+            let own_gap = lower_box(
+                line.profile.axis(inline),
+                (0.0, 0.0),
+                gap,
+                n.saturating_sub(1),
+                0.0,
+                0,
+            );
+            let mut parts = Vec::new();
+            for (index, child) in children.iter().enumerate() {
+                if !content_sized[index] {
+                    continue;
+                }
+                let shape = line.pass.envelope(
+                    *child,
+                    inline,
+                    edge_base,
+                    parent_font_px,
+                    nodes,
+                    line.retained,
+                );
+                if shape.is_rigid() {
+                    continue;
+                }
+                parts.push(LineChild {
+                    index,
+                    id: *child,
+                    shape,
+                    limit: LayoutUnits::from_px(mains[index] - mins[index]),
+                });
+            }
+            if !parts.is_empty() || !own_gap.is_rigid() {
+                let (per_child, own) = line.pass.solve_line(
+                    line.container,
+                    own_gap,
+                    &parts,
+                    overflow,
+                    line.retained,
+                    line.commit,
+                );
+                adjust.amounts = vec![LayoutUnits::ZERO; n];
+                for (part, amount) in parts.iter().zip(&per_child) {
+                    mains[part.index] -= amount.to_px();
+                    adjust.amounts[part.index] = *amount;
+                }
+                if n > 1 && own.is_positive() {
+                    adjust.gap = (gap - own.to_px() / (n - 1) as f32).max(0.0);
+                    gap_total = adjust.gap * (n - 1) as f32;
+                }
+            }
+        } else {
+            line.pass.counters.fast_fit += 1;
+        }
+        if line.commit {
+            line.pass.commit_line(
+                line.container,
+                children,
+                &adjust.amounts,
+                inline,
+                line.retained,
+            );
+        }
+    }
     apply_flex_shrink(
         content_main,
         gap_total,
@@ -141,6 +241,7 @@ pub(super) fn distribute_flex_main(
     for (size, main) in sizes.iter_mut().zip(mains) {
         set_main_extent(size, direction, main);
     }
+    adjust
 }
 
 pub(super) fn resolve_flex_fill_sizes(

@@ -3420,6 +3420,11 @@ pub struct LayoutStyle {
     ///（`flex: initial` / `flex: N` / `flex: N <basis>`）。
     pub flex_shrink: Option<f32>,
     pub flex_basis: Option<LengthSpec>,
+    /// What this box declares about its elasticity, and whether its line
+    /// solves overflow by compressing its children's (Issue #207). `None`
+    /// declares nothing and solves nothing.
+    #[serde(default)]
+    pub adaptation: Option<crate::dynamic_layout::AdaptationProfile>,
     pub overflow_x: OverflowSpec,
     pub overflow_y: OverflowSpec,
     /// `text-overflow: ellipsis`（需配合 nowrap / 定宽；Scene text 路径兑现）。
@@ -3682,6 +3687,7 @@ impl Default for LayoutStyle {
             flex_grow: None,
             flex_shrink: None,
             flex_basis: None,
+            adaptation: None,
             overflow_x: OverflowSpec::Visible,
             overflow_y: OverflowSpec::Visible,
             text_overflow_ellipsis: false,

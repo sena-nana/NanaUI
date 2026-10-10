@@ -226,6 +226,39 @@ pub struct InspectDump {
     /// Why layout last reached the node, or why it waits for the next pass.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub layout: Option<LayoutCauseDump>,
+    /// The elasticity the node's parent last read and what its line last
+    /// assigned it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub dynamic: Option<DynamicDump>,
+}
+
+/// Dynamic Layout facts for a node. Lengths are in 1/64 px.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct DynamicDump {
+    pub generation: u64,
+    pub segments: Vec<SegmentDump>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub applied: Option<AppliedDump>,
+}
+
+/// One piece of capacity: how much, what each unit costs (absent when
+/// forbidden), what gives it up and what work taking it needs.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct SegmentDump {
+    pub capacity: i32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cost: Option<u32>,
+    pub kind: String,
+    pub class: String,
+    pub sources: u16,
+}
+
+/// What a line assigned the node, and the part its padding closed up.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct AppliedDump {
+    pub axis: String,
+    pub amount: i32,
+    pub padding: i32,
 }
 
 /// A typed layout cause, by flag name.

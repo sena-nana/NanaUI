@@ -295,6 +295,7 @@ layout_style_fields! {
     flex_grow: FLEX_SIZING,
     flex_shrink: FLEX_SIZING,
     flex_basis: FLEX_SIZING,
+    adaptation: FLEX_SIZING,
     overflow_x: SCROLL,
     overflow_y: SCROLL,
     text_overflow_ellipsis: TEXT_LAYOUT,

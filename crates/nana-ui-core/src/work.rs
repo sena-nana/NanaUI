@@ -311,6 +311,8 @@ pub struct WorkCounters {
     pub container_query_cycle_fallbacks: usize,
     /// Localization (Issues #268, #269, #270).
     pub i18n: I18nCounters,
+    /// Dynamic Layout (Issues #207, #213, #214).
+    pub dynamic: DynamicLayoutCounters,
     /// Shared intrinsic measurement authority counters (Issue #198).
     pub intrinsic_measure_requests: usize,
     pub intrinsic_measure_cache_hits: usize,
@@ -434,6 +436,77 @@ accumulate_counters! {
     }
 }
 
+/// What Dynamic Layout cost (Issues #207, #213, #214): the cost-aware
+/// solver that compresses a line's declared elasticity when it overflows,
+/// and the envelopes it reads. All work adds up; the beam's widest state
+/// set and the scratch high-water mark are the largest seen.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct DynamicLayoutCounters {
+    /// Lines whose container solves overflow, looked at.
+    pub contexts_considered: usize,
+    /// Solves run: cold and incremental.
+    pub solver_runs: usize,
+    /// Lines that fit without adjusting: no envelope read.
+    pub fast_fit: usize,
+    /// Solves that touched one cost level of one class.
+    pub fast_adjust: usize,
+    /// Keep-versus-break comparisons a line decision made (Issue #211).
+    pub break_comparisons: usize,
+    /// Break or adjustment opportunities a line decision looked at.
+    pub opportunities_considered: usize,
+    /// Envelopes asked for, and how the cache answered.
+    pub envelope_queries: usize,
+    pub envelope_hits: usize,
+    pub envelope_misses: usize,
+    /// Envelopes built again over a held one whose inputs moved.
+    pub envelope_rebuilds: usize,
+    /// Segments a solve read.
+    pub cost_segments_visited: usize,
+    /// Discrete candidates created, and the ones a lower bound pruned.
+    pub candidates_created: usize,
+    pub candidates_pruned: usize,
+    /// Coarse segments refined by asking their participant.
+    pub deep_expansions: usize,
+    /// The widest beam a discrete search held.
+    pub beam_states: usize,
+    /// Children that resolved an extent their parent assigned.
+    pub child_resolves: usize,
+    /// Resolutions that had to lay a child's content out again.
+    pub child_reflows: usize,
+    /// Discrete structural adaptations chosen (explicit opt-in only).
+    pub structural_adaptations: usize,
+    /// Solves that hit a budget and fell back deterministically.
+    pub budget_fallbacks: usize,
+    /// Scratch buffers that had to grow.
+    pub allocations: usize,
+    /// The largest scratch, in bytes.
+    pub temp_bytes: usize,
+    /// Solves answered from the pass memo or a held line solve.
+    pub solver_reuses: usize,
+    /// Held line solves whose participants still matched.
+    pub previous_result_hits: usize,
+    /// Solves that only re-shared the level a held solve stopped in.
+    pub incremental_assignments: usize,
+    /// Solves run from nothing.
+    pub cold_solves: usize,
+    /// Participants a class gate or a zero capacity let a solve skip.
+    pub pruned_candidates: usize,
+}
+
+accumulate_counters! {
+    /// Fold another snapshot in: work adds up, the beam and scratch
+    /// high-water marks keep the largest.
+    DynamicLayoutCounters {
+        max: beam_states, temp_bytes;
+        sum: contexts_considered, solver_runs, fast_fit, fast_adjust, break_comparisons,
+            opportunities_considered, envelope_queries, envelope_hits, envelope_misses,
+            envelope_rebuilds, cost_segments_visited, candidates_created, candidates_pruned,
+            deep_expansions, child_resolves, child_reflows, structural_adaptations,
+            budget_fallbacks, allocations, solver_reuses, previous_result_hits,
+            incremental_assignments, cold_solves, pruned_candidates;
+    }
+}
+
 /// GPU work a renderer observed while encoding or submitting a real frame.
 ///
 /// Recording this (including zeros) means the host ran encode/submit/upload.
@@ -509,7 +582,7 @@ accumulate_counters! {
     /// recorded them.
     WorkCounters {
         latest: entities_total;
-        nested: i18n;
+        nested: i18n, dynamic;
         sum: entities_changed, entities_spawned, entities_despawned, style_processed, text_shaped,
             layout_nodes, layout_frontier_seeds, layout_frontier_seed_merges,
             layout_frontier_nodes_measure, layout_frontier_nodes_placement,

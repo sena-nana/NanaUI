@@ -378,6 +378,13 @@ impl AppContext {
             let execution = self.layout_cache.execution_stats(document);
             self.world.record_layout_frontier(frontier);
             self.world.record_layout_execution(execution);
+            if execution.dynamic.contexts_considered > 0 {
+                use nana_diagnostics::{framework::layout, metric};
+                let dynamic = execution.dynamic;
+                metric!(layout::DYNAMIC_SOLVES, dynamic.solver_runs);
+                metric!(layout::DYNAMIC_ENVELOPE_REBUILDS, dynamic.envelope_rebuilds);
+                metric!(layout::DYNAMIC_BUDGET_FALLBACKS, dynamic.budget_fallbacks);
+            }
             if frontier.constraint.seeds > 0 {
                 self.world.record_resize_context_solves(
                     execution.plan_misses + execution.containers_uncacheable,

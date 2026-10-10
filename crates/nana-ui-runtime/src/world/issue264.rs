@@ -31,9 +31,10 @@
 //! (`layout_engine::measure_trace`), not what the frontier admitted: a box
 //! can be measured again because its memo key moved.
 //!
-//! Gate E -- an available extent that stays inside a cached envelope -- needs
-//! the Dynamic Layout solver of #207 and #213, which the runtime does not
-//! have yet.
+//! - Gate E: an elastic toolbar in the first pane, dragged inside one cost
+//!   level of its solve, builds no envelope and solves nothing from scratch:
+//!   each frame re-shares the held solve, its fixed boxes never measure, and
+//!   every frame's boxes match a cold layout's.
 
 #![cfg(test)]
 
@@ -110,6 +111,9 @@ struct Parts {
     /// Fill-width rows of the first pane's list.
     rows: Vec<StableNodeId>,
     paragraph: StableNodeId,
+    /// The elastic toolbar's items and their fixed boxes, when there is one.
+    elastic_items: Vec<StableNodeId>,
+    elastic_boxes: Vec<StableNodeId>,
 }
 
 struct Workspace {
@@ -126,15 +130,21 @@ struct Workspace {
 impl Workspace {
     /// A 1200x800 page: a dock of `dock_cards` fixed cards, and the split.
     fn new(dock_cards: u64, size: f32) -> Self {
-        Self::build(dock_cards, size, false)
+        Self::build(dock_cards, size, false, false)
     }
 
     /// The same, on a page that fills the viewport.
     fn fluid(dock_cards: u64) -> Self {
-        Self::build(dock_cards, FIRST_SIZE, true)
+        Self::build(dock_cards, FIRST_SIZE, true, false)
     }
 
-    fn build(dock_cards: u64, size: f32, fluid: bool) -> Self {
+    /// The same page with an elastic toolbar at the top of the first pane: a
+    /// row that solves its overflow, six padded items around fixed boxes.
+    fn elastic(dock_cards: u64, size: f32) -> Self {
+        Self::build(dock_cards, size, false, true)
+    }
+
+    fn build(dock_cards: u64, size: f32, fluid: bool, elastic: bool) -> Self {
         let document = DocumentId::new(1).unwrap();
         let (mut b, root) = Builder::new(document, 1);
         let (width, height) = if fluid {
@@ -166,6 +176,35 @@ impl Workspace {
         }
         let mut fixed_boxes = Vec::new();
         let first = b.detached(pane());
+        let mut elastic_items = Vec::new();
+        let mut elastic_boxes = Vec::new();
+        if elastic {
+            let bar = b.element(
+                first,
+                LayoutStyle {
+                    width: Some(LengthSpec::Fill),
+                    height: Some(LengthSpec::Px(40.0)),
+                    direction: Some(FlexDirection::Row),
+                    gap: Some(LengthSpec::Px(8.0)),
+                    adaptation: Some(super::issue212::gap_profile()),
+                    ..LayoutStyle::default()
+                },
+            );
+            for _ in 0..6 {
+                let item = b.element(
+                    bar,
+                    LayoutStyle {
+                        direction: Some(FlexDirection::Row),
+                        padding_left: Some(LengthSpec::Px(16.0)),
+                        padding_right: Some(LengthSpec::Px(16.0)),
+                        adaptation: Some(super::issue212::padding_profile()),
+                        ..LayoutStyle::default()
+                    },
+                );
+                elastic_boxes.push(b.element(item, fixed(40.0, 20.0)));
+                elastic_items.push(item);
+            }
+        }
         fixed_boxes.extend(toolbar(&mut b, first));
         let list = b.element(first, fill_column());
         let rows = (0..40)
@@ -241,6 +280,8 @@ impl Workspace {
                 tall,
                 rows,
                 paragraph,
+                elastic_items,
+                elastic_boxes,
             },
             size,
             measured: HashSet::new(),
@@ -1007,4 +1048,81 @@ fn issue264_a_row_keeps_the_offered_height_only_while_its_subtree_reads_it() {
         &mut bundled_face_shaper(),
     );
     assert_matches_cold(&mut context, &mut cold, document);
+}
+
+/// Gate E. The elastic toolbar spans the first pane; from 442 px down to 298
+/// px its deficit falls in its items' padding level. Dragging 320 -> 400 ->
+/// 320 one pixel a frame re-shares the held solve every frame: no envelope is
+/// built, nothing is solved from scratch, nothing is laid out deeper than the
+/// items' own padding, and no text shapes again. Crossing into the gap level
+/// at 450 solves once from scratch; staying there re-shares again.
+#[test]
+fn issue264_e_a_drag_inside_one_envelope_segment_reuses_the_assignment() {
+    let mut workspace = Workspace::elastic(100, 320.0);
+    workspace.drag_to(321.0);
+    let sizes: Vec<f32> = (322..=400)
+        .chain((320..400).rev())
+        .map(|size| size as f32)
+        .collect();
+    let mut seen: Vec<(f32, Vec<crate::LayoutBox>)> = Vec::new();
+    for (frame, size) in sizes.iter().enumerate() {
+        let counters = workspace.drag_to(*size);
+        let dynamic = counters.dynamic;
+        assert_eq!(
+            dynamic.envelope_misses + dynamic.envelope_rebuilds,
+            0,
+            "{size}"
+        );
+        assert!(dynamic.envelope_hits > 0, "{size}");
+        assert_eq!(dynamic.cold_solves, 0, "{size}: {dynamic:?}");
+        assert!(dynamic.incremental_assignments > 0, "{size}");
+        assert_eq!(
+            (
+                dynamic.deep_expansions,
+                dynamic.child_reflows,
+                dynamic.structural_adaptations,
+                dynamic.budget_fallbacks,
+                dynamic.allocations,
+            ),
+            (0, 0, 0, 0, 0),
+            "{size}"
+        );
+        assert_eq!(counters.resize_text_reshapes, 0, "{size}");
+        assert_eq!(counters.layout_full_document_fallbacks, 0);
+        for id in &workspace.parts.elastic_boxes {
+            assert!(
+                !workspace.measured(*id),
+                "{size}: fixed box {id:?} measured"
+            );
+        }
+        let boxes: Vec<crate::LayoutBox> = workspace
+            .parts
+            .elastic_items
+            .iter()
+            .map(|id| workspace.world().layout_box(*id).unwrap())
+            .collect();
+        if let Some((_, earlier)) = seen.iter().find(|(width, _)| width == size) {
+            assert_eq!(&boxes, earlier, "{size}: not the same on the way back");
+        }
+        seen.push((*size, boxes));
+        if frame % 16 == 0 {
+            let mut cold = Workspace::elastic(100, *size);
+            assert_matches_cold(
+                &mut workspace.context,
+                &mut cold.context,
+                workspace.document,
+            );
+        }
+    }
+    let crossing = workspace.drag_to(450.0).dynamic;
+    assert_eq!(crossing.cold_solves, 1, "{crossing:?}");
+    let staying = workspace.drag_to(455.0).dynamic;
+    assert_eq!(staying.cold_solves, 0, "{staying:?}");
+    assert!(staying.incremental_assignments > 0);
+    let mut cold = Workspace::elastic(100, 455.0);
+    assert_matches_cold(
+        &mut workspace.context,
+        &mut cold.context,
+        workspace.document,
+    );
 }

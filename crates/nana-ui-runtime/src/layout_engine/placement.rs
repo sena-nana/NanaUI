@@ -902,9 +902,16 @@ pub(super) fn place_node_scoped(
         },
     );
 
-    let padding = style.resolved_padding_against_fonts(
-        Some(containing_writing.inline_size(containing.width, containing.height)),
-        fonts,
+    let containing_inline = containing_writing.inline_size(containing.width, containing.height);
+    let padding = style.resolved_padding_against_fonts(Some(containing_inline), fonts);
+    // A box its line shrank closes its own padding up first (Issue #212).
+    let padding = intrinsic.dynamic.resolve_padding(
+        id,
+        padding,
+        containing_inline,
+        parent_font_px,
+        nodes,
+        scope.map(|scope| scope.retained),
     );
     nodes.used_padding.insert(id, padding);
 
@@ -1180,7 +1187,7 @@ pub(super) fn place_node_scoped(
         positioned.reverse();
     }
     let parent_box = gap_containing_block(style, content);
-    let gap = style.main_gap_against_fonts(direction, parent_box, fonts);
+    let mut gap = style.main_gap_against_fonts(direction, parent_box, fonts);
     let cross_gap = style.cross_gap_against_fonts(direction, parent_box, fonts);
     // A new child list that moved only the main extent of the content box:
     // a child the container kept keeps the size its last plan recorded, as
@@ -1268,7 +1275,11 @@ pub(super) fn place_node_scoped(
     // Narrowed to false by anything the suffix replay cannot express.
     let mut plan_sequential = cacheable;
     let mut cross_independent = cacheable;
-    let mut main_dependent = false;
+    // A line that solves its overflow reads its own main size: what it
+    // takes from its items follows it.
+    let mut main_dependent = style
+        .adaptation
+        .is_some_and(|profile| super::dynamic::solves(&profile));
     let plan_intrinsics: Option<HashMap<StableNodeId, Size>> = cacheable.then(|| {
         flow.iter()
             .copied()
@@ -1412,6 +1423,7 @@ pub(super) fn place_node_scoped(
                 let start = start.min(end);
                 &tracks[start..end]
             });
+            let mut line_adjust = None;
             if let Some(tracks) = line_tracks.filter(|tracks| !tracks.is_empty()) {
                 apply_grid_main_sizes(
                     &line_flow,
@@ -1428,7 +1440,19 @@ pub(super) fn place_node_scoped(
                     scope,
                 )?;
             } else {
-                distribute_flex_main(
+                let single_line = line_slots.len() == 1
+                    && !ifc
+                    && !matches!(wrap, FlexWrap::Wrap | FlexWrap::WrapReverse);
+                let line = super::dynamic::DynamicLine::of(
+                    id,
+                    style,
+                    writing,
+                    single_line,
+                    &mut intrinsic.dynamic,
+                    scope.map(|scope| scope.retained),
+                    true,
+                );
+                let adjust = distribute_flex_main(
                     &line_flow,
                     &mut line_sizes,
                     direction,
@@ -1438,7 +1462,12 @@ pub(super) fn place_node_scoped(
                     viewport,
                     child_font_px,
                     nodes,
+                    line,
                 );
+                // A solved line sets its items closer: every later step of
+                // this single line reads the gap it settled on.
+                gap = adjust.gap;
+                line_adjust = Some(adjust);
             }
             // An item the line gave another main size than it was measured
             // with is as tall (wide, in a column) as its content at that size.
@@ -1447,6 +1476,14 @@ pub(super) fn place_node_scoped(
                 let Some(child_style) = nodes.style(*child) else {
                     continue;
                 };
+                // An item that gave up only its own chrome keeps its content
+                // box, and so its cross size.
+                if line_adjust
+                    .as_ref()
+                    .is_some_and(|adjust| adjust.compressed(slot_index))
+                {
+                    continue;
+                }
                 if !cross_follows_used_main(
                     &child_style,
                     direction,

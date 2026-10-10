@@ -1234,7 +1234,16 @@ fn measure_node(
         };
         let mut used_sizes = child_sizes.clone();
         if definite_main {
-            distribute_flex_main(
+            let line = super::dynamic::DynamicLine::of(
+                id,
+                style,
+                writing,
+                true,
+                &mut cache.dynamic,
+                scope.map(|scope| scope.retained),
+                false,
+            );
+            let adjust = distribute_flex_main(
                 &flow_children,
                 &mut used_sizes,
                 direction,
@@ -1244,11 +1253,17 @@ fn measure_node(
                 viewport,
                 child_font_px,
                 nodes,
+                line,
             );
             for (index, child) in flow_children.iter().enumerate() {
                 let Some(child_style) = nodes.style(*child) else {
                     continue;
                 };
+                // An item that gave up only its own chrome keeps its content
+                // box, and so its cross size: nothing to measure again.
+                if adjust.compressed(index) {
+                    continue;
+                }
                 if !cross_follows_used_main(
                     &child_style,
                     direction,

@@ -152,6 +152,15 @@ pub mod layout {
     histogram!(
         /// Boxes the layout engine emitted for the pass.
         pub BOXES_LAID_OUT, D, 5, "layout.boxes_laid_out", "count");
+    histogram!(
+        /// Dynamic Layout line solves a pass ran, cold or re-shared.
+        pub DYNAMIC_SOLVES, D, 6, "layout.dynamic.solves", "count");
+    histogram!(
+        /// Elasticity envelopes a pass built over a kept one whose inputs moved.
+        pub DYNAMIC_ENVELOPE_REBUILDS, D, 7, "layout.dynamic.envelope_rebuilds", "count");
+    histogram!(
+        /// Line solves that hit a budget and shared a class by capacity.
+        pub DYNAMIC_BUDGET_FALLBACKS, D, 8, "layout.dynamic.budget_fallbacks", "count");
 }
 
 pub mod text {

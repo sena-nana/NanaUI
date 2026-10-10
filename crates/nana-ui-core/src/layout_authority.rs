@@ -284,6 +284,7 @@ pub fn resolve_layout_intent(
                 "flex_grow",
                 "flex_shrink",
                 "flex_basis",
+                "adaptation",
             ][..],
         ),
         (

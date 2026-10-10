@@ -247,6 +247,27 @@ pub struct Inspection {
     pub source_element: Option<SourceLocation>,
     /// Why layout last reached the node, or why it waits for the next pass.
     pub layout: Option<LayoutCause>,
+    /// What Dynamic Layout knows of the node: the elasticity its parent last
+    /// read, and what its line last assigned it (Issue #208).
+    pub dynamic: Option<DynamicInspection>,
+}
+
+/// The envelope a node's parent last read and what its line last assigned
+/// it.
+#[derive(Debug, Clone, PartialEq)]
+pub struct DynamicInspection {
+    /// Bumped only when the segments themselves changed.
+    pub generation: u64,
+    pub segments: Vec<nana_ui_core::dynamic_layout::AdjustmentSegment>,
+    pub applied: Option<AppliedInspection>,
+}
+
+/// What a line assigned a node, and the part its padding closed up.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct AppliedInspection {
+    pub inline: bool,
+    pub amount: nana_ui_core::dynamic_layout::LayoutUnits,
+    pub padding: nana_ui_core::dynamic_layout::LayoutUnits,
 }
 
 /// Why layout reached a node: the typed cause the mutation authority

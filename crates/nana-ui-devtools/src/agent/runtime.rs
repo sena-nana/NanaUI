@@ -405,7 +405,10 @@ impl AgentSession for RuntimeAgentSession {
     }
 
     fn inspect(&self, node: u64) -> Result<super::protocol::InspectDump, AgentError> {
-        use super::protocol::{CauseDump, FieldDump, InspectDump, LayoutCauseDump};
+        use super::protocol::{
+            AppliedDump, CauseDump, DynamicDump, FieldDump, InspectDump, LayoutCauseDump,
+            SegmentDump,
+        };
         let target =
             StableNodeId::new(node).ok_or_else(|| AgentError("node id 0 is reserved".into()))?;
         let context = self.document.context();
@@ -465,6 +468,25 @@ impl AgentSession for RuntimeAgentSession {
                         .map(str::to_owned)
                         .collect(),
                 }
+            }),
+            dynamic: inspection.dynamic.map(|dynamic| DynamicDump {
+                generation: dynamic.generation,
+                segments: dynamic
+                    .segments
+                    .iter()
+                    .map(|segment| SegmentDump {
+                        capacity: segment.capacity.0,
+                        cost: segment.marginal_cost.finite(),
+                        kind: format!("{:?}", segment.kind).to_ascii_lowercase(),
+                        class: format!("{:?}", segment.execution_class).to_ascii_lowercase(),
+                        sources: segment.sources,
+                    })
+                    .collect(),
+                applied: dynamic.applied.map(|applied| AppliedDump {
+                    axis: if applied.inline { "inline" } else { "block" }.to_owned(),
+                    amount: applied.amount.0,
+                    padding: applied.padding.0,
+                }),
             }),
         })
     }

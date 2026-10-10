@@ -13,6 +13,7 @@ pub mod box_layout;
 pub mod date;
 pub mod dialog;
 pub mod drag;
+pub mod dynamic_layout;
 pub mod expansion;
 pub mod file_dialog;
 pub mod fonts;
@@ -203,8 +204,8 @@ pub use virtual_table::{
 };
 pub use virtual_tree::{VirtualTreeLayout, VirtualTreeRow, VirtualTreeWindow};
 pub use work::{
-    FrameStage, GpuWorkObservation, I18nCounters, OutputWorkObservation, ThemeWorkCounters,
-    WorkCounters,
+    DynamicLayoutCounters, FrameStage, GpuWorkObservation, I18nCounters, OutputWorkObservation,
+    ThemeWorkCounters, WorkCounters,
 };
 pub use workspace_model::{
     WORKSPACE_REGION_TRANSITION_DURATION, WorkspaceModel, WorkspaceMutation,
