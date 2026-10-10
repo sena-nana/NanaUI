@@ -3121,6 +3121,7 @@ impl UiWorld {
             || previous.layout.font_kerning != style.layout.font_kerning
             || previous.layout.word_break != style.layout.word_break
             || previous.layout.line_break != style.layout.line_break
+            || previous.layout.text_typography != style.layout.text_typography
             // Writing mode and direction inherit into layout, not just
             // text: a descendant container lays out along them too, and
             // the INPUT bit re-projects the accessibility nodes that

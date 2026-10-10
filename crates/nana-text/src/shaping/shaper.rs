@@ -320,7 +320,7 @@ impl Shaper {
             let pieces =
                 self.fallback_pieces(fonts, text, &item, font, segment, request.language, scale);
             for piece in pieces {
-                if let Some(run) = self.build_run(fonts, &item, piece, segment, scale) {
+                if let Some(run) = self.build_run(fonts, text, &item, piece, segment, scale) {
                     runs.push(run);
                 }
             }
@@ -553,6 +553,7 @@ impl Shaper {
     fn build_run(
         &mut self,
         fonts: &FontSystem,
+        text: &str,
         item: &Item,
         piece: Piece,
         segment: &StyleSegment<'_>,
@@ -600,6 +601,12 @@ impl Shaper {
             })
             .collect();
 
+        let mut glyphs = glyphs;
+        if item.orientation == RunOrientation::Horizontal
+            && let Some(instance) = instance.as_ref()
+        {
+            mark_punctuation_blanks(fonts, text, instance, size_px, &mut glyphs);
+        }
         let metrics = instance
             .as_ref()
             .map(|instance| fonts.run_metrics(instance, size_px))
@@ -742,6 +749,81 @@ fn used_orientation(request: &ShapeRequest<'_>) -> TextOrientationSpec {
     } else {
         TextOrientationSpec::Mixed
     }
+}
+
+/// Flag the fullwidth CJK punctuation whose ink leaves half its advance
+/// blank on one side, measured on the face that drew it. A line may close
+/// that half up (Issue #211). A face whose punctuation is centred (as
+/// Traditional Chinese faces draw it) leaves neither half blank and gets no
+/// flag; a face with no outline bounds gets none either.
+fn mark_punctuation_blanks(
+    fonts: &FontSystem,
+    text: &str,
+    instance: &crate::font::FontInstance,
+    size_px: f32,
+    glyphs: &mut [ShapedGlyph],
+) {
+    for at in 0..glyphs.len() {
+        let glyph = glyphs[at];
+        let Some(ch) = text
+            .get(glyph.cluster as usize..)
+            .and_then(|rest| rest.chars().next())
+        else {
+            continue;
+        };
+        if !is_cjk_punctuation(ch) || glyph.advance_px < size_px * 0.8 {
+            continue;
+        }
+        // A cluster's glyphs sit together: one glyph alone has neighbours of
+        // other clusters on both sides.
+        let sole = (at == 0 || glyphs[at - 1].cluster != glyph.cluster)
+            && glyphs
+                .get(at + 1)
+                .is_none_or(|next| next.cluster != glyph.cluster);
+        if !sole {
+            continue;
+        }
+        let Some((left, right)) = fonts.glyph_ink(instance, size_px, glyph.glyph_id) else {
+            continue;
+        };
+        let half = glyph.advance_px * 0.5;
+        let ink_left = left + glyph.offset_x_px;
+        let ink_right = right + glyph.offset_x_px;
+        let flags = &mut glyphs[at].flags;
+        if glyph.advance_px - ink_right >= half - 0.02 * glyph.advance_px && ink_left >= -0.5 {
+            flags.set(GlyphFlags::PUNCT_BLANK_AFTER, true);
+        } else if ink_left >= half - 0.02 * glyph.advance_px && ink_right <= glyph.advance_px + 0.5
+        {
+            flags.set(GlyphFlags::PUNCT_BLANK_BEFORE, true);
+        }
+    }
+}
+
+/// Fullwidth CJK punctuation a line may close up: commas and stops,
+/// brackets and quotes, colons and marks.
+pub(crate) fn is_cjk_punctuation(ch: char) -> bool {
+    matches!(
+        ch,
+        '\u{3001}'..='\u{3003}'
+            | '\u{3008}'..='\u{3011}'
+            | '\u{3014}'..='\u{301B}'
+            | '\u{FF01}'
+            | '\u{FF08}'
+            | '\u{FF09}'
+            | '\u{FF0C}'
+            | '\u{FF0E}'
+            | '\u{FF1A}'
+            | '\u{FF1B}'
+            | '\u{FF1F}'
+            | '\u{FF3B}'
+            | '\u{FF3D}'
+            | '\u{FF5B}'
+            | '\u{FF5D}'
+            | '\u{2018}'
+            | '\u{2019}'
+            | '\u{201C}'
+            | '\u{201D}'
+    )
 }
 
 #[cfg(test)]

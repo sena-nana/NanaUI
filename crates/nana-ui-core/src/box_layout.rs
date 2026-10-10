@@ -227,6 +227,9 @@ pub enum TextAlignSpec {
     End,
     Left,
     Right,
+    /// Lines other than a paragraph's last fill the line box; boxes in an
+    /// inline formatting context pack from the start.
+    Justify,
 }
 
 impl TextAlignSpec {
@@ -235,6 +238,13 @@ impl TextAlignSpec {
         match self {
             Self::Center => JustifySpec::Center,
             Self::Left => JustifySpec::Start,
+            Self::Justify => {
+                if rtl {
+                    JustifySpec::End
+                } else {
+                    JustifySpec::Start
+                }
+            }
             Self::Right => JustifySpec::End,
             Self::Start => {
                 if rtl {
@@ -3501,9 +3511,13 @@ pub struct LayoutStyle {
     /// CSS `font-kerning`. `None` = inherit.
     #[serde(default)]
     pub font_kerning: Option<FontKerningSpec>,
-    /// CSS `line-break` subset. `None` = inherit. `strict` / `loose` skipped.
+    /// CSS `line-break`. `None` = inherit.
     #[serde(default)]
     pub line_break: Option<LineBreakSpec>,
+    /// CSS `text-spacing-trim`, `text-autospace`, `text-justify` and
+    /// `text-wrap-style`, each inherited when unset (Issue #211).
+    #[serde(default)]
+    pub text_typography: crate::typography::TextTypography,
     /// Malformed `font-variation-settings` (unparseable). Declared axes that
     /// the loaded face does not provide are skipped at shape time and never
     /// remapped onto `wght`.
@@ -3715,6 +3729,7 @@ impl Default for LayoutStyle {
             font_variation_settings: None,
             font_kerning: None,
             line_break: None,
+            text_typography: crate::typography::TextTypography::INHERIT,
             unsupported_font_variation: false,
             placeholder_color: None,
             placeholder_opacity: None,

@@ -117,6 +117,12 @@ impl GlyphFlags {
     /// shape. Its advance is the object's width, set at layout; it has no
     /// outline to draw.
     pub const OBJECT: Self = Self(1 << 2);
+    /// Fullwidth CJK punctuation whose ink sits in the first half of its
+    /// advance: the second half is blank, and may close up (Issue #211).
+    pub const PUNCT_BLANK_AFTER: Self = Self(1 << 3);
+    /// Fullwidth CJK punctuation whose ink sits in the second half: the first
+    /// half is blank, and may close up.
+    pub const PUNCT_BLANK_BEFORE: Self = Self(1 << 4);
 
     pub const fn contains(self, flag: Self) -> bool {
         self.0 & flag.0 == flag.0

@@ -2,8 +2,8 @@
 //! policy — see [`TextScale`] for where the device scale stops.
 
 use nana_ui_core::{
-    DirSpec, LineBreakSpec, TextAlignSpec, TextOrientationSpec, TextWrapBreak, WordBreakSpec,
-    WritingModeSpec,
+    DirSpec, LineBreakSpec, TextAlignSpec, TextAutospaceSpec, TextJustifySpec, TextOrientationSpec,
+    TextSpacingTrimSpec, TextWrapBreak, TextWrapStyleSpec, WordBreakSpec, WritingModeSpec,
 };
 use serde::{Deserialize, Serialize};
 
@@ -73,6 +73,20 @@ pub struct TextConstraints {
     pub tab_width: u8,
     #[serde(default)]
     pub scale: TextScale,
+    /// How much of fullwidth CJK punctuation's blank half a line keeps
+    /// (CSS `text-spacing-trim`). The caller resolves the language default.
+    #[serde(default)]
+    pub spacing_trim: TextSpacingTrimSpec,
+    /// Whether ideographs and Latin letters or digits written against each
+    /// other get a gap (CSS `text-autospace`).
+    #[serde(default)]
+    pub autospace: TextAutospaceSpec,
+    /// Where a justified line (`align: Justify`) puts its slack.
+    #[serde(default)]
+    pub justify: TextJustifySpec,
+    /// `Pretty` lets a paragraph look ahead a bounded number of lines.
+    #[serde(default)]
+    pub wrap_style: TextWrapStyleSpec,
 }
 
 const fn default_tab_width() -> u8 {
@@ -97,6 +111,10 @@ impl Default for TextConstraints {
             // Not `u8::default()`. A zero tab width is not a tab width.
             tab_width: default_tab_width(),
             scale: TextScale::default(),
+            spacing_trim: TextSpacingTrimSpec::SpaceAll,
+            autospace: TextAutospaceSpec::NoAutospace,
+            justify: TextJustifySpec::Auto,
+            wrap_style: TextWrapStyleSpec::Auto,
         }
     }
 }

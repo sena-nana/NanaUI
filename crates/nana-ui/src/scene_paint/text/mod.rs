@@ -426,6 +426,7 @@ struct ShapeKey {
     text_orientation: u8,
     preserve_lines: bool,
     font_features: Vec<nana_ui_core::FontFeatureSetting>,
+    typography: nana_ui_core::UsedTextTypography,
 }
 
 /// Borrowed form of [`ShapeKey`] built straight from the scene primitive.
@@ -457,6 +458,7 @@ struct ShapeKeyRef<'a> {
     text_orientation: u8,
     preserve_lines: bool,
     font_features: &'a [nana_ui_core::FontFeatureSetting],
+    typography: nana_ui_core::UsedTextTypography,
 }
 
 impl ShapeKeyRef<'_> {
@@ -486,6 +488,7 @@ impl ShapeKeyRef<'_> {
         self.writing_mode.hash(&mut hasher);
         self.text_orientation.hash(&mut hasher);
         self.preserve_lines.hash(&mut hasher);
+        self.typography.hash(&mut hasher);
         // The top bit belongs to [`PARAGRAPH_IS_RETAINED`], so a hash can
         // never be mistaken for a Runtime handle. What this costs is one bit
         // of a hash whose collisions are already caught by
@@ -519,6 +522,7 @@ impl ShapeKeyRef<'_> {
             writing_mode: self.writing_mode,
             text_orientation: self.text_orientation,
             preserve_lines: self.preserve_lines,
+            typography: self.typography,
         }
     }
 }
@@ -549,6 +553,7 @@ impl ShapeKey {
             && self.writing_mode == other.writing_mode
             && self.text_orientation == other.text_orientation
             && self.preserve_lines == other.preserve_lines
+            && self.typography == other.typography
     }
 }
 
@@ -1445,6 +1450,7 @@ impl TextPipeline {
                     },
                     preserve_lines: opentype.preserve_lines,
                     font_features,
+                    typography: opentype.typography,
                 };
                 let hash = key.hash64();
                 if self.shape_cache.get(hash, &key).is_none() {
@@ -1845,6 +1851,8 @@ impl TextPipeline {
             },
             ..nana_text::TextConstraints::default()
         };
+        let mut constraints = constraints;
+        nana_ui_runtime::apply_used_typography(&mut constraints, opentype.typography);
         let kind = if wrap {
             nana_text::TextKind::Paragraph
         } else {
@@ -3853,6 +3861,8 @@ fn opentype_line_disc(line_break: nana_ui_core::LineBreakSpec) -> u8 {
         nana_ui_core::LineBreakSpec::Auto => 0,
         nana_ui_core::LineBreakSpec::Normal => 1,
         nana_ui_core::LineBreakSpec::Anywhere => 2,
+        nana_ui_core::LineBreakSpec::Strict => 3,
+        nana_ui_core::LineBreakSpec::Loose => 4,
     }
 }
 
@@ -5631,6 +5641,63 @@ mod tests {
         );
     }
 
+    /// Issue #211: the fallback lays text out with the typography the
+    /// Runtime measured it with, and a typography change misses the shape
+    /// cache rather than paint the old lines.
+    #[test]
+    fn fallback_layout_follows_the_scene_typography() {
+        let (device, queue) = test_device();
+        let mut pipeline = TextPipeline::new(&device, &queue, wgpu::TextureFormat::Rgba8Unorm);
+        let content = "中文排版测试中文排版测试中文排版测试中文";
+        let justified = SceneTextOpenType {
+            typography: nana_ui_core::UsedTextTypography {
+                justify_lines: true,
+                justify: nana_ui_core::TextJustifySpec::InterCharacter,
+                ..Default::default()
+            },
+            ..SceneTextOpenType::default()
+        };
+        let mut lay_out = |opentype: &SceneTextOpenType| {
+            pipeline.lay_out(
+                content,
+                None,
+                None,
+                16.0,
+                20.0,
+                0.0,
+                false,
+                true,
+                nana_ui_core::TextWrapBreak::Word,
+                false,
+                None,
+                101.0,
+                1000.0,
+                TextAlignSpec::Start,
+                opentype,
+            )
+        };
+        let ragged = lay_out(&SceneTextOpenType::default());
+        let filled = lay_out(&justified);
+        assert!(filled.lines.len() > 1);
+        let (_, lines) = filled.lines.split_last().unwrap();
+        for line in lines {
+            assert!(
+                (line.metrics.width_px - 101.0).abs() < 0.05,
+                "{}",
+                line.metrics.width_px
+            );
+        }
+        assert!(ragged.lines[0].metrics.width_px < 101.0 - 0.05);
+
+        let plain = shape_key_ref(content);
+        let other = ShapeKeyRef {
+            typography: justified.typography,
+            ..shape_key_ref(content)
+        };
+        assert!(!plain.to_owned_key().matches(&other));
+        assert_ne!(plain.hash64(), other.hash64());
+    }
+
     /// A shape key for `content` with everything else at its default.
     fn shape_key_ref(content: &str) -> ShapeKeyRef<'_> {
         ShapeKeyRef {
@@ -5658,6 +5725,7 @@ mod tests {
             text_orientation: 0,
             preserve_lines: false,
             font_features: &[],
+            typography: nana_ui_core::UsedTextTypography::default(),
         }
     }
 

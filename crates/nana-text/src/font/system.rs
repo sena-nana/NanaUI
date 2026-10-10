@@ -1154,6 +1154,25 @@ impl FontSystem {
             .unwrap_or_default()
     }
 
+    /// The left and right edges of a glyph's ink at an instance and a size,
+    /// along a horizontal line.
+    pub(crate) fn glyph_ink(
+        &self,
+        instance: &FontInstance,
+        size_px: f32,
+        glyph_id: u32,
+    ) -> Option<(f32, f32)> {
+        let face = self.record(instance.font())?;
+        let blob = face.blob()?;
+        face::read_glyph_ink(
+            (*blob).as_ref(),
+            face.meta.index,
+            instance.coords(),
+            size_px,
+            glyph_id,
+        )
+    }
+
     #[expect(
         clippy::too_many_arguments,
         reason = "one cluster's full fallback context"

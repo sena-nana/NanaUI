@@ -58,17 +58,24 @@ REFERENCE_ONLY_PACKAGES = {"nana-css-parity"}
 # `nana-text` borrows backend-neutral typography types rather than re-declaring
 # them, so the UiWorld adapter stays a field-for-field move. Everything else in
 # nana-ui-core -- layout, style model, semantic colour, geometry, and the
-# bundled font bytes -- is a boundary violation.
+# bundled font bytes -- is a boundary violation. `dynamic_layout` is the one
+# cost vocabulary (#208): the CJK line decision (#211) prices punctuation in
+# it rather than declare a second set of costs.
 NANA_TEXT_CORE_ALLOWLIST = {
     "DirSpec",
+    "dynamic_layout",
     "FontFeatureSetting",
     "FontKerningSpec",
     "FontVariationSetting",
     "LineBreakSpec",
     "LineHeightSpec",
     "TextAlignSpec",
+    "TextAutospaceSpec",
+    "TextJustifySpec",
     "TextOrientationSpec",
+    "TextSpacingTrimSpec",
     "TextWrapBreak",
+    "TextWrapStyleSpec",
     "WordBreakSpec",
     "WritingContext",
     "WritingModeSpec",

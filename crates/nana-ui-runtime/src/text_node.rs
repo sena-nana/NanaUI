@@ -496,6 +496,7 @@ pub(crate) fn rich_text_objects(rich: &RichText) -> Vec<nana_text::InlineObject>
                     width_px,
                     ascent_px,
                     descent_px,
+                    envelope: None,
                 },
             }
         })
@@ -626,6 +627,7 @@ pub(crate) fn classify_computed_style_change(
     if previous.line_height != next.line_height
         || previous.word_break != next.word_break
         || previous.line_break != next.line_break
+        || previous.text_typography != next.text_typography
         || previous.writing_mode != next.writing_mode
     {
         dirty |= TextDirty::CONSTRAINT;
@@ -728,6 +730,7 @@ pub(crate) fn nana_text_constraints(
         text_orientation: style.text_orientation,
         ..NanaTextConstraints::default()
     };
+    apply_used_typography(&mut nana, style.used_text_typography());
     // The box dimension lines *stack* along — the height, or the width of a
     // vertical paragraph — is a *truncation* budget: `nana-text` drops the
     // lines that do not fit it. A box too short for its text is an overflow,
@@ -745,6 +748,22 @@ pub(crate) fn nana_text_constraints(
         *stacking = None;
     }
     nana
+}
+
+/// Hands the text engine the CJK line decision's inputs (Issue #211). A
+/// justified box justifies whatever alignment its component asked for: the
+/// last line, and a line a hard break ends, still sit at the start.
+pub fn apply_used_typography(
+    constraints: &mut NanaTextConstraints,
+    used: nana_ui_core::UsedTextTypography,
+) {
+    constraints.spacing_trim = used.spacing_trim;
+    constraints.autospace = used.autospace;
+    constraints.justify = used.justify;
+    constraints.wrap_style = used.wrap_style;
+    if used.justify_lines {
+        constraints.align = TextAlignSpec::Justify;
+    }
 }
 
 /// The Runtime metrics contract read off a layout: the page size of its lines

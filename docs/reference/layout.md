@@ -620,7 +620,7 @@ grid 的列是 inline 轴上的轨道。行是 block 轴上的轨道。这是 CS
 
 竖排时，盒子的物理宽高仍是 width 和 height。但 IFC 和 `flex-direction: row` 的主轴跟着 writing-mode 的 inline 轴走。`vertical-rl` 的行从右边起排。
 
-你可以用 `text-align`。`start` 和 `end` 随 `direction`，仅横排。`left` 和 `right` 保持物理边。还有 `center`。
+你可以用 `text-align`。`start` 和 `end` 随 `direction`，仅横排。`left` 和 `right` 保持物理边。还有 `center`。`justify` 在行内盒的摆放上按 `start` 处理，同时像 CSS 一样继承给下面的文字，让段落两端对齐（见 [文本引擎](text-engine.md#cjk-行决策211)）。
 
 `white-space: pre` 在量测里保留换行和空格。
 
@@ -688,7 +688,7 @@ flex 项和 grid 项上的 float，按 CSS 被块化，然后忽略。
 
 作者的 `::selection` 和 `::-moz-selection` 只兑现 `background`、`background-color`、`color`，画到文档选区高亮。其余属性 fail-closed。这不是完整的 CSS Highlight API。未写时，选中底仍用主题的 `accent_soft`。
 
-`word-break: keep-all` 和 `line-break: strict|loose` 会跳过。字距是近似。
+`word-break: keep-all` 会跳过。`line-break: strict|loose`、`text-spacing-trim`、`text-autospace`、`text-justify`、`text-wrap-style` 交给文本引擎的 CJK 行决策（#211），都会继承。字距是近似。
 
 **隐藏。** `display: none` 不占位，也不参与点击。
 

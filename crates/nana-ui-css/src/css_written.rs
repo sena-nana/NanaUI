@@ -207,6 +207,10 @@ const WITNESS_DECLARATIONS: &[(&str, &str)] = &[
     ("letter-spacing", "1px"),
     ("font-kerning", "none"),
     ("line-break", "anywhere"),
+    ("text-spacing-trim", "trim-both"),
+    ("text-autospace", "normal"),
+    ("text-justify", "inter-word"),
+    ("text-wrap-style", "pretty"),
     ("color", "red"),
     ("grid-template-columns", "repeat(auto-fill, 10px)"),
     ("grid-template-rows", "repeat(auto-fill, 10px)"),
@@ -256,6 +260,7 @@ fn reference() -> &'static (Value, Value) {
         // witness stays complete should a declaration ever write one.
         layout.border_radius = Some(1.0);
         layout.layout_isolation = true;
+        layout.adaptation = Some(nana_ui_core::dynamic_layout::AdaptationProfile::RIGID);
         layout.placeholder_color = Some([0.5; 4]);
         layout.placeholder_opacity = Some(0.5);
         layout.selection_background = Some([0.5; 4]);

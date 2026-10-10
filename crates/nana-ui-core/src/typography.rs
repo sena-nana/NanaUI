@@ -5,7 +5,9 @@
 //! such as `BEVL`); `wght` and `wdth` also steer which face is picked. Axes
 //! missing from the face are skipped (not remapped onto `wght`). Vertical
 //! writing modes shape upright and sideways runs per `text-orientation`.
-//! Japanese `line-break: strict|loose` are **not** applied.
+//! `line-break: strict|loose`, `text-spacing-trim`, `text-autospace`,
+//! `text-justify` and `text-wrap-style: pretty` are applied by `nana-text`'s
+//! line decision (Issue #211).
 
 use serde::{Deserialize, Serialize};
 use std::hash::{Hash, Hasher};
@@ -42,14 +44,139 @@ pub enum FontKerningSpec {
     None,
 }
 
-/// CSS `line-break` subset. `loose` / `strict` are skipped at parse (no Japanese
-/// line-breaking tables). `anywhere` is glyph wrap.
+/// CSS `line-break`. `strict` forbids more breaks before CJK small kana,
+/// prolonged sound marks and the like than `normal`; `loose` allows more.
+/// `anywhere` is glyph wrap.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]
 pub enum LineBreakSpec {
     #[default]
     Auto,
     Normal,
     Anywhere,
+    Strict,
+    Loose,
+}
+
+/// CSS `text-spacing-trim`: how much of the blank half of fullwidth CJK
+/// punctuation a line keeps.
+///
+/// `SpaceAll` keeps every glyph's full advance. `Normal` closes up a pair of
+/// adjacent punctuation marks and a closing mark at the end of a line that
+/// would not fit otherwise. `TrimBoth` also closes up an opening mark at the
+/// start of a line. `Auto` is `Normal`, and a line that runs short may close
+/// up its other punctuation, at a cost, rather than break early.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]
+pub enum TextSpacingTrimSpec {
+    #[default]
+    SpaceAll,
+    Normal,
+    TrimBoth,
+    Auto,
+}
+
+impl TextSpacingTrimSpec {
+    /// Whether any punctuation closes up.
+    pub const fn trims(self) -> bool {
+        !matches!(self, Self::SpaceAll)
+    }
+}
+
+/// CSS `text-autospace`: whether a gap goes between ideographs and Latin
+/// letters or digits written against them.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]
+pub enum TextAutospaceSpec {
+    #[default]
+    NoAutospace,
+    Normal,
+}
+
+/// CSS `text-justify`: where a justified line puts its slack.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]
+pub enum TextJustifySpec {
+    /// Between words, and between CJK characters.
+    #[default]
+    Auto,
+    /// Nowhere: the line is laid out at its start.
+    None,
+    InterWord,
+    InterCharacter,
+}
+
+/// The CJK-facing typography a box declares: each `None` inherits.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]
+pub struct TextTypography {
+    #[serde(default)]
+    pub spacing_trim: Option<TextSpacingTrimSpec>,
+    #[serde(default)]
+    pub autospace: Option<TextAutospaceSpec>,
+    #[serde(default)]
+    pub justify: Option<TextJustifySpec>,
+    #[serde(default)]
+    pub wrap_style: Option<TextWrapStyleSpec>,
+    /// Whether `text-align` is `justify`: inherited as `text-align` is, so a
+    /// paragraph under a justified box justifies its lines.
+    #[serde(default)]
+    pub justify_lines: Option<bool>,
+}
+
+impl TextTypography {
+    /// Declares nothing: every property inherits.
+    pub const INHERIT: Self = Self {
+        spacing_trim: None,
+        autospace: None,
+        justify: None,
+        wrap_style: None,
+        justify_lines: None,
+    };
+
+    /// What a box declares, else what it inherits, property by property.
+    pub fn inherit_from(self, parent: Self) -> Self {
+        Self {
+            spacing_trim: self.spacing_trim.or(parent.spacing_trim),
+            autospace: self.autospace.or(parent.autospace),
+            justify: self.justify.or(parent.justify),
+            wrap_style: self.wrap_style.or(parent.wrap_style),
+            justify_lines: self.justify_lines.or(parent.justify_lines),
+        }
+    }
+
+    /// The values text is laid out with. `cjk` is whether the text's
+    /// language is Chinese or Japanese: there an unset `text-spacing-trim`
+    /// is `normal` (punctuation closes up at fixed amounts, no cost search);
+    /// elsewhere it is `space-all`.
+    pub fn used(self, cjk: bool) -> UsedTextTypography {
+        UsedTextTypography {
+            spacing_trim: self.spacing_trim.unwrap_or(if cjk {
+                TextSpacingTrimSpec::Normal
+            } else {
+                TextSpacingTrimSpec::SpaceAll
+            }),
+            autospace: self.autospace.unwrap_or_default(),
+            justify: self.justify.unwrap_or_default(),
+            wrap_style: self.wrap_style.unwrap_or_default(),
+            justify_lines: self.justify_lines.unwrap_or(false),
+        }
+    }
+}
+
+/// [`TextTypography`] with every property decided: what the text engine is
+/// handed, and what a renderer laying the text out again must hand it too.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]
+pub struct UsedTextTypography {
+    pub spacing_trim: TextSpacingTrimSpec,
+    pub autospace: TextAutospaceSpec,
+    pub justify: TextJustifySpec,
+    pub wrap_style: TextWrapStyleSpec,
+    pub justify_lines: bool,
+}
+
+/// CSS `text-wrap-style`. `Pretty` lets a paragraph look ahead a bounded
+/// number of lines when it chooses where to break.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]
+pub enum TextWrapStyleSpec {
+    #[default]
+    Auto,
+    Pretty,
 }
 
 impl FontVariationSetting {

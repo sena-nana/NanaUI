@@ -29,8 +29,8 @@ use crate::id::TextRevision;
 use crate::shaping::ShapedText;
 use crate::style::TextKind;
 use nana_ui_core::{
-    DirSpec, LineBreakSpec, TextAlignSpec, TextOrientationSpec, TextWrapBreak, WordBreakSpec,
-    WritingModeSpec,
+    DirSpec, LineBreakSpec, TextAlignSpec, TextAutospaceSpec, TextJustifySpec, TextOrientationSpec,
+    TextSpacingTrimSpec, TextWrapBreak, TextWrapStyleSpec, WordBreakSpec, WritingModeSpec,
 };
 use std::hash::{Hash, Hasher};
 use std::sync::Arc;
@@ -59,6 +59,10 @@ struct ConstraintsKey {
     /// wrong layout the day it starts mattering.
     tab_width: u8,
     scale: u32,
+    spacing_trim: u8,
+    autospace: u8,
+    justify: u8,
+    wrap_style: u8,
 }
 
 impl ConstraintsKey {
@@ -78,6 +82,10 @@ impl ConstraintsKey {
             text_orientation,
             tab_width,
             scale,
+            spacing_trim,
+            autospace,
+            justify,
+            wrap_style,
         } = *constraints;
         Self {
             max_width: max_width_px.map(canonical_f32_bits),
@@ -97,6 +105,8 @@ impl ConstraintsKey {
                 LineBreakSpec::Auto => 0,
                 LineBreakSpec::Normal => 1,
                 LineBreakSpec::Anywhere => 2,
+                LineBreakSpec::Strict => 3,
+                LineBreakSpec::Loose => 4,
             },
             max_lines,
             ellipsis,
@@ -111,6 +121,7 @@ impl ConstraintsKey {
                 TextAlignSpec::End => 2,
                 TextAlignSpec::Left => 3,
                 TextAlignSpec::Right => 4,
+                TextAlignSpec::Justify => 5,
             },
             writing_mode: match writing_mode {
                 WritingModeSpec::HorizontalTb => 0,
@@ -124,6 +135,26 @@ impl ConstraintsKey {
             },
             tab_width,
             scale: canonical_f32_bits(scale.px_per_logical),
+            spacing_trim: match spacing_trim {
+                TextSpacingTrimSpec::SpaceAll => 0,
+                TextSpacingTrimSpec::Normal => 1,
+                TextSpacingTrimSpec::TrimBoth => 2,
+                TextSpacingTrimSpec::Auto => 3,
+            },
+            autospace: match autospace {
+                TextAutospaceSpec::NoAutospace => 0,
+                TextAutospaceSpec::Normal => 1,
+            },
+            justify: match justify {
+                TextJustifySpec::Auto => 0,
+                TextJustifySpec::None => 1,
+                TextJustifySpec::InterWord => 2,
+                TextJustifySpec::InterCharacter => 3,
+            },
+            wrap_style: match wrap_style {
+                TextWrapStyleSpec::Auto => 0,
+                TextWrapStyleSpec::Pretty => 1,
+            },
         }
     }
 }
@@ -147,7 +178,7 @@ pub(crate) struct LayoutKey {
     /// Every inline object's offset and box (width, ascent, descent). Not a
     /// shaping input — objects shape as placeholders — so it cannot come in
     /// through the shaped identity either.
-    objects: Vec<(usize, [u32; 3])>,
+    objects: Vec<(usize, [u32; 7])>,
     /// Each ruby's base range and its shaped annotation, held so the pointer
     /// it is compared by stays valid.
     rubies: Vec<(std::ops::Range<usize>, Arc<ShapedText>)>,
@@ -196,12 +227,21 @@ impl LayoutKey {
             objects: objects
                 .iter()
                 .map(|object| {
+                    let envelope = object.metrics.envelope;
                     (
                         object.offset,
                         [
                             canonical_f32_bits(object.metrics.width_px),
                             canonical_f32_bits(object.metrics.ascent_px),
                             canonical_f32_bits(object.metrics.descent_px),
+                            u32::from(envelope.is_some()),
+                            envelope.map_or(0, |envelope| canonical_f32_bits(envelope.gap_px)),
+                            envelope
+                                .map_or(0, |envelope| canonical_f32_bits(envelope.gap_shrink_px)),
+                            envelope.map_or(0, |envelope| {
+                                u32::from(envelope.break_before)
+                                    | (u32::from(envelope.break_after) << 1)
+                            }),
                         ],
                     )
                 })
@@ -221,7 +261,7 @@ impl LayoutKey {
     pub fn retained_bytes(&self) -> usize {
         std::mem::size_of::<Self>()
             + self.run_line_heights.capacity() * std::mem::size_of::<u32>()
-            + self.objects.capacity() * std::mem::size_of::<(usize, [u32; 3])>()
+            + self.objects.capacity() * std::mem::size_of::<(usize, [u32; 7])>()
     }
 }
 

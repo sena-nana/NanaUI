@@ -353,6 +353,13 @@ impl TextEngine for NativeTextEngine {
         counters.layouts_created += layouts.layout_created - layouts_before.layout_created;
         counters.constraint_only_relayouts +=
             layouts.constraint_only_relayouts - layouts_before.constraint_only_relayouts;
+        counters.line_opportunities_considered +=
+            layouts.line_opportunities_considered - layouts_before.line_opportunities_considered;
+        counters.line_break_comparisons +=
+            layouts.line_break_comparisons - layouts_before.line_break_comparisons;
+        counters.line_beam_states = counters.line_beam_states.max(layouts.line_beam_states);
+        counters.line_budget_fallbacks +=
+            layouts.line_budget_fallbacks - layouts_before.line_budget_fallbacks;
         // #59: the layouter reports a vertical request it fell back on; the
         // pass is what carries it out to a frame, where somebody can see it.
         counters.vertical_writing_fallbacks +=

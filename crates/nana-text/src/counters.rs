@@ -60,6 +60,18 @@ pub struct TextWorkCounters {
     /// were already cached: a constraint change, not new text.
     #[serde(default, skip_serializing_if = "is_zero")]
     pub constraint_only_relayouts: usize,
+    /// Break or adjustment opportunities the CJK line decision looked at
+    /// (Issue #211), and the keep-versus-break comparisons it made.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub line_opportunities_considered: usize,
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub line_break_comparisons: usize,
+    /// The widest beam a pretty paragraph held.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub line_beam_states: usize,
+    /// Pretty paragraphs whose beam ran out of budget.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub line_budget_fallbacks: usize,
     /// Nodes that ended the pass holding the same layout they started with.
     #[serde(default, skip_serializing_if = "is_zero")]
     pub text_layouts_reused: usize,
@@ -149,6 +161,10 @@ impl TextWorkCounters {
         self.layout_cache_lookups += other.layout_cache_lookups;
         self.layouts_created += other.layouts_created;
         self.constraint_only_relayouts += other.constraint_only_relayouts;
+        self.line_opportunities_considered += other.line_opportunities_considered;
+        self.line_break_comparisons += other.line_break_comparisons;
+        self.line_beam_states = self.line_beam_states.max(other.line_beam_states);
+        self.line_budget_fallbacks += other.line_budget_fallbacks;
         self.text_layouts_reused += other.text_layouts_reused;
         self.vertical_writing_fallbacks += other.vertical_writing_fallbacks;
         self.editable_mutations += other.editable_mutations;

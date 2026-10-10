@@ -320,6 +320,7 @@ pub fn resolve_layout_intent(
                 "font_variation_settings",
                 "font_kerning",
                 "line_break",
+                "text_typography",
                 "text_orientation",
                 "text_align",
                 "white_space",

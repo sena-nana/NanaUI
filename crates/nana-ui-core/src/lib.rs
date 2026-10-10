@@ -186,7 +186,10 @@ pub use theme::{
     linear_scrim_alpha, space, type_scale,
 };
 pub use tree::{TreeNavigation, TreeNode, TreeViewEvent, tree_navigation_event};
-pub use typography::{FontKerningSpec, FontVariationSetting, LineBreakSpec};
+pub use typography::{
+    FontKerningSpec, FontVariationSetting, LineBreakSpec, TextAutospaceSpec, TextJustifySpec,
+    TextSpacingTrimSpec, TextTypography, TextWrapStyleSpec, UsedTextTypography,
+};
 pub use url_jail::{
     MAX_LOCAL_URL_BYTES, canonicalize_within_jail, file_url_to_path,
     href_is_protocol_relative_or_unc, is_remote_or_data_href, path_looks_network, path_to_file_url,

@@ -51,6 +51,35 @@ pub struct InlineObjectMetrics {
     pub width_px: f32,
     pub ascent_px: f32,
     pub descent_px: f32,
+    /// What the object gives a line deciding where to break (Issue #211):
+    /// a gap it keeps after itself that may close up, and whether a line may
+    /// break before or after it. `None`: no gap, and breaks as UAX #14 says.
+    #[serde(default)]
+    pub envelope: Option<InlineEnvelope>,
+}
+
+/// An inline object's part in the CJK line decision. The decision never
+/// looks inside the object: it sees a gap, how much of it may close, and
+/// where it may break.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct InlineEnvelope {
+    /// The gap the object keeps after itself, in logical px.
+    pub gap_px: f32,
+    /// How much of that gap a short line may close up; dropped at a line end.
+    pub gap_shrink_px: f32,
+    pub break_before: bool,
+    pub break_after: bool,
+}
+
+impl Default for InlineEnvelope {
+    fn default() -> Self {
+        Self {
+            gap_px: 0.0,
+            gap_shrink_px: 0.0,
+            break_before: true,
+            break_after: true,
+        }
+    }
 }
 
 /// An object placed in the text: a sticker, an image, an editor chip.

@@ -9,9 +9,13 @@ use super::engine::IntrinsicWidths;
 use super::ir::{LineBox, LineBreakCause, OverflowFlags, TextRect};
 use crate::constraints::TextConstraints;
 use crate::metrics::{LineMetrics, RunMetrics};
+use crate::shape::GlyphFlags;
 use crate::shape::{RunDirection, ShapedRun};
 use crate::shaping::{PARAGRAPH_SEPARATORS, ShapedParagraph, ShapedText, bidi_visual_order};
-use nana_ui_core::{DirSpec, LineBreakSpec, TextAlignSpec, TextWrapBreak, WordBreakSpec};
+use nana_ui_core::{
+    DirSpec, LineBreakSpec, TextAlignSpec, TextAutospaceSpec, TextJustifySpec, TextSpacingTrimSpec,
+    TextWrapBreak, TextWrapStyleSpec, WordBreakSpec,
+};
 use std::ops::Range;
 
 /// Slack for a width comparison, in px.
@@ -151,6 +155,9 @@ pub(super) struct LineInput<'a> {
     /// changes here is which box dimension budgets what, and where the
     /// baseline sits.
     pub vertical: bool,
+    /// The envelope of each inline object that declared one, by source
+    /// offset, in logical px.
+    pub envelopes: Vec<(usize, crate::InlineEnvelope)>,
 }
 
 /// Work the line builder did, for the counters.
@@ -161,6 +168,14 @@ pub(super) struct LineWork {
     pub runs_placed: usize,
     pub ellipsis_runs_used: usize,
     pub shape_runs_reused: usize,
+    /// Break or adjustment opportunities a line decision looked at.
+    pub opportunities_considered: usize,
+    /// Keep-versus-break comparisons a line decision made.
+    pub break_comparisons: usize,
+    /// The widest beam a pretty paragraph held, and the paragraphs whose
+    /// beam ran out of budget and finished greedily.
+    pub beam_states: usize,
+    pub budget_fallbacks: usize,
 }
 
 pub(super) struct LaidOut {
@@ -188,6 +203,8 @@ struct Prepared {
     /// How far an inline object taller than the line's text pushes the
     /// baseline down from where the text alone would put it.
     lift_px: f32,
+    /// What the line decision changed on this line's cells.
+    adjust: LineAdjust,
 }
 
 /// A line already placed, and what re-placing it would have to undo.
@@ -216,11 +233,21 @@ pub(super) struct Builder<'a> {
     truncated: bool,
     ellipsized: bool,
     work: LineWork,
+    /// The CJK line decision's view of the cells, when any of it applies.
+    typo: Option<Typography>,
 }
 
 impl<'a> Builder<'a> {
     pub fn new(input: LineInput<'a>) -> Self {
-        let cells = cells(input.text, input.runs);
+        let mut cells = cells(input.text, input.runs);
+        let typo = Typography::build(
+            input.text,
+            input.runs,
+            &mut cells,
+            input.constraints,
+            input.vertical,
+            &input.envelopes,
+        );
         let mut prefix = Vec::with_capacity(cells.len() + 1);
         let mut total = 0.0;
         prefix.push(0.0);
@@ -255,6 +282,7 @@ impl<'a> Builder<'a> {
             truncated: false,
             ellipsized: false,
             work: LineWork::default(),
+            typo,
         }
     }
 
@@ -336,6 +364,10 @@ impl<'a> Builder<'a> {
         }
 
         let stops = self.break_stops(&content, policy, lo, hi);
+        if self.typo.is_some() {
+            self.segment_typo(lo, hi, &stops, policy, end_cause);
+            return;
+        }
         let mut start = lo;
         let mut next_stop = 0;
         while start < hi {
@@ -376,18 +408,26 @@ impl<'a> Builder<'a> {
             // Every cluster boundary is a stop, so UAX #14 has nothing to add.
             BreakPolicy::Glyph => {
                 self.work.line_break_candidates += hi.saturating_sub(lo + 1);
-                (lo + 1..hi).collect()
+                let stops = (lo + 1..hi).collect();
+                match &self.typo {
+                    Some(typo) => typo.tailor(self.input.text, &self.cells, stops, lo, hi, true),
+                    None => stops,
+                }
             }
             BreakPolicy::Word | BreakPolicy::WordThenGlyph => {
                 let offsets =
                     breaks::opportunities(&self.input.text[content.clone()], content.start);
                 self.work.line_break_candidates += offsets.len();
-                offsets
+                let stops = offsets
                     .iter()
                     .filter_map(|offset| self.cell_at(*offset))
                     .filter(|index| *index > lo && *index < hi)
                     .filter(|index| !self.inside_ruby(*index))
-                    .collect()
+                    .collect();
+                match &self.typo {
+                    Some(typo) => typo.tailor(self.input.text, &self.cells, stops, lo, hi, false),
+                    None => stops,
+                }
             }
         }
     }
@@ -449,6 +489,395 @@ impl<'a> Builder<'a> {
                 None => (stop, stop != hi),
             };
         }
+    }
+
+    /// [`Self::segment`] under the CJK line decision: each line chosen by
+    /// [`Self::decide_line`], or for a pretty paragraph by a bounded beam,
+    /// and set with what that decision changed.
+    fn segment_typo(
+        &mut self,
+        lo: usize,
+        hi: usize,
+        stops: &[usize],
+        policy: BreakPolicy,
+        end_cause: LineBreakCause,
+    ) {
+        let pretty = self.typo.as_ref().is_some_and(|typo| typo.pretty)
+            && self.max_width_px.is_some()
+            && policy != BreakPolicy::None;
+        let ends: Vec<usize> = if pretty {
+            self.beam_breaks(lo, hi, stops, policy)
+        } else {
+            Vec::new()
+        };
+        let mut start = lo;
+        let mut next_stop = 0;
+        let mut line = 0;
+        while start < hi {
+            while next_stop < stops.len() && stops[next_stop] <= start {
+                next_stop += 1;
+            }
+            let first = start == lo;
+            let decision = match ends.get(line) {
+                Some(&end) => {
+                    let (fit, _) = self.fit_of(start, end, first);
+                    let fit = if matches!(fit, Fit::No) {
+                        Fit::Fits { end_closed: false }
+                    } else {
+                        fit
+                    };
+                    (end, end != hi, fit)
+                }
+                None => self.decide_line(start, hi, stops, next_stop, policy, first),
+            };
+            let (end, soft, fit) = decision;
+            let cause = if soft {
+                LineBreakCause::Wrap
+            } else {
+                end_cause
+            };
+            let emitted = if soft { self.trim(start, end) } else { end };
+            let at = self.cells[start].start;
+            let adjust = self.adjust_for(start, end, soft, first, fit);
+            let prepared = self.prepare_with(start..emitted, adjust);
+            if !self.place_within_budget(prepared, cause, at) {
+                return;
+            }
+            start = end;
+            line += 1;
+        }
+    }
+
+    /// How the line `start..stop` fits its box, and its drawn end.
+    fn fit_of(&self, start: usize, stop: usize, first: bool) -> (Fit, usize) {
+        let drawn = self.trim(start, stop);
+        let (Some(typo), Some(max)) = (&self.typo, self.max_width_px) else {
+            return (Fit::Fits { end_closed: false }, drawn);
+        };
+        if drawn == start {
+            return (Fit::Fits { end_closed: false }, drawn);
+        }
+        let last = drawn - 1;
+        let (always, optional) = typo.end_trims(last);
+        let width = self.width(start, drawn) - typo.start_trim(start, first) - always;
+        if width <= max + WIDTH_EPSILON_PX {
+            return (Fit::Fits { end_closed: false }, drawn);
+        }
+        if optional > 0.0 && width - optional <= max + WIDTH_EPSILON_PX {
+            return (Fit::Fits { end_closed: true }, drawn);
+        }
+        if typo.cost_fit {
+            let deficit = width - optional - max;
+            if deficit <= typo.interior_squeeze(start, last) + WIDTH_EPSILON_PX {
+                return (Fit::Squeezed { deficit }, drawn);
+            }
+        }
+        (Fit::No, drawn)
+    }
+
+    /// The width the line `start..stop` sets at once fitted as `fit`.
+    fn fitted_width(&self, start: usize, stop: usize, first: bool, fit: Fit) -> f32 {
+        let drawn = self.trim(start, stop);
+        let Some(typo) = &self.typo else {
+            return self.width(start, drawn);
+        };
+        if drawn == start {
+            return 0.0;
+        }
+        let (always, optional) = typo.end_trims(drawn - 1);
+        let mut width = self.width(start, drawn) - typo.start_trim(start, first) - always;
+        match fit {
+            Fit::Fits { end_closed: true } => width -= optional,
+            Fit::Squeezed { deficit } => width -= optional + deficit,
+            _ => {}
+        }
+        width
+    }
+
+    /// One line's choice: break at the last stop that fits as set, or keep
+    /// later stops by closing punctuation and autospace up, whichever costs
+    /// less -- the slack a break leaves, squared, against what closing up
+    /// costs. A tie keeps the later stop. With nothing that fits either way,
+    /// as [`Self::choose_break`].
+    fn decide_line(
+        &mut self,
+        start: usize,
+        hi: usize,
+        stops: &[usize],
+        next_stop: usize,
+        policy: BreakPolicy,
+        first: bool,
+    ) -> (usize, bool, Fit) {
+        let Some(max_width) = self.max_width_px.filter(|_| policy != BreakPolicy::None) else {
+            return (hi, false, Fit::Fits { end_closed: false });
+        };
+        let mut best: Option<(usize, Fit)> = None;
+        let mut squeezed: Vec<(usize, f32)> = Vec::new();
+        let mut probe = next_stop;
+        loop {
+            let stop = stops.get(probe).copied().unwrap_or(hi);
+            let drawn = self.trim(start, stop);
+            if drawn == start && stop != hi {
+                probe += 1;
+                continue;
+            }
+            self.work.opportunities_considered += 1;
+            match self.fit_of(start, stop, first).0 {
+                fit @ Fit::Fits { .. } => {
+                    if stop == hi {
+                        return (hi, false, fit);
+                    }
+                    best = Some((stop, fit));
+                }
+                Fit::Squeezed { deficit } => squeezed.push((stop, deficit)),
+                Fit::No => break,
+            }
+            if stop == hi {
+                break;
+            }
+            probe += 1;
+        }
+        let em = self.typo.as_ref().map_or(16.0, |typo| typo.em[start]);
+        let mut chosen: Option<(u64, usize, Fit)> = best.map(|(stop, fit)| {
+            let slack = max_width - self.fitted_width(start, stop, first, fit);
+            (Typography::raggedness(slack, em), stop, fit)
+        });
+        for (stop, deficit) in squeezed {
+            self.work.break_comparisons += 1;
+            let cost = Typography::squeeze_cost(deficit);
+            if chosen.is_none_or(|(held, _, _)| cost <= held) {
+                chosen = Some((cost, stop, Fit::Squeezed { deficit }));
+            }
+        }
+        match chosen {
+            Some((_, stop, fit)) => (stop, stop != hi, fit),
+            None => {
+                let (end, soft) = self.choose_break(start, hi, stops, next_stop, policy);
+                (end, soft, Fit::Fits { end_closed: false })
+            }
+        }
+    }
+
+    /// What the line `start..end` changes on its cells: an opening mark's
+    /// blank at its start, its end's autospace and (when it needs it) a
+    /// closing mark's blank, the deficit a squeezed line closes across its
+    /// interior shared by capacity, and a justified line's slack shared
+    /// across its word gaps and CJK character boundaries.
+    fn adjust_for(
+        &self,
+        start: usize,
+        end: usize,
+        soft: bool,
+        first: bool,
+        fit: Fit,
+    ) -> LineAdjust {
+        let mut adjust = LineAdjust::default();
+        let (Some(typo), Some(max)) = (&self.typo, self.max_width_px) else {
+            return adjust;
+        };
+        let drawn = self.trim(start, end);
+        if drawn == start {
+            return adjust;
+        }
+        let last = drawn - 1;
+        let lead = typo.start_trim(start, first);
+        if lead > 0.0 {
+            adjust.deltas.push((start, -lead, -lead));
+        }
+        let (always, optional) = typo.end_trims(last);
+        if always > 0.0 {
+            adjust.deltas.push((last, -always, 0.0));
+        }
+        let closes_end = matches!(fit, Fit::Fits { end_closed: true } | Fit::Squeezed { .. });
+        if closes_end && optional > 0.0 {
+            adjust.deltas.push((last, -optional, 0.0));
+        }
+        if let Fit::Squeezed { deficit } = fit {
+            // Every interior capacity costs the same: share the deficit by
+            // capacity, in 1/64 px, the remainder one unit at a time in order.
+            let items: Vec<(usize, f32, bool)> = (start + 1..last)
+                .flat_map(|at| {
+                    [
+                        (at, typo.give_after[at], false),
+                        (at, typo.give_before[at], true),
+                    ]
+                })
+                .filter(|(_, capacity, _)| *capacity > 0.0)
+                .collect();
+            let units = |px: f32| nana_ui_core::dynamic_layout::LayoutUnits::from_px(px).0 as i64;
+            let total: i64 = items.iter().map(|(_, capacity, _)| units(*capacity)).sum();
+            let want = units(deficit).min(total);
+            if total > 0 {
+                let mut shares: Vec<i64> = items
+                    .iter()
+                    .map(|(_, capacity, _)| want * units(*capacity) / total)
+                    .collect();
+                let mut left = want - shares.iter().sum::<i64>();
+                for (share, (_, capacity, _)) in shares.iter_mut().zip(&items) {
+                    if left == 0 {
+                        break;
+                    }
+                    if *share < units(*capacity) {
+                        *share += 1;
+                        left -= 1;
+                    }
+                }
+                for ((at, _, leading), share) in items.iter().zip(shares) {
+                    let px = share as f32 / 64.0;
+                    adjust
+                        .deltas
+                        .push((*at, -px, if *leading { -px } else { 0.0 }));
+                }
+            }
+        }
+        if soft
+            && let Some(justify) = typo.justify
+            && justify != TextJustifySpec::None
+        {
+            let width = self.width(start, drawn) + adjust.width_delta(drawn);
+            let slack = max - width;
+            if slack > WIDTH_EPSILON_PX {
+                let words = matches!(justify, TextJustifySpec::Auto | TextJustifySpec::InterWord);
+                let characters = matches!(
+                    justify,
+                    TextJustifySpec::Auto | TextJustifySpec::InterCharacter
+                );
+                let gaps: Vec<usize> = (start..last)
+                    .filter(|at| {
+                        let cell = &self.cells[*at];
+                        (words && cell.whitespace)
+                            || (characters
+                                && !cell.whitespace
+                                && typo.cjk[*at]
+                                && typo.cjk[at + 1]
+                                && !self.cells[at + 1].whitespace)
+                    })
+                    .collect();
+                if !gaps.is_empty() {
+                    let share = slack / gaps.len() as f32;
+                    adjust
+                        .deltas
+                        .extend(gaps.into_iter().map(|at| (at, share, 0.0)));
+                }
+            }
+        }
+        adjust
+    }
+
+    /// A pretty paragraph's breaks: a beam of at most `K` partial layouts,
+    /// each extended by at most `C` candidate ends per line -- the last `C`
+    /// stops that fit, set or squeezed -- and pruned by total cost (slack
+    /// squared, plus what closing up cost). A last line costs nothing. Past
+    /// its step budget the best partial layout finishes greedily, the same
+    /// way every time.
+    fn beam_breaks(
+        &mut self,
+        lo: usize,
+        hi: usize,
+        stops: &[usize],
+        policy: BreakPolicy,
+    ) -> Vec<usize> {
+        const K: usize = 4;
+        const C: usize = 4;
+        let Some(max_width) = self.max_width_px else {
+            return Vec::new();
+        };
+        // Arena of partial layouts: (end, parent, line index).
+        let mut arena: Vec<(usize, usize, bool)> = vec![(lo, usize::MAX, true)];
+        let mut beam: Vec<(u64, usize)> = vec![(0, 0)];
+        let budget = 16 * stops.len() + 256;
+        let mut steps = 0usize;
+        let mut done: Option<(u64, usize)> = None;
+        let mut fell_back = false;
+        while !beam.is_empty() {
+            let mut next: Vec<(u64, usize)> = Vec::new();
+            for &(cost, node) in &beam {
+                let (start, _, first) = arena[node];
+                if start >= hi {
+                    if done.is_none_or(|(held, _)| cost < held) {
+                        done = Some((cost, node));
+                    }
+                    continue;
+                }
+                let next_stop = stops.partition_point(|stop| *stop <= start);
+                let mut candidates: Vec<(usize, u64)> = Vec::new();
+                let mut probe = next_stop;
+                loop {
+                    let stop = stops.get(probe).copied().unwrap_or(hi);
+                    let drawn = self.trim(start, stop);
+                    if drawn == start && stop != hi {
+                        probe += 1;
+                        continue;
+                    }
+                    steps += 1;
+                    self.work.opportunities_considered += 1;
+                    let fit = self.fit_of(start, stop, first).0;
+                    if matches!(fit, Fit::No) {
+                        break;
+                    }
+                    let line_cost = if stop == hi {
+                        match fit {
+                            Fit::Squeezed { deficit } => Typography::squeeze_cost(deficit),
+                            _ => 0,
+                        }
+                    } else {
+                        let em = self.typo.as_ref().map_or(16.0, |typo| typo.em[start]);
+                        let slack = max_width - self.fitted_width(start, stop, first, fit);
+                        match fit {
+                            Fit::Squeezed { deficit } => Typography::squeeze_cost(deficit),
+                            _ => Typography::raggedness(slack, em),
+                        }
+                    };
+                    candidates.push((stop, line_cost));
+                    if stop == hi {
+                        break;
+                    }
+                    probe += 1;
+                }
+                if candidates.is_empty() {
+                    // Nothing fits: the greedy choice (an emergency cut or an
+                    // overflow) is the only end.
+                    let (end, _) = self.choose_break(start, hi, stops, next_stop, policy);
+                    candidates.push((end, Typography::raggedness(max_width, 16.0)));
+                }
+                let keep = candidates.len().saturating_sub(C);
+                for (stop, line_cost) in candidates.into_iter().skip(keep) {
+                    self.work.break_comparisons += 1;
+                    arena.push((stop, node, false));
+                    next.push((cost.saturating_add(line_cost), arena.len() - 1));
+                }
+            }
+            // Dedupe by end, keep the K cheapest; ties keep the later end.
+            next.sort_by_key(|(cost, node)| (arena[*node].0, *cost));
+            next.dedup_by_key(|(_, node)| arena[*node].0);
+            next.sort_by_key(|(cost, node)| (*cost, std::cmp::Reverse(arena[*node].0)));
+            next.truncate(K);
+            if let Some((held, _)) = done {
+                next.retain(|(cost, _)| *cost < held);
+            }
+            self.work.beam_states = self.work.beam_states.max(next.len());
+            if steps > budget {
+                fell_back = true;
+                if let Some(&(cost, node)) = next.first() {
+                    done = Some((cost, node));
+                }
+                break;
+            }
+            beam = next;
+        }
+        let Some((_, mut node)) = done else {
+            return Vec::new();
+        };
+        let mut ends = Vec::new();
+        while arena[node].1 != usize::MAX {
+            ends.push(arena[node].0);
+            node = arena[node].1;
+        }
+        ends.reverse();
+        if fell_back {
+            self.work.budget_fallbacks += 1;
+        }
+        ends
     }
 
     /// The furthest cluster boundary in `start..limit` that still fits, and
@@ -603,7 +1032,17 @@ impl<'a> Builder<'a> {
             descent_px,
             height_px,
             lift_px,
+            adjust: LineAdjust::default(),
         }
+    }
+
+    /// [`Self::prepare`] with what the line decision changed on the line.
+    fn prepare_with(&self, cells: Range<usize>, adjust: LineAdjust) -> Prepared {
+        let mut prepared = self.prepare(cells.clone());
+        let trimmed = self.trim(cells.start, cells.end);
+        prepared.width_px += adjust.width_delta(trimmed);
+        prepared.adjust = adjust;
+        prepared
     }
 
     fn place(&mut self, prepared: Prepared, cause: LineBreakCause, empty_at: usize) {
@@ -649,6 +1088,7 @@ impl<'a> Builder<'a> {
             descent_px,
             height_px,
             lift_px,
+            adjust,
         } = prepared;
         let source = match cells.end.checked_sub(1) {
             Some(last) if cells.start < cells.end => {
@@ -699,7 +1139,11 @@ impl<'a> Builder<'a> {
         {
             placed.extend(runs.iter().cloned());
         }
-        placed.extend(ordered.drain(..).map(|piece| self.placed_run(&piece)));
+        placed.extend(
+            ordered
+                .drain(..)
+                .map(|piece| self.placed_run(&piece, &adjust)),
+        );
         if let Some(runs) = &ellipsis_runs
             && !self.input.base_direction.is_rtl()
         {
@@ -748,6 +1192,7 @@ impl<'a> Builder<'a> {
             let cell = &self.cells[index];
             match pieces.last_mut() {
                 Some(piece) if piece.run == cell.run => {
+                    piece.cells.end = index + 1;
                     piece.glyphs.start = piece.glyphs.start.min(cell.glyphs.start);
                     piece.glyphs.end = piece.glyphs.end.max(cell.glyphs.end);
                     piece.source.start = piece.source.start.min(cell.start);
@@ -757,6 +1202,7 @@ impl<'a> Builder<'a> {
                 }
                 _ => pieces.push(Piece {
                     run: cell.run,
+                    cells: index..index + 1,
                     glyphs: cell.glyphs.clone(),
                     source: cell.start..cell.end,
                     advance_px: cell.advance_px,
@@ -792,9 +1238,31 @@ impl<'a> Builder<'a> {
     /// The piece keeps the shaped run's id: the id names the shaping that
     /// produced those glyphs, and cutting a line through a run reshapes
     /// nothing.
-    fn placed_run(&self, piece: &Piece) -> ShapedRun {
+    fn placed_run(&self, piece: &Piece, adjust: &LineAdjust) -> ShapedRun {
         let run = &self.input.runs[piece.run];
-        let whole = piece.glyphs.start == 0 && piece.glyphs.end == run.glyphs.len();
+        let mut glyphs = run.glyphs[piece.glyphs.clone()].to_vec();
+        // What the line decision changed: the fixed changes every line keeps
+        // (already in the cells' advances) and this line's own.
+        let mut adjusted = false;
+        let mut line_advance = 0.0;
+        if let Some(typo) = &self.typo {
+            for index in piece.cells.clone() {
+                let (fixed_advance, fixed_offset) = typo.fixed[index];
+                let (line_a, line_o) = adjust.of(index);
+                let (advance, offset) = (fixed_advance + line_a, fixed_offset + line_o);
+                if advance == 0.0 && offset == 0.0 {
+                    continue;
+                }
+                adjusted = true;
+                line_advance += line_a;
+                let cell = &self.cells[index];
+                let first = cell.glyphs.start - piece.glyphs.start;
+                let last = cell.glyphs.end - 1 - piece.glyphs.start;
+                glyphs[last].advance_px += advance;
+                glyphs[first].offset_x_px += offset;
+            }
+        }
+        let whole = !adjusted && piece.glyphs.start == 0 && piece.glyphs.end == run.glyphs.len();
         ShapedRun {
             id: run.id,
             source: piece.source.clone(),
@@ -804,14 +1272,14 @@ impl<'a> Builder<'a> {
             orientation: run.orientation,
             font: run.font,
             font_size_px: run.font_size_px,
-            glyphs: run.glyphs[piece.glyphs.clone()].to_vec(),
+            glyphs,
             // A whole run keeps the advance the shaper reported. Only a run cut
-            // by a line break is re-summed, and then from the shaper's own
-            // per-glyph advances.
+            // by a line break, or adjusted, is re-summed, from its per-glyph
+            // advances.
             advance_px: if whole {
                 run.advance_px
             } else {
-                piece.advance_px
+                piece.advance_px + line_advance
             },
             // Assigned by the caller once the line's visual order is known.
             origin_x_px: 0.0,
@@ -934,6 +1402,15 @@ impl<'a> Builder<'a> {
             TextAlignSpec::Left => 0.0,
             TextAlignSpec::Right => slack,
             TextAlignSpec::Center => slack * 0.5,
+            // A justified line fills its box; a last line, or one ending at a
+            // forced break, sits at the start.
+            TextAlignSpec::Justify => {
+                if rtl {
+                    slack
+                } else {
+                    0.0
+                }
+            }
         }
     }
 
@@ -1015,6 +1492,8 @@ pub(super) fn segments(text: &str, paragraphs: &[ShapedParagraph]) -> Vec<Range<
 #[derive(Debug, Clone)]
 struct Piece {
     run: usize,
+    /// The cells it draws, in logical order.
+    cells: Range<usize>,
     glyphs: Range<usize>,
     source: Range<usize>,
     advance_px: f32,
@@ -1105,4 +1584,450 @@ mod tests {
         constraints.line_break = LineBreakSpec::Anywhere;
         assert_eq!(BreakPolicy::of(&constraints), BreakPolicy::Glyph);
     }
+}
+
+/// What the CJK line decision knows about each cell (Issue #211), built
+/// only when a line may adjust something: punctuation closing up, autospace,
+/// justification, strict or loose breaking, or a pretty paragraph. Without
+/// it every line is laid out exactly as before.
+struct Typography {
+    trim: TextSpacingTrimSpec,
+    /// A line short by what its punctuation and autospace can give closes
+    /// them up, at a cost, rather than break early (`text-spacing-trim:
+    /// auto`).
+    cost_fit: bool,
+    justify: Option<TextJustifySpec>,
+    pretty: bool,
+    line_break: LineBreakSpec,
+    /// Per cell, the blank that may still close at its end, and at its start.
+    after: Vec<f32>,
+    before: Vec<f32>,
+    /// Autospace put after the cell, dropped at the end of a line.
+    space_after: Vec<f32>,
+    /// Advance and glyph offset changes every line keeps: adjacent marks
+    /// closed up, autospace put in.
+    fixed: Vec<(f32, f32)>,
+    /// Whether the cell is a CJK character a justified line may space after.
+    cjk: Vec<bool>,
+    /// The font size each cell was shaped at, for raggedness.
+    em: Vec<f32>,
+    /// `squeeze[i]` is what cost fitting may close in `cells[..i]`.
+    squeeze: Vec<f32>,
+    /// Per cell, what cost fitting may close at its end and at its start.
+    give_after: Vec<f32>,
+    give_before: Vec<f32>,
+    /// Breaks an inline object's envelope forbids before or after its cell.
+    no_break_before: Vec<bool>,
+    no_break_after: Vec<bool>,
+}
+
+impl Typography {
+    fn build(
+        text: &str,
+        runs: &[ShapedRun],
+        cells: &mut [Cell],
+        constraints: &TextConstraints,
+        vertical: bool,
+        envelopes: &[(usize, crate::InlineEnvelope)],
+    ) -> Option<Self> {
+        let trim = constraints.spacing_trim;
+        let autospace = constraints.autospace == TextAutospaceSpec::Normal;
+        let justify = (constraints.align == TextAlignSpec::Justify).then_some(constraints.justify);
+        let pretty = constraints.wrap_style == TextWrapStyleSpec::Pretty;
+        let line_break = constraints.line_break;
+        let tailored = matches!(line_break, LineBreakSpec::Strict | LineBreakSpec::Loose);
+        if !trim.trims()
+            && !autospace
+            && justify.is_none()
+            && !pretty
+            && !tailored
+            && envelopes.is_empty()
+        {
+            return None;
+        }
+        // Vertical lines keep their advances: which side of a vertical form
+        // is blank is not what a horizontal measure says.
+        let adjusts = !vertical;
+        let n = cells.len();
+        let char_of = |cell: &Cell| text.get(cell.start..).and_then(|rest| rest.chars().next());
+        let flags_of = |cell: &Cell| {
+            if cell.glyphs.len() == 1 {
+                runs[cell.run].glyphs[cell.glyphs.start].flags
+            } else {
+                GlyphFlags::default()
+            }
+        };
+        let mut after = vec![0.0f32; n];
+        let mut before = vec![0.0f32; n];
+        let mut space_after = vec![0.0f32; n];
+        let mut fixed = vec![(0.0f32, 0.0f32); n];
+        let mut cjk = vec![false; n];
+        let mut em = vec![0.0f32; n];
+        for (at, cell) in cells.iter().enumerate() {
+            em[at] = runs[cell.run].font_size_px;
+            cjk[at] = char_of(cell).is_some_and(is_cjk_letter);
+            if !(adjusts && trim.trims()) {
+                continue;
+            }
+            let flags = flags_of(cell);
+            if flags.contains(GlyphFlags::PUNCT_BLANK_AFTER) {
+                after[at] = cell.advance_px * 0.5;
+            } else if flags.contains(GlyphFlags::PUNCT_BLANK_BEFORE) {
+                before[at] = cell.advance_px * 0.5;
+            }
+        }
+        let punctuation: Vec<bool> = (0..n)
+            .map(|at| after[at] > 0.0 || before[at] > 0.0)
+            .collect();
+        let opening: Vec<bool> = before.iter().map(|blank| *blank > 0.0).collect();
+        if adjusts && trim.trims() {
+            // A closing mark before another mark, and an opening mark after
+            // an opening one, close up: one blank half between them, not two.
+            for at in 0..n.saturating_sub(1) {
+                if after[at] > 0.0 && punctuation[at + 1] {
+                    fixed[at].0 -= after[at];
+                    after[at] = 0.0;
+                }
+                if before[at + 1] > 0.0 && opening[at] {
+                    fixed[at + 1].0 -= before[at + 1];
+                    fixed[at + 1].1 -= before[at + 1];
+                    before[at + 1] = 0.0;
+                }
+            }
+        }
+        if adjusts && autospace {
+            for at in 0..n.saturating_sub(1) {
+                let (left, right) = (char_of(&cells[at]), char_of(&cells[at + 1]));
+                let (Some(left), Some(right)) = (left, right) else {
+                    continue;
+                };
+                let meets = (is_ideograph(left) && is_latin_alnum(right))
+                    || (is_latin_alnum(left) && is_ideograph(right));
+                if meets && !cells[at].whitespace && !cells[at + 1].whitespace {
+                    let extra = em[at] / 8.0;
+                    fixed[at].0 += extra;
+                    space_after[at] = extra;
+                }
+            }
+        }
+        for (cell, (advance, _)) in cells.iter_mut().zip(&fixed) {
+            cell.advance_px += advance;
+        }
+        // An object's envelope: the part of its gap that may close is dropped
+        // at a line end like autospace and, inside a line, given up at a cost;
+        // a break it forbids leaves the break table.
+        let scale = constraints.scale.px_per_logical;
+        let mut object_shrink = vec![0.0f32; n];
+        let mut no_break_before = vec![false; n];
+        let mut no_break_after = vec![false; n];
+        for (offset, envelope) in envelopes {
+            let Some(at) = cells.iter().position(|cell| cell.start == *offset) else {
+                continue;
+            };
+            let shrink = (envelope.gap_shrink_px.min(envelope.gap_px).max(0.0)) * scale;
+            if adjusts {
+                object_shrink[at] = shrink;
+                space_after[at] += shrink;
+            }
+            no_break_before[at] = !envelope.break_before;
+            no_break_after[at] = !envelope.break_after;
+        }
+        let objects_give = object_shrink.iter().any(|shrink| *shrink > 0.0);
+        let punctuation_fit = adjusts && trim == TextSpacingTrimSpec::Auto;
+        let cost_fit = punctuation_fit || objects_give;
+        // What cost fitting may close inside a line, at a cell's end and at
+        // its start: under `auto` every blank and autospace, otherwise only
+        // what objects declared.
+        let (give_after, give_before): (Vec<f32>, Vec<f32>) = (0..n)
+            .map(|at| match punctuation_fit {
+                true => (after[at] + space_after[at], before[at]),
+                false => (object_shrink[at], 0.0),
+            })
+            .unzip();
+        let mut squeeze = Vec::with_capacity(n + 1);
+        let mut total = 0.0;
+        squeeze.push(0.0);
+        for at in 0..n {
+            total += give_after[at] + give_before[at];
+            squeeze.push(total);
+        }
+        Some(Self {
+            trim,
+            cost_fit,
+            justify,
+            pretty,
+            line_break,
+            after,
+            before,
+            space_after,
+            fixed,
+            cjk,
+            em,
+            squeeze,
+            give_after,
+            give_before,
+            no_break_before,
+            no_break_after,
+        })
+    }
+
+    /// What a line starting at `start` closes at its start: an opening mark's
+    /// blank half, except on a paragraph's first line under `normal`.
+    fn start_trim(&self, start: usize, first: bool) -> f32 {
+        match self.trim {
+            TextSpacingTrimSpec::TrimBoth => self.before[start],
+            TextSpacingTrimSpec::Normal | TextSpacingTrimSpec::Auto if !first => self.before[start],
+            _ => 0.0,
+        }
+    }
+
+    /// What a line ending at cell `last` always drops (its autospace), and
+    /// what it closes only when it would not fit otherwise (a closing mark's
+    /// blank half).
+    fn end_trims(&self, last: usize) -> (f32, f32) {
+        let optional = if self.trim.trims() {
+            self.after[last]
+        } else {
+            0.0
+        };
+        (self.space_after[last], optional)
+    }
+
+    /// What cost fitting may close strictly inside `start..last`.
+    fn interior_squeeze(&self, start: usize, last: usize) -> f32 {
+        if last <= start + 1 {
+            return 0.0;
+        }
+        self.squeeze[last] - self.squeeze[start + 1]
+    }
+
+    /// Breaks the profile forbids or allows beyond UAX #14: strict forbids a
+    /// break before hyphens and wave dashes, loose allows one before small
+    /// kana and iteration marks, and a cluster break (`break-all`) never
+    /// puts closing punctuation at a line start or opening punctuation at a
+    /// line end (kinsoku).
+    fn tailor(
+        &self,
+        text: &str,
+        cells: &[Cell],
+        mut stops: Vec<usize>,
+        lo: usize,
+        hi: usize,
+        glyph_policy: bool,
+    ) -> Vec<usize> {
+        let ch = |at: usize| {
+            text.get(cells[at].start..)
+                .and_then(|rest| rest.chars().next())
+        };
+        if self.line_break == LineBreakSpec::Loose {
+            for at in lo + 1..hi {
+                let allowed = ch(at).is_some_and(loose_breaks_before)
+                    && ch(at - 1).is_some_and(is_cjk_letter);
+                if allowed {
+                    stops.push(at);
+                }
+            }
+            stops.sort_unstable();
+            stops.dedup();
+        }
+        stops.retain(|at| {
+            if self.no_break_before[*at] || self.no_break_after[*at - 1] {
+                return false;
+            }
+            let before = ch(*at);
+            let after_prev = ch(*at - 1);
+            if self.line_break == LineBreakSpec::Strict
+                && before.is_some_and(strict_no_break_before)
+            {
+                return false;
+            }
+            let kinsoku = glyph_policy && self.line_break != LineBreakSpec::Anywhere;
+            !(kinsoku
+                && (before.is_some_and(kinsoku_no_line_start)
+                    || after_prev.is_some_and(kinsoku_no_line_end)))
+        });
+        stops
+    }
+
+    /// The visual price of leaving `slack_px` unused at the end of a line
+    /// set at `em_px`: square in the slack, so a line a little short costs
+    /// little and one far short costs much, and priced so that one em of
+    /// slack costs what closing up one em of punctuation does.
+    fn raggedness(slack_px: f32, em_px: f32) -> u64 {
+        let per_px = u64::from(
+            nana_ui_core::dynamic_layout::costs::PUNCTUATION
+                .finite()
+                .unwrap_or(15),
+        );
+        let slack = slack_px.max(0.0) as f64;
+        let em = (em_px as f64).max(1.0);
+        (per_px as f64 * 64.0 * slack * slack / em) as u64
+    }
+
+    /// The visual price of closing up `deficit_px`.
+    fn squeeze_cost(deficit_px: f32) -> u64 {
+        let per_px = u64::from(
+            nana_ui_core::dynamic_layout::costs::PUNCTUATION
+                .finite()
+                .unwrap_or(15),
+        );
+        per_px
+            * nana_ui_core::dynamic_layout::LayoutUnits::from_px(deficit_px)
+                .0
+                .max(0) as u64
+    }
+}
+
+/// How a candidate line fits its box.
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum Fit {
+    /// As set, or with its end mark closed up.
+    Fits {
+        end_closed: bool,
+    },
+    /// Only by closing up `deficit` px of its punctuation and autospace.
+    Squeezed {
+        deficit: f32,
+    },
+    No,
+}
+
+/// What one line changes on the cells it sets: `(cell, advance, offset)`.
+#[derive(Debug, Clone, Default)]
+struct LineAdjust {
+    deltas: Vec<(usize, f32, f32)>,
+}
+
+impl LineAdjust {
+    fn width_delta(&self, drawn: usize) -> f32 {
+        self.deltas
+            .iter()
+            .filter(|(cell, _, _)| *cell < drawn)
+            .map(|(_, advance, _)| advance)
+            .sum()
+    }
+
+    fn of(&self, cell: usize) -> (f32, f32) {
+        self.deltas
+            .iter()
+            .filter(|(at, _, _)| *at == cell)
+            .fold((0.0, 0.0), |(advance, offset), (_, a, o)| {
+                (advance + a, offset + o)
+            })
+    }
+}
+
+fn is_ideograph(ch: char) -> bool {
+    matches!(ch as u32, 0x3400..=0x4DBF | 0x4E00..=0x9FFF | 0xF900..=0xFAFF | 0x20000..=0x2FFFF | 0x3040..=0x30FF)
+}
+
+fn is_cjk_letter(ch: char) -> bool {
+    is_ideograph(ch)
+        || matches!(ch as u32, 0x3100..=0x312F | 0x31A0..=0x31BF | 0x31F0..=0x31FF | 0xAC00..=0xD7AF)
+}
+
+fn is_latin_alnum(ch: char) -> bool {
+    ch.is_ascii_alphanumeric() || (('\u{00C0}'..='\u{024F}').contains(&ch) && ch.is_alphabetic())
+}
+
+/// CSS `line-break: strict` forbids a break before these beyond `normal`.
+fn strict_no_break_before(ch: char) -> bool {
+    matches!(
+        ch,
+        '\u{2010}'
+            | '\u{2013}'
+            | '\u{301C}'
+            | '\u{30A0}'
+            | '\u{30FC}'
+            | '\u{3005}'
+            | '\u{303B}'
+            | '\u{309D}'
+            | '\u{309E}'
+            | '\u{30FD}'
+            | '\u{30FE}'
+    ) || is_small_kana(ch)
+}
+
+/// CSS `line-break: loose` allows a break before these after a CJK letter.
+fn loose_breaks_before(ch: char) -> bool {
+    is_small_kana(ch)
+        || matches!(
+            ch,
+            '\u{30FC}'
+                | '\u{3005}'
+                | '\u{303B}'
+                | '\u{309D}'
+                | '\u{309E}'
+                | '\u{30FD}'
+                | '\u{30FE}'
+        )
+}
+
+fn is_small_kana(ch: char) -> bool {
+    matches!(
+        ch,
+        'ぁ' | 'ぃ'
+            | 'ぅ'
+            | 'ぇ'
+            | 'ぉ'
+            | 'っ'
+            | 'ゃ'
+            | 'ゅ'
+            | 'ょ'
+            | 'ゎ'
+            | 'ゕ'
+            | 'ゖ'
+            | 'ァ'
+            | 'ィ'
+            | 'ゥ'
+            | 'ェ'
+            | 'ォ'
+            | 'ッ'
+            | 'ャ'
+            | 'ュ'
+            | 'ョ'
+            | 'ヮ'
+            | 'ヵ'
+            | 'ヶ'
+    ) || ('\u{31F0}'..='\u{31FF}').contains(&ch)
+}
+
+/// Kinsoku: never at the start of a line.
+fn kinsoku_no_line_start(ch: char) -> bool {
+    matches!(
+        ch,
+        '、' | '。'
+            | '，'
+            | '．'
+            | '）'
+            | '］'
+            | '｝'
+            | '」'
+            | '』'
+            | '】'
+            | '〕'
+            | '〉'
+            | '》'
+            | '〙'
+            | '〗'
+            | '’'
+            | '”'
+            | '！'
+            | '？'
+            | '：'
+            | '；'
+            | '・'
+            | 'ー'
+            | '々'
+            | '…'
+            | '‥'
+    ) || is_small_kana(ch)
+}
+
+/// Kinsoku: never at the end of a line.
+fn kinsoku_no_line_end(ch: char) -> bool {
+    matches!(
+        ch,
+        '（' | '［' | '｛' | '「' | '『' | '【' | '〔' | '〈' | '《' | '〘' | '〖' | '‘' | '“'
+    )
 }

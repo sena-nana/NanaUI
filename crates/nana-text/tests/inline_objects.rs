@@ -37,6 +37,7 @@ fn sticker(offset: usize, width: f32, height: f32) -> InlineObject {
             width_px: width,
             ascent_px: height,
             descent_px: 0.0,
+            envelope: None,
         },
     }
 }

@@ -143,6 +143,14 @@ pub struct LayoutCounters {
     /// horizontally instead: editable text, which does not yet edit in
     /// columns (#59).
     pub vertical_writing_fallbacks: usize,
+    /// Break or adjustment opportunities the CJK line decision looked at
+    /// (Issue #211), and the keep-versus-break comparisons it made.
+    pub line_opportunities_considered: usize,
+    pub line_break_comparisons: usize,
+    /// The widest beam a pretty paragraph held, and paragraphs whose beam
+    /// ran out of budget and finished greedily.
+    pub line_beam_states: usize,
+    pub line_budget_fallbacks: usize,
 }
 
 /// Lays shaped text out and caches the result.
@@ -290,6 +298,10 @@ impl Layouter {
         self.counters.runs_placed += work.runs_placed;
         self.counters.ellipsis_runs_used += work.ellipsis_runs_used;
         self.counters.shape_runs_reused_for_layout += work.shape_runs_reused;
+        self.counters.line_opportunities_considered += work.opportunities_considered;
+        self.counters.line_break_comparisons += work.break_comparisons;
+        self.counters.line_beam_states = self.counters.line_beam_states.max(work.beam_states);
+        self.counters.line_budget_fallbacks += work.budget_fallbacks;
 
         let unsupported_writing_mode =
             request.constraints.wants_vertical_writing() && !request.shaped.vertical;
@@ -303,7 +315,7 @@ impl Layouter {
             .map(|line| line.bounds)
             .reduce(TextRect::union)
             .unwrap_or_default();
-        let objects = placed_objects(request.source, &laid_out.lines, &laid_out.runs);
+        let objects = placed_objects(request, &laid_out.lines, &laid_out.runs);
         let rubies = placed_rubies(request, &laid_out.lines, &laid_out.runs);
         let rubies_dropped = !request.source.rubies().is_empty()
             && (request.rubies.len() != request.source.rubies().len() || request.shaped.vertical);
@@ -401,6 +413,12 @@ fn sized_runs(request: &LayoutRequest<'_>, scale: f32) -> Option<Vec<ShapedRun>>
                 metrics.descent_px.max(0.0) * scale,
             ],
         };
+        // The envelope's gap travels with the object: the line decision sees
+        // one cell, and may close part of it up or drop it at a line end.
+        let width = width
+            + metrics
+                .envelope
+                .map_or(0.0, |envelope| envelope.gap_px.max(0.0) * scale);
         if let Some(glyph) = run.glyphs.first_mut() {
             glyph.advance_px = width;
         }
@@ -606,10 +624,11 @@ fn placed_rubies(
 
 /// Each object placeholder that was placed, as the box it takes on its line.
 fn placed_objects(
-    source: &TextSource,
+    request: &LayoutRequest<'_>,
     lines: &[super::ir::LineBox],
     runs: &[ShapedRun],
 ) -> Vec<super::ir::PlacedObject> {
+    let source = request.source;
     if source.objects().is_empty() {
         return Vec::new();
     }
@@ -623,14 +642,30 @@ fn placed_objects(
                 continue;
             };
             let ascent = run.metrics.ascent_px;
+            // An envelope's gap is room after the object, not the object: the
+            // box keeps its own width and the gap, closed up or not, follows
+            // it in the line's direction.
+            let (x, width) = match object.metrics.envelope {
+                Some(_) if label_box(request, object.offset).is_none() => {
+                    let own = (object.metrics.width_px.max(0.0)
+                        * request.constraints.scale.px_per_logical)
+                        .min(run.advance_px);
+                    let x = match run.direction {
+                        RunDirection::Rtl => run.origin_x_px + run.advance_px - own,
+                        _ => run.origin_x_px,
+                    };
+                    (x, own)
+                }
+                _ => (run.origin_x_px, run.advance_px),
+            };
             placed.push(super::ir::PlacedObject {
                 id: object.id,
                 offset: object.offset,
                 line: line.index,
                 rect: TextRect::new(
-                    run.origin_x_px,
+                    x,
                     line.metrics.baseline_y_px - ascent,
-                    run.advance_px,
+                    width,
                     ascent + run.metrics.descent_px,
                 ),
             });
@@ -663,6 +698,17 @@ fn line_input<'r>(
         },
         ellipsis,
         vertical: request.shaped.vertical,
+        envelopes: request
+            .source
+            .objects()
+            .iter()
+            .filter_map(|object| {
+                object
+                    .metrics
+                    .envelope
+                    .map(|envelope| (object.offset, envelope))
+            })
+            .collect(),
     }
 }
 

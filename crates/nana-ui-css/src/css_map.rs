@@ -88,7 +88,8 @@ pub use nana_ui_core::box_layout::{
     WhiteSpaceSpec, WritingModeSpec, resolve_grid_column_widths, resolve_grid_track_sizes,
 };
 pub use nana_ui_core::{
-    FontFeatureSetting, FontKerningSpec, FontVariationSetting, LineBreakSpec, WordBreakSpec,
+    FontFeatureSetting, FontKerningSpec, FontVariationSetting, LineBreakSpec, TextAutospaceSpec,
+    TextJustifySpec, TextSpacingTrimSpec, TextWrapStyleSpec, WordBreakSpec,
 };
 
 /// CSS keyword / length parsing for Style Model layout enums (L1 only).
@@ -2676,14 +2677,41 @@ impl LayoutStyleCss for LayoutStyle {
             }
             "text-align" => {
                 let kw = val.trim().to_ascii_lowercase();
-                self.text_align = match kw.as_str() {
-                    "start" => TextAlignSpec::Start,
-                    "end" => TextAlignSpec::End,
-                    "left" => TextAlignSpec::Left,
-                    "right" => TextAlignSpec::Right,
-                    "center" => TextAlignSpec::Center,
-                    _ => self.text_align,
+                let align = match kw.as_str() {
+                    "start" => Some(TextAlignSpec::Start),
+                    "end" => Some(TextAlignSpec::End),
+                    "left" => Some(TextAlignSpec::Left),
+                    "right" => Some(TextAlignSpec::Right),
+                    "center" => Some(TextAlignSpec::Center),
+                    "justify" => Some(TextAlignSpec::Justify),
+                    _ => None,
                 };
+                if let Some(align) = align {
+                    self.text_align = align;
+                    // Inherited by the text below, as `text-align` is: a
+                    // paragraph under a justified box justifies its lines.
+                    self.text_typography.justify_lines = Some(align == TextAlignSpec::Justify);
+                }
+            }
+            "text-spacing-trim" => {
+                if let Some(trim) = parse_css_text_spacing_trim(val) {
+                    self.text_typography.spacing_trim = Some(trim);
+                }
+            }
+            "text-autospace" => {
+                if let Some(autospace) = parse_css_text_autospace(val) {
+                    self.text_typography.autospace = Some(autospace);
+                }
+            }
+            "text-justify" => {
+                if let Some(justify) = parse_css_text_justify(val) {
+                    self.text_typography.justify = Some(justify);
+                }
+            }
+            "text-wrap-style" => {
+                if let Some(style) = parse_css_text_wrap_style(val) {
+                    self.text_typography.wrap_style = Some(style);
+                }
             }
             "direction" => apply_css_direction(self, val),
             "writing-mode" => apply_css_writing_mode(self, val),
@@ -4925,14 +4953,73 @@ pub fn parse_css_word_break(input: &str) -> Option<WordBreakSpec> {
     }
 }
 
-/// CSS `line-break` subset. `strict` / `loose` skipped (no Japanese line tables).
+/// CSS `line-break`. `strict` and `loose` tailor the CJK break table (#211).
 pub fn parse_css_line_break(input: &str) -> Option<LineBreakSpec> {
     let expanded = expand_css_var_fallback(input.trim());
     match expanded.trim().to_ascii_lowercase().as_str() {
         "auto" | "initial" => Some(LineBreakSpec::Auto),
         "normal" => Some(LineBreakSpec::Normal),
         "anywhere" => Some(LineBreakSpec::Anywhere),
-        "strict" | "loose" | "inherit" | "unset" | "revert" | "" => None,
+        "strict" => Some(LineBreakSpec::Strict),
+        "loose" => Some(LineBreakSpec::Loose),
+        _ => None,
+    }
+}
+
+/// CSS `text-spacing-trim`. `space-first` is `normal` (a paragraph's first
+/// line keeps its opening mark's blank either way); the per-edge keywords
+/// this engine does not tell apart are skipped.
+pub fn parse_css_text_spacing_trim(input: &str) -> Option<TextSpacingTrimSpec> {
+    let expanded = expand_css_var_fallback(input.trim());
+    match expanded.trim().to_ascii_lowercase().as_str() {
+        "space-all" => Some(TextSpacingTrimSpec::SpaceAll),
+        "normal" | "space-first" => Some(TextSpacingTrimSpec::Normal),
+        "trim-both" => Some(TextSpacingTrimSpec::TrimBoth),
+        "auto" => Some(TextSpacingTrimSpec::Auto),
+        _ => None,
+    }
+}
+
+/// CSS `text-autospace`: on between ideographs and Latin letters and digits
+/// (`normal`, `auto`, or those two named), or off.
+pub fn parse_css_text_autospace(input: &str) -> Option<TextAutospaceSpec> {
+    let expanded = expand_css_var_fallback(input.trim());
+    let value = expanded.trim().to_ascii_lowercase();
+    match value.as_str() {
+        "no-autospace" => Some(TextAutospaceSpec::NoAutospace),
+        "normal" | "auto" => Some(TextAutospaceSpec::Normal),
+        _ => {
+            let words: Vec<&str> = value.split_ascii_whitespace().collect();
+            let known = !words.is_empty()
+                && words
+                    .iter()
+                    .all(|word| matches!(*word, "ideograph-alpha" | "ideograph-numeric"));
+            known.then_some(TextAutospaceSpec::Normal)
+        }
+    }
+}
+
+/// CSS `text-justify`. `distribute` is the legacy spelling of
+/// `inter-character`.
+pub fn parse_css_text_justify(input: &str) -> Option<TextJustifySpec> {
+    let expanded = expand_css_var_fallback(input.trim());
+    match expanded.trim().to_ascii_lowercase().as_str() {
+        "auto" => Some(TextJustifySpec::Auto),
+        "none" => Some(TextJustifySpec::None),
+        "inter-word" => Some(TextJustifySpec::InterWord),
+        "inter-character" | "distribute" => Some(TextJustifySpec::InterCharacter),
+        _ => None,
+    }
+}
+
+/// CSS `text-wrap-style`: `pretty` looks a bounded number of lines ahead;
+/// `stable` is `auto` here (the greedy decision already never reflows the
+/// lines above an edit). `balance` is skipped.
+pub fn parse_css_text_wrap_style(input: &str) -> Option<TextWrapStyleSpec> {
+    let expanded = expand_css_var_fallback(input.trim());
+    match expanded.trim().to_ascii_lowercase().as_str() {
+        "auto" | "stable" => Some(TextWrapStyleSpec::Auto),
+        "pretty" => Some(TextWrapStyleSpec::Pretty),
         _ => None,
     }
 }
@@ -6532,7 +6619,7 @@ mod tests {
 
         let mut skipped = LayoutStyle::default();
         skipped.apply_css_text(
-            "word-break: keep-all; line-break: strict; font-kerning: orange",
+            "word-break: keep-all; line-break: none; font-kerning: orange",
             None,
             None,
         );
@@ -6550,7 +6637,52 @@ mod tests {
         );
         assert!(parse_css_font_feature_settings("\"toolongtag\" 1").is_none());
         assert!(parse_css_word_break("keep-all").is_none());
-        assert!(parse_css_line_break("loose").is_none());
+        assert!(parse_css_line_break("none").is_none());
+    }
+
+    /// Issue #211: the CJK line decision's properties reach the Style Model;
+    /// `text-align` says whether the text below justifies, inherited as it
+    /// is, and keywords the engine does not tell apart are skipped.
+    #[test]
+    fn cjk_typography_declarations_reach_the_style_model() {
+        let mut layout = LayoutStyle::default();
+        layout.apply_css_text(
+            "line-break: strict; text-spacing-trim: auto; text-autospace: ideograph-alpha ideograph-numeric; \
+             text-justify: distribute; text-wrap-style: pretty; text-align: justify",
+            None,
+            None,
+        );
+        assert_eq!(layout.line_break, Some(LineBreakSpec::Strict));
+        assert_eq!(layout.text_align, TextAlignSpec::Justify);
+        let typography = layout.text_typography;
+        assert_eq!(typography.spacing_trim, Some(TextSpacingTrimSpec::Auto));
+        assert_eq!(typography.autospace, Some(TextAutospaceSpec::Normal));
+        assert_eq!(typography.justify, Some(TextJustifySpec::InterCharacter));
+        assert_eq!(typography.wrap_style, Some(TextWrapStyleSpec::Pretty));
+        assert_eq!(typography.justify_lines, Some(true));
+
+        layout.apply_css_text(
+            "text-align: center; line-break: loose; text-spacing-trim: space-first",
+            None,
+            None,
+        );
+        assert_eq!(layout.text_typography.justify_lines, Some(false));
+        assert_eq!(layout.line_break, Some(LineBreakSpec::Loose));
+        assert_eq!(
+            layout.text_typography.spacing_trim,
+            Some(TextSpacingTrimSpec::Normal)
+        );
+
+        let mut skipped = LayoutStyle::default();
+        skipped.apply_css_text(
+            "text-spacing-trim: trim-start; text-autospace: punctuation; text-wrap-style: balance; text-justify: orange",
+            None,
+            None,
+        );
+        assert_eq!(
+            skipped.text_typography,
+            nana_ui_core::TextTypography::INHERIT
+        );
     }
 
     /// The deprecated `word-break: break-word` a stylesheet writes breaks

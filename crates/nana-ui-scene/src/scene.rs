@@ -1106,6 +1106,10 @@ pub struct SceneTextOpenType {
     /// lays the text out again shapes in the same one, or its `locl` forms
     /// and fallback faces would differ from what was measured.
     pub language: Option<nana_ui_runtime::LanguageTag>,
+    /// The CJK line decision the Runtime laid this text out with (#211):
+    /// punctuation trim, autospace, justification and pretty wrapping. A
+    /// renderer laying the text out again hands the engine the same.
+    pub typography: nana_ui_core::UsedTextTypography,
 }
 
 impl SceneTextOpenType {
@@ -1121,6 +1125,7 @@ impl SceneTextOpenType {
             writing_mode: style.writing_mode,
             text_orientation: style.text_orientation,
             language: style.language.clone(),
+            typography: style.used_text_typography(),
             // Not on `ComputedStyle`: `white-space` is a box-layout property,
             // so the caller that has the layout style sets it.
             preserve_lines: false,

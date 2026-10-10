@@ -65,7 +65,7 @@ consumer（Spout、录制、嵌套宿主）通过窗口输出拿到画面：宿�
 
 `scripts/check-engine-boundary.py` 保持 Runtime 和 Scene 对绘制后端中立，并守住 GPU 合同。`nana-gpu`、`nana-frame-exchange`、`nana-ui` 的公开签名，只有在 `wgpu-interop` 之下才能出现 `wgpu`。`nana_gpu::__framework` 只供框架 crate 自己的源码使用。见 [实时画面](gpu.md#gpu-合同与-wgpu-逃生口)。
 
-`nana-text` 依赖 `nana-ui-core`，且只取排版词汇。这些词是变体轴、kerning、line-break、word-break、text-align、direction、writing-mode、wrap-break、line-height、feature。同一个脚本按 allowlist 守住。
+`nana-text` 依赖 `nana-ui-core`，且只取排版词汇。这些词是变体轴、kerning、line-break、word-break、text-align、direction、writing-mode、wrap-break、line-height、feature，以及 CJK 行决策用的 text-spacing-trim、text-autospace、text-justify、text-wrap-style 和代价词汇 `dynamic_layout`（#211 按它给标点定价，不另造一套代价）。同一个脚本按 allowlist 守住。
 
 `nana-ui-runtime` 依赖 `nana-text`。保留文本节点的 revision、分级 dirty graph，以及 retained 的 `TextLayout` 句柄，都以它为词汇。这是 #95。
 

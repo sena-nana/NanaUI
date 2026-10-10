@@ -139,6 +139,29 @@ pub fn read_metrics(
     })
 }
 
+/// The left and right edges of glyph `glyph_id`'s ink at `size_px`, from
+/// its pen position along a horizontal line; `None` when the face gives no
+/// bounds for it.
+pub fn read_glyph_ink(
+    data: &[u8],
+    index: u32,
+    coords: &[AxisCoord],
+    size_px: f32,
+    glyph_id: u32,
+) -> Option<(f32, f32)> {
+    let font = FontRef::from_index(data, index).ok()?;
+    let location = font.axes().location(
+        coords
+            .iter()
+            .map(|coord| (Tag::new(&coord.tag), coord.value)),
+    );
+    let bounds = font
+        .glyph_metrics(Size::new(size_px), &location)
+        .bounds(skrifa::GlyphId::new(glyph_id))?;
+    (bounds.x_min.is_finite() && bounds.x_max.is_finite() && bounds.x_max > bounds.x_min)
+        .then_some((bounds.x_min, bounds.x_max))
+}
+
 /// Every codepoint the face's best cmap maps, folded into ranges.
 pub fn read_coverage(data: &[u8], index: u32) -> CoverageSet {
     let Ok(font) = FontRef::from_index(data, index) else {

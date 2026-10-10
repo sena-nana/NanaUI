@@ -2000,6 +2000,11 @@ pub struct ComputedStyle {
     pub font_kerning: FontKerningSpec,
     pub word_break: WordBreakSpec,
     pub line_break: LineBreakSpec,
+    /// CSS `text-spacing-trim`, `text-autospace`, `text-justify`,
+    /// `text-wrap-style` and whether `text-align` is `justify`, after
+    /// inherit; unset ones stay `None` (Issue #211). Read through
+    /// [`Self::used_text_typography`].
+    pub text_typography: nana_ui_core::TextTypography,
     /// CSS `direction` after inherit (initial LTR).
     pub direction: nana_ui_core::DirSpec,
     /// CSS `writing-mode` after inherit (initial `horizontal-tb`).
@@ -2026,6 +2031,18 @@ impl ComputedStyle {
     /// inheritance. See [`nana_ui_core::WritingContext`].
     pub fn writing_context(&self) -> nana_ui_core::WritingContext {
         nana_ui_core::WritingContext::used(self.writing_mode, self.direction, self.text_orientation)
+    }
+
+    /// The typography text under this node is laid out with: Chinese and
+    /// Japanese close their punctuation up at fixed amounts unless
+    /// `text-spacing-trim` says otherwise; every other language, and every
+    /// other property, starts off.
+    pub fn used_text_typography(&self) -> nana_ui_core::UsedTextTypography {
+        let cjk = self
+            .language
+            .as_ref()
+            .is_some_and(|language| language.matches_prefix("zh") || language.matches_prefix("ja"));
+        self.text_typography.used(cjk)
     }
 }
 
@@ -2058,6 +2075,7 @@ impl Default for ComputedStyle {
             font_kerning: FontKerningSpec::Auto,
             word_break: WordBreakSpec::Normal,
             line_break: LineBreakSpec::Auto,
+            text_typography: nana_ui_core::TextTypography::INHERIT,
             direction: nana_ui_core::DirSpec::Ltr,
             writing_mode: nana_ui_core::WritingModeSpec::HorizontalTb,
             text_orientation: nana_ui_core::TextOrientationSpec::Mixed,

@@ -144,18 +144,18 @@ fn same_direction(left: &Option<FlexDirection>, right: &Option<FlexDirection>) -
 
 /// A set of [`LayoutStyle`] fields, one bit each: what a patch writes.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
-pub struct LayoutFieldSet([u64; 2]);
+pub struct LayoutFieldSet([u64; 3]);
 
 impl LayoutFieldSet {
-    pub const EMPTY: Self = Self([0; 2]);
+    pub const EMPTY: Self = Self([0; 3]);
 
     pub const fn is_empty(&self) -> bool {
-        self.0[0] == 0 && self.0[1] == 0
+        self.0[0] == 0 && self.0[1] == 0 && self.0[2] == 0
     }
 
     /// How many fields are in the set.
     pub const fn len(&self) -> u32 {
-        self.0[0].count_ones() + self.0[1].count_ones()
+        self.0[0].count_ones() + self.0[1].count_ones() + self.0[2].count_ones()
     }
 
     fn insert(&mut self, field: usize) {
@@ -177,8 +177,8 @@ macro_rules! layout_style_fields {
         }
 
         const _: () = assert!(
-            [$(Field::$field),*].len() <= 128,
-            "LayoutFieldSet holds 128 fields"
+            [$(Field::$field),*].len() <= 192,
+            "LayoutFieldSet holds 192 fields"
         );
 
         impl LayoutStyle {
@@ -323,6 +323,7 @@ layout_style_fields! {
     font_variation_settings: FONT,
     font_kerning: FONT,
     line_break: TEXT_LAYOUT,
+    text_typography: TEXT_LAYOUT,
     unsupported_font_variation: FONT,
     placeholder_color: PAINT,
     placeholder_opacity: PAINT,

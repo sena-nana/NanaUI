@@ -2057,6 +2057,16 @@ impl UiWorld {
 
     fn record_text_work(&mut self, mut work: nana_text::TextWorkCounters) {
         work.accumulate(std::mem::take(&mut self.pending_edit_work));
+        // The CJK line decision is Dynamic Layout's text side (Issue #211).
+        if work.line_opportunities_considered > 0 || work.line_break_comparisons > 0 {
+            self.bump_last_counters(|counters| {
+                let dynamic = &mut counters.dynamic;
+                dynamic.opportunities_considered += work.line_opportunities_considered;
+                dynamic.break_comparisons += work.line_break_comparisons;
+                dynamic.beam_states = dynamic.beam_states.max(work.line_beam_states);
+                dynamic.budget_fallbacks += work.line_budget_fallbacks;
+            });
+        }
         if self.accumulating_frame {
             // Published as the frame goes, so an idle frame (no text pass)
             // leaves the last frame that had one in place, as
@@ -5558,6 +5568,8 @@ fn layout_style_invalidation(
     )
 }
 
+#[cfg(test)]
+mod issue211;
 #[cfg(test)]
 mod issue212;
 #[cfg(test)]

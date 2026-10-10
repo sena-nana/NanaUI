@@ -618,7 +618,46 @@ advance 比较。layout 全程保留浮点。**不**向整数像素取整。那�
 外溢。于是被裁剪的容器露出的是调用方对齐的那一端。`bounds.x` 因此可以是负数。`TextRect` 本来就
 不把负值抹平。
 
-`justify` **明确延期**：`TextAlignSpec` 里没有这个关键字。产品也无从表达。因此不半做。
+`justify`（#211）：除段落末行和硬换行结束的行以外，每行把余下的宽度按 `TextConstraints::justify`
+分到词间（`inter-word`）、CJK 字后（`inter-character`）或两者（`auto`）；`none` 时停在起始边。
+分出去的宽度写进字形前进量，所以 caret、选区和命中测试都跟着它走。Runtime 里 `text-align: justify`
+像 CSS 一样继承：一个两端对齐的盒子下面的段落都两端对齐，不管组件要的是哪种对齐。
+
+### CJK 行决策（#211）
+
+断行、标点挤压、避头尾、中西文间距与两端对齐在 `layout/lines.rs` 的 `Typography` 里一起决定。
+没有任何一项开启时不建 `Typography`，每一行都和以前逐字节相同。
+
+| 能力 | 开关 | 默认 |
+| --- | --- | --- |
+| 行首行尾与相邻标点挤压（固定量） | `text-spacing-trim: normal` / `trim-both` | `lang` 为 zh / ja（含继承的）时为 `normal`，其余 `space-all` |
+| 放不下时按代价挤压，避免断行 | `text-spacing-trim: auto` | 关 |
+| 中西文间距（表意字与拉丁字母、数字之间 em/8，行尾去掉） | `text-autospace` | 关 |
+| 避头尾裁剪 | `line-break: strict` / `loose`；`break-all` 下不让收尾标点落到行首、开头标点留在行尾 | `auto` |
+| 两端对齐 | `text-align: justify` + `text-justify` | 关 |
+| 有界前瞻 | `text-wrap-style: pretty` | 关 |
+
+- **墨迹决定能挤多少**：整形时对每个全角标点用 `font/face.rs::read_glyph_ink`（skrifa 只在这个文件）
+  量一次横向墨迹，空白在后半的标 `PUNCT_BLANK_AFTER`，在前半的标 `PUNCT_BLANK_BEFORE`。量不到就
+  不标，也就不给挤压容量，永远不会让字形相撞。竖排不改前进量。
+- **固定档不搜索**：`normal` 只是把 cell 宽换成挤压后的值，仍走原来的贪心断行，不建代价候选。
+  行首的开头标点去掉前半空白（段落首行除外），相邻标点之间只留一份空白；行尾收尾标点的空白只在
+  不去掉就放不下时才去掉。
+- **按代价挤压**（`auto`）：一行放不下时，比较「挤压行内标点留在这一行」（每 1/64 px 代价 15）与
+  「在前一个断点断开、留下空白」（代价 `15·64·slack²/em`），取便宜的；同价取断开。挤压量按容量
+  比例分到行内各处，余数按顺序逐 1/64 px 分配，结果确定。
+- **`pretty`**：每行至多保留 K=4 个候选，每个候选至多看 C=4 个断点，总预算 `16·B + 256` 步；
+  预算耗尽后确定性地用贪心收尾并计 `line_budget_fallbacks`。不按段落长度切换策略，宽度连续变化时
+  不会在两种结果之间振荡。
+- **原子盒**：`InlineObjectMetrics::envelope`（`InlineEnvelope`）声明对象之后的间距、其中可收的部分
+  和前后能否断行。间距并进对象的宽度，可收的部分在行尾去掉、在行内按代价让出（声明了可收部分的
+  对象会开启按代价挤压）；禁止的断点从断点表里删掉。决策从不进入对象内部；`PlacedObject` 的矩形
+  仍是对象自己的宽度，间距跟在它的行内方向后面。
+- 计数：`TextWorkCounters` 的 `line_opportunities_considered`、`line_break_comparisons`、
+  `line_beam_states`（取最大）、`line_budget_fallbacks`，经 `record_text_work` 汇入 Runtime 的
+  `WorkCounters::dynamic`。Gate D（`tests/line_decision_gate.rs`）锁住近线性、beam 上限和 resize 不重整形。
+- 渲染端回退：`SceneTextOpenType::typography` 带着 Runtime 用过的 `UsedTextTypography`，画家重排时
+  经 `nana_ui_runtime::apply_used_typography` 交给引擎，并进 `ShapeKey`。
 
 ### 省略号
 
@@ -670,7 +709,8 @@ advance 比较。layout 全程保留浮点。**不**向整数像素取整。那�
 | 请求方 source 的 `TextRevision`（见下） | |
 | 已塑形省略号的身份 | 颜色、透明度、transform、z-index、背景（`TextStyle` 本来就不带） |
 | `TextKind` | |
-| 全部 `TextConstraints` 字段（宽高、wrap、word-break、line-break、max-lines、ellipsis、preserve-lines、direction、align、writing-mode、tab-width、scale） | |
+| 全部 `TextConstraints` 字段（宽高、wrap、word-break、line-break、max-lines、ellipsis、preserve-lines、direction、align、writing-mode、tab-width、scale、spacing-trim、autospace、justify、wrap-style） | |
+| 内联对象的度量与包络（`InlineEnvelope`） | |
 | 每个 run 解析后的行高、空行行高、strut | |
 
 - key **持有** `Arc<ShapedText>` 而不是裸指针：持有才让指针可比。否则同一地址可能被另一段文本复用。
@@ -692,7 +732,7 @@ advance 比较。layout 全程保留浮点。**不**向整数像素取整。那�
 | 项 | 状态 |
 | --- | --- |
 | 制表位 | `tab_width` 已进 `LayoutKey`，但没有任何一行应用制表位；`\t` 按普通字符塑形 |
-| `justify` | `TextAlignSpec` 没有这个关键字，产品无从表达，明确延期 |
+| 运行时「文字 + 原子盒」混排流 | 原子盒参与 CJK 行决策只在 nana-text 的 `InlineObject`（RichText 路径）里做；运行时行内上下文的盒子仍是盒级贪心（#188/#190/#195 未实现） |
 | 竖排编辑器装饰（#59） | 行号栏、minimap、参考线、行尾诊断、浮窗在竖排编辑器里不画，见上 |
 | CSS 空白折叠 | 完全不做：连续空格原样保留，因此 `preserve_lines: false` 下 CRLF 折成**两个**空格，与手写两个空格是同一回事；要折叠的调用方自己规范化文本（那时挪动偏移是它自己的事） |
 
@@ -919,7 +959,7 @@ transform / opacity 一样不碰任何 revision，连 paint 也不碰。只改�
   `SetIme` / `SetTextSelection` 是 `EDIT_STATE`。
 - 计算样式落定时（`world/style.rs`）`classify_computed_style_change`：字体族 / 字号 / 字重 /
   斜体 / 字距 / feature / 变体轴 / kerning / direction → `SHAPE_STYLE`。行高 / word-break /
-  line-break / writing-mode → `CONSTRAINT`。颜色 / 前景角色 / 选区色 → `PAINT`。opacity →
+  line-break / writing-mode / CJK 排版（`text_typography`）→ `CONSTRAINT`。颜色 / 前景角色 / 选区色 → `PAINT`。opacity →
   `OPACITY`。计算出的 `language` → `LANGUAGE`。其余字段不产生文本工作。
 - `SetStyle` 只比较文本约束真正读的 `LayoutStyle` 字段（wrap / white-space / 省略号 / line-clamp /
   高度与最大高度是否确定 / 边框 / padding / 对齐）。paint、transform、opacity 与它们同在一个

@@ -221,6 +221,9 @@ impl UiWorld {
             font_kerning: layout.font_kerning.unwrap_or(inherited.font_kerning),
             word_break: layout.word_break.unwrap_or(inherited.word_break),
             line_break: layout.line_break.unwrap_or(inherited.line_break),
+            text_typography: layout
+                .text_typography
+                .inherit_from(inherited.text_typography),
             direction: layout.dir.unwrap_or(inherited.direction),
             writing_mode: layout.writing_mode.unwrap_or(inherited.writing_mode),
             text_orientation: layout

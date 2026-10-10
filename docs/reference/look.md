@@ -75,7 +75,7 @@ Vue CSS 的单层 `box-shadow`（outset 与 inset）和 `text-shadow`（仅 outs
 
 `font-feature-settings` 和 `font-kerning` 进入 shaper。`font-variation-settings` 兑现已经声明、并且字体里存在的轴。`wght` 并进 `font-weight`。`wdth` 和自定义轴（例如 `BEVL`）走同一份 `FontVariations`。字体没有的轴会跳过，不会改写成 `wght`。
 
-`word-break: break-all|break-word` 和 `line-break: anywhere` 会改 wrap。`keep-all`、`strict`、`loose` 不支持。你声明了也会被跳过。
+`word-break: break-all|break-word` 和 `line-break: anywhere` 会改 wrap。`keep-all` 不支持，声明了也会被跳过。`line-break: strict|loose` 按中日文规则裁剪断点。中文、日文（`lang` 为 zh / ja，含继承的）默认挤压行首行尾与相邻的标点；`text-spacing-trim: space-all` 关掉，`auto` 让放不下的行先挤标点再断行。`text-autospace`、`text-align: justify` + `text-justify`、`text-wrap-style: pretty` 按需打开。
 
 `writing-mode: vertical-rl | vertical-lr` 下，文字按列排。CJK 直立，拉丁侧卧。编辑器也在列里编辑。
 
