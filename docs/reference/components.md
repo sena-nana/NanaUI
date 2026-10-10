@@ -180,6 +180,20 @@ Compact + Overlay 适合分离窗底栏（单行加边距约 52px）。Compact +
 
 右键（button 2）派发 `SecondaryPress`。从命中节点往上找到第一个注册了该事件的节点。事件里带命中节点与坐标。框架不开菜单。不塞默认项。要不要弹、弹什么，由应用在 handler 里决定（通常是 `ContextMenu`）。没人注册就什么都不发生。
 
+键盘也能要菜单。焦点节点收到 `ContextMenu` 键或 Shift+F10 时，派发同一个 `SecondaryPress`，`keyboard` 为 `true`。`target` 是焦点节点，坐标是它盒子的中心。往上找 handler 的规则和右键一样。焦点控件自己先拿这个键：应用的按键策略（`on_key`）、终端、编辑器消费了它，就不再派发。按住不放的重复按键不派发。宿主有自己的同类手势时，调用 `AppContext::secondary_press_focused(document)`。键盘要来的菜单，应用打开后把焦点移进去；右键打开的不动焦点。
+
+**菜单按钮。** 会弹出菜单的控件声明 `has_popup`（`aria-haspopup="menu"`）：`Button`、`IconButton`、`ListItem` 的字段（`list_item("模型").has_popup(true)`，模板 `has_popup={true}`），自定义控件写进自己的 `AccessibilityState::has_popup`。Vue 写 `aria-haspopup="menu"`（`"true"` 同义）。读屏把它报成菜单按钮（AccessKit `HasPopup::Menu`）。焦点在它上面时，没有修饰键的 ArrowUp / ArrowDown 也派发 `keyboard: true` 的 `SecondaryPress`，和 `ContextMenu` 键一样。控件自己用方向键时（滑块、数字框）照旧归控件。菜单开不开、焦点落在哪一项，仍由应用决定。
+
+**方向键焦点组。** 容器声明 `.roving_focus(RovingFocusGroup::vertical())`（或 `horizontal()`，`.wrap(true)` 首尾相接；`AppContext::set_roving_focus_group` 是同一份声明）后，焦点在组里的项上时，方向键在项之间移动焦点。这是 WAI-ARIA 工具栏和菜单的键盘约定。
+
+- 项是组下面可聚焦、未禁用、够得着的节点，按文档顺序。最近的组是谁，项就归谁：嵌套的组各管各的项。
+- 竖向组用 ArrowUp / ArrowDown，横向组用 ArrowLeft / ArrowRight（从右往左排版时左右对调）。Home / End 去第一项、最后一项。另一个轴的方向键、带修饰键的方向键不归组。
+- 组只拿焦点控件放过的键。文本框的光标键、滑块的步进、表格和树的导航照旧归它们。同一个键既是竖向组的轴、又在菜单按钮上时，组先拿。
+- 不首尾相接时，越过两端焦点不动，组发 `RovingFocusEdge { edge: RovingEdge::Start | End, item }`。弹出层里的组通常在这里收起，把焦点还给触发它的控件。
+- 组拿到的键都消费掉。Tab 顺序不变：每一项都还在 Tab 里。
+
+Dock 那种从入口上方升起的一列胶囊就是两者合用：入口 `has_popup`，`SecondaryPress` 里打开胶囊列并聚焦离入口最近的一项；胶囊列是不首尾相接的竖向组，`RovingFocusEdge::End`（越过离入口最近的一项）时收起，焦点回入口。
+
 平台文件拖放由宿主降级为 `InputPayload::FileDrag`（`FileDragKind::{Hover, Drop, Cancel}`）。经输入路由交给放置目标。命中目标发 `FileDropEvent::{Hovered, Dropped, Left}`，并画 hover chrome。Vue 用 `<nana-drop-target drop-accepts="files">` / `NanaDropTarget`。未登记节点不接收文件拖放。悬停与放下都带 `modifiers`。拖动期间键盘仍归拖动源。宿主在 Windows（`GetAsyncKeyState`）和 macOS（`NSEvent.modifierFlags`）上每次映射都采样系统状态。Linux 退回最近一次跟踪到的修饰键。Windows 的 OLE 循环在按键变化时也会补发位置。所以只按下 Ctrl 不动鼠标也会收到新的悬停。宿主接受 Copy。macOS 另接受 Link（Copy 优先）。因为 AppKit 会把按住 Control 的 Finder 拖动收窄为 Link。只接受 Copy 时系统会拒绝这次松手。松手后取路径失败时发 `Cancel`。拖动不会悬而不决。窗口失焦或关闭也会结束悬停。
 
 `TextArea` 的行号、诊断沟、minimap、git gutter 是视图属性：`line_numbers` / `diagnostics` / `minimap` / `git_gutter`。buffer revision、LSP、git 状态仍由应用喂入。Vue `NanaTextarea` 对应 `lineNumbers`、`diagnostics`、`minimap`、`gitGutter`。

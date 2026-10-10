@@ -479,6 +479,7 @@ impl UiWorld {
             mixed: state.mixed,
             orientation: state.orientation,
             selected: state.selected,
+            has_popup: state.has_popup,
             multiline: state.multiline,
             editable: state.editable,
             selection: if visible && self.nodes.has_text_inputs() {
@@ -570,6 +571,7 @@ impl UiWorld {
                     mixed: false,
                     orientation: None,
                     selected: row.mark.selected(),
+                    has_popup: false,
                     multiline: false,
                     editable: false,
                     selection: None,

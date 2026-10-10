@@ -78,6 +78,8 @@ widget(
 
 你在处理函数里决定要不要弹出这个菜单。
 
+键盘的 `ContextMenu` 键和 Shift+F10 发同一个 `SecondaryPress`，`keyboard` 为 `true`，坐标是焦点节点盒子的中心，可以直接当锚点。
+
 `activate_overlay(host, menu)` 要求菜单是这个宿主的直接子节点。
 
 `dismiss_overlay(host)` 先停交互、恢复焦点，再把绘制留到退出动画结束。
@@ -107,7 +109,7 @@ widget(
 | `ContextMenuEvent::Select(value)` | `value` | 事件是 `ContextMenuEvent::Select(value)`、`Search` 和 `Dismiss` |
 | `Search` | — | 事件是 `ContextMenuEvent::Select(value)`、`Search` 和 `Dismiss` |
 | `Dismiss` | — | 框架收起时会把 `open` 写成 `false`，并发出 `Dismiss`，和选中之后的收起是同一条回执 |
-| `SecondaryPress` | — | 右键本身只发这个。你在处理函数里决定要不要弹出这个菜单 |
+| `SecondaryPress` | `target`、`x`、`y`、`keyboard` | 右键本身只发这个。`ContextMenu` 键和 Shift+F10 也发，`keyboard` 为 `true`。你在处理函数里决定要不要弹出这个菜单 |
 
 ## 插槽
 

@@ -537,8 +537,52 @@ impl AppContext {
         let Some(target) = self.world.hit_test(document, x, y) else {
             return Ok(None);
         };
-        let press = SecondaryPress { target, x, y };
-        let mut current = Some(target);
+        self.route_secondary_press(SecondaryPress {
+            target,
+            x,
+            y,
+            keyboard: false,
+        })
+    }
+
+    /// The keyboard's context-menu request: [`SecondaryPress`] with
+    /// `keyboard` set, raised on the focused node and routed like a pointer
+    /// press on it, with the point at the centre of its box.
+    ///
+    /// The input path calls it for the `ContextMenu` key, Shift+F10 and the
+    /// arrows on a popup trigger once the focused control has passed on the
+    /// key; a host with its own gesture for the same request calls it too.
+    /// Returns the node that handled it, `None` when nothing is focused or no
+    /// handler is registered.
+    pub fn secondary_press_focused(
+        &mut self,
+        document: DocumentId,
+    ) -> Result<Option<StableNodeId>, FrameworkError> {
+        let Some(target) = self.world.focused(document) else {
+            return Ok(None);
+        };
+        let Some(bounds) = self
+            .world
+            .viewport_layout_box(target)
+            .or_else(|| self.world.component_layout_box(target))
+        else {
+            return Ok(None);
+        };
+        self.route_secondary_press(SecondaryPress {
+            target,
+            x: bounds.x + bounds.width / 2.0,
+            y: bounds.y + bounds.height / 2.0,
+            keyboard: true,
+        })
+    }
+
+    /// Deliver `press` to the nearest `SecondaryPress` handler at or above
+    /// its target.
+    fn route_secondary_press(
+        &mut self,
+        press: SecondaryPress,
+    ) -> Result<Option<StableNodeId>, FrameworkError> {
+        let mut current = Some(press.target);
         while let Some(id) = current {
             if self
                 .event_handlers
@@ -556,7 +600,7 @@ impl AppContext {
             // surfaces are pointer-transparent), so a secondary press there
             // never reaches a row handler; resolve the row on the list itself.
             #[cfg(feature = "controls")]
-            if self.emit_reorder_row_secondary(id, x, y)? {
+            if self.emit_reorder_row_secondary(id, press.x, press.y)? {
                 return Ok(Some(id));
             }
             current = self.world.parent_id(id);

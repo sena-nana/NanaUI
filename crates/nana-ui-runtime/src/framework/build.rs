@@ -286,6 +286,21 @@ impl<'a> UiBuilder<'a> {
         }));
     }
 
+    /// Run `install` on the context once the tree batch commits, with the
+    /// event handlers: a declaration about `entity` that lives beside the
+    /// tree, such as a roving focus group.
+    pub(crate) fn after_commit<V: View>(
+        &mut self,
+        entity: Entity<V>,
+        install: impl FnOnce(&mut AppContext, Entity<V>) -> Result<(), FrameworkError> + 'static,
+    ) {
+        if self.error.is_some() || entity.id == DUMMY_NODE {
+            return;
+        }
+        self.pending_ons
+            .push(Box::new(move |cx| install(cx, entity)));
+    }
+
     /// A node this build leaves for someone else to place: a slot's content,
     /// whose id goes into the component that takes it.
     #[must_use = "detached nodes are not in the tree; hand the id to whatever \

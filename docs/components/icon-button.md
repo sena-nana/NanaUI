@@ -54,7 +54,7 @@ icon_button(Icon::Search, "搜索")
 
 ## 属性
 
-字段是 `icon: Icon`、`label: Arc<str>`、`selected: bool`、`disabled: bool`。没有 `model`。激活不自己改 `selected`。
+字段是 `icon: Icon`、`label: Arc<str>`、`selected: bool`、`disabled: bool`、`has_popup: bool`。没有 `model`。激活不自己改 `selected`。
 
 | 属性 | 类型 | 说明 |
 | --- | --- | --- |
@@ -62,6 +62,7 @@ icon_button(Icon::Search, "搜索")
 | `label` | `Arc<str>` | 可访问名。用属性或这一条子文本 |
 | `selected` | `bool` | 由应用写。激活不自己改 `selected`。选中时字形和底色走选中态 |
 | `disabled` | `bool` | 为真时不发 `Activate`，整枚按钮降到 50% 不透明度：图标平时的颜色和停用色很接近，淡出才看得出哪枚不能点 |
+| `has_popup` | `bool` | 弹出菜单的按钮（`aria-haspopup="menu"`）：读屏报成菜单按钮；焦点在它上面时，ArrowUp / ArrowDown 和 `ContextMenu` 键一样发 `keyboard: true` 的 `SecondaryPress`，由你打开菜单。见 [控件](../reference/components.md) 的菜单按钮 |
 
 ## 事件
 

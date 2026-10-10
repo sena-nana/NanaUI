@@ -39,6 +39,7 @@ macro_rules! wheel_fixture {
 mod action_menu_items;
 mod dispatch;
 mod hover_card;
+mod menu_keys;
 mod modal_handles;
 mod popover_trigger;
 mod router;

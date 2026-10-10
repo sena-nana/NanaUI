@@ -17,6 +17,7 @@ mod keyboard;
 mod lifecycle;
 mod modal;
 mod registry;
+mod roving_focus;
 pub(crate) use hooks::{ChoiceHooks, DockHooks, NavigateHooks, WorkspaceHooks, hooked};
 pub use hooks::{NodePointer, NodePointerHooks, NodeWheel, TypeBehavior, TypeHooks};
 pub(crate) use lifecycle::lifecycle_hooks;
@@ -1073,6 +1074,9 @@ pub struct AppContext {
     pending_modal_syncs: Vec<StableNodeId>,
     event_handlers: HashMap<(StableNodeId, TypeId), Vec<EventHandler>, crate::BuildIdHasher>,
     key_handlers: HashMap<StableNodeId, keyboard::KeyHandler, crate::BuildIdHasher>,
+    /// Containers whose items the arrow keys walk ([`crate::RovingFocusGroup`]).
+    roving_focus_groups:
+        HashMap<StableNodeId, roving_focus::RovingGroupEntry, crate::BuildIdHasher>,
     event_dependencies:
         HashMap<StableNodeId, HashSet<(StableNodeId, TypeId)>, crate::BuildIdHasher>,
     actions: HashMap<ActionId, RegisteredAction>,
@@ -1470,6 +1474,7 @@ impl AppContext {
             pending_modal_syncs: Vec::new(),
             event_handlers: HashMap::default(),
             key_handlers: HashMap::default(),
+            roving_focus_groups: HashMap::default(),
             event_dependencies: HashMap::default(),
             actions: HashMap::new(),
             extensions: HashSet::new(),

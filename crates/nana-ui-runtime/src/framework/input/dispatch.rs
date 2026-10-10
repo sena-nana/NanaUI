@@ -959,6 +959,17 @@ impl AppContext {
         } else {
             false
         };
+        // Last, once the focused control has passed on the key: the arrows
+        // of the roving group the focused item is in, then the keyboard's
+        // context-menu request. A group's own axis wins over a popup
+        // trigger's arrows, as in a vertical menu whose item opens a submenu.
+        let handled = handled
+            || (!modifiers.alt
+                && !modifiers.control
+                && !modifiers.meta
+                && !modifiers.shift
+                && self.roving_focus_key(document, key)?)
+            || self.keyboard_menu_key(document, key, repeat, modifiers)?;
         Ok(InputDisposition {
             handled,
             prevent_default: handled || keyboard_barrier,

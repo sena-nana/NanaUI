@@ -106,6 +106,72 @@ impl RovingFocusPolicy {
     }
 }
 
+/// A container whose focusable descendants the arrow keys walk, as in a
+/// WAI-ARIA toolbar or menu: `El::roving_focus`, or
+/// [`AppContext::set_roving_focus_group`](crate::AppContext::set_roving_focus_group).
+///
+/// Its items are the focusable, enabled, reachable nodes under it whose
+/// nearest group is this one, in document order: a group nested inside
+/// keeps its own items. With focus on an item, the arrows along
+/// `orientation` (ArrowUp / ArrowDown for a vertical group, ArrowLeft /
+/// ArrowRight for a horizontal one, swapped right to left) move it to the
+/// previous or next item, and Home / End to the first or last. A control
+/// that takes those keys itself, such as a text field or a slider, keeps
+/// them. An arrow past an end wraps when `wrap` is set; otherwise focus
+/// stays and the group emits [`RovingFocusEdge`]. Every item stays in the
+/// Tab order.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RovingFocusGroup {
+    pub orientation: SelectionOrientation,
+    pub wrap: bool,
+}
+
+impl RovingFocusGroup {
+    /// ArrowLeft / ArrowRight walk the items; no wrap.
+    pub const fn horizontal() -> Self {
+        Self {
+            orientation: SelectionOrientation::Horizontal,
+            wrap: false,
+        }
+    }
+
+    /// ArrowUp / ArrowDown walk the items; no wrap.
+    pub const fn vertical() -> Self {
+        Self {
+            orientation: SelectionOrientation::Vertical,
+            wrap: false,
+        }
+    }
+
+    /// Past the last item comes the first, and before the first the last.
+    pub const fn wrap(mut self, wrap: bool) -> Self {
+        self.wrap = wrap;
+        self
+    }
+}
+
+/// The end of a [`RovingFocusGroup`] an arrow ran past.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RovingEdge {
+    /// Before the first item: ArrowUp, or ArrowLeft (ArrowRight right to
+    /// left).
+    Start,
+    /// After the last item: ArrowDown, or ArrowRight (ArrowLeft right to
+    /// left).
+    End,
+}
+
+/// An arrow ran past an end of a [`RovingFocusGroup`] that does not wrap.
+///
+/// Emitted on the group itself; focus has not moved. A popup that the group
+/// is in typically closes here and returns focus to its trigger.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RovingFocusEdge {
+    pub edge: RovingEdge,
+    /// The focused item at that end.
+    pub item: StableNodeId,
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct SegmentedControl {
     pub label: Option<Arc<str>>,

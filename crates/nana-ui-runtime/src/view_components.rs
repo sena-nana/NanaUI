@@ -507,6 +507,10 @@ pub struct Button {
     pub loading: bool,
     pub(crate) loading_phase: f32,
     pub invalid: bool,
+    /// Opens a menu (`aria-haspopup="menu"`): announced as a menu button,
+    /// and ArrowUp / ArrowDown on it raise [`SecondaryPress`] with
+    /// `keyboard` set. See [`AccessibilityState::has_popup`].
+    pub has_popup: bool,
     pub style: NodeStyle,
     pub(crate) style_override: bool,
 }
@@ -550,6 +554,7 @@ impl Button {
             loading: false,
             loading_phase: 0.0,
             invalid: false,
+            has_popup: false,
             style: NodeStyle {
                 layout: Arc::new(layout),
                 foreground: Some(nana_ui_core::SemanticColorRole::Text),
@@ -663,6 +668,12 @@ impl Button {
 
     pub fn invalid(mut self, invalid: bool) -> Self {
         self.invalid = invalid;
+        self
+    }
+
+    /// The button opens a menu; see [`Self::has_popup`](field@Self::has_popup).
+    pub fn has_popup(mut self, has_popup: bool) -> Self {
+        self.has_popup = has_popup;
         self
     }
 
@@ -826,6 +837,7 @@ impl ComponentView for Button {
                 disabled: self.disabled || self.loading,
                 busy: self.loading,
                 invalid: self.invalid,
+                has_popup: self.has_popup,
                 ..AccessibilityState::default()
             },
         );
@@ -851,6 +863,10 @@ pub struct IconButton {
     /// Take every colour from [`Self::style`] as written instead of from
     /// [`Self::kind`]. Off by default; see [`IconButton::colors_from_style`].
     pub colors_from_style: bool,
+    /// Opens a menu (`aria-haspopup="menu"`): announced as a menu button,
+    /// and ArrowUp / ArrowDown on it raise [`SecondaryPress`] with
+    /// `keyboard` set. See [`AccessibilityState::has_popup`].
+    pub has_popup: bool,
     pub style: NodeStyle,
 }
 
@@ -915,6 +931,7 @@ impl IconButton {
             tooltip: None,
             tooltip_open: false,
             colors_from_style: false,
+            has_popup: false,
             style,
         }
     }
@@ -962,6 +979,12 @@ impl IconButton {
     /// kind's". It only affects the button it is set on.
     pub fn colors_from_style(mut self) -> Self {
         self.colors_from_style = true;
+        self
+    }
+
+    /// The button opens a menu; see [`Self::has_popup`](field@Self::has_popup).
+    pub fn has_popup(mut self, has_popup: bool) -> Self {
+        self.has_popup = has_popup;
         self
     }
 
@@ -1044,6 +1067,7 @@ impl ComponentView for IconButton {
                 label: Some(Arc::clone(&self.label)),
                 disabled: self.disabled,
                 selected: Some(selected),
+                has_popup: self.has_popup,
                 ..AccessibilityState::default()
             },
         );
@@ -1392,6 +1416,10 @@ pub struct ListItem {
     pub pill_bleed: bool,
     /// What the row is to assistive technology; the look is the same.
     pub role: ListItemRole,
+    /// Opens a menu (`aria-haspopup="menu"`): announced as a menu button,
+    /// and ArrowUp / ArrowDown on it raise [`SecondaryPress`] with
+    /// `keyboard` set. See [`AccessibilityState::has_popup`].
+    pub has_popup: bool,
     pub style: NodeStyle,
 }
 
@@ -1441,6 +1469,7 @@ impl ListItem {
             auto_height: false,
             pill_bleed: false,
             role: ListItemRole::ListItem,
+            has_popup: false,
             style: NodeStyle {
                 layout: Arc::new(layout),
                 background: None,
@@ -1489,6 +1518,12 @@ impl ListItem {
     /// What the row is to assistive technology; see [`ListItemRole`].
     pub fn role(mut self, role: ListItemRole) -> Self {
         self.role = role;
+        self
+    }
+
+    /// The row opens a menu; see [`Self::has_popup`](field@Self::has_popup).
+    pub fn has_popup(mut self, has_popup: bool) -> Self {
+        self.has_popup = has_popup;
         self
     }
 
@@ -1660,6 +1695,7 @@ impl ComponentView for ListItem {
                 disabled: self.disabled,
                 // A pressed toggle paints as selected, so the look holds.
                 checked: (self.role == ListItemRole::ToggleButton).then_some(self.selected),
+                has_popup: self.has_popup,
                 selected: match self.role {
                     ListItemRole::ListItem => Some(self.selected),
                     ListItemRole::Button => self.selected.then_some(true),
@@ -1674,17 +1710,29 @@ impl ComponentView for ListItem {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Activate;
 
-/// Secondary (right) pointer press, delivered to the nearest handler at or
-/// above the hit node.
+/// A request for a node's context menu: a secondary (right) pointer press,
+/// or its keyboard equivalent, delivered to the nearest handler at or above
+/// the target.
 ///
 /// The framework opens nothing: whether a menu appears, and what is in it, is
-/// the application's call. `target` is the node actually hit, which may be a
-/// descendant of the handler's own node.
+/// the application's call. For a pointer press `target` is the node actually
+/// hit, which may be a descendant of the handler's own node, and `x` / `y`
+/// are the window point.
+///
+/// The keyboard raises it on the focused node, with `keyboard` set and `x` /
+/// `y` at the centre of that node's box: the `ContextMenu` key or Shift+F10
+/// on any focused node, and ArrowUp / ArrowDown on a focused popup trigger
+/// ([`AccessibilityState::has_popup`]), whenever the focused control did not
+/// claim the key itself. An application that opens a menu for a keyboard
+/// request moves focus into it; one opened by the pointer leaves focus where
+/// it is.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct SecondaryPress {
     pub target: StableNodeId,
     pub x: f32,
     pub y: f32,
+    /// Raised by the keyboard rather than a pointer button.
+    pub keyboard: bool,
 }
 
 /// The pointer entered (`hovered`) or left this node's subtree.

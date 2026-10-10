@@ -59,6 +59,7 @@ macro_rules! for_each_control {
                 disabled: bool = set,
                 loading: bool = set,
                 kind: ButtonKind = set,
+                has_popup: bool = set,
             }
             on { on_activate: Activate };
             Checkbox => checkbox(label: text) for Checkbox {
@@ -140,6 +141,7 @@ macro_rules! for_each_control {
                 selected: bool = set,
                 disabled: bool = set,
                 role: ListItemRole = set,
+                has_popup: bool = set,
             }
             on { on_activate: Activate };
             Progress => progress(max: f64) for Progress {
@@ -177,6 +179,7 @@ macro_rules! for_each_control {
                 label: Arc<str> = set,
                 selected: bool = set,
                 disabled: bool = set,
+                has_popup: bool = set,
             }
             on { on_activate: Activate };
             Chip => chip(label: text) for Chip {

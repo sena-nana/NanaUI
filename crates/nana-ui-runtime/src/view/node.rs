@@ -913,6 +913,20 @@ impl<C: ComponentView, K> El<C, K> {
         self
     }
 
+    /// Make this element a [`RovingFocusGroup`](crate::RovingFocusGroup):
+    /// the arrows along its orientation, Home and End move focus among the
+    /// focusable items under it, and an arrow past an end of a group that
+    /// does not wrap emits [`RovingFocusEdge`](crate::RovingFocusEdge) on it
+    /// (listen with [`Self::on`]). Set when the element is built.
+    pub fn roving_focus(mut self, group: crate::RovingFocusGroup) -> Self {
+        self.events.push(Box::new(move |ui, entity| {
+            ui.after_commit(entity, move |cx, entity| {
+                cx.set_roving_focus_group(entity, Some(group))
+            });
+        }));
+        self
+    }
+
     /// Record the entity this element is built as in `entity_ref`, beside
     /// any [`Self::node_ref`] it also fills.
     pub fn entity_ref(self, entity_ref: EntityRef<C>) -> Self {

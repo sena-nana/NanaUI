@@ -3043,6 +3043,12 @@ pub struct AccessibilityState {
     /// Layout direction of a composite such as a radio group or tab list.
     pub orientation: Option<crate::SelectionOrientation>,
     pub selected: Option<bool>,
+    /// This control opens a menu (`aria-haspopup="menu"`): a menu button,
+    /// the entry a dock stacks its items above. Assistive technology hears
+    /// that it opens one, and ArrowUp / ArrowDown on it, when the control
+    /// itself does not take them, raise [`crate::SecondaryPress`] with
+    /// `keyboard` set, as the `ContextMenu` key does.
+    pub has_popup: bool,
     pub multiline: bool,
     pub editable: bool,
     pub modal: bool,
@@ -3069,6 +3075,8 @@ pub struct AccessibilityNode {
     pub mixed: bool,
     pub orientation: Option<crate::SelectionOrientation>,
     pub selected: Option<bool>,
+    /// Opens a menu; see [`AccessibilityState::has_popup`].
+    pub has_popup: bool,
     pub multiline: bool,
     pub editable: bool,
     pub selection: Option<TextSelection>,

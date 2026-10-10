@@ -1764,6 +1764,16 @@ impl NanaTreeDocument {
                     .attrs
                     .get("aria-hidden")
                     .is_some_and(|value| value.trim().eq_ignore_ascii_case("true")),
+                // `aria-haspopup="menu"` (or `"true"`, which means a menu): a
+                // menu button, which the arrows also open.
+                has_popup: widget
+                    .props
+                    .attrs
+                    .get("aria-haspopup")
+                    .is_some_and(|value| {
+                        let value = value.trim();
+                        value.eq_ignore_ascii_case("menu") || value.eq_ignore_ascii_case("true")
+                    }),
                 ..AccessibilityState::default()
             };
             {

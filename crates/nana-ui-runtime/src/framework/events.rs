@@ -24,6 +24,7 @@ impl AppContext {
         for id in removed {
             self.text_histories.forget(*id);
             self.key_handlers.remove(id);
+            self.roving_focus_groups.remove(id);
             self.clamp_watchers.remove(id);
             self.size_watchers.remove(id);
         }

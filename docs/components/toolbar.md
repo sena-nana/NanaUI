@@ -33,6 +33,8 @@ widget(Toolbar::new().label("主工具栏")).children((button("保存"), button(
 
 保存、运行这类动作是你放进去的按钮。条不解释按钮的含义，只把它们放在同一条可访问的工具栏里。
 
+要像原生工具栏那样用 ArrowLeft / ArrowRight 在按钮之间走，给条加上 `.roving_focus(RovingFocusGroup::horizontal())`。Home / End 去第一枚、最后一枚，按钮仍都在 Tab 顺序里。见 [控件](../reference/components.md) 的方向键焦点组。
+
 ## 表面和排列
 
 条是横向排列，子项居中。间距用 `space::SM`，左右内边距是 `space::MD`，上下是 `space::XS`。`chrome` 打开时背景是 `Surface`，只有底边画发丝线，颜色是 `BorderSoft`。

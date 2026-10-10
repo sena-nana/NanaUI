@@ -295,7 +295,8 @@ impl RegisterableComponent for Button {
             .size(spec.size)
             .disabled(spec.disabled)
             .loading(spec.loading)
-            .invalid(spec.invalid);
+            .invalid(spec.invalid)
+            .has_popup(opens_menu(spec));
         component.icon = spec.icon;
         if let Some(size) = attr_f32(spec, &["icon-size", "iconSize"]) {
             component = component.icon_size(size);
@@ -317,7 +318,8 @@ impl RegisterableComponent for IconButton {
             .kind(spec.button_kind)
             .size(spec.size)
             .selected(spec.active)
-            .disabled(spec.disabled);
+            .disabled(spec.disabled)
+            .has_popup(opens_menu(spec));
         if !spec.hint.is_empty() {
             component = component.tooltip(
                 Arc::<str>::from(spec.hint),
@@ -482,6 +484,7 @@ impl RegisterableComponent for ListItem {
         let mut component = ListItem::new(spec.display_label())
             .selected(spec.active)
             .disabled(spec.disabled)
+            .has_popup(opens_menu(spec))
             .size(spec.size)
             .gap(spec.layout.gap_or(8.0))
             .auto_height(flag_attr(spec, &["auto-height", "autoheight"]))
@@ -2090,6 +2093,14 @@ fn git_gutter_from_spec(spec: &SemanticSpec<'_>) -> Arc<[TextGitMark]> {
         })
         .collect::<Vec<_>>()
         .into()
+}
+
+/// `aria-haspopup="menu"`, or `"true"`, which means a menu.
+fn opens_menu(spec: &SemanticSpec<'_>) -> bool {
+    spec.attr("aria-haspopup").is_some_and(|value| {
+        let value = value.trim();
+        value.eq_ignore_ascii_case("menu") || value.eq_ignore_ascii_case("true")
+    })
 }
 
 fn truthy_attr(value: &str) -> bool {

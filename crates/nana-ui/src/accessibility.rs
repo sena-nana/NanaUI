@@ -5,7 +5,7 @@ use std::collections::VecDeque;
 
 use accesskit::ActionData;
 use accesskit::{
-    Action, Invalid, Node, NodeId, Orientation, Rect, Role, ScrollUnit, TextDirection,
+    Action, HasPopup, Invalid, Node, NodeId, Orientation, Rect, Role, ScrollUnit, TextDirection,
     TextPosition, TextSelection as AccessKitTextSelection, Toggled, TreeId, TreeInfo, TreeUpdate,
 };
 #[cfg(all(feature = "hosted", not(target_os = "android")))]
@@ -1080,6 +1080,9 @@ fn project_node(
     if node.selected == Some(true) {
         projected.set_selected(true);
     }
+    if node.has_popup {
+        projected.set_has_popup(HasPopup::Menu);
+    }
     if node.mixed {
         projected.set_toggled(Toggled::Mixed);
     } else if let Some(checked) = node.checked {
@@ -1426,6 +1429,7 @@ mod tests {
             mixed: false,
             orientation: None,
             selected: None,
+            has_popup: false,
             multiline: false,
             editable: false,
             selection: None,
@@ -2010,6 +2014,38 @@ mod tests {
         assert_eq!(radio.toggled(), Some(Toggled::True));
         assert!(radio.supports_action(Action::Click));
         assert!(radio.supports_action(Action::Focus));
+    }
+
+    #[test]
+    fn a_popup_trigger_projects_as_a_menu_button() {
+        use nana_ui_runtime::{AppContext, DocumentId, ListItem, ListItemRole};
+        let mut cx = AppContext::new();
+        let document = DocumentId::new(1).unwrap();
+        let entry = cx
+            .create_component(
+                document,
+                ListItem::new("模型")
+                    .role(ListItemRole::ToggleButton)
+                    .has_popup(true),
+            )
+            .unwrap();
+        let plain = cx
+            .create_component(document, ListItem::new("设置").role(ListItemRole::Button))
+            .unwrap();
+        let project = |id| {
+            let node = cx
+                .world()
+                .project_accessibility_nodes(&[id])
+                .pop()
+                .expect("projected");
+            project_node(&node, None, true, 1.0)
+                .into_iter()
+                .next()
+                .unwrap()
+                .1
+        };
+        assert_eq!(project(entry.stable_id()).has_popup(), Some(HasPopup::Menu));
+        assert_eq!(project(plain.stable_id()).has_popup(), None);
     }
 
     #[test]

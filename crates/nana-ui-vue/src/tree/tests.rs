@@ -1824,6 +1824,42 @@ fn aria_hidden_hides_the_node_from_assistive_technology() {
     assert_eq!(hidden(&doc), Some(false));
 }
 
+/// `aria-haspopup="menu"` (or `"true"`) marks a menu button; any other
+/// popup kind, or removing it, does not.
+#[test]
+fn aria_haspopup_menu_marks_a_menu_button() {
+    let mut doc = NanaTreeDocument::new(800, 600, 1.0);
+    let button = doc.create_element("button");
+    doc.insert(button, doc.mount_root(), None);
+    let mut bridge = crate::MessageBridge::new();
+    bridge.register(
+        button.0,
+        crate::WidgetKind::Button,
+        crate::WidgetProps {
+            element_tag: "button".into(),
+            label: "更多".into(),
+            ..Default::default()
+        },
+    );
+    let has_popup = |doc: &NanaTreeDocument| {
+        doc.runtime
+            .accessibility(StableNodeId::try_from(button).unwrap())
+            .map(|state| state.has_popup)
+    };
+    doc.sync_semantic_styles(&bridge.snapshot());
+    assert_eq!(has_popup(&doc), Some(false));
+
+    for (value, expected) in [("menu", true), ("listbox", false), ("true", true)] {
+        bridge.patch_prop(
+            button.0,
+            "aria-haspopup",
+            &nana_js_engine::HostValue::string(value),
+        );
+        doc.sync_semantic_styles(&bridge.snapshot());
+        assert_eq!(has_popup(&doc), Some(expected), "aria-haspopup={value}");
+    }
+}
+
 /// Incremental semantic sync must land the same projections a full pass
 /// would: mutations applied stepwise (each sync walking only the bridge's
 /// dirty set) end with correct runtime state for mutated widgets, their
