@@ -423,12 +423,8 @@ pub struct NanaTreeDocument {
     /// Elements with a `paint` attribute (Issue #217), and the painter it
     /// parsed to — `None` when the script is invalid.
     paint_scripts: HashMap<u64, Option<nana_ui_runtime::NodePainter>>,
-    /// The `paint` script error last reported for each element, so a
-    /// persisting one is reported once.
-    paint_errors: HashMap<u64, String>,
-    /// Newly failed `paint` scripts, drained by the host into the JS
-    /// diagnostics sink.
-    pending_paint_errors: Vec<String>,
+    /// `paint` script errors, each reported once per element.
+    paint_errors: NodeErrors,
     /// The catalog and locales installed on this window, and `message-args`
     /// errors (Issue #267).
     i18n: DocumentI18n,
@@ -463,6 +459,46 @@ pub struct NanaTreeDocument {
 
 const MAX_PENDING_ACCESSIBILITY_CHANGES: usize = 4_096;
 const MAX_COMMIT_REJECTIONS: usize = 32;
+
+/// Errors reported per element, each distinct one once: what was last
+/// reported on each element, and what waits for the host to drain it into
+/// the JS diagnostics sink, at most [`MAX_COMMIT_REJECTIONS`] of them.
+#[derive(Debug, Default)]
+struct NodeErrors {
+    last: HashMap<u64, String>,
+    pending: Vec<String>,
+}
+
+impl NodeErrors {
+    /// Note `error` on element `raw_id`, queued as `report` writes it unless
+    /// it is what was last reported there. `None` clears the element, so the
+    /// same error set again is reported again.
+    fn note(&mut self, raw_id: u64, error: Option<&str>, report: impl FnOnce(&str) -> String) {
+        let Some(error) = error else {
+            self.last.remove(&raw_id);
+            return;
+        };
+        if self.last.get(&raw_id).is_some_and(|last| last == error) {
+            return;
+        }
+        if self.pending.len() < MAX_COMMIT_REJECTIONS {
+            self.pending.push(report(error));
+        }
+        self.last.insert(raw_id, error.to_owned());
+    }
+
+    fn has(&self, raw_id: u64) -> bool {
+        self.last.contains_key(&raw_id)
+    }
+
+    fn forget(&mut self, raw_id: u64) {
+        self.last.remove(&raw_id);
+    }
+
+    fn take(&mut self) -> Vec<String> {
+        std::mem::take(&mut self.pending)
+    }
+}
 
 impl std::fmt::Debug for NanaTreeDocument {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -562,8 +598,7 @@ impl NanaTreeDocument {
             host_texture_nodes: HashSet::new(),
             pending_drop_accepts: HashSet::new(),
             paint_scripts: HashMap::new(),
-            paint_errors: HashMap::new(),
-            pending_paint_errors: Vec::new(),
+            paint_errors: NodeErrors::default(),
             i18n: DocumentI18n::default(),
             native_events: Arc::new(Mutex::new(Vec::new())),
             svg_root_nodes: HashSet::new(),
@@ -1456,7 +1491,7 @@ impl NanaTreeDocument {
             // component or the cascade owns its style.
             // A cleared prop clears its error too, so the same broken script
             // set again is reported again.
-            if widget.props.paint_source.is_some() || self.paint_errors.contains_key(&id.get()) {
+            if widget.props.paint_source.is_some() || self.paint_errors.has(id.get()) {
                 paint_errors.push((id.get(), widget.props.paint_error.clone()));
             }
             let painter = widget
@@ -1470,9 +1505,7 @@ impl NanaTreeDocument {
             if painter.is_some() || self.runtime.world().painter_override(id).is_some() {
                 mutations.set_painter(id, painter);
             }
-            if widget.props.message_args_source.is_some()
-                || self.i18n.errors.contains_key(&id.get())
-            {
+            if widget.props.message_args_source.is_some() || self.i18n.errors.has(id.get()) {
                 i18n_errors.push((id.get(), widget.props.message_args_error.clone()));
             }
             // A `locale` scope and a `lang` belong to the node whichever
@@ -2459,24 +2492,16 @@ impl NanaTreeDocument {
     /// Queue a `paint` script error for the diagnostics sink, once per
     /// distinct error on an element.
     fn note_paint_error(&mut self, raw_id: u64, error: Option<&String>) {
-        let Some(error) = error else {
-            self.paint_errors.remove(&raw_id);
-            return;
-        };
-        if self.paint_errors.get(&raw_id) == Some(error) {
-            return;
-        }
-        self.paint_errors.insert(raw_id, error.clone());
-        if self.pending_paint_errors.len() < MAX_COMMIT_REJECTIONS {
-            self.pending_paint_errors
-                .push(format!("node {raw_id}: invalid paint script: {error}"));
-        }
+        self.paint_errors
+            .note(raw_id, error.map(String::as_str), |error| {
+                format!("node {raw_id}: invalid paint script: {error}")
+            });
     }
 
     /// `paint` scripts that failed to parse since the last call; drained by
     /// the host and forwarded to the JS diagnostics sink.
     pub fn take_paint_errors(&mut self) -> Vec<String> {
-        std::mem::take(&mut self.pending_paint_errors)
+        self.paint_errors.take()
     }
 
     /// The painter an element's `paint` attribute asks for.
@@ -3297,8 +3322,8 @@ impl NanaTreeDocument {
             self.svg_root_nodes.remove(&id);
             self.svg_rasters.remove(&id);
             self.paint_scripts.remove(&id);
-            self.paint_errors.remove(&id);
-            self.i18n.errors.remove(&id);
+            self.paint_errors.forget(id);
+            self.i18n.errors.forget(id);
             self.pending.parent.remove(&id);
             self.pending.children.remove(&id);
             self.pending.kinds.remove(&id);

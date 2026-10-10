@@ -174,24 +174,17 @@ impl Composed {
     }
 }
 
-/// Why the guarded rules active under one mask make no responsive rule.
-enum Unplanned {
-    /// They ask more than one container, or more than one axis of it.
-    MixedContainers,
-    /// Their queries use more than [`MAX_RESPONSIVE_BREAKPOINTS`] bounds.
-    TooManyBreakpoints,
-}
-
 /// The container `queries` read and the finite bounds they use, ascending
 /// and unique: every bound is a breakpoint, so each query holds across a
-/// whole bucket or nowhere in it. `Ok(None)` without a query.
-#[allow(clippy::type_complexity)]
+/// whole bucket or nowhere in it. `None` without a query; also `None`, and a
+/// diagnostic naming where the element's classes were given (`at`), when
+/// they ask more than one container or axis or use more than
+/// [`MAX_RESPONSIVE_BREAKPOINTS`] bounds.
 fn plan(
     queries: &[&SheetQuery],
-) -> Result<Option<(Option<&'static str>, ResponsiveAxis, Vec<f32>)>, (Unplanned, usize)> {
-    let Some(first) = queries.first() else {
-        return Ok(None);
-    };
+    at: &'static Location<'static>,
+) -> Option<(Option<&'static str>, ResponsiveAxis, Vec<f32>)> {
+    let first = queries.first()?;
     let mut breakpoints: Vec<f32> = queries
         .iter()
         .flat_map(|query| query.intervals.iter())
@@ -200,16 +193,23 @@ fn plan(
         .collect();
     breakpoints.sort_by(f32::total_cmp);
     breakpoints.dedup();
-    if queries
+    let why = if queries
         .iter()
         .any(|query| query.name != first.name || query.axis != first.axis)
     {
-        return Err((Unplanned::MixedContainers, breakpoints.len()));
-    }
-    if breakpoints.len() > MAX_RESPONSIVE_BREAKPOINTS {
-        return Err((Unplanned::TooManyBreakpoints, breakpoints.len()));
-    }
-    Ok(Some((first.name, first.axis, breakpoints)))
+        "ask more than one container or axis"
+    } else if breakpoints.len() > MAX_RESPONSIVE_BREAKPOINTS {
+        "use more breakpoints than one responsive rule holds"
+    } else {
+        return Some((first.name, first.axis, breakpoints));
+    };
+    nana_diagnostics::fault!(
+        nana_diagnostics::framework::runtime::VIEW_CONTAINER_QUERY_UNSUPPORTED,
+        breakpoints = breakpoints.len() as u64;
+        "the @container rules of the element whose classes are given at {at} {why}: none of \
+         them apply"
+    );
+    None
 }
 
 impl StyleSite {
@@ -328,28 +328,7 @@ impl StyleSite {
             .filter(|(needs, _, _)| needs & !active == 0)
             .collect();
         let queries: Vec<&SheetQuery> = applying.iter().filter_map(|rule| rule.2).collect();
-        let (name, axis, breakpoints) = match plan(&queries) {
-            Ok(planned) => planned?,
-            Err((Unplanned::MixedContainers, breakpoints)) => {
-                nana_diagnostics::fault!(
-                    nana_diagnostics::framework::runtime::VIEW_CONTAINER_QUERY_UNSUPPORTED,
-                    breakpoints = breakpoints as u64;
-                    "the @container rules of the element whose classes are given at {at} ask \
-                     more than one container or axis: none of them apply"
-                );
-                return None;
-            }
-            Err((Unplanned::TooManyBreakpoints, breakpoints)) => {
-                nana_diagnostics::fault!(
-                    nana_diagnostics::framework::runtime::VIEW_CONTAINER_QUERY_UNSUPPORTED,
-                    breakpoints = breakpoints as u64;
-                    "the @container rules of the element whose classes are given at {at} use \
-                     {breakpoints} breakpoints, more than {MAX_RESPONSIVE_BREAKPOINTS}: none of \
-                     them apply"
-                );
-                return None;
-            }
-        };
+        let (name, axis, breakpoints) = plan(&queries, at)?;
         let authored = self.compose_in(composed, base, active);
         let variants: Vec<Option<StyleVariant>> = (0..=breakpoints.len())
             .map(|bucket| {

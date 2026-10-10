@@ -7197,7 +7197,7 @@ fn a_paint_attribute_paints_a_layout_element() {
     // Removing the element forgets its script.
     doc.remove(panel);
     doc.apply_layout_boxes(&[]);
-    assert!(doc.paint_scripts.is_empty() && doc.paint_errors.is_empty());
+    assert!(doc.paint_scripts.is_empty() && !doc.paint_errors.has(panel.0));
 }
 
 #[test]
@@ -7571,5 +7571,5 @@ fn broken_message_args_are_reported_once_and_do_not_stop_the_frame() {
     bridge.patch_prop(text.0, "message-args", &HostValue::string(r#"{"count":4}"#));
     settle_localized(&mut doc, &mut bridge);
     assert_eq!(doc.runtime.text(id), Some("4 files"));
-    assert!(doc.i18n.errors.is_empty());
+    assert!(!doc.i18n.errors.has(text.0));
 }

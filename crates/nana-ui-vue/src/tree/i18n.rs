@@ -4,12 +4,11 @@
 //! through here. A change that alters what shows moves the world's
 //! generation, which is what a host redraws on.
 
-use std::collections::HashMap;
 use std::sync::Arc;
 
 use nana_ui_runtime::{LanguageTag, Locale, MessageCatalog, MissingMessage};
 
-use super::{MAX_COMMIT_REJECTIONS, NanaTreeDocument};
+use super::{NanaTreeDocument, NodeErrors};
 use crate::i18n::CatalogRequest;
 
 /// The catalog installed on a window, so installing the same again does
@@ -20,10 +19,8 @@ pub(super) struct DocumentI18n {
     /// none, or for one installed from Rust, which is never taken for one
     /// installed before.
     catalog: Option<u64>,
-    /// The `message-args` error last reported per element, so a lasting one
-    /// is reported once.
-    pub(super) errors: HashMap<u64, String>,
-    pending_errors: Vec<String>,
+    /// `message-args` errors, each reported once per element.
+    pub(super) errors: NodeErrors,
 }
 
 impl NanaTreeDocument {
@@ -94,22 +91,14 @@ impl NanaTreeDocument {
     /// distinct error on an element. The text was written when the attribute
     /// was parsed, not here on the frame path.
     pub(super) fn note_message_args_error(&mut self, raw_id: u64, error: Option<String>) {
-        let Some(error) = error else {
-            self.i18n.errors.remove(&raw_id);
-            return;
-        };
-        if self.i18n.errors.get(&raw_id) == Some(&error) {
-            return;
-        }
-        if self.i18n.pending_errors.len() < MAX_COMMIT_REJECTIONS {
-            self.i18n.pending_errors.push(error.clone());
-        }
-        self.i18n.errors.insert(raw_id, error);
+        self.i18n
+            .errors
+            .note(raw_id, error.as_deref(), str::to_owned);
     }
 
     /// `message-args` errors since the last call; drained by the host into
     /// the JS diagnostics sink.
     pub fn take_i18n_errors(&mut self) -> Vec<String> {
-        std::mem::take(&mut self.i18n.pending_errors)
+        self.i18n.errors.take()
     }
 }

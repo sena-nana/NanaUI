@@ -14,7 +14,7 @@
 //!    container's extent at every bound those queries use, into at most
 //!    [`MAX_CONTAINER_BREAKPOINTS`] + 1 buckets, and lists the rules that hold
 //!    in each;
-//! 3. [`crate::css_cascade::rebuild_layout_style_indexed_with_extra`] cascades
+//! 3. [`crate::css_cascade::rebuild_layout_style_indexed`] cascades
 //!    each bucket's rules ([`ContainerRuleSet::active_rules`]) with the
 //!    sheet's own, in cascade order.
 //!
@@ -69,12 +69,6 @@ pub struct ContainerInterval {
     pub hi: f32,
 }
 
-impl ContainerInterval {
-    pub fn contains(self, extent: f32) -> bool {
-        self.lo <= extent && extent < self.hi
-    }
-}
-
 /// A compiled container query.
 #[derive(Debug, Clone, PartialEq)]
 pub struct ContainerQuery {
@@ -93,7 +87,7 @@ impl ContainerQuery {
     pub fn holds_at(&self, extent: f32) -> bool {
         self.intervals
             .iter()
-            .any(|interval| interval.contains(extent))
+            .any(|interval| interval.lo <= extent && extent < interval.hi)
     }
 }
 
@@ -161,13 +155,6 @@ pub struct ContainerPlan {
     pub active: Vec<Vec<usize>>,
 }
 
-impl ContainerPlan {
-    /// The bucket a container measuring `extent` along [`Self::axis`] is in.
-    pub fn bucket_for(&self, extent: f32) -> usize {
-        self.breakpoints.partition_point(|bound| *bound <= extent)
-    }
-}
-
 /// Why one element's container rules cannot be planned. None of them then
 /// applies to it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -178,20 +165,6 @@ pub enum ContainerPlanUnsupported {
     /// Their queries use more than [`MAX_CONTAINER_BREAKPOINTS`] distinct
     /// bounds.
     TooManyBreakpoints,
-}
-
-impl fmt::Display for ContainerPlanUnsupported {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::MixedContainers => {
-                f.write_str("its @container rules ask more than one container or axis")
-            }
-            Self::TooManyBreakpoints => write!(
-                f,
-                "its @container rules use more than {MAX_CONTAINER_BREAKPOINTS} breakpoints"
-            ),
-        }
-    }
 }
 
 /// Plans the buckets of one element's container rules, given their queries.
@@ -208,47 +181,40 @@ pub fn plan_container_queries<'q>(
         .into_iter()
         .map(|query| query.as_ref().ok())
         .collect();
-    let mut key: Option<(&'q Option<String>, ContainerAxis)> = None;
-    let mut breakpoints = Vec::new();
-    for query in queries.iter().copied().flatten() {
-        match key {
-            None => key = Some((&query.name, query.axis)),
-            Some((name, axis)) if *name == query.name && axis == query.axis => {}
-            Some(_) => return Err(ContainerPlanUnsupported::MixedContainers),
-        }
-        for interval in &query.intervals {
-            breakpoints.extend(
-                [interval.lo, interval.hi]
-                    .into_iter()
-                    .filter(|bound| bound.is_finite()),
-            );
-        }
-    }
-    let Some((name, axis)) = key else {
+    let mut supported = queries.iter().copied().flatten();
+    let Some(first) = supported.next() else {
         return Ok(None);
     };
+    if supported.any(|query| query.name != first.name || query.axis != first.axis) {
+        return Err(ContainerPlanUnsupported::MixedContainers);
+    }
+    let mut breakpoints: Vec<f32> = queries
+        .iter()
+        .copied()
+        .flatten()
+        .flat_map(|query| &query.intervals)
+        .flat_map(|interval| [interval.lo, interval.hi])
+        .filter(|bound| bound.is_finite())
+        .collect();
     breakpoints.sort_by(f32::total_cmp);
     breakpoints.dedup();
     if breakpoints.len() > MAX_CONTAINER_BREAKPOINTS {
         return Err(ContainerPlanUnsupported::TooManyBreakpoints);
     }
-    let active = (0..=breakpoints.len())
-        .map(|bucket| {
-            let lower = bucket
-                .checked_sub(1)
-                .map_or(f32::NEG_INFINITY, |below| breakpoints[below]);
+    let active = std::iter::once(f32::NEG_INFINITY)
+        .chain(breakpoints.iter().copied())
+        .map(|lower| {
             queries
                 .iter()
                 .enumerate()
-                .filter_map(|(index, query)| {
-                    query.filter(|query| query.holds_at(lower)).map(|_| index)
-                })
+                .filter(|(_, query)| query.is_some_and(|query| query.holds_at(lower)))
+                .map(|(index, _)| index)
                 .collect()
         })
         .collect();
     Ok(Some(ContainerPlan {
-        name: name.clone(),
-        axis,
+        name: first.name.clone(),
+        axis: first.axis,
         breakpoints,
         active,
     }))
@@ -299,7 +265,7 @@ impl ContainerRuleSet {
     }
 
     /// The query guarding rule `rule` of [`Self::rules`].
-    pub fn query(&self, rule: usize) -> &Result<ContainerQuery, ContainerQueryUnsupported> {
+    fn query(&self, rule: usize) -> &Result<ContainerQuery, ContainerQueryUnsupported> {
         &self.queries[self.block_of[rule]]
     }
 
@@ -333,18 +299,17 @@ impl ContainerRuleSet {
         matched: &[usize],
     ) -> Result<Option<ContainerPlan>, ContainerPlanUnsupported> {
         let mut plan = plan_container_queries(matched.iter().map(|&rule| self.query(rule)))?;
-        if let Some(plan) = &mut plan {
-            for bucket in &mut plan.active {
-                for rule in bucket.iter_mut() {
-                    *rule = matched[*rule];
-                }
-            }
+        for rule in plan
+            .iter_mut()
+            .flat_map(|plan| plan.active.iter_mut().flatten())
+        {
+            *rule = matched[*rule];
         }
         Ok(plan)
     }
 
     /// The rules of `plan` (from [`Self::plan`]) that hold in `bucket`, for
-    /// [`crate::css_cascade::rebuild_layout_style_indexed_with_extra`].
+    /// [`crate::css_cascade::rebuild_layout_style_indexed`].
     pub fn active_rules(&self, plan: &ContainerPlan, bucket: usize) -> Vec<&StyleRule> {
         plan.active
             .get(bucket)
@@ -390,31 +355,30 @@ pub fn parse_container_prelude(prelude: &str) -> Result<ContainerQuery, Containe
     let mut parser = Parser {
         tokens: &tokens,
         pos: usize::from(name.is_some()),
+        axes: Vec::new(),
     };
     if parser.pos == tokens.len() {
         return Err(if name.is_some() { NoCondition } else { Invalid });
     }
-    let condition = parser.condition()?;
+    let intervals = parser.condition()?;
     if parser.pos != tokens.len() {
         return Err(Invalid);
     }
-    let mut axes = Vec::new();
-    condition.axes(&mut axes);
-    let axis = *axes.first().ok_or(Invalid)?;
-    if axes.iter().any(|other| *other != axis) {
+    let axis = *parser.axes.first().ok_or(Invalid)?;
+    if parser.axes.iter().any(|other| *other != axis) {
         return Err(MixedAxes);
     }
     Ok(ContainerQuery {
         name,
         axis,
-        intervals: condition.intervals(),
+        intervals,
     })
 }
 
 /// `container-type`: `normal | [ size | inline-size ] || scroll-state`, or
 /// `initial` / `unset`. `scroll-state` alone answers no size query, so it is
 /// [`ContainerType::Normal`] here.
-pub fn parse_container_type(value: &str) -> Option<ContainerType> {
+pub(crate) fn parse_container_type(value: &str) -> Option<ContainerType> {
     if is_reset(value) {
         return Some(ContainerType::Normal);
     }
@@ -423,7 +387,7 @@ pub fn parse_container_type(value: &str) -> Option<ContainerType> {
 
 /// `container-name`: `none | <custom-ident>+`, or `initial` / `unset`.
 /// Names are case-sensitive.
-pub fn parse_container_name(value: &str) -> Option<Vec<String>> {
+pub(crate) fn parse_container_name(value: &str) -> Option<Vec<String>> {
     if is_reset(value) {
         return Some(Vec::new());
     }
@@ -432,7 +396,7 @@ pub fn parse_container_name(value: &str) -> Option<Vec<String>> {
 
 /// The `container` shorthand, `<'container-name'> [ / <'container-type'> ]?`:
 /// the names and the type, `normal` when it is left out.
-pub fn parse_container_shorthand(value: &str) -> Option<(Vec<String>, ContainerType)> {
+pub(crate) fn parse_container_shorthand(value: &str) -> Option<(Vec<String>, ContainerType)> {
     if is_reset(value) {
         return Some((Vec::new(), ContainerType::Normal));
     }
@@ -683,47 +647,12 @@ fn tokenize(text: &str) -> Vec<Token> {
     tokens
 }
 
-enum Condition {
-    Feature(ContainerAxis, Vec<ContainerInterval>),
-    Not(Box<Condition>),
-    And(Vec<Condition>),
-    Or(Vec<Condition>),
-}
-
-impl Condition {
-    fn axes(&self, out: &mut Vec<ContainerAxis>) {
-        match self {
-            Self::Feature(axis, _) => out.push(*axis),
-            Self::Not(inner) => inner.axes(out),
-            Self::And(terms) | Self::Or(terms) => {
-                for term in terms {
-                    term.axes(out);
-                }
-            }
-        }
-    }
-
-    fn intervals(&self) -> Vec<ContainerInterval> {
-        match self {
-            Self::Feature(_, intervals) => intervals.clone(),
-            Self::Not(inner) => complement(&inner.intervals()),
-            Self::And(terms) => terms
-                .iter()
-                .map(Self::intervals)
-                .reduce(|a, b| intersect(&a, &b))
-                .unwrap_or_default(),
-            Self::Or(terms) => terms
-                .iter()
-                .map(Self::intervals)
-                .reduce(|a, b| union(&a, &b))
-                .unwrap_or_default(),
-        }
-    }
-}
-
+/// Parses a condition into where it holds, as it goes.
 struct Parser<'t> {
     tokens: &'t [Token],
     pos: usize,
+    /// The axis of every feature read, in order.
+    axes: Vec<ContainerAxis>,
 }
 
 impl Parser<'_> {
@@ -733,12 +662,12 @@ impl Parser<'_> {
 
     /// `not <query-in-parens>`, or `<query-in-parens>`s joined by `and` or
     /// by `or`, never both.
-    fn condition(&mut self) -> Result<Condition, ContainerQueryUnsupported> {
+    fn condition(&mut self) -> Result<Vec<ContainerInterval>, ContainerQueryUnsupported> {
         if self.keyword("not") {
             self.pos += 1;
-            return Ok(Condition::Not(Box::new(self.in_parens()?)));
+            return Ok(complement(&self.in_parens()?));
         }
-        let mut terms = vec![self.in_parens()?];
+        let mut holds = self.in_parens()?;
         let mut joined_by_and = None;
         loop {
             let and = if self.keyword("and") {
@@ -753,18 +682,19 @@ impl Parser<'_> {
             }
             joined_by_and = Some(and);
             self.pos += 1;
-            terms.push(self.in_parens()?);
+            let term = self.in_parens()?;
+            holds = if and {
+                intersect(&holds, &term)
+            } else {
+                union(&holds, &term)
+            };
         }
-        Ok(match joined_by_and {
-            None => terms.swap_remove(0),
-            Some(true) => Condition::And(terms),
-            Some(false) => Condition::Or(terms),
-        })
+        Ok(holds)
     }
 
     /// `( <condition> )`, `( <size-feature> )`, or a function such as
     /// `style()`, which is never evaluated.
-    fn in_parens(&mut self) -> Result<Condition, ContainerQueryUnsupported> {
+    fn in_parens(&mut self) -> Result<Vec<ContainerInterval>, ContainerQueryUnsupported> {
         let open = self.pos;
         let function = match self.tokens.get(open) {
             Some(Token::Open) => None,
@@ -772,7 +702,6 @@ impl Parser<'_> {
             _ => return Err(ContainerQueryUnsupported::Invalid),
         };
         let close = closing(self.tokens, open + 1).ok_or(ContainerQueryUnsupported::Invalid)?;
-        self.pos = close + 1;
         if let Some(name) = function {
             return Err(ContainerQueryUnsupported::Function(name));
         }
@@ -784,19 +713,22 @@ impl Parser<'_> {
             }
             _ => false,
         };
-        if !nested {
-            return size_feature(inner);
-        }
-        let mut parser = Parser {
-            tokens: inner,
-            pos: 0,
-        };
-        let condition = parser.condition()?;
-        if parser.pos == inner.len() {
-            Ok(condition)
+        let holds = if nested {
+            // The group is balanced, and its `)` is no keyword: the
+            // condition inside ends at it or is invalid.
+            self.pos = open + 1;
+            let holds = self.condition()?;
+            if self.pos != close {
+                return Err(ContainerQueryUnsupported::Invalid);
+            }
+            holds
         } else {
-            Err(ContainerQueryUnsupported::Invalid)
-        }
+            let (axis, holds) = size_feature(inner)?;
+            self.axes.push(axis);
+            holds
+        };
+        self.pos = close + 1;
+        Ok(holds)
     }
 }
 
@@ -818,20 +750,16 @@ fn closing(tokens: &[Token], from: usize) -> Option<usize> {
     None
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Prefix {
-    Min,
-    Max,
-}
-
-fn feature(name: &str) -> Result<(ContainerAxis, Option<Prefix>), ContainerQueryUnsupported> {
+/// A feature's axis, and how its plain form `(name: value)` compares: `=`,
+/// or `>=` / `<=` with `min-` / `max-`.
+fn feature(name: &str) -> Result<(ContainerAxis, Cmp), ContainerQueryUnsupported> {
     let lower = name.to_ascii_lowercase();
-    let (prefix, base) = if let Some(base) = lower.strip_prefix("min-") {
-        (Some(Prefix::Min), base)
+    let (cmp, base) = if let Some(base) = lower.strip_prefix("min-") {
+        (Cmp::Ge, base)
     } else if let Some(base) = lower.strip_prefix("max-") {
-        (Some(Prefix::Max), base)
+        (Cmp::Le, base)
     } else {
-        (None, lower.as_str())
+        (Cmp::Eq, lower.as_str())
     };
     let axis = match base {
         "width" => ContainerAxis::Width,
@@ -840,14 +768,14 @@ fn feature(name: &str) -> Result<(ContainerAxis, Option<Prefix>), ContainerQuery
         "block-size" => ContainerAxis::Block,
         _ => return Err(ContainerQueryUnsupported::Feature(lower)),
     };
-    Ok((axis, prefix))
+    Ok((axis, cmp))
 }
 
 /// A feature in boolean or range form, where `min-` / `max-` is invalid.
 fn unprefixed_feature(name: &str) -> Result<ContainerAxis, ContainerQueryUnsupported> {
     match feature(name)? {
-        (axis, None) => Ok(axis),
-        (_, Some(_)) => Err(ContainerQueryUnsupported::Invalid),
+        (axis, Cmp::Eq) => Ok(axis),
+        _ => Err(ContainerQueryUnsupported::Invalid),
     }
 }
 
@@ -869,7 +797,9 @@ fn length(token: &Token) -> Result<f32, ContainerQueryUnsupported> {
     Ok(if *value == 0.0 { 0.0 } else { *value })
 }
 
-fn size_feature(tokens: &[Token]) -> Result<Condition, ContainerQueryUnsupported> {
+fn size_feature(
+    tokens: &[Token],
+) -> Result<(ContainerAxis, Vec<ContainerInterval>), ContainerQueryUnsupported> {
     let function = tokens.iter().find_map(|token| match token {
         Token::Function(name) => Some(name),
         _ => None,
@@ -886,12 +816,7 @@ fn size_feature(tokens: &[Token]) -> Result<Condition, ContainerQueryUnsupported
             complement(&compare(Cmp::Eq, 0.0)),
         ),
         [Token::Ident(name), Token::Colon, value] => {
-            let (axis, prefix) = feature(name)?;
-            let cmp = match prefix {
-                Some(Prefix::Min) => Cmp::Ge,
-                Some(Prefix::Max) => Cmp::Le,
-                None => Cmp::Eq,
-            };
+            let (axis, cmp) = feature(name)?;
             (axis, compare(cmp, length(value)?))
         }
         [Token::Ident(name), Token::Cmp(cmp), value] => {
@@ -928,7 +853,7 @@ fn size_feature(tokens: &[Token]) -> Result<Condition, ContainerQueryUnsupported
             return Err(ContainerQueryUnsupported::Invalid);
         }
     };
-    Ok(Condition::Feature(axis, intervals))
+    Ok((axis, intervals))
 }
 
 fn span(lo: f32, hi: f32) -> Vec<ContainerInterval> {
@@ -995,11 +920,10 @@ mod tests {
 
     use super::*;
     use crate::css_at_rule::{MediaEnvironment, MemoryStylesheetLoader, ParseStylesheetOptions};
+    use crate::css_cascade::tests::ctx;
     use crate::css_cascade::{
-        MediaEnv, UnsupportedCssTally, collect_document_custom_properties_from_rules,
-        matched_custom_properties_indexed, matched_custom_properties_indexed_with_extra,
-        parse_stylesheet, parse_stylesheet_full, parse_stylesheet_full_with_options,
-        rebuild_layout_style_indexed, rebuild_layout_style_indexed_with_extra,
+        UnsupportedCssTally, matched_custom_properties_indexed, parse_stylesheet,
+        parse_stylesheet_full, parse_stylesheet_full_with_options, rebuild_layout_style_indexed,
     };
     use crate::css_interactive::{merge_parsed_stylesheet, offset_source_order};
     use crate::css_map::{LayoutStyle, LayoutStyleCss, LengthSpec};
@@ -1007,41 +931,6 @@ mod tests {
 
     const INF: f32 = f32::INFINITY;
     const NEG_INF: f32 = f32::NEG_INFINITY;
-
-    fn element<'a>(
-        tag: &'a str,
-        id: &'a str,
-        classes: &'a [String],
-        attrs: &'a BTreeMap<String, String>,
-    ) -> MatchContext<'a> {
-        MatchContext {
-            tag,
-            id,
-            classes,
-            attrs,
-            ancestors: &[],
-            preceding_siblings: &[],
-            sibling_index: 0,
-            sibling_count: 1,
-            of_type_index: 0,
-            of_type_count: 1,
-            has_bits: 0,
-            has_args: &[],
-            focus_within: false,
-            is_empty: true,
-            checked: false,
-            media: MediaEnv::default(),
-            children: &[],
-            following_siblings: &[],
-            all_siblings: &[],
-            ancestor_subtrees: &[],
-            owned_children: &[],
-            owned_following: &[],
-            owned_ancestor_trees: &[],
-            relative: None,
-            relative_id: 0,
-        }
-    }
 
     fn intervals(prelude: &str) -> Vec<(f32, f32)> {
         parse_container_prelude(prelude)
@@ -1207,23 +1096,23 @@ mod tests {
         let min = plan(&["(min-width: 480px)"]);
         assert_eq!(min.axis, ContainerAxis::Width);
         assert_eq!(min.breakpoints, [480.0]);
-        assert_eq!(min.active, [vec![], vec![0]]);
-        assert_eq!(min.bucket_for(479.9), 0);
-        assert_eq!(min.bucket_for(480.0), 1, "min-width includes its bound");
+        assert_eq!(
+            min.active,
+            [vec![], vec![0]],
+            "min-width includes its bound"
+        );
 
         let max = plan(&["(max-width: 480px)"]);
         assert_eq!(max.breakpoints, [480f32.next_up()]);
-        assert_eq!(max.active, [vec![0], vec![]]);
-        assert_eq!(max.bucket_for(480.0), 0, "max-width includes its bound");
-        assert_eq!(max.bucket_for(480.01), 1);
+        assert_eq!(
+            max.active,
+            [vec![0], vec![]],
+            "max-width includes its bound"
+        );
 
         let below = plan(&["(width < 480px)"]);
         assert_eq!(below.breakpoints, [480.0]);
-        assert_eq!(
-            below.active[below.bucket_for(480.0)],
-            Vec::<usize>::new(),
-            "`<` excludes its bound"
-        );
+        assert_eq!(below.active, [vec![0], vec![]], "`<` excludes its bound");
 
         let range = plan(&["(400px <= width < 800px)"]);
         assert_eq!(range.breakpoints, [400.0, 800.0]);
@@ -1472,7 +1361,7 @@ mod tests {
         let set = ContainerRuleSet::build(&flat.container_rules);
         let classes = class_names(&["a"]);
         let attrs = BTreeMap::new();
-        let ctx = element("div", "", &classes, &attrs);
+        let ctx = ctx("div", "", &classes, &attrs, &[]);
         let matched = set.matching(&ctx);
         assert_eq!(matched.len(), 5);
         assert!(set.any_unsupported(&matched));
@@ -1489,24 +1378,6 @@ mod tests {
             "only the supported block applies"
         );
 
-        let index = RuleIndex::build(&flat.static_rules);
-        for bucket in 0..plan.active.len() {
-            let layout = rebuild_layout_style_indexed_with_extra(
-                LayoutStyle::default(),
-                &flat.static_rules,
-                &index,
-                &set.active_rules(&plan, bucket),
-                &ctx,
-                "",
-                "",
-                None,
-                None,
-            );
-            assert!(layout.width.is_none() && layout.height.is_none());
-            assert!(layout.padding.is_none() && layout.gap.is_none());
-            assert_eq!(layout.order, 1);
-        }
-
         // Counted per node, replaced on every pass, given back when it goes.
         let mut tally = UnsupportedCssTally::default();
         tally.observe_container_queries(1, set.any_unsupported(&matched));
@@ -1519,6 +1390,18 @@ mod tests {
         tally.forget(2);
         tally.forget(2);
         assert_eq!(tally.report().container_queries, 0);
+        assert!(tally.report().is_empty());
+        // A node's style and its container rules are counted apart.
+        let sideways = LayoutStyle {
+            unsupported_writing_mode: true,
+            ..LayoutStyle::default()
+        };
+        tally.observe(3, &sideways);
+        tally.observe_container_queries(3, true);
+        tally.observe(3, &LayoutStyle::default());
+        assert_eq!(tally.report().writing_modes, 0);
+        assert_eq!(tally.report().container_queries, 1);
+        tally.forget(3);
         assert!(tally.report().is_empty());
     }
 
@@ -1542,7 +1425,7 @@ mod tests {
         let set = ContainerRuleSet::build(&flat.container_rules);
         let classes = class_names(&["a", "b"]);
         let attrs = BTreeMap::new();
-        let ctx = element("div", "x", &classes, &attrs);
+        let ctx = ctx("div", "x", &classes, &attrs, &[]);
         let matched = set.matching(&ctx);
         assert_eq!(matched, [0]);
         assert!(!set.any_unsupported(&matched));
@@ -1551,7 +1434,7 @@ mod tests {
         assert_eq!(plan.active, [vec![], vec![0]]);
 
         let cascade = |bucket: usize, inline: &str| {
-            rebuild_layout_style_indexed_with_extra(
+            rebuild_layout_style_indexed(
                 LayoutStyle::default(),
                 &flat.static_rules,
                 &index,
@@ -1563,21 +1446,7 @@ mod tests {
                 None,
             )
         };
-        let narrow = cascade(0, "");
-        assert_eq!(
-            narrow,
-            rebuild_layout_style_indexed(
-                LayoutStyle::default(),
-                &flat.static_rules,
-                &index,
-                &ctx,
-                "",
-                "",
-                None,
-                None,
-            )
-        );
-        assert_eq!(narrow.width, Some(LengthSpec::Px(1.0)));
+        assert_eq!(cascade(0, "").width, Some(LengthSpec::Px(1.0)));
 
         let wide = cascade(1, "");
         assert_eq!(
@@ -1612,40 +1481,22 @@ mod tests {
     fn container_custom_properties_only_join_their_bucket() {
         let (sheet, _) = parse_stylesheet_full(
             r#"
-            :root { --base: 1px; }
             .a { --own: 1px; }
             @container (width > 400px) {
-                :root { --base: 2px; }
                 .a { --own: 2px; --wide: 3px; }
             }
             "#,
             0,
         );
         let flat = sheet.flatten(&MediaEnvironment::default());
-        let document = collect_document_custom_properties_from_rules(&flat.static_rules, "light");
-        assert_eq!(document.get("--base").map(String::as_str), Some("1px"));
-
         let index = RuleIndex::build(&flat.static_rules);
         let set = ContainerRuleSet::build(&flat.container_rules);
         let classes = class_names(&["a"]);
         let attrs = BTreeMap::new();
-        let parent = [crate::css_cascade::MatchNode {
-            tag: "div",
-            id: "",
-            classes: &[],
-            attrs: &attrs,
-            is_empty: false,
-            checked: false,
-        }];
-        let mut ctx = element("div", "", &classes, &attrs);
-        ctx.ancestors = &parent;
-        let unconditional = matched_custom_properties_indexed(&flat.static_rules, &index, &ctx);
-        assert_eq!(unconditional.get("--own").map(String::as_str), Some("1px"));
-        assert!(!unconditional.contains_key("--wide"));
-
+        let ctx = ctx("div", "", &classes, &attrs, &[]);
         let matched = set.matching(&ctx);
         let plan = set.plan(&matched).expect("one container").expect("a plan");
-        let wide = matched_custom_properties_indexed_with_extra(
+        let wide = matched_custom_properties_indexed(
             &flat.static_rules,
             &index,
             &set.active_rules(&plan, 1),
@@ -1724,20 +1575,5 @@ mod tests {
                 "{ignored:?}"
             );
         }
-
-        // The cascade writes them like any declaration.
-        let rules = parse_stylesheet(".panel { container: panel / size; }", 0);
-        let classes = class_names(&["panel"]);
-        let attrs = BTreeMap::new();
-        let mut layout = LayoutStyle::default();
-        crate::css_cascade::apply_stylesheet_to_layout(
-            &mut layout,
-            &rules,
-            &element("div", "", &classes, &attrs),
-            None,
-            None,
-        );
-        assert_eq!(layout.container_type, ContainerType::Size);
-        assert_eq!(layout.container_name, class_names(&["panel"]));
     }
 }

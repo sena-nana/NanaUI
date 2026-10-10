@@ -439,21 +439,12 @@ struct ContainerOutcome {
 }
 
 /// Whether `a` and `b` differ in text a child inherits that the Runtime
-/// itself passes down from its parent's effective style.
+/// itself passes down from its parent's effective style: the fields
+/// [`keep_own_inherited_text`] names.
 fn inherited_text_differs(a: &LayoutStyle, b: &LayoutStyle) -> bool {
-    a.font_size != b.font_size
-        || a.font_weight != b.font_weight
-        || a.font_italic != b.font_italic
-        || a.font_family != b.font_family
-        || a.line_height != b.line_height
-        || a.letter_spacing != b.letter_spacing
-        || a.color != b.color
-        || a.paint_colors.color != b.paint_colors.color
-        || a.word_break != b.word_break
-        || a.line_break != b.line_break
-        || a.font_features != b.font_features
-        || a.font_variation_settings != b.font_variation_settings
-        || a.font_kerning != b.font_kerning
+    let mut probe = b.clone();
+    keep_own_inherited_text(&mut probe, a);
+    probe != *b
 }
 
 /// Undo the copy of that text from the parent: `layout` keeps what `own`,
@@ -637,24 +628,17 @@ impl MessageBridge {
         id: WidgetId,
         ctx: &MatchContext<'_>,
     ) -> Option<CssComputedMotion> {
-        if let Some(runtime) = &self.cascade.interactive_runtime {
-            let interactive_motion = self.interactive_motion_for(ctx, runtime, id);
-            Some(resolve_computed_motion(
-                &self.cascade.motion_rules,
-                interactive_motion,
-                None,
-                ctx,
-            ))
-        } else if !self.cascade.motion_rules.is_empty() {
-            Some(resolve_computed_motion(
-                &self.cascade.motion_rules,
-                None,
-                None,
-                ctx,
-            ))
-        } else {
-            None
+        let runtime = self.cascade.interactive_runtime.as_ref();
+        if runtime.is_none() && self.cascade.motion_rules.is_empty() {
+            return None;
         }
+        let interactive = runtime.and_then(|runtime| self.interactive_motion_for(ctx, runtime, id));
+        Some(resolve_computed_motion(
+            &self.cascade.motion_rules,
+            interactive,
+            None,
+            ctx,
+        ))
     }
 
     fn running_paint(&self, id: WidgetId, motion: Option<&CssComputedMotion>) -> RunningPaint {
@@ -776,7 +760,7 @@ impl MessageBridge {
         // inline !important. Layout sizing comes from those layers / public
         // class contracts — not from id / data-region-id / kind whitelists.
         // A bucket's container rules sit among the sheet's in cascade order.
-        let mut layout = rebuild_layout_style_indexed_with_extra(
+        let mut layout = rebuild_layout_style_indexed(
             base,
             &self.cascade.stylesheet_rules,
             &self.cascade.stylesheet_rule_index,
@@ -1106,7 +1090,7 @@ impl MessageBridge {
         inline_style: &str,
         extra: &[&StyleRule],
     ) -> BTreeMap<String, String> {
-        let mut map = crate::css_cascade::matched_custom_properties_indexed_with_extra(
+        let mut map = crate::css_cascade::matched_custom_properties_indexed(
             &self.cascade.stylesheet_rules,
             &self.cascade.stylesheet_rule_index,
             extra,
@@ -1778,7 +1762,7 @@ impl MessageBridge {
         self.cascade
             .authored_sheets
             .iter()
-            .any(|sheet| !sheet.parsed.media_rules.is_empty())
+            .any(|sheet| sheet.parsed.has_media())
     }
 }
 

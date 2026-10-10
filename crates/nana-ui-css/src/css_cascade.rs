@@ -53,10 +53,10 @@
 //! names recorded) merge into the same [`ParsedStylesheet`] (not a second cascade).
 //! `@container` blocks stay in [`ParsedStylesheet::container_rules`]: they join
 //! this cascade per bucket of the element's container, through
-//! [`rebuild_layout_style_indexed_with_extra`], never unconditionally (see
+//! [`rebuild_layout_style_indexed`], never unconditionally (see
 //! [`crate::css_container`]).
 
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap};
 
 use crate::css_at_rule::{
     ImportPrelude, MAX_IMPORT_DEPTH, ParseStylesheetOptions, evaluate_media_query,
@@ -528,6 +528,8 @@ struct UnsupportedCssFlags {
     grid_track_list: bool,
     writing_mode: bool,
     font_variation: bool,
+    /// Matched by an `@container` rule that cannot apply to it.
+    container_query: bool,
 }
 
 impl UnsupportedCssFlags {
@@ -537,6 +539,7 @@ impl UnsupportedCssFlags {
                 || layout.grid_rows_unsupported.is_some(),
             writing_mode: layout.unsupported_writing_mode,
             font_variation: layout.unsupported_font_variation,
+            container_query: false,
         }
     }
 
@@ -560,8 +563,6 @@ impl UnsupportedCssReport {
 pub struct UnsupportedCssTally {
     report: UnsupportedCssReport,
     seen: HashMap<u64, UnsupportedCssFlags>,
-    /// Nodes counted in [`UnsupportedCssReport::container_queries`].
-    container_queries: HashSet<u64>,
 }
 
 impl UnsupportedCssTally {
@@ -572,27 +573,11 @@ impl UnsupportedCssTally {
     /// Records one node's resolved style, replacing whatever it contributed
     /// last time. Called once per node per cascade pass.
     pub fn observe(&mut self, node: u64, layout: &LayoutStyle) {
-        let flags = UnsupportedCssFlags::of(layout);
-        let previous = if flags.is_empty() {
-            self.seen.remove(&node).unwrap_or_default()
-        } else {
-            self.seen.insert(node, flags).unwrap_or_default()
+        let flags = UnsupportedCssFlags {
+            container_query: self.flags(node).container_query,
+            ..UnsupportedCssFlags::of(layout)
         };
-        adjust(
-            &mut self.report.grid_track_lists,
-            previous.grid_track_list,
-            flags.grid_track_list,
-        );
-        adjust(
-            &mut self.report.writing_modes,
-            previous.writing_mode,
-            flags.writing_mode,
-        );
-        adjust(
-            &mut self.report.font_variations,
-            previous.font_variation,
-            flags.font_variation,
-        );
+        self.record(node, flags);
     }
 
     /// Records whether one node is matched by an `@container` rule that
@@ -600,32 +585,49 @@ impl UnsupportedCssTally {
     /// replacing what it recorded last time. Called once per node per
     /// cascade pass, beside [`Self::observe`].
     pub fn observe_container_queries(&mut self, node: u64, unsupported: bool) {
-        let was = if unsupported {
-            !self.container_queries.insert(node)
-        } else {
-            self.container_queries.remove(&node)
+        let flags = UnsupportedCssFlags {
+            container_query: unsupported,
+            ..self.flags(node)
         };
-        adjust(&mut self.report.container_queries, was, unsupported);
+        self.record(node, flags);
     }
 
     /// Drops a removed node's contribution.
     pub fn forget(&mut self, node: u64) {
-        if self.container_queries.remove(&node) {
-            adjust(&mut self.report.container_queries, true, false);
-        }
-        let Some(previous) = self.seen.remove(&node) else {
-            return;
+        self.record(node, UnsupportedCssFlags::default());
+    }
+
+    fn flags(&self, node: u64) -> UnsupportedCssFlags {
+        self.seen.get(&node).copied().unwrap_or_default()
+    }
+
+    /// Replace what `node` contributes with `flags`.
+    fn record(&mut self, node: u64, flags: UnsupportedCssFlags) {
+        let previous = if flags.is_empty() {
+            self.seen.remove(&node).unwrap_or_default()
+        } else {
+            self.seen.insert(node, flags).unwrap_or_default()
         };
+        let report = &mut self.report;
         adjust(
-            &mut self.report.grid_track_lists,
+            &mut report.grid_track_lists,
             previous.grid_track_list,
-            false,
+            flags.grid_track_list,
         );
-        adjust(&mut self.report.writing_modes, previous.writing_mode, false);
         adjust(
-            &mut self.report.font_variations,
+            &mut report.writing_modes,
+            previous.writing_mode,
+            flags.writing_mode,
+        );
+        adjust(
+            &mut report.font_variations,
             previous.font_variation,
-            false,
+            flags.font_variation,
+        );
+        adjust(
+            &mut report.container_queries,
+            previous.container_query,
+            flags.container_query,
         );
     }
 }
@@ -1512,18 +1514,10 @@ fn data_theme_constraint_from_compound(c: &CompoundSelector) -> Option<String> {
 /// `:root { --bg }` on parentless nodes would clobber
 /// `:root[data-theme=light]` overlays (orphans report empty ancestors and
 /// thus match `:root`).
+///
+/// `extra` rules are sorted in among the candidates: the `@container` rules
+/// that hold in one bucket, as for [`rebuild_layout_style_indexed`].
 pub fn matched_custom_properties_indexed(
-    rules: &[StyleRule],
-    index: &RuleIndex,
-    ctx: &MatchContext<'_>,
-) -> BTreeMap<String, String> {
-    matched_custom_properties_indexed_with_extra(rules, index, &[], ctx)
-}
-
-/// [`matched_custom_properties_indexed`] with `extra` rules sorted in among
-/// the candidates: the `@container` rules that hold in one bucket, as for
-/// [`rebuild_layout_style_indexed_with_extra`].
-pub fn matched_custom_properties_indexed_with_extra(
     rules: &[StyleRule],
     index: &RuleIndex,
     extra: &[&StyleRule],
@@ -1641,39 +1635,16 @@ pub fn rebuild_layout_style(
 
 /// [`rebuild_layout_style`] restricted to [`RuleIndex`] candidates. Cascade
 /// order inside the candidate set is unchanged, so results are identical.
-pub fn rebuild_layout_style_indexed(
-    layout: LayoutStyle,
-    rules: &[StyleRule],
-    index: &RuleIndex,
-    ctx: &MatchContext<'_>,
-    prop_style: &str,
-    inline_style: &str,
-    percent_w: Option<f32>,
-    percent_h: Option<f32>,
-) -> LayoutStyle {
-    rebuild_layout_style_indexed_with_extra(
-        layout,
-        rules,
-        index,
-        &[],
-        ctx,
-        prop_style,
-        inline_style,
-        percent_w,
-        percent_h,
-    )
-}
-
-/// [`rebuild_layout_style_indexed`] with `extra` rules in the stylesheet
-/// layers: the `@container` rules that hold in one bucket
-/// ([`crate::css_container::ContainerRuleSet::active_rules`]).
 ///
-/// They are matched and sorted together with the sheet's candidates (normal
-/// before `!important`, then specificity, then source order), exactly where
-/// they would sit as ordinary rules of the sheet; they are never appended
-/// after it. Their `!important` declarations join the stylesheet-important
-/// layer, so prop / inline `!important` still beats them.
-pub fn rebuild_layout_style_indexed_with_extra(
+/// `extra` rules join the stylesheet layers: the `@container` rules that
+/// hold in one bucket
+/// ([`crate::css_container::ContainerRuleSet::active_rules`]). They are
+/// matched and sorted together with the sheet's candidates (normal before
+/// `!important`, then specificity, then source order), exactly where they
+/// would sit as ordinary rules of the sheet; they are never appended after
+/// it. Their `!important` declarations join the stylesheet-important layer,
+/// so prop / inline `!important` still beats them.
+pub fn rebuild_layout_style_indexed(
     mut layout: LayoutStyle,
     rules: &[StyleRule],
     index: &RuleIndex,
@@ -3188,11 +3159,11 @@ fn split_selector_list(s: &str) -> Vec<&str> {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use crate::css_map::{DirSpec, FlexDirection, FlexWrap, LengthSpec};
 
-    fn ctx<'a>(
+    pub(crate) fn ctx<'a>(
         tag: &'a str,
         id: &'a str,
         classes: &'a [String],
@@ -4386,7 +4357,8 @@ mod tests {
         let classes = vec!["surface".into()];
         // Parentless → would match :root for layout, but custom props skip it.
         let orphan = ctx("div", "", &classes, &empty, &[]);
-        let props = matched_custom_properties_indexed(&rules, &RuleIndex::build(&rules), &orphan);
+        let props =
+            matched_custom_properties_indexed(&rules, &RuleIndex::build(&rules), &[], &orphan);
         assert!(
             !props.contains_key("--bg"),
             "document :root --bg must not overlay theme-aware stylesheet_vars"

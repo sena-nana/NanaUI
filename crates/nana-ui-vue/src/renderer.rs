@@ -2049,45 +2049,27 @@ mod tests {
             Arc::clone(&bridge),
             shared_web_api_state(),
         );
-        let body = api.call("mountRoot", &[]).unwrap().as_f64().unwrap();
-        let patch = |element: f64, key: &str, value: &str| {
+        let body = api.call("mountRoot", &[]).unwrap().as_f64().unwrap() as u64;
+        let card = seeded_element(&mut api, body, "div", &[("class", "card")]);
+        let wrapper = seeded_element(&mut api, card, "div", &[("class", "wrapper")]);
+        let row = seeded_element(&mut api, wrapper, "div", &[("class", "row")]);
+        api.call(
+            "injectStylesheet",
+            &[HostValue::string(SHEET), HostValue::string("card.css")],
+        )
+        .unwrap();
+        let patch = |element: u64, key: &str, value: &str| {
             api.call(
                 "patchProp",
                 &[
-                    HostValue::Number(element),
+                    HostValue::Number(element as f64),
                     HostValue::string(key),
                     HostValue::string(value),
                 ],
             )
             .unwrap();
         };
-        let element = |class: &str, parent: f64| {
-            let element = api
-                .call("createElement", &[HostValue::string("div")])
-                .unwrap()
-                .as_f64()
-                .unwrap();
-            patch(element, "class", class);
-            api.call(
-                "insert",
-                &[
-                    HostValue::Number(element),
-                    HostValue::Number(parent),
-                    HostValue::Null,
-                ],
-            )
-            .unwrap();
-            element
-        };
-        let card = element("card", body);
-        let wrapper = element("wrapper", card);
-        let row = element("row", wrapper);
-        api.call(
-            "injectStylesheet",
-            &[HostValue::string(SHEET), HostValue::string("card.css")],
-        )
-        .unwrap();
-        let row_id = nana_ui_runtime::StableNodeId::new(row as u64).unwrap();
+        let row_id = nana_ui_runtime::StableNodeId::new(row).unwrap();
         let resolve = || {
             api.call("resolveLayout", &[]).unwrap();
         };
@@ -2100,7 +2082,7 @@ mod tests {
         // The wrapper sizes to the row: what the variant does to the row's
         // box reaches its parent's too.
         let heights = |doc: &NanaTreeDocument| {
-            let height = |element: f64| doc.layout_box(NodeHandle(element as u64)).unwrap().height;
+            let height = |element: u64| doc.layout_box(NodeHandle(element)).unwrap().height;
             (height(row), height(wrapper))
         };
 

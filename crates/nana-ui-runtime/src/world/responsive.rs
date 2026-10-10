@@ -268,10 +268,7 @@ impl UiWorld {
                 )
             })
             .map(|(node, _)| *node)
-            .filter(|node| {
-                std::iter::successors(Some(*node), |node| self.parent_id(*node))
-                    .any(|above| above == id)
-            })
+            .filter(|node| self.is_descendant_or_self(*node, id))
             .collect();
         nearest.sort_unstable();
         for node in nearest {

@@ -6914,6 +6914,29 @@ fn recascading_keeps_an_equal_container_rule() {
     assert!(responsive_of(&bridge, row).is_none());
 }
 
+/// An `@media` inside an `@container` block follows the viewport as one
+/// outside it does.
+#[test]
+fn media_inside_a_container_rule_follows_the_viewport() {
+    let mut bridge = MessageBridge::new();
+    let row = card_tree(&mut bridge);
+    bridge.inject_stylesheet(
+        ".card { container-type: inline-size; container-name: card; width: 320px }
+         @container card (max-width: 300px) {
+             @media (min-width: 800px) { .row { height: 40px } }
+         }",
+    );
+    // The default media environment is 960×640: the inner rule holds.
+    assert!(responsive_of(&bridge, row).is_some());
+    bridge.sync_layout_containing_blocks(ParentBox::from_viewport(400.0, 300.0));
+    assert!(
+        responsive_of(&bridge, row).is_none(),
+        "a narrow viewport drops the min-width rule inside the container rule"
+    );
+    bridge.sync_layout_containing_blocks(ParentBox::from_viewport(900.0, 300.0));
+    assert!(responsive_of(&bridge, row).is_some());
+}
+
 /// Container rules that ask two containers or two axes, or a query this
 /// engine does not evaluate, never apply; the element is counted where the
 /// other unsupported CSS is.

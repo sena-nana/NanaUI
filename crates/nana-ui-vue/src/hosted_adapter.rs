@@ -160,6 +160,14 @@ impl<E: JsEngine> VueHostedRuntime<E> {
         self.vue.set_fallback_locale(locale)
     }
 
+    /// See [`VueRuntime::set_missing_message`].
+    pub fn set_missing_message(
+        &self,
+        policy: nana_ui_runtime::MissingMessage,
+    ) -> Result<(), JsEngineError> {
+        self.vue.set_missing_message(policy)
+    }
+
     /// See [`VueRuntime::set_default_locale`].
     pub fn set_default_locale(
         &self,

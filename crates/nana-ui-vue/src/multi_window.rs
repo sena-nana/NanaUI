@@ -1041,16 +1041,7 @@ impl VueRuntime {
     /// The application's locale (`Nana.i18n.setLocale`): every window
     /// without its own takes it.
     pub fn set_default_locale(&self, locale: Option<Locale>) -> Result<(), JsEngineError> {
-        change_app_i18n(
-            &self.state,
-            |app| app.locale.clone_from(&locale),
-            |document, _| document.set_default_locale(locale.clone()),
-        )
-        .map_err(JsEngineError::from_exception)
-    }
-
-    pub fn default_locale(&self) -> Option<Locale> {
-        self.state.lock().ok()?.i18n.locale.clone()
+        set_app_locale(&self.state, locale).map_err(JsEngineError::from_exception)
     }
 
     /// One window's own locale (`handle.setLocale`); `None` takes the
@@ -1258,12 +1249,7 @@ impl VueRuntime {
         {
             let state = Arc::clone(&self.state);
             api.register("i18nSetLocale", move |args| {
-                let locale = crate::i18n::parse_locale(args.first())?;
-                change_app_i18n(
-                    &state,
-                    |app| app.locale.clone_from(&locale),
-                    |document, _| document.set_default_locale(locale.clone()),
-                )?;
+                set_app_locale(&state, crate::i18n::parse_locale(args.first())?)?;
                 Ok(HostValue::Null)
             });
         }
@@ -2361,6 +2347,18 @@ fn change_app_i18n<T>(
         apply(&mut *crate::renderer::lock_doc(&document)?, &recorded);
     }
     Ok(())
+}
+
+/// The application's locale, which every window without its own takes.
+fn set_app_locale(
+    state: &Mutex<VueRuntimeState>,
+    locale: Option<Locale>,
+) -> Result<(), JsException> {
+    change_app_i18n(
+        state,
+        |app| app.locale.clone_from(&locale),
+        |document, _| document.set_default_locale(locale.clone()),
+    )
 }
 
 /// One window's own locale, set on its document for the same reason.

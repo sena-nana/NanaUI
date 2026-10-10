@@ -247,6 +247,16 @@ impl ParsedStylesheet {
             && self.font_faces.is_empty()
     }
 
+    /// Whether the sheet has `@media` blocks, its own or inside `@container`
+    /// blocks: whether [`Self::flatten`] depends on the media.
+    pub fn has_media(&self) -> bool {
+        !self.media_rules.is_empty()
+            || self
+                .container_rules
+                .iter()
+                .any(|rule| rule.sheet.has_media())
+    }
+
     /// Copy unconditional buckets plus inner sheets whose `@media` matches `env`.
     ///
     /// `@container` blocks stay blocks, kept with those of matching `@media`;

@@ -51,8 +51,7 @@ pub use css_cascade::{
 pub use css_container::{
     ContainerAxis, ContainerInterval, ContainerPlan, ContainerPlanUnsupported, ContainerQuery,
     ContainerQueryUnsupported, ContainerRule, ContainerRuleSet, MAX_CONTAINER_BREAKPOINTS,
-    parse_container_name, parse_container_prelude, parse_container_shorthand, parse_container_type,
-    plan_container_queries,
+    parse_container_prelude, plan_container_queries,
 };
 pub use css_font_face::{
     FontFaceSrcKind, FontFaceStyle, parse_font_face_at_rule, parse_font_face_rules,
