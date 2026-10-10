@@ -7,7 +7,7 @@ pub(in crate::world) fn reorder_list_geometry(
     rows: &[crate::ReorderRowPaint],
     size: ControlSize,
     spacing: f32,
-    (insert, dragged): (Option<LayoutBox>, Option<LayoutBox>),
+    (mark, dragged): (Option<crate::ReorderDropMark>, Option<LayoutBox>),
     palette: &SemanticPalette,
     metrics: nana_ui_core::ThemeMetrics,
 ) -> crate::ComponentGeometry {
@@ -46,7 +46,18 @@ pub(in crate::world) fn reorder_list_geometry(
         .collect();
     crate::ComponentGeometry::ReorderList {
         rows,
-        insert: insert.map(|line| (line, palette.accent.as_rgba_array())),
+        insert: match mark {
+            Some(crate::ReorderDropMark::Line(line)) => {
+                Some((line, palette.accent.as_rgba_array()))
+            }
+            _ => None,
+        },
+        inside: match mark {
+            Some(crate::ReorderDropMark::Inside(row)) => {
+                Some((row, palette.accent.as_rgba_array()))
+            }
+            _ => None,
+        },
         dragged: dragged.map(|row| (row, palette.accent.as_rgba_array())),
     }
 }

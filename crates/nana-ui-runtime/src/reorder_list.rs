@@ -87,6 +87,10 @@ pub struct ReorderItem {
     pub drop_target: bool,
     pub selected: bool,
     pub disabled: bool,
+    /// With [`ReorderList::tree_drop`], a drop on the row's middle goes
+    /// inside it. A row that takes nothing inside splits into before and
+    /// after halves instead. On by default.
+    pub nest: bool,
     pub tools: Option<StableNodeId>,
 }
 
@@ -99,6 +103,7 @@ impl ReorderItem {
             drop_target: true,
             selected: false,
             disabled: false,
+            nest: true,
             tools: None,
         }
     }
@@ -119,6 +124,12 @@ impl ReorderItem {
 
     pub fn selected(mut self, selected: bool) -> Self {
         self.selected = selected;
+        self
+    }
+
+    /// Whether a tree drop can go inside this row; see [`Self::nest`].
+    pub fn nest(mut self, nest: bool) -> Self {
+        self.nest = nest;
         self
     }
 
@@ -166,23 +177,53 @@ pub struct ReorderDragVisual {
     pub x: f32,
     pub y: f32,
     pub drop_targets: Arc<[bool]>,
+    /// Which rows a tree drop can go inside ([`ReorderItem::nest`]).
+    pub nest_targets: Arc<[bool]>,
     pub tree_drop: bool,
+}
+
+/// Where a drop would land, as drawn: a line between rows, or the row a
+/// tree drop goes inside.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum ReorderDropMark {
+    Line(LayoutBox),
+    Inside(LayoutBox),
 }
 
 impl ReorderDragVisual {
     /// The drop indicator over `rows` inside `bounds`: the insert line, or
     /// the target's line for a tree drop; `None` where a drop changes nothing.
     pub fn insert_line(&self, bounds: LayoutBox, rows: &[LayoutBox]) -> Option<LayoutBox> {
+        self.drop_mark(bounds, rows).map(|mark| match mark {
+            ReorderDropMark::Line(line) | ReorderDropMark::Inside(line) => line,
+        })
+    }
+
+    /// [`Self::insert_line`], telling a line from a row a drop goes inside.
+    pub fn drop_mark(&self, bounds: LayoutBox, rows: &[LayoutBox]) -> Option<ReorderDropMark> {
         if self.tree_drop {
-            let (target, position) =
-                tree_drop_target(rows, &self.drop_targets, Some(self.source), self.x, self.y)?;
-            return Some(tree_insert_line(rows[target], position));
+            let (target, position) = tree_drop_target(
+                rows,
+                &self.drop_targets,
+                &self.nest_targets,
+                Some(self.source),
+                self.x,
+                self.y,
+            )?;
+            let mark = tree_insert_line(rows[target], position);
+            return Some(if position == TreeDropPosition::Inside {
+                ReorderDropMark::Inside(mark)
+            } else {
+                ReorderDropMark::Line(mark)
+            });
         }
         let before = drop_before_index(rows, &self.drop_targets, Some(self.source), self.y);
         if !reorder_changes_position(rows.len(), self.source, before) {
             return None;
         }
-        Some(reorder_insert_line(bounds, rows, before))
+        Some(ReorderDropMark::Line(reorder_insert_line(
+            bounds, rows, before,
+        )))
     }
 }
 
@@ -384,6 +425,7 @@ impl ReorderList {
             x: drag.x,
             y: drag.y,
             drop_targets: self.drop_target_flags().into(),
+            nest_targets: self.nest_flags().into(),
             tree_drop: self.tree_drop,
         })
     }
@@ -444,8 +486,14 @@ impl ReorderList {
         }
         let drop_targets = self.drop_target_flags();
         if self.tree_drop {
-            let (target, position) =
-                tree_drop_target(rows, &drop_targets, Some(source), drag.x, drag.y)?;
+            let (target, position) = tree_drop_target(
+                rows,
+                &drop_targets,
+                &self.nest_flags(),
+                Some(source),
+                drag.x,
+                drag.y,
+            )?;
             let target = Arc::clone(&self.items[target].value);
             return Some(ReorderListEvent::TreeDrop {
                 source: drag.source,
@@ -471,6 +519,10 @@ impl ReorderList {
 
     fn drop_target_flags(&self) -> Vec<bool> {
         self.items.iter().map(ReorderItem::is_drop_target).collect()
+    }
+
+    fn nest_flags(&self) -> Vec<bool> {
+        self.items.iter().map(|item| item.nest).collect()
     }
 
     fn set_selected(&mut self, value: &str) {
@@ -913,6 +965,7 @@ fn drop_before_index(
 fn tree_drop_target(
     bounds: &[LayoutBox],
     drop_targets: &[bool],
+    nest_targets: &[bool],
     excluded: Option<usize>,
     x: f32,
     y: f32,
@@ -927,7 +980,14 @@ fn tree_drop_target(
         })
         .map(|(index, row)| {
             let offset = (y - row.y) / row.height.max(1.0);
-            let position = if offset < 0.25 {
+            let nest = nest_targets.get(index).copied().unwrap_or(true);
+            let position = if !nest {
+                if offset < 0.5 {
+                    TreeDropPosition::Before
+                } else {
+                    TreeDropPosition::After
+                }
+            } else if offset < 0.25 {
                 TreeDropPosition::Before
             } else if offset > 0.75 {
                 TreeDropPosition::After
@@ -1087,7 +1147,13 @@ mod tests {
         .tree_drop(true);
         apply(&mut list, ReorderListPointer::Down { x: 40.0, y: 12.0 });
         apply(&mut list, ReorderListPointer::Move { x: 40.0, y: 42.0 });
-        // The inside highlight sits on the second row, inset within it.
+        // The inside highlight sits on the second row, inset within it, and
+        // is told apart from a line between rows.
+        let rows = list.row_bounds(bounds(), UI_METRICS);
+        assert!(matches!(
+            list.drag_visual().unwrap().drop_mark(bounds(), &rows),
+            Some(ReorderDropMark::Inside(_))
+        ));
         let row = ControlSize::Small.height_in(UI_METRICS);
         assert_eq!(
             list.insert_line(bounds(), UI_METRICS),
@@ -1108,6 +1174,40 @@ mod tests {
                 },
             })
         );
+    }
+
+    #[test]
+    fn a_row_that_takes_nothing_inside_splits_into_before_and_after() {
+        let list = || {
+            ReorderList::new([
+                ReorderItem::new("a", "Alpha"),
+                ReorderItem::new("b", "Beta").nest(false),
+                ReorderItem::new("c", "Gamma"),
+            ])
+            .tree_drop(true)
+        };
+        let row = ControlSize::Small.height_in(UI_METRICS);
+        let top = row + DEFAULT_SPACING;
+        for (offset, position) in [
+            (0.4, TreeDropPosition::Before),
+            (0.6, TreeDropPosition::After),
+        ] {
+            let mut list = list();
+            let y = top + row * offset;
+            apply(&mut list, ReorderListPointer::Down { x: 40.0, y: 12.0 });
+            apply(&mut list, ReorderListPointer::Move { x: 40.0, y });
+            assert_eq!(
+                apply(&mut list, ReorderListPointer::Up { x: 40.0, y }),
+                Some(ReorderListEvent::TreeDrop {
+                    source: Arc::from("a"),
+                    intent: TreeDropIntent {
+                        target: Arc::from("b"),
+                        position,
+                    },
+                }),
+                "a drop at {offset} of the row"
+            );
+        }
     }
 
     #[test]

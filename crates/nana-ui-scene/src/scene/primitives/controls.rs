@@ -12,6 +12,7 @@ pub(super) fn build(context: &GeometryPaintContext<'_>, emit: &mut impl FnMut(Sc
         Some(ComponentGeometry::ReorderList {
             rows,
             insert,
+            inside,
             dragged,
         }) => {
             let selected = rows
@@ -41,6 +42,9 @@ pub(super) fn build(context: &GeometryPaintContext<'_>, emit: &mut impl FnMut(Sc
             }
             // The dragged row is outlined where it was, so the row being
             // moved stays apparent while the insert line shows where it goes.
+            // Both paint one level above the list, over live row children:
+            // a selected row's fill would hide them otherwise.
+            let over_rows = node.z_index.saturating_add(1);
             if let Some((row, color)) = dragged {
                 emit(visual_quad(
                     &VisualPrimitiveContext {
@@ -48,7 +52,7 @@ pub(super) fn build(context: &GeometryPaintContext<'_>, emit: &mut impl FnMut(Sc
                         transform,
                         clips,
                         opacity,
-                        z_index: node.z_index,
+                        z_index: over_rows,
                         document_order: node_order,
                     },
                     12,
@@ -61,6 +65,29 @@ pub(super) fn build(context: &GeometryPaintContext<'_>, emit: &mut impl FnMut(Sc
                     },
                 ));
             }
+            // The row a drop goes into: a ring and a faint wash of the
+            // accent, so its own label stays readable under it.
+            if let Some((row, color)) = inside {
+                let [r, g, b, a] = *color;
+                emit(visual_quad(
+                    &VisualPrimitiveContext {
+                        node: id,
+                        transform,
+                        clips,
+                        opacity,
+                        z_index: over_rows,
+                        document_order: node_order,
+                    },
+                    13,
+                    scene_rect(*row),
+                    VisualQuadStyle {
+                        background: Some([r, g, b, a * 0.12]),
+                        border_color: Some(*color),
+                        border_width: 2.0,
+                        corner_radius: corner_radii(node.chrome_radii.sm),
+                    },
+                ));
+            }
             if let Some((line, color)) = insert {
                 emit(visual_quad(
                     &VisualPrimitiveContext {
@@ -68,7 +95,7 @@ pub(super) fn build(context: &GeometryPaintContext<'_>, emit: &mut impl FnMut(Sc
                         transform,
                         clips,
                         opacity,
-                        z_index: node.z_index,
+                        z_index: over_rows,
                         document_order: node_order,
                     },
                     11,

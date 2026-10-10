@@ -2562,7 +2562,7 @@ impl UiWorld {
                 let drag = drag.as_ref().map(|drag| {
                     let boxes = row_boxes(drag.drop_targets.len());
                     (
-                        drag.insert_line(bounds, &boxes),
+                        drag.drop_mark(bounds, &boxes),
                         boxes.get(drag.source).copied(),
                     )
                 });

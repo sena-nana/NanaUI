@@ -1621,6 +1621,8 @@ pub enum ComponentGeometry {
     ReorderList {
         rows: Vec<(LayoutBox, ComponentTextRegion, Option<[f32; 4]>)>,
         insert: Option<(LayoutBox, [f32; 4])>,
+        /// The row a tree drop goes inside, outlined in this colour.
+        inside: Option<(LayoutBox, [f32; 4])>,
         /// The dragged row's box, outlined in this colour while it moves.
         dragged: Option<(LayoutBox, [f32; 4])>,
     },
