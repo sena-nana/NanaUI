@@ -418,6 +418,8 @@ fn a_right_button_press_dispatches_a_secondary_press_without_activating() {
         .expect("one secondary press");
     assert_eq!(press.target, button.stable_id());
     assert_eq!((press.x, press.y), (30.0, 30.0));
+    assert!(!press.keyboard);
+    assert_eq!(press.focus, None, "a pointer press names no item to focus");
 
     // The release must not activate: no press was recorded for button 2.
     let mut release = pointer(PointerPhase::Up, 30.0, 30.0);

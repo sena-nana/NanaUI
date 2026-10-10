@@ -3,7 +3,7 @@ use std::sync::Arc;
 
 use crate::{
     AccessibilityRole, AccessibilityState, HighlightRequest, InteractionState, MutationQueue,
-    NodeKind, NodeStyle, OverlayHostState, ScrollOffset, SemanticPaint, StableNodeId,
+    NodeKind, NodeStyle, OverlayHostState, RovingEdge, ScrollOffset, SemanticPaint, StableNodeId,
     StandardVisual, TextCodeFold, TextColorSwatchSpan, TextCompletion, TextContent,
     TextDiagnosticSpan, TextEditorRenderOptions, TextGitMark, TextHorizontalAlignment, TextHover,
     TextInlay, TextInputState, TextMatchSpan, TextSignatureHelp, TextVerticalAlignment, UiWorld,
@@ -1726,6 +1726,14 @@ pub struct Activate;
 /// claim the key itself. An application that opens a menu for a keyboard
 /// request moves focus into it; one opened by the pointer leaves focus where
 /// it is.
+///
+/// `focus` says where that focus goes when the key named it, after the
+/// WAI-ARIA menu button: ArrowDown asks for the first item
+/// ([`RovingEdge::Start`]), ArrowUp for the last ([`RovingEdge::End`]). The
+/// `ContextMenu` key, Shift+F10 and a host's own gesture leave it `None` and
+/// the application picks (usually the first item); a pointer press always
+/// leaves it `None`. [`crate::AppContext::focus_roving_edge`] focuses that
+/// end of the menu's [`crate::RovingFocusGroup`].
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct SecondaryPress {
     pub target: StableNodeId,
@@ -1733,6 +1741,9 @@ pub struct SecondaryPress {
     pub y: f32,
     /// Raised by the keyboard rather than a pointer button.
     pub keyboard: bool,
+    /// The end of the menu the key asked to focus: `Start` for ArrowDown,
+    /// `End` for ArrowUp on a popup trigger; `None` otherwise.
+    pub focus: Option<RovingEdge>,
 }
 
 /// The pointer entered (`hovered`) or left this node's subtree.

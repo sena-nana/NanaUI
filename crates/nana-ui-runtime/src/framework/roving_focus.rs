@@ -105,6 +105,49 @@ impl AppContext {
         items
     }
 
+    /// Focus the first ([`RovingEdge::Start`]) or last ([`RovingEdge::End`])
+    /// item of `group`, by the rules the arrow keys walk it with: focusable,
+    /// enabled and reachable nodes whose nearest group it is. This is where a
+    /// menu opened from the keyboard puts focus, with the end
+    /// [`SecondaryPress::focus`] names.
+    ///
+    /// Pending reactive work is applied first, so items the caller showed or
+    /// enabled by writing a store or signal in the same turn are already
+    /// there; the caller does not flush. Focus moves as with
+    /// [`Self::focus_node`], scrolling the item into its scrollports.
+    ///
+    /// Call it from application code holding the context (a program update
+    /// handling the message a `SecondaryPress` handler dispatched); an event
+    /// handler's `ViewContext` has no context to call it on. Called while a
+    /// reactive flush is running (an [`crate::view::on_mount`] callback), it
+    /// cannot apply the rest of that flush and sees the items as they stand.
+    ///
+    /// Returns the item that holds focus, `None` when `group` is not a
+    /// declared group, has no such item, or the item refused focus.
+    pub fn focus_roving_edge(
+        &mut self,
+        group: StableNodeId,
+        edge: RovingEdge,
+    ) -> Result<Option<StableNodeId>, FrameworkError> {
+        self.flush_reactive()?;
+        if !self.roving_focus_groups.contains_key(&group) {
+            return Ok(None);
+        }
+        let Some(document) = self.world.document_of(group) else {
+            return Ok(None);
+        };
+        let items = self.roving_focus_items(document, group);
+        let target = match edge {
+            RovingEdge::Start => items.first(),
+            RovingEdge::End => items.last(),
+        };
+        let Some(&target) = target else {
+            return Ok(None);
+        };
+        self.focus_node(document, target)?;
+        Ok((self.world.focused(document) == Some(target)).then_some(target))
+    }
+
     /// An unmodified arrow, Home or End for the group the focused item is
     /// in. Returns whether the group took the key: it moved focus, or met
     /// an end and emitted [`RovingFocusEdge`].
@@ -187,21 +230,32 @@ impl AppContext {
         if repeat || modifiers.alt || modifiers.control || modifiers.meta {
             return Ok(false);
         }
-        let requested = match key {
-            "ContextMenu" => true,
-            "F10" => modifiers.shift,
+        // ArrowDown opens onto the first item and ArrowUp onto the last, as a
+        // WAI-ARIA menu button does; the menu keys leave the choice to the
+        // application.
+        let (requested, focus) = match key {
+            "ContextMenu" => (true, None),
+            "F10" => (modifiers.shift, None),
             "ArrowUp" | "ArrowDown" if !modifiers.shift => {
-                self.world.focused(document).is_some_and(|focused| {
+                let popup = self.world.focused(document).is_some_and(|focused| {
                     self.world
                         .accessibility(focused)
                         .is_some_and(|state| state.has_popup && !state.disabled)
-                })
+                });
+                let edge = if key == "ArrowDown" {
+                    RovingEdge::Start
+                } else {
+                    RovingEdge::End
+                };
+                (popup, Some(edge))
             }
-            _ => false,
+            _ => (false, None),
         };
         if !requested {
             return Ok(false);
         }
-        Ok(self.secondary_press_focused(document)?.is_some())
+        Ok(self
+            .secondary_press_focused_toward(document, focus)?
+            .is_some())
     }
 }

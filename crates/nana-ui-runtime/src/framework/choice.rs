@@ -542,6 +542,7 @@ impl AppContext {
             x,
             y,
             keyboard: false,
+            focus: None,
         })
     }
 
@@ -552,11 +553,22 @@ impl AppContext {
     /// The input path calls it for the `ContextMenu` key, Shift+F10 and the
     /// arrows on a popup trigger once the focused control has passed on the
     /// key; a host with its own gesture for the same request calls it too.
-    /// Returns the node that handled it, `None` when nothing is focused or no
-    /// handler is registered.
+    /// The press names no end of the menu to focus (`focus: None`), as for
+    /// the `ContextMenu` key. Returns the node that handled it, `None` when
+    /// nothing is focused or no handler is registered.
     pub fn secondary_press_focused(
         &mut self,
         document: DocumentId,
+    ) -> Result<Option<StableNodeId>, FrameworkError> {
+        self.secondary_press_focused_toward(document, None)
+    }
+
+    /// [`Self::secondary_press_focused`] with the end of the menu the key
+    /// asked to focus.
+    pub(super) fn secondary_press_focused_toward(
+        &mut self,
+        document: DocumentId,
+        focus: Option<crate::RovingEdge>,
     ) -> Result<Option<StableNodeId>, FrameworkError> {
         let Some(target) = self.world.focused(document) else {
             return Ok(None);
@@ -573,6 +585,7 @@ impl AppContext {
             x: bounds.x + bounds.width / 2.0,
             y: bounds.y + bounds.height / 2.0,
             keyboard: true,
+            focus,
         })
     }
 

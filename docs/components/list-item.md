@@ -38,7 +38,7 @@ list_item("设置").detail("外观").selected(current).on_activate(open)
 
 不在列表里的行（Dock 的入口、一排胶囊）用 `role` 说明自己是什么，外观不变：`ListItemRole::Button` 报成按钮（画成选中时仍报选中）；`ListItemRole::ToggleButton` 报成切换按钮，`selected` 报成"按下"而不是"选中"，例如打开着的任务卡片的入口。按下的切换按钮照样画成选中。
 
-点了会弹出一列项的行（Dock 里能升起一列胶囊的入口）再写 `has_popup(true)`：读屏报成菜单按钮。焦点在这一行时，ArrowUp / ArrowDown、`ContextMenu` 键和 Shift+F10 都发 `keyboard: true` 的 `SecondaryPress`，你在处理函数里打开那一列并把焦点移进去。那一列用 `.roving_focus(RovingFocusGroup::vertical())` 让方向键在项之间走，越过两端时收到 `RovingFocusEdge`。见 [控件](../reference/components.md) 的菜单按钮和方向键焦点组。
+点了会弹出一列项的行（Dock 里能升起一列胶囊的入口）再写 `has_popup(true)`：读屏报成菜单按钮。焦点在这一行时，ArrowUp / ArrowDown、`ContextMenu` 键和 Shift+F10 都发 `keyboard: true` 的 `SecondaryPress`（ArrowDown 的 `focus` 是 `Some(RovingEdge::Start)`，ArrowUp 是 `Some(RovingEdge::End)`，菜单键是 `None`），你在处理函数里打开那一列，再用 `AppContext::focus_roving_edge` 把焦点移进去。那一列用 `.roving_focus(RovingFocusGroup::vertical())` 让方向键在项之间走，越过两端时收到 `RovingFocusEdge`。见 [控件](../reference/components.md) 的菜单按钮和方向键焦点组。
 
 ## 要改控件
 

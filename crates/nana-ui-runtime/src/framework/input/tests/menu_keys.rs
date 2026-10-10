@@ -4,7 +4,7 @@
 use std::sync::{Arc, Mutex};
 
 use super::*;
-use crate::view::{column, entity_ref, list_item, row, widget, with_refs};
+use crate::view::{column, entity_ref, list_item, row, signal, when, widget, with_refs};
 use crate::{
     Entity, LayoutViewport, ListItem, ListItemRole, NumberInput, RovingEdge, RovingFocusEdge,
     RovingFocusGroup, SecondaryPress, Stack, View,
@@ -166,6 +166,7 @@ fn the_context_menu_key_and_shift_f10_request_the_focused_nodes_menu() {
     assert_eq!(heard.len(), 2, "{heard:?}");
     for press in heard {
         assert!(press.keyboard);
+        assert_eq!(press.focus, None, "the application picks the item");
         assert_eq!(press.target, button.stable_id());
         assert_eq!(
             (press.x, press.y),
@@ -254,9 +255,16 @@ fn the_arrows_on_a_popup_trigger_request_its_menu() {
     assert!(f.key("ArrowDown"));
     assert!(!f.key_with("ArrowUp", InputModifiers::default(), true));
     assert!(!f.shift("ArrowUp"));
+    assert!(f.key("ContextMenu"));
     let heard = entry_presses.lock().unwrap().clone();
-    assert_eq!(heard.len(), 2, "{heard:?}");
+    assert_eq!(heard.len(), 3, "{heard:?}");
     assert!(heard.iter().all(|press| press.keyboard));
+    // ArrowUp opens onto the last item, ArrowDown onto the first; the menu
+    // key leaves it to the application.
+    assert_eq!(
+        heard.iter().map(|press| press.focus).collect::<Vec<_>>(),
+        [Some(RovingEdge::End), Some(RovingEdge::Start), None]
+    );
 
     // A control that does not open a menu keeps its arrows to itself.
     f.focus(plain.stable_id());
@@ -434,4 +442,105 @@ fn a_field_in_a_group_keeps_its_own_arrows() {
     f.focus(after.stable_id());
     assert!(f.key("ArrowUp"));
     assert_eq!(f.focused(), Some(field.stable_id()));
+}
+
+#[test]
+fn focus_roving_edge_focuses_the_first_or_last_item_the_arrows_reach() {
+    let mut f = Fixture::new();
+    let (group, [a, b, c, d]) = capsules(&mut f, RovingFocusGroup::vertical());
+    assert_eq!(
+        f.cx.focus_roving_edge(group.stable_id(), RovingEdge::End)
+            .unwrap(),
+        Some(d.stable_id())
+    );
+    assert_eq!(f.focused(), Some(d.stable_id()));
+    assert_eq!(
+        f.cx.focus_roving_edge(group.stable_id(), RovingEdge::Start)
+            .unwrap(),
+        Some(a.stable_id())
+    );
+    assert_eq!(f.focused(), Some(a.stable_id()));
+    // Already there: it stays and is reported.
+    assert_eq!(
+        f.cx.focus_roving_edge(group.stable_id(), RovingEdge::Start)
+            .unwrap(),
+        Some(a.stable_id())
+    );
+
+    // An item, or a container that declares no group, is not a group.
+    assert_eq!(
+        f.cx.focus_roving_edge(b.stable_id(), RovingEdge::Start)
+            .unwrap(),
+        None
+    );
+    assert_eq!(
+        f.cx.focus_roving_edge(f.root, RovingEdge::Start).unwrap(),
+        None
+    );
+    assert_eq!(f.focused(), Some(a.stable_id()));
+    assert_ne!(f.focused(), Some(c.stable_id()));
+}
+
+#[test]
+fn focus_roving_edge_sees_items_shown_in_the_same_turn() {
+    let mut f = Fixture::new();
+    let handles = std::cell::Cell::new(None);
+    let (_, group) =
+        f.cx.mount_view(f.root, || {
+            let open = signal(false);
+            let locked = signal(true);
+            let group = entity_ref::<Stack>();
+            let items = [
+                entity_ref::<ListItem>(),
+                entity_ref::<ListItem>(),
+                entity_ref::<ListItem>(),
+                entity_ref::<ListItem>(),
+            ];
+            handles.set(Some((open, locked, items)));
+            let view = column()
+                .roving_focus(RovingFocusGroup::vertical())
+                .entity_ref(group)
+                .children(when(open, move || {
+                    (
+                        list_item("关闭").disabled(true).entity_ref(items[0]),
+                        list_item("截图").entity_ref(items[1]),
+                        list_item("录制").entity_ref(items[2]),
+                        list_item("直播").disabled(locked).entity_ref(items[3]),
+                    )
+                }));
+            with_refs(view, group)
+        })
+        .unwrap();
+    f.layout();
+    let (open, locked, items) = handles.take().unwrap();
+    let group = group.stable_id();
+
+    // Closed: the group has no items.
+    assert_eq!(
+        f.cx.focus_roving_edge(group, RovingEdge::Start).unwrap(),
+        None
+    );
+    assert_eq!(f.focused(), None);
+
+    // Shown by a signal write with no flush in between; the disabled ends
+    // are skipped as the arrows skip them.
+    open.set(true);
+    let [first, second, third, fourth] = items;
+    assert_eq!(
+        f.cx.focus_roving_edge(group, RovingEdge::Start).unwrap(),
+        second.get().map(|item| item.stable_id())
+    );
+    assert!(f.focused().is_some());
+    assert_ne!(f.focused(), first.get().map(|item| item.stable_id()));
+    assert_eq!(
+        f.cx.focus_roving_edge(group, RovingEdge::End).unwrap(),
+        third.get().map(|item| item.stable_id())
+    );
+
+    // Enabled the same way, the last one becomes the end.
+    locked.set(false);
+    let last = f.cx.focus_roving_edge(group, RovingEdge::End).unwrap();
+    assert!(last.is_some());
+    assert_eq!(last, fourth.get().map(|item| item.stable_id()));
+    assert_eq!(f.focused(), last);
 }
