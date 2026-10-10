@@ -46,14 +46,9 @@ struct LayerUniform {
     // flags (0 none / 1 linear / 2 radial / 3 url image-alpha), stop count, angle, radial shape
     mask_meta: vec4<f32>,
     mask_center: vec4<f32>,
-    mask_stops0: vec4<f32>,
-    mask_stops1: vec4<f32>,
-    mask_stops2: vec4<f32>,
-    mask_stops3: vec4<f32>,
-    mask_stops4: vec4<f32>,
-    mask_stops5: vec4<f32>,
-    mask_stops6: vec4<f32>,
-    mask_stops7: vec4<f32>,
+    // the mask stops' alpha, which is all a gradient mask reads
+    mask_alpha: vec4<f32>,
+    mask_alpha2: vec4<f32>,
     mask_pos: vec4<f32>,
     mask_pos2: vec4<f32>,
     // editor: checkerboard flag, zoom, checker cell (logical px), reserved
@@ -246,35 +241,33 @@ fn radial_gradient_t(local: vec2<f32>, center: vec2<f32>, circle: bool) -> f32 {
     return clamp(length(vec2(nx, ny)), 0.0, 1.0);
 }
 
-fn sample_mask_stops(t: f32) -> vec4<f32> {
+// The mask stops' alpha at `t`, as `sample_alpha_stops` in
+// quad_paint_data.wgsl.
+fn sample_mask_alpha(t: f32) -> f32 {
     let count = u32(round(layer.mask_meta.y));
-    if (count <= 1u) {
-        return layer.mask_stops0;
-    }
-    var colors = array<vec4<f32>, 8>(
-        layer.mask_stops0, layer.mask_stops1, layer.mask_stops2, layer.mask_stops3,
-        layer.mask_stops4, layer.mask_stops5, layer.mask_stops6, layer.mask_stops7,
+    var alpha = array<f32, 8>(
+        layer.mask_alpha.x, layer.mask_alpha.y, layer.mask_alpha.z, layer.mask_alpha.w,
+        layer.mask_alpha2.x, layer.mask_alpha2.y, layer.mask_alpha2.z, layer.mask_alpha2.w,
     );
     var positions = array<f32, 8>(
         layer.mask_pos.x, layer.mask_pos.y, layer.mask_pos.z, layer.mask_pos.w,
         layer.mask_pos2.x, layer.mask_pos2.y, layer.mask_pos2.z, layer.mask_pos2.w,
     );
-    if (t <= positions[0]) {
-        return colors[0];
+    if (count <= 1u || t <= positions[0]) {
+        return alpha[0];
     }
-    let last = count - 1u;
+    let last = min(count, 8u) - 1u;
     if (t >= positions[last]) {
-        return colors[min(last, 7u)];
+        return alpha[last];
     }
-    for (var i: u32 = 0u; i < min(count, 8u) - 1u; i = i + 1u) {
+    for (var i: u32 = 0u; i < last; i = i + 1u) {
         let p0 = positions[i];
         let p1 = positions[i + 1u];
         if (t >= p0 && t <= p1) {
-            let mix_t = (t - p0) / max(p1 - p0, 0.0001);
-            return mix(colors[i], colors[min(i + 1u, 7u)], mix_t);
+            return mix(alpha[i], alpha[i + 1u], (t - p0) / max(p1 - p0, 0.0001));
         }
     }
-    return layer.mask_stops0;
+    return alpha[0];
 }
 
 fn mask_alpha(local: vec2<f32>) -> f32 {
@@ -296,7 +289,7 @@ fn mask_alpha(local: vec2<f32>) -> f32 {
         t = gradient_t(local, layer.mask_meta.z);
     }
     // `mask-mode: match-source`: a gradient masks by its alpha.
-    return sample_mask_stops(t).a;
+    return sample_mask_alpha(t);
 }
 
 // One device pixel's worth of `source` at `uv`, whose screen derivatives are
@@ -1515,21 +1508,15 @@ struct LayerUniform {
     clip_inv_ef: [f32; 4],
     mask_meta: [f32; 4],
     mask_center: [f32; 4],
-    mask_stops0: [f32; 4],
-    mask_stops1: [f32; 4],
-    mask_stops2: [f32; 4],
-    mask_stops3: [f32; 4],
-    mask_stops4: [f32; 4],
-    mask_stops5: [f32; 4],
-    mask_stops6: [f32; 4],
-    mask_stops7: [f32; 4],
+    mask_alpha: [f32; 4],
+    mask_alpha2: [f32; 4],
     mask_pos: [f32; 4],
     mask_pos2: [f32; 4],
     editor: [f32; 4],
     corners: [f32; 4],
 }
 
-const _: () = assert!(std::mem::size_of::<LayerUniform>() == 368);
+const _: () = assert!(std::mem::size_of::<LayerUniform>() == 272);
 
 fn make_layer_uniform(
     layer: &HostTextureLayer,
@@ -1578,14 +1565,8 @@ fn make_layer_uniform(
         ],
         mask_meta: mask.meta,
         mask_center: mask.center,
-        mask_stops0: mask.stops[0],
-        mask_stops1: mask.stops[1],
-        mask_stops2: mask.stops[2],
-        mask_stops3: mask.stops[3],
-        mask_stops4: mask.stops[4],
-        mask_stops5: mask.stops[5],
-        mask_stops6: mask.stops[6],
-        mask_stops7: mask.stops[7],
+        mask_alpha: mask.alpha,
+        mask_alpha2: mask.alpha2,
         mask_pos: mask.pos,
         mask_pos2: mask.pos2,
         editor: [
@@ -1601,7 +1582,8 @@ fn make_layer_uniform(
 struct PackedLayerMask {
     meta: [f32; 4],
     center: [f32; 4],
-    stops: [[f32; 4]; 8],
+    alpha: [f32; 4],
+    alpha2: [f32; 4],
     pos: [f32; 4],
     pos2: [f32; 4],
 }
@@ -1614,7 +1596,8 @@ fn pack_layer_mask(
     let mut packed = PackedLayerMask {
         meta: [0.0; 4],
         center: [0.0; 4],
-        stops: [[0.0; 4]; 8],
+        alpha: [0.0; 4],
+        alpha2: [0.0; 4],
         pos: [0.0; 4],
         pos2: [0.0; 4],
     };
@@ -1651,13 +1634,15 @@ fn pack_layer_mask(
     packed.meta = [kind, count as f32, angle, circle];
     packed.center = [center[0], center[1], 0.0, 0.0];
     for (index, stop) in stops.iter().take(8).enumerate() {
-        packed.stops[index] = stop
+        let alpha = stop
             .paint_color
             .map(pack_paint_color)
-            .unwrap_or_else(|| pack_linear(stop.color));
+            .unwrap_or_else(|| pack_linear(stop.color))[3];
         if index < 4 {
+            packed.alpha[index] = alpha;
             packed.pos[index] = stop.position;
         } else {
+            packed.alpha2[index - 4] = alpha;
             packed.pos2[index - 4] = stop.position;
         }
     }
@@ -2123,14 +2108,14 @@ mod tests {
         assert_eq!(uniform.mask_meta[0], 1.0);
         assert_eq!(uniform.mask_meta[1], 2.0);
         assert_eq!(uniform.mask_meta[2], 90.0);
-        assert_eq!(uniform.mask_stops0[3], 1.0);
-        assert_eq!(uniform.mask_stops1[3], 0.0);
+        assert_eq!(uniform.mask_alpha[0], 1.0);
+        assert_eq!(uniform.mask_alpha[1], 0.0);
         assert_eq!(uniform.mask_pos[0], 0.0);
         assert_eq!(uniform.mask_pos[1], 1.0);
     }
 
     #[test]
-    fn layer_uniform_keeps_explicit_mask_stop_space() {
+    fn layer_uniform_takes_mask_alpha_from_the_explicit_stop_color() {
         let texture = test_host_texture(7, 3);
         let registry = HostTextureRegistry::new();
         let binding = registry.register(
@@ -2165,10 +2150,7 @@ mod tests {
             [64, 64],
             false,
         );
-        let expected = crate::scene_paint::pack_paint_color(stop);
-        for (actual, expected) in uniform.mask_stops0.into_iter().zip(expected) {
-            assert!((actual - expected).abs() <= 1.0e-6);
-        }
+        assert_eq!(uniform.mask_alpha[0], 0.8);
     }
 
     #[test]

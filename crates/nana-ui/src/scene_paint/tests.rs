@@ -7131,6 +7131,38 @@ fn mask_linear_fade_scales_rgb_with_alpha() {
 
 #[test]
 fn host_texture_mask_linear_fade_samples_in_document_order() {
+    let pixels = paint_masked_host_texture(nana_ui_core::MaskImage::Gradient(
+        nana_ui_core::CssGradient::Linear(nana_ui_core::LinearGradient {
+            angle_deg: 90.0,
+            stops: vec![
+                nana_ui_core::GradientStop {
+                    paint_color: None,
+                    position: 0.0,
+                    color: [1.0, 1.0, 1.0, 1.0],
+                },
+                nana_ui_core::GradientStop {
+                    paint_color: None,
+                    position: 1.0,
+                    color: [1.0, 1.0, 1.0, 0.0],
+                },
+            ],
+        }),
+    ));
+    let left = pixel(&pixels, 64, 4, 32);
+    let right = pixel(&pixels, 64, 56, 32);
+    assert!(
+        left[0] > 200 && left[1] < 40 && left[2] < 40,
+        "masked HostTexture left must stay red {left:?}"
+    );
+    assert!(
+        right[2] > 180 && right[0] < 80,
+        "HostTexture mask fade must reveal clear blue, not opaque red {right:?}"
+    );
+}
+
+/// A 64 × 64 HostTexture of solid red under `mask`, over a frame cleared to
+/// blue.
+fn paint_masked_host_texture(mask: nana_ui_core::MaskImage) -> Vec<u8> {
     let (device, queue) = test_device();
     let format = wgpu::TextureFormat::Rgba8Unorm;
     let mut painter = SceneWgpuPainter::for_test(format);
@@ -7143,23 +7175,7 @@ fn host_texture_mask_linear_fade_samples_in_document_order() {
         64.0,
         nana_ui_core::LayoutStyle {
             paint: nana_ui_core::PaintStyle {
-                mask: Some(nana_ui_core::MaskImage::Gradient(
-                    nana_ui_core::CssGradient::Linear(nana_ui_core::LinearGradient {
-                        angle_deg: 90.0,
-                        stops: vec![
-                            nana_ui_core::GradientStop {
-                                paint_color: None,
-                                position: 0.0,
-                                color: [1.0, 1.0, 1.0, 1.0],
-                            },
-                            nana_ui_core::GradientStop {
-                                paint_color: None,
-                                position: 1.0,
-                                color: [1.0, 1.0, 1.0, 0.0],
-                            },
-                        ],
-                    }),
-                )),
+                mask: Some(mask),
                 ..Default::default()
             }
             .into(),
@@ -7193,7 +7209,7 @@ fn host_texture_mask_linear_fade_samples_in_document_order() {
     };
     let (texture, target_view) = test_copy_target(&device, format, 64, 64);
     let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
-        label: Some("nana-ui host texture mask fade"),
+        label: Some("nana-ui masked host texture"),
     });
     painter
         .paint_encoder(
@@ -7205,19 +7221,7 @@ fn host_texture_mask_linear_fade_samples_in_document_order() {
             None,
         )
         .unwrap();
-    let pixels = readback_rgba(&device, &queue, encoder, &texture, 64, 64);
-    let left = pixel(&pixels, 64, 4, 32);
-    let right = pixel(&pixels, 64, 56, 32);
-    assert!(
-        left[0] > 200 && left[1] < 40 && left[2] < 40,
-        "masked HostTexture left must stay red {left:?}"
-    );
-    assert!(
-        right[2] > 180 && right[0] < 80,
-        "HostTexture mask fade must reveal clear blue, not opaque red {right:?}"
-    );
-    drop(view);
-    drop(texture);
+    readback_rgba(&device, &queue, encoder, &texture, 64, 64)
 }
 
 fn alpha_split_mask_png_data_url() -> String {
@@ -13323,55 +13327,7 @@ fn a_gradient_mask_takes_the_stops_alpha_not_their_luminance() {
 
 #[test]
 fn a_host_texture_gradient_mask_takes_the_stops_alpha_not_their_luminance() {
-    let (device, queue) = test_device();
-    let format = wgpu::TextureFormat::Rgba8Unorm;
-    let mut painter = SceneWgpuPainter::for_test(format);
-    let mut node = extracted_div(
-        1,
-        &[],
-        0.0,
-        0.0,
-        64.0,
-        64.0,
-        nana_ui_core::LayoutStyle {
-            paint: nana_ui_core::PaintStyle {
-                mask: Some(black_fade_in_mask()),
-                ..Default::default()
-            }
-            .into(),
-            ..Default::default()
-        },
-        None,
-    );
-    node.custom_render = Some(CustomRenderNode::new("nana.host-texture", "layer", 1));
-    let mut scene = UiScene::new();
-    scene.apply_delta([node], []);
-    let view = solid_texture_view(&device, &queue, format, 64, 64, wgpu::Color::RED);
-    let registry = register_host_texture("layer", &view, 64, 64);
-    let viewport = ScenePaintViewport {
-        logical_size: [64.0, 64.0],
-        physical_size: [64, 64],
-        scale_factor: 1.0,
-        scene_origin: [0.0, 0.0],
-        target_origin: [0.0, 0.0],
-        clear_color: [0.0, 0.0, 1.0, 1.0],
-        clear: true,
-    };
-    let (texture, target_view) = test_copy_target(&device, format, 64, 64);
-    let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
-        label: Some("nana-ui host texture black mask"),
-    });
-    painter
-        .paint_encoder(
-            &scene,
-            &mut encoder,
-            &target_view,
-            viewport,
-            Some(&registry),
-            None,
-        )
-        .unwrap();
-    let pixels = readback_rgba(&device, &queue, encoder, &texture, 64, 64);
+    let pixels = paint_masked_host_texture(black_fade_in_mask());
     let left = pixel(&pixels, 64, 1, 32);
     assert!(
         left[2] > 230 && left[0] < 24,
@@ -13384,6 +13340,4 @@ fn a_host_texture_gradient_mask_takes_the_stops_alpha_not_their_luminance() {
             "opaque black end shows the texture at x={x}: {shown:?}"
         );
     }
-    drop(view);
-    drop(texture);
 }

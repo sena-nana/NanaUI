@@ -98,8 +98,9 @@ struct QuadPaintData {
     grad_stops3: [f32; 4],
     grad_pos: [f32; 4],
     grad_pos2: [f32; 4],
-    mask_stops0: [f32; 4],
-    mask_stops1: [f32; 4],
+    // The mask stops' alpha, which is all a gradient mask reads.
+    mask_alpha: [f32; 4],
+    mask_alpha2: [f32; 4],
     mask_pos: [f32; 4],
     poly0: [f32; 4],
     poly1: [f32; 4],
@@ -109,12 +110,6 @@ struct QuadPaintData {
     grad_stops5: [f32; 4],
     grad_stops6: [f32; 4],
     grad_stops7: [f32; 4],
-    mask_stops2: [f32; 4],
-    mask_stops3: [f32; 4],
-    mask_stops4: [f32; 4],
-    mask_stops5: [f32; 4],
-    mask_stops6: [f32; 4],
-    mask_stops7: [f32; 4],
     mask_pos2: [f32; 4],
     grad_center_x: f32,
     grad_center_y: f32,
@@ -135,7 +130,7 @@ struct QuadPaintData {
     border_color_left: [f32; 4],
 }
 
-const _: () = assert!(std::mem::size_of::<QuadPaintData>() == 560);
+const _: () = assert!(std::mem::size_of::<QuadPaintData>() == 464);
 const _: () = assert!(std::mem::align_of::<QuadPaintData>() == 4);
 
 #[repr(C)]
@@ -1448,15 +1443,10 @@ fn pack_gradient_stops(paint: &mut QuadPaintData, stops: &[nana_ui_core::Gradien
 
 fn pack_mask_stops(paint: &mut QuadPaintData, stops: &[nana_ui_core::GradientStop]) {
     let (count, colors, positions) = pack_stop_arrays(stops, false);
+    let alpha = colors.map(|color| color[3]);
     paint.mask_stop_count = count;
-    paint.mask_stops0 = colors[0];
-    paint.mask_stops1 = colors[1];
-    paint.mask_stops2 = colors[2];
-    paint.mask_stops3 = colors[3];
-    paint.mask_stops4 = colors[4];
-    paint.mask_stops5 = colors[5];
-    paint.mask_stops6 = colors[6];
-    paint.mask_stops7 = colors[7];
+    paint.mask_alpha = [alpha[0], alpha[1], alpha[2], alpha[3]];
+    paint.mask_alpha2 = [alpha[4], alpha[5], alpha[6], alpha[7]];
     paint.mask_pos = [positions[0], positions[1], positions[2], positions[3]];
     paint.mask_pos2 = [positions[4], positions[5], positions[6], positions[7]];
 }

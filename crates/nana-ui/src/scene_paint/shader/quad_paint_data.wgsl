@@ -33,8 +33,9 @@ struct QuadPaintData {
     grad_stops3: vec4<f32>,
     grad_pos: vec4<f32>,
     grad_pos2: vec4<f32>,
-    mask_stops0: vec4<f32>,
-    mask_stops1: vec4<f32>,
+    // The mask stops' alpha, which is all a gradient mask reads.
+    mask_alpha: vec4<f32>,
+    mask_alpha2: vec4<f32>,
     mask_pos: vec4<f32>,
     poly0: vec4<f32>,
     poly1: vec4<f32>,
@@ -44,12 +45,6 @@ struct QuadPaintData {
     grad_stops5: vec4<f32>,
     grad_stops6: vec4<f32>,
     grad_stops7: vec4<f32>,
-    mask_stops2: vec4<f32>,
-    mask_stops3: vec4<f32>,
-    mask_stops4: vec4<f32>,
-    mask_stops5: vec4<f32>,
-    mask_stops6: vec4<f32>,
-    mask_stops7: vec4<f32>,
     mask_pos2: vec4<f32>,
     grad_center_x: f32,
     grad_center_y: f32,
@@ -61,7 +56,7 @@ struct QuadPaintData {
     _pad_tail1: u32,
     url_dest: vec4<f32>,
     // Four scalars, not vec3: vec3 in a storage struct is 16-byte aligned and
-    // would inflate the stride past the CPU QuadPaintData (560).
+    // would inflate the stride past the CPU QuadPaintData (464).
     outline_width: f32,
     // Packed T/R/B/L 2-bit styles: 0 solid, 1 dashed, 2 dotted.
     border_styles: u32,
@@ -148,6 +143,36 @@ fn sample_stops(
     return colors0;
 }
 
+// `sample_stops` over the stops' alpha alone.
+fn sample_alpha_stops(
+    t: f32,
+    count: u32,
+    alpha0: vec4<f32>,
+    alpha1: vec4<f32>,
+    pos0: vec4<f32>,
+    pos1: vec4<f32>,
+) -> f32 {
+    var alpha = array<f32, 8>(alpha0.x, alpha0.y, alpha0.z, alpha0.w, alpha1.x, alpha1.y, alpha1.z, alpha1.w);
+    var positions = array<f32, 8>(pos0.x, pos0.y, pos0.z, pos0.w, pos1.x, pos1.y, pos1.z, pos1.w);
+    if (count <= 1u || t <= positions[0]) {
+        return alpha[0];
+    }
+    let last = min(count, 8u) - 1u;
+    if (t >= positions[last]) {
+        return alpha[last];
+    }
+    for (var i: u32 = 0u; i < last; i = i + 1u) {
+        let p0 = positions[i];
+        let p1 = positions[i + 1u];
+        if (t >= p0 && t <= p1) {
+            return mix(alpha[i], alpha[i + 1u], (t - p0) / max(p1 - p0, 0.0001));
+        }
+    }
+    return alpha[0];
+}
+
+// The node's gradient `mask-image` at `local`: the stops' alpha, as CSS
+// `mask-mode: match-source` reads a gradient.
 fn mask_alpha(local: vec2<f32>, paint: QuadPaintData) -> f32 {
     var t: f32;
     if ((paint.flags & PAINT_MASK_RADIAL) != 0u) {
@@ -159,20 +184,12 @@ fn mask_alpha(local: vec2<f32>, paint: QuadPaintData) -> f32 {
     } else {
         t = gradient_t(local, paint.mask_angle);
     }
-    let color = sample_stops(
+    return sample_alpha_stops(
         t,
         paint.mask_stop_count,
-        paint.mask_stops0,
-        paint.mask_stops1,
-        paint.mask_stops2,
-        paint.mask_stops3,
-        paint.mask_stops4,
-        paint.mask_stops5,
-        paint.mask_stops6,
-        paint.mask_stops7,
+        paint.mask_alpha,
+        paint.mask_alpha2,
         paint.mask_pos,
         paint.mask_pos2,
     );
-    // `mask-mode: match-source`: a gradient masks by its alpha.
-    return color.a;
 }
