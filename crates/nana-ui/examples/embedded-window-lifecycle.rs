@@ -73,6 +73,11 @@ impl ApplicationHandler for Host {
                 event_loop.exit();
             }
         }
+        // winit on Windows waits on the control flow before it sees an exit
+        // asked for during this turn, and with no window left nothing wakes it.
+        if event_loop.exiting() {
+            event_loop.set_control_flow(winit::event_loop::ControlFlow::Poll);
+        }
     }
 }
 fn main() {

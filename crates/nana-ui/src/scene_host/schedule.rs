@@ -248,6 +248,11 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
         if !self.embedded {
             event_loop
                 .set_control_flow(next_wakeup.map_or(ControlFlow::Wait, ControlFlow::WaitUntil));
+            // winit on Windows waits on the control flow before it sees an exit
+            // asked for during this turn, and with no window left nothing wakes it.
+            if event_loop.exiting() {
+                event_loop.set_control_flow(ControlFlow::Poll);
+            }
         }
     }
     pub(super) fn can_present(&self, id: WindowId) -> bool {

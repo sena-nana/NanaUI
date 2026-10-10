@@ -133,7 +133,9 @@ impl ApplicationState for App {
         context.dispatch(Message::Pump);
         let service = context.windows().clone();
         let context = context.clone();
-        std::thread::spawn(move || {
+        // Joined on drop: the context holds a GPU context, whose teardown must
+        // not race the process exit.
+        let worker = std::thread::spawn(move || {
             let run = || -> Result<(), String> {
                 let service = context.windows();
                 let primary = context.window();
@@ -367,7 +369,7 @@ impl ApplicationState for App {
         });
         Ok(Self {
             service,
-            worker: None,
+            worker: Some(worker),
             exiting: false,
             cleaned: Default::default(),
             looping: Some(looping_tx),
