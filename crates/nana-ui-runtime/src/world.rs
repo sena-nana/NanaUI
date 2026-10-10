@@ -3646,8 +3646,9 @@ impl UiWorld {
     /// What a viewport resize of `document` from `previous` to `viewport`
     /// seeds. Each root: the constraint it hands its children moved on the
     /// axes the viewport did, so only the children that consume those axes
-    /// lay out again. Each box that resolves against the viewport: its own
-    /// size may move on either axis, as a sizing write would. With no
+    /// lay out again. Each box that resolves against a side of the viewport
+    /// that moved: its own size may move on either axis, as a sizing write
+    /// would. A `vw` box is not seeded by a height-only resize. With no
     /// previous viewport, the whole document.
     pub(crate) fn viewport_resize_seeds(
         &self,
@@ -3692,11 +3693,20 @@ impl UiWorld {
                 None,
             )
         };
+        let moved = nana_ui_core::ViewportAxes {
+            width: inline,
+            height: block,
+        };
         roots
             .into_iter()
             .map(|id| crate::LayoutFrontierSeed::new(id, root))
             .chain(
                 self.viewport_basis_ids_for(document)
+                    .filter(|id| {
+                        self.nodes.get(*id).is_some_and(|record| {
+                            record.resolved_layout.viewport_axes().intersects(moved)
+                        })
+                    })
                     .map(|id| crate::LayoutFrontierSeed::new(id, basis)),
             )
             .collect()
@@ -4159,6 +4169,40 @@ impl UiWorld {
         order
     }
 
+    /// The parent constraint that runs along `parent`'s line, the axis its
+    /// children share out: the inline one for a row, the block one for a
+    /// column. A container lays its children on a line along its direction
+    /// whatever its `display`, unless it is a grid or an inline formatting
+    /// context. Horizontal writing only: elsewhere the physical axes the
+    /// constraints name do not follow the direction this simply.
+    fn line_constraint(
+        &self,
+        parent: StableNodeId,
+        record: &NodeRecord,
+    ) -> Option<LayoutDependencyFootprint> {
+        let style = record.resolved_layout.as_ref();
+        if style
+            .display
+            .is_some_and(|display| display.is_grid_container() || display.is_inline_level())
+            || self.layout_writing(parent).is_vertical()
+        {
+            return None;
+        }
+        Some(
+            match style
+                .direction
+                .unwrap_or(nana_ui_core::FlexDirection::Column)
+            {
+                nana_ui_core::FlexDirection::Row => {
+                    LayoutDependencyFootprint::CONSUMES_PARENT_INLINE_CONSTRAINT
+                }
+                nana_ui_core::FlexDirection::Column => {
+                    LayoutDependencyFootprint::CONSUMES_PARENT_BLOCK_CONSTRAINT
+                }
+            },
+        )
+    }
+
     /// Downward footprint of one child under a parent-constraint seed.
     ///
     /// `edge` is what this child consumes, so the frontier measures it.
@@ -4509,6 +4553,29 @@ impl UiWorld {
                 let Some(parent_record) = self.nodes.get(parent) else {
                     continue;
                 };
+                // A node whose size moved along its parent's line moves what
+                // the line leaves its flexible siblings: a splitter's first
+                // pane widens and the fill pane beside it narrows. Each such
+                // sibling descends that axis as a constraint seed would, so
+                // only its children that read the axis measure.
+                if !force_all
+                    && let Some(line) = self.line_constraint(parent, parent_record)
+                    && axes.intersects(line)
+                {
+                    for &sibling in parent_record.hierarchy.children.iter() {
+                        if sibling != node
+                            && self.document_of(sibling) == Some(document)
+                            && !self.positioned_out_of_flow(sibling)
+                            && self.nodes.get(sibling).is_some_and(|record| {
+                                flexes_along(record.resolved_layout.as_ref(), line)
+                            })
+                        {
+                            graph.note_constraint_seed();
+                            graph.add_context_dependency_forward(node, sibling, line);
+                            pending.push_back((sibling, line, true, false, false));
+                        }
+                    }
+                }
                 let explicit_context =
                     parent_record
                         .resolved_layout
@@ -5327,6 +5394,20 @@ fn layout_result_projects_new_geometry(
 /// `aspect_ratio` says the node ties its two axes, so a size on one moves
 /// the other. `parent_line` is the direction of the line the node sits in,
 /// along which a flex factor sizes it; `None` when the node has no parent.
+/// Whether an item's size along its parent's line, `line` the constraint
+/// that runs along it, is what the line leaves it: a grow factor, or a fill.
+/// A sibling's size moving along the line moves such an item's too. An item
+/// sized by its content or a length of its own stays (a shrink on overflow
+/// is left to its memo, keyed by the extent it is offered).
+fn flexes_along(style: &nana_ui_core::LayoutStyle, line: LayoutDependencyFootprint) -> bool {
+    let size = if line == LayoutDependencyFootprint::CONSUMES_PARENT_INLINE_CONSTRAINT {
+        style.width
+    } else {
+        style.height
+    };
+    style.flex_grow.is_some_and(|grow| grow > 0.0) || size == Some(LengthSpec::Fill)
+}
+
 fn layout_style_invalidation(
     changed: nana_ui_core::LayoutStyleChange,
     aspect_ratio: bool,

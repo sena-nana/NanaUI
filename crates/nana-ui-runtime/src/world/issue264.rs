@@ -19,7 +19,17 @@
 //! - Gate D: a drag costs the same in a 1k and a 100k workspace, and asks
 //!   the same children whether they consume the constraint.
 //! - A viewport resize reaches the roots and the boxes that consume the
-//!   axis it moved on, and costs the same at 1k and 100k nodes.
+//!   axis it moved on, and costs the same at 1k and 100k nodes. A `vw` box
+//!   is not reached by a height-only resize, nor a `vh` one by a width-only
+//!   one.
+//! - The pane beside the dragged one is a constraint seed too: it narrows
+//!   as the first widens.
+//! - A real `Dock` dragged through its split ratio measures the boxes that
+//!   read a frame's width and not the ones that read only its height.
+//!
+//! "Measured" is what the layout computed, past its memos
+//! (`layout_engine::measure_trace`), not what the frontier admitted: a box
+//! can be measured again because its memo key moved.
 //!
 //! Gate E -- an available extent that stays inside a cached envelope -- needs
 //! the Dynamic Layout solver of #207 and #213, which the runtime does not
@@ -28,15 +38,18 @@
 #![cfg(test)]
 
 use nana_ui_core::{
-    AlignSpec, FlexDirection, LayoutStyle, LengthSpec, SplitAxis, SplitPaneModel,
+    AlignSpec, FlexDirection, InvalidationKind, LayoutStyle, LengthSpec, SplitAxis, SplitPaneModel,
     SplitPaneMutation, WorkCounters,
 };
 
+use std::collections::HashSet;
+
 use super::reflow_oracle::{
-    Builder, admitted, assert_matches_cold, bundled_face_shaper, fixed, measured, product_frame,
+    Builder, admitted, assert_matches_cold, bundled_face_shaper, fixed, product_frame,
     resize_frame, styled,
 };
 use super::{DocumentId, NodeKind, StableNodeId, UiWorld};
+use crate::layout_engine::measure_trace;
 use crate::layout_engine::verify::skip_layout_verify;
 use crate::{AppContext, Entity, LayoutViewport, MutationQueue, NanaTextEngineShaper, SplitPane};
 
@@ -106,6 +119,8 @@ struct Workspace {
     split: Entity<SplitPane>,
     parts: Parts,
     size: f32,
+    /// The nodes the last frame measured.
+    measured: HashSet<StableNodeId>,
 }
 
 impl Workspace {
@@ -228,6 +243,7 @@ impl Workspace {
                 paragraph,
             },
             size,
+            measured: HashSet::new(),
         };
         workspace.frame();
         workspace
@@ -238,16 +254,27 @@ impl Workspace {
     }
 
     fn frame(&mut self) -> WorkCounters {
-        product_frame(
+        measure_trace::begin();
+        let counters = product_frame(
             &mut self.context,
             self.document,
             viewport(),
             &mut self.shaper,
-        )
+        );
+        self.measured = measure_trace::take();
+        counters
     }
 
     fn resize(&mut self, viewport: LayoutViewport) -> WorkCounters {
-        resize_frame(&mut self.context, self.document, viewport, &mut self.shaper)
+        measure_trace::begin();
+        let counters = resize_frame(&mut self.context, self.document, viewport, &mut self.shaper);
+        self.measured = measure_trace::take();
+        counters
+    }
+
+    /// Whether the last frame measured `id`.
+    fn measured(&self, id: StableNodeId) -> bool {
+        self.measured.contains(&id)
     }
 
     /// Drag the splitter to `size`, one frame.
@@ -362,15 +389,16 @@ fn issue264_a_splitter_drag_lays_out_only_what_reads_the_pane_width() {
         // Gates A and C: no fixed box measures, nor anything under the
         // fixed box.
         for id in workspace.parts.fixed.iter().chain(&fixed_subtree) {
-            assert!(
-                !measured(&workspace.context, *id),
-                "{size}: fixed {id:?} measured"
-            );
+            assert!(!workspace.measured(*id), "{size}: fixed {id:?} measured");
         }
+        // The second pane narrows as the first widens: it is a constraint
+        // seed beside the first, so its children are asked whether they read
+        // that, as the first pane's are.
+        assert_eq!(cost.constraint_seeds, 2, "{size}: {cost:?}");
         // Gate B: a width-only change; the box that reads only the pane's
         // height keeps its measurement.
         assert!(
-            !measured(&workspace.context, workspace.parts.tall),
+            !workspace.measured(workspace.parts.tall),
             "{size}: the height-only box measured"
         );
         // Each drag asks the same children the same question.
@@ -414,8 +442,13 @@ fn issue264_splitter_drags_match_a_full_layout_every_pass() {
     );
 }
 
-/// Gate B the other way: a height-only change never measures the boxes
-/// that read only the width, and measures the one that reads the height.
+/// Gate B the other way: a height-only change leaves the boxes that read
+/// only the width out of the frontier, and never measures their text.
+///
+/// The fill-width rows are still measured again, by their memo rather than
+/// the frontier: a box whose height follows its content keys its memo by
+/// the block extent it is offered, which a height-only resize moves. Their
+/// text leaves key no block extent and keep theirs.
 #[test]
 fn issue264_a_height_only_resize_leaves_width_readers_alone() {
     let mut workspace = Workspace::fluid(100);
@@ -423,11 +456,13 @@ fn issue264_a_height_only_resize_leaves_width_readers_alone() {
     assert_eq!(counters.layout_full_document_fallbacks, 0);
     for row in &workspace.parts.rows {
         assert!(
-            !measured(&workspace.context, *row),
-            "fill-width row {row:?} measured"
+            !admitted(&workspace.context, *row),
+            "fill-width row {row:?} in the frontier"
         );
+        let label = workspace.world().node(*row).unwrap().children[0];
+        assert!(!workspace.measured(label), "row label {label:?} measured");
     }
-    assert!(!measured(&workspace.context, workspace.parts.paragraph));
+    assert!(!workspace.measured(workspace.parts.paragraph));
     assert_eq!(counters.resize_text_reshapes, 0);
     let mut cold = Workspace::fluid(100);
     cold.resize(LayoutViewport::new(1200.0, 760.0));
@@ -535,18 +570,194 @@ fn issue264_a_flex_factor_resize_reaches_only_the_line_axis() {
         queue.set_style(left, styled(frame(ratio)));
         queue.set_style(right, styled(frame(1.0 - ratio)));
         context.commit_mutations(queue).unwrap();
+        measure_trace::begin();
         let counters = product_frame(&mut context, document, viewport(), &mut shaper);
+        let measured = measure_trace::take();
         assert_eq!(counters.layout_full_document_fallbacks, 0);
         assert_eq!(counters.resize_text_reshapes, 0);
         for id in &tall {
             assert!(
-                !measured(&context, *id),
+                !measured.contains(id),
                 "{ratio}: height reader {id:?} measured"
             );
         }
         assert!(
-            wide.iter().any(|id| measured(&context, *id)),
+            wide.iter().any(|id| measured.contains(id)),
             "{ratio}: no width reader measured"
         );
     }
+}
+
+/// A viewport length reads one side of the viewport: a resize along the
+/// other side neither seeds its box nor measures it, and a resize along its
+/// own side does both.
+#[test]
+fn issue264_a_viewport_length_reaches_layout_only_from_its_own_side() {
+    use nana_ui_core::ViewportAxis;
+    let document = DocumentId::new(1).unwrap();
+    let build = || {
+        let (mut b, root) = Builder::new(document, 1);
+        let page = b.element(root, fill_column());
+        let viewport_length = |axis, value| Some(LengthSpec::Viewport { axis, value });
+        let wide = b.element(
+            page,
+            LayoutStyle {
+                width: viewport_length(ViewportAxis::Width, 50.0),
+                height: Some(LengthSpec::Px(20.0)),
+                direction: Some(FlexDirection::Column),
+                ..LayoutStyle::default()
+            },
+        );
+        b.label(wide, PARAGRAPH);
+        let tall = b.element(
+            page,
+            LayoutStyle {
+                width: Some(LengthSpec::Px(20.0)),
+                height: viewport_length(ViewportAxis::Height, 30.0),
+                ..LayoutStyle::default()
+            },
+        );
+        let mut context = AppContext::new();
+        context.commit_mutations(b.queue).unwrap();
+        (context, wide, tall)
+    };
+    let (mut context, wide, tall) = build();
+    let mut shaper = bundled_face_shaper();
+    product_frame(&mut context, document, viewport(), &mut shaper);
+    let mut resize = |context: &mut AppContext, width: f32, height: f32| {
+        measure_trace::begin();
+        let counters = resize_frame(
+            context,
+            document,
+            LayoutViewport::new(width, height),
+            &mut shaper,
+        );
+        (counters, measure_trace::take())
+    };
+    let box_of = |context: &AppContext, id| context.world().layout_box(id).unwrap();
+
+    // Height only: the vh box, not the vw one.
+    let (counters, measured) = resize(&mut context, 1200.0, 700.0);
+    assert_eq!(counters.layout_full_document_fallbacks, 0);
+    assert!(admitted(&context, tall) && !admitted(&context, wide));
+    assert!(measured.contains(&tall) && !measured.contains(&wide));
+    assert_eq!(box_of(&context, tall).height, 210.0);
+
+    // Width only: the vw box, not the vh one.
+    let frontier_measures = |context: &AppContext, id| {
+        context.layout_cause(id).is_some_and(|cause| {
+            !cause.pending
+                && cause
+                    .invalidation
+                    .kind
+                    .intersects(InvalidationKind::MEASURE)
+        })
+    };
+    let (counters, measured) = resize(&mut context, 1000.0, 700.0);
+    assert_eq!(counters.layout_full_document_fallbacks, 0);
+    // The vh box after it may move, so it is placed; it is not measured.
+    assert!(admitted(&context, wide) && !frontier_measures(&context, tall));
+    assert!(measured.contains(&wide) && !measured.contains(&tall));
+    assert_eq!(box_of(&context, wide).width, 500.0);
+
+    let (mut cold, _, _) = build();
+    product_frame(
+        &mut cold,
+        document,
+        LayoutViewport::new(1000.0, 700.0),
+        &mut bundled_face_shaper(),
+    );
+    assert_matches_cold(&mut context, &mut cold, document);
+}
+
+/// A real [`Dock`] dragged through its split ratio, which it projects as
+/// the flex factors of its frames: the boxes under them that read a frame's
+/// width measure again, the ones that read only its height do not.
+#[test]
+fn issue264_a_dock_split_drag_measures_only_the_width_readers() {
+    use crate::{Dock, DockAxis, DockNode};
+    let document = DocumentId::new(1).unwrap();
+    let build = |ratio: f32| {
+        let (mut b, root) = Builder::new(document, 1);
+        let page = b.element(
+            root,
+            LayoutStyle {
+                direction: Some(FlexDirection::Row),
+                align_items: AlignSpec::Stretch,
+                ..fixed(900.0, 600.0)
+            },
+        );
+        let mut wide = Vec::new();
+        let mut tall = Vec::new();
+        let mut contents = Vec::new();
+        for _ in 0..2 {
+            let content = b.detached(LayoutStyle {
+                width: Some(LengthSpec::Fill),
+                height: Some(LengthSpec::Fill),
+                direction: Some(FlexDirection::Column),
+                ..LayoutStyle::default()
+            });
+            let reader = b.element(content, fill_column());
+            b.label(reader, PARAGRAPH);
+            wide.push(reader);
+            tall.push(b.element(
+                content,
+                LayoutStyle {
+                    width: Some(LengthSpec::Px(40.0)),
+                    height: Some(LengthSpec::Percent(25.0)),
+                    ..LayoutStyle::default()
+                },
+            ));
+            contents.push(content);
+        }
+        let mut context = AppContext::new();
+        context.commit_mutations(b.queue).unwrap();
+        let dock = context
+            .create_component(
+                document,
+                Dock::new(DockNode::split(
+                    DockAxis::Horizontal,
+                    ratio,
+                    DockNode::item("a", Some(contents[0])),
+                    DockNode::item("b", Some(contents[1])),
+                )),
+            )
+            .unwrap();
+        context.assemble_dock(dock).unwrap();
+        let mut queue = MutationQueue::new();
+        queue.insert(page, dock.stable_id(), None);
+        context.commit_mutations(queue).unwrap();
+        (context, dock, wide, tall)
+    };
+    let (mut context, dock, wide, tall) = build(0.5);
+    let mut shaper = bundled_face_shaper();
+    product_frame(&mut context, document, viewport(), &mut shaper);
+    let mut ratio = 0.5;
+    for step in 1..=20u32 {
+        ratio = 0.5 + step as f32 / 100.0;
+        context
+            .update_component(dock, |dock, _| {
+                assert!(dock.root.set_split_ratio_at(&[], ratio));
+            })
+            .unwrap();
+        measure_trace::begin();
+        let counters = product_frame(&mut context, document, viewport(), &mut shaper);
+        let measured = measure_trace::take();
+        assert_eq!(counters.layout_full_document_fallbacks, 0, "{ratio}");
+        assert_eq!(counters.layout_local_subtree_fallbacks, 0, "{ratio}");
+        assert_eq!(counters.resize_text_reshapes, 0, "{ratio}");
+        for id in &tall {
+            assert!(
+                !measured.contains(id),
+                "{ratio}: height reader {id:?} measured"
+            );
+        }
+        assert!(
+            wide.iter().all(|id| measured.contains(id)),
+            "{ratio}: a width reader kept a stale measurement"
+        );
+    }
+    let (mut cold, _, _, _) = build(ratio);
+    product_frame(&mut cold, document, viewport(), &mut bundled_face_shaper());
+    assert_matches_cold(&mut context, &mut cold, document);
 }

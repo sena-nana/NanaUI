@@ -59,7 +59,9 @@ pub(super) fn retained_matches_full_layout(
         return;
     };
     // The full layout runs on its own pass cache: it counts nothing on the
-    // retained document's execution stats.
+    // retained document's execution stats, nor on a test's measure trace.
+    #[cfg(test)]
+    let _paused = super::measure_trace::pause();
     let Ok(full) = engine.layout_document(world, document, viewport) else {
         return;
     };

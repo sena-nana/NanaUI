@@ -69,6 +69,25 @@ jobs:
               --output "target/performance/issue8/weekly/nana-${scenario}.json"
           done
           python3 perf/contract.py --evaluate-invariants target/performance/issue8/weekly
+      # Issue #259: a contained edit's frame time from 1k to 100k nodes. The
+      # merge gate is the structural counters in ci.yml; a hosted runner is
+      # not a fixed machine, so this records p50/p95/p99 and the 1.75x p95
+      # check without failing the job.
+      - name: Record local-edit frame time at 1k, 10k and 100k
+        continue-on-error: true
+        run: |
+          status=0
+          cargo test --release --locked -p nana-ui-runtime --lib \
+            issue259_local_frame_time_scales_flat_to_100k -- --ignored --nocapture \
+            > target/performance/issue259-frame-time.txt 2>&1 || status=$?
+          cat target/performance/issue259-frame-time.txt
+          {
+            echo '### Issue #259 local-edit frame time'
+            echo '```'
+            grep -E 'p50|p95|p99|test result' target/performance/issue259-frame-time.txt || true
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+          exit "$status"
       - uses: actions/upload-artifact@v7
         if: always()
         with:

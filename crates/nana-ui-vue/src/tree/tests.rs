@@ -7623,3 +7623,59 @@ fn scroll_size_stops_at_a_descendant_that_clips() {
         (500.0, 400.0)
     );
 }
+
+/// Issue #263: a `<video>` or `<canvas>` with no size of its own lays out at
+/// its frame's or bitmap's pixels once the producer uploads one, as in a
+/// browser. A new frame of the same size reports nothing; a `data-nana-gpu`
+/// texture, prepared at the size layout gave it, is never reported.
+#[test]
+fn producer_texture_sizes_reach_layout_as_natural_sizes() {
+    let mut doc = NanaTreeDocument::new(800, 600, 1.0);
+    let video = doc.create_element("video");
+    doc.insert(video, doc.mount_root(), None);
+    doc.set_attribute(video, "data-nana-video", "3");
+    let canvas = doc.create_element("canvas");
+    doc.insert(canvas, doc.mount_root(), None);
+    doc.set_attribute(canvas, "data-nana-canvas", "4");
+    let program = doc.create_element("div");
+    doc.insert(program, doc.mount_root(), None);
+    doc.set_gpu_slot(program, "program");
+    doc.flush_host_frame();
+    runtime_layout(&mut doc, 800.0, 600.0);
+
+    let render = |slot: &str| nana_ui_runtime::ReplacedResource::Render {
+        renderer: Arc::from(nana_ui_runtime::HOST_TEXTURE_RENDERER),
+        resource: Arc::from(slot),
+    };
+    assert_eq!(doc.world().replaced_metadata(&render("video:3")), None);
+    doc.override_host_texture_size("video:3", (64, 36));
+    doc.override_host_texture_size("canvas:4", (120, 90));
+    doc.override_host_texture_size("program", (500, 500));
+    doc.flush_host_frame();
+    assert_eq!(
+        doc.world().replaced_metadata(&render("video:3")),
+        Some(nana_ui_runtime::ReplacedMetadata::new(64.0, 36.0))
+    );
+    assert_eq!(
+        doc.world().replaced_metadata(&render("canvas:4")),
+        Some(nana_ui_runtime::ReplacedMetadata::new(120.0, 90.0))
+    );
+    assert_eq!(doc.world().replaced_metadata(&render("program")), None);
+    runtime_layout(&mut doc, 800.0, 600.0);
+    let size = |node: NodeHandle| {
+        let id = StableNodeId::try_from(node).unwrap();
+        doc.world()
+            .layout_box(id)
+            .map(|layout| (layout.width, layout.height))
+    };
+    assert_eq!(size(video), Some((64.0, 36.0)));
+    assert_eq!(size(canvas), Some((120.0, 90.0)));
+
+    let generation = doc.world().generation();
+    doc.flush_host_frame();
+    assert_eq!(
+        doc.world().generation(),
+        generation,
+        "a frame of the same size must not report again"
+    );
+}

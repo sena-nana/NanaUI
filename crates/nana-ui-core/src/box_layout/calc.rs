@@ -11,7 +11,7 @@ use std::sync::{Mutex, OnceLock};
 
 use serde::{Deserialize, Serialize};
 
-use super::{FontSizeContext, LengthAtom, LengthSpec, ViewportAxis};
+use super::{FontSizeContext, LengthAtom, LengthSpec, ViewportAxes, ViewportAxis};
 
 /// Binary operator inside [`CalcExpr`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -109,17 +109,23 @@ enum CalcType {
 
 impl CalcExpr {
     pub fn depends_on_viewport(&self) -> bool {
+        self.viewport_axes().any()
+    }
+
+    /// The sides of the viewport the expression reads.
+    pub fn viewport_axes(&self) -> ViewportAxes {
         match self {
-            Self::Viewport { .. } => true,
-            Self::Number(_) | Self::Px(_) | Self::Percent(_) | Self::Em(_) | Self::Rem(_) => false,
-            Self::Binary { left, right, .. } => {
-                left.depends_on_viewport() || right.depends_on_viewport()
+            Self::Viewport { axis, .. } => axis.reads(),
+            Self::Number(_) | Self::Px(_) | Self::Percent(_) | Self::Em(_) | Self::Rem(_) => {
+                ViewportAxes::NONE
             }
-            Self::Neg(inner) => inner.depends_on_viewport(),
-            Self::Min(a, b) | Self::Max(a, b) => a.depends_on_viewport() || b.depends_on_viewport(),
-            Self::Clamp { min, val, max } => {
-                min.depends_on_viewport() || val.depends_on_viewport() || max.depends_on_viewport()
-            }
+            Self::Binary { left, right, .. } => left.viewport_axes().union(right.viewport_axes()),
+            Self::Neg(inner) => inner.viewport_axes(),
+            Self::Min(a, b) | Self::Max(a, b) => a.viewport_axes().union(b.viewport_axes()),
+            Self::Clamp { min, val, max } => min
+                .viewport_axes()
+                .union(val.viewport_axes())
+                .union(max.viewport_axes()),
         }
     }
 

@@ -131,6 +131,10 @@ measure 计划沿用的前提是节点自己的输入都没变：约束、样式
 `layout_scratch_allocations` 就是 `layout_scratch_entries`：这一帧各趟依赖图分配的邻接条目，
 趟结束即释放；`layout_scratch_bytes` 是这些条目占的字节。
 `plan_stats` 只做 benchmark 的阶段计时，不计数。
+四个基准（`nana-runtime-benchmark`、`nana-framework-benchmark`、`nana-dirty-frame-benchmark`、
+`nana-card-update-benchmark`）输出的计数和 `perf/contract_support/schema.py` 的 `WORK_COUNTER_KEYS`
+同名，带上了上面这些计划、scratch、suffix、子项、intrinsic 测量、约束传播和 resize 文字计数，
+报告里读到的就是门禁读的那份 `WorkCounters`。
 
 增量结果靠两层冷对照校验。第一层是 `layout_engine::verify`：测试里，以及打开
 `layout-verify` feature 时，每一趟保留布局之后都从头做一次全量布局，逐个比对盒子。
@@ -163,7 +167,9 @@ measure 计划沿用的前提是节点自己的输入都没变：约束、样式
   走过的子项，在 1k、10k、100k 下完全相同。
 - 顺序编辑放下的盒子不少于真正移动的盒子，也不超过移动的盒子加上通往编辑处的路径；
   整棵测量的子树数不随文档增长。在增长不推动后面任何东西的那一端（正向块轴的尾、
-  vertical-rl 反向块轴的头），一帧的全部工作都是常数。
+  vertical-rl 反向块轴的头），一帧的全部工作都是常数。重放后缀的只有被编辑的容器，
+  个数不随文档增长；重新记下的计划（`layout_plan_rebuilds`）不超过真正移动的盒子数：
+  盒子按页面坐标放置，移动的组要重新放它的子项，编辑之前的部分一份也不重建。
 - 页头一列 1200 px 宽，里面只包住自己文字的标签换成更长、仍放得下一行的文字：一帧只排一次布局，
   开销和不能换行的标签相同，标签下面的盒子都不动，1k 和 10k 相同（文本侧见 [文本引擎](./text-engine.md)
   的「省略号」一节）。
@@ -182,7 +188,11 @@ measure 计划沿用的前提是节点自己的输入都没变：约束、样式
   - 没有哪一帧的 scratch 超过一次编辑的闭包。
 
 规模在 10k 及以上的页面跳过每趟守卫（`skip_layout_verify`），最后以冷对照收尾；
-1k 页面每一趟都校验。
+1k 页面每一趟都校验。1k 与 10k 的全矩阵跑 1、8 处编辑；10k 与 100k 的局部编辑和安静端的
+顺序编辑跑 1、100 处，浅层和 8 层嵌套、三种书写方向各一遍
+（`issue259_contained_edits_cost_the_same_at_100k_{ltr,rtl,vertical_rl}`）。局部编辑放在
+安静端的另一端：10k 的嵌套页只有 263 组，放在中间的 100 组会和安静端的 100 组重叠，
+先热了那些组的保留状态，10k 页就比全新的页少做一些，100k 页不会重叠。
 
 下面几处做法让局部编辑的工作不随文档增长。
 
@@ -212,21 +222,30 @@ p50、p95、p99，并检查 p95 从 1k 到 100k 的增长不超过 1.75 倍：
 cargo test --release -p nana-ui-runtime --lib issue259_local_frame_time -- --ignored --nocapture
 ```
 
-PR CI 只以计数为硬门禁，计时不在 CI 里判定。
+PR CI 只以计数为硬门禁，计时不在 CI 里判定。每周的 Runtime performance 工作流以
+`continue-on-error` 跑这一项，p50 / p95 / p99 写进 job summary：托管的 runner 不是固定机器，
+这一步只做记录，不挡合并。
 
 约束变化（#264）。视口缩放、容器改尺寸、拖动分隔条、Dock 改面板比例，都走同一条约束传播：
 - 样式写入按轴分类。宽度及其上下限只改变子项的行内约束，高度及其上下限只改变块约束；
   flex 的 grow、shrink、basis 只改变父级那一行所沿的轴；box-sizing、aspect-ratio、间距、
   对齐和流的形状两轴都算。
-- 视口缩放给文档根按变化的轴播种，往下只有消费这条轴约束的子项重新测量；`position: fixed`
-  和用了视口单位的盒子，按两轴尺寸都可能变化处理。引擎记着每个文档上次布局用的视口，
-  不论从哪个入口进来，视口一变都由引擎补上这些 seed。
-- 不读视口的盒子，测量缓存和布局计划不因视口变化失效：键和计划只比较 `viewport_basis`。
+- 视口缩放给文档根按变化的轴播种，往下只有消费这条轴约束的子项重新测量。读视口的盒子
+  按它读的那一侧播种（`LayoutStyle::viewport_axes`）：`vw` 读宽，`vh` 读高，`vmin` / `vmax`
+  和 `position: fixed` 两侧都读；只改高度不碰 `vw` 盒子，只改宽度不碰 `vh` 盒子。引擎记着
+  每个文档上次布局用的视口，不论从哪个入口进来，视口一变都由引擎补上这些 seed。
+- 测量缓存的键和布局计划只比较 `viewport_basis`：盒子读的那一侧视口，不读的一侧记为 0。
+  不读视口的盒子不因视口变化失效，`vw` 盒子不因只改高度失效。
 - 某一轴尺寸是自己的确定长度、不读包含块的盒子，测量缓存的键里不放这一轴的可用尺寸。
   父级变了，它直接命中缓存，不再遍历子项。
 - 只因位置变化被触及的兄弟，不再把整棵子树拉进 frontier。它在新原点重新放置时子树跟着放，
   原点没变时子树保持原样。
 - 主轴尺寸变了，读取容器主轴尺寸的子项（主轴方向的百分比、fill、basis）不再沿用旧计划。
+- 一个子项沿父级的线（行的行内轴、列的块轴）改了尺寸，线上可伸缩的兄弟（`flex_grow > 0`
+  或这一轴是 fill）分到的尺寸也跟着变：它们也记作约束 seed，往下只有读这一轴的子项重新
+  测量。分隔条的第一个面板变宽，旁边 fill 的面板变窄，两边的子项都被问到。容器不论
+  `display` 都沿 `direction` 排成一条线（默认列）；grid、行内格式化上下文和竖排不走这一条，
+  照旧由按可用尺寸为键的测量缓存兜住。
 
 计数都在 `WorkCounters` 上：
 - `constraint_change_seeds`：改变了子项约束的 seed；
@@ -237,14 +256,24 @@ PR CI 只以计数为硬门禁，计时不在 CI 里判定。
 - `resize_context_solves`：约束变化触发的那一趟里，从头求解的格式化上下文，即计划无法复用
   或没有计划的容器。
 
-门禁在 `world/issue264.rs`：
+门禁在 `world/issue264.rs`。"测量"读的是布局真正算过的节点（测试用的
+`layout_engine::measure_trace`，越过本趟 memo 和保留 intrinsic 之后才记），不是 frontier 的
+MEASURE 位：memo 的键变了也会重测，frontier 看不到这种工作。layout-verify 守卫自己那趟全量
+布局不记。
 - 10k 节点的工作区里拖动真实的 `SplitPane` 240 次。固定盒子和 Dock 不测量，文字不重新整形，
-  节点不增不减，最后与冷布局一致；1k 工作区逐趟对照全量布局。
-- 只改宽度时，只读高度的盒子不测量；只改高度时，只读宽度的行不测量。
+  节点不增不减，最后与冷布局一致；1k 工作区逐趟对照全量布局。每次拖动有两个约束 seed：
+  被拖的面板和旁边 fill 的面板。
+- 只改宽度时，只读高度的盒子不测量；只改高度时，只读宽度的行不进 frontier，行里的文字不测量。
 - 固定尺寸的子树和它的后代不测量。
 - 拖动一次的开销在 1k 与 100k 节点下相同，问到的子项也相同。
-- 视口缩放的开销在 1k 与 100k 节点下相同，Dock 不进布局。
-- 像 Dock 那样改 flex 比例时，只读高度的盒子不测量。
+- 视口缩放的开销在 1k 与 100k 节点下相同，Dock 不进布局；`vw` 盒子只在宽度变时测量，
+  `vh` 盒子只在高度变时测量。
+- 像 Dock 那样改 flex 比例时，只读高度的盒子不测量；拖动真实的 `Dock` 分栏比例也一样，
+  读宽度的段落每次都重新测量。
+
+只改高度时，高度随内容的容器（例如只读宽度的行）仍会重测：它的测量缓存以给它的块向可用
+尺寸为键，而子孙里的百分比高度会读这个尺寸，单看这一层无法证明它不读。要省掉这次重测，
+需要整棵子树"是否读块向可用尺寸"的保留标记。
 
 #259 加了缩放风暴：在 1k、10k、100k 的页面上连续缩放视口 240 次，开销相同；vertical-rl
 页面逐趟对照全量布局。
@@ -297,9 +326,16 @@ Dynamic Layout 求解器，Runtime 里还没有这个求解器。
 宿主侧的门禁在 `nana-ui` 的 `scene_paint/natural_size_tests.rs`：data URL 和本地 HTTP 图片各一例。
 没写尺寸的盒子先没有面积；图片就绪、宿主提交后按解码尺寸布局并画出；之后不再上报。
 
-还没做的：HostTexture 的分辨率不自动上报。宿主纹理默认按 `painted_extent` 准备，那是布局定下的
-绘制尺寸，把它当成自然尺寸，auto 尺寸的节点和纹理会互相放大。分辨率确实属于内容本身的生产方
-（视频解码、canvas 位图）自己用 `set_replaced_metadata` 上报 `ReplacedResource::Render`。
+视频和 canvas 的分辨率由 Vue 宿主报上来。`<video data-nana-video>` 的帧和 `<canvas
+data-nana-canvas>` 的位图是生产方自己的像素：`NanaTreeDocument::flush_host_frame` 从 HostTexture
+注册表读到 `video:{id}`、`canvas:{id}` 槽的像素尺寸，以 `ReplacedResource::Render` 上报，同一帧布局
+就能用上。没写尺寸的 `<video>` 按帧的尺寸布局，`<canvas>` 按位图的尺寸（即它的 width、height 属性），
+和浏览器一致；同尺寸的新帧不上报，不进布局。门禁是 `nana-ui-vue` 的
+`producer_texture_sizes_reach_layout_as_natural_sizes`。
+
+`data-nana-gpu` 的 HostTexture 不上报。这种纹理默认按 `painted_extent` 准备，那是布局定下的绘制
+尺寸，把它当成自然尺寸，auto 尺寸的节点和纹理会互相放大。宿主自己生产内容的纹理，需要时自己用
+`set_replaced_metadata` 上报。
 
 虚拟列表（#262）。行高变化按差值移动列表，不扫描逻辑集合：
 - 行高索引 `VirtualListLayout` 按 512 行分块。同一高度的一段行存成一个计数：一百万行估计高度

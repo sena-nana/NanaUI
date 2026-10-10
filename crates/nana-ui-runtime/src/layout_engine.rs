@@ -49,18 +49,19 @@ impl LayoutViewport {
     }
 }
 
-/// The viewport as far as one box's own layout reads it: all of it when the
-/// box resolves against the viewport (`position: fixed`, a viewport unit),
-/// none of it otherwise. Memo keys and plans compare this, so a viewport
-/// resize keeps every memo and plan of a box that does not read it. A box
-/// whose size moves with a descendant that does is on the frontier the
-/// resize seeds, which retires its memo and checks its plan.
+/// The viewport as far as one box's own layout reads it: each side the box
+/// resolves against (a `vw` length the width, a `vh` one the height,
+/// `position: fixed` both), zero for a side it does not read. Memo keys and
+/// plans compare this, so a viewport resize keeps every memo and plan of a
+/// box that does not read the side that moved. A box whose size moves with a
+/// descendant that does is on the frontier the resize seeds, which retires
+/// its memo and checks its plan.
 fn viewport_basis(style: &LayoutStyle, viewport: LayoutViewport) -> LayoutViewport {
-    if style.depends_on_viewport() {
-        viewport
-    } else {
-        LayoutViewport::new(0.0, 0.0)
-    }
+    let reads = style.viewport_axes();
+    LayoutViewport::new(
+        if reads.width { viewport.width } else { 0.0 },
+        if reads.height { viewport.height } else { 0.0 },
+    )
 }
 
 /// Backend-neutral layout owner used by canonical Runtime applications.
@@ -3155,3 +3156,62 @@ mod issue258;
 mod tests;
 
 pub(crate) mod verify;
+
+/// Which nodes a layout actually measured: past the pass memo and the
+/// retained intrinsics, into computing a size. A gate that asks "was this
+/// box measured" reads this instead of the frontier, which does not see a
+/// box measured again because its memo key moved. Off until a test begins
+/// a trace on its thread.
+#[cfg(test)]
+pub(crate) mod measure_trace {
+    use std::cell::{Cell, RefCell};
+    use std::collections::HashSet;
+
+    use crate::StableNodeId;
+
+    thread_local! {
+        static MEASURED: RefCell<Option<HashSet<StableNodeId>>> = const { RefCell::new(None) };
+        static PAUSED: Cell<bool> = const { Cell::new(false) };
+    }
+
+    pub(crate) fn record(id: StableNodeId) {
+        if PAUSED.with(Cell::get) {
+            return;
+        }
+        MEASURED.with(|measured| {
+            if let Some(measured) = measured.borrow_mut().as_mut() {
+                measured.insert(id);
+            }
+        });
+    }
+
+    /// Stops recording until the returned value drops: the layout-verify
+    /// guard's own full layout is the test's check, not the frame's work.
+    pub(crate) fn pause() -> Paused {
+        Paused(PAUSED.with(|paused| paused.replace(true)))
+    }
+
+    pub(crate) struct Paused(bool);
+
+    impl Drop for Paused {
+        fn drop(&mut self) {
+            PAUSED.with(|paused| paused.set(self.0));
+        }
+    }
+
+    /// Start, or restart, tracing on this thread.
+    pub(crate) fn begin() {
+        MEASURED.with(|measured| *measured.borrow_mut() = Some(HashSet::new()));
+    }
+
+    /// What was measured since the trace began or was last taken.
+    pub(crate) fn take() -> HashSet<StableNodeId> {
+        MEASURED.with(|measured| {
+            measured
+                .borrow_mut()
+                .as_mut()
+                .map(std::mem::take)
+                .unwrap_or_default()
+        })
+    }
+}

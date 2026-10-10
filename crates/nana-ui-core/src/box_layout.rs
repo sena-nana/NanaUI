@@ -927,7 +927,57 @@ pub enum ViewportAxis {
     Max,
 }
 
+/// Which sides of the viewport a length or a box reads: `vw` the width,
+/// `vh` the height, `vmin` / `vmax` both. A viewport resize that moves only
+/// a side nothing reads leaves the length where it was.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct ViewportAxes {
+    pub width: bool,
+    pub height: bool,
+}
+
+impl ViewportAxes {
+    pub const NONE: Self = Self {
+        width: false,
+        height: false,
+    };
+    pub const BOTH: Self = Self {
+        width: true,
+        height: true,
+    };
+
+    pub const fn union(self, other: Self) -> Self {
+        Self {
+            width: self.width || other.width,
+            height: self.height || other.height,
+        }
+    }
+
+    pub const fn any(self) -> bool {
+        self.width || self.height
+    }
+
+    pub const fn intersects(self, other: Self) -> bool {
+        (self.width && other.width) || (self.height && other.height)
+    }
+}
+
 impl ViewportAxis {
+    /// The sides of the viewport this unit reads.
+    pub const fn reads(self) -> ViewportAxes {
+        match self {
+            Self::Width => ViewportAxes {
+                width: true,
+                height: false,
+            },
+            Self::Height => ViewportAxes {
+                width: false,
+                height: true,
+            },
+            Self::Min | Self::Max => ViewportAxes::BOTH,
+        }
+    }
+
     pub fn base(self, viewport_w: f32, viewport_h: f32) -> f32 {
         let w = viewport_w.max(0.0);
         let h = viewport_h.max(0.0);
@@ -1093,7 +1143,15 @@ impl LengthAtom {
 
     /// `true` when resolution reads the viewport.
     pub fn depends_on_viewport(self) -> bool {
-        matches!(self, Self::Viewport { .. } | Self::CalcViewport { .. })
+        self.viewport_axes().any()
+    }
+
+    /// The sides of the viewport resolution reads.
+    pub fn viewport_axes(self) -> ViewportAxes {
+        match self {
+            Self::Viewport { axis, .. } | Self::CalcViewport { axis, .. } => axis.reads(),
+            _ => ViewportAxes::NONE,
+        }
     }
 
     pub fn is_full_percent_fill(self) -> bool {
@@ -1212,16 +1270,20 @@ impl LengthSpec {
     /// `true` when resolution reads the viewport, so this length moves on a
     /// viewport change even when its containing block does not.
     pub fn depends_on_viewport(self) -> bool {
+        self.viewport_axes().any()
+    }
+
+    /// The sides of the viewport resolution reads.
+    pub fn viewport_axes(self) -> ViewportAxes {
         match self {
-            Self::Viewport { .. } | Self::CalcViewportOffset { .. } => true,
-            Self::Min2(a, b) | Self::Max2(a, b) => {
-                a.depends_on_viewport() || b.depends_on_viewport()
-            }
-            Self::Clamp3(a, b, c) => {
-                a.depends_on_viewport() || b.depends_on_viewport() || c.depends_on_viewport()
-            }
-            Self::Calc(expr) => expr.inner().depends_on_viewport(),
-            _ => false,
+            Self::Viewport { axis, .. } | Self::CalcViewportOffset { axis, .. } => axis.reads(),
+            Self::Min2(a, b) | Self::Max2(a, b) => a.viewport_axes().union(b.viewport_axes()),
+            Self::Clamp3(a, b, c) => a
+                .viewport_axes()
+                .union(b.viewport_axes())
+                .union(c.viewport_axes()),
+            Self::Calc(expr) => expr.inner().viewport_axes(),
+            _ => ViewportAxes::NONE,
         }
     }
 
@@ -4427,27 +4489,38 @@ impl LayoutStyle {
     /// A viewport change moves such a box even when its containing block keeps
     /// the exact same size, so incremental relayout cannot reuse it.
     pub fn depends_on_viewport(&self) -> bool {
+        self.viewport_axes().any()
+    }
+
+    /// The sides of the viewport this box's own layout reads: those its
+    /// lengths name, and both for a `position: fixed` box, whose containing
+    /// block is the viewport.
+    pub fn viewport_axes(&self) -> ViewportAxes {
         if self.position == PositionSpec::Fixed {
-            return true;
+            return ViewportAxes::BOTH;
         }
-        let viewport =
-            |length: &Option<LengthSpec>| length.is_some_and(LengthSpec::depends_on_viewport);
+        let viewport = |length: &Option<LengthSpec>| {
+            length.map_or(ViewportAxes::NONE, LengthSpec::viewport_axes)
+        };
         // The logical groups are nearly always the shared default: skip them
         // without reading their 24 lengths.
         let logical = |edges: &crate::shared::Shared<LogicalEdges>| {
-            !edges.is_shared_default()
-                && [
-                    &edges.inline_start,
-                    &edges.inline_end,
-                    &edges.block_start,
-                    &edges.block_end,
-                    &edges.phys_top,
-                    &edges.phys_right,
-                    &edges.phys_bottom,
-                    &edges.phys_left,
-                ]
-                .into_iter()
-                .any(viewport)
+            if edges.is_shared_default() {
+                return ViewportAxes::NONE;
+            }
+            [
+                &edges.inline_start,
+                &edges.inline_end,
+                &edges.block_start,
+                &edges.block_end,
+                &edges.phys_top,
+                &edges.phys_right,
+                &edges.phys_bottom,
+                &edges.phys_left,
+            ]
+            .into_iter()
+            .map(viewport)
+            .fold(ViewportAxes::NONE, ViewportAxes::union)
         };
         [
             &self.gap,
@@ -4476,10 +4549,11 @@ impl LayoutStyle {
             &self.flex_basis,
         ]
         .into_iter()
-        .any(viewport)
-            || logical(&self.logical_padding)
-            || logical(&self.logical_margin)
-            || logical(&self.logical_inset)
+        .map(viewport)
+        .fold(ViewportAxes::NONE, ViewportAxes::union)
+        .union(logical(&self.logical_padding))
+        .union(logical(&self.logical_margin))
+        .union(logical(&self.logical_inset))
     }
 
     /// Internal `hidden` or `display: none` — skip layout flow.

@@ -446,6 +446,9 @@ pub struct NanaTreeDocument {
     /// Test stand-in for a registered HostTexture generation/version pair.
     #[cfg(test)]
     host_texture_revision_overrides: HashMap<String, u64>,
+    /// Test stand-in for a registered HostTexture's pixel size.
+    #[cfg(test)]
+    host_texture_size_overrides: HashMap<String, (u32, u32)>,
     /// Monotonic origin for CSS transition / keyframe deadlines (same epoch as
     /// [`UiWorld::advance_animations`]).
     animation_epoch: Instant,
@@ -607,6 +610,8 @@ impl NanaTreeDocument {
             host_textures: None,
             #[cfg(test)]
             host_texture_revision_overrides: HashMap::new(),
+            #[cfg(test)]
+            host_texture_size_overrides: HashMap::new(),
             animation_epoch: Instant::now(),
             host_animation_epoch: None,
             #[cfg(test)]
@@ -747,6 +752,7 @@ impl NanaTreeDocument {
     pub fn flush_host_frame(&mut self) {
         self.sync_svg_rasters();
         self.stamp_host_texture_revisions();
+        self.report_host_texture_sizes();
         self.commit_pending_queue().ok();
         self.flush_runtime_systems();
     }
@@ -774,6 +780,65 @@ impl NanaTreeDocument {
             );
         }
         0
+    }
+
+    /// Pixel size of a registered slot, once its producer uploaded a frame.
+    fn host_texture_size(&self, slot: &str) -> Option<(u32, u32)> {
+        let _ = slot;
+        #[cfg(test)]
+        if let Some(size) = self.host_texture_size_overrides.get(slot) {
+            return Some(*size);
+        }
+        #[cfg(feature = "scene-view")]
+        if let Some(registry) = &self.host_textures
+            && let Some(binding) = registry.get(slot)
+        {
+            return Some((binding.width, binding.height));
+        }
+        None
+    }
+
+    /// Report the natural size of what a `<video>` or `<canvas>` shows: its
+    /// frame's or its bitmap's pixels, which a box with no size of its own
+    /// lays out at, as a browser does (Issue #263). Only those slots: their
+    /// pixels are the producer's own. A `data-nana-gpu` texture is prepared
+    /// at the size layout gives the box, so as a natural size it would feed
+    /// back into that box. A size the world already has is not reported, so
+    /// a new frame of the same size reaches layout as nothing.
+    fn report_host_texture_sizes(&mut self) {
+        let mut reported = HashSet::new();
+        let ids: Vec<u64> = self.host_texture_nodes.iter().copied().collect();
+        for id in ids {
+            let node = NodeHandle(id);
+            if self
+                .get_attribute(node, "data-nana-gpu")
+                .is_some_and(|slot| !slot.is_empty())
+            {
+                continue;
+            }
+            let Some(slot) = self.surface_host_texture_slot(node) else {
+                continue;
+            };
+            if !(slot.starts_with("video:") || slot.starts_with("canvas:")) {
+                continue;
+            }
+            let Some((width, height)) = self.host_texture_size(&slot) else {
+                continue;
+            };
+            if width == 0 || height == 0 || !reported.insert(slot.clone()) {
+                continue;
+            }
+            let resource = nana_ui_runtime::ReplacedResource::Render {
+                renderer: Arc::from(nana_ui_runtime::HOST_TEXTURE_RENDERER),
+                resource: Arc::from(slot),
+            };
+            let metadata = nana_ui_runtime::ReplacedMetadata::new(width as f32, height as f32);
+            if self.runtime.world().replaced_metadata(&resource) != Some(metadata) {
+                self.pending
+                    .mutations
+                    .set_replaced_metadata(resource, Some(metadata));
+            }
+        }
     }
 
     /// Refresh `CustomRenderNode.revision` from the registered texture.
@@ -813,6 +878,11 @@ impl NanaTreeDocument {
         } else {
             self.host_texture_nodes.remove(&el.0);
         }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn override_host_texture_size(&mut self, slot: impl Into<String>, size: (u32, u32)) {
+        self.host_texture_size_overrides.insert(slot.into(), size);
     }
 
     #[cfg(test)]

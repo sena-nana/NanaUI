@@ -755,6 +755,8 @@ fn measure_node(
         && nodes.world.standard_visual_ref(id).is_none()
         && nodes.world.replaced_natural_size(id).is_none()
     {
+        #[cfg(test)]
+        super::measure_trace::record(id);
         return measure_plain_childless(
             id,
             cache_key,
@@ -788,6 +790,8 @@ fn measure_node(
         cache.insert(cache_key, size);
         return Ok(size);
     }
+    #[cfg(test)]
+    super::measure_trace::record(id);
     let text_natural_width = text_metrics.and_then(|_| nodes.world.text_natural_width(id));
     let text_wrap_limit = text_metrics.and_then(|_| nodes.world.text_wrap_limit(id));
     let style = style_arc.as_ref();

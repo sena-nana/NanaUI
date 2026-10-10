@@ -15,8 +15,10 @@
 //!   the children walked and the subtrees measured are the same at 1k, 10k
 //!   and 100k nodes;
 //! - sequential: a frame places the boxes that moved and the way down to the
-//!   edit, and measures the same subtrees at every size. At the flow end
-//!   whose growth moves nothing after it, all of that is a constant;
+//!   edit, and measures the same subtrees at every size. Only the edited
+//!   containers replay a suffix, and no more plans are recorded again than
+//!   boxes moved. At the flow end whose growth moves nothing after it, all of
+//!   that is a constant;
 //! - text: a label at the head of a page, in a column it does not fill,
 //!   takes a longer string that still fits: the frame lays out once, as for
 //!   a label that cannot wrap, and nothing below the label moves, at 1k and
@@ -584,6 +586,11 @@ struct Cost {
     result_children: usize,
     full_subtrees: usize,
     plan_misses: usize,
+    /// Plans recorded again over an old one for the same container and
+    /// constraint.
+    plan_rebuilds: usize,
+    /// Sequential containers that replayed only the part after a change.
+    suffixes_replayed: usize,
     local_fallbacks: usize,
     full_fallbacks: usize,
 }
@@ -603,6 +610,8 @@ impl From<WorkCounters> for Cost {
             result_children: counters.layout_result_children_visited,
             full_subtrees: counters.intrinsic_measure_full_subtrees,
             plan_misses: counters.layout_plan_misses,
+            plan_rebuilds: counters.layout_plan_rebuilds,
+            suffixes_replayed: counters.layout_suffixes_replayed,
             local_fallbacks: counters.layout_local_subtree_fallbacks,
             full_fallbacks: counters.layout_full_document_fallbacks,
         }
@@ -731,6 +740,23 @@ fn check_case(
             small_cost.full_subtrees, large_cost.full_subtrees,
             "{label}"
         );
+        // Only the edited containers replay the part after their change;
+        // the siblings that move are placed, not replayed.
+        assert_eq!(
+            small_cost.suffixes_replayed, large_cost.suffixes_replayed,
+            "{label}"
+        );
+        // A plan is recorded again only for a container whose boxes moved:
+        // boxes are placed in page coordinates, so a group that moves walks
+        // its children to place them again. Nothing before the edit does.
+        for case in [small, large] {
+            assert!(
+                case.cost.plan_rebuilds <= case.moved,
+                "{label}: {} plans rebuilt, {} boxes moved",
+                case.cost.plan_rebuilds,
+                case.moved
+            );
+        }
         if position == quiet_end(shape.writing) {
             // The page's own placement of the edited group did change.
             assert_eq!(small.moved, large.moved, "{label}");
@@ -860,49 +886,71 @@ fn issue259_a_hundred_seeds_cost_their_union_closure() {
 }
 
 /// Local edits, and a sequential edit at the quiet end, cost the same on a
-/// 100k page as on a 10k one, one seed or a hundred.
-#[test]
-fn issue259_contained_edits_cost_the_same_at_100k() {
-    let shape = Shape::SHALLOW_LTR;
-    let mut large = Page::new(shape, 10_000, Guard::ColdOnly);
-    let mut huge = Page::new(shape, 100_000, Guard::ColdOnly);
-    assert!(huge.world().len() >= 99_000);
-    for scenario in CONTAINED.into_iter().chain([Scenario::Sequential]) {
-        let position = if scenario == Scenario::Sequential {
-            quiet_end(shape.writing)
-        } else {
-            Position::Middle
-        };
-        for seeds in [1, 100] {
-            let label = format!("{scenario:?} x{seeds}");
-            let large_case = run_case(&mut large, scenario, position, seeds);
-            let huge_case = run_case(&mut huge, scenario, position, seeds);
-            assert_eq!(large_case.moved, huge_case.moved, "{label}");
-            let compared = |cost: Cost| {
-                if scenario == Scenario::Sequential {
-                    cost.structural().without_page_result()
-                } else {
-                    cost.structural()
-                }
+/// 100k page as on a 10k one, one seed or a hundred, shallow and eight
+/// levels deep, in each writing mode.
+///
+/// The local edits go to the other end. A hundred groups in the middle of a
+/// 10k nested page (263 groups) would overlap the hundred at its quiet end,
+/// whose retained state they warm: the 10k page would then do less than a
+/// fresh one, which the 100k page, too large to overlap, does not.
+fn contained_edits_at_100k(writing: Writing) {
+    for depth in [Depth::Shallow, Depth::Nested] {
+        let shape = Shape { depth, writing };
+        let mut large = Page::new(shape, 10_000, Guard::ColdOnly);
+        let mut huge = Page::new(shape, 100_000, Guard::ColdOnly);
+        assert!(huge.world().len() >= 99_000);
+        for scenario in CONTAINED.into_iter().chain([Scenario::Sequential]) {
+            let position = match (scenario == Scenario::Sequential, quiet_end(writing)) {
+                (true, quiet) => quiet,
+                (false, Position::Head) => Position::Tail,
+                (false, _) => Position::Head,
             };
-            assert_eq!(
-                compared(large_case.cost),
-                compared(huge_case.cost),
-                "{label}"
-            );
-            assert!(
-                huge_case.cost.measured <= 2 * large_case.cost.measured + 8,
-                "{label}: {} nodes measured at 10k, {} at 100k",
-                large_case.cost.measured,
-                huge_case.cost.measured
-            );
-            assert_eq!(
-                large_case.stats.scratch_entries, huge_case.stats.scratch_entries,
-                "{label}: scratch follows the closure, not the document"
-            );
+            for seeds in [1, 100] {
+                let label = format!("{writing:?} {depth:?} {scenario:?} x{seeds}");
+                let large_case = run_case(&mut large, scenario, position, seeds);
+                let huge_case = run_case(&mut huge, scenario, position, seeds);
+                assert_eq!(large_case.moved, huge_case.moved, "{label}");
+                let compared = |cost: Cost| {
+                    if scenario == Scenario::Sequential {
+                        cost.structural().without_page_result()
+                    } else {
+                        cost.structural()
+                    }
+                };
+                assert_eq!(
+                    compared(large_case.cost),
+                    compared(huge_case.cost),
+                    "{label}"
+                );
+                assert!(
+                    huge_case.cost.measured <= 2 * large_case.cost.measured + 8,
+                    "{label}: {} nodes measured at 10k, {} at 100k",
+                    large_case.cost.measured,
+                    huge_case.cost.measured
+                );
+                assert_eq!(
+                    large_case.stats.scratch_entries, huge_case.stats.scratch_entries,
+                    "{label}: scratch follows the closure, not the document"
+                );
+            }
         }
+        large.assert_matches_cold();
     }
-    large.assert_matches_cold();
+}
+
+#[test]
+fn issue259_contained_edits_cost_the_same_at_100k_ltr() {
+    contained_edits_at_100k(Writing::Ltr);
+}
+
+#[test]
+fn issue259_contained_edits_cost_the_same_at_100k_rtl() {
+    contained_edits_at_100k(Writing::Rtl);
+}
+
+#[test]
+fn issue259_contained_edits_cost_the_same_at_100k_vertical_rl() {
+    contained_edits_at_100k(Writing::VerticalRl);
 }
 
 /// Ten thousand edits on a 100k page. The retained cache stays what the

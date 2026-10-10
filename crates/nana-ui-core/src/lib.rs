@@ -70,9 +70,10 @@ pub use box_layout::{
     OverflowSpec, OverflowWrapSpec, PaddingSpec, PaintMat4, PaintStyle, PaintTransform, ParentBox,
     PointerEventsSpec, PositionSpec, RadialGradient, TEXT_APPROX_ASCENT_EM, TextAlignSpec,
     TextDecorationLine, TextOrientationSpec, TextShadowSpec, TextStrokeSpec, TextWrapBreak,
-    TransformBox, TransformOrigin, UserSelectSpec, ViewportAxis, VisibilitySpec, WhiteSpaceSpec,
-    WordBreakSpec, WritingModeSpec, glyph_box_center_from_line_top, icon_y_on_text_glyph_center,
-    resolve_grid_column_widths, resolve_grid_track_sizes, text_line_box_height_px,
+    TransformBox, TransformOrigin, UserSelectSpec, ViewportAxes, ViewportAxis, VisibilitySpec,
+    WhiteSpaceSpec, WordBreakSpec, WritingModeSpec, glyph_box_center_from_line_top,
+    icon_y_on_text_glyph_center, resolve_grid_column_widths, resolve_grid_track_sizes,
+    text_line_box_height_px,
 };
 pub use date::{CivilDate, DayCell, MonthGrid, WeekStart, Weekday, days_in_month, is_leap_year};
 pub use dialog::{DialogClosePolicy, DialogCloseTrigger, DialogSize};
