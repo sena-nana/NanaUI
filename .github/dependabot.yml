@@ -1,0 +1,56 @@
+version: 2
+
+# Monthly version updates, one grouped PR per ecosystem. Security updates
+# still arrive on their own as alerts are published.
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: monthly
+    groups:
+      actions:
+        patterns: ["*"]
+
+  - package-ecosystem: cargo
+    directories:
+      - /
+      - /tools/css-parity-webview
+      - /crates/nana-icons-tabler
+    schedule:
+      interval: monthly
+    groups:
+      cargo:
+        patterns: ["*"]
+    ignore:
+      # Pinned to git revisions on purpose; see the comments in Cargo.toml.
+      - dependency-name: winit
+      - dependency-name: "accesskit*"
+      # css-parity-webview pins wry/tao; see its Cargo.toml for the glib note.
+      - dependency-name: wry
+      - dependency-name: tao
+      # Breaking lines held back by other crates in the lockfile:
+      # swash and usvg stay on skrifa 0.44 / harfrust 0.12, windows-numerics
+      # moves with the `windows` crate, accesskit_android stays on jni 0.21,
+      # syntect and ratex keep their own fancy-regex.
+      - dependency-name: harfrust
+        update-types: ["version-update:semver-major", "version-update:semver-minor"]
+      - dependency-name: skrifa
+        update-types: ["version-update:semver-major", "version-update:semver-minor"]
+      - dependency-name: windows-numerics
+        update-types: ["version-update:semver-major", "version-update:semver-minor"]
+      - dependency-name: jni
+        update-types: ["version-update:semver-major", "version-update:semver-minor"]
+      - dependency-name: fancy-regex
+        update-types: ["version-update:semver-major", "version-update:semver-minor"]
+
+  # A vue-sfc-compat bump also needs `npm run build` and the rebuilt dist/
+  # committed; CI fails the PR until then.
+  - package-ecosystem: npm
+    directories:
+      - /docs
+      - /crates/nana-js-engine/fixtures/vue-sfc-compat
+    schedule:
+      interval: monthly
+    groups:
+      npm:
+        patterns: ["*"]

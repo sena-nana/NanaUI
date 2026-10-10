@@ -12,14 +12,14 @@ jobs:
         os: [ubuntu-latest, macos-latest, windows-latest]
     runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Enable Git symlinks for V8
         if: runner.os == 'Windows'
         run: git config --global core.symlinks true
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt, clippy
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with:
           node-version: 24
       # libvulkan1 + mesa-vulkan-drivers give lavapipe: the runner has no GPU
@@ -166,7 +166,7 @@ jobs:
     # V8-stub branch, which needs no multi-hour GN build.
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: aarch64-linux-android
@@ -185,7 +185,7 @@ jobs:
     # stable toolchain, so without this job the declared minimum is untested.
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@1.98
       - name: Install Linux window dependencies
         run: |
@@ -202,7 +202,7 @@ jobs:
     # fixture envelopes. Live release benches stay in runtime-performance.yml.
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
       # nana-ui-vue pulls nana-ui-web-api, which pulls cpal for Web Audio, and
       # alsa-sys needs the ALSA headers to build. Without this the job dies in
@@ -381,7 +381,7 @@ jobs:
         os: [ubuntu-latest, macos-latest, windows-latest]
     runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Enable Git symlinks for V8
         if: runner.os == 'Windows'
         run: git config --global core.symlinks true
@@ -395,7 +395,7 @@ jobs:
             libwayland-dev libxrandr-dev libxinerama-dev libxcursor-dev libxi-dev
       - name: Test the pack format and the packager
         run: cargo test -p nana-package -p nana-packager --locked -- --nocapture
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: issue226-delta-${{ matrix.os }}
           path: target/performance/issue226

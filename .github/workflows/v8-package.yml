@@ -28,7 +28,7 @@ jobs:
       V8_FROM_SOURCE: "1"
       CARGO_TARGET_DIR: ${{ github.workspace }}/target-android
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: aarch64-linux-android
@@ -57,14 +57,14 @@ jobs:
           cargo build -p nana-js-v8 --features engine \
             --target aarch64-linux-android --release --locked
           bash scripts/package-v8-android.sh dist/v8
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: rusty-v8-aarch64-linux-android
           path: dist/v8/
           if-no-files-found: error
       - name: GitHub release
         if: ${{ inputs.publish_release }}
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@v3
         with:
           tag_name: rusty-v8-v${{ steps.v8ver.outputs.version }}
           files: dist/v8/*
@@ -76,7 +76,7 @@ jobs:
     env:
       CARGO_TARGET_DIR: ${{ github.workspace }}/target-android
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: aarch64-linux-android
@@ -85,7 +85,7 @@ jobs:
         with:
           ndk-version: r27c
           add-to-path: false
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           name: rusty-v8-aarch64-linux-android
           path: dist/v8
