@@ -15,4 +15,3 @@ path = "src/main.rs"
 nana-js-engine = { workspace = true, features = ["probe-fixtures"] }
 nana-js-v8 = { workspace = true, features = ["engine"] }
 nana-ui-vue.workspace = true
-serde_json.workspace = true

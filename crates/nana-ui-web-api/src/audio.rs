@@ -1107,12 +1107,12 @@ fn start_cpal_stream(mixer: Arc<Mutex<Mixer>>) -> Result<(cpal::Stream, u32, u16
     })?;
     let sample_format = supported.sample_format();
     let config: cpal::StreamConfig = supported.into();
-    let sample_rate = config.sample_rate.0.max(1);
+    let sample_rate = config.sample_rate.max(1);
     let channels = config.channels.max(1);
 
     fn build<T>(
         device: &cpal::Device,
-        config: &cpal::StreamConfig,
+        config: cpal::StreamConfig,
         mixer: Arc<Mutex<Mixer>>,
     ) -> Result<cpal::Stream, AudioError>
     where
@@ -1141,10 +1141,10 @@ fn start_cpal_stream(mixer: Arc<Mutex<Mixer>>) -> Result<(cpal::Stream, u32, u16
     }
 
     let stream = match sample_format {
-        cpal::SampleFormat::F32 => build::<f32>(&device, &config, mixer)?,
-        cpal::SampleFormat::I16 => build::<i16>(&device, &config, mixer)?,
-        cpal::SampleFormat::U16 => build::<u16>(&device, &config, mixer)?,
-        cpal::SampleFormat::I32 => build::<i32>(&device, &config, mixer)?,
+        cpal::SampleFormat::F32 => build::<f32>(&device, config, mixer)?,
+        cpal::SampleFormat::I16 => build::<i16>(&device, config, mixer)?,
+        cpal::SampleFormat::U16 => build::<u16>(&device, config, mixer)?,
+        cpal::SampleFormat::I32 => build::<i32>(&device, config, mixer)?,
         other => {
             return Err(AudioError::not_supported(format!(
                 "unsupported audio sample format {other:?}"

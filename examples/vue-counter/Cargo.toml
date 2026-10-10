@@ -25,4 +25,3 @@ nana-ui-vue = { path = "../../crates/nana-ui-vue", default-features = false }
 nana-ui-web-api.workspace = true
 nana-js-v8 = { workspace = true, optional = true }
 nana-ui = { path = "../../crates/nana-ui", optional = true, default-features = false }
-serde_json.workspace = true

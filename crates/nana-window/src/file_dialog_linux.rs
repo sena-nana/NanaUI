@@ -103,7 +103,9 @@ async fn portal(
         Some(result) => result.ok()?,
         None => return Some(Ok(Vec::new())),
     };
-    let token = format!("nana_{:032x}", rand::random::<u128>());
+    let mut token = [0u8; 16];
+    getrandom::fill(&mut token).ok()?;
+    let token = format!("nana_{:032x}", u128::from_ne_bytes(token));
     // Subscribe before Open/Save, without a predicted object path. Old portal
     // versions may ignore handle_token and return a different request path;
     // their early Response must remain queued until that path is known.

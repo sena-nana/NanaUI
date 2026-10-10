@@ -86,7 +86,7 @@ bytemuck = { version = "1.24", features = ["derive"], optional = true }
 base64 = { workspace = true, optional = true }
 # Rectangle packing for the native glyph atlas (#97). NanaUI owns the atlas
 # policy and lifetime; the shelf packer itself is not worth rewriting.
-etagere = { version = "0.2.15", optional = true }
+etagere = { version = "0.3", optional = true }
 # Outline scaling and rasterization behind `scene_paint::text::raster` (#99).
 # The renderer owns the rasterizer boundary; the outline rasterizer under it is
 # not worth rewriting. On Windows DirectWrite takes outline glyphs and swash

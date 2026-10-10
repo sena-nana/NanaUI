@@ -73,8 +73,10 @@ futures-core = "0.3.31"
 base64 = "0.23"
 crossbeam-channel = "0.5"
 url = "2.5"
-ureq = { version = "=3.4.0", default-features = false, features = ["rustls"] }
-tungstenite = { version = "0.27", default-features = false, features = ["handshake", "rustls-tls-native-roots"] }
+# Exact pin: nana-ui-platform/src/fetch.rs implements ureq's `unversioned`
+# resolver and transport traits, which ureq keeps outside semver.
+ureq = { version = "=3.4.2", default-features = false, features = ["rustls"] }
+tungstenite = { version = "0.30", default-features = false, features = ["handshake", "rustls-tls-native-roots"] }
 # Keep a single WGPU major version across NanaUI.
 # Framework crates never pick graphics backends. `nana-ui` / `nana-ui-vue` turn
 # them all on through their default `wgpu-backends` feature; an application
@@ -98,7 +100,7 @@ unicode-width = "0.2"
 raw-window-handle = "0.6.2"
 windows-sys = "0.61.2"
 pollster = "1.0"
-cpal = "0.15"
+cpal = "0.18"
 objc2 = "0.6.4"
 objc2-app-kit = { version = "0.3.2", default-features = false }
 objc2-foundation = { version = "0.3.2", default-features = false }
