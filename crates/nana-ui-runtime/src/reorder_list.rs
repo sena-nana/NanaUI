@@ -74,8 +74,11 @@ pub enum ReorderListPointer {
     Cancel,
 }
 
-/// One row identity. Optional [`Self::tools`] is a live child that keeps its
-/// own pointer handling; hits there do not start a drag.
+/// One row identity. A press on a control inside a live row (a focusable
+/// node below the row, such as a button) is the control's click unless the
+/// pointer moves past the drag threshold, when the row drags instead.
+/// Optional [`Self::tools`] is a live child that keeps the pointer to itself:
+/// hits there never start a drag.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ReorderItem {
     pub value: Arc<str>,
@@ -124,8 +127,10 @@ impl ReorderItem {
         self
     }
 
-    /// Interactive trailing tools. Pointer hits inside this child's layout box
-    /// do not begin a reorder gesture.
+    /// A region that never drags: pointer hits inside this child's layout box
+    /// do not begin a reorder gesture, even once they move. Buttons do not
+    /// need it to keep their clicks; it is for a part of the row that must
+    /// never move the row.
     pub fn tools(mut self, tools: StableNodeId) -> Self {
         self.tools = Some(tools);
         self
@@ -181,6 +186,33 @@ impl ReorderDragVisual {
     }
 }
 
+impl ReorderDrag {
+    /// Follows the pointer to `(x, y)`; once it has gone [`DRAG_THRESHOLD`]
+    /// from the press, the gesture has moved for good.
+    fn follow(&mut self, x: f32, y: f32) {
+        if !point_finite(x, y) {
+            return;
+        }
+        self.x = x;
+        self.y = y;
+        let dx = x - self.start_x;
+        let dy = y - self.start_y;
+        self.moved |= dx * dx + dy * dy >= DRAG_THRESHOLD * DRAG_THRESHOLD;
+    }
+}
+
+/// A primary press on a control inside a row, such as a button. It stays the
+/// control's press, and its click, until the pointer moves past
+/// [`DRAG_THRESHOLD`]; then the list takes the pointer and drags the row.
+#[derive(Debug, Clone, PartialEq)]
+struct ArmedPress {
+    pointer_id: u64,
+    /// The node the press landed on. The press is still this one while the
+    /// pointer's press record names it.
+    control: StableNodeId,
+    drag: ReorderDrag,
+}
+
 /// One painted row. Application identities stay on [`ReorderItem`].
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ReorderRowPaint {
@@ -202,6 +234,7 @@ pub struct ReorderList {
     pub label: Option<Arc<str>>,
     pub style: NodeStyle,
     drag: Option<ReorderDrag>,
+    armed: Option<ArmedPress>,
 }
 
 impl ReorderList {
@@ -215,6 +248,7 @@ impl ReorderList {
             label: None,
             style: NodeStyle::default(),
             drag: None,
+            armed: None,
         }
     }
 
@@ -355,7 +389,10 @@ impl ReorderList {
     }
 
     /// Clears an in-flight gesture. Escape, unfocus, and lost-touch use this.
+    /// A press on a row's control that has not moved yet was never a drag:
+    /// it is dropped without [`ReorderListEvent::Cancelled`].
     pub fn cancel(&mut self) -> Option<ReorderListEvent> {
+        self.armed = None;
         self.drag.take().map(|_| ReorderListEvent::Cancelled)
     }
 
@@ -390,17 +427,9 @@ impl ReorderList {
     }
 
     fn move_to(&mut self, x: f32, y: f32) {
-        let Some(drag) = self.drag.as_mut() else {
-            return;
-        };
-        if !point_finite(x, y) {
-            return;
+        if let Some(drag) = self.drag.as_mut() {
+            drag.follow(x, y);
         }
-        drag.x = x;
-        drag.y = y;
-        let dx = x - drag.start_x;
-        let dy = y - drag.start_y;
-        drag.moved |= dx * dx + dy * dy >= DRAG_THRESHOLD * DRAG_THRESHOLD;
     }
 
     fn finish(&mut self, rows: &[LayoutBox]) -> Option<ReorderListEvent> {
@@ -569,6 +598,13 @@ impl crate::AppContext {
         }
     }
 
+    /// A primary press on `target`. On a row's own surface the list takes
+    /// the pointer at once: the press is the row's, a click selects it and a
+    /// move drags it. On a control inside a row (a focusable node below the
+    /// row, such as a button) the press stays the control's and returns
+    /// `Ok(false)`, so the control is pressed and clicked as usual; the list
+    /// only arms a drag that [`Self::update_reorder_list_pointer`] starts
+    /// once the pointer moves past the drag threshold.
     pub fn begin_reorder_list_pointer(
         &mut self,
         document: crate::DocumentId,
@@ -591,15 +627,27 @@ impl crate::AppContext {
         if exclude.iter().any(|reserved| reserved.contains(x, y)) {
             return Ok(false);
         }
+        let on_control = self.is_reorder_row_control(list_id, target);
         self.update_component(entity, |list, cx| {
+            // A new press replaces one armed before it whose release went to
+            // whatever its control started (a slider's drag, say).
+            list.armed = None;
+            let in_flight = list.is_dragging();
             list.apply_pointer_with_rows(ReorderListPointer::Down { x, y }, &rows, &exclude);
-            if list.is_dragging() {
-                cx.mutations().capture_pointer(pointer_id, list_id);
-                cx.mutations().request_focus(document, Some(list_id));
-                true
-            } else {
-                false
+            if !list.is_dragging() {
+                return false;
             }
+            if on_control && !in_flight {
+                list.armed = list.drag.take().map(|drag| ArmedPress {
+                    pointer_id,
+                    control: target,
+                    drag,
+                });
+                return false;
+            }
+            cx.mutations().capture_pointer(pointer_id, list_id);
+            cx.mutations().request_focus(document, Some(list_id));
+            true
         })
     }
 
@@ -611,7 +659,7 @@ impl crate::AppContext {
         y: f32,
     ) -> Result<bool, crate::FrameworkError> {
         let Some(target) = self.world().pointer_capture(document, pointer_id) else {
-            return Ok(false);
+            return self.follow_armed_reorder_press(document, pointer_id, x, y);
         };
         let Some(entity) = self.reorder_list_entity(target) else {
             return Ok(false);
@@ -635,6 +683,9 @@ impl crate::AppContext {
         cancel: bool,
     ) -> Result<bool, crate::FrameworkError> {
         let Some(target) = self.world().pointer_capture(document, pointer_id) else {
+            // A press that never moved far enough ends as its control's
+            // click (or cancel): the release goes on to the control.
+            self.disarm_reorder_press(document, pointer_id)?;
             return Ok(false);
         };
         let Some(entity) = self.reorder_list_entity(target) else {
@@ -661,6 +712,93 @@ impl crate::AppContext {
     fn reorder_list_entity(&self, id: StableNodeId) -> Option<crate::Entity<ReorderList>> {
         self.is_reorder_list(id)
             .then(|| crate::Entity::from_stable_id(id))
+    }
+
+    /// Whether a press on `target` lands on a control inside one of `list`'s
+    /// rows: a focusable node between `target` and the row, the row itself
+    /// excluded. The list and a row's own surface are the row's to press.
+    fn is_reorder_row_control(&self, list: StableNodeId, target: StableNodeId) -> bool {
+        let world = self.world();
+        let mut node = target;
+        while node != list {
+            let Some(parent) = world.parent_id(node) else {
+                return false;
+            };
+            if parent == list {
+                return false;
+            }
+            if world
+                .interaction(node)
+                .is_some_and(|interaction| interaction.focusable)
+            {
+                return true;
+            }
+            node = parent;
+        }
+        false
+    }
+
+    /// Follows a press armed on a row's control. Past the drag threshold the
+    /// list takes the pointer and the control's press ends without a click.
+    fn follow_armed_reorder_press(
+        &mut self,
+        document: crate::DocumentId,
+        pointer_id: u64,
+        x: f32,
+        y: f32,
+    ) -> Result<bool, crate::FrameworkError> {
+        let Some(entity) = self.armed_reorder_press(document, pointer_id) else {
+            return Ok(false);
+        };
+        let list_id = entity.stable_id();
+        let started = self.update_component(entity, |list, cx| {
+            let Some(armed) = list.armed.as_mut() else {
+                return false;
+            };
+            armed.drag.follow(x, y);
+            if !armed.drag.moved {
+                return false;
+            }
+            list.drag = list.armed.take().map(|armed| armed.drag);
+            cx.mutations().capture_pointer(pointer_id, list_id);
+            cx.mutations().request_focus(document, Some(list_id));
+            true
+        })?;
+        if started {
+            self.release_pointer(document, pointer_id);
+        }
+        Ok(started)
+    }
+
+    /// Drops the press armed on a row's control when its pointer is released
+    /// or cancelled before it moved far enough to drag.
+    fn disarm_reorder_press(
+        &mut self,
+        document: crate::DocumentId,
+        pointer_id: u64,
+    ) -> Result<(), crate::FrameworkError> {
+        if let Some(entity) = self.armed_reorder_press(document, pointer_id) {
+            self.update_component(entity, |list, _| list.armed = None)?;
+        }
+        Ok(())
+    }
+
+    /// The list holding `pointer_id`'s press armed: the pointer is pressed on
+    /// a node of a list whose armed press is that very press.
+    fn armed_reorder_press(
+        &self,
+        document: crate::DocumentId,
+        pointer_id: u64,
+    ) -> Option<crate::Entity<ReorderList>> {
+        let control = self.world().pointer_press(document, pointer_id)?;
+        let entity = self.reorder_list_entity(self.nearest_reorder_list(control)?)?;
+        self.read(entity, |list| {
+            list.armed
+                .as_ref()
+                .is_some_and(|armed| armed.pointer_id == pointer_id && armed.control == control)
+        })
+        .ok()?
+        .then_some(entity)
     }
 
     fn reorder_row_boxes(&self, id: StableNodeId, bounds: LayoutBox) -> Vec<LayoutBox> {
@@ -1243,6 +1381,287 @@ mod tests {
         );
         let style = context.world().node_style(id).expect("projected style");
         assert_eq!(style.layout.height, Some(LengthSpec::Shrink));
+    }
+
+    /// A live list of rows `a`, `b`, `c`: each row a 28px strip that is not
+    /// hittable itself, with a 60px button at its start. The button's
+    /// clicks and the list's events are recorded.
+    struct ButtonRows {
+        context: AppContext,
+        list: crate::Entity<ReorderList>,
+        buttons: Vec<crate::Entity<crate::Button>>,
+        rows: Vec<LayoutBox>,
+        events: Arc<std::sync::Mutex<Vec<ReorderListEvent>>>,
+        clicks: Arc<std::sync::Mutex<Vec<usize>>>,
+        input: crate::HeadlessInput,
+    }
+
+    impl ButtonRows {
+        /// `tools` registers each row's button as the row's tools region.
+        fn new(tools: bool) -> Self {
+            use crate::{Activate, Button, Stack};
+            use nana_ui_core::LayoutStyle;
+
+            let document = document();
+            let mut context = AppContext::new();
+            let values = ["a", "b", "c"];
+            let mut list_style = NodeStyle::default();
+            Arc::make_mut(&mut list_style.layout).width = Some(LengthSpec::Px(200.0));
+            let list = context
+                .create_component(
+                    document,
+                    ReorderList::new(values.map(|value| ReorderItem::new(value, value)))
+                        .live_rows(true)
+                        .style(list_style),
+                )
+                .unwrap();
+            let clicks = Arc::new(std::sync::Mutex::new(Vec::new()));
+            let mut buttons = Vec::new();
+            for index in 0..values.len() {
+                let row = context
+                    .create_component(
+                        document,
+                        Stack::row(0.0).with_layout(|layout| {
+                            layout.width = Some(LengthSpec::Fill);
+                            layout.height = Some(LengthSpec::Px(28.0));
+                        }),
+                    )
+                    .unwrap();
+                context.append_child(list, row).unwrap();
+                let button = context
+                    .create_component(
+                        document,
+                        Button::new("Play").layout(Arc::new(LayoutStyle {
+                            width: Some(LengthSpec::Px(60.0)),
+                            height: Some(LengthSpec::Px(28.0)),
+                            ..LayoutStyle::default()
+                        })),
+                    )
+                    .unwrap();
+                context.append_child(row, button).unwrap();
+                let observed = Arc::clone(&clicks);
+                context
+                    .on(button, move |_, _: &Activate, _| {
+                        observed.lock().unwrap().push(index);
+                    })
+                    .unwrap();
+                buttons.push(button);
+            }
+            if tools {
+                let items = values
+                    .iter()
+                    .zip(&buttons)
+                    .map(|(value, button)| {
+                        ReorderItem::new(*value, *value).tools(button.stable_id())
+                    })
+                    .collect::<Vec<_>>();
+                context
+                    .update_component(list, |list, _| list.items = items)
+                    .unwrap();
+            }
+            let events = Arc::new(std::sync::Mutex::new(Vec::new()));
+            let observed = Arc::clone(&events);
+            context
+                .on(list, move |_, event: &ReorderListEvent, _| {
+                    observed.lock().unwrap().push(event.clone());
+                })
+                .unwrap();
+            context
+                .layout_document(document, crate::LayoutViewport::new(400.0, 300.0))
+                .unwrap();
+            context.rebuild_hit_test(document);
+            let rows = context
+                .world()
+                .node(list.stable_id())
+                .unwrap()
+                .children
+                .iter()
+                .map(|row| context.world().layout_box(*row).unwrap())
+                .collect();
+            let input = crate::HeadlessInput::bind(&mut context, document);
+            Self {
+                context,
+                list,
+                buttons,
+                rows,
+                events,
+                clicks,
+                input,
+            }
+        }
+
+        fn pointer(&mut self, phase: nana_ui_input::PointerPhase, x: f32, y: f32) {
+            self.input.pointer(&mut self.context, phase, x, y).unwrap();
+        }
+
+        /// The middle of row `index`'s button.
+        fn on_button(&self, index: usize) -> (f32, f32) {
+            let row = self.rows[index];
+            (row.x + 30.0, row.y + row.height * 0.5)
+        }
+
+        /// The middle of row `index`'s body, right of its button.
+        fn on_body(&self, index: usize) -> (f32, f32) {
+            let row = self.rows[index];
+            (row.x + 150.0, row.y + row.height * 0.5)
+        }
+
+        fn dragging(&self) -> bool {
+            self.context
+                .read(self.list, ReorderList::is_dragging)
+                .unwrap()
+        }
+
+        fn captured(&self) -> bool {
+            !self.context.world().pointer_captures(document()).is_empty()
+        }
+
+        /// The dragged row's index, while the list paints a drag.
+        fn painted_drag(&self) -> Option<usize> {
+            self.context
+                .read(self.list, ReorderList::drag_visual)
+                .unwrap()
+                .map(|visual| visual.source)
+        }
+
+        fn take_events(&self) -> Vec<ReorderListEvent> {
+            std::mem::take(&mut *self.events.lock().unwrap())
+        }
+
+        fn take_clicks(&self) -> Vec<usize> {
+            std::mem::take(&mut *self.clicks.lock().unwrap())
+        }
+    }
+
+    #[test]
+    fn a_button_in_a_row_keeps_its_click_until_the_press_moves() {
+        use nana_ui_input::PointerPhase;
+
+        let mut rows = ButtonRows::new(false);
+        assert_eq!(rows.buttons.len(), 3);
+        // Pressed and released in place: the button's click, not the row's.
+        let (x, y) = rows.on_button(0);
+        rows.pointer(PointerPhase::Down, x, y);
+        assert!(
+            !rows.dragging(),
+            "a press on a button does not start a drag"
+        );
+        assert!(!rows.captured(), "nor take the pointer from the button");
+        assert_eq!(
+            rows.context.world().pointer_press(document(), 1),
+            Some(rows.buttons[0].stable_id())
+        );
+        rows.pointer(PointerPhase::Up, x, y);
+        assert_eq!(rows.take_clicks(), [0]);
+        assert_eq!(rows.take_events(), Vec::<ReorderListEvent>::new());
+
+        // A jitter under the threshold is still a click.
+        rows.pointer(PointerPhase::Down, x, y);
+        rows.pointer(PointerPhase::Move, x + 1.0, y + 2.0);
+        assert!(!rows.dragging());
+        assert_eq!(rows.painted_drag(), None);
+        rows.pointer(PointerPhase::Up, x + 1.0, y + 2.0);
+        assert_eq!(rows.take_clicks(), [0]);
+        assert_eq!(rows.take_events(), Vec::<ReorderListEvent>::new());
+    }
+
+    #[test]
+    fn a_press_on_a_button_that_moves_drags_its_row() {
+        use nana_ui_input::PointerPhase;
+
+        let mut rows = ButtonRows::new(false);
+        let (x, y) = rows.on_button(0);
+        rows.pointer(PointerPhase::Down, x, y);
+        let below = rows.rows[2].y + rows.rows[2].height - 2.0;
+        rows.pointer(PointerPhase::Move, x, below);
+        // Past the threshold the list takes the pointer, and the button its
+        // press back: the release is the drop, not a click.
+        assert!(rows.dragging());
+        assert!(rows.captured());
+        assert_eq!(rows.painted_drag(), Some(0));
+        assert_eq!(rows.context.world().pointer_press(document(), 1), None);
+        assert_eq!(
+            rows.context.world().focused(document()),
+            Some(rows.list.stable_id())
+        );
+        rows.pointer(PointerPhase::Up, x, below);
+        assert_eq!(
+            rows.take_events(),
+            [ReorderListEvent::Reorder {
+                source: Arc::from("a"),
+                before: None,
+            }]
+        );
+        assert_eq!(rows.take_clicks(), Vec::<usize>::new());
+        assert!(!rows.dragging());
+        assert!(!rows.captured());
+
+        // From the last row's button up to the first row.
+        let (x, y) = rows.on_button(2);
+        rows.pointer(PointerPhase::Down, x, y);
+        let top = rows.rows[0].y + 2.0;
+        rows.pointer(PointerPhase::Move, x, top);
+        rows.pointer(PointerPhase::Up, x, top);
+        assert_eq!(
+            rows.take_events(),
+            [ReorderListEvent::Reorder {
+                source: Arc::from("c"),
+                before: Some(Arc::from("a")),
+            }]
+        );
+        assert_eq!(rows.take_clicks(), Vec::<usize>::new());
+    }
+
+    #[test]
+    fn a_row_body_still_selects_and_drags_at_once() {
+        use nana_ui_input::PointerPhase;
+
+        let mut rows = ButtonRows::new(false);
+        let (x, y) = rows.on_body(1);
+        rows.pointer(PointerPhase::Down, x, y);
+        assert!(rows.dragging(), "the row's own surface starts the gesture");
+        assert!(rows.captured());
+        rows.pointer(PointerPhase::Up, x, y);
+        assert_eq!(
+            rows.take_events(),
+            [ReorderListEvent::Select(Arc::from("b"))]
+        );
+        assert_eq!(rows.take_clicks(), Vec::<usize>::new());
+
+        let (x, y) = rows.on_body(0);
+        rows.pointer(PointerPhase::Down, x, y);
+        let below = rows.rows[2].y + rows.rows[2].height - 2.0;
+        rows.pointer(PointerPhase::Move, x, below);
+        rows.pointer(PointerPhase::Up, x, below);
+        assert_eq!(
+            rows.take_events(),
+            [ReorderListEvent::Reorder {
+                source: Arc::from("a"),
+                before: None,
+            }]
+        );
+    }
+
+    #[test]
+    fn a_tools_region_still_never_starts_a_drag() {
+        use nana_ui_input::PointerPhase;
+
+        let mut rows = ButtonRows::new(true);
+        let (x, y) = rows.on_button(0);
+        rows.pointer(PointerPhase::Down, x, y);
+        let below = rows.rows[2].y + rows.rows[2].height - 2.0;
+        rows.pointer(PointerPhase::Move, x, below);
+        assert!(!rows.dragging());
+        assert!(!rows.captured());
+        rows.pointer(PointerPhase::Up, x, below);
+        assert_eq!(rows.take_events(), Vec::<ReorderListEvent>::new());
+        // Released off the button: no click either.
+        assert_eq!(rows.take_clicks(), Vec::<usize>::new());
+
+        rows.pointer(PointerPhase::Down, x, y);
+        rows.pointer(PointerPhase::Up, x, y);
+        assert_eq!(rows.take_clicks(), [0]);
+        assert_eq!(rows.take_events(), Vec::<ReorderListEvent>::new());
     }
 
     #[test]
