@@ -12,7 +12,7 @@
   "license": "ISC",
   "type": "module",
   "devDependencies": {
-    "@vue/runtime-core": "3.5.13",
-    "esbuild": "0.25.0"
+    "@vue/runtime-core": "3.5.43",
+    "esbuild": "0.28.2"
   }
 }
