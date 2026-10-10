@@ -193,8 +193,7 @@ fn path_clip_cover(input: PathVertexOutput) -> f32 {
 }
 
 // The node's `mask-image` at `input`'s fragment, as `mask_alpha` in
-// quad_paint_data.wgsl takes it over the node's own quad: the stops' alpha,
-// or their luminance where they are opaque.
+// quad_paint_data.wgsl takes it over the node's own quad: the stops' alpha.
 fn path_node_mask(input: PathVertexOutput) -> f32 {
     if input.mask == NO_GRADIENT {
         return 1.0;
@@ -205,11 +204,7 @@ fn path_node_mask(input: PathVertexOutput) -> f32 {
         space[0].x * p.x + space[0].z * p.y + space[1].x,
         space[0].y * p.x + space[0].w * p.y + space[1].y,
     );
-    let color = gradient_color(input.mask, at);
-    if color.a < 1.0 {
-        return color.a;
-    }
-    return clamp(dot(color.rgb, vec3<f32>(0.2126, 0.7152, 0.0722)), 0.0, 1.0);
+    return gradient_color(input.mask, at).a;
 }
 
 // The premultiplied colour of `input`'s fragment at coverage `alpha`.

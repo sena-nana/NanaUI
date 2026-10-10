@@ -295,12 +295,8 @@ fn mask_alpha(local: vec2<f32>) -> f32 {
     } else {
         t = gradient_t(local, layer.mask_meta.z);
     }
-    let color = sample_mask_stops(t);
-    let lum = dot(color.xyz, vec3(0.2126, 0.7152, 0.0722));
-    if (color.a < 1.0) {
-        return color.a;
-    }
-    return lum;
+    // `mask-mode: match-source`: a gradient masks by its alpha.
+    return sample_mask_stops(t).a;
 }
 
 // One device pixel's worth of `source` at `uv`, whose screen derivatives are

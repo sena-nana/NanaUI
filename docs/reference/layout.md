@@ -613,7 +613,7 @@ Spinner、stroke mesh，以及非 HostTexture 的 Custom，在透视下画 **ide
 
 `background-repeat` 的初值是 `repeat`。`round` 按整数格缩放铺贴。`space` 和混写 fail closed，不铺成 repeat。
 
-`mask-image` 和 `-webkit-mask-image` 可以是线性或径向渐变的 alpha，或 `url()` 纹理。GPU 最多 8 个 mask 色标。
+`mask-image` 和 `-webkit-mask-image` 可以是线性或径向渐变的 alpha，或 `url()` 纹理。GPU 最多 8 个 mask 色标。两种都只取 alpha，色标和纹理的颜色不参与，即 CSS 默认的 `mask-mode: match-source`：`linear-gradient(90deg, transparent, black)` 从左到右由隐到显。`mask-mode: luminance` 不支持。
 
 mask 在节点的布局盒上求值，只作用于节点自己画的东西，不作用于子树：
 

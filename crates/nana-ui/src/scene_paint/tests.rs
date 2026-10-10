@@ -13266,3 +13266,124 @@ fn a_painted_fill_matches_the_background_under_angled_and_radial_masks() {
         assert!(spread.1 - spread.0 > 100, "{mask:?} varies: {spread:?}");
     }
 }
+
+/// `mask-image: linear-gradient(90deg, transparent, black 50%)`: black
+/// stops, opaque over the right half.
+fn black_fade_in_mask() -> nana_ui_core::MaskImage {
+    use nana_ui_core::{CssGradient, GradientStop, LinearGradient, MaskImage};
+    MaskImage::Gradient(CssGradient::Linear(LinearGradient {
+        angle_deg: 90.0,
+        stops: [(0.0, 0.0), (0.5, 1.0), (1.0, 1.0)]
+            .iter()
+            .map(|&(position, alpha)| GradientStop {
+                paint_color: None,
+                position,
+                color: [0.0, 0.0, 0.0, alpha],
+            })
+            .collect(),
+    }))
+}
+
+#[test]
+fn a_gradient_mask_takes_the_stops_alpha_not_their_luminance() {
+    // CSS `mask-mode: match-source` reads a gradient mask by its alpha: the
+    // opaque black half shows the node fully, the transparent end hides it.
+    let background = paint_styled_painter(
+        PaintFn(|cx: &mut nana_ui_runtime::PaintContext<'_>| cx.draw_default()),
+        [120.0, 20.0],
+        120,
+        20,
+        |layout| {
+            layout.background = Some([1.0, 1.0, 1.0, 1.0]);
+            layout.paint.mask = Some(black_fade_in_mask());
+        },
+    );
+    let painted = paint_styled_painter(
+        PaintFn(|cx: &mut nana_ui_runtime::PaintContext<'_>| {
+            cx.fill_path(&full_rect(120.0, 20.0), [1.0, 1.0, 1.0, 1.0]);
+        }),
+        [120.0, 20.0],
+        120,
+        20,
+        |layout| layout.paint.mask = Some(black_fade_in_mask()),
+    );
+    for (label, pixels) in [("background", &background), ("painted", &painted)] {
+        let at = |x| pixel(pixels, 120, x, 10)[0];
+        assert!(at(2) < 16, "{label} faded out at the left: {}", at(2));
+        for x in [64, 80, 100, 117] {
+            assert!(at(x) > 240, "{label} fully shown at x={x}: {}", at(x));
+        }
+        let row: Vec<u8> = (0..60).step_by(10).map(at).collect();
+        assert!(
+            row.windows(2).all(|w| w[0] < w[1]),
+            "{label} rises: {row:?}"
+        );
+    }
+}
+
+#[test]
+fn a_host_texture_gradient_mask_takes_the_stops_alpha_not_their_luminance() {
+    let (device, queue) = test_device();
+    let format = wgpu::TextureFormat::Rgba8Unorm;
+    let mut painter = SceneWgpuPainter::for_test(format);
+    let mut node = extracted_div(
+        1,
+        &[],
+        0.0,
+        0.0,
+        64.0,
+        64.0,
+        nana_ui_core::LayoutStyle {
+            paint: nana_ui_core::PaintStyle {
+                mask: Some(black_fade_in_mask()),
+                ..Default::default()
+            }
+            .into(),
+            ..Default::default()
+        },
+        None,
+    );
+    node.custom_render = Some(CustomRenderNode::new("nana.host-texture", "layer", 1));
+    let mut scene = UiScene::new();
+    scene.apply_delta([node], []);
+    let view = solid_texture_view(&device, &queue, format, 64, 64, wgpu::Color::RED);
+    let registry = register_host_texture("layer", &view, 64, 64);
+    let viewport = ScenePaintViewport {
+        logical_size: [64.0, 64.0],
+        physical_size: [64, 64],
+        scale_factor: 1.0,
+        scene_origin: [0.0, 0.0],
+        target_origin: [0.0, 0.0],
+        clear_color: [0.0, 0.0, 1.0, 1.0],
+        clear: true,
+    };
+    let (texture, target_view) = test_copy_target(&device, format, 64, 64);
+    let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+        label: Some("nana-ui host texture black mask"),
+    });
+    painter
+        .paint_encoder(
+            &scene,
+            &mut encoder,
+            &target_view,
+            viewport,
+            Some(&registry),
+            None,
+        )
+        .unwrap();
+    let pixels = readback_rgba(&device, &queue, encoder, &texture, 64, 64);
+    let left = pixel(&pixels, 64, 1, 32);
+    assert!(
+        left[2] > 230 && left[0] < 24,
+        "transparent end reveals clear blue {left:?}"
+    );
+    for x in [40, 56, 62] {
+        let shown = pixel(&pixels, 64, x, 32);
+        assert!(
+            shown[0] > 240 && shown[2] < 16,
+            "opaque black end shows the texture at x={x}: {shown:?}"
+        );
+    }
+    drop(view);
+    drop(texture);
+}
