@@ -758,6 +758,10 @@ mod tests {
         assert_eq!(doc.scroll_offset(scroller).x, -300.0);
     }
 
+    /// The wheel scrolls the inner scroller to its edge, then bubbles to the
+    /// outer one. The outer area stops at the inner scroller's own box, as
+    /// CSS scrollable overflow does, so the inner box is taller than the
+    /// outer viewport to leave the outer something to scroll.
     #[test]
     fn runtime_wheel_bubbles_nested_overflow_at_edge() {
         let mut doc = NanaTreeDocument::new(400, 300, 1.0);
@@ -780,8 +784,8 @@ mod tests {
 
         let layout_store = LayoutBoxStore::new();
         layout_store.record(outer, 0.0, 0.0, 200.0, 100.0);
-        layout_store.record(inner, 0.0, 0.0, 200.0, 80.0);
-        layout_store.record(item, 0.0, 0.0, 200.0, 200.0);
+        layout_store.record(inner, 0.0, 0.0, 200.0, 160.0);
+        layout_store.record(item, 0.0, 0.0, 200.0, 280.0);
         doc.sync_semantic_styles(&bridge.snapshot());
         doc.inject_layout_boxes(&layout_store.snapshot());
 

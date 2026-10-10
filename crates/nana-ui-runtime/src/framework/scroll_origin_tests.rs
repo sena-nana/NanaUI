@@ -346,9 +346,13 @@ fn a_commit_that_changes_the_content_re_measures_its_scroll_container() {
     assert_eq!((metrics.origin_x, metrics.content_width), (0.0, 200.0));
 }
 
-/// Nested scroll containers both follow a box written deep inside them: the
+/// Nested scroll containers both follow a box written inside them: the
 /// outer one's re-measure refreshes the inner one's content index on the
 /// way, which must not make the inner one look clean.
+///
+/// The outer one's area stops at the inner scroll container, as CSS
+/// scrollable overflow stops at the nearest clipping box: it follows the
+/// inner one's own box, not the content scrolling inside it.
 #[test]
 fn a_box_written_inside_nested_scroll_containers_re_measures_both() {
     let mut context = AppContext::new();
@@ -380,36 +384,42 @@ fn a_box_written_inside_nested_scroll_containers_re_measures_both() {
     build.write_layout(id(2), at(0.0, 0.0, 200.0, 100.0));
     build.write_layout(id(3), at(0.0, 0.0, 200.0, 150.0));
     context.commit_mutations(build).unwrap();
-    for outer_or_inner in [id(1), id(2)] {
-        assert_eq!(
+    let content_heights = |context: &AppContext| {
+        [id(1), id(2)].map(|container| {
             context
                 .world()
-                .scroll_metrics(outer_or_inner)
+                .scroll_metrics(container)
                 .unwrap()
-                .content_height,
-            150.0
-        );
-    }
+                .content_height
+        })
+    };
+    assert_eq!(content_heights(&context), [100.0, 150.0]);
 
     let mut grow = MutationQueue::new();
     grow.write_layout(id(3), at(0.0, 0.0, 200.0, 400.0));
     context.commit_mutations(grow).unwrap();
-    for outer_or_inner in [id(1), id(2)] {
-        assert_eq!(
-            context
-                .world()
-                .scroll_metrics(outer_or_inner)
-                .unwrap()
-                .content_height,
-            400.0
-        );
-    }
+    assert_eq!(content_heights(&context), [100.0, 400.0]);
 
-    // A container that stops scrolling drops its scrolling area.
+    // The inner container's own box growing is what moves the outer area.
+    let mut taller = MutationQueue::new();
+    taller.write_layout(id(2), at(0.0, 0.0, 200.0, 250.0));
+    context.commit_mutations(taller).unwrap();
+    assert_eq!(content_heights(&context), [250.0, 400.0]);
+
+    // A container that stops scrolling drops its scrolling area, and its
+    // content now overflows into the outer one.
     let mut plain = MutationQueue::new();
     plain.set_style(id(2), NodeStyle::default());
     context.commit_mutations(plain).unwrap();
     assert_eq!(context.world().scroll_metrics(id(2)), None);
+    assert_eq!(
+        context
+            .world()
+            .scroll_metrics(id(1))
+            .unwrap()
+            .content_height,
+        400.0
+    );
 }
 
 /// An offset restored in the same commit as the content it scrolls to is

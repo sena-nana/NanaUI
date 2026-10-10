@@ -147,6 +147,18 @@ fn scroll_container(layout: &nana_ui_core::LayoutStyle, visual: Option<&Standard
         || matches!(visual, Some(StandardVisual::Scrollbar { .. }))
 }
 
+/// See [`UiWorld::overflow_contained_axes`].
+fn overflow_contained_axes(
+    layout: &nana_ui_core::LayoutStyle,
+    visual: Option<&StandardVisual>,
+) -> [bool; 2] {
+    if scroll_container(layout, visual) {
+        [true, true]
+    } else {
+        [layout.overflow_x.clips(), layout.overflow_y.clips()]
+    }
+}
+
 /// Deepest retained tree the frame pipeline accepts.
 ///
 /// Style resolution walks ancestors, layout and hit-test walk descendants, and
@@ -2599,7 +2611,20 @@ impl UiWorld {
                 ))
     }
 
-    /// The scrolling area of `id`'s laid-out box over its descendants' boxes.
+    /// The axes (`[horizontal, vertical]`) on which `id` keeps what
+    /// overflows inside it out of the scrolling area of a scroll container
+    /// above it, which then counts only `id`'s own box on that axis. CSS
+    /// scrollable overflow stops at the nearest clipping box the same way: a
+    /// scroll container keeps both axes (CSS makes it clip both), another box
+    /// the axis `overflow: hidden` clips.
+    pub fn overflow_contained_axes(&self, id: StableNodeId) -> [bool; 2] {
+        self.nodes.get(id).map_or([false; 2], |record| {
+            overflow_contained_axes(&record.style.layout, self.nodes.visual(id))
+        })
+    }
+
+    /// The scrolling area of `id`'s laid-out box over the boxes under it
+    /// that reach it (see [`Self::overflow_contained_axes`]).
     pub(crate) fn layout_scroll_metrics(&self, id: StableNodeId) -> Option<ScrollMetrics> {
         let viewport = self.component_layout_box(id)?;
         if viewport.width <= 0.0 || viewport.height <= 0.0 {

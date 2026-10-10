@@ -695,6 +695,8 @@ L1 `overflow: auto|scroll` 的滚动权威仍是 Runtime 的 `ScrollOffset`。JS
 
 滚动起点在 start 边。这是 CSSOM View 的 scrolling area。`direction: rtl` 的行、`vertical-rl` 的块轴、`row-reverse` 和 `column-reverse` 从右或下开始排。初始视图就是右或下边。向左或向上溢出的内容，用负偏移滚到。和 CSSOM 一样，`scrollLeft` 和 `scrollTop` 从 0 往负走。越过 start 边另一侧的内容，滚不到。
 
+滚动范围只算到最近的裁剪盒为止，和 CSS 的 scrollable overflow 一样。里层的滚动容器只把自己的盒子算进外层的范围，它里面内容的溢出不算：滚动区里套一个滚动区，外层不会因为里层的内容变长而能滚。`overflow: hidden` / `clip` 的盒子在它裁剪的那条轴上同样只算自己的盒子，没裁剪的那条轴照常算进它的内容。滚动容器两条轴都算裁剪。哪些轴算裁剪，用 `UiWorld::overflow_contained_axes` 查。JS 的 `scrollWidth`、`scrollHeight` 按同一条规则。
+
 每个滚动容器都有度量。写布局盒、增删子节点，或改样式的提交结束时，Runtime 重新测量受影响的滚动容器，并把偏移夹进去。不论盒子是引擎写的，还是宿主写的。多行文本编辑器的度量随塑形结果走。`vertical-rl` 编辑器同样用负偏移滚向左边的列。
 
 自定义滚动条铬是 L2 的 [`ScrollView`](components.md)。L1 不另做一套 thumb 绘制。

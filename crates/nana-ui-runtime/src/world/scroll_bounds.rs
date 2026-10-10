@@ -1,9 +1,13 @@
 //! Layout-only content extents. Scroll offsets and paint effects do not change
 //! the scrollable layout range. Child maxima support shrinking as well as growth.
+//! The range stops at the nearest box that clips, as CSS scrollable overflow
+//! does: see [`UiWorld::overflow_contained_axes`].
 use super::*;
 
-/// The union of descendant layout boxes, in the scroll container's own
-/// coordinate space. Empty is inverted (`left > right`), so it merges as the
+/// The union of the layout boxes under a scroll container that reach its
+/// scrolling area, in the scroll container's own coordinate space: every
+/// descendant's box, up to a box that clips an axis, which adds only its own
+/// box on that axis. Empty is inverted (`left > right`), so it merges as the
 /// identity and reads as "nothing overflows" on every edge.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) struct Extent {
@@ -35,6 +39,20 @@ impl Extent {
             right: self.right.max(other.right),
             bottom: self.bottom.max(other.bottom),
         }
+    }
+    /// What a box (`self`) adds to the area above it: its own extent, and
+    /// `content`'s on each axis it does not keep contained.
+    fn with_content(self, content: Self, [contain_x, contain_y]: [bool; 2]) -> Self {
+        let mut extent = self;
+        if !contain_x {
+            extent.left = extent.left.min(content.left);
+            extent.right = extent.right.max(content.right);
+        }
+        if !contain_y {
+            extent.top = extent.top.min(content.top);
+            extent.bottom = extent.bottom.max(content.bottom);
+        }
+        extent
     }
 }
 
@@ -294,12 +312,13 @@ impl ContentBoundsIndex {
             self.refreshed += 1;
         }
         let omitted = record.style.layout.omits_box();
+        let contained = overflow_contained_axes(&record.style.layout, world.nodes.visual(id));
         let layout = record.layout;
         let own = |maxima: Extent| {
             if omitted {
                 Extent::EMPTY
             } else {
-                Extent::of(layout).merge(maxima)
+                Extent::of(layout).with_content(maxima, contained)
             }
         };
         let incremental = match (rebuild, self.entries.get_mut(&id)) {
@@ -382,7 +401,8 @@ impl UiWorld {
         )
     }
 
-    /// The union of `id`'s descendant boxes. Scroll offsets do not move it.
+    /// The union of the boxes under `id` that reach its scrolling area (see
+    /// [`Extent`]). Scroll offsets do not move it.
     pub(crate) fn scroll_content_extent(&self, id: StableNodeId) -> Extent {
         self.scroll_content_bounds.borrow_mut().content(self, id)
     }
@@ -466,19 +486,133 @@ mod tests {
         assert_eq!(world.scroll_content_bounds.borrow().refreshed, 2);
     }
 
+    /// The reference walk: every box under `root`, each axis of it counted
+    /// only while no box between it and `root` clips that axis. A scroll
+    /// container clips both.
     fn brute(world: &UiWorld, root: StableNodeId) -> Extent {
         let mut extent = Extent::EMPTY;
-        let mut stack = world.node(root).unwrap().children;
-        while let Some(id) = stack.pop() {
-            if world.node_style(id).unwrap().layout.omits_box() {
+        let mut stack = world
+            .node(root)
+            .unwrap()
+            .children
+            .into_iter()
+            .map(|child| (child, [true, true]))
+            .collect::<Vec<_>>();
+        while let Some((id, [open_x, open_y])) = stack.pop() {
+            let layout = &world.node_style(id).unwrap().layout;
+            if layout.omits_box() {
                 continue;
             }
-            let node = world.node(id).unwrap();
-            let layout = world.layout_box(id).unwrap();
-            extent = extent.merge(Extent::of(layout));
-            stack.extend(node.children);
+            let own = Extent::of(world.layout_box(id).unwrap());
+            extent = extent.merge(Extent {
+                left: if open_x { own.left } else { f32::INFINITY },
+                right: if open_x { own.right } else { f32::NEG_INFINITY },
+                top: if open_y { own.top } else { f32::INFINITY },
+                bottom: if open_y {
+                    own.bottom
+                } else {
+                    f32::NEG_INFINITY
+                },
+            });
+            let scrolls = layout.overflow_x.scrolls() || layout.overflow_y.scrolls();
+            let open = [
+                open_x && !scrolls && !layout.overflow_x.clips(),
+                open_y && !scrolls && !layout.overflow_y.clips(),
+            ];
+            stack.extend(
+                world
+                    .node(id)
+                    .unwrap()
+                    .children
+                    .into_iter()
+                    .map(|child| (child, open)),
+            );
         }
         extent
+    }
+
+    /// A box that clips stops its content at its own edges, as CSS
+    /// scrollable overflow does: an inner scroll container, or an
+    /// `overflow: hidden` box on the axis it hides, adds its own box to the
+    /// extent above it and nothing that overflows inside it.
+    #[test]
+    fn a_clipping_box_adds_only_its_own_box_to_the_extent_above_it() {
+        let document = crate::DocumentId::new(1).unwrap();
+        let at = |x: f32, y: f32, width: f32, height: f32| crate::LayoutBox {
+            x,
+            y,
+            width,
+            height,
+        };
+        let overflow = |x: nana_ui_core::OverflowSpec, y: nana_ui_core::OverflowSpec| {
+            let mut style = NodeStyle::default();
+            let layout = Arc::make_mut(&mut style.layout);
+            layout.overflow_x = x;
+            layout.overflow_y = y;
+            style
+        };
+        use nana_ui_core::OverflowSpec::{Auto, Hidden, Scroll, Visible};
+        // 1 > [2 (clips) > 3 (overflows 2), 4].
+        let mut world = UiWorld::new();
+        let mut mutations = MutationQueue::new();
+        mutations.create(id(1), document, NodeKind::Document);
+        for (child, parent) in [(2, 1), (3, 2), (4, 1)] {
+            mutations.create(id(child), document, NodeKind::Element { tag: "div".into() });
+            mutations.insert(id(parent), id(child), None);
+        }
+        mutations.set_style(id(2), overflow(Hidden, Hidden));
+        mutations.write_layout(id(2), at(0.0, 0.0, 100.0, 50.0));
+        mutations.write_layout(id(3), at(0.0, 0.0, 300.0, 400.0));
+        mutations.write_layout(id(4), at(0.0, 50.0, 100.0, 20.0));
+        world.commit(mutations).unwrap();
+        let bounds = |left, top, right, bottom| Extent {
+            left,
+            top,
+            right,
+            bottom,
+        };
+        assert_eq!(
+            world.scroll_content_extent(id(1)),
+            bounds(0.0, 0.0, 100.0, 70.0)
+        );
+        // The clipping box's own area still holds all of its content.
+        assert_eq!(
+            world.scroll_content_extent(id(2)),
+            bounds(0.0, 0.0, 300.0, 400.0)
+        );
+
+        // Content moving inside the clip does not reach the extent above.
+        let mut mutations = MutationQueue::new();
+        mutations.write_layout(id(3), at(-20.0, -10.0, 300.0, 900.0));
+        world.commit(mutations).unwrap();
+        assert_eq!(
+            world.scroll_content_extent(id(1)),
+            bounds(0.0, 0.0, 100.0, 70.0)
+        );
+        assert_eq!(
+            world.scroll_content_extent(id(2)),
+            bounds(-20.0, -10.0, 280.0, 890.0)
+        );
+
+        // Restyling the box changes what it contributes, with no box moved:
+        // one hidden axis keeps the other open, and a scroll container clips
+        // both whichever one scrolls.
+        for (style, expected) in [
+            (overflow(Hidden, Visible), bounds(0.0, -10.0, 100.0, 890.0)),
+            (overflow(Visible, Hidden), bounds(-20.0, 0.0, 280.0, 70.0)),
+            (
+                overflow(Visible, Visible),
+                bounds(-20.0, -10.0, 280.0, 890.0),
+            ),
+            (overflow(Visible, Scroll), bounds(0.0, 0.0, 100.0, 70.0)),
+            (overflow(Auto, Visible), bounds(0.0, 0.0, 100.0, 70.0)),
+        ] {
+            let mut mutations = MutationQueue::new();
+            mutations.set_style(id(2), style);
+            world.commit(mutations).unwrap();
+            assert_eq!(world.scroll_content_extent(id(1)), expected);
+            assert_eq!(world.scroll_content_extent(id(1)), brute(&world, id(1)));
+        }
     }
 
     fn far(world: &UiWorld, id: StableNodeId) -> (f32, f32) {

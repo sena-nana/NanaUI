@@ -2763,9 +2763,10 @@ impl UiWorld {
     }
 
     /// `id`'s effective layout moved from `previous` to `next`, by a style
-    /// write or a responsive variant: a box that appears or disappears
-    /// changes its scroll ancestors' content, and a container that starts or
-    /// stops scrolling, or restyles, is re-measured even when no box moved.
+    /// write or a responsive variant: a box that appears or disappears, or
+    /// starts or stops keeping its overflow in, changes its scroll ancestors'
+    /// content, and a container that starts or stops scrolling, or restyles,
+    /// is re-measured even when no box moved.
     fn track_scroll_style(
         &mut self,
         id: StableNodeId,
@@ -2779,10 +2780,12 @@ impl UiWorld {
         let visual = self.nodes.visual(id);
         let was = scroll_container(previous, visual);
         let now = scroll_container(next, visual);
+        let contains =
+            overflow_contained_axes(previous, visual) != overflow_contained_axes(next, visual);
         // By value: a `ScrollView` re-projects an equal style in a fresh
         // `Arc` on every update.
         let restyled = (was || now) && **previous != **next;
-        if previous.omits_box() != next.omits_box() {
+        if previous.omits_box() != next.omits_box() || contains {
             self.invalidate_scroll_content(id);
             self.scroll_layout_touched = true;
         }
@@ -2792,10 +2795,16 @@ impl UiWorld {
     }
 
     fn track_scroll_container(&mut self, id: StableNodeId, scrolls: bool) {
-        if scrolls {
-            self.scroll_containers.insert(id);
+        let changed = if scrolls {
+            self.scroll_containers.insert(id)
         } else {
-            self.scroll_containers.remove(&id);
+            self.scroll_containers.remove(&id)
+        };
+        if changed {
+            // A scroll container keeps its content out of the area above it:
+            // a scrollbar visual coming or going moves what it adds there.
+            self.invalidate_scroll_content(id);
+            self.scroll_layout_touched = true;
         }
         self.scroll_restyled.push(id);
     }

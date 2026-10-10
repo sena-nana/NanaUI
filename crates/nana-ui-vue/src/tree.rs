@@ -1160,6 +1160,10 @@ impl NanaTreeDocument {
     /// The scrolling area over the Scene's un-scrolled writeback boxes, else
     /// Runtime layout. View boxes already carry this scroller's own offset,
     /// which would shrink the area by the distance scrolled.
+    ///
+    /// Like Runtime's, the area stops at a box that clips: past it, only that
+    /// box's own extent counts on the axes it clips
+    /// ([`UiWorld::overflow_contained_axes`]).
     pub(crate) fn layout_scroll_metrics_from(
         &self,
         node: NodeHandle,
@@ -1173,15 +1177,34 @@ impl NanaTreeDocument {
             f32::NEG_INFINITY,
             f32::NEG_INFINITY,
         ];
-        let mut stack = self.children_of(node);
-        while let Some(child) = stack.pop() {
+        // Each child with the axes still open between it and `node`.
+        let mut stack = self
+            .children_of(node)
+            .into_iter()
+            .map(|child| (child, [true, true]))
+            .collect::<Vec<_>>();
+        while let Some((child, [open_x, open_y])) = stack.pop() {
             if let Some(box_) = box_of(child) {
-                content[0] = content[0].min(box_.x);
-                content[1] = content[1].min(box_.y);
-                content[2] = content[2].max(box_.x + box_.width);
-                content[3] = content[3].max(box_.y + box_.height);
+                if open_x {
+                    content[0] = content[0].min(box_.x);
+                    content[2] = content[2].max(box_.x + box_.width);
+                }
+                if open_y {
+                    content[1] = content[1].min(box_.y);
+                    content[3] = content[3].max(box_.y + box_.height);
+                }
             }
-            stack.extend(self.children_of(child));
+            let [contain_x, contain_y] = StableNodeId::try_from(child)
+                .map(|id| self.world().overflow_contained_axes(id))
+                .unwrap_or_default();
+            let open = [open_x && !contain_x, open_y && !contain_y];
+            if open != [false, false] {
+                stack.extend(
+                    self.children_of(child)
+                        .into_iter()
+                        .map(|grandchild| (grandchild, open)),
+                );
+            }
         }
         let far_start = StableNodeId::try_from(node)
             .map(|id| self.world().scroll_far_start_axes(id))

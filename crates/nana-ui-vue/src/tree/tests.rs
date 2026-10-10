@@ -7573,3 +7573,53 @@ fn broken_message_args_are_reported_once_and_do_not_stop_the_frame() {
     assert_eq!(doc.runtime.text(id), Some("4 files"));
     assert!(!doc.i18n.errors.has(text.0));
 }
+
+/// JS `scrollWidth` / `scrollHeight` of a box nothing published a scrolling
+/// area for stops at a descendant that clips, as CSS scrollable overflow
+/// does: an `overflow: hidden` child adds its own box, not what overflows
+/// inside it.
+#[test]
+fn scroll_size_stops_at_a_descendant_that_clips() {
+    let mut doc = NanaTreeDocument::new(400, 300, 1.0);
+    let parent = doc.create_element("div");
+    let clip = doc.create_element("div");
+    let content = doc.create_element("div");
+    doc.insert(parent, doc.mount_root(), None);
+    doc.insert(clip, parent, None);
+    doc.insert(content, clip, None);
+    let hidden = nana_ui_core::LayoutStyle {
+        overflow_x: nana_ui_core::OverflowSpec::Hidden,
+        overflow_y: nana_ui_core::OverflowSpec::Hidden,
+        ..Default::default()
+    };
+    doc.sync_widget_layouts([(clip.0, &hidden)]);
+    let at = |handle, x, y, width, height| {
+        (
+            handle,
+            LayoutBox {
+                handle,
+                x,
+                y,
+                width,
+                height,
+            },
+        )
+    };
+    doc.apply_layout_boxes(&[
+        at(parent, 0.0, 0.0, 200.0, 100.0),
+        at(clip, 0.0, 0.0, 300.0, 60.0),
+        at(content, 0.0, 0.0, 500.0, 400.0),
+    ]);
+    let store = LayoutBoxStore::new();
+    assert_eq!(
+        query_scroll_content_size(&store, &doc, parent, 200.0, 100.0),
+        (300.0, 100.0)
+    );
+
+    let visible = nana_ui_core::LayoutStyle::default();
+    doc.sync_widget_layouts([(clip.0, &visible)]);
+    assert_eq!(
+        query_scroll_content_size(&store, &doc, parent, 200.0, 100.0),
+        (500.0, 400.0)
+    );
+}

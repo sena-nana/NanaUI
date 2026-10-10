@@ -4280,6 +4280,64 @@ fn file_drag_drop_miss_redraws_so_hover_chrome_clears() {
     assert!(context.drop_hover().is_none());
 }
 
+/// A page that scrolls around a list that scrolls on its own: the page's
+/// area stops at the list's box, as CSS scrollable overflow stops at the
+/// nearest clipping box. A page that fits does not scroll by the list's
+/// content.
+#[test]
+fn a_scroll_view_inside_a_scroll_view_adds_only_its_own_box_to_the_outer_area() {
+    let mut context = AppContext::new();
+    let document = DocumentId::new(1).unwrap();
+    let sized = |width: LengthSpec, height: f32| {
+        let mut style = NodeStyle::default();
+        let layout = Arc::make_mut(&mut style.layout);
+        layout.width = Some(width);
+        layout.height = Some(LengthSpec::Px(height));
+        style
+    };
+    let page = context
+        .create_component(
+            document,
+            ScrollView::new(ScrollAxes::Vertical).style(sized(LengthSpec::Px(200.0), 300.0)),
+        )
+        .unwrap();
+    let header = context
+        .create_component(
+            document,
+            Text::new("Logs").style(sized(LengthSpec::Fill, 40.0)),
+        )
+        .unwrap();
+    context.append_child(page, header).unwrap();
+    let list = context
+        .create_component(
+            document,
+            ScrollView::new(ScrollAxes::Vertical).style(sized(LengthSpec::Fill, 200.0)),
+        )
+        .unwrap();
+    context.append_child(page, list).unwrap();
+    for index in 0..10 {
+        let row = context
+            .create_component(
+                document,
+                Text::new(format!("Line {index}")).style(sized(LengthSpec::Fill, 40.0)),
+            )
+            .unwrap();
+        context.append_child(list, row).unwrap();
+    }
+    context
+        .layout_document(document, crate::LayoutViewport::new(200.0, 300.0))
+        .unwrap();
+
+    let metrics = |scroll: Entity<ScrollView>| context.world().scroll_metrics(scroll.id).unwrap();
+    assert_eq!(metrics(list).content_height, 400.0);
+    assert_eq!(
+        metrics(page).content_height,
+        300.0,
+        "the page holds a 40px header and a 200px list"
+    );
+    assert_eq!(metrics(page).max_offset().y, 0.0);
+}
+
 fn overflowing_scroll_view(
     context: &mut AppContext,
     document: DocumentId,
