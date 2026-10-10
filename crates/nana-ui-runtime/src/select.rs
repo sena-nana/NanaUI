@@ -10,7 +10,8 @@ use crate::{
     StandardVisual, TextContent, TextVerticalAlignment, UiWorld,
 };
 
-const HANDLE_WIDTH: f32 = nana_ui_core::type_scale::LINE;
+/// Width of the drop-down arrow at the end of the field.
+pub(crate) const HANDLE_WIDTH: f32 = nana_ui_core::type_scale::LINE;
 const MENU_GAP: f32 = 0.0;
 const MENU_PAD: f32 = crate::popover::MENU_SURFACE_PADDING;
 use crate::popover::MENU_ITEM_GAP;
@@ -63,6 +64,10 @@ pub struct Select {
     pub invalid: bool,
     pub opened: bool,
     pub highlighted: Option<usize>,
+    /// Size the field's content to its widest option and its arrow, as a
+    /// native `<select>` sizes itself, rather than to the label it shows.
+    /// See [`Self::fit_options`].
+    pub fit_options: bool,
     pub style: NodeStyle,
 }
 
@@ -87,6 +92,7 @@ impl Select {
             invalid: false,
             opened: false,
             highlighted: None,
+            fit_options: false,
             style: field_style_for_size(ControlSize::Medium),
         }
     }
@@ -112,6 +118,19 @@ impl Select {
     pub fn size(mut self, size: ControlSize) -> Self {
         self.size = size;
         apply_field_size(&mut self.style, size);
+        self
+    }
+
+    /// Size the field like a native `<select>`: its content is as wide as its
+    /// widest option (or, while it shows it, its placeholder) plus the arrow,
+    /// whichever option it shows, so choosing another one does not move it.
+    ///
+    /// This is the field's own content width, which a content-sized width
+    /// (`LengthSpec::Shrink`, CSS `max-content`) uses. The default width
+    /// still fills the row, and an explicit width, `min_width` or `max_width`
+    /// still applies over it.
+    pub fn fit_options(mut self, fit: bool) -> Self {
+        self.fit_options = fit;
         self
     }
 
@@ -366,6 +385,7 @@ impl crate::ComponentView for Select {
                 .collect(),
             highlighted: self.highlighted,
             checkable: false,
+            fit_options: self.fit_options,
         };
         if world.standard_visual(id) != Some(visual.clone()) {
             mutations.set_standard_visual(id, Some(visual));
@@ -973,6 +993,190 @@ mod tests {
                 ControlSize::Medium.height_in(nana_ui_core::UI_METRICS)
             ))
         );
+    }
+
+    /// One frame the way `RuntimeDocument::flush` runs it: styles, the
+    /// scheduled text, layout of what moved, then text again at the boxes
+    /// that layout gave it.
+    fn frame(context: &mut AppContext, shaper: &mut crate::MeasureTextShaper) {
+        let viewport = crate::LayoutViewport::new(600.0, 400.0);
+        context.compat_world_mut().observe_text_shaper(shaper);
+        for _ in 0..8 {
+            let work = context.take_system_work();
+            let mut seeds = work.layout_frontier_seeds.clone();
+            if !work.is_empty() {
+                context.resolve_styles(&work.style).unwrap();
+                context.shape_text(&work.text, shaper).unwrap();
+            }
+            seeds.extend(context.take_layout_frontier_seeds(document()));
+            if work.is_empty() && seeds.is_empty() {
+                return;
+            }
+            if !seeds.is_empty() {
+                context
+                    .layout_document_for_viewport(document(), viewport, &seeds)
+                    .unwrap();
+                let scope = context.take_last_layout_scope();
+                context
+                    .shape_text_for_layout_scoped(&scope, shaper)
+                    .unwrap();
+            }
+        }
+        panic!("the frame did not settle");
+    }
+
+    fn sized_options() -> Vec<SelectOption> {
+        vec![
+            SelectOption::new("a", "A"),
+            SelectOption::new("long", "A much longer option"),
+            SelectOption::new("b", "B"),
+        ]
+    }
+
+    fn shrink(mut select: Select) -> Select {
+        Arc::make_mut(&mut select.style.layout).width = Some(LengthSpec::Shrink);
+        select
+    }
+
+    /// `selects` stacked in a 400px column that does not stretch them.
+    fn stacked(
+        selects: Vec<Select>,
+    ) -> (
+        AppContext,
+        Vec<crate::Entity<Select>>,
+        crate::MeasureTextShaper,
+    ) {
+        use crate::Stack;
+
+        let mut context = AppContext::new();
+        let page = context
+            .create_component(
+                document(),
+                Stack::column(0.0).with_layout(|layout| {
+                    layout.width = Some(LengthSpec::Px(400.0));
+                    layout.align_items = nana_ui_core::AlignSpec::Start;
+                }),
+            )
+            .unwrap();
+        let ids = selects
+            .into_iter()
+            .map(|select| {
+                let select = context.create_component(document(), select).unwrap();
+                context.append_child(page, select).unwrap();
+                select
+            })
+            .collect();
+        let mut shaper = crate::MeasureTextShaper;
+        frame(&mut context, &mut shaper);
+        (context, ids, shaper)
+    }
+
+    fn width(context: &AppContext, select: crate::Entity<Select>) -> f32 {
+        context
+            .world()
+            .layout_box(select.stable_id())
+            .unwrap()
+            .width
+    }
+
+    #[test]
+    fn a_select_that_fits_its_options_holds_the_widest_and_its_arrow() {
+        let (context, selects, _) = stacked(vec![
+            shrink(
+                Select::new(Some("a"))
+                    .options(sized_options())
+                    .fit_options(true),
+            ),
+            // Showing the widest option: the width the fitted one sizes to.
+            shrink(Select::new(Some("long")).options(sized_options())),
+            shrink(Select::new(Some("a")).options(sized_options())),
+            Select::new(Some("a"))
+                .options(sized_options())
+                .fit_options(true),
+        ]);
+        let widest = width(&context, selects[1]);
+        assert_eq!(width(&context, selects[0]), widest + HANDLE_WIDTH);
+        // Without it a content-sized select is as wide as what it shows.
+        assert!(width(&context, selects[2]) < widest);
+        // An explicit width still decides: the default one fills the row.
+        assert_eq!(width(&context, selects[3]), 400.0);
+        // The label holds the widest option; the arrow is beside it.
+        let widest_label = context
+            .world()
+            .text_metrics(selects[1].stable_id())
+            .unwrap()
+            .width;
+        let Some(ComponentGeometry::Select { label, handle, .. }) =
+            context.world().component_geometry(selects[0].stable_id())
+        else {
+            panic!("select geometry");
+        };
+        assert_eq!(label.bounds.width, widest_label);
+        assert_eq!(handle.width, HANDLE_WIDTH);
+        assert_eq!(handle.x, label.bounds.x + label.bounds.width);
+    }
+
+    #[test]
+    fn a_select_that_fits_its_options_follows_them_and_not_its_value() {
+        let (mut context, selects, mut shaper) = stacked(vec![shrink(
+            Select::new(Some("a"))
+                .options(sized_options())
+                .fit_options(true),
+        )]);
+        let select = selects[0];
+        let fitted = width(&context, select);
+        // One character of the shaper's text is one em: what "A" measures.
+        let em = context
+            .world()
+            .text_metrics(select.stable_id())
+            .unwrap()
+            .width;
+        for value in ["b", "long", "a"] {
+            context
+                .update_component(select, |select, _| select.value = Some(value.into()))
+                .unwrap();
+            frame(&mut context, &mut shaper);
+            assert_eq!(width(&context, select), fitted, "showing {value}");
+        }
+        // Six characters longer than the widest option so far.
+        let mut longer = sized_options();
+        longer.push(SelectOption::new("longer", "An even much longer option"));
+        context
+            .update_component(select, |select, _| select.options = longer)
+            .unwrap();
+        frame(&mut context, &mut shaper);
+        assert_eq!(width(&context, select), fitted + 6.0 * em);
+        context
+            .update_component(select, |select, _| select.options = sized_options())
+            .unwrap();
+        frame(&mut context, &mut shaper);
+        assert_eq!(width(&context, select), fitted);
+        // Off again: as wide as "A", the arrow no longer reserved.
+        context
+            .update_component(select, |select, _| select.fit_options = false)
+            .unwrap();
+        frame(&mut context, &mut shaper);
+        let plain = width(&context, select);
+        assert_eq!(plain, fitted - 19.0 * em - HANDLE_WIDTH);
+        context
+            .update_component(select, |select, _| select.fit_options = true)
+            .unwrap();
+        frame(&mut context, &mut shaper);
+        assert_eq!(width(&context, select), fitted);
+        // Showing the widest option, only the arrow is the difference.
+        context
+            .update_component(select, |select, _| {
+                select.value = Some("long".into());
+                select.fit_options = false;
+            })
+            .unwrap();
+        frame(&mut context, &mut shaper);
+        assert_eq!(width(&context, select), fitted - HANDLE_WIDTH);
+        context
+            .update_component(select, |select, _| select.fit_options = true)
+            .unwrap();
+        frame(&mut context, &mut shaper);
+        assert_eq!(width(&context, select), fitted);
     }
 
     #[test]

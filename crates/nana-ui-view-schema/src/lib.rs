@@ -130,6 +130,7 @@ macro_rules! for_each_control {
                 placeholder: Option<Arc<str>> = set,
                 disabled: bool = set,
                 loading: bool = set,
+                fit_options: bool = set,
             }
             with { on_change: SelectChanged }
             model value: Option<Arc<str>> => SelectChanged |event| Some(event.value.clone());

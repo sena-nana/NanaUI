@@ -1165,6 +1165,33 @@ impl<'a> ValidationPlan<'a> {
     }
 }
 
+// The option labels a select that sizes to its options measures; see
+// `Select::fit_options`. Its text asks layout for the widest of them.
+fn select_fitted_options(visual: Option<&StandardVisual>) -> Option<&[crate::SelectOptionData]> {
+    match visual {
+        Some(StandardVisual::Select {
+            fit_options: true,
+            options,
+            ..
+        }) => Some(options),
+        _ => None,
+    }
+}
+
+fn select_fitted_options_changed(
+    previous: Option<&StandardVisual>,
+    next: Option<&StandardVisual>,
+) -> bool {
+    match (select_fitted_options(previous), select_fitted_options(next)) {
+        (None, None) => false,
+        (Some(previous), Some(next)) => !previous
+            .iter()
+            .map(|option| &option.label)
+            .eq(next.iter().map(|option| &option.label)),
+        _ => true,
+    }
+}
+
 // Select options extend the hit region without changing the field layout.
 // Highlight and label changes remain paint-only.
 fn select_menu_hit_shape(visual: Option<&StandardVisual>) -> Option<(ControlSize, usize)> {
@@ -1721,12 +1748,21 @@ impl UiWorld {
                 };
                 let text_path_changed = super::text_visual_key(self.nodes.visual(*id))
                     != super::text_visual_key(visual.as_ref());
+                let select_fit_changed =
+                    select_fitted_options_changed(self.nodes.visual(*id), visual.as_ref());
                 let markdown_changed =
                     markdown_blocks_changed(self.nodes.visual(*id), visual.as_ref());
                 self.nodes.set_visual(*id, visual.clone());
                 if text_path_changed {
                     // The text path or a leading indicator's inset changed; the
                     // box may not move, so schedule the text explicitly.
+                    self.mark(*id, DirtyMask::TEXT);
+                }
+                if select_fit_changed {
+                    // Its text measures the options now, though the label it
+                    // shows may be the same.
+                    self.nodes
+                        .invalidate_text(*id, crate::text_node::TextDirty::CONTENT);
                     self.mark(*id, DirtyMask::TEXT);
                 }
                 self.sync_node_presence(*id);
@@ -1750,6 +1786,7 @@ impl UiWorld {
                     self.reconcile_text_fold_offered(*id, offered);
                 }
                 let visual_layout_changed = button_layout_changed
+                    || select_fit_changed
                     || text_input_presentation_changed
                     || empty_state_presentation_changed
                     || modal_presentation_changed
@@ -1793,6 +1830,7 @@ impl UiWorld {
                         },
                 );
                 if button_layout_changed
+                    || select_fit_changed
                     || text_input_presentation_changed
                     || empty_state_presentation_changed
                     || modal_presentation_changed

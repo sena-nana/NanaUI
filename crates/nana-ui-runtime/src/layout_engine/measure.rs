@@ -426,9 +426,9 @@ fn text_inline_size(
 }
 
 /// What a node's standard visual draws in its content box beside its text:
-/// a button's glyphs, a checkbox's indicator. Measured with the text, and
-/// compared by a measure plan: a visual change moves it without touching the
-/// node's style or text.
+/// a button's glyphs, a checkbox's indicator, the arrow of a select that
+/// sizes to its options. Measured with the text, and compared by a measure
+/// plan: a visual change moves it without touching the node's style or text.
 #[derive(Debug, Clone, Copy, PartialEq, Default)]
 pub(super) struct VisualContent {
     /// Width added beside the text.
@@ -470,6 +470,14 @@ fn visual_content(id: StableNodeId, world: &UiWorld) -> VisualContent {
                     0.0
                 },
             height: size.indicator_size(),
+        },
+        // Its text already asks for the widest option (`text_natural_width`);
+        // the arrow stands beside it.
+        Some(crate::StandardVisual::Select {
+            fit_options: true, ..
+        }) => VisualContent {
+            width: crate::select::HANDLE_WIDTH,
+            ..VisualContent::default()
         },
         _ => VisualContent::default(),
     }

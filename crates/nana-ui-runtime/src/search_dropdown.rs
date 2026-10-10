@@ -371,6 +371,7 @@ impl ComponentView for SearchDropdown {
             options: self.option_data().into(),
             highlighted: self.highlighted_visible(),
             checkable: false,
+            fit_options: false,
         };
         if world.standard_visual(id) != Some(visual.clone()) {
             mutations.set_standard_visual(id, Some(visual));

@@ -445,6 +445,7 @@ impl ComponentView for Dropdown {
             options: self.option_data().into(),
             highlighted: self.highlighted,
             checkable: matches!(self.selection, DropdownSelection::Multiple(_)),
+            fit_options: false,
         };
         if world.standard_visual(id) != Some(visual.clone()) {
             mutations.set_standard_visual(id, Some(visual));

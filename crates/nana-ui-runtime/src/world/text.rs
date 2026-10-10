@@ -4164,7 +4164,7 @@ impl UiWorld {
         // Read before the engine borrows the node's source.
         let hugged = self.shapes_anew_in_a_hugging_box(id, &constraints);
         let mut node_work = nana_text::TextWorkCounters::default();
-        let resolved = match engine {
+        let mut resolved = match engine {
             Some(engine) => {
                 let alignment = self.record(id).style.text_horizontal_alignment;
                 let (source, copied) = self
@@ -4293,12 +4293,57 @@ impl UiWorld {
                 }
             }
         };
+        // A select that sizes to its options asks layout for the widest one,
+        // whichever it shows.
+        if let Some(widest) = self.widest_fitted_option(id, &style, constraints, shaper)
+            && widest > resolved.metrics.width
+        {
+            resolved.natural = Some(
+                resolved
+                    .natural
+                    .map_or(widest, |natural| natural.max(widest)),
+            );
+        }
         if !is_text_node {
             node_work.text_nodes_considered = 0;
             node_work.text_nodes_shaped = 0;
         }
         work.accumulate(node_work);
         resolved
+    }
+
+    /// The widest option label of a select that sizes to its options
+    /// ([`crate::Select::fit_options`]), measured on one line in the field's
+    /// own style, the way its label is. `None` for any other node.
+    fn widest_fitted_option<S: TextShaper>(
+        &self,
+        id: StableNodeId,
+        style: &ComputedStyle,
+        constraints: crate::TextShapeConstraints,
+        shaper: &mut CountingShaper<'_, S>,
+    ) -> Option<f32> {
+        let Some(StandardVisual::Select {
+            fit_options: true,
+            options,
+            ..
+        }) = self.nodes.visual(id)
+        else {
+            return None;
+        };
+        let line = crate::TextShapeConstraints {
+            max_width: None,
+            wrap: false,
+            ellipsis: false,
+            max_lines: None,
+            ..constraints
+        };
+        options
+            .iter()
+            .map(|option| {
+                let label = TextContent::new(Arc::clone(&option.label));
+                shaper.shape(id, &label, style, line).width
+            })
+            .reduce(f32::max)
     }
 
     /// Whether `id` shapes anew (new content, font, shaping style or

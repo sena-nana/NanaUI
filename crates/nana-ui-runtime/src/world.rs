@@ -2861,7 +2861,9 @@ impl UiWorld {
 
     /// The width a plain text that wrapped to its box takes unwrapped, when
     /// that is wider than the lines it wrapped to: what it asks of layout
-    /// once its box may grow. `None` for text that did not wrap.
+    /// once its box may grow. For a select that sizes to its options
+    /// ([`crate::Select::fit_options`]) it is also its widest option, when
+    /// that is wider than the label it shows. `None` otherwise.
     pub(crate) fn text_natural_width(&self, id: StableNodeId) -> Option<f32> {
         self.nodes.text_natural_width(id).copied()
     }

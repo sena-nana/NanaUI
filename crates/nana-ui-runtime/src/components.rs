@@ -943,6 +943,10 @@ pub enum StandardVisual {
         /// dropdown). The check lane is reserved for the whole menu when it
         /// can, so labels do not shift as options are checked and unchecked.
         checkable: bool,
+        /// Whether the field's content holds its widest option and its arrow,
+        /// as a native `<select>` sizes itself, rather than only the label it
+        /// shows. See [`crate::Select::fit_options`].
+        fit_options: bool,
     },
     MenuSurface {
         kind: MenuSurfaceKind,

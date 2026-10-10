@@ -1771,6 +1771,39 @@ fn a_template_names_controls_by_label_and_by_caption() {
     assert_eq!(mounted.roots().len(), 1);
 }
 
+/// `fit_options` is a select's attribute in a template as on `select()`.
+#[test]
+fn a_template_sizes_a_select_to_its_options() {
+    use nana_ui_runtime::view::node_ref;
+    use nana_ui_runtime::{Select, SelectOption};
+    let mut cx = AppContext::new();
+    let document = DocumentId::new(1).unwrap();
+    let refs = std::cell::Cell::new(None);
+    cx.mount_view_root(document, || {
+        let (fitted, plain) = (node_ref(), node_ref());
+        refs.set(Some((fitted, plain)));
+        let options = vec![SelectOption::new("a", "A"), SelectOption::new("b", "B")];
+        let (options_a, options_b) = (options.clone(), options);
+        view! {
+            <Column>
+                <Select options={options_a} fit_options={true} ref={fitted} />
+                <Select options={options_b} ref={plain} />
+            </Column>
+        }
+    })
+    .unwrap();
+    let (fitted, plain) = refs.get().unwrap();
+    let fits = |node: nana_ui_runtime::view::NodeRef| {
+        cx.read(
+            Entity::<Select>::from_stable_id(node.get_untracked().unwrap()),
+            |select| select.fit_options,
+        )
+        .unwrap()
+    };
+    assert!(fits(fitted));
+    assert!(!fits(plain));
+}
+
 /// `<T id=… name=…/>` is `t(LocalizedText::new(id).arg(name, …))` and
 /// `locale=` is `.locale(..)`: a template and its function calls mount the
 /// same localized tree, and follow the same writes and the same switch.
