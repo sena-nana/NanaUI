@@ -362,8 +362,8 @@ pub use range_span::{
 };
 #[cfg(feature = "controls")]
 pub use reorder_list::{
-    ReorderItem, ReorderList, ReorderListEvent, ReorderListPointer, ReorderRowPaint,
-    TreeDropIntent, TreeDropPosition,
+    ReorderDragVisual, ReorderItem, ReorderList, ReorderListEvent, ReorderListPointer,
+    ReorderRowPaint, TreeDropIntent, TreeDropPosition,
 };
 #[cfg(feature = "rich-text")]
 pub use rich_text::{

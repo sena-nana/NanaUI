@@ -150,6 +150,37 @@ struct ReorderDrag {
     moved: bool,
 }
 
+/// What a list shows while a row is dragged past the threshold: which row,
+/// where the pointer is and which rows take a drop. The row boxes come from
+/// layout — the list's own uniform rows, or its live row children — so the
+/// drop indicator is resolved where those boxes are known.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ReorderDragVisual {
+    /// The dragged row's index in [`ReorderList::items`].
+    pub source: usize,
+    pub x: f32,
+    pub y: f32,
+    pub drop_targets: Arc<[bool]>,
+    pub tree_drop: bool,
+}
+
+impl ReorderDragVisual {
+    /// The drop indicator over `rows` inside `bounds`: the insert line, or
+    /// the target's line for a tree drop; `None` where a drop changes nothing.
+    pub fn insert_line(&self, bounds: LayoutBox, rows: &[LayoutBox]) -> Option<LayoutBox> {
+        if self.tree_drop {
+            let (target, position) =
+                tree_drop_target(rows, &self.drop_targets, Some(self.source), self.x, self.y)?;
+            return Some(tree_insert_line(rows[target], position));
+        }
+        let before = drop_before_index(rows, &self.drop_targets, Some(self.source), self.y);
+        if !reorder_changes_position(rows.len(), self.source, before) {
+            return None;
+        }
+        Some(reorder_insert_line(bounds, rows, before))
+    }
+}
+
 /// One painted row. Application identities stay on [`ReorderItem`].
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ReorderRowPaint {
@@ -295,29 +326,32 @@ impl ReorderList {
             .collect()
     }
 
-    /// Insert-line (or inside highlight) for the active drop.
+    /// Insert-line (or inside highlight) for the active drop over the list's
+    /// own uniform rows.
     pub fn insert_line(
         &self,
         bounds: LayoutBox,
         metrics: nana_ui_core::ThemeMetrics,
     ) -> Option<LayoutBox> {
+        self.drag_visual()?
+            .insert_line(bounds, &self.row_bounds(bounds, metrics))
+    }
+
+    /// The drag feedback to paint: present once a row has moved past the
+    /// threshold, gone again when the gesture ends.
+    pub fn drag_visual(&self) -> Option<ReorderDragVisual> {
         let drag = self.drag.as_ref().filter(|drag| drag.moved)?;
         let source = self.item_index(&drag.source)?;
-        if !self.items.get(source).is_some_and(ReorderItem::is_source) {
+        if !self.items[source].is_source() {
             return None;
         }
-        let rows = self.row_bounds(bounds, metrics);
-        let drop_targets = self.drop_target_flags();
-        if self.tree_drop {
-            let (target, position) =
-                tree_drop_target(&rows, &drop_targets, Some(source), drag.x, drag.y)?;
-            return Some(tree_insert_line(rows[target], position));
-        }
-        let before = drop_before_index(&rows, &drop_targets, Some(source), drag.y);
-        if !reorder_changes_position(self.items.len(), source, before) {
-            return None;
-        }
-        Some(reorder_insert_line(bounds, &rows, before))
+        Some(ReorderDragVisual {
+            source,
+            x: drag.x,
+            y: drag.y,
+            drop_targets: self.drop_target_flags().into(),
+            tree_drop: self.tree_drop,
+        })
     }
 
     /// Clears an in-flight gesture. Escape, unfocus, and lost-touch use this.
@@ -469,7 +503,7 @@ impl ComponentView for ReorderList {
             },
             size: self.size,
             spacing: self.spacing,
-            insert: None,
+            drag: self.drag_visual(),
         };
         if world.standard_visual(id) != Some(visual.clone()) {
             mutations.set_standard_visual(id, Some(visual));
@@ -1063,7 +1097,7 @@ mod tests {
                 rows: sample().paint_rows(),
                 size: ControlSize::Small,
                 spacing: DEFAULT_SPACING,
-                insert: None,
+                drag: None,
             })
         );
         let style = context.world().node_style(id).expect("projected style");
@@ -1122,6 +1156,76 @@ mod tests {
     }
 
     #[test]
+    fn a_moved_drag_over_live_rows_outlines_its_row_and_shows_where_it_lands() {
+        let mut context = AppContext::new();
+        let document = document();
+        let list = context
+            .create_component(document, sample().live_rows(true).spacing(4.0))
+            .unwrap();
+        // Live rows taller than the self-drawn ones, so a box taken from the
+        // uniform rows would land in the wrong place.
+        let mut rows = Vec::new();
+        for _ in 0..3 {
+            let row = context
+                .create_detached_component(
+                    document,
+                    crate::Stack::column(0.0).with_layout(|layout| {
+                        layout.width = Some(LengthSpec::Fill);
+                        layout.height = Some(LengthSpec::Px(40.0));
+                    }),
+                )
+                .unwrap();
+            context.append_child(list, row).unwrap();
+            rows.push(row.stable_id());
+        }
+        context
+            .layout_document(document, crate::LayoutViewport::new(200.0, 300.0))
+            .unwrap();
+        let boxes: Vec<_> = rows
+            .iter()
+            .map(|row| context.world().layout_box(*row).unwrap())
+            .collect();
+        let geometry =
+            |context: &AppContext| match context.world().component_geometry(list.stable_id()) {
+                Some(crate::ComponentGeometry::ReorderList {
+                    insert, dragged, ..
+                }) => (insert.map(|(line, _)| line), dragged.map(|(row, _)| row)),
+                other => panic!("not reorder list geometry: {other:?}"),
+            };
+        assert_eq!(geometry(&context), (None, None));
+
+        let x = boxes[0].x + 20.0;
+        let start = boxes[0].y + 20.0;
+        assert!(
+            context
+                .begin_reorder_list_pointer(document, 1, list.stable_id(), x, start)
+                .unwrap()
+        );
+        // Under the threshold: nothing is dragged yet.
+        context
+            .update_reorder_list_pointer(document, 1, x, start + 2.0)
+            .unwrap();
+        assert_eq!(geometry(&context), (None, None));
+        // Past the middle of the last row: it goes to the end.
+        let end = boxes[2].y + 30.0;
+        context
+            .update_reorder_list_pointer(document, 1, x, end)
+            .unwrap();
+        let (insert, dragged) = geometry(&context);
+        assert_eq!(dragged, Some(boxes[0]));
+        let insert = insert.expect("an insert line");
+        assert!(
+            insert.y >= boxes[2].y + boxes[2].height,
+            "the line {insert:?} sits under the last live row {:?}",
+            boxes[2]
+        );
+        context
+            .end_reorder_list_pointer(document, 1, x, end, false)
+            .unwrap();
+        assert_eq!(geometry(&context), (None, None));
+    }
+
+    #[test]
     fn declared_live_rows_suppress_self_painted_rows() {
         let mut context = AppContext::new();
         let list = context
@@ -1134,7 +1238,7 @@ mod tests {
                 rows: Arc::from([]),
                 size: ControlSize::Small,
                 spacing: DEFAULT_SPACING,
-                insert: None,
+                drag: None,
             })
         );
         let style = context.world().node_style(id).expect("projected style");

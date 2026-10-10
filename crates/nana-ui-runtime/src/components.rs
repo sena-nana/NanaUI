@@ -1005,7 +1005,8 @@ pub enum StandardVisual {
         rows: Arc<[crate::reorder_list::ReorderRowPaint]>,
         size: ControlSize,
         spacing: f32,
-        insert: Option<LayoutBox>,
+        /// The row being dragged and where it would land.
+        drag: Option<crate::reorder_list::ReorderDragVisual>,
     },
     #[cfg(feature = "rich-text")]
     NativeMarkdown {
@@ -1616,6 +1617,8 @@ pub enum ComponentGeometry {
     ReorderList {
         rows: Vec<(LayoutBox, ComponentTextRegion, Option<[f32; 4]>)>,
         insert: Option<(LayoutBox, [f32; 4])>,
+        /// The dragged row's box, outlined in this colour while it moves.
+        dragged: Option<(LayoutBox, [f32; 4])>,
     },
     NativeMarkdown {
         #[cfg(feature = "rich-text")]

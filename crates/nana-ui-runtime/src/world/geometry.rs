@@ -2523,26 +2523,55 @@ impl UiWorld {
                 rows,
                 size,
                 spacing,
-                insert,
+                drag,
             } => {
                 // Live row children own their label painting; a stale retained
                 // `rows` (projected before the children were attached) must not
-                // paint a second copy underneath them.
-                let rows = if self
+                // paint a second copy underneath them. They also own the row
+                // boxes the drag feedback is placed against.
+                let children = self
                     .nodes
                     .get(id)
-                    .is_some_and(|node| !node.hierarchy.children.is_empty())
-                {
+                    .map(|node| node.hierarchy.children.clone())
+                    .unwrap_or_default();
+                let live = !children.is_empty();
+                let painted = if live {
                     Arc::<[crate::ReorderRowPaint]>::from([])
                 } else {
                     rows.clone()
                 };
+                let row_boxes = |count: usize| -> Vec<LayoutBox> {
+                    if live {
+                        children
+                            .iter()
+                            .filter_map(|child| self.component_layout_box(*child))
+                            .collect()
+                    } else {
+                        let height = size.height_in(self.style_model.metrics);
+                        let step = height + spacing.max(0.0);
+                        (0..count)
+                            .map(|index| LayoutBox {
+                                x: bounds.x,
+                                y: bounds.y + index as f32 * step,
+                                width: bounds.width,
+                                height,
+                            })
+                            .collect()
+                    }
+                };
+                let drag = drag.as_ref().map(|drag| {
+                    let boxes = row_boxes(drag.drop_targets.len());
+                    (
+                        drag.insert_line(bounds, &boxes),
+                        boxes.get(drag.source).copied(),
+                    )
+                });
                 Some(reorder_list_geometry(
                     bounds,
-                    &rows,
+                    &painted,
                     *size,
                     *spacing,
-                    *insert,
+                    drag.unwrap_or_default(),
                     &self.style_model.palette,
                     self.style_model.metrics,
                 ))

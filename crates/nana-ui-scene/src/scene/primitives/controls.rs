@@ -9,7 +9,11 @@ pub(super) fn build(context: &GeometryPaintContext<'_>, emit: &mut impl FnMut(Sc
     let id = context.node.id;
     match context.node.component_geometry.as_deref() {
         #[cfg(feature = "controls")]
-        Some(ComponentGeometry::ReorderList { rows, insert }) => {
+        Some(ComponentGeometry::ReorderList {
+            rows,
+            insert,
+            dragged,
+        }) => {
             let selected = rows
                 .iter()
                 .filter_map(|(row, _, fill)| fill.map(|color| (scene_rect(*row), color)))
@@ -31,6 +35,28 @@ pub(super) fn build(context: &GeometryPaintContext<'_>, emit: &mut impl FnMut(Sc
                         background: Some(color),
                         border_color: None,
                         border_width: 0.0,
+                        corner_radius: corner_radii(node.chrome_radii.sm),
+                    },
+                ));
+            }
+            // The dragged row is outlined where it was, so the row being
+            // moved stays apparent while the insert line shows where it goes.
+            if let Some((row, color)) = dragged {
+                emit(visual_quad(
+                    &VisualPrimitiveContext {
+                        node: id,
+                        transform,
+                        clips,
+                        opacity,
+                        z_index: node.z_index,
+                        document_order: node_order,
+                    },
+                    12,
+                    scene_rect(*row),
+                    VisualQuadStyle {
+                        background: None,
+                        border_color: Some(*color),
+                        border_width: 1.5,
                         corner_radius: corner_radii(node.chrome_radii.sm),
                     },
                 ));
