@@ -262,31 +262,34 @@ impl GpuGradient {
 }
 
 impl GpuGradient {
-    /// A node's `mask-image` as the path shader evaluates it, and the affine
-    /// that takes node-local px into the space it is evaluated in (to be
-    /// composed into [`Self::space`]).
+    /// A node's `mask-image` as the path shader evaluates it at a fragment:
+    /// `to_layout` takes scene px back to layout space, where the node's box
+    /// starts at `origin`.
     ///
     /// This is `mask_alpha` of `quad_paint_data.wgsl` over the node's own
     /// box, rewritten as a palette gradient: the same gradient line, the same
     /// eight stops at most, interpolated premultiplied in linear scRGB. A
     /// point past the box takes the gradient's end value. `None` for a radial
     /// gradient whose centre does not resolve, which the quad skips too.
-    fn from_node_mask(mask: &nana_ui_scene::NodeMask) -> Option<(Self, [f32; 6])> {
+    fn from_node_mask(
+        mask: &nana_ui_scene::NodeMask,
+        to_layout: [f32; 6],
+        origin: [f32; 2],
+    ) -> Option<Self> {
         use nana_ui_core::CssGradient;
         let [width, height] = mask.size;
-        let (kind, geometry, to_mask, stops) = match &mask.gradient {
+        // `geometry` lies in the box's uv, scaled per axis by `scale`.
+        let (kind, geometry, scale, stops) = match &mask.gradient {
             CssGradient::Linear(linear) => {
                 // `gradient_t`: t = dot(uv − ½, axis) / (|axis.x| + |axis.y|)
                 // + ½, the line from ½ − d/2 to ½ + d/2 with d = axis · denom.
-                let rad = linear.angle_deg.to_radians();
-                let axis = [rad.sin(), -rad.cos()];
-                let denom = axis[0].abs() + axis[1].abs();
-                let d = [axis[0] * denom, axis[1] * denom];
-                let start = [0.5 - d[0] * 0.5, 0.5 - d[1] * 0.5];
+                let (sin, cos) = linear.angle_deg.to_radians().sin_cos();
+                let denom = sin.abs() + cos.abs();
+                let half = [sin * denom * 0.5, -cos * denom * 0.5];
                 (
                     0,
-                    [start[0], start[1], start[0] + d[0], start[1] + d[1]],
-                    [1.0 / width, 0.0, 0.0, 1.0 / height, 0.0, 0.0],
+                    [0.5 - half[0], 0.5 - half[1], 0.5 + half[0], 0.5 + half[1]],
+                    [1.0, 1.0],
                     linear.stops.as_slice(),
                 )
             }
@@ -295,15 +298,11 @@ impl GpuGradient {
                 if radial.circle {
                     // `radial_gradient_t`: distance in uv over the farthest
                     // corner's.
-                    let farthest = [[0.0, 0.0], [1.0, 0.0], [0.0, 1.0], [1.0, 1.0]]
-                        .iter()
-                        .map(|[x, y]| ((x - cx) * (x - cx) + (y - cy) * (y - cy)).sqrt())
-                        .fold(0.0f32, f32::max)
-                        .max(1e-4);
+                    let farthest = (cx.max(1.0 - cx)).hypot(cy.max(1.0 - cy)).max(1e-4);
                     (
                         1,
                         [cx, cy, farthest, 0.0],
-                        [1.0 / width, 0.0, 0.0, 1.0 / height, 0.0, 0.0],
+                        [1.0, 1.0],
                         radial.stops.as_slice(),
                     )
                 } else {
@@ -314,7 +313,7 @@ impl GpuGradient {
                     (
                         1,
                         [cx / rx, cy / ry, 1.0, 0.0],
-                        [1.0 / (width * rx), 0.0, 0.0, 1.0 / (height * ry), 0.0, 0.0],
+                        [1.0 / rx, 1.0 / ry],
                         radial.stops.as_slice(),
                     )
                 }
@@ -334,31 +333,16 @@ impl GpuGradient {
             packed.offsets[index / 4][index % 4] = stop.position;
             packed.colors[index] = [r * a, g * a, b * a, a];
         }
-        Some((packed, to_mask))
+        // Scene px → layout → node-local (− origin) → uv (÷ size) → `scale`.
+        let [a, b, c, d, e, f] = to_layout;
+        let sx = scale[0] / width;
+        let sy = scale[1] / height;
+        packed.space = [
+            [sx * a, sy * b, sx * c, sy * d],
+            [sx * (e - origin[0]), sy * (f - origin[1]), 0.0, 0.0],
+        ];
+        Some(packed)
     }
-}
-
-/// `first`, then `then`: affines as `[a, b, c, d, e, f]`, `x' = a·x + c·y + e`.
-fn affine_then(first: [f32; 6], then: [f32; 6]) -> [f32; 6] {
-    let [a, b, c, d, e, f] = then;
-    let [fa, fb, fc, fd, fe, ff] = first;
-    [
-        a * fa + c * fb,
-        b * fa + d * fb,
-        a * fc + c * fd,
-        b * fc + d * fd,
-        a * fe + c * ff + e,
-        b * fe + d * ff + f,
-    ]
-}
-
-fn affine_inverse([a, b, c, d, e, f]: [f32; 6]) -> Option<[f32; 6]> {
-    let det = a * d - b * c;
-    if !det.is_finite() || det.abs() < 1e-12 {
-        return None;
-    }
-    let (ia, ib, ic, id) = (d / det, -b / det, -c / det, a / det);
-    Some([ia, ib, ic, id, -(ia * e + ic * f), -(ib * e + id * f)])
 }
 
 /// Straight colour of sorted stops at `t`, interpolated premultiplied in the
@@ -910,15 +894,12 @@ impl MeshPipeline {
             }
         };
         // The mask is evaluated where each fragment lands, AA fringe
-        // included: scene px back to node-local, then into the mask's space.
-        // Its own entry each time, as that map depends on where the mesh is.
+        // included. Its own entry each time: its map depends on where the
+        // mesh is.
         let mask = node_mask
-            .and_then(|node_mask| GpuGradient::from_node_mask(node_mask))
-            .zip(affine_inverse(affine))
-            .map_or(NO_GRADIENT, |((mut gradient, to_mask), to_layout)| {
-                let to_local = affine_then(to_layout, [1.0, 0.0, 0.0, 1.0, -origin[0], -origin[1]]);
-                let [a, b, c, d, e, f] = affine_then(to_local, to_mask);
-                gradient.space = [[a, b, c, d], [e, f, 0.0, 0.0]];
+            .zip(super::clip::invert_affine(affine))
+            .and_then(|(mask, to_layout)| GpuGradient::from_node_mask(mask, to_layout, origin))
+            .map_or(NO_GRADIENT, |gradient| {
                 self.paths.pending_gradients.push(gradient);
                 self.paths.pending_gradients.len() as u32 - 1
             });

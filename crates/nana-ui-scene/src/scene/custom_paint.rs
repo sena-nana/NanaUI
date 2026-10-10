@@ -176,8 +176,9 @@ struct TextStyle {
 #[derive(Debug, Clone)]
 pub(super) struct BuiltPaint {
     recording: Arc<PaintRecording>,
-    /// Built for a node with a `mask-image`: see [`build_ops`].
-    masked: bool,
+    /// The node's `mask-image` (see [`node_mask`]). Whether there is one
+    /// decides how the ops are built: see [`build_ops`].
+    node_mask: Option<Arc<NodeMask>>,
     behind: Arc<[BuiltOp]>,
     over: Arc<[BuiltOp]>,
 }
@@ -242,16 +243,23 @@ impl UiScene {
         &mut self,
         id: StableNodeId,
         recording: &Arc<PaintRecording>,
-        masked: bool,
+        node_mask: Option<Arc<NodeMask>>,
     ) -> BuiltPaint {
+        let masked = node_mask.is_some();
         match self.custom_paint.get(&id) {
-            Some(built) if Arc::ptr_eq(&built.recording, recording) && built.masked == masked => {
-                built.clone()
+            Some(built)
+                if Arc::ptr_eq(&built.recording, recording)
+                    && built.node_mask.is_some() == masked =>
+            {
+                BuiltPaint {
+                    node_mask,
+                    ..built.clone()
+                }
             }
             _ => {
                 let built = BuiltPaint {
                     recording: Arc::clone(recording),
-                    masked,
+                    node_mask,
                     behind: build_ops(&recording.behind_children, masked).into(),
                     over: build_ops(&recording.over_children, masked).into(),
                 };
@@ -264,24 +272,16 @@ impl UiScene {
     /// Emit a painted node's own primitives. The built-in ones, if the
     /// recording asked for them, are already in; they get the path clips,
     /// local transform and opacity active at `draw_default()`.
-    ///
-    /// `node_mask` is the node's `mask-image` (see [`node_mask`]); `built`
-    /// was prepared for it.
-    #[expect(
-        clippy::too_many_arguments,
-        reason = "The node's emission state, as the built-in primitives get it"
-    )]
     pub(super) fn emit_custom_paint(
         &mut self,
         node: &ExtractedNode,
         built: &BuiltPaint,
-        node_mask: Option<&Arc<NodeMask>>,
         transform: AffineTransform,
         clips: &Arc<[ClipRegion]>,
         opacity: f32,
         node_order: usize,
     ) {
-        debug_assert_eq!(built.masked, node_mask.is_some());
+        let node_mask = built.node_mask.as_ref();
         let origin = [node.layout.x, node.layout.y];
         for (ops, pre, post) in [
             (&built.behind, PAINT_BEHIND_PRE, PAINT_BEHIND_POST),

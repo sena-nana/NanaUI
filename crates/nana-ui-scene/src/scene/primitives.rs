@@ -168,13 +168,10 @@ impl UiScene {
         // A hidden painted node keeps its built geometry: shown again with the
         // same recording, it is not triangulated again. Only losing the
         // painter (or the node) drops it.
-        let node_mask = match node.custom_paint {
-            Some(_) if visible => super::custom_paint::node_mask(&node).map(Arc::new),
-            _ => None,
-        };
         let custom_paint = match node.custom_paint.as_ref() {
             Some(recording) if visible => {
-                Some(self.prepare_custom_paint(id, recording, node_mask.is_some()))
+                let node_mask = super::custom_paint::node_mask(&node).map(Arc::new);
+                Some(self.prepare_custom_paint(id, recording, node_mask))
             }
             Some(_) => None,
             None => {
@@ -2102,15 +2099,7 @@ impl UiScene {
                 }
                 None => Arc::clone(&parent_clips),
             };
-            self.emit_custom_paint(
-                &node,
-                &built,
-                node_mask.as_ref(),
-                transform,
-                &paint_clips,
-                opacity,
-                node_order,
-            );
+            self.emit_custom_paint(&node, &built, transform, &paint_clips, opacity, node_order);
         }
     }
 }
