@@ -19,6 +19,22 @@ pub const fn xy_pad_height(size: ControlSize) -> f32 {
     }
 }
 
+/// What the pad's surface is.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum XYPadSurface {
+    /// A neutral field (`Subtle` unless the style names a fill) with centre
+    /// axes and an accent dot for the value.
+    #[default]
+    Plain,
+    /// The pad's own paint — its style's background colour and background
+    /// image layers — is the picture the value is picked from, such as a
+    /// colour picker's saturation/value square. No axes are drawn, the value
+    /// is marked by a [`crate::ContrastRing`] that reads on any colour, and
+    /// the frame is stroked again above the paint so hover, focus and
+    /// `invalid` stay visible on every edge.
+    Picture,
+}
+
 /// Shift-drag lock: first dominant axis wins (`|dx| >= |dy|` is horizontal).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum XYPadAxisLock {
@@ -60,6 +76,9 @@ pub struct XYPad {
     pub invalid: bool,
     pub label: Option<Arc<str>>,
     pub dragging: Option<XYPadDragState>,
+    pub surface: XYPadSurface,
+    /// Height in logical px instead of the size's; see [`XYPad::height`].
+    pub height: Option<f32>,
     pub style: NodeStyle,
 }
 
@@ -78,6 +97,8 @@ impl XYPad {
             invalid: false,
             label: None,
             dragging: None,
+            surface: XYPadSurface::Plain,
+            height: None,
             style: field_style(ControlSize::Medium),
         };
         pad.value = pad.sanitized(value);
@@ -109,6 +130,20 @@ impl XYPad {
     pub fn size(mut self, size: ControlSize) -> Self {
         self.size = size;
         Arc::make_mut(&mut self.style.layout).height = Some(LengthSpec::Px(xy_pad_height(size)));
+        self
+    }
+
+    /// A height other than the size's, for a pad that is a picture to pick
+    /// from rather than a control in a row. Ignored unless finite and
+    /// positive.
+    pub fn height(mut self, height: f32) -> Self {
+        self.height = (height.is_finite() && height > 0.0).then_some(height);
+        self
+    }
+
+    /// See [`XYPadSurface`].
+    pub fn surface(mut self, surface: XYPadSurface) -> Self {
+        self.surface = surface;
         self
     }
 
@@ -240,7 +275,9 @@ impl XYPad {
         if layout.width.is_none() {
             layout.width = Some(LengthSpec::Fill);
         }
-        layout.height = Some(LengthSpec::Px(xy_pad_height(self.size)));
+        layout.height = Some(LengthSpec::Px(
+            self.height.unwrap_or_else(|| xy_pad_height(self.size)),
+        ));
         if layout.border_width.is_none() {
             layout.border_width = Some(nana_ui_core::HAIRLINE);
         }
@@ -293,6 +330,7 @@ impl ComponentView for XYPad {
             size: self.size,
             invalid: self.invalid,
             disabled: inactive,
+            picture: self.surface == XYPadSurface::Picture,
         };
         if world.standard_visual(id) != Some(visual.clone()) {
             mutations.set_standard_visual(id, Some(visual));
@@ -613,6 +651,86 @@ mod tests {
             context.world().standard_visual(pad.stable_id()),
             Some(crate::StandardVisual::XYPad { invalid: true, .. })
         ));
+    }
+
+    #[test]
+    fn a_picture_pad_drops_the_axes_and_rings_the_value() {
+        let mut context = AppContext::new();
+        let root = context
+            .create_component(document(), crate::Stack::column(0.0))
+            .unwrap();
+        let plain = context
+            .create_component(document(), XYPad::new(XYPadValue::new(0.25, 0.75)))
+            .unwrap();
+        let picture = context
+            .create_component(
+                document(),
+                XYPad::new(XYPadValue::new(0.25, 0.75))
+                    .surface(XYPadSurface::Picture)
+                    .height(120.0),
+            )
+            .unwrap();
+        context.append_child(root, plain).unwrap();
+        context.append_child(root, picture).unwrap();
+        context
+            .layout_document(document(), crate::LayoutViewport::new(200.0, 400.0))
+            .unwrap();
+        let world = context.world();
+
+        let Some(crate::ComponentGeometry::XYPad {
+            h_axis,
+            v_axis,
+            thumb_ring,
+            ..
+        }) = world.component_geometry(plain.stable_id())
+        else {
+            panic!("plain pad geometry");
+        };
+        assert!(
+            h_axis.is_some() && v_axis.is_some(),
+            "a plain pad keeps its axes"
+        );
+        assert!(thumb_ring.is_none(), "and its accent dot");
+        assert!(matches!(
+            world.standard_visual(plain.stable_id()),
+            Some(crate::StandardVisual::XYPad { picture: false, .. })
+        ));
+
+        let bounds = world.layout_box(picture.stable_id()).unwrap();
+        assert_eq!(bounds.height, 120.0, "the height overrides the size's");
+        let Some(crate::ComponentGeometry::XYPad {
+            thumb,
+            h_axis,
+            v_axis,
+            thumb_ring,
+            ..
+        }) = world.component_geometry(picture.stable_id())
+        else {
+            panic!("picture pad geometry");
+        };
+        assert!(h_axis.is_none() && v_axis.is_none(), "no crosshair");
+        assert_eq!(
+            thumb_ring,
+            Some(crate::ContrastRing::from_effects(world.theme().effects()))
+        );
+        assert_eq!(thumb.width, nana_ui_core::space::XXL);
+        // Centred on the value: x across, y up.
+        assert!((thumb.x + thumb.width / 2.0 - (bounds.x + bounds.width * 0.25)).abs() < 0.01);
+        assert!((thumb.y + thumb.height / 2.0 - (bounds.y + bounds.height * 0.25)).abs() < 0.01);
+        assert!(matches!(
+            world.standard_visual(picture.stable_id()),
+            Some(crate::StandardVisual::XYPad { picture: true, .. })
+        ));
+        // Still the same slider for assistive technology.
+        assert_eq!(
+            world.accessibility(picture.stable_id()).unwrap().role,
+            AccessibilityRole::Slider
+        );
+        // A height that is not finite and positive keeps the size's.
+        assert_eq!(
+            XYPad::new(XYPadValue::default()).height(f32::NAN).height,
+            None
+        );
     }
 
     #[test]

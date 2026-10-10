@@ -179,8 +179,8 @@ pub use calendar::{
 pub use charts::{Chart, ChartEvent, ChartHoverVisual, ChartSpec, ChartTooltip};
 pub use chip::{Chip, ChipDismissed};
 pub use color_field::{
-    ColorChanged, ColorField, ColorInput, format_hex, hsv_to_rgb, parse_hex, rgb_to_hsv,
-    sanitize_rgba,
+    ColorChanged, ColorField, ColorInput, format_hex, hsv_to_rgb, hue_spectrum, parse_hex,
+    rgb_to_hsv, sanitize_rgba,
 };
 pub use command_palette::CommandPalette;
 pub use component_registry::{
@@ -192,19 +192,19 @@ pub use components::{
     AccessibilityRole, AccessibilityScrollAxis, AccessibilityScrollDirection,
     AccessibilityScrollUnit, AccessibilityState, AccessibilityUpdate, CalendarHoverGeometry,
     ComponentElevation, ComponentGeometry, ComponentTextRegion, ComponentTriggerSurface,
-    ComputedStyle, CustomRenderNode, DocumentTextSelection, DropHoverOverlay, EventListeners,
-    EventRoute, ExtractedCompositor, ExtractedNode, ExtractedTextSpan, ImeComposition, ImeView,
-    InteractionState, InteractionStyle, LayoutBox, LayoutInput, LineLabel, MeasureTextShaper,
-    MenuItemMark, MenuSurfaceKind, ModalLayoutInput, MountState, NodeStyle, NumberSteppers,
-    OverlayHostState, PointerCaptureChange, RadioIndicator, RichEditorMarks, ScrollMetrics,
-    ScrollOffset, ScrollbarBar, SelectMenuGeometry, SelectOptionData, SelectOptionGeometry,
-    SemanticPaint, StandardVisual, TextAffinity, TextAtomChip, TextAtomClosed, TextAtomSpan,
-    TextCodeFold, TextColorSwatchSpan, TextCompletion, TextCompletionEdit, TextCompletionPopup,
-    TextCompletionRow, TextCompletionSnapshot, TextContent, TextDiagnosticSeverity,
-    TextDiagnosticSpan, TextEditorRenderOptions, TextFoldGeometry, TextFoldGutter,
-    TextGitGutterGeometry, TextGitMark, TextGitMarkKind, TextHit, TextHorizontalAlignment,
-    TextHover, TextHoverPopup, TextInlay, TextInputScroll, TextInputState, TextInputView,
-    TextMatchMarker, TextMatchSpan, TextMetrics, TextMinimapGeometry, TextSelection,
+    ComputedStyle, ContrastRing, CustomRenderNode, DocumentTextSelection, DropHoverOverlay,
+    EventListeners, EventRoute, ExtractedCompositor, ExtractedNode, ExtractedTextSpan,
+    ImeComposition, ImeView, InteractionState, InteractionStyle, LayoutBox, LayoutInput, LineLabel,
+    MeasureTextShaper, MenuItemMark, MenuSurfaceKind, ModalLayoutInput, MountState, NodeStyle,
+    NumberSteppers, OverlayHostState, PointerCaptureChange, RadioIndicator, RichEditorMarks,
+    ScrollMetrics, ScrollOffset, ScrollbarBar, SelectMenuGeometry, SelectOptionData,
+    SelectOptionGeometry, SemanticPaint, StandardVisual, TextAffinity, TextAtomChip,
+    TextAtomClosed, TextAtomSpan, TextCodeFold, TextColorSwatchSpan, TextCompletion,
+    TextCompletionEdit, TextCompletionPopup, TextCompletionRow, TextCompletionSnapshot,
+    TextContent, TextDiagnosticSeverity, TextDiagnosticSpan, TextEditorRenderOptions,
+    TextFoldGeometry, TextFoldGutter, TextGitGutterGeometry, TextGitMark, TextGitMarkKind, TextHit,
+    TextHorizontalAlignment, TextHover, TextHoverPopup, TextInlay, TextInputScroll, TextInputState,
+    TextInputView, TextMatchMarker, TextMatchSpan, TextMetrics, TextMinimapGeometry, TextSelection,
     TextShapeConstraints, TextShaper, TextShaping, TextSignatureHelp, TextSignaturePopup,
     TextSnippet, TextStickyLineGeometry, TextValue, TextVerticalAlignment, TextWhitespaceKind,
     TooltipVisual, TriggeredMenuOverlay, decode_virtual_menu_item, menu_row_index, menu_row_slots,
@@ -429,7 +429,8 @@ pub use world::{
     StableNodeId, UiWorld, UiWorldError,
 };
 pub use xy_pad::{
-    XYPad, XYPadAdjustment, XYPadAxisLock, XYPadDragState, XYPadEvent, XYPadValue, xy_pad_height,
+    XYPad, XYPadAdjustment, XYPadAxisLock, XYPadDragState, XYPadEvent, XYPadSurface, XYPadValue,
+    xy_pad_height,
 };
 
 pub use native_content::{NATIVE_CONTENT_RENDERER, NativeContent};

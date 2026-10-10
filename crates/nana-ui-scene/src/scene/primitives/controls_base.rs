@@ -436,64 +436,83 @@ pub(super) fn build(context: &GeometryPaintContext<'_>, emit: &mut impl FnMut(Sc
             }
         }
         Some(ComponentGeometry::XYPad {
-            pad: _,
+            pad,
             thumb,
             h_axis,
             v_axis,
+            thumb_ring,
+            border,
+            border_width,
             thumb_color,
             axis_color,
             ..
         }) => {
-            emit(visual_quad_with_paint(
-                &VisualPrimitiveContext {
-                    node: id,
-                    transform,
-                    clips,
-                    opacity,
-                    z_index: node.z_index,
-                    document_order: node_order,
-                },
-                1,
-                scene_rect(*h_axis),
-                VisualQuadStyle::solid(*axis_color),
-                matching_paint_color(node.style.paint_colors.color, Some(*axis_color)),
-                None,
-            ));
-            emit(visual_quad_with_paint(
-                &VisualPrimitiveContext {
-                    node: id,
-                    transform,
-                    clips,
-                    opacity,
-                    z_index: node.z_index,
-                    document_order: node_order,
-                },
-                2,
-                scene_rect(*v_axis),
-                VisualQuadStyle::solid(*axis_color),
-                matching_paint_color(node.style.paint_colors.color, Some(*axis_color)),
-                None,
-            ));
-            emit(visual_quad_with_paint(
-                &VisualPrimitiveContext {
-                    node: id,
-                    transform,
-                    clips,
-                    opacity,
-                    z_index: node.z_index,
-                    document_order: node_order,
-                },
-                3,
-                scene_rect(*thumb),
-                VisualQuadStyle {
-                    background: Some(*thumb_color),
-                    border_color: None,
-                    border_width: 0.0,
-                    corner_radius: corner_radii(999.0),
-                },
-                matching_paint_color(node.style.paint_colors.color, Some(*thumb_color)),
-                None,
-            ));
+            let visual_context = VisualPrimitiveContext {
+                node: id,
+                transform,
+                clips,
+                opacity,
+                z_index: node.z_index,
+                document_order: node_order,
+            };
+            for (slot, axis) in [(1, h_axis), (2, v_axis)] {
+                if let Some(axis) = axis {
+                    emit(visual_quad_with_paint(
+                        &visual_context,
+                        slot,
+                        scene_rect(*axis),
+                        VisualQuadStyle::solid(*axis_color),
+                        matching_paint_color(node.style.paint_colors.color, Some(*axis_color)),
+                        None,
+                    ));
+                }
+            }
+            match thumb_ring {
+                Some(ring) => {
+                    // The pad's paint is the picture, and its later
+                    // background layers cover the frame the surface quad
+                    // stroked under them: stroke it again on top so hover,
+                    // focus and `invalid` show on every edge.
+                    if let Some(color) = node.style.border_color.or(*border)
+                        && *border_width > 0.0
+                    {
+                        let frame = scene_rect(*pad);
+                        emit(visual_quad_with_paint(
+                            &visual_context,
+                            1,
+                            frame,
+                            VisualQuadStyle {
+                                background: None,
+                                border_color: Some(color),
+                                border_width: *border_width,
+                                corner_radius: surface_corner_radii(
+                                    style,
+                                    frame.width,
+                                    frame.height,
+                                ),
+                            },
+                            None,
+                            matching_paint_color(node.style.paint_colors.border, Some(color)),
+                        ));
+                    }
+                    for quad in contrast_ring_quads(&visual_context, 3, scene_rect(*thumb), *ring) {
+                        emit(quad);
+                    }
+                }
+                None => emit(visual_quad_with_paint(
+                    &visual_context,
+                    3,
+                    scene_rect(*thumb),
+                    VisualQuadStyle {
+                        background: Some(*thumb_color),
+                        border_color: None,
+                        border_width: 0.0,
+                        corner_radius: corner_radii(999.0),
+                    },
+                    matching_paint_color(node.style.paint_colors.color, Some(*thumb_color)),
+                    None,
+                )),
+            }
         }
         Some(ComponentGeometry::QrCode { field, dark, .. }) => {
             emit(visual_quad_with_paint(

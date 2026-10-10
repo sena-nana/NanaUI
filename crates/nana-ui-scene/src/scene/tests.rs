@@ -5861,6 +5861,7 @@ fn standard_control_visuals_expand_without_backend_tag_matching() {
         markers: Arc::from([]),
         invalid: false,
         rail: None,
+        track_gradient: None,
     });
     style_mut(&mut slider).background = Some([0.2, 0.5, 0.9, 1.0]);
     style_mut(&mut slider).border_color = Some([0.4, 0.4, 0.4, 1.0]);
@@ -5917,6 +5918,7 @@ fn a_rail_range_draws_its_girth_and_shows_the_thumb_only_with_visible_focus() {
         markers: Arc::from([]),
         invalid: false,
         rail: Some(2.0),
+        track_gradient: None,
     });
     range.component_geometry = Some(Box::new(ComponentGeometry::Range {
         label: None,
@@ -5929,6 +5931,7 @@ fn a_rail_range_draws_its_girth_and_shows_the_thumb_only_with_visible_focus() {
         },
         unit: None,
         track: range.layout,
+        thumb_ring: None,
     }));
     style_mut(&mut range).background = Some([0.2, 0.5, 0.9, 1.0]);
     style_mut(&mut range).border_color = Some([0.4, 0.4, 0.4, 1.0]);
@@ -5953,6 +5956,265 @@ fn a_rail_range_draws_its_girth_and_shows_the_thumb_only_with_visible_focus() {
     scene.apply_delta([range], []);
     assert!(slot(&scene, 5).is_some(), "the thumb marks visible focus");
     assert!(slot(&scene, 6).is_some(), "with its ring");
+}
+
+/// A quad's bounds, fill, border colour, border width and surface paint.
+type QuadParts = (
+    SceneRect,
+    Option<nana_ui_core::PaintColor>,
+    Option<nana_ui_core::PaintColor>,
+    f32,
+    QuadSurfacePaint,
+);
+
+fn quad_parts(scene: &UiScene, node: u64, slot: u64) -> Option<QuadParts> {
+    let primitive = scene.primitive(PrimitiveId {
+        node: id(node),
+        slot,
+    })?;
+    match &primitive.kind {
+        ScenePrimitiveKind::Quad {
+            background,
+            border_color,
+            border_width,
+            surface,
+            ..
+        } => Some((
+            primitive.bounds,
+            *background,
+            *border_color,
+            *border_width,
+            surface.clone(),
+        )),
+        _ => None,
+    }
+}
+
+const TEST_RING: nana_ui_runtime::ContrastRing = nana_ui_runtime::ContrastRing {
+    ring: [1.0, 1.0, 1.0, 1.0],
+    edge: [0.0, 0.0, 0.0, 0.9],
+};
+
+/// A gradient track paints its stops as a strip, draws no fill, and marks the
+/// value with a contrast ring (dark edge, light ring, dark edge) that stands
+/// proud of the strip; focus still rings the thumb.
+#[test]
+fn a_gradient_range_paints_its_stops_and_rings_the_value() {
+    let stops: Arc<[nana_ui_core::GradientStop]> = Arc::from(
+        [
+            [1.0, 0.0, 0.0, 1.0],
+            [0.0, 1.0, 0.0, 1.0],
+            [0.0, 0.0, 1.0, 1.0],
+        ]
+        .iter()
+        .enumerate()
+        .map(|(index, color)| nana_ui_core::GradientStop {
+            paint_color: None,
+            position: index as f32 / 2.0,
+            color: *color,
+        })
+        .collect::<Vec<_>>(),
+    );
+    let mut range = node(1, None, &[]);
+    range.layout = LayoutBox {
+        x: 0.0,
+        y: 0.0,
+        width: 200.0,
+        height: 24.0,
+    };
+    range.standard_visual = Some(StandardVisual::Range {
+        label: None,
+        value: Arc::from(""),
+        unit: None,
+        size: nana_ui_core::ControlSize::Medium,
+        ratio: 0.25,
+        markers: Arc::from([]),
+        invalid: false,
+        rail: None,
+        track_gradient: Some(Arc::clone(&stops)),
+    });
+    range.component_geometry = Some(Box::new(ComponentGeometry::Range {
+        label: None,
+        value: nana_ui_runtime::ComponentTextRegion {
+            bounds: LayoutBox::default(),
+            content: Arc::<str>::from("").into(),
+            color: None,
+            font_size: 12.0,
+            font_weight: None,
+        },
+        unit: None,
+        track: LayoutBox {
+            x: 8.0,
+            y: 4.0,
+            width: 184.0,
+            height: 16.0,
+        },
+        thumb_ring: Some(TEST_RING),
+    }));
+    style_mut(&mut range).background = Some([0.2, 0.5, 0.9, 1.0]);
+    style_mut(&mut range).border_color = Some([0.4, 0.4, 0.4, 1.0]);
+
+    let mut scene = UiScene::new();
+    scene.apply_delta([range.clone()], []);
+    let (strip, background, _, _, surface) = quad_parts(&scene, 1, 3).expect("strip");
+    let girth = nana_ui_core::space::XL;
+    assert_eq!(
+        (strip.x, strip.y, strip.width, strip.height),
+        (8.0, 4.0 + (16.0 - girth) / 2.0, 184.0, girth)
+    );
+    assert_eq!(
+        background, None,
+        "the strip is the gradient, not the accent"
+    );
+    let Some(BackgroundImage::Gradient(nana_ui_core::CssGradient::Linear(gradient))) =
+        surface.background_image
+    else {
+        panic!(
+            "the strip paints a linear gradient: {:?}",
+            surface.background_image
+        );
+    };
+    assert_eq!(gradient.angle_deg, 90.0, "minimum end to maximum end");
+    assert_eq!(gradient.stops, stops.to_vec());
+    assert!(
+        quad_parts(&scene, 1, 4).is_none(),
+        "no fill up to the value"
+    );
+
+    let thumb = |slot| quad_parts(&scene, 1, slot).expect("ring quad");
+    let (outer, outer_fill, outer_edge, _, _) = thumb(5);
+    assert_eq!(
+        (outer.x, outer.y, outer.width, outer.height),
+        (8.0 + 184.0 * 0.25 - 8.0, 4.0, 16.0, 16.0),
+        "the ring is centred on the value and as tall as the band"
+    );
+    assert_eq!(outer_fill, None, "open, so the colour shows through");
+    assert_eq!(
+        outer_edge,
+        Some(nana_ui_core::PaintColor::srgb(TEST_RING.edge))
+    );
+    let (ring, _, ring_color, ring_width, _) = thumb(6);
+    assert!(ring.width < outer.width);
+    assert_eq!(
+        ring_color,
+        Some(nana_ui_core::PaintColor::srgb(TEST_RING.ring))
+    );
+    assert_eq!(ring_width, nana_ui_core::space::XXS);
+    let (inner, _, inner_edge, _, _) = thumb(7);
+    assert!(inner.width < ring.width);
+    assert_eq!(
+        inner_edge,
+        Some(nana_ui_core::PaintColor::srgb(TEST_RING.edge))
+    );
+    assert!(
+        quad_parts(&scene, 1, 8).is_none(),
+        "no focus ring unfocused"
+    );
+
+    range.focused = true;
+    let mut scene = UiScene::new();
+    scene.apply_delta([range], []);
+    let (focus, ..) = quad_parts(&scene, 1, 8).expect("focus rings the thumb");
+    assert!(focus.width > outer.width);
+}
+
+/// A picture pad's paint (fill plus background layers) stays on the surface
+/// quad; the pad draws no axes, strokes its frame again above the layers and
+/// marks the value with a contrast ring.
+#[test]
+fn a_picture_xy_pad_strokes_its_frame_over_the_paint_and_rings_the_value() {
+    let pad_box = LayoutBox {
+        x: 0.0,
+        y: 0.0,
+        width: 200.0,
+        height: 120.0,
+    };
+    let gradient = |angle_deg: f32, from: [f32; 4], to: [f32; 4]| {
+        BackgroundImage::Gradient(nana_ui_core::CssGradient::Linear(
+            nana_ui_core::LinearGradient {
+                angle_deg,
+                stops: vec![
+                    nana_ui_core::GradientStop {
+                        paint_color: None,
+                        position: 0.0,
+                        color: from,
+                    },
+                    nana_ui_core::GradientStop {
+                        paint_color: None,
+                        position: 1.0,
+                        color: to,
+                    },
+                ],
+            },
+        ))
+    };
+    let mut pad = node(1, None, &[]);
+    pad.layout = pad_box;
+    {
+        let layout = Arc::make_mut(&mut pad.source_style.layout);
+        layout.background = Some([1.0, 0.0, 0.0, 1.0]);
+        layout.border_width = Some(1.0);
+        layout.paint.background_image =
+            Some(gradient(180.0, [0.0, 0.0, 0.0, 0.0], [0.0, 0.0, 0.0, 1.0]));
+        layout.paint.background_layers =
+            vec![gradient(90.0, [1.0, 1.0, 1.0, 1.0], [1.0, 1.0, 1.0, 0.0])];
+    }
+    style_mut(&mut pad).background = Some([1.0, 0.0, 0.0, 1.0]);
+    style_mut(&mut pad).border_color = Some([0.4, 0.4, 0.4, 1.0]);
+    pad.standard_visual = Some(StandardVisual::XYPad {
+        value: nana_ui_core::XYPadValue::new(0.5, 0.5),
+        nx: 0.5,
+        ny: 0.5,
+        size: nana_ui_core::ControlSize::Medium,
+        invalid: false,
+        disabled: false,
+        picture: true,
+    });
+    pad.component_geometry = Some(Box::new(ComponentGeometry::XYPad {
+        pad: pad_box,
+        thumb: LayoutBox {
+            x: 93.0,
+            y: 53.0,
+            width: 14.0,
+            height: 14.0,
+        },
+        h_axis: None,
+        v_axis: None,
+        thumb_ring: Some(TEST_RING),
+        background: Some([1.0, 0.0, 0.0, 1.0]),
+        border: Some([0.4, 0.4, 0.4, 1.0]),
+        border_width: 1.0,
+        thumb_color: [0.2, 0.5, 0.9, 1.0],
+        axis_color: [0.4, 0.4, 0.4, 1.0],
+    }));
+
+    let mut scene = UiScene::new();
+    scene.apply_delta([pad], []);
+    let (_, fill, _, _, surface) = quad_parts(&scene, 1, 0).expect("surface");
+    assert_eq!(
+        fill,
+        Some(nana_ui_core::PaintColor::srgb([1.0, 0.0, 0.0, 1.0]))
+    );
+    assert!(surface.background_image.is_some());
+    assert_eq!(surface.background_layers.len(), 1);
+    let (frame, frame_fill, frame_color, frame_width, _) =
+        quad_parts(&scene, 1, 1).expect("the frame over the paint");
+    assert_eq!((frame.width, frame.height), (200.0, 120.0));
+    assert_eq!(frame_fill, None);
+    assert_eq!(
+        frame_color,
+        Some(nana_ui_core::PaintColor::srgb([0.4, 0.4, 0.4, 1.0]))
+    );
+    assert_eq!(frame_width, 1.0);
+    assert!(quad_parts(&scene, 1, 2).is_none(), "no axes");
+    let (ring, ring_fill, ring_edge, _, _) = quad_parts(&scene, 1, 3).expect("ring");
+    assert_eq!((ring.x, ring.y, ring.width), (93.0, 53.0, 14.0));
+    assert_eq!(ring_fill, None);
+    assert_eq!(
+        ring_edge,
+        Some(nana_ui_core::PaintColor::srgb(TEST_RING.edge))
+    );
+    assert!(quad_parts(&scene, 1, 4).is_some() && quad_parts(&scene, 1, 5).is_some());
 }
 
 #[test]
@@ -6374,6 +6636,7 @@ fn a_focused_range_adds_a_thumb_focus_ring_and_keeps_the_rail_untouched() {
             markers: Arc::from([]),
             invalid: false,
             rail: None,
+            track_gradient: None,
         });
         style_mut(&mut range).border_color = Some([0.4, 0.4, 0.45, 1.0]);
         range.standard_visual_foreground = Some([0.2, 0.5, 1.0, 1.0]);
@@ -6453,6 +6716,7 @@ fn a_range_marker_paints_on_the_track_under_the_thumb() {
         markers: Arc::from([0.25]),
         invalid: false,
         rail: None,
+        track_gradient: None,
     });
     style_mut(&mut range).background = Some([0.2, 0.5, 0.9, 1.0]);
     style_mut(&mut range).border_color = Some([0.4, 0.4, 0.45, 1.0]);
@@ -6557,6 +6821,7 @@ fn migrated_components_consume_runtime_subregion_geometry() {
         markers: Arc::from([]),
         invalid: false,
         rail: None,
+        track_gradient: None,
     });
     range.component_geometry = Some(Box::new(ComponentGeometry::Range {
         label: Some(ComponentTextRegion {
@@ -6601,6 +6866,7 @@ fn migrated_components_consume_runtime_subregion_geometry() {
             width: 120.0,
             height: 16.0,
         },
+        thumb_ring: None,
     }));
     range.layout.width = 240.0;
     range.layout.height = 40.0;

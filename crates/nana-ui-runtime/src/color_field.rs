@@ -2,11 +2,19 @@
 //! surface, hanging below it like any popover's, is the picker: assembled
 //! children (`XYPad` saturation/value, `RangeField` hue). The host never takes
 //! a window handle.
+//!
+//! The picker paints the colours it picks from. The pad is a picture pad
+//! (`XYPadSurface::Picture`): the current hue at full saturation and value,
+//! white fading out left to right over it and black fading in top to bottom
+//! over that, the standard HSV square. The hue slider is a bare strip through
+//! the spectrum (`RangeField::track_gradient`). Both mark the value with a
+//! contrast ring.
 
 use std::sync::Arc;
 
 use nana_ui_core::{
-    AlignSpec, ControlSize, FlexDirection, JustifySpec, LengthSpec, SemanticColorRole,
+    AlignSpec, BackgroundImage, ControlSize, CssGradient, FlexDirection, GradientStop, JustifySpec,
+    LengthSpec, LinearGradient, SemanticColorRole,
 };
 
 use crate::view_components::{
@@ -15,7 +23,7 @@ use crate::view_components::{
 use crate::{
     AccessibilityRole, AccessibilityState, AppContext, ComponentView, Entity, FrameworkError,
     InteractionState, MutationQueue, NodeKind, NodeStyle, Popover, PopoverToggled, StableNodeId,
-    Stack, TextContent, UiWorld, XYPad, XYPadEvent, XYPadValue,
+    Stack, TextContent, UiWorld, XYPad, XYPadEvent, XYPadSurface, XYPadValue, xy_pad_height,
 };
 
 const SWATCH_SIZE: f32 = nana_ui_core::space::PAGE_TIGHT + nana_ui_core::space::XXS;
@@ -247,22 +255,11 @@ impl AppContext {
         };
         let pad = match snapshot.pad.filter(|id| self.world().contains(*id)) {
             Some(id) => Entity::<XYPad>::from_stable_id(id),
-            None => self.create_detached_component(
-                document,
-                XYPad::new(XYPadValue {
-                    x: snapshot.sat,
-                    y: snapshot.val,
-                })
-                .x_range(0.0, 1.0)
-                .y_range(0.0, 1.0),
-            )?,
+            None => self.create_detached_component(document, saturation_value_pad(&snapshot))?,
         };
         let hue = match snapshot.hue_slider.filter(|id| self.world().contains(*id)) {
             Some(id) => Entity::<RangeField>::from_stable_id(id),
-            None => self.create_detached_component(
-                document,
-                RangeField::new(snapshot.hue as f64, 0.0, 360.0, 1.0),
-            )?,
+            None => self.create_detached_component(document, hue_strip(&snapshot))?,
         };
         let picker = match snapshot.picker.filter(|id| self.world().contains(*id)) {
             Some(id) => Entity::<Popover>::from_stable_id(id),
@@ -335,6 +332,7 @@ impl AppContext {
                 y: snapshot.val,
             };
             pad.disabled = snapshot.disabled;
+            paint_saturation_value(&mut pad.style, snapshot.hue);
         })?;
         self.update_component(hue, |range, _| {
             range.value = snapshot.hue as f64;
@@ -429,6 +427,75 @@ fn picker_popover(field: &ColorField, well: Entity<Stack>, name: Arc<str>) -> Po
         .width(220.0);
     popover.open = field.opened;
     popover
+}
+
+/// The saturation/value square: saturation across, value up, painted in the
+/// field's hue (see [`paint_saturation_value`]).
+fn saturation_value_pad(field: &ColorField) -> XYPad {
+    let mut pad = XYPad::new(XYPadValue {
+        x: field.sat,
+        y: field.val,
+    })
+    .x_range(0.0, 1.0)
+    .y_range(0.0, 1.0)
+    .surface(XYPadSurface::Picture)
+    .height(xy_pad_height(ControlSize::Large) * 2.0);
+    paint_saturation_value(&mut pad.style, field.hue);
+    pad
+}
+
+/// Paint `style` as the HSV square for `hue`: the hue at full saturation and
+/// value as the fill, white fading out to the right over it (saturation), and
+/// black fading in downwards over that (value). The layers are a node's
+/// ordinary background image layers, so the box painter draws them.
+fn paint_saturation_value(style: &mut NodeStyle, hue: f32) {
+    let layout = Arc::make_mut(&mut style.layout);
+    let hue_color = hsv_to_rgb(hue, 1.0, 1.0, 1.0);
+    if layout.background == Some(hue_color) && layout.paint.background_image.is_some() {
+        return;
+    }
+    let white = hsv_to_rgb(0.0, 0.0, 1.0, 1.0);
+    let black = hsv_to_rgb(0.0, 0.0, 0.0, 1.0);
+    let clear = |color: [f32; 4]| [color[0], color[1], color[2], 0.0];
+    layout.background = Some(hue_color);
+    // CSS order: the first image is on top. Value over saturation.
+    layout.paint.background_image = Some(linear_gradient(180.0, clear(black), black));
+    layout.paint.background_layers = vec![linear_gradient(90.0, white, clear(white))];
+}
+
+fn linear_gradient(angle_deg: f32, from: [f32; 4], to: [f32; 4]) -> BackgroundImage {
+    BackgroundImage::Gradient(CssGradient::Linear(LinearGradient {
+        angle_deg,
+        stops: vec![gradient_stop(0.0, from), gradient_stop(1.0, to)],
+    }))
+}
+
+fn gradient_stop(position: f32, color: [f32; 4]) -> GradientStop {
+    GradientStop {
+        paint_color: None,
+        position,
+        color,
+    }
+}
+
+/// The hue slider: a bare spectrum strip from 0 to 360 degrees, no readout.
+fn hue_strip(field: &ColorField) -> RangeField {
+    RangeField::new(field.hue as f64, 0.0, 360.0, 1.0)
+        .show_value(false)
+        .track_gradient(hue_spectrum())
+}
+
+/// The hue circle unrolled, 0 to 360 degrees: red, yellow, green, cyan,
+/// blue, magenta and back to red, as gradient stops for a strip such as
+/// [`RangeField::track_gradient`].
+pub fn hue_spectrum() -> Arc<[GradientStop]> {
+    const SEXTANTS: u8 = 6;
+    (0..=SEXTANTS)
+        .map(|index| {
+            let position = f32::from(index) / f32::from(SEXTANTS);
+            gradient_stop(position, hsv_to_rgb(position * 360.0, 1.0, 1.0, 1.0))
+        })
+        .collect()
 }
 
 /// The color itself: a square well, display only (the press is the
@@ -654,6 +721,94 @@ mod tests {
         assert!(snapshot.pad.is_some());
         assert!(snapshot.hue_slider.is_some());
         assert!(!context.assemble_color_field(field).unwrap());
+    }
+
+    #[test]
+    fn the_hue_spectrum_runs_round_the_circle() {
+        let stops = hue_spectrum();
+        assert_eq!(stops.len(), 7);
+        let near = |a: [f32; 4], b: [f32; 4]| a.iter().zip(b).all(|(a, b)| (a - b).abs() < 1e-5);
+        assert!(near(stops[0].color, [1.0, 0.0, 0.0, 1.0]), "red");
+        assert!(near(stops[2].color, [0.0, 1.0, 0.0, 1.0]), "green");
+        assert!(near(stops[3].color, [0.0, 1.0, 1.0, 1.0]), "cyan");
+        assert!(near(stops[4].color, [0.0, 0.0, 1.0, 1.0]), "blue");
+        assert!(near(stops[6].color, [1.0, 0.0, 0.0, 1.0]), "back to red");
+        assert_eq!((stops[0].position, stops[6].position), (0.0, 1.0));
+    }
+
+    /// The picker paints what it picks from: the pad is the HSV square in
+    /// the current hue, the hue slider a bare spectrum strip.
+    #[test]
+    fn the_picker_paints_the_hsv_square_and_a_spectrum_strip() {
+        let mut context = AppContext::new();
+        let document = DocumentId::new(1).unwrap();
+        let field = context
+            .create_component(document, ColorField::new([1.0, 0.0, 0.0, 1.0]))
+            .unwrap();
+        context.assemble_color_field(field).unwrap();
+        let snapshot = context.read(field, Clone::clone).unwrap();
+        let pad = Entity::<XYPad>::from_stable_id(snapshot.pad.unwrap());
+        let hue = Entity::<RangeField>::from_stable_id(snapshot.hue_slider.unwrap());
+
+        let pad_paint = |context: &AppContext| {
+            let style = context.world().node_style(pad.stable_id()).unwrap();
+            (
+                style.layout.background,
+                style.layout.paint.background_image.clone(),
+                style.layout.paint.background_layers.clone(),
+            )
+        };
+        let (fill, value, saturation) = pad_paint(&context);
+        assert_eq!(fill, Some([1.0, 0.0, 0.0, 1.0]), "the hue at full strength");
+        assert_eq!(
+            value,
+            Some(linear_gradient(
+                180.0,
+                [0.0, 0.0, 0.0, 0.0],
+                [0.0, 0.0, 0.0, 1.0]
+            )),
+            "black fades in downwards, on top"
+        );
+        assert_eq!(
+            saturation,
+            vec![linear_gradient(
+                90.0,
+                [1.0, 1.0, 1.0, 1.0],
+                [1.0, 1.0, 1.0, 0.0]
+            )],
+            "white fades out to the right, underneath"
+        );
+        assert_eq!(
+            context.read(pad, |pad| (pad.surface, pad.height)).unwrap(),
+            (
+                XYPadSurface::Picture,
+                Some(xy_pad_height(ControlSize::Large) * 2.0)
+            )
+        );
+        assert!(matches!(
+            context.world().standard_visual(pad.stable_id()),
+            Some(crate::StandardVisual::XYPad { picture: true, .. })
+        ));
+        let (show_value, gradient) = context
+            .read(hue, |range| {
+                (range.show_value, range.track_gradient.clone())
+            })
+            .unwrap();
+        assert!(!show_value, "no numeric readout");
+        assert_eq!(gradient, Some(hue_spectrum()));
+        assert!(matches!(
+            context.world().standard_visual(hue.stable_id()),
+            Some(crate::StandardVisual::Range { value, track_gradient: Some(_), .. })
+                if value.is_empty()
+        ));
+
+        // A new hue repaints the square; saturation and value stay put.
+        assert!(context.set_range_value(hue, 240.0).unwrap());
+        let (fill, value_after, saturation_after) = pad_paint(&context);
+        assert_eq!(fill, Some(hsv_to_rgb(240.0, 1.0, 1.0, 1.0)));
+        assert_eq!((value_after, saturation_after), (value, saturation));
+        let sv = context.read(pad, |pad| pad.value).unwrap();
+        assert_eq!(sv, XYPadValue { x: 1.0, y: 1.0 });
     }
 
     #[test]

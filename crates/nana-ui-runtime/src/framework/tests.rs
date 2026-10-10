@@ -1747,6 +1747,7 @@ fn native_toggle_and_slider_state_share_events_visuals_and_accessibility() {
             markers: Arc::from([]),
             invalid: false,
             rail: None,
+            track_gradient: None,
         })
     );
     let accessibility = context.world().project_accessibility(document);
@@ -7155,6 +7156,7 @@ fn component_size_kind_and_fallback_geometry_preserve_design_contracts() {
             value,
             unit: Some(unit),
             track,
+            ..
         } = context
             .world()
             .component_geometry(range.stable_id())
@@ -7177,6 +7179,7 @@ fn component_size_kind_and_fallback_geometry_preserve_design_contracts() {
                 markers: Arc::from([]),
                 invalid: false,
                 rail: None,
+                track_gradient: None,
             })
         );
     }
@@ -7349,6 +7352,7 @@ fn range_field_can_hide_the_value_readout_and_still_expose_the_numeric_value() {
             markers: Arc::from([]),
             invalid: false,
             rail: None,
+            track_gradient: None,
         })
     );
     let accessibility = context.world().project_accessibility(document);
@@ -7357,6 +7361,98 @@ fn range_field_can_hide_the_value_readout_and_still_expose_the_numeric_value() {
         .find(|node| node.id == range.stable_id())
         .unwrap();
     assert_eq!(slider.numeric_value, Some(40.0));
+}
+
+#[test]
+fn a_gradient_range_is_a_bare_strip_with_a_ring_thumb_and_keeps_its_slider_semantics() {
+    let mut context = AppContext::new();
+    let document = DocumentId::new(1).unwrap();
+    let mut style = NodeStyle::default();
+    {
+        let layout = Arc::make_mut(&mut style.layout);
+        layout.width = Some(LengthSpec::Px(300.0));
+        layout.height = Some(LengthSpec::Px(32.0));
+    }
+    let spectrum = crate::hue_spectrum();
+    let range = context
+        .create_component(
+            document,
+            RangeField::new(90.0, 0.0, 360.0, 1.0)
+                .label("Hue")
+                .show_label(false)
+                .show_value(false)
+                .track_gradient(Arc::clone(&spectrum))
+                .style(style),
+        )
+        .unwrap();
+    context
+        .layout_document(document, crate::LayoutViewport::new(640.0, 480.0))
+        .unwrap();
+    let bounds = context.world().layout_box(range.stable_id()).unwrap();
+    let crate::ComponentGeometry::Range {
+        label,
+        value,
+        unit,
+        track,
+        thumb_ring,
+    } = context
+        .world()
+        .component_geometry(range.stable_id())
+        .unwrap()
+    else {
+        panic!("range geometry expected");
+    };
+    assert!(label.is_none() && unit.is_none() && value.content.is_empty());
+    // No field padding: the band is inset only by half the ring, so the
+    // ring stays in the box at either end.
+    let ring = nana_ui_core::space::XXXL;
+    assert_eq!(track.x, bounds.x + ring / 2.0);
+    assert_eq!(track.width, bounds.width - ring);
+    assert_eq!(track.height, ring);
+    assert_eq!(
+        thumb_ring,
+        Some(crate::ContrastRing::from_effects(
+            context.world().theme().effects()
+        ))
+    );
+    let ring = thumb_ring.unwrap();
+    assert!(
+        ring.ring[..3].iter().all(|channel| *channel > 0.9)
+            && ring.edge[..3].iter().all(|channel| *channel < 0.1),
+        "a light ring with dark edges reads on any stop: {ring:?}"
+    );
+    assert!(matches!(
+        context.world().standard_visual(range.stable_id()),
+        Some(StandardVisual::Range {
+            value,
+            track_gradient: Some(stops),
+            rail: None,
+            ..
+        }) if value.is_empty() && stops == spectrum
+    ));
+    // Still a slider: pointer, keyboard and the numeric value all work.
+    context
+        .begin_range_drag(document, 7, range.stable_id(), track.x + track.width)
+        .unwrap();
+    assert_eq!(context.read(range, |range| range.value).unwrap(), 360.0);
+    context.end_range_drag(document, 7, false).unwrap();
+    let accessibility = context.world().project_accessibility(document);
+    let slider = accessibility
+        .iter()
+        .find(|node| node.id == range.stable_id())
+        .unwrap();
+    assert_eq!(slider.role, crate::AccessibilityRole::Slider);
+    assert_eq!(slider.label.as_deref(), Some("Hue"));
+    assert_eq!(slider.numeric_value, Some(360.0));
+    assert_eq!(slider.numeric_maximum, Some(360.0));
+
+    // Fewer than two stops keep the regular track.
+    assert!(
+        RangeField::new(0.0, 0.0, 1.0, 0.1)
+            .track_gradient(spectrum[..1].to_vec())
+            .track_gradient
+            .is_none()
+    );
 }
 
 #[test]

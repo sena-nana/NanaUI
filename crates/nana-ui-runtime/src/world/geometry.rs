@@ -1552,12 +1552,14 @@ impl UiWorld {
                 unit: None,
                 // The rail spans the box: the pointer maps onto all of it.
                 track: content,
+                thumb_ring: None,
             }),
             StandardVisual::Range {
                 label,
                 value,
                 unit,
                 size,
+                track_gradient,
                 ..
             } => {
                 // The spacing ladder, not a second one: these were 6 / 8 / 10
@@ -1587,7 +1589,13 @@ impl UiWorld {
                 let track_right = content.x + content.width
                     - trailing_width
                     - if trailing_width > 0.0 { gap } else { 0.0 };
-                let thumb = size.icon_size();
+                // A gradient track's thumb is a ring that stands proud of the
+                // strip; the band is the ring's height so it fits.
+                let thumb = if track_gradient.is_some() {
+                    nana_ui_core::space::XXXL
+                } else {
+                    size.icon_size()
+                };
                 let track = LayoutBox {
                     x: track_x + thumb / 2.0,
                     y: content.y + (content.height - thumb) / 2.0,
@@ -1636,6 +1644,9 @@ impl UiWorld {
                         )
                     }),
                     track,
+                    thumb_ring: track_gradient
+                        .is_some()
+                        .then(|| crate::ContrastRing::from_effects(self.theme.effects())),
                 })
             }
             StandardVisual::Card {
@@ -2303,9 +2314,17 @@ impl UiWorld {
                     }),
                 })
             }
-            StandardVisual::XYPad { nx, ny, .. } => {
+            StandardVisual::XYPad {
+                nx, ny, picture, ..
+            } => {
                 let pad = bounds;
-                let thumb = nana_ui_core::space::MD;
+                // A ring has to be wide enough to stay open around the colour
+                // it marks; a dot only has to be seen.
+                let thumb = if *picture {
+                    nana_ui_core::space::XXL
+                } else {
+                    nana_ui_core::space::MD
+                };
                 let nx = nx.clamp(0.0, 1.0);
                 let ny = ny.clamp(0.0, 1.0);
                 Some(crate::ComponentGeometry::XYPad {
@@ -2316,18 +2335,20 @@ impl UiWorld {
                         width: thumb,
                         height: thumb,
                     },
-                    h_axis: LayoutBox {
+                    h_axis: (!*picture).then(|| LayoutBox {
                         x: pad.x,
                         y: pad.y + pad.height / 2.0 - nana_ui_core::HAIRLINE / 2.0,
                         width: pad.width,
                         height: nana_ui_core::HAIRLINE,
-                    },
-                    v_axis: LayoutBox {
+                    }),
+                    v_axis: (!*picture).then(|| LayoutBox {
                         x: pad.x + pad.width / 2.0 - nana_ui_core::HAIRLINE / 2.0,
                         y: pad.y,
                         width: nana_ui_core::HAIRLINE,
                         height: pad.height,
-                    },
+                    }),
+                    thumb_ring: picture
+                        .then(|| crate::ContrastRing::from_effects(self.theme.effects())),
                     background: style.background,
                     border: style.border_color,
                     border_width: if style.border_color.is_some() {

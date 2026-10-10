@@ -53,6 +53,20 @@ let mut seek = RangeField::new(0.0, 0.0, 100.0, 1.0).label("进度").rail(2.0);
 Arc::make_mut(&mut seek.style.layout).height = Some(LengthSpec::Px(16.0));
 ```
 
+## 渐变轨
+
+`track_gradient(色标)` 把轨道画成一条从最小值端到最大值端穿过这些色标的渐变条，用于取值本身是颜色的刻度，比如色相条、不透明度条。渐变条不画填充，也不加字段内边距；条宽是 12，圆点换成对比色圆环（浅色环夹两道深色细边，中间镂空露出所标的颜色），比条高出一圈，在任何色标上都看得清。圆环用主题的媒体前景色和媒体遮罩色，深浅模式下都是浅环深边。轨道两端只内缩半个圆环，圆环在两端也留在控件里。标签、读数、键盘步进、拖动和读屏 `Slider` 语义都不变；要一条光秃秃的色条，再配 `show_value(false)`。色标少于两个时保持常规外观；画家只读前八个色标，和任何线性渐变一样。同时设了 `rail` 时细轨优先。`hue_spectrum()` 是 0 到 360 度的色相环展开（红、黄、绿、青、蓝、品红、回到红），`ColorField` 的色相条就是它。
+
+```rust
+use nana_ui::runtime::{RangeField, hue_spectrum};
+
+RangeField::new(200.0, 0.0, 360.0, 1.0)
+    .label("色相")
+    .show_label(false)
+    .show_value(false)
+    .track_gradient(hue_spectrum())
+```
+
 ## 读屏
 
 没人给滑块起名、又放进设置行时，读屏用行标签。自己有 `label` 时用标签。旁边另有可见标题时，`labelled_by={caption}`（`slider(..).labelled_by(caption)`）用那段标题的文字。
@@ -75,6 +89,7 @@ Arc::make_mut(&mut seek.style.layout).height = Some(LengthSpec::Px(16.0));
 | `show_label` | `bool` | `false` 不画标签，轨道占满，标签仍是读屏名称 |
 | `page_step` | — | 翻页步进，默认是 `step` 的十倍 |
 | `rail` | `Option<f32>` | `rail(粗细)` 只画这么粗的细轨，横贯整个控件，没有标签、数值和内边距，圆点只在焦点可见时出现；控件高度就是命中区 |
+| `track_gradient` | `Option<Arc<[GradientStop]>>` | `track_gradient(色标)` 把轨道画成渐变条：没有填充和字段内边距，圆点换成对比色圆环，语义不变。少于两个色标时保持常规外观；`rail` 优先 |
 
 ## 事件
 

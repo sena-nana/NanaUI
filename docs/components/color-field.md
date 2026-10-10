@@ -1,6 +1,10 @@
 # ColorField
 
-`ColorField` 是色块加十六进制。它是叶子复合件：你写属性时，`assemble_color_field` 自己建出色块、hex 输入和 HSV 选择器，不用再记一次装配。选择器是现有控件：饱和度/明度用 `XYPad`，色相用 `RangeField`，包在它自己的 `Popover` 里。
+`ColorField` 是色块加十六进制。它是叶子复合件：你写属性时，`assemble_color_field` 自己建出色块、hex 输入和 HSV 选择器，不用再记一次装配。选择器是现有控件：饱和度/明度用 `XYPad`，色相用 `RangeField`，包在它自己的 `Popover` 里，挂在色块下方。
+
+## 选择器的样子
+
+选择器画出它取值的颜色。饱和度/明度是一块画面垫（`XYPadSurface::Picture`，高度是大号垫子的两倍）：底色是当前色相的纯色，上面一层白色从左往右淡出（饱和度），再上面一层黑色从上往下渐入（明度），就是标准的 HSV 方块；色相变了，方块跟着换底色。色相是一条不带读数的光谱条（`RangeField::track_gradient(hue_spectrum())`，0 到 360 度：红、黄、绿、青、蓝、品红、回到红）。两处都用对比色圆环标出当前值，没有十字轴，也没有强调色填充。色相条仍是读屏 `Slider`，可以用键盘步进。
 
 控件表里没有 `<ColorField>`。
 

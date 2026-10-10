@@ -4214,6 +4214,9 @@ pub struct RangeField {
     /// `Some(girth)` draws only a rail that thick across the whole box; see
     /// [`Self::rail`].
     pub rail: Option<f32>,
+    /// `Some(stops)` paints the track as this gradient; see
+    /// [`Self::track_gradient`].
+    pub track_gradient: Option<Arc<[nana_ui_core::GradientStop]>>,
     pub disabled: bool,
     pub invalid: bool,
     pub dragging: Option<RangeDragState>,
@@ -4295,6 +4298,7 @@ impl RangeField {
             show_label: true,
             size: nana_ui_core::ControlSize::Medium,
             rail: None,
+            track_gradient: None,
             disabled: false,
             invalid: false,
             dragging: None,
@@ -4336,6 +4340,20 @@ impl RangeField {
     /// and positive keeps the regular look.
     pub fn rail(mut self, girth: f32) -> Self {
         self.rail = (girth.is_finite() && girth > 0.0).then_some(girth);
+        self
+    }
+    /// Paint the track as a gradient through `stops`, from the minimum end
+    /// to the maximum end, for a scale whose values are colours (a hue or an
+    /// opacity strip). The strip has no fill up to the value and no field
+    /// padding, and the thumb is a [`crate::ContrastRing`] so it reads on
+    /// any stop. Label, readout, keyboard steps and the slider semantics are
+    /// unchanged; pair it with [`Self::show_value`]`(false)` for a bare
+    /// strip. Fewer than two stops keep the regular track; the painter reads
+    /// the first eight, as it does for any linear gradient. A rail
+    /// ([`Self::rail`]) wins over it.
+    pub fn track_gradient(mut self, stops: impl Into<Arc<[nana_ui_core::GradientStop]>>) -> Self {
+        let stops: Arc<[nana_ui_core::GradientStop]> = stops.into();
+        self.track_gradient = (stops.len() >= 2).then_some(stops);
         self
     }
     pub fn disabled(mut self, disabled: bool) -> Self {
@@ -4436,6 +4454,7 @@ impl ComponentView for RangeField {
     fn project(&self, id: StableNodeId, world: &UiWorld, mutations: &mut MutationQueue) {
         let value = format_range_value(self.value, self.step);
         let rail = self.rail.filter(|girth| girth.is_finite() && *girth > 0.0);
+        let track_gradient = self.track_gradient.clone().filter(|_| rail.is_none());
         let show_value = self.show_value && rail.is_none();
         let visual = StandardVisual::Range {
             label: self
@@ -4453,6 +4472,7 @@ impl ComponentView for RangeField {
             markers: self.marker_ratios(),
             invalid: self.invalid,
             rail,
+            track_gradient: track_gradient.clone(),
         };
         if world.standard_visual(id) != Some(visual.clone()) {
             mutations.set_standard_visual(id, Some(visual));
@@ -4475,7 +4495,7 @@ impl ComponentView for RangeField {
         if effective_style.control_height.is_none() && effective_style.layout.height.is_none() {
             effective_style.control_height = Some(nana_ui_core::ControlHeight::Min(self.size));
         }
-        if rail.is_none() {
+        if rail.is_none() && track_gradient.is_none() {
             effective_style.control_padding_x = Some(nana_ui_core::ControlPadding::Field);
         }
         if self.invalid {

@@ -25,9 +25,9 @@ use nana_ui_core::{
     icon_y_on_text_glyph_center,
 };
 use nana_ui_runtime::{
-    ComponentElevation, ComponentGeometry, ComponentTextRegion, CustomRenderNode, ExtractedNode,
-    LayoutBox, NodeKind, NodeMap, NodeSet, StableNodeId, StandardVisual, TextFoldGutter,
-    TextHorizontalAlignment, TextInputScroll, TextShaping, TextVerticalAlignment,
+    ComponentElevation, ComponentGeometry, ComponentTextRegion, ContrastRing, CustomRenderNode,
+    ExtractedNode, LayoutBox, NodeKind, NodeMap, NodeSet, StableNodeId, StandardVisual,
+    TextFoldGutter, TextHorizontalAlignment, TextInputScroll, TextShaping, TextVerticalAlignment,
     TextWhitespaceKind,
 };
 
@@ -3546,6 +3546,44 @@ fn visual_quad_with_paint(
         *border_color = border_color_space.or(*border_color);
     }
     primitive
+}
+
+/// A [`ContrastRing`] thumb filling `rect`, on three consecutive slots from
+/// `first_slot`: the outer dark edge, the light ring, the inner dark edge.
+/// The middle stays open, so the colour the thumb marks shows through it;
+/// the light ring reads on dark colours, the edges on light ones.
+fn contrast_ring_quads(
+    context: &VisualPrimitiveContext<'_>,
+    first_slot: u64,
+    rect: SceneRect,
+    ring: ContrastRing,
+) -> [ScenePrimitive; 3] {
+    let edge = nana_ui_core::HAIRLINE;
+    let band = nana_ui_core::space::XXS;
+    let inset = |rect: SceneRect, by: f32| SceneRect {
+        x: rect.x + by,
+        y: rect.y + by,
+        width: (rect.width - by * 2.0).max(0.0),
+        height: (rect.height - by * 2.0).max(0.0),
+    };
+    let stroke = |slot: u64, rect: SceneRect, color: [f32; 4], width: f32| {
+        visual_quad(
+            context,
+            slot,
+            rect,
+            VisualQuadStyle {
+                background: None,
+                border_color: Some(color),
+                border_width: width,
+                corner_radius: corner_radii(rect.width.max(rect.height) / 2.0),
+            },
+        )
+    };
+    [
+        stroke(first_slot, rect, ring.edge, edge),
+        stroke(first_slot + 1, inset(rect, edge), ring.ring, band),
+        stroke(first_slot + 2, inset(rect, edge + band), ring.edge, edge),
+    ]
 }
 
 /// The one colour a scene slot paints: the authored value when there is one,

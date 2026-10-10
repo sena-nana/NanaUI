@@ -1739,28 +1739,48 @@ impl UiScene {
                     size,
                     markers,
                     rail: rail_girth,
+                    track_gradient,
                     ..
                 }) => {
                     let ratio = ratio.clamp(0.0, 1.0);
-                    let track_band = match node.component_geometry.as_deref() {
-                        Some(ComponentGeometry::Range { track, .. }) => scene_rect(*track),
-                        _ => SceneRect {
-                            x: bounds.x + 7.0,
-                            y: bounds.y + (bounds.height - 14.0) / 2.0,
-                            width: (bounds.width - 14.0).max(0.0),
-                            height: 14.0,
-                        },
+                    let (track_band, thumb_ring) = match node.component_geometry.as_deref() {
+                        Some(ComponentGeometry::Range {
+                            track, thumb_ring, ..
+                        }) => (scene_rect(*track), *thumb_ring),
+                        _ => (
+                            SceneRect {
+                                x: bounds.x + 7.0,
+                                y: bounds.y + (bounds.height - 14.0) / 2.0,
+                                width: (bounds.width - 14.0).max(0.0),
+                                height: 14.0,
+                            },
+                            None,
+                        ),
                     };
-                    let thumb_extent = match size {
-                        ControlSize::Small => 12.0_f32,
-                        ControlSize::Medium => 14.0_f32,
-                        ControlSize::Large => 16.0_f32,
-                    }
-                    .min(bounds.width)
-                    .min(track_band.height.max(0.0));
+                    // A gradient track is the scale itself: a strip through
+                    // the stops, no fill, and a ring thumb that stands proud
+                    // of it so it reads on every stop.
+                    let gradient = track_gradient
+                        .as_ref()
+                        .filter(|_| rail_girth.is_none())
+                        .zip(thumb_ring);
+                    let thumb_extent = match gradient {
+                        Some(_) => track_band.height.max(0.0).min(bounds.width),
+                        None => match size {
+                            ControlSize::Small => 12.0_f32,
+                            ControlSize::Medium => 14.0_f32,
+                            ControlSize::Large => 16.0_f32,
+                        }
+                        .min(bounds.width)
+                        .min(track_band.height.max(0.0)),
+                    };
                     // A rail-only range draws its own girth and shows the
                     // thumb only while focus is visible on it.
-                    let girth = rail_girth.map_or(4.0, |girth| girth.min(track_band.height));
+                    let girth = match (gradient, rail_girth) {
+                        (Some(_), _) => nana_ui_core::space::XL.min(track_band.height),
+                        (None, Some(girth)) => girth.min(track_band.height),
+                        (None, None) => 4.0,
+                    };
                     let rail = SceneRect {
                         x: track_band.x,
                         y: track_band.y + (track_band.height - girth) / 2.0,
@@ -1768,41 +1788,66 @@ impl UiScene {
                         height: girth,
                     };
                     let rail_radius = girth / 2.0;
-                    self.insert_primitive(visual_quad_with_paint(
-                        &visual_context,
-                        3,
-                        rail,
-                        VisualQuadStyle {
-                            background: node.style.border_color,
-                            border_color: None,
-                            border_width: 0.0,
-                            corner_radius: corner_radii(rail_radius),
-                        },
-                        matching_paint_color(
-                            node.style.paint_colors.border,
-                            node.style.border_color,
-                        ),
-                        None,
-                    ));
-                    self.insert_primitive(visual_quad_with_paint(
-                        &visual_context,
-                        4,
-                        SceneRect {
-                            width: rail.width * ratio,
-                            ..rail
-                        },
-                        VisualQuadStyle {
-                            background: node.style.background,
-                            border_color: None,
-                            border_width: 0.0,
-                            corner_radius: corner_radii(rail_radius),
-                        },
-                        node.style.paint_colors.background,
-                        None,
-                    ));
+                    if let Some((stops, _)) = gradient {
+                        let mut strip = visual_quad(
+                            &visual_context,
+                            3,
+                            rail,
+                            VisualQuadStyle {
+                                background: None,
+                                border_color: None,
+                                border_width: 0.0,
+                                corner_radius: corner_radii(rail_radius),
+                            },
+                        );
+                        if let ScenePrimitiveKind::Quad { surface, .. } = &mut strip.kind {
+                            surface.background_image = Some(BackgroundImage::Gradient(
+                                nana_ui_core::CssGradient::Linear(nana_ui_core::LinearGradient {
+                                    // CSS `to right`: minimum end to maximum end.
+                                    angle_deg: 90.0,
+                                    stops: stops.to_vec(),
+                                }),
+                            ));
+                        }
+                        self.insert_primitive(strip);
+                    } else {
+                        self.insert_primitive(visual_quad_with_paint(
+                            &visual_context,
+                            3,
+                            rail,
+                            VisualQuadStyle {
+                                background: node.style.border_color,
+                                border_color: None,
+                                border_width: 0.0,
+                                corner_radius: corner_radii(rail_radius),
+                            },
+                            matching_paint_color(
+                                node.style.paint_colors.border,
+                                node.style.border_color,
+                            ),
+                            None,
+                        ));
+                        self.insert_primitive(visual_quad_with_paint(
+                            &visual_context,
+                            4,
+                            SceneRect {
+                                width: rail.width * ratio,
+                                ..rail
+                            },
+                            VisualQuadStyle {
+                                background: node.style.background,
+                                border_color: None,
+                                border_width: 0.0,
+                                corner_radius: corner_radii(rail_radius),
+                            },
+                            node.style.paint_colors.background,
+                            None,
+                        ));
+                    }
                     // Marker slots sit between the fill (4) and the thumb.
                     // With none of them, the thumb stays on slot 5 and the
-                    // focus ring on slot 6.
+                    // focus ring on slot 6 (a ring thumb takes 5..=7 and its
+                    // focus ring 8).
                     let marker_count = markers.len() as u64;
                     for (index, marker) in markers.iter().copied().enumerate() {
                         let marker = marker.clamp(0.0, 1.0);
@@ -1833,21 +1878,31 @@ impl UiScene {
                         width: thumb_extent,
                         height: thumb_extent,
                     };
-                    if rail_girth.is_none() || node.focused {
-                        self.insert_primitive(visual_quad_with_paint(
-                            &visual_context,
-                            thumb_slot,
-                            thumb_rect,
-                            VisualQuadStyle {
-                                background: node.style.background,
-                                border_color: node.style.border_color,
-                                border_width: 1.0,
-                                corner_radius: corner_radii(thumb_extent / 2.0),
-                            },
-                            node.style.paint_colors.background,
-                            node.style.paint_colors.border,
-                        ));
-                    }
+                    let focus_slot = if let Some((_, ring)) = gradient {
+                        for quad in
+                            contrast_ring_quads(&visual_context, thumb_slot, thumb_rect, ring)
+                        {
+                            self.insert_primitive(quad);
+                        }
+                        thumb_slot + 3
+                    } else {
+                        if rail_girth.is_none() || node.focused {
+                            self.insert_primitive(visual_quad_with_paint(
+                                &visual_context,
+                                thumb_slot,
+                                thumb_rect,
+                                VisualQuadStyle {
+                                    background: node.style.background,
+                                    border_color: node.style.border_color,
+                                    border_width: 1.0,
+                                    corner_radius: corner_radii(thumb_extent / 2.0),
+                                },
+                                node.style.paint_colors.background,
+                                node.style.paint_colors.border,
+                            ));
+                        }
+                        thumb_slot + 1
+                    };
                     if node.focused {
                         // Focus marks the thumb (LiliaUI focus-visible outline),
                         // never the rail: the rail colour stays interaction-free.
@@ -1859,7 +1914,7 @@ impl UiScene {
                         };
                         self.insert_primitive(visual_quad_with_paint(
                             &visual_context,
-                            thumb_slot + 1,
+                            focus_slot,
                             ring,
                             VisualQuadStyle {
                                 background: None,

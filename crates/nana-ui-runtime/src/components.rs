@@ -832,6 +832,10 @@ pub enum StandardVisual {
         /// whole content box, with no thumb unless focus is visible on the
         /// range.
         rail: Option<f32>,
+        /// `Some(stops)`: the track is this gradient, start to end, with no
+        /// fill, and the thumb is a [`ContrastRing`]. See
+        /// `RangeField::track_gradient`.
+        track_gradient: Option<Arc<[nana_ui_core::GradientStop]>>,
     },
     /// Scroll container chrome. Carries policy only: the track and thumb boxes
     /// come from the authoritative [`ScrollOffset`] / [`ScrollMetrics`] at
@@ -929,6 +933,9 @@ pub enum StandardVisual {
         size: ControlSize,
         invalid: bool,
         disabled: bool,
+        /// The pad's own paint is the picture (`XYPadSurface::Picture`): no
+        /// axes, a [`ContrastRing`] thumb, the frame stroked above the paint.
+        picture: bool,
     },
     Select {
         label: Arc<str>,
@@ -1331,6 +1338,28 @@ impl ComponentElevation {
     }
 }
 
+/// A thumb drawn as a ring that reads on whatever colour is under it: a
+/// light ring between two thin dark edges, open in the middle so the colour
+/// it marks shows through. The colours are the theme's media pair
+/// ([`nana_ui_core::EffectTokens::media_foreground`] for the ring,
+/// [`nana_ui_core::EffectTokens::media_scrim`] for the edges), light and dark
+/// in every mode, because what the ring sits on is content, not the theme.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct ContrastRing {
+    pub ring: [f32; 4],
+    pub edge: [f32; 4],
+}
+
+impl ContrastRing {
+    /// The ring a theme's effect tokens draw.
+    pub fn from_effects(effects: nana_ui_core::EffectTokens) -> Self {
+        Self {
+            ring: effects.media_foreground.as_rgba_array(),
+            edge: effects.media_scrim.as_rgba_array(),
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct CalendarHoverGeometry {
     pub ring: LayoutBox,
@@ -1474,6 +1503,9 @@ pub enum ComponentGeometry {
         value: ComponentTextRegion,
         unit: Option<ComponentTextRegion>,
         track: LayoutBox,
+        /// The ring a gradient track's thumb is drawn as; `None` for the
+        /// regular filled track.
+        thumb_ring: Option<ContrastRing>,
     },
     Scrollbar {
         horizontal: Option<ScrollbarBar>,
@@ -1548,8 +1580,13 @@ pub enum ComponentGeometry {
     XYPad {
         pad: LayoutBox,
         thumb: LayoutBox,
-        h_axis: LayoutBox,
-        v_axis: LayoutBox,
+        /// The centre axes; `None` on a picture pad.
+        h_axis: Option<LayoutBox>,
+        v_axis: Option<LayoutBox>,
+        /// `Some` on a picture pad: the thumb is this ring, not a dot in
+        /// `thumb_color`, and the frame is stroked again above the pad's
+        /// paint.
+        thumb_ring: Option<ContrastRing>,
         background: Option<[f32; 4]>,
         border: Option<[f32; 4]>,
         border_width: f32,
