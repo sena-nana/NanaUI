@@ -206,6 +206,28 @@ fn check_plan_children(
     })
 }
 
+/// The size `plan` recorded for `child`, while the change closure reaches
+/// nothing in it, its style is the recorded one, and that style does not
+/// read the main extent, the one extent of the content box allowed to move.
+fn kept_size(
+    child: StableNodeId,
+    plan: &ContainerPlan,
+    direction: FlexDirection,
+    nodes: &LayoutInputMap<'_>,
+    scope: &ScopeContext<'_>,
+) -> Option<Size> {
+    if scope.affected.contains(&child) || scope.reach.reaches(child) {
+        return None;
+    }
+    let style = nodes.style(child)?;
+    let entries = plan.entries.borrow();
+    let entry = entries.get(plan.entry_index(child)? as usize)?;
+    (entry.child == child
+        && (Arc::ptr_eq(&style, &entry.style) || layout_inputs_equal(&style, &entry.style))
+        && !reads_main_extent(&style, direction))
+    .then_some(entry.intrinsic)
+}
+
 /// Replay a sequential container's children from `from` onward, keeping every
 /// position before it.
 ///
@@ -1153,6 +1175,26 @@ pub(super) fn place_node_scoped(
     let parent_box = gap_containing_block(style, content);
     let gap = style.main_gap_against_fonts(direction, parent_box, fonts);
     let cross_gap = style.cross_gap_against_fonts(direction, parent_box, fonts);
+    // A new child list that moved only the main extent of the content box:
+    // a child the container kept keeps the size its last plan recorded, as
+    // when the container's main size moves. A line aligned by baselines
+    // reads each item's from this pass.
+    let kept = scope
+        .and_then(|scope| Some((scope.retained.container_plans.get(&id)?, scope)))
+        .filter(|(plan, _)| {
+            !Arc::ptr_eq(&plan.children, &child_ids)
+                && plan.grid.is_none()
+                && !grid_2d
+                && (plan.main_direction, plan.writing, plan.viewport)
+                    == (direction, writing, viewport)
+                && plan.child_font_px == child_font_px
+                && cross_extent(plan.child_available, direction) == cross_extent(content, direction)
+                && !flow.iter().any(|child| {
+                    nodes.style(*child).is_some_and(|child| {
+                        child.resolved_align_self(style.align_items) == AlignSpec::Baseline
+                    })
+                })
+        });
     let mut child_sizes = Vec::with_capacity(flow.len());
     #[cfg(feature = "benchmark")]
     let mut child_phase = (flow.len() > 64).then(super::plan_stats::PhaseClock::start);
@@ -1168,6 +1210,12 @@ pub(super) fn place_node_scoped(
             content
         };
         intrinsic.note_child_measured();
+        if let Some((plan, scope)) = kept
+            && let Some(size) = kept_size(*child, plan, direction, nodes, scope)
+        {
+            child_sizes.push(size);
+            continue;
+        }
         child_sizes.push(intrinsic_size_scoped(
             *child,
             child_available,

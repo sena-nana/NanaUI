@@ -4492,6 +4492,12 @@ impl UiWorld {
                                 || display.is_inline_level()
                         });
                 if !explicit_context {
+                    // A forced subtree exports its metrics: its parent lays
+                    // out again and moves the siblings after it. Only an
+                    // isolated one, which exports none, links them.
+                    if force_all && !self.layout_isolated(node) {
+                        continue;
+                    }
                     // Block flow: only later siblings move, each because the
                     // one before it did. Link this node to its next in-flow
                     // sibling and expand that one the same way, so the chain
