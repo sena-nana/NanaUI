@@ -9241,6 +9241,115 @@ fn retained_child_reconciliation_extracts_live_editor_before_parking_ancestor() 
     );
 }
 
+/// Issue #197: changing the formatting context a container runs keeps its
+/// child components: their entities, state, focus, handlers and mount.
+#[test]
+fn a_formatting_context_transition_keeps_child_components_and_their_state() {
+    use crate::{FormattingContextKind as Ctx, ParticipationKind as Part};
+    let mut context = AppContext::new();
+    let document = DocumentId::new(1).unwrap();
+    let viewport = crate::LayoutViewport::new(400.0, 300.0);
+    let parent = context
+        .create_component(document, Stack::column(0.0))
+        .unwrap();
+    let input = context
+        .create_detached_component(document, TextInput::new("draft"))
+        .unwrap();
+    let button = context
+        .create_detached_component(document, Button::new("second"))
+        .unwrap();
+    context
+        .reconcile_children(parent.id, &[input.id, button.id])
+        .unwrap();
+    context
+        .on(button, |button, _: &Activate, _| {
+            button.label = "activated".into()
+        })
+        .unwrap();
+    // An inline-level text run, so a block parent runs an inline context.
+    let run = StableNodeId::new(9_001).unwrap();
+    let mut queue = MutationQueue::new();
+    queue.create(run, document, NodeKind::Text);
+    queue.insert(parent.id, run, None);
+    queue.set_text(
+        run,
+        TextContent {
+            value: "CPU".into(),
+        },
+    );
+    queue.set_style(
+        run,
+        NodeStyle {
+            layout: Arc::new(nana_ui_core::LayoutStyle {
+                display: Some(nana_ui_core::DisplaySpec::Inline),
+                ..nana_ui_core::LayoutStyle::default()
+            }),
+            ..NodeStyle::default()
+        },
+    );
+    context.commit_mutations(queue).unwrap();
+    context.focus_node(document, input.id).unwrap();
+    context.layout_document(document, viewport).unwrap();
+    let children = context.world.node(parent.id).unwrap().children;
+
+    for (display, established, participation) in [
+        (nana_ui_core::DisplaySpec::Grid, Ctx::Grid, Part::GridItem),
+        (
+            nana_ui_core::DisplaySpec::Block,
+            Ctx::Inline,
+            Part::FlowItem,
+        ),
+        (nana_ui_core::DisplaySpec::Flex, Ctx::Flex, Part::FlexItem),
+    ] {
+        let mut style = context.world.node_style(parent.id).unwrap().clone();
+        Arc::make_mut(&mut style.layout).display = Some(display);
+        let mut queue = MutationQueue::new();
+        queue.set_style(parent.id, style);
+        context.commit_mutations(queue).unwrap();
+        let work = context.take_system_work();
+        context
+            .layout_document_with_frontier(document, viewport, &work.layout_frontier_seeds)
+            .unwrap();
+
+        let view = context.world.layout_node(parent.id).unwrap();
+        assert_eq!(view.established, Some(established), "{display:?}");
+        for child in [input.id, button.id] {
+            assert_eq!(
+                context.world.layout_node(child).unwrap().participation,
+                Some(participation),
+                "{display:?} {child:?}"
+            );
+            assert!(context.world.is_mounted(child), "{display:?} {child:?}");
+        }
+        assert_eq!(
+            context.world.node(parent.id).unwrap().children,
+            children,
+            "{display:?}"
+        );
+        assert_eq!(
+            context.world.focused(document),
+            Some(input.id),
+            "{display:?}"
+        );
+        assert_eq!(
+            context
+                .read(input, |input| input.state.value.clone())
+                .unwrap(),
+            "draft",
+            "{display:?}"
+        );
+    }
+    assert_eq!(
+        context.world.layout_node(run).unwrap().participation,
+        Some(Part::FlexItem)
+    );
+    context.activate_button(button).unwrap();
+    assert_eq!(
+        context.read(button, |button| button.label.clone()).unwrap(),
+        "activated"
+    );
+}
+
 #[test]
 fn retained_child_reconciliation_preserves_extracted_tooltip_and_loading_lifecycles() {
     let mut context = AppContext::new();

@@ -407,7 +407,7 @@ impl AgentSession for RuntimeAgentSession {
     fn inspect(&self, node: u64) -> Result<super::protocol::InspectDump, AgentError> {
         use super::protocol::{
             AppliedDump, CauseDump, DynamicDump, FieldDump, InspectDump, LayoutCauseDump,
-            SegmentDump,
+            LayoutNodeDump, SegmentDump,
         };
         let target =
             StableNodeId::new(node).ok_or_else(|| AgentError("node id 0 is reserved".into()))?;
@@ -487,6 +487,26 @@ impl AgentSession for RuntimeAgentSession {
                     amount: applied.amount.0,
                     padding: applied.padding.0,
                 }),
+            }),
+            layout_node: inspection.layout_node.map(|layout| {
+                let view = layout.view;
+                let lower = |value: &dyn std::fmt::Debug| format!("{value:?}").to_ascii_lowercase();
+                LayoutNodeDump {
+                    node: view.id.get(),
+                    intent: format!(
+                        "display={} direction={} position={}",
+                        view.intent.display.map_or("auto".into(), |d| lower(&d)),
+                        view.intent.direction.map_or("auto".into(), |d| lower(&d)),
+                        lower(&view.intent.position),
+                    ),
+                    content: lower(&view.content),
+                    established: view.established.map(|kind| lower(&kind)),
+                    parent_context: view.parent_context.map(|kind| lower(&kind)),
+                    participation: view.participation.map(|kind| lower(&kind)),
+                    metrics_generation: layout.metrics_generation,
+                    context_generation: view.context_generation,
+                    result_generation: view.result_generation,
+                }
             }),
         })
     }

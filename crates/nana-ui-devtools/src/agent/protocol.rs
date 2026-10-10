@@ -230,6 +230,9 @@ pub struct InspectDump {
     /// assigned it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub dynamic: Option<DynamicDump>,
+    /// The node's layout identity, context and participation.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub layout_node: Option<LayoutNodeDump>,
 }
 
 /// Dynamic Layout facts for a node. Lengths are in 1/64 px.
@@ -259,6 +262,32 @@ pub struct AppliedDump {
     pub axis: String,
     pub amount: i32,
     pub padding: i32,
+}
+
+/// A node as layout sees it (Issue #197). Kinds are lowercase variant
+/// names: `flex`, `griditem`, `nativetext`, …
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct LayoutNodeDump {
+    pub node: u64,
+    /// The resolved layout intent that selects the context:
+    /// `display=grid direction=auto position=static`.
+    pub intent: String,
+    /// `children`, `text`, `replaced` or `empty`.
+    pub content: String,
+    /// The context the node lays its own content out in; absent for an
+    /// empty leaf.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub established: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub parent_context: Option<String>,
+    /// Absent until the parent has been laid out.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub participation: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub metrics_generation: Option<u64>,
+    pub context_generation: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub result_generation: Option<u64>,
 }
 
 /// A typed layout cause, by flag name.

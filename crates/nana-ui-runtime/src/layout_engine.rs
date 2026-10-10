@@ -1,3 +1,5 @@
+mod context;
+use context::*;
 mod grid;
 use grid::*;
 mod dynamic;
@@ -223,14 +225,16 @@ impl RuntimeLayoutEngine {
                             snapshot.emitted.clone(),
                             snapshot.used_padding.clone(),
                             snapshot.far_start.clone(),
+                            snapshot.contexts.clone(),
                         )
                     })
             });
-            if let Some((emitted, used_padding, far_start)) = reused {
+            if let Some((emitted, used_padding, far_start, contexts)) = reused {
                 retained.boxes.clear();
                 retained.boxes.extend(emitted.iter().copied());
                 retained.used_padding = used_padding;
                 retained.far_start = far_start;
+                retained.contexts = contexts;
                 retained.intrinsics.clear();
                 retained.intrinsic_metrics.clear();
                 retained.placements.clear();
@@ -442,6 +446,7 @@ impl RuntimeLayoutEngine {
         }
         retained.used_padding.extend(nodes.used_padding.drain());
         retained.far_start.extend(nodes.far_start.drain());
+        retained.contexts.extend(nodes.contexts.drain());
         retained.placements.extend(nodes.placements.drain());
         for (id, plan) in nodes.container_plans.drain() {
             match plan {
@@ -528,6 +533,7 @@ impl RuntimeLayoutEngine {
             retained.placements.retain(|id, _| world.contains(*id));
             retained.used_padding.retain(|id, _| world.contains(*id));
             retained.far_start.retain(|id, _| world.contains(*id));
+            retained.contexts.retain(|id, _| world.contains(*id));
             retained.container_plans.retain(|id, _| world.contains(*id));
             retained.measure_plans.retain(|id, _| world.contains(*id));
             retained.envelopes.retain(|id, _| world.contains(*id));
@@ -554,6 +560,7 @@ impl RuntimeLayoutEngine {
                 emitted: emitted.clone(),
                 used_padding: retained.used_padding.clone(),
                 far_start: retained.far_start.clone(),
+                contexts: retained.contexts.clone(),
             };
             retained.full_snapshots[1] = retained.full_snapshots[0].take();
             retained.full_snapshots[0] = Some(snapshot);
@@ -719,6 +726,7 @@ impl RetainedLayoutCache {
             cache.placements.remove(&id);
             cache.used_padding.remove(&id);
             cache.far_start.remove(&id);
+            cache.contexts.remove(&id);
             cache.container_plans.remove(&id);
             cache.measure_plans.remove(&id);
             cache.envelopes.remove(&id);
@@ -789,6 +797,32 @@ impl RetainedLayoutCache {
         self.documents.get(&document)?.far_start.get(&id).copied()
     }
 
+    /// The formatting context the last placement of `id` ran for its
+    /// children. Leaves record none.
+    pub(crate) fn formatting_context(
+        &self,
+        document: DocumentId,
+        id: StableNodeId,
+    ) -> Option<crate::FormattingContextKind> {
+        self.documents.get(&document)?.contexts.get(&id).copied()
+    }
+
+    /// The newest intrinsic generation layout holds for `id`'s content.
+    pub(crate) fn intrinsic_generation(
+        &self,
+        document: DocumentId,
+        id: StableNodeId,
+    ) -> Option<u64> {
+        self.documents
+            .get(&document)?
+            .intrinsic_metrics
+            .by_content
+            .get(&id.get())?
+            .iter()
+            .map(|(_, metrics)| metrics.generation)
+            .max()
+    }
+
     pub(crate) fn used_padding(
         &self,
         document: DocumentId,
@@ -842,6 +876,8 @@ struct DocumentLayoutCache {
     pub(crate) used_padding: HashMap<StableNodeId, nana_ui_core::PaddingSpec>,
     /// Per container, the page axes placement starts at the far end.
     far_start: HashMap<StableNodeId, [bool; 2]>,
+    /// Per container, the formatting context its last placement ran.
+    contexts: HashMap<StableNodeId, crate::FormattingContextKind>,
     /// Cached in-flow child placement per container. See [`ContainerPlan`].
     container_plans: HashMap<StableNodeId, ContainerPlan>,
     /// Cached intrinsic measurement per content-sized container. See
@@ -902,6 +938,7 @@ struct FullLayoutSnapshot {
     emitted: Vec<(StableNodeId, LayoutBox)>,
     used_padding: HashMap<StableNodeId, nana_ui_core::PaddingSpec>,
     far_start: HashMap<StableNodeId, [bool; 2]>,
+    contexts: HashMap<StableNodeId, crate::FormattingContextKind>,
 }
 
 /// Retained intrinsic facts, grouped by the content they describe. A node has
@@ -1111,6 +1148,7 @@ impl DocumentLayoutCache {
         self.boxes.clear();
         self.used_padding.clear();
         self.far_start.clear();
+        self.contexts.clear();
         self.container_plans.clear();
         self.measure_plans.clear();
         self.envelopes.clear();
@@ -2007,6 +2045,8 @@ struct LayoutInputMap<'a> {
     placements: HashMap<StableNodeId, (Point, Size, f32)>,
     used_padding: HashMap<StableNodeId, nana_ui_core::PaddingSpec>,
     far_start: HashMap<StableNodeId, [bool; 2]>,
+    /// Formatting context each container placed this pass ran.
+    contexts: HashMap<StableNodeId, crate::FormattingContextKind>,
     /// Container plans rebuilt this pass. Merged into the retained cache at the
     /// end; containers that took the fast path record nothing, so their
     /// existing plan simply stays. `None` retires a plan recorded when the
@@ -2033,6 +2073,7 @@ impl<'a> LayoutInputMap<'a> {
             placements: HashMap::new(),
             used_padding: HashMap::new(),
             far_start: HashMap::new(),
+            contexts: HashMap::new(),
             container_plans: HashMap::new(),
             measure_plans: HashMap::new(),
         }

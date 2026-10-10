@@ -916,6 +916,9 @@ pub(super) fn place_node_scoped(
     nodes.used_padding.insert(id, padding);
 
     if let Some(modal) = modal.as_ref() {
+        nodes
+            .contexts
+            .insert(id, crate::FormattingContextKind::Overlay);
         place_modal_children(
             id,
             origin,
@@ -1157,14 +1160,10 @@ pub(super) fn place_node_scoped(
     };
     let float_left_bottom = packed_floats.left_bottom;
     let float_right_bottom = packed_floats.right_bottom;
-    let grid_2d = uses_2d_grid(style, &flow, nodes);
-    let ifc = !grid_2d
-        && !style
-            .display
-            .is_some_and(|d| d.is_flex_container() || d.is_grid_container())
-        && flow
-            .iter()
-            .any(|id| nodes.style(*id).is_some_and(|s| s.is_inline_level()));
+    let context = establish_context(style, &flow, nodes);
+    nodes.contexts.insert(id, context.kind);
+    let grid_2d = context.grid_2d;
+    let ifc = context.inline();
     let direction = used_flow_direction(style, writing, ifc);
     // Flow-relative placement. Every position below is measured from the
     // main-start and cross-start edges of the content box, in flow order —

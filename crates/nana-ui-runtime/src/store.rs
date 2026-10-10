@@ -120,6 +120,10 @@ pub(crate) struct NodeRecord {
     pub layout_padding: Option<nana_ui_core::PaddingSpec>,
     /// Page axes the last layout placed the children from the far end.
     pub layout_far_start: Option<[bool; 2]>,
+    /// The formatting context the last layout ran for the children.
+    pub layout_context: Option<crate::FormattingContextKind>,
+    /// Bumped each time [`Self::layout_context`] changes.
+    pub layout_context_generation: u64,
     pub scroll_offset: ScrollOffset,
     pub interaction: InteractionState,
     pub accessibility: AccessibilityState,
@@ -145,6 +149,8 @@ impl NodeRecord {
             layout: LayoutBox::default(),
             layout_padding: None,
             layout_far_start: None,
+            layout_context: None,
+            layout_context_generation: 0,
             scroll_offset: ScrollOffset::default(),
             interaction,
             accessibility: AccessibilityState::default(),

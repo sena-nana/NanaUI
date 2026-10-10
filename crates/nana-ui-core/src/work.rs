@@ -137,6 +137,11 @@ pub struct WorkCounters {
     /// A local edit keeps this the same at any document size; only a
     /// container whose own placements changed pays for its child count.
     pub layout_result_children_visited: usize,
+    /// Containers whose placement ran a different formatting context than
+    /// the one recorded for them (Issue #197). A transition replaces the
+    /// context record and the children's participation; it never creates,
+    /// despawns or resets a child. Static and paint-only frames record 0.
+    pub layout_context_transitions: usize,
     /// Layout mutations whose effective value changed and queued a typed
     /// invalidation.
     pub layout_invalidations_created: usize,
@@ -591,7 +596,8 @@ accumulate_counters! {
             layout_local_subtree_fallbacks, layout_full_document_fallbacks, layout_measure_nodes,
             layout_measure_cache_hits, layout_measure_cache_misses, layout_placement_nodes,
             layout_result_reused, layout_result_changed, layout_origin_only_updates,
-            layout_delta_commits, layout_result_children_visited, layout_invalidations_created,
+            layout_delta_commits, layout_result_children_visited, layout_context_transitions,
+            layout_invalidations_created,
             layout_invalidations_zero_delta, layout_equivalent_mutations_skipped,
             layout_placement_plans_reused, layout_measure_plans_reused, layout_suffixes_replayed,
             layout_children_measured, layout_containers_uncacheable, layout_plan_misses,
@@ -893,6 +899,12 @@ impl WorkCounters {
         self.layout_result_children_visited = self
             .layout_result_children_visited
             .saturating_add(children_visited);
+    }
+
+    /// Containers whose recorded formatting context changed.
+    pub fn record_layout_context_transitions(&mut self, transitions: usize) {
+        self.layout_context_transitions =
+            self.layout_context_transitions.saturating_add(transitions);
     }
 
     /// Fold one pass's retained-plan work. A positioned context laid out whole

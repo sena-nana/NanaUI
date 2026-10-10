@@ -8,7 +8,7 @@
 
 use std::sync::Arc;
 
-use crate::{LayoutBox, ScrollOffset, StableNodeId};
+use crate::{FormattingContextKind, LayoutBox, ScrollOffset, StableNodeId};
 
 /// The kind of fragment emitted by a formatting context.  Fragments describe
 /// layout output only; renderer primitives are deliberately not represented.
@@ -134,6 +134,9 @@ pub struct LayoutResult {
     pub clip: Option<StableNodeId>,
     pub containing_block: Option<StableNodeId>,
     pub dependencies: Arc<[StableNodeId]>,
+    /// The formatting context the node laid its children (or its own text)
+    /// out in (Issue #197). It decides the kind of every child fragment.
+    pub formatting_context: Option<FormattingContextKind>,
     pub dependency_generation: u64,
     pub generation: u64,
     pub source: LayoutResultSource,
@@ -169,6 +172,7 @@ impl LayoutResult {
             clip: None,
             containing_block: None,
             dependencies: Arc::from([]),
+            formatting_context: None,
             dependency_generation: 0,
             generation: 0,
             source: LayoutResultSource::CompatibilityWrite,
@@ -191,6 +195,7 @@ impl LayoutResult {
             && self.clip == other.clip
             && self.containing_block == other.containing_block
             && self.dependencies == other.dependencies
+            && self.formatting_context == other.formatting_context
     }
 
     /// Classify the externally visible result change for dependency-aware

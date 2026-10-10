@@ -250,6 +250,8 @@ pub struct Inspection {
     /// What Dynamic Layout knows of the node: the elasticity its parent last
     /// read, and what its line last assigned it (Issue #208).
     pub dynamic: Option<DynamicInspection>,
+    /// The node's layout identity, context and participation.
+    pub layout_node: Option<LayoutNodeInspection>,
 }
 
 /// The envelope a node's parent last read and what its line last assigned
@@ -268,6 +270,15 @@ pub struct AppliedInspection {
     pub inline: bool,
     pub amount: nana_ui_core::dynamic_layout::LayoutUnits,
     pub padding: nana_ui_core::dynamic_layout::LayoutUnits,
+}
+
+/// The layout view of a node (Issue #197) with the intrinsic generation
+/// layout holds for its content.
+#[derive(Debug, Clone, PartialEq)]
+pub struct LayoutNodeInspection {
+    pub view: crate::LayoutNode,
+    /// `None` until layout measured the node's content.
+    pub metrics_generation: Option<u64>,
 }
 
 /// Why layout reached a node: the typed cause the mutation authority

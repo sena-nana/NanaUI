@@ -56,6 +56,7 @@ pub mod intrinsic_cache;
 mod key_layers;
 mod layout_engine;
 mod layout_frontier;
+mod layout_node;
 mod layout_result;
 /// Benchmark-only coarse phase clocks for `--profile-layout`. How much work
 /// layout did, plan reuse included, is on [`WorkCounters`].
@@ -284,6 +285,7 @@ pub use layout_engine::{
 pub use layout_frontier::{
     LayoutDependencyGraph, LayoutFrontier, LayoutFrontierSeed, LayoutFrontierStats,
 };
+pub use layout_node::{FormattingContextKind, LayoutContentKind, LayoutNode, ParticipationKind};
 pub use layout_result::{
     LayoutChildPlacement, LayoutFragment, LayoutFragmentKind, LayoutPart, LayoutPartKind,
     LayoutResult, LayoutResultSource,

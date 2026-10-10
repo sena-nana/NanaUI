@@ -638,6 +638,23 @@ impl AppContext {
                 .world
                 .document_of(node)
                 .and_then(|document| self.layout_cache.dynamic_inspection(document, node)),
+            layout_node: self.inspect_layout_node(node),
+        })
+    }
+
+    /// `node`'s layout view and the intrinsic generation of its content.
+    pub fn inspect_layout_node(
+        &self,
+        node: StableNodeId,
+    ) -> Option<crate::view::LayoutNodeInspection> {
+        let view = self.world.layout_node(node)?;
+        let metrics_generation = self
+            .world
+            .document_of(node)
+            .and_then(|document| self.layout_cache.intrinsic_generation(document, node));
+        Some(crate::view::LayoutNodeInspection {
+            view,
+            metrics_generation,
         })
     }
 

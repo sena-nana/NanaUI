@@ -135,6 +135,12 @@ impl UiWorld {
         self.replaced.dependents.contains_key(resource)
     }
 
+    /// Whether `id` shows replaced content: an image, host texture or custom
+    /// renderer, whether or not its resource has reported a size yet.
+    pub(crate) fn shows_replaced_content(&self, id: StableNodeId) -> bool {
+        self.replaced.by_node.contains_key(&id)
+    }
+
     /// The natural size of what `id` shows, once its resource reported one.
     pub(crate) fn replaced_natural_size(&self, id: StableNodeId) -> Option<ReplacedMetadata> {
         self.replaced.natural(id)

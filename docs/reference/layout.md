@@ -55,6 +55,58 @@ viewport 等依赖会进入约束或输入身份。内容、形状样式、边�
 metadata、scale/font 和子树 metrics 的变化才会 bump generation；颜色、opacity、
 transform、hover 和 accessibility 更新不会 bump。
 
+## LayoutNode、Participation 与 FormattingContext（#197）
+
+布局把一个节点拆成三件事，互不替代：
+
+- **身份**：`StableNodeId` 和它的 retained 记录。布局从不为了换算法创建、包装或销毁节点。
+- **参与方式**（`ParticipationKind`）：这个节点在父级的 formatting context 里怎么被排。
+  它由父级的 context、节点解析后的布局意图和节点自己的内容推出来，是一个视图，
+  不是组件，也不另存一棵树。
+- **建立的 context**（`FormattingContextKind`）：这个节点怎么排自己的子项。布局记下它
+  实际跑的那一种：`Flow`（`display: block` 或不写）、`Flex`、`Grid`、`Inline`（在流
+  子项里有行内级盒子）、`Overlay`（模态框按槽位放子项）。有文字的叶子为自己的文字建立
+  `Inline`，字形归 nana-text，不变成布局节点；空叶子不建立 context。
+
+measure 和 placement 用同一个函数选 context，两趟不会对同一个节点选出不同的算法。
+算法本身没有变。context 只读 `resolved_layout`，也就是 layout intent authority 的输出；
+它不再解析一次样式。
+
+| 父级 context | 子项的参与方式 |
+|---|---|
+| `Flex` | `FlexItem` |
+| `Grid` | `GridItem` |
+| `Flow` | `FlowItem`；浮动的是 `Float`；被块拆开的行内元素是 `InlineSpan` |
+| `Inline` | 行内文字是 `NativeText`，有子项的行内元素是 `InlineSpan`，`inline-block`、控件和替换内容是 `AtomicInline`，块级盒子是 `FlowItem`（断行） |
+| `Overlay` | `OverlayItem` |
+
+`Absolute` / `Fixed`、`display: contents`（`Contents`）和不生成盒子的节点（`NoBox`）
+在任何 context 里都一样。文本、图片、按钮、容器和 custom render 都走这一张表：
+它们的区别只在内容（`Children`、`Text`、`Replaced`、`Empty`），不在组件类型。同一个
+文本节点在 `Inline` 里是 `NativeText`，在 flex 或 grid 里就是一个按内在尺寸排的 item。
+节点可以任意嵌套：一个 grid 在 flex 父级里是 `FlexItem`，对自己的子项仍然是 `Grid`。
+
+`UiWorld::layout_node(id)` 每次调用时从记录拼出这个视图：解析后的意图、内容、建立的
+context、父级 context、参与方式、context generation 和结果 generation。父级还没布局时
+参与方式是 `None`，不猜。`LayoutResult::formatting_context` 记下结果是在哪个 context 里
+排出来的，子项 fragment 的种类也由它决定（`Flex` → `FlexChildPlacement`，
+`Grid` → `GridChildPlacement`，`Inline` → `InlineAtomic`，其余 → `ChildPlacement`）。
+
+context 切换（同一组子项 Flex → Grid → Inline）只换 context 记录、它的 generation、
+子项的参与方式和布局结果；按样式指针比对的计划自然失效。子项的 id、组件、状态、焦点、
+监听和挂载都不变，不生成也不销毁节点。每个记录到不同 context 的容器计一次
+`layout_context_transitions`；静态帧、只改绘制的写入和等价写入都是 0。
+DevTools `inspect` 的 `layout_node` 给出节点、意图摘要、内容、建立的 context、父级
+context、参与方式，以及 metrics、context 和结果三个 generation。
+
+门禁在 `world/issue197.rs`：同一组子项（带标签的 inline-block、行内文本、替换图片、
+嵌套 grid）经过 Flex → Grid → Inline → Flex，每一步只记一次切换、没有节点生灭、
+参与方式随父级变化，并与冷布局逐项相同；静态、只改绘制和等价写入不记切换。
+`framework/tests.rs` 里的组件版本确认 TextInput 的内容、焦点和 Button 的处理函数都保留。
+
+还没做的：Flex、Grid、Inline 算法还没拆成独立模块（#199）；脱流定位的 containing block
+（#200）和滚动作为正交行为（#201）也还没接进这套参与方式。
+
 ## Incremental reflow frontier
 
 Runtime 的增量布局把一次布局失效表示为 `LayoutInvalidation`：它同时记录

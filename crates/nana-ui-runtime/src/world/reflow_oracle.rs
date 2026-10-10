@@ -337,6 +337,12 @@ pub(super) fn assert_matches_cold(
             (None, None) => {}
             (ours, theirs) => panic!("result of {id:?}: {ours:?} != {theirs:?}"),
         }
+        let context = |world: &UiWorld| {
+            world
+                .layout_node(id)
+                .map(|node| (node.established, node.parent_context, node.participation))
+        };
+        assert_eq!(context(ours), context(theirs), "layout context of {id:?}");
         assert_eq!(
             hit_geometry(ours, document, id),
             hit_geometry(theirs, document, id),

@@ -483,3 +483,42 @@ fn inspect_prefers_compiler_source_positions_without_changing_the_wire_shape() {
     assert_eq!(json["element"], "views/Page.vue:8:4");
     assert!(json.get("source_element").is_none());
 }
+
+/// `inspect` carries the node's layout view: the context its parent runs,
+/// how the node takes part in it, and the generations behind it (#197).
+#[test]
+fn inspect_reports_the_layout_context_and_participation() {
+    use nana_ui::runtime::view::button;
+    use nana_ui_devtools::agent::{AgentCommand, AgentSession, Target};
+    let mut session = session_with(|document, id| {
+        let cx = document.context_mut();
+        let parent = cx
+            .create_component(id, nana_ui::runtime::Stack::row(0.0))
+            .unwrap()
+            .stable_id();
+        cx.mount_view(parent, || button("保存")).unwrap();
+    });
+    session.flush().expect("flush");
+    let reply = session.execute(AgentCommand::Inspect {
+        target: Target {
+            role: Some("button".into()),
+            label: Some("保存".into()),
+            ..Target::default()
+        },
+    });
+    let layout = reply
+        .inspect
+        .expect("an inspection")
+        .layout_node
+        .expect("a laid-out node has a layout view");
+    assert_eq!(layout.parent_context.as_deref(), Some("flow"), "{layout:?}");
+    assert_eq!(
+        layout.participation.as_deref(),
+        Some("flowitem"),
+        "{layout:?}"
+    );
+    assert!(layout.result_generation.is_some(), "{layout:?}");
+    assert!(layout.intent.starts_with("display="), "{layout:?}");
+    let json = serde_json::to_value(&layout).unwrap();
+    assert_eq!(json["participation"], "flowitem");
+}

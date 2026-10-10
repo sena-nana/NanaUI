@@ -18,6 +18,15 @@ paint-only work cannot rebuild layout-derived geometry. Layout-affecting writes
 clear the affected node, descendants and dependent ancestors before the next
 published result, while topology changes keep stable node identities.
 
+`formatting_context` names the context the node laid its children (or its own
+text) out in, as layout recorded it (Issue #197). It decides the kind of every
+child fragment: `Flex` gives `FlexChildPlacement`, `Grid` gives
+`GridChildPlacement`, `Inline` gives `InlineAtomic`, and `Flow` and `Overlay`
+give `ChildPlacement`. Before layout has recorded a context, the node's
+`display` alone gives a provisional one. A context transition that leaves
+every box in place still publishes a new result, because the context and the
+fragment kinds changed; the children keep their identities.
+
 `ComponentGeometry` remains the compatibility surface for component semantic
 parts and non-box drawing data (for example resize grips, chart paths and
 editor decorations). Its box placement is anchored by the same `LayoutBox`

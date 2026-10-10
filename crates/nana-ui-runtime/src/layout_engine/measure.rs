@@ -1076,14 +1076,9 @@ fn measure_node(
     cache.record_full_subtree();
     let (mut flow_children, descendant_dependent_flow) =
         collect_flow_children_reporting(&child_ids, nodes, style.display)?;
-    let grid_measure = uses_2d_grid(style, &flow_children, nodes);
-    let ifc = !grid_measure
-        && !style
-            .display
-            .is_some_and(|d| d.is_flex_container() || d.is_grid_container())
-        && flow_children
-            .iter()
-            .any(|id| nodes.style(*id).is_some_and(|s| s.is_inline_level()));
+    let context = establish_context(style, &flow_children, nodes);
+    let grid_measure = context.grid_2d;
+    let ifc = context.inline();
     let direction = used_flow_direction(style, writing, ifc);
     let wrap = style.flex_wrap;
     let wrapping = ifc
@@ -1160,7 +1155,7 @@ fn measure_node(
     let mut hypothetical: Vec<(StableNodeId, f32, Size)> = Vec::new();
     let mut recorded_grid = None;
     let mut sequential_main_sum = 0.0f64;
-    let children = if uses_2d_grid(style, &flow_children, nodes) {
+    let children = if grid_measure {
         let grid = layout_grid_2d(
             style,
             writing,

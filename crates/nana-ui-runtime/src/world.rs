@@ -1537,7 +1537,8 @@ impl UiWorld {
         result.scroll_offset = node.scroll_offset;
 
         let children = node.hierarchy.children.as_ref();
-        let child_kind = child_fragment_kind(&node.resolved_layout);
+        let child_kind = child_fragment_kind(node);
+        result.formatting_context = established_context(node);
         let mut parts = Vec::with_capacity(children.len() + 2);
         let mut overflow = bounds;
         if let Some((placements, fragments)) =
@@ -1762,6 +1763,9 @@ impl UiWorld {
         if previous.first_baseline != baseline || previous.last_baseline != baseline {
             return false;
         }
+        if previous.formatting_context != facts.context {
+            return false;
+        }
         if !retained_projection_current(
             &previous,
             content_box,
@@ -1785,12 +1789,13 @@ impl UiWorld {
             fixed: node.resolved_layout.position == PositionSpec::Fixed,
             clips: node.resolved_layout.clips_overflow(),
             scroll_offset: node.scroll_offset,
-            text: matches!(node.kind.as_ref(), NodeKind::Text) || !node.text.value.is_empty(),
+            text: record_has_text(node),
             ascent: node.text_metrics.ascent,
             child_count: node.hierarchy.children.len(),
             parent: node.hierarchy.parent,
             border: node.resolved_layout.resolved_border_edges(),
-            child_kind: child_fragment_kind(&node.resolved_layout),
+            child_kind: child_fragment_kind(node),
+            context: established_context(node),
         })
     }
 
@@ -3196,6 +3201,65 @@ impl UiWorld {
 
     pub(crate) fn layout_far_start(&self, id: StableNodeId) -> Option<[bool; 2]> {
         self.nodes.get(id)?.layout_far_start
+    }
+
+    /// Record the formatting context layout ran for `id`'s children. A
+    /// different context than the recorded one is a transition: the record
+    /// and its generation move, and the children keep their identity. The
+    /// next result publish rebuilds the node's fragments under the new kind.
+    pub(crate) fn write_formatting_context(
+        &mut self,
+        id: StableNodeId,
+        context: crate::FormattingContextKind,
+    ) {
+        let Some(record) = self.nodes.get_mut(id) else {
+            return;
+        };
+        let previous = record.layout_context.replace(context);
+        if previous == Some(context) {
+            return;
+        }
+        record.layout_context_generation = record.layout_context_generation.wrapping_add(1);
+        if previous.is_some() {
+            self.bump_last_counters(|counters| counters.record_layout_context_transitions(1));
+        }
+    }
+
+    /// The layout view of `id` (Issue #197): its resolved intent, content,
+    /// the context it establishes, and how it takes part in its parent's.
+    /// Built from the records on each call; nothing is retained for it.
+    pub fn layout_node(&self, id: StableNodeId) -> Option<crate::LayoutNode> {
+        let node = self.nodes.get(id)?;
+        let content = if !node.hierarchy.children.is_empty() {
+            crate::LayoutContentKind::Children
+        } else if self.shows_replaced_content(id) {
+            crate::LayoutContentKind::Replaced
+        } else if record_has_text(node) {
+            crate::LayoutContentKind::Text
+        } else {
+            crate::LayoutContentKind::Empty
+        };
+        let parent = node
+            .hierarchy
+            .parent
+            .and_then(|parent| self.nodes.get(parent));
+        let parent_context = parent.and_then(|parent| parent.layout_context);
+        let participation = match parent {
+            None => Some(crate::ParticipationKind::Root),
+            Some(_) => parent_context.map(|context| {
+                crate::ParticipationKind::classify(context, &node.resolved_layout, content)
+            }),
+        };
+        Some(crate::LayoutNode {
+            id,
+            intent: Arc::clone(&node.resolved_layout),
+            content,
+            established: established_context(node),
+            parent_context,
+            participation,
+            context_generation: node.layout_context_generation,
+            result_generation: self.layout_result(id).map(|result| result.generation),
+        })
     }
 
     /// Padding resolved by the layout pass, including its containing block and font.
@@ -5246,23 +5310,30 @@ struct LayoutResultFacts {
     parent: Option<StableNodeId>,
     border: nana_ui_core::PaddingSpec,
     child_kind: crate::LayoutFragmentKind,
+    context: Option<crate::FormattingContextKind>,
 }
 
-fn child_fragment_kind(style: &LayoutStyle) -> crate::LayoutFragmentKind {
-    style
-        .display
-        .map(|display| {
-            if display.is_grid_container() {
-                crate::LayoutFragmentKind::GridChildPlacement
-            } else if display.is_flex_container() {
-                crate::LayoutFragmentKind::FlexChildPlacement
-            } else if display.is_inline_level() {
-                crate::LayoutFragmentKind::InlineAtomic
-            } else {
-                crate::LayoutFragmentKind::ChildPlacement
-            }
-        })
-        .unwrap_or(crate::LayoutFragmentKind::ChildPlacement)
+/// The kind of every child fragment of `node`: what its children take part
+/// in. Layout records the context it ran; before it has, the style alone
+/// answers provisionally.
+fn child_fragment_kind(node: &NodeRecord) -> crate::LayoutFragmentKind {
+    node.layout_context
+        .unwrap_or_else(|| crate::FormattingContextKind::from_display(&node.resolved_layout))
+        .child_fragment_kind()
+}
+
+/// The context `node` lays out its own content in. A container reports what
+/// layout ran; a leaf with text runs its own lines, which belong to the text
+/// engine, not to layout nodes; an empty leaf establishes none.
+fn established_context(node: &NodeRecord) -> Option<crate::FormattingContextKind> {
+    if !node.hierarchy.children.is_empty() {
+        return node.layout_context;
+    }
+    record_has_text(node).then_some(crate::FormattingContextKind::Inline)
+}
+
+fn record_has_text(node: &NodeRecord) -> bool {
+    matches!(node.kind.as_ref(), NodeKind::Text) || !node.text.value.is_empty()
 }
 
 /// The held result's fragments and parts still project its placements under
@@ -5568,6 +5639,8 @@ fn layout_style_invalidation(
     )
 }
 
+#[cfg(test)]
+mod issue197;
 #[cfg(test)]
 mod issue211;
 #[cfg(test)]

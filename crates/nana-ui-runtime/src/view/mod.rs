@@ -65,7 +65,10 @@ pub use node::{
     NodeBindings, NodeRef, Refs, SourceLocation, ViewBuilder, WithRefs, detached, entity_ref,
     keyed, node_ref, widget, with_refs,
 };
-pub use node::{AppliedInspection, DynamicInspection, InspectedField, Inspection, LayoutCause};
+pub use node::{
+    AppliedInspection, DynamicInspection, InspectedField, Inspection, LayoutCause,
+    LayoutNodeInspection,
+};
 pub(crate) use node::{NodePatch, StructuralBinding, ViewParts, ViewState};
 #[doc(hidden)]
 pub use prop::Fixed;

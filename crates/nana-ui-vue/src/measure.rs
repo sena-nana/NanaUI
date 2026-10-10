@@ -15,7 +15,7 @@
 //! `RuntimeLayoutEngine`，供
 //! `VueHost::resolve_layout` 在尚未 paint 时填充文档缓存，并与 css-parity 对齐。
 //! 产品 Vue 混合树走 `RuntimeDocument::flush` 文本+布局，不再另写一套 measure。
-//! 它不是 NanaUI 的 canonical `nana_ui_core::LayoutNode`，也不持有 retained
+//! 它不是 NanaUI 的 canonical `nana_ui_runtime::LayoutNode`，也不持有 retained
 //! identity、participation、metrics 或 geometry authority。
 //!
 //! 盒边 / content-box / inset / gap 解析消费 `nana-ui-core::box_layout`。
@@ -30,7 +30,7 @@ use nana_ui_runtime::{LayoutViewport, RuntimeLayoutEngine, StyleLayoutNode};
 
 /// 预绘制/css-parity 的 style-only 适配节点。
 ///
-/// The canonical retained identity lives in `nana_ui_core::LayoutNode`; this
+/// The canonical layout view lives in `nana_ui_runtime::LayoutNode`; this
 /// short-lived string-keyed tree is lowered to `StyleLayoutNode` solely for
 /// the shared Runtime algorithm.
 #[derive(Debug, Clone)]
