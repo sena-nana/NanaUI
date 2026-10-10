@@ -503,6 +503,11 @@ pub mod host {
         Severity::Warn,
         &[F::u64("code")],
     );
+    /// Fault: a task queued with `RuntimeProgramContext::run_task` panicked.
+    /// Its message is dropped and its worker keeps serving the queue; the
+    /// message names the panic payload (the panic hook records the location).
+    pub static TASK_PANICKED: EventDescriptor =
+        EventDescriptor::new(D, 8, "host.task_panicked", Severity::Error, &[]);
 }
 
 pub mod persistence {

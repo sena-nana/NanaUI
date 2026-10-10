@@ -13,11 +13,13 @@ mod presence;
 mod present;
 mod schedule;
 mod startup;
+mod tasks;
 mod web_surface;
 mod windows;
 
 use accessibility::PendingAccessibility;
 use host_services::{NativeWindowServices, WindowInputSource};
+use tasks::spawn_task_workers;
 
 use std::collections::{HashMap, HashSet};
 use std::io;
@@ -1592,38 +1594,6 @@ fn program_context<Message: Send + 'static>(
         appearance,
         startup.clone(),
     )
-}
-
-fn spawn_task_workers<Message: Send + 'static>(
-    message_tx: Sender<Message>,
-    wake: Arc<schedule::HostWorkWake>,
-) -> SyncSender<Task<Message>> {
-    let (sender, receiver) = std::sync::mpsc::sync_channel::<Task<Message>>(TASK_QUEUE_CAPACITY);
-    let receiver = Arc::new(Mutex::new(receiver));
-    for _ in 0..TASK_WORKERS {
-        let receiver = Arc::clone(&receiver);
-        let message_tx = message_tx.clone();
-        let wake = Arc::clone(&wake);
-        std::thread::spawn(move || {
-            loop {
-                let task = {
-                    let Ok(receiver) = receiver.lock() else {
-                        return;
-                    };
-                    let Ok(task) = receiver.recv() else {
-                        return;
-                    };
-                    task
-                };
-                let message = pollster::block_on(task.into_future());
-                if message_tx.send(message).is_err() {
-                    return;
-                }
-                wake.wake();
-            }
-        });
-    }
-    sender
 }
 
 fn accessibility_snapshot<Program: RuntimeProgram>(

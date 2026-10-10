@@ -182,6 +182,8 @@ device/surface 丢失后宿主调用 `RuntimeDocument::set_surface_generation`�
 
 `RuntimeProgramContext` 提供 `window_id`、`geometry`、`gpu()`、`material()`、`dispatch`、`run_task`、`startup()`（启动记录与接管请求）。原生窗口句柄不穿过这条边界。
 
+`run_task` 的任务在宿主的工作线程上执行。任务 panic 时不交回消息：宿主记一条 `host.task_panicked` 故障，工作线程继续处理队列。等着结果的调用方要在任务里接住失败，交回一条失败消息。
+
 `ApplicationState` 透传下列钩子。`RuntimeApplication<State>` 原样转给 `RuntimeProgram`，所以透明叠加窗口、需要合成器路径的应用不必再手写一层 `RuntimeProgram`：
 
 | `ApplicationState` 方法 | 对应 `RuntimeProgram` 钩子 |

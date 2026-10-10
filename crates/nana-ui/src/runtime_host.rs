@@ -231,6 +231,11 @@ impl<Message: Send + 'static> RuntimeProgramContext<Message> {
 
     /// Run a Nana Runtime task on host-owned execution infrastructure and
     /// route its completion back through the native event loop.
+    ///
+    /// A task that panics delivers no message: the host records
+    /// `host.task_panicked` and its workers keep serving the queue. A caller
+    /// that waits for the result should catch the failure inside the task and
+    /// return a failure message instead.
     pub fn run_task(&self, task: Task<Message>) -> Result<(), RuntimeTaskError> {
         self.tasks.try_send(task).map_err(|error| match error {
             TrySendError::Full(_) => RuntimeTaskError::QueueFull,
