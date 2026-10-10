@@ -126,6 +126,8 @@ Issue #259 点名的其余计数也在这份 `WorkCounters` 上，不另设权�
 `layout_children_measured` 是容器遍历时读过尺寸的子项，`layout_containers_uncacheable`
 是放下了子项却记不下计划的容器，`layout_retain_sweeps` 是清掉已销毁 id 的保留缓存清扫。
 定位上下文因计划过期而整个重排，记进 `layout_local_subtree_fallbacks`。
+measure 计划沿用的前提是节点自己的输入都没变：约束、样式、子项列表、文本度量，以及标准视觉画在文字旁边的部分
+（按钮的图标、勾选框的方框）。后者只在视觉里，只给按钮加上或去掉图标时样式和文字都没变，计划照样失效、重新测量。
 `layout_scratch_allocations` 就是 `layout_scratch_entries`：这一帧各趟依赖图分配的邻接条目，
 趟结束即释放；`layout_scratch_bytes` 是这些条目占的字节。
 `plan_stats` 只做 benchmark 的阶段计时，不计数。

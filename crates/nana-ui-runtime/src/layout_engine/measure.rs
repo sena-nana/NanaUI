@@ -425,6 +425,56 @@ fn text_inline_size(
     }
 }
 
+/// What a node's standard visual draws in its content box beside its text:
+/// a button's glyphs, a checkbox's indicator. Measured with the text, and
+/// compared by a measure plan: a visual change moves it without touching the
+/// node's style or text.
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+pub(super) struct VisualContent {
+    /// Width added beside the text.
+    width: f32,
+    /// The least content height.
+    height: f32,
+}
+
+fn visual_content(id: StableNodeId, world: &UiWorld) -> VisualContent {
+    match world.standard_visual_ref(id) {
+        Some(crate::StandardVisual::Button {
+            label,
+            icon,
+            trailing_icon,
+            icon_size,
+            icon_gap,
+            loading,
+            ..
+        }) => {
+            let leading = *loading || icon.is_some();
+            let trailing = trailing_icon.is_some();
+            // Each glyph brings its own size, and a gap to whatever it stands
+            // beside: the label, or the other glyph when there is no label.
+            let glyphs = usize::from(leading) + usize::from(trailing);
+            let parts = glyphs + usize::from(!label.is_empty());
+            if glyphs == 0 {
+                return VisualContent::default();
+            }
+            VisualContent {
+                width: glyphs as f32 * icon_size + (parts - 1) as f32 * icon_gap,
+                height: *icon_size,
+            }
+        }
+        Some(crate::StandardVisual::Checkbox { size, .. }) => VisualContent {
+            width: size.indicator_size()
+                + if world.text(id).is_some_and(|label| !label.is_empty()) {
+                    size.indicator_gap()
+                } else {
+                    0.0
+                },
+            height: size.indicator_size(),
+        },
+        _ => VisualContent::default(),
+    }
+}
+
 /// A childless box whose own specs cannot move its border box off its text.
 ///
 /// Grid tracks, padding, border, min/max, and aspect ratio all can. Margin
@@ -877,6 +927,7 @@ fn measure_node(
         None
     };
     let had_plan = retained_plan.is_some();
+    let visual = visual_content(id, nodes.world);
     // A replaced box takes its resource's natural size where nothing else
     // sizes it (Issue #263); with one axis set, the other follows the natural
     // aspect ratio below.
@@ -896,6 +947,7 @@ fn measure_node(
             text_metrics,
             text_natural_width,
             text_wrap_limit,
+            visual,
             writing,
         )
         // An ancestor can rewrite a child's effective style without touching
@@ -1212,36 +1264,8 @@ fn measure_node(
             .height
             .max(text_line_box_height_px(fs, style.line_height));
     }
-    if let Some(crate::StandardVisual::Button {
-        label,
-        icon,
-        trailing_icon,
-        icon_size,
-        icon_gap,
-        loading,
-        ..
-    }) = nodes.world.standard_visual(id)
-    {
-        let leading = loading || icon.is_some();
-        let trailing = trailing_icon.is_some();
-        // Each glyph brings its own size, and a gap to whatever it stands
-        // beside: the label, or the other glyph when there is no label.
-        let glyphs = usize::from(leading) + usize::from(trailing);
-        let parts = glyphs + usize::from(!label.is_empty());
-        if glyphs > 0 {
-            content.width += glyphs as f32 * icon_size + (parts - 1) as f32 * icon_gap;
-            content.height = content.height.max(icon_size);
-        }
-    }
-    if let Some(crate::StandardVisual::Checkbox { size, .. }) = nodes.world.standard_visual(id) {
-        content.width += size.indicator_size()
-            + if nodes.world.text(id).is_some_and(|label| !label.is_empty()) {
-                size.indicator_gap()
-            } else {
-                0.0
-            };
-        content.height = content.height.max(size.indicator_size());
-    }
+    content.width += visual.width;
+    content.height = content.height.max(visual.height);
     let max_content_w = content.width + chrome.width;
     let stacked_min_w = child_sizes
         .iter()
@@ -1389,6 +1413,7 @@ fn measure_node(
                 text_metrics,
                 text_natural_width,
                 text_wrap_limit,
+                visual,
                 child_available: content_available,
                 child_direction: direction,
                 entries,

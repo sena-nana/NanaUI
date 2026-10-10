@@ -858,6 +858,75 @@ fn lays_out_shaped_controls_without_application_geometry() {
     assert_eq!(layouts[&id(2)].height, 32.0);
 }
 
+/// A button's glyph is measured beside its label, but it lives in the
+/// button's visual, not in its style or text. A retained pass that adds or
+/// drops one measures the button again instead of keeping the width a
+/// measure plan recorded without it (each pass is checked against a full
+/// layout under `cfg(test)`).
+#[test]
+fn a_button_that_gains_or_loses_a_glyph_is_measured_again() {
+    use crate::{AppContext, Button, MeasureTextShaper, Stack, StandardVisual};
+    let document = DocumentId::new(1).unwrap();
+    let mut cx = AppContext::new();
+    let page = cx
+        .create_component(
+            document,
+            Stack::column(0.0).with_layout(|layout| {
+                layout.width = Some(LengthSpec::Px(400.0));
+                layout.align_items = AlignSpec::Start;
+            }),
+        )
+        .unwrap();
+    let button = cx.create_component(document, Button::new("Play")).unwrap();
+    cx.append_child(page, button).unwrap();
+    // One frame the way `RuntimeDocument::flush` runs it.
+    let frame = |cx: &mut AppContext| {
+        let mut shaper = MeasureTextShaper;
+        let viewport = LayoutViewport::new(600.0, 400.0);
+        for _ in 0..8 {
+            let work = cx.take_system_work();
+            let mut seeds = work.layout_frontier_seeds.clone();
+            if !work.is_empty() {
+                cx.resolve_styles(&work.style).unwrap();
+                cx.shape_text(&work.text, &mut shaper).unwrap();
+            }
+            seeds.extend(cx.take_layout_frontier_seeds(document));
+            if work.is_empty() && seeds.is_empty() {
+                return;
+            }
+            if !seeds.is_empty() {
+                cx.layout_document_for_viewport(document, viewport, &seeds)
+                    .unwrap();
+                let scope = cx.take_last_layout_scope();
+                cx.shape_text_for_layout_scoped(&scope, &mut shaper)
+                    .unwrap();
+            }
+        }
+        panic!("the frame did not settle");
+    };
+    let width = |cx: &AppContext| cx.world().layout_box(button.stable_id()).unwrap().width;
+    frame(&mut cx);
+    let bare = width(&cx);
+    cx.update_component(button, |button, _| {
+        button.icon = Some(nana_ui_core::Icon::Add);
+    })
+    .unwrap();
+    frame(&mut cx);
+    let Some(StandardVisual::Button {
+        icon_size,
+        icon_gap,
+        ..
+    }) = cx.world().standard_visual(button.stable_id())
+    else {
+        panic!("button visual");
+    };
+    assert_eq!(width(&cx), bare + icon_size + icon_gap);
+    cx.update_component(button, |button, _| button.icon = None)
+        .unwrap();
+    frame(&mut cx);
+    assert_eq!(width(&cx), bare);
+}
+
 #[test]
 fn display_none_child_does_not_take_a_gap_slot() {
     let document = DocumentId::new(1).unwrap();

@@ -1777,6 +1777,8 @@ struct MeasurePlan {
     text_natural_width: Option<f32>,
     /// The width that text was last wrapped against.
     text_wrap_limit: Option<f32>,
+    /// What the container's visual draws beside that text.
+    visual: VisualContent,
     /// Available size in-flow children were measured against. Flex uses one
     /// value for every child. A grid stores the content box here; each item's
     /// contribution lives on [`GridTrackPlan`], and a fill axis is applied
@@ -1865,6 +1867,7 @@ impl MeasurePlan {
         text_metrics: Option<crate::TextMetrics>,
         text_natural_width: Option<f32>,
         text_wrap_limit: Option<f32>,
+        visual: VisualContent,
         writing: nana_ui_core::WritingContext,
     ) -> bool {
         self.writing == writing
@@ -1875,6 +1878,7 @@ impl MeasurePlan {
             && self.text_metrics == text_metrics
             && self.text_natural_width == text_natural_width
             && self.text_wrap_limit == text_wrap_limit
+            && self.visual == visual
             && Arc::ptr_eq(&self.children, children)
             && (Arc::ptr_eq(&self.style, style) || measure_inputs_equal(&self.style, style))
     }
