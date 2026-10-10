@@ -1,6 +1,7 @@
-//! Color well plus hex field. The picker surface is assembled children
-//! (`XYPad` saturation/value, `RangeField` hue); the host never takes a
-//! window handle.
+//! Color well plus hex field. The well is the trigger of a `Popover` whose
+//! surface, hanging below it like any popover's, is the picker: assembled
+//! children (`XYPad` saturation/value, `RangeField` hue). The host never takes
+//! a window handle.
 
 use std::sync::Arc;
 
@@ -9,12 +10,12 @@ use nana_ui_core::{
 };
 
 use crate::view_components::{
-    Button, RangeChanged, RangeField, RangeInput, TextChanged, TextInput, project_common,
+    RangeChanged, RangeField, RangeInput, TextChanged, TextInput, project_common,
 };
 use crate::{
-    AccessibilityRole, AccessibilityState, Activate, AppContext, ComponentView, Entity,
-    FrameworkError, InteractionState, MutationQueue, NodeKind, NodeStyle, Popover, PopoverToggled,
-    StableNodeId, TextContent, UiWorld, XYPad, XYPadEvent, XYPadValue,
+    AccessibilityRole, AccessibilityState, AppContext, ComponentView, Entity, FrameworkError,
+    InteractionState, MutationQueue, NodeKind, NodeStyle, Popover, PopoverToggled, StableNodeId,
+    Stack, TextContent, UiWorld, XYPad, XYPadEvent, XYPadValue,
 };
 
 const SWATCH_SIZE: f32 = nana_ui_core::space::PAGE_TIGHT + nana_ui_core::space::XXS;
@@ -237,8 +238,8 @@ impl AppContext {
         let snapshot = self.read(field, Clone::clone)?;
         let created = snapshot.hex.is_none();
         let swatch = match snapshot.swatch.filter(|id| self.world().contains(*id)) {
-            Some(id) => Entity::<Button>::from_stable_id(id),
-            None => self.create_detached_component(document, swatch_button(snapshot.value))?,
+            Some(id) => Entity::<Stack>::from_stable_id(id),
+            None => self.create_detached_component(document, swatch_well(snapshot.value))?,
         };
         let hex = match snapshot.hex.filter(|id| self.world().contains(*id)) {
             Some(id) => Entity::<TextInput>::from_stable_id(id),
@@ -265,23 +266,19 @@ impl AppContext {
         };
         let picker = match snapshot.picker.filter(|id| self.world().contains(*id)) {
             Some(id) => Entity::<Popover>::from_stable_id(id),
-            None => self.create_detached_component(
-                document,
-                Popover::new().width(220.0).open(snapshot.opened),
-            )?,
+            None => {
+                let name = self.color_field_name(&snapshot);
+                self.create_detached_component(document, picker_popover(&snapshot, swatch, name))?
+            }
         };
 
         if created {
-            self.observe(swatch, field, |field, _: &Activate, cx| {
-                if !field.disabled {
-                    field.opened = !field.opened;
-                    cx.reassemble();
-                }
-            })?;
-            // Light dismiss and Escape close the picker directly; mirror that
-            // so a later reassembly does not reopen it.
-            self.observe(picker, field, |field, event: &PopoverToggled, _| {
-                field.opened = event.open;
+            // The well's press, Enter / Space on it, light dismiss and Escape
+            // all toggle the popover itself; mirror that so a later reassembly
+            // keeps it, and close it again at once on a disabled field.
+            self.observe(picker, field, |field, event: &PopoverToggled, cx| {
+                field.opened = event.open && !field.disabled;
+                cx.reassemble();
             })?;
             self.observe(hex, field, |field, event: &TextChanged, cx| {
                 if let Some(value) = parse_hex(&event.value) {
@@ -316,9 +313,8 @@ impl AppContext {
             })?;
         }
 
-        self.update_component(swatch, |button, _| {
-            *button = swatch_button(snapshot.value);
-            button.disabled = snapshot.disabled;
+        self.update_component(swatch, |well, _| {
+            *well = swatch_well(snapshot.value);
         })?;
         self.update_component(hex, |input, _| {
             // The text is the user's until the color changes: text that
@@ -344,8 +340,10 @@ impl AppContext {
             range.value = snapshot.hue as f64;
             range.disabled = snapshot.disabled;
         })?;
+        let name = self.color_field_name(&snapshot);
         self.update_component(picker, |popover, _| {
-            popover.open = snapshot.opened && !snapshot.disabled;
+            *popover =
+                picker_popover(&snapshot, swatch, name).open(snapshot.opened && !snapshot.disabled);
         })?;
         self.update_component(field, |field, _| {
             field.swatch = Some(swatch.stable_id());
@@ -355,12 +353,20 @@ impl AppContext {
             field.hue_slider = Some(hue.stable_id());
         })?;
 
-        self.append_children(picker.stable_id(), &[pad.stable_id(), hue.stable_id()])?;
         self.append_children(
-            field.stable_id(),
-            &[swatch.stable_id(), hex.stable_id(), picker.stable_id()],
+            picker.stable_id(),
+            &[swatch.stable_id(), pad.stable_id(), hue.stable_id()],
         )?;
+        self.append_children(field.stable_id(), &[picker.stable_id(), hex.stable_id()])?;
         Ok(created)
+    }
+
+    /// What the field is called: its own label, or the framework's.
+    fn color_field_name(&self, field: &ColorField) -> Arc<str> {
+        field
+            .label
+            .clone()
+            .unwrap_or_else(|| Arc::clone(&self.world().framework_strings().color_field_label))
     }
 
     /// Apply a committed color to the field and its assembled children.
@@ -411,20 +417,39 @@ fn hex_input(field: &ColorField) -> TextInput {
     input
 }
 
-fn swatch_button(value: [f32; 4]) -> Button {
-    let mut button = Button::new("");
-    let layout = std::sync::Arc::make_mut(&mut button.style.layout);
-    layout.width = Some(LengthSpec::Px(SWATCH_SIZE));
-    layout.height = Some(LengthSpec::Px(SWATCH_SIZE));
-    layout.min_width = Some(LengthSpec::Px(SWATCH_SIZE));
-    layout.min_height = Some(LengthSpec::Px(SWATCH_SIZE));
-    layout.flex_grow = Some(0.0);
-    layout.flex_shrink = Some(0.0);
-    layout.border_width = Some(nana_ui_core::HAIRLINE);
-    layout.background = Some(sanitize_rgba(value));
-    button.style.radius = Some(nana_ui_core::RadiusTier::Sm);
-    button.style.border = Some(SemanticColorRole::Border);
-    button
+/// The picker: a popover whose trigger is the well, named like the field,
+/// with a bare trigger so the well sits on the field's own fill. Its surface
+/// hangs below the well, start-aligned, and keeps to the window.
+fn picker_popover(field: &ColorField, well: Entity<Stack>, name: Arc<str>) -> Popover {
+    let mut popover = Popover::new()
+        .trigger(name)
+        .trigger_content(well.stable_id())
+        .bare_trigger(true)
+        .alignment(crate::PopoverAlignment::Start)
+        .width(220.0);
+    popover.open = field.opened;
+    popover
+}
+
+/// The color itself: a square well, display only (the press is the
+/// picker's, which it draws the trigger of).
+fn swatch_well(value: [f32; 4]) -> Stack {
+    let mut style = NodeStyle::default();
+    {
+        let layout = std::sync::Arc::make_mut(&mut style.layout);
+        layout.direction = Some(FlexDirection::Row);
+        layout.width = Some(LengthSpec::Px(SWATCH_SIZE));
+        layout.height = Some(LengthSpec::Px(SWATCH_SIZE));
+        layout.min_width = Some(LengthSpec::Px(SWATCH_SIZE));
+        layout.min_height = Some(LengthSpec::Px(SWATCH_SIZE));
+        layout.flex_grow = Some(0.0);
+        layout.flex_shrink = Some(0.0);
+        layout.border_width = Some(nana_ui_core::HAIRLINE);
+        layout.background = Some(sanitize_rgba(value));
+    }
+    style.radius = Some(nana_ui_core::RadiusTier::Sm);
+    style.border = Some(SemanticColorRole::Border);
+    Stack::row(0.0).style(style)
 }
 
 pub fn sanitize_rgba(value: [f32; 4]) -> [f32; 4] {
@@ -588,6 +613,30 @@ mod tests {
             "swatch {swatch:?}"
         );
         assert!(hex.width > 40.0, "the hex input still reads, {hex:?}");
+        // The well is the picker's trigger, first in the field; the closed
+        // picker's surface is not laid out in the row, so neither its sliders
+        // nor a pixel of them show at the field's edge.
+        let picker = world.layout_box(snapshot.picker.unwrap()).unwrap();
+        assert!(picker.x < swatch.x && swatch.x + swatch.width <= picker.x + picker.width);
+        assert!(picker.x + picker.width <= hex.x);
+        for item in [snapshot.pad.unwrap(), snapshot.hue_slider.unwrap()] {
+            let shown = world.is_overlay_reachable(item)
+                && world
+                    .layout_box(item)
+                    .is_some_and(|b| b.width > 0.0 && b.height > 0.0);
+            assert!(!shown, "the closed picker's items wait for its surface");
+        }
+        // Open, the picker hangs below the well instead of joining the row.
+        assert!(context.activate_node(snapshot.picker.unwrap()).unwrap());
+        context
+            .layout_document(document, crate::LayoutViewport::new(400.0, 400.0))
+            .unwrap();
+        let world = context.world();
+        let hue = world.layout_box(snapshot.hue_slider.unwrap()).unwrap();
+        let well = world.layout_box(snapshot.swatch.unwrap()).unwrap();
+        assert!(hue.y >= well.y + well.height, "{hue:?} under {well:?}");
+        let frame_after = world.layout_box(field.stable_id()).unwrap();
+        assert_eq!(frame_after, frame, "opening does not reflow the field");
     }
 
     #[test]
@@ -617,12 +666,12 @@ mod tests {
         context.assemble_color_field(field).unwrap();
         let snapshot = context.read(field, Clone::clone).unwrap();
         let picker = Entity::<Popover>::from_stable_id(snapshot.picker.unwrap());
-        let swatch = Entity::<Button>::from_stable_id(snapshot.swatch.unwrap());
         let hue = Entity::<RangeField>::from_stable_id(snapshot.hue_slider.unwrap());
         let open = |context: &AppContext| context.read(picker, |popover| popover.open).unwrap();
 
-        assert!(context.activate_button(swatch).unwrap());
+        assert!(context.activate_node(picker.stable_id()).unwrap());
         assert!(open(&context), "the swatch opens the picker");
+        assert!(context.read(field, |field| field.opened).unwrap());
 
         assert!(context.dismiss_popovers_outside(None).unwrap());
         assert!(!context.read(field, |field| field.opened).unwrap());
@@ -643,12 +692,12 @@ mod tests {
         context.assemble_color_field(field).unwrap();
         let snapshot = context.read(field, Clone::clone).unwrap();
         let hex = snapshot.hex.unwrap();
-        let swatch = Entity::<Button>::from_stable_id(snapshot.swatch.unwrap());
+        let picker = snapshot.picker.unwrap();
         context.focus_node(document, hex).unwrap();
         context.select_all_focused_text(document).unwrap();
         context.replace_focused_text(document, "#00FF88").unwrap();
         // Opening the picker reassembles; the text already names the color.
-        assert!(context.activate_button(swatch).unwrap());
+        assert!(context.activate_node(picker).unwrap());
         let text = |context: &AppContext| {
             context
                 .read(Entity::<TextInput>::from_stable_id(hex), |input| {
@@ -662,11 +711,11 @@ mod tests {
         // no color is not.
         context.select_all_focused_text(document).unwrap();
         context.replace_focused_text(document, " 00ff88 ").unwrap();
-        assert!(context.activate_button(swatch).unwrap());
+        assert!(context.activate_node(picker).unwrap());
         assert_eq!(text(&context), " 00ff88 ");
         context.select_all_focused_text(document).unwrap();
         context.replace_focused_text(document, "#00ff8").unwrap();
-        assert!(context.activate_button(swatch).unwrap());
+        assert!(context.activate_node(picker).unwrap());
         assert_eq!(text(&context), "#00ff88");
         // A different color does rewrite it.
         let hue = Entity::<RangeField>::from_stable_id(snapshot.hue_slider.unwrap());
