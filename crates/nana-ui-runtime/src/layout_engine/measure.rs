@@ -111,6 +111,55 @@ fn sizes_own_axes(
     )
 }
 
+/// Whether `style`'s own measurement reads the block extent its box is
+/// offered, on a horizontal page: its height or a height limit resolved
+/// against the containing block, a flex basis that does, an aspect ratio or
+/// logical edges that carry a size across the axes, a declared vertical
+/// writing mode, a column that wraps (the wrap budget is the offered
+/// height), or any grid (rows and their fr and percentage tracks resolve
+/// against it). Everything else a measurement reads -- padding, margins,
+/// text, visuals, a natural size -- resolves against the inline size.
+///
+/// Every read of the offered block extent in this file must be one of
+/// these; `world/block_reads.rs` keys measurements by it, and the
+/// layout-verify reference ignores that key so a missing case shows.
+pub(crate) fn reads_offered_block_extent(style: &nana_ui_core::LayoutStyle) -> bool {
+    style.writing_mode.is_some_and(|mode| mode.is_vertical())
+        || aspect_ratio_is_usable(style)
+        || style.has_logical_box_edges()
+        || !length_ignores_block_containing_size(style.height)
+        || !length_ignores_block_containing_size(style.min_height)
+        || !length_ignores_block_containing_size(style.max_height)
+        || spec_tracks_containing_block(style.flex_basis)
+        || (style.flex_wrap != nana_ui_core::FlexWrap::NoWrap
+            && style.direction != Some(FlexDirection::Row))
+        || style
+            .display
+            .is_some_and(nana_ui_core::DisplaySpec::is_grid_container)
+        || style.active_grid_rows().is_some()
+        || style.active_grid_columns().is_some()
+        || style.grid_rows_repeat.is_some()
+        || style.grid_columns_repeat.is_some()
+        || style.grid_rows_subgrid
+        || style.grid_columns_subgrid
+        || style
+            .grid_auto_rows
+            .as_ref()
+            .is_some_and(|tracks| !tracks.is_empty())
+        || style
+            .grid_auto_columns
+            .as_ref()
+            .is_some_and(|tracks| !tracks.is_empty())
+        || style.grid_template_areas.is_some()
+}
+
+/// Whether `style` sizes its box's height by a length of its own on a
+/// horizontal page, so what it offers its children comes from that length
+/// and not from what it is offered.
+pub(crate) fn sizes_own_height(style: &nana_ui_core::LayoutStyle) -> bool {
+    sizes_own_axes(style, nana_ui_core::WritingContext::default()).1
+}
+
 /// A length that is the box's own: absolute, font-relative or
 /// viewport-relative, never one resolved against the box's surroundings.
 fn definite_own_length(spec: LengthSpec) -> bool {
@@ -646,6 +695,22 @@ fn plain_leaf_baseline(
     BaselineMetrics { first, last: first }
 }
 
+/// Whether a container whose height follows its content measures the same
+/// whatever height it is offered: nothing in its subtree reads that extent
+/// (`world/block_reads.rs`), and its page and containing block are
+/// horizontal, so its edges resolve against width. Its key then drops the
+/// offered height, and a height-only resize finds its measurement.
+fn block_extent_unread(id: StableNodeId, node: &LayoutInput, world: &UiWorld) -> bool {
+    #[cfg(any(test, feature = "layout-verify"))]
+    if !super::verify::honors_block_reads() {
+        return false;
+    }
+    !node.children.is_empty()
+        && !node.writing.is_vertical()
+        && !node.containing_writing.is_vertical()
+        && !world.subtree_reads_block_extent(id)
+}
+
 /// [`intrinsic_size_scoped`], or with `forced` for the node's own style (a
 /// flex item at its used main size): a forced measurement is not cached or
 /// planned, since neither is keyed by it; its descendants are measured as
@@ -663,6 +728,7 @@ fn measure_node(
     scope: Option<&ScopeContext<'_>>,
 ) -> Result<Size, UiWorldError> {
     let unforced = forced.is_none();
+    let world = nodes.world;
     let Some(node) = nodes.get(id)? else {
         return Ok(Size::default());
     };
@@ -693,7 +759,7 @@ fn measure_node(
     if own_width {
         keyed_available.width = 0.0;
     }
-    if own_height {
+    if own_height || block_extent_unread(id, node, world) {
         keyed_available.height = 0.0;
     }
     let cache_key = MeasurementKey::new(

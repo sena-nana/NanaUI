@@ -10,6 +10,15 @@ use super::*;
 
 thread_local! {
     static SKIPPED: Cell<bool> = const { Cell::new(false) };
+    static REFERENCE: Cell<bool> = const { Cell::new(false) };
+}
+
+/// Whether measurement may drop the offered block extent from the key of a
+/// subtree that reads none of it. The guard's reference layout keys by the
+/// real extent, so a read `reads_offered_block_extent` misses shows up as a
+/// box that differs.
+pub(super) fn honors_block_reads() -> bool {
+    !REFERENCE.with(Cell::get)
 }
 
 /// Turns the guard off on this thread until the returned value drops. For a
@@ -60,9 +69,13 @@ pub(super) fn retained_matches_full_layout(
     };
     // The full layout runs on its own pass cache: it counts nothing on the
     // retained document's execution stats, nor on a test's measure trace.
+    world.check_block_extent_reads();
     #[cfg(test)]
     let _paused = super::measure_trace::pause();
-    let Ok(full) = engine.layout_document(world, document, viewport) else {
+    REFERENCE.with(|reference| reference.set(true));
+    let full = engine.layout_document(world, document, viewport);
+    REFERENCE.with(|reference| reference.set(false));
+    let Ok(full) = full else {
         return;
     };
     let mut wrong = Vec::new();

@@ -103,6 +103,10 @@ pub(crate) struct NodeRecord {
     /// presence bookkeeping after a visual or text write does not rescan
     /// the layout's lengths.
     pub layout_depends_on_viewport: bool,
+    /// Whether this node's subtree reads the block extent it is offered,
+    /// kept up to date as styles and child lists change. See
+    /// `world/block_reads.rs`.
+    pub block_reads: crate::world::BlockExtentReads,
     /// The writing mode, direction and text orientation this node inherits:
     /// its parent's computed values, as last resolved. Kept beside the
     /// record, not only inside the parent's `ComputedStyle`, so layout reads a
@@ -133,6 +137,7 @@ impl NodeRecord {
             resolved_layout: NodeStyle::default().layout,
             resolved: ResolvedStyle::interned_default(),
             layout_depends_on_viewport: false,
+            block_reads: crate::world::BlockExtentReads::default(),
             inherited_writing: nana_ui_core::WritingContext::default(),
             inherited_orientation: nana_ui_core::TextOrientationSpec::Mixed,
             text: TextContent::default(),

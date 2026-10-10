@@ -1278,6 +1278,7 @@ impl UiWorld {
                 let _parent_hierarchy = parent_hierarchy;
                 self.renumber_children_from(*parent, index);
                 self.hierarchy_mut(*child).parent = Some(*parent);
+                self.link_block_extent_reads(*parent, *child, true);
                 if old_parent != Some(*parent) {
                     self.responsive_reparented(*child);
                     self.i18n_reparented(*child, old_parent);

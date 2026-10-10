@@ -4,7 +4,10 @@ mod flow;
 use flow::*;
 mod measure;
 use measure::*;
-pub(crate) use measure::{depends_on_used_basis, spec_tracks_containing_block};
+pub(crate) use measure::{
+    depends_on_used_basis, reads_offered_block_extent, sizes_own_height,
+    spec_tracks_containing_block,
+};
 mod placement;
 use placement::*;
 mod inline;

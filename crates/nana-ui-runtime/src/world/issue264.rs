@@ -442,26 +442,23 @@ fn issue264_splitter_drags_match_a_full_layout_every_pass() {
     );
 }
 
-/// Gate B the other way: a height-only change leaves the boxes that read
-/// only the width out of the frontier, and never measures their text.
-///
-/// The fill-width rows are still measured again, by their memo rather than
-/// the frontier: a box whose height follows its content keys its memo by
-/// the block extent it is offered, which a height-only resize moves. Their
-/// text leaves key no block extent and keep theirs.
+/// Gate B the other way: a height-only change never measures the boxes
+/// that read only the width, and measures the one that reads the height.
+/// The fill-width rows follow their content's height; nothing in them reads
+/// the height they are offered (`world/block_reads.rs`), so their memo keys
+/// drop it.
 #[test]
 fn issue264_a_height_only_resize_leaves_width_readers_alone() {
     let mut workspace = Workspace::fluid(100);
     let counters = workspace.resize(LayoutViewport::new(1200.0, 760.0));
     assert_eq!(counters.layout_full_document_fallbacks, 0);
     for row in &workspace.parts.rows {
-        assert!(
-            !admitted(&workspace.context, *row),
-            "fill-width row {row:?} in the frontier"
-        );
-        let label = workspace.world().node(*row).unwrap().children[0];
-        assert!(!workspace.measured(label), "row label {label:?} measured");
+        assert!(!workspace.measured(*row), "fill-width row {row:?} measured");
     }
+    assert!(
+        workspace.measured(workspace.parts.tall),
+        "the box that reads the pane's height kept its measurement"
+    );
     assert!(!workspace.measured(workspace.parts.paragraph));
     assert_eq!(counters.resize_text_reshapes, 0);
     let mut cold = Workspace::fluid(100);
@@ -759,5 +756,255 @@ fn issue264_a_dock_split_drag_measures_only_the_width_readers() {
     }
     let (mut cold, _, _, _) = build(ratio);
     product_frame(&mut cold, document, viewport(), &mut bundled_face_shaper());
+    assert_matches_cold(&mut context, &mut cold, document);
+}
+
+/// What sits under a fill-width row whose height follows its content, and
+/// whether a height-only resize must measure the row again because of it.
+#[derive(Debug, Clone, Copy)]
+enum Under {
+    PercentHeight,
+    FillHeightGrandchild,
+    PercentMinHeight,
+    ColumnWrap,
+    Grid,
+    AspectRatio,
+    Vertical,
+    ContentsAroundPercent,
+    AbsolutePercent,
+    HiddenPercent,
+    FixedAroundPercent,
+    Text,
+    /// A `vh` child: the row reads nothing itself, but the child's own seed
+    /// moves it, and the row measures to take its new height.
+    VhChild,
+}
+
+impl Under {
+    const ALL: [Self; 13] = [
+        Self::PercentHeight,
+        Self::FillHeightGrandchild,
+        Self::PercentMinHeight,
+        Self::ColumnWrap,
+        Self::Grid,
+        Self::AspectRatio,
+        Self::Vertical,
+        Self::ContentsAroundPercent,
+        Self::AbsolutePercent,
+        Self::HiddenPercent,
+        Self::FixedAroundPercent,
+        Self::Text,
+        Self::VhChild,
+    ];
+
+    /// Whether a height-only resize measures the row: its measurement reads
+    /// the height it is offered, or a child the resize seeds moved.
+    fn measured_on_resize(self) -> bool {
+        !matches!(
+            self,
+            Self::AbsolutePercent | Self::HiddenPercent | Self::FixedAroundPercent | Self::Text
+        )
+    }
+
+    fn build(self, b: &mut Builder, row: StableNodeId) {
+        use nana_ui_core::{DisplaySpec, GridTrack, PositionSpec, WritingModeSpec};
+        let percent = |percent| LayoutStyle {
+            width: Some(LengthSpec::Px(40.0)),
+            height: Some(LengthSpec::Percent(percent)),
+            ..LayoutStyle::default()
+        };
+        match self {
+            Self::PercentHeight => {
+                b.element(row, percent(10.0));
+            }
+            Self::FillHeightGrandchild => {
+                let child = b.element(row, fill_column());
+                b.element(
+                    child,
+                    LayoutStyle {
+                        width: Some(LengthSpec::Px(40.0)),
+                        height: Some(LengthSpec::Fill),
+                        ..LayoutStyle::default()
+                    },
+                );
+            }
+            Self::PercentMinHeight => {
+                b.element(
+                    row,
+                    LayoutStyle {
+                        width: Some(LengthSpec::Px(40.0)),
+                        min_height: Some(LengthSpec::Percent(10.0)),
+                        ..LayoutStyle::default()
+                    },
+                );
+            }
+            Self::ColumnWrap => {
+                let wrap = b.element(
+                    row,
+                    LayoutStyle {
+                        flex_wrap: nana_ui_core::FlexWrap::Wrap,
+                        direction: Some(FlexDirection::Column),
+                        ..LayoutStyle::default()
+                    },
+                );
+                for _ in 0..40 {
+                    b.element(wrap, fixed(30.0, 30.0));
+                }
+            }
+            Self::Grid => {
+                let grid = b.element(
+                    row,
+                    LayoutStyle {
+                        display: Some(DisplaySpec::Grid),
+                        grid_rows: Some(vec![GridTrack::Fr(1.0), GridTrack::Fr(1.0)]),
+                        height: Some(LengthSpec::Percent(10.0)),
+                        ..LayoutStyle::default()
+                    },
+                );
+                b.element(grid, fixed(30.0, 10.0));
+                b.element(grid, fixed(30.0, 10.0));
+            }
+            Self::AspectRatio => {
+                b.element(
+                    row,
+                    LayoutStyle {
+                        height: Some(LengthSpec::Percent(10.0)),
+                        aspect_ratio: Some(2.0),
+                        ..LayoutStyle::default()
+                    },
+                );
+            }
+            Self::Vertical => {
+                let vertical = b.element(
+                    row,
+                    LayoutStyle {
+                        writing_mode: Some(WritingModeSpec::VerticalRl),
+                        ..LayoutStyle::default()
+                    },
+                );
+                b.label(vertical, PARAGRAPH);
+            }
+            Self::ContentsAroundPercent => {
+                let contents = b.element(
+                    row,
+                    LayoutStyle {
+                        display: Some(DisplaySpec::Contents),
+                        ..LayoutStyle::default()
+                    },
+                );
+                b.element(contents, percent(10.0));
+            }
+            Self::AbsolutePercent => {
+                b.element(
+                    row,
+                    LayoutStyle {
+                        position: PositionSpec::Absolute,
+                        ..percent(10.0)
+                    },
+                );
+                b.label(row, "label");
+            }
+            Self::HiddenPercent => {
+                b.element(
+                    row,
+                    LayoutStyle {
+                        hidden: true,
+                        ..percent(10.0)
+                    },
+                );
+                b.label(row, "label");
+            }
+            Self::FixedAroundPercent => {
+                let fixed_box = b.element(
+                    row,
+                    LayoutStyle {
+                        direction: Some(FlexDirection::Column),
+                        ..fixed(100.0, 50.0)
+                    },
+                );
+                b.element(fixed_box, percent(50.0));
+            }
+            Self::Text => {
+                b.label(row, PARAGRAPH);
+            }
+            Self::VhChild => {
+                b.element(
+                    row,
+                    LayoutStyle {
+                        width: Some(LengthSpec::Px(40.0)),
+                        height: Some(LengthSpec::Viewport {
+                            axis: nana_ui_core::ViewportAxis::Height,
+                            value: 5.0,
+                        }),
+                        ..LayoutStyle::default()
+                    },
+                );
+            }
+        }
+    }
+}
+
+/// A page that fills the viewport, a row per case, each laid out and then
+/// resized in height only.
+fn block_read_page(cases: &[Under]) -> (AppContext, DocumentId, Vec<StableNodeId>) {
+    let document = DocumentId::new(1).unwrap();
+    let (mut b, root) = Builder::new(document, 1);
+    let page = b.element(
+        root,
+        LayoutStyle {
+            width: Some(LengthSpec::Fill),
+            height: Some(LengthSpec::Fill),
+            direction: Some(FlexDirection::Column),
+            ..LayoutStyle::default()
+        },
+    );
+    let rows = cases
+        .iter()
+        .map(|case| {
+            let row = b.element(page, fill_column());
+            case.build(&mut b, row);
+            row
+        })
+        .collect();
+    let mut context = AppContext::new();
+    context.commit_mutations(b.queue).unwrap();
+    (context, document, rows)
+}
+
+/// A row whose subtree reads the height it is offered keeps that height in
+/// its memo key and measures again on a height-only resize; one whose
+/// subtree reads none of it -- text, a fixed box around a percentage, an
+/// absolute or hidden child -- does not. Every pass matches a full layout
+/// that keys by the real height, and the end matches a cold layout.
+#[test]
+fn issue264_a_row_keeps_the_offered_height_only_while_its_subtree_reads_it() {
+    let (mut context, document, rows) = block_read_page(&Under::ALL);
+    let mut shaper = bundled_face_shaper();
+    product_frame(&mut context, document, viewport(), &mut shaper);
+    for height in [760.0, 700.0, 790.0] {
+        measure_trace::begin();
+        resize_frame(
+            &mut context,
+            document,
+            LayoutViewport::new(1200.0, height),
+            &mut shaper,
+        );
+        let measured = measure_trace::take();
+        for (case, row) in Under::ALL.iter().zip(&rows) {
+            assert_eq!(
+                measured.contains(row),
+                case.measured_on_resize(),
+                "{height}: {case:?} row measured {}",
+                measured.contains(row)
+            );
+        }
+    }
+    let (mut cold, _, _) = block_read_page(&Under::ALL);
+    product_frame(
+        &mut cold,
+        document,
+        LayoutViewport::new(1200.0, 790.0),
+        &mut bundled_face_shaper(),
+    );
     assert_matches_cold(&mut context, &mut cold, document);
 }

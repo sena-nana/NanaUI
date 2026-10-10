@@ -143,13 +143,20 @@ fn check_plan_children(
         // and that none reads its cross size kept the flow under a cross
         // size change. A child restyled to read either -- a fixed height
         // back to filling -- would keep a size the container no longer has.
-        if style_moved
-            && ((!plan.main_dependent && reads_main_extent(&current, plan.main_direction))
-                || (plan.cross_independent
-                    && (!matches!(
-                        current.resolved_align_self(plan.style.align_items),
-                        AlignSpec::Start | AlignSpec::Stretch
-                    ) || reads_container_size(&current, plan.main_direction))))
+        // The same for a child whose subtree came to read the block extent it
+        // is offered (`world/block_reads.rs`): the plan kept it under a main
+        // size change that it now reads.
+        let block_read_arrived = !plan.main_dependent
+            && plan.main_direction == FlexDirection::Column
+            && nodes.world.block_extent_reaches(child);
+        if block_read_arrived
+            || style_moved
+                && ((!plan.main_dependent && reads_main_extent(&current, plan.main_direction))
+                    || (plan.cross_independent
+                        && (!matches!(
+                            current.resolved_align_self(plan.style.align_items),
+                            AlignSpec::Start | AlignSpec::Stretch
+                        ) || reads_container_size(&current, plan.main_direction))))
         {
             return Ok(PlanCheck::Stale);
         }
@@ -1726,7 +1733,11 @@ pub(super) fn place_node_scoped(
                         && matches!(align, AlignSpec::Start | AlignSpec::Stretch);
                     cross_independent &= matches!(align, AlignSpec::Start | AlignSpec::Stretch)
                         && !reads_container_size(child_style, direction);
-                    main_dependent |= reads_main_extent(child_style, direction);
+                    // A child whose height follows its content still reads a
+                    // column's main size when something under it does.
+                    main_dependent |= reads_main_extent(child_style, direction)
+                        || (direction == FlexDirection::Column
+                            && nodes.world.block_extent_reaches(child));
                     entries.push(PlannedChild {
                         child,
                         style: Arc::clone(&child_style_arc),

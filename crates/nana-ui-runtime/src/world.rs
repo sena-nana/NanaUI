@@ -1,5 +1,6 @@
 mod accessibility;
 mod animation;
+mod block_reads;
 mod extraction;
 mod focus_scope;
 mod geometry;
@@ -14,6 +15,7 @@ mod presentation;
 pub use i18n::{LocaleGenerations, LocaleScope};
 mod replaced;
 mod responsive;
+pub(crate) use block_reads::BlockExtentReads;
 pub use replaced::{ReplacedMetadata, ReplacedResource};
 mod scroll_bounds;
 mod style;
@@ -830,6 +832,9 @@ pub struct UiWorld {
     /// `vw` / `vh`). A resize dirties this set together with document roots
     /// instead of discarding the retained layout cache.
     viewport_basis_nodes: usize,
+    /// Ancestors visited keeping block extent reads current, for cost tests.
+    #[cfg(test)]
+    block_read_steps: u64,
     viewport_basis: HashMap<DocumentId, HashSet<StableNodeId>, BuildIdHasher>,
     /// Nodes that accept a drop, and what they accept. A sparse index rather
     /// than a field on every node: almost no tree has drop targets.
@@ -1006,6 +1011,8 @@ impl UiWorld {
             z_index_nodes: 0,
             triggered_overlays: HashSet::default(),
             viewport_basis_nodes: 0,
+            #[cfg(test)]
+            block_read_steps: 0,
             viewport_basis: HashMap::default(),
             document_viewports: HashMap::default(),
             drop_targets: HashMap::default(),
@@ -4216,6 +4223,7 @@ impl UiWorld {
         changed: LayoutDependencyFootprint,
         has_wrapping_text: bool,
         is_icon: bool,
+        reads_block_extent: bool,
     ) -> (LayoutDependencyFootprint, LayoutDependencyFootprint) {
         let inline_flag = LayoutDependencyFootprint::CONSUMES_PARENT_INLINE_CONSTRAINT;
         let block_flag = LayoutDependencyFootprint::CONSUMES_PARENT_BLOCK_CONSTRAINT;
@@ -4295,6 +4303,13 @@ impl UiWorld {
         };
         if has_wrapping_text && inline_changed && !inline_definite {
             uncertain_inline = true;
+        }
+        // Something under a child whose height follows its content reads the
+        // block extent the child is offered: a percentage or fill height, a
+        // column that wraps, a grid (`world/block_reads.rs`). Layout resolves
+        // it against that extent, so the child passes it down.
+        if reads_block_extent && block_changed && !block_definite {
+            uncertain_block = true;
         }
         let aspect = child
             .aspect_ratio
@@ -4522,6 +4537,7 @@ impl UiWorld {
                             constraint_axes,
                             has_wrapping_text,
                             is_icon,
+                            child_record.block_reads.reads(),
                         );
                         graph.note_constraint_dependent(!edge.is_empty());
                         if edge.is_empty() {
@@ -4682,6 +4698,7 @@ impl UiWorld {
         let Some(index) = self.child_index(parent, child) else {
             return;
         };
+        self.link_block_extent_reads(parent, child, false);
         let hierarchy = self.hierarchy_mut(parent);
         Arc::make_mut(&mut hierarchy.children).remove(index);
         intern_empty_children(&mut hierarchy.children);

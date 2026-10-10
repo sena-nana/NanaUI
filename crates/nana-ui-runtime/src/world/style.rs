@@ -493,6 +493,7 @@ impl UiWorld {
         record.style = style;
         record.resolved_layout = resolved;
         record.layout_depends_on_viewport = depends_on_viewport;
+        self.refresh_block_extent_reads(id);
         self.note_layout_source_change();
     }
 
@@ -503,6 +504,7 @@ impl UiWorld {
         let style = self.record(id).style.clone();
         let resolved = self.resolve_node_layout(id, &style);
         self.record_mut(id).resolved_layout = resolved;
+        self.refresh_block_extent_reads(id);
     }
 
     /// The layout the pipeline reads for `id` with effective style `style`,
@@ -564,6 +566,7 @@ impl UiWorld {
                 self.layouts.intern(&mut resolved);
             }
             self.record_mut(id).resolved_layout = resolved;
+            self.refresh_block_extent_reads(id);
             self.note_layout_source_change();
             moved += 1;
             if !self.presence_live(id) {
