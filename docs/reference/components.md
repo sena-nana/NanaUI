@@ -78,6 +78,8 @@ inactive overlay 与关闭菜单属于结构性隐藏。`ComputedStyle::box_visi
 
 `Toolbar` / `StatusBar` 是两条横条容器。内容由应用放。相对裸 `Stack::bar` 多的是壳层表面和**无障碍角色**。读屏把工具栏播报成一组控件。状态栏播报成 live status 区域。普通布局盒表达不了这个。`chrome(false)` 用于已经自带表面的父容器。
 
+两条横条放不下时会先收紧再溢出（Dynamic Layout，见 [布局](layout.md) 的「Dynamic Layout」）：横条自己的 gap 先收到四分之一，再收 `Button`、`Chip` 声明的左右 padding（各收到三分之一），都收完还放不下才溢出或交给 shrink。这是横条样式里 `adaptation: Some(AdaptationProfile::strip())` 带来的；`Button` / `Chip` 默认带 `AdaptationProfile::control()`，只是声明，放在不求解的容器里（普通 `Stack`、行、列、Dock、SplitPane）不读也不花代价。任何容器写 `solve_overflow: true` 都能这样求解；要让某个按钮不被收紧，把它的 `adaptation` 设成 `AdaptationProfile::RIGID`。`StatusBadge` 不声明：状态点画在左侧 padding 里，收紧会让文字压上状态点。
+
 拖放：`set_drop_target(entity, DropAccepts::files())` 登记节点接受什么。`drop_target_at(document, x, y, kind)` 回答某点上最内层接受该载荷的节点（按布局盒匹配，不要求节点可点击）。**框架只回答落在哪里。** 落下之后做什么仍是应用的。和 `SecondaryPress` 一样。Tab / Dock / `ReorderList` 的拖动移动的是框架自己的结构。仍走各自的合同。
 
 悬停显隐：给节点挂 `PointerHoverChanged` 处理函数，指针进入它的子树时收到 `hovered: true`，离开时收到 `false`。在子树内的两个后代之间移动不会重复发。只有挂了处理函数的节点收到，由内向外。`Stack` 默认不参与命中，指针停在行的空白处时命中不到它，要用 `.hittable()` 让整行接住悬停。框架只报告进出，显示哪些工具是应用的事。

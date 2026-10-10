@@ -118,6 +118,9 @@ fn bar_style(chrome: bool, below_content: bool) -> NodeStyle {
     layout.padding_right = Some(LengthSpec::Px(space::MD));
     layout.padding_top = Some(LengthSpec::Px(space::XS));
     layout.padding_bottom = Some(LengthSpec::Px(space::XS));
+    // A strip of controls: when they do not fit, its gaps and then their
+    // declared padding close up before anything clips (Issue #212).
+    layout.adaptation = Some(nana_ui_core::dynamic_layout::AdaptationProfile::strip());
     if chrome {
         style.background = Some(SemanticColorRole::Surface);
         style.border = Some(SemanticColorRole::BorderSoft);

@@ -121,6 +121,41 @@ impl AdaptationProfile {
         discrete: None,
     };
 
+    /// A control that may close its inline padding up to a third of itself
+    /// when the strip it sits in runs short: buttons, chips. It solves
+    /// nothing itself.
+    pub const fn control() -> Self {
+        Self {
+            inline: AxisElasticity {
+                padding: Some(ElasticLength::new(
+                    ElasticFloor::Fraction(85),
+                    costs::PADDING,
+                )),
+                gap: None,
+                content_gap: None,
+            },
+            ..Self::RIGID
+        }
+    }
+
+    /// A strip of controls (a toolbar, a status bar) that solves its own
+    /// overflow: its gaps close up to a quarter first, then its controls'
+    /// declared padding.
+    pub const fn strip() -> Self {
+        Self {
+            inline: AxisElasticity {
+                padding: None,
+                gap: Some(ElasticLength::new(
+                    ElasticFloor::Fraction(64),
+                    costs::PLACEMENT_GAP,
+                )),
+                content_gap: None,
+            },
+            solve_overflow: true,
+            ..Self::RIGID
+        }
+    }
+
     /// What this box declares along an axis.
     pub fn axis(&self, inline: bool) -> &AxisElasticity {
         if inline { &self.inline } else { &self.block }

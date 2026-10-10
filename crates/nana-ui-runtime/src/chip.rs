@@ -119,6 +119,11 @@ impl Chip {
             layout.font_weight = Some(nana_ui_core::type_scale::MEDIUM);
             layout.flex_grow = Some(0.0);
             layout.flex_shrink = Some(0.0);
+            // Declared, not solved: only a strip that solves its overflow
+            // reads it (Issue #212).
+            layout
+                .adaptation
+                .get_or_insert(nana_ui_core::dynamic_layout::AdaptationProfile::control());
         }
         style.control_padding_x = Some(ControlPadding::Compact);
         style.control_height = Some(ControlHeight::Min(ControlSize::Small));

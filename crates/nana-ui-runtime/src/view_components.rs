@@ -533,6 +533,9 @@ impl Button {
         let mut layout = (*control_layout()).clone();
         layout.font_weight = Some(nana_ui_core::type_scale::MEDIUM);
         layout.white_space_nowrap = true;
+        // Declared, not solved: only a strip that solves its overflow reads
+        // it (Issue #212).
+        layout.adaptation = Some(nana_ui_core::dynamic_layout::AdaptationProfile::control());
         Self {
             label: label.into(),
             accessible_name: String::new(),

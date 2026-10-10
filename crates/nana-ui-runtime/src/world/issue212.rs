@@ -280,3 +280,72 @@ fn issue212_inspect_shows_the_envelope_and_the_assignment() {
             .is_none()
     );
 }
+
+/// The built-in strip: a `Toolbar` of `Button`s too wide for its page closes
+/// its gaps and then the buttons' padding, and fits; the same toolbar with
+/// its solving turned off overflows. Buttons in a plain row never compress.
+#[test]
+fn issue212_a_toolbar_of_buttons_closes_up_before_it_overflows() {
+    use crate::{Button, Stack, Toolbar};
+    use nana_ui_core::dynamic_layout::AdaptationProfile;
+    let document = DocumentId::new(1).unwrap();
+    let build = |solving: bool| {
+        let mut context = AppContext::new();
+        let page = context
+            .create_component(
+                document,
+                Stack::from_layout(LayoutStyle {
+                    width: Some(LengthSpec::Px(440.0)),
+                    direction: Some(FlexDirection::Column),
+                    ..LayoutStyle::default()
+                }),
+            )
+            .unwrap();
+        let mut toolbar = Toolbar::new();
+        if !solving {
+            std::sync::Arc::make_mut(&mut toolbar.style.layout).adaptation =
+                Some(AdaptationProfile::RIGID);
+        }
+        let toolbar = context
+            .create_detached_component(document, toolbar)
+            .unwrap();
+        context.append_child(page, toolbar).unwrap();
+        let buttons: Vec<_> = (0..6)
+            .map(|at| {
+                let button = context
+                    .create_detached_component(document, Button::new(format!("Action {at}")))
+                    .unwrap();
+                context.append_child(toolbar, button).unwrap();
+                button.stable_id()
+            })
+            .collect();
+        let mut shaper = bundled_face_shaper();
+        product_frame(
+            &mut context,
+            document,
+            LayoutViewport::new(800.0, 600.0),
+            &mut shaper,
+        );
+        let bar = context.world().layout_box(toolbar.stable_id()).unwrap();
+        let boxes: Vec<LayoutBox> = buttons
+            .iter()
+            .map(|id| context.world().layout_box(*id).unwrap())
+            .collect();
+        (context, bar, boxes)
+    };
+    let (context, bar, solved) = build(true);
+    let (_, _, rigid) = build(false);
+    let end = |boxes: &[LayoutBox]| boxes.last().map(|last| last.x + last.width).unwrap();
+    assert!(
+        end(&rigid) > bar.x + bar.width,
+        "the rigid toolbar fits: {rigid:?}"
+    );
+    assert!(
+        end(&solved) <= bar.x + bar.width + 0.05,
+        "{solved:?} in {bar:?}"
+    );
+    for (solved, rigid) in solved.iter().zip(&rigid) {
+        assert!(solved.width < rigid.width);
+    }
+    assert!(context.last_work_counters().dynamic.child_resolves >= 6);
+}
