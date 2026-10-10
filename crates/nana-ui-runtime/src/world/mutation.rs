@@ -1239,9 +1239,7 @@ impl UiWorld {
                     self.record_topology_invalidation(*child);
                 }
                 self.clear_layout_results_subtree(*child);
-                self.clear_layout_result_ancestors(*parent);
                 if let Some(old_parent) = old_parent {
-                    self.clear_layout_result_ancestors(old_parent);
                     self.remove_child(old_parent, *child);
                 }
                 let parent_hierarchy = self.hierarchy_mut(*parent);
@@ -1300,7 +1298,6 @@ impl UiWorld {
             }
             UiMutation::Detach { id } => {
                 self.record_topology_invalidation(*id);
-                self.clear_layout_result_ancestors(*id);
                 self.clear_layout_results_subtree(*id);
                 if self.unlink_from_parent(*id) {
                     report.detached += 1;
@@ -1310,7 +1307,6 @@ impl UiWorld {
             }
             UiMutation::ParkSubtree { root } => {
                 self.record_topology_invalidation(*root);
-                self.clear_layout_result_ancestors(*root);
                 self.clear_layout_results_subtree(*root);
                 self.unlink_from_parent(*root);
                 self.set_subtree_mount_state(*root, MountState::Parked);
@@ -1322,7 +1318,6 @@ impl UiWorld {
                 let root_snapshot = self.node(*root).expect("validated root must exist");
                 if let Some(parent) = root_snapshot.parent {
                     self.record_child_list_invalidation(parent);
-                    self.clear_layout_result_ancestors(parent);
                     self.remove_child(parent, *root);
                     self.mark_ancestors(
                         parent,

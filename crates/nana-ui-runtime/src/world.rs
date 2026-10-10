@@ -1156,7 +1156,12 @@ impl UiWorld {
     /// Publish that `parent`'s child list changed: it re-measures, rebuilds
     /// its placement and exports its metrics. A child that arrives carries a
     /// topology cause of its own and is laid out in full; the children that
-    /// stay keep their content, so this is not a forced subtree.
+    /// stay keep their content, so this is not a forced subtree. Like an
+    /// ancestor on a text's export path, `parent` couples none of its own
+    /// siblings: when its box did change, its container's placement moves
+    /// the ones after it. Its published result goes, and so do its
+    /// ancestors' up to the first fixed border box, which may be `parent`
+    /// itself: its children changed, not its border box.
     pub(crate) fn record_child_list_invalidation(&mut self, parent: StableNodeId) {
         self.record_layout_invalidation(
             parent,
@@ -1168,10 +1173,10 @@ impl UiWorld {
                     .union(InvalidationKind::PLACEMENT),
                 LayoutFieldMask::FLOW,
                 LayoutDependencyFootprint::intrinsic_container()
-                    .union(LayoutDependencyFootprint::EXPORTS_BASELINE)
-                    .union(LayoutDependencyFootprint::CONTEXT_LOCAL_COUPLING),
+                    .union(LayoutDependencyFootprint::EXPORTS_BASELINE),
             ),
         );
+        self.clear_layout_result_chain(parent, false);
     }
 
     /// Drain typed seeds for one document after the coarse system-work drain.
@@ -1306,12 +1311,6 @@ impl UiWorld {
         }
     }
 
-    /// Drop `id` and its ancestor snapshots when topology changes their child
-    /// placement. The subtree helper remains responsible for descendants.
-    pub(crate) fn clear_layout_result_ancestors(&mut self, id: StableNodeId) {
-        self.clear_layout_result_chain(id, true);
-    }
-
     /// Drop `start` and ancestors whose placement depends on it.
     ///
     /// A definite border box is a metric boundary. Clearing it republishes an
@@ -1395,7 +1394,7 @@ impl UiWorld {
     /// chain depends on it. The next layout commit publishes a fresh batch.
     pub(crate) fn invalidate_layout_result(&mut self, id: StableNodeId) {
         self.clear_layout_results_subtree(id);
-        self.clear_layout_result_ancestors(id);
+        self.clear_layout_result_chain(id, true);
     }
 
     /// Publish a coherent batch of layout results after all box writes in a

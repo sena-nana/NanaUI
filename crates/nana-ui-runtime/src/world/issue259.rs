@@ -24,6 +24,9 @@
 //!   builds, walks and places the same at both sizes; a string that wraps
 //!   grows the column and moves every group after it, and the frontier that
 //!   found them is still the same;
+//! - child list: a box arrives in that column and leaves again. Every group
+//!   after it moves once each way, found by the same frontier at 1k and 10k
+//!   nodes; in a column of a fixed height the whole frame costs the same;
 //! - batch: a hundred seeds walk each edge of their union closure at most
 //!   twice and cost no more than a hundred single edits;
 //! - memory: 10k edits on 100k nodes leave the retained cache what the tree
@@ -1590,5 +1593,120 @@ fn issue259_a_label_costs_its_column_not_the_groups_after_it() {
             costs[0].measured,
             costs[1].measured
         );
+    }
+}
+
+/// A column at the head of a page, 300 px wide, and the page's groups of
+/// cards directly after it, 1k and 10k nodes. A fixed box arrives in the
+/// column and leaves again. A column as tall as what it holds grows and
+/// shrinks back, and every group after it moves once each way -- real
+/// output -- while what was built, walked and measured to find them does
+/// not grow. A column of a fixed height keeps its box, and the frame costs
+/// the same at both sizes.
+#[test]
+fn issue259_a_child_list_edit_costs_its_column_not_the_groups_after_it() {
+    use super::reflow_oracle::{self, Builder, FILLER_GROUP_NODES};
+    let viewport = LayoutViewport::new(1200.0, 800.0);
+    // After every id the builder hands out.
+    let arriving = node(1_000_000);
+    let arrive = |queue: &mut MutationQueue, document, head| {
+        queue.create(arriving, document, NodeKind::Element { tag: "div".into() });
+        queue.insert(head, arriving, None);
+        queue.set_style(arriving, styled(reflow_oracle::fixed(100.0, 20.0)));
+    };
+    let build = |nodes: u64, height: Option<f32>, inserted: bool| {
+        let document = DocumentId::new(1).unwrap();
+        let (mut b, page) = Builder::page(document, 1, 1200.0);
+        let head = b.element(
+            page,
+            LayoutStyle {
+                height: height.map(LengthSpec::Px),
+                ..reflow_oracle::column(Some(300.0))
+            },
+        );
+        let label = b.label(head, "Short");
+        b.filler(page, nodes / FILLER_GROUP_NODES);
+        if inserted {
+            arrive(&mut b.queue, document, head);
+        }
+        let mut context = AppContext::new();
+        context.commit_mutations(b.queue).unwrap();
+        let mut shaper = bundled_face_shaper();
+        product_frame(&mut context, document, viewport, &mut shaper);
+        (context, document, head, label, shaper)
+    };
+    for height in [None, Some(60.0)] {
+        let grows = height.is_none();
+        let mut found = Vec::new();
+        let mut costs = Vec::new();
+        for nodes in [1_000, 10_000] {
+            let _unguarded = (nodes > 1_000).then(skip_layout_verify);
+            let (mut context, document, head, label, mut shaper) = build(nodes, height, false);
+            // The document, the page, the column and the label; the groups
+            // are everything after them.
+            let order = context.world().document_order(document);
+            let groups = order.iter().position(|id| *id == label).unwrap() + 1;
+            let boxes = |context: &AppContext| {
+                order
+                    .iter()
+                    .map(|id| context.world().layout_box(*id))
+                    .collect::<Vec<_>>()
+            };
+            for inserting in [true, false] {
+                let case = format!("height {height:?}, inserting {inserting}, {nodes} nodes");
+                let before = boxes(&context);
+                let passes = context.layout_invocations();
+                let mut queue = MutationQueue::new();
+                if inserting {
+                    arrive(&mut queue, document, head);
+                } else {
+                    queue.despawn_subtree(arriving);
+                }
+                context.commit_mutations(queue).unwrap();
+                let counters = product_frame(&mut context, document, viewport, &mut shaper);
+                assert_eq!(context.layout_invocations() - passes, 1, "{case}");
+                let moved: Vec<bool> = before
+                    .iter()
+                    .zip(boxes(&context))
+                    .map(|(old, new)| *old != new)
+                    .collect();
+                // Every group moved, and only once; or none did.
+                assert!(
+                    moved[groups..].iter().all(|moved| *moved == grows),
+                    "{case}"
+                );
+                let cost = Cost::from(counters);
+                let shifted = if grows { order.len() - groups } else { 0 };
+                assert_eq!(cost.origin_only, shifted, "{case}");
+                let moved = moved.iter().filter(|moved| **moved).count();
+                assert!(
+                    cost.placed >= moved && cost.placed <= moved + cost.frontier_placement,
+                    "{case}: {moved} boxes moved, {} placed: {cost:?}",
+                    cost.placed
+                );
+                let (mut cold, ..) = build(nodes, height, inserting);
+                assert_matches_cold(&mut context, &mut cold, document);
+                found.push((
+                    cost.frontier(),
+                    cost.full_subtrees,
+                    context.layout_frontier_stats(document),
+                ));
+                costs.push(cost);
+            }
+        }
+        // What was built, walked and measured to find them: the insertion
+        // and the removal, at 1k and at 10k.
+        assert_eq!(found[..2], found[2..], "height {height:?}");
+        for (small, large) in costs[..2].iter().zip(&costs[2..]) {
+            if !grows {
+                assert_eq!(small.structural(), large.structural(), "height {height:?}");
+            }
+            assert!(
+                large.measured <= 2 * small.measured + 8,
+                "height {height:?}: {} nodes measured at 1k, {} at 10k",
+                small.measured,
+                large.measured
+            );
+        }
     }
 }
