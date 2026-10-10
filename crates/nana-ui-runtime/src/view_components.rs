@@ -1020,6 +1020,13 @@ impl ComponentView for IconButton {
         if !self.colors_from_style {
             kind_colors(self.kind, selected, &mut effective_style);
         }
+        if self.disabled {
+            // A quiet icon's resting ink and the faint disabled ink sit close
+            // together, closest on dark themes: a disabled icon also fades,
+            // so a row of tools shows at a glance which can act.
+            let layout = Arc::make_mut(&mut effective_style.layout);
+            layout.opacity = Some(layout.opacity.unwrap_or(1.0) * ICON_BUTTON_DISABLED_OPACITY);
+        }
         project_common(
             id,
             world,
@@ -1039,6 +1046,9 @@ impl ComponentView for IconButton {
         );
     }
 }
+
+/// How far a disabled [`IconButton`] fades, over its disabled ink.
+const ICON_BUTTON_DISABLED_OPACITY: f32 = 0.5;
 
 /// The colours an [`IconButton`] of `kind` paints with, written over `style`.
 /// Skipped for a button that opted into [`IconButton::colors_from_style`].
@@ -3087,6 +3097,29 @@ impl ComponentView for HostedTextarea {
 mod hosted_textarea_tests {
     use super::*;
     use crate::{DocumentId, MutationQueue, UiWorld};
+
+    #[test]
+    fn a_disabled_icon_button_fades_and_an_enabled_one_does_not() {
+        let mut context = crate::AppContext::new();
+        let document = DocumentId::new(1).unwrap();
+        let opacity = |context: &crate::AppContext, id| {
+            context
+                .world()
+                .node_style(id)
+                .and_then(|style| style.layout.opacity)
+        };
+        let button = context
+            .create_component(document, IconButton::new(nana_ui_core::Icon::Close, "关闭"))
+            .unwrap();
+        assert_eq!(opacity(&context, button.stable_id()), None);
+        context
+            .update_component(button, |button, _| button.disabled = true)
+            .unwrap();
+        assert_eq!(
+            opacity(&context, button.stable_id()),
+            Some(ICON_BUTTON_DISABLED_OPACITY)
+        );
+    }
 
     #[test]
     fn continuous_number_input_preserves_fractions_through_commit_step_and_revert() {

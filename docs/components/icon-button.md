@@ -61,7 +61,7 @@ icon_button(Icon::Search, "搜索")
 | `icon` | `Icon` | 必须写成属性。指向静态几何的 `Copy` 身份 |
 | `label` | `Arc<str>` | 可访问名。用属性或这一条子文本 |
 | `selected` | `bool` | 由应用写。激活不自己改 `selected`。选中时字形和底色走选中态 |
-| `disabled` | `bool` | 为真时不发 `Activate` |
+| `disabled` | `bool` | 为真时不发 `Activate`，整枚按钮降到 50% 不透明度：图标平时的颜色和停用色很接近，淡出才看得出哪枚不能点 |
 
 ## 事件
 
