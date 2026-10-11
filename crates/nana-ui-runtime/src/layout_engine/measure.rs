@@ -1021,7 +1021,6 @@ fn measure_node(
             viewport,
             parent_font_px,
             &style_arc,
-            &child_ids,
             text_metrics,
             text_natural_width,
             text_wrap_limit,
@@ -1036,26 +1035,61 @@ fn measure_node(
         // one recorded before its natural size arrived no longer holds.
         && natural.is_none()
     {
-        let reused =
-            if measure_plan_children_unchanged(plan, viewport, child_font_px, nodes, cache, scope)?
-            {
-                Some(plan.size)
-            } else if let Some(size) =
-                sequential_measure_delta(id, plan, viewport, child_font_px, nodes, cache, scope)?
-            {
-                Some(size)
-            } else if let Some(size) =
-                flex_line_measure_delta(id, plan, viewport, child_font_px, nodes, cache, scope)?
-            {
-                Some(size)
-            } else if let Some(size) =
-                ifc_line_measure_delta(id, plan, viewport, child_font_px, nodes, cache, scope)?
-            {
-                Some(size)
-            } else {
-                grid_measure_delta(id, plan, viewport, child_font_px, nodes, cache, scope)?
-            };
-        if let Some(size) = reused {
+        // The size the plan answers with, and whether it patched what it
+        // recorded to get there.
+        let reused = if !Arc::ptr_eq(&plan.children, &child_ids) {
+            // A new child list. A sequential sum takes the edit; anything
+            // else measures its children again.
+            sequential_measure_delta(
+                id,
+                plan,
+                &child_ids,
+                viewport,
+                child_font_px,
+                nodes,
+                cache,
+                scope,
+            )?
+            .map(|size| (size, true))
+        } else if measure_plan_children_unchanged(
+            plan,
+            viewport,
+            child_font_px,
+            nodes,
+            cache,
+            scope,
+        )? {
+            Some((plan.size, false))
+        } else if let Some(size) = sequential_measure_delta(
+            id,
+            plan,
+            &child_ids,
+            viewport,
+            child_font_px,
+            nodes,
+            cache,
+            scope,
+        )? {
+            Some((size, true))
+        } else if let Some(size) =
+            flex_line_measure_delta(id, plan, viewport, child_font_px, nodes, cache, scope)?
+        {
+            Some((size, true))
+        } else if let Some(size) =
+            ifc_line_measure_delta(id, plan, viewport, child_font_px, nodes, cache, scope)?
+        {
+            Some((size, true))
+        } else {
+            grid_measure_delta(id, plan, viewport, child_font_px, nodes, cache, scope)?
+                .map(|size| (size, true))
+        };
+        if let Some((size, patched)) = reused {
+            if patched {
+                // The facts retained for this container were measured from
+                // the content the patch changed. A later constraint its used
+                // sizes do not hold measures it again instead.
+                cache.retire_intrinsic_facts(id);
+            }
             cache.note_measure_plan_reused();
             cache.note_measure_cache_hit();
             cache.insert(cache_key, size);
@@ -1155,6 +1189,9 @@ fn measure_node(
     let mut hypothetical: Vec<(StableNodeId, f32, Size)> = Vec::new();
     let mut recorded_grid = None;
     let mut sequential_main_sum = 0.0f64;
+    // The widest in-flow child's cross extent with its margins, and how many
+    // children are that wide.
+    let mut sequential_cross = (0.0f32, 0usize);
     let children = if grid_measure {
         let grid = layout_grid_2d(
             style,
@@ -1292,12 +1329,20 @@ fn measure_node(
         // `sequential_main_term`.
         let mut main = f64::from(gaps);
         let mut cross = 0.0f32;
+        let mut at_cross = 0usize;
         for ((child, size), used) in flow_children.iter().zip(&child_sizes).zip(&used_sizes) {
             let margin = child_margin(*child, nodes);
             main += sequential_main_term(*size, margin, direction);
-            cross = cross.max(cross_extent(*used, direction) + cross_margin(margin, direction));
+            let reach = cross_extent(*used, direction) + cross_margin(margin, direction);
+            if reach > cross {
+                at_cross = 1;
+            } else if reach == cross {
+                at_cross += 1;
+            }
+            cross = cross.max(reach);
         }
         sequential_main_sum = main;
+        sequential_cross = (cross, at_cross);
         let main = main as f32;
         match direction {
             FlexDirection::Row => Size::new(main.max(0.0), cross),
@@ -1508,6 +1553,9 @@ fn measure_node(
                 size,
                 sequential,
                 main_sum: sequential_main_sum,
+                flow_len: flow_children.len(),
+                children_cross: sequential_cross.0,
+                children_at_cross: sequential_cross.1,
                 default_cross: cross_extent(Size::new(default_width, default_height), direction),
                 grid: recorded_grid,
             }
@@ -1634,13 +1682,24 @@ pub(super) fn retained_style_matches(
     }
 }
 
-/// Apply one measured child's main-size delta to a sequential container.
+/// Apply measured children's main-size deltas to a sequential container.
 ///
 /// Returns `None` when the cached sum is not a safe description of the used
 /// size. Placement-only siblings keep their cached intrinsic.
+///
+/// `children` is the container's child list this pass. When it is not the
+/// list the plan summed, the edit is a delta too (see [`ChildListEdit`]): a
+/// child that left takes its share and its gap out of the sum, and one that
+/// arrived is measured and puts its own in. The children the two lists
+/// share are not measured again, so an edit to a long list costs the edit,
+/// not the list. What the sum cannot express -- an arrival that changes the
+/// formatting context, the widest child leaving a container as wide as its
+/// widest child, a flow that empties or starts -- measures the children.
+#[allow(clippy::too_many_arguments)]
 fn sequential_measure_delta(
     id: StableNodeId,
     plan: &MeasurePlan,
+    children: &Arc<Vec<StableNodeId>>,
     viewport: LayoutViewport,
     child_font_px: f32,
     nodes: &mut LayoutInputMap<'_>,
@@ -1669,11 +1728,20 @@ fn sequential_measure_delta(
         FlexDirection::Column => own_width,
         FlexDirection::Row => own_height,
     };
+    let world = nodes.world;
+    let edit = (!Arc::ptr_eq(&plan.children, children))
+        .then(|| ChildListEdit::between(&plan.children, children));
     let mut patches: Vec<(StableNodeId, Size, Option<Arc<nana_ui_core::LayoutStyle>>)> = Vec::new();
     for affected in scope.affected.iter().copied() {
         let Some(entry) = plan.entry(affected) else {
             continue;
         };
+        // A child that left, or moved within the list, is the edit's.
+        if let Some(edit) = edit
+            && (world.parent_id(affected) != Some(id) || edit.arrived(world, id, affected))
+        {
+            continue;
+        }
         let Some(old) = entry.intrinsic else {
             continue;
         };
@@ -1707,7 +1775,120 @@ fn sequential_measure_delta(
             - sequential_main_term(old, old_margin, direction);
         patches.push((entry.child, measured, current_style));
     }
-    if patches.is_empty() {
+    let mut flow_len = plan.flow_len;
+    let mut at_cross = plan.children_at_cross;
+    let mut arrived = Vec::new();
+    if let Some(edit) = edit {
+        let style = plan.style.as_ref();
+        // A grid places a child by its own placement, which an arrival can
+        // set: the edit can turn this flow into a grid.
+        if style.display.is_some_and(DisplaySpec::is_grid_container) {
+            return Ok(None);
+        }
+        let flex = style.display.is_some_and(DisplaySpec::is_flex_container);
+        // A container whose cross size is its content's keeps it while its
+        // widest children stay that wide: an arrival wider still, or the last
+        // of them leaving, moves it, and the children are measured instead.
+        let reach =
+            |size: Size, margin| cross_extent(size, direction) + cross_margin(margin, direction);
+        for &child in edit.left(&plan.children) {
+            let Some(entry) = plan.entry(child) else {
+                return Ok(None);
+            };
+            let Some(old) = entry.intrinsic else {
+                continue;
+            };
+            let margin = margin_of(&entry.style);
+            if !cross_own {
+                let reached = reach(old, margin);
+                if reached > plan.children_cross {
+                    return Ok(None);
+                }
+                if reached == plan.children_cross {
+                    let Some(fewer) = at_cross.checked_sub(1) else {
+                        return Ok(None);
+                    };
+                    at_cross = fewer;
+                }
+            }
+            main_sum -= sequential_main_term(old, margin, direction);
+            let Some(fewer) = flow_len.checked_sub(1) else {
+                return Ok(None);
+            };
+            flow_len = fewer;
+        }
+        for &child in edit.arrivals(children) {
+            let child_style = nodes.style(child);
+            let in_flow = match child_style.as_deref() {
+                None => false,
+                Some(arrival) if arrival.omits_box() || arrival.position.is_out_of_flow() => false,
+                // Each of these changes the formatting context rather than
+                // the sum: `display: contents` splices the child's own
+                // children in, an inline-level child makes the flow inline,
+                // and growing or shrinking shares out free space.
+                Some(arrival)
+                    if arrival.display.is_some_and(DisplaySpec::is_contents)
+                        || (!flex && arrival.is_inline_level())
+                        || arrival.flex_grow.unwrap_or(0.0) > 0.0
+                        || arrival.flex_shrink.unwrap_or(0.0) > 0.0 =>
+                {
+                    return Ok(None);
+                }
+                Some(_) => true,
+            };
+            let intrinsic = if in_flow {
+                let measured = intrinsic_size_scoped(
+                    child,
+                    plan.child_available,
+                    Some(direction),
+                    viewport,
+                    child_font_px,
+                    nodes,
+                    cache,
+                    Some(scope),
+                )?;
+                let margin = margin_of(&child_style);
+                if !cross_own {
+                    let reached = reach(measured, margin);
+                    if reached > plan.children_cross {
+                        return Ok(None);
+                    }
+                    if reached == plan.children_cross {
+                        at_cross += 1;
+                    }
+                }
+                main_sum += sequential_main_term(measured, margin, direction);
+                flow_len += 1;
+                Some(measured)
+            } else {
+                None
+            };
+            arrived.push(MeasuredChild {
+                child,
+                style: child_style,
+                intrinsic,
+                at_main: None,
+            });
+        }
+        // An empty flow sizes the container by other rules, and the last of
+        // its widest children leaving narrows it.
+        if plan.flow_len == 0
+            || flow_len == 0
+            || (!cross_own && plan.children_at_cross > 0 && at_cross == 0)
+        {
+            return Ok(None);
+        }
+        // One gap between each two in-flow children, summed in `f32` as the
+        // full measurement does before it widens the total.
+        let fonts = fonts_of(style, plan.parent_font_px);
+        let gap = style.main_gap_against_fonts(
+            direction,
+            gap_containing_block(style, plan.child_available),
+            fonts,
+        );
+        let gaps = |count: usize| f64::from(gap * count.saturating_sub(1) as f32);
+        main_sum += gaps(flow_len) - gaps(plan.flow_len);
+    } else if patches.is_empty() {
         return Ok(None);
     }
     let main = (main_sum as f32).max(0.0);
@@ -1725,6 +1906,28 @@ fn sequential_measure_delta(
     let mut updated = plan.clone();
     updated.size = size;
     updated.main_sum = main_sum;
+    if let Some(edit) = edit {
+        updated.children = Arc::clone(children);
+        updated.flow_len = flow_len;
+        updated.children_at_cross = at_cross;
+        for child in edit.left(&plan.children) {
+            if let Ok(slot) = updated
+                .entries
+                .binary_search_by_key(child, |entry| entry.child)
+            {
+                updated.entries.remove(slot);
+            }
+        }
+        for entry in arrived {
+            match updated
+                .entries
+                .binary_search_by_key(&entry.child, |held| held.child)
+            {
+                Ok(slot) => updated.entries[slot] = entry,
+                Err(slot) => updated.entries.insert(slot, entry),
+            }
+        }
+    }
     for (child, intrinsic, style) in patches {
         if let Ok(slot) = updated
             .entries

@@ -29,7 +29,10 @@
 //! - child list: a box arrives in that column, or in the page before it, and
 //!   leaves again. Every box after it moves once each way, none of them on
 //!   the frontier, found by the same frontier at 1k and 10k nodes; in a
-//!   column of a fixed height the whole frame costs the same;
+//!   column of a fixed height the whole frame costs the same. A box at
+//!   either end of the page itself leaves and arrives without a subtree
+//!   walked to measure it, the page's included; at the tail the frame costs
+//!   the same at both sizes but for the page's own result;
 //! - batch: a hundred seeds walk each edge of their union closure at most
 //!   twice and cost no more than a hundred single edits;
 //! - memory: 10k edits on 100k nodes leave the retained cache what the tree
@@ -1770,6 +1773,140 @@ fn issue259_a_child_list_edit_costs_its_parent_not_the_groups_after_it() {
                 small.measured,
                 large.measured
             );
+        }
+    }
+}
+
+/// The page's own child list, 1k and 10k nodes: the 300 px column at its
+/// head, its groups of cards, and a fixed 100x20 box at one end of it. The
+/// box leaves, in the first frame after the page was laid out from nothing,
+/// and arrives again. No subtree is walked to measure it, the page's
+/// included: the page's measure and placement take the edit from the plans
+/// they recorded, and the groups it kept are not measured again. At the tail
+/// nothing else moves, and the frame costs the same at both sizes but for
+/// the page's own result, which holds a placement for every group. At the
+/// head every box after the edit moves once -- real output -- and the only
+/// children walked are those of boxes that moved, placed again with them.
+#[test]
+fn issue259_a_child_list_edit_in_the_page_measures_the_edit_not_the_page() {
+    use super::reflow_oracle::{self, Builder, FILLER_GROUP_NODES};
+    let viewport = LayoutViewport::new(1200.0, 800.0);
+    // After every id the builder hands out: the box the page starts with,
+    // and the one that arrives once it left.
+    let (leaving, arriving) = (node(1_000_000), node(1_000_001));
+    let place = |queue: &mut MutationQueue, document, page, before, edge| {
+        queue.create(edge, document, NodeKind::Element { tag: "div".into() });
+        queue.insert(page, edge, before);
+        queue.set_style(edge, styled(reflow_oracle::fixed(100.0, 20.0)));
+    };
+    let build = |nodes: u64, head: bool, edge: Option<StableNodeId>| {
+        let document = DocumentId::new(1).unwrap();
+        let (mut b, page) = Builder::page(document, 1, 1200.0);
+        let column = b.element(page, reflow_oracle::column(Some(300.0)));
+        b.label(column, "Short");
+        b.filler(page, nodes / FILLER_GROUP_NODES);
+        // The box sits before the column, or after the last group.
+        let before = head.then_some(column);
+        if let Some(edge) = edge {
+            place(&mut b.queue, document, page, before, edge);
+        }
+        let mut context = AppContext::new();
+        context.commit_mutations(b.queue).unwrap();
+        let mut shaper = bundled_face_shaper();
+        product_frame(&mut context, document, viewport, &mut shaper);
+        (context, document, page, before, shaper)
+    };
+    for head in [true, false] {
+        let case = if head { "head" } else { "tail" };
+        let mut found = Vec::new();
+        let mut costs = Vec::new();
+        for nodes in [1_000, 10_000] {
+            let _unguarded = (nodes > 1_000).then(skip_layout_verify);
+            let (mut context, document, page, before, mut shaper) =
+                build(nodes, head, Some(leaving));
+            // The nodes before and after the edit, the box aside: the
+            // document, the page, and everything the page holds after it.
+            let order: Vec<StableNodeId> = context
+                .world()
+                .document_order(document)
+                .into_iter()
+                .filter(|id| *id != leaving)
+                .collect();
+            let after = order.iter().position(|id| *id == page).unwrap() + 1;
+            let boxes = |context: &AppContext| {
+                order
+                    .iter()
+                    .map(|id| context.world().layout_box(*id))
+                    .collect::<Vec<_>>()
+            };
+            for leaves in [true, false] {
+                let label = format!(
+                    "{case}, the box {}, {nodes} nodes",
+                    if leaves { "leaves" } else { "arrives" }
+                );
+                let previous = boxes(&context);
+                let passes = context.layout_invocations();
+                let mut queue = MutationQueue::new();
+                if leaves {
+                    queue.despawn_subtree(leaving);
+                } else {
+                    place(&mut queue, document, page, before, arriving);
+                }
+                context.commit_mutations(queue).unwrap();
+                let counters = product_frame(&mut context, document, viewport, &mut shaper);
+                assert_eq!(context.layout_invocations() - passes, 1, "{label}");
+                let moved: Vec<bool> = previous
+                    .iter()
+                    .zip(boxes(&context))
+                    .map(|(old, new)| *old != new)
+                    .collect();
+                // At the head every box in the page moved once, at the tail
+                // none did; none of them was on the frontier.
+                assert!(moved[after..].iter().all(|moved| *moved == head), "{label}");
+                assert!(
+                    !order[after..]
+                        .iter()
+                        .any(|id| reflow_oracle::admitted(&context, *id)),
+                    "{label}"
+                );
+                let cost = Cost::from(counters);
+                let shifted = if head { order.len() - after } else { 0 };
+                assert_eq!(cost.origin_only, shifted, "{label}");
+                let moved = moved.iter().filter(|moved| **moved).count();
+                assert!(
+                    cost.placed >= moved && cost.placed <= moved + cost.frontier_placement,
+                    "{label}: {moved} boxes moved, {} placed: {cost:?}",
+                    cost.placed
+                );
+                // Nothing walked a subtree to measure it, and every child a
+                // container walked was a box that moved.
+                assert_eq!(cost.full_subtrees, 0, "{label}: {cost:?}");
+                assert!(
+                    cost.children_walked <= shifted,
+                    "{label}: {} children walked, {shifted} boxes moved: {cost:?}",
+                    cost.children_walked
+                );
+                let (mut cold, ..) = build(nodes, head, (!leaves).then_some(arriving));
+                assert_matches_cold(&mut context, &mut cold, document);
+                found.push((
+                    cost.frontier(),
+                    cost.measured,
+                    context.layout_frontier_stats(document),
+                ));
+                costs.push(cost);
+            }
+        }
+        // What was built, walked and measured: the leaving and the arriving,
+        // at 1k and at 10k.
+        assert_eq!(found[..2], found[2..], "{case}");
+        if !head {
+            for (small, large) in costs[..2].iter().zip(&costs[2..]) {
+                assert_eq!(
+                    small.structural().without_page_result(),
+                    large.structural().without_page_result(),
+                    "{case}"
+                );
+            }
         }
     }
 }

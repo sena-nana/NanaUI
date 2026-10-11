@@ -235,18 +235,31 @@ fn kept_size(
     .then_some(entry.intrinsic)
 }
 
+/// One child a sequential replay places: its id, and the style and intrinsic
+/// size the plan holds for it -- `None` for a child that arrived in a
+/// child-list edit, which is measured as a child on the frontier is.
+struct RunChild {
+    child: StableNodeId,
+    planned: Option<(Arc<nana_ui_core::LayoutStyle>, Size)>,
+}
+
+impl RunChild {
+    fn planned(entry: &PlannedChild) -> Self {
+        Self {
+            child: entry.child,
+            planned: Some((Arc::clone(&entry.style), entry.intrinsic)),
+        }
+    }
+}
+
 /// Replay a sequential container's children from `from` onward, keeping every
 /// position before it.
 ///
-/// This is the one place that reproduces the container's per-child arithmetic
-/// rather than calling into the placement loop, so it is deliberately narrow:
-/// `ContainerPlan::sequential` already excluded wrapping, space-distributing
-/// justification, grid tracks, auto main margins, non-Start/Stretch cross
-/// alignment and any grow/shrink redistribution. Like the loop it is
-/// flow-relative — the cursor and each child's leading margin are read from
-/// the start edge — and turns a reversed axis onto the page the same way. Anything this
-/// function meets that it cannot express, it refuses by returning `false`, and
-/// the caller falls back to a full container relayout.
+/// This and [`replay_child_list_edit`] share the one place that reproduces the
+/// container's per-child arithmetic rather than calling into the placement
+/// loop, [`replay_sequential_run`]. Anything it meets that it cannot express,
+/// it refuses by returning `false`, and the caller falls back to a full
+/// container relayout.
 #[allow(clippy::too_many_arguments)]
 fn replay_sequential_suffix(
     id: StableNodeId,
@@ -259,6 +272,60 @@ fn replay_sequential_suffix(
     output: &mut HashMap<StableNodeId, LayoutBox>,
     scope: &ScopeContext<'_>,
 ) -> Result<bool, UiWorldError> {
+    let _ = id;
+    let (cursor, run) = {
+        let entries = plan.entries.borrow();
+        let cursor = entries.get(from).map_or(0.0, |entry| entry.cursor_before);
+        let run: Vec<RunChild> = entries[from..].iter().map(RunChild::planned).collect();
+        (cursor, run)
+    };
+    let Some(replayed) = replay_sequential_run(
+        plan, cursor, run, content, viewport, nodes, intrinsic, output, scope,
+    )?
+    else {
+        return Ok(false);
+    };
+    let shifted = shift_reversed_prefix(
+        plan, from, content, viewport, nodes, intrinsic, output, scope,
+    )?;
+    // Commit only after the whole suffix succeeded, so a bail-out above leaves
+    // the cached plan exactly as it was.
+    let mut entries = plan.entries.borrow_mut();
+    for (index, origin) in shifted {
+        entries[index].origin = origin;
+    }
+    for (slot, entry) in entries[from..].iter_mut().zip(replayed) {
+        *slot = entry;
+    }
+    plan.placed_main
+        .set(main_extent(content, plan.main_direction));
+    Ok(true)
+}
+
+/// Place `run`, children of a sequential container in placement order, from
+/// `cursor` on, and return what the plan records for each.
+///
+/// This is the one place that reproduces the container's per-child arithmetic
+/// rather than calling into the placement loop, so it is deliberately narrow:
+/// `ContainerPlan::sequential` already excluded wrapping, space-distributing
+/// justification, grid tracks, auto main margins, non-Start/Stretch cross
+/// alignment and any grow/shrink redistribution. Like the loop it is
+/// flow-relative — the cursor and each child's leading margin are read from
+/// the start edge — and turns a reversed axis onto the page the same way.
+/// Anything this function meets that it cannot express, it refuses by
+/// returning `None`.
+#[allow(clippy::too_many_arguments)]
+fn replay_sequential_run(
+    plan: &ContainerPlan,
+    mut cursor: f32,
+    run: Vec<RunChild>,
+    content: Size,
+    viewport: LayoutViewport,
+    nodes: &mut LayoutInputMap<'_>,
+    intrinsic: &mut PassIntrinsicCache,
+    output: &mut HashMap<StableNodeId, LayoutBox>,
+    scope: &ScopeContext<'_>,
+) -> Result<Option<Vec<PlannedChild>>, UiWorldError> {
     let direction = plan.main_direction;
     let writing = plan.writing;
     let container_align = plan.style.align_items;
@@ -267,49 +334,44 @@ fn replay_sequential_suffix(
     // axis that is where the far edge, and every origin, is measured from.
     let full_main = main_extent(content, direction);
     let (main_reversed, cross_reversed) = (plan.main_reversed, plan.cross_reversed);
-    let count = plan.child_count();
-    let mut cursor = plan
-        .entries
-        .borrow()
-        .get(from)
-        .map_or(0.0, |entry| entry.cursor_before);
-    let mut replayed: Vec<PlannedChild> = Vec::with_capacity(count - from);
+    let mut replayed: Vec<PlannedChild> = Vec::with_capacity(run.len());
 
-    for index in from..count {
-        let (child, cached_style, cached_intrinsic) = {
-            let entries = plan.entries.borrow();
-            let entry = &entries[index];
-            (entry.child, Arc::clone(&entry.style), entry.intrinsic)
-        };
+    for RunChild { child, planned } in run {
         // Outside the closure nothing can have moved, so reuse the cached
         // measurement; inside it, both were already refreshed by the check.
-        let (style_arc, child_intrinsic) = if scope.measure.contains(&child) {
-            let Some(style) = nodes.style(child) else {
-                return Ok(false);
-            };
-            let measured = intrinsic_size_scoped(
-                child,
-                plan.child_available,
-                Some(direction),
-                viewport,
-                plan.child_font_px,
-                nodes,
-                intrinsic,
-                Some(scope),
-            )?;
-            (style, measured)
-        } else if scope.affected.contains(&child) {
-            let style = nodes.style(child).unwrap_or(cached_style);
-            (style, cached_intrinsic)
-        } else {
-            (cached_style, cached_intrinsic)
+        // A child that arrived has neither.
+        let (style_arc, child_intrinsic) = match planned {
+            Some((cached_style, cached_intrinsic)) if !scope.measure.contains(&child) => {
+                if scope.affected.contains(&child) {
+                    let style = nodes.style(child).unwrap_or(cached_style);
+                    (style, cached_intrinsic)
+                } else {
+                    (cached_style, cached_intrinsic)
+                }
+            }
+            _ => {
+                let Some(style) = nodes.style(child) else {
+                    return Ok(None);
+                };
+                let measured = intrinsic_size_scoped(
+                    child,
+                    plan.child_available,
+                    Some(direction),
+                    viewport,
+                    plan.child_font_px,
+                    nodes,
+                    intrinsic,
+                    Some(scope),
+                )?;
+                (style, measured)
+            }
         };
         let child_style = style_arc.as_ref();
         // Leaving the flow (or being omitted) changes sibling coupling the
         // suffix arithmetic does not model. The caller lays the container out
         // again, still inside this formatting context.
         if child_style.position.is_out_of_flow() || child_style.omits_box() {
-            return Ok(false);
+            return Ok(None);
         }
         // A newly arrived auto margin or exotic alignment makes this container
         // no longer sequential; the caller must relayout it properly.
@@ -320,11 +382,11 @@ fn replay_sequential_suffix(
             }
         };
         if auto_main {
-            return Ok(false);
+            return Ok(None);
         }
         let align = child_style.resolved_align_self(container_align);
         if !matches!(align, AlignSpec::Start | AlignSpec::Stretch) {
-            return Ok(false);
+            return Ok(None);
         }
         // The replay hands every child its intrinsic main size, which is only
         // the used size while nothing redistributes free space. A child that
@@ -334,7 +396,7 @@ fn replay_sequential_suffix(
         if child_style.flex_grow.unwrap_or(0.0) > 0.0
             || child_style.flex_shrink.unwrap_or(0.0) > 0.0
         {
-            return Ok(false);
+            return Ok(None);
         }
         let child_fonts = fonts_of(child_style, plan.child_font_px);
         let margin = child_style.resolved_margin_against_fonts(
@@ -352,17 +414,7 @@ fn replay_sequential_suffix(
             Some(writing.inline_size(plan.content.width, plan.content.height)),
             child_fonts,
         );
-        let (main_lead, main_trail) = if main_reversed {
-            (
-                main_end_margin(margin, direction),
-                main_start_margin(margin, direction),
-            )
-        } else {
-            (
-                main_start_margin(margin, direction),
-                main_end_margin(margin, direction),
-            )
-        };
+        let (main_lead, main_trail) = main_margins(margin, direction, main_reversed);
         let cross_lead = if cross_reversed {
             cross_end_margin(margin, direction)
         } else {
@@ -429,31 +481,68 @@ fn replay_sequential_suffix(
             baseline: None,
         });
     }
+    Ok(Some(replayed))
+}
 
-    let _ = (id, cursor);
-    // A reversed main axis measures every origin back from the far edge. When
-    // the container's main size moved, the children before `from` keep their
-    // flow positions and move with that edge, all by the same amount: the
-    // work is the boxes that really moved, and nothing is measured again.
-    let shift = if main_reversed {
-        full_main - plan.placed_main.get()
+/// A child's main margins in the order its axis reads them: the leading one
+/// first, which on a reversed axis is the physical end one.
+fn main_margins(
+    margin: nana_ui_core::PaddingSpec,
+    direction: FlexDirection,
+    reversed: bool,
+) -> (f32, f32) {
+    if reversed {
+        (
+            main_end_margin(margin, direction),
+            main_start_margin(margin, direction),
+        )
+    } else {
+        (
+            main_start_margin(margin, direction),
+            main_end_margin(margin, direction),
+        )
+    }
+}
+
+/// A reversed main axis measures every origin back from the far edge. When
+/// the container's main size moved, the children before `from` keep their
+/// flow positions and move with that edge, all by the same amount: the work
+/// is the boxes that really moved, and nothing is measured again. Places them
+/// and returns their new origins by entry index.
+#[allow(clippy::too_many_arguments)]
+fn shift_reversed_prefix(
+    plan: &ContainerPlan,
+    from: usize,
+    content: Size,
+    viewport: LayoutViewport,
+    nodes: &mut LayoutInputMap<'_>,
+    intrinsic: &mut PassIntrinsicCache,
+    output: &mut HashMap<StableNodeId, LayoutBox>,
+    scope: &ScopeContext<'_>,
+) -> Result<Vec<(usize, Point)>, UiWorldError> {
+    let direction = plan.main_direction;
+    let shift = if plan.main_reversed {
+        main_extent(content, direction) - plan.placed_main.get()
     } else {
         0.0
     };
-    let mut shifted = Vec::new();
-    if shift != 0.0 {
-        let entries = plan.entries.borrow();
-        shifted.reserve(from);
-        for (index, entry) in entries[..from].iter().enumerate() {
+    if shift == 0.0 {
+        return Ok(Vec::new());
+    }
+    let prefix: Vec<(usize, StableNodeId, Point, Size)> = plan.entries.borrow()[..from]
+        .iter()
+        .enumerate()
+        .map(|(index, entry)| {
             let mut origin = entry.origin;
             match direction {
                 FlexDirection::Row => origin.x += shift,
                 FlexDirection::Column => origin.y += shift,
             }
-            shifted.push((index, entry.child, origin, entry.size));
-        }
-    }
-    for &(_, child, origin, size) in &shifted {
+            (index, entry.child, origin, entry.size)
+        })
+        .collect();
+    let mut shifted = Vec::with_capacity(prefix.len());
+    for (index, child, origin, size) in prefix {
         place_node_scoped(
             child,
             origin,
@@ -467,18 +556,235 @@ fn replay_sequential_suffix(
             Some(scope),
             None,
         )?;
+        shifted.push((index, origin));
     }
-    // Commit only after the whole suffix succeeded, so a bail-out above leaves
-    // the cached plan exactly as it was.
-    let mut entries = plan.entries.borrow_mut();
-    for (index, _, origin, _) in shifted {
+    Ok(shifted)
+}
+
+/// The entry of the nearest child in flow among `beside`, the children next
+/// to a child-list edit walking away from it: `Some(None)` when the list
+/// ends first, `None` when more out-of-flow children than a replay should
+/// walk stand in between.
+fn nearest_entry(
+    plan: &ContainerPlan,
+    beside: impl Iterator<Item = StableNodeId>,
+) -> Option<Option<usize>> {
+    const FARTHEST: usize = 16;
+    for (walked, child) in beside.enumerate() {
+        if let Some(index) = plan.entry_index(child) {
+            return Some(Some(index as usize));
+        }
+        if walked + 1 == FARTHEST {
+            return None;
+        }
+    }
+    Some(None)
+}
+
+/// Place a sequential container whose child list changed (see
+/// [`ChildListEdit`]) by the edit, and return its plan around it.
+///
+/// The children before the edit keep their positions; the ones that arrived
+/// are measured and placed; the ones after it move by what left and arrived,
+/// the replay a child that changed size gets ([`replay_sequential_run`]). At
+/// the end of a long list nothing moves and the edit is all the work; at its
+/// head every child after it moves once, which is the output, and none is
+/// measured again. `changed_from` is the first entry a child the change
+/// closure reaches moved, from [`check_plan_children`].
+///
+/// Returns `None` for an edit the replay does not express -- a child that
+/// leaves or arrives positioned, floated, inline, splicing its own children
+/// in, with an auto margin, out of document order, or reading the main
+/// extent -- and the caller lays the container out again.
+#[allow(clippy::too_many_arguments)]
+fn replay_child_list_edit(
+    plan: &ContainerPlan,
+    children: &Arc<Vec<StableNodeId>>,
+    edit: ChildListEdit,
+    changed_from: usize,
+    content: Size,
+    viewport: LayoutViewport,
+    nodes: &mut LayoutInputMap<'_>,
+    intrinsic: &mut PassIntrinsicCache,
+    output: &mut HashMap<StableNodeId, LayoutBox>,
+    scope: &ScopeContext<'_>,
+) -> Result<Option<ContainerPlan>, UiWorldError> {
+    // A line that solves its overflow shares out what it takes from its
+    // items: an edit can change that, which a replay does not solve.
+    if plan
+        .style
+        .adaptation
+        .is_some_and(|profile| super::dynamic::solves(&profile))
+    {
+        return Ok(None);
+    }
+    let direction = plan.main_direction;
+    let block = !plan
+        .style
+        .display
+        .is_some_and(|display| display.is_flex_container() || display.is_grid_container());
+    let old = plan.children.as_slice();
+    // A child that left in flow had an entry; an omitted one had no slot,
+    // and a positioned one is the overlay's, which this does not rebuild.
+    let mut left = Vec::new();
+    for &child in edit.left(old) {
+        match plan.entry_index(child) {
+            Some(index) => left.push(index as usize),
+            None if plan.overlay.iter().any(|entry| entry.child == child) => return Ok(None),
+            None => {}
+        }
+    }
+    left.sort_unstable();
+    let (Some(before), Some(after)) = (
+        nearest_entry(plan, old[..edit.start].iter().rev().copied()),
+        nearest_entry(plan, old[edit.old_end..].iter().copied()),
+    ) else {
+        return Ok(None);
+    };
+    // Where the edit goes among the entries: right after the child in flow
+    // before it.
+    let at = before.map_or(0, |index| index + 1);
+    let mut arrivals = Vec::new();
+    let mut reads_cross = false;
+    for &child in edit.arrivals(children) {
+        let Some(style) = nodes.style(child) else {
+            continue;
+        };
+        if style.omits_box() {
+            continue;
+        }
+        if style.position.is_out_of_flow()
+            || style.display.is_some_and(DisplaySpec::is_contents)
+            || (block && (style.is_floated() || style.is_inline_level()))
+            || style.order != 0
+            || style.margin_auto_left()
+            || style.margin_auto_right()
+            || style.margin_auto_top()
+            || style.margin_auto_bottom()
+            || reads_main_extent(&style, direction)
+            // Something under it reads the block extent it is offered, which
+            // in a column is the main extent the replay keeps.
+            || (direction == FlexDirection::Column && nodes.world.block_extent_reaches(child))
+        {
+            return Ok(None);
+        }
+        reads_cross |= reads_container_size(&style, direction);
+        arrivals.push(child);
+    }
+    let (from, cursor, run, prefix) = {
+        let entries = plan.entries.borrow();
+        // Entries run in placement order. A stable sort by `order` keeps the
+        // children that set none in document order, next to each other, so
+        // around an edit among them the children that left are the entries
+        // between the child in flow before it and the one after it.
+        let ordered = |index: usize| entries[index].style.order == 0;
+        if left
+            .iter()
+            .enumerate()
+            .any(|(offset, &index)| index != at + offset || !ordered(index))
+            || before.is_some_and(|index| !ordered(index))
+            || after.map_or(at + left.len() != entries.len(), |index| {
+                index != at + left.len() || !ordered(index)
+            })
+        {
+            return Ok(None);
+        }
+        let from = changed_from.min(at);
+        let cursor = match entries.get(from) {
+            Some(entry) => entry.cursor_before,
+            // Arrivals after the last child: the cursor that child left.
+            None => entries.last().map_or(0.0, |last| {
+                let margin = last.style.resolved_margin_against_fonts(
+                    Some(
+                        plan.writing
+                            .inline_size(plan.content.width, plan.content.height),
+                    ),
+                    fonts_of(&last.style, plan.child_font_px),
+                );
+                let (lead, trail) = main_margins(margin, direction, plan.main_reversed);
+                let mut cursor = last.cursor_before;
+                cursor += main_extent(last.size, direction) + lead + trail + plan.gap;
+                cursor
+            }),
+        };
+        let run: Vec<RunChild> = entries[from..at]
+            .iter()
+            .map(RunChild::planned)
+            .chain(arrivals.iter().map(|&child| RunChild {
+                child,
+                planned: None,
+            }))
+            .chain(entries[at + left.len()..].iter().map(RunChild::planned))
+            .collect();
+        (from, cursor, run, entries[..from].to_vec())
+    };
+    // An omitted arrival gets no slot; a box it kept from before collapses.
+    retire_omitted_children(edit.arrivals(children), nodes, output, scope);
+    let Some(replayed) = replay_sequential_run(
+        plan, cursor, run, content, viewport, nodes, intrinsic, output, scope,
+    )?
+    else {
+        return Ok(None);
+    };
+    let shifted = shift_reversed_prefix(
+        plan, from, content, viewport, nodes, intrinsic, output, scope,
+    )?;
+    let mut entries = prefix;
+    for (index, origin) in shifted {
         entries[index].origin = origin;
     }
-    for (slot, entry) in entries[from..].iter_mut().zip(replayed) {
-        *slot = entry;
-    }
-    plan.placed_main.set(full_main);
-    Ok(true)
+    entries.extend(replayed);
+    // The children before the edit keep their index, the ones after it move
+    // by the arrivals less the children that left, and the arrivals take
+    // the indices in between. Still sorted by child but for the arrivals,
+    // which the stable sort merges in as one short run.
+    let mut by_child: Vec<(StableNodeId, u32)> = plan
+        .by_child
+        .iter()
+        .filter_map(|&(child, index)| {
+            let index = index as usize;
+            if index < at {
+                Some((child, index as u32))
+            } else if index < at + left.len() {
+                None
+            } else {
+                Some((child, (index - left.len() + arrivals.len()) as u32))
+            }
+        })
+        .collect();
+    by_child.extend(
+        arrivals
+            .iter()
+            .enumerate()
+            .map(|(offset, &child)| (child, (at + offset) as u32)),
+    );
+    by_child.sort_by_key(|(child, _)| *child);
+    Ok(Some(ContainerPlan {
+        origin: plan.origin,
+        size: plan.size,
+        containing: plan.containing,
+        parent_font_px: plan.parent_font_px,
+        viewport: plan.viewport,
+        style: Arc::clone(&plan.style),
+        children: Arc::clone(children),
+        content: plan.content,
+        child_font_px: plan.child_font_px,
+        child_available: plan.child_available,
+        main_direction: direction,
+        writing: plan.writing,
+        main_reversed: plan.main_reversed,
+        cross_reversed: plan.cross_reversed,
+        content_origin: plan.content_origin,
+        gap: plan.gap,
+        sequential: true,
+        entries: RefCell::new(entries),
+        placed_main: Cell::new(main_extent(content, direction)),
+        by_child,
+        grid: None,
+        cross_independent: plan.cross_independent && !reads_cross,
+        main_dependent: plan.main_dependent,
+        overlay: plan.overlay.clone(),
+    }))
 }
 
 /// Shift later wrap lines when one item's cross size changed and the line
@@ -954,9 +1260,14 @@ pub(super) fn place_node_scoped(
     // pass. Reuse that and touch only the children the change closure reaches;
     // otherwise a one-child edit pays a full sibling scan. See `ContainerPlan`.
     let had_plan = scope.is_some_and(|scope| scope.retained.container_plans.contains_key(&id));
+    // A new child list on a sequential container: the children before the
+    // edit stay, the ones after it move, and nothing it kept is measured
+    // again. See `ChildListEdit`.
     if let Some(scope) = scope
         && inherited_grid.is_none()
         && let Some(plan) = scope.retained.container_plans.get(&id)
+        && plan.sequential
+        && !Arc::ptr_eq(&plan.children, &child_ids)
         && plan.can_reuse_flow(
             origin,
             size,
@@ -965,10 +1276,75 @@ pub(super) fn place_node_scoped(
             parent_font_px,
             viewport,
             &style_arc,
-            &child_ids,
             writing,
         )
-        && plan.flow_membership_holds(id, scope, nodes)
+        && nodes.world.children_layout_style_is_local(id)
+        && triggered_menu_overlay(nodes.world, id).is_none()
+    {
+        let edit = ChildListEdit::between(&plan.children, &child_ids);
+        let changed_from = if plan.flow_membership_holds(id, Some(&edit), scope, nodes) {
+            match check_plan_children(plan, viewport, nodes, intrinsic, scope)? {
+                PlanCheck::Stale => None,
+                PlanCheck::Unchanged => Some(plan.child_count()),
+                PlanCheck::ChangedFrom(index) => Some(index),
+            }
+        } else {
+            None
+        };
+        if let Some(changed_from) = changed_from
+            && let Some(edited) = replay_child_list_edit(
+                plan,
+                &child_ids,
+                edit,
+                changed_from,
+                content,
+                viewport,
+                nodes,
+                intrinsic,
+                output,
+                scope,
+            )?
+        {
+            place_unvisited_reaching(id, &edited, viewport, nodes, intrinsic, output, scope)?;
+            // In before the overlay, which writes its geometry into it. The
+            // edit moved no positioned child, so the old plan's overlay is
+            // this one's.
+            nodes.container_plans.insert(id, Some(edited));
+            finish_positioned_overlay(
+                id,
+                plan,
+                origin,
+                size,
+                content_origin,
+                content,
+                viewport,
+                child_font_px,
+                writing,
+                nodes,
+                intrinsic,
+                output,
+                scope,
+            )?;
+            intrinsic.note_placement_plan_reused();
+            intrinsic.note_suffix_replayed();
+            return Ok(());
+        }
+    }
+    if let Some(scope) = scope
+        && inherited_grid.is_none()
+        && let Some(plan) = scope.retained.container_plans.get(&id)
+        && Arc::ptr_eq(&plan.children, &child_ids)
+        && plan.can_reuse_flow(
+            origin,
+            size,
+            containing,
+            content_origin,
+            parent_font_px,
+            viewport,
+            &style_arc,
+            writing,
+        )
+        && plan.flow_membership_holds(id, None, scope, nodes)
         && nodes.world.children_layout_style_is_local(id)
         && triggered_menu_overlay(nodes.world, id).is_none()
     {

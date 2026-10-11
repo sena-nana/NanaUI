@@ -5537,6 +5537,221 @@ fn scoped_layout_matches_full_recompute_across_container_shapes_and_edits() {
     }
 }
 
+/// A child-list edit on a sequential container replays from the edit rather
+/// than walking every child: a row arrives at the end, at the head and in the
+/// middle, two arrive at once, rows leave from the middle, the head and the
+/// end, one moves within the list, and a hidden and a positioned row arrive.
+/// On every shape the scoped pass agrees with a full recompute at every node.
+/// On a sequential shape the container walks none of its rows for an edit
+/// in its flow: the only children walked are the labels of the rows that
+/// moved, placed again where their rows went.
+#[test]
+fn a_child_list_edit_replays_from_the_edit() {
+    const ROWS: usize = 12;
+    // The shapes whose plans are sequential: no space to share out, no
+    // wrapping, start or stretch alignment, no growing rows.
+    const SEQUENTIAL: [&str; 14] = [
+        "column-plain",
+        "column-gap",
+        "column-margins",
+        "column-reverse-margins",
+        "column-rtl-cross-start-right",
+        "row-rtl",
+        "vertical-rl-row",
+        "vertical-rl-rtl-row",
+        "row-plain",
+        "column-auto-height",
+        "column-auto-both",
+        "column-auto-height-gap-margins",
+        "column-auto-height-padded",
+        "row-auto-width",
+    ];
+    let viewport = LayoutViewport::new(320.0, 400.0);
+    for shape in diff_shapes() {
+        let (mut world, document) = diff_tree(&shape, ROWS);
+        let mut retained = RetainedLayoutCache::default();
+        let _ = world.take_system_work();
+        // Bootstrap like the driver's first frame, then resize a row and
+        // back, so the container has measured itself on a scoped pass and
+        // holds its measure plans.
+        let emitted = RuntimeLayoutEngine
+            .layout_document_with_frontier(&world, document, viewport, &[], &mut retained, true)
+            .unwrap();
+        write_changed_boxes(&mut world, &emitted);
+        let _ = world.take_system_work();
+        for height in [26.0f32, 20.0] {
+            let mut style = (shape.row)(1);
+            style.height = Some(LengthSpec::Px(height));
+            let mut queue = MutationQueue::new();
+            queue.set_style(
+                id(5),
+                NodeStyle {
+                    layout: Arc::new(style),
+                    ..NodeStyle::default()
+                },
+            );
+            world.commit(queue).unwrap();
+            scoped_step_matches_full(
+                &mut world,
+                document,
+                viewport,
+                &mut retained,
+                &format!("{} row 1 height {height}", shape.name),
+            );
+        }
+        let mut fresh = 1_000u64;
+        let mut arrive = |queue: &mut MutationQueue, before: Option<StableNodeId>, style| {
+            let row = id(fresh);
+            fresh += 1;
+            queue.create(row, document, NodeKind::Element { tag: "div".into() });
+            queue.insert(id(2), row, before);
+            queue.set_style(
+                row,
+                NodeStyle {
+                    layout: Arc::new(style),
+                    ..NodeStyle::default()
+                },
+            );
+        };
+        for step in [
+            "arrives at the end",
+            "arrives at the head",
+            "arrives in the middle",
+            "arrives twice at once",
+            "leaves the middle",
+            "leaves the head",
+            "leaves the end",
+            "moves within the list",
+            "arrives hidden",
+            "arrives positioned",
+        ] {
+            let rows = world.node(id(2)).unwrap().children;
+            let before: Vec<(StableNodeId, Option<LayoutBox>)> = rows
+                .iter()
+                .map(|row| (*row, world.layout_box(*row)))
+                .collect();
+            let row = (shape.row)(0);
+            let middle = rows[rows.len() / 2];
+            let mut queue = MutationQueue::new();
+            match step {
+                "arrives at the end" => arrive(&mut queue, None, row),
+                "arrives at the head" => arrive(&mut queue, Some(rows[0]), row),
+                "arrives in the middle" => arrive(&mut queue, Some(middle), row),
+                "arrives twice at once" => {
+                    arrive(&mut queue, Some(rows[2]), row.clone());
+                    arrive(&mut queue, Some(rows[rows.len() - 3]), row);
+                }
+                "leaves the middle" => queue.despawn_subtree(middle),
+                "leaves the head" => queue.despawn_subtree(rows[0]),
+                "leaves the end" => queue.despawn_subtree(rows[rows.len() - 1]),
+                "moves within the list" => queue.insert(id(2), rows[1], Some(rows[rows.len() - 2])),
+                "arrives hidden" => arrive(
+                    &mut queue,
+                    Some(middle),
+                    LayoutStyle {
+                        display: Some(DisplaySpec::None),
+                        ..row
+                    },
+                ),
+                "arrives positioned" => arrive(
+                    &mut queue,
+                    Some(middle),
+                    LayoutStyle {
+                        position: PositionSpec::Absolute,
+                        ..row
+                    },
+                ),
+                _ => unreachable!(),
+            }
+            world.commit(queue).unwrap();
+            let label = format!("{}: a row {step}", shape.name);
+            let scoped =
+                scoped_step_matches_full(&mut world, document, viewport, &mut retained, &label);
+            // A positioned arrival changes the container's overlay, which
+            // the replay does not rebuild: the container places its rows.
+            if !SEQUENTIAL.contains(&shape.name) || step == "arrives positioned" {
+                continue;
+            }
+            let moved = before
+                .iter()
+                .filter(|(row, kept)| world.layout_box(*row).is_some_and(|now| Some(now) != *kept))
+                .count();
+            // The document root may walk its one child, the container, when
+            // it has no measure plan yet: a fixed container never put it on
+            // a scoped measure frontier before.
+            assert!(
+                scoped.children_measured <= moved + 1,
+                "{label}: {} children walked, {moved} rows moved",
+                scoped.children_measured
+            );
+        }
+    }
+}
+
+/// A measure plan that patches its container's measurement retires the
+/// intrinsic facts measured before the patch: they describe content the
+/// patch changed, and a later constraint the container's used sizes do not
+/// hold would read them and miss it.
+#[test]
+fn a_patched_measurement_retires_the_facts_measured_before_it() {
+    let shape = diff_shapes()
+        .into_iter()
+        .find(|shape| shape.name == "column-auto-height")
+        .unwrap();
+    let viewport = LayoutViewport::new(320.0, 400.0);
+    let (mut world, document) = diff_tree(&shape, 12);
+    let mut retained = RetainedLayoutCache::default();
+    let _ = world.take_system_work();
+    let emitted = RuntimeLayoutEngine
+        .layout_document_with_frontier(&world, document, viewport, &[], &mut retained, true)
+        .unwrap();
+    write_changed_boxes(&mut world, &emitted);
+    let _ = world.take_system_work();
+    let container_facts = |retained: &RetainedLayoutCache| {
+        retained.documents[&document]
+            .intrinsic_metrics
+            .by_content
+            .contains_key(&id(2).get())
+    };
+    // The first scoped pass measures the container's rows and records its
+    // plans and facts; the second patches the plan.
+    for (pass, height) in [26.0f32, 20.0].into_iter().enumerate() {
+        let mut style = (shape.row)(1);
+        style.height = Some(LengthSpec::Px(height));
+        let mut queue = MutationQueue::new();
+        queue.set_style(
+            id(5),
+            NodeStyle {
+                layout: Arc::new(style),
+                ..NodeStyle::default()
+            },
+        );
+        world.commit(queue).unwrap();
+        let scoped = scoped_step_matches_full(
+            &mut world,
+            document,
+            viewport,
+            &mut retained,
+            &format!("row 1 height {height}"),
+        );
+        if pass == 0 {
+            assert!(
+                container_facts(&retained),
+                "a measured container keeps its facts"
+            );
+        } else {
+            assert!(
+                scoped.measure_plans_reused > 0,
+                "the plan answered the edit"
+            );
+            assert!(
+                !container_facts(&retained),
+                "a patched container keeps no facts from before the patch"
+            );
+        }
+    }
+}
+
 /// The case the style-pointer check cannot see: a child's intrinsic size
 /// changing while its own style stays byte-identical.
 ///

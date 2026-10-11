@@ -520,6 +520,12 @@ impl RuntimeLayoutEngine {
         let retained_metric_budget = universe
             .saturating_mul(4)
             .max(crate::IntrinsicCacheBudget::default().max_entries);
+        // A patched measurement leaves the facts measured before it behind:
+        // a later constraint its used sizes do not hold would read them and
+        // miss the patch. Facts this pass measured come back in below.
+        for id in std::mem::take(&mut intrinsic.retired_facts) {
+            retained.intrinsic_metrics.remove_content(id.get());
+        }
         retained.retain_intrinsic_metrics(intrinsic.new_metrics, retained_metric_budget);
         retained.materialized_inputs = nodes.materialized;
         retained.record_intrinsic_counters(intrinsic_counters);
@@ -1378,6 +1384,62 @@ fn sort_ids_with_sizes(ids: &mut [StableNodeId], sizes: &mut [Size], nodes: &Lay
     }
 }
 
+/// Where a container's child list differs from the one a plan recorded: the
+/// children between the prefix and the suffix the two lists share left it
+/// (`old[start..old_end]`) and arrived (`new[start..new_end]`). An insertion,
+/// a removal, or a move within the list is one such range; a child that moved
+/// within it both left and arrived.
+///
+/// A sequential plan takes the edit instead of walking every child again: a
+/// child that left takes its share out, one that arrived is measured and puts
+/// its share in, and the children after the edit move by the difference.
+/// Finding the range compares ids; it measures nothing.
+#[derive(Debug, Clone, Copy)]
+struct ChildListEdit {
+    start: usize,
+    old_end: usize,
+    new_end: usize,
+}
+
+impl ChildListEdit {
+    fn between(old: &[StableNodeId], new: &[StableNodeId]) -> Self {
+        let start = old
+            .iter()
+            .zip(new)
+            .take_while(|(old, new)| old == new)
+            .count();
+        let shared = old.len().min(new.len()) - start;
+        let suffix = old
+            .iter()
+            .rev()
+            .zip(new.iter().rev())
+            .take(shared)
+            .take_while(|(old, new)| old == new)
+            .count();
+        Self {
+            start,
+            old_end: old.len() - suffix,
+            new_end: new.len() - suffix,
+        }
+    }
+
+    fn left<'a>(&self, old: &'a [StableNodeId]) -> &'a [StableNodeId] {
+        &old[self.start..self.old_end]
+    }
+
+    fn arrivals<'a>(&self, new: &'a [StableNodeId]) -> &'a [StableNodeId] {
+        &new[self.start..self.new_end]
+    }
+
+    /// Whether `child`, one of `container`'s children now, arrived in this
+    /// edit, by its index in the new list.
+    fn arrived(&self, world: &UiWorld, container: StableNodeId, child: StableNodeId) -> bool {
+        world
+            .child_index(container, child)
+            .is_some_and(|index| (self.start..self.new_end).contains(&index))
+    }
+}
+
 /// A container's placement of its in-flow children, cached across passes.
 ///
 /// The whole point of scoped layout is to charge by the change, but a flex
@@ -1470,9 +1532,8 @@ struct ContainerPlan {
 
 impl ContainerPlan {
     /// Everything the container's own placement depends on, other than its
-    /// children and its used border-box size. A mismatch here means the plan
-    /// is about a different layout.
-    #[allow(clippy::too_many_arguments)]
+    /// child list, its children and its used border-box size. A mismatch
+    /// here means the plan is about a different layout.
     fn flow_identity_holds(
         &self,
         origin: Point,
@@ -1480,7 +1541,6 @@ impl ContainerPlan {
         parent_font_px: f32,
         viewport: LayoutViewport,
         style: &Arc<nana_ui_core::LayoutStyle>,
-        children: &Arc<Vec<StableNodeId>>,
         writing: nana_ui_core::WritingContext,
     ) -> bool {
         self.writing == writing
@@ -1489,11 +1549,11 @@ impl ContainerPlan {
             && self.parent_font_px == parent_font_px
             && viewport_basis(&self.style, self.viewport) == viewport_basis(style, viewport)
             && Arc::ptr_eq(&self.style, style)
-            && Arc::ptr_eq(&self.children, children)
     }
 
     /// Everything the container's own placement depends on, other than its
-    /// children. A mismatch here means the plan is about a different layout.
+    /// child list and its children. A mismatch here means the plan is about
+    /// a different layout.
     #[allow(clippy::too_many_arguments)]
     fn inputs_match(
         &self,
@@ -1503,18 +1563,10 @@ impl ContainerPlan {
         parent_font_px: f32,
         viewport: LayoutViewport,
         style: &Arc<nana_ui_core::LayoutStyle>,
-        children: &Arc<Vec<StableNodeId>>,
         writing: nana_ui_core::WritingContext,
     ) -> bool {
-        self.flow_identity_holds(
-            origin,
-            containing,
-            parent_font_px,
-            viewport,
-            style,
-            children,
-            writing,
-        ) && self.size_compatible(size)
+        self.flow_identity_holds(origin, containing, parent_font_px, viewport, style, writing)
+            && self.size_compatible(size)
     }
 
     /// In-flow start edges stay put when this container's cross size changes
@@ -1530,7 +1582,9 @@ impl ContainerPlan {
     }
 
     /// Flow reuse, including a containing-block size change that does not
-    /// move in-flow children.
+    /// move in-flow children. The child list is the caller's to compare: the
+    /// same list replays the children the change closure reaches, a new one
+    /// the edit (see [`ChildListEdit`]).
     #[allow(clippy::too_many_arguments)]
     fn can_reuse_flow(
         &self,
@@ -1541,7 +1595,6 @@ impl ContainerPlan {
         parent_font_px: f32,
         viewport: LayoutViewport,
         style: &Arc<nana_ui_core::LayoutStyle>,
-        children: &Arc<Vec<StableNodeId>>,
         writing: nana_ui_core::WritingContext,
     ) -> bool {
         // The content box's origin is not only the box's origin and its
@@ -1555,7 +1608,6 @@ impl ContainerPlan {
                 parent_font_px,
                 viewport,
                 style,
-                children,
                 writing,
             ))
             || (self.flow_identity_holds(
@@ -1564,7 +1616,6 @@ impl ContainerPlan {
                 parent_font_px,
                 viewport,
                 style,
-                children,
                 writing,
             ) && self.flow_stable_under_own_size(content_origin))
     }
@@ -1654,14 +1705,19 @@ impl ContainerPlan {
     /// in flow, positioned, or omitted. A child that enters or leaves flow, or
     /// becomes positioned, changes the participant lists themselves, which no
     /// replay can patch. Driven from the closure, like [`Self::affected_entries`].
+    /// A child that arrived in a child-list `edit` has no role here yet; the
+    /// edit places it.
     fn flow_membership_holds(
         &self,
         container: StableNodeId,
+        edit: Option<&ChildListEdit>,
         scope: &ScopeContext<'_>,
         nodes: &LayoutInputMap<'_>,
     ) -> bool {
         scope.affected.iter().all(|&child| {
-            if nodes.world.parent_id(child) != Some(container) {
+            if nodes.world.parent_id(child) != Some(container)
+                || edit.is_some_and(|edit| edit.arrived(nodes.world, container, child))
+            {
                 return true;
             }
             let Some(style) = nodes.style(child) else {
@@ -1927,6 +1983,15 @@ struct MeasurePlan {
     sequential: bool,
     /// On a sequential plan, that sum, exact: see `sequential_main_term`.
     main_sum: f64,
+    /// On a sequential plan, the in-flow children the sum holds, one gap
+    /// between each two.
+    flow_len: usize,
+    /// On a sequential plan, the widest in-flow child's cross extent with its
+    /// margins: a child arriving within it leaves the cross size where it
+    /// was, and so does one leaving while another is as wide.
+    children_cross: f32,
+    /// How many in-flow children are that wide.
+    children_at_cross: usize,
     /// The cross-axis size the measurement handed its final step, before the
     /// container's own size rules. A sequential patch keeps it.
     default_cross: f32,
@@ -1987,7 +2052,10 @@ impl MeasurePlanSlots {
 }
 
 impl MeasurePlan {
-    /// Everything the measurement depends on other than the children.
+    /// Everything the measurement depends on other than the child list and
+    /// the children. The caller compares the list: the same one re-checks the
+    /// children the change closure reaches, a new one takes the edit (see
+    /// [`ChildListEdit`]).
     #[allow(clippy::too_many_arguments)]
     fn inputs_match(
         &self,
@@ -1996,7 +2064,6 @@ impl MeasurePlan {
         viewport: LayoutViewport,
         parent_font_px: f32,
         style: &Arc<nana_ui_core::LayoutStyle>,
-        children: &Arc<Vec<StableNodeId>>,
         text_metrics: Option<crate::TextMetrics>,
         text_natural_width: Option<f32>,
         text_wrap_limit: Option<f32>,
@@ -2012,7 +2079,6 @@ impl MeasurePlan {
             && self.text_natural_width == text_natural_width
             && self.text_wrap_limit == text_wrap_limit
             && self.visual == visual
-            && Arc::ptr_eq(&self.children, children)
             && (Arc::ptr_eq(&self.style, style) || measure_inputs_equal(&self.style, style))
     }
 
@@ -2600,6 +2666,11 @@ struct PassIntrinsicCache {
     /// its hashing visits last, a different pair on every run.
     used_order: Vec<(MeasurementKey, Size)>,
     new_metrics: HashMap<crate::IntrinsicCacheKey, crate::IntrinsicMetrics>,
+    /// Containers a measure plan answered by patching what it recorded: the
+    /// intrinsic facts retained for them were measured from content the
+    /// patch changed, and no longer describe it under any constraint. They
+    /// leave the retained cache with this pass.
+    retired_facts: Vec<StableNodeId>,
     latest_intrinsic_keys: HashMap<StableNodeId, crate::IntrinsicCacheKey>,
     seeded_intrinsic: HashSet<crate::IntrinsicCacheKey>,
     extra_counters: crate::IntrinsicCacheCounters,
@@ -2621,6 +2692,7 @@ impl PassIntrinsicCache {
             used: HashMap::with_capacity(capacity),
             used_order: Vec::with_capacity(capacity),
             new_metrics: HashMap::with_capacity(capacity),
+            retired_facts: Vec::new(),
             latest_intrinsic_keys: HashMap::with_capacity(capacity),
             seeded_intrinsic: HashSet::with_capacity(capacity),
             extra_counters: crate::IntrinsicCacheCounters::default(),
@@ -2653,6 +2725,11 @@ impl PassIntrinsicCache {
     fn note_measure_plan_reused(&mut self) {
         self.execution_stats.measure_plans_reused =
             self.execution_stats.measure_plans_reused.saturating_add(1);
+    }
+
+    /// `id`'s measure plan answered by a patch: see `retired_facts`.
+    fn retire_intrinsic_facts(&mut self, id: StableNodeId) {
+        self.retired_facts.push(id);
     }
 
     fn note_suffix_replayed(&mut self) {
