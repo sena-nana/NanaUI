@@ -462,6 +462,16 @@ impl RuntimeLayoutEngine {
                 }
             }
         }
+        // The measure plans this pass answered from or recorded, by container
+        // and the constraint each holds.
+        let plan_key = |id: StableNodeId, available: Size| {
+            (id, available.width.to_bits(), available.height.to_bits())
+        };
+        let mut consulted: HashSet<(StableNodeId, u32, u32)> =
+            std::mem::take(&mut intrinsic.consulted_plans)
+                .into_iter()
+                .map(|(id, available)| plan_key(id, available))
+                .collect();
         for (id, plans) in nodes.measure_plans.drain() {
             if plans.is_empty() {
                 retained.measure_plans.remove(&id);
@@ -475,8 +485,30 @@ impl RuntimeLayoutEngine {
             // any older constraint for this same container.
             let slots = retained.measure_plans.entry(id).or_default();
             for mut plan in plans.into_plans().collect::<Vec<_>>().into_iter().rev() {
+                consulted.insert(plan_key(id, plan.available));
                 bound_measure_plan(&mut plan);
                 slots.insert(plan);
+            }
+        }
+        // A child that changed this pass reached only the plans this pass
+        // consulted. Its container's other plan, under a constraint this pass
+        // did not measure it at, still holds the child as it was; re-checking
+        // the children a later pass reaches would not find the change, and the
+        // plan would hand back a size from before it.
+        for &child in &affected {
+            let Some(container) = world.parent_id(child) else {
+                continue;
+            };
+            let Some(slots) = retained.measure_plans.get_mut(&container) else {
+                continue;
+            };
+            for plan in slots.slots.iter_mut().flatten() {
+                if !plan.stale
+                    && !consulted.contains(&plan_key(container, plan.available))
+                    && plan_missed_change(plan, child, &nodes, frontier.measure_nodes())
+                {
+                    plan.stale = true;
+                }
             }
         }
         retained
@@ -1997,6 +2029,11 @@ struct MeasurePlan {
     default_cross: f32,
     /// Present when this measurement is a grid track solution.
     grid: Option<GridTrackPlan>,
+    /// A child of the container changed in a pass that measured it under
+    /// another constraint only: this plan still holds that child as it was,
+    /// and re-checking the children a later pass reaches would not find it.
+    /// It is never reused; a walk of the children records a fresh one.
+    stale: bool,
 }
 
 /// The measure plans retained for one container.
@@ -2671,6 +2708,9 @@ struct PassIntrinsicCache {
     /// patch changed, and no longer describe it under any constraint. They
     /// leave the retained cache with this pass.
     retired_facts: Vec<StableNodeId>,
+    /// Retained measure plans this pass answered from, by container and the
+    /// constraint each holds: they saw what changed under them this pass.
+    consulted_plans: Vec<(StableNodeId, Size)>,
     latest_intrinsic_keys: HashMap<StableNodeId, crate::IntrinsicCacheKey>,
     seeded_intrinsic: HashSet<crate::IntrinsicCacheKey>,
     extra_counters: crate::IntrinsicCacheCounters,
@@ -2693,6 +2733,7 @@ impl PassIntrinsicCache {
             used_order: Vec::with_capacity(capacity),
             new_metrics: HashMap::with_capacity(capacity),
             retired_facts: Vec::new(),
+            consulted_plans: Vec::new(),
             latest_intrinsic_keys: HashMap::with_capacity(capacity),
             seeded_intrinsic: HashSet::with_capacity(capacity),
             extra_counters: crate::IntrinsicCacheCounters::default(),
@@ -2730,6 +2771,12 @@ impl PassIntrinsicCache {
     /// `id`'s measure plan answered by a patch: see `retired_facts`.
     fn retire_intrinsic_facts(&mut self, id: StableNodeId) {
         self.retired_facts.push(id);
+    }
+
+    /// `id`'s retained measure plan under `available` answered this pass:
+    /// see `consulted_plans`.
+    fn note_plan_consulted(&mut self, id: StableNodeId, available: Size) {
+        self.consulted_plans.push((id, available));
     }
 
     fn note_suffix_replayed(&mut self) {

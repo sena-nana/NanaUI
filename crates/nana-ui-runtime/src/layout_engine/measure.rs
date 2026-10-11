@@ -1015,6 +1015,9 @@ fn measure_node(
         .filter(|natural| natural.width > 0.0 && natural.height > 0.0);
     if let Some(scope) = scope
         && let Some(plan) = retained_plan
+        // A plan that missed a change of a child holds what no re-check of
+        // this pass's closure would find; see `MeasurePlan::stale`.
+        && !plan.stale
         && plan.inputs_match(
             available,
             parent_direction,
@@ -1090,6 +1093,7 @@ fn measure_node(
                 // sizes do not hold measures it again instead.
                 cache.retire_intrinsic_facts(id);
             }
+            cache.note_plan_consulted(id, available);
             cache.note_measure_plan_reused();
             cache.note_measure_cache_hit();
             cache.insert(cache_key, size);
@@ -1558,6 +1562,7 @@ fn measure_node(
                 children_at_cross: sequential_cross.1,
                 default_cross: cross_extent(Size::new(default_width, default_height), direction),
                 grid: recorded_grid,
+                stale: false,
             }
         });
         if had_plan && recorded.is_some() {
@@ -1667,6 +1672,37 @@ fn measure_plan_children_unchanged(
         }
     }
     Ok(true)
+}
+
+/// Whether `child`, which changed this pass, may have changed what `plan`
+/// holds for it: what [`measure_plan_children_unchanged`] asks of a plan a
+/// pass consults, asked of one the pass did not, without measuring. Its
+/// style is no longer the recorded one, or it is on the measure frontier and
+/// its size is not a length of its own -- one that reads neither its
+/// containing block nor the viewport measures the same under any constraint.
+/// A child the plan holds no entry for arrives in the plan's own child-list
+/// edit, and one the flow dropped adds nothing to it.
+pub(super) fn plan_missed_change(
+    plan: &MeasurePlan,
+    child: StableNodeId,
+    nodes: &LayoutInputMap<'_>,
+    measure: &HashSet<StableNodeId>,
+) -> bool {
+    let Some(entry) = plan.entry(child) else {
+        return false;
+    };
+    let current = nodes.style(child);
+    if !retained_style_matches(&current, &entry.style) {
+        return true;
+    }
+    if !measure.contains(&child) || (entry.intrinsic.is_none() && entry.at_main.is_none()) {
+        return false;
+    }
+    let Some(style) = current else {
+        return true;
+    };
+    let (own_width, own_height) = sizes_own_axes(&style, nodes.world.layout_writing(child));
+    !(own_width && own_height && !style.depends_on_viewport())
 }
 
 pub(super) fn retained_style_matches(

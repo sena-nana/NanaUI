@@ -5752,6 +5752,59 @@ fn a_patched_measurement_retires_the_facts_measured_before_it() {
     }
 }
 
+/// A measure plan a pass did not consult while a child of its container
+/// changed is not reused: it holds the child as it was. The document root
+/// measures under one viewport a frame, so a width resize and back leaves it
+/// a plan for each width. A row then grows while the root measures under the
+/// narrow width only, and the wide plan, met again after the next resize,
+/// would hand back the height from before the row grew.
+#[test]
+fn a_plan_a_pass_skipped_while_a_child_changed_is_not_reused() {
+    let shape = diff_shapes()
+        .into_iter()
+        .find(|shape| shape.name == "column-auto-height")
+        .unwrap();
+    let narrow = LayoutViewport::new(320.0, 400.0);
+    let wide = LayoutViewport::new(360.0, 400.0);
+    let (mut world, document) = diff_tree(&shape, 12);
+    let mut retained = RetainedLayoutCache::default();
+    let _ = world.take_system_work();
+    let emitted = RuntimeLayoutEngine
+        .layout_document_with_frontier(&world, document, narrow, &[], &mut retained, true)
+        .unwrap();
+    write_changed_boxes(&mut world, &emitted);
+    let _ = world.take_system_work();
+    let resize_row = |world: &mut UiWorld, height: f32| {
+        let mut style = (shape.row)(1);
+        style.height = Some(LengthSpec::Px(height));
+        let mut queue = MutationQueue::new();
+        queue.set_style(
+            id(5),
+            NodeStyle {
+                layout: Arc::new(style),
+                ..NodeStyle::default()
+            },
+        );
+        world.commit(queue).unwrap();
+    };
+    // Scoped plans under the narrow width, then the wide one, then back.
+    resize_row(&mut world, 26.0);
+    scoped_step_matches_full(&mut world, document, narrow, &mut retained, "row 1 grows");
+    scoped_step_matches_full(&mut world, document, wide, &mut retained, "wide");
+    scoped_step_matches_full(&mut world, document, narrow, &mut retained, "narrow");
+    // The row grows while the root measures under the narrow width.
+    resize_row(&mut world, 40.0);
+    scoped_step_matches_full(
+        &mut world,
+        document,
+        narrow,
+        &mut retained,
+        "row 1 grows again",
+    );
+    // The wide plan never saw that.
+    scoped_step_matches_full(&mut world, document, wide, &mut retained, "wide again");
+}
+
 /// The case the style-pointer check cannot see: a child's intrinsic size
 /// changing while its own style stays byte-identical.
 ///
