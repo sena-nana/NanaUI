@@ -10,7 +10,7 @@
   "dependencies": {
     "@nanaui/nanavue-components": "file:../../../../packages/nanavue-components",
     "@nanaui/nanavue-runtime": "file:../../../../packages/nanavue-runtime",
-    "vue": "3.5.41"
+    "vue": "3.5.43"
   },
   "devDependencies": {
     "@vitejs/plugin-vue": "6.0.8",
