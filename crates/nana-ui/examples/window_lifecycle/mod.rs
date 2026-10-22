@@ -44,6 +44,11 @@ pub fn descriptor(title: &str) -> WindowDescriptor {
         initial_size: (480.0, 320.0),
         minimum_size: (200.0, 120.0),
         system_caption: !std::env::args().any(|arg| arg == "--client-chrome"),
+        shadow: if std::env::var_os("PROBE_NO_SHADOW").is_some() {
+            nana_ui::WindowShadow::None
+        } else {
+            nana_ui::WindowShadow::Auto
+        },
         ..Default::default()
     }
 }
@@ -70,7 +75,7 @@ fn presented(
 ) -> Result<(), String> {
     loop {
         let (id, gpu) = rx
-            .recv_timeout(Duration::from_secs(20))
+            .recv_timeout(scaled_timeout(20))
             .map_err(|error| error.to_string())?;
         if let Some(expected) = *generation {
             if expected != gpu {
@@ -115,7 +120,7 @@ impl ApplicationState for App {
                 *RESULT.lock().unwrap() = Some(result);
             });
             queued_rx
-                .recv_timeout(Duration::from_secs(20))
+                .recv_timeout(scaled_timeout(20))
                 .map_err(|error| error.to_string())?;
             return Ok(Self {
                 service,
@@ -136,6 +141,12 @@ impl ApplicationState for App {
         // Joined on drop: the context holds a GPU context, whose teardown must
         // not race the process exit.
         let worker = std::thread::spawn(move || {
+            let skip_fullscreen = std::env::var_os("PROBE_SKIP_FULLSCREEN").is_some();
+            let skip = |name: &str| std::env::var_os(format!("PROBE_SKIP_{name}")).is_some();
+            let skip_taskbar = std::env::var_os("PROBE_SKIP_TASKBAR").is_some();
+            let stop_after = std::env::var("PROBE_STOP_AFTER")
+                .ok()
+                .and_then(|value| value.parse::<u32>().ok());
             let run = || -> Result<(), String> {
                 let service = context.windows();
                 let primary = context.window();
@@ -146,9 +157,12 @@ impl ApplicationState for App {
                 // probe pays it twice. That setup is the host's, so the first
                 // frame is timed from the loop, not from this thread's start.
                 looping_rx
-                    .recv_timeout(Duration::from_secs(120))
+                    .recv_timeout(scaled_timeout(120))
                     .map_err(|error| format!("the host never entered its event loop: {error}"))?;
                 presented(&rx, &primary, &mut generation)?;
+                if stop_after == Some(1) {
+                    return Ok(());
+                }
                 if !matches!(
                     service
                         .create_window(descriptor("Rejected").tag(REJECTED))
@@ -169,6 +183,10 @@ impl ApplicationState for App {
                     .map_err(|e| e.to_string())?;
                 tagged(&tags_rx, &third, TRACKING)?;
                 presented(&rx, &third, &mut generation)?;
+                if stop_after == Some(2) {
+                    return Ok(());
+                }
+                if !skip("PROPS") {
                 second
                     .set_title("Updated on worker")
                     .wait()
@@ -211,17 +229,21 @@ impl ApplicationState for App {
                     .map_err(|e| e.to_string())?;
                 loop {
                     let (id, size) = resized_rx
-                        .recv_timeout(Duration::from_secs(20))
+                        .recv_timeout(scaled_timeout(20))
                         .map_err(|error| error.to_string())?;
                     if id == second.id() && size == (520.0, 360.0) {
                         break;
                     }
                 }
+                }
+                if !skip("MATERIAL") {
                 second
                     .effects()
                     .set_material(nana_ui::MaterialEffect::Solid)
                     .wait()
                     .map_err(|e| e.to_string())?;
+                }
+                if !skip("PASSTHROUGH") {
                 second
                     .set_mouse_passthrough(true)
                     .wait()
@@ -238,6 +260,10 @@ impl ApplicationState for App {
                     .set_mouse_passthrough_forward(false)
                     .wait()
                     .map_err(|e| e.to_string())?;
+                }
+                if stop_after == Some(3) {
+                    return Ok(());
+                }
                 let display = service
                     .displays()
                     .wait()
@@ -259,6 +285,58 @@ impl ApplicationState for App {
                 ) {
                     return Err("fullscreen on a disconnected display was accepted".into());
                 }
+                if stop_after == Some(31) {
+                    return Ok(());
+                }
+                if let Ok(kind) = std::env::var("PROBE_FULLSCREEN_AS") {
+                    let info = service
+                        .displays()
+                        .wait()
+                        .map_err(|e| e.to_string())?
+                        .into_iter()
+                        .next()
+                        .ok_or("no display")?;
+                    let scale = info.scale_factor;
+                    let (w, h) = info.physical_size.ok_or("no display size")?;
+                    let (x, y) = info.physical_position.unwrap_or((0, 0));
+                    let full = (f64::from(w) / scale, f64::from(h) / scale);
+                    let target = if kind == "cover" {
+                        full
+                    } else {
+                        (full.0 * 0.75, full.1 * 0.75)
+                    };
+                    eprintln!("fake fullscreen {kind}: display {w}x{h} at {x},{y} scale {scale}, size {target:?}");
+                    if kind == "cover" {
+                        second
+                            .set_position(((f64::from(x) / scale) as f32, (f64::from(y) / scale) as f32))
+                            .wait()
+                            .map_err(|e| e.to_string())?;
+                    }
+                    let wait_size = |want: (f64, f64)| -> Result<(), String> {
+                        loop {
+                            let (id, size) = resized_rx
+                                .recv_timeout(scaled_timeout(20))
+                                .map_err(|error| format!("resize to {want:?}: {error}"))?;
+                            if id == second.id()
+                                && (f64::from(size.0) - want.0).abs() < 2.0
+                                && (f64::from(size.1) - want.1).abs() < 2.0
+                            {
+                                return Ok(());
+                            }
+                        }
+                    };
+                    second.set_size(target).wait().map_err(|e| e.to_string())?;
+                    wait_size(target)?;
+                    std::thread::sleep(scaled_timeout(1));
+                    second
+                        .set_size((520.0, 360.0))
+                        .wait()
+                        .map_err(|e| e.to_string())?;
+                    wait_size((520.0, 360.0))?;
+                    std::thread::sleep(scaled_timeout(1));
+                    return Ok(());
+                }
+                if !skip_fullscreen {
                 second
                     .set_fullscreen(on(display))
                     .wait()
@@ -266,6 +344,10 @@ impl ApplicationState for App {
                 wait_for_appearance(&modes_rx, second.id(), |mode| {
                     mode.fullscreen.is_some() && mode.display.is_none_or(|shown| shown == display)
                 })?;
+                if stop_after == Some(32) {
+                    return Ok(());
+                }
+                if !skip("LEVEL") {
                 second
                     .set_window_level(WindowLevel::AlwaysOnTop)
                     .wait()
@@ -273,16 +355,30 @@ impl ApplicationState for App {
                 wait_for_appearance(&modes_rx, second.id(), |mode| {
                     mode.level == WindowLevel::AlwaysOnTop
                 })?;
+                }
+                if stop_after == Some(33) {
+                    return Ok(());
+                }
                 second
                     .set_fullscreen(None)
                     .wait()
                     .map_err(|e| e.to_string())?;
                 wait_for_appearance(&modes_rx, second.id(), |mode| mode.fullscreen.is_none())?;
+                if stop_after == Some(34) {
+                    return Ok(());
+                }
                 second
                     .set_window_level(WindowLevel::Normal)
                     .wait()
                     .map_err(|e| e.to_string())?;
+                }
+                if stop_after == Some(35) {
+                    return Ok(());
+                }
                 for skip in [true, false] {
+                    if skip_taskbar {
+                        break;
+                    }
                     let outcome = second.set_skip_taskbar(skip).wait();
                     let reported = if cfg!(target_os = "windows") {
                         outcome.is_ok()
@@ -292,6 +388,9 @@ impl ApplicationState for App {
                     if !reported {
                         return Err(format!("skip taskbar {skip} reported {outcome:?}"));
                     }
+                }
+                if stop_after == Some(4) {
+                    return Ok(());
                 }
                 let mut opens_fullscreen = descriptor("Opens fullscreen");
                 opens_fullscreen.fullscreen = Some(FullscreenRequest {
@@ -304,6 +403,9 @@ impl ApplicationState for App {
                     .map_err(|e| e.to_string())?;
                 wait_for_appearance(&modes_rx, opened.id(), |mode| mode.fullscreen.is_some())?;
                 opened.close().wait().map_err(|e| e.to_string())?;
+                if stop_after == Some(5) {
+                    return Ok(());
+                }
                 second
                     .set_visible(false)
                     .wait()
@@ -318,6 +420,9 @@ impl ApplicationState for App {
                 primary.close().wait().map_err(|e| e.to_string())?;
                 third.request_redraw().wait().map_err(|e| e.to_string())?;
                 presented(&rx, &third, &mut generation)?;
+                if stop_after == Some(6) {
+                    return Ok(());
+                }
                 let mut modal_descriptor = descriptor("Modal child");
                 modal_descriptor.parent = Some(second.id());
                 modal_descriptor.modal = true;
@@ -353,6 +458,9 @@ impl ApplicationState for App {
                 }
                 if modal.request_redraw().wait() != Err(WindowError::WindowClosed) {
                     return Err("closing the parent did not release its modal child".into());
+                }
+                if stop_after == Some(7) {
+                    return Ok(());
                 }
                 let replacement = service
                     .create_window(descriptor("Replacement"))
@@ -484,6 +592,13 @@ impl ApplicationState for App {
         RuntimeProgramUpdate::exit()
     }
 }
+fn scaled_timeout(seconds: u64) -> Duration {
+    let scale = std::env::var("PROBE_TIMEOUT_SCALE")
+        .ok()
+        .and_then(|value| value.parse::<u64>().ok())
+        .unwrap_or(1);
+    Duration::from_secs(seconds * scale)
+}
 pub fn verify() {
     RESULT
         .lock()
@@ -503,7 +618,7 @@ fn wait_for_appearance(
 ) -> Result<(), String> {
     let mut seen = Vec::new();
     loop {
-        let (id, mode) = rx.recv_timeout(Duration::from_secs(20)).map_err(|_| {
+        let (id, mode) = rx.recv_timeout(scaled_timeout(20)).map_err(|_| {
             format!(
                 "window {} never reported the expected mode; seen {seen:?}",
                 expected.0
@@ -519,7 +634,7 @@ fn wait_for_appearance(
 fn wait_for_focus(rx: &mpsc::Receiver<WindowId>, expected: WindowId) -> Result<(), String> {
     loop {
         let id = rx
-            .recv_timeout(Duration::from_secs(20))
+            .recv_timeout(scaled_timeout(20))
             .map_err(|error| error.to_string())?;
         if id == expected {
             return Ok(());
