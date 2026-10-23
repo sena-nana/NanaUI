@@ -45,7 +45,6 @@ pub fn force_high_contrast(value: Option<bool>) {
 fn platform_high_contrast() -> Option<bool> {
     #[cfg(target_os = "windows")]
     {
-        use windows_sys::Win32::Foundation::LocalFree;
         use windows_sys::Win32::UI::WindowsAndMessaging::SystemParametersInfoW;
 
         const SPI_GETHIGHCONTRAST: u32 = 0x0042;
@@ -63,15 +62,12 @@ fn platform_high_contrast() -> Option<bool> {
             flags: 0,
             scheme: std::ptr::null_mut(),
         };
-        // SAFETY: SPI_GETHIGHCONTRAST writes one HIGHCONTRASTW. The scheme
-        // string, when present, is a LocalAlloc the caller frees.
+        // SAFETY: SPI_GETHIGHCONTRAST writes one HIGHCONTRASTW. Windows owns
+        // the scheme pointer returned in this structure; it remains a shared
+        // USER32 cache entry and must not be released by the caller.
         let ok = unsafe {
             SystemParametersInfoW(SPI_GETHIGHCONTRAST, info.cb_size, (&raw mut info).cast(), 0)
         };
-        if !info.scheme.is_null() {
-            // SAFETY: the system allocated this scheme string for the caller.
-            unsafe { LocalFree(info.scheme.cast()) };
-        }
         (ok != 0).then_some(info.flags & HCF_HIGHCONTRASTON != 0)
     }
     #[cfg(not(target_os = "windows"))]
@@ -118,5 +114,22 @@ mod tests {
         assert!(system_high_contrast().is_some());
         #[cfg(not(target_os = "windows"))]
         assert!(system_high_contrast().is_none());
+    }
+
+    /// `SPI_GETHIGHCONTRAST` returns a USER32-owned scheme pointer. Keep a
+    /// live heap allocation across repeated reads so an accidental `LocalFree`
+    /// is caught by the Windows heap instead of being hidden by one call.
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn repeated_platform_reads_leave_caller_heap_allocations_valid() {
+        let guard = Box::new([0x5au8; 256]);
+        for _ in 0..64 {
+            let before = system_high_contrast();
+            assert!(before.is_some());
+            assert!(guard.iter().all(|&byte| byte == 0x5a));
+            let after = system_high_contrast();
+            assert_eq!(after, before);
+            assert!(guard.iter().all(|&byte| byte == 0x5a));
+        }
     }
 }
