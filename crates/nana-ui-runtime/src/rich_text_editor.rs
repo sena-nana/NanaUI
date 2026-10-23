@@ -33,6 +33,16 @@ use crate::{
     StableNodeId, UiWorld,
 };
 
+/// 新输入文字的样式来源；富文本粘贴保留剪贴板携带的样式。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum RichTypingStylePolicy {
+    /// 沿用光标位置或工具栏设置的输入样式。
+    #[default]
+    Inherit,
+    /// 使用节点默认样式，供纯文本输入为主的编辑器选择。
+    Plain,
+}
+
 /// Undo steps kept per editor.
 const HISTORY_LIMIT: usize = 200;
 
@@ -87,6 +97,9 @@ impl RichAttrMask {
     pub const STROKE: Self = Self(1 << 9);
     pub const SHADOWS: Self = Self(1 << 10);
     pub const EFFECT: Self = Self(1 << 11);
+    pub const BACKGROUND_COLOR: Self = Self(1 << 12);
+    pub const STRETCH: Self = Self(1 << 13);
+    pub const EMPHASIS: Self = Self(1 << 14);
 
     pub const fn contains(self, other: Self) -> bool {
         self.0 & other.0 == other.0
@@ -119,6 +132,15 @@ impl RichAttrMask {
         }
         if self.contains(Self::COLOR) {
             style.paint.color = None;
+        }
+        if self.contains(Self::BACKGROUND_COLOR) {
+            style.paint.background_color = None;
+        }
+        if self.contains(Self::STRETCH) {
+            style.shape.stretch_percent = None;
+        }
+        if self.contains(Self::EMPHASIS) {
+            style.paint.emphasis = None;
         }
         if self.contains(Self::DECORATION) {
             style.paint.decoration = None;
@@ -208,6 +230,8 @@ pub struct RichTextEditor {
     pub value: RichText,
     pub read_only: bool,
     pub disabled: bool,
+    /// 键盘输入、输入法及纯文本粘贴共用的样式策略。
+    pub typing_style_policy: RichTypingStylePolicy,
     pub style: NodeStyle,
     /// Requested viewport offset. User scrolling leaves the selection intact.
     pub scroll_offset: crate::ScrollOffset,
@@ -224,6 +248,7 @@ impl RichTextEditor {
             value: value.into(),
             read_only: false,
             disabled: false,
+            typing_style_policy: RichTypingStylePolicy::default(),
             style,
             scroll_offset: crate::ScrollOffset::default(),
             state: EditState::default(),
@@ -237,6 +262,12 @@ impl RichTextEditor {
 
     pub fn disabled(mut self, disabled: bool) -> Self {
         self.disabled = disabled;
+        self
+    }
+
+    /// 配置新输入样式；已有文档及富文本粘贴保留自身样式。
+    pub fn typing_style_policy(mut self, policy: RichTypingStylePolicy) -> Self {
+        self.typing_style_policy = policy;
         self
     }
 
@@ -314,7 +345,7 @@ impl RichTextEditor {
         let mut display = self.value.clone();
         display.replace_range(range.clone(), preedit);
         let inserted = range.start..range.start + preedit.len();
-        let mut style = self.typing_style();
+        let mut style = self.input_style();
         let mut decoration = style.paint.decoration.unwrap_or_default();
         decoration.underline = true;
         style.paint.decoration = Some(decoration);
@@ -350,6 +381,14 @@ impl RichTextEditor {
             })
             .cloned()
             .unwrap_or_default()
+    }
+
+    /// 将选区观察样式与新输入样式分开，保持工具栏状态准确。
+    fn input_style(&self) -> RichSpanStyle {
+        match self.typing_style_policy {
+            RichTypingStylePolicy::Inherit => self.typing_style(),
+            RichTypingStylePolicy::Plain => RichSpanStyle::default(),
+        }
     }
 
     fn snapshot(&self) -> Snapshot {
@@ -388,7 +427,7 @@ impl RichTextEditor {
         if range.is_empty() && piece.text().is_empty() {
             return false;
         }
-        let style = typed.then(|| self.typing_style());
+        let style = typed.then(|| self.input_style());
         self.remember(typed && range.is_empty() && !piece.text().contains('\n'));
         self.value.replace_with(range.clone(), piece);
         let inserted = range.start..range.start + piece.text().len();
@@ -683,6 +722,18 @@ fn summarize(value: &RichText, range: Range<usize>) -> RichSelectionAttrs {
                 RichAttrMask::FEATURES,
             ),
             (piece.paint.color != first.paint.color, RichAttrMask::COLOR),
+            (
+                piece.paint.background_color != first.paint.background_color,
+                RichAttrMask::BACKGROUND_COLOR,
+            ),
+            (
+                piece.shape.stretch_percent != first.shape.stretch_percent,
+                RichAttrMask::STRETCH,
+            ),
+            (
+                piece.paint.emphasis != first.paint.emphasis,
+                RichAttrMask::EMPHASIS,
+            ),
             (
                 piece.paint.decoration != first.paint.decoration,
                 RichAttrMask::DECORATION,
@@ -1512,6 +1563,32 @@ mod tests {
             Some(red)
         );
         assert_eq!(view.value.style_at(0), None);
+    }
+
+    #[test]
+    fn stretch_and_emphasis_selection_summary_supports_undo() {
+        let style = RichSpanStyle::new().stretch(75.0).emphasis(true);
+        let mut view = RichTextEditor::new(RichText::new("abcd").with_span(0..2, style.clone()));
+        view.apply_command(RichEditCommand::Select(0..2));
+        assert_eq!(view.selection_attrs().style, style);
+        view.apply_command(RichEditCommand::Select(0..4));
+        let mixed = view.selection_attrs();
+        assert!(mixed.mixed.contains(RichAttrMask::STRETCH));
+        assert!(mixed.mixed.contains(RichAttrMask::EMPHASIS));
+        assert_eq!(mixed.style.shape.stretch_percent, None);
+        assert_eq!(mixed.style.paint.emphasis, None);
+        view.apply_command(RichEditCommand::SetAttrs(
+            RichSpanStyle::new().stretch(125.0).emphasis(false),
+        ));
+        assert_eq!(
+            view.selection_attrs().style.shape.stretch_percent,
+            Some(125.0)
+        );
+        assert!(view.undo());
+        assert_eq!(view.value.style_at(0), Some(&style));
+        assert_eq!(view.value.style_at(3), None);
+        assert!(view.redo());
+        assert_eq!(view.value.style_at(3).unwrap().paint.emphasis, Some(false));
     }
 
     #[test]

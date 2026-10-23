@@ -393,7 +393,7 @@ impl TextNodeState {
     /// each a full `nana-text` style resolved over `base` — so a theme change
     /// that moves the node's own font restyles every span that does not
     /// override it. Such a source is also rebuilt when the shape revision
-    /// moves. Paint and presentation fields never reach the source.
+    /// moves. 着重号的行高随形状 revision 更新，其余绘制属性与呈现属性保持独立。
     pub fn source_for(
         &mut self,
         text: &str,
@@ -407,7 +407,7 @@ impl TextNodeState {
                 || rich
                     .spans()
                     .iter()
-                    .any(|(_, style)| !style.shape.is_empty())
+                    .any(|(_, style)| !style.shape.is_empty() || style.paint.emphasis == Some(true))
         });
         let revision = self.revisions.content;
         let shape = match shaped {
@@ -485,7 +485,7 @@ impl TextNodeState {
 }
 
 /// The `nana-text` spans of a rich text's shaping tier, each resolved over
-/// `base` (the node's own style). Paint and presentation fields are not read.
+/// `base` (the node's own style). 着重号为行底部预留空间，其余绘制属性保持独立。
 pub(crate) fn rich_text_spans(
     rich: &RichText,
     base: &NanaTextStyle,
@@ -493,11 +493,22 @@ pub(crate) fn rich_text_spans(
 ) -> Vec<TextSpan> {
     rich.spans()
         .iter()
-        .filter(|(_, style)| !style.shape.is_empty())
-        .map(|(range, style)| TextSpan {
-            range,
-            style: shape_over(base, base_size, &style.shape),
-            composition: None,
+        .filter(|(_, style)| !style.shape.is_empty() || style.paint.emphasis == Some(true))
+        .map(|(range, span)| {
+            let mut style = shape_over(base, base_size, &span.shape);
+            if span.paint.emphasis == Some(true) {
+                // 对称行距使字体 descent 下方保留圆点与下划线各自的空间。
+                let height = style
+                    .line_height_px()
+                    .unwrap_or(0.0)
+                    .max(style.font_size_px * 2.0);
+                style.line_height = Some(LineHeightSpec::Absolute(height));
+            }
+            TextSpan {
+                range,
+                style,
+                composition: None,
+            }
         })
         .collect()
 }
@@ -552,6 +563,13 @@ fn shape_over(base: &NanaTextStyle, base_size: f32, shape: &RichShapeStyle) -> N
     if let Some(weight) = shape.weight {
         style.font_weight = weight;
     }
+    if let Some(percent) = shape.stretch_percent.filter(|value| value.is_finite()) {
+        style.variations.retain(|axis| axis.tag != *b"wdth");
+        style.variations.push(nana_ui_core::FontVariationSetting {
+            tag: *b"wdth",
+            value: percent.clamp(50.0, 200.0),
+        });
+    }
     if let Some(italic) = shape.italic {
         style.italic = italic;
     }
@@ -590,7 +608,10 @@ pub(crate) fn classify_rich_change(
     {
         dirty |= TextDirty::CONTENT;
     }
-    let shape = |style: &RichSpanStyle| (!style.shape.is_empty()).then(|| style.shape.clone());
+    let shape = |style: &RichSpanStyle| {
+        (!style.shape.is_empty() || style.paint.emphasis == Some(true))
+            .then(|| (style.shape.clone(), style.paint.emphasis == Some(true)))
+    };
     if before.map(shape) != after.map(shape)
         || previous.map_or(&[][..], RichText::rubies) != next.map_or(&[][..], RichText::rubies)
     {
@@ -871,6 +892,42 @@ mod tests {
         assert_eq!(TextDirty::OPACITY.work(), TextWork::COMPOSITOR);
         assert_eq!(TextDirty::GLYPH_PRESENTATION.work(), TextWork::COMPOSITOR);
         assert!(TextDirty::NONE.work().is_empty());
+    }
+
+    #[test]
+    fn rich_stretch_replaces_width_axis_and_preserves_other_axes() {
+        let mut base = NanaTextStyle::default();
+        base.variations = vec![
+            nana_ui_core::FontVariationSetting {
+                tag: *b"wght",
+                value: 500.0,
+            },
+            nana_ui_core::FontVariationSetting {
+                tag: *b"wdth",
+                value: 100.0,
+            },
+        ];
+        let rich = RichText::new("abc").with_span(0..3, RichSpanStyle::new().stretch(75.0));
+        let spans = rich_text_spans(&rich, &base, 16.0);
+        assert_eq!(spans[0].style.variations.len(), 2);
+        assert!(
+            spans[0]
+                .style
+                .variations
+                .contains(&nana_ui_core::FontVariationSetting {
+                    tag: *b"wdth",
+                    value: 75.0
+                })
+        );
+        assert!(
+            spans[0]
+                .style
+                .variations
+                .contains(&nana_ui_core::FontVariationSetting {
+                    tag: *b"wght",
+                    value: 500.0
+                })
+        );
     }
 
     #[test]
