@@ -2086,15 +2086,18 @@ fn ensure_range(
     minimum: f64,
     maximum: f64,
     unit: &str,
+    disabled: bool,
 ) -> Result<Entity<RangeField>, FrameworkError> {
     if let Some(id) = *slot {
         let entity = Entity::<RangeField>::from_stable_id(id);
         context.update_component(entity, |range, _| {
             range.value = range.quantize(value);
+            range.disabled = disabled;
         })?;
         Ok(entity)
     } else {
-        let field = RangeField::new(value, minimum, maximum, 1.0).unit(unit);
+        let mut field = RangeField::new(value, minimum, maximum, 1.0).unit(unit);
+        field.disabled = disabled;
         let entity = context.create_detached_component(document, field)?;
         *slot = Some(entity.stable_id());
         Ok(entity)
@@ -2448,32 +2451,21 @@ impl AppContext {
         )?;
 
         let opacity = opacity_percent(&appearance);
-        let opacity_control = if solid_mode {
-            sync_text(
-                self,
-                document,
-                &mut assembly.opacity_text,
-                styled_text(
-                    format!("{opacity:.0}%"),
-                    SemanticColorRole::Muted,
-                    12.0,
-                    400,
-                ),
-            )?
-            .stable_id()
-        } else {
-            created_opacity_range |= assembly.opacity_range.is_none();
-            ensure_range(
-                self,
-                document,
-                &mut assembly.opacity_range,
-                opacity,
-                f64::from(AppearanceSettings::MIN_BACKDROP_OPACITY) * 100.0,
-                f64::from(AppearanceSettings::MAX_BACKDROP_OPACITY) * 100.0,
-                "%",
-            )?
-            .stable_id()
-        };
+        // Solid mode keeps the slider in place, disabled, so the row has the
+        // same control as every other row and the kept value stays visible.
+        created_opacity_range |= assembly.opacity_range.is_none();
+        let opacity_control = ensure_range(
+            self,
+            document,
+            &mut assembly.opacity_range,
+            opacity,
+            f64::from(AppearanceSettings::MIN_BACKDROP_OPACITY) * 100.0,
+            f64::from(AppearanceSettings::MAX_BACKDROP_OPACITY) * 100.0,
+            "%",
+            solid_mode,
+        )?
+        .stable_id();
+        assembly.opacity_text = None;
         let opacity_hint = if solid_mode {
             strings.settings_opacity_solid_hint.as_ref()
         } else {
@@ -2495,15 +2487,17 @@ impl AppContext {
             self,
             document,
             &mut assembly.workspace_switch,
-            strings.settings_main_radius.as_ref(),
+            "",
             appearance.workspace_corners_enabled(),
             false,
         )?;
+        // The row names the setting; a second label inside the switch would
+        // sit mid-row and push the track off the column of other controls.
         let workspace_row = mount_settings_row(
             self,
             document,
             &mut assembly.workspace_row,
-            strings.settings_workspace_corners.as_ref(),
+            strings.settings_main_radius.as_ref(),
             None,
             true,
             false,
@@ -2519,6 +2513,7 @@ impl AppContext {
             f64::from(AppearanceSettings::MIN_STANDARD_RADIUS),
             f64::from(AppearanceSettings::MAX_STANDARD_RADIUS),
             " px",
+            false,
         )?;
         let radius_row = mount_settings_row(
             self,
@@ -2714,12 +2709,14 @@ impl AppContext {
                 500,
             ),
         )?;
+        // The description describes the product, so it is the name row's
+        // hint rather than a loose line under the version.
         let name_row = mount_settings_row(
             self,
             document,
             &mut assembly.name_row,
             strings.settings_name.as_ref(),
-            None,
+            metadata.description.as_deref(),
             true,
             true,
             false,
@@ -2747,32 +2744,8 @@ impl AppContext {
             true,
             version_value.stable_id(),
         )?;
-        let mut ordered = vec![name_row.stable_id(), version_row.stable_id()];
-        if let Some(description) = metadata.description.as_deref() {
-            let mut style = styled_text(
-                description,
-                SemanticColorRole::Muted,
-                nana_ui_core::type_scale::META,
-                nana_ui_core::type_scale::REGULAR,
-            )
-            .style;
-            let layout = Arc::make_mut(&mut style.layout);
-            layout.width = Some(LengthSpec::Fill);
-            layout.padding_top = Some(LengthSpec::Px(nana_ui_core::space::MD));
-            let description = sync_text(
-                self,
-                document,
-                &mut assembly.description,
-                styled_text(
-                    description,
-                    SemanticColorRole::Muted,
-                    nana_ui_core::type_scale::META,
-                    nana_ui_core::type_scale::REGULAR,
-                )
-                .style(style),
-            )?;
-            ordered.push(description.stable_id());
-        }
+        let ordered = vec![name_row.stable_id(), version_row.stable_id()];
+        assembly.description = None;
         self.update_component(section, |section, _| {
             section.assembly = Some(assembly);
         })?;
@@ -3546,7 +3519,7 @@ mod tests {
                 "透明区域",
                 "标题栏跟随侧边栏透明",
                 "材质不透明度",
-                "工作区边缘",
+                "主区域圆角",
                 "组件圆角半径",
                 "默认样式",
             ]
@@ -3571,14 +3544,14 @@ mod tests {
         assert!(option_disabled(&context, solid.target_sidebar));
         assert!(option_disabled(&context, solid.target_main));
         assert!(switch_disabled(&context, solid.titlebar_switch));
-        assert!(solid.opacity_text.is_some());
-        assert!(solid.opacity_range.is_none());
+        assert!(solid.opacity_text.is_none());
         assert!(
             context
-                .world()
-                .text(solid.opacity_text.unwrap())
+                .read(
+                    Entity::<RangeField>::from_stable_id(solid.opacity_range.unwrap()),
+                    |range| range.disabled
+                )
                 .unwrap()
-                .ends_with('%')
         );
         assert!(!switch_disabled(&context, solid.workspace_switch));
 
@@ -3632,7 +3605,7 @@ mod tests {
                 "透明区域",
                 "标题栏跟随侧边栏透明",
                 "材质不透明度",
-                "工作区边缘",
+                "主区域圆角",
                 "组件圆角半径",
                 "默认样式",
             ]
@@ -3746,9 +3719,10 @@ mod tests {
             Some("9.9.9")
         );
         assert_eq!(
-            context.world().text(assembly.description.unwrap()),
+            visible_hint_text(&context, assembly.name_row.unwrap()).as_deref(),
             Some("Host-owned blurb")
         );
+        assert!(assembly.description.is_none());
         let labels = context
             .world()
             .node(section.stable_id())
@@ -3780,10 +3754,6 @@ mod tests {
             UI_METRICS.panel_padding_y
         );
         assert_eq!(labels, ["名称", "版本"]);
-        assert_eq!(
-            visible_hint_text(&context, assembly.name_row.unwrap()),
-            None
-        );
         assert_eq!(
             visible_hint_text(&context, assembly.version_row.unwrap()),
             None
