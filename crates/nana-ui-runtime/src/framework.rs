@@ -2112,6 +2112,7 @@ impl AppContext {
         suspended?;
         self.end_drags_that_lost_their_capture(&lost_captures)?;
         self.sync_focus_within_listeners()?;
+        self.sync_rich_caret_blinks();
         Ok(report)
     }
 

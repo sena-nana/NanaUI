@@ -1406,7 +1406,10 @@ impl UiWorld {
                 candidates.push(id);
             }
         }
-        candidates.retain(|id| !self.motion_blocks_input(*id));
+        // 缓存只提供几何；交互资格始终由当前树决定，覆盖帧间关闭和节点释放。
+        candidates.retain(|id| {
+            !self.motion_blocks_input(*id) && self.validate_pointer_target(document, *id).is_ok()
+        });
         Some(forest)
     }
 
@@ -1464,11 +1467,17 @@ impl UiWorld {
         let mut found = None;
         if self.has_compositor_transform_overlay_for(document) {
             self.visit_presentation_roots(forest, x, y, &mut |id| {
+                if self.validate_pointer_target(document, id).is_err() {
+                    return false;
+                }
                 found = Some(id);
                 true
             });
         } else {
             forest.visit_roots(x, y, &mut |id| {
+                if self.validate_pointer_target(document, id).is_err() {
+                    return false;
+                }
                 found = Some(id);
                 true
             });

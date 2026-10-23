@@ -571,6 +571,8 @@ impl AppContext {
         state.last = Some((meta.sequence, meta.timestamp));
         let document = state.document;
         let now = meta.timestamp.as_duration();
+        // 富文本编辑以实际输入时间重置光标相位，复用同一宿主时钟。
+        self.component_lifecycle.now = self.component_lifecycle.now.max(now);
         let local = self
             .input
             .resolve_pointer(source, meta.device, &event.payload);

@@ -267,6 +267,7 @@ Rust `TextArea::read_only(true)` 保留焦点、光标/选区、查找和复制�
 通过 `edit_text_action(document, node, action, services)` 执行撤销、重做、剪切、复制、粘贴与全选。
 剪贴板仍由宿主的 `HostServices` 提供；富文本编辑器的复制粘贴保留进程内的格式和对象。
 `RichTextEditor::typing_style_policy(RichTypingStylePolicy::Plain)` 让新输入、输入法预编辑与提交、纯文本粘贴使用节点默认样式；默认 `Inherit` 保留光标样式继承。富文本粘贴保留复制内容的样式和对象。
+宿主通过 `read_clipboard_token` / `write_clipboard_with_token` 携带来源标记，运行时同时校验标记和正文后读取有限缓存。同正文的外部纯文本采用纯文本粘贴路径，普通写入会清除标记；只支持纯文本的宿主沿用默认实现。
 源码工具栏改写使用 `edit_text_area_value` 记为一个可撤销步骤；重新绑定业务文档仍使用普通程序设值并清空撤销会话。
 
 编辑器的文本**只有一条写路径**：`AppContext::commit_editor_edit(entity, origin, apply)`。键入、删除、粘贴、IME 提交、行变换、代码片段、应用设值，全部汇入这里。凡是「每次编辑都要做」的事只在这一处做：发变更事件、记撤销。新增一种编辑操作时，不要自己 `update_component` 写 `state.value`。走这个入口。否则它不会进撤销。

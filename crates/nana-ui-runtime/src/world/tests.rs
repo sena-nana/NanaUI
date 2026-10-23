@@ -12451,3 +12451,52 @@ fn a_border_style_change_repaints_without_moving_a_box() {
         work.render_extraction
     );
 }
+
+#[test]
+fn cached_hits_use_current_pointer_authority_before_the_next_frame() {
+    let mut world = UiWorld::new();
+    let mut create = MutationQueue::new();
+    create.create(node(1), document(1), NodeKind::Document);
+    for id in 2..=5 {
+        create.create(
+            node(id),
+            document(1),
+            NodeKind::Element { tag: "cell".into() },
+        );
+        create.write_layout(node(id), box_at(0.0, 0.0, 50.0, 50.0));
+    }
+    create.insert(node(1), node(2), None);
+    create.insert(node(1), node(3), None);
+    create.insert(node(3), node(4), None);
+    create.insert(node(3), node(5), None);
+    let mut explicit = NodeStyle::default();
+    Arc::make_mut(&mut explicit.layout).pointer_events = Some(PointerEventsSpec::Auto);
+    create.set_style(node(4), explicit);
+    world.commit(create).unwrap();
+    let work = world.take_system_work();
+    world.resolve_styles(&work.style).unwrap();
+    world.rebuild_hit_test(document(1));
+    assert_eq!(world.hit_test(document(1), 10.0, 10.0), Some(node(5)));
+
+    // 关闭父项后沿用旧几何，显式 Auto 的子项继续接收输入。
+    let mut disable = MutationQueue::new();
+    let mut style = NodeStyle::default();
+    Arc::make_mut(&mut style.layout).pointer_events = Some(PointerEventsSpec::None);
+    disable.set_style(node(3), style);
+    world.commit(disable).unwrap();
+    assert_eq!(world.hit_test(document(1), 10.0, 10.0), Some(node(4)));
+    let candidates = world.hit_test_candidates(document(1), 10.0, 10.0);
+    assert!(candidates.contains(&node(4)));
+    assert!(!candidates.contains(&node(3)));
+    assert!(!candidates.contains(&node(5)));
+
+    // 已释放节点也从旧索引候选中移除，命中继续落到下层。
+    let mut remove = MutationQueue::new();
+    remove.despawn_subtree(node(3));
+    world.commit(remove).unwrap();
+    assert_eq!(world.hit_test(document(1), 10.0, 10.0), Some(node(2)));
+    assert_eq!(
+        world.hit_test_candidates(document(1), 10.0, 10.0),
+        vec![node(2)]
+    );
+}

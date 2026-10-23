@@ -16,6 +16,13 @@ pub trait ClipboardHost: Send {
     }
     fn read_text(&mut self) -> Option<String>;
     fn write_text(&mut self, text: &str) -> bool;
+    /// 富文本来源证明；仅有普通文本的后端返回空标记。
+    fn read_token(&mut self) -> Option<String> {
+        None
+    }
+    fn write_text_with_token(&mut self, text: &str, _token: &str) -> bool {
+        self.write_text(text)
+    }
 }
 
 /// Shared clipboard handle installed into host API registries.
@@ -60,6 +67,7 @@ impl ClipboardHost for UnsupportedClipboard {
 #[derive(Debug, Default, Clone)]
 pub struct MemoryClipboard {
     text: Option<String>,
+    token: Option<String>,
 }
 
 impl MemoryClipboard {
@@ -75,6 +83,15 @@ impl ClipboardHost for MemoryClipboard {
 
     fn write_text(&mut self, text: &str) -> bool {
         self.text = Some(text.to_owned());
+        self.token = None;
+        true
+    }
+    fn read_token(&mut self) -> Option<String> {
+        self.token.clone()
+    }
+    fn write_text_with_token(&mut self, text: &str, token: &str) -> bool {
+        self.write_text(text);
+        self.token = Some(token.to_owned());
         true
     }
 }
@@ -265,6 +282,68 @@ impl ClipboardHost for OsClipboard {
             None => false,
         }
     }
+
+    fn read_token(&mut self) -> Option<String> {
+        let html = self.inner.as_mut()?.get().html().ok()?;
+        rich_clipboard_token(&html).map(str::to_owned)
+    }
+
+    fn write_text_with_token(&mut self, text: &str, token: &str) -> bool {
+        let html = rich_clipboard_html(text, token);
+        self.inner
+            .as_mut()
+            .is_some_and(|clipboard| clipboard.set_html(html, Some(text.to_owned())).is_ok())
+    }
+}
+
+/// 来源标记与转义正文共存，使其他应用仍可作为 HTML 或纯文本粘贴。
+fn rich_clipboard_html(text: &str, token: &str) -> String {
+    let escaped = text
+        .replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;");
+    format!("<!--nana-ui-rich:{token}--><pre>{escaped}</pre>")
+}
+
+fn rich_clipboard_token(html: &str) -> Option<&str> {
+    let start = html.find("<!--nana-ui-rich:")? + "<!--nana-ui-rich:".len();
+    let token = html[start..].split_once("-->")?.0;
+    (!token.is_empty()
+        && token
+            .bytes()
+            .all(|byte| byte.is_ascii_hexdigit() || byte == b'-'))
+    .then_some(token)
+}
+
+/// 沿用共享后端的非阻塞访问边界读取来源证明。
+pub fn read_shared_clipboard_token(
+    clipboard: &SharedClipboardHost,
+) -> Result<Option<String>, nana_ui_input::HostServiceError> {
+    let mut clipboard = clipboard
+        .try_lock()
+        .map_err(|_| nana_ui_input::HostServiceError::Busy)?;
+    if !clipboard.is_available() {
+        return Err(nana_ui_input::HostServiceError::Unsupported);
+    }
+    Ok(clipboard.read_token())
+}
+
+pub fn write_shared_clipboard_with_token(
+    clipboard: &SharedClipboardHost,
+    text: &str,
+    token: &str,
+) -> Result<(), nana_ui_input::HostServiceError> {
+    let mut clipboard = clipboard
+        .try_lock()
+        .map_err(|_| nana_ui_input::HostServiceError::Busy)?;
+    if !clipboard.is_available() {
+        return Err(nana_ui_input::HostServiceError::Unsupported);
+    }
+    if clipboard.write_text_with_token(text, token) {
+        Ok(())
+    } else {
+        Err(nana_ui_input::HostServiceError::Failed)
+    }
 }
 
 /// Clipboard calls against a shared backend. The lock is tried, never
@@ -302,6 +381,23 @@ pub fn write_shared_clipboard(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn rich_clipboard_html_keeps_escaped_text_and_an_owned_identity() {
+        let html = rich_clipboard_html("甲<&>\n乙", "1-a");
+        assert_eq!(
+            html,
+            "<!--nana-ui-rich:1-a--><pre>甲&lt;&amp;&gt;\n乙</pre>"
+        );
+        assert_eq!(rich_clipboard_token(&html), Some("1-a"));
+        assert_eq!(rich_clipboard_token("<pre>甲</pre>"), None);
+        assert_eq!(rich_clipboard_token("<!--nana-ui-rich:bad token-->"), None);
+        let mut clipboard = MemoryClipboard::new();
+        assert!(clipboard.write_text_with_token("甲", "1-a"));
+        assert_eq!(clipboard.read_token(), Some("1-a".into()));
+        assert!(clipboard.write_text("甲"));
+        assert_eq!(clipboard.read_token(), None);
+    }
 
     #[test]
     fn unsupported_clipboard_is_inert() {
@@ -364,6 +460,22 @@ mod tests {
             Some(marker.as_str()),
             "desktop OS clipboard read must return the written text"
         );
+        let token = format!("{:x}-ab", std::process::id());
+        let mut rich_roundtrip = false;
+        for _ in 0..8 {
+            assert!(clip.write_text_with_token(&marker, &token));
+            rich_roundtrip = clip.read_text().as_deref() == Some(marker.as_str())
+                && clip.read_token().as_deref() == Some(token.as_str());
+            if rich_roundtrip {
+                break;
+            }
+        }
+        assert!(
+            rich_roundtrip,
+            "desktop HTML clipboard must retain the rich source token"
+        );
+        assert!(clip.write_text(&marker));
+        assert_eq!(clip.read_token(), None);
 
         if let Some(prev) = previous {
             let _ = clip.write_text(&prev);

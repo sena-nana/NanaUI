@@ -120,8 +120,8 @@ mod rich_text_view;
 #[doc(hidden)]
 pub use rich_text_editor::caret_box as rich_editor_caret_box;
 pub use rich_text_editor::{
-    RichAttrMask, RichEditCommand, RichSelectionAttrs, RichTextEditor, RichTextEditorEvent,
-    RichTypingStylePolicy,
+    RichAttrMask, RichClipboardCommand, RichEditCommand, RichSelectionAttrs, RichTextEditor,
+    RichTextEditorEvent, RichTypingStylePolicy,
 };
 pub use rich_text_view::RichTextView;
 mod schedule;
