@@ -611,6 +611,17 @@ impl Default for RichLabelStyle {
     }
 }
 
+/// 富文本对象的视觉排版方式，独占行保持原始字符和段落。
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, Hash, Default, serde::Serialize, serde::Deserialize,
+)]
+#[serde(rename_all = "kebab-case")]
+pub enum RichObjectFlow {
+    #[default]
+    Inline,
+    Block,
+}
+
 /// An object inline in the text: a sticker, an emote, an editor chip.
 ///
 /// It stands on the baseline: `height_px - descent_px` above it, `descent_px`
@@ -624,6 +635,10 @@ pub struct RichObject {
     pub width_px: f32,
     pub height_px: f32,
     pub descent_px: f32,
+    /// 对象独占视觉行，U+FFFC 的文档位置保持稳定。
+    pub flow: RichObjectFlow,
+    /// 超出可用行宽时等比缩小，文档中保留原始尺寸。
+    pub fit_width: bool,
     pub content: RichObjectContent,
 }
 
@@ -635,6 +650,8 @@ impl RichObject {
             width_px,
             height_px,
             descent_px: 0.0,
+            flow: RichObjectFlow::Inline,
+            fit_width: false,
             content: RichObjectContent::Image {
                 source: source.into(),
             },
@@ -648,6 +665,8 @@ impl RichObject {
             width_px,
             height_px,
             descent_px: 0.0,
+            flow: RichObjectFlow::Inline,
+            fit_width: false,
             content: RichObjectContent::HostTexture { slot: slot.into() },
         }
     }
@@ -659,6 +678,8 @@ impl RichObject {
             width_px: 0.0,
             height_px: 0.0,
             descent_px: 0.0,
+            flow: RichObjectFlow::Inline,
+            fit_width: false,
             content: RichObjectContent::Chip {
                 label: label.into(),
                 kind,
@@ -674,6 +695,8 @@ impl RichObject {
             width_px: 0.0,
             height_px: 0.0,
             descent_px: 0.0,
+            flow: RichObjectFlow::Inline,
+            fit_width: false,
             content: RichObjectContent::Tag {
                 label: label.into(),
                 kind,
@@ -689,6 +712,8 @@ impl RichObject {
             width_px: 0.0,
             height_px: 0.0,
             descent_px: 0.0,
+            flow: RichObjectFlow::Inline,
+            fit_width: false,
             content: RichObjectContent::Label {
                 label: label.into(),
                 style: Arc::new(style),
@@ -717,6 +742,18 @@ impl RichObject {
     /// How far the object reaches below the baseline.
     pub fn descent(mut self, descent_px: f32) -> Self {
         self.descent_px = descent_px;
+        self
+    }
+
+    /// 设置视觉行模式，保持字符偏移和作者段落。
+    pub fn flow(mut self, flow: RichObjectFlow) -> Self {
+        self.flow = flow;
+        self
+    }
+
+    /// 设置按可用宽度等比缩小，布局结果保持为原始尺寸的投影。
+    pub fn fit_width(mut self, fit: bool) -> Self {
+        self.fit_width = fit;
         self
     }
 

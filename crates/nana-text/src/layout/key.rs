@@ -178,7 +178,7 @@ pub(crate) struct LayoutKey {
     /// Every inline object's offset and box (width, ascent, descent). Not a
     /// shaping input — objects shape as placeholders — so it cannot come in
     /// through the shaped identity either.
-    objects: Vec<(usize, [u32; 7])>,
+    objects: Vec<(usize, [u32; 9])>,
     paragraph_alignments: Vec<(usize, Option<TextAlignSpec>)>,
     /// Each ruby's base range and its shaped annotation, held so the pointer
     /// it is compared by stays valid.
@@ -247,6 +247,8 @@ impl LayoutKey {
                                 u32::from(envelope.break_before)
                                     | (u32::from(envelope.break_after) << 1)
                             }),
+                            u32::from(object.flow == nana_ui_core::RichObjectFlow::Block),
+                            u32::from(object.fit_width),
                         ],
                     )
                 })
@@ -268,7 +270,7 @@ impl LayoutKey {
             + self.run_line_heights.capacity() * std::mem::size_of::<u32>()
             + self.paragraph_alignments.capacity()
                 * std::mem::size_of::<(usize, Option<TextAlignSpec>)>()
-            + self.objects.capacity() * std::mem::size_of::<(usize, [u32; 7])>()
+            + self.objects.capacity() * std::mem::size_of::<(usize, [u32; 9])>()
     }
 }
 

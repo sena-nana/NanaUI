@@ -512,6 +512,8 @@ pub(crate) fn rich_text_objects(rich: &RichText) -> Vec<nana_text::InlineObject>
             nana_text::InlineObject {
                 offset: *offset,
                 id: object.id,
+                flow: object.flow,
+                fit_width: object.fit_width,
                 metrics: nana_text::InlineObjectMetrics {
                     width_px,
                     ascent_px,
@@ -617,6 +619,8 @@ pub(crate) fn classify_rich_change(
             // A label's text and look are shaped into the layout.
             at != to
                 || old.line_box() != new.line_box()
+                || old.flow != new.flow
+                || old.fit_width != new.fit_width
                 || (old.tag_label().is_some() || new.tag_label().is_some())
                     && old.content != new.content
         })

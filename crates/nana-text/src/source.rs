@@ -96,6 +96,10 @@ pub struct InlineObject {
     /// [`crate::PlacedObject::id`].
     pub id: u64,
     pub metrics: InlineObjectMetrics,
+    #[serde(default)]
+    pub flow: nana_ui_core::RichObjectFlow,
+    #[serde(default)]
+    pub fit_width: bool,
 }
 
 /// A ruby annotation: small text set above a base range (furigana, pinyin).
