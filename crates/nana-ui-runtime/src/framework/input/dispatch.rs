@@ -900,6 +900,17 @@ impl AppContext {
         if !stroke.is_text() && self.editor_composing(document) {
             return Ok(CONSUMED);
         }
+        // 已捕获的列表拖动先消费首次 Escape，松手继续保持取消，下一次拖动可重新开始。
+        if pressed
+            && key == "Escape"
+            && !repeat
+            && !modifiers.alt
+            && !modifiers.control
+            && !modifiers.meta
+            && optional_input!("controls", self.cancel_reorder_list_drag(document))?
+        {
+            return Ok(CONSUMED);
+        }
         let keyboard_barrier = self.has_blocking_runtime_overlay(document);
         // An open menu bar, or one the keyboard holds, takes its keys first.
         if !keyboard_barrier
