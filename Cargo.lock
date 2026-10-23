@@ -2909,6 +2909,7 @@ dependencies = [
  "webview2-com",
  "window-vibrancy",
  "windows",
+ "windows-core",
  "windows-numerics",
  "windows-sys 0.61.2",
  "x11-dl",
@@ -6254,7 +6255,6 @@ dependencies = [
 [[package]]
 name = "winit-win32"
 version = "0.31.0-beta.2"
-source = "git+https://github.com/rust-windowing/winit?rev=874a1e31f194d11313c1ac133b28037b99db3e19#874a1e31f194d11313c1ac133b28037b99db3e19"
 dependencies = [
  "bitflags",
  "cursor-icon",
