@@ -59,13 +59,17 @@ fn vertex_main(@builtin(vertex_index) index: u32, instance: Instance) -> VertexO
 fn fragment_main(input: VertexOutput) -> @location(0) vec4<f32> {
     let uv = input.uv;
     let seed = input.parameters.x;
-    let wave = 0.5 + 0.5 * sin((uv.x * 5.5 + uv.y * 3.0 + seed) * 3.14159265);
-    let radial = smoothstep(0.82, 0.05, distance(uv, vec2<f32>(0.64, 0.42)));
-    let grid_x = 1.0 - smoothstep(0.0, 0.035, abs(fract(uv.x * 12.0) - 0.5));
-    let grid_y = 1.0 - smoothstep(0.0, 0.035, abs(fract(uv.y * 8.0) - 0.5));
-    let grid = max(grid_x, grid_y) * 0.08;
-    let mix_amount = clamp(0.18 + wave * 0.34 + radial * 0.28, 0.0, 1.0);
-    let color = mix(input.color_a.rgb, input.color_b.rgb, mix_amount) + grid;
+    let haze = 0.5 + 0.5 * sin((uv.x * 4.0 + uv.y * 2.3 + seed) * 3.14159265);
+    let nebula = smoothstep(0.9, 0.05, distance(uv, vec2<f32>(0.70, 0.28)));
+    let cells = floor(uv * vec2<f32>(42.0, 18.0));
+    let local = fract(uv * vec2<f32>(42.0, 18.0));
+    let random = fract(sin(dot(cells + vec2<f32>(seed, seed * 1.7), vec2<f32>(12.9898, 78.233))) * 43758.5453);
+    let star_center = vec2<f32>(0.18 + random * 0.64, 0.18 + fract(random * 9.17) * 0.64);
+    let star = smoothstep(0.075, 0.0, distance(local, star_center)) * step(0.74, random);
+    // 星空底图只保留星点；文字入场的流星由应用按字行轨迹绘制。
+    let glow = star * 0.45;
+    let mix_amount = clamp(0.16 + haze * 0.20 + nebula * 0.22, 0.0, 1.0);
+    let color = mix(input.color_a.rgb, input.color_b.rgb, mix_amount) + vec3<f32>(0.08, 0.16, 0.32) * glow;
     return vec4<f32>(color, 1.0);
 }
 "#;
