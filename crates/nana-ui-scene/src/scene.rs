@@ -15,6 +15,11 @@ mod custom_paint;
 pub use custom_paint::{PathMesh, PathVertex};
 mod order;
 mod primitives;
+#[path = "scene/text_shader_input.rs"]
+mod text_shader_input;
+pub use text_shader_input::{
+    SceneTextShaderGlyph, SceneTextShaderInlineObject, SceneTextShaderInput,
+};
 mod rich_background;
 #[cfg(test)]
 use nana_ui_core::ControlSize;
