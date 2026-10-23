@@ -2593,6 +2593,7 @@ impl UiWorld {
                 menu_scroll,
                 menu_room,
                 checkable,
+                fit_options,
                 ..
             } => Some(crate::select::select_geometry(
                 bounds,
@@ -2613,6 +2614,7 @@ impl UiWorld {
                 *checkable,
                 padding,
                 self.chrome_text_measure(id),
+                fit_options.then(|| self.text_natural_width(id)).flatten(),
             )),
             StandardVisual::MenuSurface {
                 kind: crate::MenuSurfaceKind::ContextMenu,
@@ -2780,6 +2782,7 @@ impl UiWorld {
                 size,
                 spacing,
                 drag,
+                ..
             } => {
                 // Live row children own their label painting; a stale retained
                 // `rows` (projected before the children were attached) must not
@@ -2817,7 +2820,13 @@ impl UiWorld {
                 };
                 let drag = drag.as_ref().map(|drag| {
                     let boxes = row_boxes(drag.rows());
-                    (drag.drop_mark(bounds, &boxes), drag.carried_box(&boxes))
+                    (
+                        drag.drop_mark(bounds, &boxes),
+                        drag.preview_offset
+                            .is_none()
+                            .then(|| drag.carried_box(&boxes))
+                            .flatten(),
+                    )
                 });
                 Some(reorder_list_geometry(
                     bounds,

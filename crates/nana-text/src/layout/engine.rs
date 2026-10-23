@@ -250,7 +250,7 @@ impl Layouter {
         let scale = request.constraints.scale.px_per_logical;
         let base_line_height = line_height_px(request.style, scale);
         let run_line_heights = run_line_heights(request, scale);
-        let sized = sized_runs(request, scale);
+        let sized = sized_runs(request, scale, false);
         let (widths, candidates) = Builder::new(line_input(
             request,
             sized.as_deref(),
@@ -275,7 +275,7 @@ impl Layouter {
             .ellipsis
             .filter(|_| request.constraints.ellipsis)
             .and_then(|shaped| Ellipsis::new(shaped));
-        let sized = sized_runs(request, request.constraints.scale.px_per_logical);
+        let sized = sized_runs(request, request.constraints.scale.px_per_logical, true);
         let input = line_input(
             request,
             sized.as_deref(),
@@ -356,7 +356,7 @@ impl Layouter {
 /// This is where an object's size enters: after shaping and inside the
 /// layout cache's key (the source revision moves with the objects), so
 /// resizing a sticker relays the paragraph out from the runs already shaped.
-fn sized_runs(request: &LayoutRequest<'_>, scale: f32) -> Option<Vec<ShapedRun>> {
+fn sized_runs(request: &LayoutRequest<'_>, scale: f32, fit: bool) -> Option<Vec<ShapedRun>> {
     let rubies = ruby_boxes(request);
     if request.source.objects().is_empty() && rubies.is_empty() {
         return None;
@@ -406,7 +406,7 @@ fn sized_runs(request: &LayoutRequest<'_>, scale: f32) -> Option<Vec<ShapedRun>>
             .object_at(run.source.start)
             .map(|object| object.metrics)
             .unwrap_or_default();
-        let [width, ascent, descent] = match label_box(request, run.source.start) {
+        let [mut width, mut ascent, mut descent] = match label_box(request, run.source.start) {
             Some(label) => [label.width_px, label.ascent_px, label.descent_px],
             None => [
                 metrics.width_px.max(0.0) * scale,
@@ -414,6 +414,23 @@ fn sized_runs(request: &LayoutRequest<'_>, scale: f32) -> Option<Vec<ShapedRun>>
                 metrics.descent_px.max(0.0) * scale,
             ],
         };
+        // 缩放进入保留布局 IR，绘制、选区和命中共享等比缩小后的对象矩形。
+        if fit
+            && request
+                .source
+                .object_at(run.source.start)
+                .is_some_and(|object| object.fit_width)
+            && let Some(limit) = request
+                .constraints
+                .inline_budget_px(request.shaped.vertical)
+            && width > limit.max(0.0) * scale
+            && width > 0.0
+        {
+            let ratio = limit.max(0.0) * scale / width;
+            width *= ratio;
+            ascent *= ratio;
+            descent *= ratio;
+        }
         // The envelope's gap travels with the object: the line decision sees
         // one cell, and may close part of it up or drop it at a line end.
         let width = width
@@ -713,6 +730,7 @@ fn line_input<'r>(
         runs: sized.unwrap_or(&request.shaped.runs),
         rubies: ruby_boxes(request),
         paragraphs: &request.shaped.paragraphs,
+        objects: request.source.objects(),
         run_line_heights,
         constraints: request.constraints,
         strut,
@@ -751,6 +769,11 @@ fn line_input<'r>(
 /// hit skips.
 fn uses_label_fast_path(request: &LayoutRequest<'_>) -> bool {
     request.kind == TextKind::Label
+        && !request
+            .source
+            .objects()
+            .iter()
+            .any(|object| object.flow == nana_ui_core::RichObjectFlow::Block)
         && !request.constraints.wraps()
         && matches!(request.constraints.max_lines, None | Some(1))
         && request

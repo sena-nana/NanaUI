@@ -30,7 +30,7 @@ pub mod rich {
     pub use nana_ui_core::{
         AttributedRanges, GlyphEasing, GlyphEffect, GlyphEffectKind, GlyphIntro, GlyphPresentation,
         GlyphSample, MAX_TEXT_SHADOWS, OBJECT_REPLACEMENT, PaintColor, RevealSchedule, RichObject,
-        RichObjectContent, RichPaintStyle, RichShapeStyle, RichSpanStyle, RichText,
+        RichObjectContent, RichObjectFlow, RichPaintStyle, RichShapeStyle, RichSpanStyle, RichText,
         RichTextBuilder, RichTextShadow, RichTextStroke, TextDecorationLine, TextStrokeJoin,
         TextStrokePlacement, evaluate_glyph,
     };

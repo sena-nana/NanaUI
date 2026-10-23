@@ -106,6 +106,20 @@ pub trait HostServices {
     fn read_clipboard(&mut self) -> Result<Option<String>, HostServiceError>;
 
     fn write_clipboard(&mut self, text: &str) -> Result<(), HostServiceError>;
+
+    /// 可选的富文本来源标记；普通文本写入应清除已有标记。
+    fn read_clipboard_token(&mut self) -> Result<Option<String>, HostServiceError> {
+        Ok(None)
+    }
+
+    /// 同时写入纯文本与富文本来源标记；基础宿主保留纯文本能力。
+    fn write_clipboard_with_token(
+        &mut self,
+        text: &str,
+        _token: &str,
+    ) -> Result<(), HostServiceError> {
+        self.write_clipboard(text)
+    }
 }
 
 /// A host with none of these services: the cursor and text input are
@@ -135,6 +149,7 @@ pub struct HeadlessHostServices {
     cursor: CursorIcon,
     text_input: Option<TextInputContext>,
     clipboard: Option<String>,
+    clipboard_token: Option<String>,
 }
 
 impl HeadlessHostServices {
@@ -156,6 +171,7 @@ impl HeadlessHostServices {
 
     pub fn set_clipboard(&mut self, text: Option<String>) {
         self.clipboard = text;
+        self.clipboard_token = None;
     }
 }
 
@@ -174,6 +190,21 @@ impl HostServices for HeadlessHostServices {
 
     fn write_clipboard(&mut self, text: &str) -> Result<(), HostServiceError> {
         self.clipboard = Some(text.to_owned());
+        self.clipboard_token = None;
+        Ok(())
+    }
+
+    fn read_clipboard_token(&mut self) -> Result<Option<String>, HostServiceError> {
+        Ok(self.clipboard_token.clone())
+    }
+
+    fn write_clipboard_with_token(
+        &mut self,
+        text: &str,
+        token: &str,
+    ) -> Result<(), HostServiceError> {
+        self.write_clipboard(text)?;
+        self.clipboard_token = Some(token.to_owned());
         Ok(())
     }
 }
@@ -216,5 +247,17 @@ mod tests {
             services.write_clipboard("x"),
             Err(HostServiceError::Unsupported)
         );
+    }
+
+    #[test]
+    fn plain_clipboard_rewrites_clear_rich_identity_even_when_text_matches() {
+        let mut services = HeadlessHostServices::new();
+        services.write_clipboard_with_token("甲", "1-a").unwrap();
+        assert_eq!(services.read_clipboard_token(), Ok(Some("1-a".into())));
+        services.write_clipboard("甲").unwrap();
+        assert_eq!(services.read_clipboard_token(), Ok(None));
+        services.write_clipboard_with_token("甲", "1-b").unwrap();
+        services.set_clipboard(Some("甲".into()));
+        assert_eq!(services.read_clipboard_token(), Ok(None));
     }
 }

@@ -644,6 +644,7 @@ impl AppContext {
         &mut self,
         id: StableNodeId,
     ) -> Result<(), FrameworkError> {
+        self.sync_rich_caret_blinks();
         if let Some(sync) = self.behavior(id).and_then(|b| b.lifecycle) {
             sync(self, id)?;
         }

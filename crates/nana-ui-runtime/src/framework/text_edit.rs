@@ -1935,8 +1935,9 @@ impl AppContext {
     }
 
     /// Place or extend the selection of the focused editor from a pointer
-    /// press. Single presses set the caret, Shift extends, double clicks
-    /// select the word, triple clicks select the line. An Alt+click
+    /// press. Single presses set the caret, Shift extends, TextInput double
+    /// clicks select the whole value, TextArea double clicks select the word,
+    /// and TextArea triple clicks select the whole value. An Alt+click
     /// (`add_cursor`) on a multiline editor adds or removes a cursor instead:
     /// clicking an existing additional cursor removes it, any other spot gets
     /// one. Plain presses collapse back to the single primary selection.
@@ -2080,13 +2081,23 @@ impl AppContext {
         let atoms = atoms_in(&state.value, &self.editor_text_atoms(node, focused.kind));
         let (selection, additional) = match count {
             2 => {
-                let (start, end) = word_range_at(&state.value, offset);
-                let range = expand_range_over_atoms(start..end, &atoms);
+                let range = if focused.kind == TextEditorKind::Field {
+                    // 单行文本框双击全选，数字输入框沿用选词行为。
+                    0..state.value.len()
+                } else {
+                    let (start, end) = word_range_at(&state.value, offset);
+                    expand_range_over_atoms(start..end, &atoms)
+                };
                 (TextSelection::new(range.start, range.end), Vec::new())
             }
             3 => {
-                let (start, end) = logical_line_range(&state.value, offset);
-                let range = expand_range_over_atoms(start..end, &atoms);
+                let range = if focused.kind == TextEditorKind::Area {
+                    // 多行文本框三击全选，双击仍选中当前词。
+                    0..state.value.len()
+                } else {
+                    let (start, end) = logical_line_range(&state.value, offset);
+                    expand_range_over_atoms(start..end, &atoms)
+                };
                 (TextSelection::new(range.start, range.end), Vec::new())
             }
             // 单击落点带着命中的 affinity：软换行行尾点在左侧就留在这一行。

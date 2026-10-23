@@ -440,6 +440,8 @@ fn lay_out_badge(
 ) -> Arc<TextLayout> {
     let mut source = TextSource::new(BADGE);
     source.set_objects(vec![InlineObject {
+        flow: Default::default(),
+        fit_width: false,
         offset: BADGE_AT,
         id: 1,
         metrics: InlineObjectMetrics {

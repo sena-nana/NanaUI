@@ -23,7 +23,8 @@ pub use clipboard::OsClipboard;
 #[cfg(feature = "clipboard")]
 pub use clipboard::{
     ClipboardHost, MemoryClipboard, SharedClipboardHost, UnsupportedClipboard,
-    default_shared_clipboard, read_shared_clipboard, shared_clipboard, write_shared_clipboard,
+    default_shared_clipboard, read_shared_clipboard, read_shared_clipboard_token, shared_clipboard,
+    write_shared_clipboard, write_shared_clipboard_with_token,
 };
 #[cfg(feature = "fetch")]
 pub use fetch::{

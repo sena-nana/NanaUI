@@ -24,6 +24,8 @@ const INSERT_INSET: f32 = nana_ui_core::space::XS;
 const INSERT_THICKNESS: f32 = nana_ui_core::space::XXS;
 const DEFAULT_INDENT: f32 = nana_ui_core::space::LG;
 
+include!("reorder_list_gap.rs");
+
 pub use crate::tree_view::{TreeDropIntent, TreeDropPosition};
 
 /// Results published by [`ReorderList`]. Order and persistence stay with the
@@ -225,6 +227,10 @@ pub struct ReorderDragVisual {
     pub source: usize,
     pub x: f32,
     pub y: f32,
+    /// 拖动源相对抓取位置的呈现偏移，布局与落点继续使用稳定坐标。
+    pub preview_offset: Option<[f32; 2]>,
+    /// 活行普通排序的让位间距，呈现动画由调用方驱动。
+    pub gap_spacing: Option<f32>,
     pub tree_drop: bool,
     rules: Arc<DropRules>,
 }
@@ -273,6 +279,9 @@ impl ReorderDragVisual {
     /// [`Self::insert_line`], telling a line from a row a drop goes inside.
     /// A tree drop's line is indented to the depth the row lands at.
     pub fn drop_mark(&self, bounds: LayoutBox, rows: &[LayoutBox]) -> Option<ReorderDropMark> {
+        if let Some(spacing) = self.gap_spacing {
+            return self.gap_drop_mark(bounds, rows, spacing);
+        }
         if self.tree_drop {
             let drop = self.rules.tree_drop(rows, self.source, self.x, self.y)?;
             let indent = f32::from(self.rules.rows[drop.target].depth) * self.rules.indent;
@@ -612,6 +621,10 @@ pub struct ReorderList {
     /// Declared at construction: live row children own painting and the list
     /// body follows their layout. Never inferred from the tree at project time.
     pub live_rows: bool,
+    /// 用原行子树投影65%透明的拖动预览，保留稳定实体与编辑历史。
+    pub drag_preview: bool,
+    /// 提供稳定让位几何，由应用 Motion 轨道呈现相邻行移动。
+    pub drag_gap: bool,
     pub label: Option<Arc<str>>,
     pub style: NodeStyle,
     drag: Option<ReorderDrag>,
@@ -628,6 +641,8 @@ impl ReorderList {
             indent: DEFAULT_INDENT,
             accepts_root: ReorderAccepts::All,
             live_rows: false,
+            drag_preview: false,
+            drag_gap: false,
             label: None,
             style: NodeStyle::default(),
             drag: None,
@@ -667,6 +682,18 @@ impl ReorderList {
     /// self-drawn rows in this mode.
     pub fn live_rows(mut self, live_rows: bool) -> Self {
         self.live_rows = live_rows;
+        self
+    }
+
+    /// 启用随抓取点移动的半透明预览，默认关闭。
+    pub fn drag_preview(mut self, enabled: bool) -> Self {
+        self.drag_preview = enabled;
+        self
+    }
+
+    /// 提供实时让位目标，默认关闭；应用持有呈现动画。
+    pub fn drag_gap(mut self, enabled: bool) -> Self {
+        self.drag_gap = enabled;
         self
     }
 
@@ -778,6 +805,11 @@ impl ReorderList {
             source,
             x: drag.x,
             y: drag.y,
+            preview_offset: self
+                .drag_preview
+                .then_some([drag.x - drag.start_x, drag.y - drag.start_y]),
+            gap_spacing: (self.drag_gap && self.live_rows && self.drag_preview && !self.tree_drop)
+                .then_some(self.spacing.max(0.0)),
             tree_drop: self.tree_drop,
             rules: Arc::new(DropRules::of(self)),
         })
@@ -964,6 +996,7 @@ impl ComponentView for ReorderList {
             },
             size: self.size,
             spacing: self.spacing,
+            preview_enabled: self.drag_preview,
             drag: self.drag_visual(),
         };
         if world.standard_visual(id) != Some(visual.clone()) {
@@ -1108,6 +1141,10 @@ impl crate::AppContext {
         let Some(bounds) = self.world().component_layout_box(list_id) else {
             return Ok(false);
         };
+        // 输入点进入列表的布局坐标系，与保留的行盒子一致，覆盖祖先滚动与呈现变换。
+        let Some((x, y)) = self.world().pointer_layout_position(list_id, x, y) else {
+            return Ok(false);
+        };
         let rows = self.reorder_row_boxes(list_id, bounds);
         let exclude = self.reorder_tool_boxes(entity);
         if exclude.iter().any(|reserved| reserved.contains(x, y)) {
@@ -1153,6 +1190,9 @@ impl crate::AppContext {
         let Some(bounds) = self.world().component_layout_box(target) else {
             return Ok(false);
         };
+        let Some((x, y)) = self.world().pointer_layout_position(target, x, y) else {
+            return Ok(false);
+        };
         let rows = self.reorder_row_boxes(target, bounds);
         self.update_component(entity, |list, _| {
             list.apply_pointer_with_rows(ReorderListPointer::Move { x, y }, &rows, &[]);
@@ -1177,6 +1217,10 @@ impl crate::AppContext {
         let Some(entity) = self.reorder_list_entity(target) else {
             return Ok(false);
         };
+        // 取消始终释放捕获；结束点使用与按下和移动相同的布局坐标。
+        let point = self.world().pointer_layout_position(target, x, y);
+        let cancel = cancel || point.is_none();
+        let (x, y) = point.unwrap_or((x, y));
         let bounds = self.world().component_layout_box(target);
         let rows = bounds
             .map(|bounds| self.reorder_row_boxes(target, bounds))
@@ -1193,6 +1237,25 @@ impl crate::AppContext {
             cx.mutations().release_pointer(pointer_id, target);
             true
         })
+    }
+
+    /// Escape 终止文档中捕获指针的列表手势，并清理按下记录，保证松手保持取消结果。
+    pub fn cancel_reorder_list_drag(
+        &mut self,
+        document: crate::DocumentId,
+    ) -> Result<bool, crate::FrameworkError> {
+        let captures = self.world().pointer_captures(document);
+        let mut cancelled = false;
+        for (pointer_id, target) in captures {
+            if self.is_reorder_list(target)
+                && self.end_reorder_list_pointer(document, pointer_id, 0.0, 0.0, true)?
+            {
+                // 与指针 Cancel 共用终止路径，Up 随后只完成原生按钮释放。
+                self.release_pointer(document, pointer_id);
+                cancelled = true;
+            }
+        }
+        Ok(cancelled)
     }
 
     fn reorder_list_entity(&self, id: StableNodeId) -> Option<crate::Entity<ReorderList>> {
@@ -1237,6 +1300,9 @@ impl crate::AppContext {
             return Ok(false);
         };
         let list_id = entity.stable_id();
+        let Some((x, y)) = self.world().pointer_layout_position(list_id, x, y) else {
+            return Ok(false);
+        };
         let started = self.update_component(entity, |list, cx| {
             let Some(armed) = list.armed.as_mut() else {
                 return false;
@@ -1342,9 +1408,15 @@ impl crate::AppContext {
         let Some(bounds) = self.world().component_layout_box(id) else {
             return Ok(false);
         };
+        let Some((layout_x, layout_y)) = self.world().pointer_layout_position(id, x, y) else {
+            return Ok(false);
+        };
         let rows = self.reorder_row_boxes(id, bounds);
         let exclude = self.reorder_tool_boxes(entity);
-        if exclude.iter().any(|reserved| reserved.contains(x, y)) {
+        if exclude
+            .iter()
+            .any(|reserved| reserved.contains(layout_x, layout_y))
+        {
             return Ok(false);
         }
         let (values, enabled) = self
@@ -1361,7 +1433,7 @@ impl crate::AppContext {
                 )
             })
             .unwrap_or((Vec::new(), Vec::new()));
-        let Some(index) = item_at(&rows, &enabled, x, y) else {
+        let Some(index) = item_at(&rows, &enabled, layout_x, layout_y) else {
             return Ok(false);
         };
         let source = Arc::clone(&values[index]);
@@ -1371,6 +1443,10 @@ impl crate::AppContext {
         Ok(true)
     }
 }
+
+#[cfg(test)]
+#[path = "../tests/fixtures/reorder_pointer_coordinates.rs"]
+mod pointer_coordinates_tests;
 
 fn point_finite(x: f32, y: f32) -> bool {
     x.is_finite() && y.is_finite()
@@ -1426,6 +1502,8 @@ fn tree_insert_line(target: LayoutBox, position: TreeDropPosition, indent: f32) 
 
 #[cfg(test)]
 mod tests {
+    include!("reorder_list_escape_tests.rs");
+    include!("reorder_list_gap_tests.rs");
     use super::*;
     use crate::DocumentId;
     use crate::framework::AppContext;
@@ -2082,6 +2160,7 @@ mod tests {
                 rows: sample().paint_rows(),
                 size: ControlSize::Small,
                 spacing: DEFAULT_SPACING,
+                preview_enabled: false,
                 drag: None,
             })
         );
@@ -2223,6 +2302,7 @@ mod tests {
                 rows: Arc::from([]),
                 size: ControlSize::Small,
                 spacing: DEFAULT_SPACING,
+                preview_enabled: false,
                 drag: None,
             })
         );

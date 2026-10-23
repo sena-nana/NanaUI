@@ -9,7 +9,8 @@ use std::sync::OnceLock;
 use nana_ui_platform::{
     EndpointGeneration, HostServiceError, HostServices, InputEndpoint, InputSequencer,
     InputSourceId, SharedClipboardHost, TextInputContext, TextInputPurpose,
-    default_shared_clipboard, read_shared_clipboard, write_shared_clipboard,
+    default_shared_clipboard, read_shared_clipboard, read_shared_clipboard_token,
+    write_shared_clipboard, write_shared_clipboard_with_token,
 };
 use winit::cursor::CursorIcon;
 use winit::window::{
@@ -155,6 +156,18 @@ impl HostServices for NativeWindowServices<'_> {
 
     fn write_clipboard(&mut self, text: &str) -> Result<(), HostServiceError> {
         write_shared_clipboard(self.clipboard, text)
+    }
+
+    fn read_clipboard_token(&mut self) -> Result<Option<String>, HostServiceError> {
+        read_shared_clipboard_token(self.clipboard)
+    }
+
+    fn write_clipboard_with_token(
+        &mut self,
+        text: &str,
+        token: &str,
+    ) -> Result<(), HostServiceError> {
+        write_shared_clipboard_with_token(self.clipboard, text, token)
     }
 }
 

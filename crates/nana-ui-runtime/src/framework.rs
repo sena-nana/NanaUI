@@ -2112,6 +2112,7 @@ impl AppContext {
         suspended?;
         self.end_drags_that_lost_their_capture(&lost_captures)?;
         self.sync_focus_within_listeners()?;
+        self.sync_rich_caret_blinks();
         Ok(report)
     }
 
@@ -4316,6 +4317,9 @@ impl<T> Subscription<T> {
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod choice_select_tests;
 
 #[cfg(test)]
 mod retained_interaction_tests;

@@ -48,6 +48,7 @@ mod row_tools;
 mod scrollbar_lane;
 mod select_menu;
 mod terminal;
+mod text_pointer_selection;
 
 /// One thing a fixture does to a document, as a host would deliver it.
 #[derive(Debug, Clone)]

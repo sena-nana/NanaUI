@@ -36,6 +36,8 @@ fn source(label: Option<&str>) -> TextSource {
     let offset = "前".len();
     let mut source = TextSource::new(text);
     source.set_objects(vec![InlineObject {
+        flow: Default::default(),
+        fit_width: false,
         offset,
         id: 7,
         metrics: InlineObjectMetrics::default(),
