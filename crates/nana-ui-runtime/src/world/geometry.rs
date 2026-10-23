@@ -2593,6 +2593,7 @@ impl UiWorld {
                 menu_scroll,
                 menu_room,
                 checkable,
+                fit_options,
                 ..
             } => Some(crate::select::select_geometry(
                 bounds,
@@ -2613,6 +2614,7 @@ impl UiWorld {
                 *checkable,
                 padding,
                 self.chrome_text_measure(id),
+                fit_options.then(|| self.text_natural_width(id)).flatten(),
             )),
             StandardVisual::MenuSurface {
                 kind: crate::MenuSurfaceKind::ContextMenu,

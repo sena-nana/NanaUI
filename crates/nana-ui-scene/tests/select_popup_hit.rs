@@ -1,9 +1,10 @@
+//! 下拉菜单的命中区域、绘制遮挡及展开生命周期回归验证。
 use nana_ui_core::ControlSize;
 use nana_ui_runtime::{
-    Button, ComponentGeometry, DocumentId, Entity, LayoutViewport, Select, SelectChanged,
-    SelectOption, SettingsRow, Stack,
+    Button, ComponentGeometry, DocumentId, Dropdown, DropdownOption, Entity, LayoutViewport,
+    Select, SelectChanged, SelectOption, SettingsRow, StableNodeId, Stack,
 };
-use nana_ui_scene::{PrimitiveId, RuntimeDocument, ScenePrimitive, SceneRect};
+use nana_ui_scene::{PrimitiveId, RuntimeDocument, ScenePrimitive, ScenePrimitiveKind, SceneRect};
 use std::sync::{Arc, Mutex};
 
 fn flush(document: &mut RuntimeDocument) {
@@ -317,4 +318,171 @@ fn a_menu_paints_over_a_later_sibling_group() {
     assert!(at(select, row_slot(ROW_LABELS, 1)) > last_below);
     // The field itself stays in its group, under the button's.
     assert!(at(select, 0) < last_below);
+}
+
+/// 菜单覆盖按钮的全部绘制内容，包括表面、选中背景、文字及多选标记。
+fn assert_menu_covers_button(
+    document: &RuntimeDocument,
+    field: StableNodeId,
+    button: StableNodeId,
+    multiple: bool,
+) {
+    let ComponentGeometry::Select {
+        menu: Some(menu), ..
+    } = document
+        .context()
+        .world()
+        .component_geometry(field)
+        .unwrap()
+    else {
+        panic!("展开控件应提供菜单几何")
+    };
+    let button_bounds = document.context().world().layout_box(button).unwrap();
+    assert!(
+        menu.surface.x < button_bounds.x + button_bounds.width
+            && menu.surface.x + menu.surface.width > button_bounds.x
+            && menu.surface.y < button_bounds.y + button_bounds.height
+            && menu.surface.y + menu.surface.height > button_bounds.y,
+        "回归场景中的菜单应实际覆盖按钮区域"
+    );
+    let primitives: Vec<_> = document.scene().primitives().collect();
+    let button_last = primitives
+        .iter()
+        .rposition(|primitive| primitive.node == button)
+        .expect("按钮应包含可绘制内容");
+    let menu_primitives: Vec<_> = primitives
+        .iter()
+        .enumerate()
+        .filter(|(_, primitive)| primitive.node == field && primitive.bounds.y >= menu.surface.y)
+        .collect();
+    assert!(
+        menu_primitives
+            .iter()
+            .all(|(index, _)| *index > button_last)
+    );
+    assert!(
+        menu_primitives.iter().any(|(_, primitive)| {
+            matches!(primitive.kind, ScenePrimitiveKind::Quad { .. })
+                && primitive.bounds.y == menu.surface.y
+                && primitive.bounds.height == menu.surface.height
+        }),
+        "菜单表面应覆盖按钮"
+    );
+    assert!(
+        menu_primitives.iter().any(|(_, primitive)| {
+            matches!(primitive.kind, ScenePrimitiveKind::Quad { .. })
+                && primitive.bounds.y == menu.options[0].bounds.y
+                && primitive.bounds.height == menu.options[0].bounds.height
+        }),
+        "选中选项应包含背景"
+    );
+    for label in ["First", "Second"] {
+        assert!(menu_primitives.iter().any(|(_, primitive)| {
+            matches!(&primitive.kind, ScenePrimitiveKind::Text { content, .. } if content == label)
+        }), "菜单应绘制选项 {label}");
+    }
+    if multiple {
+        assert!(menu_primitives.iter().any(|(_, primitive)| {
+            matches!(&primitive.kind, ScenePrimitiveKind::Text { content, .. } if content == "✓")
+        }), "多选菜单应绘制选中标记");
+    }
+}
+
+/// 首帧展开、增量展开及兄弟层级变化均保持菜单遮挡，关闭立即恢复按钮命中。
+#[test]
+fn select_and_dropdown_menu_paint_above_buttons_through_open_sort_and_close() {
+    for multiple in [false, true] {
+        for initially_open in [false, true] {
+            let id = DocumentId::new(1).unwrap();
+            let mut document = RuntimeDocument::new(id);
+            let cx = document.context_mut();
+            let root = cx.create_component(id, Stack::column(4.0)).unwrap();
+            let field = if multiple {
+                let field = cx
+                    .create_component(
+                        id,
+                        Dropdown::multiple(["first"])
+                            .options([
+                                DropdownOption::new("first", "First"),
+                                DropdownOption::new("second", "Second"),
+                            ])
+                            .size(ControlSize::Small)
+                            .opened(initially_open),
+                    )
+                    .unwrap();
+                cx.append_child(root, field).unwrap();
+                field.stable_id()
+            } else {
+                let field = cx
+                    .create_component(
+                        id,
+                        Select::new(Some("first"))
+                            .options([
+                                SelectOption::new("first", "First"),
+                                SelectOption::new("second", "Second"),
+                            ])
+                            .size(ControlSize::Small)
+                            .opened(initially_open),
+                    )
+                    .unwrap();
+                cx.append_child(root, field).unwrap();
+                field.stable_id()
+            };
+            let button = cx
+                .create_component(id, Button::new("Stop").size(ControlSize::Small))
+                .unwrap();
+            cx.append_child(root, button).unwrap();
+            flush(&mut document);
+            if !initially_open {
+                toggle_field(&mut document, field, multiple);
+                flush(&mut document);
+            }
+            assert_menu_covers_button(&document, field, button.stable_id(), multiple);
+
+            document
+                .context_mut()
+                .update_component(button, |button, _| {
+                    Arc::make_mut(&mut button.style.layout).z_index = Some(1);
+                })
+                .unwrap();
+            flush(&mut document);
+            assert_menu_covers_button(&document, field, button.stable_id(), multiple);
+
+            toggle_field(&mut document, field, multiple);
+            flush(&mut document);
+            let world = document.context().world();
+            let button_bounds = world.layout_box(button.stable_id()).unwrap();
+            assert_eq!(
+                world.hit_test(
+                    id,
+                    button_bounds.x + button_bounds.width * 0.5,
+                    button_bounds.y + button_bounds.height * 0.5,
+                ),
+                Some(button.stable_id())
+            );
+            let field_bounds = world.layout_box(field).unwrap();
+            assert!(
+                document.scene().primitives().all(|primitive| {
+                    primitive.node != field
+                        || primitive.bounds.y < field_bounds.y + field_bounds.height
+                }),
+                "关闭菜单应移除全部浮层绘制内容"
+            );
+        }
+    }
+}
+
+/// 通过各控件的公开交互入口切换菜单状态。
+fn toggle_field(document: &mut RuntimeDocument, field: StableNodeId, multiple: bool) {
+    let cx = document.context_mut();
+    if multiple {
+        let entity = cx.view_entity::<Dropdown>(field).unwrap();
+        cx.update_component(entity, |dropdown, _| {
+            dropdown.toggle_open();
+        })
+        .unwrap();
+    } else {
+        let entity = cx.view_entity::<Select>(field).unwrap();
+        cx.toggle_select(entity).unwrap();
+    }
 }

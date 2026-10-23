@@ -404,7 +404,7 @@ pub use rich_text::{
 pub use schedule::SystemWork;
 pub use scrub_field::{ScrubChanged, ScrubDragging, ScrubField, ScrubInput};
 pub use search_dropdown::{SearchDropdown, SearchDropdownEvent, SearchDropdownOption};
-pub use select::{Select, SelectChanged, SelectOption};
+pub use select::{Select, SelectChanged, SelectOpenedChanged, SelectOption};
 pub use selection::{
     RovingEdge, RovingFocusEdge, RovingFocusGroup, RovingFocusIntent, RovingFocusPolicy,
     SegmentedControl, SegmentedOption, SegmentedOptionChosen, SegmentedSelectionRequested,

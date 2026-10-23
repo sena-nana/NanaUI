@@ -65,6 +65,12 @@ pub struct SelectChanged {
     pub value: Arc<str>,
 }
 
+/// 下拉选项开关变化；提交当前值时同样通知关闭。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SelectOpenedChanged {
+    pub opened: bool,
+}
+
 /// Single-value field. Disabled options stay visible in the opened menu.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Select {
@@ -150,6 +156,8 @@ impl Select {
     /// (`LengthSpec::Shrink`, CSS `max-content`) uses. The default width
     /// still fills the row, and an explicit width, `min_width` or `max_width`
     /// still applies over it.
+    /// The open menu also fits the measured options within the viewport when
+    /// an explicit width keeps the field narrower than those options.
     pub fn fit_options(mut self, fit: bool) -> Self {
         self.fit_options = fit;
         self
@@ -352,15 +360,7 @@ impl crate::ComponentView for Select {
     const BEHAVIOR: crate::TypeBehavior<Self> = crate::TypeBehavior {
         activation: Some(crate::AppContext::toggle_select),
         activate_at: Some(crate::AppContext::activate_select_at),
-        close_options: Some(|context, entity| {
-            context.update_component(entity, |select, _| {
-                if !select.opened {
-                    return false;
-                }
-                select.close();
-                true
-            })
-        }),
+        close_options: Some(|context, entity| context.set_select_opened(entity, false)),
         hooks: Some(|hooks| hooks.select = Some(&SELECT_HOOKS)),
         pointer: Some(&crate::framework::SELECT_MENU_POINTER),
         ..crate::TypeBehavior::NONE
@@ -493,6 +493,7 @@ pub(crate) fn select_geometry(
     checkable: bool,
     padding: nana_ui_core::PaddingSpec,
     measure: crate::text_width::ChromeTextMeasure<'_>,
+    fitted_label_width: Option<f32>,
 ) -> ComponentGeometry {
     let palette = &model.palette;
     let border = source.layout.resolved_border_width();
@@ -522,6 +523,8 @@ pub(crate) fn select_geometry(
             menu_room.or_else(|| window_room(viewport)),
             checkable,
             measure,
+            viewport,
+            fitted_label_width,
         )
     });
     let mut label_box = LayoutBox {
@@ -597,6 +600,8 @@ fn select_menu_geometry(
     room: Option<crate::SelectMenuRoom>,
     checkable: bool,
     measure: crate::text_width::ChromeTextMeasure<'_>,
+    viewport: Option<crate::LayoutViewport>,
+    fitted_label_width: Option<f32>,
 ) -> SelectMenuGeometry {
     let palette = &model.palette;
     let metrics = model.metrics;
@@ -606,10 +611,19 @@ fn select_menu_geometry(
         MENU_PAD * 2.0 + count * item_height + (count - 1.0).max(0.0) * MENU_ITEM_GAP;
     let is_light = palette.background.as_rgba_array()[0] > 0.5;
     let (surface_y, height) = resolve_menu_vertical(field, natural_height, room);
+    // 复用文本布局的最长选项测量，字段固定宽度时仍完整展开，并保留上游滚动口。
+    let check_reserve = if checkable { MENU_CHECK_RESERVE } else { 0.0 };
+    let natural_width = fitted_label_width.map_or(field.width, |width| {
+        field
+            .width
+            .max(width + MENU_PAD * 2.0 + size.padding_x_in(metrics) * 2.0 + check_reserve)
+    });
+    let width = viewport.map_or(natural_width, |v| natural_width.min(v.width.max(0.0)));
+    let x = viewport.map_or(field.x, |v| field.x.clamp(0.0, (v.width - width).max(0.0)));
     let surface = LayoutBox {
-        x: field.x,
+        x,
         y: surface_y,
-        width: field.width,
+        width,
         height,
     };
     // A surface capped short of its rows scrolls them inside its border and
@@ -649,7 +663,6 @@ fn select_menu_geometry(
     // Reserved for the whole menu when the menu *can* check, not when one
     // option currently is: deriving it from `any(checked)` shifted every label
     // 16px sideways the moment the first option became checked.
-    let check_reserve = if checkable { MENU_CHECK_RESERVE } else { 0.0 };
     let options = options
         .iter()
         .enumerate()
@@ -1011,6 +1024,7 @@ pub(crate) static SELECT_HOOKS: crate::framework::ChoiceHooks = crate::framework
 
 #[cfg(test)]
 mod tests {
+    include!("../tests/fixtures/select_fitted_menu.rs");
     #[test]
     fn only_a_multi_select_dropdown_reserves_the_check_lane() {
         use crate::{Dropdown, DropdownOption, StandardVisual};

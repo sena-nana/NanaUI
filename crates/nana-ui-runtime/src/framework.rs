@@ -4319,6 +4319,9 @@ impl<T> Subscription<T> {
 mod tests;
 
 #[cfg(test)]
+mod choice_select_tests;
+
+#[cfg(test)]
 mod retained_interaction_tests;
 
 #[cfg(test)]
