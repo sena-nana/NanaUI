@@ -88,7 +88,8 @@ pub fn parse_faces(blob: &FontBlob) -> Vec<FaceMeta> {
 pub fn system_faces() -> Vec<(DiscoveredSource, FaceMeta)> {
     let mut db = fontdb::Database::new();
     db.load_system_fonts();
-    #[cfg(target_os = "android")]
+    // Android 和 HarmonyOS 均从标准系统目录提供中文字体。
+    #[cfg(any(target_os = "android", target_env = "ohos"))]
     db.load_fonts_dir("/system/fonts");
     db.faces()
         .map(|info| {
