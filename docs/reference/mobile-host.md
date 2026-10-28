@@ -19,6 +19,8 @@ nana-ui（只开 gpu，不开 hosted）
 
 移动端不走 `run_runtime`、`RuntimeProgram` 和 `EmbeddedRuntime`，这些都在 `hosted` 里，依赖 winit。外壳拥有窗口和事件循环；`MobileRuntime` 只做和平台无关的部分。
 
+`MobileRuntime` 默认装 NanaUI 内置的浅色、深色主题，度量换成 `TOUCH_METRICS`。应用有自己的设计系统时，在挂载视图时调用 `set_theme(MobileTheme { light, dark, page })`：两份定义按原样编译（编不过就拒绝，原主题不变），所以给触屏用的定义要从 `TOUCH_METRICS` 出发，只改自己的设计决定的部分；`page` 是根节点在安全区内外画的底色角色，默认 `Background`，整屏是一张卡片、分组是卡上浅色块的应用用 `Surface`。`background_rgba()` 报的也是这个角色的颜色。
+
 ## 混合原生的规则
 
 原生只以两种方式参与：
