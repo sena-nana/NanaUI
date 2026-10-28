@@ -131,6 +131,14 @@ pub enum UiMutation {
         id: StableNodeId,
         offset: ScrollOffset,
     },
+    /// A touch drag or bounce past the scrolling area: the offset is kept
+    /// as given, not clamped, until the next change of the container's
+    /// scrolling area. Paint and hit testing translate by it like any
+    /// offset; layout boxes stay put.
+    SetScrollOverscroll {
+        id: StableNodeId,
+        offset: ScrollOffset,
+    },
     SetScrollMetrics {
         id: StableNodeId,
         metrics: Option<ScrollMetrics>,
@@ -514,6 +522,12 @@ impl MutationQueue {
     pub fn set_scroll_offset(&mut self, id: StableNodeId, offset: ScrollOffset) {
         self.mutations
             .push(UiMutation::SetScrollOffset { id, offset });
+    }
+
+    /// Queue [`UiMutation::SetScrollOverscroll`]; the touch scroll path's.
+    pub(crate) fn set_scroll_overscroll(&mut self, id: StableNodeId, offset: ScrollOffset) {
+        self.mutations
+            .push(UiMutation::SetScrollOverscroll { id, offset });
     }
 
     pub fn set_scroll_metrics(&mut self, id: StableNodeId, metrics: Option<ScrollMetrics>) {

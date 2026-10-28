@@ -738,6 +738,7 @@ impl AppContext {
             .chain(self.auto_overlay_deadline())
             .chain(self.scrollbar_hold_deadline())
             .chain(self.wheel_scroll_deadline())
+            .chain(self.touch_scroll_deadline())
             .chain(self.caret_blink_deadline())
             .chain(self.rich_drag_deadline())
             .chain(self.plain_drag_deadline())
@@ -757,6 +758,7 @@ impl AppContext {
         self.component_lifecycle.now = now;
         let mut frame = self.world.advance_animations(now);
         self.advance_wheel_scrolls(now, &mut frame);
+        self.advance_touch_scrolls(now, &mut frame);
         self.advance_caret_blink(now, &mut frame);
         if let Some(id) = self.advance_rich_drag(now) {
             frame.component_updates.push(id);

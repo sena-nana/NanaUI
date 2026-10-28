@@ -287,6 +287,8 @@ IME 预编辑存在 world 的 `ime` 槽里，不在编辑器的 `value` 里。�
 
 `ScrollView` 是滚动容器。位置权威是 Runtime 的 `ScrollOffset`。尺寸权威是 `ScrollMetrics`（任何改动布局盒、子节点或样式的提交结束时由 Runtime 重新测量，偏移随之夹取；起点在右 / 下边的轴偏移为负，见 [布局](layout.md)）。滚动条不另存一份偏移。`overflow: auto|scroll` 共用同一份 `ScrollOffset` 与 overflow clip（滚轮同样更新这份偏移）。但**不**再画一套 thumb。自定义滚动条铬只属于 `ScrollView`。
 
+触摸（`PointerType::Touch`）拖动超过 8 逻辑像素即滚动最近的可滚容器，抬起后按宿主设置的 `ScrollPhysics`（iOS 衰减加橡皮筋回弹，或 Android 样条甩动并在边缘钳住）甩动；按压被取消、不触发点击。合同见 [Runtime 与 Scene](runtime-scene.md#触摸滚动与-scrollphysics)。
+
 `ScrollView::scrollbars` 选三种：`AutoHide`（悬停或滚动时淡入，离开后保持主题的 `hide_delay` 再淡出）、`Always`（能滚就常驻，带轨道）、`Hidden`（不画，滚轮与 `scroll_to` 照常）。不写时跟随主题的策略 `ScrollbarRecipe::visibility`（内置 `AutoHide`），应用用 `ThemeDefinition::with_scrollbar_visibility` 一次改全部。
 
 滚动条是 overlay，不占布局。车道位于 padding box 边缘往内 `track_inset` 处，容器在末端留出不小于 `track_inset + thickness` 的 padding，滚动条就不碰内容。滚动条画在滚动区所有后代之上，但仍在它的裁剪与层叠上下文里。指针落在看得见的车道上时，悬停与按下都归滚动区：车道激活、滑块变粗，下面的行不显示悬停。两轴都能滚时各让出拐角，互不重叠。

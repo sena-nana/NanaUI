@@ -334,7 +334,8 @@ impl<'a> ValidationPlan<'a> {
                         return Err(UiWorldError::InvalidStyle(*id));
                     }
                 }
-                UiMutation::SetScrollOffset { id, offset } => {
+                UiMutation::SetScrollOffset { id, offset }
+                | UiMutation::SetScrollOverscroll { id, offset } => {
                     self.require_exists(*id)?;
                     // Negative on an axis whose scroll origin is the right /
                     // bottom edge; the metrics clamp decides the range.
@@ -1632,6 +1633,9 @@ impl UiWorld {
                 // offset restored with the content it scrolls to survives.
                 self.scroll_requested.push((*id, *offset));
             }
+            UiMutation::SetScrollOverscroll { id, offset } => {
+                self.scroll_to_offset(*id, *offset);
+            }
             UiMutation::SetScrollMetrics { id, metrics } => {
                 self.store_scroll_metrics(*id, *metrics);
             }
@@ -2915,6 +2919,7 @@ impl UiWorld {
             let layout_result_id = match mutation {
                 UiMutation::WriteLayout { id, .. }
                 | UiMutation::SetScrollOffset { id, .. }
+                | UiMutation::SetScrollOverscroll { id, .. }
                 | UiMutation::SetScrollMetrics { id, .. } => Some(*id),
                 _ => None,
             };
@@ -2966,7 +2971,11 @@ impl UiWorld {
 
     /// Move `id` to `offset` clamped to its scrolling area.
     fn scroll_to_clamped(&mut self, id: StableNodeId, offset: ScrollOffset) {
-        let offset = self.clamp_scroll_offset(id, offset);
+        self.scroll_to_offset(id, self.clamp_scroll_offset(id, offset));
+    }
+
+    /// Move `id` to `offset` as given: a touch overscroll, or a clamped one.
+    fn scroll_to_offset(&mut self, id: StableNodeId, offset: ScrollOffset) {
         let previous = self.record(id).scroll_offset;
         if previous != offset {
             self.record_mut(id).scroll_offset = offset;

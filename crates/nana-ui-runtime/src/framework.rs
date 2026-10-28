@@ -28,9 +28,11 @@ pub use text_edit::EditableHooks;
 mod scroll;
 mod select_menu;
 mod smooth_scroll;
+mod touch_scroll;
 pub(crate) use select_menu::{
     DROPDOWN_MENU_POINTER, SEARCH_DROPDOWN_MENU_POINTER, SELECT_MENU_POINTER,
 };
+pub use touch_scroll::ScrollPhysics;
 mod selection;
 pub use selection::FormValidity;
 #[cfg(feature = "rich-text")]
@@ -629,6 +631,8 @@ struct ComponentLifecycle {
     wheel_scrolls: HashMap<StableNodeId, smooth_scroll::WheelScroll, crate::BuildIdHasher>,
     /// Reused across samples; callbacks may mutate wheel_scrolls while we walk.
     wheel_scroll_due: Vec<StableNodeId>,
+    /// Touch gestures in flight, flings and bounces, and the physics they use.
+    touch_scroll: touch_scroll::TouchScrolls,
     /// The scrollbar lane each pointer is on: the scroll view and the axis.
     scrollbar_hot: HashMap<
         (DocumentId, u64),
@@ -1666,6 +1670,7 @@ impl AppContext {
         self.world.set_reduced_motion(reduced);
         if reduced {
             self.finish_wheel_scrolls();
+            self.finish_touch_scrolls();
         }
         let ids: Vec<_> = self
             .reduced_motion_reproject_views
@@ -4177,6 +4182,7 @@ impl AppContext {
             .retain(|_, target| !removed.contains(target));
         for id in removed {
             self.component_lifecycle.wheel_scrolls.remove(id);
+            self.stop_touch_fling(*id);
             self.component_lifecycle.tooltips.remove(id);
             self.component_lifecycle.loading.remove(id);
             self.component_lifecycle.toast_timers.remove(id);
@@ -4352,6 +4358,9 @@ mod scrollbar_tests;
 
 #[cfg(test)]
 mod smooth_scroll_tests;
+
+#[cfg(test)]
+mod touch_scroll_tests;
 
 /// A view an event handler ran on during another view's update.
 pub(super) struct TouchedObserver {
