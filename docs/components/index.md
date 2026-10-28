@@ -107,7 +107,7 @@
 - [SidebarFrame](sidebar-frame.md) — 侧栏框。不内置产品导航。
 - [SidebarSection](sidebar-section.md) — 侧栏分组。正文里的行由你给。
 - [SidebarRow](sidebar-row.md) — 侧栏一行。复用列表项的槽来画。
-- [SettingsRow](settings-row.md) — 设置行。具体的值仍由你的状态拥有。
+- [SettingsRow](settings-row.md) — 设置行；`label_column` 改成检查器式的对齐标签列。具体的值仍由你的状态拥有。
 - [Dock](dock.md) — 停靠。窗格里的内容是子节点。
 - [AreaLayout](area-layout.md) — DCC 式区域切分：从角上拖动切开或合并，区域可最大化，头部和内容按键放入，布局可序列化。
 - [SplitPane](split-pane.md) — 分割。尺寸来自 `SplitPaneModel`。

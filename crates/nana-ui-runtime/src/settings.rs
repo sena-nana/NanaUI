@@ -29,6 +29,12 @@ const ROW_INLINE_GAP: f32 = nana_ui_core::space::MD;
 const ROW_INLINE_GAP_LOOSE: f32 = nana_ui_core::space::XXL;
 const ROW_COPY_GAP: f32 = nana_ui_core::space::XXS;
 const ROW_LABEL_ACCESSORY_GAP: f32 = nana_ui_core::space::XS;
+/// Between a column row's control and its trailing node.
+const ROW_TRAILING_GAP: f32 = nana_ui_core::space::XXS;
+/// Between a column row's label column and its control, and between its
+/// label and control once it stacks.
+const ROW_COLUMN_GAP: f32 = nana_ui_core::space::XS;
+const ROW_COLUMN_STACK_GAP: f32 = nana_ui_core::space::XXS;
 /// Rows the framework assembles (appearance, about) put their control under
 /// the copy below this width: beside a segmented picker, a narrower row
 /// leaves the label and hint a column a few characters wide.
@@ -52,6 +58,15 @@ pub struct SettingsRow {
     /// The application's node after the label, on the label's line: a status
     /// pill, a badge. It keeps its width; the label gives way and elides.
     pub label_accessory: Option<StableNodeId>,
+    /// Lay the row out as an inspector's: the label in a column this many
+    /// logical pixels wide, the control growing from the column's edge and
+    /// the row only as tall as its control. Rows given the same width line
+    /// their controls up, card after card. `None` keeps the settings layout:
+    /// the copy on the left, the control pushed to the right edge.
+    pub label_column: Option<f32>,
+    /// The application's node after the control, on its line: the row's own
+    /// actions. It keeps its width; the control gives way.
+    pub trailing: Option<StableNodeId>,
     pub label_slot: Option<StableNodeId>,
     pub hint_slot: Option<StableNodeId>,
     pub(crate) copy_slot: Option<StableNodeId>,
@@ -61,6 +76,9 @@ pub struct SettingsRow {
     /// The tint [`AppContext::flash_settings_row`] paints under the row, only
     /// while it flashes.
     pub(crate) flash_slot: Option<StableNodeId>,
+    /// Holds the control and the trailing node, only while the row has a
+    /// label column or a trailing node.
+    pub(crate) control_slot: Option<StableNodeId>,
     pub style: NodeStyle,
 }
 
@@ -78,11 +96,14 @@ impl SettingsRow {
             last_in_group: false,
             control: None,
             label_accessory: None,
+            label_column: None,
+            trailing: None,
             label_slot: None,
             hint_slot: None,
             copy_slot: None,
             label_line_slot: None,
             flash_slot: None,
+            control_slot: None,
             style: NodeStyle::default(),
         }
     }
@@ -144,6 +165,21 @@ impl SettingsRow {
         self
     }
 
+    /// Put the label in a column `width` logical pixels wide and grow the
+    /// control from its edge; see [`Self::label_column`]. Non-finite or
+    /// non-positive widths keep the settings layout.
+    pub fn label_column(mut self, width: f32) -> Self {
+        self.label_column = (width.is_finite() && width > 0.0).then_some(width);
+        self
+    }
+
+    /// Put `trailing` after the control, on its line. Assembled by
+    /// [`AppContext::assemble_settings_row`], like the control.
+    pub fn trailing_child(mut self, trailing: StableNodeId) -> Self {
+        self.trailing = Some(trailing);
+        self
+    }
+
     pub fn label_slot(mut self, label: StableNodeId) -> Self {
         self.label_slot = Some(label);
         self
@@ -165,6 +201,13 @@ impl SettingsRow {
     }
 
     fn gap(&self, stacked: bool) -> f32 {
+        if self.label_column.is_some() {
+            return if stacked {
+                ROW_COLUMN_STACK_GAP
+            } else {
+                ROW_COLUMN_GAP
+            };
+        }
         match (stacked, self.loose) {
             (true, true) => ROW_STACK_GAP_LOOSE,
             (true, false) => ROW_STACK_GAP,
@@ -247,6 +290,20 @@ impl SettingsRow {
         layout.border_bottom_width = divider.then_some(nana_ui_core::HAIRLINE);
         layout.theme.border_bottom_width = divider
             .then(|| nana_ui_core::ThemeToken::Border(nana_ui_core::BorderWidth::Hairline).into());
+        if self.label_column.is_some() {
+            // An inspector row: the label column, then the control from its
+            // edge, and no band above or below the control.
+            layout.justify_content = JustifySpec::Start;
+            layout.theme.gap = Some(crate::theme_intent::space(if stacked {
+                nana_ui_core::SpacingStep::Xxs
+            } else {
+                nana_ui_core::SpacingStep::Xs
+            }));
+            layout.padding_top = Some(LengthSpec::Px(0.0));
+            layout.padding_bottom = Some(LengthSpec::Px(0.0));
+            layout.theme.padding_top = None;
+            layout.theme.padding_bottom = None;
+        }
         layout.font_size = Some(nana_ui_core::type_scale::BODY);
         crate::theme_intent::font(layout, nana_ui_core::TypeRole::Body);
         layout.line_height = Some(LineHeightSpec::Absolute(nana_ui_core::type_scale::BODY));
@@ -330,15 +387,30 @@ impl ComponentView for SettingsRow {
 impl SettingsRow {
     fn project_slots(&self, world: &UiWorld, mutations: &mut MutationQueue, stacked: bool) {
         if let Some(copy) = self.copy_slot {
-            SettingsRowCopy { stacked }.project(copy, world, mutations);
+            SettingsRowCopy {
+                stacked,
+                column: self.label_column,
+            }
+            .project(copy, world, mutations);
         }
         if let Some(line) = self.label_line_slot {
             SettingsRowLabelLine.project(line, world, mutations);
         }
         if let Some(label) = self.label_slot {
             let mut text = Text::new(self.label.as_ref());
-            text.style = label_slot_style(self.label.is_empty(), self.label_line_slot.is_some());
+            text.style = label_slot_style(
+                self.label.is_empty(),
+                self.label_line_slot.is_some(),
+                self.label_column.is_some(),
+            );
             text.project(label, world, mutations);
+        }
+        if let Some(control) = self.control_slot {
+            SettingsRowControl {
+                stacked,
+                grows: self.label_column.is_some(),
+            }
+            .project(control, world, mutations);
         }
         if let Some(flash) = self.flash_slot {
             SettingsRowFlash {
@@ -369,9 +441,16 @@ impl SettingsRow {
 /// On a line with an accessory the label is as wide as it reads, so the
 /// accessory sits right after it, and it is the one that gives way when the
 /// line is short: it shrinks and elides, the accessory keeps its width.
-fn label_slot_style(hidden: bool, on_line: bool) -> NodeStyle {
+///
+/// In a label column the label is the quieter half of the row, as in an
+/// inspector: muted and regular, so the values carry the row.
+fn label_slot_style(hidden: bool, on_line: bool, column: bool) -> NodeStyle {
     let mut style = NodeStyle::default();
-    style.foreground = Some(SemanticColorRole::Text);
+    style.foreground = Some(if column {
+        SemanticColorRole::Muted
+    } else {
+        SemanticColorRole::Text
+    });
     style.text_vertical_alignment = crate::TextVerticalAlignment::Center;
     let layout = Arc::make_mut(&mut style.layout);
     layout.font_size = Some(nana_ui_core::type_scale::BODY);
@@ -379,8 +458,19 @@ fn label_slot_style(hidden: bool, on_line: bool) -> NodeStyle {
     layout.line_height = Some(LineHeightSpec::Absolute(nana_ui_core::type_scale::BODY));
     layout.theme.line_height =
         Some(nana_ui_core::ThemeToken::Type(nana_ui_core::TypeRole::Body).into());
-    layout.font_weight = Some(nana_ui_core::type_scale::MEDIUM);
-    crate::theme_intent::weight(layout, nana_ui_core::TextWeight::Medium);
+    let (weight, step) = if column {
+        (
+            nana_ui_core::type_scale::REGULAR,
+            nana_ui_core::TextWeight::Regular,
+        )
+    } else {
+        (
+            nana_ui_core::type_scale::MEDIUM,
+            nana_ui_core::TextWeight::Medium,
+        )
+    };
+    layout.font_weight = Some(weight);
+    crate::theme_intent::weight(layout, step);
     if !on_line {
         layout.width = Some(LengthSpec::Fill);
         layout.flex_grow = Some(1.0);
@@ -418,6 +508,8 @@ fn hint_slot_style(hidden: bool) -> NodeStyle {
 #[derive(Debug, Clone, PartialEq)]
 struct SettingsRowCopy {
     stacked: bool,
+    /// The row's label column, see [`SettingsRow::label_column`].
+    column: Option<f32>,
 }
 
 impl SettingsRowCopy {
@@ -432,7 +524,70 @@ impl SettingsRowCopy {
         layout.flex_grow = Some(if self.stacked { 0.0 } else { 1.0 });
         layout.flex_shrink = Some(1.0);
         layout.min_width = Some(LengthSpec::Px(0.0));
+        if let (Some(width), false) = (self.column, self.stacked) {
+            // the column keeps its width; the control takes the rest
+            layout.width = Some(LengthSpec::Px(width));
+            layout.flex_grow = Some(0.0);
+            layout.flex_shrink = Some(0.0);
+        }
         style
+    }
+}
+
+/// The control and the row's trailing node, on one line. In a label column
+/// it grows from the column's edge to the row's end; without one it keeps
+/// the control's width at the row's end.
+#[derive(Debug, Clone, PartialEq)]
+struct SettingsRowControl {
+    stacked: bool,
+    grows: bool,
+}
+
+impl SettingsRowControl {
+    fn style(&self) -> NodeStyle {
+        let mut style = NodeStyle::default();
+        let layout = Arc::make_mut(&mut style.layout);
+        layout.direction = Some(FlexDirection::Row);
+        layout.align_items = AlignSpec::Center;
+        layout.flex_wrap = FlexWrap::NoWrap;
+        layout.gap = Some(LengthSpec::Px(ROW_TRAILING_GAP));
+        layout.theme.gap = Some(crate::theme_intent::space(nana_ui_core::SpacingStep::Xxs));
+        layout.min_width = Some(LengthSpec::Px(0.0));
+        if self.stacked {
+            layout.width = Some(LengthSpec::Fill);
+        } else if self.grows {
+            layout.flex_grow = Some(1.0);
+            layout.flex_shrink = Some(1.0);
+            layout.flex_basis = Some(LengthSpec::Px(0.0));
+        } else {
+            layout.flex_shrink = Some(0.0);
+        }
+        style
+    }
+}
+
+impl ComponentView for SettingsRowControl {
+    fn node_kind(&self) -> NodeKind {
+        NodeKind::Element {
+            tag: "settings-row-control".into(),
+        }
+    }
+
+    fn project(&self, id: StableNodeId, world: &UiWorld, mutations: &mut MutationQueue) {
+        project_common(
+            id,
+            world,
+            mutations,
+            &self.style(),
+            InteractionState {
+                pointer_events: false,
+                focusable: false,
+            },
+            AccessibilityState {
+                role: AccessibilityRole::Generic,
+                ..AccessibilityState::default()
+            },
+        );
     }
 }
 
@@ -2044,7 +2199,7 @@ fn styled_text(value: impl Into<String>, color: SemanticColorRole, size: f32, we
 }
 
 fn row_label_text(label: &str) -> Text {
-    Text::new(label).style(label_slot_style(label.is_empty(), false))
+    Text::new(label).style(label_slot_style(label.is_empty(), false, false))
 }
 
 fn row_hint_text(hint: &str, hidden: bool) -> Text {
@@ -2121,8 +2276,13 @@ fn mount_settings_row(
     let copy = if let Some(id) = copy_slot {
         Entity::<SettingsRowCopy>::from_stable_id(id)
     } else {
-        let entity =
-            context.create_detached_component(document, SettingsRowCopy { stacked: false })?;
+        let entity = context.create_detached_component(
+            document,
+            SettingsRowCopy {
+                stacked: false,
+                column: None,
+            },
+        )?;
         copy_slot = Some(entity.stable_id());
         entity
     };
@@ -2482,6 +2642,9 @@ impl AppContext {
         let (accessory, line_slot, flash_slot) = self.read(row, |row| {
             (row.label_accessory, row.label_line_slot, row.flash_slot)
         })?;
+        let (column, trailing, control_slot) = self.read(row, |row| {
+            (row.label_column, row.trailing, row.control_slot)
+        })?;
         let live = |context: &Self, slot: Option<StableNodeId>| {
             slot.filter(|id| context.world().contains(*id))
         };
@@ -2531,8 +2694,14 @@ impl AppContext {
             Some(id) => id,
             None => {
                 created = true;
-                self.create_detached_component(document, SettingsRowCopy { stacked: false })?
-                    .stable_id()
+                self.create_detached_component(
+                    document,
+                    SettingsRowCopy {
+                        stacked: false,
+                        column: None,
+                    },
+                )?
+                .stable_id()
             }
         };
         if created {
@@ -2575,7 +2744,8 @@ impl AppContext {
             let text = Entity::<Text>::from_stable_id(label_slot);
             if self.read(text, |_| ()).is_ok() {
                 self.update_component(text, |text, _| {
-                    text.style = label_slot_style(label.is_empty(), line.is_some());
+                    text.style =
+                        label_slot_style(label.is_empty(), line.is_some(), column.is_some());
                 })?;
             }
             if let Some(old) = live_line.filter(|old| Some(*old) != line) {
@@ -2586,10 +2756,33 @@ impl AppContext {
             }
         }
         let control = live(self, control);
+        // a label column or a trailing node puts the control in a box of its
+        // own, which holds the trailing node after it
+        let trailing = live(self, trailing);
+        let live_box = live(self, control_slot);
+        let control_box = match (column.is_some() || trailing.is_some(), live_box) {
+            (true, Some(id)) => Some(id),
+            (true, None) => Some(
+                self.create_detached_component(
+                    document,
+                    SettingsRowControl {
+                        stacked: false,
+                        grows: column.is_some(),
+                    },
+                )?
+                .stable_id(),
+            ),
+            (false, _) => None,
+        };
+        if let Some(control_box) = control_box {
+            let held: Vec<_> = control.into_iter().chain(trailing).collect();
+            changed |= self.reconcile_children(control_box, &held)?;
+        }
+        let box_changed = control_box != control_slot;
         let children: Vec<_> = live(self, flash_slot)
             .into_iter()
             .chain(std::iter::once(copy_slot))
-            .chain(control)
+            .chain(control_box.or(control))
             .collect();
         let previous = self
             .world()
@@ -2597,8 +2790,17 @@ impl AppContext {
             .map(|node| node.children.to_vec())
             .unwrap_or_default();
         changed |= reconcile_children(self, row, &children)?;
+        if box_changed {
+            self.update_component(row, |row, _| row.control_slot = control_box)?;
+            if let Some(old) = live_box.filter(|old| Some(*old) != control_box) {
+                // the control is back on the row: hand back what the box
+                // still holds before it goes
+                self.reconcile_children(old, &[])?;
+                self.remove_view(Entity::<SettingsRowControl>::from_stable_id(old))?;
+            }
+        }
         label_row_control(self, label_slot, control, &previous)?;
-        Ok(created || changed || line_changed)
+        Ok(created || changed || line_changed || box_changed)
     }
 
     /// Flash `row` to draw the eye to it, for a row the application has just

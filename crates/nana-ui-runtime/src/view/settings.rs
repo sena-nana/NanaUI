@@ -52,6 +52,7 @@ pub mod settings_row {
     pub struct stacked;
     pub struct first_in_group;
     pub struct last_in_group;
+    pub struct label_column;
 }
 
 macro_rules! row_fields {
@@ -89,6 +90,7 @@ row_fields! {
     stacked: bool,
     first_in_group: bool,
     last_in_group: bool,
+    label_column: Option<f32>,
 }
 
 impl<K> El<SettingsCollapsibleCard, K> {
@@ -126,6 +128,12 @@ impl<K> El<SettingsRow, K> {
     /// its label; the accessory is read as itself.
     pub fn label_accessory(self, view: impl IntoView) -> Self {
         self.slot(view, SettingsRow::label_accessory)
+    }
+
+    /// Something after the control, on its line, such as the row's own
+    /// actions: it keeps its width and the control gives way.
+    pub fn trailing(self, view: impl IntoView) -> Self {
+        self.slot(view, SettingsRow::trailing_child)
     }
 }
 
@@ -708,4 +716,85 @@ mod tests {
             cx.advance_animations(FRAME + length(&cx));
         }
     }
+
+    /// Rows with one label column line their controls up at its edge, are
+    /// only as tall as their controls, keep a trailing node after the
+    /// control, and still put the control under the label once narrow.
+    #[test]
+    fn label_column_rows_line_their_controls_up() {
+        use crate::view::{IntoView, column, text_input};
+        let document = DocumentId::new(1).unwrap();
+        let mut cx = AppContext::new();
+        let width = signal(360.0_f32);
+        let view = cx
+            .mount_view_root(document, move || {
+                column()
+                    .bind(move |c: &mut Stack| {
+                        c.layout_mut().width = Some(nana_ui_core::LengthSpec::Px(width.get()))
+                    })
+                    .children((
+                        settings_row("名称")
+                            .label_column(Some(96.0))
+                            .control(text_input().bind(|c| {
+                                c.style.layout_mut().width = Some(nana_ui_core::LengthSpec::Fill)
+                            })),
+                        settings_row("一个很长很长的标签")
+                            .label_column(Some(96.0))
+                            .control(switch(""))
+                            .trailing(switch("重置")),
+                    ))
+                    .into_any()
+            })
+            .unwrap();
+        let viewport = crate::LayoutViewport::new(800.0, 600.0);
+        let settle = |cx: &mut AppContext| {
+            cx.flush_reactive().unwrap();
+            cx.layout_document(document, viewport).unwrap();
+            cx.layout_document(document, viewport).unwrap();
+        };
+        settle(&mut cx);
+        let rows = children(&cx, view.roots()[0]);
+        let parts = |cx: &AppContext, row: StableNodeId| {
+            cx.read(Entity::<SettingsRow>::from_stable_id(row), |row| {
+                (row.control.unwrap(), row.copy_slot.unwrap(), row.trailing)
+            })
+            .unwrap()
+        };
+        let layout =
+            |cx: &AppContext, id: StableNodeId| cx.world().canonical_layout_box(id).unwrap();
+        let (name, name_copy, _) = parts(&cx, rows[0]);
+        let (toggle, toggle_copy, reset) = parts(&cx, rows[1]);
+        let reset = reset.unwrap();
+        for (row, copy, control) in [(rows[0], name_copy, name), (rows[1], toggle_copy, toggle)] {
+            let (row, copy, control) = (layout(&cx, row), layout(&cx, copy), layout(&cx, control));
+            assert_eq!(
+                copy.width, 96.0,
+                "the label keeps its column, long or short"
+            );
+            assert_eq!(
+                control.x,
+                row.x + 96.0 + ROW_GAP,
+                "controls start at the column's edge"
+            );
+            assert_eq!(
+                row.height,
+                control.height.max(copy.height),
+                "no band around the row"
+            );
+        }
+        assert_eq!(
+            layout(&cx, name).x + layout(&cx, name).width,
+            layout(&cx, rows[0]).x + 360.0,
+            "a control that fills reaches the row's end"
+        );
+        assert!(layout(&cx, reset).x >= layout(&cx, toggle).x + layout(&cx, toggle).width);
+
+        // narrower than a label column and a control, the control goes under
+        width.set(180.0);
+        settle(&mut cx);
+        let (copy, control) = (layout(&cx, name_copy), layout(&cx, name));
+        assert!(control.y >= copy.y + copy.height);
+    }
+
+    const ROW_GAP: f32 = nana_ui_core::space::XS;
 }
