@@ -207,6 +207,8 @@ Compact + Overlay 适合分离窗底栏（单行加边距约 52px）。Compact +
 
 **菜单按钮。** 会弹出菜单的控件声明 `has_popup`（`aria-haspopup="menu"`）：`Button`、`IconButton`、`ListItem` 的字段（`list_item("模型").has_popup(true)`，模板 `has_popup={true}`），自定义控件写进自己的 `AccessibilityState::has_popup`。读屏把它报成菜单按钮（AccessKit `HasPopup::Menu`）。焦点在它上面时，没有修饰键的 ArrowUp / ArrowDown 也派发 `keyboard: true` 的 `SecondaryPress`，和 `ContextMenu` 键一样。控件自己用方向键时（滑块、数字框）照旧归控件。按 WAI-ARIA 菜单按钮的约定，ArrowDown 的 `focus` 是 `Some(RovingEdge::Start)`（打开后聚焦第一项），ArrowUp 是 `Some(RovingEdge::End)`（最后一项）。菜单开不开、焦点是否照这一端落，仍由应用决定。
 
+**只显示的节点。** 角色本来会带动作、却只用来显示信息的节点（`ListItem` 的 `read_only`，`list_item("Hiyori").read_only(true)`）写 `AccessibilityState::display_only`：仍按原角色读出，不报禁用，但不提供 `Click` / `Focus` 动作，读屏发来的这两种请求也不转发。它和 `disabled` 不同：禁用是能操作而暂时不可用，画成禁用色；只显示的节点照常取色，同时不接指针与焦点（`InteractionState` 两项都为假）。
+
 **方向键焦点组。** 容器声明 `.roving_focus(RovingFocusGroup::vertical())`（或 `horizontal()`，`.wrap(true)` 首尾相接；`AppContext::set_roving_focus_group` 是同一份声明）后，焦点在组里的项上时，方向键在项之间移动焦点。这是 WAI-ARIA 工具栏和菜单的键盘约定。
 
 - 项是组下面可聚焦、未禁用、够得着的节点，按文档顺序。最近的组是谁，项就归谁：嵌套的组各管各的项。

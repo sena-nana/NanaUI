@@ -480,10 +480,10 @@ impl AccessibilityProjector {
             });
         }
         let action = match request.action {
-            Action::Click if supports_click(node.role) => {
+            Action::Click if supports_click(node.role) && !node.display_only => {
                 nana_ui_runtime::AccessibilityAction::Click
             }
-            Action::Focus if supports_focus(node.role) => {
+            Action::Focus if supports_focus(node.role) && !node.display_only => {
                 nana_ui_runtime::AccessibilityAction::Focus
             }
             Action::Increment if supports_numeric_step(node) => {
@@ -1149,12 +1149,14 @@ fn project_node(
             SelectionOrientation::Vertical => Orientation::Vertical,
         });
     }
-    if interactive && !node.disabled && supports_click(node.role) {
+    // A node that only shows something offers neither: it is still the role
+    // it says, a row of a list, just not one that acts.
+    let actionable = interactive && !node.disabled && !node.display_only;
+    if actionable && supports_click(node.role) {
         projected.add_action(Action::Click);
     }
     // A tree row's toggle only flips; the focus stays with the tree's rows.
-    if interactive
-        && !node.disabled
+    if actionable
         && supports_focus(node.role)
         && nana_ui_runtime::decode_virtual_tree_toggle(node.id).is_none()
     {
@@ -1494,6 +1496,7 @@ mod tests {
             role_description: None,
             value: None,
             disabled: false,
+            display_only: false,
             checked: None,
             mixed: false,
             orientation: None,
@@ -1985,6 +1988,37 @@ mod tests {
                 .children()
                 .is_empty()
         );
+    }
+
+    #[test]
+    fn a_display_only_row_offers_no_action_and_is_not_disabled() {
+        let root = node(1, None, &[2]);
+        let mut row = node(2, Some(1), &[]);
+        row.role = AccessibilityRole::ListItem;
+        row.display_only = true;
+        let (projector, update) = AccessibilityProjector::new(vec![root, row], true, 1.0);
+        let projected = &update
+            .nodes
+            .iter()
+            .find(|(id, _)| *id == NodeId(2))
+            .unwrap()
+            .1;
+        assert_eq!(projected.role(), Role::ListItem);
+        assert!(!projected.is_disabled());
+        assert!(!projected.supports_action(Action::Click));
+        assert!(!projected.supports_action(Action::Focus));
+        for action in [Action::Click, Action::Focus] {
+            assert!(
+                projector
+                    .project_action_request(ActionRequest {
+                        action,
+                        target_tree: TreeId::ROOT,
+                        target_node: NodeId(2),
+                        data: None,
+                    })
+                    .is_none()
+            );
+        }
     }
 
     #[test]

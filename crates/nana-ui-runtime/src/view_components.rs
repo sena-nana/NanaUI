@@ -1715,6 +1715,11 @@ pub struct ListItem {
     pub detail: String,
     pub selected: bool,
     pub disabled: bool,
+    /// The row only shows something: it takes no pointer, keyboard focus or
+    /// activation, so it neither highlights on hover nor offers a click, yet
+    /// it reads in the normal text colour and is not reported disabled. Use
+    /// [`Self::disabled`] for a row that could act but cannot now.
+    pub read_only: bool,
     pub(crate) slots: ListItemSlots,
     pub gap: f32,
     pub size: nana_ui_core::ControlSize,
@@ -1830,6 +1835,7 @@ impl ListItem {
             detail: String::new(),
             selected: false,
             disabled: false,
+            read_only: false,
             slots: ListItemSlots::default(),
             gap: nana_ui_core::space::MD,
             size: nana_ui_core::ControlSize::Small,
@@ -1918,6 +1924,18 @@ impl ListItem {
     pub fn disabled(mut self, disabled: bool) -> Self {
         self.disabled = disabled;
         self
+    }
+
+    /// The row only shows something; see [`Self::read_only`](field@Self::read_only).
+    pub fn read_only(mut self, read_only: bool) -> Self {
+        self.read_only = read_only;
+        self
+    }
+
+    /// Takes the pointer, focus and activation: neither disabled nor
+    /// read-only.
+    pub(crate) fn interactive(&self) -> bool {
+        !self.disabled && !self.read_only
     }
     /// Declarative projection hook for adapters that already own and validate
     /// the retained hierarchy. Direct Runtime consumers should prefer
@@ -2123,8 +2141,8 @@ impl ComponentView for ListItem {
             mutations,
             &self.effective_style_in(world.theme_metrics()),
             InteractionState {
-                pointer_events: !self.disabled,
-                focusable: !self.disabled,
+                pointer_events: self.interactive(),
+                focusable: self.interactive(),
             },
             AccessibilityState {
                 role: match self.role {
@@ -2133,6 +2151,7 @@ impl ComponentView for ListItem {
                 },
                 label: Some(Arc::from(accessible.as_str())),
                 disabled: self.disabled,
+                display_only: self.read_only && !self.disabled,
                 // A pressed toggle paints as selected, so the look holds.
                 checked: (self.role == ListItemRole::ToggleButton).then_some(self.selected),
                 has_popup: self.has_popup,

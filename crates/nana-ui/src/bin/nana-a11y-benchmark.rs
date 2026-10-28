@@ -17,6 +17,7 @@ fn node(value: u64) -> AccessibilityNode {
         description: None,
         role_description: None,
         disabled: false,
+        display_only: false,
         checked: None,
         mixed: false,
         orientation: None,

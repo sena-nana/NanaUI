@@ -3621,6 +3621,10 @@ pub struct AccessibilityState {
     /// equivalent of `aria-hidden="true"` for decorative subtrees.
     pub hidden: bool,
     pub disabled: bool,
+    /// The node only shows something: no action (click, focus) is offered
+    /// for it even where its role usually takes one, and it is not
+    /// disabled either — a read-only list row, not an unavailable one.
+    pub display_only: bool,
     pub checked: Option<bool>,
     /// Tri-state checkbox in its mixed state. Wins over `checked`.
     pub mixed: bool,
@@ -3655,6 +3659,8 @@ pub struct AccessibilityNode {
     pub description: Option<Arc<str>>,
     pub role_description: Option<Arc<str>>,
     pub disabled: bool,
+    /// See [`AccessibilityState::display_only`].
+    pub display_only: bool,
     pub checked: Option<bool>,
     pub mixed: bool,
     pub orientation: Option<crate::SelectionOrientation>,

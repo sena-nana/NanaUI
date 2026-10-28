@@ -492,6 +492,7 @@ impl UiWorld {
                     || self
                         .confirm_action_effect(id)
                         .is_some_and(|effect| effect.0)),
+            display_only: state.display_only,
             checked: state.checked,
             mixed: state.mixed,
             orientation: state.orientation,
@@ -591,6 +592,7 @@ impl UiWorld {
                     description: row.hint.clone(),
                     role_description: None,
                     disabled: row.disabled,
+                    display_only: false,
                     checked: row.mark.checked(),
                     mixed: false,
                     orientation: None,
@@ -690,6 +692,7 @@ impl UiWorld {
                 description: None,
                 role_description: None,
                 disabled: row.disabled,
+                display_only: false,
                 checked: None,
                 mixed: false,
                 orientation: None,
@@ -725,6 +728,7 @@ impl UiWorld {
                     description: None,
                     role_description: None,
                     disabled: row.disabled,
+                    display_only: false,
                     checked: Some(row.toggles.get(column).copied().unwrap_or(false)),
                     mixed: false,
                     orientation: None,

@@ -2544,7 +2544,7 @@ impl AppContext {
     }
 
     pub fn activate_list_item(&mut self, entity: Entity<ListItem>) -> Result<bool, FrameworkError> {
-        self.activate_component(entity, |item| item.disabled)
+        self.activate_component(entity, |item| !item.interactive())
     }
 
     pub fn activate_hover_card(
