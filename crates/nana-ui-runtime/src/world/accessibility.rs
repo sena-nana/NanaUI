@@ -658,6 +658,9 @@ impl UiWorld {
                 .iter()
                 .enumerate()
                 .filter_map(|(column, label)| {
+                    if nana_ui_core::tree::toggle_hidden(row.hidden_toggles, column) {
+                        return None;
+                    }
                     let toggle = crate::virtual_tree_toggle_id(tree.id, slot, column)?;
                     // without geometry, a square of the row's height per
                     // column at its end

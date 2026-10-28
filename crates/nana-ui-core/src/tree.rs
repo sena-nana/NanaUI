@@ -12,6 +12,10 @@ pub struct TreeNode<Id> {
     /// The row's on / off states, one per toggle column of the tree
     /// (visible, locked). Missing entries read as off.
     pub toggles: Vec<bool>,
+    /// Toggle columns this row has no toggle in, one bit per column: the
+    /// cell is not drawn, pressed, dragged across or announced. A folder row
+    /// in a layer tree, say, has no visibility of its own.
+    pub hidden_toggles: u64,
     pub children: Vec<TreeNode<Id>>,
 }
 
@@ -26,6 +30,7 @@ impl<Id> TreeNode<Id> {
             selected: false,
             disabled: false,
             toggles: Vec::new(),
+            hidden_toggles: 0,
             children: Vec::new(),
         }
     }
@@ -45,6 +50,7 @@ impl<Id> TreeNode<Id> {
             selected: false,
             disabled: false,
             toggles: Vec::new(),
+            hidden_toggles: 0,
             children: children.into_iter().collect(),
         }
     }
@@ -69,6 +75,31 @@ impl<Id> TreeNode<Id> {
         self.toggles = toggles.into_iter().collect();
         self
     }
+
+    /// Leave toggle `column` off this row: nothing drawn, pressed or
+    /// announced there. Columns past 63 cannot be hidden.
+    pub fn hide_toggle(mut self, column: usize) -> Self {
+        if column < 64 {
+            self.hidden_toggles |= 1 << column;
+        }
+        self
+    }
+
+    /// Leave every toggle column off this row.
+    pub fn hide_toggles(mut self) -> Self {
+        self.hidden_toggles = u64::MAX;
+        self
+    }
+
+    /// Whether this row has no toggle in `column`.
+    pub fn toggle_hidden(&self, column: usize) -> bool {
+        toggle_hidden(self.hidden_toggles, column)
+    }
+}
+
+/// Whether bit `column` of a [`TreeNode::hidden_toggles`] mask is set.
+pub fn toggle_hidden(mask: u64, column: usize) -> bool {
+    column < 64 && mask & (1 << column) != 0
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

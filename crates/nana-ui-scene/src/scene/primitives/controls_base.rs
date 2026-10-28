@@ -800,6 +800,10 @@ pub(super) fn build(context: &GeometryPaintContext<'_>, emit: &mut impl FnMut(Sc
                 let index = u64::try_from(index).unwrap_or(u64::MAX);
                 // toggle columns: a slot range of their own, eight per row
                 for (column, (icon, icon_bounds, color)) in row.toggles.iter().enumerate() {
+                    // a column this row has no toggle in
+                    if icon_bounds.width <= 0.0 {
+                        continue;
+                    }
                     let column = u64::try_from(column).unwrap_or(7).min(7);
                     emit(ScenePrimitive {
                         id: PrimitiveId {

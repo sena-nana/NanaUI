@@ -161,6 +161,8 @@ pub struct TreeRowData {
     pub selected: bool,
     pub disabled: bool,
     pub toggles: Vec<bool>,
+    /// Columns this row has no toggle in; see [`TreeNode::hidden_toggles`].
+    pub hidden_toggles: u64,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -474,6 +476,7 @@ fn collect_rows(nodes: &[TreeNode<Arc<str>>], depth: u8, rows: &mut Vec<TreeRowD
             selected: node.selected,
             disabled: node.disabled,
             toggles: node.toggles.clone(),
+            hidden_toggles: node.hidden_toggles,
         });
         if node.branch && node.expanded {
             collect_rows(&node.children, depth.saturating_add(1), rows);
@@ -651,13 +654,20 @@ pub(crate) fn tree_view_geometry(
                 .enumerate()
                 .map(|(column, icon)| {
                     let on = row.toggles.get(column).copied().unwrap_or(false);
+                    // A hidden cell keeps its column index with an empty box:
+                    // nothing is drawn or hit there.
+                    let side = if nana_ui_core::tree::toggle_hidden(row.hidden_toggles, column) {
+                        0.0
+                    } else {
+                        tree.icon
+                    };
                     (
                         *icon,
                         LayoutBox {
                             x: toggles_x + column as f32 * (tree.icon + tree.inset),
                             y: y + (row_height - tree.icon) / 2.0,
-                            width: tree.icon,
-                            height: tree.icon,
+                            width: side,
+                            height: side,
                         },
                         if on {
                             palette.muted.as_rgba_array()
@@ -742,7 +752,7 @@ fn tree_toggle_at(rows: &[TreeRowGeometry], x: f32, y: f32) -> Option<(usize, us
     let cells = &rows[row].toggles;
     let column = cells.iter().position(|(_, icon, _)| {
         let reach = (rows[row].bounds.height - icon.height).max(0.0) / 2.0;
-        x >= icon.x - reach && x < icon.x + icon.width + reach
+        icon.width > 0.0 && x >= icon.x - reach && x < icon.x + icon.width + reach
     })?;
     Some((row, column))
 }
@@ -1028,6 +1038,10 @@ fn set_toggle(
     on: bool,
 ) -> Option<TreeToggleChanged> {
     let node = find_node_mut(&mut tree.nodes, id)?;
+    // a drag across the column passes over rows without one
+    if node.toggle_hidden(column) {
+        return None;
+    }
     if node.toggles.len() <= column {
         node.toggles.resize(column + 1, false);
     }
@@ -1941,6 +1955,89 @@ mod tests {
             .find(|node| node.id == toggle_node(tree, 2, 1))
             .expect("a renamed column is projected again");
         assert_eq!(locked.label.as_deref(), Some("锁住"));
+    }
+
+    #[test]
+    fn a_hidden_toggle_is_not_drawn_pressed_dragged_over_or_announced() {
+        let (mut context, tree, heard) = heard_tree(
+            TreeView::new([
+                TreeNode::branch(
+                    Arc::from("group"),
+                    "group",
+                    true,
+                    [TreeNode::leaf(Arc::from("a"), "a").toggles([false, false])],
+                )
+                .hide_toggles(),
+                TreeNode::leaf(Arc::from("b"), "b")
+                    .toggles([false, false])
+                    .hide_toggle(1),
+                TreeNode::leaf(Arc::from("c"), "c").toggles([false, false]),
+            ])
+            .columns([
+                TreeToggleColumn::new(Icon::Eye, "显示"),
+                TreeToggleColumn::new(Icon::ShieldCheck, "锁定"),
+            ]),
+        );
+        let geometry = row_geometry(&context, tree);
+        let drawn = |row: usize| {
+            geometry[row]
+                .toggles
+                .iter()
+                .map(|(_, bounds, _)| bounds.width > 0.0)
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(drawn(0), [false, false]);
+        assert_eq!(drawn(1), [true, true]);
+        assert_eq!(drawn(2), [true, false]);
+
+        // a press where b's lock would be toggles nothing
+        let lock_x = mid(geometry[1].toggles[1].1).0;
+        pointer_click(&mut context, (lock_x, mid(geometry[2].bounds).1));
+        assert!(
+            take(&heard)
+                .iter()
+                .all(|event| !event.starts_with("TreeToggleChanged"))
+        );
+
+        // dragging down the lock column from a to c passes over b
+        {
+            use nana_ui_input::{InputPayload, PointerInput, PointerPhase};
+            let mut input = crate::HeadlessInput::bind(&mut context, document());
+            for (phase, row) in [
+                (PointerPhase::Down, 1),
+                (PointerPhase::Move, 2),
+                (PointerPhase::Move, 3),
+                (PointerPhase::Up, 3),
+            ] {
+                let y = mid(geometry[row].bounds).1;
+                input
+                    .route(
+                        &mut context,
+                        InputPayload::Pointer(PointerInput::mouse(phase, lock_x, y)),
+                    )
+                    .unwrap();
+            }
+        }
+        assert_eq!(
+            take(&heard),
+            [
+                r#"TreeToggleChanged { id: "a", column: 1, on: true }"#,
+                r#"TreeToggleChanged { id: "c", column: 1, on: true }"#,
+            ]
+        );
+        assert_eq!(
+            context
+                .read(tree, |tree| tree.nodes[1].toggles.clone())
+                .unwrap(),
+            [false, false],
+            "b keeps no lock"
+        );
+
+        let announced = toggle_semantics(&context, tree)
+            .iter()
+            .map(Vec::len)
+            .collect::<Vec<_>>();
+        assert_eq!(announced, [0, 2, 1, 2]);
     }
 
     #[test]
