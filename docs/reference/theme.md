@@ -135,7 +135,7 @@ nana_ui_core::motion::{HOVER_COLOR, …} ─────► 组件动画
 | **L3 Rust** | `view_components.rs` 的 `impl ComponentView`：按 `ButtonKind` 等语义选 `SemanticColorRole`，写进 `NodeStyle.interaction`；几何与其余颜色由 `world/geometry.rs` + `world/extraction.rs` 决定 | 同一控件的外观分散在三处：组件体（角色 + 状态）、extraction（`StandardVisual` 配色）、scene primitives（圆角/描边） |
 | **CSS** | [`css_map.rs`](../../crates/nana-ui-css/src/css_map.rs) 把 CSS 子集映射到 Layout；[`style.rs`](../../crates/nana-ui-css/src/style.rs) 只做 paint 解析；已知 token 名经 `SemanticColorRole::from_css_token_name` 进 Tokens，未知 `#hex` 只能当受限 paint hint | 规则已经写死且有测试，是目前最干净的一层 |
 
-`from_css_token_name` 认得的名字就是 CSS 的正式 token 表面：`background`/`surface`/`subtle`/`raised`（别名 `elevated`）/`hover`/`active`/`selected*`/`border*`/`text`/`muted`/`faint`/`accent*`/`success`/`warning*`/`danger*`/`titlebar`/`on-media`。以及 `--nana-` 前缀与 `var()` 包裹。9 个代码 token 角色（`Keyword`/`Function`/…）**不在** CSS 表面。只在 L3 语义高亮里用。
+`from_css_token_name` 认得的名字就是 CSS 的正式 token 表面：`background`/`surface`/`subtle`/`raised`（别名 `elevated`）/`header`/`hover`/`active`/`selected*`/`border*`/`text`/`muted`/`faint`/`accent*`/`success`/`warning*`/`danger*`/`titlebar`/`on-media`。以及 `--nana-` 前缀与 `var()` 包裹。9 个代码 token 角色（`Keyword`/`Function`/…）**不在** CSS 表面。只在 L3 语义高亮里用。
 
 ### 1.4 审计发现
 

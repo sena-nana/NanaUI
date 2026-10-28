@@ -113,7 +113,7 @@ widget(AreaLayout::new(model).editor_select(AreaEditorSelect::new(["outliner", "
 | `AreaLayout::new(model)` | `AreaLayoutModel` | 初始布局 |
 | `.gap(px)` | `f32` | 区域间隙，也是分隔条的宽度，默认 2 |
 | `.min_size(px)` | `f32` | 分隔条两侧、切开后两半的最小尺寸，默认 48 |
-| `.chrome(外观)` | `AreaChrome` | 每个区域的外观：`frame_radius` 是区域框的圆角档（默认 `RadiusTier::Sm`），`header_background` 是头部底色角色（默认 `Subtle`，区域框本身是 `Surface`），`header_divider` 在头部和内容之间画一道细线（默认关）。加大间隙、头部改用 `Surface`、打开细线、圆角取 `Lg`，各区域就成了浮在背景上的独立面板 |
+| `.chrome(外观)` | `AreaChrome` | 每个区域的外观：`frame_radius` 是区域框的圆角档（默认 `RadiusTier::Sm`），`header_background` 是头部底色角色（默认 `Subtle`，区域框本身是 `Surface`；要让头部成一条独立色带可以用 `Header`），`header_divider` 在头部和内容之间画一道细线（默认关）。加大间隙、头部改用 `Surface`、打开细线、圆角取 `Lg`，各区域就成了浮在背景上的独立面板 |
 | `.labels([(编辑器, 名称)])` | `(String, Arc<str>)` | 各种编辑器的区域在读屏里的名称，也是头部下拉的选项名称，按编辑器类型 id；没给的用 id |
 | `.editor_select(下拉)` | `AreaEditorSelect` | 每个区域头部最左边的编辑器类型下拉：`editors` 是选项（类型 id，按顺序），`label` 是读屏名称 |
 | `.style(style)` | `NodeStyle` | 根节点样式，默认铺满父级 |

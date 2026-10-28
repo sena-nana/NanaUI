@@ -961,12 +961,13 @@ const MOTION_NAMES: [&str; 9] = [
     "motion.attention",
 ];
 
-fn palette_fields(palette: &SemanticPalette) -> [(&'static str, SemanticColor); 25] {
+fn palette_fields(palette: &SemanticPalette) -> [(&'static str, SemanticColor); 26] {
     [
         ("palette.background", palette.background),
         ("palette.surface", palette.surface),
         ("palette.subtle", palette.subtle),
         ("palette.raised", palette.raised),
+        ("palette.header", palette.header),
         ("palette.hover", palette.hover),
         ("palette.active", palette.active),
         ("palette.selected", palette.selected),

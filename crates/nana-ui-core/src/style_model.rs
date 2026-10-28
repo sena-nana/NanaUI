@@ -262,6 +262,10 @@ pub enum SemanticColorRole {
     /// outline. Built-in palettes set it to the surface, so a theme that never
     /// names it looks exactly as before.
     Raised,
+    /// A header band across the top of a panel, section or card: the strip
+    /// that carries its title and tools. Built-in palettes set it to the
+    /// subtle surface, so a theme that never names it looks exactly as before.
+    Header,
     Hover,
     Active,
     Selected,
@@ -356,6 +360,7 @@ impl SemanticColorRole {
             "surface" | "panel" => Self::Surface,
             "subtle" => Self::Subtle,
             "raised" | "elevated" => Self::Raised,
+            "header" => Self::Header,
             "hover" => Self::Hover,
             "active" | "pressed" => Self::Active,
             "selected" => Self::Selected,
@@ -464,6 +469,8 @@ pub struct SemanticPalette {
     pub subtle: SemanticColor,
     /// See [`SemanticColorRole::Raised`].
     pub raised: SemanticColor,
+    /// See [`SemanticColorRole::Header`].
+    pub header: SemanticColor,
     pub hover: SemanticColor,
     pub active: SemanticColor,
     pub selected: SemanticColor,
@@ -511,6 +518,7 @@ impl SemanticPalette {
             surface: SemanticColor::rgb8(32, 32, 32),
             subtle: SemanticColor::rgb8(28, 28, 28),
             raised: SemanticColor::rgb8(32, 32, 32),
+            header: SemanticColor::rgb8(28, 28, 28),
             hover: SemanticColor::rgb8(45, 45, 45),
             active: SemanticColor::rgb8(53, 53, 53),
             selected: SemanticColor::rgb8(53, 53, 53),
@@ -552,6 +560,7 @@ impl SemanticPalette {
             surface: SemanticColor::rgb8(243, 244, 246),
             subtle: SemanticColor::rgb8(247, 248, 250),
             raised: SemanticColor::rgb8(243, 244, 246),
+            header: SemanticColor::rgb8(247, 248, 250),
             hover: SemanticColor::rgb8(235, 237, 240),
             active: SemanticColor::rgb8(223, 226, 231),
             selected: SemanticColor::rgb8(226, 226, 226),
@@ -608,6 +617,7 @@ impl SemanticPalette {
             surface: black,
             subtle: black,
             raised: black,
+            header: black,
             hover: SemanticColor::rgb8(32, 32, 32),
             active: SemanticColor::rgb8(64, 64, 64),
             selected: SemanticColor::rgb8(0, 0, 170),
@@ -651,6 +661,7 @@ impl SemanticPalette {
             surface: white,
             subtle: white,
             raised: white,
+            header: white,
             hover: SemanticColor::rgb8(228, 228, 228),
             active: SemanticColor::rgb8(204, 204, 204),
             selected: SemanticColor::rgb8(179, 215, 255),
@@ -758,6 +769,7 @@ impl SemanticPalette {
             SemanticColorRole::Surface => &mut self.surface.a,
             SemanticColorRole::Subtle => &mut self.subtle.a,
             SemanticColorRole::Raised => &mut self.raised.a,
+            SemanticColorRole::Header => &mut self.header.a,
             SemanticColorRole::Hover => &mut self.hover.a,
             SemanticColorRole::Active => &mut self.active.a,
             SemanticColorRole::Selected => &mut self.selected.a,
@@ -804,6 +816,7 @@ impl SemanticPalette {
             SemanticColorRole::Surface => self.surface,
             SemanticColorRole::Subtle => self.subtle,
             SemanticColorRole::Raised => self.raised,
+            SemanticColorRole::Header => self.header,
             SemanticColorRole::Hover => self.hover,
             SemanticColorRole::Active => self.active,
             SemanticColorRole::Selected => self.selected,
@@ -1092,6 +1105,34 @@ mod tests {
         assert_eq!(
             SemanticColorRole::from_css_token_name("raised"),
             Some(SemanticColorRole::Raised)
+        );
+    }
+
+    #[test]
+    fn built_in_palettes_band_headers_in_the_subtle_surface_until_a_theme_names_it() {
+        for palette in [
+            SemanticPalette::dark(),
+            SemanticPalette::light(),
+            SemanticPalette::high_contrast(),
+            SemanticPalette::high_contrast_light(),
+        ] {
+            assert_eq!(
+                palette.get_in(SemanticColorRole::Header, OpacityTokens::DARK),
+                palette.subtle
+            );
+        }
+        let header = SemanticColor::rgb8(4, 5, 6);
+        let palette = SemanticPalette {
+            header,
+            ..SemanticPalette::dark()
+        };
+        assert_eq!(
+            palette.get_in(SemanticColorRole::Header, OpacityTokens::DARK),
+            header
+        );
+        assert_eq!(
+            SemanticColorRole::from_css_token_name("header"),
+            Some(SemanticColorRole::Header)
         );
     }
 
