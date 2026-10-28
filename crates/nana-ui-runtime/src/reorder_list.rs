@@ -661,6 +661,9 @@ pub struct ReorderList {
     pub spacing: f32,
     pub size: ControlSize,
     pub tree_drop: bool,
+    /// Rows move: a press that travels drags its row. Off, the list only
+    /// selects, a click-only list of rows a drag would not change.
+    pub reorder: bool,
     /// How far each level of [`ReorderItem::depth`] sits in, for the insert
     /// line and for picking a depth with the pointer.
     pub indent: f32,
@@ -682,6 +685,7 @@ impl ReorderList {
             spacing: DEFAULT_SPACING,
             size: ControlSize::Small,
             tree_drop: false,
+            reorder: true,
             indent: DEFAULT_INDENT,
             accepts_root: ReorderAccepts::All,
             live_rows: false,
@@ -704,6 +708,12 @@ impl ReorderList {
 
     pub fn tree_drop(mut self, enabled: bool) -> Self {
         self.tree_drop = enabled;
+        self
+    }
+
+    /// See [`Self::reorder`](field@Self::reorder).
+    pub fn reorder(mut self, enabled: bool) -> Self {
+        self.reorder = enabled;
         self
     }
 
@@ -850,7 +860,7 @@ impl ReorderList {
     /// not move. The row carries the rows it holds.
     pub fn key_move(&self, source: &str, step: ReorderKeyMove) -> Option<ReorderListEvent> {
         let index = self.item_index(source)?;
-        if self.drag.is_some() || !self.items[index].is_source() {
+        if !self.reorder || self.drag.is_some() || !self.items[index].is_source() {
             return None;
         }
         let rules = DropRules::of(self);
@@ -924,6 +934,10 @@ impl ReorderList {
     }
 
     fn move_to(&mut self, x: f32, y: f32) {
+        // never moved, the release is a click
+        if !self.reorder {
+            return;
+        }
         if let Some(drag) = self.drag.as_mut() {
             drag.follow(x, y);
         }
@@ -1336,6 +1350,9 @@ impl crate::AppContext {
             let Some(armed) = list.armed.as_mut() else {
                 return false;
             };
+            if !list.reorder {
+                return false;
+            }
             armed.drag.follow(x, y);
             if !armed.drag.moved {
                 return false;
@@ -1626,6 +1643,19 @@ mod tests {
                 before: Some(Arc::from("a")),
             })
         );
+    }
+
+    #[test]
+    fn a_list_that_does_not_reorder_only_selects() {
+        let mut list = sample().reorder(false);
+        apply(&mut list, ReorderListPointer::Down { x: 40.0, y: 72.0 });
+        apply(&mut list, ReorderListPointer::Move { x: 40.0, y: 12.0 });
+        assert_eq!(list.drag_visual(), None);
+        assert_eq!(
+            apply(&mut list, ReorderListPointer::Up { x: 40.0, y: 12.0 }),
+            Some(ReorderListEvent::Select(Arc::from("c")))
+        );
+        assert_eq!(list.key_move("c", ReorderKeyMove::Up), None);
     }
 
     #[test]

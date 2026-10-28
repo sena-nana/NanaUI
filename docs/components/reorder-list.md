@@ -58,7 +58,7 @@ widget(
 
 ## 列表
 
-`.spacing` 是行距，`.size` 默认小号，`.label` 是列表的可访问名。`.tree_drop(true)` 允许拖到树上。
+`.spacing` 是行距，`.size` 默认小号，`.label` 是列表的可访问名。`.tree_drop(true)` 允许拖到树上。`.reorder(false)` 让列表只能点选：按下后怎么移动都不会拖起，松手发 `Select`。
 
 ## 树
 
@@ -147,6 +147,7 @@ each(ids, |id| id.clone(), entry_row).container(
 | `.size` | — | 默认小号 |
 | `.label` | — | 列表的可访问名 |
 | `.tree_drop` | — | `true` 允许拖到树上 |
+| `.reorder` | `true` | `false` 时只点选、不拖动 |
 | `.depth` | `u16` | 写在行上。树里的深度，顶层 0，默认 0 |
 | `.kind` | — | 写在行上。行的类型，供 `ReorderAccepts` 判断 |
 | `.accepts_inside` | `ReorderAccepts` | 写在行上。哪些类型能放进这一行，默认 `All`；`Nothing` 时这一行按上下两半算前后 |
