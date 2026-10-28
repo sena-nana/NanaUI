@@ -9,7 +9,7 @@ use std::time::Duration;
 use nana_ui_core::TableNavigation;
 use nana_ui_input::{
     CompositionInput, HostServices, InputDisposition, InputModifiers, KeyInput, PointerInput,
-    PointerPhase, WheelInput, WheelUnit,
+    PointerPhase, PointerType, WheelInput, WheelUnit,
 };
 
 use crate::{
@@ -110,6 +110,13 @@ impl AppContext {
         let pointer_id = &pointer.pointer_id.0;
         let held = (document, *pointer_id);
         self.note_pointer_detail(document, pointer, now);
+        // A finger past the slop scrolls; until then the press is ordinary.
+        let touch = pointer.pointer_type == PointerType::Touch;
+        if touch
+            && let Some(disposition) = self.touch_scroll_pointer(document, pointer, now, landed)?
+        {
+            return Ok(disposition);
+        }
         match phase {
             PointerPhase::Down if (*is_primary && *button == 0) || *button == 1 => {
                 if self
@@ -167,18 +174,21 @@ impl AppContext {
         // A shown scrollbar lane takes the pointer from the content under it:
         // the row there loses its hover and its tooltip, the lane heats up,
         // and a press there grabs the bar. A captured pointer stays with its
-        // capture, a drag included.
+        // capture, a drag included. A finger scrolls the content instead.
         let captured = self
             .world()
             .pointer_capture(document, *pointer_id)
             .is_some();
-        let lane = if captured || matches!(phase, PointerPhase::Cancel) {
+        let lane = if captured || touch || matches!(phase, PointerPhase::Cancel) {
             None
         } else {
             self.scrollbar_target_near_hit(*x, *y, overlay.target)
         };
         let target = lane.map_or(overlay.target, |(view, _)| Some(view));
         *landed = target;
+        if touch && *phase == PointerPhase::Down {
+            self.note_touch_target(document, *pointer_id, target);
+        }
         self.set_pointer_location(document, *pointer_id, Some((*x, *y)));
         self.set_pointer_hover_at(document, *pointer_id, target, now)?;
         if !captured {

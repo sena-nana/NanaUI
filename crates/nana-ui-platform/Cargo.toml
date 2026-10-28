@@ -32,8 +32,9 @@ tungstenite = { workspace = true, optional = true }
 
 # Desktop OS clipboard only. Android does not compile arboard; the Android
 # host uses JNI ClipboardManager ([`AndroidClipboard`]). OHOS (`target_os` is
-# `linux`) does not either; its host injects the pasteboard (docs/reference/ohos.md).
-[target.'cfg(not(any(target_os = "android", target_env = "ohos")))'.dependencies]
+# `linux`) and iOS (arboard falls through to X11 there) do not either; their
+# hosts inject the pasteboard (docs/reference/ohos.md, docs/reference/ios.md).
+[target.'cfg(not(any(target_os = "android", target_os = "ios", target_env = "ohos")))'.dependencies]
 arboard = { version = "3.6", default-features = false, optional = true }
 
 # The clipboard's change count, which arboard does not expose: what tells a

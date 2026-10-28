@@ -279,8 +279,9 @@ pub use framework::{
     Entity, ExtensionRegistrar, FormValidity, FrameworkError, HeadlessInput, InputBindError,
     InputCounters, InputRouteError, InputRouteOutcome, NodePointer, NodePointerHooks, NodeWheel,
     OverlayKey, OverlayPointerDecision, OverlayPointerPhase, RoutedEvent, RuntimeOverlayKind,
-    Subscription, Task, TextDeleteKind, TextEditAction, TextEditOrigin, TextFindScope, UiExtension,
-    View, ViewContext, VirtualListItems, VirtualTableItems, VirtualTreeItems,
+    ScrollPhysics, Subscription, Task, TextDeleteKind, TextEditAction, TextEditOrigin,
+    TextFindScope, UiExtension, View, ViewContext, VirtualListItems, VirtualTableItems,
+    VirtualTreeItems,
 };
 #[doc(hidden)]
 pub use framework::{EditableHooks, TypeBehavior, TypeHooks};

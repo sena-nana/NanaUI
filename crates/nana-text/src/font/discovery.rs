@@ -67,11 +67,28 @@ fn meta(info: &fontdb::FaceInfo) -> FaceMeta {
         weight: f32::from(info.weight.0),
         stretch: stretch_percent(info.stretch),
         style: match info.style {
-            fontdb::Style::Normal => FontStyle::Normal,
+            fontdb::Style::Normal => named_style(&info.post_script_name),
             fontdb::Style::Italic => FontStyle::Italic,
             fontdb::Style::Oblique => FontStyle::Oblique,
         },
         monospaced: info.monospaced,
+    }
+}
+
+/// The slope a PostScript name's style part (after the last `-`) spells,
+/// for faces whose OS/2 table leaves the italic and oblique bits clear:
+/// Apple's `HelveticaNeue-MediumItalic` and `-ThinItalic` do, and would
+/// otherwise tie with the upright face and win the tie as the later one.
+fn named_style(post_script_name: &str) -> FontStyle {
+    let Some((_, style)) = post_script_name.rsplit_once('-') else {
+        return FontStyle::Normal;
+    };
+    if style.ends_with("Italic") {
+        FontStyle::Italic
+    } else if style.ends_with("Oblique") {
+        FontStyle::Oblique
+    } else {
+        FontStyle::Normal
     }
 }
 
@@ -127,6 +144,16 @@ fn faces(db: &fontdb::Database) -> Vec<(DiscoveredSource, FaceMeta)> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_postscript_style_part_names_the_slope_the_os2_bits_omit() {
+        assert_eq!(named_style("HelveticaNeue-MediumItalic"), FontStyle::Italic);
+        assert_eq!(named_style("Helvetica-Oblique"), FontStyle::Oblique);
+        assert_eq!(named_style("HelveticaNeue-Medium"), FontStyle::Normal);
+        // Only the style part counts, never the family part.
+        assert_eq!(named_style("ItalicSans-Regular"), FontStyle::Normal);
+        assert_eq!(named_style("NoStylePart"), FontStyle::Normal);
+    }
 
     #[test]
     fn ohos_scan_reads_faces_from_the_configured_dir_under_the_root() {

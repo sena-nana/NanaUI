@@ -640,6 +640,37 @@ pub const COMPACT_METRICS: ThemeMetrics = ThemeMetrics {
     ..UI_METRICS
 };
 
+/// Touch density for phones and tablets: every control and row is at least
+/// the 44 pt minimum touch target of the platform guidelines, switches grow to
+/// a thumb-sized track, insets loosen to match. Colours, type sizes and radii
+/// stay. A mobile host installs it with
+/// `ThemeDefinition::with_metrics(TOUCH_METRICS)`.
+pub const TOUCH_METRICS: ThemeMetrics = ThemeMetrics {
+    compact_control_height: 44.0,
+    control_height: 44.0,
+    compact_control_padding_x: space::LG,
+    control_padding_x: space::XL,
+    selection_height: 48.0,
+    icon_button_size: 44.0,
+    field_padding_x: space::XL,
+    list_item_padding_x: space::LG,
+    large_control_padding_x: space::XXXL,
+    switch: SwitchMetrics {
+        track_width: 44.0,
+        track_height: 26.0,
+        ..SWITCH_METRICS
+    },
+    tree: TreeMetrics {
+        indent: space::XXL,
+        ..TREE_METRICS
+    },
+    keycap: KeycapMetrics {
+        height: 32.0,
+        ..KEYCAP_METRICS
+    },
+    ..UI_METRICS
+};
+
 impl Default for ThemeMetrics {
     fn default() -> Self {
         UI_METRICS
@@ -695,6 +726,24 @@ impl ThemeMetrics {
 #[cfg(test)]
 mod tests {
     use super::ThemeAppearance;
+
+    #[test]
+    fn touch_metrics_keep_every_target_at_the_touch_minimum() {
+        let touch = super::TOUCH_METRICS;
+        for height in [
+            touch.small_control_height(),
+            touch.medium_control_height(),
+            touch.large_control_height(),
+            touch.icon_button_size,
+        ] {
+            assert!(height >= 44.0, "{height}");
+        }
+        let theme = crate::ThemeDefinition::NANA_LIGHT
+            .with_metrics(touch)
+            .compile()
+            .expect("touch theme compiles");
+        assert_eq!(theme.metrics(), touch);
+    }
 
     #[test]
     fn theme_appearance_round_trips_for_host_persistence() {

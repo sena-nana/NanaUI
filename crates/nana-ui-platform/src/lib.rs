@@ -20,7 +20,7 @@ mod ws;
 pub use clipboard::AndroidClipboard;
 #[cfg(all(
     feature = "clipboard",
-    not(any(target_os = "android", target_env = "ohos"))
+    not(any(target_os = "android", target_os = "ios", target_env = "ohos"))
 ))]
 pub use clipboard::OsClipboard;
 #[cfg(feature = "clipboard")]

@@ -37,17 +37,18 @@ pub fn shared_clipboard<C: ClipboardHost + 'static>(clipboard: C) -> SharedClipb
 }
 
 /// Platform default: OS clipboard on desktop; JNI ClipboardManager on Android;
-/// [`UnsupportedClipboard`] on OHOS, whose host injects the system pasteboard.
+/// [`UnsupportedClipboard`] on OHOS and iOS, whose hosts inject the system
+/// pasteboard.
 pub fn default_shared_clipboard() -> SharedClipboardHost {
     #[cfg(target_os = "android")]
     {
         shared_clipboard(AndroidClipboard)
     }
-    #[cfg(target_env = "ohos")]
+    #[cfg(any(target_os = "ios", target_env = "ohos"))]
     {
         shared_clipboard(UnsupportedClipboard)
     }
-    #[cfg(not(any(target_os = "android", target_env = "ohos")))]
+    #[cfg(not(any(target_os = "android", target_os = "ios", target_env = "ohos")))]
     {
         shared_clipboard(OsClipboard::new())
     }
@@ -101,13 +102,13 @@ impl ClipboardHost for MemoryClipboard {
 }
 
 /// Desktop OS clipboard (`arboard`). Construction never panics; unavailable
-/// backends report failed reads/writes. Not compiled on Android or OHOS.
-#[cfg(not(any(target_os = "android", target_env = "ohos")))]
+/// backends report failed reads/writes. Not compiled on Android, iOS or OHOS.
+#[cfg(not(any(target_os = "android", target_os = "ios", target_env = "ohos")))]
 pub struct OsClipboard {
     inner: Option<arboard::Clipboard>,
 }
 
-#[cfg(not(any(target_os = "android", target_env = "ohos")))]
+#[cfg(not(any(target_os = "android", target_os = "ios", target_env = "ohos")))]
 impl std::fmt::Debug for OsClipboard {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("OsClipboard")
@@ -116,7 +117,7 @@ impl std::fmt::Debug for OsClipboard {
     }
 }
 
-#[cfg(not(any(target_os = "android", target_env = "ohos")))]
+#[cfg(not(any(target_os = "android", target_os = "ios", target_env = "ohos")))]
 impl OsClipboard {
     pub fn new() -> Self {
         Self {
@@ -129,7 +130,7 @@ impl OsClipboard {
     }
 }
 
-#[cfg(not(any(target_os = "android", target_env = "ohos")))]
+#[cfg(not(any(target_os = "android", target_os = "ios", target_env = "ohos")))]
 impl Default for OsClipboard {
     fn default() -> Self {
         Self::new()
@@ -270,7 +271,7 @@ fn android_clipboard_text_inner(write: Option<&str>) -> Option<String> {
     }
 }
 
-#[cfg(not(any(target_os = "android", target_env = "ohos")))]
+#[cfg(not(any(target_os = "android", target_os = "ios", target_env = "ohos")))]
 impl ClipboardHost for OsClipboard {
     fn is_available(&self) -> bool {
         self.inner.is_some()
@@ -315,6 +316,7 @@ fn os_clipboard_change_count() -> Option<u64> {
     target_os = "macos",
     windows,
     target_os = "android",
+    target_os = "ios",
     target_env = "ohos"
 )))]
 fn os_clipboard_change_count() -> Option<u64> {
@@ -402,7 +404,7 @@ mod tests {
     }
 
     #[test]
-    #[cfg(not(any(target_os = "android", target_env = "ohos")))]
+    #[cfg(not(any(target_os = "android", target_os = "ios", target_env = "ohos")))]
     fn os_clipboard_roundtrip_when_available() {
         let mut clip = OsClipboard::new();
         if !clip.is_available() {

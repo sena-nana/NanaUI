@@ -2628,6 +2628,74 @@ impl AppContext {
         }))
     }
 
+    /// The byte offset a document point lands on in the focused plain
+    /// editor's value, as a tap there places the caret. For a host whose
+    /// platform text system drives the loupe, selection handles and edit
+    /// menu (UIKit `UITextInteraction`); `None` without a focused editor.
+    pub fn focused_text_offset_at(
+        &self,
+        document: DocumentId,
+        x: f32,
+        y: f32,
+        shaper: &mut dyn crate::TextShaper,
+    ) -> Result<Option<usize>, FrameworkError> {
+        let Some(focused) = self.focused_plain_editor(document) else {
+            return Ok(None);
+        };
+        let (x, y) = self.editor_point(focused.node, x, y);
+        Ok(self
+            .text_editor_hit_offset(focused.node, focused.kind, x, y, shaper)?
+            .map(|hit| hit.offset))
+    }
+
+    /// The caret box before byte `offset` of the focused plain editor's
+    /// value, in document coordinates where it shows (the field's scroll and
+    /// the transforms above it applied): what
+    /// [`Self::focused_text_offset_at`] inverts. `None` without a focused
+    /// editor, and for an editor showing a folded view of its value.
+    pub fn focused_text_caret_rect(
+        &self,
+        document: DocumentId,
+        offset: usize,
+        shaper: &mut dyn crate::TextShaper,
+    ) -> Result<Option<crate::LayoutBox>, FrameworkError> {
+        let Some(focused) = self.focused_plain_editor(document) else {
+            return Ok(None);
+        };
+        let node = focused.node;
+        if self.world.text_display_view(node).is_some() {
+            return Ok(None);
+        }
+        let (Some(frame), Some((style, constraints))) = (
+            self.world.editor_frame(node),
+            self.world.text_input_shape_context(node),
+        ) else {
+            return Ok(None);
+        };
+        let offset = offset.min(self.editor_state(node)?.value.len());
+        let mut geometry = EditorGeometry {
+            shaper,
+            node,
+            text: TextContent {
+                value: self.editor_probe_text(node, None),
+            },
+            style,
+            constraints,
+        };
+        let (x, y, line) = geometry.probe()(offset);
+        let caret = frame.field_rect(crate::LayoutBox {
+            x,
+            y,
+            width: 0.0,
+            height: line,
+        });
+        Ok(Some(
+            self.world
+                .project_input_bounds(node, caret)
+                .unwrap_or(caret),
+        ))
+    }
+
     /// Delete the atom identified by `token` through the normal editor history
     /// and notify [`crate::TextAtomClosed`].
     pub fn close_focused_text_atom(

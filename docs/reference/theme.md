@@ -234,6 +234,15 @@ runtime crate 里 `const NAME: f32/u16/u64 = <数字>` 共 217 个（`ROW_HEIGHT
 
 钉住它的测试：`rows_follow_the_installed_tree_metrics`。它在默认主题和紧凑示例下各量一次树的高度、行距和缩进。
 
+`TOUCH_METRICS` 是手机和平板的触屏密度：
+
+- 小号、中号控件和图标按钮都高 44，大号 48，不低于平台指南的最小触控目标。
+- 开关轨道放大到 44 × 26。
+- 内边距放宽，树每层缩进加大，键帽高 32。
+- 颜色、字号和圆角不变。
+
+移动宿主（`platform/mobile-core`）默认安装这套密度，见 [mobile-host.md](mobile-host.md)。钉住它的测试：`touch_metrics_keep_every_target_at_the_touch_minimum`。
+
 ### 键帽的几何并入主题（#345）
 
 `ThemeMetrics` 还组合一个 `keycap: KeycapMetrics`：
