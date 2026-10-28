@@ -58,7 +58,7 @@ impl AppContext {
         if !anchor.viewport_y.is_finite() {
             return Err(FrameworkError::InvalidInput);
         }
-        self.component_lifecycle.wheel_scrolls.remove(&scroll.id);
+        self.stop_scroll_motion(scroll.id);
         self.update_scroll_view_visual(scroll, |view, _| view.pending_anchor = Some(anchor))?;
         // Anchor restoration depends on measured geometry. Include this
         // container in the next scoped layout even when its style is unchanged.
@@ -171,7 +171,7 @@ impl AppContext {
             return Err(FrameworkError::InvalidComponentValue(entity.id));
         }
         self.read(entity, |_| ())?;
-        self.component_lifecycle.wheel_scrolls.remove(&entity.id);
+        self.stop_scroll_motion(entity.id);
         self.apply_scroll_to(entity, offset)
     }
 
@@ -280,7 +280,7 @@ impl AppContext {
         margin: f32,
     ) -> Result<bool, FrameworkError> {
         let next = self.scroll_offset_for_target(scroll, target, margin)?;
-        self.component_lifecycle.wheel_scrolls.remove(&scroll);
+        self.stop_scroll_motion(scroll);
         if self.is_scroll_view(scroll) {
             let moved = self.scroll_to(Entity::from_stable_id(scroll), next)?;
             if moved {
@@ -485,7 +485,7 @@ impl AppContext {
         if !delta.x.is_finite() || !delta.y.is_finite() {
             return Err(FrameworkError::InvalidInput);
         }
-        self.component_lifecycle.wheel_scrolls.remove(&id);
+        self.stop_scroll_motion(id);
         let current = self.world.scroll_offset(id).unwrap_or_default();
         self.apply_scroll_node_to(
             id,
@@ -553,6 +553,44 @@ impl AppContext {
                     |area, _| area.scroll_offset = applied,
                 )?;
             }
+        }
+        Ok(true)
+    }
+
+    /// An explicit position, a pixel wheel or a grabbed bar ends any line
+    /// wheel glide and touch fling on `id`.
+    pub(super) fn stop_scroll_motion(&mut self, id: StableNodeId) {
+        self.component_lifecycle.wheel_scrolls.remove(&id);
+        self.stop_touch_fling(id);
+    }
+
+    /// Touch drags and their flings write here. Like
+    /// [`Self::apply_scroll_node_to`] on a scroll view or overflow box, except
+    /// that an offset past the scrolling area is kept for the rubber band and
+    /// the bounce instead of clamped. Only the scroll translation moves; no
+    /// layout box is written.
+    pub(super) fn apply_touch_scroll_to(
+        &mut self,
+        id: StableNodeId,
+        offset: ScrollOffset,
+    ) -> Result<bool, FrameworkError> {
+        if !offset.x.is_finite() || !offset.y.is_finite() {
+            return Err(FrameworkError::InvalidInput);
+        }
+        if self.world.scroll_offset(id) == Some(offset) {
+            return Ok(false);
+        }
+        let mut mutations = MutationQueue::new();
+        mutations.set_scroll_overscroll(id, offset);
+        self.world.commit(mutations)?;
+        if self.is_scroll_view(id) {
+            let scroll = Entity::<ScrollView>::from_stable_id(id);
+            if self.has_scroll_listener::<ScrollChanged>(id) {
+                self.update(scroll, |_scroll, cx| {
+                    cx.emit(ScrollChanged { offset });
+                })?;
+            }
+            self.emit_user_scroll(scroll)?;
         }
         Ok(true)
     }
@@ -661,7 +699,7 @@ impl AppContext {
         };
         let entity = Entity::<ScrollView>::from_stable_id(target);
         self.read(entity, |_| ())?;
-        self.component_lifecycle.wheel_scrolls.remove(&target);
+        self.stop_scroll_motion(target);
         let position = bar.axis_position(axis, x, y);
         let track = bar.track_geometry(axis);
         // Cancel restores what the press started from, including any track jump.
