@@ -1,0 +1,20 @@
+[package]
+name = "nana-ios-host"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.98"
+publish = false
+description = "Experimental iOS host: UIKit shell over nana-mobile-host (C ABI staticlib)"
+license = "MIT OR Apache-2.0"
+
+[lib]
+name = "nana_ios_host"
+path = "src/lib.rs"
+crate-type = ["staticlib", "rlib"]
+
+[dependencies]
+nana-mobile-host = { path = "../mobile-core" }
+nana-mobile-probe = { path = "../mobile-probe" }
+nana-ui-core.workspace = true
+nana-ui-platform.workspace = true
+wgpu.workspace = true

@@ -5,13 +5,13 @@ use std::time::Instant;
 
 use nana_ui::runtime::view::{Mount, entity_ref, widget, with_refs};
 use nana_ui::runtime::{
-    AccessibilityActionRequest, AppContext, DocumentId, Entity, FrameworkError, LayoutViewport,
-    List, RuntimeDocument,
+    AccessibilityAction, AccessibilityActionRequest, AppContext, DocumentId, Entity,
+    FrameworkError, LayoutViewport, List, RuntimeDocument, TextSelection,
 };
 use nana_ui::{AccessibilityNode, NanaTextShaper, RuntimeAnimationClock};
 use nana_ui_core::{
-    CompiledTheme, FlexDirection, LengthSpec, SemanticColorRole, TOUCH_METRICS, ThemeAppearance,
-    ThemeDefinition,
+    CompiledTheme, FlexDirection, LengthSpec, LogicalRect, SemanticColorRole, TOUCH_METRICS,
+    ThemeAppearance, ThemeDefinition,
 };
 use nana_ui_platform::{
     CanonicalInputEvent, CommittedText, CompositionInput, CursorIcon, DeviceId, EndpointGeneration,
@@ -357,6 +357,69 @@ impl MobileRuntime {
             selection,
             marked: Some((marked.start, marked.end)),
         })
+    }
+
+    /// The native text system moved the selection (selection handles, a tap
+    /// in the text): byte offsets into [`TextInputSnapshot::text`].
+    pub fn set_text_selection(
+        &mut self,
+        anchor: usize,
+        focus: usize,
+    ) -> Result<(), FrameworkError> {
+        let document = self.document.document();
+        let Some((target, _)) = self.document.context().focused_text_input(document) else {
+            return Ok(());
+        };
+        self.apply_accessibility_action(AccessibilityActionRequest {
+            target,
+            action: AccessibilityAction::SetSelection(TextSelection::new(anchor, focus)),
+        })
+        .map(drop)
+    }
+
+    /// The focused editor's box in logical px: where the shell places its
+    /// native text proxy so the platform's text gestures land on it.
+    pub fn text_input_bounds(&self) -> Option<LogicalRect> {
+        let document = self.document.document();
+        let context = self.document.context();
+        let (target, _) = context.focused_text_input(document)?;
+        let layout = context.world().layout_box(target)?;
+        Some(LogicalRect::new(
+            layout.x,
+            layout.y,
+            layout.width,
+            layout.height,
+        ))
+    }
+
+    /// The byte offset a logical point lands on in the focused editor: the
+    /// native text system's `closestPosition(to:)`.
+    pub fn text_offset_at(&mut self, x: f32, y: f32) -> Option<usize> {
+        let document = self.document.document();
+        self.document
+            .context()
+            .focused_text_offset_at(document, x, y, &mut self.shaper)
+            .ok()
+            .flatten()
+    }
+
+    /// The caret box before byte `offset` of the focused editor, in logical
+    /// px: the native text system's `caretRect(for:)`, and the ends of its
+    /// selection rects.
+    pub fn text_caret_rect(&mut self, offset: usize) -> Option<LogicalRect> {
+        let document = self.document.document();
+        let caret = self
+            .document
+            .context()
+            .focused_text_caret_rect(document, offset, &mut self.shaper)
+            .ok()
+            .flatten()?;
+        Some(LogicalRect::new(
+            caret.x,
+            caret.y,
+            caret.width,
+            caret.height,
+        ))
     }
 
     /// Accessibility nodes the shell publishes to VoiceOver / TalkBack.

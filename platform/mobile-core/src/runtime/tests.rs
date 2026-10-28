@@ -286,3 +286,39 @@ fn controls_take_the_touch_density() {
         .expect("button layout");
     assert!(layout.height >= 44.0, "{layout:?}");
 }
+
+#[test]
+fn the_native_selection_reaches_the_editor() {
+    let mut fixture = fixture();
+    let centre = fixture.centre(fixture.field.stable_id());
+    fixture.tap(centre);
+    fixture
+        .runtime
+        .push_composition(CompositionInput::Commit("hello".into()))
+        .unwrap();
+    fixture.runtime.set_text_selection(1, 4).unwrap();
+    assert_eq!(
+        fixture.runtime.text_input().expect("editor").selection,
+        (1, 4)
+    );
+}
+
+#[test]
+fn caret_rects_and_point_hits_invert_each_other() {
+    let mut fixture = fixture();
+    let centre = fixture.centre(fixture.field.stable_id());
+    fixture.tap(centre);
+    fixture
+        .runtime
+        .push_composition(CompositionInput::Commit("hello world".into()))
+        .unwrap();
+    fixture.settle();
+    let start = fixture.runtime.text_caret_rect(0).expect("caret at 0");
+    let middle = fixture.runtime.text_caret_rect(5).expect("caret at 5");
+    assert!(middle.x > start.x, "{start:?} {middle:?}");
+    assert!(middle.height > 0.0);
+    let hit = fixture
+        .runtime
+        .text_offset_at(middle.x, middle.y + middle.height * 0.5);
+    assert_eq!(hit, Some(5));
+}

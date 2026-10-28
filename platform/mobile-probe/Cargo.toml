@@ -1,0 +1,23 @@
+[package]
+name = "nana-mobile-probe"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.98"
+publish = false
+description = "Measurement page the experimental iOS and Android hosts share"
+license = "MIT OR Apache-2.0"
+
+[lib]
+name = "nana_mobile_probe"
+path = "src/lib.rs"
+
+[dependencies]
+nana-ui-core.workspace = true
+nana-ui-platform.workspace = true
+nana-mobile-host = { path = "../mobile-core" }
+nana-ui = { path = "../../crates/nana-ui", default-features = false, features = [
+    "gpu",
+    "wgpu-interop",
+    "wgpu-backends",
+] }
+wgpu.workspace = true
