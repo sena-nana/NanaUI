@@ -383,7 +383,7 @@ pub unsafe extern "C" fn nana_ios_host_set_marked_text(
         return;
     };
     let selection = (selection_start >= 0 && selection_end >= selection_start)
-        .then(|| (selection_start as usize, selection_end as usize));
+        .then_some((selection_start as usize, selection_end as usize));
     let event = if text.is_empty() {
         CompositionInput::End
     } else {
