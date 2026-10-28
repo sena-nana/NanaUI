@@ -352,3 +352,61 @@ GPU pixels 来自 macOS。Windows/Linux 真机与外部 consumer 完整构建/�
 - 被跨过祖先的 `clip-path` 和组件铬裁剪不作用于逃出盒子（CSS 的 `clip-path` 会作用）；已写进 `layout.md`。
 - 性能段点名的 `scroll_viewport_updates` / `scroll_content_extent_recomputes` / `scroll_layout_reflows` / `scroll_clip_updates` / `virtualization_despawned` 仍不在 `WorkCounters`。
 - 未在 Windows/Linux 或 GPU 像素以外的外部 consumer 上运行；NanaLive/NanaType 只读检查没有 `LayoutResult` / `AccessibilityNode` 字面量。
+
+## 2026-10-29 追加：#202
+
+逐条重新核对 #202 的 7 条验收项（不沿用 10-27 的判定），补上 fit 统一和 min/max，并把五种替换内容放进同一组门禁。
+
+| 验收项 | 判定 | 证据 |
+| --- | --- | --- |
+| replaced content 共用 intrinsic/aspect/fit contract | **本轮完成** | intrinsic/aspect：五种替换内容（图片、`Video`、`GpuTextureView`、`GpuView` 画布、普通元素上的 `CustomRenderNode` 锚点）都经 `ReplacedResource` 进同一索引、`LayoutContentKind::Replaced`，自然尺寸只经 `measure.rs` 的 `transfer_natural_ratio`（`issue202_c_every_replaced_kind_is_one_layout_item`）；min/max 按 CSS 2.1 §10.4 保比例（`issue202_d_min_max_keep_the_natural_ratio`，本轮修复）。fit：`ContentFit::fitted_size` 是唯一的 fit 数学，`LogicalRect::fitted`（HostTexture/视频/Avatar/Thumbnail、`texture_uv_at`）、画家 `url_dest_rect`（经 `BackgroundImageFit::object_fit`）、`ImageViewer` 都用它；标记里的 fit 读层叠 `object-fit` 与全部关键字（`issue202_f_markup_fits_every_replaced_kind_alike`、nana-ui `an_image_and_a_host_texture_share_one_fit`） |
+| Flex/Grid/Inline/Absolute 均可参与 | 可勾 | `issue202_a_natural_size_reaches_every_context`（图片，六种 context）；`issue202_c_…` 把五种替换内容放进同样六种 context，participation、尺寸、冷对照逐一相同 |
+| context 切换不重建 GPU/resource identity | 可勾 | Runtime：`issue199_a_thousand_components_keep_state_focus_and_resource_identity`（`Arc::ptr_eq`、0 spawn）；GPU：nana-ui `a_host_texture_moved_across_contexts_keeps_its_binding`（真实 `RuntimeDocument`，Flex→Grid→Flex 列→Flex 行，`gpu_buffer_reallocations == 0`） |
+| frame/texture 内容更新不触发布局 | 可勾 | `issue263_video_frames_lay_nothing_out`（1200 帧 0 布局、intrinsic generation 不变）、`issue263_fit_and_sampling_lay_nothing_out`、`issue259_replaced_content_costs_the_same_at_any_size`、nana-ui `texture_content_reuses_prepared_ui_and_replacement_rebinds` |
+| intrinsic metadata change 精确失效 | 可勾 | issue263 B/C/E（unknown→known 单 seed、共享图片 100 通知/50 seed、显式尺寸 0 seed）；本轮 `issue202_e_only_a_new_natural_size_lays_out`：同一尺寸再报一次 drain 为空；换成同尺寸的另一资源 0 replaced seed、0 frontier seed、0 measure、0 intrinsic bump；换成另一尺寸的资源只排读它的 2 个盒子 |
+| Inline baseline 有正式 policy | 可勾（附注） | 规则在布局侧：`LayoutEngine::aligns_by_bottom_edge` / `baseline_metrics` 以边框盒底边为替换内容基线；原生段落行盒与 `align-items: baseline` 的 flex 行按它对齐，行基线发布在 TextLine 片段（`issue202_replaced_content_sits_on_the_text_baseline_by_its_bottom_edge`）。附注：普通块级流里文本节点是块级行，不和 inline-block 原子同行；几个原子同行时行盒顶部对齐，没有 `vertical-align`，见下文"仍未做" |
+| CustomRender 保持 presentation anchor 边界 | 可勾 | `CustomRenderNode` 只有 renderer/resource/revision/fit/params/dedicated_pass/checkerboard/zoom/sampling 等呈现字段，params 不被 Runtime 解释（`custom_render_extension_requires_nonempty_backend_neutral_keys`）；`issue202_c_…` 的 Anchor 只挂一个 `CustomRenderNode` 就以 Replaced 参与布局，Runtime 不需要应用状态 |
+
+### 改动
+
+- `nana-ui-core`：`ContentFit::fitted_size`（新，公开）是唯一 fit 数学，`LogicalRect::fitted` 改为调用它后居中，结果与原实现相同；`BackgroundImageFit::object_fit`（`Length` 之外的关键字映射到 `ContentFit`，`Auto` 即 `none`）与 `From<ContentFit> for BackgroundImageFit`。
+- `nana-ui` 画家：`url_dest_rect` 不再自写 cover/contain/scale-down，改走 `object_fit()` + `fitted_size`；只有写长度的 `background-size` 保留自己的规则。
+- `nana-ui-runtime`：
+  - `measure.rs::transfer_natural_ratio` 读 min/max：两边都 auto 时按 CSS 2.1 §10.4 等比夹取；只写一边时，换算出的另一边再受它自己的 min/max 约束。缓存路径与新测量路径同一函数。
+  - `ImageViewer` 的 `fitted_bounds` 改为 `ContentFit::ScaleDown.fitted_size`。
+  - `gpu_slots.rs::parse_content_fit`（只认 `contain`）换成 `semantic_content_fit`：层叠的 `object-fit` 优先，`fit` 属性作 presentational hint，读全部五个关键字；`Video` 与 `GpuTextureView` 共用。
+- `nana-ui-css`：`parse_object_fit` 改为 `ContentFit::from_object_fit` 映射。
+- 文档：`layout.md` 的「替换内容」补 min/max、五种替换内容、fit 合同、门禁 A–F 与基线说明，纠正"`<img>` 的 object-fit 落到 `CustomRenderNode.fit`"的旧说法；`learn/core-contracts.md` 行号随之移动。
+
+### 门禁与变异
+
+| 门禁 | 证明 | 变异（改坏→变红→恢复→`cmp` 一致） |
+| --- | --- | --- |
+| `issue202_c_every_replaced_kind_is_one_layout_item` | 五种替换内容 × 六种 context：`shows_replaced`、`Replaced`、participation；同一 120×80 到达后都是 120×80，5 个 replaced seed、0 全文档回退；冷对照 | `replaced_resource_of` 忽略 custom render：C 与基线门禁 B 变红 |
+| `issue202_d_min_max_keep_the_natural_ratio` | 8 种 min/max 组合 × Flex/Grid/行内/absolute，增量与冷布局相同 | 关掉两边 auto 的等比夹取：红；去掉一边换算后的 clamp：红 |
+| `issue202_e_only_a_new_natural_size_lays_out` | 同尺寸重报零工作；同尺寸换资源 0 seed/measure；异尺寸换资源 2 seed | `reindex_replaced` 换资源总是 seed：红；同时去掉提交时的 no-op 过滤和 `apply_replaced_metadata` 的相等早退：红（单去任一层仍绿，两层互为兜底） |
+| `issue202_f_markup_fits_every_replaced_kind_alike` | 五个关键字下 `Video`/`GpuTextureView` 的 fit 与图片 `object-fit` 相同，样式压过属性，未知关键字为 fill | `semantic_content_fit` 不读 `object-fit`：红；`BackgroundImageFit::Auto` 映射成 `Fill`：红 |
+| nana-ui `an_image_and_a_host_texture_share_one_fit` | 五种 fit × 六组盒子/源尺寸，`url_dest_rect` 与 host-texture 的 `LogicalRect::fitted` 目标矩形相同 | `url_dest_rect` 自写 scale-down（当 contain）：红；`Auto` 映射成 `Fill`：红 |
+
+另发现但未改：显式 `aspect-ratio`（非替换内容）`width: 120px; max-width: 60px` 的 absolute 盒子得 60×80，而 Flex/Grid/行内得 60×40。absolute 的尺寸路径对声明的 `aspect-ratio` 不在夹取后回推高度，与本 Issue 的替换内容无关，留给 absolute 尺寸路径。
+
+### 本轮运行
+
+| 命令 | 结果 |
+| --- | --- |
+| `cargo fmt --all -- --check`；`git diff --check` | passed |
+| `cargo clippy -q -p nana-ui-core -p nana-ui-runtime -p nana-ui-scene -p nana-ui --all-targets -- -D warnings`；另 `-p nana-ui --features hosted,gpu -p nana-ui-css --all-targets` | passed |
+| `cargo test -q -p nana-ui-runtime --lib` | 2315 passed、1 ignored |
+| `cargo test -q -p nana-ui-runtime --lib --features layout-verify -- issue202 issue263 issue197 issue199` | 19 passed |
+| `cargo test -q -p nana-ui-scene --tests` | 全部通过（lib 238） |
+| `cargo test -q -p nana-ui-scene --lib --features nana-ui-runtime/layout-verify` | 238 passed |
+| `cargo test -q -p nana-ui --features hosted,gpu --lib` | 967 passed、1 ignored（第一次因磁盘满中途退出，清理旧测试二进制后重跑通过） |
+| `cargo test -q --workspace --all-targets` | 6066 passed、0 failed |
+| `cargo test -q -p component-gallery --bin ui-snapshots --features snapshots --locked` | 12 passed |
+| `caffeinate -di cargo run -q --release -p component-gallery --bin ui-snapshots --features snapshots --locked -- --output <scratch>` | MATCH: 680（exact） |
+
+### 仍未做
+
+- 普通块级流的原子行盒没有基线对齐（也没有 `vertical-align`）。按 CSS 应当以基线对齐（替换内容即底边对齐），但这会改变所有混高 inline-block 行的位置，属于产品层面的行为选择：要么保持顶部对齐并在文档中注明（文字与原子混排走 `InlineFlow`），要么在 `pack_ifc_line_boxes` 引入 `vertical-align: baseline` 默认值并重录受影响的基线。本轮未改。
+- HostTexture / Video 的自然尺寸仍需宿主自己用 `set_replaced_metadata` 上报；`GpuTextureView` 默认不上报（见上文 `painted_extent` 的说明）。
+- 未在 Windows/Linux 上运行；NanaLive / NanaType 只读检查：只用 `GpuTextureView.fit = ContentFit::…`（Rust 字段）与 `BackgroundImage::url_with_fit`，不受标记 fit 优先级与新增 API 影响；未构建这两个 consumer。

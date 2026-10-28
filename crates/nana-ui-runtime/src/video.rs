@@ -11,7 +11,7 @@ use std::sync::Arc;
 use nana_ui_core::ContentFit;
 
 use crate::component_registry::{RegisterableComponent, SemanticSpec};
-use crate::gpu_slots::{fill_layout, finite_opacity, finite_radius, parse_content_fit};
+use crate::gpu_slots::{fill_layout, finite_opacity, finite_radius, semantic_content_fit};
 use crate::view_components::project_common;
 use crate::{
     AccessibilityRole, AccessibilityState, ComponentView, CustomRenderNode, InteractionState,
@@ -145,8 +145,8 @@ impl RegisterableComponent for Video {
         if let Some(radius) = spec.layout.border_radius {
             video.corner_radius = finite_radius(radius);
         }
-        if let Some(fit) = spec.attr("fit") {
-            video.fit = parse_content_fit(fit);
+        if let Some(fit) = semantic_content_fit(spec) {
+            video.fit = fit;
         }
         if spec.attr("pointer-events").is_some_and(|value| {
             let value = value.trim();

@@ -423,13 +423,19 @@ pub(super) fn intrinsic_size_out_of_flow(
 }
 
 /// One axis set and the other not: a replaced box's natural aspect ratio
-/// carries the set one over, content box to content box (Issue #263). Every
-/// path that resolves a replaced box's used size goes through here, so a
-/// reused measurement cannot answer with the natural other axis instead.
+/// carries the set one over, content box to content box (Issue #263), and
+/// the other axis's min/max still bound the result. Neither set: the natural
+/// size keeps its ratio under min/max as CSS 2.1 §10.4 lays out for replaced
+/// elements (Issue #202). Every path that resolves a replaced box's used size
+/// goes through here, so a reused measurement cannot answer with the natural
+/// other axis instead.
 fn transfer_natural_ratio(
     style: &nana_ui_core::LayoutStyle,
     natural: Option<crate::ReplacedMetadata>,
     chrome: Size,
+    available: Size,
+    viewport: LayoutViewport,
+    fonts: FontSizeContext,
     size: &mut Size,
 ) {
     let Some(natural) = natural.filter(|natural| natural.width > 0.0 && natural.height > 0.0)
@@ -440,16 +446,51 @@ fn transfer_natural_ratio(
         return;
     }
     let auto = |spec: Option<LengthSpec>| matches!(spec, None | Some(LengthSpec::Auto));
+    // The limits as `finish_intrinsic_size` applies them, on the content box.
+    let vp = Some((viewport.width, viewport.height));
+    let limits = |min: f32, max: Option<f32>, chrome: f32| {
+        let min = (min - chrome).max(0.0);
+        (
+            min,
+            max.map_or(f32::INFINITY, |max| (max - chrome).max(min)),
+        )
+    };
+    let (min_w, max_w) = limits(
+        style.resolved_min_width_fonts(Some(available.width), vp, fonts),
+        style.resolved_max_width_fonts(Some(available.width), vp, fonts),
+        chrome.width,
+    );
+    let (min_h, max_h) = limits(
+        style.resolved_min_height_fonts(Some(available.height), vp, fonts),
+        style.resolved_max_height_fonts(Some(available.height), vp, fonts),
+        chrome.height,
+    );
+    let ratio = natural.width / natural.height;
     match (auto(style.width), auto(style.height)) {
         (false, true) => {
             let inner = (size.width - chrome.width).max(0.0);
-            size.height = inner * natural.height / natural.width + chrome.height;
+            size.height = (inner / ratio).clamp(min_h, max_h) + chrome.height;
         }
         (true, false) => {
             let inner = (size.height - chrome.height).max(0.0);
-            size.width = inner * natural.width / natural.height + chrome.width;
+            size.width = (inner * ratio).clamp(min_w, max_w) + chrome.width;
         }
-        _ => {}
+        (true, true) => {
+            let (mut width, mut height) = (natural.width, natural.height);
+            if !(min_w..=max_w).contains(&width) || !(min_h..=max_h).contains(&height) {
+                if width > max_w || width < min_w {
+                    width = width.clamp(min_w, max_w);
+                    height = width / ratio;
+                }
+                if height > max_h || height < min_h {
+                    height = height.clamp(min_h, max_h);
+                    width = height * ratio;
+                }
+                size.width = width.clamp(min_w, max_w) + chrome.width;
+                size.height = height.clamp(min_h, max_h) + chrome.height;
+            }
+        }
+        (false, false) => {}
     }
 }
 
@@ -958,6 +999,9 @@ fn measure_node(
             style,
             nodes.world.replaced_natural_size(id),
             chrome,
+            available,
+            viewport,
+            fonts,
             &mut size,
         );
         cache.insert(cache_key, size);
@@ -1507,7 +1551,9 @@ fn measure_node(
         default_width,
         default_height,
     );
-    transfer_natural_ratio(style, natural, chrome, &mut size);
+    transfer_natural_ratio(
+        style, natural, chrome, available, viewport, fonts, &mut size,
+    );
     // Record only on a scoped pass. A full pass rebuilds every container in
     // the document, so recording there costs an `Arc` clone per child and a
     // sort per container across the whole tree -- 1.79 -> 2.55 ms on the

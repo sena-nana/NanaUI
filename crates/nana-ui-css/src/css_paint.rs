@@ -2194,14 +2194,7 @@ fn is_repeat_token(token: &str) -> bool {
 }
 
 fn parse_object_fit(input: &str) -> Option<BackgroundImageFit> {
-    Some(match input.trim().to_ascii_lowercase().as_str() {
-        "contain" => BackgroundImageFit::Contain,
-        "cover" => BackgroundImageFit::Cover,
-        "fill" => BackgroundImageFit::Stretch,
-        "none" => BackgroundImageFit::Auto,
-        "scale-down" => BackgroundImageFit::ScaleDown,
-        _ => return None,
-    })
+    nana_ui_core::ContentFit::from_object_fit(input).map(BackgroundImageFit::from)
 }
 
 fn strip_function<'a>(input: &'a str, name: &str) -> Option<&'a str> {

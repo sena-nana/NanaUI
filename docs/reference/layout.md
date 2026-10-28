@@ -406,6 +406,10 @@ Gate E（可用尺寸仍落在缓存的包络段里时不重排）见下文「Dy
   used size 的路径上都做，包括跨 context 复用的 intrinsic facts（#202）。
 - 自然宽高比和样式里的 `aspect-ratio` 一样：flex 行与 grid 的 `stretch` 不把只写了宽的替换盒
   拉到行高或区域高，高度仍由宽度按比例得出。
+- min/max 不扭曲自然宽高比（#202，CSS 2.1 §10.4）。宽高都没写时，自然尺寸先按宽的上下限、再按高的
+  上下限等比缩放，两边的限制互相冲突时各自夹住、比例让步；只写了一边时，另一边按比例得出后再受它
+  自己的 min/max 约束。120×80 的图片 `max-width: 60px` 得 60×40，`min-width: 240px; max-height: 40px`
+  得 240×40。
 - 节点变成或不再是替换内容时，它对齐用的基线跟着变，也重新布局。
 - Markdown 里的图片解析出尺寸后，块列表变了，文档的新高度会进入布局。
 - 宽度由自己决定的容器，不再因为子项在交叉轴上变宽而退回遍历全部子项。
@@ -425,10 +429,44 @@ Gate E（可用尺寸仍落在缓存的包络段里时不重排）见下文「Dy
 - 显式尺寸下视频分辨率连变 100 次，零回流；
 - 每一趟对照全量布局，结尾对照冷布局。
 
-`world/issue202.rs` 把同一对图片（无尺寸、只写宽）放进 Flex、拉伸的 Flex 行、Grid、拉伸的 Grid、
-行内与 absolute，自然尺寸到达后逐一对照尺寸、participation 和冷布局；另一个门禁让图片和
-CustomRender 在 `align-items: baseline` 的 flex 行与原生段落里以底边落在文字基线上。普通块级流的
-行盒目前把原子项顶部对齐，不做基线对齐；这不是 replaced 专有的规则。
+替换内容是一种布局项（#202）。图片（`content_image`）、`Video`、`GpuTextureView`（HostTexture）、
+`GpuView`（GPU 画布 / 渲染目标）和挂在普通元素上的 `CustomRenderNode`（呈现锚点）都按显示的资源
+（`ReplacedResource`）进同一个索引，`LayoutNode::content` 都是 `Replaced`，在 Flex、Grid、行内与
+absolute 里的 participation 和普通盒子一样，同一个自然尺寸给出同一个盒子。没有按组件分的尺寸路径。
+组件的默认样式各有不同：`Video`、`GpuTextureView`、`GpuView` 没写宽高时铺满（`fill`），写 `auto`
+才读自然尺寸；图片没写宽高、尺寸未到时没有面积。
+
+fit 只有一份数学：`ContentFit::fitted_size`（`nana-ui-core`）。fit 是绘制，只读布局给的盒子，不回写
+布局。
+- `CustomRenderNode.fit`（视频、HostTexture、Avatar、Thumbnail）由画家用 `LogicalRect::fitted` 求目标
+  矩形，`GpuTextureView::texture_uv_at` 与 `Thumbnail::picture_rect` 用同一函数换算坐标。
+- 图片的 `object-fit` 写在 `PaintStyle::object_fit` 和 `content_image` 的 `BackgroundImageFit` 上。画家
+  `url()` 路径经 `BackgroundImageFit::object_fit` 换成 `ContentFit` 再求尺寸；`background-size` 的
+  关键字同样走这里，只有写长度的 `background-size`（`Length`）是背景自己的规则。图片另外认
+  `object-position`，HostTexture 居中。
+- `ImageViewer` 的初始画面是 `scale-down`。
+- 标记里 `<video>` 与 `<gpu>` 的 fit：层叠出的 `object-fit` 优先，`fit` 属性是 presentational hint，
+  两者都认全部五个关键字（原先属性只认 `contain`，其余都当 `fill`）。
+
+`world/issue202.rs` 的门禁：
+- A：同一对图片（无尺寸、只写宽）放进 Flex、拉伸的 Flex 行、Grid、拉伸的 Grid、行内与 absolute，
+  自然尺寸到达后逐一对照尺寸、participation 和冷布局。
+- B：图片和 CustomRender 在 `align-items: baseline` 的 flex 行与原生段落里以底边落在文字基线上。
+- C：上面五种替换内容各按应用的写法建出，在六种 context 里 content 都是 `Replaced`、participation
+  相同，同一个自然尺寸到达后盒子相同，5 个 replaced seed、0 全文档回退，对照冷布局。
+- D：min/max 与自然宽高比的八种组合在 Flex、Grid、行内、absolute 下的尺寸，对照冷布局。
+- E：同一尺寸再报一次不产生任何工作；换成同尺寸的另一个资源 0 seed、0 measure；换成另一尺寸的
+  资源只重排读它的两个盒子。
+- F：`Video` 与 `GpuTextureView` 从标记得到的 fit 与图片的 `object-fit` 是同一个值。
+
+`nana-ui` 的 `scene_paint/replaced_context_tests.rs` 另有两项：host texture 跨 context 移动不重新绑定
+纹理；五种 fit 下 `url()` 路径与 host-texture 路径给出相同的目标矩形。
+
+基线：替换内容的基线是边框盒底边（`aligns_by_bottom_edge`），由布局决定，不由画家修正 y。原生
+段落（`InlineFlow`）的行盒和 `align-items: baseline` 的 flex 行都按它对齐，行的基线发布在
+`LayoutResult` 的 TextLine 片段上。普通块级流里文本节点是块级行，不和 inline-block 原子同行；
+几个 inline-block 原子同行时行盒把它们顶部对齐，不做基线对齐，`LayoutStyle` 也没有
+`vertical-align`。这不是 replaced 专有的规则。
 
 #259 加了替换内容负载：在 1k、10k、100k 页面末尾，视频帧、图片自然尺寸、共享图片的开销相同。
 
@@ -929,7 +967,7 @@ CSS `url()` 的帧仍走 4× MSAA。它和 HostTexture、backdrop 的 interleave
 
 `backdrop-filter: blur()` 是逐节点的 dest 采样模糊。`blur(r)` 的 `r` 和 CSS 一样是高斯的标准差。它做旋转映射，也做祖先的 inset 和 polygon clip。不是整窗的 Mica 或 Acrylic。
 
-`<img>` 的 `object-fit: cover | contain | fill | none | scale-down` 经 cascade 写入 `PaintStyle`，再落到 `CustomRenderNode.fit`。HTML attr 是 presentational hint。样式表压过 attr。inline 再压过样式表。
+`<img>` 的 `object-fit: cover | contain | fill | none | scale-down` 经 cascade 写入 `PaintStyle::object_fit` 和 `content_image` 的 fit；`<video>` 与 `<gpu>` 把它落到 `CustomRenderNode.fit`。三者由画家用同一个 `ContentFit::fitted_size` 求尺寸（见上文「替换内容」）。HTML attr 是 presentational hint。样式表压过 attr。inline 再压过样式表。
 
 **命中。** `pointer-events` 是 `auto` 或 `none`，按 CSS **继承**。
 

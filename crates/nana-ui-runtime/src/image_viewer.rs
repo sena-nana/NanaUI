@@ -1001,14 +1001,18 @@ fn clamp_zoom(zoom: f32) -> f32 {
     }
 }
 
+/// The picture at its natural size, or scaled down to fit the stage: the
+/// replaced content fit `scale-down` (Issue #202).
 fn fitted_bounds(stage: LayoutBox, size: Option<(u32, u32)>) -> LayoutBox {
     let Some((width, height)) = size.filter(|(width, height)| *width > 0 && *height > 0) else {
         return stage;
     };
-    let scale = (stage.width / width as f32)
-        .min(stage.height / height as f32)
-        .clamp(0.0, 1.0);
-    let (width, height) = (width as f32 * scale, height as f32 * scale);
+    let (width, height) = nana_ui_core::ContentFit::ScaleDown.fitted_size(
+        stage.width,
+        stage.height,
+        width as f32,
+        height as f32,
+    );
     LayoutBox {
         x: stage.x + (stage.width - width) * 0.5,
         y: stage.y + (stage.height - height) * 0.5,

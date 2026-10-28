@@ -1887,28 +1887,11 @@ pub(super) fn url_dest_rect(
     tex_w: f32,
     tex_h: f32,
 ) -> [f32; 4] {
-    let (mut drawn_w, mut drawn_h) = match fit {
-        BackgroundImageFit::Stretch => (box_w, box_h),
-        BackgroundImageFit::Cover => {
-            let scale = (box_w / tex_w.max(1.0)).max(box_h / tex_h.max(1.0));
-            (tex_w * scale, tex_h * scale)
-        }
-        BackgroundImageFit::Contain => {
-            let scale = (box_w / tex_w.max(1.0)).min(box_h / tex_h.max(1.0));
-            (tex_w * scale, tex_h * scale)
-        }
-        BackgroundImageFit::Auto => (tex_w, tex_h),
-        BackgroundImageFit::ScaleDown => {
-            let scale = (box_w / tex_w.max(1.0)).min(box_h / tex_h.max(1.0));
-            if scale < 1.0 {
-                (tex_w * scale, tex_h * scale)
-            } else {
-                (tex_w, tex_h)
-            }
-        }
-        BackgroundImageFit::Length => {
-            resolve_explicit_size(size_width, size_height, box_w, box_h, tex_w, tex_h)
-        }
+    // `object-fit` and the `background-size` keywords are the one replaced
+    // content fit (Issue #202); only explicit lengths are background's own.
+    let (mut drawn_w, mut drawn_h) = match fit.object_fit() {
+        Some(fit) => fit.fitted_size(box_w, box_h, tex_w, tex_h),
+        None => resolve_explicit_size(size_width, size_height, box_w, box_h, tex_w, tex_h),
     };
     match repeat {
         BackgroundRepeat::Round | BackgroundRepeat::RoundX => {

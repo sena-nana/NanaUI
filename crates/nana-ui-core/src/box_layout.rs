@@ -1991,6 +1991,35 @@ pub enum BackgroundImageFit {
     ScaleDown,
 }
 
+impl BackgroundImageFit {
+    /// The [`crate::ContentFit`] this sizing is: every keyword but explicit
+    /// `background-size` lengths ([`Self::Length`]) sizes the image as the
+    /// matching `object-fit` does (`auto` is `none`, the natural size), so a
+    /// `url()` layer and a host texture share one fit (Issue #202).
+    pub const fn object_fit(self) -> Option<crate::ContentFit> {
+        Some(match self {
+            Self::Stretch => crate::ContentFit::Fill,
+            Self::Contain => crate::ContentFit::Contain,
+            Self::Cover => crate::ContentFit::Cover,
+            Self::Auto => crate::ContentFit::None,
+            Self::ScaleDown => crate::ContentFit::ScaleDown,
+            Self::Length => return None,
+        })
+    }
+}
+
+impl From<crate::ContentFit> for BackgroundImageFit {
+    fn from(fit: crate::ContentFit) -> Self {
+        match fit {
+            crate::ContentFit::Fill => Self::Stretch,
+            crate::ContentFit::Contain => Self::Contain,
+            crate::ContentFit::Cover => Self::Cover,
+            crate::ContentFit::None => Self::Auto,
+            crate::ContentFit::ScaleDown => Self::ScaleDown,
+        }
+    }
+}
+
 /// CSS `background-repeat` (shader tiling).
 ///
 /// `space` and mixed `space`/`round`/`repeat` stay [`Self::Unsupported`] so the
