@@ -26,6 +26,7 @@ members = [
     "crates/nana-package",
     "crates/nana-packager",
     "platform/android",
+    "platform/mobile-core",
     "examples/component-gallery",
     "examples/native-rhi-probe",
     "examples/runtime-host-fixture",

@@ -2319,6 +2319,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "nana-mobile-host"
+version = "0.1.0"
+dependencies = [
+ "nana-ui",
+ "nana-ui-core",
+ "nana-ui-platform",
+ "pollster",
+ "wgpu",
+]
+
+[[package]]
 name = "nana-package"
 version = "0.1.0"
 dependencies = [
