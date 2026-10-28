@@ -2743,9 +2743,12 @@ impl UiWorld {
                     .push(crate::LayoutFrontierSeed::new(id, invalidation));
             }
             // An editor bears text with no value yet: its caret line and an
-            // IME preedit are shaped from its presentation.
+            // IME preedit are shaped from its presentation. Text that went
+            // empty is still shaped once, to nothing: the metrics it held
+            // sized its box, and a box laid out cold without text has none.
             let has_text = matches!(self.record(id).kind.as_ref(), NodeKind::Text)
                 || !self.record(id).text.value.is_empty()
+                || self.record(id).text_metrics != TextMetrics::default()
                 || matches!(
                     self.nodes.visual(id),
                     Some(StandardVisual::TextInput { .. })

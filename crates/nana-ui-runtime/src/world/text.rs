@@ -5099,6 +5099,22 @@ impl UiWorld {
                 let presentation = matches!(visual, Some(StandardVisual::TextInput { .. }))
                     .then(|| self.text_input_presentation_source(id))
                     .flatten();
+                // A box whose text went empty has nothing to shape: it resolves
+                // to nothing and gives up the metrics that sized it, which
+                // leaves it as a box laid out cold without text.
+                if presentation.is_none()
+                    && self.record(id).text.value.is_empty()
+                    && !matches!(self.record(id).kind.as_ref(), NodeKind::Text)
+                    && !matches!(
+                        visual,
+                        Some(StandardVisual::EmptyState { .. } | StandardVisual::ModalFrame { .. })
+                    )
+                {
+                    let resolved_before = self.text_resolved_before(id);
+                    resolved.push(PlainResolution::nothing(id));
+                    shaped.push((id, TextMetrics::default(), None, None, resolved_before));
+                    continue;
+                }
                 let style = Arc::clone(&self.record(id).resolved.0);
                 #[cfg(any(test, feature = "benchmark"))]
                 if presentation.as_ref().map_or_else(

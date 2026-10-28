@@ -1284,3 +1284,57 @@ fn issue205_ten_thousand_cards_keep_one_entity_and_four_parts() {
         );
     }
 }
+
+/// A control whose label is cleared gives up the label's metrics: it sizes
+/// and publishes as the same control laid out cold with no label. Its text
+/// used to keep the old metrics, because text work for a box without text
+/// was dropped, so a cleared Button kept the old label's width.
+#[test]
+fn issue205_a_cleared_label_lays_out_as_a_cold_unlabelled_control() {
+    let document = DocumentId::new(1).unwrap();
+    let viewport = LayoutViewport::new(600.0, 400.0);
+    let build = |label: &str| {
+        let mut cx = AppContext::new();
+        let mut shaper = bundled_face_shaper();
+        let root = cx
+            .create_component(document, Stack::row(4.0).width(LengthSpec::Px(400.0)))
+            .unwrap();
+        let button = cx
+            .create_detached_component(document, Button::new(label).icon(Icon::Add))
+            .unwrap();
+        let chip = cx
+            .create_detached_component(document, Chip::new(label))
+            .unwrap();
+        cx.append_child(root, button).unwrap();
+        cx.append_child(root, chip).unwrap();
+        product_frame(&mut cx, document, viewport, &mut shaper);
+        cx.rebuild_hit_test(document);
+        (cx, button, chip)
+    };
+    let mut shaper = bundled_face_shaper();
+    let (mut cx, button, chip) = build("Save the document");
+    let labelled = cx.world().layout_box(button.stable_id()).unwrap().width;
+    cx.update_component(button, |view, _| view.label = "".into())
+        .unwrap();
+    cx.update_component(chip, |view, _| view.label = "".into())
+        .unwrap();
+    product_frame(&mut cx, document, viewport, &mut shaper);
+    let (mut cold, ..) = build("");
+    super::reflow_oracle::assert_matches_cold(&mut cx, &mut cold, document);
+    assert!(cx.world().layout_box(button.stable_id()).unwrap().width < labelled);
+    assert_eq!(
+        cx.world().text_metrics(button.stable_id()),
+        Some(crate::TextMetrics::default())
+    );
+    // Nothing is left to shape: the next frame has no work, and lays out
+    // nothing.
+    let generation = cx.world().layout_generation();
+    product_frame(&mut cx, document, viewport, &mut shaper);
+    assert!(cx.take_system_work().is_empty());
+    let idle = cx.world().frame_counters;
+    assert_eq!(
+        (idle.layout_measure_nodes, idle.layout_placement_nodes),
+        (0, 0)
+    );
+    assert_eq!(cx.world().layout_generation(), generation);
+}
