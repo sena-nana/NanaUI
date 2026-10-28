@@ -21,7 +21,7 @@ use android_activity::ndk::configuration::UiModeNight;
 use android_activity::{AndroidApp, InputStatus, MainEvent, PollEvent};
 use nana_mobile_host::{
     FrameDemand, MobileAppearance, MobilePlatform, MobileRenderer, MobileRuntime, MobileViewport,
-    SafeArea, SurfaceOptions, TouchPhase,
+    SafeArea, ScrollPhysics, SurfaceOptions, TouchPhase,
 };
 use nana_mobile_probe::{PreviewUploader, Probe, ProbeState};
 use nana_ui_platform::{SharedClipboardHost, TextInputContext, default_shared_clipboard};
@@ -142,6 +142,7 @@ impl Host {
         let mut runtime =
             MobileRuntime::new(viewport, Self::appearance(app), Box::new(AndroidPlatform))
                 .map_err(|error| format!("runtime: {error}"))?;
+        runtime.set_scroll_physics(ScrollPhysics::Android);
         let probe = Probe::mount(&mut runtime, ProbeState::default())
             .map_err(|error| format!("probe: {error}"))?;
         // SAFETY: as above.

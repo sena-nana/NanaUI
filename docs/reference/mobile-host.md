@@ -56,7 +56,7 @@ nana-ui（只开 gpu，不开 hosted）
 
 ## 输入
 
-`push_touch` 只跟随主触点，第二根手指不参与。`push_composition` 接平台文本系统的组字事件。点击编辑器以外的位置时，先提交未完成的组字，再移动焦点。
+`push_touch` 只跟随主触点，第二根手指不参与。触摸拖动滚动、甩动和回弹由 runtime 完成（见 [runtime-scene.md](runtime-scene.md#触摸滚动与-scrollphysics)）。`set_scroll_physics` 选择物理档位：iOS 宿主用 `Ios`，Android 宿主用 `Android`。甩动和回弹走动画 deadline，所以进行期间 `frame_demand` 返回 `At`，停下后回到 `Idle`。`push_composition` 接平台文本系统的组字事件。点击编辑器以外的位置时，先提交未完成的组字，再移动焦点。
 
 ## 测量页
 
@@ -64,6 +64,6 @@ nana-ui（只开 gpu，不开 hosted）
 
 ## 验收
 
-- `cargo test -p nana-mobile-host -p nana-mobile-probe`：帧需求、安全区、触屏密度、组字、选区回写，以及光标框与点命中的互逆。
+- `cargo test -p nana-mobile-host -p nana-mobile-probe`：帧需求、安全区、触屏密度、组字、选区回写，以及光标框与点命中的互逆；另外，两种物理档位下，网格都要能拖动、甩动，停下后回到 Idle（`a_swipe_scrolls_the_grid_flings_and_settles_idle`）。
 - `scripts/check-ios-arm64.sh` 和 `scripts/check-android-arm64.sh`：交叉编译。
 - 性能和手感只认真机数据，模拟器的数字不能作为证据。达标线和对照方法见 [iOS](ios.md#验收)。

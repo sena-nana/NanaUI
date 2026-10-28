@@ -59,4 +59,4 @@ xcodebuild -project platform/ios/App/NanaProbe.xcodeproj -target NanaProbe \
 | 体积 | 记录 IPA 增量 | Release 归档 |
 | 手感 | 中文输入法组字、长按选区、放大镜、编辑菜单都可用；滑动和回弹与 SwiftUI 版并排对比 | 真人操作 |
 
-网格的触摸拖动滚动依赖 runtime 的触摸滚动（`ScrollPhysics`）。这项改动单独进行，合入之前网格只能用滚动条滚动。
+网格的触摸拖动滚动走 runtime 的触摸滚动，iOS 宿主选 `ScrollPhysics::Ios`：每毫秒按 0.998 减速，拖过边缘有橡皮筋效果，松手后回弹。合同见 [runtime-scene.md](runtime-scene.md#触摸滚动与-scrollphysics)。手感上要和 SwiftUI 版并排比的是：甩动多远停下、回弹的力度，以及从按下到开始滚动的 8 逻辑像素 slop。

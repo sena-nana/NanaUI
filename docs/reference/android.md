@@ -67,4 +67,5 @@ Android（`platform/android`）是仓库内的**实验性 ARM64 宿主路径**�
 | **CJK 输入法候选** | 拼音/笔画候选词选定后正确写入 Runtime `TextInput`（宿主暂未提供 `CursorAnchorInfo`，候选条停留在键盘顶端） | **必须使用真机输入法**，不得用 `adb shell input keyevent` 替代 |
 | **系统剪贴板互通** | `TextInput` 内复制/粘贴与系统 `ClipboardManager` 互通 | 真机 |
 | **TalkBack 读屏交互** | `Button` 激活计数、`Switch` 状态切换、`TextInput` 聚焦并进入编辑 | **必须由真人在真机上做 TalkBack 手势**（`adb` 注入的 tap 会绕过无障碍触摸浏览） |
-| **滚动与虚拟列表** | 尚未接入 Android 侧滚动无障碍动作 | 留待后续阶段 |
+| **触摸滚动** | 网格按 `ScrollPhysics::Android` 甩动，到边缘停住，不越界 | 真机 |
+| **滚动与虚拟列表的无障碍** | 尚未接入 Android 侧滚动无障碍动作 | 留待后续阶段 |

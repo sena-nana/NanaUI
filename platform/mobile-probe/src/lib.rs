@@ -66,13 +66,15 @@ pub struct Probe {
     preview: Entity<GpuTextureView>,
     #[cfg_attr(not(test), allow(dead_code))]
     first_button: Entity<Button>,
+    #[cfg_attr(not(test), allow(dead_code))]
+    grid_scroll: Entity<ScrollView>,
 }
 
 impl Probe {
     pub fn mount(runtime: &mut MobileRuntime, state: ProbeState) -> Result<Self, FrameworkError> {
         let page_state = state.clone();
-        let (_, (preview, first_button)) = runtime.mount(move || {
-            let (preview, first_button) = (entity_ref(), entity_ref());
+        let (_, (preview, first_button, grid_scroll)) = runtime.mount(move || {
+            let (preview, first_button, grid_scroll) = (entity_ref(), entity_ref(), entity_ref());
             let toggles = page_state.cpu_preview.clone();
             let buttons: Vec<_> = (0..GRID_LEN)
                 .map(|index| {
@@ -126,6 +128,7 @@ impl Probe {
                         layout.min_height = Some(LengthSpec::Px(0.0));
                     }))
                     .key("grid-scroll")
+                    .entity_ref(grid_scroll)
                     .children(
                         widget(container(|layout| {
                             layout.direction = Some(FlexDirection::Row);
@@ -137,13 +140,14 @@ impl Probe {
                         .children(buttons),
                     ),
                 )),
-                (preview, first_button),
+                (preview, first_button, grid_scroll),
             )
         })?;
         Ok(Self {
             state,
             preview,
             first_button,
+            grid_scroll,
         })
     }
 
@@ -256,8 +260,11 @@ fn container(f: impl FnOnce(&mut LayoutStyle)) -> List {
 
 #[cfg(test)]
 mod tests {
+    use std::time::{Duration, Instant};
+
     use nana_mobile_host::{
-        MobileAppearance, MobilePlatform, MobileViewport, SafeArea, TouchPhase,
+        FrameDemand, MobileAppearance, MobilePlatform, MobileViewport, SafeArea, ScrollPhysics,
+        TouchPhase,
     };
     use nana_ui_platform::{
         SharedClipboardHost, TextInputContext, UnsupportedClipboard, shared_clipboard,
@@ -304,5 +311,76 @@ mod tests {
         runtime.push_touch(TouchPhase::Down, x, y, 1).unwrap();
         runtime.push_touch(TouchPhase::Up, x, y, 1).unwrap();
         assert_eq!(probe.state.presses(), 1);
+    }
+
+    fn grid_offset(runtime: &MobileRuntime, probe: &Probe) -> f32 {
+        runtime
+            .document()
+            .context()
+            .world()
+            .scroll_offset(probe.grid_scroll.stable_id())
+            .map_or(0.0, |offset| offset.y)
+    }
+
+    /// A real-time upward swipe over the grid, in physical px.
+    fn swipe(runtime: &mut MobileRuntime, probe: &Probe, distance: f32) {
+        let start = runtime
+            .document()
+            .context()
+            .world()
+            .layout_box(probe.first_button.stable_id())
+            .expect("first grid button");
+        let (x, y) = ((start.x + 10.0) * 3.0, (start.y + 10.0) * 3.0 + distance);
+        runtime.push_touch(TouchPhase::Down, x, y, 1).unwrap();
+        for step in 1..=8 {
+            std::thread::sleep(Duration::from_millis(8));
+            let y = y - distance * step as f32 / 8.0;
+            runtime.push_touch(TouchPhase::Move, x, y, 1).unwrap();
+        }
+        runtime
+            .push_touch(TouchPhase::Up, x, y - distance, 1)
+            .unwrap();
+    }
+
+    /// Drive the display link until the document goes idle; how many ticks.
+    fn run_until_idle(runtime: &mut MobileRuntime) -> usize {
+        let mut ticks = 0;
+        loop {
+            match runtime.frame_demand() {
+                FrameDemand::Idle => return ticks,
+                FrameDemand::At(deadline) => {
+                    std::thread::sleep(deadline.saturating_duration_since(Instant::now()))
+                }
+                FrameDemand::Now => {}
+            }
+            runtime.prepare_frame(Instant::now()).unwrap();
+            ticks += 1;
+            assert!(ticks < 2000, "the fling never settled");
+        }
+    }
+
+    #[test]
+    fn a_swipe_scrolls_the_grid_flings_and_settles_idle() {
+        for physics in [ScrollPhysics::Ios, ScrollPhysics::Android] {
+            let (mut runtime, probe) = mounted();
+            runtime.set_scroll_physics(physics);
+            run_until_idle(&mut runtime);
+            swipe(&mut runtime, &probe, 600.0);
+            let released = grid_offset(&runtime, &probe);
+            assert!(released > 100.0, "{physics:?}: dragged to {released}");
+            assert_eq!(
+                probe.state.presses(),
+                0,
+                "{physics:?}: a scroll is not a tap"
+            );
+            let ticks = run_until_idle(&mut runtime);
+            let settled = grid_offset(&runtime, &probe);
+            assert!(ticks > 1, "{physics:?}: no fling frames");
+            assert!(
+                settled > released,
+                "{physics:?}: fling {released} -> {settled}"
+            );
+            assert!(!runtime.prepare_frame(Instant::now()).unwrap());
+        }
     }
 }

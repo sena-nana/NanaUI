@@ -12,7 +12,7 @@ use std::time::Instant;
 
 use nana_mobile_host::{
     FrameDemand, MobileAppearance, MobilePlatform, MobileRenderer, MobileRuntime, MobileViewport,
-    SafeArea, SurfaceOptions, TouchPhase,
+    SafeArea, ScrollPhysics, SurfaceOptions, TouchPhase,
 };
 use nana_mobile_probe::{PreviewUploader, Probe, ProbeState};
 use nana_ui_core::LogicalRect;
@@ -171,6 +171,7 @@ pub unsafe extern "C" fn nana_ios_host_new(
     let Ok(mut runtime) = MobileRuntime::new(viewport, appearance, platform) else {
         return std::ptr::null_mut();
     };
+    runtime.set_scroll_physics(ScrollPhysics::Ios);
     let state = ProbeState::with_press_feedback(move || callbacks.pressed());
     let Ok(probe) = Probe::mount(&mut runtime, state) else {
         return std::ptr::null_mut();

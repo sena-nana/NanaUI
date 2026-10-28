@@ -28,6 +28,8 @@ pub use runtime::{MobileAppearance, MobilePlatform, MobileRuntime, TextInputSnap
 pub use schedule::FrameDemand;
 pub use viewport::{MobileViewport, SafeArea};
 
+pub use nana_ui::runtime::ScrollPhysics;
+
 /// Install the waker the view task executor calls when a future is ready.
 /// It may run on any thread; the shell answers it by requesting a frame on
 /// the main thread, where [`MobileRuntime::prepare_frame`] polls the tasks.

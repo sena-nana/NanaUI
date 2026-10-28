@@ -6,7 +6,7 @@ use std::time::Instant;
 use nana_ui::runtime::view::{Mount, entity_ref, widget, with_refs};
 use nana_ui::runtime::{
     AccessibilityAction, AccessibilityActionRequest, AppContext, DocumentId, Entity,
-    FrameworkError, LayoutViewport, List, RuntimeDocument, TextSelection,
+    FrameworkError, LayoutViewport, List, RuntimeDocument, ScrollPhysics, TextSelection,
 };
 use nana_ui::{AccessibilityNode, NanaTextShaper, RuntimeAnimationClock};
 use nana_ui_core::{
@@ -192,6 +192,12 @@ impl MobileRuntime {
             self.appearance = appearance;
             self.needs_present = true;
         }
+    }
+
+    /// Which platform's touch scrolling the document follows: iOS
+    /// deceleration and rubber band, or Android's `OverScroller` fling.
+    pub fn set_scroll_physics(&mut self, physics: ScrollPhysics) {
+        self.document.context_mut().set_scroll_physics(physics);
     }
 
     /// Something outside the document changed what it shows (a host texture
