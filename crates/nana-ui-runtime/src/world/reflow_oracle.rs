@@ -215,7 +215,7 @@ fn frame(
     context.compat_world_mut().observe_text_shaper(shaper);
     context.begin_frame_profile();
     for _ in 0..8 {
-        let work = context.take_system_work();
+        let work = context.take_system_work_for(document);
         if work.is_empty() && !resized {
             break;
         }

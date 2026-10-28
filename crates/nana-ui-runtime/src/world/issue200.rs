@@ -924,3 +924,67 @@ fn issue200_fixed_boxes_hang_from_their_own_windows_viewport() {
         assert_matches_cold(&mut windows.context, &mut cold.context, document);
     }
 }
+
+#[test]
+fn issue200_an_edit_pending_in_one_window_waits_for_that_windows_frame() {
+    let mut windows = Windows::new([
+        LayoutViewport::new(800.0, 600.0),
+        LayoutViewport::new(500.0, 700.0),
+    ]);
+    let grow = |windows: &mut Windows, width: f32| {
+        let mut queue = MutationQueue::new();
+        queue.set_style(
+            window_node(1, CORNER),
+            styled(LayoutStyle {
+                position: PositionSpec::Absolute,
+                offset_left: Some(LengthSpec::Px(0.0)),
+                offset_bottom: Some(LengthSpec::Px(0.0)),
+                ..sized(width, 20.0)
+            }),
+        );
+        windows.context.commit_mutations(queue).unwrap();
+    };
+    let draw = |windows: &mut Windows, window: usize| {
+        product_frame(
+            &mut windows.context,
+            WINDOWS[window],
+            windows.viewports[window],
+            &mut windows.shaper,
+        );
+    };
+    let before = windows.boxes(0);
+    // Window 1's corner grows; window 0 draws its next frame first. It has
+    // nothing of its own to lay out, and lays out nothing for window 1.
+    grow(&mut windows, 50.0);
+    let passes = windows.context.layout_invocations();
+    draw(&mut windows, 0);
+    assert_eq!(
+        windows.context.layout_invocations(),
+        passes,
+        "no pass for window 1's edit"
+    );
+    assert_eq!(windows.boxes(0), before);
+    assert_eq!(
+        windows.rect(1, CORNER).2,
+        30.0,
+        "window 1 has not drawn yet"
+    );
+    // Window 1's own frame lays the edit out.
+    draw(&mut windows, 1);
+    assert_eq!(windows.rect(1, CORNER), (0.0, 680.0, 50.0, 20.0));
+    assert!(windows.context.take_system_work().is_empty());
+
+    // A host that drains the whole context and hands window 0's pass every
+    // seed: the pass gives window 1's back rather than dropping them.
+    grow(&mut windows, 70.0);
+    let seeds = windows.context.take_system_work().layout_frontier_seeds;
+    assert!(!seeds.is_empty());
+    windows
+        .context
+        .layout_document_with_frontier(WINDOWS[0], windows.viewports[0], &seeds)
+        .unwrap();
+    assert_eq!(windows.boxes(0), before);
+    draw(&mut windows, 1);
+    assert_eq!(windows.rect(1, CORNER), (0.0, 680.0, 70.0, 20.0));
+    assert!(windows.context.take_system_work().is_empty());
+}

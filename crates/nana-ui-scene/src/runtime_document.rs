@@ -189,7 +189,7 @@ impl RuntimeDocument {
 
         self.context.begin_frame_profile();
         loop {
-            let work = self.context.take_system_work();
+            let work = self.context.take_system_work_for(self.document);
             if work.is_empty() && !force_pass {
                 break;
             }

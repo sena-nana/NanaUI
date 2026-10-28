@@ -1275,6 +1275,20 @@ impl UiWorld {
             .or_insert(invalidation);
     }
 
+    /// Hands back seeds a pass of another document was given: they stay
+    /// pending, merged into what is queued since, for their own document's
+    /// next drain. A node that left the world has nothing left to lay out.
+    pub(crate) fn requeue_layout_seeds(
+        &mut self,
+        seeds: impl IntoIterator<Item = crate::LayoutFrontierSeed>,
+    ) {
+        for seed in seeds {
+            if self.nodes.contains(seed.node) {
+                self.queue_layout_invalidation(seed.node, seed.invalidation);
+            }
+        }
+    }
+
     /// Publish the structural layout cause for a retained parent whose child
     /// list changed. The removed child may leave the live document before the
     /// next drain, so the parent is the durable frontier seed.
@@ -2598,6 +2612,21 @@ impl UiWorld {
     /// Calling it on an unchanged world returns an empty work set and performs
     /// no scheduling.
     pub fn take_system_work(&mut self) -> SystemWork {
+        self.drain_system_work(None)
+    }
+
+    /// [`Self::take_system_work`] for one document's frame: style, text and
+    /// the other world-wide work drain as usual, but only `document`'s layout
+    /// seeds do. Another document's stay pending for its own frame, which a
+    /// pass of this document could only drop.
+    pub fn take_system_work_for(&mut self, document: DocumentId) -> SystemWork {
+        self.drain_system_work(Some(document))
+    }
+
+    fn drain_system_work(&mut self, document: Option<DocumentId>) -> SystemWork {
+        let ours = |world: &Self, id: StableNodeId| {
+            document.is_none_or(|document| world.document_of(id) == Some(document))
+        };
         let mut ids = std::mem::take(&mut self.dirty_entities)
             .into_iter()
             .collect::<Vec<_>>();
@@ -2658,6 +2687,7 @@ impl UiWorld {
             // table. The private LAYOUT bit only causes this entity to be
             // visited by the drain.
             if bits & DirtyMask::LAYOUT != 0
+                && ours(self, id)
                 && let Some(invalidation) = self.pending_layout_invalidations.remove(&id)
             {
                 work.layout_frontier_seeds
@@ -2689,6 +2719,9 @@ impl UiWorld {
             .pending_layout_invalidations
             .drain()
             .collect::<Vec<_>>();
+        let (pending, theirs): (Vec<_>, Vec<_>) =
+            pending.into_iter().partition(|(id, _)| ours(self, *id));
+        self.pending_layout_invalidations.extend(theirs);
         let mut remaining = pending
             .into_iter()
             .filter(|(id, _)| self.presence_live(*id))

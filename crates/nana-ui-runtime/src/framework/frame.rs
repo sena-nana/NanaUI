@@ -20,6 +20,18 @@ impl AppContext {
         self.world.take_system_work()
     }
 
+    /// [`Self::take_system_work`] for `document`'s frame: the world-wide work
+    /// drains as usual, and of the layout seeds only `document`'s. Another
+    /// document's edits stay pending for its own frame. A host that draws
+    /// several documents from one context drains each frame through this.
+    pub fn take_system_work_for(&mut self, document: DocumentId) -> crate::SystemWork {
+        crate::view::poll_tasks();
+        if self.flush_reactive().is_err() {
+            nana_diagnostics::metric!(nana_diagnostics::framework::runtime::FLUSH_FAILED);
+        }
+        self.world.take_system_work_for(document)
+    }
+
     /// Consume the host cursor-sync hint after a successful document frame.
     #[doc(hidden)]
     pub fn take_window_cursor_dirty(&mut self) -> bool {
@@ -379,6 +391,23 @@ impl AppContext {
         let diagnostics_clock =
             started.or_else(|| nana_diagnostics::metrics_enabled().then(Instant::now));
         self.world.set_document_viewport(document, viewport);
+        // A seed of another document is its own frame's to lay out; this pass
+        // would only drop it, and the edit with it.
+        let own_seeds: Vec<crate::LayoutFrontierSeed>;
+        let typed_seeds = if typed_seeds
+            .iter()
+            .all(|seed| self.world.document_of(seed.node) == Some(document))
+        {
+            typed_seeds
+        } else {
+            let (own, theirs): (Vec<_>, Vec<_>) = typed_seeds
+                .iter()
+                .copied()
+                .partition(|seed| self.world.document_of(seed.node) == Some(document));
+            self.world.requeue_layout_seeds(theirs);
+            own_seeds = own;
+            &own_seeds
+        };
         let result = (|| {
             self.position_open_tooltips(document)?;
             completed(0);

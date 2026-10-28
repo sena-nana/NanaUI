@@ -765,6 +765,8 @@ flex 项和 grid 项上的 float，按 CSS 被块化，然后忽略。
 
 `fixed` 的包含块是它所在文档的视口：原点在窗口左上角，大小是这个文档上次布局用的视口。祖先是不是定位盒子、有没有 padding 都不算；祖先的滚动和裁剪也不作用于它，命中和无障碍同样按窗口上的位置读它的盒子。没有定位祖先的 `absolute` 用的初始包含块也是这个文档的视口。一个 `AppContext` 里有几个文档时，每个文档记着自己的视口（`UiWorld::document_viewport`）：一个文档改变视口，只重放它自己的 `fixed`、`vw` / `vh` 盒子和初始包含块上的盒子，另一个文档不跑布局，盒子、结果和记下的视口都不变。门禁 `issue200_fixed_boxes_hang_from_their_own_windows_viewport`：两个视口不同的文档，各有一个藏在 `relative` 卡片和带 padding 的静态盒子里、宽 25% 的 `fixed` 盒子，一个初始包含块上的 `absolute` 盒子，一个滚动列表里的 `fixed` 盒子；列表滚动、两个文档轮流改变大小，每一步盒子、命中和无障碍范围都在自己的视口上，另一个文档不动，最后与冷布局相同。
 
+一个 `AppContext` 承载几个文档时，每个文档的帧用 `AppContext::take_system_work_for(document)` 取工作（`RuntimeDocument` 就是这样取的）：样式、文本这些全局工作照常取走，布局 seed 只取这个文档的，另一个文档的编辑留在待处理表里，等它自己的帧。直接用 `take_system_work` 一次取完再交给某个文档的布局也不会丢：那一趟会把别的文档的 seed 放回待处理表。门禁 `issue200_an_edit_pending_in_one_window_waits_for_that_windows_frame`：第二个文档的盒子变宽后先画第一个文档，第一个文档一趟布局都不跑；第二个文档自己的帧才放下这次编辑；一次全部取完、全部交给第一个文档时，编辑同样留到第二个文档的帧。
+
 `fixed` 只适合普通节点贴在视口上。产品浮层仍走控件。不要自己用 `fixed` 搭对话框。
 
 **锚点定位（#200）。** `fixed` 盒子可以带 `LayoutStyle::anchor`（`AnchorSpec`）。它写明锚点矩形、首选侧、对齐、间距，还可以给一块可用区域。布局按盒子量出来的尺寸、对着真实视口放它，用的是 `resolve_anchored_surface`：
