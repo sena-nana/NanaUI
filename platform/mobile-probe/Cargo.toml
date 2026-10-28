@@ -21,3 +21,6 @@ nana-ui = { path = "../../crates/nana-ui", default-features = false, features = 
     "wgpu-backends",
 ] }
 wgpu.workspace = true
+
+[dev-dependencies]
+pollster.workspace = true

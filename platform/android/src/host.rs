@@ -214,6 +214,11 @@ impl Host {
             return;
         }
         self.feed_preview(now);
+        if let Some(document) = self.document.as_mut() {
+            document
+                .probe
+                .sync_preview(&mut document.preview, document.renderer.host_textures());
+        }
         if self.demand().resolve(now) != FrameDemand::Now {
             return;
         }
@@ -238,11 +243,7 @@ impl Host {
         let Some(document) = self.document.as_mut() else {
             return;
         };
-        if !document.probe.state.cpu_preview() {
-            document.preview.clear(document.renderer.host_textures());
-            return;
-        }
-        if now < self.next_preview {
+        if !document.probe.state.cpu_preview() || now < self.next_preview {
             return;
         }
         self.next_preview = now + PREVIEW_INTERVAL;

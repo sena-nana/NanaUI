@@ -240,19 +240,25 @@ fn surface_config(
                 .map(|format| (*format, wgpu::SurfaceColorSpace::Srgb))
         })
         .ok_or_else(|| "no surface formats".to_string())?;
-    let wanted = if options.transparent {
-        CompositeAlphaMode::PreMultiplied
+    // Metal offers only Opaque and PostMultiplied, and the latter is what
+    // clears `CAMetalLayer.opaque`: Core Animation composites the layer
+    // premultiplied either way. Falling back to Opaque would paint every
+    // transparent pixel black.
+    let wanted: &[CompositeAlphaMode] = if options.transparent {
+        &[
+            CompositeAlphaMode::PreMultiplied,
+            CompositeAlphaMode::PostMultiplied,
+            CompositeAlphaMode::Inherit,
+        ]
     } else {
-        CompositeAlphaMode::Opaque
+        &[CompositeAlphaMode::Opaque]
     };
-    let alpha_mode = if caps.alpha_modes.contains(&wanted) {
-        wanted
-    } else {
-        caps.alpha_modes
-            .first()
-            .copied()
-            .unwrap_or(CompositeAlphaMode::Auto)
-    };
+    let alpha_mode = wanted
+        .iter()
+        .copied()
+        .find(|mode| caps.alpha_modes.contains(mode))
+        .or_else(|| caps.alpha_modes.first().copied())
+        .unwrap_or(CompositeAlphaMode::Auto);
     // Fifo is vsync-paced and always available; the display link decides
     // which vsyncs present at all.
     let present_mode = if caps.present_modes.contains(&PresentMode::Fifo) {

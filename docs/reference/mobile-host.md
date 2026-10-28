@@ -26,6 +26,13 @@ nana-ui（只开 gpu，不开 hosted）
 1. **提供行为**：像素由 NanaUI 画，行为交给平台。例如文本输入走平台的文本系统（iOS 的 `UITextInput` 加 `UITextInteraction`，Android 的 GameTextInput），平台因此负责键盘、组字、候选、放大镜、选区手柄和编辑菜单。无障碍走平台的原生树。
 2. **整块原生层**：放在 NanaUI 表面的上方或下方，不进入布局。例如相机预览层垫在透明表面下面，页面在对应区域留透明；系统面板（权限、分享、扫码）以模态方式盖在上面。
 
+垫在下面的原生层要真的透得出来，需要两件事：
+
+- **表面不能是不透明的。** 透明表面（`SurfaceOptions { transparent: true }`）依次选 `PreMultiplied`、`PostMultiplied`、`Inherit`。Metal 只提供 `Opaque` 和 `PostMultiplied`，只有后者会把 `CAMetalLayer.opaque` 清掉；退回 `Opaque` 的话，所有透明像素都会显示成黑色。
+- **根节点不画页面底色。** `MobileRuntime::set_background_passthrough(true)` 之后，根节点不画背景，外壳在原生层下面用 `background_rgba()` 画同样的主题底色，所以页面看上去和不透明时一样。
+
+页面里的 `GpuTextureView` 只能在它的宿主纹理已经注册时显示：一帧里只要有一个采样不到的宿主纹理，`paint` 就会整帧失败。测量页的预览区因此是一个固定大小的透明容器，里面的纹理视图只在 CPU 预览槽注册后才显示（`Probe::sync_preview`，两个宿主都在准备每一帧之前调用）。
+
 **不把原生控件嵌进 NanaUI 的布局和滚动内容。** 原生层在系统合成线程上移动，NanaUI 按自己的帧移动，两者在滚动时对不齐；裁剪和层级还要拆层合成。
 
 文本代理需要知道编辑器的几何，所以 runtime 提供了 `AppContext::focused_text_offset_at`（点落在哪个字节偏移）和 `focused_text_caret_rect`（某个偏移的光标框）。`MobileRuntime::text_offset_at`、`text_caret_rect` 和 `text_input_bounds` 用逻辑像素转发这些查询；`set_text_selection` 把平台改动后的选区写回编辑器。
@@ -64,6 +71,6 @@ nana-ui（只开 gpu，不开 hosted）
 
 ## 验收
 
-- `cargo test -p nana-mobile-host -p nana-mobile-probe`：帧需求、安全区、触屏密度、组字、选区回写，以及光标框与点命中的互逆；另外，两种物理档位下，网格都要能拖动、甩动，停下后回到 Idle（`a_swipe_scrolls_the_grid_flings_and_settles_idle`）。
+- `cargo test -p nana-mobile-host -p nana-mobile-probe`：帧需求、安全区、触屏密度、组字、选区回写，以及光标框与点命中的互逆；另外，两种物理档位下，网格都要能拖动、甩动，停下后回到 Idle（`a_swipe_scrolls_the_grid_flings_and_settles_idle`）。`every_preview_path_paints` 在本机 GPU 上真的画一遍原生预览和 CPU 预览两条路径（没有 GPU 时跳过），宿主纹理缺失这类整帧失败只有这样才测得出来。
 - `scripts/check-ios-arm64.sh` 和 `scripts/check-android-arm64.sh`：交叉编译。
 - 性能和手感只认真机数据，模拟器的数字不能作为证据。达标线和对照方法见 [iOS](ios.md#验收)。

@@ -200,6 +200,31 @@ impl MobileRuntime {
         self.document.context_mut().set_scroll_physics(physics);
     }
 
+    /// For a transparent surface over native layers: the root paints no
+    /// background, so what the page leaves empty shows the layers below. The
+    /// shell then paints [`Self::background_rgba`] under those layers itself,
+    /// and the page looks as it does opaque.
+    pub fn set_background_passthrough(&mut self, passthrough: bool) -> Result<(), FrameworkError> {
+        self.document
+            .context_mut()
+            .update_component(self.root, move |root, _| {
+                root.style.background = (!passthrough).then_some(SemanticColorRole::Background);
+            })?;
+        self.needs_present = true;
+        self.flush()?;
+        Ok(())
+    }
+
+    /// The theme's page background for the current appearance, as sRGB
+    /// RGBA in `0..=1`.
+    pub fn background_rgba(&self) -> Result<[f32; 4], FrameworkError> {
+        let theme = touch_theme(theme_appearance(self.appearance))?;
+        Ok(theme
+            .style_model()
+            .color(SemanticColorRole::Background)
+            .as_rgba_array())
+    }
+
     /// Something outside the document changed what it shows (a host texture
     /// the shell invalidated, a new surface): present the next frame.
     pub fn request_present(&mut self) {
@@ -464,11 +489,7 @@ impl MobileRuntime {
     }
 
     fn apply_appearance(&mut self) -> Result<(), FrameworkError> {
-        let theme = if self.appearance.dark {
-            ThemeAppearance::Dark
-        } else {
-            ThemeAppearance::Light
-        };
+        let theme = theme_appearance(self.appearance);
         let wanted = (theme, self.appearance.text_scale);
         if self.applied == Some(wanted) {
             return Ok(());
@@ -558,6 +579,14 @@ impl MobileRuntime {
             return Ok(());
         }
         self.dispatch(InputPayload::Composition(CompositionInput::Disabled))
+    }
+}
+
+fn theme_appearance(appearance: MobileAppearance) -> ThemeAppearance {
+    if appearance.dark {
+        ThemeAppearance::Dark
+    } else {
+        ThemeAppearance::Light
     }
 }
 

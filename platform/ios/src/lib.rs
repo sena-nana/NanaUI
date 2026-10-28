@@ -119,6 +119,8 @@ pub struct NanaIosHost {
 
 impl NanaIosHost {
     fn tick(&mut self, now: Instant) -> Result<FrameDemand, String> {
+        self.probe
+            .sync_preview(&mut self.preview, self.renderer.host_textures());
         let changed = self
             .runtime
             .prepare_frame(now)
@@ -172,6 +174,9 @@ pub unsafe extern "C" fn nana_ios_host_new(
         return std::ptr::null_mut();
     };
     runtime.set_scroll_physics(ScrollPhysics::Ios);
+    if transparent && runtime.set_background_passthrough(true).is_err() {
+        return std::ptr::null_mut();
+    }
     let state = ProbeState::with_press_feedback(move || callbacks.pressed());
     let Ok(probe) = Probe::mount(&mut runtime, state) else {
         return std::ptr::null_mut();
@@ -252,6 +257,30 @@ pub unsafe extern "C" fn nana_ios_host_set_appearance(
         host.runtime
             .set_appearance(MobileAppearance { dark, text_scale });
     }
+}
+
+/// The page background for the current appearance, sRGB RGBA in `0..=1`:
+/// a transparent host paints none, and the shell paints this under its
+/// native layers instead.
+///
+/// # Safety
+///
+/// See [`host`]; `rgba` points at four writable floats.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn nana_ios_host_background(host: *mut NanaIosHost, rgba: *mut f32) -> bool {
+    // SAFETY: forwarded from the caller.
+    let Some(host) = (unsafe { self::host(host) }) else {
+        return false;
+    };
+    let Ok(color) = host.runtime.background_rgba() else {
+        return false;
+    };
+    if rgba.is_null() {
+        return false;
+    }
+    // SAFETY: the caller passes four writable floats.
+    unsafe { std::ptr::copy_nonoverlapping(color.as_ptr(), rgba, 4) };
+    true
 }
 
 /// # Safety
@@ -336,7 +365,11 @@ pub unsafe extern "C" fn nana_ios_host_tick(host: *mut NanaIosHost, seconds: *mu
     let now = Instant::now();
     match host.tick(now) {
         Ok(demand) => write_demand(demand.resolve(now), now, seconds),
-        Err(_) => -1,
+        Err(error) => {
+            // Stderr reaches the Xcode console and `simctl launch --console`.
+            eprintln!("nana-ios-host: tick failed: {error}");
+            -1
+        }
     }
 }
 
@@ -586,11 +619,7 @@ pub unsafe extern "C" fn nana_ios_host_push_preview_bgra(
     let Some(host) = (unsafe { self::host(host) }) else {
         return;
     };
-    if !host.probe.state.cpu_preview() {
-        host.preview.clear(host.renderer.host_textures());
-        return;
-    }
-    if bytes.is_null() {
+    if !host.probe.state.cpu_preview() || bytes.is_null() {
         return;
     }
     // SAFETY: forwarded from the caller.

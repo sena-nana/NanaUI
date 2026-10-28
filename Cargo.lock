@@ -2350,6 +2350,7 @@ dependencies = [
  "nana-ui",
  "nana-ui-core",
  "nana-ui-platform",
+ "pollster",
  "wgpu",
 ]
 

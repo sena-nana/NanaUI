@@ -59,6 +59,9 @@ void nana_ios_host_free(NanaIosHost *host);
 void nana_ios_host_resize(NanaIosHost *host, uint32_t width, uint32_t height, float scale,
                           NanaSafeArea safe_area);
 void nana_ios_host_set_appearance(NanaIosHost *host, bool dark, float text_scale);
+// The page background for the current appearance (sRGB RGBA, 0..1). A
+// transparent host paints none: the shell paints it under its native layers.
+bool nana_ios_host_background(NanaIosHost *host, float rgba[4]);
 bool nana_ios_host_attach(NanaIosHost *host, void *layer, uint32_t width, uint32_t height);
 void nana_ios_host_detach(NanaIosHost *host);
 

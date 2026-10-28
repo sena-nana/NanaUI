@@ -1,4 +1,5 @@
 import AVFoundation
+import UIKit
 
 /// Front camera at 640×480, as NanaTracking captures: a preview layer for
 /// the native path and BGRA sample buffers for the CPU path.
@@ -19,6 +20,8 @@ final class ProbeCamera: NSObject, AVCaptureVideoDataOutputSampleBufferDelegate 
         super.init()
         previewLayer.session = session
         previewLayer.videoGravity = .resizeAspectFill
+        // Black until the first frame, as the system camera shows.
+        previewLayer.backgroundColor = UIColor.black.cgColor
     }
 
     func start() {

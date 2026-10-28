@@ -6,10 +6,14 @@ import UIKit
 /// controller lays the camera layer out to it after each presented frame.
 /// With the page's CPU preview switch on, the layer hides and frames are
 /// uploaded into the page's host texture instead, for comparison.
+///
+/// A transparent surface paints no page background; the root view paints
+/// the theme's under the camera layer, so the page looks as it does opaque.
 final class ProbeViewController: UIViewController {
     private let nanaView = NanaView(transparent: true)
     private let camera = ProbeCamera()
     private var previewFrame = CGRect.zero
+    private var background: [Float] = []
 
     override func loadView() {
         let root = UIView()
@@ -30,6 +34,12 @@ final class ProbeViewController: UIViewController {
 
     private func layoutPreview() {
         guard let host = nanaView.host else { return }
+        var rgba = [Float](repeating: 0, count: 4)
+        if nana_ios_host_background(host, &rgba), rgba != background {
+            background = rgba
+            view.backgroundColor = UIColor(
+                red: CGFloat(rgba[0]), green: CGFloat(rgba[1]), blue: CGFloat(rgba[2]), alpha: CGFloat(rgba[3]))
+        }
         var rect = NanaRect()
         let cpu = nana_ios_host_cpu_preview(host)
         camera.wantsFrames = cpu

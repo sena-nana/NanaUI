@@ -322,3 +322,33 @@ fn caret_rects_and_point_hits_invert_each_other() {
         .text_offset_at(middle.x, middle.y + middle.height * 0.5);
     assert_eq!(hit, Some(5));
 }
+
+#[test]
+fn a_passthrough_root_paints_no_background_and_reports_the_theme_one() {
+    let mut fixture = fixture();
+    let root = fixture.runtime.root;
+    let background = |runtime: &MobileRuntime| {
+        runtime
+            .document()
+            .context()
+            .read(root, |root| root.style.background)
+            .unwrap()
+    };
+    assert_eq!(
+        background(&fixture.runtime),
+        Some(SemanticColorRole::Background)
+    );
+
+    fixture.runtime.set_background_passthrough(true).unwrap();
+    assert_eq!(background(&fixture.runtime), None);
+    assert_eq!(fixture.runtime.frame_demand(), FrameDemand::Now);
+
+    let light = fixture.runtime.background_rgba().unwrap();
+    fixture.runtime.set_appearance(MobileAppearance {
+        dark: true,
+        ..MobileAppearance::default()
+    });
+    let dark = fixture.runtime.background_rgba().unwrap();
+    assert_eq!(light[3], 1.0);
+    assert!(dark[0] < light[0], "dark {dark:?} light {light:?}");
+}

@@ -97,8 +97,8 @@ final class NanaView: UIView {
             view.requestFrame()
         }
         let center = NotificationCenter.default
-        center.addObserver(self, selector: #selector(suspend), name: UIApplication.didEnterBackgroundNotification, object: nil)
-        center.addObserver(self, selector: #selector(resume), name: UIApplication.willEnterForegroundNotification, object: nil)
+        center.addObserver(self, selector: #selector(suspend), name: UIScene.didEnterBackgroundNotification, object: nil)
+        center.addObserver(self, selector: #selector(resume), name: UIScene.willEnterForegroundNotification, object: nil)
     }
 
     /// Background: no GPU work, drop the surface, keep the document.

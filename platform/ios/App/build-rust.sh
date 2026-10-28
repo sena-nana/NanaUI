@@ -18,9 +18,11 @@ else
 fi
 TARGET_DIR="${CARGO_TARGET_DIR:-${ROOT}/target}"
 
-# Xcode's SDK and deployment variables would leak into cargo's host builds
-# (build scripts, proc macros) and point them at the iOS SDK.
-env -u SDKROOT -u IPHONEOS_DEPLOYMENT_TARGET -u LIBRARY_PATH \
+# Xcode's SDK variables would leak into cargo's host builds (build scripts,
+# proc macros) and point them at the iOS SDK. IPHONEOS_DEPLOYMENT_TARGET
+# stays: only iOS targets read it, and C dependencies (ring) need it to
+# match the app's deployment target.
+env -u SDKROOT -u LIBRARY_PATH \
   cargo build --manifest-path "${ROOT}/Cargo.toml" -p nana-ios-host \
   --target "${TARGET}" --profile "${PROFILE}" --locked
 

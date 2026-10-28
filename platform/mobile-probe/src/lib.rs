@@ -6,13 +6,17 @@
 //!
 //! The preview area has no background: a native camera layer under a
 //! transparent surface shows through it. With CPU preview on, the host
-//! instead uploads frames into [`PREVIEW_SLOT`] and the page samples them.
+//! instead uploads frames into [`PREVIEW_SLOT`] and the page samples them;
+//! the texture view inside the area shows only while that slot is
+//! registered, since a frame that samples a missing host texture fails.
 
+use std::cell::Cell;
+use std::rc::Rc;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 
 use nana_mobile_host::MobileRuntime;
-use nana_ui::runtime::view::{El, entity_ref, widget, with_refs};
+use nana_ui::runtime::view::{El, Signal, entity_ref, signal, widget, with_refs};
 use nana_ui::runtime::{
     Activate, Button, Entity, FrameworkError, GpuTextureView, List, RangeChanged, RangeField,
     ScrollAxes, ScrollView, Switch, Text, TextChanged, TextInput, ToggleChanged,
@@ -21,7 +25,9 @@ use nana_ui::{
     GpuContext, GpuError, GpuTexture, GpuTextureDescriptor, GpuTextureFormat, GpuTextureRegion,
     GpuTextureUsages, HostTexture, HostTextureAlphaMode, HostTextureRegistry,
 };
-use nana_ui_core::{ContentFit, FlexDirection, FlexWrap, LayoutStyle, LengthSpec, LogicalRect};
+use nana_ui_core::{
+    ButtonKind, ContentFit, FlexDirection, FlexWrap, LayoutStyle, LengthSpec, LogicalRect,
+};
 
 /// Host texture slot the CPU preview uploads into.
 pub const PREVIEW_SLOT: &str = "probe-camera";
@@ -63,7 +69,8 @@ impl ProbeState {
 /// The mounted page.
 pub struct Probe {
     pub state: ProbeState,
-    preview: Entity<GpuTextureView>,
+    preview: Entity<List>,
+    preview_ready: Signal<bool>,
     #[cfg_attr(not(test), allow(dead_code))]
     first_button: Entity<Button>,
     #[cfg_attr(not(test), allow(dead_code))]
@@ -73,8 +80,12 @@ pub struct Probe {
 impl Probe {
     pub fn mount(runtime: &mut MobileRuntime, state: ProbeState) -> Result<Self, FrameworkError> {
         let page_state = state.clone();
+        let ready_out = Rc::new(Cell::new(None));
+        let ready_in = ready_out.clone();
         let (_, (preview, first_button, grid_scroll)) = runtime.mount(move || {
             let (preview, first_button, grid_scroll) = (entity_ref(), entity_ref(), entity_ref());
+            let ready = signal(false);
+            ready_in.set(Some(ready));
             let toggles = page_state.cpu_preview.clone();
             let buttons: Vec<_> = (0..GRID_LEN)
                 .map(|index| {
@@ -121,7 +132,17 @@ impl Probe {
                                 range.value = event.value;
                             }),
                     )),
-                    widget(preview_view()).key("preview").entity_ref(preview),
+                    widget(container(|layout| {
+                        layout.width = Some(LengthSpec::Fill);
+                        layout.height = Some(LengthSpec::Px(PREVIEW_HEIGHT));
+                    }))
+                    .key("preview")
+                    .entity_ref(preview)
+                    .children(
+                        widget(preview_view())
+                            .key("preview-texture")
+                            .visible(move || ready.get()),
+                    ),
                     widget(ScrollView::new(ScrollAxes::Vertical).with_layout(|layout| {
                         layout.width = Some(LengthSpec::Fill);
                         layout.flex_grow = Some(1.0);
@@ -146,9 +167,21 @@ impl Probe {
         Ok(Self {
             state,
             preview,
+            preview_ready: ready_out.take().expect("mount builds the page"),
             first_button,
             grid_scroll,
         })
+    }
+
+    /// Reconcile the CPU preview before a frame is prepared: with the
+    /// switch off the slot is released, and the texture view shows exactly
+    /// while the slot is registered.
+    pub fn sync_preview(&self, uploader: &mut PreviewUploader, textures: &HostTextureRegistry) {
+        if !self.state.cpu_preview() {
+            uploader.clear(textures);
+        }
+        self.preview_ready
+            .set_if_changed(textures.get(PREVIEW_SLOT).is_some());
     }
 
     /// Where the preview area is, in logical px of the surface: the shell
@@ -231,7 +264,8 @@ impl PreviewUploader {
 fn grid_button(index: usize, state: &ProbeState) -> El<Button> {
     let presses = state.presses.clone();
     let pressed = state.pressed.clone();
-    widget(Button::new(format!("表演 {}", index + 1)))
+    // Subtle, not the default Ghost: touch has no hover to reveal chrome.
+    widget(Button::new(format!("表演 {}", index + 1)).kind(ButtonKind::Subtle))
         .key(format!("perform-{index}"))
         .on(move |_: &Activate| {
             presses.fetch_add(1, Ordering::Relaxed);
@@ -248,7 +282,7 @@ fn preview_view() -> GpuTextureView {
     view.corner_radius = 12.0;
     let layout = Arc::make_mut(&mut view.style.layout);
     layout.width = Some(LengthSpec::Fill);
-    layout.height = Some(LengthSpec::Px(PREVIEW_HEIGHT));
+    layout.height = Some(LengthSpec::Fill);
     view
 }
 
@@ -288,6 +322,113 @@ mod tests {
             MobileRuntime::new(viewport, MobileAppearance::default(), Box::new(Inert)).unwrap();
         let probe = Probe::mount(&mut runtime, ProbeState::default()).unwrap();
         (runtime, probe)
+    }
+
+    /// A GPU device with no surface, or `None` where the machine has none.
+    /// It is held to the iOS Simulator's 15 inter-stage variables (Metal's
+    /// Apple2 family), so a shader that outgrows them fails here as well.
+    fn headless_gpu() -> Option<GpuContext> {
+        let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle());
+        let adapter =
+            pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions::default()))
+                .ok()?;
+        let (device, queue) = pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
+            required_limits: wgpu::Limits {
+                max_inter_stage_shader_variables: 15,
+                ..adapter.limits()
+            },
+            ..wgpu::DeviceDescriptor::default()
+        }))
+        .ok()?;
+        Some(GpuContext::from_wgpu(adapter, device, queue))
+    }
+
+    /// Paint the page's current scene the way `MobileRenderer` does, into
+    /// an offscreen target.
+    fn paint(
+        gpu: &GpuContext,
+        painter: &mut nana_ui::SceneWgpuPainter,
+        runtime: &MobileRuntime,
+        textures: &HostTextureRegistry,
+    ) -> Result<(), String> {
+        let format = wgpu::TextureFormat::Bgra8UnormSrgb;
+        let (width, height) = (390, 844);
+        let texture = gpu
+            .wgpu()
+            .device()
+            .create_texture(&wgpu::TextureDescriptor {
+                label: Some("probe test target"),
+                size: wgpu::Extent3d {
+                    width,
+                    height,
+                    depth_or_array_layers: 1,
+                },
+                mip_level_count: 1,
+                sample_count: 1,
+                dimension: wgpu::TextureDimension::D2,
+                format,
+                usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
+                view_formats: &[],
+            });
+        let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+        let target = nana_ui::GpuRenderTarget::from_wgpu(gpu, view, format, [width, height]);
+        let mut recording = gpu.begin_frame("probe test frame");
+        painter
+            .paint(
+                runtime.document().scene(),
+                &mut recording,
+                &target,
+                nana_ui::ScenePaintViewport {
+                    logical_size: [width as f32, height as f32],
+                    physical_size: [width, height],
+                    scale_factor: 1.0,
+                    scene_origin: [0.0, 0.0],
+                    target_origin: [0.0, 0.0],
+                    clear_color: [0.0, 0.0, 0.0, 0.0],
+                    clear: true,
+                },
+                Some(textures),
+                None,
+            )
+            .map_err(|error| error.to_string())?;
+        recording.submit();
+        Ok(())
+    }
+
+    /// The native path registers no texture, so the page must not sample
+    /// one; the CPU path shows it once uploaded and drops it again.
+    #[test]
+    fn every_preview_path_paints() {
+        let Some(gpu) = headless_gpu() else {
+            eprintln!("no GPU adapter; skipped");
+            return;
+        };
+        let viewport = MobileViewport::new((390, 844), 1.0, SafeArea::default());
+        let mut runtime =
+            MobileRuntime::new(viewport, MobileAppearance::default(), Box::new(Inert)).unwrap();
+        let probe = Probe::mount(&mut runtime, ProbeState::default()).unwrap();
+        let textures = HostTextureRegistry::new();
+        let mut uploader = PreviewUploader::default();
+        let mut painter = nana_ui::SceneWgpuPainter::new(&gpu, GpuTextureFormat::BGRA8_UNORM_SRGB);
+        let mut frame = |runtime: &mut MobileRuntime, uploader: &mut PreviewUploader| {
+            probe.sync_preview(uploader, &textures);
+            runtime.prepare_frame(Instant::now()).unwrap();
+            paint(&gpu, &mut painter, runtime, &textures)
+        };
+
+        frame(&mut runtime, &mut uploader).expect("native path");
+
+        probe.state.cpu_preview.store(true, Ordering::Relaxed);
+        frame(&mut runtime, &mut uploader).expect("CPU path before the first frame");
+        let pixels = vec![128; 64 * 48 * 4];
+        uploader
+            .push_bgra(&gpu, &textures, &pixels, 64, 48, 64 * 4)
+            .unwrap();
+        frame(&mut runtime, &mut uploader).expect("CPU path with a frame");
+
+        probe.state.cpu_preview.store(false, Ordering::Relaxed);
+        frame(&mut runtime, &mut uploader).expect("back to the native path");
+        assert!(textures.get(PREVIEW_SLOT).is_none());
     }
 
     #[test]

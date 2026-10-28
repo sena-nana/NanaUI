@@ -45,6 +45,26 @@ xcodebuild -project platform/ios/App/NanaProbe.xcodeproj -target NanaProbe \
 
 装到真机时，在 Xcode 里给 NanaProbe target 选择 Development Team，然后用 Release 配置运行。Debug 的 staticlib 带完整 DWARF，有几百 MB，不能拿来测体积和性能。
 
+外壳走 UIScene 生命周期（`SceneDelegate` 建窗口，进后台看 `UIScene` 的通知）：iOS 27 SDK 编出的 App 不采用场景生命周期就直接启动失败。
+
+### 模拟器
+
+```bash
+# rustup target 装在构建时用的那个工具链上（NanaUI 用 stable）
+rustup +stable target add aarch64-apple-ios-sim
+xcodebuild -project platform/ios/App/NanaProbe.xcodeproj -target NanaProbe \
+  -configuration Debug -sdk iphonesimulator -arch arm64 CODE_SIGN_IDENTITY=- build
+xcrun simctl install booted build/Debug-iphonesimulator/NanaProbe.app
+# --console-pty 把宿主的 stderr（tick 失败、panic）接到终端
+xcrun simctl launch --console-pty booted dev.nana.probe
+```
+
+模拟器上能验证功能：首帧、触摸滚动与甩动、开关与滑条、拼音组字与候选上屏、退格、进后台再回来、深浅色切换，以及空闲时不出帧。它不能验证的是：
+
+- **相机**：模拟器没有摄像头，预览层停在黑色底，CPU 预览收不到帧。
+- **性能**：帧间隔和 CPU 数字不能作为证据。
+- **GPU 能力**：模拟器的 Metal 只提供 Apple2 家族，wgpu 据此只给 15 个跨阶段变量（真机 A11 起是 31）。场景着色器按 15 的上限写，所以模拟器上也能跑；新增着色器输出时要守住这个上限。
+
 ## 验收
 
 下面这些都要在真机上，和一个最小的 SwiftUI 对照 App（同样的网格，加 `AVCaptureVideoPreviewLayer`）背靠背比较。模拟器的数字不算证据。
