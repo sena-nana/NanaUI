@@ -3161,6 +3161,182 @@ impl TextArea {
         self
     }
 
+    /// The style the field projects: the authored one with the footer band,
+    /// the auto-grow row budget, the marker gutter and the invalid border.
+    fn effective_style(&self, id: StableNodeId, world: &UiWorld) -> NodeStyle {
+        let size = nana_ui_core::ControlSize::Medium;
+        let mut effective_style = self.style.clone();
+        let expanded_footer = self.uses_expanded_footer();
+        let footer_extent = if expanded_footer {
+            text_area_footer_extent(
+                self.character_counter.is_some(),
+                self.trailing_action.is_some(),
+                world.theme_metrics(),
+            )
+        } else {
+            0.0
+        };
+        let footer_band = if footer_extent > 0.0 {
+            footer_extent + 4.0
+        } else {
+            0.0
+        };
+        if let Some((min_rows, max_rows)) = self.auto_grow {
+            let max_rows = if self.uses_adaptive_footer() && !expanded_footer {
+                min_rows
+            } else {
+                max_rows
+            };
+            // Row budgets must use the same installed typography and authored
+            // line-height as shaping, including relative or literal overrides.
+            let layout = &effective_style.layout;
+            let theme = world.theme();
+            let font = layout.theme.font_size.as_ref().map_or_else(
+                || {
+                    layout
+                        .font_size
+                        .unwrap_or_else(|| size.text_size_in(theme.typography()))
+                },
+                |font| font.resolve(theme),
+            );
+            let line_height = layout
+                .theme
+                .line_height
+                .as_ref()
+                .map_or(layout.line_height, |line| {
+                    Some(nana_ui_core::LineHeightSpec::Absolute(line.resolve(theme)))
+                });
+            let line = nana_ui_core::text_line_box_height_px(font, line_height);
+            let border = layout.theme.border_width.as_ref().map_or_else(
+                || layout.border_width.unwrap_or(0.0),
+                |border| border.resolve(theme),
+            );
+            let chrome = (size.height_in(world.theme_metrics()) - line).max(2.0 * border);
+            effective_style.control_padding_y = None;
+            effective_style.control_height = None;
+            let layout = Arc::make_mut(&mut effective_style.layout);
+            layout.height = None;
+            layout.min_height = Some(nana_ui_core::LengthSpec::Px(
+                min_rows as f32 * line + chrome + footer_band,
+            ));
+            layout.max_height = Some(nana_ui_core::LengthSpec::Px(
+                max_rows as f32 * line + chrome + footer_band,
+            ));
+            layout.padding_top = Some(nana_ui_core::LengthSpec::Px((chrome - 2.0 * border) / 2.0));
+            layout.padding_bottom = layout.padding_top;
+            layout.word_break = Some(nana_ui_core::WordBreakSpec::BreakAll);
+            layout.white_space_nowrap = false;
+            // Natural rows are a preferred size. A bounded flex parent may
+            // reduce the text viewport down to min_rows while the footer stays.
+            // Preserve an explicit consumer policy.
+            layout.flex_shrink.get_or_insert(1.0);
+        }
+        if footer_band > 0.0 {
+            let padding = effective_style
+                .control_padding_y
+                .map(|padding| padding.resolve(world.theme_metrics()));
+            let top = padding.unwrap_or_else(|| effective_style.layout.resolved_padding().top);
+            let bottom =
+                padding.unwrap_or_else(|| effective_style.layout.resolved_padding().bottom);
+            let layout = Arc::make_mut(&mut effective_style.layout);
+            layout.position = nana_ui_core::PositionSpec::Relative;
+            layout.padding_top = Some(nana_ui_core::LengthSpec::Px(top));
+            layout.padding_bottom = Some(nana_ui_core::LengthSpec::Px(bottom + footer_band));
+            effective_style.control_padding_y = None;
+        }
+        if self.uses_adaptive_footer() && !expanded_footer && self.trailing_action.is_some() {
+            let padding = effective_style
+                .control_padding_x
+                .map(|padding| padding.resolve(world.theme_metrics()))
+                .unwrap_or_else(|| effective_style.layout.resolved_padding().right);
+            let left_padding = effective_style
+                .control_padding_x
+                .map(|padding| padding.resolve(world.theme_metrics()))
+                .unwrap_or_else(|| effective_style.layout.resolved_padding().left);
+            let layout = Arc::make_mut(&mut effective_style.layout);
+            layout.position = nana_ui_core::PositionSpec::Relative;
+            layout.padding_right = Some(nana_ui_core::LengthSpec::Px(
+                padding + nana_ui_core::ControlSize::Small.height_in(world.theme_metrics()) + 4.0,
+            ));
+            layout.padding_left = Some(nana_ui_core::LengthSpec::Px(left_padding));
+            effective_style.control_padding_x = None;
+        }
+        if self.resize_vertical
+            && let Some(height) = self.resized_height
+        {
+            Arc::make_mut(&mut effective_style.layout).height =
+                Some(nana_ui_core::LengthSpec::Px(height));
+        }
+        if self.line_numbers || !self.code_folds.is_empty() || !self.git_gutter.is_empty() {
+            // Reserve the left marker lane even before fold/git results arrive,
+            // so asynchronous decorations do not move the source horizontally.
+            // Measured at the size the scene paints line labels at: the
+            // control's caption size, independently of source text.
+            let label_size = size.caption_size();
+            let digits = if self.line_numbers {
+                let lines = self
+                    .state
+                    .value
+                    .bytes()
+                    .filter(|byte| *byte == b'\n')
+                    .count()
+                    + 1;
+                lines.ilog10() as usize + 1
+            } else {
+                0
+            };
+            // Each digit is given the widest digit's advance, so the gutter
+            // holds while the line count stays within the same digit count.
+            let digit_width = if digits == 0 {
+                0.0
+            } else {
+                let measure = world.chrome_text_measure(id);
+                (0..=9)
+                    .map(|digit| measure.width(&digit.to_string(), label_size, None))
+                    .fold(0.0, f32::max)
+            };
+            let gutter = 18.0 + digits as f32 * digit_width + 4.0;
+            let named = effective_style
+                .control_padding_x
+                .map(|padding| padding.resolve(world.theme_metrics()))
+                .unwrap_or(0.0);
+            let field_pad = named.max(effective_style.layout.resolved_padding().left);
+            {
+                let layout = Arc::make_mut(&mut effective_style.layout);
+                layout.padding_left =
+                    Some(nana_ui_core::LengthSpec::Px(field_pad.max(gutter).ceil()));
+                layout.padding_right = Some(nana_ui_core::LengthSpec::Px(field_pad));
+            }
+            // The gutter is a spent number on this axis; keep the resolver
+            // from writing Field padding back over it.
+            effective_style.control_padding_x = None;
+        }
+        if self.invalid && !self.style_override {
+            effective_style.border = Some(nana_ui_core::SemanticColorRole::Danger);
+            effective_style.interaction.hovered.border =
+                Some(nana_ui_core::SemanticColorRole::Danger);
+            effective_style.interaction.focused.border =
+                Some(nana_ui_core::SemanticColorRole::Danger);
+        }
+        effective_style
+    }
+
+    /// The padding the field ends up with on its right and bottom edges: the
+    /// footer action is placed from its padding box, inside that padding.
+    pub(crate) fn footer_padding(&self, id: StableNodeId, world: &UiWorld) -> (f32, f32) {
+        let style = self.effective_style(id, world);
+        let metrics = world.theme_metrics();
+        let padding = style.layout.resolved_padding();
+        (
+            style
+                .control_padding_x
+                .map_or(padding.right, |padding| padding.resolve(metrics)),
+            style
+                .control_padding_y
+                .map_or(padding.bottom, |padding| padding.resolve(metrics)),
+        )
+    }
+
     pub(crate) fn uses_adaptive_footer(&self) -> bool {
         matches!(self.auto_grow, Some((1, _)))
             && (self.character_counter.is_some() || self.trailing_action.is_some())
@@ -3517,159 +3693,7 @@ impl ComponentView for TextArea {
                 mutations.set_text_input_inlays(id, Arc::clone(&self.inlays));
             }
         }
-        let mut effective_style = self.style.clone();
-        let expanded_footer = self.uses_expanded_footer();
-        let footer_extent = if expanded_footer {
-            text_area_footer_extent(
-                self.character_counter.is_some(),
-                self.trailing_action.is_some(),
-                world.theme_metrics(),
-            )
-        } else {
-            0.0
-        };
-        let footer_band = if footer_extent > 0.0 {
-            footer_extent + 4.0
-        } else {
-            0.0
-        };
-        if let Some((min_rows, max_rows)) = self.auto_grow {
-            let max_rows = if self.uses_adaptive_footer() && !expanded_footer {
-                min_rows
-            } else {
-                max_rows
-            };
-            // Row budgets must use the same installed typography and authored
-            // line-height as shaping, including relative or literal overrides.
-            let layout = &effective_style.layout;
-            let theme = world.theme();
-            let font = layout.theme.font_size.as_ref().map_or_else(
-                || {
-                    layout
-                        .font_size
-                        .unwrap_or_else(|| size.text_size_in(theme.typography()))
-                },
-                |font| font.resolve(theme),
-            );
-            let line_height = layout
-                .theme
-                .line_height
-                .as_ref()
-                .map_or(layout.line_height, |line| {
-                    Some(nana_ui_core::LineHeightSpec::Absolute(line.resolve(theme)))
-                });
-            let line = nana_ui_core::text_line_box_height_px(font, line_height);
-            let border = layout.theme.border_width.as_ref().map_or_else(
-                || layout.border_width.unwrap_or(0.0),
-                |border| border.resolve(theme),
-            );
-            let chrome = (size.height_in(world.theme_metrics()) - line).max(2.0 * border);
-            effective_style.control_padding_y = None;
-            effective_style.control_height = None;
-            let layout = Arc::make_mut(&mut effective_style.layout);
-            layout.height = None;
-            layout.min_height = Some(nana_ui_core::LengthSpec::Px(
-                min_rows as f32 * line + chrome + footer_band,
-            ));
-            layout.max_height = Some(nana_ui_core::LengthSpec::Px(
-                max_rows as f32 * line + chrome + footer_band,
-            ));
-            layout.padding_top = Some(nana_ui_core::LengthSpec::Px((chrome - 2.0 * border) / 2.0));
-            layout.padding_bottom = layout.padding_top;
-            layout.word_break = Some(nana_ui_core::WordBreakSpec::BreakAll);
-            layout.white_space_nowrap = false;
-            // Natural rows are a preferred size. A bounded flex parent may
-            // reduce the text viewport down to min_rows while the footer stays.
-            // Preserve an explicit consumer policy.
-            layout.flex_shrink.get_or_insert(1.0);
-        }
-        if footer_band > 0.0 {
-            let padding = effective_style
-                .control_padding_y
-                .map(|padding| padding.resolve(world.theme_metrics()));
-            let top = padding.unwrap_or_else(|| effective_style.layout.resolved_padding().top);
-            let bottom =
-                padding.unwrap_or_else(|| effective_style.layout.resolved_padding().bottom);
-            let layout = Arc::make_mut(&mut effective_style.layout);
-            layout.position = nana_ui_core::PositionSpec::Relative;
-            layout.padding_top = Some(nana_ui_core::LengthSpec::Px(top));
-            layout.padding_bottom = Some(nana_ui_core::LengthSpec::Px(bottom + footer_band));
-            effective_style.control_padding_y = None;
-        }
-        if self.uses_adaptive_footer() && !expanded_footer && self.trailing_action.is_some() {
-            let padding = effective_style
-                .control_padding_x
-                .map(|padding| padding.resolve(world.theme_metrics()))
-                .unwrap_or_else(|| effective_style.layout.resolved_padding().right);
-            let left_padding = effective_style
-                .control_padding_x
-                .map(|padding| padding.resolve(world.theme_metrics()))
-                .unwrap_or_else(|| effective_style.layout.resolved_padding().left);
-            let layout = Arc::make_mut(&mut effective_style.layout);
-            layout.position = nana_ui_core::PositionSpec::Relative;
-            layout.padding_right = Some(nana_ui_core::LengthSpec::Px(
-                padding + nana_ui_core::ControlSize::Small.height_in(world.theme_metrics()) + 4.0,
-            ));
-            layout.padding_left = Some(nana_ui_core::LengthSpec::Px(left_padding));
-            effective_style.control_padding_x = None;
-        }
-        if self.resize_vertical
-            && let Some(height) = self.resized_height
-        {
-            Arc::make_mut(&mut effective_style.layout).height =
-                Some(nana_ui_core::LengthSpec::Px(height));
-        }
-        if self.line_numbers || !self.code_folds.is_empty() || !self.git_gutter.is_empty() {
-            // Reserve the left marker lane even before fold/git results arrive,
-            // so asynchronous decorations do not move the source horizontally.
-            // Measured at the size the scene paints line labels at: the
-            // control's caption size, independently of source text.
-            let label_size = size.caption_size();
-            let digits = if self.line_numbers {
-                let lines = self
-                    .state
-                    .value
-                    .bytes()
-                    .filter(|byte| *byte == b'\n')
-                    .count()
-                    + 1;
-                lines.ilog10() as usize + 1
-            } else {
-                0
-            };
-            // Each digit is given the widest digit's advance, so the gutter
-            // holds while the line count stays within the same digit count.
-            let digit_width = if digits == 0 {
-                0.0
-            } else {
-                let measure = world.chrome_text_measure(id);
-                (0..=9)
-                    .map(|digit| measure.width(&digit.to_string(), label_size, None))
-                    .fold(0.0, f32::max)
-            };
-            let gutter = 18.0 + digits as f32 * digit_width + 4.0;
-            let named = effective_style
-                .control_padding_x
-                .map(|padding| padding.resolve(world.theme_metrics()))
-                .unwrap_or(0.0);
-            let field_pad = named.max(effective_style.layout.resolved_padding().left);
-            {
-                let layout = Arc::make_mut(&mut effective_style.layout);
-                layout.padding_left =
-                    Some(nana_ui_core::LengthSpec::Px(field_pad.max(gutter).ceil()));
-                layout.padding_right = Some(nana_ui_core::LengthSpec::Px(field_pad));
-            }
-            // The gutter is a spent number on this axis; keep the resolver
-            // from writing Field padding back over it.
-            effective_style.control_padding_x = None;
-        }
-        if self.invalid && !self.style_override {
-            effective_style.border = Some(nana_ui_core::SemanticColorRole::Danger);
-            effective_style.interaction.hovered.border =
-                Some(nana_ui_core::SemanticColorRole::Danger);
-            effective_style.interaction.focused.border =
-                Some(nana_ui_core::SemanticColorRole::Danger);
-        }
+        let effective_style = self.effective_style(id, world);
         project_text_field(
             id,
             world,

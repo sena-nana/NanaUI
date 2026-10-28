@@ -1,6 +1,6 @@
 {
   "id": "T-P05",
-  "title": "absolute 相对含 padding 的 positioned containing block",
+  "title": "absolute 的 inset 从 positioned containing block 的 padding 盒量起",
   "status": "pass",
   "viewport": [220, 140],
   "tolerance_px": 2,
@@ -18,6 +18,6 @@
   "expected": [
     { "id": "root", "x": 0, "y": 0, "w": 220, "h": 140 },
     { "id": "flow", "x": 8, "y": 12, "w": 50, "h": 30 },
-    { "id": "badge", "x": 14, "y": 16, "w": 40, "h": 20 }
+    { "id": "badge", "x": 6, "y": 4, "w": 40, "h": 20 }
   ]
 }

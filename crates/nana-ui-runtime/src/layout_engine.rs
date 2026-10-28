@@ -242,6 +242,7 @@ impl RuntimeLayoutEngine {
                 retained.intrinsic_metrics.clear();
                 retained.placements.clear();
                 retained.container_plans.clear();
+                retained.remote_overlays.clear();
                 retained.measure_plans.clear();
                 retained.materialized_inputs = emitted.len();
                 return Ok(emitted);
@@ -456,6 +457,9 @@ impl RuntimeLayoutEngine {
             #[cfg(feature = "benchmark")]
             phase.lap(2);
         }
+        if let Some(scope) = scope_ref {
+            place_remote_overlays(viewport, &mut nodes, &mut intrinsic, &mut output, scope)?;
+        }
         if !force_full {
             // An affected node that no longer generates a box (hidden, or in
             // a closed branch) is skipped by its container rather than
@@ -480,10 +484,20 @@ impl RuntimeLayoutEngine {
                     // participants recorded this pass. A repeat edit replaces
                     // the previous plan instead of appending another.
                     bound_container_plan(&mut plan);
+                    if plan
+                        .overlay
+                        .iter()
+                        .any(|entry| !entry.fixed && !entry.in_container)
+                    {
+                        retained.remote_overlays.insert(id);
+                    } else {
+                        retained.remote_overlays.remove(&id);
+                    }
                     retained.container_plans.insert(id, plan);
                 }
                 None => {
                     retained.container_plans.remove(&id);
+                    retained.remote_overlays.remove(&id);
                 }
             }
         }
@@ -598,6 +612,7 @@ impl RuntimeLayoutEngine {
             retained.far_start.retain(|id, _| world.contains(*id));
             retained.contexts.retain(|id, _| world.contains(*id));
             retained.container_plans.retain(|id, _| world.contains(*id));
+            retained.remote_overlays.retain(|id| world.contains(*id));
             retained.measure_plans.retain(|id, _| world.contains(*id));
             retained.envelopes.retain(|id, _| world.contains(*id));
             retained.line_solves.retain(|id, _| world.contains(*id));
@@ -791,6 +806,7 @@ impl RetainedLayoutCache {
             cache.far_start.remove(&id);
             cache.contexts.remove(&id);
             cache.container_plans.remove(&id);
+            cache.remote_overlays.remove(&id);
             cache.measure_plans.remove(&id);
             cache.envelopes.remove(&id);
             cache.line_solves.remove(&id);
@@ -966,6 +982,10 @@ struct DocumentLayoutCache {
     contexts: HashMap<StableNodeId, crate::FormattingContextKind>,
     /// Cached in-flow child placement per container. See [`ContainerPlan`].
     container_plans: HashMap<StableNodeId, ContainerPlan>,
+    /// The containers whose plan holds an absolute child hung from an
+    /// ancestor or from the initial containing block: a pass that does not
+    /// place the container checks those children against their block.
+    remote_overlays: HashSet<StableNodeId>,
     /// Cached intrinsic measurement per content-sized container. See
     /// [`MeasurePlan`].
     measure_plans: HashMap<StableNodeId, MeasurePlanSlots>,
@@ -1236,6 +1256,7 @@ impl DocumentLayoutCache {
         self.far_start.clear();
         self.contexts.clear();
         self.container_plans.clear();
+        self.remote_overlays.clear();
         self.measure_plans.clear();
         self.envelopes.clear();
         self.line_solves.clear();
@@ -1307,15 +1328,27 @@ struct PlannedOverlay {
     #[allow(dead_code)]
     style: Arc<nana_ui_core::LayoutStyle>,
     fixed: bool,
+    /// The absolute child's containing block (CSS 2.1 §10.1): its nearest
+    /// positioned ancestor, whose padding box `base_origin` and `base` are,
+    /// or `None` for the initial containing block -- the viewport at the
+    /// document origin. `None` as well for a fixed child.
+    block: Option<StableNodeId>,
+    /// `block` is the container whose plan holds this entry: the child moves
+    /// with it. Otherwise only its containing block moves it.
+    in_container: bool,
+    /// The container's content origin at placement, when an axis has both
+    /// insets auto: the box keeps its static position there, so the
+    /// container moving moves it whatever its containing block.
+    static_origin: Option<Point>,
     /// The used box reads the containing block's size (percentage, fill,
     /// or both insets). A fixed child reads the viewport instead.
     tracks_containing_block: bool,
     base: Size,
-    #[allow(dead_code)]
     base_origin: Point,
-    /// What the insets add to `base_origin`, as placement added it: a
-    /// container that only moved puts the child at its new content origin
-    /// plus this (see [`ContainerPlan::moved_to`]).
+    /// Where the child stands from the container's content origin: a
+    /// container that only moved puts a child that moves with it (see
+    /// `in_container`) at its new content origin plus this (see
+    /// [`ContainerPlan::moved_to`]).
     inset: Point,
     origin: Point,
     size: Size,
@@ -1710,9 +1743,11 @@ impl ContainerPlan {
 
     /// This plan for the container at `origin`, its content box at
     /// `content_origin`. Every child keeps its place in the content box and
-    /// moves with it, as does every positioned child but a fixed one, which
-    /// hangs off the viewport: it sits at the new content origin plus its
-    /// recorded offset, the sum a fresh pass computes there. `None` when an
+    /// moves with it, as does every positioned child whose containing block
+    /// is this container: it sits at the new content origin plus its
+    /// recorded offset, the sum a fresh pass computes there. A fixed child
+    /// hangs off the viewport, and an absolute one whose containing block is
+    /// an ancestor or the initial one moves only with that block. `None` when an
     /// entry's offset is not known (see [`PlannedChild::offset`]), or a grid
     /// item is not the one the track record holds at its index or inherits
     /// the tracks it spans as a subgrid.
@@ -1738,8 +1773,11 @@ impl ContainerPlan {
             entry.origin = at(entry.offset?);
         }
         for entry in &mut moved.overlay {
-            if !entry.fixed {
-                entry.base_origin = content_origin;
+            if entry.in_container {
+                entry.base_origin = Point {
+                    x: entry.base_origin.x + content_origin.x - self.content_origin.x,
+                    y: entry.base_origin.y + content_origin.y - self.content_origin.y,
+                };
                 entry.origin = at(entry.inset);
             }
         }

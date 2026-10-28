@@ -285,13 +285,12 @@ impl AppContext {
             layout.position = PositionSpec::Absolute;
             layout.theme.width = Some(ThemeToken::Control(ControlSize::Small).into());
             layout.height = Some(LengthSpec::Percent(100.0));
-            // Runtime absolute insets use the parent's content box, whose end
-            // is also the end of the label; move through the reserved gutter.
-            layout.theme.offset_right = Some(
-                ThemeExpr::token(ThemeToken::Control(ControlSize::Small))
-                    .plus(ThemeToken::Space(SpacingStep::Xs).into())
-                    .scaled(-1.0),
-            );
+            // The chip is the containing block: the insets are measured from
+            // its padding box, so the box sits in the reserved gutter, the
+            // chip's own end padding in from its edge.
+            layout.theme.offset_right = Some(ThemeExpr::token(ThemeToken::ControlPadding(
+                ControlPadding::Compact,
+            )));
         })?;
         self.update_component(chip, |chip, _| {
             chip.close = Some(close.stable_id());

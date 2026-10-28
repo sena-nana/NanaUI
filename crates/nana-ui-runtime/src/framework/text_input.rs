@@ -66,21 +66,27 @@ impl AppContext {
         };
         let slot = Entity::<Stack>::from_stable_id(slot);
         let extent = nana_ui_core::ControlSize::Small.height_in(self.world().theme_metrics());
+        let (padding_right, padding_bottom) = {
+            let view = self.read(area, Clone::clone)?;
+            view.footer_padding(area.stable_id(), self.world())
+        };
         self.update_component(slot, |slot, _| {
             let layout = Arc::make_mut(&mut slot.style_mut().layout);
             layout.hidden = hidden;
             layout.position = nana_ui_core::PositionSpec::Absolute;
             // Text fills the content box. The footer is the reserved bottom
-            // padding band, so its action cannot consume any text-column width.
+            // (or, compact, trailing) padding band, so its action cannot
+            // consume any text-column width. The field is its containing
+            // block, so the insets are measured from its padding box.
             layout.offset_right = Some(nana_ui_core::LengthSpec::Px(if expanded {
-                0.0
+                padding_right
             } else {
-                -(extent + 4.0)
+                padding_right - (extent + 4.0)
             }));
             layout.offset_bottom = Some(nana_ui_core::LengthSpec::Px(if expanded {
-                -(extent + 4.0)
+                padding_bottom - (extent + 4.0)
             } else {
-                (nana_ui_core::ControlSize::Medium.line_height() - extent) / 2.0
+                padding_bottom + (nana_ui_core::ControlSize::Medium.line_height() - extent) / 2.0
             }));
             layout.width = Some(nana_ui_core::LengthSpec::Px(extent));
             layout.height = Some(nana_ui_core::LengthSpec::Px(extent));

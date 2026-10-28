@@ -294,6 +294,11 @@ impl AppContext {
             }
         }
         let content_layout = Arc::make_mut(&mut content.style.layout);
+        // The rows are absolute: the content box they stand in is their
+        // containing block.
+        if !content_layout.position.establishes_containing_block() {
+            content_layout.position = PositionSpec::Relative;
+        }
         content_layout.height = Some(LengthSpec::Px(layout.total_extent()));
         content_layout.min_height = content_layout.height;
         content_layout.max_height = content_layout.height;

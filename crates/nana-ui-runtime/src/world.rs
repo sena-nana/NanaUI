@@ -813,6 +813,10 @@ pub struct UiWorld {
     /// The `Arc` stays so a bit-equivalent recompute can keep the same object
     /// and generation; [`Self::layout_result`] reports these as absent.
     layout_results_suppressed: HashSet<StableNodeId>,
+    /// Nodes that started or stopped being a containing block or a clip:
+    /// every result under one records it as an anchor, so the next publish
+    /// checks them although their boxes may not have moved.
+    layout_anchor_roots: HashSet<StableNodeId>,
     /// Cursor declarations changed since the last system-work drain.
     cursor_style_dirty: bool,
     presenters: HashMap<String, Box<dyn TextPresenter>>,
@@ -1065,6 +1069,7 @@ impl UiWorld {
             framework_strings: Arc::default(),
             layout_results: crate::NodeMap::default(),
             layout_results_suppressed: HashSet::new(),
+            layout_anchor_roots: HashSet::new(),
             cursor_style_dirty: false,
             presenters: HashMap::new(),
             spawned_since_drain: 0,
@@ -1544,6 +1549,13 @@ impl UiWorld {
         // ancestor closure so a compatibility write cannot leave a parent
         // pointing at an older child box. Siblings share their ancestors:
         // a walk stops at the first one already collected.
+        let anchored = self.take_moved_layout_anchors();
+        let ids: Vec<StableNodeId> = if anchored.is_empty() {
+            ids.to_vec()
+        } else {
+            ids.iter().copied().chain(anchored).collect()
+        };
+        let ids = ids.as_slice();
         let mut seen: NodeSet = ids.iter().copied().collect();
         let mut unique: Vec<StableNodeId> = seen.iter().copied().collect();
         for &id in ids {
@@ -2044,6 +2056,53 @@ impl UiWorld {
             child_kind: child_fragment_kind(node),
             context: established_context(node),
         })
+    }
+
+    /// Notes a node whose resolved layout went from `previous` to `next`
+    /// when it started or stopped being a containing block or a clip.
+    pub(crate) fn note_layout_anchor_change(
+        &mut self,
+        id: StableNodeId,
+        previous: &nana_ui_core::LayoutStyle,
+        next: &nana_ui_core::LayoutStyle,
+    ) {
+        if previous.position.establishes_containing_block()
+            != next.position.establishes_containing_block()
+            || previous.clips_overflow() != next.clips_overflow()
+        {
+            self.layout_anchor_roots.insert(id);
+        }
+    }
+
+    /// The nodes under a noted anchor change whose published result records
+    /// an anchor that is no longer the one above them.
+    fn take_moved_layout_anchors(&mut self) -> Vec<StableNodeId> {
+        if self.layout_anchor_roots.is_empty() {
+            return Vec::new();
+        }
+        let mut roots: Vec<StableNodeId> = self.layout_anchor_roots.drain().collect();
+        roots.sort_unstable();
+        let mut moved = Vec::new();
+        let mut stack = Vec::new();
+        for root in roots {
+            let Some(node) = self.nodes.get(root) else {
+                continue;
+            };
+            stack.extend(node.hierarchy.children.iter().copied());
+            while let Some(id) = stack.pop() {
+                let Some(node) = self.nodes.get(id) else {
+                    continue;
+                };
+                if let Some(result) = self.layout_results.get(&id) {
+                    let (clip, containing_block) = self.layout_anchors(node.hierarchy.parent);
+                    if result.clip != clip || result.containing_block != containing_block {
+                        moved.push(id);
+                    }
+                }
+                stack.extend(node.hierarchy.children.iter().copied());
+            }
+        }
+        moved
     }
 
     fn layout_anchors(

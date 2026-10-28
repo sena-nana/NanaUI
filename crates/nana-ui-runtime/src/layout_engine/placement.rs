@@ -137,7 +137,17 @@ fn place_moved_children(
         )?;
     }
     for entry in &moved.overlay {
-        if entry.fixed || overlay_depends_on_block(entry, moved, content_origin, content, viewport)
+        if entry.fixed
+            || overlay_depends_on_block(
+                entry,
+                moved,
+                content_origin,
+                content,
+                viewport,
+                nodes,
+                output,
+                scope,
+            )
         {
             continue;
         }
@@ -2635,12 +2645,18 @@ pub(super) fn place_positioned_child(
         return Ok(None);
     }
     let fixed = child_style.position == PositionSpec::Fixed;
-    let base = if fixed {
-        Size::new(viewport.width, viewport.height)
+    let block = if fixed {
+        None
     } else {
-        content
+        absolute_containing_block(child, nodes)
     };
-    let base_origin = if fixed { Point::ZERO } else { content_origin };
+    let in_container = block.is_some() && block == nodes.world.parent_id(child);
+    let (base_origin, base) = match block {
+        None => (Point::ZERO, Size::new(viewport.width, viewport.height)),
+        Some(block) => {
+            padding_box(block, nodes, output, scope).unwrap_or((content_origin, content))
+        }
+    };
     let child_fonts = fonts_of(child_style, child_font_px);
     // An auto height is the content's (CSS shrink-to-fit): what inside it
     // fills or takes a percentage of its height has nothing definite to
@@ -2710,6 +2726,16 @@ pub(super) fn place_positioned_child(
     if let Some(max) = child_style.resolved_max_height_fonts(Some(base.height), vp, child_fonts) {
         child_size.height = child_size.height.min(max);
     }
+    let (static_x, static_y) = if fixed {
+        (0.0, 0.0)
+    } else {
+        (
+            content_origin.x - base_origin.x,
+            content_origin.y - base_origin.y,
+        )
+    };
+    let static_position =
+        !fixed && ((left.is_none() && right.is_none()) || (top.is_none() && bottom.is_none()));
     let inset = match child_style.anchor.filter(|_| fixed) {
         // Anchor positioning: hung from its anchor, at the size it measured,
         // by the one resolver every anchored surface shares.
@@ -2720,12 +2746,15 @@ pub(super) fn place_positioned_child(
                 y: surface.y - base_origin.y,
             }
         }
+        // An axis with both insets auto keeps the static position, where
+        // the box would start in flow: the parent's content origin (CSS 2.1
+        // §10.3.7). A fixed box keeps the viewport's origin there.
         None => Point {
             x: left.unwrap_or_else(|| {
-                right.map_or(0.0, |value| base.width - value - child_size.width)
+                right.map_or(static_x, |value| base.width - value - child_size.width)
             }),
             y: top.unwrap_or_else(|| {
-                bottom.map_or(0.0, |value| base.height - value - child_size.height)
+                bottom.map_or(static_y, |value| base.height - value - child_size.height)
             }),
         },
     };
@@ -2762,13 +2791,69 @@ pub(super) fn place_positioned_child(
         child,
         style: child_style_arc,
         fixed,
+        block,
+        in_container,
+        static_origin: static_position.then_some(content_origin),
         tracks_containing_block,
         base,
         base_origin,
-        inset,
+        inset: Point {
+            x: child_origin.x - content_origin.x,
+            y: child_origin.y - content_origin.y,
+        },
         origin: child_origin,
         size: child_size,
     }))
+}
+
+/// The containing block of an absolutely positioned `child` (CSS 2.1
+/// §10.1): its nearest positioned ancestor, or `None` for the initial
+/// containing block when it has none.
+fn absolute_containing_block(
+    child: StableNodeId,
+    nodes: &LayoutInputMap<'_>,
+) -> Option<StableNodeId> {
+    let world = nodes.world;
+    let mut ancestor = world.parent_id(child);
+    while let Some(id) = ancestor {
+        if world.is_document_node(id) {
+            return None;
+        }
+        if nodes
+            .style(id)
+            .is_some_and(|style| style.position.establishes_containing_block())
+        {
+            return Some(id);
+        }
+        ancestor = world.parent_id(id);
+    }
+    None
+}
+
+/// The padding box of `block` as this pass placed it, or as the last one
+/// left it when this pass did not place it: the edge an absolute child's
+/// insets and percentages resolve against.
+fn padding_box(
+    block: StableNodeId,
+    nodes: &LayoutInputMap<'_>,
+    output: &HashMap<StableNodeId, LayoutBox>,
+    scope: Option<&ScopeContext<'_>>,
+) -> Option<(Point, Size)> {
+    let border_box = output
+        .get(&block)
+        .or_else(|| scope.and_then(|scope| scope.retained.boxes.get(&block)))
+        .copied()?;
+    let border = nodes.style(block)?.resolved_border_edges();
+    Some((
+        Point {
+            x: border_box.x + border.left,
+            y: border_box.y + border.top,
+        },
+        Size::new(
+            (border_box.width - border.left - border.right).max(0.0),
+            (border_box.height - border.top - border.bottom).max(0.0),
+        ),
+    ))
 }
 
 /// Where a fixed box with `anchor` lands at `size` in `viewport`: inside its
@@ -2847,16 +2932,26 @@ fn overlay_child_affected(
     scope.affected.contains(&child) || scope.reach.reaches(child)
 }
 
+#[allow(clippy::too_many_arguments)]
 fn overlay_depends_on_block(
     entry: &PlannedOverlay,
     plan: &ContainerPlan,
     content_origin: Point,
     content: Size,
     viewport: LayoutViewport,
+    nodes: &LayoutInputMap<'_>,
+    output: &HashMap<StableNodeId, LayoutBox>,
+    scope: &ScopeContext<'_>,
 ) -> bool {
     if entry.fixed {
         return plan.viewport.width.to_bits() != viewport.width.to_bits()
             || plan.viewport.height.to_bits() != viewport.height.to_bits();
+    }
+    if !entry.in_container {
+        return entry
+            .static_origin
+            .is_some_and(|origin| origin != content_origin)
+            || remote_block_moved(entry, viewport, nodes, output, Some(scope));
     }
     if plan.content_origin != content_origin {
         return true;
@@ -2864,6 +2959,119 @@ fn overlay_depends_on_block(
     (plan.content.width.to_bits() != content.width.to_bits()
         || plan.content.height.to_bits() != content.height.to_bits())
         && entry.tracks_containing_block
+}
+
+/// Absolute children hung from an ancestor or from the initial containing
+/// block, in containers this pass did not place: no replay of their plan
+/// reaches them, so their block moving or resizing (the viewport, for the
+/// initial one) places them here. One placed here can be the containing
+/// block of another such child; the walk repeats until nothing moves.
+pub(super) fn place_remote_overlays(
+    viewport: LayoutViewport,
+    nodes: &mut LayoutInputMap<'_>,
+    intrinsic: &mut PassIntrinsicCache,
+    output: &mut HashMap<StableNodeId, LayoutBox>,
+    scope: &ScopeContext<'_>,
+) -> Result<(), UiWorldError> {
+    let mut containers: Vec<StableNodeId> = scope
+        .retained
+        .remote_overlays
+        .iter()
+        .copied()
+        .filter(|id| !output.contains_key(id))
+        .collect();
+    if containers.is_empty() {
+        return Ok(());
+    }
+    containers.sort_unstable();
+    loop {
+        let mut placed_any = false;
+        for &id in &containers {
+            let plan = match nodes.container_plans.get(&id) {
+                Some(Some(plan)) => plan.clone(),
+                Some(None) => continue,
+                None => match scope.retained.container_plans.get(&id) {
+                    Some(plan) => plan.clone(),
+                    None => continue,
+                },
+            };
+            let stale: Vec<StableNodeId> = plan
+                .overlay
+                .iter()
+                .filter(|entry| {
+                    !entry.fixed
+                        && !entry.in_container
+                        && !output.contains_key(&entry.child)
+                        && remote_block_moved(entry, viewport, nodes, output, Some(scope))
+                })
+                .map(|entry| entry.child)
+                .collect();
+            if stale.is_empty() {
+                continue;
+            }
+            let Some(writing) = nodes.get(id)?.map(|node| node.writing) else {
+                continue;
+            };
+            let mut placed = Vec::with_capacity(stale.len());
+            for child in stale {
+                if let Some(entry) = place_positioned_child(
+                    child,
+                    plan.content_origin,
+                    plan.content,
+                    viewport,
+                    plan.child_font_px,
+                    writing,
+                    nodes,
+                    intrinsic,
+                    output,
+                    Some(scope),
+                )? {
+                    placed.push(entry);
+                }
+            }
+            publish_overlay_plan(
+                id,
+                &plan,
+                plan.origin,
+                plan.size,
+                plan.content_origin,
+                plan.content,
+                &placed,
+                false,
+                nodes,
+            );
+            placed_any = true;
+        }
+        if !placed_any {
+            return Ok(());
+        }
+    }
+}
+
+/// Whether an absolute child hung from an ancestor or from the initial
+/// containing block has to be placed again: its containing block is another
+/// box now, or moved, or changed size under a child that reads its size.
+fn remote_block_moved(
+    entry: &PlannedOverlay,
+    viewport: LayoutViewport,
+    nodes: &LayoutInputMap<'_>,
+    output: &HashMap<StableNodeId, LayoutBox>,
+    scope: Option<&ScopeContext<'_>>,
+) -> bool {
+    if absolute_containing_block(entry.child, nodes) != entry.block {
+        return true;
+    }
+    let (origin, size) = match entry.block {
+        None => (Point::ZERO, Size::new(viewport.width, viewport.height)),
+        Some(block) => match padding_box(block, nodes, output, scope) {
+            Some(block) => block,
+            None => return true,
+        },
+    };
+    origin != entry.base_origin
+        || (entry.tracks_containing_block
+            && (size.width.to_bits() != entry.base.width.to_bits()
+                || size.height.to_bits() != entry.base.height.to_bits()))
 }
 
 /// Place the positioned children that this pass actually depends on.
@@ -2920,7 +3128,16 @@ fn finish_positioned_overlay(
             .iter()
             .filter(|entry| {
                 overlay_child_affected(entry.child, id, scope, nodes)
-                    || overlay_depends_on_block(entry, plan, content_origin, content, viewport)
+                    || overlay_depends_on_block(
+                        entry,
+                        plan,
+                        content_origin,
+                        content,
+                        viewport,
+                        nodes,
+                        output,
+                        scope,
+                    )
             })
             .map(|entry| entry.child)
             .collect();

@@ -3,9 +3,9 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use nana_ui_core::{
-    AlignSpec, FlexDirection, LengthSpec, OverflowSpec, PaddingSpec, PositionSpec,
-    RESIZE_HANDLE_SIZE, RegionId, RegionPlacement, RegionRole, RegionScope, RegionState,
-    SemanticColorRole, WorkspaceLayout, WorkspaceModel, WorkspaceMutation,
+    AlignSpec, FlexDirection, LengthSpec, OverflowSpec, PositionSpec, RESIZE_HANDLE_SIZE, RegionId,
+    RegionPlacement, RegionRole, RegionScope, RegionState, SemanticColorRole, WorkspaceLayout,
+    WorkspaceModel, WorkspaceMutation,
 };
 
 use crate::view_components::{List, project_common};
@@ -417,15 +417,11 @@ impl Workspace {
             if world.standard_visual(handle).is_some() {
                 mutations.set_standard_visual(handle, None);
             }
-            let padding = world
-                .node_style(region)
-                .map(|style| style.layout.resolved_padding())
-                .unwrap_or_default();
             project_common(
                 handle,
                 world,
                 mutations,
-                &handle_style(state.placement_value(), highlighted, padding),
+                &handle_style(state.placement_value(), highlighted),
                 InteractionState {
                     pointer_events: true,
                     focusable: true,
@@ -851,11 +847,12 @@ fn region_style(
 }
 
 fn default_handle_style(highlighted: bool) -> NodeStyle {
-    handle_style(RegionPlacement::Start, highlighted, PaddingSpec::default())
+    handle_style(RegionPlacement::Start, highlighted)
 }
 
-/// 8px bar centered on the painted edge. Insets undo content-box padding.
-fn handle_style(placement: RegionPlacement, highlighted: bool, padding: PaddingSpec) -> NodeStyle {
+/// 8px bar centered on the painted edge. The region is its containing block,
+/// so the insets are measured from its padding box.
+fn handle_style(placement: RegionPlacement, highlighted: bool) -> NodeStyle {
     let horizontal = matches!(
         placement,
         RegionPlacement::Start | RegionPlacement::Primary | RegionPlacement::End
@@ -872,25 +869,25 @@ fn handle_style(placement: RegionPlacement, highlighted: bool, padding: PaddingS
         layout.width = Some(LengthSpec::Px(RESIZE_HANDLE_SIZE));
         layout.height = Some(LengthSpec::Fill);
         layout.min_width = Some(LengthSpec::Px(RESIZE_HANDLE_SIZE));
-        layout.offset_top = Some(LengthSpec::Px(-padding.top));
-        layout.offset_bottom = Some(LengthSpec::Px(-padding.bottom));
+        layout.offset_top = Some(LengthSpec::Px(0.0));
+        layout.offset_bottom = Some(LengthSpec::Px(0.0));
         match placement {
             RegionPlacement::End => {
-                layout.offset_left = Some(LengthSpec::Px(-(padding.left + half)));
+                layout.offset_left = Some(LengthSpec::Px(-half));
             }
-            _ => layout.offset_right = Some(LengthSpec::Px(-(padding.right + half))),
+            _ => layout.offset_right = Some(LengthSpec::Px(-half)),
         }
     } else {
         layout.width = Some(LengthSpec::Fill);
         layout.height = Some(LengthSpec::Px(RESIZE_HANDLE_SIZE));
         layout.min_height = Some(LengthSpec::Px(RESIZE_HANDLE_SIZE));
-        layout.offset_left = Some(LengthSpec::Px(-padding.left));
-        layout.offset_right = Some(LengthSpec::Px(-padding.right));
+        layout.offset_left = Some(LengthSpec::Px(0.0));
+        layout.offset_right = Some(LengthSpec::Px(0.0));
         match placement {
             RegionPlacement::Bottom => {
-                layout.offset_top = Some(LengthSpec::Px(-(padding.top + half)));
+                layout.offset_top = Some(LengthSpec::Px(-half));
             }
-            _ => layout.offset_bottom = Some(LengthSpec::Px(-(padding.bottom + half))),
+            _ => layout.offset_bottom = Some(LengthSpec::Px(-half)),
         }
     }
     style

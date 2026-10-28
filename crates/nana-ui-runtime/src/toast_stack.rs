@@ -136,6 +136,11 @@ impl ToastStack {
         let mut style = self.style.clone();
         let layout = Arc::make_mut(&mut style.layout);
         layout.direction = Some(FlexDirection::Column);
+        // The containing block of the slot a toast is measured in, also
+        // before the stack is placed in its viewport.
+        if !layout.position.establishes_containing_block() {
+            layout.position = PositionSpec::Relative;
+        }
         // Resting on its bottom edge: what does not fit spills upwards.
         layout.justify_content = JustifySpec::End;
         layout.gap = Some(LengthSpec::Px(recipe.stack_gap));

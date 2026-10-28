@@ -661,6 +661,10 @@ impl AppContext {
             let mut component = self.read(table, Clone::clone)?;
             let old = component.clone();
             let style = Arc::make_mut(&mut component.style.layout);
+            // The rows are absolute: the table is their containing block.
+            if !style.position.establishes_containing_block() {
+                style.position = nana_ui_core::PositionSpec::Relative;
+            }
             style.width = Some(LengthSpec::Px(layout.column_layout().total_extent()));
             style.height = Some(LengthSpec::Px(layout.row_layout().total_extent()));
             style.min_height = style.height;

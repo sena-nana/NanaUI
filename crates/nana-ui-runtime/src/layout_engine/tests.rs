@@ -5970,12 +5970,19 @@ fn content_growth_under_a_child_moves_its_siblings_with(container_height: Option
 /// A container that only moves takes its children along (see
 /// `ContainerPlan::moved_to`). The box before it grows and shrinks back, and
 /// everything in it lands where a full layout puts it -- a row in flow
-/// shifted relatively, the cells of a grid, a child placed against its content
-/// box from the top left and one from the bottom right -- while a child fixed
-/// to the viewport stays. Nothing in it misses or records its plan again: the
-/// container is padded and bordered, so its content box moves with it.
+/// shifted relatively, the cells of a grid, and, when the container is
+/// positioned, a child placed against its padding box from the top left and
+/// one from the bottom right -- while a child fixed to the viewport stays.
+/// When the container is static those two hang from the initial containing
+/// block and stay as well. Nothing in it misses or records its plan again:
+/// the container is padded and bordered, so its content box moves with it.
 #[test]
 fn a_container_that_only_moves_takes_its_children_along() {
+    container_that_only_moves(PositionSpec::Relative);
+    container_that_only_moves(PositionSpec::Static);
+}
+
+fn container_that_only_moves(position: PositionSpec) {
     let viewport = LayoutViewport::new(320.0, 400.0);
     let document = DocumentId::new(1).unwrap();
     let mut world = UiWorld::new();
@@ -6028,6 +6035,7 @@ fn a_container_that_only_moves_takes_its_children_along() {
         &mut queue,
         4,
         LayoutStyle {
+            position,
             width: Some(LengthSpec::Px(200.0)),
             direction: Some(FlexDirection::Column),
             padding: Some(LengthSpec::Px(5.0)),
@@ -6099,6 +6107,8 @@ fn a_container_that_only_moves_takes_its_children_along() {
     let _ = world.take_system_work();
 
     let fixed_box = world.layout_box(id(12));
+    let absolute = |world: &UiWorld| (world.layout_box(id(10)), world.layout_box(id(11)));
+    let absolute_before = absolute(&world);
     for height in [35.0, 20.0, 35.0] {
         let mut queue = MutationQueue::new();
         style(&mut queue, 3, fixed(60.0, height));
@@ -6114,6 +6124,15 @@ fn a_container_that_only_moves_takes_its_children_along() {
             "{label}: what moved took its plans along"
         );
         assert_eq!(world.layout_box(id(12)), fixed_box, "{label}");
+        if position == PositionSpec::Static {
+            assert_eq!(absolute(&world), absolute_before, "{label}: not its block");
+        } else {
+            assert_eq!(
+                world.layout_box(id(10)).unwrap().y,
+                after.y + 2.0 + 4.0,
+                "{label}: inside the padding box"
+            );
+        }
     }
 }
 
@@ -7033,7 +7052,9 @@ fn scoped_layout_reveals_hidden_branch_with_new_positioned_children() {
             ..Default::default()
         },
     );
+    // The revealed absolute child's containing block.
     let branch = LayoutStyle {
+        position: PositionSpec::Relative,
         width: Some(LengthSpec::Fill),
         height: Some(LengthSpec::Px(300.0)),
         flex_shrink: Some(0.0),

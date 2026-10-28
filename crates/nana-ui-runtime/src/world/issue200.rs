@@ -1,4 +1,11 @@
-//! Issue #200: anchored overlays share one coordinate authority.
+//! Issue #200: placement shares one coordinate authority.
+//!
+//! An absolute box hangs from its containing block as CSS defines it: the
+//! padding box of its nearest positioned ancestor, static ones in between
+//! skipped, or the initial containing block -- the viewport at the document
+//! origin -- when it has none. A retained pass follows that block when it
+//! moves or resizes, and leaves the box where it is when only a static box
+//! between them moves, matching a cold layout at every step.
 //!
 //! A pointer menu and an anchored action menu state an anchor
 //! ([`nana_ui_core::AnchorSpec`]). Layout places them, at the size they
@@ -11,13 +18,15 @@
 
 #![cfg(test)]
 
-use nana_ui_core::AnchoredMenuPlacement;
+use nana_ui_core::{AnchoredMenuPlacement, FlexDirection, LayoutStyle, LengthSpec, PositionSpec};
 
-use super::reflow_oracle::{bundled_face_shaper, product_frame, resize_frame};
+use super::reflow_oracle::{
+    Builder, assert_matches_cold, bundled_face_shaper, product_frame, resize_frame, styled,
+};
 use super::{DocumentId, StableNodeId};
 use crate::{
     AnchoredActionMenu, AppContext, ComponentView, ContextMenu, ContextMenuItem, Entity, LayoutBox,
-    LayoutViewport, NanaTextEngineShaper, OverlayHost, resolve_anchored_origin,
+    LayoutViewport, MutationQueue, NanaTextEngineShaper, OverlayHost, resolve_anchored_origin,
 };
 
 /// A window whose overlay layer hosts one open menu, as an application
@@ -227,4 +236,276 @@ fn issue200_an_anchored_action_menu_hangs_on_its_side_and_flips() {
     // right into it.
     let surface = hang(40.0, 20.0);
     assert_eq!((surface.x, surface.y), (0.0, 20.0), "{surface:?}");
+}
+
+/// A tree given as `(parent, style)` per node -- `None` for the page, an
+/// index into the list otherwise -- laid out through the product frame. Each
+/// step restyles the retained tree and compares it with one built cold.
+struct Tree {
+    spec: Vec<(Option<usize>, LayoutStyle)>,
+    context: AppContext,
+    ids: Vec<StableNodeId>,
+    shaper: NanaTextEngineShaper,
+    viewport: LayoutViewport,
+}
+
+impl Tree {
+    fn new(spec: Vec<(Option<usize>, LayoutStyle)>) -> Self {
+        let viewport = LayoutViewport::new(800.0, 600.0);
+        let (context, ids) = Self::build(&spec, viewport);
+        Self {
+            spec,
+            context,
+            ids,
+            shaper: bundled_face_shaper(),
+            viewport,
+        }
+    }
+
+    fn document() -> DocumentId {
+        DocumentId::new(1).unwrap()
+    }
+
+    fn build(
+        spec: &[(Option<usize>, LayoutStyle)],
+        viewport: LayoutViewport,
+    ) -> (AppContext, Vec<StableNodeId>) {
+        let (mut b, page) = Builder::new(Self::document(), 1);
+        let page = b.element(
+            page,
+            LayoutStyle {
+                direction: Some(FlexDirection::Column),
+                ..LayoutStyle::default()
+            },
+        );
+        let mut ids: Vec<StableNodeId> = Vec::with_capacity(spec.len());
+        for (parent, style) in spec {
+            let parent = parent.map_or(page, |index| ids[index]);
+            ids.push(b.element(parent, style.clone()));
+        }
+        let mut context = AppContext::new();
+        context.commit_mutations(b.queue).unwrap();
+        product_frame(
+            &mut context,
+            Self::document(),
+            viewport,
+            &mut bundled_face_shaper(),
+        );
+        (context, ids)
+    }
+
+    fn rect(&self, index: usize) -> (f32, f32, f32, f32) {
+        let b = self.context.world().layout_box(self.ids[index]).unwrap();
+        (b.x, b.y, b.width, b.height)
+    }
+
+    /// Restyles node `index` in the retained tree, lays it out, and checks
+    /// it against the same tree laid out cold.
+    fn restyle(&mut self, index: usize, style: LayoutStyle) {
+        self.spec[index].1 = style.clone();
+        let mut queue = MutationQueue::new();
+        queue.set_style(self.ids[index], styled(style));
+        self.context.commit_mutations(queue).unwrap();
+        product_frame(
+            &mut self.context,
+            Self::document(),
+            self.viewport,
+            &mut self.shaper,
+        );
+        self.matches_cold();
+    }
+
+    fn resize(&mut self, width: f32, height: f32) {
+        self.viewport = LayoutViewport::new(width, height);
+        resize_frame(
+            &mut self.context,
+            Self::document(),
+            self.viewport,
+            &mut self.shaper,
+        );
+        self.matches_cold();
+    }
+
+    fn matches_cold(&mut self) {
+        let (mut cold, _) = Self::build(&self.spec, self.viewport);
+        assert_matches_cold(&mut self.context, &mut cold, Self::document());
+    }
+}
+
+fn sized(width: f32, height: f32) -> LayoutStyle {
+    LayoutStyle {
+        width: Some(LengthSpec::Px(width)),
+        height: Some(LengthSpec::Px(height)),
+        flex_shrink: Some(0.0),
+        ..LayoutStyle::default()
+    }
+}
+
+/// A card that is the containing block, with padding and a border.
+fn card(position: PositionSpec, width: f32) -> LayoutStyle {
+    LayoutStyle {
+        position,
+        padding_top: Some(LengthSpec::Px(12.0)),
+        padding_right: Some(LengthSpec::Px(12.0)),
+        padding_bottom: Some(LengthSpec::Px(12.0)),
+        padding_left: Some(LengthSpec::Px(12.0)),
+        border_width: Some(2.0),
+        direction: Some(FlexDirection::Column),
+        ..sized(width, 200.0)
+    }
+}
+
+/// A static box with padding of its own between the card and the badge.
+fn wrapper(position: PositionSpec) -> LayoutStyle {
+    LayoutStyle {
+        position,
+        padding_top: Some(LengthSpec::Px(10.0)),
+        padding_left: Some(LengthSpec::Px(10.0)),
+        ..sized(200.0, 100.0)
+    }
+}
+
+/// Half as wide as its containing block, in its top-right corner.
+fn badge() -> LayoutStyle {
+    LayoutStyle {
+        position: PositionSpec::Absolute,
+        offset_top: Some(LengthSpec::Px(0.0)),
+        offset_right: Some(LengthSpec::Px(0.0)),
+        width: Some(LengthSpec::Percent(50.0)),
+        height: Some(LengthSpec::Px(10.0)),
+        ..LayoutStyle::default()
+    }
+}
+
+const CARD: usize = 0;
+const SPACER: usize = 1;
+const WRAPPER: usize = 2;
+const BADGE: usize = 3;
+
+/// The card holds a spacer and then the static box; the badge and a row in
+/// flow are in the static box, so a pass where only the static box moves
+/// replays its plan rather than placing it again.
+fn card_tree() -> Tree {
+    Tree::new(vec![
+        (None, card(PositionSpec::Relative, 300.0)),
+        (Some(CARD), sized(200.0, 30.0)),
+        (Some(CARD), wrapper(PositionSpec::Static)),
+        (Some(WRAPPER), badge()),
+        (Some(WRAPPER), sized(80.0, 20.0)),
+    ])
+}
+
+/// The badge sits in the top-right corner of the card's padding box, half
+/// its width, though a static box with padding of its own stands between.
+fn assert_hangs_from_card(tree: &Tree) {
+    let (cx, cy, cw, _) = tree.rect(CARD);
+    let (bx, by, bw, bh) = tree.rect(BADGE);
+    let inner = cw - 4.0;
+    assert_eq!(
+        (bx, by, bw, bh),
+        (cx + 2.0 + inner / 2.0, cy + 2.0, inner / 2.0, 10.0),
+        "the badge hangs from the card's padding box"
+    );
+}
+
+#[test]
+fn issue200_an_absolute_box_hangs_from_its_nearest_positioned_ancestor() {
+    let mut tree = card_tree();
+    tree.matches_cold();
+    assert_hangs_from_card(&tree);
+    // The card grows; the static box between them does not move or resize,
+    // so no replay of its plan reaches the badge -- the badge follows anyway.
+    tree.restyle(CARD, card(PositionSpec::Relative, 360.0));
+    assert_eq!(tree.rect(WRAPPER).2, 200.0);
+    assert_hangs_from_card(&tree);
+    // The static box moves down; the card does not, and neither does the
+    // badge.
+    let before = tree.rect(BADGE);
+    tree.restyle(SPACER, sized(200.0, 50.0));
+    assert_eq!(
+        tree.rect(BADGE),
+        before,
+        "only its containing block moves it"
+    );
+    // The static box becomes positioned: it is the nearest one now.
+    tree.restyle(WRAPPER, wrapper(PositionSpec::Relative));
+    let (wx, wy, ww, _) = tree.rect(WRAPPER);
+    assert_eq!(tree.rect(BADGE), (wx + ww / 2.0, wy, ww / 2.0, 10.0));
+    // Neither is positioned: the initial containing block, the viewport.
+    tree.restyle(WRAPPER, wrapper(PositionSpec::Static));
+    tree.restyle(CARD, card(PositionSpec::Static, 360.0));
+    assert_eq!(tree.rect(BADGE), (400.0, 0.0, 400.0, 10.0));
+    // And back: the card is its containing block again.
+    tree.restyle(CARD, card(PositionSpec::Relative, 360.0));
+    assert_hangs_from_card(&tree);
+}
+
+#[test]
+fn issue200_a_sticky_box_is_a_containing_block() {
+    let mut tree = Tree::new(vec![
+        (
+            None,
+            LayoutStyle {
+                offset_top: Some(LengthSpec::Px(0.0)),
+                ..card(PositionSpec::Sticky, 300.0)
+            },
+        ),
+        (Some(CARD), sized(200.0, 30.0)),
+        (Some(CARD), wrapper(PositionSpec::Static)),
+        (Some(WRAPPER), badge()),
+    ]);
+    tree.matches_cold();
+    assert_hangs_from_card(&tree);
+}
+
+#[test]
+fn issue200_with_no_positioned_ancestor_the_viewport_is_the_containing_block() {
+    let corner = LayoutStyle {
+        position: PositionSpec::Absolute,
+        offset_right: Some(LengthSpec::Px(0.0)),
+        offset_bottom: Some(LengthSpec::Px(0.0)),
+        ..sized(30.0, 20.0)
+    };
+    let mut tree = Tree::new(vec![
+        (None, sized(300.0, 200.0)),
+        (Some(0), wrapper(PositionSpec::Static)),
+        (Some(1), corner),
+    ]);
+    tree.matches_cold();
+    assert_eq!(tree.rect(2), (770.0, 580.0, 30.0, 20.0));
+    // The viewport resizes; nothing between the box and the document reads
+    // it, and the box still follows.
+    tree.resize(1000.0, 700.0);
+    assert_eq!(tree.rect(2), (970.0, 680.0, 30.0, 20.0));
+}
+
+#[test]
+fn issue200_an_axis_with_auto_insets_keeps_its_static_position() {
+    // Right-aligned against the card, with no vertical inset: it stays at
+    // the top of the static box's content, where it would start in flow.
+    let pinned = LayoutStyle {
+        position: PositionSpec::Absolute,
+        offset_right: Some(LengthSpec::Px(0.0)),
+        ..sized(20.0, 10.0)
+    };
+    let mut tree = Tree::new(vec![
+        (None, card(PositionSpec::Relative, 300.0)),
+        (Some(CARD), sized(200.0, 30.0)),
+        (Some(CARD), wrapper(PositionSpec::Static)),
+        (Some(WRAPPER), pinned),
+        (Some(WRAPPER), sized(80.0, 20.0)),
+    ]);
+    tree.matches_cold();
+    let at = |tree: &Tree| {
+        let (cx, _, cw, _) = tree.rect(CARD);
+        let (_, wy, _, _) = tree.rect(WRAPPER);
+        (cx + cw - 2.0 - 20.0, wy + 10.0)
+    };
+    let (x, y, ..) = tree.rect(BADGE);
+    assert_eq!((x, y), at(&tree));
+    // The static box moves: the box keeps its static position in it, and
+    // its containing block's right edge.
+    tree.restyle(SPACER, sized(200.0, 50.0));
+    let (x, y, ..) = tree.rect(BADGE);
+    assert_eq!((x, y), at(&tree));
 }
