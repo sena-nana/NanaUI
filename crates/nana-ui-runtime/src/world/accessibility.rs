@@ -12,6 +12,9 @@ struct ProjectionMemo {
     /// Nodes whose scroll and transform chain is the identity, so viewport
     /// bounds are the layout box.
     aligned: hashbrown::HashMap<StableNodeId, bool>,
+    /// What each overflow container of a clip chain leaves its descendants,
+    /// with the containers above it, in viewport coordinates (#201).
+    clips: hashbrown::HashMap<StableNodeId, LayoutBox>,
     chain: Vec<StableNodeId>,
 }
 
@@ -106,8 +109,16 @@ impl UiWorld {
         if self.clip_visuals == 0 {
             return Some(bounds);
         }
+        // Only ancestors the clip chain hangs `id` from clip it: an escaped
+        // box passes over the ones between it and its clip parent (#201).
+        let mut escaping = self.clip_escape(id);
         let mut parent = self.nodes.get(id)?.hierarchy.parent;
         while let Some(ancestor) = parent {
+            if escaping.is_some_and(|anchor| anchor != Some(ancestor)) {
+                parent = self.nodes.get(ancestor)?.hierarchy.parent;
+                continue;
+            }
+            escaping = self.clip_escape(ancestor);
             if matches!(
                 self.nodes.visual(ancestor),
                 Some(StandardVisual::EmptyState { .. })
@@ -182,6 +193,21 @@ impl UiWorld {
                 // Viewport-relative; ancestors cannot scroll or clip this branch.
                 cumulative = self.hanging_branch_transform(node);
                 blocks_3d = false;
+            } else if let Some(anchor) = self.clip_escape(node) {
+                // An escaped box resumes from its clip parent, through the
+                // transforms it passes over but none of their scroll (#201).
+                // The clip parent is an ancestor, so it is memoized by now.
+                let base = match anchor.and_then(|anchor| memo.transforms.get(&anchor)) {
+                    Some(transform) => {
+                        blocks_3d = transform.blocks_3d;
+                        transform.children
+                    }
+                    None => {
+                        blocks_3d = false;
+                        (IDENTITY_AFFINE, [0.0, 0.0])
+                    }
+                };
+                cumulative = self.clip_bridge_transform(node, anchor, base, true);
             }
             let local = self.input_local_scene_transform(node, &layout, bounds, blocks_3d);
             cumulative = then_hit(cumulative, self.with_sticky_translation(node, local));
@@ -247,6 +273,63 @@ impl UiWorld {
             width: right - x,
             height: bottom - y,
         })
+    }
+}
+
+impl UiWorld {
+    /// What `id`'s clip chain leaves of the viewport, in the coordinates of
+    /// its accessible bounds: the overflow containers that reach it, each
+    /// where it sits after the scroll above it. `None` when none does. Paint
+    /// and hit testing cut the box by the same chain.
+    fn accessibility_clip(&self, id: StableNodeId, memo: &mut ProjectionMemo) -> Option<LayoutBox> {
+        let clip = self.layout_clip_chain(id).next()?;
+        self.accessibility_clip_region(clip, memo)
+    }
+
+    fn accessibility_clip_region(
+        &self,
+        clip: StableNodeId,
+        memo: &mut ProjectionMemo,
+    ) -> Option<LayoutBox> {
+        if let Some(region) = memo.clips.get(&clip) {
+            return Some(*region);
+        }
+        let layout = self.component_layout_box(clip)?;
+        let (x, y, width, height) = self.hit_motion_layout(clip).overflow_clip_box(
+            layout.x,
+            layout.y,
+            layout.width,
+            layout.height,
+        )?;
+        let own = self.accessibility_viewport_bounds(
+            clip,
+            LayoutBox {
+                x,
+                y,
+                width,
+                height,
+            },
+            memo,
+        )?;
+        let region = match self
+            .layout_clip_chain(clip)
+            .next()
+            .and_then(|outer| self.accessibility_clip_region(outer, memo))
+        {
+            Some(outer) => {
+                let left = own.x.max(outer.x);
+                let top = own.y.max(outer.y);
+                LayoutBox {
+                    x: left,
+                    y: top,
+                    width: ((own.x + own.width).min(outer.x + outer.width) - left).max(0.0),
+                    height: ((own.y + own.height).min(outer.y + outer.height) - top).max(0.0),
+                }
+            }
+            None => own,
+        };
+        memo.clips.insert(clip, region);
+        Some(region)
     }
 }
 
@@ -545,6 +628,11 @@ impl UiWorld {
             }),
             focused: visible && self.input.focused.get(&document) == Some(&id),
             bounds,
+            clip: if plain {
+                None
+            } else {
+                self.accessibility_clip(id, memo)
+            },
             writing,
         })
     }
@@ -623,6 +711,7 @@ impl UiWorld {
                     scroll_y: None,
                     focused: *highlighted == Some(index),
                     bounds,
+                    clip: menu.clip,
                     writing: menu.writing,
                 })
             })
@@ -727,6 +816,7 @@ impl UiWorld {
                 scroll_y: None,
                 focused: tree.focused && active.as_ref() == Some(&row.id),
                 bounds,
+                clip: tree.clip,
                 writing: tree.writing,
             });
             nodes.extend(toggles.into_iter().map(|(toggle, column, label, icon)| {
@@ -767,6 +857,7 @@ impl UiWorld {
                     scroll_y: None,
                     focused: false,
                     bounds: icon,
+                    clip: tree.clip,
                     writing: tree.writing,
                 }
             }));
@@ -902,6 +993,7 @@ impl UiWorld {
                 scroll_y: None,
                 focused: false,
                 bounds,
+                clip: field.clip,
                 writing: field.writing,
             });
         }
@@ -944,6 +1036,7 @@ impl UiWorld {
             scroll_y: None,
             focused: false,
             bounds: surface,
+            clip: field.clip,
             writing: field.writing,
         });
         nodes.extend(rows);

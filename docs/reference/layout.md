@@ -129,9 +129,8 @@ Flex、Grid、Inline、Overlay 的算法各在 `layout_engine/` 下自己的模�
 context 切换，增量与冷布局相同；分派不认模态框时 placement 的断言失败）。同一容器在 Flex → Grid → Layers → Inline 之间来回切换 20 轮，保留缓存在第
 一轮后不再变化，回到 Flex 时与只排过 Flex 的冷缓存相同（`issue199_repeated_context_switches_keep_the_retained_cache_flat`）。
 
-锚定的浮层已经由布局放置，见下文「锚点定位」。`absolute` 的包含块按 CSS 解析，`fixed` 挂在自己文档的视口上，见下文「定位」。还没做的：
-包含块在一个静态滚动容器之外时，盒子仍跟着那个滚动容器滚动、受它裁剪（#201）；clip 链没有接进 Scene/Hit/A11y
-共用的结果（#201）。
+锚定的浮层已经由布局放置，见下文「锚点定位」。`absolute` 的包含块按 CSS 解析，`fixed` 挂在自己文档的视口上，裁剪和滚动沿
+包含块走的 clip 链作用，Scene、命中和无障碍读同一条链，见下文「定位」里的「clip 链」（#201）。
 
 ## Incremental reflow frontier
 
@@ -759,6 +758,19 @@ flex 项和 grid 项上的 float，按 CSS 被块化，然后忽略。
 
 所以想让 absolute 子项贴着某个盒子，那个盒子要写 `position: relative`。`inset: 0` 盖住它的 padding 盒，不是内容盒。
 
+**clip 链（#201）。** 溢出容器（`overflow` 不是 `visible` 的盒子）只裁剪、滚动这样的后代：这个容器是后代的包含块，或者在包含块之上（CSS Overflow 3、CSS 2.1 §11.1.1）。所以：
+
+- `absolute` 盒子的包含块在一个静态滚动容器之外时，它不随那个容器滚动，也不被它裁剪；包含块在容器里面时照常。
+- `fixed` 盒子和它下面的一切不受任何祖先裁剪、滚动。
+
+每个盒子发布的 `LayoutResult` 记着这条链：`clip` 是最近一个够得着它的溢出容器，链沿那个容器自己的 `clip` 往上；`clip_parent` 是盒子取裁剪和滚动的节点，一般是父级，逃出溢出容器的 `absolute` 盒子则是它逃出的最外层容器的父级，`fixed` 盒子是 `None`。`UiWorld::layout_clip_chain` 按发布的结果列出整条链。被跨过的祖先仍把变换传给它，但不传任何裁剪和滚动。这里和 CSS 有一处不同：被跨过的祖先上的 `clip-path` 和组件铬的裁剪（EmptyState、对话框）也不作用于它，CSS 的 `clip-path` 会。
+
+Scene 抽取、命中索引、无障碍和 Select 菜单的可用空间都按 `clip_parent` 挂盒子，不各自沿祖先推导。命中索引里逃出的盒子挂在 `clip_parent` 的条目下，滚动时它逃出的那个容器的平移不带上它，它覆盖的点按绘制顺序排先后。无障碍节点的 `bounds` 仍是整个盒子，`clip` 是链上各溢出容器按此刻的滚动留给它的那块视口，链上没有容器时为 `None`；画出来的、指针点得到的就是 `bounds` 落在 `clip` 里的部分。滚动仍然不跑布局。祖先改变定位或开始、停止裁剪时，下面记着的链跟着重新发布。
+
+门禁在 `world/issue201.rs` 的 `clip_chain` 模块：定位的页面里有静态滚动容器，里面一张定位卡片带一个静态滚动容器，放一行流内盒子、一个以卡片为包含块的 `absolute` 盒子和一个 `fixed` 盒子；卡片后面一个静态裁剪盒放一个以页面为包含块的 `absolute` 盒子。断言各自的 `clip` / `clip_parent`；两个容器滚到几组偏移，每组不跑布局，无障碍的位置和裁剪、指针命中（就地打补丁的命中索引和重建的都算）都按链；Select 菜单的空间同样只被链上的容器截；卡片和里层容器改变定位、溢出时与冷布局逐项相同（含无障碍的 `clip`），就地打补丁的命中索引（先让滚动平移活着，再变链）在整页网格上的命中和候选与重建的相同；被跨过的祖先的变换（样式上的和合成器动画呈现的）照样作用于逃出的盒子；一个树序在后、盖住逃出盒子的兄弟接住指针，不论索引怎样排它们。`nana-ui-scene` 的 `runtime_document_clip_chain_tests.rs` 走真实的 `RuntimeDocument` 帧，逐个比较 Scene 画出的位置和裁剪、无障碍的 `bounds` / `clip`、命中和剔除，滚动和链变化后都相同。
+
+还没做的：滚动范围还没有按这条链算。逃出一个滚动容器的 `absolute` 盒子和其中的 `fixed` 盒子仍算进这个容器的 `LayoutResult::overflow`、`scroll_extent` 和可滚距离，CSS 不算它们。
+
 增量布局按包含块追踪：包含块挪动或改变尺寸时，挂在它上面的盒子会重放，即使中间的静态盒子这一趟没被放过；只有中间的静态盒子移动时，盒子不动。祖先开始或停止成为包含块时，下面的盒子改挂到新的包含块，发布的 `LayoutResult::containing_block` 也跟着更新。门禁在 `world/issue200.rs`：每一步都和冷布局逐个比对盒子、结果、命中和无障碍。
 
 `sticky` 相对最近的滚动视口解析 inset，并受正常流包含块约束：到父容器末端会释放。没有 inset 的轴照常滚动。嵌套 Sticky 从父级的呈现位置继续计算；嵌套滚动容器各自拥有视口。Runtime 的命中、无障碍和 Scene 绘制共用同一个 placement 投影，滚动不触发内容 measure、layout 或文本塑形。改变包含块尺寸或重新挂载时，只失效其登记的 Sticky 分支。
@@ -931,7 +943,7 @@ CSS `url()` 的帧仍走 4× MSAA。它和 HostTexture、backdrop 的 interleave
 
 **溢出。** `overflow`、`overflow-x`、`overflow-y` 可以是 `visible`、`hidden`、`clip`、`auto`、`scroll`。
 
-`hidden`、`clip`、`auto`、`scroll` 都会裁剪绘制，也会裁剪命中。
+`hidden`、`clip`、`auto`、`scroll` 都会裁剪绘制，也会裁剪命中。裁剪和滚动沿 clip 链作用于后代，见「定位」。
 
 两轴都裁剪时，后代的绘制按盒子自己的 `border-radius` 裁圆角。裁的是边框盒。四角不等时取最小的那个，不超过短边的一半。这和 CSS 一致。盒子自己的背景和边框仍只按直角边框盒裁。不被同一个圆角再裁一次。命中仍按直角。
 

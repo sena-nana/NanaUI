@@ -1531,6 +1531,9 @@ pub struct UiScene {
     /// ordinary scrolling must not scan every retained descendant.
     unadjustable_projections: NodeSet,
     sticky_nodes: nana_ui_runtime::StickyDependencies,
+    /// Nodes that hang from a clip parent other than their parent (#201): a
+    /// scroll above them that they escape must not move their culling bounds.
+    escaped_nodes: NodeSet,
     draw_attributes: std::sync::Mutex<NodeMap<DrawAttributes>>,
     /// Dest groups per node, stamped with the scene instance they were read
     /// at. See [`UiScene::opacity_groups`].
@@ -1610,6 +1613,7 @@ impl Default for UiScene {
             projections: NodeMap::default(),
             unadjustable_projections: NodeSet::default(),
             sticky_nodes: nana_ui_runtime::StickyDependencies::default(),
+            escaped_nodes: NodeSet::default(),
             draw_attributes: std::sync::Mutex::new(NodeMap::default()),
             opacity_group_cache: std::sync::Mutex::new(OpacityGroupCache::default()),
             layer_factor_cache: std::sync::Mutex::new(LayerFactorCache::default()),
@@ -1644,6 +1648,7 @@ impl Clone for UiScene {
             projections: self.projections.clone(),
             unadjustable_projections: self.unadjustable_projections.clone(),
             sticky_nodes: self.sticky_nodes.clone(),
+            escaped_nodes: self.escaped_nodes.clone(),
             draw_attributes: std::sync::Mutex::new(
                 self.draw_attributes
                     .lock()
@@ -1941,6 +1946,7 @@ impl UiScene {
                 self.unadjustable_projections.remove(&id);
                 rebind_sticky.extend(self.sticky_nodes.affected(id));
                 self.sticky_nodes.remove(id);
+                self.escaped_nodes.remove(&id);
                 if !old.children.is_empty() {
                     self.attribute_epoch = self.attribute_epoch.wrapping_add(1);
                     inherited_roots.insert(id);
@@ -2036,11 +2042,19 @@ impl UiScene {
                 delta.clips.push(node.id);
             }
             delta.paint.push(node.id);
+            // Where the clip chain hangs a node is part of the culling
+            // index's structure: which scrolls move its bounds (#201).
             hierarchy_changed |= previous.is_none_or(|old| {
                 old.parent != node.parent
                     || old.children != node.children
                     || old.source_style.layout.position != node.source_style.layout.position
+                    || clip_link(old) != clip_link(&node)
             });
+            if escapes_clip_parent(&node) {
+                self.escaped_nodes.insert(node.id);
+            } else {
+                self.escaped_nodes.remove(&node.id);
+            }
             let scroll_changed =
                 previous.is_some_and(|old| old.scroll_offset != node.scroll_offset);
             // A node's z_index and whether it opens a group are part of every
@@ -2189,6 +2203,13 @@ impl UiScene {
                     for id in self.sticky_nodes.affected(root) {
                         visibility.update(self, &[id]);
                         visibility.refresh_subtree(self, id);
+                    }
+                    // Nor do boxes that escape the scroller (#201).
+                    for &id in &self.escaped_nodes {
+                        if id != root && self.node_descends_from(id, root) {
+                            visibility.update(self, &[id]);
+                            visibility.refresh_subtree(self, id);
+                        }
                     }
                 }
                 if inherited_geometry_changed {
@@ -2521,7 +2542,9 @@ impl UiScene {
         // node breaks out of it, and whether the caller wants the presented
         // values or the logical ones.
         let fixed = node.source_style.layout.position == nana_ui_core::PositionSpec::Fixed;
-        let key = node.parent.map(|parent| (parent, fixed, visual));
+        let key = node
+            .parent
+            .map(|parent| (parent, fixed, clip_link(node), visual));
         if let Some(key) = key
             && let Ok(cache) = self.rebuild_scratch.lock()
         {
@@ -2621,6 +2644,12 @@ impl UiScene {
         let mut opacity = 1.0;
         let mut clips = Vec::new();
         let mut blocks_3d = false;
+        // The ancestors the clip chain hangs this node from, outermost
+        // first: a subsequence of `ancestors`. The others are passed over by
+        // an absolute box escaping overflow containers (#201); they lend it
+        // their transforms and opacity, but none of their clips or scroll.
+        let hung = clip_chain_parents(&self.nodes, node);
+        let mut hung = hung.iter().rev().peekable();
         for (index, ancestor) in ancestors.into_iter().enumerate() {
             if !is_opacity_group(&self.nodes, ancestor) {
                 opacity *= if visual {
@@ -2629,6 +2658,7 @@ impl UiScene {
                     local_opacity(ancestor)
                 };
             }
+            let reaches = hung.next_if(|id| **id == ancestor.id).is_some();
             if index < geometry_start {
                 continue;
             }
@@ -2647,6 +2677,9 @@ impl UiScene {
             transform = transform.then(local);
             if ancestor.source_style.layout.fails_closed_3d_context() {
                 blocks_3d = true;
+            }
+            if !reaches {
+                continue;
             }
             if let Some(region) = overflow_clip_region(
                 ancestor.source_style.layout.as_ref(),
@@ -3419,6 +3452,37 @@ pub(super) fn ancestor_ids(
 
 /// `node` and its ancestors, innermost first, stopping at the first one the
 /// scene no longer holds.
+/// The node `node` takes clips and scroll from, as its layout result
+/// publishes it (#201): its parent, or the clip parent an escaping absolute
+/// box hangs from. A node without a result hangs from its parent.
+fn clip_link(node: &ExtractedNode) -> Option<StableNodeId> {
+    match node.layout_result.as_deref() {
+        Some(result) => result.clip_parent,
+        None if node.source_style.layout.position == nana_ui_core::PositionSpec::Fixed => None,
+        None => node.parent,
+    }
+}
+
+/// Whether `node` hangs from a clip parent other than its parent.
+fn escapes_clip_parent(node: &ExtractedNode) -> bool {
+    node.source_style.layout.position != nana_ui_core::PositionSpec::Fixed
+        && clip_link(node) != node.parent
+}
+
+/// The ancestors whose clips and scroll reach `node`, nearest first, by its
+/// clip chain's links.
+fn clip_chain_parents(nodes: &SceneNodes, node: &ExtractedNode) -> Vec<StableNodeId> {
+    let mut parents = Vec::new();
+    let mut cursor = clip_link(node);
+    while let Some(id) = cursor
+        && parents.len() < MAX_ANCESTOR_DEPTH
+    {
+        parents.push(id);
+        cursor = nodes.get(&id).and_then(|node| clip_link(node));
+    }
+    parents
+}
+
 fn ancestor_nodes(
     nodes: &SceneNodes,
     node: StableNodeId,
@@ -3483,9 +3547,9 @@ impl FromIterator<(StableNodeId, Arc<ExtractedNode>)> for SceneNodes {
 }
 
 /// Which chain an [`AncestorState`] was read for: the parent it starts at,
-/// whether the node breaks out of it, and whether the caller wanted the
-/// presented values or the logical ones.
-type AncestorStateKey = (StableNodeId, bool, bool);
+/// whether the node breaks out of it, the clip parent it hangs from (#201),
+/// and whether the caller wanted the presented values or the logical ones.
+type AncestorStateKey = (StableNodeId, bool, Option<StableNodeId>, bool);
 
 /// What a remembered draw-time answer is stamped with. See
 /// [`UiScene::draw_stamp`].

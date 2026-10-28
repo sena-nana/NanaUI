@@ -9,7 +9,7 @@
 //! frames and one laid out once: every box, every published result (bounds,
 //! baselines, fragments, overflow, scroll extent, containing block and the
 //! rest of [`crate::LayoutResult::geometry_eq`]), every hit entry and every
-//! accessibility bound.
+//! accessibility bound and clip.
 //!
 //! The per-pass guard in `layout_engine::verify` checks boxes after every
 //! retained pass; this oracle checks what a pass publishes, against a world
@@ -340,12 +340,16 @@ fn hit_geometry(world: &UiWorld, document: DocumentId, id: StableNodeId) -> Opti
     })
 }
 
-fn accessibility_bounds(world: &UiWorld, id: StableNodeId) -> Option<crate::LayoutBox> {
+/// A node's accessible bounds and what its clip chain leaves of them.
+fn accessibility_bounds(
+    world: &UiWorld,
+    id: StableNodeId,
+) -> Option<(crate::LayoutBox, Option<crate::LayoutBox>)> {
     world
         .project_accessibility_nodes(&[id])
         .into_iter()
         .find(|node| node.id == id)
-        .map(|node| node.bounds)
+        .map(|node| (node.bounds, node.clip))
 }
 
 /// Every box, published result, hit entry and accessibility bound of

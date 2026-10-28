@@ -143,9 +143,26 @@ pub struct LayoutResult {
     pub child_placements: Arc<[LayoutChildPlacement]>,
     pub fragments: Arc<[LayoutFragment]>,
     pub parts: Arc<[LayoutPart]>,
-    /// Nearest layout clip and containing block. The references are retained
-    /// node identities, never renderer primitives.
+    /// The clip chain (#201). `clip` is the nearest ancestor whose overflow
+    /// clip, and scroll, reach this box: the chain goes on through that
+    /// node's own `clip`. It follows containing blocks as CSS does (CSS
+    /// Overflow 3, CSS 2.1 §11.1.1): an `overflow` container clips and
+    /// scrolls a descendant only when it is the descendant's containing
+    /// block or one of its ancestors, so an absolute box whose block lies
+    /// outside a static scroller neither scrolls with it nor is cut by it,
+    /// and a `fixed` box (with everything under it) has no clip above it.
+    ///
+    /// `clip_parent` is the node this box takes clips and scroll from: its
+    /// parent, or, for an absolute box that escapes overflow containers on
+    /// its way to its containing block, the parent of the outermost one it
+    /// escapes. The ancestors it passes over lend it their transforms, but
+    /// none of their clips and none of their scroll. `None` for a `fixed`
+    /// box and a root. Scene, hit testing and accessibility all hang a box
+    /// from this link. The references are retained node identities, never
+    /// renderer primitives.
     pub clip: Option<StableNodeId>,
+    pub clip_parent: Option<StableNodeId>,
+    /// Nearest positioned ancestor.
     pub containing_block: Option<StableNodeId>,
     pub dependencies: Arc<[StableNodeId]>,
     /// The formatting context the node laid its children (or its own text)
@@ -186,6 +203,7 @@ impl LayoutResult {
             fragments: Arc::from([]),
             parts: Arc::from([]),
             clip: None,
+            clip_parent: None,
             containing_block: None,
             dependencies: Arc::from([]),
             formatting_context: None,
@@ -210,6 +228,7 @@ impl LayoutResult {
             && self.fragments == other.fragments
             && self.parts == other.parts
             && self.clip == other.clip
+            && self.clip_parent == other.clip_parent
             && self.containing_block == other.containing_block
             && self.dependencies == other.dependencies
             && self.formatting_context == other.formatting_context
@@ -337,6 +356,7 @@ impl LayoutResult {
                 .any(|(left, right)| left.kind != right.kind || left.node != right.node);
         if self.participation != other.participation
             || self.clip != other.clip
+            || self.clip_parent != other.clip_parent
             || self.containing_block != other.containing_block
             || self.dependencies != other.dependencies
             || child_topology_changed

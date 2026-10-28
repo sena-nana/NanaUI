@@ -1556,6 +1556,7 @@ mod tests {
             scroll_y: None,
             focused: false,
             bounds: LayoutBox::default(),
+            clip: None,
             writing: Default::default(),
         }
     }

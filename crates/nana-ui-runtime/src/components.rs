@@ -3712,6 +3712,14 @@ pub struct AccessibilityNode {
     pub scroll_y: Option<AccessibilityScrollAxis>,
     pub focused: bool,
     pub bounds: LayoutBox,
+    /// What the node's clip chain leaves of the viewport, in the coordinates
+    /// of `bounds`: the overflow containers whose clip reaches it (#201),
+    /// each where it sits after the scroll above it. `None` when no
+    /// container clips it. `bounds` is the whole box; the part of it inside
+    /// this is the part painted and hit. An absolute box whose containing
+    /// block lies outside a scroller is not clipped by it, nor is a `fixed`
+    /// box by anything.
+    pub clip: Option<LayoutBox>,
     /// The writing mode and direction its text reads in (#59): which way an
     /// assistive technology walks a text run.
     pub writing: nana_ui_core::WritingContext,

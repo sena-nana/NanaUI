@@ -2370,3 +2370,7 @@ mod tests {
         );
     }
 }
+
+#[cfg(test)]
+#[path = "runtime_document_clip_chain_tests.rs"]
+mod clip_chain_tests;

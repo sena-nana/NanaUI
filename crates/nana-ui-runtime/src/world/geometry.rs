@@ -2844,7 +2844,17 @@ impl UiWorld {
         let mut shift = crate::ScrollOffset::default();
         let mut child = id;
         let mut current = self.parent_id(id);
+        // An escaped box (the field, or a box above it) passes over the
+        // ancestors between it and its clip parent: their clips and scroll
+        // do not reach it (#201).
+        let mut escaping = self.clip_escape(id);
         while let Some(ancestor) = current {
+            if escaping.is_some_and(|anchor| anchor != Some(ancestor)) {
+                child = ancestor;
+                current = self.parent_id(ancestor);
+                continue;
+            }
+            escaping = self.clip_escape(ancestor);
             let offset = self.scroll_offset(ancestor).unwrap_or_default();
             shift.x += offset.x;
             shift.y += offset.y;

@@ -308,3 +308,47 @@ GPU pixels 来自 macOS。Windows/Linux 真机与外部 consumer 完整构建/�
   - 最初放在 `resolve_layout_intent`，但那会让每个带这种记录的 CSS 节点多复制一份布局，所以改在补丁应用处做。
   - CSS 单测确认：只有物理边时记录被丢掉、物理字段保值；有逻辑边时原样保留。
 - #204 的 7 条验收项现在都有本地测试证据。
+
+## 2026-10-29 追加：#201
+
+逐条核对 #201 的 7 条验收项，补上 10-27 记为"不可勾"的 clip 链，并让它按 CSS 跟着包含块走（`absolute` 的包含块已在 68a191999 改成 CSS 的）。
+
+| 验收项 | 判定 | 证据 |
+| --- | --- | --- |
+| Scroll 与 child FormattingContext 解耦 | 可勾 | `issue201_scroll_is_orthogonal_to_flow_flex_grid_and_inline_contexts`（Block/Flex/Grid 下滚动不改 context、盒子、generation）；`ScrollView::projected_style` 只写 overflow |
+| ScrollView 是 facade，不拥有第二 layout engine | 可勾（附注） | `ScrollView` 只投影 overflow 与 scrollbar 状态，没有 measure/placement；公开的 `MutationQueue::set_scroll_metrics` 仍可注入非布局来源的度量 |
+| content extent 来自 authoritative LayoutResult | 可勾（附注） | `ContentBoundsIndex` 读已提交的布局盒，`LayoutResult.scroll_extent` 同源，`world/scroll_bounds.rs` 9 项含全遍历对照。附注：范围仍把逃出滚动容器的 `absolute` 盒子和其中的 `fixed` 盒子算进去，CSS 不算（见下文"仍未做"） |
+| scroll-only 不重做 intrinsic/content layout | 可勾 | issue201 全部滚动步骤 measure/placement/shape/spawn 为 0、generation 不变；Scene 侧 `issue201_paint_hit_and_accessibility_share_one_clip_chain` 的 `RuntimeDocument` 帧 generation 不变 |
+| clip chain 供 Scene/Hit/A11y 一致消费 | **本轮完成** | 见下表 |
+| virtualization 与 scroll layout 语义分离 | 可勾 | `sync_virtual_list_skips_mutation_until_the_visible_range_changes`、`issue262_gate_a`–`e` |
+| Grid/Inline/CustomRender 自然放入 scroll viewport | 可勾 | Grid：orthogonal 测试；Inline 段落与 host-texture CustomRender：`issue201_a_paragraph_and_a_custom_renderer_scroll_without_layout` |
+
+### clip 链的实现
+
+- 权威：`world/clip_chain.rs`。`LayoutResult::clip` 改为最近一个够得着本节点的溢出容器（按包含块链，`fixed` 及其下为 `None`）；新增 `LayoutResult::clip_parent`：本节点取裁剪和滚动的节点，一般是父级，包含块在静态溢出容器之外的 `absolute` 节点是它逃出的最外层容器的父级。`UiWorld::layout_clip_chain` 按发布结果列链。`layout_anchors` 按节点（不再按父级）计算；定位种类变化（不只是是否定位）和开始/停止裁剪都记为 anchor 变化，下一次发布连同根节点自身一起重新发布。
+- Scene：`compute_ancestor_state` 只对链上的祖先施加裁剪和滚动，被跨过的祖先只传变换和不透明度；祖先状态缓存的键加上 clip parent；滚动快路径对逃出该滚动容器的节点重算剔除范围；clip parent 变化计入层级变化。
+- 命中：逃出的条目挂在 clip parent 的条目下（从该条目的子变换加上被跨过祖先的变换建出），滚动就地补丁不带上它；它覆盖的点按绘制顺序排先后；局部补丁先撤掉分支里逃出的条目，再把分支够不着 clip parent 的条目挂回原处；合成器呈现路径和 `layout_projection_transform` 同样跨过。
+- 无障碍：逃出节点的变换从 clip parent 的子变换接续；新增 `AccessibilityNode::clip`（链上各容器按此刻滚动留下的视口区域）。组件铬裁剪同样只读链上的祖先。Select 菜单的可用空间同上。
+- 顺带修复：一个节点开始裁剪或变成 `fixed` 时，结果沿用旧的"每个子项一个片段"列表，缺 ScrollViewport/Overlay 片段，直到别的变化才补上。冷对照门禁揭出。
+
+### 门禁与变异
+
+| 门禁 | 证明 |
+| --- | --- |
+| `world/issue201.rs` `clip_chain::issue201_the_clip_chain_follows_containing_blocks` | 流内行、以卡片为包含块的 `absolute`、以页面为包含块的 `absolute`、`fixed` 各自的 `clip` / `clip_parent` / 整条链 |
+| `…::issue201_scroll_reaches_a_box_only_through_its_containing_block` | 两个容器 5 组偏移，不跑布局；无障碍位置与 `clip`、命中（就地补丁与重建的索引）都按链 |
+| `…::issue201_a_menu_room_is_cut_by_the_clip_chain_alone` | Select 菜单空间只被链上容器截 |
+| `…::issue201_a_moving_clip_chain_matches_a_cold_layout` | 卡片定位、里层溢出来回切换，与冷布局逐项相同（oracle 现在也比较无障碍 `clip`） |
+| `…::issue201_a_patched_hit_index_follows_the_moving_chain` | 滚动平移活着时变链，局部补丁的索引在整页网格上命中与候选都等于重建 |
+| `…::issue201_an_escaped_box_takes_the_transforms_it_passes_over` | 被跨过祖先的样式变换和合成器呈现变换作用于逃出盒子（无障碍、输入投影、命中），其滚动不作用 |
+| `…::issue201_an_escaped_box_is_ranked_by_paint_order` | 树序在后的兄弟盖住逃出盒子时接住指针 |
+| `nana-ui-scene` `runtime_document_clip_chain_tests.rs` 两项 | 真实 `RuntimeDocument` 帧：Scene 画出的位置与裁剪、无障碍 `bounds`/`clip`、命中、剔除逐个相同，滚动与链变化后亦然 |
+
+变异（改坏后确认变红，再恢复，逐文件 `cmp` 确认与改动版本一致）：clip parent 忽略逃出（4 项 runtime + 1 项 scene 红）；命中构建不挂到 clip parent（runtime 滚动门禁 + 2 项 scene）；无障碍不接续 clip parent 变换（同）；Scene 不跳过被跨过祖先（2 项 scene）；片段复用不认新裁剪（冷对照）；anchor 根节点不重新发布（scene 链变化门禁）；滚动快路径不重算逃出节点剔除（scene 剔除断言）；不按绘制顺序排逃出条目（paint order 门禁）；补丁不撤旧条目（补丁网格门禁，候选出现重复）；`layout_projection_transform` 带上被跨过的滚动、呈现路径不接被跨过的变换、构建不接被跨过的变换（transforms 门禁）；补丁不按 clip parent 挂逃出根（补丁网格门禁 + scene 链变化门禁）。
+
+### 仍未做
+
+- 滚动范围（`ContentBoundsIndex`、`LayoutResult::overflow` / `scroll_extent`）仍把逃出滚动容器的 `absolute` 盒子和其中的 `fixed` 盒子算进这个容器；CSS 的 scrollable overflow 只算包含块链经过它的后代。要把这些盒子的贡献改挂到 clip parent 一侧，并在链变化时失效增量索引。
+- 被跨过祖先的 `clip-path` 和组件铬裁剪不作用于逃出盒子（CSS 的 `clip-path` 会作用）；已写进 `layout.md`。
+- 性能段点名的 `scroll_viewport_updates` / `scroll_content_extent_recomputes` / `scroll_layout_reflows` / `scroll_clip_updates` / `virtualization_despawned` 仍不在 `WorkCounters`。
+- 未在 Windows/Linux 或 GPU 像素以外的外部 consumer 上运行；NanaLive/NanaType 只读检查没有 `LayoutResult` / `AccessibilityNode` 字面量。

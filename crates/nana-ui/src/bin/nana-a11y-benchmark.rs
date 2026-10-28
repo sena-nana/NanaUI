@@ -44,6 +44,7 @@ fn node(value: u64) -> AccessibilityNode {
         scroll_y: None,
         focused: false,
         bounds: LayoutBox::default(),
+        clip: None,
         writing: Default::default(),
     }
 }

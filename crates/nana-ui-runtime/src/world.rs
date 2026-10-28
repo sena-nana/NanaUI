@@ -1,6 +1,7 @@
 mod accessibility;
 mod animation;
 mod block_reads;
+mod clip_chain;
 mod extraction;
 mod focus_scope;
 mod geometry;
@@ -416,6 +417,11 @@ struct HitEntry {
     menu: Option<LayoutBox>,
     /// A painter that decides which points of the box hit (Issue #217).
     painter: Option<Arc<PainterHit>>,
+    /// The entry hangs from its clip parent, not its parent: an absolute box
+    /// that escapes overflow containers (#201). Its sibling order then says
+    /// nothing about where it paints among its new siblings, so a point it
+    /// covers is ranked by paint order.
+    escaped: bool,
     children: Vec<HitEntry>,
 }
 
@@ -1880,12 +1886,12 @@ impl UiWorld {
             result.fragments = fragments.into();
         }
 
-        let (clip, containing_block) = self.layout_anchors(node.hierarchy.parent);
+        let anchors = self.layout_anchors(id);
         let mut dependencies = children.to_vec();
-        if let Some(clip) = clip {
+        if let Some(clip) = anchors.clip {
             dependencies.push(clip);
         }
-        if let Some(containing_block) = containing_block {
+        if let Some(containing_block) = anchors.containing_block {
             dependencies.push(containing_block);
         }
         dependencies.sort_unstable();
@@ -1931,8 +1937,9 @@ impl UiWorld {
         } else {
             result.scroll_extent = overflow;
         }
-        result.clip = clip;
-        result.containing_block = containing_block;
+        result.clip = anchors.clip;
+        result.clip_parent = anchors.clip_parent;
+        result.containing_block = anchors.containing_block;
         result.dependencies = dependencies.into();
         Some(result)
     }
@@ -2042,13 +2049,11 @@ impl UiWorld {
                     )
                 })
                 .eq(extra);
-            let (clip, containing) = self.layout_anchors(facts.parent);
             return current
                 && content_current
                 && parts_current
                 && previous.formatting_context == facts.context
-                && previous.clip == clip
-                && previous.containing_block == containing;
+                && self.layout_anchors(id).recorded_in(&previous);
         }
         let baseline = facts
             .text
@@ -2088,8 +2093,7 @@ impl UiWorld {
         // dependencies are the children plus the two anchors: with the box
         // and every placement where the result recorded them, only the
         // anchors are left to move.
-        let (clip, containing_block) = self.layout_anchors(facts.parent);
-        previous.clip == clip && previous.containing_block == containing_block
+        self.layout_anchors(id).recorded_in(&previous)
     }
 
     fn layout_result_facts(&self, id: StableNodeId) -> Option<LayoutResultFacts> {
@@ -2100,7 +2104,6 @@ impl UiWorld {
             scroll_offset: node.scroll_offset,
             text: record_has_text(node),
             child_count: node.hierarchy.children.len(),
-            parent: node.hierarchy.parent,
             border: node.resolved_layout.resolved_border_edges(),
             child_kind: child_fragment_kind(node),
             context: established_context(node),
@@ -2115,9 +2118,9 @@ impl UiWorld {
         previous: &nana_ui_core::LayoutStyle,
         next: &nana_ui_core::LayoutStyle,
     ) {
-        if previous.position.establishes_containing_block()
-            != next.position.establishes_containing_block()
-            || previous.clips_overflow() != next.clips_overflow()
+        // The clip chain reads which of absolute, fixed and in-flow a box
+        // is, not only whether it is positioned (#201).
+        if previous.position != next.position || previous.clips_overflow() != next.clips_overflow()
         {
             self.layout_anchor_roots.insert(id);
         }
@@ -2134,19 +2137,27 @@ impl UiWorld {
         let mut moved = Vec::new();
         let mut stack = Vec::new();
         for root in roots {
-            let Some(node) = self.nodes.get(root) else {
-                continue;
-            };
-            stack.extend(node.hierarchy.children.iter().copied());
+            // The root itself: its own clip chain moves with its position,
+            // and its own fragments say whether it is a scroll viewport or
+            // an overlay.
+            if self.layout_results.contains_key(&root) {
+                moved.push(root);
+            }
+            stack.extend(
+                self.nodes
+                    .get(root)
+                    .map(|node| node.hierarchy.children.iter().copied())
+                    .into_iter()
+                    .flatten(),
+            );
             while let Some(id) = stack.pop() {
                 let Some(node) = self.nodes.get(id) else {
                     continue;
                 };
-                if let Some(result) = self.layout_results.get(&id) {
-                    let (clip, containing_block) = self.layout_anchors(node.hierarchy.parent);
-                    if result.clip != clip || result.containing_block != containing_block {
-                        moved.push(id);
-                    }
+                if let Some(result) = self.layout_results.get(&id)
+                    && !self.layout_anchors(id).recorded_in(result)
+                {
+                    moved.push(id);
                 }
                 stack.extend(node.hierarchy.children.iter().copied());
             }
@@ -2154,33 +2165,30 @@ impl UiWorld {
         moved
     }
 
-    fn layout_anchors(
-        &self,
-        mut ancestor: Option<StableNodeId>,
-    ) -> (Option<StableNodeId>, Option<StableNodeId>) {
-        let mut clip = None;
+    /// What `id`'s result records about the boxes around it: the nearest
+    /// positioned ancestor, and its clip chain (#201).
+    fn layout_anchors(&self, id: StableNodeId) -> LayoutAnchors {
+        let mut ancestor = self.parent_id(id);
         let mut containing_block = None;
         while let Some(candidate) = ancestor {
             let Some(record) = self.nodes.get(candidate) else {
                 break;
             };
-            if clip.is_none() && record.resolved_layout.clips_overflow() {
-                clip = Some(candidate);
-            }
-            if containing_block.is_none()
-                && record
-                    .resolved_layout
-                    .position
-                    .establishes_containing_block()
+            if record
+                .resolved_layout
+                .position
+                .establishes_containing_block()
             {
                 containing_block = Some(candidate);
-            }
-            if clip.is_some() && containing_block.is_some() {
                 break;
             }
             ancestor = record.hierarchy.parent;
         }
-        (clip, containing_block)
+        LayoutAnchors {
+            clip: self.overflow_clip_of(id),
+            clip_parent: self.clip_parent_of(id),
+            containing_block,
+        }
     }
 
     /// Child placements and the one-fragment-per-child list, when both still
@@ -2196,8 +2204,14 @@ impl UiWorld {
         Arc<[crate::LayoutFragment]>,
     )> {
         // A held child-only snapshot cannot supply text fragments when a
-        // previously empty component gains a label at the same identity.
-        if self.nodes.get(id).is_some_and(record_has_text) {
+        // previously empty component gains a label at the same identity, nor
+        // the scroll-viewport or overlay fragment of a node that starts
+        // clipping or becomes fixed.
+        if self.nodes.get(id).is_some_and(|node| {
+            record_has_text(node)
+                || node.resolved_layout.clips_overflow()
+                || node.resolved_layout.position == PositionSpec::Fixed
+        }) {
             return None;
         }
         let previous = self.layout_results.get(&id)?;
@@ -5817,13 +5831,28 @@ fn intersect_layout_boxes(left: LayoutBox, right: LayoutBox) -> Option<LayoutBox
     })
 }
 
+/// The boxes a result names around its node; see [`UiWorld::layout_anchors`].
+#[derive(Clone, Copy, PartialEq)]
+struct LayoutAnchors {
+    clip: Option<StableNodeId>,
+    clip_parent: Option<StableNodeId>,
+    containing_block: Option<StableNodeId>,
+}
+
+impl LayoutAnchors {
+    fn recorded_in(self, result: &crate::LayoutResult) -> bool {
+        result.clip == self.clip
+            && result.clip_parent == self.clip_parent
+            && result.containing_block == self.containing_block
+    }
+}
+
 struct LayoutResultFacts {
     fixed: bool,
     clips: bool,
     scroll_offset: ScrollOffset,
     text: bool,
     child_count: usize,
-    parent: Option<StableNodeId>,
     border: nana_ui_core::PaddingSpec,
     child_kind: crate::LayoutFragmentKind,
     context: Option<crate::FormattingContextKind>,
