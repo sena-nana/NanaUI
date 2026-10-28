@@ -306,7 +306,7 @@ impl ReorderDragVisual {
     /// How far the carried rows have been moved from where they were
     /// pressed, `[x, y]`.
     pub fn preview_offset(&self) -> [f32; 2] {
-        [self.x - self.press_x, self.y - self.press_y]
+        self.preview_offset.unwrap_or([0.0, 0.0])
     }
 
     /// How far each of `rows` moves down (up when negative) to make room for

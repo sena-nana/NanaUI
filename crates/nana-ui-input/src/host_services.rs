@@ -211,10 +211,6 @@ impl HostServices for HeadlessHostServices {
         self.clipboard_token = Some(token.to_owned());
         Ok(())
     }
-
-    fn clipboard_change_count(&mut self) -> Result<u64, HostServiceError> {
-        Ok(self.clipboard_changes)
-    }
 }
 
 #[cfg(test)]

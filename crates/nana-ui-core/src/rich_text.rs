@@ -471,9 +471,9 @@ impl RichSpanStyle {
         self
     }
 
-    /// 设置字素下方的圆点着重号。
-    pub fn emphasis(mut self, enabled: bool) -> Self {
-        self.paint.emphasis = Some(enabled);
+    /// 设置字素下方的圆点着重号 (CSS `text-emphasis-style`)。
+    pub fn emphasis(mut self, style: TextEmphasisStyle) -> Self {
+        self.emphasis.style = Some(style);
         self
     }
 
@@ -501,6 +501,7 @@ impl RichSpanStyle {
         self
     }
 
+    /// 设置文字范围的背景,保留已有塑形和行布局。
     pub fn background_color(mut self, color: PaintColor) -> Self {
         self.paint.background_color = Some(color);
         self
@@ -513,12 +514,6 @@ impl RichSpanStyle {
         self
     }
 
-    /// 设置文字范围的背景，保留已有塑形和行布局。
-    pub fn background_color(mut self, color: PaintColor) -> Self {
-        self.paint.background_color = Some(color);
-        self
-    }
-
     pub fn line_through(mut self) -> Self {
         let mut decoration = self.paint.decoration.unwrap_or_default();
         decoration.line_through = true;
@@ -528,12 +523,6 @@ impl RichSpanStyle {
 
     pub fn decoration_color(mut self, color: PaintColor) -> Self {
         self.paint.decoration_color = Some(color);
-        self
-    }
-
-    /// Sets emphasis marks (CSS `text-emphasis-style`) on the span.
-    pub fn emphasis(mut self, style: TextEmphasisStyle) -> Self {
-        self.emphasis.style = Some(style);
         self
     }
 

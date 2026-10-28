@@ -9,8 +9,7 @@ use std::sync::OnceLock;
 use nana_ui_platform::{
     EndpointGeneration, HostServiceError, HostServices, InputEndpoint, InputSequencer,
     InputSourceId, SharedClipboardHost, TextInputContext, TextInputPurpose,
-    default_shared_clipboard, read_shared_clipboard, read_shared_clipboard_token,
-    write_shared_clipboard, write_shared_clipboard_with_token,
+    default_shared_clipboard, read_shared_clipboard, write_shared_clipboard,
 };
 use winit::cursor::CursorIcon;
 use winit::window::{
@@ -158,17 +157,7 @@ impl HostServices for NativeWindowServices<'_> {
         write_shared_clipboard(self.clipboard, text)
     }
 
-    fn read_clipboard_token(&mut self) -> Result<Option<String>, HostServiceError> {
-        read_shared_clipboard_token(self.clipboard)
-    }
-
-    fn write_clipboard_with_token(
-        &mut self,
-        text: &str,
-        token: &str,
-    ) -> Result<(), HostServiceError> {
-        write_shared_clipboard_with_token(self.clipboard, text, token)
-    }
+    // 使用 trait 的默认实现处理 token 方法
 }
 
 /// The native icon for the Runtime's cursor, and whether it shows.

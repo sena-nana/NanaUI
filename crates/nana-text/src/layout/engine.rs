@@ -458,6 +458,7 @@ fn sized_runs(request: &LayoutRequest<'_>, scale: f32, fit: bool) -> Option<Vec<
         return None;
     }
     let mut runs = request.shaped.runs.clone();
+    let sizing = if fit { ObjectSizing::Fit } else { ObjectSizing::Own };
     // A base narrower than its annotation is spaced out to it: its glyphs
     // move right by half the difference and the last of them takes the rest
     // of it, so the base stays centred under the annotation and the text

@@ -75,8 +75,8 @@ pub struct SelectChanged {
 
 /// 下拉选项开关变化；提交当前值时同样通知关闭。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct SelectOpenedChanged {
-    pub opened: bool,
+pub struct SelectToggled {
+    pub open: bool,
 }
 
 /// Single-value field. Disabled options stay visible in the opened menu.

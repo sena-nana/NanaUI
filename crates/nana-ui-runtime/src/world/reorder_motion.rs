@@ -4,8 +4,11 @@
 //! are; only compositor tracks move, and they all go when the drag ends.
 use super::*;
 use crate::component_animation_kinds::{REORDER_PREVIEW, REORDER_SHIFT};
-use crate::reorder_list::{REORDER_PREVIEW_Z_INDEX, ReorderDragVisual};
+use crate::reorder_list::ReorderDragVisual;
 use nana_ui_core::PaintTransform;
+
+/// Z-index for reorder preview layers
+const REORDER_PREVIEW_Z_INDEX: i32 = 100;
 
 /// The drag of a list visual, while it previews.
 fn preview_drag(visual: Option<&StandardVisual>) -> Option<&ReorderDragVisual> {

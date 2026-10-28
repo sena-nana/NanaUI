@@ -242,6 +242,7 @@ impl crate::ComponentView for Popover {
             self.trigger_icon,
             self.trigger_content,
             self.open,
+            false, // Popover doesn't have a disabled field
             self.width,
             self.padding_theme
                 .map_or(self.padding, |step| world.theme().spacing().resolve(step)),
@@ -374,6 +375,7 @@ impl crate::ComponentView for ActionMenu {
             self.popover.trigger_icon,
             self.popover.trigger_content,
             self.popover.open,
+            false, // disabled - removed from Popover struct
             self.popover.width,
             self.popover
                 .padding_theme
@@ -403,6 +405,7 @@ pub(crate) fn project_menu_surface(
     trigger_icon: Option<Icon>,
     trigger_content: Option<StableNodeId>,
     open: bool,
+    disabled: bool,
     width: f32,
     padding: f32,
     gap: f32,

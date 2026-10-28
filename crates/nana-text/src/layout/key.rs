@@ -258,16 +258,6 @@ impl LayoutKey {
                     )
                 })
                 .collect(),
-            placements: placements
-                .iter()
-                .map(|placement| {
-                    (
-                        placement.offset,
-                        u32::from(placement.flow == crate::source::ObjectFlow::Block)
-                            | (u32::from(placement.fit_width) << 1),
-                    )
-                })
-                .collect(),
             rubies,
             labels,
             emphasis,
@@ -305,7 +295,6 @@ impl PartialEq for LayoutKey {
             && self.run_line_heights == other.run_line_heights
             && self.empty_line_height == other.empty_line_height
             && self.objects == other.objects
-            && self.placements == other.placements
             && self.rubies.len() == other.rubies.len()
             && self
                 .rubies
@@ -344,7 +333,6 @@ impl Hash for LayoutKey {
         self.run_line_heights.hash(state);
         self.empty_line_height.hash(state);
         self.objects.hash(state);
-        self.placements.hash(state);
         for (at, align) in &self.paragraph_alignments {
             at.hash(state);
             align.map(|a| a as u8).hash(state);

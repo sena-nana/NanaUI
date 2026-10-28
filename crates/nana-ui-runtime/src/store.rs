@@ -878,6 +878,8 @@ impl NodeStore {
                             envelope: None,
                         },
                     ),
+                    flow: nana_ui_core::RichObjectFlow::Inline,
+                    fit_width: false,
                 }
             })
             .collect::<Vec<_>>()

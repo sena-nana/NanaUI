@@ -22,6 +22,11 @@ use windows::core::{HRESULT, PCWSTR};
 #[path = "file_dialog_windows_types.rs"]
 mod types;
 
+#[path = "file_dialog_windows_events.rs"]
+mod events;
+
+const CANCELLED: HRESULT = HRESULT::from_win32(ERROR_CANCELLED.0);
+
 struct ComScope;
 
 impl ComScope {

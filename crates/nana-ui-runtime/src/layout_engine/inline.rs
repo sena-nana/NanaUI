@@ -139,6 +139,8 @@ pub(super) fn place_native_inline(
             .map(|atom| nana_text::InlineObject {
                 offset: atom.offset,
                 id: atom.node.get(),
+                flow: nana_ui_core::RichObjectFlow::Inline,
+                fit_width: false,
                 metrics: measured.get(&atom.node).copied().unwrap_or(
                     nana_text::InlineObjectMetrics {
                         width_px: 0.0,

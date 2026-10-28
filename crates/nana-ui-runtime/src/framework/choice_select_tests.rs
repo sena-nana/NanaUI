@@ -18,7 +18,7 @@ fn select_open_events_include_same_option_commits_and_dismissals() {
         .unwrap();
     let states = Arc::new(Mutex::new(Vec::new()));
     let sink = Arc::clone(&states);
-    cx.on(select, move |_, event: &crate::SelectOpenedChanged, _| {
+    cx.on(select, move |_, event: &crate::SelectToggled, _| {
         sink.lock().unwrap().push(event.opened);
     })
     .unwrap();

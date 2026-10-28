@@ -79,7 +79,6 @@ windows = { version = "0.62", features = [
     "Win32_UI_WindowsAndMessaging",
 ] }
 # `windows::core::implement` expands to `::windows_core` paths (file dialog events).
-windows-core = "0.62"
 webview2-com = "0.39"
 windows-numerics = "0.3"
 # Early Splash decodes its logo to pixels for DirectComposition.

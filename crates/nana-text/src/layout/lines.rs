@@ -363,7 +363,7 @@ impl<'a> Builder<'a> {
     fn segments(&self) -> Vec<Range<usize>> {
         // 在显式换行之间切出块对象，保持原始字符、作者段落与空行。
         let mut result = Vec::new();
-        for range in segments(self.input.text, self.input.paragraphs) {
+        for range in segments(self.input.text, self.input.paragraphs, &self.input.blocks) {
             let mut start = range.start;
             let first = self
                 .input
