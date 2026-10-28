@@ -31,6 +31,9 @@ const ROW_COPY_GAP: f32 = nana_ui_core::space::XXS;
 const ROW_LABEL_ACCESSORY_GAP: f32 = nana_ui_core::space::XS;
 /// Between a column row's control and its trailing node.
 const ROW_TRAILING_GAP: f32 = nana_ui_core::space::XXS;
+/// What the control keeps beside a trailing node, however wide that node
+/// asks to be.
+const ROW_CONTROL_MIN: f32 = 96.0;
 /// Between a column row's label column and its control, and between its
 /// label and control once it stacks.
 const ROW_COLUMN_GAP: f32 = nana_ui_core::space::XS;
@@ -79,6 +82,12 @@ pub struct SettingsRow {
     /// Holds the control and the trailing node, only while the row has a
     /// label column or a trailing node.
     pub(crate) control_slot: Option<StableNodeId>,
+    /// Hold the control and the trailing node apart, only while there is a
+    /// trailing node: the control keeps at least [`ROW_CONTROL_MIN`] and the
+    /// trailing node gives way, so one that asks for the full width (a plain
+    /// row of buttons) cannot squeeze the control out.
+    pub(crate) value_slot: Option<StableNodeId>,
+    pub(crate) trailing_slot: Option<StableNodeId>,
     pub style: NodeStyle,
 }
 
@@ -104,6 +113,8 @@ impl SettingsRow {
             label_line_slot: None,
             flash_slot: None,
             control_slot: None,
+            value_slot: None,
+            trailing_slot: None,
             style: NodeStyle::default(),
         }
     }
@@ -563,6 +574,85 @@ impl SettingsRowControl {
             layout.flex_shrink = Some(0.0);
         }
         style
+    }
+}
+
+/// The box a control sits in beside a trailing node: it grows into the room
+/// the trailing node leaves and never goes below [`ROW_CONTROL_MIN`].
+#[derive(Debug, Clone, PartialEq)]
+struct SettingsRowValue;
+
+impl ComponentView for SettingsRowValue {
+    fn node_kind(&self) -> NodeKind {
+        NodeKind::Element {
+            tag: "settings-row-value".into(),
+        }
+    }
+
+    fn project(&self, id: StableNodeId, world: &UiWorld, mutations: &mut MutationQueue) {
+        let mut style = NodeStyle::default();
+        {
+            let layout = Arc::make_mut(&mut style.layout);
+            layout.direction = Some(FlexDirection::Row);
+            layout.align_items = AlignSpec::Center;
+            layout.flex_grow = Some(1.0);
+            layout.flex_shrink = Some(1.0);
+            layout.flex_basis = Some(LengthSpec::Px(0.0));
+            layout.min_width = Some(LengthSpec::Px(ROW_CONTROL_MIN));
+        }
+        project_common(
+            id,
+            world,
+            mutations,
+            &style,
+            InteractionState {
+                pointer_events: false,
+                focusable: false,
+            },
+            AccessibilityState {
+                role: AccessibilityRole::Generic,
+                ..AccessibilityState::default()
+            },
+        );
+    }
+}
+
+/// The box a row's trailing node sits in: as wide as the node asks while
+/// that fits, and the one that gives way when it does not, down to nothing.
+#[derive(Debug, Clone, PartialEq)]
+struct SettingsRowTrailing;
+
+impl ComponentView for SettingsRowTrailing {
+    fn node_kind(&self) -> NodeKind {
+        NodeKind::Element {
+            tag: "settings-row-trailing".into(),
+        }
+    }
+
+    fn project(&self, id: StableNodeId, world: &UiWorld, mutations: &mut MutationQueue) {
+        let mut style = NodeStyle::default();
+        {
+            let layout = Arc::make_mut(&mut style.layout);
+            layout.direction = Some(FlexDirection::Row);
+            layout.align_items = AlignSpec::Center;
+            layout.flex_grow = Some(0.0);
+            layout.flex_shrink = Some(1.0);
+            layout.min_width = Some(LengthSpec::Px(0.0));
+        }
+        project_common(
+            id,
+            world,
+            mutations,
+            &style,
+            InteractionState {
+                pointer_events: false,
+                focusable: false,
+            },
+            AccessibilityState {
+                role: AccessibilityRole::Generic,
+                ..AccessibilityState::default()
+            },
+        );
     }
 }
 
@@ -2642,9 +2732,16 @@ impl AppContext {
         let (accessory, line_slot, flash_slot) = self.read(row, |row| {
             (row.label_accessory, row.label_line_slot, row.flash_slot)
         })?;
-        let (column, trailing, control_slot) = self.read(row, |row| {
-            (row.label_column, row.trailing, row.control_slot)
-        })?;
+        let (column, trailing, control_slot, value_slot, trailing_slot) =
+            self.read(row, |row| {
+                (
+                    row.label_column,
+                    row.trailing,
+                    row.control_slot,
+                    row.value_slot,
+                    row.trailing_slot,
+                )
+            })?;
         let live = |context: &Self, slot: Option<StableNodeId>| {
             slot.filter(|id| context.world().contains(*id))
         };
@@ -2774,9 +2871,52 @@ impl AppContext {
             ),
             (false, _) => None,
         };
+        // beside a trailing node the control sits in a box that keeps its
+        // minimum, and the trailing node in one that gives way
+        let (live_value, live_trailing) = (live(self, value_slot), live(self, trailing_slot));
+        let (value_box, trailing_box) = match (trailing, live_value, live_trailing) {
+            (Some(_), Some(value), Some(trailing)) => (Some(value), Some(trailing)),
+            (Some(_), _, _) => (
+                Some(
+                    self.create_detached_component(document, SettingsRowValue)?
+                        .stable_id(),
+                ),
+                Some(
+                    self.create_detached_component(document, SettingsRowTrailing)?
+                        .stable_id(),
+                ),
+            ),
+            (None, _, _) => (None, None),
+        };
+        if let (Some(value_box), Some(trailing_box), Some(trailing)) =
+            (value_box, trailing_box, trailing)
+        {
+            changed |=
+                self.reconcile_children(value_box, &control.into_iter().collect::<Vec<_>>())?;
+            changed |= self.reconcile_children(trailing_box, &[trailing])?;
+        }
         if let Some(control_box) = control_box {
-            let held: Vec<_> = control.into_iter().chain(trailing).collect();
+            let held: Vec<_> = match (value_box, trailing_box) {
+                (Some(value), Some(trailing)) => vec![value, trailing],
+                _ => control.into_iter().collect(),
+            };
             changed |= self.reconcile_children(control_box, &held)?;
+        }
+        if value_box != value_slot || trailing_box != trailing_slot {
+            self.update_component(row, |row, _| {
+                row.value_slot = value_box;
+                row.trailing_slot = trailing_box;
+            })?;
+            // hand back what the old boxes still hold before they go
+            if let Some(old) = live_value.filter(|old| Some(*old) != value_box) {
+                self.reconcile_children(old, &[])?;
+                self.remove_view(Entity::<SettingsRowValue>::from_stable_id(old))?;
+            }
+            if let Some(old) = live_trailing.filter(|old| Some(*old) != trailing_box) {
+                self.reconcile_children(old, &[])?;
+                self.remove_view(Entity::<SettingsRowTrailing>::from_stable_id(old))?;
+            }
+            changed = true;
         }
         let box_changed = control_box != control_slot;
         let children: Vec<_> = live(self, flash_slot)

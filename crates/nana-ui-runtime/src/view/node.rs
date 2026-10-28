@@ -1075,6 +1075,9 @@ impl<C: ComponentView, K> El<C, K> {
                     component = (slot.write)(component, *root);
                     if slot.child {
                         adopt.push((*root, key.take()));
+                    } else if let Some(key) = key.take() {
+                        // the composite places it; its path still names it
+                        vb.ui.key_slot(*root, key.into_owned());
                     }
                 }
                 // A failed build already recorded its error.

@@ -1167,6 +1167,10 @@ pub struct AppContext {
     /// declared parent. Reassembling that parent leaves them where they are;
     /// despawning it despawns them.
     placed_assembled: HashSet<StableNodeId, crate::BuildIdHasher>,
+    /// The key a slot's root was declared with (`El::slot`): the composite
+    /// places it, not the assembly, so it is no keyed child of anything, but
+    /// [`Self::assembly_path`] still names it by that key.
+    slot_keys: HashMap<StableNodeId, String, crate::BuildIdHasher>,
     /// Components whose assembler is running, so the `update_component` calls
     /// an assembler makes do not re-enter it.
     assembling: HashSet<StableNodeId, crate::BuildIdHasher>,
@@ -1547,6 +1551,7 @@ impl AppContext {
             assembled: HashMap::default(),
             assembled_parent: HashMap::default(),
             placed_assembled: HashSet::default(),
+            slot_keys: HashMap::default(),
             assembling: HashSet::default(),
             component_lifecycle: ComponentLifecycle::default(),
             next_id: 1,
@@ -1719,7 +1724,10 @@ impl AppContext {
     ///
     /// Keyed nodes contribute their key and continue at the parent they were
     /// declared under, wherever they are placed; unkeyed nodes continue at
-    /// their world parent. `None` when no ancestor keyed this node.
+    /// their world parent. The root of a slot (`El::slot`), which the
+    /// composite places itself, contributes the key it was declared with and
+    /// continues at its world parent, so a control keeps its name inside the
+    /// row or region that holds it. `None` when no ancestor keyed this node.
     pub fn assembly_path(&self, id: StableNodeId) -> Option<String> {
         let mut segments = Vec::new();
         let mut cursor = Some(id);
@@ -1730,7 +1738,12 @@ impl AppContext {
                     segments.push(key.as_str());
                     Some(*parent)
                 }
-                None => self.world.parent_id(node),
+                None => {
+                    if let Some(key) = self.slot_keys.get(&node) {
+                        segments.push(key.as_str());
+                    }
+                    self.world.parent_id(node)
+                }
             };
             // Declared and world parents are each acyclic; a malformed mix
             // must still not hang.
@@ -4220,6 +4233,7 @@ impl AppContext {
         self.assembled_parent
             .retain(|child, (parent, _)| !removed.contains(child) && !removed.contains(parent));
         self.placed_assembled.retain(|id| !removed.contains(id));
+        self.slot_keys.retain(|id, _| !removed.contains(id));
         self.forget_reactive(removed);
         if !self.component_lifecycle.toast_stacks.is_empty() {
             self.forget_toast_stack_nodes(removed);

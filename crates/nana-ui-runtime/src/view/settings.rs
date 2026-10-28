@@ -722,7 +722,7 @@ mod tests {
     /// control, and still put the control under the label once narrow.
     #[test]
     fn label_column_rows_line_their_controls_up() {
-        use crate::view::{IntoView, column, text_input};
+        use crate::view::{IntoView, column, row, text_input};
         let document = DocumentId::new(1).unwrap();
         let mut cx = AppContext::new();
         let width = signal(360.0_f32);
@@ -742,6 +742,22 @@ mod tests {
                             .label_column(Some(96.0))
                             .control(switch(""))
                             .trailing(switch("重置")),
+                        // a trailing row of buttons that asks for the full width
+                        settings_row("路径")
+                            .label_column(Some(96.0))
+                            .control(text_input().key("path").bind(|c| {
+                                let l = c.style.layout_mut();
+                                l.flex_basis = Some(nana_ui_core::LengthSpec::Px(0.0));
+                                l.flex_grow = Some(1.0);
+                                l.min_width = Some(nana_ui_core::LengthSpec::Px(0.0));
+                            }))
+                            .trailing(
+                                row()
+                                    .bind(|c: &mut Stack| {
+                                        c.layout_mut().width = Some(nana_ui_core::LengthSpec::Fill)
+                                    })
+                                    .children((switch("浏览"),)),
+                            ),
                     ))
                     .into_any()
             })
@@ -788,6 +804,18 @@ mod tests {
             "a control that fills reaches the row's end"
         );
         assert!(layout(&cx, reset).x >= layout(&cx, toggle).x + layout(&cx, toggle).width);
+        let (path, _, browse) = parts(&cx, rows[2]);
+        let (path_box, browse_box) = (layout(&cx, path), layout(&cx, browse.unwrap()));
+        assert!(
+            path_box.width >= 96.0 - 0.5,
+            "the control keeps its minimum beside a full-width trailing node: {path_box:?} {browse_box:?}"
+        );
+        assert!(browse_box.x + browse_box.width <= layout(&cx, rows[2]).x + 360.0 + 0.5);
+        let path_of = cx.assembly_path(path).unwrap_or_default();
+        assert!(
+            path_of.rsplit('/').next() == Some("path"),
+            "a slot's control keeps the key it was declared with: {path_of}"
+        );
 
         // narrower than a label column and a control, the control goes under
         width.set(180.0);

@@ -314,6 +314,15 @@ impl<'a> UiBuilder<'a> {
         entity
     }
 
+    /// Name `root`, a slot's root the composite places itself, by the key
+    /// its view declared, for [`AppContext::assembly_path`].
+    pub(crate) fn key_slot(&mut self, root: StableNodeId, key: String) {
+        if self.error.is_some() || root == DUMMY_NODE {
+            return;
+        }
+        self.context.slot_keys.insert(root, key);
+    }
+
     /// Place `child`, built detached, under the current parent, keyed
     /// `key` there (the key its view declared) or by position.
     pub(crate) fn adopt_as(
