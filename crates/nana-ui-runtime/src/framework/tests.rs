@@ -2141,6 +2141,7 @@ fn area_layout_chrome_paints_every_frame_and_header() {
         frame_radius: RadiusTier::Lg,
         header_background: SemanticColorRole::Surface,
         header_divider: true,
+        header_height: Some(28.0),
     };
     context
         .mount_view(root.stable_id(), move || {
@@ -2177,6 +2178,8 @@ fn area_layout_chrome_paints_every_frame_and_header() {
                 Some(nana_ui_core::HAIRLINE)
             );
             assert_eq!(header.layout.border_width, Some(0.0));
+            assert_eq!(header.layout.height, Some(LengthSpec::Px(28.0)));
+            assert_eq!(header.control_height, None);
         }
     }
     assert_eq!(areas, 2);

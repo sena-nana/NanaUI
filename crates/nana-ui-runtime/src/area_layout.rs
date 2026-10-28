@@ -171,6 +171,11 @@ pub struct AreaChrome {
     pub header_background: SemanticColorRole,
     /// A hairline between the header and the content.
     pub header_divider: bool,
+    /// The header's height in logical pixels, its content centred in it.
+    /// `None` is the small control height: one row of compact controls and
+    /// nothing around them. A taller header leaves room for controls grouped
+    /// on a track, or a band that reads as the area's title bar.
+    pub header_height: Option<f32>,
 }
 
 impl Default for AreaChrome {
@@ -179,6 +184,7 @@ impl Default for AreaChrome {
             frame_radius: nana_ui_core::RadiusTier::Sm,
             header_background: SemanticColorRole::Subtle,
             header_divider: false,
+            header_height: None,
         }
     }
 }
@@ -552,9 +558,21 @@ fn header_style(chrome: AreaChrome) -> NodeStyle {
     if chrome.header_divider {
         style.border = Some(SemanticColorRole::BorderSoft);
     }
-    style.control_height = Some(nana_ui_core::ControlHeight::Exact(
-        nana_ui_core::ControlSize::Small,
-    ));
+    match chrome
+        .header_height
+        .filter(|height| height.is_finite() && *height > 0.0)
+    {
+        Some(height) => {
+            let layout = Arc::make_mut(&mut style.layout);
+            layout.height = Some(LengthSpec::Px(height));
+            layout.min_height = Some(LengthSpec::Px(height));
+        }
+        None => {
+            style.control_height = Some(nana_ui_core::ControlHeight::Exact(
+                nana_ui_core::ControlSize::Small,
+            ));
+        }
+    }
     style
 }
 
