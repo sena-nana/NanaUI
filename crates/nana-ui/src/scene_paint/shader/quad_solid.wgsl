@@ -32,15 +32,16 @@ struct SolidVertexOutput {
     @location(5) border_widths: vec4<f32>,
     @location(6) shadow_color: vec4<f32>,
     @location(7) shadow_offset: vec2<f32>,
-    @location(8) shadow_blur_radius: f32,
-    @location(9) shadow_spread_radius: f32,
-    @location(10) local_pos: vec2<f32>,
+    // Physical blur and spread radii, packed: the struct stays within 15
+    // inter-stage variables (Apple2 Metal, as the iOS Simulator reports).
+    @location(8) shadow_radii: vec2<f32>,
+    @location(9) local_pos: vec2<f32>,
     // Screen-linear: the fragment's own paint position.
-    @location(11) @interpolate(linear) world_pos: vec2<f32>,
-    @location(12) clip_rect: vec4<f32>,
-    @location(13) clip_inv_abcd: vec4<f32>,
-    @location(14) clip_inv_ef: vec3<f32>,
-    @location(15) @interpolate(flat) instance_index: u32,
+    @location(10) @interpolate(linear) world_pos: vec2<f32>,
+    @location(11) clip_rect: vec4<f32>,
+    @location(12) clip_inv_abcd: vec4<f32>,
+    @location(13) clip_inv_ef: vec3<f32>,
+    @location(14) @interpolate(flat) instance_index: u32,
 }
 
 fn apply_affine(abcd: vec4<f32>, ef: vec4<f32>, p: vec2<f32>) -> vec2<f32> {
@@ -143,8 +144,7 @@ fn solid_vs_main(input: SolidVertexInput) -> SolidVertexOutput {
     out.border_widths = input.border_widths * globals.scale;
     out.shadow_color = premultiply(input.shadow_color);
     out.shadow_offset = input.shadow_offset * globals.scale;
-    out.shadow_blur_radius = shadow_blur_radius * globals.scale;
-    out.shadow_spread_radius = shadow_spread_radius * globals.scale;
+    out.shadow_radii = vec2<f32>(shadow_blur_radius, shadow_spread_radius) * globals.scale;
     out.local_pos = local;
     out.world_pos = world;
     out.clip_rect = input.clip_rect;
@@ -307,7 +307,7 @@ fn solid_fs_main(
     var quad_alpha: f32 = fill_alpha;
 
     // Storage keeps CSS px (same as instance spread before VS scale); the
-    // interpolated `shadow_spread_radius` is already physical.
+    // interpolated spread (`shadow_radii.y`) is already physical.
     let outline_px = paint.outline_width * globals.scale;
     if (outline_px > 0.0) {
         // The box grown by the outline, its corners with it.
@@ -337,7 +337,7 @@ fn solid_fs_main(
 
     if input.shadow_color.a > 0.0 {
         // Negated for an inset shadow, whose spread shrinks the shape.
-        let css_spread = input.shadow_spread_radius - outline_px;
+        let css_spread = input.shadow_radii.y - outline_px;
         let shadow_size = max(input.scale + vec2(css_spread * 2.0), vec2(0.0));
         let shadow_radius = max(input.border_radius + vec4(css_spread), vec4(0.0));
         let shadow_p = outer_p + input.shadow_offset;
@@ -362,7 +362,7 @@ fn solid_fs_main(
         // A blur ramps from full strength `blur` inside the edge to none `blur`
         // past it, as the Path shadow's band, and scales with the transform; an
         // unblurred edge ramps over one device pixel, as the box's own edge does.
-        let blur = input.shadow_blur_radius;
+        let blur = input.shadow_radii.x;
         let shadow_alpha = select(
             1.0 - smoothstep(-blur, blur, shadow_dist),
             clamp(0.5 - shadow_edge, 0.0, 1.0),
