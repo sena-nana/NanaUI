@@ -509,3 +509,157 @@ fn issue200_an_axis_with_auto_insets_keeps_its_static_position() {
     let (x, y, ..) = tree.rect(BADGE);
     assert_eq!((x, y), at(&tree));
 }
+
+/// A page with a 500 px spacer and then an open Select of eight options, laid
+/// out in a window of `height`, its hit index rebuilt.
+struct SelectPage {
+    context: AppContext,
+    document: DocumentId,
+    select: Entity<crate::Select>,
+    shaper: NanaTextEngineShaper,
+}
+
+impl SelectPage {
+    fn new(height: f32) -> Self {
+        use crate::{Select, SelectOption, Stack};
+        let document = DocumentId::new(1).unwrap();
+        let mut context = AppContext::new();
+        context.set_reduced_motion(true);
+        let root = context
+            .create_component(
+                document,
+                Stack::column(0.0).with_layout(|layout| {
+                    layout.width = Some(LengthSpec::Px(400.0));
+                }),
+            )
+            .unwrap();
+        let spacer = context
+            .create_detached_component(
+                document,
+                Stack::column(0.0).with_layout(|layout| {
+                    layout.width = Some(LengthSpec::Fill);
+                    layout.height = Some(LengthSpec::Px(500.0));
+                }),
+            )
+            .unwrap();
+        context.append_child(root, spacer).unwrap();
+        let select = context
+            .create_detached_component(
+                document,
+                Select::new(Some("v0")).options(
+                    (0..8).map(|n| SelectOption::new(format!("v{n}"), format!("Option {n}"))),
+                ),
+            )
+            .unwrap();
+        context.append_child(root, select).unwrap();
+        let mut page = Self {
+            context,
+            document,
+            select,
+            shaper: bundled_face_shaper(),
+        };
+        page.frame(height, false);
+        assert!(page.context.toggle_select(select).unwrap());
+        page.frame(height, false);
+        page
+    }
+
+    fn frame(&mut self, height: f32, resized: bool) {
+        let viewport = LayoutViewport::new(400.0, height);
+        if resized {
+            resize_frame(&mut self.context, self.document, viewport, &mut self.shaper);
+        } else {
+            product_frame(&mut self.context, self.document, viewport, &mut self.shaper);
+        }
+        self.context.rebuild_hit_test(self.document);
+    }
+
+    fn id(&self) -> StableNodeId {
+        self.select.stable_id()
+    }
+
+    fn field(&self) -> LayoutBox {
+        self.context.world().layout_box(self.id()).unwrap()
+    }
+
+    fn menu(&self) -> crate::SelectMenuGeometry {
+        self.context.open_select_menu(self.id()).unwrap()
+    }
+
+    /// The row the menu paints at `(x, y)`, the option the pointer picks
+    /// there, and whether hit testing gives the point to the field.
+    fn at(&self, x: f32, y: f32) -> (Option<usize>, Option<usize>, bool) {
+        // The field reads as its laid-out box, wherever its menu hangs.
+        let spoken = self
+            .context
+            .world()
+            .project_accessibility(self.document)
+            .into_iter()
+            .find(|node| node.id == self.id())
+            .unwrap()
+            .bounds;
+        assert_eq!(spoken, self.field());
+        let menu = self.menu();
+        let painted = menu.viewport.contains(x, y).then(|| {
+            menu.options
+                .iter()
+                .position(|option| option.bounds.contains(x, y))
+        });
+        let picked = crate::select::select_option_at(&menu, x, y);
+        let hit = self.context.world().hit_test(self.document, x, y) == Some(self.id());
+        (painted.flatten(), picked, hit)
+    }
+}
+
+fn row_centre(menu: &crate::SelectMenuGeometry, row: usize) -> (f32, f32) {
+    let bounds = menu.options[row].bounds;
+    (
+        bounds.x + bounds.width / 2.0,
+        bounds.y + bounds.height / 2.0,
+    )
+}
+
+#[test]
+fn issue200_a_select_menu_follows_the_viewport_and_hits_where_it_paints() {
+    // A tall window: the menu hangs below the field.
+    let mut page = SelectPage::new(1000.0);
+    let field = page.field();
+    let below = page.menu();
+    assert_eq!(below.surface.y, field.y + field.height, "{below:?}");
+    let low_row = row_centre(&below, 3);
+    assert_eq!(page.at(low_row.0, low_row.1), (Some(3), Some(3), true));
+
+    // The window shrinks under the open menu. Nothing about the field
+    // changes; the menu flips above it against the window it is in now.
+    page.frame(600.0, true);
+    assert_eq!(page.field(), field);
+    let above = page.menu();
+    assert_eq!(above.surface.y + above.surface.height, field.y, "{above:?}");
+    assert!(above.surface.y >= 0.0);
+    // The row painted under a point is the one the pointer picks there and
+    // the one hit testing gives to the field; where the menu was, it is not.
+    let high_row = row_centre(&above, 3);
+    assert_eq!(page.at(high_row.0, high_row.1), (Some(3), Some(3), true));
+    assert_eq!(page.at(low_row.0, low_row.1), (None, None, false));
+    // The same window laid out cold places the same menu.
+    assert_eq!(SelectPage::new(600.0).menu(), above);
+
+    // Back: it hangs below again, and the pointer follows it.
+    page.frame(1000.0, true);
+    assert_eq!(page.menu(), below);
+    assert_eq!(page.at(low_row.0, low_row.1), (Some(3), Some(3), true));
+    assert_eq!(page.at(high_row.0, high_row.1), (None, None, false));
+    // A press there chooses the row painted under it.
+    assert!(
+        page.context
+            .activate_select_at(page.select, low_row.0, low_row.1)
+            .unwrap()
+    );
+    assert_eq!(
+        page.context
+            .read(page.select, |select| select.value.clone())
+            .unwrap()
+            .as_deref(),
+        Some("v3")
+    );
+}

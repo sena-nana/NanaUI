@@ -379,6 +379,10 @@ impl NodeTable {
 pub(crate) struct NodeStore {
     nodes: NodeTable,
     visuals: HashMap<StableNodeId, StandardVisual>,
+    /// Nodes whose visual is an open Select, Dropdown or SearchDropdown
+    /// menu: the few a layout pass gives a new room (see
+    /// [`crate::SelectMenuRoom`]).
+    open_select_menus: hashbrown::HashSet<StableNodeId>,
     custom_render: HashMap<StableNodeId, CustomRenderNode>,
     event_listeners: HashMap<StableNodeId, EventListeners>,
     component_types: HashMap<StableNodeId, ComponentTypeId>,
@@ -500,6 +504,7 @@ impl NodeStore {
     pub fn remove(&mut self, id: StableNodeId) -> Option<NodeRecord> {
         let record = self.nodes.remove(id)?;
         self.visuals.remove(&id);
+        self.open_select_menus.remove(&id);
         self.custom_render.remove(&id);
         self.event_listeners.remove(&id);
         self.component_types.remove(&id);
@@ -542,6 +547,12 @@ impl NodeStore {
         !self.visuals.is_empty()
     }
 
+    /// Nodes whose visual is an open Select, Dropdown or SearchDropdown
+    /// menu, in no particular order.
+    pub(crate) fn open_select_menus(&self) -> impl Iterator<Item = StableNodeId> + '_ {
+        self.open_select_menus.iter().copied()
+    }
+
     pub(crate) fn has_text_inputs(&self) -> bool {
         !self.editors.is_empty()
     }
@@ -557,6 +568,11 @@ impl NodeStore {
     pub fn set_visual(&mut self, id: StableNodeId, value: Option<StandardVisual>) {
         let before = crate::world::text_visual_key(self.visuals.get(&id));
         let after = crate::world::text_visual_key(value.as_ref());
+        if matches!(value, Some(StandardVisual::Select { opened: true, .. })) {
+            self.open_select_menus.insert(id);
+        } else {
+            self.open_select_menus.remove(&id);
+        }
         if let Some(value) = value {
             self.visuals.insert(id, value);
         } else {

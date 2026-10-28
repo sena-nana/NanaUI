@@ -512,6 +512,8 @@ impl AppContext {
             }
             completed(2);
             self.apply_document_scroll_retention(document, force_full)?;
+            // After scroll retention: a clamped offset moves the room too.
+            self.refresh_select_menu_rooms(document)?;
             self.announce_size_changes(document)?;
             self.play_pending_flips(document);
             // A toast stack's new toasts were measured by this pass: what

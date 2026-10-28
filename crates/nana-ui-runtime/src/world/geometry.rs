@@ -2782,6 +2782,41 @@ impl UiWorld {
         }
     }
 
+    /// The open Select, Dropdown and SearchDropdown menus of `document`
+    /// whose room is no longer the one [`Self::select_menu_room`] gives
+    /// now, each with its visual carrying the room it has now.
+    ///
+    /// A field projects its menu's room from the boxes the last layout gave
+    /// it; a layout pass that moves those boxes or the viewport, but not the
+    /// field's own state, leaves that room behind. Fed back after every
+    /// layout pass, the menu that is painted, hit and read is placed against
+    /// the layout just published.
+    pub(crate) fn stale_select_menu_rooms(
+        &self,
+        document: DocumentId,
+    ) -> Vec<(StableNodeId, StandardVisual)> {
+        let mut stale = self
+            .nodes
+            .open_select_menus()
+            .filter(|id| self.document_of(*id) == Some(document) && self.is_mounted(*id))
+            .filter_map(|id| {
+                let Some(StandardVisual::Select { menu_room, .. }) = self.nodes.visual(id) else {
+                    return None;
+                };
+                let room = self.select_menu_room(id);
+                (*menu_room != room).then(|| {
+                    let mut visual = self.nodes.visual(id).cloned()?;
+                    if let StandardVisual::Select { menu_room, .. } = &mut visual {
+                        *menu_room = room;
+                    }
+                    Some((id, visual))
+                })?
+            })
+            .collect::<Vec<_>>();
+        stale.sort_unstable_by_key(|(id, _)| *id);
+        stale
+    }
+
     /// Where a menu hanging off `id` can be seen, in `id`'s own layout
     /// coordinates: the window and every clip above `id` that hit testing
     /// cuts it by, each moved through the scroll offsets between that box and

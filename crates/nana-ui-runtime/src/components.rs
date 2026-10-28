@@ -1051,7 +1051,8 @@ pub enum StandardVisual {
         /// How the open menu's rows are scrolled and its scrollbar held.
         menu_scroll: SelectMenuScroll,
         /// Where the open menu can be seen, taken when the field last
-        /// projected; `None` before it has been laid out.
+        /// projected and again after each layout pass that moves it;
+        /// `None` before it has been laid out.
         menu_room: Option<SelectMenuRoom>,
         /// Whether this menu can ever draw check marks (a multi-select
         /// dropdown). The check lane is reserved for the whole menu when it
@@ -2010,9 +2011,12 @@ pub struct SelectMenuScroll {
 /// capped to it; a menu wider than its field (see
 /// [`crate::Select::fit_options`]) stays between `left` and `right`.
 ///
-/// It is taken when the field projects. A page scrolled under an open menu
-/// carries the menu with its field until the menu next changes, so what is
-/// drawn and what the pointer hits stay one geometry.
+/// It is taken when the field projects, and again after every layout pass
+/// of its document that moves it (a resized window, a field or clip that
+/// moved), so the menu flips and caps against the window it is in now. A page
+/// scrolled under an open menu, which runs no layout, carries the menu with
+/// its field until the menu next changes. Either way what is drawn and what
+/// the pointer hits stay one geometry.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct SelectMenuRoom {
     pub top: f32,
