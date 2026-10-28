@@ -1,7 +1,8 @@
 //! GameActivity pointer / key / GameTextInput → NanaUI Runtime control-slot
 //! (host-testable).
 //!
-//! - Touch samples → canonical [`PointerInput`] in **logical** px.
+//! - Touch samples are gated to Primary ([`SlotInputGate`]); the accepted
+//!   ones are lowered by `nana_mobile_host::MobileRuntime::push_touch`.
 //! - Editing keys → canonical [`KeyInput`]
 //!   (US-QWERTY subset + named editing keys).
 //! - Printable commits while the slot text input is focused →
@@ -19,8 +20,7 @@ use nana_ui_core::PhysicalRect;
 use std::borrow::Cow;
 
 use nana_ui_platform::{
-    CompositionInput, InputModifiers, KeyInput, KeyState, LogicalKey, PhysicalKey, PointerId,
-    PointerInput, PointerPhase, PointerType,
+    CompositionInput, InputModifiers, KeyInput, KeyState, LogicalKey, PhysicalKey,
 };
 
 /// Touch / pointer phase from the host (Android MotionAction subset).
@@ -171,46 +171,6 @@ impl SlotInputGate {
     /// Keyboard samples reach Runtime only while the slot holds focus.
     pub fn accept_key(&self) -> bool {
         self.keyboard_focused
-    }
-}
-
-/// Physical → logical for the Runtime viewport (`scale` = window scale factor).
-pub fn logical_point(physical_x: f32, physical_y: f32, scale: f32) -> [f32; 2] {
-    let scale = scale.max(0.25);
-    [physical_x / scale, physical_y / scale]
-}
-
-/// Map one touch sample to a pointer sample (logical window coords).
-pub fn touch_to_pointer_event(
-    kind: SlotTouchKind,
-    logical: [f32; 2],
-    pointer_id: i32,
-    modifiers: InputModifiers,
-) -> PointerInput {
-    let (phase, buttons) = match kind {
-        SlotTouchKind::Down => (PointerPhase::Down, 1),
-        SlotTouchKind::Move => (PointerPhase::Move, 0),
-        SlotTouchKind::Up => (PointerPhase::Up, 0),
-        SlotTouchKind::Cancel => (PointerPhase::Cancel, 0),
-    };
-    PointerInput {
-        phase,
-        pointer_id: PointerId(pointer_id.max(0) as u64),
-        pointer_type: PointerType::Touch,
-        x: logical[0],
-        y: logical[1],
-        screen_x: logical[0],
-        screen_y: logical[1],
-        button: 0,
-        buttons,
-        pressure: 1.0,
-        tangential_pressure: 0.0,
-        tilt_x: 0,
-        tilt_y: 0,
-        twist: 0,
-        is_primary: true,
-        activation_click: false,
-        modifiers,
     }
 }
 
@@ -566,30 +526,6 @@ mod tests {
         assert!(gate.accept_pointer(slot, SlotTouchKind::Move, 20.0, 120.0, 0));
         assert!(gate.captured_pointer_id.is_none());
         assert!(!gate.keyboard_focused);
-    }
-
-    #[test]
-    fn logical_point_divides_by_scale() {
-        let p = logical_point(216.0, 432.0, 2.0);
-        assert!((p[0] - 108.0).abs() < 0.01);
-        assert!((p[1] - 216.0).abs() < 0.01);
-    }
-
-    #[test]
-    fn down_emits_primary_pointer_down() {
-        let event = touch_to_pointer_event(
-            SlotTouchKind::Down,
-            [1.0, 2.0],
-            3,
-            InputModifiers::default(),
-        );
-        assert_eq!(event.phase, PointerPhase::Down);
-        assert_eq!(event.pointer_id, PointerId(3));
-        assert_eq!(event.pointer_type, PointerType::Touch);
-        assert!((event.x - 1.0).abs() < f32::EPSILON);
-        assert!((event.y - 2.0).abs() < f32::EPSILON);
-        assert!(event.is_primary);
-        assert_eq!(event.button, 0);
     }
 
     #[test]

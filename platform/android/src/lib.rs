@@ -1,16 +1,15 @@
 //! Experimental Android ARM64 host — not a current NanaUI product target.
 //!
 //! GameActivity + GameTextInput InputConnection + `ANativeWindow` Surface
-//! (wgpu 30 / Vulkan). The window is one NanaUI Runtime document — an
-//! appearance page and a control strip filling Primary — painted through
-//! UiScene + `SceneWgpuPainter`, not a second product paint kernel.
+//! (wgpu 30 / Vulkan) over [`nana_mobile_host`], the core it shares with the
+//! iOS host. The window is one NanaUI Runtime document — the mobile probe
+//! page — painted through UiScene + `SceneWgpuPainter`, not a second product
+//! paint kernel.
 
 #![cfg_attr(target_os = "android", allow(clippy::unnecessary_wraps))]
 
 #[cfg(target_os = "android")]
-mod gpu;
-#[cfg(target_os = "android")]
-mod runtime;
+mod host;
 mod shell;
 #[cfg(target_os = "android")]
 mod slot_ax;
@@ -18,9 +17,6 @@ mod slot_ax;
 #[cfg_attr(all(not(target_os = "android"), not(test)), allow(dead_code))]
 mod slot_ime;
 mod slot_input;
-#[cfg(target_os = "android")]
-mod slot_paint;
-mod slot_runtime;
 
 pub use shell::{
     ANDROID_MDPI_DPI, AndroidShellStub, DEFAULT_ANDROID_SCALE_FACTOR, SystemInsets, primary_rect,
@@ -40,7 +36,7 @@ fn android_main(app: AndroidApp) {
             .with_tag("nana-android-host"),
     );
     log::info!("nana-android-host: android_main (no WebView)");
-    if let Err(err) = runtime::run(app) {
+    if let Err(err) = host::run(app) {
         log::error!("nana-android-host: fatal: {err}");
     }
 }

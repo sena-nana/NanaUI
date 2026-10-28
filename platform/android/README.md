@@ -2,13 +2,14 @@
 
 This crate is an **experimental** GameActivity host. **Android is not a
 current NanaUI product target** and is **not a second product paint kernel**.
-The window is one NanaUI Runtime document — an appearance page above a
-control strip, filling the Primary region — painted by `SceneWgpuPainter`.
-It is not DesktopShell.
+The window is one NanaUI Runtime document — the mobile probe page shared
+with the iOS host — held by `nana-mobile-host` (`platform/mobile-core`) and
+painted by `SceneWgpuPainter`. It is not DesktopShell.
 
 Phase 2 wires GameTextInput `InputConnection`, JNI `ClipboardManager`, and
-TalkBack Click/Focus/SetValue/SetSelection for Button / Switch / TextInput
-and the appearance page's segmented options.
+TalkBack Click/Focus/SetValue/SetSelection for Button / Switch / TextInput.
+The loop presents only while the document demands a frame, and
+`TerminateWindow` keeps the document and device (docs/reference/mobile-host.md).
 Scroll / virtual lists stay later. Cross-compile and `--lib` tests are not
 device CJK / TalkBack evidence.
 
@@ -20,14 +21,11 @@ Rust owns the wgpu Vulkan Surface, the Runtime document and
 | Path | Role |
 |------|------|
 | `src/lib.rs` | `android_main` entry (`cdylib`) |
+| `src/host.rs` | GameActivity loop over `nana-mobile-host`: lifecycle, input, insets / Configuration (JNI), frame demand |
 | `src/shell.rs` | `AndroidShellStub` — window size, scale, system insets → Primary |
-| `src/runtime.rs` | GameActivity lifecycle + GameTextInput + insets / Configuration (JNI) + Scene present |
-| `src/gpu.rs` | Host-owned wgpu 30 Surface (Vulkan), cleared each frame |
-| `src/slot_runtime.rs` | RuntimeDocument (appearance page + control strip) + pointer/key/IME into Runtime |
-| `src/slot_paint.rs` | `SceneWgpuPainter` over the full surface |
-| `src/slot_input.rs` | MotionEvent / KeyEvent mapping and the Primary input gate |
+| `src/slot_input.rs` | Primary input gate and KeyEvent mapping |
 | `src/slot_ax.rs` | AccessKit (TalkBack) publication |
-| `src/slot_ime.rs` | GameTextInput buffer → `ImeEvent` (host-testable) |
+| `src/slot_ime.rs` | GameTextInput buffer → `CompositionInput` (host-testable) |
 | `app/` | Gradle GameActivity wrapper (`NanaActivity`) |
 
 ## Build

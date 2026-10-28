@@ -57,6 +57,7 @@ run_crate() {
 run_crate nana-ui-core
 run_crate nana-ui-platform
 run_crate nana-ui --lib
+run_crate nana-mobile-host
 
 run_crate nana-android-host
 

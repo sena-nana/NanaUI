@@ -1100,7 +1100,7 @@ prelude 是 `[名字] 条件`：
 
 畸形的 `font-variation-settings` 仍 fail-closed。字体没有的轴，在 shaping 时跳过，不改写成 `wght`。
 
-Android **不是**产品布局目标。实验 NativeActivity 宿主仍用同一份 `LayoutStyle`、Runtime 和 UiScene。没有第二套 Android 布局引擎。该宿主上的软键盘和无障碍已接第一期。没有 composition IME。读屏动作未映射回 Runtime。系统剪贴板仍 fail-closed。见 [Android](android.md)。 HarmonyOS / OpenHarmony 同样共用这份布局，只是编译档，见 [OHOS](ohos.md)。
+Android 和 iOS **不是**产品布局目标。两个实验宿主（[移动宿主](mobile-host.md)）仍用同一份 `LayoutStyle`、Runtime 和 UiScene，没有第二套移动端布局引擎。见 [Android](android.md)、[iOS](ios.md)。 HarmonyOS / OpenHarmony 同样共用这份布局，只是编译档，见 [OHOS](ohos.md)。
 
 廉价主体 `:has`、`::before`、`::after`、`::placeholder` 和 `::selection` 见上文「能用的」。
 

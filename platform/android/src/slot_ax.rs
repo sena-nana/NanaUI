@@ -1,10 +1,10 @@
-//! AccessKit tree publication for the control slot.
+//! AccessKit tree publication for the window document.
 //!
 //! [`accesskit_android::InjectingAdapter`] injects an accessibility delegate
 //! into the Activity's decor view through an embedded dex, so screen readers
 //! walk the same Runtime tree as desktop hosts via [`AccessTreeProjector`].
 //! The adapter publishes name/role/value and queues reader actions; the host
-//! drains them through [`SlotRuntime::apply_accessibility_action`]. Click /
+//! drains them through [`MobileRuntime::apply_accessibility_action`]. Click /
 //! Focus / SetValue / SetSelection activate Button, Switch, and TextInput.
 //! Scroll and virtual-list coverage is a later phase.
 
@@ -18,7 +18,7 @@ use accesskit_android::jni::objects::JObject;
 use android_activity::AndroidApp;
 use nana_ui::AccessTreeProjector;
 
-use crate::slot_runtime::SlotRuntime;
+use nana_mobile_host::MobileRuntime;
 
 struct InitialTree(Option<TreeUpdate>);
 
@@ -53,7 +53,7 @@ pub struct SlotAccessibility {
 impl SlotAccessibility {
     /// Attach the accessibility delegate to the Activity's decor view and
     /// publish the slot tree as the initial (full) update.
-    pub fn new(app: &AndroidApp, runtime: &SlotRuntime) -> Result<Self, String> {
+    pub fn new(app: &AndroidApp, runtime: &MobileRuntime) -> Result<Self, String> {
         let vm = unsafe { jni::JavaVM::from_raw(app.vm_as_ptr().cast()) }
             .map_err(|error| format!("a11y jvm: {error}"))?;
         let mut env = vm
@@ -72,8 +72,11 @@ impl SlotAccessibility {
             .and_then(|value| value.l())
             .map_err(|error| format!("a11y decor view: {error}"))?;
 
-        let projector =
-            AccessTreeProjector::new(runtime.accessibility_nodes(), true, runtime.scale());
+        let projector = AccessTreeProjector::new(
+            runtime.accessibility_nodes(),
+            true,
+            runtime.viewport().scale,
+        );
         let initial = projector.full_update();
         let actions = SlotActions::default();
         let adapter = InjectingAdapter::new(
@@ -91,9 +94,12 @@ impl SlotAccessibility {
 
     /// Publish the current slot tree. Cheap no-op while TalkBack has not
     /// initialized the tree.
-    pub fn push(&mut self, runtime: &SlotRuntime) {
+    pub fn push(&mut self, runtime: &MobileRuntime) {
         let nodes = runtime.accessibility_nodes();
-        if let Some(update) = self.projector.synchronize_full(nodes, runtime.scale()) {
+        if let Some(update) = self
+            .projector
+            .synchronize_full(nodes, runtime.viewport().scale)
+        {
             self.adapter.update_if_active(|| update);
         }
     }
@@ -101,7 +107,7 @@ impl SlotAccessibility {
     /// Drain TalkBack actions and apply them through the Runtime's typed
     /// accessibility contract. Invalid or unsupported requests are ignored.
     /// Returns whether anything was drained (the host then repaints).
-    pub fn drain_actions(&mut self, runtime: &mut SlotRuntime) -> bool {
+    pub fn drain_actions(&mut self, runtime: &mut MobileRuntime) -> bool {
         let pending = self
             .actions
             .pending

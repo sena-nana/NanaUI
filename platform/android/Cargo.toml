@@ -4,7 +4,7 @@ version = "0.1.0"
 edition = "2024"
 rust-version = "1.98"
 publish = false
-description = "Experimental Android ARM64 GameActivity host (phase 2 IME/clipboard/a11y; not a product paint kernel)"
+description = "Experimental Android ARM64 GameActivity host over nana-mobile-host (not a product paint kernel)"
 license = "MIT OR Apache-2.0"
 
 [lib]
@@ -18,6 +18,8 @@ default = []
 experimental-android = []
 
 [dependencies]
+nana-mobile-host = { path = "../mobile-core" }
+nana-mobile-probe = { path = "../mobile-probe" }
 nana-ui-core.workspace = true
 nana-ui-platform = { workspace = true, features = ["experimental-android"] }
 nana-ui = { path = "../../crates/nana-ui", default-features = false, features = [
