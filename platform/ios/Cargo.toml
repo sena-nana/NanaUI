@@ -4,17 +4,23 @@ version = "0.1.0"
 edition = "2024"
 rust-version = "1.98"
 publish = false
-description = "Experimental iOS host: UIKit shell over nana-mobile-host (C ABI staticlib)"
+description = "Experimental iOS host: the C ABI a UIKit shell drives, over nana-mobile-host"
 license = "MIT OR Apache-2.0"
 
+# An rlib: the app crate builds the one staticlib its Xcode target links
+# (see `probe/` for the measurement page's).
 [lib]
 name = "nana_ios_host"
 path = "src/lib.rs"
-crate-type = ["staticlib", "rlib"]
 
 [dependencies]
 nana-mobile-host = { path = "../mobile-core" }
-nana-mobile-probe = { path = "../mobile-probe" }
 nana-ui-core.workspace = true
 nana-ui-platform.workspace = true
+nana-ui = { path = "../../crates/nana-ui", default-features = false, features = [
+    "gpu",
+    "accesskit-tree",
+    "wgpu-interop",
+    "wgpu-backends",
+] }
 wgpu.workspace = true

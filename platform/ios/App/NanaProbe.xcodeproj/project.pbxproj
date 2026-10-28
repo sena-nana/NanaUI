@@ -20,8 +20,8 @@
 
 /* Begin PBXFileReference section */
 		A20000000000000000000001 /* AppDelegate.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppDelegate.swift; sourceTree = "<group>"; };
-		A20000000000000000000002 /* NanaView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NanaView.swift; sourceTree = "<group>"; };
-		A20000000000000000000003 /* NanaTextProxy.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NanaTextProxy.swift; sourceTree = "<group>"; };
+		A20000000000000000000002 /* NanaView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = NanaView.swift; path = ../Shell/NanaView.swift; sourceTree = SOURCE_ROOT; };
+		A20000000000000000000003 /* NanaTextProxy.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = NanaTextProxy.swift; path = ../Shell/NanaTextProxy.swift; sourceTree = SOURCE_ROOT; };
 		A20000000000000000000004 /* ProbeViewController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ProbeViewController.swift; sourceTree = "<group>"; };
 		A20000000000000000000005 /* ProbeCamera.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ProbeCamera.swift; sourceTree = "<group>"; };
 		A20000000000000000000006 /* ProbeMetrics.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ProbeMetrics.swift; sourceTree = "<group>"; };
@@ -223,7 +223,7 @@
 				);
 				LIBRARY_SEARCH_PATHS = "$(DERIVED_FILE_DIR)/rust";
 				MARKETING_VERSION = 0.1;
-				OTHER_LDFLAGS = "-lnana_ios_host";
+				OTHER_LDFLAGS = "-lnana_ios_probe";
 				PRODUCT_BUNDLE_IDENTIFIER = dev.nana.probe;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
@@ -250,7 +250,7 @@
 				);
 				LIBRARY_SEARCH_PATHS = "$(DERIVED_FILE_DIR)/rust";
 				MARKETING_VERSION = 0.1;
-				OTHER_LDFLAGS = "-lnana_ios_host";
+				OTHER_LDFLAGS = "-lnana_ios_probe";
 				PRODUCT_BUNDLE_IDENTIFIER = dev.nana.probe;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";

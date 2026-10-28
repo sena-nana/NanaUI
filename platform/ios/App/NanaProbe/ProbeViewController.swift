@@ -12,6 +12,7 @@ import UIKit
 final class ProbeViewController: UIViewController {
     private let nanaView = NanaView(transparent: true)
     private let camera = ProbeCamera()
+    private let metrics = ProbeMetrics()
     private var previewFrame = CGRect.zero
     private var background: [Float] = []
 
@@ -28,6 +29,8 @@ final class ProbeViewController: UIViewController {
     override func viewDidLoad() {
         super.viewDidLoad()
         nanaView.afterTick = { [weak self] in self?.layoutPreview() }
+        nanaView.onTick = { [metrics] link, cpu in metrics.tick(link: link, cpu: cpu) }
+        nanaView.onIdle = { [metrics] in metrics.idle() }
         camera.onFrame = { [weak self] buffer in self?.uploadPreview(buffer) }
         camera.start()
     }
@@ -41,12 +44,12 @@ final class ProbeViewController: UIViewController {
                 red: CGFloat(rgba[0]), green: CGFloat(rgba[1]), blue: CGFloat(rgba[2]), alpha: CGFloat(rgba[3]))
         }
         var rect = NanaRect()
-        let cpu = nana_ios_host_cpu_preview(host)
+        let cpu = nana_probe_cpu_preview(host)
         camera.wantsFrames = cpu
         CATransaction.begin()
         CATransaction.setDisableActions(true)
         camera.previewLayer.isHidden = cpu
-        if nana_ios_host_preview_rect(host, &rect) {
+        if nana_probe_preview_rect(host, &rect) {
             let frame = view.convert(
                 CGRect(x: CGFloat(rect.x), y: CGFloat(rect.y), width: CGFloat(rect.width), height: CGFloat(rect.height)),
                 from: nanaView)
@@ -67,7 +70,7 @@ final class ProbeViewController: UIViewController {
         CVPixelBufferLockBaseAddress(buffer, .readOnly)
         defer { CVPixelBufferUnlockBaseAddress(buffer, .readOnly) }
         guard let base = CVPixelBufferGetBaseAddress(buffer) else { return }
-        nana_ios_host_push_preview_bgra(
+        nana_probe_push_preview_bgra(
             host, base.assumingMemoryBound(to: UInt8.self),
             UInt32(CVPixelBufferGetWidth(buffer)), UInt32(CVPixelBufferGetHeight(buffer)),
             UInt32(CVPixelBufferGetBytesPerRow(buffer)))

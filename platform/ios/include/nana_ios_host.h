@@ -1,7 +1,9 @@
 // C ABI of the experimental NanaUI iOS host (platform/ios).
 //
 // Every call is made on the main thread. Geometry is in physical px unless
-// a name says logical; text offsets are UTF-8 bytes.
+// a name says logical; text offsets are UTF-8 bytes. The app's staticlib
+// provides nana_ios_host_new (export_ios_app!) and its own calls in its own
+// header.
 #pragma once
 
 #include <stdbool.h>
@@ -31,9 +33,17 @@ typedef struct {
     void (*wake)(void *context);
     // The focused editor changed: active, and its caret in logical px.
     void (*text_input)(void *context, bool active, NanaRect caret);
-    // A button activated: play the haptic.
-    void (*pressed)(void *context);
+    // Play one NANA_HAPTIC_* feedback.
+    void (*haptic)(void *context, int32_t style);
 } NanaIosCallbacks;
+
+enum {
+    NANA_HAPTIC_LIGHT = 0,
+    NANA_HAPTIC_MEDIUM = 1,
+    NANA_HAPTIC_SELECTION = 2,
+    NANA_HAPTIC_SUCCESS = 3,
+    NANA_HAPTIC_WARNING = 4,
+};
 
 enum {
     NANA_TOUCH_DOWN = 0,
@@ -90,12 +100,60 @@ bool nana_ios_host_text_bounds(NanaIosHost *host, NanaRect *rect);
 int64_t nana_ios_host_text_offset_at(NanaIosHost *host, float x, float y);
 bool nana_ios_host_text_caret_rect(NanaIosHost *host, size_t offset, NanaRect *rect);
 
-// Probe page.
-bool nana_ios_host_preview_rect(NanaIosHost *host, NanaRect *rect);
-bool nana_ios_host_cpu_preview(NanaIosHost *host);
-void nana_ios_host_push_preview_bgra(NanaIosHost *host, const uint8_t *bytes, uint32_t width,
-                                     uint32_t height, uint32_t bytes_per_row);
-uint32_t nana_ios_host_presses(NanaIosHost *host);
+// Accessibility: a flat snapshot of the nodes VoiceOver stops on, in
+// document order. _count takes the snapshot; _node and _text read it by
+// index. Frames are logical px of the surface.
+enum {
+    NANA_AX_ROLE_GENERIC = 0,
+    NANA_AX_ROLE_TEXT = 1,
+    NANA_AX_ROLE_BUTTON = 2,
+    NANA_AX_ROLE_TEXT_INPUT = 3,
+    NANA_AX_ROLE_TOGGLE = 4,
+    NANA_AX_ROLE_SLIDER = 5,
+    NANA_AX_ROLE_IMAGE = 6,
+    NANA_AX_ROLE_TAB = 7,
+    NANA_AX_ROLE_ROW = 8,
+    NANA_AX_ROLE_PROGRESS = 9,
+};
+
+enum {
+    NANA_AX_DISABLED = 1 << 0,
+    NANA_AX_CHECKED = 1 << 1,
+    NANA_AX_SELECTED = 1 << 2,
+    NANA_AX_FOCUSED = 1 << 3,
+    NANA_AX_EDITABLE = 1 << 4,
+    NANA_AX_BUSY = 1 << 5,
+};
+
+enum {
+    NANA_AX_TEXT_LABEL = 0,
+    NANA_AX_TEXT_VALUE = 1,
+    NANA_AX_TEXT_HINT = 2,
+};
+
+enum {
+    NANA_AX_ACTION_ACTIVATE = 0,
+    NANA_AX_ACTION_INCREMENT = 1,
+    NANA_AX_ACTION_DECREMENT = 2,
+    NANA_AX_ACTION_FOCUS = 3,
+};
+
+typedef struct {
+    uint64_t id;
+    int32_t role;
+    uint32_t flags;
+    NanaRect frame;
+    // A slider's value; NaN otherwise.
+    double numeric_value;
+} NanaAccessibilityNode;
+
+size_t nana_ios_host_accessibility_count(NanaIosHost *host);
+bool nana_ios_host_accessibility_node(NanaIosHost *host, size_t index,
+                                      NanaAccessibilityNode *node);
+// Copies one NANA_AX_TEXT_* into `buffer` when it fits; its length, or -1.
+int64_t nana_ios_host_accessibility_text(NanaIosHost *host, size_t index, int32_t which,
+                                         char *buffer, size_t capacity);
+bool nana_ios_host_accessibility_action(NanaIosHost *host, uint64_t id, int32_t action);
 
 #ifdef __cplusplus
 }

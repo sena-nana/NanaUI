@@ -6,13 +6,37 @@ iOS 宿主（`platform/ios`）是一条**实验性**宿主路径，和 [Android]
 
 | 路径 | 作用 |
 | --- | --- |
-| `platform/ios/src/lib.rs` | `nana-ios-host`：staticlib，对外提供 C ABI，内部包着 `MobileRuntime` + `MobileRenderer` + 测量页 |
-| `platform/ios/include/nana_ios_host.h` | C 头文件。所有调用都在主线程；几何默认是物理像素，带 logical 字样的是逻辑像素；文本偏移是 UTF-8 字节 |
-| `platform/ios/App/NanaProbe.xcodeproj` | 最小 Swift 外壳。「Build Rust host」构建阶段调用 `build-rust.sh`，按平台和配置构建 staticlib（Debug 用 `dev`，Release 用 `dist`） |
-| `App/NanaProbe/NanaView.swift` | 以 `CAMetalLayer` 为底层的视图：`CADisplayLink` 按 `FrameDemand` 暂停和恢复（ProMotion 最高 120 Hz）；触摸带合并采样；从 trait collection 读深浅色和 Dynamic Type；进入后台时 detach |
-| `App/NanaProbe/NanaTextProxy.swift` | 混合层①：`UITextInput` 文本代理，加 `UITextInteraction` |
+| `platform/ios/src/lib.rs` | `nana-ios-host`：rlib，提供宿主的 C ABI（生命周期、触摸、帧、文本代理、无障碍），内部包着 `MobileRuntime` 和 `MobileRenderer` |
+| `platform/ios/include/nana_ios_host.h` | 通用 C 头文件。所有调用都在主线程；几何默认是物理像素，带 logical 字样的是逻辑像素；文本偏移是 UTF-8 字节 |
+| `platform/ios/Shell/NanaView.swift` | 以 `CAMetalLayer` 为底层的视图：`CADisplayLink` 按 `FrameDemand` 暂停和恢复（ProMotion 最高 120 Hz）；触摸带合并采样；从 trait collection 读深浅色和 Dynamic Type；进入后台时 detach；触感反馈；VoiceOver 容器。`afterTick`、`onTick`、`onIdle` 留给 App 排布原生层和统计帧数据 |
+| `platform/ios/Shell/NanaTextProxy.swift` | 混合层①：`UITextInput` 文本代理，加 `UITextInteraction` |
+| `platform/ios/probe/` | `nana-ios-probe`：测量页的 staticlib，用 `export_ios_app!` 把测量页放进宿主，自带 `nana_probe_*` 调用（`include/nana_ios_probe.h`） |
+| `platform/ios/App/NanaProbe.xcodeproj` | 测量页的 Swift 外壳。「Build Rust host」构建阶段调用 `build-rust.sh`，按平台和配置构建 staticlib（Debug 用 `dev`，Release 用 `dist`） |
 | `App/NanaProbe/ProbeViewController.swift`、`ProbeCamera.swift` | 混合层③：前置摄像头 640×480 的 `AVCaptureVideoPreviewLayer` 垫在透明表面下，按测量页预览区的位置排布；也可以切到 CPU 上传路径 |
 | `App/NanaProbe/ProbeMetrics.swift` | 帧间隔和 tick CPU 时间的 P50/P99（每 240 帧记一次日志）、冷启动到首帧的时间，以及 Instruments 用的 signpost |
+
+### 在宿主上做一个 App
+
+宿主是 rlib，Xcode target 只链接 App 自己那一个 staticlib：
+
+1. App 的 crate 设为 `crate-type = ["staticlib", "rlib"]`，依赖 `nana-ios-host` 和 `nana-mobile-host`。
+2. 实现 `IosApp`：
+   - `mount` 挂上 App 的视图，传进来的 `Shell` 用来请求触感（`Haptic`）和唤醒；
+   - `before_frame` 在每帧准备之前运行，例如更新宿主纹理。
+3. 用 `export_ios_app!(MyApp::new())` 导出 `nana_ios_host_new`。Swift 外壳对 `nana_ios_host_*` 的调用不用改。
+4. App 自己的 C 调用用 `with_app::<MyApp, _>(host, |parts| ...)` 拿到 App、`MobileRuntime` 和 `MobileRenderer`，声明在 App 自己的头文件里（头文件 include `nana_ios_host.h`）。
+5. Xcode 工程：
+   - 引用 `Shell/` 里的两个 Swift 文件；
+   - 「Build Rust host」阶段设 `NANA_RUST_PACKAGE`、`NANA_RUST_LIB`，不在这个仓库里时再设 `NANA_CARGO_MANIFEST`；
+   - `OTHER_LDFLAGS` 链接 `-l<库名>`。
+
+### 无障碍
+
+宿主把文档的无障碍树压平成 VoiceOver 会停留的节点：有对应角色的节点，以及带标签的节点。
+
+- 外壳调 `nana_ios_host_accessibility_count` 取快照，再逐个读节点（角色、状态位、逻辑像素框、滑条数值）和文字（标签、值、提示）。
+- 操作通过 `nana_ios_host_accessibility_action`，有激活、增减、聚焦。
+- `NanaView` 把这些节点做成 `UIAccessibilityElement`；VoiceOver 打开时，节点数一变就发 `layoutChanged`。
 
 ## 文本代理
 

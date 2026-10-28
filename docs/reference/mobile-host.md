@@ -2,7 +2,7 @@
 
 移动宿主是 iOS 和 Android 两个**实验性**宿主共用的那一层（`platform/mobile-core`，crate `nana-mobile-host`）。目前它只用来验证一个问题：NanaUI 加上混合原生，能不能达到原生 App 的性能和手感。它不是产品交付目标，不要据此对外承诺移动端支持。
 
-两个宿主的平台细节分别见 [iOS](ios.md) 和 [Android](android.md)。
+两个宿主的平台细节分别见 [iOS](ios.md) 和 [Android](android.md)。iOS 宿主是 rlib，App 通过 `IosApp` 把自己的视图放进去（见 [iOS](ios.md#在宿主上做一个-app)）。
 
 ## 分层
 

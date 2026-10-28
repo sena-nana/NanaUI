@@ -1,12 +1,18 @@
 //! Experimental iOS host (`include/nana_ios_host.h`).
 //!
-//! The Swift shell (`platform/ios/App`) owns the UIKit view, its
-//! `CAMetalLayer`, the `CADisplayLink`, the `UITextInput` proxy and the
-//! camera layer under the surface; it lowers UIKit events into these calls.
-//! The document, input routing, frame demand and the device live in
+//! The Swift shell (`platform/ios/Shell`) owns the UIKit view, its
+//! `CAMetalLayer`, the `CADisplayLink`, the `UITextInput` proxy and any
+//! native layers around the surface; it lowers UIKit events into these
+//! calls. The document, input routing, frame demand and the device live in
 //! [`nana_mobile_host`], shared with the Android host. Every call is made on
 //! the main thread; the callbacks never call back in synchronously.
+//!
+//! The host is an rlib: an app crate builds the one staticlib the Xcode
+//! target links, puts its view in through [`IosApp`], exports the shared
+//! `nana_ios_host_new` with [`export_ios_app!`], and adds its own C calls
+//! through [`with_app`].
 
+use std::any::Any;
 use std::ffi::c_void;
 use std::time::Instant;
 
@@ -14,7 +20,9 @@ use nana_mobile_host::{
     FrameDemand, MobileAppearance, MobilePlatform, MobileRenderer, MobileRuntime, MobileViewport,
     SafeArea, ScrollPhysics, SurfaceOptions, TouchPhase,
 };
-use nana_mobile_probe::{PreviewUploader, Probe, ProbeState};
+pub use nana_ui::runtime::FrameworkError;
+use nana_ui::runtime::{AccessibilityAction, StableNodeId};
+use nana_ui::{AccessibilityActionRequest, AccessibilityNode, AccessibilityRole};
 use nana_ui_core::LogicalRect;
 use nana_ui_platform::{
     CompositionInput, MemoryClipboard, SharedClipboardHost, TextInputContext, shared_clipboard,
@@ -55,7 +63,8 @@ pub struct NanaIosCallbacks {
     pub context: *mut c_void,
     pub wake: Option<extern "C" fn(*mut c_void)>,
     pub text_input: Option<extern "C" fn(*mut c_void, bool, NanaRect)>,
-    pub pressed: Option<extern "C" fn(*mut c_void)>,
+    /// One `NANA_HAPTIC_*` style.
+    pub haptic: Option<extern "C" fn(*mut c_void, i32)>,
 }
 
 /// The callbacks with their context, callable from the task waker's thread.
@@ -74,11 +83,52 @@ impl Callbacks {
         }
     }
 
-    fn pressed(self) {
-        if let Some(pressed) = self.0.pressed {
-            pressed(self.0.context);
+    fn haptic(self, style: Haptic) {
+        if let Some(haptic) = self.0.haptic {
+            haptic(self.0.context, style as i32);
         }
     }
+}
+
+/// Feedback the shell plays through its `UIFeedbackGenerator`s.
+#[repr(i32)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Haptic {
+    /// A light impact: a button press.
+    Light = 0,
+    /// A medium impact.
+    Medium = 1,
+    /// A selection tick: a value stepping.
+    Selection = 2,
+    /// A success notification.
+    Success = 3,
+    /// A warning notification.
+    Warning = 4,
+}
+
+/// What an app reaches the shell through, from any thread.
+#[derive(Clone, Copy)]
+pub struct Shell(Callbacks);
+
+impl Shell {
+    pub fn haptic(&self, style: Haptic) {
+        self.0.haptic(style);
+    }
+
+    /// Ask the shell for a frame: state the document reads changed off the
+    /// main thread.
+    pub fn wake(&self) {
+        self.0.wake();
+    }
+}
+
+/// The application a host shows: it mounts its view once, and may prepare
+/// host textures or other per-frame state before each frame.
+pub trait IosApp: Any {
+    fn mount(&mut self, runtime: &mut MobileRuntime, shell: Shell) -> Result<(), FrameworkError>;
+
+    /// Runs on the main thread before each frame is prepared.
+    fn before_frame(&mut self, _runtime: &mut MobileRuntime, _renderer: &mut MobileRenderer) {}
 }
 
 struct Platform {
@@ -113,14 +163,42 @@ impl MobilePlatform for Platform {
 pub struct NanaIosHost {
     runtime: MobileRuntime,
     renderer: MobileRenderer,
-    probe: Probe,
-    preview: PreviewUploader,
+    app: Box<dyn IosApp>,
+    /// The accessibility nodes the shell last asked for, read by index.
+    accessibility: Vec<AccessibilityNode>,
+}
+
+/// The parts of a live host an app's own C calls work with.
+pub struct HostParts<'a, A> {
+    pub app: &'a mut A,
+    pub runtime: &'a mut MobileRuntime,
+    pub renderer: &'a mut MobileRenderer,
+}
+
+/// Borrow the host's app as `A` for one of the app's own C calls; `None` for
+/// a null host or another app type.
+///
+/// # Safety
+///
+/// `host` is null or a live host from `nana_ios_host_new`, used on the main
+/// thread only.
+pub unsafe fn with_app<A: IosApp, R>(
+    host: *mut NanaIosHost,
+    f: impl FnOnce(HostParts<'_, A>) -> R,
+) -> Option<R> {
+    // SAFETY: forwarded from the caller.
+    let host = unsafe { self::host(host) }?;
+    let app = (host.app.as_mut() as &mut dyn Any).downcast_mut::<A>()?;
+    Some(f(HostParts {
+        app,
+        runtime: &mut host.runtime,
+        renderer: &mut host.renderer,
+    }))
 }
 
 impl NanaIosHost {
     fn tick(&mut self, now: Instant) -> Result<FrameDemand, String> {
-        self.probe
-            .sync_preview(&mut self.preview, self.renderer.host_textures());
+        self.app.before_frame(&mut self.runtime, &mut self.renderer);
         let changed = self
             .runtime
             .prepare_frame(now)
@@ -145,13 +223,56 @@ fn layer_target(layer: *mut c_void) -> wgpu::SurfaceTargetUnsafe {
     wgpu::SurfaceTargetUnsafe::CoreAnimationLayer(layer)
 }
 
+/// Export `nana_ios_host_new`, building the host around `$app` (an
+/// expression of a type implementing [`IosApp`]). Use it once, in the crate
+/// that builds the staticlib.
+#[macro_export]
+macro_rules! export_ios_app {
+    ($app:expr) => {
+        /// # Safety
+        ///
+        /// `layer` is a live `CAMetalLayer` the caller retains until
+        /// `nana_ios_host_detach` or `nana_ios_host_free`.
+        #[unsafe(no_mangle)]
+        #[allow(clippy::too_many_arguments)]
+        pub unsafe extern "C" fn nana_ios_host_new(
+            layer: *mut ::std::ffi::c_void,
+            width: u32,
+            height: u32,
+            scale: f32,
+            safe_area: $crate::NanaSafeArea,
+            dark: bool,
+            text_scale: f32,
+            transparent: bool,
+            callbacks: $crate::NanaIosCallbacks,
+        ) -> *mut $crate::NanaIosHost {
+            // SAFETY: forwarded from the caller.
+            unsafe {
+                $crate::create(
+                    layer,
+                    width,
+                    height,
+                    scale,
+                    safe_area,
+                    dark,
+                    text_scale,
+                    transparent,
+                    callbacks,
+                    ::std::boxed::Box::new($app),
+                )
+            }
+        }
+    };
+}
+
+/// Build a host around `app`; the body of [`export_ios_app!`].
+///
 /// # Safety
 ///
 /// `layer` is a live `CAMetalLayer` the caller retains until
 /// [`nana_ios_host_detach`] or [`nana_ios_host_free`].
-#[unsafe(no_mangle)]
 #[allow(clippy::too_many_arguments)]
-pub unsafe extern "C" fn nana_ios_host_new(
+pub unsafe fn create(
     layer: *mut c_void,
     width: u32,
     height: u32,
@@ -161,6 +282,7 @@ pub unsafe extern "C" fn nana_ios_host_new(
     text_scale: f32,
     transparent: bool,
     callbacks: NanaIosCallbacks,
+    mut app: Box<dyn IosApp>,
 ) -> *mut NanaIosHost {
     let callbacks = Callbacks(callbacks);
     nana_mobile_host::set_task_wake(move || callbacks.wake());
@@ -177,10 +299,9 @@ pub unsafe extern "C" fn nana_ios_host_new(
     if transparent && runtime.set_background_passthrough(true).is_err() {
         return std::ptr::null_mut();
     }
-    let state = ProbeState::with_press_feedback(move || callbacks.pressed());
-    let Ok(probe) = Probe::mount(&mut runtime, state) else {
+    if app.mount(&mut runtime, Shell(callbacks)).is_err() {
         return std::ptr::null_mut();
-    };
+    }
     // SAFETY: forwarded from the caller.
     let renderer = unsafe {
         MobileRenderer::new(
@@ -196,14 +317,14 @@ pub unsafe extern "C" fn nana_ios_host_new(
     Box::into_raw(Box::new(NanaIosHost {
         runtime,
         renderer,
-        probe,
-        preview: PreviewUploader::default(),
+        app,
+        accessibility: Vec::new(),
     }))
 }
 
 /// # Safety
 ///
-/// `host` came from [`nana_ios_host_new`] and is not used again.
+/// `host` came from `nana_ios_host_new` and is not used again.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn nana_ios_host_free(host: *mut NanaIosHost) {
     if !host.is_null() {
@@ -216,7 +337,7 @@ pub unsafe extern "C" fn nana_ios_host_free(host: *mut NanaIosHost) {
 ///
 /// # Safety
 ///
-/// `host` is null or a live host from [`nana_ios_host_new`], used on the
+/// `host` is null or a live host from `nana_ios_host_new`, used on the
 /// main thread only.
 unsafe fn host<'a>(host: *mut NanaIosHost) -> Option<&'a mut NanaIosHost> {
     // SAFETY: forwarded from the caller.
@@ -285,7 +406,7 @@ pub unsafe extern "C" fn nana_ios_host_background(host: *mut NanaIosHost, rgba: 
 
 /// # Safety
 ///
-/// See [`host`]; `layer` as in [`nana_ios_host_new`].
+/// See [`host`]; `layer` as in `nana_ios_host_new`.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn nana_ios_host_attach(
     host: *mut NanaIosHost,
@@ -576,71 +697,178 @@ pub unsafe extern "C" fn nana_ios_host_text_caret_rect(
     caret.map(|caret| write_rect(rect, caret)).is_some()
 }
 
+/// One node of the flat accessibility snapshot, logical px of the surface.
+#[repr(C)]
+#[derive(Debug, Clone, Copy, Default)]
+pub struct NanaAccessibilityNode {
+    pub id: u64,
+    /// One `NANA_AX_ROLE_*`.
+    pub role: i32,
+    /// `NANA_AX_*` state bits.
+    pub flags: u32,
+    pub frame: NanaRect,
+    /// The numeric value of a slider; NaN for other nodes.
+    pub numeric_value: f64,
+}
+
+const AX_DISABLED: u32 = 1;
+const AX_CHECKED: u32 = 1 << 1;
+const AX_SELECTED: u32 = 1 << 2;
+const AX_FOCUSED: u32 = 1 << 3;
+const AX_EDITABLE: u32 = 1 << 4;
+const AX_BUSY: u32 = 1 << 5;
+
+/// The roles the shell gives traits to; the rest read as plain elements.
+fn ax_role(role: AccessibilityRole) -> Option<i32> {
+    Some(match role {
+        AccessibilityRole::Text | AccessibilityRole::Status => 1,
+        AccessibilityRole::Button | AccessibilityRole::MenuItem | AccessibilityRole::ComboBox => 2,
+        AccessibilityRole::TextInput | AccessibilityRole::Search => 3,
+        AccessibilityRole::Switch | AccessibilityRole::Checkbox | AccessibilityRole::Radio => 4,
+        AccessibilityRole::Slider => 5,
+        AccessibilityRole::Image => 6,
+        AccessibilityRole::Tab => 7,
+        AccessibilityRole::ListItem | AccessibilityRole::TreeItem | AccessibilityRole::Row => 8,
+        AccessibilityRole::ProgressIndicator => 9,
+        _ => return None,
+    })
+}
+
+/// Whether VoiceOver should stop on the node: a role it announces, or any
+/// labelled node.
+fn ax_exposed(node: &AccessibilityNode) -> bool {
+    ax_role(node.role).is_some() || node.label.as_deref().is_some_and(|label| !label.is_empty())
+}
+
+/// Take a fresh flat snapshot of the nodes VoiceOver stops on, in document
+/// order, and return how many there are; read them with
+/// [`nana_ios_host_accessibility_node`] and
+/// [`nana_ios_host_accessibility_text`].
+///
 /// # Safety
 ///
-/// See [`host`]; `rect` is writable.
+/// See [`host`].
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn nana_ios_host_preview_rect(
-    host: *mut NanaIosHost,
-    rect: *mut NanaRect,
-) -> bool {
+pub unsafe extern "C" fn nana_ios_host_accessibility_count(host: *mut NanaIosHost) -> usize {
     // SAFETY: forwarded from the caller.
     let Some(host) = (unsafe { self::host(host) }) else {
+        return 0;
+    };
+    host.accessibility = host
+        .runtime
+        .accessibility_nodes()
+        .into_iter()
+        .filter(ax_exposed)
+        .collect();
+    host.accessibility.len()
+}
+
+/// # Safety
+///
+/// See [`host`]; `node` is writable.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn nana_ios_host_accessibility_node(
+    host: *mut NanaIosHost,
+    index: usize,
+    node: *mut NanaAccessibilityNode,
+) -> bool {
+    // SAFETY: forwarded from the caller.
+    let Some(source) = (unsafe { self::host(host) }).and_then(|host| host.accessibility.get(index))
+    else {
         return false;
     };
-    let Some(area) = host.probe.preview_rect(&host.runtime) else {
+    if node.is_null() {
         return false;
-    };
-    write_rect(rect, area);
+    }
+    let mut flags = 0;
+    for (on, bit) in [
+        (source.disabled, AX_DISABLED),
+        (source.checked == Some(true), AX_CHECKED),
+        (source.selected == Some(true), AX_SELECTED),
+        (source.focused, AX_FOCUSED),
+        (source.editable, AX_EDITABLE),
+        (source.busy, AX_BUSY),
+    ] {
+        if on {
+            flags |= bit;
+        }
+    }
+    let bounds = source.bounds;
+    // SAFETY: the caller passes a writable node.
+    unsafe {
+        *node = NanaAccessibilityNode {
+            id: source.id.get(),
+            role: ax_role(source.role).unwrap_or(0),
+            flags,
+            frame: NanaRect {
+                x: bounds.x,
+                y: bounds.y,
+                width: bounds.width,
+                height: bounds.height,
+            },
+            numeric_value: source.numeric_value.unwrap_or(f64::NAN),
+        };
+    }
     true
 }
 
+/// Copy one text of a snapshot node (`which`: 0 label, 1 value, 2 hint) into
+/// `buffer` when it fits; its UTF-8 length, or -1 when the node has none.
+///
 /// # Safety
 ///
-/// See [`host`].
+/// See [`host`]; `buffer` holds `capacity` bytes or is null.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn nana_ios_host_cpu_preview(host: *mut NanaIosHost) -> bool {
-    // SAFETY: forwarded from the caller.
-    unsafe { self::host(host) }.is_some_and(|host| host.probe.state.cpu_preview())
-}
-
-/// # Safety
-///
-/// See [`host`]; `bytes` holds `bytes_per_row * height` bytes.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn nana_ios_host_push_preview_bgra(
+pub unsafe extern "C" fn nana_ios_host_accessibility_text(
     host: *mut NanaIosHost,
-    bytes: *const u8,
-    width: u32,
-    height: u32,
-    bytes_per_row: u32,
-) {
+    index: usize,
+    which: i32,
+    buffer: *mut u8,
+    capacity: usize,
+) -> i64 {
     // SAFETY: forwarded from the caller.
-    let Some(host) = (unsafe { self::host(host) }) else {
-        return;
+    let Some(node) = (unsafe { self::host(host) }).and_then(|host| host.accessibility.get(index))
+    else {
+        return -1;
     };
-    if !host.probe.state.cpu_preview() || bytes.is_null() {
-        return;
+    let text: Option<&str> = match which {
+        0 => node.label.as_deref(),
+        1 => node.value.as_deref(),
+        _ => node.description.as_deref(),
+    };
+    let Some(text) = text else {
+        return -1;
+    };
+    let bytes = text.as_bytes();
+    if !buffer.is_null() && bytes.len() <= capacity {
+        // SAFETY: `buffer` holds `capacity >= bytes.len()` bytes.
+        unsafe { std::ptr::copy_nonoverlapping(bytes.as_ptr(), buffer, bytes.len()) };
     }
-    // SAFETY: forwarded from the caller.
-    let bytes =
-        unsafe { std::slice::from_raw_parts(bytes, (bytes_per_row as usize) * height as usize) };
-    let gpu = host.renderer.gpu();
-    let textures = host.renderer.host_textures();
-    if host
-        .preview
-        .push_bgra(gpu, textures, bytes, width, height, bytes_per_row)
-        .is_ok()
-    {
-        host.runtime.request_present();
-    }
+    bytes.len() as i64
 }
 
+/// Perform a VoiceOver action (`NANA_AX_ACTION_*`) on node `id`.
+///
 /// # Safety
 ///
 /// See [`host`].
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn nana_ios_host_presses(host: *mut NanaIosHost) -> u32 {
+pub unsafe extern "C" fn nana_ios_host_accessibility_action(
+    host: *mut NanaIosHost,
+    id: u64,
+    action: i32,
+) -> bool {
     // SAFETY: forwarded from the caller.
-    unsafe { self::host(host) }.map_or(0, |host| host.probe.state.presses())
+    let (Some(host), Some(target)) = (unsafe { self::host(host) }, StableNodeId::new(id)) else {
+        return false;
+    };
+    let action = match action {
+        0 => AccessibilityAction::Click,
+        1 => AccessibilityAction::Increment,
+        2 => AccessibilityAction::Decrement,
+        _ => AccessibilityAction::Focus,
+    };
+    host.runtime
+        .apply_accessibility_action(AccessibilityActionRequest { target, action })
+        .unwrap_or(false)
 }

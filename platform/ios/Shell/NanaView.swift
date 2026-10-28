@@ -1,5 +1,8 @@
 import QuartzCore
 import UIKit
+import os
+
+private let shellLog = Logger(subsystem: Bundle.main.bundleIdentifier ?? "nana-ui", category: "shell")
 
 /// The UIKit side of one NanaUI document: a `CAMetalLayer` the Rust host
 /// presents into, a display link that runs only while the document asks for
@@ -13,10 +16,14 @@ final class NanaView: UIView {
     private var attached = true
     private let transparent: Bool
     let textProxy = NanaTextProxy()
-    let metrics = ProbeMetrics()
-    /// Runs after each presented tick: the view controller lays the native
-    /// camera layer out to the page's preview area.
+    /// Runs after each tick: an app lays native layers out to the page here.
     var afterTick: (() -> Void)?
+    /// Each display-link tick with the host's CPU time for it, for an app's
+    /// own frame metrics.
+    var onTick: ((CADisplayLink, CFTimeInterval) -> Void)?
+    /// The document went idle and the display link paused.
+    var onIdle: (() -> Void)?
+    private var accessibilityCount = 0
 
     private var metalLayer: CAMetalLayer { layer as! CAMetalLayer }
 
@@ -78,12 +85,12 @@ final class NanaView: UIView {
             context: Unmanaged.passUnretained(self).toOpaque(),
             wake: nanaWake,
             text_input: nanaTextInput,
-            pressed: nanaPressed)
+            haptic: nanaHaptic)
         host = nana_ios_host_new(
             Unmanaged.passUnretained(metalLayer).toOpaque(), width, height,
             Float(contentScaleFactor), safeArea, dark, textScale, transparent, callbacks)
         guard host != nil else {
-            ProbeLog.metrics.error("nana_ios_host_new failed")
+            shellLog.error("nana_ios_host_new failed")
             return
         }
         let link = CADisplayLink(target: DisplayLinkTarget(self), selector: #selector(DisplayLinkTarget.tick(_:)))
@@ -146,8 +153,9 @@ final class NanaView: UIView {
         let started = CACurrentMediaTime()
         var seconds = 0.0
         let demand = Int(nana_ios_host_tick(host, &seconds))
-        metrics.tick(link: link, cpu: CACurrentMediaTime() - started)
+        onTick?(link, CACurrentMediaTime() - started)
         afterTick?()
+        refreshAccessibility()
         switch demand {
         case NANA_FRAME_NOW:
             break
@@ -160,8 +168,36 @@ final class NanaView: UIView {
             }
         default:
             link.isPaused = true
-            metrics.idle()
+            onIdle?()
         }
+    }
+
+    // MARK: Accessibility
+
+    /// VoiceOver reads the host's flat snapshot; a change in how many nodes
+    /// there are tells it the layout moved.
+    private func refreshAccessibility() {
+        guard UIAccessibility.isVoiceOverRunning, let host else { return }
+        let count = nana_ios_host_accessibility_count(host)
+        if count != accessibilityCount {
+            accessibilityCount = count
+            UIAccessibility.post(notification: .layoutChanged, argument: nil)
+        }
+    }
+
+    override var isAccessibilityElement: Bool {
+        get { false }
+        set {}
+    }
+
+    override var accessibilityElements: [Any]? {
+        get {
+            guard let host else { return [] }
+            let count = nana_ios_host_accessibility_count(host)
+            accessibilityCount = count
+            return (0..<count).compactMap { NanaAccessibilityElement(host: host, index: $0, in: self) }
+        }
+        set {}
     }
 
     // MARK: Touch
@@ -231,8 +267,78 @@ private let nanaTextInput: @convention(c) (UnsafeMutableRawPointer?, Bool, NanaR
     DispatchQueue.main.async { view.textProxy.editorChanged(active: active) }
 }
 
-private let haptics = UIImpactFeedbackGenerator(style: .light)
+private let lightImpact = UIImpactFeedbackGenerator(style: .light)
+private let mediumImpact = UIImpactFeedbackGenerator(style: .medium)
+private let selection = UISelectionFeedbackGenerator()
+private let notification = UINotificationFeedbackGenerator()
 
-private let nanaPressed: @convention(c) (UnsafeMutableRawPointer?) -> Void = { _ in
-    DispatchQueue.main.async { haptics.impactOccurred() }
+private let nanaHaptic: @convention(c) (UnsafeMutableRawPointer?, Int32) -> Void = { _, style in
+    DispatchQueue.main.async {
+        switch Int(style) {
+        case NANA_HAPTIC_MEDIUM: mediumImpact.impactOccurred()
+        case NANA_HAPTIC_SELECTION: selection.selectionChanged()
+        case NANA_HAPTIC_SUCCESS: notification.notificationOccurred(.success)
+        case NANA_HAPTIC_WARNING: notification.notificationOccurred(.warning)
+        default: lightImpact.impactOccurred()
+        }
+    }
+}
+
+/// One node of the host's accessibility snapshot.
+private final class NanaAccessibilityElement: UIAccessibilityElement {
+    private let host: OpaquePointer
+    private let id: UInt64
+
+    init?(host: OpaquePointer, index: Int, in view: NanaView) {
+        var node = NanaAccessibilityNode()
+        guard nana_ios_host_accessibility_node(host, index, &node) else { return nil }
+        self.host = host
+        id = node.id
+        super.init(accessibilityContainer: view)
+        accessibilityLabel = Self.text(host, index, NANA_AX_TEXT_LABEL)
+        accessibilityValue = Self.text(host, index, NANA_AX_TEXT_VALUE)
+        accessibilityHint = Self.text(host, index, NANA_AX_TEXT_HINT)
+        accessibilityFrameInContainerSpace = CGRect(
+            x: CGFloat(node.frame.x), y: CGFloat(node.frame.y),
+            width: CGFloat(node.frame.width), height: CGFloat(node.frame.height))
+        var traits: UIAccessibilityTraits = []
+        switch Int(node.role) {
+        case NANA_AX_ROLE_TEXT: traits.insert(.staticText)
+        case NANA_AX_ROLE_BUTTON, NANA_AX_ROLE_ROW: traits.insert(.button)
+        case NANA_AX_ROLE_TOGGLE:
+            traits.insert(.button)
+            if #available(iOS 17.0, *) { traits.insert(.toggleButton) }
+        case NANA_AX_ROLE_SLIDER: traits.insert(.adjustable)
+        case NANA_AX_ROLE_IMAGE: traits.insert(.image)
+        case NANA_AX_ROLE_TAB: traits.insert(.button)
+        case NANA_AX_ROLE_PROGRESS: traits.insert(.updatesFrequently)
+        default: break
+        }
+        let flags = Int(node.flags)
+        if flags & NANA_AX_DISABLED != 0 { traits.insert(.notEnabled) }
+        if flags & (NANA_AX_CHECKED | NANA_AX_SELECTED) != 0 { traits.insert(.selected) }
+        accessibilityTraits = traits
+    }
+
+    private static func text(_ host: OpaquePointer, _ index: Int, _ which: Int) -> String? {
+        let length = nana_ios_host_accessibility_text(host, index, Int32(which), nil, 0)
+        guard length > 0 else { return nil }
+        var bytes = [CChar](repeating: 0, count: Int(length))
+        _ = bytes.withUnsafeMutableBufferPointer {
+            nana_ios_host_accessibility_text(host, index, Int32(which), $0.baseAddress, Int(length))
+        }
+        return String(decoding: bytes.map { UInt8(bitPattern: $0) }, as: UTF8.self)
+    }
+
+    override func accessibilityActivate() -> Bool {
+        nana_ios_host_accessibility_action(host, id, Int32(NANA_AX_ACTION_ACTIVATE))
+    }
+
+    override func accessibilityIncrement() {
+        _ = nana_ios_host_accessibility_action(host, id, Int32(NANA_AX_ACTION_INCREMENT))
+    }
+
+    override func accessibilityDecrement() {
+        _ = nana_ios_host_accessibility_action(host, id, Int32(NANA_AX_ACTION_DECREMENT))
+    }
 }

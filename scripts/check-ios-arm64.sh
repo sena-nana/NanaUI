@@ -44,11 +44,17 @@ run_crate() {
 run_crate nana-ui-core
 run_crate nana-ui-platform
 run_crate nana-ui --lib --no-default-features --features gpu,accesskit-tree,wgpu-interop,wgpu-backends
+# What an app on the mobile hosts builds its pages with: declarative views,
+# controls, icons and the bundled fonts.
+run_crate nana-ui --lib --no-default-features \
+  --features gpu,accesskit-tree,wgpu-interop,wgpu-backends,view-macro,controls,icons-tabler,bundled-fonts
 run_crate nana-mobile-host
 
 if [[ -d platform/ios ]]; then
   run_crate nana-ios-host
-  ARTIFACT="${CARGO_TARGET_DIR:-target}/${TARGET}/${PROFILE_DIR}/libnana_ios_host.a"
+  # The measurement page's staticlib, the one an app links in its place.
+  run_crate nana-ios-probe
+  ARTIFACT="${CARGO_TARGET_DIR:-target}/${TARGET}/${PROFILE_DIR}/libnana_ios_probe.a"
   if [[ -f "${ARTIFACT}" ]]; then
     echo "check-ios-arm64: artifact ${ARTIFACT} ($(wc -c <"${ARTIFACT}") bytes)"
   elif [[ "${MODE}" == "build" ]]; then

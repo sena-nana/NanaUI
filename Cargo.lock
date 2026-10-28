@@ -2325,10 +2325,20 @@ name = "nana-ios-host"
 version = "0.1.0"
 dependencies = [
  "nana-mobile-host",
- "nana-mobile-probe",
+ "nana-ui",
  "nana-ui-core",
  "nana-ui-platform",
  "wgpu",
+]
+
+[[package]]
+name = "nana-ios-probe"
+version = "0.1.0"
+dependencies = [
+ "nana-ios-host",
+ "nana-mobile-host",
+ "nana-mobile-probe",
+ "nana-ui-core",
 ]
 
 [[package]]

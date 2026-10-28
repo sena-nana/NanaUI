@@ -1,0 +1,19 @@
+[package]
+name = "nana-ios-probe"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.98"
+publish = false
+description = "The measurement page's iOS staticlib: nana-ios-host around nana-mobile-probe"
+license = "MIT OR Apache-2.0"
+
+[lib]
+name = "nana_ios_probe"
+path = "src/lib.rs"
+crate-type = ["staticlib", "rlib"]
+
+[dependencies]
+nana-ios-host = { path = ".." }
+nana-mobile-host = { path = "../../mobile-core" }
+nana-mobile-probe = { path = "../../mobile-probe" }
+nana-ui-core.workspace = true
