@@ -2487,6 +2487,7 @@ impl UiWorld {
                     bounds,
                     trigger.as_ref(),
                     *trigger_icon,
+                    overlay.and_then(|overlay| overlay.trigger_icon_size),
                     trigger_image.as_ref(),
                     trigger_content.is_some(),
                     style,

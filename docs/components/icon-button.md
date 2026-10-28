@@ -48,6 +48,8 @@ icon_button(Icon::Search, "搜索")
 
 默认是方的：边长取主题的 `icon_button_size`（28），`IconButton::size` 换成控件高度档。这是没人给尺寸时的方盒（`NodeStyle::square`）。应用自己写了宽或高（`style.layout.width` / `height`，或模板 CSS 的 `width` / `height`），那一轴就照写的来，不必再把 `square` 置空：22×22 的关闭钮就是 22×22。只写了宽的按钮，高仍是方盒的边长。装别的主题密度时，变的只是方盒，不动应用写的尺寸。
 
+字形大小默认跟控件尺寸档走：取该档的正文字号，`compact` 时取中号字号。`IconButton::icon_size(px)` 直接指定字形边长（逻辑像素），按钮的方盒不变。密集主题里小号按钮的字形太小时用它，让字形更醒目而按钮不变大。非有限值或负值会被忽略，和 `Button::icon_size` 一样。
+
 ## 种类
 
 构造时的种类是 `ButtonKind::Ghost`。`selected` 为真，或种类本身是 Selected，绘制都走选中色。要改种类用 `IconButton::kind`。`colors_from_style` 让这一颗按钮改用自己 `style` 里的颜色，不再被种类盖掉；只影响设了它的那一颗。
@@ -63,6 +65,7 @@ icon_button(Icon::Search, "搜索")
 | `icon` | `Icon` | 必须写成属性。指向静态几何的 `Copy` 身份 |
 | `label` | `Arc<str>` | 可访问名。用属性或这一条子文本 |
 | `selected` | `bool` | 由应用写。激活不自己改 `selected`。选中时字形和底色走选中态 |
+| `icon_size` | `Option<f32>` | 字形边长（逻辑像素），盖过尺寸档给的字号；不动方盒。默认 `None` |
 | `disabled` | `bool` | 为真时不发 `Activate`。按种类配色的按钮整枚降到 50% 不透明度，`colors_from_style` 的按钮照 `style.interaction.disabled` 画、不淡，见上文「种类」 |
 | `has_popup` | `bool` | 弹出菜单的按钮（`aria-haspopup="menu"`）：读屏报成菜单按钮；焦点在它上面时，ArrowUp / ArrowDown 和 `ContextMenu` 键一样发 `keyboard: true` 的 `SecondaryPress`，由你打开菜单。见 [控件](../reference/components.md) 的菜单按钮 |
 

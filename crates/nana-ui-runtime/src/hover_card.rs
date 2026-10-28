@@ -289,6 +289,7 @@ impl ComponentView for HoverCard {
                 .map(TextureSlotName::to_resource),
             gap: self.gap,
             overlay: Some(TriggeredMenuOverlay {
+                trigger_icon_size: None,
                 placement: self.placement,
                 alignment: self.alignment,
                 width: self.width.max(crate::popover::MENU_MIN_WIDTH),

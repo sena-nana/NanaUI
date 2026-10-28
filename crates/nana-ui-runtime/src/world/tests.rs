@@ -8402,6 +8402,7 @@ fn open_menu_overlay_visual() -> StandardVisual {
         trigger_image: None,
         gap: 0.0,
         overlay: Some(crate::TriggeredMenuOverlay {
+            trigger_icon_size: None,
             placement: nana_ui_core::PopoverPlacement::Bottom,
             alignment: nana_ui_core::PopoverAlignment::Center,
             width: 240.0,

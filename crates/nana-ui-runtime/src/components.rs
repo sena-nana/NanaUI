@@ -1279,6 +1279,9 @@ pub struct TriggeredMenuOverlay {
     /// it stays in flow inside the trigger, shown while the surface is
     /// closed, and is not one of the items the surface places.
     pub trigger_content: Option<StableNodeId>,
+    /// An icon trigger's glyph size ([`crate::Popover::trigger_icon_size`]);
+    /// `None` keeps the standard trigger glyph.
+    pub trigger_icon_size: Option<f32>,
 }
 
 #[derive(Debug, Clone, PartialEq)]

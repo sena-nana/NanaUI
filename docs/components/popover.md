@@ -93,6 +93,7 @@ Popover::new().trigger_icon(Icon::Add, "更多").trigger_style(round)
 | `.trigger_icon` | — | `(icon, label)` 画成 28×28 的方形按钮，图标居中，`label` 是可访问名 |
 | `.bare_trigger` | — | `true` 去掉静止时的底色和描边。悬停、按下和打开时仍有一层洗色。不传则保持浅底加描边 |
 | `.trigger_style` | `NodeStyle` | 盖在触发器原有样式上，只替换写了的字段；悬停、按下和收紧尺寸都保留，写了的圆角按你写的画。默认 `None` |
+| `.trigger_icon_size` | `f32` | 图标触发器的字形边长（逻辑像素），让它和旁边按 `IconButton::icon_size` 设过的工具一样大；触发器的盒子不变。默认 `None`，用标准字形大小 |
 | `.placement` | `nana_ui::PopoverPlacement` | `Top`、`Bottom`、`Left`、`Right`，默认 `Bottom`。`new()` 位置在下方 |
 | `.alignment` | `PopoverAlignment` | `new()` 对齐居中 |
 | `open` | — | 它自己切换。写成 `false` 会关上 |

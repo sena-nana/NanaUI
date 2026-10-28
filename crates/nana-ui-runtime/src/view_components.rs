@@ -1075,6 +1075,10 @@ pub struct IconButton {
     pub compact: bool,
     pub selected: bool,
     pub disabled: bool,
+    /// The glyph's size in logical pixels, over the one [`Self::size`] (or
+    /// [`Self::compact`]) picks from the type scale. See
+    /// [`IconButton::icon_size`].
+    pub icon_size: Option<f32>,
     pub tooltip: Option<IconButtonTooltip>,
     pub(crate) tooltip_open: bool,
     /// Take every colour from [`Self::style`] as written instead of from
@@ -1147,6 +1151,7 @@ impl IconButton {
             compact: false,
             selected: false,
             disabled: false,
+            icon_size: None,
             tooltip: None,
             tooltip_open: false,
             colors_from_style: false,
@@ -1175,6 +1180,19 @@ impl IconButton {
         self.selected = selected;
         self
     }
+
+    /// Draw the glyph `size` logical pixels square instead of at the type
+    /// scale step its control size picks: a dense theme's small buttons get
+    /// a glyph that reads at a glance without growing the button. The
+    /// button's box is unchanged. A size that is not finite or below zero
+    /// is ignored, as on [`Button::icon_size`].
+    pub fn icon_size(mut self, size: f32) -> Self {
+        if size.is_finite() && size >= 0.0 {
+            self.icon_size = Some(size);
+        }
+        self
+    }
+
     pub fn tooltip(
         mut self,
         label: impl Into<Arc<str>>,
@@ -1278,7 +1296,9 @@ impl ComponentView for IconButton {
         }
         let visual = StandardVisual::Icon {
             icon: self.icon,
-            size: if self.compact {
+            size: if let Some(size) = self.icon_size {
+                size
+            } else if self.compact {
                 nana_ui_core::ControlSize::Medium.text_size_in(world.theme().typography())
             } else {
                 self.size.text_size_in(world.theme().typography())

@@ -6888,6 +6888,46 @@ fn an_icon_button_opts_into_its_own_colors_without_touching_its_siblings() {
     assert_eq!(own.interaction.hovered.background, Some(Role::AccentStrong));
 }
 
+/// `icon_size` draws the glyph at the size it names and leaves the button's
+/// square alone; without it the glyph is the control size's type step.
+#[test]
+fn an_icon_buttons_icon_size_sets_the_glyph_not_the_box() {
+    let mut context = AppContext::new();
+    let document = DocumentId::new(1).unwrap();
+    let plain = context
+        .create_component(
+            document,
+            crate::IconButton::new(nana_ui_core::Icon::Add, "Add")
+                .size(nana_ui_core::ControlSize::Small),
+        )
+        .unwrap();
+    let sized = context
+        .create_component(
+            document,
+            crate::IconButton::new(nana_ui_core::Icon::Add, "Add")
+                .size(nana_ui_core::ControlSize::Small)
+                .icon_size(16.0)
+                .icon_size(f32::NAN),
+        )
+        .unwrap();
+    let glyph = |id: crate::StableNodeId| match context.world().standard_visual(id) {
+        Some(StandardVisual::Icon { size, .. }) => size,
+        other => panic!("expected an icon visual, got {other:?}"),
+    };
+    assert_eq!(
+        glyph(plain.stable_id()),
+        nana_ui_core::ControlSize::Small.text_size_in(context.world().theme().typography())
+    );
+    assert_eq!(glyph(sized.stable_id()), 16.0);
+    let square = |id: crate::StableNodeId| {
+        context.world().extract_nodes(&[id])[0]
+            .source_style
+            .layout
+            .min_width
+    };
+    assert_eq!(square(sized.stable_id()), square(plain.stable_id()));
+}
+
 #[test]
 fn an_installed_icon_button_size_reaches_the_square() {
     let mut context = AppContext::new();
