@@ -1,6 +1,6 @@
 //! The retained document a mobile shell hosts.
 
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 use std::time::Instant;
 
 use nana_ui::runtime::view::{Mount, entity_ref, widget, with_refs};
@@ -10,7 +10,8 @@ use nana_ui::runtime::{
 };
 use nana_ui::{AccessibilityNode, NanaTextShaper, RuntimeAnimationClock};
 use nana_ui_core::{
-    FlexDirection, LengthSpec, SemanticColorRole, ThemeAppearance, builtin_theme_arc,
+    CompiledTheme, FlexDirection, LengthSpec, SemanticColorRole, TOUCH_METRICS, ThemeAppearance,
+    ThemeDefinition,
 };
 use nana_ui_platform::{
     CanonicalInputEvent, CommittedText, CompositionInput, CursorIcon, DeviceId, EndpointGeneration,
@@ -404,8 +405,9 @@ impl MobileRuntime {
             return Ok(());
         }
         let document = self.document.document();
+        let compiled = touch_theme(theme)?;
         let context = self.document.context_mut();
-        context.set_theme_tokens(builtin_theme_arc(theme))?;
+        context.set_theme_tokens(compiled)?;
         context.set_document_text_scale(document, Some(wanted.1));
         self.applied = Some(wanted);
         Ok(())
@@ -488,6 +490,25 @@ impl MobileRuntime {
         }
         self.dispatch(InputPayload::Composition(CompositionInput::Disabled))
     }
+}
+
+/// The built-in light or dark theme at [`TOUCH_METRICS`] density, compiled
+/// once per mode.
+fn touch_theme(mode: ThemeAppearance) -> Result<Arc<CompiledTheme>, FrameworkError> {
+    static LIGHT: OnceLock<Arc<CompiledTheme>> = OnceLock::new();
+    static DARK: OnceLock<Arc<CompiledTheme>> = OnceLock::new();
+    let (slot, definition) = match mode {
+        ThemeAppearance::Light => (&LIGHT, ThemeDefinition::NANA_LIGHT),
+        _ => (&DARK, ThemeDefinition::NANA_DARK),
+    };
+    if let Some(theme) = slot.get() {
+        return Ok(Arc::clone(theme));
+    }
+    let compiled = definition
+        .with_metrics(TOUCH_METRICS)
+        .compile()
+        .map_err(|_| FrameworkError::InvalidInput)?;
+    Ok(Arc::clone(slot.get_or_init(|| Arc::new(compiled))))
 }
 
 fn root_host() -> List {

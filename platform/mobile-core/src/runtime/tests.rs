@@ -273,3 +273,16 @@ fn an_appearance_change_presents_once() {
     fixture.settle();
     assert_eq!(fixture.runtime.frame_demand(), FrameDemand::Idle);
 }
+
+#[test]
+fn controls_take_the_touch_density() {
+    let fixture = fixture();
+    let layout = fixture
+        .runtime
+        .document()
+        .context()
+        .world()
+        .layout_box(fixture.button.stable_id())
+        .expect("button layout");
+    assert!(layout.height >= 44.0, "{layout:?}");
+}
