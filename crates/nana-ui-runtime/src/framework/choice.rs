@@ -3,6 +3,7 @@
 use super::*;
 
 impl AppContext {
+    /// 统一下拉开关入口，保证键盘和外部关闭都通知消费方。
     pub(crate) fn set_select_opened(
         &mut self,
         entity: Entity<Select>,
@@ -11,13 +12,16 @@ impl AppContext {
         if self.read(entity, Select::inactive)? {
             return Ok(false);
         }
-        self.update_component(entity, |select, _| {
+        self.update_component(entity, |select, cx| {
             if select.opened == opened {
                 false
-            } else if opened {
-                select.toggle_open()
             } else {
-                select.close();
+                if opened {
+                    select.toggle_open();
+                } else {
+                    select.close();
+                }
+                cx.emit(crate::SelectOpenedChanged { opened });
                 true
             }
         })
@@ -77,7 +81,8 @@ impl AppContext {
         if self.read(entity, Select::inactive)? {
             return Ok(false);
         }
-        self.update_component(entity, |select, _| select.toggle_open())
+        let opened = self.read(entity, |select| select.opened)?;
+        self.set_select_opened(entity, !opened)
     }
 
     /// Activation at a window point: an option of the open menu, the field,
@@ -101,10 +106,18 @@ impl AppContext {
                 // Choosing the option the field already shows still closes
                 // the menu, and that is the press handled.
                 return self.update_component(entity, |select, cx| {
+                    if select
+                        .options
+                        .get(index)
+                        .is_none_or(|option| option.disabled)
+                    {
+                        return false;
+                    }
                     if let Some(changed) = select.select_index(index) {
                         cx.emit(changed);
                     }
-                    !select.opened
+                    cx.emit(crate::SelectOpenedChanged { opened: false });
+                    true
                 });
             }
             let Some(field) = self.world.component_layout_box(entity.id) else {
@@ -113,10 +126,7 @@ impl AppContext {
             if field.contains(x, y) {
                 return self.toggle_select(entity);
             }
-            return self.update_component(entity, |select, _| {
-                select.close();
-                true
-            });
+            return self.set_select_opened(entity, false);
         }
         self.toggle_select(entity)
     }
@@ -140,11 +150,11 @@ impl AppContext {
         if self.read(entity, Select::inactive)? {
             return Ok(false);
         }
+        if !self.read(entity, |select| select.opened)? {
+            return self.set_select_opened(entity, true);
+        }
         let menu = self.open_select_menu(target);
         self.update_component(entity, |select, _| {
-            if !select.opened {
-                return select.toggle_open();
-            }
             let moved = select.highlight_delta(delta);
             if moved {
                 crate::select::reveal_menu_row(
@@ -237,9 +247,15 @@ impl AppContext {
             return Ok(false);
         }
         self.update_component(Entity::<Select>::from_stable_id(target), |select, cx| {
-            let opened = select.opened;
+            let was_opened = select.opened;
             if let Some(changed) = select.commit_highlighted() {
                 cx.emit(changed);
+            }
+            if was_opened && !select.opened {
+                cx.emit(crate::SelectOpenedChanged { opened: false });
+                true
+            } else {
+                false
             }
             opened && !select.opened
         })

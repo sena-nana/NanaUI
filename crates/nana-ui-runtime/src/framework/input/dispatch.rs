@@ -900,8 +900,7 @@ impl AppContext {
         if !stroke.is_text() && self.editor_composing(document) {
             return Ok(CONSUMED);
         }
-        // A list drag holding the pointer takes the first Escape press: the
-        // gesture is the innermost thing the key can cancel.
+        // 已捕获的列表拖动先消费首次 Escape，松手继续保持取消，下一次拖动可重新开始。
         if pressed
             && key == "Escape"
             && !repeat

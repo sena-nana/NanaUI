@@ -3842,7 +3842,7 @@ fn pointer_press_places_the_caret_and_multi_click_selects() {
         ("hello world".into(), 11, 11)
     );
 
-    // A quick second press selects the word under the caret.
+    // 单行文本框快速双击选中完整值。
     assert!(
         adapter
             .dispatch_with_shaper(
@@ -3857,7 +3857,7 @@ fn pointer_press_places_the_caret_and_multi_click_selects() {
     );
     assert_eq!(
         textarea_selection(&context, node),
-        ("hello world".into(), 6, 11)
+        ("hello world".into(), 0, 11)
     );
     adapter
         .dispatch_with_shaper(

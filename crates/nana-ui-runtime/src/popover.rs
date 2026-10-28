@@ -83,11 +83,7 @@ pub struct Popover {
     pub bare_trigger: bool,
     /// Use the shared 24px target when this popover has an icon trigger.
     pub compact_trigger: bool,
-    /// What the application writes over the trigger's own style while the
-    /// popover has a trigger. Each field it sets replaces the recipe's and
-    /// the rest stay the recipe's: the hover and press washes, the open
-    /// state's, a compact trigger's fit. A radius it writes is the
-    /// trigger's corners. See [`Self::trigger_style`].
+    /// 触发器布局和交互样式独立于悬挂面板，默认沿用原生按钮配方。
     pub trigger_style: Option<NodeStyle>,
 }
 
@@ -119,10 +115,7 @@ impl Popover {
         self
     }
 
-    /// Style the trigger: `style`'s fields are written over the trigger's
-    /// recipe, which keeps everything `style` leaves unset — set only a
-    /// width, and the trigger still washes on hover and press. The hanging
-    /// surface keeps [`Self::width`] and [`Self::padding`].
+    /// 自定义触发器呈现，保持面板宽度、内边距及原生输入职责。
     pub fn trigger_style(mut self, style: NodeStyle) -> Self {
         self.trigger_style = Some(style);
         self
@@ -261,7 +254,6 @@ impl crate::ComponentView for Popover {
             self.compact_trigger,
             &self.accessible_name,
             self.trigger_style.as_ref(),
-            false,
         );
     }
 }
@@ -398,7 +390,6 @@ impl crate::ComponentView for ActionMenu {
             self.popover.compact_trigger,
             &self.popover.accessible_name,
             self.popover.trigger_style.as_ref(),
-            self.disabled,
         );
     }
 }
@@ -422,7 +413,6 @@ pub(crate) fn project_menu_surface(
     compact_trigger: bool,
     accessible_name: &Arc<str>,
     trigger_style: Option<&NodeStyle>,
-    disabled: bool,
 ) {
     let open = world.project_menu_presence(id, open && !disabled, mutations);
     // A child that draws the trigger only counts while it is one.
@@ -488,6 +478,11 @@ pub(crate) fn project_menu_surface(
         crate::view_components::compact_icon_style(style)
     } else if compact_trigger && trigger_content.is_some() {
         fitted_content_style(style)
+    } else {
+        style
+    };
+    let style = if has_trigger {
+        trigger_style.cloned().unwrap_or(style)
     } else {
         style
     };
@@ -949,6 +944,7 @@ pub fn resolve_popover_origin(
 
 #[cfg(test)]
 mod tests {
+    include!("../tests/fixtures/popover_trigger_style.rs");
     use super::*;
     use crate::DocumentId;
     use crate::LayoutViewport;
