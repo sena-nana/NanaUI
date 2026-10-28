@@ -101,6 +101,7 @@
 - [DesktopShell](desktop-shell.md) — 桌面壳。格子里的内容仍由你给。
 - [AppTitleBar](app-title-bar.md) — 标题栏。高度是 `TITLE_BAR_HEIGHT`。
 - [Toolbar](toolbar.md) — 工具条。里面的按钮由你放。
+- [ToolGroup](tool-group.md) — 工具组。一组工具按钮放在同一条底槽上，横排或竖排，按单选、开关或操作读出。
 - [StatusBar](status-bar.md) — 状态条。变化会念成 live status。
 - [MediaTransportBar](media-transport-bar.md) — 播放、进度、音量、设置和全屏。
 - [Workspace](workspace.md) — 工作区。内容是树上的子节点。

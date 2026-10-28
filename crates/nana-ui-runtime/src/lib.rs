@@ -195,7 +195,7 @@ pub use area_layout::{
     AreaLayoutChanged, AreaLayoutError, AreaLayoutModel, AreaNode, AreaSplitter,
 };
 pub use avatar::{Avatar, DEFAULT_SIZE as AVATAR_DEFAULT_SIZE};
-pub use bars::{StatusBar, Toolbar};
+pub use bars::{StatusBar, ToolGroup, ToolGroupMode, Toolbar};
 pub use breadcrumb::{
     Breadcrumb, BreadcrumbEvent, BreadcrumbItem, BreadcrumbSegment, BreadcrumbTone,
 };

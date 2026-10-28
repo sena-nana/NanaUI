@@ -24,7 +24,7 @@ use crate::{
 use crate::{
     AppTitleBar, Breadcrumb, Dialog, Drawer, FormField, GpuView, IconGlyph, InteractiveCard,
     LabeledValue, LevelMeter, List, MediaTransportBar, OverlayHost, Panel, PathText, SettingsCard,
-    SettingsGroup, SidebarRow, Skeleton, StatusBar, Tabs, Toolbar, Tooltip, ValidationMessage,
+    SettingsGroup, SidebarRow, Skeleton, StatusBar, Tabs, ToolGroup, Toolbar, Tooltip, ValidationMessage,
     Video,
 };
 use nana_ui_core::{ButtonKind, Icon, RadiusTier, SemanticColorRole, StatusTone};
@@ -147,6 +147,7 @@ styled!(
     Panel,
     List,
     Toolbar,
+    ToolGroup,
     InteractiveCard,
     SettingsCard,
     SettingsGroup,
