@@ -129,7 +129,7 @@ Flex、Grid、Inline、Overlay 的算法各在 `layout_engine/` 下自己的模�
 context 切换，增量与冷布局相同；分派不认模态框时 placement 的断言失败）。同一容器在 Flex → Grid → Layers → Inline 之间来回切换 20 轮，保留缓存在第
 一轮后不再变化，回到 Flex 时与只排过 Flex 的冷缓存相同（`issue199_repeated_context_switches_keep_the_retained_cache_flat`）。
 
-锚定的浮层已经由布局放置，见下文「锚点定位」。`absolute` 的包含块按 CSS 解析，见下文「定位」。还没做的：
+锚定的浮层已经由布局放置，见下文「锚点定位」。`absolute` 的包含块按 CSS 解析，`fixed` 挂在自己文档的视口上，见下文「定位」。还没做的：
 包含块在一个静态滚动容器之外时，盒子仍跟着那个滚动容器滚动、受它裁剪（#201）；clip 链没有接进 Scene/Hit/A11y
 共用的结果（#201）。
 
@@ -762,6 +762,8 @@ flex 项和 grid 项上的 float，按 CSS 被块化，然后忽略。
 增量布局按包含块追踪：包含块挪动或改变尺寸时，挂在它上面的盒子会重放，即使中间的静态盒子这一趟没被放过；只有中间的静态盒子移动时，盒子不动。祖先开始或停止成为包含块时，下面的盒子改挂到新的包含块，发布的 `LayoutResult::containing_block` 也跟着更新。门禁在 `world/issue200.rs`：每一步都和冷布局逐个比对盒子、结果、命中和无障碍。
 
 `sticky` 相对最近的滚动视口解析 inset，并受正常流包含块约束：到父容器末端会释放。没有 inset 的轴照常滚动。嵌套 Sticky 从父级的呈现位置继续计算；嵌套滚动容器各自拥有视口。Runtime 的命中、无障碍和 Scene 绘制共用同一个 placement 投影，滚动不触发内容 measure、layout 或文本塑形。改变包含块尺寸或重新挂载时，只失效其登记的 Sticky 分支。
+
+`fixed` 的包含块是它所在文档的视口：原点在窗口左上角，大小是这个文档上次布局用的视口。祖先是不是定位盒子、有没有 padding 都不算；祖先的滚动和裁剪也不作用于它，命中和无障碍同样按窗口上的位置读它的盒子。没有定位祖先的 `absolute` 用的初始包含块也是这个文档的视口。一个 `AppContext` 里有几个文档时，每个文档记着自己的视口（`UiWorld::document_viewport`）：一个文档改变视口，只重放它自己的 `fixed`、`vw` / `vh` 盒子和初始包含块上的盒子，另一个文档不跑布局，盒子、结果和记下的视口都不变。门禁 `issue200_fixed_boxes_hang_from_their_own_windows_viewport`：两个视口不同的文档，各有一个藏在 `relative` 卡片和带 padding 的静态盒子里、宽 25% 的 `fixed` 盒子，一个初始包含块上的 `absolute` 盒子，一个滚动列表里的 `fixed` 盒子；列表滚动、两个文档轮流改变大小，每一步盒子、命中和无障碍范围都在自己的视口上，另一个文档不动，最后与冷布局相同。
 
 `fixed` 只适合普通节点贴在视口上。产品浮层仍走控件。不要自己用 `fixed` 搭对话框。
 

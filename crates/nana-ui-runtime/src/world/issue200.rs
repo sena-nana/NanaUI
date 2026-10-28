@@ -15,10 +15,18 @@
 //! stay in the window (and in the room an owner gives), follow a viewport
 //! change with no reprojection, and hit testing and accessibility read the
 //! box layout gave them.
+//!
+//! A fixed box hangs from its own document's viewport, past positioned and
+//! scrolled ancestors, and so does an absolute box with no positioned
+//! ancestor. Two documents of one context keep their own viewports: a
+//! resize of one runs no layout in the other, and hit testing and
+//! accessibility read the boxes each viewport gave.
 
 #![cfg(test)]
 
-use nana_ui_core::{AnchoredMenuPlacement, FlexDirection, LayoutStyle, LengthSpec, PositionSpec};
+use nana_ui_core::{
+    AnchoredMenuPlacement, FlexDirection, LayoutStyle, LengthSpec, PositionSpec, WorkCounters,
+};
 
 use super::reflow_oracle::{
     Builder, assert_matches_cold, bundled_face_shaper, product_frame, resize_frame, styled,
@@ -662,4 +670,257 @@ fn issue200_a_select_menu_follows_the_viewport_and_hits_where_it_paints() {
             .as_deref(),
         Some("v3")
     );
+}
+
+/// Two windows of one application, each a document with its own viewport.
+/// Each holds a `position: relative` card with a fixed box deep inside it
+/// (a quarter of the viewport wide, in its bottom-right corner), an absolute
+/// box with no positioned ancestor (the initial containing block's
+/// bottom-left corner), and a scrolled list with a fixed box inside it (the
+/// window's top-left corner).
+struct Windows {
+    context: AppContext,
+    shaper: NanaTextEngineShaper,
+    viewports: [LayoutViewport; 2],
+}
+
+const WINDOWS: [DocumentId; 2] = [DocumentId::new(1).unwrap(), DocumentId::new(2).unwrap()];
+/// Each window's node ids start here.
+const WINDOW_BASE: [u64; 2] = [1, 1_000];
+/// Node ids within a window, after its document and page.
+const PINNED: u64 = 4;
+const CORNER: u64 = 5;
+const LIST: u64 = 6;
+const LIST_PIN: u64 = 8;
+
+fn window_node(window: usize, offset: u64) -> StableNodeId {
+    super::reflow_oracle::node(WINDOW_BASE[window] + offset)
+}
+
+fn windows_queues() -> Vec<MutationQueue> {
+    use crate::InteractionState;
+    use nana_ui_core::OverflowSpec;
+    let mut queues = Vec::new();
+    for (window, document) in WINDOWS.into_iter().enumerate() {
+        let (mut b, page) = Builder::page(document, WINDOW_BASE[window], 300.0);
+        let card = b.element(page, card(PositionSpec::Relative, 300.0));
+        let wrapper = b.element(card, wrapper(PositionSpec::Static));
+        let pinned = b.element(
+            wrapper,
+            LayoutStyle {
+                position: PositionSpec::Fixed,
+                offset_right: Some(LengthSpec::Px(0.0)),
+                offset_bottom: Some(LengthSpec::Px(0.0)),
+                width: Some(LengthSpec::Percent(25.0)),
+                height: Some(LengthSpec::Px(20.0)),
+                ..LayoutStyle::default()
+            },
+        );
+        let corner = b.element(
+            page,
+            LayoutStyle {
+                position: PositionSpec::Absolute,
+                offset_left: Some(LengthSpec::Px(0.0)),
+                offset_bottom: Some(LengthSpec::Px(0.0)),
+                ..sized(30.0, 20.0)
+            },
+        );
+        let list = b.element(
+            page,
+            LayoutStyle {
+                overflow_y: OverflowSpec::Scroll,
+                direction: Some(FlexDirection::Column),
+                ..sized(200.0, 100.0)
+            },
+        );
+        b.element(list, sized(200.0, 400.0));
+        let list_pin = b.element(
+            list,
+            LayoutStyle {
+                position: PositionSpec::Fixed,
+                offset_left: Some(LengthSpec::Px(0.0)),
+                offset_top: Some(LengthSpec::Px(0.0)),
+                ..sized(40.0, 10.0)
+            },
+        );
+        assert_eq!(
+            [pinned, corner, list, list_pin],
+            [PINNED, CORNER, LIST, LIST_PIN].map(|offset| window_node(window, offset))
+        );
+        for id in [pinned, corner, list_pin] {
+            b.queue.set_interaction(
+                id,
+                InteractionState {
+                    pointer_events: true,
+                    focusable: false,
+                },
+            );
+        }
+        queues.push(b.queue);
+    }
+    queues
+}
+
+impl Windows {
+    fn new(viewports: [LayoutViewport; 2]) -> Self {
+        let mut context = AppContext::new();
+        for queue in windows_queues() {
+            context.commit_mutations(queue).unwrap();
+        }
+        let mut shaper = bundled_face_shaper();
+        // A window's first frame lays out against the viewport it opens at.
+        for (document, viewport) in WINDOWS.into_iter().zip(viewports) {
+            resize_frame(&mut context, document, viewport, &mut shaper);
+            context.rebuild_hit_test(document);
+        }
+        Self {
+            context,
+            shaper,
+            viewports,
+        }
+    }
+
+    fn rect(&self, window: usize, offset: u64) -> (f32, f32, f32, f32) {
+        let b = self
+            .context
+            .world()
+            .layout_box(window_node(window, offset))
+            .unwrap();
+        (b.x, b.y, b.width, b.height)
+    }
+
+    fn boxes(&self, window: usize) -> Vec<(StableNodeId, Option<LayoutBox>)> {
+        let world = self.context.world();
+        world
+            .document_order(WINDOWS[window])
+            .into_iter()
+            .map(|id| (id, world.layout_box(id)))
+            .collect()
+    }
+
+    /// Every published result of `window`, by its geometry.
+    fn results(&self, window: usize) -> Vec<(StableNodeId, Option<crate::LayoutResult>)> {
+        let world = self.context.world();
+        world
+            .document_order(WINDOWS[window])
+            .into_iter()
+            .map(|id| (id, world.layout_result(id).cloned()))
+            .collect()
+    }
+
+    /// The node hit testing gives `(x, y)` of `window`, and the bounds
+    /// accessibility reads for node `offset` of it.
+    fn hit_and_spoken(&self, window: usize, offset: u64, (x, y): (f32, f32)) -> (u64, LayoutBox) {
+        let world = self.context.world();
+        let hit = world.hit_test(WINDOWS[window], x, y).unwrap();
+        let id = window_node(window, offset);
+        let spoken = world
+            .project_accessibility_nodes(&[id])
+            .into_iter()
+            .find(|node| node.id == id)
+            .unwrap()
+            .bounds;
+        (hit.get() - WINDOW_BASE[window], spoken)
+    }
+
+    /// Each fixed or initial-containing-block box of `window` sits where its
+    /// viewport puts it, and hit testing and accessibility read that box.
+    fn assert_placed(&self, window: usize) {
+        let LayoutViewport { width, height } = self.viewports[window];
+        let pinned = (width * 0.75, height - 20.0, width * 0.25, 20.0);
+        let corner = (0.0, height - 20.0, 30.0, 20.0);
+        let list_pin = (0.0, 0.0, 40.0, 10.0);
+        assert_eq!(self.rect(window, PINNED), pinned, "window {window}");
+        assert_eq!(self.rect(window, CORNER), corner, "window {window}");
+        assert_eq!(self.rect(window, LIST_PIN), list_pin, "window {window}");
+        for (offset, (x, y, w, h)) in [(PINNED, pinned), (CORNER, corner), (LIST_PIN, list_pin)] {
+            let (hit, spoken) = self.hit_and_spoken(window, offset, (x + w / 2.0, y + h / 2.0));
+            assert_eq!(hit, offset, "window {window}: hit at node {offset}");
+            assert_eq!(
+                (spoken.x, spoken.y, spoken.width, spoken.height),
+                (x, y, w, h),
+                "window {window}: accessibility bounds of node {offset}"
+            );
+        }
+    }
+
+    fn resize(&mut self, window: usize, width: f32, height: f32) -> WorkCounters {
+        self.viewports[window] = LayoutViewport::new(width, height);
+        let counters = resize_frame(
+            &mut self.context,
+            WINDOWS[window],
+            self.viewports[window],
+            &mut self.shaper,
+        );
+        self.context.rebuild_hit_test(WINDOWS[window]);
+        counters
+    }
+}
+
+#[test]
+fn issue200_fixed_boxes_hang_from_their_own_windows_viewport() {
+    let mut windows = Windows::new([
+        LayoutViewport::new(800.0, 600.0),
+        LayoutViewport::new(500.0, 700.0),
+    ]);
+    windows.assert_placed(0);
+    windows.assert_placed(1);
+
+    // The list scrolls: the fixed box inside it stays on the window, for the
+    // pointer and for accessibility, as it is painted.
+    let mut queue = MutationQueue::new();
+    queue.set_scroll_offset(
+        window_node(0, LIST),
+        crate::ScrollOffset { x: 0.0, y: 50.0 },
+    );
+    windows.context.commit_mutations(queue).unwrap();
+    windows.context.rebuild_hit_test(WINDOWS[0]);
+    assert_eq!(
+        windows.context.world().scroll_offset(window_node(0, LIST)),
+        Some(crate::ScrollOffset { x: 0.0, y: 50.0 })
+    );
+    windows.assert_placed(0);
+
+    // Each window resizes on its own: its boxes follow its viewport, and the
+    // other window runs no layout pass, keeps every box and result, and
+    // keeps the viewport it was laid out at.
+    for (window, (width, height)) in [(0, (1000.0, 700.0)), (1, (360.0, 480.0))] {
+        let other = 1 - window;
+        let boxes = windows.boxes(other);
+        let results = windows.results(other);
+        let stats = windows.context.layout_frontier_stats(WINDOWS[other]);
+        windows.resize(window, width, height);
+        windows.assert_placed(window);
+        assert_eq!(windows.boxes(other), boxes, "window {other}'s boxes");
+        assert_eq!(windows.results(other), results, "window {other}'s results");
+        assert_eq!(
+            windows.context.layout_frontier_stats(WINDOWS[other]),
+            stats,
+            "no layout pass ran for window {other}"
+        );
+        assert_eq!(
+            windows.context.world().document_viewport(WINDOWS[other]),
+            Some(windows.viewports[other])
+        );
+        assert!(windows.context.take_system_work().is_empty());
+        assert!(
+            windows
+                .context
+                .take_layout_frontier_seeds(WINDOWS[other])
+                .is_empty()
+        );
+        windows.assert_placed(other);
+    }
+
+    // The same windows opened at these sizes place everything the same.
+    let mut cold = Windows::new(windows.viewports);
+    let mut queue = MutationQueue::new();
+    queue.set_scroll_offset(
+        window_node(0, LIST),
+        crate::ScrollOffset { x: 0.0, y: 50.0 },
+    );
+    cold.context.commit_mutations(queue).unwrap();
+    for document in WINDOWS {
+        assert_matches_cold(&mut windows.context, &mut cold.context, document);
+    }
 }
