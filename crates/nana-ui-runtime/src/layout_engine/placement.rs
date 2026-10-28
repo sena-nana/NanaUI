@@ -2710,10 +2710,24 @@ pub(super) fn place_positioned_child(
     if let Some(max) = child_style.resolved_max_height_fonts(Some(base.height), vp, child_fonts) {
         child_size.height = child_size.height.min(max);
     }
-    let inset = Point {
-        x: left.unwrap_or_else(|| right.map_or(0.0, |value| base.width - value - child_size.width)),
-        y: top
-            .unwrap_or_else(|| bottom.map_or(0.0, |value| base.height - value - child_size.height)),
+    let inset = match child_style.anchor.filter(|_| fixed) {
+        // Anchor positioning: hung from its anchor, at the size it measured,
+        // by the one resolver every anchored surface shares.
+        Some(anchor) => {
+            let surface = anchored_surface(anchor, child_size, viewport);
+            Point {
+                x: surface.x - base_origin.x,
+                y: surface.y - base_origin.y,
+            }
+        }
+        None => Point {
+            x: left.unwrap_or_else(|| {
+                right.map_or(0.0, |value| base.width - value - child_size.width)
+            }),
+            y: top.unwrap_or_else(|| {
+                bottom.map_or(0.0, |value| base.height - value - child_size.height)
+            }),
+        },
     };
     let child_origin = Point {
         x: base_origin.x + inset.x,
@@ -2757,6 +2771,42 @@ pub(super) fn place_positioned_child(
     }))
 }
 
+/// Where a fixed box with `anchor` lands at `size` in `viewport`: inside its
+/// room, which is the viewport or the part of it the anchor names.
+fn anchored_surface(
+    anchor: nana_ui_core::AnchorSpec,
+    size: Size,
+    viewport: LayoutViewport,
+) -> LayoutBox {
+    let rect = |[x, y, width, height]: [f32; 4]| LayoutBox {
+        x,
+        y,
+        width,
+        height,
+    };
+    let mut room = rect([0.0, 0.0, viewport.width, viewport.height]);
+    if let Some(bounds) = anchor.room.map(rect) {
+        let (right, bottom) = (
+            (room.x + room.width).min(bounds.x + bounds.width),
+            (room.y + room.height).min(bounds.y + bounds.height),
+        );
+        room.x = room.x.max(bounds.x);
+        room.y = room.y.max(bounds.y);
+        room.width = (right - room.x).max(0.0);
+        room.height = (bottom - room.y).max(0.0);
+    }
+    crate::popover::resolve_anchored_surface(
+        rect(anchor.rect),
+        size.width,
+        size.height,
+        room,
+        anchor.placement,
+        anchor.alignment,
+        anchor.gap,
+        crate::popover::AnchorOverflow::Shift,
+    )
+}
+
 fn positioned_tracks_containing_block(style: &LayoutStyle) -> bool {
     fn tracks(spec: Option<LengthSpec>) -> bool {
         spec_tracks_containing_block(spec)
@@ -2783,6 +2833,8 @@ fn positioned_tracks_containing_block(style: &LayoutStyle) -> bool {
         || (style.offset_bottom.is_some() && style.offset_top.is_none())
         // An auto width shrinks to fit the space the block leaves.
         || style.width.is_none_or(|width| !width.is_definite_declared())
+        // An anchored box flips and clamps against the viewport.
+        || style.anchor.is_some()
 }
 
 fn overlay_child_affected(

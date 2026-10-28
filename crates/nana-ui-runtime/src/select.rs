@@ -972,8 +972,9 @@ fn overlaps_vertically(row: LayoutBox, viewport: LayoutBox) -> bool {
 /// Places the drop-down surface below its field, folding it back inside the
 /// room it can be seen in near that room's bottom edge.
 ///
-/// Preference order matches the menu families: open downwards; flip above the
-/// field when the space below cannot hold the menu but the space above can;
+/// This is the shared anchored placement ([`crate::resolve_anchored_surface`])
+/// with [`crate::AnchorOverflow::Cap`]: open downwards; flip above the field
+/// when the space below cannot hold the menu but the space above can;
 /// otherwise stay on the roomier side and cap the height to it. Without a room
 /// (the document has not been laid out yet) the menu keeps its natural
 /// downward placement.
@@ -982,30 +983,18 @@ fn resolve_menu_vertical(
     natural_height: f32,
     room: Option<crate::SelectMenuRoom>,
 ) -> (f32, f32) {
-    let below_y = field.y + field.height + MENU_GAP;
     let Some(room) = room else {
-        return (below_y, natural_height);
+        return (field.y + field.height + MENU_GAP, natural_height);
     };
-    let space_below = (room.bottom - below_y).max(0.0);
-    if natural_height <= space_below {
-        return (below_y, natural_height);
-    }
-    let above_y = field.y - MENU_GAP;
-    let space_above = (above_y - room.top).max(0.0);
-    if natural_height <= space_above {
-        return (above_y - natural_height, natural_height);
-    }
-    if space_above > space_below {
-        (above_y - space_above, space_above)
-    } else {
-        (below_y, space_below)
-    }
+    let surface = drop_down(field, field.width, natural_height, room);
+    (surface.y, surface.height)
 }
 
 /// The menu's x and width: its field's, or as wide as its widest row when it
 /// fits its options and that is wider. A menu wider than its field starts
 /// where the field does and moves left as far as it must to end inside the
-/// room; one wider than the room is cut to it.
+/// room; one wider than the room is cut to it (the shared placement's cross
+/// axis under [`crate::AnchorOverflow::Cap`]).
 fn resolve_menu_horizontal(
     field: LayoutBox,
     fitted_width: Option<f32>,
@@ -1017,11 +1006,30 @@ fn resolve_menu_horizontal(
     let Some(room) = room else {
         return (field.x, fitted);
     };
-    let width = fitted.min(room.right - room.left);
-    if width <= field.width {
+    let surface = drop_down(field, fitted, 0.0, room);
+    if surface.width <= field.width {
         return (field.x, field.width);
     }
-    (field.x.min(room.right - width).max(room.left), width)
+    (surface.x, surface.width)
+}
+
+/// The drop-down hung below `field`, start-aligned, inside `room`.
+fn drop_down(field: LayoutBox, width: f32, height: f32, room: crate::SelectMenuRoom) -> LayoutBox {
+    crate::popover::resolve_anchored_surface(
+        field,
+        width,
+        height,
+        LayoutBox {
+            x: room.left,
+            y: room.top,
+            width: room.right - room.left,
+            height: room.bottom - room.top,
+        },
+        nana_ui_core::PopoverPlacement::Bottom,
+        nana_ui_core::PopoverAlignment::Start,
+        MENU_GAP,
+        crate::popover::AnchorOverflow::Cap,
+    )
 }
 
 /// What an open menu projects as its room: taken now, from the boxes the

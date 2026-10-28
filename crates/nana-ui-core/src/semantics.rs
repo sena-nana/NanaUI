@@ -246,7 +246,7 @@ impl Default for TooltipConfig {
     }
 }
 
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum PopoverPlacement {
     Top,
     #[default]
@@ -255,7 +255,7 @@ pub enum PopoverPlacement {
     Right,
 }
 
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum PopoverAlignment {
     Start,
     #[default]
@@ -278,6 +278,18 @@ pub enum AnchoredMenuPlacement {
     #[default]
     BottomStart,
     BottomEnd,
+}
+
+impl AnchoredMenuPlacement {
+    /// The side and alignment of a surface hung from a point.
+    pub const fn popover(self) -> (PopoverPlacement, PopoverAlignment) {
+        match self {
+            Self::TopStart => (PopoverPlacement::Top, PopoverAlignment::Start),
+            Self::TopEnd => (PopoverPlacement::Top, PopoverAlignment::End),
+            Self::BottomStart => (PopoverPlacement::Bottom, PopoverAlignment::Start),
+            Self::BottomEnd => (PopoverPlacement::Bottom, PopoverAlignment::End),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]

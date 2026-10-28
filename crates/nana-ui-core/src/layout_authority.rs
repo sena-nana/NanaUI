@@ -270,7 +270,14 @@ pub fn resolve_layout_intent(
         ),
         (
             LayoutFieldMask::POSITION,
-            &["position", "z_index", "isolation", "float", "clear"][..],
+            &[
+                "position",
+                "anchor",
+                "z_index",
+                "isolation",
+                "float",
+                "clear",
+            ][..],
         ),
         (
             LayoutFieldMask::ALIGNMENT,

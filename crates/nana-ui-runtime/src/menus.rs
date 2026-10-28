@@ -301,25 +301,29 @@ impl AnchoredActionMenu {
         self
     }
 
+    /// Keep the surface inside `viewport` (met with the window). Layout
+    /// places it there at the size it measures.
     pub fn place_in(&mut self, viewport: LayoutBox) {
-        let origin = resolve_anchored_origin(
-            self.x,
-            self.y,
-            self.width,
-            self.height,
-            viewport,
-            self.placement,
-        );
+        self.apply_anchor();
         let layout = Arc::make_mut(&mut self.style.layout);
-        layout.offset_left = Some(LengthSpec::Px(origin.0));
-        layout.offset_top = Some(LengthSpec::Px(origin.1));
+        if let Some(anchor) = layout.anchor.as_mut() {
+            anchor.room = Some(layout_box_array(viewport));
+        }
     }
 
+    /// Hang the surface from `(x, y)`: layout flips it to the other side of
+    /// the point and keeps it in the window (and in the room
+    /// [`Self::place_in`] gave, which this keeps).
     pub(crate) fn apply_anchor(&mut self) {
         let layout = Arc::make_mut(&mut self.style.layout);
+        let room = layout.anchor.and_then(|anchor| anchor.room);
         layout.position = PositionSpec::Fixed;
-        layout.offset_left = Some(LengthSpec::Px(self.x));
-        layout.offset_top = Some(LengthSpec::Px(self.y));
+        layout.offset_left = None;
+        layout.offset_top = None;
+        layout.anchor = Some(nana_ui_core::AnchorSpec {
+            room,
+            ..nana_ui_core::AnchorSpec::point(self.x, self.y, self.placement)
+        });
         layout.height = (self.height > 0.0).then_some(LengthSpec::Px(self.height));
     }
 }
@@ -599,22 +603,27 @@ impl ContextMenu {
             self.searchable,
             nana_ui_core::UI_METRICS,
         );
-        let (x, y) = match self.viewport {
-            Some(viewport) => resolve_anchored_origin(
-                self.anchor_x,
-                self.anchor_y,
-                self.width,
-                height,
-                viewport,
-                AnchoredMenuPlacement::BottomStart,
-            ),
-            None => (self.anchor_x, self.anchor_y),
-        };
+        let anchor = self.anchor_spec();
         let layout = Arc::make_mut(&mut self.style.layout);
         layout.position = PositionSpec::Fixed;
-        layout.offset_left = Some(LengthSpec::Px(x));
-        layout.offset_top = Some(LengthSpec::Px(y));
+        layout.offset_left = None;
+        layout.offset_top = None;
+        layout.anchor = Some(anchor);
         layout.height = Some(LengthSpec::Px(height));
+    }
+
+    /// Hung below and after the pointer; layout flips it above or before
+    /// the pointer where only that side fits, and keeps it in the window and
+    /// in [`Self::viewport`].
+    fn anchor_spec(&self) -> nana_ui_core::AnchorSpec {
+        nana_ui_core::AnchorSpec {
+            room: self.viewport.map(layout_box_array),
+            ..nana_ui_core::AnchorSpec::point(
+                self.anchor_x,
+                self.anchor_y,
+                AnchoredMenuPlacement::BottomStart,
+            )
+        }
     }
 
     fn current_level_items(&self) -> Vec<ContextMenuItem> {
@@ -783,19 +792,11 @@ impl crate::ComponentView for ContextMenu {
                 world.theme(),
             );
             layout.height = Some(LengthSpec::Px(height));
-            let (x, y) = match self.viewport {
-                Some(viewport) => resolve_anchored_origin(
-                    self.anchor_x,
-                    self.anchor_y,
-                    self.width,
-                    height,
-                    viewport,
-                    AnchoredMenuPlacement::BottomStart,
-                ),
-                None => (self.anchor_x, self.anchor_y),
-            };
-            layout.offset_left = Some(LengthSpec::Px(x));
-            layout.offset_top = Some(LengthSpec::Px(y));
+            // Placed by layout from the fields as they are now: an owner
+            // that moved `anchor_x` / `anchor_y` directly needs no re-anchor.
+            layout.offset_left = None;
+            layout.offset_top = None;
+            layout.anchor = Some(self.anchor_spec());
         }
         project_common(
             id,
@@ -953,6 +954,10 @@ pub(crate) fn action_menu_item_geometry_from_parts(
     }
 }
 
+/// Where a `width` × `height` surface hung from the point `(x, y)` with
+/// `placement` lands in `viewport`: [`crate::resolve_anchored_surface`] for a
+/// point, the placement layout gives an [`nana_ui_core::AnchorSpec`]. It
+/// flips above (or before) the point where only that side fits.
 pub fn resolve_anchored_origin(
     x: f32,
     y: f32,
@@ -961,17 +966,27 @@ pub fn resolve_anchored_origin(
     viewport: LayoutBox,
     placement: AnchoredMenuPlacement,
 ) -> (f32, f32) {
-    let mut origin = match placement {
-        AnchoredMenuPlacement::TopStart => (x, y - height),
-        AnchoredMenuPlacement::TopEnd => (x - width, y - height),
-        AnchoredMenuPlacement::BottomStart => (x, y),
-        AnchoredMenuPlacement::BottomEnd => (x - width, y),
-    };
-    let max_x = (viewport.x + viewport.width - width).max(viewport.x);
-    let max_y = (viewport.y + viewport.height - height).max(viewport.y);
-    origin.0 = origin.0.clamp(viewport.x, max_x);
-    origin.1 = origin.1.clamp(viewport.y, max_y);
-    origin
+    let (side, alignment) = placement.popover();
+    let surface = crate::popover::resolve_anchored_surface(
+        LayoutBox {
+            x,
+            y,
+            width: 0.0,
+            height: 0.0,
+        },
+        width,
+        height,
+        viewport,
+        side,
+        alignment,
+        0.0,
+        crate::popover::AnchorOverflow::Shift,
+    );
+    (surface.x, surface.y)
+}
+
+fn layout_box_array(bounds: LayoutBox) -> [f32; 4] {
+    [bounds.x, bounds.y, bounds.width, bounds.height]
 }
 
 const SEARCH_FIELD_GAP: f32 = nana_ui_core::space::XS;
@@ -1974,8 +1989,10 @@ mod tests {
         assert!(!menu.open);
     }
 
+    /// Below the point there is no room, above it there is: the surface
+    /// flips above it, and is kept inside the viewport across.
     #[test]
-    fn anchored_origin_clamps_to_the_viewport() {
+    fn anchored_origin_flips_above_the_point_and_clamps_into_the_viewport() {
         let viewport = LayoutBox {
             x: 0.0,
             y: 0.0,
@@ -1991,7 +2008,19 @@ mod tests {
                 viewport,
                 AnchoredMenuPlacement::BottomStart,
             ),
-            (120.0, 100.0)
+            (120.0, 80.0)
+        );
+        // With room below it stays there.
+        assert_eq!(
+            resolve_anchored_origin(
+                20.0,
+                20.0,
+                80.0,
+                60.0,
+                viewport,
+                AnchoredMenuPlacement::BottomStart,
+            ),
+            (20.0, 20.0)
         );
     }
 
@@ -2047,7 +2076,7 @@ mod tests {
     }
 
     /// `place_in` 的视口是持久属性：筛选或进子级都会按新的行数重新锚定，
-    /// 那些重新锚定同样不得把面板放到视口外面去。
+    /// 那些重新锚定同样不得把面板放到视口外面去。面板由布局按量出的尺寸放置。
     #[test]
     fn a_placed_menu_stays_inside_its_viewport_after_filtering() {
         let viewport = LayoutBox {
@@ -2063,23 +2092,49 @@ mod tests {
             .items(items)
             .searchable(true);
         menu.place_in(viewport);
-        let inside = |menu: &ContextMenu| {
-            let layout = &menu.style.layout;
-            let (Some(LengthSpec::Px(x)), Some(LengthSpec::Px(y)), Some(LengthSpec::Px(height))) =
-                (layout.offset_left, layout.offset_top, layout.height)
-            else {
-                panic!("anchored surface must carry a resolved box");
-            };
-            x >= viewport.x
-                && x + menu.width <= viewport.x + viewport.width
-                && y >= viewport.y
-                && (height > viewport.height || y + height <= viewport.y + viewport.height)
+        let document = crate::DocumentId::new(1).unwrap();
+        let mut cx = crate::framework::AppContext::new();
+        // 像应用那样挂在浮层宿主下：根节点总在原点，量不出放置。
+        let host = cx
+            .create_component(document, crate::OverlayHost::new())
+            .unwrap();
+        let entity = cx.create_component(document, menu).unwrap();
+        cx.append_child(host, entity).unwrap();
+        cx.activate_overlay(host, entity).unwrap();
+        let laid_out = |cx: &mut crate::framework::AppContext| {
+            cx.layout_document(
+                document,
+                crate::LayoutViewport::new(viewport.width, viewport.height),
+            )
+            .unwrap();
+            cx.world().layout_box(entity.stable_id()).unwrap()
         };
-        assert!(inside(&menu), "首次放置就落在视口内");
+        let inside = |surface: LayoutBox| {
+            surface.x >= viewport.x
+                && surface.x + surface.width <= viewport.x + viewport.width
+                && surface.y >= viewport.y
+                && (surface.height > viewport.height
+                    || surface.y + surface.height <= viewport.y + viewport.height)
+        };
+        let first = laid_out(&mut cx);
+        assert!(inside(first), "首次放置就落在视口内: {first:?}");
 
         // 筛选后行数变少、面板变矮，重新锚定仍须留在视口内。
-        menu.set_query("Item 3");
-        assert!(menu.visible_items().len() < 40, "筛选缩短了列表");
-        assert!(inside(&menu), "筛选后重新锚定仍在视口内");
+        cx.update_component(entity, |menu, _| menu.set_query("Item 3"))
+            .unwrap();
+        assert!(cx.read(entity, |menu| menu.visible_items().len()).unwrap() < 40);
+        let filtered = laid_out(&mut cx);
+        assert!(filtered.height < first.height, "筛选缩短了列表");
+        assert!(inside(filtered), "筛选后重新锚定仍在视口内: {filtered:?}");
+        // 仍挂在锚点上：一条边贴着锚点的 y，右边收进视口的右缘。
+        assert!(
+            (filtered.y - 700.0).abs() < 0.01
+                || (filtered.y + filtered.height - 700.0).abs() < 0.01,
+            "{filtered:?}"
+        );
+        assert!(
+            (filtered.x + filtered.width - viewport.width).abs() < 0.01,
+            "{filtered:?}"
+        );
     }
 }

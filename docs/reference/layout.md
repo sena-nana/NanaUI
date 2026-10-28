@@ -129,7 +129,7 @@ Flex、Grid、Inline、Overlay 的算法各在 `layout_engine/` 下自己的模�
 context 切换，增量与冷布局相同；分派不认模态框时 placement 的断言失败）。同一容器在 Flex → Grid → Layers → Inline 之间来回切换 20 轮，保留缓存在第
 一轮后不再变化，回到 Flex 时与只排过 Flex 的冷缓存相同（`issue199_repeated_context_switches_keep_the_retained_cache_flat`）。
 
-还没做的：脱流定位的 containing block 仍取直接父级的内容盒，没有按最近定位祖先解析
+锚定的浮层已经由布局放置，见下文「锚点定位」。还没做的：脱流定位的 containing block 仍取直接父级的内容盒，没有按最近定位祖先解析
 （#200）；clip 链没有接进 Scene/Hit/A11y 共用的结果（#201）。
 
 ## Incremental reflow frontier
@@ -753,6 +753,15 @@ flex 项和 grid 项上的 float，按 CSS 被块化，然后忽略。
 `sticky` 相对最近的滚动视口解析 inset，并受正常流包含块约束：到父容器末端会释放。没有 inset 的轴照常滚动。嵌套 Sticky 从父级的呈现位置继续计算；嵌套滚动容器各自拥有视口。Runtime 的命中、无障碍和 Scene 绘制共用同一个 placement 投影，滚动不触发内容 measure、layout 或文本塑形。改变包含块尺寸或重新挂载时，只失效其登记的 Sticky 分支。
 
 `fixed` 只适合普通节点贴在视口上。产品浮层仍走控件。不要自己用 `fixed` 搭对话框。
+
+**锚点定位（#200）。** `fixed` 盒子可以带 `LayoutStyle::anchor`（`AnchorSpec`）。它写明锚点矩形、首选侧、对齐、间距，还可以给一块可用区域。布局按盒子量出来的尺寸、对着真实视口放它，用的是 `resolve_anchored_surface`：
+
+- 首选侧放得下，就放首选侧；放不下而对侧放得下，就翻到对侧；
+- 再沿两条轴收进可用区域。可用区域是视口和 `room` 的交集。
+
+这是 CSS anchor positioning 里「翻面再收进来」的那一部分。所有锚定的浮层共用这一个解析器：ContextMenu、AnchoredActionMenu、触发菜单、HoverCard、Popover，以及 Select 的下拉。Select 两侧都放不下时，取宽的一侧并截短。
+
+窗口改变大小时，布局直接重放这些表面，不用重新投影组件。命中和无障碍读的都是布局给出的盒子。这个字段没有 CSS 写法，由控件写。门禁在 `world/issue200.rs`。
 
 脱流盒子的高度没写，也没同时写 `top` 和 `bottom` 时，按内容算。它里面按高度填满的子项（`Fill`、百分比高度）没有确定的高度可依，按内容处理。不再取包含块的高度。包含块的高度由这些盒子撑出来时（按内容量高的虚拟列表行），那样会每一趟布局都长高一截，帧永远稳定不下来。
 

@@ -334,6 +334,7 @@ jobs:
             virtual_tree_materializes_only_visible_rows_and_reuses_overlap_on_scroll_and_expand \
             inline_content::tests \
             issue199 \
+            issue200 \
             issue201 \
             issue202 \
             issue204 \

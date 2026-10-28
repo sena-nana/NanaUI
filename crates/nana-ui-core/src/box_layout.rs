@@ -687,6 +687,39 @@ impl GridTemplateAreas {
     }
 }
 
+/// Anchor positioning for a `position: fixed` box, as CSS `position-anchor`
+/// with `position-area` and `position-try-fallbacks: flip-block` /
+/// `flip-inline` give it: layout hangs the box from `rect` on `placement`'s
+/// side with `alignment` along it, `gap` away. It flips to the other side
+/// when only that side fits, and keeps the box inside `room` met with the
+/// viewport. Its insets are ignored. Coordinates are the viewport's.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct AnchorSpec {
+    /// `[x, y, width, height]`; a zero-sized rect is a point (a pointer).
+    pub rect: [f32; 4],
+    pub placement: crate::PopoverPlacement,
+    pub alignment: crate::PopoverAlignment,
+    pub gap: f32,
+    /// `[x, y, width, height]` the box stays inside, within the viewport;
+    /// `None` is the viewport itself.
+    #[serde(default)]
+    pub room: Option<[f32; 4]>,
+}
+
+impl AnchorSpec {
+    /// A surface hung from the point `(x, y)`.
+    pub fn point(x: f32, y: f32, placement: crate::AnchoredMenuPlacement) -> Self {
+        let (placement, alignment) = placement.popover();
+        Self {
+            rect: [x, y, 0.0, 0.0],
+            placement,
+            alignment,
+            gap: 0.0,
+            room: None,
+        }
+    }
+}
+
 /// `position` — Style Model 子集。
 ///
 /// - `Static`：忽略 inset
@@ -3383,6 +3416,9 @@ pub struct LayoutStyle {
     pub display: Option<DisplaySpec>,
     pub box_sizing: BoxSizing,
     pub position: PositionSpec,
+    /// Anchor positioning for a `position: fixed` box; see [`AnchorSpec`].
+    #[serde(default)]
+    pub anchor: Option<AnchorSpec>,
     /// CSS `z-index`（整数）。`None` = auto；fixed 层默认按树序叠在内容之上。
     #[serde(default)]
     pub z_index: Option<i32>,
@@ -3725,6 +3761,7 @@ impl Default for LayoutStyle {
             display: None,
             box_sizing: BoxSizing::BorderBox,
             position: PositionSpec::Static,
+            anchor: None,
             z_index: None,
             isolation: false,
             transform: None,

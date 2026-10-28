@@ -258,6 +258,7 @@ layout_style_fields! {
     display: FLOW_STRUCTURE,
     box_sizing: SIZING_BOTH,
     position: POSITION,
+    anchor: POSITION,
     z_index: STACKING,
     isolation: STACKING,
     transform: TRANSFORM,

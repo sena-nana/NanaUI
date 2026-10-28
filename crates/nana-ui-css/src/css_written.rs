@@ -262,6 +262,12 @@ fn reference() -> &'static (Value, Value) {
         // pseudo-elements set these) still gets a value of its own, so the
         // witness stays complete should a declaration ever write one.
         layout.border_radius = Some(1.0);
+        // Controls anchor their surfaces; no declaration writes this.
+        layout.anchor = Some(nana_ui_core::AnchorSpec::point(
+            1.0,
+            1.0,
+            nana_ui_core::AnchoredMenuPlacement::BottomStart,
+        ));
         layout.theme.gap = Some(nana_ui_core::ThemeExpr::token(
             nana_ui_core::ThemeToken::Space(nana_ui_core::SpacingStep::Md),
         ));

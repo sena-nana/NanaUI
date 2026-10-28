@@ -875,14 +875,129 @@ pub(crate) fn menu_surface_geometry(
     }
 }
 
-/// Where an anchored surface of `surface_width` × `surface_height` opens
-/// against `trigger` inside `viewport`.
+/// What an anchored surface does when neither side of its anchor holds it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AnchorOverflow {
+    /// Keep its size and its side, and move into the room: it overlaps the
+    /// anchor rather than leave the room (a menu, a popover).
+    Shift,
+    /// Take the roomier side and shrink to it, and shrink across to the
+    /// room's width or height (a drop-down list, which scrolls).
+    Cap,
+}
+
+/// The one placement every anchored surface uses: popovers, triggered and
+/// pointer menus (through [`nana_ui_core::AnchorSpec`] in layout), and the
+/// select drop-down.
 ///
-/// The surface takes the requested side unless it would overflow the viewport
-/// there while the opposite side has room for it; then it flips, as a
-/// tooltip does. Whatever side it lands on, it is then clamped into the
-/// viewport along both axes, so a surface with room on neither side overlaps
-/// its trigger rather than leaving the window.
+/// The surface of `width` × `height` hangs from `anchor` on `placement`'s
+/// side, `gap` away, with `alignment` along that side. It takes that side
+/// if it fits there. Otherwise it flips to the opposite side if it fits
+/// there. Otherwise `overflow` decides. Across the side it is then kept
+/// inside `room`. A zero-sized `anchor` is a point.
+#[allow(clippy::too_many_arguments)]
+pub fn resolve_anchored_surface(
+    anchor: LayoutBox,
+    width: f32,
+    height: f32,
+    room: LayoutBox,
+    placement: PopoverPlacement,
+    alignment: PopoverAlignment,
+    gap: f32,
+    overflow: AnchorOverflow,
+) -> LayoutBox {
+    let vertical = matches!(placement, PopoverPlacement::Top | PopoverPlacement::Bottom);
+    // Along the side's axis: the anchor's span, the room's, the surface's
+    // extent, and whether the preferred side is after the anchor.
+    let (anchor_start, anchor_end, room_start, room_end, extent) = if vertical {
+        (
+            anchor.y,
+            anchor.y + anchor.height,
+            room.y,
+            room.y + room.height,
+            height,
+        )
+    } else {
+        (
+            anchor.x,
+            anchor.x + anchor.width,
+            room.x,
+            room.x + room.width,
+            width,
+        )
+    };
+    let prefers_after = matches!(
+        placement,
+        PopoverPlacement::Bottom | PopoverPlacement::Right
+    );
+    let space_after = (room_end - (anchor_end + gap)).max(0.0);
+    let space_before = ((anchor_start - gap) - room_start).max(0.0);
+    let (preferred, other) = if prefers_after {
+        (space_after, space_before)
+    } else {
+        (space_before, space_after)
+    };
+    let (after, extent) = if extent <= preferred {
+        (prefers_after, extent)
+    } else if extent <= other {
+        (!prefers_after, extent)
+    } else {
+        match overflow {
+            AnchorOverflow::Shift => (prefers_after, extent),
+            AnchorOverflow::Cap if space_after >= space_before => (true, space_after),
+            AnchorOverflow::Cap => (false, space_before),
+        }
+    };
+    let mut main = if after {
+        anchor_end + gap
+    } else {
+        anchor_start - gap - extent
+    };
+    if overflow == AnchorOverflow::Shift {
+        main = main.clamp(room_start, (room_end - extent).max(room_start));
+    }
+    // Across the side: aligned to the anchor, then kept in the room.
+    let (cross_anchor, cross_anchor_extent, cross_room, cross_room_extent, mut cross_extent) =
+        if vertical {
+            (anchor.x, anchor.width, room.x, room.width, width)
+        } else {
+            (anchor.y, anchor.height, room.y, room.height, height)
+        };
+    if overflow == AnchorOverflow::Cap {
+        cross_extent = cross_extent.min(cross_room_extent.max(0.0));
+    }
+    let cross = match alignment {
+        PopoverAlignment::Start => cross_anchor,
+        PopoverAlignment::Center => cross_anchor + cross_anchor_extent / 2.0 - cross_extent / 2.0,
+        PopoverAlignment::End => cross_anchor + cross_anchor_extent - cross_extent,
+    }
+    .clamp(
+        cross_room,
+        (cross_room + cross_room_extent - cross_extent).max(cross_room),
+    );
+    if vertical {
+        LayoutBox {
+            x: cross,
+            y: main,
+            width: cross_extent,
+            height: extent,
+        }
+    } else {
+        LayoutBox {
+            x: main,
+            y: cross,
+            width: extent,
+            height: cross_extent,
+        }
+    }
+}
+
+/// Where an anchored surface of `surface_width` × `surface_height` opens
+/// against `trigger` inside `viewport`: [`resolve_anchored_surface`] with
+/// [`AnchorOverflow::Shift`]. The surface flips to the opposite side when
+/// only that side has room for it, as a tooltip does, and is kept inside the
+/// viewport. A surface with room on neither side overlaps its trigger rather
+/// than leave the window.
 pub fn resolve_popover_origin(
     trigger: LayoutBox,
     surface_width: f32,
@@ -892,59 +1007,17 @@ pub fn resolve_popover_origin(
     alignment: PopoverAlignment,
     gap: f32,
 ) -> (f32, f32) {
-    let fits_before = |start: f32, extent: f32, origin: f32| origin - gap - extent >= start;
-    let fits_after = |end: f32, extent: f32, origin: f32| origin + gap + extent <= end;
-    let (right, bottom) = (viewport.x + viewport.width, viewport.y + viewport.height);
-    let placement = match placement {
-        PopoverPlacement::Bottom
-            if !fits_after(bottom, surface_height, trigger.y + trigger.height)
-                && fits_before(viewport.y, surface_height, trigger.y) =>
-        {
-            PopoverPlacement::Top
-        }
-        PopoverPlacement::Top
-            if !fits_before(viewport.y, surface_height, trigger.y)
-                && fits_after(bottom, surface_height, trigger.y + trigger.height) =>
-        {
-            PopoverPlacement::Bottom
-        }
-        PopoverPlacement::Right
-            if !fits_after(right, surface_width, trigger.x + trigger.width)
-                && fits_before(viewport.x, surface_width, trigger.x) =>
-        {
-            PopoverPlacement::Left
-        }
-        PopoverPlacement::Left
-            if !fits_before(viewport.x, surface_width, trigger.x)
-                && fits_after(right, surface_width, trigger.x + trigger.width) =>
-        {
-            PopoverPlacement::Right
-        }
-        placement => placement,
-    };
-    let mut x = match placement {
-        PopoverPlacement::Top | PopoverPlacement::Bottom => match alignment {
-            PopoverAlignment::Start => trigger.x,
-            PopoverAlignment::Center => trigger.x + trigger.width / 2.0 - surface_width / 2.0,
-            PopoverAlignment::End => trigger.x + trigger.width - surface_width,
-        },
-        PopoverPlacement::Left => trigger.x - surface_width - gap,
-        PopoverPlacement::Right => trigger.x + trigger.width + gap,
-    };
-    let mut y = match placement {
-        PopoverPlacement::Top => trigger.y - surface_height - gap,
-        PopoverPlacement::Bottom => trigger.y + trigger.height + gap,
-        PopoverPlacement::Left | PopoverPlacement::Right => match alignment {
-            PopoverAlignment::Start => trigger.y,
-            PopoverAlignment::Center => trigger.y + trigger.height / 2.0 - surface_height / 2.0,
-            PopoverAlignment::End => trigger.y + trigger.height - surface_height,
-        },
-    };
-    let max_x = (right - surface_width).max(viewport.x);
-    let max_y = (bottom - surface_height).max(viewport.y);
-    x = x.clamp(viewport.x, max_x);
-    y = y.clamp(viewport.y, max_y);
-    (x, y)
+    let surface = resolve_anchored_surface(
+        trigger,
+        surface_width,
+        surface_height,
+        viewport,
+        placement,
+        alignment,
+        gap,
+        AnchorOverflow::Shift,
+    );
+    (surface.x, surface.y)
 }
 
 #[cfg(test)]

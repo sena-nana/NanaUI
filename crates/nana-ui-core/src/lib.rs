@@ -64,7 +64,7 @@ pub use action::{
     KeyContext,
 };
 pub use box_layout::{
-    AlignSpec, BackdropFilter, BackgroundImage, BackgroundImageFit, BackgroundPosition,
+    AlignSpec, AnchorSpec, BackdropFilter, BackgroundImage, BackgroundImageFit, BackgroundPosition,
     BackgroundRepeat, BorderImageSlice, BorderImageSpec, BorderImageTile, BorderStyle,
     BoxShadowSpec, BoxSizing, CalcBinOp, CalcExpr, CalcExprRef, ClearSpec, ClipCircle, ClipEllipse,
     ClipInset, ClipPath, ClipPoint, ClipShapeRadius, ColorFilter, ContainerType, CssGradient,

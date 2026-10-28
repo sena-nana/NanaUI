@@ -384,8 +384,8 @@ pub use pane_section::PaneSection;
 pub use path_field::{BrowseRequested, PathField};
 pub use placeholders::{LevelMeter, Skeleton};
 pub use popover::{
-    ActionMenu, MENU_OVERLAY_Z_INDEX, Popover, PopoverClosed, PopoverToggled,
-    resolve_popover_origin,
+    ActionMenu, AnchorOverflow, MENU_OVERLAY_Z_INDEX, Popover, PopoverClosed, PopoverToggled,
+    resolve_anchored_surface, resolve_popover_origin,
 };
 pub use presence::{PresenceLifecycle, PresencePhase, PresenceSettled};
 pub use presentation::{
