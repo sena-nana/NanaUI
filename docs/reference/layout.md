@@ -132,6 +132,25 @@ context 切换，增量与冷布局相同；分派不认模态框时 placement �
 锚定的浮层已经由布局放置，见下文「锚点定位」。`absolute` 的包含块按 CSS 解析，`fixed` 挂在自己文档的视口上，裁剪和滚动沿
 包含块走的 clip 链作用，Scene、命中和无障碍读同一条链，见下文「定位」里的「clip 链」（#201）。
 
+## 组件内容部件（#205）
+
+控件不自己排内容。图标、指示框、标签、hint、spinner 这类没有身份的内容声明为轻量 Flex
+parts（`layout_engine::parts`），用 retained Flex 的同一组求解函数分配主轴、收缩和对齐，
+结果随节点的 `LayoutResult.parts` 一起发布。部件没有 `StableNodeId`，不产生 wrapper 节点。
+一份部件声明同时供四处读：intrinsic measure 取除文字以外的宽度与间距（`chrome_extent`），
+段落预算取可用宽度减去同一份（`text_budget`），placement 求解它们，`ComponentGeometry`
+和 Scene 只读发布的盒子、附加绘制数据。文本片段（TextLine/TextRun）落在 `TextContent`
+部件里。
+
+已迁移：Button、Chip、ActionMenuItem、Checkbox、ListItem/SidebarRow/FileTab 的文字部件、
+LabeledValue、FormField、Card 标题、Select 触发器。交互、数据行、文本编辑几何（菜单行、
+树行、编辑器）与图表、路径、画布不进部件。逐组件的分类和待迁移项见
+[组件内容布局与迁移审计](component-layout.md)。
+
+文字被清空的盒子交出原来的度量：一个盒子的文字变成空串时，下一次文字工作把它解析成
+「没有文字」，度量归零、布局重新量它，结果与冷布局相同。门禁是 `world/issue205.rs` 的
+`issue205_a_cleared_label_lays_out_as_a_cold_unlabelled_control`。
+
 ## Incremental reflow frontier
 
 Runtime 的增量布局把一次布局失效表示为 `LayoutInvalidation`：它同时记录
@@ -803,7 +822,7 @@ flex 项和 grid 项上的 float，按 CSS 被块化，然后忽略。
 
 每个盒子发布的 `LayoutResult` 记着这条链：`clip` 是最近一个够得着它的溢出容器，链沿那个容器自己的 `clip` 往上；`clip_parent` 是盒子取裁剪和滚动的节点，一般是父级，逃出溢出容器的 `absolute` 盒子则是它逃出的最外层容器的父级，`fixed` 盒子是 `None`。`UiWorld::layout_clip_chain` 按发布的结果列出整条链。被跨过的祖先仍把变换传给它，但不传任何裁剪和滚动。这里和 CSS 有一处不同：被跨过的祖先上的 `clip-path` 和组件铬的裁剪（EmptyState、对话框）也不作用于它，CSS 的 `clip-path` 会。
 
-Scene 抽取、命中索引、无障碍和 Select 菜单的可用空间都按 `clip_parent` 挂盒子，不各自沿祖先推导。命中索引里逃出的盒子挂在 `clip_parent` 的条目下，滚动时它逃出的那个容器的平移不带上它，它覆盖的点按绘制顺序排先后。无障碍节点的 `bounds` 仍是整个盒子，`clip` 是链上各溢出容器按此刻的滚动留给它的那块视口，链上没有容器时为 `None`；画出来的、指针点得到的就是 `bounds` 落在 `clip` 里的部分。滚动仍然不跑布局。祖先改变定位或开始、停止裁剪时，下面记着的链跟着重新发布。
+Scene 抽取、命中索引、无障碍和 Select 菜单的可用空间都按 `clip_parent` 挂盒子，不各自沿祖先推导。要按上方的盒子截一块区域的遍历（菜单的可用空间、无障碍里 EmptyState 与对话框的铬裁剪）都走 `UiWorld::clip_ancestors`，即沿发布的 `clip_parent` 往上：`fixed` 盒子（字段自己或它上方的一个）到此为止，`fixed` 的字段打开的菜单取整个窗口（#205 门禁 `issue205_menu_room_and_chrome_clips_follow_the_clip_chain`）。命中索引里逃出的盒子挂在 `clip_parent` 的条目下，滚动时它逃出的那个容器的平移不带上它，它覆盖的点按绘制顺序排先后。无障碍节点的 `bounds` 仍是整个盒子，`clip` 是链上各溢出容器按此刻的滚动留给它的那块视口，链上没有容器时为 `None`；画出来的、指针点得到的就是 `bounds` 落在 `clip` 里的部分。滚动仍然不跑布局。祖先改变定位或开始、停止裁剪时，下面记着的链跟着重新发布。
 
 门禁在 `world/issue201.rs` 的 `clip_chain` 模块：定位的页面里有静态滚动容器，里面一张定位卡片带一个静态滚动容器，放一行流内盒子、一个以卡片为包含块的 `absolute` 盒子和一个 `fixed` 盒子；卡片后面一个静态裁剪盒放一个以页面为包含块的 `absolute` 盒子。断言各自的 `clip` / `clip_parent`；两个容器滚到几组偏移，每组不跑布局，无障碍的位置和裁剪、指针命中（就地打补丁的命中索引和重建的都算）都按链；Select 菜单的空间同样只被链上的容器截；卡片和里层容器改变定位、溢出时与冷布局逐项相同（含无障碍的 `clip`），就地打补丁的命中索引（先让滚动平移活着，再变链）在整页网格上的命中和候选与重建的相同；被跨过的祖先的变换（样式上的和合成器动画呈现的）照样作用于逃出的盒子；一个树序在后、盖住逃出盒子的兄弟接住指针，不论索引怎样排它们。`nana-ui-scene` 的 `runtime_document_clip_chain_tests.rs` 走真实的 `RuntimeDocument` 帧，逐个比较 Scene 画出的位置和裁剪、无障碍的 `bounds` / `clip`、命中和剔除，滚动和链变化后都相同。
 
@@ -828,7 +847,7 @@ Scene 抽取、命中索引、无障碍和 Select 菜单的可用空间都按 `c
 
 窗口改变大小时，布局直接重放这些表面，不用重新投影组件。命中和无障碍读的都是布局给出的盒子。这个字段没有 CSS 写法，由控件写。门禁在 `world/issue200.rs`。
 
-Select、Dropdown、SearchDropdown 的菜单不是布局盒子，是字段的组件几何：按字段的盒子和「菜单看得见的空间」（`SelectMenuRoom`：窗口，再扣掉字段外层的裁剪，按此刻的滚动位置）用同一个解析器摆放。Scene 画的、`select_option_at` 选的、命中索引里字段那一项带的菜单表面，都从这一份几何来。空间由字段投影时记下；每一趟布局结束后（滚动保留之后），引擎再为文档里开着的菜单按刚发布的布局算一次空间，变了才写回，所以窗口改变大小、字段或外层容器被挪动时，菜单不用等字段重新投影就重新翻面、截高，命中索引随之重建字段那一项。只有滚动不跑布局：页面滚动时菜单跟着字段走，到下一次变化再重新摆放，画和命中仍是同一份。门禁 `issue200_a_select_menu_follows_the_viewport_and_hits_where_it_paints`：窗口变矮再变高，菜单翻上翻下，每一步画在某点的那一行就是指针选中的一行、命中给字段的一点，旧位置不再命中，与冷布局得到的菜单相同。字段（`ComboBox`）的范围是它的布局盒子；菜单打开时，字段下有一个列表框，每个露出来的行一个选项节点，范围同样取自这份几何（行与菜单视口、此刻的「看得见的空间」相交，再经字段的变换），所以读屏读到的、画出来的和指针选中的是同一行，见 [Select 的读屏](../components/select.md#读屏)。门禁在同一个文件：`issue200_a_select_listbox_*`、`issue200_an_open_select_menu_reads_as_a_listbox_of_its_rows` 等。
+Select、Dropdown、SearchDropdown 的菜单不是布局盒子，是字段的组件几何：按字段的盒子和「菜单看得见的空间」（`SelectMenuRoom`：窗口，再扣掉字段 clip 链上的裁剪，按此刻的滚动位置）用同一个解析器摆放。Scene 画的、`select_option_at` 选的、命中索引里字段那一项带的菜单表面，都从这一份几何来。空间由字段投影时记下；每一趟布局结束后（滚动保留之后），引擎再为文档里开着的菜单按刚发布的布局算一次空间，变了才写回，所以窗口改变大小、字段或外层容器被挪动时，菜单不用等字段重新投影就重新翻面、截高，命中索引随之重建字段那一项。只有滚动不跑布局：页面滚动时菜单跟着字段走，到下一次变化再重新摆放，画和命中仍是同一份。门禁 `issue200_a_select_menu_follows_the_viewport_and_hits_where_it_paints`：窗口变矮再变高，菜单翻上翻下，每一步画在某点的那一行就是指针选中的一行、命中给字段的一点，旧位置不再命中，与冷布局得到的菜单相同。字段（`ComboBox`）的范围是它的布局盒子；菜单打开时，字段下有一个列表框，每个露出来的行一个选项节点，范围同样取自这份几何（行与菜单视口、此刻的「看得见的空间」相交，再经字段的变换），所以读屏读到的、画出来的和指针选中的是同一行，见 [Select 的读屏](../components/select.md#读屏)。门禁在同一个文件：`issue200_a_select_listbox_*`、`issue200_an_open_select_menu_reads_as_a_listbox_of_its_rows` 等。
 
 脱流盒子的高度没写，也没同时写 `top` 和 `bottom` 时，按内容算。它里面按高度填满的子项（`Fill`、百分比高度）没有确定的高度可依，按内容处理。不再取包含块的高度。包含块的高度由这些盒子撑出来时（按内容量高的虚拟列表行），那样会每一趟布局都长高一截，帧永远稳定不下来。
 

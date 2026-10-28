@@ -410,3 +410,63 @@ GPU pixels 来自 macOS。Windows/Linux 真机与外部 consumer 完整构建/�
 - 普通块级流的原子行盒没有基线对齐（也没有 `vertical-align`）。按 CSS 应当以基线对齐（替换内容即底边对齐），但这会改变所有混高 inline-block 行的位置，属于产品层面的行为选择：要么保持顶部对齐并在文档中注明（文字与原子混排走 `InlineFlow`），要么在 `pack_ifc_line_boxes` 引入 `vertical-align: baseline` 默认值并重录受影响的基线。本轮未改。
 - HostTexture / Video 的自然尺寸仍需宿主自己用 `set_replaced_metadata` 上报；`GpuTextureView` 默认不上报（见上文 `painted_extent` 的说明）。
 - 未在 Windows/Linux 上运行；NanaLive / NanaType 只读检查：只用 `GpuTextureView.fit = ContentFit::…`（Rust 字段）与 `BackgroundImage::url_with_fit`，不受标记 fit 优先级与新增 API 影响；未构建这两个 consumer。
+
+## 2026-10-29 追加：#205
+
+逐条重新核对 #205 的 7 条验收项（不沿用 10-26/10-27 的判定），补全 mini-layout 审计表，迁移 Checkbox，把 Select 菜单空间与无障碍铬裁剪改为沿 clip 链，并修复冷对照门禁揭出的「清空的文字留着旧度量」。
+
+| 验收项 | 判定 | 证据 / 缺口 |
+| --- | --- | --- |
+| 建立 component mini-layout audit 表 | **本轮补全** | `docs/reference/component-layout.md` 的审计表逐项覆盖 `UiWorld::derive_component_geometry` 的全部分支，按 Issue 的 1–4 类标出已迁移、待迁移与不迁移；原表缺 Checkbox、Switch、StatusBadge、ValidationMessage、SelectionOption、EmptyState、Toast、MenuSurface 触发器、Range/Progress、ModalFrame、Panel 等行 |
+| 首批通用组件迁移到 Foundation composition | 可勾（附注） | Issue 点名的首批：Button/Chip/ActionMenuItem（`issue205_button_chip_menu_parts_follow_content_changes_without_new_entities`）、ListItem/SidebarRow/FileTab（`issue205_row_text_parts_match_cold_and_preserve_state`、`issue205_rtl_row_parts_respect_live_slots_and_hidden_tools`）、FormField/LabeledValue（`issue205_form_field_parts_*`、`issue205_value_parts_*`）、Card（`issue205_card_header_*`）、Select 触发器（`issue205_select_trigger_parts_*`）此前已迁；Panel 本来就是普通 Flex 列，没有组件几何。本轮另迁 Checkbox（见下）。附注：菜单行（Select/Dropdown/ContextMenu）是字段的数据行，归 3 类，label/hint 分割共用 `menu_option_text_boxes`、摆放走 #200，不进 Foundation；MenuSurface 触发器的文字/图标仍手算 |
+| renderer-side label/icon/slot placement 逐步删除 | 进行中 | 本轮删掉 Scene 为 Checkbox 自算的指示框位置和标签让位（`scene/primitives.rs`），Scene 只读 `ComponentGeometry::Checkbox`；Scene 测试 `standard_control_visuals_expand_without_backend_tag_matching` 改为提供 Runtime 发布的几何。剩余：Scene 里 Switch 的 `SWITCH_TEXT_INSET` 兜底 |
+| ComponentGeometry 重复 layout authority 删除/降级 | 进行中 | 本轮删除三处：Checkbox 的指示框占位原先在 measure（`visual_content`）、段落预算（`text_shape_constraints` 的 `leading_visual`）、geometry 各算一遍，现都读 `UiWorld::checkbox_parts`；`select_menu_room` 自己沿祖先走、自己判断逃出与 `fixed`，现沿 `UiWorld::clip_ancestors`（发布的 clip 链）；无障碍的 EmptyState/对话框铬裁剪同样改走 `clip_ancestors`。剩余见审计表：Switch、StatusBadge/ValidationMessage、SelectionOption、EmptyState、Toast、MenuSurface 触发器、Range/Progress 文字、`context_menu_height` |
+| retained wrapper/entity 爆炸有门禁 | 可勾 | 1k/10k：`issue205_ten_thousand_plain_buttons_keep_one_entity_and_two_parts_each`、`…_rows_…`、`…_form_fields_and_selects_…`、`…_values_…`、`…_cards_…`，本轮 `issue205_ten_thousand_checkboxes_keep_one_entity_and_three_parts`（每个一个实体，parts 恰为 TextContent/ComponentContent/LeadingContent，空闲帧零布局零 spawn）；常驻内存 `tests/node_memory.rs` |
+| 业务/visual geometry 不被错误塞进 Layout Foundation | 可勾（附注） | 审计表把编辑器、菜单/树/命令面板/重排列表的行、滚动条、XYPad、resize grip 归 3 类，图表、日历热图、二维码、图、Markdown、ImageViewer 舞台归 4 类，均未加 `LayoutPartKind`；附注：这是按源码的人工分类，没有机器门禁 |
+| 旧 API 可作为 facade 继续使用 | 可勾 | Checkbox、Button、Select 等构造与字段未变；Runtime 全量、view_macro、Scene、nana-ui 全部通过（见下）；`ComponentGeometry::Checkbox` 字段不变 |
+
+### 改动
+
+- **Checkbox 迁到部件。** `layout_engine::parts` 新增 `checkbox_parts`（指示框 `LeadingContent`，标签 `TextContent` 取余下宽度、可收缩、交叉轴拉伸，间隔只在有标签时）、`chrome_extent`（部件里除文字以外的宽度与间距、最高的图形）、`text_budget`（可用宽度减去同一份）、`start_row_parts`（图形按内容盒取正方形后起点对齐地求解）。`button_text_budget` 与 Button 的 intrinsic 改用 `text_budget` / `chrome_extent`，数值不变。`UiWorld::checkbox_parts` 从主题读指示框尺寸与间隔，measure、段落预算、`solve_content_parts_at`、geometry 都读它。TextRun 片段因此落在标签部件里（此前 Checkbox 没有部件，文本片段落在整个内容盒，与指示框重叠）。内容盒比指示框还矮时，标签跟着正方形化后的指示框左移，不再空出固定宽度（只在显式压低的 Checkbox 上可见）。
+- **菜单空间与铬裁剪沿 clip 链。** `clip_chain.rs` 新增 `UiWorld::clip_ancestors`（沿发布的 `clip_parent` 往上）。`select_menu_room` 与无障碍的铬裁剪都用它，删掉各自的祖先遍历与逃出判断。行为变化：`fixed` 的字段打开的菜单取整个窗口，不再被它所在的滚动容器截（字段本身就画在、点在那些容器之外）；`fixed` 盒子的无障碍范围不再被祖先 EmptyState/对话框的铬裁剪截，与绘制、命中一致；逃出对话框 body 的 `absolute` 盒子不再被 body 裁剪截（命中索引早已如此）。
+- **清空的文字交出度量。** 冷对照门禁揭出：Button/Chip/Checkbox 的标签被清空后，盒子仍按旧文字的宽度排。原因是没有文字的盒子在 `take_system_work` 里被去掉 TEXT 位，旧的 `text_metrics` 一直留着。现在仍持有度量的盒子保留 TEXT 位；`shape_text` 把文字为空的非 Text 盒子解析成「没有文字」，度量归零、按度量变化重新布局，此后不再进文字工作。
+- 文档：`component-layout.md` 审计表与产品路径、`layout.md` 新增「组件内容部件（#205）」并补 clip 链段落、`layout-result.md`、`components/checkbox.md`「布局」、`components/select.md`「菜单」。
+
+### 门禁与变异
+
+| 门禁（`world/issue205.rs`） | 证明 | 变异（改坏→变红→恢复→`cmp` 一致） |
+| --- | --- | --- |
+| `issue205_checkbox_indicator_and_label_are_published_parts` | 指示框正方形、居中、起于内容盒；标签起于指示框加间隔、止于内容盒末；无宽度的 Checkbox 的标签部件恰为文字宽（measure 读同一组部件）；`ComponentGeometry::Checkbox` 等于两部件；TextRun 落在标签部件内；1 实体 3 parts；120px 宽的长标签按标签部件宽度折行 | measure 去掉间隔：红；预算不扣指示框：红；geometry 的标签取内容盒：红；不发布 Checkbox 部件：红（连同 10k 门禁） |
+| `issue205_checkbox_parts_follow_changes_like_a_cold_layout_and_toggle_paints_only` | 空标签→有标签→长标签/Small→Large/90px→清空→复原，每步与冷布局逐项相同（`assert_matches_cold`）；勾选、悬停零 measure/placement，generation 与 `LayoutResult` 指针不变，无障碍 `checked` 更新 | 去掉「持有度量的盒子保留 TEXT 位」：红 |
+| `issue205_checkbox_parts_survive_context_transitions` | 勾选且聚焦的 Checkbox 在 Grid→Inline→Flex 父级间切换：0 spawn/despawn，状态与焦点保留，几何等于部件，与冷布局相同 | geometry 的标签取内容盒：红 |
+| `issue205_ten_thousand_checkboxes_keep_one_entity_and_three_parts` | 1k/10k 每个一个实体、三个 parts、空闲帧零工作 | 不发布 Checkbox 部件：红 |
+| `issue205_menu_room_and_chrome_clips_follow_the_clip_chain` | 流内行的菜单空间被滚动容器按滚动截；`fixed` 字段的菜单空间是整个窗口、命中在它画的位置；EmptyState 流内子项在铬裁剪内，`fixed` 子项的无障碍范围是它的整个盒子、命中同处 | `select_menu_room` 改回沿树走：红（连同 `issue201_a_menu_room_is_cut_by_the_clip_chain_alone`）；无障碍铬裁剪改回沿树走：红 |
+| `issue205_a_cleared_label_lays_out_as_a_cold_unlabelled_control` | 带图标的 Button 与 Chip 清空标签后与冷布局逐项相同、Button 变窄、度量归零，下一帧无工作、零布局、generation 不变 | 去掉 TEXT 位保留：红；`shape_text` 不把空文字解析成「没有文字」（按空行量出行高）：红 |
+
+所有门禁已在 CI 的 `issue205` 过滤里（`.github/workflows/ci.yml` 的门禁循环原有 `issue205`，前缀匹配，不用改）。
+
+### 本轮运行
+
+| 命令 | 结果 |
+| --- | --- |
+| `cargo fmt --all -- --check`；`git diff --check` | passed |
+| `cargo clippy -q -p nana-ui-core -p nana-ui-runtime -p nana-ui-scene -p nana-ui --all-targets -- -D warnings` | passed |
+| `cargo test -q -p nana-ui-runtime --lib` | 2320 passed、1 ignored（加入迁移切换门禁之前；之后由下面的工作区全量覆盖） |
+| `cargo test -q -p nana-ui-runtime --lib -- issue205` | 23 passed |
+| `cargo test -q -p nana-ui-runtime --lib --features layout-verify -- issue205 issue201 issue199` | 36 passed |
+| `cargo test -q -p nana-ui-runtime --features view-macro --test view_macro` | 48 passed |
+| `cargo test -q -p nana-ui-scene --tests` | 全部通过（lib 238） |
+| `cargo test -q -p nana-ui-scene --lib --features nana-ui-runtime/layout-verify` | 238 passed |
+| `cargo test -q -p nana-ui --features hosted,gpu --lib` | 967 passed、1 ignored |
+| `cargo test -q --workspace --all-targets` | 6072 passed、0 failed、5 ignored |
+| `cargo test -q -p component-gallery --bin ui-snapshots --features snapshots --locked` | 12 passed |
+| `caffeinate -di cargo run -q --release -p component-gallery --bin ui-snapshots --features snapshots --locked -- --output <scratch>` | MATCH: 680（exact，Apple M4 Metal） |
+
+画廊像素逐张相同：画廊里的 Checkbox 都比指示框高，部件与原来手算的盒子相同；清空标签、`fixed` 字段的菜单、`fixed` 盒子在铬裁剪下的无障碍范围都不在画廊里。
+
+### 仍未做
+
+- 审计表里标「待迁移」的 2 类：Switch（track 与 label/hint、`project` 里的 min-height、段落预算与 Scene 的 `SWITCH_TEXT_INSET` 各一份 track 占位）、StatusBadge/ValidationMessage（padding 预留 + geometry 重算）、SelectionOption、EmptyState、Toast、MenuSurface 触发器、Range/Progress 的文字；ContextMenu 的 `context_menu_height`（被投影覆盖的默认度量高度）。Switch 的标签与 hint 是行里套一列，需要部件支持嵌套方向或两组部件，属下一批。
+- Checkbox 在 RTL 下不镜像（与迁移前相同）。按 CSS 应把指示框放到行尾；这会改变 RTL 下的画面，属产品选择，本轮未改。
+- 无障碍铬裁剪对「逃出对话框 body 的 `absolute` 盒子」现在与命中一致（不被 body 截），没有单独的门禁覆盖这一支；EmptyState 与 `fixed` 的门禁覆盖了沿链遍历本身。
+- 未在 Windows/Linux 上运行；没有跑 `nana-ui-devtools` 的真实 GPU `issue205_component_pixels`。NanaLive / NanaType 只读检查：没有 `ComponentGeometry::Checkbox`、`SelectMenuRoom` 或 Checkbox 部件的直接使用，Checkbox 只经构造器；NanaLive 的 `tool_window_acceptance/narrow.rs` 读行与选项的 `text_metrics`（非空标签，不受清空修复影响）；未构建这两个 consumer。

@@ -1274,26 +1274,24 @@ impl UiWorld {
                     geometry
                 })
             }
-            StandardVisual::Checkbox { size, .. } => {
-                let reserve = size.indicator_size_in(self.theme.typography(), self.theme.spacing());
-                let extent = reserve.min(content.height);
-                let gap = size.indicator_gap_in(self.theme.spacing());
+            StandardVisual::Checkbox { .. } => {
+                // Both boxes are the parts layout published (#205); the label
+                // of an empty checkbox has none and keeps the content box.
+                use crate::LayoutPartKind;
+                let indicator = self
+                    .content_part_box(id, LayoutPartKind::LeadingContent)
+                    .unwrap_or(LayoutBox {
+                        width: 0.0,
+                        height: 0.0,
+                        ..content
+                    });
                 Some(crate::ComponentGeometry::Checkbox {
                     border_width: self.theme.border().hairline,
                     check_weight: self.theme.typography().bold,
-                    indicator: LayoutBox {
-                        x: content.x,
-                        y: content.y + (content.height - extent) / 2.0,
-                        width: extent,
-                        height: extent,
-                    },
+                    indicator,
                     label: text_region(
-                        LayoutBox {
-                            x: content.x + reserve + gap,
-                            y: content.y,
-                            width: (content.width - reserve - gap).max(0.0),
-                            height: content.height,
-                        },
+                        self.content_part_box(id, LayoutPartKind::TextContent)
+                            .unwrap_or(content),
                         self.text(id).unwrap_or_default().into(),
                         false,
                         style.font_size,
@@ -2818,12 +2816,13 @@ impl UiWorld {
     }
 
     /// Where a menu hanging off `id` can be seen, in `id`'s own layout
-    /// coordinates: the window and every clip above `id` that hit testing
-    /// cuts it by, each moved through the scroll offsets between that box and
-    /// `id`. A
-    /// `position: fixed` ancestor is window-placed and ends the walk, as it
-    /// does for hit testing. Transforms are left out: they bend where the menu
-    /// is placed, not whether what it draws matches what it hits.
+    /// coordinates: the window and every clip on `id`'s clip chain, each moved
+    /// through the scroll offsets between that box and `id`. The chain is the
+    /// one paint and hit testing follow ([`Self::clip_ancestors`], #201): an
+    /// escaped box passes over the containers it escapes, and a `fixed` box,
+    /// the field or one above it, ends it. Transforms are left out: they bend
+    /// where the menu is placed, not whether what it draws matches what it
+    /// hits.
     ///
     /// `None` until the document is laid out, or when nothing is left to see.
     pub(crate) fn select_menu_room(&self, id: StableNodeId) -> Option<crate::SelectMenuRoom> {
@@ -2842,19 +2841,9 @@ impl UiWorld {
         };
         // Scroll offsets between the box being looked at and `id`.
         let mut shift = crate::ScrollOffset::default();
-        let mut child = id;
-        let mut current = self.parent_id(id);
-        // An escaped box (the field, or a box above it) passes over the
-        // ancestors between it and its clip parent: their clips and scroll
-        // do not reach it (#201).
-        let mut escaping = self.clip_escape(id);
-        while let Some(ancestor) = current {
-            if escaping.is_some_and(|anchor| anchor != Some(ancestor)) {
-                child = ancestor;
-                current = self.parent_id(ancestor);
-                continue;
-            }
-            escaping = self.clip_escape(ancestor);
+        // The link of the chain below `ancestor`.
+        let mut below = id;
+        for ancestor in self.clip_ancestors(id) {
             let offset = self.scroll_offset(ancestor).unwrap_or_default();
             shift.x += offset.x;
             shift.y += offset.y;
@@ -2877,7 +2866,7 @@ impl UiWorld {
                 match self.nodes.visual(ancestor) {
                     Some(StandardVisual::EmptyState { .. }) => clip(layout, shift),
                     Some(StandardVisual::ModalFrame { slots, .. }) => {
-                        let body_root = slots.body == Some(child);
+                        let body_root = slots.body == Some(below);
                         if let Some(crate::ComponentGeometry::ModalFrame {
                             surface, body, ..
                         }) = self.component_geometry(ancestor)
@@ -2891,11 +2880,7 @@ impl UiWorld {
                     _ => {}
                 }
             }
-            if style.position == nana_ui_core::PositionSpec::Fixed {
-                break;
-            }
-            child = ancestor;
-            current = self.parent_id(ancestor);
+            below = ancestor;
         }
         clip(
             LayoutBox {

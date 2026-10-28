@@ -38,7 +38,7 @@ measure 和 placement 的 child flow、脱流及浮动分类直接消费 `Partic
 
 ## 与 ComponentGeometry 的关系
 
-`ComponentGeometry` 仍是组件语义部件与非盒式绘制数据（例如缩放拖柄、图表路径、编辑器装饰线）的兼容表面。Button、Chip、ActionMenuItem 的文字、图标、hint、spinner 盒子由 Foundation 的轻量 Flex parts 发布，几何投影读取 `LayoutResult.parts`，不再次分配位置。其余组件的分类与待迁移边界见[组件布局审计](component-layout.md)。
+`ComponentGeometry` 仍是组件语义部件与非盒式绘制数据（例如缩放拖柄、图表路径、编辑器装饰线）的兼容表面。Button、Chip、ActionMenuItem 的文字、图标、hint、spinner 盒子与 Checkbox 的指示框、标签由 Foundation 的轻量 Flex parts 发布，几何投影读取 `LayoutResult.parts`，不再次分配位置。其余组件的分类与待迁移边界见[组件布局审计](component-layout.md)。
 
 ## 参见
 

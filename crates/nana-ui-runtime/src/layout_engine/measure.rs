@@ -568,30 +568,24 @@ fn visual_content(id: StableNodeId, world: &UiWorld) -> VisualContent {
             },
             height: 0.0,
         },
+        // The chrome a control lays out beside its label, read from the same
+        // parts placement solves.
         Some(visual @ crate::StandardVisual::Button { .. }) => {
             let parts = super::parts::button_parts(visual, Size::default()).expect("button");
+            let chrome = super::parts::chrome_extent(&parts);
             VisualContent {
-                width: parts
-                    .iter()
-                    .flatten()
-                    .map(|part| part.preferred.width + part.gap_after)
-                    .sum(),
-                height: parts
-                    .iter()
-                    .flatten()
-                    .map(|part| part.preferred.height)
-                    .fold(0.0, f32::max),
+                width: chrome.width,
+                height: chrome.height,
             }
         }
-        Some(crate::StandardVisual::Checkbox { size, .. }) => VisualContent {
-            width: size.indicator_size_in(world.theme().typography(), world.theme().spacing())
-                + if world.text(id).is_some_and(|label| !label.is_empty()) {
-                    size.indicator_gap_in(world.theme().spacing())
-                } else {
-                    0.0
-                },
-            height: size.indicator_size_in(world.theme().typography(), world.theme().spacing()),
-        },
+        Some(crate::StandardVisual::Checkbox { .. }) => {
+            let parts = world.checkbox_parts(id, Size::default()).expect("checkbox");
+            let chrome = super::parts::chrome_extent(&parts);
+            VisualContent {
+                width: chrome.width,
+                height: chrome.height,
+            }
+        }
         // Its text already asks for the widest option (`text_natural_width`);
         // the arrow stands beside it.
         Some(crate::StandardVisual::Select {

@@ -96,6 +96,21 @@ impl UiWorld {
         std::iter::successors(clip(id), move |id| clip(*id))
     }
 
+    /// The nodes whose clips and scroll reach `id`, nearest first: its clip
+    /// parent, that node's clip parent, and so on, read from the published
+    /// results. It ends at a `fixed` box, which hangs from nothing. A walk
+    /// that cuts what `id` shows by the boxes above it (an open menu's room,
+    /// a component's chrome clip) follows this, not the tree, so it agrees
+    /// with paint and hit testing about which boxes those are.
+    pub(crate) fn clip_ancestors(
+        &self,
+        id: StableNodeId,
+    ) -> impl Iterator<Item = StableNodeId> + '_ {
+        std::iter::successors(self.layout_clip_parent(id), move |node| {
+            self.layout_clip_parent(*node)
+        })
+    }
+
     /// Where `id` hangs when it escapes overflow containers on the way to
     /// its containing block: `Some(anchor)`, the clip parent it takes in
     /// place of its parent (`Some(None)`: no node, the box is a root of its

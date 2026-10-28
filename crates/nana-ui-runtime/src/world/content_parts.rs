@@ -2,7 +2,9 @@
 use super::*;
 use crate::layout_engine::{
     Size,
-    parts::{ContentParts, button_content_parts, part_bounds},
+    parts::{
+        ContentParts, FlexPart, button_content_parts, checkbox_parts, part_bounds, start_row_parts,
+    },
 };
 
 impl UiWorld {
@@ -108,6 +110,9 @@ impl UiWorld {
             button_content_parts(visual, content, Size::new(text.width, text.height))
         {
             return parts;
+        }
+        if let Some(inputs) = self.checkbox_parts(id, Size::new(text.width, text.height)) {
+            return start_row_parts(content, inputs);
         }
         if let StandardVisual::Card { title, loading, .. } = visual {
             let border = self
@@ -293,6 +298,25 @@ impl UiWorld {
             );
         }
         [None; 3]
+    }
+
+    /// A checkbox's indicator and label before placement, the label `text`
+    /// in size: what intrinsic measure, the paragraph budget and placement
+    /// all read, so none of them keeps its own copy of the indicator's room.
+    pub(crate) fn checkbox_parts(
+        &self,
+        id: StableNodeId,
+        text: Size,
+    ) -> Option<[Option<FlexPart>; 3]> {
+        let Some(StandardVisual::Checkbox { size, .. }) = self.standard_visual_ref(id) else {
+            return None;
+        };
+        Some(checkbox_parts(
+            size.indicator_size_in(self.theme.typography(), self.theme.spacing()),
+            size.indicator_gap_in(self.theme.spacing()),
+            self.text(id).is_some_and(|label| !label.is_empty()),
+            text,
+        ))
     }
 
     pub(super) fn content_part_box(

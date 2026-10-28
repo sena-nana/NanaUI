@@ -143,23 +143,79 @@ pub(crate) fn button_parts(visual: &StandardVisual, text: Size) -> Option<[Optio
     ])
 }
 
+/// A checkbox's row: its `indicator` square, then its label, which takes
+/// the rest of the row so the label's own alignment has the room the old
+/// hand-placed label box gave it. The gap stands only before a label.
+pub(crate) fn checkbox_parts(
+    indicator: f32,
+    gap: f32,
+    labelled: bool,
+    text: Size,
+) -> [Option<FlexPart>; 3] {
+    let mut mark = FlexPart::new(
+        LayoutPartKind::LeadingContent,
+        Size::new(indicator, indicator),
+    );
+    mark.gap_after = if labelled { gap } else { 0.0 };
+    let mut label = FlexPart::new(LayoutPartKind::TextContent, text);
+    label.grow = 1.0;
+    label.shrink = 1.0;
+    label.align = AlignSpec::Stretch;
+    [Some(mark), Some(label), None]
+}
+
+/// What a row of `parts` holds beside its label: every glyph's width and
+/// every gap, and the tallest glyph. Intrinsic measure adds the label's own
+/// size to it.
+pub(crate) fn chrome_extent(parts: &[Option<FlexPart>; 3]) -> Size {
+    let glyphs = || {
+        parts
+            .iter()
+            .flatten()
+            .filter(|part| part.kind != LayoutPartKind::TextContent)
+    };
+    Size::new(
+        parts
+            .iter()
+            .flatten()
+            .map(|part| part.gap_after.max(0.0))
+            .sum::<f32>()
+            + glyphs()
+                .map(|part| part.preferred.width.max(0.0))
+                .sum::<f32>(),
+        glyphs()
+            .map(|part| part.preferred.height.max(0.0))
+            .fold(0.0, f32::max),
+    )
+}
+
 /// The paragraph budget excludes fixed chrome, never its own measured advance.
-pub(crate) fn button_text_budget(visual: &StandardVisual, available: Size) -> Option<f32> {
-    let mut parts = button_parts(visual, Size::default())?;
+pub(crate) fn text_budget(mut parts: [Option<FlexPart>; 3], available: Size) -> f32 {
     fit_button_glyphs(&mut parts, available);
-    let reserved: f32 = parts
-        .iter()
-        .flatten()
-        .map(|part| {
-            part.gap_after.max(0.0)
-                + if part.kind == LayoutPartKind::TextContent {
-                    0.0
-                } else {
-                    part.preferred.width.max(0.0)
-                }
-        })
-        .sum();
-    Some((available.width - reserved).max(0.0))
+    (available.width - chrome_extent(&parts).width).max(0.0)
+}
+
+pub(crate) fn button_text_budget(visual: &StandardVisual, available: Size) -> Option<f32> {
+    Some(text_budget(
+        button_parts(visual, Size::default())?,
+        available,
+    ))
+}
+
+/// `inputs` placed as a start-aligned row of `bounds`, each glyph fitted
+/// square into it.
+pub(crate) fn start_row_parts(
+    bounds: LayoutBox,
+    mut inputs: [Option<FlexPart>; 3],
+) -> ContentParts {
+    fit_button_glyphs(&mut inputs, Size::new(bounds.width, bounds.height));
+    flex_parts(
+        bounds,
+        FlexDirection::Row,
+        JustifySpec::Start,
+        false,
+        inputs,
+    )
 }
 
 fn fit_button_glyphs(inputs: &mut [Option<FlexPart>; 3], available: Size) {

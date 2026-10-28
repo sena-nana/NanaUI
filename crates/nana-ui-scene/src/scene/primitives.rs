@@ -402,9 +402,6 @@ impl UiScene {
                 const SWITCH_TEXT_INSET: f32 = nana_ui_core::UI_METRICS.switch.track_width
                     + nana_ui_core::UI_METRICS.switch.label_gap;
                 let leading_visual = match node.standard_visual {
-                    Some(StandardVisual::Checkbox { size, .. }) => {
-                        size.indicator_size() + size.indicator_gap()
-                    }
                     Some(StandardVisual::Switch {
                         control_position: SwitchControlPosition::Start,
                         ..
@@ -437,6 +434,9 @@ impl UiScene {
                 {
                     text_bounds = scene_rect(*content);
                 }
+                // A checkbox's label sits where layout published its
+                // `TextContent` part, beside the indicator part; the scene
+                // keeps no copy of the indicator's room.
                 if let Some(ComponentGeometry::Checkbox { label, .. }) =
                     node.component_geometry.as_deref()
                 {
@@ -1639,33 +1639,24 @@ impl UiScene {
                 Some(StandardVisual::Checkbox {
                     checked,
                     indeterminate,
-                    size,
-                }) => {
-                    let indicator = match node.component_geometry.as_deref() {
-                        Some(ComponentGeometry::Checkbox { indicator, .. }) => {
-                            scene_rect(*indicator)
-                        }
-                        _ => {
-                            // Compatibility snapshots may supply visual-only nodes.
-                            // Runtime supplies resolved geometry for themed controls.
-                            let extent = size.indicator_size().min(bounds.height);
-                            SceneRect {
-                                x: bounds.x,
-                                y: bounds.y + (bounds.height - extent) / 2.0,
-                                width: extent,
-                                height: extent,
-                            }
-                        }
+                    ..
+                }) => 'checkbox: {
+                    // The indicator is the `LeadingContent` part layout
+                    // published (#205). A node without component geometry was
+                    // never laid out as a checkbox and has no indicator to
+                    // draw; the scene does not place one of its own.
+                    let Some(ComponentGeometry::Checkbox {
+                        indicator,
+                        border_width,
+                        check_weight,
+                        ..
+                    }) = node.component_geometry.as_deref()
+                    else {
+                        break 'checkbox;
                     };
+                    let indicator = scene_rect(*indicator);
+                    let (border_width, check_weight) = (*border_width, *check_weight);
                     let extent = indicator.width;
-                    let (border_width, check_weight) = match node.component_geometry.as_deref() {
-                        Some(ComponentGeometry::Checkbox {
-                            border_width,
-                            check_weight,
-                            ..
-                        }) => (*border_width, *check_weight),
-                        _ => (1.0, 700),
-                    };
                     self.insert_primitive(visual_quad_with_paint(
                         &visual_context,
                         3,

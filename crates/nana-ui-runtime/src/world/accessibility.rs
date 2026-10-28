@@ -109,16 +109,11 @@ impl UiWorld {
         if self.clip_visuals == 0 {
             return Some(bounds);
         }
-        // Only ancestors the clip chain hangs `id` from clip it: an escaped
-        // box passes over the ones between it and its clip parent (#201).
-        let mut escaping = self.clip_escape(id);
-        let mut parent = self.nodes.get(id)?.hierarchy.parent;
-        while let Some(ancestor) = parent {
-            if escaping.is_some_and(|anchor| anchor != Some(ancestor)) {
-                parent = self.nodes.get(ancestor)?.hierarchy.parent;
-                continue;
-            }
-            escaping = self.clip_escape(ancestor);
+        // Only the clip chain clips `id` (#201): an escaped box passes over
+        // the ancestors between it and its clip parent, and a `fixed` box,
+        // `id` or one above it, ends the chain, as in paint and hit testing.
+        let mut below = id;
+        for ancestor in self.clip_ancestors(id) {
             if matches!(
                 self.nodes.visual(ancestor),
                 Some(StandardVisual::EmptyState { .. })
@@ -132,28 +127,22 @@ impl UiWorld {
                     )?,
                 )?;
             }
-            if matches!(
-                self.nodes.visual(ancestor),
-                Some(StandardVisual::ModalFrame { .. })
-            ) && let Some(crate::ComponentGeometry::ModalFrame { surface, body, .. }) =
-                self.component_geometry(ancestor)
+            if let Some(StandardVisual::ModalFrame { slots, .. }) = self.nodes.visual(ancestor)
+                && let Some(crate::ComponentGeometry::ModalFrame { surface, body, .. }) =
+                    self.component_geometry(ancestor)
             {
                 bounds = intersect_layout_boxes(
                     bounds,
                     self.accessibility_viewport_bounds(ancestor, surface, memo)?,
                 )?;
-                if let Some(StandardVisual::ModalFrame { slots, .. }) = self.nodes.visual(ancestor)
-                    && slots
-                        .body
-                        .is_some_and(|body_root| self.is_descendant_or_self(id, body_root))
-                {
+                if slots.body == Some(below) {
                     bounds = intersect_layout_boxes(
                         bounds,
                         self.accessibility_viewport_bounds(ancestor, body, memo)?,
                     )?;
                 }
             }
-            parent = self.nodes.get(ancestor)?.hierarchy.parent;
+            below = ancestor;
         }
         Some(bounds)
     }

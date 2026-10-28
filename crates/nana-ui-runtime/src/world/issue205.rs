@@ -1285,6 +1285,424 @@ fn issue205_ten_thousand_cards_keep_one_entity_and_four_parts() {
     }
 }
 
+/// A checkbox `width` wide (its own size when `None`) labelled `label`, in a
+/// row, laid out once.
+fn checkbox_page(
+    label: &str,
+    size: nana_ui_core::ControlSize,
+    width: Option<f32>,
+) -> (AppContext, crate::Entity<crate::Checkbox>) {
+    let document = DocumentId::new(1).unwrap();
+    let mut cx = AppContext::new();
+    let mut shaper = bundled_face_shaper();
+    let root = cx
+        .create_component(document, Stack::row(0.0).width(LengthSpec::Px(400.0)))
+        .unwrap();
+    let checkbox = cx
+        .create_detached_component(document, checkbox_view(label, size, width))
+        .unwrap();
+    cx.append_child(root, checkbox).unwrap();
+    product_frame(
+        &mut cx,
+        document,
+        LayoutViewport::new(600.0, 400.0),
+        &mut shaper,
+    );
+    cx.rebuild_hit_test(document);
+    (cx, checkbox)
+}
+
+fn checkbox_view(
+    label: &str,
+    size: nana_ui_core::ControlSize,
+    width: Option<f32>,
+) -> crate::Checkbox {
+    crate::Checkbox::new(label, false)
+        .size(size)
+        .style(crate::NodeStyle {
+            layout: Arc::new(nana_ui_core::LayoutStyle {
+                width: width.map(LengthSpec::Px),
+                ..Default::default()
+            }),
+            ..Default::default()
+        })
+}
+
+fn part_of(cx: &AppContext, id: crate::StableNodeId, kind: LayoutPartKind) -> crate::LayoutBox {
+    cx.world()
+        .layout_result(id)
+        .unwrap()
+        .parts
+        .iter()
+        .find(|part| part.kind == kind)
+        .unwrap_or_else(|| panic!("{kind:?} part of {id:?}"))
+        .bounds
+}
+
+/// A checkbox's indicator and label are Flex parts layout publishes (#205):
+/// measure, the paragraph budget, placement, paint and the published text
+/// fragments all read them, and no copy of the indicator's room is left.
+#[test]
+fn issue205_checkbox_indicator_and_label_are_published_parts() {
+    use nana_ui_core::ControlSize;
+    let (cx, checkbox) = checkbox_page("Notifications", ControlSize::Medium, None);
+    let id = checkbox.stable_id();
+    let world = cx.world();
+    let result = world.layout_result(id).unwrap();
+    let content = result.content_box;
+    let indicator = part_of(&cx, id, LayoutPartKind::LeadingContent);
+    let label = part_of(&cx, id, LayoutPartKind::TextContent);
+    let extent = ControlSize::Medium.indicator_size();
+    let gap = ControlSize::Medium.indicator_gap();
+    // The indicator square starts the row, centred on it; the label starts
+    // one gap after it and takes the rest.
+    assert_eq!(
+        indicator,
+        crate::LayoutBox {
+            x: content.x,
+            y: content.y + (content.height - extent) / 2.0,
+            width: extent,
+            height: extent,
+        }
+    );
+    assert_eq!(label.x, content.x + extent + gap);
+    assert_eq!(label.x + label.width, content.x + content.width);
+    assert_eq!((label.y, label.height), (content.y, content.height));
+    // Measure reads the same parts: the box is exactly as wide as the
+    // indicator, the gap and the label's own text.
+    let text = world.text_metrics(id).unwrap();
+    assert!(text.width > 0.0);
+    assert!(
+        (label.width - text.width).abs() < 0.01,
+        "label part {} != text {}",
+        label.width,
+        text.width
+    );
+    // Paint reads them, nothing else.
+    let ComponentGeometry::Checkbox {
+        indicator: painted,
+        label: painted_label,
+        ..
+    } = world.component_geometry(id).unwrap()
+    else {
+        panic!("checkbox")
+    };
+    assert_eq!(painted, indicator);
+    assert_eq!(painted_label.bounds, label);
+    // The text fragments sit in the label part, not over the indicator.
+    let runs: Vec<_> = result
+        .fragments
+        .iter()
+        .filter(|fragment| fragment.kind == crate::LayoutFragmentKind::TextRun)
+        .collect();
+    assert!(!runs.is_empty());
+    for run in runs {
+        assert!(
+            run.bounds.x >= label.x - 0.01
+                && run.bounds.x + run.bounds.width <= label.x + label.width + 0.01,
+            "{run:?} outside {label:?}"
+        );
+    }
+    // One entity, the original two parts and the indicator.
+    assert_eq!(world.len(), 2);
+    assert_eq!(result.parts.len(), 3);
+
+    // A checkbox too narrow for its label shapes the label to the label
+    // part's width, not to the content box the indicator sits in.
+    let long = "Notify me about every reply in this thread";
+    let (cx, checkbox) = checkbox_page(long, ControlSize::Medium, Some(120.0));
+    let id = checkbox.stable_id();
+    let label = part_of(&cx, id, LayoutPartKind::TextContent);
+    let (_, layout) = cx.world().text_layout(id).unwrap();
+    let (shaped, _) = layout.physical_size();
+    assert!(
+        shaped <= label.width + 0.5,
+        "label shaped {shaped} wide in a {} part",
+        label.width
+    );
+}
+
+/// Label, size and width changes republish the parts as a cold layout of
+/// the same checkbox would; toggling and hovering lay nothing out.
+#[test]
+fn issue205_checkbox_parts_follow_changes_like_a_cold_layout_and_toggle_paints_only() {
+    use nana_ui_core::ControlSize;
+    let document = DocumentId::new(1).unwrap();
+    let viewport = LayoutViewport::new(600.0, 400.0);
+    let mut shaper = bundled_face_shaper();
+    let (mut cx, checkbox) = checkbox_page("", ControlSize::Medium, None);
+    for (label, size, width) in [
+        ("Notifications", ControlSize::Medium, None),
+        (
+            "Notify me about every reply in this thread",
+            ControlSize::Small,
+            None,
+        ),
+        (
+            "Notify me about every reply in this thread",
+            ControlSize::Large,
+            Some(90.0),
+        ),
+        ("", ControlSize::Large, Some(90.0)),
+        ("Notifications", ControlSize::Medium, None),
+    ] {
+        cx.update_component(checkbox, |view, _| {
+            *view = checkbox_view(label, size, width);
+        })
+        .unwrap();
+        product_frame(&mut cx, document, viewport, &mut shaper);
+        let (mut cold, cold_box) = checkbox_page(label, size, width);
+        assert_eq!(cold_box.stable_id(), checkbox.stable_id());
+        super::reflow_oracle::assert_matches_cold(&mut cx, &mut cold, document);
+        assert_eq!(cx.world().len(), 2);
+    }
+    let id = checkbox.stable_id();
+    let generation = cx.world().layout_generation();
+    let snapshot = Arc::clone(&cx.world().layout_results[&id]);
+    cx.update_component(checkbox, |view, _| view.checked = true)
+        .unwrap();
+    let toggled = product_frame(&mut cx, document, viewport, &mut shaper);
+    cx.set_pointer_hover_at(document, 1, Some(id), Duration::from_millis(16))
+        .unwrap();
+    let hovered = product_frame(&mut cx, document, viewport, &mut shaper);
+    for work in [toggled, hovered] {
+        assert_eq!(
+            (work.layout_measure_nodes, work.layout_placement_nodes),
+            (0, 0)
+        );
+    }
+    assert_eq!(cx.world().layout_generation(), generation);
+    assert!(Arc::ptr_eq(&snapshot, &cx.world().layout_results[&id]));
+    let a11y = cx.world().project_accessibility(document);
+    let node = a11y.iter().find(|node| node.id == id).unwrap();
+    assert_eq!(node.checked, Some(true));
+}
+
+/// A checked, focused checkbox moved between Grid, Inline and Flex parents
+/// keeps its entity, state and focus, and publishes the parts a cold layout
+/// in that context would.
+#[test]
+fn issue205_checkbox_parts_survive_context_transitions() {
+    use super::reflow_oracle::assert_matches_cold;
+    use crate::MutationQueue;
+    use nana_ui_core::DisplaySpec;
+    let document = DocumentId::new(1).unwrap();
+    let viewport = LayoutViewport::new(400.0, 300.0);
+    let build = |display: DisplaySpec| {
+        let mut cx = AppContext::new();
+        let root = cx
+            .create_component(
+                document,
+                Stack::column(0.0).with_layout(|layout| {
+                    layout.width = Some(LengthSpec::Px(320.0));
+                    layout.display = Some(display);
+                }),
+            )
+            .unwrap();
+        let checkbox = cx
+            .create_detached_component(document, crate::Checkbox::new("Notifications", true))
+            .unwrap();
+        cx.append_child(root, checkbox).unwrap();
+        let mut q = MutationQueue::new();
+        q.request_focus(document, Some(checkbox.stable_id()));
+        cx.commit_mutations(q).unwrap();
+        product_frame(&mut cx, document, viewport, &mut bundled_face_shaper());
+        (cx, root, checkbox)
+    };
+    let mut shaper = bundled_face_shaper();
+    let (mut cx, root, checkbox) = build(DisplaySpec::Flex);
+    let id = checkbox.stable_id();
+    for display in [DisplaySpec::Grid, DisplaySpec::Inline, DisplaySpec::Flex] {
+        let mut style = cx.world().node_style(root.stable_id()).unwrap().clone();
+        Arc::make_mut(&mut style.layout).display = Some(display);
+        let mut q = MutationQueue::new();
+        q.set_style(root.stable_id(), style);
+        cx.commit_mutations(q).unwrap();
+        let work = product_frame(&mut cx, document, viewport, &mut shaper);
+        assert_eq!((work.entities_spawned, work.entities_despawned), (0, 0));
+        assert!(cx.read(checkbox, |view| view.checked).unwrap());
+        assert_eq!(cx.world().focused(document), Some(id));
+        let ComponentGeometry::Checkbox {
+            indicator, label, ..
+        } = cx.world().component_geometry(id).unwrap()
+        else {
+            panic!("checkbox")
+        };
+        assert_eq!(indicator, part_of(&cx, id, LayoutPartKind::LeadingContent));
+        assert_eq!(label.bounds, part_of(&cx, id, LayoutPartKind::TextContent));
+        let (mut cold, ..) = build(display);
+        assert_matches_cold(&mut cx, &mut cold, document);
+    }
+}
+
+#[test]
+fn issue205_ten_thousand_checkboxes_keep_one_entity_and_three_parts() {
+    let _unguarded = crate::layout_engine::verify::skip_layout_verify();
+    for count in [1_000, 10_000] {
+        let document = DocumentId::new(1).unwrap();
+        let mut cx = AppContext::new();
+        let mut shaper = bundled_face_shaper();
+        let viewport = LayoutViewport::new(600.0, 400.0);
+        let root = cx.create_component(document, Stack::column(0.0)).unwrap();
+        let mut children = Vec::with_capacity(count);
+        for _ in 0..count {
+            children.push(
+                cx.create_detached_component(document, crate::Checkbox::new("Notify", false))
+                    .unwrap()
+                    .stable_id(),
+            );
+        }
+        let mut q = crate::MutationQueue::new();
+        for &id in &children {
+            q.insert(root.stable_id(), id, None);
+        }
+        cx.commit_mutations(q).unwrap();
+        product_frame(&mut cx, document, viewport, &mut shaper);
+        assert_eq!(cx.world().len(), count + 1);
+        for &id in &children {
+            let result = cx.world().layout_result(id).unwrap();
+            let kinds: Vec<_> = result.parts.iter().map(|part| part.kind).collect();
+            assert_eq!(
+                kinds,
+                [
+                    LayoutPartKind::TextContent,
+                    LayoutPartKind::ComponentContent,
+                    LayoutPartKind::LeadingContent
+                ]
+            );
+            assert!(result.child_placements.is_empty());
+        }
+        let generation = cx.world().layout_generation();
+        product_frame(&mut cx, document, viewport, &mut shaper);
+        assert!(cx.take_system_work().is_empty());
+        let idle = cx.world().frame_counters;
+        assert_eq!(
+            (
+                idle.layout_measure_nodes,
+                idle.layout_placement_nodes,
+                idle.entities_spawned,
+                idle.entities_despawned
+            ),
+            (0, 0, 0, 0)
+        );
+        assert_eq!(cx.world().layout_generation(), generation);
+    }
+}
+
+/// An open menu's room and a component's chrome clip read the clip chain
+/// paint and hit testing follow (#201), not a walk of their own: a `fixed`
+/// box hangs from nothing, so neither the scroller it sits in nor an empty
+/// state's chrome clip above it cuts its menu room or its accessible box.
+#[test]
+fn issue205_menu_room_and_chrome_clips_follow_the_clip_chain() {
+    use super::reflow_oracle::{Builder, fixed};
+    use crate::{InteractionState, LayoutBox, MutationQueue, ScrollOffset, StandardVisual};
+    use nana_ui_core::{FlexDirection, LayoutStyle, OverflowSpec, PositionSpec};
+    let document = DocumentId::new(1).unwrap();
+    let viewport = LayoutViewport::new(800.0, 600.0);
+    let placed = |position, [left, top, width, height]: [f32; 4]| LayoutStyle {
+        position,
+        offset_left: Some(LengthSpec::Px(left)),
+        offset_top: Some(LengthSpec::Px(top)),
+        ..fixed(width, height)
+    };
+    let (mut b, page) = Builder::page(document, 1, 400.0);
+    let scroller = b.element(
+        page,
+        LayoutStyle {
+            overflow_x: OverflowSpec::Auto,
+            overflow_y: OverflowSpec::Auto,
+            direction: Some(FlexDirection::Column),
+            flex_shrink: Some(0.0),
+            ..fixed(200.0, 100.0)
+        },
+    );
+    let row = b.element(scroller, fixed(100.0, 30.0));
+    b.element(scroller, fixed(200.0, 400.0));
+    let pinned = b.element(
+        scroller,
+        placed(PositionSpec::Fixed, [500.0, 400.0, 100.0, 30.0]),
+    );
+    let empty = b.element(page, fixed(200.0, 100.0));
+    let inside = b.element(empty, fixed(50.0, 20.0));
+    let floating = b.element(
+        empty,
+        placed(PositionSpec::Fixed, [300.0, 300.0, 50.0, 20.0]),
+    );
+    b.queue.set_standard_visual(
+        empty,
+        Some(StandardVisual::EmptyState {
+            title: Arc::from("Empty"),
+            message: None,
+            icon: None,
+            compact: true,
+            action: None,
+        }),
+    );
+    for id in [row, pinned, inside, floating] {
+        b.queue.set_interaction(
+            id,
+            InteractionState {
+                pointer_events: true,
+                focusable: false,
+            },
+        );
+    }
+    let mut cx = AppContext::new();
+    cx.commit_mutations(b.queue).unwrap();
+    let mut shaper = bundled_face_shaper();
+    let mut q = MutationQueue::new();
+    q.set_scroll_offset(scroller, ScrollOffset { x: 0.0, y: 20.0 });
+    cx.commit_mutations(q).unwrap();
+    product_frame(&mut cx, document, viewport, &mut shaper);
+    cx.rebuild_hit_test(document);
+    let world = cx.world();
+    let room = |id| {
+        let room = world.select_menu_room(id).unwrap();
+        (room.left, room.top, room.right, room.bottom)
+    };
+    // In flow, the scroller cuts the row's room where its scroll puts it.
+    assert_eq!(room(row), (0.0, 20.0, 200.0, 120.0));
+    // A fixed field's menu has the window, as the field is drawn and hit
+    // past the scroller.
+    assert_eq!(world.layout_clip_parent(pinned), None);
+    assert_eq!(room(pinned), (0.0, 0.0, 800.0, 600.0));
+    assert_eq!(world.hit_test(document, 550.0, 410.0), Some(pinned));
+
+    let accessible = |id| {
+        world
+            .project_accessibility(document)
+            .into_iter()
+            .find(|node| node.id == id)
+            .map(|node| node.bounds)
+    };
+    let empty_box = world.layout_box(empty).unwrap();
+    // A box in the empty state's flow reads inside its chrome clip ...
+    let inside_box = world.layout_box(inside).unwrap();
+    assert!(empty_box.contains(inside_box.x, inside_box.y));
+    let read = accessible(inside).unwrap();
+    assert!(
+        (read.x - inside_box.x).abs() < 0.01
+            && (read.y - inside_box.y).abs() < 0.01
+            && (read.width - inside_box.width).abs() < 0.01
+            && (read.height - inside_box.height).abs() < 0.01,
+        "{read:?} != {inside_box:?}"
+    );
+    // ... a fixed one outside it is not: it reads where it is drawn and hit.
+    let floating_box = world.layout_box(floating).unwrap();
+    assert_eq!(
+        floating_box,
+        LayoutBox {
+            x: 300.0,
+            y: 300.0,
+            width: 50.0,
+            height: 20.0
+        }
+    );
+    assert_eq!(world.hit_test(document, 310.0, 305.0), Some(floating));
+    assert_eq!(accessible(floating), Some(floating_box));
+}
+
 /// A control whose label is cleared gives up the label's metrics: it sizes
 /// and publishes as the same control laid out cold with no label. Its text
 /// used to keep the old metrics, because text work for a box without text
