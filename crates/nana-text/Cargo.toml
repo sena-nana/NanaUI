@@ -12,6 +12,9 @@ path = "src/lib.rs"
 
 [features]
 default = []
+# Glyph rasterization on the CPU (`raster`): what the renderer scales its
+# atlas glyphs with, and what a host that composites text itself uses.
+raster = ["dep:swash"]
 
 [dependencies]
 nana-ui-core.workspace = true
@@ -35,6 +38,9 @@ unicode-bidi = "0.3.18"
 # Issue #92: UAX #14 line break opportunities (`layout/breaks.rs`), named from
 # that file only.
 unicode-linebreak = "0.1.5"
+# Glyph outlines, colour tables and strikes scaled to bitmaps
+# (`raster/outline.rs`), named from that file only.
+swash = { version = "0.2.10", optional = true }
 
 [dev-dependencies]
 nana-ui-core = { workspace = true, features = ["bundled-fonts"] }

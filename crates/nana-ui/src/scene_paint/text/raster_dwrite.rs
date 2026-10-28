@@ -122,7 +122,7 @@ impl GlyphRasterizer for DWriteGlyphRasterizer {
         {
             return Some(image);
         }
-        self.swash.rasterize(request)
+        self.swash.rasterize(&request.key)
     }
 }
 
