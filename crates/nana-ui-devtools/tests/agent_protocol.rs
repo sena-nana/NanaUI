@@ -650,14 +650,15 @@ fn inspect_reports_the_layout_context_and_participation() {
         .expect("an inspection")
         .layout_node
         .expect("a laid-out node has a layout view");
-    assert_eq!(layout.parent_context.as_deref(), Some("flow"), "{layout:?}");
+    // The parent is a row: it runs Flex and the button is one of its items.
+    assert_eq!(layout.parent_context.as_deref(), Some("flex"), "{layout:?}");
     assert_eq!(
         layout.participation.as_deref(),
-        Some("flowitem"),
+        Some("flexitem"),
         "{layout:?}"
     );
     assert!(layout.result_generation.is_some(), "{layout:?}");
     assert!(layout.intent.starts_with("display="), "{layout:?}");
     let json = serde_json::to_value(&layout).unwrap();
-    assert_eq!(json["participation"], "flowitem");
+    assert_eq!(json["participation"], "flexitem");
 }
