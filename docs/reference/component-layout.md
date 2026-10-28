@@ -21,7 +21,7 @@ Button、Chip 和 ActionMenuItem 的旧 API 保持不变。组件内容声明为
 | ListItem / SidebarRow / FileTab | 普通 slot composition + Inline parts | retained slots 使用已有 child placements；fallback label/note/detail 已迁移，隐藏 slot 不占文字预算 |
 | FormField / LabeledValue | 普通 composition + 命名文本部件 | LabeledValue 已发布 Label/Value，action 使用普通 child，RTL/padding/path 消费同一结果；FormField 已发布 Label/Hint/LeadingContent，control 仍是普通 child，error/hint 槽和 RTL 消费同一结果 |
 | Card / Panel / Menu surface | container / Overlay + header / body parts | Card 已发布 Header/Spinner，body 使用普通 children 与 padding；菜单 option row 使用共享 label/hint helper，ActionMenuItem rich span 仍走单一 text primitive |
-| Select / Dropdown / ContextMenu option | 可复用 menu row composition | Select trigger 已发布 TextContent/Hint/TrailingContent，Geometry 不再重算 trigger fallback；SelectMenuGeometry 与 ComponentGeometry 提供按逻辑 index 的 row 查询，select/context option 的 hint 分割复用同一 helper 并使用 owner 的 chrome text measure；ContextMenu hint 作为独立行尾文本绘制；option `content` 只承载 fill-colour span |
+| Select / Dropdown / ContextMenu option | 可复用 menu row composition | Select trigger 已发布 TextContent/Hint/TrailingContent，Geometry 不再重算 trigger fallback；SelectMenuGeometry 与 ComponentGeometry 提供按逻辑 index 的 row 查询，select/context option 的 hint 分割复用同一 helper 并使用 owner 的 chrome text measure；ContextMenu hint 作为独立行尾文本绘制；option `content` 只承载 fill-colour span；打开的 Select / Dropdown / SearchDropdown 菜单的无障碍选项（`ListBoxOption`）读同一份 SelectMenuGeometry 的行范围，不另算 |
 | TextInput / 编辑器 caret、selection、IME | 文本布局与交互几何 | 继续由 `nana-text` 和 Runtime 文本布局提供；不作为普通 Flex 子项机械迁移 |
 | 图表、图路径、画布、resize grip | 非 box visual / 组件语义交互几何 | 保留领域算法；外部盒子仍消费 LayoutResult |
 

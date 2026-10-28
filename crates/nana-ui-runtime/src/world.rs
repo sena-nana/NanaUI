@@ -313,6 +313,41 @@ pub(crate) fn menu_surface_accessibility_changed(
         }
         (Some(StandardVisual::MenuSurface { .. }), _)
         | (_, Some(StandardVisual::MenuSurface { .. })) => true,
+        // A select field's open menu is a list box of virtual options: they
+        // follow its rows, its highlight, and where it is placed and
+        // scrolled. The pointer heating the scrollbar changes none of them.
+        (
+            Some(StandardVisual::Select {
+                opened: previous_open,
+                options: previous_options,
+                highlighted: previous_highlighted,
+                menu_scroll: previous_scroll,
+                menu_room: previous_room,
+                size: previous_size,
+                fit_options: previous_fit,
+                ..
+            }),
+            Some(StandardVisual::Select {
+                opened,
+                options,
+                highlighted,
+                menu_scroll,
+                menu_room,
+                size,
+                fit_options,
+                ..
+            }),
+        ) => {
+            previous_open != opened
+                || (*opened
+                    && (previous_options != options
+                        || previous_highlighted != highlighted
+                        || previous_scroll.offset != menu_scroll.offset
+                        || previous_room != menu_room
+                        || previous_size != size
+                        || previous_fit != fit_options))
+        }
+        (Some(StandardVisual::Select { .. }), _) | (_, Some(StandardVisual::Select { .. })) => true,
         _ => false,
     }
 }

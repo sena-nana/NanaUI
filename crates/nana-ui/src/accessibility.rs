@@ -1118,11 +1118,32 @@ fn project_node(
     if node.role == AccessibilityRole::TextInput && !node.editable {
         projected.set_read_only();
     }
-    // A tree row is always selectable, so its unselected state is said too.
+    // A tree row and a list box option are always selectable, so their
+    // unselected state is said too.
     match node.selected {
         Some(true) => projected.set_selected(true),
-        Some(false) if node.role == AccessibilityRole::TreeItem => projected.set_selected(false),
+        Some(false)
+            if matches!(
+                node.role,
+                AccessibilityRole::TreeItem | AccessibilityRole::ListBoxOption
+            ) =>
+        {
+            projected.set_selected(false)
+        }
         _ => {}
+    }
+    if let Some(descendant) = node.active_descendant {
+        projected.set_active_descendant(node_id(descendant));
+    }
+    // AccessKit counts positions from zero, `aria-posinset` from one.
+    if let Some(position) = node.position_in_set.filter(|position| *position > 0) {
+        projected.set_position_in_set(position as usize - 1);
+    }
+    if let Some(size) = node.set_size {
+        projected.set_size_of_set(size as usize);
+    }
+    if node.multiselectable {
+        projected.set_multiselectable();
     }
     if let Some(level) = node.level.filter(|level| *level > 0) {
         // AccessKit counts levels from zero, `aria-level` from one.
@@ -1216,7 +1237,10 @@ const fn text_direction(writing: nana_ui_core::WritingContext) -> TextDirection 
 const fn is_menu_row(role: AccessibilityRole) -> bool {
     matches!(
         role,
-        AccessibilityRole::MenuItem | AccessibilityRole::Checkbox | AccessibilityRole::Radio
+        AccessibilityRole::MenuItem
+            | AccessibilityRole::Checkbox
+            | AccessibilityRole::Radio
+            | AccessibilityRole::ListBoxOption
     )
 }
 
@@ -1243,6 +1267,7 @@ const fn supports_click(role: AccessibilityRole) -> bool {
             | AccessibilityRole::ListItem
             | AccessibilityRole::TreeItem
             | AccessibilityRole::MenuItem
+            | AccessibilityRole::ListBoxOption
             | AccessibilityRole::Radio
     )
 }
@@ -1279,7 +1304,7 @@ fn supports_numeric_step(node: &AccessibilityNode) -> bool {
 
 fn supports_expand(node: &AccessibilityNode) -> bool {
     match node.role {
-        AccessibilityRole::ComboBox => node.selected != Some(true),
+        AccessibilityRole::ComboBox => !combo_box_open(node),
         AccessibilityRole::TreeItem => node.expanded == Some(false),
         _ => false,
     }
@@ -1287,10 +1312,16 @@ fn supports_expand(node: &AccessibilityNode) -> bool {
 
 fn supports_collapse(node: &AccessibilityNode) -> bool {
     match node.role {
-        AccessibilityRole::ComboBox => node.selected == Some(true),
+        AccessibilityRole::ComboBox => combo_box_open(node),
         AccessibilityRole::TreeItem => node.expanded == Some(true),
         _ => false,
     }
+}
+
+/// A combobox says it is open through `expanded`; one that only sets
+/// `selected` (the state it paints with) is read the same way.
+fn combo_box_open(node: &AccessibilityNode) -> bool {
+    node.expanded.unwrap_or(node.selected == Some(true))
 }
 
 fn projected_text_selection(
@@ -1359,6 +1390,8 @@ const fn project_role(role: AccessibilityRole, multiline: bool) -> Role {
         AccessibilityRole::ProgressIndicator => Role::ProgressIndicator,
         AccessibilityRole::List => Role::List,
         AccessibilityRole::ListItem => Role::ListItem,
+        AccessibilityRole::ListBox => Role::ListBox,
+        AccessibilityRole::ListBoxOption => Role::ListBoxOption,
         AccessibilityRole::Tree => Role::Tree,
         AccessibilityRole::TreeItem => Role::TreeItem,
         AccessibilityRole::Table => Role::Table,
@@ -1503,6 +1536,10 @@ mod tests {
             selected: None,
             level: None,
             expanded: None,
+            active_descendant: None,
+            position_in_set: None,
+            set_size: None,
+            multiselectable: false,
             has_popup: false,
             multiline: false,
             editable: false,
@@ -2587,6 +2624,93 @@ mod tests {
             request.action,
             nana_ui_runtime::AccessibilityAction::ActivateMenuItem { slot: 1, .. }
         ));
+    }
+
+    #[test]
+    fn an_open_combo_box_projects_its_list_box_and_activates_an_option() {
+        let field = StableNodeId::new(2).unwrap();
+        let listbox = nana_ui_runtime::virtual_listbox_id(field).unwrap();
+        let first = nana_ui_runtime::virtual_menu_item_id(field, 0x8001).unwrap();
+        let second = nana_ui_runtime::virtual_menu_item_id(field, 0x8002).unwrap();
+        let mut combo = node(field.get(), Some(1), &[listbox.get()]);
+        combo.role = AccessibilityRole::ComboBox;
+        combo.focused = true;
+        combo.expanded = Some(true);
+        combo.active_descendant = Some(second);
+        let mut list = node(
+            listbox.get(),
+            Some(field.get()),
+            &[first.get(), second.get()],
+        );
+        list.role = AccessibilityRole::ListBox;
+        list.set_size = Some(2);
+        list.multiselectable = true;
+        let option = |id: StableNodeId, position: u32, selected: bool| {
+            let mut option = node(id.get(), Some(listbox.get()), &[]);
+            option.role = AccessibilityRole::ListBoxOption;
+            option.position_in_set = Some(position);
+            option.set_size = Some(2);
+            option.selected = Some(selected);
+            option
+        };
+        let (projector, update) = AccessibilityProjector::new(
+            vec![
+                node(1, None, &[field.get()]),
+                combo,
+                list,
+                option(first, 1, true),
+                option(second, 2, false),
+            ],
+            true,
+            1.0,
+        );
+        let projected = |id: StableNodeId| {
+            update
+                .nodes
+                .iter()
+                .find(|(node_id, _)| *node_id == NodeId(id.get()))
+                .unwrap()
+                .1
+                .clone()
+        };
+        // The focus stays on the field; the option the keyboard is on is its
+        // active descendant, and the field says it is open, not selected.
+        assert_eq!(update.focus, NodeId(field.get()));
+        let combo = projected(field);
+        assert_eq!(combo.active_descendant(), Some(NodeId(second.get())));
+        assert_eq!(combo.is_expanded(), Some(true));
+        assert_eq!(combo.is_selected(), None);
+        assert!(combo.supports_action(Action::Collapse));
+        assert!(!combo.supports_action(Action::Expand));
+        let list = projected(listbox);
+        assert_eq!(list.role(), Role::ListBox);
+        assert_eq!(list.size_of_set(), Some(2));
+        assert!(list.is_multiselectable());
+        let (chosen, other) = (projected(first), projected(second));
+        assert_eq!(chosen.role(), Role::ListBoxOption);
+        assert_eq!(chosen.is_selected(), Some(true));
+        assert_eq!(other.is_selected(), Some(false));
+        // AccessKit counts positions from zero.
+        assert_eq!(
+            (chosen.position_in_set(), other.position_in_set()),
+            (Some(0), Some(1))
+        );
+        assert!(other.supports_action(Action::Click));
+        let request = projector
+            .project_action_request(ActionRequest {
+                action: Action::Click,
+                target_tree: TreeId::ROOT,
+                target_node: NodeId(second.get()),
+                data: None,
+            })
+            .expect("option click");
+        assert_eq!(
+            request.action,
+            nana_ui_runtime::AccessibilityAction::ActivateMenuItem {
+                menu: field,
+                slot: 0x8002,
+            }
+        );
     }
 
     #[test]

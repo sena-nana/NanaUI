@@ -127,6 +127,16 @@ layout.min_width = Some(LengthSpec::Px(122.0));
 
 滚动位置和高亮一样是交互状态（`Select::menu_scroll`，类型 `SelectMenuScroll`）：菜单每次打开都重新开始；应用刷新时值和选项没变就保留。[Dropdown](dropdown.md) 和 [SearchDropdown](search-dropdown.md) 用的是同一个菜单，表现相同；SearchDropdown 的查询词变了时，回到第一个匹配项。
 
+## 读屏
+
+字段是组合框（`ComboBox`），读屏说它展开还是收起。菜单打开时，字段下面多一个列表框（`ListBox`），菜单里每一行是其中的一个选项（`ListBoxOption`），和网页上 `role="combobox"` 控制一个 `role="listbox"` 一样：
+
+- 选项读它的标签，提示读在后面（`description`）。当前选中的那一项是「已选」，其余是「未选」；禁用的选项读作禁用。每个选项带它在整份列表里的位置和总数（`aria-posinset` / `aria-setsize`），所以只露出几行时，读屏仍说「第 12 项，共 40 项」。
+- 焦点留在字段上。高亮的那一项是字段的活动后代（`aria-activedescendant`），方向键移动高亮时读屏跟着读。
+- 选项的范围就是菜单画它、指针点它的那一块：同一份菜单几何，经字段的滚动和变换换到窗口里。滚出菜单的行、被字段外层的裁剪整个裁掉的行没有节点；裁掉一部分的行，范围是露出来的那部分。菜单翻面、截高、滚动时，选项跟着走。
+- 选项按值认，值不变节点就不变。菜单收起时列表框和选项一起去掉。
+- 读屏激活一个选项（AccessKit 的 `Click`，Runtime 的 `ActivateMenuItem`），和指针按在这一行上一样：选中它、收起菜单、发 `SelectChanged`。禁用的选项不响应。
+
 ## 否决这次选择
 
 `SelectChanged` 是指针、键盘或无障碍提交的选中。`value` 为 `None` 时还没有选中项。要否决用户的选择，在处理函数里把你要的值写回去。

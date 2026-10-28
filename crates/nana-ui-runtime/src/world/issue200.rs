@@ -21,6 +21,10 @@
 //! ancestor. Two documents of one context keep their own viewports: a
 //! resize of one runs no layout in the other, and hit testing and
 //! accessibility read the boxes each viewport gave.
+//!
+//! An open Select, Dropdown or SearchDropdown menu reads as a combobox's
+//! list box: one option per row the menu shows, at the bounds its menu
+//! geometry paints and hits, following the menu when the window flips it.
 
 #![cfg(test)]
 
@@ -33,8 +37,9 @@ use super::reflow_oracle::{
 };
 use super::{DocumentId, StableNodeId};
 use crate::{
-    AnchoredActionMenu, AppContext, ComponentView, ContextMenu, ContextMenuItem, Entity, LayoutBox,
-    LayoutViewport, MutationQueue, NanaTextEngineShaper, OverlayHost, resolve_anchored_origin,
+    AccessibilityRole, AnchoredActionMenu, AppContext, ComponentView, ContextMenu, ContextMenuItem,
+    Entity, LayoutBox, LayoutViewport, MutationQueue, NanaTextEngineShaper, OverlayHost,
+    resolve_anchored_origin,
 };
 
 /// A window whose overlay layer hosts one open menu, as an application
@@ -529,7 +534,15 @@ struct SelectPage {
 
 impl SelectPage {
     fn new(height: f32) -> Self {
-        use crate::{Select, SelectOption, Stack};
+        Self::with_options(
+            height,
+            (0..8).map(|n| crate::SelectOption::new(format!("v{n}"), format!("Option {n}"))),
+        )
+    }
+
+    /// The page with an open Select of `options`, holding `v0`.
+    fn with_options(height: f32, options: impl IntoIterator<Item = crate::SelectOption>) -> Self {
+        use crate::{Select, Stack};
         let document = DocumentId::new(1).unwrap();
         let mut context = AppContext::new();
         context.set_reduced_motion(true);
@@ -552,12 +565,7 @@ impl SelectPage {
             .unwrap();
         context.append_child(root, spacer).unwrap();
         let select = context
-            .create_detached_component(
-                document,
-                Select::new(Some("v0")).options(
-                    (0..8).map(|n| SelectOption::new(format!("v{n}"), format!("Option {n}"))),
-                ),
-            )
+            .create_detached_component(document, Select::new(Some("v0")).options(options))
             .unwrap();
         context.append_child(root, select).unwrap();
         let mut page = Self {
@@ -669,6 +677,597 @@ fn issue200_a_select_menu_follows_the_viewport_and_hits_where_it_paints() {
             .unwrap()
             .as_deref(),
         Some("v3")
+    );
+}
+
+// An open Select, Dropdown or SearchDropdown menu reads as a WAI-ARIA
+// combobox's list box: a child of the field holding one option per row the
+// menu shows, each known by its value, at the bounds the menu paints and hits
+// it. The field says it is expanded and which option the keyboard is on;
+// closing the menu takes the list box away, and choosing an option through
+// accessibility is a press on its row.
+
+/// Every accessibility node of `document`, by id.
+fn spoken(
+    context: &AppContext,
+    document: DocumentId,
+) -> std::collections::HashMap<StableNodeId, crate::AccessibilityNode> {
+    context
+        .world()
+        .project_accessibility(document)
+        .into_iter()
+        .map(|node| (node.id, node))
+        .collect()
+}
+
+/// `field`'s node, the list box its open menu shows and the options in it,
+/// in row order. The field is an expanded combobox that owns the list box.
+fn listbox(
+    nodes: &std::collections::HashMap<StableNodeId, crate::AccessibilityNode>,
+    field: StableNodeId,
+) -> (
+    crate::AccessibilityNode,
+    crate::AccessibilityNode,
+    Vec<crate::AccessibilityNode>,
+) {
+    let combo = nodes[&field].clone();
+    assert_eq!(combo.role, AccessibilityRole::ComboBox);
+    assert_eq!(combo.expanded, Some(true), "{combo:?}");
+    assert_eq!(combo.selected, None, "a combobox is not itself chosen");
+    let id = crate::virtual_listbox_id(field).unwrap();
+    assert_eq!(combo.children, [id]);
+    let listbox = nodes[&id].clone();
+    assert_eq!(listbox.role, AccessibilityRole::ListBox);
+    assert_eq!(listbox.parent, Some(field));
+    let options = listbox
+        .children
+        .iter()
+        .map(|option| nodes[option].clone())
+        .collect::<Vec<_>>();
+    for option in &options {
+        assert_eq!(option.role, AccessibilityRole::ListBoxOption);
+        assert_eq!(option.parent, Some(id));
+        assert_eq!(crate::decode_virtual_menu_item(option.id).unwrap().0, field);
+    }
+    (combo, listbox, options)
+}
+
+fn centre(bounds: LayoutBox) -> (f32, f32) {
+    (
+        bounds.x + bounds.width / 2.0,
+        bounds.y + bounds.height / 2.0,
+    )
+}
+
+/// The menu row an option node stands for now.
+fn row_of(context: &AppContext, field: StableNodeId, option: StableNodeId) -> usize {
+    let (owner, slot) = crate::decode_virtual_menu_item(option).unwrap();
+    assert_eq!(owner, field);
+    context.world().virtual_menu_row_index(field, slot).unwrap()
+}
+
+/// Each option reads at the row the menu paints under it, and the pointer
+/// there picks that row, unless it is disabled, and hits the field.
+fn assert_reads_where_it_paints(page: &SelectPage, options: &[crate::AccessibilityNode]) {
+    let menu = page.menu();
+    for option in options {
+        let row = row_of(&page.context, page.id(), option.id);
+        let painted = super::intersect_layout_boxes(menu.options[row].bounds, menu.viewport);
+        assert_eq!(Some(option.bounds), painted, "row {row}");
+        let (x, y) = centre(option.bounds);
+        assert_eq!(
+            page.at(x, y),
+            (Some(row), (!option.disabled).then_some(row), true),
+            "row {row}"
+        );
+    }
+}
+
+#[test]
+fn issue200_an_open_select_menu_reads_as_a_listbox_of_its_rows() {
+    let page = SelectPage::with_options(
+        1000.0,
+        (0..8).map(|n| {
+            let option = crate::SelectOption::new(format!("v{n}"), format!("Option {n}"));
+            match n {
+                1 => option.hint("first"),
+                2 => option.disabled(true),
+                _ => option,
+            }
+        }),
+    );
+    let nodes = spoken(&page.context, page.document);
+    let (field, listbox, options) = listbox(&nodes, page.id());
+    let menu = page.menu();
+    assert_eq!(listbox.bounds, menu.surface);
+    assert_eq!(listbox.set_size, Some(8));
+    assert!(!listbox.multiselectable);
+    assert_eq!(options.len(), 8);
+    for (n, option) in options.iter().enumerate() {
+        assert_eq!(row_of(&page.context, page.id(), option.id), n);
+        assert_eq!(
+            option.label.as_deref(),
+            Some(format!("Option {n}").as_str())
+        );
+        assert_eq!(option.description.as_deref(), (n == 1).then_some("first"));
+        assert_eq!(option.selected, Some(n == 0), "v0 is chosen");
+        assert_eq!(option.disabled, n == 2);
+        assert_eq!(option.position_in_set, Some(n as u32 + 1));
+        assert_eq!(option.set_size, Some(8));
+        assert!(!option.focused, "the focus stays on the field");
+    }
+    // The highlight opens on the chosen option: the field's active
+    // descendant.
+    assert_eq!(field.active_descendant, Some(options[0].id));
+    assert_reads_where_it_paints(&page, &options);
+}
+
+#[test]
+fn issue200_a_select_listbox_follows_its_menu_and_its_highlight() {
+    let mut page = SelectPage::new(1000.0);
+    // What a host holds: the full tree once, then the deltas each frame
+    // drains.
+    let mut held = spoken(&page.context, page.document);
+    let (_, _, below) = listbox(&held, page.id());
+    let mut follow = |page: &mut SelectPage, height: f32, resized: bool| {
+        let work = super::reflow_oracle::accessible_frame(
+            &mut page.context,
+            page.document,
+            LayoutViewport::new(400.0, height),
+            &mut page.shaper,
+            resized,
+        );
+        page.context.rebuild_hit_test(page.document);
+        let delta = page.context.world().project_accessibility_delta(&work);
+        for id in delta.removed {
+            held.remove(&id);
+        }
+        held.extend(delta.updated.into_iter().map(|node| (node.id, node)));
+        let fresh = spoken(&page.context, page.document);
+        let (field, listbox, options) = listbox(&fresh, page.id());
+        for node in std::iter::once(&field)
+            .chain(std::iter::once(&listbox))
+            .chain(&options)
+        {
+            assert_eq!(held.get(&node.id), Some(node), "the delta carries it");
+        }
+        (field, options)
+    };
+
+    // The window shrinks: the menu flips above the field, and its options
+    // read there.
+    let (_, above) = follow(&mut page, 600.0, true);
+    assert_eq!(
+        above.iter().map(|option| option.id).collect::<Vec<_>>(),
+        below.iter().map(|option| option.id).collect::<Vec<_>>()
+    );
+    let field = page.field();
+    assert!(above[7].bounds.y + above[7].bounds.height <= field.y);
+    assert!(below[0].bounds.y >= field.y + field.height);
+    assert_reads_where_it_paints(&page, &above);
+
+    // The keyboard moves the highlight: only paint changes, and the field's
+    // active descendant follows it.
+    page.context
+        .update_component(page.select, |select, _| select.highlight_delta(1))
+        .unwrap();
+    let (field, options) = follow(&mut page, 600.0, false);
+    assert_eq!(field.active_descendant, Some(options[1].id));
+
+    // Back: below again.
+    let (_, options) = follow(&mut page, 1000.0, true);
+    assert_eq!(
+        options
+            .iter()
+            .map(|option| option.bounds)
+            .collect::<Vec<_>>(),
+        below.iter().map(|option| option.bounds).collect::<Vec<_>>()
+    );
+    assert_reads_where_it_paints(&page, &options);
+}
+
+#[test]
+fn issue200_a_select_listbox_reads_only_the_rows_its_menu_shows() {
+    // Forty options under a 500 px spacer in a 640 px window: the menu opens
+    // above the field, capped to the room there, and scrolls its rows.
+    let mut page = SelectPage::with_options(
+        640.0,
+        (0..40).map(|n| crate::SelectOption::new(format!("v{n}"), format!("Option {n}"))),
+    );
+    let check = |page: &SelectPage| {
+        let menu = page.menu();
+        assert!(menu.max_scroll > 0.0, "{menu:?}");
+        let (_, listbox, options) = listbox(&spoken(&page.context, page.document), page.id());
+        assert_eq!(listbox.set_size, Some(40));
+        let shown = menu
+            .options
+            .iter()
+            .enumerate()
+            .filter(|(_, row)| super::intersect_layout_boxes(row.bounds, menu.viewport).is_some())
+            .map(|(row, _)| row)
+            .collect::<Vec<_>>();
+        assert!(shown.len() < 40, "{shown:?}");
+        assert_eq!(
+            options
+                .iter()
+                .map(|option| row_of(&page.context, page.id(), option.id))
+                .collect::<Vec<_>>(),
+            shown
+        );
+        for option in &options {
+            let row = row_of(&page.context, page.id(), option.id);
+            assert_eq!(option.position_in_set, Some(row as u32 + 1));
+            assert_eq!(option.set_size, Some(40));
+        }
+        // A row the menu cuts reads as the part it shows.
+        assert_reads_where_it_paints(page, &options);
+        options
+    };
+    let top = check(&page);
+    assert_eq!(row_of(&page.context, page.id(), top[0].id), 0);
+
+    // Scrolled on: rows that left the menu leave the list box, and a row
+    // still shown keeps its node.
+    page.context
+        .update_component(page.select, |select, _| {
+            select.menu_scroll.offset = Some(300.0)
+        })
+        .unwrap();
+    page.frame(640.0, false);
+    let scrolled = check(&page);
+    assert_ne!(row_of(&page.context, page.id(), scrolled[0].id), 0);
+    let kept = scrolled
+        .iter()
+        .filter(|option| top.iter().any(|before| before.id == option.id))
+        .count();
+    assert!(kept > 0 && kept < scrolled.len(), "{kept}");
+}
+
+#[test]
+fn issue200_a_select_listbox_reads_only_what_the_page_leaves_of_its_menu() {
+    use crate::{NodeStyle, ScrollAxes, ScrollOffset, ScrollView, Select, SelectOption, Stack};
+    // A 400x300 page that scrolls, 100 px of space, a Select, and a tall
+    // block under it.
+    let document = DocumentId::new(1).unwrap();
+    let mut context = AppContext::new();
+    context.set_reduced_motion(true);
+    let mut style = NodeStyle::default();
+    {
+        let layout = std::sync::Arc::make_mut(&mut style.layout);
+        layout.width = Some(LengthSpec::Px(400.0));
+        layout.height = Some(LengthSpec::Px(300.0));
+    }
+    let page = context
+        .create_component(document, ScrollView::new(ScrollAxes::Vertical).style(style))
+        .unwrap();
+    let block = |height: f32| {
+        Stack::column(0.0).with_layout(move |layout| {
+            layout.width = Some(LengthSpec::Fill);
+            layout.height = Some(LengthSpec::Px(height));
+        })
+    };
+    let spacer = context
+        .create_detached_component(document, block(100.0))
+        .unwrap();
+    context.append_child(page, spacer).unwrap();
+    let select = context
+        .create_detached_component(
+            document,
+            Select::new(Some("v0"))
+                .options((0..8).map(|n| SelectOption::new(format!("v{n}"), format!("Option {n}")))),
+        )
+        .unwrap();
+    context.append_child(page, select).unwrap();
+    let tail = context
+        .create_detached_component(document, block(900.0))
+        .unwrap();
+    context.append_child(page, tail).unwrap();
+    let mut shaper = bundled_face_shaper();
+    let viewport = LayoutViewport::new(400.0, 300.0);
+    product_frame(&mut context, document, viewport, &mut shaper);
+    assert!(context.toggle_select(select).unwrap());
+    product_frame(&mut context, document, viewport, &mut shaper);
+    // The page scrolls under the open menu with no layout: the menu goes
+    // with its field, and the page's edge cuts its top rows away.
+    assert!(
+        context
+            .scroll_to(page, ScrollOffset { x: 0.0, y: 180.0 })
+            .unwrap()
+    );
+    context.rebuild_hit_test(document);
+    let id = select.stable_id();
+    let menu = context.open_select_menu(id).unwrap();
+    let window = LayoutBox {
+        x: 0.0,
+        y: 0.0,
+        width: 400.0,
+        height: 300.0,
+    };
+    // Where the window shows each row: its part inside the menu, scrolled
+    // with the page, inside the page.
+    let shown = menu
+        .options
+        .iter()
+        .map(|row| {
+            super::intersect_layout_boxes(row.bounds, menu.viewport)
+                .map(|part| LayoutBox {
+                    y: part.y - 180.0,
+                    ..part
+                })
+                .and_then(|part| super::intersect_layout_boxes(part, window))
+        })
+        .collect::<Vec<_>>();
+    assert!(shown[0].is_none(), "the page hides the first row: {menu:?}");
+    assert!(
+        shown.iter().flatten().any(|part| part.y == 0.0),
+        "and cuts one: {shown:?}"
+    );
+    assert!(shown.iter().any(Option::is_some));
+    let (_, _, options) = listbox(&spoken(&context, document), id);
+    assert_eq!(
+        options
+            .iter()
+            .map(|option| (row_of(&context, id, option.id), option.bounds))
+            .collect::<Vec<_>>(),
+        shown
+            .iter()
+            .enumerate()
+            .filter_map(|(row, bounds)| Some((row, (*bounds)?)))
+            .collect::<Vec<_>>()
+    );
+    // Each reads where the pointer picks it and hits the field.
+    for option in &options {
+        let row = row_of(&context, id, option.id);
+        let (x, y) = centre(option.bounds);
+        assert_eq!(context.world().hit_test(document, x, y), Some(id));
+        let (x, y) = context.menu_point(id, x, y);
+        assert_eq!(crate::select::select_option_at(&menu, x, y), Some(row));
+    }
+}
+
+#[test]
+fn issue200_a_closed_select_has_no_listbox() {
+    let mut page = SelectPage::new(1000.0);
+    let listbox_id = crate::virtual_listbox_id(page.id()).unwrap();
+    let options = listbox(&spoken(&page.context, page.document), page.id()).2;
+    assert!(page.context.toggle_select(page.select).unwrap());
+    page.frame(1000.0, false);
+    let nodes = spoken(&page.context, page.document);
+    let field = &nodes[&page.id()];
+    assert_eq!(field.expanded, Some(false));
+    assert_eq!(field.active_descendant, None);
+    assert!(field.children.is_empty(), "{field:?}");
+    assert!(!nodes.contains_key(&listbox_id));
+    assert!(options.iter().all(|option| !nodes.contains_key(&option.id)));
+    // A row id from the open menu chooses nothing now.
+    let (_, slot) = crate::decode_virtual_menu_item(options[3].id).unwrap();
+    assert!(
+        !page
+            .context
+            .apply_accessibility_action(
+                page.document,
+                crate::AccessibilityActionRequest {
+                    target: options[3].id,
+                    action: crate::AccessibilityAction::ActivateMenuItem {
+                        menu: page.id(),
+                        slot,
+                    },
+                },
+            )
+            .unwrap()
+    );
+    assert_eq!(
+        page.context
+            .read(page.select, |select| select.value.clone())
+            .unwrap()
+            .as_deref(),
+        Some("v0")
+    );
+}
+
+#[test]
+fn issue200_an_option_chosen_through_accessibility_is_a_press_on_its_row() {
+    for action in ["activate", "click"] {
+        let mut page = SelectPage::new(1000.0);
+        let options = listbox(&spoken(&page.context, page.document), page.id()).2;
+        let (_, slot) = crate::decode_virtual_menu_item(options[3].id).unwrap();
+        assert!(
+            page.context
+                .apply_accessibility_action(
+                    page.document,
+                    crate::AccessibilityActionRequest {
+                        target: options[3].id,
+                        action: if action == "click" {
+                            crate::AccessibilityAction::Click
+                        } else {
+                            crate::AccessibilityAction::ActivateMenuItem {
+                                menu: page.id(),
+                                slot,
+                            }
+                        },
+                    },
+                )
+                .unwrap(),
+            "{action}"
+        );
+        assert_eq!(
+            page.context
+                .read(page.select, |select| (select.value.clone(), select.opened))
+                .unwrap(),
+            (Some("v3".into()), false),
+            "{action}"
+        );
+        page.frame(1000.0, false);
+        let field = &spoken(&page.context, page.document)[&page.id()];
+        assert_eq!(field.expanded, Some(false));
+        assert_eq!(field.value.as_deref(), Some("Option 3"));
+    }
+}
+
+#[test]
+fn issue200_a_search_dropdown_listbox_keeps_its_options_while_the_query_filters() {
+    use crate::{SearchDropdown, SearchDropdownOption, Stack};
+    let document = DocumentId::new(1).unwrap();
+    let mut context = AppContext::new();
+    context.set_reduced_motion(true);
+    let root = context
+        .create_component(
+            document,
+            Stack::column(0.0).with_layout(|layout| {
+                layout.width = Some(LengthSpec::Px(400.0));
+            }),
+        )
+        .unwrap();
+    let field = context
+        .create_detached_component(
+            document,
+            SearchDropdown::new(Some("cherry")).options(
+                ["apple", "apricot", "banana", "blueberry", "cherry"]
+                    .map(|fruit| SearchDropdownOption::new(fruit, fruit.to_uppercase())),
+            ),
+        )
+        .unwrap();
+    context.append_child(root, field).unwrap();
+    let mut shaper = bundled_face_shaper();
+    let viewport = LayoutViewport::new(400.0, 600.0);
+    let mut frame = |context: &mut AppContext| {
+        product_frame(context, document, viewport, &mut shaper);
+        context.rebuild_hit_test(document);
+    };
+    frame(&mut context);
+    assert!(context.toggle_search_dropdown(field).unwrap());
+    frame(&mut context);
+    let id = field.stable_id();
+    let labels = |options: &[crate::AccessibilityNode]| {
+        options
+            .iter()
+            .map(|option| option.label.as_deref().unwrap().to_owned())
+            .collect::<Vec<_>>()
+    };
+    let (_, _, all) = listbox(&spoken(&context, document), id);
+    assert_eq!(
+        labels(&all),
+        ["APPLE", "APRICOT", "BANANA", "BLUEBERRY", "CHERRY"]
+    );
+    assert_eq!(
+        all.iter().map(|option| option.selected).collect::<Vec<_>>(),
+        [false, false, false, false, true].map(Some)
+    );
+
+    // The query keeps the berries and the banana: the rows it hides leave the
+    // list box, and the ones it keeps keep their nodes, numbered among the
+    // matches.
+    context
+        .update_component(field, |dropdown, _| {
+            dropdown.set_query("b");
+        })
+        .unwrap();
+    frame(&mut context);
+    let (combo, listbox_node, matches) = listbox(&spoken(&context, document), id);
+    assert_eq!(labels(&matches), ["BANANA", "BLUEBERRY"]);
+    assert_eq!(
+        matches.iter().map(|option| option.id).collect::<Vec<_>>(),
+        [all[2].id, all[3].id]
+    );
+    assert_eq!(listbox_node.set_size, Some(2));
+    assert_eq!(
+        matches
+            .iter()
+            .map(|option| (option.position_in_set, option.set_size))
+            .collect::<Vec<_>>(),
+        [(Some(1), Some(2)), (Some(2), Some(2))]
+    );
+    // The first match takes the highlight.
+    assert_eq!(combo.active_descendant, Some(all[2].id));
+    let menu = context.open_select_menu(id).unwrap();
+    for (row, option) in matches.iter().enumerate() {
+        assert_eq!(option.bounds, menu.options[row].bounds);
+        let (x, y) = centre(option.bounds);
+        assert_eq!(crate::select::select_option_at(&menu, x, y), Some(row));
+    }
+
+    // Chosen through accessibility, the second match is the blueberry, not
+    // the second option.
+    assert!(
+        context
+            .apply_accessibility_action(
+                document,
+                crate::AccessibilityActionRequest {
+                    target: matches[1].id,
+                    action: crate::AccessibilityAction::Click,
+                },
+            )
+            .unwrap()
+    );
+    assert_eq!(
+        context
+            .read(field, |dropdown| dropdown.value.clone())
+            .unwrap()
+            .as_deref(),
+        Some("blueberry")
+    );
+    frame(&mut context);
+    let nodes = spoken(&context, document);
+    assert_eq!(nodes[&id].expanded, Some(false));
+    assert!(!nodes.contains_key(&crate::virtual_listbox_id(id).unwrap()));
+}
+
+#[test]
+fn issue200_a_multiple_dropdown_listbox_reads_its_checked_options_as_chosen() {
+    use crate::{Dropdown, DropdownOption, Stack};
+    let document = DocumentId::new(1).unwrap();
+    let mut context = AppContext::new();
+    context.set_reduced_motion(true);
+    let root = context
+        .create_component(
+            document,
+            Stack::column(0.0).with_layout(|layout| {
+                layout.width = Some(LengthSpec::Px(400.0));
+            }),
+        )
+        .unwrap();
+    let field = context
+        .create_detached_component(
+            document,
+            Dropdown::multiple(["b"])
+                .options(["a", "b", "c"].map(|value| DropdownOption::new(value, value))),
+        )
+        .unwrap();
+    context.append_child(root, field).unwrap();
+    let mut shaper = bundled_face_shaper();
+    let viewport = LayoutViewport::new(400.0, 600.0);
+    product_frame(&mut context, document, viewport, &mut shaper);
+    assert!(context.toggle_dropdown(field).unwrap());
+    product_frame(&mut context, document, viewport, &mut shaper);
+    let (_, listbox_node, options) = listbox(&spoken(&context, document), field.stable_id());
+    assert!(listbox_node.multiselectable);
+    assert_eq!(
+        options
+            .iter()
+            .map(|option| option.selected)
+            .collect::<Vec<_>>(),
+        [false, true, false].map(Some)
+    );
+    // Choosing one checks it and keeps the menu open, as a press does.
+    assert!(
+        context
+            .apply_accessibility_action(
+                document,
+                crate::AccessibilityActionRequest {
+                    target: options[2].id,
+                    action: crate::AccessibilityAction::Click,
+                },
+            )
+            .unwrap()
+    );
+    product_frame(&mut context, document, viewport, &mut shaper);
+    let (_, _, options) = listbox(&spoken(&context, document), field.stable_id());
+    assert_eq!(
+        options
+            .iter()
+            .map(|option| option.selected)
+            .collect::<Vec<_>>(),
+        [false, true, true].map(Some)
     );
 }
 

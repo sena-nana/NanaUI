@@ -60,6 +60,10 @@ widget(
 
 `close` 只在开着时发出 `Closed`，并清掉高亮。
 
+## 读屏
+
+打开的菜单和 [Select 的读屏](select.md#读屏) 一样，是字段下的列表框，但只列查询匹配到的选项：位置和总数按匹配项算，查询藏起来的选项没有节点。选项按值认，查询变化时留下来的选项节点不变。读屏激活一项选中的就是这一行显示的选项。
+
 ## 属性
 
 `SearchDropdown::new(value)` 的 `value` 是当前选中值，可以是 `None`。其它可配置字段有 `placeholder`、`size`、`disabled`、`loading`、`invalid`、`opened` 和 `highlighted`；查询通过 `.query(...)` 设置、由 `query_text()` 读取。

@@ -722,7 +722,10 @@ const AX_BUSY: u32 = 1 << 5;
 fn ax_role(role: AccessibilityRole) -> Option<i32> {
     Some(match role {
         AccessibilityRole::Text | AccessibilityRole::Status => 1,
-        AccessibilityRole::Button | AccessibilityRole::MenuItem | AccessibilityRole::ComboBox => 2,
+        AccessibilityRole::Button
+        | AccessibilityRole::MenuItem
+        | AccessibilityRole::ListBoxOption
+        | AccessibilityRole::ComboBox => 2,
         AccessibilityRole::TextInput | AccessibilityRole::Search => 3,
         AccessibilityRole::Switch | AccessibilityRole::Checkbox | AccessibilityRole::Radio => 4,
         AccessibilityRole::Slider => 5,

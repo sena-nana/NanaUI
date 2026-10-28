@@ -499,6 +499,10 @@ impl UiWorld {
             selected: state.selected,
             level: None,
             expanded: None,
+            active_descendant: None,
+            position_in_set: None,
+            set_size: None,
+            multiselectable: false,
             has_popup: state.has_popup,
             multiline: state.multiline,
             editable: state.editable,
@@ -599,6 +603,10 @@ impl UiWorld {
                     selected: row.mark.selected(),
                     level: None,
                     expanded: None,
+                    active_descendant: None,
+                    position_in_set: None,
+                    set_size: None,
+                    multiselectable: false,
                     has_popup: false,
                     multiline: false,
                     editable: false,
@@ -699,6 +707,10 @@ impl UiWorld {
                 selected: Some(row.selected),
                 level: Some(u32::from(row.depth) + 1),
                 expanded: row.branch.then_some(row.expanded),
+                active_descendant: None,
+                position_in_set: None,
+                set_size: None,
+                multiselectable: false,
                 has_popup: false,
                 multiline: false,
                 editable: false,
@@ -735,6 +747,10 @@ impl UiWorld {
                     selected: None,
                     level: None,
                     expanded: None,
+                    active_descendant: None,
+                    position_in_set: None,
+                    set_size: None,
+                    multiselectable: false,
                     has_popup: false,
                     multiline: false,
                     editable: false,
@@ -758,15 +774,199 @@ impl UiWorld {
         nodes
     }
 
+    /// An open Select, Dropdown or SearchDropdown menu, read as a WAI-ARIA
+    /// combobox reads: a list box under the field with one option per row
+    /// the menu shows, each known by its value, at the bounds the menu
+    /// paints and hits it (the field's [`crate::SelectMenuGeometry`], under
+    /// the field's transform). A row scrolled out of the menu, or cut away by
+    /// a clip above the field, is not there to read; a row cut in part reads
+    /// as the part shown. The field says whether it is expanded and which
+    /// option the keyboard is on; the options' set is the rows the menu
+    /// lists, so a filtered SearchDropdown counts only its matches.
+    fn project_select_menu(
+        &self,
+        field: &mut AccessibilityNode,
+        memo: &mut ProjectionMemo,
+    ) -> Vec<AccessibilityNode> {
+        let Some(StandardVisual::Select {
+            opened,
+            options,
+            highlighted,
+            checkable,
+            ..
+        }) = self.nodes.visual(field.id)
+        else {
+            return Vec::new();
+        };
+        if field.role != AccessibilityRole::ComboBox {
+            return Vec::new();
+        }
+        // Open is `aria-expanded`; the `selected` the field keeps in its
+        // state paints it, and a combobox is not itself chosen.
+        field.expanded = Some(*opened);
+        field.selected = None;
+        if !*opened {
+            return Vec::new();
+        }
+        let (
+            Some(crate::ComponentGeometry::Select {
+                menu: Some(menu), ..
+            }),
+            Some(listbox),
+        ) = (
+            self.component_geometry(field.id),
+            crate::virtual_listbox_id(field.id),
+        )
+        else {
+            return Vec::new();
+        };
+        // What the window and the clips above the field leave of the menu,
+        // in the field's layout px, cut as hit testing cuts it.
+        let room = match self.select_menu_room(field.id) {
+            Some(room) => Some(LayoutBox {
+                x: room.left,
+                y: room.top,
+                width: room.right - room.left,
+                height: room.bottom - room.top,
+            }),
+            None if self.document_viewport_of(field.id).is_some() => return Vec::new(),
+            None => None,
+        };
+        let seen = |bounds: LayoutBox| match room {
+            Some(room) => intersect_layout_boxes(bounds, room),
+            None => Some(bounds),
+        };
+        let Some(surface) = seen(menu.surface)
+            .and_then(|local| self.accessibility_viewport_bounds(field.id, local, memo))
+        else {
+            return Vec::new();
+        };
+        let set_size = u32::try_from(options.len()).ok();
+        let slots = crate::menu_row_slots(options);
+        let mut rows = Vec::with_capacity(options.len());
+        for (index, (option, row)) in options.iter().zip(&menu.options).enumerate() {
+            // Only the part of a row inside the menu's viewport is drawn and
+            // takes the pointer.
+            let Some(bounds) = intersect_layout_boxes(row.bounds, menu.viewport)
+                .and_then(seen)
+                .and_then(|local| self.accessibility_viewport_bounds(field.id, local, memo))
+            else {
+                continue;
+            };
+            let Some(id) = crate::virtual_menu_item_id(field.id, slots[index]) else {
+                continue;
+            };
+            if *highlighted == Some(index) {
+                field.active_descendant = Some(id);
+            }
+            rows.push(AccessibilityNode {
+                id,
+                parent: Some(listbox),
+                children: Vec::new(),
+                role: AccessibilityRole::ListBoxOption,
+                label: Some(
+                    option
+                        .accessible_name
+                        .clone()
+                        .filter(|name| !name.is_empty())
+                        .unwrap_or_else(|| Arc::clone(&option.label)),
+                ),
+                value: None,
+                description: option.hint.clone().filter(|hint| !hint.is_empty()),
+                role_description: None,
+                disabled: option.disabled,
+                display_only: false,
+                checked: None,
+                mixed: false,
+                orientation: None,
+                selected: Some(option.mark.checked().unwrap_or(false)),
+                level: None,
+                expanded: None,
+                active_descendant: None,
+                position_in_set: u32::try_from(index + 1).ok(),
+                set_size,
+                multiselectable: false,
+                has_popup: false,
+                multiline: false,
+                editable: false,
+                selection: None,
+                modal: false,
+                busy: false,
+                invalid: false,
+                live: None,
+                numeric_minimum: None,
+                numeric_maximum: None,
+                numeric_step: None,
+                numeric_value: None,
+                scroll_x: None,
+                scroll_y: None,
+                focused: false,
+                bounds,
+                writing: field.writing,
+            });
+        }
+        field.children.push(listbox);
+        let mut nodes = Vec::with_capacity(rows.len() + 1);
+        nodes.push(AccessibilityNode {
+            id: listbox,
+            parent: Some(field.id),
+            children: rows.iter().map(|row| row.id).collect(),
+            role: AccessibilityRole::ListBox,
+            label: field.label.clone(),
+            value: None,
+            description: None,
+            role_description: None,
+            disabled: false,
+            display_only: false,
+            checked: None,
+            mixed: false,
+            orientation: None,
+            selected: None,
+            level: None,
+            expanded: None,
+            active_descendant: None,
+            position_in_set: None,
+            set_size,
+            multiselectable: *checkable,
+            has_popup: false,
+            multiline: false,
+            editable: false,
+            selection: None,
+            modal: false,
+            busy: false,
+            invalid: false,
+            live: None,
+            numeric_minimum: None,
+            numeric_maximum: None,
+            numeric_step: None,
+            numeric_value: None,
+            scroll_x: None,
+            scroll_y: None,
+            focused: false,
+            bounds: surface,
+            writing: field.writing,
+        });
+        nodes.extend(rows);
+        nodes
+    }
+
     fn project_accessibility_entries(
         &self,
         id: StableNodeId,
         plain: bool,
         memo: &mut ProjectionMemo,
     ) -> Vec<AccessibilityNode> {
-        let Some(node) = self.project_accessibility_node(id, plain, memo) else {
+        let Some(mut node) = self.project_accessibility_node(id, plain, memo) else {
             return Vec::new();
         };
+        if self.nodes.has_visuals()
+            && matches!(self.nodes.visual(id), Some(StandardVisual::Select { .. }))
+        {
+            let menu = self.project_select_menu(&mut node, memo);
+            let mut entries = vec![node];
+            entries.extend(menu);
+            return entries;
+        }
         if self.nodes.has_visuals()
             && matches!(self.nodes.visual(id), Some(StandardVisual::TreeView { .. }))
         {
@@ -866,9 +1066,15 @@ impl UiWorld {
 
 impl UiWorld {
     /// The row of `menu` that holds accessibility `slot` now.
+    /// A select field's open menu counts as its menu: its options are rows.
     pub(crate) fn virtual_menu_row_index(&self, menu: StableNodeId, slot: u16) -> Option<usize> {
         match self.nodes.visual(menu) {
-            Some(StandardVisual::MenuSurface { rows, .. }) => crate::menu_row_index(rows, slot),
+            Some(StandardVisual::MenuSurface { rows, .. })
+            | Some(StandardVisual::Select {
+                opened: true,
+                options: rows,
+                ..
+            }) => crate::menu_row_index(rows, slot),
             _ => None,
         }
     }

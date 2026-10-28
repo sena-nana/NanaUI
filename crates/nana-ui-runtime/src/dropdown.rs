@@ -310,21 +310,29 @@ impl Dropdown {
     fn option_data(&self) -> Vec<SelectOptionData> {
         self.options
             .iter()
-            .map(|option| SelectOptionData {
-                key: None,
-                label: Arc::clone(&option.label),
-                content: option.content.clone(),
-                hint: option.hint.clone(),
-                disabled: option.disabled,
-                checked: match &self.selection {
+            .map(|option| {
+                let chosen = match &self.selection {
                     DropdownSelection::Multiple(values) => {
                         values.iter().any(|value| value == &option.value)
                     }
-                    DropdownSelection::Single(_) => false,
-                },
-                icon: None,
-                accessible_name: None,
-                mark: crate::MenuItemMark::Command,
+                    DropdownSelection::Single(value) => value.as_ref() == Some(&option.value),
+                };
+                SelectOptionData {
+                    // Known by its value to assistive technology, which
+                    // hears the chosen options as selected.
+                    key: Some(crate::menus::menu_item_key(&option.value)),
+                    label: Arc::clone(&option.label),
+                    content: option.content.clone(),
+                    hint: option.hint.clone(),
+                    disabled: option.disabled,
+                    checked: chosen && matches!(self.selection, DropdownSelection::Multiple(_)),
+                    icon: None,
+                    accessible_name: None,
+                    mark: match &self.selection {
+                        DropdownSelection::Multiple(_) => crate::MenuItemMark::Check(chosen),
+                        DropdownSelection::Single(_) => crate::MenuItemMark::Radio(chosen),
+                    },
+                }
             })
             .collect()
     }

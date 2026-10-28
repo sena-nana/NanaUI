@@ -437,7 +437,9 @@ impl crate::ComponentView for Select {
                 .options
                 .iter()
                 .map(|option| SelectOptionData {
-                    key: None,
+                    // Known by its value to assistive technology; the
+                    // option the field holds reads as the chosen one.
+                    key: Some(crate::menus::menu_item_key(&option.value)),
                     label: Arc::clone(&option.label),
                     content: option.content.clone(),
                     hint: option.hint.clone(),
@@ -445,7 +447,7 @@ impl crate::ComponentView for Select {
                     checked: false,
                     icon: None,
                     accessible_name: None,
-                    mark: crate::MenuItemMark::Command,
+                    mark: crate::MenuItemMark::Radio(self.value.as_deref() == Some(&*option.value)),
                 })
                 .collect(),
             highlighted: self.highlighted,
