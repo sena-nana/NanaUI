@@ -95,6 +95,17 @@ pub struct TreeDropRequested {
     pub intent: TreeDropIntent,
 }
 
+/// `rows` were dragged out of the tree and let go at window `(x, y)`, the
+/// coordinates a pointer event carries. Another part of the application
+/// may take them there, say a list it maps the point into with
+/// [`crate::UiWorld::pointer_layout_position`].
+#[derive(Debug, Clone, PartialEq)]
+pub struct TreeDragReleased {
+    pub rows: Vec<Arc<str>>,
+    pub x: f32,
+    pub y: f32,
+}
+
 /// `id` was renamed to `text`. The application renames the node if it
 /// accepts.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -950,8 +961,16 @@ fn tree_moved(
 fn tree_released(
     cx: &mut AppContext,
     tree: Entity<TreeView>,
-    _: NodePointer,
+    pointer: NodePointer,
 ) -> Result<bool, FrameworkError> {
+    // Let go outside the tree: where, in window coordinates.
+    let outside = tree_rows(cx, tree, &pointer).and_then(|(_, (x, y))| {
+        let bounds = cx.world().component_layout_box(tree.stable_id())?;
+        if bounds.contains(x, y) {
+            return None;
+        }
+        cx.world().layout_pointer_position(tree.stable_id(), x, y)
+    });
     cx.update_component(tree, |tree, view| {
         let gesture = tree.gesture.take();
         let drop = tree.drop.take();
@@ -969,6 +988,12 @@ fn tree_released(
                 view.emit(TreeDropRequested {
                     rows: dragged_rows(tree, &row),
                     intent,
+                });
+            } else if let Some((x, y)) = outside {
+                view.emit(TreeDragReleased {
+                    rows: dragged_rows(tree, &row),
+                    x,
+                    y,
                 });
             }
         } else if select_on_release {

@@ -1819,7 +1819,7 @@ fn timeline_editor_clips_that_are_not_editable_only_select() {
 #[test]
 fn tree_view_selects_toggles_drags_and_renames() {
     use crate::{
-        TreeDropIntent, TreeDropPosition, TreeDropRequested, TreeRenameRequested,
+        TreeDragReleased, TreeDropIntent, TreeDropPosition, TreeDropRequested, TreeRenameRequested,
         TreeSelectionChanged, TreeToggleChanged, TreeToggleColumn, TreeView,
     };
     use nana_ui_core::{Icon, TreeNode};
@@ -1878,6 +1878,16 @@ fn tree_view_selects_toggles_drags_and_renames() {
                 e.rows.iter().map(|s| s.as_ref()).collect::<Vec<_>>(),
                 e.intent.target,
                 e.intent.position
+            ))
+        })
+        .unwrap();
+    context
+        .on(tree, |_, e: &TreeDragReleased, _| {
+            HEARD.lock().unwrap().push(format!(
+                "released {:?} at {} {}",
+                e.rows.iter().map(|s| s.as_ref()).collect::<Vec<_>>(),
+                e.x,
+                e.y
             ))
         })
         .unwrap();
@@ -2042,6 +2052,31 @@ fn tree_view_selects_toggles_drags_and_renames() {
     );
     relayout(&mut context);
     assert!(rows(&context).1.is_none());
+
+    // let go outside the tree: the rows and the window point, for another
+    // part of the application to take
+    let bounds = context.world().layout_box(tree.stable_id()).unwrap();
+    let away = (body.0, bounds.y + bounds.height + 40.0);
+    // away from the last press, which would make this a double click
+    input
+        .route(
+            &mut context,
+            plain(PointerPhase::Down, (body.0 - 40.0, body.1)),
+        )
+        .unwrap();
+    input
+        .route(&mut context, plain(PointerPhase::Move, away))
+        .unwrap();
+    input
+        .route(&mut context, plain(PointerPhase::Up, away))
+        .unwrap();
+    assert_eq!(
+        take(),
+        [format!(
+            r#"released ["face", "eye", "body"] at {} {}"#,
+            away.0, away.1
+        )]
+    );
 
     // a click without a drag on a selected row selects it alone
     click(&mut input, &mut context, &plain, eye);

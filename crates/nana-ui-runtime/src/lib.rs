@@ -467,8 +467,8 @@ pub use timeline::{
 pub use toast::{Toast, ToastAction, ToastDismissed, ToastProgress, ToastTone};
 pub use toast_stack::ToastStack;
 pub use tree_view::{
-    TreeDropIntent, TreeDropMark, TreeDropPosition, TreeDropRequested, TreeRenameRequested,
-    TreeSelectionChanged, TreeToggleChanged, TreeToggleColumn, TreeView,
+    TreeDragReleased, TreeDropIntent, TreeDropMark, TreeDropPosition, TreeDropRequested,
+    TreeRenameRequested, TreeSelectionChanged, TreeToggleChanged, TreeToggleColumn, TreeView,
 };
 pub use video::Video;
 pub use view_components::{

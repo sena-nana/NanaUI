@@ -85,7 +85,7 @@ widget(TreeView::new([
 - 指针在下四分之一：`After`，在行的下缘画一条线。
 - 指针在中间：`Inside`，给整行画框。
 
-被拖的是选中集合（从选中的行开始拖时），否则只是这一行。目标是被拖行自己或它的子孙时不显示落点。松手发 `TreeDropRequested { rows, intent }`，树本身不移动任何节点，由应用决定接不接受。不拖动、直接松开一个已选中的行，会只选中这一行。
+被拖的是选中集合（从选中的行开始拖时），否则只是这一行。目标是被拖行自己或它的子孙时不显示落点。松手发 `TreeDropRequested { rows, intent }`，树本身不移动任何节点，由应用决定接不接受。拖出树外再松手发 `TreeDragReleased { rows, x, y }`，`x`、`y` 是窗口坐标，应用可以用 `UiWorld::pointer_layout_position` 换算到别的控件里，把行放进另一个列表。不拖动、直接松开一个已选中的行，会只选中这一行。
 
 ## 行内重命名
 
@@ -162,6 +162,7 @@ widget(TreeView::new([
 | `TreeSelectionChanged` | `selected`, `active` | 选中集合或活动项变了 |
 | `TreeToggleChanged` | `id`, `column`, `on` | 一行的开关被设成 `on`：按下、拖过，或读屏点击开关 |
 | `TreeDropRequested` | `rows`, `intent` | 拖放请求；`intent` 是目标与 `Before` / `Inside` / `After` |
+| `TreeDragReleased` | `rows`, `x`, `y` | 行被拖出树外松手；`x`、`y` 是窗口坐标 |
 | `TreeRenameRequested` | `id`, `text` | 重命名提交 |
 
 ## 插槽
