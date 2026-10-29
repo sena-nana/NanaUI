@@ -58,7 +58,7 @@ widget(
 
 ## 列表
 
-`.spacing` 是行距，`.size` 默认小号，`.label` 是列表的可访问名。`.tree_drop(true)` 允许拖到树上。`.reorder(false)` 让列表只能点选：按下后怎么移动都不会拖起，松手发 `Select`。
+`.spacing` 是行距，`.size` 默认小号，`.label` 是列表的可访问名。`.tree_drop(true)` 允许拖到树上。`.reorder(false)` 让列表只能点选：按下后怎么移动都不会拖起，松手发 `Select`。只让某几行不动时，给那几行 `.movable(false)`：它们照样点选、照样能接别的行落在旁边。
 
 ## 树
 

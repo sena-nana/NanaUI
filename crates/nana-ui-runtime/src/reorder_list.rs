@@ -111,6 +111,9 @@ pub struct ReorderItem {
     pub value: Arc<str>,
     pub label: Arc<str>,
     pub draggable: bool,
+    /// The row moves when dragged. A row that does not still selects on a
+    /// click and takes drops; dragging it does nothing.
+    pub movable: bool,
     pub drop_target: bool,
     pub selected: bool,
     pub disabled: bool,
@@ -132,6 +135,7 @@ impl ReorderItem {
             value: value.into(),
             label: label.into(),
             draggable: true,
+            movable: true,
             drop_target: true,
             selected: false,
             disabled: false,
@@ -149,6 +153,12 @@ impl ReorderItem {
     pub fn draggable(mut self, draggable: bool) -> Self {
         self.draggable = draggable;
         self.drop_target = draggable;
+        self
+    }
+
+    /// See [`Self::movable`](field@Self::movable).
+    pub fn movable(mut self, movable: bool) -> Self {
+        self.movable = movable;
         self
     }
 
@@ -860,7 +870,7 @@ impl ReorderList {
     /// not move. The row carries the rows it holds.
     pub fn key_move(&self, source: &str, step: ReorderKeyMove) -> Option<ReorderListEvent> {
         let index = self.item_index(source)?;
-        if !self.reorder || self.drag.is_some() || !self.items[index].is_source() {
+        if !self.moves(source) || self.drag.is_some() || !self.items[index].is_source() {
             return None;
         }
         let rules = DropRules::of(self);
@@ -935,7 +945,7 @@ impl ReorderList {
 
     fn move_to(&mut self, x: f32, y: f32) {
         // never moved, the release is a click
-        if !self.reorder {
+        if !self.drag.as_ref().is_some_and(|drag| self.moves(&drag.source)) {
             return;
         }
         if let Some(drag) = self.drag.as_mut() {
@@ -971,6 +981,11 @@ impl ReorderList {
             source: drag.source,
             before,
         })
+    }
+
+    /// Whether row `value` moves when dragged.
+    fn moves(&self, value: &str) -> bool {
+        self.reorder && self.item_index(value).is_some_and(|index| self.items[index].movable)
     }
 
     fn item_index(&self, value: &str) -> Option<usize> {
@@ -1347,12 +1362,12 @@ impl crate::AppContext {
             return Ok(false);
         };
         let started = self.update_component(entity, |list, cx| {
+            if !list.armed.as_ref().is_some_and(|armed| list.moves(&armed.drag.source)) {
+                return false;
+            }
             let Some(armed) = list.armed.as_mut() else {
                 return false;
             };
-            if !list.reorder {
-                return false;
-            }
             armed.drag.follow(x, y);
             if !armed.drag.moved {
                 return false;
@@ -1656,6 +1671,24 @@ mod tests {
             Some(ReorderListEvent::Select(Arc::from("c")))
         );
         assert_eq!(list.key_move("c", ReorderKeyMove::Up), None);
+    }
+
+    #[test]
+    fn a_row_that_does_not_move_only_selects() {
+        let mut list = sample();
+        list.items[2] = list.items[2].clone().movable(false);
+        apply(&mut list, ReorderListPointer::Down { x: 40.0, y: 72.0 });
+        apply(&mut list, ReorderListPointer::Move { x: 40.0, y: 12.0 });
+        assert_eq!(list.drag_visual(), None);
+        assert_eq!(
+            apply(&mut list, ReorderListPointer::Up { x: 40.0, y: 12.0 }),
+            Some(ReorderListEvent::Select(Arc::from("c")))
+        );
+        assert_eq!(list.key_move("c", ReorderKeyMove::Up), None);
+        // the other rows still drag
+        apply(&mut list, ReorderListPointer::Down { x: 40.0, y: 12.0 });
+        apply(&mut list, ReorderListPointer::Move { x: 40.0, y: 72.0 });
+        assert!(list.drag_visual().is_some());
     }
 
     #[test]
