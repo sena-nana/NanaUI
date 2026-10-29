@@ -3878,36 +3878,14 @@ impl UiWorld {
             self.nodes.set_empty_state_text(id, Some(presentation));
             changed = true;
         }
-        let Some(StandardVisual::EmptyState {
-            icon,
-            compact,
-            action,
-            ..
-        }) = self.nodes.visual(id)
-        else {
+        // The block reserves its declared height above the action (#205).
+        let Some(inputs) = self.empty_state_inputs(id) else {
             return changed;
         };
-        let spacing = if *compact {
-            self.theme.spacing().xxs
-        } else {
-            self.theme.spacing().sm
-        };
-        let vertical = if *compact {
-            self.theme.spacing().md
-        } else {
-            self.theme.spacing().page
-        };
-        let mut height = presentation.title.height;
-        if icon.is_some() {
-            height += self.theme.spacing().page_tight + self.theme.spacing().xxs + spacing;
-        }
-        if let Some(message) = presentation.message {
-            height += spacing + message.height;
-        }
-        if action.is_some() {
-            height += spacing + self.theme.spacing().xs;
-        }
-        let padding_top = nana_ui_core::LengthSpec::Px(vertical + height);
+        let size =
+            |metrics: TextMetrics| crate::layout_engine::Size::new(metrics.width, metrics.height);
+        let height = inputs.block_height(size(presentation.title), presentation.message.map(size));
+        let padding_top = nana_ui_core::LengthSpec::Px(inputs.inset.height + height);
         let mut style = self.record(id).style.clone();
         if style.layout.padding_top != Some(padding_top) {
             Arc::make_mut(&mut style.layout).padding_top = Some(padding_top);
@@ -3977,17 +3955,15 @@ impl UiWorld {
                 }
                 let computed = self.record(id).resolved.0.as_ref();
                 let visual = self.nodes.visual(id);
-                if let Some(visual @ StandardVisual::EmptyState { compact, .. }) = visual {
+                if let Some(visual @ StandardVisual::EmptyState { .. }) = visual {
                     if computed.visible {
                         let Some(layout) = self.component_layout_box(id) else {
                             continue;
                         };
-                        let horizontal = if *compact {
-                            self.theme.spacing().sm
-                        } else {
-                            self.theme.spacing().xxxl
-                        };
-                        let width = (layout.width - horizontal * 2.0).max(0.0);
+                        // The block's band is its paragraph budget.
+                        let width = self
+                            .empty_state_inputs(id)
+                            .map_or(layout.width, |inputs| inputs.band(layout).width);
                         let runs = shaper.runs;
                         let intrinsic = shape_empty_state_text(
                             id,

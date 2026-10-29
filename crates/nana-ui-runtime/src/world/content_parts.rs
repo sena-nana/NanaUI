@@ -3,9 +3,9 @@ use super::*;
 use crate::layout_engine::{
     Size,
     parts::{
-        ContentParts, FlexPart, SwitchInputs, button_content_parts, checkbox_parts, part_bounds,
-        selection_option_parts, selection_option_row, start_row_parts, status_dot_parts,
-        switch_parts,
+        ContentParts, EmptyStateInputs, FlexPart, SwitchInputs, button_content_parts,
+        checkbox_parts, empty_state_parts, part_bounds, selection_option_parts,
+        selection_option_row, start_row_parts, status_dot_parts, switch_parts,
     },
 };
 
@@ -146,6 +146,19 @@ impl UiWorld {
         }
         if let Some(inputs) = self.switch_inputs(id) {
             return switch_parts(content, inputs);
+        }
+        if let Some(inputs) = self.empty_state_inputs(id) {
+            let presentation = self.nodes.empty_state_text(id).copied().unwrap_or_default();
+            let size = |metrics: crate::TextMetrics| Size::new(metrics.width, metrics.height);
+            let message = matches!(
+                visual,
+                StandardVisual::EmptyState {
+                    message: Some(_),
+                    ..
+                }
+            )
+            .then(|| size(presentation.message.unwrap_or_default()));
+            return empty_state_parts(bounds, inputs, size(presentation.title), message);
         }
         if let Some(inputs) = self.selection_option_parts(id, Size::new(text.width, text.height)) {
             return selection_option_row(content, inputs, self.selection_option_icon_line(id));
@@ -406,6 +419,35 @@ impl UiWorld {
             .is_some_and(|style| style.text_vertical_alignment == TextVerticalAlignment::Center);
         (!centred)
             .then(|| nana_ui_core::text_line_box_height_px(style.font_size, style.line_height))
+    }
+
+    /// An empty state's icon, title and message block before placement,
+    /// from the installed theme: what the paragraph budget, the room the
+    /// block reserves above the action, placement and the chrome clip all
+    /// read.
+    pub(crate) fn empty_state_inputs(&self, id: StableNodeId) -> Option<EmptyStateInputs> {
+        let Some(StandardVisual::EmptyState {
+            icon,
+            compact,
+            action,
+            ..
+        }) = self.standard_visual_ref(id)
+        else {
+            return None;
+        };
+        let spacing = self.theme.spacing();
+        let (inset, gap) = if *compact {
+            (Size::new(spacing.sm, spacing.md), spacing.xxs)
+        } else {
+            (Size::new(spacing.xxxl, spacing.page), spacing.sm)
+        };
+        Some(EmptyStateInputs {
+            inset,
+            icon: icon.map(|_| spacing.page_tight + spacing.xxs),
+            gap,
+            centred: !*compact,
+            action: action.map(|_| spacing.xs),
+        })
     }
 
     /// A switch's track and text column before placement, from the

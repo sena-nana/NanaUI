@@ -3182,3 +3182,400 @@ fn issue205_ten_thousand_selection_options_keep_one_entity_and_bounded_parts() {
         assert_eq!(cx.world().layout_generation(), generation);
     }
 }
+
+/// An empty state saying `title` (and `message`), with an icon when `icon`
+/// and an action button when `action`, in a `width` column above a button,
+/// under `theme` when given, laid out once.
+fn empty_state_page(
+    title: &str,
+    message: Option<&str>,
+    icon: bool,
+    compact: bool,
+    action: bool,
+    width: f32,
+    theme: Option<&nana_ui_core::ThemeDefinition>,
+) -> (
+    AppContext,
+    crate::Entity<crate::EmptyState>,
+    Option<crate::StableNodeId>,
+) {
+    let document = DocumentId::new(1).unwrap();
+    let mut cx = AppContext::new();
+    if let Some(theme) = theme {
+        cx.set_theme_definition(theme).unwrap();
+    }
+    let root = cx
+        .create_component(document, Stack::column(4.0).width(LengthSpec::Px(width)))
+        .unwrap();
+    let empty = cx
+        .create_detached_component(document, empty_state_view(title, message, icon, compact))
+        .unwrap();
+    cx.append_child(root, empty).unwrap();
+    let action = action.then(|| {
+        let button = cx
+            .create_detached_component(document, Button::new("Upload"))
+            .unwrap();
+        cx.set_empty_state_action(empty, Some(button.stable_id()))
+            .unwrap();
+        button.stable_id()
+    });
+    let below = cx
+        .create_detached_component(document, Button::new("Below"))
+        .unwrap();
+    cx.append_child(root, below).unwrap();
+    product_frame(
+        &mut cx,
+        document,
+        LayoutViewport::new(700.0, 600.0),
+        &mut bundled_face_shaper(),
+    );
+    cx.rebuild_hit_test(document);
+    (cx, empty, action)
+}
+
+fn empty_state_view(
+    title: &str,
+    message: Option<&str>,
+    icon: bool,
+    compact: bool,
+) -> crate::EmptyState {
+    let mut view = crate::EmptyState::new(title).compact(compact);
+    view.message = message.map(Into::into);
+    view.icon = icon.then_some(Icon::File);
+    view
+}
+
+/// An empty state's icon, title and message are Flex parts layout
+/// publishes (#205): one column at the top of the band its inset leaves,
+/// each item centred (or at its start when compact) and as wide as its text
+/// up to the band. The band's width is the paragraph budget, the column's
+/// height is the room the block keeps above the action, and paint, the
+/// chrome clip and accessibility read the same parts.
+#[test]
+fn issue205_empty_state_icon_title_and_message_are_published_parts() {
+    let long = "Nothing has been shared with this workspace yet, so there is nothing to show";
+    for compact in [false, true] {
+        for icon in [false, true] {
+            for (message, action) in [(None, false), (Some("Drop files here"), true)] {
+                for (title, width) in [("No files", 320.0), (long, 140.0)] {
+                    let (cx, empty, action_id) =
+                        empty_state_page(title, message, icon, compact, action, width, None);
+                    let id = empty.stable_id();
+                    let world = cx.world();
+                    let result = world.layout_result(id).unwrap();
+                    let bounds = result.bounds;
+                    let spacing = world.theme().spacing();
+                    let (inset, gap) = if compact {
+                        ((spacing.sm, spacing.md), spacing.xxs)
+                    } else {
+                        ((spacing.xxxl, spacing.page), spacing.sm)
+                    };
+                    let band = crate::LayoutBox {
+                        x: bounds.x + inset.0,
+                        y: bounds.y + inset.1,
+                        width: bounds.width - inset.0 * 2.0,
+                        height: bounds.height - inset.1 * 2.0,
+                    };
+                    let presentation = *world.nodes.empty_state_text(id).unwrap();
+                    let at = |size: f32| {
+                        if compact {
+                            band.x
+                        } else {
+                            band.x + (band.width - size) / 2.0
+                        }
+                    };
+                    let mut y = band.y;
+                    let geometry = world.component_geometry(id).unwrap();
+                    let ComponentGeometry::EmptyState {
+                        content_clip,
+                        icon: painted_icon,
+                        title: painted_title,
+                        message: painted_message,
+                        ..
+                    } = geometry
+                    else {
+                        panic!("{geometry:?}")
+                    };
+                    assert_eq!(content_clip, band);
+                    if icon {
+                        let part = part_of(&cx, id, LayoutPartKind::LeadingContent);
+                        let extent = spacing.page_tight + spacing.xxs;
+                        assert_eq!((part.width, part.height, part.y), (extent, extent, y));
+                        assert!((part.x - at(extent)).abs() < 1e-4);
+                        assert_eq!(painted_icon.map(|(_, bounds, _)| bounds), Some(part));
+                        y += extent + gap;
+                    }
+                    let header = part_of(&cx, id, LayoutPartKind::Header);
+                    let title_width = presentation.title.width.min(band.width);
+                    assert!((header.y - y).abs() < 1e-3, "{header:?} at {y}");
+                    assert_eq!(
+                        (header.width, header.height),
+                        (title_width, presentation.title.height)
+                    );
+                    assert!((header.x - at(title_width)).abs() < 1e-3);
+                    assert_eq!(painted_title.bounds, header);
+                    // The band is the title's paragraph budget.
+                    assert!(presentation.title.width <= band.width + 0.5);
+                    y += header.height;
+                    if message.is_some() {
+                        let detail = part_of(&cx, id, LayoutPartKind::Detail);
+                        let metrics = presentation.message.unwrap();
+                        y += gap;
+                        assert!((detail.y - y).abs() < 1e-3, "{detail:?} at {y}");
+                        assert_eq!(detail.height, metrics.height);
+                        assert_eq!(painted_message.unwrap().bounds, detail);
+                        y += detail.height;
+                    } else {
+                        assert!(painted_message.is_none());
+                    }
+                    // The content box, where the action stands, starts below
+                    // the block and the action's lead-in.
+                    let content = result.content_box;
+                    let expected = y + action_id.map_or(0.0, |_| gap + spacing.xs);
+                    assert!(
+                        (content.y - expected).abs() < 1e-3,
+                        "{content:?} at {expected}"
+                    );
+                    if let Some(action) = action_id {
+                        assert!((world.layout_box(action).unwrap().y - expected).abs() < 1e-3);
+                    }
+                    // One entity and its action; the parts are its icon,
+                    // title, message and content box.
+                    assert_eq!(world.len(), 3 + usize::from(action));
+                    assert_eq!(
+                        result
+                            .parts
+                            .iter()
+                            .filter(|part| part.kind != LayoutPartKind::ChildPlacement)
+                            .count(),
+                        2 + usize::from(icon) + usize::from(message.is_some())
+                    );
+                }
+            }
+        }
+    }
+}
+
+/// Title, message, icon, density, action and width changes, including a
+/// title that changes its width but not its height, and a theme that moves
+/// the inset and the gaps, republish what a cold layout would.
+#[test]
+fn issue205_empty_state_parts_follow_changes_like_a_cold_layout() {
+    let document = DocumentId::new(1).unwrap();
+    let viewport = LayoutViewport::new(700.0, 600.0);
+    let long = "Nothing has been shared with this workspace yet, so there is nothing to show";
+    let mut spacing =
+        nana_ui_core::ThemeDefinition::for_appearance(nana_ui_core::ThemeAppearance::Light);
+    spacing.tokens.spacing.xxs += 1.0;
+    spacing.tokens.spacing.sm += 2.0;
+    spacing.tokens.spacing.xxxl += 4.0;
+    spacing.tokens.spacing.page += 3.0;
+    spacing.tokens.spacing.page_tight += 2.0;
+    let spacing = spacing.bump();
+    for compact in [false, true] {
+        let mut shaper = bundled_face_shaper();
+        let (mut cx, empty, _) =
+            empty_state_page("No files", None, false, compact, false, 320.0, None);
+        for (title, message, icon) in [
+            ("No folders", None, false),
+            ("No folders", Some("Drop files here"), false),
+            ("No folders", Some(long), true),
+            (long, Some("Drop files here"), true),
+            ("", None, true),
+            ("No files", Some("Drop files here"), false),
+        ] {
+            cx.update_component(empty, |view, _| {
+                let action = view.action;
+                *view = empty_state_view(title, message, icon, compact);
+                view.action = action;
+            })
+            .unwrap();
+            product_frame(&mut cx, document, viewport, &mut shaper);
+            let (mut cold, cold_empty, _) =
+                empty_state_page(title, message, icon, compact, false, 320.0, None);
+            assert_eq!(cold_empty.stable_id(), empty.stable_id());
+            super::reflow_oracle::assert_matches_cold(&mut cx, &mut cold, document);
+        }
+        cx.set_theme_definition(&spacing).unwrap();
+        product_frame(&mut cx, document, viewport, &mut shaper);
+        let (mut cold, ..) = empty_state_page(
+            "No files",
+            Some("Drop files here"),
+            false,
+            compact,
+            false,
+            320.0,
+            Some(&spacing),
+        );
+        super::reflow_oracle::assert_matches_cold(&mut cx, &mut cold, document);
+    }
+    // Mounting an action moves the content box below the block's lead-in.
+    let mut shaper = bundled_face_shaper();
+    let (mut cx, empty, _) = empty_state_page(
+        "No files",
+        Some("Drop files here"),
+        true,
+        false,
+        false,
+        320.0,
+        None,
+    );
+    let button = cx
+        .create_detached_component(document, Button::new("Upload"))
+        .unwrap();
+    cx.set_empty_state_action(empty, Some(button.stable_id()))
+        .unwrap();
+    product_frame(&mut cx, document, viewport, &mut shaper);
+    // The same tree, built in the same order and laid out once.
+    let mut cold = AppContext::new();
+    let root = cold
+        .create_component(document, Stack::column(4.0).width(LengthSpec::Px(320.0)))
+        .unwrap();
+    let cold_empty = cold
+        .create_detached_component(
+            document,
+            empty_state_view("No files", Some("Drop files here"), true, false),
+        )
+        .unwrap();
+    cold.append_child(root, cold_empty).unwrap();
+    let below = cold
+        .create_detached_component(document, Button::new("Below"))
+        .unwrap();
+    cold.append_child(root, below).unwrap();
+    let action = cold
+        .create_detached_component(document, Button::new("Upload"))
+        .unwrap();
+    cold.set_empty_state_action(cold_empty, Some(action.stable_id()))
+        .unwrap();
+    product_frame(&mut cold, document, viewport, &mut bundled_face_shaper());
+    super::reflow_oracle::assert_matches_cold(&mut cx, &mut cold, document);
+}
+
+/// Empty states moved between Grid, Inline and Flex parents keep their
+/// entities and publish the parts a cold layout in that context would.
+#[test]
+fn issue205_empty_state_parts_survive_context_transitions() {
+    use super::reflow_oracle::assert_matches_cold;
+    use crate::MutationQueue;
+    use nana_ui_core::DisplaySpec;
+    let document = DocumentId::new(1).unwrap();
+    let viewport = LayoutViewport::new(400.0, 300.0);
+    let build = |display: DisplaySpec| {
+        let mut cx = AppContext::new();
+        let root = cx
+            .create_component(
+                document,
+                Stack::column(0.0).with_layout(|layout| {
+                    layout.width = Some(LengthSpec::Px(320.0));
+                    layout.display = Some(display);
+                }),
+            )
+            .unwrap();
+        let mut ids = Vec::new();
+        for compact in [false, true] {
+            let empty = cx
+                .create_detached_component(
+                    document,
+                    empty_state_view("No files", Some("Drop files here"), true, compact),
+                )
+                .unwrap();
+            cx.append_child(root, empty).unwrap();
+            ids.push(empty.stable_id());
+        }
+        product_frame(&mut cx, document, viewport, &mut bundled_face_shaper());
+        (cx, root, ids)
+    };
+    let mut shaper = bundled_face_shaper();
+    let (mut cx, root, ids) = build(DisplaySpec::Flex);
+    for display in [DisplaySpec::Grid, DisplaySpec::Inline, DisplaySpec::Flex] {
+        let mut style = cx.world().node_style(root.stable_id()).unwrap().clone();
+        Arc::make_mut(&mut style.layout).display = Some(display);
+        let mut q = MutationQueue::new();
+        q.set_style(root.stable_id(), style);
+        cx.commit_mutations(q).unwrap();
+        let work = product_frame(&mut cx, document, viewport, &mut shaper);
+        assert_eq!((work.entities_spawned, work.entities_despawned), (0, 0));
+        for &id in &ids {
+            let Some(ComponentGeometry::EmptyState {
+                icon,
+                title,
+                message,
+                ..
+            }) = cx.world().component_geometry(id)
+            else {
+                panic!("empty state")
+            };
+            assert_eq!(
+                icon.map(|(_, bounds, _)| bounds),
+                Some(part_of(&cx, id, LayoutPartKind::LeadingContent))
+            );
+            assert_eq!(title.bounds, part_of(&cx, id, LayoutPartKind::Header));
+            assert_eq!(
+                message.map(|message| message.bounds),
+                Some(part_of(&cx, id, LayoutPartKind::Detail))
+            );
+        }
+        let (mut cold, ..) = build(display);
+        assert_matches_cold(&mut cx, &mut cold, document);
+    }
+}
+
+#[test]
+fn issue205_ten_thousand_empty_states_keep_one_entity_and_bounded_parts() {
+    let _unguarded = crate::layout_engine::verify::skip_layout_verify();
+    for count in [1_000, 10_000] {
+        let document = DocumentId::new(1).unwrap();
+        let mut cx = AppContext::new();
+        let mut shaper = bundled_face_shaper();
+        let viewport = LayoutViewport::new(600.0, 400.0);
+        let root = cx.create_component(document, Stack::column(0.0)).unwrap();
+        let children: Vec<_> = (0..count)
+            .map(|index| {
+                cx.create_detached_component(
+                    document,
+                    empty_state_view(
+                        "No files",
+                        (index % 2 == 0).then_some("Drop files here"),
+                        index % 3 == 0,
+                        index % 4 == 0,
+                    ),
+                )
+                .unwrap()
+                .stable_id()
+            })
+            .collect();
+        let mut q = crate::MutationQueue::new();
+        for &id in &children {
+            q.insert(root.stable_id(), id, None);
+        }
+        cx.commit_mutations(q).unwrap();
+        product_frame(&mut cx, document, viewport, &mut shaper);
+        assert_eq!(cx.world().len(), count + 1);
+        for (index, &id) in children.iter().enumerate() {
+            let result = cx.world().layout_result(id).unwrap();
+            let kinds: Vec<_> = result.parts.iter().map(|part| part.kind).collect();
+            let mut expected = vec![LayoutPartKind::ComponentContent];
+            if index % 3 == 0 {
+                expected.push(LayoutPartKind::LeadingContent);
+            }
+            expected.push(LayoutPartKind::Header);
+            if index % 2 == 0 {
+                expected.push(LayoutPartKind::Detail);
+            }
+            assert_eq!(kinds, expected);
+        }
+        let generation = cx.world().layout_generation();
+        product_frame(&mut cx, document, viewport, &mut shaper);
+        let idle = cx.world().frame_counters;
+        assert_eq!(
+            (
+                idle.layout_measure_nodes,
+                idle.layout_placement_nodes,
+                idle.entities_spawned,
+                idle.entities_despawned
+            ),
+            (0, 0, 0, 0)
+        );
+        assert_eq!(cx.world().layout_generation(), generation);
+    }
+}

@@ -321,6 +321,113 @@ pub(crate) fn selection_option_row(
     parts
 }
 
+/// An empty state's text block before placement: an optional icon over its
+/// title over an optional message, in a band inset from the border box.
+/// The band's width is the paragraph budget, the column's height (with the
+/// action's lead-in when there is one) is what the block reserves above the
+/// action, and placement solves the same column; all read this one
+/// declaration.
+#[derive(Clone, Copy, PartialEq)]
+pub(crate) struct EmptyStateInputs {
+    /// The band's inset from the border box on each side.
+    pub inset: Size,
+    /// The icon's square, when there is one.
+    pub icon: Option<f32>,
+    /// Between the icon, the title and the message.
+    pub gap: f32,
+    /// Each item centred in the band rather than at its start.
+    pub centred: bool,
+    /// Between the message and the action, when there is an action.
+    pub action: Option<f32>,
+}
+
+impl EmptyStateInputs {
+    /// The band the block and the chrome clip share, in a `bounds` border box.
+    pub fn band(&self, bounds: LayoutBox) -> LayoutBox {
+        LayoutBox {
+            x: bounds.x + self.inset.width,
+            y: bounds.y + self.inset.height,
+            width: (bounds.width - self.inset.width * 2.0).max(0.0),
+            height: (bounds.height - self.inset.height * 2.0).max(0.0),
+        }
+    }
+
+    fn column(&self, title: Size, message: Option<Size>) -> [Option<FlexPart>; 3] {
+        let item = |kind, size: Size, gap_after| {
+            let mut part = FlexPart::new(kind, size);
+            part.align = if self.centred {
+                AlignSpec::Center
+            } else {
+                AlignSpec::Start
+            };
+            part.gap_after = gap_after;
+            part
+        };
+        [
+            self.icon.map(|icon| {
+                item(
+                    LayoutPartKind::LeadingContent,
+                    Size::new(icon, icon),
+                    self.gap,
+                )
+            }),
+            Some(item(
+                LayoutPartKind::Header,
+                title,
+                if message.is_some() { self.gap } else { 0.0 },
+            )),
+            message.map(|message| item(LayoutPartKind::Detail, message, 0.0)),
+        ]
+    }
+
+    /// The block's height: the column and the action's lead-in.
+    pub fn block_height(&self, title: Size, message: Option<Size>) -> f32 {
+        let mut height = title.height;
+        if let Some(icon) = self.icon {
+            height += icon + self.gap;
+        }
+        if let Some(message) = message {
+            height += self.gap + message.height;
+        }
+        if let Some(lead) = self.action {
+            height += self.gap + lead;
+        }
+        height
+    }
+}
+
+/// An empty state's icon, title and message in the band of `bounds`: one
+/// Flex column at the band's top, each item centred or at its start, the
+/// title and message as wide as their text up to the band.
+pub(crate) fn empty_state_parts(
+    bounds: LayoutBox,
+    inputs: EmptyStateInputs,
+    title: Size,
+    message: Option<Size>,
+) -> ContentParts {
+    let band = inputs.band(bounds);
+    let fit = |size: Size| Size::new(size.width.clamp(0.0, band.width), size.height);
+    // The block reserved its own height above the action, so the band never
+    // cuts an item short: the column runs as long as its items (and a pixel
+    // more, so rounding in the running sum cannot clip the last one).
+    let column = inputs.column(fit(title), message.map(fit));
+    let height = column
+        .iter()
+        .flatten()
+        .map(|part| part.preferred.height.max(0.0) + part.gap_after.max(0.0))
+        .sum::<f32>();
+    flex_parts(
+        LayoutBox {
+            height: height + 1.0,
+            ..band
+        },
+        FlexDirection::Column,
+        JustifySpec::Start,
+        false,
+        column,
+    )
+}
+
 /// What a row of `parts` holds beside its label: every glyph's width and
 /// every gap, and the tallest glyph. Intrinsic measure adds the label's own
 /// size to it.

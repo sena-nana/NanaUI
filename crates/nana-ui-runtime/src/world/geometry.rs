@@ -1855,65 +1855,34 @@ impl UiWorld {
                 compact,
                 action,
             } => {
-                let (horizontal, vertical, title_size, message_size, spacing) = if *compact {
-                    (
-                        self.theme.spacing().sm,
-                        self.theme.spacing().md,
-                        self.theme.typography().meta,
-                        self.theme.typography().hint,
-                        self.theme.spacing().xxs,
-                    )
+                // The icon, title and message are the parts layout published
+                // (#205); the chrome clip is the band they share.
+                use crate::LayoutPartKind;
+                let inputs = self.empty_state_inputs(id)?;
+                let band = inputs.band(bounds);
+                let (title_size, message_size) = if *compact {
+                    (self.theme.typography().meta, self.theme.typography().hint)
                 } else {
-                    (
-                        self.theme.spacing().xxxl,
-                        self.theme.spacing().page,
-                        self.theme.typography().body,
-                        self.theme.typography().meta,
-                        self.theme.spacing().sm,
-                    )
+                    (self.theme.typography().body, self.theme.typography().meta)
                 };
-                let width = (bounds.width - horizontal * 2.0).max(0.0);
-                let presentation = self.nodes.empty_state_text(id).copied().unwrap_or_default();
-                let text_bounds = |metrics: TextMetrics, y: f32| {
-                    let shaped_width = metrics.width.clamp(0.0, width);
-                    crate::LayoutBox {
-                        x: bounds.x
-                            + horizontal
-                            + if *compact {
-                                0.0
-                            } else {
-                                (width - shaped_width) / 2.0
-                            },
-                        y,
-                        width: shaped_width,
-                        height: metrics.height,
-                    }
+                let part = |kind| {
+                    self.content_part_box(id, kind).unwrap_or(LayoutBox {
+                        width: 0.0,
+                        height: 0.0,
+                        ..band
+                    })
                 };
-                let mut y = bounds.y + vertical;
                 let icon = icon.map(|icon| {
-                    let icon_width =
-                        (self.theme.spacing().page_tight + self.theme.spacing().xxs).min(width);
-                    let icon_bounds = LayoutBox {
-                        x: if *compact {
-                            bounds.x + horizontal
-                        } else {
-                            bounds.x + horizontal + (width - icon_width) / 2.0
-                        },
-                        y,
-                        width: icon_width,
-                        height: (self.theme.spacing().page_tight + self.theme.spacing().xxs),
-                    };
-                    y += (self.theme.spacing().page_tight + self.theme.spacing().xxs) + spacing;
                     (
                         icon,
-                        icon_bounds,
+                        part(LayoutPartKind::LeadingContent),
                         self.style_model
                             .color(SemanticColorRole::Faint)
                             .as_rgba_array(),
                     )
                 });
                 let title_region = crate::ComponentTextRegion {
-                    bounds: text_bounds(presentation.title, y),
+                    bounds: part(LayoutPartKind::Header),
                     content: Arc::clone(title).into(),
                     color: Some(if *compact {
                         secondary
@@ -1925,25 +1894,16 @@ impl UiWorld {
                     font_size: title_size,
                     font_weight: Some(self.theme.typography().semibold),
                 };
-                y += presentation.title.height;
-                let message = message.as_ref().map(|message| {
-                    y += spacing;
-                    crate::ComponentTextRegion {
-                        bounds: text_bounds(presentation.message.unwrap_or_default(), y),
-                        content: Arc::clone(message).into(),
-                        color: Some(secondary),
-                        font_size: message_size,
-                        font_weight: None,
-                    }
+                let message = message.as_ref().map(|message| crate::ComponentTextRegion {
+                    bounds: part(LayoutPartKind::Detail),
+                    content: Arc::clone(message).into(),
+                    color: Some(secondary),
+                    font_size: message_size,
+                    font_weight: None,
                 });
                 Some(crate::ComponentGeometry::EmptyState {
                     root_clip: bounds,
-                    content_clip: LayoutBox {
-                        x: bounds.x + horizontal,
-                        y: bounds.y + vertical,
-                        width,
-                        height: (bounds.height - vertical * 2.0).max(0.0),
-                    },
+                    content_clip: band,
                     icon,
                     title: title_region,
                     message,

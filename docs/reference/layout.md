@@ -147,7 +147,7 @@ parts（`layout_engine::parts`），用 retained Flex 的同一组求解函数�
 （图标、指示框、圆点），与段落预算相同，文字铺满时盒子不会因为这些部件超出可用宽度。部件读的主题度量没有出现在节点自己的样式里时（Switch 的
 track 与间隔，StatusBadge / ValidationMessage 的圆点格宽与间隔，带图标的 SelectionOption 的图标间隔），主题改了这些度量，节点照样重新测量（`visual_parts_read_theme`）。
 
-已迁移：Button、Chip、ActionMenuItem、Checkbox、Switch、StatusBadge、ValidationMessage、SelectionOption（竖排圆环、分段项、标签页）、ListItem/SidebarRow/FileTab 的文字部件、
+已迁移：Button、Chip、ActionMenuItem、Checkbox、Switch、StatusBadge、ValidationMessage、SelectionOption（竖排圆环、分段项、标签页）、EmptyState、ListItem/SidebarRow/FileTab 的文字部件、
 LabeledValue、FormField、Card 标题、Select 触发器。交互、数据行、文本编辑几何（菜单行、
 树行、编辑器）与图表、路径、画布不进部件。逐组件的分类和待迁移项见
 [组件内容布局与迁移审计](component-layout.md)。
