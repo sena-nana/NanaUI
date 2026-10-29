@@ -662,3 +662,78 @@ T-I06 / T-I07 的期望值按 CSS 2.1 §10.8 和上面的近似字体度量推�
 | 旧 API 可作为 facade 继续使用 | 可勾：构造器与字段不变；`ContextMenu.style.layout.height` 不再带被投影覆盖的那份值 |
 
 结论：剩「ComponentGeometry 重复 layout authority 删除」一项未完成，#205 暂不能关闭；剩余五组按审计表继续，或由维护者决定把它们拆成后续 issue 后再关。
+
+## 2026-10-29 追加（三）：#205 SelectionOption、EmptyState
+
+接上一节「仍未做」的 2 类清单，按顺序迁移 SelectionOption 与 EmptyState，修补一处随新部件类型漏掉的复用判定。Toast、MenuSurface 触发器、Range/Progress 文字、ModalFrame 文本本轮未做（见「仍未做」）。
+
+### 改动
+
+- **SelectionOption（`79312cbfe`）。** 竖排圆环、分段项与标签页的选项原先把圆环和图标的位置写进 `padding_left`（`radio_lead`、图标的 `1em + xs`），geometry 再按同一组常量摆一遍圆环和图标。`parts::selection_option_parts`：圆环是新增的 `LayoutPartKind::Indicator`（`#[non_exhaustive]` 枚举的追加成员，非破坏），图标是 `LeadingContent`，标签是 `TextContent` 取余下宽度（分段项居中、竖排起点对齐都在这条宽度里）。`UiWorld::selection_option_parts` 读一次，intrinsic measure（`chrome_extent`）、段落预算（`text_budget`）、placement（`selection_option_row`）与 `ComponentGeometry::SelectionOption` 都读它；padding 只剩选项自己的内缩（竖排 `RADIO_ROW_INSET`，分段项 `padding_x_in + xxs`）。标签不是垂直居中时，图标对齐标签第一行的中线（原 `icon_y_on_text_glyph_center` 的行为，挪进部件求解）。圆环与竖排图标仍用固定控件档尺寸（`indicator_size()`、`indicator_gap()`、`icon_size()`，与迁移前相同，主题不改）；分段项图标是解析字号的 1em，间隔读主题 `xs`。图标增删经 visual 分类失效布局；带图标的选项在主题变化时重新测量（`visual_parts_read_theme`）。选中、禁用、悬停只改绘制。
+- **复用判定（`8f0da4775`）。** 需要 native 文本片段的结果只在发布的部件与求解的部件相同时复用，比较时按一张部件类型清单过滤；清单里缺 `Indicator`，这种圆环行永远判为不相同、每次重建。补进清单。没有单独门禁（选项默认不折行，这条路径只在调用方关掉 `nowrap` 让标签折行时才走到）。
+- **EmptyState（`bb8e0f4c1`）。** 原先 geometry 手算图标、标题、说明的位置，text pass 再按同一组主题间距算两遍（折行宽度、写进 `padding_top` 的块高）。`parts::EmptyStateInputs` 声明带子（相对边框盒的四周留白）和一列图标（`LeadingContent`）、标题（`Header`）、说明（`Detail`），每项居中或（紧凑时）靠起点，宽度是文字宽度、最多到带子宽度。`UiWorld::empty_state_inputs` 从主题读一次，段落预算（`band`）、操作按钮上方的预留（`block_height`）、placement（`empty_state_parts`）、geometry 与铬裁剪（`content_clip`）都读它。action 仍是普通子节点：Flex 列没有「部件排在子节点前」的能力，所以块高仍写进 `padding_top`（与 Card 的标题带相同），但只来自这份声明。
+- 文档：`component-layout.md` 审计表（SelectionOption、EmptyState 标为已迁移），`layout.md`「组件内容部件」，`layout-result.md`，`components/segmented-control.md`、`components/empty-state.md` 的「布局」。
+
+### 迁移前后 A/B
+
+改代码前在父提交上跑临时测试（未提交），把盒子、文字度量、文字布局尺寸、组件几何（以及 EmptyState 的无障碍 `bounds`/`clip`）写进文件，改后再跑比对：
+
+- SelectionOption：两种主题（默认 / 间距改动）× 三种 chrome × 三档尺寸 × 有无图标 × 三种标签（空、短、长）× 五种宽度（默认、fill、60px、200px、Shrink）× 行/列 × 分段项的 wrap，加两个真实分组，共 1442 项。盒子、文字度量、圆环与图标几何全部相同；只有空标签的 300 项不同：不画字的标签区原先是图标之后的零宽区域，现在退回内容盒（空标签不发布 `TextContent` 部件）。
+- EmptyState：两种主题 × 紧凑与否 × 有无图标 × 三种标题 × 三种说明 × 有无 action × 三种宽度，共 432 项，全部相同。
+
+### 门禁与变异
+
+| 门禁（`world/issue205.rs`） | 证明 | 变异（改坏→变红→恢复后 `touch`→`cmp` 一致） |
+| --- | --- | --- |
+| `issue205_selection_option_ring_icon_and_label_are_published_parts` | 三种 chrome × 两档尺寸 × 有无图标：padding 只剩内缩；圆环、图标、标签的位置与尺寸；按内容宽时标签部件恰为文字宽；段落预算等于标签部件宽；几何等于部件；TextRun 在标签部件里；1 实体、parts 数；120px 竖排长标签的预算是扣掉圆环和图标后的宽度；顶对齐的高标签页里图标在第一行中线 | measure 不计部件：红；geometry 标签取内容盒：红；预算不读部件：红；不发布部件：红；去掉第一行中线调整：红 |
+| `issue205_selection_option_parts_follow_changes_like_a_cold_layout_and_selection_paints_only` | 标签/图标/尺寸/宽度变化与冷布局相同；只改 `xs` 的主题下与冷布局相同；选中、悬停零 measure/placement、generation 与结果指针不变，无障碍 `selected` 更新 | visual 分类不认图标增删：红；主题失效名单去掉带图标的选项：红；visual 分类对任何变化都失效布局：红（选中不再只改绘制） |
+| `issue205_selection_option_parts_survive_context_transitions` | 选中且聚焦的三种选项在 Grid→Inline→Flex 间切换：0 spawn/despawn，状态焦点保留，几何等于部件，与冷布局相同 | geometry 标签取内容盒：红；不发布部件：红 |
+| `issue205_ten_thousand_selection_options_keep_one_entity_and_bounded_parts` | 1k/10k 每个一个实体，parts 恰为 TextContent/ComponentContent（+Indicator、+LeadingContent），空闲帧零工作 | 不发布部件：红 |
+| `issue205_empty_state_icon_title_and_message_are_published_parts` | 紧凑与否 × 有无图标 × 有无说明与 action × 短标题 320px / 长标题 140px：带子、各部件的位置与尺寸、标题宽度不超过带子（预算）；内容盒（action 所在）起于块高加 action 间隔；几何与铬裁剪等于部件与带子；实体数、parts 数 | 不发布部件：红；geometry 标题横向取带子起点：红；折行宽度改回整个盒宽：红；块高不计 action 间隔：红 |
+| `issue205_empty_state_parts_follow_changes_like_a_cold_layout` | 标题（含只改宽不改高的 "No files"→"No folders"）、说明、图标变化与冷布局相同；改 inset 与间隔的主题下与冷布局相同；挂上 action 后与同序冷建相同 | （不发布部件时两边都缺部件，仍绿；由上一行与下一行覆盖） |
+| `issue205_empty_state_parts_survive_context_transitions` | 两个 EmptyState 在 Grid→Inline→Flex 间切换：0 spawn/despawn，几何等于部件，与冷布局相同 | 不发布部件：红；geometry 标题取带子起点：红 |
+| `issue205_ten_thousand_empty_states_keep_one_entity_and_bounded_parts` | 1k/10k 每个一个实体，parts 恰为 ComponentContent（+LeadingContent）+Header（+Detail），空闲帧零工作 | 不发布部件：红 |
+
+EmptyState 没有新增失效：标题只改宽不改高时，现有的 visual 变更路径已重新发布部件（上表第二个 EmptyState 门禁覆盖），所以没有可加可删的分类。变异脚本恢复文件后 `touch`，并与备份逐字节比对（全部一致）。
+
+### 本轮运行（最终树 `bb8e0f4c1`）
+
+| 命令 | 结果 |
+| --- | --- |
+| `cargo fmt -p nana-ui-runtime -p nana-ui-scene -p nana-ui-core -p nana-ui -- --check` | exit 1，只有上游 `crates/nana-ui-runtime/src/reorder_list.rs` 三处（不是本轮的文件，未动）；本轮改动的文件无差异。`git diff --check HEAD~3`：passed |
+| `cargo clippy -q -p nana-ui-core -p nana-ui-runtime -p nana-ui-scene -p nana-ui --all-targets -- -D warnings` | passed |
+| `cargo test -q -p nana-ui-runtime --lib` | 2347 passed、1 ignored |
+| `cargo test -q -p nana-ui-runtime --lib --features layout-verify -- issue205 issue201 issue199` | 58 passed |
+| `cargo test -q -p nana-ui-runtime --features view-macro --test view_macro` | 48 passed |
+| `cargo test -q -p nana-ui-scene --tests` | 全部通过（lib 238） |
+| `cargo test -q -p nana-ui --features hosted,gpu --lib` | 967 passed、1 ignored |
+| `CARGO_INCREMENTAL=0 cargo test -q --workspace --all-targets --no-fail-fast` | 6107 passed、0 failed、5 ignored（前两次跑到中途磁盘满：链接失败与 `nana-packager` 写包 ENOSPC；清掉 `target/*/incremental` 与 debug 测试可执行文件后第三次也被并行会话占满；第四次全绿） |
+| `cargo test -q -p component-gallery --bin ui-snapshots --features snapshots --locked` | 12 passed |
+| `caffeinate -di cargo run -q --release -p component-gallery --bin ui-snapshots --features snapshots --locked -- --output <scratch>` | MATCH: 680（exact，Apple M4 Metal；SelectionOption、EmptyState 各自提交前也各跑一次，均 680） |
+| 同上加 `--semantic` | MATCH: 156（三次均一致，未重录基线） |
+
+### 仍未做
+
+- 2 类待迁移，按原顺序：
+  - **Toast**：裸 toast（未 assemble）的 `effective_style` 按 `copy_height` 手写 `min_height`，geometry 手摆指示、标题、说明、关闭按钮；节点文字是标题，按整个内容宽量，而绘制的标题区扣掉了指示和关闭按钮（预算与绘制不一致，迁移时会改变长标题的折行/省略，需要 A/B）。assembled toast 把指示与间隔写进 `padding_left`，geometry 按 recipe 再算指示在第一行的位置。四个部件超出 `ContentParts` 的三格，需要先放宽部件槽或拆两次求解。
+  - **MenuSurface 触发器**：`menus.rs` 的 `menu_surface_geometry` 手算触发器文字与图标（含 `icon_y_on_text_glyph_center`）。
+  - **Range / Progress / LevelMeter** 的 label/value/unit/cancel 文字；**ModalFrame** 的 title/description/body 仍由 `ModalChrome::measure_in` 排。
+- EmptyState 的块高仍写进 `padding_top`：要去掉需要 Flex 支持「部件排在子节点之前」（Card 的标题带同理），属布局引擎能力，本轮未做。
+- `Indicator` 只用于竖排圆环；Checkbox 的指示框仍是 `LeadingContent`（保持已发布的部件类型不变）。是否统一成 `Indicator` 会改变已发布结果，留给维护者决定。
+- RTL：SelectionOption 的圆环和图标、EmptyState 紧凑模式在 RTL 下都不镜像（与迁移前相同），属产品选择。
+- 复用判定补 `Indicator` 没有门禁（见上）。
+- 未在 Windows/Linux 上运行；没有跑 `nana-ui-devtools` 的真实 GPU `issue205_component_pixels`。NanaLive / NanaType 只读检查：没有 `radio_lead`、`RADIO_ROW_INSET`、`LayoutPartKind` 或 `ComponentGeometry::EmptyState` 的直接使用；NanaLive 的 `tool_window_acceptance/narrow.rs` 读选项几何的 `label.bounds.width`（非空标签，A/B 相同）；NanaLive 的空页 EmptyState 是空标题加图标（A/B 覆盖，相同），内边距写在外层卡片上；未构建这两个 consumer。
+
+### #205 能否关闭
+
+| 验收项 | 判定 |
+| --- | --- |
+| 建立 component mini-layout audit 表 | 可勾：本轮更新 SelectionOption、EmptyState 两行 |
+| 首批通用组件迁移到 Foundation composition | 可勾：Issue 点名的首批此前已迁；本轮另加 SelectionOption（Select/Dropdown 的选项行之外的 radio/分段/标签页项）与 EmptyState |
+| renderer-side label/icon/slot placement 逐步删除 | 可勾（附注同上一节）：本轮两个组件的 Scene 本来就只读几何，没有 Scene 侧摆放 |
+| ComponentGeometry 重复 layout authority 删除/降级 | 未完成：本轮删掉 SelectionOption 的 padding 占位与 geometry 手算、EmptyState 三处重复的带子/块高/位置计算；仍有 Toast、MenuSurface 触发器、Range/Progress 文字、ModalFrame 文本四组 2 类手算 |
+| retained wrapper/entity 爆炸有门禁 | 可勾：本轮加 SelectionOption 与 EmptyState 的 1k/10k 门禁 |
+| 业务/visual geometry 不被错误塞进 Layout Foundation | 可勾（附注：人工分类，无机器门禁） |
+| 旧 API 可作为 facade 继续使用 | 可勾：构造器与字段不变；`ControlSize::radio_lead` 仍在（不再被选项样式使用）；`SegmentedOption` 的样式 `padding_left` 不再含圆环/图标的占位（竖排为 `RADIO_ROW_INSET`），`LayoutPartKind` 追加 `Indicator` |
+
+结论：「ComponentGeometry 重复 layout authority 删除」仍未完成，#205 暂不能关闭；剩余四组按审计表继续，或由维护者把它们拆成后续 issue 后再关。
