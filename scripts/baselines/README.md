@@ -53,3 +53,31 @@ public animation-run builder (`ff9e4c895`) and the native Mermaid engine
   `nana-ui-diagram` crate, outside this scan's root; `rich_text.rs` 5 → 4.
   `markdown_diagram.rs` and `view/marks.rs` join the shared inventory with role
   reads only. Components scanned 146 → 148.
+
+## 2026-10-29 re-record
+
+The gate had been failing on `main` since `faf41be3c` (sena-nana/NanaUI#371).
+The inventory diff against the previous baseline source (`efb90d29b`), each
+entry reviewed:
+
+- Shared design numbers 63 → 84 (+23, −2). All 23 additions are zeros, not
+  design values: the empty box a migrated component's geometry falls back to
+  when layout published no part (`world/geometry.rs`, 12), zero-width carets
+  and runs (`text_edit.rs`, `layout_engine.rs`, `layout_engine/inline.rs`,
+  `layout_engine/overlay.rs`, `inline_content.rs`, `store.rs`, `menus.rs`), a
+  zero initial `gap_after`/`height` in `layout_engine/parts.rs` and `measure.rs`,
+  and the reset `border_width = Some(0.0)` before AreaLayout's header divider.
+  The two removals are the 14 × 14 Card spinner box `world/geometry.rs`
+  placed by hand before Card's header became published parts (`faf41be3c`).
+- Shared motion 28 → 30: the touch-scroll velocity window and frame interval
+  in `framework/touch_scroll.rs`, sampling constants of the gesture physics.
+- Module constants 113 → 126: the ten touch-scroll physics constants (slop,
+  rest thresholds, deceleration, rubber band, fling), the animation channel id
+  `animation::ATTENTION`, and SettingsRow's `ROW_CONTROL_MIN` (96 px) and
+  `FLASH_HOLD` (0.2). The last two are real design values and belong on the
+  Theme; they are recorded here and left to #371.
+- The test modules `world/issue201.rs` and `world/issue205.rs` were scanned as
+  shared code because they lacked an inner `#![cfg(test)]`; they now carry
+  one, which removed their fixtures from the inventory.
+- Component totals are unchanged (design numbers 25, motion 3). Components
+  scanned 149 → 156.

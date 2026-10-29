@@ -1,4 +1,6 @@
 //! Scroll is a behavior of the same retained formatting context.
+#![cfg(test)]
+
 use super::reflow_oracle::{bundled_face_shaper, product_frame};
 use crate::{
     AppContext, Button, DocumentId, GpuTextureView, InlineContent, InlineFlow, LayoutViewport,

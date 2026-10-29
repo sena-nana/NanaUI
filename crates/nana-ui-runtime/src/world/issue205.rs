@@ -1,4 +1,6 @@
 //! Migrated component parts are published once, then consumed by paint/input.
+#![cfg(test)]
+
 use super::reflow_oracle::{bundled_face_shaper, product_frame};
 use crate::{
     ActionMenuItem, AppContext, Button, Chip, ComponentGeometry, DocumentId, LayoutPartKind,
