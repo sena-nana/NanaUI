@@ -737,3 +737,92 @@ EmptyState 没有新增失效：标题只改宽不改高时，现有的 visual �
 | 旧 API 可作为 facade 继续使用 | 可勾：构造器与字段不变；`ControlSize::radio_lead` 仍在（不再被选项样式使用）；`SegmentedOption` 的样式 `padding_left` 不再含圆环/图标的占位（竖排为 `RADIO_ROW_INSET`），`LayoutPartKind` 追加 `Indicator` |
 
 结论：「ComponentGeometry 重复 layout authority 删除」仍未完成，#205 暂不能关闭；剩余四组按审计表继续，或由维护者把它们拆成后续 issue 后再关。
+
+## 2026-10-29 追加（四）：#205 部件槽放宽、Toast、MenuSurface 触发器
+
+按维护者的决定先把 `ContentParts` 放宽到能装下 Toast 的四个部件，再按「仍未做」的顺序迁移 Toast 与 MenuSurface 触发器。Range / Progress / LevelMeter 与 ModalFrame 本轮只做了源码盘点（写进审计表），没有迁移，原因见「仍未做」。
+
+### 改动
+
+- **部件槽（`efc4ef8d2`）。** `ContentParts` 原是 `[Option<LayoutPart>; 3]`，`UiWorld::component_content_parts` 把已发布的部件 zip 进去，第四个会被静默丢掉。现为 `[Option<LayoutPart>; CONTENT_PART_SLOTS]`（四格，仍内联、不分配），`content_parts` 补齐较短的求解结果，`NO_CONTENT_PARTS` 是空集；从已发布结果拷贝时在 debug 构建里断言没有剩余，不再截断。类型是 crate 私有的，读部件的地方（几何、段落预算、native 文本复用判定、Scene 经 `ComponentGeometry`）都按部件类型取，不按槽位，已发布的 `LayoutResult.parts` 形状不变。逐个核对过：`layout_result.rs`（`parts: Arc<[LayoutPart]>`，只放存在的部件）、`world/content_parts.rs`、`world/geometry.rs`、`world.rs` 的复用清单与 `retained_projection_current`、`menus.rs` / `select.rs` / `world/text.rs` 的读取、`layout_engine/inline.rs` 与 `layout_engine.rs` 的 Header 基线，都不假设三格。
+- **Toast（`842bb6b68`，破坏性）。** 裸提示原先在 `effective_style` 按 `copy_height` 手写 `min_height`，geometry 手摆记号、标题、说明、关闭目标；节点文字（标题）按整个内容宽量，绘制的标题区却扣掉了记号和关闭目标。装配后的提示把记号与间隔写进 `padding_left`，geometry 再按配方算一遍记号。现在 `parts::ToastInputs` 声明配方 padding 在边框盒里留出的带子，带子里一行 Flex：记号 `LeadingContent`、文案列（取余下宽度）、关闭目标 `TrailingContent`；文案列是嵌套的 Flex 列，标题 `TextContent`（`title.size` 高）在说明 `Detail` 上面。`UiWorld::toast_inputs` 读一次配方，intrinsic measure（`ToastInputs::chrome`，扣掉带子伸出内容盒的那圈边框）、标题的段落预算（标题部件宽）、placement（`toast_parts`）与 `ComponentGeometry::Toast` 都读它；样式不再写 `min_height`。装配后的提示只发布记号部件，记号的空间仍是 padding（Flex 不支持部件排在子节点前，与 EmptyState、Card 相同），但来自 `ToastInputs::lead`。说明或关闭目标的增删经 visual 分类失效布局；Toast 配方变化时失效裸提示的布局；色调、字形、悬停只改绘制。
+- **MenuSurface 触发器（`92b6c81af`）。** Popover / ActionMenu / HoverCard 的触发器原先在 `popover::menu_surface_geometry` 里按 `ControlSize::Medium` 的内边距常量算标签、按 overlay 的图标尺寸居中图标（审计表原写在 `menus.rs`，实际在 `popover.rs`；图标是几何居中，不读 `icon_y_on_text_glyph_center`）。现在 `solve_content_parts_at` 发布文字触发器的标签区为 `TextContent`（边框盒减去所用的左右内边距、整个触发器高，就是原先画的位置）、图标触发器的图标为 `LeadingContent`（`trigger_icon_size` 缺省 `TRIGGER_ICON_SIZE`，在触发器里居中）；头像和子节点画的触发器不发布部件。标签的段落预算是标签部件宽，`menu_surface_geometry` 只读部件。`trigger_icon_size` 变化经 visual 分类失效布局（门禁证明需要：样式不含它）。
+- 文档：`component-layout.md` 审计表（Toast、MenuSurface 触发器标为已迁移；Range、Progress、LevelMeter 拆成三行并写明盘点结果；ModalFrame 写明三处调用），`layout.md`「组件内容部件」，`layout-result.md`（四格槽、Toast 与触发器部件），`components/toast.md` 新增「布局」，`components/popover.md`「触发器」。
+
+### 迁移前后 A/B
+
+改代码前在父提交上跑临时测试（未提交），写出盒子、内容盒、文字度量、组件几何、下方兄弟的位置（MenuSurface 另写段落预算），改后再跑比对：
+
+- 部件槽放宽：Toast 的 3072 项逐字节相同。
+- Toast：四种配方（默认点、16px 字形配 13px 标题、无记号无边框、上下 padding 不对称）× 两种列宽 × 裸/装配 × 四种标题（空、短、中、长）× 三种说明 × 可否关闭 × 四种宽度（填满、`fit-content`、200px、90px）× 装配时的进度/动作/图标，共 3072 项。装配后的提示全部相同。不同的 618 项都是下面几类，没有无法解释的差异：
+  - 标题宽于它那条宽度的裸提示（原先节点文字按内容宽折成 2–11 行把提示撑高，画出来只有截断的一行）：现在一行高，标题照旧截断加省略号。
+  - 按内容宽的裸提示（`fit-content`）：宽度现在算进记号、间隔与关闭目标，标题不再被它们截掉（原先 "Saved" 只剩 22px 宽）。
+  - 上下 padding 不对称的配方：记号、无说明的标题、关闭目标在带子里居中，原先在边框盒里居中（相差上下 padding 之差的一半）。内置配方与 NanaLive / NanaType 的配方上下对称，不受影响。
+  - 空标题：不再发布空的标题绘制区（原先画一段空文字）。
+- MenuSurface 触发器：三种组件 × 文字/图标 × 图标尺寸 × 作者内边距 × 宽度 × 打开与否 × bare / compact × 两种主题（默认、控件内边距 +3 与紧凑高度 +4），共 576 项。图标触发器全部相同；文字触发器的文字度量全部相同，段落预算变为标签部件宽（比内容盒宽两条边框）；只有作者用 `trigger_style` 写了左右内边距的文字触发器，标签现在画在那段内边距里（原先固定按控件档位的内边距画，写 4px 时标签偏右且被挤窄）。
+
+### 门禁与变异
+
+| 门禁（`world/issue205.rs`） | 证明 | 变异（改坏→变红→恢复后 `touch`→`cmp` 一致） |
+| --- | --- | --- |
+| `issue205_toast_mark_copy_and_dismiss_are_published_parts` | 四种配方 × 可否关闭 × 有无说明 × 短/长标题 × 填满/200px/`fit-content`：带子、记号、关闭目标、标题区、说明的位置与尺寸；段落预算等于标题区宽、不折行、最多一行；`fit-content` 时标题区恰为文字宽；TextRun 在标题区里；高度等于带子块高与一行标题取大，样式无 `min_height`；几何等于部件；实体数与 parts 数 | measure 不计部件：红；预算不读部件：红；几何标题取内容盒：红；不发布部件：红（连同 10k 与另两个门禁）；标题照旧折行：红 |
+| `issue205_assembled_toast_mark_is_a_published_part` | 四种配方 × 有无长说明：内容盒起于 padding 加记号空间；记号部件在那段空间里、站在标题第一行中线；几何的记号等于部件，不画标题、说明、关闭目标 | 记号不扣 lead：红；`padding_left` 不含 lead：红 |
+| `issue205_toast_parts_follow_changes_like_a_cold_layout_and_tone_paints_only` | 关闭目标、说明、长标题、宽度、空标题 `fit-content` 等 8 步，每步与冷布局逐项相同；只动部件的配方（记号、说明间距、说明行、关闭目标档位）下与该配方的冷布局相同；色调、悬停零 measure/placement、generation 与结果指针不变；装配后的提示在四种配方的主题切换后与冷布局相同 | visual 分类去掉 Toast：红；分类不认说明增删：红；配方变化不失效裸提示：红；分类对任何变化都失效：红（色调不再只改绘制） |
+| `issue205_toast_parts_survive_context_transitions` | 裸与装配后的提示在 Grid→Inline→Flex 间切换：0 spawn/despawn，几何等于部件，与冷布局相同 | 几何标题取内容盒：红；不发布部件：红 |
+| `issue205_ten_thousand_toasts_keep_one_entity_and_bounded_parts` | 1k/10k 每个一个实体，parts 恰为 TextContent/ComponentContent/LeadingContent（+Detail、+TrailingContent），空闲帧零工作 | 不发布部件：红 |
+| `issue205_menu_trigger_label_and_glyph_are_published_parts` | 三种组件 × 文字/默认图标/20px 图标 × 作者内边距 × 打开与否 × 两种主题：标签区与图标的位置尺寸；预算等于标签区宽；TextRun 在标签区里；几何等于部件；parts 数 | 几何标签取整个触发器：红；不发布部件：红；预算不读部件：红；标签区改回 `ControlSize::Medium` 常量：红；图标不居中：红 |
+| `issue205_menu_trigger_parts_follow_changes_like_a_cold_layout_and_hover_paints_only` | 标签、作者内边距、文字↔图标、只改图标尺寸、打开，每步与冷布局相同；主题改控件内边距与高度后与冷布局相同；悬停零布局、结果指针不变 | visual 分类不认图标尺寸：红 |
+| `issue205_menu_trigger_parts_survive_context_transitions` | 文字、图标、HoverCard 触发器在 Grid→Inline→Flex 间切换：0 spawn/despawn，几何等于部件，与冷布局相同 | 几何标签取整个触发器：红；不发布部件：红 |
+| `issue205_ten_thousand_menu_triggers_keep_one_entity_and_bounded_parts` | 1k/10k 每个一个实体，parts 恰为 TextContent/ComponentContent 或 ComponentContent/LeadingContent，空闲帧零工作 | 不发布部件：红 |
+
+试过又删掉的失效（变异后仍绿）：`text_visual_key` 给裸提示单列一条文字路径、visual 分类比较 `assembled`、Toast 配方失效同时跟随 `token_layout_changed`。三者改坏后相关测试全绿，按规则不留。
+
+两处冷对照不一致是迁移前就有的、与这些组件无关，门禁绕开了它们：
+
+- 被 `hidden` 的节点（`NoBox`）在祖先重新布局（主题切换、父级换 Flex/Grid）后，增量布局给它发布一份 0×0 的 `LayoutResult`，冷布局没有。最小复现是一行里一个可见 Text 和一个隐藏 Text，切主题或换 `display` 后对照冷布局即红；在父提交上同样红。装配后的提示把不显示的部件（百分比、进度条、动作）隐藏起来，所以装配后提示的冷对照用显示全部部件的提示。
+- 打开过再关上的 Popover / ActionMenu，增量布局的 overflow 仍含面板条目的盒子（230×72 对冷布局的 55×28）；父提交上同样红。触发器门禁把打开放在最后一步。
+
+### 常驻内存
+
+`tests/node_memory.rs` 的三项不变（每节点 text 3408 / button 4657 / list item 5178 B @1k，3152 / 4271 / 4277 B @10k，改前改后相同）。另用临时测试（未提交）量裸提示：带说明与关闭目标的 4806 → 4892 B（1k）、4412 → 4504 B（10k），多出的约 90 B 是三个部件（记号、说明、关闭目标）；只有标题的 4782 → 4788 B（1k）、4388 → 4400 B（10k）。部件槽放宽本身不改变常驻内存（`ContentParts` 只在求解时在栈上）。
+
+### 本轮运行（最终树 `92b6c81af`）
+
+| 命令 | 结果 |
+| --- | --- |
+| 本轮改动的每个 .rs 逐个 `rustfmt --edition 2024 --check` | 全部 exit 0（未在整个工作区跑写模式 fmt；上游 `reorder_list.rs` 不是本轮的文件） |
+| `cargo clippy -q -p nana-ui-core -p nana-ui-runtime -p nana-ui-scene -p nana-ui --all-targets -- -D warnings` | exit 0 |
+| `cargo test -q -p nana-ui-runtime --lib` | 2357 passed、1 ignored |
+| `cargo test -q -p nana-ui-runtime --lib --features layout-verify -- issue205 issue201 issue199` | 67 passed |
+| `cargo test -q -p nana-ui-runtime --features view-macro --test view_macro` | 48 passed |
+| `cargo test -q -p nana-ui-runtime --test node_memory -- --nocapture` | 2 passed（数值见上） |
+| `cargo test -q -p nana-ui-scene --tests` | 全部通过（lib 238） |
+| `cargo test -q -p nana-ui --features hosted,gpu --lib` | 967 passed、1 ignored |
+| `CARGO_INCREMENTAL=0 cargo test -q --workspace --all-targets --no-fail-fast` | exit 0：6117 passed、0 failed、5 ignored |
+| `cargo test -q -p component-gallery --bin ui-snapshots --features snapshots --locked` | 12 passed |
+| `caffeinate -di cargo run -q --release -p component-gallery --bin ui-snapshots --features snapshots --locked -- --output <scratch>` | MATCH: 680（exact，Apple M4 Metal；Toast、触发器各自提交前也各跑一次，均 680） |
+| 同上加 `--semantic` | MATCH: 156（三次均一致，未重录基线） |
+
+### 仍未做
+
+- **Range**：label / value / unit 由 geometry 量宽并排成一行，是唯一的一份（没有节点文字，measure 与预算不读它们）。迁移成部件要先定一个行为：value 读数在拖动时每一步都会变，若读数宽度变化要失效布局、重新发布部件，拖动就不再只改绘制（现在保留四位数字宽度，常见拖动宽度不变，但更长的读数会变宽）。这是需要维护者决定的取舍，本轮未做。
+- **Progress**：`project` 按 `heading_height` 手写 `layout.height`（含主题意图的 offset），`progress_geometry` 按同一组常量再摆一遍 label 与 cancel，且读边框盒、不读作者 padding。迁移要把高度改由测量给出并处理主题意图高度，会碰到 #204 的主题意图路径，本轮未做。
+- **LevelMeter**：没有文字，审计表改为 3 类，不需迁移。
+- **ModalFrame**：`ModalChrome::measure_in` 在 Overlay 布局、text pass、geometry 三处各调一次，传入的度量不同。迁移是让 Overlay 布局发布标题/说明/正文部件、另两处读部件，本轮未做。
+- 上文两处与组件无关的冷对照不一致（隐藏节点的空结果、关上的菜单的 overflow）没有修，应另开 issue。
+- Toast 与触发器在 RTL 下不镜像（与迁移前相同）；Checkbox 的 `LeadingContent` / `Indicator` 未动。
+- 未在 Windows/Linux 上运行；没有跑 `nana-ui-devtools` 的真实 GPU `issue205_component_pixels`。NanaLive / NanaType 只读检查：两者的提示都经 `push_toast`（ToastStack 装配，A/B 相同），自定义的 Toast 配方上下 padding 对称；没有 `trigger_style`、`trigger_icon_size`、`ComponentGeometry::Toast` / `MenuSurface` 或 `LayoutPartKind` 的直接使用；未构建这两个 consumer。
+
+### #205 能否关闭
+
+| 验收项 | 判定 |
+| --- | --- |
+| 建立 component mini-layout audit 表 | 可勾：本轮更新 Toast、MenuSurface 触发器两行，Range / Progress / LevelMeter 拆成三行并写明盘点，ModalFrame 写明三处调用 |
+| 首批通用组件迁移到 Foundation composition | 可勾：Issue 点名的首批此前已迁；本轮另加 Toast 与菜单触发器 |
+| renderer-side label/icon/slot placement 逐步删除 | 可勾（附注同前）：两个组件的 Scene 本来就只读几何 |
+| ComponentGeometry 重复 layout authority 删除/降级 | 未完成：本轮删掉 Toast 的手写 `min_height`、geometry 手摆与标题预算不一致，装配后提示的第二份记号计算，触发器的 `Medium` 内边距常量与图标居中；仍有 Range 文字（需先定拖动失效的取舍）、Progress label/cancel 与手写高度、ModalFrame 文本三组 |
+| retained wrapper/entity 爆炸有门禁 | 可勾：本轮加 Toast 与菜单触发器的 1k/10k 门禁 |
+| 业务/visual geometry 不被错误塞进 Layout Foundation | 可勾（附注：人工分类，无机器门禁）；LevelMeter 改归 3 类 |
+| 旧 API 可作为 facade 继续使用 | 可勾（附注）：构造器与字段不变；`ContentParts` 是 crate 私有类型；裸 Toast 的长标题高度与 `fit-content` 宽度、作者内边距下触发器标签的位置是可见的行为变化（已在提交里标 BREAKING / Behavior） |
+
+结论：「ComponentGeometry 重复 layout authority 删除」仍未完成，#205 暂不能关闭。剩余三组里 Range 需要维护者先定拖动读数是否失效布局；Progress 与 ModalFrame 可以按审计表继续，或拆成后续 issue 后再关。
