@@ -3636,17 +3636,6 @@ fn toast_view(
     view
 }
 
-/// An assembled toast that shows every part it builds. (A part it hides has
-/// no box; after a relayout of its ancestors such a part holds an empty
-/// result a cold layout does not publish, which is not the toast's own
-/// layout and would fail the cold comparisons below for an unrelated
-/// reason.)
-fn dressed_toast_view(title: &str) -> crate::Toast {
-    toast_view(title, Some("Master sent to disk."), true, None)
-        .progress(crate::ToastProgress::Determinate(0.4))
-        .action("Undo")
-}
-
 /// `view` in a 420px column above a button, assembled when asked, under
 /// `theme` when given, laid out once.
 fn toast_page(
@@ -3980,12 +3969,13 @@ fn issue205_toast_parts_follow_changes_like_a_cold_layout_and_tone_paints_only()
     }
     assert_eq!(cx.world().layout_generation(), generation);
     assert!(Arc::ptr_eq(&snapshot, &cx.world().layout_results[&id]));
-    // An assembled toast under every recipe, reached by a theme change.
+    // An assembled toast under every recipe, reached by a theme change. It
+    // hides the description and progress it has none of.
     for theme in toast_themes().into_iter().flatten() {
-        let (mut cx, _) = toast_page(dressed_toast_view("Saved"), true, None);
+        let (mut cx, _) = toast_page(toast_view("Saved", None, false, None), true, None);
         cx.set_theme_definition(&theme).unwrap();
         product_frame(&mut cx, document, viewport, &mut shaper);
-        let (mut cold, _) = toast_page(dressed_toast_view("Saved"), true, Some(&theme));
+        let (mut cold, _) = toast_page(toast_view("Saved", None, false, None), true, Some(&theme));
         super::reflow_oracle::assert_matches_cold(&mut cx, &mut cold, document);
     }
 }
@@ -4013,11 +4003,7 @@ fn issue205_toast_parts_survive_context_transitions() {
             .unwrap();
         let mut ids = Vec::new();
         for assembled in [false, true] {
-            let view = if assembled {
-                dressed_toast_view("Export complete")
-            } else {
-                toast_view("Export complete", Some("Master sent to disk."), true, None)
-            };
+            let view = toast_view("Export complete", Some("Master sent to disk."), true, None);
             let toast = cx.create_detached_component(document, view).unwrap();
             cx.append_child(root, toast).unwrap();
             if assembled {

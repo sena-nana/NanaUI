@@ -1627,6 +1627,7 @@ impl UiWorld {
             }
         }
         unique.sort_unstable();
+        let boxless = self.boxless_nodes(&unique);
         // Ancestors are republished with the batch. Downstream geometry is
         // scheduled only for a caller node whose own box, padding, fragment
         // or clip changed.
@@ -1649,6 +1650,11 @@ impl UiWorld {
         let mut reused = 0usize;
         let mut children_visited = 0usize;
         for &id in &unique {
+            if boxless.contains(&id) {
+                self.layout_results.remove(&id);
+                self.layout_results_suppressed.remove(&id);
+                continue;
+            }
             let covered = covered.get(&id).map_or(&[][..], Vec::as_slice);
             children_visited = children_visited.saturating_add(covered.len());
             if self.layout_result_geometry_current(id, covered) {
@@ -1750,6 +1756,43 @@ impl UiWorld {
         }
         #[cfg(feature = "benchmark")]
         phase.lap(9);
+    }
+
+    /// The nodes of `batch` with no box: ones layout sees hidden (see
+    /// [`Self::omits_layout_box`]), and what is inside them. They publish no
+    /// result, as a cold layout gives them none, and whatever result one
+    /// held before goes (#386). `batch` holds every ancestor of its nodes,
+    /// so the walk up stays inside it, and a batch with no node omitting its
+    /// own box has none.
+    fn boxless_nodes(&self, batch: &[StableNodeId]) -> NodeSet {
+        let omits = |id: StableNodeId| self.nodes.contains(id) && self.omits_layout_box(id);
+        if !batch.iter().any(|&id| omits(id)) {
+            return NodeSet::default();
+        }
+        let mut memo: NodeMap<bool> = NodeMap::default();
+        let mut chain = Vec::new();
+        for &id in batch {
+            let mut current = Some(id);
+            let mut boxless = false;
+            while let Some(node) = current {
+                if let Some(&known) = memo.get(&node) {
+                    boxless = known;
+                    break;
+                }
+                chain.push(node);
+                if omits(node) {
+                    boxless = true;
+                    break;
+                }
+                current = self.parent_id(node);
+            }
+            for node in chain.drain(..) {
+                memo.insert(node, boxless);
+            }
+        }
+        memo.into_iter()
+            .filter_map(|(id, boxless)| boxless.then_some(id))
+            .collect()
     }
 
     fn build_layout_result(
@@ -3850,14 +3893,20 @@ impl UiWorld {
             )
     }
 
-    fn effective_layout_style(&self, id: StableNodeId) -> Arc<nana_ui_core::LayoutStyle> {
-        let record = self.record(id);
-        let mut style = Arc::clone(&record.resolved_layout);
-        if style.omits_box()
+    /// Whether `id` lays out with no box of its own: its style omits one, or
+    /// it is parked, in an overlay branch that is not active, or an item of a
+    /// closed menu. [`Self::effective_layout_style`] reports it hidden.
+    fn omits_layout_box(&self, id: StableNodeId) -> bool {
+        self.record(id).resolved_layout.omits_box()
             || !self.presence_live(id)
             || !self.overlay_branch_active(id)
             || !self.menu_branch_open(id)
-        {
+    }
+
+    fn effective_layout_style(&self, id: StableNodeId) -> Arc<nana_ui_core::LayoutStyle> {
+        let record = self.record(id);
+        let mut style = Arc::clone(&record.resolved_layout);
+        if self.omits_layout_box(id) {
             Arc::make_mut(&mut style).hidden = true;
             return style;
         }
@@ -6260,6 +6309,7 @@ mod issue266;
 mod issue268;
 mod issue269;
 mod issue270;
+mod issue386;
 mod reflow_oracle;
 #[cfg(test)]
 mod tests;
