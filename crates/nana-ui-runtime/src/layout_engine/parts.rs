@@ -280,6 +280,47 @@ pub(crate) fn status_dot_parts(
     [Some(lead), Some(dot), Some(label)]
 }
 
+/// A selection option's row (a radio row, a segmented item, a tab): the
+/// radio `ring` square and its gap, the `icon` square and its gap, then the
+/// label, which takes the rest so its own alignment (start for a radio,
+/// centred for a segmented item) has the whole lane. Each gap stands whether
+/// or not there is a label, as the inset the row used to reserve did.
+pub(crate) fn selection_option_parts(
+    ring: Option<(f32, f32)>,
+    icon: Option<(f32, f32)>,
+    text: Size,
+) -> [Option<FlexPart>; 3] {
+    let glyph = |kind, (extent, gap): (f32, f32)| {
+        let mut part = FlexPart::new(kind, Size::new(extent, extent));
+        part.gap_after = gap;
+        part
+    };
+    let mut label = FlexPart::new(LayoutPartKind::TextContent, text);
+    label.grow = 1.0;
+    label.shrink = 1.0;
+    label.align = AlignSpec::Stretch;
+    [
+        ring.map(|ring| glyph(LayoutPartKind::Indicator, ring)),
+        icon.map(|icon| glyph(LayoutPartKind::LeadingContent, icon)),
+        Some(label),
+    ]
+}
+
+/// [`selection_option_parts`] placed in `bounds`. An icon beside a label
+/// that is not centred in the row sits on the centre of the label's first
+/// line, `icon_line` tall, rather than on the row's.
+pub(crate) fn selection_option_row(
+    bounds: LayoutBox,
+    inputs: [Option<FlexPart>; 3],
+    icon_line: Option<f32>,
+) -> ContentParts {
+    let mut parts = start_row_parts(bounds, inputs);
+    if let (Some(line), Some(icon)) = (icon_line, parts[1].as_mut()) {
+        icon.bounds.y = bounds.y + line * 0.5 - icon.bounds.height * 0.5;
+    }
+    parts
+}
+
 /// What a row of `parts` holds beside its label: every glyph's width and
 /// every gap, and the tallest glyph. Intrinsic measure adds the label's own
 /// size to it.

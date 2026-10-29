@@ -87,6 +87,9 @@ pub enum LayoutPartKind {
     Label,
     Value,
     Header,
+    /// A selection indicator drawn before a label, apart from any icon: a
+    /// radio row's ring.
+    Indicator,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]

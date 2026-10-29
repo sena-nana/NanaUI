@@ -2003,107 +2003,71 @@ impl UiWorld {
             StandardVisual::SelectionOption {
                 label,
                 icon,
-                size,
                 show_focus_ring,
-                indicator,
                 selected,
                 disabled,
+                ..
             } => {
-                let icon_extent = if *indicator {
-                    size.icon_size()
-                } else {
-                    style.font_size
-                }
-                .min(content.height);
-                let base_padding = if *indicator {
-                    size.radio_lead()
-                } else {
-                    size.padding_x_in(self.style_model.metrics) + self.theme.spacing().xxs
-                };
-                let ring = indicator.then(|| {
-                    let extent = size.indicator_size().min(bounds.height);
-                    let ring = LayoutBox {
-                        x: bounds.x + nana_ui_core::RADIO_ROW_INSET,
-                        y: bounds.y + (bounds.height - extent) / 2.0,
-                        width: extent,
-                        height: extent,
-                    };
-                    let (ring_color, dot_color) = if *disabled {
-                        let faint = self
-                            .style_model
-                            .color(SemanticColorRole::Faint)
-                            .as_rgba_array();
-                        (faint, faint)
-                    } else if *selected {
-                        let accent = self
-                            .style_model
-                            .color(SemanticColorRole::Accent)
-                            .as_rgba_array();
-                        (accent, accent)
-                    } else {
-                        (
-                            self.style_model
-                                .color(SemanticColorRole::BorderStrong)
-                                .as_rgba_array(),
-                            self.style_model
+                // The ring, the icon and the label are the parts layout
+                // published (#205).
+                use crate::LayoutPartKind;
+                let ring = self
+                    .content_part_box(id, LayoutPartKind::Indicator)
+                    .map(|ring| {
+                        let (ring_color, dot_color) = if *disabled {
+                            let faint = self
+                                .style_model
+                                .color(SemanticColorRole::Faint)
+                                .as_rgba_array();
+                            (faint, faint)
+                        } else if *selected {
+                            let accent = self
+                                .style_model
                                 .color(SemanticColorRole::Accent)
-                                .as_rgba_array(),
-                        )
-                    };
-                    let dot_extent = extent / 2.5;
-                    crate::RadioIndicator {
-                        ring,
-                        ring_color,
-                        dot: selected.then_some((
-                            LayoutBox {
-                                x: ring.x + (extent - dot_extent) / 2.0,
-                                y: ring.y + (extent - dot_extent) / 2.0,
-                                width: dot_extent,
-                                height: dot_extent,
-                            },
-                            dot_color,
-                        )),
-                    }
-                });
-                let icon_bounds = icon.map(|icon| {
-                    (
+                                .as_rgba_array();
+                            (accent, accent)
+                        } else {
+                            (
+                                self.style_model
+                                    .color(SemanticColorRole::BorderStrong)
+                                    .as_rgba_array(),
+                                self.style_model
+                                    .color(SemanticColorRole::Accent)
+                                    .as_rgba_array(),
+                            )
+                        };
+                        let dot_extent = ring.width / 2.5;
+                        crate::RadioIndicator {
+                            ring,
+                            ring_color,
+                            dot: selected.then_some((
+                                LayoutBox {
+                                    x: ring.x + (ring.width - dot_extent) / 2.0,
+                                    y: ring.y + (ring.height - dot_extent) / 2.0,
+                                    width: dot_extent,
+                                    height: dot_extent,
+                                },
+                                dot_color,
+                            )),
+                        }
+                    });
+                let icon_bounds = icon.and_then(|icon| {
+                    let bounds = self.content_part_box(id, LayoutPartKind::LeadingContent)?;
+                    Some((
                         icon,
-                        LayoutBox {
-                            x: bounds.x + base_padding,
-                            y: icon_y_on_text_glyph_center(
-                                content.y,
-                                content.height,
-                                style.font_size,
-                                style.line_height,
-                                matches!(
-                                    source.text_vertical_alignment,
-                                    TextVerticalAlignment::Center
-                                ),
-                                icon_extent,
-                            ),
-                            width: icon_extent,
-                            height: icon_extent,
-                        },
+                        bounds,
                         style.color.unwrap_or_else(|| {
                             self.style_model
                                 .color(SemanticColorRole::Muted)
                                 .as_rgba_array()
                         }),
-                    )
+                    ))
                 });
-                // The label is the content box: `SegmentedOption::project`
-                // already spent the icon and its gap in the leading padding, so
-                // re-deriving the label origin from the icon only invents a
-                // second gap that layout never reserved.
                 Some(crate::ComponentGeometry::SelectionOption {
                     icon: icon_bounds,
                     label: text_region(
-                        LayoutBox {
-                            x: content.x,
-                            y: content.y,
-                            width: content.width,
-                            height: content.height,
-                        },
+                        self.content_part_box(id, LayoutPartKind::TextContent)
+                            .unwrap_or(content),
                         Arc::clone(label),
                         false,
                         style.font_size,

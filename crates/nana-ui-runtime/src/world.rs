@@ -44,7 +44,7 @@ use nana_ui_core::{
     ControlSize, InvalidationKind, InvalidationReason, LayoutDependencyFootprint, LayoutFieldMask,
     LayoutInvalidation, LayoutInvalidationSource, LayoutStyle, LengthSpec, PointerEventsSpec,
     PositionSpec, SemanticColorRole, SemanticPalette, StyleModelRef, SwitchControlPosition,
-    ThemeAppearance, ThemeWorkCounters, icon_y_on_text_glyph_center,
+    ThemeAppearance, ThemeWorkCounters,
 };
 
 #[cfg(feature = "calendar")]

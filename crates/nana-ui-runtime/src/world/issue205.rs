@@ -2722,3 +2722,463 @@ fn issue205_context_menu_height_is_the_projections_alone() {
             )
     );
 }
+
+/// A selection option (`chrome`) saying `label`, `width` wide, with an
+/// icon when `icon`, in a 320px row beside a button, under `theme` when
+/// given, laid out once.
+fn option_page(
+    label: &str,
+    chrome: crate::SelectionChrome,
+    size: nana_ui_core::ControlSize,
+    icon: bool,
+    width: Option<LengthSpec>,
+    theme: Option<&nana_ui_core::ThemeDefinition>,
+) -> (AppContext, crate::Entity<crate::SegmentedOption>) {
+    let document = DocumentId::new(1).unwrap();
+    let mut cx = AppContext::new();
+    if let Some(theme) = theme {
+        cx.set_theme_definition(theme).unwrap();
+    }
+    let root = cx
+        .create_component(document, Stack::row(4.0).width(LengthSpec::Px(320.0)))
+        .unwrap();
+    let option = cx
+        .create_detached_component(document, option_view(label, chrome, size, icon, width))
+        .unwrap();
+    cx.append_child(root, option).unwrap();
+    let sibling = cx
+        .create_detached_component(document, Button::new("Retry"))
+        .unwrap();
+    cx.append_child(root, sibling).unwrap();
+    product_frame(
+        &mut cx,
+        document,
+        LayoutViewport::new(600.0, 400.0),
+        &mut bundled_face_shaper(),
+    );
+    cx.rebuild_hit_test(document);
+    (cx, option)
+}
+
+fn option_view(
+    label: &str,
+    chrome: crate::SelectionChrome,
+    size: nana_ui_core::ControlSize,
+    icon: bool,
+    width: Option<LengthSpec>,
+) -> crate::SegmentedOption {
+    let mut view = crate::SegmentedOption::new(label).surface(size, chrome, false);
+    view.icon = icon.then_some(Icon::File);
+    Arc::make_mut(&mut view.style.layout).width = width;
+    view
+}
+
+/// The parts of a selection option's geometry: its ring, its icon box and
+/// its label region.
+fn option_geometry(
+    cx: &AppContext,
+    id: crate::StableNodeId,
+) -> (
+    Option<crate::LayoutBox>,
+    Option<crate::LayoutBox>,
+    crate::LayoutBox,
+) {
+    match cx.world().component_geometry(id).unwrap() {
+        ComponentGeometry::SelectionOption {
+            icon,
+            label,
+            indicator,
+            ..
+        } => (
+            indicator.map(|indicator| indicator.ring),
+            icon.map(|(_, bounds, _)| bounds),
+            label.bounds,
+        ),
+        other => panic!("{other:?}"),
+    }
+}
+
+const OPTION_CHROMES: [crate::SelectionChrome; 3] = [
+    crate::SelectionChrome::Radio,
+    crate::SelectionChrome::Segmented,
+    crate::SelectionChrome::Tabs,
+];
+
+/// A selection option's radio ring, icon and label are Flex parts layout
+/// publishes (#205): the ring and the icon stand at the start of the content
+/// box with their gaps, the label takes the rest, and intrinsic measure, the
+/// paragraph budget, paint and the text fragments all read them. The padding
+/// is only the option's own inset; it keeps no copy of the ring's or the
+/// icon's room.
+#[test]
+fn issue205_selection_option_ring_icon_and_label_are_published_parts() {
+    use crate::SelectionChrome;
+    use nana_ui_core::ControlSize;
+    for chrome in OPTION_CHROMES {
+        for size in [ControlSize::Small, ControlSize::Large] {
+            for icon in [false, true] {
+                let (cx, option) = option_page(
+                    "Preview",
+                    chrome,
+                    size,
+                    icon,
+                    Some(LengthSpec::Shrink),
+                    None,
+                );
+                let id = option.stable_id();
+                let world = cx.world();
+                let result = world.layout_result(id).unwrap();
+                let content = result.content_box;
+                let radio = chrome == SelectionChrome::Radio;
+                let inset = if radio {
+                    nana_ui_core::RADIO_ROW_INSET
+                } else {
+                    size.padding_x_in(world.theme_metrics()) + world.theme().spacing().xxs
+                };
+                assert_eq!(content.x - result.bounds.x, inset);
+                assert_eq!(
+                    result.bounds.x + result.bounds.width - (content.x + content.width),
+                    inset
+                );
+                let (ring, icon_box, painted) = option_geometry(&cx, id);
+                let mut cursor = content.x;
+                let parts = result
+                    .parts
+                    .iter()
+                    .find(|part| part.kind == LayoutPartKind::Indicator);
+                if radio {
+                    let part = part_of(&cx, id, LayoutPartKind::Indicator);
+                    let extent = size.indicator_size();
+                    assert_eq!((part.x, part.width, part.height), (cursor, extent, extent));
+                    assert!((part.y - (content.y + (content.height - extent) / 2.0)).abs() < 1e-4);
+                    assert_eq!(ring, Some(part));
+                    cursor += extent + size.indicator_gap();
+                } else {
+                    assert!(parts.is_none() && ring.is_none());
+                }
+                if icon {
+                    let part = part_of(&cx, id, LayoutPartKind::LeadingContent);
+                    let extent = if radio {
+                        size.icon_size()
+                    } else {
+                        world.computed_style(id).unwrap().font_size
+                    };
+                    assert_eq!((part.x, part.width, part.height), (cursor, extent, extent));
+                    assert!((part.y - (content.y + (content.height - extent) / 2.0)).abs() < 1e-4);
+                    assert_eq!(icon_box, Some(part));
+                    cursor += extent + world.theme().spacing().xs;
+                } else {
+                    assert!(icon_box.is_none());
+                }
+                let label = part_of(&cx, id, LayoutPartKind::TextContent);
+                assert!((label.x - cursor).abs() < 1e-4, "{label:?} at {cursor}");
+                assert!((label.x + label.width - (content.x + content.width)).abs() < 1e-4);
+                assert_eq!((label.y, label.height), (content.y, content.height));
+                assert_eq!(painted, label);
+                // Measure reads the same parts: an option as wide as its
+                // content is its ring, icon, gaps and the label's text.
+                let text = world.text_metrics(id).unwrap();
+                assert!(
+                    (label.width - text.width).abs() < 0.01,
+                    "label part {} != text {}",
+                    label.width,
+                    text.width
+                );
+                // So does the paragraph budget.
+                assert_eq!(
+                    world.text_shape_constraints(id).max_width,
+                    Some(label.width)
+                );
+                for run in result
+                    .fragments
+                    .iter()
+                    .filter(|fragment| fragment.kind == crate::LayoutFragmentKind::TextRun)
+                {
+                    assert!(
+                        run.bounds.x >= label.x - 0.01
+                            && run.bounds.x + run.bounds.width <= label.x + label.width + 0.01,
+                        "{run:?} outside {label:?}"
+                    );
+                }
+                // One entity: the text, the content box, the ring, the icon.
+                assert_eq!(world.len(), 3);
+                assert_eq!(
+                    result.parts.len(),
+                    2 + usize::from(radio) + usize::from(icon)
+                );
+            }
+        }
+    }
+    // A fixed-width option budgets its label to the lane its ring and icon
+    // leave, not to the content box.
+    let (cx, option) = option_page(
+        "Automatically choose the best available option",
+        SelectionChrome::Radio,
+        ControlSize::Medium,
+        true,
+        Some(LengthSpec::Px(120.0)),
+        None,
+    );
+    let label = part_of(&cx, option.stable_id(), LayoutPartKind::TextContent);
+    let content = cx
+        .world()
+        .layout_result(option.stable_id())
+        .unwrap()
+        .content_box;
+    assert!(label.width < content.width - ControlSize::Medium.indicator_size());
+    assert_eq!(
+        cx.world()
+            .text_shape_constraints(option.stable_id())
+            .max_width,
+        Some(label.width)
+    );
+    // An icon beside a label set at the top of a tall option sits on the
+    // label's first line, not on the middle of the row.
+    let document = DocumentId::new(1).unwrap();
+    let mut cx = AppContext::new();
+    let mut view = option_view(
+        "Preview",
+        SelectionChrome::Tabs,
+        ControlSize::Medium,
+        true,
+        None,
+    );
+    view.style.control_height = None;
+    view.style.text_vertical_alignment = crate::TextVerticalAlignment::Top;
+    Arc::make_mut(&mut view.style.layout).height = Some(LengthSpec::Px(60.0));
+    let option = cx.create_component(document, view).unwrap();
+    product_frame(
+        &mut cx,
+        document,
+        LayoutViewport::new(600.0, 400.0),
+        &mut bundled_face_shaper(),
+    );
+    let id = option.stable_id();
+    let style = cx.world().computed_style(id).unwrap();
+    let line = nana_ui_core::text_line_box_height_px(style.font_size, style.line_height);
+    let content = cx.world().layout_result(id).unwrap().content_box;
+    let icon = part_of(&cx, id, LayoutPartKind::LeadingContent);
+    assert!(content.height > line + 10.0);
+    assert!((icon.y - (content.y + line / 2.0 - icon.height / 2.0)).abs() < 1e-4);
+    assert_eq!(option_geometry(&cx, id).1, Some(icon));
+}
+
+/// A theme whose spacing steps differ from the defaults, so the icon's gap
+/// (`xs`) moves while nothing else in a radio row's style does.
+fn option_spacing_theme() -> nana_ui_core::ThemeDefinition {
+    let mut theme =
+        nana_ui_core::ThemeDefinition::for_appearance(nana_ui_core::ThemeAppearance::Light);
+    theme.tokens.spacing.xs += 3.0;
+    theme.bump()
+}
+
+/// Label, icon, size and width changes, and a theme that moves the icon's
+/// gap, republish what a cold layout would; selecting, disabling the paint
+/// and hovering lay nothing out.
+#[test]
+fn issue205_selection_option_parts_follow_changes_like_a_cold_layout_and_selection_paints_only() {
+    use nana_ui_core::ControlSize;
+    let document = DocumentId::new(1).unwrap();
+    let viewport = LayoutViewport::new(600.0, 400.0);
+    let long = "Automatically choose the best available option";
+    let spacing = option_spacing_theme();
+    for chrome in OPTION_CHROMES {
+        let mut shaper = bundled_face_shaper();
+        let (mut cx, option) = option_page("", chrome, ControlSize::Medium, false, None, None);
+        for (label, size, icon, width) in [
+            ("Preview", ControlSize::Medium, false, None),
+            ("Preview", ControlSize::Medium, true, None),
+            (long, ControlSize::Small, true, Some(LengthSpec::Px(90.0))),
+            (long, ControlSize::Large, false, Some(LengthSpec::Shrink)),
+            ("", ControlSize::Large, true, Some(LengthSpec::Shrink)),
+            (
+                "Preview",
+                ControlSize::Medium,
+                true,
+                Some(LengthSpec::Shrink),
+            ),
+            (
+                "Preview",
+                ControlSize::Medium,
+                false,
+                Some(LengthSpec::Shrink),
+            ),
+            (
+                "Preview",
+                ControlSize::Medium,
+                true,
+                Some(LengthSpec::Shrink),
+            ),
+        ] {
+            cx.update_component(option, |view, _| {
+                let selected = view.selected;
+                *view = option_view(label, chrome, size, icon, width);
+                view.selected = selected;
+            })
+            .unwrap();
+            product_frame(&mut cx, document, viewport, &mut shaper);
+            let (mut cold, cold_option) = option_page(label, chrome, size, icon, width, None);
+            assert_eq!(cold_option.stable_id(), option.stable_id());
+            super::reflow_oracle::assert_matches_cold(&mut cx, &mut cold, document);
+        }
+        cx.set_theme_definition(&spacing).unwrap();
+        product_frame(&mut cx, document, viewport, &mut shaper);
+        let (mut cold, _) = option_page(
+            "Preview",
+            chrome,
+            ControlSize::Medium,
+            true,
+            Some(LengthSpec::Shrink),
+            Some(&spacing),
+        );
+        super::reflow_oracle::assert_matches_cold(&mut cx, &mut cold, document);
+
+        let id = option.stable_id();
+        let generation = cx.world().layout_generation();
+        let snapshot = Arc::clone(&cx.world().layout_results[&id]);
+        cx.update_component(option, |view, _| view.selected = true)
+            .unwrap();
+        let selected = product_frame(&mut cx, document, viewport, &mut shaper);
+        cx.set_pointer_hover_at(document, 1, Some(id), Duration::from_millis(16))
+            .unwrap();
+        let hovered = product_frame(&mut cx, document, viewport, &mut shaper);
+        for work in [selected, hovered] {
+            assert_eq!(
+                (work.layout_measure_nodes, work.layout_placement_nodes),
+                (0, 0),
+                "{chrome:?}"
+            );
+        }
+        assert_eq!(cx.world().layout_generation(), generation);
+        assert!(Arc::ptr_eq(&snapshot, &cx.world().layout_results[&id]));
+        let a11y = cx.world().project_accessibility(document);
+        let node = a11y.iter().find(|node| node.id == id).unwrap();
+        assert_eq!(node.selected, Some(true));
+    }
+}
+
+/// A selected, focused radio option with an icon moved between Grid,
+/// Inline and Flex parents keeps its entity, state and focus, and publishes
+/// the parts a cold layout in that context would.
+#[test]
+fn issue205_selection_option_parts_survive_context_transitions() {
+    use super::reflow_oracle::assert_matches_cold;
+    use crate::MutationQueue;
+    use nana_ui_core::{ControlSize, DisplaySpec};
+    let document = DocumentId::new(1).unwrap();
+    let viewport = LayoutViewport::new(400.0, 300.0);
+    let build = |display: DisplaySpec| {
+        let mut cx = AppContext::new();
+        let root = cx
+            .create_component(
+                document,
+                Stack::column(0.0).with_layout(|layout| {
+                    layout.width = Some(LengthSpec::Px(320.0));
+                    layout.display = Some(display);
+                }),
+            )
+            .unwrap();
+        let mut ids = Vec::new();
+        for chrome in OPTION_CHROMES {
+            let mut view = option_view("Preview", chrome, ControlSize::Medium, true, None);
+            view.selected = true;
+            let option = cx.create_detached_component(document, view).unwrap();
+            cx.append_child(root, option).unwrap();
+            ids.push(option);
+        }
+        let mut q = MutationQueue::new();
+        q.request_focus(document, Some(ids[0].stable_id()));
+        cx.commit_mutations(q).unwrap();
+        product_frame(&mut cx, document, viewport, &mut bundled_face_shaper());
+        (cx, root, ids)
+    };
+    let mut shaper = bundled_face_shaper();
+    let (mut cx, root, ids) = build(DisplaySpec::Flex);
+    for display in [DisplaySpec::Grid, DisplaySpec::Inline, DisplaySpec::Flex] {
+        let mut style = cx.world().node_style(root.stable_id()).unwrap().clone();
+        Arc::make_mut(&mut style.layout).display = Some(display);
+        let mut q = MutationQueue::new();
+        q.set_style(root.stable_id(), style);
+        cx.commit_mutations(q).unwrap();
+        let work = product_frame(&mut cx, document, viewport, &mut shaper);
+        assert_eq!((work.entities_spawned, work.entities_despawned), (0, 0));
+        assert_eq!(cx.world().focused(document), Some(ids[0].stable_id()));
+        for option in &ids {
+            let id = option.stable_id();
+            assert!(cx.read(*option, |view| view.selected()).unwrap());
+            let (ring, icon, label) = option_geometry(&cx, id);
+            if option == &ids[0] {
+                assert_eq!(ring, Some(part_of(&cx, id, LayoutPartKind::Indicator)));
+            }
+            assert_eq!(icon, Some(part_of(&cx, id, LayoutPartKind::LeadingContent)));
+            assert_eq!(label, part_of(&cx, id, LayoutPartKind::TextContent));
+        }
+        let (mut cold, ..) = build(display);
+        assert_matches_cold(&mut cx, &mut cold, document);
+    }
+}
+
+#[test]
+fn issue205_ten_thousand_selection_options_keep_one_entity_and_bounded_parts() {
+    let _unguarded = crate::layout_engine::verify::skip_layout_verify();
+    for count in [1_000, 10_000] {
+        let document = DocumentId::new(1).unwrap();
+        let mut cx = AppContext::new();
+        let mut shaper = bundled_face_shaper();
+        let viewport = LayoutViewport::new(600.0, 400.0);
+        let root = cx.create_component(document, Stack::column(0.0)).unwrap();
+        let children: Vec<_> = (0..count)
+            .map(|index| {
+                cx.create_detached_component(
+                    document,
+                    option_view(
+                        "Preview",
+                        OPTION_CHROMES[index % 3],
+                        nana_ui_core::ControlSize::Medium,
+                        index % 2 == 0,
+                        None,
+                    ),
+                )
+                .unwrap()
+                .stable_id()
+            })
+            .collect();
+        let mut q = crate::MutationQueue::new();
+        for &id in &children {
+            q.insert(root.stable_id(), id, None);
+        }
+        cx.commit_mutations(q).unwrap();
+        product_frame(&mut cx, document, viewport, &mut shaper);
+        assert_eq!(cx.world().len(), count + 1);
+        for (index, &id) in children.iter().enumerate() {
+            let result = cx.world().layout_result(id).unwrap();
+            let kinds: Vec<_> = result.parts.iter().map(|part| part.kind).collect();
+            let mut expected = vec![
+                LayoutPartKind::TextContent,
+                LayoutPartKind::ComponentContent,
+            ];
+            if index % 3 == 0 {
+                expected.push(LayoutPartKind::Indicator);
+            }
+            if index % 2 == 0 {
+                expected.push(LayoutPartKind::LeadingContent);
+            }
+            assert_eq!(kinds, expected);
+            assert!(result.child_placements.is_empty());
+        }
+        let generation = cx.world().layout_generation();
+        product_frame(&mut cx, document, viewport, &mut shaper);
+        assert!(cx.take_system_work().is_empty());
+        let idle = cx.world().frame_counters;
+        assert_eq!(
+            (
+                idle.layout_measure_nodes,
+                idle.layout_placement_nodes,
+                idle.entities_spawned,
+                idle.entities_despawned
+            ),
+            (0, 0, 0, 0)
+        );
+        assert_eq!(cx.world().layout_generation(), generation);
+    }
+}

@@ -527,9 +527,11 @@ pub(crate) fn selection_chrome_style(
 
 fn segmented_option_style(size: ControlSize, chrome: SelectionChrome, fill: bool) -> NodeStyle {
     let radio = matches!(chrome, SelectionChrome::Radio);
+    // A radio row's ring and its gap are content parts (#205); the padding is
+    // the row's own inset on both sides.
     let (padding_left, padding_right) = if radio {
         (
-            Some(LengthSpec::Px(size.radio_lead())),
+            Some(LengthSpec::Px(nana_ui_core::RADIO_ROW_INSET)),
             Some(LengthSpec::Px(nana_ui_core::RADIO_ROW_INSET)),
         )
     } else {
@@ -709,31 +711,17 @@ impl ComponentView for SegmentedOption {
             }
         }
         {
+            // The ring, the icon and their gaps are content parts (#205); the
+            // padding is the option's own inset. A segmented item's is spent
+            // against the installed metrics so a density change can move it.
             let radio = matches!(self.chrome, SelectionChrome::Radio);
             let inset = if radio {
-                self.size.radio_lead()
+                nana_ui_core::RADIO_ROW_INSET
             } else {
                 self.size.padding_x_in(world.theme_metrics()) + world.theme().spacing().xxs
             };
-            // The icon has no box of its own: it is drawn inside the leading
-            // inset, so the inset has to grow by the icon and its gap or the
-            // label is measured into a box the icon already occupies. The
-            // trailing inset is the plain one either way — an icon on the left
-            // is no reason to leave the label flush against the right edge, and
-            // dropping it also measured every icon option short by one inset.
             let layout = Arc::make_mut(&mut effective_style.layout);
-            layout.padding_left = Some(if self.icon.is_some() && radio {
-                LengthSpec::Px(inset + self.size.icon_size() + world.theme().spacing().xs)
-            } else if self.icon.is_some() {
-                // Paint uses the resolved label font for the icon. Keep its
-                // leading share at 1em so a CSS font override agrees too.
-                LengthSpec::CalcEmOffset {
-                    em: 1.0,
-                    offset_px: inset + world.theme().spacing().xs,
-                }
-            } else {
-                LengthSpec::Px(inset)
-            });
+            layout.padding_left = Some(LengthSpec::Px(inset));
             if !radio {
                 layout.padding_right = Some(LengthSpec::Px(inset));
             }
@@ -903,9 +891,10 @@ mod tests {
         for size in [ControlSize::Small, ControlSize::Medium, ControlSize::Large] {
             let option =
                 SegmentedOption::new("Manual").surface(size, SelectionChrome::Radio, false);
+            // The ring and its gap are content parts, not padding (#205).
             assert_eq!(
                 option.style.layout.padding_left,
-                Some(LengthSpec::Px(size.radio_lead()))
+                Some(LengthSpec::Px(nana_ui_core::RADIO_ROW_INSET))
             );
             assert_eq!(
                 option.style.control_height,

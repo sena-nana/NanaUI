@@ -4,7 +4,8 @@ use crate::layout_engine::{
     Size,
     parts::{
         ContentParts, FlexPart, SwitchInputs, button_content_parts, checkbox_parts, part_bounds,
-        start_row_parts, status_dot_parts, switch_parts,
+        selection_option_parts, selection_option_row, start_row_parts, status_dot_parts,
+        switch_parts,
     },
 };
 
@@ -19,9 +20,10 @@ pub(crate) const STATUS_DOT_FRACTION: f32 = 10.0 / 24.0;
 
 /// Whether a visual's content parts read installed metrics that a theme can
 /// move without moving any style the node resolves: a switch's track and
-/// gap, a status dot's slot and gap. (A checkbox's indicator reads the same
-/// type and spacing steps its own style resolves, so a theme that moves them
-/// relays it out already.)
+/// gap, a status dot's slot and gap, a selection option's icon gap. (A
+/// checkbox's indicator reads the same type and spacing steps its own style
+/// resolves, so a theme that moves them relays it out already; a radio ring
+/// keeps fixed control steps.)
 pub(super) fn visual_parts_read_theme(visual: Option<&StandardVisual>) -> bool {
     matches!(
         visual,
@@ -29,6 +31,7 @@ pub(super) fn visual_parts_read_theme(visual: Option<&StandardVisual>) -> bool {
             StandardVisual::Switch { .. }
                 | StandardVisual::StatusBadge { .. }
                 | StandardVisual::ValidationMessage { .. }
+                | StandardVisual::SelectionOption { icon: Some(_), .. }
         )
     )
 }
@@ -50,6 +53,7 @@ impl UiWorld {
                         | crate::LayoutPartKind::Label
                         | crate::LayoutPartKind::Value
                         | crate::LayoutPartKind::Header
+                        | crate::LayoutPartKind::Indicator
                 )
             })) {
                 *slot = Some(*part);
@@ -142,6 +146,9 @@ impl UiWorld {
         }
         if let Some(inputs) = self.switch_inputs(id) {
             return switch_parts(content, inputs);
+        }
+        if let Some(inputs) = self.selection_option_parts(id, Size::new(text.width, text.height)) {
+            return selection_option_row(content, inputs, self.selection_option_icon_line(id));
         }
         if let Some(inputs) = self.status_dot_parts(id, Size::new(text.width, text.height)) {
             // The spacer before the dot is not a part of its own.
@@ -351,6 +358,54 @@ impl UiWorld {
             self.text(id).is_some_and(|label| !label.is_empty()),
             text,
         ))
+    }
+
+    /// A selection option's radio ring, icon and label before placement, the
+    /// label `text` in size: what intrinsic measure, the paragraph budget and
+    /// placement all read, so the style's padding keeps no copy of the ring's
+    /// or the icon's room. The ring and a radio row's icon keep the fixed
+    /// control steps they always used; a segmented item's icon is one em of
+    /// the label's resolved font, its gap the installed `xs` step.
+    pub(crate) fn selection_option_parts(
+        &self,
+        id: StableNodeId,
+        text: Size,
+    ) -> Option<[Option<FlexPart>; 3]> {
+        let Some(StandardVisual::SelectionOption {
+            icon,
+            size,
+            indicator,
+            ..
+        }) = self.standard_visual_ref(id)
+        else {
+            return None;
+        };
+        let gap = self.theme.spacing().xs;
+        let icon = icon.map(|_| {
+            let extent = if *indicator {
+                size.icon_size()
+            } else {
+                self.computed_style(id)
+                    .map_or(size.text_size(), |style| style.font_size)
+            };
+            (extent, gap)
+        });
+        Some(selection_option_parts(
+            indicator.then(|| (size.indicator_size(), size.indicator_gap())),
+            icon,
+            text,
+        ))
+    }
+
+    /// The line an option's icon centres on when its label is not centred
+    /// in the row: the label's first line box.
+    fn selection_option_icon_line(&self, id: StableNodeId) -> Option<f32> {
+        let style = self.computed_style(id)?;
+        let centred = self
+            .node_style(id)
+            .is_some_and(|style| style.text_vertical_alignment == TextVerticalAlignment::Center);
+        (!centred)
+            .then(|| nana_ui_core::text_line_box_height_px(style.font_size, style.line_height))
     }
 
     /// A switch's track and text column before placement, from the

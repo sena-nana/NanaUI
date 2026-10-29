@@ -586,6 +586,16 @@ fn visual_content(id: StableNodeId, world: &UiWorld) -> VisualContent {
                 height: chrome.height,
             }
         }
+        Some(crate::StandardVisual::SelectionOption { .. }) => {
+            let parts = world
+                .selection_option_parts(id, Size::default())
+                .expect("selection option");
+            let chrome = super::parts::chrome_extent(&parts);
+            VisualContent {
+                width: chrome.width,
+                height: chrome.height,
+            }
+        }
         Some(
             crate::StandardVisual::StatusBadge { .. }
             | crate::StandardVisual::ValidationMessage { .. },

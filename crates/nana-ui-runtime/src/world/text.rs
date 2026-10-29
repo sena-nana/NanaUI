@@ -3519,6 +3519,11 @@ impl UiWorld {
                         .map_or(available, |parts| {
                             crate::layout_engine::parts::text_budget(parts, content)
                         }),
+                    Some(StandardVisual::SelectionOption { .. }) => self
+                        .selection_option_parts(id, crate::layout_engine::Size::default())
+                        .map_or(available, |parts| {
+                            crate::layout_engine::parts::text_budget(parts, content)
+                        }),
                     Some(StandardVisual::Card { .. }) => self
                         .content_part_box(id, crate::LayoutPartKind::Header)
                         .map_or(available, |part| part.width.max(0.0)),

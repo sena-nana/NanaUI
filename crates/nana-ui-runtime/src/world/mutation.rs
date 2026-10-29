@@ -1915,6 +1915,22 @@ impl UiWorld {
                     }
                     (_, Some(StandardVisual::Switch { .. }))
                     | (Some(StandardVisual::Switch { .. }), _) => true,
+                    // What a selection option's parts read (#205); selecting,
+                    // disabling and the focus ring paint only.
+                    (
+                        Some(StandardVisual::SelectionOption {
+                            icon: ia,
+                            indicator: ra,
+                            size: sa,
+                            ..
+                        }),
+                        Some(StandardVisual::SelectionOption {
+                            icon: ib,
+                            indicator: rb,
+                            size: sb,
+                            ..
+                        }),
+                    ) => (ia.is_some(), ra, sa) != (ib.is_some(), rb, sb),
                     _ => false,
                 };
                 let (
