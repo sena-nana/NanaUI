@@ -4339,66 +4339,80 @@ fn issue205_menu_trigger_parts_follow_changes_like_a_cold_layout_and_hover_paint
     let viewport = LayoutViewport::new(700.0, 600.0);
     let mut shaper = bundled_face_shaper();
     let long = "A much longer trigger label than the box";
+    let steps: [(&str, Option<Option<f32>>, Option<f32>, bool); 7] = [
+        (long, None, None, false),
+        ("Menu", None, None, true),
+        (long, None, Some(4.0), false),
+        ("Menu", Some(None), Some(4.0), false),
+        ("Menu", Some(Some(20.0)), Some(4.0), true),
+        ("Menu", Some(Some(11.0)), None, false),
+        ("Menu", None, None, false),
+    ];
     for kind in 0..2u8 {
-        let (mut cx, id) = menu_trigger_page(kind, "Menu", None, None, false, None);
-        // Opening is the last step: a menu that closes keeps its items in
-        // its overflow where a cold layout has none, which is not the
-        // trigger's layout (it fails the same way without these parts).
-        let steps: [(&str, Option<Option<f32>>, Option<f32>, bool); 7] = [
-            (long, None, None, false),
-            (long, None, Some(4.0), false),
-            ("Menu", Some(None), Some(4.0), false),
-            ("Menu", Some(Some(20.0)), Some(4.0), false),
-            ("Menu", Some(Some(11.0)), None, false),
-            ("Menu", None, None, false),
-            ("Menu", None, None, true),
-        ];
-        for (label, icon, inset, open) in steps {
-            let style = inset.map(trigger_padding);
-            let next = |mut popover: crate::Popover| {
-                popover = match icon {
-                    Some(size) => {
-                        let popover = popover.trigger_icon(Icon::Add, label);
-                        match size {
-                            Some(size) => popover.trigger_icon_size(size),
-                            None => popover,
-                        }
-                    }
-                    None => popover.trigger(label),
-                };
-                match &style {
-                    Some(style) => popover.trigger_style(style.clone()),
-                    None => popover,
-                }
-                .open(open)
-            };
-            if kind == 0 {
-                cx.update_component(
-                    crate::Entity::<crate::Popover>::from_stable_id(id),
-                    |view, _| *view = next(crate::Popover::new()),
-                )
-                .unwrap();
-            } else {
-                cx.update_component(
-                    crate::Entity::<crate::ActionMenu>::from_stable_id(id),
-                    |view, _| {
-                        let mut menu = crate::ActionMenu::new();
-                        menu.popover = next(menu.popover);
-                        *view = menu;
-                    },
-                )
-                .unwrap();
+        // Any order: opens and closes land between other changes.
+        for reversed in [false, true] {
+            let mut order = steps;
+            if reversed {
+                order.reverse();
             }
+            let (mut cx, id) = menu_trigger_page(kind, "Menu", None, None, false, None);
+            let mut now = Duration::ZERO;
+            for (label, icon, inset, open) in order {
+                let style = inset.map(trigger_padding);
+                let next = |mut popover: crate::Popover| {
+                    popover = match icon {
+                        Some(size) => {
+                            let popover = popover.trigger_icon(Icon::Add, label);
+                            match size {
+                                Some(size) => popover.trigger_icon_size(size),
+                                None => popover,
+                            }
+                        }
+                        None => popover.trigger(label),
+                    };
+                    match &style {
+                        Some(style) => popover.trigger_style(style.clone()),
+                        None => popover,
+                    }
+                    .open(open)
+                };
+                if kind == 0 {
+                    cx.update_component(
+                        crate::Entity::<crate::Popover>::from_stable_id(id),
+                        |view, _| *view = next(crate::Popover::new()),
+                    )
+                    .unwrap();
+                } else {
+                    cx.update_component(
+                        crate::Entity::<crate::ActionMenu>::from_stable_id(id),
+                        |view, _| {
+                            let mut menu = crate::ActionMenu::new();
+                            menu.popover = next(menu.popover);
+                            *view = menu;
+                        },
+                    )
+                    .unwrap();
+                }
+                product_frame(&mut cx, document, viewport, &mut shaper);
+                // A menu that closes shows its items until its exit ends
+                // (#387); a cold closed menu has none to show.
+                if cx.world().surface_closing(id) {
+                    now += Duration::from_secs(10);
+                    cx.advance_animations(now);
+                    product_frame(&mut cx, document, viewport, &mut shaper);
+                }
+                let (mut cold, cold_id) = menu_trigger_page(kind, label, icon, style, open, None);
+                assert_eq!(cold_id, id);
+                super::reflow_oracle::assert_matches_cold(&mut cx, &mut cold, document);
+            }
+            let theme = padded_trigger_theme();
+            cx.set_theme_definition(&theme).unwrap();
             product_frame(&mut cx, document, viewport, &mut shaper);
-            let (mut cold, cold_id) = menu_trigger_page(kind, label, icon, style, open, None);
-            assert_eq!(cold_id, id);
+            let (label, icon, inset, open) = order[order.len() - 1];
+            let style = inset.map(trigger_padding);
+            let (mut cold, _) = menu_trigger_page(kind, label, icon, style, open, Some(&theme));
             super::reflow_oracle::assert_matches_cold(&mut cx, &mut cold, document);
         }
-        let theme = padded_trigger_theme();
-        cx.set_theme_definition(&theme).unwrap();
-        product_frame(&mut cx, document, viewport, &mut shaper);
-        let (mut cold, _) = menu_trigger_page(kind, "Menu", None, None, true, Some(&theme));
-        super::reflow_oracle::assert_matches_cold(&mut cx, &mut cold, document);
 
         let (mut cx, id) = menu_trigger_page(kind, "Menu", None, None, false, None);
         let generation = cx.world().layout_generation();

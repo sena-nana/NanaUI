@@ -6310,6 +6310,7 @@ mod issue268;
 mod issue269;
 mod issue270;
 mod issue386;
+mod issue387;
 mod reflow_oracle;
 #[cfg(test)]
 mod tests;
