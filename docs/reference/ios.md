@@ -58,6 +58,8 @@ UIKit 按 UTF-16 偏移计数，代理负责和 UTF-8 字节偏移互相换算�
 
 ## 构建
 
+`nana-ios-host` 和 `nana-ios-probe` 在根 workspace 里，但只在 `target_vendor = "apple"`（wgpu 提供 `SurfaceTargetUnsafe::CoreAnimationLayer` 的条件）上有内容；Linux、Windows 上它们编成空 crate，`cargo check --workspace` 照常经过。iOS 目标本身要用下面的脚本检查。
+
 ```bash
 # 交叉检查（真机目标；--sim 换成模拟器目标，需要先 rustup target add aarch64-apple-ios-sim）
 ./scripts/check-ios-arm64.sh

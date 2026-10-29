@@ -11,6 +11,12 @@
 //! target links, puts its view in through [`IosApp`], exports the shared
 //! `nana_ios_host_new` with [`export_ios_app!`], and adds its own C calls
 //! through [`with_app`].
+//!
+//! The crate is a workspace member, so `cargo check --workspace` reaches it
+//! on every host. It compiles only where wgpu has Metal (the same
+//! `target_vendor = "apple"` condition wgpu gates `CoreAnimationLayer` on),
+//! and is empty elsewhere.
+#![cfg(target_vendor = "apple")]
 
 use std::any::Any;
 use std::ffi::c_void;

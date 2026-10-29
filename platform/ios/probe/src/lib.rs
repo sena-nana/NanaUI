@@ -1,6 +1,9 @@
 //! The measurement page's iOS staticlib (`include/nana_ios_probe.h`): the
 //! generic host from `nana-ios-host` around `nana-mobile-probe`, plus the
 //! calls the probe shell makes for its camera layer and counters.
+//!
+//! Empty off Apple targets, like `nana-ios-host` it wraps.
+#![cfg(target_vendor = "apple")]
 
 use nana_ios_host::{
     FrameworkError, Haptic, HostParts, IosApp, NanaIosHost, NanaRect, Shell, export_ios_app,
