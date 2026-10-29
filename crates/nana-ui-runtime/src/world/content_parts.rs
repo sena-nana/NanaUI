@@ -8,7 +8,13 @@ use crate::layout_engine::{
     },
 };
 
-/// A status dot's diameter in its slot.
+/// Diameter of a status dot, as a fraction of the slot reserved for it.
+///
+/// `StatusBadge` and `ValidationMessage` both wrote this as
+/// `indicator_slot * 10.0 / 24.0`, where nothing in either arm is 24: the
+/// denominator was the icon box the ratio was originally measured against, and
+/// it survived the move to a spacing-step slot. Two copies of a phantom
+/// denominator is how the two badges drift apart.
 pub(crate) const STATUS_DOT_FRACTION: f32 = 10.0 / 24.0;
 
 /// Whether a visual's content parts read installed metrics that a theme can

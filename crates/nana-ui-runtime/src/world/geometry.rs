@@ -30,14 +30,6 @@ use image_viewer::*;
 
 use super::*;
 
-/// Diameter of a status dot, as a fraction of the slot reserved for it.
-///
-/// `StatusBadge` and `ValidationMessage` both wrote this as
-/// `indicator_slot * 10.0 / 24.0`, where nothing in either arm is 24: the
-/// denominator was the icon box the ratio was originally measured against, and
-/// it survived the move to a spacing-step slot. Two copies of a phantom
-/// denominator is how the two badges drift apart.
-
 /// Block extent of a progress bar.
 pub(crate) const PROGRESS_GIRTH: f32 = nana_ui_core::space::SM;
 
