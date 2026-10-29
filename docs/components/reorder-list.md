@@ -40,9 +40,15 @@ widget(
 
 收到 `Reorder` 之后，按 `source` 和 `before` 重排你的列表，再写回 `items`。
 
-## 不跨窗口
+## 跨列表拖动
 
-它不跨窗口。
+同一个文档里，`.transfer_group("…")` 相同的列表互相接收拖动。默认没有组，拖动只在自己的列表里。
+
+- 从列表 A 拖出的行移到同组的列表 B 上时，由 B 按自己的规则算落点：被拖行的 `kind`，B 各行的 `accepts_inside`、`accepts_sibling`，B 的 `accepts_root`、`.tree_drop` 和深度，和在 B 里拖动一样，只是 B 里没有跟着走的行。B 画插入线或放进某一行的标记，A 不再画自己的落点，被拖行的描边和跟手照旧。指针回到 A 上，A 恢复原样。
+- 在 B 上松手、落点有效时，事件发在 B 上：树列表是 `TreeDrop { source, intent }`，普通列表是 `Reorder { source, before }`。`source` 是被拖行在 A 里的值，`intent`、`before` 指向 B 的行；同组列表的行值要能互相区分。A 这次不发事件。B 不接受的地方不画标记，松手两边都不发事件。
+- 树列表要指在 B 的某一行上才有落点，空的树列表接不到；普通列表按纵向位置算，空列表也能放到末尾。
+- 指针一直由 A 捕获。拖动中按 Escape 或 `Cancel`，A 发 `Cancelled`，B 的标记一起收回。
+- 键盘移动不跨列表。不同文档（窗口）的列表不互相接收。
 
 ## 特性
 
@@ -154,6 +160,7 @@ each(ids, |id| id.clone(), entry_row).container(
 | `.accepts_root` | `ReorderAccepts` | 哪些类型能放在顶层，默认 `All` |
 | `.indent` | — | 每层深度的缩进，插入线按它缩进，指针按它选深度。默认 `space::LG` |
 | `.live_rows` | — | `true` 时行由你挂的子节点来画。列表仍用 `items` 做命中和拖动，不再按标签自绘。构造时声明，不在投影时从树上推断 |
+| `.transfer_group` | — | 同一文档里组相同的列表互相接收拖动，落点和事件归接收的列表。默认没有组 |
 
 ## 事件
 
@@ -163,6 +170,7 @@ each(ids, |id| id.clone(), entry_row).container(
 - `Secondary { source, x, y }` 是行身上的右键。 `x`、`y` 是窗口坐标，用来锚住上下文菜单。行表面不接指针，所以这个事件发在列表上。
 - `Reorder { source, before }` 里 `before` 为 `None` 表示放到末尾。
 - `TreeDrop { source, intent }` 的 `intent` 带目标 id 和 `TreeDropPosition`：`Before`、`Inside` 或 `After`。`source` 带着它的子树一起移动。键盘移动也发这个事件。
+- 从同组列表拖进来的行，在这个列表上发 `TreeDrop`（普通列表是 `Reorder`），`source` 是它在原列表里的值，见[跨列表拖动](#跨列表拖动)。
 - `Cancelled` 是取消。拖动中按 Escape 由框架取消，并释放捕获和按下记录，随后的松开不再落下、也不点击起手的行内控件。自己驱动 `apply_pointer` 时，失焦、触摸丢失要交给 `ReorderListPointer::Cancel`。
 
 指针坐标先按列表的布局坐标反投影再命中行，所以列表放在 `ScrollView` 里或祖先带变换时，按下、拖动、落点和右键找的都是指针下的那一行；`Secondary` 的 `x`、`y` 仍是窗口坐标。

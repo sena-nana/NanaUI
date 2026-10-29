@@ -174,7 +174,7 @@ Compact + Overlay 适合分离窗底栏（单行加边距约 52px）。Compact +
 
 进度拖拽只预览读数（宿主暂停、没有 tick 时也会跟随）。抬手才发一次 `Seek`。取消的拖拽不发。一次拖拽前后各有 `SeekStarted` / `SeekEnded`（结束在 `Seek` 之后；取消或原地松手时只有这一对）。宿主据此在拖动期间不回写播放位置。不必去监听条内部进度控件的 `RangeInput`。`RangeField` 自己的拖动起止是 `RangeDragging { dragging }`（键盘与无障碍步进不算拖动）。键盘 / 无障碍每一步都是提交。与原生 range 一致。音量跟随拖拽实时发 `Volume`。条在发 `Seek` / `Volume` 前先把目标写进 `position` / `volume`。宿主下一次写入仍是权威值。宿主若在 seek 完成前继续写旧位置，滑块会短暂回到旧位置。
 
-`ReorderList` 可以挂 live 行子节点。按在行里的控件（按钮等能获得焦点的节点）上，不移动松开是控件的点击，移动超过拖动阈值才拖动这一行。`ReorderItem::tools` 标出绝不开始拖动的子树。没有子节点时仍按标签自绘行。行可以是展开的树：`ReorderItem::depth` 写深度，拖动带着整棵子树，`kind` 与 `accepts_inside` / `accepts_sibling`（`ReorderAccepts`）声明谁能放进、放到旁边，插入线按落点深度缩进；Alt 加方向键在兄弟间移动、放进前一个兄弟或移出父行。`IconButton::with_tooltip` 用默认 `TooltipConfig`。
+`ReorderList` 可以挂 live 行子节点。按在行里的控件（按钮等能获得焦点的节点）上，不移动松开是控件的点击，移动超过拖动阈值才拖动这一行。`ReorderItem::tools` 标出绝不开始拖动的子树。没有子节点时仍按标签自绘行。行可以是展开的树：`ReorderItem::depth` 写深度，拖动带着整棵子树，`kind` 与 `accepts_inside` / `accepts_sibling`（`ReorderAccepts`）声明谁能放进、放到旁边，插入线按落点深度缩进；Alt 加方向键在兄弟间移动、放进前一个兄弟或移出父行。同一文档里 `transfer_group` 相同的列表互相接收拖动：落点按接收方的规则算，事件发在接收方，`source` 是原列表里的值。`IconButton::with_tooltip` 用默认 `TooltipConfig`。
 
 ## 交互
 
