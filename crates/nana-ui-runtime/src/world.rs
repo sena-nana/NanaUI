@@ -1528,12 +1528,15 @@ impl UiWorld {
 
     /// A px border box with no min/max does not export a child's intrinsic
     /// size. Baseline alignment is the exception: the parent's line still
-    /// moves when the child's baseline moves.
+    /// moves when the child's baseline moves -- under `align-items:
+    /// baseline`, and for an atom on a line of an ordinary block.
     fn is_fixed_metric_boundary(&self, id: StableNodeId) -> bool {
         let Some(record) = self.nodes.get(id) else {
             return false;
         };
-        if !definite_fixed_border(record.resolved_layout.as_ref()) {
+        if !definite_fixed_border(record.resolved_layout.as_ref())
+            || self.atom_baseline_reads_content(id)
+        {
             return false;
         }
         if let Some(parent) = record.hierarchy.parent
@@ -5024,9 +5027,11 @@ impl UiWorld {
                     definite_fixed_border(parent_record.resolved_layout.as_ref());
                 // A fixed inline-block is an atomic box. Inner metrics
                 // stop at its border; the outer inline formatting
-                // context does not reflow.
+                // context does not reflow -- unless the atom sits on its
+                // line by a baseline what it holds puts there.
                 let atomic_border = has_definite_size
-                    && parent_display == Some(nana_ui_core::DisplaySpec::InlineBlock);
+                    && parent_display == Some(nana_ui_core::DisplaySpec::InlineBlock)
+                    && !self.atom_baseline_reads_content(parent);
                 let is_formatting_context = !atomic_border
                     && parent_display.is_some_and(|display| {
                         display.is_flex_container()
@@ -5571,6 +5576,8 @@ impl UiWorld {
         // out again, and nothing above it measures. A fixed inline-block's
         // shaped text does not change the border box the outer line packed
         // either: the seed stays on the atomic, which is only placed again.
+        // One whose baseline its text puts is not fixed (see
+        // `is_fixed_metric_boundary`): its line aligns again.
         let atomic = display == Some(nana_ui_core::DisplaySpec::InlineBlock);
         if fixed
             && (atomic

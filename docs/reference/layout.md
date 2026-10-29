@@ -477,15 +477,32 @@ fit 只有一份数学：`ContentFit::fitted_size`（`nana-ui-core`）。fit 是
 - E：同一尺寸再报一次不产生任何工作；换成同尺寸的另一个资源 0 seed、0 measure；换成另一尺寸的
   资源只重排读它的两个盒子。
 - F：`Video` 与 `GpuTextureView` 从标记得到的 fit 与图片的 `object-fit` 是同一个值。
+- G：普通块级流里同一行的原子按基线对齐：没有行盒的 inline-block、`overflow` 非 visible 的
+  inline-block 和图片以底外边距边落在基线上，带文字的 inline-block 以末行基线落在基线上，块的
+  高度就是行盒从最高顶到最低底的跨度。换一个更高的原子、同尺寸盒子里文字折成多行、原本空的原子
+  里来了文字，每一步都重新摆放这一行，并与冷布局逐项相同。
 
 `nana-ui` 的 `scene_paint/replaced_context_tests.rs` 另有两项：host texture 跨 context 移动不重新绑定
 纹理；五种 fit 下 `url()` 路径与 host-texture 路径给出相同的目标矩形。
 
-基线：替换内容的基线是边框盒底边（`aligns_by_bottom_edge`），由布局决定，不由画家修正 y。原生
-段落（`InlineFlow`）的行盒和 `align-items: baseline` 的 flex 行都按它对齐，行的基线发布在
-`LayoutResult` 的 TextLine 片段上。普通块级流里文本节点是块级行，不和 inline-block 原子同行；
-几个 inline-block 原子同行时行盒把它们顶部对齐，不做基线对齐，`LayoutStyle` 也没有
-`vertical-align`。这不是 replaced 专有的规则。
+基线：替换内容按底边对齐（`aligns_by_bottom_edge`），由布局决定，不由画家修正 y。行内格式化上下文
+（原生段落 `InlineFlow` 的行盒，和普通块级流里 inline-block 原子同行的行盒）都按 CSS 默认的
+`vertical-align: baseline`（CSS 2.1 §10.8.1）对齐，两者读同一个函数
+`LayoutInputMap::atom_line_metrics`：
+- inline-block 以末个流内行盒的基线落在行的基线上，基线值取 `baseline_metrics` 的末行基线；
+- 替换内容、`overflow` 非 visible 的 inline-block、没有流内行盒的 inline-block（`UiWorld::atom_sits_on_line_box`）
+  以**底外边距边**落在基线上，`margin-bottom` 把它抬高；
+- 行盒高度是对齐之后从最高的顶外边距边到最低的底外边距边的跨度，块级子项独占一行、从行顶排起。
+  没有 strut：行盒不按父级字体留出最小高度。
+
+`align-items: baseline` 的 flex 行仍按首行基线对齐，替换内容取边框盒底边（CSS Align 在 flex / grid
+里从边框盒合成基线）。行的基线发布在 `LayoutResult` 的 TextLine 片段上。`LayoutStyle` 没有
+`vertical-align`，默认的 `baseline` 就是全部行为。这不是 replaced 专有的规则。
+
+原子的基线随内容移动，失效也跟着走：`overflow` 为 visible 的固定尺寸 inline-block 在普通块级流里
+不再是度量边界（`UiWorld::atom_baseline_reads_content`），它里面的变化会让这一行重新对齐；
+`overflow` 非 visible 的和替换内容的位置只看自己的盒子，仍然是边界，里面的变化不重排这一行。
+IFC 的 measure plan 记下每个原子在行上的 ascent，盒子尺寸没变但 ascent 变了时重新测量这个块。
 
 #259 加了替换内容负载：在 1k、10k、100k 页面末尾，视频帧、图片自然尺寸、共享图片的开销相同。
 
@@ -790,6 +807,10 @@ grid 的列是 inline 轴上的轨道。行是 block 轴上的轨道。这是 CS
 `nana-text` 保留的首行和末行 baseline；宿主只提供 ascent 时才使用该
 fallback。替换内容和 Custom 节点以 block 轴末端作为明确 fallback。Flex、Grid
 和 IFC 不各自估算一套基线。
+
+IFC 的行里，原子按基线对齐（`vertical-align: baseline`，见上文「替换内容」的基线一段）：
+inline-block 取末行基线，替换内容、`overflow` 非 visible 和没有行盒的原子取底外边距边，行高是
+对齐后的跨度。原生段落和普通块级流的行共用这条规则。
 
 flex 行的保留计划记下每个按基线对齐的子项当时用的基线。下一趟里，子项的尺寸没变
 但基线变了（固定尺寸的按钮里字号变了），这一行照样重新对齐，不沿用旧位置。
@@ -1180,7 +1201,9 @@ prelude 是 `[名字] 条件`：
 - `@import … layer()` 和 `supports()`。
 - 完整的 cascade-layer 优先级。
 - 完整的浮动排除。祖先浮动侵入子块、`shape-outside`、流内块级边框盒缩窄，都没有。
-- 完整 IFC。没有精确的 CSS 基线，也没有行内拆箱。
+- 完整 IFC。行内原子按基线对齐，但没有 strut、没有 `vertical-align` 的其他取值，也没有行内拆箱。
+  没有自己文字、文字在后代里的 inline-block，基线仍按自己的字体近似成首行（`baseline_metrics`
+  的 `chrome_top + ascent`），不是后代末行的实际位置。
 - 轨道列表 token 形式的 `subgrid`。
 - 用 `position: fixed` 当 Dialog 或 Drawer。走 Nana 的浮层。
 - 自定义 `url()` 光标图。

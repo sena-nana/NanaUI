@@ -364,7 +364,7 @@ GPU pixels 来自 macOS。Windows/Linux 真机与外部 consumer 完整构建/�
 | context 切换不重建 GPU/resource identity | 可勾 | Runtime：`issue199_a_thousand_components_keep_state_focus_and_resource_identity`（`Arc::ptr_eq`、0 spawn）；GPU：nana-ui `a_host_texture_moved_across_contexts_keeps_its_binding`（真实 `RuntimeDocument`，Flex→Grid→Flex 列→Flex 行，`gpu_buffer_reallocations == 0`） |
 | frame/texture 内容更新不触发布局 | 可勾 | `issue263_video_frames_lay_nothing_out`（1200 帧 0 布局、intrinsic generation 不变）、`issue263_fit_and_sampling_lay_nothing_out`、`issue259_replaced_content_costs_the_same_at_any_size`、nana-ui `texture_content_reuses_prepared_ui_and_replacement_rebinds` |
 | intrinsic metadata change 精确失效 | 可勾 | issue263 B/C/E（unknown→known 单 seed、共享图片 100 通知/50 seed、显式尺寸 0 seed）；本轮 `issue202_e_only_a_new_natural_size_lays_out`：同一尺寸再报一次 drain 为空；换成同尺寸的另一资源 0 replaced seed、0 frontier seed、0 measure、0 intrinsic bump；换成另一尺寸的资源只排读它的 2 个盒子 |
-| Inline baseline 有正式 policy | 可勾（附注） | 规则在布局侧：`LayoutEngine::aligns_by_bottom_edge` / `baseline_metrics` 以边框盒底边为替换内容基线；原生段落行盒与 `align-items: baseline` 的 flex 行按它对齐，行基线发布在 TextLine 片段（`issue202_replaced_content_sits_on_the_text_baseline_by_its_bottom_edge`）。附注：普通块级流里文本节点是块级行，不和 inline-block 原子同行；几个原子同行时行盒顶部对齐，没有 `vertical-align`，见下文"仍未做" |
+| Inline baseline 有正式 policy | **可勾（基线追加完成）** | 规则在布局侧：`LayoutEngine::aligns_by_bottom_edge` / `baseline_metrics` 以边框盒底边为替换内容基线；原生段落行盒与 `align-items: baseline` 的 flex 行按它对齐，行基线发布在 TextLine 片段（`issue202_replaced_content_sits_on_the_text_baseline_by_its_bottom_edge`）。普通块级流里同行原子的基线对齐已按产品决定补上（`vertical-align: baseline` 默认值），见下文「追加：块级流的原子基线」 |
 | CustomRender 保持 presentation anchor 边界 | 可勾 | `CustomRenderNode` 只有 renderer/resource/revision/fit/params/dedicated_pass/checkerboard/zoom/sampling 等呈现字段，params 不被 Runtime 解释（`custom_render_extension_requires_nonempty_backend_neutral_keys`）；`issue202_c_…` 的 Anchor 只挂一个 `CustomRenderNode` 就以 Replaced 参与布局，Runtime 不需要应用状态 |
 
 ### 改动
@@ -407,9 +407,55 @@ GPU pixels 来自 macOS。Windows/Linux 真机与外部 consumer 完整构建/�
 
 ### 仍未做
 
-- 普通块级流的原子行盒没有基线对齐（也没有 `vertical-align`）。按 CSS 应当以基线对齐（替换内容即底边对齐），但这会改变所有混高 inline-block 行的位置，属于产品层面的行为选择：要么保持顶部对齐并在文档中注明（文字与原子混排走 `InlineFlow`），要么在 `pack_ifc_line_boxes` 引入 `vertical-align: baseline` 默认值并重录受影响的基线。本轮未改。
+- ~~普通块级流的原子行盒没有基线对齐（也没有 `vertical-align`）。~~ 产品决定采用 CSS 默认的 `vertical-align: baseline`，已在下文「追加：块级流的原子基线」完成。
 - HostTexture / Video 的自然尺寸仍需宿主自己用 `set_replaced_metadata` 上报；`GpuTextureView` 默认不上报（见上文 `painted_extent` 的说明）。
 - 未在 Windows/Linux 上运行；NanaLive / NanaType 只读检查：只用 `GpuTextureView.fit = ContentFit::…`（Rust 字段）与 `BackgroundImage::url_with_fit`，不受标记 fit 优先级与新增 API 影响；未构建这两个 consumer。
+
+### 追加：块级流的原子基线（`vertical-align: baseline`）
+
+产品决定：普通块级流里同一行的 inline-level 原子（inline-block、替换内容）按 CSS 默认的 `vertical-align: baseline` 对齐（CSS 2.1 §10.8 / §10.8.1、CSS Inline 3），不再顶部对齐；不新增 `vertical-align` 属性。
+
+**规则（一处）。** `LayoutInputMap::atom_line_metrics` 给出原子在行上的 ascent / descent（含外边距），原生段落（`place_native_inline`）和普通块级流的行（`pack_ifc_line_boxes` 与 placement、IFC 的 intrinsic 测量 `wrap_intrinsic_size`）都读它：
+- inline-block 以末个流内行盒的基线落在基线上，值取 `baseline_metrics` 的 `last`（原生段落此前读 `first`）；
+- 替换内容、`overflow` 非 visible 的 inline-block、没有流内行盒的 inline-block（`UiWorld::atom_sits_on_line_box` / `holds_line_box`）以底外边距边落在基线上；
+- 行盒高度 = 对齐后最高顶到最低底的跨度（`ifc_line_metrics`），块级子项独占一行从行顶排；无 strut。
+
+**根因修正：替换内容的边。** 原生段落此前把替换内容的**边框盒**底边放在基线上，`margin-bottom` 垂在基线下（`atomic_metrics` 的 ascent = 边框盒基线 + margin-top）。CSS 在行内格式化上下文里用**底外边距边**。修在 `inline_content::atomic_metrics`：基线改为 `Option`，`None` 即整个外边距盒在基线之上；原生段落与块级流因此一致，`sync_inline_metrics` 的布局后回填走同一规则（`intrinsic_baseline` 改读末行基线）。`align-items: baseline` 的 flex / grid 不改：CSS Align 在那里从边框盒合成基线，仍是边框盒底边。
+
+**失效。** 原子的基线随内容走，原先「固定尺寸 inline-block 是原子边界，里面的变化不重排外层行」只在基线不读内容时成立：
+- `UiWorld::atom_baseline_reads_content`：普通块级流（非原生段落）里 `overflow` 为 visible 的非替换原子。这样的固定 inline-block 不再是度量边界（`is_fixed_metric_boundary`、frontier 上行的 `atomic_border`、`fixed_inline_block` 岛与 `affected_edits_are_direct`），自身文字变化不再只排 PLACEMENT。
+- IFC 的 measure plan（`MeasuredChild::baseline`）记下每个原子的 ascent，`measure_plan_children_unchanged` 比对；未被本趟查询的 plan 遇到有 ascent 的子项在 measure 前沿上即标 stale（`plan_missed_change`）；`ifc_line_measure_delta` 回写新 ascent。IFC 容器本来不记 placement plan，placement 每次按新 ascent 重排。
+- `inline_scope.rs::inline_fixed_size_atomic_does_not_reflow_its_line` 拆成两种：`overflow: hidden` 的原子保持原断言（不重排父级行、不碰另一个上下文）；`overflow` visible 的原子会重排这一行，但仍不碰另一个上下文、测量工作不随它增长、位置不变。
+
+**门禁与变异**（改坏→变红→恢复→`cmp` 一致）：
+
+| 门禁 | 证明 | 变异 |
+| --- | --- | --- |
+| `issue202_g_atoms_on_a_block_line_share_one_baseline` | 一行里：空 40×20、空 40×50 带 `margin-bottom: 6`、20×30 图片带 `margin-bottom: 4`、`overflow: hidden` 的 50×30（内有标签）以底外边距边落在基线上；60×60 的文字原子与 30×20 的文字原子以末行基线落在同一基线；块高 = 行盒跨度、行顶 = 块顶、各原子顶部不同。随后：高原子 50→70；60×60 盒子里文字折成多行（盒子尺寸不变，原子上移）；不决定行高的 30×20 原子文字折行（块盒不变、原子上移）；空原子里插入文字。每步 `assert_matches_cold` | placement 改回顶部对齐：红；`atomic_metrics` 的 `None` 改回边框盒底边：红；忽略 `overflow`：红；所有原子都当有行盒：红；`atom_baseline_reads_content` 恒为 false（失效收窄）：红（verify 揭出）；IFC 测量不按基线算行高：红；`measure_plan_children_unchanged` 不比 ascent：红（verify 揭出）。`plan_missed_change` 的新分支去掉后门禁仍绿（需要同一容器在两个约束下各有 plan，门禁未构造），作为保守分支保留 |
+| css-parity `T-I05`（新） | 块里 20/50/30（`margin-bottom: 6`）三个 inline-block：50 的顶在 0，20 的在 30，30 的在 14（按 CSS 2.1 §10.8 推得，未在浏览器里实测；默认字体的 strut ascent 小于 50，不影响这三个位置） | placement 改回顶部对齐：T-I05 FAIL |
+
+**快照。** 画廊像素 680 个、语义 156 个全部 MATCH，未重录任何基线：画廊里没有普通块级流中的 inline-level 原子，原生段落的原子也没有可见变化。
+
+**本轮运行：**
+
+| 命令 | 结果 |
+| --- | --- |
+| `cargo fmt --all -- --check`；`git diff --check` | passed |
+| `cargo clippy -q -p nana-ui-core -p nana-ui-runtime -p nana-ui-scene -p nana-ui --all-targets -- -D warnings` | passed |
+| `cargo test -q -p nana-ui-runtime --lib` | 2322 passed、1 ignored |
+| `cargo test -q -p nana-ui-runtime --lib --features layout-verify -- issue202 issue197 issue199` | 13 passed |
+| `cargo test -q -p nana-ui-scene --tests` | 全部通过 |
+| `cargo test -q -p nana-ui --features hosted,gpu --lib` | 967 passed、1 ignored |
+| `cargo test -q -p nana-css-parity` | 全部通过（含新 T-I05） |
+| `cargo test -q --workspace --all-targets` | 6073 passed、0 failed、5 ignored |
+| `cargo test -q -p component-gallery --bin ui-snapshots --features snapshots --locked` | 12 passed |
+| `caffeinate -di cargo run -q --release -p component-gallery --bin ui-snapshots --features snapshots --locked -- --output <scratch>` | MATCH: 680（exact） |
+| 同上加 `--semantic` | MATCH: 156 |
+
+**仍未做：**
+- 没有自己文字、文字在后代里的 inline-block（比如 `div` 里放一个标签），基线仍是 `baseline_metrics` 对容器的近似（自身字体的首行 `chrome_top + ascent`），不是后代末个行盒的实际位置；后代多行时与 CSS 不同。要按后代推导需要在测量时知道子项的块向偏移，牵涉 measure plan 与固定尺寸早退路径，单独做。
+- 没有 strut：行盒不按父级字体留出最小 ascent/descent，空 inline-block 下面不留 descent 空隙。
+- NanaLive / NanaType 只读检查：源码里没有 `inline-block` / `DisplaySpec::Inline*` / `InlineFlow`，不受影响；未构建。
 
 ## 2026-10-29 追加：#205
 

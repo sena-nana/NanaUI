@@ -1358,6 +1358,7 @@ fn measure_node(
             viewport,
             child_font_px,
             nodes,
+            ifc && !writing.is_vertical(),
         )
     } else {
         // With a definite main size the line hands out free space (or takes
@@ -1613,14 +1614,30 @@ fn measure_node(
                         flow_cursor += 1;
                         size
                     });
+                    let style = nodes.style(child);
+                    let baseline = intrinsic
+                        .filter(|_| ifc && !writing.is_vertical())
+                        .zip(style.as_deref())
+                        .and_then(|(size, child_style)| {
+                            ifc_atom_metrics(
+                                child,
+                                child_style,
+                                size,
+                                child_edge_base,
+                                child_font_px,
+                                nodes,
+                            )
+                        })
+                        .map(|(ascent, _)| ascent);
                     MeasuredChild {
                         child,
-                        style: nodes.style(child),
+                        style,
                         intrinsic,
                         at_main: hypothetical
                             .iter()
                             .find(|(item, _, _)| *item == child)
                             .map(|(_, main, size)| (*main, *size)),
+                        baseline,
                     }
                 })
                 .collect();
@@ -1737,6 +1754,23 @@ fn measure_plan_children_unchanged(
             if measured != cached {
                 return Ok(false);
             }
+            // An atom whose baseline moved in a box of the same size moves
+            // its line, and the line's height.
+            if let Some(ascent) = entry.baseline {
+                let now = nodes.style(entry.child).and_then(|style| {
+                    ifc_atom_metrics(
+                        entry.child,
+                        &style,
+                        measured,
+                        plan.child_available.width,
+                        child_font_px,
+                        nodes,
+                    )
+                });
+                if now.map(|(now, _)| now.to_bits()) != Some(ascent.to_bits()) {
+                    return Ok(false);
+                }
+            }
         }
         // An item the line gave another main size is as tall as its content
         // at that size, which can change while its measurement above did not.
@@ -1783,6 +1817,10 @@ pub(super) fn plan_missed_change(
     }
     if !measure.contains(&child) || (entry.intrinsic.is_none() && entry.at_main.is_none()) {
         return false;
+    }
+    // Its baseline can move in a box of its own size.
+    if entry.baseline.is_some() {
+        return true;
     }
     let Some(style) = current else {
         return true;
@@ -2002,6 +2040,7 @@ fn sequential_measure_delta(
                 style: child_style,
                 intrinsic,
                 at_main: None,
+                baseline: None,
             });
         }
         // An empty flow sizes the container by other rules, and the last of
@@ -2298,6 +2337,7 @@ fn flex_line_measure_delta(
         viewport,
         child_font_px,
         nodes,
+        false,
     );
     let new_content = wrap_intrinsic_size(
         direction,
@@ -2312,6 +2352,7 @@ fn flex_line_measure_delta(
         viewport,
         child_font_px,
         nodes,
+        false,
     );
     let mut size = plan.size;
     match direction {

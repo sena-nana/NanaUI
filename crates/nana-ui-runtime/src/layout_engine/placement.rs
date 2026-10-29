@@ -1914,6 +1914,7 @@ pub(super) fn place_node_scoped(
             main_available: full_main,
             cross_y: 0.0,
             pin_cross: false,
+            baseline_aligned: false,
         };
         let mut line_slots = if wrapping {
             if style.equal_wrap {
@@ -1967,8 +1968,17 @@ pub(super) fn place_node_scoped(
         if matches!(wrap, FlexWrap::WrapReverse) {
             line_slots.reverse();
         }
-        let mut packed: Vec<(Vec<StableNodeId>, Vec<Size>, f32, f32, f32, f32, bool)> =
-            Vec::with_capacity(line_slots.len());
+        #[allow(clippy::type_complexity)]
+        let mut packed: Vec<(
+            Vec<StableNodeId>,
+            Vec<Size>,
+            f32,
+            f32,
+            f32,
+            f32,
+            bool,
+            Option<f32>,
+        )> = Vec::with_capacity(line_slots.len());
         // Items measured again at the main size their line gave them.
         let mut hypothetical: HashMap<StableNodeId, (f32, Size)> = HashMap::new();
         for slot in &line_slots {
@@ -2109,6 +2119,18 @@ pub(super) fn place_node_scoped(
                     cross_extent(*size, direction) + cross_margin(margin, direction)
                 })
                 .fold(0.0, f32::max);
+            // A line of an ordinary block: its baseline, and the span its
+            // items cover once they sit on it.
+            let line_baseline_y = slot.baseline_aligned.then(|| {
+                ifc_line_metrics(
+                    line_flow.iter().copied().zip(line_sizes.iter().copied()),
+                    content.width,
+                    viewport,
+                    child_font_px,
+                    nodes,
+                )
+            });
+            let line_cross = line_baseline_y.map_or(line_cross, |(_, height)| height);
             // A float-narrowed line's start, measured from main-start: its
             // physical left offset, or the room its right end leaves when the
             // main axis runs from the right.
@@ -2125,6 +2147,7 @@ pub(super) fn place_node_scoped(
                 slot.main_available,
                 slot.cross_y,
                 slot.pin_cross,
+                line_baseline_y.map(|(baseline, _)| baseline),
             ));
         }
         let align_content = style.align_content;
@@ -2133,7 +2156,7 @@ pub(super) fn place_node_scoped(
         let (mut cross_cursor, extra_cross_gap) = if line_count > 1 {
             let total = packed
                 .iter()
-                .map(|(_, _, cross, _, _, _, _)| *cross)
+                .map(|(_, _, cross, _, _, _, _, _)| *cross)
                 .sum::<f32>()
                 + cross_gap * line_count.saturating_sub(1) as f32;
             if matches!(align_content, JustifySpec::Stretch | JustifySpec::Start)
@@ -2189,6 +2212,7 @@ pub(super) fn place_node_scoped(
             line_main_available,
             line_cross_y,
             pin_cross,
+            line_atom_baseline,
         ) in packed
         {
             if pin_cross {
@@ -2269,7 +2293,12 @@ pub(super) fn place_node_scoped(
                 );
                 let align = child_style.resolved_align_self(style.align_items);
                 let cross_available = line_box_cross - cross_margin(margin, direction);
+                // An atom on a line of an ordinary block sits on the line's
+                // baseline whatever `align-self` says, and is not stretched.
+                let on_baseline_line =
+                    line_atom_baseline.is_some() && child_style.is_inline_level();
                 if align == AlignSpec::Stretch
+                    && !on_baseline_line
                     && !cross_axis_is_definite(
                         child_style,
                         direction,
@@ -2284,6 +2313,18 @@ pub(super) fn place_node_scoped(
                     Some(writing.inline_size(content.width, content.height)),
                     child_fonts,
                 );
+                let atom_ascent = line_atom_baseline
+                    .and_then(|_| {
+                        ifc_atom_metrics(
+                            child,
+                            child_style,
+                            child_size,
+                            content.width,
+                            child_font_px,
+                            nodes,
+                        )
+                    })
+                    .map(|(ascent, _)| ascent);
                 let aligned_baseline = (align == AlignSpec::Baseline).then(|| {
                     intrinsic
                         .baseline(child, crate::Baseline::First)
@@ -2291,24 +2332,31 @@ pub(super) fn place_node_scoped(
                             nodes.baseline(child, child_fonts.element_px, child_size)
                         })
                 });
-                let cross_offset = match align {
-                    AlignSpec::Start | AlignSpec::Stretch => cross_cursor + cross_lead(margin),
-                    AlignSpec::Baseline => {
-                        let base = aligned_baseline.unwrap_or_default();
-                        cross_cursor + (line_baseline - base).max(0.0)
-                    }
-                    AlignSpec::Center => {
-                        cross_cursor
-                            + cross_lead(margin)
-                            + ((cross_available - cross_extent(child_size, direction)) / 2.0)
+                let cross_offset = if let (Some(line), Some(ascent)) =
+                    (line_atom_baseline, atom_ascent)
+                {
+                    // The margin box's top is `ascent` above the baseline.
+                    cross_cursor + line - ascent + cross_lead(margin)
+                } else {
+                    match align {
+                        AlignSpec::Start | AlignSpec::Stretch => cross_cursor + cross_lead(margin),
+                        AlignSpec::Baseline => {
+                            let base = aligned_baseline.unwrap_or_default();
+                            cross_cursor + (line_baseline - base).max(0.0)
+                        }
+                        AlignSpec::Center => {
+                            cross_cursor
+                                + cross_lead(margin)
+                                + ((cross_available - cross_extent(child_size, direction)) / 2.0)
+                                    .max(0.0)
+                        }
+                        AlignSpec::End => {
+                            cross_cursor
+                                + (line_box_cross
+                                    - cross_extent(child_size, direction)
+                                    - cross_trail(margin))
                                 .max(0.0)
-                    }
-                    AlignSpec::End => {
-                        cross_cursor
-                            + (line_box_cross
-                                - cross_extent(child_size, direction)
-                                - cross_trail(margin))
-                            .max(0.0)
+                        }
                     }
                 };
                 // Flow-relative to the page: a reversed axis measures back

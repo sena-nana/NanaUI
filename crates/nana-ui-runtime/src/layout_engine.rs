@@ -902,16 +902,18 @@ impl RetainedLayoutCache {
             .max()
     }
 
+    /// The last baseline `id` published, the one an atom sits on its line by.
     pub(crate) fn intrinsic_baseline(&self, document: DocumentId, id: StableNodeId) -> Option<f32> {
-        self.documents
+        let metrics = &self
+            .documents
             .get(&document)?
             .intrinsic_metrics
             .by_content
             .get(&id.get())?
             .iter()
             .max_by_key(|(_, metrics)| metrics.generation)?
-            .1
-            .first_baseline
+            .1;
+        metrics.last_baseline.or(metrics.first_baseline)
     }
     pub(crate) fn take_inline_objects(
         &mut self,
@@ -2085,6 +2087,10 @@ struct MeasuredChild {
     /// measured one, and the child measured at it (its cross size is the
     /// container's input then).
     at_main: Option<(f32, Size)>,
+    /// An atom on a line of an ordinary block: its ascent on the line
+    /// ([`inline::ifc_atom_metrics`]). The line's height reads it, so it
+    /// can move while the atom's size stays.
+    baseline: Option<f32>,
 }
 
 /// A container's own intrinsic measurement, cached across passes.
@@ -2403,26 +2409,40 @@ impl<'a> LayoutInputMap<'a> {
     }
 
     /// Whether `id` aligns by its border-box bottom rather than a text
-    /// baseline: a custom renderer, a content image, a skipped replaced
-    /// element or an image viewer. The one rule every context's baseline
-    /// reads, so inline, flex and grid alignment cannot disagree on it.
+    /// baseline: [`UiWorld::aligns_by_bottom_edge`].
     fn aligns_by_bottom_edge(&self, id: StableNodeId, style: &nana_ui_core::LayoutStyle) -> bool {
-        self.world.custom_render(id).is_some()
-            || style.paint.content_image.is_some()
-            || style.paint.skipped_replaced.is_some()
-            || {
-                #[cfg(feature = "image-viewer")]
-                {
-                    matches!(
-                        self.world.standard_visual_ref(id),
-                        Some(crate::StandardVisual::ImageViewer { .. })
-                    )
-                }
-                #[cfg(not(feature = "image-viewer"))]
-                {
-                    false
-                }
-            }
+        self.world.aligns_by_bottom_edge(id, style)
+    }
+
+    /// Where atomic inline `id` sits on a line box: its ascent and descent
+    /// about the line's baseline, margins included. Native paragraphs and
+    /// the lines of an ordinary block both read this, so the two cannot
+    /// disagree (CSS 2.1 §10.8.1, `vertical-align: baseline`).
+    ///
+    /// An inline-block sits by the baseline of its last line box, read from
+    /// [`Self::baseline_metrics`] like every other context reads a baseline.
+    /// Replaced content, an inline-block whose overflow is not visible and
+    /// one with no in-flow line box sit by their bottom margin edge
+    /// ([`UiWorld::atom_sits_on_line_box`]).
+    fn atom_line_metrics(
+        &self,
+        id: StableNodeId,
+        writing: nana_ui_core::WritingContext,
+        used: Size,
+        margin: nana_ui_core::PaddingSpec,
+        fallback_font_px: f32,
+        inline_base: f32,
+    ) -> nana_text::InlineObjectMetrics {
+        let block = writing.logical_size(used.width, used.height).1.max(0.0);
+        let baseline = (!writing.is_vertical() && self.world.atom_sits_on_line_box(id))
+            .then(|| {
+                let metrics =
+                    self.baseline_metrics(id, fallback_font_px, Some(inline_base), Some(used));
+                metrics.last.or(metrics.first)
+            })
+            .flatten()
+            .map(|baseline| baseline.clamp(0.0, block));
+        crate::inline_content::atomic_metrics(writing, used.width, used.height, margin, baseline)
     }
 
     /// Shared baseline authority for all formatting contexts. Retained

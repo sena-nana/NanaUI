@@ -290,6 +290,9 @@ pub(super) struct LineBoxSlot {
     /// Content-relative cross start after float drop / `clear` (IFC only).
     pub(super) cross_y: f32,
     pub(super) pin_cross: bool,
+    /// A line of an ordinary block's inline-level items: they sit on one
+    /// baseline (CSS 2.1 §10.8.1), not at the line's top.
+    pub(super) baseline_aligned: bool,
 }
 
 /// Geometric same-side pack/wrap. Bottoms are the occupied extent after wrapping,

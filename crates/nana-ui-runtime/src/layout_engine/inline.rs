@@ -73,32 +73,12 @@ pub(super) fn place_native_inline(
         let size =
             intrinsic_size_scoped(child, content, None, viewport, font, nodes, cache, scope)?;
         let writing = nodes.world.layout_writing(id);
-        let (_, block) = writing.logical_size(size.width, size.height);
-        let baseline = if writing.is_vertical() {
-            block
-        } else {
-            cache
-                .baseline(child, crate::Baseline::First)
-                .or_else(|| {
-                    nodes
-                        .baseline_metrics(child, font, Some(content.width), Some(size))
-                        .first
-                })
-                .unwrap_or(block)
-        }
-        .clamp(0.0, block);
         let margin = nodes
             .world
             .inline_object_margin(child, writing.inline_size(content.width, content.height));
         measured.insert(
             child,
-            crate::inline_content::atomic_metrics(
-                writing,
-                size.width,
-                size.height,
-                margin,
-                baseline,
-            ),
+            nodes.atom_line_metrics(child, writing, size, margin, font, content.width),
         );
         let rect = by_node
             .get(&child)
@@ -259,6 +239,65 @@ pub(super) fn ifc_item_outer(
     (outer_main, outer_cross)
 }
 
+/// An inline-level item's ascent and descent about the baseline of a
+/// horizontal line of an ordinary block, margins included
+/// ([`LayoutInputMap::atom_line_metrics`]). `None` for a block-level item,
+/// which holds a line alone and sits at its top.
+pub(super) fn ifc_atom_metrics(
+    child: StableNodeId,
+    style: &LayoutStyle,
+    size: Size,
+    content_width: f32,
+    parent_font_px: f32,
+    nodes: &LayoutInputMap<'_>,
+) -> Option<(f32, f32)> {
+    if !style.is_inline_level() {
+        return None;
+    }
+    let margin =
+        style.resolved_margin_against_fonts(Some(content_width), fonts_of(style, parent_font_px));
+    let metrics = nodes.atom_line_metrics(
+        child,
+        nana_ui_core::WritingContext::HORIZONTAL_LTR,
+        size,
+        margin,
+        parent_font_px,
+        content_width,
+    );
+    Some((metrics.ascent_px, metrics.descent_px))
+}
+
+/// A horizontal line box of an ordinary block: its baseline below the
+/// line's top, and its height. Its inline-level items sit on that baseline,
+/// and the line spans the highest top to the lowest bottom among them
+/// (CSS 2.1 §10.8); a block-level item counts from the line's top.
+pub(super) fn ifc_line_metrics(
+    items: impl IntoIterator<Item = (StableNodeId, Size)>,
+    content_width: f32,
+    viewport: LayoutViewport,
+    parent_font_px: f32,
+    nodes: &LayoutInputMap<'_>,
+) -> (f32, f32) {
+    let (mut ascent, mut descent, mut from_top) = (0.0f32, 0.0f32, 0.0f32);
+    for (child, size) in items {
+        let Some(style) = nodes.style(child) else {
+            continue;
+        };
+        match ifc_atom_metrics(child, &style, size, content_width, parent_font_px, nodes) {
+            Some((above, below)) => {
+                ascent = ascent.max(above);
+                descent = descent.max(below);
+            }
+            None => {
+                let (_, outer) =
+                    ifc_item_outer(&style, size, content_width, viewport, parent_font_px);
+                from_top = from_top.max(outer);
+            }
+        }
+    }
+    (ascent, (ascent + descent).max(from_top))
+}
+
 /// IFC wrap using the existing content-width line packer, with per-line available
 /// width reduced by sibling float occupancy (shrink-to-avoid-float).
 #[allow(clippy::too_many_arguments)]
@@ -295,30 +334,20 @@ pub(super) fn pack_ifc_line_boxes(
         if current.is_empty() {
             return;
         }
-        let line_cross = current
-            .iter()
-            .map(|&index| {
-                nodes
-                    .style(children[index])
-                    .map(|style| {
-                        ifc_item_outer(
-                            style.as_ref(),
-                            sizes[index],
-                            content_width,
-                            viewport,
-                            parent_font_px,
-                        )
-                        .1
-                    })
-                    .unwrap_or(0.0)
-            })
-            .fold(0.0f32, f32::max);
+        let (_, line_cross) = ifc_line_metrics(
+            current.iter().map(|&index| (children[index], sizes[index])),
+            content_width,
+            viewport,
+            parent_font_px,
+            nodes,
+        );
         lines.push(LineBoxSlot {
             indices: std::mem::take(current),
             main_start: *left_inset,
             main_available: *available,
             cross_y: *line_y,
             pin_cross: true,
+            baseline_aligned: true,
         });
         *line_main = 0.0;
         *line_y += line_cross + cross_gap;
@@ -369,6 +398,7 @@ pub(super) fn pack_ifc_line_boxes(
                 main_available: content_width,
                 cross_y: line_y,
                 pin_cross: true,
+                baseline_aligned: false,
             });
             line_y += outer_cross + cross_gap;
             refresh(line_y, &mut left_inset, &mut available);
@@ -429,6 +459,7 @@ pub(super) fn pack_ifc_line_boxes(
             main_available: content_width,
             cross_y: 0.0,
             pin_cross: true,
+            baseline_aligned: false,
         });
     }
     lines
@@ -449,6 +480,9 @@ pub(super) fn wrap_intrinsic_size(
     viewport: LayoutViewport,
     parent_font_px: f32,
     nodes: &LayoutInputMap<'_>,
+    // The lines of an ordinary block: inline-level items share a baseline
+    // and a line is as tall as they span ([`ifc_line_metrics`]).
+    baseline_lines: bool,
 ) -> Size {
     let content_main = main_extent(available, direction);
     let mut lines = pack_wrap_lines(
@@ -498,6 +532,16 @@ pub(super) fn wrap_intrinsic_size(
             }
             line_cross = line_cross
                 .max(cross_extent(sizes[index], direction) + cross_margin(margin, direction));
+        }
+        if baseline_lines {
+            line_cross = ifc_line_metrics(
+                line.iter().map(|&index| (children[index], sizes[index])),
+                edge_base,
+                viewport,
+                parent_font_px,
+                nodes,
+            )
+            .1;
         }
         max_main = max_main.max(line_main);
         cross += line_cross;
@@ -701,6 +745,7 @@ pub(super) fn ifc_line_measure_delta(
         viewport,
         child_font_px,
         nodes,
+        true,
     );
     let mut size = plan.size;
     // The inline size is the definite line budget. Only the block size follows
@@ -717,6 +762,15 @@ pub(super) fn ifc_line_measure_delta(
         };
         updated.entries[slot].intrinsic = Some(measured);
         if let Some(child_style) = nodes.style(child) {
+            updated.entries[slot].baseline = ifc_atom_metrics(
+                child,
+                &child_style,
+                measured,
+                edge_base,
+                child_font_px,
+                nodes,
+            )
+            .map(|(ascent, _)| ascent);
             updated.entries[slot].style = Some(child_style);
         }
     }
@@ -751,7 +805,7 @@ fn affected_edits_are_direct(
         let Some(style) = nodes.style(direct) else {
             return false;
         };
-        if !fixed_inline_block(style.as_ref(), plan.style.as_ref()) {
+        if !fixed_inline_block(nodes.world, direct, style.as_ref(), plan.style.as_ref()) {
             return false;
         }
     }
@@ -772,7 +826,7 @@ pub(super) fn fixed_inline_block_island(
     let style = world.layout_style(id)?;
     let parent = world.parent_id(id)?;
     let parent_style = world.layout_style(parent)?;
-    if !fixed_inline_block(style.as_ref(), parent_style.as_ref()) {
+    if !fixed_inline_block(world, id, style.as_ref(), parent_style.as_ref()) {
         return None;
     }
     let pad = parent_padding
@@ -800,8 +854,17 @@ pub(super) fn fixed_inline_block_island(
     ))
 }
 
-fn fixed_inline_block(style: &LayoutStyle, parent: &LayoutStyle) -> bool {
+/// A fixed inline-block whose content cannot move its line: its border box
+/// is the style's, and it sits on the line by an edge rather than by a
+/// baseline its content puts there ([`UiWorld::atom_baseline_reads_content`]).
+fn fixed_inline_block(
+    world: &UiWorld,
+    id: StableNodeId,
+    style: &LayoutStyle,
+    parent: &LayoutStyle,
+) -> bool {
     style.display == Some(DisplaySpec::InlineBlock)
+        && !world.atom_baseline_reads_content(id)
         && matches!(style.width, Some(LengthSpec::Px(value)) if value.is_finite() && value >= 0.0)
         && matches!(style.height, Some(LengthSpec::Px(value)) if value.is_finite() && value >= 0.0)
         && style.min_width.is_none()

@@ -4,9 +4,10 @@
 //!   resource reports, and one with only a width takes its height from the
 //!   aspect ratio, as a flex item, a grid item, an atomic inline box and an
 //!   absolutely positioned box alike. Each matches a cold layout.
-//! - Gate B: replaced content aligns by its border-box bottom: as an atom of
-//!   a native paragraph and under `align-items: baseline`, an image's and a
-//!   custom renderer's bottom edge sits on the text's baseline.
+//! - Gate B: replaced content aligns by its bottom edge: as an atom of a
+//!   native paragraph (its margin box's, Gate G) and under `align-items:
+//!   baseline` (its border box's), an image's and a custom renderer's bottom
+//!   edge sits on the text's baseline.
 //! - Gate C: an image, a video, a host texture, a GPU canvas and a bare
 //!   custom-render anchor are one kind of layout item: built the way an
 //!   application builds each, they are replaced content with the same
@@ -23,6 +24,14 @@
 //!   ahead of the `fit` attribute. The painter then sizes all three with
 //!   `ContentFit::fitted_size` (nana-ui `scene_paint/replaced_context_tests.rs`
 //!   checks its `url()` path against the host-texture one).
+//! - Gate G: atoms sharing a line of an ordinary block align by baseline
+//!   (CSS 2.1 §10.8.1, `vertical-align: baseline`). An inline-block with no
+//!   line box, one whose overflow is not visible and replaced content sit on
+//!   the baseline by their bottom margin edge; an inline-block with text by
+//!   its last line. The line box spans the highest top to the lowest bottom.
+//!   A taller atom, text that wraps to another line in a box of the same
+//!   size, and a line box arriving in an empty atom each place the line
+//!   again, and each matches a cold layout.
 
 #![cfg(test)]
 
@@ -695,4 +704,306 @@ fn issue202_f_markup_fits_every_replaced_kind_alike() {
     }
     assert_eq!(fits(None, None), ContentFit::Fill);
     assert_eq!(fits(None, Some("bogus")), ContentFit::Fill);
+}
+
+/// One block-flow line of mixed atoms, for Gate G.
+struct AtomLine {
+    context: AppContext,
+    document: DocumentId,
+    shaper: NanaTextEngineShaper,
+    block: StableNodeId,
+    /// 40x20, empty: no line box.
+    short: StableNodeId,
+    /// 40 wide, `tall` high, 6 below: no line box.
+    tall: StableNodeId,
+    /// A 20x30 image, 4 below.
+    image: StableNodeId,
+    /// 50x30, `overflow: hidden`, holding a label.
+    clipped: StableNodeId,
+    /// A 60x60 text node of its own.
+    text: StableNodeId,
+    /// A 30x20 text node of its own, that neither sets the line's baseline
+    /// nor its depth.
+    note: StableNodeId,
+}
+
+impl AtomLine {
+    fn new(tall: f32, text: &str, note: &str, short_label: bool) -> Self {
+        let document = DocumentId::new(1).unwrap();
+        let (mut b, page) = Builder::page(document, 1, 800.0);
+        let block = b.element(
+            page,
+            LayoutStyle {
+                display: Some(DisplaySpec::Block),
+                width: Some(LengthSpec::Px(600.0)),
+                ..LayoutStyle::default()
+            },
+        );
+        let atom = |width: f32, height: f32| LayoutStyle {
+            display: Some(DisplaySpec::InlineBlock),
+            width: Some(LengthSpec::Px(width)),
+            height: Some(LengthSpec::Px(height)),
+            ..LayoutStyle::default()
+        };
+        let short = b.element(block, atom(40.0, 20.0));
+        let tall = b.element(
+            block,
+            LayoutStyle {
+                margin_bottom: Some(LengthSpec::Px(6.0)),
+                ..atom(40.0, tall)
+            },
+        );
+        let image = b.element(
+            block,
+            LayoutStyle {
+                display: Some(DisplaySpec::InlineBlock),
+                margin_bottom: Some(LengthSpec::Px(4.0)),
+                ..image_layout("pic", Some(20.0), Some(30.0))
+            },
+        );
+        let clipped = b.element(
+            block,
+            LayoutStyle {
+                overflow_y: nana_ui_core::OverflowSpec::Hidden,
+                ..atom(50.0, 30.0)
+            },
+        );
+        b.label(clipped, "Clipped");
+        let text = b.label(block, text);
+        b.queue.set_style(text, styled(atom(60.0, 60.0)));
+        let note = b.label(block, note);
+        b.queue.set_style(note, styled(atom(30.0, 20.0)));
+        if short_label {
+            short_label_into(&mut b.queue, document, short);
+        }
+        let mut context = AppContext::new();
+        context.commit_mutations(b.queue).unwrap();
+        let mut line = Self {
+            context,
+            document,
+            shaper: bundled_face_shaper(),
+            block,
+            short,
+            tall,
+            image,
+            clipped,
+            text,
+            note,
+        };
+        line.frame();
+        line
+    }
+
+    fn frame(&mut self) -> nana_ui_core::WorkCounters {
+        product_frame(
+            &mut self.context,
+            self.document,
+            viewport(),
+            &mut self.shaper,
+        )
+    }
+
+    fn commit(&mut self, queue: MutationQueue) {
+        self.context.commit_mutations(queue).unwrap();
+        self.frame();
+    }
+
+    /// The line's baseline, as the text atom's last line puts it.
+    fn text_baseline(&self) -> f32 {
+        self.last_baseline(self.text)
+    }
+
+    /// Where text atom `id` puts its last line's baseline, kept inside its
+    /// box.
+    fn last_baseline(&self, id: StableNodeId) -> f32 {
+        let world = self.context.world();
+        let (_, layout) = world.text_layout(id).expect("shaped text");
+        let last = layout.lines.last().expect("a line").metrics.baseline_y_px;
+        let bounds = world.layout_box(id).unwrap();
+        bounds.y + last.min(bounds.height)
+    }
+
+    /// Every atom on one baseline, and the line box around them. `short`
+    /// sits by its bottom edge while it has no line box.
+    fn check(&self, short_empty: bool) {
+        let world = self.context.world();
+        let bounds = |id| world.layout_box(id).unwrap();
+        let baseline = self.text_baseline();
+        let lines = world.text_layout(self.text).unwrap().1.lines.len();
+        let mut on_edge = vec![(self.tall, 6.0), (self.image, 4.0), (self.clipped, 0.0)];
+        if short_empty {
+            on_edge.push((self.short, 0.0));
+        }
+        for (id, below) in on_edge {
+            let edge = bounds(id).y + bounds(id).height + below;
+            assert!(
+                (edge - baseline).abs() < 0.01,
+                "{id:?}: bottom margin edge {edge} vs the text's last baseline {baseline} \
+                 ({lines} lines)"
+            );
+        }
+        let note = self.last_baseline(self.note);
+        assert!(
+            (note - baseline).abs() < 0.01,
+            "the note's last baseline {note} vs {baseline}"
+        );
+        // Not top-aligned: the atoms' tops differ.
+        assert!(bounds(self.short).y > bounds(self.tall).y + 1.0);
+        // The line box: highest top to lowest bottom, margins included.
+        let block = bounds(self.block);
+        let atoms = [
+            (self.short, 0.0),
+            (self.tall, 6.0),
+            (self.image, 4.0),
+            (self.clipped, 0.0),
+            (self.text, 0.0),
+            (self.note, 0.0),
+        ];
+        let top = atoms
+            .iter()
+            .map(|&(id, _)| bounds(id).y)
+            .fold(f32::INFINITY, f32::min);
+        let bottom = atoms
+            .iter()
+            .map(|&(id, below)| bounds(id).y + bounds(id).height + below)
+            .fold(f32::NEG_INFINITY, f32::max);
+        assert!(
+            (top - block.y).abs() < 0.01,
+            "line top {top} vs {}",
+            block.y
+        );
+        assert!(
+            (block.height - (bottom - top)).abs() < 0.01,
+            "block {} vs line box {}",
+            block.height,
+            bottom - top
+        );
+    }
+}
+
+/// Gate G.
+#[test]
+fn issue202_g_atoms_on_a_block_line_share_one_baseline() {
+    let mut line = AtomLine::new(50.0, "Word", "a", false);
+    assert_eq!(
+        line.context
+            .world()
+            .layout_node(line.text)
+            .unwrap()
+            .participation,
+        Some(Part::AtomicInline)
+    );
+    line.check(true);
+    let first = line.text_baseline();
+
+    // A taller atom lowers the baseline.
+    let mut queue = MutationQueue::new();
+    queue.set_style(
+        line.tall,
+        styled(LayoutStyle {
+            display: Some(DisplaySpec::InlineBlock),
+            width: Some(LengthSpec::Px(40.0)),
+            height: Some(LengthSpec::Px(70.0)),
+            margin_bottom: Some(LengthSpec::Px(6.0)),
+            ..LayoutStyle::default()
+        }),
+    );
+    line.commit(queue);
+    line.check(true);
+    assert!(line.text_baseline() > first + 1.0);
+    assert_matches_cold(
+        &mut line.context,
+        &mut AtomLine::new(70.0, "Word", "a", false).context,
+        line.document,
+    );
+
+    // Text that wraps in a box of the same size moves its last baseline:
+    // the box rises to keep that baseline on the line's.
+    let before = line.context.world().layout_box(line.text).unwrap().y;
+    let mut queue = MutationQueue::new();
+    queue.set_text(
+        line.text,
+        crate::TextContent {
+            value: "Word word word".into(),
+        },
+    );
+    line.commit(queue);
+    assert!(
+        line.context
+            .world()
+            .text_layout(line.text)
+            .unwrap()
+            .1
+            .lines
+            .len()
+            > 1
+    );
+    assert_eq!(
+        line.context.world().layout_box(line.text).unwrap().height,
+        60.0
+    );
+    line.check(true);
+    assert!(line.context.world().layout_box(line.text).unwrap().y < before - 1.0);
+    assert_matches_cold(
+        &mut line.context,
+        &mut AtomLine::new(70.0, "Word word word", "a", false).context,
+        line.document,
+    );
+
+    // A baseline that moves in a box of the same size, under a line of the
+    // same height: the line's box and size stay, the atom moves.
+    let block = line.context.world().layout_box(line.block).unwrap();
+    let note = line.context.world().layout_box(line.note).unwrap();
+    let mut queue = MutationQueue::new();
+    queue.set_text(
+        line.note,
+        crate::TextContent {
+            value: "aa aa aa aa".into(),
+        },
+    );
+    line.commit(queue);
+    assert!(
+        line.context
+            .world()
+            .text_layout(line.note)
+            .unwrap()
+            .1
+            .lines
+            .len()
+            > 1
+    );
+    line.check(true);
+    assert_eq!(line.context.world().layout_box(line.block).unwrap(), block);
+    let moved = line.context.world().layout_box(line.note).unwrap();
+    assert_eq!((moved.width, moved.height), (note.width, note.height));
+    assert!(moved.y < note.y - 1.0, "{moved:?} vs {note:?}");
+    assert_matches_cold(
+        &mut line.context,
+        &mut AtomLine::new(70.0, "Word word word", "aa aa aa aa", false).context,
+        line.document,
+    );
+
+    // A line box arriving in an empty atom gives it a baseline of its own.
+    let mut queue = MutationQueue::new();
+    short_label_into(&mut queue, line.document, line.short);
+    line.commit(queue);
+    line.check(false);
+    assert_matches_cold(
+        &mut line.context,
+        &mut AtomLine::new(70.0, "Word word word", "aa aa aa aa", true).context,
+        line.document,
+    );
+}
+
+/// A label for Gate G's empty atom, at an id past the page's.
+fn short_label_into(queue: &mut MutationQueue, document: DocumentId, short: StableNodeId) {
+    let label = StableNodeId::new(1_000).unwrap();
+    queue.create(label, document, crate::NodeKind::Text);
+    queue.insert(short, label, None);
+    queue.set_text(
+        label,
+        crate::TextContent {
+            value: "Short".into(),
+        },
+    );
 }
