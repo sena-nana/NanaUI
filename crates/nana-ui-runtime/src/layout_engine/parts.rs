@@ -256,6 +256,30 @@ pub(crate) fn switch_parts(bounds: LayoutBox, inputs: SwitchInputs) -> ContentPa
     [track, label, hint]
 }
 
+/// A status dot's row: the dot centred in its `slot`, then the label, which
+/// takes the rest of the row. The space either side of the dot is a spacer
+/// before it and part of its gap after it, so the published
+/// `LeadingContent` is the dot itself.
+pub(crate) fn status_dot_parts(
+    slot: f32,
+    diameter: f32,
+    gap: f32,
+    text: Size,
+) -> [Option<FlexPart>; 3] {
+    let inset = ((slot - diameter) / 2.0).max(0.0);
+    let lead = FlexPart::new(LayoutPartKind::ComponentContent, Size::new(inset, 0.0));
+    let mut dot = FlexPart::new(
+        LayoutPartKind::LeadingContent,
+        Size::new(diameter, diameter),
+    );
+    dot.gap_after = inset + gap;
+    let mut label = FlexPart::new(LayoutPartKind::TextContent, text);
+    label.grow = 1.0;
+    label.shrink = 1.0;
+    label.align = AlignSpec::Stretch;
+    [Some(lead), Some(dot), Some(label)]
+}
+
 /// What a row of `parts` holds beside its label: every glyph's width and
 /// every gap, and the tallest glyph. Intrinsic measure adds the label's own
 /// size to it.

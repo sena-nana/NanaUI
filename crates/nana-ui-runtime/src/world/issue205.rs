@@ -2239,3 +2239,402 @@ fn issue205_checkbox_parts_follow_a_theme_that_moves_no_style() {
     let (_, layout) = cx.world().text_layout(id).unwrap();
     assert!(layout.physical_size().0 <= label.width + 0.5);
 }
+
+/// A status badge (`kind` 0) or validation message (`kind` 1) saying
+/// `label`, `width` wide, in a 240px row beside a button, under `theme`
+/// when given, laid out once.
+fn status_dot_page(
+    kind: u8,
+    label: &str,
+    compact: bool,
+    width: Option<LengthSpec>,
+    theme: Option<&nana_ui_core::ThemeDefinition>,
+) -> (AppContext, crate::StableNodeId) {
+    let document = DocumentId::new(1).unwrap();
+    let mut cx = AppContext::new();
+    if let Some(theme) = theme {
+        cx.set_theme_definition(theme).unwrap();
+    }
+    let root = cx
+        .create_component(document, Stack::row(4.0).width(LengthSpec::Px(240.0)))
+        .unwrap();
+    let id = status_dot_view(&mut cx, kind, label, compact, width);
+    cx.append_child_id(root.stable_id(), id);
+    let sibling = cx
+        .create_detached_component(document, Button::new("Retry"))
+        .unwrap();
+    cx.append_child(root, sibling).unwrap();
+    product_frame(
+        &mut cx,
+        document,
+        LayoutViewport::new(600.0, 400.0),
+        &mut bundled_face_shaper(),
+    );
+    cx.rebuild_hit_test(document);
+    (cx, id)
+}
+
+fn status_badge_view(label: &str, compact: bool, width: Option<LengthSpec>) -> crate::StatusBadge {
+    let mut view =
+        crate::StatusBadge::new(label, nana_ui_core::StatusTone::Success).compact(compact);
+    Arc::make_mut(&mut view.style.layout).width = width;
+    view
+}
+
+fn validation_view(
+    label: &str,
+    compact: bool,
+    width: Option<LengthSpec>,
+) -> crate::ValidationMessage {
+    let mut view = crate::ValidationMessage::new(label, nana_ui_core::ValidationIntent::Danger)
+        .compact(compact);
+    Arc::make_mut(&mut view.style.layout).width = width;
+    view
+}
+
+fn status_dot_view(
+    cx: &mut AppContext,
+    kind: u8,
+    label: &str,
+    compact: bool,
+    width: Option<LengthSpec>,
+) -> crate::StableNodeId {
+    let document = DocumentId::new(1).unwrap();
+    if kind == 0 {
+        cx.create_detached_component(document, status_badge_view(label, compact, width))
+            .unwrap()
+            .stable_id()
+    } else {
+        cx.create_detached_component(document, validation_view(label, compact, width))
+            .unwrap()
+            .stable_id()
+    }
+}
+
+/// The slot, gap and left padding a status dot control uses.
+fn status_dot_metrics(kind: u8, compact: bool) -> (f32, f32, f32) {
+    use nana_ui_core::space;
+    match (kind, compact) {
+        (0, true) => (space::SM, space::XS, space::SM),
+        (0, false) => (space::MD, space::SM, space::MD),
+        (_, true) => (space::XL, space::XS, 0.0),
+        (_, false) => (space::XXL, space::SM, 0.0),
+    }
+}
+
+/// A status badge's and a validation message's dot and label are Flex parts
+/// layout publishes (#205): the dot is centred in its slot, the label takes
+/// the rest, and intrinsic measure, the paragraph budget, paint and the
+/// text fragments all read them. The padding is only the control's own
+/// inset; it keeps no copy of the dot's room.
+#[test]
+fn issue205_status_dot_and_label_are_published_parts() {
+    for kind in [0, 1] {
+        for compact in [true, false] {
+            let (cx, id) = status_dot_page(kind, "Saved", compact, None, None);
+            let world = cx.world();
+            let result = world.layout_result(id).unwrap();
+            let content = result.content_box;
+            let (slot, gap, inset) = status_dot_metrics(kind, compact);
+            let diameter = slot * super::content_parts::STATUS_DOT_FRACTION;
+            let dot = part_of(&cx, id, LayoutPartKind::LeadingContent);
+            let label = part_of(&cx, id, LayoutPartKind::TextContent);
+            assert!((dot.x - (content.x + (slot - diameter) / 2.0)).abs() < 1e-4);
+            assert!((dot.y - (content.y + (content.height - diameter) / 2.0)).abs() < 1e-4);
+            assert_eq!((dot.width, dot.height), (diameter, diameter));
+            assert!((label.x - (content.x + slot + gap)).abs() < 1e-4);
+            assert!((label.x + label.width - (content.x + content.width)).abs() < 1e-4);
+            assert_eq!((label.y, label.height), (content.y, content.height));
+            assert_eq!(content.x - result.bounds.x, inset);
+            // Measure reads the same parts: a badge as wide as its content is
+            // the dot's slot, the gap and the label's text.
+            let text = world.text_metrics(id).unwrap();
+            assert!(
+                (label.width - text.width).abs() < 0.01,
+                "label part {} != text {}",
+                label.width,
+                text.width
+            );
+            // Paint reads them, nothing else.
+            let (indicator, painted) = match world.component_geometry(id).unwrap() {
+                ComponentGeometry::StatusBadge {
+                    indicator, label, ..
+                }
+                | ComponentGeometry::ValidationMessage {
+                    indicator, label, ..
+                } => (indicator, label),
+                other => panic!("{other:?}"),
+            };
+            assert_eq!(indicator, dot);
+            assert_eq!(painted.bounds, label);
+            let runs: Vec<_> = result
+                .fragments
+                .iter()
+                .filter(|fragment| fragment.kind == crate::LayoutFragmentKind::TextRun)
+                .collect();
+            assert!(!runs.is_empty());
+            for run in runs {
+                assert!(
+                    run.bounds.x >= label.x - 0.01
+                        && run.bounds.x + run.bounds.width <= label.x + label.width + 0.01,
+                    "{run:?} outside {label:?}"
+                );
+            }
+            // One entity: the text, the content box and the dot.
+            assert_eq!(world.len(), 3);
+            assert_eq!(result.parts.len(), 3);
+        }
+        // A label too long for the row wraps in the label part, and the box
+        // does not push past the row by the dot's room.
+        let long = "Every reply in this thread was saved to the archive just now";
+        let (cx, id) = status_dot_page(kind, long, false, None, None);
+        let label = part_of(&cx, id, LayoutPartKind::TextContent);
+        let (_, layout) = cx.world().text_layout(id).unwrap();
+        assert!(layout.physical_size().0 <= label.width + 0.5);
+        assert!(cx.world().layout_box(id).unwrap().width <= 240.0);
+    }
+}
+
+/// A control's text asks intrinsic measure for the row less the parts
+/// beside it, as its paragraph budget has it: a checkbox whose label could
+/// fill the row stays in the row instead of overflowing it by its indicator
+/// and gap.
+#[test]
+fn issue205_a_checkbox_text_asks_for_the_row_less_its_indicator() {
+    let document = DocumentId::new(1).unwrap();
+    let mut cx = AppContext::new();
+    let root = cx
+        .create_component(document, Stack::row(4.0).width(LengthSpec::Px(240.0)))
+        .unwrap();
+    let checkbox = cx
+        .create_detached_component(
+            document,
+            crate::Checkbox::new(
+                "Every reply in this thread was saved to the archive just now",
+                false,
+            ),
+        )
+        .unwrap();
+    cx.append_child(root, checkbox).unwrap();
+    product_frame(
+        &mut cx,
+        document,
+        LayoutViewport::new(600.0, 400.0),
+        &mut bundled_face_shaper(),
+    );
+    assert!(cx.world().layout_box(checkbox.stable_id()).unwrap().width <= 240.0);
+}
+
+/// Label, density and width changes, and a theme that moves the slot and
+/// the gap, republish what a cold layout would; a tone or intent change
+/// paints only.
+#[test]
+fn issue205_status_dot_parts_follow_changes_like_a_cold_layout() {
+    let document = DocumentId::new(1).unwrap();
+    let viewport = LayoutViewport::new(600.0, 400.0);
+    let long = "Every reply in this thread was saved to the archive just now";
+    let mut spacing =
+        nana_ui_core::ThemeDefinition::for_appearance(nana_ui_core::ThemeAppearance::Light);
+    spacing.tokens.spacing.sm += 2.0;
+    spacing.tokens.spacing.md += 3.0;
+    spacing.tokens.spacing.xl += 4.0;
+    spacing.tokens.spacing.xxl += 4.0;
+    spacing.tokens.spacing.xs += 1.0;
+    let spacing = spacing.bump();
+    for kind in [0u8, 1] {
+        let mut shaper = bundled_face_shaper();
+        let (mut cx, id) = status_dot_page(kind, "Saved", true, None, None);
+        for (label, compact, width) in [
+            ("Saved", false, None),
+            (long, false, None),
+            (long, true, Some(LengthSpec::Px(60.0))),
+            ("", true, None),
+            ("Saved", false, Some(LengthSpec::Px(200.0))),
+        ] {
+            cx.update_view_dyn(id, kind, label, compact, width);
+            product_frame(&mut cx, document, viewport, &mut shaper);
+            let (mut cold, cold_id) = status_dot_page(kind, label, compact, width, None);
+            assert_eq!(cold_id, id);
+            super::reflow_oracle::assert_matches_cold(&mut cx, &mut cold, document);
+        }
+        cx.set_theme_definition(&spacing).unwrap();
+        product_frame(&mut cx, document, viewport, &mut shaper);
+        let (mut cold, _) = status_dot_page(
+            kind,
+            "Saved",
+            false,
+            Some(LengthSpec::Px(200.0)),
+            Some(&spacing),
+        );
+        super::reflow_oracle::assert_matches_cold(&mut cx, &mut cold, document);
+
+        let generation = cx.world().layout_generation();
+        let snapshot = Arc::clone(&cx.world().layout_results[&id]);
+        if kind == 0 {
+            let entity = crate::Entity::<crate::StatusBadge>::from_stable_id(id);
+            cx.update_component(entity, |view, _| {
+                view.tone = nana_ui_core::StatusTone::Danger
+            })
+            .unwrap();
+        } else {
+            let entity = crate::Entity::<crate::ValidationMessage>::from_stable_id(id);
+            cx.update_component(entity, |view, _| {
+                view.intent = nana_ui_core::ValidationIntent::Warning
+            })
+            .unwrap();
+        }
+        let work = product_frame(&mut cx, document, viewport, &mut shaper);
+        assert_eq!(
+            (work.layout_measure_nodes, work.layout_placement_nodes),
+            (0, 0)
+        );
+        assert_eq!(cx.world().layout_generation(), generation);
+        assert!(Arc::ptr_eq(&snapshot, &cx.world().layout_results[&id]));
+    }
+}
+
+/// Status dots moved between Grid, Inline and Flex parents keep their
+/// entities and publish the parts a cold layout in that context would.
+#[test]
+fn issue205_status_dot_parts_survive_context_transitions() {
+    use super::reflow_oracle::assert_matches_cold;
+    use crate::MutationQueue;
+    use nana_ui_core::DisplaySpec;
+    let document = DocumentId::new(1).unwrap();
+    let viewport = LayoutViewport::new(400.0, 300.0);
+    let build = |display: DisplaySpec| {
+        let mut cx = AppContext::new();
+        let root = cx
+            .create_component(
+                document,
+                Stack::column(0.0).with_layout(|layout| {
+                    layout.width = Some(LengthSpec::Px(320.0));
+                    layout.display = Some(display);
+                }),
+            )
+            .unwrap();
+        let badge = status_dot_view(&mut cx, 0, "Saved", false, None);
+        let message = status_dot_view(&mut cx, 1, "Name is required", true, None);
+        cx.append_child_id(root.stable_id(), badge);
+        cx.append_child_id(root.stable_id(), message);
+        product_frame(&mut cx, document, viewport, &mut bundled_face_shaper());
+        (cx, root, [badge, message])
+    };
+    let mut shaper = bundled_face_shaper();
+    let (mut cx, root, ids) = build(DisplaySpec::Flex);
+    for display in [DisplaySpec::Grid, DisplaySpec::Inline, DisplaySpec::Flex] {
+        let mut style = cx.world().node_style(root.stable_id()).unwrap().clone();
+        Arc::make_mut(&mut style.layout).display = Some(display);
+        let mut q = MutationQueue::new();
+        q.set_style(root.stable_id(), style);
+        cx.commit_mutations(q).unwrap();
+        let work = product_frame(&mut cx, document, viewport, &mut shaper);
+        assert_eq!((work.entities_spawned, work.entities_despawned), (0, 0));
+        for id in ids {
+            let (indicator, label) = match cx.world().component_geometry(id).unwrap() {
+                ComponentGeometry::StatusBadge {
+                    indicator, label, ..
+                }
+                | ComponentGeometry::ValidationMessage {
+                    indicator, label, ..
+                } => (indicator, label),
+                other => panic!("{other:?}"),
+            };
+            assert_eq!(indicator, part_of(&cx, id, LayoutPartKind::LeadingContent));
+            assert_eq!(label.bounds, part_of(&cx, id, LayoutPartKind::TextContent));
+        }
+        let (mut cold, ..) = build(display);
+        assert_matches_cold(&mut cx, &mut cold, document);
+    }
+}
+
+#[test]
+fn issue205_ten_thousand_status_dots_keep_one_entity_and_three_parts() {
+    let _unguarded = crate::layout_engine::verify::skip_layout_verify();
+    for count in [1_000, 10_000] {
+        let document = DocumentId::new(1).unwrap();
+        let mut cx = AppContext::new();
+        let mut shaper = bundled_face_shaper();
+        let viewport = LayoutViewport::new(600.0, 400.0);
+        let root = cx.create_component(document, Stack::column(0.0)).unwrap();
+        let children: Vec<_> = (0..count)
+            .map(|index| status_dot_view(&mut cx, (index % 2) as u8, "Saved", true, None))
+            .collect();
+        let mut q = crate::MutationQueue::new();
+        for &id in &children {
+            q.insert(root.stable_id(), id, None);
+        }
+        cx.commit_mutations(q).unwrap();
+        product_frame(&mut cx, document, viewport, &mut shaper);
+        assert_eq!(cx.world().len(), count + 1);
+        for &id in &children {
+            let result = cx.world().layout_result(id).unwrap();
+            let kinds: Vec<_> = result.parts.iter().map(|part| part.kind).collect();
+            assert_eq!(
+                kinds,
+                [
+                    LayoutPartKind::TextContent,
+                    LayoutPartKind::ComponentContent,
+                    LayoutPartKind::LeadingContent
+                ]
+            );
+        }
+        let generation = cx.world().layout_generation();
+        product_frame(&mut cx, document, viewport, &mut shaper);
+        assert!(cx.take_system_work().is_empty());
+        let idle = cx.world().frame_counters;
+        assert_eq!(
+            (
+                idle.layout_measure_nodes,
+                idle.layout_placement_nodes,
+                idle.entities_spawned,
+                idle.entities_despawned
+            ),
+            (0, 0, 0, 0)
+        );
+        assert_eq!(cx.world().layout_generation(), generation);
+    }
+}
+
+trait StatusDotUpdate {
+    fn append_child_id(&mut self, parent: crate::StableNodeId, child: crate::StableNodeId);
+    fn update_view_dyn(
+        &mut self,
+        id: crate::StableNodeId,
+        kind: u8,
+        label: &str,
+        compact: bool,
+        width: Option<LengthSpec>,
+    );
+}
+
+impl StatusDotUpdate for AppContext {
+    fn append_child_id(&mut self, parent: crate::StableNodeId, child: crate::StableNodeId) {
+        let mut q = crate::MutationQueue::new();
+        q.insert(parent, child, None);
+        self.commit_mutations(q).unwrap();
+    }
+
+    fn update_view_dyn(
+        &mut self,
+        id: crate::StableNodeId,
+        kind: u8,
+        label: &str,
+        compact: bool,
+        width: Option<LengthSpec>,
+    ) {
+        if kind == 0 {
+            let entity = crate::Entity::<crate::StatusBadge>::from_stable_id(id);
+            self.update_component(entity, |view, _| {
+                *view = status_badge_view(label, compact, width)
+            })
+            .unwrap();
+        } else {
+            let entity = crate::Entity::<crate::ValidationMessage>::from_stable_id(id);
+            self.update_component(entity, |view, _| {
+                *view = validation_view(label, compact, width)
+            })
+            .unwrap();
+        }
+    }
+}

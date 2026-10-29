@@ -4,16 +4,27 @@ use crate::layout_engine::{
     Size,
     parts::{
         ContentParts, FlexPart, SwitchInputs, button_content_parts, checkbox_parts, part_bounds,
-        start_row_parts, switch_parts,
+        start_row_parts, status_dot_parts, switch_parts,
     },
 };
 
+/// A status dot's diameter in its slot.
+pub(crate) const STATUS_DOT_FRACTION: f32 = 10.0 / 24.0;
+
 /// Whether a visual's content parts read installed metrics that a theme can
 /// move without moving any style the node resolves: a switch's track and
-/// gap. (A checkbox's indicator reads the same type and spacing steps its
-/// own style resolves, so a theme that moves them relays it out already.)
+/// gap, a status dot's slot and gap. (A checkbox's indicator reads the same
+/// type and spacing steps its own style resolves, so a theme that moves them
+/// relays it out already.)
 pub(super) fn visual_parts_read_theme(visual: Option<&StandardVisual>) -> bool {
-    matches!(visual, Some(StandardVisual::Switch { .. }))
+    matches!(
+        visual,
+        Some(
+            StandardVisual::Switch { .. }
+                | StandardVisual::StatusBadge { .. }
+                | StandardVisual::ValidationMessage { .. }
+        )
+    )
 }
 
 impl UiWorld {
@@ -125,6 +136,11 @@ impl UiWorld {
         }
         if let Some(inputs) = self.switch_inputs(id) {
             return switch_parts(content, inputs);
+        }
+        if let Some(inputs) = self.status_dot_parts(id, Size::new(text.width, text.height)) {
+            // The spacer before the dot is not a part of its own.
+            let [_, dot, label] = start_row_parts(content, inputs);
+            return [dot, label, None];
         }
         if let StandardVisual::Card { title, loading, .. } = visual {
             let border = self
@@ -362,6 +378,41 @@ impl UiWorld {
                 )
             }),
         })
+    }
+
+    /// A status badge's or validation message's dot and label before
+    /// placement, the label `text` in size: what intrinsic measure, the
+    /// paragraph budget and placement all read, so the style's padding keeps
+    /// no copy of the dot's room.
+    pub(crate) fn status_dot_parts(
+        &self,
+        id: StableNodeId,
+        text: Size,
+    ) -> Option<[Option<FlexPart>; 3]> {
+        let spacing = self.theme.spacing();
+        let (slot, gap) = match self.standard_visual_ref(id)? {
+            StandardVisual::StatusBadge { compact, .. } => {
+                if *compact {
+                    (spacing.sm, spacing.xs)
+                } else {
+                    (spacing.md, spacing.sm)
+                }
+            }
+            StandardVisual::ValidationMessage { compact, .. } => {
+                if *compact {
+                    (spacing.xl, spacing.xs)
+                } else {
+                    (spacing.xxl, spacing.sm)
+                }
+            }
+            _ => return None,
+        };
+        Some(status_dot_parts(
+            slot,
+            slot * STATUS_DOT_FRACTION,
+            gap,
+            text,
+        ))
     }
 
     pub(super) fn content_part_box(

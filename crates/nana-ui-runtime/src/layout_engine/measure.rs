@@ -586,6 +586,19 @@ fn visual_content(id: StableNodeId, world: &UiWorld) -> VisualContent {
                 height: chrome.height,
             }
         }
+        Some(
+            crate::StandardVisual::StatusBadge { .. }
+            | crate::StandardVisual::ValidationMessage { .. },
+        ) => {
+            let parts = world
+                .status_dot_parts(id, Size::default())
+                .expect("status dot");
+            let chrome = super::parts::chrome_extent(&parts);
+            VisualContent {
+                width: chrome.width,
+                height: chrome.height,
+            }
+        }
         // The track and its gap, and the taller of the track and the label
         // over hint column: the same declaration placement solves.
         Some(crate::StandardVisual::Switch { .. }) => {
@@ -1495,11 +1508,19 @@ fn measure_node(
         clock.lap(5);
     }
     let text = text_metrics.unwrap_or_default();
+    // A visual beside the text (a glyph, an indicator, a status dot) takes
+    // its room out of the line the text may ask for, the way the paragraph
+    // budget does; otherwise a text as wide as the box would push the box
+    // past it by the visual.
     let text_width = text_inline_size(
         text,
         text_natural_width,
         text_wrap_limit,
-        content_available.width,
+        if header_chrome {
+            content_available.width
+        } else {
+            (content_available.width - visual.width).max(0.0)
+        },
     ) + if header_chrome { visual.width } else { 0.0 };
     let mut content = Size::new(
         children.width.max(text_width),

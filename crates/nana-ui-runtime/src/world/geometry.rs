@@ -37,7 +37,6 @@ use super::*;
 /// denominator was the icon box the ratio was originally measured against, and
 /// it survived the move to a spacing-step slot. Two copies of a phantom
 /// denominator is how the two badges drift apart.
-const STATUS_DOT_FRACTION: f32 = 10.0 / 24.0;
 
 /// Block extent of a progress bar.
 pub(crate) const PROGRESS_GIRTH: f32 = nana_ui_core::space::SM;
@@ -1780,22 +1779,23 @@ impl UiWorld {
                 tone,
                 compact,
             } => {
-                let (horizontal, indicator_slot, gap, text_size) = if *compact {
-                    (
-                        self.theme.spacing().sm,
-                        self.theme.spacing().sm,
-                        self.theme.spacing().xs,
-                        self.theme.typography().hint,
-                    )
+                // The dot and the label are the parts layout published (#205).
+                use crate::LayoutPartKind;
+                let indicator = self
+                    .content_part_box(id, LayoutPartKind::LeadingContent)
+                    .unwrap_or(LayoutBox {
+                        width: 0.0,
+                        height: 0.0,
+                        ..content
+                    });
+                let label_bounds = self
+                    .content_part_box(id, LayoutPartKind::TextContent)
+                    .unwrap_or(content);
+                let text_size = if *compact {
+                    self.theme.typography().hint
                 } else {
-                    (
-                        self.theme.spacing().md,
-                        self.theme.spacing().md,
-                        self.theme.spacing().sm,
-                        self.theme.typography().meta,
-                    )
+                    self.theme.typography().meta
                 };
-                let diameter = indicator_slot * STATUS_DOT_FRACTION;
                 let foreground = self
                     .style_model
                     .color(self.theme.recipes().status().role(*tone))
@@ -1803,20 +1803,9 @@ impl UiWorld {
                 let mut background = foreground;
                 background[3] *= 0.12;
                 Some(crate::ComponentGeometry::StatusBadge {
-                    indicator: LayoutBox {
-                        x: bounds.x + horizontal + (indicator_slot - diameter) / 2.0,
-                        y: bounds.y + (bounds.height - diameter) / 2.0,
-                        width: diameter,
-                        height: diameter,
-                    },
+                    indicator,
                     label: crate::ComponentTextRegion {
-                        bounds: LayoutBox {
-                            x: bounds.x + horizontal + indicator_slot + gap,
-                            y: bounds.y,
-                            width: (bounds.width - horizontal * 2.0 - indicator_slot - gap)
-                                .max(0.0),
-                            height: bounds.height,
-                        },
+                        bounds: label_bounds,
                         content: Arc::clone(label).into(),
                         color: Some(foreground),
                         font_size: text_size,
@@ -1827,16 +1816,20 @@ impl UiWorld {
                 })
             }
             StandardVisual::ValidationMessage {
-                message,
-                intent,
-                compact,
+                message, intent, ..
             } => {
-                let (indicator_slot, gap) = if *compact {
-                    (self.theme.spacing().xl, self.theme.spacing().xs)
-                } else {
-                    (self.theme.spacing().xxl, self.theme.spacing().sm)
-                };
-                let diameter = indicator_slot * STATUS_DOT_FRACTION;
+                // The dot and the message are the parts layout published (#205).
+                use crate::LayoutPartKind;
+                let indicator = self
+                    .content_part_box(id, LayoutPartKind::LeadingContent)
+                    .unwrap_or(LayoutBox {
+                        width: 0.0,
+                        height: 0.0,
+                        ..content
+                    });
+                let label_bounds = self
+                    .content_part_box(id, LayoutPartKind::TextContent)
+                    .unwrap_or(content);
                 let foreground = self
                     .style_model
                     .color(match intent {
@@ -1845,19 +1838,9 @@ impl UiWorld {
                     })
                     .as_rgba_array();
                 Some(crate::ComponentGeometry::ValidationMessage {
-                    indicator: LayoutBox {
-                        x: bounds.x + (indicator_slot - diameter) / 2.0,
-                        y: bounds.y + (bounds.height - diameter) / 2.0,
-                        width: diameter,
-                        height: diameter,
-                    },
+                    indicator,
                     label: crate::ComponentTextRegion {
-                        bounds: LayoutBox {
-                            x: bounds.x + indicator_slot + gap,
-                            y: bounds.y,
-                            width: (bounds.width - indicator_slot - gap).max(0.0),
-                            height: bounds.height,
-                        },
+                        bounds: label_bounds,
                         content: Arc::clone(message).into(),
                         color: Some(foreground),
                         font_size: style.font_size,

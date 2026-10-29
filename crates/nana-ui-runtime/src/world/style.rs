@@ -1114,6 +1114,12 @@ impl UiWorld {
             );
         }
         for id in part_readers {
+            // A status dot's paragraph budget reads the same parts.
+            if self.text(id).is_some_and(|text| !text.is_empty()) {
+                self.nodes
+                    .invalidate_text(id, crate::text_node::TextDirty::CONSTRAINT);
+                self.mark(id, DirtyMask::TEXT);
+            }
             self.record_layout_invalidation(
                 id,
                 nana_ui_core::LayoutInvalidation::new(
