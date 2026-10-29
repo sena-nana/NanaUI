@@ -3080,6 +3080,12 @@ fn subgrid_inherits_parent_column_track_sizes() {
     );
 }
 
+/// The pitch of a line of 20px-high empty inline-blocks in a block of the
+/// default font (16px, `line-height` 1.2): they sit on the baseline by their
+/// bottom edge, and the block's strut adds its descent below them, the
+/// font's 0.2em and half of the 0.2em leading (CSS 2.1 §10.8.1).
+const STRUT_LINE: f32 = 20.0 + 16.0 * (1.0 - nana_ui_core::TEXT_APPROX_ASCENT_EM) + 16.0 * 0.1;
+
 #[test]
 fn ifc_wraps_inline_around_left_float() {
     let inline = |id: &str| StyleLayoutNode {
@@ -3131,12 +3137,12 @@ fn ifc_wraps_inline_around_left_float() {
         boxes["a"]
     );
     assert!(
-        (boxes["b"].x - 80.0).abs() < 0.5 && (boxes["b"].y - 20.0).abs() < 0.5,
+        (boxes["b"].x - 80.0).abs() < 0.5 && (boxes["b"].y - STRUT_LINE).abs() < 0.5,
         "second inline wraps in the shortened band, got {:?}",
         boxes["b"]
     );
     assert!(
-        (boxes["c"].y - 40.0).abs() < 0.5 && (boxes["c"].x - 0.0).abs() < 0.5,
+        (boxes["c"].y - 2.0 * STRUT_LINE).abs() < 0.5 && (boxes["c"].x - 0.0).abs() < 0.5,
         "third inline drops below the float to full width, got {:?}",
         boxes["c"]
     );
@@ -3217,12 +3223,12 @@ fn ifc_block_sibling_starts_new_line() {
     let boxes = box_map(&tree, 200.0, 80.0);
     assert!((boxes["a"].y - 0.0).abs() < 0.5);
     assert!(
-        (boxes["mid"].y - 20.0).abs() < 0.5,
+        (boxes["mid"].y - STRUT_LINE).abs() < 0.5,
         "block sibling must break the IFC line, got {:?}",
         boxes["mid"]
     );
     assert!(
-        (boxes["c"].y - 40.0).abs() < 0.5,
+        (boxes["c"].y - STRUT_LINE - 20.0).abs() < 0.5,
         "inline after block starts a new line, got {:?}",
         boxes["c"]
     );
@@ -3278,12 +3284,12 @@ fn ifc_block_in_inline_unboxes_like_block_siblings() {
         boxes["a"]
     );
     assert!(
-        (boxes["mid"].y - 20.0).abs() < 0.5,
+        (boxes["mid"].y - STRUT_LINE).abs() < 0.5,
         "block inside inline must hoist onto its own line, got {:?}",
         boxes["mid"]
     );
     assert!(
-        (boxes["c"].y - 40.0).abs() < 0.5,
+        (boxes["c"].y - STRUT_LINE - 20.0).abs() < 0.5,
         "trailing inline-block starts after the hoisted block, got {:?}",
         boxes["c"]
     );
@@ -3507,7 +3513,7 @@ fn ifc_inlines_wrap_in_width_beside_float() {
         boxes["a"]
     );
     assert!(
-        (boxes["b"].x - 80.0).abs() < 0.5 && (boxes["b"].y - 20.0).abs() < 0.5,
+        (boxes["b"].x - 80.0).abs() < 0.5 && (boxes["b"].y - STRUT_LINE).abs() < 0.5,
         "70+70 exceeds remaining 120 so b wraps beside the float, got {:?}",
         boxes["b"]
     );
@@ -3533,7 +3539,7 @@ fn ifc_uses_full_width_below_float() {
     };
     let boxes = box_map(&tree, 200.0, 80.0);
     assert!(
-        (boxes["c"].x - 0.0).abs() < 0.5 && (boxes["c"].y - 40.0).abs() < 0.5,
+        (boxes["c"].x - 0.0).abs() < 0.5 && (boxes["c"].y - 2.0 * STRUT_LINE).abs() < 0.5,
         "below the float the line box is full width, got {:?}",
         boxes["c"]
     );
@@ -5970,12 +5976,19 @@ fn content_growth_under_a_child_moves_its_siblings_with(container_height: Option
 /// A container that only moves takes its children along (see
 /// `ContainerPlan::moved_to`). The box before it grows and shrinks back, and
 /// everything in it lands where a full layout puts it -- a row in flow
-/// shifted relatively, the cells of a grid, a child placed against its content
-/// box from the top left and one from the bottom right -- while a child fixed
-/// to the viewport stays. Nothing in it misses or records its plan again: the
-/// container is padded and bordered, so its content box moves with it.
+/// shifted relatively, the cells of a grid, and, when the container is
+/// positioned, a child placed against its padding box from the top left and
+/// one from the bottom right -- while a child fixed to the viewport stays.
+/// When the container is static those two hang from the initial containing
+/// block and stay as well. Nothing in it misses or records its plan again:
+/// the container is padded and bordered, so its content box moves with it.
 #[test]
 fn a_container_that_only_moves_takes_its_children_along() {
+    container_that_only_moves(PositionSpec::Relative);
+    container_that_only_moves(PositionSpec::Static);
+}
+
+fn container_that_only_moves(position: PositionSpec) {
     let viewport = LayoutViewport::new(320.0, 400.0);
     let document = DocumentId::new(1).unwrap();
     let mut world = UiWorld::new();
@@ -6028,6 +6041,7 @@ fn a_container_that_only_moves_takes_its_children_along() {
         &mut queue,
         4,
         LayoutStyle {
+            position,
             width: Some(LengthSpec::Px(200.0)),
             direction: Some(FlexDirection::Column),
             padding: Some(LengthSpec::Px(5.0)),
@@ -6099,6 +6113,8 @@ fn a_container_that_only_moves_takes_its_children_along() {
     let _ = world.take_system_work();
 
     let fixed_box = world.layout_box(id(12));
+    let absolute = |world: &UiWorld| (world.layout_box(id(10)), world.layout_box(id(11)));
+    let absolute_before = absolute(&world);
     for height in [35.0, 20.0, 35.0] {
         let mut queue = MutationQueue::new();
         style(&mut queue, 3, fixed(60.0, height));
@@ -6114,6 +6130,15 @@ fn a_container_that_only_moves_takes_its_children_along() {
             "{label}: what moved took its plans along"
         );
         assert_eq!(world.layout_box(id(12)), fixed_box, "{label}");
+        if position == PositionSpec::Static {
+            assert_eq!(absolute(&world), absolute_before, "{label}: not its block");
+        } else {
+            assert_eq!(
+                world.layout_box(id(10)).unwrap().y,
+                after.y + 2.0 + 4.0,
+                "{label}: inside the padding box"
+            );
+        }
     }
 }
 
@@ -7033,7 +7058,9 @@ fn scoped_layout_reveals_hidden_branch_with_new_positioned_children() {
             ..Default::default()
         },
     );
+    // The revealed absolute child's containing block.
     let branch = LayoutStyle {
+        position: PositionSpec::Relative,
         width: Some(LengthSpec::Fill),
         height: Some(LengthSpec::Px(300.0)),
         flex_shrink: Some(0.0),

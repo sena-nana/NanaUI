@@ -54,6 +54,7 @@ mod engine;
 mod ir;
 mod key;
 mod lines;
+mod placement;
 mod store;
 
 /// For the cross-list check in `source`'s tests: every one-byte separator that
@@ -66,4 +67,5 @@ pub use ir::{
     LineBox, LineBreakCause, OverflowFlags, PlacedEmphasis, PlacedObject, PlacedRuby, TextLayout,
     TextRect,
 };
+pub use placement::{GlyphPlacement, GlyphSource};
 pub use store::{StaleLayout, TextLayoutStore};

@@ -100,6 +100,7 @@ NANA_TEXT_PRIVATE_BACKENDS = {
     "harfrust": "shaping/opentype.rs",
     "unicode_bidi": "shaping/bidi.rs",
     "unicode_linebreak": "layout/breaks.rs",
+    "swash": "raster/outline.rs",
 }
 
 GPU_BACKEND_PACKAGES = {

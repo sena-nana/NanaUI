@@ -127,6 +127,28 @@ impl AppContext {
         }
     }
 
+    /// After a layout pass of `document`: every open menu whose room the
+    /// pass moved -- a resized window, a field or clip that moved -- takes
+    /// the room the published layout gives it, so it flips and caps against
+    /// what can be seen now with no projection of its field. Only the room
+    /// changes: the hit index rebuilds the field's entry, and paint reads the
+    /// same geometry.
+    pub(super) fn refresh_select_menu_rooms(
+        &mut self,
+        document: DocumentId,
+    ) -> Result<(), FrameworkError> {
+        let stale = self.world.stale_select_menu_rooms(document);
+        if stale.is_empty() {
+            return Ok(());
+        }
+        let mut mutations = MutationQueue::new();
+        for (id, visual) in stale {
+            mutations.set_standard_visual(id, Some(visual));
+        }
+        self.commit_mutations(mutations)?;
+        Ok(())
+    }
+
     /// A window point in the layout px `id`'s menu is laid out in, through
     /// the scroll offsets and transforms above it.
     pub(crate) fn menu_point(&self, id: StableNodeId, x: f32, y: f32) -> (f32, f32) {

@@ -302,40 +302,57 @@ fn box_y(world: &UiWorld, node: StableNodeId) -> f32 {
 }
 
 /// A content change inside a fixed inline-block does not reflow its line or
-/// the other inline formatting context.
+/// the other inline formatting context when the atom sits on its line by its
+/// bottom margin edge whatever it holds: its overflow is not visible (CSS 2.1
+/// §10.8.1). With visible overflow its last line box would be its baseline,
+/// so the line is placed again; the other context is still not considered,
+/// and the work does not grow with it.
 #[test]
 fn inline_fixed_size_atomic_does_not_reflow_its_line() {
     let viewport = LayoutViewport::new(800.0, 600.0);
-    let mut measured = Vec::new();
-    for other_lines in [2usize, 6] {
-        let (mut world, document) = two_contexts(2, other_lines, true, None);
-        let mut retained = RetainedLayoutCache::default();
-        prepare(&mut world, document, viewport, &mut retained);
-        let line_y = box_y(&world, id(12));
-        let other_y = box_y(&world, id(400));
+    for clipped in [true, false] {
+        let mut measured = Vec::new();
+        for other_lines in [2usize, 6] {
+            let (mut world, document) = two_contexts(2, other_lines, true, None);
+            if clipped {
+                set_style(
+                    &mut world,
+                    id(10),
+                    LayoutStyle {
+                        overflow_x: nana_ui_core::OverflowSpec::Hidden,
+                        overflow_y: nana_ui_core::OverflowSpec::Hidden,
+                        ..atomic(80.0)
+                    },
+                );
+            }
+            let mut retained = RetainedLayoutCache::default();
+            prepare(&mut world, document, viewport, &mut retained);
+            let line_y = box_y(&world, id(12));
+            let other_y = box_y(&world, id(400));
 
-        set_style(&mut world, id(9), block_box(40.0, 10.0));
-        let step = scoped(&mut world, document, viewport, &mut retained);
-        assert_eq!(step.full_document_fallbacks, 0);
-        assert!(
-            !step.emitted.contains(&id(3)),
-            "the parent inline context was reflowed: {:?}",
-            step.emitted
+            set_style(&mut world, id(9), block_box(40.0, 10.0));
+            let step = scoped(&mut world, document, viewport, &mut retained);
+            assert_eq!(step.full_document_fallbacks, 0);
+            assert!(
+                !clipped || !step.emitted.contains(&id(3)),
+                "the parent inline context was reflowed: {:?}",
+                step.emitted
+            );
+            assert!(
+                !step.emitted.contains(&id(4)) && !step.emitted.contains(&id(400)),
+                "the other inline context was considered: {:?}",
+                step.emitted
+            );
+            assert!((box_y(&world, id(12)) - line_y).abs() < 0.01);
+            assert!((box_y(&world, id(400)) - other_y).abs() < 0.01);
+            assert_eq!(world.layout_box(id(10)).unwrap().width, 80.0);
+            measured.push(step.children_measured);
+        }
+        assert_eq!(
+            measured[0], measured[1],
+            "the other inline context added measure work (clipped {clipped}): {measured:?}"
         );
-        assert!(
-            !step.emitted.contains(&id(4)) && !step.emitted.contains(&id(400)),
-            "the other inline context was considered: {:?}",
-            step.emitted
-        );
-        assert!((box_y(&world, id(12)) - line_y).abs() < 0.01);
-        assert!((box_y(&world, id(400)) - other_y).abs() < 0.01);
-        assert_eq!(world.layout_box(id(10)).unwrap().width, 80.0);
-        measured.push(step.children_measured);
     }
-    assert_eq!(
-        measured[0], measured[1],
-        "the other inline context added measure work: {measured:?}"
-    );
 }
 
 /// Widening one atomic reflows its formatting context only. The other context

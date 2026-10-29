@@ -147,6 +147,7 @@ macro_rules! for_each_control {
                 detail: String = set,
                 selected: bool = set,
                 disabled: bool = set,
+                read_only: bool = set,
                 role: ListItemRole = set,
                 has_popup: bool = set,
                 keep_tools: bool = set,

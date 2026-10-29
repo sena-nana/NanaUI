@@ -83,6 +83,9 @@ pub struct Popover {
     pub bare_trigger: bool,
     /// Use the shared 24px target when this popover has an icon trigger.
     pub compact_trigger: bool,
+    /// An icon trigger's glyph size in logical pixels; `None` keeps the
+    /// standard glyph. See [`Self::trigger_icon_size`].
+    pub trigger_icon_size: Option<f32>,
     /// What the application writes over the trigger's own style while the
     /// popover has a trigger. Each field it sets replaces the recipe's and
     /// the rest stay the recipe's: the hover and press washes, the open
@@ -110,6 +113,7 @@ impl Popover {
             close_on_outside: true,
             bare_trigger: false,
             compact_trigger: false,
+            trigger_icon_size: None,
             trigger_style: None,
         }
     }
@@ -147,6 +151,17 @@ impl Popover {
     /// its accessible name.
     pub fn trigger_content(mut self, content: StableNodeId) -> Self {
         self.trigger_content = Some(content);
+        self
+    }
+
+    /// Draw an icon trigger's glyph `size` logical pixels square, so it can
+    /// match the [`crate::IconButton::icon_size`] of the tools beside it. The
+    /// trigger's box is unchanged. A size that is not finite or below zero is
+    /// ignored.
+    pub fn trigger_icon_size(mut self, size: f32) -> Self {
+        if size.is_finite() && size >= 0.0 {
+            self.trigger_icon_size = Some(size);
+        }
         self
     }
 
@@ -247,6 +262,7 @@ impl crate::ComponentView for Popover {
             MenuSurfaceKind::Popover,
             Some(Arc::clone(&self.trigger)).filter(|value| !value.is_empty()),
             self.trigger_icon,
+            self.trigger_icon_size,
             self.trigger_content,
             self.open,
             self.width,
@@ -307,6 +323,12 @@ impl ActionMenu {
 
     pub fn trigger_icon(mut self, icon: Icon, label: impl Into<Arc<str>>) -> Self {
         self.popover = self.popover.trigger_icon(icon, label);
+        self
+    }
+
+    /// The icon trigger's glyph size; see [`Popover::trigger_icon_size`].
+    pub fn trigger_icon_size(mut self, size: f32) -> Self {
+        self.popover = self.popover.trigger_icon_size(size);
         self
     }
 
@@ -380,6 +402,7 @@ impl crate::ComponentView for ActionMenu {
             MenuSurfaceKind::ActionMenu,
             Some(Arc::clone(&self.popover.trigger)).filter(|value| !value.is_empty()),
             self.popover.trigger_icon,
+            self.popover.trigger_icon_size,
             self.popover.trigger_content,
             self.popover.open,
             self.popover.width,
@@ -410,6 +433,7 @@ pub(crate) fn project_menu_surface(
     kind: MenuSurfaceKind,
     trigger: Option<Arc<str>>,
     trigger_icon: Option<Icon>,
+    trigger_icon_size: Option<f32>,
     trigger_content: Option<StableNodeId>,
     open: bool,
     width: f32,
@@ -445,6 +469,7 @@ pub(crate) fn project_menu_surface(
                 padding,
                 gap,
                 trigger_content,
+                trigger_icon_size: trigger_icon_size.filter(|_| trigger_icon.is_some()),
             }),
             query: None,
             rows: Arc::from([]),
@@ -793,6 +818,7 @@ pub(crate) fn menu_surface_geometry(
     bounds: LayoutBox,
     trigger: Option<&Arc<str>>,
     trigger_icon: Option<Icon>,
+    trigger_icon_size: Option<f32>,
     trigger_image: Option<&Arc<str>>,
     trigger_content: bool,
     style: &crate::ComputedStyle,
@@ -817,7 +843,8 @@ pub(crate) fn menu_surface_geometry(
         width: bounds.width,
         height: trigger_h,
     };
-    let icon_extent = TRIGGER_ICON_SIZE
+    let icon_extent = trigger_icon_size
+        .unwrap_or(TRIGGER_ICON_SIZE)
         .min(trigger_bounds.width)
         .min(trigger_bounds.height);
     ComponentGeometry::MenuSurface {
@@ -1739,6 +1766,77 @@ mod tests {
             icon_bounds.y + icon_bounds.height / 2.0,
             chrome.y + chrome.height / 2.0
         );
+    }
+
+    /// `trigger_icon_size` reaches the glyph box through the trigger's
+    /// overlay, centred like the standard glyph; without it the glyph keeps
+    /// the standard size.
+    #[test]
+    fn an_icon_triggers_glyph_takes_the_size_it_was_given() {
+        let glyph_for = |size: Option<f32>| {
+            let mut world = UiWorld::new();
+            let mut queue = MutationQueue::new();
+            let id = StableNodeId::new(1).unwrap();
+            queue.create(
+                id,
+                document(),
+                NodeKind::Element {
+                    tag: "action-menu".into(),
+                },
+            );
+            queue.write_layout(
+                id,
+                LayoutBox {
+                    x: 0.0,
+                    y: 0.0,
+                    width: TRIGGER_HEIGHT,
+                    height: TRIGGER_HEIGHT,
+                },
+            );
+            queue.set_style(id, trigger_icon_button_style());
+            queue.set_standard_visual(
+                id,
+                Some(StandardVisual::MenuSurface {
+                    kind: MenuSurfaceKind::ActionMenu,
+                    open: false,
+                    trigger: None,
+                    trigger_icon: Some(Icon::Add),
+                    trigger_image: None,
+                    gap: 0.0,
+                    overlay: Some(crate::TriggeredMenuOverlay {
+                        placement: PopoverPlacement::Bottom,
+                        alignment: PopoverAlignment::Start,
+                        width: ACTION_MENU_WIDTH,
+                        padding: 0.0,
+                        gap: 0.0,
+                        trigger_content: None,
+                        trigger_icon_size: size,
+                    }),
+                    query: None,
+                    rows: Arc::from([]),
+                    highlighted: None,
+                }),
+            );
+            world.commit(queue).unwrap();
+            world.resolve_styles(&[id]).unwrap();
+            let Some(ComponentGeometry::MenuSurface { trigger_icon, .. }) =
+                world.component_geometry(id)
+            else {
+                panic!("expected menu surface geometry");
+            };
+            trigger_icon.expect("trigger glyph box").1
+        };
+        let standard = glyph_for(None);
+        assert_eq!(standard.width, TRIGGER_ICON_SIZE.min(TRIGGER_HEIGHT));
+        let sized = glyph_for(Some(16.0));
+        assert_eq!((sized.width, sized.height), (16.0, 16.0));
+        assert_eq!(sized.x + sized.width / 2.0, TRIGGER_HEIGHT / 2.0);
+        assert_eq!(sized.y + sized.height / 2.0, TRIGGER_HEIGHT / 2.0);
+        // the builder forwards it, and ignores a size that is not one
+        let menu = ActionMenu::new()
+            .trigger_icon_size(16.0)
+            .trigger_icon_size(-1.0);
+        assert_eq!(menu.popover.trigger_icon_size, Some(16.0));
     }
 
     #[test]

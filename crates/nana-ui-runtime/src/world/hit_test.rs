@@ -152,6 +152,10 @@ pub(super) struct HitIndex {
     pub(super) entries: hashbrown::HashMap<StableNodeId, IndexedHit>,
     root_bounds: BoundsTree,
     viewport_roots: HashSet<StableNodeId>,
+    /// Entries hanging from their clip parent rather than their parent
+    /// (#201). Ids whose entry has since gone or stopped escaping only cost a
+    /// paint-order ranking they did not need.
+    escaped: HashSet<StableNodeId>,
 }
 
 // Preorder construction data; parents precede their children.
@@ -295,10 +299,25 @@ fn overlay_connector_box(trigger: LayoutBox, surface: LayoutBox) -> Option<Layou
 
 impl HitIndex {
     fn viewport_hit_at(&self, x: f32, y: f32) -> bool {
-        !self.viewport_roots.is_empty()
+        (!self.viewport_roots.is_empty()
             && self.root_bounds.visit(x, y, &mut |slot| {
                 self.roots[slot].is_some_and(|id| self.viewport_roots.contains(&id))
+            }))
+            || self.escaped_hit_at(x, y)
+    }
+
+    /// Whether an entry that hangs from its clip parent covers `(x, y)`. Its
+    /// place among its new siblings is not its paint order, so such a point
+    /// is ranked by paint order as a viewport root's is.
+    fn escaped_hit_at(&self, x: f32, y: f32) -> bool {
+        self.escaped.iter().any(|id| {
+            self.entries.get(id).is_some_and(|indexed| {
+                indexed.entry.escaped && {
+                    let shift = self.inherited_shift(*id);
+                    indexed.bounds.contains(x - shift[0], y - shift[1])
+                }
             })
+        })
     }
 
     #[cfg(test)]
@@ -395,7 +414,11 @@ impl HitIndex {
             sibling_slot[child] = slot;
         }
         let mut entries = hashbrown::HashMap::with_capacity(n);
+        let mut escaped = HashSet::new();
         for (index, node) in built.into_iter().enumerate() {
+            if node.entry.escaped {
+                escaped.insert(node.entry.id);
+            }
             let id = node.entry.id;
             let parent = node.parent.map(|position| ids[position]);
             let start = offsets[index] as usize;
@@ -422,6 +445,7 @@ impl HitIndex {
             entries,
             root_bounds,
             viewport_roots: HashSet::new(),
+            escaped,
         }
     }
 
@@ -433,6 +457,9 @@ impl HitIndex {
         sibling_slot: usize,
     ) {
         let id = entry.id;
+        if entry.escaped {
+            self.escaped.insert(id);
+        }
         let children = std::mem::take(&mut entry.children);
         entry.transform[4] -= offset[0];
         entry.transform[5] -= offset[1];
@@ -917,16 +944,24 @@ impl UiWorld {
         if !self.is_mounted(target) {
             return None;
         }
+        // Each ancestor, and whether its scroll reaches `target`: not when
+        // `target` (or a box on the way) escapes past it (#201).
         let mut chain = Vec::new();
+        let mut escaping = None;
         let mut cursor = if own {
             Some(target)
         } else {
+            escaping = self.clip_escape(target);
             self.nodes.get(target)?.hierarchy.parent
         };
         let mut transform = (IDENTITY_AFFINE, [0.0, 0.0]);
         while let Some(id) = cursor {
             let node = self.nodes.get(id)?;
-            chain.push(id);
+            let passed_over = escaping.is_some_and(|anchor| anchor != Some(id));
+            if !passed_over {
+                escaping = self.clip_escape(id);
+            }
+            chain.push((id, passed_over));
             if self.hit_motion_layout(id).position == PositionSpec::Fixed {
                 transform = self.hanging_branch_transform(id);
                 break;
@@ -934,14 +969,14 @@ impl UiWorld {
             cursor = node.hierarchy.parent;
         }
         let mut blocks_3d = false;
-        for id in chain.into_iter().rev() {
+        for (id, passed_over) in chain.into_iter().rev() {
             let node = self.nodes.get(id)?;
             let style = self.hit_motion_layout(id);
             let b = self.component_layout_box(id)?;
             let local = self.input_local_scene_transform(id, &style, b, blocks_3d);
             transform = then_hit(transform, self.with_sticky_translation(id, local));
             blocks_3d |= style.fails_closed_3d_context();
-            if id != target {
+            if id != target && !passed_over {
                 transform = then_hit(
                     transform,
                     (
@@ -1235,15 +1270,17 @@ impl UiWorld {
             let Some(id) = index.roots[slot] else {
                 continue;
             };
-            if self.visit_presentation_hits(
-                index,
-                id,
-                (IDENTITY_AFFINE, [0.0, 0.0]),
-                false,
-                x,
-                y,
-                emit,
-            ) {
+            let base = (IDENTITY_AFFINE, [0.0, 0.0]);
+            let base = if index
+                .entries
+                .get(&id)
+                .is_some_and(|root| root.entry.escaped)
+            {
+                self.clip_bridge_transform(id, None, base, true)
+            } else {
+                base
+            };
+            if self.visit_presentation_hits(index, id, base, false, x, y, emit) {
                 return true;
             }
         }
@@ -1331,10 +1368,21 @@ impl UiWorld {
                         return true;
                     }
                 }
+                // An escaped child takes the transforms of the ancestors it
+                // passes over, but none of their scroll.
+                let parent_hit = if index
+                    .entries
+                    .get(&child)
+                    .is_some_and(|child| child.entry.escaped)
+                {
+                    self.clip_bridge_transform(child, Some(id), child_transform, true)
+                } else {
+                    child_transform
+                };
                 if self.visit_presentation_hits(
                     index,
                     child,
-                    child_transform,
+                    parent_hit,
                     child_blocks_3d,
                     x,
                     y,
@@ -1631,6 +1679,40 @@ impl UiWorld {
     /// only ever compared between siblings, so a spliced subtree stays sortable
     /// against untouched siblings without renumbering the document.
     fn build_hit_entries(&self, seeds: Vec<(StableNodeId, [f32; 6])>) -> Vec<BuiltHit> {
+        let (mut built, mut deferred) = self.build_hit_entries_deferring(seeds);
+        // An escaped box whose clip parent is no node hangs as a root of its
+        // own, from the transforms above it but none of their scroll.
+        while let Some(id) = deferred.pop() {
+            if self.layout_clip_parent(id).is_some() {
+                continue;
+            }
+            let (transform, _) =
+                self.clip_bridge_transform(id, None, (IDENTITY_AFFINE, [0.0, 0.0]), false);
+            let (more, later) = self.build_hit_entries_deferring(vec![(id, transform)]);
+            let base = built.len();
+            built.extend(more.into_iter().map(|mut node| {
+                node.parent = node.parent.map(|parent| parent + base);
+                node
+            }));
+            if let Some(root) = built.get_mut(base) {
+                root.entry.escaped = true;
+                root.entry.order = self
+                    .parent_id(id)
+                    .and_then(|parent| self.child_index(parent, id))
+                    .unwrap_or_default();
+            }
+            deferred.extend(later);
+        }
+        built
+    }
+
+    /// [`Self::build_hit_entries`], leaving out the escaped boxes whose clip
+    /// parent this build does not reach (it was seeded below it): those are
+    /// returned for the caller to hang where they belong.
+    fn build_hit_entries_deferring(
+        &self,
+        seeds: Vec<(StableNodeId, [f32; 6])>,
+    ) -> (Vec<BuiltHit>, Vec<StableNodeId>) {
         let mut stack = seeds
             .into_iter()
             .enumerate()
@@ -1647,6 +1729,10 @@ impl UiWorld {
             })
             .collect::<Vec<_>>();
         let mut built: Vec<BuiltHit> = Vec::new();
+        // What each built entry hands its children: an escaped box resumes
+        // from its clip parent's.
+        let mut child_states: Vec<(([f32; 6], [f32; 2]), bool)> = Vec::new();
+        let mut deferred = Vec::new();
         let mut memo = AncestorMemo::default();
         let visuals = self.nodes.has_visuals();
         let plain_layout = self.layout_length_tracks.is_empty()
@@ -1741,10 +1827,12 @@ impl UiWorld {
                         hittable,
                         menu: None,
                         painter: None,
+                        escaped: false,
                         children: Vec::new(),
                     },
                     parent,
                 });
+                child_states.push((parent_hit, false));
                 stack.extend(children.iter().enumerate().rev().map(|(position, child)| {
                     (*child, parent_hit, Some(index), position, used_pe, false)
                 }));
@@ -1759,11 +1847,36 @@ impl UiWorld {
             // This is a projection root, not a Runtime reparent. Fixed layout
             // is viewport-relative; ancestors still control lifecycle and
             // inherited pointer-events, but cannot clip or scroll this branch.
-            let (parent_hit, parent, parent_blocks_3d) =
+            //
+            // An absolute box that escapes overflow containers hangs from its
+            // clip parent instead (#201): their clips and scroll do not reach
+            // it, the transforms between still do.
+            let (parent_hit, parent, parent_blocks_3d, escaped) =
                 if node_style.position == PositionSpec::Fixed {
-                    ((IDENTITY_AFFINE, [0.0, 0.0]), None, false)
+                    ((IDENTITY_AFFINE, [0.0, 0.0]), None, false, false)
+                } else if let Some(tree_parent) = parent
+                    && node_style.position == PositionSpec::Absolute
+                    && let Some(anchor) = self.clip_escape(id)
+                {
+                    let mut cursor = Some(tree_parent);
+                    while let Some(at) = cursor
+                        && Some(built[at].entry.id) != anchor
+                    {
+                        cursor = built[at].parent;
+                    }
+                    let Some(at) = cursor else {
+                        deferred.push(id);
+                        continue;
+                    };
+                    let (base, blocks_3d) = child_states[at];
+                    (
+                        self.clip_bridge_transform(id, anchor, base, false),
+                        Some(at),
+                        blocks_3d,
+                        true,
+                    )
                 } else {
-                    (parent_hit, parent, parent_blocks_3d)
+                    (parent_hit, parent, parent_blocks_3d, false)
                 };
             let local = if parent_blocks_3d && node_style.transform_3d.is_some() {
                 (IDENTITY_AFFINE, [0.0, 0.0])
@@ -1870,10 +1983,12 @@ impl UiWorld {
                     } else {
                         None
                     },
+                    escaped,
                     children: Vec::new(),
                 },
                 parent,
             });
+            child_states.push((child_transform, child_blocks_3d));
             // Sibling position is the sort key. Invisible siblings are skipped
             // and leave gaps, which is harmless because only relative order
             // between surviving siblings is ever compared.
@@ -1888,11 +2003,21 @@ impl UiWorld {
                 )
             }));
         }
-        built
+        (built, deferred)
     }
 
+    #[cfg(test)]
     pub(super) fn build_hit_forest(&self, seeds: Vec<(StableNodeId, [f32; 6])>) -> Vec<HitEntry> {
-        let built = self.build_hit_entries(seeds);
+        self.build_hit_forest_deferring(seeds).0
+    }
+
+    /// [`Self::build_hit_forest`], and the escaped boxes it left for the
+    /// caller to hang from a clip parent outside the seeded branch.
+    fn build_hit_forest_deferring(
+        &self,
+        seeds: Vec<(StableNodeId, [f32; 6])>,
+    ) -> (Vec<HitEntry>, Vec<StableNodeId>) {
+        let (built, deferred) = self.build_hit_entries_deferring(seeds);
         let n = built.len();
         let mut parent_of = Vec::with_capacity(n);
         let mut entries = Vec::with_capacity(n);
@@ -1910,7 +2035,7 @@ impl UiWorld {
                     .push(child);
             }
         }
-        entries.into_iter().flatten().collect::<Vec<_>>()
+        (entries.into_iter().flatten().collect::<Vec<_>>(), deferred)
     }
 }
 
@@ -1952,10 +2077,60 @@ impl UiWorld {
         }) {
             return false;
         }
+        // The escaped entries of this branch hang outside it; take them out,
+        // so the rebuilt branch places each exactly once (#201).
+        self.withdraw_escaped_entries_under(document, root);
+        let Some(deferred) = self.patch_hit_branch(document, root) else {
+            return false;
+        };
+        // Escaped boxes the branch reaches but does not hold hang from their
+        // clip parent, outside it.
+        deferred
+            .into_iter()
+            .all(|id| self.patch_hit_subtree(document, id))
+    }
+
+    /// Remove the entries of `root`'s branch that hang from a clip parent.
+    fn withdraw_escaped_entries_under(&mut self, document: DocumentId, root: StableNodeId) {
+        let Some(index) = self.hit_test_index.get(&document) else {
+            return;
+        };
+        if index.escaped.is_empty() {
+            return;
+        }
+        let stale: Vec<_> = index
+            .escaped
+            .iter()
+            .copied()
+            .filter(|id| {
+                *id != root
+                    && index.entries.contains_key(id)
+                    && self.is_descendant_or_self(*id, root)
+            })
+            .collect();
+        let index = self
+            .hit_test_index
+            .get_mut(&document)
+            .expect("checked above");
+        for id in stale {
+            index.remove(id);
+            index.escaped.remove(&id);
+        }
+    }
+
+    /// [`Self::patch_hit_subtree`] for `root`'s own branch: `None` when the
+    /// document must be rebuilt, otherwise the escaped boxes the branch
+    /// reached and left to hang from their clip parent.
+    fn patch_hit_branch(
+        &mut self,
+        document: DocumentId,
+        root: StableNodeId,
+    ) -> Option<Vec<StableNodeId>> {
         if self.hit_motion_layout(root).position == PositionSpec::Fixed {
-            let mut forest = self.build_hit_forest(vec![(root, IDENTITY_AFFINE)]);
+            let (mut forest, deferred) =
+                self.build_hit_forest_deferring(vec![(root, IDENTITY_AFFINE)]);
             if forest.len() > 1 {
-                return false;
+                return None;
             }
             let entry = forest.pop().map(|mut entry| {
                 entry.order = self
@@ -1985,7 +2160,10 @@ impl UiWorld {
             } else {
                 index.viewport_roots.remove(&root);
             }
-            return true;
+            return Some(deferred);
+        }
+        if let Some(anchor) = self.clip_escape(root) {
+            return self.patch_escaped_hit(document, root, anchor?);
         }
         let parent = self.parent_id(root);
         let Some(parent) = parent else {
@@ -2000,27 +2178,24 @@ impl UiWorld {
             });
             let expected = roots.contains(&root) && self.node_has_hit_box(root);
             if present != expected {
-                return false;
+                return None;
             }
             if !expected {
-                return true;
+                return Some(Vec::new());
             }
             let position = roots.iter().position(|id| *id == root).unwrap_or_default();
-            let mut rebuilt = self.build_hit_forest(vec![(root, IDENTITY_AFFINE)]);
+            let (mut rebuilt, deferred) =
+                self.build_hit_forest_deferring(vec![(root, IDENTITY_AFFINE)]);
             if rebuilt.len() > 1 {
-                return false;
+                return None;
             }
-            let Some(mut entry) = rebuilt.pop() else {
-                return false;
-            };
+            let mut entry = rebuilt.pop()?;
             entry.order = position;
             sort_hit_children(&mut entry);
             self.note_hit_nodes_built(std::slice::from_ref(&entry));
-            let Some(forest) = self.hit_test_index.get_mut(&document) else {
-                return false;
-            };
+            let forest = self.hit_test_index.get_mut(&document)?;
             forest.replace(root, None, Some(entry));
-            return true;
+            return Some(deferred);
         };
 
         // The parent's own entry supplies the inherited transform. Its scroll is
@@ -2032,7 +2207,7 @@ impl UiWorld {
         else {
             // Parent is absent from the index. That is correct only when the
             // parent omits its layout subtree; otherwise the index is stale.
-            return !self.node_has_hit_box(parent);
+            return (!self.node_has_hit_box(parent)).then(Vec::new);
         };
         let scroll = self.record(parent).scroll_offset;
         let child_transform =
@@ -2049,12 +2224,11 @@ impl UiWorld {
                 .then_some(entry.entry.order)
             })
             .or_else(|| siblings.iter().position(|id| *id == root));
-        let Some(position) = position else {
-            return false;
-        };
-        let mut rebuilt = self.build_hit_forest(vec![(root, child_transform)]);
+        let position = position?;
+        let (mut rebuilt, deferred) =
+            self.build_hit_forest_deferring(vec![(root, child_transform)]);
         if rebuilt.len() > 1 {
-            return false;
+            return None;
         }
         let entry = rebuilt.pop().map(|mut entry| {
             entry.order = position;
@@ -2064,11 +2238,50 @@ impl UiWorld {
         if let Some(entry) = entry.as_ref() {
             self.note_hit_nodes_built(std::slice::from_ref(entry));
         }
-        let Some(forest) = self.hit_test_index.get_mut(&document) else {
-            return false;
-        };
+        let forest = self.hit_test_index.get_mut(&document)?;
         forest.replace(root, Some(parent), entry);
-        true
+        Some(deferred)
+    }
+
+    /// Patch an escaped box's branch where it hangs: under its clip parent
+    /// `anchor`, from that entry's child transform and the transforms of the
+    /// ancestors it passes over.
+    fn patch_escaped_hit(
+        &mut self,
+        document: DocumentId,
+        root: StableNodeId,
+        anchor: StableNodeId,
+    ) -> Option<Vec<StableNodeId>> {
+        let Some(anchor_transform) = self
+            .hit_test_index
+            .get(&document)
+            .and_then(|forest| find_hit_transform(forest, anchor))
+        else {
+            return (!self.node_has_hit_box(anchor)).then(Vec::new);
+        };
+        let scroll = self.record(anchor).scroll_offset;
+        let base = then_affine(anchor_transform, [1.0, 0.0, 0.0, 1.0, -scroll.x, -scroll.y]);
+        let (transform, _) =
+            self.clip_bridge_transform(root, Some(anchor), (base, [0.0, 0.0]), false);
+        let position = self
+            .parent_id(root)
+            .and_then(|parent| self.child_index(parent, root))?;
+        let (mut rebuilt, deferred) = self.build_hit_forest_deferring(vec![(root, transform)]);
+        if rebuilt.len() > 1 {
+            return None;
+        }
+        let entry = rebuilt.pop().map(|mut entry| {
+            entry.order = position;
+            entry.escaped = true;
+            sort_hit_children(&mut entry);
+            entry
+        });
+        if let Some(entry) = entry.as_ref() {
+            self.note_hit_nodes_built(std::slice::from_ref(entry));
+        }
+        let forest = self.hit_test_index.get_mut(&document)?;
+        forest.replace(root, Some(anchor), entry);
+        Some(deferred)
     }
 }
 

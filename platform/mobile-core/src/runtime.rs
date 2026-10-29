@@ -52,6 +52,28 @@ impl Default for MobileAppearance {
     }
 }
 
+/// The application's design system, installed with
+/// [`MobileRuntime::set_theme`] in place of NanaUI's built-in light and dark
+/// themes. Each definition is used as given, so one meant for touch starts
+/// from [`TOUCH_METRICS`] (or keeps its control heights and insets) and
+/// changes what its design decides.
+#[derive(Debug, Clone)]
+pub struct MobileTheme {
+    pub light: ThemeDefinition,
+    pub dark: ThemeDefinition,
+    /// What the page behind the application's view paints, edge to edge
+    /// under the safe area: `Background` by default, `Surface` for an app
+    /// whose screens are one card with soft blocks on it.
+    pub page: SemanticColorRole,
+}
+
+/// A [`MobileTheme`], compiled.
+struct InstalledTheme {
+    light: Arc<CompiledTheme>,
+    dark: Arc<CompiledTheme>,
+    page: SemanticColorRole,
+}
+
 /// One phase of the primary touch.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TouchPhase {
@@ -107,6 +129,9 @@ pub struct MobileRuntime {
     viewport: MobileViewport,
     appearance: MobileAppearance,
     applied: Option<(ThemeAppearance, f32)>,
+    theme: Option<InstalledTheme>,
+    /// The root paints no background ([`Self::set_background_passthrough`]).
+    passthrough: bool,
     root: Entity<List>,
     /// The touch the document follows; other fingers are ignored.
     primary_touch: Option<u64>,
@@ -147,6 +172,8 @@ impl MobileRuntime {
             viewport,
             appearance,
             applied: None,
+            theme: None,
+            passthrough: false,
             root,
             primary_touch: None,
             ime_enabled: false,
@@ -205,24 +232,59 @@ impl MobileRuntime {
     /// shell then paints [`Self::background_rgba`] under those layers itself,
     /// and the page looks as it does opaque.
     pub fn set_background_passthrough(&mut self, passthrough: bool) -> Result<(), FrameworkError> {
+        self.passthrough = passthrough;
+        self.paint_root()
+    }
+
+    /// Install the application's design system. Both definitions compile
+    /// here, so one that does not is refused and the previous theme stays.
+    pub fn set_theme(&mut self, theme: MobileTheme) -> Result<(), FrameworkError> {
+        let compile = |definition: ThemeDefinition| {
+            definition
+                .compile()
+                .map(Arc::new)
+                .map_err(|_| FrameworkError::InvalidInput)
+        };
+        self.theme = Some(InstalledTheme {
+            light: compile(theme.light)?,
+            dark: compile(theme.dark)?,
+            page: theme.page,
+        });
+        self.applied = None;
+        self.paint_root()
+    }
+
+    /// The page's background for the current appearance, as sRGB RGBA in
+    /// `0..=1`.
+    pub fn background_rgba(&self) -> Result<[f32; 4], FrameworkError> {
+        let theme = self.compiled(theme_appearance(self.appearance))?;
+        Ok(theme.style_model().color(self.page_role()).as_rgba_array())
+    }
+
+    fn page_role(&self) -> SemanticColorRole {
+        self.theme
+            .as_ref()
+            .map_or(SemanticColorRole::Background, |theme| theme.page)
+    }
+
+    fn compiled(&self, mode: ThemeAppearance) -> Result<Arc<CompiledTheme>, FrameworkError> {
+        match (&self.theme, mode) {
+            (Some(theme), ThemeAppearance::Light) => Ok(Arc::clone(&theme.light)),
+            (Some(theme), _) => Ok(Arc::clone(&theme.dark)),
+            (None, mode) => touch_theme(mode),
+        }
+    }
+
+    fn paint_root(&mut self) -> Result<(), FrameworkError> {
+        let background = (!self.passthrough).then_some(self.page_role());
         self.document
             .context_mut()
             .update_component(self.root, move |root, _| {
-                root.style.background = (!passthrough).then_some(SemanticColorRole::Background);
+                root.style.background = background;
             })?;
         self.needs_present = true;
         self.flush()?;
         Ok(())
-    }
-
-    /// The theme's page background for the current appearance, as sRGB
-    /// RGBA in `0..=1`.
-    pub fn background_rgba(&self) -> Result<[f32; 4], FrameworkError> {
-        let theme = touch_theme(theme_appearance(self.appearance))?;
-        Ok(theme
-            .style_model()
-            .color(SemanticColorRole::Background)
-            .as_rgba_array())
     }
 
     /// Something outside the document changed what it shows (a host texture
@@ -495,7 +557,7 @@ impl MobileRuntime {
             return Ok(());
         }
         let document = self.document.document();
-        let compiled = touch_theme(theme)?;
+        let compiled = self.compiled(theme)?;
         let context = self.document.context_mut();
         context.set_theme_tokens(compiled)?;
         context.set_document_text_scale(document, Some(wanted.1));

@@ -25,6 +25,7 @@ const INTERACTIVE_ROLES: &[&str] = &[
     "combo-box",
     "list-item",
     "menu-item",
+    "option",
     "radio",
     "row",
     "slider",

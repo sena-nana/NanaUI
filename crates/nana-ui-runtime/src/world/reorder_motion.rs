@@ -82,9 +82,15 @@ impl UiWorld {
         // Rows that do not match the items yet (still being attached, or
         // not laid out) cannot be moved against their drop: no preview.
         let drag = drag.zip(boxes).filter(|(drag, boxes)| {
-            boxes.len() == drag.rows() && *drag.carried().end() < boxes.len()
+            boxes.len() == drag.rows()
+                && drag
+                    .carried()
+                    .is_some_and(|carried| *carried.end() < boxes.len())
         });
-        let carried = drag.as_ref().map_or(0..=0, |(drag, _)| drag.carried());
+        let carried = drag
+            .as_ref()
+            .and_then(|(drag, _)| drag.carried())
+            .unwrap_or(0..=0);
         let is_carried = |index: usize| drag.is_some() && carried.contains(&index);
         self.sync_reorder_previews(id, &rows, is_carried);
         let Some((drag, boxes)) = drag else {

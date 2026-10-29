@@ -40,6 +40,14 @@ list_item("设置").detail("外观").selected(current).on_activate(open)
 
 无障碍名依次是 `label`、`note`、`detail`，画不下的 `note` 也照样读出。
 
+## 只显示的行
+
+只用来显示信息的行（房间里的成员、一条已绑定的记录）写 `read_only(true)`。它不接指针、不随悬停高亮、Tab 不停在它上面，也不发 `Activate`；文字照常取色，不画成禁用灰。无障碍角色仍是 ListItem，不报禁用，也不提供 `Click` / `Focus` 动作。能操作但暂时不可用的行才用 `disabled`。
+
+```rust
+list_item("Hiyori").detail("房主").read_only(true)
+```
+
 ## 选中
 
 `selected` 由应用写。激活只报告点了这一行，不改选中。无障碍角色是 ListItem，`selected` 映射选中，`disabled` 映射禁用。
@@ -72,7 +80,7 @@ widget(ListItem::new("模型").tools_rest(RowToolsRest::Reserve))
 
 ## 属性
 
-字段是 `label: String`、`note: String`、`detail: String`、`selected: bool`、`disabled: bool`、`role: ListItemRole`、`has_popup: bool`、`keep_tools: bool`。没有 `model`。选中不由控件自己翻。
+字段是 `label: String`、`note: String`、`detail: String`、`selected: bool`、`disabled: bool`、`read_only: bool`、`role: ListItemRole`、`has_popup: bool`、`keep_tools: bool`。没有 `model`。选中不由控件自己翻。
 
 | 属性 | 类型 | 说明 |
 | --- | --- | --- |
@@ -81,6 +89,7 @@ widget(ListItem::new("模型").tools_rest(RowToolsRest::Reserve))
 | `detail` | `String` | 空字符串表示不画行尾补充，不增加行高。非空、又没有 content 槽时画在行尾 |
 | `selected` | `bool` | 由应用写。选中不由控件自己翻。无障碍映射选中 |
 | `disabled` | `bool` | 为真时不发 `Activate`。无障碍映射禁用 |
+| `read_only` | `bool` | 只显示：不接指针与焦点、不悬停高亮、不发 `Activate`，正常文字色。无障碍不报禁用，也没有 `Click` / `Focus` 动作 |
 | `role` | `ListItemRole` | 默认 `ListItem`；`Button`、`ToggleButton`（`selected` 报成按下）。只改无障碍，不改外观 |
 | `has_popup` | `bool` | 这一行会弹出菜单。读屏报成菜单按钮，ArrowUp / ArrowDown 发 `keyboard: true` 的 `SecondaryPress` |
 | `keep_tools` | `bool` | `.tools` 的工具平时也显示 |

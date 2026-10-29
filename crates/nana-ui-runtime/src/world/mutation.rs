@@ -1261,6 +1261,16 @@ impl UiWorld {
                 if was != now {
                     self.track_scroll_container(*id, now);
                 }
+                // An open triggered menu places its items `fixed`, out of
+                // every scroller's range.
+                let current = self.nodes.visual(*id);
+                if current != visual.as_ref()
+                    && (is_triggered_menu_overlay(current)
+                        || is_triggered_menu_overlay(visual.as_ref()))
+                {
+                    self.scroll_content_bounds.borrow_mut().relist(self, *id);
+                    self.scroll_layout_touched = true;
+                }
             }
             _ => {}
         }
@@ -1882,6 +1892,29 @@ impl UiWorld {
                     ) => (sa, ha.is_some(), ea.is_some()) != (sb, hb.is_some(), eb.is_some()),
                     (_, Some(StandardVisual::FormField { .. }))
                     | (Some(StandardVisual::FormField { .. }), _) => true,
+                    // What a switch's parts read (#205); toggling and the
+                    // thumb's travel paint only.
+                    (
+                        Some(StandardVisual::Switch {
+                            label: la,
+                            hint: ha,
+                            control_position: pa,
+                            size: sa,
+                            ..
+                        }),
+                        Some(StandardVisual::Switch {
+                            label: lb,
+                            hint: hb,
+                            control_position: pb,
+                            size: sb,
+                            ..
+                        }),
+                    ) => {
+                        (la.is_empty(), ha.is_some(), pa, sa)
+                            != (lb.is_empty(), hb.is_some(), pb, sb)
+                    }
+                    (_, Some(StandardVisual::Switch { .. }))
+                    | (Some(StandardVisual::Switch { .. }), _) => true,
                     _ => false,
                 };
                 let (
@@ -1959,8 +1992,13 @@ impl UiWorld {
                     self.mark(*id, DirtyMask::TEXT);
                 }
 
+                // A value and a switch draw their text from the visual, not
+                // from the node's paragraph.
                 if content_layout_changed
-                    && !matches!(visual, Some(StandardVisual::LabeledValue { .. }))
+                    && !matches!(
+                        visual,
+                        Some(StandardVisual::LabeledValue { .. } | StandardVisual::Switch { .. })
+                    )
                 {
                     self.nodes
                         .invalidate_text(*id, crate::text_node::TextDirty::CONSTRAINT);

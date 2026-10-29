@@ -137,7 +137,17 @@ fn place_moved_children(
         )?;
     }
     for entry in &moved.overlay {
-        if entry.fixed || overlay_depends_on_block(entry, moved, content_origin, content, viewport)
+        if entry.fixed
+            || overlay_depends_on_block(
+                entry,
+                moved,
+                content_origin,
+                content,
+                viewport,
+                nodes,
+                output,
+                scope,
+            )
         {
             continue;
         }
@@ -1904,6 +1914,7 @@ pub(super) fn place_node_scoped(
             main_available: full_main,
             cross_y: 0.0,
             pin_cross: false,
+            baseline_aligned: false,
         };
         let mut line_slots = if wrapping {
             if style.equal_wrap {
@@ -1921,6 +1932,15 @@ pub(super) fn place_node_scoped(
                 .map(|range| line_slot(range.collect()))
                 .collect()
             } else if ifc && !writing.is_vertical() {
+                prime_atom_baselines(
+                    flow.iter().copied().zip(child_sizes.iter().copied()),
+                    content.width,
+                    viewport,
+                    child_font_px,
+                    nodes,
+                    intrinsic,
+                    scope,
+                )?;
                 pack_ifc_line_boxes(
                     &flow,
                     &child_sizes,
@@ -1930,6 +1950,7 @@ pub(super) fn place_node_scoped(
                     cross_gap,
                     viewport,
                     child_font_px,
+                    line_strut(style, child_font_px),
                     nodes,
                     &packed_floats,
                 )
@@ -1957,8 +1978,17 @@ pub(super) fn place_node_scoped(
         if matches!(wrap, FlexWrap::WrapReverse) {
             line_slots.reverse();
         }
-        let mut packed: Vec<(Vec<StableNodeId>, Vec<Size>, f32, f32, f32, f32, bool)> =
-            Vec::with_capacity(line_slots.len());
+        #[allow(clippy::type_complexity)]
+        let mut packed: Vec<(
+            Vec<StableNodeId>,
+            Vec<Size>,
+            f32,
+            f32,
+            f32,
+            f32,
+            bool,
+            Option<f32>,
+        )> = Vec::with_capacity(line_slots.len());
         // Items measured again at the main size their line gave them.
         let mut hypothetical: HashMap<StableNodeId, (f32, Size)> = HashMap::new();
         for slot in &line_slots {
@@ -2099,6 +2129,30 @@ pub(super) fn place_node_scoped(
                     cross_extent(*size, direction) + cross_margin(margin, direction)
                 })
                 .fold(0.0, f32::max);
+            // A line of an ordinary block: its baseline, and the span its
+            // items cover once they sit on it.
+            let line_baseline_y = if slot.baseline_aligned {
+                prime_atom_baselines(
+                    line_flow.iter().copied().zip(line_sizes.iter().copied()),
+                    content.width,
+                    viewport,
+                    child_font_px,
+                    nodes,
+                    intrinsic,
+                    scope,
+                )?;
+                Some(ifc_line_metrics(
+                    line_flow.iter().copied().zip(line_sizes.iter().copied()),
+                    content.width,
+                    viewport,
+                    child_font_px,
+                    line_strut(style, child_font_px),
+                    nodes,
+                ))
+            } else {
+                None
+            };
+            let line_cross = line_baseline_y.map_or(line_cross, |(_, height)| height);
             // A float-narrowed line's start, measured from main-start: its
             // physical left offset, or the room its right end leaves when the
             // main axis runs from the right.
@@ -2115,6 +2169,7 @@ pub(super) fn place_node_scoped(
                 slot.main_available,
                 slot.cross_y,
                 slot.pin_cross,
+                line_baseline_y.map(|(baseline, _)| baseline),
             ));
         }
         let align_content = style.align_content;
@@ -2123,7 +2178,7 @@ pub(super) fn place_node_scoped(
         let (mut cross_cursor, extra_cross_gap) = if line_count > 1 {
             let total = packed
                 .iter()
-                .map(|(_, _, cross, _, _, _, _)| *cross)
+                .map(|(_, _, cross, _, _, _, _, _)| *cross)
                 .sum::<f32>()
                 + cross_gap * line_count.saturating_sub(1) as f32;
             if matches!(align_content, JustifySpec::Stretch | JustifySpec::Start)
@@ -2179,6 +2234,7 @@ pub(super) fn place_node_scoped(
             line_main_available,
             line_cross_y,
             pin_cross,
+            line_atom_baseline,
         ) in packed
         {
             if pin_cross {
@@ -2259,7 +2315,12 @@ pub(super) fn place_node_scoped(
                 );
                 let align = child_style.resolved_align_self(style.align_items);
                 let cross_available = line_box_cross - cross_margin(margin, direction);
+                // An atom on a line of an ordinary block sits on the line's
+                // baseline whatever `align-self` says, and is not stretched.
+                let on_baseline_line =
+                    line_atom_baseline.is_some() && child_style.is_inline_level();
                 if align == AlignSpec::Stretch
+                    && !on_baseline_line
                     && !cross_axis_is_definite(
                         child_style,
                         direction,
@@ -2274,6 +2335,29 @@ pub(super) fn place_node_scoped(
                     Some(writing.inline_size(content.width, content.height)),
                     child_fonts,
                 );
+                if line_atom_baseline.is_some() {
+                    prime_atom_baselines(
+                        [(child, child_size)],
+                        content.width,
+                        viewport,
+                        child_font_px,
+                        nodes,
+                        intrinsic,
+                        scope,
+                    )?;
+                }
+                let atom_ascent = line_atom_baseline
+                    .and_then(|_| {
+                        ifc_atom_metrics(
+                            child,
+                            child_style,
+                            child_size,
+                            content.width,
+                            child_font_px,
+                            nodes,
+                        )
+                    })
+                    .map(|(ascent, _)| ascent);
                 let aligned_baseline = (align == AlignSpec::Baseline).then(|| {
                     intrinsic
                         .baseline(child, crate::Baseline::First)
@@ -2281,24 +2365,31 @@ pub(super) fn place_node_scoped(
                             nodes.baseline(child, child_fonts.element_px, child_size)
                         })
                 });
-                let cross_offset = match align {
-                    AlignSpec::Start | AlignSpec::Stretch => cross_cursor + cross_lead(margin),
-                    AlignSpec::Baseline => {
-                        let base = aligned_baseline.unwrap_or_default();
-                        cross_cursor + (line_baseline - base).max(0.0)
-                    }
-                    AlignSpec::Center => {
-                        cross_cursor
-                            + cross_lead(margin)
-                            + ((cross_available - cross_extent(child_size, direction)) / 2.0)
+                let cross_offset = if let (Some(line), Some(ascent)) =
+                    (line_atom_baseline, atom_ascent)
+                {
+                    // The margin box's top is `ascent` above the baseline.
+                    cross_cursor + line - ascent + cross_lead(margin)
+                } else {
+                    match align {
+                        AlignSpec::Start | AlignSpec::Stretch => cross_cursor + cross_lead(margin),
+                        AlignSpec::Baseline => {
+                            let base = aligned_baseline.unwrap_or_default();
+                            cross_cursor + (line_baseline - base).max(0.0)
+                        }
+                        AlignSpec::Center => {
+                            cross_cursor
+                                + cross_lead(margin)
+                                + ((cross_available - cross_extent(child_size, direction)) / 2.0)
+                                    .max(0.0)
+                        }
+                        AlignSpec::End => {
+                            cross_cursor
+                                + (line_box_cross
+                                    - cross_extent(child_size, direction)
+                                    - cross_trail(margin))
                                 .max(0.0)
-                    }
-                    AlignSpec::End => {
-                        cross_cursor
-                            + (line_box_cross
-                                - cross_extent(child_size, direction)
-                                - cross_trail(margin))
-                            .max(0.0)
+                        }
                     }
                 };
                 // Flow-relative to the page: a reversed axis measures back
@@ -2635,12 +2726,18 @@ pub(super) fn place_positioned_child(
         return Ok(None);
     }
     let fixed = child_style.position == PositionSpec::Fixed;
-    let base = if fixed {
-        Size::new(viewport.width, viewport.height)
+    let block = if fixed {
+        None
     } else {
-        content
+        absolute_containing_block(child, nodes)
     };
-    let base_origin = if fixed { Point::ZERO } else { content_origin };
+    let in_container = block.is_some() && block == nodes.world.parent_id(child);
+    let (base_origin, base) = match block {
+        None => (Point::ZERO, Size::new(viewport.width, viewport.height)),
+        Some(block) => {
+            padding_box(block, nodes, output, scope).unwrap_or((content_origin, content))
+        }
+    };
     let child_fonts = fonts_of(child_style, child_font_px);
     // An auto height is the content's (CSS shrink-to-fit): what inside it
     // fills or takes a percentage of its height has nothing definite to
@@ -2710,6 +2807,16 @@ pub(super) fn place_positioned_child(
     if let Some(max) = child_style.resolved_max_height_fonts(Some(base.height), vp, child_fonts) {
         child_size.height = child_size.height.min(max);
     }
+    let (static_x, static_y) = if fixed {
+        (0.0, 0.0)
+    } else {
+        (
+            content_origin.x - base_origin.x,
+            content_origin.y - base_origin.y,
+        )
+    };
+    let static_position =
+        !fixed && ((left.is_none() && right.is_none()) || (top.is_none() && bottom.is_none()));
     let inset = match child_style.anchor.filter(|_| fixed) {
         // Anchor positioning: hung from its anchor, at the size it measured,
         // by the one resolver every anchored surface shares.
@@ -2720,12 +2827,15 @@ pub(super) fn place_positioned_child(
                 y: surface.y - base_origin.y,
             }
         }
+        // An axis with both insets auto keeps the static position, where
+        // the box would start in flow: the parent's content origin (CSS 2.1
+        // §10.3.7). A fixed box keeps the viewport's origin there.
         None => Point {
             x: left.unwrap_or_else(|| {
-                right.map_or(0.0, |value| base.width - value - child_size.width)
+                right.map_or(static_x, |value| base.width - value - child_size.width)
             }),
             y: top.unwrap_or_else(|| {
-                bottom.map_or(0.0, |value| base.height - value - child_size.height)
+                bottom.map_or(static_y, |value| base.height - value - child_size.height)
             }),
         },
     };
@@ -2762,13 +2872,69 @@ pub(super) fn place_positioned_child(
         child,
         style: child_style_arc,
         fixed,
+        block,
+        in_container,
+        static_origin: static_position.then_some(content_origin),
         tracks_containing_block,
         base,
         base_origin,
-        inset,
+        inset: Point {
+            x: child_origin.x - content_origin.x,
+            y: child_origin.y - content_origin.y,
+        },
         origin: child_origin,
         size: child_size,
     }))
+}
+
+/// The containing block of an absolutely positioned `child` (CSS 2.1
+/// §10.1): its nearest positioned ancestor, or `None` for the initial
+/// containing block when it has none.
+fn absolute_containing_block(
+    child: StableNodeId,
+    nodes: &LayoutInputMap<'_>,
+) -> Option<StableNodeId> {
+    let world = nodes.world;
+    let mut ancestor = world.parent_id(child);
+    while let Some(id) = ancestor {
+        if world.is_document_node(id) {
+            return None;
+        }
+        if nodes
+            .style(id)
+            .is_some_and(|style| style.position.establishes_containing_block())
+        {
+            return Some(id);
+        }
+        ancestor = world.parent_id(id);
+    }
+    None
+}
+
+/// The padding box of `block` as this pass placed it, or as the last one
+/// left it when this pass did not place it: the edge an absolute child's
+/// insets and percentages resolve against.
+fn padding_box(
+    block: StableNodeId,
+    nodes: &LayoutInputMap<'_>,
+    output: &HashMap<StableNodeId, LayoutBox>,
+    scope: Option<&ScopeContext<'_>>,
+) -> Option<(Point, Size)> {
+    let border_box = output
+        .get(&block)
+        .or_else(|| scope.and_then(|scope| scope.retained.boxes.get(&block)))
+        .copied()?;
+    let border = nodes.style(block)?.resolved_border_edges();
+    Some((
+        Point {
+            x: border_box.x + border.left,
+            y: border_box.y + border.top,
+        },
+        Size::new(
+            (border_box.width - border.left - border.right).max(0.0),
+            (border_box.height - border.top - border.bottom).max(0.0),
+        ),
+    ))
 }
 
 /// Where a fixed box with `anchor` lands at `size` in `viewport`: inside its
@@ -2847,16 +3013,26 @@ fn overlay_child_affected(
     scope.affected.contains(&child) || scope.reach.reaches(child)
 }
 
+#[allow(clippy::too_many_arguments)]
 fn overlay_depends_on_block(
     entry: &PlannedOverlay,
     plan: &ContainerPlan,
     content_origin: Point,
     content: Size,
     viewport: LayoutViewport,
+    nodes: &LayoutInputMap<'_>,
+    output: &HashMap<StableNodeId, LayoutBox>,
+    scope: &ScopeContext<'_>,
 ) -> bool {
     if entry.fixed {
         return plan.viewport.width.to_bits() != viewport.width.to_bits()
             || plan.viewport.height.to_bits() != viewport.height.to_bits();
+    }
+    if !entry.in_container {
+        return entry
+            .static_origin
+            .is_some_and(|origin| origin != content_origin)
+            || remote_block_moved(entry, viewport, nodes, output, Some(scope));
     }
     if plan.content_origin != content_origin {
         return true;
@@ -2864,6 +3040,119 @@ fn overlay_depends_on_block(
     (plan.content.width.to_bits() != content.width.to_bits()
         || plan.content.height.to_bits() != content.height.to_bits())
         && entry.tracks_containing_block
+}
+
+/// Absolute children hung from an ancestor or from the initial containing
+/// block, in containers this pass did not place: no replay of their plan
+/// reaches them, so their block moving or resizing (the viewport, for the
+/// initial one) places them here. One placed here can be the containing
+/// block of another such child; the walk repeats until nothing moves.
+pub(super) fn place_remote_overlays(
+    viewport: LayoutViewport,
+    nodes: &mut LayoutInputMap<'_>,
+    intrinsic: &mut PassIntrinsicCache,
+    output: &mut HashMap<StableNodeId, LayoutBox>,
+    scope: &ScopeContext<'_>,
+) -> Result<(), UiWorldError> {
+    let mut containers: Vec<StableNodeId> = scope
+        .retained
+        .remote_overlays
+        .iter()
+        .copied()
+        .filter(|id| !output.contains_key(id))
+        .collect();
+    if containers.is_empty() {
+        return Ok(());
+    }
+    containers.sort_unstable();
+    loop {
+        let mut placed_any = false;
+        for &id in &containers {
+            let plan = match nodes.container_plans.get(&id) {
+                Some(Some(plan)) => plan.clone(),
+                Some(None) => continue,
+                None => match scope.retained.container_plans.get(&id) {
+                    Some(plan) => plan.clone(),
+                    None => continue,
+                },
+            };
+            let stale: Vec<StableNodeId> = plan
+                .overlay
+                .iter()
+                .filter(|entry| {
+                    !entry.fixed
+                        && !entry.in_container
+                        && !output.contains_key(&entry.child)
+                        && remote_block_moved(entry, viewport, nodes, output, Some(scope))
+                })
+                .map(|entry| entry.child)
+                .collect();
+            if stale.is_empty() {
+                continue;
+            }
+            let Some(writing) = nodes.get(id)?.map(|node| node.writing) else {
+                continue;
+            };
+            let mut placed = Vec::with_capacity(stale.len());
+            for child in stale {
+                if let Some(entry) = place_positioned_child(
+                    child,
+                    plan.content_origin,
+                    plan.content,
+                    viewport,
+                    plan.child_font_px,
+                    writing,
+                    nodes,
+                    intrinsic,
+                    output,
+                    Some(scope),
+                )? {
+                    placed.push(entry);
+                }
+            }
+            publish_overlay_plan(
+                id,
+                &plan,
+                plan.origin,
+                plan.size,
+                plan.content_origin,
+                plan.content,
+                &placed,
+                false,
+                nodes,
+            );
+            placed_any = true;
+        }
+        if !placed_any {
+            return Ok(());
+        }
+    }
+}
+
+/// Whether an absolute child hung from an ancestor or from the initial
+/// containing block has to be placed again: its containing block is another
+/// box now, or moved, or changed size under a child that reads its size.
+fn remote_block_moved(
+    entry: &PlannedOverlay,
+    viewport: LayoutViewport,
+    nodes: &LayoutInputMap<'_>,
+    output: &HashMap<StableNodeId, LayoutBox>,
+    scope: Option<&ScopeContext<'_>>,
+) -> bool {
+    if absolute_containing_block(entry.child, nodes) != entry.block {
+        return true;
+    }
+    let (origin, size) = match entry.block {
+        None => (Point::ZERO, Size::new(viewport.width, viewport.height)),
+        Some(block) => match padding_box(block, nodes, output, scope) {
+            Some(block) => block,
+            None => return true,
+        },
+    };
+    origin != entry.base_origin
+        || (entry.tracks_containing_block
+            && (size.width.to_bits() != entry.base.width.to_bits()
+                || size.height.to_bits() != entry.base.height.to_bits()))
 }
 
 /// Place the positioned children that this pass actually depends on.
@@ -2920,7 +3209,16 @@ fn finish_positioned_overlay(
             .iter()
             .filter(|entry| {
                 overlay_child_affected(entry.child, id, scope, nodes)
-                    || overlay_depends_on_block(entry, plan, content_origin, content, viewport)
+                    || overlay_depends_on_block(
+                        entry,
+                        plan,
+                        content_origin,
+                        content,
+                        viewport,
+                        nodes,
+                        output,
+                        scope,
+                    )
             })
             .map(|entry| entry.child)
             .collect();

@@ -280,6 +280,14 @@ impl PackedFloats {
     }
 }
 
+/// The strut a line box of an ordinary block starts from: its ascent and
+/// descent about the baseline ([`super::inline::line_strut`]).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(super) struct LineStrut {
+    pub(super) ascent: f32,
+    pub(super) descent: f32,
+}
+
 /// One wrap line: child indices plus the shortened IFC line box (full width when
 /// not avoiding floats).
 #[derive(Debug, Clone)]
@@ -290,6 +298,9 @@ pub(super) struct LineBoxSlot {
     /// Content-relative cross start after float drop / `clear` (IFC only).
     pub(super) cross_y: f32,
     pub(super) pin_cross: bool,
+    /// A line of an ordinary block's inline-level items: they sit on one
+    /// baseline (CSS 2.1 §10.8.1), not at the line's top.
+    pub(super) baseline_aligned: bool,
 }
 
 /// Geometric same-side pack/wrap. Bottoms are the occupied extent after wrapping,

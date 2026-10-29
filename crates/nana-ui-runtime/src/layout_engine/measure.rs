@@ -423,13 +423,19 @@ pub(super) fn intrinsic_size_out_of_flow(
 }
 
 /// One axis set and the other not: a replaced box's natural aspect ratio
-/// carries the set one over, content box to content box (Issue #263). Every
-/// path that resolves a replaced box's used size goes through here, so a
-/// reused measurement cannot answer with the natural other axis instead.
+/// carries the set one over, content box to content box (Issue #263), and
+/// the other axis's min/max still bound the result. Neither set: the natural
+/// size keeps its ratio under min/max as CSS 2.1 §10.4 lays out for replaced
+/// elements (Issue #202). Every path that resolves a replaced box's used size
+/// goes through here, so a reused measurement cannot answer with the natural
+/// other axis instead.
 fn transfer_natural_ratio(
     style: &nana_ui_core::LayoutStyle,
     natural: Option<crate::ReplacedMetadata>,
     chrome: Size,
+    available: Size,
+    viewport: LayoutViewport,
+    fonts: FontSizeContext,
     size: &mut Size,
 ) {
     let Some(natural) = natural.filter(|natural| natural.width > 0.0 && natural.height > 0.0)
@@ -440,16 +446,51 @@ fn transfer_natural_ratio(
         return;
     }
     let auto = |spec: Option<LengthSpec>| matches!(spec, None | Some(LengthSpec::Auto));
+    // The limits as `finish_intrinsic_size` applies them, on the content box.
+    let vp = Some((viewport.width, viewport.height));
+    let limits = |min: f32, max: Option<f32>, chrome: f32| {
+        let min = (min - chrome).max(0.0);
+        (
+            min,
+            max.map_or(f32::INFINITY, |max| (max - chrome).max(min)),
+        )
+    };
+    let (min_w, max_w) = limits(
+        style.resolved_min_width_fonts(Some(available.width), vp, fonts),
+        style.resolved_max_width_fonts(Some(available.width), vp, fonts),
+        chrome.width,
+    );
+    let (min_h, max_h) = limits(
+        style.resolved_min_height_fonts(Some(available.height), vp, fonts),
+        style.resolved_max_height_fonts(Some(available.height), vp, fonts),
+        chrome.height,
+    );
+    let ratio = natural.width / natural.height;
     match (auto(style.width), auto(style.height)) {
         (false, true) => {
             let inner = (size.width - chrome.width).max(0.0);
-            size.height = inner * natural.height / natural.width + chrome.height;
+            size.height = (inner / ratio).clamp(min_h, max_h) + chrome.height;
         }
         (true, false) => {
             let inner = (size.height - chrome.height).max(0.0);
-            size.width = inner * natural.width / natural.height + chrome.width;
+            size.width = (inner * ratio).clamp(min_w, max_w) + chrome.width;
         }
-        _ => {}
+        (true, true) => {
+            let (mut width, mut height) = (natural.width, natural.height);
+            if !(min_w..=max_w).contains(&width) || !(min_h..=max_h).contains(&height) {
+                if width > max_w || width < min_w {
+                    width = width.clamp(min_w, max_w);
+                    height = width / ratio;
+                }
+                if height > max_h || height < min_h {
+                    height = height.clamp(min_h, max_h);
+                    width = height * ratio;
+                }
+                size.width = width.clamp(min_w, max_w) + chrome.width;
+                size.height = height.clamp(min_h, max_h) + chrome.height;
+            }
+        }
+        (false, false) => {}
     }
 }
 
@@ -527,30 +568,46 @@ fn visual_content(id: StableNodeId, world: &UiWorld) -> VisualContent {
             },
             height: 0.0,
         },
+        // The chrome a control lays out beside its label, read from the same
+        // parts placement solves.
         Some(visual @ crate::StandardVisual::Button { .. }) => {
             let parts = super::parts::button_parts(visual, Size::default()).expect("button");
+            let chrome = super::parts::chrome_extent(&parts);
             VisualContent {
-                width: parts
-                    .iter()
-                    .flatten()
-                    .map(|part| part.preferred.width + part.gap_after)
-                    .sum(),
-                height: parts
-                    .iter()
-                    .flatten()
-                    .map(|part| part.preferred.height)
-                    .fold(0.0, f32::max),
+                width: chrome.width,
+                height: chrome.height,
             }
         }
-        Some(crate::StandardVisual::Checkbox { size, .. }) => VisualContent {
-            width: size.indicator_size_in(world.theme().typography(), world.theme().spacing())
-                + if world.text(id).is_some_and(|label| !label.is_empty()) {
-                    size.indicator_gap_in(world.theme().spacing())
-                } else {
-                    0.0
-                },
-            height: size.indicator_size_in(world.theme().typography(), world.theme().spacing()),
-        },
+        Some(crate::StandardVisual::Checkbox { .. }) => {
+            let parts = world.checkbox_parts(id, Size::default()).expect("checkbox");
+            let chrome = super::parts::chrome_extent(&parts);
+            VisualContent {
+                width: chrome.width,
+                height: chrome.height,
+            }
+        }
+        Some(
+            crate::StandardVisual::StatusBadge { .. }
+            | crate::StandardVisual::ValidationMessage { .. },
+        ) => {
+            let parts = world
+                .status_dot_parts(id, Size::default())
+                .expect("status dot");
+            let chrome = super::parts::chrome_extent(&parts);
+            VisualContent {
+                width: chrome.width,
+                height: chrome.height,
+            }
+        }
+        // The track and its gap, and the taller of the track and the label
+        // over hint column: the same declaration placement solves.
+        Some(crate::StandardVisual::Switch { .. }) => {
+            let extent = world.switch_inputs(id).expect("switch").extent();
+            VisualContent {
+                width: extent.width,
+                height: extent.height,
+            }
+        }
         // Its text already asks for the widest option (`text_natural_width`);
         // the arrow stands beside it.
         Some(crate::StandardVisual::Select {
@@ -958,6 +1015,9 @@ fn measure_node(
             style,
             nodes.world.replaced_natural_size(id),
             chrome,
+            available,
+            viewport,
+            fonts,
             &mut size,
         );
         cache.insert(cache_key, size);
@@ -978,6 +1038,16 @@ fn measure_node(
         if unforced {
             cache.insert(cache_key, size);
             if !depends_on_used_basis(style.width) && !depends_on_used_basis(style.height) {
+                publish_atom_baseline(
+                    id,
+                    size,
+                    writing.inline_size(available.width, available.height),
+                    viewport,
+                    parent_font_px,
+                    nodes,
+                    cache,
+                    scope,
+                )?;
                 let baseline = nodes.baseline_metrics(
                     id,
                     fonts.element_px,
@@ -1216,6 +1286,24 @@ fn measure_node(
     if let Some(clock) = child_phase.as_mut() {
         clock.lap(4);
     }
+    // The lines of an ordinary block sit their atoms on one baseline.
+    let baseline_lines = (ifc && !writing.is_vertical()).then(|| line_strut(style, child_font_px));
+    if baseline_lines.is_some() {
+        prime_atom_baselines(
+            flow_children
+                .iter()
+                .copied()
+                .zip(child_sizes.iter().copied()),
+            writing
+                .logical_size(content_available.width, content_available.height)
+                .0,
+            viewport,
+            child_font_px,
+            nodes,
+            cache,
+            scope,
+        )?;
+    }
     let parent_box = gap_containing_block(style, content_available);
     let gap = style.main_gap_against_fonts(direction, parent_box, fonts);
     let cross_gap = style.cross_gap_against_fonts(direction, parent_box, fonts);
@@ -1320,6 +1408,7 @@ fn measure_node(
             viewport,
             child_font_px,
             nodes,
+            baseline_lines,
         )
     } else {
         // With a definite main size the line hands out free space (or takes
@@ -1419,11 +1508,19 @@ fn measure_node(
         clock.lap(5);
     }
     let text = text_metrics.unwrap_or_default();
+    // A visual beside the text (a glyph, an indicator, a status dot) takes
+    // its room out of the line the text may ask for, the way the paragraph
+    // budget does; otherwise a text as wide as the box would push the box
+    // past it by the visual.
     let text_width = text_inline_size(
         text,
         text_natural_width,
         text_wrap_limit,
-        content_available.width,
+        if header_chrome {
+            content_available.width
+        } else {
+            (content_available.width - visual.width).max(0.0)
+        },
     ) + if header_chrome { visual.width } else { 0.0 };
     let mut content = Size::new(
         children.width.max(text_width),
@@ -1507,7 +1604,9 @@ fn measure_node(
         default_width,
         default_height,
     );
-    transfer_natural_ratio(style, natural, chrome, &mut size);
+    transfer_natural_ratio(
+        style, natural, chrome, available, viewport, fonts, &mut size,
+    );
     // Record only on a scoped pass. A full pass rebuilds every container in
     // the document, so recording there costs an `Arc` clone per child and a
     // sort per container across the whole tree -- 1.79 -> 2.55 ms on the
@@ -1573,14 +1672,30 @@ fn measure_node(
                         flow_cursor += 1;
                         size
                     });
+                    let style = nodes.style(child);
+                    let baseline = intrinsic
+                        .filter(|_| ifc && !writing.is_vertical())
+                        .zip(style.as_deref())
+                        .and_then(|(size, child_style)| {
+                            ifc_atom_metrics(
+                                child,
+                                child_style,
+                                size,
+                                child_edge_base,
+                                child_font_px,
+                                nodes,
+                            )
+                        })
+                        .map(|(ascent, _)| ascent);
                     MeasuredChild {
                         child,
-                        style: nodes.style(child),
+                        style,
                         intrinsic,
                         at_main: hypothetical
                             .iter()
                             .find(|(item, _, _)| *item == child)
                             .map(|(_, main, size)| (*main, *size)),
+                        baseline,
                     }
                 })
                 .collect();
@@ -1624,6 +1739,16 @@ fn measure_node(
     }
     if unforced {
         cache.insert(cache_key, size);
+        publish_atom_baseline(
+            id,
+            size,
+            writing.inline_size(available.width, available.height),
+            viewport,
+            parent_font_px,
+            nodes,
+            cache,
+            scope,
+        )?;
         let baseline = nodes.baseline_metrics(
             id,
             fonts.element_px,
@@ -1648,6 +1773,35 @@ fn measure_node(
         );
     }
     Ok(size)
+}
+
+/// An atom of a native paragraph publishes the last baseline it sits on its
+/// line by with its intrinsic facts: the paragraph reads it back after
+/// layout (`UiWorld::sync_inline_metrics`), so it must be the one placement
+/// derived from its descendants ([`prime_atom_baselines`]).
+#[allow(clippy::too_many_arguments)]
+fn publish_atom_baseline(
+    id: StableNodeId,
+    size: Size,
+    inline_base: f32,
+    viewport: LayoutViewport,
+    parent_font_px: f32,
+    nodes: &mut LayoutInputMap<'_>,
+    cache: &mut PassIntrinsicCache,
+    scope: Option<&ScopeContext<'_>>,
+) -> Result<(), UiWorldError> {
+    if nodes.world.inline_parent(id).is_none() {
+        return Ok(());
+    }
+    prime_atom_baselines(
+        [(id, size)],
+        inline_base,
+        viewport,
+        parent_font_px,
+        nodes,
+        cache,
+        scope,
+    )
 }
 
 /// Re-check only the children the change closure reaches.
@@ -1697,6 +1851,32 @@ fn measure_plan_children_unchanged(
             if measured != cached {
                 return Ok(false);
             }
+            // An atom whose baseline moved in a box of the same size moves
+            // its line, and the line's height.
+            if let Some(ascent) = entry.baseline {
+                prime_atom_baselines(
+                    [(entry.child, measured)],
+                    plan.child_available.width,
+                    viewport,
+                    child_font_px,
+                    nodes,
+                    cache,
+                    Some(scope),
+                )?;
+                let now = nodes.style(entry.child).and_then(|style| {
+                    ifc_atom_metrics(
+                        entry.child,
+                        &style,
+                        measured,
+                        plan.child_available.width,
+                        child_font_px,
+                        nodes,
+                    )
+                });
+                if now.map(|(now, _)| now.to_bits()) != Some(ascent.to_bits()) {
+                    return Ok(false);
+                }
+            }
         }
         // An item the line gave another main size is as tall as its content
         // at that size, which can change while its measurement above did not.
@@ -1743,6 +1923,10 @@ pub(super) fn plan_missed_change(
     }
     if !measure.contains(&child) || (entry.intrinsic.is_none() && entry.at_main.is_none()) {
         return false;
+    }
+    // Its baseline can move in a box of its own size.
+    if entry.baseline.is_some() {
+        return true;
     }
     let Some(style) = current else {
         return true;
@@ -1962,6 +2146,7 @@ fn sequential_measure_delta(
                 style: child_style,
                 intrinsic,
                 at_main: None,
+                baseline: None,
             });
         }
         // An empty flow sizes the container by other rules, and the last of
@@ -2258,6 +2443,7 @@ fn flex_line_measure_delta(
         viewport,
         child_font_px,
         nodes,
+        None,
     );
     let new_content = wrap_intrinsic_size(
         direction,
@@ -2272,6 +2458,7 @@ fn flex_line_measure_delta(
         viewport,
         child_font_px,
         nodes,
+        None,
     );
     let mut size = plan.size;
     match direction {

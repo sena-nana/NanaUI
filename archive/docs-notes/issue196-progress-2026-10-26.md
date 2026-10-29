@@ -308,3 +308,280 @@ GPU pixels 来自 macOS。Windows/Linux 真机与外部 consumer 完整构建/�
   - 最初放在 `resolve_layout_intent`，但那会让每个带这种记录的 CSS 节点多复制一份布局，所以改在补丁应用处做。
   - CSS 单测确认：只有物理边时记录被丢掉、物理字段保值；有逻辑边时原样保留。
 - #204 的 7 条验收项现在都有本地测试证据。
+
+## 2026-10-29 追加：#201
+
+逐条核对 #201 的 7 条验收项，补上 10-27 记为"不可勾"的 clip 链，并让它按 CSS 跟着包含块走（`absolute` 的包含块已在 68a191999 改成 CSS 的）。
+
+| 验收项 | 判定 | 证据 |
+| --- | --- | --- |
+| Scroll 与 child FormattingContext 解耦 | 可勾 | `issue201_scroll_is_orthogonal_to_flow_flex_grid_and_inline_contexts`（Block/Flex/Grid 下滚动不改 context、盒子、generation）；`ScrollView::projected_style` 只写 overflow |
+| ScrollView 是 facade，不拥有第二 layout engine | 可勾（附注） | `ScrollView` 只投影 overflow 与 scrollbar 状态，没有 measure/placement；公开的 `MutationQueue::set_scroll_metrics` 仍可注入非布局来源的度量 |
+| content extent 来自 authoritative LayoutResult | 可勾 | `ContentBoundsIndex` 读已提交的布局盒，`LayoutResult.scroll_extent` 同源，`world/scroll_bounds.rs` 10 项含全遍历对照。范围按 clip 链算已补上，见下文「追加：滚动范围按 clip 链」 |
+| scroll-only 不重做 intrinsic/content layout | 可勾 | issue201 全部滚动步骤 measure/placement/shape/spawn 为 0、generation 不变；Scene 侧 `issue201_paint_hit_and_accessibility_share_one_clip_chain` 的 `RuntimeDocument` 帧 generation 不变 |
+| clip chain 供 Scene/Hit/A11y 一致消费 | **本轮完成** | 见下表 |
+| virtualization 与 scroll layout 语义分离 | 可勾 | `sync_virtual_list_skips_mutation_until_the_visible_range_changes`、`issue262_gate_a`–`e` |
+| Grid/Inline/CustomRender 自然放入 scroll viewport | 可勾 | Grid：orthogonal 测试；Inline 段落与 host-texture CustomRender：`issue201_a_paragraph_and_a_custom_renderer_scroll_without_layout` |
+
+### clip 链的实现
+
+- 权威：`world/clip_chain.rs`。`LayoutResult::clip` 改为最近一个够得着本节点的溢出容器（按包含块链，`fixed` 及其下为 `None`）；新增 `LayoutResult::clip_parent`：本节点取裁剪和滚动的节点，一般是父级，包含块在静态溢出容器之外的 `absolute` 节点是它逃出的最外层容器的父级。`UiWorld::layout_clip_chain` 按发布结果列链。`layout_anchors` 按节点（不再按父级）计算；定位种类变化（不只是是否定位）和开始/停止裁剪都记为 anchor 变化，下一次发布连同根节点自身一起重新发布。
+- Scene：`compute_ancestor_state` 只对链上的祖先施加裁剪和滚动，被跨过的祖先只传变换和不透明度；祖先状态缓存的键加上 clip parent；滚动快路径对逃出该滚动容器的节点重算剔除范围；clip parent 变化计入层级变化。
+- 命中：逃出的条目挂在 clip parent 的条目下（从该条目的子变换加上被跨过祖先的变换建出），滚动就地补丁不带上它；它覆盖的点按绘制顺序排先后；局部补丁先撤掉分支里逃出的条目，再把分支够不着 clip parent 的条目挂回原处；合成器呈现路径和 `layout_projection_transform` 同样跨过。
+- 无障碍：逃出节点的变换从 clip parent 的子变换接续；新增 `AccessibilityNode::clip`（链上各容器按此刻滚动留下的视口区域）。组件铬裁剪同样只读链上的祖先。Select 菜单的可用空间同上。
+- 顺带修复：一个节点开始裁剪或变成 `fixed` 时，结果沿用旧的"每个子项一个片段"列表，缺 ScrollViewport/Overlay 片段，直到别的变化才补上。冷对照门禁揭出。
+
+### 门禁与变异
+
+| 门禁 | 证明 |
+| --- | --- |
+| `world/issue201.rs` `clip_chain::issue201_the_clip_chain_follows_containing_blocks` | 流内行、以卡片为包含块的 `absolute`、以页面为包含块的 `absolute`、`fixed` 各自的 `clip` / `clip_parent` / 整条链 |
+| `…::issue201_scroll_reaches_a_box_only_through_its_containing_block` | 两个容器 5 组偏移，不跑布局；无障碍位置与 `clip`、命中（就地补丁与重建的索引）都按链 |
+| `…::issue201_a_menu_room_is_cut_by_the_clip_chain_alone` | Select 菜单空间只被链上容器截 |
+| `…::issue201_a_moving_clip_chain_matches_a_cold_layout` | 卡片定位、里层溢出来回切换，与冷布局逐项相同（oracle 现在也比较无障碍 `clip`） |
+| `…::issue201_a_patched_hit_index_follows_the_moving_chain` | 滚动平移活着时变链，局部补丁的索引在整页网格上命中与候选都等于重建 |
+| `…::issue201_an_escaped_box_takes_the_transforms_it_passes_over` | 被跨过祖先的样式变换和合成器呈现变换作用于逃出盒子（无障碍、输入投影、命中），其滚动不作用 |
+| `…::issue201_an_escaped_box_is_ranked_by_paint_order` | 树序在后的兄弟盖住逃出盒子时接住指针 |
+| `nana-ui-scene` `runtime_document_clip_chain_tests.rs` 两项 | 真实 `RuntimeDocument` 帧：Scene 画出的位置与裁剪、无障碍 `bounds`/`clip`、命中、剔除逐个相同，滚动与链变化后亦然 |
+
+变异（改坏后确认变红，再恢复，逐文件 `cmp` 确认与改动版本一致）：clip parent 忽略逃出（4 项 runtime + 1 项 scene 红）；命中构建不挂到 clip parent（runtime 滚动门禁 + 2 项 scene）；无障碍不接续 clip parent 变换（同）；Scene 不跳过被跨过祖先（2 项 scene）；片段复用不认新裁剪（冷对照）；anchor 根节点不重新发布（scene 链变化门禁）；滚动快路径不重算逃出节点剔除（scene 剔除断言）；不按绘制顺序排逃出条目（paint order 门禁）；补丁不撤旧条目（补丁网格门禁，候选出现重复）；`layout_projection_transform` 带上被跨过的滚动、呈现路径不接被跨过的变换、构建不接被跨过的变换（transforms 门禁）；补丁不按 clip parent 挂逃出根（补丁网格门禁 + scene 链变化门禁）。
+
+### 仍未做
+
+- ~~滚动范围仍把逃出滚动容器的 `absolute` 盒子和 `fixed` 盒子算进这个容器~~：已做，见下文「追加：滚动范围按 clip 链」。
+- 被跨过祖先的 `clip-path` 和组件铬裁剪不作用于逃出盒子（CSS 的 `clip-path` 会作用）；已写进 `layout.md`。
+- 性能段点名的 `scroll_viewport_updates` / `scroll_content_extent_recomputes` / `scroll_layout_reflows` / `scroll_clip_updates` / `virtualization_materialized` / `virtualization_despawned` 仍不在 `WorkCounters`，要先定口径（见下文追加节末尾）。
+- 未在 Windows/Linux 或 GPU 像素以外的外部 consumer 上运行；NanaLive/NanaType 只读检查没有 `LayoutResult` / `AccessibilityNode` 字面量。
+
+### 追加：滚动范围按 clip 链
+
+CSS Overflow 3 让盒子只算进它包含块链上的 scrollable overflow。现在滚动范围与 clip 链同一条规则：
+
+- 内容索引（`world/scroll_bounds.rs`）：每个条目除了流内的 `extent`，再记 `pending`——子树里包含块还在上方的 `absolute` 盒子。父级读子项时按 clip 链读它的定位（`UiWorld::clip_position`，打开的触发式菜单的项算 `fixed`）：流内子项进最大值树；`absolute` 子项不进树，它的范围随 `pending` 往上带；`fixed` 子项哪里都不算。带上来的范围在包含块（定位盒或文档节点）落进 `content`；到了没有父级的顶层，顶层不裁剪就落下，裁剪就丢掉，与 `clip_parent` 为 `None` 一致。带上去的范围只取决于来源子树，所以子树搬家不需要重建下面的条目；少数带范围的子项单独记在条目的 `carried` 里，没有时不分配。
+- 失效：定位种类或是否裁剪变化走 `note_layout_anchor_change`，同时把节点在索引里标脏（父级重读它的分类，它自己重算落下还是上传）；触发式菜单开关时 `relist` 让菜单表面重读全部子项。拓扑变化沿用原来的重建。
+- `LayoutResult::overflow`：会裁剪或有滚动度量的节点只并入 `clip_parent` 是自己的子项（其余节点照旧并入全部子项，保留只读子项放置的复用快路径）；`scroll_extent` 与度量同源于索引。Scene、ScrollView 没有第二份计算。
+- 与 `clip_parent` 的关系：带到包含块落下，与挂在 clip parent 上再沿不裁剪的祖先上传，对任何裁剪节点和包含块读出的范围相同（clip parent 与包含块之间不会有裁剪盒）；只在既不裁剪也不是包含块的中间节点上内部聚合不同，那里不读范围。
+
+| 门禁 | 证明 |
+| --- | --- |
+| `world/issue201.rs` `scroll_range::issue201_boxes_a_scroller_does_not_reach_stay_out_of_its_range` | 静态滚动容器里以页面为包含块的 `absolute` 盒子（y 900）和 `fixed` 盒子（y 1200，内含 `absolute`）：容器度量、`overflow`、`scroll_extent` 只到 690，偏移夹到 490；页面够得着 `absolute` 盒子，到 940，夹到 340，不含 `fixed` |
+| `…::issue201_a_moving_chain_moves_the_ranges_as_a_cold_layout_has_them` | 容器 static↔relative、两个盒子 absolute↔fixed 共 6 步，每步范围、度量、夹取后的偏移与冷布局相同，`assert_matches_cold` 通过 |
+| `…::issue201_scrolling_leaves_the_ranges_and_lays_nothing_out` | 两个容器滚 4 组偏移：measure/placement/shape 为 0、layout generation 不变、范围不变 |
+| `world/scroll_bounds.rs` `out_of_flow_boxes_count_where_their_clip_chain_reaches_them` | 索引层面每步对照按 clip 链走的全遍历与新建索引，并要求索引无残留脏状态：定位翻转、裁剪开关、子树在包含块之间搬动、停放后改样式（顶层开始裁剪）再接回、触发式菜单开与关、删除 |
+
+变异（改坏→变红→恢复→逐文件 `cmp` 一致）：`absolute` 子项按流内读（4 项红）；`fixed` 子项像 `absolute` 一样上传（4 项红）；`overflow` 并入全部子项（3 项 scroll_range 红）；锚点变化不标脏索引（冷对照 + 索引门禁红）；包含块不落下带上的范围（4 项红）；裁剪的顶层也落下（索引门禁红）；菜单开关不 `relist`（索引门禁红）；增量路径不记子项带的范围（2 项红）；整树重填丢掉 `carried`（2 项红）；只动自身盒子的快路径不重算落下（2 项红）。
+
+计数器口径待定（未加）：`scroll_viewport_updates`（度量重存的次数，还是只算视口尺寸变化，现有 `scroll_resized` 只记后者）、`scroll_content_extent_recomputes`（索引条目刷新数，现为 test/benchmark 专用的 `refreshed`，常开要定是否进公开的 `WorkCounters`）、`scroll_layout_reflows`（滚动引起的重排，按合同恒为 0，是否单列还是沿用 measure/placement 计数）、`scroll_clip_updates`（偏移变化的容器数、还是受影响的 clip 链节点数）、`virtualization_materialized` / `despawned`（与已有 `virtual_rows_materialized_from_layout`、`entities_spawned/despawned` 的关系）。`WorkCounters` 加字段是公开结构的变化，口径定了再一起加。
+
+## 2026-10-29 追加：#202
+
+逐条重新核对 #202 的 7 条验收项（不沿用 10-27 的判定），补上 fit 统一和 min/max，并把五种替换内容放进同一组门禁。
+
+| 验收项 | 判定 | 证据 |
+| --- | --- | --- |
+| replaced content 共用 intrinsic/aspect/fit contract | **本轮完成** | intrinsic/aspect：五种替换内容（图片、`Video`、`GpuTextureView`、`GpuView` 画布、普通元素上的 `CustomRenderNode` 锚点）都经 `ReplacedResource` 进同一索引、`LayoutContentKind::Replaced`，自然尺寸只经 `measure.rs` 的 `transfer_natural_ratio`（`issue202_c_every_replaced_kind_is_one_layout_item`）；min/max 按 CSS 2.1 §10.4 保比例（`issue202_d_min_max_keep_the_natural_ratio`，本轮修复）。fit：`ContentFit::fitted_size` 是唯一的 fit 数学，`LogicalRect::fitted`（HostTexture/视频/Avatar/Thumbnail、`texture_uv_at`）、画家 `url_dest_rect`（经 `BackgroundImageFit::object_fit`）、`ImageViewer` 都用它；标记里的 fit 读层叠 `object-fit` 与全部关键字（`issue202_f_markup_fits_every_replaced_kind_alike`、nana-ui `an_image_and_a_host_texture_share_one_fit`） |
+| Flex/Grid/Inline/Absolute 均可参与 | 可勾 | `issue202_a_natural_size_reaches_every_context`（图片，六种 context）；`issue202_c_…` 把五种替换内容放进同样六种 context，participation、尺寸、冷对照逐一相同 |
+| context 切换不重建 GPU/resource identity | 可勾 | Runtime：`issue199_a_thousand_components_keep_state_focus_and_resource_identity`（`Arc::ptr_eq`、0 spawn）；GPU：nana-ui `a_host_texture_moved_across_contexts_keeps_its_binding`（真实 `RuntimeDocument`，Flex→Grid→Flex 列→Flex 行，`gpu_buffer_reallocations == 0`） |
+| frame/texture 内容更新不触发布局 | 可勾 | `issue263_video_frames_lay_nothing_out`（1200 帧 0 布局、intrinsic generation 不变）、`issue263_fit_and_sampling_lay_nothing_out`、`issue259_replaced_content_costs_the_same_at_any_size`、nana-ui `texture_content_reuses_prepared_ui_and_replacement_rebinds` |
+| intrinsic metadata change 精确失效 | 可勾 | issue263 B/C/E（unknown→known 单 seed、共享图片 100 通知/50 seed、显式尺寸 0 seed）；本轮 `issue202_e_only_a_new_natural_size_lays_out`：同一尺寸再报一次 drain 为空；换成同尺寸的另一资源 0 replaced seed、0 frontier seed、0 measure、0 intrinsic bump；换成另一尺寸的资源只排读它的 2 个盒子 |
+| Inline baseline 有正式 policy | **可勾（基线、后代末行与 strut 追加完成）** | 规则在布局侧：`LayoutEngine::aligns_by_bottom_edge` / `baseline_metrics` 以边框盒底边为替换内容基线；原生段落行盒与 `align-items: baseline` 的 flex 行按它对齐，行基线发布在 TextLine 片段（`issue202_replaced_content_sits_on_the_text_baseline_by_its_bottom_edge`）。普通块级流里同行原子的基线对齐已按产品决定补上（`vertical-align: baseline` 默认值），见下文「追加：块级流的原子基线」；行盒在后代里的 inline-block 取后代末行、行盒有 strut，见「追加：后代末行基线与 strut」 |
+| CustomRender 保持 presentation anchor 边界 | 可勾 | `CustomRenderNode` 只有 renderer/resource/revision/fit/params/dedicated_pass/checkerboard/zoom/sampling 等呈现字段，params 不被 Runtime 解释（`custom_render_extension_requires_nonempty_backend_neutral_keys`）；`issue202_c_…` 的 Anchor 只挂一个 `CustomRenderNode` 就以 Replaced 参与布局，Runtime 不需要应用状态 |
+
+### 改动
+
+- `nana-ui-core`：`ContentFit::fitted_size`（新，公开）是唯一 fit 数学，`LogicalRect::fitted` 改为调用它后居中，结果与原实现相同；`BackgroundImageFit::object_fit`（`Length` 之外的关键字映射到 `ContentFit`，`Auto` 即 `none`）与 `From<ContentFit> for BackgroundImageFit`。
+- `nana-ui` 画家：`url_dest_rect` 不再自写 cover/contain/scale-down，改走 `object_fit()` + `fitted_size`；只有写长度的 `background-size` 保留自己的规则。
+- `nana-ui-runtime`：
+  - `measure.rs::transfer_natural_ratio` 读 min/max：两边都 auto 时按 CSS 2.1 §10.4 等比夹取；只写一边时，换算出的另一边再受它自己的 min/max 约束。缓存路径与新测量路径同一函数。
+  - `ImageViewer` 的 `fitted_bounds` 改为 `ContentFit::ScaleDown.fitted_size`。
+  - `gpu_slots.rs::parse_content_fit`（只认 `contain`）换成 `semantic_content_fit`：层叠的 `object-fit` 优先，`fit` 属性作 presentational hint，读全部五个关键字；`Video` 与 `GpuTextureView` 共用。
+- `nana-ui-css`：`parse_object_fit` 改为 `ContentFit::from_object_fit` 映射。
+- 文档：`layout.md` 的「替换内容」补 min/max、五种替换内容、fit 合同、门禁 A–F 与基线说明，纠正"`<img>` 的 object-fit 落到 `CustomRenderNode.fit`"的旧说法；`learn/core-contracts.md` 行号随之移动。
+
+### 门禁与变异
+
+| 门禁 | 证明 | 变异（改坏→变红→恢复→`cmp` 一致） |
+| --- | --- | --- |
+| `issue202_c_every_replaced_kind_is_one_layout_item` | 五种替换内容 × 六种 context：`shows_replaced`、`Replaced`、participation；同一 120×80 到达后都是 120×80，5 个 replaced seed、0 全文档回退；冷对照 | `replaced_resource_of` 忽略 custom render：C 与基线门禁 B 变红 |
+| `issue202_d_min_max_keep_the_natural_ratio` | 8 种 min/max 组合 × Flex/Grid/行内/absolute，增量与冷布局相同 | 关掉两边 auto 的等比夹取：红；去掉一边换算后的 clamp：红 |
+| `issue202_e_only_a_new_natural_size_lays_out` | 同尺寸重报零工作；同尺寸换资源 0 seed/measure；异尺寸换资源 2 seed | `reindex_replaced` 换资源总是 seed：红；同时去掉提交时的 no-op 过滤和 `apply_replaced_metadata` 的相等早退：红（单去任一层仍绿，两层互为兜底） |
+| `issue202_f_markup_fits_every_replaced_kind_alike` | 五个关键字下 `Video`/`GpuTextureView` 的 fit 与图片 `object-fit` 相同，样式压过属性，未知关键字为 fill | `semantic_content_fit` 不读 `object-fit`：红；`BackgroundImageFit::Auto` 映射成 `Fill`：红 |
+| nana-ui `an_image_and_a_host_texture_share_one_fit` | 五种 fit × 六组盒子/源尺寸，`url_dest_rect` 与 host-texture 的 `LogicalRect::fitted` 目标矩形相同 | `url_dest_rect` 自写 scale-down（当 contain）：红；`Auto` 映射成 `Fill`：红 |
+
+另发现但未改：显式 `aspect-ratio`（非替换内容）`width: 120px; max-width: 60px` 的 absolute 盒子得 60×80，而 Flex/Grid/行内得 60×40。absolute 的尺寸路径对声明的 `aspect-ratio` 不在夹取后回推高度，与本 Issue 的替换内容无关，留给 absolute 尺寸路径。
+
+### 本轮运行
+
+| 命令 | 结果 |
+| --- | --- |
+| `cargo fmt --all -- --check`；`git diff --check` | passed |
+| `cargo clippy -q -p nana-ui-core -p nana-ui-runtime -p nana-ui-scene -p nana-ui --all-targets -- -D warnings`；另 `-p nana-ui --features hosted,gpu -p nana-ui-css --all-targets` | passed |
+| `cargo test -q -p nana-ui-runtime --lib` | 2315 passed、1 ignored |
+| `cargo test -q -p nana-ui-runtime --lib --features layout-verify -- issue202 issue263 issue197 issue199` | 19 passed |
+| `cargo test -q -p nana-ui-scene --tests` | 全部通过（lib 238） |
+| `cargo test -q -p nana-ui-scene --lib --features nana-ui-runtime/layout-verify` | 238 passed |
+| `cargo test -q -p nana-ui --features hosted,gpu --lib` | 967 passed、1 ignored（第一次因磁盘满中途退出，清理旧测试二进制后重跑通过） |
+| `cargo test -q --workspace --all-targets` | 6066 passed、0 failed |
+| `cargo test -q -p component-gallery --bin ui-snapshots --features snapshots --locked` | 12 passed |
+| `caffeinate -di cargo run -q --release -p component-gallery --bin ui-snapshots --features snapshots --locked -- --output <scratch>` | MATCH: 680（exact） |
+
+### 仍未做
+
+- ~~普通块级流的原子行盒没有基线对齐（也没有 `vertical-align`）。~~ 产品决定采用 CSS 默认的 `vertical-align: baseline`，已在下文「追加：块级流的原子基线」完成。
+- HostTexture / Video 的自然尺寸仍需宿主自己用 `set_replaced_metadata` 上报；`GpuTextureView` 默认不上报（见上文 `painted_extent` 的说明）。
+- 未在 Windows/Linux 上运行；NanaLive / NanaType 只读检查：只用 `GpuTextureView.fit = ContentFit::…`（Rust 字段）与 `BackgroundImage::url_with_fit`，不受标记 fit 优先级与新增 API 影响；未构建这两个 consumer。
+
+### 追加：块级流的原子基线（`vertical-align: baseline`）
+
+产品决定：普通块级流里同一行的 inline-level 原子（inline-block、替换内容）按 CSS 默认的 `vertical-align: baseline` 对齐（CSS 2.1 §10.8 / §10.8.1、CSS Inline 3），不再顶部对齐；不新增 `vertical-align` 属性。
+
+**规则（一处）。** `LayoutInputMap::atom_line_metrics` 给出原子在行上的 ascent / descent（含外边距），原生段落（`place_native_inline`）和普通块级流的行（`pack_ifc_line_boxes` 与 placement、IFC 的 intrinsic 测量 `wrap_intrinsic_size`）都读它：
+- inline-block 以末个流内行盒的基线落在基线上，值取 `baseline_metrics` 的 `last`（原生段落此前读 `first`）；
+- 替换内容、`overflow` 非 visible 的 inline-block、没有流内行盒的 inline-block（`UiWorld::atom_sits_on_line_box` / `holds_line_box`）以底外边距边落在基线上；
+- 行盒高度 = 对齐后最高顶到最低底的跨度（`ifc_line_metrics`），块级子项独占一行从行顶排；无 strut。
+
+**根因修正：替换内容的边。** 原生段落此前把替换内容的**边框盒**底边放在基线上，`margin-bottom` 垂在基线下（`atomic_metrics` 的 ascent = 边框盒基线 + margin-top）。CSS 在行内格式化上下文里用**底外边距边**。修在 `inline_content::atomic_metrics`：基线改为 `Option`，`None` 即整个外边距盒在基线之上；原生段落与块级流因此一致，`sync_inline_metrics` 的布局后回填走同一规则（`intrinsic_baseline` 改读末行基线）。`align-items: baseline` 的 flex / grid 不改：CSS Align 在那里从边框盒合成基线，仍是边框盒底边。
+
+**失效。** 原子的基线随内容走，原先「固定尺寸 inline-block 是原子边界，里面的变化不重排外层行」只在基线不读内容时成立：
+- `UiWorld::atom_baseline_reads_content`：普通块级流（非原生段落）里 `overflow` 为 visible 的非替换原子。这样的固定 inline-block 不再是度量边界（`is_fixed_metric_boundary`、frontier 上行的 `atomic_border`、`fixed_inline_block` 岛与 `affected_edits_are_direct`），自身文字变化不再只排 PLACEMENT。
+- IFC 的 measure plan（`MeasuredChild::baseline`）记下每个原子的 ascent，`measure_plan_children_unchanged` 比对；未被本趟查询的 plan 遇到有 ascent 的子项在 measure 前沿上即标 stale（`plan_missed_change`）；`ifc_line_measure_delta` 回写新 ascent。IFC 容器本来不记 placement plan，placement 每次按新 ascent 重排。
+- `inline_scope.rs::inline_fixed_size_atomic_does_not_reflow_its_line` 拆成两种：`overflow: hidden` 的原子保持原断言（不重排父级行、不碰另一个上下文）；`overflow` visible 的原子会重排这一行，但仍不碰另一个上下文、测量工作不随它增长、位置不变。
+
+**门禁与变异**（改坏→变红→恢复→`cmp` 一致）：
+
+| 门禁 | 证明 | 变异 |
+| --- | --- | --- |
+| `issue202_g_atoms_on_a_block_line_share_one_baseline` | 一行里：空 40×20、空 40×50 带 `margin-bottom: 6`、20×30 图片带 `margin-bottom: 4`、`overflow: hidden` 的 50×30（内有标签）以底外边距边落在基线上；60×60 的文字原子与 30×20 的文字原子以末行基线落在同一基线；块高 = 行盒跨度、行顶 = 块顶、各原子顶部不同。随后：高原子 50→70；60×60 盒子里文字折成多行（盒子尺寸不变，原子上移）；不决定行高的 30×20 原子文字折行（块盒不变、原子上移）；空原子里插入文字。每步 `assert_matches_cold` | placement 改回顶部对齐：红；`atomic_metrics` 的 `None` 改回边框盒底边：红；忽略 `overflow`：红；所有原子都当有行盒：红；`atom_baseline_reads_content` 恒为 false（失效收窄）：红（verify 揭出）；IFC 测量不按基线算行高：红；`measure_plan_children_unchanged` 不比 ascent：红（verify 揭出）。`plan_missed_change` 的新分支去掉后门禁仍绿（需要同一容器在两个约束下各有 plan，门禁未构造），作为保守分支保留 |
+| css-parity `T-I05`（新） | 块里 20/50/30（`margin-bottom: 6`）三个 inline-block：50 的顶在 0，20 的在 30，30 的在 14（按 CSS 2.1 §10.8 推得，未在浏览器里实测；默认字体的 strut ascent 小于 50，不影响这三个位置） | placement 改回顶部对齐：T-I05 FAIL |
+
+**快照。** 画廊像素 680 个、语义 156 个全部 MATCH，未重录任何基线：画廊里没有普通块级流中的 inline-level 原子，原生段落的原子也没有可见变化。
+
+**本轮运行：**
+
+| 命令 | 结果 |
+| --- | --- |
+| `cargo fmt --all -- --check`；`git diff --check` | passed |
+| `cargo clippy -q -p nana-ui-core -p nana-ui-runtime -p nana-ui-scene -p nana-ui --all-targets -- -D warnings` | passed |
+| `cargo test -q -p nana-ui-runtime --lib` | 2322 passed、1 ignored |
+| `cargo test -q -p nana-ui-runtime --lib --features layout-verify -- issue202 issue197 issue199` | 13 passed |
+| `cargo test -q -p nana-ui-scene --tests` | 全部通过 |
+| `cargo test -q -p nana-ui --features hosted,gpu --lib` | 967 passed、1 ignored |
+| `cargo test -q -p nana-css-parity` | 全部通过（含新 T-I05） |
+| `cargo test -q --workspace --all-targets` | 6073 passed、0 failed、5 ignored |
+| `cargo test -q -p component-gallery --bin ui-snapshots --features snapshots --locked` | 12 passed |
+| `caffeinate -di cargo run -q --release -p component-gallery --bin ui-snapshots --features snapshots --locked -- --output <scratch>` | MATCH: 680（exact） |
+| 同上加 `--semantic` | MATCH: 156 |
+
+**仍未做：**
+- ~~没有自己文字、文字在后代里的 inline-block（比如 `div` 里放一个标签），基线仍是 `baseline_metrics` 对容器的近似（自身字体的首行 `chrome_top + ascent`），不是后代末个行盒的实际位置；后代多行时与 CSS 不同。~~ 已在下文「追加：后代末行基线与 strut」完成（flex / grid 容器等仍是近似，见那里）。
+- ~~没有 strut：行盒不按父级字体留出最小 ascent/descent，空 inline-block 下面不留 descent 空隙。~~ 同上完成。
+- NanaLive / NanaType 只读检查：源码里没有 `inline-block` / `DisplaySpec::Inline*` / `InlineFlow`，不受影响；未构建。
+
+### 追加：后代末行基线与 strut
+
+补上「块级流的原子基线」留下的两项。
+
+**后代末行基线。** 行盒都在后代里的 inline-block（`UiWorld::line_boxes_are_descendants`：没有自己的文字、控件或段落，只在流里有行盒）以持有末个行盒的后代的实际位置落在基线上（CSS 2.1 §10.8.1），不再取自身字体首行的近似。
+- 推导只有一处：`inline::descendant_last_baseline`。它按 placement 的方式从子项在原子内容盒里量出的尺寸排原子的流：块级流逐个叠放（`align-items: stretch` 的块按 placement 拉宽），行内格式化上下文用 `pack_ifc_line_boxes` 排行、按 `ifc_line_metrics` 定行的基线；末个行盒要么是这样一行，要么是独占一行的块，后者取它自己的末行基线（行盒也在后代里就递归）。子项尺寸都经 `intrinsic_size_scoped`，和 placement 用同一个 key，所以工作只是提前，不是新增。
+- 结果按节点与所用尺寸记在每趟的 `LayoutInputMap::derived_baselines`。读原子 ascent 的每一处都先 `prime_atom_baselines`：块的测量（`measure_node` 的 IFC）、measure plan 比对（`measure_plan_children_unchanged`）、IFC 增量（`ifc_line_measure_delta`）、placement（排行、行基线、原子 ascent）、原生段落（`place_native_inline`）；原生段落的原子在测量发布 intrinsic facts 前也 prime（`publish_atom_baseline`），布局后回填（`sync_inline_metrics`）读到的是同一个值。`baseline_metrics` 在近似之前先读这份记录。测试与 `layout-verify` 构建里，`atom_line_metrics` 遇到没 prime 的这种原子直接 panic，漏掉的调用点不会悄悄退回近似。
+- 不推导、仍是近似的：flex / grid 容器（inline-flex 等）、反向或换行的块级流、`justify-content` 非 start 的块级流、行旁有浮动的流、竖排；容器的首个基线（`align-items: baseline` 读的）也仍是近似。
+
+**strut。** 普通块级流里有行内级子项的行盒从块的 strut 起算（`inline::line_strut`，`ifc_line_metrics` 的新参数 `LineStrut`，`wrap_intrinsic_size` 的 `baseline_lines` 改为 `Option<LineStrut>`，测量、增量、placement 共用）。布局读不到字体度量，ascent 用共享近似 `TEXT_APPROX_ASCENT_EM`（0.8em），descent 是 0.2em，`line-height` 与 em 的差两边各半。块级子项独占的行没有 strut。原生段落（`InlineFlow`）的行本来就有 strut：`nana-text` 的 `LineStrut`，取真实字面度量。两条路径都有 strut，不同的只是度量来源；要让普通块级流也用真实字面需要在布局前替块整形 strut，属于跨层改动，本轮不做。
+
+**失效。** `UiWorld::atom_baseline_reads_content` 扩到块链：读内容的原子流里的流内块（再往下也一样）是找末个行盒的地方，固定尺寸也不再是度量边界（`is_fixed_metric_boundary`），frontier 的 `has_definite_size` 也读它，不在那里横向停下。变化不移动末行时（行数不变的文字改动），IFC 的 measure plan 比对 ascent 相同、沿用计划，盒子都不动。
+
+**门禁与变异**（改坏→变红→恢复→`cmp` 一致）。Gate H 的「固定尺寸块里的文字折行」一步先写、先红（verify：保留布局 93 对全量 80），再改失效；其余门禁写在实现之后，靠下表的变异证明会红：
+
+| 门禁 | 证明 | 变异 |
+| --- | --- | --- |
+| `issue202_h_an_inline_block_sits_by_its_descendants_last_line` | 一行里：空 40×20（基线 = 它的底边）；120×80、`padding-top: 7`、内有 10 高的块和一个标签；60 宽、内有块、块里标签折成多行（取第二行，首行不在基线上）；70 宽、两个各占一行的 inline-block 标签（取第二个）；80 宽、内有固定 70×50 的块和标签。随后：holder 标签折行（盒子尺寸不变，基线在盒内下移）；上方块 10→20（基线在盒内下移 10）；行数不变的文字改动（所有盒子不变、0 全文档回退）；固定块里的标签折行。每步 `assert_matches_cold` | `baseline_metrics` 不读推导值（回到近似）：红；块级流叠放忽略前面的兄弟：红；IFC 推导取首行：红；`atom_baseline_reads_content` 恒 false：H、G 红（verify）；plan 比对忽略 ascent：H、G 红（verify）；块链分支恒 false：红（verify）；frontier 的 `has_definite_size` 不读它：红（verify） |
+| `issue202_i_a_line_box_starts_with_the_blocks_strut` | 字号 20、`line-height: 20px` 的块里 40×30 空原子：行顶 = 原子顶，原子下面空出 4（字体 descent）；默认行高再加半个 leading（共 6）；块级子项独占的行高 30（无 strut）；原生段落的空原子下面也有空隙；原子改成 4 高后它的底在行顶下 16（strut ascent）、行高 20 | 去掉 strut：红 |
+| css-parity `T-I06`（新） | 字号 20、行高 20 的块：40×30 与 10×4 两个空 inline-block，块高 34，矮的底落在 30 | 去掉 strut：红 |
+| css-parity `T-I07`（新） | inline-block 里 10 高的块下面一个块（`line-height: 20px`），块里一个 30×15 的 inline-block：外层原子的基线在它内部 26 处，旁边 40×20 的空原子顶在 6，外层块高 30 | 不读推导值：红；去掉 strut：红 |
+
+T-I06 / T-I07 的期望值按 CSS 2.1 §10.8 和上面的近似字体度量推得，未在浏览器里实测；真实字面的 strut 与近似差不到 1px，在 2px 容差内。T-I07 给块写了显式宽度和 `line-height`：引擎的块默认 `align-items: start` 不拉宽，测试夹具也不继承 `line-height`，显式写出后 CSS 与引擎的输入一致。
+
+**行为变化（BREAKING）。** 普通块级流里有 inline-level 原子的行：行底多出块字体的 strut descent（默认 16px 字号、行高 1.2 时 4.8px），很矮的原子下移到 strut ascent 之下，自动高度的块随之变高；行盒在后代里的 inline-block 按后代末行落在基线上；读内容的原子里固定尺寸块内的变化现在会重排这一行。已更新的期望：`layout_engine/tests.rs` 的五个 IFC 测试（`STRUT_LINE` = 24.8）、css-parity `T-I04`（mid 24.8、c 44.8）与 `T-FL05`（b 24.8）。
+
+**快照。** 画廊像素 680、语义 156 全部 MATCH，未重录：画廊里没有普通块级流中的 inline-level 原子。
+
+**本轮运行：**
+
+| 命令 | 结果 |
+| --- | --- |
+| `cargo fmt --all -- --check`；`git diff --check` | passed |
+| `cargo clippy -q -p nana-ui-core -p nana-ui-runtime -p nana-ui-scene -p nana-ui --all-targets -- -D warnings` | passed |
+| `cargo test -q -p nana-ui-runtime --lib` | 2328 passed、1 ignored |
+| `cargo test -q -p nana-ui-runtime --lib --features layout-verify -- issue202 issue197 issue199` | 15 passed |
+| `cargo test -q -p nana-ui-scene --tests` | 全部通过（370） |
+| `cargo test -q -p nana-ui --features hosted,gpu --lib` | 967 passed、1 ignored |
+| `cargo test -q -p nana-css-parity` | 全部通过（含新 T-I06、T-I07） |
+| `cargo test -q --workspace --all-targets` | 第一次在 nana-ui lib 停下：`output::driver_tests::shared_painter::unchanged_incompatible_groups_reuse_without_rendering_submitting_or_uploading` 失败一次（GPU 提交，机器高负载；单独跑 3 次都过）；加 `--no-fail-fast` 重跑：6079 passed、0 failed、5 ignored |
+| `cargo test -q -p component-gallery --bin ui-snapshots --features snapshots --locked` | 12 passed |
+| `caffeinate -di cargo run -q --release -p component-gallery --bin ui-snapshots --features snapshots --locked -- --output <scratch>` | MATCH: 680（exact） |
+| 同上加 `--semantic` | MATCH: 156 |
+
+**仍未做：**
+- strut 的字体度量是近似（0.8em / 0.2em），不是块字体的真实字面值；原生段落用真实值。
+- 上文列出的不推导情形（flex / grid 容器、反向或换行的块级流、带浮动的流、竖排）与容器的首个基线仍是近似。
+- 未在 Windows/Linux 上运行。NanaLive / NanaType 只读检查：NanaUI 源码用法里仍没有 `inline-block` / `DisplaySpec::Inline*` / `InlineFlow`（只有 NanaLive 文档提到 `InlineFlow`、NanaType 一个浏览器集成页面的 HTML），不受影响；未构建。
+
+## 2026-10-29 追加：#205
+
+逐条重新核对 #205 的 7 条验收项（不沿用 10-26/10-27 的判定），补全 mini-layout 审计表，迁移 Checkbox，把 Select 菜单空间与无障碍铬裁剪改为沿 clip 链，并修复冷对照门禁揭出的「清空的文字留着旧度量」。
+
+| 验收项 | 判定 | 证据 / 缺口 |
+| --- | --- | --- |
+| 建立 component mini-layout audit 表 | **本轮补全** | `docs/reference/component-layout.md` 的审计表逐项覆盖 `UiWorld::derive_component_geometry` 的全部分支，按 Issue 的 1–4 类标出已迁移、待迁移与不迁移；原表缺 Checkbox、Switch、StatusBadge、ValidationMessage、SelectionOption、EmptyState、Toast、MenuSurface 触发器、Range/Progress、ModalFrame、Panel 等行 |
+| 首批通用组件迁移到 Foundation composition | 可勾（附注） | Issue 点名的首批：Button/Chip/ActionMenuItem（`issue205_button_chip_menu_parts_follow_content_changes_without_new_entities`）、ListItem/SidebarRow/FileTab（`issue205_row_text_parts_match_cold_and_preserve_state`、`issue205_rtl_row_parts_respect_live_slots_and_hidden_tools`）、FormField/LabeledValue（`issue205_form_field_parts_*`、`issue205_value_parts_*`）、Card（`issue205_card_header_*`）、Select 触发器（`issue205_select_trigger_parts_*`）此前已迁；Panel 本来就是普通 Flex 列，没有组件几何。本轮另迁 Checkbox（见下）。附注：菜单行（Select/Dropdown/ContextMenu）是字段的数据行，归 3 类，label/hint 分割共用 `menu_option_text_boxes`、摆放走 #200，不进 Foundation；MenuSurface 触发器的文字/图标仍手算 |
+| renderer-side label/icon/slot placement 逐步删除 | 进行中 | 本轮删掉 Scene 为 Checkbox 自算的指示框位置和标签让位（`scene/primitives.rs`），Scene 只读 `ComponentGeometry::Checkbox`；Scene 测试 `standard_control_visuals_expand_without_backend_tag_matching` 改为提供 Runtime 发布的几何。剩余：Scene 里 Switch 的 `SWITCH_TEXT_INSET` 兜底 |
+| ComponentGeometry 重复 layout authority 删除/降级 | 进行中 | 本轮删除三处：Checkbox 的指示框占位原先在 measure（`visual_content`）、段落预算（`text_shape_constraints` 的 `leading_visual`）、geometry 各算一遍，现都读 `UiWorld::checkbox_parts`；`select_menu_room` 自己沿祖先走、自己判断逃出与 `fixed`，现沿 `UiWorld::clip_ancestors`（发布的 clip 链）；无障碍的 EmptyState/对话框铬裁剪同样改走 `clip_ancestors`。剩余见审计表：Switch、StatusBadge/ValidationMessage、SelectionOption、EmptyState、Toast、MenuSurface 触发器、Range/Progress 文字、`context_menu_height` |
+| retained wrapper/entity 爆炸有门禁 | 可勾 | 1k/10k：`issue205_ten_thousand_plain_buttons_keep_one_entity_and_two_parts_each`、`…_rows_…`、`…_form_fields_and_selects_…`、`…_values_…`、`…_cards_…`，本轮 `issue205_ten_thousand_checkboxes_keep_one_entity_and_three_parts`（每个一个实体，parts 恰为 TextContent/ComponentContent/LeadingContent，空闲帧零布局零 spawn）；常驻内存 `tests/node_memory.rs` |
+| 业务/visual geometry 不被错误塞进 Layout Foundation | 可勾（附注） | 审计表把编辑器、菜单/树/命令面板/重排列表的行、滚动条、XYPad、resize grip 归 3 类，图表、日历热图、二维码、图、Markdown、ImageViewer 舞台归 4 类，均未加 `LayoutPartKind`；附注：这是按源码的人工分类，没有机器门禁 |
+| 旧 API 可作为 facade 继续使用 | 可勾 | Checkbox、Button、Select 等构造与字段未变；Runtime 全量、view_macro、Scene、nana-ui 全部通过（见下）；`ComponentGeometry::Checkbox` 字段不变 |
+
+### 改动
+
+- **Checkbox 迁到部件。** `layout_engine::parts` 新增 `checkbox_parts`（指示框 `LeadingContent`，标签 `TextContent` 取余下宽度、可收缩、交叉轴拉伸，间隔只在有标签时）、`chrome_extent`（部件里除文字以外的宽度与间距、最高的图形）、`text_budget`（可用宽度减去同一份）、`start_row_parts`（图形按内容盒取正方形后起点对齐地求解）。`button_text_budget` 与 Button 的 intrinsic 改用 `text_budget` / `chrome_extent`，数值不变。`UiWorld::checkbox_parts` 从主题读指示框尺寸与间隔，measure、段落预算、`solve_content_parts_at`、geometry 都读它。TextRun 片段因此落在标签部件里（此前 Checkbox 没有部件，文本片段落在整个内容盒，与指示框重叠）。内容盒比指示框还矮时，标签跟着正方形化后的指示框左移，不再空出固定宽度（只在显式压低的 Checkbox 上可见）。
+- **菜单空间与铬裁剪沿 clip 链。** `clip_chain.rs` 新增 `UiWorld::clip_ancestors`（沿发布的 `clip_parent` 往上）。`select_menu_room` 与无障碍的铬裁剪都用它，删掉各自的祖先遍历与逃出判断。行为变化：`fixed` 的字段打开的菜单取整个窗口，不再被它所在的滚动容器截（字段本身就画在、点在那些容器之外）；`fixed` 盒子的无障碍范围不再被祖先 EmptyState/对话框的铬裁剪截，与绘制、命中一致；逃出对话框 body 的 `absolute` 盒子不再被 body 裁剪截（命中索引早已如此）。
+- **清空的文字交出度量。** 冷对照门禁揭出：Button/Chip/Checkbox 的标签被清空后，盒子仍按旧文字的宽度排。原因是没有文字的盒子在 `take_system_work` 里被去掉 TEXT 位，旧的 `text_metrics` 一直留着。现在仍持有度量的盒子保留 TEXT 位；`shape_text` 把文字为空的非 Text 盒子解析成「没有文字」，度量归零、按度量变化重新布局，此后不再进文字工作。
+- 文档：`component-layout.md` 审计表与产品路径、`layout.md` 新增「组件内容部件（#205）」并补 clip 链段落、`layout-result.md`、`components/checkbox.md`「布局」、`components/select.md`「菜单」。
+
+### 门禁与变异
+
+| 门禁（`world/issue205.rs`） | 证明 | 变异（改坏→变红→恢复→`cmp` 一致） |
+| --- | --- | --- |
+| `issue205_checkbox_indicator_and_label_are_published_parts` | 指示框正方形、居中、起于内容盒；标签起于指示框加间隔、止于内容盒末；无宽度的 Checkbox 的标签部件恰为文字宽（measure 读同一组部件）；`ComponentGeometry::Checkbox` 等于两部件；TextRun 落在标签部件内；1 实体 3 parts；120px 宽的长标签按标签部件宽度折行 | measure 去掉间隔：红；预算不扣指示框：红；geometry 的标签取内容盒：红；不发布 Checkbox 部件：红（连同 10k 门禁） |
+| `issue205_checkbox_parts_follow_changes_like_a_cold_layout_and_toggle_paints_only` | 空标签→有标签→长标签/Small→Large/90px→清空→复原，每步与冷布局逐项相同（`assert_matches_cold`）；勾选、悬停零 measure/placement，generation 与 `LayoutResult` 指针不变，无障碍 `checked` 更新 | 去掉「持有度量的盒子保留 TEXT 位」：红 |
+| `issue205_checkbox_parts_survive_context_transitions` | 勾选且聚焦的 Checkbox 在 Grid→Inline→Flex 父级间切换：0 spawn/despawn，状态与焦点保留，几何等于部件，与冷布局相同 | geometry 的标签取内容盒：红 |
+| `issue205_ten_thousand_checkboxes_keep_one_entity_and_three_parts` | 1k/10k 每个一个实体、三个 parts、空闲帧零工作 | 不发布 Checkbox 部件：红 |
+| `issue205_menu_room_and_chrome_clips_follow_the_clip_chain` | 流内行的菜单空间被滚动容器按滚动截；`fixed` 字段的菜单空间是整个窗口、命中在它画的位置；EmptyState 流内子项在铬裁剪内，`fixed` 子项的无障碍范围是它的整个盒子、命中同处 | `select_menu_room` 改回沿树走：红（连同 `issue201_a_menu_room_is_cut_by_the_clip_chain_alone`）；无障碍铬裁剪改回沿树走：红 |
+| `issue205_a_cleared_label_lays_out_as_a_cold_unlabelled_control` | 带图标的 Button 与 Chip 清空标签后与冷布局逐项相同、Button 变窄、度量归零，下一帧无工作、零布局、generation 不变 | 去掉 TEXT 位保留：红；`shape_text` 不把空文字解析成「没有文字」（按空行量出行高）：红 |
+
+所有门禁已在 CI 的 `issue205` 过滤里（`.github/workflows/ci.yml` 的门禁循环原有 `issue205`，前缀匹配，不用改）。
+
+### 本轮运行
+
+| 命令 | 结果 |
+| --- | --- |
+| `cargo fmt --all -- --check`；`git diff --check` | passed |
+| `cargo clippy -q -p nana-ui-core -p nana-ui-runtime -p nana-ui-scene -p nana-ui --all-targets -- -D warnings` | passed |
+| `cargo test -q -p nana-ui-runtime --lib` | 2320 passed、1 ignored（加入迁移切换门禁之前；之后由下面的工作区全量覆盖） |
+| `cargo test -q -p nana-ui-runtime --lib -- issue205` | 23 passed |
+| `cargo test -q -p nana-ui-runtime --lib --features layout-verify -- issue205 issue201 issue199` | 36 passed |
+| `cargo test -q -p nana-ui-runtime --features view-macro --test view_macro` | 48 passed |
+| `cargo test -q -p nana-ui-scene --tests` | 全部通过（lib 238） |
+| `cargo test -q -p nana-ui-scene --lib --features nana-ui-runtime/layout-verify` | 238 passed |
+| `cargo test -q -p nana-ui --features hosted,gpu --lib` | 967 passed、1 ignored |
+| `cargo test -q --workspace --all-targets` | 6072 passed、0 failed、5 ignored |
+| `cargo test -q -p component-gallery --bin ui-snapshots --features snapshots --locked` | 12 passed |
+| `caffeinate -di cargo run -q --release -p component-gallery --bin ui-snapshots --features snapshots --locked -- --output <scratch>` | MATCH: 680（exact，Apple M4 Metal） |
+
+画廊像素逐张相同：画廊里的 Checkbox 都比指示框高，部件与原来手算的盒子相同；清空标签、`fixed` 字段的菜单、`fixed` 盒子在铬裁剪下的无障碍范围都不在画廊里。
+
+### 仍未做
+
+- 审计表里标「待迁移」的 2 类：Switch（track 与 label/hint、`project` 里的 min-height、段落预算与 Scene 的 `SWITCH_TEXT_INSET` 各一份 track 占位）、StatusBadge/ValidationMessage（padding 预留 + geometry 重算）、SelectionOption、EmptyState、Toast、MenuSurface 触发器、Range/Progress 的文字；ContextMenu 的 `context_menu_height`（被投影覆盖的默认度量高度）。Switch 的标签与 hint 是行里套一列，需要部件支持嵌套方向或两组部件，属下一批。
+- Checkbox 在 RTL 下不镜像（与迁移前相同）。按 CSS 应把指示框放到行尾；这会改变 RTL 下的画面，属产品选择，本轮未改。
+- 无障碍铬裁剪对「逃出对话框 body 的 `absolute` 盒子」现在与命中一致（不被 body 截），没有单独的门禁覆盖这一支；EmptyState 与 `fixed` 的门禁覆盖了沿链遍历本身。
+- 未在 Windows/Linux 上运行；没有跑 `nana-ui-devtools` 的真实 GPU `issue205_component_pixels`。NanaLive / NanaType 只读检查：没有 `ComponentGeometry::Checkbox`、`SelectMenuRoom` 或 Checkbox 部件的直接使用，Checkbox 只经构造器；NanaLive 的 `tool_window_acceptance/narrow.rs` 读行与选项的 `text_metrics`（非空标签，不受清空修复影响）；未构建这两个 consumer。

@@ -129,8 +129,32 @@ Flex、Grid、Inline、Overlay 的算法各在 `layout_engine/` 下自己的模�
 context 切换，增量与冷布局相同；分派不认模态框时 placement 的断言失败）。同一容器在 Flex → Grid → Layers → Inline 之间来回切换 20 轮，保留缓存在第
 一轮后不再变化，回到 Flex 时与只排过 Flex 的冷缓存相同（`issue199_repeated_context_switches_keep_the_retained_cache_flat`）。
 
-锚定的浮层已经由布局放置，见下文「锚点定位」。还没做的：脱流定位的 containing block 仍取直接父级的内容盒，没有按最近定位祖先解析
-（#200）；clip 链没有接进 Scene/Hit/A11y 共用的结果（#201）。
+锚定的浮层已经由布局放置，见下文「锚点定位」。`absolute` 的包含块按 CSS 解析，`fixed` 挂在自己文档的视口上，裁剪和滚动沿
+包含块走的 clip 链作用，Scene、命中和无障碍读同一条链，见下文「定位」里的「clip 链」（#201）。
+
+## 组件内容部件（#205）
+
+控件不自己排内容。图标、指示框、标签、hint、spinner 这类没有身份的内容声明为轻量 Flex
+parts（`layout_engine::parts`），用 retained Flex 的同一组求解函数分配主轴、收缩和对齐，
+结果随节点的 `LayoutResult.parts` 一起发布。部件没有 `StableNodeId`，不产生 wrapper 节点。
+一份部件声明同时供四处读：intrinsic measure 取除文字以外的宽度与间距（`chrome_extent`），
+段落预算取可用宽度减去同一份（`text_budget`），placement 求解它们，`ComponentGeometry`
+和 Scene 只读发布的盒子、附加绘制数据。文本片段（TextLine/TextRun）落在 `TextContent`
+部件里。
+
+部件可以嵌套方向：Switch 的一行是 track 与一个文字列，文字列再按 Flex 列解出标签和 hint，
+两次求解用同一个 `flex_parts`。intrinsic measure 把文字能要的宽度先扣掉文字旁的部件
+（图标、指示框、圆点），与段落预算相同，文字铺满时盒子不会因为这些部件超出可用宽度。部件读的主题度量没有出现在节点自己的样式里时（Switch 的
+track 与间隔，StatusBadge / ValidationMessage 的圆点格宽与间隔），主题改了这些度量，节点照样重新测量（`visual_parts_read_theme`）。
+
+已迁移：Button、Chip、ActionMenuItem、Checkbox、Switch、StatusBadge、ValidationMessage、ListItem/SidebarRow/FileTab 的文字部件、
+LabeledValue、FormField、Card 标题、Select 触发器。交互、数据行、文本编辑几何（菜单行、
+树行、编辑器）与图表、路径、画布不进部件。逐组件的分类和待迁移项见
+[组件内容布局与迁移审计](component-layout.md)。
+
+文字被清空的盒子交出原来的度量：一个盒子的文字变成空串时，下一次文字工作把它解析成
+「没有文字」，度量归零、布局重新量它，结果与冷布局相同。门禁是 `world/issue205.rs` 的
+`issue205_a_cleared_label_lays_out_as_a_cold_unlabelled_control`。
 
 ## Incremental reflow frontier
 
@@ -298,8 +322,9 @@ measure 计划沿用的前提是节点自己的输入都没变：约束、样式
 只移动了的容器。前面的兄弟变了，后面的容器只是被推开：它的 placement 计划除原点外都成立（放回原来的
 位置照样能沿用），它的子项都不在 frontier 上、也不通向 frontier 上的节点，这一趟也还没放过它。这时它不
 逐个查子项的尺寸，也不重建计划：每个子项放在新的内容原点加上计划记下的、它在内容盒里的偏移，在原来的
-包含块里（grid 的子项是它的单元格）；子项有自己的计划时同样平移下去，绝对定位的子项跟着内容盒移动，
-固定定位的子项挂在视口上，不动。整棵子树的盒子都要重新写一遍，这是真实输出，计划只换掉原点。偏移就是
+包含块里（grid 的子项是它的单元格）；子项有自己的计划时同样平移下去。绝对定位的子项以这个容器为包含块时
+跟着移动；包含块是更上层的祖先或初始包含块时，只随那个包含块动，按它现在的盒子决定要不要重放。固定定位的
+子项挂在视口上，不动。整棵子树的盒子都要重新写一遍，这是真实输出，计划只换掉原点。偏移就是
 放置时加到内容原点上的那个值，所以平移后的位置和从头布局逐位相同。被反向主轴的远端或换行 flex 前面
 一行按差值挪过的子项没有精确偏移，subgrid 的子项要读继承的轨道，这样的容器移动时照旧重新放置子项。
 
@@ -405,6 +430,10 @@ Gate E（可用尺寸仍落在缓存的包络段里时不重排）见下文「Dy
   used size 的路径上都做，包括跨 context 复用的 intrinsic facts（#202）。
 - 自然宽高比和样式里的 `aspect-ratio` 一样：flex 行与 grid 的 `stretch` 不把只写了宽的替换盒
   拉到行高或区域高，高度仍由宽度按比例得出。
+- min/max 不扭曲自然宽高比（#202，CSS 2.1 §10.4）。宽高都没写时，自然尺寸先按宽的上下限、再按高的
+  上下限等比缩放，两边的限制互相冲突时各自夹住、比例让步；只写了一边时，另一边按比例得出后再受它
+  自己的 min/max 约束。120×80 的图片 `max-width: 60px` 得 60×40，`min-width: 240px; max-height: 40px`
+  得 240×40。
 - 节点变成或不再是替换内容时，它对齐用的基线跟着变，也重新布局。
 - Markdown 里的图片解析出尺寸后，块列表变了，文档的新高度会进入布局。
 - 宽度由自己决定的容器，不再因为子项在交叉轴上变宽而退回遍历全部子项。
@@ -424,10 +453,86 @@ Gate E（可用尺寸仍落在缓存的包络段里时不重排）见下文「Dy
 - 显式尺寸下视频分辨率连变 100 次，零回流；
 - 每一趟对照全量布局，结尾对照冷布局。
 
-`world/issue202.rs` 把同一对图片（无尺寸、只写宽）放进 Flex、拉伸的 Flex 行、Grid、拉伸的 Grid、
-行内与 absolute，自然尺寸到达后逐一对照尺寸、participation 和冷布局；另一个门禁让图片和
-CustomRender 在 `align-items: baseline` 的 flex 行与原生段落里以底边落在文字基线上。普通块级流的
-行盒目前把原子项顶部对齐，不做基线对齐；这不是 replaced 专有的规则。
+替换内容是一种布局项（#202）。图片（`content_image`）、`Video`、`GpuTextureView`（HostTexture）、
+`GpuView`（GPU 画布 / 渲染目标）和挂在普通元素上的 `CustomRenderNode`（呈现锚点）都按显示的资源
+（`ReplacedResource`）进同一个索引，`LayoutNode::content` 都是 `Replaced`，在 Flex、Grid、行内与
+absolute 里的 participation 和普通盒子一样，同一个自然尺寸给出同一个盒子。没有按组件分的尺寸路径。
+组件的默认样式各有不同：`Video`、`GpuTextureView`、`GpuView` 没写宽高时铺满（`fill`），写 `auto`
+才读自然尺寸；图片没写宽高、尺寸未到时没有面积。
+
+fit 只有一份数学：`ContentFit::fitted_size`（`nana-ui-core`）。fit 是绘制，只读布局给的盒子，不回写
+布局。
+- `CustomRenderNode.fit`（视频、HostTexture、Avatar、Thumbnail）由画家用 `LogicalRect::fitted` 求目标
+  矩形，`GpuTextureView::texture_uv_at` 与 `Thumbnail::picture_rect` 用同一函数换算坐标。
+- 图片的 `object-fit` 写在 `PaintStyle::object_fit` 和 `content_image` 的 `BackgroundImageFit` 上。画家
+  `url()` 路径经 `BackgroundImageFit::object_fit` 换成 `ContentFit` 再求尺寸；`background-size` 的
+  关键字同样走这里，只有写长度的 `background-size`（`Length`）是背景自己的规则。图片另外认
+  `object-position`，HostTexture 居中。
+- `ImageViewer` 的初始画面是 `scale-down`。
+- 标记里 `<video>` 与 `<gpu>` 的 fit：层叠出的 `object-fit` 优先，`fit` 属性是 presentational hint，
+  两者都认全部五个关键字（原先属性只认 `contain`，其余都当 `fill`）。
+
+`world/issue202.rs` 的门禁：
+- A：同一对图片（无尺寸、只写宽）放进 Flex、拉伸的 Flex 行、Grid、拉伸的 Grid、行内与 absolute，
+  自然尺寸到达后逐一对照尺寸、participation 和冷布局。
+- B：图片和 CustomRender 在 `align-items: baseline` 的 flex 行与原生段落里以底边落在文字基线上。
+- C：上面五种替换内容各按应用的写法建出，在六种 context 里 content 都是 `Replaced`、participation
+  相同，同一个自然尺寸到达后盒子相同，5 个 replaced seed、0 全文档回退，对照冷布局。
+- D：min/max 与自然宽高比的八种组合在 Flex、Grid、行内、absolute 下的尺寸，对照冷布局。
+- E：同一尺寸再报一次不产生任何工作；换成同尺寸的另一个资源 0 seed、0 measure；换成另一尺寸的
+  资源只重排读它的两个盒子。
+- F：`Video` 与 `GpuTextureView` 从标记得到的 fit 与图片的 `object-fit` 是同一个值。
+- G：普通块级流里同一行的原子按基线对齐：没有行盒的 inline-block、`overflow` 非 visible 的
+  inline-block 和图片以底外边距边落在基线上，带文字的 inline-block 以末行基线落在基线上，块的
+  高度就是行盒从最高顶到最低底的跨度。换一个更高的原子、同尺寸盒子里文字折成多行、原本空的原子
+  里来了文字，每一步都重新摆放这一行，并与冷布局逐项相同。
+- H：行盒都在后代里的 inline-block 以末个后代行盒的基线落在行的基线上：标签在空块下面的固定盒子、
+  块里折成多行的标签（取第二行，不取首行）、两个各占一行的 inline-block 标签（取第二行）、固定
+  尺寸块里的标签。后代文字折行、上方的块变高、固定尺寸块里的文字折行都重新摆放这一行；行数不变的
+  文字改动不移动任何盒子。每一步与冷布局逐项相同。
+- I：普通块级流的行盒从块的 strut 起算：`line-height` 等于字号时空 inline-block 下面留出字体的
+  descent，默认行高再加半个 leading；很矮的原子顶不高于 strut 的 ascent；块级子项独占的行没有
+  strut；原生段落的行同样在原子下面留出空隙。
+
+`nana-ui` 的 `scene_paint/replaced_context_tests.rs` 另有两项：host texture 跨 context 移动不重新绑定
+纹理；五种 fit 下 `url()` 路径与 host-texture 路径给出相同的目标矩形。
+
+基线：替换内容按底边对齐（`aligns_by_bottom_edge`），由布局决定，不由画家修正 y。行内格式化上下文
+（原生段落 `InlineFlow` 的行盒，和普通块级流里 inline-block 原子同行的行盒）都按 CSS 默认的
+`vertical-align: baseline`（CSS 2.1 §10.8.1）对齐，两者读同一个函数
+`LayoutInputMap::atom_line_metrics`：
+- inline-block 以末个流内行盒的基线落在行的基线上，基线值取 `baseline_metrics` 的末行基线。
+  行盒都在后代里的 inline-block（`UiWorld::line_boxes_are_descendants`：没有自己的文字、控件或
+  段落，只在流里有）取持有末个行盒的后代所在的位置（CSS 2.1 §10.8.1）：
+  `inline::descendant_last_baseline` 按 placement 的方式从子项在它内容盒里量出的尺寸排它的流
+  ——块级流逐个叠放，行内格式化上下文用 `pack_ifc_line_boxes` 排行、按 `ifc_line_metrics` 定
+  行的基线——末个行盒要么是这样一行，要么是独占一行的块，后者再取它自己的末行基线（行盒也在后代里
+  就递归）。每趟按节点和所用尺寸记在 `LayoutInputMap::derived_baselines`，读原子 ascent 的每一处
+  （块的测量与 placement、measure plan 的比对与增量、原生段落）先 `prime_atom_baselines`，
+  `baseline_metrics` 再读它，所以只有这一份推导。flex / grid 容器、反向或换行的块级流、行旁有浮动的
+  盒子不推导，仍是自身字体首行的近似；
+- 替换内容、`overflow` 非 visible 的 inline-block、没有流内行盒的 inline-block（`UiWorld::atom_sits_on_line_box`）
+  以**底外边距边**落在基线上，`margin-bottom` 把它抬高；
+- 行盒高度是对齐之后从最高的顶外边距边到最低的底外边距边的跨度，块级子项独占一行、从行顶排起。
+- 普通块级流里有行内级子项的行盒从块的 **strut** 起算（`inline::line_strut`）：一个零宽、用块
+  自己的字号和 `line-height` 的行内盒。布局读不到字体度量，ascent 用共享的近似
+  `TEXT_APPROX_ASCENT_EM`（0.8em），descent 是 em 的其余 0.2em，`line-height` 与 em 的差一半
+  加在上、一半加在下。所以以底边落在基线上的空 inline-block 下面留出 descent（默认行高 1.2 时是
+  0.3em），很矮的原子顶不高于 strut 的 ascent。块级子项独占的行没有 strut。`line-height` 读块自己
+  的 `LayoutStyle`（CSS 路径由 `inherit_typography_from` 继承下来），不读 `ComputedStyle`。
+  原生段落的行本来就有 strut（`nana-text` 的 `LineStrut`），用的是真实字面的度量，所以两者都有
+  strut，但普通块级流的值是近似，和同字号原生段落可差零点几像素。
+
+`align-items: baseline` 的 flex 行仍按首行基线对齐，替换内容取边框盒底边（CSS Align 在 flex / grid
+里从边框盒合成基线）。行的基线发布在 `LayoutResult` 的 TextLine 片段上。`LayoutStyle` 没有
+`vertical-align`，默认的 `baseline` 就是全部行为。这不是 replaced 专有的规则。
+
+原子的基线随内容移动，失效也跟着走：`overflow` 为 visible 的固定尺寸 inline-block 在普通块级流里
+不再是度量边界（`UiWorld::atom_baseline_reads_content`），它里面的变化会让这一行重新对齐；
+这样的原子流里的流内块（再往下也一样）是找末个行盒的地方，固定尺寸也不是边界，frontier 也不在它
+那里停（`has_definite_size` 读同一个函数）。`overflow` 非 visible 的和替换内容的位置只看自己的盒子，
+仍然是边界，里面的变化不重排这一行。IFC 的 measure plan 记下每个原子在行上的 ascent，盒子尺寸没变
+但 ascent 变了时重新测量这个块；ascent 没变（后代文字改了但末行没动）时沿用计划，盒子都不动。
 
 #259 加了替换内容负载：在 1k、10k、100k 页面末尾，视频帧、图片自然尺寸、共享图片的开销相同。
 
@@ -733,6 +838,11 @@ grid 的列是 inline 轴上的轨道。行是 block 轴上的轨道。这是 CS
 fallback。替换内容和 Custom 节点以 block 轴末端作为明确 fallback。Flex、Grid
 和 IFC 不各自估算一套基线。
 
+IFC 的行里，原子按基线对齐（`vertical-align: baseline`，见上文「替换内容」的基线一段）：
+inline-block 取末行基线（行盒在后代里时取后代末个行盒的实际位置），替换内容、`overflow` 非
+visible 和没有行盒的原子取底外边距边，行从块的 strut 起算，行高是对齐后的跨度。原生段落和普通
+块级流的行共用这条规则。
+
 flex 行的保留计划记下每个按基线对齐的子项当时用的基线。下一趟里，子项的尺寸没变
 但基线变了（固定尺寸的按钮里字号变了），这一行照样重新对齐，不沿用旧位置。
 
@@ -750,7 +860,33 @@ flex 项和 grid 项上的 float，按 CSS 被块化，然后忽略。
 
 **定位。** 你可以用 `relative`、脱流的 `absolute`、相对窗口的 `fixed`，以及文档流内的 `sticky`。`sticky` 在滚动投影之后才贴住。它不写回 Runtime 的 `LayoutBox`。
 
+`absolute` 的包含块和 CSS 相同（CSS 2.1 §10.1）：
+
+- 最近的定位祖先（`relative`、`absolute`、`fixed`、`sticky`）的 **padding 盒**。中间的静态盒子跳过，它们的 padding 不算。
+- 没有定位祖先时，是初始包含块：文档原点上、视口大小的矩形。
+
+所以想让 absolute 子项贴着某个盒子，那个盒子要写 `position: relative`。`inset: 0` 盖住它的 padding 盒，不是内容盒。
+
+**clip 链（#201）。** 溢出容器（`overflow` 不是 `visible` 的盒子）只裁剪、滚动这样的后代：这个容器是后代的包含块，或者在包含块之上（CSS Overflow 3、CSS 2.1 §11.1.1）。所以：
+
+- `absolute` 盒子的包含块在一个静态滚动容器之外时，它不随那个容器滚动，也不被它裁剪；包含块在容器里面时照常。
+- `fixed` 盒子和它下面的一切不受任何祖先裁剪、滚动。
+
+每个盒子发布的 `LayoutResult` 记着这条链：`clip` 是最近一个够得着它的溢出容器，链沿那个容器自己的 `clip` 往上；`clip_parent` 是盒子取裁剪和滚动的节点，一般是父级，逃出溢出容器的 `absolute` 盒子则是它逃出的最外层容器的父级，`fixed` 盒子是 `None`。`UiWorld::layout_clip_chain` 按发布的结果列出整条链。被跨过的祖先仍把变换传给它，但不传任何裁剪和滚动。这里和 CSS 有一处不同：被跨过的祖先上的 `clip-path` 和组件铬的裁剪（EmptyState、对话框）也不作用于它，CSS 的 `clip-path` 会。
+
+Scene 抽取、命中索引、无障碍和 Select 菜单的可用空间都按 `clip_parent` 挂盒子，不各自沿祖先推导。要按上方的盒子截一块区域的遍历（菜单的可用空间、无障碍里 EmptyState 与对话框的铬裁剪）都走 `UiWorld::clip_ancestors`，即沿发布的 `clip_parent` 往上：`fixed` 盒子（字段自己或它上方的一个）到此为止，`fixed` 的字段打开的菜单取整个窗口（#205 门禁 `issue205_menu_room_and_chrome_clips_follow_the_clip_chain`）。命中索引里逃出的盒子挂在 `clip_parent` 的条目下，滚动时它逃出的那个容器的平移不带上它，它覆盖的点按绘制顺序排先后。无障碍节点的 `bounds` 仍是整个盒子，`clip` 是链上各溢出容器按此刻的滚动留给它的那块视口，链上没有容器时为 `None`；画出来的、指针点得到的就是 `bounds` 落在 `clip` 里的部分。滚动仍然不跑布局。祖先改变定位或开始、停止裁剪时，下面记着的链跟着重新发布。
+
+门禁在 `world/issue201.rs` 的 `clip_chain` 模块：定位的页面里有静态滚动容器，里面一张定位卡片带一个静态滚动容器，放一行流内盒子、一个以卡片为包含块的 `absolute` 盒子和一个 `fixed` 盒子；卡片后面一个静态裁剪盒放一个以页面为包含块的 `absolute` 盒子。断言各自的 `clip` / `clip_parent`；两个容器滚到几组偏移，每组不跑布局，无障碍的位置和裁剪、指针命中（就地打补丁的命中索引和重建的都算）都按链；Select 菜单的空间同样只被链上的容器截；卡片和里层容器改变定位、溢出时与冷布局逐项相同（含无障碍的 `clip`），就地打补丁的命中索引（先让滚动平移活着，再变链）在整页网格上的命中和候选与重建的相同；被跨过的祖先的变换（样式上的和合成器动画呈现的）照样作用于逃出的盒子；一个树序在后、盖住逃出盒子的兄弟接住指针，不论索引怎样排它们。`nana-ui-scene` 的 `runtime_document_clip_chain_tests.rs` 走真实的 `RuntimeDocument` 帧，逐个比较 Scene 画出的位置和裁剪、无障碍的 `bounds` / `clip`、命中和剔除，滚动和链变化后都相同。
+
+滚动范围也按这条链算（CSS Overflow 3：盒子只算进它包含块链上的 scrollable overflow）。`absolute` 盒子算进它包含块的范围，不算进它逃出的静态滚动容器；`fixed` 盒子和它下面的一切不算进任何容器。见下文「溢出」。门禁在 `world/issue201.rs` 的 `scroll_range` 模块：静态滚动容器里放一个以页面为包含块、远在下方的 `absolute` 盒子和一个更远的 `fixed` 盒子（里面再放一个 `absolute` 盒子），容器的可滚距离、`LayoutResult::overflow`、`scroll_extent` 和偏移夹取都不含它们，`absolute` 盒子算进够得着它的页面；容器改成 `relative`、盒子在 `absolute` 与 `fixed` 之间切换时范围随链移动，与冷布局逐项相同（含度量和夹取后的偏移）；两个容器滚动时不跑布局，范围不变。`world/scroll_bounds.rs` 的 `out_of_flow_boxes_count_where_their_clip_chain_reaches_them` 在索引层面对照按 clip 链走的全遍历和新建的索引：定位翻转、子树在包含块之间搬动、停放后接回、停放时顶层开始裁剪、触发式菜单打开（菜单项变 `fixed`）再关上。
+
+增量布局按包含块追踪：包含块挪动或改变尺寸时，挂在它上面的盒子会重放，即使中间的静态盒子这一趟没被放过；只有中间的静态盒子移动时，盒子不动。祖先开始或停止成为包含块时，下面的盒子改挂到新的包含块，发布的 `LayoutResult::containing_block` 也跟着更新。门禁在 `world/issue200.rs`：每一步都和冷布局逐个比对盒子、结果、命中和无障碍。
+
 `sticky` 相对最近的滚动视口解析 inset，并受正常流包含块约束：到父容器末端会释放。没有 inset 的轴照常滚动。嵌套 Sticky 从父级的呈现位置继续计算；嵌套滚动容器各自拥有视口。Runtime 的命中、无障碍和 Scene 绘制共用同一个 placement 投影，滚动不触发内容 measure、layout 或文本塑形。改变包含块尺寸或重新挂载时，只失效其登记的 Sticky 分支。
+
+`fixed` 的包含块是它所在文档的视口：原点在窗口左上角，大小是这个文档上次布局用的视口。祖先是不是定位盒子、有没有 padding 都不算；祖先的滚动和裁剪也不作用于它，命中和无障碍同样按窗口上的位置读它的盒子。没有定位祖先的 `absolute` 用的初始包含块也是这个文档的视口。一个 `AppContext` 里有几个文档时，每个文档记着自己的视口（`UiWorld::document_viewport`）：一个文档改变视口，只重放它自己的 `fixed`、`vw` / `vh` 盒子和初始包含块上的盒子，另一个文档不跑布局，盒子、结果和记下的视口都不变。门禁 `issue200_fixed_boxes_hang_from_their_own_windows_viewport`：两个视口不同的文档，各有一个藏在 `relative` 卡片和带 padding 的静态盒子里、宽 25% 的 `fixed` 盒子，一个初始包含块上的 `absolute` 盒子，一个滚动列表里的 `fixed` 盒子；列表滚动、两个文档轮流改变大小，每一步盒子、命中和无障碍范围都在自己的视口上，另一个文档不动，最后与冷布局相同。
+
+一个 `AppContext` 承载几个文档时，每个文档的帧用 `AppContext::take_system_work_for(document)` 取工作（`RuntimeDocument` 就是这样取的）：样式、文本这些全局工作照常取走，布局 seed 只取这个文档的，另一个文档的编辑留在待处理表里，等它自己的帧。直接用 `take_system_work` 一次取完再交给某个文档的布局也不会丢：那一趟会把别的文档的 seed 放回待处理表。门禁 `issue200_an_edit_pending_in_one_window_waits_for_that_windows_frame`：第二个文档的盒子变宽后先画第一个文档，第一个文档一趟布局都不跑；第二个文档自己的帧才放下这次编辑；一次全部取完、全部交给第一个文档时，编辑同样留到第二个文档的帧。
 
 `fixed` 只适合普通节点贴在视口上。产品浮层仍走控件。不要自己用 `fixed` 搭对话框。
 
@@ -762,6 +898,8 @@ flex 项和 grid 项上的 float，按 CSS 被块化，然后忽略。
 这是 CSS anchor positioning 里「翻面再收进来」的那一部分。所有锚定的浮层共用这一个解析器：ContextMenu、AnchoredActionMenu、触发菜单、HoverCard、Popover，以及 Select 的下拉。Select 两侧都放不下时，取宽的一侧并截短。
 
 窗口改变大小时，布局直接重放这些表面，不用重新投影组件。命中和无障碍读的都是布局给出的盒子。这个字段没有 CSS 写法，由控件写。门禁在 `world/issue200.rs`。
+
+Select、Dropdown、SearchDropdown 的菜单不是布局盒子，是字段的组件几何：按字段的盒子和「菜单看得见的空间」（`SelectMenuRoom`：窗口，再扣掉字段 clip 链上的裁剪，按此刻的滚动位置）用同一个解析器摆放。Scene 画的、`select_option_at` 选的、命中索引里字段那一项带的菜单表面，都从这一份几何来。空间由字段投影时记下；每一趟布局结束后（滚动保留之后），引擎再为文档里开着的菜单按刚发布的布局算一次空间，变了才写回，所以窗口改变大小、字段或外层容器被挪动时，菜单不用等字段重新投影就重新翻面、截高，命中索引随之重建字段那一项。只有滚动不跑布局：页面滚动时菜单跟着字段走，到下一次变化再重新摆放，画和命中仍是同一份。门禁 `issue200_a_select_menu_follows_the_viewport_and_hits_where_it_paints`：窗口变矮再变高，菜单翻上翻下，每一步画在某点的那一行就是指针选中的一行、命中给字段的一点，旧位置不再命中，与冷布局得到的菜单相同。字段（`ComboBox`）的范围是它的布局盒子；菜单打开时，字段下有一个列表框，每个露出来的行一个选项节点，范围同样取自这份几何（行与菜单视口、此刻的「看得见的空间」相交，再经字段的变换），所以读屏读到的、画出来的和指针选中的是同一行，见 [Select 的读屏](../components/select.md#读屏)。门禁在同一个文件：`issue200_a_select_listbox_*`、`issue200_an_open_select_menu_reads_as_a_listbox_of_its_rows` 等。
 
 脱流盒子的高度没写，也没同时写 `top` 和 `bottom` 时，按内容算。它里面按高度填满的子项（`Fill`、百分比高度）没有确定的高度可依，按内容处理。不再取包含块的高度。包含块的高度由这些盒子撑出来时（按内容量高的虚拟列表行），那样会每一趟布局都长高一截，帧永远稳定不下来。
 
@@ -900,7 +1038,7 @@ CSS `url()` 的帧仍走 4× MSAA。它和 HostTexture、backdrop 的 interleave
 
 `backdrop-filter: blur()` 是逐节点的 dest 采样模糊。`blur(r)` 的 `r` 和 CSS 一样是高斯的标准差。它做旋转映射，也做祖先的 inset 和 polygon clip。不是整窗的 Mica 或 Acrylic。
 
-`<img>` 的 `object-fit: cover | contain | fill | none | scale-down` 经 cascade 写入 `PaintStyle`，再落到 `CustomRenderNode.fit`。HTML attr 是 presentational hint。样式表压过 attr。inline 再压过样式表。
+`<img>` 的 `object-fit: cover | contain | fill | none | scale-down` 经 cascade 写入 `PaintStyle::object_fit` 和 `content_image` 的 fit；`<video>` 与 `<gpu>` 把它落到 `CustomRenderNode.fit`。三者由画家用同一个 `ContentFit::fitted_size` 求尺寸（见上文「替换内容」）。HTML attr 是 presentational hint。样式表压过 attr。inline 再压过样式表。
 
 **命中。** `pointer-events` 是 `auto` 或 `none`，按 CSS **继承**。
 
@@ -914,7 +1052,7 @@ CSS `url()` 的帧仍走 4× MSAA。它和 HostTexture、backdrop 的 interleave
 
 **溢出。** `overflow`、`overflow-x`、`overflow-y` 可以是 `visible`、`hidden`、`clip`、`auto`、`scroll`。
 
-`hidden`、`clip`、`auto`、`scroll` 都会裁剪绘制，也会裁剪命中。
+`hidden`、`clip`、`auto`、`scroll` 都会裁剪绘制，也会裁剪命中。裁剪和滚动沿 clip 链作用于后代，见「定位」。
 
 两轴都裁剪时，后代的绘制按盒子自己的 `border-radius` 裁圆角。裁的是边框盒。四角不等时取最小的那个，不超过短边的一半。这和 CSS 一致。盒子自己的背景和边框仍只按直角边框盒裁。不被同一个圆角再裁一次。命中仍按直角。
 
@@ -924,7 +1062,7 @@ CSS `url()` 的帧仍走 4× MSAA。它和 HostTexture、backdrop 的 interleave
 
 滚动起点在 start 边。这是 CSSOM View 的 scrolling area。`direction: rtl` 的行、`vertical-rl` 的块轴、`row-reverse` 和 `column-reverse` 从右或下开始排。初始视图就是右或下边。向左或向上溢出的内容，用负偏移滚到。和 CSSOM 一样，偏移从 0 往负走。越过 start 边另一侧的内容，滚不到。
 
-滚动范围只算到最近的裁剪盒为止，和 CSS 的 scrollable overflow 一样。里层的滚动容器只把自己的盒子算进外层的范围，它里面内容的溢出不算：滚动区里套一个滚动区，外层不会因为里层的内容变长而能滚。`overflow: hidden` / `clip` 的盒子在它裁剪的那条轴上同样只算自己的盒子，没裁剪的那条轴照常算进它的内容。滚动容器两条轴都算裁剪。哪些轴算裁剪，用 `UiWorld::overflow_contained_axes` 查。
+滚动范围只算滚动容器够得着的盒子，即 clip 链经过它的盒子（见「定位」里的「clip 链」）：包含块在容器之外的 `absolute` 盒子算进它的包含块，`fixed` 盒子哪里都不算。内容索引把 `absolute` 盒子的范围带过它和包含块之间的盒子，落进包含块；带上去的范围只取决于它来自的子树，所以子树搬家时索引不用重建。会裁剪或滚动的盒子，`LayoutResult::overflow` 也只并入 `clip_parent` 是自己的子项；其他盒子照旧并入所有子项。滚动范围只算到最近的裁剪盒为止，和 CSS 的 scrollable overflow 一样。里层的滚动容器只把自己的盒子算进外层的范围，它里面内容的溢出不算：滚动区里套一个滚动区，外层不会因为里层的内容变长而能滚。`overflow: hidden` / `clip` 的盒子在它裁剪的那条轴上同样只算自己的盒子，没裁剪的那条轴照常算进它的内容。滚动容器两条轴都算裁剪。哪些轴算裁剪，用 `UiWorld::overflow_contained_axes` 查。
 
 每个滚动容器都有度量。写布局盒、增删子节点，或改样式的提交结束时，Runtime 重新测量受影响的滚动容器，并把偏移夹进去。不论盒子是引擎写的，还是宿主写的。多行文本编辑器的度量随塑形结果走。`vertical-rl` 编辑器同样用负偏移滚向左边的列。
 
@@ -1094,7 +1232,10 @@ prelude 是 `[名字] 条件`：
 - `@import … layer()` 和 `supports()`。
 - 完整的 cascade-layer 优先级。
 - 完整的浮动排除。祖先浮动侵入子块、`shape-outside`、流内块级边框盒缩窄，都没有。
-- 完整 IFC。没有精确的 CSS 基线，也没有行内拆箱。
+- 完整 IFC。行内原子按基线对齐、行盒有 strut，但没有 `vertical-align` 的其他取值，也没有行内
+  拆箱。strut 的字体度量是近似（0.8em / 0.2em），不是字面的真实值。行盒在后代里的 inline-block
+  里，flex / grid 容器、反向或换行的块级流和带浮动的流不推导末行位置，仍按自身字体近似；首个基线
+  （`align-items: baseline` 读的）对容器仍是近似。
 - 轨道列表 token 形式的 `subgrid`。
 - 用 `position: fixed` 当 Dialog 或 Drawer。走 Nana 的浮层。
 - 自定义 `url()` 光标图。

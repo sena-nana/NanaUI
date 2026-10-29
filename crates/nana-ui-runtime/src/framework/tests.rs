@@ -6923,6 +6923,46 @@ fn an_icon_button_opts_into_its_own_colors_without_touching_its_siblings() {
     assert_eq!(own.interaction.hovered.background, Some(Role::AccentStrong));
 }
 
+/// `icon_size` draws the glyph at the size it names and leaves the button's
+/// square alone; without it the glyph is the control size's type step.
+#[test]
+fn an_icon_buttons_icon_size_sets_the_glyph_not_the_box() {
+    let mut context = AppContext::new();
+    let document = DocumentId::new(1).unwrap();
+    let plain = context
+        .create_component(
+            document,
+            crate::IconButton::new(nana_ui_core::Icon::Add, "Add")
+                .size(nana_ui_core::ControlSize::Small),
+        )
+        .unwrap();
+    let sized = context
+        .create_component(
+            document,
+            crate::IconButton::new(nana_ui_core::Icon::Add, "Add")
+                .size(nana_ui_core::ControlSize::Small)
+                .icon_size(16.0)
+                .icon_size(f32::NAN),
+        )
+        .unwrap();
+    let glyph = |id: crate::StableNodeId| match context.world().standard_visual(id) {
+        Some(StandardVisual::Icon { size, .. }) => size,
+        other => panic!("expected an icon visual, got {other:?}"),
+    };
+    assert_eq!(
+        glyph(plain.stable_id()),
+        nana_ui_core::ControlSize::Small.text_size_in(context.world().theme().typography())
+    );
+    assert_eq!(glyph(sized.stable_id()), 16.0);
+    let square = |id: crate::StableNodeId| {
+        context.world().extract_nodes(&[id])[0]
+            .source_style
+            .layout
+            .min_width
+    };
+    assert_eq!(square(sized.stable_id()), square(plain.stable_id()));
+}
+
 #[test]
 fn an_installed_icon_button_size_reaches_the_square() {
     let mut context = AppContext::new();
@@ -13364,4 +13404,56 @@ fn auto_growing_text_area_follows_nested_composer_constraints_without_losing_its
         let scroll = cx.world().scroll_metrics(area.stable_id()).unwrap();
         assert!(scroll.content_height > scroll.viewport_height);
     }
+}
+
+/// A row that only shows something (a member of a room) is neither a control
+/// nor an unavailable one: the pointer passes through it, so it never takes
+/// the hover paint; it takes no focus and no activation; and it is still a
+/// row of the list, in the normal text colour and not disabled.
+#[test]
+fn a_read_only_list_item_takes_no_pointer_focus_or_activation() {
+    let mut context = AppContext::new();
+    let document = DocumentId::new(1).unwrap();
+    let row = context
+        .create_component(document, ListItem::new("Hiyori").read_only(true))
+        .unwrap();
+    let live = context
+        .create_component(document, ListItem::new("Haru"))
+        .unwrap();
+    context
+        .layout_document(document, crate::LayoutViewport::new(240.0, 120.0))
+        .unwrap();
+    context.rebuild_hit_test(document);
+    let id = row.stable_id();
+
+    let interaction = context.world().interaction(id).unwrap();
+    assert!(!interaction.pointer_events && !interaction.focusable);
+    let state = context.world().accessibility(id).unwrap();
+    assert_eq!(state.role, crate::AccessibilityRole::ListItem);
+    assert!(!state.disabled, "it reads as text, not as unavailable");
+    assert!(state.display_only);
+
+    let geometry = context.world().layout_box(id).unwrap();
+    let (x, y) = (
+        geometry.x + geometry.width / 2.0,
+        geometry.y + geometry.height / 2.0,
+    );
+    assert_ne!(context.pointer_target(document, x, y), Some(id));
+    assert!(!context.focus_node(document, id).unwrap());
+    assert!(!context.activate_list_item(row).unwrap());
+
+    // The same row that acts keeps all three.
+    let live_id = live.stable_id();
+    let live_box = context.world().layout_box(live_id).unwrap();
+    assert_eq!(
+        context.pointer_target(
+            document,
+            live_box.x + live_box.width / 2.0,
+            live_box.y + live_box.height / 2.0,
+        ),
+        Some(live_id)
+    );
+    assert!(context.world().interaction(live_id).unwrap().focusable);
+    assert!(context.focus_node(document, live_id).unwrap());
+    assert!(!context.world().accessibility(live_id).unwrap().display_only);
 }

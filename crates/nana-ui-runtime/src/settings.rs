@@ -249,6 +249,10 @@ impl SettingsRow {
         let divider = self.divided && !self.last_in_group;
         style.border = divider.then_some(SemanticColorRole::BorderSoft);
         let layout = Arc::make_mut(&mut style.layout);
+        // The containing block of the flash tint.
+        if !layout.position.establishes_containing_block() {
+            layout.position = nana_ui_core::PositionSpec::Relative;
+        }
         layout.width = Some(LengthSpec::Percent(100.0));
         layout.direction = Some(if stacked {
             FlexDirection::Column
@@ -424,11 +428,7 @@ impl SettingsRow {
             .project(control, world, mutations);
         }
         if let Some(flash) = self.flash_slot {
-            SettingsRowFlash {
-                first_in_group: self.first_in_group,
-                last_in_group: self.last_in_group,
-            }
-            .project(flash, world, mutations);
+            SettingsRowFlash.project(flash, world, mutations);
         }
         if let Some(hint) = self.hint_slot {
             let value = self.hint.as_deref().unwrap_or("");
@@ -754,18 +754,14 @@ impl ComponentView for SettingsRowLabelLine {
 }
 
 /// The tint a flashing row paints under itself. It is out of flow, so the
-/// row lays out as it would without it; it covers the row's box top to
-/// bottom (an absolute box is placed in its parent's content box, so it
-/// reaches back over the row's padding) and reaches past the copy and the
-/// control by a list item's inset on either side, as a selected list row's
-/// pill does past its text. Pointers go through it and assistive technology
+/// row lays out as it would without it; the row is its containing block, so
+/// it covers the row's padding box top to bottom and reaches past the copy
+/// and the control by a list item's inset on either side, as a selected list
+/// row's pill does past its text. Pointers go through it and assistive technology
 /// does not see it. Its opacity is the flash: see
 /// [`AppContext::flash_settings_row`].
 #[derive(Debug, Clone, PartialEq)]
-struct SettingsRowFlash {
-    first_in_group: bool,
-    last_in_group: bool,
-}
+struct SettingsRowFlash;
 
 impl SettingsRowFlash {
     fn style(&self) -> NodeStyle {
@@ -783,22 +779,8 @@ impl SettingsRowFlash {
         layout.offset_right = Some(LengthSpec::Px(-bleed_px));
         layout.theme.offset_left = Some(bleed.clone());
         layout.theme.offset_right = Some(bleed);
-        // The row's own vertical padding, as `SettingsRow::effective_style`
-        // picks it.
-        let (top, top_px) = if self.first_in_group {
-            (nana_ui_core::SpacingStep::Xs, ROW_GROUP_PADDING_Y)
-        } else {
-            (nana_ui_core::SpacingStep::Lg, ROW_PADDING_Y)
-        };
-        let (bottom, bottom_px) = if self.last_in_group {
-            (nana_ui_core::SpacingStep::Xs, ROW_GROUP_PADDING_Y)
-        } else {
-            (nana_ui_core::SpacingStep::Lg, ROW_PADDING_Y)
-        };
-        layout.offset_top = Some(LengthSpec::Px(-top_px));
-        layout.offset_bottom = Some(LengthSpec::Px(-bottom_px));
-        layout.theme.offset_top = Some(crate::theme_intent::space(top).scaled(-1.0));
-        layout.theme.offset_bottom = Some(crate::theme_intent::space(bottom).scaled(-1.0));
+        layout.offset_top = Some(LengthSpec::Px(0.0));
+        layout.offset_bottom = Some(LengthSpec::Px(0.0));
         style
     }
 }
@@ -2961,20 +2943,12 @@ impl AppContext {
     /// leaves with the row, should the row go first.
     pub fn flash_settings_row(&mut self, row: Entity<SettingsRow>) -> Result<(), FrameworkError> {
         let document = document_of(self, row.stable_id())?;
-        let (flash, first_in_group, last_in_group) = self.read(row, |row| {
-            (row.flash_slot, row.first_in_group, row.last_in_group)
-        })?;
+        let flash = self.read(row, |row| row.flash_slot)?;
         let flash = match flash.filter(|id| self.world().contains(*id)) {
             Some(id) => id,
             None => {
                 let id = self
-                    .create_detached_component(
-                        document,
-                        SettingsRowFlash {
-                            first_in_group,
-                            last_in_group,
-                        },
-                    )?
+                    .create_detached_component(document, SettingsRowFlash)?
                     .stable_id();
                 self.update_component(row, |row, _| row.flash_slot = Some(id))?;
                 // First, so it paints under everything else in the row.

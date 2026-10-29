@@ -355,9 +355,10 @@ impl crate::ComponentView for AnchoredActionMenu {
     }
 }
 
-/// A context-menu row is known by its value: the same command keeps its
-/// accessibility node while a search filters the rows around it.
-fn menu_item_key(value: &str) -> u64 {
+/// A context-menu row, or a select field's option, is known by its value:
+/// the same command keeps its accessibility node while a search filters the
+/// rows around it.
+pub(crate) fn menu_item_key(value: &str) -> u64 {
     use std::hash::{Hash, Hasher};
     let mut hasher = std::collections::hash_map::DefaultHasher::new();
     value.hash(&mut hasher);

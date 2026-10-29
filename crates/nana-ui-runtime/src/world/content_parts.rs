@@ -2,8 +2,30 @@
 use super::*;
 use crate::layout_engine::{
     Size,
-    parts::{ContentParts, button_content_parts, part_bounds},
+    parts::{
+        ContentParts, FlexPart, SwitchInputs, button_content_parts, checkbox_parts, part_bounds,
+        start_row_parts, status_dot_parts, switch_parts,
+    },
 };
+
+/// A status dot's diameter in its slot.
+pub(crate) const STATUS_DOT_FRACTION: f32 = 10.0 / 24.0;
+
+/// Whether a visual's content parts read installed metrics that a theme can
+/// move without moving any style the node resolves: a switch's track and
+/// gap, a status dot's slot and gap. (A checkbox's indicator reads the same
+/// type and spacing steps its own style resolves, so a theme that moves them
+/// relays it out already.)
+pub(super) fn visual_parts_read_theme(visual: Option<&StandardVisual>) -> bool {
+    matches!(
+        visual,
+        Some(
+            StandardVisual::Switch { .. }
+                | StandardVisual::StatusBadge { .. }
+                | StandardVisual::ValidationMessage { .. }
+        )
+    )
+}
 
 impl UiWorld {
     pub(super) fn component_content_parts(&self, id: StableNodeId) -> ContentParts {
@@ -108,6 +130,17 @@ impl UiWorld {
             button_content_parts(visual, content, Size::new(text.width, text.height))
         {
             return parts;
+        }
+        if let Some(inputs) = self.checkbox_parts(id, Size::new(text.width, text.height)) {
+            return start_row_parts(content, inputs);
+        }
+        if let Some(inputs) = self.switch_inputs(id) {
+            return switch_parts(content, inputs);
+        }
+        if let Some(inputs) = self.status_dot_parts(id, Size::new(text.width, text.height)) {
+            // The spacer before the dot is not a part of its own.
+            let [_, dot, label] = start_row_parts(content, inputs);
+            return [dot, label, None];
         }
         if let StandardVisual::Card { title, loading, .. } = visual {
             let border = self
@@ -293,6 +326,93 @@ impl UiWorld {
             );
         }
         [None; 3]
+    }
+
+    /// A checkbox's indicator and label before placement, the label `text`
+    /// in size: what intrinsic measure, the paragraph budget and placement
+    /// all read, so none of them keeps its own copy of the indicator's room.
+    pub(crate) fn checkbox_parts(
+        &self,
+        id: StableNodeId,
+        text: Size,
+    ) -> Option<[Option<FlexPart>; 3]> {
+        let Some(StandardVisual::Checkbox { size, .. }) = self.standard_visual_ref(id) else {
+            return None;
+        };
+        Some(checkbox_parts(
+            size.indicator_size_in(self.theme.typography(), self.theme.spacing()),
+            size.indicator_gap_in(self.theme.spacing()),
+            self.text(id).is_some_and(|label| !label.is_empty()),
+            text,
+        ))
+    }
+
+    /// A switch's track and text column before placement, from the
+    /// installed theme: what intrinsic measure and placement both read, so
+    /// neither the style nor the paint keeps its own copy of the track's
+    /// room or the text column's height.
+    pub(crate) fn switch_inputs(&self, id: StableNodeId) -> Option<SwitchInputs> {
+        let Some(StandardVisual::Switch {
+            label,
+            hint,
+            control_position,
+            size,
+            ..
+        }) = self.standard_visual_ref(id)
+        else {
+            return None;
+        };
+        let track = self.style_model.metrics.switch;
+        let typography = self.theme.typography();
+        let line = |font: f32| (font * typography.line / typography.body).max(font);
+        Some(SwitchInputs {
+            track: Size::new(track.track_width, track.track_height),
+            gap: track.label_gap,
+            end: *control_position == SwitchControlPosition::End,
+            labelled: !label.is_empty() || hint.is_some(),
+            label_line: line(size.text_size_in(typography)),
+            hint: hint.as_ref().map(|_| {
+                (
+                    self.theme.spacing().xxs,
+                    line(size.caption_size_in(typography)),
+                )
+            }),
+        })
+    }
+
+    /// A status badge's or validation message's dot and label before
+    /// placement, the label `text` in size: what intrinsic measure, the
+    /// paragraph budget and placement all read, so the style's padding keeps
+    /// no copy of the dot's room.
+    pub(crate) fn status_dot_parts(
+        &self,
+        id: StableNodeId,
+        text: Size,
+    ) -> Option<[Option<FlexPart>; 3]> {
+        let spacing = self.theme.spacing();
+        let (slot, gap) = match self.standard_visual_ref(id)? {
+            StandardVisual::StatusBadge { compact, .. } => {
+                if *compact {
+                    (spacing.sm, spacing.xs)
+                } else {
+                    (spacing.md, spacing.sm)
+                }
+            }
+            StandardVisual::ValidationMessage { compact, .. } => {
+                if *compact {
+                    (spacing.xl, spacing.xs)
+                } else {
+                    (spacing.xxl, spacing.sm)
+                }
+            }
+            _ => return None,
+        };
+        Some(status_dot_parts(
+            slot,
+            slot * STATUS_DOT_FRACTION,
+            gap,
+            text,
+        ))
     }
 
     pub(super) fn content_part_box(

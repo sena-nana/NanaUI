@@ -37,7 +37,6 @@ use super::*;
 /// denominator was the icon box the ratio was originally measured against, and
 /// it survived the move to a spacing-step slot. Two copies of a phantom
 /// denominator is how the two badges drift apart.
-const STATUS_DOT_FRACTION: f32 = 10.0 / 24.0;
 
 /// Block extent of a progress bar.
 pub(crate) const PROGRESS_GIRTH: f32 = nana_ui_core::space::SM;
@@ -1274,26 +1273,24 @@ impl UiWorld {
                     geometry
                 })
             }
-            StandardVisual::Checkbox { size, .. } => {
-                let reserve = size.indicator_size_in(self.theme.typography(), self.theme.spacing());
-                let extent = reserve.min(content.height);
-                let gap = size.indicator_gap_in(self.theme.spacing());
+            StandardVisual::Checkbox { .. } => {
+                // Both boxes are the parts layout published (#205); the label
+                // of an empty checkbox has none and keeps the content box.
+                use crate::LayoutPartKind;
+                let indicator = self
+                    .content_part_box(id, LayoutPartKind::LeadingContent)
+                    .unwrap_or(LayoutBox {
+                        width: 0.0,
+                        height: 0.0,
+                        ..content
+                    });
                 Some(crate::ComponentGeometry::Checkbox {
                     border_width: self.theme.border().hairline,
                     check_weight: self.theme.typography().bold,
-                    indicator: LayoutBox {
-                        x: content.x,
-                        y: content.y + (content.height - extent) / 2.0,
-                        width: extent,
-                        height: extent,
-                    },
+                    indicator,
                     label: text_region(
-                        LayoutBox {
-                            x: content.x + reserve + gap,
-                            y: content.y,
-                            width: (content.width - reserve - gap).max(0.0),
-                            height: content.height,
-                        },
+                        self.content_part_box(id, LayoutPartKind::TextContent)
+                            .unwrap_or(content),
                         self.text(id).unwrap_or_default().into(),
                         false,
                         style.font_size,
@@ -1311,65 +1308,31 @@ impl UiWorld {
                 invalid,
                 ..
             } => {
-                let track = self.style_model.metrics.switch;
-                let control = LayoutBox {
-                    x: match control_position {
-                        SwitchControlPosition::Start => content.x,
-                        SwitchControlPosition::End => {
-                            content.x + (content.width - track.track_width).max(0.0)
-                        }
-                    },
-                    y: content.y + (content.height - track.track_height) / 2.0,
-                    width: track.track_width.min(content.width),
-                    height: track.track_height.min(content.height),
-                };
-                let text_x = if *control_position == SwitchControlPosition::Start {
-                    control.x + control.width + track.label_gap
-                } else {
-                    content.x
-                };
-                let text_right = if *control_position == SwitchControlPosition::End {
-                    control.x - track.label_gap
-                } else {
-                    content.x + content.width
-                };
-                let text_width = (text_right - text_x).max(0.0);
-                let label_size = size.text_size_in(self.theme.typography());
-                let label_line = (label_size * self.theme.typography().line
-                    / self.theme.typography().body)
-                    .max(label_size);
-                let hint_size = size.caption_size_in(self.theme.typography());
-                let hint_line = (hint_size * self.theme.typography().line
-                    / self.theme.typography().body)
-                    .max(hint_size);
-                let (label_bounds, hint_bounds) = if hint.is_some() {
-                    (
-                        LayoutBox {
-                            x: text_x,
-                            y: content.y,
-                            width: text_width,
-                            height: label_line.min(content.height),
+                // The track, label and hint are the parts layout published
+                // (#205); a switch with nothing beside its track has no label
+                // part and draws an empty label at the content box's start.
+                use crate::LayoutPartKind;
+                let control = self
+                    .content_part_box(
+                        id,
+                        if *control_position == SwitchControlPosition::End {
+                            LayoutPartKind::TrailingContent
+                        } else {
+                            LayoutPartKind::LeadingContent
                         },
-                        Some(LayoutBox {
-                            x: text_x,
-                            y: content.y + label_line + self.theme.spacing().xxs,
-                            width: text_width,
-                            height: (content.height - label_line - self.theme.spacing().xxs)
-                                .max(0.0)
-                                .min(hint_line),
-                        }),
                     )
-                } else {
-                    (
-                        LayoutBox {
-                            x: text_x,
-                            y: content.y,
-                            width: text_width,
-                            height: content.height,
-                        },
-                        None,
-                    )
-                };
+                    .unwrap_or(LayoutBox {
+                        width: 0.0,
+                        height: 0.0,
+                        ..content
+                    });
+                let label_bounds =
+                    self.content_part_box(id, LayoutPartKind::Label)
+                        .unwrap_or(LayoutBox {
+                            width: 0.0,
+                            ..content
+                        });
+                let hint_bounds = self.content_part_box(id, LayoutPartKind::Hint);
                 let palette = self.style_model;
                 let hovered = self
                     .input
@@ -1816,22 +1779,23 @@ impl UiWorld {
                 tone,
                 compact,
             } => {
-                let (horizontal, indicator_slot, gap, text_size) = if *compact {
-                    (
-                        self.theme.spacing().sm,
-                        self.theme.spacing().sm,
-                        self.theme.spacing().xs,
-                        self.theme.typography().hint,
-                    )
+                // The dot and the label are the parts layout published (#205).
+                use crate::LayoutPartKind;
+                let indicator = self
+                    .content_part_box(id, LayoutPartKind::LeadingContent)
+                    .unwrap_or(LayoutBox {
+                        width: 0.0,
+                        height: 0.0,
+                        ..content
+                    });
+                let label_bounds = self
+                    .content_part_box(id, LayoutPartKind::TextContent)
+                    .unwrap_or(content);
+                let text_size = if *compact {
+                    self.theme.typography().hint
                 } else {
-                    (
-                        self.theme.spacing().md,
-                        self.theme.spacing().md,
-                        self.theme.spacing().sm,
-                        self.theme.typography().meta,
-                    )
+                    self.theme.typography().meta
                 };
-                let diameter = indicator_slot * STATUS_DOT_FRACTION;
                 let foreground = self
                     .style_model
                     .color(self.theme.recipes().status().role(*tone))
@@ -1839,20 +1803,9 @@ impl UiWorld {
                 let mut background = foreground;
                 background[3] *= 0.12;
                 Some(crate::ComponentGeometry::StatusBadge {
-                    indicator: LayoutBox {
-                        x: bounds.x + horizontal + (indicator_slot - diameter) / 2.0,
-                        y: bounds.y + (bounds.height - diameter) / 2.0,
-                        width: diameter,
-                        height: diameter,
-                    },
+                    indicator,
                     label: crate::ComponentTextRegion {
-                        bounds: LayoutBox {
-                            x: bounds.x + horizontal + indicator_slot + gap,
-                            y: bounds.y,
-                            width: (bounds.width - horizontal * 2.0 - indicator_slot - gap)
-                                .max(0.0),
-                            height: bounds.height,
-                        },
+                        bounds: label_bounds,
                         content: Arc::clone(label).into(),
                         color: Some(foreground),
                         font_size: text_size,
@@ -1863,16 +1816,20 @@ impl UiWorld {
                 })
             }
             StandardVisual::ValidationMessage {
-                message,
-                intent,
-                compact,
+                message, intent, ..
             } => {
-                let (indicator_slot, gap) = if *compact {
-                    (self.theme.spacing().xl, self.theme.spacing().xs)
-                } else {
-                    (self.theme.spacing().xxl, self.theme.spacing().sm)
-                };
-                let diameter = indicator_slot * STATUS_DOT_FRACTION;
+                // The dot and the message are the parts layout published (#205).
+                use crate::LayoutPartKind;
+                let indicator = self
+                    .content_part_box(id, LayoutPartKind::LeadingContent)
+                    .unwrap_or(LayoutBox {
+                        width: 0.0,
+                        height: 0.0,
+                        ..content
+                    });
+                let label_bounds = self
+                    .content_part_box(id, LayoutPartKind::TextContent)
+                    .unwrap_or(content);
                 let foreground = self
                     .style_model
                     .color(match intent {
@@ -1881,19 +1838,9 @@ impl UiWorld {
                     })
                     .as_rgba_array();
                 Some(crate::ComponentGeometry::ValidationMessage {
-                    indicator: LayoutBox {
-                        x: bounds.x + (indicator_slot - diameter) / 2.0,
-                        y: bounds.y + (bounds.height - diameter) / 2.0,
-                        width: diameter,
-                        height: diameter,
-                    },
+                    indicator,
                     label: crate::ComponentTextRegion {
-                        bounds: LayoutBox {
-                            x: bounds.x + indicator_slot + gap,
-                            y: bounds.y,
-                            width: (bounds.width - indicator_slot - gap).max(0.0),
-                            height: bounds.height,
-                        },
+                        bounds: label_bounds,
                         content: Arc::clone(message).into(),
                         color: Some(foreground),
                         font_size: style.font_size,
@@ -2487,6 +2434,7 @@ impl UiWorld {
                     bounds,
                     trigger.as_ref(),
                     *trigger_icon,
+                    overlay.and_then(|overlay| overlay.trigger_icon_size),
                     trigger_image.as_ref(),
                     trigger_content.is_some(),
                     style,
@@ -2781,13 +2729,49 @@ impl UiWorld {
         }
     }
 
+    /// The open Select, Dropdown and SearchDropdown menus of `document`
+    /// whose room is no longer the one [`Self::select_menu_room`] gives
+    /// now, each with its visual carrying the room it has now.
+    ///
+    /// A field projects its menu's room from the boxes the last layout gave
+    /// it; a layout pass that moves those boxes or the viewport, but not the
+    /// field's own state, leaves that room behind. Fed back after every
+    /// layout pass, the menu that is painted, hit and read is placed against
+    /// the layout just published.
+    pub(crate) fn stale_select_menu_rooms(
+        &self,
+        document: DocumentId,
+    ) -> Vec<(StableNodeId, StandardVisual)> {
+        let mut stale = self
+            .nodes
+            .open_select_menus()
+            .filter(|id| self.document_of(*id) == Some(document) && self.is_mounted(*id))
+            .filter_map(|id| {
+                let Some(StandardVisual::Select { menu_room, .. }) = self.nodes.visual(id) else {
+                    return None;
+                };
+                let room = self.select_menu_room(id);
+                (*menu_room != room).then(|| {
+                    let mut visual = self.nodes.visual(id).cloned()?;
+                    if let StandardVisual::Select { menu_room, .. } = &mut visual {
+                        *menu_room = room;
+                    }
+                    Some((id, visual))
+                })?
+            })
+            .collect::<Vec<_>>();
+        stale.sort_unstable_by_key(|(id, _)| *id);
+        stale
+    }
+
     /// Where a menu hanging off `id` can be seen, in `id`'s own layout
-    /// coordinates: the window and every clip above `id` that hit testing
-    /// cuts it by, each moved through the scroll offsets between that box and
-    /// `id`. A
-    /// `position: fixed` ancestor is window-placed and ends the walk, as it
-    /// does for hit testing. Transforms are left out: they bend where the menu
-    /// is placed, not whether what it draws matches what it hits.
+    /// coordinates: the window and every clip on `id`'s clip chain, each moved
+    /// through the scroll offsets between that box and `id`. The chain is the
+    /// one paint and hit testing follow ([`Self::clip_ancestors`], #201): an
+    /// escaped box passes over the containers it escapes, and a `fixed` box,
+    /// the field or one above it, ends it. Transforms are left out: they bend
+    /// where the menu is placed, not whether what it draws matches what it
+    /// hits.
     ///
     /// `None` until the document is laid out, or when nothing is left to see.
     pub(crate) fn select_menu_room(&self, id: StableNodeId) -> Option<crate::SelectMenuRoom> {
@@ -2806,9 +2790,9 @@ impl UiWorld {
         };
         // Scroll offsets between the box being looked at and `id`.
         let mut shift = crate::ScrollOffset::default();
-        let mut child = id;
-        let mut current = self.parent_id(id);
-        while let Some(ancestor) = current {
+        // The link of the chain below `ancestor`.
+        let mut below = id;
+        for ancestor in self.clip_ancestors(id) {
             let offset = self.scroll_offset(ancestor).unwrap_or_default();
             shift.x += offset.x;
             shift.y += offset.y;
@@ -2831,7 +2815,7 @@ impl UiWorld {
                 match self.nodes.visual(ancestor) {
                     Some(StandardVisual::EmptyState { .. }) => clip(layout, shift),
                     Some(StandardVisual::ModalFrame { slots, .. }) => {
-                        let body_root = slots.body == Some(child);
+                        let body_root = slots.body == Some(below);
                         if let Some(crate::ComponentGeometry::ModalFrame {
                             surface, body, ..
                         }) = self.component_geometry(ancestor)
@@ -2845,11 +2829,7 @@ impl UiWorld {
                     _ => {}
                 }
             }
-            if style.position == nana_ui_core::PositionSpec::Fixed {
-                break;
-            }
-            child = ancestor;
-            current = self.parent_id(ancestor);
+            below = ancestor;
         }
         clip(
             LayoutBox {

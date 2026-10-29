@@ -32,9 +32,12 @@ impl LogicalPoint {
 
 /// How a source image or host texture maps into its layout box.
 ///
-/// CSS `object-fit` on `<img>` uses this at the content box. The painter
-/// samples the full source into the destination rect and clips to the layout
-/// box — no extra GPU copy. [`Self::Fill`] stretches. [`Self::Contain`]
+/// This is the one fit contract of replaced content (Issue #202): an image's
+/// `object-fit` ([`crate::BackgroundImageFit::object_fit`]), a video, a host
+/// texture, a thumbnail and an image viewer all size their picture with
+/// [`Self::fitted_size`]. Fit is paint: it reads the box layout gave the node
+/// and never feeds back into it. The painter samples the full source into the
+/// destination rect and clips to the layout box — no extra GPU copy. [`Self::Fill`] stretches. [`Self::Contain`]
 /// letterboxes. [`Self::Cover`] overflow-crops. [`Self::None`] keeps intrinsic
 /// size. [`Self::ScaleDown`] is `none` or `contain`, whichever is smaller.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -113,108 +116,86 @@ impl LogicalRect {
         }
     }
 
-    /// Destination rect for sampling `content_width`×`content_height` with `fit`.
+    /// Destination rect for sampling `content_width`×`content_height` with
+    /// `fit`: [`ContentFit::fitted_size`], centered in this rect.
     pub fn fitted(self, content_width: f32, content_height: f32, fit: ContentFit) -> Self {
-        match fit {
-            ContentFit::Fill => self,
-            ContentFit::Contain => contain_rect(self, content_width, content_height),
-            ContentFit::Cover => cover_rect(self, content_width, content_height),
-            ContentFit::None => none_rect(self, content_width, content_height),
-            ContentFit::ScaleDown => scale_down_rect(self, content_width, content_height),
+        match fit.fit_within(self.width, self.height, content_width, content_height) {
+            Some((width, height)) => LogicalRect::new(
+                self.x + (self.width - width) * 0.5,
+                self.y + (self.height - height) * 0.5,
+                width,
+                height,
+            ),
+            None => self,
         }
     }
 }
 
-fn contain_rect(frame: LogicalRect, content_width: f32, content_height: f32) -> LogicalRect {
-    let Some(content_aspect) = fit_aspects(frame, content_width, content_height) else {
-        return frame;
-    };
-    let frame_aspect = frame.width / frame.height;
-    if content_aspect > frame_aspect {
-        let height = frame.width / content_aspect;
-        LogicalRect::new(
-            frame.x,
-            frame.y + (frame.height - height) * 0.5,
-            frame.width,
-            height,
-        )
-    } else {
-        let width = frame.height * content_aspect;
-        LogicalRect::new(
-            frame.x + (frame.width - width) * 0.5,
-            frame.y,
-            width,
-            frame.height,
-        )
+impl ContentFit {
+    /// The size a `content_width`×`content_height` source is drawn at in a
+    /// `frame_width`×`frame_height` box. A source with no usable size, or a
+    /// box with no area under a ratio-keeping fit, fills the box.
+    pub fn fitted_size(
+        self,
+        frame_width: f32,
+        frame_height: f32,
+        content_width: f32,
+        content_height: f32,
+    ) -> (f32, f32) {
+        self.fit_within(frame_width, frame_height, content_width, content_height)
+            .unwrap_or((frame_width, frame_height))
     }
-}
 
-fn cover_rect(frame: LogicalRect, content_width: f32, content_height: f32) -> LogicalRect {
-    let Some(content_aspect) = fit_aspects(frame, content_width, content_height) else {
-        return frame;
-    };
-    let frame_aspect = frame.width / frame.height;
-    if content_aspect > frame_aspect {
-        let width = frame.height * content_aspect;
-        LogicalRect::new(
-            frame.x + (frame.width - width) * 0.5,
-            frame.y,
-            width,
-            frame.height,
-        )
-    } else {
-        let height = frame.width / content_aspect;
-        LogicalRect::new(
-            frame.x,
-            frame.y + (frame.height - height) * 0.5,
-            frame.width,
-            height,
-        )
+    /// [`Self::fitted_size`], or `None` where the source fills the box.
+    fn fit_within(
+        self,
+        frame_width: f32,
+        frame_height: f32,
+        content_width: f32,
+        content_height: f32,
+    ) -> Option<(f32, f32)> {
+        let usable = content_width.is_finite()
+            && content_height.is_finite()
+            && content_width > 0.0
+            && content_height > 0.0;
+        // The source's aspect ratio, and whether it is wider than the box's.
+        let aspects = || {
+            if !usable || frame_width <= 0.0 || frame_height <= 0.0 {
+                return None;
+            }
+            let frame_aspect = frame_width / frame_height;
+            let content_aspect = content_width / content_height;
+            (frame_aspect.is_finite() && content_aspect.is_finite())
+                .then_some((content_aspect, content_aspect > frame_aspect))
+        };
+        let contain = || {
+            aspects().map(|(aspect, wider)| {
+                if wider {
+                    (frame_width, frame_width / aspect)
+                } else {
+                    (frame_height * aspect, frame_height)
+                }
+            })
+        };
+        match self {
+            Self::Fill => None,
+            Self::Contain => contain(),
+            Self::Cover => aspects().map(|(aspect, wider)| {
+                if wider {
+                    (frame_height * aspect, frame_height)
+                } else {
+                    (frame_width, frame_width / aspect)
+                }
+            }),
+            Self::None => usable.then_some((content_width, content_height)),
+            Self::ScaleDown
+                if usable && content_width <= frame_width && content_height <= frame_height =>
+            {
+                Some((content_width, content_height))
+            }
+            Self::ScaleDown => contain(),
+        }
     }
-}
-
-fn none_rect(frame: LogicalRect, content_width: f32, content_height: f32) -> LogicalRect {
-    if !usable_fit_size(content_width, content_height) {
-        return frame;
-    }
-    LogicalRect::new(
-        frame.x + (frame.width - content_width) * 0.5,
-        frame.y + (frame.height - content_height) * 0.5,
-        content_width,
-        content_height,
-    )
-}
-
-fn scale_down_rect(frame: LogicalRect, content_width: f32, content_height: f32) -> LogicalRect {
-    if usable_fit_size(content_width, content_height)
-        && content_width <= frame.width
-        && content_height <= frame.height
-    {
-        none_rect(frame, content_width, content_height)
-    } else {
-        contain_rect(frame, content_width, content_height)
-    }
-}
-
-fn fit_aspects(frame: LogicalRect, content_width: f32, content_height: f32) -> Option<f32> {
-    if !usable_fit_size(content_width, content_height) || frame.width <= 0.0 || frame.height <= 0.0
-    {
-        return None;
-    }
-    let frame_aspect = frame.width / frame.height;
-    let content_aspect = content_width / content_height;
-    if !frame_aspect.is_finite() || !content_aspect.is_finite() {
-        None
-    } else {
-        Some(content_aspect)
-    }
-}
-
-fn usable_fit_size(content_width: f32, content_height: f32) -> bool {
-    content_width.is_finite()
-        && content_height.is_finite()
-        && content_width > 0.0
-        && content_height > 0.0
 }
 
 /// A physical-pixel rectangle derived from a logical rectangle and scale factor.

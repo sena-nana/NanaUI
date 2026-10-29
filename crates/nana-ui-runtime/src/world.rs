@@ -1,6 +1,7 @@
 mod accessibility;
 mod animation;
 mod block_reads;
+mod clip_chain;
 mod extraction;
 mod focus_scope;
 mod geometry;
@@ -313,6 +314,41 @@ pub(crate) fn menu_surface_accessibility_changed(
         }
         (Some(StandardVisual::MenuSurface { .. }), _)
         | (_, Some(StandardVisual::MenuSurface { .. })) => true,
+        // A select field's open menu is a list box of virtual options: they
+        // follow its rows, its highlight, and where it is placed and
+        // scrolled. The pointer heating the scrollbar changes none of them.
+        (
+            Some(StandardVisual::Select {
+                opened: previous_open,
+                options: previous_options,
+                highlighted: previous_highlighted,
+                menu_scroll: previous_scroll,
+                menu_room: previous_room,
+                size: previous_size,
+                fit_options: previous_fit,
+                ..
+            }),
+            Some(StandardVisual::Select {
+                opened,
+                options,
+                highlighted,
+                menu_scroll,
+                menu_room,
+                size,
+                fit_options,
+                ..
+            }),
+        ) => {
+            previous_open != opened
+                || (*opened
+                    && (previous_options != options
+                        || previous_highlighted != highlighted
+                        || previous_scroll.offset != menu_scroll.offset
+                        || previous_room != menu_room
+                        || previous_size != size
+                        || previous_fit != fit_options))
+        }
+        (Some(StandardVisual::Select { .. }), _) | (_, Some(StandardVisual::Select { .. })) => true,
         _ => false,
     }
 }
@@ -381,6 +417,11 @@ struct HitEntry {
     menu: Option<LayoutBox>,
     /// A painter that decides which points of the box hit (Issue #217).
     painter: Option<Arc<PainterHit>>,
+    /// The entry hangs from its clip parent, not its parent: an absolute box
+    /// that escapes overflow containers (#201). Its sibling order then says
+    /// nothing about where it paints among its new siblings, so a point it
+    /// covers is ranked by paint order.
+    escaped: bool,
     children: Vec<HitEntry>,
 }
 
@@ -813,6 +854,10 @@ pub struct UiWorld {
     /// The `Arc` stays so a bit-equivalent recompute can keep the same object
     /// and generation; [`Self::layout_result`] reports these as absent.
     layout_results_suppressed: HashSet<StableNodeId>,
+    /// Nodes that started or stopped being a containing block or a clip:
+    /// every result under one records it as an anchor, so the next publish
+    /// checks them although their boxes may not have moved.
+    layout_anchor_roots: HashSet<StableNodeId>,
     /// Cursor declarations changed since the last system-work drain.
     cursor_style_dirty: bool,
     presenters: HashMap<String, Box<dyn TextPresenter>>,
@@ -1065,6 +1110,7 @@ impl UiWorld {
             framework_strings: Arc::default(),
             layout_results: crate::NodeMap::default(),
             layout_results_suppressed: HashSet::new(),
+            layout_anchor_roots: HashSet::new(),
             cursor_style_dirty: false,
             presenters: HashMap::new(),
             spawned_since_drain: 0,
@@ -1270,6 +1316,20 @@ impl UiWorld {
             .or_insert(invalidation);
     }
 
+    /// Hands back seeds a pass of another document was given: they stay
+    /// pending, merged into what is queued since, for their own document's
+    /// next drain. A node that left the world has nothing left to lay out.
+    pub(crate) fn requeue_layout_seeds(
+        &mut self,
+        seeds: impl IntoIterator<Item = crate::LayoutFrontierSeed>,
+    ) {
+        for seed in seeds {
+            if self.nodes.contains(seed.node) {
+                self.queue_layout_invalidation(seed.node, seed.invalidation);
+            }
+        }
+    }
+
     /// Publish the structural layout cause for a retained parent whose child
     /// list changed. The removed child may leave the live document before the
     /// next drain, so the parent is the durable frontier seed.
@@ -1468,12 +1528,15 @@ impl UiWorld {
 
     /// A px border box with no min/max does not export a child's intrinsic
     /// size. Baseline alignment is the exception: the parent's line still
-    /// moves when the child's baseline moves.
+    /// moves when the child's baseline moves -- under `align-items:
+    /// baseline`, and for an atom on a line of an ordinary block.
     fn is_fixed_metric_boundary(&self, id: StableNodeId) -> bool {
         let Some(record) = self.nodes.get(id) else {
             return false;
         };
-        if !definite_fixed_border(record.resolved_layout.as_ref()) {
+        if !definite_fixed_border(record.resolved_layout.as_ref())
+            || self.atom_baseline_reads_content(id)
+        {
             return false;
         }
         if let Some(parent) = record.hierarchy.parent
@@ -1544,6 +1607,13 @@ impl UiWorld {
         // ancestor closure so a compatibility write cannot leave a parent
         // pointing at an older child box. Siblings share their ancestors:
         // a walk stops at the first one already collected.
+        let anchored = self.take_moved_layout_anchors();
+        let ids: Vec<StableNodeId> = if anchored.is_empty() {
+            ids.to_vec()
+        } else {
+            ids.iter().copied().chain(anchored).collect()
+        };
+        let ids = ids.as_slice();
         let mut seen: NodeSet = ids.iter().copied().collect();
         let mut unique: Vec<StableNodeId> = seen.iter().copied().collect();
         for &id in ids {
@@ -1704,11 +1774,22 @@ impl UiWorld {
         result.participation = self.layout_node(id).and_then(|node| node.participation);
         let mut parts = Vec::with_capacity(children.len() + 2);
         let mut overflow = bounds;
+        // A box that clips or scrolls counts in its overflow only the
+        // children its clip and scroll reach: not a `fixed` child, nor an
+        // `absolute` one whose containing block is above it (#201). The
+        // range of the boxes under them is the content index's, which
+        // follows the same chain. Elsewhere overflow joins every child.
+        let scroll_metrics = self.scroll_metrics(id);
+        let joins_every_child = !node.resolved_layout.clips_overflow() && scroll_metrics.is_none();
+        let reaches =
+            |child: StableNodeId| joins_every_child || self.clip_parent_of(child) == Some(id);
         if let Some((placements, fragments)) =
             self.reusable_child_geometry(id, children, child_kind)
         {
             for placement in placements.iter() {
-                overflow = union_layout_boxes(overflow, placement.bounds);
+                if reaches(placement.node) {
+                    overflow = union_layout_boxes(overflow, placement.bounds);
+                }
                 parts.push(crate::LayoutPart {
                     kind: crate::LayoutPartKind::ChildPlacement,
                     node: Some(placement.node),
@@ -1753,7 +1834,9 @@ impl UiWorld {
                     node: Some(child),
                     bounds: child_bounds,
                 });
-                overflow = union_layout_boxes(overflow, child_bounds);
+                if reaches(child) {
+                    overflow = union_layout_boxes(overflow, child_bounds);
+                }
             }
 
             if record_has_text(node) && self.needs_native_text_fragments(id) {
@@ -1819,12 +1902,12 @@ impl UiWorld {
             result.fragments = fragments.into();
         }
 
-        let (clip, containing_block) = self.layout_anchors(node.hierarchy.parent);
+        let anchors = self.layout_anchors(id);
         let mut dependencies = children.to_vec();
-        if let Some(clip) = clip {
+        if let Some(clip) = anchors.clip {
             dependencies.push(clip);
         }
-        if let Some(containing_block) = containing_block {
+        if let Some(containing_block) = anchors.containing_block {
             dependencies.push(containing_block);
         }
         dependencies.sort_unstable();
@@ -1839,7 +1922,6 @@ impl UiWorld {
         // Only scroll containers need the retained descendant index. Avoid
         // materializing that index for ordinary nodes while still publishing
         // the full scroll extent where a consumer can actually use it.
-        let scroll_metrics = self.scroll_metrics(id);
         if scroll_metrics.is_some() {
             let content_extent = self.scroll_content_extent(id);
             if content_extent.left.is_finite()
@@ -1870,8 +1952,9 @@ impl UiWorld {
         } else {
             result.scroll_extent = overflow;
         }
-        result.clip = clip;
-        result.containing_block = containing_block;
+        result.clip = anchors.clip;
+        result.clip_parent = anchors.clip_parent;
+        result.containing_block = anchors.containing_block;
         result.dependencies = dependencies.into();
         Some(result)
     }
@@ -1981,13 +2064,11 @@ impl UiWorld {
                     )
                 })
                 .eq(extra);
-            let (clip, containing) = self.layout_anchors(facts.parent);
             return current
                 && content_current
                 && parts_current
                 && previous.formatting_context == facts.context
-                && previous.clip == clip
-                && previous.containing_block == containing;
+                && self.layout_anchors(id).recorded_in(&previous);
         }
         let baseline = facts
             .text
@@ -2027,8 +2108,7 @@ impl UiWorld {
         // dependencies are the children plus the two anchors: with the box
         // and every placement where the result recorded them, only the
         // anchors are left to move.
-        let (clip, containing_block) = self.layout_anchors(facts.parent);
-        previous.clip == clip && previous.containing_block == containing_block
+        self.layout_anchors(id).recorded_in(&previous)
     }
 
     fn layout_result_facts(&self, id: StableNodeId) -> Option<LayoutResultFacts> {
@@ -2039,40 +2119,96 @@ impl UiWorld {
             scroll_offset: node.scroll_offset,
             text: record_has_text(node),
             child_count: node.hierarchy.children.len(),
-            parent: node.hierarchy.parent,
             border: node.resolved_layout.resolved_border_edges(),
             child_kind: child_fragment_kind(node),
             context: established_context(node),
         })
     }
 
-    fn layout_anchors(
-        &self,
-        mut ancestor: Option<StableNodeId>,
-    ) -> (Option<StableNodeId>, Option<StableNodeId>) {
-        let mut clip = None;
+    /// Notes a node whose resolved layout went from `previous` to `next`
+    /// when it started or stopped being a containing block or a clip.
+    pub(crate) fn note_layout_anchor_change(
+        &mut self,
+        id: StableNodeId,
+        previous: &nana_ui_core::LayoutStyle,
+        next: &nana_ui_core::LayoutStyle,
+    ) {
+        // The clip chain reads which of absolute, fixed and in-flow a box
+        // is, not only whether it is positioned (#201).
+        if previous.position != next.position || previous.clips_overflow() != next.clips_overflow()
+        {
+            self.layout_anchor_roots.insert(id);
+            // The scrollable range follows the same chain: the box may move
+            // between its parent's area and its containing block's, and the
+            // boxes it carries may land here or pass on.
+            self.invalidate_scroll_content(id);
+            self.scroll_layout_touched = true;
+        }
+    }
+
+    /// The nodes under a noted anchor change whose published result records
+    /// an anchor that is no longer the one above them.
+    fn take_moved_layout_anchors(&mut self) -> Vec<StableNodeId> {
+        if self.layout_anchor_roots.is_empty() {
+            return Vec::new();
+        }
+        let mut roots: Vec<StableNodeId> = self.layout_anchor_roots.drain().collect();
+        roots.sort_unstable();
+        let mut moved = Vec::new();
+        let mut stack = Vec::new();
+        for root in roots {
+            // The root itself: its own clip chain moves with its position,
+            // and its own fragments say whether it is a scroll viewport or
+            // an overlay.
+            if self.layout_results.contains_key(&root) {
+                moved.push(root);
+            }
+            stack.extend(
+                self.nodes
+                    .get(root)
+                    .map(|node| node.hierarchy.children.iter().copied())
+                    .into_iter()
+                    .flatten(),
+            );
+            while let Some(id) = stack.pop() {
+                let Some(node) = self.nodes.get(id) else {
+                    continue;
+                };
+                if let Some(result) = self.layout_results.get(&id)
+                    && !self.layout_anchors(id).recorded_in(result)
+                {
+                    moved.push(id);
+                }
+                stack.extend(node.hierarchy.children.iter().copied());
+            }
+        }
+        moved
+    }
+
+    /// What `id`'s result records about the boxes around it: the nearest
+    /// positioned ancestor, and its clip chain (#201).
+    fn layout_anchors(&self, id: StableNodeId) -> LayoutAnchors {
+        let mut ancestor = self.parent_id(id);
         let mut containing_block = None;
         while let Some(candidate) = ancestor {
             let Some(record) = self.nodes.get(candidate) else {
                 break;
             };
-            if clip.is_none() && record.resolved_layout.clips_overflow() {
-                clip = Some(candidate);
-            }
-            if containing_block.is_none()
-                && record
-                    .resolved_layout
-                    .position
-                    .establishes_containing_block()
+            if record
+                .resolved_layout
+                .position
+                .establishes_containing_block()
             {
                 containing_block = Some(candidate);
-            }
-            if clip.is_some() && containing_block.is_some() {
                 break;
             }
             ancestor = record.hierarchy.parent;
         }
-        (clip, containing_block)
+        LayoutAnchors {
+            clip: self.overflow_clip_of(id),
+            clip_parent: self.clip_parent_of(id),
+            containing_block,
+        }
     }
 
     /// Child placements and the one-fragment-per-child list, when both still
@@ -2088,8 +2224,14 @@ impl UiWorld {
         Arc<[crate::LayoutFragment]>,
     )> {
         // A held child-only snapshot cannot supply text fragments when a
-        // previously empty component gains a label at the same identity.
-        if self.nodes.get(id).is_some_and(record_has_text) {
+        // previously empty component gains a label at the same identity, nor
+        // the scroll-viewport or overlay fragment of a node that starts
+        // clipping or becomes fixed.
+        if self.nodes.get(id).is_some_and(|node| {
+            record_has_text(node)
+                || node.resolved_layout.clips_overflow()
+                || node.resolved_layout.position == PositionSpec::Fixed
+        }) {
             return None;
         }
         let previous = self.layout_results.get(&id)?;
@@ -2539,6 +2681,21 @@ impl UiWorld {
     /// Calling it on an unchanged world returns an empty work set and performs
     /// no scheduling.
     pub fn take_system_work(&mut self) -> SystemWork {
+        self.drain_system_work(None)
+    }
+
+    /// [`Self::take_system_work`] for one document's frame: style, text and
+    /// the other world-wide work drain as usual, but only `document`'s layout
+    /// seeds do. Another document's stay pending for its own frame, which a
+    /// pass of this document could only drop.
+    pub fn take_system_work_for(&mut self, document: DocumentId) -> SystemWork {
+        self.drain_system_work(Some(document))
+    }
+
+    fn drain_system_work(&mut self, document: Option<DocumentId>) -> SystemWork {
+        let ours = |world: &Self, id: StableNodeId| {
+            document.is_none_or(|document| world.document_of(id) == Some(document))
+        };
         let mut ids = std::mem::take(&mut self.dirty_entities)
             .into_iter()
             .collect::<Vec<_>>();
@@ -2599,15 +2756,19 @@ impl UiWorld {
             // table. The private LAYOUT bit only causes this entity to be
             // visited by the drain.
             if bits & DirtyMask::LAYOUT != 0
+                && ours(self, id)
                 && let Some(invalidation) = self.pending_layout_invalidations.remove(&id)
             {
                 work.layout_frontier_seeds
                     .push(crate::LayoutFrontierSeed::new(id, invalidation));
             }
             // An editor bears text with no value yet: its caret line and an
-            // IME preedit are shaped from its presentation.
+            // IME preedit are shaped from its presentation. Text that went
+            // empty is still shaped once, to nothing: the metrics it held
+            // sized its box, and a box laid out cold without text has none.
             let has_text = matches!(self.record(id).kind.as_ref(), NodeKind::Text)
                 || !self.record(id).text.value.is_empty()
+                || self.record(id).text_metrics != TextMetrics::default()
                 || matches!(
                     self.nodes.visual(id),
                     Some(StandardVisual::TextInput { .. })
@@ -2630,6 +2791,9 @@ impl UiWorld {
             .pending_layout_invalidations
             .drain()
             .collect::<Vec<_>>();
+        let (pending, theirs): (Vec<_>, Vec<_>) =
+            pending.into_iter().partition(|(id, _)| ours(self, *id));
+        self.pending_layout_invalidations.extend(theirs);
         let mut remaining = pending
             .into_iter()
             .filter(|(id, _)| self.presence_live(*id))
@@ -4876,8 +5040,12 @@ impl UiWorld {
                     continue;
                 };
                 let parent_display = parent_record.resolved_layout.display;
+                // A box whose lines an atom's baseline reads is not fixed
+                // to the line it sits on, whatever its size: what it holds
+                // moves that baseline.
                 let has_definite_size =
-                    definite_fixed_border(parent_record.resolved_layout.as_ref());
+                    definite_fixed_border(parent_record.resolved_layout.as_ref())
+                        && !self.atom_baseline_reads_content(parent);
                 // A fixed inline-block is an atomic box. Inner metrics
                 // stop at its border; the outer inline formatting
                 // context does not reflow.
@@ -5427,6 +5595,8 @@ impl UiWorld {
         // out again, and nothing above it measures. A fixed inline-block's
         // shaped text does not change the border box the outer line packed
         // either: the seed stays on the atomic, which is only placed again.
+        // One whose baseline its text puts is not fixed (see
+        // `is_fixed_metric_boundary`): its line aligns again.
         let atomic = display == Some(nana_ui_core::DisplaySpec::InlineBlock);
         if fixed
             && (atomic
@@ -5690,13 +5860,28 @@ fn intersect_layout_boxes(left: LayoutBox, right: LayoutBox) -> Option<LayoutBox
     })
 }
 
+/// The boxes a result names around its node; see [`UiWorld::layout_anchors`].
+#[derive(Clone, Copy, PartialEq)]
+struct LayoutAnchors {
+    clip: Option<StableNodeId>,
+    clip_parent: Option<StableNodeId>,
+    containing_block: Option<StableNodeId>,
+}
+
+impl LayoutAnchors {
+    fn recorded_in(self, result: &crate::LayoutResult) -> bool {
+        result.clip == self.clip
+            && result.clip_parent == self.clip_parent
+            && result.containing_block == self.containing_block
+    }
+}
+
 struct LayoutResultFacts {
     fixed: bool,
     clips: bool,
     scroll_offset: ScrollOffset,
     text: bool,
     child_count: usize,
-    parent: Option<StableNodeId>,
     border: nana_ui_core::PaddingSpec,
     child_kind: crate::LayoutFragmentKind,
     context: Option<crate::FormattingContextKind>,

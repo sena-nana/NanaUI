@@ -5995,6 +5995,31 @@ fn standard_control_visuals_expand_without_backend_tag_matching() {
         indeterminate: false,
         size: nana_ui_core::ControlSize::Medium,
     });
+    // The boxes Runtime publishes as the checkbox's LeadingContent and
+    // TextContent parts; the scene draws them and places neither itself.
+    let indicator = nana_ui_core::ControlSize::Medium.indicator_size();
+    checkbox.component_geometry = Some(Box::new(ComponentGeometry::Checkbox {
+        indicator: LayoutBox {
+            x: 0.0,
+            y: (80.0 - indicator) / 2.0,
+            width: indicator,
+            height: indicator,
+        },
+        label: nana_ui_runtime::ComponentTextRegion {
+            bounds: LayoutBox {
+                x: 24.0,
+                y: 0.0,
+                width: 76.0,
+                height: 80.0,
+            },
+            content: "Notifications".into(),
+            color: None,
+            font_size: 14.0,
+            font_weight: None,
+        },
+        border_width: 1.0,
+        check_weight: 700,
+    }));
     style_mut(&mut checkbox).background = Some([0.2, 0.5, 0.9, 1.0]);
     style_mut(&mut checkbox).border_color = Some([0.1, 0.2, 0.3, 1.0]);
 

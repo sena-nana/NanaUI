@@ -242,6 +242,7 @@ impl RuntimeLayoutEngine {
                 retained.intrinsic_metrics.clear();
                 retained.placements.clear();
                 retained.container_plans.clear();
+                retained.remote_overlays.clear();
                 retained.measure_plans.clear();
                 retained.materialized_inputs = emitted.len();
                 return Ok(emitted);
@@ -456,6 +457,9 @@ impl RuntimeLayoutEngine {
             #[cfg(feature = "benchmark")]
             phase.lap(2);
         }
+        if let Some(scope) = scope_ref {
+            place_remote_overlays(viewport, &mut nodes, &mut intrinsic, &mut output, scope)?;
+        }
         if !force_full {
             // An affected node that no longer generates a box (hidden, or in
             // a closed branch) is skipped by its container rather than
@@ -480,10 +484,20 @@ impl RuntimeLayoutEngine {
                     // participants recorded this pass. A repeat edit replaces
                     // the previous plan instead of appending another.
                     bound_container_plan(&mut plan);
+                    if plan
+                        .overlay
+                        .iter()
+                        .any(|entry| !entry.fixed && !entry.in_container)
+                    {
+                        retained.remote_overlays.insert(id);
+                    } else {
+                        retained.remote_overlays.remove(&id);
+                    }
                     retained.container_plans.insert(id, plan);
                 }
                 None => {
                     retained.container_plans.remove(&id);
+                    retained.remote_overlays.remove(&id);
                 }
             }
         }
@@ -598,6 +612,7 @@ impl RuntimeLayoutEngine {
             retained.far_start.retain(|id, _| world.contains(*id));
             retained.contexts.retain(|id, _| world.contains(*id));
             retained.container_plans.retain(|id, _| world.contains(*id));
+            retained.remote_overlays.retain(|id| world.contains(*id));
             retained.measure_plans.retain(|id, _| world.contains(*id));
             retained.envelopes.retain(|id, _| world.contains(*id));
             retained.line_solves.retain(|id, _| world.contains(*id));
@@ -791,6 +806,7 @@ impl RetainedLayoutCache {
             cache.far_start.remove(&id);
             cache.contexts.remove(&id);
             cache.container_plans.remove(&id);
+            cache.remote_overlays.remove(&id);
             cache.measure_plans.remove(&id);
             cache.envelopes.remove(&id);
             cache.line_solves.remove(&id);
@@ -886,16 +902,18 @@ impl RetainedLayoutCache {
             .max()
     }
 
+    /// The last baseline `id` published, the one an atom sits on its line by.
     pub(crate) fn intrinsic_baseline(&self, document: DocumentId, id: StableNodeId) -> Option<f32> {
-        self.documents
+        let metrics = &self
+            .documents
             .get(&document)?
             .intrinsic_metrics
             .by_content
             .get(&id.get())?
             .iter()
             .max_by_key(|(_, metrics)| metrics.generation)?
-            .1
-            .first_baseline
+            .1;
+        metrics.last_baseline.or(metrics.first_baseline)
     }
     pub(crate) fn take_inline_objects(
         &mut self,
@@ -966,6 +984,10 @@ struct DocumentLayoutCache {
     contexts: HashMap<StableNodeId, crate::FormattingContextKind>,
     /// Cached in-flow child placement per container. See [`ContainerPlan`].
     container_plans: HashMap<StableNodeId, ContainerPlan>,
+    /// The containers whose plan holds an absolute child hung from an
+    /// ancestor or from the initial containing block: a pass that does not
+    /// place the container checks those children against their block.
+    remote_overlays: HashSet<StableNodeId>,
     /// Cached intrinsic measurement per content-sized container. See
     /// [`MeasurePlan`].
     measure_plans: HashMap<StableNodeId, MeasurePlanSlots>,
@@ -1236,6 +1258,7 @@ impl DocumentLayoutCache {
         self.far_start.clear();
         self.contexts.clear();
         self.container_plans.clear();
+        self.remote_overlays.clear();
         self.measure_plans.clear();
         self.envelopes.clear();
         self.line_solves.clear();
@@ -1307,15 +1330,27 @@ struct PlannedOverlay {
     #[allow(dead_code)]
     style: Arc<nana_ui_core::LayoutStyle>,
     fixed: bool,
+    /// The absolute child's containing block (CSS 2.1 §10.1): its nearest
+    /// positioned ancestor, whose padding box `base_origin` and `base` are,
+    /// or `None` for the initial containing block -- the viewport at the
+    /// document origin. `None` as well for a fixed child.
+    block: Option<StableNodeId>,
+    /// `block` is the container whose plan holds this entry: the child moves
+    /// with it. Otherwise only its containing block moves it.
+    in_container: bool,
+    /// The container's content origin at placement, when an axis has both
+    /// insets auto: the box keeps its static position there, so the
+    /// container moving moves it whatever its containing block.
+    static_origin: Option<Point>,
     /// The used box reads the containing block's size (percentage, fill,
     /// or both insets). A fixed child reads the viewport instead.
     tracks_containing_block: bool,
     base: Size,
-    #[allow(dead_code)]
     base_origin: Point,
-    /// What the insets add to `base_origin`, as placement added it: a
-    /// container that only moved puts the child at its new content origin
-    /// plus this (see [`ContainerPlan::moved_to`]).
+    /// Where the child stands from the container's content origin: a
+    /// container that only moved puts a child that moves with it (see
+    /// `in_container`) at its new content origin plus this (see
+    /// [`ContainerPlan::moved_to`]).
     inset: Point,
     origin: Point,
     size: Size,
@@ -1710,9 +1745,11 @@ impl ContainerPlan {
 
     /// This plan for the container at `origin`, its content box at
     /// `content_origin`. Every child keeps its place in the content box and
-    /// moves with it, as does every positioned child but a fixed one, which
-    /// hangs off the viewport: it sits at the new content origin plus its
-    /// recorded offset, the sum a fresh pass computes there. `None` when an
+    /// moves with it, as does every positioned child whose containing block
+    /// is this container: it sits at the new content origin plus its
+    /// recorded offset, the sum a fresh pass computes there. A fixed child
+    /// hangs off the viewport, and an absolute one whose containing block is
+    /// an ancestor or the initial one moves only with that block. `None` when an
     /// entry's offset is not known (see [`PlannedChild::offset`]), or a grid
     /// item is not the one the track record holds at its index or inherits
     /// the tracks it spans as a subgrid.
@@ -1738,8 +1775,11 @@ impl ContainerPlan {
             entry.origin = at(entry.offset?);
         }
         for entry in &mut moved.overlay {
-            if !entry.fixed {
-                entry.base_origin = content_origin;
+            if entry.in_container {
+                entry.base_origin = Point {
+                    x: entry.base_origin.x + content_origin.x - self.content_origin.x,
+                    y: entry.base_origin.y + content_origin.y - self.content_origin.y,
+                };
                 entry.origin = at(entry.inset);
             }
         }
@@ -2047,6 +2087,10 @@ struct MeasuredChild {
     /// measured one, and the child measured at it (its cross size is the
     /// container's input then).
     at_main: Option<(f32, Size)>,
+    /// An atom on a line of an ordinary block: its ascent on the line
+    /// ([`inline::ifc_atom_metrics`]). The line's height reads it, so it
+    /// can move while the atom's size stays.
+    baseline: Option<f32>,
 }
 
 /// A container's own intrinsic measurement, cached across passes.
@@ -2269,6 +2313,16 @@ struct LayoutInputMap<'a> {
     /// Measure plans rebuilt this pass, merged the same way. An entry that
     /// ends the pass empty retires the container's retained plans.
     measure_plans: HashMap<StableNodeId, MeasurePlanSlots>,
+    /// Last baselines of boxes whose line boxes are all their descendants',
+    /// by node and used border-box size, derived this pass from where those
+    /// descendants sit ([`inline::descendant_last_baseline`]). `None`: a
+    /// context the derivation does not lay out, which keeps the
+    /// approximation of [`Self::baseline_metrics`].
+    derived_baselines: HashMap<(StableNodeId, u32, u32), Option<f32>>,
+}
+
+fn derived_baseline_key(id: StableNodeId, used: Size) -> (StableNodeId, u32, u32) {
+    (id, used.width.to_bits(), used.height.to_bits())
 }
 
 #[derive(Debug, Clone, Copy, Default)]
@@ -2307,6 +2361,7 @@ impl<'a> LayoutInputMap<'a> {
             contexts: HashMap::new(),
             container_plans: HashMap::new(),
             measure_plans: HashMap::new(),
+            derived_baselines: HashMap::new(),
         }
     }
 
@@ -2365,26 +2420,53 @@ impl<'a> LayoutInputMap<'a> {
     }
 
     /// Whether `id` aligns by its border-box bottom rather than a text
-    /// baseline: a custom renderer, a content image, a skipped replaced
-    /// element or an image viewer. The one rule every context's baseline
-    /// reads, so inline, flex and grid alignment cannot disagree on it.
+    /// baseline: [`UiWorld::aligns_by_bottom_edge`].
     fn aligns_by_bottom_edge(&self, id: StableNodeId, style: &nana_ui_core::LayoutStyle) -> bool {
-        self.world.custom_render(id).is_some()
-            || style.paint.content_image.is_some()
-            || style.paint.skipped_replaced.is_some()
-            || {
-                #[cfg(feature = "image-viewer")]
-                {
-                    matches!(
-                        self.world.standard_visual_ref(id),
-                        Some(crate::StandardVisual::ImageViewer { .. })
-                    )
-                }
-                #[cfg(not(feature = "image-viewer"))]
-                {
-                    false
-                }
-            }
+        self.world.aligns_by_bottom_edge(id, style)
+    }
+
+    /// Where atomic inline `id` sits on a line box: its ascent and descent
+    /// about the line's baseline, margins included. Native paragraphs and
+    /// the lines of an ordinary block both read this, so the two cannot
+    /// disagree (CSS 2.1 §10.8.1, `vertical-align: baseline`).
+    ///
+    /// An inline-block sits by the baseline of its last line box, read from
+    /// [`Self::baseline_metrics`] like every other context reads a baseline.
+    /// Replaced content, an inline-block whose overflow is not visible and
+    /// one with no in-flow line box sit by their bottom margin edge
+    /// ([`UiWorld::atom_sits_on_line_box`]).
+    fn atom_line_metrics(
+        &self,
+        id: StableNodeId,
+        writing: nana_ui_core::WritingContext,
+        used: Size,
+        margin: nana_ui_core::PaddingSpec,
+        fallback_font_px: f32,
+        inline_base: f32,
+    ) -> nana_text::InlineObjectMetrics {
+        let block = writing.logical_size(used.width, used.height).1.max(0.0);
+        let on_line_box = !writing.is_vertical() && self.world.atom_sits_on_line_box(id);
+        // Every line reads one derived value: a caller that did not prime
+        // this atom ([`inline::prime_atom_baselines`]) would place it by the
+        // approximation instead.
+        #[cfg(any(test, feature = "layout-verify"))]
+        assert!(
+            !on_line_box
+                || !self.world.line_boxes_are_descendants(id)
+                || self
+                    .derived_baselines
+                    .contains_key(&derived_baseline_key(id, used)),
+            "{id:?} at {used:?}: its descendants' last baseline was not derived"
+        );
+        let baseline = on_line_box
+            .then(|| {
+                let metrics =
+                    self.baseline_metrics(id, fallback_font_px, Some(inline_base), Some(used));
+                metrics.last.or(metrics.first)
+            })
+            .flatten()
+            .map(|baseline| baseline.clamp(0.0, block));
+        crate::inline_content::atomic_metrics(writing, used.width, used.height, margin, baseline)
     }
 
     /// Shared baseline authority for all formatting contexts. Retained
@@ -2553,7 +2635,18 @@ impl<'a> LayoutInputMap<'a> {
             // when shaping has not produced a line yet.
             return BaselineMetrics { first, last: first };
         }
-        BaselineMetrics { first, last: first }
+        // A box whose line boxes are its descendants' ends on the last of
+        // them, where it sits inside the box. The first stays the
+        // approximation of its own font's first line.
+        let last = used
+            .and_then(|used| {
+                self.derived_baselines
+                    .get(&derived_baseline_key(id, used))
+                    .copied()
+            })
+            .flatten()
+            .or(first);
+        BaselineMetrics { first, last }
     }
 
     fn baseline(&self, id: StableNodeId, fallback_font_px: f32, used: Size) -> f32 {

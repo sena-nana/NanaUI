@@ -139,7 +139,9 @@ fn positioned_world(in_flow: usize, absolute: LayoutStyle) -> (UiWorld, Document
     queue.set_style(
         nid(3),
         NodeStyle {
+            // The positioned children's containing block.
             layout: Arc::new(LayoutStyle {
+                position: PositionSpec::Relative,
                 width: Some(LengthSpec::Px(400.0)),
                 height: Some(LengthSpec::Px(300.0)),
                 direction: Some(FlexDirection::Column),
@@ -301,6 +303,7 @@ fn containing_block_change_places_dependent_positioned_child() {
     let before = world.layout_box(nid(90)).unwrap().width;
 
     let container = LayoutStyle {
+        position: PositionSpec::Relative,
         width: Some(LengthSpec::Px(500.0)),
         height: Some(LengthSpec::Px(300.0)),
         direction: Some(FlexDirection::Column),
@@ -442,6 +445,7 @@ fn a_far_anchored_badge_follows_its_growing_container() {
         &mut world,
         nid(3),
         LayoutStyle {
+            position: PositionSpec::Relative,
             width: Some(LengthSpec::Px(400.0)),
             direction: Some(FlexDirection::Column),
             align_items: AlignSpec::Start,

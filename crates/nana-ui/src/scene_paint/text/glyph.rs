@@ -3,7 +3,8 @@
 //! Nothing here names a shaping backend. A resolver turns a
 //! `nana_text::TextLayout` into [`NanaGlyphRun`]s over a flat [`PlacedGlyph`]
 //! arena, and every stage below this module only ever sees that IR plus
-//! [`GlyphRasterKey`].
+//! [`GlyphRasterKey`]. The key and its parts are `nana_text::raster`'s, so the
+//! renderer and a host that rasterizes text itself agree on what a bitmap is.
 //!
 //! The split that matters is which facts are in the raster key and which are
 //! not. Text color, node opacity and the scene transform change where a glyph
@@ -12,108 +13,12 @@
 
 use std::ops::Range;
 
-/// An OpenType glyph index. `u32` rather than `u16`: this is a cross-layer id
-/// and widening it later would be an ABI break, the same call
-/// [`nana_text::ShapedGlyph`](nana_text::ShapedGlyph) made.
-pub(super) type GlyphId = u32;
-
-/// A face as the renderer names it.
-///
-/// Issued by the glyph resolver's font source (see
-/// [`super::raster::SwashGlyphRasterizer::intern`]), dense and `Copy`. It is
-/// deliberately **not** a shaping backend's face id: #99 replaces the source
-/// that issues it without touching the raster cache or the atlas.
-///
-/// Only meaningful together with the font generation it was issued under.
-#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
-pub(super) struct GlyphFontId(pub u32);
-
-/// The axis coordinates a face was instantiated at, as one id.
-///
-/// Zero is the face's own default instance. Two runs that differ only here are
-/// different outlines, so this is part of the raster key.
-#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
-pub(super) struct GlyphVariationId(pub u64);
-
-/// Synthesis, hinting and orientation the rasterizer applies, as opposed to
-/// what the face already carries. Part of the raster key: each flag changes
-/// the bitmap.
-#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug, Default)]
-pub(super) struct GlyphSynthesis(pub u8);
-
-impl GlyphSynthesis {
-    pub(super) const NONE: Self = Self(0);
-    /// Skew an upright face to stand in for a missing italic.
-    pub(super) const FAKE_ITALIC: Self = Self(1 << 0);
-    pub(super) const DISABLE_HINTING: Self = Self(1 << 1);
-    /// Snap the subpixel offset: a bitmap face must land on whole pixels.
-    pub(super) const PIXEL_FONT: Self = Self(1 << 2);
-    /// Embolden an upright face to stand in for a weight it cannot reach.
-    /// Reported by the font layer when the requested weight is out of the
-    /// face's range and no other face covers it.
-    pub(super) const FAKE_BOLD: Self = Self(1 << 3);
-    /// Turn the outline 90° clockwise: a sideways run of a vertical line
-    /// (#59), whose glyphs lie on their side with their tops facing the line's
-    /// block end. Not synthesis in the font sense, but the same kind of fact —
-    /// a transform the rasterizer applies that changes the bitmap — so it
-    /// rides in the same key field.
-    pub(super) const ROTATE_CW: Self = Self(1 << 4);
-    /// Rasterize from the outline with the renderer's own scaler, never a
-    /// platform rasterizer. A glyph that is also stroked or blurred is: its
-    /// outline and its shadow come from the same scaler, and a fill drawn by
-    /// another one would not sit exactly inside them.
-    pub(super) const OUTLINE_RASTER: Self = Self(1 << 5);
-
-    pub(super) const fn contains(self, flag: Self) -> bool {
-        self.0 & flag.0 == flag.0
-    }
-
-    #[must_use]
-    pub(super) const fn with(self, flag: Self) -> Self {
-        Self(self.0 | flag.0)
-    }
-}
-
-/// What a run asks the rasterizer to produce.
-///
-/// The *request*, not the result: a color face answers a [`Mask`](Self::Mask)
-/// request with a color bitmap, and [`super::raster::GlyphImage::format`] is
-/// what actually came back.
-#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
-pub(super) enum GlyphRenderMode {
-    /// Grayscale coverage, with color faces passed through as color bitmaps.
-    Mask,
-    /// Per-subpixel (LCD / ClearType) coverage for a panel whose subpixels
-    /// run red, green, blue left to right. Color faces still answer with
-    /// color bitmaps.
-    SubpixelRgb,
-    /// The same for a panel whose subpixels run blue, green, red.
-    SubpixelBgr,
-    /// Grayscale coverage of the glyph's outline stroked `width_q / 4` raster
-    /// px wide, centred on it. Outline glyphs only.
-    Stroke {
-        width_q: u16,
-        /// [`super::raster::stroke_join`]'s encoding of the join.
-        join: u8,
-    },
-    /// Grayscale coverage grown by `spread_q / 4` raster px, then blurred by
-    /// a Gaussian of CSS blur radius `radius_q / 4` raster px (twice its
-    /// standard deviation). What a text shadow layer samples.
-    Blur { radius_q: u16, spread_q: u16 },
-}
-
-impl GlyphRenderMode {
-    /// Quarter raster px, the bucket the stroke and blur keys are cut in.
-    pub(super) fn quarters(px: f32) -> u16 {
-        (px.max(0.0) * 4.0).round().min(f32::from(u16::MAX)) as u16
-    }
-
-    /// Whether this mode is coverage the renderer derives from the outline
-    /// itself (a stroke, a blur), rather than the glyph as the face draws it.
-    pub(super) fn is_derived(self) -> bool {
-        matches!(self, Self::Stroke { .. } | Self::Blur { .. })
-    }
-}
+#[cfg(windows)]
+pub(super) use nana_text::raster::size_from_bits;
+pub(super) use nana_text::raster::{
+    GlyphFontId, GlyphId, GlyphRasterKey, GlyphRenderMode, GlyphSynthesis, GlyphVariationId,
+    SubpixelBin, size_bits,
+};
 
 /// What an instance is to the paragraph it belongs to. Kept on the run and
 /// in the instance, so the presentation layer can tell a shadow from the
@@ -124,93 +29,6 @@ pub(super) enum GlyphRole {
     Fill,
     Shadow,
     Stroke,
-}
-
-/// Fractional pen placement, quantized to quarter pixels.
-///
-/// Unquantized placement would make the raster key unbounded: a label sliding
-/// under an animation would rasterize a new bitmap every frame. Quarters are
-/// the same bucketing the reference path used, so glyph positioning does not
-/// shift under this rewrite.
-///
-/// [`Self::split`] is cosmic-text's `SubpixelBin::new` — the thresholds, the
-/// branch order and the carry into the whole pixel are all kept, because what
-/// makes the migration invisible is that a glyph lands in the same bin it
-/// used to. Derived from cosmic-text, Copyright (c) 2022 System76, MIT OR
-/// Apache-2.0 (<https://github.com/pop-os/cosmic-text>), the same licence pair
-/// NanaUI is under. See `docs/reference/third-party.md`.
-#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug, Default)]
-pub(super) struct SubpixelBin(u8);
-
-impl SubpixelBin {
-    /// Split a physical-pixel coordinate into its whole pixel and its bin.
-    pub(super) fn split(position: f32) -> (i32, Self) {
-        let trunc = position as i32;
-        let fract = position - trunc as f32;
-        if position.is_sign_negative() {
-            if fract > -0.125 {
-                (trunc, Self(0))
-            } else if fract > -0.375 {
-                (trunc - 1, Self(3))
-            } else if fract > -0.625 {
-                (trunc - 1, Self(2))
-            } else if fract > -0.875 {
-                (trunc - 1, Self(1))
-            } else {
-                (trunc - 1, Self(0))
-            }
-        } else if fract < 0.125 {
-            (trunc, Self(0))
-        } else if fract < 0.375 {
-            (trunc, Self(1))
-        } else if fract < 0.625 {
-            (trunc, Self(2))
-        } else if fract < 0.875 {
-            (trunc, Self(3))
-        } else {
-            (trunc + 1, Self(0))
-        }
-    }
-
-    /// The pen offset this bin rasterizes at, in pixels.
-    pub(super) fn as_float(self) -> f32 {
-        f32::from(self.0) * 0.25
-    }
-}
-
-/// The raster size is the shaped size, to the bit.
-///
-/// Bucketing it was tried and rejected: at 1/64 px a 15.6px heading shifted to
-/// 15.59375 and its antialiased edges moved by up to 11/255, which is a
-/// rendering change this phase has no reason to make. What bounds the key
-/// space is the cache's byte budget and its LRU, not a coarser key — and the
-/// shaped paragraphs above already key on the same exact size, so a scale
-/// animation was never going to reuse a bitmap anyway.
-pub(super) fn size_bits(size_px: f32) -> u32 {
-    size_px.max(0.0).to_bits()
-}
-
-pub(super) fn size_from_bits(bits: u32) -> f32 {
-    f32::from_bits(bits)
-}
-
-/// Everything that decides a glyph's bitmap, and nothing that does not.
-///
-/// The font generation is part of the key rather than a reason to flush: a
-/// `@font-face` registration reissues face ids, and an entry keyed by the old
-/// generation can never be handed to the new one.
-#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
-pub(super) struct GlyphRasterKey {
-    pub font: GlyphFontId,
-    pub font_generation: u32,
-    pub variation: GlyphVariationId,
-    pub glyph: GlyphId,
-    /// Raster size, see [`size_bits`].
-    pub size_bits: u32,
-    pub subpixel_x: SubpixelBin,
-    pub subpixel_y: SubpixelBin,
-    pub synthesis: GlyphSynthesis,
-    pub mode: GlyphRenderMode,
 }
 
 /// One glyph's pen position in physical pixels, fraction included.
@@ -355,30 +173,6 @@ impl NanaGlyphBuffer {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn subpixel_bins_round_to_quarters_and_carry_into_the_whole_pixel() {
-        assert_eq!(SubpixelBin::split(4.0), (4, SubpixelBin(0)));
-        assert_eq!(SubpixelBin::split(4.3), (4, SubpixelBin(1)));
-        assert_eq!(SubpixelBin::split(4.5), (4, SubpixelBin(2)));
-        assert_eq!(SubpixelBin::split(4.95), (5, SubpixelBin(0)));
-        assert_eq!(SubpixelBin::split(-0.5), (-1, SubpixelBin(2)));
-        assert_eq!(SubpixelBin(3).as_float(), 0.75);
-    }
-
-    #[test]
-    fn a_fractional_dpi_size_survives_the_raster_size_bucket_exactly() {
-        for size in [13.0f32, 16.0, 20.0] {
-            for scale in [1.0f32, 1.25, 1.5, 1.75, 2.0] {
-                let physical = size * scale;
-                assert_eq!(
-                    size_from_bits(size_bits(physical)),
-                    physical,
-                    "{size} at {scale} must not drift through the raster bucket"
-                );
-            }
-        }
-    }
 
     #[test]
     fn color_leaves_the_raster_key_alone_but_opens_a_new_run() {

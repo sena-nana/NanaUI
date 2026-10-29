@@ -17,7 +17,7 @@ Rust input (builders, view!, .vue dialect)
 
 Supporting boundaries:
 
-- \`nana-text\` is the product text measurement, shaping, and retained text-layout authority.
+- \`nana-text\` is the product text measurement, shaping, and retained text-layout authority. It also owns where each laid-out glyph goes (\`TextLayout::glyph_placements\`) and, behind its \`raster\` feature, CPU glyph rasterization (\`nana_text::raster\`) that the renderer's atlas and hosts compositing text themselves share.
 - \`nana-ui-charts\` is the chart model: the typed ECharts-shaped option, scales, layout, hit data and the GPU mark arrays the chart shaders read. It depends only on \`nana-ui-core\`; the \`Chart\` component lives in \`nana-ui-runtime\` and the chart pipelines in \`nana-ui\`.
 - \`nana-ui-diagram\` is the Mermaid engine: parsing, layout and a theme-neutral vector display list, with no GPU and no text engine (callers pass measurement). \`nana-ui-runtime\` (\`rich-text\`) lays fences out through it and records the list against the theme; \`nana-ui-scene\` tessellates the recording like any custom paint. Diagram types land one family at a time behind \`families::<name>::NATIVE\`; see \`docs/reference/diagram-engine.md\`.
 - \`nana-ui-css\` is the one CSS engine: stylesheet parse, cascade and the mapping onto the Style Model. The \`.vue\` compiler, \`view!\` and \`css!\` run it at build time and hand the runtime Style Model data. CSS parsing stays out of \`nana-ui-core\`, \`nana-ui-runtime\`, \`nana-ui-scene\` and \`nana-ui\`.

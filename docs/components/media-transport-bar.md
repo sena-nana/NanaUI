@@ -68,7 +68,7 @@ widget(MediaTransportBar::new().mini().show_play(false).icons(icons))
 
 `.placement` 是 `MediaTransportPlacement::Overlay` 或 `Inline`。
 
-Overlay 沿父级底边绝对定位，只有铬接命中；Inline 参与父级排版，`max_width` 不用。
+Overlay 沿包含块底边绝对定位，只有铬接命中；Inline 参与父级排版，`max_width` 不用。Overlay 的条挂在最近的定位祖先上，所以画面区域那个父级要写 `position: relative`（见[布局的定位](../reference/layout.md#能用的)）。
 
 ## 显隐
 

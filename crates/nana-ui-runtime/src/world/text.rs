@@ -3478,20 +3478,6 @@ impl UiWorld {
         }
         let padding = self.used_layout_padding(id);
         let border = source.layout.resolved_border_edges();
-        let leading_visual = match self.nodes.visual(id) {
-            Some(StandardVisual::Checkbox { size, .. }) => {
-                size.indicator_size_in(self.theme.typography(), self.theme.spacing())
-                    + if self.text(id).is_some_and(|label| !label.is_empty()) {
-                        size.indicator_gap_in(self.theme.spacing())
-                    } else {
-                        0.0
-                    }
-            }
-            Some(StandardVisual::Switch { .. }) => {
-                self.theme.metrics().switch.track_width + self.theme.metrics().switch.label_gap
-            }
-            _ => 0.0,
-        };
         let counter_reserved = self
             .text_input_character_counter(id)
             .map(|counter| {
@@ -3508,25 +3494,31 @@ impl UiWorld {
                     - padding.right
                     - border.left
                     - border.right
-                    - leading_visual
                     - counter_reserved)
                     .max(0.0);
+                let content = crate::layout_engine::Size::new(
+                    available,
+                    (layout.height - padding.top - padding.bottom - border.top - border.bottom)
+                        .max(0.0),
+                );
                 Some(match self.standard_visual_ref(id) {
                     Some(visual @ StandardVisual::Button { .. }) => {
-                        crate::layout_engine::parts::button_text_budget(
-                            visual,
-                            crate::layout_engine::Size::new(
-                                available,
-                                (layout.height
-                                    - padding.top
-                                    - padding.bottom
-                                    - border.top
-                                    - border.bottom)
-                                    .max(0.0),
-                            ),
-                        )
-                        .unwrap_or(available)
+                        crate::layout_engine::parts::button_text_budget(visual, content)
+                            .unwrap_or(available)
                     }
+                    Some(StandardVisual::Checkbox { .. }) => self
+                        .checkbox_parts(id, crate::layout_engine::Size::default())
+                        .map_or(available, |parts| {
+                            crate::layout_engine::parts::text_budget(parts, content)
+                        }),
+                    Some(
+                        StandardVisual::StatusBadge { .. }
+                        | StandardVisual::ValidationMessage { .. },
+                    ) => self
+                        .status_dot_parts(id, crate::layout_engine::Size::default())
+                        .map_or(available, |parts| {
+                            crate::layout_engine::parts::text_budget(parts, content)
+                        }),
                     Some(StandardVisual::Card { .. }) => self
                         .content_part_box(id, crate::LayoutPartKind::Header)
                         .map_or(available, |part| part.width.max(0.0)),
@@ -3656,7 +3648,6 @@ pub(crate) fn text_visual_key(visual: Option<&StandardVisual>) -> (u8, u32) {
             nana_ui_core::ControlSize::Medium => 2,
             nana_ui_core::ControlSize::Large => 3,
         },
-        Some(StandardVisual::Switch { .. }) => 4,
         _ => 0,
     };
     (path, indicator)
@@ -5099,6 +5090,22 @@ impl UiWorld {
                 let presentation = matches!(visual, Some(StandardVisual::TextInput { .. }))
                     .then(|| self.text_input_presentation_source(id))
                     .flatten();
+                // A box whose text went empty has nothing to shape: it resolves
+                // to nothing and gives up the metrics that sized it, which
+                // leaves it as a box laid out cold without text.
+                if presentation.is_none()
+                    && self.record(id).text.value.is_empty()
+                    && !matches!(self.record(id).kind.as_ref(), NodeKind::Text)
+                    && !matches!(
+                        visual,
+                        Some(StandardVisual::EmptyState { .. } | StandardVisual::ModalFrame { .. })
+                    )
+                {
+                    let resolved_before = self.text_resolved_before(id);
+                    resolved.push(PlainResolution::nothing(id));
+                    shaped.push((id, TextMetrics::default(), None, None, resolved_before));
+                    continue;
+                }
                 let style = Arc::clone(&self.record(id).resolved.0);
                 #[cfg(any(test, feature = "benchmark"))]
                 if presentation.as_ref().map_or_else(

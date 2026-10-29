@@ -143,23 +143,195 @@ pub(crate) fn button_parts(visual: &StandardVisual, text: Size) -> Option<[Optio
     ])
 }
 
-/// The paragraph budget excludes fixed chrome, never its own measured advance.
-pub(crate) fn button_text_budget(visual: &StandardVisual, available: Size) -> Option<f32> {
-    let mut parts = button_parts(visual, Size::default())?;
-    fit_button_glyphs(&mut parts, available);
-    let reserved: f32 = parts
-        .iter()
-        .flatten()
-        .map(|part| {
-            part.gap_after.max(0.0)
-                + if part.kind == LayoutPartKind::TextContent {
-                    0.0
+/// A checkbox's row: its `indicator` square, then its label, which takes
+/// the rest of the row so the label's own alignment has the room the old
+/// hand-placed label box gave it. The gap stands only before a label.
+pub(crate) fn checkbox_parts(
+    indicator: f32,
+    gap: f32,
+    labelled: bool,
+    text: Size,
+) -> [Option<FlexPart>; 3] {
+    let mut mark = FlexPart::new(
+        LayoutPartKind::LeadingContent,
+        Size::new(indicator, indicator),
+    );
+    mark.gap_after = if labelled { gap } else { 0.0 };
+    let mut label = FlexPart::new(LayoutPartKind::TextContent, text);
+    label.grow = 1.0;
+    label.shrink = 1.0;
+    label.align = AlignSpec::Stretch;
+    [Some(mark), Some(label), None]
+}
+
+/// A switch's content before placement: its track and, beside it, a column
+/// of its label over its hint. Intrinsic measure ([`Self::extent`]) and
+/// placement ([`switch_parts`]) both read this one declaration.
+#[derive(Clone, Copy, PartialEq)]
+pub(crate) struct SwitchInputs {
+    pub track: Size,
+    /// Between the track and the text column, when there is one.
+    pub gap: f32,
+    /// The track ends the row (`SwitchControlPosition::End`).
+    pub end: bool,
+    /// The switch says something beside its track: a label or a hint.
+    pub labelled: bool,
+    pub label_line: f32,
+    /// The gap above the hint and the hint's line, when it has one.
+    pub hint: Option<(f32, f32)>,
+}
+
+impl SwitchInputs {
+    fn column_height(&self) -> f32 {
+        if !self.labelled {
+            return 0.0;
+        }
+        self.label_line + self.hint.map_or(0.0, |(gap, line)| gap + line)
+    }
+
+    /// What the switch holds beside its text: the track and its gap, and the
+    /// taller of the track and the text column.
+    pub fn extent(&self) -> Size {
+        Size::new(
+            self.track.width.max(0.0)
+                + if self.labelled {
+                    self.gap.max(0.0)
                 } else {
-                    part.preferred.width.max(0.0)
-                }
-        })
-        .sum();
-    Some((available.width - reserved).max(0.0))
+                    0.0
+                },
+            self.track.height.max(0.0).max(self.column_height()),
+        )
+    }
+}
+
+/// A switch's track, label and hint in `bounds`. The row is the track and a
+/// text column that takes the rest; a track at the end is the same row
+/// reversed, so it keeps the end edge when the box is too narrow for both.
+/// The column stacks the label line over the hint, or is all label.
+pub(crate) fn switch_parts(bounds: LayoutBox, inputs: SwitchInputs) -> ContentParts {
+    let mut track = FlexPart::new(
+        if inputs.end {
+            LayoutPartKind::TrailingContent
+        } else {
+            LayoutPartKind::LeadingContent
+        },
+        inputs.track,
+    );
+    track.gap_after = if inputs.labelled { inputs.gap } else { 0.0 };
+    let column = inputs.labelled.then(|| {
+        let mut part = FlexPart::new(
+            LayoutPartKind::Label,
+            Size::new(0.0, inputs.column_height()),
+        );
+        part.grow = 1.0;
+        part.shrink = 1.0;
+        part.align = AlignSpec::Stretch;
+        part
+    });
+    let [track, column] = flex_parts(
+        bounds,
+        FlexDirection::Row,
+        JustifySpec::Start,
+        inputs.end,
+        [Some(track), column],
+    );
+    let Some(column) = column else {
+        return [track, None, None];
+    };
+    let Some((gap, line)) = inputs.hint else {
+        return [track, Some(column), None];
+    };
+    let mut label = FlexPart::new(LayoutPartKind::Label, Size::new(0.0, inputs.label_line));
+    label.align = AlignSpec::Stretch;
+    label.gap_after = gap;
+    let mut hint = FlexPart::new(LayoutPartKind::Hint, Size::new(0.0, line));
+    hint.align = AlignSpec::Stretch;
+    let [label, hint] = flex_parts(
+        column.bounds,
+        FlexDirection::Column,
+        JustifySpec::Start,
+        false,
+        [Some(label), Some(hint)],
+    );
+    [track, label, hint]
+}
+
+/// A status dot's row: the dot centred in its `slot`, then the label, which
+/// takes the rest of the row. The space either side of the dot is a spacer
+/// before it and part of its gap after it, so the published
+/// `LeadingContent` is the dot itself.
+pub(crate) fn status_dot_parts(
+    slot: f32,
+    diameter: f32,
+    gap: f32,
+    text: Size,
+) -> [Option<FlexPart>; 3] {
+    let inset = ((slot - diameter) / 2.0).max(0.0);
+    let lead = FlexPart::new(LayoutPartKind::ComponentContent, Size::new(inset, 0.0));
+    let mut dot = FlexPart::new(
+        LayoutPartKind::LeadingContent,
+        Size::new(diameter, diameter),
+    );
+    dot.gap_after = inset + gap;
+    let mut label = FlexPart::new(LayoutPartKind::TextContent, text);
+    label.grow = 1.0;
+    label.shrink = 1.0;
+    label.align = AlignSpec::Stretch;
+    [Some(lead), Some(dot), Some(label)]
+}
+
+/// What a row of `parts` holds beside its label: every glyph's width and
+/// every gap, and the tallest glyph. Intrinsic measure adds the label's own
+/// size to it.
+pub(crate) fn chrome_extent(parts: &[Option<FlexPart>; 3]) -> Size {
+    let glyphs = || {
+        parts
+            .iter()
+            .flatten()
+            .filter(|part| part.kind != LayoutPartKind::TextContent)
+    };
+    Size::new(
+        parts
+            .iter()
+            .flatten()
+            .map(|part| part.gap_after.max(0.0))
+            .sum::<f32>()
+            + glyphs()
+                .map(|part| part.preferred.width.max(0.0))
+                .sum::<f32>(),
+        glyphs()
+            .map(|part| part.preferred.height.max(0.0))
+            .fold(0.0, f32::max),
+    )
+}
+
+/// The paragraph budget excludes fixed chrome, never its own measured advance.
+pub(crate) fn text_budget(mut parts: [Option<FlexPart>; 3], available: Size) -> f32 {
+    fit_button_glyphs(&mut parts, available);
+    (available.width - chrome_extent(&parts).width).max(0.0)
+}
+
+pub(crate) fn button_text_budget(visual: &StandardVisual, available: Size) -> Option<f32> {
+    Some(text_budget(
+        button_parts(visual, Size::default())?,
+        available,
+    ))
+}
+
+/// `inputs` placed as a start-aligned row of `bounds`, each glyph fitted
+/// square into it.
+pub(crate) fn start_row_parts(
+    bounds: LayoutBox,
+    mut inputs: [Option<FlexPart>; 3],
+) -> ContentParts {
+    fit_button_glyphs(&mut inputs, Size::new(bounds.width, bounds.height));
+    flex_parts(
+        bounds,
+        FlexDirection::Row,
+        JustifySpec::Start,
+        false,
+        inputs,
+    )
 }
 
 fn fit_button_glyphs(inputs: &mut [Option<FlexPart>; 3], available: Size) {

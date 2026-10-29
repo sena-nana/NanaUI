@@ -109,22 +109,14 @@ impl StatusBadge {
         style.background = Some(status_background(self.tone));
         style.border = None;
         let layout = Arc::make_mut(&mut style.layout);
-        let (horizontal, vertical, indicator, gap) = if self.compact {
-            (
-                nana_ui_core::space::SM,
-                nana_ui_core::space::XXS,
-                nana_ui_core::space::SM,
-                nana_ui_core::space::XS,
-            )
+        // The dot and its gap are content parts (#205); the padding is the
+        // pill's own inset on both sides.
+        let (horizontal, vertical) = if self.compact {
+            (nana_ui_core::space::SM, nana_ui_core::space::XXS)
         } else {
-            (
-                nana_ui_core::space::MD,
-                nana_ui_core::space::XS,
-                nana_ui_core::space::MD,
-                nana_ui_core::space::SM,
-            )
+            (nana_ui_core::space::MD, nana_ui_core::space::XS)
         };
-        layout.padding_left = Some(LengthSpec::Px(horizontal + indicator + gap));
+        layout.padding_left = Some(LengthSpec::Px(horizontal));
         layout.padding_right = Some(LengthSpec::Px(horizontal));
         use nana_ui_core::SpacingStep;
         let horizontal_step = if self.compact {
@@ -132,21 +124,12 @@ impl StatusBadge {
         } else {
             SpacingStep::Md
         };
-        let gap_step = if self.compact {
-            SpacingStep::Xs
-        } else {
-            SpacingStep::Sm
-        };
         let vertical_step = if self.compact {
             SpacingStep::Xxs
         } else {
             SpacingStep::Xs
         };
-        layout.theme.padding_left = Some(
-            crate::theme_intent::space(horizontal_step)
-                .scaled(2.0)
-                .plus(crate::theme_intent::space(gap_step)),
-        );
+        layout.theme.padding_left = Some(crate::theme_intent::space(horizontal_step));
         layout.theme.padding_right = Some(crate::theme_intent::space(horizontal_step));
         layout.theme.padding_top = Some(crate::theme_intent::space(vertical_step));
         layout.theme.padding_bottom = Some(crate::theme_intent::space(vertical_step));
@@ -249,29 +232,10 @@ impl ValidationMessage {
             nana_ui_core::ValidationIntent::Danger => SemanticColorRole::Danger,
         });
         let layout = Arc::make_mut(&mut style.layout);
-        let indicator = if self.compact {
-            nana_ui_core::space::XL
-        } else {
-            nana_ui_core::space::XXL
-        };
-        let gap = if self.compact {
-            nana_ui_core::space::XS
-        } else {
-            nana_ui_core::space::SM
-        };
-        layout.padding_left = Some(LengthSpec::Px(indicator + gap));
-        layout.theme.padding_left = Some(
-            crate::theme_intent::space(if self.compact {
-                nana_ui_core::SpacingStep::Xl
-            } else {
-                nana_ui_core::SpacingStep::Xxl
-            })
-            .plus(crate::theme_intent::space(if self.compact {
-                nana_ui_core::SpacingStep::Xs
-            } else {
-                nana_ui_core::SpacingStep::Sm
-            })),
-        );
+        // The dot and its gap are content parts (#205); the message keeps
+        // no left inset of its own.
+        layout.padding_left = Some(LengthSpec::Px(0.0));
+        layout.theme.padding_left = None;
         layout.font_size = Some(if self.compact {
             nana_ui_core::type_scale::HINT
         } else {

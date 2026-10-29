@@ -9,7 +9,7 @@
 //! frames and one laid out once: every box, every published result (bounds,
 //! baselines, fragments, overflow, scroll extent, containing block and the
 //! rest of [`crate::LayoutResult::geometry_eq`]), every hit entry and every
-//! accessibility bound.
+//! accessibility bound and clip.
 //!
 //! The per-pass guard in `layout_engine::verify` checks boxes after every
 //! retained pass; this oracle checks what a pass publishes, against a world
@@ -170,7 +170,7 @@ pub(super) fn product_frame(
     viewport: LayoutViewport,
     shaper: &mut NanaTextEngineShaper,
 ) -> WorkCounters {
-    frame(context, document, viewport, shaper, false, None)
+    frame(context, document, viewport, shaper, false, None, None)
 }
 
 /// [`product_frame`], and the nodes every layout pass of it was seeded at.
@@ -188,6 +188,7 @@ pub(super) fn product_frame_seeded(
         shaper,
         false,
         Some(&mut seeded),
+        None,
     );
     (counters, seeded)
 }
@@ -201,7 +202,30 @@ pub(super) fn resize_frame(
     viewport: LayoutViewport,
     shaper: &mut NanaTextEngineShaper,
 ) -> WorkCounters {
-    frame(context, document, viewport, shaper, true, None)
+    frame(context, document, viewport, shaper, true, None, None)
+}
+
+/// A [`product_frame`] (after a viewport change when `resized`, as
+/// [`resize_frame`]), and the accessibility work it drained: what a host
+/// hands [`UiWorld::project_accessibility_delta`] to update its tree.
+pub(super) fn accessible_frame(
+    context: &mut AppContext,
+    document: DocumentId,
+    viewport: LayoutViewport,
+    shaper: &mut NanaTextEngineShaper,
+    resized: bool,
+) -> crate::SystemWork {
+    let mut drained = crate::SystemWork::default();
+    frame(
+        context,
+        document,
+        viewport,
+        shaper,
+        resized,
+        None,
+        Some(&mut drained),
+    );
+    drained
 }
 
 fn frame(
@@ -211,11 +235,21 @@ fn frame(
     shaper: &mut NanaTextEngineShaper,
     mut resized: bool,
     mut seeded: Option<&mut HashSet<StableNodeId>>,
+    mut accessible: Option<&mut crate::SystemWork>,
 ) -> WorkCounters {
     context.compat_world_mut().observe_text_shaper(shaper);
     context.begin_frame_profile();
     for _ in 0..8 {
-        let work = context.take_system_work();
+        let work = context.take_system_work_for(document);
+        if let Some(drained) = accessible.as_deref_mut() {
+            drained.generation = work.generation;
+            drained.accessibility.extend(&work.accessibility);
+            drained
+                .accessibility_removals
+                .extend(&work.accessibility_removals);
+            drained.input_hit_test.extend(&work.input_hit_test);
+            drained.transform.extend(&work.transform);
+        }
         if work.is_empty() && !resized {
             break;
         }
@@ -306,12 +340,16 @@ fn hit_geometry(world: &UiWorld, document: DocumentId, id: StableNodeId) -> Opti
     })
 }
 
-fn accessibility_bounds(world: &UiWorld, id: StableNodeId) -> Option<crate::LayoutBox> {
+/// A node's accessible bounds and what its clip chain leaves of them.
+fn accessibility_bounds(
+    world: &UiWorld,
+    id: StableNodeId,
+) -> Option<(crate::LayoutBox, Option<crate::LayoutBox>)> {
     world
         .project_accessibility_nodes(&[id])
         .into_iter()
         .find(|node| node.id == id)
-        .map(|node| node.bounds)
+        .map(|node| (node.bounds, node.clip))
 }
 
 /// Every box, published result, hit entry and accessibility bound of

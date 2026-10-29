@@ -63,8 +63,9 @@ corpus/golden/TX-*.layout.json  签入的基线(Phase 0 由 cosmic 参照引擎�
 | 字体注册、代际、`FontId` 签发、face 匹配、fallback 策略与候选、覆盖率缓存、变体坐标解析 | **nana-text**（`font` 模块） | 缓存失效与「为什么用了这个字体」的权威；不能交给第三方 query |
 | 系统字体目录扫描、name / OS/2 元数据读取 | **成熟 crate**（fontdb，仅 `font/discovery.rs`） | 不用它的 query 和 fallback |
 | 轴、命名实例、彩色表、cmap 读取 | **成熟 crate**（skrifa，仅 `font/face.rs`） | 与 Phase 2 的 harfrust 0.12 同一条 read-fonts 线 |
+| 字形落位（`TextLayout::glyph_placements`）、栅格键、CPU 字形栅格化（`raster` 特性） | **nana-text**（`layout/placement.rs`、`raster` 模块） | 画字的人都要走同一遍笔位置与取整，栅格要用排版时那份字体实例；见「字形落位与 CPU 栅格」一节 |
 | glyph IR、raster cache、atlas 策略与生命周期、上传、text pipeline | **NanaRenderer::text**（`nana-ui` 的 `scene_paint/text/`） | #97：renderer 侧的合同，见下节；不属于 `nana-text`，因为它是 device 状态 |
-| 字形轮廓栅格化 | **成熟 crate**（swash，只在 `scene_paint/text/raster.rs` 后面） | #97 非目标明确写了不重写 TrueType 栅格器 |
+| 字形轮廓栅格化 | **成熟 crate**（swash，只在 `nana-text` 的 `raster/outline.rs` 后面） | #97 非目标明确写了不重写 TrueType 栅格器 |
 | 矩形打包 | **成熟 crate**（etagere，只在 `scene_paint/text/atlas.rs` 后面） | 同上；Nana 拥有的是 atlas 策略，不是打包算法 |
 
 `nana-text` 只许 import 这些 `nana_ui_core` 项：`DirSpec`、`FontFeatureSetting`、`FontKerningSpec`、`FontVariationSetting`、`LineBreakSpec`、`LineHeightSpec`、`TextAlignSpec`、`TextWrapBreak`、`WordBreakSpec`、`WritingModeSpec`。
@@ -1792,6 +1793,20 @@ cutover 之后仍有几条路径不经过 `nana-text` 量字。或者量了但�
 - `PaintContext::measure_text` 与 `PaintRecording::record` 在没有引擎的世界里仍退回 em 估算。
   那是「宿主没装引擎」的情形。产品宿主总是装的。
 
+## 字形落位与 CPU 栅格
+
+画一段已排好的文字，要先走一遍同样的路：行的基线、沿 run 前进的笔、塑形器给的偏移换成页面 y，再按同样的规矩取整。两个画字的地方各走各的，同一个字就会差一个像素。所以这一遍在 `nana-text` 里，只有一份。
+
+`TextLayout::glyph_placements(scale, origin)` 按绘制顺序给出每个要画的字形：先是各行，然后是 ruby、着重号、对象标签。每项带字体实例、栅格字号（排版 px 乘 `scale`）、字形号、笔位置（x 留小数做子像素，y 落在整像素基线上）、它代表的字节偏移和来源（`GlyphSource`）。竖排段落按列给出，侧躺的 run 标 `sideways`，栅格时顺时针转四分之一。字体层没能实例化的 run 没有字可画，跳过；它的前进量仍在行里，后面的字不动。renderer 的 resolve 就是这一遍加上颜色。
+
+`raster` 特性（`nana-ui` 的 `gpu` 打开它）带来 `nana_text::raster`：
+
+- **栅格键**：`GlyphRasterKey` 及其各部分（`GlyphFontId`、`GlyphVariationId`、`GlyphSynthesis`、`GlyphRenderMode`、四分之一像素的 `SubpixelBin`、按位存的字号）。颜色、不透明度和变换不在键里。
+- **`OutlineRasterizer`**：在 CPU 上把一个键栅格成 `GlyphImage`——灰度覆盖率、彩色位图或子像素覆盖率，以及描边与模糊的派生覆盖率。face 取自同一个引擎的字体层，所以栅格用的就是塑形时那份实例。swash 只在 `raster/outline.rs` 里出现。
+- **`rasterize_layout`**：一段文字的所有字形，栅格好并放到位（位图左上角的栅格像素），给自己合成文字、不走 renderer atlas 的宿主用。它每次都重新栅格；常常重画的调用方自己在 `OutlineRasterizer::rasterize` 上面做缓存。
+
+这里没有 GPU：上传、atlas 和合成都归调用方。renderer 在它上面实现自己的 `GlyphRasterizer` 边界、raster cache 与 atlas；Windows 上 DirectWrite 接管轮廓字形，其余仍交给 `OutlineRasterizer`。
+
 ## NanaRenderer::text（Phase 6，#97）
 
 绘制这一半从 cryoglyph 换成了 NanaUI 自己的子系统。目录是
@@ -1799,12 +1814,12 @@ cutover 之后仍有几条路径不经过 `nana-text` 量字。或者量了但�
 
 ```text
 已塑形的段落
-        │  resolve
+        │  TextLayout::glyph_placements（nana-text）
         ▼
 NanaGlyphRun / PlacedGlyph              glyph.rs
-        │  GlyphRasterKey
+        │  GlyphRasterKey（nana_text::raster）
         ▼
-GlyphRasterCache ── GlyphRasterizer     raster_cache.rs / raster.rs
+GlyphRasterCache ── GlyphRasterizer     raster_cache.rs / raster.rs（OutlineRasterizer 在 nana-text）
         │  GlyphImage
         ▼
 GlyphAtlasManager ── GlyphUploadQueue   atlas.rs / upload.rs

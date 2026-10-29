@@ -52,6 +52,10 @@ checkbox("完成").disabled(locked).model(done)
 
 可见文字和可访问名是同一个 `label`。
 
+## 布局
+
+指示框在前，标签在后，中间隔一档 `indicator_gap`，标签占去余下的宽度；没有标签时不留这段间隔。两者是布局发布的部件（指示框 `LeadingContent`、标签 `TextContent`），尺寸、换行宽度、绘制位置和文字片段都从这一份来，所以没写宽度的 Checkbox 正好是指示框、间隔和标签文字那么宽，标签折行时按标签自己的宽度折。勾选和悬停只改绘制，不重新布局。从右到左的方向下指示框仍在左侧。
+
 ## 混合态
 
 混合态在组件 `Checkbox` 的 `indeterminate` 上，绘制和无障碍都优先于 `checked`。`invalid` 把边画成危险色，`size` 改尺寸。这两项和混合态都不在字段表里。

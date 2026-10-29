@@ -1213,8 +1213,9 @@ mod tests {
         let map = map_of(&root, 220.0, 140.0);
         assert!((map["flow"].x - 8.0).abs() < 0.01);
         assert!((map["flow"].y - 12.0).abs() < 0.01);
-        assert!((map["badge"].x - 14.0).abs() < 0.01);
-        assert!((map["badge"].y - 16.0).abs() < 0.01);
+        // The insets are measured from the padding box, as a browser does.
+        assert!((map["badge"].x - 6.0).abs() < 0.01);
+        assert!((map["badge"].y - 4.0).abs() < 0.01);
     }
 
     #[test]

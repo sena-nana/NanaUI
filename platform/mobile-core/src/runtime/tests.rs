@@ -352,3 +352,49 @@ fn a_passthrough_root_paints_no_background_and_reports_the_theme_one() {
     assert_eq!(light[3], 1.0);
     assert!(dark[0] < light[0], "dark {dark:?} light {light:?}");
 }
+
+#[test]
+fn an_installed_theme_replaces_the_built_in_one() {
+    use nana_ui_core::{SemanticColor, TOUCH_METRICS};
+    let mut fixture = fixture();
+    let root = fixture.runtime.root;
+    let with_surface = |definition: ThemeDefinition, surface| {
+        let mut palette = definition.tokens.palette;
+        palette.surface = surface;
+        definition.with_metrics(TOUCH_METRICS).with_palette(palette)
+    };
+    let light = with_surface(ThemeDefinition::NANA_LIGHT, SemanticColor::rgb8(10, 20, 30));
+    let dark = with_surface(ThemeDefinition::NANA_DARK, SemanticColor::rgb8(40, 50, 60));
+    fixture
+        .runtime
+        .set_theme(MobileTheme {
+            light,
+            dark,
+            page: SemanticColorRole::Surface,
+        })
+        .unwrap();
+    let background = |runtime: &MobileRuntime| {
+        runtime
+            .document()
+            .context()
+            .read(root, |root| root.style.background)
+            .unwrap()
+    };
+    // The page paints the role the theme names, in that theme's colour.
+    assert_eq!(
+        background(&fixture.runtime),
+        Some(SemanticColorRole::Surface)
+    );
+    let rgba = fixture.runtime.background_rgba().unwrap();
+    assert_eq!(rgba, SemanticColor::rgb8(10, 20, 30).as_rgba_array());
+    fixture.runtime.set_appearance(MobileAppearance {
+        dark: true,
+        ..MobileAppearance::default()
+    });
+    let rgba = fixture.runtime.background_rgba().unwrap();
+    assert_eq!(rgba, SemanticColor::rgb8(40, 50, 60).as_rgba_array());
+
+    // Passthrough still wins over the page's role.
+    fixture.runtime.set_background_passthrough(true).unwrap();
+    assert_eq!(background(&fixture.runtime), None);
+}

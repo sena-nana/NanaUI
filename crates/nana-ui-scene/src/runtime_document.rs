@@ -189,7 +189,7 @@ impl RuntimeDocument {
 
         self.context.begin_frame_profile();
         loop {
-            let work = self.context.take_system_work();
+            let work = self.context.take_system_work_for(self.document);
             if work.is_empty() && !force_pass {
                 break;
             }
@@ -2370,3 +2370,7 @@ mod tests {
         );
     }
 }
+
+#[cfg(test)]
+#[path = "runtime_document_clip_chain_tests.rs"]
+mod clip_chain_tests;

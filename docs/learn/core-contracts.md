@@ -46,7 +46,7 @@ title: 核心合同：nana-ui-core
 | `LogicalRect` / `LogicalPoint` | `crates/nana-ui-core/src/geometry.rs:22` | 逻辑像素几何原语（区别于 Scene 层的物理设备像素） |
 | `AccentRamp` | `crates/nana-ui-core/src/theme/tokens.rs:42` | 强调色阶梯：`base` / `strong` / `on_soft` / `text` + `soft` 系 alpha + 显式指定的 `focus` |
 | `MotionTokens` / `MotionRole` | `crates/nana-ui-core/src/theme/tokens.rs` | 动效时长与缓动的 token 类别（`DEFAULT_MOTION` 即 `MotionTokens::DEFAULT`） |
-| `ContentFit` | `crates/nana-ui-core/src/geometry.rs:41` | CSS `object-fit` 语义：`Fill` / `Contain` / `Cover` / `None` / `ScaleDown` |
+| `ContentFit` | `crates/nana-ui-core/src/geometry.rs:44` | CSS `object-fit` 语义：`Fill` / `Contain` / `Cover` / `None` / `ScaleDown` |
 | `ControlSemantics` | `crates/nana-ui-core/src/style_model.rs:914` | 组件语义控制点：`size` / `button_kind` / `card_kind` / `status` |
 
 ## 内部结构
@@ -80,7 +80,7 @@ title: 核心合同：nana-ui-core
 
 ### 4. 几何原语与 Workspace 合同
 
-`geometry.rs` 定义逻辑像素原语与窗口几何常量：`LogicalPoint`（`:22`）、`LogicalRect`（`:99`，构造时将负宽高钳制为 `0`）、`ContentFit`（`:41-53`，对应 CSS `object-fit`，由绘制端通过采样 UV 与裁剪实现，不额外复制 GPU 纹理）、`ImageSampling`（`Resample` / `Mipmap`，`:89-95`）以及 `TITLE_BAR_HEIGHT = 36.0`。
+`geometry.rs` 定义逻辑像素原语与窗口几何常量：`LogicalPoint`（`:22`）、`LogicalRect`（`:102`，构造时将负宽高钳制为 `0`）、`ContentFit`（`:44-56`，对应 CSS `object-fit`，由绘制端通过采样 UV 与裁剪实现，不额外复制 GPU 纹理）、`ImageSampling`（`Resample` / `Mipmap`，`:92-98`）以及 `TITLE_BAR_HEIGHT = 36.0`。
 
 Workspace 合同分为静态描述与交互模型两部分：
 

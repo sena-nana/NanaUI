@@ -174,7 +174,7 @@ Compact + Overlay 适合分离窗底栏（单行加边距约 52px）。Compact +
 
 进度拖拽只预览读数（宿主暂停、没有 tick 时也会跟随）。抬手才发一次 `Seek`。取消的拖拽不发。一次拖拽前后各有 `SeekStarted` / `SeekEnded`（结束在 `Seek` 之后；取消或原地松手时只有这一对）。宿主据此在拖动期间不回写播放位置。不必去监听条内部进度控件的 `RangeInput`。`RangeField` 自己的拖动起止是 `RangeDragging { dragging }`（键盘与无障碍步进不算拖动）。键盘 / 无障碍每一步都是提交。与原生 range 一致。音量跟随拖拽实时发 `Volume`。条在发 `Seek` / `Volume` 前先把目标写进 `position` / `volume`。宿主下一次写入仍是权威值。宿主若在 seek 完成前继续写旧位置，滑块会短暂回到旧位置。
 
-`ReorderList` 可以挂 live 行子节点。按在行里的控件（按钮等能获得焦点的节点）上，不移动松开是控件的点击，移动超过拖动阈值才拖动这一行。`ReorderItem::tools` 标出绝不开始拖动的子树。没有子节点时仍按标签自绘行。行可以是展开的树：`ReorderItem::depth` 写深度，拖动带着整棵子树，`kind` 与 `accepts_inside` / `accepts_sibling`（`ReorderAccepts`）声明谁能放进、放到旁边，插入线按落点深度缩进；Alt 加方向键在兄弟间移动、放进前一个兄弟或移出父行。`IconButton::with_tooltip` 用默认 `TooltipConfig`。
+`ReorderList` 可以挂 live 行子节点。按在行里的控件（按钮等能获得焦点的节点）上，不移动松开是控件的点击，移动超过拖动阈值才拖动这一行。`ReorderItem::tools` 标出绝不开始拖动的子树。没有子节点时仍按标签自绘行。行可以是展开的树：`ReorderItem::depth` 写深度，拖动带着整棵子树，`kind` 与 `accepts_inside` / `accepts_sibling`（`ReorderAccepts`）声明谁能放进、放到旁边，插入线按落点深度缩进；Alt 加方向键在兄弟间移动、放进前一个兄弟或移出父行。同一文档里 `transfer_group` 相同的列表互相接收拖动：落点按接收方的规则算，事件发在接收方，`source` 是原列表里的值。`IconButton::with_tooltip` 用默认 `TooltipConfig`。
 
 ## 交互
 
@@ -206,6 +206,8 @@ Compact + Overlay 适合分离窗底栏（单行加边距约 52px）。Compact +
 键盘也能要菜单。焦点节点收到 `ContextMenu` 键或 Shift+F10 时，派发同一个 `SecondaryPress`，`keyboard` 为 `true`。`target` 是焦点节点，坐标是它盒子的中心。往上找 handler 的规则和右键一样。焦点控件自己先拿这个键：应用的按键策略（`on_key`）、终端、编辑器消费了它，就不再派发。按住不放的重复按键不派发。宿主有自己的同类手势时，调用 `AppContext::secondary_press_focused(document)`。键盘要来的菜单，应用打开后把焦点移进去；右键打开的不动焦点。`SecondaryPress` 的 `focus` 说键要焦点落在哪一端：`Some(RovingEdge::Start)` 是第一项，`Some(RovingEdge::End)` 是最后一项，`None` 由应用挑（通常第一项）。`ContextMenu` 键、Shift+F10、`secondary_press_focused` 和右键都是 `None`。
 
 **菜单按钮。** 会弹出菜单的控件声明 `has_popup`（`aria-haspopup="menu"`）：`Button`、`IconButton`、`ListItem` 的字段（`list_item("模型").has_popup(true)`，模板 `has_popup={true}`），自定义控件写进自己的 `AccessibilityState::has_popup`。读屏把它报成菜单按钮（AccessKit `HasPopup::Menu`）。焦点在它上面时，没有修饰键的 ArrowUp / ArrowDown 也派发 `keyboard: true` 的 `SecondaryPress`，和 `ContextMenu` 键一样。控件自己用方向键时（滑块、数字框）照旧归控件。按 WAI-ARIA 菜单按钮的约定，ArrowDown 的 `focus` 是 `Some(RovingEdge::Start)`（打开后聚焦第一项），ArrowUp 是 `Some(RovingEdge::End)`（最后一项）。菜单开不开、焦点是否照这一端落，仍由应用决定。
+
+**只显示的节点。** 角色本来会带动作、却只用来显示信息的节点（`ListItem` 的 `read_only`，`list_item("Hiyori").read_only(true)`）写 `AccessibilityState::display_only`：仍按原角色读出，不报禁用，但不提供 `Click` / `Focus` 动作，读屏发来的这两种请求也不转发。它和 `disabled` 不同：禁用是能操作而暂时不可用，画成禁用色；只显示的节点照常取色，同时不接指针与焦点（`InteractionState` 两项都为假）。
 
 **方向键焦点组。** 容器声明 `.roving_focus(RovingFocusGroup::vertical())`（或 `horizontal()`，`.wrap(true)` 首尾相接；`AppContext::set_roving_focus_group` 是同一份声明）后，焦点在组里的项上时，方向键在项之间移动焦点。这是 WAI-ARIA 工具栏和菜单的键盘约定。
 

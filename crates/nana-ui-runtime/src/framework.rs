@@ -2544,7 +2544,7 @@ impl AppContext {
     }
 
     pub fn activate_list_item(&mut self, entity: Entity<ListItem>) -> Result<bool, FrameworkError> {
-        self.activate_component(entity, |item| item.disabled)
+        self.activate_component(entity, |item| !item.interactive())
     }
 
     pub fn activate_hover_card(
@@ -3321,6 +3321,11 @@ impl AppContext {
                     };
                     return self.activate_context_menu_index(entity, index);
                 }
+                if let Some((field, slot)) = crate::decode_virtual_menu_item(request.target)
+                    && let Some(handled) = self.activate_select_option(field, slot)?
+                {
+                    return Ok(handled);
+                }
                 if self.activate_node(request.target)? {
                     return Ok(true);
                 }
@@ -3337,6 +3342,9 @@ impl AppContext {
             AccessibilityAction::ActivateMenuItem { menu, slot } => {
                 if crate::decode_virtual_menu_item(request.target) != Some((menu, slot)) {
                     return Ok(false);
+                }
+                if let Some(handled) = self.activate_select_option(menu, slot)? {
+                    return Ok(handled);
                 }
                 let Some(entity) = self.view_entity::<ContextMenu>(menu) else {
                     return Ok(false);
@@ -3501,6 +3509,61 @@ impl AppContext {
                 Ok(false)
             }
         }
+    }
+
+    /// Choose the option in accessibility `slot` of select `field`'s open
+    /// menu, as a press on its row does. `None` when `field` is no Select,
+    /// Dropdown or SearchDropdown.
+    fn activate_select_option(
+        &mut self,
+        field: StableNodeId,
+        slot: u16,
+    ) -> Result<Option<bool>, FrameworkError> {
+        let select = self.view_entity::<Select>(field);
+        let dropdown = self.view_entity::<Dropdown>(field);
+        let search = self.view_entity::<SearchDropdown>(field);
+        if select.is_none() && dropdown.is_none() && search.is_none() {
+            return Ok(None);
+        }
+        // Only an open menu's shown rows have nodes.
+        let Some(row) = self.world.virtual_menu_row_index(field, slot) else {
+            return Ok(Some(false));
+        };
+        if let Some(entity) = select {
+            return self
+                .update_component(entity, |select, cx| {
+                    let opened = select.opened;
+                    if let Some(changed) = select.select_index(row) {
+                        cx.emit(changed);
+                    }
+                    opened && !select.opened
+                })
+                .map(Some);
+        }
+        if let Some(entity) = dropdown {
+            return self
+                .update_component(entity, |dropdown, cx| {
+                    dropdown.select_index(row).is_some_and(|event| {
+                        cx.emit(event);
+                        true
+                    })
+                })
+                .map(Some);
+        }
+        let Some(entity) = search else {
+            return Ok(Some(false));
+        };
+        self.update_component(entity, |dropdown, cx| {
+            // The menu lists only the options the query matches.
+            let Some(index) = dropdown.visible_indices().get(row).copied() else {
+                return false;
+            };
+            dropdown.select_index(index).is_some_and(|event| {
+                cx.emit(event);
+                true
+            })
+        })
+        .map(Some)
     }
 
     fn activate_component<C: ComponentView>(

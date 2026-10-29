@@ -314,7 +314,9 @@ impl SearchDropdown {
             .map(|index| {
                 let option = &self.options[index];
                 SelectOptionData {
-                    key: None,
+                    // Known by its value, so an option keeps its
+                    // accessibility node while the query filters the rest.
+                    key: Some(crate::menus::menu_item_key(&option.value)),
                     label: Arc::clone(&option.label),
                     content: option.content.clone(),
                     hint: option.hint.clone(),
@@ -322,7 +324,7 @@ impl SearchDropdown {
                     checked: false,
                     icon: None,
                     accessible_name: None,
-                    mark: crate::MenuItemMark::Command,
+                    mark: crate::MenuItemMark::Radio(self.value.as_ref() == Some(&option.value)),
                 }
             })
             .collect()

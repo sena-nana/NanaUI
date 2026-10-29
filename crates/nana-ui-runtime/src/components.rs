@@ -1051,7 +1051,8 @@ pub enum StandardVisual {
         /// How the open menu's rows are scrolled and its scrollbar held.
         menu_scroll: SelectMenuScroll,
         /// Where the open menu can be seen, taken when the field last
-        /// projected; `None` before it has been laid out.
+        /// projected and again after each layout pass that moves it;
+        /// `None` before it has been laid out.
         menu_room: Option<SelectMenuRoom>,
         /// Whether this menu can ever draw check marks (a multi-select
         /// dropdown). The check lane is reserved for the whole menu when it
@@ -1279,6 +1280,9 @@ pub struct TriggeredMenuOverlay {
     /// it stays in flow inside the trigger, shown while the surface is
     /// closed, and is not one of the items the surface places.
     pub trigger_content: Option<StableNodeId>,
+    /// An icon trigger's glyph size ([`crate::Popover::trigger_icon_size`]);
+    /// `None` keeps the standard trigger glyph.
+    pub trigger_icon_size: Option<f32>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -2007,9 +2011,12 @@ pub struct SelectMenuScroll {
 /// capped to it; a menu wider than its field (see
 /// [`crate::Select::fit_options`]) stays between `left` and `right`.
 ///
-/// It is taken when the field projects. A page scrolled under an open menu
-/// carries the menu with its field until the menu next changes, so what is
-/// drawn and what the pointer hits stay one geometry.
+/// It is taken when the field projects, and again after every layout pass
+/// of its document that moves it (a resized window, a field or clip that
+/// moved), so the menu flips and caps against the window it is in now. A page
+/// scrolled under an open menu, which runs no layout, carries the menu with
+/// its field until the menu next changes. Either way what is drawn and what
+/// the pointer hits stay one geometry.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct SelectMenuRoom {
     pub top: f32,
@@ -3552,6 +3559,12 @@ pub enum AccessibilityRole {
     ProgressIndicator,
     List,
     ListItem,
+    /// The options an open combobox offers (`role="listbox"`): the menu of a
+    /// Select, Dropdown or SearchDropdown, a child of its field.
+    ListBox,
+    /// One option of a [`Self::ListBox`] (`role="option"`), carrying whether
+    /// it is chosen and where it sits in the list.
+    ListBoxOption,
     /// A hierarchical list whose rows expand and collapse: a `TreeView`.
     Tree,
     /// One row of a [`Self::Tree`], carrying its level and, for a branch,
@@ -3614,6 +3627,10 @@ pub struct AccessibilityState {
     /// equivalent of `aria-hidden="true"` for decorative subtrees.
     pub hidden: bool,
     pub disabled: bool,
+    /// The node only shows something: no action (click, focus) is offered
+    /// for it even where its role usually takes one, and it is not
+    /// disabled either — a read-only list row, not an unavailable one.
+    pub display_only: bool,
     pub checked: Option<bool>,
     /// Tri-state checkbox in its mixed state. Wins over `checked`.
     pub mixed: bool,
@@ -3648,6 +3665,8 @@ pub struct AccessibilityNode {
     pub description: Option<Arc<str>>,
     pub role_description: Option<Arc<str>>,
     pub disabled: bool,
+    /// See [`AccessibilityState::display_only`].
+    pub display_only: bool,
     pub checked: Option<bool>,
     pub mixed: bool,
     pub orientation: Option<crate::SelectionOrientation>,
@@ -3656,8 +3675,19 @@ pub struct AccessibilityNode {
     /// (`aria-level`). `None` where levels do not apply.
     pub level: Option<u32>,
     /// Whether a disclosure is open (`aria-expanded`): set only on nodes that
-    /// can expand, such as a branch row of a tree.
+    /// can expand, such as a branch row of a tree or a combobox.
     pub expanded: Option<bool>,
+    /// The descendant the keyboard is on while the focus stays on this node
+    /// (`aria-activedescendant`): the highlighted option of an open combobox.
+    pub active_descendant: Option<StableNodeId>,
+    /// Where this item sits in its set, from 1 (`aria-posinset`). `None`
+    /// where the set is the node's siblings as they are.
+    pub position_in_set: Option<u32>,
+    /// How many items its set has (`aria-setsize`), on the items and on the
+    /// container that holds them.
+    pub set_size: Option<u32>,
+    /// More than one of its options can be chosen (`aria-multiselectable`).
+    pub multiselectable: bool,
     /// Opens a menu; see [`AccessibilityState::has_popup`].
     pub has_popup: bool,
     pub multiline: bool,
@@ -3682,6 +3712,14 @@ pub struct AccessibilityNode {
     pub scroll_y: Option<AccessibilityScrollAxis>,
     pub focused: bool,
     pub bounds: LayoutBox,
+    /// What the node's clip chain leaves of the viewport, in the coordinates
+    /// of `bounds`: the overflow containers whose clip reaches it (#201),
+    /// each where it sits after the scroll above it. `None` when no
+    /// container clips it. `bounds` is the whole box; the part of it inside
+    /// this is the part painted and hit. An absolute box whose containing
+    /// block lies outside a scroller is not clipped by it, nor is a `fixed`
+    /// box by anything.
+    pub clip: Option<LayoutBox>,
     /// The writing mode and direction its text reads in (#59): which way an
     /// assistive technology walks a text run.
     pub writing: nana_ui_core::WritingContext,
@@ -3747,7 +3785,8 @@ pub fn menu_row_index(rows: &[SelectOptionData], slot: u16) -> Option<usize> {
 const VIRTUAL_NODE: u64 = 0x8000_0000_0000_0000;
 const VIRTUAL_TREE_ITEM: u64 = 0x4000_0000_0000_0000;
 /// Bits 54–61 hold the part of a row a virtual descendant is: 0 for the row
-/// itself, one plus the column for a tree row's toggle in that column (#353).
+/// itself, one plus the column for a tree row's toggle in that column (#353),
+/// and 1 under a menu owner for a select field's list box.
 const VIRTUAL_PART_SHIFT: u32 = 54;
 const VIRTUAL_PART_MAX: u64 = 0xff;
 /// The largest owner id a virtual descendant can encode, in bits 16–53.
@@ -3787,6 +3826,13 @@ fn decode_virtual_descendant(id: StableNodeId) -> Option<(u64, u64, StableNodeId
 /// [`menu_row_slots`]).
 pub fn virtual_menu_item_id(menu: StableNodeId, slot: u16) -> Option<StableNodeId> {
     virtual_descendant_id(0, 0, menu, slot)
+}
+
+/// The virtual accessibility node of the list box an open Select, Dropdown
+/// or SearchDropdown `field` shows: a child of the field, the parent of its
+/// options, which are [`virtual_menu_item_id`]s of the field.
+pub fn virtual_listbox_id(field: StableNodeId) -> Option<StableNodeId> {
+    virtual_descendant_id(0, 1, field, 1)
 }
 
 /// The menu and row slot a virtual menu row node stands for.

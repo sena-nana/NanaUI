@@ -114,6 +114,7 @@ action_menu("预设").children((
 | `.placement` | — | 传给内部的 popover |
 | `.width` | — | 传给内部的 popover |
 | `.trigger_style` | `NodeStyle` | 传给内部的 popover：盖在触发器原有样式上，只替换写了的字段，见 [Popover](popover.md#触发器) |
+| `.trigger_icon_size` | `f32` | 传给内部的 popover：图标触发器的字形边长，触发器的盒子不变 |
 | `.open` | — | 直接写出开关。开关跟 popover 一样，由控件自己切换 |
 | `ActionMenuItem::new(label)` | — | 条目 |
 | `.hint` | — | 一行补充，空字符串会被丢掉 |

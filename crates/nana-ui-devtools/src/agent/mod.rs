@@ -232,6 +232,8 @@ fn accessibility_role_name(role: AccessibilityRole) -> &'static str {
         AccessibilityRole::ProgressIndicator => "progress",
         AccessibilityRole::List => "list",
         AccessibilityRole::ListItem => "list-item",
+        AccessibilityRole::ListBox => "list-box",
+        AccessibilityRole::ListBoxOption => "option",
         AccessibilityRole::Tree => "tree",
         AccessibilityRole::TreeItem => "tree-item",
         AccessibilityRole::Table => "table",

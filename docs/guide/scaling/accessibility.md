@@ -53,7 +53,7 @@ settings_row("静音").control(switch(""))
 
 ## 虚拟子节点与区域名称
 
-像 `TreeView` 和打开的菜单这类自绘单节点控件，框架会把每个可见行投影为无障碍树下的虚拟子节点（例如 `AccessibilityRole::Tree` 下的 `TreeItem`，带 `level`、`expanded`、`selected`、`disabled` 和行矩形边界；折叠后子行从无障碍树中移除），读屏的 `Click` / `Focus` / `Expand` / `Collapse` 与指针键盘走同一份状态更新（见 [TreeView](../../components/tree-view.md#无障碍)）。
+像 `TreeView` 和打开的菜单这类自绘单节点控件，框架会把每个可见行投影为无障碍树下的虚拟子节点（例如 `AccessibilityRole::Tree` 下的 `TreeItem`，带 `level`、`expanded`、`selected`、`disabled` 和行矩形边界；折叠后子行从无障碍树中移除），读屏的 `Click` / `Focus` / `Expand` / `Collapse` 与指针键盘走同一份状态更新（见 [TreeView](../../components/tree-view.md#无障碍)）。Select、Dropdown、SearchDropdown 打开的菜单是字段（`ComboBox`，带 `expanded` 和指向高亮项的 `active_descendant`）下的 `ListBox`，每个露出来的行一个 `ListBoxOption`，带 `selected`、`disabled`、`position_in_set` / `set_size`（见 [Select 的读屏](../../components/select.md#读屏)）。
 
 `AreaLayout` 中的每个区域在无障碍树里是一个 `Region`，名称通过 `.labels([(编辑器, 名称)])` 或切换语言时的 `AppContext::set_area_labels` 提供，不污染可序列化的布局模型（见 [AreaLayout](../../components/area-layout.md)）。
 

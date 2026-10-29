@@ -144,6 +144,120 @@ impl UiWorld {
                 )
             })
     }
+    /// Whether `id` aligns by its border-box bottom rather than a text
+    /// baseline: a custom renderer, a content image, a skipped replaced
+    /// element or an image viewer. The one rule every context's baseline
+    /// reads, so inline, flex and grid alignment cannot disagree on it.
+    pub(crate) fn aligns_by_bottom_edge(
+        &self,
+        id: StableNodeId,
+        style: &nana_ui_core::LayoutStyle,
+    ) -> bool {
+        self.custom_render(id).is_some()
+            || style.paint.content_image.is_some()
+            || style.paint.skipped_replaced.is_some()
+            || {
+                #[cfg(feature = "image-viewer")]
+                {
+                    matches!(
+                        self.standard_visual_ref(id),
+                        Some(StandardVisual::ImageViewer { .. })
+                    )
+                }
+                #[cfg(not(feature = "image-viewer"))]
+                {
+                    false
+                }
+            }
+    }
+
+    /// Whether atomic inline `id` sits on its line by the baseline of its
+    /// last in-flow line box. Otherwise its bottom margin edge sits on the
+    /// baseline: replaced content, an inline-block whose overflow is not
+    /// visible, and one with no in-flow line box (CSS 2.1 §10.8.1).
+    pub(crate) fn atom_sits_on_line_box(&self, id: StableNodeId) -> bool {
+        self.layout_style(id).is_some_and(|style| {
+            !self.aligns_by_bottom_edge(id, &style)
+                && !style.overflow_x.clips()
+                && !style.overflow_y.clips()
+                && self.holds_line_box(id)
+        })
+    }
+
+    /// Whether what `id` holds can move the baseline an atom sits on its
+    /// line by: an atom on a line of an ordinary block whose last line box
+    /// is its own, or an in-flow block of such an atom's flow (and so on
+    /// down), where that last line box is looked for (CSS 2.1 §10.8.1). A
+    /// replaced one and an atom whose overflow is not visible sit by their
+    /// bottom margin edge, whatever they hold. Native paragraph atoms are
+    /// not counted: the paragraph reads their metrics after layout.
+    pub(crate) fn atom_baseline_reads_content(&self, id: StableNodeId) -> bool {
+        let Some(style) = self.layout_style(id) else {
+            return false;
+        };
+        if self.inline_parent(id).is_some() || self.aligns_by_bottom_edge(id, &style) {
+            return false;
+        }
+        // Lines, not a flex or grid container's items.
+        let Some(parent) = self.parent_id(id) else {
+            return false;
+        };
+        if self.layout_style(parent).is_none_or(|parent| {
+            parent
+                .display
+                .is_some_and(|display| display.is_flex_container() || display.is_grid_container())
+        }) {
+            return false;
+        }
+        if style.is_inline_level() {
+            return !style.overflow_x.clips() && !style.overflow_y.clips();
+        }
+        !style.position.is_out_of_flow()
+            && !style.is_floated()
+            && self.atom_baseline_reads_content(parent)
+    }
+
+    /// Whether `id` lays out a line box of its own: text of its own, or a
+    /// control or paragraph that lays text out. Its baselines are then that
+    /// text's.
+    pub(crate) fn lays_out_own_line(&self, id: StableNodeId) -> bool {
+        self.standard_visual_ref(id).is_some()
+            || self.text(id).is_some_and(|text| !text.is_empty())
+            || self.text_layout(id).is_some()
+            || self.inline_record(id).is_some()
+    }
+
+    /// Whether every line box `id` holds is a descendant's: it lays out none
+    /// of its own, is not replaced, and holds one in its flow. Its last
+    /// baseline is then that of the descendant holding its last line box
+    /// (CSS 2.1 §10.8.1), at that descendant's offset inside it.
+    pub(crate) fn line_boxes_are_descendants(&self, id: StableNodeId) -> bool {
+        !self.lays_out_own_line(id)
+            && self
+                .layout_style(id)
+                .is_some_and(|style| !self.aligns_by_bottom_edge(id, &style))
+            && self.holds_line_box(id)
+    }
+
+    /// Whether `id` holds an in-flow line box: text of its own, a control
+    /// or paragraph that lays text out, an inline-level box in its flow, or
+    /// a block in its flow that holds one.
+    fn holds_line_box(&self, id: StableNodeId) -> bool {
+        if self.lays_out_own_line(id) {
+            return true;
+        }
+        self.child_ids(id).iter().any(|&child| {
+            let Some(style) = self.layout_style(child) else {
+                return false;
+            };
+            if style.omits_box() || style.position.is_out_of_flow() || style.is_floated() {
+                return false;
+            }
+            style.is_inline_level()
+                || (!self.aligns_by_bottom_edge(child, &style) && self.holds_line_box(child))
+        })
+    }
+
     pub(super) fn inline_box_omitted(&self, id: StableNodeId) -> bool {
         self.inline_parent(id).is_some()
             && self
@@ -267,10 +381,11 @@ impl UiWorld {
                     let block_size = writing.logical_size(bounds.width, bounds.height).1;
                     let retained =
                         (!writing.is_vertical()).then_some(previous.metrics.ascent_px - margin.top);
-                    let baseline = baseline_of(atom.node)
-                        .or(retained)
-                        .unwrap_or(block_size)
-                        .clamp(0.0, block_size.max(0.0));
+                    let baseline = self
+                        .atom_sits_on_line_box(atom.node)
+                        .then(|| baseline_of(atom.node).or(retained))
+                        .flatten()
+                        .map(|baseline| baseline.clamp(0.0, block_size.max(0.0)));
                     let metrics = crate::inline_content::atomic_metrics(
                         writing,
                         bounds.width,

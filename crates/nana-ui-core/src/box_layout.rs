@@ -736,7 +736,8 @@ pub enum PositionSpec {
     #[default]
     Static,
     Relative,
-    /// measure 脱流 + inset；非完整 CSS 定位引擎。
+    /// 脱流，按 inset 放在包含块里：最近的定位祖先的 padding 盒，没有定位祖先时是
+    /// 视口大小的初始包含块（CSS 2.1 §10.1）。
     Absolute,
     /// 视口固定定位子集（CB = 当前窗口/content viewport）。
     Fixed,
@@ -754,9 +755,10 @@ impl PositionSpec {
         matches!(self, Self::Relative)
     }
 
-    /// 为绝对定位后代建立 containing block（relative / absolute / fixed）。
+    /// 为绝对定位后代建立 containing block：非 static 的定位盒子都算，
+    /// sticky 也一样（CSS 2.1 §10.1、CSS Position 3 §2.1）。
     pub fn establishes_containing_block(self) -> bool {
-        matches!(self, Self::Relative | Self::Absolute | Self::Fixed)
+        !matches!(self, Self::Static)
     }
 
     pub fn is_out_of_flow_absolute(self) -> bool {
@@ -1987,6 +1989,35 @@ pub enum BackgroundImageFit {
     Length,
     /// CSS `object-fit: scale-down` (`min(none, contain)`).
     ScaleDown,
+}
+
+impl BackgroundImageFit {
+    /// The [`crate::ContentFit`] this sizing is: every keyword but explicit
+    /// `background-size` lengths ([`Self::Length`]) sizes the image as the
+    /// matching `object-fit` does (`auto` is `none`, the natural size), so a
+    /// `url()` layer and a host texture share one fit (Issue #202).
+    pub const fn object_fit(self) -> Option<crate::ContentFit> {
+        Some(match self {
+            Self::Stretch => crate::ContentFit::Fill,
+            Self::Contain => crate::ContentFit::Contain,
+            Self::Cover => crate::ContentFit::Cover,
+            Self::Auto => crate::ContentFit::None,
+            Self::ScaleDown => crate::ContentFit::ScaleDown,
+            Self::Length => return None,
+        })
+    }
+}
+
+impl From<crate::ContentFit> for BackgroundImageFit {
+    fn from(fit: crate::ContentFit) -> Self {
+        match fit {
+            crate::ContentFit::Fill => Self::Stretch,
+            crate::ContentFit::Contain => Self::Contain,
+            crate::ContentFit::Cover => Self::Cover,
+            crate::ContentFit::None => Self::Auto,
+            crate::ContentFit::ScaleDown => Self::ScaleDown,
+        }
+    }
 }
 
 /// CSS `background-repeat` (shader tiling).

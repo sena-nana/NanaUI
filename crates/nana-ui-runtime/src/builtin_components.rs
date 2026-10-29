@@ -505,6 +505,7 @@ impl RegisterableComponent for ListItem {
         let mut component = ListItem::new(spec.display_label())
             .selected(spec.active)
             .disabled(spec.disabled)
+            .read_only(spec.read_only)
             .has_popup(opens_menu(spec))
             .size(spec.size)
             .gap(spec.layout.gap_or(8.0))

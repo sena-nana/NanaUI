@@ -289,21 +289,24 @@ pub(crate) struct InlineRecord {
 
 /// Atomic exports are outer logical metrics; placement retains the ordinary
 /// node's border box inside its resolved physical margins.
+///
+/// `baseline` is the atom's own, from its border-box top. Without one the
+/// atom sits on the line by its bottom margin edge (CSS 2.1 §10.8.1): all of
+/// its margin box is above the baseline.
 pub(crate) fn atomic_metrics(
     writing: nana_ui_core::WritingContext,
     width: f32,
     height: f32,
     margin: nana_ui_core::PaddingSpec,
-    baseline: f32,
+    baseline: Option<f32>,
 ) -> nana_text::InlineObjectMetrics {
     let (inline, block) = writing.logical_size(
         width + margin.left + margin.right,
         height + margin.top + margin.bottom,
     );
-    let ascent = if writing.is_vertical() {
-        block
-    } else {
-        baseline + margin.top
+    let ascent = match baseline {
+        Some(baseline) if !writing.is_vertical() => baseline + margin.top,
+        _ => block,
     };
     nana_text::InlineObjectMetrics {
         width_px: inline.max(0.0),

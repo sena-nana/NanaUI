@@ -54,6 +54,8 @@ pub mod id;
 pub mod layout;
 pub mod metrics;
 pub mod parity;
+#[cfg(feature = "raster")]
+pub mod raster;
 pub mod shape;
 pub mod shaping;
 pub mod shared;
@@ -72,9 +74,9 @@ pub use engine::{
 };
 pub use id::{FontGeneration, FontId, FontSourceId, ShapeRunId, TextLayoutId, TextRevision};
 pub use layout::{
-    IntrinsicWidths, LayoutCacheBudget, LayoutCounters, LayoutRequest, Layouter, LineBox,
-    LineBreakCause, OverflowFlags, PlacedEmphasis, PlacedObject, PlacedRuby, ShapedEmphasis,
-    StaleLayout, TextLayout, TextLayoutStore, TextRect,
+    GlyphPlacement, GlyphSource, IntrinsicWidths, LayoutCacheBudget, LayoutCounters, LayoutRequest,
+    Layouter, LineBox, LineBreakCause, OverflowFlags, PlacedEmphasis, PlacedObject, PlacedRuby,
+    ShapedEmphasis, StaleLayout, TextLayout, TextLayoutStore, TextRect,
 };
 pub use metrics::{LineMetrics, RunMetrics};
 pub use shape::{GlyphFlags, RunDirection, RunOrientation, ScriptTag, ShapedGlyph, ShapedRun};

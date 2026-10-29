@@ -24,7 +24,9 @@ mod schedule;
 mod viewport;
 
 pub use render::{MobileRenderer, SurfaceOptions};
-pub use runtime::{MobileAppearance, MobilePlatform, MobileRuntime, TextInputSnapshot, TouchPhase};
+pub use runtime::{
+    MobileAppearance, MobilePlatform, MobileRuntime, MobileTheme, TextInputSnapshot, TouchPhase,
+};
 pub use schedule::FrameDemand;
 pub use viewport::{MobileViewport, SafeArea};
 

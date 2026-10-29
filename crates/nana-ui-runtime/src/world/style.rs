@@ -573,8 +573,10 @@ impl UiWorld {
         }
         let record = self.record_mut(id);
         record.style = style;
-        record.resolved_layout = resolved;
+        let previous = std::mem::replace(&mut record.resolved_layout, resolved);
         record.layout_depends_on_viewport = depends_on_viewport;
+        let next = Arc::clone(&self.record(id).resolved_layout);
+        self.note_layout_anchor_change(id, &previous, &next);
         self.refresh_block_extent_reads(id);
         self.note_layout_source_change();
     }
@@ -585,7 +587,9 @@ impl UiWorld {
     pub(crate) fn refresh_resolved_layout(&mut self, id: StableNodeId) {
         let style = self.record(id).style.clone();
         let resolved = self.resolve_node_layout(id, &style);
-        self.record_mut(id).resolved_layout = resolved;
+        let previous = std::mem::replace(&mut self.record_mut(id).resolved_layout, resolved);
+        let next = Arc::clone(&self.record(id).resolved_layout);
+        self.note_layout_anchor_change(id, &previous, &next);
         self.refresh_block_extent_reads(id);
     }
 
@@ -659,6 +663,7 @@ impl UiWorld {
                 self.layouts.intern(&mut resolved);
             }
             self.record_mut(id).resolved_layout = resolved;
+            self.note_layout_anchor_change(id, &previous, &self.record(id).resolved_layout.clone());
             self.refresh_block_extent_reads(id);
             self.note_layout_source_change();
             moved += 1;
@@ -1037,6 +1042,16 @@ impl UiWorld {
         } else {
             Vec::new()
         };
+        // A control whose content parts read control metrics no style of it
+        // names (#205) lays out again when they move.
+        let part_readers = if token_layout_changed {
+            ids.iter()
+                .copied()
+                .filter(|id| super::content_parts::visual_parts_read_theme(self.nodes.visual(*id)))
+                .collect::<Vec<_>>()
+        } else {
+            Vec::new()
+        };
         let mut work = ThemeWorkCounters::default();
         work.record_paint_invalidation(ids.len());
         if !ids.is_empty() {
@@ -1077,7 +1092,7 @@ impl UiWorld {
             }
             work.record_layout_invalidation(dependents);
         }
-        work.record_layout_invalidation(modal_frames.len());
+        work.record_layout_invalidation(modal_frames.len() + part_readers.len());
         self.record_theme_work(work);
         for id in modal_frames {
             // These visuals shape several internal typography roles. A
@@ -1095,6 +1110,26 @@ impl UiWorld {
                         .union(nana_ui_core::InvalidationKind::PLACEMENT),
                     nana_ui_core::LayoutFieldMask::ALL,
                     nana_ui_core::LayoutDependencyFootprint::ALL,
+                ),
+            );
+        }
+        for id in part_readers {
+            // A status dot's paragraph budget reads the same parts.
+            if self.text(id).is_some_and(|text| !text.is_empty()) {
+                self.nodes
+                    .invalidate_text(id, crate::text_node::TextDirty::CONSTRAINT);
+                self.mark(id, DirtyMask::TEXT);
+            }
+            self.record_layout_invalidation(
+                id,
+                nana_ui_core::LayoutInvalidation::new(
+                    nana_ui_core::LayoutInvalidationSource::Resource,
+                    nana_ui_core::InvalidationReason::RESOURCE,
+                    nana_ui_core::InvalidationKind::MEASURE
+                        .union(nana_ui_core::InvalidationKind::PLACEMENT),
+                    nana_ui_core::LayoutFieldMask::INTRINSIC
+                        .union(nana_ui_core::LayoutFieldMask::FLOW),
+                    nana_ui_core::LayoutDependencyFootprint::intrinsic_container(),
                 ),
             );
         }

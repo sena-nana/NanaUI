@@ -12,6 +12,9 @@ struct ProjectionMemo {
     /// Nodes whose scroll and transform chain is the identity, so viewport
     /// bounds are the layout box.
     aligned: hashbrown::HashMap<StableNodeId, bool>,
+    /// What each overflow container of a clip chain leaves its descendants,
+    /// with the containers above it, in viewport coordinates (#201).
+    clips: hashbrown::HashMap<StableNodeId, LayoutBox>,
     chain: Vec<StableNodeId>,
 }
 
@@ -106,8 +109,11 @@ impl UiWorld {
         if self.clip_visuals == 0 {
             return Some(bounds);
         }
-        let mut parent = self.nodes.get(id)?.hierarchy.parent;
-        while let Some(ancestor) = parent {
+        // Only the clip chain clips `id` (#201): an escaped box passes over
+        // the ancestors between it and its clip parent, and a `fixed` box,
+        // `id` or one above it, ends the chain, as in paint and hit testing.
+        let mut below = id;
+        for ancestor in self.clip_ancestors(id) {
             if matches!(
                 self.nodes.visual(ancestor),
                 Some(StandardVisual::EmptyState { .. })
@@ -121,28 +127,22 @@ impl UiWorld {
                     )?,
                 )?;
             }
-            if matches!(
-                self.nodes.visual(ancestor),
-                Some(StandardVisual::ModalFrame { .. })
-            ) && let Some(crate::ComponentGeometry::ModalFrame { surface, body, .. }) =
-                self.component_geometry(ancestor)
+            if let Some(StandardVisual::ModalFrame { slots, .. }) = self.nodes.visual(ancestor)
+                && let Some(crate::ComponentGeometry::ModalFrame { surface, body, .. }) =
+                    self.component_geometry(ancestor)
             {
                 bounds = intersect_layout_boxes(
                     bounds,
                     self.accessibility_viewport_bounds(ancestor, surface, memo)?,
                 )?;
-                if let Some(StandardVisual::ModalFrame { slots, .. }) = self.nodes.visual(ancestor)
-                    && slots
-                        .body
-                        .is_some_and(|body_root| self.is_descendant_or_self(id, body_root))
-                {
+                if slots.body == Some(below) {
                     bounds = intersect_layout_boxes(
                         bounds,
                         self.accessibility_viewport_bounds(ancestor, body, memo)?,
                     )?;
                 }
             }
-            parent = self.nodes.get(ancestor)?.hierarchy.parent;
+            below = ancestor;
         }
         Some(bounds)
     }
@@ -182,6 +182,21 @@ impl UiWorld {
                 // Viewport-relative; ancestors cannot scroll or clip this branch.
                 cumulative = self.hanging_branch_transform(node);
                 blocks_3d = false;
+            } else if let Some(anchor) = self.clip_escape(node) {
+                // An escaped box resumes from its clip parent, through the
+                // transforms it passes over but none of their scroll (#201).
+                // The clip parent is an ancestor, so it is memoized by now.
+                let base = match anchor.and_then(|anchor| memo.transforms.get(&anchor)) {
+                    Some(transform) => {
+                        blocks_3d = transform.blocks_3d;
+                        transform.children
+                    }
+                    None => {
+                        blocks_3d = false;
+                        (IDENTITY_AFFINE, [0.0, 0.0])
+                    }
+                };
+                cumulative = self.clip_bridge_transform(node, anchor, base, true);
             }
             let local = self.input_local_scene_transform(node, &layout, bounds, blocks_3d);
             cumulative = then_hit(cumulative, self.with_sticky_translation(node, local));
@@ -247,6 +262,63 @@ impl UiWorld {
             width: right - x,
             height: bottom - y,
         })
+    }
+}
+
+impl UiWorld {
+    /// What `id`'s clip chain leaves of the viewport, in the coordinates of
+    /// its accessible bounds: the overflow containers that reach it, each
+    /// where it sits after the scroll above it. `None` when none does. Paint
+    /// and hit testing cut the box by the same chain.
+    fn accessibility_clip(&self, id: StableNodeId, memo: &mut ProjectionMemo) -> Option<LayoutBox> {
+        let clip = self.layout_clip_chain(id).next()?;
+        self.accessibility_clip_region(clip, memo)
+    }
+
+    fn accessibility_clip_region(
+        &self,
+        clip: StableNodeId,
+        memo: &mut ProjectionMemo,
+    ) -> Option<LayoutBox> {
+        if let Some(region) = memo.clips.get(&clip) {
+            return Some(*region);
+        }
+        let layout = self.component_layout_box(clip)?;
+        let (x, y, width, height) = self.hit_motion_layout(clip).overflow_clip_box(
+            layout.x,
+            layout.y,
+            layout.width,
+            layout.height,
+        )?;
+        let own = self.accessibility_viewport_bounds(
+            clip,
+            LayoutBox {
+                x,
+                y,
+                width,
+                height,
+            },
+            memo,
+        )?;
+        let region = match self
+            .layout_clip_chain(clip)
+            .next()
+            .and_then(|outer| self.accessibility_clip_region(outer, memo))
+        {
+            Some(outer) => {
+                let left = own.x.max(outer.x);
+                let top = own.y.max(outer.y);
+                LayoutBox {
+                    x: left,
+                    y: top,
+                    width: ((own.x + own.width).min(outer.x + outer.width) - left).max(0.0),
+                    height: ((own.y + own.height).min(outer.y + outer.height) - top).max(0.0),
+                }
+            }
+            None => own,
+        };
+        memo.clips.insert(clip, region);
+        Some(region)
     }
 }
 
@@ -492,12 +564,17 @@ impl UiWorld {
                     || self
                         .confirm_action_effect(id)
                         .is_some_and(|effect| effect.0)),
+            display_only: state.display_only,
             checked: state.checked,
             mixed: state.mixed,
             orientation: state.orientation,
             selected: state.selected,
             level: None,
             expanded: None,
+            active_descendant: None,
+            position_in_set: None,
+            set_size: None,
+            multiselectable: false,
             has_popup: state.has_popup,
             multiline: state.multiline,
             editable: state.editable,
@@ -540,6 +617,11 @@ impl UiWorld {
             }),
             focused: visible && self.input.focused.get(&document) == Some(&id),
             bounds,
+            clip: if plain {
+                None
+            } else {
+                self.accessibility_clip(id, memo)
+            },
             writing,
         })
     }
@@ -591,12 +673,17 @@ impl UiWorld {
                     description: row.hint.clone(),
                     role_description: None,
                     disabled: row.disabled,
+                    display_only: false,
                     checked: row.mark.checked(),
                     mixed: false,
                     orientation: None,
                     selected: row.mark.selected(),
                     level: None,
                     expanded: None,
+                    active_descendant: None,
+                    position_in_set: None,
+                    set_size: None,
+                    multiselectable: false,
                     has_popup: false,
                     multiline: false,
                     editable: false,
@@ -613,6 +700,7 @@ impl UiWorld {
                     scroll_y: None,
                     focused: *highlighted == Some(index),
                     bounds,
+                    clip: menu.clip,
                     writing: menu.writing,
                 })
             })
@@ -690,12 +778,17 @@ impl UiWorld {
                 description: None,
                 role_description: None,
                 disabled: row.disabled,
+                display_only: false,
                 checked: None,
                 mixed: false,
                 orientation: None,
                 selected: Some(row.selected),
                 level: Some(u32::from(row.depth) + 1),
                 expanded: row.branch.then_some(row.expanded),
+                active_descendant: None,
+                position_in_set: None,
+                set_size: None,
+                multiselectable: false,
                 has_popup: false,
                 multiline: false,
                 editable: false,
@@ -712,6 +805,7 @@ impl UiWorld {
                 scroll_y: None,
                 focused: tree.focused && active.as_ref() == Some(&row.id),
                 bounds,
+                clip: tree.clip,
                 writing: tree.writing,
             });
             nodes.extend(toggles.into_iter().map(|(toggle, column, label, icon)| {
@@ -725,12 +819,17 @@ impl UiWorld {
                     description: None,
                     role_description: None,
                     disabled: row.disabled,
+                    display_only: false,
                     checked: Some(row.toggles.get(column).copied().unwrap_or(false)),
                     mixed: false,
                     orientation: None,
                     selected: None,
                     level: None,
                     expanded: None,
+                    active_descendant: None,
+                    position_in_set: None,
+                    set_size: None,
+                    multiselectable: false,
                     has_popup: false,
                     multiline: false,
                     editable: false,
@@ -747,10 +846,189 @@ impl UiWorld {
                     scroll_y: None,
                     focused: false,
                     bounds: icon,
+                    clip: tree.clip,
                     writing: tree.writing,
                 }
             }));
         }
+        nodes
+    }
+
+    /// An open Select, Dropdown or SearchDropdown menu, read as a WAI-ARIA
+    /// combobox reads: a list box under the field with one option per row
+    /// the menu shows, each known by its value, at the bounds the menu
+    /// paints and hits it (the field's [`crate::SelectMenuGeometry`], under
+    /// the field's transform). A row scrolled out of the menu, or cut away by
+    /// a clip above the field, is not there to read; a row cut in part reads
+    /// as the part shown. The field says whether it is expanded and which
+    /// option the keyboard is on; the options' set is the rows the menu
+    /// lists, so a filtered SearchDropdown counts only its matches.
+    fn project_select_menu(
+        &self,
+        field: &mut AccessibilityNode,
+        memo: &mut ProjectionMemo,
+    ) -> Vec<AccessibilityNode> {
+        let Some(StandardVisual::Select {
+            opened,
+            options,
+            highlighted,
+            checkable,
+            ..
+        }) = self.nodes.visual(field.id)
+        else {
+            return Vec::new();
+        };
+        if field.role != AccessibilityRole::ComboBox {
+            return Vec::new();
+        }
+        // Open is `aria-expanded`; the `selected` the field keeps in its
+        // state paints it, and a combobox is not itself chosen.
+        field.expanded = Some(*opened);
+        field.selected = None;
+        if !*opened {
+            return Vec::new();
+        }
+        let (
+            Some(crate::ComponentGeometry::Select {
+                menu: Some(menu), ..
+            }),
+            Some(listbox),
+        ) = (
+            self.component_geometry(field.id),
+            crate::virtual_listbox_id(field.id),
+        )
+        else {
+            return Vec::new();
+        };
+        // What the window and the clips above the field leave of the menu,
+        // in the field's layout px, cut as hit testing cuts it.
+        let room = match self.select_menu_room(field.id) {
+            Some(room) => Some(LayoutBox {
+                x: room.left,
+                y: room.top,
+                width: room.right - room.left,
+                height: room.bottom - room.top,
+            }),
+            None if self.document_viewport_of(field.id).is_some() => return Vec::new(),
+            None => None,
+        };
+        let seen = |bounds: LayoutBox| match room {
+            Some(room) => intersect_layout_boxes(bounds, room),
+            None => Some(bounds),
+        };
+        let Some(surface) = seen(menu.surface)
+            .and_then(|local| self.accessibility_viewport_bounds(field.id, local, memo))
+        else {
+            return Vec::new();
+        };
+        let set_size = u32::try_from(options.len()).ok();
+        let slots = crate::menu_row_slots(options);
+        let mut rows = Vec::with_capacity(options.len());
+        for (index, (option, row)) in options.iter().zip(&menu.options).enumerate() {
+            // Only the part of a row inside the menu's viewport is drawn and
+            // takes the pointer.
+            let Some(bounds) = intersect_layout_boxes(row.bounds, menu.viewport)
+                .and_then(seen)
+                .and_then(|local| self.accessibility_viewport_bounds(field.id, local, memo))
+            else {
+                continue;
+            };
+            let Some(id) = crate::virtual_menu_item_id(field.id, slots[index]) else {
+                continue;
+            };
+            if *highlighted == Some(index) {
+                field.active_descendant = Some(id);
+            }
+            rows.push(AccessibilityNode {
+                id,
+                parent: Some(listbox),
+                children: Vec::new(),
+                role: AccessibilityRole::ListBoxOption,
+                label: Some(
+                    option
+                        .accessible_name
+                        .clone()
+                        .filter(|name| !name.is_empty())
+                        .unwrap_or_else(|| Arc::clone(&option.label)),
+                ),
+                value: None,
+                description: option.hint.clone().filter(|hint| !hint.is_empty()),
+                role_description: None,
+                disabled: option.disabled,
+                display_only: false,
+                checked: None,
+                mixed: false,
+                orientation: None,
+                selected: Some(option.mark.checked().unwrap_or(false)),
+                level: None,
+                expanded: None,
+                active_descendant: None,
+                position_in_set: u32::try_from(index + 1).ok(),
+                set_size,
+                multiselectable: false,
+                has_popup: false,
+                multiline: false,
+                editable: false,
+                selection: None,
+                modal: false,
+                busy: false,
+                invalid: false,
+                live: None,
+                numeric_minimum: None,
+                numeric_maximum: None,
+                numeric_step: None,
+                numeric_value: None,
+                scroll_x: None,
+                scroll_y: None,
+                focused: false,
+                bounds,
+                clip: field.clip,
+                writing: field.writing,
+            });
+        }
+        field.children.push(listbox);
+        let mut nodes = Vec::with_capacity(rows.len() + 1);
+        nodes.push(AccessibilityNode {
+            id: listbox,
+            parent: Some(field.id),
+            children: rows.iter().map(|row| row.id).collect(),
+            role: AccessibilityRole::ListBox,
+            label: field.label.clone(),
+            value: None,
+            description: None,
+            role_description: None,
+            disabled: false,
+            display_only: false,
+            checked: None,
+            mixed: false,
+            orientation: None,
+            selected: None,
+            level: None,
+            expanded: None,
+            active_descendant: None,
+            position_in_set: None,
+            set_size,
+            multiselectable: *checkable,
+            has_popup: false,
+            multiline: false,
+            editable: false,
+            selection: None,
+            modal: false,
+            busy: false,
+            invalid: false,
+            live: None,
+            numeric_minimum: None,
+            numeric_maximum: None,
+            numeric_step: None,
+            numeric_value: None,
+            scroll_x: None,
+            scroll_y: None,
+            focused: false,
+            bounds: surface,
+            clip: field.clip,
+            writing: field.writing,
+        });
+        nodes.extend(rows);
         nodes
     }
 
@@ -760,9 +1038,17 @@ impl UiWorld {
         plain: bool,
         memo: &mut ProjectionMemo,
     ) -> Vec<AccessibilityNode> {
-        let Some(node) = self.project_accessibility_node(id, plain, memo) else {
+        let Some(mut node) = self.project_accessibility_node(id, plain, memo) else {
             return Vec::new();
         };
+        if self.nodes.has_visuals()
+            && matches!(self.nodes.visual(id), Some(StandardVisual::Select { .. }))
+        {
+            let menu = self.project_select_menu(&mut node, memo);
+            let mut entries = vec![node];
+            entries.extend(menu);
+            return entries;
+        }
         if self.nodes.has_visuals()
             && matches!(self.nodes.visual(id), Some(StandardVisual::TreeView { .. }))
         {
@@ -862,9 +1148,15 @@ impl UiWorld {
 
 impl UiWorld {
     /// The row of `menu` that holds accessibility `slot` now.
+    /// A select field's open menu counts as its menu: its options are rows.
     pub(crate) fn virtual_menu_row_index(&self, menu: StableNodeId, slot: u16) -> Option<usize> {
         match self.nodes.visual(menu) {
-            Some(StandardVisual::MenuSurface { rows, .. }) => crate::menu_row_index(rows, slot),
+            Some(StandardVisual::MenuSurface { rows, .. })
+            | Some(StandardVisual::Select {
+                opened: true,
+                options: rows,
+                ..
+            }) => crate::menu_row_index(rows, slot),
             _ => None,
         }
     }

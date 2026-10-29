@@ -593,8 +593,8 @@ impl RegisterableComponent for GpuTextureView {
         if let Some(radius) = spec.layout.border_radius {
             view.corner_radius = finite_radius(radius);
         }
-        if let Some(fit) = spec.attr("fit") {
-            view.fit = parse_content_fit(fit);
+        if let Some(fit) = semantic_content_fit(spec) {
+            view.fit = fit;
         }
         if spec.attr("pointer-events").is_some_and(|value| {
             let value = value.trim();
@@ -637,11 +637,18 @@ impl RegisterableComponent for GpuView {
     }
 }
 
-pub(crate) fn parse_content_fit(raw: &str) -> nana_ui_core::ContentFit {
-    match raw.trim().to_ascii_lowercase().as_str() {
-        "contain" => nana_ui_core::ContentFit::Contain,
-        _ => nana_ui_core::ContentFit::Fill,
-    }
+/// A replaced component's fit from its markup: the cascaded `object-fit`,
+/// else the `fit` attribute as a presentational hint, else `fill`. Both
+/// read every `object-fit` keyword (Issue #202).
+pub(crate) fn semantic_content_fit(spec: &SemanticSpec<'_>) -> Option<nana_ui_core::ContentFit> {
+    spec.layout
+        .paint
+        .object_fit
+        .and_then(nana_ui_core::BackgroundImageFit::object_fit)
+        .or_else(|| {
+            spec.attr("fit")
+                .map(|raw| nana_ui_core::ContentFit::from_object_fit(raw).unwrap_or_default())
+        })
 }
 
 pub(crate) fn finite_opacity(opacity: f32) -> f32 {

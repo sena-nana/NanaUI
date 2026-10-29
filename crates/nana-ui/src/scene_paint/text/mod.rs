@@ -2045,180 +2045,61 @@ impl TextPipeline {
         };
         resolved.clear();
         let generation = *font_generation as u32;
-        if layout.is_vertical() {
-            resolve_vertical(
-                layout, rasterizer, resolved, colors, generation, scale, origin,
-            );
-        }
-        for line in layout.lines.iter().filter(|_| !layout.is_vertical()) {
-            // The baseline is snapped whole so it cannot land between texels;
-            // the sub-pixel phase of the paragraph's origin is what the glyph
-            // bitmaps were rasterized for and stays fractional.
-            let baseline = (line.metrics.baseline_y_px * scale).round();
-            for run in layout.line_runs(line) {
-                // A run the font layer could not instantiate has no face to
-                // scale, so there is nothing to draw for it. Its advances are
-                // still in the line, which is why the layout box does not move.
-                let Some(instance) = run.instance.as_ref() else {
-                    continue;
-                };
-                let (font, variation, synthesis) = rasterizer.intern_instance(instance);
-                let size = size_bits(run.font_size_px * scale);
-                let mut pen = run.origin_x_px;
-                for glyph in &run.glyphs {
-                    let x = (pen + glyph.offset_x_px) * scale + origin[0];
-                    // `offset_y_px` is the shaper's, positive up; screen y
-                    // grows down. `floor`, not `trunc`: rounding toward zero
-                    // would snap text above the origin the other way and shift
-                    // its baseline by a pixel as it scrolls past y = 0.
-                    let y = (origin[1] - glyph.offset_y_px * scale).floor() + baseline;
-                    pen += glyph.advance_px;
-                    resolved.push(
-                        font,
-                        generation,
-                        variation,
-                        size,
-                        synthesis,
-                        mode,
-                        colors.color_at(glyph.cluster as usize).srgb,
-                        colors.color_at(glyph.cluster as usize).paint_color,
-                        GlyphRole::Fill,
-                        PlacedGlyph {
-                            glyph: glyph.glyph_id,
-                            x,
-                            y,
-                            cluster: glyph.cluster,
-                        },
-                    );
-                }
+        let vertical = layout.is_vertical();
+        // Lines, then ruby above their bases, emphasis marks beside their
+        // characters and object labels inside their objects: each glyph that
+        // stands for a character takes that character's effects and reveal
+        // turn, and its colour by what part of the paragraph it draws.
+        for placed in layout.glyph_placements(scale, origin) {
+            let (font, variation, mut synthesis) = rasterizer.intern_instance(placed.instance);
+            if placed.sideways {
+                synthesis = synthesis.with(GlyphSynthesis::ROTATE_CW);
             }
-        }
-        // Ruby annotations, above their bases. Each glyph stands for the
-        // base's first byte, so it takes the base's colour, effects and
-        // reveal turn.
-        for ruby in &layout.rubies {
-            let baseline = (ruby.baseline_y_px * scale).round();
-            let cluster = ruby.range.start as u32;
-            let color = colors.color_at(ruby.range.start);
-            for run in &ruby.runs {
-                let Some(instance) = run.instance.as_ref() else {
-                    continue;
-                };
-                let (font, variation, synthesis) = rasterizer.intern_instance(instance);
-                let size = size_bits(run.font_size_px * scale);
-                let mut pen = run.origin_x_px;
-                for glyph in &run.glyphs {
-                    let x = (pen + glyph.offset_x_px) * scale + origin[0];
-                    let y = (origin[1] - glyph.offset_y_px * scale).floor() + baseline;
-                    pen += glyph.advance_px;
-                    resolved.push(
-                        font,
-                        generation,
-                        variation,
-                        size,
-                        synthesis,
-                        mode,
-                        color.srgb,
-                        color.paint_color,
-                        GlyphRole::Fill,
-                        PlacedGlyph {
-                            glyph: glyph.glyph_id,
-                            x,
-                            y,
-                            cluster,
-                        },
-                    );
+            let cluster = placed.cluster as usize;
+            let color = match placed.source {
+                nana_text::GlyphSource::Line | nana_text::GlyphSource::Ruby => {
+                    colors.color_at(cluster)
                 }
-            }
-        }
-        // Emphasis marks, beside their characters, in the mark colour or the
-        // character's own fill. Each glyph stands for its character, so it
-        // takes that character's effects and reveal turn.
-        for mark in &layout.emphasis {
-            let Some(runs) = layout.emphasis_marks.get(mark.mark as usize) else {
-                continue;
-            };
-            let baseline = (mark.baseline_y_px * scale).round();
-            let cluster = mark.offset as u32;
-            let color = match effects
-                .rich
-                .and_then(|rich| rich.effects_at(mark.offset).emphasis_color)
-            {
-                Some(paint) => ResolvedSpanColor {
-                    srgb: paint.to_srgb(),
-                    paint_color: Some(paint),
+                // The mark colour, or the character's own fill.
+                nana_text::GlyphSource::Emphasis => match effects
+                    .rich
+                    .and_then(|rich| rich.effects_at(cluster).emphasis_color)
+                {
+                    Some(paint) => ResolvedSpanColor {
+                        srgb: paint.to_srgb(),
+                        paint_color: Some(paint),
+                    },
+                    None => colors.color_at(cluster),
                 },
-                None => colors.color_at(mark.offset),
+                // A light ink unless the label names one.
+                nana_text::GlyphSource::Label(label) => ResolvedSpanColor {
+                    srgb: layout.labels[label].color.unwrap_or([1.0, 1.0, 1.0, 1.0]),
+                    paint_color: None,
+                },
             };
-            for run in runs {
-                let Some(instance) = run.instance.as_ref() else {
-                    continue;
-                };
-                let (font, variation, synthesis) = rasterizer.intern_instance(instance);
-                let size = size_bits(run.font_size_px * scale);
-                let mut pen = mark.x_px + run.origin_x_px;
-                for glyph in &run.glyphs {
-                    let x = (pen + glyph.offset_x_px) * scale + origin[0];
-                    let y = (origin[1] - glyph.offset_y_px * scale).floor() + baseline;
-                    pen += glyph.advance_px;
-                    resolved.push(
-                        font,
-                        generation,
-                        variation,
-                        size,
-                        synthesis,
-                        mode,
-                        color.srgb,
-                        color.paint_color,
-                        GlyphRole::Fill,
-                        PlacedGlyph {
-                            glyph: glyph.glyph_id,
-                            x,
-                            y,
-                            cluster,
-                        },
-                    );
-                }
-            }
-        }
-        // Object labels (tags), inside their objects, on their own pill: a
-        // light ink unless the label names one. Each glyph stands for the
-        // object's character, so it takes the object's effects and reveal
-        // turn.
-        for label in &layout.labels {
-            let ink = label.color.unwrap_or([1.0, 1.0, 1.0, 1.0]);
-            let baseline = (label.baseline_y_px * scale).round();
-            let cluster = label.offset as u32;
-            for run in &label.runs {
-                let Some(instance) = run.instance.as_ref() else {
-                    continue;
-                };
-                let (font, variation, synthesis) = rasterizer.intern_instance(instance);
-                let size = size_bits(run.font_size_px * scale);
-                let mut pen = run.origin_x_px;
-                for glyph in &run.glyphs {
-                    let x = (pen + glyph.offset_x_px) * scale + origin[0];
-                    let y = (origin[1] - glyph.offset_y_px * scale).floor() + baseline;
-                    pen += glyph.advance_px;
-                    resolved.push(
-                        font,
-                        generation,
-                        variation,
-                        size,
-                        synthesis,
-                        mode,
-                        ink,
-                        None,
-                        GlyphRole::Fill,
-                        PlacedGlyph {
-                            glyph: glyph.glyph_id,
-                            x,
-                            y,
-                            cluster,
-                        },
-                    );
-                }
-            }
+            // A vertical column draws plain coverage.
+            let mode = if vertical && placed.source == nana_text::GlyphSource::Line {
+                GlyphRenderMode::Mask
+            } else {
+                mode
+            };
+            resolved.push(
+                font,
+                generation,
+                variation,
+                size_bits(placed.font_size_px),
+                synthesis,
+                mode,
+                color.srgb,
+                color.paint_color,
+                GlyphRole::Fill,
+                PlacedGlyph {
+                    glyph: placed.glyph_id,
+                    x: placed.position[0],
+                    y: placed.position[1],
+                    cluster: placed.cluster,
+                },
+            );
         }
         if resolved.is_empty() {
             return None;
@@ -3496,82 +3377,6 @@ fn hash_paint_color(paint: Option<nana_ui_core::PaintColor>, hasher: &mut impl s
             let (channels, alpha) = paint.to_linear_sc_rgb();
             channels.map(f32::to_bits).hash(hasher);
             alpha.to_bits().hash(hasher);
-        }
-    }
-}
-
-/// Resolves a vertical paragraph's glyphs onto the page (#59).
-///
-/// Columns are placed against the paragraph's own column stack, not the box:
-/// `vertical-rl` puts the first column at the stack's right edge and the
-/// caller shifts the whole entry right by whatever the box adds. That keeps
-/// the entry a function of the layout alone, so a box that only widened
-/// reuses every instance instead of re-resolving them.
-///
-/// Each column's centre line is snapped whole, as a horizontal baseline is.
-/// Upright glyphs hang from it by the offsets HarfRust reported relative to
-/// their horizontal origin; a sideways run centres its em box on it and is
-/// rasterized a quarter turn clockwise.
-fn resolve_vertical(
-    layout: &TextLayout,
-    rasterizer: &mut PlatformRasterizer,
-    resolved: &mut NanaGlyphBuffer,
-    colors: &SpanColors,
-    generation: u32,
-    scale: f32,
-    origin: [f32; 2],
-) {
-    let stack = layout.physical_size().0;
-    for line in &layout.lines {
-        let centre =
-            (layout.physical_x_of_block(line.metrics.baseline_y_px, stack) * scale).round();
-        for run in layout.line_runs(line) {
-            let Some(instance) = run.instance.as_ref() else {
-                continue;
-            };
-            let (font, variation, mut synthesis) = rasterizer.intern_instance(instance);
-            let sideways = run.orientation == nana_text::RunOrientation::Sideways;
-            // The sideways run's own baseline, placed so that its em box —
-            // ascent to the right of it, descent to the left — is centred on
-            // the column's centre line.
-            let baseline = centre - (run.metrics.ascent_px - run.metrics.descent_px) * 0.5 * scale;
-            if sideways {
-                synthesis = synthesis.with(GlyphSynthesis::ROTATE_CW);
-            }
-            let size = size_bits(run.font_size_px * scale);
-            let mut pen = run.origin_x_px;
-            for glyph in &run.glyphs {
-                let (x, y) = if sideways {
-                    // Font y (up) is page x; font x is page y.
-                    (
-                        baseline + glyph.offset_y_px * scale + origin[0],
-                        (pen + glyph.offset_x_px) * scale + origin[1],
-                    )
-                } else {
-                    (
-                        centre + glyph.offset_x_px * scale + origin[0],
-                        (pen - glyph.offset_y_px) * scale + origin[1],
-                    )
-                };
-                pen += glyph.advance_px;
-                resolved.push(
-                    font,
-                    generation,
-                    variation,
-                    size,
-                    synthesis,
-                    GlyphRenderMode::Mask,
-                    colors.color_at(glyph.cluster as usize).srgb,
-                    colors.color_at(glyph.cluster as usize).paint_color,
-                    GlyphRole::Fill,
-                    PlacedGlyph {
-                        glyph: glyph.glyph_id,
-                        x,
-                        y,
-                        cluster: glyph.cluster,
-                    },
-                );
-            }
         }
     }
 }

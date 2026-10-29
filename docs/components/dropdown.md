@@ -37,6 +37,10 @@ widget(Dropdown::single(value))
 
 单值事件是 `DropdownEvent::Select`，多值是 `DropdownEvent::Toggle`，开合是 `Opened` 与 `Closed`。禁用或加载时 `toggle_open` 不发事件。`inactive` 在禁用或加载时为真。
 
+## 读屏
+
+打开的菜单和 [Select 的读屏](select.md#读屏) 一样，是字段下的列表框。多选时列表框可多选（`aria-multiselectable`），勾上的每一项都是「已选」；读屏激活一项就是勾上或取消它，菜单不收起，和按下这一行一样。
+
 ## 属性
 
 | 属性 | 类型 | 说明 |
