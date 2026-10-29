@@ -363,19 +363,33 @@ impl<'a> UiBuilder<'a> {
         parent: Entity<P>,
         children: impl FnOnce(&mut Self) -> R,
     ) -> R {
-        if self.error.is_some() || parent.id == DUMMY_NODE {
-            return children(self);
-        }
-        self.stack.push(Level {
-            parent: Some(parent.id),
-            seen: Vec::new(),
-            seen_keys: HashSet::new(),
-            autos: HashMap::new(),
+        let mut children = Some(children);
+        let mut result = None;
+        self.nest_dyn(parent.id, &mut |ui| {
+            if let Some(children) = children.take() {
+                result = Some(children(ui));
+            }
         });
-        let result = children(self);
-        self.finish_level();
-        self.stack.pop();
-        result
+        result.expect("nest runs its children once")
+    }
+
+    /// [`Self::nest`] without generics: `children` runs exactly once.
+    #[inline(never)]
+    pub(crate) fn nest_dyn(&mut self, parent: StableNodeId, children: &mut dyn FnMut(&mut Self)) {
+        let nested = self.error.is_none() && parent != DUMMY_NODE;
+        if nested {
+            self.stack.push(Level {
+                parent: Some(parent),
+                seen: Vec::new(),
+                seen_keys: HashSet::new(),
+                autos: HashMap::new(),
+            });
+        }
+        children(self);
+        if nested {
+            self.finish_level();
+            self.stack.pop();
+        }
     }
 
     fn queue_despawn(&mut self, root: StableNodeId) {

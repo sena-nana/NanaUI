@@ -435,11 +435,27 @@ impl<'a> ViewBuilder<'_, 'a, '_> {
         parent: Entity<P>,
         f: impl FnOnce(&mut ViewBuilder<'_, 'a, '_>),
     ) {
+        let mut f = Some(f);
+        self.nest_dyn(parent.stable_id(), &mut |vb| {
+            if let Some(f) = f.take() {
+                f(vb);
+            }
+        });
+    }
+
+    /// [`Self::nest`] without generics: `f` runs exactly once.
+    #[inline(never)]
+    pub(crate) fn nest_dyn(
+        &mut self,
+        parent: StableNodeId,
+        f: &mut dyn FnMut(&mut ViewBuilder<'_, 'a, '_>),
+    ) {
         // A pending key names a root at this level, never a child.
         let pending = self.st.pending_key.take();
         self.st.levels.push(Level::default());
         let st = &mut *self.st;
-        self.ui.nest(parent, |ui| f(&mut ViewBuilder { ui, st }));
+        self.ui
+            .nest_dyn(parent, &mut |ui| f(&mut ViewBuilder { ui, st }));
         self.st.levels.pop();
         self.st.pending_key = pending;
     }
@@ -1047,15 +1063,52 @@ impl<C: ComponentView, K> El<C, K> {
 }
 
 impl<C: ComponentView, K> El<C, K> {
+    /// The element without its children, and the children: the head builds
+    /// through code that is generic over the component type alone.
+    fn split(self) -> (El<C>, Box<K>) {
+        let El {
+            component,
+            key,
+            node_refs,
+            labelled_by,
+            locale,
+            bindings,
+            events,
+            implicit,
+            slots,
+            classes,
+            children,
+            site,
+            source,
+        } = self;
+        let head = El {
+            component,
+            key,
+            node_refs,
+            labelled_by,
+            locale,
+            bindings,
+            events,
+            implicit,
+            slots,
+            classes,
+            children: Box::new(()),
+            site,
+            source,
+        };
+        (head, children)
+    }
+}
+
+/// The slot roots an element adopts as its children, with the keys they
+/// were declared with.
+type Adopted = Vec<(StableNodeId, Option<Cow<'static, str>>)>;
+
+impl<C: ComponentView> El<C> {
     /// Build this element's own node: its slots, classes, bindings and
-    /// events. Returns the entity, the slot roots to adopt as its children
-    /// (with the keys they were declared with), and the children to build
-    /// under it; `None` when the build failed.
-    #[allow(clippy::type_complexity)]
-    fn place_node(
-        self,
-        vb: &mut ViewBuilder<'_, '_, '_>,
-    ) -> Option<(Entity<C>, Vec<(StableNodeId, Option<Cow<'static, str>>)>, K)> {
+    /// events. Returns the entity and the slot roots to adopt as its
+    /// children; `None` when the build failed.
+    fn place_node(self, vb: &mut ViewBuilder<'_, '_, '_>) -> Option<(Entity<C>, Adopted)> {
         let El {
             mut component,
             key,
@@ -1067,7 +1120,7 @@ impl<C: ComponentView, K> El<C, K> {
             mut implicit,
             slots,
             classes,
-            children,
+            children: _,
             site,
             source,
         } = self;
@@ -1146,11 +1199,8 @@ impl<C: ComponentView, K> El<C, K> {
                 EventInstall::After(install) => install(vb.ui, entity),
             }
         }
-        Some((entity, adopt, *children))
+        Some((entity, adopt))
     }
-}
-
-impl<C: ComponentView> El<C> {
     /// Build this element as the container of a structural view, which
     /// builds the children under it itself: the node with its classes,
     /// bindings and events, and no slots. `None` when the build failed.
@@ -1161,27 +1211,45 @@ impl<C: ComponentView> El<C> {
                 && C::BEHAVIOR.assembler.is_none(),
             "a structural container takes no slots and assembles nothing"
         );
-        self.place_node(vb).map(|(entity, _, ())| entity)
+        self.place_node(vb).map(|(entity, _)| entity)
     }
 }
 
 impl<C: ComponentView, K: IntoView> IntoView for El<C, K> {
     fn build(self, vb: &mut ViewBuilder<'_, '_, '_>) {
-        let Some((entity, adopt, children)) = self.place_node(vb) else {
-            return;
-        };
-        let id = entity.stable_id();
-        vb.nest(entity, |vb| {
-            for (root, key) in adopt {
-                vb.ui.adopt_as(root, TypeId::of::<AnyView>(), key);
+        let (head, children) = self.split();
+        let mut children = Some(children);
+        build_el(head, vb, &mut |vb| {
+            if let Some(children) = children.take() {
+                children.build(vb);
             }
-            children.build(vb)
         });
-        // After its children, whose entries went in above, and after its
-        // slots, built before it: a composite assembles once everything it
-        // takes is assembled, so its own patches to that content stand.
-        if C::BEHAVIOR.slot_assembler.is_some() || C::BEHAVIOR.assembler.is_some() {
-            vb.st.parts.assemble.push((id, TypeId::of::<C>()));
+    }
+}
+
+/// Build `head`'s node and, under it, its adopted slot roots and then
+/// `children`. Generic over the component type alone: the children arrive
+/// as one dynamic call, so a container literal does not copy this body.
+#[inline(never)]
+fn build_el<C: ComponentView>(
+    head: El<C>,
+    vb: &mut ViewBuilder<'_, '_, '_>,
+    children: &mut dyn FnMut(&mut ViewBuilder<'_, '_, '_>),
+) {
+    let Some((entity, mut adopt)) = head.place_node(vb) else {
+        return;
+    };
+    let id = entity.stable_id();
+    vb.nest_dyn(id, &mut |vb| {
+        for (root, key) in std::mem::take(&mut adopt) {
+            vb.ui.adopt_as(root, TypeId::of::<AnyView>(), key);
         }
+        children(vb);
+    });
+    // After its children, whose entries went in above, and after its
+    // slots, built before it: a composite assembles once everything it
+    // takes is assembled, so its own patches to that content stand.
+    if C::BEHAVIOR.slot_assembler.is_some() || C::BEHAVIOR.assembler.is_some() {
+        vb.st.parts.assemble.push((id, TypeId::of::<C>()));
     }
 }
