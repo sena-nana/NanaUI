@@ -3579,3 +3579,557 @@ fn issue205_ten_thousand_empty_states_keep_one_entity_and_bounded_parts() {
         assert_eq!(cx.world().layout_generation(), generation);
     }
 }
+
+/// Toast recipes the gates run under: the built-in dot, a glyph with a
+/// larger title, no mark and no border, and one that moves every length the
+/// toast's parts read but no style of the toast names.
+fn toast_themes() -> Vec<Option<nana_ui_core::ThemeDefinition>> {
+    use nana_ui_core::{ThemeDefinition, ToastGlyphs, ToastIndicator, ToastRecipe};
+    let glyphs = ToastGlyphs {
+        info: Icon::About,
+        success: Icon::ShieldCheck,
+        warning: Icon::Eye,
+        danger: Icon::Close,
+    };
+    vec![
+        None,
+        Some(ThemeDefinition::NANA_DARK.with_toast(ToastRecipe {
+            indicator: ToastIndicator::Glyph { size: 16.0, glyphs },
+            title: nana_ui_core::RecipeText::new(13.0, Some(500)),
+            ..ToastRecipe::DEFAULT
+        })),
+        Some(ThemeDefinition::NANA_DARK.with_toast(ToastRecipe {
+            border: None,
+            indicator: ToastIndicator::None,
+            ..ToastRecipe::DEFAULT
+        })),
+        Some(toast_parts_theme()),
+    ]
+}
+
+/// Moves the mark, the copy gap, the description line and the dismiss
+/// target: none of them is in the style a bare toast projects.
+fn toast_parts_theme() -> nana_ui_core::ThemeDefinition {
+    use nana_ui_core::{ControlSize, ThemeDefinition, ToastIndicator, ToastRecipe};
+    ThemeDefinition::NANA_LIGHT.with_toast(ToastRecipe {
+        indicator: ToastIndicator::Dot { size: 9.0 },
+        copy_gap: 5.0,
+        description: nana_ui_core::RecipeText::new(13.0, None),
+        control_size: ControlSize::Medium,
+        ..ToastRecipe::DEFAULT
+    })
+}
+
+fn toast_view(
+    title: &str,
+    description: Option<&str>,
+    dismissible: bool,
+    width: Option<LengthSpec>,
+) -> crate::Toast {
+    let mut view = crate::Toast::new(title, crate::ToastTone::Success).dismissible(dismissible);
+    if let Some(description) = description {
+        view = view.description(description);
+    }
+    Arc::make_mut(&mut view.style.layout).width = width;
+    view
+}
+
+/// An assembled toast that shows every part it builds. (A part it hides has
+/// no box; after a relayout of its ancestors such a part holds an empty
+/// result a cold layout does not publish, which is not the toast's own
+/// layout and would fail the cold comparisons below for an unrelated
+/// reason.)
+fn dressed_toast_view(title: &str) -> crate::Toast {
+    toast_view(title, Some("Master sent to disk."), true, None)
+        .progress(crate::ToastProgress::Determinate(0.4))
+        .action("Undo")
+}
+
+/// `view` in a 420px column above a button, assembled when asked, under
+/// `theme` when given, laid out once.
+fn toast_page(
+    view: crate::Toast,
+    assembled: bool,
+    theme: Option<&nana_ui_core::ThemeDefinition>,
+) -> (AppContext, crate::Entity<crate::Toast>) {
+    let document = DocumentId::new(1).unwrap();
+    let mut cx = AppContext::new();
+    if let Some(theme) = theme {
+        cx.set_theme_definition(theme).unwrap();
+    }
+    let root = cx
+        .create_component(document, Stack::column(4.0).width(LengthSpec::Px(420.0)))
+        .unwrap();
+    let toast = cx.create_detached_component(document, view).unwrap();
+    cx.append_child(root, toast).unwrap();
+    if assembled {
+        cx.assemble_toast(toast).unwrap();
+    }
+    let below = cx
+        .create_detached_component(document, Button::new("Below"))
+        .unwrap();
+    cx.append_child(root, below).unwrap();
+    product_frame(
+        &mut cx,
+        document,
+        LayoutViewport::new(700.0, 600.0),
+        &mut bundled_face_shaper(),
+    );
+    cx.rebuild_hit_test(document);
+    (cx, toast)
+}
+
+/// A bare toast's mark, title, description and dismiss target are Flex
+/// parts layout publishes (#205): a row in the band the recipe's padding
+/// leaves, the copy a nested column. Measure gives the box its height from
+/// the same declaration (the style keeps no min-height), the title is one
+/// line shaped to its lane, and paint reads the published boxes.
+#[test]
+fn issue205_toast_mark_copy_and_dismiss_are_published_parts() {
+    use nana_ui_core::ToastIndicator;
+    let long =
+        "Export complete for the whole project including every stem, every bus and the master";
+    for theme in toast_themes() {
+        for dismissible in [false, true] {
+            for description in [None, Some("Master sent to disk.")] {
+                for (title, width) in [
+                    ("Saved", None),
+                    (long, None),
+                    (long, Some(LengthSpec::Px(200.0))),
+                    ("Saved", Some(LengthSpec::FitContent)),
+                ] {
+                    let (cx, toast) = toast_page(
+                        toast_view(title, description, dismissible, width),
+                        false,
+                        theme.as_ref(),
+                    );
+                    let id = toast.stable_id();
+                    let world = cx.world();
+                    let recipe = *world.theme().recipes().toast();
+                    let result = world.layout_result(id).unwrap();
+                    let bounds = result.bounds;
+                    let padding = recipe.padding;
+                    let band = crate::LayoutBox {
+                        x: bounds.x + padding.inline,
+                        y: bounds.y + padding.top,
+                        width: bounds.width - padding.inline * 2.0,
+                        height: bounds.height - padding.top - padding.bottom,
+                    };
+                    let mark = recipe.indicator.size();
+                    let lead = match recipe.indicator {
+                        ToastIndicator::None => 0.0,
+                        _ => mark + recipe.gap,
+                    };
+                    let dismiss = recipe.control_size.height_in(world.theme_metrics())
+                        * f32::from(dismissible);
+                    let close = |a: f32, b: f32| (a - b).abs() < 1e-3;
+                    let ComponentGeometry::Toast {
+                        indicator,
+                        title: painted_title,
+                        description: painted_description,
+                        dismiss: painted_dismiss,
+                        ..
+                    } = world.component_geometry(id).unwrap()
+                    else {
+                        panic!("toast")
+                    };
+                    if mark > 0.0 {
+                        let part = part_of(&cx, id, LayoutPartKind::LeadingContent);
+                        assert_eq!((part.x, part.width, part.height), (band.x, mark, mark));
+                        assert!(close(part.y, band.y + (band.height - mark) / 2.0));
+                        assert_eq!(indicator, Some(part));
+                    } else {
+                        assert_eq!(indicator, None);
+                    }
+                    if dismissible {
+                        let part = part_of(&cx, id, LayoutPartKind::TrailingContent);
+                        assert!(close(part.x, band.x + band.width - dismiss));
+                        assert_eq!((part.width, part.height), (dismiss, dismiss));
+                        assert!(close(part.y, band.y + (band.height - dismiss) / 2.0));
+                        assert_eq!(painted_dismiss, Some(part));
+                    } else {
+                        assert_eq!(painted_dismiss, None);
+                    }
+                    // The title's lane runs from the mark's gap to the
+                    // dismiss target; it is one line, shaped to the lane.
+                    let lane = part_of(&cx, id, LayoutPartKind::TextContent);
+                    assert!(close(lane.x, band.x + lead), "{lane:?} in {band:?}");
+                    assert!(close(lane.width, band.width - lead - dismiss));
+                    assert_eq!(lane.height, recipe.title.size);
+                    let constraints = world.text_shape_constraints(id);
+                    assert_eq!(constraints.max_width, Some(lane.width));
+                    assert_eq!((constraints.wrap, constraints.max_lines), (false, Some(1)));
+                    let text = world.text_metrics(id).unwrap();
+                    assert_eq!(painted_title.unwrap().bounds, lane);
+                    if width == Some(LengthSpec::FitContent) {
+                        // A toast as wide as its copy gives the title the
+                        // lane its text needs, beside the mark and target.
+                        assert!(close(lane.width, text.width), "{lane:?} {text:?}");
+                    }
+                    let run = result
+                        .fragments
+                        .iter()
+                        .find(|fragment| fragment.kind == crate::LayoutFragmentKind::TextRun)
+                        .unwrap();
+                    assert!(run.bounds.x >= lane.x - 1e-3);
+                    assert!(run.bounds.x + run.bounds.width <= lane.x + lane.width + 1e-3);
+                    let copy = recipe.title.size
+                        + description.map_or(0.0, |_| recipe.copy_gap + recipe.description.size);
+                    if let Some(description) = description {
+                        assert_eq!(lane.y, band.y);
+                        let detail = part_of(&cx, id, LayoutPartKind::Detail);
+                        assert_eq!(
+                            detail,
+                            crate::LayoutBox {
+                                y: lane.y + recipe.title.size + recipe.copy_gap,
+                                height: recipe.description.size,
+                                ..lane
+                            }
+                        );
+                        let painted = painted_description.unwrap();
+                        assert_eq!(painted.bounds, detail);
+                        assert_eq!(painted.content.as_ref(), description);
+                    } else {
+                        assert!(close(
+                            lane.y,
+                            band.y + (band.height - recipe.title.size) / 2.0
+                        ));
+                        assert!(painted_description.is_none());
+                    }
+                    // The box is as tall as the taller of the band's block
+                    // and the one-line title in the content box; the style
+                    // names no height of its own.
+                    let border = result.padding_box.y - bounds.y;
+                    let block = copy.max(mark).max(dismiss);
+                    assert!(
+                        close(
+                            bounds.height,
+                            (padding.top + padding.bottom + block)
+                                .max(padding.top + padding.bottom + border * 2.0 + text.height)
+                        ),
+                        "{bounds:?} block {block} text {text:?}"
+                    );
+                    assert_eq!(world.node_style(id).unwrap().layout.min_height, None);
+                    // One entity (and the button below); its parts are the
+                    // title, the content box, the mark, the description and
+                    // the dismiss target.
+                    assert_eq!(world.len(), 3);
+                    assert_eq!(
+                        result.parts.len(),
+                        2 + usize::from(mark > 0.0)
+                            + usize::from(description.is_some())
+                            + usize::from(dismissible)
+                    );
+                }
+            }
+        }
+    }
+}
+
+/// An assembled toast's copy and buttons are children; it publishes its
+/// tone mark as a part in the room its declaration keeps before them,
+/// centred on the title's first line, and paints it there.
+#[test]
+fn issue205_assembled_toast_mark_is_a_published_part() {
+    for theme in toast_themes() {
+        for description in [None, Some("Master sent to disk along with every stem")] {
+            let (cx, toast) = toast_page(
+                toast_view("Export complete", description, true, None),
+                true,
+                theme.as_ref(),
+            );
+            let id = toast.stable_id();
+            let world = cx.world();
+            let recipe = *world.theme().recipes().toast();
+            let result = world.layout_result(id).unwrap();
+            let mark = recipe.indicator.size();
+            let lead = if mark > 0.0 { mark + recipe.gap } else { 0.0 };
+            let padding_box = result.padding_box;
+            let content = result.content_box;
+            assert_eq!(content.x, padding_box.x + recipe.padding.inline + lead);
+            let ComponentGeometry::Toast {
+                indicator,
+                title,
+                description: painted_description,
+                dismiss,
+                ..
+            } = world.component_geometry(id).unwrap()
+            else {
+                panic!("toast")
+            };
+            assert!(title.is_none() && painted_description.is_none() && dismiss.is_none());
+            let parts = result
+                .parts
+                .iter()
+                .filter(|part| part.kind != LayoutPartKind::ChildPlacement)
+                .count();
+            if mark > 0.0 {
+                let part = part_of(&cx, id, LayoutPartKind::LeadingContent);
+                let line = crate::toast::line_box(recipe.title.size);
+                assert_eq!(
+                    part,
+                    crate::LayoutBox {
+                        x: padding_box.x + recipe.padding.inline,
+                        y: content.y + (line - mark) / 2.0,
+                        width: mark,
+                        height: mark,
+                    }
+                );
+                assert_eq!(indicator, Some(part));
+                assert_eq!(parts, 2);
+            } else {
+                assert_eq!(indicator, None);
+                assert_eq!(parts, 1);
+            }
+        }
+    }
+}
+
+/// Title, description, dismissal and width changes to a bare toast, and a
+/// theme that moves only what its parts read, republish what a cold layout
+/// would; a tone change and hover paint only. An assembled toast follows a
+/// theme that moves its mark the same way.
+#[test]
+fn issue205_toast_parts_follow_changes_like_a_cold_layout_and_tone_paints_only() {
+    let document = DocumentId::new(1).unwrap();
+    let viewport = LayoutViewport::new(700.0, 600.0);
+    let mut shaper = bundled_face_shaper();
+    let long =
+        "Export complete for the whole project including every stem, every bus and the master";
+    let (mut cx, toast) = toast_page(toast_view("Saved", None, false, None), false, None);
+    let steps: [(&str, Option<&str>, bool, Option<LengthSpec>); 8] = [
+        ("Saved", None, true, None),
+        ("Saved", Some("Master sent to disk."), true, None),
+        (long, Some("Master sent to disk."), true, None),
+        (
+            long,
+            Some("Master sent to disk."),
+            false,
+            Some(LengthSpec::Px(200.0)),
+        ),
+        (
+            "",
+            Some("Master sent to disk."),
+            false,
+            Some(LengthSpec::FitContent),
+        ),
+        ("Saved", None, true, Some(LengthSpec::FitContent)),
+        ("Saved", Some("Master sent to disk."), false, None),
+        ("Saved", None, false, None),
+    ];
+    for (title, description, dismissible, width) in steps {
+        cx.update_component(toast, |view, _| {
+            *view = toast_view(title, description, dismissible, width);
+        })
+        .unwrap();
+        product_frame(&mut cx, document, viewport, &mut shaper);
+        let (mut cold, cold_toast) = toast_page(
+            toast_view(title, description, dismissible, width),
+            false,
+            None,
+        );
+        assert_eq!(cold_toast.stable_id(), toast.stable_id());
+        super::reflow_oracle::assert_matches_cold(&mut cx, &mut cold, document);
+    }
+    // A recipe that moves the mark, the copy gap, the description line and
+    // the dismiss target moves no style a bare toast resolves.
+    let moved = toast_parts_theme();
+    for (title, description, dismissible) in [
+        ("Saved", Some("Master sent to disk."), true),
+        (long, None, true),
+    ] {
+        let (mut cx, toast) = toast_page(
+            toast_view(title, description, dismissible, None),
+            false,
+            None,
+        );
+        cx.set_theme_definition(&moved).unwrap();
+        product_frame(&mut cx, document, viewport, &mut shaper);
+        let (mut cold, _) = toast_page(
+            toast_view(title, description, dismissible, None),
+            false,
+            Some(&moved),
+        );
+        super::reflow_oracle::assert_matches_cold(&mut cx, &mut cold, document);
+        assert_eq!(
+            part_of(&cx, toast.stable_id(), LayoutPartKind::LeadingContent).width,
+            9.0
+        );
+    }
+    let (mut cx, toast) = toast_page(
+        toast_view("Saved", Some("Master sent to disk."), true, None),
+        false,
+        None,
+    );
+    let id = toast.stable_id();
+    let generation = cx.world().layout_generation();
+    let snapshot = Arc::clone(&cx.world().layout_results[&id]);
+    cx.update_component(toast, |view, _| view.tone = crate::ToastTone::Danger)
+        .unwrap();
+    let toned = product_frame(&mut cx, document, viewport, &mut shaper);
+    cx.set_pointer_hover_at(document, 1, Some(id), Duration::from_millis(800))
+        .unwrap();
+    let hovered = product_frame(&mut cx, document, viewport, &mut shaper);
+    for work in [toned, hovered] {
+        assert_eq!(
+            (work.layout_measure_nodes, work.layout_placement_nodes),
+            (0, 0)
+        );
+    }
+    assert_eq!(cx.world().layout_generation(), generation);
+    assert!(Arc::ptr_eq(&snapshot, &cx.world().layout_results[&id]));
+    // An assembled toast under every recipe, reached by a theme change.
+    for theme in toast_themes().into_iter().flatten() {
+        let (mut cx, _) = toast_page(dressed_toast_view("Saved"), true, None);
+        cx.set_theme_definition(&theme).unwrap();
+        product_frame(&mut cx, document, viewport, &mut shaper);
+        let (mut cold, _) = toast_page(dressed_toast_view("Saved"), true, Some(&theme));
+        super::reflow_oracle::assert_matches_cold(&mut cx, &mut cold, document);
+    }
+}
+
+/// Bare and assembled toasts moved between Grid, Inline and Flex parents
+/// keep their entities and publish the parts a cold layout in that context
+/// would.
+#[test]
+fn issue205_toast_parts_survive_context_transitions() {
+    use super::reflow_oracle::assert_matches_cold;
+    use crate::MutationQueue;
+    use nana_ui_core::DisplaySpec;
+    let document = DocumentId::new(1).unwrap();
+    let viewport = LayoutViewport::new(500.0, 400.0);
+    let build = |display: DisplaySpec| {
+        let mut cx = AppContext::new();
+        let root = cx
+            .create_component(
+                document,
+                Stack::column(0.0).with_layout(|layout| {
+                    layout.width = Some(LengthSpec::Px(360.0));
+                    layout.display = Some(display);
+                }),
+            )
+            .unwrap();
+        let mut ids = Vec::new();
+        for assembled in [false, true] {
+            let view = if assembled {
+                dressed_toast_view("Export complete")
+            } else {
+                toast_view("Export complete", Some("Master sent to disk."), true, None)
+            };
+            let toast = cx.create_detached_component(document, view).unwrap();
+            cx.append_child(root, toast).unwrap();
+            if assembled {
+                cx.assemble_toast(toast).unwrap();
+            }
+            ids.push(toast.stable_id());
+        }
+        product_frame(&mut cx, document, viewport, &mut bundled_face_shaper());
+        (cx, root, ids)
+    };
+    let mut shaper = bundled_face_shaper();
+    let (mut cx, root, ids) = build(DisplaySpec::Flex);
+    for display in [DisplaySpec::Grid, DisplaySpec::Inline, DisplaySpec::Flex] {
+        let mut style = cx.world().node_style(root.stable_id()).unwrap().clone();
+        Arc::make_mut(&mut style.layout).display = Some(display);
+        let mut q = MutationQueue::new();
+        q.set_style(root.stable_id(), style);
+        cx.commit_mutations(q).unwrap();
+        let work = product_frame(&mut cx, document, viewport, &mut shaper);
+        assert_eq!((work.entities_spawned, work.entities_despawned), (0, 0));
+        for (index, &id) in ids.iter().enumerate() {
+            let Some(ComponentGeometry::Toast {
+                indicator,
+                title,
+                description,
+                dismiss,
+                ..
+            }) = cx.world().component_geometry(id)
+            else {
+                panic!("toast")
+            };
+            assert_eq!(
+                indicator,
+                Some(part_of(&cx, id, LayoutPartKind::LeadingContent))
+            );
+            if index == 0 {
+                assert_eq!(
+                    title.unwrap().bounds,
+                    part_of(&cx, id, LayoutPartKind::TextContent)
+                );
+                assert_eq!(
+                    description.unwrap().bounds,
+                    part_of(&cx, id, LayoutPartKind::Detail)
+                );
+                assert_eq!(
+                    dismiss,
+                    Some(part_of(&cx, id, LayoutPartKind::TrailingContent))
+                );
+            }
+        }
+        let (mut cold, ..) = build(display);
+        assert_matches_cold(&mut cx, &mut cold, document);
+    }
+}
+
+#[test]
+fn issue205_ten_thousand_toasts_keep_one_entity_and_bounded_parts() {
+    let _unguarded = crate::layout_engine::verify::skip_layout_verify();
+    for count in [1_000, 10_000] {
+        let document = DocumentId::new(1).unwrap();
+        let mut cx = AppContext::new();
+        let mut shaper = bundled_face_shaper();
+        let viewport = LayoutViewport::new(600.0, 400.0);
+        let root = cx.create_component(document, Stack::column(0.0)).unwrap();
+        let children: Vec<_> = (0..count)
+            .map(|index| {
+                cx.create_detached_component(
+                    document,
+                    toast_view(
+                        "Saved",
+                        (index % 2 == 0).then_some("Master sent to disk."),
+                        index % 3 == 0,
+                        None,
+                    ),
+                )
+                .unwrap()
+                .stable_id()
+            })
+            .collect();
+        let mut q = crate::MutationQueue::new();
+        for &id in &children {
+            q.insert(root.stable_id(), id, None);
+        }
+        cx.commit_mutations(q).unwrap();
+        product_frame(&mut cx, document, viewport, &mut shaper);
+        assert_eq!(cx.world().len(), count + 1);
+        for (index, &id) in children.iter().enumerate() {
+            let result = cx.world().layout_result(id).unwrap();
+            let kinds: Vec<_> = result.parts.iter().map(|part| part.kind).collect();
+            let mut expected = vec![
+                LayoutPartKind::TextContent,
+                LayoutPartKind::ComponentContent,
+                LayoutPartKind::LeadingContent,
+            ];
+            if index % 2 == 0 {
+                expected.push(LayoutPartKind::Detail);
+            }
+            if index % 3 == 0 {
+                expected.push(LayoutPartKind::TrailingContent);
+            }
+            assert_eq!(kinds, expected);
+        }
+        let generation = cx.world().layout_generation();
+        product_frame(&mut cx, document, viewport, &mut shaper);
+        let idle = cx.world().frame_counters;
+        assert_eq!(
+            (
+                idle.layout_measure_nodes,
+                idle.layout_placement_nodes,
+                idle.entities_spawned,
+                idle.entities_despawned
+            ),
+            (0, 0, 0, 0)
+        );
+        assert_eq!(cx.world().layout_generation(), generation);
+    }
+}

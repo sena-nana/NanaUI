@@ -618,6 +618,19 @@ fn visual_content(id: StableNodeId, world: &UiWorld) -> VisualContent {
                 height: extent.height,
             }
         }
+        // A bare toast's mark, gap and dismiss target beside its title, and
+        // its copy column's height: the declaration placement solves. (An
+        // assembled toast's copy is its children; its mark's room is
+        // padding.)
+        Some(crate::StandardVisual::Toast {
+            assembled: false, ..
+        }) => {
+            let chrome = world.toast_chrome(id).expect("toast");
+            VisualContent {
+                width: chrome.width,
+                height: chrome.height,
+            }
+        }
         // Its text already asks for the widest option (`text_natural_width`);
         // the arrow stands beside it.
         Some(crate::StandardVisual::Select {

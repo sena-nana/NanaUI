@@ -1931,6 +1931,21 @@ impl UiWorld {
                             ..
                         }),
                     ) => (ia.is_some(), ra, sa) != (ib.is_some(), rb, sb),
+                    // What a toast's parts read (#205): whether it has a
+                    // description line and a dismiss target. Its tone, glyph
+                    // and copy paint only.
+                    (
+                        Some(StandardVisual::Toast {
+                            description: da,
+                            dismissible: xa,
+                            ..
+                        }),
+                        Some(StandardVisual::Toast {
+                            description: db,
+                            dismissible: xb,
+                            ..
+                        }),
+                    ) => (da.is_some(), xa) != (db.is_some(), xb),
                     _ => false,
                 };
                 let (

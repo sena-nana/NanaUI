@@ -442,6 +442,164 @@ pub(crate) fn empty_state_parts(
     ))
 }
 
+/// A toast's content before placement: its tone mark, its copy (a title
+/// line over an optional description line) and its dismiss target, in a
+/// band inset from the border box by the recipe's padding. Intrinsic
+/// measure ([`Self::chrome`]), the title's paragraph budget, placement
+/// ([`toast_parts`]) and the room an assembled toast keeps before its copy
+/// ([`Self::lead`]) all read this one declaration.
+#[derive(Clone, Copy, PartialEq)]
+pub(crate) struct ToastInputs {
+    /// The band's inset from the border box: the recipe's padding, top,
+    /// bottom and either side. The border lies inside it.
+    pub inset: (f32, f32, f32),
+    /// The tone mark's square, when the recipe marks tones at all; a mark
+    /// may be empty and still keep its gap.
+    pub mark: Option<f32>,
+    /// Between the mark and the copy.
+    pub gap: f32,
+    /// The title line's height.
+    pub title: f32,
+    /// The gap above the description and its line, when there is one.
+    pub description: Option<(f32, f32)>,
+    /// The dismiss target's square, when the toast can be dismissed.
+    pub dismiss: Option<f32>,
+}
+
+impl ToastInputs {
+    /// The room before the copy: the mark and its gap.
+    pub fn lead(&self) -> f32 {
+        self.mark
+            .map_or(0.0, |mark| mark.max(0.0) + self.gap.max(0.0))
+    }
+
+    fn copy_height(&self) -> f32 {
+        self.title + self.description.map_or(0.0, |(gap, line)| gap + line)
+    }
+
+    /// The band in a `bounds` border box.
+    pub fn band(&self, bounds: LayoutBox) -> LayoutBox {
+        let (top, bottom, inline) = self.inset;
+        LayoutBox {
+            x: bounds.x + inline,
+            y: bounds.y + top,
+            width: (bounds.width - inline * 2.0).max(0.0),
+            height: (bounds.height - top - bottom).max(0.0),
+        }
+    }
+
+    /// What the toast holds in its content box beside its title: the mark,
+    /// its gap and the dismiss target across, and the tallest of the copy,
+    /// the mark and the dismiss target down. The band reaches past the
+    /// content box by the `border` (across, down), so that much of it is
+    /// already the toast's own.
+    pub fn chrome(&self, border: Size) -> Size {
+        let dismiss = self.dismiss.map_or(0.0, |dismiss| dismiss.max(0.0));
+        let block = self
+            .copy_height()
+            .max(self.mark.map_or(0.0, |mark| mark.max(0.0)))
+            .max(dismiss);
+        Size::new(
+            (self.lead() + dismiss - border.width).max(0.0),
+            (block - border.height).max(0.0),
+        )
+    }
+
+    /// Where an assembled toast paints its mark: in the room [`Self::lead`]
+    /// keeps before the copy that starts at `content`, centred on the
+    /// title's first `line`.
+    pub fn assembled_mark(&self, content: LayoutBox, line: f32) -> ContentParts {
+        let Some(mark) = self.mark.filter(|mark| *mark > 0.0) else {
+            return NO_CONTENT_PARTS;
+        };
+        content_parts([Some(LayoutPart::new(
+            LayoutPartKind::LeadingContent,
+            LayoutBox {
+                x: content.x - self.lead(),
+                y: content.y + (line - mark) / 2.0,
+                width: mark,
+                height: mark,
+            },
+        ))])
+    }
+}
+
+/// [`ToastInputs`] from a toast `recipe`, its dismiss target `control`
+/// tall when `dismissible`, with a description line when `described`.
+pub(crate) fn toast_inputs(
+    recipe: &nana_ui_core::ToastRecipe,
+    control: f32,
+    dismissible: bool,
+    described: bool,
+) -> ToastInputs {
+    let padding = recipe.padding;
+    let marked = !matches!(recipe.indicator, nana_ui_core::ToastIndicator::None);
+    ToastInputs {
+        inset: (padding.top, padding.bottom, padding.inline),
+        mark: marked.then(|| recipe.indicator.size()),
+        gap: recipe.gap,
+        title: recipe.title.size,
+        description: described.then_some((recipe.copy_gap, recipe.description.size)),
+        dismiss: dismissible.then_some(control),
+    }
+}
+
+/// A bare toast's mark, title, description and dismiss target in the band
+/// of `bounds`: a row of the mark, the copy column, which takes the rest,
+/// and the dismiss target, each centred down the band except a copy with a
+/// description, which starts at its top. The column stacks the title line
+/// over the description line.
+pub(crate) fn toast_parts(bounds: LayoutBox, inputs: ToastInputs) -> ContentParts {
+    let band = inputs.band(bounds);
+    let mark = inputs.mark.map(|mark| {
+        let mut part = FlexPart::new(LayoutPartKind::LeadingContent, Size::new(mark, mark));
+        part.gap_after = inputs.gap;
+        part
+    });
+    let mut copy = FlexPart::new(
+        LayoutPartKind::TextContent,
+        Size::new(0.0, inputs.copy_height()),
+    );
+    copy.grow = 1.0;
+    copy.shrink = 1.0;
+    copy.align = if inputs.description.is_some() {
+        AlignSpec::Start
+    } else {
+        AlignSpec::Center
+    };
+    let dismiss = inputs
+        .dismiss
+        .map(|dismiss| FlexPart::new(LayoutPartKind::TrailingContent, Size::new(dismiss, dismiss)));
+    let [mark, copy, dismiss] = flex_parts(
+        band,
+        FlexDirection::Row,
+        JustifySpec::Start,
+        false,
+        [mark, Some(copy), dismiss],
+    );
+    // An empty mark keeps its gap but is no part.
+    let mark = mark.filter(|mark| mark.bounds.width > 0.0);
+    let Some(copy) = copy else {
+        return content_parts([mark, dismiss]);
+    };
+    let Some((gap, line)) = inputs.description else {
+        return content_parts([mark, Some(copy), dismiss]);
+    };
+    let mut title = FlexPart::new(LayoutPartKind::TextContent, Size::new(0.0, inputs.title));
+    title.align = AlignSpec::Stretch;
+    title.gap_after = gap;
+    let mut description = FlexPart::new(LayoutPartKind::Detail, Size::new(0.0, line));
+    description.align = AlignSpec::Stretch;
+    let [title, description] = flex_parts(
+        copy.bounds,
+        FlexDirection::Column,
+        JustifySpec::Start,
+        false,
+        [Some(title), Some(description)],
+    );
+    content_parts([mark, title, description, dismiss])
+}
+
 /// What a row of `parts` holds beside its label: every glyph's width and
 /// every gap, and the tallest glyph. Intrinsic measure adds the label's own
 /// size to it.

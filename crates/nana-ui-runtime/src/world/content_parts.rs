@@ -4,9 +4,9 @@ use crate::layout_engine::{
     Size,
     parts::{
         CONTENT_PART_SLOTS, ContentParts, EmptyStateInputs, FlexPart, NO_CONTENT_PARTS,
-        SwitchInputs, button_content_parts, checkbox_parts, content_parts, empty_state_parts,
-        part_bounds, selection_option_parts, selection_option_row, start_row_parts,
-        status_dot_parts, switch_parts,
+        SwitchInputs, ToastInputs, button_content_parts, checkbox_parts, content_parts,
+        empty_state_parts, part_bounds, selection_option_parts, selection_option_row,
+        start_row_parts, status_dot_parts, switch_parts, toast_parts,
     },
 };
 
@@ -169,6 +169,17 @@ impl UiWorld {
             )
             .then(|| size(presentation.message.unwrap_or_default()));
             return empty_state_parts(bounds, inputs, size(presentation.title), message);
+        }
+        if let StandardVisual::Toast { assembled, .. } = visual {
+            let inputs = self.toast_inputs(id).expect("toast");
+            return if *assembled {
+                inputs.assembled_mark(
+                    content,
+                    crate::toast::line_box(self.theme.recipes().toast().title.size),
+                )
+            } else {
+                toast_parts(bounds, inputs)
+            };
         }
         if let Some(inputs) = self.selection_option_parts(id, Size::new(text.width, text.height)) {
             return selection_option_row(content, inputs, self.selection_option_icon_line(id));
@@ -454,6 +465,40 @@ impl UiWorld {
             centred: !*compact,
             action: action.map(|_| spacing.xs),
         })
+    }
+
+    /// A toast's mark, copy and dismiss target before placement, from the
+    /// installed toast recipe: what intrinsic measure, the title's
+    /// paragraph budget, placement and an assembled toast's lead all read,
+    /// so neither its style nor its paint keeps a copy of their room.
+    pub(crate) fn toast_inputs(&self, id: StableNodeId) -> Option<ToastInputs> {
+        let Some(StandardVisual::Toast {
+            description,
+            dismissible,
+            assembled,
+            ..
+        }) = self.standard_visual_ref(id)
+        else {
+            return None;
+        };
+        let recipe = self.theme.recipes().toast();
+        // An assembled toast's description and close button are children.
+        let bare = !*assembled;
+        Some(crate::layout_engine::parts::toast_inputs(
+            recipe,
+            recipe.control_size.height_in(self.style_model.metrics),
+            bare && *dismissible,
+            bare && description.is_some(),
+        ))
+    }
+
+    /// [`ToastInputs::chrome`] for a bare toast's own border.
+    pub(crate) fn toast_chrome(&self, id: StableNodeId) -> Option<Size> {
+        let border = self.nodes.get(id)?.resolved_layout.resolved_border_edges();
+        Some(self.toast_inputs(id)?.chrome(Size::new(
+            border.left + border.right,
+            border.top + border.bottom,
+        )))
     }
 
     /// A switch's track and text column before placement, from the

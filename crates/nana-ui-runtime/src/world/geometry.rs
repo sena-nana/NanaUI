@@ -2115,16 +2115,12 @@ impl UiWorld {
                 title,
                 description,
                 tone,
-                dismissible,
-                assembled,
                 icon,
+                ..
             } => {
-                // The recipe the layout side reserved by, so the two cannot
-                // drift; the dismiss reserve follows the themeable control
-                // height of its size rather than a literal.
+                // Every box is a part layout published from the recipe
+                // (`UiWorld::toast_inputs`); this adds what paints in it.
                 let recipe = self.theme.recipes().toast();
-                let pad_x = recipe.padding.inline;
-                let indicator = recipe.indicator.size();
                 let glyph = match recipe.indicator {
                     nana_ui_core::ToastIndicator::Glyph { glyphs, .. } => {
                         Some(icon.unwrap_or_else(|| glyphs.get(*tone)))
@@ -2134,90 +2130,38 @@ impl UiWorld {
                 let elevation = recipe
                     .elevation
                     .map(|role| crate::ComponentElevation::from_shadow(self.theme.shadow(role)));
-                if *assembled {
-                    // The copy is laid out inside the border and the padding
-                    // the toast reserves the mark's square in; the mark
-                    // stands in the title's first line, not in the middle
-                    // of a toast that wraps.
-                    let line = crate::toast::line_box(recipe.title.size);
-                    return Some(crate::ComponentGeometry::Toast {
-                        indicator: (indicator > 0.0).then(|| LayoutBox {
-                            x: bounds.x + border + pad_x,
-                            y: bounds.y + border + recipe.padding.top + (line - indicator) / 2.0,
-                            width: indicator,
-                            height: indicator,
-                        }),
-                        glyph,
-                        title: None,
-                        description: None,
-                        dismiss: None,
-                        elevation,
-                    });
-                }
-                // No mark, no gap after it: the copy starts at the inset.
-                let gap = match recipe.indicator {
-                    nana_ui_core::ToastIndicator::None => 0.0,
-                    _ => recipe.gap,
-                };
-                let dismiss = if *dismissible {
-                    recipe.control_size.height_in(self.style_model.metrics)
-                } else {
-                    0.0
-                };
-                let copy_x = bounds.x + pad_x + indicator + gap;
-                let copy_right = bounds.x + bounds.width - pad_x - dismiss;
-                let copy_width = (copy_right - copy_x).max(0.0);
-                let title_height = recipe.title.size;
-                let desc_height = recipe.description.size;
-                let title_y = if description.is_some() {
-                    bounds.y + recipe.padding.top
-                } else {
-                    bounds.y + (bounds.height - title_height) / 2.0
-                };
+                use crate::LayoutPartKind;
+                let parts = self.component_content_parts(id);
+                let part = |kind| crate::layout_engine::parts::part_bounds(&parts, kind);
+                // An assembled toast's copy is its children: it publishes only
+                // its mark, so it paints no title, description or dismiss
+                // target of its own.
                 Some(crate::ComponentGeometry::Toast {
-                    indicator: (indicator > 0.0).then(|| LayoutBox {
-                        x: bounds.x + pad_x,
-                        y: bounds.y + (bounds.height - indicator) / 2.0,
-                        width: indicator,
-                        height: indicator,
-                    }),
+                    indicator: part(LayoutPartKind::LeadingContent),
                     glyph,
-                    title: Some(crate::ComponentTextRegion {
-                        bounds: LayoutBox {
-                            x: copy_x,
-                            y: title_y,
-                            width: copy_width,
-                            height: title_height,
-                        },
-                        content: Arc::clone(title).into(),
-                        color: Some(
-                            self.style_model
-                                .color(SemanticColorRole::Text)
-                                .as_rgba_array(),
-                        ),
-                        font_size: recipe.title.size,
-                        font_weight: recipe.title.weight,
-                    }),
-                    description: description.as_ref().map(|description| {
+                    title: part(LayoutPartKind::TextContent).map(|bounds| {
                         crate::ComponentTextRegion {
-                            bounds: LayoutBox {
-                                x: copy_x,
-                                y: title_y + title_height + recipe.copy_gap,
-                                width: copy_width,
-                                height: desc_height,
-                            },
+                            bounds,
+                            content: Arc::clone(title).into(),
+                            color: Some(
+                                self.style_model
+                                    .color(SemanticColorRole::Text)
+                                    .as_rgba_array(),
+                            ),
+                            font_size: recipe.title.size,
+                            font_weight: recipe.title.weight,
+                        }
+                    }),
+                    description: description.as_ref().zip(part(LayoutPartKind::Detail)).map(
+                        |(description, bounds)| crate::ComponentTextRegion {
+                            bounds,
                             content: Arc::clone(description).into(),
                             color: Some(secondary),
                             font_size: recipe.description.size,
                             font_weight: recipe.description.weight,
-                        }
-                    }),
-                    dismiss: dismissible.then(|| LayoutBox {
-                        x: bounds.x + bounds.width - pad_x - dismiss,
-                        y: bounds.y + (bounds.height - dismiss) / 2.0,
-                        width: dismiss,
-                        height: dismiss,
-                    }),
+                        },
+                    ),
+                    dismiss: part(LayoutPartKind::TrailingContent),
                     elevation,
                 })
             }

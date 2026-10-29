@@ -3443,17 +3443,27 @@ impl UiWorld {
             self.standard_visual_ref(id),
             Some(StandardVisual::Card { .. })
         );
-        let wrap = if card_title {
+        // A card's title and a bare toast's title are one line, cut to the
+        // lane they paint in.
+        let one_line = card_title
+            || matches!(
+                self.standard_visual_ref(id),
+                Some(StandardVisual::Toast {
+                    assembled: false,
+                    ..
+                })
+            );
+        let wrap = if one_line {
             false
         } else if is_text_input {
             text_input_multiline && source.layout.text_wraps()
         } else {
             source.layout.text_wraps()
         };
-        let preserve_lines = !card_title && Self::preserves_lines(source, text_input_multiline);
+        let preserve_lines = !one_line && Self::preserves_lines(source, text_input_multiline);
         let wrap_break = source.layout.text_wrap_break();
-        let ellipsis = card_title || (!is_text_input && source.layout.uses_text_ellipsis());
-        let max_lines = if card_title {
+        let ellipsis = one_line || (!is_text_input && source.layout.uses_text_ellipsis());
+        let max_lines = if one_line {
             Some(1)
         } else {
             (!is_text_input)
@@ -3526,6 +3536,19 @@ impl UiWorld {
                         }),
                     Some(StandardVisual::Card { .. }) => self
                         .content_part_box(id, crate::LayoutPartKind::Header)
+                        .map_or(available, |part| part.width.max(0.0)),
+                    // The title's lane between the mark and the dismiss
+                    // target, from the parts placement solves in this box.
+                    Some(StandardVisual::Toast {
+                        assembled: false, ..
+                    }) => self
+                        .toast_inputs(id)
+                        .and_then(|inputs| {
+                            crate::layout_engine::parts::part_bounds(
+                                &crate::layout_engine::parts::toast_parts(layout, inputs),
+                                crate::LayoutPartKind::TextContent,
+                            )
+                        })
                         .map_or(available, |part| part.width.max(0.0)),
                     Some(
                         StandardVisual::ActionMenuItem { .. }

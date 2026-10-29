@@ -997,6 +997,9 @@ impl UiWorld {
         // reaches only the modal frames.
         let dialog_changed =
             self.theme.recipes().dialog() != next.recipes().dialog() || token_layout_changed;
+        // A bare toast's mark, copy column and dismiss target are parts read
+        // from its recipe (#205), not from any style it projects.
+        let toast_changed = self.theme.recipes().toast() != next.recipes().toast();
         self.style_model = next.style_model();
         self.theme = next;
         self.palette_epoch = self.palette_epoch.wrapping_add(1).max(1);
@@ -1044,10 +1047,21 @@ impl UiWorld {
         };
         // A control whose content parts read control metrics no style of it
         // names (#205) lays out again when they move.
-        let part_readers = if token_layout_changed {
+        let part_readers = if token_layout_changed || toast_changed {
             ids.iter()
                 .copied()
-                .filter(|id| super::content_parts::visual_parts_read_theme(self.nodes.visual(*id)))
+                .filter(|id| {
+                    let visual = self.nodes.visual(*id);
+                    (token_layout_changed && super::content_parts::visual_parts_read_theme(visual))
+                        || (toast_changed
+                            && matches!(
+                                visual,
+                                Some(StandardVisual::Toast {
+                                    assembled: false,
+                                    ..
+                                })
+                            ))
+                })
                 .collect::<Vec<_>>()
         } else {
             Vec::new()

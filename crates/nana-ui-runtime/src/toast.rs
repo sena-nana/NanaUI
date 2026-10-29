@@ -6,8 +6,7 @@ use std::sync::Arc;
 use nana_ui_core::framework_strings::fill;
 use nana_ui_core::{
     AlignSpec, ButtonKind, ControlSize, FlexDirection, FontFeatureSetting, Icon, LengthSpec,
-    LineHeightSpec, PopoverAlignment, PositionSpec, RecipeText, SemanticColorRole, ToastIndicator,
-    ToastRecipe,
+    LineHeightSpec, PopoverAlignment, PositionSpec, RecipeText, SemanticColorRole, ToastRecipe,
 };
 
 use crate::panel::{origin, positive};
@@ -100,7 +99,7 @@ pub struct Toast {
     /// [`ToastAction`]. Assembled toasts only.
     pub action: Option<Arc<str>>,
     /// Shown in place of the tone's glyph when the theme's recipe marks
-    /// tones with glyphs ([`ToastIndicator::Glyph`]); a recipe that marks
+    /// tones with glyphs ([`nana_ui_core::ToastIndicator::Glyph`]); a recipe that marks
     /// them with a dot, or not at all, keeps doing so. Assembled toasts only.
     pub icon: Option<Icon>,
     /// The close button's accessible name; `None` says the framework's
@@ -221,26 +220,12 @@ impl Toast {
         sanitize_description(self.description.as_ref())
     }
 
-    /// The copy column's height: one line of title, and one of description
-    /// under it when there is one, never shorter than the tone mark.
-    fn copy_height(&self, recipe: &ToastRecipe) -> f32 {
-        let copy = if self.resolved_description().is_some() {
-            recipe.title.size + recipe.copy_gap + recipe.description.size
-        } else {
-            recipe.title.size
-        };
-        copy.max(recipe.indicator.size())
-    }
-
+    /// A bare toast's own box. Its mark, copy and dismiss target are
+    /// content parts (`UiWorld::toast_inputs`): measure gives the box their
+    /// height, so the style keeps no copy of it.
     fn effective_style(&self, world: &UiWorld) -> NodeStyle {
         let recipe = world.theme().recipes().toast();
         let metrics = world.theme_metrics();
-        let dismiss = recipe.control_size.height_in(metrics);
-        let content_height = if self.dismissible {
-            self.copy_height(recipe).max(dismiss)
-        } else {
-            self.copy_height(recipe)
-        };
         let mut style = self.style.clone();
         style.foreground = Some(SemanticColorRole::Text);
         style.background = Some(recipe.background);
@@ -259,9 +244,6 @@ impl Toast {
         layout.padding_right = Some(LengthSpec::Px(padding.inline));
         layout.padding_top = Some(LengthSpec::Px(padding.top));
         layout.padding_bottom = Some(LengthSpec::Px(padding.bottom));
-        layout.min_height = Some(LengthSpec::Px(
-            padding.top + content_height + padding.bottom,
-        ));
         layout.border_width = recipe.border.map(|_| world.theme().border().hairline);
         layout.border_radius = Some(recipe.radius.resolve(metrics));
         layout.font_size = Some(recipe.title.size);
@@ -294,14 +276,13 @@ impl Toast {
         layout.direction = Some(FlexDirection::Row);
         layout.align_items = AlignSpec::Start;
         layout.gap = Some(LengthSpec::Px(recipe.gap));
-        // The toast paints its tone mark in the inset before the copy:
-        // reserve its square and the gap after it.
-        let mark = match recipe.indicator {
-            ToastIndicator::None => 0.0,
-            indicator => indicator.size() + recipe.gap,
-        };
+        // The toast paints its tone mark in the inset before the copy, which
+        // is its children: reserve the room its mark part takes. Flex lays
+        // no part before children, so the room is padding, but it comes
+        // from the declaration placement reads.
+        let lead = crate::layout_engine::parts::toast_inputs(recipe, 0.0, false, false).lead();
         let padding = recipe.padding;
-        layout.padding_left = Some(LengthSpec::Px(padding.inline + mark));
+        layout.padding_left = Some(LengthSpec::Px(padding.inline + lead));
         layout.padding_right = Some(LengthSpec::Px(padding.inline));
         layout.padding_top = Some(LengthSpec::Px(padding.top));
         layout.padding_bottom = Some(LengthSpec::Px(padding.bottom));
@@ -862,11 +843,15 @@ mod tests {
         assert_eq!(style.layout.gap, Some(LengthSpec::Px(8.0)));
         assert_eq!(style.layout.font_size, Some(12.0));
         assert_eq!(style.layout.font_weight, Some(600));
-        assert_eq!(
-            style.layout.min_height,
-            Some(LengthSpec::Px(10.0 + 12.0 + 2.0 + 11.0 + 10.0))
-        );
+        // Its height is measured from its parts (#205): the insets, a 12px
+        // title over an 11px description 2 apart.
+        assert_eq!(style.layout.min_height, None);
         assert_eq!(context.world().interaction(id), Some(inert()));
+        lay_out(&mut context, 420.0);
+        assert_eq!(
+            context.world().layout_box(id).unwrap().height,
+            10.0 + 12.0 + 2.0 + 11.0 + 10.0
+        );
     }
 
     #[test]
@@ -882,11 +867,16 @@ mod tests {
 
         assert!(!context.read(toast, |toast| toast.dismissible).unwrap());
         assert_eq!(context.world().interaction(id), Some(inert()));
+        // Its height is measured from its parts (#205): at least the insets
+        // and the title or the mark, and at least the one-line title in its
+        // content box.
+        lay_out(&mut context, 420.0);
+        let border = nana_ui_core::HAIRLINE * 2.0;
+        let line = context.world().text_metrics(id).unwrap().height;
         assert_eq!(
-            context.world().node_style(id).unwrap().layout.min_height,
-            Some(LengthSpec::Px(
-                pad_top + recipe.title.size.max(recipe.indicator.size()) + pad_bottom
-            ))
+            context.world().layout_box(id).unwrap().height,
+            (pad_top + recipe.title.size.max(recipe.indicator.size()) + pad_bottom)
+                .max(pad_top + border + line + pad_bottom)
         );
 
         context
@@ -895,9 +885,14 @@ mod tests {
             })
             .unwrap();
         assert_eq!(context.world().interaction(id), Some(dismiss_target()));
+        lay_out(&mut context, 420.0);
+        assert_eq!(
+            context.world().layout_box(id).unwrap().height,
+            pad_top + dismiss + pad_bottom
+        );
         assert_eq!(
             context.world().node_style(id).unwrap().layout.min_height,
-            Some(LengthSpec::Px(pad_top + dismiss + pad_bottom))
+            None
         );
 
         let dismissed = Arc::new(Mutex::new(false));
@@ -1172,10 +1167,7 @@ mod tests {
         );
         assert_eq!(style.layout.font_size, Some(13.0));
         assert_eq!(style.layout.font_weight, Some(500));
-        assert_eq!(
-            style.layout.min_height,
-            Some(LengthSpec::Px(10.0 + 13.0 + 2.0 + 11.0 + 10.0))
-        );
+        assert_eq!(style.layout.min_height, None);
         let (indicator, glyph, title, elevation) = geometry(&context);
         assert_eq!(indicator.map(|mark| mark.width), Some(16.0));
         assert_eq!(glyph, Some(Icon::ShieldCheck), "the success tone's glyph");
@@ -1629,7 +1621,7 @@ mod tests {
             danger: Icon::Close,
         };
         let marked = ThemeDefinition::NANA_DARK.with_toast(ToastRecipe {
-            indicator: ToastIndicator::Glyph { size: 16.0, glyphs },
+            indicator: nana_ui_core::ToastIndicator::Glyph { size: 16.0, glyphs },
             ..ToastRecipe::DEFAULT
         });
         assert!(context.set_theme_definition(&marked).unwrap());

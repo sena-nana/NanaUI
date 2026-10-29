@@ -7201,17 +7201,38 @@ fn an_installed_compact_height_reaches_a_dismissible_toast() {
             crate::Toast::new("Copied", crate::ToastTone::Info).dismissible(true),
         )
         .unwrap();
-    let min_height_of = |context: &AppContext| {
-        context.world().extract_nodes(&[toast.stable_id()])[0]
-            .source_style
-            .layout
-            .min_height
+    // The dismiss target is a part the toast's height is measured from
+    // (#205); the style names no height of its own.
+    let height_of = |context: &mut AppContext| {
+        for _ in 0..2 {
+            let work = context.take_system_work();
+            context.resolve_styles(&work.style).unwrap();
+            context
+                .shape_text(&work.text, &mut crate::MeasureTextShaper)
+                .unwrap();
+            context
+                .layout_document(document, crate::LayoutViewport::new(400.0, 300.0))
+                .unwrap();
+        }
+        assert_eq!(
+            context
+                .world()
+                .node_style(toast.stable_id())
+                .unwrap()
+                .layout
+                .min_height,
+            None
+        );
+        context
+            .world()
+            .layout_box(toast.stable_id())
+            .unwrap()
+            .height
     };
-    let px = nana_ui_core::LengthSpec::Px;
     let padding = nana_ui_core::ToastRecipe::DEFAULT.padding;
     let block = padding.top + padding.bottom;
     let default = block + nana_ui_core::UI_METRICS.compact_control_height;
-    assert_eq!(min_height_of(&context), Some(px(default)));
+    assert_eq!(height_of(&mut context), default);
     let mut metrics = nana_ui_core::UI_METRICS;
     metrics.compact_control_height = 40.0;
     assert!(
@@ -7224,7 +7245,7 @@ fn an_installed_compact_height_reaches_a_dismissible_toast() {
             )
             .unwrap()
     );
-    assert_eq!(min_height_of(&context), Some(px(block + 40.0)));
+    assert_eq!(height_of(&mut context), block + 40.0);
 }
 
 #[test]
