@@ -248,6 +248,37 @@ fn a_keyed_list_keeps_row_identity_through_insert_remove_and_reorder() {
     assert_eq!(text_of(&cx, Entity::from_stable_id(after[0])), "任务 9");
 }
 
+#[test]
+fn a_keyed_list_builds_the_first_item_of_a_repeated_key_and_skips_the_rest() {
+    let (mut cx, _, parent) = setup();
+    let items = std::cell::Cell::new(None);
+    let view = cx
+        .mount_view(parent, || {
+            let list = signal(vec![(1u32, "a"), (2, "b"), (1, "c")]);
+            items.set(Some(list));
+            each(list, |item| item.0, |item| text(item.1))
+        })
+        .unwrap();
+    let list = view.roots()[0];
+    let label = |cx: &AppContext, id: StableNodeId| text_of(cx, Entity::from_stable_id(id));
+    let built = children(&cx, list);
+    assert_eq!(
+        built.iter().map(|id| label(&cx, *id)).collect::<Vec<_>>(),
+        ["a", "b"],
+        "the second item keyed 1 is skipped"
+    );
+
+    // A repeated key that is new builds once; the built row keeps its node.
+    let items = items.get().unwrap();
+    items.set(vec![(3, "d"), (1, "e"), (3, "f"), (2, "g")]);
+    cx.flush_reactive().unwrap();
+    let after = children(&cx, list);
+    assert_eq!(after.len(), 3);
+    assert_eq!(&after[1..], &[built[0], built[1]]);
+    assert_eq!(label(&cx, after[0]), "d");
+    assert_eq!(label(&cx, after[1]), "a", "kept rows are not rebuilt");
+}
+
 /// A signal owned by no scope, like application state created at startup.
 fn view_scope_signal(value: &str) -> Signal<String> {
     signal(value.to_owned())

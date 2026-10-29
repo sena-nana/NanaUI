@@ -22,9 +22,7 @@ use super::prop::{IntoProp, PropSource};
 use super::reactive::{self, EffectKey, EffectTarget, Readable, ScopeKey};
 use super::style::{ContainerStyle, container_styles};
 use super::transition::Transition;
-use crate::{
-    AppContext, ComponentView, Entity, FrameworkError, MutationQueue, StableNodeId, Stack,
-};
+use crate::{AppContext, ComponentView, FrameworkError, MutationQueue, StableNodeId, Stack};
 
 pub(super) struct Built {
     pub(super) scope: ScopeKey,
@@ -304,74 +302,147 @@ pub(crate) fn container<C: StyledComponent + ComponentView>(
     style.apply(element)
 }
 
-struct EachBinding<T, K, S, KF, RF> {
+/// Whether an item's key is the first of its kind, and built already.
+enum Admit {
+    /// A key seen earlier in the list: the item is skipped.
+    Duplicate,
+    /// A row with this key is built.
+    Built,
+    /// The first item with this key, and no row has it yet.
+    Fresh,
+}
+
+/// A row still to build: its key and the call that makes its view.
+type FreshRow<'a, K> = (K, Box<dyn FnOnce() -> AnyView + 'a>);
+
+/// The part of a keyed list that knows its items: their keys and how to
+/// build a row. Everything else is [`EachBinding`], generic over the key
+/// alone.
+trait EachSource<K>: Send {
+    /// The keys `admit` lets through, in order, and the rows to build for
+    /// the ones it calls fresh. Reads the items tracked.
+    fn read<'a>(&'a self, admit: &mut dyn FnMut(&K) -> Admit) -> (Vec<K>, Vec<FreshRow<'a, K>>);
+}
+
+struct EachItems<T, S, KF, RF> {
     items: S,
     key_fn: KF,
     row_fn: RF,
-    transition: Option<Transition>,
-    /// Removed rows still playing their leave.
-    leaving: Vec<StableNodeId>,
-    scope: Option<ScopeKey>,
-    rows: HashMap<K, Built>,
-    order: Vec<K>,
     _types: PhantomData<fn(T)>,
 }
 
-impl<T, K, S, KF, RF, V> EachBinding<T, K, S, KF, RF>
+impl<T, K, S, KF, RF, V> EachSource<K> for EachItems<T, S, KF, RF>
 where
     T: Clone + 'static,
-    K: Eq + Hash + Clone + Send + 'static,
+    K: Clone,
     S: Readable<Vec<T>>,
     KF: Fn(&T) -> K + Send + 'static,
     RF: Fn(T) -> V + Send + 'static,
     V: IntoView,
 {
-    /// The keys in order, and the items whose keys are not built yet.
-    fn read(&self) -> (Vec<K>, Vec<(K, T)>) {
+    fn read<'a>(&'a self, admit: &mut dyn FnMut(&K) -> Admit) -> (Vec<K>, Vec<FreshRow<'a, K>>) {
         self.items.with_value(|items| {
             let mut keys = Vec::with_capacity(items.len());
-            let mut seen = HashSet::with_capacity(items.len());
-            let mut fresh = Vec::new();
+            let mut fresh: Vec<FreshRow<'a, K>> = Vec::new();
             for item in items {
                 let key = (self.key_fn)(item);
-                if !seen.insert(key.clone()) {
-                    continue;
-                }
-                if !self.rows.contains_key(&key) {
-                    fresh.push((key.clone(), item.clone()));
+                match admit(&key) {
+                    Admit::Duplicate => continue,
+                    Admit::Built => {}
+                    Admit::Fresh => {
+                        let item = item.clone();
+                        let row_fn = &self.row_fn;
+                        fresh.push((key.clone(), Box::new(move || row_fn(item).into_any())));
+                    }
                 }
                 keys.push(key);
             }
             (keys, fresh)
         })
     }
+}
+
+/// A keyed list bound to its items: diffing, building and removing rows,
+/// their order and transitions, for every item type with this key type.
+struct EachBinding<K> {
+    source: Box<dyn EachSource<K>>,
+    transition: Option<Transition>,
+    /// Removed rows still playing their leave.
+    leaving: Vec<StableNodeId>,
+    scope: Option<ScopeKey>,
+    rows: HashMap<K, Built>,
+    order: Vec<K>,
+}
+
+impl<K: Eq + Hash + Clone + Send + 'static> EachBinding<K> {
+    /// A list's binding, in the scope it is built in.
+    fn new(source: Box<dyn EachSource<K>>, transition: Option<Transition>) -> Self {
+        Self {
+            source,
+            transition,
+            leaving: Vec::new(),
+            scope: reactive::current_scope(),
+            rows: HashMap::new(),
+            order: Vec::new(),
+        }
+    }
+
+    /// The keys in order, and the rows whose keys are not built yet.
+    /// Duplicate keys after the first are skipped.
+    fn read<'a>(
+        source: &'a dyn EachSource<K>,
+        rows: &HashMap<K, Built>,
+    ) -> (Vec<K>, Vec<FreshRow<'a, K>>) {
+        let mut seen = HashSet::new();
+        source.read(&mut |key| {
+            if !seen.insert(key.clone()) {
+                Admit::Duplicate
+            } else if rows.contains_key(key) {
+                Admit::Built
+            } else {
+                Admit::Fresh
+            }
+        })
+    }
 
     /// Build the rows under `container`, placed already, and keep them
     /// bound to the items.
-    fn mount<C: ComponentView>(
+    #[inline(never)]
+    fn mount(
         mut self,
         vb: &mut ViewBuilder<'_, '_, '_>,
-        container: Entity<C>,
+        container: StableNodeId,
         site: &'static Location<'static>,
     ) {
-        let id = container.stable_id();
-        let effect = reactive::create_effect(vb.st.tag, EffectTarget::Structural(id), None, site);
-        let (keys, fresh) = reactive::run_tracked(effect, || self.read());
-        vb.nest(container, |vb| {
-            let built = self.build_rows(vb, fresh);
-            self.rows.extend(built);
+        let effect =
+            reactive::create_effect(vb.st.tag, EffectTarget::Structural(container), None, site);
+        let (keys, fresh) = reactive::run_tracked(effect, || Self::read(&*self.source, &self.rows));
+        let mut fresh = Some(fresh);
+        let mut built = Vec::new();
+        let scope = self.scope;
+        vb.nest_dyn(container, &mut |vb| {
+            if let Some(fresh) = fresh.take() {
+                built = Self::build_rows(vb, scope, fresh);
+            }
         });
+        // The rows it held borrow the source, which goes into the box below.
+        drop(fresh);
+        self.rows.extend(built);
         self.order = keys;
-        vb.st.parts.structural.push((id, effect, Box::new(self)));
+        vb.st
+            .parts
+            .structural
+            .push((container, effect, Box::new(self)));
     }
 
-    fn build_rows(&self, vb: &mut ViewBuilder<'_, '_, '_>, fresh: Vec<(K, T)>) -> Vec<(K, Built)> {
+    fn build_rows(
+        vb: &mut ViewBuilder<'_, '_, '_>,
+        scope: Option<ScopeKey>,
+        fresh: Vec<FreshRow<'_, K>>,
+    ) -> Vec<(K, Built)> {
         fresh
             .into_iter()
-            .map(|(key, item)| {
-                let built = build_scoped(vb, self.scope, || (self.row_fn)(item).into_any());
-                (key, built)
-            })
+            .map(|(key, row)| (key, build_scoped(vb, scope, row)))
             .collect()
     }
 }
@@ -398,7 +469,7 @@ where
             ..
         } = self;
         if let Some(container) = container(stack.structural(), key, style, site).place(vb) {
-            EachBinding::new(items, key_fn, row_fn, transition).mount(vb, container, site);
+            each_binding(items, key_fn, row_fn, transition).mount(vb, container.stable_id(), site);
         }
     }
 }
@@ -423,29 +494,18 @@ where
             ..
         } = self.each;
         if let Some(container) = self.element.place(vb) {
-            EachBinding::new(items, key_fn, row_fn, transition).mount(vb, container, site);
+            each_binding(items, key_fn, row_fn, transition).mount(vb, container.stable_id(), site);
         }
     }
 }
 
-impl<T, K, S, KF, RF> EachBinding<T, K, S, KF, RF> {
-    /// A list's binding, in the scope it is built in.
-    fn new(items: S, key_fn: KF, row_fn: RF, transition: Option<Transition>) -> Self {
-        Self {
-            items,
-            key_fn,
-            row_fn,
-            transition,
-            leaving: Vec::new(),
-            scope: reactive::current_scope(),
-            rows: HashMap::new(),
-            order: Vec::new(),
-            _types: PhantomData,
-        }
-    }
-}
-
-impl<T, K, S, KF, RF, V> StructuralBinding for EachBinding<T, K, S, KF, RF>
+/// The binding of a list over `items`.
+fn each_binding<T, K, S, KF, RF, V>(
+    items: S,
+    key_fn: KF,
+    row_fn: RF,
+    transition: Option<Transition>,
+) -> EachBinding<K>
 where
     T: Clone + 'static,
     K: Eq + Hash + Clone + Send + 'static,
@@ -454,13 +514,26 @@ where
     RF: Fn(T) -> V + Send + 'static,
     V: IntoView,
 {
+    EachBinding::new(
+        Box::new(EachItems {
+            items,
+            key_fn,
+            row_fn,
+            _types: PhantomData,
+        }),
+        transition,
+    )
+}
+
+impl<K: Eq + Hash + Clone + Send + 'static> StructuralBinding for EachBinding<K> {
+    #[inline(never)]
     fn update(
         &mut self,
         cx: &mut AppContext,
         container: StableNodeId,
         effect: EffectKey,
     ) -> Result<(), FrameworkError> {
-        let (keys, fresh) = reactive::run_tracked(effect, || self.read());
+        let (keys, fresh) = reactive::run_tracked(effect, || Self::read(&*self.source, &self.rows));
         let transition = self.transition;
         let moves = transition.and_then(|transition| transition.moves);
         let removed: Vec<K> = {
@@ -489,9 +562,9 @@ where
         remove(cx, removed, transition.as_ref(), &mut self.leaving)?;
         let mut entered = Vec::new();
         if !fresh.is_empty() {
-            let this = &*self;
+            let scope = self.scope;
             let built = build_detached_into(cx, container, false, |vb, created| {
-                let built = this.build_rows(vb, fresh);
+                let built = Self::build_rows(vb, scope, fresh);
                 created.extend(built.iter().map(|(_, built)| built.scope));
                 built
             })?;
