@@ -967,7 +967,11 @@ fn create_primary_window(
     // splash is before the startup thread's icons arrive. The attributes above
     // already rendered this icon; resolving it again is a clone.
     #[cfg(target_os = "windows")]
-    window.set_taskbar_icon(winit_icon(&resolved_scene_icon(settings.icon.as_ref())));
+    window.set_taskbar_icon(
+        resolved_scene_icon(settings.icon.as_ref())
+            .as_ref()
+            .and_then(winit_icon),
+    );
     // The program does not exist yet; `complete_startup` re-applies the
     // material with the host's own colour once it does.
     let (requested_material, applied_material) = apply_window_material(
@@ -2119,7 +2123,10 @@ fn scene_window_attributes(
     // is the longest step before the window exists; the Dock icon is applied
     // separately.
     #[cfg(not(target_os = "macos"))]
-    if let Some(icon) = winit_icon(&resolved_scene_icon(settings.icon.as_ref())) {
+    if let Some(icon) = resolved_scene_icon(settings.icon.as_ref())
+        .as_ref()
+        .and_then(winit_icon)
+    {
         attributes = attributes.with_window_icon(Some(icon));
     }
 
@@ -2164,8 +2171,14 @@ fn scene_desktop(event_loop: &dyn ActiveEventLoop, work_area: bool) -> Desktop {
     }
 }
 
-fn resolved_scene_icon(per_window: Option<&WindowIcon>) -> WindowIcon {
-    nana_app_icon::resolved_application_icon(per_window)
+/// The window's own icon, else the registered application icon, else the
+/// default Nana mark. With `no-default-app-icon` the mark is not linked and a
+/// window with neither keeps the platform's icon.
+fn resolved_scene_icon(per_window: Option<&WindowIcon>) -> Option<WindowIcon> {
+    #[cfg(not(feature = "no-default-app-icon"))]
+    return Some(nana_app_icon::resolved_application_icon(per_window));
+    #[cfg(feature = "no-default-app-icon")]
+    return nana_ui_platform::resolve_window_icon(per_window);
 }
 
 fn winit_icon(icon: &WindowIcon) -> Option<Icon> {
@@ -2195,7 +2208,7 @@ fn apply_application_icon() {
 /// startup renders them on a thread while the device is requested; applying
 /// them is cheap.
 struct SceneIcons {
-    window: WindowIcon,
+    window: Option<WindowIcon>,
     #[cfg(target_os = "macos")]
     application_png: Option<Vec<u8>>,
 }
@@ -2204,12 +2217,10 @@ impl SceneIcons {
     fn render(per_window: Option<&WindowIcon>, application: bool) -> Self {
         let window = resolved_scene_icon(per_window);
         #[cfg(target_os = "macos")]
-        let application_png = application
-            .then(|| {
-                let icon = nana_app_icon::with_system_grid(&window);
-                nana_app_icon::encode_png(icon.width, icon.height, &icon.rgba).ok()
-            })
-            .flatten();
+        let application_png = window.as_ref().filter(|_| application).and_then(|window| {
+            let icon = nana_app_icon::with_system_grid(window);
+            nana_app_icon::encode_png(icon.width, icon.height, &icon.rgba).ok()
+        });
         #[cfg(not(target_os = "macos"))]
         let _ = application;
         Self {
@@ -2222,9 +2233,9 @@ impl SceneIcons {
     fn apply(&self, window: &dyn winit::window::Window) {
         // winit 的 Win32 后端把共享的 RGBA 缓冲原地 R/B 翻转成 BGRA;同一 Icon
         // 转换第二次会把颜色换回去,所以每个入口都拿到独立缓冲,恰好转换一次。
-        window.set_window_icon(winit_icon(&self.window));
+        window.set_window_icon(self.window.as_ref().and_then(winit_icon));
         #[cfg(target_os = "windows")]
-        window.set_taskbar_icon(winit_icon(&self.window));
+        window.set_taskbar_icon(self.window.as_ref().and_then(winit_icon));
         #[cfg(target_os = "macos")]
         if let Some(png) = self.application_png.as_deref() {
             set_application_icon_png(png);
@@ -2355,7 +2366,10 @@ fn apply_scene_window_chrome(
                     CornerPreference::DoNotRound
                 });
             }
-            if let Some(icon) = winit_icon(&resolved_scene_icon(settings.icon.as_ref())) {
+            if let Some(icon) = resolved_scene_icon(settings.icon.as_ref())
+                .as_ref()
+                .and_then(winit_icon)
+            {
                 win = win.with_taskbar_icon(Some(icon));
             }
             attributes.with_platform_attributes(Box::new(win))
@@ -4014,6 +4028,21 @@ mod tests {
             )
             .chrome();
             assert_eq!(chrome, Some(NativeChromePolicy::OPAQUE));
+        }
+    }
+
+    /// A window's own icon always wins. Without the default mark, a window
+    /// with no icon of its own and none registered asks for none, so the
+    /// platform keeps its own.
+    #[test]
+    fn scene_icons_resolve_without_the_default_mark_only_when_it_is_left_out() {
+        let own = nana_ui_platform::WindowIcon::from_rgba(vec![1, 2, 3, 4], 1, 1).unwrap();
+        assert_eq!(super::resolved_scene_icon(Some(&own)), Some(own));
+        let unset = super::resolved_scene_icon(None);
+        if cfg!(feature = "no-default-app-icon") {
+            assert_eq!(unset, nana_ui_platform::resolve_window_icon(None));
+        } else {
+            assert!(unset.is_some());
         }
     }
 

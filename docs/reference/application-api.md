@@ -128,6 +128,7 @@ Android、XR 与 accessibility provider 的设备验收。
 | `full` | fonts + components + hosted + syntax-highlighting |
 | `calendar` / `charts` / `controls` / `graph-canvas` / `image-viewer` / `rich-text` | 打开对应 runtime/scene `cfg` 并再导出该族。未启用则该族不参与编译。历史 no-op 别名（`overlays`、`selects`、`qr-code` 等）已删除，改用 `components` / `full` |
 | `syntax-highlighting` | `TextArea` 的 `"highlight"` presenter |
+| `no-default-app-icon` | 应用总是注册自己的图标：不链接默认图标标记，没有图标的窗口沿用平台默认。只由应用打开 |
 | `accesskit-tree` | `AccessTreeProjector` 的 TreeUpdate 投影导出，给自接平台适配器的宿主（如 Android `accesskit_android`）；`hosted` 已隐含 |
 
 Cargo 不会因你写了 `CalendarHeatmap` 就自动打开 `calendar`。

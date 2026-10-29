@@ -69,6 +69,11 @@ wgpu-interop = ["gpu", "nana-gpu/wgpu-interop", "nana-frame-exchange/wgpu-intero
 # fence another D3D device opens by handle (`WindowOutputExport::Native`).
 # Windows only; compiles the DX12 backend in.
 native-export = ["gpu", "nana-gpu/native-export"]
+# The application always registers its own icon (`register_application_icon`
+# or `WindowDescriptor::icon`), so the default Nana mark (~1 MB of PNG) is
+# not linked. A window with no icon then keeps the platform's own. Only the
+# application binary turns this on; libraries never do.
+no-default-app-icon = []
 hosted = [
     "gpu",
     "accesskit-tree",

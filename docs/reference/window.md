@@ -352,6 +352,7 @@ Linux portal 返回 URI 数组。可保留路径中的换行。zenity fallback �
 
 - Rust：`register_application_icon`。或 `WindowDescriptor::icon` / `WindowHandle::set_icon`
 - 未设置时用默认几何标记。不要把它当品牌
+- 应用总是注册自己的图标时，可打开 `nana-ui` 的 `no-default-app-icon`：默认标记（约 1 MB PNG）不再链接进二进制，没有图标的窗口沿用平台默认。只由应用本身打开，库不要打开。打包时的默认 ICO/ICNS（`embed_windows`、`encode_icns`）不受影响
 - Windows exe 可在 `build.rs` 里 `nana_app_icon::embed_windows()`
 - macOS Dock：`nana_window::set_application_icon_png`。`.app` 由 `nana-packager` 生成（见[打包与分发](packaging.md)）
 
