@@ -3,9 +3,10 @@ use super::*;
 use crate::layout_engine::{
     Size,
     parts::{
-        ContentParts, EmptyStateInputs, FlexPart, SwitchInputs, button_content_parts,
-        checkbox_parts, empty_state_parts, part_bounds, selection_option_parts,
-        selection_option_row, start_row_parts, status_dot_parts, switch_parts,
+        CONTENT_PART_SLOTS, ContentParts, EmptyStateInputs, FlexPart, NO_CONTENT_PARTS,
+        SwitchInputs, button_content_parts, checkbox_parts, content_parts, empty_state_parts,
+        part_bounds, selection_option_parts, selection_option_row, start_row_parts,
+        status_dot_parts, switch_parts,
     },
 };
 
@@ -39,8 +40,8 @@ pub(super) fn visual_parts_read_theme(visual: Option<&StandardVisual>) -> bool {
 impl UiWorld {
     pub(super) fn component_content_parts(&self, id: StableNodeId) -> ContentParts {
         if let Some(result) = self.layout_result(id) {
-            let mut parts = [None; 3];
-            for (slot, part) in parts.iter_mut().zip(result.parts.iter().filter(|part| {
+            let mut parts = NO_CONTENT_PARTS;
+            let mut published = result.parts.iter().filter(|part| {
                 matches!(
                     part.kind,
                     crate::LayoutPartKind::TextContent
@@ -55,13 +56,22 @@ impl UiWorld {
                         | crate::LayoutPartKind::Header
                         | crate::LayoutPartKind::Indicator
                 )
-            })) {
+            });
+            for (slot, part) in parts.iter_mut().zip(published.by_ref()) {
                 *slot = Some(*part);
             }
+            // The solver never yields more than the slots hold, so nothing
+            // published is dropped here.
+            debug_assert!(
+                published.next().is_none(),
+                "more than {CONTENT_PART_SLOTS} content parts published"
+            );
             return parts;
         }
         self.component_content_box(id)
-            .map_or([None; 3], |content| self.solve_content_parts(id, content))
+            .map_or(NO_CONTENT_PARTS, |content| {
+                self.solve_content_parts(id, content)
+            })
     }
     pub(super) fn solve_content_parts(&self, id: StableNodeId, content: LayoutBox) -> ContentParts {
         self.solve_content_parts_at(
@@ -77,7 +87,7 @@ impl UiWorld {
         bounds: LayoutBox,
     ) -> ContentParts {
         let Some(visual) = self.standard_visual_ref(id) else {
-            return [None; 3];
+            return NO_CONTENT_PARTS;
         };
         let text = self.text_metrics(id).unwrap_or_default();
         if let StandardVisual::Select {
@@ -165,8 +175,8 @@ impl UiWorld {
         }
         if let Some(inputs) = self.status_dot_parts(id, Size::new(text.width, text.height)) {
             // The spacer before the dot is not a part of its own.
-            let [_, dot, label] = start_row_parts(content, inputs);
-            return [dot, label, None];
+            let [_, dot, label, ..] = start_row_parts(content, inputs);
+            return content_parts([dot, label]);
         }
         if let StandardVisual::Card { title, loading, .. } = visual {
             let border = self
@@ -278,7 +288,7 @@ impl UiWorld {
         } = visual
         {
             let Some(style) = self.computed_style(id) else {
-                return [None; 3];
+                return NO_CONTENT_PARTS;
             };
             let reverse = style.direction == nana_ui_core::DirSpec::Rtl;
             let gap = self.nodes.get(id).map_or(0.0, |node| {
@@ -313,14 +323,10 @@ impl UiWorld {
             if note.as_ref().is_none_or(|text| text.is_empty())
                 && detail.as_ref().is_none_or(|text| text.is_empty())
             {
-                return [
-                    Some(crate::LayoutPart::new(
-                        crate::LayoutPartKind::TextContent,
-                        bounds,
-                    )),
-                    None,
-                    None,
-                ];
+                return content_parts([Some(crate::LayoutPart::new(
+                    crate::LayoutPartKind::TextContent,
+                    bounds,
+                ))]);
             }
             let measure = self.chrome_text_measure(id);
             let size = self.theme.typography().meta;
@@ -351,7 +357,7 @@ impl UiWorld {
                 reverse,
             );
         }
-        [None; 3]
+        NO_CONTENT_PARTS
     }
 
     /// A checkbox's indicator and label before placement, the label `text`

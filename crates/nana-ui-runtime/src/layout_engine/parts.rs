@@ -27,8 +27,22 @@ impl FlexPart {
     }
 }
 
-/// A fixed number of semantic slots; absent slots cost no retained allocation.
-pub(crate) type ContentParts = [Option<LayoutPart>; 3];
+/// How many semantic parts one component's content publishes at most: a
+/// toast's mark, title, description and dismiss target.
+pub(crate) const CONTENT_PART_SLOTS: usize = 4;
+
+/// A fixed number of semantic slots, held inline; absent slots cost no
+/// retained allocation, and only the parts present are published.
+pub(crate) type ContentParts = [Option<LayoutPart>; CONTENT_PART_SLOTS];
+
+/// No content parts.
+pub(crate) const NO_CONTENT_PARTS: ContentParts = [None; CONTENT_PART_SLOTS];
+
+/// `parts` in the first slots, the rest empty.
+pub(crate) fn content_parts<const N: usize>(parts: [Option<LayoutPart>; N]) -> ContentParts {
+    const { assert!(N <= CONTENT_PART_SLOTS) };
+    std::array::from_fn(|index| parts.get(index).copied().flatten())
+}
 
 pub(crate) fn flex_parts<const N: usize>(
     bounds: LayoutBox,
@@ -236,10 +250,10 @@ pub(crate) fn switch_parts(bounds: LayoutBox, inputs: SwitchInputs) -> ContentPa
         [Some(track), column],
     );
     let Some(column) = column else {
-        return [track, None, None];
+        return content_parts([track]);
     };
     let Some((gap, line)) = inputs.hint else {
-        return [track, Some(column), None];
+        return content_parts([track, Some(column)]);
     };
     let mut label = FlexPart::new(LayoutPartKind::Label, Size::new(0.0, inputs.label_line));
     label.align = AlignSpec::Stretch;
@@ -253,7 +267,7 @@ pub(crate) fn switch_parts(bounds: LayoutBox, inputs: SwitchInputs) -> ContentPa
         false,
         [Some(label), Some(hint)],
     );
-    [track, label, hint]
+    content_parts([track, label, hint])
 }
 
 /// A status dot's row: the dot centred in its `slot`, then the label, which
@@ -416,7 +430,7 @@ pub(crate) fn empty_state_parts(
         .flatten()
         .map(|part| part.preferred.height.max(0.0) + part.gap_after.max(0.0))
         .sum::<f32>();
-    flex_parts(
+    content_parts(flex_parts(
         LayoutBox {
             height: height + 1.0,
             ..band
@@ -425,7 +439,7 @@ pub(crate) fn empty_state_parts(
         JustifySpec::Start,
         false,
         column,
-    )
+    ))
 }
 
 /// What a row of `parts` holds beside its label: every glyph's width and
@@ -473,13 +487,13 @@ pub(crate) fn start_row_parts(
     mut inputs: [Option<FlexPart>; 3],
 ) -> ContentParts {
     fit_button_glyphs(&mut inputs, Size::new(bounds.width, bounds.height));
-    flex_parts(
+    content_parts(flex_parts(
         bounds,
         FlexDirection::Row,
         JustifySpec::Start,
         false,
         inputs,
-    )
+    ))
 }
 
 fn fit_button_glyphs(inputs: &mut [Option<FlexPart>; 3], available: Size) {
@@ -514,13 +528,13 @@ pub(crate) fn button_content_parts(
         TextHorizontalAlignment::Center => JustifySpec::Center,
         TextHorizontalAlignment::End => JustifySpec::End,
     };
-    Some(flex_parts(
+    Some(content_parts(flex_parts(
         bounds,
         FlexDirection::Row,
         justify,
         false,
         inputs,
-    ))
+    )))
 }
 
 pub(crate) fn part_bounds(parts: &ContentParts, kind: LayoutPartKind) -> Option<LayoutBox> {
@@ -545,7 +559,7 @@ pub(crate) fn card_content_parts(
     reverse: bool,
 ) -> ContentParts {
     if !has_title && !loading {
-        return [None; 3];
+        return NO_CONTENT_PARTS;
     }
     let glyph = crate::view_components::CARD_TITLE_SIZE
         .min(header.width)
@@ -584,11 +598,10 @@ pub(crate) fn card_content_parts(
         width: budget,
         ..header
     };
-    [
+    content_parts([
         has_title.then(|| LayoutPart::new(LayoutPartKind::Header, text)),
         solved[1],
-        None,
-    ]
+    ])
 }
 
 pub(crate) struct RowTextMetrics {
@@ -631,7 +644,7 @@ pub(crate) fn paired_text_parts(
             )),
         ],
     );
-    [solved[0], solved[2], None]
+    content_parts([solved[0], solved[2]])
 }
 
 fn priority_secondary_width(
@@ -716,7 +729,7 @@ pub(crate) fn list_text_parts(
             detail.map(|size| FlexPart::new(LayoutPartKind::Detail, size)),
         ],
     );
-    [solved[0], solved[1], solved[3]]
+    content_parts([solved[0], solved[1], solved[3]])
 }
 
 pub(crate) fn menu_content_parts(
@@ -731,7 +744,7 @@ pub(crate) fn menu_content_parts(
     label.grow = 1.0;
     label.align = AlignSpec::Stretch;
     label.gap_after = if hint_width.is_some() { gap } else { 0.0 };
-    flex_parts(
+    content_parts(flex_parts(
         bounds,
         FlexDirection::Row,
         JustifySpec::Start,
@@ -749,7 +762,7 @@ pub(crate) fn menu_content_parts(
                 part
             }),
         ],
-    )
+    ))
 }
 
 /// The label and support bands belong to the field's own visual surface.  They
@@ -774,7 +787,7 @@ pub(crate) fn form_field_parts(
         },
     );
     if support.is_none() && !error {
-        return [Some(label), None, None];
+        return content_parts([Some(label)]);
     }
     let support_height = nana_ui_core::type_scale::META.min(bounds.height);
     let support_y = (bounds.y + bounds.height - support_height).max(bounds.y);
@@ -807,7 +820,7 @@ pub(crate) fn form_field_parts(
         reverse,
         [indicator, Some(hint), None],
     );
-    [Some(label), solved[1], solved[0]]
+    content_parts([Some(label), solved[1], solved[0]])
 }
 
 /// Trigger text, optional hint and the arrow handle share one retained row.
@@ -872,7 +885,7 @@ pub(crate) fn select_trigger_parts(
         reverse,
         [Some(label_part), hint_part, Some(spacer), Some(handle)],
     );
-    [solved[0], solved[1], solved[3]]
+    content_parts([solved[0], solved[1], solved[3]])
 }
 
 /// Splits an option row's already-reserved text lane into label and hint
