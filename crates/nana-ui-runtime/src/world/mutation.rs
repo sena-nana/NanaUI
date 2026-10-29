@@ -1946,6 +1946,15 @@ impl UiWorld {
                             ..
                         }),
                     ) => (da.is_some(), xa) != (db.is_some(), xb),
+                    // A trigger glyph's square is a part (#205) its style
+                    // does not size.
+                    (
+                        Some(StandardVisual::MenuSurface { overlay: oa, .. }),
+                        Some(StandardVisual::MenuSurface { overlay: ob, .. }),
+                    ) => {
+                        oa.and_then(|overlay| overlay.trigger_icon_size)
+                            != ob.and_then(|overlay| overlay.trigger_icon_size)
+                    }
                     _ => false,
                 };
                 let (

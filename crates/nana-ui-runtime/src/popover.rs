@@ -36,7 +36,7 @@ pub const MENU_OVERLAY_Z_INDEX: i32 = 1_000;
 #[cfg(test)]
 pub(crate) const TRIGGER_HEIGHT: f32 = UI_METRICS.compact_control_height;
 /// Icon triggers draw the standard control glyph size, centered in the chrome.
-const TRIGGER_ICON_SIZE: f32 = UI_BASE_TEXT_SIZE;
+pub(crate) const TRIGGER_ICON_SIZE: f32 = UI_BASE_TEXT_SIZE;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct PopoverToggled {
@@ -814,18 +814,22 @@ pub(crate) fn project_anchored_menu(
     );
 }
 
+/// A triggered menu's paint over its published trigger parts: the label in
+/// its `TextContent` lane, the glyph in its `LeadingContent` square
+/// (`UiWorld::solve_content_parts_at`). Neither is placed here.
 pub(crate) fn menu_surface_geometry(
     bounds: LayoutBox,
     trigger: Option<&Arc<str>>,
     trigger_icon: Option<Icon>,
-    trigger_icon_size: Option<f32>,
     trigger_image: Option<&Arc<str>>,
     trigger_content: bool,
     style: &crate::ComputedStyle,
     palette: &SemanticPalette,
-    metrics: nana_ui_core::ThemeMetrics,
     surface: LayoutBox,
+    parts: &crate::layout_engine::parts::ContentParts,
 ) -> ComponentGeometry {
+    use crate::LayoutPartKind;
+    use crate::layout_engine::parts::part_bounds;
     let is_light = palette.background.as_rgba_array()[0] > 0.5;
     let has_trigger =
         trigger.is_some() || trigger_icon.is_some() || trigger_image.is_some() || trigger_content;
@@ -843,35 +847,17 @@ pub(crate) fn menu_surface_geometry(
         width: bounds.width,
         height: trigger_h,
     };
-    let icon_extent = trigger_icon_size
-        .unwrap_or(TRIGGER_ICON_SIZE)
-        .min(trigger_bounds.width)
-        .min(trigger_bounds.height);
     ComponentGeometry::MenuSurface {
-        trigger: label.map(|value| ComponentTextRegion {
-            bounds: LayoutBox {
-                x: trigger_bounds.x + nana_ui_core::ControlSize::Medium.padding_x_in(metrics),
-                width: (trigger_bounds.width
-                    - nana_ui_core::ControlSize::Medium.padding_x_in(metrics) * 2.0)
-                    .max(0.0),
-                ..trigger_bounds
-            },
-            content: Arc::clone(value).into(),
-            color: Some(style.color.unwrap_or_else(|| palette.text.as_rgba_array())),
-            font_size: style.font_size,
-            font_weight: None,
-        }),
-        trigger_icon: trigger_icon.map(|icon| {
-            (
-                icon,
-                LayoutBox {
-                    x: trigger_bounds.x + (trigger_bounds.width - icon_extent) / 2.0,
-                    y: trigger_bounds.y + (trigger_bounds.height - icon_extent) / 2.0,
-                    width: icon_extent,
-                    height: icon_extent,
-                },
-            )
-        }),
+        trigger: label
+            .zip(part_bounds(parts, LayoutPartKind::TextContent))
+            .map(|(value, bounds)| ComponentTextRegion {
+                bounds,
+                content: Arc::clone(value).into(),
+                color: Some(style.color.unwrap_or_else(|| palette.text.as_rgba_array())),
+                font_size: style.font_size,
+                font_weight: None,
+            }),
+        trigger_icon: trigger_icon.zip(part_bounds(parts, LayoutPartKind::LeadingContent)),
         trigger_image: trigger_image.cloned(),
         // Hover and press already resolved into the computed style, so the
         // trigger reads its chrome from there rather than the raw palette.
@@ -1439,6 +1425,14 @@ mod tests {
             },
         );
         queue.set_style(id, trigger_button_style());
+        // The label is the node's text, as the projection writes it; layout
+        // publishes its lane as the trigger's text part (#205).
+        queue.set_text(
+            id,
+            crate::TextContent {
+                value: "Actions".into(),
+            },
+        );
         queue.set_standard_visual(
             id,
             Some(StandardVisual::MenuSurface {

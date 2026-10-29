@@ -170,6 +170,47 @@ impl UiWorld {
             .then(|| size(presentation.message.unwrap_or_default()));
             return empty_state_parts(bounds, inputs, size(presentation.title), message);
         }
+        if let StandardVisual::MenuSurface {
+            trigger,
+            trigger_icon,
+            trigger_image,
+            overlay,
+            ..
+        } = visual
+        {
+            // A glyph trigger centres its square in the trigger; a label runs
+            // across the trigger inside its inline padding (the border lies
+            // within that inset), the trigger's whole height. An avatar or a
+            // child drawing the trigger lays out no part of its own.
+            if trigger_icon.is_some() {
+                let extent = overlay
+                    .and_then(|overlay| overlay.trigger_icon_size)
+                    .unwrap_or(crate::popover::TRIGGER_ICON_SIZE)
+                    .min(bounds.width)
+                    .min(bounds.height);
+                return content_parts([Some(crate::LayoutPart::new(
+                    crate::LayoutPartKind::LeadingContent,
+                    LayoutBox {
+                        x: bounds.x + (bounds.width - extent) / 2.0,
+                        y: bounds.y + (bounds.height - extent) / 2.0,
+                        width: extent,
+                        height: extent,
+                    },
+                ))]);
+            }
+            if trigger_image.is_none() && trigger.as_ref().is_some_and(|label| !label.is_empty()) {
+                let padding = self.used_layout_padding(id);
+                return content_parts([Some(crate::LayoutPart::new(
+                    crate::LayoutPartKind::TextContent,
+                    LayoutBox {
+                        x: bounds.x + padding.left,
+                        width: (bounds.width - padding.left - padding.right).max(0.0),
+                        ..bounds
+                    },
+                ))]);
+            }
+            return NO_CONTENT_PARTS;
+        }
         if let StandardVisual::Toast { assembled, .. } = visual {
             let inputs = self.toast_inputs(id).expect("toast");
             return if *assembled {

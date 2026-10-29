@@ -2301,13 +2301,12 @@ impl UiWorld {
                     bounds,
                     trigger.as_ref(),
                     *trigger_icon,
-                    overlay.and_then(|overlay| overlay.trigger_icon_size),
                     trigger_image.as_ref(),
                     trigger_content.is_some(),
                     style,
                     &self.style_model.palette,
-                    self.style_model.metrics,
                     surface,
+                    &self.component_content_parts(id),
                 ))
             }
             StandardVisual::ActionMenuItem {

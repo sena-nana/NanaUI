@@ -3550,6 +3550,17 @@ impl UiWorld {
                             )
                         })
                         .map_or(available, |part| part.width.max(0.0)),
+                    // A triggered menu's label lane, from the parts placement
+                    // solves in this box.
+                    Some(StandardVisual::MenuSurface { .. }) => self
+                        .component_content_box(id)
+                        .and_then(|content| {
+                            crate::layout_engine::parts::part_bounds(
+                                &self.solve_content_parts(id, content),
+                                crate::LayoutPartKind::TextContent,
+                            )
+                        })
+                        .map_or(available, |part| part.width.max(0.0)),
                     Some(
                         StandardVisual::ActionMenuItem { .. }
                         | StandardVisual::ListItem { content: None, .. },

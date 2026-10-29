@@ -4133,3 +4133,422 @@ fn issue205_ten_thousand_toasts_keep_one_entity_and_bounded_parts() {
         assert_eq!(cx.world().layout_generation(), generation);
     }
 }
+
+/// A triggered menu's trigger, as its kind builds it: 0 a popover, 1 an
+/// action menu, 2 a hover card; with a glyph of `icon` size when asked.
+fn menu_trigger_view(
+    cx: &mut AppContext,
+    kind: u8,
+    label: &str,
+    icon: Option<Option<f32>>,
+    style: Option<crate::NodeStyle>,
+    open: bool,
+) -> crate::StableNodeId {
+    let document = DocumentId::new(1).unwrap();
+    let popover = |mut popover: crate::Popover| {
+        popover = match icon {
+            Some(size) => {
+                let popover = popover.trigger_icon(Icon::Add, label);
+                match size {
+                    Some(size) => popover.trigger_icon_size(size),
+                    None => popover,
+                }
+            }
+            None => popover.trigger(label),
+        };
+        match &style {
+            Some(style) => popover.trigger_style(style.clone()),
+            None => popover,
+        }
+        .open(open)
+    };
+    let id = match kind {
+        0 => cx
+            .create_detached_component(document, popover(crate::Popover::new()))
+            .unwrap()
+            .stable_id(),
+        1 => {
+            let mut menu = crate::ActionMenu::new();
+            menu.popover = popover(menu.popover);
+            cx.create_detached_component(document, menu)
+                .unwrap()
+                .stable_id()
+        }
+        _ => {
+            let mut card = crate::HoverCard::new().trigger(label);
+            if icon.is_some() {
+                card = card.trigger_icon(Icon::Add, label);
+            }
+            card.open = open;
+            cx.create_detached_component(document, card)
+                .unwrap()
+                .stable_id()
+        }
+    };
+    if kind < 2 {
+        let item = cx
+            .create_detached_component(document, ActionMenuItem::new("Open"))
+            .unwrap()
+            .stable_id();
+        cx.append_child_id(id, item);
+    }
+    id
+}
+
+/// One trigger in a 420px row, under `theme` when given, laid out once.
+fn menu_trigger_page(
+    kind: u8,
+    label: &str,
+    icon: Option<Option<f32>>,
+    style: Option<crate::NodeStyle>,
+    open: bool,
+    theme: Option<&nana_ui_core::ThemeDefinition>,
+) -> (AppContext, crate::StableNodeId) {
+    let document = DocumentId::new(1).unwrap();
+    let mut cx = AppContext::new();
+    if let Some(theme) = theme {
+        cx.set_theme_definition(theme).unwrap();
+    }
+    let root = cx
+        .create_component(document, Stack::row(4.0).width(LengthSpec::Px(420.0)))
+        .unwrap();
+    let id = menu_trigger_view(&mut cx, kind, label, icon, style, open);
+    cx.append_child_id(root.stable_id(), id);
+    product_frame(
+        &mut cx,
+        document,
+        LayoutViewport::new(700.0, 600.0),
+        &mut bundled_face_shaper(),
+    );
+    cx.rebuild_hit_test(document);
+    (cx, id)
+}
+
+fn padded_trigger_theme() -> nana_ui_core::ThemeDefinition {
+    let mut definition =
+        nana_ui_core::ThemeDefinition::for_appearance(nana_ui_core::ThemeAppearance::Light);
+    definition.tokens.metrics.control_padding_x += 3.0;
+    definition.tokens.metrics.compact_control_height += 4.0;
+    definition.bump()
+}
+
+fn trigger_padding(inline: f32) -> crate::NodeStyle {
+    crate::NodeStyle {
+        layout: Arc::new(nana_ui_core::LayoutStyle {
+            padding_left: Some(LengthSpec::Px(inline)),
+            padding_right: Some(LengthSpec::Px(inline)),
+            ..Default::default()
+        }),
+        ..Default::default()
+    }
+}
+
+/// A triggered menu's label and glyph are parts layout publishes (#205):
+/// the label runs across the trigger inside its inline padding and the
+/// trigger's whole height, and is the paragraph budget; the glyph is a
+/// square centred in the trigger. Paint reads the published boxes, so an
+/// authored inset moves the label with the box it measured.
+#[test]
+fn issue205_menu_trigger_label_and_glyph_are_published_parts() {
+    let long = "A much longer trigger label than the box";
+    for theme in [None, Some(padded_trigger_theme())] {
+        for kind in 0..3u8 {
+            for icon in [None, Some(None), Some(Some(20.0))] {
+                if kind == 2 && icon == Some(Some(20.0)) {
+                    continue;
+                }
+                for (label, style) in [
+                    ("Menu", None),
+                    ("Menu", Some(trigger_padding(4.0))),
+                    (long, Some(trigger_padding(14.0))),
+                ] {
+                    let style = style.filter(|_| kind < 2);
+                    for open in [false, true] {
+                        let (cx, id) = menu_trigger_page(
+                            kind,
+                            label,
+                            icon,
+                            style.clone(),
+                            open,
+                            theme.as_ref(),
+                        );
+                        let world = cx.world();
+                        let result = world.layout_result(id).unwrap();
+                        let bounds = result.bounds;
+                        let Some(ComponentGeometry::MenuSurface {
+                            trigger,
+                            trigger_icon,
+                            ..
+                        }) = world.component_geometry(id)
+                        else {
+                            panic!("menu surface")
+                        };
+                        let parts = result
+                            .parts
+                            .iter()
+                            .filter(|part| part.kind != LayoutPartKind::ChildPlacement)
+                            .count();
+                        if let Some(size) = icon {
+                            let extent = size
+                                .unwrap_or(crate::popover::TRIGGER_ICON_SIZE)
+                                .min(bounds.width)
+                                .min(bounds.height);
+                            let glyph = part_of(&cx, id, LayoutPartKind::LeadingContent);
+                            assert_eq!(
+                                glyph,
+                                crate::LayoutBox {
+                                    x: bounds.x + (bounds.width - extent) / 2.0,
+                                    y: bounds.y + (bounds.height - extent) / 2.0,
+                                    width: extent,
+                                    height: extent,
+                                }
+                            );
+                            assert_eq!(trigger_icon, Some((Icon::Add, glyph)));
+                            assert!(trigger.is_none());
+                            assert_eq!(parts, 2);
+                        } else {
+                            let padding = result.padding_box.x - bounds.x;
+                            let inset = result.content_box.x - result.padding_box.x;
+                            let lane = part_of(&cx, id, LayoutPartKind::TextContent);
+                            assert_eq!(
+                                lane,
+                                crate::LayoutBox {
+                                    x: bounds.x + inset,
+                                    width: bounds.width - inset * 2.0,
+                                    ..bounds
+                                },
+                                "border {padding}"
+                            );
+                            assert_eq!(trigger.unwrap().bounds, lane);
+                            assert!(trigger_icon.is_none());
+                            assert_eq!(
+                                world.text_shape_constraints(id).max_width,
+                                Some(lane.width)
+                            );
+                            let run = result
+                                .fragments
+                                .iter()
+                                .find(|fragment| {
+                                    fragment.kind == crate::LayoutFragmentKind::TextRun
+                                })
+                                .unwrap();
+                            assert!(run.bounds.x >= lane.x - 1e-3);
+                            assert_eq!(parts, 2);
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// Label, glyph, glyph size, inset and open changes, and a theme that moves
+/// the control padding and height, republish what a cold layout would; a
+/// hover over the trigger paints only.
+#[test]
+fn issue205_menu_trigger_parts_follow_changes_like_a_cold_layout_and_hover_paints_only() {
+    let document = DocumentId::new(1).unwrap();
+    let viewport = LayoutViewport::new(700.0, 600.0);
+    let mut shaper = bundled_face_shaper();
+    let long = "A much longer trigger label than the box";
+    for kind in 0..2u8 {
+        let (mut cx, id) = menu_trigger_page(kind, "Menu", None, None, false, None);
+        // Opening is the last step: a menu that closes keeps its items in
+        // its overflow where a cold layout has none, which is not the
+        // trigger's layout (it fails the same way without these parts).
+        let steps: [(&str, Option<Option<f32>>, Option<f32>, bool); 7] = [
+            (long, None, None, false),
+            (long, None, Some(4.0), false),
+            ("Menu", Some(None), Some(4.0), false),
+            ("Menu", Some(Some(20.0)), Some(4.0), false),
+            ("Menu", Some(Some(11.0)), None, false),
+            ("Menu", None, None, false),
+            ("Menu", None, None, true),
+        ];
+        for (label, icon, inset, open) in steps {
+            let style = inset.map(trigger_padding);
+            let next = |mut popover: crate::Popover| {
+                popover = match icon {
+                    Some(size) => {
+                        let popover = popover.trigger_icon(Icon::Add, label);
+                        match size {
+                            Some(size) => popover.trigger_icon_size(size),
+                            None => popover,
+                        }
+                    }
+                    None => popover.trigger(label),
+                };
+                match &style {
+                    Some(style) => popover.trigger_style(style.clone()),
+                    None => popover,
+                }
+                .open(open)
+            };
+            if kind == 0 {
+                cx.update_component(
+                    crate::Entity::<crate::Popover>::from_stable_id(id),
+                    |view, _| *view = next(crate::Popover::new()),
+                )
+                .unwrap();
+            } else {
+                cx.update_component(
+                    crate::Entity::<crate::ActionMenu>::from_stable_id(id),
+                    |view, _| {
+                        let mut menu = crate::ActionMenu::new();
+                        menu.popover = next(menu.popover);
+                        *view = menu;
+                    },
+                )
+                .unwrap();
+            }
+            product_frame(&mut cx, document, viewport, &mut shaper);
+            let (mut cold, cold_id) = menu_trigger_page(kind, label, icon, style, open, None);
+            assert_eq!(cold_id, id);
+            super::reflow_oracle::assert_matches_cold(&mut cx, &mut cold, document);
+        }
+        let theme = padded_trigger_theme();
+        cx.set_theme_definition(&theme).unwrap();
+        product_frame(&mut cx, document, viewport, &mut shaper);
+        let (mut cold, _) = menu_trigger_page(kind, "Menu", None, None, true, Some(&theme));
+        super::reflow_oracle::assert_matches_cold(&mut cx, &mut cold, document);
+
+        let (mut cx, id) = menu_trigger_page(kind, "Menu", None, None, false, None);
+        let generation = cx.world().layout_generation();
+        let snapshot = Arc::clone(&cx.world().layout_results[&id]);
+        cx.set_pointer_hover_at(document, 1, Some(id), Duration::from_millis(800))
+            .unwrap();
+        let hovered = product_frame(&mut cx, document, viewport, &mut shaper);
+        assert_eq!(
+            (hovered.layout_measure_nodes, hovered.layout_placement_nodes),
+            (0, 0)
+        );
+        assert_eq!(cx.world().layout_generation(), generation);
+        assert!(Arc::ptr_eq(&snapshot, &cx.world().layout_results[&id]));
+    }
+}
+
+/// Triggers moved between Grid, Inline and Flex parents keep their
+/// entities and publish the parts a cold layout in that context would.
+#[test]
+fn issue205_menu_trigger_parts_survive_context_transitions() {
+    use super::reflow_oracle::assert_matches_cold;
+    use crate::MutationQueue;
+    use nana_ui_core::DisplaySpec;
+    let document = DocumentId::new(1).unwrap();
+    let viewport = LayoutViewport::new(500.0, 400.0);
+    let build = |display: DisplaySpec| {
+        let mut cx = AppContext::new();
+        let root = cx
+            .create_component(
+                document,
+                Stack::row(4.0).with_layout(|layout| {
+                    layout.width = Some(LengthSpec::Px(420.0));
+                    layout.display = Some(display);
+                }),
+            )
+            .unwrap();
+        let mut ids = Vec::new();
+        for (kind, icon) in [(0, None), (1, Some(None)), (2, None)] {
+            let id = menu_trigger_view(&mut cx, kind, "Menu", icon, None, false);
+            cx.append_child_id(root.stable_id(), id);
+            ids.push(id);
+        }
+        product_frame(&mut cx, document, viewport, &mut bundled_face_shaper());
+        (cx, root, ids)
+    };
+    let mut shaper = bundled_face_shaper();
+    let (mut cx, root, ids) = build(DisplaySpec::Flex);
+    for display in [DisplaySpec::Grid, DisplaySpec::Inline, DisplaySpec::Flex] {
+        let mut style = cx.world().node_style(root.stable_id()).unwrap().clone();
+        Arc::make_mut(&mut style.layout).display = Some(display);
+        let mut q = MutationQueue::new();
+        q.set_style(root.stable_id(), style);
+        cx.commit_mutations(q).unwrap();
+        let work = product_frame(&mut cx, document, viewport, &mut shaper);
+        assert_eq!((work.entities_spawned, work.entities_despawned), (0, 0));
+        for (index, &id) in ids.iter().enumerate() {
+            let Some(ComponentGeometry::MenuSurface {
+                trigger,
+                trigger_icon,
+                ..
+            }) = cx.world().component_geometry(id)
+            else {
+                panic!("menu surface")
+            };
+            if index == 1 {
+                assert_eq!(
+                    trigger_icon.map(|(_, bounds)| bounds),
+                    Some(part_of(&cx, id, LayoutPartKind::LeadingContent))
+                );
+            } else {
+                assert_eq!(
+                    trigger.unwrap().bounds,
+                    part_of(&cx, id, LayoutPartKind::TextContent)
+                );
+            }
+        }
+        let (mut cold, ..) = build(display);
+        assert_matches_cold(&mut cx, &mut cold, document);
+    }
+}
+
+#[test]
+fn issue205_ten_thousand_menu_triggers_keep_one_entity_and_bounded_parts() {
+    let _unguarded = crate::layout_engine::verify::skip_layout_verify();
+    for count in [1_000, 10_000] {
+        let document = DocumentId::new(1).unwrap();
+        let mut cx = AppContext::new();
+        let mut shaper = bundled_face_shaper();
+        let viewport = LayoutViewport::new(600.0, 400.0);
+        let root = cx.create_component(document, Stack::column(0.0)).unwrap();
+        let children: Vec<_> = (0..count)
+            .map(|index| {
+                let mut popover = crate::Popover::new();
+                popover = if index % 2 == 0 {
+                    popover.trigger("Menu")
+                } else {
+                    popover.trigger_icon(Icon::Add, "Menu")
+                };
+                cx.create_detached_component(document, popover)
+                    .unwrap()
+                    .stable_id()
+            })
+            .collect();
+        let mut q = crate::MutationQueue::new();
+        for &id in &children {
+            q.insert(root.stable_id(), id, None);
+        }
+        cx.commit_mutations(q).unwrap();
+        product_frame(&mut cx, document, viewport, &mut shaper);
+        assert_eq!(cx.world().len(), count + 1);
+        for (index, &id) in children.iter().enumerate() {
+            let result = cx.world().layout_result(id).unwrap();
+            let kinds: Vec<_> = result.parts.iter().map(|part| part.kind).collect();
+            let expected = if index % 2 == 0 {
+                vec![
+                    LayoutPartKind::TextContent,
+                    LayoutPartKind::ComponentContent,
+                ]
+            } else {
+                vec![
+                    LayoutPartKind::ComponentContent,
+                    LayoutPartKind::LeadingContent,
+                ]
+            };
+            assert_eq!(kinds, expected);
+        }
+        let generation = cx.world().layout_generation();
+        product_frame(&mut cx, document, viewport, &mut shaper);
+        let idle = cx.world().frame_counters;
+        assert_eq!(
+            (
+                idle.layout_measure_nodes,
+                idle.layout_placement_nodes,
+                idle.entities_spawned,
+                idle.entities_despawned
+            ),
+            (0, 0, 0, 0)
+        );
+        assert_eq!(cx.world().layout_generation(), generation);
+    }
+}
