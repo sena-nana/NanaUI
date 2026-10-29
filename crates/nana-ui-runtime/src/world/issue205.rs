@@ -2638,3 +2638,73 @@ impl StatusDotUpdate for AppContext {
         }
     }
 }
+
+/// An open context menu's height is the one its projection writes, from
+/// the rows it shows against the installed theme. The component used to
+/// write its own copy from the default metrics whenever it re-anchored,
+/// which the projection always overwrote; that copy is gone.
+#[test]
+fn issue205_context_menu_height_is_the_projections_alone() {
+    use crate::{ContextMenu, ContextMenuItem};
+    let document = DocumentId::new(1).unwrap();
+    let viewport = LayoutViewport::new(600.0, 400.0);
+    let mut shaper = bundled_face_shaper();
+    let mut cx = AppContext::new();
+    let root = cx.create_component(document, Stack::column(0.0)).unwrap();
+    let menu = cx
+        .create_detached_component(
+            document,
+            ContextMenu::new(24.0, 36.0)
+                .items([
+                    ContextMenuItem::new("rename", "Rename"),
+                    ContextMenuItem::new("delete", "Delete"),
+                    ContextMenuItem::new("share", "Share"),
+                ])
+                .searchable(true),
+        )
+        .unwrap();
+    cx.append_child(root, menu).unwrap();
+    product_frame(&mut cx, document, viewport, &mut shaper);
+    let id = menu.stable_id();
+    let expected = |cx: &AppContext, items: usize| {
+        crate::menus::context_menu_height_in(
+            items,
+            true,
+            cx.world().theme_metrics(),
+            cx.world().theme(),
+        )
+    };
+    let height = |cx: &AppContext| cx.world().layout_box(id).unwrap().height;
+    assert!(
+        cx.read(menu, |view| view.style.layout.height.is_none())
+            .unwrap()
+    );
+    assert_eq!(height(&cx), expected(&cx, 3));
+    // Filtering re-anchors the component; the box follows the rows shown.
+    cx.update_component(menu, |view, _| *view = view.clone().query("re"))
+        .unwrap();
+    product_frame(&mut cx, document, viewport, &mut shaper);
+    let shown = cx.read(menu, |view| view.visible_items().len()).unwrap();
+    assert!(shown < 3);
+    assert!(
+        cx.read(menu, |view| view.style.layout.height.is_none())
+            .unwrap()
+    );
+    assert_eq!(height(&cx), expected(&cx, shown));
+    // Taller rows from the theme reach it, as the projection reads them.
+    let mut theme =
+        nana_ui_core::ThemeDefinition::for_appearance(nana_ui_core::ThemeAppearance::Light);
+    theme.tokens.metrics.compact_control_height += 6.0;
+    cx.set_theme_definition(&theme.bump()).unwrap();
+    product_frame(&mut cx, document, viewport, &mut shaper);
+    assert_eq!(height(&cx), expected(&cx, shown));
+    assert!(
+        height(&cx)
+            > crate::menus::context_menu_height_in(
+                shown,
+                true,
+                nana_ui_core::UI_METRICS,
+                &nana_ui_core::CompiledTheme::default(),
+            )
+    );
+}

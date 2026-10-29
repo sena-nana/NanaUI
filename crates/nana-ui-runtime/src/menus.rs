@@ -598,19 +598,16 @@ impl ContextMenu {
         self.active_path.clear();
     }
 
+    /// Hang the menu from its point. Its height is not written here: the
+    /// projection sizes it from the rows it shows against the installed
+    /// theme ([`context_menu_height_in`]), every time it projects.
     pub(crate) fn apply_anchor(&mut self) {
-        let height = context_menu_height(
-            self.visible_items().len(),
-            self.searchable,
-            nana_ui_core::UI_METRICS,
-        );
         let anchor = self.anchor_spec();
         let layout = Arc::make_mut(&mut self.style.layout);
         layout.position = PositionSpec::Fixed;
         layout.offset_left = None;
         layout.offset_top = None;
         layout.anchor = Some(anchor);
-        layout.height = Some(LengthSpec::Px(height));
     }
 
     /// Hung below and after the pointer; layout flips it above or before
@@ -990,29 +987,11 @@ fn layout_box_array(bounds: LayoutBox) -> [f32; 4] {
     [bounds.x, bounds.y, bounds.width, bounds.height]
 }
 
-const SEARCH_FIELD_GAP: f32 = nana_ui_core::space::XS;
-
 fn search_field_height(metrics: nana_ui_core::ThemeMetrics) -> f32 {
     ControlSize::Small.height_in(metrics)
 }
 
-fn context_menu_height(
-    item_count: usize,
-    searchable: bool,
-    metrics: nana_ui_core::ThemeMetrics,
-) -> f32 {
-    let count = item_count.max(1) as f32;
-    let item = ControlSize::Small.height_in(metrics);
-    let list =
-        MENU_PADDING * 2.0 + count * item + (count - 1.0).max(0.0) * crate::popover::MENU_ITEM_GAP;
-    if searchable {
-        list + search_field_height(metrics) + SEARCH_FIELD_GAP
-    } else {
-        list
-    }
-}
-
-fn context_menu_height_in(
+pub(crate) fn context_menu_height_in(
     item_count: usize,
     searchable: bool,
     metrics: nana_ui_core::ThemeMetrics,
@@ -1453,17 +1432,16 @@ mod tests {
             .map(|item| item.value)
             .collect();
         assert_eq!(root, [Arc::<str>::from("file"), Arc::<str>::from("edit")]);
-        assert!(matches!(
-            empty.style.layout.height,
-            Some(LengthSpec::Px(full)) if matches!(
-                menu.style.layout.height,
-                Some(LengthSpec::Px(filtered)) if filtered < full
-            )
-        ));
-        let Some(LengthSpec::Px(searchable_height)) = menu.style.layout.height else {
-            panic!("searchable menu height");
+        // The projection sizes the menu from the rows it shows; the
+        // component's own style holds no height of its own.
+        assert_eq!(empty.style.layout.height, None);
+        assert_eq!(menu.style.layout.height, None);
+        let theme = nana_ui_core::CompiledTheme::default();
+        let height = |items: usize, searchable: bool| {
+            context_menu_height_in(items, searchable, nana_ui_core::UI_METRICS, &theme)
         };
-        assert!(searchable_height > context_menu_height(1, false, nana_ui_core::UI_METRICS));
+        assert!(height(1, true) < height(2, true));
+        assert!(height(1, true) > height(1, false));
     }
 
     #[test]
