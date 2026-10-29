@@ -13,20 +13,20 @@ state: info
   text #2/2 36.00,20.00 41.61x17.54 opacity=1.00 color=#7bb9f0ff size=11.00 weight=500 line_height=Relative(1.2307693) tracking=0.00 italic=false underline=false line_through=false spans=0 shadow=false
   quad #2/3 27.75,27.52 2.50x2.50 opacity=1.00 bg=#7bb9f0ff border=none border_width=0.00 radius=999.00/999.00/999.00/999.00 shadow=none
 state: success
-  target: 20.00,20.00 54.30x17.54
+  target: 20.00,20.00 54.31x17.54
   a11y: role=Text disabled=false checked=None selected=None mixed=false
-  quad #2/0 20.00,20.00 54.30x17.54 opacity=1.00 bg=#3fb9501f border=none border_width=0.00 radius=999.00/999.00/999.00/999.00 shadow=none
-  text #2/2 36.00,20.00 32.30x17.54 opacity=1.00 color=#3fb950ff size=11.00 weight=500 line_height=Relative(1.2307693) tracking=0.00 italic=false underline=false line_through=false spans=0 shadow=false
+  quad #2/0 20.00,20.00 54.31x17.54 opacity=1.00 bg=#3fb9501f border=none border_width=0.00 radius=999.00/999.00/999.00/999.00 shadow=none
+  text #2/2 36.00,20.00 32.31x17.54 opacity=1.00 color=#3fb950ff size=11.00 weight=500 line_height=Relative(1.2307693) tracking=0.00 italic=false underline=false line_through=false spans=0 shadow=false
   quad #2/3 27.75,27.52 2.50x2.50 opacity=1.00 bg=#3fb950ff border=none border_width=0.00 radius=999.00/999.00/999.00/999.00 shadow=none
 state: warning
-  target: 20.00,20.00 64.55x17.54
+  target: 20.00,20.00 64.56x17.54
   a11y: role=Text disabled=false checked=None selected=None mixed=false
-  quad #2/0 20.00,20.00 64.55x17.54 opacity=1.00 bg=#d4a85b1f border=none border_width=0.00 radius=999.00/999.00/999.00/999.00 shadow=none
-  text #2/2 36.00,20.00 42.55x17.54 opacity=1.00 color=#d4a85bff size=11.00 weight=500 line_height=Relative(1.2307693) tracking=0.00 italic=false underline=false line_through=false spans=0 shadow=false
+  quad #2/0 20.00,20.00 64.56x17.54 opacity=1.00 bg=#d4a85b1f border=none border_width=0.00 radius=999.00/999.00/999.00/999.00 shadow=none
+  text #2/2 36.00,20.00 42.56x17.54 opacity=1.00 color=#d4a85bff size=11.00 weight=500 line_height=Relative(1.2307693) tracking=0.00 italic=false underline=false line_through=false spans=0 shadow=false
   quad #2/3 27.75,27.52 2.50x2.50 opacity=1.00 bg=#d4a85bff border=none border_width=0.00 radius=999.00/999.00/999.00/999.00 shadow=none
 state: danger
-  target: 20.00,20.00 57.28x17.54
+  target: 20.00,20.00 57.27x17.54
   a11y: role=Text disabled=false checked=None selected=None mixed=false
-  quad #2/0 20.00,20.00 57.28x17.54 opacity=1.00 bg=#f471741f border=none border_width=0.00 radius=999.00/999.00/999.00/999.00 shadow=none
-  text #2/2 36.00,20.00 35.28x17.54 opacity=1.00 color=#f47174ff size=11.00 weight=500 line_height=Relative(1.2307693) tracking=0.00 italic=false underline=false line_through=false spans=0 shadow=false
+  quad #2/0 20.00,20.00 57.27x17.54 opacity=1.00 bg=#f471741f border=none border_width=0.00 radius=999.00/999.00/999.00/999.00 shadow=none
+  text #2/2 36.00,20.00 35.27x17.54 opacity=1.00 color=#f47174ff size=11.00 weight=500 line_height=Relative(1.2307693) tracking=0.00 italic=false underline=false line_through=false spans=0 shadow=false
   quad #2/3 27.75,27.52 2.50x2.50 opacity=1.00 bg=#f47174ff border=none border_width=0.00 radius=999.00/999.00/999.00/999.00 shadow=none

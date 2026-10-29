@@ -47,7 +47,7 @@ state: loading
   a11y: role=Generic disabled=false checked=None selected=None mixed=false
   quad #2/0 20.00,20.00 380.00x68.00 opacity=1.00 bg=#f3f4f6ff border=none border_width=0.00 radius=10.00/10.00/10.00/10.00 shadow=none
   text #2/2 34.00,34.00 330.00x18.00 opacity=1.00 color=#1a1a1fff size=13.00 weight=600 line_height=Absolute(18.0) tracking=0.00 italic=false underline=false line_through=false spans=0 shadow=false
-  spinner #2/3 94.62,36.50 13.00x13.00 opacity=1.00 color=#4991d7ff
+  spinner #2/3 94.66,36.50 13.00x13.00 opacity=1.00 color=#4991d7ff
   text #3/2 34.00,58.00 111.44x16.00 opacity=1.00 color=#1a1a1fff size=13.00 weight=400 line_height=Relative(1.2307693) tracking=0.00 italic=false underline=false line_through=false spans=0 shadow=false
 state: long-content
   target: 20.00,20.00 380.00x84.00
