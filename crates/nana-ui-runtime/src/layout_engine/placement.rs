@@ -1932,6 +1932,15 @@ pub(super) fn place_node_scoped(
                 .map(|range| line_slot(range.collect()))
                 .collect()
             } else if ifc && !writing.is_vertical() {
+                prime_atom_baselines(
+                    flow.iter().copied().zip(child_sizes.iter().copied()),
+                    content.width,
+                    viewport,
+                    child_font_px,
+                    nodes,
+                    intrinsic,
+                    scope,
+                )?;
                 pack_ifc_line_boxes(
                     &flow,
                     &child_sizes,
@@ -1941,6 +1950,7 @@ pub(super) fn place_node_scoped(
                     cross_gap,
                     viewport,
                     child_font_px,
+                    line_strut(style, child_font_px),
                     nodes,
                     &packed_floats,
                 )
@@ -2121,15 +2131,27 @@ pub(super) fn place_node_scoped(
                 .fold(0.0, f32::max);
             // A line of an ordinary block: its baseline, and the span its
             // items cover once they sit on it.
-            let line_baseline_y = slot.baseline_aligned.then(|| {
-                ifc_line_metrics(
+            let line_baseline_y = if slot.baseline_aligned {
+                prime_atom_baselines(
                     line_flow.iter().copied().zip(line_sizes.iter().copied()),
                     content.width,
                     viewport,
                     child_font_px,
                     nodes,
-                )
-            });
+                    intrinsic,
+                    scope,
+                )?;
+                Some(ifc_line_metrics(
+                    line_flow.iter().copied().zip(line_sizes.iter().copied()),
+                    content.width,
+                    viewport,
+                    child_font_px,
+                    line_strut(style, child_font_px),
+                    nodes,
+                ))
+            } else {
+                None
+            };
             let line_cross = line_baseline_y.map_or(line_cross, |(_, height)| height);
             // A float-narrowed line's start, measured from main-start: its
             // physical left offset, or the room its right end leaves when the
@@ -2313,6 +2335,17 @@ pub(super) fn place_node_scoped(
                     Some(writing.inline_size(content.width, content.height)),
                     child_fonts,
                 );
+                if line_atom_baseline.is_some() {
+                    prime_atom_baselines(
+                        [(child, child_size)],
+                        content.width,
+                        viewport,
+                        child_font_px,
+                        nodes,
+                        intrinsic,
+                        scope,
+                    )?;
+                }
                 let atom_ascent = line_atom_baseline
                     .and_then(|_| {
                         ifc_atom_metrics(

@@ -2313,6 +2313,16 @@ struct LayoutInputMap<'a> {
     /// Measure plans rebuilt this pass, merged the same way. An entry that
     /// ends the pass empty retires the container's retained plans.
     measure_plans: HashMap<StableNodeId, MeasurePlanSlots>,
+    /// Last baselines of boxes whose line boxes are all their descendants',
+    /// by node and used border-box size, derived this pass from where those
+    /// descendants sit ([`inline::descendant_last_baseline`]). `None`: a
+    /// context the derivation does not lay out, which keeps the
+    /// approximation of [`Self::baseline_metrics`].
+    derived_baselines: HashMap<(StableNodeId, u32, u32), Option<f32>>,
+}
+
+fn derived_baseline_key(id: StableNodeId, used: Size) -> (StableNodeId, u32, u32) {
+    (id, used.width.to_bits(), used.height.to_bits())
 }
 
 #[derive(Debug, Clone, Copy, Default)]
@@ -2351,6 +2361,7 @@ impl<'a> LayoutInputMap<'a> {
             contexts: HashMap::new(),
             container_plans: HashMap::new(),
             measure_plans: HashMap::new(),
+            derived_baselines: HashMap::new(),
         }
     }
 
@@ -2434,7 +2445,20 @@ impl<'a> LayoutInputMap<'a> {
         inline_base: f32,
     ) -> nana_text::InlineObjectMetrics {
         let block = writing.logical_size(used.width, used.height).1.max(0.0);
-        let baseline = (!writing.is_vertical() && self.world.atom_sits_on_line_box(id))
+        let on_line_box = !writing.is_vertical() && self.world.atom_sits_on_line_box(id);
+        // Every line reads one derived value: a caller that did not prime
+        // this atom ([`inline::prime_atom_baselines`]) would place it by the
+        // approximation instead.
+        #[cfg(any(test, feature = "layout-verify"))]
+        assert!(
+            !on_line_box
+                || !self.world.line_boxes_are_descendants(id)
+                || self
+                    .derived_baselines
+                    .contains_key(&derived_baseline_key(id, used)),
+            "{id:?} at {used:?}: its descendants' last baseline was not derived"
+        );
+        let baseline = on_line_box
             .then(|| {
                 let metrics =
                     self.baseline_metrics(id, fallback_font_px, Some(inline_base), Some(used));
@@ -2611,7 +2635,18 @@ impl<'a> LayoutInputMap<'a> {
             // when shaping has not produced a line yet.
             return BaselineMetrics { first, last: first };
         }
-        BaselineMetrics { first, last: first }
+        // A box whose line boxes are its descendants' ends on the last of
+        // them, where it sits inside the box. The first stays the
+        // approximation of its own font's first line.
+        let last = used
+            .and_then(|used| {
+                self.derived_baselines
+                    .get(&derived_baseline_key(id, used))
+                    .copied()
+            })
+            .flatten()
+            .or(first);
+        BaselineMetrics { first, last }
     }
 
     fn baseline(&self, id: StableNodeId, fallback_font_px: f32, used: Size) -> f32 {

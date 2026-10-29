@@ -3080,6 +3080,12 @@ fn subgrid_inherits_parent_column_track_sizes() {
     );
 }
 
+/// The pitch of a line of 20px-high empty inline-blocks in a block of the
+/// default font (16px, `line-height` 1.2): they sit on the baseline by their
+/// bottom edge, and the block's strut adds its descent below them, the
+/// font's 0.2em and half of the 0.2em leading (CSS 2.1 §10.8.1).
+const STRUT_LINE: f32 = 20.0 + 16.0 * (1.0 - nana_ui_core::TEXT_APPROX_ASCENT_EM) + 16.0 * 0.1;
+
 #[test]
 fn ifc_wraps_inline_around_left_float() {
     let inline = |id: &str| StyleLayoutNode {
@@ -3131,12 +3137,12 @@ fn ifc_wraps_inline_around_left_float() {
         boxes["a"]
     );
     assert!(
-        (boxes["b"].x - 80.0).abs() < 0.5 && (boxes["b"].y - 20.0).abs() < 0.5,
+        (boxes["b"].x - 80.0).abs() < 0.5 && (boxes["b"].y - STRUT_LINE).abs() < 0.5,
         "second inline wraps in the shortened band, got {:?}",
         boxes["b"]
     );
     assert!(
-        (boxes["c"].y - 40.0).abs() < 0.5 && (boxes["c"].x - 0.0).abs() < 0.5,
+        (boxes["c"].y - 2.0 * STRUT_LINE).abs() < 0.5 && (boxes["c"].x - 0.0).abs() < 0.5,
         "third inline drops below the float to full width, got {:?}",
         boxes["c"]
     );
@@ -3217,12 +3223,12 @@ fn ifc_block_sibling_starts_new_line() {
     let boxes = box_map(&tree, 200.0, 80.0);
     assert!((boxes["a"].y - 0.0).abs() < 0.5);
     assert!(
-        (boxes["mid"].y - 20.0).abs() < 0.5,
+        (boxes["mid"].y - STRUT_LINE).abs() < 0.5,
         "block sibling must break the IFC line, got {:?}",
         boxes["mid"]
     );
     assert!(
-        (boxes["c"].y - 40.0).abs() < 0.5,
+        (boxes["c"].y - STRUT_LINE - 20.0).abs() < 0.5,
         "inline after block starts a new line, got {:?}",
         boxes["c"]
     );
@@ -3278,12 +3284,12 @@ fn ifc_block_in_inline_unboxes_like_block_siblings() {
         boxes["a"]
     );
     assert!(
-        (boxes["mid"].y - 20.0).abs() < 0.5,
+        (boxes["mid"].y - STRUT_LINE).abs() < 0.5,
         "block inside inline must hoist onto its own line, got {:?}",
         boxes["mid"]
     );
     assert!(
-        (boxes["c"].y - 40.0).abs() < 0.5,
+        (boxes["c"].y - STRUT_LINE - 20.0).abs() < 0.5,
         "trailing inline-block starts after the hoisted block, got {:?}",
         boxes["c"]
     );
@@ -3507,7 +3513,7 @@ fn ifc_inlines_wrap_in_width_beside_float() {
         boxes["a"]
     );
     assert!(
-        (boxes["b"].x - 80.0).abs() < 0.5 && (boxes["b"].y - 20.0).abs() < 0.5,
+        (boxes["b"].x - 80.0).abs() < 0.5 && (boxes["b"].y - STRUT_LINE).abs() < 0.5,
         "70+70 exceeds remaining 120 so b wraps beside the float, got {:?}",
         boxes["b"]
     );
@@ -3533,7 +3539,7 @@ fn ifc_uses_full_width_below_float() {
     };
     let boxes = box_map(&tree, 200.0, 80.0);
     assert!(
-        (boxes["c"].x - 0.0).abs() < 0.5 && (boxes["c"].y - 40.0).abs() < 0.5,
+        (boxes["c"].x - 0.0).abs() < 0.5 && (boxes["c"].y - 2.0 * STRUT_LINE).abs() < 0.5,
         "below the float the line box is full width, got {:?}",
         boxes["c"]
     );

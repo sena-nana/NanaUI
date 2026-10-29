@@ -481,6 +481,13 @@ fit 只有一份数学：`ContentFit::fitted_size`（`nana-ui-core`）。fit 是
   inline-block 和图片以底外边距边落在基线上，带文字的 inline-block 以末行基线落在基线上，块的
   高度就是行盒从最高顶到最低底的跨度。换一个更高的原子、同尺寸盒子里文字折成多行、原本空的原子
   里来了文字，每一步都重新摆放这一行，并与冷布局逐项相同。
+- H：行盒都在后代里的 inline-block 以末个后代行盒的基线落在行的基线上：标签在空块下面的固定盒子、
+  块里折成多行的标签（取第二行，不取首行）、两个各占一行的 inline-block 标签（取第二行）、固定
+  尺寸块里的标签。后代文字折行、上方的块变高、固定尺寸块里的文字折行都重新摆放这一行；行数不变的
+  文字改动不移动任何盒子。每一步与冷布局逐项相同。
+- I：普通块级流的行盒从块的 strut 起算：`line-height` 等于字号时空 inline-block 下面留出字体的
+  descent，默认行高再加半个 leading；很矮的原子顶不高于 strut 的 ascent；块级子项独占的行没有
+  strut；原生段落的行同样在原子下面留出空隙。
 
 `nana-ui` 的 `scene_paint/replaced_context_tests.rs` 另有两项：host texture 跨 context 移动不重新绑定
 纹理；五种 fit 下 `url()` 路径与 host-texture 路径给出相同的目标矩形。
@@ -489,11 +496,27 @@ fit 只有一份数学：`ContentFit::fitted_size`（`nana-ui-core`）。fit 是
 （原生段落 `InlineFlow` 的行盒，和普通块级流里 inline-block 原子同行的行盒）都按 CSS 默认的
 `vertical-align: baseline`（CSS 2.1 §10.8.1）对齐，两者读同一个函数
 `LayoutInputMap::atom_line_metrics`：
-- inline-block 以末个流内行盒的基线落在行的基线上，基线值取 `baseline_metrics` 的末行基线；
+- inline-block 以末个流内行盒的基线落在行的基线上，基线值取 `baseline_metrics` 的末行基线。
+  行盒都在后代里的 inline-block（`UiWorld::line_boxes_are_descendants`：没有自己的文字、控件或
+  段落，只在流里有）取持有末个行盒的后代所在的位置（CSS 2.1 §10.8.1）：
+  `inline::descendant_last_baseline` 按 placement 的方式从子项在它内容盒里量出的尺寸排它的流
+  ——块级流逐个叠放，行内格式化上下文用 `pack_ifc_line_boxes` 排行、按 `ifc_line_metrics` 定
+  行的基线——末个行盒要么是这样一行，要么是独占一行的块，后者再取它自己的末行基线（行盒也在后代里
+  就递归）。每趟按节点和所用尺寸记在 `LayoutInputMap::derived_baselines`，读原子 ascent 的每一处
+  （块的测量与 placement、measure plan 的比对与增量、原生段落）先 `prime_atom_baselines`，
+  `baseline_metrics` 再读它，所以只有这一份推导。flex / grid 容器、反向或换行的块级流、行旁有浮动的
+  盒子不推导，仍是自身字体首行的近似；
 - 替换内容、`overflow` 非 visible 的 inline-block、没有流内行盒的 inline-block（`UiWorld::atom_sits_on_line_box`）
   以**底外边距边**落在基线上，`margin-bottom` 把它抬高；
 - 行盒高度是对齐之后从最高的顶外边距边到最低的底外边距边的跨度，块级子项独占一行、从行顶排起。
-  没有 strut：行盒不按父级字体留出最小高度。
+- 普通块级流里有行内级子项的行盒从块的 **strut** 起算（`inline::line_strut`）：一个零宽、用块
+  自己的字号和 `line-height` 的行内盒。布局读不到字体度量，ascent 用共享的近似
+  `TEXT_APPROX_ASCENT_EM`（0.8em），descent 是 em 的其余 0.2em，`line-height` 与 em 的差一半
+  加在上、一半加在下。所以以底边落在基线上的空 inline-block 下面留出 descent（默认行高 1.2 时是
+  0.3em），很矮的原子顶不高于 strut 的 ascent。块级子项独占的行没有 strut。`line-height` 读块自己
+  的 `LayoutStyle`（CSS 路径由 `inherit_typography_from` 继承下来），不读 `ComputedStyle`。
+  原生段落的行本来就有 strut（`nana-text` 的 `LineStrut`），用的是真实字面的度量，所以两者都有
+  strut，但普通块级流的值是近似，和同字号原生段落可差零点几像素。
 
 `align-items: baseline` 的 flex 行仍按首行基线对齐，替换内容取边框盒底边（CSS Align 在 flex / grid
 里从边框盒合成基线）。行的基线发布在 `LayoutResult` 的 TextLine 片段上。`LayoutStyle` 没有
@@ -501,8 +524,10 @@ fit 只有一份数学：`ContentFit::fitted_size`（`nana-ui-core`）。fit 是
 
 原子的基线随内容移动，失效也跟着走：`overflow` 为 visible 的固定尺寸 inline-block 在普通块级流里
 不再是度量边界（`UiWorld::atom_baseline_reads_content`），它里面的变化会让这一行重新对齐；
-`overflow` 非 visible 的和替换内容的位置只看自己的盒子，仍然是边界，里面的变化不重排这一行。
-IFC 的 measure plan 记下每个原子在行上的 ascent，盒子尺寸没变但 ascent 变了时重新测量这个块。
+这样的原子流里的流内块（再往下也一样）是找末个行盒的地方，固定尺寸也不是边界，frontier 也不在它
+那里停（`has_definite_size` 读同一个函数）。`overflow` 非 visible 的和替换内容的位置只看自己的盒子，
+仍然是边界，里面的变化不重排这一行。IFC 的 measure plan 记下每个原子在行上的 ascent，盒子尺寸没变
+但 ascent 变了时重新测量这个块；ascent 没变（后代文字改了但末行没动）时沿用计划，盒子都不动。
 
 #259 加了替换内容负载：在 1k、10k、100k 页面末尾，视频帧、图片自然尺寸、共享图片的开销相同。
 
@@ -809,8 +834,9 @@ fallback。替换内容和 Custom 节点以 block 轴末端作为明确 fallback
 和 IFC 不各自估算一套基线。
 
 IFC 的行里，原子按基线对齐（`vertical-align: baseline`，见上文「替换内容」的基线一段）：
-inline-block 取末行基线，替换内容、`overflow` 非 visible 和没有行盒的原子取底外边距边，行高是
-对齐后的跨度。原生段落和普通块级流的行共用这条规则。
+inline-block 取末行基线（行盒在后代里时取后代末个行盒的实际位置），替换内容、`overflow` 非
+visible 和没有行盒的原子取底外边距边，行从块的 strut 起算，行高是对齐后的跨度。原生段落和普通
+块级流的行共用这条规则。
 
 flex 行的保留计划记下每个按基线对齐的子项当时用的基线。下一趟里，子项的尺寸没变
 但基线变了（固定尺寸的按钮里字号变了），这一行照样重新对齐，不沿用旧位置。
@@ -1201,9 +1227,10 @@ prelude 是 `[名字] 条件`：
 - `@import … layer()` 和 `supports()`。
 - 完整的 cascade-layer 优先级。
 - 完整的浮动排除。祖先浮动侵入子块、`shape-outside`、流内块级边框盒缩窄，都没有。
-- 完整 IFC。行内原子按基线对齐，但没有 strut、没有 `vertical-align` 的其他取值，也没有行内拆箱。
-  没有自己文字、文字在后代里的 inline-block，基线仍按自己的字体近似成首行（`baseline_metrics`
-  的 `chrome_top + ascent`），不是后代末行的实际位置。
+- 完整 IFC。行内原子按基线对齐、行盒有 strut，但没有 `vertical-align` 的其他取值，也没有行内
+  拆箱。strut 的字体度量是近似（0.8em / 0.2em），不是字面的真实值。行盒在后代里的 inline-block
+  里，flex / grid 容器、反向或换行的块级流和带浮动的流不推导末行位置，仍按自身字体近似；首个基线
+  （`align-items: baseline` 读的）对容器仍是近似。
 - 轨道列表 token 形式的 `subgrid`。
 - 用 `position: fixed` 当 Dialog 或 Drawer。走 Nana 的浮层。
 - 自定义 `url()` 光标图。

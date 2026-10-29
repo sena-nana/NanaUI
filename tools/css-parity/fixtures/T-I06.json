@@ -1,0 +1,20 @@
+{
+  "id": "T-I06",
+  "title": "行盒从块的 strut 起算：空 inline-block 下留出字体的 descent",
+  "status": "pass",
+  "viewport": [300, 80],
+  "tolerance_px": 2,
+  "tree": {
+    "id": "root",
+    "style": "display:block;width:300px;font-size:20px;line-height:20px",
+    "children": [
+      { "id": "a", "style": "display:inline-block;width:40px;height:30px" },
+      { "id": "b", "style": "display:inline-block;width:10px;height:4px" }
+    ]
+  },
+  "expected": [
+    { "id": "root", "x": 0, "y": 0, "w": 300, "h": 34 },
+    { "id": "a", "x": 0, "y": 0, "w": 40, "h": 30 },
+    { "id": "b", "x": 40, "y": 26, "w": 10, "h": 4 }
+  ]
+}

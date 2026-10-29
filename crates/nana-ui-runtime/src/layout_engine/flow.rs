@@ -280,6 +280,14 @@ impl PackedFloats {
     }
 }
 
+/// The strut a line box of an ordinary block starts from: its ascent and
+/// descent about the baseline ([`super::inline::line_strut`]).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(super) struct LineStrut {
+    pub(super) ascent: f32,
+    pub(super) descent: f32,
+}
+
 /// One wrap line: child indices plus the shortened IFC line box (full width when
 /// not avoiding floats).
 #[derive(Debug, Clone)]

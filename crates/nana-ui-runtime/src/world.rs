@@ -5040,15 +5040,17 @@ impl UiWorld {
                     continue;
                 };
                 let parent_display = parent_record.resolved_layout.display;
+                // A box whose lines an atom's baseline reads is not fixed
+                // to the line it sits on, whatever its size: what it holds
+                // moves that baseline.
                 let has_definite_size =
-                    definite_fixed_border(parent_record.resolved_layout.as_ref());
+                    definite_fixed_border(parent_record.resolved_layout.as_ref())
+                        && !self.atom_baseline_reads_content(parent);
                 // A fixed inline-block is an atomic box. Inner metrics
                 // stop at its border; the outer inline formatting
-                // context does not reflow -- unless the atom sits on its
-                // line by a baseline what it holds puts there.
+                // context does not reflow.
                 let atomic_border = has_definite_size
-                    && parent_display == Some(nana_ui_core::DisplaySpec::InlineBlock)
-                    && !self.atom_baseline_reads_content(parent);
+                    && parent_display == Some(nana_ui_core::DisplaySpec::InlineBlock);
                 let is_formatting_context = !atomic_border
                     && parent_display.is_some_and(|display| {
                         display.is_flex_container()

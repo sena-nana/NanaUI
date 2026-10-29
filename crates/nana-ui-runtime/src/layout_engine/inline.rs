@@ -76,6 +76,15 @@ pub(super) fn place_native_inline(
         let margin = nodes
             .world
             .inline_object_margin(child, writing.inline_size(content.width, content.height));
+        prime_atom_baselines(
+            [(child, size)],
+            content.width,
+            viewport,
+            font,
+            nodes,
+            cache,
+            scope,
+        )?;
         measured.insert(
             child,
             nodes.atom_line_metrics(child, writing, size, margin, font, content.width),
@@ -267,15 +276,343 @@ pub(super) fn ifc_atom_metrics(
     Some((metrics.ascent_px, metrics.descent_px))
 }
 
+/// Derives, for each atom among `items` that sits on its line by its last
+/// line box while every line box it holds is a descendant's, that baseline
+/// at the size the atom takes on the line ([`descendant_last_baseline`]).
+/// [`LayoutInputMap::atom_line_metrics`] reads it from there, so every line
+/// that sits the atom, measured or placed, reads one value. `inline_base`
+/// is the line's containing block's inline size.
+#[allow(clippy::too_many_arguments)]
+pub(super) fn prime_atom_baselines(
+    items: impl IntoIterator<Item = (StableNodeId, Size)>,
+    inline_base: f32,
+    viewport: LayoutViewport,
+    parent_font_px: f32,
+    nodes: &mut LayoutInputMap<'_>,
+    cache: &mut PassIntrinsicCache,
+    scope: Option<&ScopeContext<'_>>,
+) -> Result<(), UiWorldError> {
+    for (child, size) in items {
+        if nodes.world.atom_sits_on_line_box(child) && nodes.world.line_boxes_are_descendants(child)
+        {
+            descendant_last_baseline(
+                child,
+                size,
+                inline_base,
+                viewport,
+                parent_font_px,
+                nodes,
+                cache,
+                scope,
+            )?;
+        }
+    }
+    Ok(())
+}
+
+/// The last baseline of `id` at border-box size `used`, from its top, when
+/// every line box it holds is a descendant's (CSS 2.1 §10.8.1): the
+/// baseline of its last in-flow line box, where that line sits inside it.
+///
+/// It lays the box's flow out the way placement does, from the sizes its
+/// children measure at its content box: a block flow stacks them, an inline
+/// formatting context packs its lines with [`pack_ifc_line_boxes`] and sits
+/// each on its baseline ([`ifc_line_metrics`]). The last line is either such
+/// a line, or a block holding a line alone, whose own last baseline counts
+/// (derived again if its lines are its descendants'). Recorded per pass in
+/// `LayoutInputMap::derived_baselines`; `None` where the box lays its flow
+/// out otherwise (a flex or grid container, a reversed or wrapping block
+/// flow, floats beside its lines), which keeps the approximation of
+/// `baseline_metrics`.
+#[allow(clippy::too_many_arguments)]
+pub(super) fn descendant_last_baseline(
+    id: StableNodeId,
+    used: Size,
+    inline_base: f32,
+    viewport: LayoutViewport,
+    parent_font_px: f32,
+    nodes: &mut LayoutInputMap<'_>,
+    cache: &mut PassIntrinsicCache,
+    scope: Option<&ScopeContext<'_>>,
+) -> Result<Option<f32>, UiWorldError> {
+    let key = derived_baseline_key(id, used);
+    if let Some(known) = nodes.derived_baselines.get(&key) {
+        return Ok(*known);
+    }
+    let derived = derive_last_baseline(
+        id,
+        used,
+        inline_base,
+        viewport,
+        parent_font_px,
+        nodes,
+        cache,
+        scope,
+    )?;
+    nodes.derived_baselines.insert(key, derived);
+    Ok(derived)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn derive_last_baseline(
+    id: StableNodeId,
+    used: Size,
+    inline_base: f32,
+    viewport: LayoutViewport,
+    parent_font_px: f32,
+    nodes: &mut LayoutInputMap<'_>,
+    cache: &mut PassIntrinsicCache,
+    scope: Option<&ScopeContext<'_>>,
+) -> Result<Option<f32>, UiWorldError> {
+    let Some(style) = nodes.style(id) else {
+        return Ok(None);
+    };
+    let Some(node) = nodes.get(id)? else {
+        return Ok(None);
+    };
+    let (child_ids, writing) = (Arc::clone(&node.children), node.writing);
+    if writing.is_vertical()
+        || style.omits_box()
+        || style
+            .display
+            .is_some_and(|display| display.is_flex_container() || display.is_grid_container())
+    {
+        return Ok(None);
+    }
+    let fonts = fonts_of(&style, parent_font_px);
+    let child_font_px = fonts.element_px;
+    let padding = style.resolved_padding_against_fonts(Some(inline_base), fonts);
+    let border = style.resolved_border_edges();
+    let top = border.top + padding.top;
+    // The content box placement lays the children out in.
+    let content = Size::new(
+        used.width - padding.left - padding.right - border.left - border.right,
+        used.height - padding.top - padding.bottom - border.top - border.bottom,
+    );
+    let (mut flow, _) = collect_flow_children_reporting(&child_ids, nodes, &style)?;
+    if flow
+        .iter()
+        .any(|&child| nodes.style(child).is_some_and(|child| child.is_floated()))
+    {
+        return Ok(None);
+    }
+    sort_by_order(&mut flow, nodes);
+    let context = establish_context(id, &style, &flow, nodes);
+    let ifc = context.inline();
+    if context.grid_2d || !(ifc || matches!(context.kind, crate::FormattingContextKind::Flow)) {
+        return Ok(None);
+    }
+    let direction = used_flow_direction(&style, writing, ifc);
+    if !ifc
+        && (direction != FlexDirection::Column
+            || matches!(style.flex_wrap, FlexWrap::Wrap | FlexWrap::WrapReverse)
+            || style.justify_content != JustifySpec::Start
+            || style
+                .active_grid_rows()
+                .is_some_and(|tracks| !tracks.is_empty()))
+    {
+        return Ok(None);
+    }
+    let parent_box = gap_containing_block(&style, content);
+    let gap = style.main_gap_against_fonts(direction, parent_box, fonts);
+    let mut sizes = Vec::with_capacity(flow.len());
+    for &child in &flow {
+        sizes.push(intrinsic_size_scoped(
+            child,
+            content,
+            Some(direction),
+            viewport,
+            child_font_px,
+            nodes,
+            cache,
+            scope,
+        )?);
+    }
+    let margin_of = |child: StableNodeId, nodes: &LayoutInputMap<'_>| {
+        nodes
+            .style(child)
+            .map(|child_style| {
+                child_style.resolved_margin_against_fonts(
+                    Some(content.width),
+                    fonts_of(&child_style, child_font_px),
+                )
+            })
+            .unwrap_or_default()
+    };
+    if ifc {
+        prime_atom_baselines(
+            flow.iter().copied().zip(sizes.iter().copied()),
+            content.width,
+            viewport,
+            child_font_px,
+            nodes,
+            cache,
+            scope,
+        )?;
+        let strut = line_strut(&style, child_font_px);
+        let cross_gap = style.cross_gap_against_fonts(direction, parent_box, fonts);
+        let lines = pack_ifc_line_boxes(
+            &flow,
+            &sizes,
+            Point { x: 0.0, y: 0.0 },
+            content.width,
+            gap,
+            cross_gap,
+            viewport,
+            child_font_px,
+            strut,
+            nodes,
+            &PackedFloats::default(),
+        );
+        for line in lines.iter().rev() {
+            let Some(&first) = line.indices.first() else {
+                continue;
+            };
+            if line.baseline_aligned {
+                let (ascent, _) = ifc_line_metrics(
+                    line.indices
+                        .iter()
+                        .map(|&index| (flow[index], sizes[index])),
+                    content.width,
+                    viewport,
+                    child_font_px,
+                    strut,
+                    nodes,
+                );
+                return Ok(Some(top + line.cross_y + ascent));
+            }
+            if let Some(baseline) = block_last_baseline(
+                flow[first],
+                sizes[first],
+                content.width,
+                viewport,
+                child_font_px,
+                nodes,
+                cache,
+                scope,
+            )? {
+                let margin = margin_of(flow[first], nodes);
+                return Ok(Some(top + line.cross_y + margin.top + baseline));
+            }
+        }
+        return Ok(None);
+    }
+    // A block flow stacks its children from the top of its content box.
+    let mut tops = Vec::with_capacity(flow.len());
+    let mut cursor = 0.0f32;
+    for (index, &child) in flow.iter().enumerate() {
+        if index > 0 {
+            cursor += gap;
+        }
+        let margin = margin_of(child, nodes);
+        tops.push(cursor + margin.top);
+        cursor += margin.top + sizes[index].height + margin.bottom;
+    }
+    for index in (0..flow.len()).rev() {
+        let child = flow[index];
+        let Some(child_style) = nodes.style(child) else {
+            continue;
+        };
+        // Stretched across the block as placement stretches it, so what it
+        // holds lays out at the width it gets.
+        let mut size = sizes[index];
+        if child_style.resolved_align_self(style.align_items) == AlignSpec::Stretch
+            && !cross_axis_is_definite(
+                &child_style,
+                direction,
+                has_natural_ratio(nodes.world, child),
+            )
+        {
+            let margin = margin_of(child, nodes);
+            set_cross_extent(
+                &mut size,
+                direction,
+                (content.width - margin.left - margin.right).max(0.0),
+            );
+        }
+        if let Some(baseline) = block_last_baseline(
+            child,
+            size,
+            content.width,
+            viewport,
+            child_font_px,
+            nodes,
+            cache,
+            scope,
+        )? {
+            return Ok(Some(top + tops[index] + baseline));
+        }
+    }
+    Ok(None)
+}
+
+/// The last baseline of block-level `child` of a box's flow, from its top,
+/// or `None` when it holds no line box: replaced content, or a box with no
+/// line box in it.
+#[allow(clippy::too_many_arguments)]
+fn block_last_baseline(
+    child: StableNodeId,
+    size: Size,
+    inline_base: f32,
+    viewport: LayoutViewport,
+    parent_font_px: f32,
+    nodes: &mut LayoutInputMap<'_>,
+    cache: &mut PassIntrinsicCache,
+    scope: Option<&ScopeContext<'_>>,
+) -> Result<Option<f32>, UiWorldError> {
+    if nodes.world.line_boxes_are_descendants(child) {
+        let derived = descendant_last_baseline(
+            child,
+            size,
+            inline_base,
+            viewport,
+            parent_font_px,
+            nodes,
+            cache,
+            scope,
+        )?;
+        if derived.is_some() {
+            return Ok(derived);
+        }
+    } else if !nodes.world.lays_out_own_line(child)
+        || nodes
+            .style(child)
+            .is_none_or(|style| nodes.world.aligns_by_bottom_edge(child, &style))
+    {
+        return Ok(None);
+    }
+    let metrics = nodes.baseline_metrics(child, parent_font_px, Some(inline_base), Some(size));
+    Ok(metrics.last.or(metrics.first))
+}
+
+/// The strut a line box of an ordinary block starts from (CSS 2.1 §10.8.1):
+/// the ascent and descent of a zero-width inline box in the block's own font
+/// at its own line height, so an atom that sits by its bottom edge leaves the
+/// font's descent below it. Layout reads no face metrics, so the font's
+/// ascent and descent are the shared approximation
+/// ([`nana_ui_core::TEXT_APPROX_ASCENT_EM`] of the em, the rest below), and
+/// the half-leading splits what the line height leaves around that em box.
+pub(super) fn line_strut(style: &LayoutStyle, font_px: f32) -> LineStrut {
+    let font = font_px.max(0.0);
+    let ascent = font * nana_ui_core::TEXT_APPROX_ASCENT_EM;
+    let half_leading = (text_line_box_height_px(font, style.line_height) - font) * 0.5;
+    LineStrut {
+        ascent: ascent + half_leading,
+        descent: font - ascent + half_leading,
+    }
+}
+
 /// A horizontal line box of an ordinary block: its baseline below the
-/// line's top, and its height. Its inline-level items sit on that baseline,
-/// and the line spans the highest top to the lowest bottom among them
-/// (CSS 2.1 §10.8); a block-level item counts from the line's top.
+/// line's top, and its height. Its inline-level items sit on that baseline
+/// with the block's strut, and the line spans the highest top to the lowest
+/// bottom among them (CSS 2.1 §10.8); a block-level item holds a line alone,
+/// counted from the line's top, with no strut.
 pub(super) fn ifc_line_metrics(
     items: impl IntoIterator<Item = (StableNodeId, Size)>,
     content_width: f32,
     viewport: LayoutViewport,
     parent_font_px: f32,
+    strut: LineStrut,
     nodes: &LayoutInputMap<'_>,
 ) -> (f32, f32) {
     let (mut ascent, mut descent, mut from_top) = (0.0f32, 0.0f32, 0.0f32);
@@ -285,8 +622,8 @@ pub(super) fn ifc_line_metrics(
         };
         match ifc_atom_metrics(child, &style, size, content_width, parent_font_px, nodes) {
             Some((above, below)) => {
-                ascent = ascent.max(above);
-                descent = descent.max(below);
+                ascent = ascent.max(above).max(strut.ascent);
+                descent = descent.max(below).max(strut.descent);
             }
             None => {
                 let (_, outer) =
@@ -310,6 +647,7 @@ pub(super) fn pack_ifc_line_boxes(
     cross_gap: f32,
     viewport: LayoutViewport,
     parent_font_px: f32,
+    strut: LineStrut,
     nodes: &LayoutInputMap<'_>,
     packed_floats: &PackedFloats,
 ) -> Vec<LineBoxSlot> {
@@ -339,6 +677,7 @@ pub(super) fn pack_ifc_line_boxes(
             content_width,
             viewport,
             parent_font_px,
+            strut,
             nodes,
         );
         lines.push(LineBoxSlot {
@@ -480,9 +819,10 @@ pub(super) fn wrap_intrinsic_size(
     viewport: LayoutViewport,
     parent_font_px: f32,
     nodes: &LayoutInputMap<'_>,
-    // The lines of an ordinary block: inline-level items share a baseline
-    // and a line is as tall as they span ([`ifc_line_metrics`]).
-    baseline_lines: bool,
+    // The lines of an ordinary block, with its strut: inline-level items
+    // share a baseline and a line is as tall as they span
+    // ([`ifc_line_metrics`]).
+    baseline_lines: Option<LineStrut>,
 ) -> Size {
     let content_main = main_extent(available, direction);
     let mut lines = pack_wrap_lines(
@@ -533,12 +873,13 @@ pub(super) fn wrap_intrinsic_size(
             line_cross = line_cross
                 .max(cross_extent(sizes[index], direction) + cross_margin(margin, direction));
         }
-        if baseline_lines {
+        if let Some(strut) = baseline_lines {
             line_cross = ifc_line_metrics(
                 line.iter().map(|&index| (children[index], sizes[index])),
                 edge_base,
                 viewport,
                 parent_font_px,
+                strut,
                 nodes,
             )
             .1;
@@ -732,6 +1073,15 @@ pub(super) fn ifc_line_measure_delta(
         .writing
         .logical_size(plan.child_available.width, plan.child_available.height)
         .0;
+    prime_atom_baselines(
+        flow.iter().copied().zip(sizes.iter().copied()),
+        edge_base,
+        viewport,
+        child_font_px,
+        nodes,
+        cache,
+        Some(scope),
+    )?;
     let content = wrap_intrinsic_size(
         direction,
         FlexWrap::Wrap,
@@ -745,7 +1095,7 @@ pub(super) fn ifc_line_measure_delta(
         viewport,
         child_font_px,
         nodes,
-        true,
+        Some(line_strut(style, child_font_px)),
     );
     let mut size = plan.size;
     // The inline size is the definite line budget. Only the block size follows

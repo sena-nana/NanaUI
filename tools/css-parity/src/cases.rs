@@ -15,8 +15,8 @@ pub const PRIORITY_CASE_IDS: &[&str] = &[
     "T-G23", "T-G24", "T-G25", "T-G26", "T-G27", "T-G28", "T-G29", "T-G30", "T-G31", "T-G32",
     "T-G33", "T-G34", "T-G36", "T-P01", "T-P02", "T-P03", "T-P04", "T-P05", "T-P06", "T-P07",
     "T-P08", "T-P09", "T-P10", "T-P11", "T-P12", "T-P13", "T-P14", "T-P15", "T-P16", "T-P17",
-    "T-P18", "T-P19", "T-P20", "T-I01", "T-I02", "T-I03", "T-I04", "T-I05", "T-FL01", "T-FL02",
-    "T-FL03", "T-FL04", "T-FL05", "T-FL06",
+    "T-P18", "T-P19", "T-P20", "T-I01", "T-I02", "T-I03", "T-I04", "T-I05", "T-I06", "T-I07",
+    "T-FL01", "T-FL02", "T-FL03", "T-FL04", "T-FL05", "T-FL06",
 ];
 
 /// `(id, status_pass, gap)` — `gap` 仅仍 ignore 的用例有值。
@@ -161,6 +161,8 @@ pub fn catalog() -> &'static [(&'static str, bool, Option<&'static str>)] {
         ("T-I03", true, None),  // white-space:pre preserves newlines
         ("T-I04", true, None),  // IFC block-level sibling starts a new line
         ("T-I05", true, None),  // mixed-height inline-blocks share a baseline
+        ("T-I06", true, None),  // a line box starts from the block's strut
+        ("T-I07", true, None),  // an inline-block's last line box is a descendant's
         ("T-FL01", true, None), // float left/right + clear:both
         ("T-FL02", true, None), // two float:left wrap, no overlap
         ("T-FL03", true, None), // clear:both after wrapping same-side floats uses packed bottom

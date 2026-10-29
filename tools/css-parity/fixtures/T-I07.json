@@ -1,0 +1,36 @@
+{
+  "id": "T-I07",
+  "title": "行盒都在后代里的 inline-block 以末个后代行盒的基线对齐",
+  "status": "pass",
+  "viewport": [300, 80],
+  "tolerance_px": 2,
+  "tree": {
+    "id": "root",
+    "style": "display:block;width:300px;font-size:20px;line-height:20px",
+    "children": [
+      { "id": "a", "style": "display:inline-block;width:40px;height:20px" },
+      {
+        "id": "b",
+        "style": "display:inline-block;width:60px",
+        "children": [
+          { "id": "spacer", "style": "display:block;width:60px;height:10px" },
+          {
+            "id": "inner",
+            "style": "display:block;width:60px;line-height:20px",
+            "children": [
+              { "id": "c", "style": "display:inline-block;width:30px;height:15px" }
+            ]
+          }
+        ]
+      }
+    ]
+  },
+  "expected": [
+    { "id": "root", "x": 0, "y": 0, "w": 300, "h": 30 },
+    { "id": "a", "x": 0, "y": 6, "w": 40, "h": 20 },
+    { "id": "b", "x": 40, "y": 0, "w": 60, "h": 30 },
+    { "id": "spacer", "x": 40, "y": 0, "w": 60, "h": 10 },
+    { "id": "inner", "x": 40, "y": 10, "w": 60, "h": 20 },
+    { "id": "c", "x": 40, "y": 11, "w": 30, "h": 15 }
+  ]
+}

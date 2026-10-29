@@ -32,6 +32,14 @@
 //!   A taller atom, text that wraps to another line in a box of the same
 //!   size, and a line box arriving in an empty atom each place the line
 //!   again, and each matches a cold layout.
+//! - Gate H: an inline-block whose line boxes all lie in its descendants
+//!   sits by the last of them, where it sits inside the atom: below a block,
+//!   the last of a wrapped label's lines, the second of two stacked atoms,
+//!   inside a fixed block. Changes that move it place the line again; one
+//!   that does not moves nothing. Each matches a cold layout.
+//! - Gate I: a line box of an ordinary block starts from the block's strut:
+//!   the font's descent below an empty atom, half the leading on each side,
+//!   none on a block-level box's line.
 
 #![cfg(test)]
 
@@ -1006,4 +1014,418 @@ fn short_label_into(queue: &mut MutationQueue, document: DocumentId, short: Stab
             value: "Short".into(),
         },
     );
+}
+
+/// One block-flow line whose atoms hold their text in descendants, for
+/// Gate H.
+struct NestedLine {
+    context: AppContext,
+    document: DocumentId,
+    shaper: NanaTextEngineShaper,
+    block: StableNodeId,
+    /// 40x20, empty: its bottom edge is the line's baseline.
+    edge: StableNodeId,
+    /// 120x80 with 7 of padding on top, holding a block `spacer` high and a
+    /// label below it.
+    holder: StableNodeId,
+    spacer: StableNodeId,
+    holder_label: StableNodeId,
+    /// 60 wide, its height its content's: a block holding a label that wraps.
+    nested: StableNodeId,
+    nested_label: StableNodeId,
+    /// 70 wide, its height its content's: two inline-block labels 60 wide,
+    /// one line box each.
+    stacked: StableNodeId,
+    stacked_labels: [StableNodeId; 2],
+    /// 80 wide, its height its content's: a fixed 70x50 block holding a
+    /// label.
+    boxed: StableNodeId,
+    boxed_label: StableNodeId,
+}
+
+impl NestedLine {
+    fn new(spacer: f32, holder_text: &str, nested_text: &str, boxed_text: &str) -> Self {
+        let document = DocumentId::new(1).unwrap();
+        let (mut b, page) = Builder::page(document, 1, 800.0);
+        let block = b.element(
+            page,
+            LayoutStyle {
+                display: Some(DisplaySpec::Block),
+                width: Some(LengthSpec::Px(600.0)),
+                ..LayoutStyle::default()
+            },
+        );
+        let inline_block = |width: f32, height: Option<f32>| LayoutStyle {
+            display: Some(DisplaySpec::InlineBlock),
+            width: Some(LengthSpec::Px(width)),
+            height: height.map(LengthSpec::Px),
+            ..LayoutStyle::default()
+        };
+        let edge = b.element(block, inline_block(40.0, Some(20.0)));
+        let holder = b.element(
+            block,
+            LayoutStyle {
+                padding_top: Some(LengthSpec::Px(7.0)),
+                ..inline_block(120.0, Some(80.0))
+            },
+        );
+        let spacer = b.element(holder, spacer_style(spacer));
+        let holder_label = b.label(holder, holder_text);
+        let nested = b.element(block, inline_block(60.0, None));
+        let inner = b.element(
+            nested,
+            LayoutStyle {
+                display: Some(DisplaySpec::Block),
+                ..LayoutStyle::default()
+            },
+        );
+        let nested_label = b.label(inner, nested_text);
+        let stacked = b.element(block, inline_block(70.0, None));
+        let stacked_labels = ["Up", "Down"].map(|text| {
+            let label = b.label(stacked, text);
+            b.queue
+                .set_style(label, styled(inline_block(60.0, Some(18.0))));
+            label
+        });
+        let boxed = b.element(block, inline_block(80.0, None));
+        let fixed_block = b.element(
+            boxed,
+            LayoutStyle {
+                display: Some(DisplaySpec::Block),
+                width: Some(LengthSpec::Px(70.0)),
+                height: Some(LengthSpec::Px(50.0)),
+                ..LayoutStyle::default()
+            },
+        );
+        let boxed_label = b.label(fixed_block, boxed_text);
+        let mut context = AppContext::new();
+        context.commit_mutations(b.queue).unwrap();
+        let mut line = Self {
+            context,
+            document,
+            shaper: bundled_face_shaper(),
+            block,
+            edge,
+            holder,
+            spacer,
+            holder_label,
+            nested,
+            nested_label,
+            stacked,
+            stacked_labels,
+            boxed,
+            boxed_label,
+        };
+        line.frame();
+        line
+    }
+
+    fn frame(&mut self) -> nana_ui_core::WorkCounters {
+        product_frame(
+            &mut self.context,
+            self.document,
+            viewport(),
+            &mut self.shaper,
+        )
+    }
+
+    fn commit(&mut self, queue: MutationQueue) -> nana_ui_core::WorkCounters {
+        self.context.commit_mutations(queue).unwrap();
+        self.frame()
+    }
+
+    fn lines(&self, label: StableNodeId) -> usize {
+        self.context
+            .world()
+            .text_layout(label)
+            .expect("shaped text")
+            .1
+            .lines
+            .len()
+    }
+
+    /// Where `label` puts the baseline of its line `index` (the last one
+    /// when `None`), in the document.
+    fn label_baseline(&self, label: StableNodeId, index: Option<usize>) -> f32 {
+        let world = self.context.world();
+        let (_, layout) = world.text_layout(label).expect("shaped text");
+        let line = match index {
+            Some(index) => &layout.lines[index],
+            None => layout.lines.last().expect("a line"),
+        };
+        world.layout_box(label).unwrap().y + line.metrics.baseline_y_px
+    }
+
+    /// Each atom on the line's baseline by its descendant's last line.
+    fn check(&self) {
+        let world = self.context.world();
+        let edge = world.layout_box(self.edge).unwrap();
+        let baseline = edge.y + edge.height;
+        for label in [
+            self.holder_label,
+            self.nested_label,
+            self.stacked_labels[1],
+            self.boxed_label,
+        ] {
+            let last = self.label_baseline(label, None);
+            assert!(
+                (last - baseline).abs() < 0.01,
+                "{label:?}: last baseline {last} vs the line's {baseline} ({} lines)",
+                self.lines(label)
+            );
+        }
+        // The stacked atom's second line, not its first.
+        let [up, down] = self.stacked_labels.map(|id| world.layout_box(id).unwrap());
+        assert!(down.y >= up.y + up.height - 0.01, "{up:?} {down:?}");
+        // Not its own font's first line: the label sits below a spacer.
+        let holder = world.layout_box(self.holder).unwrap();
+        let spacer = world.layout_box(self.spacer).unwrap();
+        assert!(spacer.height > 0.0 && spacer.y >= holder.y + 7.0 - 0.01);
+        assert!(world.layout_box(self.holder_label).unwrap().y >= spacer.y + spacer.height - 0.01);
+    }
+}
+
+fn spacer_style(height: f32) -> LayoutStyle {
+    LayoutStyle {
+        display: Some(DisplaySpec::Block),
+        height: Some(LengthSpec::Px(height)),
+        ..LayoutStyle::default()
+    }
+}
+
+/// Gate H: an inline-block whose text lies in its descendants sits on the
+/// line by the baseline of its last line box, where that line box sits
+/// inside it (CSS 2.1 §10.8.1), not by its own font's first line. A
+/// descendant's change that moves that line places the line again; one
+/// that does not leaves every box where it was. Each matches a cold layout.
+#[test]
+fn issue202_h_an_inline_block_sits_by_its_descendants_last_line() {
+    let mut line = NestedLine::new(10.0, "Nested", "aa aa aa aa aa", "Box");
+    assert!(
+        line.lines(line.nested_label) > 1,
+        "the nested label wraps: {} lines",
+        line.lines(line.nested_label)
+    );
+    assert_eq!(line.lines(line.holder_label), 1);
+    line.check();
+    // The second line, not the first, is on the line's baseline.
+    let first = line.label_baseline(line.nested_label, Some(0));
+    assert!(first < line.label_baseline(line.nested_label, None) - 1.0);
+
+    // How far below the holder's top the line's baseline is.
+    let depth = |line: &NestedLine| {
+        let world = line.context.world();
+        let edge = world.layout_box(line.edge).unwrap();
+        edge.y + edge.height - world.layout_box(line.holder).unwrap().y
+    };
+
+    // Text that wraps in a box of the same size moves its last line down:
+    // the line's baseline sits that much lower inside the holder.
+    let holder = line.context.world().layout_box(line.holder).unwrap();
+    let before = depth(&line);
+    let mut queue = MutationQueue::new();
+    queue.set_text(
+        line.holder_label,
+        crate::TextContent {
+            value: "Nested nested nested nested".into(),
+        },
+    );
+    line.commit(queue);
+    assert!(line.lines(line.holder_label) > 1);
+    line.check();
+    let moved = line.context.world().layout_box(line.holder).unwrap();
+    assert_eq!((moved.width, moved.height), (holder.width, holder.height));
+    assert!(depth(&line) > before + 1.0, "{} vs {before}", depth(&line));
+    assert_matches_cold(
+        &mut line.context,
+        &mut NestedLine::new(10.0, "Nested nested nested nested", "aa aa aa aa aa", "Box").context,
+        line.document,
+    );
+
+    // A taller box above the label moves it, and the line's baseline sits
+    // as much lower inside the holder.
+    let before = depth(&line);
+    let mut queue = MutationQueue::new();
+    queue.set_style(line.spacer, styled(spacer_style(20.0)));
+    line.commit(queue);
+    line.check();
+    assert!(
+        (depth(&line) - before - 10.0).abs() < 0.01,
+        "{} vs {before}",
+        depth(&line)
+    );
+    assert_matches_cold(
+        &mut line.context,
+        &mut NestedLine::new(20.0, "Nested nested nested nested", "aa aa aa aa aa", "Box").context,
+        line.document,
+    );
+
+    // Text that keeps its lines where they were moves nothing.
+    let boxes = |line: &NestedLine| {
+        [
+            line.block,
+            line.edge,
+            line.holder,
+            line.nested,
+            line.stacked,
+            line.boxed,
+        ]
+        .map(|id| line.context.world().layout_box(id).unwrap())
+    };
+    let before = boxes(&line);
+    let lines = line.lines(line.nested_label);
+    let mut queue = MutationQueue::new();
+    queue.set_text(
+        line.nested_label,
+        crate::TextContent {
+            value: "bb bb bb bb bb".into(),
+        },
+    );
+    let work = line.commit(queue);
+    assert_eq!(work.layout_full_document_fallbacks, 0);
+    assert_eq!(line.lines(line.nested_label), lines);
+    line.check();
+    assert_eq!(boxes(&line), before);
+    assert_matches_cold(
+        &mut line.context,
+        &mut NestedLine::new(20.0, "Nested nested nested nested", "bb bb bb bb bb", "Box").context,
+        line.document,
+    );
+
+    // Text wrapping inside a fixed block of the atom: the block keeps its
+    // size, the last line box moves, and the line is placed again.
+    let before = boxes(&line);
+    let mut queue = MutationQueue::new();
+    queue.set_text(
+        line.boxed_label,
+        crate::TextContent {
+            value: "Box box box box".into(),
+        },
+    );
+    line.commit(queue);
+    assert!(line.lines(line.boxed_label) > 1);
+    line.check();
+    assert_ne!(boxes(&line), before);
+    assert_matches_cold(
+        &mut line.context,
+        &mut NestedLine::new(
+            20.0,
+            "Nested nested nested nested",
+            "bb bb bb bb bb",
+            "Box box box box",
+        )
+        .context,
+        line.document,
+    );
+}
+
+/// Gate I: a line box of an ordinary block starts from the block's strut
+/// (CSS 2.1 §10.8.1), the ascent and descent of its own font at its line
+/// height: an empty inline-block, which sits by its bottom edge, leaves the
+/// font's descent below it, and a short one sits no higher than the strut's
+/// ascent. A block-level box holds a line alone, with no strut. A native
+/// paragraph's line has one too.
+#[test]
+fn issue202_i_a_line_box_starts_with_the_blocks_strut() {
+    let document = DocumentId::new(1).unwrap();
+    let (mut b, page) = Builder::page(document, 1, 800.0);
+    let font = 20.0f32;
+    let block = |line_height| LayoutStyle {
+        display: Some(DisplaySpec::Block),
+        width: Some(LengthSpec::Px(600.0)),
+        font_size: Some(font),
+        line_height,
+        ..LayoutStyle::default()
+    };
+    let atom = |width: f32, height: f32| LayoutStyle {
+        display: Some(DisplaySpec::InlineBlock),
+        width: Some(LengthSpec::Px(width)),
+        height: Some(LengthSpec::Px(height)),
+        ..LayoutStyle::default()
+    };
+    // No leading: the strut is the em box, its descent the font's.
+    let tight = b.element(
+        page,
+        block(Some(nana_ui_core::LineHeightSpec::Absolute(font))),
+    );
+    let tight_atom = b.element(tight, atom(40.0, 30.0));
+    let tight_short = b.element(tight, atom(10.0, 6.0));
+    // The default line height adds half its leading on each side.
+    let normal = b.element(page, block(None));
+    let normal_atom = b.element(normal, atom(40.0, 30.0));
+    // A block-level box alone on its line.
+    let blocky = b.element(page, block(None));
+    b.element(
+        blocky,
+        LayoutStyle {
+            display: Some(DisplaySpec::Block),
+            ..atom(40.0, 30.0)
+        },
+    );
+    let paragraph_atom = b.detached(atom(40.0, 30.0));
+    let mut context = AppContext::new();
+    context.commit_mutations(b.queue).unwrap();
+    let paragraph = context
+        .create_component(
+            document,
+            InlineFlow::new(InlineContent::builder().child(paragraph_atom).build())
+                .width(LengthSpec::Px(600.0)),
+        )
+        .unwrap()
+        .stable_id();
+    let mut shaper = bundled_face_shaper();
+    product_frame(&mut context, document, viewport(), &mut shaper);
+    let world = context.world();
+    let bounds = |id| world.layout_box(id).unwrap();
+    let ascent = font * nana_ui_core::TEXT_APPROX_ASCENT_EM;
+    let descent = font - ascent;
+
+    // The tall atom sets the line's top; the strut its depth.
+    let (line, tall, short) = (bounds(tight), bounds(tight_atom), bounds(tight_short));
+    assert!((tall.y - line.y).abs() < 0.01, "{tall:?} vs {line:?}");
+    let baseline = tall.y + tall.height;
+    let gap = line.y + line.height - baseline;
+    assert!(
+        (gap - descent).abs() < 0.01,
+        "the gap below an empty atom {gap} vs the font's descent {descent}"
+    );
+    assert!((short.y + short.height - baseline).abs() < 0.01);
+
+    // Half the leading of the default line height on each side.
+    let half_leading = (font * 1.2 - font) / 2.0;
+    let (line, tall) = (bounds(normal), bounds(normal_atom));
+    let gap = line.y + line.height - (tall.y + tall.height);
+    assert!(
+        (gap - (descent + half_leading)).abs() < 0.01,
+        "{gap} vs {}",
+        descent + half_leading
+    );
+
+    // A line of a block-level box alone has no strut.
+    assert_eq!(bounds(blocky).height, 30.0);
+
+    // A native paragraph's line leaves room below its atom as well; its
+    // strut is its face's, shaped by nana-text.
+    let (line, held) = (bounds(paragraph), bounds(paragraph_atom));
+    assert!(
+        line.y + line.height > held.y + held.height + 1.0,
+        "{held:?} in {line:?}"
+    );
+
+    // A short atom sits no higher than the strut's ascent: the line's top
+    // is the strut's.
+    let mut queue = MutationQueue::new();
+    queue.set_style(tight_atom, styled(atom(40.0, 4.0)));
+    context.commit_mutations(queue).unwrap();
+    product_frame(&mut context, document, viewport(), &mut shaper);
+    let world = context.world();
+    let (line, tall) = (
+        world.layout_box(tight).unwrap(),
+        world.layout_box(tight_atom).unwrap(),
+    );
+    assert!(
+        (tall.y + tall.height - (line.y + ascent)).abs() < 0.01,
+        "{tall:?} in {line:?}"
+    );
+    assert!((line.height - font).abs() < 0.01, "{line:?}");
 }

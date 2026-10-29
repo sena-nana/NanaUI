@@ -1016,6 +1016,16 @@ fn measure_node(
         if unforced {
             cache.insert(cache_key, size);
             if !depends_on_used_basis(style.width) && !depends_on_used_basis(style.height) {
+                publish_atom_baseline(
+                    id,
+                    size,
+                    writing.inline_size(available.width, available.height),
+                    viewport,
+                    parent_font_px,
+                    nodes,
+                    cache,
+                    scope,
+                )?;
                 let baseline = nodes.baseline_metrics(
                     id,
                     fonts.element_px,
@@ -1254,6 +1264,24 @@ fn measure_node(
     if let Some(clock) = child_phase.as_mut() {
         clock.lap(4);
     }
+    // The lines of an ordinary block sit their atoms on one baseline.
+    let baseline_lines = (ifc && !writing.is_vertical()).then(|| line_strut(style, child_font_px));
+    if baseline_lines.is_some() {
+        prime_atom_baselines(
+            flow_children
+                .iter()
+                .copied()
+                .zip(child_sizes.iter().copied()),
+            writing
+                .logical_size(content_available.width, content_available.height)
+                .0,
+            viewport,
+            child_font_px,
+            nodes,
+            cache,
+            scope,
+        )?;
+    }
     let parent_box = gap_containing_block(style, content_available);
     let gap = style.main_gap_against_fonts(direction, parent_box, fonts);
     let cross_gap = style.cross_gap_against_fonts(direction, parent_box, fonts);
@@ -1358,7 +1386,7 @@ fn measure_node(
             viewport,
             child_font_px,
             nodes,
-            ifc && !writing.is_vertical(),
+            baseline_lines,
         )
     } else {
         // With a definite main size the line hands out free space (or takes
@@ -1681,6 +1709,16 @@ fn measure_node(
     }
     if unforced {
         cache.insert(cache_key, size);
+        publish_atom_baseline(
+            id,
+            size,
+            writing.inline_size(available.width, available.height),
+            viewport,
+            parent_font_px,
+            nodes,
+            cache,
+            scope,
+        )?;
         let baseline = nodes.baseline_metrics(
             id,
             fonts.element_px,
@@ -1705,6 +1743,35 @@ fn measure_node(
         );
     }
     Ok(size)
+}
+
+/// An atom of a native paragraph publishes the last baseline it sits on its
+/// line by with its intrinsic facts: the paragraph reads it back after
+/// layout (`UiWorld::sync_inline_metrics`), so it must be the one placement
+/// derived from its descendants ([`prime_atom_baselines`]).
+#[allow(clippy::too_many_arguments)]
+fn publish_atom_baseline(
+    id: StableNodeId,
+    size: Size,
+    inline_base: f32,
+    viewport: LayoutViewport,
+    parent_font_px: f32,
+    nodes: &mut LayoutInputMap<'_>,
+    cache: &mut PassIntrinsicCache,
+    scope: Option<&ScopeContext<'_>>,
+) -> Result<(), UiWorldError> {
+    if nodes.world.inline_parent(id).is_none() {
+        return Ok(());
+    }
+    prime_atom_baselines(
+        [(id, size)],
+        inline_base,
+        viewport,
+        parent_font_px,
+        nodes,
+        cache,
+        scope,
+    )
 }
 
 /// Re-check only the children the change closure reaches.
@@ -1757,6 +1824,15 @@ fn measure_plan_children_unchanged(
             // An atom whose baseline moved in a box of the same size moves
             // its line, and the line's height.
             if let Some(ascent) = entry.baseline {
+                prime_atom_baselines(
+                    [(entry.child, measured)],
+                    plan.child_available.width,
+                    viewport,
+                    child_font_px,
+                    nodes,
+                    cache,
+                    Some(scope),
+                )?;
                 let now = nodes.style(entry.child).and_then(|style| {
                     ifc_atom_metrics(
                         entry.child,
@@ -2337,7 +2413,7 @@ fn flex_line_measure_delta(
         viewport,
         child_font_px,
         nodes,
-        false,
+        None,
     );
     let new_content = wrap_intrinsic_size(
         direction,
@@ -2352,7 +2428,7 @@ fn flex_line_measure_delta(
         viewport,
         child_font_px,
         nodes,
-        false,
+        None,
     );
     let mut size = plan.size;
     match direction {

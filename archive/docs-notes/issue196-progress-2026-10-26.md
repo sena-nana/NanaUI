@@ -384,7 +384,7 @@ CSS Overflow 3 让盒子只算进它包含块链上的 scrollable overflow。现
 | context 切换不重建 GPU/resource identity | 可勾 | Runtime：`issue199_a_thousand_components_keep_state_focus_and_resource_identity`（`Arc::ptr_eq`、0 spawn）；GPU：nana-ui `a_host_texture_moved_across_contexts_keeps_its_binding`（真实 `RuntimeDocument`，Flex→Grid→Flex 列→Flex 行，`gpu_buffer_reallocations == 0`） |
 | frame/texture 内容更新不触发布局 | 可勾 | `issue263_video_frames_lay_nothing_out`（1200 帧 0 布局、intrinsic generation 不变）、`issue263_fit_and_sampling_lay_nothing_out`、`issue259_replaced_content_costs_the_same_at_any_size`、nana-ui `texture_content_reuses_prepared_ui_and_replacement_rebinds` |
 | intrinsic metadata change 精确失效 | 可勾 | issue263 B/C/E（unknown→known 单 seed、共享图片 100 通知/50 seed、显式尺寸 0 seed）；本轮 `issue202_e_only_a_new_natural_size_lays_out`：同一尺寸再报一次 drain 为空；换成同尺寸的另一资源 0 replaced seed、0 frontier seed、0 measure、0 intrinsic bump；换成另一尺寸的资源只排读它的 2 个盒子 |
-| Inline baseline 有正式 policy | **可勾（基线追加完成）** | 规则在布局侧：`LayoutEngine::aligns_by_bottom_edge` / `baseline_metrics` 以边框盒底边为替换内容基线；原生段落行盒与 `align-items: baseline` 的 flex 行按它对齐，行基线发布在 TextLine 片段（`issue202_replaced_content_sits_on_the_text_baseline_by_its_bottom_edge`）。普通块级流里同行原子的基线对齐已按产品决定补上（`vertical-align: baseline` 默认值），见下文「追加：块级流的原子基线」 |
+| Inline baseline 有正式 policy | **可勾（基线、后代末行与 strut 追加完成）** | 规则在布局侧：`LayoutEngine::aligns_by_bottom_edge` / `baseline_metrics` 以边框盒底边为替换内容基线；原生段落行盒与 `align-items: baseline` 的 flex 行按它对齐，行基线发布在 TextLine 片段（`issue202_replaced_content_sits_on_the_text_baseline_by_its_bottom_edge`）。普通块级流里同行原子的基线对齐已按产品决定补上（`vertical-align: baseline` 默认值），见下文「追加：块级流的原子基线」；行盒在后代里的 inline-block 取后代末行、行盒有 strut，见「追加：后代末行基线与 strut」 |
 | CustomRender 保持 presentation anchor 边界 | 可勾 | `CustomRenderNode` 只有 renderer/resource/revision/fit/params/dedicated_pass/checkerboard/zoom/sampling 等呈现字段，params 不被 Runtime 解释（`custom_render_extension_requires_nonempty_backend_neutral_keys`）；`issue202_c_…` 的 Anchor 只挂一个 `CustomRenderNode` 就以 Replaced 参与布局，Runtime 不需要应用状态 |
 
 ### 改动
@@ -473,9 +473,58 @@ CSS Overflow 3 让盒子只算进它包含块链上的 scrollable overflow。现
 | 同上加 `--semantic` | MATCH: 156 |
 
 **仍未做：**
-- 没有自己文字、文字在后代里的 inline-block（比如 `div` 里放一个标签），基线仍是 `baseline_metrics` 对容器的近似（自身字体的首行 `chrome_top + ascent`），不是后代末个行盒的实际位置；后代多行时与 CSS 不同。要按后代推导需要在测量时知道子项的块向偏移，牵涉 measure plan 与固定尺寸早退路径，单独做。
-- 没有 strut：行盒不按父级字体留出最小 ascent/descent，空 inline-block 下面不留 descent 空隙。
+- ~~没有自己文字、文字在后代里的 inline-block（比如 `div` 里放一个标签），基线仍是 `baseline_metrics` 对容器的近似（自身字体的首行 `chrome_top + ascent`），不是后代末个行盒的实际位置；后代多行时与 CSS 不同。~~ 已在下文「追加：后代末行基线与 strut」完成（flex / grid 容器等仍是近似，见那里）。
+- ~~没有 strut：行盒不按父级字体留出最小 ascent/descent，空 inline-block 下面不留 descent 空隙。~~ 同上完成。
 - NanaLive / NanaType 只读检查：源码里没有 `inline-block` / `DisplaySpec::Inline*` / `InlineFlow`，不受影响；未构建。
+
+### 追加：后代末行基线与 strut
+
+补上「块级流的原子基线」留下的两项。
+
+**后代末行基线。** 行盒都在后代里的 inline-block（`UiWorld::line_boxes_are_descendants`：没有自己的文字、控件或段落，只在流里有行盒）以持有末个行盒的后代的实际位置落在基线上（CSS 2.1 §10.8.1），不再取自身字体首行的近似。
+- 推导只有一处：`inline::descendant_last_baseline`。它按 placement 的方式从子项在原子内容盒里量出的尺寸排原子的流：块级流逐个叠放（`align-items: stretch` 的块按 placement 拉宽），行内格式化上下文用 `pack_ifc_line_boxes` 排行、按 `ifc_line_metrics` 定行的基线；末个行盒要么是这样一行，要么是独占一行的块，后者取它自己的末行基线（行盒也在后代里就递归）。子项尺寸都经 `intrinsic_size_scoped`，和 placement 用同一个 key，所以工作只是提前，不是新增。
+- 结果按节点与所用尺寸记在每趟的 `LayoutInputMap::derived_baselines`。读原子 ascent 的每一处都先 `prime_atom_baselines`：块的测量（`measure_node` 的 IFC）、measure plan 比对（`measure_plan_children_unchanged`）、IFC 增量（`ifc_line_measure_delta`）、placement（排行、行基线、原子 ascent）、原生段落（`place_native_inline`）；原生段落的原子在测量发布 intrinsic facts 前也 prime（`publish_atom_baseline`），布局后回填（`sync_inline_metrics`）读到的是同一个值。`baseline_metrics` 在近似之前先读这份记录。测试与 `layout-verify` 构建里，`atom_line_metrics` 遇到没 prime 的这种原子直接 panic，漏掉的调用点不会悄悄退回近似。
+- 不推导、仍是近似的：flex / grid 容器（inline-flex 等）、反向或换行的块级流、`justify-content` 非 start 的块级流、行旁有浮动的流、竖排；容器的首个基线（`align-items: baseline` 读的）也仍是近似。
+
+**strut。** 普通块级流里有行内级子项的行盒从块的 strut 起算（`inline::line_strut`，`ifc_line_metrics` 的新参数 `LineStrut`，`wrap_intrinsic_size` 的 `baseline_lines` 改为 `Option<LineStrut>`，测量、增量、placement 共用）。布局读不到字体度量，ascent 用共享近似 `TEXT_APPROX_ASCENT_EM`（0.8em），descent 是 0.2em，`line-height` 与 em 的差两边各半。块级子项独占的行没有 strut。原生段落（`InlineFlow`）的行本来就有 strut：`nana-text` 的 `LineStrut`，取真实字面度量。两条路径都有 strut，不同的只是度量来源；要让普通块级流也用真实字面需要在布局前替块整形 strut，属于跨层改动，本轮不做。
+
+**失效。** `UiWorld::atom_baseline_reads_content` 扩到块链：读内容的原子流里的流内块（再往下也一样）是找末个行盒的地方，固定尺寸也不再是度量边界（`is_fixed_metric_boundary`），frontier 的 `has_definite_size` 也读它，不在那里横向停下。变化不移动末行时（行数不变的文字改动），IFC 的 measure plan 比对 ascent 相同、沿用计划，盒子都不动。
+
+**门禁与变异**（改坏→变红→恢复→`cmp` 一致）。Gate H 的「固定尺寸块里的文字折行」一步先写、先红（verify：保留布局 93 对全量 80），再改失效；其余门禁写在实现之后，靠下表的变异证明会红：
+
+| 门禁 | 证明 | 变异 |
+| --- | --- | --- |
+| `issue202_h_an_inline_block_sits_by_its_descendants_last_line` | 一行里：空 40×20（基线 = 它的底边）；120×80、`padding-top: 7`、内有 10 高的块和一个标签；60 宽、内有块、块里标签折成多行（取第二行，首行不在基线上）；70 宽、两个各占一行的 inline-block 标签（取第二个）；80 宽、内有固定 70×50 的块和标签。随后：holder 标签折行（盒子尺寸不变，基线在盒内下移）；上方块 10→20（基线在盒内下移 10）；行数不变的文字改动（所有盒子不变、0 全文档回退）；固定块里的标签折行。每步 `assert_matches_cold` | `baseline_metrics` 不读推导值（回到近似）：红；块级流叠放忽略前面的兄弟：红；IFC 推导取首行：红；`atom_baseline_reads_content` 恒 false：H、G 红（verify）；plan 比对忽略 ascent：H、G 红（verify）；块链分支恒 false：红（verify）；frontier 的 `has_definite_size` 不读它：红（verify） |
+| `issue202_i_a_line_box_starts_with_the_blocks_strut` | 字号 20、`line-height: 20px` 的块里 40×30 空原子：行顶 = 原子顶，原子下面空出 4（字体 descent）；默认行高再加半个 leading（共 6）；块级子项独占的行高 30（无 strut）；原生段落的空原子下面也有空隙；原子改成 4 高后它的底在行顶下 16（strut ascent）、行高 20 | 去掉 strut：红 |
+| css-parity `T-I06`（新） | 字号 20、行高 20 的块：40×30 与 10×4 两个空 inline-block，块高 34，矮的底落在 30 | 去掉 strut：红 |
+| css-parity `T-I07`（新） | inline-block 里 10 高的块下面一个块（`line-height: 20px`），块里一个 30×15 的 inline-block：外层原子的基线在它内部 26 处，旁边 40×20 的空原子顶在 6，外层块高 30 | 不读推导值：红；去掉 strut：红 |
+
+T-I06 / T-I07 的期望值按 CSS 2.1 §10.8 和上面的近似字体度量推得，未在浏览器里实测；真实字面的 strut 与近似差不到 1px，在 2px 容差内。T-I07 给块写了显式宽度和 `line-height`：引擎的块默认 `align-items: start` 不拉宽，测试夹具也不继承 `line-height`，显式写出后 CSS 与引擎的输入一致。
+
+**行为变化（BREAKING）。** 普通块级流里有 inline-level 原子的行：行底多出块字体的 strut descent（默认 16px 字号、行高 1.2 时 4.8px），很矮的原子下移到 strut ascent 之下，自动高度的块随之变高；行盒在后代里的 inline-block 按后代末行落在基线上；读内容的原子里固定尺寸块内的变化现在会重排这一行。已更新的期望：`layout_engine/tests.rs` 的五个 IFC 测试（`STRUT_LINE` = 24.8）、css-parity `T-I04`（mid 24.8、c 44.8）与 `T-FL05`（b 24.8）。
+
+**快照。** 画廊像素 680、语义 156 全部 MATCH，未重录：画廊里没有普通块级流中的 inline-level 原子。
+
+**本轮运行：**
+
+| 命令 | 结果 |
+| --- | --- |
+| `cargo fmt --all -- --check`；`git diff --check` | passed |
+| `cargo clippy -q -p nana-ui-core -p nana-ui-runtime -p nana-ui-scene -p nana-ui --all-targets -- -D warnings` | passed |
+| `cargo test -q -p nana-ui-runtime --lib` | 2328 passed、1 ignored |
+| `cargo test -q -p nana-ui-runtime --lib --features layout-verify -- issue202 issue197 issue199` | 15 passed |
+| `cargo test -q -p nana-ui-scene --tests` | 全部通过（370） |
+| `cargo test -q -p nana-ui --features hosted,gpu --lib` | 967 passed、1 ignored |
+| `cargo test -q -p nana-css-parity` | 全部通过（含新 T-I06、T-I07） |
+| `cargo test -q --workspace --all-targets` | 第一次在 nana-ui lib 停下：`output::driver_tests::shared_painter::unchanged_incompatible_groups_reuse_without_rendering_submitting_or_uploading` 失败一次（GPU 提交，机器高负载；单独跑 3 次都过）；加 `--no-fail-fast` 重跑：6079 passed、0 failed、5 ignored |
+| `cargo test -q -p component-gallery --bin ui-snapshots --features snapshots --locked` | 12 passed |
+| `caffeinate -di cargo run -q --release -p component-gallery --bin ui-snapshots --features snapshots --locked -- --output <scratch>` | MATCH: 680（exact） |
+| 同上加 `--semantic` | MATCH: 156 |
+
+**仍未做：**
+- strut 的字体度量是近似（0.8em / 0.2em），不是块字体的真实字面值；原生段落用真实值。
+- 上文列出的不推导情形（flex / grid 容器、反向或换行的块级流、带浮动的流、竖排）与容器的首个基线仍是近似。
+- 未在 Windows/Linux 上运行。NanaLive / NanaType 只读检查：NanaUI 源码用法里仍没有 `inline-block` / `DisplaySpec::Inline*` / `InlineFlow`（只有 NanaLive 文档提到 `InlineFlow`、NanaType 一个浏览器集成页面的 HTML），不受影响；未构建。
 
 ## 2026-10-29 追加：#205
 
