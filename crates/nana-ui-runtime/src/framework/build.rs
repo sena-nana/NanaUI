@@ -269,20 +269,23 @@ impl<'a> UiBuilder<'a> {
         V: View,
         E: Send + 'static,
     {
-        if self.error.is_some() || entity.id == DUMMY_NODE {
+        self.on_erased(entity.id, super::events::ErasedOn::new(handler));
+    }
+
+    /// [`Self::on`] for a handler erased where it was declared.
+    #[inline(never)]
+    pub(crate) fn on_erased(&mut self, id: StableNodeId, on: super::events::ErasedOn) {
+        if self.error.is_some() || id == DUMMY_NODE {
             return;
         }
         let slot = {
-            let seen = self
-                .on_slots
-                .entry((entity.id, TypeId::of::<E>()))
-                .or_insert(0);
+            let seen = self.on_slots.entry((id, on.event())).or_insert(0);
             let slot = *seen;
             *seen += 1;
             slot
         };
         self.pending_ons.push(Box::new(move |cx| {
-            cx.on_keyed(entity, format!("ui::on::{slot}"), handler)
+            cx.on_keyed_erased(id, format!("ui::on::{slot}"), on)
         }));
     }
 

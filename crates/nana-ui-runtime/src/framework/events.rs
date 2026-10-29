@@ -18,6 +18,67 @@ fn emit_size<V: View>(
     cx.update(Entity::<V>::from_stable_id(id), |_, cx| cx.emit(event))
 }
 
+type SizeEmitFn = fn(&mut AppContext, StableNodeId, SizeChanged) -> Result<(), FrameworkError>;
+
+/// An event handler erased where it is declared: everything installing it
+/// needs, as data, so the installation code is not copied per handler.
+pub(crate) struct ErasedOn {
+    /// The observer's view type, checked where it is installed.
+    view: TypeId,
+    event: TypeId,
+    /// How to tell the source its size, when the event is [`SizeChanged`].
+    size_emit: Option<SizeEmitFn>,
+    callback: ErasedEventHandler,
+}
+
+impl ErasedOn {
+    pub(crate) fn new<V, E>(
+        mut handler: impl FnMut(&mut V, &E, &mut ViewContext<'_, V>) + Send + 'static,
+    ) -> Self
+    where
+        V: View,
+        E: Send + 'static,
+    {
+        Self {
+            view: TypeId::of::<V>(),
+            event: TypeId::of::<E>(),
+            size_emit: (TypeId::of::<E>() == TypeId::of::<SizeChanged>())
+                .then_some(emit_size::<V> as SizeEmitFn),
+            callback: Box::new(
+                move |observer: StableNodeId,
+                      view: &mut dyn Any,
+                      event: &dyn Any,
+                      mutations: &mut MutationQueue,
+                      events: &mut VecDeque<BoxedEvent>,
+                      program_messages: &mut Vec<ProgramMessage>,
+                      now: Duration| {
+                    let view = view
+                        .downcast_mut::<V>()
+                        .expect("handler is registered for its view type");
+                    let event = event
+                        .downcast_ref::<E>()
+                        .expect("handler is indexed by event type");
+                    let mut cx = ViewContext {
+                        entity: Entity::from_stable_id(observer),
+                        mutations,
+                        events,
+                        program_messages,
+                        now,
+                        reassemble: false,
+                    };
+                    handler(view, event, &mut cx);
+                    cx.reassemble
+                },
+            ),
+        }
+    }
+
+    /// The event type this handler listens for.
+    pub(crate) fn event(&self) -> TypeId {
+        self.event
+    }
+}
+
 impl AppContext {
     pub(super) fn remove_event_handlers_for(&mut self, removed: &HashSet<StableNodeId>) -> usize {
         // An editor's undo journal dies with the editor.
@@ -113,65 +174,82 @@ impl AppContext {
     pub fn on<V, E>(
         &mut self,
         entity: Entity<V>,
-        mut handler: impl FnMut(&mut V, &E, &mut ViewContext<'_, V>) + Send + 'static,
+        handler: impl FnMut(&mut V, &E, &mut ViewContext<'_, V>) + Send + 'static,
     ) -> Result<(), FrameworkError>
     where
         V: View,
         E: Send + 'static,
     {
         self.read(entity, |_| ())?;
-        let erased = move |view: &mut dyn Any,
-                           event: &dyn Any,
-                           mutations: &mut MutationQueue,
-                           events: &mut VecDeque<BoxedEvent>,
-                           program_messages: &mut Vec<ProgramMessage>,
-                           now: Duration| {
-            let view = view
-                .downcast_mut::<V>()
-                .expect("handler is registered for the entity view type");
-            let event = event
-                .downcast_ref::<E>()
-                .expect("handler is indexed by event type");
-            let mut cx = ViewContext {
-                entity,
-                mutations,
-                events,
-                program_messages,
-                now,
-                reassemble: false,
-            };
-            handler(view, event, &mut cx);
-            cx.reassemble
-        };
-        self.index_event_handler((entity.id, TypeId::of::<E>()), entity.id);
-        self.watch_clamp::<E>(entity.id);
-        self.watch_size::<V, E>(entity.id);
-        self.event_handlers
-            .entry((entity.id, TypeId::of::<E>()))
-            .or_default()
-            .push(EventHandler {
-                key: None,
-                observer: entity.id,
-                callback: Box::new(erased),
-            });
+        self.install_handler(entity.id, entity.id, ErasedOn::new(handler), None);
         Ok(())
     }
 
-    /// A handler for [`TextClamped`] makes its text announce its clamp.
-    fn watch_clamp<E: 'static>(&mut self, text: StableNodeId) {
-        if TypeId::of::<E>() == TypeId::of::<TextClamped>() {
-            self.clamp_watchers.entry(text).or_insert(None);
+    /// Whether `id` holds a view of type `view`: [`Self::read`]'s check for
+    /// an erased handler.
+    fn check_view(&self, id: StableNodeId, view: TypeId) -> Result<(), FrameworkError> {
+        if !self.world.contains(id) {
+            return Err(FrameworkError::MissingView(id));
+        }
+        let held = self.views.get(&id).ok_or(FrameworkError::MissingView(id))?;
+        if held.as_ref().type_id() != view {
+            return Err(FrameworkError::ViewType(id));
+        }
+        Ok(())
+    }
+
+    /// Index `on` under `(source, its event)` for `observer`, start the
+    /// clamp or size watch its event asks for, and append it, or with `key`
+    /// replace the handler already holding that key.
+    #[inline(never)]
+    fn install_handler(
+        &mut self,
+        source: StableNodeId,
+        observer: StableNodeId,
+        on: ErasedOn,
+        key: Option<String>,
+    ) {
+        let slot = (source, on.event);
+        self.index_event_handler(slot, observer);
+        if on.event == TypeId::of::<TextClamped>() {
+            self.clamp_watchers.entry(source).or_insert(None);
+        }
+        if let Some(emit) = on.size_emit {
+            self.size_watchers
+                .entry(source)
+                .or_insert(SizeWatch { sent: None, emit });
+        }
+        let handlers = self.event_handlers.entry(slot).or_default();
+        let existing = key.as_ref().and_then(|key| {
+            handlers
+                .iter_mut()
+                .find(|entry| entry.key.as_ref() == Some(key))
+        });
+        let handler = EventHandler {
+            key,
+            observer,
+            callback: on.callback,
+        };
+        match existing {
+            Some(existing) => *existing = handler,
+            None => handlers.push(handler),
         }
     }
 
-    /// A handler for [`SizeChanged`] makes its node announce its size.
-    fn watch_size<V: View, E: 'static>(&mut self, node: StableNodeId) {
-        if TypeId::of::<E>() == TypeId::of::<SizeChanged>() {
-            self.size_watchers.entry(node).or_insert(SizeWatch {
-                sent: None,
-                emit: emit_size::<V>,
-            });
+    /// [`Self::on_keyed`] for a handler erased where it was declared.
+    #[inline(never)]
+    pub(crate) fn on_keyed_erased(
+        &mut self,
+        id: StableNodeId,
+        key: String,
+        on: ErasedOn,
+    ) -> Result<(), FrameworkError> {
+        if key.is_empty() {
+            return Err(FrameworkError::InvalidInput);
         }
+        self.check_view(id, on.view)?;
+        self.install_handler(id, id, on, Some(key));
+        Ok(())
     }
 
     /// Send [`SizeChanged`] to each listening node of `document` whose box
@@ -243,33 +321,14 @@ impl AppContext {
         V: View,
         E: Send + 'static,
     {
-        let key = key.into();
-        if key.is_empty() {
-            return Err(FrameworkError::InvalidInput);
-        }
-        self.on(entity, handler)?;
-        let handlers = self
-            .event_handlers
-            .get_mut(&(entity.id, TypeId::of::<E>()))
-            .expect("on inserted the handler");
-        let mut replacement = handlers.pop().expect("on appended the handler");
-        replacement.key = Some(key.clone());
-        if let Some(existing) = handlers
-            .iter_mut()
-            .find(|entry| entry.key.as_ref() == Some(&key))
-        {
-            *existing = replacement;
-        } else {
-            handlers.push(replacement);
-        }
-        Ok(())
+        self.on_keyed_erased(entity.id, key.into(), ErasedOn::new(handler))
     }
 
     pub fn observe<S, V, E>(
         &mut self,
         source: Entity<S>,
         observer: Entity<V>,
-        mut handler: impl FnMut(&mut V, &E, &mut ViewContext<'_, V>) + Send + 'static,
+        handler: impl FnMut(&mut V, &E, &mut ViewContext<'_, V>) + Send + 'static,
     ) -> Result<(), FrameworkError>
     where
         S: View,
@@ -278,40 +337,12 @@ impl AppContext {
     {
         self.read(source, |_| ())?;
         self.read(observer, |_| ())?;
-        let erased = move |view: &mut dyn Any,
-                           event: &dyn Any,
-                           mutations: &mut MutationQueue,
-                           events: &mut VecDeque<BoxedEvent>,
-                           program_messages: &mut Vec<ProgramMessage>,
-                           now: Duration| {
-            let view = view
-                .downcast_mut::<V>()
-                .expect("observer handler is registered for its view type");
-            let event = event
-                .downcast_ref::<E>()
-                .expect("observer handler is indexed by event type");
-            let mut cx = ViewContext {
-                entity: observer,
-                mutations,
-                events,
-                program_messages,
-                now,
-                reassemble: false,
-            };
-            handler(view, event, &mut cx);
-            cx.reassemble
-        };
-        self.index_event_handler((source.id, TypeId::of::<E>()), observer.id);
-        self.watch_clamp::<E>(source.id);
-        self.watch_size::<S, E>(source.id);
-        self.event_handlers
-            .entry((source.id, TypeId::of::<E>()))
-            .or_default()
-            .push(EventHandler {
-                key: None,
-                observer: observer.id,
-                callback: Box::new(erased),
-            });
+        let mut on = ErasedOn::new(handler);
+        // The size watch tells the source, not the observer.
+        if on.size_emit.is_some() {
+            on.size_emit = Some(emit_size::<S>);
+        }
+        self.install_handler(source.id, observer.id, on, None);
         Ok(())
     }
 
@@ -371,6 +402,7 @@ impl AppContext {
             for handler in &mut handlers {
                 if handler.observer == id {
                     (handler.callback)(
+                        id,
                         view,
                         event.as_ref(),
                         mutations,
@@ -384,6 +416,7 @@ impl AppContext {
                     continue;
                 };
                 let asked = (handler.callback)(
+                    handler.observer,
                     observer.as_mut(),
                     event.as_ref(),
                     mutations,

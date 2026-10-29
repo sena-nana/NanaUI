@@ -6,6 +6,7 @@ mod charts;
 pub(crate) use charts::CHART_POINTER;
 mod choice;
 mod events;
+pub(crate) use events::ErasedOn;
 mod frame;
 mod input;
 pub(crate) use input::LINE_SCROLL_EXTENT;
@@ -552,8 +553,12 @@ impl<V: View> Entity<V> {
 
 type BoxedEvent = (StableNodeId, TypeId, Box<dyn Any + Send>);
 type ProgramMessage = Box<dyn Any + Send>;
+/// A typed event handler behind one signature: the observer's id, its view,
+/// the event, and the update's queues. Returns whether the handler asked for
+/// its observer's assembler ([`ViewContext::reassemble`]).
 type ErasedEventHandler = Box<
     dyn FnMut(
+            StableNodeId,
             &mut dyn Any,
             &dyn Any,
             &mut MutationQueue,

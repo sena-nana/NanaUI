@@ -719,7 +719,12 @@ impl<V: IntoView> IntoView for Keyed<V> {
     }
 }
 
-type EventInstall<C> = Box<dyn FnOnce(&mut UiBuilder<'_>, Entity<C>)>;
+/// What an element installs once it is built: a handler, erased where it
+/// was declared, or a declaration beside the tree.
+enum EventInstall<C: ComponentView> {
+    On(crate::framework::ErasedOn),
+    After(Box<dyn FnOnce(&mut UiBuilder<'_>, Entity<C>)>),
+}
 
 /// A view handed to a component by the id of its root ([`El::slot`]).
 struct Slot<C> {
@@ -894,9 +899,10 @@ impl<C: ComponentView, K> El<C, K> {
 
     /// Run `f` for every `E` this node emits.
     pub fn on<E: Send + 'static>(mut self, mut f: impl FnMut(&E) + Send + 'static) -> Self {
-        self.events.push(Box::new(move |ui, entity| {
-            ui.on(entity, move |_: &mut C, event: &E, _| f(event));
-        }));
+        self.events
+            .push(EventInstall::On(crate::framework::ErasedOn::new(
+                move |_: &mut C, event: &E, _: &mut ViewContext<'_, C>| f(event),
+            )));
         self
     }
 
@@ -907,9 +913,8 @@ impl<C: ComponentView, K> El<C, K> {
         mut self,
         f: impl FnMut(&mut C, &E, &mut ViewContext<'_, C>) + Send + 'static,
     ) -> Self {
-        self.events.push(Box::new(move |ui, entity| {
-            ui.on(entity, f);
-        }));
+        self.events
+            .push(EventInstall::On(crate::framework::ErasedOn::new(f)));
         self
     }
 
@@ -919,11 +924,12 @@ impl<C: ComponentView, K> El<C, K> {
     /// does not wrap emits [`RovingFocusEdge`](crate::RovingFocusEdge) on it
     /// (listen with [`Self::on`]). Set when the element is built.
     pub fn roving_focus(mut self, group: crate::RovingFocusGroup) -> Self {
-        self.events.push(Box::new(move |ui, entity| {
-            ui.after_commit(entity, move |cx, entity| {
-                cx.set_roving_focus_group(entity, Some(group))
-            });
-        }));
+        self.events
+            .push(EventInstall::After(Box::new(move |ui, entity| {
+                ui.after_commit(entity, move |cx, entity| {
+                    cx.set_roving_focus_group(entity, Some(group))
+                });
+            })));
         self
     }
 
@@ -1135,7 +1141,10 @@ impl<C: ComponentView, K> El<C, K> {
             vb.st.parts.implicit.push((id, implicit.into_boxed_slice()));
         }
         for install in events {
-            install(vb.ui, entity);
+            match install {
+                EventInstall::On(on) => vb.ui.on_erased(id, on),
+                EventInstall::After(install) => install(vb.ui, entity),
+            }
         }
         Some((entity, adopt, *children))
     }
