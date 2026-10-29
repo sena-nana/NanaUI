@@ -997,6 +997,36 @@ impl ComponentView for Button {
             );
         }
         let mut effective_style = self.style.clone();
+        // Retained children share the label's content box, so they sit where
+        // the label does: centred vertically and placed across by
+        // `content_align`. An author style that already aligns them wins;
+        // the bare default would leave them in the top-left corner.
+        if effective_style.layout.align_items == nana_ui_core::AlignSpec::Start
+            && effective_style.layout.justify_content == nana_ui_core::JustifySpec::Start
+        {
+            let layout = Arc::make_mut(&mut effective_style.layout);
+            let (across, along) = match self.content_align {
+                TextHorizontalAlignment::Start => (
+                    nana_ui_core::AlignSpec::Start,
+                    nana_ui_core::JustifySpec::Start,
+                ),
+                TextHorizontalAlignment::Center => (
+                    nana_ui_core::AlignSpec::Center,
+                    nana_ui_core::JustifySpec::Center,
+                ),
+                TextHorizontalAlignment::End => {
+                    (nana_ui_core::AlignSpec::End, nana_ui_core::JustifySpec::End)
+                }
+            };
+            // Children stack in a column unless the author made a row.
+            if layout.direction == Some(nana_ui_core::FlexDirection::Row) {
+                layout.align_items = nana_ui_core::AlignSpec::Center;
+                layout.justify_content = along;
+            } else {
+                layout.align_items = across;
+                layout.justify_content = nana_ui_core::JustifySpec::Center;
+            }
+        }
         let recipe = world.theme().recipes().button();
         if !self.style_override {
             // These five slots used to be five inline `match self.kind` tables
@@ -6799,6 +6829,56 @@ mod stack_preset_tests {
         let (_, centre) = layout_label_x(TextHorizontalAlignment::Center);
         assert!(start < bounds.x + 20.0, "start group hugs the left padding");
         assert!(centre > start + 80.0, "centred group sits well inside");
+    }
+
+    #[test]
+    fn button_children_sit_where_the_label_would() {
+        let child_offset = |style: Option<NodeStyle>| {
+            let mut context = crate::AppContext::new();
+            let document = crate::DocumentId::new(1).unwrap();
+            let mut button = Button::new("");
+            if let Some(style) = style {
+                button = button.style(style);
+            }
+            let layout = Arc::make_mut(&mut button.style.layout);
+            layout.width = Some(nana_ui_core::LengthSpec::Px(100.0));
+            layout.height = Some(nana_ui_core::LengthSpec::Px(40.0));
+            let button = context.create_component(document, button).unwrap();
+            let child = context
+                .create_component(
+                    document,
+                    Stack::row(0.0)
+                        .width(nana_ui_core::LengthSpec::Px(40.0))
+                        .height(nana_ui_core::LengthSpec::Px(20.0)),
+                )
+                .unwrap();
+            context.append_child(button, child).unwrap();
+            context
+                .layout_document(document, crate::LayoutViewport::new(400.0, 100.0))
+                .unwrap();
+            let outer = context.world().layout_box(button.stable_id()).unwrap();
+            let inner = context.world().layout_box(child.stable_id()).unwrap();
+            (
+                inner.x - outer.x,
+                inner.y - outer.y,
+                outer.x + outer.width - inner.x - inner.width,
+                outer.y + outer.height - inner.y - inner.height,
+            )
+        };
+        let mut row = NodeStyle::default();
+        Arc::make_mut(&mut row.layout).direction = Some(nana_ui_core::FlexDirection::Row);
+        for style in [None, Some(NodeStyle::default()), Some(row)] {
+            let (left, top, right, bottom) = child_offset(style);
+            assert!(
+                (top - bottom).abs() < 0.5,
+                "centred vertically: {top} {bottom}"
+            );
+            assert!((left - right).abs() < 0.5, "centred across: {left} {right}");
+        }
+        let mut placed = NodeStyle::default();
+        Arc::make_mut(&mut placed.layout).align_items = nana_ui_core::AlignSpec::End;
+        let (left, _, right, _) = child_offset(Some(placed));
+        assert!(right < left, "an author alignment wins: {left} {right}");
     }
 
     #[test]

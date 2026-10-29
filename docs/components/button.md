@@ -58,6 +58,8 @@ button("保存").disabled(pending).on_activate(save)
 
 没有具名插槽。子文本写入 `label`。
 
+Rust 里用 `.children(...)` 放进按钮的子节点（键帽、色块这类自绘内容）和文字处在同一个内容区：垂直居中，水平按 `content_align` 摆放。样式里自己写了 `align_items` 或 `justify_content` 时以样式为准。
+
 ## 参见
 
 [总览](index.md) · [控件](../reference/components.md)
