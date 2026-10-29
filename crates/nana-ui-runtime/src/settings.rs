@@ -31,9 +31,6 @@ const ROW_COPY_GAP: f32 = nana_ui_core::space::XXS;
 const ROW_LABEL_ACCESSORY_GAP: f32 = nana_ui_core::space::XS;
 /// Between a column row's control and its trailing node.
 const ROW_TRAILING_GAP: f32 = nana_ui_core::space::XXS;
-/// What the control keeps beside a trailing node, however wide that node
-/// asks to be.
-const ROW_CONTROL_MIN: f32 = 96.0;
 /// Between a column row's label column and its control, and between its
 /// label and control once it stacks.
 const ROW_COLUMN_GAP: f32 = nana_ui_core::space::XS;
@@ -83,7 +80,7 @@ pub struct SettingsRow {
     /// label column or a trailing node.
     pub(crate) control_slot: Option<StableNodeId>,
     /// Hold the control and the trailing node apart, only while there is a
-    /// trailing node: the control keeps at least [`ROW_CONTROL_MIN`] and the
+    /// trailing node: the control keeps at least [`row_control_min`] and the
     /// trailing node gives way, so one that asks for the full width (a plain
     /// row of buttons) cannot squeeze the control out.
     pub(crate) value_slot: Option<StableNodeId>,
@@ -577,8 +574,16 @@ impl SettingsRowControl {
     }
 }
 
+/// What the control keeps beside a trailing node, however wide that node
+/// asks to be: three of the installed theme's control heights, 96 px in the
+/// default theme.
+fn row_control_min() -> nana_ui_core::ThemeExpr {
+    nana_ui_core::ThemeExpr::token(nana_ui_core::ThemeToken::Control(ControlSize::Medium))
+        .scaled(3.0)
+}
+
 /// The box a control sits in beside a trailing node: it grows into the room
-/// the trailing node leaves and never goes below [`ROW_CONTROL_MIN`].
+/// the trailing node leaves and never goes below [`row_control_min`].
 #[derive(Debug, Clone, PartialEq)]
 struct SettingsRowValue;
 
@@ -598,7 +603,7 @@ impl ComponentView for SettingsRowValue {
             layout.flex_grow = Some(1.0);
             layout.flex_shrink = Some(1.0);
             layout.flex_basis = Some(LengthSpec::Px(0.0));
-            layout.min_width = Some(LengthSpec::Px(ROW_CONTROL_MIN));
+            layout.theme.min_width = Some(row_control_min());
         }
         project_common(
             id,
@@ -811,10 +816,8 @@ impl ComponentView for SettingsRowFlash {
     }
 }
 
-/// The share of a flash it holds at full tint before it fades.
-const FLASH_HOLD: f32 = 0.2;
-
-/// A flash's tint, from `start` for `length`: held, then faded on `easing`,
+/// A flash's tint, from `start` for `length`: held for the `hold` share of
+/// it, then faded on `easing`,
 /// or held throughout while motion is `reduced`. It fills forwards: a frame
 /// painted between its end and the tint being taken away shows where it
 /// ended, not the tint at full.
@@ -822,6 +825,7 @@ fn settings_row_flash_animation(
     flash: StableNodeId,
     start: std::time::Duration,
     length: std::time::Duration,
+    hold: f32,
     easing: crate::Easing,
     reduced: bool,
 ) -> Option<crate::AnimationSpec> {
@@ -834,7 +838,7 @@ fn settings_row_flash_animation(
         // end, runs on the track's.
         crate::MotionTo::Keyframes(vec![
             crate::Keyframe {
-                offset: FLASH_HOLD,
+                offset: hold,
                 value: shown,
                 easing: None,
             },
@@ -2983,10 +2987,16 @@ impl AppContext {
         if property == crate::AnimatableProperty::Progress {
             let theme = self.world().theme();
             let length = theme.duration(nana_ui_core::MotionRole::Attention);
-            let easing = theme.motion().easing(nana_ui_core::EasingRole::Standard);
-            if let Some(spec) =
-                settings_row_flash_animation(flash, now, length, easing, self.reduced_motion())
-            {
+            let motion = theme.motion();
+            let easing = motion.easing(nana_ui_core::EasingRole::Standard);
+            if let Some(spec) = settings_row_flash_animation(
+                flash,
+                now,
+                length,
+                motion.attention_hold,
+                easing,
+                self.reduced_motion(),
+            ) {
                 let mut mutations = MutationQueue::new();
                 mutations.start_animation(spec);
                 self.commit_mutations(mutations)?;

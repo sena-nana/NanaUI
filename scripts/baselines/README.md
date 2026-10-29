@@ -71,11 +71,13 @@ entry reviewed:
   placed by hand before Card's header became published parts (`faf41be3c`).
 - Shared motion 28 → 30: the touch-scroll velocity window and frame interval
   in `framework/touch_scroll.rs`, sampling constants of the gesture physics.
-- Module constants 113 → 126: the ten touch-scroll physics constants (slop,
-  rest thresholds, deceleration, rubber band, fling), the animation channel id
-  `animation::ATTENTION`, and SettingsRow's `ROW_CONTROL_MIN` (96 px) and
-  `FLASH_HOLD` (0.2). The last two are real design values and belong on the
-  Theme; they are recorded here and left to #371.
+- Module constants 113 → 124: the ten touch-scroll physics constants (slop,
+  rest thresholds, deceleration, rubber band, fling) and the animation channel
+  id `animation::ATTENTION`. SettingsRow also added two real design values,
+  and both now read the installed theme instead of being recorded: the
+  control's minimum beside a trailing node is three `ControlSize::Medium`
+  heights (96 px in the default theme, as before), and the flash's hold is
+  `MotionTokens::attention_hold` (0.2 by default, validated to `0.0..=1.0`).
 - The test modules `world/issue201.rs` and `world/issue205.rs` were scanned as
   shared code because they lacked an inner `#![cfg(test)]`; they now carry
   one, which removed their fixtures from the inventory.

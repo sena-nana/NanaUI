@@ -649,6 +649,7 @@ impl ThemeDefinition {
         for (index, millis) in self.motion.durations().into_iter().enumerate() {
             check.duration(MOTION_NAMES[index], millis);
         }
+        check.alpha("motion.attention_hold", self.motion.attention_hold);
 
         for (name, shadow) in [
             ("effects.surface", self.effects.surface),
@@ -1537,6 +1538,14 @@ mod tests {
             washed.compile(),
             Err(ThemeCompileError::AlphaOutOfRange { token, .. })
                 if token == "opacity.warning_soft"
+        ));
+
+        let mut overheld = dark();
+        overheld.motion.attention_hold = 1.5;
+        assert!(matches!(
+            overheld.compile(),
+            Err(ThemeCompileError::AlphaOutOfRange { token, .. })
+                if token == "motion.attention_hold"
         ));
 
         let mut tiny = dark();

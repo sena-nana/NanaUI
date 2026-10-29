@@ -527,7 +527,7 @@ mod tests {
 
     mod flash {
         use super::*;
-        use crate::{AnimatableProperty, MotionValue};
+        use crate::{AnimatableProperty, MotionValue, MutationQueue};
         use std::time::Duration;
 
         const FRAME: Duration = Duration::from_millis(16);
@@ -649,6 +649,24 @@ mod tests {
 
             // A view commit after it reassembles the row as it was.
             assert!(!cx.assemble_settings_row(entity).unwrap());
+        }
+
+        /// The hold is the installed theme's share of the flash.
+        #[test]
+        fn the_hold_is_the_installed_themes() {
+            let (mut cx, _, _, row) = mounted();
+            let mut held = nana_ui_core::ThemeDefinition::NANA_DARK;
+            held.motion.attention_hold = 0.6;
+            let mut install = MutationQueue::new();
+            install.set_theme_tokens(Arc::new(held.bump().compile().expect("compiles")));
+            cx.commit_mutations(install).unwrap();
+            cx.flash_settings_row(Entity::from_stable_id(row)).unwrap();
+            let flash = flash_of(&cx, row).unwrap();
+            let start = FRAME;
+            cx.advance_animations(start);
+            let length = length(&cx);
+            assert_eq!(opacity(&cx, flash, start + length / 2), Some(1.0), "held");
+            assert!(opacity(&cx, flash, start + length * 8 / 10).unwrap() < 1.0);
         }
 
         /// Reduced motion keeps the tint still for the same time, then takes
@@ -816,6 +834,27 @@ mod tests {
             path_of.rsplit('/').next() == Some("path"),
             "a slot's control keeps the key it was declared with: {path_of}"
         );
+
+        // the minimum is the installed theme's: three control heights
+        let value = cx.world().parent_id(path).unwrap();
+        assert_eq!(layout(&cx, value).width, 96.0, "held at its minimum");
+        let compact = nana_ui_core::COMPACT_METRICS;
+        cx.set_style_tokens(
+            nana_ui_core::ThemeAppearance::Dark,
+            compact,
+            nana_ui_core::SemanticPalette::dark(),
+            nana_ui_core::SemanticPalette::dark().surface,
+        )
+        .unwrap();
+        settle(&mut cx);
+        assert_eq!(layout(&cx, value).width, compact.control_height * 3.0);
+        cx.set_style_tokens(
+            nana_ui_core::ThemeAppearance::Dark,
+            nana_ui_core::UI_METRICS,
+            nana_ui_core::SemanticPalette::dark(),
+            nana_ui_core::SemanticPalette::dark().surface,
+        )
+        .unwrap();
 
         // narrower than a label column and a control, the control goes under
         width.set(180.0);

@@ -17,10 +17,10 @@
     "motion": 30,
     "elevation": 0
   },
-  "token_reads": 1070,
+  "token_reads": 1071,
   "local_values": 28,
   "shared_local_values": 114,
-  "module_constants": 126,
+  "module_constants": 124,
   "components": [
     {
       "component": "AboutSection",
@@ -3435,7 +3435,7 @@
         "elevation": 0
       },
       "local_values": 0,
-      "token_reads": 62,
+      "token_reads": 63,
       "roles": [
         "Background",
         "Muted",
@@ -4337,27 +4337,6 @@
       "count": 3
     },
     {
-      "file": "crates/nana-ui-runtime/src/settings.rs",
-      "constants": [
-        {
-          "name": "ROW_CONTROL_MIN",
-          "type": "f32",
-          "value": 96.0
-        },
-        {
-          "name": "ASSEMBLED_ROW_STACK_BELOW",
-          "type": "f32",
-          "value": 280.0
-        },
-        {
-          "name": "FLASH_HOLD",
-          "type": "f32",
-          "value": 0.2
-        }
-      ],
-      "count": 3
-    },
-    {
       "file": "crates/nana-ui-runtime/src/split_pane.rs",
       "constants": [
         {
@@ -4650,6 +4629,17 @@
           "name": "MENU_GAP",
           "type": "f32",
           "value": 0.0
+        }
+      ],
+      "count": 1
+    },
+    {
+      "file": "crates/nana-ui-runtime/src/settings.rs",
+      "constants": [
+        {
+          "name": "ASSEMBLED_ROW_STACK_BELOW",
+          "type": "f32",
+          "value": 280.0
         }
       ],
       "count": 1

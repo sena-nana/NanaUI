@@ -500,8 +500,8 @@ pub enum MotionRole {
     /// Button / switch / card loading indicator cycle.
     LoadingSpin,
     /// A row flashing to draw the eye after the application brought it into
-    /// view: the whole flash, held at full tint for its first fifth and
-    /// fading out over the rest.
+    /// view: the whole flash, held at full tint for its first
+    /// [`MotionTokens::attention_hold`] and fading out over the rest.
     Attention,
 }
 
@@ -536,6 +536,9 @@ pub struct MotionTokens {
     pub spinner_rotation_ms: u16,
     pub loading_spin_ms: u16,
     pub attention_ms: u16,
+    /// The share of an [`MotionRole::Attention`] flash held at full tint
+    /// before it fades, `0.0..=1.0`.
+    pub attention_hold: f32,
     pub standard_easing: Easing,
     pub expand_easing: Easing,
     pub emphasized_easing: Easing,
@@ -553,6 +556,7 @@ impl MotionTokens {
         spinner_rotation_ms: 900,
         loading_spin_ms: 800,
         attention_ms: 1500,
+        attention_hold: 0.2,
         standard_easing: Easing::EaseOutCubic,
         expand_easing: Easing::EaseInOutCubic,
         emphasized_easing: Easing::MENU_POP,
