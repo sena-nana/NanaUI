@@ -862,3 +862,298 @@ mod clip_chain {
         );
     }
 }
+
+/// The scrollable range follows the clip chain (#201): a scroller's range
+/// counts a box only when the scroller reaches it, as CSS scrollable
+/// overflow does (CSS Overflow 3: a box contributes to the scrollable
+/// overflow of its containing block chain). A relative scrolling page holds
+/// a static wrapper around a static scroller `holder`; in `holder` an
+/// in-flow block, a relative block with an absolute box far below it, an
+/// absolute box `far` and a `fixed` box `pinned` (holding an absolute box of
+/// its own), the last two far outside `holder`.
+mod scroll_range {
+    use super::super::reflow_oracle::{
+        Builder, assert_matches_cold, bundled_face_shaper, column, fixed, product_frame, styled,
+    };
+    use crate::{
+        AppContext, DocumentId, LayoutViewport, MutationQueue, ScrollOffset, StableNodeId,
+    };
+    use nana_ui_core::{LayoutStyle, LengthSpec, OverflowSpec, PositionSpec};
+
+    fn document() -> DocumentId {
+        DocumentId::new(1).unwrap()
+    }
+
+    fn viewport() -> LayoutViewport {
+        LayoutViewport::new(800.0, 600.0)
+    }
+
+    #[derive(Clone, Copy)]
+    struct Ids {
+        page: StableNodeId,
+        holder: StableNodeId,
+        far: StableNodeId,
+        pinned: StableNodeId,
+    }
+
+    /// The positions a state gives `holder`, `far` and `pinned`.
+    type State = (PositionSpec, PositionSpec, PositionSpec);
+
+    fn scroller(position: PositionSpec, width: f32, height: f32) -> LayoutStyle {
+        LayoutStyle {
+            position,
+            overflow_x: OverflowSpec::Auto,
+            overflow_y: OverflowSpec::Auto,
+            height: Some(LengthSpec::Px(height)),
+            flex_shrink: Some(0.0),
+            ..column(Some(width))
+        }
+    }
+
+    fn placed(position: PositionSpec, [left, top, width, height]: [f32; 4]) -> LayoutStyle {
+        LayoutStyle {
+            position,
+            offset_left: Some(LengthSpec::Px(left)),
+            offset_top: Some(LengthSpec::Px(top)),
+            ..fixed(width, height)
+        }
+    }
+
+    fn holder_style(position: PositionSpec) -> LayoutStyle {
+        scroller(position, 300.0, 200.0)
+    }
+
+    fn far_style(position: PositionSpec) -> LayoutStyle {
+        placed(position, [50.0, 900.0, 40.0, 40.0])
+    }
+
+    fn pinned_style(position: PositionSpec) -> LayoutStyle {
+        placed(position, [600.0, 1200.0, 40.0, 40.0])
+    }
+
+    fn build((holder, far, pinned): State) -> (AppContext, Ids) {
+        let (mut b, page) = Builder::page(document(), 1, 800.0);
+        b.queue
+            .set_style(page, styled(scroller(PositionSpec::Relative, 800.0, 600.0)));
+        let wrap = b.element(
+            page,
+            LayoutStyle {
+                flex_shrink: Some(0.0),
+                ..column(Some(300.0))
+            },
+        );
+        let holder_id = b.element(wrap, holder_style(holder));
+        b.element(holder_id, fixed(300.0, 250.0));
+        let near = b.element(
+            holder_id,
+            LayoutStyle {
+                position: PositionSpec::Relative,
+                flex_shrink: Some(0.0),
+                ..fixed(100.0, 50.0)
+            },
+        );
+        b.element(
+            near,
+            placed(PositionSpec::Absolute, [0.0, 400.0, 40.0, 40.0]),
+        );
+        let far_id = b.element(holder_id, far_style(far));
+        let pinned_id = b.element(holder_id, pinned_style(pinned));
+        b.element(
+            pinned_id,
+            placed(PositionSpec::Absolute, [0.0, 100.0, 40.0, 40.0]),
+        );
+        let mut context = AppContext::new();
+        context.commit_mutations(b.queue).unwrap();
+        let mut shaper = bundled_face_shaper();
+        product_frame(&mut context, document(), viewport(), &mut shaper);
+        (
+            context,
+            Ids {
+                page,
+                holder: holder_id,
+                far: far_id,
+                pinned: pinned_id,
+            },
+        )
+    }
+
+    /// How far each scroller's range reaches down: `holder`'s and the
+    /// page's, as their scroll metrics, published results and clamping all
+    /// say it.
+    fn reach(context: &AppContext, ids: Ids) -> (f32, f32) {
+        let world = context.world();
+        let bottom = |id: StableNodeId| {
+            let metrics = world.scroll_metrics(id).expect("a scroller has metrics");
+            let result = world.layout_result(id).expect("a laid-out scroller");
+            let bottom = result.bounds.y + metrics.content_height;
+            assert_eq!(
+                result.scroll_extent.y + result.scroll_extent.height,
+                bottom,
+                "{id:?}: the published scroll extent is the measured range"
+            );
+            assert_eq!(
+                result.overflow.y + result.overflow.height,
+                bottom,
+                "{id:?}: the published overflow is the measured range"
+            );
+            bottom
+        };
+        (bottom(ids.holder), bottom(ids.page))
+    }
+
+    /// Where the ranges reach in `state`. The relative box's absolute box
+    /// reaches 690 inside `holder` whatever happens; `far` reaches 940 and
+    /// `pinned` (with its absolute box) 1340 in whichever scroller reaches
+    /// them; the page's own box ends at 600.
+    fn expected((holder, far, pinned): State) -> (f32, f32) {
+        let mut ranges = (690.0_f32, 600.0_f32);
+        let mut count = |position: PositionSpec, bottom: f32| match position {
+            PositionSpec::Fixed => {}
+            PositionSpec::Absolute if holder == PositionSpec::Static => {
+                ranges.1 = ranges.1.max(bottom)
+            }
+            _ => ranges.0 = ranges.0.max(bottom),
+        };
+        count(far, 940.0);
+        count(pinned, 1340.0);
+        ranges
+    }
+
+    fn offsets(context: &mut AppContext, ids: Ids) {
+        let mut q = MutationQueue::new();
+        q.set_scroll_offset(
+            ids.holder,
+            ScrollOffset {
+                x: 0.0,
+                y: 10_000.0,
+            },
+        );
+        q.set_scroll_offset(
+            ids.page,
+            ScrollOffset {
+                x: 0.0,
+                y: 10_000.0,
+            },
+        );
+        context.commit_mutations(q).unwrap();
+        let mut shaper = bundled_face_shaper();
+        product_frame(context, document(), viewport(), &mut shaper);
+    }
+
+    #[test]
+    fn issue201_boxes_a_scroller_does_not_reach_stay_out_of_its_range() {
+        let state = (
+            PositionSpec::Static,
+            PositionSpec::Absolute,
+            PositionSpec::Fixed,
+        );
+        let (mut context, ids) = build(state);
+        let world = context.world();
+        // The chain the range follows: `far` escapes `holder` and hangs
+        // from the wrapper, inside the page; `pinned` hangs from nothing.
+        assert_eq!(
+            world.layout_clip_chain(ids.far).collect::<Vec<_>>(),
+            [ids.page]
+        );
+        assert_eq!(world.layout_clip_chain(ids.pinned).count(), 0);
+        assert_eq!(world.layout_box(ids.far).map(|b| b.y), Some(900.0));
+        assert_eq!(world.layout_box(ids.pinned).map(|b| b.y), Some(1200.0));
+        // `holder` ends at its relative box's absolute box; the page, which
+        // reaches `far`, at `far`; nothing at `pinned`.
+        assert_eq!(reach(&context, ids), (690.0, 940.0));
+        assert_eq!(reach(&context, ids), expected(state));
+        // Clamping reads the same range.
+        offsets(&mut context, ids);
+        let world = context.world();
+        assert_eq!(world.scroll_offset(ids.holder).unwrap().y, 490.0);
+        assert_eq!(world.scroll_offset(ids.page).unwrap().y, 340.0);
+    }
+
+    /// Changing what the chain says moves the ranges with it, incrementally
+    /// as a cold layout of the same inputs has them: `holder` turning
+    /// relative takes `far` in; `far` turning fixed leaves every range;
+    /// `pinned` turning absolute enters the page's.
+    #[test]
+    fn issue201_a_moving_chain_moves_the_ranges_as_a_cold_layout_has_them() {
+        use PositionSpec::{Absolute, Fixed, Relative, Static};
+        let mut state = (Static, Absolute, Fixed);
+        let (mut context, ids) = build(state);
+        offsets(&mut context, ids);
+        for next in [
+            (Relative, Absolute, Fixed),
+            (Static, Absolute, Fixed),
+            (Static, Fixed, Fixed),
+            (Static, Fixed, Absolute),
+            (Relative, Fixed, Absolute),
+            (Static, Absolute, Fixed),
+        ] {
+            state = next;
+            let mut q = MutationQueue::new();
+            q.set_style(ids.holder, styled(holder_style(state.0)));
+            q.set_style(ids.far, styled(far_style(state.1)));
+            q.set_style(ids.pinned, styled(pinned_style(state.2)));
+            context.commit_mutations(q).unwrap();
+            let mut shaper = bundled_face_shaper();
+            product_frame(&mut context, document(), viewport(), &mut shaper);
+            offsets(&mut context, ids);
+            let (mut cold, _) = build(state);
+            offsets(&mut cold, ids);
+            assert_eq!(reach(&context, ids), expected(state), "{state:?}");
+            assert_eq!(reach(&cold, ids), expected(state), "cold {state:?}");
+            for id in [ids.holder, ids.page] {
+                assert_eq!(
+                    context.world().scroll_metrics(id),
+                    cold.world().scroll_metrics(id),
+                    "{state:?}: metrics of {id:?}"
+                );
+                assert_eq!(
+                    context.world().scroll_offset(id),
+                    cold.world().scroll_offset(id),
+                    "{state:?}: offset of {id:?}"
+                );
+            }
+            assert_matches_cold(&mut context, &mut cold, document());
+        }
+    }
+
+    /// Scrolling either scroller lays nothing out and leaves both ranges
+    /// where they were.
+    #[test]
+    fn issue201_scrolling_leaves_the_ranges_and_lays_nothing_out() {
+        let state = (
+            PositionSpec::Static,
+            PositionSpec::Absolute,
+            PositionSpec::Fixed,
+        );
+        let (mut context, ids) = build(state);
+        let generation = context.world().layout_generation();
+        let mut shaper = bundled_face_shaper();
+        for (holder_y, page_y) in [(100.0, 0.0), (100.0, 200.0), (0.0, 340.0), (490.0, 10.0)] {
+            let mut q = MutationQueue::new();
+            q.set_scroll_offset(
+                ids.holder,
+                ScrollOffset {
+                    x: 0.0,
+                    y: holder_y,
+                },
+            );
+            q.set_scroll_offset(ids.page, ScrollOffset { x: 0.0, y: page_y });
+            context.commit_mutations(q).unwrap();
+            let work = product_frame(&mut context, document(), viewport(), &mut shaper);
+            assert_eq!(
+                (
+                    work.layout_measure_nodes,
+                    work.layout_placement_nodes,
+                    work.text_shaped
+                ),
+                (0, 0, 0),
+                "scrolling lays nothing out"
+            );
+            let world = context.world();
+            assert_eq!(world.layout_generation(), generation);
+            assert_eq!(world.scroll_offset(ids.holder).unwrap().y, holder_y);
+            assert_eq!(world.scroll_offset(ids.page).unwrap().y, page_y);
+            assert_eq!(reach(&context, ids), expected(state));
+        }
+    }
+}

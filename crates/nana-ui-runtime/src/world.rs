@@ -1774,11 +1774,22 @@ impl UiWorld {
         result.participation = self.layout_node(id).and_then(|node| node.participation);
         let mut parts = Vec::with_capacity(children.len() + 2);
         let mut overflow = bounds;
+        // A box that clips or scrolls counts in its overflow only the
+        // children its clip and scroll reach: not a `fixed` child, nor an
+        // `absolute` one whose containing block is above it (#201). The
+        // range of the boxes under them is the content index's, which
+        // follows the same chain. Elsewhere overflow joins every child.
+        let scroll_metrics = self.scroll_metrics(id);
+        let joins_every_child = !node.resolved_layout.clips_overflow() && scroll_metrics.is_none();
+        let reaches =
+            |child: StableNodeId| joins_every_child || self.clip_parent_of(child) == Some(id);
         if let Some((placements, fragments)) =
             self.reusable_child_geometry(id, children, child_kind)
         {
             for placement in placements.iter() {
-                overflow = union_layout_boxes(overflow, placement.bounds);
+                if reaches(placement.node) {
+                    overflow = union_layout_boxes(overflow, placement.bounds);
+                }
                 parts.push(crate::LayoutPart {
                     kind: crate::LayoutPartKind::ChildPlacement,
                     node: Some(placement.node),
@@ -1823,7 +1834,9 @@ impl UiWorld {
                     node: Some(child),
                     bounds: child_bounds,
                 });
-                overflow = union_layout_boxes(overflow, child_bounds);
+                if reaches(child) {
+                    overflow = union_layout_boxes(overflow, child_bounds);
+                }
             }
 
             if record_has_text(node) && self.needs_native_text_fragments(id) {
@@ -1909,7 +1922,6 @@ impl UiWorld {
         // Only scroll containers need the retained descendant index. Avoid
         // materializing that index for ordinary nodes while still publishing
         // the full scroll extent where a consumer can actually use it.
-        let scroll_metrics = self.scroll_metrics(id);
         if scroll_metrics.is_some() {
             let content_extent = self.scroll_content_extent(id);
             if content_extent.left.is_finite()
@@ -2126,6 +2138,11 @@ impl UiWorld {
         if previous.position != next.position || previous.clips_overflow() != next.clips_overflow()
         {
             self.layout_anchor_roots.insert(id);
+            // The scrollable range follows the same chain: the box may move
+            // between its parent's area and its containing block's, and the
+            // boxes it carries may land here or pass on.
+            self.invalidate_scroll_content(id);
+            self.scroll_layout_touched = true;
         }
     }
 

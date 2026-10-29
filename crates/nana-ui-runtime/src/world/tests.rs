@@ -8393,7 +8393,7 @@ fn clip_empty_state_visual() -> StandardVisual {
     }
 }
 
-fn open_menu_overlay_visual() -> StandardVisual {
+pub(super) fn open_menu_overlay_visual() -> StandardVisual {
     StandardVisual::MenuSurface {
         kind: crate::MenuSurfaceKind::HoverCard,
         open: true,

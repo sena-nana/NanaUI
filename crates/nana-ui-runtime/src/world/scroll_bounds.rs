@@ -2,6 +2,14 @@
 //! the scrollable layout range. Child maxima support shrinking as well as growth.
 //! The range stops at the nearest box that clips, as CSS scrollable overflow
 //! does: see [`UiWorld::overflow_contained_axes`].
+//!
+//! A box counts only where the clip chain (#201) reaches it: CSS has a box
+//! contribute to the scrollable overflow of its containing block chain
+//! (CSS Overflow 3). An `absolute` box's extent is carried up past the boxes
+//! between it and its containing block and lands in that block's content, so
+//! a static scroller it escapes does not count it; a `fixed` box counts
+//! nowhere. The carried extent depends only on the subtree it comes from, so
+//! a subtree that moves keeps its entries.
 use super::*;
 
 /// The union of the layout boxes under a scroll container that reach its
@@ -24,6 +32,9 @@ impl Extent {
         right: f32::NEG_INFINITY,
         bottom: f32::NEG_INFINITY,
     };
+    fn is_empty(self) -> bool {
+        self.left > self.right
+    }
     fn of(layout: crate::LayoutBox) -> Self {
         Self {
             left: layout.x,
@@ -145,7 +156,17 @@ impl Changed {
 struct Entry {
     children: Arc<Vec<StableNodeId>>,
     slots: NodeMap<usize>,
+    /// What each child adds in flow: an out-of-flow child adds nothing here.
     maxima: MaxTree,
+    /// The children that carry absolute boxes up to a containing block
+    /// above them, with what each carries. Few children carry any.
+    carried: Vec<(StableNodeId, Extent)>,
+    /// What this node's area holds: the in-flow children, and the carried
+    /// boxes whose containing block it is.
+    content: Extent,
+    /// The carried boxes whose containing block is above this node.
+    pending: Extent,
+    /// What this node adds in flow to the area above it.
     extent: Extent,
     /// This node's own box, or something under it, moved since `extent`.
     dirty: bool,
@@ -157,26 +178,108 @@ struct Entry {
 }
 
 impl Entry {
-    fn fresh(
-        children: Arc<Vec<StableNodeId>>,
-        bounds: Vec<Extent>,
-        own: impl FnOnce(Extent) -> Extent,
-    ) -> Self {
+    fn fresh(children: Arc<Vec<StableNodeId>>, reads: Vec<Read>, place: &Placement) -> Self {
         let mut maxima = MaxTree::default();
-        maxima.refill(bounds.into_iter());
-        Self {
+        maxima.refill(reads.iter().map(|read| read.in_flow));
+        let carried = children
+            .iter()
+            .zip(&reads)
+            .filter(|(_, read)| !read.carried.is_empty())
+            .map(|(child, read)| (*child, read.carried))
+            .collect();
+        let mut entry = Self {
             slots: children
                 .iter()
                 .copied()
                 .enumerate()
                 .map(|(index, id)| (id, index))
                 .collect(),
-            extent: own(maxima.total()),
             maxima,
+            carried,
+            content: Extent::EMPTY,
+            pending: Extent::EMPTY,
+            extent: Extent::EMPTY,
             children,
             dirty: false,
             changed: Changed::default(),
             rebuild: false,
+        };
+        entry.settle(place);
+        entry
+    }
+
+    /// Record what `child` carries up.
+    fn carry(&mut self, child: StableNodeId, carried: Extent) {
+        let at = self.carried.iter().position(|(id, _)| *id == child);
+        match (at, carried.is_empty()) {
+            (Some(at), true) => {
+                self.carried.swap_remove(at);
+            }
+            (Some(at), false) => self.carried[at].1 = carried,
+            (None, false) => self.carried.push((child, carried)),
+            (None, true) => {}
+        }
+    }
+
+    /// Land or pass on the carried boxes, then derive what this node adds.
+    fn settle(&mut self, place: &Placement) {
+        let in_flow = self.maxima.total();
+        let carried = self
+            .carried
+            .iter()
+            .fold(Extent::EMPTY, |all, (_, carried)| all.merge(*carried));
+        (self.content, self.pending) = match place.lands {
+            Some(true) => (in_flow.merge(carried), Extent::EMPTY),
+            Some(false) => (in_flow, Extent::EMPTY),
+            None => (in_flow, carried),
+        };
+        if place.omitted {
+            self.pending = Extent::EMPTY;
+            self.extent = Extent::EMPTY;
+        } else {
+            self.extent = place.own.with_content(self.content, place.contained);
+        }
+    }
+}
+
+/// What a parent takes from one child.
+#[derive(Clone, Copy)]
+struct Read {
+    /// Added to the parent's area in flow.
+    in_flow: Extent,
+    /// Carried past the parent toward a containing block.
+    carried: Extent,
+}
+
+/// What a node does with the boxes under it, read from the world.
+struct Placement {
+    own: Extent,
+    contained: [bool; 2],
+    omitted: bool,
+    /// What happens to carried boxes here: `Some(true)` they land in this
+    /// node's area (it is their containing block, or the top of a tree that
+    /// does not clip), `Some(false)` they are dropped (the top of a tree
+    /// that clips: no scroller reaches them, as their clip parent says),
+    /// `None` they pass on to the parent.
+    lands: Option<bool>,
+}
+
+impl Placement {
+    fn of(world: &UiWorld, id: StableNodeId, record: &NodeRecord) -> Self {
+        let lands = if world.is_document_node(id)
+            || world.clip_position(id).establishes_containing_block()
+        {
+            Some(true)
+        } else if record.hierarchy.parent.is_none() {
+            Some(!record.resolved_layout.clips_overflow())
+        } else {
+            None
+        };
+        Self {
+            own: Extent::of(record.layout),
+            contained: overflow_contained_axes(&record.style.layout, world.nodes.visual(id)),
+            omitted: record.style.layout.omits_box(),
+            lands,
         }
     }
 }
@@ -258,10 +361,23 @@ impl ContentBoundsIndex {
         self.deferred = deferred;
     }
 
+    /// Which children of `id` are in flow may have changed (an open
+    /// triggered menu places its items `fixed`): re-read all of them.
+    pub fn relist(&mut self, world: &UiWorld, id: StableNodeId) {
+        if !self.entries.contains_key(&id) {
+            return;
+        }
+        self.invalidate(world, id);
+        let entry = self.entries.get_mut(&id).expect("checked above");
+        entry.rebuild = true;
+        entry.changed = Changed::None;
+    }
+
     pub fn remove(&mut self, id: StableNodeId, parent: Option<StableNodeId>) {
         self.entries.remove(&id);
         if let Some(parent) = parent.and_then(|parent| self.entries.get_mut(&parent)) {
             parent.changed.remove(id);
+            parent.carry(id, Extent::EMPTY);
         }
         if self.entries.is_empty() {
             self.deferred.clear();
@@ -279,7 +395,7 @@ impl ContentBoundsIndex {
         self.refresh(world, id);
         self.entries
             .get(&id)
-            .map_or(Extent::EMPTY, |entry| entry.maxima.total())
+            .map_or(Extent::EMPTY, |entry| entry.content)
     }
 
     /// No pending work anywhere in the index.
@@ -290,6 +406,32 @@ impl ContentBoundsIndex {
                 .entries
                 .values()
                 .all(|entry| !entry.dirty && !entry.rebuild && entry.changed.as_slice().is_empty())
+    }
+
+    /// What the parent of `child` takes from it: its extent in flow, or,
+    /// out of flow, nothing in flow and its extent carried to its
+    /// containing block (`absolute`) or nowhere (`fixed`), as the clip
+    /// chain reads its position. The boxes it carries up go on either way.
+    fn read(&mut self, world: &UiWorld, child: StableNodeId) -> Read {
+        let extent = self.refresh(world, child);
+        let pending = self
+            .entries
+            .get(&child)
+            .map_or(Extent::EMPTY, |entry| entry.pending);
+        match world.clip_position(child) {
+            PositionSpec::Absolute => Read {
+                in_flow: Extent::EMPTY,
+                carried: extent.merge(pending),
+            },
+            PositionSpec::Fixed => Read {
+                in_flow: Extent::EMPTY,
+                carried: pending,
+            },
+            _ => Read {
+                in_flow: extent,
+                carried: pending,
+            },
+        }
     }
 
     fn refresh(&mut self, world: &UiWorld, id: StableNodeId) -> Extent {
@@ -311,22 +453,13 @@ impl ContentBoundsIndex {
         {
             self.refreshed += 1;
         }
-        let omitted = record.style.layout.omits_box();
-        let contained = overflow_contained_axes(&record.style.layout, world.nodes.visual(id));
-        let layout = record.layout;
-        let own = |maxima: Extent| {
-            if omitted {
-                Extent::EMPTY
-            } else {
-                Extent::of(layout).with_content(maxima, contained)
-            }
-        };
+        let place = Placement::of(world, id, record);
         let incremental = match (rebuild, self.entries.get_mut(&id)) {
             (false, Some(entry)) if Arc::ptr_eq(&entry.children, &record.hierarchy.children) => {
                 if changed.as_slice().is_empty() {
                     // Only this node's own box moved (every leaf a relayout
-                    // writes).
-                    entry.extent = own(entry.maxima.total());
+                    // writes), or its position or clip.
+                    entry.settle(&place);
                     return entry.extent;
                 }
                 true
@@ -336,11 +469,11 @@ impl ContentBoundsIndex {
         if !incremental {
             // New, or its children list changed: build it from every child.
             let children = Arc::clone(&record.hierarchy.children);
-            let bounds = children
+            let reads = children
                 .iter()
-                .map(|child| self.refresh(world, *child))
+                .map(|child| self.read(world, *child))
                 .collect::<Vec<_>>();
-            let entry = Entry::fresh(children, bounds, own);
+            let entry = Entry::fresh(children, reads, &place);
             let extent = entry.extent;
             self.entries.insert(id, entry);
             return extent;
@@ -357,22 +490,33 @@ impl ContentBoundsIndex {
             // children refresh straight into it.
             let entry = self.entries.get_mut(&id).expect("incremental entry");
             let mut maxima = std::mem::take(&mut entry.maxima);
-            let work = maxima.refill(children.iter().map(|child| self.refresh(world, *child)));
-            self.entries.get_mut(&id).expect("incremental entry").maxima = maxima;
+            let mut carried = std::mem::take(&mut entry.carried);
+            carried.clear();
+            let work = maxima.refill(children.iter().map(|child| {
+                let read = self.read(world, *child);
+                if !read.carried.is_empty() {
+                    carried.push((*child, read.carried));
+                }
+                read.in_flow
+            }));
+            let entry = self.entries.get_mut(&id).expect("incremental entry");
+            entry.maxima = maxima;
+            entry.carried = carried;
             work
         } else {
             let mut work = 0;
             for child in changed {
-                let extent = self.refresh(world, *child);
+                let read = self.read(world, *child);
                 let entry = self.entries.get_mut(&id).expect("incremental entry");
                 if let Some(&slot) = entry.slots.get(child) {
-                    work += entry.maxima.set(slot, extent);
+                    work += entry.maxima.set(slot, read.in_flow);
+                    entry.carry(*child, read.carried);
                 }
             }
             work
         };
         let entry = self.entries.get_mut(&id).expect("incremental entry");
-        entry.extent = own(entry.maxima.total());
+        entry.settle(&place);
         let extent = entry.extent;
         #[cfg(any(test, feature = "benchmark"))]
         {
@@ -486,49 +630,229 @@ mod tests {
         assert_eq!(world.scroll_content_bounds.borrow().refreshed, 2);
     }
 
-    /// The reference walk: every box under `root`, each axis of it counted
-    /// only while no box between it and `root` clips that axis. A scroll
-    /// container clips both.
+    /// The reference walk: every box under `root` that `root`'s clip
+    /// reaches, each axis of it counted only while no box between them on
+    /// its clip chain keeps that axis contained. A box under one that omits
+    /// its box counts nowhere. Valid for a `root` that clips or is a
+    /// containing block, which is where a range is read.
     fn brute(world: &UiWorld, root: StableNodeId) -> Extent {
         let mut extent = Extent::EMPTY;
-        let mut stack = world
-            .node(root)
-            .unwrap()
-            .children
-            .into_iter()
-            .map(|child| (child, [true, true]))
-            .collect::<Vec<_>>();
-        while let Some((id, [open_x, open_y])) = stack.pop() {
-            let layout = &world.node_style(id).unwrap().layout;
-            if layout.omits_box() {
+        let mut stack = world.node(root).unwrap().children;
+        while let Some(id) = stack.pop() {
+            if world.node_style(id).unwrap().layout.omits_box() {
+                continue;
+            }
+            stack.extend(world.node(id).unwrap().children);
+            let mut open = [true, true];
+            let mut cursor = world.clip_parent_of(id);
+            while let Some(node) = cursor.filter(|node| *node != root) {
+                let contained = world.overflow_contained_axes(node);
+                open = [open[0] && !contained[0], open[1] && !contained[1]];
+                cursor = world.clip_parent_of(node);
+            }
+            if cursor != Some(root) {
                 continue;
             }
             let own = Extent::of(world.layout_box(id).unwrap());
             extent = extent.merge(Extent {
-                left: if open_x { own.left } else { f32::INFINITY },
-                right: if open_x { own.right } else { f32::NEG_INFINITY },
-                top: if open_y { own.top } else { f32::INFINITY },
-                bottom: if open_y {
+                left: if open[0] { own.left } else { f32::INFINITY },
+                right: if open[0] {
+                    own.right
+                } else {
+                    f32::NEG_INFINITY
+                },
+                top: if open[1] { own.top } else { f32::INFINITY },
+                bottom: if open[1] {
                     own.bottom
                 } else {
                     f32::NEG_INFINITY
                 },
             });
-            let scrolls = layout.overflow_x.scrolls() || layout.overflow_y.scrolls();
-            let open = [
-                open_x && !scrolls && !layout.overflow_x.clips(),
-                open_y && !scrolls && !layout.overflow_y.clips(),
-            ];
-            stack.extend(
-                world
-                    .node(id)
-                    .unwrap()
-                    .children
-                    .into_iter()
-                    .map(|child| (child, open)),
-            );
         }
         extent
+    }
+
+    /// The range follows the clip chain (#201): an `absolute` box counts in
+    /// its containing block's area, not in a static scroller it escapes; a
+    /// `fixed` box counts nowhere. Positions flip, subtrees move between
+    /// containing blocks, park and come back, and every range read stays
+    /// the reference walk's and what a fresh index reads.
+    #[test]
+    fn out_of_flow_boxes_count_where_their_clip_chain_reaches_them() {
+        use nana_ui_core::{
+            OverflowSpec::{self, Auto, Hidden, Visible},
+            PositionSpec::{self, Absolute, Fixed, Relative, Static},
+        };
+        let document = crate::DocumentId::new(1).unwrap();
+        let styled = |position: PositionSpec, overflow: OverflowSpec| {
+            let mut style = NodeStyle::default();
+            let layout = Arc::make_mut(&mut style.layout);
+            layout.position = position;
+            layout.overflow_x = overflow;
+            layout.overflow_y = overflow;
+            style
+        };
+        // 1 > [2 (scroller) > [3 > [4 abs > 5, 6 fixed > 7 abs],
+        //                      8 (hidden) > 9 abs],
+        //      10 relative > 11 (scroller) > [12 abs, 13]];
+        // 2 also holds 14 > 15, 14 a menu surface later.
+        let mut world = UiWorld::new();
+        let mut mutations = MutationQueue::new();
+        mutations.create(id(1), document, NodeKind::Document);
+        for (child, parent, position, overflow) in [
+            (2, 1, Static, Auto),
+            (3, 2, Static, Visible),
+            (4, 3, Absolute, Visible),
+            (5, 4, Static, Visible),
+            (6, 3, Fixed, Visible),
+            (7, 6, Absolute, Visible),
+            (8, 2, Static, Hidden),
+            (9, 8, Absolute, Visible),
+            (10, 1, Relative, Visible),
+            (11, 10, Static, Auto),
+            (12, 11, Absolute, Visible),
+            (13, 11, Static, Visible),
+            (14, 2, Static, Visible),
+            (15, 14, Static, Visible),
+        ] {
+            mutations.create(id(child), document, NodeKind::Element { tag: "div".into() });
+            mutations.insert(id(parent), id(child), None);
+            mutations.set_style(id(child), styled(position, overflow));
+            // Each box far from the others, so each one shows in a range.
+            let at = child as f32;
+            mutations.write_layout(
+                id(child),
+                crate::LayoutBox {
+                    x: at * 7.0 - 40.0,
+                    y: at * 100.0 - 300.0,
+                    width: 10.0,
+                    height: 10.0,
+                },
+            );
+        }
+        world.commit(mutations).unwrap();
+        let check = |world: &UiWorld, step: &str| {
+            // Where a range is read: a box that clips, or a containing
+            // block (the document among them).
+            let roots = [1, 2, 8, 10, 11, 4, 6].map(id).into_iter().filter(|root| {
+                world.nodes.get(*root).is_some_and(|record| {
+                    record.resolved_layout.clips_overflow()
+                        || world.is_document_node(*root)
+                        || world.clip_position(*root).establishes_containing_block()
+                })
+            });
+            for root in roots {
+                let read = world.scroll_content_extent(root);
+                assert_eq!(
+                    read,
+                    brute(world, root),
+                    "{step}: {root:?} against the walk"
+                );
+                let fresh = ContentBoundsIndex::default().content(world, root);
+                assert_eq!(read, fresh, "{step}: {root:?} against a fresh index");
+            }
+            assert!(world.scroll_content_bounds.borrow().settled(), "{step}");
+        };
+        check(&world, "initial");
+        // The scrollers hold their in-flow boxes alone: the absolute boxes
+        // escape them, the fixed one and what it holds count nowhere.
+        let boxes = |ids: &[u64]| {
+            ids.iter().fold(Extent::EMPTY, |all, value| {
+                all.merge(Extent::of(world.layout_box(id(*value)).unwrap()))
+            })
+        };
+        assert_eq!(world.scroll_content_extent(id(2)), boxes(&[3, 8, 14, 15]));
+        assert_eq!(world.scroll_content_extent(id(11)), boxes(&[13]));
+        assert_eq!(
+            world.scroll_content_extent(id(1)),
+            boxes(&[2, 4, 5, 9, 10, 12])
+        );
+        let steps: Vec<(&str, Box<dyn Fn(&mut MutationQueue)>)> = vec![
+            (
+                "14 opens as a triggered menu: 15 is fixed",
+                Box::new(|q| {
+                    q.set_standard_visual(
+                        id(14),
+                        Some(super::super::tests::open_menu_overlay_visual()),
+                    )
+                }),
+            ),
+            (
+                "3 turns relative",
+                Box::new(|q| q.set_style(id(3), styled(Relative, Visible))),
+            ),
+            (
+                "4 turns fixed",
+                Box::new(|q| q.set_style(id(4), styled(Fixed, Visible))),
+            ),
+            (
+                "6 turns static",
+                Box::new(|q| q.set_style(id(6), styled(Static, Visible))),
+            ),
+            (
+                "8 stops clipping",
+                Box::new(|q| q.set_style(id(8), styled(Static, Visible))),
+            ),
+            (
+                "3 moves into 11",
+                Box::new(|q| q.insert(id(11), id(3), None)),
+            ),
+            (
+                "3 turns static inside 11",
+                Box::new(|q| q.set_style(id(3), styled(Static, Visible))),
+            ),
+            (
+                "11 turns relative",
+                Box::new(|q| q.set_style(id(11), styled(Relative, Auto))),
+            ),
+            (
+                "boxes move",
+                Box::new(|q| {
+                    q.write_layout(id(7), rectangle(-500.0));
+                    q.write_layout(id(12), rectangle(4_000.0));
+                    q.insert(id(4), id(13), None);
+                }),
+            ),
+            ("10 parks", Box::new(|q| q.park_subtree(id(10)))),
+            (
+                "11 turns static while parked",
+                Box::new(|q| q.set_style(id(11), styled(Static, Auto))),
+            ),
+            (
+                "10 turns static and clips while parked",
+                Box::new(|q| q.set_style(id(10), styled(Static, Hidden))),
+            ),
+            (
+                "10 comes back into 2",
+                Box::new(|q| q.insert(id(2), id(10), None)),
+            ),
+            (
+                "10 turns static",
+                Box::new(|q| q.set_style(id(10), styled(Static, Visible))),
+            ),
+            (
+                "2 stops scrolling",
+                Box::new(|q| q.set_style(id(2), styled(Static, Visible))),
+            ),
+            (
+                "9 turns fixed, 12 static",
+                Box::new(|q| {
+                    q.set_style(id(9), styled(Fixed, Visible));
+                    q.set_style(id(12), styled(Static, Visible));
+                }),
+            ),
+            ("4 goes", Box::new(|q| q.despawn_subtree(id(4)))),
+            (
+                "14 closes",
+                Box::new(|q| q.set_standard_visual(id(14), None)),
+            ),
+        ];
+        for (step, edit) in steps {
+            let mut mutations = MutationQueue::new();
+            edit(&mut mutations);
+            world.commit(mutations).unwrap();
+            check(&world, step);
+        }
     }
 
     /// A box that clips stops its content at its own edges, as CSS

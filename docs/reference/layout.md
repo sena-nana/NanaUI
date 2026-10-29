@@ -847,7 +847,7 @@ Scene 抽取、命中索引、无障碍和 Select 菜单的可用空间都按 `c
 
 门禁在 `world/issue201.rs` 的 `clip_chain` 模块：定位的页面里有静态滚动容器，里面一张定位卡片带一个静态滚动容器，放一行流内盒子、一个以卡片为包含块的 `absolute` 盒子和一个 `fixed` 盒子；卡片后面一个静态裁剪盒放一个以页面为包含块的 `absolute` 盒子。断言各自的 `clip` / `clip_parent`；两个容器滚到几组偏移，每组不跑布局，无障碍的位置和裁剪、指针命中（就地打补丁的命中索引和重建的都算）都按链；Select 菜单的空间同样只被链上的容器截；卡片和里层容器改变定位、溢出时与冷布局逐项相同（含无障碍的 `clip`），就地打补丁的命中索引（先让滚动平移活着，再变链）在整页网格上的命中和候选与重建的相同；被跨过的祖先的变换（样式上的和合成器动画呈现的）照样作用于逃出的盒子；一个树序在后、盖住逃出盒子的兄弟接住指针，不论索引怎样排它们。`nana-ui-scene` 的 `runtime_document_clip_chain_tests.rs` 走真实的 `RuntimeDocument` 帧，逐个比较 Scene 画出的位置和裁剪、无障碍的 `bounds` / `clip`、命中和剔除，滚动和链变化后都相同。
 
-还没做的：滚动范围还没有按这条链算。逃出一个滚动容器的 `absolute` 盒子和其中的 `fixed` 盒子仍算进这个容器的 `LayoutResult::overflow`、`scroll_extent` 和可滚距离，CSS 不算它们。
+滚动范围也按这条链算（CSS Overflow 3：盒子只算进它包含块链上的 scrollable overflow）。`absolute` 盒子算进它包含块的范围，不算进它逃出的静态滚动容器；`fixed` 盒子和它下面的一切不算进任何容器。见下文「溢出」。门禁在 `world/issue201.rs` 的 `scroll_range` 模块：静态滚动容器里放一个以页面为包含块、远在下方的 `absolute` 盒子和一个更远的 `fixed` 盒子（里面再放一个 `absolute` 盒子），容器的可滚距离、`LayoutResult::overflow`、`scroll_extent` 和偏移夹取都不含它们，`absolute` 盒子算进够得着它的页面；容器改成 `relative`、盒子在 `absolute` 与 `fixed` 之间切换时范围随链移动，与冷布局逐项相同（含度量和夹取后的偏移）；两个容器滚动时不跑布局，范围不变。`world/scroll_bounds.rs` 的 `out_of_flow_boxes_count_where_their_clip_chain_reaches_them` 在索引层面对照按 clip 链走的全遍历和新建的索引：定位翻转、子树在包含块之间搬动、停放后接回、停放时顶层开始裁剪、触发式菜单打开（菜单项变 `fixed`）再关上。
 
 增量布局按包含块追踪：包含块挪动或改变尺寸时，挂在它上面的盒子会重放，即使中间的静态盒子这一趟没被放过；只有中间的静态盒子移动时，盒子不动。祖先开始或停止成为包含块时，下面的盒子改挂到新的包含块，发布的 `LayoutResult::containing_block` 也跟着更新。门禁在 `world/issue200.rs`：每一步都和冷布局逐个比对盒子、结果、命中和无障碍。
 
@@ -1031,7 +1031,7 @@ CSS `url()` 的帧仍走 4× MSAA。它和 HostTexture、backdrop 的 interleave
 
 滚动起点在 start 边。这是 CSSOM View 的 scrolling area。`direction: rtl` 的行、`vertical-rl` 的块轴、`row-reverse` 和 `column-reverse` 从右或下开始排。初始视图就是右或下边。向左或向上溢出的内容，用负偏移滚到。和 CSSOM 一样，偏移从 0 往负走。越过 start 边另一侧的内容，滚不到。
 
-滚动范围只算到最近的裁剪盒为止，和 CSS 的 scrollable overflow 一样。里层的滚动容器只把自己的盒子算进外层的范围，它里面内容的溢出不算：滚动区里套一个滚动区，外层不会因为里层的内容变长而能滚。`overflow: hidden` / `clip` 的盒子在它裁剪的那条轴上同样只算自己的盒子，没裁剪的那条轴照常算进它的内容。滚动容器两条轴都算裁剪。哪些轴算裁剪，用 `UiWorld::overflow_contained_axes` 查。
+滚动范围只算滚动容器够得着的盒子，即 clip 链经过它的盒子（见「定位」里的「clip 链」）：包含块在容器之外的 `absolute` 盒子算进它的包含块，`fixed` 盒子哪里都不算。内容索引把 `absolute` 盒子的范围带过它和包含块之间的盒子，落进包含块；带上去的范围只取决于它来自的子树，所以子树搬家时索引不用重建。会裁剪或滚动的盒子，`LayoutResult::overflow` 也只并入 `clip_parent` 是自己的子项；其他盒子照旧并入所有子项。滚动范围只算到最近的裁剪盒为止，和 CSS 的 scrollable overflow 一样。里层的滚动容器只把自己的盒子算进外层的范围，它里面内容的溢出不算：滚动区里套一个滚动区，外层不会因为里层的内容变长而能滚。`overflow: hidden` / `clip` 的盒子在它裁剪的那条轴上同样只算自己的盒子，没裁剪的那条轴照常算进它的内容。滚动容器两条轴都算裁剪。哪些轴算裁剪，用 `UiWorld::overflow_contained_axes` 查。
 
 每个滚动容器都有度量。写布局盒、增删子节点，或改样式的提交结束时，Runtime 重新测量受影响的滚动容器，并把偏移夹进去。不论盒子是引擎写的，还是宿主写的。多行文本编辑器的度量随塑形结果走。`vertical-rl` 编辑器同样用负偏移滚向左边的列。
 

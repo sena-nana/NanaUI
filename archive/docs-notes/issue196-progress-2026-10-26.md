@@ -317,7 +317,7 @@ GPU pixels 来自 macOS。Windows/Linux 真机与外部 consumer 完整构建/�
 | --- | --- | --- |
 | Scroll 与 child FormattingContext 解耦 | 可勾 | `issue201_scroll_is_orthogonal_to_flow_flex_grid_and_inline_contexts`（Block/Flex/Grid 下滚动不改 context、盒子、generation）；`ScrollView::projected_style` 只写 overflow |
 | ScrollView 是 facade，不拥有第二 layout engine | 可勾（附注） | `ScrollView` 只投影 overflow 与 scrollbar 状态，没有 measure/placement；公开的 `MutationQueue::set_scroll_metrics` 仍可注入非布局来源的度量 |
-| content extent 来自 authoritative LayoutResult | 可勾（附注） | `ContentBoundsIndex` 读已提交的布局盒，`LayoutResult.scroll_extent` 同源，`world/scroll_bounds.rs` 9 项含全遍历对照。附注：范围仍把逃出滚动容器的 `absolute` 盒子和其中的 `fixed` 盒子算进去，CSS 不算（见下文"仍未做"） |
+| content extent 来自 authoritative LayoutResult | 可勾 | `ContentBoundsIndex` 读已提交的布局盒，`LayoutResult.scroll_extent` 同源，`world/scroll_bounds.rs` 10 项含全遍历对照。范围按 clip 链算已补上，见下文「追加：滚动范围按 clip 链」 |
 | scroll-only 不重做 intrinsic/content layout | 可勾 | issue201 全部滚动步骤 measure/placement/shape/spawn 为 0、generation 不变；Scene 侧 `issue201_paint_hit_and_accessibility_share_one_clip_chain` 的 `RuntimeDocument` 帧 generation 不变 |
 | clip chain 供 Scene/Hit/A11y 一致消费 | **本轮完成** | 见下表 |
 | virtualization 与 scroll layout 语义分离 | 可勾 | `sync_virtual_list_skips_mutation_until_the_visible_range_changes`、`issue262_gate_a`–`e` |
@@ -348,10 +348,30 @@ GPU pixels 来自 macOS。Windows/Linux 真机与外部 consumer 完整构建/�
 
 ### 仍未做
 
-- 滚动范围（`ContentBoundsIndex`、`LayoutResult::overflow` / `scroll_extent`）仍把逃出滚动容器的 `absolute` 盒子和其中的 `fixed` 盒子算进这个容器；CSS 的 scrollable overflow 只算包含块链经过它的后代。要把这些盒子的贡献改挂到 clip parent 一侧，并在链变化时失效增量索引。
+- ~~滚动范围仍把逃出滚动容器的 `absolute` 盒子和 `fixed` 盒子算进这个容器~~：已做，见下文「追加：滚动范围按 clip 链」。
 - 被跨过祖先的 `clip-path` 和组件铬裁剪不作用于逃出盒子（CSS 的 `clip-path` 会作用）；已写进 `layout.md`。
-- 性能段点名的 `scroll_viewport_updates` / `scroll_content_extent_recomputes` / `scroll_layout_reflows` / `scroll_clip_updates` / `virtualization_despawned` 仍不在 `WorkCounters`。
+- 性能段点名的 `scroll_viewport_updates` / `scroll_content_extent_recomputes` / `scroll_layout_reflows` / `scroll_clip_updates` / `virtualization_materialized` / `virtualization_despawned` 仍不在 `WorkCounters`，要先定口径（见下文追加节末尾）。
 - 未在 Windows/Linux 或 GPU 像素以外的外部 consumer 上运行；NanaLive/NanaType 只读检查没有 `LayoutResult` / `AccessibilityNode` 字面量。
+
+### 追加：滚动范围按 clip 链
+
+CSS Overflow 3 让盒子只算进它包含块链上的 scrollable overflow。现在滚动范围与 clip 链同一条规则：
+
+- 内容索引（`world/scroll_bounds.rs`）：每个条目除了流内的 `extent`，再记 `pending`——子树里包含块还在上方的 `absolute` 盒子。父级读子项时按 clip 链读它的定位（`UiWorld::clip_position`，打开的触发式菜单的项算 `fixed`）：流内子项进最大值树；`absolute` 子项不进树，它的范围随 `pending` 往上带；`fixed` 子项哪里都不算。带上来的范围在包含块（定位盒或文档节点）落进 `content`；到了没有父级的顶层，顶层不裁剪就落下，裁剪就丢掉，与 `clip_parent` 为 `None` 一致。带上去的范围只取决于来源子树，所以子树搬家不需要重建下面的条目；少数带范围的子项单独记在条目的 `carried` 里，没有时不分配。
+- 失效：定位种类或是否裁剪变化走 `note_layout_anchor_change`，同时把节点在索引里标脏（父级重读它的分类，它自己重算落下还是上传）；触发式菜单开关时 `relist` 让菜单表面重读全部子项。拓扑变化沿用原来的重建。
+- `LayoutResult::overflow`：会裁剪或有滚动度量的节点只并入 `clip_parent` 是自己的子项（其余节点照旧并入全部子项，保留只读子项放置的复用快路径）；`scroll_extent` 与度量同源于索引。Scene、ScrollView 没有第二份计算。
+- 与 `clip_parent` 的关系：带到包含块落下，与挂在 clip parent 上再沿不裁剪的祖先上传，对任何裁剪节点和包含块读出的范围相同（clip parent 与包含块之间不会有裁剪盒）；只在既不裁剪也不是包含块的中间节点上内部聚合不同，那里不读范围。
+
+| 门禁 | 证明 |
+| --- | --- |
+| `world/issue201.rs` `scroll_range::issue201_boxes_a_scroller_does_not_reach_stay_out_of_its_range` | 静态滚动容器里以页面为包含块的 `absolute` 盒子（y 900）和 `fixed` 盒子（y 1200，内含 `absolute`）：容器度量、`overflow`、`scroll_extent` 只到 690，偏移夹到 490；页面够得着 `absolute` 盒子，到 940，夹到 340，不含 `fixed` |
+| `…::issue201_a_moving_chain_moves_the_ranges_as_a_cold_layout_has_them` | 容器 static↔relative、两个盒子 absolute↔fixed 共 6 步，每步范围、度量、夹取后的偏移与冷布局相同，`assert_matches_cold` 通过 |
+| `…::issue201_scrolling_leaves_the_ranges_and_lays_nothing_out` | 两个容器滚 4 组偏移：measure/placement/shape 为 0、layout generation 不变、范围不变 |
+| `world/scroll_bounds.rs` `out_of_flow_boxes_count_where_their_clip_chain_reaches_them` | 索引层面每步对照按 clip 链走的全遍历与新建索引，并要求索引无残留脏状态：定位翻转、裁剪开关、子树在包含块之间搬动、停放后改样式（顶层开始裁剪）再接回、触发式菜单开与关、删除 |
+
+变异（改坏→变红→恢复→逐文件 `cmp` 一致）：`absolute` 子项按流内读（4 项红）；`fixed` 子项像 `absolute` 一样上传（4 项红）；`overflow` 并入全部子项（3 项 scroll_range 红）；锚点变化不标脏索引（冷对照 + 索引门禁红）；包含块不落下带上的范围（4 项红）；裁剪的顶层也落下（索引门禁红）；菜单开关不 `relist`（索引门禁红）；增量路径不记子项带的范围（2 项红）；整树重填丢掉 `carried`（2 项红）；只动自身盒子的快路径不重算落下（2 项红）。
+
+计数器口径待定（未加）：`scroll_viewport_updates`（度量重存的次数，还是只算视口尺寸变化，现有 `scroll_resized` 只记后者）、`scroll_content_extent_recomputes`（索引条目刷新数，现为 test/benchmark 专用的 `refreshed`，常开要定是否进公开的 `WorkCounters`）、`scroll_layout_reflows`（滚动引起的重排，按合同恒为 0，是否单列还是沿用 measure/placement 计数）、`scroll_clip_updates`（偏移变化的容器数、还是受影响的 clip 链节点数）、`virtualization_materialized` / `despawned`（与已有 `virtual_rows_materialized_from_layout`、`entities_spawned/despawned` 的关系）。`WorkCounters` 加字段是公开结构的变化，口径定了再一起加。
 
 ## 2026-10-29 追加：#202
 

@@ -1261,6 +1261,16 @@ impl UiWorld {
                 if was != now {
                     self.track_scroll_container(*id, now);
                 }
+                // An open triggered menu places its items `fixed`, out of
+                // every scroller's range.
+                let current = self.nodes.visual(*id);
+                if current != visual.as_ref()
+                    && (is_triggered_menu_overlay(current)
+                        || is_triggered_menu_overlay(visual.as_ref()))
+                {
+                    self.scroll_content_bounds.borrow_mut().relist(self, *id);
+                    self.scroll_layout_touched = true;
+                }
             }
             _ => {}
         }

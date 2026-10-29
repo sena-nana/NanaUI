@@ -15,7 +15,7 @@
 
 Runtime 帧更新（`RuntimeFrameUpdate`）对外暴露这一 `layout_generation`，使 Scene 提取、命中测试、无障碍投影和滚动消费方能够对齐各自的投影版本，而不必依赖粒度更粗的 `UiWorld` 变更代际（mutation generation）。
 
-`clip` 是最近一个够得着本节点的溢出容器，链沿该容器自己的 `clip` 往上；`clip_parent` 是本节点取裁剪和滚动的节点：一般是父级，包含块在静态溢出容器之外的 `absolute` 节点是它逃出的最外层容器的父级，`fixed` 节点为 `None`（Issue #201，规则见 [布局（CSS 子集）](layout.md) 的「clip 链」）。Scene 提取、命中测试与无障碍投影都按 `clip_parent` 挂节点，被跨过的祖先只传变换，不传裁剪和滚动；无障碍节点的 `clip` 是这条链留下的视口区域。祖先改变定位或开始、停止裁剪时，下面节点的这两项随下一次发布更新。
+`clip` 是最近一个够得着本节点的溢出容器，链沿该容器自己的 `clip` 往上；`clip_parent` 是本节点取裁剪和滚动的节点：一般是父级，包含块在静态溢出容器之外的 `absolute` 节点是它逃出的最外层容器的父级，`fixed` 节点为 `None`（Issue #201，规则见 [布局（CSS 子集）](layout.md) 的「clip 链」）。Scene 提取、命中测试与无障碍投影都按 `clip_parent` 挂节点，被跨过的祖先只传变换，不传裁剪和滚动；无障碍节点的 `clip` 是这条链留下的视口区域。祖先改变定位或开始、停止裁剪时，下面节点的这两项随下一次发布更新。滚动范围按同一条链算：会裁剪或滚动的节点，`overflow` 只并入 `clip_parent` 是它的子项，`scroll_extent` 和滚动度量只含它够得着的后代，逃出它的 `absolute` 盒子算进它们的包含块，`fixed` 盒子不算进任何节点。
 
 `ExtractedNode::layout_result` 共享这一不可变快照。Scene 的 Sticky placement 从中读取包含块、视口和滚动范围，不重新测量内容；滚动偏移仍读取当前的 `ExtractedNode::scroll_offset`，不会把呈现位置写回快照。
 
