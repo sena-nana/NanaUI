@@ -585,3 +585,80 @@ T-I06 / T-I07 的期望值按 CSS 2.1 §10.8 和上面的近似字体度量推�
 - Checkbox 在 RTL 下不镜像（与迁移前相同）。按 CSS 应把指示框放到行尾；这会改变 RTL 下的画面，属产品选择，本轮未改。
 - 无障碍铬裁剪对「逃出对话框 body 的 `absolute` 盒子」现在与命中一致（不被 body 截），没有单独的门禁覆盖这一支；EmptyState 与 `fixed` 的门禁覆盖了沿链遍历本身。
 - 未在 Windows/Linux 上运行；没有跑 `nana-ui-devtools` 的真实 GPU `issue205_component_pixels`。NanaLive / NanaType 只读检查：没有 `ComponentGeometry::Checkbox`、`SelectMenuRoom` 或 Checkbox 部件的直接使用，Checkbox 只经构造器；NanaLive 的 `tool_window_acceptance/narrow.rs` 读行与选项的 `text_metrics`（非空标签，不受清空修复影响）；未构建这两个 consumer。
+
+## 2026-10-29 追加（二）：#205 Switch、状态圆点、ContextMenu 高度
+
+接上一节「仍未做」的 2 类清单，按顺序迁移 Switch、StatusBadge / ValidationMessage，删除 ContextMenu 的死高度。SelectionOption、EmptyState、Toast、MenuSurface 触发器、Range/Progress 文字本轮未做。
+
+### 改动
+
+- **Switch（`3d732fe27`）。** `parts::switch_parts`：一行是 track 与文字列，文字列是嵌套的 Flex 列（`Label` 在上、`Hint` 在下），两次求解都走 `flex_parts`；`control_position: End` 是同一行的 reverse（track 为 `TrailingContent`），窄到放不下时 track 仍贴住行尾，与原手算一致。`UiWorld::switch_inputs` 从主题读一次，intrinsic measure（`SwitchInputs::extent`）和 placement 都读它，`ComponentGeometry::Switch` 只读发布的部件。删除四处重复：`project` 按行高写的 `min_height`（改为 `ControlHeight::Min(size)` 下限 + 测量给出文字列高度）、`text_shape_constraints` 的 track 占位与 `text_visual_key` 的 Switch 键（开关的节点文字恒为空，这两处本是死代码）、geometry 的手算、Scene 的 `SWITCH_TEXT_INSET` 和无几何时自画的 30×16 轨道。标签/hint 有无、位置、尺寸的变化经 visual 分类失效布局；拨动与滑块移动只改绘制。track 与间隔不在开关自己的样式里，主题改动它们时开关原先不会重新测量——新增 `visual_parts_read_theme`，在主题的间距/字号/度量变化时给这类节点记 MEASURE+PLACEMENT 失效。
+- **StatusBadge / ValidationMessage（`f91c7a425`、`3d982471d`）。** `parts::status_dot_parts`：圆点是 `LeadingContent`（格前空白是不发布的 spacer，圆点在格里居中），标签是 `TextContent` 取余下宽度。`UiWorld::status_dot_parts` 从主题间距读格宽和间隔，measure（`chrome_extent`）、段落预算（`text_budget`）、placement（`start_row_parts`）与 geometry 都读它；`padding_left` 不再写圆点占位（徽章两侧各一档内边距，校验消息左内边距 0）。徽章绘制标签时横向取部件、纵向仍取整个胶囊（单行居中，位置相同；这样 `component-migration/status-badge` 的语义基线不变，未重录）。主题间距变化时两者重新测量并重做段落预算。
+- **intrinsic measure 的文字上限扣掉旁边的部件。** 状态圆点的冷对照揭出：`text_inline_size` 的上限是整个内容宽，再加上部件宽，文字铺满一行时盒子会超出可用宽度一个部件宽。现在上限先扣掉 `VisualContent.width`，与段落预算一致；Checkbox 同样受益（`issue205_a_checkbox_text_asks_for_the_row_less_its_indicator`）。
+- **ContextMenu 高度（`530fa6f97`）。** `apply_anchor` 每次重新锚定时按默认度量写进组件样式的 `context_menu_height`，总被投影按主题算的 `context_menu_height_in` 覆盖；先核实投影每次都写高度，再删除该函数与只它用的 `SEARCH_FIELD_GAP`。组件的公开字段 `style.layout.height` 不再带这份值（布局结果不变）。
+- `accce782f`：`STATUS_DOT_FRACTION` 挪到 `content_parts.rs` 时把文档注释留在了原处，clippy 报 `empty_line_after_doc_comments`，补提交挪回。
+- 文档：`component-layout.md` 审计表（Switch、StatusBadge/ValidationMessage 标为已迁移，ContextMenu 行改写）与产品路径段落、`layout.md`「组件内容部件」（嵌套方向、主题失效、文字上限）、`layout-result.md`、`components/switch.md`、`components/status-badge.md`、`components/validation-message.md` 的「布局」。
+
+### 迁移前后 A/B
+
+改代码前在父提交上跑一个临时测试（未提交），把每种组合的盒子、部件与绘制几何写进文件，改后再跑一次比对：
+
+- Switch：默认/加密主题 × 列/行 × 三档尺寸 × 有无标签 × 有无 hint × 两侧 × 五种宽度，共 480 项。除空标签的零宽标签框外，只有显式 `width: Auto` 放在行里的 48 项不同：原先这种开关只剩内边距宽，track 被压成 0 宽；现在 measure 计入 track 与间隔（标签文字仍不计入宽度，与迁移前相同）。另有 1 ULP 级的浮点差（30.307692→30.307693）。
+- 状态圆点：两种主题 × 列/行 × 紧凑与否 × 长短文字 × 三种宽度 × 两个组件，共 96 项。修正文字上限后，盒子、圆点完全相同；差别只在徽章标签区的纵向（随后改回整个胶囊）和 1 ULP 的 x（22.0→22.000002）。
+
+### 门禁与变异
+
+| 门禁（`world/issue205.rs`） | 证明 | 变异（改坏→变红→恢复→`cmp` 一致） |
+| --- | --- | --- |
+| `issue205_switch_track_label_and_hint_are_published_parts` | 两侧的 track 尺寸、居中、贴边；标签/hint 列的位置与行高；内容盒高恰为文字列高，样式无 `min_height`、`control_height` 为 `Min(size)`；几何等于部件；1 实体 4 parts；无 hint 时标签占满列；按内容宽的开关含 track 与间隔 | measure 不计 switch：红；geometry 标签取内容盒：红；不发布 switch 部件：红 |
+| `issue205_switch_parts_follow_changes_like_a_cold_layout_and_toggle_paints_only` | 空→标签→加 hint→换侧换尺寸→空标签带 hint 固定宽→按内容宽→bare→复原，每步与冷布局逐项相同；改 track/间隔/hint 间距/行高的主题后与该主题下的冷布局相同；拨动、滑块动画帧、悬停零 measure/placement，generation 与结果指针不变 | 主题不失效 switch：红；visual 分类不认 switch：红 |
+| `issue205_switch_parts_survive_context_transitions` | Grid→Inline→Flex：0 spawn/despawn，状态焦点保留，几何等于部件，与冷布局相同 | geometry 标签取内容盒：红 |
+| `issue205_ten_thousand_switches_keep_one_entity_and_bounded_parts` | 1k/10k 每个一个实体，parts 恰为 ComponentContent/TrailingContent/Label（有 hint 再加 Hint），空闲帧零工作 | 不发布 switch 部件：红 |
+| `issue205_checkbox_parts_follow_a_theme_that_moves_no_style` | 改间距的主题下 Checkbox 与冷布局相同、间隔跟随、按标签部件宽折行 | 把 Checkbox 从主题失效名单去掉仍绿：Checkbox 的样式意图本身读同一组 token，主题改动已让它重新布局，因此名单只留 Switch 与状态圆点 |
+| `issue205_status_dot_and_label_are_published_parts` | 两组件 × 紧凑与否：圆点在格里居中、标签起于格加间隔止于内容盒末、左内边距只剩控件自己的；无宽度时标签部件恰为文字宽；几何的圆点等于部件，标签横向等于部件（徽章纵向取整个胶囊）；TextRun 在标签部件里；1 实体 3 parts；长文字在标签部件里折行、盒子不超出 240px 的行 | measure 不计圆点：红；校验消息标签取内容盒：红；徽章标签横向取内容盒：红；不发布部件：红；文字上限不扣部件：红；段落预算不扣部件：红 |
+| `issue205_status_dot_parts_follow_changes_like_a_cold_layout` | 文字、紧凑、宽度变化与冷布局相同；改间距的主题后与该主题下的冷布局相同；改 tone/intent 零布局、结果指针不变 | 主题不失效状态圆点：红 |
+| `issue205_status_dot_parts_survive_context_transitions` | Grid→Inline→Flex 下与冷布局相同、几何等于部件 | 校验消息标签取内容盒：红；不发布部件：红 |
+| `issue205_ten_thousand_status_dots_keep_one_entity_and_three_parts` | 1k/10k 每个一个实体、三个 parts、空闲帧零工作 | 不发布部件：红 |
+| `issue205_a_checkbox_text_asks_for_the_row_less_its_indicator` | 标签能铺满 240px 行的 Checkbox 不超出该行 | 文字上限不扣部件：红 |
+| `issue205_context_menu_height_is_the_projections_alone` | 菜单盒高等于投影按显示行数与当前主题算的高度（过滤后、行高变大的主题下都成立），组件样式不带高度 | 投影改用默认度量：红；`apply_anchor` 写高度：红 |
+
+另：给状态圆点的 `compact` 加 visual 分类的变异仍绿——`compact` 同时改样式（内边距、字号），样式变更已经失效布局，所以没有加这条分类。
+
+变异脚本恢复文件时保留了原 mtime，曾让一次全量运行用到变异后的旧产物（两项红）；改为恢复后 `touch`，重跑全绿。
+
+### 本轮运行（最终树 `3d982471d`）
+
+| 命令 | 结果 |
+| --- | --- |
+| `cargo fmt --all -- --check`；`git diff --check` | passed |
+| `cargo clippy -q -p nana-ui-core -p nana-ui-runtime -p nana-ui-scene -p nana-ui --all-targets -- -D warnings` | passed |
+| `cargo test -q -p nana-ui-runtime --lib` | 2339 passed、1 ignored |
+| `cargo test -q -p nana-ui-runtime --lib --features layout-verify -- issue205 issue201 issue199` | 50 passed |
+| `cargo test -q -p nana-ui-runtime --features view-macro --test view_macro` | 48 passed |
+| `cargo test -q -p nana-ui-scene --tests` | 全部通过（lib 238） |
+| `cargo test -q -p nana-ui --features hosted,gpu --lib` | 967 passed、1 ignored |
+| `CARGO_INCREMENTAL=0 cargo test -q --workspace --all-targets --no-fail-fast` | 6097 passed、0 failed、5 ignored（第一次跑到一半磁盘满、链接失败；清掉 `target/*/incremental` 与 debug 测试可执行文件后重跑） |
+| `cargo test -q -p component-gallery --bin ui-snapshots --features snapshots --locked` | 12 passed |
+| `caffeinate -di cargo run -q --release -p component-gallery --bin ui-snapshots --features snapshots --locked -- --output <scratch>` | MATCH: 680（exact，Apple M4 Metal；Switch、状态圆点各自提交后也各跑一次，均 680） |
+| 同上加 `--semantic` | MATCH: 156（`f91c7a425` 时徽章标签区改成内容盒，`component-migration/status-badge` light/dark 2 项 CHANGED、上一行的单测同时变红；`3d982471d` 改回整个胶囊后全部一致，未重录基线） |
+
+### 仍未做
+
+- 2 类待迁移：SelectionOption（ring/icon/label 手算，`radio_lead` 写成 padding）、EmptyState（icon/title/message）、Toast（indicator/title/description/dismiss）、MenuSurface 触发器（`menu_surface_geometry`）、Range/Progress/LevelMeter 的 label/value/unit/cancel 文字；ModalFrame 的 title/description/body 文本仍由 `ModalChrome::measure_in` 排。
+- Switch 的标签文字不计入 intrinsic 宽度（与迁移前相同；默认 `Fill` 宽，看不出）。计入它会改变行内 `Fill` 开关的最小内容宽，可能改变现有布局，属产品选择。
+- RTL：Checkbox、Switch、状态圆点在 RTL 下都不镜像（与迁移前相同）。按 CSS 应把指示框/圆点放到行首（右侧），Switch 的 `Start`/`End` 应按逻辑方向解释；会改变 RTL 画面，属产品选择，本轮未改。
+- 未在 Windows/Linux 上运行；没有跑 `nana-ui-devtools` 的真实 GPU `issue205_component_pixels`。NanaLive / NanaType 只读检查：没有 `ComponentGeometry::{Switch, StatusBadge, ValidationMessage}`、`context_menu_height` 或这些部件的直接使用；NanaLive 的 `reminder_switch` 是无标签开关，自设左右内边距 0，宽仍按 `track_width`，不受影响；没有消费者读 ContextMenu 的 `style.layout.height` 或给 StatusBadge/ValidationMessage 设内边距。未构建这两个 consumer。
+
+### #205 能否关闭
+
+| 验收项 | 判定 |
+| --- | --- |
+| 建立 component mini-layout audit 表 | 可勾：审计表覆盖 `derive_component_geometry` 全部分支，本轮更新 Switch、StatusBadge/ValidationMessage、ContextMenu 行 |
+| 首批通用组件迁移到 Foundation composition | 可勾：Issue 点名的首批（Button/Chip/ActionMenuItem、ListItem/SidebarRow/FileTab、FormField/LabeledValue、Card/Panel、Select 触发器）此前已迁，另加 Checkbox、Switch、StatusBadge、ValidationMessage |
+| renderer-side label/icon/slot placement 逐步删除 | 可勾（附注）：Scene 里最后两处自带的控件内容摆放（Switch 的 `SWITCH_TEXT_INSET` 与 30×16 兜底轨道）已删；Scene 只剩按样式内边距画无几何节点的文字这一通用兜底 |
+| ComponentGeometry 重复 layout authority 删除/降级 | 未完成：本轮删掉 Switch、StatusBadge/ValidationMessage 的手算和 ContextMenu 的死高度；审计表仍有 SelectionOption、EmptyState、Toast、MenuSurface 触发器、Range/Progress 文字、ModalFrame 文本五组 2 类手算 |
+| retained wrapper/entity 爆炸有门禁 | 可勾：本轮加 Switch 与状态圆点的 1k/10k 门禁 |
+| 业务/visual geometry 不被错误塞进 Layout Foundation | 可勾（附注同上一节：人工分类，无机器门禁） |
+| 旧 API 可作为 facade 继续使用 | 可勾：构造器与字段不变；`ContextMenu.style.layout.height` 不再带被投影覆盖的那份值 |
+
+结论：剩「ComponentGeometry 重复 layout authority 删除」一项未完成，#205 暂不能关闭；剩余五组按审计表继续，或由维护者决定把它们拆成后续 issue 后再关。
