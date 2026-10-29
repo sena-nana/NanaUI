@@ -1,7 +1,7 @@
 //! Issue #90 font layer, against committed fixtures only.
 //!
 //! Every face here comes from `crates/nana-text/fonts/` or the bundled Noto
-//! Sans SC weights in `nana-ui-core`, and every fallback policy is built in
+//! Sans SC variable face in `nana-ui-core`, and every fallback policy is built in
 //! the test. Nothing reads the machine's installed fonts; that lives in
 //! `font_system_platform_acceptance.rs`.
 
@@ -12,7 +12,7 @@ use nana_text::font::{
 };
 use nana_text::{FontId, ScriptTag, TextStyle};
 use nana_ui_core::FontVariationSetting;
-use nana_ui_core::fonts::{UI_FONT_BOLD, UI_FONT_MEDIUM, UI_FONT_REGULAR, UI_FONT_SEMIBOLD};
+use nana_ui_core::fonts::UI_FONT_REGULAR;
 use skrifa::outline::{DrawSettings, OutlinePen};
 use skrifa::prelude::{Size, Tag};
 use skrifa::{FontRef, MetadataProvider};
@@ -93,32 +93,100 @@ fn the_preferred_family_is_primary_and_later_families_form_the_chain() {
 #[test]
 fn weight_matching_picks_the_css_nearest_static_face() {
     let mut system = FontSystem::hermetic();
+    let bytes = font_blob(fixture("noto-sans-kr"));
+    let mut face = |weight: f32| {
+        system
+            .register_bytes(
+                Arc::clone(&bytes),
+                &FaceDescriptor {
+                    weight: Some((weight, weight)),
+                    ..FaceDescriptor::family("Weighted")
+                },
+            )
+            .unwrap()
+            .faces[0]
+    };
     // Registered out of weight order on purpose.
-    for bytes in [
-        UI_FONT_BOLD,
-        UI_FONT_REGULAR,
-        UI_FONT_SEMIBOLD,
-        UI_FONT_MEDIUM,
-    ] {
-        register_static(&mut system, bytes);
-    }
+    let bold = face(700.0);
+    let regular = face(400.0);
+    let semibold = face(600.0);
+    let medium = face(500.0);
     let pick = |system: &mut FontSystem, weight: f32| {
+        let mut query = query("Weighted");
+        query.weight = FontWeight::new(weight);
+        system.select(&query).primary.expect("a face was selected")
+    };
+    assert_eq!(pick(&mut system, 400.0), regular);
+    assert_eq!(pick(&mut system, 500.0), medium);
+    assert_eq!(pick(&mut system, 600.0), semibold);
+    assert_eq!(pick(&mut system, 700.0), bold);
+    // 650 is above 500, so heavier wins over the closer lighter face.
+    assert_eq!(pick(&mut system, 650.0), bold);
+    // 450 checks heavier faces up to 500 before any lighter one.
+    assert_eq!(pick(&mut system, 450.0), medium);
+    // Below everything: the lightest available.
+    assert_eq!(pick(&mut system, 100.0), regular);
+    assert_eq!(pick(&mut system, 1000.0), bold);
+}
+
+/// The bundled UI face is one variable font: every UI weight is a point on
+/// its real `wght` axis, never a synthesized bold of the Regular outlines.
+#[test]
+fn the_bundled_ui_face_draws_every_ui_weight_on_its_wght_axis() {
+    let mut system = FontSystem::hermetic();
+    let sc = register_static(&mut system, UI_FONT_REGULAR);
+    assert_eq!(postscript(&system, Some(sc)), "NotoSansSC-Regular");
+    let described = system.describe(sc).unwrap();
+    assert_eq!(described.weight, (400.0, 700.0));
+    let instance_names: Vec<Option<&str>> = described
+        .named_instances
+        .iter()
+        .map(|instance| instance.name.as_deref())
+        .collect();
+    assert_eq!(
+        instance_names,
+        [
+            Some("Regular"),
+            Some("Medium"),
+            Some("SemiBold"),
+            Some("Bold")
+        ]
+    );
+
+    let mut stems = Vec::new();
+    for weight in [400.0, 500.0, 600.0, 700.0] {
         let mut query = query("Noto Sans SC");
         query.weight = FontWeight::new(weight);
-        let selection = system.select(&query);
-        postscript(system, selection.primary)
-    };
-    assert_eq!(pick(&mut system, 400.0), "NotoSansSC-Regular");
-    assert_eq!(pick(&mut system, 500.0), "NotoSansSC-Medium");
-    assert_eq!(pick(&mut system, 600.0), "NotoSansSC-SemiBold");
-    assert_eq!(pick(&mut system, 700.0), "NotoSansSC-Bold");
-    // 650 is above 500, so heavier wins over the closer lighter face.
-    assert_eq!(pick(&mut system, 650.0), "NotoSansSC-Bold");
-    // 450 checks heavier faces up to 500 before any lighter one.
-    assert_eq!(pick(&mut system, 450.0), "NotoSansSC-Medium");
-    // Below everything: the lightest available.
-    assert_eq!(pick(&mut system, 100.0), "NotoSansSC-Regular");
-    assert_eq!(pick(&mut system, 1000.0), "NotoSansSC-Bold");
+        assert_eq!(system.select(&query).primary, Some(sc));
+        let instance = system
+            .instance(sc, &query, &FontVariations::default())
+            .unwrap();
+        // The default instance (400) carries no coordinate.
+        let expected = (weight != 400.0).then_some(weight);
+        assert_eq!(instance.coord(*b"wght"), expected);
+        assert!(!instance.key.synthesis.bold, "{weight} is synthesized");
+        let (min, max) = glyph_extent(&system, &instance, 'I');
+        stems.push(max - min);
+    }
+    assert!(
+        stems.windows(2).all(|pair| pair[1] > pair[0]),
+        "the I stem thickens with weight: {stems:?}"
+    );
+
+    // Outside the axis a request clamps to its nearest end.
+    let mut heavy = query("Noto Sans SC");
+    heavy.weight = FontWeight::new(900.0);
+    let heavy = system
+        .instance(sc, &heavy, &FontVariations::default())
+        .unwrap();
+    assert_eq!(heavy.coord(*b"wght"), Some(700.0));
+    let mut light = query("Noto Sans SC");
+    light.weight = FontWeight::new(300.0);
+    let light = system
+        .instance(sc, &light, &FontVariations::default())
+        .unwrap();
+    assert_eq!(light.coord(*b"wght"), None);
+    assert!(!light.key.synthesis.bold);
 }
 
 #[test]

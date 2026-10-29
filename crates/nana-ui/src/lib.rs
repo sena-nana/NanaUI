@@ -385,7 +385,7 @@ pub use theme::{
     UI_BASE_TEXT_SIZE, UI_METRICS, builtin_theme_arc, install_theme_tokens, space, type_scale,
 };
 #[cfg(feature = "bundled-fonts")]
-pub use theme::{UI_FONT_BOLD, UI_FONT_MEDIUM, UI_FONT_REGULAR, UI_FONT_SEMIBOLD, ui_font_sources};
+pub use theme::{UI_FONT_REGULAR, ui_font_sources};
 pub use tooltip::{TooltipConfig, TooltipPlacement};
 pub use virtual_list::{
     TableColumn, TableCursor, TableNavigation, VirtualAlignment, VirtualFrozenWindow,

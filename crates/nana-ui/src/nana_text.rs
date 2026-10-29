@@ -553,11 +553,11 @@ mod tests {
     #[cfg(feature = "bundled-fonts")]
     fn a_scoped_face_is_withdrawn_when_its_scope_is() {
         let _font_test = FONT_TESTS.lock().unwrap_or_else(|e| e.into_inner());
-        let data = include_bytes!("../assets/fonts/NotoSansSC-Regular.ttf");
+        let data = crate::UI_FONT_REGULAR;
         let mut scope = HostFontScope::new();
         let registration = scope
             .add_face("NanaSkinFace", data.to_vec(), Some(400), None, None)
-            .expect("the bundled Regular face loads")
+            .expect("the bundled face loads")
             .clone();
         assert_eq!(registration.families(), ["NanaSkinFace".to_string()]);
         assert_eq!(scope.families(), vec!["NanaSkinFace".to_string()]);
@@ -581,9 +581,9 @@ mod tests {
     #[cfg(feature = "bundled-fonts")]
     fn register_host_font_face_aliases_css_family() {
         let _font_test = FONT_TESTS.lock().unwrap_or_else(|e| e.into_inner());
-        let data = include_bytes!("../assets/fonts/NotoSansSC-Regular.ttf");
+        let data = crate::UI_FONT_REGULAR;
         let added = register_host_font_face("NanaCssFace", data.to_vec(), Some(400), None);
-        assert!(added > 0, "bundled Regular face must load");
+        assert!(added > 0, "bundled face must load");
         let used = shaped_face_families("NanaCssFace", "H");
         assert!(
             used.iter().any(|name| name == "NanaCssFace"),
@@ -610,9 +610,9 @@ mod tests {
     #[cfg(feature = "bundled-fonts")]
     fn a_weight_range_matches_every_weight_in_it() {
         let _font_test = FONT_TESTS.lock().unwrap_or_else(|e| e.into_inner());
-        let data = include_bytes!("../assets/fonts/NotoSansSC-Regular.ttf");
+        let data = crate::UI_FONT_REGULAR;
         let added = register_host_font_face("NanaVfRangeFace", data.to_vec(), Some(200), Some(700));
-        assert!(added > 0, "bundled Regular face must load");
+        assert!(added > 0, "bundled face must load");
         for weight in [200u16, 400, 700] {
             let mut shaper = NanaTextShaper::default();
             let metrics = shaper.shape(
@@ -1181,11 +1181,7 @@ mod tests {
     #[cfg(feature = "bundled-fonts")]
     fn css_family_alias_shapes_loaded_face() {
         let _font_test = FONT_TESTS.lock().unwrap_or_else(|e| e.into_inner());
-        let bytes = std::fs::read(
-            std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-                .join("assets/fonts/NotoSansSC-Regular.ttf"),
-        )
-        .expect("bundled Noto Sans SC Regular");
+        let bytes = crate::UI_FONT_REGULAR.to_vec();
         let added = register_host_font_face("Host Sans", bytes, Some(400), None);
         assert!(added > 0, "Noto bytes must load");
         let used = shaped_face_families("Host Sans", "H");

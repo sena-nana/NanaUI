@@ -52,7 +52,7 @@ CSS 的单层 `box-shadow`（支持 outset 与 inset）与 `text-shadow`（仅 o
 
 ## 字体、语言与排版特性
 
-启用 `bundled-fonts` feature 时，宿主会自动注册 Noto Sans SC 的四档字重，并将其设为默认的 `sans-serif` 界面字体。关闭该 feature 则回退到系统字体（注意：视觉快照与设计基线核对必须使用捆绑字体，不能拿系统字体替代）。
+启用 `bundled-fonts` feature 时，宿主会自动注册 Noto Sans SC，并将其设为默认的 `sans-serif` 界面字体。捆绑的是一个可变字体：`wght` 轴 400–700、默认实例 Regular，命名实例 Regular / Medium / SemiBold / Bold，四档界面字重都走真实字重轴，不合成粗体。字符集是简体中文常用字加 JIS X 0208 第一水准汉字与各消费者界面文案用到的字；文件由 `scripts/build-ui-font.py` 生成，来源、校验和与字符集见 `crates/nana-ui/assets/fonts/README.md`。关闭该 feature 则回退到系统字体（注意：视觉快照与设计基线核对必须使用捆绑字体，不能拿系统字体替代）。
 
 ### 宿主字体注册与热卸载
 

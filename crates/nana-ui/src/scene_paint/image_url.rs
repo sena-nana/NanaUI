@@ -770,4 +770,35 @@ mod tests {
             );
         }
     }
+
+    /// The bundled face is variable: `font-weight` reaches its `wght` axis in
+    /// the SVG rasterizer too, so bold SVG text is drawn heavier rather than
+    /// with the Regular outlines.
+    #[cfg(any(feature = "rich-text", feature = "bundled-fonts"))]
+    #[test]
+    fn svg_text_weight_drives_the_bundled_wght_axis() {
+        let ink = |weight: u16, text: &str| -> u32 {
+            let svg = format!(
+                r#"<svg xmlns="http://www.w3.org/2000/svg" width="200" height="40"><text x="2" y="30" font-family="sans-serif" font-size="24" font-weight="{weight}" fill="red">{text}</text></svg>"#
+            );
+            let (_, _, pixels) = decode_svg_rgba(svg.as_bytes()).unwrap();
+            pixels
+                .as_chunks::<4>()
+                .0
+                .iter()
+                .map(|pixel| u32::from(pixel[3]))
+                .sum()
+        };
+        for text in ["Mermaid", "流程图"] {
+            let inks = [400, 500, 600, 700].map(|weight| ink(weight, text));
+            assert!(
+                inks.windows(2).all(|pair| pair[1] > pair[0]),
+                "{text}: ink grows with weight: {inks:?}"
+            );
+            assert!(
+                inks[3] * 10 > inks[0] * 12,
+                "{text}: Bold is visibly heavier than Regular: {inks:?}"
+            );
+        }
+    }
 }

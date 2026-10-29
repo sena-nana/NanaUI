@@ -50,7 +50,7 @@
         "font_size_px": 24.0,
         "glyphs": [
           {
-            "glyph_id": 7759,
+            "glyph_id": 8132,
             "cluster": 0,
             "cluster_end": 3,
             "advance_px": 24.0,
@@ -60,7 +60,7 @@
             "flags": 0
           },
           {
-            "glyph_id": 1959,
+            "glyph_id": 2005,
             "cluster": 3,
             "cluster_end": 6,
             "advance_px": 24.0,
@@ -70,7 +70,7 @@
             "flags": 0
           },
           {
-            "glyph_id": 281,
+            "glyph_id": 285,
             "cluster": 6,
             "cluster_end": 9,
             "advance_px": 24.0,
@@ -80,7 +80,7 @@
             "flags": 0
           },
           {
-            "glyph_id": 252,
+            "glyph_id": 256,
             "cluster": 9,
             "cluster_end": 12,
             "advance_px": 24.0,
@@ -90,7 +90,7 @@
             "flags": 0
           },
           {
-            "glyph_id": 283,
+            "glyph_id": 287,
             "cluster": 12,
             "cluster_end": 15,
             "advance_px": 24.0,
@@ -100,7 +100,7 @@
             "flags": 0
           },
           {
-            "glyph_id": 287,
+            "glyph_id": 291,
             "cluster": 15,
             "cluster_end": 18,
             "advance_px": 24.0,
@@ -110,7 +110,7 @@
             "flags": 0
           },
           {
-            "glyph_id": 3833,
+            "glyph_id": 3948,
             "cluster": 18,
             "cluster_end": 21,
             "advance_px": 24.0,
@@ -120,7 +120,7 @@
             "flags": 0
           },
           {
-            "glyph_id": 3387,
+            "glyph_id": 3479,
             "cluster": 21,
             "cluster_end": 24,
             "advance_px": 24.0,

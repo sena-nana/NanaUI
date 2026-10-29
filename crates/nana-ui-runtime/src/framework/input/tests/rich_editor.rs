@@ -24,7 +24,7 @@ fn fixture(
         .register_file(
             concat!(
                 env!("CARGO_MANIFEST_DIR"),
-                "/../nana-ui/assets/fonts/NotoSansSC-Regular.ttf"
+                "/../nana-ui/assets/fonts/NotoSansSC-Variable.ttf"
             ),
             &nana_text::font::FaceDescriptor::default(),
         )

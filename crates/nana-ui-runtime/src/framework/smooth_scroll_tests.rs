@@ -473,7 +473,7 @@ fn rich_editor_line_wheel_retains_its_sample_until_selection_changes() {
         .register_file(
             concat!(
                 env!("CARGO_MANIFEST_DIR"),
-                "/../nana-ui/assets/fonts/NotoSansSC-Regular.ttf"
+                "/../nana-ui/assets/fonts/NotoSansSC-Variable.ttf"
             ),
             &nana_text::font::FaceDescriptor::default(),
         )

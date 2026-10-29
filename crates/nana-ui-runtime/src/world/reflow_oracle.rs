@@ -153,7 +153,7 @@ pub(super) fn bundled_face_shaper() -> NanaTextEngineShaper {
         .register_file(
             concat!(
                 env!("CARGO_MANIFEST_DIR"),
-                "/../nana-ui/assets/fonts/NotoSansSC-Regular.ttf"
+                "/../nana-ui/assets/fonts/NotoSansSC-Variable.ttf"
             ),
             &FaceDescriptor::default(),
         )

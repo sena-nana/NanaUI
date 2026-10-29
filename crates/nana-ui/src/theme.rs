@@ -257,12 +257,10 @@ impl ThemeAppearanceExt for ThemeAppearance {
     }
 }
 
-// The faces themselves live in `nana-ui-core` so that the theme, the SVG
+// The face itself lives in `nana-ui-core` so that the theme, the SVG
 // rasterizer and Canvas2D all reference one copy — see `nana_ui_core::fonts`.
 #[cfg(feature = "bundled-fonts")]
-pub use nana_ui_core::fonts::{
-    UI_FONT_BOLD, UI_FONT_MEDIUM, UI_FONT_REGULAR, UI_FONT_SEMIBOLD, ui_font_sources,
-};
+pub use nana_ui_core::fonts::{UI_FONT_REGULAR, ui_font_sources};
 
 #[cfg(test)]
 mod tests {

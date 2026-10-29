@@ -245,7 +245,12 @@ impl OutlineRasterizer {
             .context
             .builder(font)
             .size(size)
-            .hint(!key.synthesis.contains(GlyphSynthesis::DISABLE_HINTING));
+            .hint(!key.synthesis.contains(GlyphSynthesis::DISABLE_HINTING))
+            // swash keeps the coordinates in the shared context and neither
+            // `builder` nor `variations` resets them: without this a
+            // default-instance glyph is drawn at whatever axis position the
+            // previous glyph of any variable face asked for.
+            .normalized_coords(std::iter::empty::<swash::NormalizedCoord>());
         if let Some(coords) = coords {
             builder = builder.variations(
                 coords

@@ -374,7 +374,7 @@ family。名字解析不到 face 就跳过。hermetic 测试一律从 `FallbackP
 ### 测试
 
 - `tests/font_system_is_hermetic_and_deterministic.rs`：只用签入的 fixture 与 `nana-ui-core`
-  打包的四个 Noto Sans SC 字重。策略在测试里搭。覆盖 preferred family、weight / style /
+  打包的 Noto Sans SC 可变字体（`wght` 400–700，四档界面字重都落在轴上、不合成粗体）。策略在测试里搭。覆盖 preferred family、weight / style /
   stretch、可变范围、CJK / 语言提示、emoji 彩色候选、Latin + CJK 混排、缺字、`BEVL` / `wdth`、
   `wght` 优先级、注册 / 卸载 / 替换与代际、同 query 复用、线程可移交。
 - `tests/font_system_platform_acceptance.rs`：读本机字体。`#[ignore]`。在目标平台上手动跑。
@@ -489,6 +489,11 @@ fallback 链。把全部 26 条语料按**逻辑簇**逐字段对 golden：glyph
 （`noto-sans-sc`）当 family 名去查「请求的 face」。查不到。于是所有 glyph 都没有
 `FALLBACK_FONT`。包括 `TX-B02` / `TX-B03` 里确实来自 Arabic fallback 字体的 glyph。已修正为
 family 名并重新 bless。golden 的变化只有这两条用例里 20 处 `flags: 0 → 2`。
+
+捆绑字体从四个静态字重换成一个可变字体（`wght` 400–700，默认实例 Regular）时，Regular 的轮廓、
+advance 与 GSUB/GPOS 不变，但子集里的 glyph 重新编号。golden 因此只做了 glyph id 的机械重编号：
+有码位的 glyph 按 cmap 对应，无码位的按轮廓与 advance 唯一匹配；5 条用例、39 处 `glyph_id`，
+其余字段一字未动。这不是用新引擎重录。
 
 ### 测试
 

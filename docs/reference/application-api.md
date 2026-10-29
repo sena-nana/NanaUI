@@ -123,7 +123,7 @@ Android、XR 与 accessibility provider 的设备验收。
 | --- | --- |
 | `hosted` | `run_runtime`、winit 0.31-line（workspace git pin，非 crates.io 0.31.0）、AccessKit；隐含 `gpu` |
 | `gpu` | `SceneWgpuPainter`、`HostTexture`、`GpuTextureView`、`GpuView` |
-| `bundled-fonts` | 嵌入 Noto Sans SC |
+| `bundled-fonts` | 嵌入 Noto Sans SC 可变字体（`wght` 400–700）并注册为界面字体 |
 | `components` | 下面组件族的聚合 |
 | `full` | fonts + components + hosted + syntax-highlighting |
 | `calendar` / `charts` / `controls` / `graph-canvas` / `image-viewer` / `rich-text` | 打开对应 runtime/scene `cfg` 并再导出该族。未启用则该族不参与编译。历史 no-op 别名（`overlays`、`selects`、`qr-code` 等）已删除，改用 `components` / `full` |

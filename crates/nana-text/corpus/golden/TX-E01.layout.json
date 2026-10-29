@@ -50,7 +50,7 @@
         "font_size_px": 24.0,
         "glyphs": [
           {
-            "glyph_id": 243,
+            "glyph_id": 247,
             "cluster": 0,
             "cluster_end": 3,
             "advance_px": 24.0,
@@ -60,7 +60,7 @@
             "flags": 0
           },
           {
-            "glyph_id": 245,
+            "glyph_id": 249,
             "cluster": 3,
             "cluster_end": 6,
             "advance_px": 24.0,
@@ -102,7 +102,7 @@
         "font_size_px": 30.0,
         "glyphs": [
           {
-            "glyph_id": 247,
+            "glyph_id": 251,
             "cluster": 6,
             "cluster_end": 9,
             "advance_px": 30.0,
@@ -112,7 +112,7 @@
             "flags": 0
           },
           {
-            "glyph_id": 249,
+            "glyph_id": 253,
             "cluster": 9,
             "cluster_end": 12,
             "advance_px": 30.0,

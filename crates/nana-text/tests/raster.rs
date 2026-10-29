@@ -97,3 +97,45 @@ fn a_paragraph_rasterizes_into_placed_coverage() {
     // An outline reaches past the glyph it strokes.
     assert!(stroked[0].image.width > glyphs[0].image.width);
 }
+
+/// One rasterizer draws every weight of the bundled variable face. A glyph at
+/// the default instance must come out the same whether or not a heavier
+/// instance was drawn just before it: the scale context is shared, and its
+/// axis coordinates must not leak from one glyph into the next.
+#[test]
+fn a_default_instance_glyph_does_not_inherit_the_previous_glyphs_axis() {
+    let engine = engine();
+    let at_weight = |weight: u16| {
+        let mut counters = TextWorkCounters::default();
+        let layout = lock_text_engine(&engine).layout(
+            TextKind::Label,
+            &TextSource::new("中"),
+            &TextStyle {
+                font_size_px: 32.0,
+                font_weight: weight,
+                ..TextStyle::default()
+            },
+            &TextConstraints::default(),
+            &mut counters,
+        );
+        (*layout).clone()
+    };
+    let regular = at_weight(400);
+    let bold = at_weight(700);
+    let ink = |rasterizer: &mut OutlineRasterizer, layout: &TextLayout| -> u64 {
+        rasterize_layout(rasterizer, layout, 1.0, [0.0, 0.0], GlyphRenderMode::Mask)
+            .iter()
+            .flat_map(|glyph| glyph.image.data.iter())
+            .map(|value| u64::from(*value))
+            .sum()
+    };
+
+    let mut fresh = OutlineRasterizer::new(Arc::clone(&engine));
+    let regular_alone = ink(&mut fresh, &regular);
+
+    let mut shared = OutlineRasterizer::new(Arc::clone(&engine));
+    let bold_ink = ink(&mut shared, &bold);
+    let regular_after_bold = ink(&mut shared, &regular);
+    assert!(bold_ink > regular_alone, "{bold_ink} > {regular_alone}");
+    assert_eq!(regular_after_bold, regular_alone);
+}
