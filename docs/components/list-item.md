@@ -107,6 +107,8 @@ widget(ListItem::new("模型").tools_rest(RowToolsRest::Reserve))
 
 三个槽是这一行自己的子节点，顺序是 leading、content、trailing。`.leading(…)` 放在标签前，`.content(…)` 代替标签，`.trailing(…)` 放在标签后。模板里写成 `<template #leading>`、`#content`、`#trailing`。挂了 content 之后，`detail` 不再占行尾。
 
+前导槽或尾随槽里的子节点隐藏（`hidden`，或 `display: none`）时，这一行按没有这个槽来排：前导槽隐藏后，标签从内边距起排，尾随槽仍在行尾；再显示时恢复原来的排法，不必重建这一行。
+
 | 插槽 | 说明 |
 | --- | --- |
 | `#leading` / `.leading` | 放在标签前 |

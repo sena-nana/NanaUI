@@ -3919,6 +3919,9 @@ impl UiWorld {
         if writing != style.writing_context() && style.has_logical_box_edges() {
             Arc::make_mut(&mut style).resolve_logical_box_edges_in(writing);
         }
+        if self.lone_list_trailing(id, &style) {
+            Arc::make_mut(&mut style).justify_content = nana_ui_core::JustifySpec::End;
+        }
         if let Some(overlay) = self.parent_triggered_overlay(id) {
             apply_triggered_overlay(Arc::make_mut(&mut style), overlay);
             if self.groups_action_menu_items(id, &style) {
@@ -3928,6 +3931,28 @@ impl UiWorld {
             }
         }
         style
+    }
+
+    /// Whether `id` is a list row that spreads its leading and trailing
+    /// slots to its two ends while the leading slot (and a content slot)
+    /// lays out no box. The row then lays out as one with no leading slot:
+    /// its trailing slot stays at the end rather than becoming the only item
+    /// `SpaceBetween` puts at the start (#333). A slot's visibility is its
+    /// own style, so the row's projection cannot see it change.
+    fn lone_list_trailing(&self, id: StableNodeId, style: &nana_ui_core::LayoutStyle) -> bool {
+        if style.justify_content != nana_ui_core::JustifySpec::SpaceBetween {
+            return false;
+        }
+        let Some(StandardVisual::ListItem {
+            leading: Some(leading),
+            content,
+            ..
+        }) = self.nodes.visual(id)
+        else {
+            return false;
+        };
+        let no_box = |slot: StableNodeId| !self.contains(slot) || self.omits_layout_box(slot);
+        no_box(*leading) && content.is_none_or(no_box)
     }
 
     /// Whether `id`, a child of an open action menu, is a plain column that
@@ -6309,6 +6334,7 @@ mod issue266;
 mod issue268;
 mod issue269;
 mod issue270;
+mod issue333;
 mod issue386;
 mod issue387;
 mod reflow_oracle;

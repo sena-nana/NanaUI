@@ -25,7 +25,7 @@ Button、Chip 和 ActionMenuItem 的旧 API 保持不变。组件内容声明为
 | Button / Chip | 2 | 已迁移：文字、前后图标和 spinner 是 Flex parts；intrinsic measure 与段落预算读同一组部件（`chrome_extent` / `text_budget`）；绘制保留 chrome 与语义 |
 | ActionMenuItem | 2 | 已迁移 icon / label / hint；hint 更新复用原节点 |
 | Checkbox | 2 | 已迁移：指示框是 `LeadingContent`，标签是 `TextContent`，标签取余下宽度。intrinsic measure、段落预算、placement 与绘制都读 `UiWorld::checkbox_parts`，原先 measure、`text_shape_constraints` 与 geometry 各算一遍指示框的占位，现已删除；Scene 不再自带指示框和标签的让位。TextRun 片段落在标签部件里（此前落在整个内容盒，与指示框重叠）。RTL 与以前一样不镜像 |
-| ListItem / SidebarRow / FileTab | 1 + 2 | retained slots 使用已有 child placements；fallback label/note/detail 已迁移，隐藏 slot 不占文字预算 |
+| ListItem / SidebarRow / FileTab | 1 + 2 | retained slots 使用已有 child placements；fallback label/note/detail 已迁移，隐藏 slot 不占文字预算；前导槽没有盒子时，布局把这一行的 `SpaceBetween` 换成 `End`，尾随槽留在行尾（#333） |
 | FormField / LabeledValue | 1 + 2 | LabeledValue 已发布 Label/Value，action 是普通 child；FormField 已发布 Label/Hint/LeadingContent，control 是普通 child |
 | Card | 2 | 已发布 Header/Spinner，body 使用普通 children 与 padding |
 | Panel | 1 | 本来就是普通 Flex 列（`Stack::fill_column`），标题、动作、正文都是子节点，没有组件几何，无需迁移 |
