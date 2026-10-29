@@ -611,10 +611,10 @@ impl AppContext {
                 && let Some(emit) = self
                     .views
                     .get(&id)
-                    .and_then(|view| self.secondary_presses.get(&view.as_ref().type_id()))
-                    .cloned()
+                    .and_then(|view| self.emitters.get(&view.as_ref().type_id()))
+                    .copied()
             {
-                emit(self, id, press)?;
+                super::emit_erased(self, emit, id, press)?;
                 return Ok(Some(id));
             }
             // Reorder-list row bodies are hit-tested at the list shell (row

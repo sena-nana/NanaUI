@@ -201,7 +201,7 @@ pub(crate) struct RegisteredComponentType {
     reads_child_derived_spec: bool,
     /// Type-erased `AppContext::reproject_component`, for views a host bound
     /// through this registry rather than created through the context.
-    pub(crate) reproject: Option<crate::framework::ReprojectFn>,
+    pub(crate) reproject: Option<crate::framework::UpdateErasedFn>,
     /// Installs the type's hooks (activation, assembler) for a view bound
     /// through this registry. `None` for identity-only entries.
     pub(crate) register: Option<fn(&mut crate::AppContext)>,
@@ -398,7 +398,7 @@ pub(crate) fn registerable_entry<C: RegisterableComponent>()
             rust_type: Some(TypeId::of::<C>()),
             binder: bind_registerable::<C>(),
             reads_child_derived_spec: C::READS_CHILD_DERIVED_SPEC,
-            reproject: Some(crate::framework::reproject_erased::<C>),
+            reproject: Some(crate::framework::update_erased::<C>),
             register: Some(crate::AppContext::register_view_type::<C>),
         },
         normalized_tags(C::TAGS),

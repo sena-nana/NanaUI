@@ -243,12 +243,12 @@ impl AppContext {
         let Some(emit) = self
             .views
             .get(&id)
-            .and_then(|view| self.file_drops.get(&view.as_ref().type_id()))
-            .cloned()
+            .and_then(|view| self.emitters.get(&view.as_ref().type_id()))
+            .copied()
         else {
             return Ok(());
         };
-        emit(self, id, event)
+        super::emit_erased(self, emit, id, event)
     }
 
     /// Collects the invalid fields under `root`, in document order.

@@ -69,19 +69,19 @@ use crate::Dialog;
 use crate::{
     AccessibilityAction, AccessibilityActionRequest, ActionMenu, ActionMenuItem, Activate,
     AnimationFrame, Button, Checkbox, Chip, CodeEditing, CommandPalette, ComponentView,
-    ContextMenu, ContextMenuEvent, DocumentId, Dropdown, EmptyState, FileDropEvent,
-    FocusWithinChanged, FormField, FrameProfile, FrameProfiler, FrameStage, HoverCard, IconButton,
-    LabeledValue, List, ListItem, ListItemSlots, ModalSlots, ModalSurface, MountState,
-    MutationQueue, NodeKind, NumberChanged, NumberInput, OverlayChanged, OverlayHost,
-    PointerHoverChanged, Popover, PopoverClosed, PopoverToggled, Progress, ProgressCancelled,
-    RangeAdjustment, RangeChanged, RangeDragging, RangeField, RangeInput, RovingFocusIntent,
-    RowToolsPresence, ScrollAxes, ScrollChanged, ScrollLaidOut, ScrollMetrics, ScrollOffset,
-    ScrollView, ScrollViewportChanged, SearchDropdown, SearchDropdownEvent, SecondaryPress,
-    SegmentedControl, SegmentedOption, SegmentedSelectionRequested, Select,
-    SettingsCollapsibleCard, SidebarFooterButton, SidebarRow, SidebarSection, SizeChanged,
-    StableNodeId, Switch, Table, TableCell, TableRow, Tabs, TextArea, TextChanged, TextClamped,
-    TextInput, TextInputState, TextPresenter, TextSelection, ToggleChanged, Tooltip, TreeView,
-    UiWorld, UiWorldError, Workspace, XYPad, XYPadDragState, XYPadEvent,
+    ContextMenu, ContextMenuEvent, DocumentId, Dropdown, EmptyState, FocusWithinChanged, FormField,
+    FrameProfile, FrameProfiler, FrameStage, HoverCard, IconButton, LabeledValue, List, ListItem,
+    ListItemSlots, ModalSlots, ModalSurface, MountState, MutationQueue, NodeKind, NumberChanged,
+    NumberInput, OverlayChanged, OverlayHost, PointerHoverChanged, Popover, PopoverClosed,
+    PopoverToggled, Progress, ProgressCancelled, RangeAdjustment, RangeChanged, RangeDragging,
+    RangeField, RangeInput, RovingFocusIntent, RowToolsPresence, ScrollAxes, ScrollChanged,
+    ScrollLaidOut, ScrollMetrics, ScrollOffset, ScrollView, ScrollViewportChanged, SearchDropdown,
+    SearchDropdownEvent, SecondaryPress, SegmentedControl, SegmentedOption,
+    SegmentedSelectionRequested, Select, SettingsCollapsibleCard, SidebarFooterButton, SidebarRow,
+    SidebarSection, SizeChanged, StableNodeId, Switch, Table, TableCell, TableRow, Tabs, TextArea,
+    TextChanged, TextClamped, TextInput, TextInputState, TextPresenter, TextSelection,
+    ToggleChanged, Tooltip, TreeView, UiWorld, UiWorldError, Workspace, XYPad, XYPadDragState,
+    XYPadEvent,
     component_registry::{
         ComponentBindKind, ComponentBindRequest, ComponentRegistry, ComponentTypeId,
         RegisterableComponent, SemanticSpec, alias_entry, registerable_entry, tag_entry,
@@ -657,14 +657,6 @@ impl ComponentLifecycle {
 type ActivationFn =
     Arc<dyn Fn(&mut AppContext, StableNodeId) -> Result<bool, FrameworkError> + Send + Sync>;
 
-/// Emit [`SecondaryPress`] on a node whose concrete component type the caller
-/// no longer knows. Registered per type when a component is created.
-type SecondaryPressFn = Arc<
-    dyn Fn(&mut AppContext, StableNodeId, SecondaryPress) -> Result<(), FrameworkError>
-        + Send
-        + Sync,
->;
-
 /// A toast's dismiss timer. The lifecycle clock can be stale when a toast
 /// mounts or resumes after an idle stretch, so the timer first arms with a
 /// one-frame timeline and only counts from the frame that wakes for it.
@@ -685,30 +677,6 @@ pub(crate) enum ToastTimer {
     /// Ran out and asked for dismissal; it does not count again.
     Expired,
 }
-
-/// Emit [`PointerHoverChanged`] on a node whose concrete component type the
-/// caller no longer knows. Registered per type when a component is created.
-type PointerHoverFn = Arc<
-    dyn Fn(&mut AppContext, StableNodeId, PointerHoverChanged) -> Result<(), FrameworkError>
-        + Send
-        + Sync,
->;
-
-/// Emit [`FocusWithinChanged`] on a node whose concrete component type the
-/// caller no longer knows. Registered per type when a component is created.
-type FocusWithinFn = Arc<
-    dyn Fn(&mut AppContext, StableNodeId, FocusWithinChanged) -> Result<(), FrameworkError>
-        + Send
-        + Sync,
->;
-
-/// Emit [`FileDropEvent`] on a node whose concrete component type the caller
-/// no longer knows. Registered per type when a component is created.
-type FileDropFn = Arc<
-    dyn Fn(&mut AppContext, StableNodeId, FileDropEvent) -> Result<(), FrameworkError>
-        + Send
-        + Sync,
->;
 
 /// Reproject a component view whose concrete type the scheduler no longer
 /// knows, via the typed `update_component` pipeline captured at stamp time.
@@ -858,8 +826,12 @@ impl<V: View> ViewContext<'_, V> {
     }
 
     pub fn emit<E: Send + 'static>(&mut self, event: E) {
-        self.events
-            .push_back((self.entity.id, TypeId::of::<E>(), Box::new(event)));
+        self.emit_boxed(TypeId::of::<E>(), Box::new(event));
+    }
+
+    /// [`Self::emit`] for an event already boxed with its `TypeId`.
+    pub(crate) fn emit_boxed(&mut self, type_id: TypeId, event: Box<dyn Any + Send>) {
+        self.events.push_back((self.entity.id, type_id, event));
     }
 
     /// Queue a `RuntimeProgram::Message` for the Scene host, keeping only the
@@ -1133,9 +1105,10 @@ pub struct AppContext {
     activations: HashMap<TypeId, ActivationFn, crate::BuildIdHasher>,
     /// Pointer hooks extensions registered ([`ExtensionRegistrar::register_pointer`]).
     pointer_extensions: HashMap<TypeId, &'static dyn hooks::ErasedPointer, crate::BuildIdHasher>,
-    secondary_presses: HashMap<TypeId, SecondaryPressFn, crate::BuildIdHasher>,
-    pointer_hovers: HashMap<TypeId, PointerHoverFn, crate::BuildIdHasher>,
-    focus_withins: HashMap<TypeId, FocusWithinFn, crate::BuildIdHasher>,
+    /// [`update_erased`] per component type stamped through this context:
+    /// emits the secondary-press, hover, focus-within and file-drop events on
+    /// a node whose concrete type the router no longer knows.
+    emitters: HashMap<TypeId, UpdateErasedFn, crate::BuildIdHasher>,
     /// Per document, the focused node the focus-within listeners last heard
     /// about and the listeners told it is inside them.
     focus_within: HashMap<DocumentId, (StableNodeId, Vec<StableNodeId>)>,
@@ -1143,9 +1116,8 @@ pub struct AppContext {
     /// out being updated.
     pending_focus_within: Vec<(StableNodeId, bool)>,
     draining_focus_within: bool,
-    file_drops: HashMap<TypeId, FileDropFn, crate::BuildIdHasher>,
-    /// [`reproject_erased`] per component type created through this context.
-    reprojectors: HashMap<TypeId, ReprojectFn, crate::BuildIdHasher>,
+    /// [`update_erased`] per component type created through this context.
+    reprojectors: HashMap<TypeId, UpdateErasedFn, crate::BuildIdHasher>,
     /// [`ComponentView::BEHAVIOR`] per component type created through this
     /// context.
     behaviors: HashMap<TypeId, hooks::ErasedBehavior, crate::BuildIdHasher>,
@@ -1535,13 +1507,10 @@ impl AppContext {
             components: ComponentRegistry::default(),
             activations: HashMap::default(),
             pointer_extensions: HashMap::default(),
-            secondary_presses: HashMap::default(),
-            pointer_hovers: HashMap::default(),
-            focus_withins: HashMap::default(),
+            emitters: HashMap::default(),
             focus_within: HashMap::new(),
             pending_focus_within: Vec::new(),
             draining_focus_within: false,
-            file_drops: HashMap::default(),
             reprojectors: HashMap::default(),
             behaviors: HashMap::default(),
             laid_out_notices: HashSet::default(),
@@ -2596,10 +2565,10 @@ impl AppContext {
                 let emit = self
                     .views
                     .get(&id)
-                    .and_then(|view| self.pointer_hovers.get(&view.as_ref().type_id()))
-                    .cloned();
+                    .and_then(|view| self.emitters.get(&view.as_ref().type_id()))
+                    .copied();
                 if let Some(emit) = emit {
-                    emit(self, id, PointerHoverChanged { hovered })?;
+                    emit_erased(self, emit, id, PointerHoverChanged { hovered })?;
                 }
             }
         }
@@ -2686,7 +2655,7 @@ impl AppContext {
                     waiting.push((id, focused));
                     continue;
                 };
-                let emit = self.focus_withins.get(&view.as_ref().type_id()).cloned();
+                let emit = self.emitters.get(&view.as_ref().type_id()).copied();
                 if self.is_tools_row(id) {
                     outcome = outcome
                         .and(self.sync_row_tools(Some(id), |row| row.focus_within = focused));
@@ -2698,7 +2667,8 @@ impl AppContext {
                     continue;
                 }
                 if let Some(emit) = emit {
-                    outcome = outcome.and(emit(self, id, FocusWithinChanged { focused }));
+                    outcome =
+                        outcome.and(emit_erased(self, emit, id, FocusWithinChanged { focused }));
                 }
             }
         }
@@ -3813,7 +3783,7 @@ impl AppContext {
         &mut self,
         entity: Entity<C>,
     ) -> Result<(), FrameworkError> {
-        self.update_component_inner(entity, |_, _| {}, Projection::Always)
+        update_erased::<C>(self, entity.id, Projection::Always, None)
     }
 
     fn update_component_inner<C: ComponentView, R>(
@@ -3953,6 +3923,7 @@ impl AppContext {
                     } else {
                         Projection::ProjectOnly
                     },
+                    None,
                 ),
                 None if observer.reassemble => {
                     self.run_component_assembler(observer.id, observer.type_id)
@@ -3984,14 +3955,14 @@ impl AppContext {
             .get(&id)
             .and_then(|view| self.reprojector(view.as_ref().type_id()));
         match reproject {
-            Some(reproject) => reproject(self, id, projection),
+            Some(reproject) => reproject(self, id, projection, None),
             None => Ok(()),
         }
     }
 
     /// The type-erased [`Self::reproject_component`] for a component type,
     /// known once any instance of it was created or its type registered.
-    fn reprojector(&self, type_id: TypeId) -> Option<ReprojectFn> {
+    fn reprojector(&self, type_id: TypeId) -> Option<UpdateErasedFn> {
         self.reprojectors.get(&type_id).copied().or_else(|| {
             self.components
                 .get_by_rust(type_id)
@@ -4461,16 +4432,51 @@ pub(super) enum Projection {
     ProjectOnly,
 }
 
-/// Projects a component of a type known only by `TypeId`.
-pub(crate) type ReprojectFn =
-    fn(&mut AppContext, StableNodeId, Projection) -> Result<(), FrameworkError>;
+/// Updates a component of a type known only by `TypeId`: projects it per
+/// `projection` and, with a payload, emits that event from it first.
+///
+/// One instantiation per component type serves every type-erased route —
+/// reprojection, the per-node reproject hooks and the secondary-press,
+/// hover, focus-within and file-drop emitters — so the
+/// `update_component_inner` body is not copied once per route.
+pub(crate) type UpdateErasedFn = fn(
+    &mut AppContext,
+    StableNodeId,
+    Projection,
+    Option<(TypeId, Box<dyn Any + Send>)>,
+) -> Result<(), FrameworkError>;
 
-pub(crate) fn reproject_erased<C: ComponentView>(
+#[inline(never)]
+pub(crate) fn update_erased<C: ComponentView>(
     context: &mut AppContext,
     id: StableNodeId,
     projection: Projection,
+    payload: Option<(TypeId, Box<dyn Any + Send>)>,
 ) -> Result<(), FrameworkError> {
-    context.update_component_inner(Entity::<C>::from_stable_id(id), |_, _| {}, projection)
+    context.update_component_inner(
+        Entity::<C>::from_stable_id(id),
+        move |_, cx| {
+            if let Some((type_id, event)) = payload {
+                cx.emit_boxed(type_id, event);
+            }
+        },
+        projection,
+    )
+}
+
+/// Emits `event` from the node `id` through its type's [`update_erased`].
+fn emit_erased<E: Send + 'static>(
+    context: &mut AppContext,
+    update: UpdateErasedFn,
+    id: StableNodeId,
+    event: E,
+) -> Result<(), FrameworkError> {
+    update(
+        context,
+        id,
+        Projection::IfChanged,
+        Some((TypeId::of::<E>(), Box::new(event))),
+    )
 }
 
 /// [`AppContext::reproject_component`] for the per-node reproject hooks.
@@ -4478,7 +4484,7 @@ fn reproject_typed<C: ComponentView>(
     context: &mut AppContext,
     id: StableNodeId,
 ) -> Result<(), FrameworkError> {
-    context.reproject_component(Entity::<C>::from_stable_id(id))
+    update_erased::<C>(context, id, Projection::Always, None)
 }
 
 /// Menu surfaces: their open motion is only started for a mounted node.

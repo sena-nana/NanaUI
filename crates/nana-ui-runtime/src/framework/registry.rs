@@ -169,7 +169,7 @@ impl AppContext {
         }
         self.reprojectors
             .entry(type_id)
-            .or_insert(super::reproject_erased::<C>);
+            .or_insert(super::update_erased::<C>);
         self.behaviors
             .insert(type_id, super::hooks::ErasedBehavior::of::<C>());
         if let Some(install) = C::BEHAVIOR.hooks {
@@ -221,40 +221,9 @@ impl AppContext {
         if C::wants_hover_tracking() {
             self.component_lifecycle.hover_cards.entry(id).or_default();
         }
-        self.secondary_presses
+        self.emitters
             .entry(TypeId::of::<C>())
-            .or_insert_with(|| {
-                Arc::new(|context: &mut AppContext, id, press| {
-                    context.update_component(Entity::<C>::from_stable_id(id), |_, cx| {
-                        cx.emit(press);
-                    })
-                })
-            });
-        self.pointer_hovers
-            .entry(TypeId::of::<C>())
-            .or_insert_with(|| {
-                Arc::new(|context: &mut AppContext, id, hover| {
-                    context.update_component(Entity::<C>::from_stable_id(id), |_, cx| {
-                        cx.emit(hover);
-                    })
-                })
-            });
-        self.focus_withins
-            .entry(TypeId::of::<C>())
-            .or_insert_with(|| {
-                Arc::new(|context: &mut AppContext, id, focus| {
-                    context.update_component(Entity::<C>::from_stable_id(id), |_, cx| {
-                        cx.emit(focus);
-                    })
-                })
-            });
-        self.file_drops.entry(TypeId::of::<C>()).or_insert_with(|| {
-            Arc::new(|context: &mut AppContext, id, event| {
-                context.update_component(Entity::<C>::from_stable_id(id), |_, cx| {
-                    cx.emit(event);
-                })
-            })
-        });
+            .or_insert(super::update_erased::<C>);
     }
 
     pub(super) fn allocate_id(&mut self) -> StableNodeId {
