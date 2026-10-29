@@ -2061,6 +2061,7 @@ impl UiWorld {
                             | crate::LayoutPartKind::Label
                             | crate::LayoutPartKind::Value
                             | crate::LayoutPartKind::Header
+                            | crate::LayoutPartKind::Indicator
                     )
                 })
                 .eq(extra);
