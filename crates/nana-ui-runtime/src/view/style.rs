@@ -119,45 +119,58 @@ pub struct StyleSite {
     composed: Mutex<Option<Composed>>,
 }
 
+/// How many of the bases a site saw last it keeps alive itself.
+const RECENT_BASES: usize = 4;
+
 /// A site's bases, compositions and responsive rules. Held weakly by base:
-/// a base no instance keeps any more takes what was made from it with it at
+/// a base no instance keeps any more, and that is not among the last
+/// [`RECENT_BASES`] the site saw, takes what was made from it with it at
 /// the next prune.
 #[derive(Default)]
 struct Composed {
     /// The distinct bases seen, one per value.
     bases: Vec<Weak<LayoutStyle>>,
+    /// The last few distinct bases, held: an element without conditional
+    /// classes swaps its base for the composition, so nothing else keeps
+    /// the base, and the next equal element would compose again.
+    recent: Vec<Arc<LayoutStyle>>,
     /// `(base pointer, active classes) -> composed`.
     by_base: HashMap<(usize, u64), (Weak<LayoutStyle>, Arc<LayoutStyle>)>,
     /// `(base pointer, active classes) -> the rule its guarded rules give`.
     responsive: HashMap<(usize, u64), (Weak<LayoutStyle>, Option<Arc<ResponsiveRule>>)>,
     /// Entries at the last prune; the next runs when that doubles.
     pruned_at: usize,
+    /// Compositions made, for tests.
+    #[cfg(test)]
+    compositions: usize,
 }
 
 impl Composed {
-    /// The live base equal to `base`, `base` itself when none is. Pointers
-    /// first: a value comparison of a whole layout runs only for a base
-    /// pointer not seen before.
+    /// The live base equal to `base`, `base` itself when none is, kept among
+    /// the recent ones. Pointers first: a value comparison of a whole layout
+    /// runs only for a base pointer not seen before.
     fn canonical(&mut self, base: &Arc<LayoutStyle>) -> Arc<LayoutStyle> {
         let known = |weak: &Weak<LayoutStyle>| weak.upgrade();
-        if let Some(found) = self
+        let found = self
             .bases
             .iter()
             .filter_map(known)
             .find(|known| Arc::ptr_eq(known, base))
-        {
-            return found;
+            .or_else(|| {
+                self.bases
+                    .iter()
+                    .filter_map(known)
+                    .find(|known| **known == **base)
+            })
+            .unwrap_or_else(|| {
+                self.bases.push(Arc::downgrade(base));
+                Arc::clone(base)
+            });
+        if !self.recent.iter().any(|kept| Arc::ptr_eq(kept, &found)) {
+            self.recent.truncate(RECENT_BASES - 1);
+            self.recent.insert(0, Arc::clone(&found));
         }
-        if let Some(found) = self
-            .bases
-            .iter()
-            .filter_map(known)
-            .find(|known| **known == **base)
-        {
-            return found;
-        }
-        self.bases.push(Arc::downgrade(base));
-        Arc::clone(base)
+        found
     }
 
     /// Drop what belongs to bases nothing holds, once the maps have doubled.
@@ -270,6 +283,10 @@ impl StyleSite {
             .filter(|(needs, _, query)| query.is_none() && needs & !active == 0)
             .map(|(_, patch, _)| patch.value());
         let layout = Arc::new(apply(base, applying));
+        #[cfg(test)]
+        {
+            composed.compositions += 1;
+        }
         composed
             .by_base
             .insert(key, (Arc::downgrade(base), Arc::clone(&layout)));
@@ -358,6 +375,15 @@ impl StyleSite {
             breakpoints,
             variants,
         )
+    }
+
+    #[cfg(test)]
+    fn compositions(&self) -> usize {
+        self.composed
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .as_ref()
+            .map_or(0, |composed| composed.compositions)
     }
 
     #[cfg(test)]
@@ -931,6 +957,57 @@ mod site_tests {
             SITE.composed_entries() <= 128,
             "{} entries for bases nothing holds",
             SITE.composed_entries()
+        );
+    }
+
+    static PAD: StylePatch = StylePatch::new(r#"{"padding":{"Px":4.0}}"#);
+    static PADDED: [SheetRule; 1] = [SheetRule {
+        classes: &[0],
+        patch: &PAD,
+        query: None,
+    }];
+    static PADDED_SHEET: Sheet = Sheet::new(&PADDED, &[]);
+
+    /// Mounting more of the same styled rows composes nothing new: an
+    /// element without conditional classes drops its base for the
+    /// composition, and the next equal one still finds it (#348).
+    #[test]
+    fn equal_elements_compose_once_however_many_mount() {
+        use crate::view::{button, column, row, text};
+        use crate::{AppContext, DocumentId};
+        let class = Class::new(&PADDED_SHEET, 0);
+        let rows = |from: usize, count: usize| {
+            (from..from + count)
+                .map(|i| {
+                    row().class(class).children((
+                        text(format!("row {i}")).class(class),
+                        button(format!("button {i}")).class(class),
+                    ))
+                })
+                .collect::<Vec<_>>()
+        };
+        let mut cx = AppContext::new();
+        let document = DocumentId::new(1).unwrap();
+        let list = cx
+            .mount_view_root(document, || column().children(rows(0, 1)))
+            .unwrap()
+            .roots()[0];
+        let (site, _) = PADDED_SHEET.resolve(&[0], &[]);
+        let first = site.compositions();
+        assert!(first > 0, "the first row composes its elements");
+        cx.mount_view(list, || rows(1, 300)).unwrap();
+        assert_eq!(
+            site.compositions(),
+            first,
+            "300 more equal rows composed again"
+        );
+        let padding = |id| cx.world().node_style(id).unwrap().layout.padding;
+        let children = cx.world().node(list).unwrap().children.to_vec();
+        assert_eq!(children.len(), 301);
+        assert!(
+            children
+                .iter()
+                .all(|row| padding(*row) == Some(LengthSpec::Px(4.0)))
         );
     }
 
