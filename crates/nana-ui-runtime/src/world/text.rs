@@ -3478,12 +3478,6 @@ impl UiWorld {
         }
         let padding = self.used_layout_padding(id);
         let border = source.layout.resolved_border_edges();
-        let leading_visual = match self.nodes.visual(id) {
-            Some(StandardVisual::Switch { .. }) => {
-                self.theme.metrics().switch.track_width + self.theme.metrics().switch.label_gap
-            }
-            _ => 0.0,
-        };
         let counter_reserved = self
             .text_input_character_counter(id)
             .map(|counter| {
@@ -3500,7 +3494,6 @@ impl UiWorld {
                     - padding.right
                     - border.left
                     - border.right
-                    - leading_visual
                     - counter_reserved)
                     .max(0.0);
                 let content = crate::layout_engine::Size::new(
@@ -3647,7 +3640,6 @@ pub(crate) fn text_visual_key(visual: Option<&StandardVisual>) -> (u8, u32) {
             nana_ui_core::ControlSize::Medium => 2,
             nana_ui_core::ControlSize::Large => 3,
         },
-        Some(StandardVisual::Switch { .. }) => 4,
         _ => 0,
     };
     (path, indicator)

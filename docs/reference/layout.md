@@ -142,7 +142,11 @@ parts（`layout_engine::parts`），用 retained Flex 的同一组求解函数�
 和 Scene 只读发布的盒子、附加绘制数据。文本片段（TextLine/TextRun）落在 `TextContent`
 部件里。
 
-已迁移：Button、Chip、ActionMenuItem、Checkbox、ListItem/SidebarRow/FileTab 的文字部件、
+部件可以嵌套方向：Switch 的一行是 track 与一个文字列，文字列再按 Flex 列解出标签和 hint，
+两次求解用同一个 `flex_parts`。部件读的主题度量没有出现在节点自己的样式里时（Switch 的
+track 与间隔），主题改了这些度量，节点照样重新测量（`visual_parts_read_theme`）。
+
+已迁移：Button、Chip、ActionMenuItem、Checkbox、Switch、ListItem/SidebarRow/FileTab 的文字部件、
 LabeledValue、FormField、Card 标题、Select 触发器。交互、数据行、文本编辑几何（菜单行、
 树行、编辑器）与图表、路径、画布不进部件。逐组件的分类和待迁移项见
 [组件内容布局与迁移审计](component-layout.md)。

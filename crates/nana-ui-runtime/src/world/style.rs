@@ -1042,6 +1042,16 @@ impl UiWorld {
         } else {
             Vec::new()
         };
+        // A control whose content parts read control metrics no style of it
+        // names (#205) lays out again when they move.
+        let part_readers = if token_layout_changed {
+            ids.iter()
+                .copied()
+                .filter(|id| super::content_parts::visual_parts_read_theme(self.nodes.visual(*id)))
+                .collect::<Vec<_>>()
+        } else {
+            Vec::new()
+        };
         let mut work = ThemeWorkCounters::default();
         work.record_paint_invalidation(ids.len());
         if !ids.is_empty() {
@@ -1082,7 +1092,7 @@ impl UiWorld {
             }
             work.record_layout_invalidation(dependents);
         }
-        work.record_layout_invalidation(modal_frames.len());
+        work.record_layout_invalidation(modal_frames.len() + part_readers.len());
         self.record_theme_work(work);
         for id in modal_frames {
             // These visuals shape several internal typography roles. A
@@ -1100,6 +1110,20 @@ impl UiWorld {
                         .union(nana_ui_core::InvalidationKind::PLACEMENT),
                     nana_ui_core::LayoutFieldMask::ALL,
                     nana_ui_core::LayoutDependencyFootprint::ALL,
+                ),
+            );
+        }
+        for id in part_readers {
+            self.record_layout_invalidation(
+                id,
+                nana_ui_core::LayoutInvalidation::new(
+                    nana_ui_core::LayoutInvalidationSource::Resource,
+                    nana_ui_core::InvalidationReason::RESOURCE,
+                    nana_ui_core::InvalidationKind::MEASURE
+                        .union(nana_ui_core::InvalidationKind::PLACEMENT),
+                    nana_ui_core::LayoutFieldMask::INTRINSIC
+                        .union(nana_ui_core::LayoutFieldMask::FLOW),
+                    nana_ui_core::LayoutDependencyFootprint::intrinsic_container(),
                 ),
             );
         }

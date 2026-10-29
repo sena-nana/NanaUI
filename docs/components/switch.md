@@ -46,6 +46,10 @@ switch("静音").loading(pending).model(muted)
 
 组件上还有 `hint`、`size`、`invalid` 和开关画在哪一侧的 `control_position`。它们不在 `<Switch>` 的字段表里。默认画在行尾，`SwitchControlPosition::End`。和复选框共用同一种 `ToggleChanged`。
 
+## 布局
+
+开关的轨道和文字是一行：轨道在 `control_position` 那一侧，隔一档主题的 `switch.label_gap`，余下的宽度是一列，标签在上、hint 在下，中间隔 `xxs`。没有标签也没有 hint 时只剩轨道，不留间隔。这些都是布局发布的部件（轨道是 `LeadingContent` 或 `TrailingContent`，标签 `Label`，hint `Hint`），intrinsic measure、摆放和绘制都读这一份：带 hint 的开关的高度由测量给出，样式里不再写 `min_height`，控件尺寸档只作下限。宽度默认铺满；写成按内容宽时只算轨道和间隔，标签文字不计入宽度。拨动、悬停和滑块的移动只改绘制，不重新布局。从右到左的方向下轨道仍在 `control_position` 指定的物理一侧，不镜像。
+
 ## 属性
 
 字段是 `label: String`、`checked: bool`、`disabled: bool`、`loading: bool`。`model` 绑定 `checked`。

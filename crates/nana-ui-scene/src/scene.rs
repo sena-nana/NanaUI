@@ -24,8 +24,7 @@ use std::sync::{Arc, OnceLock};
 use nana_ui_core::{
     BackgroundImage, BorderImageSpec, ClipPath, ColorFilter, DirSpec, DrawerSide,
     FontFeatureSetting, FontKerningSpec, FontVariationSetting, Icon, LineBreakSpec, LineHeightSpec,
-    MixBlendMode, SwitchControlPosition, WordBreakSpec, WritingModeSpec,
-    icon_y_on_text_glyph_center,
+    MixBlendMode, WordBreakSpec, WritingModeSpec, icon_y_on_text_glyph_center,
 };
 use nana_ui_runtime::{
     ComponentElevation, ComponentGeometry, ComponentTextRegion, ContrastRing, CustomRenderNode,

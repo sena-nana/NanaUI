@@ -391,40 +391,10 @@ impl UiScene {
             }) {
                 let padding = style.resolved_padding_against(Some(bounds.width));
                 let border = style.resolved_border_width();
-                // A switch that produced component geometry lays its own label
-                // out from the installed `SwitchMetrics`, and
-                // `component_owns_text` sends it down that path — this is the
-                // fallback for one that produced none (a degenerate content
-                // box). It used to be the literal `38.0`, twice, which was
-                // `30 + 8` copied by hand from the geometry arm: moving the
-                // track desynced the painter silently. Derive it from the same
-                // default the geometry arm starts from instead.
-                const SWITCH_TEXT_INSET: f32 = nana_ui_core::UI_METRICS.switch.track_width
-                    + nana_ui_core::UI_METRICS.switch.label_gap;
-                let leading_visual = match node.standard_visual {
-                    Some(StandardVisual::Switch {
-                        control_position: SwitchControlPosition::Start,
-                        ..
-                    }) => SWITCH_TEXT_INSET,
-                    _ => 0.0,
-                };
-                let trailing_visual = match node.standard_visual {
-                    Some(StandardVisual::Switch {
-                        control_position: SwitchControlPosition::End,
-                        ..
-                    }) => SWITCH_TEXT_INSET,
-                    _ => 0.0,
-                };
                 let mut text_bounds = SceneRect {
-                    x: bounds.x + border + padding.left + leading_visual,
+                    x: bounds.x + border + padding.left,
                     y: bounds.y + border + padding.top,
-                    width: (bounds.width
-                        - border * 2.0
-                        - padding.left
-                        - padding.right
-                        - leading_visual
-                        - trailing_visual)
-                        .max(0.0),
+                    width: (bounds.width - border * 2.0 - padding.left - padding.right).max(0.0),
                     height: (bounds.height - border * 2.0 - padding.top - padding.bottom).max(0.0),
                 };
                 if let Some(ComponentGeometry::ListItem {
@@ -1780,36 +1750,29 @@ impl UiScene {
                     loading,
                     loading_phase,
                     ..
-                }) => {
-                    let (track, track_background, track_border, thumb_background, border_width) =
-                        match node.component_geometry.as_deref() {
-                            Some(ComponentGeometry::Switch {
-                                control,
-                                track_background,
-                                track_border,
-                                thumb_background,
-                                border_width,
-                                ..
-                            }) => (
-                                scene_rect(*control),
-                                Some(*track_background),
-                                Some(*track_border),
-                                Some(*thumb_background),
-                                *border_width,
-                            ),
-                            _ => (
-                                SceneRect {
-                                    x: bounds.x,
-                                    y: bounds.y + (bounds.height - 16.0) / 2.0,
-                                    width: 30.0,
-                                    height: 16.0,
-                                },
-                                node.style.background,
-                                node.style.border_color,
-                                node.standard_visual_foreground,
-                                1.0,
-                            ),
-                        };
+                }) => 'switch: {
+                    // The track is the part layout published (#205). A node
+                    // without component geometry was never laid out as a
+                    // switch and has no track to draw; the scene does not
+                    // place one of its own.
+                    let Some(ComponentGeometry::Switch {
+                        control,
+                        track_background,
+                        track_border,
+                        thumb_background,
+                        border_width,
+                        ..
+                    }) = node.component_geometry.as_deref()
+                    else {
+                        break 'switch;
+                    };
+                    let (track, track_background, track_border, thumb_background, border_width) = (
+                        scene_rect(*control),
+                        Some(*track_background),
+                        Some(*track_border),
+                        Some(*thumb_background),
+                        *border_width,
+                    );
                     let inset = track.height * (3.0 / 16.0);
                     let thumb_extent =
                         (track.height * (10.0 / 16.0)).min((track.width - 2.0 * inset).max(0.0));

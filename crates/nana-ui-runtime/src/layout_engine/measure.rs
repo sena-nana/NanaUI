@@ -586,6 +586,15 @@ fn visual_content(id: StableNodeId, world: &UiWorld) -> VisualContent {
                 height: chrome.height,
             }
         }
+        // The track and its gap, and the taller of the track and the label
+        // over hint column: the same declaration placement solves.
+        Some(crate::StandardVisual::Switch { .. }) => {
+            let extent = world.switch_inputs(id).expect("switch").extent();
+            VisualContent {
+                width: extent.width,
+                height: extent.height,
+            }
+        }
         // Its text already asks for the widest option (`text_natural_width`);
         // the arrow stands beside it.
         Some(crate::StandardVisual::Select {

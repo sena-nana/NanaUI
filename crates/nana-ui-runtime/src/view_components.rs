@@ -4872,8 +4872,8 @@ impl ComponentView for Switch {
         }
     }
 
-    /// The hint row's height and a bare switch's width are spent from the
-    /// installed metrics in `project`, which no layout intent re-resolves.
+    /// A bare switch's width is spent from the installed metrics in
+    /// `project`, which no layout intent re-resolves.
     fn wants_metrics_reproject() -> bool {
         true
     }
@@ -4921,9 +4921,6 @@ impl ComponentView for Switch {
         let bare = self.label.is_empty() && self.hint.is_none();
         let metrics = world.theme_metrics();
         let mut effective_style = self.style.clone();
-        let vertical_padding = effective_style
-            .control_padding_y
-            .map(|padding| padding.resolve(metrics));
         {
             let layout = Arc::make_mut(&mut effective_style.layout);
             if layout.width.is_none() {
@@ -4933,35 +4930,13 @@ impl ComponentView for Switch {
                     nana_ui_core::LengthSpec::Fill
                 });
             }
-            if !bare && layout.height.is_none() && layout.theme.height.is_none() {
-                let typography = world.theme().typography();
-                let line = |font: f32| (font * typography.line / typography.body).max(font);
-                let label_line = line(self.size.text_size_in(typography));
-                let text_height = if self.hint.is_some() {
-                    label_line
-                        + world.theme().spacing().xxs
-                        + line(self.size.caption_size_in(typography))
-                } else {
-                    label_line
-                };
-                let mut resolved = layout.clone();
-                layout.theme.apply(&mut resolved, world.theme());
-                let padding = resolved.resolved_padding();
-                let inset = vertical_padding
-                    .map_or(padding.top + padding.bottom, |padding| padding * 2.0)
-                    + resolved.border_width.unwrap_or(0.0) * 2.0;
-                layout.min_height = Some(nana_ui_core::LengthSpec::Px(
-                    self.size
-                        .height_in(metrics)
-                        .max(text_height.max(metrics.switch.track_height) + inset),
-                ));
-                layout.theme.min_height = None;
-            }
         }
-        if !bare || effective_style.layout.height.is_some() {
-            // The hint row is taller than the size step, and a CSS box is
-            // a spent number; don't let intent write the control height back
-            // over either.
+        // The track and the label over hint column are content parts (#205):
+        // intrinsic measure gives the box their height, so the style only
+        // holds the size step's floor. A CSS box is a spent number; don't let
+        // intent write the control height back over it.
+        if effective_style.layout.height.is_some() || effective_style.layout.theme.height.is_some()
+        {
             effective_style.control_height = None;
         } else if effective_style.control_height.is_none() {
             effective_style.control_height = Some(nana_ui_core::ControlHeight::Min(self.size));

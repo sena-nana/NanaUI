@@ -3,9 +3,18 @@ use super::*;
 use crate::layout_engine::{
     Size,
     parts::{
-        ContentParts, FlexPart, button_content_parts, checkbox_parts, part_bounds, start_row_parts,
+        ContentParts, FlexPart, SwitchInputs, button_content_parts, checkbox_parts, part_bounds,
+        start_row_parts, switch_parts,
     },
 };
+
+/// Whether a visual's content parts read installed metrics that a theme can
+/// move without moving any style the node resolves: a switch's track and
+/// gap. (A checkbox's indicator reads the same type and spacing steps its
+/// own style resolves, so a theme that moves them relays it out already.)
+pub(super) fn visual_parts_read_theme(visual: Option<&StandardVisual>) -> bool {
+    matches!(visual, Some(StandardVisual::Switch { .. }))
+}
 
 impl UiWorld {
     pub(super) fn component_content_parts(&self, id: StableNodeId) -> ContentParts {
@@ -113,6 +122,9 @@ impl UiWorld {
         }
         if let Some(inputs) = self.checkbox_parts(id, Size::new(text.width, text.height)) {
             return start_row_parts(content, inputs);
+        }
+        if let Some(inputs) = self.switch_inputs(id) {
+            return switch_parts(content, inputs);
         }
         if let StandardVisual::Card { title, loading, .. } = visual {
             let border = self
@@ -317,6 +329,39 @@ impl UiWorld {
             self.text(id).is_some_and(|label| !label.is_empty()),
             text,
         ))
+    }
+
+    /// A switch's track and text column before placement, from the
+    /// installed theme: what intrinsic measure and placement both read, so
+    /// neither the style nor the paint keeps its own copy of the track's
+    /// room or the text column's height.
+    pub(crate) fn switch_inputs(&self, id: StableNodeId) -> Option<SwitchInputs> {
+        let Some(StandardVisual::Switch {
+            label,
+            hint,
+            control_position,
+            size,
+            ..
+        }) = self.standard_visual_ref(id)
+        else {
+            return None;
+        };
+        let track = self.style_model.metrics.switch;
+        let typography = self.theme.typography();
+        let line = |font: f32| (font * typography.line / typography.body).max(font);
+        Some(SwitchInputs {
+            track: Size::new(track.track_width, track.track_height),
+            gap: track.label_gap,
+            end: *control_position == SwitchControlPosition::End,
+            labelled: !label.is_empty() || hint.is_some(),
+            label_line: line(size.text_size_in(typography)),
+            hint: hint.as_ref().map(|_| {
+                (
+                    self.theme.spacing().xxs,
+                    line(size.caption_size_in(typography)),
+                )
+            }),
+        })
     }
 
     pub(super) fn content_part_box(

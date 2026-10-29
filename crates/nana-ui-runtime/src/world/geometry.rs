@@ -1309,65 +1309,31 @@ impl UiWorld {
                 invalid,
                 ..
             } => {
-                let track = self.style_model.metrics.switch;
-                let control = LayoutBox {
-                    x: match control_position {
-                        SwitchControlPosition::Start => content.x,
-                        SwitchControlPosition::End => {
-                            content.x + (content.width - track.track_width).max(0.0)
-                        }
-                    },
-                    y: content.y + (content.height - track.track_height) / 2.0,
-                    width: track.track_width.min(content.width),
-                    height: track.track_height.min(content.height),
-                };
-                let text_x = if *control_position == SwitchControlPosition::Start {
-                    control.x + control.width + track.label_gap
-                } else {
-                    content.x
-                };
-                let text_right = if *control_position == SwitchControlPosition::End {
-                    control.x - track.label_gap
-                } else {
-                    content.x + content.width
-                };
-                let text_width = (text_right - text_x).max(0.0);
-                let label_size = size.text_size_in(self.theme.typography());
-                let label_line = (label_size * self.theme.typography().line
-                    / self.theme.typography().body)
-                    .max(label_size);
-                let hint_size = size.caption_size_in(self.theme.typography());
-                let hint_line = (hint_size * self.theme.typography().line
-                    / self.theme.typography().body)
-                    .max(hint_size);
-                let (label_bounds, hint_bounds) = if hint.is_some() {
-                    (
-                        LayoutBox {
-                            x: text_x,
-                            y: content.y,
-                            width: text_width,
-                            height: label_line.min(content.height),
+                // The track, label and hint are the parts layout published
+                // (#205); a switch with nothing beside its track has no label
+                // part and draws an empty label at the content box's start.
+                use crate::LayoutPartKind;
+                let control = self
+                    .content_part_box(
+                        id,
+                        if *control_position == SwitchControlPosition::End {
+                            LayoutPartKind::TrailingContent
+                        } else {
+                            LayoutPartKind::LeadingContent
                         },
-                        Some(LayoutBox {
-                            x: text_x,
-                            y: content.y + label_line + self.theme.spacing().xxs,
-                            width: text_width,
-                            height: (content.height - label_line - self.theme.spacing().xxs)
-                                .max(0.0)
-                                .min(hint_line),
-                        }),
                     )
-                } else {
-                    (
-                        LayoutBox {
-                            x: text_x,
-                            y: content.y,
-                            width: text_width,
-                            height: content.height,
-                        },
-                        None,
-                    )
-                };
+                    .unwrap_or(LayoutBox {
+                        width: 0.0,
+                        height: 0.0,
+                        ..content
+                    });
+                let label_bounds =
+                    self.content_part_box(id, LayoutPartKind::Label)
+                        .unwrap_or(LayoutBox {
+                            width: 0.0,
+                            ..content
+                        });
+                let hint_bounds = self.content_part_box(id, LayoutPartKind::Hint);
                 let palette = self.style_model;
                 let hovered = self
                     .input

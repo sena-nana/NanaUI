@@ -1756,3 +1756,486 @@ fn issue205_a_cleared_label_lays_out_as_a_cold_unlabelled_control() {
     );
     assert_eq!(cx.world().layout_generation(), generation);
 }
+
+/// A theme that moves every metric a switch's parts read: the track, its
+/// gap, the hint gap and the line ratio.
+fn dense_switch_theme() -> nana_ui_core::ThemeDefinition {
+    let mut definition =
+        nana_ui_core::ThemeDefinition::for_appearance(nana_ui_core::ThemeAppearance::Light);
+    definition.tokens.metrics.switch.track_width += 6.0;
+    definition.tokens.metrics.switch.track_height += 4.0;
+    definition.tokens.metrics.switch.label_gap += 2.0;
+    definition.tokens.spacing.xxs += 2.0;
+    definition.typography.line += 2.0;
+    definition.bump()
+}
+
+/// `view` in a 320px column, under `theme` when given, laid out once.
+fn switch_page(
+    view: crate::Switch,
+    theme: Option<&nana_ui_core::ThemeDefinition>,
+) -> (AppContext, crate::Entity<crate::Switch>) {
+    let document = DocumentId::new(1).unwrap();
+    let mut cx = AppContext::new();
+    if let Some(theme) = theme {
+        cx.set_theme_definition(theme).unwrap();
+    }
+    let root = cx
+        .create_component(document, Stack::column(0.0).width(LengthSpec::Px(320.0)))
+        .unwrap();
+    let switch = cx.create_detached_component(document, view).unwrap();
+    cx.append_child(root, switch).unwrap();
+    product_frame(
+        &mut cx,
+        document,
+        LayoutViewport::new(600.0, 400.0),
+        &mut bundled_face_shaper(),
+    );
+    cx.rebuild_hit_test(document);
+    (cx, switch)
+}
+
+fn switch_view(
+    label: &str,
+    hint: Option<&str>,
+    position: nana_ui_core::SwitchControlPosition,
+    size: nana_ui_core::ControlSize,
+    width: Option<LengthSpec>,
+) -> crate::Switch {
+    let mut view = crate::Switch::new(label, false)
+        .size(size)
+        .control_position(position);
+    if let Some(hint) = hint {
+        view = view.hint(hint);
+    }
+    Arc::make_mut(&mut view.style.layout).width = width;
+    view
+}
+
+/// A switch's track, label and hint are Flex parts layout publishes (#205):
+/// the track and a label-over-hint column in one row, the column a nested
+/// Flex column. Intrinsic measure gives the box its height from the same
+/// declaration, so the style keeps no min-height of its own, and paint reads
+/// the published boxes.
+#[test]
+fn issue205_switch_track_label_and_hint_are_published_parts() {
+    use nana_ui_core::{ControlSize, SwitchControlPosition};
+    let metrics = nana_ui_core::UI_METRICS.switch;
+    let typography = nana_ui_core::TypographyTokens::default();
+    let line = |font: f32| (font * typography.line / typography.body).max(font);
+    let label_line = line(ControlSize::Medium.text_size());
+    let hint_line = line(ControlSize::Medium.caption_size());
+    let xxs = nana_ui_core::space::XXS;
+    for position in [SwitchControlPosition::Start, SwitchControlPosition::End] {
+        let (cx, switch) = switch_page(
+            switch_view(
+                "Wi-Fi",
+                Some("Connect automatically to known networks"),
+                position,
+                ControlSize::Medium,
+                None,
+            ),
+            None,
+        );
+        let id = switch.stable_id();
+        let world = cx.world();
+        let result = world.layout_result(id).unwrap();
+        let content = result.content_box;
+        let end = position == SwitchControlPosition::End;
+        let track = part_of(
+            &cx,
+            id,
+            if end {
+                LayoutPartKind::TrailingContent
+            } else {
+                LayoutPartKind::LeadingContent
+            },
+        );
+        let label = part_of(&cx, id, LayoutPartKind::Label);
+        let hint = part_of(&cx, id, LayoutPartKind::Hint);
+        // The track sits at its edge, centred on the row; the column takes
+        // the rest beyond the gap.
+        assert_eq!(
+            (track.width, track.height),
+            (metrics.track_width, metrics.track_height)
+        );
+        assert_eq!(track.y, content.y + (content.height - track.height) / 2.0);
+        let column_x = if end {
+            assert_eq!(track.x + track.width, content.x + content.width);
+            content.x
+        } else {
+            assert_eq!(track.x, content.x);
+            content.x + metrics.track_width + metrics.label_gap
+        };
+        let column_width = content.width - metrics.track_width - metrics.label_gap;
+        for part in [label, hint] {
+            assert_eq!((part.x, part.width), (column_x, column_width));
+        }
+        // The label line, the hint gap and the hint line stack down the
+        // column, and intrinsic measure made the content box exactly that
+        // tall: no style min-height holds it open.
+        assert_eq!((label.y, label.height), (content.y, label_line));
+        assert!((hint.y - (content.y + label_line + xxs)).abs() < 1e-4);
+        assert!((hint.height - hint_line).abs() < 1e-4);
+        assert!((content.height - (label_line + xxs + hint_line)).abs() < 1e-4);
+        let style = world.node_style(id).unwrap();
+        assert_eq!(style.layout.min_height, None);
+        assert_eq!(
+            style.control_height,
+            Some(nana_ui_core::ControlHeight::Min(ControlSize::Medium))
+        );
+        // Paint reads the parts and nothing else.
+        let ComponentGeometry::Switch {
+            control,
+            label: painted_label,
+            hint: painted_hint,
+            ..
+        } = world.component_geometry(id).unwrap()
+        else {
+            panic!("switch")
+        };
+        assert_eq!(control, track);
+        assert_eq!(painted_label.bounds, label);
+        assert_eq!(painted_hint.unwrap().bounds, hint);
+        // One entity; the content box, the track, the label and the hint.
+        assert_eq!(world.len(), 2);
+        assert_eq!(result.parts.len(), 4);
+    }
+
+    // Without a hint the label is the whole column; the control size is
+    // the floor the row cannot go under.
+    let (cx, switch) = switch_page(
+        switch_view(
+            "Wi-Fi",
+            None,
+            SwitchControlPosition::Start,
+            ControlSize::Medium,
+            None,
+        ),
+        None,
+    );
+    let id = switch.stable_id();
+    let content = cx.world().layout_result(id).unwrap().content_box;
+    let label = part_of(&cx, id, LayoutPartKind::Label);
+    assert_eq!((label.y, label.height), (content.y, content.height));
+    assert_eq!(
+        cx.world().layout_box(id).unwrap().height,
+        ControlSize::Medium.height_in(nana_ui_core::UI_METRICS)
+    );
+    assert_eq!(cx.world().layout_result(id).unwrap().parts.len(), 3);
+
+    // A switch whose width is its content's holds its track and gap: the
+    // track used to collapse to nothing in an auto-width box.
+    let (cx, switch) = switch_page(
+        switch_view(
+            "Wi-Fi",
+            None,
+            SwitchControlPosition::End,
+            ControlSize::Medium,
+            Some(LengthSpec::MaxContent),
+        ),
+        None,
+    );
+    let id = switch.stable_id();
+    let track = part_of(&cx, id, LayoutPartKind::TrailingContent);
+    assert_eq!(track.width, metrics.track_width);
+    let result = cx.world().layout_result(id).unwrap();
+    assert_eq!(
+        result.content_box.width,
+        metrics.track_width + metrics.label_gap
+    );
+}
+
+/// Label, hint, side, size, width and theme changes republish the parts a
+/// cold layout of the same switch would; toggling and hovering lay nothing
+/// out.
+#[test]
+fn issue205_switch_parts_follow_changes_like_a_cold_layout_and_toggle_paints_only() {
+    use nana_ui_core::{ControlSize, SwitchControlPosition};
+    let document = DocumentId::new(1).unwrap();
+    let viewport = LayoutViewport::new(600.0, 400.0);
+    let mut shaper = bundled_face_shaper();
+    let hint = "Connect automatically to known networks";
+    let (mut cx, switch) = switch_page(
+        switch_view(
+            "",
+            None,
+            SwitchControlPosition::End,
+            ControlSize::Medium,
+            None,
+        ),
+        None,
+    );
+    for (label, hint, position, size, width) in [
+        (
+            "Wi-Fi",
+            None,
+            SwitchControlPosition::End,
+            ControlSize::Medium,
+            None,
+        ),
+        (
+            "Wi-Fi",
+            Some(hint),
+            SwitchControlPosition::End,
+            ControlSize::Medium,
+            None,
+        ),
+        (
+            "Wi-Fi",
+            Some(hint),
+            SwitchControlPosition::Start,
+            ControlSize::Small,
+            None,
+        ),
+        (
+            "",
+            Some(hint),
+            SwitchControlPosition::Start,
+            ControlSize::Large,
+            Some(LengthSpec::Px(90.0)),
+        ),
+        (
+            "Wi-Fi",
+            None,
+            SwitchControlPosition::End,
+            ControlSize::Large,
+            Some(LengthSpec::MaxContent),
+        ),
+        (
+            "",
+            None,
+            SwitchControlPosition::End,
+            ControlSize::Medium,
+            None,
+        ),
+        (
+            "Wi-Fi",
+            Some(hint),
+            SwitchControlPosition::End,
+            ControlSize::Medium,
+            None,
+        ),
+    ] {
+        cx.update_component(switch, |view, _| {
+            *view = switch_view(label, hint, position, size, width);
+        })
+        .unwrap();
+        product_frame(&mut cx, document, viewport, &mut shaper);
+        let (mut cold, cold_switch) =
+            switch_page(switch_view(label, hint, position, size, width), None);
+        assert_eq!(cold_switch.stable_id(), switch.stable_id());
+        super::reflow_oracle::assert_matches_cold(&mut cx, &mut cold, document);
+        assert_eq!(cx.world().len(), 2);
+    }
+    // A theme that moves the track, its gap, the hint gap and the line
+    // ratio moves no style the switch resolves; its parts follow anyway.
+    let dense = dense_switch_theme();
+    cx.set_theme_definition(&dense).unwrap();
+    product_frame(&mut cx, document, viewport, &mut shaper);
+    let (mut cold, _) = switch_page(
+        switch_view(
+            "Wi-Fi",
+            Some(hint),
+            SwitchControlPosition::End,
+            ControlSize::Medium,
+            None,
+        ),
+        Some(&dense),
+    );
+    super::reflow_oracle::assert_matches_cold(&mut cx, &mut cold, document);
+    let id = switch.stable_id();
+    assert_eq!(
+        part_of(&cx, id, LayoutPartKind::TrailingContent).width,
+        nana_ui_core::UI_METRICS.switch.track_width + 6.0
+    );
+
+    let generation = cx.world().layout_generation();
+    let snapshot = Arc::clone(&cx.world().layout_results[&id]);
+    cx.update_component(switch, |view, _| view.checked = true)
+        .unwrap();
+    let toggled = product_frame(&mut cx, document, viewport, &mut shaper);
+    // The thumb travels for a while; every frame of it paints only.
+    cx.advance_animations(Duration::from_millis(80));
+    let travelled = product_frame(&mut cx, document, viewport, &mut shaper);
+    cx.set_pointer_hover_at(document, 1, Some(id), Duration::from_millis(800))
+        .unwrap();
+    let hovered = product_frame(&mut cx, document, viewport, &mut shaper);
+    for work in [toggled, travelled, hovered] {
+        assert_eq!(
+            (work.layout_measure_nodes, work.layout_placement_nodes),
+            (0, 0)
+        );
+    }
+    assert_eq!(cx.world().layout_generation(), generation);
+    assert!(Arc::ptr_eq(&snapshot, &cx.world().layout_results[&id]));
+    let a11y = cx.world().project_accessibility(document);
+    let node = a11y.iter().find(|node| node.id == id).unwrap();
+    assert_eq!(node.checked, Some(true));
+}
+
+/// A checked, focused switch moved between Grid, Inline and Flex parents
+/// keeps its entity, state and focus, and publishes the parts a cold layout
+/// in that context would.
+#[test]
+fn issue205_switch_parts_survive_context_transitions() {
+    use super::reflow_oracle::assert_matches_cold;
+    use crate::MutationQueue;
+    use nana_ui_core::DisplaySpec;
+    let document = DocumentId::new(1).unwrap();
+    let viewport = LayoutViewport::new(400.0, 300.0);
+    let build = |display: DisplaySpec| {
+        let mut cx = AppContext::new();
+        let root = cx
+            .create_component(
+                document,
+                Stack::column(0.0).with_layout(|layout| {
+                    layout.width = Some(LengthSpec::Px(320.0));
+                    layout.display = Some(display);
+                }),
+            )
+            .unwrap();
+        let switch = cx
+            .create_detached_component(
+                document,
+                crate::Switch::new("Wi-Fi", true).hint("Connect automatically"),
+            )
+            .unwrap();
+        cx.append_child(root, switch).unwrap();
+        let mut q = MutationQueue::new();
+        q.request_focus(document, Some(switch.stable_id()));
+        cx.commit_mutations(q).unwrap();
+        product_frame(&mut cx, document, viewport, &mut bundled_face_shaper());
+        (cx, root, switch)
+    };
+    let mut shaper = bundled_face_shaper();
+    let (mut cx, root, switch) = build(DisplaySpec::Flex);
+    let id = switch.stable_id();
+    for display in [DisplaySpec::Grid, DisplaySpec::Inline, DisplaySpec::Flex] {
+        let mut style = cx.world().node_style(root.stable_id()).unwrap().clone();
+        Arc::make_mut(&mut style.layout).display = Some(display);
+        let mut q = MutationQueue::new();
+        q.set_style(root.stable_id(), style);
+        cx.commit_mutations(q).unwrap();
+        let work = product_frame(&mut cx, document, viewport, &mut shaper);
+        assert_eq!((work.entities_spawned, work.entities_despawned), (0, 0));
+        assert!(cx.read(switch, |view| view.checked).unwrap());
+        assert_eq!(cx.world().focused(document), Some(id));
+        let ComponentGeometry::Switch {
+            control,
+            label,
+            hint,
+            ..
+        } = cx.world().component_geometry(id).unwrap()
+        else {
+            panic!("switch")
+        };
+        assert_eq!(control, part_of(&cx, id, LayoutPartKind::TrailingContent));
+        assert_eq!(label.bounds, part_of(&cx, id, LayoutPartKind::Label));
+        assert_eq!(hint.unwrap().bounds, part_of(&cx, id, LayoutPartKind::Hint));
+        let (mut cold, ..) = build(display);
+        assert_matches_cold(&mut cx, &mut cold, document);
+    }
+}
+
+#[test]
+fn issue205_ten_thousand_switches_keep_one_entity_and_bounded_parts() {
+    let _unguarded = crate::layout_engine::verify::skip_layout_verify();
+    for count in [1_000, 10_000] {
+        let document = DocumentId::new(1).unwrap();
+        let mut cx = AppContext::new();
+        let mut shaper = bundled_face_shaper();
+        let viewport = LayoutViewport::new(600.0, 400.0);
+        let root = cx.create_component(document, Stack::column(0.0)).unwrap();
+        let mut children = Vec::with_capacity(count);
+        for index in 0..count {
+            let view = if index % 2 == 0 {
+                crate::Switch::new("Wi-Fi", false)
+            } else {
+                crate::Switch::new("Wi-Fi", true).hint("Connect automatically")
+            };
+            children.push(
+                cx.create_detached_component(document, view)
+                    .unwrap()
+                    .stable_id(),
+            );
+        }
+        let mut q = crate::MutationQueue::new();
+        for &id in &children {
+            q.insert(root.stable_id(), id, None);
+        }
+        cx.commit_mutations(q).unwrap();
+        product_frame(&mut cx, document, viewport, &mut shaper);
+        assert_eq!(cx.world().len(), count + 1);
+        for (index, &id) in children.iter().enumerate() {
+            let result = cx.world().layout_result(id).unwrap();
+            let kinds: Vec<_> = result.parts.iter().map(|part| part.kind).collect();
+            let mut expected = vec![
+                LayoutPartKind::ComponentContent,
+                LayoutPartKind::TrailingContent,
+                LayoutPartKind::Label,
+            ];
+            if index % 2 == 1 {
+                expected.push(LayoutPartKind::Hint);
+            }
+            assert_eq!(kinds, expected);
+            assert!(result.child_placements.is_empty());
+        }
+        let generation = cx.world().layout_generation();
+        product_frame(&mut cx, document, viewport, &mut shaper);
+        assert!(cx.take_system_work().is_empty());
+        let idle = cx.world().frame_counters;
+        assert_eq!(
+            (
+                idle.layout_measure_nodes,
+                idle.layout_placement_nodes,
+                idle.entities_spawned,
+                idle.entities_despawned
+            ),
+            (0, 0, 0, 0)
+        );
+        assert_eq!(cx.world().layout_generation(), generation);
+    }
+}
+
+/// A theme that moves the spacing a checkbox's indicator gap reads: its
+/// parts and its paragraph budget follow, as a cold layout under that theme
+/// has them.
+#[test]
+fn issue205_checkbox_parts_follow_a_theme_that_moves_no_style() {
+    use nana_ui_core::ControlSize;
+    let document = DocumentId::new(1).unwrap();
+    let viewport = LayoutViewport::new(600.0, 400.0);
+    let mut theme =
+        nana_ui_core::ThemeDefinition::for_appearance(nana_ui_core::ThemeAppearance::Light);
+    theme.tokens.spacing.md += 6.0;
+    let theme = theme.bump();
+    let long = "Notify me about every reply in this thread";
+    let (mut cx, checkbox) = checkbox_page(long, ControlSize::Medium, Some(160.0));
+    cx.set_theme_definition(&theme).unwrap();
+    product_frame(&mut cx, document, viewport, &mut bundled_face_shaper());
+    let mut cold = AppContext::new();
+    cold.set_theme_definition(&theme).unwrap();
+    let root = cold
+        .create_component(document, Stack::row(0.0).width(LengthSpec::Px(400.0)))
+        .unwrap();
+    let cold_box = cold
+        .create_detached_component(
+            document,
+            checkbox_view(long, ControlSize::Medium, Some(160.0)),
+        )
+        .unwrap();
+    cold.append_child(root, cold_box).unwrap();
+    product_frame(&mut cold, document, viewport, &mut bundled_face_shaper());
+    assert_eq!(cold_box.stable_id(), checkbox.stable_id());
+    super::reflow_oracle::assert_matches_cold(&mut cx, &mut cold, document);
+    let id = checkbox.stable_id();
+    let indicator = part_of(&cx, id, LayoutPartKind::LeadingContent);
+    let label = part_of(&cx, id, LayoutPartKind::TextContent);
+    assert_eq!(
+        label.x - (indicator.x + indicator.width),
+        nana_ui_core::space::MD + 6.0
+    );
+    let (_, layout) = cx.world().text_layout(id).unwrap();
+    assert!(layout.physical_size().0 <= label.width + 0.5);
+}
