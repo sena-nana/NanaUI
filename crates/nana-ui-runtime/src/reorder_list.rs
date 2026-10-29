@@ -1100,7 +1100,11 @@ impl ReorderList {
 
     fn move_to(&mut self, x: f32, y: f32) {
         // never moved, the release is a click
-        if !self.drag.as_ref().is_some_and(|drag| self.moves(&drag.source)) {
+        if !self
+            .drag
+            .as_ref()
+            .is_some_and(|drag| self.moves(&drag.source))
+        {
             return;
         }
         if let Some(drag) = self.drag.as_mut() {
@@ -1141,7 +1145,10 @@ impl ReorderList {
 
     /// Whether row `value` moves when dragged.
     fn moves(&self, value: &str) -> bool {
-        self.reorder && self.item_index(value).is_some_and(|index| self.items[index].movable)
+        self.reorder
+            && self
+                .item_index(value)
+                .is_some_and(|index| self.items[index].movable)
     }
 
     fn item_index(&self, value: &str) -> Option<usize> {
@@ -1659,7 +1666,11 @@ impl crate::AppContext {
             return Ok(false);
         };
         let started = self.update_component(entity, |list, cx| {
-            if !list.armed.as_ref().is_some_and(|armed| list.moves(&armed.drag.source)) {
+            if !list
+                .armed
+                .as_ref()
+                .is_some_and(|armed| list.moves(&armed.drag.source))
+            {
                 return false;
             }
             let Some(armed) = list.armed.as_mut() else {
