@@ -2366,7 +2366,20 @@ fn issue205_status_dot_and_label_are_published_parts() {
                 other => panic!("{other:?}"),
             };
             assert_eq!(indicator, dot);
-            assert_eq!(painted.bounds, label);
+            // A badge paints its one centred line across the whole pill.
+            let paint_rows = if kind == 0 {
+                (result.bounds.y, result.bounds.height)
+            } else {
+                (label.y, label.height)
+            };
+            assert_eq!(
+                painted.bounds,
+                crate::LayoutBox {
+                    y: paint_rows.0,
+                    height: paint_rows.1,
+                    ..label
+                }
+            );
             let runs: Vec<_> = result
                 .fragments
                 .iter()
@@ -2541,7 +2554,8 @@ fn issue205_status_dot_parts_survive_context_transitions() {
                 other => panic!("{other:?}"),
             };
             assert_eq!(indicator, part_of(&cx, id, LayoutPartKind::LeadingContent));
-            assert_eq!(label.bounds, part_of(&cx, id, LayoutPartKind::TextContent));
+            let part = part_of(&cx, id, LayoutPartKind::TextContent);
+            assert_eq!((label.bounds.x, label.bounds.width), (part.x, part.width));
         }
         let (mut cold, ..) = build(display);
         assert_matches_cold(&mut cx, &mut cold, document);

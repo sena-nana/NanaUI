@@ -1772,6 +1772,9 @@ impl UiWorld {
                 compact,
             } => {
                 // The dot and the label are the parts layout published (#205).
+                // The label's single centred line is painted across the
+                // pill's whole height, as it always was; across the content
+                // box it centres at the same place.
                 use crate::LayoutPartKind;
                 let indicator = self
                     .content_part_box(id, LayoutPartKind::LeadingContent)
@@ -1782,7 +1785,11 @@ impl UiWorld {
                     });
                 let label_bounds = self
                     .content_part_box(id, LayoutPartKind::TextContent)
-                    .unwrap_or(content);
+                    .map_or(content, |part| LayoutBox {
+                        y: bounds.y,
+                        height: bounds.height,
+                        ..part
+                    });
                 let text_size = if *compact {
                     self.theme.typography().hint
                 } else {
