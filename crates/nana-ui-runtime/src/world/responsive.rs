@@ -71,6 +71,9 @@ pub(super) struct ResponsiveIndex {
     left: HashMap<StableNodeId, Vec<usize>, BuildIdHasher>,
     /// The authored style of each node whose record holds a variant.
     authored: HashMap<StableNodeId, NodeStyle, BuildIdHasher>,
+    /// Nodes or rules finding query containers again has visited, for tests.
+    #[cfg(test)]
+    pub(super) visited: usize,
 }
 
 impl ResponsiveIndex {
@@ -254,22 +257,60 @@ impl UiWorld {
 
     /// Whether `id` became or stopped being a query container, or changed
     /// name, moved: the rules below it that read the nearest one find it
-    /// again. Visits the rules that read a nearest container, not the
-    /// subtree.
+    /// again. Visits whichever is smaller, the subtree or the rules: a row
+    /// inserted under a page of rules walks its own few nodes, and a
+    /// container over a large subtree with few rules visits the rules
+    /// (#348).
     pub(super) fn find_query_containers_again(&mut self, id: StableNodeId) {
-        let mut nearest: Vec<StableNodeId> = self
-            .responsive
-            .dependents
-            .iter()
-            .filter(|(_, dependent)| {
-                matches!(
-                    dependent.rule.container(),
-                    ResponsiveContainer::Nearest { .. }
-                )
-            })
-            .map(|(node, _)| *node)
-            .filter(|node| self.is_descendant_or_self(*node, id))
-            .collect();
+        let reads_nearest = |dependent: &Dependent| {
+            matches!(
+                dependent.rule.container(),
+                ResponsiveContainer::Nearest { .. }
+            )
+        };
+        let rules = self.responsive.dependents.len();
+        if rules == 0 {
+            return;
+        }
+        let mut nearest = Vec::new();
+        let mut stack = vec![id];
+        let mut walked = 0usize;
+        while let Some(node) = stack.pop() {
+            walked += 1;
+            if walked > rules {
+                nearest.clear();
+                break;
+            }
+            if self
+                .responsive
+                .dependents
+                .get(&node)
+                .is_some_and(reads_nearest)
+            {
+                nearest.push(node);
+            }
+            if let Some(record) = self.nodes.get(node) {
+                stack.extend(record.hierarchy.children.iter().copied());
+            }
+        }
+        #[cfg(test)]
+        {
+            self.responsive.visited += walked;
+        }
+        if walked > rules {
+            #[cfg(test)]
+            {
+                self.responsive.visited += rules;
+            }
+            nearest = self
+                .responsive
+                .dependents
+                .iter()
+                .filter(|(_, dependent)| reads_nearest(dependent))
+                .map(|(node, _)| *node)
+                .filter(|node| self.is_descendant_or_self(*node, id))
+                .collect();
+        }
         nearest.sort_unstable();
         for node in nearest {
             let Some(dependent) = self.responsive.dependents.get(&node) else {
@@ -421,5 +462,72 @@ impl UiWorld {
         let seeds_before = self.layout_seeds_created;
         self.restyle(id, None);
         (self.layout_seeds_created - seeds_before) as usize
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::super::reflow_oracle::{node, styled};
+    use super::*;
+    use nana_ui_core::LayoutStyle;
+
+    fn element(queue: &mut MutationQueue, document: DocumentId, parent: u64, id: u64) {
+        queue.create(node(id), document, NodeKind::Element { tag: "div".into() });
+        queue.insert(node(parent), node(id), None);
+    }
+
+    fn follow_nearest(queue: &mut MutationQueue, id: u64) {
+        let rule = ResponsiveRule::new(
+            ResponsiveContainer::Nearest { name: None },
+            ResponsiveAxis::Inline,
+        );
+        queue.set_responsive(node(id), Some(Arc::new(rule)));
+    }
+
+    /// Rows inserted under a page of rules that read their nearest
+    /// container find it by walking their own few nodes, not every rule on
+    /// the page (#348).
+    #[test]
+    fn inserted_rows_find_their_container_without_visiting_every_rule() {
+        const PAGE: u64 = 2_000;
+        const INSERTED: u64 = 10;
+        let document = DocumentId::new(1).unwrap();
+        let mut world = UiWorld::new();
+        let mut queue = MutationQueue::new();
+        queue.create(node(1), document, NodeKind::Document);
+        element(&mut queue, document, 1, 2);
+        queue.set_style(
+            node(2),
+            styled(LayoutStyle {
+                container_type: ContainerType::InlineSize,
+                ..LayoutStyle::default()
+            }),
+        );
+        for id in 10..10 + PAGE {
+            element(&mut queue, document, 2, id);
+            follow_nearest(&mut queue, id);
+        }
+        world.commit(queue).unwrap();
+        world.responsive.visited = 0;
+
+        let mut queue = MutationQueue::new();
+        let first = 10 + PAGE;
+        for id in first..first + INSERTED {
+            element(&mut queue, document, 2, id);
+            follow_nearest(&mut queue, id);
+        }
+        world.commit(queue).unwrap();
+        for id in first..first + INSERTED {
+            assert_eq!(
+                world.responsive.dependents[&node(id)].container,
+                Some(node(2)),
+                "row {id} follows the container"
+            );
+        }
+        assert!(
+            world.responsive.visited <= 4 * INSERTED as usize,
+            "{} visits for {INSERTED} rows under {PAGE} rules",
+            world.responsive.visited
+        );
     }
 }
