@@ -826,3 +826,381 @@ fn issue384_ten_thousand_progress_bars_keep_one_entity_and_bounded_parts() {
         assert_eq!(cx.world().layout_generation(), generation);
     }
 }
+
+/// A dialog's or a confirm's declared copy, the inputs its text parts read.
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct ModalCase {
+    /// A confirm (with a body message) rather than a dialog (with a body
+    /// slot and an action).
+    confirm: bool,
+    title: &'static str,
+    description: Option<&'static str>,
+    message: &'static str,
+}
+
+const SETTINGS: ModalCase = ModalCase {
+    confirm: false,
+    title: "Settings",
+    description: Some("Changes apply to every window"),
+    message: "",
+};
+
+const LONG_TITLE: &str = "Connect the plugin to this machine and every window it opens from now on";
+
+const REMOVE: ModalCase = ModalCase {
+    confirm: true,
+    title: "Remove plugin",
+    description: None,
+    message: "The plugin and its settings are removed from every window; the files it made stay \
+              where they are on disk.",
+};
+
+fn modal_viewport() -> LayoutViewport {
+    LayoutViewport::new(800.0, 600.0)
+}
+
+/// `case` open in an overlay host inside a column `display`ed so, under
+/// `theme` when given, laid out once: the modal frame and its action.
+fn modal_page(
+    case: ModalCase,
+    display: nana_ui_core::DisplaySpec,
+    theme: Option<&nana_ui_core::ThemeDefinition>,
+) -> (AppContext, StableNodeId, Option<StableNodeId>) {
+    let mut cx = AppContext::new();
+    if let Some(theme) = theme {
+        cx.set_theme_definition(theme).unwrap();
+    }
+    let root = cx
+        .create_component(
+            document(),
+            Stack::column(0.0).with_layout(|layout| {
+                layout.width = Some(LengthSpec::Px(800.0));
+                layout.display = Some(display);
+            }),
+        )
+        .unwrap();
+    let host = cx
+        .create_detached_component(document(), crate::OverlayHost::new())
+        .unwrap();
+    cx.append_child(root, host).unwrap();
+    let (frame, action) = if case.confirm {
+        let confirm = cx
+            .create_detached_component(
+                document(),
+                crate::ConfirmDialog::new(case.title, case.message),
+            )
+            .unwrap();
+        cx.append_child(host, confirm).unwrap();
+        cx.assemble_confirm_dialog(confirm).unwrap();
+        cx.activate_overlay(host, confirm).unwrap();
+        (confirm.stable_id(), None)
+    } else {
+        let mut view = crate::Dialog::new(case.title);
+        if let Some(description) = case.description {
+            view = view.description(description);
+        }
+        let dialog = cx.create_detached_component(document(), view).unwrap();
+        cx.append_child(host, dialog).unwrap();
+        let body = cx
+            .create_detached_component(
+                document(),
+                Stack::column(0.0).with_layout(|layout| {
+                    layout.width = Some(LengthSpec::Px(240.0));
+                    layout.height = Some(LengthSpec::Px(80.0));
+                }),
+            )
+            .unwrap();
+        let action = cx
+            .create_detached_component(document(), crate::Button::new("Save"))
+            .unwrap();
+        cx.set_modal_slots(
+            dialog,
+            crate::ModalSlots {
+                body: Some(body.stable_id()),
+                actions: vec![action.stable_id()],
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        cx.activate_overlay(host, dialog).unwrap();
+        (dialog.stable_id(), Some(action.stable_id()))
+    };
+    product_frame(
+        &mut cx,
+        document(),
+        modal_viewport(),
+        &mut bundled_face_shaper(),
+    );
+    cx.rebuild_hit_test(document());
+    (cx, frame, action)
+}
+
+fn modal_text_regions(
+    cx: &AppContext,
+    id: StableNodeId,
+) -> (
+    crate::ComponentTextRegion,
+    Option<crate::ComponentTextRegion>,
+    Option<crate::ComponentTextRegion>,
+    crate::LayoutBox,
+) {
+    match cx.world().component_geometry(id).unwrap() {
+        ComponentGeometry::ModalFrame {
+            title,
+            description,
+            body_text,
+            surface,
+            ..
+        } => (title, description, body_text, surface),
+        other => panic!("{other:?}"),
+    }
+}
+
+/// A dialog's title and description and a confirm's body copy are parts
+/// layout publishes: paint reads them, the text pass wraps the title and
+/// description to the title part's width (the header row less the icon and
+/// close button) and the copy to the body part's, and the parts sit where
+/// the chrome puts them in the card.
+#[test]
+fn issue384_modal_title_description_and_body_are_published_parts() {
+    for case in [
+        SETTINGS,
+        ModalCase {
+            title: LONG_TITLE,
+            ..SETTINGS
+        },
+        ModalCase {
+            description: None,
+            ..SETTINGS
+        },
+        REMOVE,
+    ] {
+        let (cx, id, _) = modal_page(case, nana_ui_core::DisplaySpec::Flex, None);
+        let world = cx.world();
+        let header = part(&cx, id, LayoutPartKind::Header).expect("title part");
+        let detail = part(&cx, id, LayoutPartKind::Detail);
+        let note = part(&cx, id, LayoutPartKind::Note);
+        let (title, description, body, surface) = modal_text_regions(&cx, id);
+        assert_eq!(title.bounds, header, "{case:?}");
+        assert_eq!(description.map(|region| region.bounds), detail);
+        assert_eq!(body.map(|region| region.bounds), note);
+        assert_eq!(detail.is_some(), case.description.is_some());
+        assert_eq!(note.is_some(), case.confirm);
+        // Inside the card, the description under the title.
+        for part in [Some(header), detail, note].into_iter().flatten() {
+            assert!(part.x >= surface.x && part.x + part.width <= surface.x + surface.width);
+            assert!(part.y >= surface.y && part.y + part.height <= surface.y + surface.height);
+        }
+        if let Some(detail) = detail {
+            assert_eq!((detail.x, detail.width), (header.x, header.width));
+            assert!(detail.y >= header.y + header.height);
+        }
+        // The shaped copy is what the parts hold.
+        let shaped = *world.nodes.modal_text(id).unwrap();
+        assert_eq!(header.height, shaped.title.height);
+        assert!(shaped.title.width <= header.width + 0.5, "{case:?}");
+        if let Some(detail) = detail {
+            assert_eq!(detail.height, shaped.description.unwrap().height);
+        }
+        if let Some(note) = note {
+            assert_eq!(note.height, shaped.body.unwrap().height);
+            assert!(shaped.body.unwrap().width <= note.width + 0.5);
+        }
+    }
+}
+
+/// Hovering a modal's action paints only; title, description and message
+/// edits and a theme switch lay out what a cold layout of the same modal
+/// does.
+#[test]
+fn issue384_modal_parts_follow_changes_like_a_cold_layout_and_hover_paints_only() {
+    use nana_ui_core::DisplaySpec;
+    let theme = nana_ui_core::ThemeDefinition::NANA_LIGHT.with_dialog(nana_ui_core::DialogRecipe {
+        header_gap: 20.0,
+        ..nana_ui_core::DialogRecipe::DEFAULT
+    });
+    for (first, edits) in [
+        (
+            SETTINGS,
+            [
+                ModalCase {
+                    title: LONG_TITLE,
+                    ..SETTINGS
+                },
+                ModalCase {
+                    description: None,
+                    ..SETTINGS
+                },
+                SETTINGS,
+            ],
+        ),
+        (
+            REMOVE,
+            [
+                ModalCase {
+                    title: LONG_TITLE,
+                    ..REMOVE
+                },
+                ModalCase {
+                    message: "Removed.",
+                    ..REMOVE
+                },
+                REMOVE,
+            ],
+        ),
+    ] {
+        let mut shaper = bundled_face_shaper();
+        let (mut cx, id, action) = modal_page(first, DisplaySpec::Flex, None);
+        // Hovering the action (or the card) lays nothing out.
+        let generation = cx.world().layout_generation();
+        let snapshot = Arc::clone(&cx.world().layout_results[&id]);
+        cx.set_pointer_hover_at(
+            document(),
+            1,
+            Some(action.unwrap_or(id)),
+            Duration::from_millis(16),
+        )
+        .unwrap();
+        let work = product_frame(&mut cx, document(), modal_viewport(), &mut shaper);
+        assert_eq!(
+            (work.layout_measure_nodes, work.layout_placement_nodes),
+            (0, 0)
+        );
+        assert_eq!(cx.world().layout_generation(), generation);
+        assert!(Arc::ptr_eq(&snapshot, &cx.world().layout_results[&id]));
+        for (step, case) in edits.into_iter().enumerate() {
+            let themed = step == 2;
+            if case.confirm {
+                cx.update_component(
+                    Entity::<crate::ConfirmDialog>::from_stable_id(id),
+                    |view, _| {
+                        view.title = case.title.into();
+                        view.message = case.message.into();
+                    },
+                )
+                .unwrap();
+                cx.assemble_confirm_dialog(Entity::from_stable_id(id))
+                    .unwrap();
+            } else {
+                cx.update_component(Entity::<crate::Dialog>::from_stable_id(id), |view, _| {
+                    view.title = case.title.into();
+                    view.description = case.description.map(Into::into);
+                })
+                .unwrap();
+            }
+            if themed {
+                cx.set_theme_definition(&theme).unwrap();
+            }
+            product_frame(&mut cx, document(), modal_viewport(), &mut shaper);
+            let (mut cold, cold_id, _) =
+                modal_page(case, DisplaySpec::Flex, themed.then_some(&theme));
+            assert_eq!(cold_id, id);
+            assert_matches_cold(&mut cx, &mut cold, document());
+            let boxes = |cx: &AppContext| {
+                let (title, description, body, surface) = modal_text_regions(cx, id);
+                (
+                    title.bounds,
+                    description.map(|region| region.bounds),
+                    body.map(|region| region.bounds),
+                    surface,
+                )
+            };
+            assert_eq!(boxes(&cx), boxes(&cold), "{case:?}");
+        }
+    }
+}
+
+/// A modal whose host's parent turns Grid, Inline and Flex keeps its
+/// entities and publishes the text parts a cold layout in that context
+/// would.
+#[test]
+fn issue384_modal_parts_survive_context_transitions() {
+    use crate::MutationQueue;
+    use nana_ui_core::DisplaySpec;
+    for first in [SETTINGS, REMOVE] {
+        let mut shaper = bundled_face_shaper();
+        let (mut cx, id, _) = modal_page(first, DisplaySpec::Flex, None);
+        let root = cx.world().document_order(document())[0];
+        let entities = cx.world().len();
+        for display in [DisplaySpec::Grid, DisplaySpec::Inline, DisplaySpec::Flex] {
+            let mut style = cx.world().node_style(root).unwrap().clone();
+            Arc::make_mut(&mut style.layout).display = Some(display);
+            let mut q = MutationQueue::new();
+            q.set_style(root, style);
+            cx.commit_mutations(q).unwrap();
+            let work = product_frame(&mut cx, document(), modal_viewport(), &mut shaper);
+            assert_eq!((work.entities_spawned, work.entities_despawned), (0, 0));
+            assert_eq!(cx.world().len(), entities);
+            let (title, ..) = modal_text_regions(&cx, id);
+            assert_eq!(Some(title.bounds), part(&cx, id, LayoutPartKind::Header));
+            let (mut cold, ..) = modal_page(first, display, None);
+            assert_matches_cold(&mut cx, &mut cold, document());
+        }
+    }
+}
+
+/// 1k and 10k dialogs keep one entity each and publish their content box,
+/// their overlay and their title and description parts, and an idle frame
+/// lays nothing out.
+#[test]
+fn issue384_ten_thousand_dialogs_keep_one_entity_and_bounded_parts() {
+    let _unguarded = crate::layout_engine::verify::skip_layout_verify();
+    for count in [1_000, 10_000] {
+        let mut cx = AppContext::new();
+        let mut shaper = bundled_face_shaper();
+        let root = cx
+            .create_component(document(), Stack::column(0.0).width(LengthSpec::Px(800.0)))
+            .unwrap();
+        let mut children = Vec::with_capacity(count);
+        for _ in 0..count {
+            children.push(
+                cx.create_detached_component(
+                    document(),
+                    crate::Dialog::new("Settings").description("Changes apply to every window"),
+                )
+                .unwrap()
+                .stable_id(),
+            );
+        }
+        let mut q = crate::MutationQueue::new();
+        for &id in &children {
+            q.insert(root.stable_id(), id, None);
+        }
+        cx.commit_mutations(q).unwrap();
+        product_frame(&mut cx, document(), modal_viewport(), &mut shaper);
+        assert_eq!(cx.world().len(), count + 1);
+        for &id in &children {
+            let kinds: Vec<_> = cx
+                .world()
+                .layout_result(id)
+                .unwrap()
+                .parts
+                .iter()
+                .map(|part| part.kind)
+                .collect();
+            assert_eq!(
+                kinds,
+                [
+                    LayoutPartKind::ComponentContent,
+                    LayoutPartKind::Overlay,
+                    LayoutPartKind::Header,
+                    LayoutPartKind::Detail
+                ]
+            );
+        }
+        let generation = cx.world().layout_generation();
+        product_frame(&mut cx, document(), modal_viewport(), &mut shaper);
+        assert!(cx.take_system_work().is_empty());
+        let idle = cx.world().frame_counters;
+        assert_eq!(
+            (
+                idle.layout_measure_nodes,
+                idle.layout_placement_nodes,
+                idle.entities_spawned,
+                idle.entities_despawned
+            ),
+            (0, 0, 0, 0)
+        );
+        assert_eq!(cx.world().layout_generation(), generation);
+    }
+}

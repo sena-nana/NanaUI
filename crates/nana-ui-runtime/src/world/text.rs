@@ -3971,28 +3971,23 @@ impl UiWorld {
                     }
                     continue;
                 }
-                if let Some(visual @ StandardVisual::ModalFrame { kind, slots, .. }) = visual {
+                if let Some(visual @ StandardVisual::ModalFrame { .. }) = visual {
                     if computed.visible {
                         let Some(root) = self.component_layout_box(id) else {
                             continue;
                         };
-                        let surface = crate::overlay_surfaces::modal_surface_bounds(
-                            root,
-                            *kind,
-                            None,
-                            self.theme.recipes().dialog(),
-                        );
-                        let chrome = crate::overlay_surfaces::ModalChrome::measure_in(
-                            *kind,
-                            crate::TextMetrics::default(),
-                            None,
-                            slots,
-                            self.theme.recipes().dialog(),
-                            self.theme.border().hairline,
-                            &self.theme,
-                        );
-                        let wrap_width = chrome.text_width(surface, root);
-                        let body_width = chrome.body_box(surface).width;
+                        // The title and description wrap to their parts' width
+                        // and the body copy to its own, the parts layout
+                        // publishes (#384); their widths read only the card.
+                        let parts = self.modal_text_parts(id, root);
+                        let width = |kind| {
+                            crate::layout_engine::parts::part_bounds(&parts, kind)
+                                .map(|part| part.width)
+                        };
+                        let Some(wrap_width) = width(crate::LayoutPartKind::Header) else {
+                            continue;
+                        };
+                        let body_width = width(crate::LayoutPartKind::Note).unwrap_or(wrap_width);
                         let runs = shaper.runs;
                         let intrinsic = shape_modal_text(
                             id,

@@ -162,75 +162,40 @@ impl UiWorld {
                 description,
                 body_text,
                 kind,
-                slots,
                 danger,
                 surface_painter,
                 ..
             } => {
-                let mut presentation = self.nodes.modal_text(id).copied().unwrap_or_default();
-                // A title content slot that lays out stands in the title's
-                // place: the row reads its height as it would the title's,
-                // and the title text is not drawn.
-                let title_content = slots
-                    .title_content
-                    .filter(|slot| {
-                        !self
-                            .node_style(*slot)
-                            .is_some_and(|style| style.layout.omits_box())
-                    })
-                    .and_then(|slot| self.component_layout_box(slot));
-                if let Some(content) = title_content {
-                    presentation.title = crate::TextMetrics {
-                        width: content.width,
-                        height: content.height,
-                        ascent: None,
-                    };
-                }
+                // The card and its chrome are the measure the parts were
+                // solved with; the title, description and body copy are the
+                // parts layout published (#384).
+                let super::content_parts::ModalFrameLayout {
+                    chrome,
+                    surface,
+                    title_content,
+                    ..
+                } = self.modal_frame_layout(id, bounds)?;
                 let recipe = self.theme.recipes().dialog();
-                let chrome = crate::overlay_surfaces::ModalChrome::measure_in(
-                    *kind,
-                    presentation.title,
-                    presentation.description,
-                    slots,
-                    recipe,
-                    self.theme.border().hairline,
-                    &self.theme,
-                );
-                let body_copy = presentation.body.map_or(0.0, |metrics| metrics.height);
-                let body_slot = slots
-                    .body
-                    .and_then(|id| self.component_layout_box(id))
-                    .map_or(0.0, |region| region.height);
-                let body_gap = if body_copy > 0.0 && body_slot > 0.0 {
-                    self.theme.spacing().md
-                } else {
-                    0.0
-                };
-                let intrinsic_height = chrome.chrome_height(body_copy + body_gap + body_slot);
-                let surface = crate::overlay_surfaces::modal_surface_bounds(
-                    bounds,
-                    *kind,
-                    Some(intrinsic_height),
-                    recipe,
-                );
-                let text_width = chrome.text_width(surface, bounds);
+                let parts = self.component_content_parts(id);
+                let part = |kind| crate::layout_engine::parts::part_bounds(&parts, kind);
+                let title_box = part(crate::LayoutPartKind::Header).unwrap_or(LayoutBox {
+                    x: surface.x,
+                    y: surface.y,
+                    ..LayoutBox::default()
+                });
+                let description_box = part(crate::LayoutPartKind::Detail);
                 let title_type = crate::overlay_surfaces::modal_title_type(
                     *kind,
                     recipe,
                     self.theme.typography(),
                 );
                 let body = chrome.body_box(surface);
-                let (title_x, title_y) = chrome.title_origin(surface);
                 let surface_paint = surface_painter.as_ref().map(|painter| {
                     let local = |section: LayoutBox| LayoutBox {
                         x: section.x - surface.x,
                         y: section.y - surface.y,
                         ..section
                     };
-                    let title_height = presentation.title.height
-                        + presentation.description.map_or(0.0, |description| {
-                            self.theme.spacing().xs + description.height
-                        });
                     // The header band stops where its divider starts, so a
                     // shape drawn to its height meets the rule, not its far
                     // edge.
@@ -244,11 +209,12 @@ impl UiWorld {
                             width: surface.width,
                             height: header_height,
                         },
+                        // The title and the description under it.
                         title: local(LayoutBox {
-                            x: title_x,
-                            y: title_y,
-                            width: text_width,
-                            height: title_height,
+                            height: description_box.map_or(title_box.height, |description| {
+                                description.y + description.height - title_box.y
+                            }),
+                            ..title_box
                         }),
                         icon: chrome.icon_box(surface).map(local),
                         close: chrome.close_box(surface).map(local),
@@ -318,12 +284,7 @@ impl UiWorld {
                     title: crate::ComponentTextRegion {
                         color: Some(title_color),
                         ..text_region(
-                            LayoutBox {
-                                x: title_x,
-                                y: title_y,
-                                width: text_width,
-                                height: presentation.title.height,
-                            },
+                            title_box,
                             if title_content.is_some() {
                                 Arc::from("")
                             } else {
@@ -334,34 +295,29 @@ impl UiWorld {
                             title_type.weight,
                         )
                     },
-                    description: description.as_ref().map(|description| {
-                        text_region(
-                            LayoutBox {
-                                x: title_x,
-                                y: title_y + presentation.title.height + self.theme.spacing().xs,
-                                width: text_width,
-                                height: presentation.description.unwrap_or_default().height,
-                            },
-                            Arc::clone(description),
-                            true,
-                            self.theme.typography().meta,
-                            None,
-                        )
-                    }),
-                    body_text: body_text.as_ref().map(|message| {
-                        text_region(
-                            LayoutBox {
-                                x: body.x,
-                                y: body.y,
-                                width: body.width,
-                                height: presentation.body.unwrap_or_default().height,
-                            },
-                            Arc::clone(message),
-                            false,
-                            self.theme.typography().body,
-                            None,
-                        )
-                    }),
+                    description: description.as_ref().zip(description_box).map(
+                        |(description, bounds)| {
+                            text_region(
+                                bounds,
+                                Arc::clone(description),
+                                true,
+                                self.theme.typography().meta,
+                                None,
+                            )
+                        },
+                    ),
+                    body_text: body_text
+                        .as_ref()
+                        .zip(part(crate::LayoutPartKind::Note))
+                        .map(|(message, bounds)| {
+                            text_region(
+                                bounds,
+                                Arc::clone(message),
+                                false,
+                                self.theme.typography().body,
+                                None,
+                            )
+                        }),
                     background: self
                         .style_model
                         .color(SemanticColorRole::Surface)

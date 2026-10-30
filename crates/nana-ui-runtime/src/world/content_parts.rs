@@ -41,7 +41,137 @@ pub(super) fn visual_parts_read_theme(visual: Option<&StandardVisual>) -> bool {
     )
 }
 
+/// Where a modal frame's chrome puts things in its box: the chrome measured
+/// from its shaped title (or the title content slot standing in for it),
+/// description and body, and the card it sizes (#384).
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct ModalFrameLayout {
+    pub chrome: crate::overlay_surfaces::ModalChrome,
+    pub surface: LayoutBox,
+    pub presentation: crate::components::ModalTextPresentation,
+    /// The title content slot's box, when one lays out in the title's place.
+    pub title_content: Option<LayoutBox>,
+}
+
 impl UiWorld {
+    /// [`ModalFrameLayout`] for modal frame `id` laid out in `bounds`.
+    pub(crate) fn modal_frame_layout(
+        &self,
+        id: StableNodeId,
+        bounds: LayoutBox,
+    ) -> Option<ModalFrameLayout> {
+        let Some(StandardVisual::ModalFrame { kind, slots, .. }) = self.standard_visual_ref(id)
+        else {
+            return None;
+        };
+        let mut presentation = self.nodes.modal_text(id).copied().unwrap_or_default();
+        // A title content slot that lays out stands in the title's place: the
+        // row reads its height as it would the title's.
+        let title_content = slots
+            .title_content
+            .filter(|slot| {
+                !self
+                    .node_style(*slot)
+                    .is_some_and(|style| style.layout.omits_box())
+            })
+            .and_then(|slot| self.component_layout_box(slot));
+        if let Some(content) = title_content {
+            presentation.title = crate::TextMetrics {
+                width: content.width,
+                height: content.height,
+                ascent: None,
+            };
+        }
+        let recipe = self.theme.recipes().dialog();
+        let chrome = crate::overlay_surfaces::ModalChrome::measure_in(
+            *kind,
+            presentation.title,
+            presentation.description,
+            slots,
+            recipe,
+            self.theme.border().hairline,
+            &self.theme,
+        );
+        let body_copy = presentation.body.map_or(0.0, |metrics| metrics.height);
+        let body_slot = slots
+            .body
+            .and_then(|id| self.component_layout_box(id))
+            .map_or(0.0, |region| region.height);
+        let body_gap = if body_copy > 0.0 && body_slot > 0.0 {
+            self.theme.spacing().md
+        } else {
+            0.0
+        };
+        let surface = crate::overlay_surfaces::modal_surface_bounds(
+            bounds,
+            *kind,
+            Some(chrome.chrome_height(body_copy + body_gap + body_slot)),
+            recipe,
+        );
+        Some(ModalFrameLayout {
+            chrome,
+            surface,
+            presentation,
+            title_content,
+        })
+    }
+
+    /// A modal frame's title (`Header`), description (`Detail`) and body copy
+    /// (`Note`) where its chrome puts them in `bounds` (#384): the title and
+    /// the description stacked after the icon, as wide as the header row
+    /// lets them run, the body copy at the top of the body. Overlay layout
+    /// publishes them; the text pass wraps to their widths and geometry
+    /// paints in them.
+    pub(crate) fn modal_text_parts(&self, id: StableNodeId, bounds: LayoutBox) -> ContentParts {
+        let Some(StandardVisual::ModalFrame {
+            description,
+            body_text,
+            ..
+        }) = self.standard_visual_ref(id)
+        else {
+            return NO_CONTENT_PARTS;
+        };
+        let Some(frame) = self.modal_frame_layout(id, bounds) else {
+            return NO_CONTENT_PARTS;
+        };
+        let width = frame.chrome.text_width(frame.surface, bounds);
+        let (x, y) = frame.chrome.title_origin(frame.surface);
+        let title = frame.presentation.title.height;
+        let body = frame.chrome.body_box(frame.surface);
+        let part = |kind, bounds| Some(crate::LayoutPart::new(kind, bounds));
+        content_parts([
+            part(
+                crate::LayoutPartKind::Header,
+                LayoutBox {
+                    x,
+                    y,
+                    width,
+                    height: title,
+                },
+            ),
+            description.as_ref().and_then(|_| {
+                part(
+                    crate::LayoutPartKind::Detail,
+                    LayoutBox {
+                        x,
+                        y: y + title + self.theme.spacing().xs,
+                        width,
+                        height: frame.presentation.description.unwrap_or_default().height,
+                    },
+                )
+            }),
+            body_text.as_ref().and_then(|_| {
+                part(
+                    crate::LayoutPartKind::Note,
+                    LayoutBox {
+                        height: frame.presentation.body.unwrap_or_default().height,
+                        ..body
+                    },
+                )
+            }),
+        ])
+    }
+
     pub(super) fn component_content_parts(&self, id: StableNodeId) -> ContentParts {
         if let Some(result) = self.layout_result(id) {
             let mut parts = NO_CONTENT_PARTS;
@@ -166,6 +296,9 @@ impl UiWorld {
         }
         if let Some(inputs) = self.progress_inputs(id) {
             return crate::layout_engine::parts::progress_parts(content, inputs);
+        }
+        if let StandardVisual::ModalFrame { .. } = visual {
+            return self.modal_text_parts(id, bounds);
         }
         if let Some(inputs) = self.empty_state_inputs(id) {
             let presentation = self.nodes.empty_state_text(id).copied().unwrap_or_default();
