@@ -212,6 +212,7 @@ class ApplicationLintTests(unittest.TestCase):
             "    let c = Stack::row(0.0).gap_step(SpacingStep::Md);\n"
             "    let d = Text::new(\"x\").size(15.0);\n"
             "    // LengthSpec::Px(99.0) in a comment\n"
+            "    let e = Stack::row(0.0).gap_step(SpacingStep::Md).padding(12.0);\n"
             "}\n",
             encoding="utf-8",
         )
@@ -219,8 +220,43 @@ class ApplicationLintTests(unittest.TestCase):
     def test_literal_lengths_count_and_none_and_steps_do_not(self):
         findings = audit.lint_findings(self.root, ["src/ui"])
         lines = sorted((f["line"], f["category"]) for f in findings)
-        self.assertEqual(lines, [(2, "pixel_length"), (5, "pixel_length")])
+        self.assertEqual(
+            lines, [(2, "pixel_length"), (5, "pixel_length"), (7, "pixel_length")]
+        )
         self.assertEqual(findings[0]["file"], "src/ui/page.rs")
+
+    def test_a_token_read_on_the_line_does_not_hide_a_pixel_literal(self):
+        findings = audit.lint_findings(self.root, ["src/ui"])
+        texts = [f["text"] for f in findings if f["line"] == 7]
+        self.assertEqual(texts, [".padding(12.0)"])
+
+    def test_build_output_and_tool_state_are_skipped_and_bin_is_not(self):
+        for directory in ("target/debug", ".git/x", ".claude/worktrees/w", "node_modules/m"):
+            (self.root / directory).mkdir(parents=True)
+            (self.root / directory / "copy.rs").write_text(
+                "fn copy() { let a = LengthSpec::Px(12.0); }\n", encoding="utf-8"
+            )
+        (self.root / "src" / "bin").mkdir(parents=True)
+        (self.root / "src" / "bin" / "app.rs").write_text(
+            "fn main() { let a = LengthSpec::Px(9.0); }\n", encoding="utf-8"
+        )
+        files = sorted({f["file"] for f in audit.lint_findings(self.root, ["."])})
+        self.assertEqual(files, ["src/bin/app.rs", "src/ui/page.rs"])
+
+    def test_markdown_output_has_a_header(self):
+        import contextlib
+        import io
+
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            code = audit.main(
+                ["--root", str(self.root), "--path", "src/ui", "--format", "markdown"]
+            )
+        self.assertEqual(code, 0)
+        lines = out.getvalue().splitlines()
+        header = lines.index("| Category | Count |")
+        self.assertEqual(lines[header + 1], "| --- | ---: |")
+        self.assertIn("| `pixel_length` | 3 |", lines)
 
     def test_lint_fails_on_findings_and_check_only_on_growth(self):
         self.assertEqual(audit.main(["--root", str(self.root), "--path", "src/ui", "--lint"]), 1)

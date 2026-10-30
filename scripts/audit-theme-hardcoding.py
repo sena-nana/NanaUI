@@ -83,6 +83,19 @@ COMPONENT_ROOT = "crates/nana-ui-runtime/src"
 # A `tests/` directory holds test modules split out of their parent, the
 # same code a `*tests.rs` file or a `#[cfg(test)]` block holds.
 SKIP_PARTS = ("bin", "benches", "fixtures", "corpus", "tests")
+# Application mode reads a whole checkout: build output, VCS and tool state
+# are not UI code, while an app's `src/bin` entry points are, so `bin` stays
+# in.
+APP_SKIP_PARTS = (
+    "target",
+    ".git",
+    ".claude",
+    "node_modules",
+    "benches",
+    "fixtures",
+    "corpus",
+    "tests",
+)
 SKIP_SUFFIXES = ("_tests.rs", "tests.rs")
 TEST_ONLY_FILE = re.compile(r"(?:\s*//[^\n]*\n)*\s*#!\[cfg\((?:test|any\(test\b[^\]]*\))\)\]")
 
@@ -259,10 +272,10 @@ def display_path(path: Path) -> str:
 
 
 
-def rust_sources(root: Path) -> Iterable[Path]:
+def rust_sources(root: Path, skip_parts: tuple[str, ...] = SKIP_PARTS) -> Iterable[Path]:
     for path in sorted(root.rglob("*.rs")):
         relative = path.relative_to(root)
-        if any(part in SKIP_PARTS for part in relative.parts):
+        if any(part in skip_parts for part in relative.parts):
             continue
         if path.name.endswith(SKIP_SUFFIXES):
             continue
@@ -489,14 +502,16 @@ def scan() -> dict[str, object]:
 
 def lint_sources(root: Path, paths: list[str]) -> Iterable[Path]:
     """The `.rs` files under each of `paths` (relative to `root`), test code
-    left out as in the product scan."""
+    left out as in the product scan, and build output, VCS and tool state
+    (`target`, `.git`, `.claude`, `node_modules`) too; an app's `src/bin`
+    is scanned."""
     seen: set[Path] = set()
     for entry in paths:
         target = (root / entry).resolve()
         if target.is_file():
             files: Iterable[Path] = [target]
         else:
-            files = rust_sources(target)
+            files = rust_sources(target, APP_SKIP_PARTS)
         for path in files:
             if path not in seen:
                 seen.add(path)
@@ -519,9 +534,12 @@ def lint_findings(root: Path, paths: list[str]) -> list[dict[str, object]]:
             hits: list[tuple[str, str]] = []
             hits += [("color_literal", m.group(0)) for m in COLOR_LITERAL.finditer(line)]
             hits += [("motion", m.group(0)) for m in MOTION.finditer(line)]
+            # A pixel literal is a literal wherever it sits: a token read
+            # elsewhere on the line (`.gap_step(..).padding(12.0)`) does not
+            # name a step for it. Only a bare digit literal matches.
+            hits += [("pixel_length", m.group(0)) for m in PIXEL_LENGTH.finditer(line)]
             if not tokenized:
                 hits += [("design_number", m.group(0)) for m in DESIGN_NUMBER.finditer(line)]
-                hits += [("pixel_length", m.group(0)) for m in PIXEL_LENGTH.finditer(line)]
             for category, snippet in hits:
                 findings.append(
                     {"file": label, "line": number, "category": category, "text": snippet.strip()}
@@ -722,6 +740,10 @@ def lint_main(args: argparse.Namespace) -> int:
             return 1
         return 0
     if args.format == "markdown":
+        print(f"Scanned {', '.join(f'`{path}`' for path in paths)} under `{root}`.")
+        print()
+        print("| Category | Count |")
+        print("| --- | ---: |")
         for key in LINT_KEYS:
             print(f"| `{key}` | {totals[key]} |")  # type: ignore[index]
     else:

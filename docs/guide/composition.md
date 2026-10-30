@@ -117,6 +117,7 @@ python3 ../NanaUI/scripts/audit-theme-hardcoding.py --root . --path crates/app/s
 
 - `--lint` 列出每一处 `space::` / `type_scale::` 以外的像素、字号和圆角字面量（文件:行），有就退出 1。
 - 想先接受现状、只拦新增时，用 `--output baseline.json` 记下当前计数，之后 `--check baseline.json` 只在某类计数增长时失败（和 NanaUI 自己的门禁一样）。
+- 扫描跳过 `target`、`.git`、`.claude`、`node_modules` 和测试代码，但会扫应用的 `src/bin`。同一行里读了档位也不能掩护像素字面量：`.gap_step(SpacingStep::Md).padding(12.0)` 里的 `12.0` 照样算。`--format markdown` 输出带表头的计数表。
 
 ## 还没有的接口
 
