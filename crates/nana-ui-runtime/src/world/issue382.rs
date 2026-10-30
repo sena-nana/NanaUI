@@ -26,10 +26,15 @@
 //!   font size and a taller spacer inside the fixed box align the row again;
 //!   text that leaves the first line where it was, and text outside the row,
 //!   move nothing. Each step matches a cold layout.
+//! - Gate E: a block flow not packed to its start (`justify-content`
+//!   center, end, space-between, space-evenly; a reversed flow) sits by
+//!   where its first and last line boxes are, on a flex row and on a line.
+//!   A new justification aligns them again; each step matches a cold layout.
 #![cfg(test)]
 
 use nana_ui_core::{
-    BoxSizing, DisplaySpec, FlexDirection, GridTrack, LayoutStyle, LengthSpec, PositionSpec,
+    BoxSizing, DisplaySpec, FlexDirection, GridTrack, JustifySpec, LayoutStyle, LengthSpec,
+    PositionSpec,
 };
 
 use std::sync::{Arc, Mutex};
@@ -996,5 +1001,152 @@ fn issue382_d_a_flex_item_sits_by_its_first_descendant_line() {
         "the row measured for text outside it"
     );
     let (mut cold, _, _) = first_baseline_page(28.0, 24.0, "Second, longer", "Outside, longer");
+    assert_matches_cold(&mut warm, &mut cold, document);
+}
+
+/// The block flows gate E lays out: two labels in a fixed box whose flow
+/// puts its free space before, between or around them, or stacks them up
+/// from the bottom.
+const FLOWS: [(JustifySpec, bool); 6] = [
+    (JustifySpec::Center, false),
+    (JustifySpec::End, false),
+    (JustifySpec::SpaceBetween, false),
+    (JustifySpec::SpaceEvenly, false),
+    (JustifySpec::Start, true),
+    (JustifySpec::End, true),
+];
+
+/// A flex row aligning by first baselines and an ordinary block's line,
+/// each holding a reference label and one fixed box per [`FLOWS`] entry,
+/// the first entry's justification replaced by `first`. Returns the row's
+/// and the line's labels, the reference first, then each box's two, and
+/// the row's and the line's first box.
+fn flow_baseline_page(
+    first: JustifySpec,
+) -> (
+    AppContext,
+    NanaTextEngineShaper,
+    [Vec<StableNodeId>; 2],
+    [StableNodeId; 2],
+) {
+    let document = DocumentId::new(1).unwrap();
+    let (mut b, page) = Builder::page(document, 1, 900.0);
+    let row = b.element(
+        page,
+        LayoutStyle {
+            display: Some(DisplaySpec::Flex),
+            direction: Some(FlexDirection::Row),
+            align_items: nana_ui_core::AlignSpec::Baseline,
+            width: Some(LengthSpec::Px(800.0)),
+            ..LayoutStyle::default()
+        },
+    );
+    let line = b.element(
+        page,
+        LayoutStyle {
+            width: Some(LengthSpec::Px(800.0)),
+            ..LayoutStyle::default()
+        },
+    );
+    let mut labels = [Vec::new(), Vec::new()];
+    let mut first_boxes = Vec::new();
+    for (slot, parent) in [row, line].into_iter().enumerate() {
+        let reference = b.element(
+            parent,
+            LayoutStyle {
+                display: Some(DisplaySpec::InlineBlock),
+                ..LayoutStyle::default()
+            },
+        );
+        labels[slot].push(b.label(reference, "Ref"));
+        for (index, (justify, reversed)) in FLOWS.into_iter().enumerate() {
+            let flow = b.element(
+                parent,
+                LayoutStyle {
+                    display: Some(DisplaySpec::InlineBlock),
+                    width: Some(LengthSpec::Px(90.0)),
+                    height: Some(LengthSpec::Px(80.0)),
+                    justify_content: if index == 0 { first } else { justify },
+                    flex_reverse: reversed,
+                    ..LayoutStyle::default()
+                },
+            );
+            if index == 0 {
+                first_boxes.push(flow);
+            }
+            for text in ["A", "B"] {
+                let holder = b.element(flow, LayoutStyle::default());
+                labels[slot].push(b.label(holder, text));
+            }
+        }
+    }
+    let mut context = AppContext::new();
+    context.commit_mutations(b.queue).unwrap();
+    let mut shaper = strut_shaper(false);
+    product_frame(&mut context, document, viewport(), &mut shaper);
+    (context, shaper, labels, [first_boxes[0], first_boxes[1]])
+}
+
+/// The row sits each box by its first label in flow order, the line by its
+/// last: each on the reference label's baseline, wherever its flow put it.
+fn assert_flows_on_one_baseline(context: &AppContext, labels: &[Vec<StableNodeId>; 2]) {
+    let world = context.world();
+    let baseline = |id: StableNodeId| {
+        world
+            .layout_result(id)
+            .and_then(|result| result.first_baseline)
+            .unwrap_or_else(|| panic!("{id:?} publishes no baseline"))
+    };
+    for (slot, labels) in labels.iter().enumerate() {
+        let reference = baseline(labels[0]);
+        for (index, pair) in labels[1..].chunks(2).enumerate() {
+            let sitting = pair[if slot == 0 { 0 } else { 1 }];
+            let other = pair[if slot == 0 { 1 } else { 0 }];
+            assert!(
+                (baseline(sitting) - reference).abs() < 0.01,
+                "{} {:?}: {} vs the reference {reference}",
+                if slot == 0 { "row" } else { "line" },
+                FLOWS[index],
+                baseline(sitting)
+            );
+            assert!(
+                (baseline(other) - reference).abs() > 1.0,
+                "{:?}: both labels on the baseline",
+                FLOWS[index]
+            );
+        }
+    }
+}
+
+/// Gate E: a block flow that is not packed to its start sits by where its
+/// first and last line boxes are: `justify-content` center, end,
+/// space-between and space-evenly, and a reversed flow, alone and packed
+/// to its end. On a flex row aligning first baselines and on an ordinary
+/// block's line (last baselines) alike; a new justification aligns them
+/// again. Each step matches a cold layout.
+#[test]
+fn issue382_e_a_justified_or_reversed_block_flow_sits_by_its_line_boxes() {
+    let document = DocumentId::new(1).unwrap();
+    let (mut warm, mut shaper, labels, first_boxes) = flow_baseline_page(JustifySpec::Center);
+    assert_flows_on_one_baseline(&warm, &labels);
+    let (mut cold, _, _, _) = flow_baseline_page(JustifySpec::Center);
+    assert_matches_cold(&mut warm, &mut cold, document);
+    let mut queue = MutationQueue::new();
+    for first_box in first_boxes {
+        queue.set_style(
+            first_box,
+            styled(LayoutStyle {
+                display: Some(DisplaySpec::InlineBlock),
+                width: Some(LengthSpec::Px(90.0)),
+                height: Some(LengthSpec::Px(80.0)),
+                justify_content: JustifySpec::End,
+                ..LayoutStyle::default()
+            }),
+        );
+    }
+    warm.commit_mutations(queue).unwrap();
+    product_frame(&mut warm, document, viewport(), &mut shaper);
+    assert_flows_on_one_baseline(&warm, &labels);
+    let (mut cold, _, _, _) = flow_baseline_page(JustifySpec::End);
     assert_matches_cold(&mut warm, &mut cold, document);
 }

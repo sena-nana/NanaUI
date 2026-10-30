@@ -357,10 +357,12 @@ pub(super) fn prime_first_baselines(
 /// are each either such a line, or a block holding a line alone, whose own
 /// first or last baseline counts (derived again if its lines are its
 /// descendants'). One walk finds both, the first forward and the last back.
-/// Recorded per pass in `LayoutInputMap::derived_baselines`; both `None`
-/// where the box lays its flow out otherwise (a flex or grid container, a
-/// reversed or wrapping block flow, floats beside its lines), which keeps
-/// the approximation of `baseline_metrics`.
+/// A block flow stacks its children where placement does, `justify-content`
+/// and a reversed flow included. Recorded per pass in
+/// `LayoutInputMap::derived_baselines`; both `None` where the box lays its
+/// flow out otherwise (a flex or grid container, a wrapping block flow or
+/// one with auto margins, floats beside its lines), which keeps the
+/// approximation of `baseline_metrics`.
 #[allow(clippy::too_many_arguments)]
 pub(super) fn descendant_baselines(
     id: StableNodeId,
@@ -443,7 +445,7 @@ fn derive_baselines(
     if !ifc
         && (direction != FlexDirection::Column
             || matches!(style.flex_wrap, FlexWrap::Wrap | FlexWrap::WrapReverse)
-            || style.justify_content != JustifySpec::Start
+            || count_auto_main_margins(&flow, direction, nodes) > 0
             || style
                 .active_grid_rows()
                 .is_some_and(|tracks| !tracks.is_empty()))
@@ -549,16 +551,44 @@ fn derive_baselines(
         }
         return Ok(found);
     }
-    // A block flow stacks its children from the top of its content box.
+    // A block flow stacks its children down its content box as placement
+    // does: `justify-content` puts the free space before, between or around
+    // them, and a reversed flow stacks them up from the bottom, each the
+    // other way round in its margins. The order the first and the last line
+    // box are looked for in stays the flow's.
+    let main_reversed = flow_axes_reversed(&style, writing, direction, false, false).0;
+    let occupied = main_occupied(
+        &flow,
+        &sizes,
+        direction,
+        content.width,
+        gap,
+        child_font_px,
+        nodes,
+    );
+    let (start, step) = justify_offsets(
+        style.justify_content,
+        content.height,
+        occupied,
+        gap,
+        flow.len(),
+    );
     let mut tops = Vec::with_capacity(flow.len());
-    let mut cursor = 0.0f32;
+    let mut cursor = start;
     for (index, &child) in flow.iter().enumerate() {
-        if index > 0 {
-            cursor += gap;
-        }
         let margin = margin_of(child, nodes);
-        tops.push(cursor + margin.top);
-        cursor += margin.top + sizes[index].height + margin.bottom;
+        let (lead, trail) = if main_reversed {
+            (margin.bottom, margin.top)
+        } else {
+            (margin.top, margin.bottom)
+        };
+        let height = sizes[index].height;
+        tops.push(if main_reversed {
+            content.height - cursor - lead - height
+        } else {
+            cursor + lead
+        });
+        cursor += lead + height + trail + step;
     }
     let mut found = BaselineMetrics::default();
     for (which, order) in [
