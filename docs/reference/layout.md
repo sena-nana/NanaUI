@@ -537,7 +537,9 @@ fit 只有一份数学：`ContentFit::fitted_size`（`nana-ui-core`）。fit 是
   0.3em），很矮的原子顶不高于 strut 的 ascent。块级子项独占的行没有 strut。`line-height` 读块自己
   的 `LayoutStyle`（CSS 路径由 `inherit_typography_from` 继承下来），不读 `ComputedStyle`。
   原生段落的行本来就有 strut（`nana-text` 的 `LineStrut`），用的是真实字面的度量，所以两者都有
-  strut，但普通块级流的值是近似，和同字号原生段落可差零点几像素。
+  strut，但普通块级流的值是近似。差多少看字面：产品 UI 字面 Noto Sans SC 的 ascent / descent 是
+  1.16em / 0.288em，16px、行高 1.2 时真实 strut 的 descent 约 2.6px，近似是 4.8px，空 inline-block
+  的行高差约 1.6px（Chrome 实测见 css-parity `T-I04`、`T-I06`、`T-I07`，#382）。
 
 `align-items: baseline` 的 flex 行仍按首行基线对齐，替换内容取边框盒底边（CSS Align 在 flex / grid
 里从边框盒合成基线）。行的基线发布在 `LayoutResult` 的 TextLine 片段上。`LayoutStyle` 没有

@@ -1,6 +1,6 @@
 {
   "id": "T-I06",
-  "title": "行盒从块的 strut 起算：空 inline-block 下留出字体的 descent",
+  "title": "行盒从块的 strut 起算：空 inline-block 下留出字体的 descent（Chrome 152 + Noto Sans SC 实测）",
   "status": "pass",
   "viewport": [300, 80],
   "tolerance_px": 2,
@@ -13,7 +13,7 @@
     ]
   },
   "expected": [
-    { "id": "root", "x": 0, "y": 0, "w": 300, "h": 34 },
+    { "id": "root", "x": 0, "y": 0, "w": 300, "h": 32 },
     { "id": "a", "x": 0, "y": 0, "w": 40, "h": 30 },
     { "id": "b", "x": 40, "y": 26, "w": 10, "h": 4 }
   ]

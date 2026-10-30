@@ -1,6 +1,6 @@
 {
   "id": "T-I05",
-  "title": "不同高度的 inline-block 同行按基线对齐（底外边距边落在基线上）",
+  "title": "不同高度的 inline-block 同行按基线对齐（底外边距边落在基线上）（Chrome 152 + Noto Sans SC 实测）",
   "status": "pass",
   "viewport": [300, 80],
   "tolerance_px": 2,
