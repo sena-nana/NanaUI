@@ -2805,6 +2805,16 @@ pub(super) fn place_positioned_child(
     if let Some(max) = child_style.resolved_max_width_fonts(Some(base.width), vp, child_fonts) {
         child_size.width = child_size.width.min(max);
     }
+    // A declared ratio fills an auto height from the width the insets and
+    // limits left, as in flow; the height then meets its own limits.
+    if auto_height {
+        fill_auto_height_from_aspect_ratio(
+            child_style,
+            &mut child_size,
+            Some(base.width),
+            child_fonts,
+        );
+    }
     child_size.height = child_size.height.max(child_style.resolved_min_height_fonts(
         Some(base.height),
         vp,

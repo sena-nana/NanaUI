@@ -1,0 +1,20 @@
+{
+  "id": "T-P21",
+  "title": "absolute 的 aspect-ratio 按夹取后与 inset 给出的宽度回推高度（Chrome 152 实测）",
+  "status": "pass",
+  "viewport": [600, 300],
+  "tolerance_px": 2,
+  "tree": {
+    "id": "root",
+    "style": "display:block;position:relative;width:600px;height:300px",
+    "children": [
+      { "id": "clamped", "style": "position:absolute;top:0;left:0;width:120px;max-width:60px;aspect-ratio:1.5" },
+      { "id": "insets", "style": "position:absolute;top:100px;left:0;right:480px;aspect-ratio:1.5" }
+    ]
+  },
+  "expected": [
+    { "id": "root", "x": 0, "y": 0, "w": 600, "h": 300 },
+    { "id": "clamped", "x": 0, "y": 0, "w": 60, "h": 40 },
+    { "id": "insets", "x": 0, "y": 100, "w": 120, "h": 80 }
+  ]
+}
