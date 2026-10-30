@@ -1,5 +1,7 @@
 #[path = "runtime_benchmark/style_sharing.rs"]
 mod style_sharing;
+#[path = "runtime_benchmark/styled_mount.rs"]
+mod styled_mount;
 
 use std::{
     collections::BTreeMap,
@@ -245,6 +247,10 @@ fn main() {
     let document = DocumentId::new(1).unwrap();
     if std::env::args().any(|arg| arg == "--profile-style-sharing") {
         style_sharing::run(document);
+        return;
+    }
+    if std::env::args().any(|arg| arg == "--profile-styled-mount") {
+        styled_mount::run(document);
         return;
     }
     if std::env::args().any(|arg| arg == "--profile-initial-systems") {
