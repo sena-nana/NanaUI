@@ -139,6 +139,10 @@ struct SignalNode {
     /// `RefCell<T>`, for a signal and a computed alike.
     value: Rc<dyn Any>,
     subscribers: Vec<Observer>,
+    /// Observers of `subscribers` disposed since the list was last
+    /// compacted. A write skips them; the list is compacted once they are
+    /// half of it.
+    dead: usize,
     computed: Option<ComputedNode>,
     created: &'static Location<'static>,
 }
@@ -218,6 +222,9 @@ struct Runtime {
     /// [`on_mount`] callbacks of views being built, with their scopes.
     mounted: Vec<(Option<ScopeKey>, MountFn)>,
     stats: ReactiveStats,
+    /// Subscribers compacting has looked at, for tests.
+    #[cfg(test)]
+    compacted: usize,
     #[cfg(feature = "reactive-trace")]
     trace: super::trace::Ring,
 }
@@ -228,9 +235,10 @@ struct Runtime {
 struct Released {
     cleanups: Vec<Box<dyn FnOnce()>>,
     garbage: Vec<Box<dyn Any>>,
-    /// Signals a removed observer read: their subscriber lists are compacted
-    /// once per disposal, not scanned once per observer (a list of n rows
-    /// reading one signal would otherwise pay O(n²) to clear).
+    /// Signals a removed observer read, once per observer: each list counts
+    /// its dead and is compacted once they are half of it, across
+    /// disposals (n rows reading one signal, unmounted one by one, would
+    /// otherwise pay O(n²)).
     stale_subscribers: Vec<SignalKey>,
 }
 
@@ -250,6 +258,8 @@ impl Runtime {
             current_scope: None,
             mounted: Vec::new(),
             stats: ReactiveStats::default(),
+            #[cfg(test)]
+            compacted: 0,
             #[cfg(feature = "reactive-trace")]
             trace: super::trace::Ring::new(),
         }
@@ -290,6 +300,7 @@ impl Runtime {
         let (index, generation) = self.signals.insert(SignalNode {
             value,
             subscribers: Vec::new(),
+            dead: 0,
             computed,
             created,
         });
@@ -475,22 +486,37 @@ impl Runtime {
         released.garbage.push(Box::new(node.value));
     }
 
-    /// Drop the observers that no longer exist from the subscriber lists
-    /// `released` names, each list once.
+    /// Count the observers `released` disposed against the subscriber lists
+    /// they were on, and drop the ones that no longer exist from a list once
+    /// they are half of it. Compacting every list on every disposal made
+    /// unmounting n rows that read one signal cost n² (#348).
     fn compact_subscribers(&mut self, released: &mut Released) {
         let stale = &mut released.stale_subscribers;
         if stale.is_empty() {
             return;
         }
         stale.sort_unstable_by_key(|key| (key.index, key.generation));
-        stale.dedup();
-        for key in stale.drain(..) {
-            let Some(mut subscribers) = self
-                .signal_mut(key)
-                .map(|node| std::mem::take(&mut node.subscribers))
-            else {
+        let mut at = 0;
+        while at < stale.len() {
+            let key = stale[at];
+            let run = stale[at..]
+                .iter()
+                .take_while(|other| **other == key)
+                .count();
+            at += run;
+            let Some(node) = self.signal_mut(key) else {
                 continue;
             };
+            node.dead += run;
+            if node.dead * 2 < node.subscribers.len() {
+                continue;
+            }
+            node.dead = 0;
+            let mut subscribers = std::mem::take(&mut node.subscribers);
+            #[cfg(test)]
+            {
+                self.compacted += subscribers.len();
+            }
             subscribers.retain(|observer| match *observer {
                 Observer::Effect(effect) => {
                     self.effects.get(effect.index, effect.generation).is_some()
@@ -504,6 +530,7 @@ impl Runtime {
                 node.subscribers = subscribers;
             }
         }
+        stale.clear();
     }
 
     fn dispose_scope(&mut self, key: ScopeKey, released: &mut Released) {
@@ -1529,6 +1556,43 @@ mod tests {
                 run_user_effect(key);
             }
         }
+    }
+
+    /// Rows that read one signal, disposed one by one, compact its
+    /// subscriber list a bounded number of times per row, and a write after
+    /// reaches only the rows still alive (#348).
+    #[test]
+    fn disposing_readers_one_by_one_compacts_in_amortized_constant_time() {
+        const ROWS: usize = 2_000;
+        let runs = Rc::new(Cell::new(0));
+        let (owner, shared) = scoped(|| signal(0u32));
+        let rows: Vec<ScopeKey> = (0..ROWS)
+            .map(|_| {
+                let seen = Rc::clone(&runs);
+                scoped(move || {
+                    watch_effect(move || {
+                        shared.get();
+                        seen.set(seen.get() + 1);
+                    });
+                })
+                .0
+            })
+            .collect();
+        let before = with_rt(|rt| rt.compacted);
+        for row in &rows[..ROWS - 1] {
+            dispose_scope(*row);
+        }
+        let looked_at = with_rt(|rt| rt.compacted) - before;
+        assert!(
+            looked_at <= 4 * ROWS,
+            "{looked_at} subscribers looked at to dispose {ROWS} readers"
+        );
+        runs.set(0);
+        shared.set(1);
+        flush_user_effects();
+        assert_eq!(runs.get(), 1, "only the last row reruns");
+        dispose_scope(rows[ROWS - 1]);
+        dispose_scope(owner);
     }
 
     #[test]
