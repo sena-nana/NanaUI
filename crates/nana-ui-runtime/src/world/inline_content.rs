@@ -186,9 +186,10 @@ impl UiWorld {
 
     /// Whether what `id` holds can move the baseline an atom sits on its
     /// line by: an atom on a line of an ordinary block whose last line box
-    /// is its own, or an in-flow block of such an atom's flow (and so on
-    /// down), where that last line box is looked for (CSS 2.1 §10.8.1). A
-    /// replaced one and an atom whose overflow is not visible sit by their
+    /// is its own, an item a flex line aligns by its first baseline, or an
+    /// in-flow block of such an atom's or item's flow (and so on down),
+    /// where that line box is looked for (CSS 2.1 §10.8.1, CSS Align 3 §9).
+    /// A replaced one and an atom whose overflow is not visible sit by their
     /// bottom margin edge, whatever they hold. Native paragraph atoms are
     /// not counted: the paragraph reads their metrics after layout.
     pub(crate) fn atom_baseline_reads_content(&self, id: StableNodeId) -> bool {
@@ -197,6 +198,9 @@ impl UiWorld {
         };
         if self.inline_parent(id).is_some() || self.aligns_by_bottom_edge(id, &style) {
             return false;
+        }
+        if self.aligns_by_first_baseline(id) {
+            return true;
         }
         // Lines, not a flex or grid container's items.
         let Some(parent) = self.parent_id(id) else {
@@ -215,6 +219,28 @@ impl UiWorld {
         !style.position.is_out_of_flow()
             && !style.is_floated()
             && self.atom_baseline_reads_content(parent)
+    }
+
+    /// Whether `id` is an in-flow item of a flex container that aligns it by
+    /// its first baseline (`align-self: baseline`, or `align-items: baseline`
+    /// it does not override). A grid aligns such an item to the start of
+    /// its area.
+    pub(crate) fn aligns_by_first_baseline(&self, id: StableNodeId) -> bool {
+        let Some(parent) = self
+            .parent_id(id)
+            .and_then(|parent| self.layout_style(parent))
+        else {
+            return false;
+        };
+        parent
+            .display
+            .is_some_and(nana_ui_core::DisplaySpec::is_flex_container)
+            && self.layout_style(id).is_some_and(|style| {
+                !style.position.is_out_of_flow()
+                    && !style.omits_box()
+                    && style.resolved_align_self(parent.align_items)
+                        == nana_ui_core::AlignSpec::Baseline
+            })
     }
 
     /// Whether `id` lays out a line box of its own: text of its own, or a

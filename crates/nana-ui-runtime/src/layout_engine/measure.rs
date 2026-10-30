@@ -1826,10 +1826,12 @@ fn measure_node(
     Ok(size)
 }
 
-/// An atom of a native paragraph publishes the last baseline it sits on its
-/// line by with its intrinsic facts: the paragraph reads it back after
-/// layout (`UiWorld::sync_inline_metrics`), so it must be the one placement
-/// derived from its descendants ([`prime_atom_baselines`]).
+/// A box publishes the baselines it is aligned by with its intrinsic facts,
+/// so they must be the ones placement derives from its descendants. An atom
+/// of a native paragraph: the paragraph reads its last baseline back after
+/// layout (`UiWorld::sync_inline_metrics`, [`prime_atom_baselines`]). An
+/// item a flex line aligns by its first baseline: the line reads it from
+/// the facts ([`prime_first_baselines`]).
 #[allow(clippy::too_many_arguments)]
 fn publish_atom_baseline(
     id: StableNodeId,
@@ -1842,7 +1844,15 @@ fn publish_atom_baseline(
     scope: Option<&ScopeContext<'_>>,
 ) -> Result<(), UiWorldError> {
     if nodes.world.inline_parent(id).is_none() {
-        return Ok(());
+        return prime_first_baselines(
+            [(id, size)],
+            inline_base,
+            viewport,
+            parent_font_px,
+            nodes,
+            cache,
+            scope,
+        );
     }
     prime_atom_baselines(
         [(id, size)],

@@ -2329,22 +2329,38 @@ struct LayoutInputMap<'a> {
     /// Measure plans rebuilt this pass, merged the same way. An entry that
     /// ends the pass empty retires the container's retained plans.
     measure_plans: HashMap<StableNodeId, MeasurePlanSlots>,
-    /// Last baselines of boxes whose line boxes are all their descendants',
-    /// by node and used border-box size, derived this pass from where those
-    /// descendants sit ([`inline::descendant_last_baseline`]). `None`: a
-    /// context the derivation does not lay out, which keeps the
+    /// First and last baselines of boxes whose line boxes are all their
+    /// descendants', by node and used border-box size, derived this pass from
+    /// where those descendants sit ([`inline::descendant_baselines`]). `None`:
+    /// a context the derivation does not lay out, which keeps the
     /// approximation of [`Self::baseline_metrics`].
-    derived_baselines: HashMap<(StableNodeId, u32, u32), Option<f32>>,
+    derived_baselines: HashMap<(StableNodeId, u32, u32), BaselineMetrics>,
 }
 
 fn derived_baseline_key(id: StableNodeId, used: Size) -> (StableNodeId, u32, u32) {
     (id, used.width.to_bits(), used.height.to_bits())
 }
 
-#[derive(Debug, Clone, Copy, Default)]
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
 struct BaselineMetrics {
     first: Option<f32>,
     last: Option<f32>,
+}
+
+impl BaselineMetrics {
+    fn get(self, which: crate::Baseline) -> Option<f32> {
+        match which {
+            crate::Baseline::First => self.first,
+            crate::Baseline::Last => self.last,
+        }
+    }
+
+    fn set(&mut self, which: crate::Baseline, baseline: f32) {
+        match which {
+            crate::Baseline::First => self.first = Some(baseline),
+            crate::Baseline::Last => self.last = Some(baseline),
+        }
+    }
 }
 
 impl<'a> LayoutInputMap<'a> {
@@ -2643,29 +2659,48 @@ impl<'a> LayoutInputMap<'a> {
             .and_then(|metrics| metrics.ascent)
             .filter(|value| value.is_finite() && *value >= 0.0);
         let ascent = ascent.unwrap_or(font * nana_ui_core::TEXT_APPROX_ASCENT_EM);
-        let first = Some(chrome_top + ascent);
+        let approximate = Some(chrome_top + ascent);
         if button_with_label {
             // A labelled button's baseline belongs to its internal label
             // content. The shaped text metrics above are authoritative; the
             // approximation is only the same explicit host fallback used
             // when shaping has not produced a line yet.
-            return BaselineMetrics { first, last: first };
+            return BaselineMetrics {
+                first: approximate,
+                last: approximate,
+            };
         }
-        // A box whose line boxes are its descendants' ends on the last of
-        // them, where it sits inside the box. The first stays the
-        // approximation of its own font's first line.
-        let last = used
+        // A box whose line boxes are its descendants' starts on the first of
+        // them and ends on the last, where they sit inside the box. Where
+        // nothing derived them, its own font's first line is the
+        // approximation of both.
+        let derived = used
             .and_then(|used| {
                 self.derived_baselines
                     .get(&derived_baseline_key(id, used))
                     .copied()
             })
-            .flatten()
-            .or(first);
-        BaselineMetrics { first, last }
+            .unwrap_or_default();
+        let first = derived.first.or(approximate);
+        BaselineMetrics {
+            first,
+            last: derived.last.or(first),
+        }
     }
 
     fn baseline(&self, id: StableNodeId, fallback_font_px: f32, used: Size) -> f32 {
+        // A flex line reads one derived value: a caller that did not prime
+        // this item ([`inline::prime_first_baselines`]) would align it by
+        // the approximation instead.
+        #[cfg(any(test, feature = "layout-verify"))]
+        assert!(
+            !self.world.aligns_by_first_baseline(id)
+                || !self.world.line_boxes_are_descendants(id)
+                || self
+                    .derived_baselines
+                    .contains_key(&derived_baseline_key(id, used)),
+            "{id:?} at {used:?}: its descendants' first baseline was not derived"
+        );
         let writing = self
             .nodes
             .get(&id)

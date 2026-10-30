@@ -260,6 +260,18 @@ fn check_plan_children(
             };
         // Aligned by a baseline that moved: the line aligns again, though no
         // size changed.
+        if on_measure && entry.baseline.is_some() {
+            prime_first_baselines(
+                [(child, entry.size)],
+                plan.writing
+                    .inline_size(plan.content.width, plan.content.height),
+                viewport,
+                plan.child_font_px,
+                nodes,
+                intrinsic,
+                Some(scope),
+            )?;
+        }
         let baseline_moved = on_measure
             && entry.baseline.is_some_and(|aligned| {
                 let font_px = fonts_of(&current, plan.child_font_px).element_px;
@@ -2272,6 +2284,17 @@ pub(super) fn place_node_scoped(
                         child.resolved_align_self(style.align_items) == AlignSpec::Baseline
                     })
                 });
+            if needs_baseline {
+                prime_first_baselines(
+                    line_flow.iter().copied().zip(line_sizes.iter().copied()),
+                    writing.inline_size(content.width, content.height),
+                    viewport,
+                    child_font_px,
+                    nodes,
+                    intrinsic,
+                    scope,
+                )?;
+            }
             let line_baseline = if needs_baseline {
                 line_flow
                     .iter()

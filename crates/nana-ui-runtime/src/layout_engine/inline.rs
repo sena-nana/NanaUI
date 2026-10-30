@@ -278,7 +278,7 @@ pub(super) fn ifc_atom_metrics(
 
 /// Derives, for each atom among `items` that sits on its line by its last
 /// line box while every line box it holds is a descendant's, that baseline
-/// at the size the atom takes on the line ([`descendant_last_baseline`]).
+/// at the size the atom takes on the line ([`descendant_baselines`]).
 /// [`LayoutInputMap::atom_line_metrics`] reads it from there, so every line
 /// that sits the atom, measured or placed, reads one value. `inline_base`
 /// is the line's containing block's inline size.
@@ -295,7 +295,7 @@ pub(super) fn prime_atom_baselines(
     for (child, size) in items {
         if nodes.world.atom_sits_on_line_box(child) && nodes.world.line_boxes_are_descendants(child)
         {
-            descendant_last_baseline(
+            descendant_baselines(
                 child,
                 size,
                 inline_base,
@@ -310,22 +310,59 @@ pub(super) fn prime_atom_baselines(
     Ok(())
 }
 
-/// The last baseline of `id` at border-box size `used`, from its top, when
-/// every line box it holds is a descendant's (CSS 2.1 §10.8.1): the
-/// baseline of its last in-flow line box, where that line sits inside it.
+/// Derive, for each item of a flex line that aligns it by its first
+/// baseline while every line box it holds is a descendant's, its baselines
+/// at the size it takes on the line ([`descendant_baselines`]), so the
+/// line, measured or placed, and the intrinsic facts it publishes read one
+/// value ([`LayoutInputMap::baseline_metrics`]). `inline_base` is the flex
+/// container's inline size.
+#[allow(clippy::too_many_arguments)]
+pub(super) fn prime_first_baselines(
+    items: impl IntoIterator<Item = (StableNodeId, Size)>,
+    inline_base: f32,
+    viewport: LayoutViewport,
+    parent_font_px: f32,
+    nodes: &mut LayoutInputMap<'_>,
+    cache: &mut PassIntrinsicCache,
+    scope: Option<&ScopeContext<'_>>,
+) -> Result<(), UiWorldError> {
+    for (item, size) in items {
+        if nodes.world.aligns_by_first_baseline(item)
+            && nodes.world.line_boxes_are_descendants(item)
+        {
+            descendant_baselines(
+                item,
+                size,
+                inline_base,
+                viewport,
+                parent_font_px,
+                nodes,
+                cache,
+                scope,
+            )?;
+        }
+    }
+    Ok(())
+}
+
+/// The first and last baselines of `id` at border-box size `used`, from
+/// its top, when every line box it holds is a descendant's (CSS 2.1
+/// §10.8.1, CSS Inline 3 §4.2.1): the baselines of its first and its last
+/// in-flow line box, where those lines sit inside it.
 ///
 /// It lays the box's flow out the way placement does, from the sizes its
 /// children measure at its content box: a block flow stacks them, an inline
 /// formatting context packs its lines with [`pack_ifc_line_boxes`] and sits
-/// each on its baseline ([`ifc_line_metrics`]). The last line is either such
-/// a line, or a block holding a line alone, whose own last baseline counts
-/// (derived again if its lines are its descendants'). Recorded per pass in
-/// `LayoutInputMap::derived_baselines`; `None` where the box lays its flow
-/// out otherwise (a flex or grid container, a reversed or wrapping block
-/// flow, floats beside its lines), which keeps the approximation of
-/// `baseline_metrics`.
+/// each on its baseline ([`ifc_line_metrics`]). The first line and the last
+/// are each either such a line, or a block holding a line alone, whose own
+/// first or last baseline counts (derived again if its lines are its
+/// descendants'). One walk finds both, the first forward and the last back.
+/// Recorded per pass in `LayoutInputMap::derived_baselines`; both `None`
+/// where the box lays its flow out otherwise (a flex or grid container, a
+/// reversed or wrapping block flow, floats beside its lines), which keeps
+/// the approximation of `baseline_metrics`.
 #[allow(clippy::too_many_arguments)]
-pub(super) fn descendant_last_baseline(
+pub(super) fn descendant_baselines(
     id: StableNodeId,
     used: Size,
     inline_base: f32,
@@ -334,12 +371,12 @@ pub(super) fn descendant_last_baseline(
     nodes: &mut LayoutInputMap<'_>,
     cache: &mut PassIntrinsicCache,
     scope: Option<&ScopeContext<'_>>,
-) -> Result<Option<f32>, UiWorldError> {
+) -> Result<BaselineMetrics, UiWorldError> {
     let key = derived_baseline_key(id, used);
     if let Some(known) = nodes.derived_baselines.get(&key) {
         return Ok(*known);
     }
-    let derived = derive_last_baseline(
+    let derived = derive_baselines(
         id,
         used,
         inline_base,
@@ -354,7 +391,7 @@ pub(super) fn descendant_last_baseline(
 }
 
 #[allow(clippy::too_many_arguments)]
-fn derive_last_baseline(
+fn derive_baselines(
     id: StableNodeId,
     used: Size,
     inline_base: f32,
@@ -363,12 +400,12 @@ fn derive_last_baseline(
     nodes: &mut LayoutInputMap<'_>,
     cache: &mut PassIntrinsicCache,
     scope: Option<&ScopeContext<'_>>,
-) -> Result<Option<f32>, UiWorldError> {
+) -> Result<BaselineMetrics, UiWorldError> {
     let Some(style) = nodes.style(id) else {
-        return Ok(None);
+        return Ok(BaselineMetrics::default());
     };
     let Some(node) = nodes.get(id)? else {
-        return Ok(None);
+        return Ok(BaselineMetrics::default());
     };
     let (child_ids, writing) = (Arc::clone(&node.children), node.writing);
     if writing.is_vertical()
@@ -377,7 +414,7 @@ fn derive_last_baseline(
             .display
             .is_some_and(|display| display.is_flex_container() || display.is_grid_container())
     {
-        return Ok(None);
+        return Ok(BaselineMetrics::default());
     }
     let fonts = fonts_of(&style, parent_font_px);
     let child_font_px = fonts.element_px;
@@ -394,13 +431,13 @@ fn derive_last_baseline(
         .iter()
         .any(|&child| nodes.style(child).is_some_and(|child| child.is_floated()))
     {
-        return Ok(None);
+        return Ok(BaselineMetrics::default());
     }
     sort_by_order(&mut flow, nodes);
     let context = establish_context(id, &style, &flow, nodes);
     let ifc = context.inline();
     if context.grid_2d || !(ifc || matches!(context.kind, crate::FormattingContextKind::Flow)) {
-        return Ok(None);
+        return Ok(BaselineMetrics::default());
     }
     let direction = used_flow_direction(&style, writing, ifc);
     if !ifc
@@ -411,7 +448,7 @@ fn derive_last_baseline(
                 .active_grid_rows()
                 .is_some_and(|tracks| !tracks.is_empty()))
     {
-        return Ok(None);
+        return Ok(BaselineMetrics::default());
     }
     let parent_box = gap_containing_block(&style, content);
     let gap = style.main_gap_against_fonts(direction, parent_box, fonts);
@@ -464,38 +501,53 @@ fn derive_last_baseline(
             nodes,
             &PackedFloats::default(),
         );
-        for line in lines.iter().rev() {
-            let Some(&first) = line.indices.first() else {
-                continue;
-            };
-            if line.baseline_aligned {
-                let (ascent, _) = ifc_line_metrics(
-                    line.indices
-                        .iter()
-                        .map(|&index| (flow[index], sizes[index])),
-                    content.width,
-                    viewport,
-                    child_font_px,
-                    strut,
-                    nodes,
-                );
-                return Ok(Some(top + line.cross_y + ascent));
-            }
-            if let Some(baseline) = block_last_baseline(
-                flow[first],
-                sizes[first],
-                content.width,
-                viewport,
-                child_font_px,
-                nodes,
-                cache,
-                scope,
-            )? {
-                let margin = margin_of(flow[first], nodes);
-                return Ok(Some(top + line.cross_y + margin.top + baseline));
+        // The first line forward, the last back: each a line its items sit
+        // on, or a block alone on its line with a baseline of its own.
+        let mut found = BaselineMetrics::default();
+        for (which, order) in [
+            (crate::Baseline::First, (0..lines.len()).collect::<Vec<_>>()),
+            (crate::Baseline::Last, (0..lines.len()).rev().collect()),
+        ] {
+            for index in order {
+                let line = &lines[index];
+                let Some(&first) = line.indices.first() else {
+                    continue;
+                };
+                let baseline = if line.baseline_aligned {
+                    let (ascent, _) = ifc_line_metrics(
+                        line.indices
+                            .iter()
+                            .map(|&index| (flow[index], sizes[index])),
+                        content.width,
+                        viewport,
+                        child_font_px,
+                        strut,
+                        nodes,
+                    );
+                    Some(top + line.cross_y + ascent)
+                } else {
+                    block_baseline(
+                        flow[first],
+                        sizes[first],
+                        which,
+                        content.width,
+                        viewport,
+                        child_font_px,
+                        nodes,
+                        cache,
+                        scope,
+                    )?
+                    .map(|baseline| {
+                        top + line.cross_y + margin_of(flow[first], nodes).top + baseline
+                    })
+                };
+                if let Some(baseline) = baseline {
+                    found.set(which, baseline);
+                    break;
+                }
             }
         }
-        return Ok(None);
+        return Ok(found);
     }
     // A block flow stacks its children from the top of its content box.
     let mut tops = Vec::with_capacity(flow.len());
@@ -508,51 +560,60 @@ fn derive_last_baseline(
         tops.push(cursor + margin.top);
         cursor += margin.top + sizes[index].height + margin.bottom;
     }
-    for index in (0..flow.len()).rev() {
-        let child = flow[index];
-        let Some(child_style) = nodes.style(child) else {
-            continue;
-        };
-        // Stretched across the block as placement stretches it, so what it
-        // holds lays out at the width it gets.
-        let mut size = sizes[index];
-        if child_style.resolved_align_self(style.align_items) == AlignSpec::Stretch
-            && !cross_axis_is_definite(
-                &child_style,
-                direction,
-                has_natural_ratio(nodes.world, child),
-            )
-        {
-            let margin = margin_of(child, nodes);
-            set_cross_extent(
-                &mut size,
-                direction,
-                (content.width - margin.left - margin.right).max(0.0),
-            );
-        }
-        if let Some(baseline) = block_last_baseline(
-            child,
-            size,
-            content.width,
-            viewport,
-            child_font_px,
-            nodes,
-            cache,
-            scope,
-        )? {
-            return Ok(Some(top + tops[index] + baseline));
+    let mut found = BaselineMetrics::default();
+    for (which, order) in [
+        (crate::Baseline::First, (0..flow.len()).collect::<Vec<_>>()),
+        (crate::Baseline::Last, (0..flow.len()).rev().collect()),
+    ] {
+        for index in order {
+            let child = flow[index];
+            let Some(child_style) = nodes.style(child) else {
+                continue;
+            };
+            // Stretched across the block as placement stretches it, so what
+            // it holds lays out at the width it gets.
+            let mut size = sizes[index];
+            if child_style.resolved_align_self(style.align_items) == AlignSpec::Stretch
+                && !cross_axis_is_definite(
+                    &child_style,
+                    direction,
+                    has_natural_ratio(nodes.world, child),
+                )
+            {
+                let margin = margin_of(child, nodes);
+                set_cross_extent(
+                    &mut size,
+                    direction,
+                    (content.width - margin.left - margin.right).max(0.0),
+                );
+            }
+            if let Some(baseline) = block_baseline(
+                child,
+                size,
+                which,
+                content.width,
+                viewport,
+                child_font_px,
+                nodes,
+                cache,
+                scope,
+            )? {
+                found.set(which, top + tops[index] + baseline);
+                break;
+            }
         }
     }
-    Ok(None)
+    Ok(found)
 }
 
-/// The last baseline of block-level `child` of a box's flow, from its top,
-/// or `None` when it holds no line box: replaced content, or a box with no
-/// line box in it.
+/// The first or last baseline of block-level `child` of a box's flow, from
+/// its top, or `None` when it holds no line box: replaced content, or a box
+/// with no line box in it.
 #[allow(clippy::too_many_arguments)]
-fn block_last_baseline(
+fn block_baseline(
     child: StableNodeId,
     size: Size,
+    which: crate::Baseline,
     inline_base: f32,
     viewport: LayoutViewport,
     parent_font_px: f32,
@@ -561,7 +622,7 @@ fn block_last_baseline(
     scope: Option<&ScopeContext<'_>>,
 ) -> Result<Option<f32>, UiWorldError> {
     if nodes.world.line_boxes_are_descendants(child) {
-        let derived = descendant_last_baseline(
+        let derived = descendant_baselines(
             child,
             size,
             inline_base,
@@ -570,7 +631,8 @@ fn block_last_baseline(
             nodes,
             cache,
             scope,
-        )?;
+        )?
+        .get(which);
         if derived.is_some() {
             return Ok(derived);
         }
@@ -582,7 +644,10 @@ fn block_last_baseline(
         return Ok(None);
     }
     let metrics = nodes.baseline_metrics(child, parent_font_px, Some(inline_base), Some(size));
-    Ok(metrics.last.or(metrics.first))
+    Ok(match which {
+        crate::Baseline::First => metrics.first,
+        crate::Baseline::Last => metrics.last.or(metrics.first),
+    })
 }
 
 /// The strut a line box of block `id` starts from (CSS 2.1 §10.8.1): the

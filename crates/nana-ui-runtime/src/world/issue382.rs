@@ -20,6 +20,12 @@
 //!   parent's context, though its box stays put; children turned
 //!   inline-level again leave the flow plan their block recorded while they
 //!   were block-level, and lie on a line again.
+//! - Gate D: an item a flex row aligns by its first baseline, whose line
+//!   boxes are its descendants', sits by its first in-flow line box: below
+//!   a spacer in a fixed box, two blocks down, the first of two lines. A new
+//!   font size and a taller spacer inside the fixed box align the row again;
+//!   text that leaves the first line where it was, and text outside the row,
+//!   move nothing. Each step matches a cold layout.
 #![cfg(test)]
 
 use nana_ui_core::{
@@ -768,4 +774,227 @@ fn issue382_b_an_inherited_face_and_a_moved_child_reach_the_strut() {
         let (mut cold, _, _) = build(Some("Wide"), held);
         assert_matches_cold(&mut warm, &mut cold, document);
     }
+}
+
+/// What gate D aligns: a label, a fixed box whose first line box is a
+/// label below a spacer, a box whose first line box is two blocks down,
+/// and a narrow box whose two empty atoms wrap to two lines, on a flex row
+/// that aligns them by their first baselines. Returns the row, the labels,
+/// the boxed text and spacer, the nested box's second label, a label
+/// outside the row, the fixed box and the narrow box's two atoms.
+fn first_baseline_page(
+    boxed_font: f32,
+    spacer: f32,
+    second: &str,
+    outside: &str,
+) -> (AppContext, NanaTextEngineShaper, [StableNodeId; 11]) {
+    let document = DocumentId::new(1).unwrap();
+    let (mut b, page) = Builder::page(document, 1, 800.0);
+    let row = b.element(
+        page,
+        LayoutStyle {
+            display: Some(DisplaySpec::Flex),
+            direction: Some(FlexDirection::Row),
+            align_items: nana_ui_core::AlignSpec::Baseline,
+            width: Some(LengthSpec::Px(700.0)),
+            ..LayoutStyle::default()
+        },
+    );
+    let plain = b.label(row, "Plain");
+    let boxed = b.element(
+        row,
+        LayoutStyle {
+            width: Some(LengthSpec::Px(120.0)),
+            height: Some(LengthSpec::Px(80.0)),
+            padding_top: Some(LengthSpec::Px(7.0)),
+            ..LayoutStyle::default()
+        },
+    );
+    let boxed_spacer = b.element(
+        boxed,
+        LayoutStyle {
+            height: Some(LengthSpec::Px(spacer)),
+            ..LayoutStyle::default()
+        },
+    );
+    let boxed_text = b.element(
+        boxed,
+        LayoutStyle {
+            font_size: Some(boxed_font),
+            ..LayoutStyle::default()
+        },
+    );
+    let boxed_label = b.label(boxed_text, "Boxed");
+    let nested = b.element(
+        row,
+        LayoutStyle {
+            width: Some(LengthSpec::Px(120.0)),
+            ..LayoutStyle::default()
+        },
+    );
+    let inner = b.element(nested, LayoutStyle::default());
+    let nested_label = b.label(inner, "Nested");
+    let nested_second = b.label(nested, second);
+    let narrow = b.element(
+        row,
+        LayoutStyle {
+            width: Some(LengthSpec::Px(60.0)),
+            ..LayoutStyle::default()
+        },
+    );
+    let lines = [
+        b.element(narrow, strut_atom(DisplaySpec::InlineBlock, 40.0, 20.0)),
+        b.element(narrow, strut_atom(DisplaySpec::InlineBlock, 40.0, 20.0)),
+    ];
+    let outside = b.label(page, outside);
+    let mut context = AppContext::new();
+    context.commit_mutations(b.queue).unwrap();
+    let mut shaper = strut_shaper(false);
+    product_frame(&mut context, document, viewport(), &mut shaper);
+    (
+        context,
+        shaper,
+        [
+            row,
+            plain,
+            boxed_label,
+            boxed_text,
+            boxed_spacer,
+            nested_label,
+            nested_second,
+            outside,
+            boxed,
+            lines[0],
+            lines[1],
+        ],
+    )
+}
+
+/// Every first line on the row sits on one baseline: the plain label's,
+/// the boxed label's below its spacer, the nested label's, and the narrow
+/// box's first line, which its empty atom sits on by its bottom edge; its
+/// second line is below.
+fn assert_on_one_baseline(
+    context: &AppContext,
+    labels: [StableNodeId; 3],
+    lines: [StableNodeId; 2],
+) {
+    let world = context.world();
+    let baselines = labels.map(|label| {
+        world
+            .layout_result(label)
+            .and_then(|result| result.first_baseline)
+            .unwrap_or_else(|| panic!("{label:?} publishes no baseline"))
+    });
+    let bottom = |id| {
+        let atom = world.layout_box(id).unwrap();
+        atom.y + atom.height
+    };
+    for baseline in baselines.into_iter().chain([bottom(lines[0])]) {
+        assert!(
+            (baseline - baselines[0]).abs() < 0.01,
+            "first baselines {baselines:?}, first atom's bottom {}",
+            bottom(lines[0])
+        );
+    }
+    assert!(
+        bottom(lines[1]) > bottom(lines[0]) + 10.0,
+        "the narrow box holds one line"
+    );
+}
+
+/// Gate D: an item of a baseline-aligned flex row whose line boxes are its
+/// descendants' sits by its first in-flow line box, wherever that lies
+/// inside it: below a spacer in a fixed box, two blocks down. A new font
+/// size in the fixed box and a taller spacer align the row again; text that
+/// leaves the first line where it was, and text outside the row, move
+/// nothing. Each step matches a cold layout.
+#[test]
+fn issue382_d_a_flex_item_sits_by_its_first_descendant_line() {
+    let document = DocumentId::new(1).unwrap();
+    let (mut warm, mut shaper, ids) = first_baseline_page(16.0, 10.0, "Second", "Outside");
+    let [
+        row,
+        plain,
+        boxed_label,
+        boxed_text,
+        boxed_spacer,
+        nested_label,
+        nested_second,
+        outside,
+        boxed,
+        first_line,
+        second_line,
+    ] = ids;
+    let lines = [first_line, second_line];
+    let labels = [plain, boxed_label, nested_label];
+    assert_on_one_baseline(&warm, labels, lines);
+    let (mut cold, _, _) = first_baseline_page(16.0, 10.0, "Second", "Outside");
+    assert_matches_cold(&mut warm, &mut cold, document);
+    let fixed = warm.world().layout_box(boxed);
+
+    // A bigger font in the fixed box: its first line moves down inside it,
+    // the box does not grow, the row aligns again.
+    let mut queue = MutationQueue::new();
+    queue.set_style(
+        boxed_text,
+        styled(LayoutStyle {
+            font_size: Some(28.0),
+            ..LayoutStyle::default()
+        }),
+    );
+    warm.commit_mutations(queue).unwrap();
+    product_frame(&mut warm, document, viewport(), &mut shaper);
+    assert_eq!(
+        warm.world().layout_box(boxed).map(|b| (b.width, b.height)),
+        fixed.map(|b| (b.width, b.height))
+    );
+    assert_on_one_baseline(&warm, labels, lines);
+    let (mut cold, _, _) = first_baseline_page(28.0, 10.0, "Second", "Outside");
+    assert_matches_cold(&mut warm, &mut cold, document);
+
+    // A taller spacer above the first line in the fixed box.
+    let mut queue = MutationQueue::new();
+    queue.set_style(
+        boxed_spacer,
+        styled(LayoutStyle {
+            height: Some(LengthSpec::Px(24.0)),
+            ..LayoutStyle::default()
+        }),
+    );
+    warm.commit_mutations(queue).unwrap();
+    product_frame(&mut warm, document, viewport(), &mut shaper);
+    assert_on_one_baseline(&warm, labels, lines);
+    let (mut cold, _, _) = first_baseline_page(28.0, 24.0, "Second", "Outside");
+    assert_matches_cold(&mut warm, &mut cold, document);
+
+    // Text below the nested box's first line, and text outside the row:
+    // no item of the row moves.
+    let items = |context: &AppContext| {
+        let world = context.world();
+        world
+            .node(row)
+            .unwrap()
+            .children
+            .iter()
+            .map(|id| world.layout_box(*id))
+            .collect::<Vec<_>>()
+    };
+    let before = items(&warm);
+    for (id, text) in [
+        (nested_second, "Second, longer"),
+        (outside, "Outside, longer"),
+    ] {
+        let mut queue = MutationQueue::new();
+        queue.set_text(id, crate::TextContent::new(text));
+        warm.commit_mutations(queue).unwrap();
+        product_frame(&mut warm, document, viewport(), &mut shaper);
+        assert_eq!(items(&warm), before, "{text}");
+    }
+    assert!(
+        !measured(&warm, row),
+        "the row measured for text outside it"
+    );
+    let (mut cold, _, _) = first_baseline_page(28.0, 24.0, "Second, longer", "Outside, longer");
+    assert_matches_cold(&mut warm, &mut cold, document);
 }

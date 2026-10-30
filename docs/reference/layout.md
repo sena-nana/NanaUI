@@ -520,10 +520,10 @@ fit 只有一份数学：`ContentFit::fitted_size`（`nana-ui-core`）。fit 是
 - inline-block 以末个流内行盒的基线落在行的基线上，基线值取 `baseline_metrics` 的末行基线。
   行盒都在后代里的 inline-block（`UiWorld::line_boxes_are_descendants`：没有自己的文字、控件或
   段落，只在流里有）取持有末个行盒的后代所在的位置（CSS 2.1 §10.8.1）：
-  `inline::descendant_last_baseline` 按 placement 的方式从子项在它内容盒里量出的尺寸排它的流
+  `inline::descendant_baselines` 按 placement 的方式从子项在它内容盒里量出的尺寸排它的流
   ——块级流逐个叠放，行内格式化上下文用 `pack_ifc_line_boxes` 排行、按 `ifc_line_metrics` 定
   行的基线——末个行盒要么是这样一行，要么是独占一行的块，后者再取它自己的末行基线（行盒也在后代里
-  就递归）。每趟按节点和所用尺寸记在 `LayoutInputMap::derived_baselines`，读原子 ascent 的每一处
+  就递归）。同一趟推导也正着找首个行盒，得出首个基线（#382）。每趟按节点和所用尺寸记在 `LayoutInputMap::derived_baselines`，读原子 ascent 的每一处
   （块的测量与 placement、measure plan 的比对与增量、原生段落）先 `prime_atom_baselines`，
   `baseline_metrics` 再读它，所以只有这一份推导。flex / grid 容器、反向或换行的块级流、行旁有浮动的
   盒子不推导，仍是自身字体首行的近似；
@@ -552,8 +552,14 @@ fit 只有一份数学：`ContentFit::fitted_size`（`nana-ui-core`）。fit 是
     测试与 `layout-verify` 构建里，每趟文字阶段后把每个保留的 strut 和重读的比一遍
     （`UiWorld::audit_block_struts`），漏掉的候选直接报错。门禁在 `world/issue382.rs` 的 B。
 
-`align-items: baseline` 的 flex 行仍按首行基线对齐，替换内容取边框盒底边（CSS Align 在 flex / grid
-里从边框盒合成基线）。行的基线发布在 `LayoutResult` 的 TextLine 片段上。`LayoutStyle` 没有
+`align-items: baseline` 的 flex 行按项目的首个基线对齐，替换内容取边框盒底边（CSS Align 在 flex / grid
+里从边框盒合成基线）。行盒都在后代里的项目（`UiWorld::aligns_by_first_baseline` 且
+`line_boxes_are_descendants`）取首个流内行盒所在的位置，和 inline-block 的末行基线是同一份推导
+（`inline::descendant_baselines`）：测量发布 intrinsic facts 前、placement 读行的基线前、flex 计划比对
+基线前都先 `prime_first_baselines`，`baseline_metrics` 的首个基线再读它；测试与 `layout-verify` 构建里
+没预备就读会直接报错。这样的项目也读内容（`atom_baseline_reads_content`），固定尺寸不再是度量边界，
+里面后代的字号、文字、上方块的高度变化会让这一行重新对齐；首行没动的变化不移动任何项目。门禁在
+`world/issue382.rs` 的 D。grid 不做基线对齐，`baseline` 当 `start`。行的基线发布在 `LayoutResult` 的 TextLine 片段上。`LayoutStyle` 没有
 `vertical-align`，默认的 `baseline` 就是全部行为。这不是 replaced 专有的规则。
 
 原子的基线随内容移动，失效也跟着走：`overflow` 为 visible 的固定尺寸 inline-block 在普通块级流里
@@ -1265,9 +1271,8 @@ prelude 是 `[名字] 条件`：
 - 完整的 cascade-layer 优先级。
 - 完整的浮动排除。祖先浮动侵入子块、`shape-outside`、流内块级边框盒缩窄，都没有。
 - 完整 IFC。行内原子按基线对齐、行盒有 strut，但没有 `vertical-align` 的其他取值，也没有行内
-  拆箱。行盒在后代里的 inline-block
-  里，flex / grid 容器、反向或换行的块级流和带浮动的流不推导末行位置，仍按自身字体近似；首个基线
-  （`align-items: baseline` 读的）对容器仍是近似。
+  拆箱。行盒在后代里的盒子里，flex / grid 容器、反向或换行的块级流和带浮动的流不推导首末行位置，
+  仍按自身字体近似。
 - 轨道列表 token 形式的 `subgrid`。
 - 用 `position: fixed` 当 Dialog 或 Drawer。走 Nana 的浮层。
 - 自定义 `url()` 光标图。
