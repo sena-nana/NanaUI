@@ -1923,8 +1923,9 @@ impl UiWorld {
                     ) => (sa, ha.is_some(), ea.is_some()) != (sb, hb.is_some(), eb.is_some()),
                     (_, Some(StandardVisual::FormField { .. }))
                     | (Some(StandardVisual::FormField { .. }), _) => true,
-                    // What a switch's parts read (#205); toggling and the
-                    // thumb's travel paint only.
+                    // What a switch's parts read (#205), its label and hint
+                    // text too, which count toward its width (#388);
+                    // toggling and the thumb's travel paint only.
                     (
                         Some(StandardVisual::Switch {
                             label: la,
@@ -1940,10 +1941,7 @@ impl UiWorld {
                             size: sb,
                             ..
                         }),
-                    ) => {
-                        (la.is_empty(), ha.is_some(), pa, sa)
-                            != (lb.is_empty(), hb.is_some(), pb, sb)
-                    }
+                    ) => (la, ha, pa, sa) != (lb, hb, pb, sb),
                     (_, Some(StandardVisual::Switch { .. }))
                     | (Some(StandardVisual::Switch { .. }), _) => true,
                     // What a selection option's parts read (#205); selecting,

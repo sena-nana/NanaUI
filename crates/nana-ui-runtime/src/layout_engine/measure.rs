@@ -549,6 +549,10 @@ pub(super) struct VisualContent {
     width: f32,
     /// The least content height.
     height: f32,
+    /// The natural width of text the visual draws itself rather than as the
+    /// node's text (a switch's label and hint): it asks for that much beside
+    /// `width`, as far as the box gives it room, the way node text does.
+    text: f32,
     /// The parts laid out before the children (#385).
     lead: Option<super::parts::LeadingParts>,
 }
@@ -617,12 +621,16 @@ fn visual_beside_text(id: StableNodeId, world: &UiWorld) -> VisualContent {
             }
         }
         // The track and its gap, and the taller of the track and the label
-        // over hint column: the same declaration placement solves.
+        // over hint column: the same declaration placement solves. The
+        // label and hint are the visual's own text, so their natural width
+        // counts too (#388).
         Some(crate::StandardVisual::Switch { .. }) => {
-            let extent = world.switch_inputs(id).expect("switch").extent();
+            let inputs = world.switch_inputs(id).expect("switch");
+            let extent = inputs.extent();
             VisualContent {
                 width: extent.width,
                 height: extent.height,
+                text: if inputs.labelled { inputs.text } else { 0.0 },
                 ..VisualContent::default()
             }
         }
@@ -1564,6 +1572,12 @@ fn measure_node(
             (content_available.width - visual.width).max(0.0)
         },
     ) + if header_chrome { visual.width } else { 0.0 };
+    // Text the visual draws itself asks the same way, with no wrapping.
+    let text_width = text_width.max(
+        visual
+            .text
+            .min((content_available.width - visual.width).max(0.0)),
+    );
     let mut content = Size::new(
         children.width.max(text_width),
         children.height.max(text.height),

@@ -1926,8 +1926,9 @@ fn issue205_switch_track_label_and_hint_are_published_parts() {
     );
     assert_eq!(cx.world().layout_result(id).unwrap().parts.len(), 3);
 
-    // A switch whose width is its content's holds its track and gap: the
-    // track used to collapse to nothing in an auto-width box.
+    // A switch whose width is its content's holds its track, its gap and
+    // its label (#388): the track used to collapse to nothing in an
+    // auto-width box.
     let (cx, switch) = switch_page(
         switch_view(
             "Wi-Fi",
@@ -1942,9 +1943,16 @@ fn issue205_switch_track_label_and_hint_are_published_parts() {
     let track = part_of(&cx, id, LayoutPartKind::TrailingContent);
     assert_eq!(track.width, metrics.track_width);
     let result = cx.world().layout_result(id).unwrap();
+    let typography = cx.world().theme().typography();
+    let label = cx.world().chrome_text_measure(id).width(
+        "Wi-Fi",
+        ControlSize::Medium.text_size_in(typography),
+        Some(typography.medium),
+    );
+    assert!(label > 0.0);
     assert_eq!(
         result.content_box.width,
-        metrics.track_width + metrics.label_gap
+        metrics.track_width + metrics.label_gap + label
     );
 }
 

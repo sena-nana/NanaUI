@@ -225,6 +225,9 @@ pub(crate) struct SwitchInputs {
     pub end: bool,
     /// The switch says something beside its track: a label or a hint.
     pub labelled: bool,
+    /// The text column's natural width: the wider of the label's and the
+    /// hint's single lines.
+    pub text: f32,
     pub label_line: f32,
     /// The gap above the hint and the hint's line, when it has one.
     pub hint: Option<(f32, f32)>,

@@ -601,11 +601,30 @@ impl UiWorld {
         let track = self.style_model.metrics.switch;
         let typography = self.theme.typography();
         let line = |font: f32| (font * typography.line / typography.body).max(font);
+        // The label and hint at the size and weight geometry paints them.
+        let measure = self.chrome_text_measure(id);
+        let label_width = if label.is_empty() {
+            0.0
+        } else {
+            measure.width(
+                label,
+                size.text_size_in(typography),
+                Some(typography.medium),
+            )
+        };
+        let hint_width = hint.as_ref().map_or(0.0, |hint| {
+            measure.width(
+                hint,
+                size.caption_size_in(typography),
+                Some(typography.regular),
+            )
+        });
         Some(SwitchInputs {
             track: Size::new(track.track_width, track.track_height),
             gap: track.label_gap,
             end: *control_position == SwitchControlPosition::End,
             labelled: !label.is_empty() || hint.is_some(),
+            text: label_width.max(hint_width),
             label_line: line(size.text_size_in(typography)),
             hint: hint.as_ref().map(|_| {
                 (
