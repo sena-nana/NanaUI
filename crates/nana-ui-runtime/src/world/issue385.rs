@@ -68,6 +68,8 @@ enum Padding {
     Lead(f32),
     /// The other edges.
     Rest(f32),
+    /// The `padding` shorthand alone, on every edge.
+    Uniform(f32),
 }
 
 impl Padding {
@@ -83,6 +85,7 @@ impl Padding {
                 layout.padding_right = Some(LengthSpec::Px(px));
                 layout.padding_bottom = Some(LengthSpec::Px(px));
             }
+            (Self::Uniform(px), _) => layout.padding = Some(LengthSpec::Px(px)),
         }
     }
 }
@@ -113,6 +116,18 @@ fn assert_laid_out_before_children(
             FlexDirection::Row => used.0,
         };
         assert!((used - px).abs() < 1e-3, "{id:?}: {used} for {px}");
+    }
+    if let Padding::Uniform(px) = padding {
+        let used = [
+            content.y - padding_box.y,
+            padding_box.x + padding_box.width - content.x - content.width,
+            padding_box.y + padding_box.height - content.y - content.height,
+            content.x - padding_box.x,
+        ];
+        assert!(
+            used.iter().all(|edge| (edge - px).abs() < 1e-3),
+            "{id:?}: {used:?} for {px}"
+        );
     }
     let lead = world.leading_parts(id).unwrap_or_default();
     assert_eq!(lead.extent, extent, "{id:?}");
@@ -230,10 +245,11 @@ fn assert_empty_state(cx: &AppContext, id: StableNodeId, action: StableNodeId, c
     }
 }
 
-/// An empty state under author padding on each side of its block, a theme
-/// that moves its default padding and gaps, and its icon and message coming
-/// and going: its block starts where the padding ends, the action starts
-/// past it, and each step lays out what a cold layout does.
+/// An empty state under author padding on each side of its block or the
+/// `padding` shorthand alone, a theme that moves its default padding and
+/// gaps, and its icon and message coming and going: its block starts where
+/// the padding ends, the action starts past it, and each step lays out what
+/// a cold layout does.
 #[test]
 fn issue385_empty_state_block_lays_out_before_its_action_like_a_cold_layout() {
     let document = DocumentId::new(1).unwrap();
@@ -257,6 +273,8 @@ fn issue385_empty_state_block_lays_out_before_its_action_like_a_cold_layout() {
             (Padding::Default, true, true, true),
             (Padding::Lead(18.0), false, false, true),
             (Padding::Default, true, false, true),
+            (Padding::Uniform(20.0), true, true, true),
+            (Padding::Uniform(7.0), false, false, true),
         ];
         for (padding, icon, message, themed) in steps {
             let case = EmptyCase {

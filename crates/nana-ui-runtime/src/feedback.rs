@@ -355,7 +355,8 @@ impl EmptyState {
         };
         layout.gap = Some(LengthSpec::Px(0.0));
         // Surface padding follows the spacing scale; a caller that declares its
-        // own keeps it.
+        // own keeps it. A longhand outranks the `padding` shorthand when the
+        // box resolves, so an edge the shorthand covers takes no default.
         let (horizontal, vertical) = if self.compact {
             (nana_ui_core::space::SM, nana_ui_core::space::MD)
         } else {
@@ -370,7 +371,7 @@ impl EmptyState {
             },
         );
         crate::theme_intent::weight(layout, nana_ui_core::TextWeight::Semibold);
-        if layout.padding_left.is_none() {
+        if layout.padding.is_none() && layout.padding_left.is_none() {
             layout.padding_left = Some(LengthSpec::Px(horizontal));
             layout.theme.padding_left = Some(crate::theme_intent::space(if self.compact {
                 nana_ui_core::SpacingStep::Sm
@@ -378,7 +379,7 @@ impl EmptyState {
                 nana_ui_core::SpacingStep::Xxxl
             }));
         }
-        if layout.padding_right.is_none() {
+        if layout.padding.is_none() && layout.padding_right.is_none() {
             layout.padding_right = Some(LengthSpec::Px(horizontal));
             layout.theme.padding_right = Some(crate::theme_intent::space(if self.compact {
                 nana_ui_core::SpacingStep::Sm
@@ -388,7 +389,7 @@ impl EmptyState {
         }
         // The icon, title and message are laid out inside it, before the
         // action (#385), not written into it.
-        if layout.padding_top.is_none() {
+        if layout.padding.is_none() && layout.padding_top.is_none() {
             layout.padding_top = Some(LengthSpec::Px(vertical));
             layout.theme.padding_top = Some(crate::theme_intent::space(if self.compact {
                 nana_ui_core::SpacingStep::Md
@@ -396,7 +397,7 @@ impl EmptyState {
                 nana_ui_core::SpacingStep::Page
             }));
         }
-        if layout.padding_bottom.is_none() {
+        if layout.padding.is_none() && layout.padding_bottom.is_none() {
             layout.padding_bottom = Some(LengthSpec::Px(vertical));
             layout.theme.padding_bottom = Some(crate::theme_intent::space(if self.compact {
                 nana_ui_core::SpacingStep::Md
