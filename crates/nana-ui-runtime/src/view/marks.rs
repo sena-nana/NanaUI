@@ -489,9 +489,10 @@ container_styles!([] HeadingRow, [] HeadingTools, [] SettingsGroupView);
 /// cutting through a row. It takes no input, so the wheel and the pointer
 /// reach the list under it; end the list with `height` of air so its last
 /// row can scroll clear of the fade. Place it in the positioned box that
-/// holds the scroll area; over an area with a [`crate::ScrollView::gutter`],
-/// give it the same gutter with [`ScrollFootFade::clear_of`] so the
-/// scrollbar's lane stays clear of the fade.
+/// holds the scroll area, beside the area; over an area with a
+/// [`crate::ScrollView::gutter`], give it the same gutter with
+/// [`ScrollFootFade::clear_of`] so it covers the area as far as the area
+/// reaches and the scrollbar's lane stays clear of it.
 pub fn scroll_foot_fade(height: f32, surface: SemanticColorRole) -> ScrollFootFade {
     ScrollFootFade {
         height,
@@ -508,9 +509,12 @@ pub struct ScrollFootFade {
 }
 
 impl ScrollFootFade {
-    /// Stop `gutter` short of the right edge: the scroll area reaches that
-    /// far into its container's margin and runs its scrollbar there
-    /// ([`crate::ScrollView::gutter`]).
+    /// Match a scroll area with this `gutter` ([`crate::ScrollView::gutter`])
+    /// beside the fade in the same positioned box. The area reaches `gutter`
+    /// out past both sides of that box into its container's margin and runs
+    /// its scrollbar in the right-hand one; the fade reaches out on the left
+    /// with it and stops at the box's right edge, where the bar's lane
+    /// begins. It covers the area's border box minus the lane.
     pub fn clear_of(mut self, gutter: f32) -> Self {
         self.lane = gutter.max(0.0);
         self
@@ -541,8 +545,9 @@ fn scroll_foot_fade_view(fade: ScrollFootFade) -> AnyView {
     };
     widget(Stack::row(0.0).surface(surface).with_layout(|l| {
         l.position = nana_ui_core::PositionSpec::Absolute;
-        l.offset_left = Some(LengthSpec::Px(0.0));
-        l.offset_right = Some(LengthSpec::Px(lane));
+        // Out over the margin the area reaches into, short of its bar lane.
+        l.offset_left = Some(LengthSpec::Px(-lane));
+        l.offset_right = Some(LengthSpec::Px(0.0));
         l.offset_bottom = Some(LengthSpec::Px(0.0));
         l.height = Some(LengthSpec::Px(height));
         l.pointer_events = Some(nana_ui_core::PointerEventsSpec::None);

@@ -5939,3 +5939,77 @@ fn a_first_line_row_keeps_its_authored_vertical_padding() {
         );
     }
 }
+
+/// A foot fade beside a guttered scroll area, in the positioned box that
+/// holds the area, covers the area's content line and the margin it reaches
+/// into, and stops where the scrollbar's lane begins.
+#[test]
+fn a_foot_fade_clear_of_a_gutter_covers_the_content_line_up_to_the_bar_lane() {
+    let (mut cx, document, parent) = setup();
+    let gutter = 12.0;
+    let view = cx
+        .mount_view(parent, move || {
+            widget(Stack::column(0.0).padding_xy(gutter, gutter))
+                .children(
+                    widget(Stack::column(0.0).with_layout(|l| {
+                        l.position = nana_ui_core::PositionSpec::Relative;
+                        l.height = Some(LengthSpec::Px(200.0));
+                    }))
+                    .children((
+                        widget(
+                            crate::ScrollView::new(crate::ScrollAxes::Vertical)
+                                .gutter(gutter)
+                                .with_layout(|l| l.height = Some(LengthSpec::Fill)),
+                        )
+                        .children(widget(fixed(None, 800.0)).key("content"))
+                        .key("scroll"),
+                        scroll_foot_fade(24.0, nana_ui_core::SemanticColorRole::Surface)
+                            .clear_of(gutter),
+                    ))
+                    .key("holder"),
+                )
+                .key("card")
+        })
+        .unwrap();
+    let root = view.roots()[0];
+    cx.layout_document(document, LayoutViewport::new(400.0, 600.0))
+        .unwrap();
+    let rect = |path: &str| {
+        cx.world()
+            .layout_box(cx.resolve_assembly_path(root, path).unwrap())
+            .unwrap()
+    };
+    let holder = cx.resolve_assembly_path(root, "holder").unwrap();
+    let fade = cx.world().layout_box(children(&cx, holder)[1]).unwrap();
+    let (card, scroll, content) = (
+        rect(""),
+        rect("holder/scroll"),
+        rect("holder/scroll/content"),
+    );
+    let right = |r: crate::LayoutBox| r.x + r.width;
+    // The content line, and the bar lane in the card's right margin.
+    assert_eq!(
+        (content.x, right(content)),
+        (card.x + gutter, right(card) - gutter)
+    );
+    assert_eq!(
+        right(scroll) - gutter,
+        right(content),
+        "the lane starts past the line"
+    );
+    assert_eq!(
+        fade.x, scroll.x,
+        "the fade reaches out with the scroll area"
+    );
+    assert_eq!(
+        right(fade),
+        right(content),
+        "the fade stops at the bar lane"
+    );
+    assert_eq!(
+        fade.y + fade.height,
+        scroll.y + scroll.height,
+        "on the area's foot"
+    );
+    assert_eq!(fade.height, 24.0);
+}
