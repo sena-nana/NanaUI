@@ -520,18 +520,16 @@ fit 只有一份数学：`ContentFit::fitted_size`（`nana-ui-core`）。fit 是
 - inline-block 以末个流内行盒的基线落在行的基线上，基线值取 `baseline_metrics` 的末行基线。
   行盒都在后代里的 inline-block（`UiWorld::line_boxes_are_descendants`：没有自己的文字、控件或
   段落，只在流里有）取持有末个行盒的后代所在的位置（CSS 2.1 §10.8.1）：
-  `inline::descendant_baselines` 按 placement 的方式从子项在它内容盒里量出的尺寸排它的流
-  ——块级流逐个叠放，行内格式化上下文用 `pack_ifc_line_boxes` 排行、按 `ifc_line_metrics` 定
-  行的基线——末个行盒要么是这样一行，要么是独占一行的块，后者再取它自己的末行基线（行盒也在后代里
-  就递归）。同一趟推导也正着找首个行盒，得出首个基线（#382）。每趟按节点和所用尺寸记在 `LayoutInputMap::derived_baselines`，读原子 ascent 的每一处
-  （块的测量与 placement、measure plan 的比对与增量、原生段落）先 `prime_atom_baselines`，
-  `baseline_metrics` 再读它，所以只有这一份推导。块级流按 placement 的方式定子项的位置：
-  `justify-content` 把空余放在前后或中间（`justify_offsets`），反向的流从底部往上叠，每个子项的
-  margin 也随之反过来；换行的块级流按 `pack_wrap_lines` 分成并排的几列，每列各自这样叠放；找首末行盒
-  的顺序仍是流的顺序（门禁 `world/issue382.rs` 的 E、G）。行旁有浮动的
-  行内格式化上下文和 placement 一样先打包浮动（`pack_floated_children`），行排在浮动留下的空间里，
-  放不下的原子落到浮动下面（门禁 F，css-parity `T-FL07`，Chrome 实测）。flex / grid 容器、按等宽分行
-  （`equal_wrap`）、有自动 margin 或浮动的块级流不推导，仍是自身字体首行的近似；
+  `inline::descendant_baselines` 从子项在它内容盒里量出的尺寸，读 placement 会把它们放在哪里：
+  placement 排行、分配主轴空余、交叉轴对齐并转到页面上的那一段是 `placement::arrange_flow`，
+  placement 自己和推导都调它（#394），推导不另排一遍。末个行盒要么是原子所在的一行（`ArrangedLine`
+  的 `atom_baseline`），要么是独占一行的块，后者再取它自己的末行基线（行盒也在后代里就递归）。
+  同一趟推导也正着找首个行盒，得出首个基线（#382）。找首末行盒的顺序是流的顺序。每趟按节点和所用
+  尺寸记在 `LayoutInputMap::derived_baselines`，读原子 ascent 的每一处（块的测量与 placement、
+  measure plan 的比对与增量、原生段落）先 `prime_atom_baselines`，`baseline_metrics` 再读它，所以
+  只有这一份推导。`justify-content`、反向、换行成列、行旁的浮动（门禁 `world/issue382.rs` 的
+  E、F、G，css-parity `T-FL07`）、自动 margin、等宽分行和块级流里的 `clear` 都按 placement 的结果，
+  不再有退回近似的情形。flex 容器的基线见下文；grid 容器和竖排不推导，仍是自身字体首行的近似；
 - 替换内容、`overflow` 非 visible 的 inline-block、没有流内行盒的 inline-block（`UiWorld::atom_sits_on_line_box`）
   以**底外边距边**落在基线上，`margin-bottom` 把它抬高；
 - 行盒高度是对齐之后从最高的顶外边距边到最低的底外边距边的跨度，块级子项独占一行、从行顶排起。
@@ -566,6 +564,19 @@ fit 只有一份数学：`ContentFit::fitted_size`（`nana-ui-core`）。fit 是
 里面后代的字号、文字、上方块的高度变化会让这一行重新对齐；首行没动的变化不移动任何项目。门禁在
 `world/issue382.rs` 的 D。grid 不做基线对齐，`baseline` 当 `start`。行的基线发布在 `LayoutResult` 的 TextLine 片段上。`LayoutStyle` 没有
 `vertical-align`，默认的 `baseline` 就是全部行为。这不是 replaced 专有的规则。
+
+flex 容器的基线（CSS Flexbox §8.5，按 Chrome 152 实测，#394）从 `arrange_flow` 给出的项目位置读
+（`inline::flex_first_baseline`）：取画面上最上面的一行——placement 排 `wrap-reverse` 时先排末行，
+所以就是排好的第一行——行里有按 `align-self: baseline` 对齐的项目时取它们共享的基线，否则取这一行
+里最靠行内起点的项目的首个基线；纵向的 flex 取最靠行内起点的一列里最上面的项目。所以 `row-reverse`
+取最左边的项目、`column-reverse` 取最上面的，不是流里的第一个。项目没有行盒时取它的边框盒底边。
+flex 容器的末基线就是首基线：以 flex 容器结尾的 inline-block 在 Chrome 里也按它的首基线对齐。
+一个盒子自己没有文字、流里也没有任何行盒时没有基线，按 CSS Align §9.1 取边框盒底边
+（`baseline_metrics`），不再用字体的近似 ascent。flex 容器的任何流内项目都可能是它取基线的那一个，
+所以这些项目也读内容（`atom_baseline_reads_content`），固定尺寸的项目里换字号也会让外面的行重新对齐。
+门禁在 `world/issue394.rs`，Chrome 实测是 css-parity `T-FX01`–`T-FX03`。还没做的：inline-flex 在
+块的行上仍排成块级（不是行内原子），按基线对齐的 flex 行的交叉尺寸没把项目在基线以下的部分算进去，
+grid 的基线对齐和 grid 容器的基线。
 
 原子的基线随内容移动，失效也跟着走：`overflow` 为 visible 的固定尺寸 inline-block 在普通块级流里
 不再是度量边界（`UiWorld::atom_baseline_reads_content`），它里面的变化会让这一行重新对齐；

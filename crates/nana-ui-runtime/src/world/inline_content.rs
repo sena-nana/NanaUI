@@ -187,8 +187,9 @@ impl UiWorld {
     /// Whether what `id` holds can move the baseline an atom sits on its
     /// line by: an atom on a line of an ordinary block whose last line box
     /// is its own, an item a flex line aligns by its first baseline, or an
-    /// in-flow block of such an atom's or item's flow (and so on down),
-    /// where that line box is looked for (CSS 2.1 §10.8.1, CSS Align 3 §9).
+    /// in-flow block or flex item of such an atom's or item's flow (and so
+    /// on down), where that line box is looked for (CSS 2.1 §10.8.1, CSS
+    /// Align 3 §9).
     /// A replaced one and an atom whose overflow is not visible sit by their
     /// bottom margin edge, whatever they hold. Native paragraph atoms are
     /// not counted: the paragraph reads their metrics after layout.
@@ -202,15 +203,26 @@ impl UiWorld {
         if self.aligns_by_first_baseline(id) {
             return true;
         }
-        // Lines, not a flex or grid container's items.
         let Some(parent) = self.parent_id(id) else {
             return false;
         };
-        if self.layout_style(parent).is_none_or(|parent| {
-            parent
-                .display
-                .is_some_and(|display| display.is_flex_container() || display.is_grid_container())
-        }) {
+        let Some(parent_style) = self.layout_style(parent) else {
+            return false;
+        };
+        // Any in-flow item of a flex container can be the one it takes its
+        // baseline from (#394); a grid's items, none yet.
+        if parent_style
+            .display
+            .is_some_and(nana_ui_core::DisplaySpec::is_flex_container)
+        {
+            return !style.position.is_out_of_flow()
+                && !style.omits_box()
+                && self.atom_baseline_reads_content(parent);
+        }
+        if parent_style
+            .display
+            .is_some_and(nana_ui_core::DisplaySpec::is_grid_container)
+        {
             return false;
         }
         if style.is_inline_level() {
@@ -268,7 +280,7 @@ impl UiWorld {
     /// Whether `id` holds an in-flow line box: text of its own, a control
     /// or paragraph that lays text out, an inline-level box in its flow, or
     /// a block in its flow that holds one.
-    fn holds_line_box(&self, id: StableNodeId) -> bool {
+    pub(crate) fn holds_line_box(&self, id: StableNodeId) -> bool {
         if self.lays_out_own_line(id) {
             return true;
         }

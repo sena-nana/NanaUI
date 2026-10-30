@@ -350,20 +350,16 @@ pub(super) fn prime_first_baselines(
 /// §10.8.1, CSS Inline 3 §4.2.1): the baselines of its first and its last
 /// in-flow line box, where those lines sit inside it.
 ///
-/// It lays the box's flow out the way placement does, from the sizes its
-/// children measure at its content box: a block flow stacks them, an inline
-/// formatting context packs its lines with [`pack_ifc_line_boxes`] and sits
-/// each on its baseline ([`ifc_line_metrics`]). The first line and the last
-/// are each either such a line, or a block holding a line alone, whose own
-/// first or last baseline counts (derived again if its lines are its
-/// descendants'). One walk finds both, the first forward and the last back.
-/// A block flow stacks its children where placement does, `justify-content`,
-/// a reversed flow and the columns of a wrapping one included. Recorded per
-/// pass in `LayoutInputMap::derived_baselines`; both `None` where the box
-/// lays its flow out otherwise (a flex or grid container, a block flow with
-/// auto margins or floats, or one wrapping into lines of equal size), which
-/// keeps the approximation of `baseline_metrics`. Lines beside floats are packed in the room the
-/// floats leave them, as placement packs them.
+/// It reads where placement puts the box's children ([`arrange_flow`]),
+/// from the sizes they measure at its content box, rather than laying them
+/// out again. A block's first line and its last are each either a line its
+/// inline-level items sit on, or a block holding a line, whose own first or
+/// last baseline counts (derived again if its lines are its descendants'),
+/// looked for in the flow's order. A flex container's are the baseline of
+/// the line and item Chrome takes ([`flex_first_baseline`], #394), first
+/// and last alike. Recorded per pass in `LayoutInputMap::derived_baselines`;
+/// both `None` for a grid container or a vertical box, which keep the
+/// approximation of `baseline_metrics`.
 #[allow(clippy::too_many_arguments)]
 pub(super) fn descendant_baselines(
     id: StableNodeId,
@@ -413,12 +409,11 @@ fn derive_baselines(
     let (child_ids, writing) = (Arc::clone(&node.children), node.writing);
     if writing.is_vertical()
         || style.omits_box()
-        || style
-            .display
-            .is_some_and(|display| display.is_flex_container() || display.is_grid_container())
+        || style.display.is_some_and(DisplaySpec::is_grid_container)
     {
         return Ok(BaselineMetrics::default());
     }
+    let flex = style.display.is_some_and(DisplaySpec::is_flex_container);
     let fonts = fonts_of(&style, parent_font_px);
     let child_font_px = fonts.element_px;
     let padding = style.resolved_padding_against_fonts(Some(inline_base), fonts);
@@ -429,36 +424,27 @@ fn derive_baselines(
         used.width - padding.left - padding.right - border.left - border.right,
         used.height - padding.top - padding.bottom - border.top - border.bottom,
     );
-    // Floats leave the flow, as placement takes them out of it.
+    // Floats leave a block's flow, as placement takes them out of it.
     let (mut flow, _) = collect_flow_children_reporting(&child_ids, nodes, &style)?;
-    let floated = collect_floated_children(&child_ids, nodes)?;
+    let floated = if flex {
+        Vec::new()
+    } else {
+        collect_floated_children(&child_ids, nodes)?
+    };
     if !floated.is_empty() {
         flow.retain(|id| !floated.contains(id));
     }
     sort_by_order(&mut flow, nodes);
     let context = establish_context(id, &style, &flow, nodes);
+    if context.grid_2d {
+        return Ok(BaselineMetrics::default());
+    }
     let ifc = context.inline();
-    if context.grid_2d || !(ifc || matches!(context.kind, crate::FormattingContextKind::Flow)) {
-        return Ok(BaselineMetrics::default());
-    }
-    // Lines beside floats are packed in what the floats leave them; blocks
-    // a float clears are not modelled here.
-    if !floated.is_empty() && !ifc {
-        return Ok(BaselineMetrics::default());
-    }
     let direction = used_flow_direction(&style, writing, ifc);
-    if !ifc
-        && (direction != FlexDirection::Column
-            || style.equal_wrap
-            || count_auto_main_margins(&flow, direction, nodes) > 0
-            || style
-                .active_grid_rows()
-                .is_some_and(|tracks| !tracks.is_empty()))
-    {
-        return Ok(BaselineMetrics::default());
-    }
+    let child_edge_base = writing.inline_size(content.width, content.height);
     let parent_box = gap_containing_block(&style, content);
     let gap = style.main_gap_against_fonts(direction, parent_box, fonts);
+    let cross_gap = style.cross_gap_against_fonts(direction, parent_box, fonts);
     let mut sizes = Vec::with_capacity(flow.len());
     for &child in &flow {
         sizes.push(intrinsic_size_scoped(
@@ -472,210 +458,172 @@ fn derive_baselines(
             scope,
         )?);
     }
-    let margin_of = |child: StableNodeId, nodes: &LayoutInputMap<'_>| {
-        nodes
-            .style(child)
-            .map(|child_style| {
-                child_style.resolved_margin_against_fonts(
-                    Some(content.width),
-                    fonts_of(&child_style, child_font_px),
-                )
-            })
-            .unwrap_or_default()
-    };
-    if ifc {
-        prime_atom_baselines(
-            flow.iter().copied().zip(sizes.iter().copied()),
-            content.width,
+    let packed_floats = if floated.is_empty() {
+        PackedFloats::default()
+    } else {
+        pack_floated_children(
+            &floated,
+            Point { x: 0.0, y: 0.0 },
+            content,
+            child_edge_base,
             viewport,
             child_font_px,
             nodes,
             cache,
             scope,
-        )?;
-        let strut = line_strut(id, &style, child_font_px, nodes);
-        let cross_gap = style.cross_gap_against_fonts(direction, parent_box, fonts);
-        let packed_floats = if floated.is_empty() {
-            PackedFloats::default()
-        } else {
-            pack_floated_children(
-                &floated,
-                Point { x: 0.0, y: 0.0 },
-                content,
-                content.width,
-                viewport,
-                child_font_px,
-                nodes,
-                cache,
-                scope,
-            )?
-        };
-        let lines = pack_ifc_line_boxes(
-            &flow,
-            &sizes,
-            Point { x: 0.0, y: 0.0 },
-            content.width,
-            gap,
-            cross_gap,
+        )?
+    };
+    // Where placement puts every child: one arrangement, read here rather
+    // than laid out again.
+    let arranged = arrange_flow(
+        id,
+        &style,
+        writing,
+        &flow,
+        &sizes,
+        Point { x: 0.0, y: 0.0 },
+        content,
+        child_edge_base,
+        gap,
+        cross_gap,
+        ifc,
+        direction,
+        flow_axes_reversed(&style, writing, direction, ifc, false),
+        &packed_floats,
+        viewport,
+        child_font_px,
+        nodes,
+        cache,
+        scope,
+        false,
+    )?;
+    if flex {
+        let first = flex_first_baseline(
+            &arranged,
+            direction,
+            writing,
+            child_edge_base,
             viewport,
             child_font_px,
-            strut,
             nodes,
-            &packed_floats,
-        );
-        // The first line forward, the last back: each a line its items sit
-        // on, or a block alone on its line with a baseline of its own.
-        let mut found = BaselineMetrics::default();
-        for (which, order) in [
-            (crate::Baseline::First, (0..lines.len()).collect::<Vec<_>>()),
-            (crate::Baseline::Last, (0..lines.len()).rev().collect()),
-        ] {
-            for index in order {
-                let line = &lines[index];
-                let Some(&first) = line.indices.first() else {
-                    continue;
-                };
-                let baseline = if line.baseline_aligned {
-                    let (ascent, _) = ifc_line_metrics(
-                        line.indices
-                            .iter()
-                            .map(|&index| (flow[index], sizes[index])),
-                        content.width,
-                        viewport,
-                        child_font_px,
-                        strut,
-                        nodes,
-                    );
-                    Some(top + line.cross_y + ascent)
-                } else {
-                    block_baseline(
-                        flow[first],
-                        sizes[first],
-                        which,
-                        content.width,
-                        viewport,
-                        child_font_px,
-                        nodes,
-                        cache,
-                        scope,
-                    )?
-                    .map(|baseline| {
-                        top + line.cross_y + margin_of(flow[first], nodes).top + baseline
-                    })
-                };
-                if let Some(baseline) = baseline {
-                    found.set(which, baseline);
+            cache,
+            scope,
+        )?
+        .map(|baseline| top + baseline);
+        // A flex container's last baseline, where a block's last line box
+        // is looked for, is its first: what Chrome aligns an inline-block
+        // ending in one by.
+        return Ok(BaselineMetrics { first, last: first });
+    }
+    // A block's first line box forward, its last back, in the flow's order:
+    // a line its inline-level items sit on, or a block on it with a
+    // baseline of its own.
+    let mut found = BaselineMetrics::default();
+    for which in [crate::Baseline::First, crate::Baseline::Last] {
+        let mut order: Vec<usize> = (0..arranged.lines.len()).collect();
+        if which == crate::Baseline::Last {
+            order.reverse();
+        }
+        'lines: for index in order {
+            let line = &arranged.lines[index];
+            if let Some(baseline) = line.atom_baseline {
+                if !line.children.is_empty() {
+                    found.set(which, top + line.cross_start + baseline);
                     break;
                 }
-            }
-        }
-        return Ok(found);
-    }
-    // A block flow stacks its children down its content box as placement
-    // does: `justify-content` puts the free space before, between or around
-    // them, and a reversed flow stacks them up from the bottom, each the
-    // other way round in its margins. A wrapping one does so in each of the
-    // columns `pack_wrap_lines` breaks it into, side by side. The order the
-    // first and the last line box are looked for in stays the flow's.
-    let main_reversed = flow_axes_reversed(&style, writing, direction, false, false).0;
-    let lines = if matches!(style.flex_wrap, FlexWrap::Wrap | FlexWrap::WrapReverse) {
-        pack_wrap_lines(
-            &flow,
-            &sizes,
-            direction,
-            content,
-            content.width,
-            gap,
-            None,
-            viewport,
-            child_font_px,
-            nodes,
-            false,
-        )
-    } else {
-        vec![(0..flow.len()).collect()]
-    };
-    let mut tops = vec![0.0f32; flow.len()];
-    for line in lines {
-        let line_flow = line.iter().map(|&index| flow[index]).collect::<Vec<_>>();
-        let line_sizes = line.iter().map(|&index| sizes[index]).collect::<Vec<_>>();
-        let occupied = main_occupied(
-            &line_flow,
-            &line_sizes,
-            direction,
-            content.width,
-            gap,
-            child_font_px,
-            nodes,
-        );
-        let (start, step) = justify_offsets(
-            style.justify_content,
-            content.height,
-            occupied,
-            gap,
-            line.len(),
-        );
-        let mut cursor = start;
-        for index in line {
-            let margin = margin_of(flow[index], nodes);
-            let (lead, trail) = if main_reversed {
-                (margin.bottom, margin.top)
-            } else {
-                (margin.top, margin.bottom)
-            };
-            let height = sizes[index].height;
-            tops[index] = if main_reversed {
-                content.height - cursor - lead - height
-            } else {
-                cursor + lead
-            };
-            cursor += lead + height + trail + step;
-        }
-    }
-    let mut found = BaselineMetrics::default();
-    for (which, order) in [
-        (crate::Baseline::First, (0..flow.len()).collect::<Vec<_>>()),
-        (crate::Baseline::Last, (0..flow.len()).rev().collect()),
-    ] {
-        for index in order {
-            let child = flow[index];
-            let Some(child_style) = nodes.style(child) else {
                 continue;
-            };
-            // Stretched across the block as placement stretches it, so what
-            // it holds lays out at the width it gets.
-            let mut size = sizes[index];
-            if child_style.resolved_align_self(style.align_items) == AlignSpec::Stretch
-                && !cross_axis_is_definite(
-                    &child_style,
-                    direction,
-                    has_natural_ratio(nodes.world, child),
-                )
-            {
-                let margin = margin_of(child, nodes);
-                set_cross_extent(
-                    &mut size,
-                    direction,
-                    (content.width - margin.left - margin.right).max(0.0),
-                );
             }
-            if let Some(baseline) = block_baseline(
-                child,
-                size,
-                which,
-                content.width,
-                viewport,
-                child_font_px,
-                nodes,
-                cache,
-                scope,
-            )? {
-                found.set(which, top + tops[index] + baseline);
-                break;
+            let mut items: Vec<usize> = line.children.clone().collect();
+            if which == crate::Baseline::Last {
+                items.reverse();
+            }
+            for item in items {
+                let item = &arranged.children[item];
+                if let Some(baseline) = block_baseline(
+                    item.child,
+                    item.size,
+                    which,
+                    child_edge_base,
+                    viewport,
+                    child_font_px,
+                    nodes,
+                    cache,
+                    scope,
+                )? {
+                    found.set(which, top + item.offset.y + baseline);
+                    break 'lines;
+                }
             }
         }
     }
     Ok(found)
+}
+
+/// A flex container's first baseline from its content box's top, read off
+/// where placement puts its items (CSS Flexbox §8.5, as Chrome lays it
+/// out): of the line nearest the top of the page, the baseline its items
+/// share under `align-self: baseline`, or else the first baseline of its
+/// item nearest the inline start, synthesized from that item's border-box
+/// bottom where it holds no line. A column's line is its column nearest
+/// the inline start and its item the topmost. Lines and items are taken
+/// where they land, so a reversed direction or `wrap-reverse` picks the
+/// line and item on top and at the start, not the first in the flow.
+#[allow(clippy::too_many_arguments)]
+fn flex_first_baseline(
+    arranged: &ArrangedFlow,
+    direction: FlexDirection,
+    writing: nana_ui_core::WritingContext,
+    inline_base: f32,
+    viewport: LayoutViewport,
+    child_font_px: f32,
+    nodes: &mut LayoutInputMap<'_>,
+    cache: &mut PassIntrinsicCache,
+    scope: Option<&ScopeContext<'_>>,
+) -> Result<Option<f32>, UiWorldError> {
+    let rtl = writing.inline_reversed();
+    // How far an item stands from the inline start.
+    let inline_start = |item: &ArrangedChild| {
+        if rtl {
+            -(item.offset.x + item.size.width)
+        } else {
+            item.offset.x
+        }
+    };
+    // Lines are arranged from the cross start of the page: placement packs
+    // a `wrap-reverse` flow's last line first.
+    let Some(line) = arranged.lines.iter().find(|line| !line.children.is_empty()) else {
+        return Ok(None);
+    };
+    let items = &arranged.children[line.children.clone()];
+    if direction.is_row()
+        && let Some(shared) = items
+            .iter()
+            .find_map(|item| item.baseline.map(|baseline| item.offset.y + baseline))
+    {
+        return Ok(Some(shared));
+    }
+    let Some(item) = items.iter().min_by(|a, b| {
+        if direction.is_row() {
+            inline_start(a).total_cmp(&inline_start(b))
+        } else {
+            a.offset.y.total_cmp(&b.offset.y)
+        }
+    }) else {
+        return Ok(None);
+    };
+    let baseline = block_baseline(
+        item.child,
+        item.size,
+        crate::Baseline::First,
+        inline_base,
+        viewport,
+        child_font_px,
+        nodes,
+        cache,
+        scope,
+    )?
+    .unwrap_or(item.size.height);
+    Ok(Some(item.offset.y + baseline))
 }
 
 /// The first or last baseline of block-level `child` of a box's flow, from
