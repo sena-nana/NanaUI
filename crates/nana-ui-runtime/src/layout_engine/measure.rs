@@ -2023,6 +2023,24 @@ fn sequential_measure_delta(
     if !plan.sequential {
         return Ok(None);
     }
+    // A sum of stacked children: an inline-level child arriving in an
+    // ordinary block's flow puts its children on lines instead.
+    let flex_or_grid = plan
+        .style
+        .display
+        .is_some_and(|display| display.is_flex_container() || display.is_grid_container());
+    if !flex_or_grid
+        && scope.affected.iter().any(|&child| {
+            nodes.world.parent_id(child) == Some(id)
+                && nodes.style(child).is_some_and(|style| {
+                    style.is_inline_level()
+                        && !style.is_floated()
+                        && !style.position.is_out_of_flow()
+                })
+        })
+    {
+        return Ok(None);
+    }
     let direction = plan.child_direction;
     let edge_base = plan
         .writing

@@ -2198,6 +2198,13 @@ impl UiWorld {
             self.invalidate_scroll_content(id);
             self.scroll_layout_touched = true;
         }
+        // So does how it takes part in its parent's context: an inline-block
+        // turned block-level is a flow item where its box stays put, and its
+        // result, not republished for a box that did not move, would say it
+        // is still atomic.
+        if previous.display != next.display || previous.float != next.float {
+            self.layout_anchor_roots.insert(id);
+        }
     }
 
     /// The nodes under a noted anchor change whose published result records

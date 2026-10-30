@@ -1907,6 +1907,17 @@ impl ContainerPlan {
             let Some(style) = nodes.style(child) else {
                 return false;
             };
+            // Only a container that lays no lines out records a plan: an
+            // inline-level child in its flow now makes it one that does.
+            if style.is_inline_level()
+                && !style.is_floated()
+                && !style.position.is_out_of_flow()
+                && !self.style.display.is_some_and(|display| {
+                    display.is_flex_container() || display.is_grid_container()
+                })
+            {
+                return false;
+            }
             let was_in_flow = self
                 .by_child
                 .binary_search_by_key(&child, |(entry, _)| *entry)

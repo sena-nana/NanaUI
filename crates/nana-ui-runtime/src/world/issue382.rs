@@ -7,16 +7,27 @@
 //!   `box-sizing` names, and the height it gives meets the box's own
 //!   `min-height` / `max-height`. An in-flow container's auto height reads
 //!   that height too (#393). Each matches a cold layout.
+//! - Gate C: a display change republishes how the box takes part in its
+//!   parent's context, though its box stays put; children turned
+//!   inline-level again leave the flow plan their block recorded while they
+//!   were block-level, and lie on a line again.
 #![cfg(test)]
 
 use nana_ui_core::{
     BoxSizing, DisplaySpec, FlexDirection, GridTrack, LayoutStyle, LengthSpec, PositionSpec,
 };
 
+use std::sync::{Arc, Mutex};
+
+use nana_text::NativeTextEngine;
+use nana_text::font::{FaceDescriptor, FallbackPolicy, FontSystem, GenericFamily};
+
 use super::reflow_oracle::{
     Builder, assert_matches_cold, bundled_face_shaper, product_frame, styled,
 };
-use crate::{AppContext, DocumentId, LayoutViewport, MutationQueue, StableNodeId};
+use crate::{
+    AppContext, DocumentId, LayoutViewport, MutationQueue, NanaTextEngineShaper, StableNodeId,
+};
 
 fn viewport() -> LayoutViewport {
     LayoutViewport::new(800.0, 600.0)
@@ -200,4 +211,207 @@ fn issue382_a_declared_ratio_follows_the_clamped_width_everywhere() {
             assert_matches_cold(&mut warm, &mut cold, document);
         }
     }
+}
+
+/// A shaper with the product UI face as `sans-serif`, and `Wide` in two
+/// faces of other metrics: Noto Sans Arabic up to weight 500, Noto Emoji
+/// above. With `late`, `Late` is Noto Sans Arabic as well.
+fn strut_shaper(late: bool) -> NanaTextEngineShaper {
+    let mut policy = FallbackPolicy::empty();
+    policy.set_generic(GenericFamily::SansSerif, ["Noto Sans SC"]);
+    let mut fonts = FontSystem::with_policy(policy);
+    fonts
+        .register_file(ui_face(), &FaceDescriptor::default())
+        .expect("the bundled UI face registers");
+    for (file, weight) in [
+        ("noto-sans-arabic.ttf", (100.0, 500.0)),
+        ("noto-emoji.ttf", (600.0, 900.0)),
+    ] {
+        fonts
+            .register_file(
+                corpus_face(file),
+                &FaceDescriptor {
+                    weight: Some(weight),
+                    ..FaceDescriptor::family("Wide")
+                },
+            )
+            .expect("a corpus face registers");
+    }
+    let shaper = NanaTextEngineShaper::new(Arc::new(Mutex::new(NativeTextEngine::new(fonts))));
+    if late {
+        register_late(&shaper);
+    }
+    shaper
+}
+
+fn ui_face() -> String {
+    concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../nana-ui/assets/fonts/NotoSansSC-Variable.ttf"
+    )
+    .into()
+}
+
+fn corpus_face(file: &str) -> String {
+    format!("{}/../nana-text/fonts/{file}", env!("CARGO_MANIFEST_DIR"))
+}
+
+/// Registers `Late`: a new font set, as a host's `@font-face` arriving.
+fn register_late(shaper: &NanaTextEngineShaper) {
+    nana_text::lock_text_engine(shaper.engine())
+        .fonts_mut()
+        .register_file(
+            corpus_face("noto-sans-arabic.ttf"),
+            &FaceDescriptor::family("Late"),
+        )
+        .expect("a corpus face registers");
+}
+
+/// What the ordinary block in gate B is written in.
+#[derive(Debug, Clone, Copy)]
+struct Face {
+    family: Option<&'static str>,
+    weight: u16,
+}
+
+const FONT: f32 = 20.0;
+
+/// A page of an ordinary block (20px, `line-height: 20px`) holding a
+/// 40×30 and a 10×4 inline-block, a sibling block of two inline-blocks in
+/// the default font, and a flex row. `block_atoms` is the first atom's
+/// display. Returns the block, its first atom, the sibling and the row.
+fn strut_page(
+    face: Face,
+    first_atom: DisplaySpec,
+    late: bool,
+) -> (AppContext, NanaTextEngineShaper, [StableNodeId; 4]) {
+    let document = DocumentId::new(1).unwrap();
+    let (mut b, page) = Builder::page(document, 1, 800.0);
+    let block = b.element(page, strut_block(face));
+    let atom = b.element(block, strut_atom(first_atom, 40.0, 30.0));
+    b.element(block, strut_atom(DisplaySpec::InlineBlock, 10.0, 4.0));
+    let sibling = b.element(
+        page,
+        LayoutStyle {
+            width: Some(LengthSpec::Px(600.0)),
+            ..LayoutStyle::default()
+        },
+    );
+    b.element(sibling, strut_atom(DisplaySpec::InlineBlock, 40.0, 30.0));
+    b.element(sibling, strut_atom(DisplaySpec::InlineBlock, 20.0, 10.0));
+    let row = b.element(
+        page,
+        LayoutStyle {
+            display: Some(DisplaySpec::Flex),
+            direction: Some(FlexDirection::Row),
+            width: Some(LengthSpec::Px(200.0)),
+            ..LayoutStyle::default()
+        },
+    );
+    b.label(row, "Row");
+    let mut context = AppContext::new();
+    context.commit_mutations(b.queue).unwrap();
+    let mut shaper = strut_shaper(late);
+    product_frame(&mut context, document, viewport(), &mut shaper);
+    (context, shaper, [block, atom, sibling, row])
+}
+
+fn strut_block(face: Face) -> LayoutStyle {
+    LayoutStyle {
+        display: Some(DisplaySpec::Block),
+        width: Some(LengthSpec::Px(600.0)),
+        font_size: Some(FONT),
+        line_height: Some(nana_ui_core::LineHeightSpec::Absolute(FONT)),
+        font_family: face.family.map(str::to_owned),
+        font_weight: Some(face.weight),
+        ..LayoutStyle::default()
+    }
+}
+
+fn strut_atom(display: DisplaySpec, width: f32, height: f32) -> LayoutStyle {
+    LayoutStyle {
+        display: Some(display),
+        width: Some(LengthSpec::Px(width)),
+        height: Some(LengthSpec::Px(height)),
+        ..LayoutStyle::default()
+    }
+}
+
+/// Gate C: an atom of an ordinary block turned block-level, and back,
+/// keeps its box where its line put it, and is published as what it takes
+/// part as: a flow item, then an atomic inline box. Found by gate B, whose
+/// cold check reads the participation; it shows on this page and font set.
+#[test]
+fn issue382_c_a_display_change_republishes_the_participation() {
+    let sans = Face {
+        family: None,
+        weight: 400,
+    };
+    let document = DocumentId::new(1).unwrap();
+    let (mut warm, mut shaper, [_, atom, _, _]) = strut_page(sans, DisplaySpec::InlineBlock, false);
+    for (display, part) in [
+        (DisplaySpec::Block, crate::ParticipationKind::FlowItem),
+        (
+            DisplaySpec::InlineBlock,
+            crate::ParticipationKind::AtomicInline,
+        ),
+    ] {
+        let mut queue = MutationQueue::new();
+        queue.set_style(atom, styled(strut_atom(display, 40.0, 30.0)));
+        warm.commit_mutations(queue).unwrap();
+        product_frame(&mut warm, document, viewport(), &mut shaper);
+        let published = warm.world().layout_result(atom).unwrap().participation;
+        assert_eq!(published, Some(part), "{display:?}");
+        let (mut cold, _, _) = strut_page(sans, display, false);
+        assert_matches_cold(&mut warm, &mut cold, document);
+    }
+}
+
+/// Gate C, second part: every child of an ordinary block turned
+/// block-level and back in one commit. Block-level, the block stacks them
+/// and records a placement plan; inline-level again, it lays them on a line,
+/// which the plan does not model, and places them afresh.
+#[test]
+fn issue382_c_children_turned_inline_level_again_leave_the_flow_plan() {
+    let child = |display, width, height| LayoutStyle {
+        display: Some(display),
+        width: Some(LengthSpec::Px(width)),
+        height: Some(LengthSpec::Px(height)),
+        ..LayoutStyle::default()
+    };
+    let build = |display| {
+        let document = DocumentId::new(1).unwrap();
+        let (mut b, page) = Builder::page(document, 1, 800.0);
+        let block = b.element(
+            page,
+            LayoutStyle {
+                width: Some(LengthSpec::Px(600.0)),
+                ..LayoutStyle::default()
+            },
+        );
+        let ids = [
+            b.element(block, child(display, 40.0, 30.0)),
+            b.element(block, child(display, 10.0, 4.0)),
+        ];
+        let mut app = AppContext::new();
+        app.commit_mutations(b.queue).unwrap();
+        product_frame(&mut app, document, viewport(), &mut bundled_face_shaper());
+        (app, document, ids)
+    };
+    let (mut warm, document, [tall, short]) = build(DisplaySpec::InlineBlock);
+    for display in [DisplaySpec::Block, DisplaySpec::InlineBlock] {
+        let mut queue = MutationQueue::new();
+        queue.set_style(tall, styled(child(display, 40.0, 30.0)));
+        queue.set_style(short, styled(child(display, 10.0, 4.0)));
+        warm.commit_mutations(queue).unwrap();
+        product_frame(&mut warm, document, viewport(), &mut bundled_face_shaper());
+        let (mut cold, _, _) = build(display);
+        assert_matches_cold(&mut warm, &mut cold, document);
+    }
+    // On one line again: the short one beside the tall one.
+    let (tall, short) = (
+        warm.world().layout_box(tall).unwrap(),
+        warm.world().layout_box(short).unwrap(),
+    );
+    assert_eq!(short.x, tall.x + tall.width, "{short:?} beside {tall:?}");
 }
