@@ -4,14 +4,17 @@
 //! match (`spread`), spreads all of them over the three classes in use
 //! (`all_match`), or does that with every other rule also needing a
 //! conditional class each element takes through `class_when` on one signal
-//! (`conditional`). For that shape, switching the signal on recomposes every
-//! element, and is timed too. Rounds interleave the sheets; the first mount
+//! (`conditional`), or inside an `@container` block of three width ranges
+//! (`container`). For the conditional shape, switching the signal on
+//! recomposes every element, and is timed too. Rounds interleave the sheets; the first mount
 //! of a sheet also resolves its classes and is reported apart.
 use super::*;
 
 use nana_ui_runtime::AppContext;
+use nana_ui_runtime::ResponsiveAxis;
 use nana_ui_runtime::view::{
-    Class, IntoView, Sheet, SheetRule, Signal, StylePatch, button, column, row, signal, text,
+    Class, IntoView, Sheet, SheetQuery, SheetRule, Signal, StylePatch, button, column, row, signal,
+    text,
 };
 
 const ROWS: usize = 4_000;
@@ -19,12 +22,20 @@ const APPENDED: usize = 500;
 const ROUNDS: usize = 8;
 /// The class `conditional` sheets switch on.
 const DIM: u16 = 3;
+/// The query every other rule of a `container` sheet sits under: three
+/// width ranges of the nearest container.
+static RANGES: SheetQuery = SheetQuery::new(
+    None,
+    ResponsiveAxis::Width,
+    &[(f32::NEG_INFINITY, 200.0), (400.0, 600.0), (800.0, 1_000.0)],
+);
 
 #[derive(Clone, Copy, PartialEq)]
 enum Shape {
     Spread,
     AllMatch,
     Conditional,
+    Container,
 }
 
 impl Shape {
@@ -33,6 +44,7 @@ impl Shape {
             Self::Spread => "spread",
             Self::AllMatch => "all_match",
             Self::Conditional => "conditional",
+            Self::Container => "container",
         }
     }
 }
@@ -41,7 +53,8 @@ impl Shape {
 struct StyledMountCase {
     rules: usize,
     shape: &'static str,
-    /// Rules each element matches, with its conditional class on.
+    /// Rules each element matches, with its conditional class on and its
+    /// container query holding.
     matched_per_element: usize,
     rows: usize,
     nodes: usize,
@@ -51,6 +64,9 @@ struct StyledMountCase {
     appended_rows: usize,
     append_ms: Distribution,
     append_us_per_row: f64,
+    /// Unmounting the list, all its rows with it.
+    unmount_ms: Distribution,
+    unmount_us_per_row: f64,
     /// Switching the conditional class on for every element at once.
     #[serde(skip_serializing_if = "Option::is_none")]
     switch_on_ms: Option<Distribution>,
@@ -79,7 +95,7 @@ fn sheet(rules: usize, shape: Shape) -> Styled {
             let class = (rule % 3) as u16;
             match shape {
                 Shape::Spread => vec![rule as u16].leak(),
-                Shape::AllMatch => vec![class].leak(),
+                Shape::AllMatch | Shape::Container => vec![class].leak(),
                 Shape::Conditional if rule % 2 == 1 => vec![class, DIM].leak(),
                 Shape::Conditional => vec![class].leak(),
             }
@@ -89,10 +105,11 @@ fn sheet(rules: usize, shape: Shape) -> Styled {
     let sheet_rules: &'static [SheetRule] = patches
         .iter()
         .zip(classes)
-        .map(|(patch, classes)| SheetRule {
+        .enumerate()
+        .map(|(rule, (patch, classes))| SheetRule {
             classes,
             patch,
-            query: None,
+            query: (shape == Shape::Container && rule % 2 == 1).then_some(&RANGES),
         })
         .collect::<Vec<_>>()
         .leak();
@@ -102,7 +119,7 @@ fn sheet(rules: usize, shape: Shape) -> Styled {
         shape,
         matched: match shape {
             Shape::Spread => 1,
-            Shape::AllMatch | Shape::Conditional => rules.div_ceil(3),
+            Shape::AllMatch | Shape::Conditional | Shape::Container => rules.div_ceil(3),
         },
         classes: [0, 1, 2].map(|index| Class::new(sheet, index)),
         dim: Class::new(sheet, DIM),
@@ -136,13 +153,20 @@ pub(super) fn run(document: DocumentId) {
     let styles: Vec<Styled> = [10, 100, 1_000]
         .into_iter()
         .flat_map(|rules| {
-            [Shape::Spread, Shape::AllMatch, Shape::Conditional].map(|shape| sheet(rules, shape))
+            [
+                Shape::Spread,
+                Shape::AllMatch,
+                Shape::Conditional,
+                Shape::Container,
+            ]
+            .map(|shape| sheet(rules, shape))
         })
         .collect();
     let mut first = vec![Duration::ZERO; styles.len()];
     let mut cold = vec![Vec::new(); styles.len()];
     let mut append = vec![Vec::new(); styles.len()];
     let mut switch_on = vec![Vec::new(); styles.len()];
+    let mut unmount = vec![Vec::new(); styles.len()];
     for round in 0..=ROUNDS {
         // Alternate the order so neither end of the list always runs warm.
         let order: Vec<usize> = if round % 2 == 0 {
@@ -156,13 +180,13 @@ pub(super) fn run(document: DocumentId) {
             let mut cx = AppContext::new();
             let mut dim = None;
             let started = Instant::now();
-            let list = cx
+            let view = cx
                 .mount_view_root(document, || {
                     dim = conditional.then(|| signal(false));
                     column().children(rows(styled, dim, 0, ROWS))
                 })
-                .unwrap()
-                .roots()[0];
+                .unwrap();
+            let list = view.roots()[0];
             let cold_elapsed = started.elapsed();
             let started = Instant::now();
             cx.mount_view(list, || rows(styled, dim, ROWS, APPENDED))
@@ -172,18 +196,29 @@ pub(super) fn run(document: DocumentId) {
                 cx.world().node(list).unwrap().children.len(),
                 ROWS + APPENDED
             );
+            let last = *cx.world().node(list).unwrap().children.last().unwrap();
+            assert_eq!(
+                cx.world().responsive_rule(last).is_some(),
+                styled.shape == Shape::Container,
+                "only rows under container rules carry a responsive rule"
+            );
             let switch_elapsed = dim.map(|dim| {
                 let started = Instant::now();
                 dim.set(true);
                 cx.flush_reactive().unwrap();
                 started.elapsed()
             });
+            let started = Instant::now();
+            view.unmount(&mut cx).unwrap();
+            let unmount_elapsed = started.elapsed();
+            assert!(!cx.world().contains(list));
             if round == 0 {
                 first[at] = cold_elapsed;
             } else {
                 cold[at].push(cold_elapsed);
                 append[at].push(append_elapsed);
                 switch_on[at].extend(switch_elapsed);
+                unmount[at].push(unmount_elapsed);
             }
         }
     }
@@ -211,6 +246,8 @@ pub(super) fn run(document: DocumentId) {
                 appended_rows: APPENDED,
                 append_ms: summarize(&append[at]),
                 append_us_per_row: us_per_row(&append[at], APPENDED),
+                unmount_ms: summarize(&unmount[at]),
+                unmount_us_per_row: us_per_row(&unmount[at], ROWS + APPENDED),
                 switch_on_ms: switched.then(|| summarize(&switch_on[at])),
                 switch_on_us_per_row: switched.then(|| us_per_row(&switch_on[at], ROWS + APPENDED)),
             }

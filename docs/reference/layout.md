@@ -4,7 +4,7 @@ Rust 的第一路径用控件自己的布局。你不写 CSS。排行、列和�
 
 这篇只描述 `nana-ui-css` 能映射的那一部分网页 CSS。`.vue` 方言的 `<style>`、`view!`、`stylesheet!` 与 `css!` 在构建期用它。你用它排界面骨架。
 
-构建期编译的是 class 选择器（`.card`、`.card.active`）、其中的 `@container` 规则和 `transition`。其他选择器、`:hover` 等交互态、`@media`、`@keyframes` 以及 Style Model 没有字段的声明只给出构建警告，不进视图。下文写到的这些能力属于引擎本身，由 `tools/css-parity` 对照浏览器校验。
+构建期编译的是 class 选择器（`.card`、`.card.active`）、其中的 `@container` 规则和 `transition`。其他选择器、`:hover` 等交互态、`@media`、`@keyframes` 以及 Style Model 没有字段的声明只给出构建警告，不进视图。下文写到的选择器和 at-rule 能力属于引擎本身，由 `nana-ui-css` 的单元测试覆盖。`tools/css-parity` 只用 inline `style` 和 class hints 对照浏览器校验盒模型，不跑样式表。
 
 它不是浏览器里的 CSS 引擎。没有完整的选择器世界。对不上，就改布局。不靠容差假装一致。
 
@@ -1068,59 +1068,47 @@ CSS `url()` 的帧仍走 4× MSAA。它和 HostTexture、backdrop 的 interleave
 
 自定义滚动条铬是 [`ScrollView`](components.md)。`overflow` 不另做一套 thumb 绘制。
 
-**选择器。** 你可以用 type、class、id、属性选择器，以及组合符空格、`>`、`+`、`~`。
+**选择器。** 视图里只有 class 和 class 复合选择器生效（`.card`、`.card.active`），其余选择器给构建警告。下面是引擎本身能解析和匹配的部分。匹配要的树信息（兄弟序号、是否为空、是否选中、焦点、`:has()` 的后代位集）都由调用引擎的一方给出，引擎不自己遍历树。
 
-还有 `:root`、`:first-child`、`:last-child`、`:only-child`、`:nth-child()`、`:nth-of-type()`、`:nth-last-child()`、`:first-of-type`、`:last-of-type`。简单的 `:not()`、`:is()`、`:where()` 也可以。其中包括廉价的 `:disabled` 和 `:not(:disabled)`。它们和 `[disabled]`、表单控件的 `disabled` 是同一份存在性匹配。
+引擎认得 type、class、id、属性选择器，以及组合符空格、`>`、`+`、`~`。
 
-廉价 `:checked` 只匹配 checkbox、radio、switch。它以 `WidgetProps.toggled` 为准。非 checkable 宿主上的 `checked` 属性不匹配。`toggled=false` 会清掉 `attrs["checked"]`。`input:checked + label` 走已有的兄弟组合符。
+还有 `:root`、`:first-child`、`:last-child`、`:only-child`、`:nth-child()`、`:nth-of-type()`、`:nth-last-child()`、`:first-of-type`、`:last-of-type`。它们按调用方给的兄弟序号和个数匹配。简单的 `:not()`、`:is()`、`:where()` 也可以。
 
-`:empty` 和 `:not(:empty)` 的意思是：没有元素子节点，并且宿主的 `label`、`value` 和子文本都没有含非空白 Unicode 标量的 UTF-8。空白用 `char::is_whitespace` 判断。
+`:disabled` 和 `:not(:disabled)` 就是 `[disabled]` 的存在性匹配。
 
-文本节点只认 `#text`、`nana-text`。`p`、`span`、`label`、`h1`–`h6` 即使 kind 是 Text，也是元素。空的 span，或 `p` 里套一个文本节点，都会让父级不是 `:empty`。
+`:checked` 读调用方给的 `checked` 标志。哪些节点算选中，由调用方决定。`input:checked + label` 走已有的兄弟组合符。
 
-空白文本，以及生成盒 `::before`、`::after`，不算内容。`:first-child`、`:last-child`、`:only-child`、`:nth-*` 的兄弟计数不含生成盒，也不含这些文本节点。
+`:empty` 和 `:not(:empty)` 读调用方给的 `is_empty`。引擎不自己数子节点和文字。
 
-廉价主体 `:has(.class|#id|type)`，含逗号 OR，按一次 O(n·k) 的后序 bitset 匹配。k 是去重后的简单参数，上限 64。不是每个主体都扫一遍子树。
+廉价主体 `:has(.class|#id|type)`，含逗号 OR，读调用方算好的后代位集（`has_bits`、`has_args`）。参数去重后最多 64 个。引擎不自己扫子树。
 
-廉价主体 `:focus-within` 在焦点变化时按祖先链失效。不整表、每帧重算。
+廉价主体 `:focus-within` 读调用方给的 `focus_within` 标志。
 
-`:focus-visible` 映射为 `:focus`。没有键盘和指针的区分。这是 fail-closed：未聚焦时不匹配，也不会单独画 focus-visible。
+`:focus-visible` 映射为 `:focus`。没有键盘和指针的区分。这是 fail-closed：未聚焦时不匹配。
 
-`::before` 和 `::after` 走生成盒。
+`::before`、`::after`、`::placeholder`、`::selection` 和 `::-moz-selection` 只解析和匹配，得到声明块，没有谁拿它生成盒子或画东西。
 
-`::placeholder` 把 `color` 和 `opacity` 画到 Runtime TextInput 的占位文字上。只对 `input` 和 `textarea`。它不是生成盒。也不在非输入上假装占位。
+占位文字和文档选区的颜色是 Style Model 的字段：`LayoutStyle::placeholder_color`、`placeholder_opacity`，以及 `selection_background`、`selection_color`。Runtime 的 TextInput 和文档选区照着画。
 
-`::selection` 和 `::-moz-selection` 把 `background`、`background-color`、`color` 画到文档级文本选区。它不是生成盒，也不是完整的 Highlight API。
+带组合符的 `:has` 和 `:focus-within`，以及写在祖先上的，引擎不解析，计入 `skipped_selectors`。
 
-带组合符的 `:has` 和 `:focus-within`，以及写在祖先上的，计入 `skipped_selectors`。
+**层叠。** 样式表内部先 normal，再 `!important`。然后再比特异度和源序。视图编译 class 规则时用的也是这个顺序。
 
-**层叠。** 这些规则同属 author。
+视图里没有 prop 和 inline 这两层：class 规则按上面的顺序，写在元素构建出来的布局上。引擎自己的 `rebuild_layout_style` 还有这两层，顺序见下文「`@layer`」之后的几段。
 
-样式表内部先 normal，再 `!important`。然后再比特异度和源序。
+`:hover`、`:focus`、`:active` 进交互桶，`matched_interactive_rules` 按调用方给的状态挑规则。它们不当布局条件。视图里是构建警告。
 
-prop 和 inline 的**普通**声明覆盖样式表的普通声明。inline 覆盖 prop。
+`transition` 在视图里编成元素的隐式动画。只认 `opacity`、`transform`、`width`、`height`、`background`（含 `background-color`），其他属性给构建警告。
 
-样式表的 `!important` 覆盖 prop 和 inline 的普通声明。
+`@keyframes` 和 `animation` 只解析，不播放。视图里是构建警告。
 
-prop 和 inline 上的 `!important` 会去掉标志，并作为 author-important 再写。它覆盖样式表的 `!important`。inline important 覆盖 prop important。
+`font-variation-settings` 的过渡在视图里给构建警告。要按轴动画，用 Rust 的 `TransitionBuilder::font_axis`：每个轴一条 Layout-class track。
 
-`:hover`、`:focus`、`:active` 进交互桶。它们按 Runtime 的指针和焦点状态，叠到绘制样式上。不当布局条件。
-
-`::before` 和 `::after` 在有 `content` 时生成匿名子盒。这是部分落地：只有字符串 content。没有 `attr()`，没有计数器，也没有 `quotes`。
-
-`@keyframes` 和 `transition` 已经解析，并编译进 Motion IR。`opacity`、`transform`，以及分类为 Compositor 的 `clip-path`，走 compositor overlay。`color`、`background`、`filter` 走 Paint-class 的 CPU 插值。`width` 和 `height` 走 Layout-class。
-
-`font-variation-settings` 每个轴一条 Layout-class track。只在两端声明同一组轴时，才逐轴插值。否则离散切换。transition 两端的轴集合不同时，直接切换。`@keyframes` 相邻两帧的轴集合不同时，在该段缓动进度过半处切换。某帧没写的轴，在那一段不存在，取字体默认值。
-
-`@keyframes` 缺 `0%` 或 `100%` 时，用元素自身的值补齐。补的是 opacity、transform 和字体轴。
-
-属性分类、fallback 和性能含义见 [架构](architecture.md)。
+各属性走哪一类动画（Compositor、Paint、Layout）、fallback 和性能含义见 [架构](architecture.md)。
 
 **增删节点时重算什么。** 什么都不重算。视图运行时不匹配选择器，增删一个子节点不会让兄弟、父节点或祖先重新级联。
 
 视图里的元素只按自己写的 class 组合（含 `class_when` 当前打开的那些）取样式。`:first-child`、`:nth-child()`、`+`、`~`、`:empty`、`:has()` 这类要看树结构的选择器，在视图里只给构建警告。
-
-引擎自己做一次级联时（`tools/css-parity`），`:has()` 的后代位集在这一次级联里一次算好，见上文。
 
 **挂载带样式的节点要多少。** `stylesheet!`、`view!` 和 `.vue` 的 `<style>` 在构建期编译成 `StylePatch`。运行期不解析 CSS，也不逐元素匹配选择器。一个元素的 class 组合第一次出现时，从样式表里挑出它能命中的规则，得到一个 `StyleSite`。之后同一组合、同一初始布局的元素，直接复用这处已经合成好的样式。
 
@@ -1143,13 +1131,23 @@ prop 和 inline 上的 `!important` 会去掉标志，并作为 author-important
 
 10、100、1,000 条规则下这几个数都一样：每组「class 组合 × 打开的条件 class」只合成一次。
 
+**`@container` 规则。** 一半规则写在一个有三个宽度区间的 `@container` 块里，每个元素因此带上一条响应式规则。冷挂载和追加每行都在 10.0–10.6 µs。
+
+插入的行只沿自己的子树去找最近的查询容器，不再把页面上所有响应式规则扫一遍。此前每插入一行都要扫一遍，4,000 行冷挂载要 240 ms，追加每行 120 µs。门禁是 `world::responsive::tests::inserted_rows_find_their_container_without_visiting_every_rule`。
+
+**卸载。** 整张列表（4,500 行）一次卸载，每行约 2 µs，带条件 class 时约 2.5 µs。
+
+逐行卸载读同一个信号的行时，订阅列表在失效的订阅者占到一半时才清理一次，所以每行的成本不随行数涨。门禁是 `view::reactive::tests::disposing_readers_one_by_one_compacts_in_amortized_constant_time`。
+
 **预算：** 挂载 4,000 个带样式的节点在 100 ms 以内。用 `cargo run --release --locked -p nana-ui-runtime --features benchmark --bin nana-runtime-benchmark -- --profile-styled-mount` 复测。
 
 门禁 `view::style::site_tests::equal_elements_compose_once_however_many_mount` 守住"相同的元素只合成一次"：再挂 300 行相同的行，合成次数不变。
 
-**`@import`。** 它解析 `url(...)` 和引号路径。相对路径相对导入方，或相对样式表 jail。canonicalize 之后必须落在 `stylesheet_base` 下。
+**`@import`。** 视图的构建期编译不给加载器，`<style>` 里的 `@import` 一律不加载，`nana://res/` 也一样。下面是引擎在调用方给了加载器时的行为。
 
-`stylesheet_base` 由调用引擎的一方给出，`stylesheet_base_from_href` 从样式表的地址推出它。未设置时，相对 `@import` 跳过。视图的构建期编译不给加载器，`<style>` 里的 `@import` 一律不加载。不扫进程 cwd。`nana://res/` 打包样式表照常加载。它内部的相对 `@import` 在包内解析。
+它解析 `url(...)` 和引号路径。相对路径相对导入方，或相对 `FsStylesheetLoader` 的 `base`。canonicalize 之后必须落在 `base` 下。`stylesheet_base_from_href` 从样式表的地址推出 `base`。没有加载器时，`@import` 跳过。不扫进程 cwd。
+
+给了 `PackagedStylesheetLoader` 时，`nana://res/` 打包样式表照常加载。它内部的相对 `@import` 在包内解析。
 
 `http(s)`、`data:`、越狱、超过 1MB、带 `layer` 或 `supports()` 的 prelude，一律 fail closed。记 skip，不加载。
 
@@ -1161,23 +1159,15 @@ prop 和 inline 上的 `!important` 会去掉标志，并作为 author-important
 
 **`@media`。** 子集是 `min/max/width`、`min/max/height`（px）、`orientation`、`prefers-color-scheme`，以及 `screen`、`all`、`print` 类型。
 
-条件匹配时，规则进入 cascade。视口或主题变化时，只重新 flatten 已经解析的规则。不重扫 CSS 文本。
+条件匹配时，`ParsedStylesheet::flatten` 把规则并进 cascade。换视口或主题，用新的 `MediaEnvironment` 再 flatten 一次即可，不重扫 CSS 文本。视图里 `@media` 是构建警告。
 
-**`@font-face`。** 它解析 `font-family`、`src`、`font-weight`。`font-weight: 200 700` 这种范围，宿主按 100 一档在 fontdb 里登记别名。不是只取起点。
+**`@font-face`。** 引擎只解析 `font-family`、`src`、`font-weight`（含 `200 700` 这种范围），不注册字体。视图里是构建警告。
 
-经宿主的 [`register_host_font_face`](../../crates/nana-ui/src/nana_text.rs) 和 [`alias_host_font_face_local`](../../crates/nana-ui/src/nana_text.rs)，写入共享的 `FontSystem` 和 fontdb。和 `bundled-fonts` 是同一套库。这不是 CSSOM 的 `FontFace`。
+要用自己的字体，在宿主里调 [`register_host_font_face`](../../crates/nana-ui/src/nana_text.rs)：一个 family 加一段字重范围，登记成一个 face，写入共享的 `FontSystem`。和 `bundled-fonts` 是同一套库。要成组替换，用 `HostFontScope`。这不是 CSSOM 的 `FontFace`。
 
-相对 `url(...)` 相对**声明该规则的样式表**。
+单个字体文件的读上限是 8MB。
 
-`src` 跳过 `format()` 和 `tech()`。按声明顺序尝试 `local()` 和 `url()`。`local("Family")` 命中已经加载的 fontdb 家族名或 PostScript 名，就给 CSS `font-family` 做别名，并且不读 url。未命中则 fail-closed，试下一项。
-
-未匹配的 `@media`（含 `print`）里的 `@font-face` 不注册。
-
-远程 `src` 一律拒绝。`@font-face` 没有网络传输。这和样式表 `@import` 是同一条规矩。只认 `local()`、`data:`，以及 jail 内的本机文件。
-
-读上限是 8MB。按 canonical 路径去重，或按 `local:name` 加上 family 加上 weight 范围去重。
-
-**`@supports`。** 它在解析期求值。匹配，就把内部规则并进同一份 cascade。
+**`@supports`。** 它在解析期求值。匹配，就把内部规则并进同一份 cascade，所以视图里块内的 class 规则照样编译。
 
 谓词子集是引擎已有的。`display: flex|grid|block`，以及已经解析的其它 `display` 关键字。`color` 是 `parse_css_color` 能解析的值。`width` 是 `LengthSpec::parse` 能解析的值。可以加 `not`、`and`、`or`。
 
@@ -1201,7 +1191,7 @@ prelude 是 `[名字] 条件`：
 - 一条查询里有两条轴；
 - 逗号列表，只有名字，嵌套的 `@container`。
 
-一个元素命中的规则问到两个容器或两条轴，或者断点超过 16 个时，它的 `@container` 规则全部不生效，计入 `container_queries`。
+一个元素命中的规则问到两个容器或两条轴，或者断点超过 16 个时，它的 `@container` 规则全部不生效。引擎计入 `container_queries`，视图里给构建警告。
 
 块里只有普通样式规则生效。`:hover`、伪元素、`transition`、`@keyframes`、`@font-face` 写在里面不生效。
 
@@ -1211,11 +1201,9 @@ prelude 是 `[名字] 条件`：
 
 `@import … layer()` 和 `supports()` 仍不加载。
 
-`width`、`height`、`min-width` 等 layout prop 和 class、style 走同一份 `rebuild_layout_style`。先写完普通层和 `nana-*` class hints，再写样式表 important，然后是 prop 和 inline 的 important。
+引擎的 `rebuild_layout_style` 先写样式表的普通声明、prop 和 inline 的普通声明，以及 `nana-*` class hints；再写样式表 important；最后是 prop 和 inline 的 important。所以样式表的 `width:80px !important` 不会被普通的 `width:200px` prop 盖掉。
 
-因此样式表的 `width:80px !important` 不会被后来的普通 `width:200px` prop 盖掉。prop 或 inline 带 `!important` 的，仍覆盖样式表 important。
-
-`nana-*` hints 压过普通声明。但压不过其后的 important 尾。
+视图不走这条路，也不认 `nana-*` class hints：class 只按 `<style>` 里写的规则取样式。
 
 自定义属性会去掉 `!important`。和普通声明同一套 `split_important_flag`。所以 `--gap: 8px !important` 经 `var(--gap)` 得到 `8px`。不是带着标志，无法解析。
 
@@ -1249,25 +1237,26 @@ prelude 是 `[名字] 条件`：
 - 用 `position: fixed` 当 Dialog 或 Drawer。走 Nana 的浮层。
 - 自定义 `url()` 光标图。
 - 未知的 `user-select` 关键字。
-- 完整的 CSS Highlight API。`::selection` 只兑现 background 和 color。
+- 完整的 CSS Highlight API。选区只有 `selection_background` 和 `selection_color` 两个字段，CSS 的 `::selection` 在视图里是构建警告。
+- `::before`、`::after` 生成盒，`content`、`attr()`、计数器、`quotes`。
 - `-webkit-app-region` 和 `app-region`。任意盒不能当标题栏。拖窗只走 `AppTitleBar`，再到 `nana-window`。你写了也不会拖窗。
 - `overflow:auto` 的自定义滚动条铬。走 `ScrollView`。
 - `<iframe>` 加载。见 [应用内浏览器](gpu.md#应用内浏览器)。这一条未实现。
 - 浏览器式 `<video>` 的解码和播放。宿主推帧和 poster 规则见 [实时画面](gpu.md)。
-- 把 `<canvas>` 当成 2D 位图，或当成浏览器的 2D / WebGPU 上下文。没有 HostTexture 槽时，`skipped_replaced = canvas`，不写 `content_image`。GPU 画面走 [实时画面](gpu.md) 的 `GpuTextureView`（`"nana.host-texture"`）。那不是 Chromium 2D。
+- 把 `<canvas>` 当成 2D 位图，或当成浏览器的 2D / WebGPU 上下文。GPU 画面走 [实时画面](gpu.md) 的 `GpuTextureView`（`"nana.host-texture"`）。那不是 Chromium 2D。
 - 父级 CSS `perspective` 属性，以及 `preserve-3d`。元素自身的 `perspective()` 加 `rotateY` 已经会画。
 
 畸形的 `font-variation-settings` 仍 fail-closed。字体没有的轴，在 shaping 时跳过，不改写成 `wght`。
 
 Android 和 iOS **不是**产品布局目标。两个实验宿主（[移动宿主](mobile-host.md)）仍用同一份 `LayoutStyle`、Runtime 和 UiScene，没有第二套移动端布局引擎。见 [Android](android.md)、[iOS](ios.md)。 HarmonyOS / OpenHarmony 同样共用这份布局，只是编译档，见 [OHOS](ohos.md)。
 
-廉价主体 `:has`、`::before`、`::after`、`::placeholder` 和 `::selection` 见上文「能用的」。
+`:has`、`::before`、`::after`、`::placeholder`、`::selection` 只是引擎能解析和匹配，视图里都是构建警告，见上文「选择器」。
 
 `writing-mode: horizontal-tb | vertical-rl | vertical-lr` 已经接入逻辑边，也接入了 IFC 和 flex 行的 inline 轴。见上文「能用的」。
 
 主题色走控件和外观设置。不要用任意业务色去改框架 token。
 
-未知声明会被忽略。不要假设「写了就能在某处生效」。
+未知声明不进 Style Model。视图里会给构建警告。不要假设「写了就能在某处生效」。
 
 ## 和 Rust 布局的关系
 
@@ -1279,7 +1268,7 @@ L3 用 [`Stack`](rust-layout.md) 表达这份合同。用 `from_layout`，或用
 
 ## 页面与卡片的留白
 
-NanaUI 的容器边距归属见 [Rust 布局合同](rust-layout.md#边距归属与覆盖)。
+NanaUI 的容器边距归属见 [Rust 布局合同](rust-layout.md#浮层定位与容器内边距归属)。
 
 CSS 只覆盖你声明的边。`padding: 0` 明确清零。
 
