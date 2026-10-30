@@ -16,6 +16,11 @@ pub(super) struct ValidationPlan<'a> {
     /// Mount overrides staged by this batch. Absent means "ask `source`".
     pub(super) parked: NodeMap<bool>,
     detached: NodeMap<bool>,
+    /// Children detached from each parent whose staged list still holds them.
+    /// The list drops them in one pass when next read, so a batch removing
+    /// many children of one parent filters its list once, not once per child
+    /// (#389).
+    leaving: NodeMap<NodeSet>,
     pub(super) interactions: NodeMap<InteractionState>,
     pub(super) styles: NodeMap<NodeStyle>,
     pub(super) focus: HashMap<DocumentId, Option<StableNodeId>>,
@@ -35,6 +40,9 @@ pub(super) struct ValidationPlan<'a> {
     /// `UiWorld::validation_nodes_scanned` so a reintroduced world scan fails a
     /// test instead of silently costing a frame.
     pub(super) scanned: usize,
+    /// Child-list entries `leaving` filtered, for cost tests.
+    #[cfg(test)]
+    pub(super) child_list_steps: u64,
 }
 
 /// An editor's text and selections as a batch leaves them, for validating
@@ -56,6 +64,7 @@ impl<'a> ValidationPlan<'a> {
             newly_retired: Default::default(),
             parked: Default::default(),
             detached: Default::default(),
+            leaving: Default::default(),
             interactions: Default::default(),
             styles: Default::default(),
             focus: HashMap::new(),
@@ -69,6 +78,8 @@ impl<'a> ValidationPlan<'a> {
             overlay_dependents: Default::default(),
             affected_overlay_hosts: Default::default(),
             scanned: 0,
+            #[cfg(test)]
+            child_list_steps: 0,
         }
     }
 
@@ -821,7 +832,8 @@ impl<'a> ValidationPlan<'a> {
         let parent = self.node(id)?.parent;
         self.detached.insert(id, true);
         if let Some(parent) = parent {
-            self.node_mut(parent)?.children.retain(|child| *child != id);
+            self.ensure(parent)?;
+            self.leaving.entry(parent).or_default().insert(id);
             self.node_mut(id)?.parent = None;
         }
         Ok(())
@@ -1161,12 +1173,31 @@ impl<'a> ValidationPlan<'a> {
 
     pub(super) fn node(&mut self, id: StableNodeId) -> Result<&PlannedNode, UiWorldError> {
         self.ensure(id)?;
+        self.drop_leaving(id);
         Ok(self.nodes.get(&id).expect("ensured node must exist"))
     }
 
     pub(super) fn node_mut(&mut self, id: StableNodeId) -> Result<&mut PlannedNode, UiWorldError> {
         self.ensure(id)?;
+        self.drop_leaving(id);
         Ok(self.nodes.get_mut(&id).expect("ensured node must exist"))
+    }
+
+    /// Take the children detached from `id` out of its staged list, before
+    /// anything reads it.
+    fn drop_leaving(&mut self, id: StableNodeId) {
+        if self.leaving.is_empty() {
+            return;
+        }
+        let Some(leaving) = self.leaving.remove(&id) else {
+            return;
+        };
+        let node = self.nodes.get_mut(&id).expect("ensured node must exist");
+        #[cfg(test)]
+        {
+            self.child_list_steps += node.children.len() as u64;
+        }
+        node.children.retain(|child| !leaving.contains(child));
     }
 
     pub(super) fn ensure(&mut self, id: StableNodeId) -> Result<(), UiWorldError> {
@@ -2973,6 +3004,12 @@ impl UiWorld {
             let mut plan = ValidationPlan::new(self);
             validated = plan.validate(queue.as_slice());
             scanned = plan.scanned;
+            #[cfg(test)]
+            let steps = plan.child_list_steps;
+            #[cfg(test)]
+            {
+                self.child_list_steps += steps;
+            }
         }
         self.validation_nodes_scanned = self.validation_nodes_scanned.saturating_add(scanned);
         validated?;
@@ -2981,7 +3018,12 @@ impl UiWorld {
         let mut applied = false;
         let mut layout_inputs_changed = false;
         let mut layout_result_ids = Vec::new();
-        for mutation in queue.as_slice() {
+        let mutations = queue.as_slice();
+        let mut run_end = 0;
+        for (index, mutation) in mutations.iter().enumerate() {
+            if index >= run_end {
+                run_end = index + self.unlink_removal_run(&mutations[index..]);
+            }
             if self.is_structural_noop(mutation) {
                 self.note_noop_text_scale(mutation);
                 continue;
@@ -3022,6 +3064,10 @@ impl UiWorld {
                 }
             }
         }
+        debug_assert!(
+            self.unlinked_ahead.is_empty(),
+            "a removal run left children its mutations never reached"
+        );
         if !applied {
             return Ok(report);
         }
@@ -3045,6 +3091,62 @@ impl UiWorld {
         #[cfg(debug_assertions)]
         self.audit_hit_eligibility("commit");
         Ok(report)
+    }
+
+    /// Removals from one parent in a row leave its child list together: one
+    /// filter and one renumbering from the first of them, where one each per
+    /// child made clearing a long list from the front quadratic (#389).
+    /// Returns how many mutations the run spans; a lone removal keeps its own
+    /// edit.
+    fn unlink_removal_run(&mut self, mutations: &[UiMutation]) -> usize {
+        let removal_root = |mutation: &UiMutation| match mutation {
+            UiMutation::Detach { id }
+            | UiMutation::ParkSubtree { root: id }
+            | UiMutation::DespawnSubtree { root: id } => Some(*id),
+            _ => None,
+        };
+        let Some(parent) = mutations
+            .first()
+            .and_then(removal_root)
+            .and_then(|root| self.parent_id(root))
+        else {
+            return 1;
+        };
+        // Siblings of one parent: none is in another's subtree, so taking
+        // them out first leaves each mutation the same subtree to retire.
+        let mut leaving = NodeSet::default();
+        let mut roots = Vec::new();
+        for mutation in mutations {
+            match removal_root(mutation) {
+                Some(root) if self.parent_id(root) == Some(parent) && leaving.insert(root) => {
+                    roots.push(root);
+                }
+                _ => break,
+            }
+        }
+        if roots.len() < 2 {
+            return 1;
+        }
+        for &root in &roots {
+            self.link_block_extent_reads(parent, root, false);
+        }
+        let hierarchy = self.hierarchy_mut(parent);
+        #[cfg(test)]
+        let filtered = hierarchy.children.len() as u64;
+        let children = Arc::make_mut(&mut hierarchy.children);
+        let first = children
+            .iter()
+            .position(|child| leaving.contains(child))
+            .expect("a run's roots are their parent's children");
+        children.retain(|child| !leaving.contains(child));
+        intern_empty_children(&mut hierarchy.children);
+        #[cfg(test)]
+        {
+            self.child_list_steps += filtered;
+        }
+        self.renumber_children_from(parent, first);
+        self.unlinked_ahead = leaving;
+        roots.len()
     }
 
     /// Move `id` to `offset` clamped to its scrolling area.

@@ -965,6 +965,13 @@ pub struct UiWorld {
     /// Ancestors visited keeping block extent reads current, for cost tests.
     #[cfg(test)]
     block_read_steps: u64,
+    /// Children a run of removals from one parent already took out of its
+    /// list, in one pass; their own mutations skip that edit (#389).
+    unlinked_ahead: NodeSet,
+    /// Child-list entries removals have shifted, filtered or renumbered, in
+    /// validation and apply, for cost tests.
+    #[cfg(test)]
+    child_list_steps: u64,
     viewport_basis: HashMap<DocumentId, HashSet<StableNodeId>, BuildIdHasher>,
     /// Nodes that accept a drop, and what they accept. A sparse index rather
     /// than a field on every node: almost no tree has drop targets.
@@ -1156,6 +1163,9 @@ impl UiWorld {
             viewport_basis_nodes: 0,
             #[cfg(test)]
             block_read_steps: 0,
+            unlinked_ahead: NodeSet::default(),
+            #[cfg(test)]
+            child_list_steps: 0,
             viewport_basis: HashMap::default(),
             document_viewports: HashMap::default(),
             drop_targets: HashMap::default(),
@@ -5390,6 +5400,10 @@ impl UiWorld {
         else {
             return;
         };
+        #[cfg(test)]
+        {
+            self.child_list_steps += children.len().saturating_sub(from) as u64;
+        }
         for (index, &child) in children.iter().enumerate().skip(from) {
             if let Some(record) = self.nodes.get_mut(child) {
                 record.hierarchy.index_in_parent = u32::try_from(index).unwrap_or(u32::MAX);
@@ -5398,15 +5412,24 @@ impl UiWorld {
     }
 
     /// Take `child` out of `parent`'s children and renumber the ones after
-    /// it.
+    /// it, unless a run of removals already did.
     fn remove_child(&mut self, parent: StableNodeId, child: StableNodeId) {
+        if !self.unlinked_ahead.is_empty() && self.unlinked_ahead.remove(&child) {
+            return;
+        }
         let Some(index) = self.child_index(parent, child) else {
             return;
         };
         self.link_block_extent_reads(parent, child, false);
         let hierarchy = self.hierarchy_mut(parent);
+        #[cfg(test)]
+        let shifted = (hierarchy.children.len() - index - 1) as u64;
         Arc::make_mut(&mut hierarchy.children).remove(index);
         intern_empty_children(&mut hierarchy.children);
+        #[cfg(test)]
+        {
+            self.child_list_steps += shifted;
+        }
         self.renumber_children_from(parent, index);
     }
 
@@ -6337,6 +6360,7 @@ mod issue270;
 mod issue333;
 mod issue386;
 mod issue387;
+mod issue389;
 mod reflow_oracle;
 #[cfg(test)]
 mod tests;
