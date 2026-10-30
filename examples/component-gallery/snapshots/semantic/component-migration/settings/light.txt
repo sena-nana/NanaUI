@@ -71,10 +71,10 @@ state: settings-page
   quad #34/5 337.00,448.15 10.00x10.00 opacity=1.00 bg=#ffffffff border=none border_width=0.00 radius=5.00/5.00/5.00/5.00 shadow=none
   quad #43/0 60.00,480.15 300.00x53.00 opacity=1.00 bg=none border=#eef0f3ff border_width=1.00 radius=0.00/0.00/0.00/0.00 shadow=none
   text #40/2 60.00,499.65 146.00x13.00 opacity=1.00 color=#1a1a1fff size=13.00 weight=500 line_height=Absolute(13.0) tracking=0.00 italic=false underline=false line_through=false spans=0 shadow=false
-  quad #39/3 230.50,504.15 59.00x4.00 opacity=1.00 bg=#cbcfd5ff border=none border_width=0.00 radius=2.00/2.00/2.00/2.00 shadow=none
-  quad #39/4 230.50,504.15 5.90x4.00 opacity=1.00 bg=#4991d7ff border=none border_width=0.00 radius=2.00/2.00/2.00/2.00 shadow=none
-  quad #39/5 229.90,499.65 13.00x13.00 opacity=1.00 bg=#4991d7ff border=#cbcfd5ff border_width=1.00 radius=6.50/6.50/6.50/6.50 shadow=none
-  text #39/6 304.00,490.15 30.00x32.00 opacity=1.00 color=#1a1a1fff size=13.00 weight=500 line_height=Absolute(16.0) tracking=0.00 italic=false underline=false line_through=false spans=0 shadow=false
+  quad #39/3 230.50,504.15 74.00x4.00 opacity=1.00 bg=#cbcfd5ff border=none border_width=0.00 radius=2.00/2.00/2.00/2.00 shadow=none
+  quad #39/4 230.50,504.15 7.40x4.00 opacity=1.00 bg=#4991d7ff border=none border_width=0.00 radius=2.00/2.00/2.00/2.00 shadow=none
+  quad #39/5 231.40,499.65 13.00x13.00 opacity=1.00 bg=#4991d7ff border=#cbcfd5ff border_width=1.00 radius=6.50/6.50/6.50/6.50 shadow=none
+  text #39/6 319.00,490.15 15.00x32.00 opacity=1.00 color=#1a1a1fff size=13.00 weight=500 line_height=Absolute(16.0) tracking=0.00 italic=false underline=false line_through=false spans=0 shadow=false
   text #39/7 334.00,490.15 16.00x32.00 opacity=1.00 color=#5a616eff size=12.00 weight=400 line_height=Absolute(16.0) tracking=0.00 italic=false underline=false line_through=false spans=0 shadow=false
   text #45/2 60.00,543.15 226.00x13.00 opacity=1.00 color=#1a1a1fff size=13.00 weight=500 line_height=Absolute(13.0) tracking=0.00 italic=false underline=false line_through=false spans=0 shadow=false
   text #46/2 60.00,558.15 226.00x16.00 opacity=1.00 color=#5a616eff size=12.00 weight=400 line_height=Absolute(16.0) tracking=0.00 italic=false underline=false line_through=false spans=0 shadow=false
