@@ -1336,13 +1336,19 @@ pub(super) fn place_node_scoped(
     }
 
     let border = style.resolved_border_edges();
+    // The children start past the parts laid out before them (#385), inside
+    // the padding.
+    let lead = nodes
+        .world
+        .leading_parts(id)
+        .map_or(Size::default(), |lead| lead.inset());
     let content_origin = Point {
-        x: origin.x + border.left + padding.left,
-        y: origin.y + border.top + padding.top,
+        x: origin.x + border.left + padding.left + lead.width,
+        y: origin.y + border.top + padding.top + lead.height,
     };
     let content = Size::new(
-        size.width - padding.left - padding.right - border.left - border.right,
-        size.height - padding.top - padding.bottom - border.top - border.bottom,
+        size.width - padding.left - padding.right - border.left - border.right - lead.width,
+        size.height - padding.top - padding.bottom - border.top - border.bottom - lead.height,
     );
     if nodes.world.inline_record(id).is_some() {
         nodes
@@ -1380,8 +1386,8 @@ pub(super) fn place_node_scoped(
             // Where this pass's border and padding put the content box in the
             // box where it stood: the box moved, not its content box in it.
             Point {
-                x: plan.origin.x + border.left + padding.left,
-                y: plan.origin.y + border.top + padding.top,
+                x: plan.origin.x + border.left + padding.left + lead.width,
+                y: plan.origin.y + border.top + padding.top + lead.height,
             },
             parent_font_px,
             viewport,

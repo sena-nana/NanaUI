@@ -155,6 +155,19 @@ LabeledValue、FormField、Card 标题、Select 触发器。交互、数据行�
 树行、编辑器）与图表、路径、画布不进部件。逐组件的分类和待迁移项见
 [组件内容布局与迁移审计](component-layout.md)。
 
+有子节点的组件把排在子节点前面的部件声明为前置部件（`parts::LeadingParts`，#385）：
+`UiWorld::leading_parts` 给出一条沿组件自己的轴（`Column` 在子节点上方，`Row` 在左边，RTL
+不镜像）的带子，长 `extent`，交叉方向至少 `breadth`。带子在 content box 的起点、padding 的
+里面：测量把 `extent` 加在子节点前面、把 `breadth` 当作 content box 交叉方向的下限，并在交给
+子节点的可用空间里扣掉 `extent`；placement 让子节点从带子之后开始；组件在 content box 起点
+解出自己的部件。padding 只是盒子声明的那份（作者写的，或组件的默认值），发布的 used padding
+不含部件，作者的 padding 与部件空间既不叠加也不互相顶替。前置部件随 `VisualContent` 进测量
+计划的输入比较；grid 增量不重解带前置部件的盒子。已用：EmptyState 的图标、标题、说明（操作
+按钮之前）、带标题 Card 的标题带（正文之前）、装配后 Toast 的记号与间隔（文案之前）。门禁是
+`world/issue385.rs`：三者在作者 padding、主题切换、部件显隐下逐步与冷布局对照，并核对
+content box 等于 padding box 减去声明的 padding、部件从 content box 起点开始、首个子节点在
+带子之后。
+
 文字被清空的盒子交出原来的度量：一个盒子的文字变成空串时，下一次文字工作把它解析成
 「没有文字」，度量归零、布局重新量它，结果与冷布局相同。门禁是 `world/issue205.rs` 的
 `issue205_a_cleared_label_lays_out_as_a_cold_unlabelled_control`。

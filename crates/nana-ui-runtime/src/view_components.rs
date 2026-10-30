@@ -54,52 +54,6 @@ pub(crate) fn compact_icon_style(mut style: NodeStyle) -> NodeStyle {
     style
 }
 
-fn add_length_px(length: nana_ui_core::LengthSpec, offset: f32) -> nana_ui_core::LengthSpec {
-    use nana_ui_core::LengthSpec;
-    match length {
-        LengthSpec::Px(value) => LengthSpec::Px(value + offset),
-        LengthSpec::Percent(percent) => LengthSpec::CalcPercentOffset {
-            percent,
-            offset_px: offset,
-        },
-        LengthSpec::Em(em) => LengthSpec::CalcEmOffset {
-            em,
-            offset_px: offset,
-        },
-        LengthSpec::Rem(rem) => LengthSpec::CalcRemOffset {
-            rem,
-            offset_px: offset,
-        },
-        LengthSpec::Viewport { axis, value } => LengthSpec::CalcViewportOffset {
-            axis,
-            value,
-            offset_px: offset,
-        },
-        LengthSpec::CalcPercentOffset { percent, offset_px } => LengthSpec::CalcPercentOffset {
-            percent,
-            offset_px: offset_px + offset,
-        },
-        LengthSpec::CalcEmOffset { em, offset_px } => LengthSpec::CalcEmOffset {
-            em,
-            offset_px: offset_px + offset,
-        },
-        LengthSpec::CalcRemOffset { rem, offset_px } => LengthSpec::CalcRemOffset {
-            rem,
-            offset_px: offset_px + offset,
-        },
-        LengthSpec::CalcViewportOffset {
-            axis,
-            value,
-            offset_px,
-        } => LengthSpec::CalcViewportOffset {
-            axis,
-            value,
-            offset_px: offset_px + offset,
-        },
-        other => other,
-    }
-}
-
 pub(crate) fn format_range_value(value: f64, step: f64) -> Arc<str> {
     let decimals = (0_i32..=6)
         .find(|decimals| {
@@ -692,10 +646,8 @@ pub(crate) const CARD_TITLE_WEIGHT: u16 = nana_ui_core::type_scale::SEMIBOLD;
 pub(crate) const CARD_TITLE_LINE: f32 = nana_ui_core::type_scale::LINE_TALL;
 /// Gap between the title band and the card's content.
 pub(crate) const CARD_TITLE_GAP: f32 = nana_ui_core::space::SM;
-/// Vertical band a titled `Card` adds above its content padding.
-///
-/// Layout adds it to `padding_top`; the painter subtracts it again to find the
-/// title's own row. Both sides must read this one constant.
+/// Vertical band a titled `Card` lays out above its body, inside its padding
+/// (#385): the title's line and the gap below it.
 pub(crate) const CARD_TITLE_BAND: f32 = CARD_TITLE_LINE + CARD_TITLE_GAP;
 /// Width a loading `Card` reserves for its spinner beside the title.
 pub(crate) const CARD_LOADING_RESERVE: f32 =
@@ -1701,21 +1653,6 @@ impl ComponentView for Card {
             let layout = Arc::make_mut(&mut effective_style.layout);
             if layout.border_width.is_none() {
                 layout.border_width = Some(kind_border_width);
-            }
-            if self.title.is_some() {
-                let y = layout
-                    .padding_top
-                    .or(layout.padding)
-                    .or_else(|| {
-                        effective_style
-                            .surface_padding
-                            .and_then(|padding| padding.resolve_y(world.theme_metrics()))
-                            .map(nana_ui_core::LengthSpec::Px)
-                    })
-                    .unwrap_or(nana_ui_core::LengthSpec::Px(
-                        world.theme_metrics().panel_padding_y,
-                    ));
-                layout.padding_top = Some(add_length_px(y, CARD_TITLE_BAND));
             }
         }
         project_common(

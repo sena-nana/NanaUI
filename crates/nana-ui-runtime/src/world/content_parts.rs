@@ -3,10 +3,10 @@ use super::*;
 use crate::layout_engine::{
     Size,
     parts::{
-        CONTENT_PART_SLOTS, ContentParts, EmptyStateInputs, FlexPart, NO_CONTENT_PARTS,
-        SwitchInputs, ToastInputs, button_content_parts, checkbox_parts, content_parts,
-        empty_state_parts, part_bounds, selection_option_parts, selection_option_row,
-        start_row_parts, status_dot_parts, switch_parts, toast_parts,
+        CONTENT_PART_SLOTS, ContentParts, EmptyStateInputs, FlexPart, LeadingParts,
+        NO_CONTENT_PARTS, SwitchInputs, ToastInputs, button_content_parts, checkbox_parts,
+        content_parts, empty_state_parts, part_bounds, selection_option_parts,
+        selection_option_row, start_row_parts, status_dot_parts, switch_parts, toast_parts,
     },
 };
 
@@ -168,7 +168,7 @@ impl UiWorld {
                 }
             )
             .then(|| size(presentation.message.unwrap_or_default()));
-            return empty_state_parts(bounds, inputs, size(presentation.title), message);
+            return empty_state_parts(content, inputs, size(presentation.title), message);
         }
         if let StandardVisual::MenuSurface {
             trigger,
@@ -231,14 +231,10 @@ impl UiWorld {
             return content_parts([dot, label]);
         }
         if let StandardVisual::Card { title, loading, .. } = visual {
-            let border = self
-                .nodes
-                .get(id)
-                .map_or(0.0, |node| node.resolved_layout.resolved_border_edges().top);
+            // The title's line at the top of the band layout keeps before
+            // the body (#385).
             let x = content.x.min(bounds.x + bounds.width).max(bounds.x);
-            let y = (content.y - crate::view_components::CARD_TITLE_BAND)
-                .max(bounds.y + border)
-                .min(bounds.y + bounds.height);
+            let y = content.y.max(bounds.y).min(bounds.y + bounds.height);
             let header = LayoutBox {
                 x,
                 y,
@@ -480,9 +476,8 @@ impl UiWorld {
     }
 
     /// An empty state's icon, title and message block before placement,
-    /// from the installed theme: what the paragraph budget, the room the
-    /// block reserves above the action, placement and the chrome clip all
-    /// read.
+    /// from the installed theme: what the band layout keeps above the
+    /// action and placement both read.
     pub(crate) fn empty_state_inputs(&self, id: StableNodeId) -> Option<EmptyStateInputs> {
         let Some(StandardVisual::EmptyState {
             icon,
@@ -494,18 +489,64 @@ impl UiWorld {
             return None;
         };
         let spacing = self.theme.spacing();
-        let (inset, gap) = if *compact {
-            (Size::new(spacing.sm, spacing.md), spacing.xxs)
-        } else {
-            (Size::new(spacing.xxxl, spacing.page), spacing.sm)
-        };
+        let gap = if *compact { spacing.xxs } else { spacing.sm };
         Some(EmptyStateInputs {
-            inset,
             icon: icon.map(|_| spacing.page_tight + spacing.xxs),
             gap,
             centred: !*compact,
             action: action.map(|_| spacing.xs),
         })
+    }
+
+    /// The parts `id` lays out before its children (#385): an empty state's
+    /// icon, title and message above its action, a titled card's header
+    /// above its body, an assembled toast's mark before its copy. Measure,
+    /// placement and the parts' solve all read this, so no style of the node
+    /// keeps a copy of their room.
+    pub(crate) fn leading_parts(&self, id: StableNodeId) -> Option<LeadingParts> {
+        match self.standard_visual_ref(id)? {
+            StandardVisual::EmptyState { .. } => {
+                let inputs = self.empty_state_inputs(id)?;
+                let presentation = self.nodes.empty_state_text(id).copied().unwrap_or_default();
+                let size = |metrics: crate::TextMetrics| Size::new(metrics.width, metrics.height);
+                Some(LeadingParts {
+                    axis: nana_ui_core::FlexDirection::Column,
+                    extent: inputs
+                        .block_height(size(presentation.title), presentation.message.map(size)),
+                    breadth: 0.0,
+                })
+            }
+            StandardVisual::Card { title: Some(_), .. } => Some(LeadingParts {
+                axis: nana_ui_core::FlexDirection::Column,
+                extent: crate::view_components::CARD_TITLE_BAND,
+                breadth: 0.0,
+            }),
+            StandardVisual::Toast {
+                assembled: true, ..
+            } => {
+                let inputs = self.toast_inputs(id)?;
+                Some(LeadingParts {
+                    axis: nana_ui_core::FlexDirection::Row,
+                    extent: inputs.lead(),
+                    breadth: inputs.mark.unwrap_or(0.0),
+                })
+            }
+            _ => None,
+        }
+    }
+
+    /// Where `id`'s children lay out in its `content` box: past the parts
+    /// laid out before them (#385).
+    pub(crate) fn children_box(&self, id: StableNodeId, content: LayoutBox) -> LayoutBox {
+        let inset = self
+            .leading_parts(id)
+            .map_or(Size::default(), |lead| lead.inset());
+        LayoutBox {
+            x: content.x + inset.width,
+            y: content.y + inset.height,
+            width: (content.width - inset.width).max(0.0),
+            height: (content.height - inset.height).max(0.0),
+        }
     }
 
     /// A toast's mark, copy and dismiss target before placement, from the

@@ -276,13 +276,10 @@ impl Toast {
         layout.direction = Some(FlexDirection::Row);
         layout.align_items = AlignSpec::Start;
         layout.gap = Some(LengthSpec::Px(recipe.gap));
-        // The toast paints its tone mark in the inset before the copy, which
-        // is its children: reserve the room its mark part takes. Flex lays
-        // no part before children, so the room is padding, but it comes
-        // from the declaration placement reads.
-        let lead = crate::layout_engine::parts::toast_inputs(recipe, 0.0, false, false).lead();
+        // Its tone mark is a part laid out before the copy, which is its
+        // children (#385); the padding is the recipe's alone.
         let padding = recipe.padding;
-        layout.padding_left = Some(LengthSpec::Px(padding.inline + lead));
+        layout.padding_left = Some(LengthSpec::Px(padding.inline));
         layout.padding_right = Some(LengthSpec::Px(padding.inline));
         layout.padding_top = Some(LengthSpec::Px(padding.top));
         layout.padding_bottom = Some(LengthSpec::Px(padding.bottom));
@@ -1367,10 +1364,12 @@ mod tests {
         let style = context.world().node_style(id).unwrap();
         assert_eq!(style.layout.width, Some(LengthSpec::FitContent));
         assert_eq!(style.layout.align_items, AlignSpec::Start);
-        // The dot and the gap after it are reserved before the copy.
+        // The dot and the gap after it are laid out before the copy, not
+        // in the padding (#385).
+        assert_eq!(style.layout.padding_left, Some(LengthSpec::Px(12.0)));
         assert_eq!(
-            style.layout.padding_left,
-            Some(LengthSpec::Px(12.0 + 6.0 + 8.0))
+            context.world().leading_parts(id).map(|lead| lead.extent),
+            Some(6.0 + 8.0)
         );
 
         context

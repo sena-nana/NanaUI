@@ -386,10 +386,15 @@ impl EmptyState {
                 nana_ui_core::SpacingStep::Xxxl
             }));
         }
-        // The real intrinsic leading block is written after TextShaper has
-        // measured title/message for the resolved content width.
+        // The icon, title and message are laid out inside it, before the
+        // action (#385), not written into it.
         if layout.padding_top.is_none() {
             layout.padding_top = Some(LengthSpec::Px(vertical));
+            layout.theme.padding_top = Some(crate::theme_intent::space(if self.compact {
+                nana_ui_core::SpacingStep::Md
+            } else {
+                nana_ui_core::SpacingStep::Page
+            }));
         }
         if layout.padding_bottom.is_none() {
             layout.padding_bottom = Some(LengthSpec::Px(vertical));
@@ -1434,6 +1439,8 @@ mod tests {
             panic!("title-only empty state geometry")
         };
         assert_eq!(title.bounds.height, 12.0 * 1.2);
+        // The title is laid out inside the padding, before the children
+        // (#385): the padding is the compact default alone.
         assert_eq!(
             context
                 .world()
@@ -1441,7 +1448,14 @@ mod tests {
                 .unwrap()
                 .layout
                 .padding_top,
-            Some(LengthSpec::Px(8.0 + title.bounds.height))
+            Some(LengthSpec::Px(8.0))
+        );
+        assert_eq!(
+            context
+                .world()
+                .leading_parts(empty.stable_id())
+                .map(|lead| lead.extent),
+            Some(title.bounds.height)
         );
     }
 

@@ -3907,23 +3907,14 @@ impl UiWorld {
         id: StableNodeId,
         presentation: EmptyStateTextPresentation,
     ) -> bool {
-        let mut changed = false;
-        if self.nodes.empty_state_text(id) != Some(&presentation) {
-            self.nodes.set_empty_state_text(id, Some(presentation));
-            changed = true;
+        if self.nodes.empty_state_text(id) == Some(&presentation) {
+            return false;
         }
-        // The block reserves its declared height above the action (#205).
-        let Some(inputs) = self.empty_state_inputs(id) else {
-            return changed;
-        };
-        let size =
-            |metrics: TextMetrics| crate::layout_engine::Size::new(metrics.width, metrics.height);
-        let height = inputs.block_height(size(presentation.title), presentation.message.map(size));
-        let padding_top = nana_ui_core::LengthSpec::Px(inputs.inset.height + height);
-        let mut style = self.record(id).style.clone();
-        if style.layout.padding_top != Some(padding_top) {
-            Arc::make_mut(&mut style.layout).padding_top = Some(padding_top);
-            self.write_node_style(id, style);
+        // The block is the band layout keeps above the action (#385): a
+        // block of another height moves the action and resizes the box.
+        let lead = self.leading_parts(id);
+        self.nodes.set_empty_state_text(id, Some(presentation));
+        if self.leading_parts(id) != lead {
             self.record_layout_invalidation(
                 id,
                 nana_ui_core::LayoutInvalidation::new(
@@ -3940,9 +3931,8 @@ impl UiWorld {
             if let Some(parent) = self.parent_id(id) {
                 self.mark_ancestors(parent, DirtyMask::LAYOUT | DirtyMask::RENDER);
             }
-            changed = true;
         }
-        changed
+        true
     }
 }
 
@@ -3994,10 +3984,10 @@ impl UiWorld {
                         let Some(layout) = self.component_layout_box(id) else {
                             continue;
                         };
-                        // The block's band is its paragraph budget.
+                        // The content box is its paragraph budget.
                         let width = self
-                            .empty_state_inputs(id)
-                            .map_or(layout.width, |inputs| inputs.band(layout).width);
+                            .component_content_box(id)
+                            .map_or(layout.width, |content| content.width);
                         let runs = shaper.runs;
                         let intrinsic = shape_empty_state_text(
                             id,

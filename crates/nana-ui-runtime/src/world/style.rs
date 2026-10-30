@@ -997,8 +997,8 @@ impl UiWorld {
         // reaches only the modal frames.
         let dialog_changed =
             self.theme.recipes().dialog() != next.recipes().dialog() || token_layout_changed;
-        // A bare toast's mark, copy column and dismiss target are parts read
-        // from its recipe (#205), not from any style it projects.
+        // A toast's mark, copy column and dismiss target are parts read from
+        // its recipe (#205, #385), not from any style it projects.
         let toast_changed = self.theme.recipes().toast() != next.recipes().toast();
         self.style_model = next.style_model();
         self.theme = next;
@@ -1053,14 +1053,7 @@ impl UiWorld {
                 .filter(|id| {
                     let visual = self.nodes.visual(*id);
                     (token_layout_changed && super::content_parts::visual_parts_read_theme(visual))
-                        || (toast_changed
-                            && matches!(
-                                visual,
-                                Some(StandardVisual::Toast {
-                                    assembled: false,
-                                    ..
-                                })
-                            ))
+                        || (toast_changed && matches!(visual, Some(StandardVisual::Toast { .. })))
                 })
                 .collect::<Vec<_>>()
         } else {

@@ -1714,7 +1714,8 @@ impl UiWorld {
                             Some(crate::view_components::CARD_TITLE_WEIGHT),
                         )
                     }),
-                    content,
+                    // The body's area, below the header band.
+                    content: self.children_box(id, content),
                     elevation: (*kind == nana_ui_core::CardKind::Raised).then_some(
                         crate::ComponentElevation::from_shadow(
                             self.theme.shadow(nana_ui_core::ElevationRole::Surface),
@@ -1856,10 +1857,10 @@ impl UiWorld {
                 action,
             } => {
                 // The icon, title and message are the parts layout published
-                // (#205); the chrome clip is the band they share.
+                // (#205); the chrome clip is the content box they and the
+                // action share.
                 use crate::LayoutPartKind;
-                let inputs = self.empty_state_inputs(id)?;
-                let band = inputs.band(bounds);
+                let band = content;
                 let (title_size, message_size) = if *compact {
                     (self.theme.typography().meta, self.theme.typography().hint)
                 } else {

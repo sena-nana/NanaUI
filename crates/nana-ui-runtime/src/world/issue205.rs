@@ -3330,14 +3330,11 @@ fn issue205_empty_state_icon_title_and_message_are_published_parts() {
                     } else {
                         assert!(painted_message.is_none());
                     }
-                    // The content box, where the action stands, starts below
-                    // the block and the action's lead-in.
-                    let content = result.content_box;
+                    // The block is laid out inside the content box, before
+                    // the action, which stands below it and its lead-in
+                    // (#385).
+                    assert_eq!(result.content_box.y, band.y);
                     let expected = y + action_id.map_or(0.0, |_| gap + spacing.xs);
-                    assert!(
-                        (content.y - expected).abs() < 1e-3,
-                        "{content:?} at {expected}"
-                    );
                     if let Some(action) = action_id {
                         assert!((world.layout_box(action).unwrap().y - expected).abs() < 1e-3);
                     }
@@ -3837,7 +3834,11 @@ fn issue205_assembled_toast_mark_is_a_published_part() {
             let lead = if mark > 0.0 { mark + recipe.gap } else { 0.0 };
             let padding_box = result.padding_box;
             let content = result.content_box;
-            assert_eq!(content.x, padding_box.x + recipe.padding.inline + lead);
+            // The mark is laid out inside the recipe's padding, before the
+            // copy (#385).
+            assert_eq!(content.x, padding_box.x + recipe.padding.inline);
+            let copy = world.layout_box(world.child_ids(id)[0]).unwrap();
+            assert_eq!(copy.x, content.x + lead);
             let ComponentGeometry::Toast {
                 indicator,
                 title,

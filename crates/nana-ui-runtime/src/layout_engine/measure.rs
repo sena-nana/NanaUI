@@ -556,9 +556,18 @@ pub(super) struct VisualContent {
     width: f32,
     /// The least content height.
     height: f32,
+    /// The parts laid out before the children (#385).
+    lead: Option<super::parts::LeadingParts>,
 }
 
 fn visual_content(id: StableNodeId, world: &UiWorld) -> VisualContent {
+    VisualContent {
+        lead: world.leading_parts(id),
+        ..visual_beside_text(id, world)
+    }
+}
+
+fn visual_beside_text(id: StableNodeId, world: &UiWorld) -> VisualContent {
     match world.standard_visual_ref(id) {
         Some(crate::StandardVisual::Card { loading, .. }) => VisualContent {
             width: if *loading {
@@ -567,6 +576,7 @@ fn visual_content(id: StableNodeId, world: &UiWorld) -> VisualContent {
                 0.0
             },
             height: 0.0,
+            ..VisualContent::default()
         },
         // The chrome a control lays out beside its label, read from the same
         // parts placement solves.
@@ -576,6 +586,7 @@ fn visual_content(id: StableNodeId, world: &UiWorld) -> VisualContent {
             VisualContent {
                 width: chrome.width,
                 height: chrome.height,
+                ..VisualContent::default()
             }
         }
         Some(crate::StandardVisual::Checkbox { .. }) => {
@@ -584,6 +595,7 @@ fn visual_content(id: StableNodeId, world: &UiWorld) -> VisualContent {
             VisualContent {
                 width: chrome.width,
                 height: chrome.height,
+                ..VisualContent::default()
             }
         }
         Some(crate::StandardVisual::SelectionOption { .. }) => {
@@ -594,6 +606,7 @@ fn visual_content(id: StableNodeId, world: &UiWorld) -> VisualContent {
             VisualContent {
                 width: chrome.width,
                 height: chrome.height,
+                ..VisualContent::default()
             }
         }
         Some(
@@ -607,6 +620,7 @@ fn visual_content(id: StableNodeId, world: &UiWorld) -> VisualContent {
             VisualContent {
                 width: chrome.width,
                 height: chrome.height,
+                ..VisualContent::default()
             }
         }
         // The track and its gap, and the taller of the track and the label
@@ -616,12 +630,13 @@ fn visual_content(id: StableNodeId, world: &UiWorld) -> VisualContent {
             VisualContent {
                 width: extent.width,
                 height: extent.height,
+                ..VisualContent::default()
             }
         }
         // A bare toast's mark, gap and dismiss target beside its title, and
         // its copy column's height: the declaration placement solves. (An
-        // assembled toast's copy is its children; its mark's room is
-        // padding.)
+        // assembled toast's copy is its children; its mark is laid out
+        // before them, `lead`.)
         Some(crate::StandardVisual::Toast {
             assembled: false, ..
         }) => {
@@ -629,6 +644,7 @@ fn visual_content(id: StableNodeId, world: &UiWorld) -> VisualContent {
             VisualContent {
                 width: chrome.width,
                 height: chrome.height,
+                ..VisualContent::default()
             }
         }
         // Its text already asks for the widest option (`text_natural_width`);
@@ -1106,6 +1122,14 @@ fn measure_node(
     };
     let had_plan = retained_plan.is_some();
     let visual = visual_content(id, nodes.world);
+    // The parts laid out before the children take their band out of the
+    // room the children are offered (#385).
+    let lead = visual.lead.unwrap_or_default();
+    let lead_inset = lead.inset();
+    content_available = Size::new(
+        (content_available.width - lead_inset.width).max(0.0),
+        (content_available.height - lead_inset.height).max(0.0),
+    );
     let header_chrome = matches!(
         nodes.world.standard_visual_ref(id),
         Some(crate::StandardVisual::Card { .. })
@@ -1586,6 +1610,13 @@ fn measure_node(
         content.width += visual.width;
     }
     content.height = content.height.max(visual.height);
+    // The leading parts' band comes before the children, and its breadth is
+    // the least the content box spans beside it.
+    let lead_floor = lead.floor();
+    content = Size::new(
+        content.width.max(lead_floor.width) + lead_inset.width,
+        content.height.max(lead_floor.height) + lead_inset.height,
+    );
     let max_content_w = content.width + chrome.width;
     let stacked_min_w = child_sizes
         .iter()
@@ -1594,7 +1625,8 @@ fn measure_node(
             let margin = child_margin(*child, nodes);
             size.width + margin.left + margin.right
         })
-        .fold(0.0f32, f32::max)
+        .fold(lead_floor.width, f32::max)
+        + lead_inset.width
         + chrome.width;
     // nowrap row: min-content cannot be narrower than the packed sum.
     // wrap / column / block: min-content is the largest child (plus chrome).
@@ -2521,7 +2553,9 @@ fn grid_measure_delta(
     cache: &mut PassIntrinsicCache,
     scope: &ScopeContext<'_>,
 ) -> Result<Option<Size>, UiWorldError> {
-    if plan.grid.is_none() {
+    // The track extent below is the children's alone, not the band laid out
+    // before them.
+    if plan.grid.is_none() || plan.visual.lead.is_some() {
         return Ok(None);
     }
     let style = plan.style.as_ref();

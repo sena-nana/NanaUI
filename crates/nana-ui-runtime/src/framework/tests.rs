@@ -3653,9 +3653,16 @@ fn card_icon_button_and_list_item_keep_visual_and_semantic_content_distinct() {
             .unwrap()
             .layout
             .padding_top,
-        Some(nana_ui_core::LengthSpec::Px(
-            nana_ui_core::UI_METRICS.panel_padding_y + 24.0
-        ))
+        // The header is laid out before the body, not in the padding
+        // (#385): the card keeps its panel surface padding alone.
+        None
+    );
+    assert_eq!(
+        context
+            .world()
+            .leading_parts(card.stable_id())
+            .map(|lead| lead.extent),
+        Some(crate::view_components::CARD_TITLE_BAND)
     );
     assert_eq!(
         context.world().node(card.stable_id()).unwrap().children,
@@ -9219,7 +9226,7 @@ fn composite_geometry_separates_text_controls_and_range_drag_axis() {
         .unwrap()
         .layout
         .as_ref();
-    assert_eq!(card_layout.padding_top, Some(LengthSpec::Px(52.0)));
+    assert_eq!(card_layout.padding_top, Some(LengthSpec::Px(28.0)));
     assert_eq!(card_layout.padding_bottom, Some(LengthSpec::Px(28.0)));
 
     let crate::ComponentGeometry::Range { track, .. } = context

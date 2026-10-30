@@ -44,6 +44,44 @@ pub(crate) fn content_parts<const N: usize>(parts: [Option<LayoutPart>; N]) -> C
     std::array::from_fn(|index| parts.get(index).copied().flatten())
 }
 
+/// The parts a container lays out before its children (#385): a band
+/// `extent` long at the start of its content box, at least `breadth` across
+/// it. The children lay out in the rest of the content box, and the
+/// container's padding stays outside both, so an author's padding neither
+/// adds to the parts' room nor takes its place. Measure counts the extent
+/// before the children and the breadth as the least the content box spans
+/// beside them; placement starts the children past the extent; the
+/// component solves its parts at the start of its content box.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub(crate) struct LeadingParts {
+    /// `Column` puts the band above the children, `Row` to their left. It
+    /// is the component's own axis, whatever direction its children run
+    /// in, and RTL does not mirror it.
+    pub axis: FlexDirection,
+    pub extent: f32,
+    pub breadth: f32,
+}
+
+impl LeadingParts {
+    /// What the band takes from the content box, across and down.
+    pub fn inset(&self) -> Size {
+        let extent = self.extent.max(0.0);
+        match self.axis {
+            FlexDirection::Column => Size::new(0.0, extent),
+            FlexDirection::Row => Size::new(extent, 0.0),
+        }
+    }
+
+    /// The least the content box spans beside the band, across and down.
+    pub fn floor(&self) -> Size {
+        let breadth = self.breadth.max(0.0);
+        match self.axis {
+            FlexDirection::Column => Size::new(breadth, 0.0),
+            FlexDirection::Row => Size::new(0.0, breadth),
+        }
+    }
+}
+
 pub(crate) fn flex_parts<const N: usize>(
     bounds: LayoutBox,
     direction: FlexDirection,
@@ -336,15 +374,13 @@ pub(crate) fn selection_option_row(
 }
 
 /// An empty state's text block before placement: an optional icon over its
-/// title over an optional message, in a band inset from the border box.
-/// The band's width is the paragraph budget, the column's height (with the
-/// action's lead-in when there is one) is what the block reserves above the
-/// action, and placement solves the same column; all read this one
+/// title over an optional message, the parts it lays out before its action
+/// (#385). The content box's width is the paragraph budget, the column's
+/// height (with the action's lead-in when there is one) is the band's extent,
+/// and placement solves the same column in that band; all read this one
 /// declaration.
 #[derive(Clone, Copy, PartialEq)]
 pub(crate) struct EmptyStateInputs {
-    /// The band's inset from the border box on each side.
-    pub inset: Size,
     /// The icon's square, when there is one.
     pub icon: Option<f32>,
     /// Between the icon, the title and the message.
@@ -356,16 +392,6 @@ pub(crate) struct EmptyStateInputs {
 }
 
 impl EmptyStateInputs {
-    /// The band the block and the chrome clip share, in a `bounds` border box.
-    pub fn band(&self, bounds: LayoutBox) -> LayoutBox {
-        LayoutBox {
-            x: bounds.x + self.inset.width,
-            y: bounds.y + self.inset.height,
-            width: (bounds.width - self.inset.width * 2.0).max(0.0),
-            height: (bounds.height - self.inset.height * 2.0).max(0.0),
-        }
-    }
-
     fn column(&self, title: Size, message: Option<Size>) -> [Option<FlexPart>; 3] {
         let item = |kind, size: Size, gap_after| {
             let mut part = FlexPart::new(kind, size);
@@ -410,20 +436,20 @@ impl EmptyStateInputs {
     }
 }
 
-/// An empty state's icon, title and message in the band of `bounds`: one
-/// Flex column at the band's top, each item centred or at its start, the
-/// title and message as wide as their text up to the band.
+/// An empty state's icon, title and message at the top of its `content`
+/// box: one Flex column, each item centred or at its start, the title and
+/// message as wide as their text up to the content box.
 pub(crate) fn empty_state_parts(
-    bounds: LayoutBox,
+    content: LayoutBox,
     inputs: EmptyStateInputs,
     title: Size,
     message: Option<Size>,
 ) -> ContentParts {
-    let band = inputs.band(bounds);
+    let band = content;
     let fit = |size: Size| Size::new(size.width.clamp(0.0, band.width), size.height);
-    // The block reserved its own height above the action, so the band never
-    // cuts an item short: the column runs as long as its items (and a pixel
-    // more, so rounding in the running sum cannot clip the last one).
+    // Layout laid the block out before the action, so the band never cuts an
+    // item short: the column runs as long as its items (and a pixel more, so
+    // rounding in the running sum cannot clip the last one).
     let column = inputs.column(fit(title), message.map(fit));
     let height = column
         .iter()
@@ -446,8 +472,8 @@ pub(crate) fn empty_state_parts(
 /// line over an optional description line) and its dismiss target, in a
 /// band inset from the border box by the recipe's padding. Intrinsic
 /// measure ([`Self::chrome`]), the title's paragraph budget, placement
-/// ([`toast_parts`]) and the room an assembled toast keeps before its copy
-/// ([`Self::lead`]) all read this one declaration.
+/// ([`toast_parts`]) and the band an assembled toast lays out before its
+/// copy ([`Self::lead`]) all read this one declaration.
 #[derive(Clone, Copy, PartialEq)]
 pub(crate) struct ToastInputs {
     /// The band's inset from the border box: the recipe's padding, top,
@@ -505,9 +531,9 @@ impl ToastInputs {
         )
     }
 
-    /// Where an assembled toast paints its mark: in the room [`Self::lead`]
-    /// keeps before the copy that starts at `content`, centred on the
-    /// title's first `line`.
+    /// Where an assembled toast paints its mark: at the start of its
+    /// `content` box, in the band [`Self::lead`] long that layout keeps
+    /// before the copy, centred on the title's first `line`.
     pub fn assembled_mark(&self, content: LayoutBox, line: f32) -> ContentParts {
         let Some(mark) = self.mark.filter(|mark| *mark > 0.0) else {
             return NO_CONTENT_PARTS;
@@ -515,7 +541,7 @@ impl ToastInputs {
         content_parts([Some(LayoutPart::new(
             LayoutPartKind::LeadingContent,
             LayoutBox {
-                x: content.x - self.lead(),
+                x: content.x,
                 y: content.y + (line - mark) / 2.0,
                 width: mark,
                 height: mark,

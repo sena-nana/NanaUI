@@ -1182,9 +1182,13 @@ pub(super) fn fixed_inline_block_island(
     let pad = parent_padding
         .unwrap_or_else(|| parent_style.resolved_padding_against(Some(parent_box.width)));
     let edge = parent_style.resolved_border_edges();
+    // The parent's leading parts take their band out of its content box (#385).
+    let lead = world
+        .leading_parts(parent)
+        .map_or(Size::default(), |lead| lead.inset());
     let containing = Size::new(
-        (parent_box.width - pad.left - pad.right - edge.left - edge.right).max(0.0),
-        (parent_box.height - pad.top - pad.bottom - edge.top - edge.bottom).max(0.0),
+        (parent_box.width - pad.left - pad.right - edge.left - edge.right - lead.width).max(0.0),
+        (parent_box.height - pad.top - pad.bottom - edge.top - edge.bottom - lead.height).max(0.0),
     );
     let font = element_font_px(world, parent);
     // The kept border box already carries the relative offset, which
