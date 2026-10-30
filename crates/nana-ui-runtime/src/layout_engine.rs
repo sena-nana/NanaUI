@@ -2164,6 +2164,8 @@ struct MeasurePlan {
     text_natural_width: Option<f32>,
     /// The width that text was last wrapped against.
     text_wrap_limit: Option<f32>,
+    /// The face metrics its line boxes started from (`UiWorld::block_strut`).
+    strut: Option<crate::FontStrut>,
     /// What the container's visual draws beside that text.
     visual: VisualContent,
     /// Available size in-flow children were measured against. Flex uses one
@@ -2270,10 +2272,12 @@ impl MeasurePlan {
         text_metrics: Option<crate::TextMetrics>,
         text_natural_width: Option<f32>,
         text_wrap_limit: Option<f32>,
+        strut: Option<crate::FontStrut>,
         visual: VisualContent,
         writing: nana_ui_core::WritingContext,
     ) -> bool {
         self.writing == writing
+            && self.strut == strut
             && self.available == available
             && self.parent_direction == parent_direction
             && viewport_basis(&self.style, self.viewport) == viewport_basis(style, viewport)

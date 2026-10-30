@@ -2642,6 +2642,15 @@ pub struct TextMetrics {
     pub ascent: Option<f32>,
 }
 
+/// The ascent and descent of a style's own face, in CSS px at the style's font
+/// size: what the strut of an ordinary block's line boxes starts from (CSS 2.1
+/// §10.8.1). See [`TextShaper::strut_metrics`].
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+pub struct FontStrut {
+    pub ascent: f32,
+    pub descent: f32,
+}
+
 /// Shaped intrinsic text owned by an EmptyState rather than application child
 /// nodes. Runtime layout and every renderer consume the same measured runs.
 #[derive(Debug, Clone, Copy, PartialEq, Default)]
@@ -2729,6 +2738,17 @@ pub trait TextShaper {
     /// `false` and stay cached.
     fn retains_measurement(&self, _id: StableNodeId) -> bool {
         false
+    }
+
+    /// The ascent and descent of `style`'s own face at its font size, which
+    /// the line boxes of an ordinary block start from (its strut). A native
+    /// paragraph's lines start from the same face's metrics.
+    ///
+    /// `None` keeps the approximation, [`nana_ui_core::TEXT_APPROX_ASCENT_EM`]
+    /// of the em above the baseline and the rest below. Like every metric,
+    /// the answer is current for one [`Self::font_generation`].
+    fn strut_metrics(&mut self, _style: &ComputedStyle) -> Option<FontStrut> {
+        None
     }
 
     /// Generation of the font set [`Self::shape`] measures against. A change

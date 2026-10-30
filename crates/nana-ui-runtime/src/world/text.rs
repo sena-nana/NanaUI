@@ -45,6 +45,10 @@ impl<'a, S: TextShaper> CountingShaper<'a, S> {
 }
 
 impl<S: TextShaper> TextShaper for CountingShaper<'_, S> {
+    fn strut_metrics(&mut self, style: &ComputedStyle) -> Option<crate::FontStrut> {
+        self.inner.strut_metrics(style)
+    }
+
     fn font_generation(&self) -> u64 {
         self.inner.font_generation()
     }
@@ -237,6 +241,10 @@ struct PreparedCountingShaper<'a> {
     font_generation: u64,
 }
 impl TextShaper for PreparedCountingShaper<'_> {
+    fn strut_metrics(&mut self, style: &ComputedStyle) -> Option<crate::FontStrut> {
+        self.inner.strut_metrics(style)
+    }
+
     fn font_generation(&self) -> u64 {
         self.inner.font_generation()
     }
@@ -4794,6 +4802,10 @@ impl UiWorld {
         // generation must not be answered with the last one's numbers.
         self.glyph_cache.clear();
         self.text_layout_cache.clear();
+        // So does every block's strut: a face that serves its font now, or
+        // stopped serving it, moves its lines.
+        let struts = self.nodes.strut_holders().collect::<Vec<_>>();
+        self.strut_candidates.extend(struts);
         // Every resolved text shapes again against the new fonts. Layout hears
         // only from the text whose exported metrics moved, as after any other
         // reshape: a font registration that changes no text's metrics lays
@@ -5298,6 +5310,7 @@ impl UiWorld {
         let glyph_stats = glyphs.take_counters();
         self.text_layout_cache = cache;
         self.glyph_cache = glyphs;
+        self.resolve_block_struts(ids, host);
         self.refresh_document_text_highlights(host);
         // Taken last: document highlights measure through the host too.
         work.accumulate(host.take_text_work());
@@ -5311,6 +5324,119 @@ impl UiWorld {
             glyph_stats,
         );
         Ok(())
+    }
+}
+
+impl UiWorld {
+    /// The strut `id`'s line boxes start from, per px of its font size: its
+    /// own face's ascent and descent, as the shaper reported them. `None`
+    /// keeps layout's approximation.
+    pub(crate) fn block_strut(&self, id: StableNodeId) -> Option<crate::FontStrut> {
+        self.nodes.block_strut(id).copied()
+    }
+
+    /// Whether `id` lays its children's lines out with a strut of its own: an
+    /// ordinary block (not a flex or grid container) with no line box of its
+    /// own whose children include an inline-level one in flow (CSS 2.1
+    /// §10.8.1). It reads `id`'s kind, text and display, and its children's
+    /// display, position and float; each of those changing makes `id` a
+    /// strut candidate.
+    pub(crate) fn wants_block_strut(&self, id: StableNodeId) -> bool {
+        let Some(record) = self.nodes.get(id) else {
+            return false;
+        };
+        let style = &record.resolved_layout;
+        if matches!(record.kind.as_ref(), NodeKind::Text)
+            || self.lays_out_own_line(id)
+            || style.omits_box()
+            || style
+                .display
+                .is_some_and(|display| display.is_flex_container() || display.is_grid_container())
+        {
+            return false;
+        }
+        record.hierarchy.children.iter().any(|&child| {
+            self.nodes.get(child).is_some_and(|child| {
+                let child = &child.resolved_layout;
+                child.is_inline_level() && !child.is_floated() && !child.position.is_out_of_flow()
+            })
+        })
+    }
+
+    /// The strut `id` holds when it [wants one](Self::wants_block_strut):
+    /// the shaper's metrics of its computed font's own face, per px of its
+    /// font size. A size change alone then lays the block out as before
+    /// without asking the shaper again.
+    fn fresh_block_strut(
+        &self,
+        id: StableNodeId,
+        shaper: &mut impl TextShaper,
+    ) -> Option<crate::FontStrut> {
+        if !self.wants_block_strut(id) {
+            return None;
+        }
+        let style = &self.nodes.get(id)?.resolved.0;
+        let size = style.font_size;
+        if !(size.is_finite() && size > 0.0) {
+            return None;
+        }
+        let metrics = shaper.strut_metrics(style)?;
+        let per_px = crate::FontStrut {
+            ascent: metrics.ascent / size,
+            descent: metrics.descent / size,
+        };
+        (per_px.ascent.is_finite() && per_px.descent.is_finite()).then_some(per_px)
+    }
+
+    /// Considers again the strut of every block that may have gained, lost
+    /// or changed one: the scheduled text (a box whose text came or went),
+    /// and the candidates since the last pass (a block whose font or child
+    /// list changed, or a child whose display did; every holder after a
+    /// font set change). A strut that moved lays its block out again, the
+    /// way moved text metrics do.
+    fn resolve_block_struts(&mut self, scheduled: &[StableNodeId], shaper: &mut impl TextShaper) {
+        if self.strut_candidates.is_empty() && scheduled.is_empty() {
+            return;
+        }
+        let mut candidates = std::mem::take(&mut self.strut_candidates);
+        candidates.extend_from_slice(scheduled);
+        candidates.sort_unstable();
+        candidates.dedup();
+        for id in candidates {
+            if !self.contains(id) {
+                continue;
+            }
+            let next = self.fresh_block_strut(id, shaper);
+            if self.nodes.block_strut(id).copied() == next {
+                continue;
+            }
+            self.nodes.set_block_strut(id, next);
+            self.note_layout_source_change();
+            if self.presence_live(id) {
+                self.propagate_layout_from_node(id);
+            }
+        }
+        #[cfg(any(test, feature = "layout-verify"))]
+        self.audit_block_struts(shaper);
+    }
+
+    /// Every block's retained strut is the one it would read fresh: what
+    /// the candidates missed would lay a block out with a stale strut that
+    /// no frame corrects. Checked on worlds small enough to scan.
+    #[cfg(any(test, feature = "layout-verify"))]
+    fn audit_block_struts(&self, shaper: &mut impl TextShaper) {
+        const AUDIT_LIMIT: usize = 512;
+        if self.nodes.len() > AUDIT_LIMIT {
+            return;
+        }
+        let ids = self.nodes.keys().collect::<Vec<_>>();
+        for id in ids {
+            assert_eq!(
+                self.nodes.block_strut(id).copied(),
+                self.fresh_block_strut(id, shaper),
+                "{id:?}: the retained strut disagrees with a fresh read"
+            );
+        }
     }
 }
 

@@ -1148,6 +1148,7 @@ fn measure_node(
             text_metrics,
             text_natural_width,
             text_wrap_limit,
+            nodes.world.block_strut(id),
             visual,
             writing,
         )
@@ -1327,7 +1328,8 @@ fn measure_node(
         clock.lap(4);
     }
     // The lines of an ordinary block sit their atoms on one baseline.
-    let baseline_lines = (ifc && !writing.is_vertical()).then(|| line_strut(style, child_font_px));
+    let baseline_lines =
+        (ifc && !writing.is_vertical()).then(|| line_strut(id, style, child_font_px, nodes));
     if baseline_lines.is_some() {
         prime_atom_baselines(
             flow_children
@@ -1759,6 +1761,7 @@ fn measure_node(
                 text_metrics,
                 text_natural_width,
                 text_wrap_limit,
+                strut: world.block_strut(id),
                 visual,
                 child_available: content_available,
                 child_direction: direction,

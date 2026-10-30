@@ -1037,6 +1037,10 @@ pub struct UiWorld {
     /// despawn). Consumers take the list once per commit to schedule opt-in
     /// component reprojections; see `ComponentView::wants_child_reproject`.
     structural_change_parents: Vec<StableNodeId>,
+    /// Blocks whose strut the next text pass considers again: their child
+    /// list or a child's display changed, or their font did. See
+    /// [`Self::resolve_block_struts`].
+    strut_candidates: Vec<StableNodeId>,
     /// minimap 行长单条缓存（原始值 → 每逻辑行非空白字符数）。存于
     /// `RefCell` 供 `&self` 的 presentation 构建路径读写。
     minimap_line_lengths_cache: RefCell<Option<(crate::TextValue, Vec<u32>)>>,
@@ -1185,6 +1189,7 @@ impl UiWorld {
             validation_nodes_scanned: 0,
             palette_epoch: 1,
             structural_change_parents: Vec::new(),
+            strut_candidates: Vec::new(),
             minimap_line_lengths_cache: RefCell::new(None),
             bracket_color_spans_cache: RefCell::new(None),
             presentation_transform_documents_cache: RefCell::new(None),
@@ -2187,6 +2192,21 @@ impl UiWorld {
         previous: &nana_ui_core::LayoutStyle,
         next: &nana_ui_core::LayoutStyle,
     ) {
+        // Whether a block holds a strut reads its children's display, and
+        // which strut its own face (`resolve_block_struts`).
+        if previous.display != next.display
+            || previous.position != next.position
+            || previous.float != next.float
+            || previous.font_family != next.font_family
+            || previous.font_weight != next.font_weight
+            || previous.font_italic != next.font_italic
+            || previous.font_variation_settings != next.font_variation_settings
+        {
+            self.strut_candidates.push(id);
+            if let Some(parent) = self.parent_id(id) {
+                self.strut_candidates.push(parent);
+            }
+        }
         // The clip chain reads which of absolute, fixed and in-flow a box
         // is, not only whether it is positioned (#201).
         if previous.position != next.position || previous.clips_overflow() != next.clips_overflow()
@@ -2839,6 +2859,14 @@ impl UiWorld {
             let bits = if has_text {
                 bits
             } else {
+                // A block with no text of its own still holds a strut when
+                // its lines hold atoms: its font changed, or it is new.
+                if bits & DirtyMask::TEXT != 0
+                    && (!self.record(id).hierarchy.children.is_empty()
+                        || self.nodes.block_strut(id).is_some())
+                {
+                    self.strut_candidates.push(id);
+                }
                 bits & !DirtyMask::TEXT
             };
             if bits != 0 {
@@ -3496,6 +3524,9 @@ impl UiWorld {
         if self.structural_change_parents.last() != Some(&parent) {
             self.structural_change_parents.push(parent);
         }
+        // Whether it has inline-level children, and so a strut, may have
+        // changed with them.
+        self.strut_candidates.push(parent);
     }
 
     /// Parents whose child list changed since the last drain, or one of

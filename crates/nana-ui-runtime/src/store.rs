@@ -419,6 +419,12 @@ pub(crate) struct NodeStore {
     /// holds an entry: its metrics are the lines it wrapped to, and layout
     /// needs this to give it more room once its box may grow.
     text_natural_widths: HashMap<StableNodeId, f32>,
+    /// The strut an ordinary block's line boxes start from, per px of its
+    /// font size: its own face's ascent and descent. Only a block with
+    /// inline-level children and no line box of its own holds an entry, and
+    /// only under a shaper that reports struts; see
+    /// `UiWorld::resolve_block_struts`.
+    block_struts: HashMap<StableNodeId, crate::FontStrut>,
     /// The width a plain text that wraps was last shaped against: its box
     /// width then, or infinity when it had no box yet. Text that does not
     /// wrap holds no entry. Layout trusts the lines' own width only within a
@@ -525,6 +531,7 @@ impl NodeStore {
         self.text_viewport_pins.remove(&id);
         self.text_drop_indicators.remove(&id);
         self.text_natural_widths.remove(&id);
+        self.block_struts.remove(&id);
         self.text_wrap_limits.remove(&id);
         self.languages.remove(&id);
         self.text_scales.remove(&id);
@@ -720,6 +727,12 @@ impl NodeStore {
         set_text_natural_width
     );
     sparse!(text_wrap_limits, f32, text_wrap_limit, set_text_wrap_limit);
+    sparse!(block_struts, crate::FontStrut, block_strut, set_block_strut);
+
+    /// Every block holding a strut: what a new font set can change.
+    pub(crate) fn strut_holders(&self) -> impl Iterator<Item = StableNodeId> + '_ {
+        self.block_struts.keys().copied()
+    }
     sparse!(
         languages,
         nana_text::font::LanguageTag,

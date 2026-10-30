@@ -368,6 +368,17 @@ impl std::fmt::Debug for NanaTextEngineShaper {
 }
 
 impl TextShaper for NanaTextEngineShaper {
+    /// The engine's own strut metrics, the ones a paragraph it lays out in
+    /// `style` starts its lines from, at one physical px per CSS px.
+    fn strut_metrics(&mut self, style: &ComputedStyle) -> Option<crate::FontStrut> {
+        let metrics = nana_text::lock_text_engine(&self.engine)
+            .strut_metrics(&nana_text_style(style), 1.0)?;
+        Some(crate::FontStrut {
+            ascent: metrics.ascent_px,
+            descent: metrics.descent_px,
+        })
+    }
+
     fn shape(
         &mut self,
         id: StableNodeId,
@@ -584,6 +595,10 @@ impl PreparedEngineShaper<'_> {
 }
 
 impl TextShaper for PreparedEngineShaper<'_> {
+    fn strut_metrics(&mut self, style: &ComputedStyle) -> Option<crate::FontStrut> {
+        self.host.strut_metrics(style)
+    }
+
     fn shape(
         &mut self,
         id: StableNodeId,

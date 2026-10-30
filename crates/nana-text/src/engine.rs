@@ -283,8 +283,13 @@ impl NativeTextEngine {
 
     /// Metrics of the base style's own face, which every line box then starts
     /// from. Without them a line containing one taller fallback glyph would
-    /// move its own baseline.
-    fn strut_metrics(&mut self, base: &TextStyle, scale: f32) -> Option<RunMetrics> {
+    /// move its own baseline. In physical px at `scale` physical px per
+    /// logical px; `None` when no face serves the style.
+    ///
+    /// The strut of a line box laid out without this engine (an ordinary
+    /// block's lines in a host's layout) reads the same answer, so both kinds
+    /// of line start from one face's metrics.
+    pub fn strut_metrics(&mut self, base: &TextStyle, scale: f32) -> Option<RunMetrics> {
         let language = base.language.clone().or_else(|| self.language.clone());
         let query = FontQuery::from_style(base, language);
         let selection = self.fonts.select(&query);

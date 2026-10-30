@@ -227,7 +227,7 @@ pub use components::{
     AccessibilityScrollUnit, AccessibilityState, AccessibilityUpdate, CalendarHoverGeometry,
     ComponentElevation, ComponentGeometry, ComponentTextRegion, ComponentTriggerSurface,
     ComputedStyle, ContrastRing, CustomRenderNode, DocumentTextSelection, DropHoverOverlay,
-    EventListeners, EventRoute, ExtractedCompositor, ExtractedNode, ExtractedTextSpan,
+    EventListeners, EventRoute, ExtractedCompositor, ExtractedNode, ExtractedTextSpan, FontStrut,
     ImeComposition, ImeView, InteractionState, InteractionStyle, LayoutBox, LayoutInput, LineLabel,
     MeasureTextShaper, MenuItemMark, MenuSurfaceKind, ModalLayoutInput, MountState, NodeStyle,
     NumberSteppers, OverlayHostState, PointerCaptureChange, RadioIndicator, RichEditorMarks,

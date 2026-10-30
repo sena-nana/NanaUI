@@ -449,7 +449,7 @@ fn derive_last_baseline(
             cache,
             scope,
         )?;
-        let strut = line_strut(&style, child_font_px);
+        let strut = line_strut(id, &style, child_font_px, nodes);
         let cross_gap = style.cross_gap_against_fonts(direction, parent_box, fonts);
         let lines = pack_ifc_line_boxes(
             &flow,
@@ -585,20 +585,34 @@ fn block_last_baseline(
     Ok(metrics.last.or(metrics.first))
 }
 
-/// The strut a line box of an ordinary block starts from (CSS 2.1 §10.8.1):
-/// the ascent and descent of a zero-width inline box in the block's own font
-/// at its own line height, so an atom that sits by its bottom edge leaves the
-/// font's descent below it. Layout reads no face metrics, so the font's
-/// ascent and descent are the shared approximation
-/// ([`nana_ui_core::TEXT_APPROX_ASCENT_EM`] of the em, the rest below), and
-/// the half-leading splits what the line height leaves around that em box.
-pub(super) fn line_strut(style: &LayoutStyle, font_px: f32) -> LineStrut {
+/// The strut a line box of block `id` starts from (CSS 2.1 §10.8.1): the
+/// ascent and descent of a zero-width inline box in the block's own font at
+/// its own line height, so an atom that sits by its bottom edge leaves the
+/// font's descent below it. The face's ascent and descent are the ones the
+/// text pass read for the block (`UiWorld::block_strut`), which a native
+/// paragraph in the same face starts its lines from too; under a shaper that
+/// reports none they are the shared approximation
+/// ([`nana_ui_core::TEXT_APPROX_ASCENT_EM`] of the em, the rest below). The
+/// half-leading splits what the line height leaves around them.
+pub(super) fn line_strut(
+    id: StableNodeId,
+    style: &LayoutStyle,
+    font_px: f32,
+    nodes: &LayoutInputMap<'_>,
+) -> LineStrut {
     let font = font_px.max(0.0);
-    let ascent = font * nana_ui_core::TEXT_APPROX_ASCENT_EM;
-    let half_leading = (text_line_box_height_px(font, style.line_height) - font) * 0.5;
+    let (ascent, descent) = nodes.world.block_strut(id).map_or_else(
+        || {
+            let ascent = font * nana_ui_core::TEXT_APPROX_ASCENT_EM;
+            (ascent, font - ascent)
+        },
+        |strut| (font * strut.ascent, font * strut.descent),
+    );
+    let half_leading =
+        (text_line_box_height_px(font, style.line_height) - (ascent + descent)) * 0.5;
     LineStrut {
         ascent: ascent + half_leading,
-        descent: font - ascent + half_leading,
+        descent: descent + half_leading,
     }
 }
 
@@ -1095,7 +1109,7 @@ pub(super) fn ifc_line_measure_delta(
         viewport,
         child_font_px,
         nodes,
-        Some(line_strut(style, child_font_px)),
+        Some(line_strut(id, style, child_font_px, nodes)),
     );
     let mut size = plan.size;
     // The inline size is the definite line budget. Only the block size follows

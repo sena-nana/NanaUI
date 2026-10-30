@@ -1,6 +1,6 @@
 {
   "id": "T-FL05",
-  "title": "IFC 行盒在 float:left 旁缩窄；行内项在剩余宽里折行",
+  "title": "IFC 行盒在 float:left 旁缩窄；行内项在剩余宽里折行（Chrome 152 + Noto Sans SC 实测）",
   "status": "pass",
   "viewport": [200, 80],
   "tolerance_px": 2,
@@ -17,6 +17,6 @@
     { "id": "root", "x": 0, "y": 0, "w": 200, "h": 80 },
     { "id": "fl", "x": 0, "y": 0, "w": 80, "h": 40 },
     { "id": "a", "x": 80, "y": 0, "w": 70, "h": 20 },
-    { "id": "b", "x": 80, "y": 24.8, "w": 70, "h": 20 }
+    { "id": "b", "x": 80, "y": 23.19, "w": 70, "h": 20 }
   ]
 }

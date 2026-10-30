@@ -38,7 +38,7 @@
 //!   inside a fixed block. Changes that move it place the line again; one
 //!   that does not moves nothing. Each matches a cold layout.
 //! - Gate I: a line box of an ordinary block starts from the block's strut:
-//!   the font's descent below an empty atom, half the leading on each side,
+//!   its face's descent below an empty atom, half the leading on each side,
 //!   none on a block-level box's line.
 
 #![cfg(test)]
@@ -1377,29 +1377,31 @@ fn issue202_i_a_line_box_starts_with_the_blocks_strut() {
     product_frame(&mut context, document, viewport(), &mut shaper);
     let world = context.world();
     let bounds = |id| world.layout_box(id).unwrap();
-    let ascent = font * nana_ui_core::TEXT_APPROX_ASCENT_EM;
-    let descent = font - ascent;
+    // The block's own face's ascent and descent (#382), the half-leading
+    // what the line height leaves around them.
+    let face = world
+        .block_strut(tight)
+        .expect("the face reports its metrics");
+    let (ascent, descent) = (font * face.ascent, font * face.descent);
+    let half_leading = |line_height: f32| (line_height - (ascent + descent)) / 2.0;
 
     // The tall atom sets the line's top; the strut its depth.
     let (line, tall, short) = (bounds(tight), bounds(tight_atom), bounds(tight_short));
     assert!((tall.y - line.y).abs() < 0.01, "{tall:?} vs {line:?}");
     let baseline = tall.y + tall.height;
     let gap = line.y + line.height - baseline;
+    let below = descent + half_leading(font);
     assert!(
-        (gap - descent).abs() < 0.01,
-        "the gap below an empty atom {gap} vs the font's descent {descent}"
+        (gap - below).abs() < 0.01,
+        "the gap below an empty atom {gap} vs the strut's descent {below}"
     );
     assert!((short.y + short.height - baseline).abs() < 0.01);
 
     // Half the leading of the default line height on each side.
-    let half_leading = (font * 1.2 - font) / 2.0;
     let (line, tall) = (bounds(normal), bounds(normal_atom));
     let gap = line.y + line.height - (tall.y + tall.height);
-    assert!(
-        (gap - (descent + half_leading)).abs() < 0.01,
-        "{gap} vs {}",
-        descent + half_leading
-    );
+    let below = descent + half_leading(font * 1.2);
+    assert!((gap - below).abs() < 0.01, "{gap} vs {below}");
 
     // A line of a block-level box alone has no strut.
     assert_eq!(bounds(blocky).height, 30.0);
@@ -1424,7 +1426,7 @@ fn issue202_i_a_line_box_starts_with_the_blocks_strut() {
         world.layout_box(tight_atom).unwrap(),
     );
     assert!(
-        (tall.y + tall.height - (line.y + ascent)).abs() < 0.01,
+        (tall.y + tall.height - (line.y + ascent + half_leading(font))).abs() < 0.01,
         "{tall:?} in {line:?}"
     );
     assert!((line.height - font).abs() < 0.01, "{line:?}");

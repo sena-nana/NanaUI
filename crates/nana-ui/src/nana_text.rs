@@ -403,6 +403,10 @@ impl TextShaper for NanaTextShaper {
         self.engine.font_generation()
     }
 
+    fn strut_metrics(&mut self, style: &ComputedStyle) -> Option<nana_ui_runtime::FontStrut> {
+        self.engine.strut_metrics(style)
+    }
+
     fn retains_measurement(&self, id: StableNodeId) -> bool {
         self.engine.retains_measurement(id)
     }

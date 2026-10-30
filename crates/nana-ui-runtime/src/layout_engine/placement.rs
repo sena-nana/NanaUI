@@ -1958,7 +1958,7 @@ pub(super) fn place_node_scoped(
                     cross_gap,
                     viewport,
                     child_font_px,
-                    line_strut(style, child_font_px),
+                    line_strut(id, style, child_font_px, nodes),
                     nodes,
                     &packed_floats,
                 )
@@ -2154,7 +2154,7 @@ pub(super) fn place_node_scoped(
                     content.width,
                     viewport,
                     child_font_px,
-                    line_strut(style, child_font_px),
+                    line_strut(id, style, child_font_px, nodes),
                     nodes,
                 ))
             } else {

@@ -531,15 +531,26 @@ fit 只有一份数学：`ContentFit::fitted_size`（`nana-ui-core`）。fit 是
   以**底外边距边**落在基线上，`margin-bottom` 把它抬高；
 - 行盒高度是对齐之后从最高的顶外边距边到最低的底外边距边的跨度，块级子项独占一行、从行顶排起。
 - 普通块级流里有行内级子项的行盒从块的 **strut** 起算（`inline::line_strut`）：一个零宽、用块
-  自己的字号和 `line-height` 的行内盒。布局读不到字体度量，ascent 用共享的近似
-  `TEXT_APPROX_ASCENT_EM`（0.8em），descent 是 em 的其余 0.2em，`line-height` 与 em 的差一半
-  加在上、一半加在下。所以以底边落在基线上的空 inline-block 下面留出 descent（默认行高 1.2 时是
-  0.3em），很矮的原子顶不高于 strut 的 ascent。块级子项独占的行没有 strut。`line-height` 读块自己
-  的 `LayoutStyle`（CSS 路径由 `inherit_typography_from` 继承下来），不读 `ComputedStyle`。
-  原生段落的行本来就有 strut（`nana-text` 的 `LineStrut`），用的是真实字面的度量，所以两者都有
-  strut，但普通块级流的值是近似。差多少看字面：产品 UI 字面 Noto Sans SC 的 ascent / descent 是
-  1.16em / 0.288em，16px、行高 1.2 时真实 strut 的 descent 约 2.6px，近似是 4.8px，空 inline-block
-  的行高差约 1.6px（Chrome 实测见 css-parity `T-I04`、`T-I06`、`T-I07`，#382）。
+  自己的字面、字号和 `line-height` 的行内盒，ascent 和 descent 是块自己字面的真实度量（#382），
+  `line-height` 与两者之和的差一半加在上、一半加在下。所以以底边落在基线上的空 inline-block 下面
+  留出字面的 descent 加半个 leading，很矮的原子顶不高于 strut 的 ascent。块级子项独占的行没有
+  strut。`line-height` 读块自己的 `LayoutStyle`（CSS 路径由 `inherit_typography_from` 继承下来），
+  不读 `ComputedStyle`。
+  - 度量和原生段落（`nana-text` 的 `LineStrut`）是同一份：文字阶段替块问 shaper
+    （`TextShaper::strut_metrics`，`NanaTextEngineShaper` 读 `NativeTextEngine::strut_metrics`），
+    按块字号的每 px 存在 `UiWorld::block_strut`，布局乘上字号读它。所以同字面、同行高下，普通块级流
+    和原生段落在空原子下面留的空隙相同。产品 UI 字面 Noto Sans SC 的 ascent / descent 是
+    1.16em / 0.288em，16px、行高 1.2 时 strut 的 descent 约 2.6px（Chrome 实测见 css-parity
+    `T-I04`、`T-I06`、`T-I07`）。
+  - 只有要它的块持有 strut（`UiWorld::wants_block_strut`）：不是 flex / grid 容器、没有自己的
+    行盒、子项里有流内的行内级盒子。shaper 不报度量时（默认实现返回 `None`），退回共享近似
+    `TEXT_APPROX_ASCENT_EM`（0.8em），descent 是 em 的其余 0.2em。
+  - 失效：块的字体族、字重、斜体、可变轴变化，子项的 display、position、float 变化，子项增删，都把
+    块（和变化子项的父级）记为候选；字体集或语言提示变化（`TextBackendEpoch`）重读每个持有者。
+    文字阶段只重读候选，值变了才按文字度量变化的路径排布局；只改字号不重读（存的是每 px 的值），
+    语言不参与首选字面的选择，也不重读出新值。IFC 的 measure plan 记下它用的 strut 并比对。
+    测试与 `layout-verify` 构建里，每趟文字阶段后把每个保留的 strut 和重读的比一遍
+    （`UiWorld::audit_block_struts`），漏掉的候选直接报错。门禁在 `world/issue382.rs` 的 B。
 
 `align-items: baseline` 的 flex 行仍按首行基线对齐，替换内容取边框盒底边（CSS Align 在 flex / grid
 里从边框盒合成基线）。行的基线发布在 `LayoutResult` 的 TextLine 片段上。`LayoutStyle` 没有
@@ -1254,7 +1265,7 @@ prelude 是 `[名字] 条件`：
 - 完整的 cascade-layer 优先级。
 - 完整的浮动排除。祖先浮动侵入子块、`shape-outside`、流内块级边框盒缩窄，都没有。
 - 完整 IFC。行内原子按基线对齐、行盒有 strut，但没有 `vertical-align` 的其他取值，也没有行内
-  拆箱。strut 的字体度量是近似（0.8em / 0.2em），不是字面的真实值。行盒在后代里的 inline-block
+  拆箱。行盒在后代里的 inline-block
   里，flex / grid 容器、反向或换行的块级流和带浮动的流不推导末行位置，仍按自身字体近似；首个基线
   （`align-items: baseline` 读的）对容器仍是近似。
 - 轨道列表 token 形式的 `subgrid`。
