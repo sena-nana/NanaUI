@@ -1109,7 +1109,9 @@ item_slots!(crate::SidebarRow);
 /// A [`ListItem`]'s side slot, in its first-line band when the row puts its
 /// slots on its first line ([`crate::TrailingAlign::FirstLine`]): as tall as
 /// a one-line row and reaching up over the row's first-line inset, so the
-/// slot centres on the first line whatever its own height.
+/// slot centres on the first line whatever its own height. It reaches as far
+/// down, so it takes only the first line's height in the row and a one-line
+/// row is no taller than a centred one.
 fn list_item_side(item: &ListItem, view: impl super::IntoView) -> super::AnyView {
     if item.resolved_trailing_align() != crate::TrailingAlign::FirstLine {
         return view.into_any();
@@ -1122,7 +1124,8 @@ fn list_item_side(item: &ListItem, view: impl super::IntoView) -> super::AnyView
             .align(nana_ui_core::AlignSpec::Center)
             .with_layout(|layout| {
                 layout.theme.min_height = Some(band);
-                layout.theme.margin_top = Some(reach);
+                layout.theme.margin_top = Some(reach.clone());
+                layout.theme.margin_bottom = Some(reach);
             }),
     )
     .children(view)

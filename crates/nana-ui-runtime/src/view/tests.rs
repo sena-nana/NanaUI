@@ -6013,3 +6013,107 @@ fn a_foot_fade_clear_of_a_gutter_covers_the_content_line_up_to_the_bar_lane() {
     );
     assert_eq!(fade.height, 24.0);
 }
+
+/// A heading's lead keeps its width, sits a small step before the title and
+/// is centred on the heading line.
+#[test]
+fn a_heading_lead_keeps_its_width_before_the_title() {
+    let (mut cx, document, parent) = setup();
+    let line = cx
+        .world()
+        .theme()
+        .typography()
+        .line_height(nana_ui_core::LineRole::Line);
+    let view = cx
+        .mount_view(parent, move || {
+            heading_row(
+                widget(fixed(None, line)),
+                heading_tools(widget(fixed(Some(24.0), 24.0))),
+            )
+            .lead(widget(fixed(Some(20.0), 20.0)))
+        })
+        .unwrap();
+    let root = view.roots()[0];
+    cx.layout_document(document, LayoutViewport::new(120.0, 240.0))
+        .unwrap();
+    let rect = |id| cx.world().layout_box(id).unwrap();
+    // The heading holds [lead and title, tools]; the lead sits in its holder.
+    let [lead, title] = children(&cx, children(&cx, root)[0])[..] else {
+        panic!("lead and title");
+    };
+    let heading = rect(root);
+    let middle = |r: crate::LayoutBox| r.y + r.height / 2.0;
+    let (lead, title) = (rect(children(&cx, lead)[0]), rect(title));
+    assert_eq!(lead.width, 20.0, "the lead keeps its width");
+    assert_eq!(lead.x, heading.x);
+    assert_eq!(title.x, lead.x + lead.width + nana_ui_core::space::SM);
+    assert!((middle(lead) - middle(title)).abs() < 0.5);
+}
+
+/// The alignment a row is given wins over the one `auto_height` implies: a
+/// fixed-height row put on its first line is as tall as a centred one and
+/// keeps its slot where the centred one does (so does a one-line
+/// auto-height row), and a multi-line row asked to centre centres on the
+/// whole row.
+#[test]
+fn an_explicit_trailing_align_wins_over_auto_height() {
+    let (mut cx, document, parent) = setup();
+    let line = cx
+        .world()
+        .theme()
+        .typography()
+        .line_height(nana_ui_core::LineRole::Line);
+    let view = cx
+        .mount_view(parent, move || {
+            column().children((
+                widget(crate::ListItem::new("").trailing_align(crate::TrailingAlign::FirstLine))
+                    .content(widget(fixed(None, line)))
+                    .trailing(widget(fixed(Some(28.0), 28.0)))
+                    .key("first-line"),
+                widget(crate::ListItem::new(""))
+                    .content(widget(fixed(None, line)))
+                    .trailing(widget(fixed(Some(28.0), 28.0)))
+                    .key("centre"),
+                widget(crate::ListItem::new("").auto_height(true))
+                    .content(widget(fixed(None, line)))
+                    .trailing(widget(fixed(Some(28.0), 28.0)))
+                    .key("auto-one-line"),
+                widget(
+                    crate::ListItem::new("")
+                        .auto_height(true)
+                        .trailing_align(crate::TrailingAlign::Center),
+                )
+                .content(column().children((
+                    widget(fixed(None, line)),
+                    widget(fixed(None, line)),
+                    widget(fixed(None, line)),
+                )))
+                .trailing(widget(fixed(Some(28.0), 28.0)).key("slot"))
+                .key("tall-centre"),
+            ))
+        })
+        .unwrap();
+    let root = view.roots()[0];
+    cx.layout_document(document, LayoutViewport::new(320.0, 480.0))
+        .unwrap();
+    let id = |path: &str| cx.resolve_assembly_path(root, path).unwrap();
+    let rect = |id| cx.world().layout_box(id).unwrap();
+    let middle = |r: crate::LayoutBox| r.y + r.height / 2.0;
+    // In its band, the first-line row's slot lands where the centred one does.
+    let band = children(&cx, id("first-line"))[1];
+    let (first, first_row) = (rect(children(&cx, band)[0]), rect(id("first-line")));
+    let (centre, centre_row) = (rect(children(&cx, id("centre"))[1]), rect(id("centre")));
+    assert_eq!(
+        first_row.height, centre_row.height,
+        "the band adds no height"
+    );
+    assert!(((first.y - first_row.y) - (centre.y - centre_row.y)).abs() < 0.5);
+    // So is an auto-height row of one line.
+    assert_eq!(rect(id("auto-one-line")).height, centre_row.height);
+    // The tall centred row has no band: its slot is centred on the row.
+    let tall = id("tall-centre");
+    assert_eq!(children(&cx, tall)[1], id("tall-centre/slot"));
+    let (slot, row) = (rect(id("tall-centre/slot")), rect(tall));
+    assert!(row.height > 3.0 * line);
+    assert!((middle(slot) - middle(row)).abs() < 0.5, "{slot:?} {row:?}");
+}
