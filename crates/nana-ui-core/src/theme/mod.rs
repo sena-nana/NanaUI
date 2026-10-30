@@ -135,6 +135,8 @@ pub mod type_scale {
     pub const BODY: f32 = SCALE.body;
     /// Section title inside a page or card.
     pub const SECTION: f32 = SCALE.section;
+    /// A card's or a dialog's own name ([`super::TypeRole::CardTitle`]).
+    pub const CARD_TITLE: f32 = SCALE.card_title;
     /// In-page heading (profile name, dialog title).
     pub const HEADING: f32 = SCALE.heading;
     /// Page title (settings).
@@ -798,6 +800,37 @@ mod tests {
         assert_eq!(super::type_scale::BODY, type_tokens.body);
         assert_eq!(super::type_scale::BOLD, type_tokens.bold);
         assert_eq!(super::HAIRLINE, super::BorderTokens::DEFAULT.hairline);
+    }
+
+    /// Every type role has its bare constant at the default scale; a new
+    /// role fails to compile here until it gets one.
+    #[test]
+    fn every_type_role_has_a_bare_constant() {
+        use super::{TypeRole, type_scale};
+        let bare = |role: TypeRole| match role {
+            TypeRole::Hint => type_scale::HINT,
+            TypeRole::Meta => type_scale::META,
+            TypeRole::Body => type_scale::BODY,
+            TypeRole::Section => type_scale::SECTION,
+            TypeRole::CardTitle => type_scale::CARD_TITLE,
+            TypeRole::Heading => type_scale::HEADING,
+            TypeRole::Title => type_scale::TITLE,
+            TypeRole::Display => type_scale::DISPLAY,
+        };
+        let scale = super::TypographyTokens::DEFAULT;
+        for role in [
+            TypeRole::Hint,
+            TypeRole::Meta,
+            TypeRole::Body,
+            TypeRole::Section,
+            TypeRole::CardTitle,
+            TypeRole::Heading,
+            TypeRole::Title,
+            TypeRole::Display,
+        ] {
+            assert_eq!(bare(role), scale.size(role), "{role:?}");
+        }
+        assert_eq!(type_scale::CARD_TITLE, 15.0);
     }
 
     #[test]

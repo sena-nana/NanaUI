@@ -336,6 +336,16 @@ mod tests {
     }
 
     #[test]
+    fn the_card_title_type_role_has_a_css_name() {
+        let expr = parse_theme_expr("theme(type-card-title)").unwrap();
+        assert_eq!(expr.terms, [(ThemeToken::Type(TypeRole::CardTitle), 1.0)]);
+        let mut definition = ThemeDefinition::NANA_DARK;
+        definition.typography.card_title = 17.0;
+        let theme = definition.compile().unwrap();
+        assert_eq!(expr.resolve(&theme), 17.0);
+    }
+
+    #[test]
     fn invalid_or_nonlinear_expressions_are_rejected() {
         for value in [
             "theme(no-such-token)",
