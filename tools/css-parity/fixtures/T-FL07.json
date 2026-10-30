@@ -1,0 +1,91 @@
+{
+  "id": "T-FL07",
+  "title": "行旁有浮动的盒子按浮动留下的空间排行，再按首末行盒对齐（Chrome 152 + Noto Sans SC 实测）",
+  "status": "pass",
+  "viewport": [600, 200],
+  "tolerance_px": 2,
+  "tree": {
+    "id": "root",
+    "style": "display:block;width:600px",
+    "children": [
+      {
+        "id": "row",
+        "style": "display:flex;align-items:baseline;width:600px",
+        "children": [
+          {
+            "id": "plain",
+            "style": "display:block;width:100px",
+            "children": [
+              {
+                "id": "plain-atom",
+                "style": "display:inline-block;width:40px;height:20px"
+              }
+            ]
+          },
+          {
+            "id": "floated",
+            "style": "display:block;width:100px",
+            "children": [
+              {
+                "id": "floated-float",
+                "style": "float:left;width:80px;height:40px"
+              },
+              {
+                "id": "floated-atom",
+                "style": "display:inline-block;width:40px;height:20px"
+              }
+            ]
+          }
+        ]
+      },
+      {
+        "id": "line",
+        "style": "display:block;width:600px",
+        "children": [
+          {
+            "id": "ref",
+            "style": "display:inline-block;width:30px;height:30px"
+          },
+          {
+            "id": "holder",
+            "style": "display:inline-block;width:100px",
+            "children": [
+              {
+                "id": "holder-float",
+                "style": "float:left;width:80px;height:40px"
+              },
+              {
+                "id": "a",
+                "style": "display:inline-block;width:40px;height:20px"
+              },
+              {
+                "id": "b",
+                "style": "display:inline-block;width:40px;height:20px"
+              },
+              {
+                "id": "c",
+                "style": "display:inline-block;width:40px;height:20px"
+              }
+            ]
+          }
+        ]
+      }
+    ]
+  },
+  "expected": [
+    { "id": "root", "x": 0, "y": 0, "w": 600, "h": 149.56 },
+    { "id": "row", "x": 0, "y": 0, "w": 600, "h": 63.19 },
+    { "id": "plain", "x": 0, "y": 40, "w": 100, "h": 23.19 },
+    { "id": "plain-atom", "x": 0, "y": 40, "w": 40, "h": 20 },
+    { "id": "floated", "x": 100, "y": 0, "w": 100, "h": 63.19 },
+    { "id": "floated-float", "x": 100, "y": 0, "w": 80, "h": 40 },
+    { "id": "floated-atom", "x": 100, "y": 40, "w": 40, "h": 20 },
+    { "id": "line", "x": 0, "y": 63.19, "w": 600, "h": 86.38 },
+    { "id": "ref", "x": 0, "y": 116.38, "w": 30, "h": 30 },
+    { "id": "holder", "x": 30, "y": 63.19, "w": 100, "h": 86.38 },
+    { "id": "holder-float", "x": 30, "y": 63.19, "w": 80, "h": 40 },
+    { "id": "a", "x": 30, "y": 103.19, "w": 40, "h": 20 },
+    { "id": "b", "x": 70, "y": 103.19, "w": 40, "h": 20 },
+    { "id": "c", "x": 30, "y": 126.38, "w": 40, "h": 20 }
+  ]
+}

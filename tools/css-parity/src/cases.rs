@@ -16,7 +16,7 @@ pub const PRIORITY_CASE_IDS: &[&str] = &[
     "T-G32", "T-G33", "T-G34", "T-G36", "T-P01", "T-P02", "T-P03", "T-P04", "T-P05", "T-P06",
     "T-P07", "T-P08", "T-P09", "T-P10", "T-P11", "T-P12", "T-P13", "T-P14", "T-P15", "T-P16",
     "T-P17", "T-P18", "T-P19", "T-P20", "T-P21", "T-I01", "T-I02", "T-I03", "T-I04", "T-I05",
-    "T-I06", "T-I07", "T-FL01", "T-FL02", "T-FL03", "T-FL04", "T-FL05", "T-FL06",
+    "T-I06", "T-I07", "T-FL01", "T-FL02", "T-FL03", "T-FL04", "T-FL05", "T-FL06", "T-FL07",
 ];
 
 /// `(id, status_pass, gap)` — `gap` 仅仍 ignore 的用例有值。
@@ -171,5 +171,6 @@ pub fn catalog() -> &'static [(&'static str, bool, Option<&'static str>)] {
         ("T-FL04", true, None), // float's own clear:left starts below packed left
         ("T-FL05", true, None), // IFC line box shrinks beside float:left; inlines wrap in remainder
         ("T-FL06", true, None), // oversized inline drops below float (no overlap)
+        ("T-FL07", true, None), // lines beside a float give a box's first and last baselines
     ]
 }

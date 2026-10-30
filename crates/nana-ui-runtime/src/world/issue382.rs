@@ -30,6 +30,9 @@
 //!   center, end, space-between, space-evenly; a reversed flow) sits by
 //!   where its first and last line boxes are, on a flex row and on a line.
 //!   A new justification aligns them again; each step matches a cold layout.
+//! - Gate F: a box whose lines run beside a float sits by where those lines
+//!   are, packed in the room the float leaves them: its first line below
+//!   the float on a flex row, its last wrapped below it on a line.
 #![cfg(test)]
 
 use nana_ui_core::{
@@ -1149,4 +1152,139 @@ fn issue382_e_a_justified_or_reversed_block_flow_sits_by_its_line_boxes() {
     assert_flows_on_one_baseline(&warm, &labels);
     let (mut cold, _, _, _) = flow_baseline_page(JustifySpec::End);
     assert_matches_cold(&mut warm, &mut cold, document);
+}
+
+/// A flex row aligning first baselines and an ordinary block's line, each
+/// with a reference label and a 100-wide box that floats an 80×40 box
+/// left: on the row its one 40×20 atom does not fit beside the float and
+/// drops below it; on the line three such atoms drop below it and wrap.
+/// `float` floats the box (or leaves it in flow, 80 wide). Returns the
+/// references and the atoms the box sits by: the row's only one, the
+/// line's last.
+fn float_baseline_page(float: bool) -> (AppContext, NanaTextEngineShaper, [StableNodeId; 4]) {
+    let document = DocumentId::new(1).unwrap();
+    let (mut b, page) = Builder::page(document, 1, 900.0);
+    let row = b.element(
+        page,
+        LayoutStyle {
+            display: Some(DisplaySpec::Flex),
+            direction: Some(FlexDirection::Row),
+            align_items: nana_ui_core::AlignSpec::Baseline,
+            width: Some(LengthSpec::Px(800.0)),
+            ..LayoutStyle::default()
+        },
+    );
+    let line = b.element(
+        page,
+        LayoutStyle {
+            width: Some(LengthSpec::Px(800.0)),
+            ..LayoutStyle::default()
+        },
+    );
+    let mut ids = Vec::new();
+    for (parent, atoms) in [(row, 1), (line, 3)] {
+        let reference = b.element(
+            parent,
+            LayoutStyle {
+                display: Some(DisplaySpec::InlineBlock),
+                ..LayoutStyle::default()
+            },
+        );
+        ids.push(b.label(reference, "Ref"));
+        let holder = b.element(
+            parent,
+            LayoutStyle {
+                display: Some(DisplaySpec::InlineBlock),
+                width: Some(LengthSpec::Px(100.0)),
+                ..LayoutStyle::default()
+            },
+        );
+        b.element(
+            holder,
+            LayoutStyle {
+                width: Some(LengthSpec::Px(80.0)),
+                height: Some(LengthSpec::Px(40.0)),
+                float: if float {
+                    nana_ui_core::FloatSpec::Left
+                } else {
+                    nana_ui_core::FloatSpec::None
+                },
+                ..LayoutStyle::default()
+            },
+        );
+        let mut last = None;
+        for _ in 0..atoms {
+            last = Some(b.element(holder, strut_atom(DisplaySpec::InlineBlock, 40.0, 20.0)));
+        }
+        ids.push(last.unwrap());
+    }
+    let mut context = AppContext::new();
+    context.commit_mutations(b.queue).unwrap();
+    let mut shaper = strut_shaper(false);
+    product_frame(&mut context, document, viewport(), &mut shaper);
+    (context, shaper, [ids[0], ids[1], ids[2], ids[3]])
+}
+
+/// Gate F: a box whose lines run beside a float sits by where those lines
+/// are: on a flex row by its first line, which an atom too wide for the
+/// room beside the float takes below it; on a line by its last, which
+/// wraps below the float. Floating the box and sinking it back into the
+/// flow each place them again, as a cold layout does.
+#[test]
+fn issue382_f_lines_beside_a_float_give_the_baselines() {
+    let document = DocumentId::new(1).unwrap();
+    let on_baseline =
+        |context: &AppContext, [row_ref, row_atom, line_ref, line_atom]: [StableNodeId; 4]| {
+            let world = context.world();
+            for (reference, atom) in [(row_ref, row_atom), (line_ref, line_atom)] {
+                let baseline = world
+                    .layout_result(reference)
+                    .and_then(|result| result.first_baseline)
+                    .unwrap();
+                let atom = world.layout_box(atom).unwrap();
+                assert!(
+                    (atom.y + atom.height - baseline).abs() < 0.01,
+                    "{atom:?} sits off the baseline {baseline}"
+                );
+            }
+        };
+    let (mut warm, mut shaper, ids) = float_baseline_page(true);
+    on_baseline(&warm, ids);
+    // Below the float: the first line starts at its bottom.
+    let holder = warm.world().parent_id(ids[1]).unwrap();
+    let (atom, holder_box) = (
+        warm.world().layout_box(ids[1]).unwrap(),
+        warm.world().layout_box(holder).unwrap(),
+    );
+    assert!(
+        atom.y >= holder_box.y + 40.0 - 0.01,
+        "{atom:?} in {holder_box:?}"
+    );
+    let (mut cold, _, _) = float_baseline_page(true);
+    assert_matches_cold(&mut warm, &mut cold, document);
+    for float in [false, true] {
+        let mut queue = MutationQueue::new();
+        for atom in [ids[1], ids[3]] {
+            let holder = warm.world().parent_id(atom).unwrap();
+            let box_id = warm.world().node(holder).unwrap().children[0];
+            queue.set_style(
+                box_id,
+                styled(LayoutStyle {
+                    width: Some(LengthSpec::Px(80.0)),
+                    height: Some(LengthSpec::Px(40.0)),
+                    float: if float {
+                        nana_ui_core::FloatSpec::Left
+                    } else {
+                        nana_ui_core::FloatSpec::None
+                    },
+                    ..LayoutStyle::default()
+                }),
+            );
+        }
+        warm.commit_mutations(queue).unwrap();
+        product_frame(&mut warm, document, viewport(), &mut shaper);
+        on_baseline(&warm, ids);
+        let (mut cold, _, _) = float_baseline_page(float);
+        assert_matches_cold(&mut warm, &mut cold, document);
+    }
 }

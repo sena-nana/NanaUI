@@ -361,8 +361,9 @@ pub(super) fn prime_first_baselines(
 /// and a reversed flow included. Recorded per pass in
 /// `LayoutInputMap::derived_baselines`; both `None` where the box lays its
 /// flow out otherwise (a flex or grid container, a wrapping block flow or
-/// one with auto margins, floats beside its lines), which keeps the
-/// approximation of `baseline_metrics`.
+/// one with auto margins or floats), which keeps the approximation of
+/// `baseline_metrics`. Lines beside floats are packed in the room the
+/// floats leave them, as placement packs them.
 #[allow(clippy::too_many_arguments)]
 pub(super) fn descendant_baselines(
     id: StableNodeId,
@@ -428,17 +429,21 @@ fn derive_baselines(
         used.width - padding.left - padding.right - border.left - border.right,
         used.height - padding.top - padding.bottom - border.top - border.bottom,
     );
+    // Floats leave the flow, as placement takes them out of it.
     let (mut flow, _) = collect_flow_children_reporting(&child_ids, nodes, &style)?;
-    if flow
-        .iter()
-        .any(|&child| nodes.style(child).is_some_and(|child| child.is_floated()))
-    {
-        return Ok(BaselineMetrics::default());
+    let floated = collect_floated_children(&child_ids, nodes)?;
+    if !floated.is_empty() {
+        flow.retain(|id| !floated.contains(id));
     }
     sort_by_order(&mut flow, nodes);
     let context = establish_context(id, &style, &flow, nodes);
     let ifc = context.inline();
     if context.grid_2d || !(ifc || matches!(context.kind, crate::FormattingContextKind::Flow)) {
+        return Ok(BaselineMetrics::default());
+    }
+    // Lines beside floats are packed in what the floats leave them; blocks
+    // a float clears are not modelled here.
+    if !floated.is_empty() && !ifc {
         return Ok(BaselineMetrics::default());
     }
     let direction = used_flow_direction(&style, writing, ifc);
@@ -490,6 +495,21 @@ fn derive_baselines(
         )?;
         let strut = line_strut(id, &style, child_font_px, nodes);
         let cross_gap = style.cross_gap_against_fonts(direction, parent_box, fonts);
+        let packed_floats = if floated.is_empty() {
+            PackedFloats::default()
+        } else {
+            pack_floated_children(
+                &floated,
+                Point { x: 0.0, y: 0.0 },
+                content,
+                content.width,
+                viewport,
+                child_font_px,
+                nodes,
+                cache,
+                scope,
+            )?
+        };
         let lines = pack_ifc_line_boxes(
             &flow,
             &sizes,
@@ -501,7 +521,7 @@ fn derive_baselines(
             child_font_px,
             strut,
             nodes,
-            &PackedFloats::default(),
+            &packed_floats,
         );
         // The first line forward, the last back: each a line its items sit
         // on, or a block alone on its line with a baseline of its own.
