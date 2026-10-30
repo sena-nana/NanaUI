@@ -943,7 +943,7 @@ fn set_drag_enabled<W: HasWindowHandle + ?Sized>(window: &W, enabled: bool) -> b
 #[cfg(target_os = "macos")]
 fn drag<W: HasWindowHandle + ?Sized>(window: &W) -> bool {
     use objc2::MainThreadMarker;
-    use objc2_app_kit::{NSApplication, NSEventType};
+    use objc2_app_kit::{NSApplication, NSEvent, NSEventType};
 
     let Some(mtm) = MainThreadMarker::new() else {
         return false;
@@ -958,6 +958,13 @@ fn drag<W: HasWindowHandle + ?Sized>(window: &W) -> bool {
     // the press was queued and handled outside its own mouseDown dispatch.
     let kind = event.r#type();
     if kind != NSEventType::LeftMouseDown && kind != NSEventType::LeftMouseDragged {
+        return false;
+    }
+    // `currentEvent` can still be the press that triggered this command after
+    // a short click has already released the mouse. AppKit then reports the
+    // synthetic completion without a matching move begin. Only enter its
+    // native move loop while the primary button is still physically held.
+    if NSEvent::pressedMouseButtons() & 1 == 0 {
         return false;
     }
 
