@@ -888,11 +888,6 @@ impl<C: ComponentView, K> El<C, K> {
         &mut self.classes
     }
 
-    /// The component as configured so far.
-    pub(crate) fn component_ref(&self) -> &C {
-        &self.component
-    }
-
     pub(crate) fn parts_mut(&mut self) -> (&mut C, &mut NodeBindings<C>) {
         (&mut self.component, &mut self.bindings)
     }

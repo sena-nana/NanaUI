@@ -4181,6 +4181,15 @@ impl UiWorld {
         self.nodes.get(id)?.hierarchy.parent
     }
 
+    /// The node's element tag, without copying the node as [`Self::node`]
+    /// does; `None` for a node that is not an element or not in the world.
+    pub(crate) fn element_tag(&self, id: StableNodeId) -> Option<&str> {
+        match self.nodes.get(id)?.kind.as_ref() {
+            NodeKind::Element { tag } => Some(tag),
+            _ => None,
+        }
+    }
+
     /// The node's children, without copying the node as [`Self::node`] does;
     /// empty for a node that is not in the world.
     pub(crate) fn child_ids(&self, id: StableNodeId) -> &[StableNodeId] {
@@ -6410,6 +6419,7 @@ mod issue387;
 mod issue388;
 mod issue389;
 mod issue392;
+mod issue396;
 mod reflow_oracle;
 #[cfg(test)]
 mod tests;

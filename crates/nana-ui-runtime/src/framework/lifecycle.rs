@@ -3,15 +3,20 @@
 use super::*;
 
 impl AppContext {
-    /// Atomically attach and order a ListItem's typed direct-child slots.
-    /// Every existing child must be named exactly once; arbitrary nested or
-    /// duplicate slot identities are rejected before retained state changes.
+    /// Atomically attach and order a ListItem's typed slots. Every existing
+    /// slot must be named exactly once; arbitrary nested or duplicate slot
+    /// identities are rejected before retained state changes.
+    ///
+    /// The content slot is the row's child. A side slot is too, unless the
+    /// row puts its slots on its first line ([`crate::TrailingAlign`]): it
+    /// then sits in a band the row owns, a child of the row between the row
+    /// and the slot. The row keeps that in step with its alignment.
     pub fn set_list_item_slots(
         &mut self,
         item: Entity<ListItem>,
         slots: ListItemSlots,
     ) -> Result<bool, FrameworkError> {
-        self.read(item, |_| ())?;
+        let banded = self.read(item, ListItem::bands_slots)?;
         let ordered = [slots.leading, slots.content, slots.trailing]
             .into_iter()
             .flatten()
@@ -27,46 +32,113 @@ impl AppContext {
             .world
             .node(item.id)
             .ok_or(FrameworkError::MissingView(item.id))?;
-        if item_node
-            .children
-            .iter()
-            .any(|child| !unique.contains(child))
-        {
-            return Err(FrameworkError::InvalidListItemSlots {
-                item: item.id,
-                slot: item_node
-                    .children
-                    .iter()
-                    .find(|child| !unique.contains(child))
-                    .copied(),
-            });
+        let invalid = |slot| FrameworkError::InvalidListItemSlots {
+            item: item.id,
+            slot: Some(slot),
+        };
+        // The row's children are its slots and the bands holding its side
+        // slots; everything they hold must be named again.
+        let mut bands = Vec::new();
+        for &child in &item_node.children {
+            if unique.contains(&child) {
+                continue;
+            }
+            if !crate::view_components::is_list_item_band(&self.world, child) {
+                return Err(invalid(child));
+            }
+            if let Some(&unnamed) = self
+                .world
+                .child_ids(child)
+                .iter()
+                .find(|slot| !unique.contains(slot))
+            {
+                return Err(invalid(unnamed));
+            }
+            bands.push(child);
         }
         for &slot in &ordered {
             let Some(node) = self.world.node(slot) else {
-                return Err(FrameworkError::InvalidListItemSlots {
-                    item: item.id,
-                    slot: Some(slot),
-                });
+                return Err(invalid(slot));
             };
             if node.document != item_node.document
-                || node.parent.is_some_and(|parent| parent != item.id)
+                || node
+                    .parent
+                    .is_some_and(|parent| parent != item.id && !bands.contains(&parent))
             {
-                return Err(FrameworkError::InvalidListItemSlots {
-                    item: item.id,
-                    slot: Some(slot),
-                });
+                return Err(invalid(slot));
             }
         }
-        let changed =
-            item_node.children != ordered || self.read(item, |item| item.slots != slots)?;
+        // Each side slot keeps the band it is in, or gets a new one.
+        let mut created = Vec::new();
+        let mut side = |slot: Option<StableNodeId>| {
+            slot.map(|slot| {
+                if !banded {
+                    return (slot, None);
+                }
+                let band = crate::view_components::list_item_band(&self.world, item.id, slot)
+                    .unwrap_or_else(|| {
+                        let band = self.allocate_id();
+                        created.push(band);
+                        band
+                    });
+                (slot, Some(band))
+            })
+        };
+        let leading = side(slots.leading);
+        let trailing = side(slots.trailing);
+        let children = [leading, slots.content.map(|slot| (slot, None)), trailing]
+            .into_iter()
+            .flatten()
+            .map(|(slot, band)| band.unwrap_or(slot))
+            .collect::<Vec<_>>();
+        let held = [leading, trailing]
+            .into_iter()
+            .flatten()
+            .filter_map(|(slot, band)| band.map(|band| (band, slot)))
+            .collect::<Vec<_>>();
+        let dropped = bands
+            .iter()
+            .copied()
+            .filter(|band| !children.contains(band))
+            .collect::<Vec<_>>();
+        let changed = item_node.children != children
+            || held
+                .iter()
+                .any(|&(band, slot)| self.world.child_ids(band) != [slot])
+            || self.read(item, |item| item.slots != slots)?;
         if !changed {
             return Ok(false);
         }
+        // The bands' looks follow the row; a new band's go in with it.
+        let mut looks = MutationQueue::new();
+        self.read(item, |row| {
+            for &(band, slot) in &held {
+                row.project_band(band, Some(slot) == slots.trailing, &self.world, &mut looks);
+            }
+        })?;
         let item_id = item.id;
+        let document = item_node.document;
         self.update_component(item, |item, cx| {
             item.slots = slots;
-            for slot in &ordered {
-                cx.mutations().insert(item_id, *slot, None);
+            let mutations = cx.mutations();
+            for &band in &created {
+                mutations.create(
+                    band,
+                    document,
+                    NodeKind::Element {
+                        tag: crate::view_components::LIST_ITEM_BAND_TAG.into(),
+                    },
+                );
+            }
+            mutations.append(looks);
+            for &(band, slot) in &held {
+                mutations.insert(band, slot, None);
+            }
+            for &child in &children {
+                mutations.insert(item_id, child, None);
+            }
+            for &band in &dropped {
+                mutations.despawn_subtree(band);
             }
         })?;
         Ok(true)

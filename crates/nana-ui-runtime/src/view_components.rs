@@ -1736,14 +1736,14 @@ pub enum TrailingAlign {
     /// centre on the first line; a padding thinner than the inset lets the
     /// band reach past the row's edge.
     ///
-    /// The default for [`ListItem::auto_height`] rows. The view builder
-    /// (`El::leading` / `trailing` / `tools`) puts a slot in its band, so set
-    /// this (or `auto_height`) on the row before giving it slots; a slot set
-    /// through `AppContext::set_list_item_slots` brings its own band. The
-    /// band is fixed when the slot is given: setting `auto_height` or the
-    /// alignment after the slots, or binding either, changes the row's
-    /// padding but does not move a slot into or out of its band, so build a
-    /// row per alignment instead of switching one.
+    /// The default for [`ListItem::auto_height`] rows. The row holds each
+    /// side slot in a band node of its own, a child of the row between the
+    /// row and the slot, and projects the band from its current alignment,
+    /// size and theme. It puts the slots into their bands and takes them out
+    /// again whenever its alignment changes, however the slots were given
+    /// (`El::leading` / `trailing` / `tools`, or
+    /// `AppContext::set_list_item_slots`) and however the alignment changed
+    /// (set before or after the slots, or bound), so a row may switch.
     FirstLine,
 }
 
@@ -2026,6 +2026,58 @@ impl ListItem {
         ))
     }
 
+    /// Whether the side slots sit in first-line bands.
+    pub(crate) fn bands_slots(&self) -> bool {
+        self.resolved_trailing_align() == TrailingAlign::FirstLine
+    }
+
+    /// A side slot's first-line band as the row has it now: as tall as a
+    /// one-line row and reaching up over the row's first-line inset, so the
+    /// slot centres on the first line whatever its own height. It reaches as
+    /// far down, so it takes only the first line's height in the row and a
+    /// one-line row is no taller than a centred one. A trailing band of row
+    /// tools that are put away takes no room either.
+    fn band_style(&self, trailing: bool) -> NodeStyle {
+        let band = self.first_line_band();
+        let reach = self.first_line_reach().scaled(-1.0);
+        let away = trailing
+            && self.trailing_tools
+            && self.tools_rest == RowToolsRest::Yield
+            && !self.tools_shown();
+        Stack::row(0.0)
+            .shrink(0.0)
+            .align(nana_ui_core::AlignSpec::Center)
+            .with_layout(|layout| {
+                layout.theme.min_height = Some(band);
+                layout.theme.margin_top = Some(reach.clone());
+                layout.theme.margin_bottom = Some(reach);
+                layout.hidden = away;
+            })
+            .node_style()
+    }
+
+    /// Projects a side slot's band, which this row owns, from the row's
+    /// current state; see [`list_item_band`].
+    pub(crate) fn project_band(
+        &self,
+        band: StableNodeId,
+        trailing: bool,
+        world: &UiWorld,
+        mutations: &mut MutationQueue,
+    ) {
+        project_common(
+            band,
+            world,
+            mutations,
+            &self.band_style(trailing),
+            InteractionState {
+                pointer_events: false,
+                focusable: false,
+            },
+            AccessibilityState::default(),
+        );
+    }
+
     /// 行 pill 相对文本线水平外扩一个内边距：margin 取自身水平 padding
     /// 的负值，文本内缩不变。用于宿主面板把行文本对齐到内容线、同时
     /// pill 保留文本呼吸区的场景。
@@ -2142,22 +2194,76 @@ impl ListItem {
     }
 }
 
-/// A view builds a row's slots before the row, so their nodes join the world
-/// after its first projection; the tools are put away once they have.
-fn assemble_list_item_tools(
+/// The tag of the node a [`ListItem`] holds a side slot in while the row puts
+/// its slots on its first line.
+pub(crate) const LIST_ITEM_BAND_TAG: &str = "list-item-band";
+
+/// Whether `id` is a list row's band node.
+pub(crate) fn is_list_item_band(world: &UiWorld, id: StableNodeId) -> bool {
+    world.element_tag(id) == Some(LIST_ITEM_BAND_TAG)
+}
+
+/// The band of `item` that holds `slot`: the row's own child between the
+/// row and the slot, while the row puts its slots on its first line.
+pub(crate) fn list_item_band(
+    world: &UiWorld,
+    item: StableNodeId,
+    slot: StableNodeId,
+) -> Option<StableNodeId> {
+    let band = world.parent_id(slot)?;
+    (band != item && world.parent_id(band) == Some(item) && is_list_item_band(world, band))
+        .then_some(band)
+}
+
+/// Whether `item`'s placed side slots sit in bands exactly when it puts them
+/// on its first line. A slot not placed under the row yet (a view's slot
+/// before it is assembled) is left for the placement that adopts it.
+fn list_item_bands_settled(world: &UiWorld, id: StableNodeId, item: &ListItem) -> bool {
+    let banded = item.bands_slots();
+    [item.slots.leading, item.slots.trailing]
+        .into_iter()
+        .flatten()
+        .all(|slot| match list_item_band(world, id, slot) {
+            Some(_) => banded,
+            None => world.parent_id(slot) != Some(id) || !banded,
+        })
+}
+
+/// Puts a row's side slots into their first-line bands or takes them out,
+/// when what the row says no longer matches its tree: after a build, a
+/// write or a binding changed `auto_height` or `trailing_align`.
+fn assemble_list_item_bands(
     cx: &mut crate::AppContext,
     item: crate::Entity<ListItem>,
 ) -> Result<bool, crate::FrameworkError> {
+    let slots = cx.read(item, |row| {
+        (!list_item_bands_settled(cx.world(), item.stable_id(), row)).then_some(row.slots)
+    })?;
+    match slots {
+        Some(slots) => cx.set_list_item_slots(item, slots),
+        None => Ok(false),
+    }
+}
+
+/// A view builds a row's slots before the row, so their nodes join the world
+/// after its first projection: a first-line row's side slots go into their
+/// bands, and the tools are put away, once they have.
+fn assemble_list_item_slots(
+    cx: &mut crate::AppContext,
+    item: crate::Entity<ListItem>,
+) -> Result<bool, crate::FrameworkError> {
+    let placed = assemble_list_item_bands(cx, item)?;
     if cx.read(item, |item| item.trailing_tools)? {
         cx.reproject_component(item)?;
     }
-    Ok(false)
+    Ok(placed)
 }
 
 impl ComponentView for ListItem {
     const BEHAVIOR: crate::TypeBehavior<Self> = crate::TypeBehavior {
         activation: Some(crate::AppContext::activate_list_item),
-        slot_assembler: Some(assemble_list_item_tools),
+        slot_assembler: Some(assemble_list_item_slots),
+        assembler: Some(assemble_list_item_bands),
         ..crate::TypeBehavior::NONE
     };
 
@@ -2242,6 +2348,13 @@ impl ComponentView for ListItem {
             },
         );
         self.project_tools(world, mutations);
+        if self.bands_slots() {
+            for (slot, trailing) in [(self.slots.leading, false), (self.slots.trailing, true)] {
+                if let Some(band) = slot.and_then(|slot| list_item_band(world, id, slot)) {
+                    self.project_band(band, trailing, world, mutations);
+                }
+            }
+        }
     }
 }
 

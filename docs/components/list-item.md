@@ -123,9 +123,7 @@ widget(ListItem::new("模型").tools_rest(RowToolsRest::Reserve))
 
 行的样式上已经给了竖向内边距（某一边的 `padding_top` / `padding_bottom`，像素或主题档位都算，或者 `padding`、`control_padding_y`）时，那一边保留作者的值，第一行垫高只补没设的边。带子挂在内容边上，所以行首行尾照样对着第一行；内边距比垫高薄时，带子会伸出行的边缘。
 
-视图构造器的 `.leading` / `.trailing` / `.tools` 会把槽放进这条带子，所以先在 `ListItem` 上设好 `auto_height` 或 `trailing_align`，再给槽。经 `AppContext::set_list_item_slots` 挂的槽要自己带带子。内容槽的第一行按行自己的行盒算。
-
-带子是给槽那一刻定下的，之后不再跟着变：给槽之后才设的 `auto_height` / `trailing_align`、或用 `.bind` 在运行中切换它们，行的竖向垫高会跟着新的对齐变，槽却不会进出带子，两者就错开了。要在两种对齐之间切换，就按对齐分别建行，不要绑定这两个属性。
+带子是行自己的节点：`FirstLine` 时每个行首、行尾槽各有一条，夹在行和槽之间；`Center` 时没有带子，槽直接是行的子节点。行在投影时按自己当前的对齐、`size` 和主题写带子的样式，对齐一变就把槽放进带子或取出来。所以不管槽是视图构造器的 `.leading` / `.trailing` / `.tools` 给的，还是经 `AppContext::set_list_item_slots` 挂的，也不管 `auto_height` / `trailing_align` 是在给槽之前设、之后设，还是用 `.bind` 在运行中切换，槽和行的竖向垫高都一起变。内容槽不进带子，它的第一行按行自己的行盒算。
 
 ## 三种状态
 

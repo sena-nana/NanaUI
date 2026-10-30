@@ -1106,37 +1106,11 @@ macro_rules! item_slots {
 
 item_slots!(crate::SidebarRow);
 
-/// A [`ListItem`]'s side slot, in its first-line band when the row puts its
-/// slots on its first line ([`crate::TrailingAlign::FirstLine`]): as tall as
-/// a one-line row and reaching up over the row's first-line inset, so the
-/// slot centres on the first line whatever its own height. It reaches as far
-/// down, so it takes only the first line's height in the row and a one-line
-/// row is no taller than a centred one.
-fn list_item_side(item: &ListItem, view: impl super::IntoView) -> super::AnyView {
-    if item.resolved_trailing_align() != crate::TrailingAlign::FirstLine {
-        return view.into_any();
-    }
-    let band = item.first_line_band();
-    let reach = item.first_line_reach().scaled(-1.0);
-    super::widget(
-        crate::Stack::row(0.0)
-            .shrink(0.0)
-            .align(nana_ui_core::AlignSpec::Center)
-            .with_layout(|layout| {
-                layout.theme.min_height = Some(band);
-                layout.theme.margin_top = Some(reach.clone());
-                layout.theme.margin_bottom = Some(reach);
-            }),
-    )
-    .children(view)
-    .into_any()
-}
-
 impl<K> El<ListItem, K> {
     /// Before the label (an icon, a check). On a first-line row it sits in
-    /// the first line's band; see [`crate::TrailingAlign`].
+    /// the first line's band, which the row keeps in step with its
+    /// alignment; see [`crate::TrailingAlign`].
     pub fn leading(self, view: impl super::IntoView) -> Self {
-        let view = list_item_side(self.component_ref(), view);
         self.child_slot(view, |mut item: ListItem, id| {
             item.slots.leading = Some(id);
             item
@@ -1152,9 +1126,9 @@ impl<K> El<ListItem, K> {
     }
 
     /// After the label (a count, a shortcut, a control). On a first-line row
-    /// it sits in the first line's band; see [`crate::TrailingAlign`].
+    /// it sits in the first line's band, which the row keeps in step with
+    /// its alignment; see [`crate::TrailingAlign`].
     pub fn trailing(self, view: impl super::IntoView) -> Self {
-        let view = list_item_side(self.component_ref(), view);
         self.child_slot(view, |mut item: ListItem, id| {
             item.slots.trailing = Some(id);
             item
@@ -1168,7 +1142,6 @@ impl<K> El<ListItem, K> {
     /// of `.trailing`; [`ListItem::tools_rest`] says how they sit while put
     /// away, and `keep_tools` keeps them shown at rest (a pin that is on).
     pub fn tools(self, view: impl super::IntoView) -> Self {
-        let view = list_item_side(self.component_ref(), view);
         self.child_slot(view, |mut item: ListItem, id| {
             item.slots.trailing = Some(id);
             item.trailing_tools = true;
