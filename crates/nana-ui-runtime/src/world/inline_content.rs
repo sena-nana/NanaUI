@@ -187,8 +187,8 @@ impl UiWorld {
     /// Whether what `id` holds can move the baseline an atom sits on its
     /// line by: an atom on a line of an ordinary block whose last line box
     /// is its own, an item a flex line aligns by its first baseline, or an
-    /// in-flow block or flex item of such an atom's or item's flow (and so
-    /// on down), where that line box is looked for (CSS 2.1 §10.8.1, CSS
+    /// in-flow block, flex item or grid item of such an atom's or item's
+    /// flow (and so on down), where that line box is looked for (CSS 2.1 §10.8.1, CSS
     /// Align 3 §9).
     /// A replaced one and an atom whose overflow is not visible sit by their
     /// bottom margin edge, whatever they hold. Native paragraph atoms are
@@ -209,21 +209,15 @@ impl UiWorld {
         let Some(parent_style) = self.layout_style(parent) else {
             return false;
         };
-        // Any in-flow item of a flex container can be the one it takes its
-        // baseline from (#394); a grid's items, none yet.
+        // Any in-flow item of a flex or grid container can be the one it
+        // takes its baseline from (#394).
         if parent_style
             .display
-            .is_some_and(nana_ui_core::DisplaySpec::is_flex_container)
+            .is_some_and(|display| display.is_flex_container() || display.is_grid_container())
         {
             return !style.position.is_out_of_flow()
                 && !style.omits_box()
                 && self.atom_baseline_reads_content(parent);
-        }
-        if parent_style
-            .display
-            .is_some_and(nana_ui_core::DisplaySpec::is_grid_container)
-        {
-            return false;
         }
         if style.is_inline_level() {
             return !style.overflow_x.clips() && !style.overflow_y.clips();
@@ -233,10 +227,10 @@ impl UiWorld {
             && self.atom_baseline_reads_content(parent)
     }
 
-    /// Whether `id` is an in-flow item of a flex container that aligns it by
-    /// its first baseline (`align-self: baseline`, or `align-items: baseline`
-    /// it does not override). A grid aligns such an item to the start of
-    /// its area.
+    /// Whether `id` is an in-flow item of a flex or grid container that
+    /// aligns it by its first baseline (`align-self: baseline`, or
+    /// `align-items: baseline` it does not override). A grid's share one
+    /// baseline per start row (#394).
     pub(crate) fn aligns_by_first_baseline(&self, id: StableNodeId) -> bool {
         let Some(parent) = self
             .parent_id(id)
@@ -246,7 +240,7 @@ impl UiWorld {
         };
         parent
             .display
-            .is_some_and(nana_ui_core::DisplaySpec::is_flex_container)
+            .is_some_and(|display| display.is_flex_container() || display.is_grid_container())
             && self.layout_style(id).is_some_and(|style| {
                 !style.position.is_out_of_flow()
                     && !style.omits_box()

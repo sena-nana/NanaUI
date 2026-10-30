@@ -1,0 +1,727 @@
+{
+  "id": "T-GB01",
+  "title": "按基线对齐的 flex 行里的 grid 容器：grid 项目按起始行共享基线；容器按第一行的共享基线，或第一行里 grid 顺序第一个项目的基线对齐，没有行盒时取其边框底边（Chrome 152 + Noto Sans SC 实测）",
+  "status": "pass",
+  "viewport": [
+    600,
+    1200
+  ],
+  "tolerance_px": 2,
+  "tree": {
+    "id": "root",
+    "style": "display:block;width:600px",
+    "children": [
+      {
+        "id": "ga-row",
+        "style": "display:flex;align-items:baseline;width:600px",
+        "children": [
+          {
+            "id": "ga-ref",
+            "style": "width:10px;height:10px"
+          },
+          {
+            "id": "ga-in",
+            "style": "display:grid;grid-template-columns:60px 60px;align-items:baseline;padding-top:7px;width:200px",
+            "children": [
+              {
+                "id": "ga-p",
+                "style": "display:block;margin-top:5px",
+                "children": [
+                  {
+                    "id": "ga-pa",
+                    "style": "display:inline-block;width:20px;height:20px"
+                  }
+                ]
+              },
+              {
+                "id": "ga-q",
+                "style": "display:block",
+                "children": [
+                  {
+                    "id": "ga-qa",
+                    "style": "display:inline-block;width:40px;height:40px"
+                  }
+                ]
+              }
+            ]
+          }
+        ]
+      },
+      {
+        "id": "gb-row",
+        "style": "display:flex;align-items:baseline;width:600px",
+        "children": [
+          {
+            "id": "gb-ref",
+            "style": "width:10px;height:10px"
+          },
+          {
+            "id": "gb-in",
+            "style": "display:grid;grid-template-columns:60px 60px;grid-template-rows:100px;align-items:center;width:200px",
+            "children": [
+              {
+                "id": "gb-p",
+                "style": "display:block",
+                "children": [
+                  {
+                    "id": "gb-pa",
+                    "style": "display:inline-block;width:20px;height:20px"
+                  }
+                ]
+              },
+              {
+                "id": "gb-q",
+                "style": "display:block",
+                "children": [
+                  {
+                    "id": "gb-qa",
+                    "style": "display:inline-block;width:40px;height:40px"
+                  }
+                ]
+              }
+            ]
+          }
+        ]
+      },
+      {
+        "id": "gc-row",
+        "style": "display:flex;align-items:baseline;width:600px",
+        "children": [
+          {
+            "id": "gc-ref",
+            "style": "width:10px;height:10px"
+          },
+          {
+            "id": "gc-in",
+            "style": "display:grid;grid-template-columns:60px 60px;grid-template-rows:100px;align-items:end;width:200px",
+            "children": [
+              {
+                "id": "gc-e",
+                "style": "width:30px;height:30px"
+              },
+              {
+                "id": "gc-q",
+                "style": "display:block",
+                "children": [
+                  {
+                    "id": "gc-qa",
+                    "style": "display:inline-block;width:40px;height:40px"
+                  }
+                ]
+              }
+            ]
+          }
+        ]
+      },
+      {
+        "id": "ge-row",
+        "style": "display:flex;align-items:baseline;width:600px",
+        "children": [
+          {
+            "id": "ge-ref",
+            "style": "width:10px;height:10px"
+          },
+          {
+            "id": "ge-in",
+            "style": "display:grid;grid-template-columns:60px 60px;grid-template-rows:50px 60px;align-items:center;width:200px",
+            "children": [
+              {
+                "id": "ge-p",
+                "style": "display:block;grid-row:2;grid-column:2",
+                "children": [
+                  {
+                    "id": "ge-pa",
+                    "style": "display:inline-block;width:20px;height:20px"
+                  }
+                ]
+              },
+              {
+                "id": "ge-q",
+                "style": "display:block;grid-row:2;grid-column:1",
+                "children": [
+                  {
+                    "id": "ge-qa",
+                    "style": "display:inline-block;width:40px;height:40px"
+                  }
+                ]
+              }
+            ]
+          }
+        ]
+      },
+      {
+        "id": "gf-row",
+        "style": "display:flex;align-items:baseline;width:600px",
+        "children": [
+          {
+            "id": "gf-ref",
+            "style": "width:10px;height:10px"
+          },
+          {
+            "id": "gf-in",
+            "style": "display:grid;grid-template-columns:60px 60px 60px;align-items:baseline;width:200px",
+            "children": [
+              {
+                "id": "gf-a",
+                "style": "display:block",
+                "children": [
+                  {
+                    "id": "gf-aa",
+                    "style": "display:inline-block;width:20px;height:20px"
+                  }
+                ]
+              },
+              {
+                "id": "gf-b",
+                "style": "display:block",
+                "children": [
+                  {
+                    "id": "gf-ba",
+                    "style": "display:inline-block;width:40px;height:40px"
+                  }
+                ]
+              },
+              {
+                "id": "gf-c",
+                "style": "display:block",
+                "children": [
+                  {
+                    "id": "gf-ca",
+                    "style": "display:inline-block;width:10px;height:10px"
+                  }
+                ]
+              },
+              {
+                "id": "gf-d",
+                "style": "display:block",
+                "children": [
+                  {
+                    "id": "gf-da",
+                    "style": "display:inline-block;width:30px;height:30px"
+                  }
+                ]
+              },
+              {
+                "id": "gf-e",
+                "style": "display:block;align-self:start",
+                "children": [
+                  {
+                    "id": "gf-ea",
+                    "style": "display:inline-block;width:10px;height:10px"
+                  }
+                ]
+              },
+              {
+                "id": "gf-f",
+                "style": "display:block",
+                "children": [
+                  {
+                    "id": "gf-fa",
+                    "style": "display:inline-block;width:50px;height:50px"
+                  }
+                ]
+              }
+            ]
+          }
+        ]
+      },
+      {
+        "id": "gh-row",
+        "style": "display:flex;align-items:baseline;width:600px",
+        "children": [
+          {
+            "id": "gh-ref",
+            "style": "width:10px;height:10px"
+          },
+          {
+            "id": "gh-in",
+            "style": "display:grid;direction:rtl;grid-template-columns:60px 60px;grid-template-rows:100px;align-items:center;width:200px",
+            "children": [
+              {
+                "id": "gh-p",
+                "style": "display:block",
+                "children": [
+                  {
+                    "id": "gh-pa",
+                    "style": "display:inline-block;width:20px;height:20px"
+                  }
+                ]
+              },
+              {
+                "id": "gh-q",
+                "style": "display:block",
+                "children": [
+                  {
+                    "id": "gh-qa",
+                    "style": "display:inline-block;width:40px;height:40px"
+                  }
+                ]
+              }
+            ]
+          }
+        ]
+      },
+      {
+        "id": "gs-row",
+        "style": "display:flex;align-items:baseline;width:600px",
+        "children": [
+          {
+            "id": "gs-ref",
+            "style": "width:10px;height:10px"
+          },
+          {
+            "id": "gs-in",
+            "style": "display:grid;grid-template-columns:60px 60px;grid-template-rows:50px 40px;align-items:center;width:200px",
+            "children": [
+              {
+                "id": "gs-p",
+                "style": "display:block;grid-row:1 / span 2",
+                "children": [
+                  {
+                    "id": "gs-pa",
+                    "style": "display:inline-block;width:20px;height:20px"
+                  }
+                ]
+              },
+              {
+                "id": "gs-q",
+                "style": "display:block",
+                "children": [
+                  {
+                    "id": "gs-qa",
+                    "style": "display:inline-block;width:40px;height:40px"
+                  }
+                ]
+              },
+              {
+                "id": "gs-r",
+                "style": "display:block",
+                "children": [
+                  {
+                    "id": "gs-ra",
+                    "style": "display:inline-block;width:30px;height:30px"
+                  }
+                ]
+              }
+            ]
+          }
+        ]
+      }
+    ]
+  },
+  "expected": [
+    {
+      "id": "root",
+      "x": 0,
+      "y": 0,
+      "w": 600,
+      "h": 646.56
+    },
+    {
+      "id": "ga-row",
+      "x": 0,
+      "y": 0,
+      "w": 600,
+      "h": 50.19
+    },
+    {
+      "id": "ga-ref",
+      "x": 0,
+      "y": 37,
+      "w": 10,
+      "h": 10
+    },
+    {
+      "id": "ga-in",
+      "x": 10,
+      "y": 0,
+      "w": 200,
+      "h": 50.19
+    },
+    {
+      "id": "ga-p",
+      "x": 10,
+      "y": 27,
+      "w": 60,
+      "h": 23.19
+    },
+    {
+      "id": "ga-pa",
+      "x": 10,
+      "y": 27,
+      "w": 20,
+      "h": 20
+    },
+    {
+      "id": "ga-q",
+      "x": 70,
+      "y": 7,
+      "w": 60,
+      "h": 43.19
+    },
+    {
+      "id": "ga-qa",
+      "x": 70,
+      "y": 7,
+      "w": 40,
+      "h": 40
+    },
+    {
+      "id": "gb-row",
+      "x": 0,
+      "y": 50.19,
+      "w": 600,
+      "h": 100
+    },
+    {
+      "id": "gb-ref",
+      "x": 0,
+      "y": 98.59,
+      "w": 10,
+      "h": 10
+    },
+    {
+      "id": "gb-in",
+      "x": 10,
+      "y": 50.19,
+      "w": 200,
+      "h": 100
+    },
+    {
+      "id": "gb-p",
+      "x": 10,
+      "y": 88.59,
+      "w": 60,
+      "h": 23.19
+    },
+    {
+      "id": "gb-pa",
+      "x": 10,
+      "y": 88.59,
+      "w": 20,
+      "h": 20
+    },
+    {
+      "id": "gb-q",
+      "x": 70,
+      "y": 78.59,
+      "w": 60,
+      "h": 43.19
+    },
+    {
+      "id": "gb-qa",
+      "x": 70,
+      "y": 78.59,
+      "w": 40,
+      "h": 40
+    },
+    {
+      "id": "gc-row",
+      "x": 0,
+      "y": 150.19,
+      "w": 600,
+      "h": 100
+    },
+    {
+      "id": "gc-ref",
+      "x": 0,
+      "y": 240.19,
+      "w": 10,
+      "h": 10
+    },
+    {
+      "id": "gc-in",
+      "x": 10,
+      "y": 150.19,
+      "w": 200,
+      "h": 100
+    },
+    {
+      "id": "gc-e",
+      "x": 10,
+      "y": 220.19,
+      "w": 30,
+      "h": 30
+    },
+    {
+      "id": "gc-q",
+      "x": 70,
+      "y": 207,
+      "w": 60,
+      "h": 43.19
+    },
+    {
+      "id": "gc-qa",
+      "x": 70,
+      "y": 207,
+      "w": 40,
+      "h": 40
+    },
+    {
+      "id": "ge-row",
+      "x": 0,
+      "y": 250.19,
+      "w": 600,
+      "h": 110
+    },
+    {
+      "id": "ge-ref",
+      "x": 0,
+      "y": 338.59,
+      "w": 10,
+      "h": 10
+    },
+    {
+      "id": "ge-in",
+      "x": 10,
+      "y": 250.19,
+      "w": 200,
+      "h": 110
+    },
+    {
+      "id": "ge-p",
+      "x": 70,
+      "y": 318.59,
+      "w": 60,
+      "h": 23.19
+    },
+    {
+      "id": "ge-pa",
+      "x": 70,
+      "y": 318.59,
+      "w": 20,
+      "h": 20
+    },
+    {
+      "id": "ge-q",
+      "x": 10,
+      "y": 308.59,
+      "w": 60,
+      "h": 43.19
+    },
+    {
+      "id": "ge-qa",
+      "x": 10,
+      "y": 308.59,
+      "w": 40,
+      "h": 40
+    },
+    {
+      "id": "gf-row",
+      "x": 0,
+      "y": 360.19,
+      "w": 600,
+      "h": 96.38
+    },
+    {
+      "id": "gf-ref",
+      "x": 0,
+      "y": 390.19,
+      "w": 10,
+      "h": 10
+    },
+    {
+      "id": "gf-in",
+      "x": 10,
+      "y": 360.19,
+      "w": 200,
+      "h": 96.38
+    },
+    {
+      "id": "gf-a",
+      "x": 10,
+      "y": 380.19,
+      "w": 60,
+      "h": 23.19
+    },
+    {
+      "id": "gf-aa",
+      "x": 10,
+      "y": 380.19,
+      "w": 20,
+      "h": 20
+    },
+    {
+      "id": "gf-b",
+      "x": 70,
+      "y": 360.19,
+      "w": 60,
+      "h": 43.19
+    },
+    {
+      "id": "gf-ba",
+      "x": 70,
+      "y": 360.19,
+      "w": 40,
+      "h": 40
+    },
+    {
+      "id": "gf-c",
+      "x": 130,
+      "y": 384.19,
+      "w": 60,
+      "h": 19.19
+    },
+    {
+      "id": "gf-ca",
+      "x": 130,
+      "y": 390.19,
+      "w": 10,
+      "h": 10
+    },
+    {
+      "id": "gf-d",
+      "x": 10,
+      "y": 423.38,
+      "w": 60,
+      "h": 33.19
+    },
+    {
+      "id": "gf-da",
+      "x": 10,
+      "y": 423.38,
+      "w": 30,
+      "h": 30
+    },
+    {
+      "id": "gf-e",
+      "x": 70,
+      "y": 403.38,
+      "w": 60,
+      "h": 19.19
+    },
+    {
+      "id": "gf-ea",
+      "x": 70,
+      "y": 409.38,
+      "w": 10,
+      "h": 10
+    },
+    {
+      "id": "gf-f",
+      "x": 130,
+      "y": 403.38,
+      "w": 60,
+      "h": 53.19
+    },
+    {
+      "id": "gf-fa",
+      "x": 130,
+      "y": 403.38,
+      "w": 50,
+      "h": 50
+    },
+    {
+      "id": "gh-row",
+      "x": 0,
+      "y": 456.56,
+      "w": 600,
+      "h": 100
+    },
+    {
+      "id": "gh-ref",
+      "x": 0,
+      "y": 504.97,
+      "w": 10,
+      "h": 10
+    },
+    {
+      "id": "gh-in",
+      "x": 10,
+      "y": 456.56,
+      "w": 200,
+      "h": 100
+    },
+    {
+      "id": "gh-p",
+      "x": 150,
+      "y": 494.97,
+      "w": 60,
+      "h": 23.19
+    },
+    {
+      "id": "gh-pa",
+      "x": 190,
+      "y": 494.97,
+      "w": 20,
+      "h": 20
+    },
+    {
+      "id": "gh-q",
+      "x": 90,
+      "y": 484.97,
+      "w": 60,
+      "h": 43.19
+    },
+    {
+      "id": "gh-qa",
+      "x": 110,
+      "y": 484.97,
+      "w": 40,
+      "h": 40
+    },
+    {
+      "id": "gs-row",
+      "x": 0,
+      "y": 556.56,
+      "w": 600,
+      "h": 90
+    },
+    {
+      "id": "gs-ref",
+      "x": 0,
+      "y": 599.97,
+      "w": 10,
+      "h": 10
+    },
+    {
+      "id": "gs-in",
+      "x": 10,
+      "y": 556.56,
+      "w": 200,
+      "h": 90
+    },
+    {
+      "id": "gs-p",
+      "x": 10,
+      "y": 589.97,
+      "w": 60,
+      "h": 23.19
+    },
+    {
+      "id": "gs-pa",
+      "x": 10,
+      "y": 589.97,
+      "w": 20,
+      "h": 20
+    },
+    {
+      "id": "gs-q",
+      "x": 70,
+      "y": 559.97,
+      "w": 60,
+      "h": 43.19
+    },
+    {
+      "id": "gs-qa",
+      "x": 70,
+      "y": 559.97,
+      "w": 40,
+      "h": 40
+    },
+    {
+      "id": "gs-r",
+      "x": 70,
+      "y": 609.97,
+      "w": 60,
+      "h": 33.19
+    },
+    {
+      "id": "gs-ra",
+      "x": 70,
+      "y": 609.97,
+      "w": 30,
+      "h": 30
+    }
+  ]
+}

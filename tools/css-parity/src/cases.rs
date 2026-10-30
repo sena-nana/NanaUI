@@ -17,7 +17,7 @@ pub const PRIORITY_CASE_IDS: &[&str] = &[
     "T-P07", "T-P08", "T-P09", "T-P10", "T-P11", "T-P12", "T-P13", "T-P14", "T-P15", "T-P16",
     "T-P17", "T-P18", "T-P19", "T-P20", "T-P21", "T-I01", "T-I02", "T-I03", "T-I04", "T-I05",
     "T-I06", "T-I07", "T-FL01", "T-FL02", "T-FL03", "T-FL04", "T-FL05", "T-FL06", "T-FL07",
-    "T-FX01", "T-FX02", "T-FX03",
+    "T-FX01", "T-FX02", "T-FX03", "T-GB01", "T-GB02",
 ];
 
 /// `(id, status_pass, gap)` — `gap` 仅仍 ignore 的用例有值。
@@ -176,5 +176,7 @@ pub fn catalog() -> &'static [(&'static str, bool, Option<&'static str>)] {
         ("T-FX01", true, None), // a flex container on a baseline row sits by its top line's or start item's baseline
         ("T-FX02", true, None), // an inline-block ending in a wrapping flex container sits by that container's first baseline
         ("T-FX03", true, None), // an inline-block ending in a column flex container sits by its first item's baseline
+        ("T-GB01", true, None), // grid items share a baseline per row; a grid sits by its first row's
+        ("T-GB02", true, None), // an inline-block ending in a grid sits by the grid's first row
     ]
 }

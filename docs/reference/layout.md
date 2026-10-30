@@ -529,7 +529,7 @@ fit 只有一份数学：`ContentFit::fitted_size`（`nana-ui-core`）。fit 是
   measure plan 的比对与增量、原生段落）先 `prime_atom_baselines`，`baseline_metrics` 再读它，所以
   只有这一份推导。`justify-content`、反向、换行成列、行旁的浮动（门禁 `world/issue382.rs` 的
   E、F、G，css-parity `T-FL07`）、自动 margin、等宽分行和块级流里的 `clear` 都按 placement 的结果，
-  不再有退回近似的情形。flex 容器的基线见下文；grid 容器和竖排不推导，仍是自身字体首行的近似；
+  不再有退回近似的情形。flex、grid 容器的基线见下文；subgrid 和竖排不推导，仍是自身字体首行的近似；
 - 替换内容、`overflow` 非 visible 的 inline-block、没有流内行盒的 inline-block（`UiWorld::atom_sits_on_line_box`）
   以**底外边距边**落在基线上，`margin-bottom` 把它抬高；
 - 行盒高度是对齐之后从最高的顶外边距边到最低的底外边距边的跨度，块级子项独占一行、从行顶排起。
@@ -562,7 +562,8 @@ fit 只有一份数学：`ContentFit::fitted_size`（`nana-ui-core`）。fit 是
 基线前都先 `prime_first_baselines`，`baseline_metrics` 的首个基线再读它；测试与 `layout-verify` 构建里
 没预备就读会直接报错。这样的项目也读内容（`atom_baseline_reads_content`），固定尺寸不再是度量边界，
 里面后代的字号、文字、上方块的高度变化会让这一行重新对齐；首行没动的变化不移动任何项目。门禁在
-`world/issue382.rs` 的 D。grid 不做基线对齐，`baseline` 当 `start`。行的基线发布在 `LayoutResult` 的 TextLine 片段上。`LayoutStyle` 没有
+`world/issue382.rs` 的 D。grid 项目按基线对齐时，同一起始行里的这些项目共享一条基线：每个项目按自己的
+首个基线加上方 margin，对齐到这一行里最深的那个（`grid::arrange_grid_2d`，#394）。行的基线发布在 `LayoutResult` 的 TextLine 片段上。`LayoutStyle` 没有
 `vertical-align`，默认的 `baseline` 就是全部行为。这不是 replaced 专有的规则。
 
 flex 容器的基线（CSS Flexbox §8.5，按 Chrome 152 实测，#394）从 `arrange_flow` 给出的项目位置读
@@ -574,9 +575,14 @@ flex 容器的末基线就是首基线：以 flex 容器结尾的 inline-block �
 一个盒子自己没有文字、流里也没有任何行盒时没有基线，按 CSS Align §9.1 取边框盒底边
 （`baseline_metrics`），不再用字体的近似 ascent。flex 容器的任何流内项目都可能是它取基线的那一个，
 所以这些项目也读内容（`atom_baseline_reads_content`），固定尺寸的项目里换字号也会让外面的行重新对齐。
-门禁在 `world/issue394.rs`，Chrome 实测是 css-parity `T-FX01`–`T-FX03`。还没做的：inline-flex 在
-块的行上仍排成块级（不是行内原子），按基线对齐的 flex 行的交叉尺寸没把项目在基线以下的部分算进去，
-grid 的基线对齐和 grid 容器的基线。
+grid 容器的基线（CSS Grid 2 §11.8，按 Chrome 实测）同样从项目的位置读（`grid::arrange_grid_2d`、
+`inline::grid_first_baseline`）：取有项目起始的第一行，行里有按基线对齐的项目时取它们共享的基线，否则取
+这一行里 grid 顺序的第一个项目（列号最小的，RTL 下在最右边，不看 DOM 顺序；跨行的项目算在它起始的那一行），
+没有行盒时取它的边框盒底边；末基线也就是首基线。grid 项目同样读内容。
+门禁在 `world/issue394.rs`，Chrome 实测是 css-parity `T-FX01`–`T-FX03`、`T-GB01`、`T-GB02`。还没做的：
+inline-flex、inline-grid 在块的行上仍排成块级（不是行内原子）；按基线对齐的 flex 行的交叉尺寸、grid
+轨道的尺寸都没把基线对齐挪出来的空间算进去（CSS 的 baseline shim）；grid 里跨行项目对 auto 行的尺寸
+分配、inline-block 里块级 grid 的宽度和 Chrome 有出入。
 
 原子的基线随内容移动，失效也跟着走：`overflow` 为 visible 的固定尺寸 inline-block 在普通块级流里
 不再是度量边界（`UiWorld::atom_baseline_reads_content`），它里面的变化会让这一行重新对齐；

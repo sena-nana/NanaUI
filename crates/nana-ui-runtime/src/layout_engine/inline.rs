@@ -357,9 +357,10 @@ pub(super) fn prime_first_baselines(
 /// last baseline counts (derived again if its lines are its descendants'),
 /// looked for in the flow's order. A flex container's are the baseline of
 /// the line and item Chrome takes ([`flex_first_baseline`], #394), first
-/// and last alike. Recorded per pass in `LayoutInputMap::derived_baselines`;
-/// both `None` for a grid container or a vertical box, which keep the
-/// approximation of `baseline_metrics`.
+/// and last alike, and a grid container's those of its first row
+/// ([`grid_first_baseline`]). Recorded per pass in
+/// `LayoutInputMap::derived_baselines`; both `None` for a subgrid or a
+/// vertical box, which keep the approximation of `baseline_metrics`.
 #[allow(clippy::too_many_arguments)]
 pub(super) fn descendant_baselines(
     id: StableNodeId,
@@ -407,13 +408,16 @@ fn derive_baselines(
         return Ok(BaselineMetrics::default());
     };
     let (child_ids, writing) = (Arc::clone(&node.children), node.writing);
+    // A subgrid's tracks are its parent's.
     if writing.is_vertical()
         || style.omits_box()
-        || style.display.is_some_and(DisplaySpec::is_grid_container)
+        || style.is_subgrid_columns()
+        || style.is_subgrid_rows()
     {
         return Ok(BaselineMetrics::default());
     }
     let flex = style.display.is_some_and(DisplaySpec::is_flex_container);
+    let grid = style.display.is_some_and(DisplaySpec::is_grid_container);
     let fonts = fonts_of(&style, parent_font_px);
     let child_font_px = fonts.element_px;
     let padding = style.resolved_padding_against_fonts(Some(inline_base), fonts);
@@ -426,7 +430,7 @@ fn derive_baselines(
     );
     // Floats leave a block's flow, as placement takes them out of it.
     let (mut flow, _) = collect_flow_children_reporting(&child_ids, nodes, &style)?;
-    let floated = if flex {
+    let floated = if flex || grid {
         Vec::new()
     } else {
         collect_floated_children(&child_ids, nodes)?
@@ -437,7 +441,43 @@ fn derive_baselines(
     sort_by_order(&mut flow, nodes);
     let context = establish_context(id, &style, &flow, nodes);
     if context.grid_2d {
-        return Ok(BaselineMetrics::default());
+        let direction = used_flow_direction(&style, writing, false);
+        let mut sizes = Vec::with_capacity(flow.len());
+        for &child in &flow {
+            let available = nodes.style(child).map_or(content, |child_style| {
+                grid_item_measure_available(&child_style, content)
+            });
+            sizes.push(intrinsic_size_scoped(
+                child,
+                available,
+                Some(direction),
+                viewport,
+                child_font_px,
+                nodes,
+                cache,
+                scope,
+            )?);
+        }
+        let mut solved = layout_grid_2d(
+            &style, writing, &flow, &sizes, content, fonts, None, viewport, nodes, cache, scope,
+        )?;
+        solved.fill_layer_cell(&style, writing, content);
+        let arranged = arrange_grid_2d(
+            &solved,
+            writing,
+            content,
+            &style,
+            viewport,
+            child_font_px,
+            nodes,
+            cache,
+            scope,
+            None,
+        )?;
+        let first = grid_first_baseline(&arranged, viewport, child_font_px, nodes, cache, scope)?
+            .map(|baseline| top + baseline);
+        // Like a flex container's, its last baseline is its first.
+        return Ok(BaselineMetrics { first, last: first });
     }
     let ifc = context.inline();
     let direction = used_flow_direction(&style, writing, ifc);
@@ -557,6 +597,48 @@ fn derive_baselines(
         }
     }
     Ok(found)
+}
+
+/// A grid container's first baseline from its content box's top, read off
+/// where placement puts its items (CSS Grid 2 §11.8, as Chrome lays it
+/// out): of the first row an item starts in, the baseline its items share
+/// under `align-self: baseline`, or else the first baseline of its first
+/// item in grid order (the one in the column nearest the inline start),
+/// synthesized from that item's border-box bottom where it holds no line.
+#[allow(clippy::too_many_arguments)]
+fn grid_first_baseline(
+    arranged: &[ArrangedGridItem],
+    viewport: LayoutViewport,
+    child_font_px: f32,
+    nodes: &mut LayoutInputMap<'_>,
+    cache: &mut PassIntrinsicCache,
+    scope: Option<&ScopeContext<'_>>,
+) -> Result<Option<f32>, UiWorldError> {
+    let Some(row) = arranged.iter().map(|item| item.row).min() else {
+        return Ok(None);
+    };
+    let first_row = || arranged.iter().filter(move |item| item.row == row);
+    if let Some(shared) =
+        first_row().find_map(|item| item.baseline.map(|baseline| item.offset.y + baseline))
+    {
+        return Ok(Some(shared));
+    }
+    let Some(item) = first_row().min_by_key(|item| item.col) else {
+        return Ok(None);
+    };
+    let baseline = block_baseline(
+        item.id,
+        item.size,
+        crate::Baseline::First,
+        item.cell.width,
+        viewport,
+        child_font_px,
+        nodes,
+        cache,
+        scope,
+    )?
+    .unwrap_or(item.size.height);
+    Ok(Some(item.offset.y + baseline))
 }
 
 /// A flex container's first baseline from its content box's top, read off
