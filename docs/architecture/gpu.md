@@ -68,10 +68,8 @@ prepare_window_frame             ──► 在每帧 flush 前写入像素或替
 | --- | --- | --- |
 | `<Texture>` / `<nana-gpu>` | `"nana.host-texture"` + 登记的槽位名 | 标准 `GpuTextureView` 宿主纹理节点 |
 | `<nana-gpu-view>` | `"gpu-view"` + 十进制 `slot_id` | `GpuView` 直写节点（宿主需注册对应 `SceneGpuRenderer`） |
-| `<canvas data-nana-canvas="{id}">` | `canvas:{id}` | 走同一套 `HostTexture` 上传路径（未带该属性的 `<canvas>` 为空盒子） |
-| `canvas.getContext("webgpu")` | `webgpu-canvas:{id}` | 复用宿主同一份 GPU 设备并输出到 `HostTexture` |
 | `<video data-nana-video="{id}">` | `video:{id}` | 宿主推帧显示视频（有槽位时不画 `poster`；无槽位仅显示静态 `poster`） |
-| `<iframe>` | 无 | 显式跳过，不加载 `src` |
+| `<canvas>`、`<iframe>` | 无 | 不支持。GPU 画面用 `<Texture>`，网页用 `BrowserView` |
 | `BrowserView` | Runtime 布局锚点 + 宿主原生子视图 | 见下节「BrowserView 原生子视图例外」 |
 
 ## `BrowserView` 原生子视图例外

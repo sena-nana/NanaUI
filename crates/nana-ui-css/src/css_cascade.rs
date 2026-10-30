@@ -44,10 +44,12 @@
 //! `:nth-child(… of …)`, nested / complex `:not()` args, unknown at-rules,
 //! unknown `@supports` predicates, `@import … layer()` / `supports()`,
 //! and cascade-layer *priority* (unlayered vs layered).
-//! `::placeholder` is parsed with generated pseudos and applied as TextInput
-//! placeholder paint (not a generated box).
-//! Cheap subject `:has(.class|#id|type)` descendant-present is matched with an
-//! O(n·k) precomputed bitset (k = unique simple `:has` args, cap 64).
+//! `::placeholder` is parsed with the generated pseudos; nothing paints it
+//! (the Style Model's `placeholder_color` / `placeholder_opacity` are set
+//! directly).
+//! Cheap subject `:has(.class|#id|type)` descendant-present reads the
+//! caller's precomputed bitset ([`MatchContext::has_bits`], k = unique simple
+//! `:has` args, cap 64); this crate does not walk the tree to build it.
 //! `@import` / `@media` (width/height/orientation/prefers-color-scheme) /
 //! `@font-face` / matching `@supports` / `@layer { }` (author source order,
 //! names recorded) merge into the same [`ParsedStylesheet`] (not a second cascade).

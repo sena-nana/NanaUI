@@ -1,8 +1,9 @@
 //! Load `@font-face` `url(...)` srcs into the process FontSystem.
 //!
-//! Called from stylesheet **inject**, not parse. Reuses
-//! [`resolve_background_image_url`] / document URL base. Local, packaged
-//! (`nana://res/`) and `data:` only: remote srcs never reach the network.
+//! A host calls it with the faces it wants loaded; nothing calls it on
+//! parse. Reuses [`resolve_background_image_url`] / the given URL base.
+//! Local, packaged (`nana://res/`) and `data:` only: remote srcs never reach
+//! the network.
 
 use std::collections::HashSet;
 use std::sync::{Mutex, OnceLock};

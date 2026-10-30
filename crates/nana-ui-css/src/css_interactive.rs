@@ -1,9 +1,10 @@
 //! Parsed-but-not-yet-applied CSS: interactive pseudos, generated boxes, keyframes, motion.
 //!
 //! Rules land in [`ParsedStylesheet`] buckets at parse time. Static cascade in
-//! [`crate::css_cascade`] ignores them until a later bridge / Runtime agent wires
-//! hover restyle, `::before`/`::after` boxes, `::placeholder` input paint,
-//! `::selection` highlight colors, and animation timelines.
+//! [`crate::css_cascade`] ignores them; the matchers here pick a bucket's
+//! rules for state the caller supplies. Nothing in the product path applies
+//! them: hover restyle, `::before`/`::after` boxes, `::placeholder` and
+//! `::selection` paint, and keyframe timelines are build warnings in views.
 
 use std::collections::BTreeMap;
 

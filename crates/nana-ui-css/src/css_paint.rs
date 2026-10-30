@@ -377,75 +377,6 @@ fn is_default_border_image_repeat(val: &str) -> bool {
             .all(|token| token.eq_ignore_ascii_case("stretch"))
 }
 
-/// Bind `<img src>` onto the replaced-content paint slot (above CSS backgrounds).
-pub fn apply_img_replaced_content(style: &mut nana_ui_core::LayoutStyle, src: &str) {
-    let trimmed = src.trim();
-    if trimmed.is_empty() {
-        style.paint.content_image = None;
-        return;
-    }
-    let fit = style
-        .paint
-        .object_fit
-        .unwrap_or(BackgroundImageFit::Stretch);
-    let position = style
-        .paint
-        .object_position
-        .unwrap_or_else(BackgroundPosition::center);
-    style.paint.content_image = Some(BackgroundImage::Url {
-        url: trimmed.to_string(),
-        fit,
-        size_width: None,
-        size_height: None,
-        position,
-        repeat: BackgroundRepeat::NoRepeat,
-        sampling: nana_ui_core::ImageSampling::Resample,
-    });
-}
-
-/// Bind `<video poster>` only when there is no HostTexture slot.
-///
-/// `data-nana-video` / Runtime [`nana_ui_runtime::Video`] samples
-/// `"nana.host-texture"` (`video:{id}`). A slotted surface must not also
-/// paint `poster` as `content_image`. Decode and playback stay with the host.
-pub fn apply_video_poster(
-    style: &mut nana_ui_core::LayoutStyle,
-    poster: &str,
-    has_host_texture_slot: bool,
-) {
-    if has_host_texture_slot {
-        style.paint.content_image = None;
-        style.paint.skipped_replaced = None;
-        return;
-    }
-    let trimmed = poster.trim();
-    if trimmed.is_empty() {
-        style.paint.content_image = None;
-        style.paint.skipped_replaced = Some("video".into());
-        return;
-    }
-    style.paint.skipped_replaced = None;
-    apply_img_replaced_content(style, trimmed);
-}
-
-/// `<iframe>` is not a browser. Do not fetch `src`.
-pub fn apply_iframe_skip(style: &mut nana_ui_core::LayoutStyle) {
-    style.paint.content_image = None;
-    style.paint.skipped_replaced = Some("iframe".into());
-}
-
-/// `<canvas>` is not a CSS 2D bitmap. Pixels exist only on a HostTexture slot
-/// (`data-nana-canvas` / `data-nana-gpu` → `"nana.host-texture"`). Bare canvas
-/// is an empty box; do not bind `src` or a pixmap onto `content_image`.
-pub fn apply_canvas_skip(style: &mut nana_ui_core::LayoutStyle, has_host_texture_slot: bool) {
-    style.paint.content_image = None;
-    style.paint.skipped_replaced = if has_host_texture_slot {
-        None
-    } else {
-        Some("canvas".into())
-    };
-}
-
 fn apply_background_shorthand(style: &mut nana_ui_core::LayoutStyle, val: &str) {
     // CSS `background` resets size/position/repeat longhands. Do not zip
     // leftover lists onto a later `background-image`.
@@ -2739,26 +2670,13 @@ mod tests {
     }
 
     #[test]
-    fn object_fit_contain_and_img_src_bind() {
+    fn object_fit_and_position_parse() {
         let mut layout = LayoutStyle::default();
         layout.apply_css_text("object-fit: contain; object-position: left top", None, None);
-        apply_img_replaced_content(&mut layout, "photo.png");
-        match layout.paint.content_image.clone() {
-            Some(BackgroundImage::Url {
-                ref url,
-                fit,
-                position,
-                repeat,
-                ..
-            }) => {
-                assert_eq!(url, "photo.png");
-                assert_eq!(fit, BackgroundImageFit::Contain);
-                assert_eq!(position.x, LengthSpec::Percent(0.0));
-                assert_eq!(position.y, LengthSpec::Percent(0.0));
-                assert_eq!(repeat, BackgroundRepeat::NoRepeat);
-            }
-            other => panic!("expected img content, got {other:?}"),
-        }
+        assert_eq!(layout.paint.object_fit, Some(BackgroundImageFit::Contain));
+        let position = layout.paint.object_position.expect("object-position");
+        assert_eq!(position.x, LengthSpec::Percent(0.0));
+        assert_eq!(position.y, LengthSpec::Percent(0.0));
     }
 
     #[test]
@@ -2766,69 +2684,6 @@ mod tests {
         let mut layout = LayoutStyle::default();
         layout.apply_css_text("object-fit: scale-down", None, None);
         assert_eq!(layout.paint.object_fit, Some(BackgroundImageFit::ScaleDown));
-        apply_img_replaced_content(&mut layout, "photo.png");
-        match layout.paint.content_image.clone() {
-            Some(BackgroundImage::Url { fit, .. }) => {
-                assert_eq!(fit, BackgroundImageFit::ScaleDown);
-            }
-            other => panic!("expected scale-down img, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn video_poster_and_iframe_skip_fail_closed() {
-        let mut poster = LayoutStyle::default();
-        apply_video_poster(&mut poster, "still.png", false);
-        match poster.paint.content_image.clone() {
-            Some(BackgroundImage::Url { ref url, .. }) => assert_eq!(url, "still.png"),
-            other => panic!("expected poster, got {other:?}"),
-        }
-        assert!(poster.paint.skipped_replaced.is_none());
-
-        let mut video = LayoutStyle::default();
-        apply_video_poster(&mut video, "", false);
-        assert!(video.paint.content_image.is_none());
-        assert_eq!(video.paint.skipped_replaced.as_deref(), Some("video"));
-
-        let mut slotted = LayoutStyle::default();
-        apply_video_poster(&mut slotted, "still.png", true);
-        assert!(
-            slotted.paint.content_image.is_none(),
-            "HostTexture video must not also paint poster"
-        );
-        assert!(slotted.paint.skipped_replaced.is_none());
-
-        let mut iframe = LayoutStyle::default();
-        apply_iframe_skip(&mut iframe);
-        assert!(iframe.paint.content_image.is_none());
-        assert_eq!(iframe.paint.skipped_replaced.as_deref(), Some("iframe"));
-    }
-
-    #[test]
-    fn canvas_without_slot_is_not_a_2d_bitmap() {
-        let mut bare = LayoutStyle::default();
-        bare.paint.content_image = Some(BackgroundImage::url_with_fit(
-            "frame.png",
-            BackgroundImageFit::Stretch,
-        ));
-        apply_canvas_skip(&mut bare, false);
-        assert!(
-            bare.paint.content_image.is_none(),
-            "bare <canvas> must not keep a pixmap on content_image"
-        );
-        assert_eq!(bare.paint.skipped_replaced.as_deref(), Some("canvas"));
-
-        let mut slotted = LayoutStyle::default();
-        slotted.paint.content_image = Some(BackgroundImage::url_with_fit(
-            "frame.png",
-            BackgroundImageFit::Stretch,
-        ));
-        apply_canvas_skip(&mut slotted, true);
-        assert!(
-            slotted.paint.content_image.is_none(),
-            "HostTexture canvas still must not pretend to be content_image"
-        );
-        assert!(slotted.paint.skipped_replaced.is_none());
     }
 
     #[test]

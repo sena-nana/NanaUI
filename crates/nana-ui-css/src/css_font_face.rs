@@ -1,8 +1,9 @@
 //! `@font-face` subset parser, collected by [`crate::css_cascade::parse_stylesheet_full`].
 //!
 //! Unknown descriptors are ignored. This module does not fetch, touch
-//! FontSystem, or depend on `nana-ui`. Host ingest runs at `inject_stylesheet`
-//! when `scene-view` is on. This is not a CSSOM `CSSFontFaceRule`.
+//! FontSystem, or depend on `nana-ui`; a host registers faces itself
+//! (`nana_ui::register_host_font_face`). This is not a CSSOM
+//! `CSSFontFaceRule`.
 
 /// One `@font-face` block after a successful parse of the supported descriptors.
 #[derive(Debug, Clone, PartialEq, Eq)]
