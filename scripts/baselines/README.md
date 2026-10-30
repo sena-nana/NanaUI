@@ -83,3 +83,14 @@ entry reviewed:
   one, which removed their fixtures from the inventory.
 - Component totals are unchanged (design numbers 25, motion 3). Components
   scanned 149 → 156.
+
+## 2026-10-30 re-record
+
+The gate had been failing on `main` since `1cc119510` (submenu aim): shared
+motion 30 → 31 and module constants 124 → 125. Both are the safe-triangle's
+input tolerances in `submenu_aim.rs`, of the same kind as the touch-scroll
+physics recorded on 2026-10-29: `AIM_GRACE` (300 ms a pointer may rest in the
+triangle before the row under it takes over) and `AIM_TOLERANCE` (4 px of
+hand wobble the triangle allows). They tune how a pointer is read, not how a
+theme looks, so they are recorded rather than moved onto the Theme. Token
+reads rose 1071 → 1085 with the commits in between (`e215bb088` among them); nothing else changed.
