@@ -20,7 +20,9 @@
 //! Everything else in the sheet (other selectors, `:hover` and the other
 //! interactive states, `@media`, `@keyframes`, an `@container` query the
 //! engine does not evaluate, a `transition` inside `@container`, a
-//! declaration the Style Model has no field for) is a warning, not silently
+//! declaration the Style Model has no field for, and what the engine skips
+//! while parsing: a selector it does not parse, `@import`, an `@supports`
+//! whose condition does not hold, an unknown at-rule) is a warning, not silently
 //! dropped. Each warning points at what it is about: a range of the sheet's
 //! text, or the element or `class` attribute in the template.
 
@@ -471,6 +473,102 @@ fn outline_within(css: &str, range: Range<usize>) -> Vec<Block> {
         .collect()
 }
 
+/// The `,`-separated selectors of a prelude, trimmed.
+fn selector_parts(css: &str, prelude: Range<usize>) -> Vec<Range<usize>> {
+    let bytes = css.as_bytes();
+    let mut parts = Vec::new();
+    let mut depth = 0usize;
+    let mut part = prelude.start;
+    let mut at = prelude.start;
+    while at < prelude.end {
+        if let Some(next) = skip_opaque(bytes, at) {
+            at = next;
+            continue;
+        }
+        match bytes[at] {
+            b'(' | b'[' => depth += 1,
+            b')' | b']' => depth = depth.saturating_sub(1),
+            b',' if depth == 0 => {
+                parts.push(trim(bytes, part..at));
+                part = at + 1;
+            }
+            _ => {}
+        }
+        at += 1;
+    }
+    parts.push(trim(bytes, part..prelude.end));
+    parts
+}
+
+/// What the engine skips while parsing `block`, as its report counts it:
+/// each selector it does not parse, and an at-rule it skips whole
+/// (`@import`, which a view never loads; an `@supports` whose condition
+/// does not hold; an unknown at-rule). An `@supports` or `@layer` that
+/// applies is checked inside.
+fn check_skipped(css: &str, block: &Block, warnings: &mut Vec<StyleWarning>) {
+    let prelude = &css[block.prelude.clone()];
+    if prelude.starts_with('@') {
+        if at_rule(prelude, "container").is_some() {
+            return;
+        }
+        let in_place =
+            at_rule(prelude, "supports").is_some() || at_rule(prelude, "layer").is_some();
+        let has_body = block.range != block.prelude;
+        // Its own prelude alone: what it holds is checked below.
+        let text = if in_place && has_body {
+            format!("{prelude} {{}}")
+        } else {
+            css[block.range.clone()].to_owned()
+        };
+        if parse_stylesheet_full(&text, 0).1.skipped_at_rules > 0 {
+            let keyword = prelude
+                .split(|c: char| c.is_whitespace() || c == '(' || c == '"' || c == '\'')
+                .next()
+                .unwrap_or(prelude);
+            let message = if at_rule(prelude, "import").is_some() {
+                format!("`@import` is not loaded for L3 views; `{prelude}` is ignored")
+            } else if at_rule(prelude, "supports").is_some() {
+                format!("the condition of `{prelude}` does not hold, so its rules are ignored")
+            } else {
+                format!("`{keyword}` is not compiled for L3 views; `{prelude}` is ignored")
+            };
+            warnings.push(StyleWarning {
+                at: StyleAt::Sheet(block.prelude.clone()),
+                message,
+            });
+        } else if in_place && has_body {
+            for inner in outline_within(css, body_of(css, block)) {
+                check_skipped(css, &inner, warnings);
+            }
+        }
+        return;
+    }
+    if parse_stylesheet_full(&css[block.range.clone()], 0)
+        .1
+        .skipped_selectors
+        == 0
+    {
+        return;
+    }
+    // The rule with one selector at a time finds those it skips.
+    let body = &css[block.prelude.end..block.range.end];
+    for part in selector_parts(css, block.prelude.clone()) {
+        let selector = &css[part.clone()];
+        if parse_stylesheet_full(&format!("{selector}{body}"), 0)
+            .1
+            .skipped_selectors
+            > 0
+        {
+            warnings.push(StyleWarning {
+                at: StyleAt::Sheet(part),
+                message: format!(
+                    "the selector `{selector}` is not one the CSS engine parses and is ignored"
+                ),
+            });
+        }
+    }
+}
+
 /// One block's warnings; `in_container` when it is inside an `@container`
 /// block, whose class rules compile and whose other content does not.
 fn check_block(
@@ -481,6 +579,7 @@ fn check_block(
     warnings: &mut Vec<StyleWarning>,
 ) {
     let prelude = &css[block.prelude.clone()];
+    let before = warnings.len();
     let mut warn = |range: Range<usize>, message: String| {
         warnings.push(StyleWarning {
             at: StyleAt::Sheet(range),
@@ -621,6 +720,15 @@ fn check_block(
                 ),
             );
         }
+    }
+    // What the engine skips while parsing, unless the at-rule is already
+    // warned about as a whole.
+    if !prelude.starts_with('@')
+        || !warnings[before..]
+            .iter()
+            .any(|warning| matches!(&warning.at, StyleAt::Sheet(at) if *at == block.prelude))
+    {
+        check_skipped(css, block, warnings);
     }
     // `@container` inside another block that compiles (`@supports`,
     // `@layer`): checked as if it stood alone.
@@ -1231,6 +1339,58 @@ mod tests {
         assert_eq!(at(&warnings, ":hover"), ".d:hover");
         assert_eq!(at(&warnings, "class selectors"), ".e > .f");
         assert_eq!(warnings.len(), 7, "{warnings:?}");
+    }
+
+    /// What the engine skips while parsing is a warning at its text, not
+    /// silently dropped.
+    #[test]
+    fn what_the_engine_skips_is_a_warning_at_its_text() {
+        for (css, text, needle) in [
+            (".a:has(> .b) { opacity: 0.5 }", ".a:has(> .b)", "selector"),
+            (
+                ".a::file-selector-button { opacity: 0.5 }",
+                ".a::file-selector-button",
+                "selector",
+            ),
+            (
+                "@supports (frob: 1) { .a { opacity: 0.5 } }",
+                "@supports (frob: 1)",
+                "condition",
+            ),
+            (
+                "@frobnicate x { .a { opacity: 0.5 } }",
+                "@frobnicate x",
+                "`@frobnicate`",
+            ),
+            ("@import \"x.css\";", "@import \"x.css\"", "`@import`"),
+        ] {
+            let warnings = located(css);
+            assert_eq!(warnings.len(), 1, "{css}: {warnings:?}");
+            assert_eq!(at(&warnings, needle), text, "{css}");
+        }
+        // One selector of a list, and what an `@supports` or `@layer` that
+        // applies holds, are pointed at themselves.
+        let warnings = located(
+            ".a, .b:has(> .c) { opacity: 0.5 }\n\
+             @supports (display: flex) { .d { opacity: 0.5 } @frob y { .e { opacity: 1 } } }\n\
+             @layer base { .f::file-selector-button, .g { opacity: 0.5 } }",
+        );
+        let texts: Vec<&str> = warnings.iter().map(|(text, _)| *text).collect();
+        assert_eq!(
+            texts,
+            [".b:has(> .c)", "@frob y", ".f::file-selector-button"],
+            "{warnings:?}"
+        );
+        // A selector list warned about as a whole still points at the one
+        // the engine skips.
+        let warnings = located(".x .a, .b:has(> .c) { opacity: 0.5 }");
+        assert_eq!(at(&warnings, "class selectors"), ".x .a, .b:has(> .c)");
+        assert_eq!(at(&warnings, "CSS engine parses"), ".b:has(> .c)");
+        assert_eq!(warnings.len(), 2, "{warnings:?}");
+        // An at-rule already warned about as a whole is not warned again.
+        let warnings = located("@media (min-width: 1px) { @frob z { .a { opacity: 1 } } }");
+        assert_eq!(warnings.len(), 1, "{warnings:?}");
+        assert_eq!(at(&warnings, "@media"), "@media (min-width: 1px)");
     }
 
     #[test]
