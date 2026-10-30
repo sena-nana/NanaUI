@@ -3,10 +3,15 @@
 //! - Gate A: a box with a declared `aspect-ratio` and no content of its own
 //!   takes its height from the width min/max and both insets leave it (CSS
 //!   Sizing 4 §5), the same as a flex item, a grid item, an atomic inline
-//!   box and an absolutely positioned box. Each matches a cold layout.
+//!   box and an absolutely positioned box. The ratio relates the boxes
+//!   `box-sizing` names, and the height it gives meets the box's own
+//!   `min-height` / `max-height`. An in-flow container's auto height reads
+//!   that height too (#393). Each matches a cold layout.
 #![cfg(test)]
 
-use nana_ui_core::{DisplaySpec, FlexDirection, GridTrack, LayoutStyle, LengthSpec, PositionSpec};
+use nana_ui_core::{
+    BoxSizing, DisplaySpec, FlexDirection, GridTrack, LayoutStyle, LengthSpec, PositionSpec,
+};
 
 use super::reflow_oracle::{
     Builder, assert_matches_cold, bundled_face_shaper, product_frame, styled,
@@ -65,11 +70,18 @@ impl Context {
                 layout.position = PositionSpec::Absolute;
                 layout.offset_top = Some(LengthSpec::Px(0.0));
                 layout.offset_left = Some(LengthSpec::Px(0.0));
-                // 600 wide: the insets leave the declared width.
-                let width = layout.width.take().map_or(0.0, |width| match width {
-                    LengthSpec::Px(px) => px,
-                    other => panic!("{other:?}"),
-                });
+                // 600 wide: the insets leave the declared width, which a
+                // content box declares inside its padding.
+                let px = |spec: Option<LengthSpec>| {
+                    spec.map_or(0.0, |spec| match spec {
+                        LengthSpec::Px(px) => px,
+                        other => panic!("{other:?}"),
+                    })
+                };
+                let mut width = px(layout.width.take());
+                if layout.box_sizing == BoxSizing::ContentBox {
+                    width += 2.0 * px(layout.padding);
+                }
                 layout.offset_right = Some(LengthSpec::Px(600.0 - width));
             }
         }
@@ -103,7 +115,7 @@ fn page(context: Context, layout: LayoutStyle) -> (AppContext, DocumentId, Stabl
 #[test]
 fn issue382_a_declared_ratio_follows_the_clamped_width_everywhere() {
     type Edit = fn(&mut LayoutStyle);
-    let cases: [(&str, Edit, (f32, f32)); 3] = [
+    let cases: [(&str, Edit, (f32, f32)); 7] = [
         ("width", |_| {}, (120.0, 80.0)),
         (
             "max-width",
@@ -115,6 +127,37 @@ fn issue382_a_declared_ratio_follows_the_clamped_width_everywhere() {
             |l| l.min_width = Some(LengthSpec::Px(240.0)),
             (240.0, 160.0),
         ),
+        // Border boxes: 60 wide, 40 tall, the padding inside both.
+        (
+            "border-box padding",
+            |l| {
+                l.max_width = Some(LengthSpec::Px(60.0));
+                l.padding = Some(LengthSpec::Px(6.0));
+            },
+            (60.0, 40.0),
+        ),
+        // Content boxes: 120×80 inside, the padding outside both.
+        (
+            "content-box padding",
+            |l| {
+                l.box_sizing = BoxSizing::ContentBox;
+                l.padding = Some(LengthSpec::Px(6.0));
+            },
+            (132.0, 92.0),
+        ),
+        (
+            "min-height",
+            |l| {
+                l.max_width = Some(LengthSpec::Px(60.0));
+                l.min_height = Some(LengthSpec::Px(50.0));
+            },
+            (60.0, 50.0),
+        ),
+        (
+            "max-height",
+            |l| l.max_height = Some(LengthSpec::Px(30.0)),
+            (120.0, 30.0),
+        ),
     ];
     for context in [
         Context::Flex,
@@ -123,6 +166,9 @@ fn issue382_a_declared_ratio_follows_the_clamped_width_everywhere() {
         Context::Absolute,
         Context::AbsoluteInsets,
     ] {
+        // What an in-flow container adds below its one item: nothing, or on
+        // a line the strut below the inline-block's baseline.
+        let mut line_slack = None;
         for (label, edit, expected) in cases {
             // Warm: a plain box first, then the case as an edit.
             let (mut warm, document, id) = page(context, ratio_box(|l| l.aspect_ratio = None));
@@ -136,6 +182,20 @@ fn issue382_a_declared_ratio_follows_the_clamped_width_everywhere() {
                 expected,
                 "{context:?} {label}"
             );
+            // The container's auto height reads the item's measured height,
+            // which the ratio fills from the limited width too.
+            if !matches!(context, Context::Absolute | Context::AbsoluteInsets) {
+                let container = warm.world().parent_id(id).unwrap();
+                let slack = warm.world().layout_box(container).unwrap().height - bounds.height;
+                if !matches!(context, Context::Inline) {
+                    assert_eq!(slack, 0.0, "{context:?} {label} container");
+                }
+                let first = *line_slack.get_or_insert(slack);
+                assert!(
+                    (slack - first).abs() < 0.01,
+                    "{context:?} {label} container: {slack} below, {first} in the first case"
+                );
+            }
             let (mut cold, _, _) = page(context, ratio_box(edit));
             assert_matches_cold(&mut warm, &mut cold, document);
         }

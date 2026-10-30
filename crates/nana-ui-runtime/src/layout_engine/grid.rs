@@ -1047,6 +1047,8 @@ pub(super) fn place_grid_2d_items(
                 child_style,
                 &mut child_size,
                 Some(writing.inline_size(cell.width, cell.height)),
+                Some(cell.height),
+                viewport,
                 child_fonts,
             );
         }

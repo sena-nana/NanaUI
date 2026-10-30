@@ -267,26 +267,19 @@ fn finish_intrinsic_size(
         if stretch_fit_width {
             width = available.width.max(min_width);
         }
-        let mut content_w =
-            if width_from_spec || stretch_fit_width || (!height_from_spec && width > 0.0) {
-                Some((width - chrome.width).max(0.0))
-            } else {
-                None
-            };
-        let mut content_h = if height_from_spec {
-            Some((height - chrome.height).max(0.0))
-        } else {
-            None
-        };
-        style.apply_aspect_ratio_used(&mut content_w, &mut content_h);
-        if let Some(content_w) = content_w {
-            width = content_w + chrome.width;
+        // The ratio reads the used width, after its limits; the height it
+        // gives then meets its own (CSS Sizing 4 §5.1).
+        if let Some(max) = style.resolved_max_width_fonts(Some(available.width), vp, fonts) {
+            width = width.min(max);
         }
-        if let Some(content_h) = content_h {
-            height = content_h + chrome.height;
+        let mut used_w =
+            (width_from_spec || stretch_fit_width || (!height_from_spec && width > 0.0))
+                .then_some(width);
+        let mut used_h = height_from_spec.then_some(height);
+        style.apply_aspect_ratio_used(&mut used_w, &mut used_h, (chrome.width, chrome.height));
+        if let Some(used_h) = used_h {
+            height = used_h.max(min_height);
         }
-        width = width.max(min_width);
-        height = height.max(min_height);
     }
     if let Some(max) = style.resolved_max_width_fonts(Some(available.width), vp, fonts) {
         width = width.min(max);

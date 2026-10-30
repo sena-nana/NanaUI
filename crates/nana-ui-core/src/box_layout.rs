@@ -4496,19 +4496,33 @@ impl LayoutStyle {
         !self.is_inline_level() && !self.is_floated() && !self.is_out_of_flow()
     }
 
-    /// Apply `aspect-ratio` to used **content-box** extents.
+    /// Apply `aspect-ratio` to used **border-box** extents.
     ///
     /// CSS: a definite used width fills an automatic height. Block `width:auto`
     /// is stretch-fit (already the CB) so both axes then definite — the ratio
     /// does **not** shrink the inline size from a definite height.
-    pub fn apply_aspect_ratio_used(&self, width: &mut Option<f32>, height: &mut Option<f32>) {
+    ///
+    /// The ratio relates the boxes [`Self::box_sizing`] names (CSS Sizing 4
+    /// §5.1): border boxes, or the content boxes inside `chrome` (padding plus
+    /// border, horizontal then vertical). A border box is never shorter than
+    /// its own chrome.
+    pub fn apply_aspect_ratio_used(
+        &self,
+        width: &mut Option<f32>,
+        height: &mut Option<f32>,
+        chrome: (f32, f32),
+    ) {
         let Some(ratio) = self.aspect_ratio.filter(|r| r.is_finite() && *r > 0.0) else {
             return;
         };
+        let (chrome_w, chrome_h) = chrome;
         if let (Some(w), None) = (*width, *height)
             && w > 0.0
         {
-            *height = Some(w / ratio);
+            *height = Some(match self.box_sizing {
+                BoxSizing::BorderBox => (w / ratio).max(chrome_h),
+                BoxSizing::ContentBox => (w - chrome_w).max(0.0) / ratio + chrome_h,
+            });
         }
     }
 
@@ -5135,7 +5149,10 @@ impl LayoutStyle {
                     .width
                     .map(|w| Self::axis_content_extent(w, chrome_w, content_box, self.width));
             }
-            self.apply_aspect_ratio_used(&mut width, &mut height);
+            let mut border_w = width.map(|w| w + chrome_w);
+            let mut border_h = height.map(|h| h + chrome_h);
+            self.apply_aspect_ratio_used(&mut border_w, &mut border_h, (chrome_w, chrome_h));
+            height = border_h.map(|h| (h - chrome_h).max(0.0));
         }
         ParentBox { width, height }
     }

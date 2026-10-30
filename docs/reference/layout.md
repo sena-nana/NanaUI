@@ -923,7 +923,9 @@ Select、Dropdown、SearchDropdown 的菜单不是布局盒子，是字段的组
 
 这条只管它里面的子项。盒子自己的百分比 `min-height` / `max-height` 仍按包含块的高度兑现：`fixed` 是视口，`absolute` 是它的包含块。脱流盒子的包含块总有确定的高度（CSS 2.1 §10.7）。所以 `position: fixed; max-height: 80%` 的卡片按内容长高，最高到视口的 80%。不用改写成 `80vh`。
 
-写了 `aspect-ratio` 的脱流盒子，高度按 `left` / `right` 和宽度的上下限留下的宽度换算，和 flex、grid、行内里一样：`width: 120px; max-width: 60px; aspect-ratio: 1.5` 得 60×40，`left: 0; right: 480px` 在 600 宽的包含块里得 120×80（#382，门禁 `world/issue382.rs` 的 A，css-parity `T-P21`）。换算出的高度再受它自己的 `min-height` / `max-height` 约束；同时写了 `top` 和 `bottom` 的盒子，高度仍取两个 inset 之间。两处和 CSS 不同，所有 context 都一样：比例总在内容盒之间换算，CSS 在 `box-sizing` 指定的盒子之间换算（`border-box` 带 padding 时高度偏大）；flex、grid、行内里换算出的高度不再受 `min-height` 约束。
+写了 `aspect-ratio` 的脱流盒子，高度按 `left` / `right` 和宽度的上下限留下的宽度换算，和 flex、grid、行内里一样：`width: 120px; max-width: 60px; aspect-ratio: 1.5` 得 60×40，`left: 0; right: 480px` 在 600 宽的包含块里得 120×80（#382，门禁 `world/issue382.rs` 的 A，css-parity `T-P21`）。同时写了 `top` 和 `bottom` 的盒子，高度仍取两个 inset 之间。
+
+这几条所有 context 都一样（CSS Sizing 4 §5.1）。比例在 `box-sizing` 指定的盒子之间换算：`border-box; padding: 6px; width: 120px; max-width: 60px; aspect-ratio: 1.5` 的边框盒是 60×40，`content-box; padding: 6px; width: 120px` 的内容盒是 120×80、边框盒 132×92。换算出的高度再受盒子自己的 `min-height` / `max-height` 约束：上例加 `min-height: 50px` 得 60×50。流内容器的 auto 高度读的也是这个高度（#393，门禁 `world/issue382.rs` 的 A，css-parity `T-S23`）。
 
 **层叠上下文子集。** Scene 按 `(z_index, document_order)` 排序。它把隔离组当成一层。这些组是：`opacity` 介于 0 和 1 的组、`isolation: isolate`，以及 `position` 非 static 且写了 `z-index`。
 

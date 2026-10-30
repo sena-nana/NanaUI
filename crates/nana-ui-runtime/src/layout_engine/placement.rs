@@ -486,6 +486,8 @@ fn replay_sequential_run(
             child_style,
             &mut child_size,
             Some(writing.inline_size(plan.content.width, plan.content.height)),
+            Some(plan.child_available.height),
+            viewport,
             child_fonts,
         );
         let (main_lead, main_trail) = main_margins(margin, direction, main_reversed);
@@ -2339,6 +2341,8 @@ pub(super) fn place_node_scoped(
                     child_style,
                     &mut child_size,
                     Some(writing.inline_size(content.width, content.height)),
+                    Some(content.height),
+                    viewport,
                     child_fonts,
                 );
                 if line_atom_baseline.is_some() {
@@ -2812,6 +2816,8 @@ pub(super) fn place_positioned_child(
             child_style,
             &mut child_size,
             Some(base.width),
+            Some(base.height),
+            viewport,
             child_fonts,
         );
     }

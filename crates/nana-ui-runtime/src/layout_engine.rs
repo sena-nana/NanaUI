@@ -3590,11 +3590,16 @@ fn has_natural_ratio(world: &UiWorld, id: StableNodeId) -> bool {
         .is_some_and(|natural| natural.width > 0.0 && natural.height > 0.0)
 }
 
-/// After stretch (or a flexed used width), fill `height:auto` from the used width.
+/// After stretch (or a flexed used width), fill `height:auto` from the used
+/// width; the height then meets the box's own `min-height` / `max-height`
+/// (CSS Sizing 4 §5.1). `percent_base` resolves padding, `height_base` the
+/// height limits, as measurement resolved them.
 fn fill_auto_height_from_aspect_ratio(
     style: &nana_ui_core::LayoutStyle,
     size: &mut Size,
     percent_base: Option<f32>,
+    height_base: Option<f32>,
+    viewport: LayoutViewport,
     fonts: FontSizeContext,
 ) {
     if !aspect_ratio_is_usable(style) || style.height.is_some() {
@@ -3604,11 +3609,16 @@ fn fill_auto_height_from_aspect_ratio(
     let border = style.resolved_border_edges();
     let chrome_w = padding.left + padding.right + border.left + border.right;
     let chrome_h = padding.top + padding.bottom + border.top + border.bottom;
-    let mut content_w = Some((size.width - chrome_w).max(0.0));
-    let mut content_h = None;
-    style.apply_aspect_ratio_used(&mut content_w, &mut content_h);
-    if let Some(h) = content_h {
-        size.height = h + chrome_h;
+    let mut width = Some(size.width);
+    let mut height = None;
+    style.apply_aspect_ratio_used(&mut width, &mut height, (chrome_w, chrome_h));
+    if let Some(height) = height {
+        let vp = Some((viewport.width, viewport.height));
+        let mut height = height.max(style.resolved_min_height_fonts(height_base, vp, fonts));
+        if let Some(max) = style.resolved_max_height_fonts(height_base, vp, fonts) {
+            height = height.min(max);
+        }
+        size.height = height;
     }
 }
 

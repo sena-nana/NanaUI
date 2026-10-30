@@ -1,0 +1,68 @@
+{
+  "id": "T-S23",
+  "title": "aspect-ratio 在 box-sizing 指定的盒子之间换算，换算出的高度受 min/max-height 约束；flex、grid、行内、absolute 相同（Chrome 152 实测）",
+  "status": "pass",
+  "viewport": [600, 400],
+  "tolerance_px": 1,
+  "tree": {
+    "id": "root",
+    "style": "display:block;width:600px",
+    "children": [
+      {
+        "id": "flex",
+        "style": "display:flex;align-items:flex-start;width:600px",
+        "children": [
+          { "id": "flex-pad", "style": "box-sizing:border-box;padding:6px;width:120px;max-width:60px;aspect-ratio:1.5" },
+          { "id": "flex-min", "style": "box-sizing:border-box;width:120px;max-width:60px;min-height:50px;aspect-ratio:1.5" },
+          { "id": "flex-cb", "style": "box-sizing:content-box;padding:6px;width:120px;aspect-ratio:1.5" }
+        ]
+      },
+      {
+        "id": "grid",
+        "style": "display:grid;grid-template-columns:200px 200px 200px;align-items:start;justify-items:start;width:600px",
+        "children": [
+          { "id": "grid-pad", "style": "box-sizing:border-box;padding:6px;width:120px;max-width:60px;aspect-ratio:1.5" },
+          { "id": "grid-min", "style": "box-sizing:border-box;width:120px;max-width:60px;min-height:50px;aspect-ratio:1.5" },
+          { "id": "grid-cb", "style": "box-sizing:content-box;padding:6px;width:120px;aspect-ratio:1.5" }
+        ]
+      },
+      {
+        "id": "line",
+        "style": "display:block;width:600px;height:92px;line-height:0",
+        "children": [
+          { "id": "line-pad", "style": "display:inline-block;box-sizing:border-box;padding:6px;width:120px;max-width:60px;aspect-ratio:1.5" },
+          { "id": "line-min", "style": "display:inline-block;box-sizing:border-box;width:120px;max-width:60px;min-height:50px;aspect-ratio:1.5" },
+          { "id": "line-cb", "style": "display:inline-block;box-sizing:content-box;padding:6px;width:120px;aspect-ratio:1.5" }
+        ]
+      },
+      {
+        "id": "abs",
+        "style": "display:block;position:relative;width:600px;height:100px",
+        "children": [
+          { "id": "abs-pad", "style": "position:absolute;top:0;left:0;box-sizing:border-box;padding:6px;width:120px;max-width:60px;aspect-ratio:1.5" },
+          { "id": "abs-min", "style": "position:absolute;top:0;left:200px;box-sizing:border-box;width:120px;max-width:60px;min-height:50px;aspect-ratio:1.5" },
+          { "id": "abs-cb", "style": "position:absolute;top:0;left:400px;box-sizing:content-box;padding:6px;width:120px;aspect-ratio:1.5" }
+        ]
+      }
+    ]
+  },
+  "expected": [
+    { "id": "root", "x": 0, "y": 0, "w": 600, "h": 376 },
+    { "id": "flex", "x": 0, "y": 0, "w": 600, "h": 92 },
+    { "id": "flex-pad", "x": 0, "y": 0, "w": 60, "h": 40 },
+    { "id": "flex-min", "x": 60, "y": 0, "w": 60, "h": 50 },
+    { "id": "flex-cb", "x": 120, "y": 0, "w": 132, "h": 92 },
+    { "id": "grid", "x": 0, "y": 92, "w": 600, "h": 92 },
+    { "id": "grid-pad", "x": 0, "y": 92, "w": 60, "h": 40 },
+    { "id": "grid-min", "x": 200, "y": 92, "w": 60, "h": 50 },
+    { "id": "grid-cb", "x": 400, "y": 92, "w": 132, "h": 92 },
+    { "id": "line", "x": 0, "y": 184, "w": 600, "h": 92 },
+    { "id": "line-pad", "x": 0, "y": 236, "w": 60, "h": 40 },
+    { "id": "line-min", "x": 60, "y": 226, "w": 60, "h": 50 },
+    { "id": "line-cb", "x": 120, "y": 184, "w": 132, "h": 92 },
+    { "id": "abs", "x": 0, "y": 276, "w": 600, "h": 100 },
+    { "id": "abs-pad", "x": 0, "y": 276, "w": 60, "h": 40 },
+    { "id": "abs-min", "x": 200, "y": 276, "w": 60, "h": 50 },
+    { "id": "abs-cb", "x": 400, "y": 276, "w": 132, "h": 92 }
+  ]
+}
