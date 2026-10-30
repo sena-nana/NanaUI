@@ -463,8 +463,9 @@ impl RuntimeLayoutEngine {
         if !force_full {
             // An affected node that no longer generates a box (hidden, or in
             // a closed branch) is skipped by its container rather than
-            // placed: collapse what it kept, and everything under it.
-            collapse_omitted_boxes(&affected, &mut nodes, &*retained, &mut output);
+            // placed: collapse what it kept, and everything under it, and
+            // drop the contexts they established.
+            collapse_omitted_boxes(&affected, &mut nodes, retained, &mut output);
         }
         // Publish recomputed boxes from the placed set; no document_order walk.
         let mut emitted = output.into_iter().collect::<Vec<_>>();
@@ -2675,26 +2676,17 @@ impl<'a> LayoutInputMap<'a> {
     }
 }
 
-/// Zero-size every kept box at or under an affected node that omits its box
-/// and was not placed this pass.
+/// Collapse every kept box at or under an affected node that omits its box
+/// and was not placed this pass to the empty box a cold layout leaves it, and
+/// forget the contexts those nodes established, which a cold layout never
+/// records, with the plans placed under them: shown again, they are placed
+/// afresh and record their contexts again (#392).
 fn collapse_omitted_boxes(
     affected: &HashSet<StableNodeId>,
     nodes: &mut LayoutInputMap<'_>,
-    retained: &DocumentLayoutCache,
+    retained: &mut DocumentLayoutCache,
     output: &mut HashMap<StableNodeId, LayoutBox>,
 ) {
-    let collapse = |id: StableNodeId, output: &mut HashMap<StableNodeId, LayoutBox>| {
-        if let Some(kept) = retained.boxes.get(&id)
-            && (kept.width != 0.0 || kept.height != 0.0)
-        {
-            // Collapsed where it stood: its origin, no extent.
-            output.entry(id).or_insert(LayoutBox {
-                x: kept.x,
-                y: kept.y,
-                ..LayoutBox::default()
-            });
-        }
-    };
     for &id in affected {
         // A container may write the omitted box itself, as a zero box, and
         // stop there: its descendants still keep the boxes they had.
@@ -2703,7 +2695,16 @@ fn collapse_omitted_boxes(
         }
         let mut stack = vec![id];
         while let Some(node) = stack.pop() {
-            collapse(node, output);
+            retained.contexts.remove(&node);
+            retained.container_plans.remove(&node);
+            retained.remote_overlays.remove(&node);
+            if retained
+                .boxes
+                .get(&node)
+                .is_some_and(|kept| *kept != LayoutBox::default())
+            {
+                output.entry(node).or_insert(LayoutBox::default());
+            }
             if let Some(record) = nodes.world.node(node) {
                 stack.extend(record.children.iter().copied());
             }

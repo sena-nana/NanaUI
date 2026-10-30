@@ -457,10 +457,12 @@ impl AppContext {
                     .is_some_and(|far| self.world.write_layout_far_start(id, far));
                 // A different context places the children differently but can
                 // leave every box where it was; the publish below rebuilds the
-                // fragments under the new kind either way.
-                if let Some(context) = self.layout_cache.formatting_context(document, id)
-                    && self.world.write_formatting_context(id, context)
-                {
+                // fragments under the new kind either way. A node that lost
+                // its box keeps no context, as in a cold layout (#392).
+                if self.world.write_formatting_context(
+                    id,
+                    self.layout_cache.formatting_context(document, id),
+                ) {
                     context_children.extend_from_slice(self.world.child_ids(id));
                 }
                 if padding_changed

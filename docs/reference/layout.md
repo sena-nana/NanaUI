@@ -95,7 +95,10 @@ context、父级 context、参与方式、context generation 和结果 generatio
 参与方式是 `None`，不猜。`LayoutResult::formatting_context` 记下结果是在哪个 context 里
 排出来的，子项 fragment 的种类也由它决定（`Flex` → `FlexChildPlacement`，
 `Grid` 和 `Layers` → `GridChildPlacement`，`Inline` → `InlineAtomic`，其余 →
-`ChildPlacement`）。
+`ChildPlacement`）。不生成盒子的容器不建立 context：已经布局过的容器后来变成 `NoBox`，
+它和里面的节点撤掉各自建立的 context，盒子收成原点处的空盒，与冷布局相同；这不算一次
+context 切换，不计 `layout_context_transitions`，只推进 context generation。再显示时
+整棵子树重新放置，重新记下 context（Issue #392，门禁在 `world/issue392.rs`）。
 
 `Layers` 是叠层，和 SwiftUI `ZStack`、Compose `Box`、Flutter `Stack` 同义：在流子项共用
 同一块区域，按 `justify-items` / `align-items`（子项的 `justify-self` / `align-self`

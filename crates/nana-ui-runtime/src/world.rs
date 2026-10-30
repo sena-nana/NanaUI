@@ -3770,24 +3770,26 @@ impl UiWorld {
         self.nodes.get(id)?.layout_far_start
     }
 
-    /// Record the formatting context layout ran for `id`'s children. A
-    /// different context than the recorded one is a transition: the record
-    /// and its generation move, and the children keep their identity. The
-    /// next result publish rebuilds the node's fragments under the new kind.
+    /// Record the formatting context layout ran for `id`'s children, or
+    /// none for a node layout now gives no box (#392). A different context
+    /// than the recorded one is a transition: the record and its generation
+    /// move, and the children keep their identity. The next result publish
+    /// rebuilds the node's fragments under the new kind. Returns whether a
+    /// recorded context changed or went.
     pub(crate) fn write_formatting_context(
         &mut self,
         id: StableNodeId,
-        context: crate::FormattingContextKind,
+        context: Option<crate::FormattingContextKind>,
     ) -> bool {
         let Some(record) = self.nodes.get_mut(id) else {
             return false;
         };
-        let previous = record.layout_context.replace(context);
-        if previous == Some(context) {
+        let previous = std::mem::replace(&mut record.layout_context, context);
+        if previous == context {
             return false;
         }
         record.layout_context_generation = record.layout_context_generation.wrapping_add(1);
-        if previous.is_some() {
+        if previous.is_some() && context.is_some() {
             self.bump_last_counters(|counters| counters.record_layout_context_transitions(1));
         }
         previous.is_some()
@@ -6361,6 +6363,7 @@ mod issue333;
 mod issue386;
 mod issue387;
 mod issue389;
+mod issue392;
 mod reflow_oracle;
 #[cfg(test)]
 mod tests;
