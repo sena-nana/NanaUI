@@ -119,7 +119,9 @@ widget(ListItem::new("模型").tools_rest(RowToolsRest::Reserve))
 
 ## 多行的行
 
-名称下面带说明的行，行首行尾要对着名称那一行，而不是对着两行整体居中。`ListItem::trailing_align(TrailingAlign::FirstLine)` 这样放：行把第一行垫到单行行的位置（上下各 `(控件高 − 行盒) / 2`），行首行尾放在一条和单行行一样高的带子里居中，所以单行行和多行行混排时行尾在同一条线上。`auto_height(true)` 的行默认就是 `FirstLine`，其余默认 `Center`。
+名称下面带说明的行，行首行尾要对着名称那一行，而不是对着两行整体居中。`ListItem::trailing_align(TrailingAlign::FirstLine)` 这样放：行把第一行垫到单行行的位置（上下各 `(带高 − 行盒) / 2 − 细边框`；带高是行 `style.control_height` 那一档的控件高，没有就按 `size`，和单行行一样把边框算在内），行首行尾放在这条带子里居中，所以单行行和多行行混排时行尾在同一条线上。`auto_height(true)` 的行默认就是 `FirstLine`，其余默认 `Center`。
+
+行的样式上已经给了竖向内边距（某一边的 `padding_top` / `padding_bottom`，像素或主题档位都算，或者 `padding`、`control_padding_y`）时，那一边保留作者的值，第一行垫高只补没设的边。带子挂在内容边上，所以行首行尾照样对着第一行；内边距比垫高薄时，带子会伸出行的边缘。
 
 视图构造器的 `.leading` / `.trailing` / `.tools` 会把槽放进这条带子，所以先在 `ListItem` 上设好 `auto_height` 或 `trailing_align`，再给槽。经 `AppContext::set_list_item_slots` 挂的槽要自己带带子。内容槽的第一行按行自己的行盒算。
 

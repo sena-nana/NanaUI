@@ -1729,6 +1729,13 @@ pub enum TrailingAlign {
     /// The first line is the row's own line box: a content slot whose first
     /// line is another size should say so with its own layout.
     ///
+    /// Vertical padding the row's style already gives an edge (pixels or a
+    /// theme step, on that edge, through `padding`, or as
+    /// `control_padding_y`) stays: the first-line inset only pads an edge
+    /// left unset. The band hangs from the content edge, so the slots still
+    /// centre on the first line; a padding thinner than the inset lets the
+    /// band reach past the row's edge.
+    ///
     /// The default for [`ListItem::auto_height`] rows. The view builder
     /// (`El::leading` / `trailing` / `tools`) puts a slot in its band, so set
     /// this (or `auto_height`) on the row before giving it slots; a slot set
@@ -2083,6 +2090,7 @@ impl ListItem {
         let inset = style
             .control_padding_x
             .map(|padding| padding.resolve(metrics));
+        let padded_y = style.control_padding_y.is_some();
         let layout = Arc::make_mut(&mut style.layout);
         layout.justify_content = if self.visible_trailing().is_some() {
             if self.slots.leading.is_some() {
@@ -2099,9 +2107,19 @@ impl ListItem {
         let has_side = self.slots.leading.is_some() || self.slots.trailing.is_some();
         if has_side && self.resolved_trailing_align() == TrailingAlign::FirstLine {
             layout.align_items = nana_ui_core::AlignSpec::Start;
+            // Padding the author gave an edge (pixels or a theme step) stays;
+            // the first-line inset only pads an edge left unset. The band
+            // hangs from the content edge, so it centres on the first line
+            // either way.
+            let padded_y = padded_y || layout.padding.is_some() || layout.theme.padding.is_some();
             let inset = self.first_line_inset();
-            layout.theme.padding_top = Some(inset.clone());
-            layout.theme.padding_bottom = Some(inset);
+            if !padded_y && layout.padding_top.is_none() && layout.theme.padding_top.is_none() {
+                layout.theme.padding_top = Some(inset.clone());
+            }
+            if !padded_y && layout.padding_bottom.is_none() && layout.theme.padding_bottom.is_none()
+            {
+                layout.theme.padding_bottom = Some(inset);
+            }
         }
         if self.pill_bleed {
             // 对称外扩与书写方向无关。Intent 还没写成像素时按安装值算；

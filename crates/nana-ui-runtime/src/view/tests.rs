@@ -5881,3 +5881,61 @@ fn a_dividers_step_inset_follows_its_direction_and_a_pixel_inset_replaces_it() {
     assert!(layout.theme.margin_top.is_some() && layout.theme.margin_bottom.is_some());
     assert!(layout.theme.margin_left.is_none());
 }
+
+/// A first-line row keeps the vertical padding its author gave it, in pixels
+/// or as a theme step, and still centres its trailing slot on its first line.
+#[test]
+fn a_first_line_row_keeps_its_authored_vertical_padding() {
+    let (mut cx, document, parent) = setup();
+    let line = cx
+        .world()
+        .theme()
+        .typography()
+        .line_height(nana_ui_core::LineRole::Line);
+    let row = move |theme: bool| {
+        let mut item = crate::ListItem::new("").auto_height(true);
+        let layout = std::sync::Arc::make_mut(&mut item.style.layout);
+        if theme {
+            let step = crate::theme_intent::space(nana_ui_core::SpacingStep::PageTight);
+            layout.theme.padding_top = Some(step.clone());
+            layout.theme.padding_bottom = Some(step);
+        } else {
+            layout.padding_top = Some(LengthSpec::Px(20.0));
+            layout.padding_bottom = Some(LengthSpec::Px(20.0));
+        }
+        widget(item)
+            .content(column().children((widget(fixed(None, line)), widget(fixed(None, line)))))
+            .trailing(widget(fixed(Some(28.0), 28.0)))
+    };
+    let view = cx
+        .mount_view(parent, move || {
+            column().children((row(false).key("px"), row(true).key("theme")))
+        })
+        .unwrap();
+    let root = view.roots()[0];
+    cx.layout_document(document, LayoutViewport::new(320.0, 480.0))
+        .unwrap();
+    let rect = |id| cx.world().layout_box(id).unwrap();
+    let middle = |r: crate::LayoutBox| r.y + r.height / 2.0;
+    for path in ["px", "theme"] {
+        let id = cx.resolve_assembly_path(root, path).unwrap();
+        let [content, band] = children(&cx, id)[..] else {
+            panic!("content and trailing");
+        };
+        let (row, name, trailing) = (
+            rect(id),
+            rect(children(&cx, content)[0]),
+            rect(children(&cx, band)[0]),
+        );
+        assert_eq!(
+            name.y - row.y,
+            20.0 + nana_ui_core::HAIRLINE,
+            "{path}: the authored padding stays"
+        );
+        assert_eq!(row.height, 40.0 + 2.0 * line + 2.0 * nana_ui_core::HAIRLINE);
+        assert!(
+            (middle(trailing) - middle(name)).abs() < 0.5,
+            "{path}: trailing {trailing:?} on the first line {name:?}"
+        );
+    }
+}
