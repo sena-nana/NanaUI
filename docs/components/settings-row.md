@@ -37,7 +37,7 @@ settings_row("静音").control(switch("").checked(false))
 
 ## 分组
 
-`.divided(true)` 在行下画一条发丝线，一组的最后一行不要画，组自己的边已经收尾。`.first_in_group` 和 `.last_in_group` 标出组的两端。`.loose` 加大间距。
+`.divided(true)` 在行下画一条发丝线，一组的最后一行不要画，组自己的边已经收尾。放在 `SettingsGroup` 里、紧跟在别的内容（键值、列表、提示）之后时，组还会让它在行上也画一条，设置行与别的内容的交界两边都有线。`.first_in_group` 和 `.last_in_group` 标出组的两端。`.loose` 加大间距。
 
 哪一行是两端，取决于此刻显示了哪些行。把行放进 `SettingsGroup`（`widget(SettingsGroup::new()).children(..)`）由它来定：成员的显示或隐藏一变，分组就把第一个、最后一个显示的成员找出来，写到直接放在组里的 `SettingsRow` 的 `first_in_group` / `last_in_group` 上，组里的行不要再自己绑这两个字段。其他成员（徽章、数值、一排按钮）也占位置，只是不被写。带 key 的列表和 `when` / `dynamic` 自己的容器会被看穿，里面的每一行都算成员。组里的 `Divider` 是分隔线：只在两个显示的成员之间显示。
 

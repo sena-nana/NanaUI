@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 #[cfg(test)]
@@ -54,6 +54,12 @@ pub struct SettingsRow {
     pub loose: bool,
     pub first_in_group: bool,
     pub last_in_group: bool,
+    /// Written by the row's [`SettingsGroup`]: the shown member above this
+    /// row is not a settings row (a value list, a list, a notice). A divided
+    /// row then draws the line above itself too, so a settings row's edge is
+    /// ruled on both sides whatever stands next to it; its own bottom line
+    /// only ever covers the edge below.
+    pub(crate) rule_above: bool,
     pub control: Option<StableNodeId>,
     /// The application's node after the label, on the label's line: a status
     /// pill, a badge. It keeps its width; the label gives way and elides.
@@ -100,6 +106,7 @@ impl SettingsRow {
             loose: false,
             first_in_group: false,
             last_in_group: false,
+            rule_above: false,
             control: None,
             label_accessory: None,
             label_column: None,
@@ -244,7 +251,8 @@ impl SettingsRow {
         // into something that passed for dividers, but a card holding one row
         // got a square frame inside its rounded corners.
         let divider = self.divided && !self.last_in_group;
-        style.border = divider.then_some(SemanticColorRole::BorderSoft);
+        let rule_above = self.divided && self.rule_above && !self.first_in_group;
+        style.border = (divider || rule_above).then_some(SemanticColorRole::BorderSoft);
         let layout = Arc::make_mut(&mut style.layout);
         // The containing block of the flash tint.
         if !layout.position.establishes_containing_block() {
@@ -296,11 +304,15 @@ impl SettingsRow {
         } else {
             ROW_PADDING_Y
         }));
-        // Only the bottom edge is named; the others fall back to the unset
-        // uniform width, which is none.
+        // Only the bottom edge, and the top one under other content, are
+        // named; the others fall back to the unset uniform width, which is
+        // none.
         layout.border_width = None;
         layout.border_bottom_width = divider.then_some(nana_ui_core::HAIRLINE);
         layout.theme.border_bottom_width = divider
+            .then(|| nana_ui_core::ThemeToken::Border(nana_ui_core::BorderWidth::Hairline).into());
+        layout.border_top_width = rule_above.then_some(nana_ui_core::HAIRLINE);
+        layout.theme.border_top_width = rule_above
             .then(|| nana_ui_core::ThemeToken::Border(nana_ui_core::BorderWidth::Hairline).into());
         if self.label_column.is_some() {
             // An inspector row: the label column, then the control from its
@@ -1123,6 +1135,19 @@ fn mark_group_edges(
         .map(|(id, _)| *id)
         .collect();
     let (first, last) = (shown.first().copied(), shown.last().copied());
+    // A row under a shown member that is not a settings row rules its top
+    // edge: a settings row's edge is lined whichever side the other content
+    // is on (docs/guide/composition.md「分隔线」).
+    let is_row = |id: StableNodeId| {
+        context
+            .read(Entity::<SettingsRow>::from_stable_id(id), |_| ())
+            .is_ok()
+    };
+    let after_other: HashSet<StableNodeId> = shown
+        .windows(2)
+        .filter(|pair| !is_row(pair[0]) && is_row(pair[1]))
+        .map(|pair| pair[1])
+        .collect();
     for (index, &(id, separator)) in members.iter().enumerate() {
         if separator {
             let before = members[..index].iter().any(|(_, separator)| !separator);
@@ -1143,11 +1168,17 @@ fn mark_group_edges(
             continue;
         }
         let row = Entity::<SettingsRow>::from_stable_id(id);
-        let edges = (Some(id) == first, Some(id) == last);
-        let current = context.read(row, |row| (row.first_in_group, row.last_in_group));
+        let edges = (
+            Some(id) == first,
+            Some(id) == last,
+            after_other.contains(&id),
+        );
+        let current = context.read(row, |row| {
+            (row.first_in_group, row.last_in_group, row.rule_above)
+        });
         if current.is_ok_and(|current| current != edges) {
             context.update_component(row, |row, _| {
-                (row.first_in_group, row.last_in_group) = edges;
+                (row.first_in_group, row.last_in_group, row.rule_above) = edges;
             })?;
         }
     }

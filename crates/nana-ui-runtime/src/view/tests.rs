@@ -6195,3 +6195,66 @@ fn a_footer_bar_and_an_expansion_body_keep_their_lines() {
     let content = children(&cx, group)[0];
     assert!((rect(content).x - (rect(root).x + 24.0)).abs() < 0.5);
 }
+
+/// A divided row under other content (a value, a list, a notice) rules its
+/// top edge as well, so the line between settings rows and other content
+/// shows whichever side the rows are on; hiding that content takes the line
+/// away again.
+#[test]
+fn a_settings_group_rules_a_row_under_other_content() {
+    let (mut cx, document, parent) = setup();
+    let state = std::cell::Cell::new(None);
+    cx.mount_view(parent, || {
+        let value = signal(true);
+        state.set(Some(value));
+        widget(crate::SettingsGroup::new()).children((
+            settings_row("a").divided(true),
+            text("value").visible(value),
+            settings_row("b").divided(true),
+            settings_row("c").divided(true),
+        ))
+    })
+    .unwrap();
+    let value = state.get().unwrap();
+    let rules = |cx: &AppContext| -> Vec<(String, bool, Option<f32>, Option<f32>)> {
+        cx.world()
+            .document_order(document)
+            .into_iter()
+            .filter_map(|id| {
+                let row = cx
+                    .read(Entity::<crate::SettingsRow>::from_stable_id(id), |row| {
+                        (row.label.to_string(), row.rule_above)
+                    })
+                    .ok()?;
+                let layout = &cx.world().node_style(id)?.layout;
+                Some((
+                    row.0,
+                    row.1,
+                    layout.border_top_width,
+                    layout.border_bottom_width,
+                ))
+            })
+            .collect()
+    };
+    let line = Some(nana_ui_core::HAIRLINE);
+    assert_eq!(
+        rules(&cx),
+        [
+            ("a".to_owned(), false, None, line),
+            ("b".to_owned(), true, line, line),
+            ("c".to_owned(), false, None, None),
+        ]
+    );
+
+    value.set(false);
+    cx.flush_reactive().unwrap();
+    assert_eq!(
+        rules(&cx),
+        [
+            ("a".to_owned(), false, None, line),
+            ("b".to_owned(), false, None, line),
+            ("c".to_owned(), false, None, None),
+        ],
+        "with the value hidden, b is just the next row"
+    );
+}
