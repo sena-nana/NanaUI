@@ -527,10 +527,11 @@ fit 只有一份数学：`ContentFit::fitted_size`（`nana-ui-core`）。fit 是
   （块的测量与 placement、measure plan 的比对与增量、原生段落）先 `prime_atom_baselines`，
   `baseline_metrics` 再读它，所以只有这一份推导。块级流按 placement 的方式定子项的位置：
   `justify-content` 把空余放在前后或中间（`justify_offsets`），反向的流从底部往上叠，每个子项的
-  margin 也随之反过来；找首末行盒的顺序仍是流的顺序（门禁 `world/issue382.rs` 的 E）。行旁有浮动的
+  margin 也随之反过来；换行的块级流按 `pack_wrap_lines` 分成并排的几列，每列各自这样叠放；找首末行盒
+  的顺序仍是流的顺序（门禁 `world/issue382.rs` 的 E、G）。行旁有浮动的
   行内格式化上下文和 placement 一样先打包浮动（`pack_floated_children`），行排在浮动留下的空间里，
-  放不下的原子落到浮动下面（门禁 F，css-parity `T-FL07`，Chrome 实测）。flex / grid 容器、换行的块级流、
-  有自动 margin 或浮动的块级流不推导，仍是自身字体首行的近似；
+  放不下的原子落到浮动下面（门禁 F，css-parity `T-FL07`，Chrome 实测）。flex / grid 容器、按等宽分行
+  （`equal_wrap`）、有自动 margin 或浮动的块级流不推导，仍是自身字体首行的近似；
 - 替换内容、`overflow` 非 visible 的 inline-block、没有流内行盒的 inline-block（`UiWorld::atom_sits_on_line_box`）
   以**底外边距边**落在基线上，`margin-bottom` 把它抬高；
 - 行盒高度是对齐之后从最高的顶外边距边到最低的底外边距边的跨度，块级子项独占一行、从行顶排起。
@@ -1275,7 +1276,7 @@ prelude 是 `[名字] 条件`：
 - 完整的 cascade-layer 优先级。
 - 完整的浮动排除。祖先浮动侵入子块、`shape-outside`、流内块级边框盒缩窄，都没有。
 - 完整 IFC。行内原子按基线对齐、行盒有 strut，但没有 `vertical-align` 的其他取值，也没有行内
-  拆箱。行盒在后代里的盒子里，flex / grid 容器、换行或有自动 margin、浮动的块级流不推导首末行位置，
+  拆箱。行盒在后代里的盒子里，flex / grid 容器、等宽分行或有自动 margin、浮动的块级流不推导首末行位置，
   仍按自身字体近似。
 - 轨道列表 token 形式的 `subgrid`。
 - 用 `position: fixed` 当 Dialog 或 Drawer。走 Nana 的浮层。

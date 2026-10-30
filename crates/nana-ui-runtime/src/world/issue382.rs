@@ -33,6 +33,9 @@
 //! - Gate F: a box whose lines run beside a float sits by where those lines
 //!   are, packed in the room the float leaves them: its first line below
 //!   the float on a flex row, its last wrapped below it on a line.
+//! - Gate G: a block flow wrapping into columns sits by its first and last
+//!   line boxes where those columns put them, packed to their end or
+//!   reversed; a taller flow in one column aligns them again.
 #![cfg(test)]
 
 use nana_ui_core::{
@@ -1285,6 +1288,160 @@ fn issue382_f_lines_beside_a_float_give_the_baselines() {
         product_frame(&mut warm, document, viewport(), &mut shaper);
         on_baseline(&warm, ids);
         let (mut cold, _, _) = float_baseline_page(float);
+        assert_matches_cold(&mut warm, &mut cold, document);
+    }
+}
+
+/// The wrapping block flows gate G lays out: four 25-tall labelled blocks
+/// in a 60-tall flow, two to a column, packed to the end or reversed.
+const WRAPPED: [(JustifySpec, bool); 2] = [(JustifySpec::End, false), (JustifySpec::Start, true)];
+
+/// A flex row aligning first baselines and an ordinary block's line, each
+/// with a reference label and one wrapping flow per [`WRAPPED`] entry.
+/// Returns the row's and the line's labels: the reference, then each
+/// flow's four in flow order.
+fn wrap_baseline_page(height: f32) -> (AppContext, NanaTextEngineShaper, [Vec<StableNodeId>; 2]) {
+    let document = DocumentId::new(1).unwrap();
+    let (mut b, page) = Builder::page(document, 1, 900.0);
+    let row = b.element(
+        page,
+        LayoutStyle {
+            display: Some(DisplaySpec::Flex),
+            direction: Some(FlexDirection::Row),
+            align_items: nana_ui_core::AlignSpec::Baseline,
+            width: Some(LengthSpec::Px(800.0)),
+            ..LayoutStyle::default()
+        },
+    );
+    let line = b.element(
+        page,
+        LayoutStyle {
+            width: Some(LengthSpec::Px(800.0)),
+            ..LayoutStyle::default()
+        },
+    );
+    let mut labels = [Vec::new(), Vec::new()];
+    for (slot, parent) in [row, line].into_iter().enumerate() {
+        let reference = b.element(
+            parent,
+            LayoutStyle {
+                display: Some(DisplaySpec::InlineBlock),
+                ..LayoutStyle::default()
+            },
+        );
+        labels[slot].push(b.label(reference, "Ref"));
+        for (justify, reversed) in WRAPPED {
+            let flow = b.element(
+                parent,
+                LayoutStyle {
+                    display: Some(DisplaySpec::InlineBlock),
+                    width: Some(LengthSpec::Px(160.0)),
+                    height: Some(LengthSpec::Px(height)),
+                    flex_wrap: nana_ui_core::FlexWrap::Wrap,
+                    justify_content: justify,
+                    flex_reverse: reversed,
+                    ..LayoutStyle::default()
+                },
+            );
+            for text in ["A", "B", "C", "D"] {
+                let holder = b.element(
+                    flow,
+                    LayoutStyle {
+                        width: Some(LengthSpec::Px(60.0)),
+                        height: Some(LengthSpec::Px(25.0)),
+                        ..LayoutStyle::default()
+                    },
+                );
+                labels[slot].push(b.label(holder, text));
+            }
+        }
+    }
+    let mut context = AppContext::new();
+    context.commit_mutations(b.queue).unwrap();
+    let mut shaper = strut_shaper(false);
+    product_frame(&mut context, document, viewport(), &mut shaper);
+    (context, shaper, labels)
+}
+
+/// Gate G: a block flow that wraps into columns sits by where its first and
+/// last line boxes are, in the columns placement lays them in: packed to
+/// the end of each column, or reversed. On a flex row (first baselines,
+/// the first label) and on a line (last baselines, the fourth); a taller
+/// flow puts all four in one column and aligns them again. Each step
+/// matches a cold layout.
+#[test]
+fn issue382_g_a_wrapping_block_flow_sits_by_its_columns_line_boxes() {
+    let document = DocumentId::new(1).unwrap();
+    let check = |context: &AppContext, labels: &[Vec<StableNodeId>; 2], columns: bool| {
+        let world = context.world();
+        let baseline = |id: StableNodeId| {
+            world
+                .layout_result(id)
+                .and_then(|result| result.first_baseline)
+                .unwrap()
+        };
+        for (slot, labels) in labels.iter().enumerate() {
+            let reference = baseline(labels[0]);
+            for (index, flow) in labels[1..].chunks(4).enumerate() {
+                let sitting = flow[if slot == 0 { 0 } else { 3 }];
+                assert!(
+                    (baseline(sitting) - reference).abs() < 0.01,
+                    "{} {:?}: {} vs the reference {reference}",
+                    if slot == 0 { "row" } else { "line" },
+                    WRAPPED[index],
+                    baseline(sitting)
+                );
+                let (first, third) = (
+                    world.layout_box(flow[0]).unwrap(),
+                    world.layout_box(flow[2]).unwrap(),
+                );
+                assert_eq!(
+                    third.x > first.x + 30.0,
+                    columns,
+                    "{:?}: {first:?}, {third:?}",
+                    WRAPPED[index]
+                );
+            }
+        }
+    };
+    let (mut warm, mut shaper, labels) = wrap_baseline_page(60.0);
+    check(&warm, &labels, true);
+    let (mut cold, _, _) = wrap_baseline_page(60.0);
+    assert_matches_cold(&mut warm, &mut cold, document);
+    for height in [120.0, 60.0] {
+        let mut queue = MutationQueue::new();
+        for slot in &labels {
+            for flow in slot[1..].chunks(4) {
+                let holder = warm.world().parent_id(flow[0]).unwrap();
+                let flow_box = warm.world().parent_id(holder).unwrap();
+                let index = warm
+                    .world()
+                    .node(warm.world().parent_id(flow_box).unwrap())
+                    .unwrap()
+                    .children
+                    .iter()
+                    .position(|id| *id == flow_box)
+                    .unwrap()
+                    - 1;
+                let (justify, reversed) = WRAPPED[index];
+                queue.set_style(
+                    flow_box,
+                    styled(LayoutStyle {
+                        display: Some(DisplaySpec::InlineBlock),
+                        width: Some(LengthSpec::Px(160.0)),
+                        height: Some(LengthSpec::Px(height)),
+                        flex_wrap: nana_ui_core::FlexWrap::Wrap,
+                        justify_content: justify,
+                        flex_reverse: reversed,
+                        ..LayoutStyle::default()
+                    }),
+                );
+            }
+        }
+        warm.commit_mutations(queue).unwrap();
+        product_frame(&mut warm, document, viewport(), &mut shaper);
+        check(&warm, &labels, height < 100.0);
+        let (mut cold, _, _) = wrap_baseline_page(height);
         assert_matches_cold(&mut warm, &mut cold, document);
     }
 }
