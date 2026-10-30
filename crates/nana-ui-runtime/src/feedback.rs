@@ -580,10 +580,10 @@ impl ComponentView for LabeledValue {
     }
 }
 
+#[cfg(test)]
 const PROGRESS_GIRTH: f32 = nana_ui_core::space::SM;
 const PROGRESS_LABEL_SIZE: f32 = nana_ui_core::type_scale::META;
 const PROGRESS_GAP: f32 = nana_ui_core::space::SM;
-const PROGRESS_CANCEL_SIZE: f32 = nana_ui_core::space::PAGE;
 /// How much of its colour a still indeterminate fill keeps: faint enough
 /// that a full track cannot be read as "done".
 pub(crate) const PROGRESS_STILL_ALPHA: f32 = 0.35;
@@ -740,10 +740,6 @@ impl Progress {
             .filter(|thickness| thickness.is_finite() && *thickness > 0.0)
     }
 
-    fn resolved_thickness(&self) -> f32 {
-        self.explicit_thickness().unwrap_or(PROGRESS_GIRTH)
-    }
-
     fn displayed_value(&self) -> f64 {
         let max = self.resolved_max();
         if self.value.is_finite() {
@@ -757,18 +753,6 @@ impl Progress {
         let ratio = (self.displayed_value() / self.resolved_max()) as f32;
         if ratio.is_finite() {
             ratio.clamp(0.0, 1.0)
-        } else {
-            0.0
-        }
-    }
-
-    fn heading_height(&self) -> f32 {
-        if self.label.is_some() || self.cancellable {
-            PROGRESS_LABEL_SIZE.max(if self.cancellable {
-                PROGRESS_CANCEL_SIZE
-            } else {
-                0.0
-            })
         } else {
             0.0
         }
@@ -795,19 +779,8 @@ impl Progress {
                 *edge = Some(LengthSpec::Px(0.0));
             }
         }
-        let padding = layout.resolved_padding();
-        let heading = self.heading_height();
-        let thickness = self.resolved_thickness();
-        let content = if heading > 0.0 {
-            heading + PROGRESS_GAP + thickness
-        } else {
-            thickness
-        };
-        layout.height = Some(LengthSpec::Px(content + padding.top + padding.bottom));
-        layout.theme.height = self.explicit_thickness().is_none().then(|| {
-            crate::theme_intent::space(nana_ui_core::SpacingStep::Sm)
-                .offset(content - thickness + padding.top + padding.bottom)
-        });
+        // Its height is measured from its heading and track (#384): an
+        // author's height is kept, and none is written for it.
         layout.direction = Some(FlexDirection::Column);
         layout.gap = Some(LengthSpec::Px(PROGRESS_GAP));
         layout.theme.gap = Some(crate::theme_intent::space(nana_ui_core::SpacingStep::Sm));
@@ -2490,7 +2463,11 @@ mod tests {
         let id = progress.stable_id();
         let style = context.world().node_style(id).unwrap();
         assert_eq!(style.background, Some(SemanticColorRole::BorderSoft));
-        assert_eq!(style.layout.height, Some(LengthSpec::Px(3.0)));
+        // Measure, not the style, makes it as tall as the thickness (#384).
+        assert_eq!(style.layout.height, None);
+        let extent =
+            |context: &AppContext, id| context.world().progress_inputs(id).unwrap().extent();
+        assert_eq!(extent(&context, id), 3.0);
         layout(&mut context, id, 100.0, 3.0);
         let crate::ComponentGeometry::Progress {
             track,
@@ -2515,8 +2492,8 @@ mod tests {
             })
             .unwrap();
         assert_eq!(
-            context.world().node_style(id).unwrap().layout.height,
-            Some(LengthSpec::Px(PROGRESS_GIRTH)),
+            extent(&context, id),
+            PROGRESS_GIRTH,
             "a thickness that is not a positive number keeps the rail"
         );
 
@@ -2525,7 +2502,8 @@ mod tests {
             .unwrap();
         let style = context.world().node_style(plain.stable_id()).unwrap();
         assert_eq!(style.background, Some(SemanticColorRole::Subtle));
-        assert_eq!(style.layout.height, Some(LengthSpec::Px(6.0)));
+        assert_eq!(style.layout.height, None);
+        assert_eq!(extent(&context, plain.stable_id()), 6.0);
         assert_eq!(
             context.world().extract_nodes(&[plain.stable_id()])[0].standard_visual_foreground,
             Some(palette.accent.as_rgba_array())

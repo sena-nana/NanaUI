@@ -2014,27 +2014,39 @@ impl UiWorld {
             StandardVisual::Progress {
                 value_ratio,
                 label,
-                cancellable,
                 mode,
-                thickness,
                 ..
-            } => progress_geometry(
-                bounds,
-                style,
-                *value_ratio,
-                *mode,
-                *thickness,
-                // A pill, derived — not the literal `3.0` it used to be. The
-                // two were equal and free to drift, and only `LevelMeter`
-                // right below said so in code.
-                *thickness / 2.0,
-                label.as_ref(),
-                *cancellable,
-                self.style_model
-                    .color(SemanticColorRole::Text)
-                    .as_rgba_array(),
-                self.theme.spacing().sm,
-            ),
+            } => {
+                // The label and the cancel target are the parts layout
+                // published (#384); the track runs below them.
+                use crate::LayoutPartKind;
+                let inputs = self.progress_inputs(id)?;
+                let parts = self.component_content_parts(id);
+                let part = |kind| crate::layout_engine::parts::part_bounds(&parts, kind);
+                let typography = self.theme.typography();
+                progress_geometry(
+                    crate::layout_engine::parts::progress_track(content, inputs),
+                    *value_ratio,
+                    *mode,
+                    // A pill, derived — not the literal `3.0` it used to be.
+                    inputs.thickness / 2.0,
+                    label
+                        .as_ref()
+                        .zip(part(LayoutPartKind::Label))
+                        .map(|(label, bounds)| crate::ComponentTextRegion {
+                            bounds,
+                            content: Arc::clone(label).into(),
+                            color: Some(style.color.unwrap_or_else(|| {
+                                self.style_model
+                                    .color(SemanticColorRole::Text)
+                                    .as_rgba_array()
+                            })),
+                            font_size: typography.meta,
+                            font_weight: Some(typography.medium),
+                        }),
+                    part(LayoutPartKind::TrailingContent),
+                )
+            }
             StandardVisual::LevelMeter {
                 value_ratio, girth, ..
             } => {
@@ -2043,17 +2055,18 @@ impl UiWorld {
                 } else {
                     self.theme.spacing().xs
                 };
+                // Its track centred down its box; it has no text.
                 progress_geometry(
-                    bounds,
-                    style,
+                    LayoutBox {
+                        y: bounds.y + (bounds.height - girth).max(0.0) / 2.0,
+                        height: girth.min(bounds.height),
+                        ..bounds
+                    },
                     *value_ratio,
                     crate::ProgressMode::Value,
-                    girth,
                     girth / 2.0,
                     None,
-                    false,
-                    [0.0; 4],
-                    self.theme.spacing().xs,
+                    None,
                 )
             }
             StandardVisual::FormField {

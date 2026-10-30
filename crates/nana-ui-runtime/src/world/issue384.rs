@@ -452,3 +452,377 @@ fn issue384_ten_thousand_ranges_keep_one_entity_and_bounded_parts() {
         assert_eq!(cx.world().layout_generation(), generation);
     }
 }
+
+/// A progress bar's declared inputs, the ones its parts read.
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct ProgressCase {
+    label: bool,
+    cancellable: bool,
+    thickness: Option<f32>,
+    padding: Option<f32>,
+}
+
+const COPYING: ProgressCase = ProgressCase {
+    label: true,
+    cancellable: true,
+    thickness: None,
+    padding: None,
+};
+
+fn progress_view(case: ProgressCase, value: f64) -> crate::Progress {
+    let mut view = crate::Progress::new(value, 100.0).cancellable(case.cancellable);
+    if case.label {
+        view = view.label("Copying");
+    }
+    if let Some(thickness) = case.thickness {
+        view = view.thickness(thickness);
+    }
+    if let Some(padding) = case.padding.map(LengthSpec::Px) {
+        let layout = Arc::make_mut(&mut view.style.layout);
+        layout.padding_top = Some(padding);
+        layout.padding_right = Some(padding);
+        layout.padding_bottom = Some(padding);
+        layout.padding_left = Some(padding);
+    }
+    view
+}
+
+/// `case` in a 320px column above a button, under `theme` when given, laid
+/// out once.
+fn progress_page(
+    case: ProgressCase,
+    theme: Option<&nana_ui_core::ThemeDefinition>,
+) -> (AppContext, Entity<crate::Progress>) {
+    let mut cx = AppContext::new();
+    if let Some(theme) = theme {
+        cx.set_theme_definition(theme).unwrap();
+    }
+    let root = cx
+        .create_component(document(), Stack::column(4.0).width(LengthSpec::Px(320.0)))
+        .unwrap();
+    let progress = cx
+        .create_detached_component(document(), progress_view(case, 40.0))
+        .unwrap();
+    cx.append_child(root, progress).unwrap();
+    let below = cx
+        .create_detached_component(document(), crate::Button::new("Below"))
+        .unwrap();
+    cx.append_child(root, below).unwrap();
+    product_frame(&mut cx, document(), viewport(), &mut bundled_face_shaper());
+    cx.rebuild_hit_test(document());
+    (cx, progress)
+}
+
+fn progress_geometry(
+    cx: &AppContext,
+    id: StableNodeId,
+) -> (
+    crate::LayoutBox,
+    crate::LayoutBox,
+    Option<crate::ComponentTextRegion>,
+    Option<crate::LayoutBox>,
+) {
+    match cx.world().component_geometry(id).unwrap() {
+        ComponentGeometry::Progress {
+            track,
+            fill,
+            label,
+            cancel,
+            ..
+        } => (track, fill, label, cancel),
+        other => panic!("{other:?}"),
+    }
+}
+
+/// Paint reads the published label and cancel parts and runs the track
+/// below them; measure makes the content box exactly the heading, its gap
+/// and the track (no style height), inside an author's padding.
+#[test]
+fn issue384_progress_label_and_cancel_are_published_parts() {
+    for case in [
+        COPYING,
+        ProgressCase {
+            cancellable: false,
+            ..COPYING
+        },
+        ProgressCase {
+            label: false,
+            ..COPYING
+        },
+        ProgressCase {
+            label: false,
+            cancellable: false,
+            ..COPYING
+        },
+        ProgressCase {
+            thickness: Some(3.0),
+            padding: Some(10.0),
+            ..COPYING
+        },
+    ] {
+        let (cx, progress) = progress_page(case, None);
+        let id = progress.stable_id();
+        let world = cx.world();
+        let result = world.layout_result(id).unwrap();
+        let content = result.content_box;
+        let spacing = world.theme().spacing();
+        let typography = world.theme().typography();
+        let thickness = case.thickness.unwrap_or(spacing.sm);
+        let heading = if case.cancellable {
+            spacing
+                .page
+                .max(if case.label { typography.meta } else { 0.0 })
+        } else if case.label {
+            typography.meta
+        } else {
+            0.0
+        };
+        let expected = if heading > 0.0 {
+            heading + spacing.sm + thickness
+        } else {
+            thickness
+        };
+        assert!(
+            (content.height - expected).abs() < 1e-3,
+            "{case:?}: {content:?} for {expected}"
+        );
+        assert_eq!(world.node_style(id).unwrap().layout.height, None);
+        if let Some(padding) = case.padding {
+            assert!((content.x - result.border_box.x - padding).abs() < 1e-3);
+            assert!((content.y - result.border_box.y - padding).abs() < 1e-3);
+        }
+        let (track, fill, label, cancel) = progress_geometry(&cx, id);
+        let label_part = part(&cx, id, LayoutPartKind::Label);
+        let cancel_part = part(&cx, id, LayoutPartKind::TrailingContent);
+        assert_eq!(label.as_ref().map(|label| label.bounds), label_part);
+        assert_eq!(cancel, cancel_part);
+        assert_eq!(
+            (label_part.is_some(), cancel_part.is_some()),
+            (case.label, case.cancellable)
+        );
+        if let Some(cancel) = cancel_part {
+            assert_eq!((cancel.width, cancel.height), (spacing.page, spacing.page));
+            assert!((cancel.x + cancel.width - (content.x + content.width)).abs() < 1e-3);
+            if let Some(label) = label_part {
+                assert!((cancel.x - spacing.md - (label.x + label.width)).abs() < 1e-3);
+            }
+        }
+        if let Some(label) = label_part {
+            assert_eq!(label.x, content.x);
+            assert_eq!(label.height, typography.meta);
+        }
+        assert_eq!((track.x, track.width), (content.x, content.width));
+        assert_eq!(track.height, thickness);
+        assert!((track.y + track.height - (content.y + content.height)).abs() < 1e-3);
+        assert!((fill.width - track.width * 0.4).abs() < 1e-3);
+        assert_eq!(world.len(), 3);
+    }
+}
+
+/// Label, cancel target, thickness and padding changes, and a theme that
+/// moves the gaps, the cancel target and the label's type, lay out what a
+/// cold layout of the same bar does; the value, the sweep and hovering
+/// paint only.
+#[test]
+fn issue384_progress_parts_follow_changes_like_a_cold_layout_and_value_paints_only() {
+    let mut theme =
+        nana_ui_core::ThemeDefinition::for_appearance(nana_ui_core::ThemeAppearance::Light);
+    theme.tokens.spacing.sm += 2.0;
+    theme.tokens.spacing.md += 3.0;
+    theme.tokens.spacing.page += 4.0;
+    theme.typography.meta += 2.0;
+    let theme = theme.bump();
+    let mut shaper = bundled_face_shaper();
+    let (mut cx, progress) = progress_page(COPYING, None);
+    let steps = [
+        (
+            ProgressCase {
+                cancellable: false,
+                ..COPYING
+            },
+            false,
+        ),
+        (
+            ProgressCase {
+                label: false,
+                thickness: Some(3.0),
+                ..COPYING
+            },
+            false,
+        ),
+        (
+            ProgressCase {
+                padding: Some(12.0),
+                ..COPYING
+            },
+            false,
+        ),
+        (COPYING, true),
+        (
+            ProgressCase {
+                label: false,
+                cancellable: false,
+                ..COPYING
+            },
+            true,
+        ),
+        (COPYING, true),
+    ];
+    let mut themed = false;
+    for (case, under_theme) in steps {
+        cx.update_component(progress, |view, _| *view = progress_view(case, 40.0))
+            .unwrap();
+        if under_theme && !themed {
+            cx.set_theme_definition(&theme).unwrap();
+            themed = true;
+        }
+        product_frame(&mut cx, document(), viewport(), &mut shaper);
+        let (mut cold, cold_progress) = progress_page(case, under_theme.then_some(&theme));
+        assert_eq!(cold_progress.stable_id(), progress.stable_id());
+        assert_matches_cold(&mut cx, &mut cold, document());
+        assert_eq!(
+            progress_geometry(&cx, progress.stable_id()),
+            progress_geometry(&cold, progress.stable_id()),
+            "{case:?}"
+        );
+    }
+
+    let id = progress.stable_id();
+    let generation = cx.world().layout_generation();
+    let snapshot = Arc::clone(&cx.world().layout_results[&id]);
+    for value in [55.0, 90.0, 100.0] {
+        cx.update_component(progress, |view, _| view.value = value)
+            .unwrap();
+        let work = product_frame(&mut cx, document(), viewport(), &mut shaper);
+        assert_eq!(
+            (work.layout_measure_nodes, work.layout_placement_nodes),
+            (0, 0),
+            "value {value}"
+        );
+        let (track, fill, ..) = progress_geometry(&cx, id);
+        assert!((fill.width - track.width * (value as f32 / 100.0)).abs() < 1e-3);
+    }
+    cx.update_component(progress, |view, _| view.indeterminate = true)
+        .unwrap();
+    let swept = product_frame(&mut cx, document(), viewport(), &mut shaper);
+    cx.set_pointer_hover_at(document(), 1, Some(id), Duration::from_millis(16))
+        .unwrap();
+    let hovered = product_frame(&mut cx, document(), viewport(), &mut shaper);
+    for work in [swept, hovered] {
+        assert_eq!(
+            (work.layout_measure_nodes, work.layout_placement_nodes),
+            (0, 0)
+        );
+    }
+    assert_eq!(cx.world().layout_generation(), generation);
+    assert!(Arc::ptr_eq(&snapshot, &cx.world().layout_results[&id]));
+}
+
+/// A progress bar moved between Grid, Inline and Flex parents keeps its
+/// entity and value, and publishes the parts a cold layout in that context
+/// would.
+#[test]
+fn issue384_progress_parts_survive_context_transitions() {
+    use crate::MutationQueue;
+    use nana_ui_core::DisplaySpec;
+    let build = |display: DisplaySpec| {
+        let mut cx = AppContext::new();
+        let root = cx
+            .create_component(
+                document(),
+                Stack::column(0.0).with_layout(|layout| {
+                    layout.width = Some(LengthSpec::Px(320.0));
+                    layout.display = Some(display);
+                }),
+            )
+            .unwrap();
+        let progress = cx
+            .create_detached_component(document(), progress_view(COPYING, 40.0))
+            .unwrap();
+        cx.append_child(root, progress).unwrap();
+        product_frame(&mut cx, document(), viewport(), &mut bundled_face_shaper());
+        (cx, root, progress)
+    };
+    let mut shaper = bundled_face_shaper();
+    let (mut cx, root, progress) = build(DisplaySpec::Flex);
+    let id = progress.stable_id();
+    for display in [DisplaySpec::Grid, DisplaySpec::Inline, DisplaySpec::Flex] {
+        let mut style = cx.world().node_style(root.stable_id()).unwrap().clone();
+        Arc::make_mut(&mut style.layout).display = Some(display);
+        let mut q = MutationQueue::new();
+        q.set_style(root.stable_id(), style);
+        cx.commit_mutations(q).unwrap();
+        let work = product_frame(&mut cx, document(), viewport(), &mut shaper);
+        assert_eq!((work.entities_spawned, work.entities_despawned), (0, 0));
+        assert_eq!(cx.read(progress, |view| view.value).unwrap(), 40.0);
+        let (_, _, label, cancel) = progress_geometry(&cx, id);
+        assert_eq!(
+            label.map(|label| label.bounds),
+            part(&cx, id, LayoutPartKind::Label)
+        );
+        assert_eq!(cancel, part(&cx, id, LayoutPartKind::TrailingContent));
+        let (mut cold, ..) = build(display);
+        assert_matches_cold(&mut cx, &mut cold, document());
+    }
+}
+
+/// 1k and 10k progress bars keep one entity each and publish the content
+/// box and two parts, and an idle frame lays nothing out.
+#[test]
+fn issue384_ten_thousand_progress_bars_keep_one_entity_and_bounded_parts() {
+    let _unguarded = crate::layout_engine::verify::skip_layout_verify();
+    for count in [1_000, 10_000] {
+        let mut cx = AppContext::new();
+        let mut shaper = bundled_face_shaper();
+        let root = cx
+            .create_component(document(), Stack::column(0.0).width(LengthSpec::Px(320.0)))
+            .unwrap();
+        let mut children = Vec::with_capacity(count);
+        for _ in 0..count {
+            children.push(
+                cx.create_detached_component(document(), progress_view(COPYING, 40.0))
+                    .unwrap()
+                    .stable_id(),
+            );
+        }
+        let mut q = crate::MutationQueue::new();
+        for &id in &children {
+            q.insert(root.stable_id(), id, None);
+        }
+        cx.commit_mutations(q).unwrap();
+        product_frame(&mut cx, document(), viewport(), &mut shaper);
+        assert_eq!(cx.world().len(), count + 1);
+        for &id in &children {
+            let kinds: Vec<_> = cx
+                .world()
+                .layout_result(id)
+                .unwrap()
+                .parts
+                .iter()
+                .map(|part| part.kind)
+                .collect();
+            assert_eq!(
+                kinds,
+                [
+                    LayoutPartKind::ComponentContent,
+                    LayoutPartKind::Label,
+                    LayoutPartKind::TrailingContent
+                ]
+            );
+        }
+        let generation = cx.world().layout_generation();
+        product_frame(&mut cx, document(), viewport(), &mut shaper);
+        assert!(cx.take_system_work().is_empty());
+        let idle = cx.world().frame_counters;
+        assert_eq!(
+            (
+                idle.layout_measure_nodes,
+                idle.layout_placement_nodes,
+                idle.entities_spawned,
+                idle.entities_despawned
+            ),
+            (0, 0, 0, 0)
+        );
+        assert_eq!(cx.world().layout_generation(), generation);
+    }
+}

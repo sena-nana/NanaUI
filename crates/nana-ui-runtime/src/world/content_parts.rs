@@ -4,9 +4,10 @@ use crate::layout_engine::{
     Size,
     parts::{
         CONTENT_PART_SLOTS, ContentParts, EmptyStateInputs, FlexPart, LeadingParts,
-        NO_CONTENT_PARTS, RangeInputs, SwitchInputs, ToastInputs, button_content_parts,
-        checkbox_parts, content_parts, empty_state_parts, part_bounds, selection_option_parts,
-        selection_option_row, start_row_parts, status_dot_parts, switch_parts, toast_parts,
+        NO_CONTENT_PARTS, ProgressInputs, RangeInputs, SwitchInputs, ToastInputs,
+        button_content_parts, checkbox_parts, content_parts, empty_state_parts, part_bounds,
+        selection_option_parts, selection_option_row, start_row_parts, status_dot_parts,
+        switch_parts, toast_parts,
     },
 };
 
@@ -21,8 +22,8 @@ pub(crate) const STATUS_DOT_FRACTION: f32 = 10.0 / 24.0;
 
 /// Whether a visual's content parts read installed metrics that a theme can
 /// move without moving any style the node resolves: a switch's track and
-/// gap, a range's gaps and unit size, a status dot's slot and gap, a
-/// selection option's icon gap. (A
+/// gap, a range's gaps and unit size, a progress bar's heading and gaps, a
+/// status dot's slot and gap, a selection option's icon gap. (A
 /// checkbox's indicator reads the same type and spacing steps its own style
 /// resolves, so a theme that moves them relays it out already; a radio ring
 /// keeps fixed control steps.)
@@ -32,6 +33,7 @@ pub(super) fn visual_parts_read_theme(visual: Option<&StandardVisual>) -> bool {
         Some(
             StandardVisual::Switch { .. }
                 | StandardVisual::Range { .. }
+                | StandardVisual::Progress { .. }
                 | StandardVisual::StatusBadge { .. }
                 | StandardVisual::ValidationMessage { .. }
                 | StandardVisual::SelectionOption { icon: Some(_), .. }
@@ -161,6 +163,9 @@ impl UiWorld {
         }
         if let Some(inputs) = self.range_inputs(id) {
             return crate::layout_engine::parts::range_parts(content, inputs);
+        }
+        if let Some(inputs) = self.progress_inputs(id) {
+            return crate::layout_engine::parts::progress_parts(content, inputs);
         }
         if let Some(inputs) = self.empty_state_inputs(id) {
             let presentation = self.nodes.empty_state_text(id).copied().unwrap_or_default();
@@ -717,6 +722,34 @@ impl UiWorld {
                 )
             }),
             gap: self.range_gap(*size),
+        })
+    }
+
+    /// A progress bar's label, cancel target and track before placement,
+    /// from the installed theme: what intrinsic measure, placement and the
+    /// track all read (#384). The label's line is the meta type size it is
+    /// set at, the cancel target a page step square.
+    pub(crate) fn progress_inputs(&self, id: StableNodeId) -> Option<ProgressInputs> {
+        let Some(StandardVisual::Progress {
+            label,
+            cancellable,
+            thickness,
+            ..
+        }) = self.standard_visual_ref(id)
+        else {
+            return None;
+        };
+        let spacing = self.theme.spacing();
+        Some(ProgressInputs {
+            label: label.as_ref().map(|_| self.theme.typography().meta),
+            cancel: cancellable.then_some(spacing.page),
+            cancel_gap: spacing.md,
+            gap: spacing.sm,
+            thickness: if thickness.is_finite() && *thickness > 0.0 {
+                *thickness
+            } else {
+                spacing.sm
+            },
         })
     }
 

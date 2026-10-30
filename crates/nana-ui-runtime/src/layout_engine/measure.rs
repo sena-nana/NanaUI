@@ -640,6 +640,14 @@ fn visual_beside_text(id: StableNodeId, world: &UiWorld) -> VisualContent {
             width: world.range_inputs(id).map_or(0.0, |inputs| inputs.extent()),
             ..VisualContent::default()
         },
+        // A progress bar's heading, its gap and its track down the box: the
+        // declaration placement solves (#384).
+        Some(crate::StandardVisual::Progress { .. }) => VisualContent {
+            height: world
+                .progress_inputs(id)
+                .map_or(0.0, |inputs| inputs.extent()),
+            ..VisualContent::default()
+        },
         // A bare toast's mark, gap and dismiss target beside its title, and
         // its copy column's height: the declaration placement solves. (An
         // assembled toast's copy is its children; its mark is laid out

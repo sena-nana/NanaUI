@@ -1968,6 +1968,26 @@ impl UiWorld {
                     ) => (la, ma, ua, sa, ra.is_some()) != (lb, mb, ub, sb, rb.is_some()),
                     (_, Some(StandardVisual::Range { .. }))
                     | (Some(StandardVisual::Range { .. }), _) => true,
+                    // What a progress bar's parts read (#384): whether it has
+                    // a label and a cancel target, and its thickness. The
+                    // value, the sweep, the fill and the label's words paint
+                    // only.
+                    (
+                        Some(StandardVisual::Progress {
+                            label: la,
+                            cancellable: ca,
+                            thickness: ta,
+                            ..
+                        }),
+                        Some(StandardVisual::Progress {
+                            label: lb,
+                            cancellable: cb,
+                            thickness: tb,
+                            ..
+                        }),
+                    ) => (la.is_some(), ca, ta) != (lb.is_some(), cb, tb),
+                    (_, Some(StandardVisual::Progress { .. }))
+                    | (Some(StandardVisual::Progress { .. }), _) => true,
                     // What a selection option's parts read (#205); selecting,
                     // disabling and the focus ring paint only.
                     (

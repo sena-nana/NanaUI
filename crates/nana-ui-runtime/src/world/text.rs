@@ -605,67 +605,18 @@ pub(super) fn shape_modal_text(
 /// The share of the track an indeterminate sweep's segment covers.
 const PROGRESS_SWEEP_SEGMENT: f32 = 0.35;
 
+/// A bar's fill along its `track` for `value_ratio` in `mode`, and the
+/// geometry around it: a progress bar's label region and cancel target are
+/// the parts layout published (#384), a level meter has neither.
 pub(super) fn progress_geometry(
-    bounds: LayoutBox,
-    style: &ComputedStyle,
+    track: LayoutBox,
     value_ratio: f32,
     mode: crate::ProgressMode,
-    girth: f32,
     corner_radius: f32,
-    label: Option<&Arc<str>>,
-    cancellable: bool,
-    default_label_color: [f32; 4],
-    fallback_girth: f32,
+    label: Option<crate::ComponentTextRegion>,
+    cancel: Option<LayoutBox>,
 ) -> Option<crate::ComponentGeometry> {
     let ratio = value_ratio.clamp(0.0, 1.0);
-    let girth = if girth.is_finite() && girth > 0.0 {
-        girth
-    } else {
-        fallback_girth
-    };
-    let cancel_size = 24.0_f32.min(bounds.height).min(bounds.width);
-    let heading = if label.is_some() || cancellable {
-        12.0_f32.max(if cancellable { cancel_size } else { 0.0 })
-    } else {
-        0.0
-    };
-    let cancel = cancellable.then(|| LayoutBox {
-        x: bounds.x + (bounds.width - cancel_size).max(0.0),
-        y: bounds.y + (heading - cancel_size).max(0.0) / 2.0,
-        width: cancel_size,
-        height: cancel_size,
-    });
-    let label_width = cancel
-        .map(|cancel| (cancel.x - bounds.x - nana_ui_core::space::MD).max(0.0))
-        .unwrap_or(bounds.width);
-    let label_region = label.map(|label| crate::ComponentTextRegion {
-        bounds: LayoutBox {
-            x: bounds.x,
-            y: bounds.y + (heading - nana_ui_core::type_scale::META).max(0.0) / 2.0,
-            width: label_width,
-            height: nana_ui_core::type_scale::META.min(bounds.height),
-        },
-        content: Arc::clone(label).into(),
-        color: Some(style.color.unwrap_or(default_label_color)),
-        font_size: nana_ui_core::type_scale::META,
-        font_weight: Some(nana_ui_core::type_scale::MEDIUM),
-    });
-    let track = if heading > 0.0 {
-        let track_y = bounds.y + heading + nana_ui_core::space::SM;
-        LayoutBox {
-            x: bounds.x,
-            y: track_y,
-            width: bounds.width,
-            height: girth.min((bounds.y + bounds.height - track_y).max(0.0)),
-        }
-    } else {
-        LayoutBox {
-            x: bounds.x,
-            y: bounds.y + (bounds.height - girth).max(0.0) / 2.0,
-            width: bounds.width,
-            height: girth.min(bounds.height),
-        }
-    };
     let fill = match mode {
         crate::ProgressMode::Value => LayoutBox {
             width: track.width * ratio,
@@ -693,7 +644,7 @@ pub(super) fn progress_geometry(
     Some(crate::ComponentGeometry::Progress {
         fill,
         track,
-        label: label_region,
+        label,
         cancel,
         corner_radius: corner_radius.max(0.0),
     })

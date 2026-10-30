@@ -744,6 +744,102 @@ pub(crate) fn range_track_lane(content: LayoutBox, parts: &ContentParts, gap: f3
     }
 }
 
+/// A progress bar's heading (its label and cancel target) over its track,
+/// before placement. Intrinsic measure ([`Self::extent`]), placement
+/// ([`progress_parts`]) and the track ([`progress_track`]) all read this one
+/// declaration (#384), so neither its style nor its paint keeps a copy of
+/// the heading's height.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct ProgressInputs {
+    /// The label's line, when it draws one.
+    pub label: Option<f32>,
+    /// The cancel target's square, when it can be cancelled.
+    pub cancel: Option<f32>,
+    /// Between the label and the cancel target.
+    pub cancel_gap: f32,
+    /// Between the heading and the track.
+    pub gap: f32,
+    /// The track's thickness.
+    pub thickness: f32,
+}
+
+impl ProgressInputs {
+    fn heading(&self) -> f32 {
+        self.label
+            .unwrap_or(0.0)
+            .max(self.cancel.unwrap_or(0.0))
+            .max(0.0)
+    }
+
+    /// The bar's content height: the heading, its gap and the track, or the
+    /// track alone.
+    pub fn extent(&self) -> f32 {
+        let heading = self.heading();
+        if heading > 0.0 {
+            heading + self.gap.max(0.0) + self.thickness.max(0.0)
+        } else {
+            self.thickness.max(0.0)
+        }
+    }
+}
+
+/// A progress bar's label and cancel target in the heading row at the top
+/// of `content`: the label takes the row up to the cancel target, which
+/// ends it, each centred down the row.
+pub(crate) fn progress_parts(content: LayoutBox, inputs: ProgressInputs) -> ContentParts {
+    let heading = inputs.heading();
+    if heading <= 0.0 {
+        return NO_CONTENT_PARTS;
+    }
+    let row = LayoutBox {
+        height: heading.min(content.height),
+        ..content
+    };
+    let label = inputs.label.map(|line| {
+        let mut part = FlexPart::new(LayoutPartKind::Label, Size::new(0.0, line));
+        part.grow = 1.0;
+        part.shrink = 1.0;
+        part.gap_after = if inputs.cancel.is_some() {
+            inputs.cancel_gap
+        } else {
+            0.0
+        };
+        part
+    });
+    let cancel = inputs
+        .cancel
+        .map(|cancel| FlexPart::new(LayoutPartKind::TrailingContent, Size::new(cancel, cancel)));
+    let [label, cancel] = flex_parts(
+        row,
+        FlexDirection::Row,
+        JustifySpec::End,
+        false,
+        [label, cancel],
+    );
+    content_parts([label, cancel])
+}
+
+/// Where a progress bar's track runs in `content`: below the heading and
+/// its gap, or centred down the box when there is no heading.
+pub(crate) fn progress_track(content: LayoutBox, inputs: ProgressInputs) -> LayoutBox {
+    let thickness = inputs.thickness.max(0.0);
+    let heading = inputs.heading();
+    if heading > 0.0 {
+        let y = content.y + heading + inputs.gap.max(0.0);
+        LayoutBox {
+            y,
+            height: thickness.min((content.y + content.height - y).max(0.0)),
+            ..content
+        }
+    } else {
+        LayoutBox {
+            y: content.y + (content.height - thickness).max(0.0) / 2.0,
+            height: thickness.min(content.height),
+            ..content
+        }
+    }
+}
+
 /// What a row of `parts` holds beside its label: every glyph's width and
 /// every gap, and the tallest glyph. Intrinsic measure adds the label's own
 /// size to it.
