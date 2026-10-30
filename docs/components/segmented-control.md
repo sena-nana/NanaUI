@@ -44,7 +44,7 @@ segmented().label("输入方式").children((
 SegmentedControl::new().size(ControlSize::Small).fill(true)
 ```
 
-语义组件入口接受 `fill` 和 `wrap` 布尔属性，与 Rust 构造器采用同一套布局。
+语义组件入口接受 `fill` 和 `wrap` 布尔属性，与 Rust 构造器采用同一套布局。没写 `wrap` 时和 `SegmentedControl::new()` 一样默认换行；写 `wrap="false"`（或 `0`、`no`）才保持一行。
 
 ## 竖排
 

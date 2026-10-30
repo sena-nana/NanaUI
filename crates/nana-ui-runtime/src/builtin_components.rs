@@ -964,7 +964,9 @@ impl RegisterableComponent for SegmentedControl {
         component = component
             .size(spec.size)
             .fill(flag_attr(spec, &["fill"]))
-            .wrap(flag_attr(spec, &["wrap"]));
+            // Wraps by default, as `SegmentedControl::new` does; only an
+            // explicit false keeps one line.
+            .wrap(parse_tristate_attr(spec, &["wrap"]).unwrap_or(true));
         if !spec.label.is_empty() {
             component = component.label(Arc::<str>::from(spec.label));
         }
@@ -3488,6 +3490,21 @@ mod tests {
             slots,
             ..SemanticSpec::from_parts(type_id, layout)
         }
+    }
+
+    #[test]
+    fn segmented_control_semantic_wraps_unless_told_not_to() {
+        let ty = ComponentTypeId::new(SegmentedControl::TYPE_ID).unwrap();
+        let layout = Arc::new(LayoutStyle::default());
+        let wrap = |attrs: &[(&str, &str)]| {
+            SegmentedControl::from_semantic(&spec_with(&ty, &layout, attrs, &[], &[], "", "")).wrap
+        };
+        assert!(wrap(&[]), "like SegmentedControl::new");
+        assert!(wrap(&[("chrome", "radio")]));
+        assert!(wrap(&[("wrap", "")]));
+        assert!(wrap(&[("wrap", "true")]));
+        assert!(!wrap(&[("wrap", "false")]));
+        assert!(!wrap(&[("wrap", "0")]));
     }
 
     #[test]
