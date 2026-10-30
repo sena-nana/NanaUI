@@ -2631,6 +2631,10 @@ impl UiWorld {
                 stats.placement_nodes,
                 stats.origin_only_updates,
             );
+            counters.record_layout_stack_per_level(
+                stats.measure_stack_per_level,
+                stats.placement_stack_per_level,
+            );
             counters.record_layout_plans(
                 stats.placement_plans_reused,
                 stats.measure_plans_reused,

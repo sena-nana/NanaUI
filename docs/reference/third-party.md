@@ -4,7 +4,7 @@ NanaUI 自身代码采用 **MIT 或 Apache-2.0** 双许可发布（详见仓库�
 
 ## 核心合规结论
 
-1. **全图宽松许可证（Permissive Only）**：全平台（`--target all`）的 `normal + build` 依赖图共包含 **586 个外部 crate**，全部采用宽松开源许可证（MIT、Apache-2.0、BSD、ISC、Zlib、Unicode-3.0、0BSD、CC0、BSL-1.0、CDLA-Permissive-2.0 及其组合），不存在任何仅提供 Copyleft 的依赖边（两处 `MIT OR Apache-2.0 OR LGPL-2.1-or-later` 均按多选许可取 MIT / Apache-2.0 分支）。
+1. **全图宽松许可证（Permissive Only）**：全平台（`--target all`）的 `normal + build` 依赖图共包含 **572 个外部 crate**，全部采用宽松开源许可证（MIT、Apache-2.0、Apache-2.0 WITH LLVM-exception、BSD、ISC、Zlib、Unicode-3.0、0BSD、CC0、BSL-1.0、CDLA-Permissive-2.0 及其组合），不存在任何仅提供 Copyleft 的依赖边（两处 `MIT OR Apache-2.0 OR LGPL-2.1-or-later` 均按多选许可取 MIT / Apache-2.0 分支）。
 2. **`cryoglyph` 与 `cosmic-text` 已从产品与 `Cargo.lock` 中彻底移除**：两者既不在普通依赖中，也不在 dev 依赖中。CI 中的 `scripts/check-engine-boundary.py` 强制检查全工作区：任何成员在任何 feature 下均不得引入通向 `cosmic-text`、`cryoglyph` 或 `glyphon`（含改名 fork）的非 dev 依赖边，且 `nana-text/src` 下不得出现这三个标识符。
 3. **两处移植代码片段均已就地保留原始版权与许可证声明**（详见下文「显式署名与移植片段」）。
 

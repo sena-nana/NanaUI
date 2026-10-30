@@ -76,6 +76,7 @@ icu_provider = { version = "2.3", features = ["sync"], optional = true }
 icu_time = { version = "2.3", optional = true }
 fixed_decimal = { version = "0.7", features = ["ryu"], optional = true }
 writeable = { version = "0.6", optional = true }
+stacker = "0.1.25"
 
 [[bin]]
 name = "nana-runtime-benchmark"

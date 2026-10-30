@@ -825,8 +825,38 @@ fn block_extent_unread(id: StableNodeId, node: &LayoutInput, world: &UiWorld) ->
 /// flex item at its used main size): a forced measurement is not cached or
 /// planned, since neither is keyed by it; its descendants are measured as
 /// usual.
+///
+/// One level of the measure recursion, on a stack that cannot run out (see
+/// `recursion`).
 #[allow(clippy::too_many_arguments)]
 fn measure_node(
+    id: StableNodeId,
+    forced: Option<Arc<nana_ui_core::LayoutStyle>>,
+    available: Size,
+    parent_direction: Option<FlexDirection>,
+    viewport: LayoutViewport,
+    parent_font_px: f32,
+    nodes: &mut LayoutInputMap<'_>,
+    cache: &mut PassIntrinsicCache,
+    scope: Option<&ScopeContext<'_>>,
+) -> Result<Size, UiWorldError> {
+    super::recursion::level(cache, super::recursion::Recursion::Measure, |cache| {
+        measure_node_level(
+            id,
+            forced,
+            available,
+            parent_direction,
+            viewport,
+            parent_font_px,
+            nodes,
+            cache,
+            scope,
+        )
+    })
+}
+
+#[allow(clippy::too_many_arguments)]
+fn measure_node_level(
     id: StableNodeId,
     forced: Option<Arc<nana_ui_core::LayoutStyle>>,
     available: Size,

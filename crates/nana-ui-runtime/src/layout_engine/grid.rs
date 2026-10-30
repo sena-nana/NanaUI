@@ -937,11 +937,12 @@ pub(super) fn place_grid_2d_items(
     child_font_px: f32,
     nodes: &mut LayoutInputMap<'_>,
     intrinsic: &mut PassIntrinsicCache,
-    output: &mut HashMap<StableNodeId, LayoutBox>,
     scope: Option<&ScopeContext<'_>>,
     // Used border box for an item whose contribution and cell size are unchanged.
     reuse_used: Option<&HashMap<StableNodeId, Size>>,
     mut record: Option<&mut Vec<PlannedChild>>,
+    // Items whose subtrees are placed again: the caller places them.
+    descend: &mut Vec<Descend>,
 ) -> Result<(), UiWorldError> {
     let col_off = grid_track_offsets(&grid.col_sizes, grid.col_gap);
     let row_off = grid_track_offsets(&grid.row_sizes, grid.row_gap);
@@ -1096,19 +1097,13 @@ pub(super) fn place_grid_2d_items(
             } else {
                 None
             };
-            place_node_scoped(
-                item.id,
-                child_origin,
-                child_size,
-                cell,
-                viewport,
-                child_font_px,
-                nodes,
-                intrinsic,
-                output,
-                scope,
-                inherited.as_ref(),
-            )?;
+            descend.push(Descend {
+                child: item.id,
+                origin: child_origin,
+                size: child_size,
+                containing: cell,
+                inherited,
+            });
         }
     }
     Ok(())

@@ -1190,6 +1190,7 @@ fn replay_grid(
         reuse.insert(item.id, entry.size);
     }
     let mut recorded = Vec::with_capacity(solved.items.len());
+    let mut items = Vec::new();
     place_grid_2d_items(
         &solved,
         plan.writing,
@@ -1200,10 +1201,19 @@ fn replay_grid(
         plan.child_font_px,
         nodes,
         intrinsic,
-        output,
         Some(scope),
         Some(&reuse),
         Some(&mut recorded),
+        &mut items,
+    )?;
+    place_descendants(
+        items,
+        viewport,
+        plan.child_font_px,
+        nodes,
+        intrinsic,
+        output,
+        Some(scope),
     )?;
     if recorded.len() != solved.items.len() {
         return Ok(false);
@@ -1228,7 +1238,45 @@ fn replay_grid(
     Ok(true)
 }
 
+/// Places `id` and its subtree: one level of the placement recursion, on a
+/// stack that cannot run out (see `recursion`).
+#[allow(clippy::too_many_arguments)]
 pub(super) fn place_node_scoped(
+    id: StableNodeId,
+    origin: Point,
+    size: Size,
+    containing: Size,
+    viewport: LayoutViewport,
+    parent_font_px: f32,
+    nodes: &mut LayoutInputMap<'_>,
+    intrinsic: &mut PassIntrinsicCache,
+    output: &mut HashMap<StableNodeId, LayoutBox>,
+    scope: Option<&ScopeContext<'_>>,
+    inherited_grid: Option<&InheritedGridTracks>,
+) -> Result<(), UiWorldError> {
+    super::recursion::level(
+        intrinsic,
+        super::recursion::Recursion::Placement,
+        |intrinsic| {
+            place_node_level(
+                id,
+                origin,
+                size,
+                containing,
+                viewport,
+                parent_font_px,
+                nodes,
+                intrinsic,
+                output,
+                scope,
+                inherited_grid,
+            )
+        },
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn place_node_level(
     id: StableNodeId,
     origin: Point,
     size: Size,
@@ -1385,6 +1433,266 @@ pub(super) fn place_node_scoped(
             scope,
         );
     }
+    if place_moved_container(
+        id,
+        origin,
+        size,
+        containing,
+        viewport,
+        parent_font_px,
+        child_font_px,
+        &style_arc,
+        &child_ids,
+        writing,
+        border,
+        padding,
+        lead,
+        content_origin,
+        content,
+        placed_before,
+        inherited_grid,
+        nodes,
+        intrinsic,
+        output,
+        scope,
+    )? {
+        return Ok(());
+    }
+    let had_plan = scope.is_some_and(|scope| scope.retained.container_plans.contains_key(&id));
+    if place_edited_child_list(
+        id,
+        origin,
+        size,
+        containing,
+        viewport,
+        parent_font_px,
+        child_font_px,
+        &style_arc,
+        &child_ids,
+        writing,
+        content_origin,
+        content,
+        inherited_grid,
+        nodes,
+        intrinsic,
+        output,
+        scope,
+    )? {
+        return Ok(());
+    }
+    // A container whose own inputs and whose children's styles and intrinsic
+    // sizes are all unchanged places its children exactly where it did last
+    // pass. Reuse that and touch only the children the change closure reaches;
+    // otherwise a one-child edit pays a full sibling scan. See `ContainerPlan`.
+    if place_from_plan(
+        id,
+        origin,
+        size,
+        containing,
+        viewport,
+        parent_font_px,
+        child_font_px,
+        &style_arc,
+        &child_ids,
+        writing,
+        content_origin,
+        content,
+        inherited_grid,
+        nodes,
+        intrinsic,
+        output,
+        scope,
+    )? {
+        return Ok(());
+    }
+
+    let ChildrenLayout {
+        descend,
+        positioned,
+        packed_floats,
+        plan_entries,
+        gap,
+        plan_sequential,
+        cross_independent,
+        main_dependent,
+        direction,
+        main_reversed,
+        cross_reversed,
+        recorded_grid,
+        #[cfg(feature = "benchmark")]
+        mut child_phase,
+    } = lay_out_children(
+        id,
+        &style_arc,
+        &child_ids,
+        content_origin,
+        content,
+        writing,
+        fonts,
+        child_font_px,
+        viewport,
+        had_plan,
+        nodes,
+        intrinsic,
+        output,
+        scope,
+        inherited_grid,
+    )?;
+    place_descendants(
+        descend,
+        viewport,
+        child_font_px,
+        nodes,
+        intrinsic,
+        output,
+        scope,
+    )?;
+    #[cfg(feature = "benchmark")]
+    if let Some(clock) = child_phase.as_mut() {
+        clock.lap(7);
+    }
+    if let Some(entries) = plan_entries {
+        if had_plan {
+            intrinsic.note_plan_rebuilt();
+        }
+        nodes.container_plans.insert(
+            id,
+            Some(ContainerPlan {
+                content_origin,
+                gap,
+                sequential: plan_sequential,
+                by_child: {
+                    let mut by_child: Vec<(StableNodeId, u32)> = entries
+                        .iter()
+                        .enumerate()
+                        .map(|(index, entry)| (entry.child, index as u32))
+                        .collect();
+                    by_child.sort_unstable_by_key(|(child, _)| *child);
+                    by_child
+                },
+                origin,
+                size,
+                containing,
+                parent_font_px,
+                viewport,
+                style: Arc::clone(&style_arc),
+                children: Arc::clone(&child_ids),
+                content,
+                child_font_px,
+                child_available: content,
+                main_direction: direction,
+                writing,
+                main_reversed,
+                cross_reversed,
+                entries: RefCell::new(entries),
+                placed_main: Cell::new(main_extent(content, direction)),
+                grid: recorded_grid,
+                cross_independent,
+                main_dependent,
+                overlay: Vec::new(),
+            }),
+        );
+    }
+    for packed in &packed_floats.items {
+        let Some(child_style) = nodes.style(packed.id) else {
+            continue;
+        };
+        let child_style = child_style.as_ref();
+        let child_fonts = fonts_of(child_style, child_font_px);
+        if !subtree_unchanged(
+            packed.id,
+            packed.origin,
+            packed.size,
+            content,
+            child_style,
+            child_fonts,
+            writing,
+            scope,
+        ) {
+            place_node_scoped(
+                packed.id,
+                packed.origin,
+                packed.size,
+                content,
+                viewport,
+                child_font_px,
+                nodes,
+                intrinsic,
+                output,
+                scope,
+                None,
+            )?;
+        }
+    }
+    if let Some(overlay) = triggered_menu_overlay(nodes.world, id) {
+        place_triggered_menu_items(
+            id,
+            overlay,
+            LayoutBox {
+                x: origin.x,
+                y: origin.y,
+                width: size.width,
+                height: size.height,
+            },
+            &positioned,
+            viewport,
+            child_font_px,
+            nodes,
+            intrinsic,
+            output,
+            scope,
+        )?;
+        return Ok(());
+    }
+    let mut recorded_overlay = Vec::with_capacity(positioned.len());
+    for child in positioned {
+        if let Some(entry) = place_positioned_child(
+            child,
+            content_origin,
+            content,
+            viewport,
+            child_font_px,
+            writing,
+            nodes,
+            intrinsic,
+            output,
+            scope,
+        )? {
+            recorded_overlay.push(entry);
+        }
+    }
+    if let Some(Some(plan)) = nodes.container_plans.get_mut(&id) {
+        plan.overlay = recorded_overlay;
+    }
+    Ok(())
+}
+
+/// A container that only moved, placed from its plan. False when the plan
+/// cannot answer.
+#[allow(clippy::too_many_arguments)]
+fn place_moved_container(
+    id: StableNodeId,
+    origin: Point,
+    size: Size,
+    containing: Size,
+    viewport: LayoutViewport,
+    parent_font_px: f32,
+    child_font_px: f32,
+    style_arc: &Arc<LayoutStyle>,
+    child_ids: &Arc<Vec<StableNodeId>>,
+    writing: nana_ui_core::WritingContext,
+    border: nana_ui_core::PaddingSpec,
+    padding: nana_ui_core::PaddingSpec,
+    lead: Size,
+    content_origin: Point,
+    content: Size,
+    placed_before: bool,
+    inherited_grid: Option<&InheritedGridTracks>,
+    nodes: &mut LayoutInputMap<'_>,
+    intrinsic: &mut PassIntrinsicCache,
+    output: &mut HashMap<StableNodeId, LayoutBox>,
+    scope: Option<&ScopeContext<'_>>,
+) -> Result<bool, UiWorldError> {
     // A container that only moved: its plan holds where the box stood, and
     // nothing in it is on the frontier. Every box under it moves with it --
     // the output -- and none is measured, nor a plan recorded again, to place
@@ -1394,7 +1702,7 @@ pub(super) fn place_node_scoped(
         && inherited_grid.is_none()
         && let Some(plan) = scope.retained.container_plans.get(&id)
         && plan.origin != origin
-        && Arc::ptr_eq(&plan.children, &child_ids)
+        && Arc::ptr_eq(&plan.children, child_ids)
         && plan.can_reuse_flow(
             plan.origin,
             size,
@@ -1407,7 +1715,7 @@ pub(super) fn place_node_scoped(
             },
             parent_font_px,
             viewport,
-            &style_arc,
+            style_arc,
             writing,
         )
         // A grid solves its tracks again for a box of another size, and a
@@ -1458,13 +1766,33 @@ pub(super) fn place_node_scoped(
             nodes.container_plans.entry(id).or_insert(Some(moved));
         }
         intrinsic.note_placement_plan_reused();
-        return Ok(());
+        return Ok(true);
     }
-    // A container whose own inputs and whose children's styles and intrinsic
-    // sizes are all unchanged places its children exactly where it did last
-    // pass. Reuse that and touch only the children the change closure reaches;
-    // otherwise a one-child edit pays a full sibling scan. See `ContainerPlan`.
-    let had_plan = scope.is_some_and(|scope| scope.retained.container_plans.contains_key(&id));
+    Ok(false)
+}
+
+/// A sequential container with a new child list, placed by replaying its
+/// plan from the edit. False when the plan cannot answer.
+#[allow(clippy::too_many_arguments)]
+fn place_edited_child_list(
+    id: StableNodeId,
+    origin: Point,
+    size: Size,
+    containing: Size,
+    viewport: LayoutViewport,
+    parent_font_px: f32,
+    child_font_px: f32,
+    style_arc: &Arc<LayoutStyle>,
+    child_ids: &Arc<Vec<StableNodeId>>,
+    writing: nana_ui_core::WritingContext,
+    content_origin: Point,
+    content: Size,
+    inherited_grid: Option<&InheritedGridTracks>,
+    nodes: &mut LayoutInputMap<'_>,
+    intrinsic: &mut PassIntrinsicCache,
+    output: &mut HashMap<StableNodeId, LayoutBox>,
+    scope: Option<&ScopeContext<'_>>,
+) -> Result<bool, UiWorldError> {
     // A new child list on a sequential container: the children before the
     // edit stay, the ones after it move, and nothing it kept is measured
     // again. See `ChildListEdit`.
@@ -1472,7 +1800,7 @@ pub(super) fn place_node_scoped(
         && inherited_grid.is_none()
         && let Some(plan) = scope.retained.container_plans.get(&id)
         && plan.sequential
-        && !Arc::ptr_eq(&plan.children, &child_ids)
+        && !Arc::ptr_eq(&plan.children, child_ids)
         && plan.can_reuse_flow(
             origin,
             size,
@@ -1480,13 +1808,13 @@ pub(super) fn place_node_scoped(
             content_origin,
             parent_font_px,
             viewport,
-            &style_arc,
+            style_arc,
             writing,
         )
         && nodes.world.children_layout_style_is_local(id)
         && triggered_menu_overlay(nodes.world, id).is_none()
     {
-        let edit = ChildListEdit::between(&plan.children, &child_ids);
+        let edit = ChildListEdit::between(&plan.children, child_ids);
         let changed_from = if plan.flow_membership_holds(id, Some(&edit), scope, nodes) {
             match check_plan_children(plan, viewport, nodes, intrinsic, scope)? {
                 PlanCheck::Stale => None,
@@ -1499,7 +1827,7 @@ pub(super) fn place_node_scoped(
         if let Some(changed_from) = changed_from
             && let Some(edited) = replay_child_list_edit(
                 plan,
-                &child_ids,
+                child_ids,
                 edit,
                 changed_from,
                 content,
@@ -1532,13 +1860,39 @@ pub(super) fn place_node_scoped(
             )?;
             intrinsic.note_placement_plan_reused();
             intrinsic.note_suffix_replayed();
-            return Ok(());
+            return Ok(true);
         }
     }
+    Ok(false)
+}
+
+/// A container whose plan still holds for its inputs, placed from it, with
+/// only what changed under it placed again. False when the plan cannot
+/// answer and the container walks its children.
+#[allow(clippy::too_many_arguments)]
+fn place_from_plan(
+    id: StableNodeId,
+    origin: Point,
+    size: Size,
+    containing: Size,
+    viewport: LayoutViewport,
+    parent_font_px: f32,
+    child_font_px: f32,
+    style_arc: &Arc<LayoutStyle>,
+    child_ids: &Arc<Vec<StableNodeId>>,
+    writing: nana_ui_core::WritingContext,
+    content_origin: Point,
+    content: Size,
+    inherited_grid: Option<&InheritedGridTracks>,
+    nodes: &mut LayoutInputMap<'_>,
+    intrinsic: &mut PassIntrinsicCache,
+    output: &mut HashMap<StableNodeId, LayoutBox>,
+    scope: Option<&ScopeContext<'_>>,
+) -> Result<bool, UiWorldError> {
     if let Some(scope) = scope
         && inherited_grid.is_none()
         && let Some(plan) = scope.retained.container_plans.get(&id)
-        && Arc::ptr_eq(&plan.children, &child_ids)
+        && Arc::ptr_eq(&plan.children, child_ids)
         && plan.can_reuse_flow(
             origin,
             size,
@@ -1546,7 +1900,7 @@ pub(super) fn place_node_scoped(
             content_origin,
             parent_font_px,
             viewport,
-            &style_arc,
+            style_arc,
             writing,
         )
         && plan.flow_membership_holds(id, None, scope, nodes)
@@ -1608,7 +1962,7 @@ pub(super) fn place_node_scoped(
                     scope,
                 )?;
                 intrinsic.note_placement_plan_reused();
-                return Ok(());
+                return Ok(true);
             }
             // Something the closure reaches resized or restyled. Children
             // before it cannot have moved, so a sequential container replays
@@ -1635,7 +1989,7 @@ pub(super) fn place_node_scoped(
                     )?;
                     intrinsic.note_placement_plan_reused();
                     intrinsic.note_suffix_replayed();
-                    return Ok(());
+                    return Ok(true);
                 }
             }
             PlanCheck::Stale => {}
@@ -1660,7 +2014,7 @@ pub(super) fn place_node_scoped(
                         scope,
                     )?;
                     intrinsic.note_placement_plan_reused();
-                    return Ok(());
+                    return Ok(true);
                 }
                 if replay_grid(
                     id,
@@ -1692,28 +2046,114 @@ pub(super) fn place_node_scoped(
                         scope,
                     )?;
                     intrinsic.note_placement_plan_reused();
-                    return Ok(());
+                    return Ok(true);
                 }
             }
         }
     }
+    Ok(false)
+}
 
+/// A child subtree a container's walk gave a box, placed once the walk's frame
+/// is gone (see `lay_out_children`).
+pub(super) struct Descend {
+    pub(super) child: StableNodeId,
+    pub(super) origin: Point,
+    pub(super) size: Size,
+    /// Its containing block: the container's content box, or its grid cell.
+    pub(super) containing: Size,
+    pub(super) inherited: Option<InheritedGridTracks>,
+}
+
+/// Places each of `children` in order.
+fn place_descendants(
+    children: Vec<Descend>,
+    viewport: LayoutViewport,
+    child_font_px: f32,
+    nodes: &mut LayoutInputMap<'_>,
+    intrinsic: &mut PassIntrinsicCache,
+    output: &mut HashMap<StableNodeId, LayoutBox>,
+    scope: Option<&ScopeContext<'_>>,
+) -> Result<(), UiWorldError> {
+    for child in children {
+        place_node_scoped(
+            child.child,
+            child.origin,
+            child.size,
+            child.containing,
+            viewport,
+            child_font_px,
+            nodes,
+            intrinsic,
+            output,
+            scope,
+            child.inherited.as_ref(),
+        )?;
+    }
+    Ok(())
+}
+
+/// What a container's walk decided for its children, before any in-flow
+/// child is placed: where each goes, and the plan it would record.
+struct ChildrenLayout {
+    /// In-flow children whose subtrees are placed again, in order.
+    descend: Vec<Descend>,
+    positioned: Vec<StableNodeId>,
+    packed_floats: PackedFloats,
+    plan_entries: Option<Vec<PlannedChild>>,
+    gap: f32,
+    plan_sequential: bool,
+    cross_independent: bool,
+    main_dependent: bool,
+    direction: FlexDirection,
+    main_reversed: bool,
+    cross_reversed: bool,
+    recorded_grid: Option<GridTrackPlan>,
+    #[cfg(feature = "benchmark")]
+    child_phase: Option<super::plan_stats::PhaseClock>,
+}
+
+/// A container's walk of its children: measure them, pack floats and lines,
+/// align, and decide every in-flow child's box. It places no in-flow
+/// subtree: the caller descends into `descend`
+/// once this frame is gone, so a level of the placement recursion does not
+/// carry the walk's locals (see `recursion`).
+#[allow(clippy::too_many_arguments)]
+fn lay_out_children(
+    id: StableNodeId,
+    style_arc: &Arc<LayoutStyle>,
+    child_ids: &Arc<Vec<StableNodeId>>,
+    content_origin: Point,
+    content: Size,
+    writing: nana_ui_core::WritingContext,
+    fonts: FontSizeContext,
+    child_font_px: f32,
+    viewport: LayoutViewport,
+    had_plan: bool,
+    nodes: &mut LayoutInputMap<'_>,
+    intrinsic: &mut PassIntrinsicCache,
+    output: &mut HashMap<StableNodeId, LayoutBox>,
+    scope: Option<&ScopeContext<'_>>,
+    inherited_grid: Option<&InheritedGridTracks>,
+) -> Result<ChildrenLayout, UiWorldError> {
+    let style = style_arc.as_ref();
+    let mut descend = Vec::new();
     if had_plan {
         intrinsic.note_plan_miss();
     }
     let (mut flow, descendant_dependent_flow) =
-        collect_flow_children_reporting(&child_ids, nodes, style)?;
+        collect_flow_children_reporting(child_ids, nodes, style)?;
     if let Some(scope) = scope {
-        retire_omitted_children(&child_ids, nodes, output, scope);
+        retire_omitted_children(child_ids, nodes, output, scope);
     }
-    let mut positioned = collect_positioned_children(&child_ids, nodes)?;
+    let mut positioned = collect_positioned_children(child_ids, nodes)?;
     let floated = if style
         .display
         .is_some_and(|d| d.is_flex_container() || d.is_grid_container())
     {
         Vec::new()
     } else {
-        collect_floated_children(&child_ids, nodes)?
+        collect_floated_children(child_ids, nodes)?
     };
     if !floated.is_empty() {
         flow.retain(|id| !floated.contains(id));
@@ -1776,7 +2216,7 @@ pub(super) fn place_node_scoped(
     let kept = scope
         .and_then(|scope| Some((scope.retained.container_plans.get(&id)?, scope)))
         .filter(|(plan, _)| {
-            !Arc::ptr_eq(&plan.children, &child_ids)
+            !Arc::ptr_eq(&plan.children, child_ids)
                 && plan.grid.is_none()
                 && !grid_2d
                 && (plan.main_direction, plan.writing, plan.viewport)
@@ -1905,10 +2345,10 @@ pub(super) fn place_node_scoped(
             child_font_px,
             nodes,
             intrinsic,
-            output,
             scope,
             None,
             plan_entries.as_mut(),
+            &mut descend,
         )?;
     } else {
         let wrap = if ifc { FlexWrap::Wrap } else { style.flex_wrap };
@@ -2505,19 +2945,13 @@ pub(super) fn place_node_scoped(
                     writing,
                     scope,
                 ) {
-                    place_node_scoped(
+                    descend.push(Descend {
                         child,
-                        child_origin,
-                        child_size,
-                        content,
-                        viewport,
-                        child_font_px,
-                        nodes,
-                        intrinsic,
-                        output,
-                        scope,
-                        None,
-                    )?;
+                        origin: child_origin,
+                        size: child_size,
+                        containing: content,
+                        inherited: None,
+                    });
                 }
                 cursor += main_extent(child_size, direction)
                     + main_lead(margin)
@@ -2527,124 +2961,22 @@ pub(super) fn place_node_scoped(
             cross_cursor += line_cross + extra_cross_gap;
         }
     }
-    #[cfg(feature = "benchmark")]
-    if let Some(clock) = child_phase.as_mut() {
-        clock.lap(7);
-    }
-    if let Some(entries) = plan_entries {
-        if had_plan {
-            intrinsic.note_plan_rebuilt();
-        }
-        nodes.container_plans.insert(
-            id,
-            Some(ContainerPlan {
-                content_origin,
-                gap,
-                sequential: plan_sequential,
-                by_child: {
-                    let mut by_child: Vec<(StableNodeId, u32)> = entries
-                        .iter()
-                        .enumerate()
-                        .map(|(index, entry)| (entry.child, index as u32))
-                        .collect();
-                    by_child.sort_unstable_by_key(|(child, _)| *child);
-                    by_child
-                },
-                origin,
-                size,
-                containing,
-                parent_font_px,
-                viewport,
-                style: Arc::clone(&style_arc),
-                children: Arc::clone(&child_ids),
-                content,
-                child_font_px,
-                child_available: content,
-                main_direction: direction,
-                writing,
-                main_reversed,
-                cross_reversed,
-                entries: RefCell::new(entries),
-                placed_main: Cell::new(main_extent(content, direction)),
-                grid: recorded_grid,
-                cross_independent,
-                main_dependent,
-                overlay: Vec::new(),
-            }),
-        );
-    }
-    for packed in &packed_floats.items {
-        let Some(child_style) = nodes.style(packed.id) else {
-            continue;
-        };
-        let child_style = child_style.as_ref();
-        let child_fonts = fonts_of(child_style, child_font_px);
-        if !subtree_unchanged(
-            packed.id,
-            packed.origin,
-            packed.size,
-            content,
-            child_style,
-            child_fonts,
-            writing,
-            scope,
-        ) {
-            place_node_scoped(
-                packed.id,
-                packed.origin,
-                packed.size,
-                content,
-                viewport,
-                child_font_px,
-                nodes,
-                intrinsic,
-                output,
-                scope,
-                None,
-            )?;
-        }
-    }
-    if let Some(overlay) = triggered_menu_overlay(nodes.world, id) {
-        place_triggered_menu_items(
-            id,
-            overlay,
-            LayoutBox {
-                x: origin.x,
-                y: origin.y,
-                width: size.width,
-                height: size.height,
-            },
-            &positioned,
-            viewport,
-            child_font_px,
-            nodes,
-            intrinsic,
-            output,
-            scope,
-        )?;
-        return Ok(());
-    }
-    let mut recorded_overlay = Vec::with_capacity(positioned.len());
-    for child in positioned {
-        if let Some(entry) = place_positioned_child(
-            child,
-            content_origin,
-            content,
-            viewport,
-            child_font_px,
-            writing,
-            nodes,
-            intrinsic,
-            output,
-            scope,
-        )? {
-            recorded_overlay.push(entry);
-        }
-    }
-    if let Some(Some(plan)) = nodes.container_plans.get_mut(&id) {
-        plan.overlay = recorded_overlay;
-    }
-    Ok(())
+    Ok(ChildrenLayout {
+        descend,
+        positioned,
+        packed_floats,
+        plan_entries,
+        gap,
+        plan_sequential,
+        cross_independent,
+        main_dependent,
+        direction,
+        main_reversed,
+        cross_reversed,
+        recorded_grid,
+        #[cfg(feature = "benchmark")]
+        child_phase,
+    })
 }
 
 /// Whether an in-flow child's used box reads its container's content box.

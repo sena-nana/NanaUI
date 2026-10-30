@@ -18,6 +18,7 @@ pub(crate) use measure::{
     spec_tracks_containing_block,
 };
 mod placement;
+mod recursion;
 use placement::*;
 mod overlay;
 use overlay::*;
@@ -575,6 +576,8 @@ impl RuntimeLayoutEngine {
             }
         }
         intrinsic.execution_stats.dynamic = intrinsic.dynamic.counters;
+        intrinsic.execution_stats.measure_stack_per_level = intrinsic.measure_levels.per_level;
+        intrinsic.execution_stats.placement_stack_per_level = intrinsic.placement_levels.per_level;
         let intrinsic_counters = intrinsic.counters();
         retained.execution_stats = intrinsic.execution_stats;
         let universe = if force_full { nodes.len() } else { world.len() };
@@ -3031,6 +3034,11 @@ pub(crate) struct LayoutExecutionStats {
     pub retain_sweeps: usize,
     /// What Dynamic Layout did this pass.
     pub dynamic: nana_ui_core::DynamicLayoutCounters,
+    /// Most stack one level of the measure recursion took, in bytes; 0 where
+    /// the platform cannot tell. See `recursion`.
+    pub measure_stack_per_level: usize,
+    /// The same for the placement recursion.
+    pub placement_stack_per_level: usize,
 }
 
 /// Per-pass used-size memo.  The public [`crate::IntrinsicCache`] owns the
@@ -3068,6 +3076,9 @@ struct PassIntrinsicCache {
     execution_stats: LayoutExecutionStats,
     /// Dynamic Layout state for the pass.
     dynamic: dynamic::DynamicPass,
+    /// The open levels of the measure and placement recursions.
+    measure_levels: recursion::LevelStack,
+    placement_levels: recursion::LevelStack,
 }
 
 impl PassIntrinsicCache {
@@ -3090,6 +3101,15 @@ impl PassIntrinsicCache {
             extra_counters: crate::IntrinsicCacheCounters::default(),
             execution_stats: LayoutExecutionStats::default(),
             dynamic: dynamic::DynamicPass::default(),
+            measure_levels: recursion::LevelStack::default(),
+            placement_levels: recursion::LevelStack::default(),
+        }
+    }
+
+    fn levels(&mut self, recursion: recursion::Recursion) -> &mut recursion::LevelStack {
+        match recursion {
+            recursion::Recursion::Measure => &mut self.measure_levels,
+            recursion::Recursion::Placement => &mut self.placement_levels,
         }
     }
 
@@ -3794,6 +3814,7 @@ fn finite_extent(value: f32) -> f32 {
 }
 
 mod issue258;
+mod stack_budget;
 #[cfg(test)]
 mod tests;
 

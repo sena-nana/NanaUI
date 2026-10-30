@@ -130,6 +130,12 @@ pub struct WorkCounters {
     pub layout_result_changed: usize,
     /// Placement writes that moved the origin and kept the measured size.
     pub layout_origin_only_updates: usize,
+    /// Most stack, in bytes, one level of the measure recursion took: the
+    /// cost a deeper tree pays per level. 0 where the platform cannot tell.
+    /// A frame keeps the largest of its passes.
+    pub layout_measure_stack_per_level: usize,
+    /// The same for the placement recursion.
+    pub layout_placement_stack_per_level: usize,
     /// Publish batches that wrote at least one changed layout result.
     pub layout_delta_commits: usize,
     /// Children result publication looked at: the covered children a held
@@ -632,6 +638,7 @@ accumulate_counters! {
     /// recorded them.
     WorkCounters {
         latest: entities_total;
+        max: layout_measure_stack_per_level, layout_placement_stack_per_level;
         nested: i18n, dynamic;
         sum: entities_changed, entities_spawned, entities_despawned, style_processed, text_shaped,
             layout_nodes, layout_frontier_seeds, layout_frontier_seed_merges,
@@ -930,6 +937,13 @@ impl WorkCounters {
         self.layout_origin_only_updates = self
             .layout_origin_only_updates
             .saturating_add(origin_only_updates);
+    }
+
+    /// Keep the most stack one level of each layout recursion took.
+    pub fn record_layout_stack_per_level(&mut self, measure: usize, placement: usize) {
+        self.layout_measure_stack_per_level = self.layout_measure_stack_per_level.max(measure);
+        self.layout_placement_stack_per_level =
+            self.layout_placement_stack_per_level.max(placement);
     }
 
     /// `delta_commits` is 1 only when at least one result object was replaced.
