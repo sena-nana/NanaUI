@@ -125,6 +125,8 @@ widget(ListItem::new("模型").tools_rest(RowToolsRest::Reserve))
 
 视图构造器的 `.leading` / `.trailing` / `.tools` 会把槽放进这条带子，所以先在 `ListItem` 上设好 `auto_height` 或 `trailing_align`，再给槽。经 `AppContext::set_list_item_slots` 挂的槽要自己带带子。内容槽的第一行按行自己的行盒算。
 
+带子是给槽那一刻定下的，之后不再跟着变：给槽之后才设的 `auto_height` / `trailing_align`、或用 `.bind` 在运行中切换它们，行的竖向垫高会跟着新的对齐变，槽却不会进出带子，两者就错开了。要在两种对齐之间切换，就按对齐分别建行，不要绑定这两个属性。
+
 ## 三种状态
 
 能点会做事的行用默认；只展示信息、从来不能点的行用 `.read_only(true)`（不响应悬停和点击，文字照常颜色）；本来能做、现在不能的行用 `.disabled(true)`（变灰，并说明原因）。只读不要写成禁用。见 [版式与组合](../guide/composition.md#列表行)。

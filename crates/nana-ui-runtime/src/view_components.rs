@@ -1739,7 +1739,11 @@ pub enum TrailingAlign {
     /// The default for [`ListItem::auto_height`] rows. The view builder
     /// (`El::leading` / `trailing` / `tools`) puts a slot in its band, so set
     /// this (or `auto_height`) on the row before giving it slots; a slot set
-    /// through `AppContext::set_list_item_slots` brings its own band.
+    /// through `AppContext::set_list_item_slots` brings its own band. The
+    /// band is fixed when the slot is given: setting `auto_height` or the
+    /// alignment after the slots, or binding either, changes the row's
+    /// padding but does not move a slot into or out of its band, so build a
+    /// row per alignment instead of switching one.
     FirstLine,
 }
 

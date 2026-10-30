@@ -6,8 +6,8 @@
 
 ```rust
 use nana_ui::runtime::view::{heading_row, heading_tools, text, widget};
-use nana_ui::runtime::{IconButton, TypeRole};
-use nana_ui_core::Icon;
+use nana_ui::runtime::{Icon, IconButton};
+use nana_ui::theme::TypeRole;
 
 heading_row(
     text("模型").role(TypeRole::Meta),
