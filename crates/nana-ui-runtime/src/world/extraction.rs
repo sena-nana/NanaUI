@@ -51,6 +51,43 @@ impl UiWorld {
 }
 
 impl UiWorld {
+    /// Write the installed palette's paint colours over `style`, `id`'s
+    /// resolved style from before a palette-only theme switch, which
+    /// re-resolves no style. Returns the text colour.
+    fn repaint_style(
+        &self,
+        id: StableNodeId,
+        style: &mut Arc<ComputedStyle>,
+        inherited_color: Option<[f32; 4]>,
+    ) -> Option<[f32; 4]> {
+        let (foreground, color, background, border_color) =
+            self.palette_paint_colors(id, inherited_color);
+        if style.foreground != foreground
+            || style.color != color
+            || style.background != background
+            || style.border_color != border_color
+        {
+            let style = Arc::make_mut(style);
+            style.foreground = foreground;
+            style.color = color;
+            style.background = background;
+            style.border_color = border_color;
+        }
+        color
+    }
+
+    /// `id`'s resolved style in the installed palette: what extraction
+    /// paints it with.
+    pub(super) fn painted_style(&self, id: StableNodeId) -> Option<Arc<ComputedStyle>> {
+        let node = self.nodes.get(id)?;
+        let mut style = Arc::clone(&node.resolved.0);
+        if node.resolved.1 != self.palette_epoch {
+            let inherited_color = self.inherited_palette_color(node.hierarchy.parent);
+            self.repaint_style(id, &mut style, inherited_color);
+        }
+        Some(style)
+    }
+
     pub(super) fn extract_node_memo(
         &self,
         id: StableNodeId,
@@ -109,21 +146,8 @@ impl UiWorld {
                     .copied()
                     .or_else(|| self.inherited_palette_color(Some(parent)))
             });
-            let (foreground, color, background, border_color) =
-                self.palette_paint_colors(id, inherited_color);
-            if let Some(color) = color {
+            if let Some(color) = self.repaint_style(id, &mut style, inherited_color) {
                 memo.color.insert(id, color);
-            }
-            if style.foreground != foreground
-                || style.color != color
-                || style.background != background
-                || style.border_color != border_color
-            {
-                let style = Arc::make_mut(&mut style);
-                style.foreground = foreground;
-                style.color = color;
-                style.background = background;
-                style.border_color = border_color;
             }
         }
         if !self.inline_presentation_visible_memo(id, memo) {

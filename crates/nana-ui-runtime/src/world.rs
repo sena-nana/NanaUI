@@ -3267,6 +3267,10 @@ impl UiWorld {
             .unwrap_or(&self.record(id).style)
     }
 
+    /// `id`'s resolved style. A palette-only theme switch re-resolves no
+    /// style, so its paint colours can be the previous palette's until the
+    /// node restyles; [`Self::component_geometry`] and extraction read them
+    /// in the installed palette.
     pub fn computed_style(&self, id: StableNodeId) -> Option<&ComputedStyle> {
         self.nodes.get(id).map(|node| node.resolved.0.as_ref())
     }
@@ -3569,10 +3573,12 @@ impl UiWorld {
         self.nodes.visual(id)
     }
 
+    /// The chrome `id` paints, its text colours in the installed palette as
+    /// extraction paints them (#398).
     pub fn component_geometry(&self, id: StableNodeId) -> Option<crate::ComponentGeometry> {
         let visual = self.nodes.visual(id)?;
-        let style = self.nodes.get(id)?.resolved.0.as_ref();
-        self.derive_component_geometry(id, visual, style)
+        let style = self.painted_style(id)?;
+        self.derive_component_geometry(id, visual, &style)
     }
 
     pub(crate) fn component_content_box(&self, id: StableNodeId) -> Option<LayoutBox> {
@@ -6421,6 +6427,7 @@ mod issue389;
 mod issue392;
 mod issue396;
 mod issue397;
+mod issue398;
 mod reflow_oracle;
 #[cfg(test)]
 mod tests;
