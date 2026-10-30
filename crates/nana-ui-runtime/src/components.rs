@@ -2379,9 +2379,10 @@ impl NodeStyle {
         self
     }
 
-    /// Name the gap step between children. See [`Self::gap_step`].
-    pub fn gap_step(mut self, step: nana_ui_core::SpacingStep) -> Self {
-        self.gap_step = Some(step);
+    /// Name the gap step between children, or the [`nana_ui_core::SpacingRole`]
+    /// that stands for it. See [`Self::gap_step`].
+    pub fn gap_step(mut self, step: impl Into<nana_ui_core::SpacingStep>) -> Self {
+        self.gap_step = Some(step.into());
         self
     }
 

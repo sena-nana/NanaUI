@@ -6370,8 +6370,8 @@ impl Stack {
         self
     }
 
-    /// 子项间距档位，跟随安装主题的间距刻度，覆盖构造时给的 `gap`。
-    pub fn gap_step(mut self, step: nana_ui_core::SpacingStep) -> Self {
+    /// 子项间距档位（或代表它的 `SpacingRole`），跟随安装主题的间距刻度，覆盖构造时给的 `gap`。
+    pub fn gap_step(mut self, step: impl Into<nana_ui_core::SpacingStep>) -> Self {
         self.style = self.style.gap_step(step);
         self
     }

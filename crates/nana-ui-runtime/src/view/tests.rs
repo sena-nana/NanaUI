@@ -6117,3 +6117,81 @@ fn an_explicit_trailing_align_wins_over_auto_height() {
     assert!(row.height > 3.0 * line);
     assert!((middle(slot) - middle(row)).abs() < 0.5, "{slot:?} {row:?}");
 }
+
+/// An inset group: the title on the rows' text line and a role's step above
+/// the block, the group's own actions as close under it, and the rows on
+/// the block's inset without a second one.
+#[test]
+fn an_inset_settings_group_attaches_its_title_and_footer() {
+    let (mut cx, document, parent) = setup();
+    let view = cx
+        .mount_view(parent, || {
+            settings_group(
+                Some("甲".into()),
+                vec![
+                    group_row(widget(fixed(None, 30.0))),
+                    group_row(widget(fixed(None, 30.0))),
+                ],
+            )
+            .inset()
+            .footer(widget(fixed(Some(60.0), 20.0)))
+        })
+        .unwrap();
+    let root = view.roots()[0];
+    cx.layout_document(document, LayoutViewport::new(320.0, 400.0))
+        .unwrap();
+    let rect = |id| cx.world().layout_box(id).unwrap();
+    let [title, block, footer] = children(&cx, root)[..] else {
+        panic!("title, block and footer");
+    };
+    let text = children(&cx, title)[0];
+    let attach = nana_ui_core::space::role(nana_ui_core::SpacingRole::Attach);
+    let (title_box, text, block_box, footer) = (rect(title), rect(text), rect(block), rect(footer));
+    assert!((text.x - (block_box.x + nana_ui_core::space::XL)).abs() < 0.5);
+    assert!((block_box.y - (title_box.y + title_box.height) - attach).abs() < 0.5);
+    assert!((footer.y - (block_box.y + block_box.height) - attach).abs() < 0.5);
+    let group = children(&cx, block)[0];
+    let first = children(&cx, group)[0];
+    assert!((rect(first).x - (block_box.x + nana_ui_core::space::XL)).abs() < 0.5);
+}
+
+/// A footer bar: a hairline over its buttons, which stand a button's gap
+/// apart; an expansion body stands its content on the lead it is given.
+#[test]
+fn a_footer_bar_and_an_expansion_body_keep_their_lines() {
+    let (mut cx, document, parent) = setup();
+    let view = cx
+        .mount_view(parent, || {
+            column().children((
+                widget(footer_bar()).children((
+                    widget(fixed(Some(40.0), 20.0)),
+                    widget(fixed(Some(40.0), 20.0)),
+                )),
+                expansion_body(24.0, widget(fixed(None, 20.0))),
+            ))
+        })
+        .unwrap();
+    let root = view.roots()[0];
+    cx.layout_document(document, LayoutViewport::new(320.0, 400.0))
+        .unwrap();
+    let rect = |id| cx.world().layout_box(id).unwrap();
+    let [bar, body] = children(&cx, root)[..] else {
+        panic!("a bar and a body");
+    };
+    let [one, two] = children(&cx, bar)[..] else {
+        panic!("two buttons");
+    };
+    let (bar_box, one, two) = (rect(bar), rect(one), rect(two));
+    let style = cx.world().node_style(bar).unwrap();
+    assert_eq!(style.layout.border_top_width, Some(nana_ui_core::HAIRLINE));
+    assert_eq!(
+        style.border,
+        Some(nana_ui_core::SemanticColorRole::BorderSoft)
+    );
+    assert!((one.y - (bar_box.y + nana_ui_core::space::XL + nana_ui_core::HAIRLINE)).abs() < 0.5);
+    let buttons = nana_ui_core::space::role(nana_ui_core::SpacingRole::Buttons);
+    assert!((two.x - (one.x + one.width) - buttons).abs() < 0.5);
+    let group = children(&cx, body)[0];
+    let content = children(&cx, group)[0];
+    assert!((rect(content).x - (rect(root).x + 24.0)).abs() < 0.5);
+}

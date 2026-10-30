@@ -32,7 +32,7 @@ pub use nana_ui_core::{
     LineRole, MotionRole, MotionTokens, OpacityTokens, RadiusTier, RecipeText, SCROLLBAR_METRICS,
     SWITCH_METRICS, ScrollbarMetrics, ScrollbarMotion, ScrollbarRecipe, ScrollbarSkin,
     ScrollbarTransition, ScrollbarVisibility, SemanticColor, SemanticPalette, ShadowToken,
-    SpacingStep, SpacingTokens, SquareSize, StateLayer, StatusRecipe, SurfaceMaterial,
+    SpacingRole, SpacingStep, SpacingTokens, SquareSize, StateLayer, StatusRecipe, SurfaceMaterial,
     SurfacePadding, SurfaceRole, SurfaceSpec, SurfaceTokens, SwitchMetrics, TOUCH_METRICS,
     TREE_METRICS, TextWeight, ThemeAppearance, ThemeChoice, ThemeCompileError, ThemeDefinition,
     ThemeExpr, ThemeGeneration, ThemeId, ThemeIdentity, ThemeLayout, ThemeMetrics, ThemeProperty,

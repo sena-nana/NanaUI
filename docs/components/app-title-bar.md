@@ -92,6 +92,7 @@ widget(AppTitleBar::new("Nana").drag_enabled(true)).trailing(button("分享"))
 | `.native_controls` | — | 平台默认用系统按钮时为真，控件槽是留给系统按钮的空位；否则槽里是自定义的最小化、最大化和关闭。原生占位即使先隐藏也会装上，方便以后再显示时有盒子可跟 |
 | `.maximized` | — | 交给窗口按钮的外观 |
 | `.center_width` | — | 中间标题列的宽度 |
+| `.edge_inset` | `SpacingStep::Sm` | 前导槽离标题栏左边、尾随槽离右边的距离。标题栏放卡片标题时给卡片自己的内边距（如 `Xxxl`），标题和工具就站在卡片的内容线上，应用不用再减去这一档。原生按钮占位仍贴左边，自定义窗口按钮仍贴右边 |
 
 ## 事件
 

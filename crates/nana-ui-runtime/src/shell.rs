@@ -95,6 +95,8 @@ pub struct AppTitleBar {
     pub show_window_controls: bool,
     pub maximized: bool,
     pub style: NodeStyle,
+    /// How far the slots stand in from the bar's outer edges.
+    pub(crate) edge_inset: nana_ui_core::SpacingStep,
 }
 
 impl AppTitleBar {
@@ -112,7 +114,20 @@ impl AppTitleBar {
             show_window_controls: true,
             maximized: false,
             style: NodeStyle::default(),
+            edge_inset: nana_ui_core::SpacingStep::Sm,
         }
+    }
+
+    /// How far the leading slot's content stands in from the bar's left
+    /// edge, and the trailing slot's from its right edge: `Sm` by default.
+    /// A bar heading a card gives the card's own inset, so its title and
+    /// tools stand on the card's content line without the application
+    /// taking the bar's `Sm` back off its own padding. The window controls
+    /// keep their place: the native placeholder still sits flush at the
+    /// leading edge and custom controls still hug the trailing edge.
+    pub fn edge_inset(mut self, step: nana_ui_core::SpacingStep) -> Self {
+        self.edge_inset = step;
+        self
     }
 
     /// Removes only the title-bar background, preserving foreground and slot
@@ -199,6 +214,12 @@ impl AppTitleBar {
     pub fn style(mut self, style: NodeStyle) -> Self {
         self.style = style;
         self
+    }
+
+    /// [`Self::edge_inset`] in logical px at the default metrics, beside the
+    /// theme intent that follows an installed theme.
+    fn edge_px(&self) -> f32 {
+        nana_ui_core::SpacingTokens::DEFAULT.resolve(self.edge_inset)
     }
 
     fn resolved_center_width(&self) -> f32 {
@@ -289,7 +310,7 @@ impl AppTitleBar {
                             if self.leads_with_native_controls() && self.controls.is_some() {
                                 0.0
                             } else {
-                                SLOT_PADDING + self.chrome_padding_left()
+                                self.edge_px() + self.chrome_padding_left()
                             },
                         ));
                         layout.padding_right = Some(LengthSpec::Px(SLOT_PADDING));
@@ -319,12 +340,12 @@ impl AppTitleBar {
                         layout.theme.padding_left =
                             Some(crate::theme_intent::space(nana_ui_core::SpacingStep::Sm));
                         // Custom controls hug the window edge; native or
-                        // absent controls keep the shared slot padding.
+                        // absent controls keep the bar's edge inset.
                         layout.padding_right = Some(LengthSpec::Px(
                             if self.show_window_controls && !self.native_controls {
                                 0.0
                             } else {
-                                SLOT_PADDING
+                                self.edge_px()
                             },
                         ));
                         layout.padding_top = Some(LengthSpec::Px(0.0));
@@ -344,9 +365,8 @@ impl AppTitleBar {
             if let Some(leading) = self.leading.filter(|&n| is_bar_child(n)) {
                 patch_layout(world, mutations, leading, |layout| {
                     apply_hug_slot(layout, AlignSpec::Center, JustifySpec::Start);
-                    layout.padding_left = Some(LengthSpec::Px(SLOT_PADDING));
-                    layout.theme.padding_left =
-                        Some(crate::theme_intent::space(nana_ui_core::SpacingStep::Sm));
+                    layout.padding_left = Some(LengthSpec::Px(self.edge_px()));
+                    layout.theme.padding_left = Some(crate::theme_intent::space(self.edge_inset));
                     layout.padding_right = Some(LengthSpec::Px(SLOT_PADDING));
                     layout.theme.padding_right =
                         Some(crate::theme_intent::space(nana_ui_core::SpacingStep::Sm));
@@ -365,9 +385,8 @@ impl AppTitleBar {
                     layout.padding_left = Some(LengthSpec::Px(SLOT_PADDING));
                     layout.theme.padding_left =
                         Some(crate::theme_intent::space(nana_ui_core::SpacingStep::Sm));
-                    layout.padding_right = Some(LengthSpec::Px(SLOT_PADDING));
-                    layout.theme.padding_right =
-                        Some(crate::theme_intent::space(nana_ui_core::SpacingStep::Sm));
+                    layout.padding_right = Some(LengthSpec::Px(self.edge_px()));
+                    layout.theme.padding_right = Some(crate::theme_intent::space(self.edge_inset));
                     layout.padding_top = Some(LengthSpec::Px(0.0));
                     layout.padding_bottom = Some(LengthSpec::Px(0.0));
                 });
@@ -2967,6 +2986,59 @@ mod tests {
             .canonical_layout_box(leading.stable_id())
             .unwrap();
         assert!(leading.x < NATIVE_WINDOW_CONTROLS_WIDTH);
+    }
+
+    /// A bar heading a card stands its slots on the card's content line:
+    /// the edge inset replaces the slots' `Sm` at the outer edges only.
+    #[test]
+    fn edge_inset_moves_the_slots_off_the_outer_edges() {
+        let width = 400.0;
+        let inset = nana_ui_core::space::XXXL;
+        for (step, expected) in [
+            (nana_ui_core::SpacingStep::Sm, nana_ui_core::space::SM),
+            (nana_ui_core::SpacingStep::Xxxl, inset),
+        ] {
+            let mut context = AppContext::new();
+            let leading = context
+                .create_component(
+                    document(),
+                    IconButton::new(Icon::Sidebar, "sidebar").size(ControlSize::Small),
+                )
+                .unwrap();
+            let trailing = context
+                .create_component(
+                    document(),
+                    IconButton::new(Icon::Close, "close").size(ControlSize::Small),
+                )
+                .unwrap();
+            let bar = context
+                .create_component(
+                    document(),
+                    AppTitleBar::new("")
+                        .show_window_controls(false)
+                        .leading(leading.stable_id())
+                        .trailing(trailing.stable_id())
+                        .edge_inset(step),
+                )
+                .unwrap();
+            context.assemble_app_title_bar(bar).unwrap();
+            context
+                .layout_document(document(), LayoutViewport::new(width, 400.0))
+                .unwrap();
+            let world = context.world();
+            let lead = world.canonical_layout_box(leading.stable_id()).unwrap();
+            let trail = world.canonical_layout_box(trailing.stable_id()).unwrap();
+            assert!(
+                (lead.x - expected).abs() < 0.5,
+                "{step:?}: leading at {}",
+                lead.x
+            );
+            assert!(
+                (width - (trail.x + trail.width) - expected).abs() < 0.5,
+                "{step:?}: trailing ends {} from the edge",
+                width - (trail.x + trail.width)
+            );
+        }
     }
 
     #[test]

@@ -25,6 +25,26 @@ settings_group(Some("输入".into()), vec![
 
 `settings_row` 自己没有左右内边距，所以同样要上内容线。没上的行（设置行、按钮、说明文字都一样）会贴着卡片边缘，和缩进的细线对不齐。
 
+## 浅底分组
+
+`.inset()` 把凸起卡片换成无描边的浅底块（`group_block`）：标题与行文字站在同一条线上，离块 `SpacingRole::Attach`。块的内边距就是内容线，所以行用 `group_row(view)`，不要再 `group_row_on_line`；行间细线铺满块的内容宽度。
+
+```rust
+use nana_ui::runtime::view::{group_row, settings_group, settings_row};
+
+settings_group(Some("连接".into()), vec![
+    group_row(settings_row("地址").control(address)),
+    group_row(settings_row("端口").control(port)),
+])
+.inset()
+```
+
+自己拼标题、或者块里放的不是 `group_row` 时，直接用 `group_block(children)`：它是同一块浅底，里面一层 `SettingsGroup` 管首末与细线；`.quiet()` 去掉底色和内边距，`.gap(step)` 给成员之间的间距。
+
+## 分组自己的动作
+
+`.footer(view)` 放在卡片或块下面，离它和标题离它一样近（凸起卡片 `Md`，浅底块 `Attach`），读起来属于这一组而不是下一组。推进任务的按钮放这里，不放进标题工具。
+
 ## 隐藏行
 
 `group_row(view).visible(cond)`：隐藏的行带走它的分隔线，第一行也一样——分隔线只在两个显示的行之间显示。不要只隐藏行里的内容，那会留下空行。
@@ -48,6 +68,9 @@ settings_group(Some("输入".into()), vec![
 | `group_row_on_line(view)` | 一行，放到内容线上 |
 | `GroupRow::visible(cond)` | 按条件显示，隐藏时带走分隔线 |
 | `content_line(view)` | 把任意视图放到内容线上（只加水平内边距） |
+| `.inset()` | 浅底块代替凸起卡片，标题与行文字同线，行用 `group_row` |
+| `.footer(view)` | 分组自己的动作，紧跟在卡片或块下面 |
+| `group_block(children)` | 不带标题的浅底块；`.quiet()`、`.gap(step)` |
 | `CONTENT_INSET` / `content_inset()` | 内容线的档位 / **只在默认度量下**成立的像素值：主题改了间距，内容线跟着档位走，这个数字不变。能写档位的地方写 `CONTENT_INSET`（`Divider::inset_step`、主题内边距） |
 
 ## 参见

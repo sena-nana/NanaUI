@@ -181,6 +181,60 @@ pub enum SpacingStep {
     Page,
 }
 
+/// What a gap says about the two things it separates, rather than which
+/// step it is: the spacing roles of the composition guide
+/// (`docs/guide/composition.md`「间距按关系」). Choosing a role instead of a
+/// step keeps neighbouring relations a visible step apart: a group's heading
+/// sits [`Self::Attach`] from its block and groups stand at least twice that
+/// apart. Each role resolves to a [`SpacingStep`], so it follows the installed
+/// theme and density like any step.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum SpacingRole {
+    /// A name and the line of description under it.
+    Copy,
+    /// Icon tools side by side, as a heading's tools stand.
+    IconTools,
+    /// The small things of one cluster at a row's end: text buttons,
+    /// keycaps, a switch, a badge beside a label.
+    Cluster,
+    /// Text buttons side by side, in a row or a column.
+    Buttons,
+    /// What belongs to the group beside it with nothing to frame it: a
+    /// group's heading above its block, the actions under a block, the cards
+    /// of one group.
+    Attach,
+    /// A row's label and its control.
+    Label,
+    /// Groups in a card or a panel, at least twice [`Self::Attach`].
+    GroupInCard,
+    /// Groups in a window's column, a step looser than in a card: the
+    /// column is taller.
+    GroupInPane,
+    /// Groups on a page of settings.
+    GroupInPage,
+}
+
+impl SpacingRole {
+    /// The step this role stands for.
+    pub const fn step(self) -> SpacingStep {
+        match self {
+            Self::Copy | Self::IconTools => SpacingStep::Xxs,
+            Self::Cluster => SpacingStep::Xs,
+            Self::Buttons | Self::Attach => SpacingStep::Sm,
+            Self::Label => SpacingStep::Md,
+            Self::GroupInCard => SpacingStep::Xl,
+            Self::GroupInPane => SpacingStep::Xxxl,
+            Self::GroupInPage => SpacingStep::PageTight,
+        }
+    }
+}
+
+impl From<SpacingRole> for SpacingStep {
+    fn from(role: SpacingRole) -> Self {
+        role.step()
+    }
+}
+
 impl SpacingTokens {
     /// The scale the whole component tree is built on.
     ///

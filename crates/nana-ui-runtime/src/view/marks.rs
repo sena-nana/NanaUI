@@ -14,7 +14,7 @@ use std::sync::Arc;
 
 use nana_ui_core::{
     AlignSpec, Icon, JustifySpec, LengthSpec, RadiusTier, SemanticColorMix, SemanticColorRole,
-    SpacingStep, SquareSize, StatusTone, TextWeight, TypeRole,
+    SpacingRole, SpacingStep, SquareSize, StatusTone, TextWeight, TypeRole,
 };
 
 use super::node::{AnyView, IntoView, widget};
@@ -653,6 +653,115 @@ fn group_divider() -> AnyView {
     widget(crate::Divider::horizontal().inset_step(CONTENT_INSET)).into_any()
 }
 
+/// A group's block with no heading of its own: a subtle, borderless plate
+/// whose inset is the content line its rows stand on, holding one
+/// [`crate::SettingsGroup`] so the rows' group edges and dividers follow
+/// what is shown. Rows that draw their own dividers (`SettingsRow::divided`)
+/// go in as they are; nothing in the block adds a second inset.
+///
+/// The plate of [`SettingsGroupView::inset`], for a consumer that builds
+/// its own heading or puts the block under one.
+pub fn group_block(children: impl IntoView) -> GroupBlock {
+    GroupBlock {
+        children: children.into_any(),
+        quiet: false,
+        gap: None,
+    }
+}
+
+/// A [`group_block`] being set up; a view.
+pub struct GroupBlock {
+    children: AnyView,
+    quiet: bool,
+    gap: Option<SpacingStep>,
+}
+
+impl GroupBlock {
+    /// No plate and no inset: the members stand on the surrounding content
+    /// line (a task card's key–value summary under its heading).
+    pub fn quiet(mut self) -> Self {
+        self.quiet = true;
+        self
+    }
+
+    /// Space between the block's members. None by default: rows carry
+    /// their own air, and their dividers must stay continuous.
+    pub fn gap(mut self, step: impl Into<SpacingStep>) -> Self {
+        self.gap = Some(step.into());
+        self
+    }
+}
+
+impl IntoView for GroupBlock {
+    fn build(self, vb: &mut super::node::ViewBuilder<'_, '_, '_>) {
+        let GroupBlock {
+            children,
+            quiet,
+            gap,
+        } = self;
+        let mut plate = Stack::column(0.0).width(LengthSpec::Fill);
+        if !quiet {
+            plate = plate
+                .surface(SemanticColorRole::Subtle)
+                .radius(RadiusTier::Md)
+                .padding_step(SpacingStep::Xl, SpacingStep::Xs);
+        }
+        let mut group = crate::SettingsGroup::new();
+        if let Some(gap) = gap {
+            group = group.gap(nana_ui_core::SpacingTokens::DEFAULT.resolve(gap));
+        }
+        widget(plate)
+            .children(widget(group).children(children))
+            .build(vb)
+    }
+}
+
+/// What a row opens in place, one level in: a recessed plate (the window's
+/// own background, no rim: air rather than another frame sets it apart)
+/// under the row, its content standing `lead` in from the row's start so it
+/// lines up with the open row's title. Its rows are one
+/// [`crate::SettingsGroup`]. The bottom is a step tighter than the top: the
+/// next row brings its own air.
+pub fn expansion_body(lead: f32, children: impl IntoView) -> AnyView {
+    let pad = nana_ui_core::space::MD;
+    widget(
+        Stack::column(0.0)
+            .width(LengthSpec::Fill)
+            .surface(SemanticColorRole::Background)
+            .radius(RadiusTier::Sm)
+            .with_layout(|layout| {
+                layout.padding_left = Some(LengthSpec::Px(pad));
+                layout.padding_right = Some(LengthSpec::Px(pad));
+                layout.padding_top = Some(LengthSpec::Px(pad));
+                layout.padding_bottom = Some(LengthSpec::Px(nana_ui_core::space::SM));
+                layout.margin_left = Some(LengthSpec::Px((lead - pad).max(0.0)));
+                layout.margin_bottom = Some(LengthSpec::Px(nana_ui_core::space::SM));
+            }),
+    )
+    .children(widget(crate::SettingsGroup::new()).children(children))
+    .into_any()
+}
+
+/// A card's or panel's own footer under its scrolling body: a hairline
+/// across the content line, then its buttons [`SpacingRole::Buttons`]
+/// apart. The hairline says the footer belongs to the card rather than to
+/// its last group. Set how the buttons line up (`justify`, `wrap`) on the
+/// returned stack; a surface with no padding of its own adds its inset.
+pub fn footer_bar() -> Stack {
+    let stack = Stack::row(nana_ui_core::space::role(SpacingRole::Buttons))
+        .gap_step(SpacingRole::Buttons)
+        .width(LengthSpec::Fill)
+        .shrink(0.0)
+        .with_layout(|layout| {
+            layout.flex_grow = Some(0.0);
+            layout.padding_top = Some(LengthSpec::Px(nana_ui_core::space::XL));
+            layout.border_top_width = Some(nana_ui_core::HAIRLINE);
+        });
+    let mut style = stack.node_style();
+    style.border = Some(SemanticColorRole::BorderSoft);
+    stack.style(style)
+}
+
 /// A settings group: `title` (when there is one) above a raised card whose
 /// rows are separated by inset hairlines. A hidden row takes its hairline
 /// with it, whichever row it is. `.class`, `.css` and `.visible` style the
@@ -662,6 +771,8 @@ pub fn settings_group(title: Option<String>, rows: Vec<GroupRow>) -> SettingsGro
         title,
         rows,
         container: ContainerStyle::default(),
+        inset: false,
+        footer: None,
     }
 }
 
@@ -670,11 +781,31 @@ pub struct SettingsGroupView {
     title: Option<String>,
     rows: Vec<GroupRow>,
     container: ContainerStyle,
+    inset: bool,
+    footer: Option<AnyView>,
 }
 
 impl SettingsGroupView {
     fn container_style_mut(&mut self) -> &mut ContainerStyle {
         &mut self.container
+    }
+
+    /// A subtle, borderless block instead of the raised card (a
+    /// [`group_block`]): the title stands on the rows' text line and
+    /// [`SpacingRole::Attach`] above the block. The block's inset is the
+    /// content line, so its rows go in with [`group_row`], not
+    /// [`group_row_on_line`], and its hairlines span the block's content.
+    pub fn inset(mut self) -> Self {
+        self.inset = true;
+        self
+    }
+
+    /// The group's own actions under its card or block: the buttons that
+    /// carry its task on, as close to it as the title is, so they read as
+    /// this group's and not the next one's.
+    pub fn footer(mut self, footer: impl IntoView) -> Self {
+        self.footer = Some(footer.into_any());
+        self
     }
 }
 
@@ -684,11 +815,17 @@ impl IntoView for SettingsGroupView {
             title,
             rows,
             container,
+            inset,
+            footer,
         } = self;
         let mut members: Vec<AnyView> = Vec::new();
         for (i, GroupRow { view, visible }) in rows.into_iter().enumerate() {
             if i > 0 {
-                members.push(group_divider());
+                members.push(if inset {
+                    widget(crate::Divider::horizontal()).into_any()
+                } else {
+                    group_divider()
+                });
             }
             let row = widget(Stack::column(0.0)).children(view);
             members.push(match visible {
@@ -697,15 +834,37 @@ impl IntoView for SettingsGroupView {
             });
         }
         let mut group = Stack::column(0.0);
-        if title.is_some() {
-            group = group.gap_step(SpacingStep::Md);
+        if title.is_some() || footer.is_some() {
+            group = group.gap_step(if inset {
+                SpacingRole::Attach.step()
+            } else {
+                SpacingStep::Md
+            });
         }
+        // The title stands on the rows' text: the block's inset when inset,
+        // a little in from the raised card's edge otherwise.
+        let title_inset = if inset {
+            nana_ui_core::space::XL
+        } else {
+            nana_ui_core::space::XS
+        };
+        let card = if inset {
+            group_block(members).into_any()
+        } else {
+            widget(
+                Stack::column(0.0)
+                    .radius(RadiusTier::Lg)
+                    .painter(RaisedSurfacePainter(RadiusTier::Lg)),
+            )
+            .children(widget(crate::SettingsGroup::new()).children(members))
+            .into_any()
+        };
         container
             .apply(widget(group))
             .children((
                 title.map(|title| {
                     widget(Stack::row(0.0).with_layout(|l| {
-                        l.padding_left = Some(LengthSpec::Px(nana_ui_core::space::XS));
+                        l.padding_left = Some(LengthSpec::Px(title_inset));
                     }))
                     .children(widget(
                         Text::new(title)
@@ -714,12 +873,8 @@ impl IntoView for SettingsGroupView {
                             .color(SemanticColorRole::Muted),
                     ))
                 }),
-                widget(
-                    Stack::column(0.0)
-                        .radius(RadiusTier::Lg)
-                        .painter(RaisedSurfacePainter(RadiusTier::Lg)),
-                )
-                .children(widget(crate::SettingsGroup::new()).children(members)),
+                card,
+                footer,
             ))
             .build(vb)
     }

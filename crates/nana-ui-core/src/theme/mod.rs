@@ -31,8 +31,8 @@ pub use scrollbar::{
 pub use toast::{ToastGlyphs, ToastIndicator, ToastMotion, ToastProgressRecipe, ToastRecipe};
 pub use tokens::{
     AccentRamp, BorderTokens, BorderWidth, EasingRole, EffectTokens, ElevationRole, LineRole,
-    MotionRole, MotionTokens, OpacityTokens, ShadowToken, SpacingStep, SpacingTokens, StateLayer,
-    SurfaceMaterial, SurfaceRole, SurfaceSpec, SurfaceTokens, TextWeight, TypeRole,
+    MotionRole, MotionTokens, OpacityTokens, ShadowToken, SpacingRole, SpacingStep, SpacingTokens,
+    StateLayer, SurfaceMaterial, SurfaceRole, SurfaceSpec, SurfaceTokens, TextWeight, TypeRole,
     TypographyTokens, linear_scrim_alpha,
 };
 
@@ -110,6 +110,13 @@ pub mod space {
     pub const PAGE_TIGHT: f32 = STEPS.page_tight;
     /// Page horizontal inset; between top-level page sections.
     pub const PAGE: f32 = STEPS.page;
+
+    /// `role` in logical px at the default metrics, for an interface that
+    /// takes pixels; a node that can name its step takes the role itself
+    /// (`gap_step(SpacingRole::Attach)`) and follows the installed theme.
+    pub const fn role(role: super::tokens::SpacingRole) -> f32 {
+        STEPS.resolve(role.step())
+    }
 }
 
 /// Product type scale: font size and weight steps shared by desktop shells.
@@ -728,6 +735,21 @@ impl ThemeMetrics {
 #[cfg(test)]
 mod tests {
     use super::ThemeAppearance;
+
+    /// docs/guide/composition.md「间距按关系」: what stands outside a frame
+    /// belongs by distance, so groups stand at least twice as far apart as a
+    /// heading stands from its block, and looser containers space their
+    /// groups no tighter.
+    #[test]
+    fn spacing_roles_keep_neighbouring_relations_apart() {
+        use super::tokens::SpacingRole as R;
+        let px = super::space::role;
+        assert!(px(R::GroupInCard) >= 2.0 * px(R::Attach));
+        assert!(px(R::GroupInPane) > px(R::GroupInCard));
+        assert!(px(R::GroupInPage) > px(R::GroupInPane));
+        assert!(px(R::Copy) < px(R::Cluster) && px(R::Cluster) < px(R::Buttons));
+        assert_eq!(super::SpacingStep::from(R::Label), R::Label.step());
+    }
 
     #[test]
     fn touch_metrics_keep_every_target_at_the_touch_minimum() {
