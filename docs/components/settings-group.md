@@ -48,7 +48,7 @@ settings_group(Some("输入".into()), vec![
 | `group_row_on_line(view)` | 一行，放到内容线上 |
 | `GroupRow::visible(cond)` | 按条件显示，隐藏时带走分隔线 |
 | `content_line(view)` | 把任意视图放到内容线上（只加水平内边距） |
-| `CONTENT_INSET` / `content_inset()` | 内容线的档位 / 默认度量下的像素值 |
+| `CONTENT_INSET` / `content_inset()` | 内容线的档位 / **只在默认度量下**成立的像素值：主题改了间距，内容线跟着档位走，这个数字不变。能写档位的地方写 `CONTENT_INSET`（`Divider::inset_step`、主题内边距） |
 
 ## 参见
 

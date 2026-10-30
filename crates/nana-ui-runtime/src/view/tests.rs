@@ -5804,3 +5804,80 @@ fn a_scroll_gutter_and_a_content_line_keep_content_on_the_line() {
     assert_eq!(row.y, line.y);
     assert_eq!(line.height, 20.0);
 }
+
+/// A group's hairlines and its rows' content share one content line under a
+/// theme whose spacing differs from the default metrics, whether the theme is
+/// installed before the group mounts or switched in after.
+#[test]
+fn a_groups_hairlines_follow_its_rows_under_a_custom_spacing_theme() {
+    fn group() -> impl IntoView {
+        settings_group(
+            None,
+            vec![
+                group_row_on_line(widget(fixed(None, 20.0))),
+                group_row_on_line(widget(fixed(None, 20.0))),
+            ],
+        )
+    }
+    // (row content x, hairline x, hairline right), from the card's edges.
+    fn offsets(cx: &mut AppContext, document: DocumentId, root: StableNodeId) -> [f32; 3] {
+        let work = cx.take_system_work();
+        cx.resolve_styles(&work.style).unwrap();
+        cx.layout_document(document, LayoutViewport::new(400.0, 600.0))
+            .unwrap();
+        let rect = |id| cx.world().layout_box(id).unwrap();
+        let card = *children(cx, root).last().unwrap();
+        let members = children(cx, children(cx, card)[0]);
+        let leaf = children(cx, children(cx, members[0])[0])[0];
+        let (card, divider) = (rect(card), rect(members[1]));
+        [
+            rect(leaf).x - card.x,
+            divider.x - card.x,
+            card.x + card.width - (divider.x + divider.width),
+        ]
+    }
+    let mut definition = nana_ui_core::ThemeDefinition::NANA_DARK.clone();
+    definition.tokens.spacing.xxxl = 28.0;
+
+    let (mut cx, document, parent) = setup();
+    let root = cx.mount_view(parent, group).unwrap().roots()[0];
+    assert_eq!(offsets(&mut cx, document, root), [16.0; 3]);
+    cx.set_theme_definition(&definition).unwrap();
+    assert_eq!(
+        offsets(&mut cx, document, root),
+        [28.0; 3],
+        "switched in after mounting"
+    );
+
+    let (mut cold, document, parent) = setup();
+    cold.set_theme_definition(&definition).unwrap();
+    let root = cold.mount_view(parent, group).unwrap().roots()[0];
+    assert_eq!(
+        offsets(&mut cold, document, root),
+        [28.0; 3],
+        "installed before mounting"
+    );
+}
+
+/// A divider's step inset rides the theme along its own direction, and a
+/// later pixel inset replaces it.
+#[test]
+fn a_dividers_step_inset_follows_its_direction_and_a_pixel_inset_replaces_it() {
+    use nana_ui_core::SpacingStep;
+    let stepped = crate::Divider::horizontal().inset_step(SpacingStep::Xl);
+    let layout = &stepped.style.layout;
+    assert_eq!(
+        layout.margin_left,
+        Some(LengthSpec::Px(nana_ui_core::space::XL))
+    );
+    assert!(layout.theme.margin_left.is_some() && layout.theme.margin_right.is_some());
+    assert!(layout.theme.margin_top.is_none());
+    let replaced = stepped.inset(4.0);
+    let layout = &replaced.style.layout;
+    assert_eq!(layout.margin_right, Some(LengthSpec::Px(4.0)));
+    assert!(layout.theme.margin_left.is_none() && layout.theme.margin_right.is_none());
+    let vertical = crate::Divider::vertical().inset_step(SpacingStep::Xl);
+    let layout = &vertical.style.layout;
+    assert!(layout.theme.margin_top.is_some() && layout.theme.margin_bottom.is_some());
+    assert!(layout.theme.margin_left.is_none());
+}

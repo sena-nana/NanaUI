@@ -4746,10 +4746,50 @@ impl Divider {
         self
     }
 
+    /// Inset both ends by `inset` logical px. Replaces an
+    /// [`Self::inset_step`].
     pub fn inset(mut self, inset: f32) -> Self {
         self.inset = inset;
+        self.set_theme_inset(None);
         self.style = self.resolved_style();
         self
+    }
+
+    /// Inset both ends by a spacing step: the installed theme's spacing
+    /// decides the pixels, so the rule stays in line with content padded by
+    /// the same step whatever the theme. [`Self::inset`] holds the step at
+    /// the default metrics; a later [`Self::inset`] replaces the step.
+    pub fn inset_step(mut self, step: nana_ui_core::SpacingStep) -> Self {
+        self = self.inset(nana_ui_core::SpacingTokens::DEFAULT.resolve(step));
+        self.set_theme_inset(Some(crate::theme_intent::space(step)));
+        self
+    }
+
+    fn set_theme_inset(&mut self, inset: Option<nana_ui_core::ThemeExpr>) {
+        let theme = &self.style.layout.theme;
+        let unset = match self.orientation {
+            crate::SelectionOrientation::Horizontal => {
+                theme.margin_left.is_none() && theme.margin_right.is_none()
+            }
+            crate::SelectionOrientation::Vertical => {
+                theme.margin_top.is_none() && theme.margin_bottom.is_none()
+            }
+        };
+        if inset.is_none() && unset {
+            // Leave the shared default layout and theme group unshared.
+            return;
+        }
+        let theme = &mut Arc::make_mut(&mut self.style.layout).theme;
+        match self.orientation {
+            crate::SelectionOrientation::Horizontal => {
+                theme.margin_left = inset.clone();
+                theme.margin_right = inset;
+            }
+            crate::SelectionOrientation::Vertical => {
+                theme.margin_top = inset.clone();
+                theme.margin_bottom = inset;
+            }
+        }
     }
 
     pub fn style(mut self, style: NodeStyle) -> Self {

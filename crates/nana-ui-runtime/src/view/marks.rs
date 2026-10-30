@@ -587,8 +587,10 @@ pub fn content_line(view: impl IntoView) -> AnyView {
     .into_any()
 }
 
-/// [`CONTENT_INSET`] in logical px at the default metrics, for a value that
-/// cannot carry a theme step (a [`crate::Divider::inset`]).
+/// [`CONTENT_INSET`] in logical px at the default metrics only: a theme whose
+/// spacing differs moves the content line and leaves this number behind.
+/// Prefer the step ([`crate::Divider::inset_step`], a theme padding); take
+/// this only where nothing but pixels is accepted.
 pub const fn content_inset() -> f32 {
     nana_ui_core::space::XXXL
 }
@@ -621,8 +623,8 @@ impl GroupRow {
 /// The inset hairline between two rows of a group. The group shows it only
 /// between two shown rows.
 fn group_divider() -> AnyView {
-    // Inset like the rows' copy: the card's content line.
-    widget(crate::Divider::horizontal().inset(content_inset())).into_any()
+    // Inset like the rows' copy: the card's content line, by the same step.
+    widget(crate::Divider::horizontal().inset_step(CONTENT_INSET)).into_any()
 }
 
 /// A settings group: `title` (when there is one) above a raised card whose

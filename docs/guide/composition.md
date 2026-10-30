@@ -78,7 +78,7 @@
 
 - 间距写 `SpacingStep`（`gap_step`、`padding_step`、`space::*`），字号写 `TypeRole`，圆角写 `RadiusTier`，线宽写 `BorderWidth`，控件高度写 `ControlSize`。不要写数字：档位跟着安装的主题和密度变，数字不会。
 - 卡片或对话框自己的名字用 `TypeRole::CardTitle`，配 `TextWeight::Bold`。
-- 只有接口只收像素（`Divider::inset`、`ScrollView::gutter`）时才写数字，并从档位常量取（`space::XXXL`、`content_inset()`）。
+- 只有接口只收像素时才写数字，并从档位常量取（`space::XXXL`）。这些数字只在默认度量下成立：主题改了间距，档位跟着变，数字不变。能写档位就写档位：细线缩进用 `Divider::inset_step(CONTENT_INSET)`，不用 `inset(content_inset())`——`content_inset()` 只是默认度量下的像素值。
 - 仓库自带的 `scripts/audit-theme-hardcoding.py` 也能扫消费方的源码，见下文。
 
 ## 滚动区
