@@ -2863,6 +2863,34 @@ fn app_menu_bar_opens_switches_cascades_and_reports_ids() {
     assert_eq!(hot(&context).as_deref(), Some("Quit"));
     relayout(&mut context);
 
+    // resting on the way hands the highlight to the row under the pointer
+    input
+        .route(&mut context, mouse(PointerPhase::Move, recent))
+        .unwrap();
+    relayout(&mut context);
+    input
+        .route(&mut context, mouse(PointerPhase::Move, toward))
+        .unwrap();
+    assert_eq!(open(&context), ["File", "Recent"]);
+    let deadline = context
+        .next_animation_deadline()
+        .expect("the aim wakes a frame");
+    assert_eq!(
+        deadline,
+        input.now() + std::time::Duration::from_millis(300)
+    );
+    context.advance_animations(deadline);
+    assert_eq!(open(&context), ["File"]);
+    assert_eq!(hot(&context).as_deref(), Some("Quit"));
+    assert!(
+        context
+            .next_animation_deadline()
+            .is_none_or(|next| next > deadline),
+        "a settled aim stops waking frames"
+    );
+    input.set_now(deadline);
+    relayout(&mut context);
+
     // a disabled item does nothing; an item reports its id and closes the bar
     input
         .route(&mut context, mouse(PointerPhase::Down, quit))

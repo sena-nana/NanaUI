@@ -109,6 +109,7 @@ mod qr_code;
 mod query;
 mod range_span;
 mod responsive;
+mod submenu_aim;
 #[cfg(feature = "icu")]
 pub use i18n::IcuFormatter;
 pub use i18n::{

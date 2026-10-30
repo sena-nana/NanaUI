@@ -17,6 +17,7 @@ pub use input::{
 mod hooks;
 mod keyboard;
 mod lifecycle;
+mod menu_bar_aim;
 mod menu_bar_keys;
 mod modal;
 mod registry;
@@ -633,6 +634,8 @@ struct ComponentLifecycle {
     auto_overlays: std::collections::BTreeMap<StableNodeId, auto_overlay::AutoOverlay>,
     /// When each scroll view's hold on its auto-hiding bars runs out.
     scrollbar_holds: HashMap<StableNodeId, Duration, crate::BuildIdHasher>,
+    /// When each menu bar's submenu aim runs out.
+    menu_aims: HashMap<StableNodeId, Duration, crate::BuildIdHasher>,
     wheel_scrolls: HashMap<StableNodeId, smooth_scroll::WheelScroll, crate::BuildIdHasher>,
     /// Reused across samples; callbacks may mutate wheel_scrolls while we walk.
     wheel_scroll_due: Vec<StableNodeId>,

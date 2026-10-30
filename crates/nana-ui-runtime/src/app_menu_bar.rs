@@ -5,7 +5,8 @@
 //! A press on a title opens its menu; while one is open, moving onto another
 //! title switches to it. Submenus open to the side of their row and flip to
 //! the other side when the window is too narrow; a submenu stays open while
-//! the pointer heads for it across its parent's other rows. A press-drag from
+//! the pointer heads for it across its parent's other rows, until the pointer
+//! rests there (see `crate::submenu_aim`). A press-drag from
 //! a title onto an item chooses it on release. Alt pressed and released alone
 //! or F10 give the bar the keyboard: the arrows walk the titles and the rows,
 //! Enter chooses, Escape closes one level at a time.
@@ -20,6 +21,7 @@
 //! underneath.
 
 use std::sync::Arc;
+use std::time::Duration;
 
 use nana_ui_core::{
     AlignSpec, BoxShadowSpec, ControlSize, DisplaySpec, FlexDirection, LengthSpec, Menu, MenuBar,
@@ -29,6 +31,7 @@ use nana_ui_core::{
 use crate::popover::{
     MENU_ITEM_GAP, MENU_MIN_WIDTH, MENU_OVERLAY_Z_INDEX, MENU_SURFACE_PADDING, menu_surface_style,
 };
+use crate::submenu_aim::SubmenuAim;
 use crate::text_width::estimated_text_width;
 use crate::view_components::{Text, project_common};
 use crate::{
@@ -68,14 +71,25 @@ pub(crate) struct MenuBarState {
     pub(crate) levels: Vec<MenuLevel>,
     /// The keyboard holds the bar.
     pub(crate) keyboard: bool,
-    /// Where the pointer was when the highlight last moved.
+    /// Where the pointer was at its last move or press.
     last: Option<(f32, f32)>,
+    /// The pointer heading for an open submenu across its parent's rows.
+    pub(crate) aim: Option<MenuAim>,
     /// The press that opened the menu: releasing it on the title keeps the
     /// menu open.
     opening: bool,
     /// The press that closed the menu: the layer stays up and takes its
     /// release, so nothing underneath sees half a click.
     swallow: bool,
+}
+
+/// The pointer heading for the submenu open from `level`'s menu, and the
+/// row of that menu it is over meanwhile.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(crate) struct MenuAim {
+    level: usize,
+    row: Option<usize>,
+    pub(crate) aim: SubmenuAim,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -220,6 +234,7 @@ impl AppMenuBar {
         self.state.title = Some(title);
         self.state.levels = vec![MenuLevel { hot, sub: None }];
         self.state.keyboard = keyboard;
+        self.state.aim = None;
     }
 
     /// Open the submenu at `index` of `level`, its first row highlighted when
@@ -236,6 +251,78 @@ impl AppMenuBar {
             hot: hot.flatten(),
             sub: None,
         });
+        self.state.aim = None;
+    }
+
+    /// The pointer takes `index` of `level`: it highlights, and opens when
+    /// it is a submenu.
+    fn hover_row(&mut self, level: usize, index: usize) {
+        if self.state.levels[level].sub != Some(index) {
+            self.state.levels.truncate(level + 1);
+            self.state.levels[level].sub = None;
+            self.state.levels[level].hot = Some(index);
+            if matches!(self.entry(level, index), Some(MenuEntry::Submenu(_))) {
+                self.open_submenu(level, index, false);
+            }
+        }
+        self.state.keyboard = false;
+    }
+
+    /// Whether the pointer at `at`, over `row` of `level`'s menu (`None`:
+    /// between its rows or off the menus), still heads for the submenu open
+    /// from that menu. An aim starts from the pointer's last place when
+    /// `begin` is set.
+    fn aiming(
+        &mut self,
+        level: usize,
+        row: Option<usize>,
+        at: (f32, f32),
+        now: Duration,
+        panels: &[Option<LayoutBox>],
+        begin: bool,
+    ) -> bool {
+        let aim = match self.state.aim.filter(|aim| aim.level == level) {
+            Some(aim) => Some(aim.aim),
+            None if begin => match (self.state.last, panels.get(level + 1)) {
+                (Some(from), Some(Some(target))) => Some(SubmenuAim::begin(from, *target, now)),
+                _ => None,
+            },
+            None => None,
+        };
+        self.state.aim =
+            aim.and_then(|mut aim| aim.track(at, now).then_some(MenuAim { level, row, aim }));
+        self.state.aim.is_some()
+    }
+
+    /// The pointer left the rows of `level`'s menu (any menu when `None`):
+    /// an aim from it goes on while it holds, with no row waiting.
+    fn keep_aiming(
+        &mut self,
+        level: Option<usize>,
+        at: (f32, f32),
+        now: Duration,
+        panels: &[Option<LayoutBox>],
+    ) {
+        match self.state.aim {
+            Some(aim) if level.is_none_or(|level| level == aim.level) => {
+                self.aiming(aim.level, None, at, now, panels, false);
+            }
+            _ => self.state.aim = None,
+        }
+    }
+
+    /// The pointer rested inside the triangle until `now`: the row it is
+    /// over takes the highlight.
+    pub(crate) fn settle_aim(&mut self, now: Duration) {
+        let Some(aim) = self.state.aim.filter(|aim| now >= aim.aim.until()) else {
+            return;
+        };
+        self.state.aim = None;
+        if let Some(row) = aim.row
+            && aim.level < self.state.levels.len()
+        {
+            self.hover_row(aim.level, row);
+        }
     }
 
     fn close(&mut self) {
@@ -243,8 +330,16 @@ impl AppMenuBar {
     }
 
     /// The pointer moved to `hit` at `at`. `panels` are the open panels'
-    /// boxes, outermost first.
-    fn hover(&mut self, hit: MenuHit, at: (f32, f32), panels: &[Option<LayoutBox>]) {
+    /// boxes, outermost first. `aim` is false for a finger, which has no
+    /// path between rows to follow.
+    fn hover(
+        &mut self,
+        hit: MenuHit,
+        at: (f32, f32),
+        now: Duration,
+        aim: bool,
+        panels: &[Option<LayoutBox>],
+    ) {
         if !self.is_open() {
             if let MenuHit::Title(title) = hit {
                 self.state.title = Some(title);
@@ -260,23 +355,13 @@ impl AppMenuBar {
             }
             MenuHit::Row(level, index) => {
                 let open = self.state.levels[level].sub;
-                if open.is_some_and(|sub| sub != index)
-                    && let (Some(from), Some(Some(target))) =
-                        (self.state.last, panels.get(level + 1))
-                    && heading_for(from, at, *target)
+                // a sibling row crossed on the way to the open submenu waits
+                if !(open.is_some_and(|sub| sub != index)
+                    && self.aiming(level, Some(index), at, now, panels, aim))
                 {
-                    // on the way to the open submenu across this menu's rows
-                    return;
+                    self.state.aim = None;
+                    self.hover_row(level, index);
                 }
-                if open != Some(index) {
-                    self.state.levels.truncate(level + 1);
-                    self.state.levels[level].sub = None;
-                    self.state.levels[level].hot = Some(index);
-                    if matches!(self.entry(level, index), Some(MenuEntry::Submenu(_))) {
-                        self.open_submenu(level, index, false);
-                    }
-                }
-                self.state.keyboard = false;
             }
             MenuHit::Outside => {
                 if let Some(last) = self.state.levels.last_mut()
@@ -284,8 +369,10 @@ impl AppMenuBar {
                 {
                     last.hot = None;
                 }
+                self.keep_aiming(None, at, now, panels);
             }
-            MenuHit::Title(_) | MenuHit::Panel(_) => {}
+            MenuHit::Panel(level) => self.keep_aiming(Some(level), at, now, panels),
+            MenuHit::Title(_) => self.state.aim = None,
         }
         self.state.last = Some(at);
     }
@@ -359,6 +446,7 @@ impl AppMenuBar {
             }
             return MenuKey::Consumed;
         }
+        self.state.aim = None;
         let depth = self.state.levels.len() - 1;
         let entries = self
             .open_menus()
@@ -441,26 +529,6 @@ fn step(entries: &[MenuEntry], from: Option<usize>, direction: isize) -> Option<
         }
     }
     None
-}
-
-/// The pointer moving from `from` to `at` stays inside the triangle between
-/// `from` and the near edge of `target`: it is heading for that submenu.
-fn heading_for(from: (f32, f32), at: (f32, f32), target: LayoutBox) -> bool {
-    let edge = if target.x >= from.0 {
-        target.x
-    } else {
-        target.x + target.width
-    };
-    let a = from;
-    let b = (edge, target.y);
-    let c = (edge, target.y + target.height);
-    let side = |p: (f32, f32), q: (f32, f32), r: (f32, f32)| {
-        (q.0 - p.0) * (r.1 - p.1) - (q.1 - p.1) * (r.0 - p.0)
-    };
-    let (d1, d2, d3) = (side(a, b, at), side(b, c, at), side(c, a, at));
-    let negative = d1 < 0.0 || d2 < 0.0 || d3 < 0.0;
-    let positive = d1 > 0.0 || d2 > 0.0 || d3 > 0.0;
-    !(negative && positive)
 }
 
 /// How shortcut text is spelled.
@@ -916,6 +984,7 @@ impl AppContext {
         let out = change(&mut copy);
         if copy.state != before {
             let active = copy.is_active();
+            self.note_menu_aim(bar.stable_id(), copy.state.aim.map(|aim| aim.aim.until()));
             let state = copy.state;
             self.update_component(bar, |bar, _| bar.state = state)?;
             if let Some(document) = self.world().document_of(bar.stable_id()) {
@@ -968,7 +1037,9 @@ impl AppContext {
                     .iter()
                     .map(|panel| self.world().component_layout_box(panel.panel))
                     .collect::<Vec<_>>();
-                self.drive_menu_bar(bar, |bar| bar.hover(hit, at, &panels))?;
+                let now = self.menu_aim_clock();
+                let aim = pointer.pointer_type != nana_ui_input::PointerType::Touch;
+                self.drive_menu_bar(bar, |bar| bar.hover(hit, at, now, aim, &panels))?;
                 Ok(true)
             }
             Phase::Press => self.drive_menu_bar(bar, |bar| {
@@ -1430,6 +1501,60 @@ mod tests {
     }
 
     #[test]
+    fn a_row_crossed_toward_a_submenu_waits_until_the_pointer_rests() {
+        let panels = [
+            Some(LayoutBox {
+                x: 0.0,
+                y: 20.0,
+                width: 160.0,
+                height: 120.0,
+            }),
+            Some(LayoutBox {
+                x: 160.0,
+                y: 60.0,
+                width: 140.0,
+                height: 70.0,
+            }),
+        ];
+        let ms = Duration::from_millis;
+        let (recent, toward) = ((80.0, 70.0), (150.0, 95.0));
+        let opened = || {
+            let mut bar = bar();
+            bar.open_menu(0, false, false);
+            bar.hover(MenuHit::Row(0, 2), recent, ms(0), true, &panels);
+            assert_eq!(bar.open_titles(), ["File", "Recent"]);
+            bar
+        };
+
+        let mut bar = opened();
+        bar.hover(MenuHit::Row(0, 3), toward, ms(16), true, &panels);
+        assert_eq!(bar.open_titles(), ["File", "Recent"], "on the way");
+        bar.settle_aim(ms(200));
+        assert_eq!(
+            bar.open_titles(),
+            ["File", "Recent"],
+            "not rested long enough"
+        );
+        bar.settle_aim(ms(16) + crate::submenu_aim::AIM_GRACE);
+        assert_eq!(bar.open_titles(), ["File"]);
+        assert_eq!(bar.highlighted(), Some("Quit"), "the row it rested on");
+
+        let mut bar = opened();
+        bar.hover(MenuHit::Row(0, 3), toward, ms(16), false, &panels);
+        assert_eq!(
+            bar.highlighted(),
+            Some("Quit"),
+            "a finger takes the row at once"
+        );
+
+        let mut bar = opened();
+        bar.hover(MenuHit::Row(0, 3), toward, ms(16), true, &panels);
+        bar.hover(MenuHit::Row(1, 0), (170.0, 70.0), ms(32), true, &panels);
+        assert_eq!(bar.highlighted(), Some("a.vlive"));
+        assert_eq!(bar.state.aim, None, "reaching the submenu ends the aim");
+    }
+
+    #[test]
     fn shortcut_text_follows_the_platform() {
         let shortcut = MenuShortcut::primary("s").shift();
         assert_eq!(ShortcutNotation::Symbols.label(&shortcut), "⇧⌘S");
@@ -1440,17 +1565,5 @@ mod tests {
             "Ctrl+Shift+S"
         };
         assert_eq!(menu_shortcut_label(&shortcut), host);
-    }
-
-    #[test]
-    fn heading_for_a_submenu_stays_inside_the_triangle() {
-        let target = LayoutBox {
-            x: 200.0,
-            y: 40.0,
-            width: 100.0,
-            height: 120.0,
-        };
-        assert!(heading_for((100.0, 50.0), (150.0, 70.0), target));
-        assert!(!heading_for((100.0, 50.0), (110.0, 90.0), target));
     }
 }

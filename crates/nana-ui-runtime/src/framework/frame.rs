@@ -770,6 +770,7 @@ impl AppContext {
             )
             .chain(self.auto_overlay_deadline())
             .chain(self.scrollbar_hold_deadline())
+            .chain(self.menu_aim_deadline())
             .chain(self.wheel_scroll_deadline())
             .chain(self.touch_scroll_deadline())
             .chain(self.caret_blink_deadline())
@@ -849,6 +850,11 @@ impl AppContext {
         for scroll in self.release_scrollbar_holds(now) {
             if !frame.component_updates.contains(&scroll) {
                 frame.component_updates.push(scroll);
+            }
+        }
+        for bar in self.settle_menu_aims(now) {
+            if !frame.component_updates.contains(&bar) {
+                frame.component_updates.push(bar);
             }
         }
         self.sweep_hover_cards();
