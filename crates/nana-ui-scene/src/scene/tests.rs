@@ -5365,12 +5365,14 @@ fn modal_frame_paints_the_recipe_radius_and_section_dividers() {
         quad(10).1,
         ScenePrimitiveKind::Quad {
             background: Some(nana_ui_core::PaintColor::Srgb { rgba }),
-            surface: QuadSurfacePaint {
-                backdrop_filter: Some(nana_ui_core::BackdropFilter { blur_radius, saturate }),
-                ..
-            },
+            surface,
             ..
-        } if rgba == [0.0, 0.0, 0.0, 0.73] && blur_radius == 2.0 && saturate == 1.0
+        } if rgba == [0.0, 0.0, 0.0, 0.73]
+            && matches!(
+                surface.backdrop_filter,
+                Some(nana_ui_core::BackdropFilter { blur_radius, saturate })
+                    if blur_radius == 2.0 && saturate == 1.0
+            )
     ));
     for (slot, rule) in [(15, header_rule), (16, footer_rule)] {
         let (bounds, kind) = quad(slot);
@@ -6160,7 +6162,7 @@ fn quad_parts(scene: &UiScene, node: u64, slot: u64) -> Option<QuadParts> {
             *background,
             *border_color,
             *border_width,
-            surface.clone(),
+            (**surface).clone(),
         )),
         _ => None,
     }

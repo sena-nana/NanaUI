@@ -644,7 +644,7 @@ pub(super) fn build(context: &GeometryPaintContext<'_>, emit: &mut impl FnMut(Sc
                         border_width: menu.border_width,
                         corner_radius: corner_radii(node.chrome_radii.md),
                         shadow: Some(menu.elevation),
-                        surface: QuadSurfacePaint::default(),
+                        surface: Box::default(),
                     },
                 });
                 // The rows and the bar are cut at the surface's inside edge,
@@ -978,7 +978,7 @@ pub(super) fn build(context: &GeometryPaintContext<'_>, emit: &mut impl FnMut(Sc
                     border_width: 0.0,
                     corner_radius: corner_radii(node.chrome_radii.md),
                     shadow: Some(*elevation),
-                    surface: QuadSurfacePaint::default(),
+                    surface: Box::default(),
                 },
             });
             let mut title_text = component_text_primitive(

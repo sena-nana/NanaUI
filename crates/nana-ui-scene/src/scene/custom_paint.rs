@@ -605,7 +605,7 @@ impl UiScene {
                             border_width: border.map_or(0.0, |(_, width)| width),
                             corner_radius: *radii,
                             shadow: *shadow,
-                            surface: QuadSurfacePaint::default(),
+                            surface: Box::default(),
                         },
                         Arc::clone(clips),
                         under(local_transform),
@@ -800,10 +800,10 @@ pub(super) fn image_quad(
         border_width: 0.0,
         corner_radius: radii,
         shadow: None,
-        surface: QuadSurfacePaint {
+        surface: Box::new(QuadSurfacePaint {
             content_image: Some(image),
             ..QuadSurfacePaint::default()
-        },
+        }),
     }
 }
 
