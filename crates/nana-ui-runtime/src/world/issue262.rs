@@ -149,7 +149,7 @@ impl Pass {
 pub(super) struct Feed {
     pub(super) cx: AppContext,
     shaper: NanaTextEngineShaper,
-    scroll: Entity<ScrollView>,
+    pub(super) scroll: Entity<ScrollView>,
     list: Entity<List>,
     pub(super) items: VirtualListItems<u64, Text>,
     layout: VirtualListLayout,

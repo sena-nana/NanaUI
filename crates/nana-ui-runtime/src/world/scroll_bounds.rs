@@ -292,7 +292,8 @@ pub(super) struct ContentBoundsIndex {
     /// Boxes written by the commit being applied, marked dirty in one batch
     /// when it ends (or before any query reads the index).
     deferred: Vec<StableNodeId>,
-    #[cfg(any(test, feature = "benchmark"))]
+    /// Entries whose extent was recomputed since the world last folded them
+    /// into `WorkCounters::scroll_content_extent_recomputes`.
     refreshed: usize,
     #[cfg(any(test, feature = "benchmark"))]
     range_updates: usize,
@@ -449,10 +450,7 @@ impl ContentBoundsIndex {
         let Some(record) = world.nodes.get(id) else {
             return Extent::EMPTY;
         };
-        #[cfg(any(test, feature = "benchmark"))]
-        {
-            self.refreshed += 1;
-        }
+        self.refreshed += 1;
         let place = Placement::of(world, id, record);
         let incremental = match (rebuild, self.entries.get_mut(&id)) {
             (false, Some(entry)) if Arc::ptr_eq(&entry.children, &record.hierarchy.children) => {
@@ -536,12 +534,13 @@ impl UiWorld {
         id: StableNodeId,
     ) -> ((f32, f32), (usize, usize)) {
         let mut index = self.scroll_content_bounds.borrow_mut();
-        index.refreshed = 0;
+        // Measured as a difference: the count is the world's to fold.
+        let refreshed = index.refreshed;
         index.range_updates = 0;
         let extent = index.content(self, id);
         (
             (extent.right, extent.bottom),
-            (index.refreshed, index.range_updates),
+            (index.refreshed - refreshed, index.range_updates),
         )
     }
 
@@ -549,6 +548,18 @@ impl UiWorld {
     /// [`Extent`]). Scroll offsets do not move it.
     pub(crate) fn scroll_content_extent(&self, id: StableNodeId) -> Extent {
         self.scroll_content_bounds.borrow_mut().content(self, id)
+    }
+
+    /// Extent recomputes not yet folded into the work counters.
+    pub(super) fn pending_scroll_extent_recomputes(&self) -> usize {
+        self.scroll_content_bounds
+            .try_borrow()
+            .map_or(0, |index| index.refreshed)
+    }
+
+    /// Hand the extent recomputes over to the work counters.
+    pub(super) fn take_scroll_extent_recomputes(&mut self) -> usize {
+        std::mem::take(&mut self.scroll_content_bounds.get_mut().refreshed)
     }
 
     pub(super) fn invalidate_scroll_content(&self, id: StableNodeId) {

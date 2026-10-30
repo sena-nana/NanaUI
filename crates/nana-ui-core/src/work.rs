@@ -300,8 +300,21 @@ pub struct WorkCounters {
     pub virtual_logical_rows_scanned: usize,
     /// Times a list's scroll extent, its total height, moved.
     pub virtual_scroll_extent_updates: usize,
-    /// Rows a list created for its window.
+    /// Rows a list created for its window. A virtual list's spawns and
+    /// despawns stay `entities_spawned` / `entities_despawned` (Issue #381).
     pub virtual_rows_materialized_from_layout: usize,
+    /// Stores that changed a scroll container's viewport size, its first
+    /// measured one or dropping it included. A store of equal metrics, or one
+    /// that moved only the content extent, does not count (Issue #381).
+    pub scroll_viewport_updates: usize,
+    /// Entries of the scroll content index whose extent was recomputed. Pure
+    /// scrolling recomputes none (Issue #381).
+    pub scroll_content_extent_recomputes: usize,
+    /// Hit entries, with their clips, the scroll path rewrote: a sticky
+    /// branch the scroll moves, or every entry where it falls back to a
+    /// rebuild. Not the containers scrolled, whose descendants share one
+    /// shift (Issue #381).
+    pub scroll_clip_updates: usize,
     /// Container axes whose content extent moved while responsive rules read
     /// them (Issue #265).
     pub container_query_size_changes: usize,
@@ -652,7 +665,8 @@ accumulate_counters! {
             replaced_content_only_layout_invalidations, resource_intrinsic_dependents_notified,
             virtual_row_metric_updates, virtual_prefix_index_updates, virtual_rows_remeasured,
             virtual_rows_repositioned, virtual_logical_rows_scanned, virtual_scroll_extent_updates,
-            virtual_rows_materialized_from_layout, container_query_size_changes,
+            virtual_rows_materialized_from_layout, scroll_viewport_updates,
+            scroll_content_extent_recomputes, scroll_clip_updates, container_query_size_changes,
             container_query_rules_evaluated, container_query_results_changed,
             container_query_results_unchanged, container_query_downstream_invalidations,
             container_query_convergence_rounds, container_query_cycle_fallbacks,

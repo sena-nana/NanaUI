@@ -2383,6 +2383,7 @@ impl UiWorld {
         );
         add_pending_counts(&mut counters, self.pending_layout_invalidations_counted);
         add_pending_counts(&mut counters, self.pending_drain_counts);
+        counters.scroll_content_extent_recomputes += self.pending_scroll_extent_recomputes();
         counters.i18n.accumulate(self.i18n_gauges());
         counters
     }
@@ -2777,6 +2778,8 @@ impl UiWorld {
         let ours = |world: &Self, id: StableNodeId| {
             document.is_none_or(|document| world.document_of(id) == Some(document))
         };
+        self.pending_drain_counts.scroll_content_extent_recomputes +=
+            self.take_scroll_extent_recomputes();
         let mut ids = std::mem::take(&mut self.dirty_entities)
             .into_iter()
             .collect::<Vec<_>>();
@@ -6398,6 +6401,7 @@ mod issue268;
 mod issue269;
 mod issue270;
 mod issue333;
+mod issue381;
 mod issue382;
 mod issue385;
 mod issue386;

@@ -1571,6 +1571,23 @@ impl UiWorld {
         scroller: StableNodeId,
         delta: [f32; 2],
     ) {
+        // Entries the scroll rewrites, clips with them, are what the hit
+        // index's build sentinel adds while this runs.
+        let built = |world: &Self| world.last_counters.hit_test_nodes_rebuilt.unwrap_or(0);
+        let before = built(self);
+        self.shift_hit_test_scroll(document, scroller, delta);
+        let rewritten = built(self).saturating_sub(before);
+        if rewritten != 0 {
+            self.bump_last_counters(|counters| counters.scroll_clip_updates += rewritten);
+        }
+    }
+
+    fn shift_hit_test_scroll(
+        &mut self,
+        document: DocumentId,
+        scroller: StableNodeId,
+        delta: [f32; 2],
+    ) {
         let Some(index) = self.hit_test_index.get_mut(&document) else {
             return;
         };

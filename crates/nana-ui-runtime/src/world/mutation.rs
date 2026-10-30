@@ -3167,6 +3167,11 @@ impl UiWorld {
 
     /// Store `id`'s scrolling area and clamp its offset into it.
     fn store_scroll_metrics(&mut self, id: StableNodeId, metrics: Option<ScrollMetrics>) -> bool {
+        if scroll_viewport_size(self.nodes.scroll_metrics(id).copied())
+            != scroll_viewport_size(metrics)
+        {
+            self.pending_drain_counts.scroll_viewport_updates += 1;
+        }
         self.nodes.set_scroll_metrics(id, metrics);
         let current = self.record(id).scroll_offset;
         let clamped = self.clamp_scroll_offset(id, current);
@@ -3227,9 +3232,7 @@ impl UiWorld {
             if previous == metrics {
                 continue;
             }
-            let viewport =
-                |m: Option<ScrollMetrics>| m.map(|m| (m.viewport_width, m.viewport_height));
-            if viewport(previous) != viewport(metrics) {
+            if scroll_viewport_size(previous) != scroll_viewport_size(metrics) {
                 self.scroll_resized.insert(id);
             }
             if self.store_scroll_metrics(id, metrics) {
@@ -3393,6 +3396,11 @@ impl UiWorld {
         }
         Ok((report, parked, inserted))
     }
+}
+
+/// A scroll container's viewport size, `None` while it has no metrics.
+fn scroll_viewport_size(metrics: Option<ScrollMetrics>) -> Option<(f32, f32)> {
+    metrics.map(|metrics| (metrics.viewport_width, metrics.viewport_height))
 }
 
 fn placement_already(style: &nana_ui_core::LayoutStyle, top: f32, height: Option<f32>) -> bool {
