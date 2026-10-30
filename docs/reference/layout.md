@@ -1076,7 +1076,7 @@ CSS `url()` 的帧仍走 4× MSAA。它和 HostTexture、backdrop 的 interleave
 
 `:empty` 和 `:not(:empty)` 的意思是：没有元素子节点，并且宿主的 `label`、`value` 和子文本都没有含非空白 Unicode 标量的 UTF-8。空白用 `char::is_whitespace` 判断。
 
-文本节点只认 `#text`、`createText`、`nana-text`。`p`、`span`、`label`、`h1`–`h6` 即使 kind 是 Text，也是元素。空的 span，或 `p` 加 `createText`，都会让父级不是 `:empty`。
+文本节点只认 `#text`、`nana-text`。`p`、`span`、`label`、`h1`–`h6` 即使 kind 是 Text，也是元素。空的 span，或 `p` 里套一个文本节点，都会让父级不是 `:empty`。
 
 空白文本，以及生成盒 `::before`、`::after`，不算内容。`:first-child`、`:last-child`、`:only-child`、`:nth-*` 的兄弟计数不含生成盒，也不含这些文本节点。
 
@@ -1116,35 +1116,32 @@ prop 和 inline 上的 `!important` 会去掉标志，并作为 author-important
 
 属性分类、fallback 和性能含义见 [架构](architecture.md)。
 
-**增删节点时重算什么。** 插入或删除一个子节点，只重算样式表能观察到的部分。重算哪些，由你启用的规则决定。
+**增删节点时重算什么。** 什么都不重算。视图运行时不匹配选择器，增删一个子节点不会让兄弟、父节点或祖先重新级联。
 
-用了 `:first-child`、`:nth-child()` 这类从前数的伪类，或用了 `+`、`~`，就重算变动位置之后的兄弟。
+视图里的元素只按自己写的 class 组合（含 `class_when` 当前打开的那些）取样式。`:first-child`、`:nth-child()`、`+`、`~`、`:empty`、`:has()` 这类要看树结构的选择器，在视图里只给构建警告。
 
-用了 `:last-child`、`:nth-last-child()` 这类从后数的，就重算之前的兄弟。
-
-用了 `:empty`，就重算父节点。
-
-用了 `:has()`，只重算祖先链。`:has()` 里不能写组合符，所以它只读后代。
-
-后代选择器和子选择器看不到兄弟。例如 `.a .b`、`.a > .b`。追加一行，只重算这一行。
-
-`:has()` 的后代位集随每次增删、改 class、改属性、改文字做增量维护。不再每次改动后整棵树重扫。
-
-只有 `+` 规则时，只取紧挨着的前一个兄弟。只有计数伪类，才算兄弟位置。
+引擎自己做一次级联时（`tools/css-parity`），`:has()` 的后代位集在这一次级联里一次算好，见上文。
 
 **挂载带样式的节点要多少。** `stylesheet!`、`view!` 和 `.vue` 的 `<style>` 在构建期编译成 `StylePatch`。运行期不解析 CSS，也不逐元素匹配选择器。一个元素的 class 组合第一次出现时，从样式表里挑出它能命中的规则，得到一个 `StyleSite`。之后同一组合、同一初始布局的元素，直接复用这处已经合成好的样式。
 
 所以挂载成本不随样式表有多少条规则变，也不随一个元素命中多少条规则变，更不随已挂载的节点数变。
 
-实测（#348）：每行一个行容器、一个文本、一个按钮，各带一个 class，共 3 个节点。release，Apple M4，2026-10-30，负载约 3。
+实测（#348）：每行一个行容器、一个文本、一个按钮，各带一个 class，共 3 个节点。release，Apple M4，2026-10-30，负载约 3。计时包括建视图、合成样式、提交到 `UiWorld`，不包括之后的布局和绘制。
 
 | 样式表 | 每个元素命中 | 冷挂载 4,000 行（12,001 节点） | 每行 | 再追加 500 行，每行 |
 | --- | ---: | ---: | ---: | ---: |
-| 10 条规则 | 1 / 4 条 | 约 36 ms | 8.7–8.9 µs | 9.3–9.4 µs |
-| 100 条规则 | 1 / 34 条 | 约 36 ms | 8.9 µs | 9.2–9.3 µs |
-| 1,000 条规则 | 1 / 334 条 | 约 36 ms | 8.7–8.9 µs | 9.4 µs |
+| 10 条规则 | 1 / 4 条 | 约 37 ms | 8.9–9.0 µs | 9.2–9.3 µs |
+| 100 条规则 | 1 / 34 条 | 约 37 ms | 9.0–9.1 µs | 9.4–9.5 µs |
+| 1,000 条规则 | 1 / 334 条 | 约 37 ms | 9.0–9.2 µs | 9.0–9.4 µs |
 
 同样的行不带 class，每行约 8.5 µs。往已有 0、1,000、2,000、4,000 行的列表里追加 500 行，耗时一样。
+
+**条件 class。** 每个元素再加一个 `class_when`，所有行共用一个信号；一半规则要这个 class 打开才命中。
+
+- 冷挂载每行 9.9–10.1 µs，追加每行 10.1–10.4 µs。比只用固定 class 多约 10%，多出的是每个元素一个绑定。
+- 打开这个信号后，4,500 行共 13,500 个元素一起换样式。一次 `flush_reactive` 约 9.4 ms，每行约 2 µs。
+
+10、100、1,000 条规则下这几个数都一样：每组「class 组合 × 打开的条件 class」只合成一次。
 
 **预算：** 挂载 4,000 个带样式的节点在 100 ms 以内。用 `cargo run --release --locked -p nana-ui-runtime --features benchmark --bin nana-runtime-benchmark -- --profile-styled-mount` 复测。
 
@@ -1152,7 +1149,7 @@ prop 和 inline 上的 `!important` 会去掉标志，并作为 author-important
 
 **`@import`。** 它解析 `url(...)` 和引号路径。相对路径相对导入方，或相对样式表 jail。canonicalize 之后必须落在 `stylesheet_base` 下。
 
-`stylesheet_base` 由文档或 SFC 的 URL 写入。未设置时，相对 `@import` 跳过。不扫进程 cwd。`nana://res/` 打包样式表照常加载。它内部的相对 `@import` 在包内解析。
+`stylesheet_base` 由调用引擎的一方给出，`stylesheet_base_from_href` 从样式表的地址推出它。未设置时，相对 `@import` 跳过。视图的构建期编译不给加载器，`<style>` 里的 `@import` 一律不加载。不扫进程 cwd。`nana://res/` 打包样式表照常加载。它内部的相对 `@import` 在包内解析。
 
 `http(s)`、`data:`、越狱、超过 1MB、带 `layer` 或 `supports()` 的 prelude，一律 fail closed。记 skip，不加载。
 
