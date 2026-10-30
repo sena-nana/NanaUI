@@ -457,3 +457,109 @@ fn issue388_controls_mirror_their_parts_under_rtl() {
     }
     assert_mirrored(&ltr, &cx, &controls);
 }
+
+const SHORT_TITLE: &str = "Export complete";
+const MEDIUM_TITLE: &str = "The October session master finished exporting to disk";
+const LONG_TITLE: &str = "The October session master finished exporting to the shared archive \
+     drive with every stem, every bus and the reference mix alongside it";
+
+fn bare_toast(title: &str, description: bool) -> crate::Toast {
+    let mut view = crate::Toast::new(title, crate::ToastTone::Success).dismissible(true);
+    if description {
+        view = view.description("Master sent to disk");
+    }
+    view
+}
+
+/// A bare toast in a 300px column above a button, laid out once.
+fn toast_column(title: &str, description: bool) -> (AppContext, StableNodeId) {
+    let mut cx = AppContext::new();
+    let root = cx
+        .create_component(document(), Stack::column(4.0).width(LengthSpec::Px(300.0)))
+        .unwrap();
+    let toast = cx
+        .create_detached_component(document(), bare_toast(title, description))
+        .unwrap();
+    cx.append_child(root, toast).unwrap();
+    let below = cx
+        .create_detached_component(document(), crate::Button::new("Below"))
+        .unwrap();
+    cx.append_child(root, below).unwrap();
+    product_frame(&mut cx, document(), viewport(), &mut bundled_face_shaper());
+    (cx, toast.stable_id())
+}
+
+/// The shaped title's lines, whether it ends in an ellipsis, and how much
+/// taller than its first line it is.
+fn title_lines(cx: &AppContext, id: StableNodeId) -> (usize, bool, f32) {
+    let (_, layout) = cx.world().text_layout(id).unwrap();
+    (
+        layout.lines.len(),
+        layout
+            .overflow
+            .contains(nana_text::OverflowFlags::ELLIPSIZED),
+        layout.bounds.height - layout.lines[0].bounds.height,
+    )
+}
+
+/// A bare toast's title wraps to at most two lines, then ends in an
+/// ellipsis; the title part, and the toast, grow by the second line, and a
+/// description sits below it. A one-line title lays out as it did. Title
+/// edits lay out what a cold layout does.
+#[test]
+fn issue388_a_bare_toast_title_wraps_to_two_lines_then_ellipsis() {
+    use super::reflow_oracle::assert_matches_cold;
+    for description in [false, true] {
+        let (short, short_id) = toast_column(SHORT_TITLE, description);
+        let recipe = *short.world().theme().recipes().toast();
+        assert_eq!(title_lines(&short, short_id), (1, false, 0.0));
+        let short_title = part(&short, short_id, LayoutPartKind::TextContent);
+        assert_eq!(short_title.height, recipe.title.size);
+        let short_box = short.world().layout_box(short_id).unwrap();
+        for (title, ellipsized) in [(MEDIUM_TITLE, false), (LONG_TITLE, true)] {
+            let (cx, id) = toast_column(title, description);
+            let (lines, cut, second) = title_lines(&cx, id);
+            assert_eq!((lines, cut), (2, ellipsized), "{title:?}");
+            assert!(second > 0.0);
+            let title_part = part(&cx, id, LayoutPartKind::TextContent);
+            assert!(
+                (title_part.height - (recipe.title.size + second)).abs() < 1e-3,
+                "{title_part:?}"
+            );
+            let (_, layout) = cx.world().text_layout(id).unwrap();
+            assert!(layout.physical_size().0 <= title_part.width + 0.5);
+            let border = cx.world().layout_box(id).unwrap();
+            assert!(
+                border.height > short_box.height,
+                "{title:?}: {border:?} not taller than {short_box:?}"
+            );
+            if description {
+                let detail = part(&cx, id, LayoutPartKind::Detail);
+                assert!(
+                    detail.y >= title_part.y + title_part.height,
+                    "{detail:?} under {title_part:?}"
+                );
+                assert!(detail.y + detail.height <= border.y + border.height);
+            }
+        }
+    }
+
+    let mut shaper = bundled_face_shaper();
+    let (mut cx, id) = toast_column(SHORT_TITLE, false);
+    for (title, description) in [
+        (LONG_TITLE, false),
+        (MEDIUM_TITLE, true),
+        (LONG_TITLE, true),
+        (SHORT_TITLE, true),
+        (MEDIUM_TITLE, false),
+        (SHORT_TITLE, false),
+    ] {
+        let entity = crate::Entity::<crate::Toast>::from_stable_id(id);
+        cx.update_component(entity, |view, _| *view = bare_toast(title, description))
+            .unwrap();
+        product_frame(&mut cx, document(), viewport(), &mut shaper);
+        let (mut cold, cold_id) = toast_column(title, description);
+        assert_eq!(cold_id, id);
+        assert_matches_cold(&mut cx, &mut cold, document());
+    }
+}

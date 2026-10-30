@@ -583,15 +583,31 @@ impl UiWorld {
         let recipe = self.theme.recipes().toast();
         // An assembled toast's description and close button are children.
         let bare = !*assembled;
+        let inputs = crate::layout_engine::parts::toast_inputs(
+            recipe,
+            recipe.control_size.height_in(self.style_model.metrics),
+            bare && *dismissible,
+            bare && description.is_some(),
+        );
         Some(ToastInputs {
             reverse: self.right_to_left(id),
-            ..crate::layout_engine::parts::toast_inputs(
-                recipe,
-                recipe.control_size.height_in(self.style_model.metrics),
-                bare && *dismissible,
-                bare && description.is_some(),
-            )
+            // A bare toast's title grows by the lines it wrapped to past its
+            // first (#388).
+            title: inputs.title + if bare { self.toast_title_wrap(id) } else { 0.0 },
+            ..inputs
         })
+    }
+
+    /// How much taller than its first line a bare toast's shaped title is:
+    /// the second line, when the title wrapped.
+    fn toast_title_wrap(&self, id: StableNodeId) -> f32 {
+        self.text_layout(id)
+            .and_then(|(_, layout)| {
+                let first = layout.lines.first()?;
+                (layout.lines.len() > 1)
+                    .then(|| (layout.bounds.height - first.bounds.height).max(0.0))
+            })
+            .unwrap_or(0.0)
     }
 
     /// [`ToastInputs::chrome`] for a bare toast's own border.

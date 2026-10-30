@@ -3447,32 +3447,34 @@ impl UiWorld {
             editor_multiline.unwrap_or(false) || self.nodes.rich_editor_marks(id).is_some();
         let is_text_input =
             editor_multiline.is_some() || self.nodes.rich_editor_marks(id).is_some();
+        // A card's title is one line and a bare toast's title at most two
+        // (#388: one line loses a medium title's meaning, two keep the
+        // toast's height bounded), each cut to the lane it paints in. The
+        // recipe's `title_max_lines` is the assembled notice's.
         let card_title = matches!(
             self.standard_visual_ref(id),
             Some(StandardVisual::Card { .. })
         );
-        // A card's title and a bare toast's title are one line, cut to the
-        // lane they paint in.
-        let one_line = card_title
-            || matches!(
-                self.standard_visual_ref(id),
-                Some(StandardVisual::Toast {
-                    assembled: false,
-                    ..
-                })
-            );
-        let wrap = if one_line {
-            false
+        let clamped = match self.standard_visual_ref(id) {
+            Some(StandardVisual::Card { .. }) => Some(1),
+            Some(StandardVisual::Toast {
+                assembled: false, ..
+            }) => Some(2),
+            _ => None,
+        };
+        let wrap = if let Some(lines) = clamped {
+            lines > 1
         } else if is_text_input {
             text_input_multiline && source.layout.text_wraps()
         } else {
             source.layout.text_wraps()
         };
-        let preserve_lines = !one_line && Self::preserves_lines(source, text_input_multiline);
+        let preserve_lines =
+            clamped.is_none() && Self::preserves_lines(source, text_input_multiline);
         let wrap_break = source.layout.text_wrap_break();
-        let ellipsis = one_line || (!is_text_input && source.layout.uses_text_ellipsis());
-        let max_lines = if one_line {
-            Some(1)
+        let ellipsis = clamped.is_some() || (!is_text_input && source.layout.uses_text_ellipsis());
+        let max_lines = if clamped.is_some() {
+            clamped
         } else {
             (!is_text_input)
                 .then(|| source.layout.resolved_line_clamp())

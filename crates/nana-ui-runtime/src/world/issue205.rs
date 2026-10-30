@@ -3678,8 +3678,9 @@ fn toast_page(
 /// A bare toast's mark, title, description and dismiss target are Flex
 /// parts layout publishes (#205): a row in the band the recipe's padding
 /// leaves, the copy a nested column. Measure gives the box its height from
-/// the same declaration (the style keeps no min-height), the title is one
-/// line shaped to its lane, and paint reads the published boxes.
+/// the same declaration (the style keeps no min-height), the title is at
+/// most two lines shaped to its lane (#388), and paint reads the published
+/// boxes.
 #[test]
 fn issue205_toast_mark_copy_and_dismiss_are_published_parts() {
     use nana_ui_core::ToastIndicator;
@@ -3747,14 +3748,19 @@ fn issue205_toast_mark_copy_and_dismiss_are_published_parts() {
                         assert_eq!(painted_dismiss, None);
                     }
                     // The title's lane runs from the mark's gap to the
-                    // dismiss target; it is one line, shaped to the lane.
+                    // dismiss target; it wraps to at most two lines (#388),
+                    // shaped to the lane, and grows by its second line.
                     let lane = part_of(&cx, id, LayoutPartKind::TextContent);
                     assert!(close(lane.x, band.x + lead), "{lane:?} in {band:?}");
                     assert!(close(lane.width, band.width - lead - dismiss));
-                    assert_eq!(lane.height, recipe.title.size);
+                    let (_, shaped) = world.text_layout(id).unwrap();
+                    assert!(shaped.lines.len() <= 2, "{title:?}");
+                    let title_height =
+                        recipe.title.size + shaped.bounds.height - shaped.lines[0].bounds.height;
+                    assert!(close(lane.height, title_height), "{lane:?}");
                     let constraints = world.text_shape_constraints(id);
                     assert_eq!(constraints.max_width, Some(lane.width));
-                    assert_eq!((constraints.wrap, constraints.max_lines), (false, Some(1)));
+                    assert_eq!((constraints.wrap, constraints.max_lines), (true, Some(2)));
                     let text = world.text_metrics(id).unwrap();
                     assert_eq!(painted_title.unwrap().bounds, lane);
                     if width == Some(LengthSpec::FitContent) {
@@ -3769,7 +3775,7 @@ fn issue205_toast_mark_copy_and_dismiss_are_published_parts() {
                         .unwrap();
                     assert!(run.bounds.x >= lane.x - 1e-3);
                     assert!(run.bounds.x + run.bounds.width <= lane.x + lane.width + 1e-3);
-                    let copy = recipe.title.size
+                    let copy = title_height
                         + description.map_or(0.0, |_| recipe.copy_gap + recipe.description.size);
                     if let Some(description) = description {
                         assert_eq!(lane.y, band.y);
@@ -3777,7 +3783,7 @@ fn issue205_toast_mark_copy_and_dismiss_are_published_parts() {
                         assert_eq!(
                             detail,
                             crate::LayoutBox {
-                                y: lane.y + recipe.title.size + recipe.copy_gap,
+                                y: lane.y + lane.height + recipe.copy_gap,
                                 height: recipe.description.size,
                                 ..lane
                             }
@@ -3786,10 +3792,7 @@ fn issue205_toast_mark_copy_and_dismiss_are_published_parts() {
                         assert_eq!(painted.bounds, detail);
                         assert_eq!(painted.content.as_ref(), description);
                     } else {
-                        assert!(close(
-                            lane.y,
-                            band.y + (band.height - recipe.title.size) / 2.0
-                        ));
+                        assert!(close(lane.y, band.y + (band.height - title_height) / 2.0));
                         assert!(painted_description.is_none());
                     }
                     // The box is as tall as the taller of the band's block
