@@ -8,7 +8,7 @@
 use std::collections::HashSet;
 use std::sync::{Mutex, OnceLock};
 
-use crate::nana_text::{HostFontStyle, register_host_font_face};
+use crate::nana_text::{HostFontStyle, register_host_font_face_styled};
 use crate::scene_paint::{resolve_background_image_url, resolved_resource_is_allowed};
 
 const FONT_FACE_MAX_BYTES: usize = 8 * 1024 * 1024;
@@ -93,7 +93,9 @@ fn ingest_one(spec: &HostFontFaceSpec) -> bool {
         let Some(family) = spec.family.as_deref().filter(|family| !family.is_empty()) else {
             continue;
         };
-        if register_host_font_face(family, bytes, spec.weight, spec.weight_end) == 0 {
+        if register_host_font_face_styled(family, bytes, spec.weight, spec.weight_end, spec.style)
+            == 0
+        {
             continue;
         }
         mark_loaded(key);
@@ -201,5 +203,46 @@ mod tests {
             .map(|face| face.weight)
             .collect();
         assert_eq!(faces, [(200.0, 700.0)], "450 shapes with the 200..700 face");
+    }
+
+    /// `font-style: italic` reaches the registration: the ingested face is
+    /// described as italic, not the default style.
+    #[test]
+    #[cfg(feature = "bundled-fonts")]
+    fn an_ingested_italic_face_registers_as_italic() {
+        use base64::Engine as _;
+        let encoded = base64::engine::general_purpose::STANDARD.encode(crate::UI_FONT_REGULAR);
+        let spec = HostFontFaceSpec {
+            family: Some("NanaIngestItalicFace".into()),
+            urls: vec![format!("data:font/ttf;base64,{encoded}")],
+            weight: None,
+            weight_end: None,
+            style: Some(HostFontStyle::Italic),
+        };
+        assert_eq!(ingest_host_font_faces(&[spec]), 1);
+
+        let style = nana_text::TextStyle {
+            font_family: Some(std::sync::Arc::from("NanaIngestItalicFace")),
+            italic: true,
+            ..nana_text::TextStyle::default()
+        };
+        let engine = crate::text_engine::nana_text_engine();
+        let mut engine = crate::text_engine::lock_engine(&engine);
+        let layout = nana_text::TextEngine::layout(
+            &mut *engine,
+            nana_text::TextKind::Label,
+            &nana_text::TextSource::new("H"),
+            &style,
+            &nana_text::TextConstraints::default(),
+            &mut nana_text::TextWorkCounters::default(),
+        );
+        let styles: Vec<_> = layout
+            .runs
+            .iter()
+            .filter_map(|run| engine.fonts().describe(run.font))
+            .filter(|face| face.families.iter().any(|f| &**f == "NanaIngestItalicFace"))
+            .map(|face| face.style)
+            .collect();
+        assert_eq!(styles, [nana_text::font::FontStyle::Italic]);
     }
 }
