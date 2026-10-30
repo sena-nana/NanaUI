@@ -1442,7 +1442,7 @@ pub struct ScenePrimitive {
 // Every primitive the scene holds or a builder makes is this size, and an
 // unoptimized build gives each one its own stack slot: inlining a large rare
 // field (the quad surface was 1 KiB) grew the builders' frames past 150 KiB
-// each and overflowed a 1 MiB main thread. Box such fields instead.
+// each. Box such fields instead.
 const _: () = assert!(std::mem::size_of::<ScenePrimitive>() <= 512);
 
 /// Isolating ancestor whose subtree is composited as one layer.
