@@ -1352,7 +1352,7 @@ fn issue205_checkbox_indicator_and_label_are_published_parts() {
     let world = cx.world();
     let result = world.layout_result(id).unwrap();
     let content = result.content_box;
-    let indicator = part_of(&cx, id, LayoutPartKind::LeadingContent);
+    let indicator = part_of(&cx, id, LayoutPartKind::Indicator);
     let label = part_of(&cx, id, LayoutPartKind::TextContent);
     let extent = ControlSize::Medium.indicator_size();
     let gap = ControlSize::Medium.indicator_gap();
@@ -1530,7 +1530,7 @@ fn issue205_checkbox_parts_survive_context_transitions() {
         else {
             panic!("checkbox")
         };
-        assert_eq!(indicator, part_of(&cx, id, LayoutPartKind::LeadingContent));
+        assert_eq!(indicator, part_of(&cx, id, LayoutPartKind::Indicator));
         assert_eq!(label.bounds, part_of(&cx, id, LayoutPartKind::TextContent));
         let (mut cold, ..) = build(display);
         assert_matches_cold(&mut cx, &mut cold, document);
@@ -1569,7 +1569,7 @@ fn issue205_ten_thousand_checkboxes_keep_one_entity_and_three_parts() {
                 [
                     LayoutPartKind::TextContent,
                     LayoutPartKind::ComponentContent,
-                    LayoutPartKind::LeadingContent
+                    LayoutPartKind::Indicator
                 ]
             );
             assert!(result.child_placements.is_empty());
@@ -2232,7 +2232,7 @@ fn issue205_checkbox_parts_follow_a_theme_that_moves_no_style() {
     assert_eq!(cold_box.stable_id(), checkbox.stable_id());
     super::reflow_oracle::assert_matches_cold(&mut cx, &mut cold, document);
     let id = checkbox.stable_id();
-    let indicator = part_of(&cx, id, LayoutPartKind::LeadingContent);
+    let indicator = part_of(&cx, id, LayoutPartKind::Indicator);
     let label = part_of(&cx, id, LayoutPartKind::TextContent);
     assert_eq!(
         label.x - (indicator.x + indicator.width),

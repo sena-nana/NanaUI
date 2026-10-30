@@ -204,10 +204,7 @@ pub(crate) fn checkbox_parts(
     labelled: bool,
     text: Size,
 ) -> [Option<FlexPart>; 3] {
-    let mut mark = FlexPart::new(
-        LayoutPartKind::LeadingContent,
-        Size::new(indicator, indicator),
-    );
+    let mut mark = FlexPart::new(LayoutPartKind::Indicator, Size::new(indicator, indicator));
     mark.gap_after = if labelled { gap } else { 0.0 };
     let mut label = FlexPart::new(LayoutPartKind::TextContent, text);
     label.grow = 1.0;

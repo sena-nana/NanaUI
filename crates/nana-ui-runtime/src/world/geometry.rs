@@ -1270,7 +1270,7 @@ impl UiWorld {
                 // of an empty checkbox has none and keeps the content box.
                 use crate::LayoutPartKind;
                 let indicator = self
-                    .content_part_box(id, LayoutPartKind::LeadingContent)
+                    .content_part_box(id, LayoutPartKind::Indicator)
                     .unwrap_or(LayoutBox {
                         width: 0.0,
                         height: 0.0,

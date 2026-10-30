@@ -1611,7 +1611,7 @@ impl UiScene {
                     indeterminate,
                     ..
                 }) => 'checkbox: {
-                    // The indicator is the `LeadingContent` part layout
+                    // The indicator is the `Indicator` part layout
                     // published (#205). A node without component geometry was
                     // never laid out as a checkbox and has no indicator to
                     // draw; the scene does not place one of its own.

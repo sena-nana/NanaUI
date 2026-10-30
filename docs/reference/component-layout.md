@@ -10,7 +10,7 @@ Button、Chip 和 ActionMenuItem 的旧 API 保持不变。组件内容声明为
 
 纯文字 Button 和 Chip 沿用原来的两个部件（文本和内容），不增加 retained 节点或部件。loading、内容对齐、菜单 hint 与图标占位的变化失效布局输入；hover、disabled 颜色和 spinner 相位保留布局结果。极窄的内容盒会裁限部件范围，避免图标或 hint 产生负宽度。
 
-一个控件把内容交给部件，就只留一份部件声明：intrinsic measure 取其中除文字以外的宽度与间距（`parts::chrome_extent`），段落预算是可用宽度减去同一份（`parts::text_budget`），placement 用 Flex 求解它们，绘制读发布的结果。Checkbox 按这条规则迁移：指示框与标签是 `LeadingContent` / `TextContent` 两个部件，一个 Checkbox 仍是一个实体、三个 parts（文字、内容、指示框）；勾选、悬停只改绘制，零布局。指示框按内容盒取正方形，内容盒比指示框还矮时标签跟着左移，不再空出原来那段固定宽度。Switch 的文字不是节点文字，标签和 hint 画在部件里：一行是 track 与文字列，文字列是嵌套的 Flex 列，带 hint 的开关的高度由测量这份声明给出，样式不再写 `min_height`。track 与间隔不出现在开关自己的样式里，主题改动它们时开关照样重新测量（`visual_parts_read_theme`）。StatusBadge / ValidationMessage 的圆点同理：圆点在它那一格里居中，格宽与间隔读主题间距，padding 只剩控件自己的内边距。intrinsic measure 让文字能要的宽度先扣掉这些部件，与段落预算一致：此前一段铺满可用宽度的文字会让带图标的 Button、Checkbox 或状态圆点按部件的宽度超出可用宽度。
+一个控件把内容交给部件，就只留一份部件声明：intrinsic measure 取其中除文字以外的宽度与间距（`parts::chrome_extent`），段落预算是可用宽度减去同一份（`parts::text_budget`），placement 用 Flex 求解它们，绘制读发布的结果。Checkbox 按这条规则迁移：指示框与标签是 `Indicator` / `TextContent` 两个部件（指示框与单选环同一种部件，#388），一个 Checkbox 仍是一个实体、三个 parts（文字、内容、指示框）；勾选、悬停只改绘制，零布局。指示框按内容盒取正方形，内容盒比指示框还矮时标签跟着左移，不再空出原来那段固定宽度。Switch 的文字不是节点文字，标签和 hint 画在部件里：一行是 track 与文字列，文字列是嵌套的 Flex 列，带 hint 的开关的高度由测量这份声明给出，样式不再写 `min_height`。track 与间隔不出现在开关自己的样式里，主题改动它们时开关照样重新测量（`visual_parts_read_theme`）。StatusBadge / ValidationMessage 的圆点同理：圆点在它那一格里居中，格宽与间隔读主题间距，padding 只剩控件自己的内边距。intrinsic measure 让文字能要的宽度先扣掉这些部件，与段落预算一致：此前一段铺满可用宽度的文字会让带图标的 Button、Checkbox 或状态圆点按部件的宽度超出可用宽度。
 
 标签被清空的控件（Button、Chip、Checkbox 以及任何自带文字的盒子）交出原文字的度量，和冷布局时没有文字的同一控件相同。此前没有文字的盒子不再进文字工作，旧度量留着，清空标签的 Button 仍保持原来的宽度。
 
@@ -24,7 +24,7 @@ Button、Chip 和 ActionMenuItem 的旧 API 保持不变。组件内容声明为
 | --- | --- | --- |
 | Button / Chip | 2 | 已迁移：文字、前后图标和 spinner 是 Flex parts；intrinsic measure 与段落预算读同一组部件（`chrome_extent` / `text_budget`）；绘制保留 chrome 与语义 |
 | ActionMenuItem | 2 | 已迁移 icon / label / hint；hint 更新复用原节点 |
-| Checkbox | 2 | 已迁移：指示框是 `LeadingContent`，标签是 `TextContent`，标签取余下宽度。intrinsic measure、段落预算、placement 与绘制都读 `UiWorld::checkbox_parts`，原先 measure、`text_shape_constraints` 与 geometry 各算一遍指示框的占位，现已删除；Scene 不再自带指示框和标签的让位。TextRun 片段落在标签部件里（此前落在整个内容盒，与指示框重叠）。RTL 与以前一样不镜像 |
+| Checkbox | 2 | 已迁移：指示框是 `Indicator`（与单选环同一种部件，几何读它，#388），标签是 `TextContent`，标签取余下宽度。intrinsic measure、段落预算、placement 与绘制都读 `UiWorld::checkbox_parts`，原先 measure、`text_shape_constraints` 与 geometry 各算一遍指示框的占位，现已删除；Scene 不再自带指示框和标签的让位。TextRun 片段落在标签部件里（此前落在整个内容盒，与指示框重叠）。RTL 与以前一样不镜像 |
 | ListItem / SidebarRow / FileTab | 1 + 2 | retained slots 使用已有 child placements；fallback label/note/detail 已迁移，隐藏 slot 不占文字预算；前导槽没有盒子时，布局把这一行的 `SpaceBetween` 换成 `End`，尾随槽留在行尾（#333） |
 | FormField / LabeledValue | 1 + 2 | LabeledValue 已发布 Label/Value，action 是普通 child；FormField 已发布 Label/Hint/LeadingContent，control 是普通 child |
 | Card | 2 | 已发布 Header/Spinner；标题带是前置部件（#385），body 是普通 children，从标题带之后开始。padding 只是卡片自己的（作者写的或 Panel 表面内边距），不再加 `CARD_TITLE_BAND`；几何的 `content` 是标题带下面的正文区 |
@@ -48,9 +48,16 @@ Button、Chip 和 ActionMenuItem 的旧 API 保持不变。组件内容声明为
 | TreeView / CommandPalette / ReorderList 行、Scrollbar、XYPad、resize grip、KeyCapture/Keymap 徽标 | 3 | 数据行、虚拟行或交互几何；外部盒子读 LayoutResult |
 | Chart / ChartTooltip / CalendarHeatmap / QrCode / GraphCanvas / GraphMinimap / NativeMarkdown / ImageViewer 舞台 | 4 | 保留领域算法 |
 
+## 内容部件的取舍（#388）
+
+#205 迁移时保留原有表现、留待定下的几项，按 #388 的决定：
+
+- **Checkbox 指示框是 `Indicator`。** 与 SelectionOption 的单选环同一种部件，一个 Checkbox 发布 `TextContent`、`ComponentContent`、`Indicator` 三个 parts，不再有 `LeadingContent`。`ComponentGeometry::Checkbox` 的 `indicator` 读这个部件；命中与无障碍读整个控件盒，它包住指示框。门禁：`issue388_a_checkbox_indicator_is_the_indicator_part`（有标签和空标签：部件种类、绘制的指示框等于部件、指示框中心命中这个 Checkbox、无障碍盒包住它）。
+
 ## 验证入口
 
 - `cargo test --locked -p nana-ui-runtime --lib issue205`：部件与绘制投影一致、hint/loading 更新、a11y、hover 零布局、1k/10k 单实体和 retained parts 数量；Checkbox 的部件、measure、预算与冷布局对照；清空标签后与冷布局相同；菜单空间与铬裁剪沿 clip 链。
+- `cargo test --locked -p nana-ui-runtime --lib issue388`：#388 的四项取舍，见上节。
 - `cargo test --locked -p nana-ui-runtime --lib issue385`：EmptyState、Card、装配后 Toast 的前置部件在作者 padding、主题切换、部件显隐下与冷布局相同；padding 只是声明的那份，部件从 content box 起点开始，子节点在带子之后。
 - `cargo test --locked -p nana-ui-runtime --lib issue199`：1k 实际组件跨 context / 正常流与脱流切换，保留状态、焦点和资源身份。
 - `cargo test --locked -p nana-ui-devtools --features runtime-agent --test issue205_component_pixels`：实际 GPU 的组件图像和 hover；设置 `NANA_COMPONENT_REQUIRE_GPU=1` 时无 GPU 必须失败。

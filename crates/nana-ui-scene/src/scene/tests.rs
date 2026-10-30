@@ -5995,7 +5995,7 @@ fn standard_control_visuals_expand_without_backend_tag_matching() {
         indeterminate: false,
         size: nana_ui_core::ControlSize::Medium,
     });
-    // The boxes Runtime publishes as the checkbox's LeadingContent and
+    // The boxes Runtime publishes as the checkbox's Indicator and
     // TextContent parts; the scene draws them and places neither itself.
     let indicator = nana_ui_core::ControlSize::Medium.indicator_size();
     checkbox.component_geometry = Some(Box::new(ComponentGeometry::Checkbox {
