@@ -889,6 +889,11 @@ pub enum StandardVisual {
     Range {
         label: Option<Arc<str>>,
         value: Arc<str>,
+        /// The minimum and the maximum formatted as `value`
+        /// is, at the step's precision, while the readout shows: the value's
+        /// slot is as wide as the wider of them, so a value moving between
+        /// them repaints without laying anything out (#384).
+        limits: Option<[Arc<str>; 2]>,
         unit: Option<Arc<str>>,
         size: ControlSize,
         ratio: f32,

@@ -3978,6 +3978,7 @@ fn native_toggle_and_slider_state_share_events_visuals_and_accessibility() {
         Some(StandardVisual::Range {
             label: Some(Arc::from("Volume")),
             value: Arc::from("100"),
+            limits: Some([Arc::from("0"), Arc::from("100")]),
             unit: None,
             size: nana_ui_core::ControlSize::Medium,
             ratio: 1.0,
@@ -9653,6 +9654,7 @@ fn component_size_kind_and_fallback_geometry_preserve_design_contracts() {
             Some(StandardVisual::Range {
                 label: Some(Arc::from("Opacity")),
                 value: Arc::from("0.7"),
+                limits: Some([Arc::from("0.0"), Arc::from("1.0")]),
                 unit: Some(Arc::from("%")),
                 size,
                 ratio: 0.7,
@@ -9827,6 +9829,7 @@ fn range_field_can_hide_the_value_readout_and_still_expose_the_numeric_value() {
         Some(StandardVisual::Range {
             label: Some(Arc::from("Seek")),
             value: Arc::from(""),
+            limits: None,
             unit: None,
             size: nana_ui_core::ControlSize::Medium,
             ratio: 0.4,

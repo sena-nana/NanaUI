@@ -1589,49 +1589,18 @@ impl UiWorld {
                 track_gradient,
                 ..
             } => {
-                // The spacing ladder, not a second one: these were 6 / 8 / 10
-                // as bare numbers sitting next to `SpacingTokens`' own SM / MD
-                // / LG, which are the same three values.
-                let gap = match size {
-                    nana_ui_core::ControlSize::Small => self.theme.spacing().sm,
-                    nana_ui_core::ControlSize::Medium => self.theme.spacing().md,
-                    nana_ui_core::ControlSize::Large => self.theme.spacing().lg,
-                };
-                let measure = self.chrome_text_measure(id);
-                let label_width = label.as_ref().map_or(0.0, |label| {
-                    measure
-                        .width(label, style.font_size, style.font_weight)
-                        .min(content.width * 0.28)
-                });
-                let show_value = !value.is_empty();
-                let unit_width = if show_value {
-                    unit.as_ref().map_or(0.0, |unit| {
-                        measure
-                            .width(
-                                unit,
-                                size.caption_size_in(self.theme.typography()),
-                                Some(self.theme.typography().regular),
-                            )
-                            .min(content.width)
-                    })
-                } else {
-                    0.0
-                };
-                let value_width = if show_value {
-                    // Reserve four digits so ordinary value changes keep the
-                    // track stable; longer readouts retain their natural width.
-                    measure
-                        .width(value, style.font_size, style.font_weight)
-                        .max(measure.width("0000", style.font_size, style.font_weight))
-                        .min((content.width - unit_width).max(0.0))
-                } else {
-                    0.0
-                };
-                let trailing_width = value_width + unit_width;
-                let track_x = content.x + label_width + if label.is_some() { gap } else { 0.0 };
-                let track_right = content.x + content.width
-                    - trailing_width
-                    - if trailing_width > 0.0 { gap } else { 0.0 };
+                // The label, the value's slot and the unit are the parts
+                // layout published (#384); the track runs in the lane they
+                // leave. An empty value region (no readout) sits at the
+                // content box's end.
+                use crate::LayoutPartKind;
+                let parts = self.component_content_parts(id);
+                let part = |kind| crate::layout_engine::parts::part_bounds(&parts, kind);
+                let lane = crate::layout_engine::parts::range_track_lane(
+                    content,
+                    &parts,
+                    self.range_gap(*size),
+                );
                 // A gradient track's thumb is a ring that stands proud of the
                 // strip; the band is the ring's height so it fits.
                 let thumb = if track_gradient.is_some() {
@@ -1641,53 +1610,48 @@ impl UiWorld {
                 }
                 .min(content.height);
                 let track = LayoutBox {
-                    x: track_x + thumb / 2.0,
+                    x: lane.x + thumb / 2.0,
                     y: content.y + (content.height - thumb) / 2.0,
-                    width: (track_right - track_x - thumb).max(0.0),
+                    width: (lane.width - thumb).max(0.0),
                     height: thumb.min(content.height),
                 };
                 Some(crate::ComponentGeometry::Range {
                     border_width: self.theme.border().hairline,
-                    label: label.as_ref().map(|label| {
-                        text_region(
-                            LayoutBox {
-                                x: content.x,
-                                y: content.y,
-                                width: label_width,
-                                height: content.height,
-                            },
-                            Arc::clone(label),
-                            false,
-                            style.font_size,
-                            style.font_weight,
-                        )
-                    }),
-                    value: text_region(
-                        LayoutBox {
-                            x: content.x + content.width - value_width - unit_width,
-                            y: content.y,
-                            width: value_width,
-                            height: content.height,
+                    label: label.as_ref().zip(part(LayoutPartKind::Label)).map(
+                        |(label, bounds)| {
+                            text_region(
+                                bounds,
+                                Arc::clone(label),
+                                false,
+                                style.font_size,
+                                style.font_weight,
+                            )
                         },
+                    ),
+                    value: text_region(
+                        part(LayoutPartKind::Value).unwrap_or(LayoutBox {
+                            x: content.x + content.width,
+                            y: content.y,
+                            height: content.height,
+                            ..LayoutBox::default()
+                        }),
                         Arc::clone(value),
                         false,
                         style.font_size,
                         style.font_weight,
                     ),
-                    unit: unit.as_ref().map(|unit| {
-                        text_region(
-                            LayoutBox {
-                                x: content.x + content.width - unit_width,
-                                y: content.y,
-                                width: unit_width,
-                                height: content.height,
-                            },
-                            Arc::clone(unit),
-                            true,
-                            size.caption_size_in(self.theme.typography()),
-                            Some(self.theme.typography().regular),
-                        )
-                    }),
+                    unit: unit
+                        .as_ref()
+                        .zip(part(LayoutPartKind::Detail))
+                        .map(|(unit, bounds)| {
+                            text_region(
+                                bounds,
+                                Arc::clone(unit),
+                                true,
+                                size.caption_size_in(self.theme.typography()),
+                                Some(self.theme.typography().regular),
+                            )
+                        }),
                     track,
                     track_girth: if track_gradient.is_some() {
                         self.theme.spacing().xl

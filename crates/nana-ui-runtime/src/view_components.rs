@@ -5351,6 +5351,12 @@ impl ComponentView for RangeField {
             } else {
                 Arc::from("")
             },
+            limits: show_value.then(|| {
+                [
+                    format_range_value(self.minimum, self.step),
+                    format_range_value(self.maximum, self.step),
+                ]
+            }),
             unit: if show_value { self.unit.clone() } else { None },
             size: self.size,
             ratio: self.ratio(),

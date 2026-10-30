@@ -6403,6 +6403,7 @@ mod issue270;
 mod issue333;
 mod issue381;
 mod issue382;
+mod issue384;
 mod issue385;
 mod issue386;
 mod issue387;

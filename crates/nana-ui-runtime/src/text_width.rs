@@ -60,12 +60,39 @@ impl<'a> ChromeTextMeasure<'a> {
     /// pixel so a region exactly this wide never ellipsizes its own run on
     /// float noise.
     pub(crate) fn width(&self, text: &str, font_size: f32, font_weight: Option<u16>) -> f32 {
+        self.width_with(text, font_size, font_weight, false)
+    }
+
+    /// [`Self::width`] with tabular figures (`tnum`) where the font has
+    /// them: every digit as wide, so a number's width depends on how many
+    /// digits it has, not which.
+    pub(crate) fn tabular_width(
+        &self,
+        text: &str,
+        font_size: f32,
+        font_weight: Option<u16>,
+    ) -> f32 {
+        self.width_with(text, font_size, font_weight, true)
+    }
+
+    fn width_with(
+        &self,
+        text: &str,
+        font_size: f32,
+        font_weight: Option<u16>,
+        tabular: bool,
+    ) -> f32 {
         let Some(engine) = self.engine else {
             return estimated_text_width(text, font_size);
         };
         let mut style = self.base.cloned().unwrap_or_default();
         style.font_size = font_size;
         style.font_weight = font_weight;
+        if tabular {
+            style
+                .font_features
+                .push(nana_ui_core::FontFeatureSetting::new(*b"tnum", 1));
+        }
         let constraints = TextShapeConstraints::default();
         // Chrome runs across a line even in a vertical editor (#59), the same
         // as `NanaTextEngineShaper::horizontal_offset`.

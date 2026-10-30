@@ -4,8 +4,8 @@ use crate::layout_engine::{
     Size,
     parts::{
         CONTENT_PART_SLOTS, ContentParts, EmptyStateInputs, FlexPart, LeadingParts,
-        NO_CONTENT_PARTS, SwitchInputs, ToastInputs, button_content_parts, checkbox_parts,
-        content_parts, empty_state_parts, part_bounds, selection_option_parts,
+        NO_CONTENT_PARTS, RangeInputs, SwitchInputs, ToastInputs, button_content_parts,
+        checkbox_parts, content_parts, empty_state_parts, part_bounds, selection_option_parts,
         selection_option_row, start_row_parts, status_dot_parts, switch_parts, toast_parts,
     },
 };
@@ -21,7 +21,8 @@ pub(crate) const STATUS_DOT_FRACTION: f32 = 10.0 / 24.0;
 
 /// Whether a visual's content parts read installed metrics that a theme can
 /// move without moving any style the node resolves: a switch's track and
-/// gap, a status dot's slot and gap, a selection option's icon gap. (A
+/// gap, a range's gaps and unit size, a status dot's slot and gap, a
+/// selection option's icon gap. (A
 /// checkbox's indicator reads the same type and spacing steps its own style
 /// resolves, so a theme that moves them relays it out already; a radio ring
 /// keeps fixed control steps.)
@@ -30,6 +31,7 @@ pub(super) fn visual_parts_read_theme(visual: Option<&StandardVisual>) -> bool {
         visual,
         Some(
             StandardVisual::Switch { .. }
+                | StandardVisual::Range { .. }
                 | StandardVisual::StatusBadge { .. }
                 | StandardVisual::ValidationMessage { .. }
                 | StandardVisual::SelectionOption { icon: Some(_), .. }
@@ -156,6 +158,9 @@ impl UiWorld {
         }
         if let Some(inputs) = self.switch_inputs(id) {
             return switch_parts(content, inputs);
+        }
+        if let Some(inputs) = self.range_inputs(id) {
+            return crate::layout_engine::parts::range_parts(content, inputs);
         }
         if let Some(inputs) = self.empty_state_inputs(id) {
             let presentation = self.nodes.empty_state_text(id).copied().unwrap_or_default();
@@ -670,6 +675,60 @@ impl UiWorld {
                 )
             }),
         })
+    }
+
+    /// A range's label, value slot and unit before placement: what
+    /// intrinsic measure, placement and the track's lane all read (#384).
+    /// The label and value are set in the range's own font, the unit at the
+    /// caption size; the slot measures the formatted minimum and maximum in
+    /// tabular figures, so it moves only with them, the step, the unit and
+    /// the theme, never with the value. A rail draws no text.
+    pub(crate) fn range_inputs(&self, id: StableNodeId) -> Option<RangeInputs> {
+        let Some(StandardVisual::Range {
+            label,
+            limits,
+            unit,
+            size,
+            rail: None,
+            ..
+        }) = self.standard_visual_ref(id)
+        else {
+            return None;
+        };
+        let style = self.computed_style(id)?;
+        let typography = self.theme.typography();
+        let measure = self.chrome_text_measure(id);
+        let value = limits.as_ref().map(|limits| {
+            limits
+                .iter()
+                .map(|limit| measure.tabular_width(limit, style.font_size, style.font_weight))
+                .fold(0.0, f32::max)
+        });
+        Some(RangeInputs {
+            label: label
+                .as_ref()
+                .map(|label| measure.width(label, style.font_size, style.font_weight)),
+            value,
+            unit: unit.as_ref().filter(|_| value.is_some()).map(|unit| {
+                measure.width(
+                    unit,
+                    size.caption_size_in(typography),
+                    Some(typography.regular),
+                )
+            }),
+            gap: self.range_gap(*size),
+        })
+    }
+
+    /// Between a range's label and its track, and its track and readout:
+    /// the spacing ladder's step for the control size.
+    pub(crate) fn range_gap(&self, size: nana_ui_core::ControlSize) -> f32 {
+        let spacing = self.theme.spacing();
+        match size {
+            nana_ui_core::ControlSize::Small => spacing.sm,
+            nana_ui_core::ControlSize::Medium => spacing.md,
+            nana_ui_core::ControlSize::Large => spacing.lg,
+        }
     }
 
     /// A status badge's or validation message's dot and label before

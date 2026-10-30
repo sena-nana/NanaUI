@@ -634,6 +634,12 @@ fn visual_beside_text(id: StableNodeId, world: &UiWorld) -> VisualContent {
                 ..VisualContent::default()
             }
         }
+        // A range's label, value slot and unit beside its track, the
+        // declaration placement solves (#384); the track takes the rest.
+        Some(crate::StandardVisual::Range { .. }) => VisualContent {
+            width: world.range_inputs(id).map_or(0.0, |inputs| inputs.extent()),
+            ..VisualContent::default()
+        },
         // A bare toast's mark, gap and dismiss target beside its title, and
         // its copy column's height: the declaration placement solves. (An
         // assembled toast's copy is its children; its mark is laid out

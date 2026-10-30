@@ -6027,6 +6027,7 @@ fn standard_control_visuals_expand_without_backend_tag_matching() {
     slider.standard_visual = Some(StandardVisual::Range {
         label: None,
         value: Arc::from("25"),
+        limits: None,
         unit: None,
         size: nana_ui_core::ControlSize::Medium,
         ratio: 0.25,
@@ -6084,6 +6085,7 @@ fn a_rail_range_draws_its_girth_and_shows_the_thumb_only_with_visible_focus() {
     range.standard_visual = Some(StandardVisual::Range {
         label: None,
         value: Arc::from(""),
+        limits: None,
         unit: None,
         size: nana_ui_core::ControlSize::Small,
         ratio: 0.5,
@@ -6199,6 +6201,7 @@ fn a_gradient_range_paints_its_stops_and_rings_the_value() {
     range.standard_visual = Some(StandardVisual::Range {
         label: None,
         value: Arc::from(""),
+        limits: None,
         unit: None,
         size: nana_ui_core::ControlSize::Medium,
         ratio: 0.25,
@@ -6938,6 +6941,7 @@ fn a_focused_range_adds_a_thumb_focus_ring_and_keeps_the_rail_untouched() {
         range.standard_visual = Some(StandardVisual::Range {
             label: None,
             value: Arc::from("50"),
+            limits: None,
             unit: None,
             size: nana_ui_core::ControlSize::Medium,
             ratio: 0.5,
@@ -7018,6 +7022,7 @@ fn a_range_marker_paints_on_the_track_under_the_thumb() {
     range.standard_visual = Some(StandardVisual::Range {
         label: None,
         value: Arc::from("50"),
+        limits: None,
         unit: None,
         size: nana_ui_core::ControlSize::Medium,
         ratio: 0.5,
@@ -7124,6 +7129,7 @@ fn migrated_components_consume_runtime_subregion_geometry() {
     range.standard_visual = Some(StandardVisual::Range {
         label: Some(Arc::from("Opacity")),
         value: Arc::from("25"),
+        limits: None,
         unit: Some(Arc::from("%")),
         size: nana_ui_core::ControlSize::Medium,
         ratio: 0.25,

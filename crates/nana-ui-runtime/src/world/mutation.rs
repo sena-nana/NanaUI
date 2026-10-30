@@ -1944,6 +1944,30 @@ impl UiWorld {
                     ) => (la, ha, pa, sa) != (lb, hb, pb, sb),
                     (_, Some(StandardVisual::Switch { .. }))
                     | (Some(StandardVisual::Switch { .. }), _) => true,
+                    // What a range's parts read (#384): its label, the limits
+                    // its value slot measures, its unit and size, and whether
+                    // it draws text at all. The value, the ratio, markers and
+                    // validity paint only, so a drag step lays nothing out.
+                    (
+                        Some(StandardVisual::Range {
+                            label: la,
+                            limits: ma,
+                            unit: ua,
+                            size: sa,
+                            rail: ra,
+                            ..
+                        }),
+                        Some(StandardVisual::Range {
+                            label: lb,
+                            limits: mb,
+                            unit: ub,
+                            size: sb,
+                            rail: rb,
+                            ..
+                        }),
+                    ) => (la, ma, ua, sa, ra.is_some()) != (lb, mb, ub, sb, rb.is_some()),
+                    (_, Some(StandardVisual::Range { .. }))
+                    | (Some(StandardVisual::Range { .. }), _) => true,
                     // What a selection option's parts read (#205); selecting,
                     // disabling and the focus ring paint only.
                     (
@@ -2061,12 +2085,16 @@ impl UiWorld {
                     self.mark(*id, DirtyMask::TEXT);
                 }
 
-                // A value and a switch draw their text from the visual, not
-                // from the node's paragraph.
+                // A value, a switch and a range draw their text from the
+                // visual, not from the node's paragraph.
                 if content_layout_changed
                     && !matches!(
                         visual,
-                        Some(StandardVisual::LabeledValue { .. } | StandardVisual::Switch { .. })
+                        Some(
+                            StandardVisual::LabeledValue { .. }
+                                | StandardVisual::Switch { .. }
+                                | StandardVisual::Range { .. }
+                        )
                     )
                 {
                     self.nodes
