@@ -111,7 +111,7 @@ nana_ui_core::motion::{HOVER_COLOR, …} ─────► 组件动画
 | `ThemeMetrics` | [theme/mod.rs](../../crates/nana-ui-core/src/theme/mod.rs) | 非颜色 token：radius ×4、control height ×3、padding、icon size、panel padding、field/list padding，外加组合进来的 scrollbar。~~**motion ×2**~~ 已删（§7） | **已演进**：§7 的 `DesignTokens.metrics` 按值持有它本身 |
 | `UI_METRICS` | 同上 | `ThemeMetrics` 的 `const` 默认值 | **废弃为唯一权威**：现在是 `DesignTokens::for_appearance` 的初值；仍有 62 处产品读取点，见 §1.5 |
 | `ScrollbarMetrics` / `SCROLLBAR_METRICS` | [scrollbar.rs](../../crates/nana-ui-core/src/scrollbar.rs) | 滚动条独有的 5 个几何 token（thickness 12 / thumb 6 / min length 24 / inset 2 / page 0.9） | **保留**：本轮已由 `ThemeMetrics.scrollbar` 组合持有（§1.5），不再是第三份 metrics |
-| `space` / `type_scale` | 同上 | 间距 10 档、字号 7 档（含 `HINT` 11 / `TITLE` 18）+ 字重 4 档，裸 `const` | **已演进**：§7 的 `SpacingTokens` / `TypographyTokens`；`const` 现在读它们的 `DEFAULT`，不再自己拿着数字 |
+| `space` / `type_scale` | 同上 | 间距 10 档、字号 8 档（含 `HINT` 11 / `TITLE` 18，以及卡片或对话框名字的 `CardTitle` 15）+ 字重 4 档，裸 `const` | **已演进**：§7 的 `SpacingTokens` / `TypographyTokens`；`const` 现在读它们的 `DEFAULT`，不再自己拿着数字 |
 | `StyleModelRef` | [style_model.rs](../../crates/nana-ui-core/src/style_model.rs) | appearance + metrics + palette + titlebar 的只读视图，`color(role)` 是 token 读取入口 | 由已安装的 `CompiledTheme` 提供 |
 | `ControlSemantics` | 同上 | size + button/card kind + status 的组合 | **保留**，是 recipe 的 selector |
 | `ControlSize` / `ButtonKind` / `CardKind` / `StatusTone` / `ToastTone` / `ValidationIntent` | [semantics.rs](../../crates/nana-ui-core/src/semantics.rs) | 组件意图枚举 | **保留**，Component Recipe 的 variant 轴 |

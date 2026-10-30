@@ -194,19 +194,21 @@ impl SegmentedControl {
     }
 
     pub fn new() -> Self {
-        Self {
+        let mut control = Self {
             label: None,
             orientation: SelectionOrientation::Horizontal,
             chrome: SelectionChrome::Segmented,
             fill: false,
-            wrap: false,
+            wrap: true,
             size: ControlSize::Medium,
             options: Vec::new(),
             selected: None,
             focus_target: None,
             roving_focus: RovingFocusPolicy::default(),
-            style: selection_chrome_style(SelectionChrome::Segmented, ControlSize::Medium, false),
-        }
+            style: NodeStyle::default(),
+        };
+        control.refresh_style();
+        control
     }
 
     /// Same selection engine, radio chrome: a vertical stack of ring options.
@@ -243,8 +245,12 @@ impl SegmentedControl {
         self.refresh_style();
         self
     }
-    /// Wrap horizontal segmented options; with `fill(true)`, each line is
-    /// divided equally without shortening its labels. Off by default.
+    /// Wrap horizontal segmented options onto more lines when the width
+    /// they are given cannot hold them on one; with `fill(true)`, each line
+    /// is divided equally without shortening its labels. On by default: a
+    /// control with room keeps its one line and its own width, and one in a
+    /// narrow card or column wraps instead of overflowing or clipping its
+    /// labels. `wrap(false)` keeps one line whatever the width.
     pub fn wrap(mut self, wrap: bool) -> Self {
         self.wrap = wrap;
         self.refresh_style();
@@ -258,9 +264,15 @@ impl SegmentedControl {
     fn refresh_style(&mut self) {
         self.style = selection_chrome_style(self.chrome, self.size, self.fill);
         if self.wrap && self.chrome == SelectionChrome::Segmented {
-            self.style.control_height = None;
+            // One line keeps the control's height; more lines grow it.
+            self.style.control_height = Some(nana_ui_core::ControlHeight::Min(self.size));
             let layout = Arc::make_mut(&mut self.style.layout);
-            layout.width = Some(LengthSpec::Fill);
+            if self.fill {
+                layout.width = Some(LengthSpec::Fill);
+            } else {
+                // Its own width while that fits, the width given when not.
+                layout.max_width = Some(LengthSpec::Percent(100.0));
+            }
             layout.flex_wrap = nana_ui_core::FlexWrap::Wrap;
             layout.equal_wrap = self.fill;
         }
@@ -809,10 +821,15 @@ mod tests {
                 option.style.interaction.selected.background,
                 Some(SemanticColorRole::Selected)
             );
-            let control = SegmentedControl::new().size(size);
+            let control = SegmentedControl::new().size(size).wrap(false);
             assert_eq!(
                 control.style.control_height,
                 Some(nana_ui_core::ControlHeight::Exact(size))
+            );
+            // Wrapping (the default) floors the height at the same step.
+            assert_eq!(
+                SegmentedControl::new().size(size).style.control_height,
+                Some(nana_ui_core::ControlHeight::Min(size))
             );
             assert_eq!(control.style.radius, Some(nana_ui_core::RadiusTier::Sm));
             assert_eq!(control.style.layout.border_width, Some(1.0));

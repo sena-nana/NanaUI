@@ -324,6 +324,7 @@ impl IntoView for Callout {
 /// `.css` and `.visible` style the line as they style an element.
 pub fn heading_row(title: impl IntoView, tools: impl IntoView) -> HeadingRow {
     HeadingRow {
+        lead: None,
         title: title.into_any(),
         tools: tools.into_any(),
         container: ContainerStyle::default(),
@@ -332,6 +333,7 @@ pub fn heading_row(title: impl IntoView, tools: impl IntoView) -> HeadingRow {
 
 /// A [`heading_row`] being set up; a view.
 pub struct HeadingRow {
+    lead: Option<AnyView>,
     title: AnyView,
     tools: AnyView,
     container: ContainerStyle,
@@ -341,15 +343,27 @@ impl HeadingRow {
     fn container_style_mut(&mut self) -> &mut ContainerStyle {
         &mut self.container
     }
+
+    /// `view` before the title (a card's icon, a back arrow): it keeps its
+    /// width, sits [`SpacingStep::Sm`] from the title and is centred on the
+    /// heading line, so the title starts at the same place whatever leads it.
+    pub fn lead(mut self, view: impl IntoView) -> Self {
+        self.lead = Some(view.into_any());
+        self
+    }
 }
 
 impl IntoView for HeadingRow {
     fn build(self, vb: &mut super::node::ViewBuilder<'_, '_, '_>) {
         let HeadingRow {
+            lead,
             title,
             tools,
             container,
         } = self;
+        let lead = lead.map(|lead| {
+            widget(Stack::row(0.0).shrink(0.0).align(AlignSpec::Center)).children(lead)
+        });
         container
             .apply(widget(
                 Stack::row(0.0)
@@ -366,20 +380,60 @@ impl IntoView for HeadingRow {
                         .align(AlignSpec::Center)
                         .with_layout(|l| l.min_width = Some(LengthSpec::Px(0.0))),
                 )
-                .children(title),
+                .children((lead, title)),
                 tools,
             ))
             .build(vb)
     }
 }
 
+/// The hit target of a heading's tools ([`crate::IconButton::tool`], compact
+/// menus): 24px at the default metrics, at every density.
+pub const COMPACT_TARGET: SpacingStep = SpacingStep::Page;
+
+/// How far [`heading_tools`] hang out of a heading line above and below:
+/// half of what a [`COMPACT_TARGET`] is taller than the theme's line box
+/// (4px at the default metrics). A scroll area whose first child is a
+/// heading reaches this far above its content
+/// ([`crate::ScrollView::heading_room`]) so the tools are not clipped.
+pub fn heading_overhang() -> nana_ui_core::ThemeExpr {
+    use nana_ui_core::{LineRole, ThemeExpr, ThemeToken};
+    ThemeExpr::from(ThemeToken::Space(COMPACT_TARGET))
+        .plus(ThemeExpr::from(ThemeToken::Line(LineRole::Line)).scaled(-1.0))
+        .scaled(0.5)
+}
+
+/// `view` on a heading line, hanging out of it evenly above and below by
+/// [`heading_overhang`] instead of raising it: what is not a tool but is as
+/// tall as one (a status badge beside the name, a compact button). It keeps
+/// its width and is centred on the line. Tools go in [`heading_tools`],
+/// which hangs the same way.
+pub fn heading_hang(view: impl IntoView) -> AnyView {
+    widget(
+        Stack::row(0.0)
+            .shrink(0.0)
+            .align(AlignSpec::Center)
+            .with_layout(|l| {
+                l.theme.margin_top = Some(heading_overhang().scaled(-1.0));
+                l.theme.margin_bottom = Some(heading_overhang().scaled(-1.0));
+            }),
+    )
+    .children(view)
+    .into_any()
+}
+
 /// A heading's tools ([`crate::IconButton::tool`], compact menus): a
-/// toolbar without chrome or vertical inset, so the heading line keeps the
-/// height of its text or its tools, whichever is taller; it never shrinks
-/// its targets. `.class`, `.css` and `.visible` style the toolbar.
+/// toolbar without chrome or vertical inset that hangs out of its heading
+/// line evenly above and below ([`heading_overhang`]) instead of raising it,
+/// so a heading with tools stands as tall as one without and headings line
+/// up across a page. It never shrinks its targets. The overhang assumes a
+/// heading on the theme's line box ([`TypeRole::Meta`] to
+/// [`TypeRole::Body`] text); a taller title takes [`HeadingTools::inline`].
+/// `.class`, `.css` and `.visible` style the toolbar.
 pub fn heading_tools(tools: impl IntoView) -> HeadingTools {
     HeadingTools {
         tools: tools.into_any(),
+        overhang: true,
         container: ContainerStyle::default(),
     }
 }
@@ -387,6 +441,7 @@ pub fn heading_tools(tools: impl IntoView) -> HeadingTools {
 /// A [`heading_tools`] being set up; a view.
 pub struct HeadingTools {
     tools: AnyView,
+    overhang: bool,
     container: ContainerStyle,
 }
 
@@ -394,21 +449,34 @@ impl HeadingTools {
     fn container_style_mut(&mut self) -> &mut ContainerStyle {
         &mut self.container
     }
+
+    /// Stay inside the heading line: the line is as tall as the tools when
+    /// they are the taller, as beside a title already taller than a target.
+    pub fn inline(mut self) -> Self {
+        self.overhang = false;
+        self
+    }
 }
 
 impl IntoView for HeadingTools {
     fn build(self, vb: &mut super::node::ViewBuilder<'_, '_, '_>) {
-        let HeadingTools { tools, container } = self;
+        let HeadingTools {
+            tools,
+            overhang,
+            container,
+        } = self;
+        let mut style = Stack::row(0.0)
+            .gap_step(SpacingStep::Xxs)
+            .shrink(0.0)
+            .align(AlignSpec::Center)
+            .node_style();
+        if overhang {
+            let layout = style.layout_mut();
+            layout.theme.margin_top = Some(heading_overhang().scaled(-1.0));
+            layout.theme.margin_bottom = Some(heading_overhang().scaled(-1.0));
+        }
         container
-            .apply(widget(
-                crate::Toolbar::new().chrome(false).style(
-                    Stack::row(0.0)
-                        .gap_step(SpacingStep::Xxs)
-                        .shrink(0.0)
-                        .align(AlignSpec::Center)
-                        .node_style(),
-                ),
-            ))
+            .apply(widget(crate::Toolbar::new().chrome(false).style(style)))
             .children(tools)
             .build(vb)
     }
@@ -420,8 +488,51 @@ container_styles!([] HeadingRow, [] HeadingTools, [] SettingsGroupView);
 /// over the area's bottom edge, it shows a list runs on past it instead of
 /// cutting through a row. It takes no input, so the wheel and the pointer
 /// reach the list under it; end the list with `height` of air so its last
-/// row can scroll clear of the fade.
-pub fn scroll_foot_fade(height: f32, surface: SemanticColorRole) -> AnyView {
+/// row can scroll clear of the fade. Place it in the positioned box that
+/// holds the scroll area; over an area with a [`crate::ScrollView::gutter`],
+/// give it the same gutter with [`ScrollFootFade::clear_of`] so the
+/// scrollbar's lane stays clear of the fade.
+pub fn scroll_foot_fade(height: f32, surface: SemanticColorRole) -> ScrollFootFade {
+    ScrollFootFade {
+        height,
+        surface,
+        lane: 0.0,
+    }
+}
+
+/// A [`scroll_foot_fade`] being set up; a view.
+pub struct ScrollFootFade {
+    height: f32,
+    surface: SemanticColorRole,
+    lane: f32,
+}
+
+impl ScrollFootFade {
+    /// Stop `gutter` short of the right edge: the scroll area reaches that
+    /// far into its container's margin and runs its scrollbar there
+    /// ([`crate::ScrollView::gutter`]).
+    pub fn clear_of(mut self, gutter: f32) -> Self {
+        self.lane = gutter.max(0.0);
+        self
+    }
+}
+
+impl IntoView for ScrollFootFade {
+    fn build(self, vb: &mut super::node::ViewBuilder<'_, '_, '_>) {
+        scroll_foot_fade_view(self).build(vb)
+    }
+
+    fn into_any(self) -> AnyView {
+        scroll_foot_fade_view(self)
+    }
+}
+
+fn scroll_foot_fade_view(fade: ScrollFootFade) -> AnyView {
+    let ScrollFootFade {
+        height,
+        surface,
+        lane,
+    } = fade;
     use nana_ui_core::{CssGradient, GradientStop, LinearGradient, MaskImage};
     let stop = |position: f32, alpha: f32| GradientStop {
         paint_color: None,
@@ -431,7 +542,7 @@ pub fn scroll_foot_fade(height: f32, surface: SemanticColorRole) -> AnyView {
     widget(Stack::row(0.0).surface(surface).with_layout(|l| {
         l.position = nana_ui_core::PositionSpec::Absolute;
         l.offset_left = Some(LengthSpec::Px(0.0));
-        l.offset_right = Some(LengthSpec::Px(0.0));
+        l.offset_right = Some(LengthSpec::Px(lane));
         l.offset_bottom = Some(LengthSpec::Px(0.0));
         l.height = Some(LengthSpec::Px(height));
         l.pointer_events = Some(nana_ui_core::PointerEventsSpec::None);
@@ -451,12 +562,51 @@ pub struct GroupRow {
     visible: Option<PropSource<bool>>,
 }
 
-/// `view` as a row of a [`settings_group`].
+/// The content line of a [`settings_group`]'s card: how far its rows' copy
+/// and controls sit in from the card's edge, and how far the hairlines
+/// between them are inset.
+pub const CONTENT_INSET: SpacingStep = SpacingStep::Xxxl;
+
+/// `view` on a card's content line: padded across by [`CONTENT_INSET`] on
+/// both sides, and nothing up or down. Neither a [`settings_group`]'s card
+/// nor its rows inset their content, and a
+/// [`settings_row`](super::settings_row) has no inset across of its own, so
+/// every row of a group is put on the line once, here: a row left off it sits
+/// flush against the card's edge, out of line with the hairlines. Wrap a row
+/// once only: a block already on the line (one of your own row builders)
+/// goes into [`group_row`] as it is.
+pub fn content_line(view: impl IntoView) -> AnyView {
+    widget(Stack::column(0.0).width(LengthSpec::Fill).with_layout(|l| {
+        let inset = nana_ui_core::ThemeExpr::from(nana_ui_core::ThemeToken::Space(CONTENT_INSET));
+        l.padding_left = Some(LengthSpec::Px(nana_ui_core::space::XXXL));
+        l.padding_right = Some(LengthSpec::Px(nana_ui_core::space::XXXL));
+        l.theme.padding_left = Some(inset.clone());
+        l.theme.padding_right = Some(inset);
+    }))
+    .children(view)
+    .into_any()
+}
+
+/// [`CONTENT_INSET`] in logical px at the default metrics, for a value that
+/// cannot carry a theme step (a [`crate::Divider::inset`]).
+pub const fn content_inset() -> f32 {
+    nana_ui_core::space::XXXL
+}
+
+/// `view` as a row of a [`settings_group`], as it is: give a row its content
+/// line with [`group_row_on_line`] (or wrap it in [`content_line`]) unless it
+/// already carries one.
 pub fn group_row(view: impl IntoView) -> GroupRow {
     GroupRow {
         view: view.into_any(),
         visible: None,
     }
+}
+
+/// `view` as a row of a [`settings_group`], on the card's content line:
+/// `group_row(content_line(view))`.
+pub fn group_row_on_line(view: impl IntoView) -> GroupRow {
+    group_row(content_line(view))
 }
 
 impl GroupRow {
@@ -471,8 +621,8 @@ impl GroupRow {
 /// The inset hairline between two rows of a group. The group shows it only
 /// between two shown rows.
 fn group_divider() -> AnyView {
-    // Inset like the rows' own copy: the settings row's horizontal inset.
-    widget(crate::Divider::horizontal().inset(nana_ui_core::space::XXXL)).into_any()
+    // Inset like the rows' copy: the card's content line.
+    widget(crate::Divider::horizontal().inset(content_inset())).into_any()
 }
 
 /// A settings group: `title` (when there is one) above a raised card whose

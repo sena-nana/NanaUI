@@ -5618,3 +5618,189 @@ fn a_settings_group_marks_a_row_its_flush_shows() {
     cx.flush_reactive().unwrap();
     assert_eq!(rows(&cx), [(false, true, true), (true, false, true)]);
 }
+
+fn fixed(width: Option<f32>, height: f32) -> Stack {
+    Stack::column(0.0).with_layout(|l| {
+        l.width = Some(width.map_or(LengthSpec::Fill, LengthSpec::Px));
+        l.height = Some(LengthSpec::Px(height));
+        l.flex_shrink = Some(0.0);
+    })
+}
+
+/// A row with a description under its name puts its trailing control on the
+/// name's line, where a one-line row puts it; a one-line row still centres.
+#[test]
+fn a_first_line_row_centres_its_trailing_slot_on_its_first_line() {
+    let (mut cx, document, parent) = setup();
+    let line = cx
+        .world()
+        .theme()
+        .typography()
+        .line_height(nana_ui_core::LineRole::Line);
+    let view = cx
+        .mount_view(parent, || {
+            column().children((
+                widget(crate::ListItem::new("").auto_height(true))
+                    .content(column().children((
+                        widget(fixed(None, line)),
+                        widget(fixed(None, line)),
+                        widget(fixed(None, line)),
+                    )))
+                    .trailing(widget(fixed(Some(28.0), 28.0)))
+                    .key("multi-row"),
+                widget(crate::ListItem::new(""))
+                    .content(widget(fixed(None, line)))
+                    .trailing(widget(fixed(Some(28.0), 28.0)))
+                    .key("single-row"),
+            ))
+        })
+        .unwrap();
+    let root = view.roots()[0];
+    cx.layout_document(document, LayoutViewport::new(320.0, 480.0))
+        .unwrap();
+    let row = |path: &str| cx.resolve_assembly_path(root, path).unwrap();
+    let rect = |id| cx.world().layout_box(id).unwrap();
+    let middle = |r: crate::LayoutBox| r.y + r.height / 2.0;
+    // Slots in order: content, trailing (in its first-line band).
+    let [content, band] = children(&cx, row("multi-row"))[..] else {
+        panic!("content and trailing");
+    };
+    let (name, multi, multi_row) = (
+        rect(children(&cx, content)[0]),
+        rect(children(&cx, band)[0]),
+        rect(row("multi-row")),
+    );
+    assert!(
+        multi_row.height > 3.0 * line,
+        "the row grows with its lines"
+    );
+    assert!(
+        (middle(multi) - middle(name)).abs() < 0.5,
+        "trailing {multi:?} on the first line {name:?}"
+    );
+    // The first line sits where a one-line row's line does.
+    let single = children(&cx, row("single-row"))[1];
+    let (single, single_row) = (rect(single), rect(row("single-row")));
+    assert!((middle(single) - middle(single_row)).abs() < 0.5);
+    assert!(
+        ((name.y - multi_row.y) - (single.y - single_row.y + (28.0 - line) / 2.0)).abs() < 0.5,
+        "{name:?} {multi_row:?} {single:?} {single_row:?} {line}"
+    );
+}
+
+/// Heading tools hang out of their line instead of raising it, unless they
+/// are asked to stay inline.
+#[test]
+fn heading_tools_hang_out_of_the_heading_line() {
+    let (mut cx, document, parent) = setup();
+    let line = cx
+        .world()
+        .theme()
+        .typography()
+        .line_height(nana_ui_core::LineRole::Line);
+    let view = cx
+        .mount_view(parent, || {
+            column().children((
+                heading_row(
+                    widget(fixed(None, line)),
+                    heading_tools(widget(fixed(Some(24.0), 24.0))),
+                ),
+                heading_row(
+                    widget(fixed(None, line)),
+                    heading_tools(widget(fixed(Some(24.0), 24.0))).inline(),
+                ),
+                heading_row(
+                    widget(fixed(None, line)),
+                    heading_hang(widget(fixed(Some(40.0), 24.0))),
+                ),
+            ))
+        })
+        .unwrap();
+    let root = view.roots()[0];
+    cx.layout_document(document, LayoutViewport::new(320.0, 240.0))
+        .unwrap();
+    let rect = |id| cx.world().layout_box(id).unwrap();
+    let [hung, inline, badge] = children(&cx, root)[..] else {
+        panic!("three headings");
+    };
+    assert_eq!(rect(badge).height, line, "other content hangs the same way");
+    let tools = children(&cx, hung)[1];
+    let tool = children(&cx, tools)[0];
+    let (hung, tool, inline) = (rect(hung), rect(tool), rect(inline));
+    assert_eq!(hung.height, line, "the line keeps its height");
+    assert_eq!(tool.height, 24.0);
+    assert!(
+        (tool.y - (hung.y - (24.0 - line) / 2.0)).abs() < 0.5,
+        "{tool:?} in {hung:?}"
+    );
+    assert_eq!(inline.height, 24.0);
+}
+
+/// A gutter runs the scrollport and its bar out into the container's margin
+/// while the content stays on the content line; heading room reaches up as
+/// far as heading tools hang; a content line insets across only.
+#[test]
+fn a_scroll_gutter_and_a_content_line_keep_content_on_the_line() {
+    let (mut cx, document, parent) = setup();
+    let view = cx
+        .mount_view(parent, || {
+            column().children((
+                widget(Stack::column(0.0).padding_xy(12.0, 12.0))
+                    .children(
+                        widget(
+                            crate::ScrollView::new(crate::ScrollAxes::Vertical)
+                                .gutter(12.0)
+                                .heading_room(),
+                        )
+                        .children(widget(fixed(None, 40.0)).key("content"))
+                        .key("scroll"),
+                    )
+                    .key("card"),
+                content_line(widget(fixed(None, 20.0))),
+            ))
+        })
+        .unwrap();
+    let root = view.roots()[0];
+    cx.layout_document(document, LayoutViewport::new(320.0, 240.0))
+        .unwrap();
+    let rect = |path: &str| {
+        cx.world()
+            .layout_box(cx.resolve_assembly_path(root, path).unwrap())
+            .unwrap()
+    };
+    let hang = (24.0
+        - cx.world()
+            .theme()
+            .typography()
+            .line_height(nana_ui_core::LineRole::Line))
+        / 2.0;
+    let (card, scroll, content) = (
+        rect("card"),
+        rect("card/scroll"),
+        rect("card/scroll/content"),
+    );
+    assert_eq!(scroll.x, card.x, "the scrollport reaches the card's edge");
+    assert_eq!(scroll.width, card.width);
+    assert_eq!(content.x, card.x + 12.0, "the content stays on the line");
+    assert_eq!(content.width, card.width - 24.0);
+    assert!((scroll.y - (card.y + 12.0 - hang)).abs() < 0.5);
+    assert!((content.y - (card.y + 12.0)).abs() < 0.5);
+    let skin = cx
+        .world()
+        .node_style(cx.resolve_assembly_path(root, "card/scroll").unwrap())
+        .unwrap()
+        .layout
+        .paint
+        .scrollbar
+        .unwrap();
+    assert_eq!(skin.room, Some(12.0));
+    let line = children(&cx, root)[1];
+    let row = children(&cx, line)[0];
+    let (line, row) = (
+        cx.world().layout_box(line).unwrap(),
+        cx.world().layout_box(row).unwrap(),
+    );
+    assert_eq!(row.x, line.x + nana_ui_core::space::XXXL);
+    assert_eq!(row.y, line.y);
+    assert_eq!(line.height, 20.0);
+}

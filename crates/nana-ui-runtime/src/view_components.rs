@@ -1691,6 +1691,9 @@ pub struct ListItem {
     pub gap: f32,
     pub size: nana_ui_core::ControlSize,
     pub auto_height: bool,
+    /// Where the leading and trailing slots sit across the row; `None`
+    /// follows [`Self::auto_height`]. See [`TrailingAlign`].
+    pub trailing_align: Option<TrailingAlign>,
     /// 行 pill 相对文本线水平外扩，语义见 [`ListItem::pill_bleed`]。
     pub pill_bleed: bool,
     /// What the row is to assistive technology; the look is the same.
@@ -1709,6 +1712,28 @@ pub struct ListItem {
     /// Kept by the framework from the pointer and keyboard focus.
     pub tools_presence: RowToolsPresence,
     pub style: NodeStyle,
+}
+
+/// Where a [`ListItem`]'s leading and trailing slots sit across the row.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum TrailingAlign {
+    /// Centred on the whole row: right for a row of one line.
+    #[default]
+    Center,
+    /// On the row's first line: a control after a name with a description
+    /// under it lines up with the name, not with the middle of both lines.
+    /// The row's first line sits where a one-line row's does (a row with a
+    /// leading or trailing slot pads it into its control height; one with
+    /// neither keeps hugging its lines), and each slot is centred in that band,
+    /// so one-line and multi-line rows of a list share the slot's place.
+    /// The first line is the row's own line box: a content slot whose first
+    /// line is another size should say so with its own layout.
+    ///
+    /// The default for [`ListItem::auto_height`] rows. The view builder
+    /// (`El::leading` / `trailing` / `tools`) puts a slot in its band, so set
+    /// this (or `auto_height`) on the row before giving it slots; a slot set
+    /// through `AppContext::set_list_item_slots` brings its own band.
+    FirstLine,
 }
 
 /// How a row's tools sit while they are put away (the pointer is elsewhere
@@ -1807,6 +1832,7 @@ impl ListItem {
             gap: nana_ui_core::space::MD,
             size: nana_ui_core::ControlSize::Small,
             auto_height: false,
+            trailing_align: None,
             pill_bleed: false,
             role: ListItemRole::ListItem,
             has_popup: false,
@@ -1936,6 +1962,59 @@ impl ListItem {
         self
     }
 
+    /// Where the leading and trailing slots sit across the row; see
+    /// [`TrailingAlign`]. Without this, an [`Self::auto_height`] row puts
+    /// them on its first line and any other row centres them.
+    pub fn trailing_align(mut self, align: TrailingAlign) -> Self {
+        self.trailing_align = Some(align);
+        self
+    }
+
+    /// [`Self::trailing_align`] as given, else as `auto_height` implies.
+    pub fn resolved_trailing_align(&self) -> TrailingAlign {
+        self.trailing_align.unwrap_or(if self.auto_height {
+            TrailingAlign::FirstLine
+        } else {
+            TrailingAlign::Center
+        })
+    }
+
+    /// The band a [`TrailingAlign::FirstLine`] row's slots are centred in:
+    /// the row's control height, the height of a one-line row.
+    pub(crate) fn first_line_band(&self) -> nana_ui_core::ThemeExpr {
+        let size = self
+            .style
+            .control_height
+            .map_or(self.size, nana_ui_core::ControlHeight::size);
+        nana_ui_core::ThemeToken::Control(size).into()
+    }
+
+    /// How far the row pads its first line to centre it in
+    /// [`Self::first_line_band`]; the band counts the row's border, as a
+    /// one-line row's height does.
+    pub(crate) fn first_line_inset(&self) -> nana_ui_core::ThemeExpr {
+        use nana_ui_core::{ThemeExpr, ThemeToken};
+        let line = match self.size {
+            nana_ui_core::ControlSize::Large => nana_ui_core::LineRole::Tall,
+            _ => nana_ui_core::LineRole::Line,
+        };
+        self.first_line_band()
+            .plus(ThemeExpr::from(ThemeToken::Line(line)).scaled(-1.0))
+            .scaled(0.5)
+            .plus(
+                ThemeExpr::from(ThemeToken::Border(nana_ui_core::BorderWidth::Hairline))
+                    .scaled(-1.0),
+            )
+    }
+
+    /// How far a side slot's band reaches up from the row's content edge to
+    /// the row's border edge, where a one-line row's band starts.
+    pub(crate) fn first_line_reach(&self) -> nana_ui_core::ThemeExpr {
+        self.first_line_inset().plus(nana_ui_core::ThemeExpr::from(
+            nana_ui_core::ThemeToken::Border(nana_ui_core::BorderWidth::Hairline),
+        ))
+    }
+
     /// 行 pill 相对文本线水平外扩一个内边距：margin 取自身水平 padding
     /// 的负值，文本内缩不变。用于宿主面板把行文本对齐到内容线、同时
     /// pill 保留文本呼吸区的场景。
@@ -2014,6 +2093,16 @@ impl ListItem {
         } else {
             nana_ui_core::JustifySpec::Start
         };
+        // A row without side slots has nothing to line up; it keeps hugging
+        // its lines. Tools put away still count, so revealing them never
+        // moves the row's lines.
+        let has_side = self.slots.leading.is_some() || self.slots.trailing.is_some();
+        if has_side && self.resolved_trailing_align() == TrailingAlign::FirstLine {
+            layout.align_items = nana_ui_core::AlignSpec::Start;
+            let inset = self.first_line_inset();
+            layout.theme.padding_top = Some(inset.clone());
+            layout.theme.padding_bottom = Some(inset);
+        }
         if self.pill_bleed {
             // 对称外扩与书写方向无关。Intent 还没写成像素时按安装值算；
             // 已经写成 `Px` 的显式 padding 仍按它外扩。
@@ -5456,6 +5545,44 @@ impl ScrollView {
 
     pub fn label(mut self, label: impl Into<Arc<str>>) -> Self {
         self.label = Some(label.into());
+        self
+    }
+
+    /// Reach `gutter` out into the container's margin on both sides and inset
+    /// the content by as much: the content keeps its container's content
+    /// line and width, while the scrollport — and the scrollbar drawn at its
+    /// edge — runs out into the margin, so the bar sits in the empty margin
+    /// instead of over the content, and the margin scrolls the list too. A
+    /// margin narrower than the theme's lane and its inset narrows the lane
+    /// to fit ([`nana_ui_core::ScrollbarSkin::room`]). Give the container a
+    /// horizontal padding of at least `gutter`; a
+    /// [`scroll_foot_fade`](crate::view::scroll_foot_fade) over the area
+    /// takes the same gutter (`clear_of`).
+    pub fn gutter(mut self, gutter: f32) -> Self {
+        use nana_ui_core::LengthSpec::Px;
+        let gutter = gutter.max(0.0);
+        let layout = Arc::make_mut(&mut self.style.layout);
+        layout.margin_left = Some(Px(-gutter));
+        layout.margin_right = Some(Px(-gutter));
+        layout.padding_left = Some(Px(gutter));
+        layout.padding_right = Some(Px(gutter));
+        let skin = layout.paint.scrollbar.unwrap_or_default();
+        layout.paint.scrollbar = Some(nana_ui_core::ScrollbarSkin {
+            room: Some(gutter),
+            ..skin
+        });
+        self
+    }
+
+    /// Reach as far above the content as heading tools hang out of their
+    /// line ([`heading_overhang`](crate::view::heading_overhang)), with the
+    /// content inset by as much, so a heading at the top keeps its tools
+    /// whole instead of having them clipped by the scrollport.
+    pub fn heading_room(mut self) -> Self {
+        let room = crate::view::heading_overhang();
+        let layout = Arc::make_mut(&mut self.style.layout);
+        layout.theme.margin_top = Some(room.clone().scaled(-1.0));
+        layout.theme.padding_top = Some(room);
         self
     }
 

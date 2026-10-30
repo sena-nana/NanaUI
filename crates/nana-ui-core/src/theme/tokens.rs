@@ -248,6 +248,9 @@ pub enum TypeRole {
     Body,
     /// Section title inside a page or card.
     Section,
+    /// A card's or a dialog's own name, at the head of the card: between a
+    /// section title and an in-page heading, set in [`TextWeight::Bold`].
+    CardTitle,
     /// In-page heading (profile name, dialog title).
     Heading,
     /// Page title.
@@ -281,6 +284,7 @@ pub struct TypographyTokens {
     pub meta: f32,
     pub body: f32,
     pub section: f32,
+    pub card_title: f32,
     pub heading: f32,
     pub title: f32,
     pub display: f32,
@@ -298,6 +302,7 @@ impl TypographyTokens {
         meta: 12.0,
         body: 13.0,
         section: 14.0,
+        card_title: 15.0,
         heading: 16.0,
         title: 18.0,
         display: 20.0,
@@ -315,6 +320,7 @@ impl TypographyTokens {
             TypeRole::Meta => self.meta,
             TypeRole::Body => self.body,
             TypeRole::Section => self.section,
+            TypeRole::CardTitle => self.card_title,
             TypeRole::Heading => self.heading,
             TypeRole::Title => self.title,
             TypeRole::Display => self.display,
@@ -337,12 +343,13 @@ impl TypographyTokens {
         }
     }
 
-    pub(super) const fn sizes(self) -> [f32; 9] {
+    pub(super) const fn sizes(self) -> [f32; 10] {
         [
             self.hint,
             self.meta,
             self.body,
             self.section,
+            self.card_title,
             self.heading,
             self.title,
             self.display,

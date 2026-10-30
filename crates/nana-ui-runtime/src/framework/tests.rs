@@ -7159,7 +7159,12 @@ fn an_installed_control_height_reaches_a_sidebar_row() {
 fn an_installed_control_height_reaches_a_segmented_control() {
     let mut context = AppContext::new();
     let document = DocumentId::new(1).unwrap();
+    // A wrapping control (the default) takes the height as its floor, one
+    // that keeps one line as its height.
     let control = context
+        .create_component(document, crate::SegmentedControl::new().wrap(false))
+        .unwrap();
+    let wrapping = context
         .create_component(document, crate::SegmentedControl::new())
         .unwrap();
     let height_of = |context: &AppContext| {
@@ -7168,6 +7173,18 @@ fn an_installed_control_height_reaches_a_segmented_control() {
             .layout
             .height
     };
+    let floor_of = |context: &AppContext| {
+        context.world().extract_nodes(&[wrapping.stable_id()])[0]
+            .source_style
+            .layout
+            .min_height
+    };
+    assert_eq!(
+        floor_of(&context),
+        Some(nana_ui_core::LengthSpec::Px(
+            nana_ui_core::UI_METRICS.control_height
+        ))
+    );
     let px = nana_ui_core::LengthSpec::Px;
     assert_eq!(
         height_of(&context),
@@ -7186,6 +7203,7 @@ fn an_installed_control_height_reaches_a_segmented_control() {
             .unwrap()
     );
     assert_eq!(height_of(&context), Some(px(44.0)));
+    assert_eq!(floor_of(&context), Some(px(44.0)));
 }
 
 #[test]

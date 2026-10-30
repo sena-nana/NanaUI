@@ -931,11 +931,12 @@ const OPACITY_NAMES: [&str; 5] = [
     "opacity.danger_soft_pressed",
 ];
 
-const TYPE_SIZE_NAMES: [&str; 9] = [
+const TYPE_SIZE_NAMES: [&str; 10] = [
     "typography.hint",
     "typography.meta",
     "typography.body",
     "typography.section",
+    "typography.card_title",
     "typography.heading",
     "typography.title",
     "typography.display",

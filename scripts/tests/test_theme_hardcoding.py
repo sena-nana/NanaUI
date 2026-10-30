@@ -198,5 +198,44 @@ impl Default for Helper {
         )
 
 
+
+class ApplicationLintTests(unittest.TestCase):
+    def setUp(self):
+        self.root = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, self.root)
+        ui = self.root / "src" / "ui"
+        ui.mkdir(parents=True)
+        (ui / "page.rs").write_text(
+            "fn page() {\n"
+            "    let a = LengthSpec::Px(12.0);\n"
+            "    let b = LengthSpec::Px(0.0);\n"
+            "    let c = Stack::row(0.0).gap_step(SpacingStep::Md);\n"
+            "    let d = Text::new(\"x\").size(15.0);\n"
+            "    // LengthSpec::Px(99.0) in a comment\n"
+            "}\n",
+            encoding="utf-8",
+        )
+
+    def test_literal_lengths_count_and_none_and_steps_do_not(self):
+        findings = audit.lint_findings(self.root, ["src/ui"])
+        lines = sorted((f["line"], f["category"]) for f in findings)
+        self.assertEqual(lines, [(2, "pixel_length"), (5, "pixel_length")])
+        self.assertEqual(findings[0]["file"], "src/ui/page.rs")
+
+    def test_lint_fails_on_findings_and_check_only_on_growth(self):
+        self.assertEqual(audit.main(["--root", str(self.root), "--path", "src/ui", "--lint"]), 1)
+        baseline = self.root / "baseline.json"
+        audit.main(["--root", str(self.root), "--path", "src/ui", "--output", str(baseline)])
+        self.assertEqual(
+            audit.main(["--root", str(self.root), "--path", "src/ui", "--check", str(baseline)]), 0
+        )
+        (self.root / "src" / "ui" / "more.rs").write_text(
+            "fn more() { let e = LengthSpec::Px(7.0); }\n", encoding="utf-8"
+        )
+        self.assertEqual(
+            audit.main(["--root", str(self.root), "--path", "src/ui", "--check", str(baseline)]), 1
+        )
+
+
 if __name__ == "__main__":
     unittest.main()

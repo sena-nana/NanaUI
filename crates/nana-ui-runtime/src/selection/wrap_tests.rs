@@ -219,12 +219,12 @@ fn segmented_wrap_grows_for_a_single_label_wider_than_the_container() {
 }
 
 #[test]
-fn segmented_content_wrap_keeps_intrinsic_widths_and_default_stays_unwrapped() {
+fn segmented_content_wrap_keeps_intrinsic_widths_and_wrap_false_stays_unwrapped() {
     let (mut cx, doc, _, options) = fixture(&["A", "A longer label", "B"], false);
     layout(&mut cx, doc, 150.0);
     assert!(bounds(&cx, options[1]).width > bounds(&cx, options[0]).width);
     assert!(bounds(&cx, options[2]).y > bounds(&cx, options[0]).y);
-    let plain = SegmentedControl::new().fill(true);
+    let plain = SegmentedControl::new().fill(true).wrap(false);
     assert!(!plain.wrap_value());
     assert!(!plain.style.layout.equal_wrap);
     assert_eq!(plain.style.layout.flex_wrap, nana_ui_core::FlexWrap::NoWrap);
@@ -236,4 +236,27 @@ fn segmented_content_wrap_keeps_intrinsic_widths_and_default_stays_unwrapped() {
             .layout
             .equal_wrap
     );
+}
+
+/// The default wraps only when it must: with room it keeps one line at its
+/// own width and its one-line height, in a narrow box it wraps instead of
+/// overflowing.
+#[test]
+fn a_default_segmented_control_keeps_one_line_with_room_and_wraps_without() {
+    assert!(SegmentedControl::new().wrap_value());
+    let (mut cx, doc, control, options) = fixture(&["Light", "Dark", "Follow system"], false);
+    let track = |cx: &AppContext| cx.world().layout_box(control.stable_id()).unwrap();
+    layout(&mut cx, doc, 640.0);
+    assert!(track(&cx).width < 640.0, "keeps its own width with room");
+    assert_eq!(bounds(&cx, options[2]).y, bounds(&cx, options[0]).y);
+    assert!(
+        (track(&cx).height - ControlSize::Small.height_in(cx.world().theme_metrics())).abs() < 0.5,
+        "one line is one control tall"
+    );
+    layout(&mut cx, doc, 120.0);
+    assert!(
+        track(&cx).width <= 120.5,
+        "stays inside the width it is given"
+    );
+    assert!(bounds(&cx, options[2]).y > bounds(&cx, options[0]).y);
 }

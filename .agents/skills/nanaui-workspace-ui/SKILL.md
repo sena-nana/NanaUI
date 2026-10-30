@@ -5,7 +5,7 @@ description: Maintain NanaUI's reusable workspace shell and visual controls. Use
 
 # NanaUI Workspace UI
 
-Read [`docs/reference/workspace.md`](../../../docs/reference/workspace.md), [`docs/reference/components.md`](../../../docs/reference/components.md), [`docs/reference/look.md`](../../../docs/reference/look.md), and [`docs/reference/how-it-works.md`](../../../docs/reference/how-it-works.md). For crate ownership read [`docs/reference/architecture.md`](../../../docs/reference/architecture.md).
+Read [`docs/reference/workspace.md`](../../../docs/reference/workspace.md), [`docs/reference/components.md`](../../../docs/reference/components.md), [`docs/reference/look.md`](../../../docs/reference/look.md), and [`docs/reference/how-it-works.md`](../../../docs/reference/how-it-works.md). For how controls compose (content line, heading rows and tool overhang, row states and first-line alignment, status hierarchy, scroll gutters) read [`docs/guide/composition.md`](../../../docs/guide/composition.md); a default that makes consumers compensate belongs there and in the API, not in each app. For crate ownership read [`docs/reference/architecture.md`](../../../docs/reference/architecture.md).
 
 ## Boundaries
 

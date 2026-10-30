@@ -70,6 +70,7 @@ export default defineConfig({
           text: "组件深入",
           items: [
             { text: "组合视图", link: "/guide/essentials/view-functions" },
+            { text: "版式与组合", link: "/guide/composition" },
             { text: "依赖提供", link: "/guide/components/provide" },
             { text: "扩展控件", link: "/guide/components/registry" },
             { text: "属性", link: "/guide/components/props" },
@@ -145,6 +146,9 @@ export default defineConfig({
             { text: "Divider", link: "/components/divider" },
             { text: "IconGlyph", link: "/components/icon-glyph" },
             { text: "ScrollView", link: "/components/scroll-view" },
+            { text: "heading_row", link: "/components/heading-row" },
+            { text: "settings_group", link: "/components/settings-group" },
+            { text: "scroll_foot_fade", link: "/components/scroll-foot-fade" },
           ],
         },
         {
@@ -165,6 +169,7 @@ export default defineConfig({
             { text: "DynamicForm", link: "/components/dynamic-form" },
             { text: "InteractionRequestCard", link: "/components/interaction-request-card" },
             { text: "EmptyState", link: "/components/empty-state" },
+            { text: "callout", link: "/components/callout" },
             { text: "Progress", link: "/components/progress" },
             { text: "Skeleton", link: "/components/skeleton" },
             { text: "Spinner", link: "/components/spinner" },

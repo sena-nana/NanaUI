@@ -38,10 +38,10 @@ segmented().label("输入方式").children((
 
 `SegmentedControl::new` 没有参数，默认中号、不拉满。`.label` 给整组一个可访问名，`.size` 改控件档，`.fill(true)` 让选项平分宽度。
 
-`.wrap(true)` 为横向分段选择开启自动换行（默认关闭），容器占满可用宽度，高度跟随内容。与 `.fill(true)` 一起使用时，每行按原顺序容纳尽可能多的选项，使用真实文字、图标和主题留白的固有尺寸判断是否放得下，再将该行宽度均分；末行也铺满。`.fill(false).wrap(true)` 保留选项各自的固有宽度，只在放不下时换行。隐藏项不占位，禁用项照常参与布局。单个标签比整行还长时，独占一行并折行增高，不缩小字号。普通选项维持当前主题的标准高度。Radio 与独立 Tabs 不采用此换行策略。
+横向分段选择默认自动换行（`.wrap(false)` 关闭）：给它的宽度放得下一行时保持一行和自己的宽度，放不下时换行、高度跟随内容，选项文字不会被截断或溢出容器。一行时高度和不换行的控件一样。与 `.fill(true)` 一起使用时，每行按原顺序容纳尽可能多的选项，使用真实文字、图标和主题留白的固有尺寸判断是否放得下，再将该行宽度均分；末行也铺满。`.fill(false).wrap(true)` 保留选项各自的固有宽度，只在放不下时换行。隐藏项不占位，禁用项照常参与布局。单个标签比整行还长时，独占一行并折行增高，不缩小字号。普通选项维持当前主题的标准高度。Radio 与独立 Tabs 不采用此换行策略。
 
 ```rust
-SegmentedControl::new().size(ControlSize::Small).fill(true).wrap(true)
+SegmentedControl::new().size(ControlSize::Small).fill(true)
 ```
 
 语义组件入口接受 `fill` 和 `wrap` 布尔属性，与 Rust 构造器采用同一套布局。
@@ -81,7 +81,7 @@ SegmentedControl::new().size(ControlSize::Small).fill(true).wrap(true)
 | `.label` | — | 整组的可访问名 |
 | `.size` | — | 控件档。`new` 默认中号 |
 | `.fill` | — | `true` 让选项平分宽度。默认不拉满 |
-| `.wrap` | `bool` | 横向分段选项自动换行，默认关闭；与 fill 组合时同行均分 |
+| `.wrap` | `bool` | 横向分段选项在宽度不够时换行，默认开启；与 fill 组合时同行均分 |
 | 选项 `label` | — | `segmented_option(label)` |
 | `.selected` | — | 这一项是不是当前选择。控件不替你保存产品状态，下一次绑定按你写的再说一遍 |
 | `.disabled` | — | 禁掉这一项。藏起时要连同禁用，节点还在 |

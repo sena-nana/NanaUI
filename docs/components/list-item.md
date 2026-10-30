@@ -74,7 +74,7 @@ widget(ListItem::new("模型").tools_rest(RowToolsRest::Reserve))
 
 ## 跟着数据
 
-要跟着数据变的一整列，用 `each`，见 [视图写法](../guide/essentials/view.md)。个数写死的几行放进 `column().children((…))`。行高、间距、`auto_height`、`pill_bleed` 和 `tools_rest` 在组件 `ListItem` 上，不在字段表里。
+要跟着数据变的一整列，用 `each`，见 [视图写法](../guide/essentials/view.md)。个数写死的几行放进 `column().children((…))`。行高、间距、`auto_height`、`trailing_align`、`pill_bleed` 和 `tools_rest` 在组件 `ListItem` 上，不在字段表里。
 
 槽是这一行自己的子节点。根上写了 `key` 的，可以用装配路径再找到。没写 key 的按位置命名。
 
@@ -115,6 +115,17 @@ widget(ListItem::new("模型").tools_rest(RowToolsRest::Reserve))
 | `#content` / `.content` | 代替标签。挂了之后，`detail` 不再占行尾 |
 | `#trailing` / `.trailing` | 放在标签后 |
 | `.tools` | 占 trailing 的位置，悬停或焦点在行内时显出，见上面的行内工具 |
+
+
+## 多行的行
+
+名称下面带说明的行，行首行尾要对着名称那一行，而不是对着两行整体居中。`ListItem::trailing_align(TrailingAlign::FirstLine)` 这样放：行把第一行垫到单行行的位置（上下各 `(控件高 − 行盒) / 2`），行首行尾放在一条和单行行一样高的带子里居中，所以单行行和多行行混排时行尾在同一条线上。`auto_height(true)` 的行默认就是 `FirstLine`，其余默认 `Center`。
+
+视图构造器的 `.leading` / `.trailing` / `.tools` 会把槽放进这条带子，所以先在 `ListItem` 上设好 `auto_height` 或 `trailing_align`，再给槽。经 `AppContext::set_list_item_slots` 挂的槽要自己带带子。内容槽的第一行按行自己的行盒算。
+
+## 三种状态
+
+能点会做事的行用默认；只展示信息、从来不能点的行用 `.read_only(true)`（不响应悬停和点击，文字照常颜色）；本来能做、现在不能的行用 `.disabled(true)`（变灰，并说明原因）。只读不要写成禁用。见 [版式与组合](../guide/composition.md#列表行)。
 
 ## 参见
 

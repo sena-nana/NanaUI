@@ -19,6 +19,7 @@ fn token(name: &str) -> Option<ThemeToken> {
         "type-meta" => ThemeToken::Type(TypeRole::Meta),
         "type-body" => ThemeToken::Type(TypeRole::Body),
         "type-section" => ThemeToken::Type(TypeRole::Section),
+        "type-card-title" => ThemeToken::Type(TypeRole::CardTitle),
         "type-heading" => ThemeToken::Type(TypeRole::Heading),
         "type-title" => ThemeToken::Type(TypeRole::Title),
         "type-display" => ThemeToken::Type(TypeRole::Display),

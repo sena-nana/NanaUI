@@ -44,6 +44,25 @@ and diffed, which is what makes it useful.
     python3 scripts/audit-theme-hardcoding.py --format markdown
     python3 scripts/audit-theme-hardcoding.py --output <path>.json
     python3 scripts/audit-theme-hardcoding.py --check <path>.json
+
+An application can run the same scan over its own UI code. `--root` is the
+application's checkout and each `--path` a directory (or file) under it;
+there is no component split there, every line counts:
+
+    python3 ../NanaUI/scripts/audit-theme-hardcoding.py --root . \
+        --path crates/app/src/ui --lint
+    python3 ../NanaUI/scripts/audit-theme-hardcoding.py --root . \
+        --path crates/app/src/ui --output ui-hardcoding.json
+    python3 ../NanaUI/scripts/audit-theme-hardcoding.py --root . \
+        --path crates/app/src/ui --check ui-hardcoding.json
+
+`--lint` lists every finding as `file:line: category: text` and fails when
+there is any; `--output` / `--check` record the counts and fail only when a
+category grows, so a codebase with existing values can stop new ones first.
+Besides the categories above, application code counts `pixel_length`: a
+`LengthSpec::Px(n)` or a `.size(n)` / `.padding(n)` / `.gap(n)` style call
+with a literal other than 0, which in a view is a number that should be a
+step (`SpacingStep`, `TypeRole`, `RadiusTier`, `ControlSize`).
 """
 
 from __future__ import annotations
@@ -156,6 +175,14 @@ DESIGN_CONST = re.compile(
 )
 
 COUNT_KEYS = ("color_role", "color_literal", "design_number", "motion", "elevation")
+
+# Application code: a literal length where a view should name a step.
+# `Px(0.0)` is "none" (flex `min-width: 0`, a cleared edge), not a design value.
+PIXEL_LENGTH = re.compile(
+    r"\bPx\(\s*-?(?!0(?:\.0*)?\s*\))\d+(?:\.\d+)?\s*\)"
+    r"|\.(?:size|padding|gap|radius|height|width|inset)\(\s*-?(?!0(?:\.0*)?\s*\))\d+(?:\.\d+)?\s*\)"
+)
+LINT_KEYS = ("color_literal", "design_number", "motion", "pixel_length")
 
 
 def strip_rust(source: str) -> str:
@@ -460,6 +487,62 @@ def scan() -> dict[str, object]:
     }
 
 
+def lint_sources(root: Path, paths: list[str]) -> Iterable[Path]:
+    """The `.rs` files under each of `paths` (relative to `root`), test code
+    left out as in the product scan."""
+    seen: set[Path] = set()
+    for entry in paths:
+        target = (root / entry).resolve()
+        if target.is_file():
+            files: Iterable[Path] = [target]
+        else:
+            files = rust_sources(target)
+        for path in files:
+            if path not in seen:
+                seen.add(path)
+                yield path
+
+
+def lint_findings(root: Path, paths: list[str]) -> list[dict[str, object]]:
+    """Every local design value in application code, one per match."""
+    findings: list[dict[str, object]] = []
+    for path in lint_sources(root, paths):
+        text = strip_rust(path.read_text(encoding="utf-8"))
+        try:
+            label = path.relative_to(root.resolve()).as_posix()
+        except ValueError:
+            label = path.as_posix()
+        for number, line in enumerate(text.splitlines(), start=1):
+            if not line.strip():
+                continue
+            tokenized = bool(TOKEN_READ.search(line))
+            hits: list[tuple[str, str]] = []
+            hits += [("color_literal", m.group(0)) for m in COLOR_LITERAL.finditer(line)]
+            hits += [("motion", m.group(0)) for m in MOTION.finditer(line)]
+            if not tokenized:
+                hits += [("design_number", m.group(0)) for m in DESIGN_NUMBER.finditer(line)]
+                hits += [("pixel_length", m.group(0)) for m in PIXEL_LENGTH.finditer(line)]
+            for category, snippet in hits:
+                findings.append(
+                    {"file": label, "line": number, "category": category, "text": snippet.strip()}
+                )
+    return findings
+
+
+def lint_report(root: Path, paths: list[str]) -> dict[str, object]:
+    findings = lint_findings(root, paths)
+    totals = dict.fromkeys(LINT_KEYS, 0)
+    for finding in findings:
+        totals[str(finding["category"])] += 1
+    return {
+        "schema_version": 1,
+        "mode": "lint",
+        "paths": paths,
+        "totals": totals,
+        "findings": findings,
+    }
+
+
 def markdown(report: dict[str, object], top: int) -> str:
     lines: list[str] = []
     totals = report["totals"]  # type: ignore[index]
@@ -522,7 +605,26 @@ def main(argv: list[str] | None = None) -> int:
         type=Path,
         help="compare against a committed report and fail when local values grew",
     )
+    parser.add_argument(
+        "--root",
+        type=Path,
+        help="an application checkout to scan instead of NanaUI's components",
+    )
+    parser.add_argument(
+        "--path",
+        action="append",
+        default=[],
+        help="a directory or file under --root to scan (repeatable)",
+    )
+    parser.add_argument(
+        "--lint",
+        action="store_true",
+        help="list every local design value as file:line and fail when there is any",
+    )
     args = parser.parse_args(argv)
+
+    if args.root is not None or args.path or args.lint:
+        return lint_main(args)
 
     report = scan()
     if args.check:
@@ -566,6 +668,62 @@ def main(argv: list[str] | None = None) -> int:
         return 0
     if args.format == "markdown":
         print(markdown(report, args.top), end="")
+    else:
+        print(json.dumps(report, indent=2, ensure_ascii=False))
+    return 0
+
+
+def lint_main(args: argparse.Namespace) -> int:
+    """Application mode: `--root` / `--path` / `--lint`."""
+    root = (args.root or Path.cwd()).resolve()
+    paths = args.path or ["."]
+    report = lint_report(root, paths)
+    totals = report["totals"]  # type: ignore[assignment]
+    if args.check:
+        baseline = json.loads(args.check.read_text(encoding="utf-8"))
+        grew = [
+            (key, baseline["totals"].get(key, 0), totals[key])  # type: ignore[index]
+            for key in LINT_KEYS
+            if totals[key] > baseline["totals"].get(key, 0)  # type: ignore[index]
+        ]
+        if grew:
+            for key, was, now in grew:
+                print(f"{key}: {was} -> {now}", file=sys.stderr)
+            print(
+                "New design values in UI code. Name a step (SpacingStep, TypeRole, "
+                "RadiusTier, ControlSize) instead, or re-record the baseline with "
+                "--output and say why.",
+                file=sys.stderr,
+            )
+            return 1
+        print("theme hardcoding lint: no category grew")
+        return 0
+    if args.output:
+        args.output.parent.mkdir(parents=True, exist_ok=True)
+        args.output.write_text(
+            json.dumps(
+                {key: value for key, value in report.items() if key != "findings"},
+                indent=2,
+                ensure_ascii=False,
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+        print(args.output)
+        return 0
+    if args.lint:
+        for finding in report["findings"]:  # type: ignore[union-attr]
+            print(
+                f"{finding['file']}:{finding['line']}: {finding['category']}: {finding['text']}"
+            )
+        count = len(report["findings"])  # type: ignore[arg-type]
+        if count:
+            print(f"{count} local design value(s)", file=sys.stderr)
+            return 1
+        return 0
+    if args.format == "markdown":
+        for key in LINT_KEYS:
+            print(f"| `{key}` | {totals[key]} |")  # type: ignore[index]
     else:
         print(json.dumps(report, indent=2, ensure_ascii=False))
     return 0

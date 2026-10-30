@@ -481,7 +481,7 @@ pub use view_components::{
     RowToolsPresence, RowToolsRest, ScrollAnchor, ScrollAxes, ScrollChanged, ScrollLaidOut,
     ScrollView, ScrollViewportChanged, ScrollbarDragState, SecondaryPress, SizeChanged, Stack,
     Switch, Table, TableCell, TableCellFocused, TableRow, Text, TextArea, TextChanged, TextClamped,
-    TextInput, TextSubmitted, ToggleChanged, Tooltip, UserScroll,
+    TextInput, TextSubmitted, ToggleChanged, Tooltip, TrailingAlign, UserScroll,
 };
 pub use workspace::{Workspace, WorkspaceRegionSlot, WorkspaceResizeHandle};
 pub use world::{

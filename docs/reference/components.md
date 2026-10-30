@@ -127,14 +127,16 @@ inactive overlay 与关闭菜单属于结构性隐藏。`ComputedStyle::box_visi
 
 ### 标记与分组（view::marks）
 
+这些视图拼在一起时的规则（内容线、标题行、状态层级、滚动区）见 [版式与组合](../guide/composition.md)。
+
 不是控件，是由 `Stack` / `Text` / `IconGlyph` 拼成的视图，只说主题角色和档位：
 
 - `kbd(key)`、`kbd_glyph(icon)`、`chord("Ctrl+B")`、`chord_with(keys, draw_key)`：键帽和组合键，键帽由 `KeycapPainter` 画（表面、边框、强边框色的底边，随明暗模式），高度和底边取自已安装主题的 `ThemeMetrics::keycap`。
 - `tag(text)` / `tag_frame()`：不可交互的标签；要能选、能关的用 `Chip`。
-- `callout(icon, tone, text)`：按 `StatusTone` 着色的提示条，图标由调用方给。`text` 可以绑定，为空时整条隐藏；`.quiet()` 不带底色、不自带水平内边距，文字小一号、偏淡，和图标居中对齐，放在已有内边距的块里当一行说明；`.trailing(view)` 在行尾放一个跳转链接或按钮，行尾不收缩，文字先换行。它的行和元素一样接 `.class` / `.css` / `.visible`：默认顶端对齐，让换行的长文字从上排起；一行提示配较高的按钮时写 `.css(css! { align-items: center; })` 居中。`.visible` 与「文字为空时隐藏」同时生效。
-- `heading_row(title, tools)` + `heading_tools(tools)`：标题行。标题先让出宽度（可省略），工具保持宽度；工具栏没有外观和竖向内边距，行高取文字和工具中较高的。工具用 `IconButton::tool(icon, label)`（紧凑 24×24，标签同时作提示）或紧凑菜单。两者都接 `.class` / `.css` / `.visible`，写在各自的行或工具栏上（例如 `.css(css! { align-items: flex-start; })` 让多行标题从顶端对齐）。
-- `scroll_foot_fade(height, surface)`：放在滚动区底边上的渐隐，从透明过渡到 `surface`，说明列表还没到底；不接收输入，列表末尾留出同样高度的空白，最后一行能滚出渐隐。
-- `settings_group(title, rows)` + `group_row(view).visible(cond)`：标题在上、卡片在下，行间是缩进细线，隐藏的行带走它的分隔线，第一行也一样（行和分隔线放在 `SettingsGroup` 里，分隔线只在两个显示的行之间显示）；卡片由 `RaisedSurfacePainter` 画（细边框，亮色下一道短阴影）。`settings_group` 接 `.class` / `.css` / `.visible`，作用在放标题和卡片的那一列上。
+- `callout(icon, tone, text)`：按 `StatusTone` 着色的提示条；`.quiet()` 是没有底色、不带水平内边距的一行说明，`.trailing(view)` 放行尾动作。见 [callout](../components/callout.md)。
+- `heading_row(title, tools)` + `heading_tools(tools)`：标题行。标题先让出宽度，工具保持宽度；`.lead(view)` 放标题前的图标。紧凑工具（`IconButton::tool`，目标 `COMPACT_TARGET`）默认按 `heading_overhang()` 上下悬出、不撑高标题行，`.inline()` 留在行内；标题在滚动区顶部时滚动区写 `ScrollView::heading_room()`。见 [heading_row](../components/heading-row.md)。
+- `scroll_foot_fade(height, surface)`：放在滚动区底边上的渐隐，不接收输入；滚动区用了 `ScrollView::gutter` 时写 `.clear_of(gutter)` 让出滚动条车道。见 [scroll_foot_fade](../components/scroll-foot-fade.md)。
+- `settings_group(title, rows)` + `group_row(view).visible(cond)`：标题在上、卡片在下，行间是缩进 `CONTENT_INSET` 的细线，隐藏的行带走它的分隔线。卡片和 `group_row` 都不加左右内边距：行用 `group_row_on_line(view)`（即 `group_row(content_line(view))`）放到内容线上，已带内边距的行直接 `group_row`。见 [settings_group](../components/settings-group.md)。
 - `tone_role(tone)`：状态色调对应的颜色角色。
 
 `Avatar` 的空槽仍是 Subtle 占位，不画首字母；需要首字母的应用自己叠一层。
