@@ -102,7 +102,7 @@ pub(super) fn build(context: &GeometryPaintContext<'_>, emit: &mut impl FnMut(Sc
                         border_width: 0.0,
                         corner_radius: corner_radii(radius),
                         shadow: Some(*elevation),
-                        surface: QuadSurfacePaint::default(),
+                        surface: Box::default(),
                     },
                 });
             }
@@ -359,7 +359,7 @@ pub(super) fn build(context: &GeometryPaintContext<'_>, emit: &mut impl FnMut(Sc
                         border_width: 1.0,
                         corner_radius: radius,
                         shadow: None,
-                        surface: QuadSurfacePaint::default(),
+                        surface: Box::default(),
                     },
                 });
             }
@@ -436,7 +436,7 @@ pub(super) fn build(context: &GeometryPaintContext<'_>, emit: &mut impl FnMut(Sc
                         border_width: 1.0,
                         corner_radius: corner_radii(node.chrome_radii.md),
                         shadow: Some(*elevation),
-                        surface: QuadSurfacePaint::default(),
+                        surface: Box::default(),
                     },
                 });
             }

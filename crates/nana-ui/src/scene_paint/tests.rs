@@ -2059,7 +2059,7 @@ fn axis_aligned_clips_do_not_dest_wrap() {
         border_width: 0.0,
         corner_radius: [0.0; 4],
         shadow: None,
-        surface: nana_ui_scene::QuadSurfacePaint::default(),
+        surface: Box::default(),
     };
     assert!(clip_dests_for(&custom, &aligned, origin).is_empty());
     assert!(clip_dests_for(&quad, &aligned, origin).is_empty());
@@ -2142,7 +2142,7 @@ fn mesh_polygon_clip_stays_in_gpu_clip_not_dest() {
         border_width: 0.0,
         corner_radius: [0.0; 4],
         shadow: None,
-        surface: nana_ui_scene::QuadSurfacePaint::default(),
+        surface: Box::default(),
     };
     assert_eq!(
         clip_dests_for(&quad, &polygon, origin).len(),

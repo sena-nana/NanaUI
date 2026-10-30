@@ -356,7 +356,10 @@ pub enum ScenePrimitiveKind {
         border_width: f32,
         corner_radius: [f32; 4],
         shadow: Option<ComponentElevation>,
-        surface: QuadSurfacePaint,
+        /// Images, masks, materials and filters: rare, and over a kilobyte,
+        /// so boxed to keep every primitive (and every frame building one)
+        /// small.
+        surface: Box<QuadSurfacePaint>,
     },
     QuadBatch {
         bounds: Vec<SceneRect>,
@@ -365,7 +368,7 @@ pub enum ScenePrimitiveKind {
         border_width: f32,
         corner_radius: [f32; 4],
         shadow: Option<ComponentElevation>,
-        surface: QuadSurfacePaint,
+        surface: Box<QuadSurfacePaint>,
     },
     /// One batch of solid-color quads with per-item colors (editor color
     /// swatch decorators). Mirrors [`ScenePrimitiveKind::QuadBatch`]: one
@@ -1435,6 +1438,12 @@ pub struct ScenePrimitive {
     pub document_order: usize,
     pub kind: ScenePrimitiveKind,
 }
+
+// Every primitive the scene holds or a builder makes is this size, and an
+// unoptimized build gives each one its own stack slot: inlining a large rare
+// field (the quad surface was 1 KiB) grew the builders' frames past 150 KiB
+// each and overflowed a 1 MiB main thread. Box such fields instead.
+const _: () = assert!(std::mem::size_of::<ScenePrimitive>() <= 512);
 
 /// Isolating ancestor whose subtree is composited as one layer.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -4313,7 +4322,7 @@ fn visual_quad(
             border_width: style.border_width,
             corner_radius: style.corner_radius,
             shadow: None,
-            surface: QuadSurfacePaint::default(),
+            surface: Box::default(),
         },
     }
 }
@@ -4612,7 +4621,7 @@ fn visual_quad_batch(
             border_width: style.border_width,
             corner_radius: style.corner_radius,
             shadow: None,
-            surface: QuadSurfacePaint::default(),
+            surface: Box::default(),
         }
     })
 }

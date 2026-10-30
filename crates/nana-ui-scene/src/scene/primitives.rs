@@ -345,7 +345,7 @@ impl UiScene {
                                 }
                                 surface.border_styles = style.paint_border_style_codes();
                             }
-                            surface
+                            Box::new(surface)
                         },
                     },
                 });
