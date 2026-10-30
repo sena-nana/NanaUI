@@ -4,7 +4,9 @@ use crate::{LayoutStyle, LengthSpec, LineHeightSpec};
 use serde::{Deserialize, Serialize};
 
 /// A typed token reference; no strings are looked up on the runtime path.
+/// More tokens may come, so a `match` on one needs a wildcard arm.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[non_exhaustive]
 pub enum ThemeToken {
     Space(SpacingStep),
     Type(TypeRole),
@@ -14,6 +16,11 @@ pub enum ThemeToken {
     Radius(RadiusTier),
     Control(crate::ControlSize),
     ControlPadding(crate::ControlPadding),
+    /// A panel's padding across ([`super::SurfacePadding::Panel`] and
+    /// `PanelX`, [`super::ThemeMetrics::panel_padding_x`]): what a Card or a
+    /// settings group insets its content by, so a scroll area's gutter can
+    /// name its card's own padding under any metrics.
+    PanelPaddingX,
 }
 impl ThemeToken {
     pub fn resolve(self, theme: &CompiledTheme) -> f32 {
@@ -26,6 +33,7 @@ impl ThemeToken {
             Self::Radius(tier) => tier.resolve(theme.metrics()),
             Self::Control(size) => size.height_in(theme.metrics()),
             Self::ControlPadding(padding) => padding.resolve(theme.metrics()),
+            Self::PanelPaddingX => super::SurfacePadding::Panel.resolve_x(theme.metrics()),
         }
     }
 }
@@ -155,6 +163,10 @@ pub struct ThemeLayout {
     pub border_bottom_width: Option<ThemeExpr>,
     pub border_left_width: Option<ThemeExpr>,
     pub border_radius: Option<ThemeExpr>,
+    /// The margin a scroll container's bar runs in
+    /// ([`crate::ScrollbarSkin::room`]), resolved onto the node's skin.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub scrollbar_room: Option<ThemeExpr>,
 }
 impl ThemeLayout {
     /// Standard control typography selected by its size step.
@@ -248,6 +260,7 @@ impl ThemeLayout {
             && self.border_bottom_width.is_none()
             && self.border_left_width.is_none()
             && self.border_radius.is_none()
+            && self.scrollbar_room.is_none()
     }
     /// Resolve onto a copy of the authored layout. Expressions stay in the
     /// authored model so later theme installs can resolve them again.
@@ -388,6 +401,14 @@ impl ThemeLayout {
             let value = expr.resolve(theme);
             layout.border_radius = Some(value);
             layout.paint.border_radii = Some([LengthSpec::Px(value); 4]);
+        }
+        if let Some(expr) = &self.scrollbar_room {
+            let value = expr.resolve(theme);
+            let skin = layout.paint.scrollbar.unwrap_or_default();
+            layout.paint.scrollbar = Some(crate::ScrollbarSkin {
+                room: Some(value),
+                ..skin
+            });
         }
     }
 }

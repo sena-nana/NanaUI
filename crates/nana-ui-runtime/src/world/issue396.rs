@@ -330,3 +330,182 @@ fn issue396_a_band_follows_the_rows_size_like_a_cold_layout() {
         );
     }
 }
+
+/// How a page's scroll area names its gutter.
+#[derive(Clone, Copy)]
+enum Gutter {
+    /// The card's own padding, `ThemeToken::PanelPaddingX`.
+    Panel,
+    Px(f32),
+}
+
+/// A page's card, the positioned frame inside it, and the scroll area and
+/// foot fade the frame holds.
+struct GutterPage {
+    card: StableNodeId,
+    frame: StableNodeId,
+    scroll: StableNodeId,
+    fade: StableNodeId,
+}
+
+/// A 300px card holding a 160px frame with a scroll area that reaches its
+/// `gutter` into the card's padding over 400px of content, its bar always
+/// shown, and a foot fade clear of the same gutter; under `theme` when
+/// given, laid out once.
+fn gutter_page(gutter: Gutter, theme: Option<&ThemeDefinition>) -> (AppContext, GutterPage) {
+    use crate::view::scroll_foot_fade;
+    use nana_ui_core::{ScrollbarVisibility, SemanticColorRole, ThemeToken};
+    let mut cx = AppContext::new();
+    if let Some(theme) = theme {
+        cx.set_theme_definition(theme).unwrap();
+    }
+    let root = cx
+        .create_component(document(), Stack::column(0.0))
+        .unwrap()
+        .stable_id();
+    let mut card = crate::Card::new();
+    Arc::make_mut(&mut card.style.layout).width = Some(LengthSpec::Px(300.0));
+    let view = cx
+        .mount_view(root, move || {
+            let scroll = crate::ScrollView::new(crate::ScrollAxes::Vertical)
+                .scrollbars(ScrollbarVisibility::Always)
+                .with_layout(|l| l.height = Some(LengthSpec::Fill));
+            let (scroll, fade) = match gutter {
+                Gutter::Panel => (
+                    scroll.gutter_theme(ThemeToken::PanelPaddingX),
+                    scroll_foot_fade(24.0, SemanticColorRole::Surface)
+                        .clear_of_theme(ThemeToken::PanelPaddingX),
+                ),
+                Gutter::Px(px) => (
+                    scroll.gutter(px),
+                    scroll_foot_fade(24.0, SemanticColorRole::Surface).clear_of(px),
+                ),
+            };
+            widget(card)
+                .children(
+                    widget(Stack::column(0.0).with_layout(|l| {
+                        l.position = nana_ui_core::PositionSpec::Relative;
+                        l.height = Some(LengthSpec::Px(160.0));
+                    }))
+                    .children((
+                        widget(scroll)
+                            .children(widget(fixed(None, 400.0)))
+                            .key("scroll"),
+                        fade,
+                    ))
+                    .key("frame"),
+                )
+                .key("card")
+        })
+        .unwrap();
+    let base = view.roots()[0];
+    let path = |path: &str| cx.resolve_assembly_path(base, path).unwrap();
+    let frame = path("frame");
+    let page = GutterPage {
+        card: base,
+        frame,
+        scroll: path("frame/scroll"),
+        fade: children(&cx, frame)[1],
+    };
+    product_frame(&mut cx, document(), viewport(), &mut bundled_face_shaper());
+    (cx, page)
+}
+
+fn result(cx: &AppContext, id: StableNodeId) -> crate::LayoutResult {
+    cx.world().layout_result(id).unwrap().clone()
+}
+
+fn bar_lane(cx: &AppContext, scroll: StableNodeId) -> LayoutBox {
+    let Some(crate::ComponentGeometry::Scrollbar {
+        vertical: Some(bar),
+        ..
+    }) = cx.world().component_geometry(scroll)
+    else {
+        panic!("a vertical bar");
+    };
+    bar.lane
+}
+
+fn right(r: LayoutBox) -> f32 {
+    r.x + r.width
+}
+
+/// The scroll area runs from the card's padding edge to its padding edge
+/// across, its content keeps the card's content line, its bar's lane is
+/// fitted into the right-hand padding and the foot fade covers the area up
+/// to that lane: nothing reaches past the card's padding under `metrics`.
+fn assert_runs_into_the_padding(cx: &AppContext, page: &GutterPage, inset: f32) {
+    let card = result(cx, page.card);
+    let scroll = result(cx, page.scroll);
+    let padding = card.padding_box;
+    let content = card.content_box;
+    assert_eq!(
+        (scroll.border_box.x, right(scroll.border_box)),
+        (padding.x, right(padding)),
+        "the area spans the card's padding box"
+    );
+    assert_eq!(
+        (scroll.content_box.x, right(scroll.content_box)),
+        (content.x, right(content)),
+        "the content keeps the card's content line"
+    );
+    let lane = bar_lane(cx, page.scroll);
+    assert_eq!(
+        lane.x,
+        right(content) + inset,
+        "the lane starts past the content"
+    );
+    assert_eq!(
+        right(lane),
+        right(padding) - inset,
+        "and ends inside the card"
+    );
+    let fade = rect(cx, page.fade);
+    assert_eq!(fade.x, padding.x, "the fade reaches out with the area");
+    assert_eq!(
+        right(fade),
+        right(rect(cx, page.frame)),
+        "and stops at the lane"
+    );
+}
+
+/// A theme-step gutter names the card's own padding: under the default
+/// metrics it lays out exactly as `gutter(16)` does, and under
+/// `COMPACT_METRICS`, whose panels pad by 10, the area, its bar and the foot
+/// fade still run exactly into the padding, where `gutter(16)` overshoots by
+/// 6. Switching the theme lays out what a cold layout under it does.
+#[test]
+fn issue396_a_theme_step_gutter_runs_into_the_cards_padding_under_any_metrics() {
+    let default_padding = nana_ui_core::UI_METRICS.panel_padding_x;
+    let compact_metrics = nana_ui_core::COMPACT_METRICS;
+    let inset = nana_ui_core::SCROLLBAR_METRICS.track_inset;
+    assert_eq!(default_padding, 16.0);
+    assert_eq!(compact_metrics.panel_padding_x, 10.0);
+    let compact =
+        ThemeDefinition::for_appearance(ThemeAppearance::Light).with_metrics(compact_metrics);
+    let mut shaper = bundled_face_shaper();
+
+    // Default metrics: the same layout and the same bar as `gutter(16)`.
+    let (mut cx, page) = gutter_page(Gutter::Panel, None);
+    let (mut px, px_page) = gutter_page(Gutter::Px(default_padding), None);
+    assert_matches_cold(&mut cx, &mut px, document());
+    assert_eq!(bar_lane(&cx, page.scroll), bar_lane(&px, px_page.scroll));
+    assert_runs_into_the_padding(&cx, &page, inset);
+
+    // Compact metrics: pixels written for the default theme overshoot.
+    let (px, px_page) = gutter_page(Gutter::Px(default_padding), Some(&compact));
+    let padding = result(&px, px_page.card).padding_box;
+    assert_eq!(
+        rect(&px, px_page.scroll).x,
+        padding.x - (default_padding - compact_metrics.panel_padding_x)
+    );
+
+    // The theme step follows the switch, as a cold layout under it does.
+    cx.set_theme_definition(&compact).unwrap();
+    product_frame(&mut cx, document(), viewport(), &mut shaper);
+    let (mut cold, _) = gutter_page(Gutter::Panel, Some(&compact));
+    assert_matches_cold(&mut cx, &mut cold, document());
+    assert_eq!(bar_lane(&cx, page.scroll), bar_lane(&cold, page.scroll));
+    assert_runs_into_the_padding(&cx, &page, inset);
+    assert_runs_into_the_padding(&cold, &page, inset);
+}

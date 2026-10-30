@@ -83,27 +83,27 @@
 
 ## 滚动区
 
-- **滚动条跑在边距里，不压在内容上。** 卡片有水平内边距时，滚动区用 `ScrollView::gutter(px)` 伸进这段边距（`px` 取卡片的内边距），内容再缩回来：内容仍在卡片的内容线上，滚动条画在空着的边距里；边距放不下主题的滚动条车道时，车道收窄。
-- **底部渐隐**：`scroll_foot_fade(height, surface)` 放在装滚动区的定位容器里，盖在滚动区底边上，说明列表还没到底。滚动区用了 `gutter` 时，渐隐写 `.clear_of(px)`（同一个值）：它和滚动区放在同一个定位容器里（卡片内容框中的一列，左右边就是内容线），左边跟着滚动区伸进边距，右边停在滚动条车道之前。列表末尾留出 `height` 的空白，最后一行能滚出渐隐。
+- **滚动条跑在边距里，不压在内容上。** 卡片有水平内边距时，滚动区用 `ScrollView::gutter_theme(ThemeToken::PanelPaddingX)` 伸进这段边距（这个档位就是卡片自己的水平内边距，随主题变），内容再缩回来：内容仍在卡片的内容线上，滚动条画在空着的边距里；边距放不下主题的滚动条车道时，车道收窄。不要写 `gutter(16.0)` 这类像素：它只在默认度量下等于卡片内边距，换到 `COMPACT_METRICS` 就多伸出 6。
+- **底部渐隐**：`scroll_foot_fade(height, surface)` 放在装滚动区的定位容器里，盖在滚动区底边上，说明列表还没到底。滚动区用了 `gutter_theme` 时，渐隐写 `.clear_of_theme(档位)`（同一个值）：它和滚动区放在同一个定位容器里（卡片内容框中的一列，左右边就是内容线），左边跟着滚动区伸进边距，右边停在滚动条车道之前。列表末尾留出 `height` 的空白，最后一行能滚出渐隐。
 - 顶部有标题工具时加 `.heading_room()`（见「标题行」）。
 
 ```rust
 use nana_ui::runtime::view::{scroll_foot_fade, widget};
 use nana_ui::runtime::{ScrollAxes, ScrollView, SemanticColorRole, Stack};
-use nana_ui::theme::space;
+use nana_ui::theme::ThemeToken;
 
-let gutter = space::XL; // 卡片的水平内边距
+let gutter = ThemeToken::PanelPaddingX; // 卡片自己的水平内边距
 widget(Stack::column(0.0).with_layout(|l| {
     l.position = nana_ui::runtime::PositionSpec::Relative;
 }))
 .children((
     widget(
         ScrollView::new(ScrollAxes::Vertical)
-            .gutter(gutter)
+            .gutter_theme(gutter)
             .heading_room(),
     )
     .children(groups),
-    scroll_foot_fade(24.0, SemanticColorRole::Surface).clear_of(gutter),
+    scroll_foot_fade(24.0, SemanticColorRole::Surface).clear_of_theme(gutter),
 ))
 ```
 

@@ -490,14 +490,15 @@ container_styles!([] HeadingRow, [] HeadingTools, [] SettingsGroupView);
 /// reach the list under it; end the list with `height` of air so its last
 /// row can scroll clear of the fade. Place it in the positioned box that
 /// holds the scroll area, beside the area; over an area with a
-/// [`crate::ScrollView::gutter`], give it the same gutter with
-/// [`ScrollFootFade::clear_of`] so it covers the area as far as the area
+/// [`crate::ScrollView::gutter_theme`] (or [`crate::ScrollView::gutter`]),
+/// give it the same gutter with [`ScrollFootFade::clear_of_theme`] (or
+/// [`ScrollFootFade::clear_of`]) so it covers the area as far as the area
 /// reaches and the scrollbar's lane stays clear of it.
 pub fn scroll_foot_fade(height: f32, surface: SemanticColorRole) -> ScrollFootFade {
     ScrollFootFade {
         height,
         surface,
-        lane: 0.0,
+        lane: FadeLane::Px(0.0),
     }
 }
 
@@ -505,7 +506,13 @@ pub fn scroll_foot_fade(height: f32, surface: SemanticColorRole) -> ScrollFootFa
 pub struct ScrollFootFade {
     height: f32,
     surface: SemanticColorRole,
-    lane: f32,
+    lane: FadeLane,
+}
+
+/// The gutter a foot fade reaches out over.
+enum FadeLane {
+    Px(f32),
+    Theme(nana_ui_core::ThemeExpr),
 }
 
 impl ScrollFootFade {
@@ -515,8 +522,19 @@ impl ScrollFootFade {
     /// its scrollbar in the right-hand one; the fade reaches out on the left
     /// with it and stops at the box's right edge, where the bar's lane
     /// begins. It covers the area's border box minus the lane.
+    ///
+    /// Pixels hold under one theme only; over an area with a
+    /// [`crate::ScrollView::gutter_theme`], use [`Self::clear_of_theme`].
     pub fn clear_of(mut self, gutter: f32) -> Self {
-        self.lane = gutter.max(0.0);
+        self.lane = FadeLane::Px(gutter.max(0.0));
+        self
+    }
+
+    /// [`Self::clear_of`] as a theme value: match a scroll area with this
+    /// [`crate::ScrollView::gutter_theme`], so the fade follows the area's
+    /// gutter under any theme (`ThemeToken::PanelPaddingX` inside a Card).
+    pub fn clear_of_theme(mut self, gutter: impl Into<nana_ui_core::ThemeExpr>) -> Self {
+        self.lane = FadeLane::Theme(gutter.into());
         self
     }
 }
@@ -546,7 +564,10 @@ fn scroll_foot_fade_view(fade: ScrollFootFade) -> AnyView {
     widget(Stack::row(0.0).surface(surface).with_layout(|l| {
         l.position = nana_ui_core::PositionSpec::Absolute;
         // Out over the margin the area reaches into, short of its bar lane.
-        l.offset_left = Some(LengthSpec::Px(-lane));
+        match lane {
+            FadeLane::Px(lane) => l.offset_left = Some(LengthSpec::Px(-lane)),
+            FadeLane::Theme(lane) => l.theme.offset_left = Some(lane.scaled(-1.0)),
+        }
         l.offset_right = Some(LengthSpec::Px(0.0));
         l.offset_bottom = Some(LengthSpec::Px(0.0));
         l.height = Some(LengthSpec::Px(height));

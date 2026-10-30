@@ -5739,6 +5739,11 @@ impl ScrollView {
     /// horizontal padding of at least `gutter`; a
     /// [`scroll_foot_fade`](crate::view::scroll_foot_fade) over the area
     /// takes the same gutter (`clear_of`).
+    ///
+    /// Pixels hold under one theme only: in a Card, whose padding follows
+    /// the metrics, prefer [`Self::gutter_theme`] with
+    /// [`nana_ui_core::ThemeToken::PanelPaddingX`]. A later call replaces an
+    /// earlier one of either kind.
     pub fn gutter(mut self, gutter: f32) -> Self {
         use nana_ui_core::LengthSpec::Px;
         let gutter = gutter.max(0.0);
@@ -5747,11 +5752,40 @@ impl ScrollView {
         layout.margin_right = Some(Px(-gutter));
         layout.padding_left = Some(Px(gutter));
         layout.padding_right = Some(Px(gutter));
+        if !layout.theme.is_empty() {
+            let theme = &mut *layout.theme;
+            theme.margin_left = None;
+            theme.margin_right = None;
+            theme.padding_left = None;
+            theme.padding_right = None;
+            theme.scrollbar_room = None;
+        }
         let skin = layout.paint.scrollbar.unwrap_or_default();
         layout.paint.scrollbar = Some(nana_ui_core::ScrollbarSkin {
             room: Some(gutter),
             ..skin
         });
+        self
+    }
+
+    /// [`Self::gutter`] as a theme value, resolved against the installed
+    /// theme and again whenever it changes: the margin, the content inset
+    /// and the bar's room all follow it. Inside a Card, name the card's own
+    /// padding, `gutter_theme(ThemeToken::PanelPaddingX)`, and the area runs
+    /// exactly to the card's edge under any metrics.
+    pub fn gutter_theme(mut self, gutter: impl Into<nana_ui_core::ThemeExpr>) -> Self {
+        let gutter = gutter.into();
+        let layout = Arc::make_mut(&mut self.style.layout);
+        layout.margin_left = None;
+        layout.margin_right = None;
+        layout.padding_left = None;
+        layout.padding_right = None;
+        let theme = &mut *layout.theme;
+        theme.margin_left = Some(gutter.clone().scaled(-1.0));
+        theme.margin_right = Some(gutter.clone().scaled(-1.0));
+        theme.padding_left = Some(gutter.clone());
+        theme.padding_right = Some(gutter.clone());
+        theme.scrollbar_room = Some(gutter);
         self
     }
 

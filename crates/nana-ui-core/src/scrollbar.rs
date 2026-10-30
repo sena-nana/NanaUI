@@ -99,6 +99,9 @@ pub struct ScrollbarSkin {
     /// lane and its inset on both sides: the lane narrows to fit it, and the
     /// thumbs stay no wider than the lane. Resolved against the installed
     /// metrics when painted, so a theme with a narrower lane still wins.
+    /// A room that is a theme value is written to the node's
+    /// [`crate::ThemeLayout::scrollbar_room`] instead, which resolves onto
+    /// this field with the rest of the node's layout.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub room: Option<f32>,
 }
