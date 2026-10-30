@@ -537,6 +537,10 @@ pub fn load_stylesheet_file(
 
 /// Load `@font-face` bytes (relative to the declaring sheet, then jail).
 ///
+/// Files and packaged srcs only: a `data:` src names no file, so the jail
+/// refuses it like any non-filesystem href. Inline faces are the host's to
+/// decode (`nana_ui::ingest_host_font_faces` does).
+///
 /// Returns `(bytes, canonical_path)` so the host can dedupe by path/family/weight.
 pub fn load_font_face_bytes(
     href: &str,

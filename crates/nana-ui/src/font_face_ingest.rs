@@ -19,7 +19,10 @@ pub struct HostFontFaceSpec {
     pub family: Option<String>,
     /// `url(...)` values only; `local(...)` is ignored.
     pub urls: Vec<String>,
+    /// `font-weight` start; with [`Self::weight_end`] the inclusive range
+    /// (`font-weight: 200 700`), alone a single weight.
     pub weight: Option<u16>,
+    pub weight_end: Option<u16>,
     pub style: Option<HostFontStyle>,
 }
 
@@ -56,10 +59,12 @@ fn mark_loaded(key: String) {
 
 /// Load each face's first usable `url(...)` and register it with CSS aliases.
 ///
+/// The face is registered over its whole `weight`..`weight_end` range.
 /// Already-loaded keys are skipped. Failed srcs drop that face (no system-font
 /// stand-in). Remote `http(s)` srcs are refused — `@font-face` has no network
 /// transport. `data:` and jailed filesystem
-/// srcs read up to 8 MiB.
+/// srcs read up to 8 MiB; `data:` is decoded here, since the CSS engine's
+/// file loader (`nana_ui_css::css_at_rule::load_font_face_bytes`) reads only files.
 pub fn ingest_host_font_faces(specs: &[HostFontFaceSpec]) -> usize {
     let mut loaded = 0usize;
     for spec in specs {
@@ -88,7 +93,7 @@ fn ingest_one(spec: &HostFontFaceSpec) -> bool {
         let Some(family) = spec.family.as_deref().filter(|family| !family.is_empty()) else {
             continue;
         };
-        if register_host_font_face(family, bytes, spec.weight, None) == 0 {
+        if register_host_font_face(family, bytes, spec.weight, spec.weight_end) == 0 {
             continue;
         }
         mark_loaded(key);
@@ -143,6 +148,7 @@ mod tests {
             family: Some("Remote".into()),
             urls: vec![url],
             weight: None,
+            weight_end: None,
             style: None,
         };
         assert_eq!(
@@ -154,5 +160,46 @@ mod tests {
             matches!(listener.accept(), Err(error) if error.kind() == std::io::ErrorKind::WouldBlock),
             "a remote src must not open a socket"
         );
+    }
+
+    /// `font-weight: 200 700` is one registration over the whole range: a
+    /// weight inside it, not only the start, lands on a face that covers it.
+    #[test]
+    #[cfg(feature = "bundled-fonts")]
+    fn an_ingested_weight_range_covers_weights_inside_it() {
+        use base64::Engine as _;
+        let encoded = base64::engine::general_purpose::STANDARD.encode(crate::UI_FONT_REGULAR);
+        let spec = HostFontFaceSpec {
+            family: Some("NanaIngestRangeFace".into()),
+            urls: vec![format!("data:font/ttf;base64,{encoded}")],
+            weight: Some(200),
+            weight_end: Some(700),
+            style: None,
+        };
+        assert_eq!(ingest_host_font_faces(&[spec]), 1);
+
+        let style = nana_text::TextStyle {
+            font_family: Some(std::sync::Arc::from("NanaIngestRangeFace")),
+            font_weight: 450,
+            ..nana_text::TextStyle::default()
+        };
+        let engine = crate::text_engine::nana_text_engine();
+        let mut engine = crate::text_engine::lock_engine(&engine);
+        let layout = nana_text::TextEngine::layout(
+            &mut *engine,
+            nana_text::TextKind::Label,
+            &nana_text::TextSource::new("H"),
+            &style,
+            &nana_text::TextConstraints::default(),
+            &mut nana_text::TextWorkCounters::default(),
+        );
+        let faces: Vec<_> = layout
+            .runs
+            .iter()
+            .filter_map(|run| engine.fonts().describe(run.font))
+            .filter(|face| face.families.iter().any(|f| &**f == "NanaIngestRangeFace"))
+            .map(|face| face.weight)
+            .collect();
+        assert_eq!(faces, [(200.0, 700.0)], "450 shapes with the 200..700 face");
     }
 }

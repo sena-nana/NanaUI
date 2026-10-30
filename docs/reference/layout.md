@@ -1165,6 +1165,8 @@ CSS `url()` 的帧仍走 4× MSAA。它和 HostTexture、backdrop 的 interleave
 
 要用自己的字体，在宿主里调 [`register_host_font_face`](../../crates/nana-ui/src/nana_text.rs)：一个 family 加一段字重范围，登记成一个 face，写入共享的 `FontSystem`。和 `bundled-fonts` 是同一套库。要成组替换，用 `HostFontScope`。这不是 CSSOM 的 `FontFace`。
 
+宿主手里已经有解析好的 face，可以交给 [`ingest_host_font_faces`](../../crates/nana-ui/src/font_face_ingest.rs)：`HostFontFaceSpec` 的 `weight` 和 `weight_end` 就是 `font-weight` 的范围，整段登记。它读 jail 内的本机文件、`nana://res/` 和 `data:`。CSS 引擎的 `css_at_rule::load_font_face_bytes` 只读文件和资源包，不认 `data:`，因为 `data:` 不是文件路径。内联字体由 ingest 自己解码。
+
 单个字体文件的读上限是 8MB。
 
 **`@supports`。** 它在解析期求值。匹配，就把内部规则并进同一份 cascade，所以视图里块内的 class 规则照样编译。
