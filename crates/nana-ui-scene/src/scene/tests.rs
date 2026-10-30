@@ -11617,3 +11617,85 @@ fn frozen_glyph_effect_keeps_its_pose_without_looping_frames() {
     assert_eq!(scene.live_until(), Some(std::time::Duration::ZERO));
     assert_eq!(scene.effects_of(1).len(), 1);
 }
+
+/// A right-to-left switch's thumb travels toward the track's left edge, its
+/// "on" end being the track's inline end, and its loading spinner sits at
+/// the inline start: the mirror image of the left-to-right switch (#388).
+#[test]
+fn issue388_a_right_to_left_switch_thumb_is_the_mirror_image() {
+    let track = LayoutBox {
+        x: 170.0,
+        y: 18.0,
+        width: 30.0,
+        height: 16.0,
+    };
+    let paint = |direction, progress: f32| {
+        let mut switch = node(1, None, &[]);
+        switch.standard_visual = Some(StandardVisual::Switch {
+            thumb_progress: progress,
+            label: Arc::from("Enabled"),
+            hint: None,
+            checked: progress > 0.5,
+            control_position: nana_ui_core::SwitchControlPosition::End,
+            size: nana_ui_core::ControlSize::Medium,
+            loading: true,
+            loading_phase: 0.0,
+            invalid: false,
+        });
+        switch.component_geometry = Some(Box::new(ComponentGeometry::Switch {
+            thumb_progress: progress,
+            label: ComponentTextRegion {
+                bounds: LayoutBox {
+                    x: 0.0,
+                    y: 18.0,
+                    width: 160.0,
+                    height: 16.0,
+                },
+                content: nana_ui_runtime::TextValue::from("Enabled"),
+                color: Some([0.9, 0.9, 0.9, 1.0]),
+                font_size: 13.0,
+                font_weight: Some(500),
+            },
+            hint: None,
+            control: track,
+            track_background: [0.2, 0.5, 0.9, 1.0],
+            border_width: 1.0,
+            track_border: [0.1, 0.4, 0.8, 1.0],
+            thumb_background: [1.0, 1.0, 1.0, 1.0],
+        }));
+        switch.layout.width = 200.0;
+        switch.layout.height = 52.0;
+        style_mut(&mut switch).direction = direction;
+        let mut scene = UiScene::new();
+        scene.apply_delta([switch], []);
+        let bounds = |slot| {
+            scene
+                .primitive(PrimitiveId { node: id(1), slot })
+                .expect("switch primitive")
+                .bounds
+        };
+        (bounds(5), bounds(6))
+    };
+    let mirror = |rect: SceneRect| SceneRect {
+        x: 2.0 * track.x + track.width - rect.x - rect.width,
+        ..rect
+    };
+    for progress in [0.0, 0.25, 1.0] {
+        let (thumb, spinner) = paint(nana_ui_core::DirSpec::Ltr, progress);
+        let (rtl_thumb, rtl_spinner) = paint(nana_ui_core::DirSpec::Rtl, progress);
+        for (ours, theirs) in [(rtl_thumb, mirror(thumb)), (rtl_spinner, mirror(spinner))] {
+            assert!(
+                (ours.x - theirs.x).abs() < 1e-4
+                    && ours.y == theirs.y
+                    && ours.width == theirs.width
+                    && ours.height == theirs.height,
+                "{progress}: {ours:?} != {theirs:?}"
+            );
+        }
+    }
+    // On is the right edge left to right, the left edge right to left.
+    let (on, _) = paint(nana_ui_core::DirSpec::Ltr, 1.0);
+    let (rtl_on, _) = paint(nana_ui_core::DirSpec::Rtl, 1.0);
+    assert!(on.x > track.x + track.width / 2.0);
+    assert!(rtl_on.x + rtl_on.width < track.x + track.width / 2.0);
+}

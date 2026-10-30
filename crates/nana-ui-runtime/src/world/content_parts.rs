@@ -152,7 +152,7 @@ impl UiWorld {
             return parts;
         }
         if let Some(inputs) = self.checkbox_parts(id, Size::new(text.width, text.height)) {
-            return start_row_parts(content, inputs);
+            return start_row_parts(content, inputs, self.right_to_left(id));
         }
         if let Some(inputs) = self.switch_inputs(id) {
             return switch_parts(content, inputs);
@@ -223,11 +223,16 @@ impl UiWorld {
             };
         }
         if let Some(inputs) = self.selection_option_parts(id, Size::new(text.width, text.height)) {
-            return selection_option_row(content, inputs, self.selection_option_icon_line(id));
+            return selection_option_row(
+                content,
+                inputs,
+                self.selection_option_icon_line(id),
+                self.right_to_left(id),
+            );
         }
         if let Some(inputs) = self.status_dot_parts(id, Size::new(text.width, text.height)) {
             // The spacer before the dot is not a part of its own.
-            let [_, dot, label, ..] = start_row_parts(content, inputs);
+            let [_, dot, label, ..] = start_row_parts(content, inputs, self.right_to_left(id));
             return content_parts([dot, label]);
         }
         if let StandardVisual::Card { title, loading, .. } = visual {
@@ -408,6 +413,13 @@ impl UiWorld {
         NO_CONTENT_PARTS
     }
 
+    /// Whether `id` lays its content out right to left (`direction: rtl`):
+    /// its parts' inline start is the right edge (#388).
+    pub(crate) fn right_to_left(&self, id: StableNodeId) -> bool {
+        self.computed_style(id)
+            .is_some_and(|style| style.direction == nana_ui_core::DirSpec::Rtl)
+    }
+
     /// A checkbox's indicator and label before placement, the label `text`
     /// in size: what intrinsic measure, the paragraph budget and placement
     /// all read, so none of them keeps its own copy of the indicator's room.
@@ -514,12 +526,14 @@ impl UiWorld {
                     extent: inputs
                         .block_height(size(presentation.title), presentation.message.map(size)),
                     breadth: 0.0,
+                    end: false,
                 })
             }
             StandardVisual::Card { title: Some(_), .. } => Some(LeadingParts {
                 axis: nana_ui_core::FlexDirection::Column,
                 extent: crate::view_components::CARD_TITLE_BAND,
                 breadth: 0.0,
+                end: false,
             }),
             StandardVisual::Toast {
                 assembled: true, ..
@@ -529,6 +543,7 @@ impl UiWorld {
                     axis: nana_ui_core::FlexDirection::Row,
                     extent: inputs.lead(),
                     breadth: inputs.mark.unwrap_or(0.0),
+                    end: inputs.reverse,
                 })
             }
             _ => None,
@@ -538,12 +553,14 @@ impl UiWorld {
     /// Where `id`'s children lay out in its `content` box: past the parts
     /// laid out before them (#385).
     pub(crate) fn children_box(&self, id: StableNodeId, content: LayoutBox) -> LayoutBox {
-        let inset = self
+        let (inset, offset) = self
             .leading_parts(id)
-            .map_or(Size::default(), |lead| lead.inset());
+            .map_or((Size::default(), Size::default()), |lead| {
+                (lead.inset(), lead.offset())
+            });
         LayoutBox {
-            x: content.x + inset.width,
-            y: content.y + inset.height,
+            x: content.x + offset.width,
+            y: content.y + offset.height,
             width: (content.width - inset.width).max(0.0),
             height: (content.height - inset.height).max(0.0),
         }
@@ -566,12 +583,15 @@ impl UiWorld {
         let recipe = self.theme.recipes().toast();
         // An assembled toast's description and close button are children.
         let bare = !*assembled;
-        Some(crate::layout_engine::parts::toast_inputs(
-            recipe,
-            recipe.control_size.height_in(self.style_model.metrics),
-            bare && *dismissible,
-            bare && description.is_some(),
-        ))
+        Some(ToastInputs {
+            reverse: self.right_to_left(id),
+            ..crate::layout_engine::parts::toast_inputs(
+                recipe,
+                recipe.control_size.height_in(self.style_model.metrics),
+                bare && *dismissible,
+                bare && description.is_some(),
+            )
+        })
     }
 
     /// [`ToastInputs::chrome`] for a bare toast's own border.
@@ -623,6 +643,7 @@ impl UiWorld {
             track: Size::new(track.track_width, track.track_height),
             gap: track.label_gap,
             end: *control_position == SwitchControlPosition::End,
+            reverse: self.right_to_left(id),
             labelled: !label.is_empty() || hint.is_some(),
             text: label_width.max(hint_width),
             label_line: line(size.text_size_in(typography)),

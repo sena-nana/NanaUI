@@ -205,3 +205,255 @@ fn issue388_a_switch_label_counts_toward_its_width() {
         assert_matches_cold(&mut cx, &mut cold, document());
     }
 }
+
+/// The controls whose parts sit on logical sides (#388).
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum Control {
+    Checkbox,
+    Switch(nana_ui_core::SwitchControlPosition),
+    Radio,
+    Segmented,
+    StatusBadge,
+    Validation,
+    Toast,
+    AssembledToast,
+    MenuLabel,
+    MenuIcon,
+}
+
+const CONTROLS: [Control; 11] = [
+    Control::Checkbox,
+    Control::Switch(nana_ui_core::SwitchControlPosition::Start),
+    Control::Switch(nana_ui_core::SwitchControlPosition::End),
+    Control::Radio,
+    Control::Segmented,
+    Control::StatusBadge,
+    Control::Validation,
+    Control::Toast,
+    Control::AssembledToast,
+    Control::MenuLabel,
+    Control::MenuIcon,
+];
+
+fn create_control(cx: &mut AppContext, control: Control) -> StableNodeId {
+    let document = document();
+    let id = |entity: StableNodeId| entity;
+    match control {
+        Control::Checkbox => id(cx
+            .create_detached_component(document, crate::Checkbox::new("Notifications", true))
+            .unwrap()
+            .stable_id()),
+        Control::Switch(position) => id(cx
+            .create_detached_component(
+                document,
+                crate::Switch::new("Wi-Fi", true)
+                    .hint("Connect automatically")
+                    .control_position(position),
+            )
+            .unwrap()
+            .stable_id()),
+        Control::Radio | Control::Segmented => {
+            let chrome = if control == Control::Radio {
+                crate::SelectionChrome::Radio
+            } else {
+                crate::SelectionChrome::Segmented
+            };
+            let mut view = crate::SegmentedOption::new("Automatic").surface(
+                nana_ui_core::ControlSize::Medium,
+                chrome,
+                false,
+            );
+            view.icon = Some(nana_ui_core::Icon::File);
+            cx.create_detached_component(document, view)
+                .unwrap()
+                .stable_id()
+        }
+        Control::StatusBadge => cx
+            .create_detached_component(
+                document,
+                crate::StatusBadge::new("Synced", nana_ui_core::StatusTone::Success),
+            )
+            .unwrap()
+            .stable_id(),
+        Control::Validation => cx
+            .create_detached_component(
+                document,
+                crate::ValidationMessage::new(
+                    "Name is required",
+                    nana_ui_core::ValidationIntent::Danger,
+                ),
+            )
+            .unwrap()
+            .stable_id(),
+        Control::Toast | Control::AssembledToast => {
+            let toast = cx
+                .create_detached_component(
+                    document,
+                    crate::Toast::new("Export complete", crate::ToastTone::Success)
+                        .description("Master sent to disk")
+                        .dismissible(true),
+                )
+                .unwrap();
+            if control == Control::AssembledToast {
+                cx.assemble_toast(toast).unwrap();
+            }
+            toast.stable_id()
+        }
+        Control::MenuLabel | Control::MenuIcon => {
+            let mut menu = crate::ActionMenu::new();
+            menu.popover = if control == Control::MenuLabel {
+                menu.popover.trigger("Options")
+            } else {
+                menu.popover.trigger_icon(nana_ui_core::Icon::Add, "Add")
+            };
+            let menu = cx
+                .create_detached_component(document, menu)
+                .unwrap()
+                .stable_id();
+            let item = cx
+                .create_detached_component(document, crate::ActionMenuItem::new("Open"))
+                .unwrap()
+                .stable_id();
+            let mut q = crate::MutationQueue::new();
+            q.insert(menu, item, None);
+            cx.commit_mutations(q).unwrap();
+            menu
+        }
+    }
+}
+
+fn direction_style(
+    direction: nana_ui_core::DirSpec,
+) -> impl FnOnce(&mut nana_ui_core::LayoutStyle) {
+    move |layout| {
+        layout.width = Some(LengthSpec::Px(420.0));
+        layout.dir = Some(direction);
+    }
+}
+
+/// Every control in a 420px column laid out in `direction`, laid out once.
+fn controls_page(
+    direction: nana_ui_core::DirSpec,
+) -> (AppContext, StableNodeId, Vec<(Control, StableNodeId)>) {
+    let mut cx = AppContext::new();
+    let root = cx
+        .create_component(
+            document(),
+            Stack::column(4.0).with_layout(direction_style(direction)),
+        )
+        .unwrap();
+    let controls = CONTROLS
+        .iter()
+        .map(|&control| {
+            let id = create_control(&mut cx, control);
+            let mut q = crate::MutationQueue::new();
+            q.insert(root.stable_id(), id, None);
+            cx.commit_mutations(q).unwrap();
+            (control, id)
+        })
+        .collect();
+    product_frame(&mut cx, document(), viewport(), &mut bundled_face_shaper());
+    (cx, root.stable_id(), controls)
+}
+
+/// `rect`, laid out in `from`, reflected across that box's vertical centre
+/// line and carried to `to`, a box as large: where the mirror image sits.
+fn mirror(
+    rect: crate::LayoutBox,
+    from: crate::LayoutBox,
+    to: crate::LayoutBox,
+) -> crate::LayoutBox {
+    crate::LayoutBox {
+        x: to.x + from.x + from.width - rect.x - rect.width,
+        y: to.y + rect.y - from.y,
+        ..rect
+    }
+}
+
+fn assert_close(ours: crate::LayoutBox, theirs: crate::LayoutBox, what: &str) {
+    assert!(
+        (ours.x - theirs.x).abs() < 1e-3
+            && (ours.y - theirs.y).abs() < 1e-3
+            && (ours.width - theirs.width).abs() < 1e-3
+            && (ours.height - theirs.height).abs() < 1e-3,
+        "{what}: {ours:?} != {theirs:?}"
+    );
+}
+
+/// Each control's parts in `rtl` are its parts in `ltr` reflected across
+/// its own box (which the page's column may put elsewhere): the indicator or mark at the inline start, a dismiss target
+/// at the inline end, the switch track at the side its position names, and
+/// what an assembled toast lays out after its mark with it.
+fn assert_mirrored(ltr: &AppContext, rtl: &AppContext, controls: &[(Control, StableNodeId)]) {
+    for &(control, id) in controls {
+        let frame = |cx: &AppContext| cx.world().layout_box(id).unwrap();
+        let (left, right) = (frame(ltr), frame(rtl));
+        assert_eq!(
+            (left.width, left.height),
+            (right.width, right.height),
+            "{control:?}"
+        );
+        let parts = |cx: &AppContext| cx.world().layout_result(id).unwrap().parts.clone();
+        let (left_parts, right_parts) = (parts(ltr), parts(rtl));
+        let kinds =
+            |parts: &[crate::LayoutPart]| parts.iter().map(|part| part.kind).collect::<Vec<_>>();
+        assert_eq!(kinds(&left_parts), kinds(&right_parts), "{control:?}");
+        let mut content = 0;
+        for (ours, theirs) in left_parts.iter().zip(right_parts.iter()) {
+            if ours.kind == LayoutPartKind::ChildPlacement {
+                continue;
+            }
+            content += usize::from(!matches!(ours.kind, LayoutPartKind::ComponentContent));
+            assert_close(
+                theirs.bounds,
+                mirror(ours.bounds, left, right),
+                &format!("{control:?} {:?}", ours.kind),
+            );
+        }
+        assert!(content > 0, "{control:?} publishes no content part");
+        if control == Control::AssembledToast {
+            for &child in ltr.world().child_ids(id) {
+                let child_box = |cx: &AppContext| cx.world().layout_box(child).unwrap();
+                // A child that generates no box (a hidden slot) is nowhere.
+                if child_box(ltr).width == 0.0 && child_box(ltr).height == 0.0 {
+                    continue;
+                }
+                assert_close(
+                    child_box(rtl),
+                    mirror(child_box(ltr), left, right),
+                    &format!("{control:?} child {child:?}"),
+                );
+            }
+        }
+    }
+}
+
+/// Under `direction: rtl` a checkbox's indicator, a switch's track (and its
+/// "on" end), a radio ring, a segmented item's icon, a status dot, a toast's
+/// mark and dismiss target and a menu trigger's label and glyph sit on
+/// their logical sides: every control laid out right to left is the mirror
+/// image of itself laid out left to right. Flipping the page's direction
+/// either way lays out what a cold layout in that direction does.
+#[test]
+fn issue388_controls_mirror_their_parts_under_rtl() {
+    use super::reflow_oracle::assert_matches_cold;
+    use nana_ui_core::DirSpec;
+    let (ltr, _, controls) = controls_page(DirSpec::Ltr);
+    let (rtl, _, rtl_controls) = controls_page(DirSpec::Rtl);
+    assert_eq!(controls, rtl_controls);
+    assert_mirrored(&ltr, &rtl, &controls);
+
+    let (mut cx, root, _) = controls_page(DirSpec::Ltr);
+    let mut shaper = bundled_face_shaper();
+    for direction in [DirSpec::Rtl, DirSpec::Ltr, DirSpec::Rtl] {
+        let mut style = cx.world().node_style(root).unwrap().clone();
+        direction_style(direction)(Arc::make_mut(&mut style.layout));
+        let mut q = crate::MutationQueue::new();
+        q.set_style(root, style);
+        cx.commit_mutations(q).unwrap();
+        product_frame(&mut cx, document(), viewport(), &mut shaper);
+        let (mut cold, ..) = controls_page(direction);
+        assert_matches_cold(&mut cx, &mut cold, document());
+    }
+    assert_mirrored(&ltr, &cx, &controls);
+}

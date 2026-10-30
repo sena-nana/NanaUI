@@ -156,8 +156,8 @@ LabeledValue、FormField、Card 标题、Select 触发器。交互、数据行�
 [组件内容布局与迁移审计](component-layout.md)。
 
 有子节点的组件把排在子节点前面的部件声明为前置部件（`parts::LeadingParts`，#385）：
-`UiWorld::leading_parts` 给出一条沿组件自己的轴（`Column` 在子节点上方，`Row` 在左边，RTL
-不镜像）的带子，长 `extent`，交叉方向至少 `breadth`。带子在 content box 的起点、padding 的
+`UiWorld::leading_parts` 给出一条沿组件自己的轴（`Column` 在子节点上方，`Row` 在行内起点：
+LTR 在左边，RTL 在右边，`LeadingParts::end`，#388）的带子，长 `extent`，交叉方向至少 `breadth`。带子在 content box 的起点、padding 的
 里面：测量把 `extent` 加在子节点前面、把 `breadth` 当作 content box 交叉方向的下限，并在交给
 子节点的可用空间里扣掉 `extent`；placement 让子节点从带子之后开始；组件在 content box 起点
 解出自己的部件。padding 只是盒子声明的那份（作者写的，或组件的默认值），发布的 used padding
@@ -1109,6 +1109,18 @@ CSS `url()` 的帧仍走 4× MSAA。它和 HostTexture、backdrop 的 interleave
 滚动范围只算滚动容器够得着的盒子，即 clip 链经过它的盒子（见「定位」里的「clip 链」）：包含块在容器之外的 `absolute` 盒子算进它的包含块，`fixed` 盒子哪里都不算。内容索引把 `absolute` 盒子的范围带过它和包含块之间的盒子，落进包含块；带上去的范围只取决于它来自的子树，所以子树搬家时索引不用重建。会裁剪或滚动的盒子，`LayoutResult::overflow` 也只并入 `clip_parent` 是自己的子项；其他盒子照旧并入所有子项。滚动范围只算到最近的裁剪盒为止，和 CSS 的 scrollable overflow 一样。里层的滚动容器只把自己的盒子算进外层的范围，它里面内容的溢出不算：滚动区里套一个滚动区，外层不会因为里层的内容变长而能滚。`overflow: hidden` / `clip` 的盒子在它裁剪的那条轴上同样只算自己的盒子，没裁剪的那条轴照常算进它的内容。滚动容器两条轴都算裁剪。哪些轴算裁剪，用 `UiWorld::overflow_contained_axes` 查。
 
 每个滚动容器都有度量。写布局盒、增删子节点，或改样式的提交结束时，Runtime 重新测量受影响的滚动容器，并把偏移夹进去。不论盒子是引擎写的，还是宿主写的。多行文本编辑器的度量随塑形结果走。`vertical-rl` 编辑器同样用负偏移滚向左边的列。
+
+滚动路径的计数在 `WorkCounters` 上（#381），都常开，只做加法：
+- `scroll_viewport_updates`：滚动容器视口尺寸变化的次数。第一次量出视口、不再滚动时丢掉视口，都算一次。存进相同的度量不算，只有内容范围变了也不算。
+- `scroll_content_extent_recomputes`：内容索引里重算范围的条目数。纯滚动是 0。范围重算一旦爬上每次滚动，这一列先变。
+- `scroll_clip_updates`：滚动路径重写了 clip 的节点数，即命中索引里重建的条目，不是被滚动的容器数。普通后代共用容器的一次平移，不重写；粘性分支跟着滚动重放，算它的条目；带透视的容器退回整份重建，算全部条目。clip 传播退化成 O(子树) 时，这一列跟着涨。
+- 没有 `scroll_layout_reflows`。“纯滚动不排版”断言在已有的计数上：`layout_measure_nodes`、`layout_placement_nodes`、`text_shaped` 都是 0。
+- 虚拟列表不另起名字。为窗口新建的行是 `virtual_rows_materialized_from_layout`；这些行的实体是 `entities_spawned`，离开窗口的行的实体是 `entities_despawned`。
+
+门禁在 `world/issue381.rs`。页面和视口一样高，里面两个列表，各有一个带两个子节点的粘性表头和 50 行：
+- 只滚动的帧：不排版，视口和范围都是 0。滚一个列表，clip 计 3，就是它的粘性分支，不含它的 50 行，也不含另一个列表的表头；两个都滚计 6；滚页面计 0。
+- 视口从 600 改成 500：只有跟着视口走的页面计一次视口变化，范围重算 1 次（只有页面自己的条目），clip 是 0。存进相同的度量不计。列表里一行变高，范围变了，视口不计。
+- 虚拟列表滚到窗口之外：滚动帧三项都是 0。同步后，新建行数等于新窗口的行数；下一帧新建的实体是新窗口的，删掉的是旧窗口的。范围重算不超过发布批次数乘以实体数，一万行和一百万行的集合相同。
 
 自定义滚动条铬是 [`ScrollView`](components.md)。`overflow` 不另做一套 thumb 绘制。
 

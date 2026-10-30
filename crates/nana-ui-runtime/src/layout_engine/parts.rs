@@ -54,12 +54,15 @@ pub(crate) fn content_parts<const N: usize>(parts: [Option<LayoutPart>; N]) -> C
 /// component solves its parts at the start of its content box.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub(crate) struct LeadingParts {
-    /// `Column` puts the band above the children, `Row` to their left. It
-    /// is the component's own axis, whatever direction its children run
-    /// in, and RTL does not mirror it.
+    /// `Column` puts the band above the children, `Row` at their inline
+    /// start. It is the component's own axis, whatever direction its
+    /// children run in.
     pub axis: FlexDirection,
     pub extent: f32,
     pub breadth: f32,
+    /// A `Row` band at the content box's right edge: the inline start of a
+    /// right-to-left component (#388).
+    pub end: bool,
 }
 
 impl LeadingParts {
@@ -69,6 +72,16 @@ impl LeadingParts {
         match self.axis {
             FlexDirection::Column => Size::new(0.0, extent),
             FlexDirection::Row => Size::new(extent, 0.0),
+        }
+    }
+
+    /// How far the children's box starts from the content box's origin,
+    /// across and down: past the band, unless the band is at the end.
+    pub fn offset(&self) -> Size {
+        if self.end {
+            Size::default()
+        } else {
+            self.inset()
         }
     }
 
@@ -223,6 +236,9 @@ pub(crate) struct SwitchInputs {
     pub gap: f32,
     /// The track ends the row (`SwitchControlPosition::End`).
     pub end: bool,
+    /// The row runs right to left (`direction: rtl`), so its start, and the
+    /// track's "on" end, are on the right (#388).
+    pub reverse: bool,
     /// The switch says something beside its track: a label or a hint.
     pub labelled: bool,
     /// The text column's natural width: the wider of the label's and the
@@ -259,7 +275,8 @@ impl SwitchInputs {
 /// A switch's track, label and hint in `bounds`. The row is the track and a
 /// text column that takes the rest; a track at the end is the same row
 /// reversed, so it keeps the end edge when the box is too narrow for both.
-/// The column stacks the label line over the hint, or is all label.
+/// A right-to-left switch mirrors the row. The column stacks the label line
+/// over the hint, or is all label.
 pub(crate) fn switch_parts(bounds: LayoutBox, inputs: SwitchInputs) -> ContentParts {
     let mut track = FlexPart::new(
         if inputs.end {
@@ -284,7 +301,7 @@ pub(crate) fn switch_parts(bounds: LayoutBox, inputs: SwitchInputs) -> ContentPa
         bounds,
         FlexDirection::Row,
         JustifySpec::Start,
-        inputs.end,
+        inputs.end != inputs.reverse,
         [Some(track), column],
     );
     let Some(column) = column else {
@@ -358,15 +375,16 @@ pub(crate) fn selection_option_parts(
     ]
 }
 
-/// [`selection_option_parts`] placed in `bounds`. An icon beside a label
-/// that is not centred in the row sits on the centre of the label's first
-/// line, `icon_line` tall, rather than on the row's.
+/// [`selection_option_parts`] placed in `bounds`, mirrored when `reverse`.
+/// An icon beside a label that is not centred in the row sits on the centre
+/// of the label's first line, `icon_line` tall, rather than on the row's.
 pub(crate) fn selection_option_row(
     bounds: LayoutBox,
     inputs: [Option<FlexPart>; 3],
     icon_line: Option<f32>,
+    reverse: bool,
 ) -> ContentParts {
-    let mut parts = start_row_parts(bounds, inputs);
+    let mut parts = start_row_parts(bounds, inputs, reverse);
     if let (Some(line), Some(icon)) = (icon_line, parts[1].as_mut()) {
         icon.bounds.y = bounds.y + line * 0.5 - icon.bounds.height * 0.5;
     }
@@ -490,6 +508,9 @@ pub(crate) struct ToastInputs {
     pub description: Option<(f32, f32)>,
     /// The dismiss target's square, when the toast can be dismissed.
     pub dismiss: Option<f32>,
+    /// The row runs right to left (`direction: rtl`): the mark at the right,
+    /// the dismiss target at the left (#388).
+    pub reverse: bool,
 }
 
 impl ToastInputs {
@@ -531,7 +552,7 @@ impl ToastInputs {
         )
     }
 
-    /// Where an assembled toast paints its mark: at the start of its
+    /// Where an assembled toast paints its mark: at the inline start of its
     /// `content` box, in the band [`Self::lead`] long that layout keeps
     /// before the copy, centred on the title's first `line`.
     pub fn assembled_mark(&self, content: LayoutBox, line: f32) -> ContentParts {
@@ -541,7 +562,11 @@ impl ToastInputs {
         content_parts([Some(LayoutPart::new(
             LayoutPartKind::LeadingContent,
             LayoutBox {
-                x: content.x,
+                x: if self.reverse {
+                    content.x + content.width - mark
+                } else {
+                    content.x
+                },
                 y: content.y + (line - mark) / 2.0,
                 width: mark,
                 height: mark,
@@ -567,14 +592,15 @@ pub(crate) fn toast_inputs(
         title: recipe.title.size,
         description: described.then_some((recipe.copy_gap, recipe.description.size)),
         dismiss: dismissible.then_some(control),
+        reverse: false,
     }
 }
 
 /// A bare toast's mark, title, description and dismiss target in the band
 /// of `bounds`: a row of the mark, the copy column, which takes the rest,
 /// and the dismiss target, each centred down the band except a copy with a
-/// description, which starts at its top. The column stacks the title line
-/// over the description line.
+/// description, which starts at its top; a right-to-left toast mirrors the
+/// row. The column stacks the title line over the description line.
 pub(crate) fn toast_parts(bounds: LayoutBox, inputs: ToastInputs) -> ContentParts {
     let band = inputs.band(bounds);
     let mark = inputs.mark.map(|mark| {
@@ -600,7 +626,7 @@ pub(crate) fn toast_parts(bounds: LayoutBox, inputs: ToastInputs) -> ContentPart
         band,
         FlexDirection::Row,
         JustifySpec::Start,
-        false,
+        inputs.reverse,
         [mark, Some(copy), dismiss],
     );
     // An empty mark keeps its gap but is no part.
@@ -664,18 +690,20 @@ pub(crate) fn button_text_budget(visual: &StandardVisual, available: Size) -> Op
     ))
 }
 
-/// `inputs` placed as a start-aligned row of `bounds`, each glyph fitted
-/// square into it.
+/// `inputs` placed as a row of `bounds` from its inline start (the right
+/// edge when `reverse`, for `direction: rtl`), each glyph fitted square into
+/// it.
 pub(crate) fn start_row_parts(
     bounds: LayoutBox,
     mut inputs: [Option<FlexPart>; 3],
+    reverse: bool,
 ) -> ContentParts {
     fit_button_glyphs(&mut inputs, Size::new(bounds.width, bounds.height));
     content_parts(flex_parts(
         bounds,
         FlexDirection::Row,
         JustifySpec::Start,
-        false,
+        reverse,
         inputs,
     ))
 }

@@ -1777,8 +1777,13 @@ impl UiScene {
                     let thumb_extent =
                         (track.height * (10.0 / 16.0)).min((track.width - 2.0 * inset).max(0.0));
                     let travel = (track.width - 2.0 * inset - thumb_extent).max(0.0);
+                    // "On" is the track's inline end: its left edge in a
+                    // right-to-left switch (#388).
+                    let rtl = node.style.direction == nana_ui_core::DirSpec::Rtl;
+                    let progress = thumb_progress.clamp(0.0, 1.0);
+                    let progress = if rtl { 1.0 - progress } else { progress };
                     let thumb = SceneRect {
-                        x: track.x + inset + travel * thumb_progress.clamp(0.0, 1.0),
+                        x: track.x + inset + travel * progress,
                         y: track.y + (track.height - thumb_extent) / 2.0,
                         width: thumb_extent,
                         height: thumb_extent,
@@ -1819,8 +1824,13 @@ impl UiScene {
                         self.insert_primitive(ScenePrimitive {
                             id: PrimitiveId { node: id, slot: 6 },
                             node: id,
+                            // At the track's inline start, as the thumb is.
                             bounds: SceneRect {
-                                x: track.x + track.height / 16.0,
+                                x: if rtl {
+                                    track.x + track.width - track.height * 15.0 / 16.0
+                                } else {
+                                    track.x + track.height / 16.0
+                                },
                                 y: track.y + track.height / 16.0,
                                 width: track.height * 14.0 / 16.0,
                                 height: track.height * 14.0 / 16.0,

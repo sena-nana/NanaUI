@@ -1352,13 +1352,15 @@ pub(super) fn place_node_scoped(
     let border = style.resolved_border_edges();
     // The children start past the parts laid out before them (#385), inside
     // the padding.
-    let lead = nodes
+    let (lead, lead_offset) = nodes
         .world
         .leading_parts(id)
-        .map_or(Size::default(), |lead| lead.inset());
+        .map_or((Size::default(), Size::default()), |lead| {
+            (lead.inset(), lead.offset())
+        });
     let content_origin = Point {
-        x: origin.x + border.left + padding.left + lead.width,
-        y: origin.y + border.top + padding.top + lead.height,
+        x: origin.x + border.left + padding.left + lead_offset.width,
+        y: origin.y + border.top + padding.top + lead_offset.height,
     };
     let content = Size::new(
         size.width - padding.left - padding.right - border.left - border.right - lead.width,
