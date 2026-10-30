@@ -163,7 +163,7 @@ pub(super) fn bundled_face_shaper() -> NanaTextEngineShaper {
 
 /// One product frame, in the order `RuntimeDocument::flush` runs it: shape
 /// scheduled text, merge what shaping queued, lay out, re-shape the laid-out
-/// scope. Returns the frame's work counters.
+/// scope. Returns the frame's work counters; an idle frame reports its own.
 pub(super) fn product_frame(
     context: &mut AppContext,
     document: DocumentId,
@@ -239,8 +239,10 @@ fn frame(
 ) -> WorkCounters {
     context.compat_world_mut().observe_text_shaper(shaper);
     context.begin_frame_profile();
+    let mut drained_any = false;
     for _ in 0..8 {
         let work = context.take_system_work_for(document);
+        drained_any |= !work.is_empty() || resized;
         if let Some(drained) = accessible.as_deref_mut() {
             drained.generation = work.generation;
             drained.accessibility.extend(&work.accessibility);
@@ -294,7 +296,14 @@ fn frame(
         }
     }
     context.finish_frame_profile();
-    context.last_work_counters()
+    // `last_work_counters` keeps the last frame that drained work across idle
+    // frames, which reads as that work repeating (#397); an idle frame
+    // reports its own counters.
+    if drained_any {
+        context.last_work_counters()
+    } else {
+        context.world().frame_counters
+    }
 }
 
 /// Whether the last layout pass of `id`'s document admitted it.
