@@ -98,6 +98,14 @@ if let Some(row) = row.get() {
 
 `mount_settings_leaf_row` 保留标签、提示和控件槽。一开始没有提示，也可以随后 `update_component` 把 `hint` 写成 `Some`，写成 `None` 就藏起来。
 
+## 错误
+
+`.error(reason)` 说这一行的值哪里不对：必填项为空、端口被占用、身份码不正确。原因占提示的位置，画成 Danger 的 [ValidationMessage](validation-message.md)，提示先让开；写回 `None` 后提示回来。原因就在用户正看的那一行，有提示的行高度不变。
+
+行本身读作 invalid，读屏的值是原因。控件自己的红框由控件的 `invalid` 管，行只说为什么：两样一起写。
+
+原因的槽在第一次有错误时建好，之后错误清掉也留着（隐藏），下一次出错不再重建。
+
 ## 工作区
 
 进入设置若用独立的 `WorkspaceController`，不会覆盖主工作区的尺寸和折叠。
@@ -108,6 +116,7 @@ if let Some(row) = row.get() {
 | --- | --- | --- |
 | `label` | — | `SettingsRow::new(label)`。默认横排，不按宽度折行。视图函数先 `new("")`，再把标签写上 |
 | `.hint` | — | 写在标签下面。可以随后 `update_component` 写成 `Some`，写成 `None` 就藏起来 |
+| `.error` | `Option<Arc<str>>` | 值哪里不对。设了就占提示的位置，画成 Danger 的 `ValidationMessage`，行读作 invalid；`None` 让提示回来。视图里可绑定 |
 | `.stacked` | — | `true` 始终上下排列 |
 | `.stack_below` | — | 窄于阈值时上下排，等于或宽于阈值时同行。无效阈值视为没开。视图函数用 `280.0`。参考里的例子用 `480.0` 作为应用自己的阈值 |
 | `.divided` | — | `true` 在行下画一条发丝线。一组的最后一行不要画，组自己的边已经收尾 |

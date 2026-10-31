@@ -323,6 +323,55 @@ fn line_number_gutter_is_measured_once_an_engine_has_shaped() {
     assert_eq!(padding_left(&cx, area.stable_id()), first);
 }
 
+/// A number field's unit is drawn right before its steppers, as wide as the
+/// engine measures it, and the text's box ends a gap before it: the number
+/// never runs under the unit, and the unit is read after the value.
+#[test]
+fn a_number_fields_unit_stands_before_its_steppers() {
+    let mut cx = AppContext::new();
+    let plain_doc = DocumentId::new(1).unwrap();
+    let doc = DocumentId::new(2).unwrap();
+    let plain = cx
+        .create_component(plain_doc, NumberInput::new(120.0))
+        .unwrap();
+    let field = cx
+        .create_component(doc, NumberInput::new(120.0).unit("ms"))
+        .unwrap();
+    let mut shaper = NanaTextShaper::default();
+    frame(&mut cx, plain_doc, &mut shaper);
+    frame(&mut cx, doc, &mut shaper);
+    let Some(ComponentGeometry::TextInput { suffix: None, .. }) =
+        cx.world().component_geometry(plain.stable_id())
+    else {
+        panic!("a field without a unit draws none");
+    };
+    let Some(ComponentGeometry::TextInput {
+        suffix: Some(suffix),
+        steppers: Some(steppers),
+        ..
+    }) = cx.world().component_geometry(field.stable_id())
+    else {
+        panic!("the unit and the steppers");
+    };
+    assert_eq!(&*suffix.text.content, "ms");
+    let width = measured(&cx, &mut shaper, field.stable_id(), &suffix.text);
+    assert_eq!(suffix.text.bounds.width, width);
+    let unit_end = suffix.text.bounds.x + suffix.text.bounds.width;
+    assert!(
+        unit_end <= steppers.increment.x,
+        "the unit ends ({unit_end}) before the steppers ({})",
+        steppers.increment.x
+    );
+    let text_end = suffix.editor_bounds.x + suffix.editor_bounds.width;
+    assert!(
+        text_end < suffix.text.bounds.x,
+        "the text's box ends ({text_end}) before the unit ({})",
+        suffix.text.bounds.x
+    );
+    let spoken = cx.world().accessibility(field.stable_id()).unwrap();
+    assert_eq!(spoken.description.as_deref(), Some("ms"));
+}
+
 #[test]
 fn diagnostic_label_is_as_wide_as_its_measured_message() {
     let mut cx = AppContext::new();

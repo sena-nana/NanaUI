@@ -6483,6 +6483,72 @@ impl UiWorld {
         })
     }
 
+    /// The width a single-line field's steppers take off its content box,
+    /// with the gap before them; zero without steppers.
+    fn text_input_stepper_extent(&self, id: StableNodeId, content: LayoutBox) -> f32 {
+        let Some(StandardVisual::TextInput {
+            size,
+            steppers: true,
+            ..
+        }) = self.nodes.visual(id)
+        else {
+            return 0.0;
+        };
+        let band = (size.height_in(self.style_model.metrics) / 2.0).min(content.height / 2.0);
+        let width = size.indicator_size();
+        if band <= 0.0 || width <= 0.0 || content.width <= width {
+            return 0.0;
+        }
+        width + 4.0
+    }
+
+    /// The unit after a field's text ([`crate::TextEditorRenderOptions::suffix`]):
+    /// muted and at the text's own size, right before the steppers, with the
+    /// text's box ending a gap before it.
+    pub(crate) fn text_input_suffix(&self, id: StableNodeId) -> Option<crate::TextInputSuffix> {
+        let StandardVisual::TextInput { editor_options, .. } = self.nodes.visual(id)? else {
+            return None;
+        };
+        let suffix = editor_options
+            .suffix
+            .as_ref()
+            .filter(|suffix| !suffix.is_empty())?;
+        if self.nodes.get(id)?.accessibility.multiline {
+            return None;
+        }
+        let content = self.component_content_box(id)?;
+        let style = self.computed_style(id)?;
+        let (font_size, weight) = (style.font_size, style.font_weight);
+        let end =
+            content.x + (content.width - self.text_input_stepper_extent(id, content)).max(0.0);
+        let width = self
+            .chrome_text_measure(id)
+            .width(suffix, font_size, weight)
+            .min((end - content.x).max(0.0));
+        let gap = 4.0;
+        Some(crate::TextInputSuffix {
+            text: crate::ComponentTextRegion {
+                bounds: LayoutBox {
+                    x: end - width,
+                    width,
+                    ..content
+                },
+                content: suffix.as_ref().into(),
+                color: Some(
+                    self.style_model
+                        .color(nana_ui_core::SemanticColorRole::Muted)
+                        .as_rgba_array(),
+                ),
+                font_size,
+                font_weight: weight,
+            },
+            editor_bounds: LayoutBox {
+                width: (end - width - gap - content.x).max(0.0),
+                ..content
+            },
+        })
+    }
+
     pub(crate) fn take_text_input_adaptive_updates(&mut self) -> Vec<StableNodeId> {
         std::mem::take(&mut self.text_input_adaptive_updates)
     }
@@ -6526,21 +6592,15 @@ impl UiWorld {
         if let Some(counter) = self.text_input_character_counter(id) {
             return Some(counter.editor_bounds);
         }
-        let Some(StandardVisual::TextInput {
-            size,
-            steppers: true,
-            ..
-        }) = self.nodes.visual(id)
-        else {
-            return Some(content);
-        };
-        let band = (size.height_in(self.style_model.metrics) / 2.0).min(content.height / 2.0);
-        let width = size.indicator_size();
-        if band <= 0.0 || width <= 0.0 || content.width <= width {
+        if let Some(suffix) = self.text_input_suffix(id) {
+            return Some(suffix.editor_bounds);
+        }
+        let steppers = self.text_input_stepper_extent(id, content);
+        if steppers <= 0.0 {
             return Some(content);
         }
         Some(LayoutBox {
-            width: (content.width - width - 4.0).max(0.0),
+            width: (content.width - steppers).max(0.0),
             ..content
         })
     }

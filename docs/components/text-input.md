@@ -40,6 +40,7 @@ text_input().placeholder("新任务").model(draft)
 | `label` | `Option<Arc<str>>` | 可访问名称 |
 | `placeholder` | `Arc<str>` | 空着时的提示 |
 | `disabled` | `bool` | 不能编辑 |
+| `invalid` | `bool` | 值不对，描 Danger 框；在设置行里，原因写在行的 `error` |
 | `character_counter` | `Option<usize>` | 在框内右侧显示已提交字数与上限，默认关闭 |
 
 ## 字数计数

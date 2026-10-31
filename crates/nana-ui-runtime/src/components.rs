@@ -1307,6 +1307,15 @@ pub struct TextInputCharacterCounter {
     pub editor_bounds: LayoutBox,
 }
 
+/// A field's unit after its text ([`TextEditorRenderOptions::suffix`]) and
+/// the editor viewport it leaves. Derived once, so the chrome, the text box
+/// a pointer hits and the Scene clip agree on where the text stops.
+#[derive(Debug, Clone, PartialEq)]
+pub struct TextInputSuffix {
+    pub text: ComponentTextRegion,
+    pub editor_bounds: LayoutBox,
+}
+
 /// Button chrome drawn behind a component's own trigger, so a menu can look
 /// pressable without the caller supplying a separate button node.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -1623,6 +1632,7 @@ pub enum ComponentGeometry {
     TextInput {
         resize_grip: Option<LayoutBox>,
         character_counter: Option<TextInputCharacterCounter>,
+        suffix: Option<TextInputSuffix>,
         text: ComponentTextRegion,
         multiline: bool,
         /// `None` for a single-line field, whose scroll only follows its caret.
@@ -3121,6 +3131,11 @@ pub struct TextSwatchMark {
 /// 路径零分配短路。
 #[derive(Debug, Clone, PartialEq)]
 pub struct TextEditorRenderOptions {
+    /// A unit drawn after a single-line field's text, before its steppers
+    /// ("ms", "%"): muted, at the text's size, outside the text's box, so
+    /// it is neither selected, edited nor scrolled with the text. `None`
+    /// (and an empty one) draws nothing.
+    pub suffix: Option<Arc<str>>,
     pub resize_vertical: bool,
     /// A real action occupies the trailing side of the multiline footer.
     pub footer_action: bool,
@@ -3156,6 +3171,7 @@ pub struct TextEditorRenderOptions {
 impl Default for TextEditorRenderOptions {
     fn default() -> Self {
         Self {
+            suffix: None,
             resize_vertical: false,
             footer_action: false,
             adaptive_footer: false,

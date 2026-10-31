@@ -40,21 +40,29 @@ number_input().label("数量").placeholder("0").model(count)
 
 连续模式用 `NumberInput::continuous(value)` 而不是 `number_input()`。那种字段的文本取最短的、能往返的写法，`precision` 不会把小数吃掉。
 
+## 单位
+
+`.unit("ms")` 把单位画在数字后面、步进按钮前面：Muted 色，与数字同字号。单位不是文本的一部分，键入、解析和提交的值都看不到它；文字区在单位前留一段空隙就停下，长数字不会压到单位底下。读屏在值之后读出单位（`description`）。
+
+单位跟着语言变时，在视图里绑定 `unit`。标签不再在括号里写单位。
+
 ## 只读
 
 `read_only` 不接受输入。`disabled` 同样不接受。步进按钮是这颗控件自己画的，不是外面再放两个按钮。
 
 ## 属性
 
-字段是 `value: f64`、`label: Option<Arc<str>>`、`placeholder: Arc<str>`、`disabled: bool`、`read_only: bool`。`value` 的写入是 `assign`，不是直接改字段。`model` 绑定 `value`，取 `event.value`。
+字段是 `value: f64`、`label: Option<Arc<str>>`、`placeholder: Arc<str>`、`unit: Option<Arc<str>>`、`disabled: bool`、`read_only: bool`、`invalid: bool`。`value` 的写入是 `assign`，不是直接改字段。`model` 绑定 `value`，取 `event.value`。
 
 | 属性 | 类型 | 说明 |
 | --- | --- | --- |
 | `value` | `f64` | 已提交的数。写入是 `assign`，不是直接改字段。`model` 绑定这一字段，取 `event.value` |
 | `label` | `Option<Arc<str>>` | 字段 |
 | `placeholder` | `Arc<str>` | 字段 |
+| `unit` | `Option<Arc<str>>` | 画在数字后面的单位，见上文「单位」 |
 | `disabled` | `bool` | 不接受输入 |
 | `read_only` | `bool` | 不接受输入 |
+| `invalid` | `bool` | 值不对，描 Danger 框；原因写在所在行的 `error` |
 
 ## 事件
 

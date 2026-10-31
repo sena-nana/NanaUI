@@ -46,6 +46,12 @@ pub struct SettingsRow {
     pub label: Arc<str>,
     pub hint: Option<Arc<str>>,
     pub hint_is_path: bool,
+    /// Why the row's value is wrong (an empty required field, a port that
+    /// is taken). While set it takes the hint's place, as a Danger
+    /// [`ValidationMessage`], and the hint comes back once it clears: the
+    /// reason stands on the line the user is looking at and the row keeps
+    /// its height. The control marks itself invalid; the row only says why.
+    pub error: Option<Arc<str>>,
     pub stacked: bool,
     /// Stack below this row's laid-out width in logical pixels. `stacked`
     /// remains an unconditional override; `None` preserves inline layout.
@@ -75,6 +81,9 @@ pub struct SettingsRow {
     pub trailing: Option<StableNodeId>,
     pub label_slot: Option<StableNodeId>,
     pub hint_slot: Option<StableNodeId>,
+    /// The [`ValidationMessage`] under the label, made the first time the
+    /// row has an [`Self::error`] and hidden while it has none.
+    pub(crate) error_slot: Option<StableNodeId>,
     pub(crate) copy_slot: Option<StableNodeId>,
     /// The line holding the label and its accessory, only while there is an
     /// accessory: without one the label sits in the copy itself.
@@ -100,6 +109,7 @@ impl SettingsRow {
             label: label.into(),
             hint: None,
             hint_is_path: false,
+            error: None,
             stacked: false,
             stack_below: None,
             divided: false,
@@ -113,6 +123,7 @@ impl SettingsRow {
             trailing: None,
             label_slot: None,
             hint_slot: None,
+            error_slot: None,
             copy_slot: None,
             label_line_slot: None,
             flash_slot: None,
@@ -131,6 +142,12 @@ impl SettingsRow {
     pub fn path_hint(mut self, path: impl Into<Arc<str>>) -> Self {
         self.hint = Some(path.into());
         self.hint_is_path = true;
+        self
+    }
+
+    /// Say why the value is wrong, in the hint's place; see [`Self::error`].
+    pub fn error(mut self, error: impl Into<Arc<str>>) -> Self {
+        self.error = Some(error.into());
         self
     }
 
@@ -400,7 +417,8 @@ impl ComponentView for SettingsRow {
             AccessibilityState {
                 role: AccessibilityRole::Generic,
                 label: Some(Arc::clone(&self.label)),
-                value: self.hint.clone(),
+                value: self.error.clone().or_else(|| self.hint.clone()),
+                invalid: self.error.is_some(),
                 ..AccessibilityState::default()
             },
         );
@@ -439,9 +457,18 @@ impl SettingsRow {
         if let Some(flash) = self.flash_slot {
             SettingsRowFlash.project(flash, world, mutations);
         }
+        if let Some(error) = self.error_slot {
+            crate::ValidationMessage::new(
+                self.error.clone().unwrap_or_default(),
+                nana_ui_core::ValidationIntent::Danger,
+            )
+            .compact(false)
+            .style(error_slot_style(self.error.is_none()))
+            .project(error, world, mutations);
+        }
         if let Some(hint) = self.hint_slot {
             let value = self.hint.as_deref().unwrap_or("");
-            let style = hint_slot_style(self.hint.is_none());
+            let style = hint_slot_style(self.hint.is_none() || self.error.is_some());
             if self.hint_is_path {
                 crate::PathText::new(value)
                     .style(style)
@@ -499,6 +526,20 @@ fn label_slot_style(hidden: bool, on_line: bool, column: bool) -> NodeStyle {
     layout.min_width = Some(LengthSpec::Px(0.0));
     layout.white_space_nowrap = true;
     layout.text_overflow_ellipsis = true;
+    layout.hidden = hidden;
+    style
+}
+
+/// The error stands where the hint does, wrapping under the label as it does.
+fn error_slot_style(hidden: bool) -> NodeStyle {
+    let mut style = NodeStyle::default();
+    let layout = Arc::make_mut(&mut style.layout);
+    layout.line_height = Some(LineHeightSpec::Absolute(nana_ui_core::type_scale::LINE));
+    layout.theme.line_height =
+        Some(nana_ui_core::ThemeToken::Line(nana_ui_core::LineRole::Line).into());
+    layout.width = Some(LengthSpec::Fill);
+    layout.flex_shrink = Some(1.0);
+    layout.min_width = Some(LengthSpec::Px(0.0));
     layout.hidden = hidden;
     style
 }
@@ -2749,6 +2790,7 @@ impl AppContext {
         let (accessory, line_slot, flash_slot) = self.read(row, |row| {
             (row.label_accessory, row.label_line_slot, row.flash_slot)
         })?;
+        let (error, error_slot) = self.read(row, |row| (row.error.is_some(), row.error_slot))?;
         let (column, trailing, control_slot, value_slot, trailing_slot) =
             self.read(row, |row| {
                 (
@@ -2830,10 +2872,29 @@ impl AppContext {
                 Entity::<crate::PathText>::from_stable_id(hint_slot),
                 |text, _| {
                     text.value = hint.clone().unwrap_or_default();
-                    text.style = hint_slot_style(hint.is_none());
+                    text.style = hint_slot_style(hint.is_none() || error);
                 },
             )?;
         }
+        // The error's slot is made the first time there is one and kept,
+        // hidden, after it clears: a row that was wrong once is likely to be
+        // again, and its copy keeps one shape meanwhile.
+        let error_slot = match (live(self, error_slot), error) {
+            (Some(id), _) => Some(id),
+            (None, true) => {
+                let id = self
+                    .create_detached_component(
+                        document,
+                        crate::ValidationMessage::new("", nana_ui_core::ValidationIntent::Danger)
+                            .compact(false)
+                            .style(error_slot_style(true)),
+                    )?
+                    .stable_id();
+                self.update_component(row, |row, _| row.error_slot = Some(id))?;
+                Some(id)
+            }
+            (None, false) => None,
+        };
         let copy = Entity::<SettingsRowCopy>::from_stable_id(copy_slot);
         let accessory = live(self, accessory);
         let live_line = live(self, line_slot);
@@ -2850,7 +2911,11 @@ impl AppContext {
         if let (Some(line), Some(accessory)) = (line, accessory) {
             changed |= self.reconcile_children(line, &[label_slot, accessory])?;
         }
-        changed |= reconcile_children(self, copy, &[line.unwrap_or(label_slot), hint_slot])?;
+        let copy_children: Vec<_> = [line.unwrap_or(label_slot), hint_slot]
+            .into_iter()
+            .chain(error_slot)
+            .collect();
+        changed |= reconcile_children(self, copy, &copy_children)?;
         if line_changed {
             // The label's width rule follows where it sits; the row's
             // projection writes it too, from the slot written here.

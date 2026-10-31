@@ -156,6 +156,10 @@ impl UiScene {
                         character_counter: Some(counter),
                         ..
                     }) => Some(counter.editor_bounds),
+                    Some(ComponentGeometry::TextInput {
+                        suffix: Some(suffix),
+                        ..
+                    }) => Some(suffix.editor_bounds),
                     _ => None,
                 };
                 let mut text_input_clips = clips.to_vec();

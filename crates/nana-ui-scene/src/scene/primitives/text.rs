@@ -17,10 +17,32 @@ pub(super) fn build(context: &GeometryPaintContext<'_>, emit: &mut impl FnMut(Sc
             selection_color,
             steppers,
             character_counter,
+            suffix,
             resize_grip,
             ..
         }) => {
             let scroll = EditorScroll(*scroll);
+            if let Some(suffix) = suffix {
+                let mut suffix_clips = clips.to_vec();
+                suffix_clips.push(ClipRegion {
+                    bounds: scene_rect(suffix.text.bounds),
+                    transform,
+                    corner_radius: 0.0,
+                    polygon_clip: None,
+                });
+                emit(component_text_primitive(
+                    id,
+                    27,
+                    &suffix.text,
+                    TextHorizontalAlignment::End,
+                    false,
+                    node,
+                    transform,
+                    suffix_clips.into(),
+                    opacity,
+                    node_order,
+                ));
+            }
             if let Some(counter) = character_counter {
                 // Dedicated slot: 10 belongs to multiline indent guides.
                 let mut counter_clips = clips.to_vec();

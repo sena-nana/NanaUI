@@ -169,6 +169,9 @@ struct TextFieldProjection<'a> {
     /// The number a spinner field steps from (its parsed draft, else its
     /// committed value; see `NumberInput::step_base`) and its rules.
     numeric: Option<(f64, nana_ui_core::NumberFieldSpec)>,
+    /// Read after the value: a number field's unit, which is drawn in the
+    /// field but is not part of its text.
+    description: Option<Arc<str>>,
 }
 
 fn project_text_field(
@@ -219,6 +222,7 @@ fn project_text_field(
             numeric_maximum: field.numeric.and_then(|(_, spec)| spec.maximum),
             numeric_step: field.numeric.map(|(_, spec)| spec.effective_step()),
             numeric_value: field.numeric.map(|(value, _)| value),
+            description: field.description,
             ..AccessibilityState::default()
         },
     );
@@ -2770,6 +2774,7 @@ impl ComponentView for TextInput {
                 style: &effective_style,
                 highlight: self.highlight.as_ref(),
                 numeric: None,
+                description: None,
             },
         );
     }
@@ -2792,6 +2797,10 @@ pub struct NumberInput {
     pub size: nana_ui_core::ControlSize,
     /// Show the trailing increment/decrement buttons. Keyboard stepping remains available.
     pub steppers: bool,
+    /// The unit after the number ("ms", "%"), drawn in the field before the
+    /// steppers; see [`crate::TextEditorRenderOptions::suffix`]. It is not
+    /// part of the text: typing, parsing and the committed value never see it.
+    pub unit: Option<Arc<str>>,
     pub disabled: bool,
     pub read_only: bool,
     pub invalid: bool,
@@ -2819,6 +2828,7 @@ impl NumberInput {
             spec,
             size: nana_ui_core::ControlSize::Medium,
             steppers: true,
+            unit: None,
             disabled: false,
             read_only: false,
             invalid: false,
@@ -2890,6 +2900,12 @@ impl NumberInput {
         layout.font_size = Some(size.text_size());
         layout.theme.control_typography(size);
         layout.line_height = Some(nana_ui_core::LineHeightSpec::Absolute(size.line_height()));
+        self
+    }
+
+    /// Draw `unit` after the number; see [`Self::unit`].
+    pub fn unit(mut self, unit: impl Into<Arc<str>>) -> Self {
+        self.unit = Some(unit.into());
         self
     }
 
@@ -3115,7 +3131,10 @@ impl ComponentView for NumberInput {
             indent_guides: None,
             folds: Arc::from([]),
             git_marks: Arc::from([]),
-            editor_options: TextEditorRenderOptions::default(),
+            editor_options: TextEditorRenderOptions {
+                suffix: self.unit.clone(),
+                ..TextEditorRenderOptions::default()
+            },
         };
         if world.standard_visual(id) != Some(visual.clone()) {
             mutations.set_standard_visual(id, Some(visual));
@@ -3143,6 +3162,7 @@ impl ComponentView for NumberInput {
                 style: &effective_style,
                 highlight: None,
                 numeric: Some((self.step_base(), self.reachable_spec())),
+                description: self.unit.clone(),
             },
         );
     }
@@ -3833,6 +3853,7 @@ impl ComponentView for TextArea {
             folds: Arc::clone(&self.code_folds),
             git_marks: Arc::clone(&self.git_gutter),
             editor_options: TextEditorRenderOptions {
+                suffix: None,
                 resize_vertical: self.supports_vertical_resize(),
                 footer_action: self.trailing_action.is_some(),
                 adaptive_footer: self.uses_adaptive_footer(),
@@ -3919,6 +3940,7 @@ impl ComponentView for TextArea {
                 style: &effective_style,
                 highlight: self.highlight.as_ref(),
                 numeric: None,
+                description: None,
             },
         );
         // Clear composition while this node is still focused, then release focus.

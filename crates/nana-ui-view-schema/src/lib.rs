@@ -83,6 +83,7 @@ macro_rules! for_each_control {
                 value: f64 = clamp,
                 label: Option<Arc<str>> = set,
                 show_label: bool = set,
+                unit: Option<Arc<str>> = set,
                 disabled: bool = set,
             }
             with { on_input: RangeInput, on_change: RangeChanged }
@@ -106,6 +107,7 @@ macro_rules! for_each_control {
                 label: Option<Arc<str>> = set,
                 placeholder: Arc<str> = set,
                 disabled: bool = set,
+                invalid: bool = set,
             }
             with { on_input: TextChanged, on_submit: TextSubmitted }
             model value: String => TextChanged |event| event.value.to_string();
@@ -124,8 +126,10 @@ macro_rules! for_each_control {
                 value: f64 = assign,
                 label: Option<Arc<str>> = set,
                 placeholder: Arc<str> = set,
+                unit: Option<Arc<str>> = set,
                 disabled: bool = set,
                 read_only: bool = set,
+                invalid: bool = set,
                 steppers: bool = set,
             }
             with { on_change: NumberChanged }
