@@ -33,8 +33,23 @@ use crate::{
     StableNodeId, UiWorld,
 };
 
+#[path = "rich_clipboard.rs"]
 mod clipboard;
 pub use clipboard::RichClipboardCommand;
+
+#[path = "rich_ime.rs"]
+mod ime;
+pub use ime::RichImeSnapshot;
+
+/// 新输入文字的样式来源；富文本粘贴保留剪贴板携带的样式。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum RichTypingStylePolicy {
+    /// 沿用光标位置或工具栏设置的输入样式。
+    #[default]
+    Inherit,
+    /// 使用节点默认样式，供纯文本输入为主的编辑器选择。
+    Plain,
+}
 
 /// Undo steps kept per editor.
 const HISTORY_LIMIT: usize = 200;
@@ -104,11 +119,9 @@ impl RichAttrMask {
     pub const STROKE: Self = Self(1 << 9);
     pub const SHADOWS: Self = Self(1 << 10);
     pub const EFFECT: Self = Self(1 << 11);
-    pub const STRETCH: Self = Self(1 << 12);
-    pub const BACKGROUND_COLOR: Self = Self(1 << 13);
-    /// The emphasis tier: mark style and position together.
+    pub const BACKGROUND_COLOR: Self = Self(1 << 12);
+    pub const STRETCH: Self = Self(1 << 13);
     pub const EMPHASIS: Self = Self(1 << 14);
-    pub const EMPHASIS_COLOR: Self = Self(1 << 15);
 
     pub const fn contains(self, other: Self) -> bool {
         self.0 & other.0 == other.0
@@ -147,6 +160,12 @@ impl RichAttrMask {
         }
         if self.contains(Self::BACKGROUND_COLOR) {
             style.paint.background_color = None;
+        }
+        if self.contains(Self::STRETCH) {
+            style.shape.stretch_percent = None;
+        }
+        if self.contains(Self::EMPHASIS) {
+            style.paint.emphasis = None;
         }
         if self.contains(Self::DECORATION) {
             style.paint.decoration = None;
@@ -216,9 +235,7 @@ struct Snapshot {
     focus: usize,
 }
 
-/// A pointer selecting by drag and where it last was: a move that only
-/// re-reports that point (after cancelling preedit changed the layout under
-/// it) does not move the selection.
+/// 跟踪实际指针移动，避免取消预编辑后的布局变化重新解释静止指针。
 #[derive(Debug, Clone, Copy, PartialEq)]
 struct DragState {
     pointer: u64,
@@ -240,6 +257,8 @@ struct EditState {
     redo: Vec<Snapshot>,
     /// The last edit was typing at a caret, so the next one joins its step.
     coalesce: bool,
+    /// 输入、选区及预编辑操作用于重新启动绘制光标的可见阶段。
+    caret_revision: u64,
     dragging: Option<DragState>,
     click: Option<(u64, std::time::Duration, f32, f32, u8)>,
     drag_range: Option<Range<usize>>,
@@ -258,7 +277,7 @@ pub struct RichTextEditor {
     pub value: RichText,
     pub read_only: bool,
     pub disabled: bool,
-    /// What typing, the IME and a plain-text paste are styled with.
+    /// 键盘输入、输入法及纯文本粘贴共用的样式策略。
     pub typing_style_policy: RichTypingStylePolicy,
     pub style: NodeStyle,
     /// Requested viewport offset. User scrolling leaves the selection intact.
@@ -293,6 +312,7 @@ impl RichTextEditor {
         self
     }
 
+    /// 配置新输入样式；已有文档及富文本粘贴保留自身样式。
     pub fn typing_style_policy(mut self, policy: RichTypingStylePolicy) -> Self {
         self.typing_style_policy = policy;
         self
@@ -344,10 +364,6 @@ impl RichTextEditor {
         self.state.caret_revision
     }
 
-    fn bump_caret_revision(&mut self) {
-        self.state.caret_revision = self.state.caret_revision.wrapping_add(1);
-    }
-
     pub fn can_undo(&self) -> bool {
         self.editable() && !self.state.undo.is_empty()
     }
@@ -359,9 +375,7 @@ impl RichTextEditor {
         self.state.anchor.min(self.state.focus)..self.state.anchor.max(self.state.focus)
     }
 
-    /// The committed-document byte a hit on the displayed text means. The
-    /// display carries the preedit in place of the selection: a hit inside it
-    /// is its start, a hit after it shifts back by the length difference.
+    /// 显示命中包含预编辑字节，编辑状态始终落在已提交文档的字符边界。
     fn document_offset(&self, display_byte: usize) -> usize {
         let range = self.range();
         let byte = match &self.state.preedit {
@@ -399,7 +413,7 @@ impl RichTextEditor {
         let mut display = self.value.clone();
         display.replace_range(range.clone(), preedit);
         let inserted = range.start..range.start + preedit.len();
-        let mut style = self.typing_style();
+        let mut style = self.input_style();
         let mut decoration = style.paint.decoration.unwrap_or_default();
         decoration.underline = true;
         style.paint.decoration = Some(decoration);
@@ -440,6 +454,14 @@ impl RichTextEditor {
             .unwrap_or_default()
     }
 
+    /// 将选区观察样式与新输入样式分开，保持工具栏状态准确。
+    fn input_style(&self) -> RichSpanStyle {
+        match self.typing_style_policy {
+            RichTypingStylePolicy::Inherit => self.typing_style(),
+            RichTypingStylePolicy::Plain => RichSpanStyle::default(),
+        }
+    }
+
     fn snapshot(&self) -> Snapshot {
         Snapshot {
             value: self.value.clone(),
@@ -476,7 +498,7 @@ impl RichTextEditor {
         if range.is_empty() && piece.text().is_empty() {
             return false;
         }
-        let style = typed.then(|| self.typing_style());
+        let style = typed.then(|| self.input_style());
         self.remember(typed && range.is_empty() && !piece.text().contains('\n'));
         self.value.replace_with(range.clone(), piece);
         let inserted = range.start..range.start + piece.text().len();
@@ -780,6 +802,14 @@ fn summarize(value: &RichText, range: Range<usize>) -> RichSelectionAttrs {
                 RichAttrMask::BACKGROUND_COLOR,
             ),
             (
+                piece.shape.stretch_percent != first.shape.stretch_percent,
+                RichAttrMask::STRETCH,
+            ),
+            (
+                piece.paint.emphasis != first.paint.emphasis,
+                RichAttrMask::EMPHASIS,
+            ),
+            (
                 piece.paint.decoration != first.paint.decoration,
                 RichAttrMask::DECORATION,
             ),
@@ -966,7 +996,7 @@ impl ComponentView for RichTextEditor {
         *self = next;
         self.state = state;
         if !same {
-            self.bump_caret_revision();
+            self.state.caret_revision = self.state.caret_revision.wrapping_add(1);
             let len = self.value.text().len();
             self.state.anchor = floor_char(self.value.text(), self.state.anchor.min(len));
             self.state.focus = floor_char(self.value.text(), self.state.focus.min(len));
@@ -1020,7 +1050,16 @@ impl AppContext {
         entity: Entity<RichTextEditor>,
         command: RichEditCommand,
     ) -> Result<bool, FrameworkError> {
-        self.edit_with(entity, |view, _| view.apply_command(command))
+        self.update_component(entity, |view, cx| {
+            let before = view.snapshot();
+            let attrs = view.selection_attrs();
+            let changed = view.apply_command(command);
+            if changed {
+                view.state.caret_revision = view.state.caret_revision.wrapping_add(1);
+            }
+            view.report(&before, &attrs, cx);
+            changed
+        })
     }
 
     /// The focused rich text editor of `document`.
@@ -1275,7 +1314,11 @@ impl AppContext {
                 true
             }
             CompositionInput::End => view.state.preedit.take().is_some(),
-            CompositionInput::Enabled | CompositionInput::DeleteSurrounding { .. } => false,
+            CompositionInput::DeleteSurrounding {
+                before_bytes,
+                after_bytes,
+            } => view.delete_ime_surrounding(*before_bytes, *after_bytes),
+            CompositionInput::Enabled => false,
         })?;
         Ok(Some(handled))
     }
@@ -1405,12 +1448,13 @@ impl AppContext {
                     }
                 }
                 1 => {
-                    let moved = scrolled
+                    if (scrolled
                         || view
                             .state
                             .dragging
-                            .is_some_and(|drag| drag.position != (x, y));
-                    if moved && let Some((byte, _)) = hit {
+                            .is_some_and(|drag| drag.position != (x, y)))
+                        && let Some((byte, _)) = hit
+                    {
                         let range = selection_unit(view.value.text(), byte, view.state.drag_unit);
                         if view.state.drag_unit == 1 {
                             view.state.focus = byte;
@@ -1474,8 +1518,6 @@ impl AppContext {
                 && local_y <= line.metrics.top_y_px + line.metrics.height_px;
             inside.then_some((placed.id, placed.offset))
         });
-        // The layout shows the preedit; the editor's state is the committed
-        // document, and an object id may repeat in it.
         self.read(Entity::<RichTextEditor>::from_stable_id(id), |view| {
             let byte = view.document_offset(byte);
             let object = object.and_then(|(id, display_offset)| {
@@ -1501,11 +1543,8 @@ impl AppContext {
             let preedit = view.state.preedit.clone();
             let attrs = view.selection_attrs();
             let changed = edit(view, cx);
-            if view.selection() != (before.anchor, before.focus)
-                || view.state.preedit != preedit
-                || view.value != before.value
-            {
-                view.bump_caret_revision();
+            if changed {
+                view.state.caret_revision = view.state.caret_revision.wrapping_add(1);
             }
             view.report(&before, &attrs, cx);
             changed
@@ -1642,6 +1681,32 @@ mod tests {
                 RichTypingStylePolicy::Plain => assert_eq!(typed.shape.weight, None),
             }
         }
+    }
+
+    #[test]
+    fn stretch_and_emphasis_selection_summary_supports_undo() {
+        let style = RichSpanStyle::new().stretch(75.0).emphasis(true);
+        let mut view = RichTextEditor::new(RichText::new("abcd").with_span(0..2, style.clone()));
+        view.apply_command(RichEditCommand::Select(0..2));
+        assert_eq!(view.selection_attrs().style, style);
+        view.apply_command(RichEditCommand::Select(0..4));
+        let mixed = view.selection_attrs();
+        assert!(mixed.mixed.contains(RichAttrMask::STRETCH));
+        assert!(mixed.mixed.contains(RichAttrMask::EMPHASIS));
+        assert_eq!(mixed.style.shape.stretch_percent, None);
+        assert_eq!(mixed.style.paint.emphasis, None);
+        view.apply_command(RichEditCommand::SetAttrs(
+            RichSpanStyle::new().stretch(125.0).emphasis(false),
+        ));
+        assert_eq!(
+            view.selection_attrs().style.shape.stretch_percent,
+            Some(125.0)
+        );
+        assert!(view.undo());
+        assert_eq!(view.value.style_at(0), Some(&style));
+        assert_eq!(view.value.style_at(3), None);
+        assert!(view.redo());
+        assert_eq!(view.value.style_at(3).unwrap().paint.emphasis, Some(false));
     }
 
     #[test]

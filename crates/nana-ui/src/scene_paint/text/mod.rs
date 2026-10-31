@@ -30,6 +30,7 @@
 //!   compaction cannot be observed as the wrong glyph.
 
 mod atlas;
+mod emphasis;
 mod entry;
 mod gamma;
 mod glyph;
@@ -38,6 +39,8 @@ mod raster;
 mod raster_cache;
 #[cfg(windows)]
 mod raster_dwrite;
+#[cfg(test)]
+mod stacked_effects_tests;
 mod upload;
 
 use nana_text::{TextEngine as _, TextLayout};
@@ -2123,6 +2126,7 @@ impl TextPipeline {
                 std::mem::swap(resolved, layered);
                 if rich.has_decoration() && !layout.is_vertical() {
                     decoration_quads(layout, rich, colors, scale, origin, solids);
+                    emphasis::quads(layout, content, rich, colors, scale, origin, solids);
                 }
                 fill_start
             }
@@ -4943,6 +4947,50 @@ mod tests {
         );
     }
 
+    /// GPU 读回确认着重号增加文字下方的可见像素。
+    #[test]
+    fn emphasis_paints_round_dots_below_glyphs_on_gpu() {
+        let (device, queue) = test_device();
+        let mut pipeline = TextPipeline::new(&device, &queue, wgpu::TextureFormat::Rgba8Unorm);
+        let bounds = LogicalRect::from_xywh(8.0, 8.0, 48.0, 48.0);
+        let clip = LogicalRect::from_xywh(0.0, 0.0, 64.0, 64.0);
+        let plain = paint_text(
+            &device,
+            &queue,
+            &mut pipeline,
+            bounds,
+            clip,
+            clip::IDENTITY_AFFINE,
+            [0.0; 2],
+            clip::FragmentClip::PASS,
+        );
+        let rich = effects(SceneTextEffects {
+            emphasis: true,
+            ..SceneTextEffects::default()
+        });
+        pipeline.set_effects(rich.as_ref(), None);
+        let marked = paint_text(
+            &device,
+            &queue,
+            &mut pipeline,
+            bounds,
+            clip,
+            clip::IDENTITY_AFFINE,
+            [0.0; 2],
+            clip::FragmentClip::PASS,
+        );
+        let plain_ink = ink_aabb(&plain, 64, 64).unwrap();
+        let marked_ink = ink_aabb(&marked, 64, 64).unwrap();
+        assert!(
+            marked_ink.3 > plain_ink.3,
+            "dots add visible ink below the glyphs"
+        );
+        assert_eq!(plain_ink.1, marked_ink.1);
+        if let Some(path) = std::env::var_os("NANA_EMPHASIS_ARTIFACT") {
+            image::save_buffer(path, &marked, 64, 64, image::ColorType::Rgba8).unwrap();
+        }
+    }
+
     /// One entry, in CSS paint order: shadow layers under outlines under the
     /// underline under the fills, the strikeout on top.
     #[test]
@@ -4957,7 +5005,7 @@ mod tests {
                 line_through: true,
             },
             decoration_color: None,
-            emphasis_color: None,
+            emphasis: false,
             stroke: Some(nana_ui_core::RichTextStroke::new(
                 2.0,
                 paint([0.0, 0.0, 0.0, 1.0]),

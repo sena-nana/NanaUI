@@ -96,6 +96,10 @@ pub struct InlineObject {
     /// [`crate::PlacedObject::id`].
     pub id: u64,
     pub metrics: InlineObjectMetrics,
+    #[serde(default)]
+    pub flow: nana_ui_core::RichObjectFlow,
+    #[serde(default)]
+    pub fit_width: bool,
 }
 
 /// Whether an object shares its line with the text around it.

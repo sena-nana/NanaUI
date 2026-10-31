@@ -464,47 +464,51 @@ mod tests {
     use super::*;
     use nana_text::font::Synthesis;
 
-    /// A key for glyph `glyph` of the first face that DirectWrite accepts,
-    /// with the rasterizer that interned it.
+    /// 使用随项目分发的常规字体与真实字符映射，避免系统扫描顺序选中符号字体的空字形。
     fn rasterizer_and_key(
-        glyph: u32,
+        character: char,
         mode: GlyphRenderMode,
     ) -> Option<(DWriteGlyphRasterizer, GlyphRasterKey)> {
-        let engine = crate::text_engine::nana_text_engine();
-        let faces = {
-            let engine = crate::text_engine::lock_engine(&engine);
-            engine.fonts().faces()
-        };
+        use nana_text::NativeTextEngine;
+        use nana_text::font::{FaceDescriptor, FontSystem, font_blob};
+        use std::sync::{Arc, Mutex};
+
+        let bytes = include_bytes!("../../../assets/fonts/NotoSansSC-Regular.ttf");
+        let glyph = swash::FontRef::from_index(bytes, 0)
+            .expect("bundled regular face parses")
+            .charmap()
+            .map(character);
+        assert_ne!(glyph, 0, "bundled regular face maps the fixture character");
+        let mut fonts = FontSystem::hermetic();
+        let face = fonts
+            .register_bytes(font_blob(bytes), &FaceDescriptor::default())
+            .expect("bundled regular face registers")
+            .faces[0];
+        let engine = Arc::new(Mutex::new(NativeTextEngine::new(fonts)));
         let mut rasterizer = DWriteGlyphRasterizer::new(engine);
         rasterizer.dwrite.as_ref()?;
-        for face in faces {
-            let (font, variation, synthesis) = rasterizer.intern_instance(&FontInstanceKey {
-                font: face,
-                coords: Vec::new().into(),
-                synthesis: Synthesis::default(),
-            });
-            let key = GlyphRasterKey {
-                font,
-                font_generation: 0,
-                variation,
-                glyph,
-                size_bits: size_bits(16.0),
-                subpixel_x: SubpixelBin::default(),
-                subpixel_y: SubpixelBin::default(),
-                synthesis,
-                mode,
-            };
-            let swash = &rasterizer.swash;
-            if rasterizer
-                .dwrite
-                .as_mut()?
-                .face(swash, font, variation, synthesis)
-                .is_some()
-            {
-                return Some((rasterizer, key));
-            }
-        }
-        None
+        let (font, variation, synthesis) = rasterizer.intern_instance(&FontInstanceKey {
+            font: face,
+            coords: Vec::new().into(),
+            synthesis: Synthesis::default(),
+        });
+        let key = GlyphRasterKey {
+            font,
+            font_generation: 0,
+            variation,
+            glyph: u32::from(glyph),
+            size_bits: size_bits(16.0),
+            subpixel_x: SubpixelBin::default(),
+            subpixel_y: SubpixelBin::default(),
+            synthesis,
+            mode,
+        };
+        rasterizer
+            .dwrite
+            .as_mut()?
+            .face(&rasterizer.swash, font, variation, synthesis)
+            .expect("DirectWrite accepts the bundled regular outline face");
+        Some((rasterizer, key))
     }
 
     fn draw(rasterizer: &mut DWriteGlyphRasterizer, key: GlyphRasterKey) -> GlyphImage {
@@ -517,12 +521,13 @@ mod tests {
             .expect("DirectWrite draws an outline face")
     }
 
-    /// Some glyph with ink: glyph ids 1.. are letters in any text face.
-    const GLYPH: u32 = 36;
+    /// 常规拉丁字母具有可验证的笔画，实际 glyph ID 从字体 cmap 获取。
+    const CHARACTER: char = 'A';
 
     #[test]
     fn grayscale_glyphs_come_back_as_one_coverage_a_pixel() {
-        let Some((mut rasterizer, key)) = rasterizer_and_key(GLYPH, GlyphRenderMode::Mask) else {
+        let Some((mut rasterizer, key)) = rasterizer_and_key(CHARACTER, GlyphRenderMode::Mask)
+        else {
             return;
         };
         let image = draw(&mut rasterizer, key);
@@ -537,7 +542,7 @@ mod tests {
     #[test]
     fn cleartype_glyphs_carry_distinct_subpixel_coverage_mirrored_for_bgr() {
         let Some((mut rasterizer, rgb_key)) =
-            rasterizer_and_key(GLYPH, GlyphRenderMode::SubpixelRgb)
+            rasterizer_and_key(CHARACTER, GlyphRenderMode::SubpixelRgb)
         else {
             return;
         };
@@ -567,7 +572,8 @@ mod tests {
 
     #[test]
     fn a_quarter_pixel_shift_changes_the_bitmap() {
-        let Some((mut rasterizer, key)) = rasterizer_and_key(GLYPH, GlyphRenderMode::Mask) else {
+        let Some((mut rasterizer, key)) = rasterizer_and_key(CHARACTER, GlyphRenderMode::Mask)
+        else {
             return;
         };
         let whole = draw(&mut rasterizer, key);
@@ -587,7 +593,8 @@ mod tests {
 
     #[test]
     fn a_glyph_past_the_outline_threshold_still_comes_back_with_ink() {
-        let Some((mut rasterizer, key)) = rasterizer_and_key(GLYPH, GlyphRenderMode::Mask) else {
+        let Some((mut rasterizer, key)) = rasterizer_and_key(CHARACTER, GlyphRenderMode::Mask)
+        else {
             return;
         };
         // Above its outline threshold DirectWrite recommends bypassing the

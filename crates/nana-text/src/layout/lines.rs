@@ -141,6 +141,7 @@ pub(super) struct LineInput<'a> {
     pub paragraph_alignments: &'a [(usize, Option<TextAlignSpec>)],
     pub runs: &'a [ShapedRun],
     pub paragraphs: &'a [ShapedParagraph],
+    pub objects: &'a [crate::source::InlineObject],
     /// Resolved line box height per entry of `runs`, physical px.
     pub run_line_heights: &'a [f32],
     pub constraints: &'a TextConstraints,
@@ -339,7 +340,7 @@ impl<'a> Builder<'a> {
     pub fn paragraphs(mut self) -> LaidOut {
         let segments = self.segments();
         let last = segments.len() - 1;
-        for index in 0..segments.len() {
+        for (index, content) in segments.iter().enumerate() {
             if self.truncated {
                 break;
             }
@@ -348,18 +349,43 @@ impl<'a> Builder<'a> {
             // line, so its end byte has a caret on both lines, as at a wrap.
             let cause = if index == last {
                 LineBreakCause::EndOfText
-            } else if segments[index].end == segments[index + 1].start {
+            } else if content.end == segments[index + 1].start {
+                // 视觉块边界共享字节位置，保持软换行的光标 affinity。
                 LineBreakCause::Wrap
             } else {
                 LineBreakCause::Explicit
             };
-            self.segment(segments[index].clone(), cause);
+            self.segment(content.clone(), cause);
         }
         self.finish()
     }
 
     fn segments(&self) -> Vec<Range<usize>> {
-        segments(self.input.text, self.input.paragraphs, &self.input.blocks)
+        // 在显式换行之间切出块对象，保持原始字符、作者段落与空行。
+        let mut result = Vec::new();
+        for range in segments(self.input.text, self.input.paragraphs) {
+            let mut start = range.start;
+            let first = self
+                .input
+                .objects
+                .partition_point(|object| object.offset < range.start);
+            for object in self.input.objects[first..]
+                .iter()
+                .take_while(|object| object.offset < range.end)
+                .filter(|object| object.flow == nana_ui_core::RichObjectFlow::Block)
+            {
+                if start < object.offset {
+                    result.push(start..object.offset);
+                }
+                let end = object.offset + crate::source::OBJECT_REPLACEMENT.len_utf8();
+                result.push(object.offset..end);
+                start = end;
+            }
+            if start < range.end || range.is_empty() {
+                result.push(start..range.end);
+            }
+        }
+        result
     }
 
     /// One run of text with no forced break inside it: as many lines as the

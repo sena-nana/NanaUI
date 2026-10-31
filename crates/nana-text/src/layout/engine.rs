@@ -282,29 +282,16 @@ impl Layouter {
         let scale = request.constraints.scale.px_per_logical;
         let base_line_height = line_height_px(request.style, scale);
         let run_line_heights = run_line_heights(request, scale);
-        let measure = |sizing| {
-            let sized = sized_runs(request, scale, sizing);
-            Builder::new(line_input(
-                request,
-                sized.as_deref(),
-                None,
-                &run_line_heights,
-                base_line_height,
-                None,
-            ))
-            .intrinsic_widths()
-        };
-        let (mut widths, mut candidates) = measure(ObjectSizing::Own);
-        if request
-            .source
-            .placements()
-            .iter()
-            .any(|placement| placement.fit_width)
-        {
-            let (compressed, more) = measure(ObjectSizing::Compressed);
-            widths.min_px = compressed.min_px;
-            candidates += more;
-        }
+        let sized = sized_runs(request, scale, false);
+        let (widths, candidates) = Builder::new(line_input(
+            request,
+            sized.as_deref(),
+            None,
+            &run_line_heights,
+            base_line_height,
+            None,
+        ))
+        .intrinsic_widths();
         self.counters.line_break_candidates += candidates;
         widths
     }
@@ -320,11 +307,7 @@ impl Layouter {
             .ellipsis
             .filter(|_| request.constraints.ellipsis)
             .and_then(|shaped| Ellipsis::new(shaped));
-        let sized = sized_runs(
-            request,
-            request.constraints.scale.px_per_logical,
-            ObjectSizing::Fit,
-        );
+        let sized = sized_runs(request, request.constraints.scale.px_per_logical, true);
         let input = line_input(
             request,
             sized.as_deref(),
@@ -469,14 +452,7 @@ fn fit_ratio(
 /// This is where an object's size enters: after shaping and inside the
 /// layout cache's key (the source revision moves with the objects), so
 /// resizing a sticker relays the paragraph out from the runs already shaped.
-/// An object that fits its line's room is scaled here, its ascent and descent
-/// with its width, so the line box, hit testing, carets, selection and paint
-/// all read the one scaled box.
-fn sized_runs(
-    request: &LayoutRequest<'_>,
-    scale: f32,
-    sizing: ObjectSizing,
-) -> Option<Vec<ShapedRun>> {
+fn sized_runs(request: &LayoutRequest<'_>, scale: f32, fit: bool) -> Option<Vec<ShapedRun>> {
     let rubies = ruby_boxes(request);
     if request.source.objects().is_empty() && rubies.is_empty() {
         return None;
@@ -526,7 +502,7 @@ fn sized_runs(
             .object_at(run.source.start)
             .map(|object| object.metrics)
             .unwrap_or_default();
-        let [width, ascent, descent] = match label_box(request, run.source.start) {
+        let [mut width, mut ascent, mut descent] = match label_box(request, run.source.start) {
             Some(label) => [label.width_px, label.ascent_px, label.descent_px],
             None => {
                 let width = metrics.width_px.max(0.0) * scale;
@@ -538,6 +514,23 @@ fn sized_runs(
                 ]
             }
         };
+        // 缩放进入保留布局 IR，绘制、选区和命中共享等比缩小后的对象矩形。
+        if fit
+            && request
+                .source
+                .object_at(run.source.start)
+                .is_some_and(|object| object.fit_width)
+            && let Some(limit) = request
+                .constraints
+                .inline_budget_px(request.shaped.vertical)
+            && width > limit.max(0.0) * scale
+            && width > 0.0
+        {
+            let ratio = limit.max(0.0) * scale / width;
+            width *= ratio;
+            ascent *= ratio;
+            descent *= ratio;
+        }
         // The envelope's gap travels with the object: the line decision sees
         // one cell, and may close part of it up or drop it at a line end.
         let width = width
@@ -1005,6 +998,7 @@ fn line_input<'r>(
         rubies: ruby_boxes(request),
         emphasis: emphasis_cells(request),
         paragraphs: &request.shaped.paragraphs,
+        objects: request.source.objects(),
         run_line_heights,
         constraints: request.constraints,
         strut,
@@ -1056,6 +1050,11 @@ fn block_offsets(source: &TextSource) -> Vec<usize> {
 /// when a layout is *built*, which a cache hit skips.
 fn uses_label_fast_path(request: &LayoutRequest<'_>) -> bool {
     request.kind == TextKind::Label
+        && !request
+            .source
+            .objects()
+            .iter()
+            .any(|object| object.flow == nana_ui_core::RichObjectFlow::Block)
         && !request.constraints.wraps()
         && matches!(request.constraints.max_lines, None | Some(1))
         && request

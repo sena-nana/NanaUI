@@ -31,6 +31,8 @@ fn style() -> TextStyle {
 
 fn sticker(offset: usize, width: f32, height: f32) -> InlineObject {
     InlineObject {
+        flow: Default::default(),
+        fit_width: false,
         offset,
         id: 7,
         metrics: InlineObjectMetrics {

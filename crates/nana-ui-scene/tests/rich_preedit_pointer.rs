@@ -1,6 +1,4 @@
-//! A pointer on a rich editor showing preedit lands on the committed
-//! document: the displayed bytes include the composition, the edit state
-//! does not.
+//! 显示预编辑的命中坐标回到已提交文档后的输入链回归。
 
 #![cfg(feature = "rich-text")]
 
@@ -15,7 +13,7 @@ use nana_ui_runtime::{
 };
 use nana_ui_scene::RuntimeDocument;
 
-/// A real text layout, so displayed and committed bytes really differ.
+/// 保留真实文本布局，以覆盖输入法显示字节与文档字节之间的差异。
 struct Fixture {
     runtime: RuntimeDocument,
     shaper: NanaTextEngineShaper,
@@ -150,8 +148,7 @@ fn empty_preedit_click_cancels_composition_and_allows_typing_and_undo() {
 
 #[test]
 fn replacement_preedit_hits_map_before_inside_and_after_to_committed_characters() {
-    // The document is 「前ab后尾」 and shows 「前你好后尾」; a hit inside
-    // the composition is the start of what it replaces.
+    // 文档为「前ab后尾」，显示为「前你好后尾」；组合内部回到替换起点。
     for (display_byte, document_byte) in [(0, 0), (3, 3), (6, 3), (9, 5), (12, 8), (15, 11)] {
         let mut f = Fixture::new("前ab后尾");
         f.preedit(3..5, "你好");
@@ -163,7 +160,7 @@ fn replacement_preedit_hits_map_before_inside_and_after_to_committed_characters(
         );
         f.input.text(f.runtime.context_mut(), "字").unwrap();
         let mut expected = "前ab后尾".to_owned();
-        expected.insert(document_byte, '字');
+        expected.insert_str(document_byte, "字");
         assert_eq!(
             f.runtime
                 .context()
