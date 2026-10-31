@@ -1,6 +1,9 @@
 //! Committed node projection into Scene input.
 
 use super::*;
+#[cfg(feature = "controls")]
+#[path = "reorder_preview.rs"]
+mod reorder_preview;
 
 impl UiWorld {
     pub(super) fn stacking_z_index_memo(&self, id: StableNodeId, memo: &mut AncestorMemo) -> i32 {
@@ -214,6 +217,8 @@ impl UiWorld {
         // Scene must paint it so too, or the trigger's clips and stacking
         // groups cut the card that was laid out above them.
         self.triggered_overlay_layout(id, &mut source_style.layout);
+        #[cfg(feature = "controls")]
+        let preview = self.reorder_preview_layout(id, &mut source_style.layout);
         // Scene receives the layout-resolved padding; it must not resolve %
         // against the painted node's own width. Authored world style stays intact.
         // With no length animation, used padding is the layout pass value or
@@ -289,7 +294,16 @@ impl UiWorld {
             children: hierarchy_children,
             layout,
             scroll_offset: self.rich_editor_scroll_offset(id).unwrap_or(scroll_offset),
-            z_index: self.stacking_z_index_memo(id, memo),
+            z_index: {
+                #[cfg(feature = "controls")]
+                if preview {
+                    100_000
+                } else {
+                    self.stacking_z_index_memo(id, memo)
+                }
+                #[cfg(not(feature = "controls"))]
+                self.stacking_z_index_memo(id, memo)
+            },
             source_style,
             style,
             text,
@@ -689,6 +703,8 @@ impl UiWorld {
     /// Extract only dirty nodes. Hidden nodes stay present with `visible=false`
     /// so an incremental renderer can remove their previous primitives.
     pub fn extract_nodes(&self, ids: &[StableNodeId]) -> Vec<ExtractedNode> {
+        #[cfg(feature = "controls")]
+        let ids = self.reorder_preview_extraction_ids(ids);
         let mut memo = AncestorMemo::default();
         let mut extracted = Vec::with_capacity(ids.len());
         extracted.extend(

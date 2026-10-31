@@ -109,14 +109,18 @@ pub trait HostServices {
 
     fn write_clipboard(&mut self, text: &str) -> Result<(), HostServiceError>;
 
-    /// A count that advances with every write to the clipboard, by this
-    /// process or any other, and not with reads. Read right after a write,
-    /// an equal count at a later paste means the clipboard still holds that
-    /// write (macOS `NSPasteboard.changeCount`, Windows
-    /// `GetClipboardSequenceNumber`). `Unsupported` where the platform keeps
-    /// none; callers then match on the text alone.
-    fn clipboard_change_count(&mut self) -> Result<u64, HostServiceError> {
-        Err(HostServiceError::Unsupported)
+    /// 可选的富文本来源标记；普通文本写入应清除已有标记。
+    fn read_clipboard_token(&mut self) -> Result<Option<String>, HostServiceError> {
+        Ok(None)
+    }
+
+    /// 同时写入纯文本与富文本来源标记；基础宿主保留纯文本能力。
+    fn write_clipboard_with_token(
+        &mut self,
+        text: &str,
+        _token: &str,
+    ) -> Result<(), HostServiceError> {
+        self.write_clipboard(text)
     }
 }
 
@@ -147,7 +151,7 @@ pub struct HeadlessHostServices {
     cursor: CursorIcon,
     text_input: Option<TextInputContext>,
     clipboard: Option<String>,
-    clipboard_changes: u64,
+    clipboard_token: Option<String>,
 }
 
 impl HeadlessHostServices {
@@ -171,7 +175,7 @@ impl HeadlessHostServices {
     /// change count sees.
     pub fn set_clipboard(&mut self, text: Option<String>) {
         self.clipboard = text;
-        self.clipboard_changes += 1;
+        self.clipboard_token = None;
     }
 }
 
@@ -190,7 +194,21 @@ impl HostServices for HeadlessHostServices {
 
     fn write_clipboard(&mut self, text: &str) -> Result<(), HostServiceError> {
         self.clipboard = Some(text.to_owned());
-        self.clipboard_changes += 1;
+        self.clipboard_token = None;
+        Ok(())
+    }
+
+    fn read_clipboard_token(&mut self) -> Result<Option<String>, HostServiceError> {
+        Ok(self.clipboard_token.clone())
+    }
+
+    fn write_clipboard_with_token(
+        &mut self,
+        text: &str,
+        token: &str,
+    ) -> Result<(), HostServiceError> {
+        self.write_clipboard(text)?;
+        self.clipboard_token = Some(token.to_owned());
         Ok(())
     }
 
@@ -252,5 +270,17 @@ mod tests {
         assert_eq!(services.clipboard_change_count(), Ok(copied));
         services.set_clipboard(Some("same".into()));
         assert_ne!(services.clipboard_change_count(), Ok(copied));
+    }
+
+    #[test]
+    fn plain_clipboard_rewrites_clear_rich_identity_even_when_text_matches() {
+        let mut services = HeadlessHostServices::new();
+        services.write_clipboard_with_token("甲", "1-a").unwrap();
+        assert_eq!(services.read_clipboard_token(), Ok(Some("1-a".into())));
+        services.write_clipboard("甲").unwrap();
+        assert_eq!(services.read_clipboard_token(), Ok(None));
+        services.write_clipboard_with_token("甲", "1-b").unwrap();
+        services.set_clipboard(Some("甲".into()));
+        assert_eq!(services.read_clipboard_token(), Ok(None));
     }
 }

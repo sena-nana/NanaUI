@@ -1139,6 +1139,8 @@ pub enum StandardVisual {
         rows: Arc<[crate::reorder_list::ReorderRowPaint]>,
         size: ControlSize,
         spacing: f32,
+        /// 预览开关持续存在，使取消后的增量抽取也恢复各行。
+        preview_enabled: bool,
         /// The row being dragged and where it would land.
         drag: Option<crate::reorder_list::ReorderDragVisual>,
     },

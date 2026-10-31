@@ -74,6 +74,8 @@ NANA_TEXT_CORE_ALLOWLIST = {
     "FontVariationSetting",
     "LineBreakSpec",
     "LineHeightSpec",
+    # 富文本对象的行内/独占行语义属于后端中立的断行词汇，尺寸仍由文本 IR 持有。
+    "RichObjectFlow",
     "TextAlignSpec",
     "TextAutospaceSpec",
     "TextEmphasisPosition",

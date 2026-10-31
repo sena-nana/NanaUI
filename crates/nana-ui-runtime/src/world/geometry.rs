@@ -2164,37 +2164,27 @@ impl UiWorld {
                 checkable,
                 fit_options,
                 ..
-            } => {
-                let parts = self.component_content_parts(id);
-                Some(crate::select::select_geometry(
-                    bounds,
-                    label,
-                    hint.as_ref(),
-                    *placeholder,
-                    *size,
-                    *opened,
-                    options,
-                    *highlighted,
-                    *menu_scroll,
-                    *menu_room,
-                    style,
-                    &source,
-                    self.style_model,
-                    self.theme.recipes().scrollbar(),
-                    self.document_viewport_of(id),
-                    *checkable,
-                    &parts,
-                    self.chrome_text_measure(id),
-                    // The widest option layout measured for the field: its natural
-                    // width, or the label it shows when that is the widest.
-                    fit_options
-                        .then(|| {
-                            self.text_natural_width(id)
-                                .or_else(|| self.text_metrics(id).map(|metrics| metrics.width))
-                        })
-                        .flatten(),
-                ))
-            }
+            } => Some(crate::select::select_geometry(
+                bounds,
+                label,
+                hint.as_ref(),
+                *placeholder,
+                *size,
+                *opened,
+                options,
+                *highlighted,
+                *menu_scroll,
+                *menu_room,
+                style,
+                &source,
+                self.style_model,
+                self.theme.recipes().scrollbar(),
+                self.document_viewport_of(id),
+                *checkable,
+                padding,
+                self.chrome_text_measure(id),
+                fit_options.then(|| self.text_natural_width(id)).flatten(),
+            )),
             StandardVisual::MenuSurface {
                 kind: crate::MenuSurfaceKind::ContextMenu,
                 query,
@@ -2363,6 +2353,7 @@ impl UiWorld {
                 size,
                 spacing,
                 drag,
+                ..
             } => {
                 // Live row children own their label painting; a stale retained
                 // `rows` (projected before the children were attached) must not
@@ -2402,7 +2393,13 @@ impl UiWorld {
                 // the carried rows follow the pointer, the rest make room.
                 let drag = drag.as_ref().filter(|drag| !drag.preview).map(|drag| {
                     let boxes = row_boxes(drag.rows());
-                    (drag.drop_mark(bounds, &boxes), drag.carried_box(&boxes))
+                    (
+                        drag.drop_mark(bounds, &boxes),
+                        drag.preview_offset
+                            .is_none()
+                            .then(|| drag.carried_box(&boxes))
+                            .flatten(),
+                    )
                 });
                 Some(reorder_list_geometry(
                     bounds,

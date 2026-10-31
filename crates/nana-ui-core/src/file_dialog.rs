@@ -203,9 +203,7 @@ pub struct FileDialogResult {
     pub id: u64,
     pub paths: Vec<PathBuf>,
     pub error: Option<FileDialogError>,
-    /// Index into the request's `filters` of the type selected when the
-    /// dialog closed. `None` where the platform does not report it (macOS,
-    /// the zenity fallback) or the request had no filters.
+    /// 用户选择的过滤器索引（从零开始）；平台未提供时为 None。
     pub selected_filter: Option<usize>,
 }
 
@@ -237,9 +235,9 @@ impl FileDialogResult {
         }
     }
 
-    /// Record the type the user left selected, as reported by the platform.
-    pub fn with_selected_filter(mut self, filter: Option<usize>) -> Self {
-        self.selected_filter = filter;
+    /// 保留平台选中的文件类型，同时兼容仅返回路径的后端。
+    pub fn with_selected_filter(mut self, index: Option<usize>) -> Self {
+        self.selected_filter = index;
         self
     }
 
@@ -264,6 +262,25 @@ mod tests {
         assert!(result.is_cancelled());
         assert_eq!(result.path(), None);
         assert_eq!(result.id, 3);
+        assert_eq!(result.selected_filter, None);
+    }
+
+    /// 类型索引独立于路径后缀保存，缺少类型回执的平台仍可只提供路径。
+    #[test]
+    fn selected_filter_roundtrips_without_reinterpreting_the_path() {
+        let path = PathBuf::from("剧本.json");
+        let selected =
+            FileDialogResult::selected(7, vec![path.clone()]).with_selected_filter(Some(2));
+        assert_eq!(selected.selected_filter, Some(2));
+        assert_eq!(selected.path(), Some(path.as_path()));
+        assert_eq!(
+            FileDialogResult::selected(8, vec![path]).selected_filter,
+            None
+        );
+        assert_eq!(
+            FileDialogResult::failed(9, FileDialogError::Busy).selected_filter,
+            None
+        );
     }
 
     #[test]

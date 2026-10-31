@@ -133,8 +133,8 @@ mod rich_text_view;
 #[doc(hidden)]
 pub use rich_text_editor::caret_box as rich_editor_caret_box;
 pub use rich_text_editor::{
-    RichAttrMask, RichClipboardCommand, RichEditCommand, RichSelectionAttrs, RichTextEditor,
-    RichTextEditorEvent, RichTypingStylePolicy,
+    RichAttrMask, RichClipboardCommand, RichEditCommand, RichImeSnapshot, RichSelectionAttrs,
+    RichTextEditor, RichTextEditorEvent, RichTypingStylePolicy,
 };
 pub use rich_text_view::RichTextView;
 mod schedule;
@@ -418,7 +418,7 @@ pub use rich_text::{
 pub use schedule::SystemWork;
 pub use scrub_field::{ScrubChanged, ScrubDragging, ScrubField, ScrubInput};
 pub use search_dropdown::{SearchDropdown, SearchDropdownEvent, SearchDropdownOption};
-pub use select::{Select, SelectChanged, SelectOption, SelectToggled};
+pub use select::{Select, SelectChanged, SelectOpenedChanged, SelectOption};
 pub use selection::{
     RovingEdge, RovingFocusEdge, RovingFocusGroup, RovingFocusIntent, RovingFocusPolicy,
     SegmentedControl, SegmentedOption, SegmentedOptionChosen, SegmentedSelectionRequested,

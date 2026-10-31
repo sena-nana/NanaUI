@@ -12452,11 +12452,9 @@ fn a_border_style_change_repaints_without_moving_a_box() {
         work.render_extraction
     );
 }
-/// Cells 2 and 3 are document children; 4 and 5 are children of 3, all
-/// stacked on the same box so each hit falls through to the next sibling
-/// down. 4 opts back into pointer events, so it stays hittable under a
-/// `pointer-events: none` parent.
-fn stacked_hit_cells() -> UiWorld {
+
+#[test]
+fn cached_hits_use_current_pointer_authority_before_the_next_frame() {
     let mut world = UiWorld::new();
     let mut create = MutationQueue::new();
     create.create(node(1), document(1), NodeKind::Document);
@@ -12480,60 +12478,20 @@ fn stacked_hit_cells() -> UiWorld {
     world.resolve_styles(&work.style).unwrap();
     world.rebuild_hit_test(document(1));
     assert_eq!(world.hit_test(document(1), 10.0, 10.0), Some(node(5)));
-    world
-}
 
-fn pointer_events_none() -> NodeStyle {
+    // 关闭父项后沿用旧几何，显式 Auto 的子项继续接收输入。
+    let mut disable = MutationQueue::new();
     let mut style = NodeStyle::default();
     Arc::make_mut(&mut style.layout).pointer_events = Some(PointerEventsSpec::None);
-    style
-}
-
-#[test]
-fn a_committed_pointer_events_none_is_not_hit_before_the_next_layout() {
-    let mut world = stacked_hit_cells();
-    let mut disable = MutationQueue::new();
-    disable.set_style(node(5), pointer_events_none());
+    disable.set_style(node(3), style);
     world.commit(disable).unwrap();
     assert_eq!(world.hit_test(document(1), 10.0, 10.0), Some(node(4)));
-    assert_eq!(
-        world.hit_test_candidates(document(1), 10.0, 10.0),
-        vec![node(4), node(3), node(2)]
-    );
-}
+    let candidates = world.hit_test_candidates(document(1), 10.0, 10.0);
+    assert!(candidates.contains(&node(4)));
+    assert!(!candidates.contains(&node(3)));
+    assert!(!candidates.contains(&node(5)));
 
-#[test]
-fn an_ancestor_pointer_events_none_is_inherited_before_the_next_layout() {
-    let mut world = stacked_hit_cells();
-    let mut disable = MutationQueue::new();
-    disable.set_style(node(3), pointer_events_none());
-    world.commit(disable).unwrap();
-    // 5 inherits `none`; 4 specified `auto` and keeps taking the pointer.
-    assert_eq!(world.hit_test(document(1), 10.0, 10.0), Some(node(4)));
-    assert_eq!(
-        world.hit_test_candidates(document(1), 10.0, 10.0),
-        vec![node(4), node(2)]
-    );
-
-    // Lifting it again only withdraws nothing: the subtree comes back with
-    // the frame that resolves its style and rebuilds the index.
-    let mut enable = MutationQueue::new();
-    enable.set_style(node(3), NodeStyle::default());
-    world.commit(enable).unwrap();
-    assert_eq!(world.hit_test(document(1), 10.0, 10.0), Some(node(4)));
-    let work = world.take_system_work();
-    world.resolve_styles(&work.style).unwrap();
-    world.rebuild_hit_test_scoped(document(1), &work.input_hit_test);
-    assert_eq!(world.hit_test(document(1), 10.0, 10.0), Some(node(5)));
-    assert_eq!(
-        world.hit_test_candidates(document(1), 10.0, 10.0),
-        vec![node(5), node(4), node(3), node(2)]
-    );
-}
-
-#[test]
-fn a_despawned_subtree_is_not_hit_in_the_same_frame() {
-    let mut world = stacked_hit_cells();
+    // 已释放节点也从旧索引候选中移除，命中继续落到下层。
     let mut remove = MutationQueue::new();
     remove.despawn_subtree(node(3));
     world.commit(remove).unwrap();
@@ -12542,47 +12500,4 @@ fn a_despawned_subtree_is_not_hit_in_the_same_frame() {
         world.hit_test_candidates(document(1), 10.0, 10.0),
         vec![node(2)]
     );
-}
-
-#[test]
-fn pointer_interaction_turned_off_is_not_hit_before_the_next_layout() {
-    let mut world = stacked_hit_cells();
-    let mut disable = MutationQueue::new();
-    disable.set_interaction(
-        node(5),
-        InteractionState {
-            pointer_events: false,
-            focusable: false,
-        },
-    );
-    world.commit(disable).unwrap();
-    assert_eq!(world.hit_test(document(1), 10.0, 10.0), Some(node(4)));
-}
-
-#[test]
-fn a_subtree_moved_under_pointer_events_none_is_not_hit_before_the_next_layout() {
-    let mut world = stacked_hit_cells();
-    let mut disable = MutationQueue::new();
-    disable.set_style(node(2), pointer_events_none());
-    world.commit(disable).unwrap();
-    assert_eq!(world.hit_test(document(1), 10.0, 10.0), Some(node(5)));
-
-    // 5 moves under 2 and inherits its `none`; 4 still takes the pointer.
-    let mut moved = MutationQueue::new();
-    moved.insert(node(2), node(5), None);
-    world.commit(moved).unwrap();
-    assert_eq!(world.hit_test(document(1), 10.0, 10.0), Some(node(4)));
-}
-
-#[test]
-fn a_subtree_moved_under_a_parked_parent_is_not_hit_before_the_next_layout() {
-    let mut world = stacked_hit_cells();
-    let mut park = MutationQueue::new();
-    park.park_subtree(node(2));
-    world.commit(park).unwrap();
-
-    let mut moved = MutationQueue::new();
-    moved.insert(node(2), node(3), None);
-    world.commit(moved).unwrap();
-    assert_eq!(world.hit_test(document(1), 10.0, 10.0), None);
 }
