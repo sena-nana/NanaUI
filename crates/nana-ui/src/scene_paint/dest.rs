@@ -433,6 +433,8 @@ pub(super) struct DestPassCounts {
     pub blit: u32,
     pub group: u32,
     pub backdrop: u32,
+    /// 组实际合成的裁剪面积总和，用于检查重复全屏填充。
+    pub composite_pixels: u64,
     pub msaa_allocated: bool,
 }
 

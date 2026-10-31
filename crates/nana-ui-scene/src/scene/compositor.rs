@@ -1185,6 +1185,9 @@ mod tests {
     use nana_ui_runtime::{ComputedStyle, LayoutBox, NodeKind, NodeStyle};
     use std::sync::Arc;
 
+    #[path = "../../compositor_delta_tests.rs"]
+    mod delta_tests;
+
     fn id(value: u64) -> StableNodeId {
         StableNodeId::new(value).unwrap()
     }

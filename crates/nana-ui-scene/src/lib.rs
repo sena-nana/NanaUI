@@ -26,6 +26,7 @@ pub use scene::{
     SceneRect, SceneRichPaint, SceneRichRun, SceneTextEffects, SceneTextOpenType, SceneTextSpan,
     StrokeCap, StrokePattern, UiScene, css_text_effects, rich_fill_spans,
 };
+pub use scene::{SceneTextShaderGlyph, SceneTextShaderInlineObject, SceneTextShaderInput};
 
 pub use nana_ui_core::{
     MOTION_GPU_DESCRIPTOR_SIZE, MOTION_GPU_KEYFRAME_SIZE, MOTION_GPU_TIME_SIZE,

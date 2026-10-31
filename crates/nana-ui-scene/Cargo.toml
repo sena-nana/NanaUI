@@ -16,7 +16,7 @@ rich-text = ["nana-ui-runtime/rich-text"]
 components = ["calendar", "charts", "controls", "graph-canvas", "image-viewer", "rich-text"]
 default = ["icu"]
 icu = ["nana-ui-runtime/icu"]
-benchmark = ["dep:serde", "dep:serde_json", "dep:nana-text", "nana-ui-core/bundled-font-regular", "nana-ui-runtime/benchmark"]
+benchmark = ["dep:serde", "dep:serde_json", "nana-ui-core/bundled-font-regular", "nana-ui-runtime/benchmark"]
 
 [dependencies]
 nana-diagnostics.workspace = true
@@ -27,8 +27,8 @@ lyon_tessellation.workspace = true
 i_overlay.workspace = true
 # Grapheme ordinals of per-glyph presentation.
 unicode-segmentation.workspace = true
-# Benchmark only: `nana-dirty-frame-benchmark --engine nana-text`.
-nana-text = { workspace = true, optional = true }
+# 保留文本着色器字形快照与 benchmark 共用同一个文本引擎合同。
+nana-text.workspace = true
 serde = { workspace = true, optional = true }
 serde_json = { workspace = true, optional = true }
 

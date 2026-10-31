@@ -6,6 +6,7 @@ use nana_ui_runtime::{
 };
 
 use super::*;
+include!("popover_trigger_radii_tests.rs");
 
 fn id(value: u64) -> StableNodeId {
     StableNodeId::new(value).unwrap()

@@ -16,6 +16,9 @@ use nana_ui_scene::{
 use super::*;
 use crate::HostTextureRegistry;
 
+#[path = "group_composite_tests.rs"]
+mod group_composite_tests;
+
 #[test]
 fn scene_renderers_share_static_pipelines_across_painters() {
     let host = crate::test_gpu::context();

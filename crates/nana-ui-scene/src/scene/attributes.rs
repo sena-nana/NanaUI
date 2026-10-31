@@ -105,7 +105,9 @@ impl UiScene {
         let Some(&(epoch, base_transform, parent_clip_count)) = self.projections.get(&node) else {
             return Some(NodeProjection::Retained);
         };
-        if epoch == self.attribute_epoch {
+        // 重绘保留逻辑投影；合成图层及提升等待期继续叠加当前呈现。
+        // 绘制与可见性边界共用属性缓存，在无关布局更新前后保持一致。
+        if epoch == self.attribute_epoch && !self.compositor.has_presentation() {
             return Some(NodeProjection::Retained);
         }
         let cached = self

@@ -418,10 +418,8 @@ impl UiScene {
                     text_bounds.x -= node.scroll_offset.x;
                     text_bounds.y -= node.scroll_offset.y;
                 }
-                if let (Some(rich), Some(layout)) = (&node.rich_text, &node.text_layout)
-                    && rich.text() == text.value.as_str()
-                {
-                    let backgrounds = crate::scene::rich_span_background_primitives(
+                if let (Some(rich), Some(layout)) = (&node.rich_text, &node.text_layout) {
+                    let backgrounds = super::rich_background::primitives(
                         &VisualPrimitiveContext {
                             node: id,
                             transform,
@@ -435,8 +433,8 @@ impl UiScene {
                         layout,
                         rich,
                     );
-                    for primitive in backgrounds {
-                        self.insert_primitive(primitive);
+                    for background in backgrounds {
+                        self.insert_primitive(background);
                     }
                 }
                 if !node.document_text_selection.is_empty() {
@@ -583,9 +581,9 @@ impl UiScene {
                         },
                         horizontal_alignment: node.source_style.text_horizontal_alignment,
                         vertical_alignment: node.source_style.text_vertical_alignment,
-                        spans: crate::scene::rich_fill_spans(
-                            text.value.as_str(),
-                            node.rich_text.as_ref(),
+                        spans: super::rich_background::fill_spans(
+                            &node,
+                            &self.nodes,
                             scene_text_spans(&node, None, &text.value),
                         ),
                         text_shadow: style.paint.text_shadow,

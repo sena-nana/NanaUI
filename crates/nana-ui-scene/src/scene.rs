@@ -16,6 +16,12 @@ mod custom_paint;
 pub use custom_paint::{PathMesh, PathVertex};
 mod order;
 mod primitives;
+#[path = "scene/text_shader_input.rs"]
+mod text_shader_input;
+pub use text_shader_input::{
+    SceneTextShaderGlyph, SceneTextShaderInlineObject, SceneTextShaderInput,
+};
+mod rich_background;
 #[cfg(test)]
 use nana_ui_core::ControlSize;
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
@@ -170,6 +176,8 @@ const TEXT_ATOM_LABELS: u32 = 5;
 const TEXT_INLINE_OBJECTS: u32 = 7;
 /// A rich text editor's caret, over its glyphs.
 const TEXT_EDITOR_CARET: u32 = 8;
+/// 文字背景位于宿主背景与文字选区之间。
+const TEXT_SPAN_BACKGROUND: u32 = 14;
 /// An open select menu's rows, one slot per option in each namespace. A
 /// long menu outgrew fixed slots: the highlight of its 31st row took the
 /// first row's label slot. The namespaces paint in this order, so a row's
@@ -613,6 +621,8 @@ pub struct SceneTextSpan {
 pub struct SceneTextEffects {
     pub material: Option<nana_ui_core::MaterialRef>,
     pub decoration: nana_ui_core::TextDecorationLine,
+    /// 按保留排版字素绘制下方圆点着重号。
+    pub emphasis: bool,
     /// `None` draws the lines in the glyphs' own fill.
     pub decoration_color: Option<nana_ui_core::PaintColor>,
     pub stroke: Option<nana_ui_core::RichTextStroke>,
@@ -627,7 +637,7 @@ pub struct SceneTextEffects {
 impl SceneTextEffects {
     pub fn is_empty(&self) -> bool {
         self.material.is_none()
-            && self.emphasis_color.is_none()
+            && !self.emphasis
             && !self.decoration.is_active()
             && self.stroke.is_none()
             && self.shadows.is_empty()
@@ -655,6 +665,7 @@ impl SceneTextEffects {
         Self {
             material: over.material.clone().or_else(|| self.material.clone()),
             decoration: over.decoration.unwrap_or(self.decoration),
+            emphasis: over.emphasis.unwrap_or(self.emphasis),
             decoration_color: over.decoration_color.or(self.decoration_color),
             stroke: over.stroke.or(self.stroke),
             shadows: over
@@ -876,7 +887,8 @@ impl SceneRichPaint {
     }
 
     pub fn has_decoration(&self) -> bool {
-        self.all().any(|effects| effects.decoration.is_active())
+        self.all()
+            .any(|effects| effects.decoration.is_active() || effects.emphasis)
     }
 
     /// A node's effects from its resolved CSS, with `rich`'s paint tier over
@@ -899,7 +911,8 @@ impl SceneRichPaint {
                     .iter()
                     .filter(|(_, span)| {
                         let paint = &span.paint;
-                        paint.material.is_some()
+                        paint.emphasis.is_some()
+                            || paint.material.is_some()
                             || paint.decoration.is_some()
                             || paint.decoration_color.is_some()
                             || paint.stroke.is_some()
@@ -925,6 +938,7 @@ fn hash_paint(color: &nana_ui_core::PaintColor, hasher: &mut impl std::hash::Has
 }
 
 fn hash_effects(effects: &SceneTextEffects, hasher: &mut impl std::hash::Hasher) {
+    hasher.write_u8(u8::from(effects.emphasis));
     hasher.write_u64(effects.material.as_ref().map_or(0, |m| m.key()));
     hasher.write_u8(
         u8::from(effects.decoration.underline) | u8::from(effects.decoration.line_through) << 1,
@@ -1006,6 +1020,7 @@ pub fn css_text_effects(style: &nana_ui_core::LayoutStyle) -> SceneTextEffects {
     SceneTextEffects {
         material: style.paint.text_material.clone(),
         decoration: style.text_decoration.unwrap_or_default(),
+        emphasis: false,
         decoration_color: None,
         stroke,
         shadows,
@@ -1333,6 +1348,16 @@ pub fn rich_fill_spans(
     rich: Option<&nana_ui_core::RichText>,
     existing: Vec<SceneTextSpan>,
 ) -> Vec<SceneTextSpan> {
+    rich_fill_spans_with(content, rich, existing, |span| span.paint.color)
+}
+
+/// 使用同一范围合并规则投影作者文字色及文字背景的默认对比色。
+fn rich_fill_spans_with(
+    content: &str,
+    rich: Option<&nana_ui_core::RichText>,
+    existing: Vec<SceneTextSpan>,
+    fill: impl Fn(&nana_ui_core::RichSpanStyle) -> Option<nana_ui_core::PaintColor>,
+) -> Vec<SceneTextSpan> {
     let Some(rich) = rich.filter(|rich| rich.text() == content) else {
         return existing;
     };
@@ -1341,7 +1366,7 @@ pub fn rich_fill_spans(
     taken.sort_unstable();
     let mut out = existing;
     for (range, span) in rich.spans().iter() {
-        let Some(color) = span.paint.color else {
+        let Some(color) = fill(span) else {
             continue;
         };
         let mut cursor = range.start;
@@ -1483,6 +1508,8 @@ struct SceneOrderKey {
     /// Collection identity must not lift scrolling text above sticky bands,
     /// minimaps or popup surfaces owned by the same component.
     paint_layer: u64,
+    /// 同一文字底层内依次绘制宿主背景、文字背景和文字选区。
+    paint_sub_layer: u8,
     slot: u64,
     node: StableNodeId,
 }
@@ -1599,6 +1626,8 @@ pub struct UiScene {
     /// compositor tick can move, scale and fade them the way the glyphs
     /// around them are (the text shader cannot reach them: they are images).
     glyph_objects: NodeMap<(Arc<SceneGlyphPresentation>, Arc<[GlyphObject]>)>,
+    /// 默认文字色依赖祖先表面明度的富文本节点，背景变化仅重建这些绘制。
+    rich_background_dependents: NodeSet,
     /// Identity that changes on node-changing mutation and on Clone.
     /// In-place [`UiScene::apply_delta`] that updates or removes nodes also
     /// gets a fresh value, because product flush mutates a unique `Arc` in
@@ -1641,6 +1670,7 @@ impl Default for UiScene {
             glyph_live: NodeMap::default(),
             chart_live: NodeMap::default(),
             glyph_objects: NodeMap::default(),
+            rich_background_dependents: NodeSet::default(),
             instance: next_scene_instance(),
             corner_shape: nana_ui_core::CornerShape::Round,
         }
@@ -1683,6 +1713,7 @@ impl Clone for UiScene {
             glyph_live: self.glyph_live.clone(),
             chart_live: self.chart_live.clone(),
             glyph_objects: self.glyph_objects.clone(),
+            rich_background_dependents: self.rich_background_dependents.clone(),
             instance: next_scene_instance(),
             corner_shape: self.corner_shape,
         }
@@ -1942,6 +1973,7 @@ impl UiScene {
         self.structure_changed = false;
         let mut removed_nodes = 0;
         let mut changed = Vec::new();
+        let mut background_roots = Vec::new();
         let mut hierarchy_changed = false;
         let mut inherited_roots = HashSet::new();
         let mut custom_paint_changed = false;
@@ -1989,14 +2021,17 @@ impl UiScene {
         let mut inherited_geometry_changed = !inherited_roots.is_empty();
         for node in extracted {
             let previous = self.nodes.get(&node.id);
-            if previous.is_none_or(|old| {
+            if previous.is_some_and(|old| {
                 old.parent != node.parent
-                    || old.source_style.layout.position != node.source_style.layout.position
-                    || old.source_style.layout.overflow_x != node.source_style.layout.overflow_x
-                    || old.source_style.layout.overflow_y != node.source_style.layout.overflow_y
+                    || old.style.background != node.style.background
+                    || old.style.paint_colors.background != node.style.paint_colors.background
             }) {
-                rebind_sticky.extend(self.sticky_nodes.affected(node.id));
-                rebind_sticky.push(node.id);
+                background_roots.push(node.id);
+            }
+            if rich_background::depends_on_backdrop(&node) {
+                self.rich_background_dependents.insert(node.id);
+            } else {
+                self.rich_background_dependents.remove(&node.id);
             }
             // Gaining or losing a painter changes which primitives a node
             // owns without necessarily touching the frame plan, so the
@@ -2155,6 +2190,15 @@ impl UiScene {
                 }
             }
             let mut rebuild = changed;
+            for &id in &self.rich_background_dependents {
+                if background_roots
+                    .iter()
+                    .any(|root| self.node_descends_from(id, *root))
+                {
+                    rebuild.push(id);
+                    delta.paint.push(id);
+                }
+            }
             if !subtree_rebuild.is_empty() {
                 let extracted: NodeSet = rebuild.iter().copied().collect();
                 for root in subtree_rebuild {
@@ -2771,6 +2815,7 @@ impl UiScene {
     }
 
     fn remove_node_primitives(&mut self, id: StableNodeId) {
+        self.rich_background_dependents.remove(&id);
         self.glyph_live.remove(&id);
         self.chart_live.remove(&id);
         self.glyph_objects.remove(&id);
@@ -3820,6 +3865,7 @@ fn has_custom_paint(nodes: &SceneNodes, node: StableNodeId) -> bool {
 
 fn primitive_paint_layer(slot: u64) -> u64 {
     match slot >> 32 {
+        namespace if namespace == u64::from(TEXT_SPAN_BACKGROUND) => 1,
         // Behind the glyphs (layer 2), above a custom-rendered backdrop
         // (layer 1, broken by the much larger slot).
         namespace if namespace == u64::from(DOCUMENT_TEXT_SELECTION) => 1,
@@ -3889,6 +3935,11 @@ impl SceneOrderKey {
         Self {
             stack,
             paint_layer: primitive_paint_layer(primitive.id.slot),
+            paint_sub_layer: match primitive.id.slot >> 32 {
+                namespace if namespace == u64::from(TEXT_SPAN_BACKGROUND) => 1,
+                namespace if namespace == u64::from(DOCUMENT_TEXT_SELECTION) => 2,
+                _ => 0,
+            },
             slot: primitive.id.slot,
             node: primitive.node,
         }

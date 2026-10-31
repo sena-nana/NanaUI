@@ -156,14 +156,11 @@ pub trait ApplicationState: Sized + 'static {
     ) -> Result<RuntimeProgramUpdate, nana_ui_runtime::FrameworkError> {
         Ok(RuntimeProgramUpdate::default())
     }
-    /// Animation samples the host already applied to `id`'s document, with
-    /// the runs that finished or were cancelled. See
-    /// [`RuntimeProgram::animation_frame`].
+    /// 将宿主推进的动画完成事件交给应用状态，显隐生命周期与窗口时钟一致。
     fn animation_frame(
         &mut self,
-        _id: WindowId,
+        _window: &mut ApplicationWindow,
         _frame: nana_ui_runtime::AnimationFrame,
-        _windows: &mut HashMap<WindowId, ApplicationWindow>,
         _context: &RuntimeProgramContext<Self::Message>,
     ) -> Result<RuntimeProgramUpdate, nana_ui_runtime::FrameworkError> {
         Ok(RuntimeProgramUpdate::default())
@@ -271,14 +268,17 @@ impl<State: ApplicationState> RuntimeProgram for RuntimeApplication<State> {
         self.state
             .input_event(id, input, &mut self.windows, context)
     }
+    /// 按窗口路由动画帧；关闭后迟到的事件返回空更新。
     fn animation_frame(
         &mut self,
         id: WindowId,
         frame: nana_ui_runtime::AnimationFrame,
         context: &RuntimeProgramContext<Self::Message>,
     ) -> Result<RuntimeProgramUpdate, nana_ui_runtime::FrameworkError> {
-        self.state
-            .animation_frame(id, frame, &mut self.windows, context)
+        match self.windows.get_mut(&id) {
+            Some(window) => self.state.animation_frame(window, frame, context),
+            None => Ok(RuntimeProgramUpdate::default()),
+        }
     }
     fn next_wakeup(&self) -> Option<Instant> {
         self.state.next_wakeup()
@@ -459,6 +459,10 @@ impl<State: ApplicationState> RuntimeProgram for RuntimeApplication<State> {
             .startup_changed(status, &mut self.windows, context)
     }
 }
+
+#[cfg(test)]
+#[path = "../tests/fixtures/application_animation.rs"]
+mod animation_tests;
 
 #[cfg(test)]
 mod tests {

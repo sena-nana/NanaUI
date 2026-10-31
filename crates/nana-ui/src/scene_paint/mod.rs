@@ -3314,31 +3314,29 @@ fn encode_ordered(
                     index += 1;
                     continue;
                 }
-                // Where the group can change its parent: a blend that reads
-                // the backdrop copies and composites only there.
+                // 每个组只合成实际影响的保守范围，减少小裁剪层的全屏片元开销。
+                // 会扩散像素的滤镜和边界未知的绘制仍使用整个目标。
                 let whole = PhysicalRect {
                     x: 0,
                     y: 0,
                     width: dest_physical[0],
                     height: dest_physical[1],
                 };
-                let mut area = None;
-                if dest.reads_backdrop(frame.slot) {
-                    let region = match pipelines.group_extents.get(frame.slot as usize) {
-                        Some(GroupExtent::Empty) => {
-                            // Nothing drawn: every blend of a transparent
-                            // source leaves the backdrop as it was.
-                            index += 1;
-                            continue;
-                        }
-                        Some(GroupExtent::Rect(rect)) => intersect_physical(*rect, whole),
-                        Some(GroupExtent::All) | None => whole,
-                    };
-                    if region.width == 0 || region.height == 0 {
+                let region = match pipelines.group_extents.get(frame.slot as usize) {
+                    Some(GroupExtent::Empty) => {
+                        // Nothing drawn: every blend of a transparent
+                        // source leaves the backdrop as it was.
                         index += 1;
                         continue;
                     }
-                    area = Some(region);
+                    Some(GroupExtent::Rect(rect)) => intersect_physical(*rect, whole),
+                    Some(GroupExtent::All) | None => whole,
+                };
+                if region.width == 0 || region.height == 0 {
+                    index += 1;
+                    continue;
+                }
+                if dest.reads_backdrop(frame.slot) {
                     // The blend reads what it lands on: bring the parent up
                     // to date — a first use still has to clear it — and copy
                     // it before compositing over it.
@@ -3379,9 +3377,8 @@ fn encode_ordered(
                     }
                 };
                 restore_dest_viewport(&mut pass, dest_physical);
-                if let Some(area) = area {
-                    pass.set_scissor_rect(area.x, area.y, area.width, area.height);
-                }
+                pass.set_scissor_rect(region.x, region.y, region.width, region.height);
+                dest_passes.composite_pixels += u64::from(region.width) * u64::from(region.height);
                 dest.composite_group(&mut pass, frame.layer, frame.slot, Some(pipelines.gpu_work));
                 drop(pass);
                 index += 1;

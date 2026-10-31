@@ -171,7 +171,7 @@ impl Source {
 
     fn retained_bytes(&self) -> u64 {
         match self {
-            // A `data:` URL is the whole encoded image.
+            // data URL 自身持有完整的 Base64 图片，纳入驻留预算。
             Self::Url(url) => url.capacity() as u64,
             Self::Bytes { bytes, .. } => bytes.len() as u64,
         }
@@ -975,7 +975,7 @@ impl UrlTextureCache {
                 if entry.used.get() == self.frame {
                     continue;
                 }
-                // The key is the URL too, held even by a failed entry.
+                // 失败结果也持有缓存键；大 data URL 的键和解码源分别占内存。
                 let size = entry.bytes()
                     + key.capacity() as u64
                     + std::mem::size_of::<(String, Entry)>() as u64;
@@ -1348,6 +1348,10 @@ impl UrlTextureCache {
             .map(|texture| (texture.width, texture.height, texture.mip_levels))
     }
 }
+
+#[cfg(test)]
+#[path = "url_texture_cache_budget_tests.rs"]
+mod budget_tests;
 
 #[cfg(test)]
 mod tests {
