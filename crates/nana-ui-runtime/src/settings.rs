@@ -84,6 +84,10 @@ pub struct SettingsRow {
     /// The [`ValidationMessage`] under the label, made the first time the
     /// row has an [`Self::error`] and hidden while it has none.
     pub(crate) error_slot: Option<StableNodeId>,
+    /// Whether the last assembly showed an error; `None` before the first.
+    /// A reason that appears on a row already there takes the focus to the
+    /// row's control (see [`AppContext::assemble_settings_row`]).
+    pub(crate) error_shown: Option<bool>,
     pub(crate) copy_slot: Option<StableNodeId>,
     /// The line holding the label and its accessory, only while there is an
     /// accessory: without one the label sits in the copy itself.
@@ -124,6 +128,7 @@ impl SettingsRow {
             label_slot: None,
             hint_slot: None,
             error_slot: None,
+            error_shown: None,
             copy_slot: None,
             label_line_slot: None,
             flash_slot: None,
@@ -2790,7 +2795,9 @@ impl AppContext {
         let (accessory, line_slot, flash_slot) = self.read(row, |row| {
             (row.label_accessory, row.label_line_slot, row.flash_slot)
         })?;
-        let (error, error_slot) = self.read(row, |row| (row.error.is_some(), row.error_slot))?;
+        let (error, error_slot, error_shown) = self.read(row, |row| {
+            (row.error.is_some(), row.error_slot, row.error_shown)
+        })?;
         let (column, trailing, control_slot, value_slot, trailing_slot) =
             self.read(row, |row| {
                 (
@@ -2935,6 +2942,21 @@ impl AppContext {
             }
         }
         let control = live(self, control);
+        if error_shown != Some(error) {
+            self.update_component(row, |row, _| row.error_shown = Some(error))?;
+        }
+        // A reason that has just appeared on a row already there takes the
+        // focus to the field it is about, when the focus is in this document
+        // (on the button that submitted, say): the user lands where the fix
+        // goes, and a screen reader reads the field and the reason. A row
+        // built with its error, or focus in another window, is left alone.
+        if error
+            && error_shown == Some(false)
+            && self.world().focused(document).is_some()
+            && let Some(control) = control
+        {
+            self.focus_first_in(document, control)?;
+        }
         // a label column or a trailing node puts the control in a box of its
         // own, which holds the trailing node after it
         let trailing = live(self, trailing);

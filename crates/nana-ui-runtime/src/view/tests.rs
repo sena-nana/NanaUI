@@ -6330,3 +6330,61 @@ fn a_settings_rows_error_takes_the_hints_place() {
     assert!(!spoken.invalid);
     assert_eq!(spoken.value.as_deref(), Some("The editor listens here"));
 }
+
+/// A reason that appears on a row takes the focus to the row's field, from
+/// the button that submitted it: the user lands where the fix goes. A row
+/// built with its error, or a document without focus, keeps the focus put.
+#[test]
+fn a_settings_rows_new_error_takes_the_focus_to_its_field() {
+    let (mut cx, document, parent) = setup();
+    let state = std::cell::Cell::new(None);
+    cx.mount_view(parent, || {
+        let error = signal(None::<std::sync::Arc<str>>);
+        state.set(Some(error));
+        (
+            settings_row("password")
+                .error(move || error.get())
+                .control(text_input()),
+            button("Create"),
+            settings_row("already")
+                .error(Some(std::sync::Arc::from("Wrong")))
+                .control(text_input()),
+        )
+    })
+    .unwrap();
+    let error = state.get().unwrap();
+    let children = cx.world().node(parent).unwrap().children;
+    let (row, submit, already) = (children[0], children[1], children[2]);
+    let field = |cx: &AppContext, row: StableNodeId| {
+        cx.read(Entity::<crate::SettingsRow>::from_stable_id(row), |row| {
+            row.control
+        })
+        .unwrap()
+        .unwrap()
+    };
+    assert_ne!(
+        cx.world().focused(document),
+        Some(field(&cx, already)),
+        "a row built with its error takes no focus"
+    );
+
+    error.set(Some("Type a password".into()));
+    cx.flush_reactive().unwrap();
+    assert_eq!(cx.world().focused(document), None, "nothing had the focus");
+    error.set(None);
+    cx.flush_reactive().unwrap();
+
+    cx.focus_node(document, submit).unwrap();
+    error.set(Some("Type a password".into()));
+    cx.flush_reactive().unwrap();
+    assert_eq!(cx.world().focused(document), Some(field(&cx, row)));
+
+    cx.focus_node(document, submit).unwrap();
+    error.set(Some("Still empty".into()));
+    cx.flush_reactive().unwrap();
+    assert_eq!(
+        cx.world().focused(document),
+        Some(submit),
+        "a reason that only changes words stays where it is"
+    );
+}
