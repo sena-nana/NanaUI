@@ -37,7 +37,11 @@ members = [
     "examples/reactive-sfc",
 ]
 resolver = "2"
-exclude = ["tools/css-parity-webview", "crates/nana-icons-tabler"]
+exclude = ["tools/css-parity-webview", "crates/nana-icons-tabler", "platform/winit-win32"]
+
+# Windows IMM 同步回调前释放窗口状态锁；其余后端保留固定上游版本。
+[patch."https://github.com/rust-windowing/winit"]
+winit-win32 = { path = "platform/winit-win32" }
 
 [workspace.dependencies]
 nana-ui-core = { path = "crates/nana-ui-core" }

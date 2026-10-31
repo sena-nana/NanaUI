@@ -62,9 +62,9 @@ fn platform_high_contrast() -> Option<bool> {
             flags: 0,
             scheme: std::ptr::null_mut(),
         };
-        // SAFETY: SPI_GETHIGHCONTRAST writes one HIGHCONTRASTW. The scheme
-        // pointer it fills in belongs to USER32, not to the caller: freeing
-        // it corrupts the process heap on the next settings change.
+        // SAFETY: SPI_GETHIGHCONTRAST writes one HIGHCONTRASTW. Windows owns
+        // the scheme pointer returned in this structure; it remains a shared
+        // USER32 cache entry and must not be released by the caller.
         let ok = unsafe {
             SystemParametersInfoW(SPI_GETHIGHCONTRAST, info.cb_size, (&raw mut info).cast(), 0)
         };
@@ -114,5 +114,22 @@ mod tests {
         assert!(system_high_contrast().is_some());
         #[cfg(not(target_os = "windows"))]
         assert!(system_high_contrast().is_none());
+    }
+
+    /// `SPI_GETHIGHCONTRAST` returns a USER32-owned scheme pointer. Keep a
+    /// live heap allocation across repeated reads so an accidental `LocalFree`
+    /// is caught by the Windows heap instead of being hidden by one call.
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn repeated_platform_reads_leave_caller_heap_allocations_valid() {
+        let guard = Box::new([0x5au8; 256]);
+        for _ in 0..64 {
+            let before = system_high_contrast();
+            assert!(before.is_some());
+            assert!(guard.iter().all(|&byte| byte == 0x5a));
+            let after = system_high_contrast();
+            assert_eq!(after, before);
+            assert!(guard.iter().all(|&byte| byte == 0x5a));
+        }
     }
 }
