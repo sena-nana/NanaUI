@@ -677,15 +677,20 @@ pub struct SceneGlyphPresentation {
     /// when no grapheme plays an effect.
     pub cluster_effects: Arc<[u16]>,
     pub reveal: Option<nana_ui_core::RevealSchedule>,
+    /// The writing mode of the text it presents, the node's own: which page
+    /// direction a wave, a jump and a rise take
+    /// ([`nana_ui_core::evaluate_glyph_chain_in`]).
+    pub writing_mode: WritingModeSpec,
 }
 
 impl SceneGlyphPresentation {
-    /// The presentation of `content` under `presentation`, its graphemes'
-    /// effect indices read from `rich`'s spans.
+    /// The presentation of `content`, set in `writing_mode`, under
+    /// `presentation`, its graphemes' effect indices read from `rich`'s spans.
     pub fn new(
         content: &str,
         rich: Option<&nana_ui_core::RichText>,
         presentation: &nana_ui_core::GlyphPresentation,
+        writing_mode: WritingModeSpec,
     ) -> Option<Arc<Self>> {
         use unicode_segmentation::UnicodeSegmentation;
         let mut any = false;
@@ -726,7 +731,24 @@ impl SceneGlyphPresentation {
             },
             transitions: presentation.transitions.clone(),
             reveal: presentation.reveal.clone(),
+            writing_mode,
         }))
+    }
+
+    /// Grapheme `ordinal`'s look at `now`: what the text shader draws it as.
+    pub fn sample(
+        &self,
+        reveal: Option<&nana_ui_core::RevealSchedule>,
+        ordinal: u32,
+        now: std::time::Duration,
+    ) -> nana_ui_core::GlyphSample {
+        nana_ui_core::evaluate_glyph_chain_in(
+            self.effects_of(ordinal as usize),
+            reveal,
+            ordinal,
+            now,
+            self.writing_mode,
+        )
     }
 
     /// Until when it changes what is drawn; `None` while an effect loops.
@@ -2796,12 +2818,7 @@ impl UiScene {
                     r.intro.rise_px = 0.;
                 }
                 let reveal_now = presentation.transitions.freeze_reveal.unwrap_or(now);
-                let sample = nana_ui_core::evaluate_glyph_chain(
-                    presentation.effects_of(object.ordinal as usize),
-                    reveal.as_ref(),
-                    object.ordinal,
-                    reveal_now,
-                );
+                let sample = presentation.sample(reveal.as_ref(), object.ordinal, reveal_now);
                 let [cx, cy] = object.center;
                 let scale = sample.scale;
                 let local = AffineTransform::from_matrix([

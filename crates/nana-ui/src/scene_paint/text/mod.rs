@@ -5334,6 +5334,7 @@ mod tests {
             effect_chains: Arc::from([]),
             cluster_effects: cluster_effects.into(),
             reveal,
+            writing_mode: nana_ui_core::WritingModeSpec::HorizontalTb,
         })
     }
 
@@ -5406,6 +5407,7 @@ mod tests {
             effect_chains: vec![nana_ui_core::GlyphEffectChain::new(vec![wave, rainbow])].into(),
             cluster_effects: vec![0].into(),
             reveal: None,
+            writing_mode: nana_ui_core::WritingModeSpec::HorizontalTb,
         });
         let composed = paint_presented(&device, &queue, &mut pipeline, Some(&chain), crest)
             .expect("combined effects draw");
