@@ -150,6 +150,12 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
             self.rearm_frame_demand(id);
             return;
         }
+        // Until the startup thread's painter arrives the splash, or nothing,
+        // stays up; its arrival wakes the loop and asks for this frame again.
+        if !self.take_startup_painter(false) {
+            self.rearm_frame_demand(id);
+            return;
+        }
         // AppKit calls this synchronously from its live-resize tracking loop.
         // A step inside the commit interval returns before surface configure
         // and document layout; the drawable already on screen stays up.
@@ -840,6 +846,15 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
         &mut self,
         profile: crate::ScenePresentationProfile,
     ) -> &mut SceneWgpuPainter {
+        // Building another painter for it would only compile the same
+        // pipelines again.
+        if self
+            .startup_painter
+            .as_ref()
+            .is_some_and(|(built, _)| *built == profile)
+        {
+            self.take_startup_painter(true);
+        }
         // A device switch clears the map; a painter that still names another
         // device would only refuse every frame.
         let current = self.graphics.gpu().generation();
@@ -857,6 +872,37 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
         self.painters
             .get_mut(&profile)
             .expect("painter was just inserted")
+    }
+
+    /// Takes the painter the startup thread built, once it has, waiting for it
+    /// when `wait`. Returns whether none is still to come.
+    pub(super) fn take_startup_painter(&mut self, wait: bool) -> bool {
+        let Some((_, receiver)) = &self.startup_painter else {
+            return true;
+        };
+        let received = if wait {
+            receiver
+                .recv()
+                .map_err(|_| mpsc::TryRecvError::Disconnected)
+        } else {
+            receiver.try_recv()
+        };
+        let built = match received {
+            Ok(built) => built,
+            Err(mpsc::TryRecvError::Empty) => return false,
+            // The thread stopped without one; a painter is built when needed.
+            Err(mpsc::TryRecvError::Disconnected) => {
+                self.startup_painter = None;
+                return true;
+            }
+        };
+        self.startup_painter = None;
+        startup::record_device_start(&self.startup.handle, None, Some(built.build));
+        let profile = built.painter.presentation();
+        if !self.painters.contains_key(&profile) {
+            self.adopt_painter(profile, built.painter);
+        }
+        true
     }
 
     /// Installs a painter built elsewhere (the startup thread builds the first

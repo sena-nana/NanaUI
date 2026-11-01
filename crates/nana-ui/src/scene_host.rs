@@ -307,6 +307,12 @@ struct WindowManager<Program: RuntimeProgram> {
     /// that wakes it; re-subscribed only when the slot set or registry changes.
     texture_subscriptions: HashMap<WindowId, (HashSet<Arc<str>>, crate::TextureSubscription)>,
     texture_redraws: Arc<Mutex<HashSet<WindowId>>>,
+    /// The painter the startup thread is still building, for this profile.
+    /// Windows do not present until it arrives; see `take_startup_painter`.
+    startup_painter: Option<(
+        crate::ScenePresentationProfile,
+        Receiver<startup::StartupPainter>,
+    )>,
     /// Set when a skin material compiled off the UI thread is ready: every
     /// window paints again, since any of them may draw it.
     material_redraws: Arc<std::sync::atomic::AtomicBool>,
@@ -1077,8 +1083,11 @@ struct PrimaryStart {
     /// Created before the window was first shown, when it was shown early.
     #[cfg(not(target_os = "android"))]
     accessibility: Option<HostedAccessibility>,
-    /// Built off the event thread together with the device.
-    painter: Option<SceneWgpuPainter>,
+    /// Being built off the event thread, on the device, for this profile.
+    painter: Option<(
+        crate::ScenePresentationProfile,
+        Receiver<startup::StartupPainter>,
+    )>,
     /// Rendered off the event thread while the device was requested.
     icons: Option<Receiver<SceneIcons>>,
     startup: startup::HostStartup,
@@ -1332,6 +1341,7 @@ fn complete_startup<Program: RuntimeProgram>(
         direct_output_traces: HashMap::new(),
         texture_subscriptions: HashMap::new(),
         texture_redraws: Arc::new(Mutex::new(HashSet::new())),
+        startup_painter: None,
         material_redraws: Arc::new(std::sync::atomic::AtomicBool::new(false)),
         material_waker: None,
         image_targets: Arc::new(Mutex::new(HashMap::new())),
@@ -1373,12 +1383,15 @@ fn complete_startup<Program: RuntimeProgram>(
         .sync_animation_clock(ready.animation_clock.epoch());
     ready.sync_document_reduced_motion(WindowId::PRIMARY);
     ready.apply_high_contrast(WindowId::PRIMARY);
+    // The startup thread is usually still compiling the painter's pipelines:
+    // the program initialized meanwhile. Windows present once it arrives (see
+    // `take_startup_painter`); one of another profile is built here.
     match early_painter {
-        Some(painter) if painter.presentation() == profile => ready.adopt_painter(profile, painter),
-        Some(_) => {
-            let _ = ready.painter_mut(profile);
+        Some((built, painter)) if built == profile => {
+            ready.startup_painter = Some((built, painter));
+            ready.take_startup_painter(false);
         }
-        None => {
+        _ => {
             let _ = ready.painter_mut(profile);
         }
     }

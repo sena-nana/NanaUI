@@ -183,15 +183,22 @@ pub(super) struct LoadingStartup<Message> {
     pub(super) entry: Instant,
 }
 
-/// What the startup thread sends back: a device for the surface, and the
-/// scene painter built on it, so the pipelines are not compiled on the event
-/// thread either.
+/// What the startup thread sends back: a device for the surface, and where
+/// the scene painter it goes on to build on that device will arrive. The
+/// painter's pipelines are not compiled on the event thread either, and the
+/// program initializes while they compile.
 pub(super) struct DeviceStart {
     device: Result<AcquiredDevice, String>,
-    painter: Option<SceneWgpuPainter>,
-    /// How long the request and the painter took on the startup thread.
+    painter: Option<Receiver<StartupPainter>>,
+    /// How long the request took on the startup thread.
     device_request: Option<Duration>,
-    painter_build: Option<Duration>,
+}
+
+/// The scene painter the startup thread built for the device it sent, and how
+/// long that took.
+pub(super) struct StartupPainter {
+    pub(super) painter: SceneWgpuPainter,
+    pub(super) build: Duration,
 }
 
 /// One presentation target being tried. Fields drop in declaration order:
@@ -329,7 +336,6 @@ impl<Message: Send + 'static> PendingStartup<Message> {
                 device: Err("the GPU startup thread stopped without a device".into()),
                 painter: None,
                 device_request: None,
-                painter_build: None,
             }),
         }
     }
@@ -520,7 +526,14 @@ impl<Message: Send + 'static> PendingStartup<Message> {
             .take()
             .expect("a device result belongs to an attempt");
         let target = self.target;
-        record_device_start(&self.handle, start.device_request, start.painter_build);
+        record_device_start(&self.handle, start.device_request, None);
+        let painter = start.painter.zip(
+            start
+                .device
+                .as_ref()
+                .ok()
+                .map(AcquiredDevice::scene_profile),
+        );
         let bound = start
             .device
             .and_then(|device| surface.finish(device).map_err(|error| error.to_string()))
@@ -558,7 +571,7 @@ impl<Message: Send + 'static> PendingStartup<Message> {
                 },
                 #[cfg(not(target_os = "android"))]
                 accessibility,
-                painter: start.painter,
+                painter: painter.map(|(receiver, profile)| (profile, receiver)),
                 icons: self.icons,
                 startup,
             },
@@ -595,7 +608,7 @@ fn spawn_icon_render(
 }
 
 /// Adds one attempt's startup-thread durations to the record and the gauges.
-fn record_device_start(
+pub(super) fn record_device_start(
     handle: &StartupHandle,
     device_request: Option<Duration>,
     painter_build: Option<Duration>,
@@ -642,16 +655,17 @@ fn spawn_device_request(
                 pollster::block_on(request.acquire()).map_err(|error| error.to_string())
             };
             let device_request = device.is_ok().then(|| requested.elapsed());
-            let built = Instant::now();
-            let painter = device.as_ref().ok().map(|device| {
-                SceneWgpuPainter::new_with_presentation(device.gpu(), device.scene_profile())
-            });
-            let painter_build = painter.is_some().then(|| built.elapsed());
+            // The device goes back first, so the program initializes while
+            // the painter's pipelines compile here.
+            let build = device
+                .as_ref()
+                .ok()
+                .map(|device| (device.gpu().clone(), device.scene_profile()));
+            let (painter_sender, painter) = mpsc::channel();
             if let Err(unsent) = sender.send(DeviceStart {
                 device,
-                painter,
+                painter: build.is_some().then_some(painter),
                 device_request,
-                painter_build,
             }) {
                 // The host went away. The surface holds a reference to its
                 // window, which must not be released off the window's thread:
@@ -660,6 +674,19 @@ fn spawn_device_request(
                 return;
             }
             proxy.wake_up();
+            if let Some((gpu, profile)) = build {
+                let built = Instant::now();
+                let painter = SceneWgpuPainter::new_with_presentation(&gpu, profile);
+                if painter_sender
+                    .send(StartupPainter {
+                        painter,
+                        build: built.elapsed(),
+                    })
+                    .is_ok()
+                {
+                    proxy.wake_up();
+                }
+            }
         })
         .map_err(|error| format!("failed to start the GPU startup thread: {error}"))?;
     Ok(receiver)

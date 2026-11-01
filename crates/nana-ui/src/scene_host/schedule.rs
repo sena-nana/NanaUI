@@ -300,6 +300,10 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
     ) -> Option<Instant> {
         let mut changed =
             std::mem::take(&mut *self.texture_redraws.lock().expect("texture redraws"));
+        // The startup painter arrived: the frames held for it are due.
+        if self.startup_painter.is_some() && self.take_startup_painter(false) {
+            changed.extend(self.known_window_ids());
+        }
         if self
             .material_redraws
             .swap(false, std::sync::atomic::Ordering::AcqRel)
