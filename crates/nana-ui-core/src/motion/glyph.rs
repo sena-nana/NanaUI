@@ -12,9 +12,18 @@
 //! hour (so a long session keeps f32 precision; the loop restarts on the
 //! hour); a reveal's on whole seconds since its start, subtracted as
 //! integers.
+//!
+//! "Up" is line-relative: the line-over side of the text's line, which is the
+//! page's top in `horizontal-tb` and its right in both vertical modes (CSS
+//! Writing Modes §6.4; a sideways run of a vertical line is turned clockwise,
+//! so its glyphs' tops face right too). Wave, jump and a rise move across the
+//! line, never along it, so a vertical column keeps its spacing. Shake,
+//! rainbow, pulse and flicker have no direction.
 
 use std::sync::Arc;
 use std::time::Duration;
+
+use crate::box_layout::WritingModeSpec;
 
 /// What a looping effect does to each glyph.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -22,9 +31,11 @@ pub enum GlyphEffectKind {
     /// Jitter by up to `amplitude` px each way, a new position `frequency`
     /// times a second.
     Shake,
-    /// Bob up and down by `amplitude` px.
+    /// Bob up and down by `amplitude` px: across the line, so right and left
+    /// on a vertical one.
     Wave,
-    /// Hop up by `amplitude` px and land.
+    /// Hop up by `amplitude` px and land: toward the line-over side, the
+    /// right of a vertical line.
     Jump,
     /// Cycle the hue, `frequency` turns a second.
     Rainbow,
@@ -136,7 +147,8 @@ pub struct GlyphIntro {
     pub fade: bool,
     /// Grow from half size.
     pub pop: bool,
-    /// Rise from this many px below.
+    /// Rise from this many px below: from the line-under side, the left of a
+    /// vertical line.
     pub rise_px: f32,
     pub duration_s: f32,
     pub easing: GlyphEasing,
@@ -427,7 +439,8 @@ pub fn rainbow_color(hue: f32) -> [f32; 3] {
     [channel(5.0), channel(3.0), channel(1.0)]
 }
 
-/// Glyph `ordinal`'s look at `now` under `effect` and `reveal`.
+/// Glyph `ordinal`'s look at `now` under `effect` and `reveal`, on a
+/// horizontal line.
 pub fn evaluate_glyph(
     effect: Option<&GlyphEffect>,
     reveal: Option<&RevealSchedule>,
@@ -442,28 +455,59 @@ pub fn evaluate_glyph(
     )
 }
 
-/// CPU counterpart of the text shader, also used for inline objects.
+/// CPU counterpart of the text shader, on a horizontal line. Text in another
+/// writing mode goes through [`evaluate_glyph_chain_in`].
 pub fn evaluate_glyph_chain(
     effects: &[GlyphEffect],
     reveal: Option<&RevealSchedule>,
     ordinal: u32,
     now: Duration,
 ) -> GlyphSample {
+    evaluate_glyph_chain_in(effects, reveal, ordinal, now, WritingModeSpec::HorizontalTb)
+}
+
+/// CPU counterpart of the text shader for text set in `writing_mode`, also
+/// used for inline objects: a vertical line takes the wave, the jump and the
+/// rise across itself, `(0, dy)` on the page becoming `(-dy, 0)`.
+pub fn evaluate_glyph_chain_in(
+    effects: &[GlyphEffect],
+    reveal: Option<&RevealSchedule>,
+    ordinal: u32,
+    now: Duration,
+    writing_mode: WritingModeSpec,
+) -> GlyphSample {
+    let vertical = writing_mode.is_vertical();
     let mut sample = GlyphSample::IDENTITY;
     for effect in effects.iter().filter(|effect| effect.is_effective()) {
-        apply_effect(&mut sample, effect, ordinal, effect_clock(now));
+        apply_effect(&mut sample, effect, ordinal, effect_clock(now), vertical);
     }
     if let Some(reveal) = reveal {
         let (now_secs, now_fraction) = split_seconds(now);
         let (start_secs, start_fraction) = split_seconds(reveal.start);
         let since =
             now_secs.wrapping_sub(start_secs) as i32 as f32 + (now_fraction - start_fraction);
-        apply_reveal(&mut sample, reveal, ordinal, since);
+        apply_reveal(&mut sample, reveal, ordinal, since, vertical);
     }
     sample
 }
 
-fn apply_effect(sample: &mut GlyphSample, effect: &GlyphEffect, ordinal: u32, clock: f32) {
+/// Move `sample` `px` toward the line-over side: up on the page, or right on
+/// a vertical line. `glyph_over` in `text_atlas.wgsl` is the same step.
+fn lift(sample: &mut GlyphSample, vertical: bool, px: f32) {
+    if vertical {
+        sample.offset[0] += px;
+    } else {
+        sample.offset[1] -= px;
+    }
+}
+
+fn apply_effect(
+    sample: &mut GlyphSample,
+    effect: &GlyphEffect,
+    ordinal: u32,
+    clock: f32,
+    vertical: bool,
+) {
     let phase = clock * effect.frequency_hz - ordinal as f32 * effect.stagger;
     let tau = std::f32::consts::TAU;
     match effect.kind {
@@ -474,10 +518,14 @@ fn apply_effect(sample: &mut GlyphSample, effect: &GlyphEffect, ordinal: u32, cl
             sample.offset[1] += (unit(glyph_hash(seed)) * 2.0 - 1.0) * effect.amplitude;
         }
         GlyphEffectKind::Wave => {
-            sample.offset[1] -= effect.amplitude * (tau * phase).sin();
+            lift(sample, vertical, effect.amplitude * (tau * phase).sin());
         }
         GlyphEffectKind::Jump => {
-            sample.offset[1] -= effect.amplitude * (std::f32::consts::PI * phase).sin().abs();
+            lift(
+                sample,
+                vertical,
+                effect.amplitude * (std::f32::consts::PI * phase).sin().abs(),
+            );
         }
         GlyphEffectKind::Rainbow => {
             sample.color = Some(rainbow_color(phase));
@@ -494,7 +542,13 @@ fn apply_effect(sample: &mut GlyphSample, effect: &GlyphEffect, ordinal: u32, cl
     }
 }
 
-fn apply_reveal(sample: &mut GlyphSample, reveal: &RevealSchedule, ordinal: u32, since: f32) {
+fn apply_reveal(
+    sample: &mut GlyphSample,
+    reveal: &RevealSchedule,
+    ordinal: u32,
+    since: f32,
+    vertical: bool,
+) {
     let scheduled = reveal.at_s.get(ordinal as usize).copied();
     let limited = reveal.limit.is_some_and(|limit| ordinal >= limit);
     let Some(at) = scheduled.filter(|_| !limited) else {
@@ -518,7 +572,7 @@ fn apply_reveal(sample: &mut GlyphSample, reveal: &RevealSchedule, ordinal: u32,
     if intro.pop {
         sample.scale *= 0.5 + 0.5 * eased;
     }
-    sample.offset[1] += intro.rise_px * (1.0 - eased);
+    lift(sample, vertical, -(intro.rise_px * (1.0 - eased)));
 }
 
 #[cfg(test)]
@@ -626,5 +680,59 @@ mod tests {
         let rainbow = evaluate_glyph(Some(&GlyphEffect::rainbow()), None, 0, Duration::ZERO);
         assert!(rainbow.color.is_some());
         assert!((GlyphEasing::BackOut.sample(1.0) - 1.0).abs() < 1e-5);
+    }
+
+    #[test]
+    fn a_vertical_line_takes_wave_jump_and_rise_across_itself() {
+        let crest = Duration::from_secs_f32(0.25 / 1.2);
+        let wave = [GlyphEffect::wave(4.0)];
+        let jump = [GlyphEffect::jump(5.0)];
+        let shake = [GlyphEffect::shake(3.0)];
+        let reveal = RevealSchedule::new(Duration::ZERO, vec![0.0; 4]).intro(GlyphIntro {
+            pop: true,
+            ..GlyphIntro::rise(8.0, 1.0)
+        });
+        let half = Duration::from_millis(500);
+        let jitter = Duration::from_millis(12_345);
+        let horizontal = |effects: &[GlyphEffect], reveal, now| {
+            evaluate_glyph_chain_in(effects, reveal, 3, now, WritingModeSpec::HorizontalTb)
+        };
+        for mode in [WritingModeSpec::VerticalRl, WritingModeSpec::VerticalLr] {
+            let vertical = |effects: &[GlyphEffect], reveal, now| {
+                evaluate_glyph_chain_in(effects, reveal, 3, now, mode)
+            };
+            for (effects, reveal, now) in [
+                (&wave[..], None, crest),
+                (&jump[..], None, crest),
+                (&[][..], Some(&reveal), half),
+                (&[wave[0], jump[0]][..], Some(&reveal), half),
+            ] {
+                let across = horizontal(effects, reveal, now);
+                let down = vertical(effects, reveal, now);
+                // `(0, dy)` on a horizontal line is `(-dy, 0)` down a column:
+                // line-over is the right in both vertical modes.
+                assert_eq!(across.offset[0], 0.0, "{mode:?}");
+                assert_eq!(down.offset, [-across.offset[1], 0.0], "{mode:?}");
+                assert_eq!(
+                    (down.scale, down.alpha, down.color),
+                    (across.scale, across.alpha, across.color),
+                    "{mode:?}: only the direction turns"
+                );
+            }
+            // The first glyph's crest leans toward the line-over side.
+            let peak = evaluate_glyph_chain_in(&wave, None, 0, crest, mode);
+            assert!((peak.offset[0] - 4.0).abs() < 1e-3, "{mode:?}: {peak:?}");
+            let entering = vertical(&[], Some(&reveal), half);
+            assert!(entering.offset[0] < 0.0, "{mode:?}: enters from the left");
+            assert_eq!(
+                vertical(&shake, None, jitter),
+                horizontal(&shake, None, jitter),
+                "{mode:?}: a shake has no direction to turn"
+            );
+        }
+        assert_eq!(
+            horizontal(&wave, Some(&reveal), half),
+            evaluate_glyph_chain(&wave, Some(&reveal), 3, half)
+        );
     }
 }
