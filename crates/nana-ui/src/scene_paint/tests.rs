@@ -13985,3 +13985,189 @@ fn a_new_painter_holds_the_pipelines_its_first_frame_draws_with() {
         "and its own subpixel program"
     );
 }
+
+/// The quad family from its precompiled DXIL paints what it paints from WGSL.
+/// Needs a DX12 adapter that takes passthrough shaders (WARP does); run with
+/// `--ignored --test-threads=1` after regenerating the DXIL.
+#[cfg(target_os = "windows")]
+mod precompiled_quads {
+    use super::*;
+
+    /// A DX12 device; with `passthrough`, one that runs precompiled stages.
+    fn dx12(passthrough: bool) -> nana_gpu::GpuContext {
+        let mut descriptor = wgpu::InstanceDescriptor {
+            backends: wgpu::Backends::DX12,
+            flags: wgpu::InstanceFlags::empty(),
+            ..wgpu::InstanceDescriptor::new_without_display_handle()
+        };
+        if let Ok(dxc_path) = std::env::var("NANA_DXC_PATH") {
+            descriptor.backend_options.dx12.shader_compiler =
+                wgpu::Dx12Compiler::DynamicDxc { dxc_path };
+        }
+        let instance = wgpu::Instance::new(descriptor);
+        let adapter = pollster::block_on(instance.request_adapter(&Default::default()))
+            .expect("a DX12 adapter");
+        let wanted = if passthrough {
+            wgpu::Features::DUAL_SOURCE_BLENDING | wgpu::Features::PASSTHROUGH_SHADERS
+        } else {
+            wgpu::Features::DUAL_SOURCE_BLENDING
+        };
+        let (device, queue) = pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
+            label: Some("nana-ui precompiled quads"),
+            required_features: adapter.features() & wanted,
+            required_limits: wgpu::Limits::default(),
+            memory_hints: wgpu::MemoryHints::MemoryUsage,
+            trace: wgpu::Trace::Off,
+            experimental_features: wgpu::ExperimentalFeatures::disabled(),
+        }))
+        .expect("a DX12 device");
+        __framework::adopt(adapter, device, queue)
+    }
+
+    fn shadow(blur: f32, inset: bool, color: [f32; 4]) -> nana_ui_core::BoxShadowSpec {
+        nana_ui_core::BoxShadowSpec {
+            paint_color: None,
+            offset_x: if inset { 0.0 } else { 4.0 },
+            offset_y: if inset { 0.0 } else { 6.0 },
+            blur_radius: blur,
+            spread_radius: if inset { 0.0 } else { 1.0 },
+            color,
+            inset,
+        }
+    }
+
+    /// Rounded, bordered, dashed, translucent and shadowed quads.
+    fn quads_scene() -> UiScene {
+        let style = |background: [f32; 4]| nana_ui_core::LayoutStyle {
+            background: Some(background),
+            ..Default::default()
+        };
+        let shadowed = |shadow: nana_ui_core::BoxShadowSpec| nana_ui_core::PaintStyle {
+            box_shadows: vec![shadow],
+            ..Default::default()
+        };
+        let page = [0.9, 0.9, 0.95, 1.0];
+        let blue = [0.2, 0.5, 0.9, 1.0];
+        let green = [0.1, 0.7, 0.3, 1.0];
+        let white = [1.0, 1.0, 1.0, 1.0];
+        let yellow = [0.95, 0.85, 0.3, 1.0];
+        let mut scene = UiScene::new();
+        scene.apply_delta(
+            [
+                extracted_div(
+                    1,
+                    &[2, 3, 4, 5],
+                    0.0,
+                    0.0,
+                    200.0,
+                    120.0,
+                    style(page),
+                    Some(page),
+                ),
+                extracted_div(
+                    2,
+                    &[],
+                    10.0,
+                    10.0,
+                    60.0,
+                    40.0,
+                    nana_ui_core::LayoutStyle {
+                        border_radius: Some(12.0),
+                        border_width: Some(3.0),
+                        border_color: Some([0.8, 0.1, 0.1, 1.0]),
+                        ..style(blue)
+                    },
+                    Some(blue),
+                ),
+                extracted_div(
+                    3,
+                    &[],
+                    90.0,
+                    10.0,
+                    60.0,
+                    40.0,
+                    nana_ui_core::LayoutStyle {
+                        border_radius: Some(20.0),
+                        opacity: Some(0.6),
+                        paint: shadowed(shadow(8.0, false, [0.0, 0.0, 0.0, 0.5])).into(),
+                        ..style(green)
+                    },
+                    Some(green),
+                ),
+                extracted_div(
+                    4,
+                    &[],
+                    10.0,
+                    65.0,
+                    80.0,
+                    40.0,
+                    nana_ui_core::LayoutStyle {
+                        border_width: Some(4.0),
+                        border_color: Some([0.1, 0.1, 0.1, 1.0]),
+                        border_style: Some(nana_ui_core::BorderStyle::Dashed),
+                        ..style(white)
+                    },
+                    Some(white),
+                ),
+                extracted_div(
+                    5,
+                    &[],
+                    110.0,
+                    65.0,
+                    70.0,
+                    40.0,
+                    nana_ui_core::LayoutStyle {
+                        border_radius: Some(8.0),
+                        paint: shadowed(shadow(6.0, true, [0.9, 0.2, 0.6, 0.8])).into(),
+                        ..style(yellow)
+                    },
+                    Some(yellow),
+                ),
+            ],
+            [],
+        );
+        scene
+    }
+
+    fn paint(gpu: &nana_gpu::GpuContext, scene: &UiScene) -> Vec<u8> {
+        let format = wgpu::TextureFormat::Rgba8Unorm;
+        let mut painter = SceneWgpuPainter::new(gpu, __framework::format_from_wgpu(format));
+        let device = __framework::device(gpu);
+        let queue = __framework::queue(gpu);
+        let viewport = ScenePaintViewport {
+            logical_size: [200.0, 120.0],
+            physical_size: [200, 120],
+            scale_factor: 1.0,
+            scene_origin: [0.0, 0.0],
+            target_origin: [0.0, 0.0],
+            clear_color: [0.0, 0.0, 0.0, 1.0],
+            clear: true,
+        };
+        let (texture, view) = test_copy_target(device, format, 200, 120);
+        let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+            label: Some("nana-ui precompiled quads"),
+        });
+        painter
+            .paint_encoder(scene, &mut encoder, &view, viewport, None, None)
+            .unwrap();
+        readback_rgba(device, queue, encoder, &texture, 200, 120)
+    }
+
+    #[test]
+    #[ignore = "needs a DX12 adapter that takes passthrough shaders"]
+    fn precompiled_quads_paint_what_wgsl_quads_paint() {
+        let scene = quads_scene();
+        let loaded =
+            || super::super::precompiled::tests::LOADED.load(std::sync::atomic::Ordering::Relaxed);
+        let before = loaded();
+        let from_dxil = paint(&dx12(true), &scene);
+        assert!(loaded() > before, "the precompiled quad stages were used");
+        let from_wgsl = paint(&dx12(false), &scene);
+        let differing = from_wgsl
+            .chunks(4)
+            .zip(from_dxil.chunks(4))
+            .filter(|(a, b)| a.iter().zip(b.iter()).any(|(x, y)| x.abs_diff(*y) > 1))
+            .count();
+        assert_eq!(differing, 0, "of {} pixels", from_wgsl.len() / 4);
+    }
+}

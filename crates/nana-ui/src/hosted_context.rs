@@ -1385,7 +1385,8 @@ async fn request_shared_device(
     adapter
         .request_device(&wgpu::DeviceDescriptor {
             label: Some("NanaUI hosted shared device"),
-            required_features: shared_device_features(adapter.features(), required_features),
+            required_features: shared_device_features(adapter.features(), required_features)
+                | precompiled_stage_features(adapter),
             required_limits: wgpu::Limits::default(),
             memory_hints: wgpu::MemoryHints::MemoryUsage,
             trace: wgpu::Trace::Off,
@@ -1477,6 +1478,18 @@ fn shared_device_features(available: wgpu::Features, requested: wgpu::Features) 
             | wgpu::Features::DUAL_SOURCE_BLENDING
             | wgpu::Features::TEXTURE_COMPRESSION_BC
             | wgpu::Features::TEXTURE_COMPRESSION_ASTC)
+}
+
+/// On DX12, passthrough shaders: the framework's own pipeline families then
+/// load stages precompiled to DXIL instead of compiling their WGSL at startup
+/// (`scene_paint::precompiled`). Only NanaUI creates passthrough modules, from
+/// DXIL built into the binary; skin and application shaders stay WGSL.
+fn precompiled_stage_features(adapter: &wgpu::Adapter) -> wgpu::Features {
+    if adapter.get_info().backend == wgpu::Backend::Dx12 {
+        adapter.features() & wgpu::Features::PASSTHROUGH_SHADERS
+    } else {
+        wgpu::Features::empty()
+    }
 }
 
 /// The instance every hosted device is created on: `backends`, and on DX12

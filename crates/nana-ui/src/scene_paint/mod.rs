@@ -19,6 +19,7 @@ mod material;
 mod mesh;
 mod motion;
 mod natural_sizes;
+mod precompiled;
 mod presentation_color;
 mod quad;
 mod text;
@@ -749,7 +750,12 @@ impl SceneWgpuPainter {
                 let backdrop = beside!(scope, "nana-paint-backdrop", {
                     BackdropPipeline::new(device, format, policy)
                 });
-                let quads = QuadPipeline::new_with_policy(device, format, Some(policy));
+                let quads = QuadPipeline::new_with_policy(
+                    device,
+                    format,
+                    Some(policy),
+                    precompiled::runs_on(gpu, device),
+                );
                 (
                     quads,
                     meshes.join(),
@@ -879,7 +885,12 @@ impl SceneWgpuPainter {
             let backdrop = beside!(scope, "nana-paint-backdrop", {
                 BackdropPipeline::new(device, format, policy)
             });
-            let quads = QuadPipeline::new_with_policy(device, format, Some(policy));
+            let quads = QuadPipeline::new_with_policy(
+                device,
+                format,
+                Some(policy),
+                precompiled::runs_on(gpu, device),
+            );
             let icons = self.icons.pipeline_for(device, format, Some(policy));
             PipelineSet {
                 quads,

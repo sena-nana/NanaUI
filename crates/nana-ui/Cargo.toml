@@ -125,6 +125,7 @@ accesskit_macos = { workspace = true, optional = true }
 
 [dev-dependencies]
 pollster = { workspace = true }
+log = "0.4"
 
 # `window-output-probe` reads its native output on a D3D11 device.
 [target.'cfg(target_os = "windows")'.dev-dependencies]
@@ -135,6 +136,8 @@ windows = { version = "0.62", features = [
     "Win32_Graphics_Dxgi",
     "Win32_Graphics_Dxgi_Common",
     "Win32_System_LibraryLoader",
+    "Win32_Graphics_Direct3D_Dxc",
+    "Win32_Graphics_Direct3D12",
 ] }
 
 # AT-SPI over D-Bus. Not on OHOS, whose `target_os` is also `linux`.

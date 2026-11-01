@@ -51,6 +51,13 @@ const PAINT_URL_PREMULT: u32 = 512;
 const PAINT_GRADIENT_SRGB: u32 = 1024;
 const QUAD_VERTEX_FRAGMENT: &[ShaderStage] = &[ShaderStage::Vertex, ShaderStage::Fragment];
 const QUAD_FRAGMENT: &[ShaderStage] = &[ShaderStage::Fragment];
+/// What the precompiled quad stages must have been compiled from: the WGSL,
+/// its resource layout key, and the instance attributes its vertex stage reads.
+#[cfg(test)]
+pub(super) fn precompiled_inputs() -> (&'static str, u64, usize) {
+    (QUAD_SHADER, quad_layout_key(), SOLID_ATTRIBUTES.len())
+}
+
 fn quad_layout_key() -> u64 {
     ResourceTable::new(vec![
         LogicalBinding::new(0, LogicalBindingType::UniformBuffer, QUAD_VERTEX_FRAGMENT)
@@ -212,18 +219,29 @@ impl QuadPipeline {
     }
     #[cfg(test)]
     pub(super) fn new(device: &wgpu::Device, format: wgpu::TextureFormat) -> Self {
-        Self::new_with_policy(device, format, None)
+        Self::new_with_policy(device, format, None, false)
     }
 
+    /// `precompiled`: the device runs [`super::precompiled`] stages, which
+    /// spare it compiling the family's WGSL when they are still current.
     pub(super) fn new_with_policy(
         device: &wgpu::Device,
         format: wgpu::TextureFormat,
         policy: Option<&nana_gpu::GpuDeviceState>,
+        precompiled: bool,
     ) -> Self {
-        let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
-            label: Some("nana-ui.scene.quad.solid.shader"),
-            source: wgpu::ShaderSource::Wgsl(std::borrow::Cow::Borrowed(QUAD_SHADER)),
-        });
+        let precompiled =
+            precompiled && super::precompiled::QUAD.fresh(QUAD_SHADER, quad_layout_key());
+        // Parsed only when a pipeline compiles from WGSL after all.
+        let shader = std::cell::OnceCell::new();
+        let wgsl = || {
+            shader.get_or_init(|| {
+                device.create_shader_module(wgpu::ShaderModuleDescriptor {
+                    label: Some("nana-ui.scene.quad.solid.shader"),
+                    source: wgpu::ShaderSource::Wgsl(std::borrow::Cow::Borrowed(QUAD_SHADER)),
+                })
+            })
+        };
         // Trilinear. A default (`ImageSampling::Resample`) texture has one
         // level at its painted size, so this is plain bilinear for it; only an
         // `ImageSampling::Mipmap` texture has levels to blend.
@@ -391,8 +409,18 @@ impl QuadPipeline {
             bind_group_layouts: &[Some(&bind_layout), Some(&motion_layout)],
             immediate_size: 0,
         });
-        let pipeline = cached_solid_pipeline(policy, device, &shader, &layout, format, 1, 1);
-        let pipeline_msaa = cached_solid_pipeline(policy, device, &shader, &layout, format, 4, 2);
+        let solid = |samples| {
+            precompiled
+                .then(|| {
+                    super::precompiled::pipeline(device, &super::precompiled::QUAD, |vs, fs| {
+                        solid_pipeline_from(device, vs, fs, &layout, format, samples)
+                    })
+                })
+                .flatten()
+                .unwrap_or_else(|| solid_pipeline(device, wgsl(), &layout, format, samples))
+        };
+        let pipeline = cached_solid_pipeline(policy, format, 1, 1, || solid(1));
+        let pipeline_msaa = cached_solid_pipeline(policy, format, 4, 2, || solid(4));
         let instance_capacity = INITIAL_INSTANCES;
         let instances = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("nana-ui.scene.quad.instances"),
@@ -1983,12 +2011,10 @@ fn position_origin(spec: LengthSpec, box_len: f32, image_len: f32) -> f32 {
 
 fn cached_solid_pipeline(
     policy: Option<&nana_gpu::GpuDeviceState>,
-    device: &wgpu::Device,
-    shader: &wgpu::ShaderModule,
-    layout: &wgpu::PipelineLayout,
     format: wgpu::TextureFormat,
     sample_count: u32,
     material: u64,
+    create: impl FnOnce() -> wgpu::RenderPipeline,
 ) -> wgpu::RenderPipeline {
     if let Some(policy) = policy {
         return nana_gpu::__framework::render_pipeline_state(
@@ -2005,11 +2031,11 @@ fn cached_solid_pipeline(
                 depth: 0,
                 vertex_layout: std::mem::size_of::<SolidInstance>() as u64,
             },
-            || solid_pipeline(device, shader, layout, format, sample_count),
+            create,
         )
         .expect("quad pipeline uses this context generation");
     }
-    solid_pipeline(device, shader, layout, format, sample_count)
+    create()
 }
 
 fn solid_pipeline(
@@ -2019,38 +2045,54 @@ fn solid_pipeline(
     format: wgpu::TextureFormat,
     sample_count: u32,
 ) -> wgpu::RenderPipeline {
+    solid_pipeline_from(device, shader, shader, layout, format, sample_count)
+}
+
+/// One [`SolidInstance`], as the solid vertex stage reads it.
+const SOLID_ATTRIBUTES: [wgpu::VertexAttribute; 16] = wgpu::vertex_attr_array!(
+    0 => Float32x4,
+    1 => Float32x2,
+    2 => Float32x2,
+    3 => Float32x4,
+    4 => Float32x4,
+    5 => Float32x4,
+    6 => Float32x4,
+    7 => Float32x2,
+    8 => Float32x2,
+    9 => Float32x2,
+    10 => Uint32,
+    11 => Float32x4,
+    12 => Float32x4,
+    13 => Float32x4,
+    14 => Float32x4,
+    15 => Float32x3,
+);
+
+/// [`solid_pipeline`] with its vertex and fragment stages in modules of their
+/// own, as precompiled stages come.
+fn solid_pipeline_from(
+    device: &wgpu::Device,
+    vertex: &wgpu::ShaderModule,
+    fragment: &wgpu::ShaderModule,
+    layout: &wgpu::PipelineLayout,
+    format: wgpu::TextureFormat,
+    sample_count: u32,
+) -> wgpu::RenderPipeline {
     device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
         label: Some("nana-ui.scene.quad.solid.pipeline"),
         layout: Some(layout),
         vertex: wgpu::VertexState {
-            module: shader,
+            module: vertex,
             entry_point: Some("solid_vs_main"),
             buffers: &[Some(wgpu::VertexBufferLayout {
                 array_stride: std::mem::size_of::<SolidInstance>() as u64,
                 step_mode: wgpu::VertexStepMode::Instance,
-                attributes: &wgpu::vertex_attr_array!(
-                    0 => Float32x4,
-                    1 => Float32x2,
-                    2 => Float32x2,
-                    3 => Float32x4,
-                    4 => Float32x4,
-                    5 => Float32x4,
-                    6 => Float32x4,
-                    7 => Float32x2,
-                    8 => Float32x2,
-                    9 => Float32x2,
-                    10 => Uint32,
-                    11 => Float32x4,
-                    12 => Float32x4,
-                    13 => Float32x4,
-                    14 => Float32x4,
-                    15 => Float32x3,
-                ),
+                attributes: &SOLID_ATTRIBUTES,
             })],
             compilation_options: wgpu::PipelineCompilationOptions::default(),
         },
         fragment: Some(wgpu::FragmentState {
-            module: shader,
+            module: fragment,
             entry_point: Some("solid_fs_main"),
             targets: &[Some(wgpu::ColorTargetState {
                 format,

@@ -71,6 +71,12 @@ jobs:
         run: cargo check -p component-gallery --bin component-gallery --locked
       - name: Run default-feature tests
         run: cargo test --workspace --all-targets --locked
+      # `scene_paint::precompiled`: the quad family from its DXIL paints what
+      # it paints from WGSL. The DXIL's freshness against the WGSL, layout and
+      # locked wgpu is checked by the default-feature tests on every OS.
+      - name: Precompiled DXIL paints what WGSL paints
+        if: runner.os == 'Windows'
+        run: cargo test -p nana-ui --lib --features gpu --locked -- --ignored precompiled_quads_paint --test-threads=1
       # Issue #242: measured output work, never a prerecorded zero fixture.
       # Linux has lavapipe, macOS Metal and Windows the hosted GPU/WARP path.
       - name: Exercise retained output and judge live GPU work
