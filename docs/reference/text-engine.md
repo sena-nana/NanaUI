@@ -1729,9 +1729,10 @@ entry 的颜色指纹把 span 颜色和 `rich.revision` 合在一起：改描边
 - **实例**在建 entry 时就记下自己的字素序号（`GlyphInstance.pad[1]` 的高 30 位，低 2 位是角色）。呈现不在 entry 的指纹里：换特效、换揭示不重建实例。
 - **GPU。** 每帧 prepare 把呈现的段落打包成一张字表（绑定 4，`text_glyph_fx`）：一个段落一个表头（揭示起点、上限、入场参数、特效表的位置），每个字素两个字（特效下标、揭示时刻）。run 行的 `fx` 指向表头。顶点着色器从 `Globals.motion` 读运动时钟（整秒、小数、模一小时的特效时钟），按 `glyph_look` 算出位移、绕字形中心的缩放、透明度和彩虹色，再放到实例的四个角上。阴影、描边跟着同一个字素走；彩虹只染填充。装饰线跟它下面的第一个字一起出现。还没轮到的字直接剔掉。时钟只在动了时写 16 字节。
 - **CPU 求值器** `evaluate_glyph` 是同一套算术：抖动和闪烁用同一个整数哈希（lowbias32），揭示的时间差先按整秒相减再加小数。内联对象（贴纸）不经文字着色器，场景在每个合成器 tick 用它算出对象的位移、缩放和透明度，写回对象图元。
+- **方向。** 波浪、跳跃和入场的上升走行的横截方向，朝行上（line-over）一侧：`horizontal-tb` 是页面的上方，`vertical-rl` 与 `vertical-lr` 都是右方（CSS Writing Modes §6.4；竖排里横躺的字顺时针转 90°，字头同样朝右）。页面位移 `(0, dy)` 在竖排里成为 `(-dy, 0)`，所以一列字不会时密时疏、入场也不会撞向前一个字。书写方向取自节点自己的计算样式：场景抽取时写进 `SceneGlyphPresentation::writing_mode`，打包进字表表头第 11 个字（`glyph_over`），CPU 侧走 `evaluate_glyph_chain_in` / `SceneGlyphPresentation::sample`。调用方不用另外传参；`evaluate_glyph` / `evaluate_glyph_chain` 仍是横排的答案。抖动、彩虹、呼吸、闪烁和 pop 的缩放没有方向，不变。
 - **出帧。** 场景记录每个呈现中的节点到什么时候还在动：循环特效一直动，揭示到最后一个字入场结束为止。`compositor_needs_tick` 据此请求帧；揭示播完就回到按需出帧。画笔在有活动呈现时不复用上一帧的 dest。
 
-测试：`nana-ui-core` `motion::glyph::tests`（揭示、上限、确定性、波峰）；`nana-ui-scene` `tests/glyph_presentation.rs`（揭示不做文本工作、只在播放期间要帧、循环特效持续、清除后停止、贴纸按自己的字素揭示）；`nana-ui` `scene_paint::text`（着色器把字放到 CPU 求值器给的位置：波峰位移、未揭示不画、pop 的缩放；60 帧活动呈现不重建、不上传任何字形或实例）。
+测试：`nana-ui-core` `motion::glyph::tests`（揭示、上限、确定性、波峰、竖排的横截位移）；`nana-ui-scene` `tests/glyph_presentation.rs`（揭示不做文本工作、只在播放期间要帧、循环特效持续、清除后停止、贴纸按自己的字素揭示、竖排贴纸向右起伏）；`nana-ui` `scene_paint::text`（着色器把字放到 CPU 求值器给的位置：波峰位移、未揭示不画、pop 的缩放、竖排的波浪/跳跃/上升走横向；表头带书写方向；60 帧活动呈现不重建、不上传任何字形或实例）。
 
 ### 字体的装饰线度量
 
