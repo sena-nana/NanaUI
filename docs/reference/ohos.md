@@ -41,6 +41,7 @@ OHOS 的 `target_os` 是 `linux`，所以任何写成 `target_os = "linux"` 的�
 - **没有真机或模拟器 CI。** CI 只做交叉 `cargo check`。没有链接、没有 `.so`，也没有在设备上跑过任何代码。
 - **窗口与 XComponent 宿主由应用集成。** 从 XComponent 的 `OHNativeWindow` 建 `GpuContext` 与 surface、帧调度、触摸与按键降成 `nana-ui-input` 的规范事件、输入法接入、无障碍投影，都没有在 OHOS 上验证过。wgpu 在 OHOS 上建 surface 能否成功同样未验证。
 - **`fetch` / GPU 路径不在 CI 里。** `fetch`（ureq → rustls → ring）的 build script 即使只做 `check` 也要目标平台的 C 编译器，CI 没有装 OHOS SDK。设置 `OHOS_NDK_HOME` 后脚本才检查 `nana-ui-platform` 默认 feature 与 `nana-ui --features gpu`。
+- **没有 SDK 时用宿主 `clang` 汇编 `psm`。** `nana-ui-runtime` 的 `stacker` 经 `psm` 汇编一个只含 psm 自带头文件的 `.s`，不需要 OHOS sysroot；脚本把 `CC_aarch64_unknown_linux_ohos` 设成宿主 `clang`（cc-rs 传 `--target=aarch64-unknown-linux-ohos`），有 `llvm-ar` 时一并用它。宿主 gcc 只出 x86 代码，汇编不了；找不到 `clang` 时脚本直接失败。
 - **字体配置只按开源样例验证。** `fontconfig.json` 的解析对照的是 OpenHarmony Skia 移植仓库里的 `src/ports/skia_ohos/config/fontconfig.json`，没有读过设备上的文件。`generic` 里的家族别名（如 `HarmonyOS-Sans-Bold`）只认 CSS 通用族名，其它别名不映射。
 - 只有 ARM64。`armv7-unknown-linux-ohos` 与 `x86_64-unknown-linux-ohos` 没有检查。
 
@@ -92,7 +93,7 @@ rustup target add aarch64-unknown-linux-ohos
 ./scripts/check-ohos-arm64.sh
 ```
 
-不需要 linker。要连 `fetch` / GPU 路径一起检查，先装 OpenHarmony SDK 的 native 部分，再：
+不需要 linker；没有 OHOS SDK 时需要宿主 `clang`，见上文。要连 `fetch` / GPU 路径一起检查，先装 OpenHarmony SDK 的 native 部分，再：
 
 ```bash
 OHOS_NDK_HOME=/path/to/ohos-sdk/linux ./scripts/check-ohos-arm64.sh

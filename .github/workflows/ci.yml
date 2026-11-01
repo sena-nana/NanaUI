@@ -262,8 +262,9 @@ jobs:
   ohos-arm64-cross:
     # OHOS is a compile tier (docs/reference/ohos.md): `target_os` is `linux`,
     # so a new desktop-only Linux branch breaks it silently. No OHOS SDK here,
-    # so the script checks the crates that build no C; `fetch` (ring) needs
-    # OHOS_NDK_HOME and is not in CI.
+    # so the script checks the crates that need no OHOS sysroot; the runner's
+    # clang assembles stacker's psm, and `fetch` (ring) needs OHOS_NDK_HOME
+    # and is not in CI.
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
