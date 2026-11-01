@@ -284,6 +284,7 @@ widget(RichTextView::new(RichText::new("欢迎来到直播间")))
 - 揭示：`at_s[i]` 是第 `i` 个字素开始入场的时刻（秒，相对 `start`）；`limit` 让揭示停在某个字素前（暂停标记）。`start` 用 `cx.animation_now()`，和合成器同一个时钟。
 - 入场：`GlyphIntro::fade` / `pop` / `rise`。
 - 贴纸跟着自己所在的字素揭示、跟着它的特效动。
+- 代价：播放期间宿主默认以 120Hz 呈现这扇窗口；程序用 `RuntimeProgram::max_frame_rate` 封顶（见 [应用 API](../reference/application-api.md#runtimeprogram)）。只有逐字呈现在动、其他东西都没变时，绘制器从第二帧起把第一处文字之前画好的内容（背景、面板等）留作快照，之后每帧拷回快照、只重画文字，不再画几何。帧里有别的合成动画、图表过渡，或第一处文字前有 HostTexture / GPU 节点时照常整帧重画。逐字呈现停止后快照即释放。
 
 ## 属性
 

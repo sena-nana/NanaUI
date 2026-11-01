@@ -373,7 +373,7 @@ use clip::{
     transformed_aabb_projective, union_physical,
 };
 pub(crate) use color::{pack_linear, pack_paint_color};
-use dest::{DestPassCounts, DestTarget, GroupSlot};
+use dest::{DestPassCounts, DestTarget, GroupSlot, PrefixSplit};
 use host_texture::{HostTexturePipeline, PreparedHostTexture};
 use icon::{IconPipeline, PreparedIcon};
 use mesh::{MeshPipeline, MeshRange, PathRange, StrokeStyle};
@@ -1388,12 +1388,13 @@ impl SceneWgpuPainter {
 
         // Per-glyph presentation moves with the motion clock, so a frame with
         // a live one is never the dest already painted.
-        let gpu_motion_live = scene
+        let motion_live = scene
             .motion_gpu_descriptors()
             .iter()
-            .any(|descriptor| descriptor.is_live())
-            || scene.glyph_presentation_live()
-            || scene.chart_presentation_live();
+            .any(|descriptor| descriptor.is_live());
+        let glyph_live = scene.glyph_presentation_live();
+        let chart_live = scene.chart_presentation_live();
+        let gpu_motion_live = motion_live || glyph_live || chart_live;
         self.text
             .write_motion(&self.queue, scene.motion_gpu_now(), Some(&gpu_work));
         if self.painted == Some(painted)
@@ -1402,6 +1403,7 @@ impl SceneWgpuPainter {
             && dest.width == dest_physical[0]
             && dest.height == dest_physical[1]
         {
+            dest.release_prefix();
             dest.set_presentation_parameters(
                 &self.queue,
                 self.presentation_parameters,
@@ -2465,6 +2467,35 @@ impl SceneWgpuPainter {
                 Some(&gpu_work),
             );
         }
+        // Per-glyph presentation moves text alone. While nothing else moves
+        // and the batch is the last frame's, the dest as it stood before its
+        // first text draw is the last frame's too: put that back instead of
+        // drawing it again.
+        let split = if glyph_live && !motion_live && !chart_live {
+            prefix_split(&commands, gpu_interleaved, viewport.clear)
+        } else {
+            None
+        };
+        let prefix = {
+            let dest = self.dest.as_mut().expect("dest target");
+            match split {
+                None => {
+                    dest.release_prefix();
+                    PrefixUse::Paint
+                }
+                Some(split) if reused && dest.prefix_holds(split) => PrefixUse::Restore(split),
+                // Only a batch painted twice is stored: one rebuilt every
+                // frame would pay the copy for nothing.
+                Some(split) if reused => {
+                    dest.reserve_prefix(&self.device);
+                    PrefixUse::Store(split)
+                }
+                Some(_) => {
+                    dest.forget_prefix();
+                    PrefixUse::Paint
+                }
+            }
+        };
         let dest = self.dest.as_ref().expect("dest target");
         let sample_count = if gpu_interleaved { 1 } else { 4 };
         let initial_load = if viewport.clear {
@@ -2484,28 +2515,61 @@ impl SceneWgpuPainter {
             Some(encoder),
         );
         if gpu_interleaved {
+            let mut ordered = EncodeOrdered {
+                quads: &self.quads,
+                meshes: &self.meshes,
+                charts: self.charts.as_ref(),
+                chart_target: &self.chart_target,
+                icons: &self.icons,
+                text: &self.text,
+                host_textures: &self.host_textures,
+                backdrop: &mut self.backdrop,
+                gpu: &self.gpu,
+                format: __framework::format_from_wgpu(self.format),
+                presentation: self.presentation,
+                gpu_work: &gpu_work,
+                motion: self.motion.bind_group(),
+                group_extents: &group_extents,
+            };
+            let (load, rest) = match prefix {
+                PrefixUse::Restore(PrefixSplit::Ordered(split)) => {
+                    dest.restore_prefix(encoder, &mut dest_passes);
+                    (wgpu::LoadOp::Load, &commands[split..])
+                }
+                PrefixUse::Store(PrefixSplit::Ordered(split)) => {
+                    encode_ordered(
+                        &mut ordered,
+                        encoder,
+                        dest,
+                        dest_physical,
+                        initial_load,
+                        &commands[..split],
+                        &mut dest_passes,
+                    );
+                    dest.store_prefix(encoder, &mut dest_passes);
+                    (wgpu::LoadOp::Load, &commands[split..])
+                }
+                _ => (initial_load, &commands[..]),
+            };
             encode_ordered(
-                &mut EncodeOrdered {
-                    quads: &self.quads,
-                    meshes: &self.meshes,
-                    charts: self.charts.as_ref(),
-                    chart_target: &self.chart_target,
-                    icons: &self.icons,
-                    text: &self.text,
-                    host_textures: &self.host_textures,
-                    backdrop: &mut self.backdrop,
-                    gpu: &self.gpu,
-                    format: __framework::format_from_wgpu(self.format),
-                    presentation: self.presentation,
-                    gpu_work: &gpu_work,
-                    motion: self.motion.bind_group(),
-                    group_extents: &group_extents,
-                },
+                &mut ordered,
                 encoder,
                 dest,
                 dest_physical,
-                initial_load,
+                load,
+                rest,
+                &mut dest_passes,
+            );
+        } else if let PrefixUse::Restore(PrefixSplit::Geometry) = prefix {
+            dest.restore_prefix(encoder, &mut dest_passes);
+            encode_glyph_pass(
+                &self.text,
+                &self.icons,
+                dest,
+                encoder,
                 &commands,
+                dest_physical,
+                &gpu_work,
                 &mut dest_passes,
             );
         } else {
@@ -2567,30 +2631,19 @@ impl SceneWgpuPainter {
                 }
             }
             drop(pass);
-            if commands.iter().any(|command| {
-                matches!(command, DrawCommand::Text { .. } | DrawCommand::Icon { .. })
-            }) {
-                let mut pass = dest.begin_color_pass(encoder, wgpu::LoadOp::Load, &mut dest_passes);
-                restore_dest_viewport(&mut pass, dest_physical);
-                for command in &commands {
-                    match command {
-                        DrawCommand::Text { prepared, scissor } => {
-                            self.text
-                                .draw(&mut pass, prepared, *scissor, Some(&gpu_work));
-                        }
-                        DrawCommand::Icon {
-                            first,
-                            count,
-                            scissor,
-                        } => {
-                            self.icons
-                                .draw(&mut pass, *first, *count, *scissor, Some(&gpu_work));
-                        }
-                        _ => {}
-                    }
-                }
-                drop(pass);
+            if let PrefixUse::Store(PrefixSplit::Geometry) = prefix {
+                dest.store_prefix(encoder, &mut dest_passes);
             }
+            encode_glyph_pass(
+                &self.text,
+                &self.icons,
+                dest,
+                encoder,
+                &commands,
+                dest_physical,
+                &gpu_work,
+                &mut dest_passes,
+            );
         }
         dest.blit(
             encoder,
@@ -2603,6 +2656,9 @@ impl SceneWgpuPainter {
             Some(&gpu_work),
             &mut dest_passes,
         );
+        if let PrefixUse::Store(split) = prefix {
+            self.dest.as_mut().expect("dest target").mark_prefix(split);
+        }
         let encode = encode_started.elapsed();
         if !reused {
             self.url_cache.trim();
@@ -3275,6 +3331,85 @@ struct GroupFrame {
     slot: u32,
 }
 
+/// What a frame does with the dest's text-free prefix ([`PrefixSplit`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PrefixUse {
+    /// Paint every command, keep nothing.
+    Paint,
+    /// Paint every command and keep the prefix for the frames after.
+    Store(PrefixSplit),
+    /// Put the kept prefix back and paint only what follows it.
+    Restore(PrefixSplit),
+}
+
+/// Where per-glyph presentation, which moves text alone, starts changing a
+/// frame's pixels. A UI-only frame draws all its geometry before any glyph.
+/// An ordered frame changes from its first text draw on, or from the group
+/// that holds it; a GPU node before it draws pixels the scene does not
+/// describe, so a frame with one there keeps no prefix. So does an ordered
+/// frame that loads the dest rather than clearing it, as its prefix then
+/// depends on what was there.
+fn prefix_split(commands: &[DrawCommand], ordered: bool, clears: bool) -> Option<PrefixSplit> {
+    if !ordered {
+        return Some(PrefixSplit::Geometry);
+    }
+    if !clears {
+        return None;
+    }
+    let mut depth = 0usize;
+    let mut top = 0usize;
+    for (index, command) in commands.iter().enumerate() {
+        if depth == 0 {
+            top = index;
+        }
+        match command {
+            DrawCommand::Text { .. } => return (top > 0).then_some(PrefixSplit::Ordered(top)),
+            DrawCommand::HostTexture(_) | DrawCommand::Custom { .. } => return None,
+            DrawCommand::PushGroup { .. } => depth += 1,
+            DrawCommand::PopGroup => depth = depth.saturating_sub(1),
+            _ => {}
+        }
+    }
+    None
+}
+
+/// A UI-only frame's glyphs and icons, over its geometry.
+#[allow(clippy::too_many_arguments)]
+fn encode_glyph_pass(
+    text: &TextPipeline,
+    icons: &IconPipeline,
+    dest: &DestTarget,
+    encoder: &mut wgpu::CommandEncoder,
+    commands: &[DrawCommand],
+    dest_physical: [u32; 2],
+    gpu_work: &GpuWorkSink,
+    dest_passes: &mut DestPassCounts,
+) {
+    if !commands
+        .iter()
+        .any(|command| matches!(command, DrawCommand::Text { .. } | DrawCommand::Icon { .. }))
+    {
+        return;
+    }
+    let mut pass = dest.begin_color_pass(encoder, wgpu::LoadOp::Load, dest_passes);
+    restore_dest_viewport(&mut pass, dest_physical);
+    for command in commands {
+        match command {
+            DrawCommand::Text { prepared, scissor } => {
+                text.draw(&mut pass, prepared, *scissor, Some(gpu_work));
+            }
+            DrawCommand::Icon {
+                first,
+                count,
+                scissor,
+            } => {
+                icons.draw(&mut pass, *first, *count, *scissor, Some(gpu_work));
+            }
+            _ => {}
+        }
+    }
+}
+
 fn encode_ordered(
     pipelines: &mut EncodeOrdered<'_>,
     encoder: &mut wgpu::CommandEncoder,
@@ -3713,6 +3848,9 @@ mod tests;
 
 #[cfg(test)]
 mod presentation_tests;
+
+#[cfg(all(test, feature = "rich-text"))]
+mod glyph_prefix_tests;
 
 /// Whether `rect` (layout space), under `affine` into logical target space,
 /// reaches the `size` physical-pixel target.

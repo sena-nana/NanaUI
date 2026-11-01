@@ -433,7 +433,28 @@ pub(super) struct DestPassCounts {
     pub blit: u32,
     pub group: u32,
     pub backdrop: u32,
+    /// Copies of the dest's text-free prefix into its snapshot, and back.
+    pub prefix_store: u32,
+    pub prefix_restore: u32,
     pub msaa_allocated: bool,
+}
+
+/// Where a frame's paint stops being what the last frame painted while only
+/// per-glyph presentation moves.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum PrefixSplit {
+    /// A UI-only frame's geometry pass: everything but its text and icons.
+    Geometry,
+    /// An ordered frame's commands before this index.
+    Ordered(usize),
+}
+
+/// The dest as it stood at a [`PrefixSplit`].
+struct PrefixSnapshot {
+    texture: wgpu::Texture,
+    /// What the texture holds; `None` until a frame stores it, and again
+    /// once the batch that painted it is gone.
+    holds: Option<PrefixSplit>,
 }
 
 struct ReadingBlend {
@@ -494,6 +515,8 @@ pub(super) struct DestTarget {
     group_uniform_slots: u64,
     slot_blend: Vec<u32>,
     policy: nana_gpu::GpuDeviceState,
+    /// Kept only while per-glyph presentation plays; see [`PrefixSplit`].
+    prefix: Option<PrefixSnapshot>,
 }
 
 fn msaa_view(
@@ -546,6 +569,7 @@ impl DestTarget {
             if target.msaa_allocated != want_msaa {
                 target.msaa = want_msaa.then(|| msaa_view(device, format, width, height));
                 target.msaa_allocated = want_msaa;
+                target.forget_prefix();
             }
             return;
         }
@@ -590,7 +614,8 @@ impl DestTarget {
             format,
             usage: wgpu::TextureUsages::RENDER_ATTACHMENT
                 | wgpu::TextureUsages::TEXTURE_BINDING
-                | wgpu::TextureUsages::COPY_SRC,
+                | wgpu::TextureUsages::COPY_SRC
+                | wgpu::TextureUsages::COPY_DST,
             view_formats: &[],
         });
         let color_view = color.create_view(&wgpu::TextureViewDescriptor::default());
@@ -882,11 +907,111 @@ impl DestTarget {
             group_uniform_slots: GROUP_UNIFORM_SLOTS,
             slot_blend: Vec::new(),
             policy: policy.clone(),
+            prefix: None,
         }
     }
 
     pub(super) fn color_view(&self) -> &wgpu::TextureView {
         &self.color_view
+    }
+
+    /// Whether the snapshot holds the dest as it stood at `split`.
+    pub(super) fn prefix_holds(&self, split: PrefixSplit) -> bool {
+        self.prefix
+            .as_ref()
+            .is_some_and(|prefix| prefix.holds == Some(split))
+    }
+
+    /// The batch that painted the snapshot is gone; keep its memory for the
+    /// next one.
+    pub(super) fn forget_prefix(&mut self) {
+        if let Some(prefix) = self.prefix.as_mut() {
+            prefix.holds = None;
+        }
+    }
+
+    /// Nothing per-glyph plays any more: give the snapshot's memory back.
+    pub(super) fn release_prefix(&mut self) {
+        self.prefix = None;
+    }
+
+    #[cfg(all(test, feature = "rich-text"))]
+    pub(super) fn prefix_allocated(&self) -> bool {
+        self.prefix.is_some()
+    }
+
+    /// Allocate the snapshot a frame is about to store into.
+    pub(super) fn reserve_prefix(&mut self, device: &wgpu::Device) {
+        if self.prefix.is_some() {
+            return;
+        }
+        let texture = device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("nana-ui.scene.dest.prefix"),
+            size: wgpu::Extent3d {
+                width: self.width,
+                height: self.height,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: self.format,
+            usage: wgpu::TextureUsages::COPY_SRC | wgpu::TextureUsages::COPY_DST,
+            view_formats: &[],
+        });
+        self.prefix = Some(PrefixSnapshot {
+            texture,
+            holds: None,
+        });
+    }
+
+    /// Copy the dest into the snapshot reserved for it. The snapshot holds
+    /// `split` once [`Self::mark_prefix`] says so.
+    pub(super) fn store_prefix(
+        &self,
+        encoder: &mut wgpu::CommandEncoder,
+        counts: &mut DestPassCounts,
+    ) {
+        let Some(prefix) = self.prefix.as_ref() else {
+            return;
+        };
+        counts.prefix_store = counts.prefix_store.saturating_add(1);
+        encoder.copy_texture_to_texture(
+            self.color.as_image_copy(),
+            prefix.texture.as_image_copy(),
+            self.extent(),
+        );
+    }
+
+    pub(super) fn mark_prefix(&mut self, split: PrefixSplit) {
+        if let Some(prefix) = self.prefix.as_mut() {
+            prefix.holds = Some(split);
+        }
+    }
+
+    /// Put the snapshot back as the dest's content.
+    pub(super) fn restore_prefix(
+        &self,
+        encoder: &mut wgpu::CommandEncoder,
+        counts: &mut DestPassCounts,
+    ) {
+        let Some(prefix) = self.prefix.as_ref() else {
+            return;
+        };
+        counts.prefix_restore = counts.prefix_restore.saturating_add(1);
+        encoder.copy_texture_to_texture(
+            prefix.texture.as_image_copy(),
+            self.color.as_image_copy(),
+            self.extent(),
+        );
+    }
+
+    fn extent(&self) -> wgpu::Extent3d {
+        wgpu::Extent3d {
+            width: self.width,
+            height: self.height,
+            depth_or_array_layers: 1,
+        }
     }
 
     /// Update the presentation parameters without changing the target or any
