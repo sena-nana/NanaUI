@@ -30,7 +30,9 @@ use nana_ui::runtime::{
     TextContent,
 };
 use nana_ui::{NanaTextShaper, RenderTargetId, ScenePaintViewport, SceneWgpuPainter};
-use nana_ui_core::{OverflowSpec, PaintTransform, TransformOrigin};
+use nana_ui_core::{
+    GlyphEffect, GlyphPresentation, OverflowSpec, PaintTransform, RevealSchedule, TransformOrigin,
+};
 use serde::Serialize;
 
 const FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8Unorm;
@@ -69,6 +71,20 @@ const PRESSURE_POOL: u32 = 20_000;
 /// any length up to 14 stays inside it.
 const HEX_TWICE: &str = "0123456789abcdef0123456789abcdef";
 const PRESSURE_SIZES: [f32; 6] = [32.0, 44.0, 56.0, 72.0, 88.0, 104.0];
+
+/// The panel [`Workload::Reveal`] prints over.
+const REVEAL_PANEL: [f32; 4] = [0.16, 0.18, 0.24, 1.0];
+/// How far the presentation clock moves between [`Workload::Reveal`] frames.
+const REVEAL_STEP: std::time::Duration = std::time::Duration::from_micros(16_667);
+
+/// A reveal that shows a label's graphemes one a second, so every frame the
+/// workload samples still has some to show.
+fn reveal_presentation() -> GlyphPresentation {
+    GlyphPresentation::new(
+        Vec::<GlyphEffect>::new(),
+        Some(RevealSchedule::uniform(std::time::Duration::ZERO, 16, 1.0)),
+    )
+}
 
 /// Label counts Issue #98 asks for.
 const LABEL_GRID: [usize; 4] = [1, 100, 1_000, 10_000];
@@ -133,6 +149,11 @@ enum Workload {
     /// The container zooms from 1x to 2x: a scene scale animation, which may
     /// re-rasterize at a few half-octave steps and never once per frame.
     Zoom,
+    /// Every label types itself out over a panel, the way a dialogue box
+    /// prints a line: a per-glyph reveal. Presentation only: the scene stands
+    /// still and only the motion clock moves, so this is the frame a
+    /// typewriter effect costs at every present.
+    Reveal,
 }
 
 impl Workload {
@@ -154,10 +175,11 @@ impl Workload {
             Self::AtlasPressure => "atlas-pressure",
             Self::MultiWindow => "multi-window",
             Self::Zoom => "zoom",
+            Self::Reveal => "reveal",
         }
     }
 
-    const ALL: [Self; 16] = [
+    const ALL: [Self; 17] = [
         Self::Static,
         Self::StaticUnique,
         Self::Color,
@@ -174,6 +196,7 @@ impl Workload {
         Self::AtlasPressure,
         Self::MultiWindow,
         Self::Zoom,
+        Self::Reveal,
     ];
 
     /// Frames before the sampled ones. The churn a settling workload stops
@@ -197,6 +220,7 @@ impl Workload {
                 | Self::TableScroll
                 | Self::TableScrollX
                 | Self::Zoom
+                | Self::Reveal
         )
     }
 }
@@ -497,7 +521,15 @@ fn run(
             },
         );
         build.set_style(label, label_style(cell));
+        if workload == Workload::Reveal {
+            build.set_glyph_presentation(label, Some(reveal_presentation()));
+        }
         rows.push(label);
+    }
+    if workload == Workload::Reveal {
+        let mut style = column_style(None, None);
+        Arc::make_mut(&mut style.layout).background = Some(REVEAL_PANEL);
+        build.set_style(column, style);
     }
     document
         .context_mut()
@@ -526,6 +558,7 @@ fn run(
     let mut upload = Vec::new();
     let mut gpu = Vec::new();
     let mut encode = Vec::new();
+    let mut draw_calls = 0usize;
     let mut warm = None;
     let mut warm_glyph = None;
     let mut warm_shape = None;
@@ -543,14 +576,25 @@ fn run(
             &rows,
             frame,
         );
+        if workload == Workload::Reveal {
+            // What a host does before each present while glyphs are live.
+            document.sync_presentation_clock(REVEAL_STEP * frame as u32);
+        }
         let flush_started = std::time::Instant::now();
         document.flush(viewport, &mut shaper).expect("flush");
         let flush_elapsed = flush_started.elapsed();
+        if workload == Workload::Reveal {
+            assert!(
+                document.scene().glyph_presentation_live(),
+                "every sampled reveal frame has glyphs still to show"
+            );
+        }
         let mut recording = context.begin_frame("nana-text-paint-benchmark");
 
         let mut frame_batch = std::time::Duration::ZERO;
         let mut frame_upload = std::time::Duration::ZERO;
         let mut frame_encode = std::time::Duration::ZERO;
+        let mut frame_draws = 0usize;
         for (window, view) in std::iter::once(&target).chain(second.as_ref()).enumerate() {
             // One window paints the way a single-window host does, so these
             // cells stay comparable with every earlier report.
@@ -579,6 +623,7 @@ fn run(
             frame_batch += timings.batch;
             frame_upload += timings.gpu_upload;
             frame_encode += timings.encode;
+            frame_draws += painter.last_gpu_work().map_or(0, |work| work.draw_calls);
         }
         let submitted = std::time::Instant::now();
         recording.submit();
@@ -600,12 +645,15 @@ fn run(
             upload.push(frame_upload.as_secs_f64() * 1000.0);
             gpu.push(gpu_elapsed.as_secs_f64() * 1000.0);
             encode.push(frame_encode.as_secs_f64() * 1000.0);
+            draw_calls += frame_draws;
         }
     }
     let warm = warm.expect("warm counters");
     let end = painter.text_glyph_counters();
     let per_frame = frames.max(1) as f64;
     let mut counters = BTreeMap::new();
+    // Every draw the painter recorded, the dest blit included.
+    counters.insert("draw_calls".to_string(), draw_calls as f64 / per_frame);
     let mut delta = |name: &str, after: u64, before: u64| {
         counters.insert(
             name.to_string(),
@@ -882,6 +930,8 @@ fn mutate(
             let x = frame as f32 * 0.37 % SHEET_OVERHANG;
             queue.set_scroll_offset(column, ScrollOffset { x, y: 0.0 });
         }
+        // The clock moves; see `run`.
+        Workload::Reveal => {}
         Workload::Zoom => {
             let factor = 1.0 + (frame % 60) as f32 / 60.0;
             let zoomed = Some(PaintTransform {
