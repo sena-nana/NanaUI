@@ -11578,7 +11578,8 @@ fn static_and_empty_glyph_effect_slots_do_not_request_looping_frames() {
         SceneGlyphPresentation::new(
             text.text(),
             Some(&text),
-            &GlyphPresentation::new(vec![GlyphEffect::shake(0.0)], None)
+            &GlyphPresentation::new(vec![GlyphEffect::shake(0.0)], None),
+            nana_ui_core::WritingModeSpec::HorizontalTb,
         )
         .is_none()
     );
@@ -11586,7 +11587,8 @@ fn static_and_empty_glyph_effect_slots_do_not_request_looping_frames() {
         SceneGlyphPresentation::new(
             text.text(),
             Some(&text),
-            &GlyphPresentation::chains(vec![GlyphEffectChain::default()], None)
+            &GlyphPresentation::chains(vec![GlyphEffectChain::default()], None),
+            nana_ui_core::WritingModeSpec::HorizontalTb,
         )
         .is_none()
     );
@@ -11597,6 +11599,7 @@ fn static_and_empty_glyph_effect_slots_do_not_request_looping_frames() {
         text.text(),
         Some(&text),
         &GlyphPresentation::chains(vec![GlyphEffectChain::default()], Some(reveal)),
+        nana_ui_core::WritingModeSpec::HorizontalTb,
     )
     .unwrap();
     assert_eq!(scene.live_until(), Some(end));
@@ -11610,6 +11613,7 @@ fn static_and_empty_glyph_effect_slots_do_not_request_looping_frames() {
             ])],
             None,
         ),
+        nana_ui_core::WritingModeSpec::HorizontalTb,
     )
     .unwrap();
     assert_eq!(scene.effects_of(0).len(), 2);
@@ -11621,7 +11625,13 @@ fn frozen_glyph_effect_keeps_its_pose_without_looping_frames() {
     use nana_ui_core::{GlyphEffect, GlyphPresentation, RichSpanStyle, RichText};
     let text = RichText::new("文字").with_span(0..6, RichSpanStyle::new().effect(0));
     let presentation = GlyphPresentation::new(vec![GlyphEffect::wave(2.0).frequency(0.0)], None);
-    let scene = SceneGlyphPresentation::new(text.text(), Some(&text), &presentation).unwrap();
+    let scene = SceneGlyphPresentation::new(
+        text.text(),
+        Some(&text),
+        &presentation,
+        nana_ui_core::WritingModeSpec::HorizontalTb,
+    )
+    .unwrap();
     assert_eq!(scene.live_until(), Some(std::time::Duration::ZERO));
     assert_eq!(scene.effects_of(1).len(), 1);
 }

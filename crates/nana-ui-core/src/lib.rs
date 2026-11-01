@@ -133,8 +133,9 @@ pub use motion::{
     PresentationPair, PresentationSlot, PresentationStore, ProgressSample, RevealSchedule, Spring,
     SpringParams, StepJump, TextTransitions, TimedProgress, Timeline, classify_animatable_property,
     compile_motion_descriptor, cpu_fallback_reason, decode_motion_track, evaluate_descriptor,
-    evaluate_glyph, evaluate_glyph_chain, evaluate_progress, evaluate_track, evaluate_track_at,
-    invert_flip_translate, retarget_track, track_completion_deadline,
+    evaluate_glyph, evaluate_glyph_chain, evaluate_glyph_chain_in, evaluate_progress,
+    evaluate_track, evaluate_track_at, invert_flip_translate, retarget_track,
+    track_completion_deadline,
 };
 pub use number_field::NumberFieldSpec;
 pub use overlay::ExclusiveOverlay;
