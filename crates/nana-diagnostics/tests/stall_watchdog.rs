@@ -62,13 +62,16 @@ fn a_stuck_callback_is_reported_with_its_stack_and_its_recovery() {
         })
         .expect("stall fault");
     assert!(message.contains("inside window_event"), "{message}");
-    assert!(message.contains("% of one core"), "{message}");
     if cfg!(all(windows, target_arch = "x86_64")) {
+        assert!(message.contains("% of one core"), "{message}");
         assert!(message.contains("sample 1:"), "{message}");
         assert!(
             message.contains("stall_watchdog_stuck_callback"),
             "{message}"
         );
+    } else {
+        // Elsewhere the thread's CPU time and stack are not read.
+        assert!(message.contains("no stack sample"), "{message}");
     }
     let recovered = file.entries.iter().any(|entry| {
         matches!(entry, Entry::Event { key, .. }
