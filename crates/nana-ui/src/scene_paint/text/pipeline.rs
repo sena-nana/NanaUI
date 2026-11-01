@@ -605,6 +605,8 @@ pub(super) struct TextGpu {
     pipeline: wgpu::RenderPipeline,
     /// The dual-source program, while subpixel text is on.
     dual_source: Option<wgpu::RenderPipeline>,
+    /// The dual-source program compiled ahead; see [`Self::prewarm_subpixel`].
+    prewarmed_dual_source: Option<wgpu::RenderPipeline>,
     layout: wgpu::PipelineLayout,
     format: wgpu::TextureFormat,
     globals_layout: wgpu::BindGroupLayout,
@@ -767,6 +769,7 @@ impl TextGpu {
             material_waker: None,
             pipeline,
             dual_source: None,
+            prewarmed_dual_source: None,
             layout,
             format,
             globals_layout,
@@ -951,47 +954,73 @@ fn shade(input:VsOut)->TextShade {
     }
 
     pub(super) fn set_subpixel(&mut self, device: &wgpu::Device, enabled: bool) {
+        self.dual_source = enabled.then(|| {
+            self.prewarmed_dual_source
+                .clone()
+                .unwrap_or_else(|| self.dual_source_pipeline(device))
+        });
+    }
+
+    /// Compile the subpixel program before the frame that turns it on. It is
+    /// the text shader again, as slow to compile, and that frame, a window's
+    /// first, would wait for it.
+    pub(super) fn prewarm_subpixel(&mut self, device: &wgpu::Device) {
+        if Self::supports_subpixel(device) {
+            self.prewarmed_dual_source = Some(self.dual_source_pipeline(device));
+        }
+    }
+
+    /// Whether the subpixel program was compiled ahead, and is the one in
+    /// use if subpixel text is on.
+    #[cfg(test)]
+    pub(super) fn subpixel_prewarmed(&self) -> bool {
+        self.prewarmed_dual_source.is_some()
+            && self
+                .dual_source
+                .as_ref()
+                .is_none_or(|in_use| Some(in_use) == self.prewarmed_dual_source.as_ref())
+    }
+
+    fn dual_source_pipeline(&self, device: &wgpu::Device) -> wgpu::RenderPipeline {
         // `src0 * src1 + dst * (1 - src1)`, channel by channel.
         let per_channel = wgpu::BlendComponent {
             src_factor: wgpu::BlendFactor::Src1,
             dst_factor: wgpu::BlendFactor::OneMinusSrc1,
             operation: wgpu::BlendOperation::Add,
         };
-        self.dual_source = enabled.then(|| {
-            let create = || {
-                build_pipeline(
-                    device,
-                    &self.layout,
-                    self.format,
-                    TEXT_SHADER_DUAL_SOURCE,
-                    wgpu::BlendState {
-                        color: per_channel,
-                        alpha: per_channel,
-                    },
-                )
-            };
-            if let Some(policy) = &self.policy {
-                nana_gpu::__framework::render_pipeline_state(
-                    policy,
-                    nana_gpu::PipelineKey {
-                        generation: policy.generation(),
-                        target_format: nana_gpu::__framework::format_from_wgpu(self.format),
-                        sample_count: 1,
-                        shader: 0x7465_7874_6475_616c,
-                        layout: text_layout_key(),
-                        material: 1,
-                        primitive: 1,
-                        blend: 3,
-                        depth: 0,
-                        vertex_layout: INDEX_BYTES,
-                    },
-                    create,
-                )
-                .expect("dual-source text pipeline uses this context generation")
-            } else {
-                create()
-            }
-        });
+        let create = || {
+            build_pipeline(
+                device,
+                &self.layout,
+                self.format,
+                TEXT_SHADER_DUAL_SOURCE,
+                wgpu::BlendState {
+                    color: per_channel,
+                    alpha: per_channel,
+                },
+            )
+        };
+        if let Some(policy) = &self.policy {
+            nana_gpu::__framework::render_pipeline_state(
+                policy,
+                nana_gpu::PipelineKey {
+                    generation: policy.generation(),
+                    target_format: nana_gpu::__framework::format_from_wgpu(self.format),
+                    sample_count: 1,
+                    shader: 0x7465_7874_6475_616c,
+                    layout: text_layout_key(),
+                    material: 1,
+                    primitive: 1,
+                    blend: 3,
+                    depth: 0,
+                    vertex_layout: INDEX_BYTES,
+                },
+                create,
+            )
+            .expect("dual-source text pipeline uses this context generation")
+        } else {
+            create()
+        }
     }
 
     pub(super) fn new_target(&self, device: &wgpu::Device) -> TextTargetGpu {

@@ -1068,6 +1068,16 @@ impl TextPipeline {
     ///
     /// Entries resolved under the other mode fail their validity check and
     /// are resolved again on their next frame, so the switch needs no sweep.
+    #[cfg(test)]
+    pub(super) fn subpixel_prewarmed(&self) -> bool {
+        self.gpu.subpixel_prewarmed()
+    }
+
+    /// See [`TextGpu::prewarm_subpixel`].
+    pub(super) fn prewarm_subpixel(&mut self, device: &wgpu::Device) {
+        self.gpu.prewarm_subpixel(device);
+    }
+
     pub(super) fn set_subpixel(
         &mut self,
         device: &wgpu::Device,

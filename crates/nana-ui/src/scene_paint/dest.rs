@@ -528,112 +528,37 @@ pub(super) struct DestTarget {
     prefix: Option<PrefixSnapshot>,
 }
 
-fn msaa_view(
-    device: &wgpu::Device,
+/// What a [`DestTarget`] draws its blits and group composites with: layouts
+/// and pipelines, nothing sized. A painter builds its own beside its other
+/// pipeline families (see `SceneWgpuPainter::new_with_presentation`), so its
+/// first frame, a window's first, has none of them to compile.
+#[derive(Clone)]
+pub(super) struct DestPipelines {
     format: wgpu::TextureFormat,
-    width: u32,
-    height: u32,
-) -> wgpu::TextureView {
-    device
-        .create_texture(&wgpu::TextureDescriptor {
-            label: Some("nana-ui.scene.dest.msaa"),
-            size: wgpu::Extent3d {
-                width,
-                height,
-                depth_or_array_layers: 1,
-            },
-            mip_level_count: 1,
-            sample_count: 4,
-            dimension: wgpu::TextureDimension::D2,
-            format,
-            usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
-            view_formats: &[],
-        })
-        .create_view(&wgpu::TextureViewDescriptor::default())
+    target_format: wgpu::TextureFormat,
+    presentation: ScenePresentationProfile,
+    pub(super) bind_layout: wgpu::BindGroupLayout,
+    blit_pipeline: wgpu::RenderPipeline,
+    blit_gamma_pipeline: Option<wgpu::RenderPipeline>,
+    blit_presentation_pipeline: Option<wgpu::RenderPipeline>,
+    blit_clear_pipeline: wgpu::RenderPipeline,
+    blit_clear_gamma_pipeline: Option<wgpu::RenderPipeline>,
+    blit_clear_presentation_pipeline: Option<wgpu::RenderPipeline>,
+    group_bind_layout: wgpu::BindGroupLayout,
+    group_pipeline: wgpu::RenderPipeline,
+    group_pipeline_multiply: wgpu::RenderPipeline,
+    group_pipeline_screen: wgpu::RenderPipeline,
 }
 
-impl DestTarget {
-    #[allow(clippy::too_many_arguments)]
-    pub(super) fn ensure(
-        current: &mut Option<Self>,
+impl DestPipelines {
+    pub(super) fn new(
         device: &wgpu::Device,
         pipeline_cache: Option<&wgpu::PipelineCache>,
         format: wgpu::TextureFormat,
         target_format: wgpu::TextureFormat,
         presentation: ScenePresentationProfile,
-        width: u32,
-        height: u32,
-        want_msaa: bool,
-        policy: &nana_gpu::GpuDeviceState,
-    ) {
-        if let Some(target) = current.as_mut()
-            && target.width == width
-            && target.height == height
-            && target.format == format
-            && target.target_format == target_format
-            && target.presentation == presentation
-        {
-            // Switching between UI-only and ordered GPU composition changes
-            // the attachment, not the color target, bindings or pipelines.
-            if target.msaa_allocated != want_msaa {
-                target.msaa = want_msaa.then(|| msaa_view(device, format, width, height));
-                target.msaa_allocated = want_msaa;
-                target.forget_prefix();
-            }
-            return;
-        }
-        *current = Some(Self::new(
-            device,
-            pipeline_cache,
-            format,
-            target_format,
-            presentation,
-            width,
-            height,
-            want_msaa,
-            policy,
-        ));
-    }
-
-    #[allow(clippy::too_many_arguments)]
-    fn new(
-        device: &wgpu::Device,
-        pipeline_cache: Option<&wgpu::PipelineCache>,
-        format: wgpu::TextureFormat,
-        target_format: wgpu::TextureFormat,
-        presentation: ScenePresentationProfile,
-        width: u32,
-        height: u32,
-        want_msaa: bool,
         policy: &nana_gpu::GpuDeviceState,
     ) -> Self {
-        let width = width.max(1);
-        let height = height.max(1);
-        let msaa = want_msaa.then(|| msaa_view(device, format, width, height));
-        let color = device.create_texture(&wgpu::TextureDescriptor {
-            label: Some("nana-ui.scene.dest.color"),
-            size: wgpu::Extent3d {
-                width,
-                height,
-                depth_or_array_layers: 1,
-            },
-            mip_level_count: 1,
-            sample_count: 1,
-            dimension: wgpu::TextureDimension::D2,
-            format,
-            usage: wgpu::TextureUsages::RENDER_ATTACHMENT
-                | wgpu::TextureUsages::TEXTURE_BINDING
-                | wgpu::TextureUsages::COPY_SRC
-                | wgpu::TextureUsages::COPY_DST,
-            view_formats: &[],
-        });
-        let color_view = color.create_view(&wgpu::TextureViewDescriptor::default());
-        let sampler = device.create_sampler(&wgpu::SamplerDescriptor {
-            label: Some("nana-ui.scene.dest.sampler"),
-            mag_filter: wgpu::FilterMode::Linear,
-            min_filter: wgpu::FilterMode::Linear,
-            ..wgpu::SamplerDescriptor::default()
-        });
         let bind_layout = if policy.generation().get() != 0 {
             let stages = &[ShaderStage::Fragment];
             let table = ResourceTable::new(vec![
@@ -681,31 +606,6 @@ impl DestTarget {
                 ],
             })
         };
-        let presentation_uniforms =
-            ManagedBuffer::new(device.create_buffer(&wgpu::BufferDescriptor {
-                label: Some("nana-ui.scene.dest.presentation.uniforms"),
-                size: PRESENTATION_UNIFORM_SIZE,
-                usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
-                mapped_at_creation: false,
-            }));
-        let blit_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("nana-ui.scene.dest.blit.bind"),
-            layout: &bind_layout,
-            entries: &[
-                wgpu::BindGroupEntry {
-                    binding: 0,
-                    resource: wgpu::BindingResource::TextureView(&color_view),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 1,
-                    resource: wgpu::BindingResource::Sampler(&sampler),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 2,
-                    resource: presentation_uniforms.as_entire_binding(),
-                },
-            ],
-        });
         let blit_program = OnceCell::new();
         let make_blit = |entry_point: &str, label: &str, blend: Option<wgpu::BlendState>| {
             let (shader, pipeline_layout) = blit_program.get_or_init(|| {
@@ -818,12 +718,6 @@ impl DestTarget {
             (!presentation.is_direct_linear()).then(|| make_presentation(true, true));
         let blit_clear_presentation_pipeline = (!presentation.is_direct_linear() && !direct_srgb)
             .then(|| make_presentation(false, true));
-        let group_sampler = device.create_sampler(&wgpu::SamplerDescriptor {
-            label: Some("nana-ui.scene.group.sampler"),
-            mag_filter: wgpu::FilterMode::Linear,
-            min_filter: wgpu::FilterMode::Linear,
-            ..wgpu::SamplerDescriptor::default()
-        });
         let group_table = ResourceTable::new(vec![
             LogicalBinding::new(
                 0,
@@ -844,12 +738,6 @@ impl DestTarget {
             nana_gpu::__framework::logical_layout(device, policy.generation(), &group_table)
                 .expect("dest group logical layout matches the device");
         let group_bind_layout = nana_gpu::__framework::resource_layout(&group_logical).clone();
-        let group_uniforms = ManagedBuffer::new(device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("nana-ui.scene.group.uniforms"),
-            size: GROUP_UNIFORM_STRIDE * GROUP_UNIFORM_SLOTS,
-            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
-            mapped_at_creation: false,
-        }));
         let group_program = OnceCell::new();
         let make_group = |blend, label| {
             let (shader, layout) = group_program.get_or_init(|| {
@@ -887,6 +775,203 @@ impl DestTarget {
                 make_group(blend_screen(), "nana-ui.scene.group.pipeline.screen")
             });
         Self {
+            format,
+            target_format,
+            presentation,
+            bind_layout,
+            blit_pipeline,
+            blit_gamma_pipeline,
+            blit_presentation_pipeline,
+            blit_clear_pipeline,
+            blit_clear_gamma_pipeline,
+            blit_clear_presentation_pipeline,
+            group_bind_layout,
+            group_pipeline,
+            group_pipeline_multiply,
+            group_pipeline_screen,
+        }
+    }
+}
+
+fn msaa_view(
+    device: &wgpu::Device,
+    format: wgpu::TextureFormat,
+    width: u32,
+    height: u32,
+) -> wgpu::TextureView {
+    device
+        .create_texture(&wgpu::TextureDescriptor {
+            label: Some("nana-ui.scene.dest.msaa"),
+            size: wgpu::Extent3d {
+                width,
+                height,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 4,
+            dimension: wgpu::TextureDimension::D2,
+            format,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
+            view_formats: &[],
+        })
+        .create_view(&wgpu::TextureViewDescriptor::default())
+}
+
+impl DestTarget {
+    #[allow(clippy::too_many_arguments)]
+    /// `built` is the painter's own [`DestPipelines`], used when they are
+    /// for this target's formats.
+    pub(super) fn ensure(
+        current: &mut Option<Self>,
+        built: Option<&DestPipelines>,
+        device: &wgpu::Device,
+        pipeline_cache: Option<&wgpu::PipelineCache>,
+        format: wgpu::TextureFormat,
+        target_format: wgpu::TextureFormat,
+        presentation: ScenePresentationProfile,
+        width: u32,
+        height: u32,
+        want_msaa: bool,
+        policy: &nana_gpu::GpuDeviceState,
+    ) {
+        if let Some(target) = current.as_mut()
+            && target.width == width
+            && target.height == height
+            && target.format == format
+            && target.target_format == target_format
+            && target.presentation == presentation
+        {
+            // Switching between UI-only and ordered GPU composition changes
+            // the attachment, not the color target, bindings or pipelines.
+            if target.msaa_allocated != want_msaa {
+                target.msaa = want_msaa.then(|| msaa_view(device, format, width, height));
+                target.msaa_allocated = want_msaa;
+                target.forget_prefix();
+            }
+            return;
+        }
+        *current = Some(Self::new(
+            built,
+            device,
+            pipeline_cache,
+            format,
+            target_format,
+            presentation,
+            width,
+            height,
+            want_msaa,
+            policy,
+        ));
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn new(
+        built: Option<&DestPipelines>,
+        device: &wgpu::Device,
+        pipeline_cache: Option<&wgpu::PipelineCache>,
+        format: wgpu::TextureFormat,
+        target_format: wgpu::TextureFormat,
+        presentation: ScenePresentationProfile,
+        width: u32,
+        height: u32,
+        want_msaa: bool,
+        policy: &nana_gpu::GpuDeviceState,
+    ) -> Self {
+        let width = width.max(1);
+        let height = height.max(1);
+        let msaa = want_msaa.then(|| msaa_view(device, format, width, height));
+        let color = device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("nana-ui.scene.dest.color"),
+            size: wgpu::Extent3d {
+                width,
+                height,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT
+                | wgpu::TextureUsages::TEXTURE_BINDING
+                | wgpu::TextureUsages::COPY_SRC
+                | wgpu::TextureUsages::COPY_DST,
+            view_formats: &[],
+        });
+        let color_view = color.create_view(&wgpu::TextureViewDescriptor::default());
+        let sampler = device.create_sampler(&wgpu::SamplerDescriptor {
+            label: Some("nana-ui.scene.dest.sampler"),
+            mag_filter: wgpu::FilterMode::Linear,
+            min_filter: wgpu::FilterMode::Linear,
+            ..wgpu::SamplerDescriptor::default()
+        });
+        let DestPipelines {
+            bind_layout,
+            blit_pipeline,
+            blit_gamma_pipeline,
+            blit_presentation_pipeline,
+            blit_clear_pipeline,
+            blit_clear_gamma_pipeline,
+            blit_clear_presentation_pipeline,
+            group_bind_layout,
+            group_pipeline,
+            group_pipeline_multiply,
+            group_pipeline_screen,
+            ..
+        } = built
+            .filter(|built| {
+                built.format == format
+                    && built.target_format == target_format
+                    && built.presentation == presentation
+            })
+            .cloned()
+            .unwrap_or_else(|| {
+                DestPipelines::new(
+                    device,
+                    pipeline_cache,
+                    format,
+                    target_format,
+                    presentation,
+                    policy,
+                )
+            });
+        let presentation_uniforms =
+            ManagedBuffer::new(device.create_buffer(&wgpu::BufferDescriptor {
+                label: Some("nana-ui.scene.dest.presentation.uniforms"),
+                size: PRESENTATION_UNIFORM_SIZE,
+                usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+                mapped_at_creation: false,
+            }));
+        let blit_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("nana-ui.scene.dest.blit.bind"),
+            layout: &bind_layout,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: wgpu::BindingResource::TextureView(&color_view),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: wgpu::BindingResource::Sampler(&sampler),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 2,
+                    resource: presentation_uniforms.as_entire_binding(),
+                },
+            ],
+        });
+        let group_sampler = device.create_sampler(&wgpu::SamplerDescriptor {
+            label: Some("nana-ui.scene.group.sampler"),
+            mag_filter: wgpu::FilterMode::Linear,
+            min_filter: wgpu::FilterMode::Linear,
+            ..wgpu::SamplerDescriptor::default()
+        });
+        let group_uniforms = ManagedBuffer::new(device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("nana-ui.scene.group.uniforms"),
+            size: GROUP_UNIFORM_STRIDE * GROUP_UNIFORM_SLOTS,
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        }));
+        Self {
             width,
             height,
             msaa_allocated: want_msaa,
@@ -918,6 +1003,14 @@ impl DestTarget {
             policy: policy.clone(),
             prefix: None,
         }
+    }
+
+    /// Whether this target blits and composites with `pipelines`.
+    #[cfg(test)]
+    pub(super) fn draws_with(&self, pipelines: &DestPipelines) -> bool {
+        self.blit_pipeline == pipelines.blit_pipeline
+            && self.blit_clear_pipeline == pipelines.blit_clear_pipeline
+            && self.group_pipeline == pipelines.group_pipeline
     }
 
     pub(super) fn color_view(&self) -> &wgpu::TextureView {
@@ -1461,6 +1554,7 @@ mod lifecycle_tests {
         let ensure = |current: &mut Option<DestTarget>, width, msaa| {
             DestTarget::ensure(
                 current,
+                None,
                 device,
                 None,
                 format,

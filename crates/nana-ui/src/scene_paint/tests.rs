@@ -13930,3 +13930,58 @@ fn a_painter_without_a_material_waker_shades_its_first_frame() {
     let first = square_centre(&device, &queue, &mut painter, &scene);
     assert!(is_green(first), "the material shades it at once: {first:?}");
 }
+
+/// A window's first frame compiles no pipeline of its own: the painter built
+/// its dest's blits and group composites, and the subpixel text program,
+/// beside its other pipeline families, and the frame draws with those.
+#[test]
+fn a_new_painter_holds_the_pipelines_its_first_frame_draws_with() {
+    let (device, queue) = test_device();
+    let format = wgpu::TextureFormat::Rgba8Unorm;
+    let mut painter = SceneWgpuPainter::for_test(format);
+    let built = painter
+        .dest_pipelines
+        .clone()
+        .expect("the dest pipelines are built with the painter");
+    assert!(painter.dest.is_none(), "before any frame");
+    let subpixel = device
+        .features()
+        .contains(wgpu::Features::DUAL_SOURCE_BLENDING);
+    assert_eq!(
+        painter.text.subpixel_prewarmed(),
+        subpixel,
+        "the subpixel program is compiled ahead wherever it can run"
+    );
+    let mut scene = UiScene::new();
+    scene.apply_delta(
+        [extracted_div(
+            1,
+            &[],
+            0.0,
+            0.0,
+            64.0,
+            64.0,
+            nana_ui_core::LayoutStyle {
+                background: Some([0.0, 0.0, 1.0, 1.0]),
+                ..Default::default()
+            },
+            Some([0.0, 0.0, 1.0, 1.0]),
+        )],
+        [],
+    );
+    painter.set_subpixel_text(Some(SubpixelOrder::Rgb));
+    let centre = square_centre(&device, &queue, &mut painter, &scene);
+    assert!(is_blue(centre), "the frame paints: {centre:?}");
+    assert!(
+        painter
+            .dest
+            .as_ref()
+            .expect("the first frame made its dest")
+            .draws_with(&built),
+        "with the painter's own dest pipelines"
+    );
+    assert!(
+        !subpixel || painter.text.subpixel_prewarmed(),
+        "and its own subpixel program"
+    );
+}
