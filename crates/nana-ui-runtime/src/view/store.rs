@@ -39,7 +39,7 @@ use std::rc::Rc;
 use hashbrown::HashMap;
 
 use super::node::IntoView;
-use super::prop::{FieldWrite, IntoProp, PropSource};
+use super::prop::{FieldWrite, IntoProp, PropSource, Writable};
 use super::reactive::{self, Readable, ScopeKey, Signal, SignalKey};
 use super::structural::{Each, each};
 use super::{EachVirtual, NodeBindings, each_virtual};
@@ -977,6 +977,16 @@ macro_rules! readable_paths {
 
             fn into_source(self) -> PropSource<$value> {
                 PropSource::Dyn(Box::new(move || self.get()))
+            }
+        }
+
+        impl<$($generics)*> Writable<$value> for $path
+        where
+            $value: Clone + Send,
+        {
+            #[track_caller]
+            fn write_back(&self, value: $value) {
+                self.set(value);
             }
         }
     )*};

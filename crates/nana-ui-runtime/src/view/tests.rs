@@ -1135,6 +1135,58 @@ fn a_store_field_write_reaches_only_the_binding_that_read_it() {
 }
 
 #[test]
+fn a_model_bound_to_a_store_path_writes_back_through_it() {
+    let (mut cx, _, parent) = setup();
+    let board = std::cell::Cell::new(None);
+    let view = cx
+        .mount_view(parent, || {
+            let state = store(Board {
+                tasks: (1..=3).map(task).collect(),
+            });
+            board.set(Some(state));
+            state.tasks().keyed(|task| task.id).each(|task| {
+                row().children((
+                    text_input().model(task.title()).key("title"),
+                    checkbox("").model(task.done()).key("done"),
+                ))
+            })
+        })
+        .unwrap();
+    let board = board.get().unwrap();
+    let list = view.roots()[0];
+    let tasks = board.tasks().keyed(|task| task.id);
+
+    let row = children(&cx, list)[1];
+    let done: Entity<Checkbox> = node(&cx, row, "done");
+    cx.toggle_checkbox(done).unwrap();
+    let before = reactive_stats();
+    cx.flush_reactive().unwrap();
+    assert!(tasks.at(&2).done().get_untracked());
+    assert!(!tasks.at(&1).done().get_untracked());
+    assert_eq!(
+        delta(before).effects_run,
+        1,
+        "only row 2's checkbox binding read the written field"
+    );
+
+    let input: Entity<TextInput> = node(&cx, row, "title");
+    cx.update_component(input, |field, cx| {
+        field.state.replace_value("改过的");
+        cx.emit(TextChanged {
+            value: field.state.value.clone(),
+            selection: field.state.selection,
+        });
+    })
+    .unwrap();
+    cx.flush_reactive().unwrap();
+    assert_eq!(tasks.at(&2).title().get_untracked(), "改过的");
+
+    tasks.at(&2).done().set(false);
+    cx.flush_reactive().unwrap();
+    assert!(!cx.read(done, |checkbox| checkbox.checked).unwrap());
+}
+
+#[test]
 fn store_list_operations_move_rows_without_rereading_them() {
     let (mut cx, _, parent) = setup();
     let (board, list) = mount_board(&mut cx, parent, 3);

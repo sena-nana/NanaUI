@@ -44,6 +44,24 @@ pub trait IntoProp<T: 'static>: Sized {
     fn into_source(self) -> PropSource<T>;
 }
 
+/// A prop the control may also write back to: what `.model` (`v-model`)
+/// takes. A [`Signal`] or a store path ([`super::Store`],
+/// [`super::Subfield`], [`super::Item`]), which carries both the read and
+/// the write, so binding a store field needs no handler of its own.
+pub trait Writable<T: 'static>: IntoProp<T> + Copy + Send + 'static {
+    /// Write the control's new value and notify readers. Does nothing once
+    /// a list item on a store path is gone.
+    #[track_caller]
+    fn write_back(&self, value: T);
+}
+
+impl<T: Clone + 'static> Writable<T> for Signal<T> {
+    #[track_caller]
+    fn write_back(&self, value: T) {
+        self.set(value);
+    }
+}
+
 /// A prop kept for later evaluation (conditions, list sources).
 pub enum PropSource<T: 'static> {
     Const(T),

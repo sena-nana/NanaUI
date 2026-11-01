@@ -821,7 +821,9 @@ fn rows_dialogs_and_the_transport_bar_place_their_slots() {
 
 mod store_derive {
     use nana_ui_runtime::view::{Store, StoreList, StorePath, reactive_stats, store, text};
-    use nana_ui_runtime::{AppContext, DocumentId, Entity, Stack, Text};
+    use nana_ui_runtime::{
+        AppContext, DocumentId, Entity, Stack, Text, TextChanged, TextInput, view,
+    };
 
     #[derive(Clone, Store)]
     struct Todo {
@@ -884,6 +886,44 @@ mod store_derive {
         assert_eq!(cx.read(second, |text| text.value.clone()).unwrap(), "贰");
         assert_eq!(app.heading().get_untracked(), "新标题");
         assert_eq!(app.todos().len(), 2);
+    }
+
+    #[test]
+    fn v_model_takes_a_store_field() {
+        let mut cx = AppContext::new();
+        let document = DocumentId::new(1).unwrap();
+        let parent = cx
+            .create_component(document, Stack::column(0.0))
+            .unwrap()
+            .stable_id();
+        let app = std::cell::Cell::new(None);
+        let view = cx
+            .mount_view(parent, || {
+                let state = store(App {
+                    todos: Vec::new(),
+                    heading: "标题".into(),
+                });
+                app.set(Some(state));
+                view! { <TextInput v-model={state.heading()} /> }
+            })
+            .unwrap();
+        let app = app.get().unwrap();
+        let input: Entity<TextInput> = Entity::from_stable_id(view.roots()[0]);
+        assert_eq!(
+            cx.read(input, |field| field.state.value.clone()).unwrap(),
+            "标题"
+        );
+
+        cx.update_component(input, |field, cx| {
+            field.state.replace_value("新标题");
+            cx.emit(TextChanged {
+                value: field.state.value.clone(),
+                selection: field.state.selection,
+            });
+        })
+        .unwrap();
+        cx.flush_reactive().unwrap();
+        assert_eq!(app.heading().get_untracked(), "新标题");
     }
 }
 

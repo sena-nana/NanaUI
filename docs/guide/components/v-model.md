@@ -30,6 +30,36 @@ column().gap(8).children((
 
 对没有 `v-model` 的控件写 `v-model`，编译模板时会报错。
 
+## 绑到 store 的字段
+
+`v-model` 也收 store 路径（`Store`、`Subfield`、`Item`）。路径既能读也能写，所以直接交给 `.model` 就行，不用再写一个处理器：
+
+:::api
+
+```rust view
+use nana_ui::runtime::view;
+
+todos.each(|t| view! {
+    <Row gap=4>
+        <Checkbox v-model={t.done()}></Checkbox>
+        <TextInput v-model={t.title()} />
+    </Row>
+});
+```
+
+```rust rust
+use nana_ui::runtime::view::{checkbox, row, text_input};
+
+todos.each(|t| row().gap(4).children((
+    checkbox("").model(t.done()),
+    text_input().model(t.title()),
+)));
+```
+
+:::
+
+写回走路径自己的 `set`：只有读了这一行这个字段的绑定会重跑，`store_with_history` 也把它算进当前这一步。行被删掉以后，迟到的写回什么也不做。路径的值类型要和控件表里的字段类型一致；不一致时（例如 store 里是 `u32`，`NumberInput` 要 `f64`），绑字段再接 `.on_change` 自己转换。`.model` 收的是 `Writable<T>`，`Signal<T>` 和这三种路径都实现了它。
+
 ## 谁可以绑
 
 控件表里登记了 `model` 的只有这些。信号类型必须对上。

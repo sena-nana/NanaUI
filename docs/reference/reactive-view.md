@@ -138,7 +138,7 @@ app.filter().set("done".into());   // 只影响读 filter 的地方
 ```
 
 - `#[derive(Store)]` 生成 `<Name>StoreFields` trait。每个字段一个访问器。返回 `Subfield`。用到访问器的地方要导入这个 trait。只支持具名字段、不带泛型的结构体。
-- 路径句柄（`Store`、`Subfield`、`Item`）和信号一样是 `Copy` 的 id。可以直接当属性值：`text(t.title())`、`.checked(t.done())`。读写方法 `get` / `with` / `try_with` / `set` / `update` 来自 `StorePath` trait。
+- 路径句柄（`Store`、`Subfield`、`Item`）和信号一样是 `Copy` 的 id。可以直接当属性值：`text(t.title())`、`.checked(t.done())`。也可以直接双向绑定：`.model(t.done())`、`v-model={t.done()}`（`Writable<T>`，写回走路径的 `set`。行已删除时什么也不做）。读写方法 `get` / `with` / `try_with` / `set` / `update` 来自 `StorePath` trait。
 - 每条路径有两个触发器。都在第一次被追踪读取时才创建。没被读过的路径不占任何信号。读值（`get` / `with`）追踪 deep。遍历列表（`keyed(..).each` / `items()`、`len()`）只追踪 shallow。写一条路径触发它自己和它下面已存在路径的两个触发器。以及它上面各路径的 deep。
 - 列表自己的 `push`、`insert`、`retain`、`swap`、`sort_by_key` 不改任何一项的内容。所以只触发列表本身和上层的 deep。不触发各行。整体 `set` / `update` 列表会触发所有行。行内绑定重跑后按字段比较。值没变就到此为止。
 - 行按 key 的 64 位哈希定位。重排后仍指向同一项。同一列表里两个 key 的哈希不能相同。行被删掉后。它的触发器在下一次按 key 查找时释放。对已删除行的 `get` 会 panic。`try_with` 返回 `None`。

@@ -403,11 +403,16 @@ let board = store(Board { tasks: Vec::new(), title: String::new() });
     <Text>{{ board.title().get() }}</Text>
     <Text>{{ board.tasks().len() }} 项</Text>
     <Text :value="board.title()" />
+    <TextInput v-model="board.title()" />
   </Column>
 </template>"#,
     )])
     .unwrap();
     let code = squash(&out.code);
+    assert!(
+        code.contains(&squash(".model(board.title())")),
+        "v-model takes the store path itself: {code}"
+    );
     assert!(!code.contains("constant("), "a store never folds: {code}");
     assert!(
         !code.contains("Fixed("),

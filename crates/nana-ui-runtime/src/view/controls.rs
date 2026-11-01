@@ -7,8 +7,7 @@ use std::sync::Arc;
 
 use super::node::IntoView;
 use super::node::{El, widget};
-use super::prop::{FieldWrite, IntoProp};
-use super::reactive::Signal;
+use super::prop::{FieldWrite, IntoProp, Writable};
 use crate::{
     ActionMenu, ActionMenuItem, ColorChanged, ColorField, InlineContent, ListItemRole, SizeField,
     SizeFieldChanged, SizePreset, TabsEvent, TextSelection, ThumbnailState, TreeNode, TreeView,
@@ -217,11 +216,12 @@ macro_rules! controls {
             )*
 
             $(
-                /// `v-model`: shows the signal and writes each change back.
+                /// `v-model`: shows the signal or store path and writes each
+                /// change back.
                 #[track_caller]
-                pub fn model(self, value: Signal<$model_ty>) -> Self {
+                pub fn model(self, value: impl Writable<$model_ty>) -> Self {
                     self.$model(value)
-                        .on(move |$event: &$model_event| value.set($from_event))
+                        .on(move |$event: &$model_event| value.write_back($from_event))
                 }
             )?
 

@@ -72,9 +72,9 @@ macro_rules! modal_open {
             /// another overlay opening in its place), so the signal always
             /// says whether the surface is open.
             #[track_caller]
-            pub fn model(self, open: super::reactive::Signal<bool>) -> Self {
+            pub fn model(self, open: impl super::Writable<bool>) -> Self {
                 self.open(open)
-                    .on(move |toggled: &crate::DialogToggled| open.set(toggled.open))
+                    .on(move |toggled: &crate::DialogToggled| open.write_back(toggled.open))
             }
         }
     )*};

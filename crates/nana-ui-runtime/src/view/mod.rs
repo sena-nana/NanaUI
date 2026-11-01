@@ -90,7 +90,7 @@ pub use node::{
 pub(crate) use node::{NodePatch, StructuralBinding, ViewParts, ViewState};
 #[doc(hidden)]
 pub use prop::Fixed;
-pub use prop::{FieldWrite, IntoProp, PropSource};
+pub use prop::{FieldWrite, IntoProp, PropSource, Writable};
 #[doc(hidden)]
 pub use reactive::{__checked, Dep};
 pub use reactive::{
