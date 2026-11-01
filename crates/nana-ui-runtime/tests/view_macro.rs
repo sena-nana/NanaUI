@@ -904,7 +904,7 @@ mod store_derive {
                     heading: "标题".into(),
                 });
                 app.set(Some(state));
-                view! { <TextInput v-model={state.heading()} /> }
+                view! { <TextInput label="标题" v-model={state.heading()} /> }
             })
             .unwrap();
         let app = app.get().unwrap();
