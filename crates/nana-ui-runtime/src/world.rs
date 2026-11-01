@@ -6429,6 +6429,7 @@ mod issue387;
 mod issue388;
 mod issue389;
 mod issue392;
+mod issue394;
 mod issue396;
 mod issue397;
 mod issue398;

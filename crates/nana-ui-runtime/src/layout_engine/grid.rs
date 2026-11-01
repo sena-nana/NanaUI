@@ -902,6 +902,8 @@ pub(super) fn align_in_grid_cell(
     if used + 1e-6 >= cell {
         return (0.0, used);
     }
+    // A baseline item starts here; `arrange_grid_2d` then sets it on its
+    // row's shared baseline.
     let offset = match align {
         AlignSpec::Start | AlignSpec::Stretch | AlignSpec::Baseline => 0.0,
         AlignSpec::Center => ((cell - used) / 2.0).max(0.0),
@@ -927,10 +929,33 @@ pub(super) fn margin_at(
     }
 }
 
-pub(super) fn place_grid_2d_items(
+/// A grid item where its area and its alignment put it.
+pub(super) struct ArrangedGridItem {
+    /// Its index in [`Grid2DLayout::items`].
+    pub(super) index: usize,
+    pub(super) id: StableNodeId,
+    /// Its border box's origin from the content box's, on the page.
+    pub(super) offset: Point,
+    pub(super) size: Size,
+    /// Its area: its containing block.
+    pub(super) cell: Size,
+    pub(super) row: usize,
+    pub(super) col: usize,
+    /// The first baseline it is aligned by, under `align-self: baseline`.
+    pub(super) baseline: Option<f32>,
+}
+
+/// Gives every item of `grid` its box in the content box `content`: its
+/// area from the tracks, and inside it where `justify-self` and
+/// `align-self` put it. Items aligned by their first baseline (in a
+/// horizontal grid) share one with the others of their start row: each
+/// sits where its baseline lands on the deepest of theirs, its top margin
+/// included (CSS Grid 2 §11.6, CSS Align 3 §9). Placement places the items
+/// by it and baseline derivation reads it (#394).
+#[allow(clippy::too_many_arguments)]
+pub(super) fn arrange_grid_2d(
     grid: &Grid2DLayout,
     writing: nana_ui_core::WritingContext,
-    content_origin: Point,
     content: Size,
     style: &LayoutStyle,
     viewport: LayoutViewport,
@@ -940,10 +965,11 @@ pub(super) fn place_grid_2d_items(
     scope: Option<&ScopeContext<'_>>,
     // Used border box for an item whose contribution and cell size are unchanged.
     reuse_used: Option<&HashMap<StableNodeId, Size>>,
-    mut record: Option<&mut Vec<PlannedChild>>,
-    // Items whose subtrees are placed again: the caller places them.
-    descend: &mut Vec<Descend>,
-) -> Result<(), UiWorldError> {
+) -> Result<Vec<ArrangedGridItem>, UiWorldError> {
+    let mut arranged = Vec::with_capacity(grid.items.len());
+    // Per baseline-aligned item: its index in `arranged`, its flow rect,
+    // its top margin and its baseline.
+    let mut aligned: Vec<(usize, (f32, f32, f32, f32), f32, f32)> = Vec::new();
     let col_off = grid_track_offsets(&grid.col_sizes, grid.col_gap);
     let row_off = grid_track_offsets(&grid.row_sizes, grid.row_gap);
     // Cells and items are placed flow-relative — columns from the
@@ -959,7 +985,7 @@ pub(super) fn place_grid_2d_items(
         let (x, y, width, height) = writing.flow_rect_to_page(rect, box_extents);
         (Point { x, y }, Size::new(width, height))
     };
-    for item in &grid.items {
+    for (index, item) in grid.items.iter().enumerate() {
         let Some(child_style) = nodes.style(item.id) else {
             continue;
         };
@@ -1032,12 +1058,13 @@ pub(super) fn place_grid_2d_items(
             align_in_grid_cell(justify, measured_inline, inner_inline, stretch_inline);
         let (off_block, used_block) =
             align_in_grid_cell(align, measured_block, inner_block, stretch_block);
-        let (offset, mut child_size) = page((
+        let flow_rect = (
             cell_inline + inline_lead + off_inline,
             cell_block + block_lead + off_block,
             used_inline,
             used_block,
-        ));
+        );
+        let (offset, mut child_size) = page(flow_rect);
         let stretch_height = if writing.is_vertical() {
             stretch_inline
         } else {
@@ -1053,24 +1080,107 @@ pub(super) fn place_grid_2d_items(
                 child_fonts,
             );
         }
+        if align == AlignSpec::Baseline && !writing.is_vertical() {
+            prime_first_baselines(
+                [(item.id, child_size)],
+                cell.width,
+                viewport,
+                child_font_px,
+                nodes,
+                intrinsic,
+                scope,
+            )?;
+            let baseline = intrinsic
+                .baseline(item.id, crate::Baseline::First)
+                .unwrap_or_else(|| nodes.baseline(item.id, child_fonts.element_px, child_size));
+            aligned.push((arranged.len(), flow_rect, block_lead, baseline));
+        }
+        arranged.push(ArrangedGridItem {
+            index,
+            id: item.id,
+            offset,
+            size: child_size,
+            cell,
+            row: item.row,
+            col: item.col,
+            baseline: None,
+        });
+    }
+    // Each start row's baseline items sit on the deepest of their baselines.
+    let mut shared: HashMap<usize, f32> = HashMap::new();
+    for &(at, _, lead, baseline) in &aligned {
+        let row = arranged[at].row;
+        let reach = lead + baseline;
+        shared
+            .entry(row)
+            .and_modify(|deepest| *deepest = deepest.max(reach))
+            .or_insert(reach);
+    }
+    for (at, (inline, _, inline_size, block_size), lead, baseline) in aligned {
+        let item = &mut arranged[at];
+        let cell_block = row_off.get(item.row).copied().unwrap_or(0.0);
+        let block = cell_block + shared[&item.row] - baseline;
+        debug_assert!(block >= cell_block + lead - 0.01);
+        let (offset, _) = page((inline, block, inline_size, block_size));
+        item.offset = offset;
+        item.baseline = Some(baseline);
+    }
+    Ok(arranged)
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(super) fn place_grid_2d_items(
+    grid: &Grid2DLayout,
+    writing: nana_ui_core::WritingContext,
+    content_origin: Point,
+    content: Size,
+    style: &LayoutStyle,
+    viewport: LayoutViewport,
+    child_font_px: f32,
+    nodes: &mut LayoutInputMap<'_>,
+    intrinsic: &mut PassIntrinsicCache,
+    scope: Option<&ScopeContext<'_>>,
+    // Used border box for an item whose contribution and cell size are unchanged.
+    reuse_used: Option<&HashMap<StableNodeId, Size>>,
+    mut record: Option<&mut Vec<PlannedChild>>,
+    // Items whose subtrees are placed again: the caller places them.
+    descend: &mut Vec<Descend>,
+) -> Result<(), UiWorldError> {
+    let arranged = arrange_grid_2d(
+        grid,
+        writing,
+        content,
+        style,
+        viewport,
+        child_font_px,
+        nodes,
+        intrinsic,
+        scope,
+        reuse_used,
+    )?;
+    for placed in arranged {
+        let item = &grid.items[placed.index];
+        let Some(child_style_arc) = nodes.style(item.id) else {
+            continue;
+        };
+        let child_style = child_style_arc.as_ref();
+        let child_fonts = fonts_of(child_style, child_font_px);
+        let (offset, child_size, cell) = (placed.offset, placed.size, placed.cell);
         let child_origin = Point {
             x: content_origin.x + offset.x,
             y: content_origin.y + offset.y,
         };
-        if let Some(record) = record.as_mut()
-            && let Some(style_arc) = nodes.style(item.id)
-        {
+        if let Some(record) = record.as_mut() {
             record.push(PlannedChild {
                 child: item.id,
-                style: style_arc,
+                style: Arc::clone(&child_style_arc),
                 intrinsic: item.intrinsic,
                 at_main: None,
                 origin: child_origin,
                 offset: Some(offset),
                 size: child_size,
                 cursor_before: 0.0,
-                // A grid aligns baseline items to the start of their area.
-                baseline: None,
+                baseline: placed.baseline,
             });
         }
         if !subtree_unchanged(

@@ -1,0 +1,147 @@
+{
+  "id": "T-GB02",
+  "title": "以 grid 容器结尾的 inline-block 在块的行上：按这个 grid 第一行的基线对齐（Chrome 152 + Noto Sans SC 实测）",
+  "status": "pass",
+  "viewport": [
+    600,
+    200
+  ],
+  "tolerance_px": 2,
+  "tree": {
+    "id": "root",
+    "style": "display:block;width:600px",
+    "children": [
+      {
+        "id": "gg-line",
+        "style": "display:block;width:600px",
+        "children": [
+          {
+            "id": "gg-ref",
+            "style": "display:inline-block;width:30px;height:30px"
+          },
+          {
+            "id": "gg-h",
+            "style": "display:inline-block;width:130px",
+            "children": [
+              {
+                "id": "gg-grid",
+                "style": "display:grid;grid-template-columns:60px 60px;align-items:baseline;width:130px",
+                "children": [
+                  {
+                    "id": "gg-p",
+                    "style": "display:block",
+                    "children": [
+                      {
+                        "id": "gg-pa",
+                        "style": "display:inline-block;width:20px;height:20px"
+                      }
+                    ]
+                  },
+                  {
+                    "id": "gg-q",
+                    "style": "display:block",
+                    "children": [
+                      {
+                        "id": "gg-qa",
+                        "style": "display:inline-block;width:40px;height:40px"
+                      }
+                    ]
+                  },
+                  {
+                    "id": "gg-s",
+                    "style": "display:block",
+                    "children": [
+                      {
+                        "id": "gg-sa",
+                        "style": "display:inline-block;width:10px;height:10px"
+                      }
+                    ]
+                  }
+                ]
+              }
+            ]
+          }
+        ]
+      }
+    ]
+  },
+  "expected": [
+    {
+      "id": "root",
+      "x": 0,
+      "y": 0,
+      "w": 600,
+      "h": 62.38
+    },
+    {
+      "id": "gg-line",
+      "x": 0,
+      "y": 0,
+      "w": 600,
+      "h": 62.38
+    },
+    {
+      "id": "gg-ref",
+      "x": 0,
+      "y": 10,
+      "w": 30,
+      "h": 30
+    },
+    {
+      "id": "gg-h",
+      "x": 30,
+      "y": 0,
+      "w": 130,
+      "h": 62.38
+    },
+    {
+      "id": "gg-grid",
+      "x": 30,
+      "y": 0,
+      "w": 130,
+      "h": 62.38
+    },
+    {
+      "id": "gg-p",
+      "x": 30,
+      "y": 20,
+      "w": 60,
+      "h": 23.19
+    },
+    {
+      "id": "gg-pa",
+      "x": 30,
+      "y": 20,
+      "w": 20,
+      "h": 20
+    },
+    {
+      "id": "gg-q",
+      "x": 90,
+      "y": 0,
+      "w": 60,
+      "h": 43.19
+    },
+    {
+      "id": "gg-qa",
+      "x": 90,
+      "y": 0,
+      "w": 40,
+      "h": 40
+    },
+    {
+      "id": "gg-s",
+      "x": 30,
+      "y": 43.19,
+      "w": 60,
+      "h": 19.19
+    },
+    {
+      "id": "gg-sa",
+      "x": 30,
+      "y": 49.19,
+      "w": 10,
+      "h": 10
+    }
+  ]
+}

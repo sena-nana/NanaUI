@@ -2179,8 +2179,6 @@ fn lay_out_children(
             scope,
         )?
     };
-    let float_left_bottom = packed_floats.left_bottom;
-    let float_right_bottom = packed_floats.right_bottom;
     let context = establish_context(id, style, &flow, nodes);
     nodes.contexts.insert(id, context.kind);
     let grid_2d = context.grid_2d;
@@ -2351,614 +2349,98 @@ fn lay_out_children(
             &mut descend,
         )?;
     } else {
-        let wrap = if ifc { FlexWrap::Wrap } else { style.flex_wrap };
-        let wrapping = ifc
-            || match direction {
-                FlexDirection::Row => matches!(wrap, FlexWrap::Wrap | FlexWrap::WrapReverse),
-                FlexDirection::Column => {
-                    matches!(wrap, FlexWrap::Wrap | FlexWrap::WrapReverse) && content.height > 0.5
-                }
+        let arranged = arrange_flow(
+            id,
+            style,
+            writing,
+            &flow,
+            &child_sizes,
+            content_origin,
+            content,
+            child_edge_base,
+            gap,
+            cross_gap,
+            ifc,
+            direction,
+            (main_reversed, cross_reversed),
+            &packed_floats,
+            viewport,
+            child_font_px,
+            nodes,
+            intrinsic,
+            scope,
+            true,
+        )?;
+        gap = arranged.gap;
+        plan_sequential &= arranged.sequential_justify;
+        let line_count = arranged.lines.len();
+        for item in arranged.children {
+            let child = item.child;
+            let child_style = item.style.as_ref();
+            let child_fonts = fonts_of(child_style, child_font_px);
+            let child_size = item.size;
+            let child_origin = Point {
+                x: content_origin.x + item.offset.x,
+                y: content_origin.y + item.offset.y,
             };
-        let grid_tracks = match direction {
-            FlexDirection::Row => style.active_grid_columns(),
-            FlexDirection::Column => style.active_grid_rows(),
-        };
-        let justify = if ifc {
-            ifc_justify(style.text_align, writing)
-        } else {
-            style.justify_content
-        };
-        plan_sequential &= justify == JustifySpec::Start && grid_tracks.is_none();
-        let full_main = main_extent(content, direction);
-        let line_slot = |indices| LineBoxSlot {
-            indices,
-            main_start: 0.0,
-            main_available: full_main,
-            cross_y: 0.0,
-            pin_cross: false,
-            baseline_aligned: false,
-        };
-        let mut line_slots = if wrapping {
-            if style.equal_wrap {
-                pack_equal_wrap_lines(
-                    &flow,
-                    &child_sizes,
-                    direction,
-                    full_main,
-                    child_edge_base,
-                    gap,
-                    child_font_px,
-                    nodes,
-                )
-                .into_iter()
-                .map(|range| line_slot(range.collect()))
-                .collect()
-            } else if ifc && !writing.is_vertical() {
-                prime_atom_baselines(
-                    flow.iter().copied().zip(child_sizes.iter().copied()),
-                    content.width,
-                    viewport,
-                    child_font_px,
-                    nodes,
-                    intrinsic,
-                    scope,
-                )?;
-                pack_ifc_line_boxes(
-                    &flow,
-                    &child_sizes,
-                    content_origin,
-                    content.width,
-                    gap,
-                    cross_gap,
-                    viewport,
-                    child_font_px,
-                    line_strut(id, style, child_font_px, nodes),
-                    nodes,
-                    &packed_floats,
-                )
-            } else {
-                pack_wrap_lines(
-                    &flow,
-                    &child_sizes,
-                    direction,
-                    content,
-                    child_edge_base,
-                    gap,
-                    grid_tracks,
-                    viewport,
-                    child_font_px,
-                    nodes,
-                    ifc,
-                )
-                .into_iter()
-                .map(line_slot)
-                .collect()
-            }
-        } else {
-            vec![line_slot((0..flow.len()).collect())]
-        };
-        if matches!(wrap, FlexWrap::WrapReverse) {
-            line_slots.reverse();
-        }
-        #[allow(clippy::type_complexity)]
-        let mut packed: Vec<(
-            Vec<StableNodeId>,
-            Vec<Size>,
-            f32,
-            f32,
-            f32,
-            f32,
-            bool,
-            Option<f32>,
-        )> = Vec::with_capacity(line_slots.len());
-        // Items measured again at the main size their line gave them.
-        let mut hypothetical: HashMap<StableNodeId, (f32, Size)> = HashMap::new();
-        for slot in &line_slots {
-            let line_flow: Vec<StableNodeId> =
-                slot.indices.iter().map(|&index| flow[index]).collect();
-            let mut line_sizes: Vec<Size> = slot
-                .indices
-                .iter()
-                .map(|&index| child_sizes[index])
-                .collect();
-            let mut line_content = content;
-            set_main_extent(&mut line_content, direction, slot.main_available);
-            let line_tracks = grid_tracks.map(|tracks| {
-                let start = slot.indices.first().copied().unwrap_or(0);
-                let end = slot
-                    .indices
-                    .last()
-                    .map(|index| index + 1)
-                    .unwrap_or(0)
-                    .min(tracks.len());
-                let start = start.min(end);
-                &tracks[start..end]
-            });
-            let mut line_adjust = None;
-            if style.equal_wrap && wrapping {
-                let share = equal_wrap_share(
-                    &line_flow,
-                    direction,
-                    slot.main_available,
-                    child_edge_base,
-                    gap,
-                    child_font_px,
-                    nodes,
-                );
-                for size in &mut line_sizes {
-                    set_main_extent(size, direction, share);
-                }
-            } else if let Some(tracks) = line_tracks.filter(|tracks| !tracks.is_empty()) {
-                apply_grid_main_sizes(
-                    &line_flow,
-                    &mut line_sizes,
-                    direction,
-                    line_content,
-                    child_edge_base,
-                    gap,
-                    tracks,
-                    viewport,
-                    child_font_px,
-                    nodes,
-                    intrinsic,
-                    scope,
-                )?;
-            } else {
-                let single_line = line_slots.len() == 1
-                    && !ifc
-                    && !matches!(wrap, FlexWrap::Wrap | FlexWrap::WrapReverse);
-                let line = super::dynamic::DynamicLine::of(
-                    id,
-                    style,
-                    writing,
-                    single_line,
-                    &mut intrinsic.dynamic,
-                    scope.map(|scope| scope.retained),
-                    true,
-                );
-                let adjust = distribute_flex_main(
-                    &line_flow,
-                    &mut line_sizes,
-                    direction,
-                    line_content,
-                    child_edge_base,
-                    gap,
-                    viewport,
-                    child_font_px,
-                    nodes,
-                    line,
-                );
-                // A solved line sets its items closer: every later step of
-                // this single line reads the gap it settled on.
-                gap = adjust.gap;
-                line_adjust = Some(adjust);
-            }
-            // An item the line gave another main size than it was measured
-            // with is as tall (wide, in a column) as its content at that size.
-            for (slot_index, child) in line_flow.iter().enumerate() {
-                let measured = child_sizes[slot.indices[slot_index]];
-                let Some(child_style) = nodes.style(*child) else {
-                    continue;
-                };
-                // An item that gave up only its own chrome keeps its content
-                // box, and so its cross size.
-                if line_adjust
-                    .as_ref()
-                    .is_some_and(|adjust| adjust.compressed(slot_index))
-                {
-                    continue;
-                }
-                if !cross_follows_used_main(
-                    &child_style,
-                    direction,
-                    measured,
-                    line_sizes[slot_index],
-                ) {
-                    continue;
-                }
-                let main = main_extent(line_sizes[slot_index], direction);
-                let at_main = intrinsic_size_at_main(
-                    *child,
-                    main,
-                    direction,
-                    content,
-                    viewport,
-                    child_font_px,
-                    nodes,
-                    intrinsic,
-                    scope,
-                )?;
-                set_cross_extent(
-                    &mut line_sizes[slot_index],
-                    direction,
-                    cross_extent(at_main, direction),
-                );
-                hypothetical.insert(*child, (main, at_main));
-            }
-            let line_cross = line_flow
-                .iter()
-                .zip(line_sizes.iter())
-                .map(|(child, size)| {
-                    let margin = nodes
-                        .style(*child)
-                        .map(|style| {
-                            style.resolved_margin_against_fonts(
-                                Some(writing.inline_size(content.width, content.height)),
-                                fonts_of(style.as_ref(), child_font_px),
-                            )
-                        })
-                        .unwrap_or_default();
-                    cross_extent(*size, direction) + cross_margin(margin, direction)
-                })
-                .fold(0.0, f32::max);
-            // A line of an ordinary block: its baseline, and the span its
-            // items cover once they sit on it.
-            let line_baseline_y = if slot.baseline_aligned {
-                prime_atom_baselines(
-                    line_flow.iter().copied().zip(line_sizes.iter().copied()),
-                    content.width,
-                    viewport,
-                    child_font_px,
-                    nodes,
-                    intrinsic,
-                    scope,
-                )?;
-                Some(ifc_line_metrics(
-                    line_flow.iter().copied().zip(line_sizes.iter().copied()),
-                    content.width,
-                    viewport,
-                    child_font_px,
-                    line_strut(id, style, child_font_px, nodes),
-                    nodes,
-                ))
-            } else {
-                None
-            };
-            let line_cross = line_baseline_y.map_or(line_cross, |(_, height)| height);
-            // A float-narrowed line's start, measured from main-start: its
-            // physical left offset, or the room its right end leaves when the
-            // main axis runs from the right.
-            let line_start = if main_reversed {
-                full_main - slot.main_start - slot.main_available
-            } else {
-                slot.main_start
-            };
-            packed.push((
-                line_flow,
-                line_sizes,
-                line_cross,
-                line_start,
-                slot.main_available,
-                slot.cross_y,
-                slot.pin_cross,
-                line_baseline_y.map(|(baseline, _)| baseline),
-            ));
-        }
-        let align_content = style.align_content;
-        let line_count = packed.len();
-        let container_cross = cross_extent(content, direction);
-        let (mut cross_cursor, extra_cross_gap) = if line_count > 1 {
-            let total = packed
-                .iter()
-                .map(|(_, _, cross, _, _, _, _, _)| *cross)
-                .sum::<f32>()
-                + cross_gap * line_count.saturating_sub(1) as f32;
-            if matches!(align_content, JustifySpec::Stretch | JustifySpec::Start)
-                && align_content == JustifySpec::Stretch
+            if let Some(entries) = plan_entries.as_mut()
+                && let Some(intrinsics) = plan_intrinsics.as_ref()
+                && let Some(child_intrinsic) = intrinsics.get(&child).copied()
             {
-                let leftover = (container_cross - total).max(0.0);
-                let extra = leftover / line_count as f32;
-                for packed_line in &mut packed {
-                    packed_line.2 += extra;
-                }
-                (0.0, cross_gap)
-            } else {
-                justify_offsets(align_content, container_cross, total, cross_gap, line_count)
-            }
-        } else {
-            (0.0, cross_gap)
-        };
-        // A child's margins on the side its axis starts from, and on the
-        // other: on a reversed axis the leading margin is the physical end one.
-        let main_lead = |margin| {
-            if main_reversed {
-                main_end_margin(margin, direction)
-            } else {
-                main_start_margin(margin, direction)
-            }
-        };
-        let main_trail = |margin| {
-            if main_reversed {
-                main_start_margin(margin, direction)
-            } else {
-                main_end_margin(margin, direction)
-            }
-        };
-        let cross_lead = |margin| {
-            if cross_reversed {
-                cross_end_margin(margin, direction)
-            } else {
-                cross_start_margin(margin, direction)
-            }
-        };
-        let cross_trail = |margin| {
-            if cross_reversed {
-                cross_start_margin(margin, direction)
-            } else {
-                cross_end_margin(margin, direction)
-            }
-        };
-        for (
-            line_flow,
-            line_sizes,
-            line_cross,
-            line_origin_main,
-            line_main_available,
-            line_cross_y,
-            pin_cross,
-            line_atom_baseline,
-        ) in packed
-        {
-            if pin_cross {
-                cross_cursor = cross_cursor.max(line_cross_y);
-            }
-            let occupied = main_occupied(
-                &line_flow,
-                &line_sizes,
-                direction,
-                child_edge_base,
-                gap,
-                child_font_px,
-                nodes,
-            );
-            let auto_main = count_auto_main_margins(&line_flow, direction, nodes);
-            let (mut cursor, effective_gap, auto_main_share) = if auto_main > 0 {
-                let free = (line_main_available - occupied).max(0.0);
-                (0.0, gap, free / auto_main as f32)
-            } else {
-                let (start, extra_gap) =
-                    justify_offsets(justify, line_main_available, occupied, gap, line_flow.len());
-                (start, extra_gap, 0.0)
-            };
-            let needs_baseline = style.align_items == AlignSpec::Baseline
-                || line_flow.iter().any(|id| {
-                    nodes.style(*id).is_some_and(|child| {
-                        child.resolved_align_self(style.align_items) == AlignSpec::Baseline
-                    })
-                });
-            if needs_baseline {
-                prime_first_baselines(
-                    line_flow.iter().copied().zip(line_sizes.iter().copied()),
-                    writing.inline_size(content.width, content.height),
-                    viewport,
-                    child_font_px,
-                    nodes,
-                    intrinsic,
-                    scope,
-                )?;
-            }
-            let line_baseline = if needs_baseline {
-                line_flow
-                    .iter()
-                    .zip(line_sizes.iter())
-                    .filter_map(|(id, size)| {
-                        nodes.style(*id).map(|style| {
-                            let font_px = fonts_of(&style, child_font_px).element_px;
-                            intrinsic
-                                .baseline(*id, crate::Baseline::First)
-                                .unwrap_or_else(|| nodes.baseline(*id, font_px, *size))
-                                .max(style.resolved_border_width())
-                        })
-                    })
-                    .fold(0.0f32, f32::max)
-            } else {
-                0.0
-            };
-            for (child, mut child_size) in line_flow.into_iter().zip(line_sizes) {
-                let Some(child_style_arc) = nodes.style(child) else {
-                    continue;
-                };
-                let child_style = child_style_arc.as_ref();
-                let child_fonts = fonts_of(child_style, child_font_px);
-                let clear_y =
-                    clear_offset(child_style.clear, float_left_bottom, float_right_bottom);
-                if clear_y > 0.0 {
-                    if direction.is_column() {
-                        cursor = cursor.max(clear_y);
-                    } else {
-                        cross_cursor = cross_cursor.max(clear_y);
-                    }
-                }
-                let mut margin = child_style.resolved_margin_against_fonts(
-                    Some(writing.inline_size(content.width, content.height)),
-                    child_fonts,
-                );
-                let line_box_cross = if line_count > 1 {
-                    line_cross
-                } else {
-                    container_cross
-                };
-                apply_auto_margins(
-                    child_style,
-                    direction,
-                    &mut margin,
-                    auto_main_share,
-                    line_box_cross,
-                    child_size,
-                );
+                // Anything that couples this child's position to a sibling
+                // other than through the running cursor takes the container
+                // off the sequential path. Grow/shrink is detected from the
+                // data rather than from the style: if the used main size
+                // still equals the intrinsic, no free space was
+                // redistributed.
                 let align = child_style.resolved_align_self(style.align_items);
-                let cross_available = line_box_cross - cross_margin(margin, direction);
-                // An atom on a line of an ordinary block sits on the line's
-                // baseline whatever `align-self` says, and is not stretched.
-                let on_baseline_line =
-                    line_atom_baseline.is_some() && child_style.is_inline_level();
-                if align == AlignSpec::Stretch
-                    && !on_baseline_line
-                    && !cross_axis_is_definite(
-                        child_style,
-                        direction,
-                        has_natural_ratio(nodes.world, child),
-                    )
-                {
-                    set_cross_extent(&mut child_size, direction, cross_available.max(0.0));
-                }
-                fill_auto_height_from_aspect_ratio(
-                    child_style,
-                    &mut child_size,
-                    Some(writing.inline_size(content.width, content.height)),
-                    Some(content.height),
-                    viewport,
-                    child_fonts,
-                );
-                if line_atom_baseline.is_some() {
-                    prime_atom_baselines(
-                        [(child, child_size)],
-                        content.width,
-                        viewport,
-                        child_font_px,
-                        nodes,
-                        intrinsic,
-                        scope,
-                    )?;
-                }
-                let atom_ascent = line_atom_baseline
-                    .and_then(|_| {
-                        ifc_atom_metrics(
-                            child,
-                            child_style,
-                            child_size,
-                            content.width,
-                            child_font_px,
-                            nodes,
-                        )
-                    })
-                    .map(|(ascent, _)| ascent);
-                let aligned_baseline = (align == AlignSpec::Baseline).then(|| {
-                    intrinsic
-                        .baseline(child, crate::Baseline::First)
-                        .unwrap_or_else(|| {
-                            nodes.baseline(child, child_fonts.element_px, child_size)
-                        })
-                });
-                let cross_offset = if let (Some(line), Some(ascent)) =
-                    (line_atom_baseline, atom_ascent)
-                {
-                    // The margin box's top is `ascent` above the baseline.
-                    cross_cursor + line - ascent + cross_lead(margin)
-                } else {
-                    match align {
-                        AlignSpec::Start | AlignSpec::Stretch => cross_cursor + cross_lead(margin),
-                        AlignSpec::Baseline => {
-                            let base = aligned_baseline.unwrap_or_default();
-                            cross_cursor + (line_baseline - base).max(0.0)
-                        }
-                        AlignSpec::Center => {
-                            cross_cursor
-                                + cross_lead(margin)
-                                + ((cross_available - cross_extent(child_size, direction)) / 2.0)
-                                    .max(0.0)
-                        }
-                        AlignSpec::End => {
-                            cross_cursor
-                                + (line_box_cross
-                                    - cross_extent(child_size, direction)
-                                    - cross_trail(margin))
-                                .max(0.0)
-                        }
-                    }
-                };
-                // Flow-relative to the page: a reversed axis measures back
-                // from its far edge.
-                let flow_main = line_origin_main + cursor + main_lead(margin);
-                let main_start = if main_reversed {
-                    full_main - flow_main - main_extent(child_size, direction)
-                } else {
-                    flow_main
-                };
-                let cross_offset = if cross_reversed {
-                    container_cross - cross_offset - cross_extent(child_size, direction)
-                } else {
-                    cross_offset
-                };
-                let child_offset = match direction {
-                    FlexDirection::Row => Point {
-                        x: main_start,
-                        y: cross_offset,
-                    },
-                    FlexDirection::Column => Point {
-                        x: cross_offset,
-                        y: main_start,
-                    },
-                };
-                let child_origin = Point {
-                    x: content_origin.x + child_offset.x,
-                    y: content_origin.y + child_offset.y,
-                };
-                if let Some(entries) = plan_entries.as_mut()
-                    && let Some(intrinsics) = plan_intrinsics.as_ref()
-                    && let Some(child_intrinsic) = intrinsics.get(&child).copied()
-                {
-                    // Anything that couples this child's position to a sibling
-                    // other than through the running cursor takes the container
-                    // off the sequential path. Grow/shrink is detected from the
-                    // data rather than from the style: if the used main size
-                    // still equals the intrinsic, no free space was
-                    // redistributed.
-                    let align = child_style.resolved_align_self(style.align_items);
-                    plan_sequential &= line_count == 1
-                        && auto_main == 0
-                        && main_extent(child_size, direction)
-                            == main_extent(child_intrinsic, direction)
-                        // `used == intrinsic` proves no space was distributed
-                        // THIS pass. A child that can grow may still start
-                        // distributing once a later edit frees space up, and
-                        // the replay does not model that, so exclude it now.
-                        && child_style.flex_grow.unwrap_or(0.0) <= 0.0
-                        && child_style.flex_shrink.unwrap_or(0.0) <= 0.0
-                        && matches!(align, AlignSpec::Start | AlignSpec::Stretch);
-                    cross_independent &= matches!(align, AlignSpec::Start | AlignSpec::Stretch)
-                        && !reads_container_size(child_style, direction);
-                    // A child whose height follows its content still reads a
-                    // column's main size when something under it does.
-                    main_dependent |= reads_main_extent(child_style, direction)
-                        || (direction == FlexDirection::Column
-                            && nodes.world.block_extent_reaches(child));
-                    entries.push(PlannedChild {
-                        child,
-                        style: Arc::clone(&child_style_arc),
-                        intrinsic: child_intrinsic,
-                        at_main: hypothetical.get(&child).copied(),
-                        origin: child_origin,
-                        offset: Some(child_offset),
-                        size: child_size,
-                        cursor_before: cursor,
-                        baseline: aligned_baseline,
-                    });
-                }
-                if !subtree_unchanged(
+                plan_sequential &= line_count == 1
+                    && arranged.lines[item.line].auto_main == 0
+                    && main_extent(child_size, direction) == main_extent(child_intrinsic, direction)
+                    // `used == intrinsic` proves no space was distributed
+                    // THIS pass. A child that can grow may still start
+                    // distributing once a later edit frees space up, and
+                    // the replay does not model that, so exclude it now.
+                    && child_style.flex_grow.unwrap_or(0.0) <= 0.0
+                    && child_style.flex_shrink.unwrap_or(0.0) <= 0.0
+                    && matches!(align, AlignSpec::Start | AlignSpec::Stretch);
+                cross_independent &= matches!(align, AlignSpec::Start | AlignSpec::Stretch)
+                    && !reads_container_size(child_style, direction);
+                // A child whose height follows its content still reads a
+                // column's main size when something under it does.
+                main_dependent |= reads_main_extent(child_style, direction)
+                    || (direction == FlexDirection::Column
+                        && nodes.world.block_extent_reaches(child));
+                entries.push(PlannedChild {
                     child,
-                    child_origin,
-                    child_size,
-                    content,
-                    child_style,
-                    child_fonts,
-                    writing,
-                    scope,
-                ) {
-                    descend.push(Descend {
-                        child,
-                        origin: child_origin,
-                        size: child_size,
-                        containing: content,
-                        inherited: None,
-                    });
-                }
-                cursor += main_extent(child_size, direction)
-                    + main_lead(margin)
-                    + main_trail(margin)
-                    + effective_gap;
+                    style: Arc::clone(&item.style),
+                    intrinsic: child_intrinsic,
+                    at_main: item.at_main,
+                    origin: child_origin,
+                    offset: Some(item.offset),
+                    size: child_size,
+                    cursor_before: item.cursor_before,
+                    baseline: item.baseline,
+                });
             }
-            cross_cursor += line_cross + extra_cross_gap;
+            if !subtree_unchanged(
+                child,
+                child_origin,
+                child_size,
+                content,
+                child_style,
+                child_fonts,
+                writing,
+                scope,
+            ) {
+                descend.push(Descend {
+                    child,
+                    origin: child_origin,
+                    size: child_size,
+                    containing: content,
+                    inherited: None,
+                });
+            }
         }
     }
     Ok(ChildrenLayout {
@@ -2976,6 +2458,648 @@ fn lay_out_children(
         recorded_grid,
         #[cfg(feature = "benchmark")]
         child_phase,
+    })
+}
+
+/// An in-flow child of a box's flow where its lines put it.
+pub(super) struct ArrangedChild {
+    pub(super) child: StableNodeId,
+    pub(super) style: Arc<LayoutStyle>,
+    /// Its border box's origin from the content box's, on the page.
+    pub(super) offset: Point,
+    pub(super) size: Size,
+    /// Where its line's main cursor stood before it.
+    pub(super) cursor_before: f32,
+    /// The first baseline its line aligns it by, under `align-self:
+    /// baseline`.
+    pub(super) baseline: Option<f32>,
+    /// The main size its line gave it and its size measured at it, where
+    /// that differs from what it measured.
+    pub(super) at_main: Option<(f32, Size)>,
+    /// Its line, in [`ArrangedFlow::lines`].
+    pub(super) line: usize,
+}
+
+/// One line of a box's flow.
+pub(super) struct ArrangedLine {
+    /// Where it starts across the flow, from the content box's cross start
+    /// before a reversed cross axis turns it onto the page.
+    pub(super) cross_start: f32,
+    /// The baseline its inline-level items sit on, from its cross start,
+    /// when it is a line of an ordinary block.
+    pub(super) atom_baseline: Option<f32>,
+    /// How many of its items have an auto margin on the main axis.
+    pub(super) auto_main: usize,
+    /// Its items, in [`ArrangedFlow::children`].
+    pub(super) children: std::ops::Range<usize>,
+}
+
+/// A box's in-flow children where its lines put them: the one arrangement
+/// placement places them by and baseline derivation reads (#394).
+pub(super) struct ArrangedFlow {
+    pub(super) children: Vec<ArrangedChild>,
+    pub(super) lines: Vec<ArrangedLine>,
+    /// The gap a solved single line settled on.
+    pub(super) gap: f32,
+    /// Whether its justification leaves the children where a running
+    /// cursor puts them (`start`, no grid tracks).
+    pub(super) sequential_justify: bool,
+}
+
+/// Breaks `flow` (measured at `child_sizes`) into the lines of the box `id`
+/// lays out at `content`, hands each line's free space out, aligns each
+/// item across it and turns the result onto the page. Flex lines, a block
+/// flow (a column, wrapping or not) and an inline formatting context's line
+/// boxes, beside `packed_floats`. A 2D grid is placed elsewhere. `commit`
+/// lets a solved line keep its assignment, as placement does; a reader
+/// passes `false`.
+#[allow(clippy::too_many_arguments)]
+pub(super) fn arrange_flow(
+    id: StableNodeId,
+    style: &LayoutStyle,
+    writing: nana_ui_core::WritingContext,
+    flow: &[StableNodeId],
+    child_sizes: &[Size],
+    content_origin: Point,
+    content: Size,
+    child_edge_base: f32,
+    mut gap: f32,
+    cross_gap: f32,
+    ifc: bool,
+    direction: FlexDirection,
+    (main_reversed, cross_reversed): (bool, bool),
+    packed_floats: &PackedFloats,
+    viewport: LayoutViewport,
+    child_font_px: f32,
+    nodes: &mut LayoutInputMap<'_>,
+    intrinsic: &mut PassIntrinsicCache,
+    scope: Option<&ScopeContext<'_>>,
+    commit: bool,
+) -> Result<ArrangedFlow, UiWorldError> {
+    let float_left_bottom = packed_floats.left_bottom;
+    let float_right_bottom = packed_floats.right_bottom;
+    let mut children: Vec<ArrangedChild> = Vec::with_capacity(flow.len());
+    let mut lines: Vec<ArrangedLine> = Vec::new();
+    let wrap = if ifc { FlexWrap::Wrap } else { style.flex_wrap };
+    let wrapping = ifc
+        || match direction {
+            FlexDirection::Row => matches!(wrap, FlexWrap::Wrap | FlexWrap::WrapReverse),
+            FlexDirection::Column => {
+                matches!(wrap, FlexWrap::Wrap | FlexWrap::WrapReverse) && content.height > 0.5
+            }
+        };
+    let grid_tracks = match direction {
+        FlexDirection::Row => style.active_grid_columns(),
+        FlexDirection::Column => style.active_grid_rows(),
+    };
+    let justify = if ifc {
+        ifc_justify(style.text_align, writing)
+    } else {
+        style.justify_content
+    };
+    let full_main = main_extent(content, direction);
+    let line_slot = |indices| LineBoxSlot {
+        indices,
+        main_start: 0.0,
+        main_available: full_main,
+        cross_y: 0.0,
+        pin_cross: false,
+        baseline_aligned: false,
+    };
+    let mut line_slots = if wrapping {
+        if style.equal_wrap {
+            pack_equal_wrap_lines(
+                flow,
+                child_sizes,
+                direction,
+                full_main,
+                child_edge_base,
+                gap,
+                child_font_px,
+                nodes,
+            )
+            .into_iter()
+            .map(|range| line_slot(range.collect()))
+            .collect()
+        } else if ifc && !writing.is_vertical() {
+            prime_atom_baselines(
+                flow.iter().copied().zip(child_sizes.iter().copied()),
+                content.width,
+                viewport,
+                child_font_px,
+                nodes,
+                intrinsic,
+                scope,
+            )?;
+            pack_ifc_line_boxes(
+                flow,
+                child_sizes,
+                content_origin,
+                content.width,
+                gap,
+                cross_gap,
+                viewport,
+                child_font_px,
+                line_strut(id, style, child_font_px, nodes),
+                nodes,
+                packed_floats,
+            )
+        } else {
+            pack_wrap_lines(
+                flow,
+                child_sizes,
+                direction,
+                content,
+                child_edge_base,
+                gap,
+                grid_tracks,
+                viewport,
+                child_font_px,
+                nodes,
+                ifc,
+            )
+            .into_iter()
+            .map(line_slot)
+            .collect()
+        }
+    } else {
+        vec![line_slot((0..flow.len()).collect())]
+    };
+    if matches!(wrap, FlexWrap::WrapReverse) {
+        line_slots.reverse();
+    }
+    #[allow(clippy::type_complexity)]
+    let mut packed: Vec<(
+        Vec<StableNodeId>,
+        Vec<Size>,
+        f32,
+        f32,
+        f32,
+        f32,
+        bool,
+        Option<f32>,
+    )> = Vec::with_capacity(line_slots.len());
+    // Items measured again at the main size their line gave them.
+    let mut hypothetical: HashMap<StableNodeId, (f32, Size)> = HashMap::new();
+    for slot in &line_slots {
+        let line_flow: Vec<StableNodeId> = slot.indices.iter().map(|&index| flow[index]).collect();
+        let mut line_sizes: Vec<Size> = slot
+            .indices
+            .iter()
+            .map(|&index| child_sizes[index])
+            .collect();
+        let mut line_content = content;
+        set_main_extent(&mut line_content, direction, slot.main_available);
+        let line_tracks = grid_tracks.map(|tracks| {
+            let start = slot.indices.first().copied().unwrap_or(0);
+            let end = slot
+                .indices
+                .last()
+                .map(|index| index + 1)
+                .unwrap_or(0)
+                .min(tracks.len());
+            let start = start.min(end);
+            &tracks[start..end]
+        });
+        let mut line_adjust = None;
+        if style.equal_wrap && wrapping {
+            let share = equal_wrap_share(
+                &line_flow,
+                direction,
+                slot.main_available,
+                child_edge_base,
+                gap,
+                child_font_px,
+                nodes,
+            );
+            for size in &mut line_sizes {
+                set_main_extent(size, direction, share);
+            }
+        } else if let Some(tracks) = line_tracks.filter(|tracks| !tracks.is_empty()) {
+            apply_grid_main_sizes(
+                &line_flow,
+                &mut line_sizes,
+                direction,
+                line_content,
+                child_edge_base,
+                gap,
+                tracks,
+                viewport,
+                child_font_px,
+                nodes,
+                intrinsic,
+                scope,
+            )?;
+        } else {
+            let single_line = line_slots.len() == 1
+                && !ifc
+                && !matches!(wrap, FlexWrap::Wrap | FlexWrap::WrapReverse);
+            let line = super::dynamic::DynamicLine::of(
+                id,
+                style,
+                writing,
+                single_line,
+                &mut intrinsic.dynamic,
+                scope.map(|scope| scope.retained),
+                commit,
+            );
+            let adjust = distribute_flex_main(
+                &line_flow,
+                &mut line_sizes,
+                direction,
+                line_content,
+                child_edge_base,
+                gap,
+                viewport,
+                child_font_px,
+                nodes,
+                line,
+            );
+            // A solved line sets its items closer: every later step of
+            // this single line reads the gap it settled on.
+            gap = adjust.gap;
+            line_adjust = Some(adjust);
+        }
+        // An item the line gave another main size than it was measured
+        // with is as tall (wide, in a column) as its content at that size.
+        for (slot_index, child) in line_flow.iter().enumerate() {
+            let measured = child_sizes[slot.indices[slot_index]];
+            let Some(child_style) = nodes.style(*child) else {
+                continue;
+            };
+            // An item that gave up only its own chrome keeps its content
+            // box, and so its cross size.
+            if line_adjust
+                .as_ref()
+                .is_some_and(|adjust| adjust.compressed(slot_index))
+            {
+                continue;
+            }
+            if !cross_follows_used_main(&child_style, direction, measured, line_sizes[slot_index]) {
+                continue;
+            }
+            let main = main_extent(line_sizes[slot_index], direction);
+            let at_main = intrinsic_size_at_main(
+                *child,
+                main,
+                direction,
+                content,
+                viewport,
+                child_font_px,
+                nodes,
+                intrinsic,
+                scope,
+            )?;
+            set_cross_extent(
+                &mut line_sizes[slot_index],
+                direction,
+                cross_extent(at_main, direction),
+            );
+            hypothetical.insert(*child, (main, at_main));
+        }
+        let line_cross = line_flow
+            .iter()
+            .zip(line_sizes.iter())
+            .map(|(child, size)| {
+                let margin = nodes
+                    .style(*child)
+                    .map(|style| {
+                        style.resolved_margin_against_fonts(
+                            Some(writing.inline_size(content.width, content.height)),
+                            fonts_of(style.as_ref(), child_font_px),
+                        )
+                    })
+                    .unwrap_or_default();
+                cross_extent(*size, direction) + cross_margin(margin, direction)
+            })
+            .fold(0.0, f32::max);
+        // A line of an ordinary block: its baseline, and the span its
+        // items cover once they sit on it.
+        let line_baseline_y = if slot.baseline_aligned {
+            prime_atom_baselines(
+                line_flow.iter().copied().zip(line_sizes.iter().copied()),
+                content.width,
+                viewport,
+                child_font_px,
+                nodes,
+                intrinsic,
+                scope,
+            )?;
+            Some(ifc_line_metrics(
+                line_flow.iter().copied().zip(line_sizes.iter().copied()),
+                content.width,
+                viewport,
+                child_font_px,
+                line_strut(id, style, child_font_px, nodes),
+                nodes,
+            ))
+        } else {
+            None
+        };
+        let line_cross = line_baseline_y.map_or(line_cross, |(_, height)| height);
+        // A float-narrowed line's start, measured from main-start: its
+        // physical left offset, or the room its right end leaves when the
+        // main axis runs from the right.
+        let line_start = if main_reversed {
+            full_main - slot.main_start - slot.main_available
+        } else {
+            slot.main_start
+        };
+        packed.push((
+            line_flow,
+            line_sizes,
+            line_cross,
+            line_start,
+            slot.main_available,
+            slot.cross_y,
+            slot.pin_cross,
+            line_baseline_y.map(|(baseline, _)| baseline),
+        ));
+    }
+    let align_content = style.align_content;
+    let line_count = packed.len();
+    let container_cross = cross_extent(content, direction);
+    let (mut cross_cursor, extra_cross_gap) = if line_count > 1 {
+        let total = packed
+            .iter()
+            .map(|(_, _, cross, _, _, _, _, _)| *cross)
+            .sum::<f32>()
+            + cross_gap * line_count.saturating_sub(1) as f32;
+        if matches!(align_content, JustifySpec::Stretch | JustifySpec::Start)
+            && align_content == JustifySpec::Stretch
+        {
+            let leftover = (container_cross - total).max(0.0);
+            let extra = leftover / line_count as f32;
+            for packed_line in &mut packed {
+                packed_line.2 += extra;
+            }
+            (0.0, cross_gap)
+        } else {
+            justify_offsets(align_content, container_cross, total, cross_gap, line_count)
+        }
+    } else {
+        (0.0, cross_gap)
+    };
+    // A child's margins on the side its axis starts from, and on the
+    // other: on a reversed axis the leading margin is the physical end one.
+    let main_lead = |margin| {
+        if main_reversed {
+            main_end_margin(margin, direction)
+        } else {
+            main_start_margin(margin, direction)
+        }
+    };
+    let main_trail = |margin| {
+        if main_reversed {
+            main_start_margin(margin, direction)
+        } else {
+            main_end_margin(margin, direction)
+        }
+    };
+    let cross_lead = |margin| {
+        if cross_reversed {
+            cross_end_margin(margin, direction)
+        } else {
+            cross_start_margin(margin, direction)
+        }
+    };
+    let cross_trail = |margin| {
+        if cross_reversed {
+            cross_start_margin(margin, direction)
+        } else {
+            cross_end_margin(margin, direction)
+        }
+    };
+    for (
+        line_index,
+        (
+            line_flow,
+            line_sizes,
+            line_cross,
+            line_origin_main,
+            line_main_available,
+            line_cross_y,
+            pin_cross,
+            line_atom_baseline,
+        ),
+    ) in packed.into_iter().enumerate()
+    {
+        if pin_cross {
+            cross_cursor = cross_cursor.max(line_cross_y);
+        }
+        let line_start_cross = cross_cursor;
+        let first_child = children.len();
+        let occupied = main_occupied(
+            &line_flow,
+            &line_sizes,
+            direction,
+            child_edge_base,
+            gap,
+            child_font_px,
+            nodes,
+        );
+        let auto_main = count_auto_main_margins(&line_flow, direction, nodes);
+        let (mut cursor, effective_gap, auto_main_share) = if auto_main > 0 {
+            let free = (line_main_available - occupied).max(0.0);
+            (0.0, gap, free / auto_main as f32)
+        } else {
+            let (start, extra_gap) =
+                justify_offsets(justify, line_main_available, occupied, gap, line_flow.len());
+            (start, extra_gap, 0.0)
+        };
+        let needs_baseline = style.align_items == AlignSpec::Baseline
+            || line_flow.iter().any(|id| {
+                nodes.style(*id).is_some_and(|child| {
+                    child.resolved_align_self(style.align_items) == AlignSpec::Baseline
+                })
+            });
+        if needs_baseline {
+            prime_first_baselines(
+                line_flow.iter().copied().zip(line_sizes.iter().copied()),
+                writing.inline_size(content.width, content.height),
+                viewport,
+                child_font_px,
+                nodes,
+                intrinsic,
+                scope,
+            )?;
+        }
+        let line_baseline = if needs_baseline {
+            line_flow
+                .iter()
+                .zip(line_sizes.iter())
+                .filter_map(|(id, size)| {
+                    nodes.style(*id).map(|style| {
+                        let font_px = fonts_of(&style, child_font_px).element_px;
+                        intrinsic
+                            .baseline(*id, crate::Baseline::First)
+                            .unwrap_or_else(|| nodes.baseline(*id, font_px, *size))
+                            .max(style.resolved_border_width())
+                    })
+                })
+                .fold(0.0f32, f32::max)
+        } else {
+            0.0
+        };
+        for (child, mut child_size) in line_flow.into_iter().zip(line_sizes) {
+            let Some(child_style_arc) = nodes.style(child) else {
+                continue;
+            };
+            let child_style = child_style_arc.as_ref();
+            let child_fonts = fonts_of(child_style, child_font_px);
+            let clear_y = clear_offset(child_style.clear, float_left_bottom, float_right_bottom);
+            if clear_y > 0.0 {
+                if direction.is_column() {
+                    cursor = cursor.max(clear_y);
+                } else {
+                    cross_cursor = cross_cursor.max(clear_y);
+                }
+            }
+            let mut margin = child_style.resolved_margin_against_fonts(
+                Some(writing.inline_size(content.width, content.height)),
+                child_fonts,
+            );
+            let line_box_cross = if line_count > 1 {
+                line_cross
+            } else {
+                container_cross
+            };
+            apply_auto_margins(
+                child_style,
+                direction,
+                &mut margin,
+                auto_main_share,
+                line_box_cross,
+                child_size,
+            );
+            let align = child_style.resolved_align_self(style.align_items);
+            let cross_available = line_box_cross - cross_margin(margin, direction);
+            // An atom on a line of an ordinary block sits on the line's
+            // baseline whatever `align-self` says, and is not stretched.
+            let on_baseline_line = line_atom_baseline.is_some() && child_style.is_inline_level();
+            if align == AlignSpec::Stretch
+                && !on_baseline_line
+                && !cross_axis_is_definite(
+                    child_style,
+                    direction,
+                    has_natural_ratio(nodes.world, child),
+                )
+            {
+                set_cross_extent(&mut child_size, direction, cross_available.max(0.0));
+            }
+            fill_auto_height_from_aspect_ratio(
+                child_style,
+                &mut child_size,
+                Some(writing.inline_size(content.width, content.height)),
+                Some(content.height),
+                viewport,
+                child_fonts,
+            );
+            if line_atom_baseline.is_some() {
+                prime_atom_baselines(
+                    [(child, child_size)],
+                    content.width,
+                    viewport,
+                    child_font_px,
+                    nodes,
+                    intrinsic,
+                    scope,
+                )?;
+            }
+            let atom_ascent = line_atom_baseline
+                .and_then(|_| {
+                    ifc_atom_metrics(
+                        child,
+                        child_style,
+                        child_size,
+                        content.width,
+                        child_font_px,
+                        nodes,
+                    )
+                })
+                .map(|(ascent, _)| ascent);
+            let aligned_baseline = (align == AlignSpec::Baseline).then(|| {
+                intrinsic
+                    .baseline(child, crate::Baseline::First)
+                    .unwrap_or_else(|| nodes.baseline(child, child_fonts.element_px, child_size))
+            });
+            let cross_offset = if let (Some(line), Some(ascent)) = (line_atom_baseline, atom_ascent)
+            {
+                // The margin box's top is `ascent` above the baseline.
+                cross_cursor + line - ascent + cross_lead(margin)
+            } else {
+                match align {
+                    AlignSpec::Start | AlignSpec::Stretch => cross_cursor + cross_lead(margin),
+                    AlignSpec::Baseline => {
+                        let base = aligned_baseline.unwrap_or_default();
+                        cross_cursor + (line_baseline - base).max(0.0)
+                    }
+                    AlignSpec::Center => {
+                        cross_cursor
+                            + cross_lead(margin)
+                            + ((cross_available - cross_extent(child_size, direction)) / 2.0)
+                                .max(0.0)
+                    }
+                    AlignSpec::End => {
+                        cross_cursor
+                            + (line_box_cross
+                                - cross_extent(child_size, direction)
+                                - cross_trail(margin))
+                            .max(0.0)
+                    }
+                }
+            };
+            // Flow-relative to the page: a reversed axis measures back
+            // from its far edge.
+            let flow_main = line_origin_main + cursor + main_lead(margin);
+            let main_start = if main_reversed {
+                full_main - flow_main - main_extent(child_size, direction)
+            } else {
+                flow_main
+            };
+            let cross_offset = if cross_reversed {
+                container_cross - cross_offset - cross_extent(child_size, direction)
+            } else {
+                cross_offset
+            };
+            let child_offset = match direction {
+                FlexDirection::Row => Point {
+                    x: main_start,
+                    y: cross_offset,
+                },
+                FlexDirection::Column => Point {
+                    x: cross_offset,
+                    y: main_start,
+                },
+            };
+            children.push(ArrangedChild {
+                child,
+                style: Arc::clone(&child_style_arc),
+                offset: child_offset,
+                size: child_size,
+                cursor_before: cursor,
+                baseline: aligned_baseline,
+                at_main: hypothetical.get(&child).copied(),
+                line: line_index,
+            });
+            cursor += main_extent(child_size, direction)
+                + main_lead(margin)
+                + main_trail(margin)
+                + effective_gap;
+        }
+        lines.push(ArrangedLine {
+            cross_start: line_start_cross,
+            atom_baseline: line_atom_baseline,
+            auto_main,
+            children: first_child..children.len(),
+        });
+        cross_cursor += line_cross + extra_cross_gap;
+    }
+    Ok(ArrangedFlow {
+        children,
+        lines,
+        gap,
+        sequential_justify: justify == JustifySpec::Start && grid_tracks.is_none(),
     })
 }
 

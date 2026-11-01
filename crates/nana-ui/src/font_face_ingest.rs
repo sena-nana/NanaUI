@@ -26,13 +26,27 @@ pub struct HostFontFaceSpec {
     pub style: Option<HostFontStyle>,
 }
 
-static LOADED_FONT_URLS: OnceLock<Mutex<HashSet<String>>> = OnceLock::new();
-
-fn loaded_urls() -> &'static Mutex<HashSet<String>> {
-    LOADED_FONT_URLS.get_or_init(|| Mutex::new(HashSet::new()))
+/// One registered face: its src and the descriptors it was registered under.
+///
+/// The src alone is not the face. Two `@font-face` rules may share one file
+/// under different families, weights or styles, and each is its own
+/// registration; keying on the src made the second rule a silent no-op.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+struct LoadedFaceKey {
+    src: String,
+    family: String,
+    weight: Option<u16>,
+    weight_end: Option<u16>,
+    style: Option<HostFontStyle>,
 }
 
-fn cache_key(resolved: &str) -> String {
+static LOADED_FONT_FACES: OnceLock<Mutex<HashSet<LoadedFaceKey>>> = OnceLock::new();
+
+fn loaded_faces() -> &'static Mutex<HashSet<LoadedFaceKey>> {
+    LOADED_FONT_FACES.get_or_init(|| Mutex::new(HashSet::new()))
+}
+
+fn src_key(resolved: &str) -> String {
     if resolved.starts_with("data:") && resolved.len() > 128 {
         use std::collections::hash_map::DefaultHasher;
         use std::hash::{Hash, Hasher};
@@ -44,15 +58,15 @@ fn cache_key(resolved: &str) -> String {
     }
 }
 
-fn already_loaded(key: &str) -> bool {
-    loaded_urls()
+fn already_loaded(key: &LoadedFaceKey) -> bool {
+    loaded_faces()
         .lock()
         .map(|guard| guard.contains(key))
         .unwrap_or(false)
 }
 
-fn mark_loaded(key: String) {
-    if let Ok(mut guard) = loaded_urls().lock() {
+fn mark_loaded(key: LoadedFaceKey) {
+    if let Ok(mut guard) = loaded_faces().lock() {
         guard.insert(key);
     }
 }
@@ -60,11 +74,12 @@ fn mark_loaded(key: String) {
 /// Load each face's first usable `url(...)` and register it with CSS aliases.
 ///
 /// The face is registered over its whole `weight`..`weight_end` range.
-/// Already-loaded keys are skipped. Failed srcs drop that face (no system-font
-/// stand-in). Remote `http(s)` srcs are refused — `@font-face` has no network
-/// transport. `data:` and jailed filesystem
-/// srcs read up to 8 MiB; `data:` is decoded here, since the CSS engine's
-/// file loader (`nana_ui_css::css_at_rule::load_font_face_bytes`) reads only files.
+/// A face already loaded from the same src under the same descriptors is
+/// skipped. Failed srcs drop that face (no system-font stand-in). Remote
+/// `http(s)` srcs are refused — `@font-face` has no network transport.
+/// `data:` and jailed filesystem srcs read up to 8 MiB; `data:` is decoded
+/// here, since the CSS engine's file loader
+/// (`nana_ui_css::css_at_rule::load_font_face_bytes`) reads only files.
 pub fn ingest_host_font_faces(specs: &[HostFontFaceSpec]) -> usize {
     let mut loaded = 0usize;
     for spec in specs {
@@ -76,6 +91,9 @@ pub fn ingest_host_font_faces(specs: &[HostFontFaceSpec]) -> usize {
 }
 
 fn ingest_one(spec: &HostFontFaceSpec) -> bool {
+    let Some(family) = spec.family.as_deref().filter(|family| !family.is_empty()) else {
+        return false;
+    };
     for url in &spec.urls {
         let Some(resolved) = resolve_background_image_url(url) else {
             continue;
@@ -83,14 +101,17 @@ fn ingest_one(spec: &HostFontFaceSpec) -> bool {
         if !resolved_resource_is_allowed(url, &resolved) {
             continue;
         }
-        let key = cache_key(&resolved);
+        let key = LoadedFaceKey {
+            src: src_key(&resolved),
+            family: family.to_owned(),
+            weight: spec.weight,
+            weight_end: spec.weight_end,
+            style: spec.style,
+        };
         if already_loaded(&key) {
             return true;
         }
         let Some(bytes) = load_font_src_bytes(&resolved) else {
-            continue;
-        };
-        let Some(family) = spec.family.as_deref().filter(|family| !family.is_empty()) else {
             continue;
         };
         if register_host_font_face_styled(family, bytes, spec.weight, spec.weight_end, spec.style)
@@ -244,5 +265,51 @@ mod tests {
             .map(|face| face.style)
             .collect();
         assert_eq!(styles, [nana_text::font::FontStyle::Italic]);
+    }
+
+    /// One src under a second family is a second face. Keyed on the src
+    /// alone, the second rule was skipped as already loaded, so its family
+    /// never existed; the tests above share one `data:` src and raced on it.
+    #[test]
+    #[cfg(feature = "bundled-fonts")]
+    fn one_src_under_two_families_registers_both() {
+        use base64::Engine as _;
+        let encoded = base64::engine::general_purpose::STANDARD.encode(crate::UI_FONT_REGULAR);
+        let spec = |family: &str| HostFontFaceSpec {
+            family: Some(family.into()),
+            urls: vec![format!("data:font/ttf;base64,{encoded}")],
+            weight: None,
+            weight_end: None,
+            style: None,
+        };
+        assert_eq!(
+            ingest_host_font_faces(&[spec("NanaIngestSharedSrcA"), spec("NanaIngestSharedSrcB")]),
+            2
+        );
+
+        let engine = crate::text_engine::nana_text_engine();
+        let mut engine = crate::text_engine::lock_engine(&engine);
+        for family in ["NanaIngestSharedSrcA", "NanaIngestSharedSrcB"] {
+            let style = nana_text::TextStyle {
+                font_family: Some(std::sync::Arc::from(family)),
+                ..nana_text::TextStyle::default()
+            };
+            let layout = nana_text::TextEngine::layout(
+                &mut *engine,
+                nana_text::TextKind::Label,
+                &nana_text::TextSource::new("H"),
+                &style,
+                &nana_text::TextConstraints::default(),
+                &mut nana_text::TextWorkCounters::default(),
+            );
+            assert!(
+                layout
+                    .runs
+                    .iter()
+                    .filter_map(|run| engine.fonts().describe(run.font))
+                    .any(|face| face.families.iter().any(|f| &**f == family)),
+                "{family} shapes with its own registration"
+            );
+        }
     }
 }

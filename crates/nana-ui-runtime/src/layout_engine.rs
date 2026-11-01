@@ -2651,6 +2651,22 @@ impl<'a> LayoutInputMap<'a> {
                 last: block,
             };
         }
+        // A box with no line box in it, of its own or a descendant's, has
+        // no baseline: one is synthesized from its border-box bottom (CSS
+        // Align 3 §9.1), as a flex container takes from such an item (#394).
+        if !self.world.holds_line_box(id)
+            && let Some(used) = used
+        {
+            let writing = self
+                .nodes
+                .get(&id)
+                .map_or_else(Default::default, |node| node.writing);
+            let block = Some(writing.logical_size(used.width, used.height).1.max(0.0));
+            return BaselineMetrics {
+                first: block,
+                last: block,
+            };
+        }
         let button_with_label = matches!(
             self.world.standard_visual_ref(id),
             Some(crate::StandardVisual::Button { label, .. }) if !label.is_empty()

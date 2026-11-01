@@ -1,0 +1,147 @@
+{
+  "id": "T-FX03",
+  "title": "以纵向 flex 容器结尾的 inline-block 在块的行上：按这个 flex 容器第一个项目的基线对齐（Chrome 152 + Noto Sans SC 实测）",
+  "status": "pass",
+  "viewport": [
+    600,
+    200
+  ],
+  "tolerance_px": 2,
+  "tree": {
+    "id": "root",
+    "style": "display:block;width:600px",
+    "children": [
+      {
+        "id": "f3-line",
+        "style": "display:block;width:600px",
+        "children": [
+          {
+            "id": "f3-ref",
+            "style": "display:inline-block;width:30px;height:30px"
+          },
+          {
+            "id": "f3-h",
+            "style": "display:inline-block;width:130px",
+            "children": [
+              {
+                "id": "f3-flex",
+                "style": "display:flex;flex-direction:column;width:130px",
+                "children": [
+                  {
+                    "id": "f3-p",
+                    "style": "display:block;width:60px",
+                    "children": [
+                      {
+                        "id": "f3-pa",
+                        "style": "display:inline-block;width:20px;height:20px"
+                      }
+                    ]
+                  },
+                  {
+                    "id": "f3-q",
+                    "style": "display:block;width:60px",
+                    "children": [
+                      {
+                        "id": "f3-qa",
+                        "style": "display:inline-block;width:40px;height:40px"
+                      }
+                    ]
+                  },
+                  {
+                    "id": "f3-s",
+                    "style": "display:block;width:60px",
+                    "children": [
+                      {
+                        "id": "f3-sa",
+                        "style": "display:inline-block;width:10px;height:10px"
+                      }
+                    ]
+                  }
+                ]
+              }
+            ]
+          }
+        ]
+      }
+    ]
+  },
+  "expected": [
+    {
+      "id": "root",
+      "x": 0,
+      "y": 0,
+      "w": 600,
+      "h": 95.56
+    },
+    {
+      "id": "f3-line",
+      "x": 0,
+      "y": 0.0,
+      "w": 600,
+      "h": 95.56
+    },
+    {
+      "id": "f3-ref",
+      "x": 0,
+      "y": 0.0,
+      "w": 30,
+      "h": 30
+    },
+    {
+      "id": "f3-h",
+      "x": 30,
+      "y": 10.0,
+      "w": 130,
+      "h": 85.56
+    },
+    {
+      "id": "f3-flex",
+      "x": 30,
+      "y": 10.0,
+      "w": 130,
+      "h": 85.56
+    },
+    {
+      "id": "f3-p",
+      "x": 30,
+      "y": 10.0,
+      "w": 60,
+      "h": 23.19
+    },
+    {
+      "id": "f3-pa",
+      "x": 30,
+      "y": 10.0,
+      "w": 20,
+      "h": 20
+    },
+    {
+      "id": "f3-q",
+      "x": 30,
+      "y": 33.19,
+      "w": 60,
+      "h": 43.19
+    },
+    {
+      "id": "f3-qa",
+      "x": 30,
+      "y": 33.19,
+      "w": 40,
+      "h": 40
+    },
+    {
+      "id": "f3-s",
+      "x": 30,
+      "y": 76.38,
+      "w": 60,
+      "h": 19.19
+    },
+    {
+      "id": "f3-sa",
+      "x": 30,
+      "y": 82.38,
+      "w": 10,
+      "h": 10
+    }
+  ]
+}

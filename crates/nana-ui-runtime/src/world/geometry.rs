@@ -1058,6 +1058,7 @@ impl UiWorld {
                 });
                 let geometry = crate::ComponentGeometry::TextInput {
                     character_counter: self.text_input_character_counter(id),
+                    suffix: self.text_input_suffix(id),
                     resize_grip: matches!(visual, StandardVisual::TextInput { editor_options, .. } if editor_options.resize_vertical).then_some(LayoutBox {
                         x: bounds.x + (bounds.width - 14.0).max(0.0), y: bounds.y + (bounds.height - 14.0).max(0.0),
                         width: bounds.width.min(14.0), height: bounds.height.min(14.0),
@@ -2662,6 +2663,7 @@ fn vertical_text_input_geometry(
     let crate::ComponentGeometry::TextInput {
         resize_grip,
         character_counter,
+        suffix,
         mut text,
         additional_caret_color,
         swatch_border_color,
@@ -2699,6 +2701,7 @@ fn vertical_text_input_geometry(
     crate::ComponentGeometry::TextInput {
         resize_grip,
         character_counter,
+        suffix,
         text,
         multiline,
         scroll: multiline.then(|| frame.scroll_x(inline_extent, block_extent, multiline)),

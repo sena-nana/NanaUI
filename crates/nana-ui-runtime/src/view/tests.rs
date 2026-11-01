@@ -6258,3 +6258,133 @@ fn a_settings_group_rules_a_row_under_other_content() {
         "with the value hidden, b is just the next row"
     );
 }
+
+/// A row's error stands where its hint does: while it is set the hint steps
+/// aside, the reason shows as a Danger validation message and the row reads
+/// as invalid; once it clears the hint comes back.
+#[test]
+fn a_settings_rows_error_takes_the_hints_place() {
+    let (mut cx, _document, parent) = setup();
+    let state = std::cell::Cell::new(None);
+    cx.mount_view(parent, || {
+        let error = signal(None::<std::sync::Arc<str>>);
+        state.set(Some(error));
+        settings_row("port")
+            .hint("The editor listens here")
+            .error(move || error.get())
+    })
+    .unwrap();
+    let error = state.get().unwrap();
+    let row = cx.world().node(parent).unwrap().children[0];
+    let row = Entity::<crate::SettingsRow>::from_stable_id(row);
+    let hidden =
+        |cx: &AppContext, id: StableNodeId| cx.world().node_style(id).unwrap().layout.hidden;
+    let (hint, slot) = cx
+        .read(row, |row| (row.hint_slot.unwrap(), row.error_slot))
+        .unwrap();
+    assert_eq!(slot, None, "no error, no slot");
+    assert!(!hidden(&cx, hint));
+
+    error.set(Some("Another app uses this port".into()));
+    cx.flush_reactive().unwrap();
+    let slot = cx
+        .read(row, |row| row.error_slot)
+        .unwrap()
+        .expect("an error slot");
+    let copy = cx.world().node(slot).unwrap().parent;
+    assert_eq!(
+        copy,
+        cx.world().node(hint).unwrap().parent,
+        "under the label, with the hint"
+    );
+    // The row projects what its slots say, as it does the hint's text.
+    let Some(crate::StandardVisual::ValidationMessage {
+        message, intent, ..
+    }) = cx.world().standard_visual(slot)
+    else {
+        panic!("a validation message");
+    };
+    assert_eq!(
+        (message.as_ref(), intent),
+        (
+            "Another app uses this port",
+            nana_ui_core::ValidationIntent::Danger
+        )
+    );
+    assert!(hidden(&cx, hint), "the hint steps aside");
+    assert!(!hidden(&cx, slot));
+    let spoken = cx.world().accessibility(row.stable_id()).unwrap();
+    assert!(spoken.invalid);
+    assert_eq!(spoken.value.as_deref(), Some("Another app uses this port"));
+
+    error.set(None);
+    cx.flush_reactive().unwrap();
+    assert_eq!(
+        cx.read(row, |row| row.error_slot).unwrap(),
+        Some(slot),
+        "kept"
+    );
+    assert!(hidden(&cx, slot));
+    assert!(!hidden(&cx, hint), "the hint is back");
+    let spoken = cx.world().accessibility(row.stable_id()).unwrap();
+    assert!(!spoken.invalid);
+    assert_eq!(spoken.value.as_deref(), Some("The editor listens here"));
+}
+
+/// A reason that appears on a row takes the focus to the row's field, from
+/// the button that submitted it: the user lands where the fix goes. A row
+/// built with its error, or a document without focus, keeps the focus put.
+#[test]
+fn a_settings_rows_new_error_takes_the_focus_to_its_field() {
+    let (mut cx, document, parent) = setup();
+    let state = std::cell::Cell::new(None);
+    cx.mount_view(parent, || {
+        let error = signal(None::<std::sync::Arc<str>>);
+        state.set(Some(error));
+        (
+            settings_row("password")
+                .error(move || error.get())
+                .control(text_input()),
+            button("Create"),
+            settings_row("already")
+                .error(Some(std::sync::Arc::from("Wrong")))
+                .control(text_input()),
+        )
+    })
+    .unwrap();
+    let error = state.get().unwrap();
+    let children = cx.world().node(parent).unwrap().children;
+    let (row, submit, already) = (children[0], children[1], children[2]);
+    let field = |cx: &AppContext, row: StableNodeId| {
+        cx.read(Entity::<crate::SettingsRow>::from_stable_id(row), |row| {
+            row.control
+        })
+        .unwrap()
+        .unwrap()
+    };
+    assert_ne!(
+        cx.world().focused(document),
+        Some(field(&cx, already)),
+        "a row built with its error takes no focus"
+    );
+
+    error.set(Some("Type a password".into()));
+    cx.flush_reactive().unwrap();
+    assert_eq!(cx.world().focused(document), None, "nothing had the focus");
+    error.set(None);
+    cx.flush_reactive().unwrap();
+
+    cx.focus_node(document, submit).unwrap();
+    error.set(Some("Type a password".into()));
+    cx.flush_reactive().unwrap();
+    assert_eq!(cx.world().focused(document), Some(field(&cx, row)));
+
+    cx.focus_node(document, submit).unwrap();
+    error.set(Some("Still empty".into()));
+    cx.flush_reactive().unwrap();
+    assert_eq!(
+        cx.world().focused(document),
+        Some(submit),
+        "a reason that only changes words stays where it is"
+    );
+}

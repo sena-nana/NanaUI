@@ -47,7 +47,7 @@ impl From<nana_text::font::FontError> for HostFontError {
 }
 
 /// CSS `@font-face` `font-style` mapped onto a loaded face.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum HostFontStyle {
     Normal,
     Italic,

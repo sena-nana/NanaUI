@@ -77,13 +77,14 @@ RangeField::new(200.0, 0.0, 360.0, 1.0)
 
 ## 属性
 
-字段是 `value: f64`、`label: Option<Arc<str>>`、`disabled: bool`。`model` 绑定 `value`，来源是 `RangeInput`，不是提交。
+字段是 `value: f64`、`label: Option<Arc<str>>`、`unit: Option<Arc<str>>`、`disabled: bool`。`model` 绑定 `value`，来源是 `RangeInput`，不是提交。
 
 | 属性 | 类型 | 说明 |
 | --- | --- | --- |
 | `value` | `f64` | `model` 绑定这一字段，来源是 `RangeInput`，不是提交 |
 | `label` | `Option<Arc<str>>` | 自己有标签时读屏用它。没人起名、又放进设置行时，读屏用行标签 |
 | `disabled` | `bool` | 字段 |
+| `unit` | `Option<Arc<str>>` | 读数后面的单位，读屏跟在值后面读。跟着语言变时在视图里绑定（`.unit(..)`），标签不再在括号里写单位 |
 | `min` / `max` / `step` | `f64` | `slider` 的三个参数。起点就是 `min`，内部是 `RangeField::new(minimum, minimum, maximum, step)` |
 | `show_value` | — | 不在 `<Slider>` 字段表里，`slider` 上也没有同名方法。默认在轨道旁画当前值和单位；`false` 只留轨道，读屏仍能读到数值 |
 | `show_label` | `bool` | `false` 不画标签，轨道占满，标签仍是读屏名称 |
