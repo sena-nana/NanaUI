@@ -77,7 +77,7 @@ fn dest_group_layout_key() -> u64 {
 
 const GROUP_UNIFORM_STRIDE: u64 = 256;
 const GROUP_UNIFORM_SLOTS: u64 = 64;
-const GROUP_UNIFORM_SIZE: u64 = 176;
+const GROUP_UNIFORM_SIZE: u64 = 192;
 const PRESENTATION_UNIFORM_SIZE: u64 = 16;
 
 #[derive(Debug, Clone, Copy)]
@@ -92,6 +92,10 @@ pub(super) struct GroupSlot {
     pub drop_shadow_blur: f32,
     pub filter_invert: f32,
     pub drop_shadow_color: [f32; 4],
+    /// A scroll edge fade in dest pixels: the top edge, the bottom edge, and
+    /// the lengths of the bands the alpha ramps across below and above
+    /// them. Zero lengths fade nothing.
+    pub edge_fade: [f32; 4],
 }
 
 impl GroupSlot {
@@ -125,6 +129,7 @@ impl GroupSlot {
             drop_shadow_blur: 0.0,
             filter_invert: 0.0,
             drop_shadow_color: [0.0, 0.0, 0.0, 0.0],
+            edge_fade: [0.0; 4],
         }
     }
 
@@ -185,6 +190,10 @@ fn pack_group_slot(slot: &GroupSlot, corner_exponent: f32) -> [u8; GROUP_UNIFORM
     bytes[156..160].copy_from_slice(&slot.filter_invert.to_le_bytes());
     for (index, value) in slot.drop_shadow_color.iter().enumerate() {
         let offset = 160 + index * 4;
+        bytes[offset..offset + 4].copy_from_slice(&value.to_le_bytes());
+    }
+    for (index, value) in slot.edge_fade.iter().enumerate() {
+        let offset = 176 + index * 4;
         bytes[offset..offset + 4].copy_from_slice(&value.to_le_bytes());
     }
     bytes

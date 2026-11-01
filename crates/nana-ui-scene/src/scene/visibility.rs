@@ -134,7 +134,12 @@ fn primitive_bounds(scene: &UiScene, id: PrimitiveId) -> Option<Bounds> {
     let draw_transform = scene.draw_transform(primitive)?;
     // Destination groups need their complete source, including pixels that a
     // blur or blend can move into the viewport. Do not cull their source leaves.
-    if !scene.opacity_groups(id.node).is_empty() {
+    // A scroll edge fade moves none, and a long list under one must still cull.
+    if scene
+        .opacity_groups(id.node)
+        .iter()
+        .any(|group| !group.is_edge_fade_only())
+    {
         return None;
     }
     let mut bounds = Bounds::from_rect(primitive.bounds);

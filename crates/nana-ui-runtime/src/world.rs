@@ -2010,6 +2010,7 @@ impl UiWorld {
         } else {
             result.scroll_extent = overflow;
         }
+        result.scroll_metrics = scroll_metrics;
         result.clip = anchors.clip;
         result.clip_parent = anchors.clip_parent;
         result.containing_block = anchors.containing_block;

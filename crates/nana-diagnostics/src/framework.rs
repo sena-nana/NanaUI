@@ -718,6 +718,31 @@ pub mod diagnostics {
     /// location, and payload.
     pub static PANIC: EventDescriptor =
         EventDescriptor::new(D, 1, "diagnostics.panic", Severity::Fatal, &[]);
+    /// Fault: the watched event-loop thread has been inside one callback for
+    /// `elapsed_ms` (see [`crate::stall`]). `report` counts the reports of
+    /// this stall from 1; `cpu_permille` is how much of one core the thread
+    /// used since the watchdog saw the callback start (`u64::MAX` when the
+    /// platform cannot tell). The message names the callback and carries
+    /// stack samples where the platform can take them.
+    pub static MAIN_THREAD_STALLED: EventDescriptor = EventDescriptor::new(
+        D,
+        2,
+        "diagnostics.main_thread_stalled",
+        Severity::Error,
+        &[
+            F::u64("elapsed_ms"),
+            F::u64("report"),
+            F::u64("cpu_permille"),
+        ],
+    );
+    /// A reported stall ended: the callback returned after `stalled_ms`.
+    pub static MAIN_THREAD_RECOVERED: EventDescriptor = EventDescriptor::new(
+        D,
+        3,
+        "diagnostics.main_thread_recovered",
+        Severity::Warn,
+        &[F::u64("stalled_ms")],
+    );
 }
 
 pub mod resource {

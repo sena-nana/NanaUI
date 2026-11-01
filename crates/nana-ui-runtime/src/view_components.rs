@@ -5823,6 +5823,27 @@ impl ScrollView {
         self
     }
 
+    /// Fade the content out toward the top and bottom edges of the
+    /// scrollport, `top` and `bottom` logical pixels deep. The view and
+    /// everything it holds composite as one layer whose alpha ramps to zero
+    /// at each edge, so whatever is behind the view shows through — floating
+    /// cards over a live stage included — where
+    /// [`scroll_foot_fade`](crate::view::scroll_foot_fade) would paint a
+    /// surface colour. The bars stay unfaded.
+    ///
+    /// A band reaches only as far as there is content past its edge: the
+    /// top one grows in as the content scrolls away from its start, the
+    /// bottom one shrinks away as the end arrives, so neither pops. Zero
+    /// turns a band off; both zero is no fade. Stored on the view's style
+    /// ([`nana_ui_core::PaintStyle::scroll_edge_fade`]), so call it after
+    /// [`Self::style`].
+    pub fn edge_fade(mut self, top: f32, bottom: f32) -> Self {
+        let fade = nana_ui_core::ScrollEdgeFade::new(top, bottom);
+        Arc::make_mut(&mut self.style.layout).paint.scroll_edge_fade =
+            fade.is_active().then_some(fade);
+        self
+    }
+
     /// Choose overlay auto-hide, resident, or no bars at all for this view,
     /// whatever the theme's policy says.
     pub fn scrollbars(mut self, visibility: nana_ui_core::ScrollbarVisibility) -> Self {

@@ -4,7 +4,7 @@ use nana_gpu::{LogicalBinding, LogicalBindingType, ResourceTable, ShaderInterfac
 use nana_ui_core::{MATERIAL_ABI, MaterialRef};
 use std::{
     collections::HashMap,
-    sync::{Arc, LazyLock, Mutex, RwLock, Weak},
+    sync::{Arc, LazyLock, Mutex, OnceLock, RwLock, Weak},
 };
 
 /// The host's say over the material programs it hands the painter, for hosts
@@ -55,12 +55,31 @@ pub(super) struct MaterialDevice {
     rejected: Mutex<HashMap<u64, Weak<nana_ui_core::MaterialInstance>>>,
     pipelines: Mutex<HashMap<PipelineKey, PipelineEntry>>,
 }
+/// Called when a material pipeline compiled off the painting thread is ready.
+pub(super) type MaterialWaker = Arc<dyn Fn() + Send + Sync>;
 /// A material pipeline's identity: program key, target format, sample
 /// count and the two blend/variant keys it was built for.
 type PipelineKey = (u64, wgpu::TextureFormat, u32, u64, u64);
 struct PipelineEntry {
     owners: Vec<Weak<nana_ui_core::MaterialProgram>>,
-    pipeline: Option<wgpu::RenderPipeline>,
+    compile: Arc<Compile>,
+}
+/// One pipeline's compile, wherever it runs.
+struct Compile {
+    /// Empty while it compiles; `None` inside for a program the driver
+    /// rejected.
+    pipeline: OnceLock<Option<wgpu::RenderPipeline>>,
+    /// Who to wake once it is ready. Locked around filling `pipeline`, so a
+    /// waker is either taken or sees the pipeline.
+    waiting: Mutex<Vec<MaterialWaker>>,
+}
+/// A material pipeline as [`MaterialDevice::pipeline`] finds it.
+pub(super) enum MaterialPipeline {
+    /// Compiled, or `None`: rejected, so the material paints natively.
+    Ready(Option<wgpu::RenderPipeline>),
+    /// Still compiling: paint natively for now, and ask again once
+    /// [`MaterialDevice::ready`] moves.
+    Compiling,
 }
 impl MaterialDevice {
     pub(super) fn shared(
@@ -210,24 +229,88 @@ impl MaterialDevice {
             entries: &entries,
         })
     }
+    /// The pipeline `create` builds for `programs`, compiled once per `key`.
+    /// `create` answers `None` for a program it cannot adapt.
+    ///
+    /// Compiling a material is the driver's work, hundreds of milliseconds or
+    /// seconds in a debug build. A caller with a `wake` (a host that will
+    /// paint again) has it done on a thread of its own: it paints natively,
+    /// and every frame of every window keeps coming, until `wake` says the
+    /// pipeline is ready. Without one, nothing would paint again for it, so
+    /// the pipeline is compiled, or waited for, in place.
     pub(super) fn pipeline(
         &self,
         key: (u64, wgpu::TextureFormat, u32, u64, u64),
         programs: &[&Arc<nana_ui_core::MaterialProgram>],
         device: &wgpu::Device,
-        create: impl FnOnce() -> wgpu::RenderPipeline,
-    ) -> Option<wgpu::RenderPipeline> {
+        wake: Option<&MaterialWaker>,
+        create: impl FnOnce() -> Option<wgpu::RenderPipeline> + Send + 'static,
+    ) -> MaterialPipeline {
         let key = (key.0 ^ self.interface.key(), key.1, key.2, key.3, key.4);
-        let mut pipelines = self.pipelines.lock().unwrap_or_else(|e| e.into_inner());
-        pipelines.retain(|_, entry| entry.owners.iter().all(|owner| owner.strong_count() > 0));
-        pipelines
-            .entry(key)
-            .or_insert_with(|| PipelineEntry {
-                owners: programs.iter().map(|p| Arc::downgrade(p)).collect(),
-                pipeline: compile(device, create),
+        let compile = {
+            let mut pipelines = self.pipelines.lock().unwrap_or_else(|e| e.into_inner());
+            pipelines.retain(|_, entry| entry.owners.iter().all(|owner| owner.strong_count() > 0));
+            if let Some(entry) = pipelines.get(&key) {
+                Arc::clone(&entry.compile)
+            } else {
+                let compile = Arc::new(Compile {
+                    pipeline: OnceLock::new(),
+                    waiting: Mutex::new(Vec::new()),
+                });
+                pipelines.insert(
+                    key,
+                    PipelineEntry {
+                        owners: programs.iter().map(|p| Arc::downgrade(p)).collect(),
+                        compile: Arc::clone(&compile),
+                    },
+                );
+                drop(pipelines);
+                if wake.is_none() {
+                    let _ = compile.pipeline.set(self::compile(device, create));
+                } else if !self.compile_off_thread(&compile, device, create) {
+                    // No thread to compile on: paint natively.
+                    let _ = compile.pipeline.set(None);
+                }
+                compile
+            }
+        };
+        let Some(wake) = wake else {
+            return MaterialPipeline::Ready(compile.pipeline.wait().clone());
+        };
+        let mut waiting = compile.waiting.lock().unwrap_or_else(|e| e.into_inner());
+        match compile.pipeline.get() {
+            Some(pipeline) => MaterialPipeline::Ready(pipeline.clone()),
+            None => {
+                if !waiting.iter().any(|known| Arc::ptr_eq(known, wake)) {
+                    waiting.push(Arc::clone(wake));
+                }
+                MaterialPipeline::Compiling
+            }
+        }
+    }
+
+    /// Start `compile` on a thread of its own. `false` when none started.
+    fn compile_off_thread(
+        &self,
+        compile: &Arc<Compile>,
+        device: &wgpu::Device,
+        create: impl FnOnce() -> Option<wgpu::RenderPipeline> + Send + 'static,
+    ) -> bool {
+        let (compile, device) = (Arc::clone(compile), device.clone());
+        std::thread::Builder::new()
+            .name("nana-ui.material-compile".into())
+            .spawn(move || {
+                let pipeline = self::compile(&device, create);
+                let waiting = {
+                    let mut waiting = compile.waiting.lock().unwrap_or_else(|e| e.into_inner());
+                    let _ = compile.pipeline.set(pipeline);
+                    std::mem::take(&mut *waiting)
+                };
+                for wake in waiting {
+                    wake();
+                }
             })
-            .pipeline
-            .clone()
+            .is_ok()
     }
     fn reject(&self, material: &MaterialRef) {
         let mut rejected = self.rejected.lock().unwrap_or_else(|e| e.into_inner());
@@ -383,7 +466,7 @@ fn texture_entry(binding: u32) -> wgpu::BindGroupLayoutEntry {
 /// Driver validation is scoped: an invalid extension falls back to native paint.
 pub(super) fn compile(
     device: &wgpu::Device,
-    create: impl FnOnce() -> wgpu::RenderPipeline,
+    create: impl FnOnce() -> Option<wgpu::RenderPipeline>,
 ) -> Option<wgpu::RenderPipeline> {
     let oom = device.push_error_scope(wgpu::ErrorFilter::OutOfMemory);
     let internal = device.push_error_scope(wgpu::ErrorFilter::Internal);
@@ -400,7 +483,7 @@ pub(super) fn compile(
         nana_diagnostics::event!(&nana_diagnostics::framework::gpu::MATERIAL_REJECTED);
         None
     } else {
-        Some(result)
+        result
     }
 }
 

@@ -135,7 +135,7 @@ inactive overlay 与关闭菜单属于结构性隐藏。`ComputedStyle::box_visi
 - `tag(text)` / `tag_frame()`：不可交互的标签；要能选、能关的用 `Chip`。
 - `callout(icon, tone, text)`：按 `StatusTone` 着色的提示条；`.quiet()` 是没有底色、不带水平内边距的一行说明，`.trailing(view)` 放行尾动作。见 [callout](../components/callout.md)。
 - `heading_row(title, tools)` + `heading_tools(tools)`：标题行。标题先让出宽度，工具保持宽度；`.lead(view)` 放标题前的图标。紧凑工具（`IconButton::tool`，目标 `COMPACT_TARGET`）默认按 `heading_overhang()` 上下悬出、不撑高标题行，`.inline()` 留在行内；标题在滚动区顶部时滚动区写 `ScrollView::heading_room()`。见 [heading_row](../components/heading-row.md)。
-- `scroll_foot_fade(height, surface)`：放在滚动区底边上的渐隐，不接收输入；滚动区用了 `ScrollView::gutter` 时写 `.clear_of(gutter)` 让出滚动条车道。见 [scroll_foot_fade](../components/scroll-foot-fade.md)。
+- `scroll_foot_fade(height, surface)`：放在滚动区底边上的渐隐，不接收输入；滚动区用了 `ScrollView::gutter` 时写 `.clear_of(gutter)` 让出滚动条车道。见 [scroll_foot_fade](../components/scroll-foot-fade.md)。背后不是实色时用 `ScrollView::edge_fade`。
 - `settings_group(title, rows)` + `group_row(view).visible(cond)`：标题在上、卡片在下，行间是缩进 `CONTENT_INSET` 的细线，隐藏的行带走它的分隔线。卡片和 `group_row` 都不加左右内边距：行用 `group_row_on_line(view)`（即 `group_row(content_line(view))`）放到内容线上，已带内边距的行直接 `group_row`。见 [settings_group](../components/settings-group.md)。
 - `tone_role(tone)`：状态色调对应的颜色角色。
 
@@ -292,6 +292,8 @@ IME 预编辑存在 world 的 `ime` 槽里，不在编辑器的 `value` 里。�
 `ScrollView` 是滚动容器。位置权威是 Runtime 的 `ScrollOffset`。尺寸权威是 `ScrollMetrics`（任何改动布局盒、子节点或样式的提交结束时由 Runtime 重新测量，偏移随之夹取；起点在右 / 下边的轴偏移为负，见 [布局](layout.md)）。滚动条不另存一份偏移。`overflow: auto|scroll` 共用同一份 `ScrollOffset` 与 overflow clip（滚轮同样更新这份偏移）。但**不**再画一套 thumb。自定义滚动条铬只属于 `ScrollView`。
 
 触摸（`PointerType::Touch`）拖动超过 8 逻辑像素即滚动最近的可滚容器，抬起后按宿主设置的 `ScrollPhysics`（iOS 衰减加橡皮筋回弹，或 Android 样条甩动并在边缘钳住）甩动；按压被取消、不触发点击。合同见 [Runtime 与 Scene](runtime-scene.md#触摸滚动与-scrollphysics)。
+
+`ScrollView::edge_fade(top, bottom)` 让内容在滚动口上下边缘渐隐：滚动区和它的子树合成成一个 dest group，alpha 在每条带里降到边缘处的 0，所以透明背景上也成立，滚动条留在组外不渐隐。每条带的长度是 `min(长度, 边外的内容)`，随偏移长出、缩回。见 [ScrollView](../components/scroll-view.md#边缘渐隐)。
 
 `ScrollView::scrollbars` 选三种：`AutoHide`（悬停或滚动时淡入，离开后保持主题的 `hide_delay` 再淡出）、`Always`（能滚就常驻，带轨道）、`Hidden`（不画，滚轮与 `scroll_to` 照常）。不写时跟随主题的策略 `ScrollbarRecipe::visibility`（内置 `AutoHide`），应用用 `ThemeDefinition::with_scrollbar_visibility` 一次改全部。
 

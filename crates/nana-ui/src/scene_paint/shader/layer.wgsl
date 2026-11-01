@@ -26,6 +26,9 @@ struct LayerUniforms {
     drop_shadow_blur: f32,
     filter_invert: f32,
     drop_shadow_color: vec4<f32>,
+    // Scroll edge fade in dest pixels: top edge, bottom edge, top band,
+    // bottom band (`GroupSlot::edge_fade`).
+    edge_fade: vec4<f32>,
 }
 
 @group(0) @binding(2)
@@ -126,5 +129,21 @@ fn layer_source(input: VertexOutput) -> vec4<f32> {
         );
     }
     // After the filter, which must not see the faded edge.
-    return sampled * clip_cover;
+    return sampled * (clip_cover * edge_fade_coverage(input.position.y));
+}
+
+// How much of the group shows at dest row `y` under its scroll edge fade:
+// 0 at the scrollport's top and bottom edges, ramping linearly to 1 across
+// each band. Rows outside the bands, and above or below the scrollport (a
+// shadow the scroll container casts), are untouched.
+fn edge_fade_coverage(y: f32) -> f32 {
+    let fade = layer.edge_fade;
+    var cover = 1.0;
+    if fade.z > 0.0 && y >= fade.x {
+        cover = min(cover, clamp((y - fade.x) / fade.z, 0.0, 1.0));
+    }
+    if fade.w > 0.0 && y <= fade.y {
+        cover = min(cover, clamp((fade.y - y) / fade.w, 0.0, 1.0));
+    }
+    return cover;
 }

@@ -2671,6 +2671,11 @@ pub struct PaintStyle {
     /// the default `border_strong` / `muted` / `subtle` colors.
     #[serde(default)]
     pub scrollbar: Option<ScrollbarSkin>,
+    /// Fade a scroll container's content out toward its top and bottom
+    /// edges as one composited layer ([`crate::ScrollEdgeFade`]). Read only on
+    /// a box whose vertical overflow clips.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub scroll_edge_fade: Option<crate::ScrollEdgeFade>,
     #[serde(default)]
     pub text_shadow: Option<TextShadowSpec>,
     /// Every `text-shadow` layer in CSS order (the first is drawn on top),

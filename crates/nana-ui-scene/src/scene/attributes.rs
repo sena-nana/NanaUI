@@ -81,6 +81,14 @@ impl UiScene {
         super::visibility::transform(self.node_bounds(id)?, transform)
     }
 
+    /// [`Self::draw_node_bounds`] of `rect`, given in `id`'s layout space.
+    pub fn draw_node_rect(&self, id: StableNodeId, rect: SceneRect) -> Option<SceneRect> {
+        let node = self.nodes.get(&id)?;
+        let (parent, _, _, blocks_3d) = self.draw_ancestor_state(node);
+        let transform = parent.then(self.resolved_local_transform(node, blocks_3d));
+        super::visibility::transform(rect, transform)
+    }
+
     /// [`Self::node_projection`] of the primitive's node, except for a
     /// triggered menu surface: it is viewport-fixed like the content it wraps,
     /// so nothing its trigger inherits moves or cuts it. Only the menu's own

@@ -51,6 +51,7 @@ mod runtime;
 mod schema;
 mod session;
 mod span;
+pub mod stall;
 mod throttle;
 mod worker;
 

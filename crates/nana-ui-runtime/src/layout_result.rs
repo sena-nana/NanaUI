@@ -143,6 +143,10 @@ pub struct LayoutResult {
     /// creates a new result.
     pub scroll_extent: LayoutBox,
     pub scroll_offset: ScrollOffset,
+    /// The scrolling area when the node is a scroll container, as
+    /// [`crate::UiWorld::scroll_metrics`] reports it. A painter reads how far
+    /// the content reaches past each edge from this and the live offset.
+    pub scroll_metrics: Option<crate::ScrollMetrics>,
     pub child_placements: Arc<[LayoutChildPlacement]>,
     pub fragments: Arc<[LayoutFragment]>,
     pub parts: Arc<[LayoutPart]>,
@@ -202,6 +206,7 @@ impl LayoutResult {
             overflow: bounds,
             scroll_extent: content_box,
             scroll_offset: ScrollOffset::default(),
+            scroll_metrics: None,
             child_placements: Arc::from([]),
             fragments: Arc::from([]),
             parts: Arc::from([]),
@@ -227,6 +232,7 @@ impl LayoutResult {
             && self.last_baseline == other.last_baseline
             && self.overflow == other.overflow
             && self.scroll_extent == other.scroll_extent
+            && self.scroll_metrics == other.scroll_metrics
             && self.child_placements == other.child_placements
             && self.fragments == other.fragments
             && self.parts == other.parts
@@ -331,7 +337,8 @@ impl LayoutResult {
         if self.overflow != other.overflow {
             delta = delta.union(Delta::OVERFLOW);
         }
-        if self.scroll_extent != other.scroll_extent {
+        if self.scroll_extent != other.scroll_extent || self.scroll_metrics != other.scroll_metrics
+        {
             delta = delta.union(Delta::SCROLL_EXTENT);
         }
         let child_topology_changed = self.child_placements.len() != other.child_placements.len()

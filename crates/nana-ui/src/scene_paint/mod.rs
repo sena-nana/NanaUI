@@ -473,6 +473,13 @@ pub struct SceneWgpuPainter {
     /// host to take; swapped per target like `painted`.
     natural_sizes: natural_sizes::NaturalSizes,
     image_revision: u64,
+    /// The host's waker, counting into `materials_ready` first; see
+    /// [`Self::set_material_waker`].
+    material_waker: Option<Arc<dyn Fn() + Send + Sync>>,
+    /// Material pipelines this painter waited for that are ready, and how
+    /// many of them it has painted since.
+    materials_ready: Arc<std::sync::atomic::AtomicU64>,
+    materials_painted: u64,
     /// Egress for `url(...)` loads of the scenes painted next.
     fetch_host: Option<SharedFetchHost>,
     /// Egress the active target's URL bindings and cached dest were built
@@ -774,6 +781,9 @@ impl SceneWgpuPainter {
             painted_demand: Default::default(),
             natural_sizes: Default::default(),
             image_revision: 0,
+            material_waker: None,
+            materials_ready: Arc::default(),
+            materials_painted: 0,
             fetch_host: None,
             bound_fetch_host: None,
             alpha_encoding: AlphaEncoding::Linear,
@@ -816,6 +826,7 @@ impl SceneWgpuPainter {
                 .unwrap_or_else(|| self.build_pipeline_set(next.working_format));
             self.swap_pipeline_set(&mut set);
             self.pipeline_sets.insert(current, set);
+            self.adopt_material_waker();
             self.format = next.working_format;
             self.working_format = next.working_format;
             self.url_cache.set_srgb_source(next.srgb_source);
@@ -894,6 +905,31 @@ impl SceneWgpuPainter {
         &self.gpu
     }
 
+    /// Compile skin materials off the painting thread, and call `wake` when
+    /// one is ready. Until then the text or surface it shades paints natively;
+    /// the next paint after `wake` uses it, and bumps
+    /// [`Self::image_revision`] so retained outputs are recorded again.
+    ///
+    /// Without a waker nothing would paint again for a pipeline compiled in
+    /// the background, so a painter without one (offscreen snapshots) compiles
+    /// in place, on the frame that first draws the material.
+    pub fn set_material_waker(&mut self, wake: Arc<dyn Fn() + Send + Sync>) {
+        let ready = Arc::clone(&self.materials_ready);
+        self.material_waker = Some(Arc::new(move || {
+            ready.fetch_add(1, std::sync::atomic::Ordering::AcqRel);
+            wake();
+        }));
+        self.adopt_material_waker();
+    }
+
+    /// Hand the waker to the pipelines in use, also after a format swap.
+    fn adopt_material_waker(&mut self) {
+        if let Some(wake) = &self.material_waker {
+            self.quads.set_material_waker(Arc::clone(wake));
+            self.text.set_material_waker(Arc::clone(wake));
+        }
+    }
+
     /// Wake the owning event loop when an asynchronous URL image completes.
     pub fn set_image_waker(&mut self, wake: Arc<dyn Fn() + Send + Sync>) {
         let keyed: Arc<dyn Fn(&str) + Send + Sync> = Arc::new(move |_| wake());
@@ -938,8 +974,20 @@ impl SceneWgpuPainter {
     /// target can be reused. Polling only while painting would leave a static
     /// target permanently displaying its pre-decode pixels.
     pub(crate) fn refresh_image_resources(&mut self) -> bool {
+        // A material compiled since the last paint: the batch drew natively
+        // where it now shades, so neither it nor the painted dest is current.
+        let ready = self
+            .materials_ready
+            .load(std::sync::atomic::Ordering::Acquire);
+        let materials = ready != self.materials_painted;
+        if materials {
+            self.materials_painted = ready;
+            self.painted = None;
+            self.prepared_batch = None;
+            self.image_revision = self.image_revision.wrapping_add(1);
+        }
         if !self.url_cache.poll() {
-            return false;
+            return materials;
         }
         self.painted = None;
         self.image_revision = self.image_revision.wrapping_add(1);
@@ -2816,18 +2864,20 @@ fn sync_opacity_groups(
 ) -> bool {
     // Retain the scene's stacking/culling boundary for terminal holds without
     // keeping an identity composition pass alive once the card is opaque.
-    let needed = needed.iter().filter(|group| {
-        group.opacity != 1.0
-            || !group.filter.is_identity()
-            || !group.mix_blend.is_normal()
-            || group.inset_shadow.is_some()
-    });
+    // A scroll view keeps its group at either end of its content, where
+    // neither edge fade band shows.
+    let needed = needed.iter().filter(|group| !group.is_identity());
     // A triggered menu's trigger composites its menu's logical opacity while
-    // the hanging surface fades: one node, two groups.
+    // the hanging surface fades: one node, two groups. A scroll view's bars
+    // composite without the edge fade its content has.
     let common = stack
         .iter()
         .zip(needed.clone())
-        .take_while(|(open, want)| open.node == want.node && open.opacity == want.opacity)
+        .take_while(|(open, want)| {
+            open.node == want.node
+                && open.opacity == want.opacity
+                && open.edge_fade == want.edge_fade
+        })
         .count();
     let mut emitted = false;
     while stack.len() > common {
@@ -2908,6 +2958,30 @@ fn dest_group_slot(
             .paint_color
             .map(pack_paint_color)
             .unwrap_or_else(|| pack_linear(shadow.color));
+    }
+    if let Some(fade) = group
+        .edge_fade
+        .filter(nana_ui_scene::EdgeFadeMask::is_visible)
+        && let Some(port) = scene.draw_node_rect(group.node, fade.bounds)
+    {
+        let scale = if scale.is_finite() && scale > 0.0 {
+            scale
+        } else {
+            1.0
+        };
+        // The bands stretch with the scrollport under a scaling transform.
+        let along = if fade.bounds.height > 0.0 {
+            port.height / fade.bounds.height
+        } else {
+            1.0
+        };
+        let top = port.y + origin.offset[1];
+        slot.edge_fade = [
+            top * scale,
+            (top + port.height) * scale,
+            fade.top * along * scale,
+            fade.bottom * along * scale,
+        ];
     }
     slot
 }
@@ -3848,6 +3922,9 @@ mod tests;
 
 #[cfg(test)]
 mod presentation_tests;
+
+#[cfg(test)]
+mod scroll_fade_tests;
 
 #[cfg(all(test, feature = "rich-text"))]
 mod glyph_prefix_tests;

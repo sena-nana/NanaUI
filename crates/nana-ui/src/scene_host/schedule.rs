@@ -298,7 +298,14 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
         event_loop: &dyn ActiveEventLoop,
         now: Instant,
     ) -> Option<Instant> {
-        let changed = std::mem::take(&mut *self.texture_redraws.lock().expect("texture redraws"));
+        let mut changed =
+            std::mem::take(&mut *self.texture_redraws.lock().expect("texture redraws"));
+        if self
+            .material_redraws
+            .swap(false, std::sync::atomic::Ordering::AcqRel)
+        {
+            changed.extend(self.known_window_ids());
+        }
         for id in changed {
             if self.can_present(id) && !self.startup_holds(id) {
                 self.request_redraw(id);

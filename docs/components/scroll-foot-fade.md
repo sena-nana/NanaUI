@@ -22,6 +22,7 @@ widget(Stack::column(0.0).with_layout(|l| l.position = PositionSpec::Relative))
 - 它不接收输入：滚轮和指针都落到下面的列表上。
 - 列表末尾留出 `height` 的空白，最后一行能滚出渐隐。
 - `surface` 用滚动区背后的表面角色，渐隐才看不出边。
+- 滚动区背后是透明的或不是一块实色（比如舞台上的浮动卡片之间）时，表面色会盖在背后的东西上。这时用 [`ScrollView::edge_fade`](scroll-view.md#边缘渐隐)，让内容本身渐隐。
 
 ## 避开滚动条
 

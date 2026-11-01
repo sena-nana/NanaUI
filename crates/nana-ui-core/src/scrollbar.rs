@@ -106,6 +106,58 @@ pub struct ScrollbarSkin {
     pub room: Option<f32>,
 }
 
+/// A scrollport's content fading out toward its top and bottom edges, in
+/// logical pixels. The scrollport and everything it holds composite as one
+/// layer whose alpha ramps to zero across each band, so the fade shows
+/// whatever is behind the scrollport — a transparent background included —
+/// rather than painting a surface colour over the content. The scroll view's
+/// own bars stay unfaded.
+///
+/// Each band only reaches as far as there is content past that edge
+/// ([`Self::resolve`]): at rest the top shows none, and the bottom none once
+/// the end is reached, so neither pops in or out as the content scrolls.
+#[derive(Debug, Clone, Copy, PartialEq, Default, Serialize, Deserialize)]
+pub struct ScrollEdgeFade {
+    pub top: f32,
+    pub bottom: f32,
+}
+
+impl ScrollEdgeFade {
+    /// A negative or non-finite length is no band.
+    pub fn new(top: f32, bottom: f32) -> Self {
+        let length = |value: f32| {
+            if value.is_finite() {
+                value.max(0.0)
+            } else {
+                0.0
+            }
+        };
+        Self {
+            top: length(top),
+            bottom: length(bottom),
+        }
+    }
+
+    pub fn is_active(self) -> bool {
+        self.top > 0.0 || self.bottom > 0.0
+    }
+
+    /// The bands to draw, `[top, bottom]`, with `above` pixels of content
+    /// scrolled out past the top edge and `below` still past the bottom:
+    /// each is its length, or the distance when that is shorter.
+    pub fn resolve(self, above: f32, below: f32) -> [f32; 2] {
+        let band = |length: f32, distance: f32| {
+            let length = Self::new(length, 0.0).top;
+            if distance.is_nan() {
+                0.0
+            } else {
+                length.min(distance.max(0.0))
+            }
+        };
+        [band(self.top, above), band(self.bottom, below)]
+    }
+}
+
 impl ScrollbarSkin {
     pub fn is_empty(self) -> bool {
         self.thickness.is_none()
@@ -399,6 +451,20 @@ fn finite_non_negative(value: f32) -> f32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn an_edge_fade_band_ramps_with_the_content_past_its_edge() {
+        let fade = ScrollEdgeFade::new(14.0, 64.0);
+        assert_eq!(fade.resolve(0.0, 500.0), [0.0, 64.0]);
+        assert_eq!(fade.resolve(5.0, 30.0), [5.0, 30.0]);
+        assert_eq!(fade.resolve(200.0, 0.0), [14.0, 0.0]);
+        assert_eq!(fade.resolve(-3.0, f32::NAN), [0.0, 0.0]);
+        assert_eq!(
+            ScrollEdgeFade::new(-1.0, f32::INFINITY),
+            ScrollEdgeFade::default()
+        );
+        assert!(!ScrollEdgeFade::default().is_active());
+    }
 
     #[test]
     fn a_track_shorter_than_its_content_yields_a_proportional_thumb() {

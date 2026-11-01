@@ -8,8 +8,9 @@ use std::time::Duration;
 use nana_text::font::{FaceDescriptor, FallbackPolicy, FontSystem, GenericFamily, font_blob};
 use nana_text::{NativeTextEngine, SharedTextEngine};
 use nana_ui_core::{
-    GlyphEffect, GlyphIntro, LayoutStyle, LengthSpec, RevealSchedule, RichObject, RichSpanStyle,
-    RichText, WritingModeSpec,
+    GlyphEffect, GlyphIntro, GlyphPresentation, LayoutStyle, LengthSpec, MaterialProgram,
+    MaterialRef, PresentationMask, PresentationMaskSpace, RevealSchedule, RichObject,
+    RichSpanStyle, RichText, WritingModeSpec,
 };
 use nana_ui_runtime::{
     DocumentId, Entity, LayoutViewport, MutationQueue, NanaTextEngineShaper, NodeKind, NodeStyle,
@@ -191,6 +192,73 @@ fn an_inline_sticker_reveals_with_its_place_in_the_text() {
     );
     at(&mut runtime, &mut shaper, Duration::from_millis(6100));
     assert_eq!(sticker_opacity(&runtime), 1.0);
+}
+
+#[test]
+fn an_animated_sticker_fades_over_a_material_transition() {
+    // An animated picture is a host texture: it cannot carry the material
+    // mask the glyphs and still pictures play, so it fades over its progress.
+    let value = RichText::builder()
+        .plain("ab")
+        .object(RichObject::texture(3, "sticker", 20.0, 20.0))
+        .build();
+    let (mut runtime, view) = document(value);
+    let mut shaper = NanaTextEngineShaper::new(engine());
+    settle(&mut runtime, &mut shaper);
+    let mask = |start: Duration| PresentationMask {
+        material: MaterialRef::new(MaterialProgram::new(
+            "fn material(i:MaterialInput)->vec4<f32>{return i.color;}",
+        )),
+        space: PresentationMaskSpace::Local,
+        start,
+        duration: Duration::from_millis(400),
+    };
+    let mut presentation = GlyphPresentation::new(
+        Vec::new(),
+        Some(RevealSchedule::uniform(Duration::from_secs(5), 3, 0.5)),
+    );
+    presentation.transitions.entrance = Some(mask(Duration::ZERO));
+    let mut queue = MutationQueue::new();
+    queue.set_glyph_presentation(view.stable_id(), Some(presentation.clone()));
+    runtime.context_mut().commit_mutations(queue).unwrap();
+    let sticker_opacity = |runtime: &RuntimeDocument| {
+        runtime
+            .scene()
+            .primitives()
+            .find(|primitive| {
+                primitive.node == view.stable_id()
+                    && matches!(primitive.kind, ScenePrimitiveKind::Custom { .. })
+            })
+            .map(|primitive| primitive.opacity)
+            .expect("the sticker paints")
+    };
+    at(&mut runtime, &mut shaper, Duration::from_millis(5900));
+    assert_eq!(
+        sticker_opacity(&runtime),
+        0.0,
+        "its turn is the third grapheme, at 1.0s"
+    );
+    at(&mut runtime, &mut shaper, Duration::from_millis(6200));
+    let entering = sticker_opacity(&runtime);
+    assert!(
+        (entering - 0.5).abs() < 0.05,
+        "halfway through the entrance: {entering}"
+    );
+    at(&mut runtime, &mut shaper, Duration::from_millis(6500));
+    assert_eq!(sticker_opacity(&runtime), 1.0);
+
+    presentation.transitions.exit = Some(mask(Duration::from_secs(10)));
+    let mut queue = MutationQueue::new();
+    queue.set_glyph_presentation(view.stable_id(), Some(presentation));
+    runtime.context_mut().commit_mutations(queue).unwrap();
+    at(&mut runtime, &mut shaper, Duration::from_millis(10_200));
+    let leaving = sticker_opacity(&runtime);
+    assert!(
+        (leaving - 0.5).abs() < 0.05,
+        "halfway through the exit: {leaving}"
+    );
+    at(&mut runtime, &mut shaper, Duration::from_millis(10_500));
+    assert_eq!(sticker_opacity(&runtime), 0.0);
 }
 
 /// Where a waving sticker is pushed at its crest, against where it rests,

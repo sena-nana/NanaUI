@@ -1476,6 +1476,53 @@ pub struct OpacityGroup {
     pub mix_blend: MixBlendMode,
     /// Inset `box-shadow` overlay recorded on this dest group. `None` when none.
     pub inset_shadow: Option<InsetShadowOverlay>,
+    /// The scroll edge fade the group's alpha ramps across, for a scroll
+    /// container styled with one ([`nana_ui_core::PaintStyle::scroll_edge_fade`]).
+    pub edge_fade: Option<EdgeFadeMask>,
+}
+
+impl OpacityGroup {
+    /// Whether compositing this group changes nothing: it is kept only as a
+    /// stacking and culling boundary.
+    pub fn is_identity(&self) -> bool {
+        self.opacity == 1.0
+            && self.filter.is_identity()
+            && self.mix_blend.is_normal()
+            && self.inset_shadow.is_none()
+            && self.edge_fade.is_none_or(|fade| !fade.is_visible())
+    }
+
+    /// Whether the group only fades its scroll edges: compositing it moves
+    /// no pixel and lightens none outside the bands, so what it holds can be
+    /// culled like anything else.
+    pub fn is_edge_fade_only(&self) -> bool {
+        self.edge_fade.is_some()
+            && Self {
+                edge_fade: None,
+                ..*self
+            }
+            .is_identity()
+    }
+}
+
+/// A scroll container's edge fade on its dest group: the alpha ramps from 0
+/// at the clip box's top edge to 1 `top` below it, and from 1 `bottom` above
+/// its bottom edge to 0 there. Outside the bands the group is untouched.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct EdgeFadeMask {
+    /// The scrollport's overflow clip box, in the node's layout space.
+    pub bounds: SceneRect,
+    /// The bands' lengths for the current scroll offset, in logical pixels
+    /// ([`nana_ui_core::ScrollEdgeFade::resolve`]).
+    pub top: f32,
+    pub bottom: f32,
+}
+
+impl EdgeFadeMask {
+    /// Whether either band has any length right now.
+    pub fn is_visible(&self) -> bool {
+        self.top > 0.0 || self.bottom > 0.0
+    }
 }
 
 /// Inset shadow painted onto a dest group after its descendants composite.
@@ -1886,6 +1933,9 @@ impl UiScene {
                 .map_or_else(empty_opacity_groups, |parent| self.opacity_groups(parent));
         }
         let groups = self.opacity_groups(primitive.node);
+        if is_scrollbar_chrome_slot(primitive.id.slot) {
+            return without_edge_fade(primitive.node, groups);
+        }
         if is_triggered_overlay_surface(primitive.id) {
             return groups;
         }
@@ -1922,11 +1972,7 @@ impl UiScene {
             return groups;
         };
         let logical = dest_group(&self.nodes, menu.id, menu);
-        if logical.opacity == 1.0
-            && logical.filter.is_identity()
-            && logical.mix_blend.is_normal()
-            && logical.inset_shadow.is_none()
-        {
+        if logical.is_identity() {
             return Arc::from(outer);
         }
         if *own == logical {
@@ -2809,8 +2855,20 @@ impl UiScene {
         let mut moved = false;
         for (node, (presentation, objects)) in &self.glyph_objects {
             for object in objects.iter() {
+                let Some(held) = self.primitives.get_mut(&PrimitiveId {
+                    node: *node,
+                    slot: object.slot,
+                }) else {
+                    continue;
+                };
+                // Only a quad carries the transition masks, and its mask
+                // stands in for the intro. Any other object (a host texture's
+                // animated picture) keeps the intro the glyphs around it play
+                // and fades in and out over the masks' progress instead.
+                let masked = matches!(held.primitive.kind, ScenePrimitiveKind::Quad { .. });
                 let mut reveal = presentation.reveal.clone();
-                if presentation.transitions.entrance.is_some()
+                if masked
+                    && presentation.transitions.entrance.is_some()
                     && let Some(r) = &mut reveal
                 {
                     r.intro.fade = false;
@@ -2829,47 +2887,40 @@ impl UiScene {
                     cx + sample.offset[0] - scale * cx,
                     cy + sample.offset[1] - scale * cy,
                 ]);
-                let Some(held) = self.primitives.get_mut(&PrimitiveId {
-                    node: *node,
-                    slot: object.slot,
-                }) else {
-                    continue;
-                };
-                if let ScenePrimitiveKind::Quad { surface, .. } = &mut held.primitive.kind {
-                    let mut masks = Vec::new();
-                    for (enter, mask) in [
-                        (true, &presentation.transitions.entrance),
-                        (false, &presentation.transitions.exit),
-                    ] {
-                        if let Some(mask) = mask {
-                            let progress = if enter {
-                                reveal.as_ref().map_or(1., |r| {
-                                    let ordinal = if mask.space
-                                        == nana_ui_core::PresentationMaskSpace::Target
-                                    {
+                let mut masks = Vec::new();
+                let mut fade = 1.;
+                for (enter, mask) in [
+                    (true, &presentation.transitions.entrance),
+                    (false, &presentation.transitions.exit),
+                ] {
+                    if let Some(mask) = mask {
+                        let progress = if enter {
+                            reveal.as_ref().map_or(1., |r| {
+                                let ordinal =
+                                    if mask.space == nana_ui_core::PresentationMaskSpace::Target {
                                         0
                                     } else {
                                         object.ordinal as usize
                                     };
-                                    r.at_s.get(ordinal).map_or(0., |at| {
-                                        if mask.duration.is_zero() {
-                                            return f32::from(
-                                                reveal_now.as_secs_f64()
-                                                    >= r.start.max(mask.start).as_secs_f64()
-                                                        + f64::from(*at),
-                                            );
-                                        }
-                                        ((reveal_now.as_secs_f64()
-                                            - r.start.max(mask.start).as_secs_f64()
-                                            - f64::from(*at))
-                                            / mask.duration.as_secs_f64().max(0.000001))
-                                        .clamp(0., 1.)
-                                            as f32
-                                    })
+                                r.at_s.get(ordinal).map_or(0., |at| {
+                                    if mask.duration.is_zero() {
+                                        return f32::from(
+                                            reveal_now.as_secs_f64()
+                                                >= r.start.max(mask.start).as_secs_f64()
+                                                    + f64::from(*at),
+                                        );
+                                    }
+                                    ((reveal_now.as_secs_f64()
+                                        - r.start.max(mask.start).as_secs_f64()
+                                        - f64::from(*at))
+                                        / mask.duration.as_secs_f64().max(0.000001))
+                                    .clamp(0., 1.) as f32
                                 })
-                            } else {
-                                mask.progress(now)
-                            };
+                            })
+                        } else {
+                            mask.progress(now)
+                        };
+                        if masked {
                             masks.push(nana_ui_core::PresentationMaskSample {
                                 mask: mask.clone(),
                                 progress,
@@ -2880,14 +2931,18 @@ impl UiScene {
                                     object.target.height,
                                 ),
                             });
+                        } else {
+                            fade *= if enter { progress } else { 1. - progress };
                         }
                     }
-                    if surface.presentation_masks != masks {
-                        surface.presentation_masks = masks;
-                        moved = true;
-                    }
                 }
-                let opacity = object.opacity * sample.alpha;
+                if let ScenePrimitiveKind::Quad { surface, .. } = &mut held.primitive.kind
+                    && surface.presentation_masks != masks
+                {
+                    surface.presentation_masks = masks;
+                    moved = true;
+                }
+                let opacity = object.opacity * sample.alpha * fade;
                 let transform = object.transform.then(local);
                 if held.primitive.opacity != opacity || held.primitive.transform != transform {
                     held.primitive.opacity = opacity;
@@ -3302,6 +3357,7 @@ struct PaintOrderFacts {
     custom_paint: bool,
     /// A scroll view whose bars can show opens a group for them.
     scrollbar_chrome: bool,
+    scroll_edge_fade: bool,
 }
 
 fn paint_order_facts(node: &ExtractedNode) -> PaintOrderFacts {
@@ -3314,6 +3370,7 @@ fn paint_order_facts(node: &ExtractedNode) -> PaintOrderFacts {
         stacking_context: node.source_style.layout.creates_paint_stacking_context(),
         custom_paint: node.custom_paint.is_some(),
         scrollbar_chrome: has_scrollbar_chrome(node),
+        scroll_edge_fade: has_scroll_edge_fade(node),
     }
 }
 
@@ -3350,6 +3407,7 @@ fn may_be_dest_group(node: &ExtractedNode) -> bool {
             .filter
             .is_some_and(|filter| !filter.is_identity())
         || !node.source_style.layout.paint.mix_blend.is_normal()
+        || has_scroll_edge_fade(node)
 }
 
 fn is_opacity_group(nodes: &SceneNodes, node: &ExtractedNode) -> bool {
@@ -3358,6 +3416,79 @@ fn is_opacity_group(nodes: &SceneNodes, node: &ExtractedNode) -> bool {
         || translucent
         || dest_filter_applies(nodes, node)
         || !node.source_style.layout.paint.mix_blend.is_normal()
+        || (has_scroll_edge_fade(node) && has_extracted_child(nodes, node))
+}
+
+/// A vertically clipping box styled with an edge fade. It is a group however
+/// far it is scrolled, so scrolling to either end never re-sorts the scene:
+/// the painter skips compositing it while neither band shows.
+fn has_scroll_edge_fade(node: &ExtractedNode) -> bool {
+    let style = &node.source_style.layout;
+    style.overflow_y.clips()
+        && style
+            .paint
+            .scroll_edge_fade
+            .is_some_and(nana_ui_core::ScrollEdgeFade::is_active)
+}
+
+/// The edge fade `node`'s group composites with at its current offset.
+fn edge_fade_mask(node: &ExtractedNode) -> Option<EdgeFadeMask> {
+    if !has_scroll_edge_fade(node) {
+        return None;
+    }
+    let style = &node.source_style.layout;
+    let fade = style.paint.scroll_edge_fade?;
+    let (x, y, width, height) = style.overflow_clip_box(
+        node.layout.x,
+        node.layout.y,
+        node.layout.width,
+        node.layout.height,
+    )?;
+    // Physical offsets run from the topmost reachable one to the lowest,
+    // whichever edge the axis starts at: the content above the scrollport
+    // is the distance from the first, and below it the distance to the last.
+    let [top, bottom] = node
+        .layout_result
+        .as_ref()
+        .and_then(|result| result.scroll_metrics)
+        .map_or([0.0, 0.0], |metrics| {
+            let offset = node.scroll_offset.y;
+            fade.resolve(
+                offset - metrics.min_offset().y,
+                metrics.max_offset().y - offset,
+            )
+        });
+    Some(EdgeFadeMask {
+        bounds: SceneRect {
+            x,
+            y,
+            width,
+            height,
+        },
+        top,
+        bottom,
+    })
+}
+
+/// `groups` with `node`'s own group, when it is the last, not fading its
+/// edges: the bars a scroll view draws over its content stay whole. Dropped
+/// when that leaves nothing to composite.
+fn without_edge_fade(node: StableNodeId, groups: Arc<[OpacityGroup]>) -> Arc<[OpacityGroup]> {
+    let Some((own, outer)) = groups
+        .split_last()
+        .filter(|(own, _)| own.node == node && own.edge_fade.is_some())
+    else {
+        return groups;
+    };
+    let own = OpacityGroup {
+        edge_fade: None,
+        ..*own
+    };
+    let mut groups = outer.to_vec();
+    if !own.is_identity() {
+        groups.push(own);
+    }
+    Arc::from(groups)
 }
 
 /// Whether the two styles differ in anything a descendant inherits the
@@ -3654,6 +3785,7 @@ fn dest_group(nodes: &SceneNodes, id: StableNodeId, candidate: &ExtractedNode) -
         },
         mix_blend: candidate.source_style.layout.paint.mix_blend,
         inset_shadow: inset_shadow_overlay(candidate),
+        edge_fade: edge_fade_mask(candidate),
     }
 }
 

@@ -67,6 +67,24 @@ widget(
 
 `.heading_room()` 让滚动区向上伸出 `heading_overhang()`、再把内容缩回同样的距离：顶部标题行悬出的工具不被滚动区裁掉。见 [heading_row](heading-row.md)。
 
+## 边缘渐隐
+
+`.edge_fade(top, bottom)` 让内容在滚动口的上下边缘渐隐，长度是逻辑像素。滚动区连同它装的所有内容合成成一层，这一层的 alpha 在每条渐隐带里线性降到边缘处的 0：背后是什么就透出什么，透明背景、舞台上的浮动卡片之间的空隙都一样，不画任何表面色。滚动区的滚动条不跟着渐隐。
+
+```rust
+use nana_ui::runtime::{ScrollAxes, ScrollView};
+
+ScrollView::new(ScrollAxes::Vertical).edge_fade(14.0, 64.0)
+```
+
+- 渐隐带只伸到边外还有内容的那么远：上带是 `min(top, 已滚出顶部的距离)`，下带是 `min(bottom, 底部剩下的距离)`。停在开头时没有上带，滚到底时没有下带，滚动时两条带都是长出来、缩回去，不会突然出现或消失。
+- 内容放得下时两条带都是 0，绘制器不为它做任何合成。
+- 渐隐每帧按当前偏移算出来，本身没有动画；减少动态效果时也一样。
+- 写 0 关掉那一条；两条都是 0 就是没有渐隐。
+- 它存在滚动区的样式上（`PaintStyle::scroll_edge_fade`，类型 `nana_ui_core::ScrollEdgeFade`），所以写在 `.style(…)` 之后；直接在样式里设这个字段也一样。只在竖向溢出裁剪的盒子上生效。
+
+背后是一块已知的实色表面、又想让渐隐只盖住一条底边时，[scroll_foot_fade](scroll-foot-fade.md) 更便宜：它不用把滚动区隔离成一层。
+
 ## 跟随末尾
 
 `.follow_end(true)` 让布局公布新的滚动几何之后，竖向停在最新内容；你在读旧内容时把它关掉。
@@ -124,6 +142,7 @@ widget(
 | `axes` | `ScrollAxes` | `Horizontal`、`Vertical` 或 `Both`。`ScrollView::new(axes)`。对应轴的溢出写成 `Scroll` |
 | `.label` | — | 可访问名 |
 | `.follow_end` | — | `true` 时，布局公布新的滚动几何之后竖向停在最新内容；读旧内容时关掉 |
+| `.edge_fade(top, bottom)` | `f32`, `f32` | 内容在滚动口上下边缘渐隐的长度（逻辑像素），作为一层合成，透明背景上也成立；每条带只伸到边外还有的内容那么远；滚动条不渐隐。见[边缘渐隐](#边缘渐隐) |
 | `.scrollbars` | `nana_ui_core::ScrollbarVisibility` | 不写时跟随主题策略（内置 `AutoHide`）；`AutoHide` 悬停或滚动时出现、离开后延迟淡出；`Always` 在能滚时一直画着并带轨道；`Hidden` 不画，滚轮和 `scroll_to` 照常 |
 
 ## 事件

@@ -157,9 +157,9 @@ pub use rich_text::{
     RichText, RichTextBuilder, RichTextShadow, RichTextStroke, TextStrokeJoin, TextStrokePlacement,
 };
 pub use scrollbar::{
-    SCROLLBAR_METRICS, ScrollbarAxis, ScrollbarExtent, ScrollbarLayout, ScrollbarMetrics,
-    ScrollbarRect, ScrollbarSkin, ScrollbarTrack, ScrollbarVisibility, scrollbar_layout,
-    scrollbar_track,
+    SCROLLBAR_METRICS, ScrollEdgeFade, ScrollbarAxis, ScrollbarExtent, ScrollbarLayout,
+    ScrollbarMetrics, ScrollbarRect, ScrollbarSkin, ScrollbarTrack, ScrollbarVisibility,
+    scrollbar_layout, scrollbar_track,
 };
 pub use selection::{SelectionMove, SingleSelection};
 pub use semantics::{
