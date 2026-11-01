@@ -487,13 +487,18 @@ impl Group {
             .unwrap();
     }
 
-    fn pixels(&mut self) -> Vec<u8> {
+    /// The pixels of `revision` once it has completed. Until then `sample`
+    /// still returns the revision published before it, so taking the first
+    /// sample compares the previous frame whenever the GPU lags the test.
+    fn pixels(&mut self, revision: u64) -> Vec<u8> {
         let gpu = test_gpu::context();
         let deadline = Instant::now() + Duration::from_secs(30);
         loop {
             gpu.poll();
             self.surface.poll();
-            if let Ok(frame) = self.surface.sample() {
+            if let Ok(frame) = self.surface.sample()
+                && frame.content_revision() == revision
+            {
                 return read_pixels(frame.texture().unwrap());
             }
             assert!(Instant::now() < deadline, "output did not complete");
@@ -535,14 +540,16 @@ fn dropping_a_frame_with_two_recorded_groups_rolls_both_back() {
             plan
         })
         .collect();
+    let revisions: Vec<_> = plans.iter().map(|plan| plan.content_revision()).collect();
     let submission = frame.submit();
     for (group, plan) in groups.iter_mut().zip(plans) {
         group.surface.bind_submission(plan, &submission).unwrap();
     }
     let published: Vec<_> = groups
         .iter_mut()
-        .map(|group| {
-            let pixels = group.pixels();
+        .zip(revisions)
+        .map(|(group, revision)| {
+            let pixels = group.pixels(revision);
             (group.surface.sample().unwrap(), pixels)
         })
         .collect();
@@ -575,14 +582,18 @@ fn dropping_a_frame_with_two_recorded_groups_rolls_both_back() {
         plans.push(plan);
     }
     drop(dropped);
+    let revisions: Vec<_> = plans.iter().map(|plan| plan.content_revision()).collect();
     let submission = frame.submit();
     for (group, plan) in groups.iter_mut().zip(plans) {
         group.surface.bind_submission(plan, &submission).unwrap();
     }
-    for ((profile, extent), group) in profiles.iter().zip(extents).zip(&mut groups) {
+    for (((profile, extent), group), revision) in
+        profiles.iter().zip(extents).zip(&mut groups).zip(revisions)
+    {
         let mut own = SceneWgpuPainter::new_with_presentation(&gpu, *profile);
         let mut reference = Group::new(&gpu, *profile, extent, 9 << 24);
         let plan = reference.prepare(&second, 0);
+        let reference_revision = plan.content_revision();
         let mut frame = gpu.begin_frame("reference");
         reference.record(&plan, &mut frame, &mut own, &second);
         let submission = frame.submit();
@@ -591,7 +602,7 @@ fn dropping_a_frame_with_two_recorded_groups_rolls_both_back() {
             .bind_submission(plan, &submission)
             .unwrap();
         assert!(
-            group.pixels() == reference.pixels(),
+            group.pixels(revision) == reference.pixels(reference_revision),
             "{profile:?}: the frame after the drop repaints the group completely"
         );
     }
