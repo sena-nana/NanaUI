@@ -2809,8 +2809,20 @@ impl UiScene {
         let mut moved = false;
         for (node, (presentation, objects)) in &self.glyph_objects {
             for object in objects.iter() {
+                let Some(held) = self.primitives.get_mut(&PrimitiveId {
+                    node: *node,
+                    slot: object.slot,
+                }) else {
+                    continue;
+                };
+                // Only a quad carries the transition masks, and its mask
+                // stands in for the intro. Any other object (a host texture's
+                // animated picture) keeps the intro the glyphs around it play
+                // and fades in and out over the masks' progress instead.
+                let masked = matches!(held.primitive.kind, ScenePrimitiveKind::Quad { .. });
                 let mut reveal = presentation.reveal.clone();
-                if presentation.transitions.entrance.is_some()
+                if masked
+                    && presentation.transitions.entrance.is_some()
                     && let Some(r) = &mut reveal
                 {
                     r.intro.fade = false;
@@ -2829,47 +2841,40 @@ impl UiScene {
                     cx + sample.offset[0] - scale * cx,
                     cy + sample.offset[1] - scale * cy,
                 ]);
-                let Some(held) = self.primitives.get_mut(&PrimitiveId {
-                    node: *node,
-                    slot: object.slot,
-                }) else {
-                    continue;
-                };
-                if let ScenePrimitiveKind::Quad { surface, .. } = &mut held.primitive.kind {
-                    let mut masks = Vec::new();
-                    for (enter, mask) in [
-                        (true, &presentation.transitions.entrance),
-                        (false, &presentation.transitions.exit),
-                    ] {
-                        if let Some(mask) = mask {
-                            let progress = if enter {
-                                reveal.as_ref().map_or(1., |r| {
-                                    let ordinal = if mask.space
-                                        == nana_ui_core::PresentationMaskSpace::Target
-                                    {
+                let mut masks = Vec::new();
+                let mut fade = 1.;
+                for (enter, mask) in [
+                    (true, &presentation.transitions.entrance),
+                    (false, &presentation.transitions.exit),
+                ] {
+                    if let Some(mask) = mask {
+                        let progress = if enter {
+                            reveal.as_ref().map_or(1., |r| {
+                                let ordinal =
+                                    if mask.space == nana_ui_core::PresentationMaskSpace::Target {
                                         0
                                     } else {
                                         object.ordinal as usize
                                     };
-                                    r.at_s.get(ordinal).map_or(0., |at| {
-                                        if mask.duration.is_zero() {
-                                            return f32::from(
-                                                reveal_now.as_secs_f64()
-                                                    >= r.start.max(mask.start).as_secs_f64()
-                                                        + f64::from(*at),
-                                            );
-                                        }
-                                        ((reveal_now.as_secs_f64()
-                                            - r.start.max(mask.start).as_secs_f64()
-                                            - f64::from(*at))
-                                            / mask.duration.as_secs_f64().max(0.000001))
-                                        .clamp(0., 1.)
-                                            as f32
-                                    })
+                                r.at_s.get(ordinal).map_or(0., |at| {
+                                    if mask.duration.is_zero() {
+                                        return f32::from(
+                                            reveal_now.as_secs_f64()
+                                                >= r.start.max(mask.start).as_secs_f64()
+                                                    + f64::from(*at),
+                                        );
+                                    }
+                                    ((reveal_now.as_secs_f64()
+                                        - r.start.max(mask.start).as_secs_f64()
+                                        - f64::from(*at))
+                                        / mask.duration.as_secs_f64().max(0.000001))
+                                    .clamp(0., 1.) as f32
                                 })
-                            } else {
-                                mask.progress(now)
-                            };
+                            })
+                        } else {
+                            mask.progress(now)
+                        };
+                        if masked {
                             masks.push(nana_ui_core::PresentationMaskSample {
                                 mask: mask.clone(),
                                 progress,
@@ -2880,14 +2885,18 @@ impl UiScene {
                                     object.target.height,
                                 ),
                             });
+                        } else {
+                            fade *= if enter { progress } else { 1. - progress };
                         }
                     }
-                    if surface.presentation_masks != masks {
-                        surface.presentation_masks = masks;
-                        moved = true;
-                    }
                 }
-                let opacity = object.opacity * sample.alpha;
+                if let ScenePrimitiveKind::Quad { surface, .. } = &mut held.primitive.kind
+                    && surface.presentation_masks != masks
+                {
+                    surface.presentation_masks = masks;
+                    moved = true;
+                }
+                let opacity = object.opacity * sample.alpha * fade;
                 let transform = object.transform.then(local);
                 if held.primitive.opacity != opacity || held.primitive.transform != transform {
                     held.primitive.opacity = opacity;
