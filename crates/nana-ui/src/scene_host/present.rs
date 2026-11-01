@@ -884,6 +884,14 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
             }
             proxy.wake_up();
         }));
+        let (redraws, proxy) = (Arc::clone(&self.material_redraws), self.proxy.clone());
+        let wake = self.material_waker.get_or_insert_with(|| {
+            Arc::new(move || {
+                redraws.store(true, std::sync::atomic::Ordering::Release);
+                proxy.wake_up();
+            })
+        });
+        painter.set_material_waker(Arc::clone(wake));
         self.note_startup_painter();
         self.painters.insert(profile, painter);
     }

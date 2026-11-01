@@ -13794,3 +13794,138 @@ mod painted_quad_runs {
         }
     }
 }
+
+/// A 64 px square filled blue, its background shaded by a material that
+/// paints green. `tag` keeps each test's program, and so its pipeline, apart.
+fn green_material_square(tag: &str) -> UiScene {
+    let material = nana_ui_core::MaterialRef::new(nana_ui_core::MaterialProgram::new(format!(
+        "// {tag}\nfn material(i:MaterialInput)->vec4<f32>{{return vec4<f32>(0.,1.,0.,1.);}}"
+    )));
+    let mut scene = UiScene::new();
+    scene.apply_delta(
+        [extracted_div(
+            1,
+            &[],
+            0.0,
+            0.0,
+            64.0,
+            64.0,
+            nana_ui_core::LayoutStyle {
+                background: Some([0.0, 0.0, 1.0, 1.0]),
+                paint: nana_ui_core::PaintStyle {
+                    background_material: Some(material),
+                    ..Default::default()
+                }
+                .into(),
+                ..Default::default()
+            },
+            Some([0.0, 0.0, 1.0, 1.0]),
+        )],
+        [],
+    );
+    scene
+}
+
+/// The square's centre as `painter` paints `scene`.
+fn square_centre(
+    device: &wgpu::Device,
+    queue: &wgpu::Queue,
+    painter: &mut SceneWgpuPainter,
+    scene: &UiScene,
+) -> [u8; 4] {
+    let format = wgpu::TextureFormat::Rgba8Unorm;
+    let viewport = ScenePaintViewport {
+        logical_size: [64.0, 64.0],
+        physical_size: [64, 64],
+        scale_factor: 1.0,
+        scene_origin: [0.0, 0.0],
+        target_origin: [0.0, 0.0],
+        clear_color: [0.0, 0.0, 0.0, 1.0],
+        clear: true,
+    };
+    let (texture, view) = test_copy_target(device, format, 64, 64);
+    let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+        label: Some("nana-ui material compile"),
+    });
+    painter
+        .paint_encoder(scene, &mut encoder, &view, viewport, None, None)
+        .unwrap();
+    let pixels = readback_rgba(device, queue, encoder, &texture, 64, 64);
+    pixel(&pixels, 64, 32, 32)
+}
+
+fn is_blue(color: [u8; 4]) -> bool {
+    color[0] < 40 && color[1] < 40 && color[2] > 200
+}
+
+fn is_green(color: [u8; 4]) -> bool {
+    color[0] < 40 && color[1] > 200 && color[2] < 40
+}
+
+/// A hosted painter does not hold its frame for the driver: the first frame
+/// paints the square natively, the waker says when a material pipeline is
+/// ready, and the frame after paints it shaded, a revision later. The square
+/// compiles one pipeline per sample count, each once.
+#[test]
+fn a_painter_with_a_material_waker_paints_natively_until_the_material_compiles() {
+    let (device, queue) = test_device();
+    let scene = green_material_square("waker");
+    let mut painter = SceneWgpuPainter::for_test(wgpu::TextureFormat::Rgba8Unorm);
+    let (ready, woken) = std::sync::mpsc::channel();
+    let ready = std::sync::Mutex::new(ready);
+    painter.set_material_waker(Arc::new(move || {
+        let _ = ready.lock().unwrap().send(());
+    }));
+    let revision = painter.image_revision();
+    let first = square_centre(&device, &queue, &mut painter, &scene);
+    assert!(
+        is_blue(first),
+        "painted natively while compiling: {first:?}"
+    );
+    let mut wakes = 0;
+    loop {
+        woken
+            .recv_timeout(std::time::Duration::from_secs(60))
+            .expect("the waker says a pipeline is ready");
+        wakes += 1;
+        let next = square_centre(&device, &queue, &mut painter, &scene);
+        if is_green(next) {
+            break;
+        }
+        assert!(
+            is_blue(next),
+            "native until its pipeline is ready: {next:?}"
+        );
+        assert!(wakes < 2, "two pipelines, and still not shaded");
+    }
+    assert_ne!(
+        painter.image_revision(),
+        revision,
+        "retained outputs see the frame changed"
+    );
+    for _ in 0..3 {
+        let again = square_centre(&device, &queue, &mut painter, &scene);
+        assert!(is_green(again), "and keeps shading it: {again:?}");
+    }
+    while woken
+        .recv_timeout(std::time::Duration::from_millis(500))
+        .is_ok()
+    {
+        wakes += 1;
+    }
+    assert!(
+        wakes <= 2,
+        "each pipeline compiles once, woke {wakes} times"
+    );
+}
+
+/// With no waker nothing would paint again for a pipeline compiled in the
+/// background: an offscreen painter compiles on the frame that needs it.
+#[test]
+fn a_painter_without_a_material_waker_shades_its_first_frame() {
+    let (device, queue) = test_device();
+    let scene = green_material_square("no waker");
+    let mut painter = SceneWgpuPainter::for_test(wgpu::TextureFormat::Rgba8Unorm);
+    let first = square_centre(&device, &queue, &mut painter, &scene);
+    assert!(is_green(first), "the material shades it at once: {first:?}");
+}

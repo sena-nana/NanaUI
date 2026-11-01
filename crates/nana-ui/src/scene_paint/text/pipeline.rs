@@ -600,6 +600,8 @@ pub(super) struct TextGpu {
     bundles: std::collections::HashMap<u64, wgpu::BindGroup>,
     identity: nana_ui_core::MaterialRef,
     material_device: std::sync::Arc<super::super::material::MaterialDevice>,
+    /// See [`super::super::SceneWgpuPainter::set_material_waker`].
+    material_waker: Option<super::super::material::MaterialWaker>,
     pipeline: wgpu::RenderPipeline,
     /// The dual-source program, while subpixel text is on.
     dual_source: Option<wgpu::RenderPipeline>,
@@ -762,6 +764,7 @@ impl TextGpu {
                 "fn material(i:MaterialInput)->vec4<f32>{return i.color;}",
             )),
             material_device: super::super::material::MaterialDevice::shared(device, policy),
+            material_waker: None,
             pipeline,
             dual_source: None,
             layout,
@@ -860,11 +863,24 @@ impl TextGpu {
             self.bundles
                 .entry(*key)
                 .or_insert_with(|| self.material_device.bundle(device, &bindings));
-            self.material_pipelines.entry((programs,dual)).or_insert_with(|| {
+            if self.material_pipelines.contains_key(&(programs, dual)) {
+                continue;
+            }
+            let sources = materials
+                .each_ref()
+                .map(|m| std::sync::Arc::clone(m.program()));
+            let layouts = [
+                self.globals_layout.clone(),
+                atlas.layout().clone(),
+                self.material_device.text_layout.clone(),
+            ];
+            let (worker, format, owned) = (device.clone(), self.format, sources.clone());
+            let built = self.material_device.pipeline((if dual{13}else{12},format,1,{use std::hash::{Hash,Hasher};let mut hash=std::collections::hash_map::DefaultHasher::new();programs.hash(&mut hash);hash.finish()},0),&sources.iter().collect::<Vec<_>>(),device,self.material_waker.as_ref(),move || {
+                let device = worker;
                 let native=if dual {TEXT_SHADER_DUAL_SOURCE}else{TEXT_SHADER};
                 let mut source=native.replace("if duration > 0.0 {", "if duration > 0.0 && text_glyph_fx[fx+12u]==0u {");
-                for (i,m) in materials.iter().enumerate() {
-                    source.push_str(&super::super::material::program_source_at(m.program(), ["nm_text_","nm_enter_","nm_exit_"][i],2,i as u32*4)?);
+                for (i,m) in owned.iter().enumerate() {
+                    source.push_str(&super::super::material::program_source_at(m, ["nm_text_","nm_enter_","nm_exit_"][i],2,i as u32*4)?);
                 }
                 source=source.replace("out.color = input.color.rgb;", "let nm = nm_text_material(nm_text_MaterialInput(input.material_position,input.glyph_uv,input.glyph_size,input.glyph_uv,vec4<f32>(input.color.rgb,1.),1.,input.text_position,vec2<f32>(1.))); out.color = nm.rgb;")
                     .replace("input.color.a * corrected * clip_cover", "input.color.a * clamp(nm.a,0.,1.) * corrected * clip_cover")
@@ -892,13 +908,21 @@ fn shade(input:VsOut)->TextShade {
     return result;
 }
 "#);
-                let layout=device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {label:Some("text color and transition materials"),bind_group_layouts:&[Some(&self.globals_layout),Some(atlas.layout()),Some(&self.material_device.text_layout)],immediate_size:0});
+                let [globals, atlas, materials] = &layouts;
+                let layout=device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {label:Some("text color and transition materials"),bind_group_layouts:&[Some(globals),Some(atlas),Some(materials)],immediate_size:0});
                 let blend=if dual {let c=wgpu::BlendComponent{src_factor:wgpu::BlendFactor::Src1,dst_factor:wgpu::BlendFactor::OneMinusSrc1,operation:wgpu::BlendOperation::Add};wgpu::BlendState{color:c,alpha:c}}else{wgpu::BlendState::ALPHA_BLENDING};
-                use std::hash::{Hash,Hasher};let mut hash=std::collections::hash_map::DefaultHasher::new();programs.hash(&mut hash);
-                self.material_device.pipeline((if dual{13}else{12},self.format,1,hash.finish(),0),&materials.iter().map(|m|m.program()).collect::<Vec<_>>(),device,||build_pipeline(device,&layout,self.format,&source,blend))
+                Some(build_pipeline(&device,&layout,format,&source,blend))
             });
+            // Still compiling: the glyphs draw natively until it is ready.
+            if let super::super::material::MaterialPipeline::Ready(pipeline) = built {
+                self.material_pipelines.insert((programs, dual), pipeline);
+            }
         }
         self.material_pipelines.retain(|k, _| active.contains(k));
+    }
+
+    pub(super) fn set_material_waker(&mut self, wake: super::super::material::MaterialWaker) {
+        self.material_waker = Some(wake);
     }
 
     pub(super) fn instance_slots(&self) -> u32 {

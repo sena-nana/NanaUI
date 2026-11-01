@@ -302,6 +302,12 @@ struct WindowManager<Program: RuntimeProgram> {
     /// that wakes it; re-subscribed only when the slot set or registry changes.
     texture_subscriptions: HashMap<WindowId, (HashSet<Arc<str>>, crate::TextureSubscription)>,
     texture_redraws: Arc<Mutex<HashSet<WindowId>>>,
+    /// Set when a skin material compiled off the UI thread is ready: every
+    /// window paints again, since any of them may draw it.
+    material_redraws: Arc<std::sync::atomic::AtomicBool>,
+    /// The one waker every painter registers, so material devices shared
+    /// between painters keep a single copy of it.
+    material_waker: Option<Arc<dyn Fn() + Send + Sync>>,
     image_targets: Arc<Mutex<HashMap<String, HashSet<WindowId>>>>,
     image_window_keys: HashMap<WindowId, HashSet<String>>,
     occluded: HashSet<WindowId>,
@@ -1315,6 +1321,8 @@ fn complete_startup<Program: RuntimeProgram>(
         direct_output_traces: HashMap::new(),
         texture_subscriptions: HashMap::new(),
         texture_redraws: Arc::new(Mutex::new(HashSet::new())),
+        material_redraws: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+        material_waker: None,
         image_targets: Arc::new(Mutex::new(HashMap::new())),
         image_window_keys: HashMap::new(),
         occluded: HashSet::new(),

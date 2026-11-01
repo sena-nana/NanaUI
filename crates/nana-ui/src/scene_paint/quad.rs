@@ -165,6 +165,8 @@ struct Uniforms {
 
 pub(super) struct QuadPipeline {
     material_device: std::sync::Arc<super::material::MaterialDevice>,
+    /// See [`super::SceneWgpuPainter::set_material_waker`].
+    material_waker: Option<super::material::MaterialWaker>,
     material_bindings: HashMap<u64, std::sync::Arc<super::material::MaterialBinding>>,
     material_refs: HashMap<u64, std::sync::Weak<nana_ui_core::MaterialInstance>>,
     material_pipelines: HashMap<(u64, u64, u32, bool), Option<wgpu::RenderPipeline>>,
@@ -400,6 +402,7 @@ impl QuadPipeline {
         });
         Self {
             material_device: super::material::MaterialDevice::shared(device, policy),
+            material_waker: None,
             material_bindings: Default::default(),
             material_refs: Default::default(),
             material_pipelines: Default::default(),
@@ -446,25 +449,40 @@ impl QuadPipeline {
             return;
         }
         for samples in [1, 4] {
-            self.material_pipelines.entry((bg,br,samples,masked)).or_insert_with(|| {
-                if background.is_some_and(|m| m.program().source.len()>65536) || border.is_some_and(|m| m.program().source.len()>65536) { return None; }
+            let key = (bg, br, samples, masked);
+            if self.material_pipelines.contains_key(&key) {
+                continue;
+            }
+            let background = background.map(|m| std::sync::Arc::clone(m.program()));
+            let border = border.map(|m| std::sync::Arc::clone(m.program()));
+            let programs = background.iter().chain(&border).collect::<Vec<_>>();
+            let layouts = [
+                self.bind_layout.clone(),
+                self.motion_layout.clone(),
+                self.material_device.layout.clone(),
+            ];
+            let (worker, format) = (device.clone(), self.format);
+            let (background, border) = (background.clone(), border.clone());
+            let built = self.material_device.pipeline((if masked{21}else{1}, format, samples, bg, br), &programs, device, self.material_waker.as_ref(), move || {
+                let device = worker;
+                if background.as_ref().is_some_and(|m| m.source.len()>65536) || border.as_ref().is_some_and(|m| m.source.len()>65536) { return None; }
                 let mut source = QUAD_SHADER.to_owned();
-                if let Some(material) = background.filter(|_|!masked) {
-                    let author = super::material::program_source(material.program(), "nm_bg_", 2)?;
+                if let Some(material) = background.as_ref().filter(|_|!masked) {
+                    let author = super::material::program_source(material, "nm_bg_", 2)?;
                     source.push_str(&author);
                     source = source.replace("var mixed_color: vec4<f32> = compose_quad_fill(input.color, local_uv, paint);", "var mixed_color: vec4<f32> = compose_quad_fill(input.color, local_uv, paint); let nm_bg = nm_bg_material(nm_bg_MaterialInput((input.local_pos - input.pos) / globals.scale, local_uv, input.scale / globals.scale, vec2<f32>(0.), vec4<f32>(mixed_color.rgb / max(mixed_color.a, 0.00001), 1.), 1., vec2<f32>(0.), input.scale / globals.scale)); mixed_color = vec4<f32>(nm_bg.rgb * clamp(nm_bg.a, 0., 1.), clamp(nm_bg.a, 0., 1.)) * mixed_color.a;");
                 }
-                if let Some(material) = border.filter(|_|!masked) {
-                    let author = super::material::program_source(material.program(), "nm_br_", 3)?;
+                if let Some(material) = border.as_ref().filter(|_|!masked) {
+                    let author = super::material::program_source(material, "nm_br_", 3)?;
                     source.push_str(&author);
                     source = source.replace("var cover = clamp(0.5 + inner_dist, 0.0, 1.0);", "let nm_br = nm_br_material(nm_br_MaterialInput((input.local_pos - input.pos) / globals.scale, local_uv, input.scale / globals.scale, vec2<f32>(0.), vec4<f32>(edge_color.rgb / max(edge_color.a, 0.00001), 1.), 1., vec2<f32>(0.), input.scale / globals.scale)); edge_color = vec4<f32>(nm_br.rgb * clamp(nm_br.a, 0., 1.), clamp(nm_br.a, 0., 1.)) * edge_color.a; var cover = clamp(0.5 + inner_dist, 0.0, 1.0);");
                 }
                 if masked {
                     let mut expression=String::from("1.");
-                    for (i,m) in [background,border].into_iter().enumerate() {
+                    for (i,m) in [&background,&border].into_iter().enumerate() {
                         if let Some(m)=m {
                             let prefix=format!("nm_mask{i}_");
-                            source.push_str(&super::material::program_source(m.program(),&prefix,2+i as u32)?);
+                            source.push_str(&super::material::program_source(m,&prefix,2+i as u32)?);
                             expression.push_str(&format!(" * clamp(nm_mask{i}_material(nm_mask{i}_MaterialInput(select(mask_local,mask_local-paint.target{i}.xy,paint.presentation{i}.y>0.),select(local_uv,(mask_local-paint.target{i}.xy)/max(paint.target{i}.zw,vec2<f32>(1.)),paint.presentation{i}.y>0.),select(input.scale/globals.scale,paint.target{i}.zw,paint.presentation{i}.y>0.),local_uv,vec4<f32>(1.),paint.presentation{i}.x,mask_local-paint.target{i}.xy,paint.target{i}.zw)).a,0.,1.)"));
                         }
                     }
@@ -476,13 +494,20 @@ impl QuadPipeline {
                 }
                 // Keep both resource groups in the adapter layout, even when a
                 // material only uses one slot; bind a live instance to the other.
-                let layout=device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor { label:Some("surface material"), bind_group_layouts:&[Some(&self.bind_layout), Some(&self.motion_layout), Some(&self.material_device.layout), Some(&self.material_device.layout)], immediate_size:0 });
-                self.material_device.pipeline((if masked{21}else{1}, self.format, samples, bg, br), &background.into_iter().chain(border).map(|m| m.program()).collect::<Vec<_>>(), device, || {
-                    let shader=device.create_shader_module(wgpu::ShaderModuleDescriptor { label:Some("surface material"), source:wgpu::ShaderSource::Wgsl(source.into()) });
-                    solid_pipeline(device, &shader, &layout, self.format, samples)
-                })
+                let [bind, motion, material] = &layouts;
+                let layout=device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor { label:Some("surface material"), bind_group_layouts:&[Some(bind), Some(motion), Some(material), Some(material)], immediate_size:0 });
+                let shader=device.create_shader_module(wgpu::ShaderModuleDescriptor { label:Some("surface material"), source:wgpu::ShaderSource::Wgsl(source.into()) });
+                Some(solid_pipeline(&device, &shader, &layout, format, samples))
             });
+            // Still compiling: paint natively and ask again next frame.
+            if let super::material::MaterialPipeline::Ready(pipeline) = built {
+                self.material_pipelines.insert(key, pipeline);
+            }
         }
+    }
+
+    pub(super) fn set_material_waker(&mut self, wake: super::material::MaterialWaker) {
+        self.material_waker = Some(wake);
     }
 
     /// Whether the host's material policy lets both programs (0: none) run.

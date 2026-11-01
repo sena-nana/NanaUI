@@ -1004,6 +1004,10 @@ impl TextPipeline {
         self.linear_color_override = color;
     }
 
+    pub(super) fn set_material_waker(&mut self, wake: super::material::MaterialWaker) {
+        self.gpu.set_material_waker(wake);
+    }
+
     /// What the next [`Self::prepare`] presents per glyph. Not part of what
     /// its instances are built from: a new presentation is a new fx row, not
     /// a rebuilt entry.
