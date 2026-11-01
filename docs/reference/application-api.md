@@ -153,6 +153,11 @@ Cargo 不会因你写了 `CalendarHeatmap` 就自动打开 `calendar`。
 `Continuous(NonZeroU32)`。120 代表请求 120Hz。不是显示器刷新率保证。
 宿主会把 `UiScene::compositor_needs_tick` 合并进该窗口的 present cadence。
 compositor overlay 不改写程序自己的 `frame_demand`。也不唤醒无关窗口。
+合成器轨道、逐字 reveal / 循环动效和图表过渡在可见窗口上默认以 120Hz 呈现。
+程序要给某扇窗口封顶时实现 `RuntimeProgram::max_frame_rate`（`ApplicationWindow::max_frame_rate`）：
+返回 `Some(30)` 后，程序自己的 `Continuous` 与框架加上的合成器节拍都不超过 30Hz。
+这些动画按绝对时间求值，封顶只少出帧，不会变慢。`At` 截止时间、输入和显式重绘不受它限制。
+默认 `None` 不封顶。
 device/surface 丢失后宿主调用 `RuntimeDocument::set_surface_generation`。
 资源更新使用 `TextureSlot`。详细变更和当前验收范围见
 [高刷新重构](../../archive/docs-notes/high-refresh-refactor.md)。

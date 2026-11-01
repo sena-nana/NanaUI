@@ -20,6 +20,9 @@ pub struct ApplicationWindow {
     /// Keep one host per window: replacing the `Arc` refetches its images.
     pub fetch_host: Option<nana_ui_platform::SharedFetchHost>,
     pub demand: FrameDemand,
+    /// See [`RuntimeProgram::max_frame_rate`]: the fastest this window keeps
+    /// presenting, whether `demand` or framework animation asks for frames.
+    pub max_frame_rate: Option<std::num::NonZeroU32>,
     /// Retained output of this window's presentation; frames and
     /// state changes arrive at [`ApplicationState::output_frame`] and
     /// [`ApplicationState::output_status`]. Compatible pixel contracts share
@@ -59,6 +62,7 @@ impl ApplicationWindow {
             producers: None,
             fetch_host: None,
             demand: FrameDemand::OnDemand,
+            max_frame_rate: None,
             output: None,
         }
     }
@@ -339,6 +343,11 @@ impl<State: ApplicationState> RuntimeProgram for RuntimeApplication<State> {
         self.windows
             .get(&id)
             .map_or(FrameDemand::OnDemand, |window| window.demand)
+    }
+    fn max_frame_rate(&self, id: WindowId) -> Option<std::num::NonZeroU32> {
+        self.windows
+            .get(&id)
+            .and_then(|window| window.max_frame_rate)
     }
     fn host_textures(&self, id: WindowId) -> Option<HostTextureRegistry> {
         self.windows.get(&id).map(|window| window.textures.clone())

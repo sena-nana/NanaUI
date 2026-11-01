@@ -512,8 +512,9 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
             .read_document(id, |document| document.compositor_needs_tick())
             .unwrap_or(false);
         let can_present = self.can_present(id);
+        let max_rate = self.program.max_frame_rate(id);
         merge_frame_demand(
-            window_present_demand(program, compositor, can_present),
+            window_present_demand(program, compositor, can_present, max_rate),
             self.window_output_demand(id, can_present),
         )
     }
@@ -551,18 +552,32 @@ pub(super) fn drawable_surface(physical_size: (u32, u32)) -> bool {
 
 /// Per-window present demand. Compositor overlay may keep presenting this
 /// window without a CPU animation deadline. Hidden/minimized compositor does
-/// not drive GpuOnly ticks: resume presents at absolute time.
+/// not drive GpuOnly ticks: resume presents at absolute time. The program's
+/// [`RuntimeProgram::max_frame_rate`] holds both cadences down: compositor
+/// motion samples absolute time, so it loses frames, not speed.
 pub(super) fn window_present_demand(
     program: FrameDemand,
     compositor_needs_tick: bool,
     can_present: bool,
+    max_rate: Option<NonZeroU32>,
 ) -> FrameDemand {
     let compositor = if compositor_needs_tick && can_present {
         FrameDemand::Continuous(COMPOSITOR_PRESENT_HZ)
     } else {
         FrameDemand::OnDemand
     };
-    merge_frame_demand(program, compositor)
+    cap_frame_demand(merge_frame_demand(program, compositor), max_rate)
+}
+
+/// A continuous cadence held to `max_rate`. A one-shot deadline is the
+/// program's own and is served when due.
+pub(super) fn cap_frame_demand(demand: FrameDemand, max_rate: Option<NonZeroU32>) -> FrameDemand {
+    match (demand, max_rate) {
+        (FrameDemand::Continuous(rate), Some(max_rate)) => {
+            FrameDemand::Continuous(rate.min(max_rate))
+        }
+        (demand, _) => demand,
+    }
 }
 
 pub(super) fn merge_frame_demand(left: FrameDemand, right: FrameDemand) -> FrameDemand {
@@ -743,7 +758,7 @@ mod tests {
 
     #[test]
     fn compositor_tick_is_lightweight_present_not_cpu_wake() {
-        let demand = super::window_present_demand(FrameDemand::OnDemand, true, true);
+        let demand = super::window_present_demand(FrameDemand::OnDemand, true, true, None);
         assert_eq!(demand, fps(120));
         assert!(!super::cpu_wake_redraw(false, false));
         assert!(!super::cpu_wake_redraw(false, true));
@@ -751,10 +766,10 @@ mod tests {
 
     #[test]
     fn compositor_tick_does_not_force_hidden_gpu_catch_up() {
-        let hidden = super::window_present_demand(FrameDemand::OnDemand, true, false);
+        let hidden = super::window_present_demand(FrameDemand::OnDemand, true, false, None);
         assert_eq!(hidden, FrameDemand::OnDemand);
         assert_eq!(
-            super::window_present_demand(fps(60), true, false),
+            super::window_present_demand(fps(60), true, false, None),
             fps(60),
             "external GPU cadence still ticks when hidden; compositor does not add one"
         );
@@ -773,29 +788,35 @@ mod tests {
         assert!(animated);
         assert!(!static_window);
         assert_eq!(
-            super::window_present_demand(FrameDemand::OnDemand, false, true),
+            super::window_present_demand(FrameDemand::OnDemand, false, true, None),
             FrameDemand::OnDemand
         );
     }
 
     #[test]
     fn compositor_present_merges_with_program_gpu_cadence() {
-        assert_eq!(super::window_present_demand(fps(30), true, true), fps(120));
-        assert_eq!(super::window_present_demand(fps(240), true, true), fps(240));
-        let later = Instant::now() + Duration::from_millis(50);
         assert_eq!(
-            super::window_present_demand(FrameDemand::At(later), true, true),
+            super::window_present_demand(fps(30), true, true, None),
             fps(120)
         );
         assert_eq!(
-            super::window_present_demand(FrameDemand::At(later), false, true),
+            super::window_present_demand(fps(240), true, true, None),
+            fps(240)
+        );
+        let later = Instant::now() + Duration::from_millis(50);
+        assert_eq!(
+            super::window_present_demand(FrameDemand::At(later), true, true, None),
+            fps(120)
+        );
+        assert_eq!(
+            super::window_present_demand(FrameDemand::At(later), false, true, None),
             FrameDemand::At(later)
         );
     }
 
     #[test]
     fn compositor_continuous_skips_missed_ticks_on_resume() {
-        let demand = super::window_present_demand(FrameDemand::OnDemand, true, true);
+        let demand = super::window_present_demand(FrameDemand::OnDemand, true, true, None);
         let mut schedule = FrameSchedule::default();
         let start = Instant::now();
         assert!(schedule.due(demand, start));
@@ -808,6 +829,88 @@ mod tests {
         assert_eq!(
             frame_tick(true, schedule.due(demand, resumed), true),
             FrameTick::None
+        );
+    }
+
+    fn rate(n: u32) -> Option<std::num::NonZeroU32> {
+        std::num::NonZeroU32::new(n)
+    }
+
+    #[test]
+    fn a_max_frame_rate_holds_the_compositor_cadence_to_the_program() {
+        // A glyph reveal or effect alone no longer lifts the window to 120 Hz.
+        assert_eq!(
+            super::window_present_demand(FrameDemand::OnDemand, true, true, rate(30)),
+            fps(30)
+        );
+        // Nor does it outbid the program's own cadence under the cap.
+        assert_eq!(
+            super::window_present_demand(fps(30), true, true, rate(30)),
+            fps(30)
+        );
+        assert_eq!(
+            super::window_present_demand(fps(240), false, true, rate(60)),
+            fps(60),
+            "the program's own cadence is held to it too"
+        );
+        assert_eq!(
+            super::window_present_demand(FrameDemand::OnDemand, true, true, rate(240)),
+            fps(120),
+            "a cap above the compositor cadence does not raise it"
+        );
+    }
+
+    #[test]
+    fn a_max_frame_rate_asks_for_no_frames_of_its_own() {
+        let later = Instant::now() + Duration::from_millis(50);
+        assert_eq!(
+            super::window_present_demand(FrameDemand::OnDemand, false, true, rate(30)),
+            FrameDemand::OnDemand
+        );
+        assert_eq!(
+            super::window_present_demand(FrameDemand::At(later), false, true, rate(30)),
+            FrameDemand::At(later),
+            "a one-shot deadline is served when due"
+        );
+        assert_eq!(
+            super::window_present_demand(FrameDemand::OnDemand, true, false, rate(30)),
+            FrameDemand::OnDemand,
+            "a hidden window's compositor still drives no ticks"
+        );
+    }
+
+    /// Frames a window presents in one second when the loop polls it at
+    /// 240 Hz and serves every due tick.
+    fn presents_in_one_second(demand: FrameDemand) -> u32 {
+        let mut schedule = FrameSchedule::default();
+        let start = Instant::now();
+        let step = Duration::from_nanos(1_000_000_000 / 240);
+        let mut presents = 0;
+        for index in 0u32..240 {
+            let now = start + step * index;
+            if frame_tick(true, schedule.due(demand, now), true) == FrameTick::Present {
+                presents += 1;
+                let _ = schedule.advance_served(demand, now);
+            } else {
+                let _ = schedule.arm(demand, now);
+            }
+        }
+        presents
+    }
+
+    #[test]
+    fn a_live_glyph_presentation_presents_at_the_capped_rate() {
+        let uncapped = super::window_present_demand(FrameDemand::OnDemand, true, true, None);
+        let capped = super::window_present_demand(FrameDemand::OnDemand, true, true, rate(30));
+        let uncapped = presents_in_one_second(uncapped);
+        let capped = presents_in_one_second(capped);
+        assert!(
+            (119..=121).contains(&uncapped),
+            "uncapped compositor cadence is 120 Hz, got {uncapped}"
+        );
+        assert!(
+            (29..=31).contains(&capped),
+            "a 30 Hz cap presents 30 frames a second, got {capped}"
         );
     }
 }

@@ -536,6 +536,11 @@ impl<L: Launch> RuntimeProgram for Staged<L> {
             .map_or(FrameDemand::OnDemand, |program| program.frame_demand(id))
     }
 
+    fn max_frame_rate(&self, id: WindowId) -> Option<std::num::NonZeroU32> {
+        self.program()
+            .and_then(|program| program.max_frame_rate(id))
+    }
+
     fn next_wakeup(&self) -> Option<Instant> {
         let program = self.program().and_then(RuntimeProgram::next_wakeup);
         match (program, self.takeover.retry_at) {

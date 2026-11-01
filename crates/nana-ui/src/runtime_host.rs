@@ -867,6 +867,19 @@ pub trait RuntimeProgram: Sized + 'static {
         FrameDemand::OnDemand
     }
 
+    /// The fastest cadence the host keeps presenting `id` at. Both the
+    /// program's own [`FrameDemand::Continuous`] and the cadence the framework
+    /// adds for presentation it animates on the GPU — compositor layers,
+    /// per-glyph reveals and effects, chart transitions — are held to it.
+    /// Those animations sample absolute time, so a lower rate shows fewer
+    /// frames of them, never slower ones. `None`, the default, leaves the
+    /// cadence as asked. One-shot [`FrameDemand::At`] deadlines, input and
+    /// explicit redraws are served when due either way, and the display's
+    /// refresh still bounds every rate.
+    fn max_frame_rate(&self, _id: WindowId) -> Option<std::num::NonZeroU32> {
+        None
+    }
+
     /// Application-owned wake deadline for sampled state, external runtimes,
     /// retry backoff or other work that must not depend on UI redraw cadence.
     fn next_wakeup(&self) -> Option<Instant> {
