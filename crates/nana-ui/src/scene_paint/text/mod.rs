@@ -3541,7 +3541,9 @@ fn pack_glyph_fx(fx: &mut Vec<u32>, presentation: &SceneGlyphPresentation) -> u3
         effects_at as u32,
         clusters_at as u32,
         chain_count as u32,
-        0,
+        // Which way "up" is: 1 when the line is vertical and its line-over
+        // side is the page's right (`glyph_over`).
+        u32::from(presentation.writing_mode.is_vertical()),
     ]);
     fx.resize(at + HEADER, 0);
     let enter = transitions.entrance.as_ref();
@@ -5458,6 +5460,84 @@ mod tests {
             "scaled to {small_w} of {still_w}, the evaluator says x{}",
             expected.scale
         );
+    }
+
+    /// Header word 11 tells `glyph_look` which way "up" is.
+    #[test]
+    fn the_glyph_fx_header_carries_the_line_over_side() {
+        for (mode, word) in [
+            (nana_ui_core::WritingModeSpec::HorizontalTb, 0),
+            (nana_ui_core::WritingModeSpec::VerticalRl, 1),
+            (nana_ui_core::WritingModeSpec::VerticalLr, 1),
+        ] {
+            let mut presented =
+                presentation(vec![nana_ui_core::GlyphEffect::wave(2.0)], vec![0], None);
+            Arc::make_mut(&mut presented).writing_mode = mode;
+            let mut fx = vec![0; 3];
+            let at = pack_glyph_fx(&mut fx, &presented) as usize;
+            assert_eq!(fx[at + 11], word, "{mode:?}");
+        }
+    }
+
+    /// Text in a vertical writing mode waves, jumps and rises across its
+    /// line, on the GPU where the CPU evaluator says: `(0, dy)` becomes
+    /// `(-dy, 0)`, toward the line-over side on the right.
+    #[test]
+    fn the_shader_turns_a_vertical_line_s_motion_where_the_cpu_evaluator_does() {
+        let (device, queue) = test_device();
+        let mut pipeline = TextPipeline::new(&device, &queue, wgpu::TextureFormat::Rgba8Unorm);
+        let still = paint_presented(
+            &device,
+            &queue,
+            &mut pipeline,
+            None,
+            std::time::Duration::ZERO,
+        )
+        .expect("the glyph draws");
+        let wave = nana_ui_core::GlyphEffect::wave(6.0);
+        let jump = nana_ui_core::GlyphEffect::jump(5.0);
+        let crest = std::time::Duration::from_secs_f32(0.25 / wave.frequency_hz);
+        let rising = nana_ui_core::RevealSchedule::new(std::time::Duration::ZERO, vec![0.0])
+            .intro(nana_ui_core::GlyphIntro::rise(12.0, 1.0));
+        let early = std::time::Duration::from_millis(100);
+        for mode in [
+            nana_ui_core::WritingModeSpec::VerticalRl,
+            nana_ui_core::WritingModeSpec::VerticalLr,
+        ] {
+            for (effects, reveal, now) in [
+                (vec![wave], None, crest),
+                (vec![jump], None, crest),
+                (Vec::new(), Some(rising.clone()), early),
+            ] {
+                let mut presented = presentation(
+                    effects.clone(),
+                    if effects.is_empty() {
+                        Vec::new()
+                    } else {
+                        vec![0]
+                    },
+                    reveal.clone(),
+                );
+                Arc::make_mut(&mut presented).writing_mode = mode;
+                let expected =
+                    nana_ui_core::evaluate_glyph_chain_in(&effects, reveal.as_ref(), 0, now, mode);
+                assert_eq!(expected.offset[1], 0.0);
+                assert!(expected.offset[0].abs() >= 3.0, "{expected:?}");
+                let moved = paint_presented(&device, &queue, &mut pipeline, Some(&presented), now)
+                    .expect("still drawn");
+                let shift = moved.0 as f32 - still.0 as f32;
+                assert!(
+                    (shift - expected.offset[0]).abs() <= 1.0,
+                    "{mode:?}: the shader moved it {shift}px, the evaluator says {}",
+                    expected.offset[0]
+                );
+                assert_eq!(
+                    (moved.1, moved.3),
+                    (still.1, still.3),
+                    "{mode:?}: across a vertical line is left and right only"
+                );
+            }
+        }
     }
 
     /// Presentation is not part of what an entry was built from: changing it,

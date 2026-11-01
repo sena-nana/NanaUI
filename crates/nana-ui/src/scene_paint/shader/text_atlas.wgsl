@@ -136,6 +136,12 @@ fn glyph_ease(kind: u32, progress: f32) -> f32 {
     return 1.0 - r * r * r;
 }
 
+// `px` toward the line-over side: up the page, or right when the line is
+// vertical (header word 11). `lift` in `nana_ui_core::motion::glyph`.
+fn glyph_over(vertical: bool, px: f32) -> vec2<f32> {
+    return select(vec2<f32>(0.0, -px), vec2<f32>(px, 0.0), vertical);
+}
+
 // What glyph `ordinal` of the run whose presentation starts at word `fx`
 // looks like now.
 fn glyph_look(fx: u32, ordinal: u32) -> GlyphLook {
@@ -147,6 +153,7 @@ fn glyph_look(fx: u32, ordinal: u32) -> GlyphLook {
     let flags = text_glyph_fx[fx];
     let clusters = text_glyph_fx[fx + 1u];
     let cluster_base = text_glyph_fx[fx + 9u];
+    let vertical = text_glyph_fx[fx + 11u] != 0u;
     var effect_index = 0xffffffffu;
     var at = bitcast<f32>(0x7f800000u);
     if ordinal < clusters {
@@ -174,9 +181,9 @@ fn glyph_look(fx: u32, ordinal: u32) -> GlyphLook {
                 look.offset.x = look.offset.x + (glyph_unit(seed) * 2.0 - 1.0) * amplitude;
                 look.offset.y = look.offset.y + (glyph_unit(glyph_hash(seed)) * 2.0 - 1.0) * amplitude;
             } else if kind == 1u {
-                look.offset.y = look.offset.y - amplitude * sin(tau * phase);
+                look.offset = look.offset + glyph_over(vertical, amplitude * sin(tau * phase));
             } else if kind == 2u {
-                look.offset.y = look.offset.y - amplitude * abs(sin(3.1415927 * phase));
+                look.offset = look.offset + glyph_over(vertical, amplitude * abs(sin(3.1415927 * phase)));
             } else if kind == 3u {
                 look.color = vec4<f32>(glyph_rainbow(phase), 1.0);
             } else if kind == 4u {
@@ -213,7 +220,7 @@ fn glyph_look(fx: u32, ordinal: u32) -> GlyphLook {
             if (intro & 2u) != 0u {
                 look.scale = look.scale * (0.5 + 0.5 * eased);
             }
-            look.offset.y = look.offset.y + bitcast<f32>(text_glyph_fx[fx + 6u]) * (1.0 - eased);
+            look.offset = look.offset + glyph_over(vertical, -(bitcast<f32>(text_glyph_fx[fx + 6u]) * (1.0 - eased)));
         }
     }
     return look;
