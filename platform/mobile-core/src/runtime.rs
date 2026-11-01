@@ -351,6 +351,21 @@ impl MobileRuntime {
         physical_y: f32,
         pointer_id: u64,
     ) -> Result<bool, FrameworkError> {
+        self.push_touch_at(phase, physical_x, physical_y, pointer_id, Instant::now())
+    }
+
+    /// [`Self::push_touch`] for a sample taken `at`, not when it arrives: a
+    /// fling's velocity is measured from these times. Input is routed in time
+    /// order: `at` must not precede the input before it, nor follow the input
+    /// after it.
+    pub fn push_touch_at(
+        &mut self,
+        phase: TouchPhase,
+        physical_x: f32,
+        physical_y: f32,
+        pointer_id: u64,
+        at: Instant,
+    ) -> Result<bool, FrameworkError> {
         match (phase, self.primary_touch) {
             (TouchPhase::Down, None) => self.primary_touch = Some(pointer_id),
             (TouchPhase::Down, Some(_)) => return Ok(false),
@@ -365,7 +380,7 @@ impl MobileRuntime {
         if phase == TouchPhase::Down && !self.focused_editor_contains(x, y) {
             // A tap elsewhere commits the preedit while the editor still has
             // focus; the world drops a blurred node's composition.
-            self.commit_ime_on_blur()?;
+            self.commit_ime_on_blur(at)?;
         }
         let (phase, buttons) = match phase {
             TouchPhase::Down => (PointerPhase::Down, 1),
@@ -373,26 +388,29 @@ impl MobileRuntime {
             TouchPhase::Up => (PointerPhase::Up, 0),
             TouchPhase::Cancel => (PointerPhase::Cancel, 0),
         };
-        self.dispatch(InputPayload::Pointer(PointerInput {
-            phase,
-            pointer_id: PointerId(pointer_id),
-            pointer_type: PointerType::Touch,
-            x,
-            y,
-            screen_x: x,
-            screen_y: y,
-            button: 0,
-            buttons,
-            pressure: 1.0,
-            tangential_pressure: 0.0,
-            tilt_x: 0,
-            tilt_y: 0,
-            twist: 0,
-            is_primary: true,
-            activation_click: false,
-            modifiers: InputModifiers::default(),
-        }))?;
-        self.sync_ime_lifecycle()?;
+        self.dispatch_at(
+            InputPayload::Pointer(PointerInput {
+                phase,
+                pointer_id: PointerId(pointer_id),
+                pointer_type: PointerType::Touch,
+                x,
+                y,
+                screen_x: x,
+                screen_y: y,
+                button: 0,
+                buttons,
+                pressure: 1.0,
+                tangential_pressure: 0.0,
+                tilt_x: 0,
+                tilt_y: 0,
+                twist: 0,
+                is_primary: true,
+                activation_click: false,
+                modifiers: InputModifiers::default(),
+            }),
+            at,
+        )?;
+        self.sync_ime_lifecycle(at)?;
         Ok(true)
     }
 
@@ -406,7 +424,7 @@ impl MobileRuntime {
             }))?;
         }
         self.flush()?;
-        self.sync_ime_lifecycle()
+        self.sync_ime_lifecycle(Instant::now())
     }
 
     /// Route a composition event from the native text proxy into the focused
@@ -416,7 +434,7 @@ impl MobileRuntime {
             return Ok(());
         }
         self.dispatch(InputPayload::Composition(event))?;
-        self.sync_ime_lifecycle()
+        self.sync_ime_lifecycle(Instant::now())
     }
 
     /// The focused editor, for the native text proxy.
@@ -533,7 +551,7 @@ impl MobileRuntime {
             .context_mut()
             .apply_accessibility_action(document, request)?;
         self.flush()?;
-        self.sync_ime_lifecycle()?;
+        self.sync_ime_lifecycle(Instant::now())?;
         Ok(applied)
     }
 
@@ -582,7 +600,15 @@ impl MobileRuntime {
     }
 
     fn route(&mut self, payload: InputPayload) -> Result<InputSequence, FrameworkError> {
-        let now = self.clock.runtime_time(Instant::now());
+        self.route_at(payload, Instant::now())
+    }
+
+    fn route_at(
+        &mut self,
+        payload: InputPayload,
+        at: Instant,
+    ) -> Result<InputSequence, FrameworkError> {
+        let now = self.clock.runtime_time(at);
         let event = CanonicalInputEvent {
             metadata: self.sequencer.stamp(DeviceId(0), now),
             payload,
@@ -602,7 +628,11 @@ impl MobileRuntime {
     }
 
     fn dispatch(&mut self, payload: InputPayload) -> Result<(), FrameworkError> {
-        self.route(payload)?;
+        self.dispatch_at(payload, Instant::now())
+    }
+
+    fn dispatch_at(&mut self, payload: InputPayload, at: Instant) -> Result<(), FrameworkError> {
+        self.route_at(payload, at)?;
         self.flush().map(drop)
     }
 
@@ -624,23 +654,23 @@ impl MobileRuntime {
         })
     }
 
-    fn sync_ime_lifecycle(&mut self) -> Result<(), FrameworkError> {
+    fn sync_ime_lifecycle(&mut self, at: Instant) -> Result<(), FrameworkError> {
         let focused = self.editor_focused();
         if focused && !self.ime_enabled {
             self.ime_enabled = true;
-            self.dispatch(InputPayload::Composition(CompositionInput::Enabled))?;
+            self.dispatch_at(InputPayload::Composition(CompositionInput::Enabled), at)?;
         } else if !focused && self.ime_enabled {
             self.ime_enabled = false;
         }
         Ok(())
     }
 
-    fn commit_ime_on_blur(&mut self) -> Result<(), FrameworkError> {
+    fn commit_ime_on_blur(&mut self, at: Instant) -> Result<(), FrameworkError> {
         let enabled = std::mem::replace(&mut self.ime_enabled, false);
         if !enabled || !self.editor_focused() {
             return Ok(());
         }
-        self.dispatch(InputPayload::Composition(CompositionInput::Disabled))
+        self.dispatch_at(InputPayload::Composition(CompositionInput::Disabled), at)
     }
 }
 

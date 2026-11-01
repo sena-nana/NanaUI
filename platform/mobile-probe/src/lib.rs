@@ -463,7 +463,9 @@ mod tests {
             .map_or(0.0, |offset| offset.y)
     }
 
-    /// A real-time upward swipe over the grid, in physical px.
+    /// An upward swipe over the grid, in physical px: a sample every 8 ms by
+    /// the samples' own times, so a slow machine measures the same velocity.
+    /// Returns once the clock has reached the lift.
     fn swipe(runtime: &mut MobileRuntime, probe: &Probe, distance: f32) {
         let start = runtime
             .document()
@@ -472,15 +474,21 @@ mod tests {
             .layout_box(probe.first_button.stable_id())
             .expect("first grid button");
         let (x, y) = ((start.x + 10.0) * 3.0, (start.y + 10.0) * 3.0 + distance);
-        runtime.push_touch(TouchPhase::Down, x, y, 1).unwrap();
+        let down = Instant::now();
+        let at = |step: u32| down + Duration::from_millis(8) * step;
+        runtime
+            .push_touch_at(TouchPhase::Down, x, y, 1, at(0))
+            .unwrap();
         for step in 1..=8 {
-            std::thread::sleep(Duration::from_millis(8));
             let y = y - distance * step as f32 / 8.0;
-            runtime.push_touch(TouchPhase::Move, x, y, 1).unwrap();
+            runtime
+                .push_touch_at(TouchPhase::Move, x, y, 1, at(step))
+                .unwrap();
         }
         runtime
-            .push_touch(TouchPhase::Up, x, y - distance, 1)
+            .push_touch_at(TouchPhase::Up, x, y - distance, 1, at(8))
             .unwrap();
+        std::thread::sleep(at(8).saturating_duration_since(Instant::now()));
     }
 
     /// Drive the display link until the document goes idle; how many ticks.
