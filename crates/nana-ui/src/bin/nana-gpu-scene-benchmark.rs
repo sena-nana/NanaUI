@@ -205,6 +205,14 @@ struct SamplingReport {
     mode: &'static str,
     surface_present_measured: bool,
     framework_cpu_prepare_ms: Distribution,
+    /// The scene's own edits before the flush (`set_component` and the
+    /// commits they make), timed apart from the flush.
+    app_mutation_ms: Distribution,
+    /// `RuntimeDocument::flush` alone: style, text, layout, extraction and
+    /// the scene delta, without the painter.
+    runtime_flush_ms: Distribution,
+    /// Most scene nodes one flush updated.
+    maximum_scene_updated_nodes: usize,
     runtime_passes: usize,
     structure_plan_rebuilds: usize,
     maximum_gpu_work_per_frame: GpuWorkSnapshot,
@@ -715,6 +723,9 @@ fn run_ui_only(mut scenario: ScenarioFile, args: &Args) -> Report {
     let mut encode = Vec::with_capacity(FRAMES);
     let mut submit = Vec::with_capacity(FRAMES);
     let mut prepare = Vec::new();
+    let mut app_mutation = Vec::new();
+    let mut runtime_flush = Vec::new();
+    let mut maximum_scene_updated_nodes = 0;
     let mut producer_gpu = Vec::new();
     let mut ui_gpu = Vec::new();
     let mut queries = args
@@ -753,12 +764,14 @@ fn run_ui_only(mut scenario: ScenarioFile, args: &Args) -> Report {
                 .set_component(ticker, Text::new(format!("tick {:04}", frame % 10_000)))
                 .expect("ticker text");
         }
+        let mutation_started = Instant::now();
         if let Some(animation) = params.text_animation {
             animate_text(&mut document, &handles, animation, frame);
         }
         if let Some(animation) = params.path_animation {
             animate_paths(&mut document, &handles, animation, frame);
         }
+        let mutation_elapsed = mutation_started.elapsed();
         let runtime_started = Instant::now();
         let (update, runtime_allocations) = allocations::measure(args.allocation_counts, || {
             document
@@ -842,6 +855,10 @@ fn run_ui_only(mut scenario: ScenarioFile, args: &Args) -> Report {
             maximum_gpu_work.draw_batches = maximum_gpu_work.draw_batches.max(work.draw_batches);
             maximum_gpu_work.draw_calls = maximum_gpu_work.draw_calls.max(work.draw_calls);
             prepare.push(prepare_elapsed);
+            app_mutation.push(mutation_elapsed);
+            runtime_flush.push(runtime_elapsed);
+            maximum_scene_updated_nodes =
+                maximum_scene_updated_nodes.max(update.scene.updated_nodes);
             if let Some([producer, ui]) = gpu_sample {
                 producer_gpu.push(producer);
                 ui_gpu.push(ui);
@@ -899,6 +916,9 @@ fn run_ui_only(mut scenario: ScenarioFile, args: &Args) -> Report {
             },
             surface_present_measured: false,
             framework_cpu_prepare_ms: summarize(&prepare),
+            app_mutation_ms: summarize(&app_mutation),
+            runtime_flush_ms: summarize(&runtime_flush),
+            maximum_scene_updated_nodes,
             runtime_passes,
             structure_plan_rebuilds,
             maximum_gpu_work_per_frame: GpuWorkSnapshot::from(maximum_gpu_work),

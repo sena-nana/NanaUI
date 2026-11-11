@@ -91,7 +91,7 @@ Shares are of non-blocked samples. The remainder is the `wgpu` front end (≤1.3
 
 - The painter batches 2,000 nodes into 4 draws, so per-draw validation has almost nothing to scale with. The UI scenes are GPU-bound: the main thread waits in `GpuContext::begin_frame` for a frame slot (`Device::maintain`).
 - `host-textures-64` is the many-small-passes case (the bench's 64 producer passes plus the UI pass). Its cost is driver work: 25% is the bench's own `queue.write_buffer` calls, and inside `command_encoder_finish`, 42% is wgpu-core opening a new hal command list per pass (`InnerCommandEncoder::open_pass` → `begin_encoding`, 290 µs/frame on DX12 and 528 µs on Vulkan). Only 19% of `finish` is wgpu-core's own code.
-- NanaUI's own work, by inclusive share of CPU: text is 3.5% in `ui-dense-2k`, 57% in `text-paint-color` (mostly `RuntimeDocument::flush`; the painter is 9.6%) and 84% in `text-constraint-resize`. Icons are 0.5% in `ui-dense-2k`. None of the `gpu-scene-*` scenarios draws vector paths, so this measurement does not cover path cost; paths are measured in §10.
+- NanaUI's own work, by inclusive share of CPU: text is 3.5% in `ui-dense-2k`, 57% in `text-paint-color` (mostly `RuntimeDocument::flush`; the painter is 9.6%. Split apart, the text engine itself is close to 0: it is the generic cost of repainting each node, see §12) and 84% in `text-constraint-resize`. Icons are 0.5% in `ui-dense-2k`. None of the `gpu-scene-*` scenarios draws vector paths, so this measurement does not cover path cost; paths are measured in §10.
 
 **(a) Verdict: no-go.** Skipping validation would save at most 9–35 µs/frame in ordinary scenes and about 110–117 µs in the 65-pass synthetic. That is under 1% of CPU in text-heavy frames, where NanaUI's own work is 93–97%. Revisit only if a real scene shows hundreds of draws or passes per frame. Even then, the per-pass command-list opening is the larger target (measured in §11: also a no-go).
 
@@ -393,6 +393,51 @@ WGPU_BACKEND=dx12 target/release/examples/stack-sampler.exe --delay-ms 3500 --du
   --out $S/fx-dx12.folded -- target/release/nana-gpu-scene-benchmark.exe \
   --scenario perf/scenarios/gpu-scene-ui-effects.json --serialize --sample-seconds 10 --output $S/fx-dx12.bench.json
 python perf/stack_attribution.py --list-stages --cpu-us-per-frame 515 $S/fx-dx12.folded
+```
+
+### 12. Measured: frames that only change text color (2026-11-11)
+
+Question: in §6, `text-paint-color` (1,000 labels change foreground color every frame) spent 57% of CPU on text, mostly in the Runtime flush. A color change should need no shaping, line breaking or layout. Does that CPU come from an invalidation path that does more than it needs to? **Verdict: no; no product code changes.** A recolor frame does no text-specific work. What is left is the generic cost every node pays to be repainted. Only the measurement (new bench fields) and these docs were committed.
+
+**Invalidation path.** Every label in the scene is recolored with `set_component(Text::new(..).color(role))`. `project_common` emits only a `SetStyle`. `UiWorld::restyle` classifies `foreground` as an inherited paint change and marks the node and its subtree `STYLE | RENDER`: no `TEXT`, and no layout seed. In `LayoutStyleChange`, `color` is already `PAINT`, and text does not bypass that classification. The text-side classification (`TextDirty::PAINT`, see the text engine doc) leaves the shape revision alone as well. Every bench work counter is 0 every frame: shaping, layouts created, painter-side layout, rasterization, atlas upload, and instance rebuild and upload. All 1,000 entries are reused as they are (`text_prepare_nodes_skipped` = 1000). The Layout stage in `frame_stages` is skipped. Each flush updates exactly 1,000 scene nodes, not one more.
+
+**Where the time goes.** Same machine as §6, DX12, release with `CARGO_PROFILE_RELEASE_DEBUG=limited`, `--serialize`, 5 s per round. The ML training job ran throughout (GPU 47% busy, 13.3 GB of VRAM), with one other build session in parallel. The bench now times the application's edits (`app_mutation_ms`: the 1,000 `set_component` calls and their commits) apart from `RuntimeDocument::flush` (`runtime_flush_ms`), and reports `maximum_scene_updated_nodes`. Each cell below is the median of 3 rounds' p50 [min–max], in ms.
+
+| Scenario | App edits | Runtime flush | Painter (`batch`) | FPS | Scene nodes updated per frame |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| `text-paint-color` (recolor) | 0.83 [0.82–0.96] | 1.59 [1.52–1.63] | 0.26 [0.25–0.26] | 232 | 1000 |
+| `text-constraint-resize` (re-wrap) | 2.05 [2.03–2.11] | 15.60 [14.72–16.03] | 0.91 [0.85–0.99] | 47 | 1002 |
+| `text-retained` (static) | 0.0001 | 0.055 [0.052–0.055] | 0.45 [0.45–0.45] | 636 | 1 |
+
+A recolor costs about 2.4 µs per label (0.83 µs of edits, 1.59 µs of flush), about a seventh of a re-wrap (about 17.6 µs per label). One round under §6's `stack-sampler` (6 s, every 2 ms; about 3.2 ms of CPU per frame while sampled), inclusive shares:
+
+| Stage | Share | What it is |
+| --- | ---: | --- |
+| `update_component_staged<Text>` | 27% | Clone and compare the component, `project`, commit one by one (of which `UiWorld::restyle` 9.8%: interning the style, resolving the layout again, the layout-pair memo) |
+| Scene `apply_delta_with_moves` | 29% | Of which `rebuild_node_primitives` 17% (rebuilding the node's primitives, inserting them into paint order), and `VisibilityIndex::update` 2% |
+| `extract_nodes_reusing` | 11% | A fresh `ExtractedNode` per node |
+| `resolve_styles` | 6% | Resolving the computed style (of which `invalidate_text_for_style` 0.8%, which decides not to invalidate the text) |
+| Painter `paint` | 9.5% | Every glyph entry is reused; only the run row's color changes |
+| Shaping, layout, `TextLayout` | ≤0.1% | |
+
+§6's "text 57%" counted, inclusively, everything a text node set off as text. Split apart, the text engine itself is close to 0.
+
+**What could still go.** The largest piece is the scene rebuilding the primitives of every recolored node (17%, about 0.55 ms a frame, about 0.55 µs per label). A path in `UiScene` that patches a primitive's color in place when only paint color changed would save at most that, and only if it can prove geometry, clip, order and visibility unchanged. That is not specific to text: every paint-only change takes this path. Interfaces that recolor a thousand nodes every frame are rare, so this is not done now. If a real application shows that load, weigh it against this ceiling.
+
+Commands (from the repository root, S a scratch directory):
+
+```sh
+export CARGO_PROFILE_RELEASE_DEBUG=limited
+cargo build -j 4 --release -p nana-ui --bin nana-gpu-scene-benchmark --features gpu
+cargo build -j 4 --release -p nana-ui --example stack-sampler --features hosted,bundled-fonts
+# 3 rounds for each scenario (text-paint-color | text-constraint-resize | text-retained)
+WGPU_BACKEND=dx12 target/release/nana-gpu-scene-benchmark.exe --scenario perf/scenarios/gpu-scene-text-paint-color.json \
+  --serialize --sample-seconds 5 --output $S/text-paint-color-1.json
+# read the p50 of sampling.app_mutation_ms, sampling.runtime_flush_ms and stages.batch_ms
+WGPU_BACKEND=dx12 target/release/examples/stack-sampler.exe --delay-ms 3000 --duration-ms 6000 --interval-us 2000 \
+  --out $S/color.folded -- target/release/nana-gpu-scene-benchmark.exe \
+  --scenario perf/scenarios/gpu-scene-text-paint-color.json --serialize --sample-seconds 9 --output $S/color-sampled.json
+python perf/stack_attribution.py $S/color.folded
 ```
 
 ## Mounting host textures (`HostTexture` + `GpuTextureView`)
