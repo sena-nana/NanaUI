@@ -1,4 +1,5 @@
-// Custom-paint path triangles (Issue #217). Tessellated on the CPU; the only
+// Custom-paint path triangles (Issue #217). Tessellated on the CPU and kept
+// on the GPU node-local; the vertex stage places them, and the only
 // per-pixel work is the clip test, an optional gradient and turning coverage
 // into alpha. Shares the stroke module's globals and clip palette.
 
@@ -26,22 +27,33 @@ struct GradientPalette {
 @group(0) @binding(2)
 var<storage, read> gradient_palette: GradientPalette;
 
+// A mesh's vertices stay on the GPU node-local, as the mesh was built; what a
+// frame changes comes per draw in `PathInstanceInput`.
 struct PathVertexInput {
-    // Logical scene px after the primitive's affine.
+    // Node-local px.
     @location(0) position: vec2<f32>,
-    // Logical px this vertex moves per physical px of AA fringe; it moves half
-    // of it, the fringe centred on the outline.
+    // Node-space miter along which the vertex moves half a physical px of AA
+    // fringe; zero off a fringe. `path_screen_extrude` carries it to screen.
     @location(1) extrude: vec2<f32>,
-    @location(2) coverage: f32,
-    @location(3) clip_index: u32,
-    // Linear RGBA, straight alpha, primitive opacity applied. Under a
+    // Where the vertex sits in the gradient's space.
+    @location(2) paint_pos: vec2<f32>,
+    @location(3) coverage: f32,
+    // Linear RGBA, straight alpha, before the draw's opacity. Under a
     // gradient only its alpha is used.
     @location(4) color: vec4<f32>,
-    // Where the vertex sits in the gradient's space.
-    @location(5) paint_pos: vec2<f32>,
-    @location(6) gradient: u32,
+}
+
+// Matches `GpuPathInstance` in `mesh.rs`.
+struct PathInstanceInput {
+    // The node-to-scene affine's linear part.
+    @location(5) abcd: vec4<f32>,
+    // Its translation, then the mesh's origin in the node's layout space.
+    @location(6) ef_origin: vec4<f32>,
+    @location(7) opacity: f32,
+    @location(8) clip_index: u32,
+    @location(9) gradient: u32,
     // The node's `mask-image`, a gradient of the palette, or `NO_GRADIENT`.
-    @location(7) mask: u32,
+    @location(10) mask: u32,
 }
 
 struct PathVertexOutput {
@@ -61,21 +73,77 @@ struct PathVertexOutput {
     @location(9) @interpolate(flat) mask: u32,
 }
 
+// One of a miter's two edge normals (`bisector` turned by ±the half angle),
+// mapped by the inverse transpose of `m` and normalised; z is 0 when the map
+// leaves it no length.
+fn path_screen_normal(m: vec4<f32>, det: f32, bisector: vec2<f32>, c: f32, s: f32) -> vec3<f32> {
+    let n = vec2<f32>(bisector.x * c - bisector.y * s, bisector.x * s + bisector.y * c);
+    let mapped = vec2<f32>(m.w * n.x - m.y * n.y, -m.z * n.x + m.x * n.y) / det;
+    let len = length(mapped);
+    if !(len > 1e-12) {
+        return vec3<f32>(0.0);
+    }
+    return vec3<f32>(mapped / len, 1.0);
+}
+
+// A vertex's node-space AA miter carried through the linear part `m` of the
+// draw's affine so the edges still move one pixel on screen: each edge
+// normal maps by the inverse transpose and the miter is rebuilt from the two
+// (limit 4). A degenerate map gives no fringe. `screen_extrude` in `mesh.rs`
+// is the reference.
+fn path_screen_extrude(m: vec4<f32>, extrude: vec2<f32>) -> vec2<f32> {
+    let det = m.x * m.w - m.y * m.z;
+    let len = length(extrude);
+    if !(abs(det) >= 1e-12 && abs(det) <= 3.0e38) || !(len > 1e-12) {
+        return vec2<f32>(0.0);
+    }
+    if m.x == m.w && m.y == -m.z {
+        // A rotation and uniform scale: the miter just turns with it.
+        let k = sqrt(m.x * m.x + m.y * m.y);
+        return vec2<f32>(m.x * extrude.x + m.z * extrude.y, m.y * extrude.x + m.w * extrude.y) / k;
+    }
+    let bisector = extrude / len;
+    let c = min(1.0 / len, 1.0);
+    let s = sqrt(max(1.0 - c * c, 0.0));
+    let n1 = path_screen_normal(m, det, bisector, c, s);
+    let n2 = path_screen_normal(m, det, bisector, c, -s);
+    if n1.z == 0.0 || n2.z == 0.0 {
+        return vec2<f32>(0.0);
+    }
+    let denominator = 1.0 + dot(n1.xy, n2.xy);
+    var miter = n1.xy;
+    if denominator > 1e-3 {
+        miter = (n1.xy + n2.xy) / denominator;
+    }
+    let reach = length(miter);
+    if reach > 4.0 {
+        return miter * (4.0 / reach);
+    }
+    return miter;
+}
+
 @vertex
-fn path_vs_main(input: PathVertexInput) -> PathVertexOutput {
+fn path_vs_main(input: PathVertexInput, instance: PathInstanceInput) -> PathVertexOutput {
     var out: PathVertexOutput;
-    let world = input.position + input.extrude * 0.5 / max(globals.viewport_scale, 1e-4);
-    out.fringe = select(0.0, 1.0, any(input.extrude != vec2<f32>(0.0)));
+    let m = instance.abcd;
+    let local = input.position + instance.ef_origin.zw;
+    let scene = vec2<f32>(
+        m.x * local.x + m.z * local.y + instance.ef_origin.x,
+        m.y * local.x + m.w * local.y + instance.ef_origin.y,
+    );
+    let extrude = path_screen_extrude(m, input.extrude);
+    let world = scene + extrude * 0.5 / max(globals.viewport_scale, 1e-4);
+    out.fringe = select(0.0, 1.0, any(extrude != vec2<f32>(0.0)));
     out.position = globals.transform * vec4<f32>(world, 0.0, 1.0);
     out.world_pos = world;
-    out.color = input.color;
+    out.color = vec4<f32>(input.color.rgb, input.color.a * instance.opacity);
     out.coverage = input.coverage;
-    out.clip_index = input.clip_index;
+    out.clip_index = instance.clip_index;
     out.pixel_scale = globals.viewport_scale;
     out.corner_exponent = globals.corner_exponent;
     out.paint_pos = input.paint_pos;
-    out.gradient = input.gradient;
-    out.mask = input.mask;
+    out.gradient = instance.gradient;
+    out.mask = instance.mask;
     return out;
 }
 

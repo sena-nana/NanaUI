@@ -208,7 +208,7 @@ cargo run -p nana-ui --example surface-resize-probe --features gpu,wgpu-interop 
 
 ### 10. Measured: CPU meshing of vector paths (2026-11-11)
 
-The question: could vector paths be drawn directly on the GPU, without converting them on the CPU first? Today's route (`custom_paint.rs` in `nana-ui-scene`) flattens curves, lets `i_overlay` resolve the fill rule, stroke outline and clip intersection, then tessellates with `lyon` and adds an anti-aliasing fringe. The painter's `MeshPipeline::push_path` then transforms the vertices into scene space, and `PathBuffers::upload` uploads them. None of the §6 scenes draws a path, so this fills that gap. This is measurement only: nothing on the product frame path changed.
+The question: could vector paths be drawn directly on the GPU, without converting them on the CPU first? Today's route (`custom_paint.rs` in `nana-ui-scene`) flattens curves, lets `i_overlay` resolve the fill rule, stroke outline and clip intersection, then tessellates with `lyon` and adds an anti-aliasing fringe. The painter's `MeshPipeline::push_path` then transforms the vertices into scene space, and `PathBuffers::upload` uploads them. None of the §6 scenes draws a path, so this fills that gap. The measurement changed nothing on the product frame path. The change made for fix 1 afterwards, with its before and after numbers, is at the end of this section.
 
 **Scenes.** Two new scenarios for `nana-gpu-scene-benchmark` (`--features gpu,rich-text`):
 
@@ -270,11 +270,30 @@ GPU coverage is not free either. Curves still have to be uploaded, and strokes, 
 
 Cheaper fixes with a surer payoff, in order:
 
-1. Keep path vertices resident on the GPU in node-local space and pass the transform per draw. This saves 79–90% of scroll and compositor-scale frame CPU without touching meshing.
+1. Keep path vertices resident on the GPU in node-local space and pass the transform per draw. This saves 79–90% of scroll and compositor-scale frame CPU without touching meshing. (Done; see below.)
 2. Let paths that `lyon` can handle directly skip `i_overlay`: simple fills with no clip, and strokes through `lyon`'s `StrokeTessellator`. `i_overlay` is 37–45% of the build.
 3. Revisit the flattening tolerance and round-join density (406 and 767 vertices per mesh).
 
 Revisit GPU coverage if, after fixes 2 and 3, a product still needs to re-record more than about 50 paths a frame (about 4 ms at 78–112 µs per path).
+
+**After: path vertices resident on the GPU (fix 1, done).** The first frame that draws a mesh writes its vertices and indices into one shared arena of the painter (one per render target), node-local, and nothing changes them after that. Each draw sends only a 48-byte instance: affine, origin, opacity, and the clip, gradient and mask indices. Neighbouring meshes of one node still draw as one when they share an instance and sit next to each other in the arena. The AA fringe is not rebuilt on the CPU. In the vertex shader, `path_screen_extrude` in `path.wgsl` maps each vertex's node-space miter to the screen through the draw's affine, with the same algorithm the CPU's `screen_extrude` ran. So the fringe stays one physical pixel under any scale, with no re-fringe threshold and no screen-space derivatives. The arena remembers meshes through `Weak`. A mesh goes the frame after the scene lets it go, or after 120 frames that did not draw it. Over 64 MiB resident, only what the last frame drew stays. The arena compacts once it holds more dead space than live, and shrinks once it is a quarter used. `resource_counters()` gains `path_meshes` and `path_mesh_bytes`.
+
+Same commands and machine, medians of 3 runs each before and after (brackets: min–max). The training job was still running: GPU utilisation was 19–100% at the start of each run, with 13.3–13.7 GB of video memory in use.
+
+| Scene | Case | prepare p50 ms before → after | CPU µs/frame before → after | Vertex transform + upload µs before → after | Upload/frame before → after | Draws before → after |
+| --- | --- | ---: | ---: | ---: | ---: | ---: |
+| canvas | scroll | 3.86 → 0.14 | 7124 [6738–7789] → 427 [317–438] | 6267 → 32 | 7.1 MB → < 1 KB | 2 → 16 |
+| canvas | compositor scale | 4.51 → 0.14 | 8066 [7807–8571] → 321 [238–603] | 7336 → 26 | 7.6 MB → < 1 KB | 3 → 22 |
+| canvas | re-record | 33.6 → 28.6 | 34637 [32343–37586] → 30427 [28900–31635] | 9572 → 5246 | 9.0 MB → 7.4 MB | 3 → 3 |
+| mermaid | scroll | 4.59 → 0.52 | 6769 [6300–7533] → 858 [825–990] | 5310 → 22 | 6.7 MB → 8 KB | 30 → 32 |
+| mermaid | compositor scale | 4.04 → 0.15 | 7253 [6912–7738] → 481 [405–510] | 6412 → 23 | 6.7 MB → 8 KB | 28 → 30 |
+| mermaid | re-record | 24.9 → 22.2 | 24979 [23774–26595] → 24236 [23619–25561] | 3034 → 3472 | 0 → 6.6 MB | 28 → 30 |
+
+- **Scroll and compositor scale: path CPU drops from 5–7 ms to 22–32 µs.** Each frame uploads only instances (a few dozen for the canvas; mermaid's 8 KB is mostly text), and the whole frame's CPU drops to 0.3–0.9 ms. What remains of mermaid's scroll prepare is text and Runtime work, not paths.
+- **Re-record does not get worse.** The canvas no longer transforms on the CPU, so moving vertices drops from 9.6 ms to 5.2 ms. Mermaid re-records with unchanged geometry. Before, the byte comparison found nothing to upload; now every new `Arc` is written into the arena again (6.6 MB), which adds about 0.4 ms to moving vertices. The transform it saves offsets that, and neither the frame's CPU nor prepare got worse.
+- **Still frames are unchanged.** The painter already skipped paths. Interleaving 3 runs of each build, the median CPU per frame was 201 → 194 µs for the canvas and 171 → 203 µs for mermaid, both within the 130–330 µs swing of driver submission.
+- **The picture is unchanged.** `retained_paths_paint_what_cpu_transformed_vertices_did_under_any_scale` compares resident paths pixel by pixel with the same meshes transformed on the CPU as before: an ellipse, a triangle, a 1px stroke and a rotated gradient square. It runs under node scales 0.5, 1, 1.5 and 2, and under rotate(25deg) scale(1.4, 0.7). No channel differs by more than 2/255.
+- **Fix 2 (simple paths skipping `i_overlay`) was not done.** The fringe builder relies on the clean outlines `i_overlay` returns: outer contours and holes wound a fixed way, nothing crossing. Skipping it would first need a test that each contour is simple and correctly wound. Strokes through `StrokeTessellator` give no outline to build a fringe from either. That is not a small change. The re-record build is still 17–23 ms, and `i_overlay` is still its largest stage.
 
 Commands (repo root; S is a scratch directory; only one GPU process at a time):
 

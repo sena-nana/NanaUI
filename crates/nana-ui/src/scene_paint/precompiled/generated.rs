@@ -26,7 +26,7 @@ pub(in crate::scene_paint) const QUAD: Family = Family {
 };
 
 pub(in crate::scene_paint) const MESH: Family = Family {
-    wgsl: 0x9602d81161efc4f1,
+    wgsl: 0xe2c31a130fb526d3,
     layout: 0xb38f9f07724bd99f,
     stages: &[
         Stage {
