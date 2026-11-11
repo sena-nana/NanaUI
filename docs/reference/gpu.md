@@ -113,6 +113,8 @@ Surface 的 HDR 能力由 `SurfaceCapabilities::format_capabilities` 决定，�
 
 **(b) 结论：DX12 上做，范围限于持续重绘的窗口。** 不是去掉等待，而是挪位置：在帧开头、取输入和准备帧之前等 waitable，而不是在 `get_current_texture` 里等。wgpu 已经创建了这个句柄（`Dx12UseFrameLatencyWaitableObject::DontWait`，hal 的 `dx12::Surface::waitable_handle()`），fork 只需加一个让宿主能等它的增量接口。下面是估算，不是测量值：在等待期间到达的输入仍要等完剩下的部分，所以 p50 预计能省下 14.6 ms 阻塞的一半左右，约 32 → 25 ms。要接近 Vulkan 的约 7 ms，还需要对齐相位（刚好在 DWM 合成前呈现）。空闲的按需 UI 没有收益。Metal drawable 时序没有测（没有 macOS 主机），继续搁置。
 
+**(b) 已实现，A/B 待测。** fork 新增 `wgpu::Surface::wait_for_frame_latency(timeout)`（见 `third_party/wgpu/README.zh-CN.md`）：在 DX12 上它提前取走 waitable 的计数，之后的 acquire 不再重复等待；其他后端立即返回。帧需求为 `Continuous` 的窗口，场景宿主在 `redraw` 开头、应用程序消息与输入和刷新文档之前，在这里等待，最长 40 ms；超时后 acquire 照旧等待。按需和 `At` 窗口不变。等待只是挪了位置，没有增加，所以一帧阻塞的时间不会比原来长；所有窗口仍共用一个事件循环线程，一个窗口在等时其他窗口也在等，这和原来在 acquire 里等一样。`NANA_FRAME_LATENCY_WAIT=acquire` 恢复原来的位置，供 A/B 对照。用 `input-latency-probe` 做的交替 A/B（DX12 与 Vulkan，持续 60 与空闲）还没有跑：桌面当时处于锁定状态，Desktop Duplication 看不到窗口。跑之前，收益未经测量。跑的时候要注意一点：探针里一次按下会立即请求重绘（上表 input → prepare 为 0.12 ms），帧开始时按下已经生效。在开头等待只对等待期间到达的输入有帮助，被点击的那一帧本身可能收益不大。若 A/B 看不出差别，结论改为不做，并撤回这项改动。
+
 命令（在仓库根目录执行，S 为临时目录）：
 
 ```sh

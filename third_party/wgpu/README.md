@@ -75,6 +75,10 @@ other by path, so:
     `ID3D12Device5::RemoveDevice`) and checks that polls report
     `PollError::DeviceLost`, the lost callback runs once and pending
     callbacks resolve.
+  - `frame_latency_wait` (Windows) waits with
+    `Surface::wait_for_frame_latency` before each acquire on a FIFO swap
+    chain with frame latency 1 and checks that the DX12 acquire no longer
+    waits, and that the call returns at once on Vulkan and before configure.
 
   A GPU test without an adapter skips; `NANA_REQUIRE_WGPU_FORK_TESTS=1`
   makes it fail instead, as the Windows CI job does for DX12.
@@ -219,3 +223,20 @@ finished": polls succeeded and the loss went unnoticed.
   (`#[doc(hidden)]`, tests only) waits for the device to go idle, then makes
   fence waits, fence reads and queue submits return `DeviceError::Lost`, so
   tests reach this path without a real reset.
+
+### Waiting for frame pacing before building a frame
+
+- **`wgpu::Surface::wait_for_frame_latency(Option<Duration>) -> bool`** (new).
+  On DX12 it waits on the swap chain's frame-latency waitable, which
+  `get_current_texture` otherwise waits on (`Dx12UseFrameLatencyWaitableObject::Wait`,
+  the default), so an application can block before it reads input and
+  builds the frame rather than after. It returns `false` if the timeout
+  elapsed. Every other backend, a surface not configured, and a DX12
+  surface without a waitable return `true` at once; so does a lost swap
+  chain, which `get_current_texture` then reports. It goes through
+  `as_hal`, so neither `wgpu-core` nor the dispatch trait changes.
+- **`wgpu-hal` DX12**: `dx12::Surface::wait_for_frame_latency` (new, public).
+  The swap chain remembers that a count was already taken; the next
+  `acquire_texture` skips its own wait and clears the mark (in any waiting
+  mode), and further calls before that acquire return `true` without
+  waiting. A reconfigure starts a new swap chain without the mark.

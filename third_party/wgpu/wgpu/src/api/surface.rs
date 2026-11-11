@@ -198,6 +198,34 @@ impl Surface<'_> {
         }
     }
 
+    /// Waits up to `timeout` (`None`: no limit) until a frame can be acquired
+    /// from this surface without blocking on frame pacing (NanaUI fork).
+    ///
+    /// On DX12 this waits on the swap chain's frame-latency waitable, which
+    /// [`Surface::get_current_texture`] otherwise waits on (with the default
+    /// `Dx12UseFrameLatencyWaitableObject::Wait`). Waiting here first lets an
+    /// application block *before* it reads input and builds the frame, so the
+    /// frame shows the newest input; the next `get_current_texture` then does
+    /// not wait again. Calling it again before that acquire returns at once.
+    ///
+    /// Returns `false` if the timeout elapsed first; `get_current_texture`
+    /// then waits as usual. Every other backend, a surface that is not
+    /// configured, and a DX12 surface without a waitable return `true` at
+    /// once. A lost swap chain also returns `true`; `get_current_texture`
+    /// reports it.
+    pub fn wait_for_frame_latency(&self, timeout: Option<core::time::Duration>) -> bool {
+        #[cfg(dx12)]
+        {
+            // SAFETY: the guard only reads the hal surface and is dropped
+            // here; nothing is destroyed through it.
+            if let Some(hal) = unsafe { self.as_hal::<hal::api::Dx12>() } {
+                return hal.wait_for_frame_latency(timeout).unwrap_or(true);
+            }
+        }
+        let _ = timeout;
+        true
+    }
+
     /// Get the [`wgpu_hal`] surface from this `Surface`.
     ///
     /// Find the Api struct corresponding to the active backend in [`wgpu_hal::api`],

@@ -394,6 +394,17 @@ impl HostedGpuSurface {
         size.width > 0 && size.height > 0
     }
 
+    /// Waits up to `timeout` until the next acquire will not block on frame
+    /// pacing (the DX12 frame-latency waitable); the acquire then skips its
+    /// own wait. Other backends, and a surface not ready to acquire, return at
+    /// once. `false` means the timeout elapsed and the acquire waits as before.
+    pub(crate) fn wait_for_frame_latency(&self, timeout: std::time::Duration) -> bool {
+        if !self.is_drawable() || self.needs_recovery || self.needs_reconfigure {
+            return true;
+        }
+        self.surface.wait_for_frame_latency(Some(timeout))
+    }
+
     /// Resize and reconfigure this surface from the current native window size.
     ///
     /// This is the low-level surface operation. Embedding hosts should normally

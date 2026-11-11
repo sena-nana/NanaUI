@@ -39,6 +39,7 @@
   - `vulkan_present_tracking`（Windows）在 Vulkan 上、带着在途帧反复缩放窗口，适配器支持的每种 present 跟踪方式各跑一遍，并请求校验层；后端记下任何错误即失败。没有 `VK_LAYER_KHRONOS_validation` 时只检查驱动自己的消息；设 `NANA_REQUIRE_VULKAN_VALIDATION=1` 则缺少校验层就失败；
   - `timed_poll` 在 DX12 与 Vulkan 上让零超时的等待与其他线程的 poll、提交竞争几秒；
   - `device_lost_poll` 不重置 GPU 就让设备丢失（Vulkan 用 hal 的测试专用 `simulate_device_lost`，DX12 用 `ID3D12Device5::RemoveDevice`），检查 poll 报 `PollError::DeviceLost`、丢失回调只调一次、挂起的回调都有结果。
+  - `frame_latency_wait`（Windows）在帧延迟为 1 的 FIFO 交换链上，每次 acquire 前先调 `Surface::wait_for_frame_latency`，检查 DX12 的 acquire 不再等待，以及在 Vulkan 上和 configure 之前该调用立即返回。
 
   没有适配器时 GPU 测试会跳过；设 `NANA_REQUIRE_WGPU_FORK_TESTS=1` 则改为失败，Windows CI 对 DX12 就是这样跑的。这些测试里的 GPU 负载要小且有上限。
 
@@ -102,3 +103,8 @@
 - **`wgpu-core`**：`Device::maintain` 在等围栏或读围栏失败时不再立即返回。`Device::handle_hal_error` 已把设备标为无效并调用设备丢失回调（只一次，原因为 `DeviceLostReason::Unknown`）；随后这次 poll 把所有提交当作已完成，`on_submitted_work_done` 与 `map_async` 的回调都会执行（映射以错误结束，或映射到丢失设备的内存上），"无效且队列为空"的路径释放设备的资源，最后报告丢失。`WaitIdleError::to_poll_error` 把 `DeviceError::Lost` 与 `OutOfMemory`（两者在这里都会让设备丢失）映射为 `PollError::DeviceLost`。丢失设备上的提交本来就会被拒绝，不会 panic。
 - **`wgpu-hal` DX12**：围栏读出 `u64::MAX` 时查 `GetDeviceRemovedReason`；设备已被移除则 `get_fence_value` 与 `wait` 返回 `DeviceError::Lost`。
 - **`wgpu-hal` Vulkan**：`vulkan::Device::simulate_device_lost()`（`#[doc(hidden)]`，仅供测试）先等设备空闲，之后等围栏、读围栏与队列提交都返回 `DeviceError::Lost`，测试不必真的重置就能走到这条路径。
+
+### 先等帧节奏，再构建帧
+
+- **`wgpu::Surface::wait_for_frame_latency(Option<Duration>) -> bool`**（新增）。在 DX12 上等交换链的 frame-latency waitable。默认（`Dx12UseFrameLatencyWaitableObject::Wait`）下 `get_current_texture` 本来就在等它；先在这里等，应用就能在读取输入、构建帧之前阻塞，而不是之后。超时返回 `false`。其他后端、尚未 configure 的 surface、没有 waitable 的 DX12 surface 都立即返回 `true`；交换链丢失时也返回 `true`，由 `get_current_texture` 报告。它经 `as_hal` 实现，`wgpu-core` 与 dispatch trait 都不变。
+- **`wgpu-hal` DX12**：`dx12::Surface::wait_for_frame_latency`（新增，公开）。交换链记下已经取过一次计数；下一次 `acquire_texture` 跳过自己的等待并清掉这个标记（任何等待模式下都清），在这次 acquire 之前再调用会直接返回 `true`，不再等待。重新 configure 得到的新交换链不带这个标记。
