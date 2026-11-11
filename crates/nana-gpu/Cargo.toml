@@ -13,8 +13,9 @@ default = []
 # Ordinary renderers and producers do not need it.
 wgpu-interop = []
 # DX12 shared textures and a shared fence another D3D device opens by handle
-# (`NativeExportPool`). Windows only; compiles the DX12 backend in.
-native-export = ["dep:windows", "wgpu/dx12"]
+# (`NativeExportPool`) on Windows, and the Metal backend so a macOS host can
+# reach `wgpu::hal::api::Metal` (for example Syphon). Compiles those backends in.
+native-export = ["dep:windows", "wgpu/dx12", "wgpu/metal"]
 # Host-owned DX12 shared input textures written by an external GPU producer.
 native-import = ["dep:windows", "wgpu/dx12"]
 
