@@ -831,7 +831,19 @@ def _size2(value: Any) -> bool:
 # text: the #98 paint-only and compositor-only gates, #223's sub-pixel slide
 # and #99's constraint-only resize.
 _UI_ONLY_TEXT_ANIMATIONS = frozenset({"color", "opacity", "transform", "slide", "resize"})
-_UI_ONLY_NODE_KINDS = {"list", "text", "gpu-texture-view", "gpu-view", "icon", "button"}
+# What it can do to the vector-path content (`vector-canvas`, `mermaid`):
+# move or scale the list holding it, or record it again every frame.
+_UI_ONLY_PATH_ANIMATIONS = frozenset({"scroll", "scale", "rerecord"})
+_UI_ONLY_NODE_KINDS = {
+    "list",
+    "text",
+    "gpu-texture-view",
+    "gpu-view",
+    "icon",
+    "button",
+    "vector-canvas",
+    "mermaid",
+}
 
 _UI_ONLY_GPU_NODE_KINDS = {"gpu-texture-view", "gpu-view"}
 _UI_ONLY_CHROME_KINDS = {"list", "text", "button", "icon"}
@@ -873,6 +885,11 @@ def _validate_gpu_scene_ui_only(params: Mapping[str, Any]) -> list[str]:
         errors.append("GpuScene UiOnly params.shared_gpu_view_slot must be a boolean")
     if "text_ticker" in params and not isinstance(params["text_ticker"], bool):
         errors.append("GpuScene UiOnly params.text_ticker must be a boolean")
+    if "path_animation" in params and params["path_animation"] not in _UI_ONLY_PATH_ANIMATIONS:
+        errors.append(
+            "GpuScene UiOnly params.path_animation must be one of "
+            f"{sorted(_UI_ONLY_PATH_ANIMATIONS)}"
+        )
     if "text_animation" in params:
         if params["text_animation"] not in _UI_ONLY_TEXT_ANIMATIONS:
             errors.append(

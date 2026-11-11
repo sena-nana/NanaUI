@@ -1,0 +1,35 @@
+{
+  "schema_version": 1,
+  "id": "gpu-scene-paths-canvas",
+  "kind": "GpuScene",
+  "params": {
+    "composition": "UiOnly",
+    "viewport": [1280, 800],
+    "host_texture": {
+      "slot": "content",
+      "width": 64,
+      "height": 36
+    },
+    "ui_nodes": ["list", "vector-canvas", "gpu-texture-view"]
+  },
+  "record": ["batch", "gpu_upload", "encode", "submit", "work_counters"],
+  "invariants": [
+    {
+      "name": "paths_canvas_draws_path_meshes",
+      "path": "path_counters.path_meshes",
+      "op": "gte",
+      "value": 200,
+      "status": "required",
+      "note": "The canvas's fills, strokes, clipped shapes and shadows reach the scene as tessellated meshes. Missing stays not-evaluable."
+    },
+    {
+      "name": "paths_canvas_still_reuses_every_mesh",
+      "path": "path_counters.path_meshes_rebuilt",
+      "op": "lte",
+      "value": 0,
+      "status": "required",
+      "note": "Holds without a path_animation (and for scroll and scale): the recording did not change, so no mesh is tessellated again."
+    }
+  ],
+  "notes": "Vector-path cost row (docs/reference/gpu.md §10). One 1200x720 custom-paint canvas: 96 cells of curved fills, round-capped and dashed curve strokes, miter-joined markers, even-odd rings, 12 shadows: 332 path ops, one mesh each, those of 32 cells under a circle path clip. Run with --path-animation scroll|scale|rerecord: scroll and scale move the list (no re-tessellation expected), rerecord redraws the canvas at a new zoom each frame (every mesh rebuilt; the rebuilt invariant does not apply). NanaUI-internal; no Iced/GPUI analog."
+}

@@ -91,7 +91,7 @@ Surface 的 HDR 能力由 `SurfaceCapabilities::format_capabilities` 决定，�
 
 - Painter 把 2,000 个节点合成 4 次 draw，逐 draw 校验几乎没有可放大的对象。UI 场景受 GPU 限制：主线程在 `GpuContext::begin_frame` 里等帧槽（`Device::maintain`）。
 - `host-textures-64` 是“大量小 pass”的情形（bench 自己的 64 个 producer pass 加上 UI pass），开销在驱动。其中 25% 是 bench 自己的 `queue.write_buffer`。在 `command_encoder_finish` 内部，42% 是 wgpu-core 为每个 pass 新开一条 hal 命令列表（`InnerCommandEncoder::open_pass` → `begin_encoding`，DX12 每帧 290 µs，Vulkan 528 µs）。`finish` 里只有 19% 是 wgpu-core 自身代码。
-- NanaUI 自身的开销按 CPU 的包含式占比统计：文字在 `ui-dense-2k` 占 3.5%，在 `text-paint-color` 占 57%（主要是 `RuntimeDocument::flush`，painter 占 9.6%），在 `text-constraint-resize` 占 84%。图标在 `ui-dense-2k` 占 0.5%。`gpu-scene-*` 场景都不画矢量路径，所以这次测量没有覆盖路径的开销。
+- NanaUI 自身的开销按 CPU 的包含式占比统计：文字在 `ui-dense-2k` 占 3.5%，在 `text-paint-color` 占 57%（主要是 `RuntimeDocument::flush`，painter 占 9.6%），在 `text-constraint-resize` 占 84%。图标在 `ui-dense-2k` 占 0.5%。`gpu-scene-*` 场景都不画矢量路径，所以这次测量没有覆盖路径的开销；路径另见 §10。
 
 **(a) 结论：不做。** 跳过校验，普通场景每帧最多省 9–35 µs，65 个 pass 的合成场景约省 110–117 µs。在文字为主的帧里不到 CPU 的 1%，这类帧 93–97% 是 NanaUI 自身的工作。只有当真实场景每帧出现数百个 draw 或 pass 时才值得重看；即便那样，逐 pass 开命令列表才是更大的目标。
 
@@ -205,6 +205,84 @@ cargo run -p nana-ui --example surface-resize-probe --features gpu,wgpu-interop 
 ```
 
 `--load` 上限 16，`--resizes` 上限 200；不要同时运行两个 GPU 探针。
+
+### 10. 实测：矢量路径的 CPU 网格化（2026-11-11）
+
+问题：矢量路径能不能直接在 GPU 上画，省掉 CPU 上的转换？现在的路线（`nana-ui-scene` 的 `custom_paint.rs`）是：展平曲线 → `i_overlay` 求填充规则、描边轮廓与裁剪交集 → `lyon` 三角化并加抗锯齿边带 → painter 的 `MeshPipeline::push_path` 把顶点变换到场景坐标、`PathBuffers::upload` 上传。§6 的场景都不画路径，这次补上。只做测量，产品帧路径上没有改任何代码。
+
+**场景。** 两个新场景，用 `nana-gpu-scene-benchmark` 跑（`--features gpu,rich-text`）：
+
+- `gpu-scene-paths-canvas`：一个 1200×720 的自绘画布，96 格，每格一个三次曲线闭合填充、一条圆头描边曲线（每四格一条虚线）、一个斜接三角描边；每五格一个 even-odd 圆环，每八格一个带阴影的星形；每三格的内容在圆形路径裁剪里。共 332 条路径，每条一个网格，约 13.5 万顶点。
+- `gpu-scene-paths-mermaid`：一篇 Markdown，含一个中等流程图（23 个节点、29 条边、两个子图）和一个时序图（5 个参与者、16 条消息、一个循环、注释）。156 个网格，约 12 万顶点。
+
+每个场景跑四种情形，由 `--path-animation` 选：静止（`none`）；滚动（`scroll`，列表每帧上移 1.7 px）；合成缩放（`scale`，列表在 0.9–1.1 倍之间缩放）；重录（`rerecord`，画布每帧换一个缩放重画，`paint_key` 随之改变；Mermaid 每帧改一行注释，相当于实时编辑图表）。bench 每帧在 `path_counters` 里报告场景持有的网格数，以及其中不是上一帧同一个 `Arc` 的网格数（即重新网格化的）。
+
+**方法。** 测量机器同 §6（RTX 5060 Ti，Core Ultra 7 265K），DX12，release 构建并设 `CARGO_PROFILE_RELEASE_DEBUG=limited`。`--serialize` 让每帧提交后等 GPU 完成，任何时候只有一条提交在途。每种情形跑 3 轮，每轮先不采样跑 5 秒（取 `framework_cpu_prepare_ms`，即 Runtime flush 加 painter 录制），再用 §6 的 `stack-sampler` 每 2 ms 采样 6 秒。每帧 CPU = 采样窗口内主线程 CPU 时间 ÷ 窗口内帧数。`perf/stack_attribution.py --path-stages` 把每个非阻塞样本按调用栈只记到一个阶段（构建内依次判断 `i_overlay`、`lyon`、展平、边带）。下表都是 3 轮的中位数，方括号里是最小–最大值。
+
+**机器负载。** 测量期间这台机器上一直跑着一个 ML 训练任务。每轮开始时记录的 GPU 利用率为 27–98%（多数在 90% 以上），显存占用 12.8 GB，系统内存 47 GB 里用了约 25 GB。表里的量都是进程内的 CPU 时间。帧率含串行等 GPU 的时间，受训练任务影响，只作参考，不作结论依据；GPU 计时没有测。
+
+| 场景 | 情形 | 每帧重建网格 | prepare p50 ms | 每帧 CPU µs | 构建 µs | 顶点变换 + 上传 µs | 每帧上传 |
+| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| canvas | 静止 | 0 / 332 | <0.01 | 182 [160–218] | 0 | 0 | 0 |
+| canvas | 滚动 | 0 / 332 | 3.8 [3.7–4.0] | 6745 [6441–7093] | 0 | 6059 [5715–6394]（90%） | 9.2 MB |
+| canvas | 合成缩放 | 0 / 332 | 4.5 [4.5–4.9] | 7789 [7403–8937] | 0 | 7170 [6511–7981]（89%） | 9.1 MB |
+| canvas | 重录 | 332 / 332 | 33.2 [31.1–34.4] | 34976 [33555–36438] | 25769 [23759–25793]（71%） | 8454 [7561–8903]（24%） | 9.3 MB |
+| mermaid | 静止 | 0 / 156 | <0.01 | 246 [244–263] | 0 | 0 | 0 |
+| mermaid | 滚动 | 0 / 156 | 4.1 [4.0–4.3] | 6100 [6011–6547] | 0 | 4880 [4775–5136]（79%） | 8.1 MB |
+| mermaid | 合成缩放 | 0 / 156 | 3.9 [3.9–4.3] | 7074 [6894–7168] | 0 | 6312 [5943–6357]（88%） | 8.0 MB |
+| mermaid | 重录 | 156 / 156 | 24.2 [23.9–24.8] | 23392 [22986–26825] | 17419 [16940–19630]（74%） | 2908 [2719–2950]（12%） | 0 |
+
+“构建”是展平、`i_overlay`、`lyon` 与边带四段之和；“顶点变换 + 上传”是 `push_path`、`PathBuffers::upload`（逐块比较并写入）和提交时把这些字节拷进上传环三段之和。括号里是占每帧 CPU 的比例。Mermaid 重录时几何不变，新顶点与上一帧逐字节相同，比较后不上传。
+
+重录时构建内部的拆分（µs/帧，括号为占每帧 CPU 的比例）：
+
+| 场景 | 展平 | `i_overlay` | `lyon` 三角化 | 抗锯齿边带 / 阴影带 | 其他 | 图表解析 + 布局 | 录制 |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| canvas | 318（0.9%） | 16321（45%） | 5892（17%） | 2843（8%） | 327（0.9%） | — | 59 |
+| mermaid | 136（0.6%） | 8713（37%） | 4435（19%） | 3832（16%） | 348（1.5%） | 578（2.3%） | 77 |
+
+滚动时变换与上传的拆分：
+
+| 场景 | `push_path` µs | 比较 + 写入 µs | 拷进上传环 µs |
+| --- | ---: | ---: | ---: |
+| canvas | 1769 | 1866 | 2484 |
+| mermaid | 1439 | 1717 | 1778 |
+
+- **静止：第二帧完全复用。** 没有一个网格被重建；painter 连路径都不碰（prepare 不到 0.01 ms，零上传）。录制按（`paint_key`、布局尺寸、主题代数）缓存，场景按录制缓存网格，两层都命中。
+- **滚动与合成缩放：不重新网格化，但每帧要搬全部顶点。** 重建数为 0，合成缩放也一样。可这两种帧 79–90% 的 CPU（4.9–7.2 ms）花在搬顶点上：`push_path` 每帧在 CPU 上把每个顶点变换到场景坐标，`PathBuffers::upload` 比较并重写整份约 8–9 MB 的顶点数组，提交时再拷一次进上传环。索引不变，没有上传。这和网格化无关，也不需要 GPU 覆盖率才能解决：把顶点按节点局部坐标留在 GPU 上，每次 draw 传原点与仿射即可（保留文本条目就是这样做的）。
+- **重录：构建占大头。** 每帧要 17–26 ms（canvas 每条路径约 78 µs，mermaid 每个网格约 112 µs）。其中 `i_overlay` 最大（37–45%），`lyon` 17–19%，边带 8–16%，展平不到 1%。Mermaid 的解析与布局只占 2%。
+- 网格偏重：canvas 每个网格平均 406 个顶点，mermaid 767 个（展平容差 0.05 逻辑 px，加上圆角连接与边带）。顶点数直接决定上面滚动时的搬运量。
+
+**结论：不做（不用 GPU 端解析覆盖率替换展平 + `i_overlay` + `lyon`）。** 判据如下：
+
+1. 稳态帧（静止、滚动、合成缩放）里重新网格化的开销超过每帧 0.5 ms（60 Hz 帧预算的 3%）。实测为 0，不满足。
+2. 某个受支持的工作负载每帧都重录路径，且在先做完下面第 2、3 项这类更便宜的 CPU 改进之后，构建仍超过每帧 4 ms（60 Hz 预算的四分之一）。原始构建是 17–26 ms，超过了开销门槛；但只有内容持续重录时才会出现，例如把缩放或动画放进 `paint_key` 的画布，或每次按键都重新解析的图表（这种通常有节流，不会到 60 Hz）。框架自己的路径都不会每帧重录：Markdown 图表只在源码改变时重录。
+3. 普通文档首帧一次性构建造成超过 50 ms 的卡顿。实测是 17–26 ms，不满足。
+
+另外，GPU 端覆盖率不是免费的：曲线仍要上传，描边、虚线和路径裁剪仍要处理；Vello 式 compute 要用计算着色器（wgpu 的 GLES 后端只在 GLES 3.1 以上才有），还会把工作搬到一块正被其他任务占满的共享 GPU 上。更便宜、收益更确定的做法，按先后：
+
+1. 路径顶点按节点局部坐标常驻 GPU，每次 draw 传变换。可省掉滚动与合成缩放帧 79–90% 的 CPU，不碰网格化。
+2. 让 `lyon` 能直接处理的路径绕开 `i_overlay`：没有裁剪的简单填充，以及描边（用 `lyon` 的 `StrokeTessellator`）。`i_overlay` 占构建的 37–45%。
+3. 复核展平容差和圆角连接的密度（每个网格 406 / 767 个顶点）。
+
+如果做完 2、3 之后，某个产品仍需要每帧重录 50 条以上的路径（按每条 78–112 µs 计约 4 ms），再重新评估 GPU 覆盖率方案。
+
+命令（仓库根目录；S 为临时目录；每次只运行一个 GPU 进程）：
+
+```sh
+export CARGO_PROFILE_RELEASE_DEBUG=limited
+cargo build -j 4 --release -p nana-ui --bin nana-gpu-scene-benchmark --features gpu,rich-text
+cargo build -j 4 --release -p nana-ui --example stack-sampler --features hosted,bundled-fonts
+# 每个场景（canvas | mermaid）和情形（none | scroll | scale | rerecord）各跑 3 轮
+WGPU_BACKEND=dx12 target/release/nana-gpu-scene-benchmark.exe --scenario perf/scenarios/gpu-scene-paths-canvas.json \
+  --path-animation scroll --serialize --sample-seconds 5 --output $S/plain-canvas-scroll.json
+WGPU_BACKEND=dx12 target/release/examples/stack-sampler.exe --delay-ms 3000 --duration-ms 6000 --interval-us 2000 \
+  --out $S/canvas-scroll.folded -- target/release/nana-gpu-scene-benchmark.exe \
+  --scenario perf/scenarios/gpu-scene-paths-canvas.json --path-animation scroll --serialize --sample-seconds 9 \
+  --output $S/sampled-canvas-scroll.json
+# 每帧 CPU µs = stack-sampler 打印的 thread_cpu_ms × 1000 ÷（bench 帧率 × wall_ms ÷ 1000）
+python perf/stack_attribution.py --path-stages --cpu-us-per-frame 6745 $S/canvas-scroll.folded
+```
 
 ## 挂载宿主纹理（`HostTexture` + `GpuTextureView`）
 

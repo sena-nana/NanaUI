@@ -31,6 +31,8 @@ use serde::{Deserialize, Serialize};
 mod allocations;
 #[path = "gpu_scene_benchmark/timestamps.rs"]
 mod timestamps;
+#[path = "gpu_scene_benchmark/vector.rs"]
+mod vector;
 
 #[global_allocator]
 static ALLOCATOR: allocations::CountingAllocator = allocations::CountingAllocator;
@@ -77,6 +79,10 @@ struct Report {
     gpu_timestamps: Option<TimestampReport>,
     #[serde(skip_serializing_if = "Option::is_none")]
     framework_thread_allocations: Option<allocations::Report>,
+    /// Per sampled frame, for scenes that draw vector paths: meshes held,
+    /// meshes not reused from the frame before, and their size.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    path_counters: Option<vector::MeshReuseReport>,
 }
 
 #[derive(Serialize, Deserialize, Clone, PartialEq, Eq)]
@@ -100,6 +106,10 @@ struct Materialization {
     /// ran a still scene would pass by construction.
     #[serde(skip_serializing_if = "Option::is_none")]
     text_animation: Option<TextAnimation>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    path_animation: Option<vector::PathAnimation>,
+    /// Every frame waited for the GPU before the next began (`--serialize`).
+    serialized: bool,
     ui_entity_count: usize,
     host_texture_resources: usize,
     scene_primitive_kinds: Vec<String>,
@@ -254,6 +264,10 @@ struct ScenarioParams {
     /// the runs it already shaped.
     #[serde(default)]
     text_animation: Option<TextAnimation>,
+    /// Move, scale or re-record the vector-path content every frame (see
+    /// [`vector::PathAnimation`]). `--path-animation` overrides it.
+    #[serde(default)]
+    path_animation: Option<vector::PathAnimation>,
 }
 
 #[derive(Serialize, Deserialize, Clone, Copy, PartialEq, Eq, Debug)]
@@ -326,6 +340,11 @@ struct Args {
     sample_seconds: Option<f64>,
     gpu_timestamps: bool,
     allocation_counts: bool,
+    /// `none` clears the scenario's path animation.
+    path_animation: Option<Option<vector::PathAnimation>>,
+    /// Wait for each frame's GPU work before starting the next: one
+    /// submission in flight.
+    serialize: bool,
 }
 
 impl Args {
@@ -335,6 +354,8 @@ impl Args {
         let mut sample_seconds = None;
         let mut gpu_timestamps = false;
         let mut allocation_counts = false;
+        let mut path_animation = None;
+        let mut serialize = false;
         let mut argv = std::env::args().skip(1);
         while let Some(arg) = argv.next() {
             match arg.as_str() {
@@ -354,6 +375,18 @@ impl Args {
                 }
                 "--gpu-timestamps" => gpu_timestamps = true,
                 "--allocation-counts" => allocation_counts = true,
+                "--path-animation" => {
+                    let value = argv.next().expect("--path-animation needs a value");
+                    path_animation = Some(if value == "none" {
+                        None
+                    } else {
+                        Some(
+                            vector::PathAnimation::parse(&value)
+                                .expect("--path-animation: none|scroll|scale|rerecord"),
+                        )
+                    });
+                }
+                "--serialize" => serialize = true,
                 _ => {}
             }
         }
@@ -363,6 +396,8 @@ impl Args {
             sample_seconds,
             gpu_timestamps,
             allocation_counts,
+            path_animation,
+            serialize,
         }
     }
 }
@@ -552,6 +587,7 @@ fn unsupported(scenario_id: Option<String>, composition: &str, reason: String) -
         sampling: None,
         gpu_timestamps: None,
         framework_thread_allocations: None,
+        path_counters: None,
     }
 }
 
@@ -576,7 +612,10 @@ struct TextShapingWork {
     paint_misses: usize,
 }
 
-fn run_ui_only(scenario: ScenarioFile, args: &Args) -> Report {
+fn run_ui_only(mut scenario: ScenarioFile, args: &Args) -> Report {
+    if let Some(animation) = args.path_animation {
+        scenario.params.path_animation = animation;
+    }
     let params = &scenario.params;
     let Some((gpu, adapter)) = request_device(args.gpu_timestamps) else {
         return unsupported(
@@ -636,6 +675,8 @@ fn run_ui_only(scenario: ScenarioFile, args: &Args) -> Report {
         shared_gpu_view_slot: params.shared_gpu_view_slot,
         text_ticker: params.text_ticker,
         text_animation: params.text_animation,
+        path_animation: params.path_animation,
+        serialized: args.serialize,
         host_texture_resources: resource_count,
         ui_entity_count: document
             .context()
@@ -690,6 +731,7 @@ fn run_ui_only(scenario: ScenarioFile, args: &Args) -> Report {
     let mut plan = document.scene().frame_plan().expect("valid frame plan");
     let mut maximum_gpu_work = GpuWorkObservation::default();
     let mut allocation_report = allocations::Report::default();
+    let mut mesh_reuse = vector::MeshReuse::default();
     let (work, last_stages) = loop {
         let sampling = frame >= WARMUP && warmup_started.elapsed() >= warmup;
         if sampling && sampled_at.is_none() {
@@ -714,6 +756,9 @@ fn run_ui_only(scenario: ScenarioFile, args: &Args) -> Report {
         if let Some(animation) = params.text_animation {
             animate_text(&mut document, &handles, animation, frame);
         }
+        if let Some(animation) = params.path_animation {
+            animate_paths(&mut document, &handles, animation, frame);
+        }
         let runtime_started = Instant::now();
         let (update, runtime_allocations) = allocations::measure(args.allocation_counts, || {
             document
@@ -721,6 +766,9 @@ fn run_ui_only(scenario: ScenarioFile, args: &Args) -> Report {
                 .expect("settled GPU document flush")
         });
         let runtime_elapsed = runtime_started.elapsed();
+        if !handles.path_nodes.is_empty() {
+            mesh_reuse.observe(document.scene(), sampling);
+        }
         for (index, preview) in previews.iter().enumerate() {
             preview.write_uniform(&queue, frame.wrapping_add(index) as u32);
         }
@@ -756,6 +804,9 @@ fn run_ui_only(scenario: ScenarioFile, args: &Args) -> Report {
         }
         let submission = recording.submit();
         painter.record_submit(&submission);
+        if args.serialize && queries.is_none() {
+            let _ = device.poll(wgpu::PollType::wait_indefinitely());
+        }
         let timings = painter
             .last_gpu_timings()
             .expect("encoded GPU scene frame must time stages");
@@ -857,6 +908,7 @@ fn run_ui_only(scenario: ScenarioFile, args: &Args) -> Report {
             ui_composition_ms: summarize(&ui_gpu),
         }),
         framework_thread_allocations: args.allocation_counts.then_some(allocation_report),
+        path_counters: mesh_reuse.report(),
         stages: Some(StageReport {
             batch_ms: summarize(&batch),
             gpu_upload_ms: summarize(&upload),
@@ -870,6 +922,48 @@ fn run_ui_only(scenario: ScenarioFile, args: &Args) -> Report {
 struct DocumentHandles {
     root: Entity<List>,
     texts: Vec<Entity<Text>>,
+    /// Vector-path content: custom-paint canvases and Mermaid documents.
+    path_nodes: Vec<PathNode>,
+}
+
+enum PathNode {
+    Canvas(Entity<List>),
+    #[cfg(feature = "rich-text")]
+    Mermaid(Entity<nana_ui_runtime::NativeMarkdown>),
+}
+
+/// Change what `animation` names about the vector content, for this frame.
+fn animate_paths(
+    document: &mut RuntimeDocument,
+    handles: &DocumentHandles,
+    animation: vector::PathAnimation,
+    frame: usize,
+) {
+    if let Some(transform) = vector::root_transform(animation, frame) {
+        document
+            .context_mut()
+            .set_component(
+                handles.root,
+                List::new()
+                    .label(ROOT_LABEL)
+                    .style(vector::with_transform(root_style(), transform)),
+            )
+            .expect("move list");
+        return;
+    }
+    for node in &handles.path_nodes {
+        match node {
+            PathNode::Canvas(canvas) => document
+                .context_mut()
+                .set_component(*canvas, vector::canvas(vector::canvas_zoom(frame)))
+                .expect("redraw canvas"),
+            #[cfg(feature = "rich-text")]
+            PathNode::Mermaid(markdown) => document
+                .context_mut()
+                .set_component(*markdown, vector::mermaid(Some(frame)))
+                .expect("edit diagram"),
+        }
+    }
 }
 
 /// Change the one thing `animation` names about the labels, for this frame.
@@ -998,6 +1092,7 @@ fn ui_document(params: &ScenarioParams) -> Result<(RuntimeDocument, DocumentHand
     let mut texture_index = 0;
     let mut gpu_view_index = 0u64;
     let mut texts = Vec::new();
+    let mut path_nodes = Vec::new();
     for kind in &params.ui_nodes {
         for _ in 0..params.repeat(kind) {
             match kind.as_str() {
@@ -1075,6 +1170,33 @@ fn ui_document(params: &ScenarioParams) -> Result<(RuntimeDocument, DocumentHand
                         .append_child(root, child)
                         .expect("gpu-view child");
                 }
+                "vector-canvas" => {
+                    let child = document
+                        .context_mut()
+                        .create_component(document_id, vector::canvas(1.0))
+                        .expect("vector canvas");
+                    document
+                        .context_mut()
+                        .append_child(root, child)
+                        .expect("canvas child");
+                    path_nodes.push(PathNode::Canvas(child));
+                }
+                #[cfg(feature = "rich-text")]
+                "mermaid" => {
+                    let child = document
+                        .context_mut()
+                        .create_component(document_id, vector::mermaid(None))
+                        .expect("mermaid markdown");
+                    document
+                        .context_mut()
+                        .append_child(root, child)
+                        .expect("markdown child");
+                    path_nodes.push(PathNode::Mermaid(child));
+                }
+                #[cfg(not(feature = "rich-text"))]
+                "mermaid" => {
+                    return Err("ui node mermaid needs the rich-text feature".into());
+                }
                 "button" => {
                     let child = document
                         .context_mut()
@@ -1091,13 +1213,20 @@ fn ui_document(params: &ScenarioParams) -> Result<(RuntimeDocument, DocumentHand
                 other => {
                     return Err(format!(
                         "UiOnly ui_nodes contains unknown node {other}; catalog allows \
-                         list/text/icon/gpu-texture-view/gpu-view/button"
+                         list/text/icon/gpu-texture-view/gpu-view/button/vector-canvas/mermaid"
                     ));
                 }
             }
         }
     }
-    Ok((document, DocumentHandles { root, texts }))
+    Ok((
+        document,
+        DocumentHandles {
+            root,
+            texts,
+            path_nodes,
+        },
+    ))
 }
 
 /// Wrapping row. A column would push every repeated node past the viewport, and
