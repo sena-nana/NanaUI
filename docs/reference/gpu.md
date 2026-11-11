@@ -91,7 +91,7 @@ Surface 的 HDR 能力由 `SurfaceCapabilities::format_capabilities` 决定，�
 
 - Painter 把 2,000 个节点合成 4 次 draw，逐 draw 校验几乎没有可放大的对象。UI 场景受 GPU 限制：主线程在 `GpuContext::begin_frame` 里等帧槽（`Device::maintain`）。
 - `host-textures-64` 是“大量小 pass”的情形（bench 自己的 64 个 producer pass 加上 UI pass），开销在驱动。其中 25% 是 bench 自己的 `queue.write_buffer`。在 `command_encoder_finish` 内部，42% 是 wgpu-core 为每个 pass 新开一条 hal 命令列表（`InnerCommandEncoder::open_pass` → `begin_encoding`，DX12 每帧 290 µs，Vulkan 528 µs）。`finish` 里只有 19% 是 wgpu-core 自身代码。
-- NanaUI 自身的开销按 CPU 的包含式占比统计：文字在 `ui-dense-2k` 占 3.5%，在 `text-paint-color` 占 57%（主要是 `RuntimeDocument::flush`，painter 占 9.6%），在 `text-constraint-resize` 占 84%。图标在 `ui-dense-2k` 占 0.5%。`gpu-scene-*` 场景都不画矢量路径，所以这次测量没有覆盖路径的开销；路径另见 §10。
+- NanaUI 自身的开销按 CPU 的包含式占比统计：文字在 `ui-dense-2k` 占 3.5%，在 `text-paint-color` 占 57%（主要是 `RuntimeDocument::flush`，painter 占 9.6%；拆开后文本引擎本身几乎为 0，是逐节点重新上色的通用开销，见 §12），在 `text-constraint-resize` 占 84%。图标在 `ui-dense-2k` 占 0.5%。`gpu-scene-*` 场景都不画矢量路径，所以这次测量没有覆盖路径的开销；路径另见 §10。
 
 **(a) 结论：不做。** 跳过校验，普通场景每帧最多省 9–35 µs，65 个 pass 的合成场景约省 110–117 µs。在文字为主的帧里不到 CPU 的 1%，这类帧 93–97% 是 NanaUI 自身的工作。只有当真实场景每帧出现数百个 draw 或 pass 时才值得重看；即便那样，逐 pass 开命令列表才是更大的目标（已实测，也不做，见 §11）。
 
@@ -371,6 +371,51 @@ WGPU_BACKEND=dx12 target/release/examples/stack-sampler.exe --delay-ms 3500 --du
   --out $S/fx-dx12.folded -- target/release/nana-gpu-scene-benchmark.exe \
   --scenario perf/scenarios/gpu-scene-ui-effects.json --serialize --sample-seconds 10 --output $S/fx-dx12.bench.json
 python perf/stack_attribution.py --list-stages --cpu-us-per-frame 515 $S/fx-dx12.folded
+```
+
+### 12. 实测：只改文字颜色的帧（2026-11-11）
+
+问题：§6 里 1,000 个标签每帧换前景色的 `text-paint-color`，文字占 CPU 的 57%，大部分在 Runtime 的 flush 里。只换颜色本不该塑形、断行或排版，那这些 CPU 是不是走了多余的失效路径？**结论：不是，不改产品代码。** 只换颜色的帧没有任何文字专属的工作，剩下的是每个节点重新上色都要付的通用开销。只提交了测量（bench 新字段）和文档。
+
+**失效路径。** 场景里每个标签都用 `set_component(Text::new(..).color(role))` 换色。`project_common` 只发出 `SetStyle`。`UiWorld::restyle` 把 `foreground` 归为继承的 paint 变化，只给节点及其子树标 `STYLE | RENDER`，不标 `TEXT`，也不播种 layout。`LayoutStyleChange` 里 `color` 本来就属于 `PAINT`，文本也没有绕过这套分类。文本侧的分级（`TextDirty::PAINT`，见文本引擎文档）同样不碰 shape revision。bench 的工作计数每帧全为 0：塑形、新建 layout、画笔自排、栅格化、atlas 上传、instance 重建与上传。1,000 个 entry 都直接复用（`text_prepare_nodes_skipped` = 1000）。`frame_stages` 里 Layout 一栏是 skipped。每次 flush 更新的场景节点正好 1,000 个，不多一个。
+
+**时间去向。** 机器同 §6，DX12，release 并设 `CARGO_PROFILE_RELEASE_DEBUG=limited`，`--serialize`，每轮采 5 秒。测量时 ML 训练任务一直在跑（GPU 利用率 47%，显存占 13.3 GB），另有一个构建会话并行。bench 现在把应用改动（`app_mutation_ms`，即 1,000 次 `set_component` 及其提交）和 `RuntimeDocument::flush`（`runtime_flush_ms`）分开计时，并报告 `maximum_scene_updated_nodes`。下表是 3 轮 p50 的中位数，方括号里是最小–最大值，单位 ms。
+
+| 场景 | 应用改动 | Runtime flush | painter（`batch`） | 帧率 | 每帧更新的场景节点 |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| `text-paint-color`（换色） | 0.83 [0.82–0.96] | 1.59 [1.52–1.63] | 0.26 [0.25–0.26] | 232 | 1000 |
+| `text-constraint-resize`（重新断行） | 2.05 [2.03–2.11] | 15.60 [14.72–16.03] | 0.91 [0.85–0.99] | 47 | 1002 |
+| `text-retained`（静止） | 0.0001 | 0.055 [0.052–0.055] | 0.45 [0.45–0.45] | 636 | 1 |
+
+换色每个标签约 2.4 µs（应用改动 0.83 µs，flush 1.59 µs），约为重新断行（每个标签约 17.6 µs）的七分之一。用 §6 的 `stack-sampler` 采一轮（6 s，每 2 ms 一次，采样时每帧 CPU 约 3.2 ms），包含式占比如下：
+
+| 阶段 | 占比 | 内容 |
+| --- | ---: | --- |
+| `update_component_staged<Text>` | 27% | 克隆比较组件、`project`、逐个提交（其中 `UiWorld::restyle` 9.8%：intern 样式、重新解析 resolved layout、layout 对比较的记忆） |
+| 场景 `apply_delta_with_moves` | 29% | 其中 `rebuild_node_primitives` 17%（重建节点的 primitive、插入绘制顺序），`VisibilityIndex::update` 2% |
+| `extract_nodes_reusing` | 11% | 每个节点产出一份新的 `ExtractedNode` |
+| `resolve_styles` | 6% | 解析计算样式（其中 `invalidate_text_for_style` 0.8%，判断后不使文本失效） |
+| painter `paint` | 9.5% | glyph entry 全部复用，只改 run 行颜色 |
+| 塑形、排版、`TextLayout` | ≤0.1% | |
+
+§6 的“文字 57%”是按包含式把文本节点触发的所有工作都记给了文字。拆开后，文本引擎本身几乎为 0。
+
+**还能省的地方。** 最大的一块是场景为每个换色节点整份重建 primitive（17%，约 0.55 ms/帧，每个标签约 0.55 µs）。若在 `UiScene` 里加一条“只换 paint 颜色就原地改 primitive 颜色”的路径，最多省这么多，前提是能证明几何、裁剪、顺序和可见性都没变。它不是文本专属的问题，每种 paint-only 变化都走这条路。每帧上千个节点同时换色的界面很少见，所以现在不做。若真实应用出现这种负载，再按这个上限评估。
+
+命令（在仓库根目录执行，S 为临时目录）：
+
+```sh
+export CARGO_PROFILE_RELEASE_DEBUG=limited
+cargo build -j 4 --release -p nana-ui --bin nana-gpu-scene-benchmark --features gpu
+cargo build -j 4 --release -p nana-ui --example stack-sampler --features hosted,bundled-fonts
+# 每个场景（text-paint-color | text-constraint-resize | text-retained）跑 3 轮
+WGPU_BACKEND=dx12 target/release/nana-gpu-scene-benchmark.exe --scenario perf/scenarios/gpu-scene-text-paint-color.json \
+  --serialize --sample-seconds 5 --output $S/text-paint-color-1.json
+# 读 sampling.app_mutation_ms、sampling.runtime_flush_ms、stages.batch_ms 的 p50
+WGPU_BACKEND=dx12 target/release/examples/stack-sampler.exe --delay-ms 3000 --duration-ms 6000 --interval-us 2000 \
+  --out $S/color.folded -- target/release/nana-gpu-scene-benchmark.exe \
+  --scenario perf/scenarios/gpu-scene-text-paint-color.json --serialize --sample-seconds 9 --output $S/color-sampled.json
+python perf/stack_attribution.py $S/color.folded
 ```
 
 ## 挂载宿主纹理（`HostTexture` + `GpuTextureView`）

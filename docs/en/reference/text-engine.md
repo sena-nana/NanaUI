@@ -2693,7 +2693,7 @@ python3 perf/contract.py --self-test
 | Gate | What changes each frame | Criterion |
 | --- | --- | --- |
 | `gpu-scene-text-retained` | One of a thousand labels changes text | `text_nodes_shaped ≤ 1`, `text_layouts_created ≤ 1`, `paint_shape_cache_misses ≤ 0`, `text_instance_rebuilds ≤ 1`, `glyph_rasterized ≤ 4`, `glyph_upload_bytes ≤ 4096`, `text_instance_upload_bytes ≤ 4096`, `text_prepare_nodes_skipped ≥ 900` |
-| `gpu-scene-text-paint-color` | Every label changes its foreground color | Shaping, layout (both Runtime and painter sides), rasterization, atlas upload, instance rebuild and upload are all 0; `skipped ≥ 900` |
+| `gpu-scene-text-paint-color` | Every label changes its foreground color | Shaping, layout (both Runtime and painter sides), rasterization, atlas upload, instance rebuild and upload are all 0; `skipped ≥ 900`. Where the remaining CPU goes: [GPU doc §12](./gpu.md) |
 | `gpu-scene-text-compositor-opacity` | The container fades in and out | Same as above |
 | `gpu-scene-text-compositor-transform` | The container rotates between −1.5° / 0° / +1.5° | Same as above, except instance upload (every third frame passes through identity) |
 | `gpu-scene-text-compositor-slide` (#223) | The container moves 0.37 px sideways per frame with a CSS translate, simulating a trackpad horizontal scroll | Same as paint-color (including instance upload 0, not exempt like transform) |
