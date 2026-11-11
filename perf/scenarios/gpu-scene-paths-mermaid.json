@@ -1,0 +1,35 @@
+{
+  "schema_version": 1,
+  "id": "gpu-scene-paths-mermaid",
+  "kind": "GpuScene",
+  "params": {
+    "composition": "UiOnly",
+    "viewport": [1280, 800],
+    "host_texture": {
+      "slot": "content",
+      "width": 64,
+      "height": 36
+    },
+    "ui_nodes": ["list", "mermaid", "gpu-texture-view"]
+  },
+  "record": ["batch", "gpu_upload", "encode", "submit", "work_counters"],
+  "invariants": [
+    {
+      "name": "paths_mermaid_draws_path_meshes",
+      "path": "path_counters.path_meshes",
+      "op": "gte",
+      "value": 20,
+      "status": "required",
+      "note": "Edges, arrowheads and non-rectangular shapes reach the scene as tessellated meshes. Missing stays not-evaluable."
+    },
+    {
+      "name": "paths_mermaid_still_reuses_every_mesh",
+      "path": "path_counters.path_meshes_rebuilt",
+      "op": "lte",
+      "value": 0,
+      "status": "required",
+      "note": "Holds without a path_animation (and for scroll and scale): the diagram recordings did not change."
+    }
+  ],
+  "notes": "Vector-path cost row (docs/reference/gpu.md §10). One Markdown document with a mid-size Mermaid flowchart (23 nodes, 29 edges, two subgraphs) and a sequence diagram (5 participants, 16 messages, a loop, notes). Needs the rich-text feature. --path-animation rerecord changes a Mermaid comment each frame: parse, layout, record and tessellation all run again (a diagram edited live). NanaUI-internal; no Iced/GPUI analog."
+}

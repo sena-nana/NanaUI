@@ -91,7 +91,7 @@ Shares are of non-blocked samples. The remainder is the `wgpu` front end (≤1.3
 
 - The painter batches 2,000 nodes into 4 draws, so per-draw validation has almost nothing to scale with. The UI scenes are GPU-bound: the main thread waits in `GpuContext::begin_frame` for a frame slot (`Device::maintain`).
 - `host-textures-64` is the many-small-passes case (the bench's 64 producer passes plus the UI pass). Its cost is driver work: 25% is the bench's own `queue.write_buffer` calls, and inside `command_encoder_finish`, 42% is wgpu-core opening a new hal command list per pass (`InnerCommandEncoder::open_pass` → `begin_encoding`, 290 µs/frame on DX12 and 528 µs on Vulkan). Only 19% of `finish` is wgpu-core's own code.
-- NanaUI's own work, by inclusive share of CPU: text is 3.5% in `ui-dense-2k`, 57% in `text-paint-color` (mostly `RuntimeDocument::flush`; the painter is 9.6%) and 84% in `text-constraint-resize`. Icons are 0.5% in `ui-dense-2k`. None of the `gpu-scene-*` scenarios draws vector paths, so this measurement does not cover path cost.
+- NanaUI's own work, by inclusive share of CPU: text is 3.5% in `ui-dense-2k`, 57% in `text-paint-color` (mostly `RuntimeDocument::flush`; the painter is 9.6%) and 84% in `text-constraint-resize`. Icons are 0.5% in `ui-dense-2k`. None of the `gpu-scene-*` scenarios draws vector paths, so this measurement does not cover path cost; paths are measured in §10.
 
 **(a) Verdict: no-go.** Skipping validation would save at most 9–35 µs/frame in ordinary scenes and about 110–117 µs in the 65-pass synthetic. That is under 1% of CPU in text-heavy frames, where NanaUI's own work is 93–97%. Revisit only if a real scene shows hundreds of draws or passes per frame. Even then, the per-pass command-list opening is the larger target.
 
@@ -205,6 +205,93 @@ cargo run -p nana-ui --example surface-resize-probe --features gpu,wgpu-interop 
 ```
 
 `--load` is capped at 16 and `--resizes` at 200; never run two GPU probes at once.
+
+### 10. Measured: CPU meshing of vector paths (2026-11-11)
+
+The question: could vector paths be drawn directly on the GPU, without converting them on the CPU first? Today's route (`custom_paint.rs` in `nana-ui-scene`) flattens curves, lets `i_overlay` resolve the fill rule, stroke outline and clip intersection, then tessellates with `lyon` and adds an anti-aliasing fringe. The painter's `MeshPipeline::push_path` then transforms the vertices into scene space, and `PathBuffers::upload` uploads them. None of the §6 scenes draws a path, so this fills that gap. This is measurement only: nothing on the product frame path changed.
+
+**Scenes.** Two new scenarios for `nana-gpu-scene-benchmark` (`--features gpu,rich-text`):
+
+- `gpu-scene-paths-canvas`: one 1200×720 custom-paint canvas of 96 cells. Each cell has a closed cubic fill, a round-capped curve stroke (dashed in every fourth cell) and a miter-joined triangle outline. Every fifth cell adds an even-odd ring, every eighth a star with a shadow, and every third has its contents inside a circular path clip. That makes 332 paths, one mesh each, about 135k vertices.
+- `gpu-scene-paths-mermaid`: one Markdown document with a mid-size flowchart (23 nodes, 29 edges, two subgraphs) and a sequence diagram (5 participants, 16 messages, a loop, notes). 156 meshes, about 120k vertices.
+
+Each scene runs four cases, chosen with `--path-animation`:
+
+- still (`none`);
+- scroll (`scroll`): the list moves up 1.7 px a frame;
+- compositor scale (`scale`): the list scales between 0.9× and 1.1×;
+- re-record (`rerecord`): the canvas redraws at a new zoom every frame, so its `paint_key` changes; the Mermaid source changes one comment line every frame, a diagram edited live.
+
+Each frame the bench reports in `path_counters` how many meshes the scene holds, and how many of them are not the same `Arc` as the frame before, that is, were meshed again.
+
+**Method.** The machine is the one in §6 (RTX 5060 Ti, Core Ultra 7 265K), on DX12, with a release build and `CARGO_PROFILE_RELEASE_DEBUG=limited`. `--serialize` waits for each frame's GPU work after submitting it, so only one submission is ever in flight. Each case ran 3 times. Each run first went 5 s unsampled, for `framework_cpu_prepare_ms` (Runtime flush plus painter recording), then 6 s under §6's `stack-sampler` at 2 ms. CPU per frame is the main thread's CPU time in the sampling window divided by the frames in that window. `perf/stack_attribution.py --path-stages` charges each non-blocked sample to exactly one stage by its stack; inside the build it checks `i_overlay`, then `lyon`, then flattening, then the fringe. Tables give the median of the 3 runs, with min–max in brackets.
+
+**Machine load.** An ML training job ran on this machine throughout. GPU utilisation logged at the start of each run was 27–98%, mostly above 90%. It used 12.8 GB of VRAM, and about 25 GB of the 47 GB system RAM was in use. Every quantity in the tables is in-process CPU time. Frame rates include the serialized wait for the GPU, which the training job distorts: they are context, not evidence. No GPU timings were taken.
+
+| Scene | Case | Meshes rebuilt per frame | prepare p50 ms | CPU per frame µs | Build µs | Transform + upload µs | Upload per frame |
+| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| canvas | still | 0 / 332 | <0.01 | 182 [160–218] | 0 | 0 | 0 |
+| canvas | scroll | 0 / 332 | 3.8 [3.7–4.0] | 6745 [6441–7093] | 0 | 6059 [5715–6394] (90%) | 9.2 MB |
+| canvas | compositor scale | 0 / 332 | 4.5 [4.5–4.9] | 7789 [7403–8937] | 0 | 7170 [6511–7981] (89%) | 9.1 MB |
+| canvas | re-record | 332 / 332 | 33.2 [31.1–34.4] | 34976 [33555–36438] | 25769 [23759–25793] (71%) | 8454 [7561–8903] (24%) | 9.3 MB |
+| mermaid | still | 0 / 156 | <0.01 | 246 [244–263] | 0 | 0 | 0 |
+| mermaid | scroll | 0 / 156 | 4.1 [4.0–4.3] | 6100 [6011–6547] | 0 | 4880 [4775–5136] (79%) | 8.1 MB |
+| mermaid | compositor scale | 0 / 156 | 3.9 [3.9–4.3] | 7074 [6894–7168] | 0 | 6312 [5943–6357] (88%) | 8.0 MB |
+| mermaid | re-record | 156 / 156 | 24.2 [23.9–24.8] | 23392 [22986–26825] | 17419 [16940–19630] (74%) | 2908 [2719–2950] (12%) | 0 |
+
+"Build" is the sum of four stages: flattening, `i_overlay`, `lyon` and the fringe. "Transform + upload" is the sum of three: `push_path`, `PathBuffers::upload` (block-wise compare and write), and the copy into the upload ring at submit. Percentages are shares of CPU per frame. When Mermaid re-records, its geometry stays the same, so the new vertices are byte-identical to the previous frame's and the compare uploads nothing.
+
+The build stages when re-recording (µs per frame; share of CPU per frame in brackets):
+
+| Scene | Flatten | `i_overlay` | `lyon` tessellation | AA fringe / shadow band | Other | Diagram parse + layout | Record |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| canvas | 318 (0.9%) | 16321 (45%) | 5892 (17%) | 2843 (8%) | 327 (0.9%) | — | 59 |
+| mermaid | 136 (0.6%) | 8713 (37%) | 4435 (19%) | 3832 (16%) | 348 (1.5%) | 578 (2.3%) | 77 |
+
+The transform and upload stages when scrolling:
+
+| Scene | `push_path` µs | Compare + write µs | Copy into upload ring µs |
+| --- | ---: | ---: | ---: |
+| canvas | 1769 | 1866 | 2484 |
+| mermaid | 1439 | 1717 | 1778 |
+
+- **Still: the second frame reuses everything.** No mesh is rebuilt, and the painter doesn't touch paths at all: prepare takes under 0.01 ms and nothing is uploaded. Recordings are cached by (`paint_key`, layout size, theme epoch) and the scene caches meshes per recording; both caches hit.
+- **Scroll and compositor scale: nothing is meshed again, but every vertex moves every frame.** No mesh is rebuilt, under compositor scale either. Even so, 79–90% of these frames' CPU (4.9–7.2 ms) goes into moving vertices. Each frame, `push_path` transforms every vertex into scene space on the CPU. `PathBuffers::upload` then compares and rewrites the whole vertex array, about 8–9 MB, and submit copies it again into the upload ring. The indices don't change and aren't re-uploaded. This cost has nothing to do with meshing, and fixing it doesn't need GPU coverage: keep the vertices on the GPU in node-local space and pass the origin and affine per draw, as retained text entries already do.
+- **Re-record: the build dominates.** It costs 17–26 ms a frame: about 78 µs per path on the canvas and 112 µs per Mermaid mesh. `i_overlay` is the largest stage (37–45%), then `lyon` (17–19%) and the fringe (8–16%). Flattening is under 1%. Mermaid's parse and layout are only 2%.
+- **Meshes are heavy.** The average canvas mesh has 406 vertices and the average Mermaid mesh 767. The causes are the 0.05 logical-px flattening tolerance, round joins and the fringe. The vertex count directly sets how much the scroll case moves.
+
+**Verdict: no-go on replacing flatten + `i_overlay` + `lyon` with GPU-side analytic coverage.** Either a per-pixel coverage shader or Vello-style compute would have had to clear one of these thresholds:
+
+1. **Steady-state re-meshing over 0.5 ms a frame** (3% of a 60 Hz budget) in still, scroll or compositor-scale frames. Measured: 0. Not met.
+2. **A supported workload that re-records paths every frame and still spends over 4 ms a frame building** (a quarter of a 60 Hz budget) after the cheaper CPU fixes 2 and 3 below. The raw build, 17–26 ms, clears the cost bar. But it only happens when content re-records continuously: a canvas that puts zoom or animation into its `paint_key`, or a diagram re-parsed on every keystroke (usually throttled well below 60 Hz). None of the framework's own paths re-records every frame; Markdown diagrams re-record only when their source changes.
+3. **A first-frame build over 50 ms** for an ordinary document. Measured: a one-off 17–26 ms. Not met.
+
+GPU coverage is not free either. Curves still have to be uploaded, and strokes, dashes and path clips still have to be handled. Vello-style compute needs compute shaders, which wgpu's GLES backend only has from GLES 3.1. It also moves the work onto a GPU that, on machines like this one, other jobs already keep busy.
+
+Cheaper fixes with a surer payoff, in order:
+
+1. Keep path vertices resident on the GPU in node-local space and pass the transform per draw. This saves 79–90% of scroll and compositor-scale frame CPU without touching meshing.
+2. Let paths that `lyon` can handle directly skip `i_overlay`: simple fills with no clip, and strokes through `lyon`'s `StrokeTessellator`. `i_overlay` is 37–45% of the build.
+3. Revisit the flattening tolerance and round-join density (406 and 767 vertices per mesh).
+
+Revisit GPU coverage if, after fixes 2 and 3, a product still needs to re-record more than about 50 paths a frame (about 4 ms at 78–112 µs per path).
+
+Commands (repo root; S is a scratch directory; only one GPU process at a time):
+
+```sh
+export CARGO_PROFILE_RELEASE_DEBUG=limited
+cargo build -j 4 --release -p nana-ui --bin nana-gpu-scene-benchmark --features gpu,rich-text
+cargo build -j 4 --release -p nana-ui --example stack-sampler --features hosted,bundled-fonts
+# Per scene (canvas | mermaid) and case (none | scroll | scale | rerecord), 3 runs each
+WGPU_BACKEND=dx12 target/release/nana-gpu-scene-benchmark.exe --scenario perf/scenarios/gpu-scene-paths-canvas.json \
+  --path-animation scroll --serialize --sample-seconds 5 --output $S/plain-canvas-scroll.json
+WGPU_BACKEND=dx12 target/release/examples/stack-sampler.exe --delay-ms 3000 --duration-ms 6000 --interval-us 2000 \
+  --out $S/canvas-scroll.folded -- target/release/nana-gpu-scene-benchmark.exe \
+  --scenario perf/scenarios/gpu-scene-paths-canvas.json --path-animation scroll --serialize --sample-seconds 9 \
+  --output $S/sampled-canvas-scroll.json
+# CPU µs per frame = stack-sampler's thread_cpu_ms × 1000 ÷ (bench frame rate × wall_ms ÷ 1000)
+python perf/stack_attribution.py --path-stages --cpu-us-per-frame 6745 $S/canvas-scroll.folded
+```
 
 ## Mounting host textures (`HostTexture` + `GpuTextureView`)
 

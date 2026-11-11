@@ -21,6 +21,11 @@ Owners:
 
 `--scope` keeps only samples whose stack contains the substring, e.g.
 `SceneWgpuPainter::paint` or `FrameContext::submit`.
+
+`--path-stages` charges every non-blocked sample to exactly one stage of the
+vector-path pipeline (see PATH_STAGES; first match wins), for the
+`gpu-scene-paths-*` rows in docs/reference/gpu.md §10. `--cpu-us-per-frame`
+turns the shares into microseconds per frame.
 """
 
 import argparse
@@ -74,6 +79,46 @@ INCLUSIVE = [
 ]
 
 
+# Exclusive stages of the vector-path pipeline, checked in order. A sample is
+# charged to the first stage any of whose needles occurs in any of its frames,
+# so the order matters: `MeshBuilder::fill` calls `tessellate` (lyon), and
+# `build_ops` contains all four build stages.
+BUILD = "custom_paint::build_ops"
+PATH_STAGES = [
+    ("build: i_overlay (fill rule, stroke outline, clip)",
+     [BUILD], ["i_overlay::", "i_float::", "i_shape::", "i_tree::", "i_key_sort::"]),
+    ("build: lyon fill tessellation",
+     [BUILD], ["custom_paint::tessellate", "lyon_tessellation::fill", "custom_paint::triangulate"]),
+    ("build: flatten curves",
+     [BUILD], ["custom_paint::flatten", "custom_paint::lyon_path", "lyon_path::iterator", "lyon_geom::"]),
+    ("build: AA fringe / shadow band",
+     [BUILD], ["custom_paint::MeshBuilder", "custom_paint::miters", "custom_paint::ring_reach",
+               "custom_paint::clip_polygon"]),
+    ("build: other (dashes, op walk, alloc)", [BUILD], [""]),
+    ("diagram: parse + layout", [], ["nana_ui_diagram::"]),
+    ("diagram: record", [], ["markdown_diagram::record"]),
+    ("record: Painter::paint", [], ["as nana_ui_runtime::custom_paint::Painter>::paint",
+                                     "custom_paint::PaintContext::", "vector::VectorCanvas"]),
+    ("painter: push_path (vertex transform)", [], ["MeshPipeline::push_path"]),
+    ("painter: path upload (diff + write)", [], ["MeshPipeline::upload"]),
+    ("submit: upload-ring copy (all uploads)", ["FrameContext::submit"], ["nana_gpu::upload::"]),
+    ("scene: emit built ops", [], ["custom_paint::emit_", "UiScene::emit_built_ops"]),
+    ("runtime flush: other", [], ["RuntimeDocument::flush"]),
+    ("painter: other", [], ["SceneWgpuPainter::paint"]),
+    ("submit + driver", [], ["FrameContext::submit", "GpuContext::begin_frame"]),
+    ("other", [], [""]),
+]
+
+
+def path_stage(frames):
+    for name, scope, needles in PATH_STAGES:
+        if scope and not any(n in f for f in frames for n in scope):
+            continue
+        if any(n in f for f in frames for n in needles):
+            return name
+    return "other"
+
+
 def owner(frame):
     module, _, symbol = frame.partition("!")
     if GRAPHICS_DLL.match(module):
@@ -107,8 +152,11 @@ def main():
     parser.add_argument(
         "--json", action="store_true", help="print one JSON summary instead of tables"
     )
+    parser.add_argument("--path-stages", action="store_true")
+    parser.add_argument("--cpu-us-per-frame", type=float)
     args = parser.parse_args()
     inclusive = collections.Counter()
+    stages = collections.Counter()
 
     totals = collections.Counter()
     leaves = collections.defaultdict(collections.Counter)
@@ -136,12 +184,31 @@ def main():
                     break
             totals[charged] += count
             if charged != "blocked":
+                stages[path_stage(frames)] += count
                 for name, needles in INCLUSIVE:
                     if any(n in f for f in frames for n in needles):
                         inclusive[name] += count
             leaves[charged][charged_frame.partition("!")[2][:160]] += count
 
     busy = scoped - totals["blocked"]
+    if args.path_stages:
+        import json
+
+        shares = {name: stages[name] / max(busy, 1) for name, _, _ in PATH_STAGES}
+        if args.json:
+            print(json.dumps({
+                "cpu_samples": busy,
+                "blocked": totals["blocked"],
+                "share": {k: round(v, 4) for k, v in shares.items()},
+                "us_per_frame": None if args.cpu_us_per_frame is None else
+                {k: round(v * args.cpu_us_per_frame, 1) for k, v in shares.items()},
+            }))
+            return 0
+        print(f"{busy} non-blocked samples ({totals['blocked']} blocked)")
+        for name, _, _ in PATH_STAGES:
+            us = "" if args.cpu_us_per_frame is None else f"  {shares[name] * args.cpu_us_per_frame:9.1f} us/frame"
+            print(f"  {name:52s} {stages[name]:7d}  {100 * shares[name]:5.1f}%{us}")
+        return 0
     if args.json:
         import json
 
