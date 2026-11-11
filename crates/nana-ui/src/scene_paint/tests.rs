@@ -12574,6 +12574,110 @@ fn a_scrolled_path_uploads_only_its_draw_and_is_dropped_with_its_scene() {
 }
 
 #[test]
+fn a_rerecorded_path_with_unchanged_geometry_uploads_no_vertex() {
+    // Content that re-records every frame hands the painter new meshes with
+    // the geometry the old ones had. They take over the arena ranges the
+    // old ones leave, so the frame writes no vertex or index.
+    let (device, queue) = test_device();
+    let format = wgpu::TextureFormat::Rgba8Unorm;
+    let mut context = AppContext::new();
+    let document = DocumentId::new(1).unwrap();
+    let node = context
+        .create_component(
+            document,
+            nana_ui_runtime::Stack::column(0.0)
+                .with_layout(|layout| {
+                    layout.width = Some(LengthSpec::Px(64.0));
+                    layout.height = Some(LengthSpec::Px(64.0));
+                })
+                .painter(PaintFn(retained_path_shapes)),
+        )
+        .unwrap();
+    context.resolve_styles(&[node.stable_id()]).unwrap();
+    context
+        .layout_document(document, nana_ui_runtime::LayoutViewport::new(64.0, 64.0))
+        .unwrap();
+    let record = || {
+        let mut scene = UiScene::new();
+        scene.apply_delta(context.world().extract_document(document), []);
+        scene
+    };
+    let meshes = |scene: &UiScene| -> Vec<Arc<nana_ui_scene::PathMesh>> {
+        scene
+            .primitives()
+            .filter_map(|primitive| match &primitive.kind {
+                nana_ui_scene::ScenePrimitiveKind::Path { mesh, .. } => Some(Arc::clone(mesh)),
+                _ => None,
+            })
+            .collect()
+    };
+    let mut painter = SceneWgpuPainter::for_test(format);
+    let target = test_target(&device, format, 64, 64);
+    let frame = |painter: &mut SceneWgpuPainter, scene: &UiScene| {
+        let viewport = ScenePaintViewport {
+            logical_size: [64.0, 64.0],
+            physical_size: [64, 64],
+            scale_factor: 1.0,
+            scene_origin: [0.0, 0.0],
+            target_origin: [0.0, 0.0],
+            clear_color: [0.0, 0.0, 0.0, 1.0],
+            clear: true,
+        };
+        let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+            label: Some("nana-ui rerecorded paths"),
+        });
+        painter
+            .paint_encoder(scene, &mut encoder, &target, viewport, None, None)
+            .unwrap();
+        queue.submit([encoder.finish()]);
+        painter.last_gpu_work().expect("a frame records GPU work")
+    };
+    let mut scene = record();
+    let first = frame(&mut painter, &scene);
+    let mesh_bytes: usize = meshes(&scene)
+        .iter()
+        .map(|mesh| mesh.vertices.len() * 44 + mesh.indices.len() * 4)
+        .sum();
+    assert!(first.gpu_upload_bytes >= mesh_bytes);
+    for step in 1..4 {
+        // The old scene, and with it the old meshes, go before the frame,
+        // as a re-recording scene replaces them.
+        let before = meshes(&scene);
+        let rerecorded = record();
+        let after = meshes(&rerecorded);
+        assert_eq!(after.len(), 4);
+        assert!(
+            before
+                .iter()
+                .zip(&after)
+                .all(|(old, new)| !Arc::ptr_eq(old, new) && old.vertices == new.vertices),
+            "step {step}: new meshes with the old geometry"
+        );
+        drop(before);
+        drop(after);
+        scene = rerecorded;
+        let work = frame(&mut painter, &scene);
+        assert!(
+            work.gpu_upload_bytes < 1024,
+            "re-record {step} sent {} bytes",
+            work.gpu_upload_bytes
+        );
+        assert_eq!(painter.resource_counters().path_meshes, 4);
+        assert_eq!(painter.meshes.path_slots(), 4);
+    }
+    // Let go for good, a range lingers one frame, then goes with the mesh
+    // it kept.
+    let kept: Vec<_> = meshes(&scene).iter().map(Arc::downgrade).collect();
+    drop(scene);
+    frame(&mut painter, &UiScene::new());
+    assert_eq!(painter.resource_counters().path_meshes, 0);
+    assert_eq!(painter.meshes.path_slots(), 4);
+    frame(&mut painter, &UiScene::new());
+    assert_eq!(painter.meshes.path_slots(), 0);
+    assert!(kept.iter().all(|mesh| mesh.strong_count() == 0));
+}
+
+#[test]
 fn a_reading_blend_copies_and_composites_only_where_its_group_drew() {
     use nana_ui_runtime::BlendMode;
     let pixels = paint_one_painter(

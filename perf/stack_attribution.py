@@ -99,6 +99,7 @@ PATH_STAGES = [
     ("diagram: record", [], ["markdown_diagram::record"]),
     ("record: Painter::paint", [], ["as nana_ui_runtime::custom_paint::Painter>::paint",
                                      "custom_paint::PaintContext::", "vector::VectorCanvas"]),
+    ("painter: content match (probe + compare)", [], ["mesh::mesh_probe", "mesh::same_content"]),
     ("painter: push_path (vertex transform)", [], ["MeshPipeline::push_path"]),
     ("painter: path upload (diff + write)", [], ["MeshPipeline::upload"]),
     ("submit: upload-ring copy (all uploads)", ["FrameContext::submit"], ["nana_gpu::upload::"]),
