@@ -110,8 +110,23 @@ PATH_STAGES = [
 ]
 
 
-def path_stage(frames):
-    for name, scope, needles in PATH_STAGES:
+# Native command-list work (first match wins). wgpu-core opens one hal list
+# for each pass and one more for the barriers before it.
+LIST_STAGES = [
+    ("native list: open (begin_encoding)", [], ["::begin_encoding"]),
+    ("native list: close (end_encoding)", [], ["::end_encoding"]),
+    ("native list: recycle (reset_all)", [], ["::reset_all"]),
+    ("queue submit (ExecuteCommandLists / vkQueueSubmit)", [],
+     ["wgpu_hal::dynamic::queue::impl$0::submit"]),
+    ("barriers (insert_barriers / transition_*)", [],
+     ["insert_barriers_from", "::transition_textures", "::transition_buffers"]),
+    ("pass recording (encode_render_pass, other)", [], ["encode_render_pass"]),
+    ("other", [], [""]),
+]
+
+
+def path_stage(frames, table=PATH_STAGES):
+    for name, scope, needles in table:
         if scope and not any(n in f for f in frames for n in scope):
             continue
         if any(n in f for f in frames for n in needles):
@@ -153,8 +168,10 @@ def main():
         "--json", action="store_true", help="print one JSON summary instead of tables"
     )
     parser.add_argument("--path-stages", action="store_true")
+    parser.add_argument("--list-stages", action="store_true")
     parser.add_argument("--cpu-us-per-frame", type=float)
     args = parser.parse_args()
+    table = LIST_STAGES if args.list_stages else PATH_STAGES
     inclusive = collections.Counter()
     stages = collections.Counter()
 
@@ -184,17 +201,17 @@ def main():
                     break
             totals[charged] += count
             if charged != "blocked":
-                stages[path_stage(frames)] += count
+                stages[path_stage(frames, table)] += count
                 for name, needles in INCLUSIVE:
                     if any(n in f for f in frames for n in needles):
                         inclusive[name] += count
             leaves[charged][charged_frame.partition("!")[2][:160]] += count
 
     busy = scoped - totals["blocked"]
-    if args.path_stages:
+    if args.path_stages or args.list_stages:
         import json
 
-        shares = {name: stages[name] / max(busy, 1) for name, _, _ in PATH_STAGES}
+        shares = {name: stages[name] / max(busy, 1) for name, _, _ in table}
         if args.json:
             print(json.dumps({
                 "cpu_samples": busy,
@@ -205,7 +222,7 @@ def main():
             }))
             return 0
         print(f"{busy} non-blocked samples ({totals['blocked']} blocked)")
-        for name, _, _ in PATH_STAGES:
+        for name, _, _ in table:
             us = "" if args.cpu_us_per_frame is None else f"  {shares[name] * args.cpu_us_per_frame:9.1f} us/frame"
             print(f"  {name:52s} {stages[name]:7d}  {100 * shares[name]:5.1f}%{us}")
         return 0
