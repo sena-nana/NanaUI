@@ -438,11 +438,30 @@ pub(super) struct PathRange {
     pub instance: u32,
 }
 
-/// Where a retained mesh sits in the path arena.
+/// A cheap fingerprint of what a mesh puts in the arena: a hash of its
+/// bounds, explicit solid and a few sampled vertices and indices, with its
+/// vertex and index counts. Meshes that share one are compared in full
+/// before they share a range.
+type Probe = (u64, u32, u32);
+
+/// A retained mesh the scene holds.
 struct ResidentPath {
-    /// The scene owns the mesh. While this is held its allocation cannot be
-    /// reused, so its address keys the entry for as long as the entry lives.
+    /// While this is held the mesh's allocation cannot be reused, so its
+    /// address keys the entry for as long as the entry lives.
     mesh: Weak<nana_ui_scene::PathMesh>,
+    slot: u64,
+}
+
+/// One range of the path arena, shared by every mesh with its content.
+struct PathSlot {
+    /// The mesh the range is written from, one the scene holds while any
+    /// does. Once none does, the slot keeps it one more frame, its bytes
+    /// still on the GPU, for a mesh re-recorded with the same content to
+    /// be compared with and take the range over.
+    mesh: Arc<nana_ui_scene::PathMesh>,
+    probe: Probe,
+    /// A mesh the scene holds names the slot.
+    held: bool,
     first_vertex: u32,
     vertex_count: u32,
     first_index: u32,
@@ -455,6 +474,8 @@ struct ResidentPath {
 /// vertices and indices are written once, when a frame first draws it, at
 /// a range of one shared arena, node-local; each draw then only sends a
 /// [`GpuPathInstance`], so a scroll or a compositor scale moves no vertex.
+/// Meshes with the same content share a range, so a mesh re-recorded with
+/// unchanged geometry takes over the one its predecessor left.
 /// Separate from the stroke instances, but drawn with the same globals and
 /// clip palette.
 pub(super) struct PathBuffers {
@@ -470,15 +491,19 @@ pub(super) struct PathBuffers {
     indices: ManagedBuffer,
     index_capacity: usize,
     resident: HashMap<usize, ResidentPath>,
-    /// The arena's used ends; what lies below them and no entry names is dead.
+    slots: HashMap<u64, PathSlot>,
+    /// The slots with each [`Probe`].
+    probes: HashMap<Probe, Vec<u64>>,
+    next_slot: u64,
+    /// The arena's used ends; what lies below them and no slot names is dead.
     vertex_end: u32,
     index_end: u32,
     live_vertices: u32,
     live_indices: u32,
     frame: u64,
-    /// Entries placed since the last upload, in arena order, not yet written.
-    unwritten: Vec<usize>,
-    /// Every entry must be written again: the arena was compacted or replaced.
+    /// Slots placed since the last upload, in arena order, not yet written.
+    unwritten: Vec<u64>,
+    /// Every slot must be written again: the arena was compacted or replaced.
     rewrite: bool,
     instances: ManagedBuffer,
     instance_capacity: usize,
@@ -504,6 +529,9 @@ impl PathBuffers {
             indices: ManagedBuffer::new(path_index_buffer(device, INITIAL_PATH_INDICES)),
             index_capacity: INITIAL_PATH_INDICES,
             resident: HashMap::new(),
+            slots: HashMap::new(),
+            probes: HashMap::new(),
+            next_slot: 0,
             vertex_end: 0,
             index_end: 0,
             live_vertices: 0,
@@ -536,10 +564,11 @@ impl PathBuffers {
             + self.live_indices as usize * std::mem::size_of::<u32>()
     }
 
-    /// Start a frame: drop the meshes the scene let go of, those no frame
-    /// drew for [`PATH_RETAIN_FRAMES`], and over [`PATH_ARENA_BUDGET`] every
-    /// one the last frame did not draw; compact the arena once it is mostly
-    /// dead. Draw ranges are handed out after this, so they stay valid.
+    /// Start a frame: drop the meshes the scene let go of, the ranges no
+    /// held mesh names unless the last frame drew them, those no frame drew
+    /// for [`PATH_RETAIN_FRAMES`], and over [`PATH_ARENA_BUDGET`] every one
+    /// the last frame did not draw; compact the arena once it is mostly dead.
+    /// Draw ranges are handed out after this, so they stay valid.
     fn begin_frame(&mut self) {
         #[cfg(test)]
         if let Some(kept) = self.cpu_transformed.as_mut() {
@@ -551,17 +580,50 @@ impl PathBuffers {
         self.frame += 1;
         let frame = self.frame;
         let over_budget = self.live_bytes() > PATH_ARENA_BUDGET;
-        let (mut live_vertices, mut live_indices) = (0u32, 0u32);
+        let slots = &self.slots;
         self.resident.retain(|_, entry| {
-            let keep = entry.mesh.strong_count() > 0
-                && entry.frame + PATH_RETAIN_FRAMES >= frame
-                && !(over_budget && entry.frame + 1 < frame);
+            // The slot's own reference does not keep a mesh in the scene.
+            let ours = slots
+                .get(&entry.slot)
+                .is_some_and(|slot| std::ptr::eq(Arc::as_ptr(&slot.mesh), entry.mesh.as_ptr()));
+            entry.mesh.strong_count() > usize::from(ours)
+        });
+        for slot in self.slots.values_mut() {
+            slot.held = false;
+        }
+        for entry in self.resident.values() {
+            if let Some(slot) = self.slots.get_mut(&entry.slot) {
+                slot.held = true;
+                // Hold a mesh the scene holds, not one it let go of.
+                if Arc::strong_count(&slot.mesh) == 1
+                    && let Some(mesh) = entry.mesh.upgrade()
+                {
+                    slot.mesh = mesh;
+                }
+            }
+        }
+        let (mut live_vertices, mut live_indices) = (0u32, 0u32);
+        let probes = &mut self.probes;
+        self.slots.retain(|id, slot| {
+            // Unheld, a range lingers one frame after its last draw: a mesh
+            // re-recorded with the same content takes it over.
+            let keep = (slot.held || slot.frame + 1 >= frame)
+                && slot.frame + PATH_RETAIN_FRAMES >= frame
+                && !(over_budget && slot.frame + 1 < frame);
             if keep {
-                live_vertices += entry.vertex_count;
-                live_indices += entry.index_count;
+                live_vertices += slot.vertex_count;
+                live_indices += slot.index_count;
+            } else if let Some(ids) = probes.get_mut(&slot.probe) {
+                ids.retain(|other| other != id);
+                if ids.is_empty() {
+                    probes.remove(&slot.probe);
+                }
             }
             keep
         });
+        let slots = &self.slots;
+        self.resident
+            .retain(|_, entry| slots.contains_key(&entry.slot));
         self.live_vertices = live_vertices;
         self.live_indices = live_indices;
         let dead_vertices = self.vertex_end - live_vertices;
@@ -574,58 +636,96 @@ impl PathBuffers {
         }
     }
 
-    /// Pack the live entries at the start of the arena, in the order they
-    /// were placed, so ranges that were adjacent stay adjacent.
+    /// Pack the live slots at the start of the arena, in the order they
+    /// were placed, so ranges that were adjacent stay adjacent. An unheld
+    /// slot moves too, but is written only once a mesh takes it over.
     fn compact(&mut self) {
-        let mut order: Vec<(u32, usize)> = self
-            .resident
+        let mut order: Vec<(u32, u64)> = self
+            .slots
             .iter()
-            .map(|(key, entry)| (entry.first_vertex, *key))
+            .map(|(key, slot)| (slot.first_vertex, *key))
             .collect();
         order.sort_unstable();
         let (mut vertex, mut index) = (0u32, 0u32);
         for (_, key) in &order {
-            let entry = self.resident.get_mut(key).expect("listed entry");
-            entry.first_vertex = vertex;
-            entry.first_index = index;
-            vertex += entry.vertex_count;
-            index += entry.index_count;
+            let slot = self.slots.get_mut(key).expect("listed slot");
+            slot.first_vertex = vertex;
+            slot.first_index = index;
+            vertex += slot.vertex_count;
+            index += slot.index_count;
         }
         self.vertex_end = vertex;
         self.index_end = index;
         self.unwritten.clear();
-        self.rewrite = !self.resident.is_empty();
+        self.rewrite = !self.slots.is_empty();
     }
 
-    /// The arena range of `mesh`'s indices, placing it there the first time.
+    /// The arena range of `mesh`'s indices: the one a mesh with the same
+    /// content holds or just let go of, or a new one, written at upload.
     fn resident(&mut self, mesh: &Arc<nana_ui_scene::PathMesh>) -> (u32, u32) {
         let key = Arc::as_ptr(mesh) as usize;
-        let frame = self.frame;
-        let entry = match self.resident.entry(key) {
-            std::collections::hash_map::Entry::Occupied(entry) => entry.into_mut(),
-            std::collections::hash_map::Entry::Vacant(slot) => {
-                let vertex_count = mesh.vertices.len() as u32;
-                let index_count = mesh.indices.len() as u32;
-                let entry = slot.insert(ResidentPath {
-                    mesh: Arc::downgrade(mesh),
-                    first_vertex: self.vertex_end,
-                    vertex_count,
-                    first_index: self.index_end,
-                    index_count,
-                    frame,
-                });
-                self.vertex_end += vertex_count;
-                self.index_end += index_count;
-                self.live_vertices += vertex_count;
-                self.live_indices += index_count;
-                if !self.rewrite {
-                    self.unwritten.push(key);
-                }
-                entry
+        let id = match self.resident.get(&key) {
+            Some(entry) => entry.slot,
+            None => {
+                let slot = self.share_or_place(mesh);
+                self.resident.insert(
+                    key,
+                    ResidentPath {
+                        mesh: Arc::downgrade(mesh),
+                        slot,
+                    },
+                );
+                slot
             }
         };
-        entry.frame = frame;
-        (entry.first_index, entry.index_count)
+        let frame = self.frame;
+        let slot = self.slots.get_mut(&id).expect("a resident mesh's slot");
+        slot.held = true;
+        // Taking over a range: let the mesh the scene dropped go.
+        if Arc::strong_count(&slot.mesh) == 1 && !Arc::ptr_eq(&slot.mesh, mesh) {
+            slot.mesh = Arc::clone(mesh);
+        }
+        slot.frame = frame;
+        (slot.first_index, slot.index_count)
+    }
+
+    /// The slot of a mesh with `mesh`'s content, or a new one. Only a mesh
+    /// new to the painter comes here, so only a frame that records meshes
+    /// pays for the probe, and for the full comparison only on a match.
+    fn share_or_place(&mut self, mesh: &Arc<nana_ui_scene::PathMesh>) -> u64 {
+        let probe = mesh_probe(mesh);
+        if let Some(ids) = self.probes.get(&probe)
+            && let Some(&id) = ids
+                .iter()
+                .find(|id| same_content(&self.slots[*id].mesh, mesh))
+        {
+            return id;
+        }
+        let id = self.next_slot;
+        self.next_slot += 1;
+        let (_, vertex_count, index_count) = probe;
+        self.slots.insert(
+            id,
+            PathSlot {
+                mesh: Arc::clone(mesh),
+                probe,
+                held: true,
+                first_vertex: self.vertex_end,
+                vertex_count,
+                first_index: self.index_end,
+                index_count,
+                frame: self.frame,
+            },
+        );
+        self.probes.entry(probe).or_default().push(id);
+        self.vertex_end += vertex_count;
+        self.index_end += index_count;
+        self.live_vertices += vertex_count;
+        self.live_indices += index_count;
+        if !self.rewrite {
+            self.unwritten.push(id);
+        }
+        id
     }
 
     /// Queue `instance`, sharing the last one when it is the same draw state:
@@ -759,8 +859,8 @@ impl PathBuffers {
         let mut keys = std::mem::take(&mut self.unwritten);
         if self.rewrite {
             keys.clear();
-            keys.extend(self.resident.keys().copied());
-            keys.sort_unstable_by_key(|key| self.resident[key].first_vertex);
+            keys.extend(self.slots.keys().copied());
+            keys.sort_unstable_by_key(|key| self.slots[key].first_vertex);
             self.rewrite = false;
         }
         if keys.is_empty() {
@@ -770,13 +870,15 @@ impl PathBuffers {
         // Meshes placed one after another are written as one run.
         let mut run: Option<(u32, u32)> = None;
         for key in &keys {
-            let Some(entry) = self.resident.get(key) else {
+            let Some(entry) = self.slots.get(key) else {
                 continue;
             };
-            // A mesh dropped since it was placed is never drawn.
-            let Some(mesh) = entry.mesh.upgrade() else {
+            // Kept only for a re-recorded mesh to take over, and none did:
+            // not drawn, and dropped at the next frame.
+            if !entry.held && entry.frame != self.frame {
                 continue;
-            };
+            }
+            let mesh = Arc::clone(&entry.mesh);
             let (first_vertex, first_index) = (entry.first_vertex, entry.first_index);
             match run {
                 Some((vertex, index))
@@ -855,6 +957,73 @@ fn cpu_transformed(
         vertex.extrude = screen_extrude([a, b, c, d], vertex.extrude);
     }
     moved
+}
+
+/// The [`Probe`] of `mesh`: a few of its vertices and indices, evenly
+/// spaced, so it costs the same for any size of mesh.
+// Kept out of line so profiles can tell it from the draw it serves.
+#[inline(never)]
+fn mesh_probe(mesh: &nana_ui_scene::PathMesh) -> Probe {
+    const SAMPLES: usize = 8;
+    const K: u64 = 0x9E37_79B9_7F4A_7C15;
+    fn fold(a: u64, b: u64) -> u64 {
+        let product = u128::from(a) * u128::from(b);
+        product as u64 ^ (product >> 64) as u64
+    }
+    fn bits([a, b]: [f32; 2]) -> u64 {
+        u64::from(a.to_bits()) | (u64::from(b.to_bits()) << 32)
+    }
+    let bounds = mesh.bounds;
+    let mut hash = fold(
+        bits([bounds.x, bounds.y]) ^ K,
+        bits([bounds.width, bounds.height]) ^ K.rotate_left(32),
+    );
+    if let Some(color) = mesh.paint_color {
+        let [r, g, b, a] = pack_paint_color(color);
+        hash = fold(hash ^ bits([r, g]), bits([b, a]) ^ K);
+    }
+    let vertices = &mesh.vertices;
+    for sample in 0..SAMPLES.min(vertices.len()) {
+        let vertex = &vertices[sample * vertices.len() / SAMPLES.min(vertices.len())];
+        let [r, g, b, a] = vertex.color;
+        hash = fold(hash ^ bits(vertex.position), bits(vertex.extrude) ^ K);
+        hash = fold(hash ^ bits([r, g]), bits([b, a]) ^ K);
+        hash = fold(
+            hash ^ bits(vertex.paint_pos),
+            u64::from(vertex.coverage.to_bits()) ^ K,
+        );
+    }
+    let indices = &mesh.indices;
+    for sample in 0..SAMPLES.min(indices.len()) {
+        let index = indices[sample * indices.len() / SAMPLES.min(indices.len())];
+        hash = fold(hash ^ u64::from(index), K);
+    }
+    (hash, vertices.len() as u32, indices.len() as u32)
+}
+
+/// Whether `a` and `b` put the same bytes in the arena. Bitwise, a chunk
+/// of vertices at a time without a branch per field, so it runs at memory
+/// speed: the derived float comparison is several times slower.
+#[inline(never)]
+fn same_content(a: &nana_ui_scene::PathMesh, b: &nana_ui_scene::PathMesh) -> bool {
+    fn differ(p: &nana_ui_scene::PathVertex, q: &nana_ui_scene::PathVertex) -> u32 {
+        let pair = |x: [f32; 2], y: [f32; 2]| {
+            (x[0].to_bits() ^ y[0].to_bits()) | (x[1].to_bits() ^ y[1].to_bits())
+        };
+        pair(p.position, q.position)
+            | pair(p.extrude, q.extrude)
+            | pair(p.paint_pos, q.paint_pos)
+            | (p.coverage.to_bits() ^ q.coverage.to_bits())
+            | pair([p.color[0], p.color[1]], [q.color[0], q.color[1]])
+            | pair([p.color[2], p.color[3]], [q.color[2], q.color[3]])
+    }
+    a.vertices.len() == b.vertices.len()
+        && a.paint_color == b.paint_color
+        && a.indices == b.indices
+        && a.vertices
+            .chunks(64)
+            .zip(b.vertices.chunks(64))
+            .all(|(x, y)| x.iter().zip(y).fold(0, |acc, (p, q)| acc | differ(p, q)) == 0)
 }
 
 /// `mesh` as the arena holds it: vertices node-local in linear colour, and
@@ -1319,6 +1488,12 @@ impl MeshPipeline {
     #[cfg(test)]
     pub(super) fn transform_paths_on_cpu(&mut self, on: bool) {
         self.paths.cpu_transformed = on.then(Vec::new);
+    }
+
+    /// Arena ranges held, including those kept a frame for a re-record.
+    #[cfg(test)]
+    pub(super) fn path_slots(&self) -> usize {
+        self.paths.slots.len()
     }
 
     fn bind_path_buffers(&self, pass: &mut wgpu::RenderPass<'_>) {
