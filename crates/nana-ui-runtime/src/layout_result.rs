@@ -77,7 +77,6 @@ pub enum LayoutPartKind {
     Overlay,
     ScrollViewport,
     TextContent,
-    ChildPlacement,
     LeadingContent,
     TrailingContent,
     Hint,
@@ -114,7 +113,8 @@ impl LayoutPart {
     }
 }
 
-/// Placement of one direct child in the parent's formatting context.
+/// Placement of one direct child in the parent's formatting context, as
+/// [`crate::UiWorld::layout_child_placements`] gives it.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct LayoutChildPlacement {
     pub node: StableNodeId,
@@ -171,8 +171,14 @@ pub struct LayoutResult {
     /// [`crate::UiWorld::scroll_metrics`] reports it. A painter reads how far
     /// the content reaches past each edge from this and the live offset.
     pub scroll_metrics: Option<crate::ScrollMetrics>,
-    pub child_placements: Arc<[LayoutChildPlacement]>,
+    /// The node's own fragments: its text lines and runs, its overlay and
+    /// scroll viewport. Where its children sit is not copied in here: a
+    /// child's box is the child's, and [`crate::UiWorld::layout_child_fragments`]
+    /// and [`crate::UiWorld::layout_child_placements`] read the children
+    /// when asked. A result that held them was rebuilt for every child
+    /// that moved, and held each child's box three times.
     pub fragments: Arc<[LayoutFragment]>,
+    /// The node's own parts: its content box, text and component slots.
     pub parts: Arc<[LayoutPart]>,
     /// The clip chain (#201). `clip` is the nearest ancestor whose overflow
     /// clip, and scroll, reach this box: the chain goes on through that
@@ -233,7 +239,6 @@ impl LayoutResult {
             scroll_metrics: None,
             // `Arc::default` shares one static empty slice; `Arc::from([])`
             // would allocate a header per result.
-            child_placements: Arc::default(),
             fragments: Arc::default(),
             parts: Arc::default(),
             clip: None,
@@ -259,7 +264,6 @@ impl LayoutResult {
             && self.overflow == other.overflow
             && self.scroll_extent == other.scroll_extent
             && self.scroll_metrics == other.scroll_metrics
-            && self.child_placements == other.child_placements
             && self.fragments == other.fragments
             && self.parts == other.parts
             && self.clip == other.clip
@@ -312,25 +316,13 @@ impl LayoutResult {
             delta = delta.union(Delta::PLACEMENT);
         }
         // A container can keep its own box while changing the placement of a
-        // direct child, fragment, or semantic part. Those nested geometries
-        // are part of the retained result and must not be mistaken for a
-        // stable boundary. Size changes also affect the container's exported
-        // child metrics, while an origin-only change remains placement-only.
+        // fragment or semantic part. Those nested geometries are part of the
+        // retained result and must not be mistaken for a stable boundary.
+        // Size changes also affect the container's exported metrics, while
+        // an origin-only change remains placement-only. A child's placement
+        // is the child's own result.
         let mut nested_placement = false;
         let mut nested_used_size = false;
-        for (left, right) in self
-            .child_placements
-            .iter()
-            .zip(other.child_placements.iter())
-        {
-            if left.bounds.x != right.bounds.x || left.bounds.y != right.bounds.y {
-                nested_placement = true;
-            }
-            if left.bounds.width != right.bounds.width || left.bounds.height != right.bounds.height
-            {
-                nested_used_size = true;
-            }
-        }
         for (left, right) in self.fragments.iter().zip(other.fragments.iter()) {
             if left.bounds.x != right.bounds.x || left.bounds.y != right.bounds.y {
                 nested_placement = true;
@@ -367,12 +359,6 @@ impl LayoutResult {
         {
             delta = delta.union(Delta::SCROLL_EXTENT);
         }
-        let child_topology_changed = self.child_placements.len() != other.child_placements.len()
-            || self
-                .child_placements
-                .iter()
-                .zip(other.child_placements.iter())
-                .any(|(left, right)| left.node != right.node || left.index != right.index);
         let fragment_topology_changed = self.fragments.len() != other.fragments.len()
             || self
                 .fragments
@@ -395,7 +381,6 @@ impl LayoutResult {
             || self.clip_parent != other.clip_parent
             || self.containing_block != other.containing_block
             || self.dependencies != other.dependencies
-            || child_topology_changed
             || fragment_topology_changed
             || part_topology_changed
         {
@@ -417,9 +402,8 @@ pub(crate) fn place_box(origin: [f32; 2], local: LayoutBox) -> LayoutBox {
 
 impl LayoutResult {
     /// The boxes and baselines of a result built with its border box at the
-    /// origin, placed at `origin`. The fragment, part and child lists are
-    /// left empty: [`Self::place_fragment`] and [`Self::place_part`] place
-    /// the own ones, and the children's come from where the children are.
+    /// origin, placed at `origin`. The fragment and part lists are left
+    /// empty: [`Self::place_fragment`] and [`Self::place_part`] place them.
     ///
     /// Takes the result rather than cloning it: every field it keeps moves
     /// over, and the lists, empty on a result built at the origin, are not
@@ -434,9 +418,6 @@ impl LayoutResult {
         self.last_baseline = baseline(self.last_baseline);
         self.overflow = place_box(origin, self.overflow);
         self.scroll_extent = place_box(origin, self.scroll_extent);
-        if !self.child_placements.is_empty() {
-            self.child_placements = Arc::default();
-        }
         if !self.fragments.is_empty() {
             self.fragments = Arc::default();
         }
@@ -508,30 +489,23 @@ mod tests {
             LayoutMetricDelta::PLACEMENT
         );
 
-        let mut child_moved = result();
-        child_moved.child_placements = Arc::from([LayoutChildPlacement {
-            node: StableNodeId::new(7).unwrap(),
-            bounds: LayoutBox {
-                x: 4.0,
-                y: 0.0,
-                width: 10.0,
-                height: 10.0,
-            },
-            index: 0,
-        }]);
-        let mut child_moved_again = child_moved.clone();
-        child_moved_again.child_placements = Arc::from([LayoutChildPlacement {
-            node: StableNodeId::new(7).unwrap(),
-            bounds: LayoutBox {
-                x: 8.0,
-                y: 0.0,
-                width: 10.0,
-                height: 10.0,
-            },
-            index: 0,
-        }]);
+        let line = |x: f32| {
+            LayoutFragment::new(
+                LayoutFragmentKind::TextLine,
+                LayoutBox {
+                    x,
+                    y: 0.0,
+                    width: 10.0,
+                    height: 10.0,
+                },
+            )
+        };
+        let mut line_moved = result();
+        line_moved.fragments = Arc::from([line(4.0)]);
+        let mut line_moved_again = line_moved.clone();
+        line_moved_again.fragments = Arc::from([line(8.0)]);
         assert_eq!(
-            child_moved.metric_delta(&child_moved_again),
+            line_moved.metric_delta(&line_moved_again),
             LayoutMetricDelta::PLACEMENT
         );
     }

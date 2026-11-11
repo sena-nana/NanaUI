@@ -91,7 +91,7 @@ Nodes may nest arbitrarily: a grid in a flex parent is a `FlexItem` and is still
 `UiWorld::layout_node(id)` assembles this view from the records on every call: resolved intent, content, established
 context, parent context, participation, context generation, and result generation. When the parent has not been laid out yet,
 participation is `None`; it does not guess. `LayoutResult::formatting_context` records which context the result was
-produced in, and it also decides the kind of child fragment (`Flex` → `FlexChildPlacement`,
+produced in, and it also decides the kind of child fragment `UiWorld::layout_child_fragments` gives (`Flex` → `FlexChildPlacement`,
 `Grid` and `Layers` → `GridChildPlacement`, `Inline` → `InlineAtomic`, everything else →
 `ChildPlacement`). A container that generates no box establishes no context: when a container that was already laid out later becomes `NoBox`,
 it and the nodes inside it drop the contexts they established, and the boxes collapse to empty boxes at the origin, the same as a cold layout. This does not count as a

@@ -291,7 +291,7 @@ fn issue205_ten_thousand_plain_buttons_keep_one_entity_and_two_parts_each() {
                 2,
                 "plain label retains the original two parts"
             );
-            assert!(result.child_placements.is_empty());
+            assert!(cx.world().layout_child_placements(id).unwrap().is_empty());
         }
         let generation = cx.world().layout_generation();
         product_frame(&mut cx, document, viewport, &mut shaper);
@@ -465,7 +465,7 @@ fn issue205_ten_thousand_rows_keep_one_entity_and_bounded_parts() {
         for id in ids {
             let result = cx.world().layout_result(id).unwrap();
             assert_eq!(result.parts.len(), 4);
-            assert!(result.child_placements.is_empty());
+            assert!(cx.world().layout_child_placements(id).unwrap().is_empty());
         }
         product_frame(&mut cx, document, viewport, &mut shaper);
         assert!(cx.take_system_work().is_empty());
@@ -593,8 +593,9 @@ fn issue205_form_field_parts_follow_support_state_and_rtl_without_replacing_cont
             .any(|part| part.kind == LayoutPartKind::LeadingContent)
     );
     assert!(
-        result
-            .child_placements
+        cx.world()
+            .layout_child_placements(field.stable_id())
+            .unwrap()
             .iter()
             .any(|placement| placement.node == control.stable_id())
     );
@@ -771,12 +772,12 @@ fn issue205_ten_thousand_form_fields_and_selects_keep_bounded_parts() {
         for id in fields {
             let result = cx.world().layout_result(id).unwrap();
             assert_eq!(result.parts.len(), 4);
-            assert!(result.child_placements.is_empty());
+            assert!(cx.world().layout_child_placements(id).unwrap().is_empty());
         }
         for id in selects {
             let result = cx.world().layout_result(id).unwrap();
             assert_eq!(result.parts.len(), 4);
-            assert!(result.child_placements.is_empty());
+            assert!(cx.world().layout_child_placements(id).unwrap().is_empty());
         }
         product_frame(&mut cx, document, viewport, &mut shaper);
         let idle = cx.world().counters.frame_counters;
@@ -974,7 +975,7 @@ fn issue205_ten_thousand_values_keep_one_entity_and_three_parts() {
         for id in ids {
             let result = cx.world().layout_result(id).unwrap();
             assert_eq!(result.parts.len(), 3);
-            assert!(result.child_placements.is_empty());
+            assert!(cx.world().layout_child_placements(id).unwrap().is_empty());
         }
         product_frame(&mut cx, document, viewport, &mut shaper);
         assert!(cx.take_system_work().is_empty());
@@ -1269,7 +1270,7 @@ fn issue205_ten_thousand_cards_keep_one_entity_and_four_parts() {
         for id in ids {
             let result = cx.world().layout_result(id).unwrap();
             assert_eq!(result.parts.len(), 4);
-            assert!(result.child_placements.is_empty());
+            assert!(cx.world().layout_child_placements(id).unwrap().is_empty());
         }
         product_frame(&mut cx, document, viewport, &mut shaper);
         assert!(cx.take_system_work().is_empty());
@@ -1574,7 +1575,7 @@ fn issue205_ten_thousand_checkboxes_keep_one_entity_and_three_parts() {
                     LayoutPartKind::Indicator
                 ]
             );
-            assert!(result.child_placements.is_empty());
+            assert!(cx.world().layout_child_placements(id).unwrap().is_empty());
         }
         let generation = cx.world().layout_generation();
         product_frame(&mut cx, document, viewport, &mut shaper);
@@ -2194,7 +2195,7 @@ fn issue205_ten_thousand_switches_keep_one_entity_and_bounded_parts() {
                 expected.push(LayoutPartKind::Hint);
             }
             assert_eq!(kinds, expected);
-            assert!(result.child_placements.is_empty());
+            assert!(cx.world().layout_child_placements(id).unwrap().is_empty());
         }
         let generation = cx.world().layout_generation();
         product_frame(&mut cx, document, viewport, &mut shaper);
@@ -3185,7 +3186,7 @@ fn issue205_ten_thousand_selection_options_keep_one_entity_and_bounded_parts() {
                 expected.push(LayoutPartKind::LeadingContent);
             }
             assert_eq!(kinds, expected);
-            assert!(result.child_placements.is_empty());
+            assert!(cx.world().layout_child_placements(id).unwrap().is_empty());
         }
         let generation = cx.world().layout_generation();
         product_frame(&mut cx, document, viewport, &mut shaper);
@@ -3361,11 +3362,7 @@ fn issue205_empty_state_icon_title_and_message_are_published_parts() {
                     // title, message and content box.
                     assert_eq!(world.len(), 3 + usize::from(action));
                     assert_eq!(
-                        result
-                            .parts
-                            .iter()
-                            .filter(|part| part.kind != LayoutPartKind::ChildPlacement)
-                            .count(),
+                        result.parts.iter().count(),
                         2 + usize::from(icon) + usize::from(message.is_some())
                     );
                 }
@@ -3872,11 +3869,7 @@ fn issue205_assembled_toast_mark_is_a_published_part() {
                 panic!("toast")
             };
             assert!(title.is_none() && painted_description.is_none() && dismiss.is_none());
-            let parts = result
-                .parts
-                .iter()
-                .filter(|part| part.kind != LayoutPartKind::ChildPlacement)
-                .count();
+            let parts = result.parts.iter().count();
             if mark > 0.0 {
                 let part = part_of(&cx, id, LayoutPartKind::LeadingContent);
                 let line = crate::toast::line_box(recipe.title.size);
@@ -4297,11 +4290,7 @@ fn issue205_menu_trigger_label_and_glyph_are_published_parts() {
                         else {
                             panic!("menu surface")
                         };
-                        let parts = result
-                            .parts
-                            .iter()
-                            .filter(|part| part.kind != LayoutPartKind::ChildPlacement)
-                            .count();
+                        let parts = result.parts.iter().count();
                         if let Some(size) = icon {
                             let extent = size
                                 .unwrap_or(crate::popover::TRIGGER_ICON_SIZE)

@@ -93,7 +93,7 @@ measure 和 placement 用同一个函数选 context，两趟不会对同一个�
 `UiWorld::layout_node(id)` 每次调用时从记录拼出这个视图：解析后的意图、内容、建立的
 context、父级 context、参与方式、context generation 和结果 generation。父级还没布局时
 参与方式是 `None`，不猜。`LayoutResult::formatting_context` 记下结果是在哪个 context 里
-排出来的，子项 fragment 的种类也由它决定（`Flex` → `FlexChildPlacement`，
+排出来的，`UiWorld::layout_child_fragments` 给出的子项 fragment 的种类也由它决定（`Flex` → `FlexChildPlacement`，
 `Grid` 和 `Layers` → `GridChildPlacement`，`Inline` → `InlineAtomic`，其余 →
 `ChildPlacement`）。不生成盒子的容器不建立 context：已经布局过的容器后来变成 `NoBox`，
 它和里面的节点撤掉各自建立的 context，盒子收成原点处的空盒，与冷布局相同；这不算一次

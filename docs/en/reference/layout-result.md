@@ -11,7 +11,7 @@ Each `LayoutResult` carries:
 - the border box, padding box, and content box;
 - the first baseline and last baseline;
 - the overflow extent and scroll extent;
-- child placements and typed layout fragments / parts;
+- the node's own typed layout fragments / parts: text lines and runs, overlay and scroll viewport, content box and component parts;
 - the clip chain (`clip`, `clip_parent`), containing-block references, and dependency metadata;
 - the monotonically increasing layout generation (`layout_generation`) that produced the result.
 
@@ -19,13 +19,15 @@ The Runtime frame update (`RuntimeFrameUpdate`) exposes this `layout_generation`
 
 `clip` is the nearest overflow container that reaches this node, and the chain continues up through that container's own `clip`. `clip_parent` is the node this node takes clipping and scrolling from: normally the parent; for an `absolute` node whose containing block lies outside a static overflow container, the parent of the outermost container it escapes; and `None` for a `fixed` node (Issue #201; rules under "clip chain" in [Layout (CSS Subset)](layout.md)). Scene extraction, hit testing, and the accessibility projection all attach nodes by `clip_parent`; skipped ancestors pass only transforms, not clipping or scrolling. An accessibility node's `clip` is the viewport region left by this chain. When an ancestor changes positioning or starts or stops clipping, these two fields on the nodes below update at the next publish. Scroll extents follow the same chain: for a node that clips or scrolls, `overflow` merges in only the children whose `clip_parent` is that node; `scroll_extent` and scroll metrics include only the descendants it reaches; `absolute` boxes that escape it count toward their containing blocks; and `fixed` boxes count toward no node.
 
+A result copies none of its children's boxes. Where each child sits in the parent's context, as placements and fragments, is read from the children when asked: `UiWorld::layout_child_placements` / `layout_child_fragments` (page coordinates) and `local_layout_child_placements` / `local_layout_child_fragments` (from the parent's border-box origin, each child measured from its own frame); a call walks the parent's children once, and returns `None` when the node has no published result. So a child that only moves inside its parent's box leaves the parent's result as it was: not rebuilt, not republished, not extracted again; a child reaching past the parent's box (or back) changes the parent's `overflow`, and the result is rebuilt as before. Before 2026-11-11 a result also had a `child_placements` field, began `fragments` with one fragment per child and held one `ChildPlacement` part per child in `parts`: the same child box three times (about 144 B per child), and the whole parent rebuilt whenever a child moved. To migrate, replace `result.child_placements` with `world.layout_child_placements(id)`, read child fragments picked out of `result.fragments` by `node.is_some()` from `world.layout_child_fragments(id)` instead; `LayoutPartKind::ChildPlacement` is gone.
+
 `ExtractedNode::layout_result` shares this immutable snapshot. Scene's Sticky placement reads the containing block, viewport, and scroll extent from it without remeasuring content; the scroll offset is still read from the current `ExtractedNode::scroll_offset`, and the presented position is never written back to the snapshot.
 
 `layout_generation` is independent of the world mutation generation: **it increments only when layout output actually changes**. So hover, opacity, transform, and other paint-only changes trigger no geometry rebuild derived from layout. Layout-affecting writes clear the caches of affected nodes, their descendants, and dependent ancestors before the next result is published, while topology changes keep stable node identity (`StableNodeId`).
 
 ## Formatting context and child fragments
 
-`formatting_context` records the formatting context the node actually used to arrange its children (or its own text) (Issue #197), and determines the concrete type of each child fragment:
+`formatting_context` records the formatting context the node actually used to arrange its children (or its own text) (Issue #197), and determines the concrete type of each child fragment `UiWorld::layout_child_fragments` gives:
 
 | `formatting_context` | Child fragment type |
 | --- | --- |

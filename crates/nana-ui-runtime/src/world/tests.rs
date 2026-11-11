@@ -259,13 +259,28 @@ fn layout_result_is_the_shared_geometry_snapshot_and_survives_paint_only_work() 
     let result = world.layout_result(node(1)).expect("published result");
     assert_eq!(result.bounds, box_at(4.0, 6.0, 100.0, 40.0));
     assert_eq!(world.layout_box(node(1)), Some(result.bounds));
-    assert_eq!(result.child_placements.len(), 1);
-    assert_eq!(result.child_placements[0].node, node(2));
+    let placements = world.layout_child_placements(node(1)).unwrap();
+    assert_eq!(placements.len(), 1);
+    assert_eq!(placements[0].node, node(2));
+    // On the page, as the child's own result stands.
+    assert_eq!(placements[0].bounds, box_at(12.0, 18.0, 32.0, 16.0));
+    assert_eq!(
+        world.local_layout_child_placements(node(1)).unwrap()[0].bounds,
+        box_at(8.0, 12.0, 32.0, 16.0)
+    );
+    assert!(
+        world
+            .layout_child_fragments(node(1))
+            .unwrap()
+            .iter()
+            .any(|fragment| fragment.node == Some(node(2)))
+    );
+    // The result holds only its own geometry.
     assert!(
         result
             .fragments
             .iter()
-            .any(|fragment| fragment.node == Some(node(2)))
+            .all(|fragment| fragment.node.is_none())
     );
     assert_eq!(result.generation, world.layout_generation());
     let generation = world.layout_generation();
@@ -351,7 +366,10 @@ fn unchanged_child_keeps_its_layout_generation_when_the_parent_box_changes() {
     let parent = world.layout_result(node(1)).expect("parent");
     assert_eq!(parent.generation, world.layout_generation());
     assert_eq!(parent.bounds, box_at(0.0, 0.0, 180.0, 40.0));
-    assert_eq!(parent.child_placements[0].bounds, child_bounds);
+    assert_eq!(
+        world.layout_child_placements(node(1)).unwrap()[0].bounds,
+        child_bounds
+    );
 }
 
 #[test]
@@ -12686,4 +12704,73 @@ fn a_subtree_moved_under_a_parked_parent_is_not_hit_before_the_next_layout() {
     moved.insert(node(2), node(3), None);
     world.commit(moved).unwrap();
     assert_eq!(world.hit_test(document(1), 10.0, 10.0), None);
+}
+
+/// A parent's result holds none of its children's boxes: a child that moves
+/// inside it leaves the parent's result as it was, and the child placements
+/// read from the children say where it went. A child reaching past the box
+/// grows the overflow, and moving back shrinks it again.
+#[test]
+fn a_child_moving_inside_its_parent_leaves_the_parent_result() {
+    let mut world = UiWorld::new();
+    let mut create = MutationQueue::new();
+    for id in 1..=3 {
+        create.create(
+            node(id),
+            document(1),
+            NodeKind::Element { tag: "div".into() },
+        );
+    }
+    create.insert(node(1), node(2), None);
+    create.insert(node(1), node(3), None);
+    world.commit(create).unwrap();
+    let mut layout = MutationQueue::new();
+    layout.write_layout(node(1), box_at(0.0, 0.0, 100.0, 40.0));
+    layout.write_layout(node(2), box_at(0.0, 0.0, 30.0, 10.0));
+    layout.write_layout(node(3), box_at(40.0, 0.0, 30.0, 10.0));
+    world.commit(layout).unwrap();
+    let held = Arc::clone(world.local_layout_result(node(1)).unwrap());
+    let place = |world: &mut UiWorld, bounds: LayoutBox| {
+        let mut layout = MutationQueue::new();
+        layout.write_layout(node(2), bounds);
+        world.commit(layout).unwrap();
+    };
+
+    place(&mut world, box_at(10.0, 5.0, 30.0, 10.0));
+    assert!(Arc::ptr_eq(
+        world.local_layout_result(node(1)).unwrap(),
+        &held
+    ));
+    let placements = world.layout_child_placements(node(1)).unwrap();
+    assert_eq!(
+        placements
+            .iter()
+            .map(|placement| (placement.node, placement.index, placement.bounds))
+            .collect::<Vec<_>>(),
+        [
+            (node(2), 0, box_at(10.0, 5.0, 30.0, 10.0)),
+            (node(3), 1, box_at(40.0, 0.0, 30.0, 10.0)),
+        ]
+    );
+
+    place(&mut world, box_at(90.0, 0.0, 30.0, 10.0));
+    let result = world.layout_result(node(1)).unwrap();
+    assert_eq!(result.overflow, box_at(0.0, 0.0, 120.0, 40.0));
+
+    place(&mut world, box_at(10.0, 5.0, 30.0, 10.0));
+    let result = world.layout_result(node(1)).unwrap();
+    assert_eq!(result.overflow, box_at(0.0, 0.0, 100.0, 40.0));
+    assert!(result.fragments.is_empty());
+    assert_eq!(
+        world
+            .layout_child_fragments(node(1))
+            .unwrap()
+            .iter()
+            .map(|fragment| (fragment.node, fragment.bounds))
+            .collect::<Vec<_>>(),
+        [
+            (Some(node(2)), box_at(10.0, 5.0, 30.0, 10.0)),
+            (Some(node(3)), box_at(40.0, 0.0, 30.0, 10.0)),
+        ]
+    );
 }

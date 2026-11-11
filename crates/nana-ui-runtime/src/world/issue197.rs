@@ -228,14 +228,13 @@ fn issue197_a_context_transition_keeps_every_child() {
         assert_eq!(page.established(button), Some(Ctx::Inline), "{display:?}");
         let result = page.world().layout_result(container).unwrap();
         assert_eq!(result.formatting_context, Some(context));
+        let children = page.world().layout_child_fragments(container).unwrap();
+        assert!(!children.is_empty());
         assert!(
-            result
-                .fragments
+            children
                 .iter()
-                .filter(|fragment| fragment.node.is_some())
                 .all(|fragment| fragment.kind == context.child_fragment_kind()),
-            "{display:?}: {:?}",
-            result.fragments
+            "{display:?}: {children:?}"
         );
 
         let mut cold = Page::new(display);

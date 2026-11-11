@@ -454,6 +454,48 @@ fn issue200_an_absolute_box_hangs_from_its_nearest_positioned_ancestor() {
 }
 
 #[test]
+fn issue200_a_box_hanging_past_its_parent_moves_that_parents_overflow_on_the_page() {
+    // The badge sits in a static wrapper below a spacer and hangs from the
+    // card's top right corner, so its box is measured from the card: in
+    // those numbers it lies inside the wrapper's own box, while on the page
+    // it is above it. The card narrows and the badge follows it, the
+    // wrapper's box and its result unchanged (a parent result holds no
+    // child boxes); the wrapper's overflow on the page follows the badge.
+    let pinned = LayoutStyle {
+        position: PositionSpec::Absolute,
+        offset_top: Some(LengthSpec::Px(0.0)),
+        offset_right: Some(LengthSpec::Px(0.0)),
+        ..sized(20.0, 10.0)
+    };
+    let mut tree = Tree::new(vec![
+        (None, card(PositionSpec::Relative, 340.0)),
+        (Some(0), sized(200.0, 50.0)),
+        (Some(0), sized(300.0, 100.0)),
+        (Some(2), pinned),
+    ]);
+    tree.matches_cold();
+    for width in [320.0, 300.0] {
+        tree.restyle(0, card(PositionSpec::Relative, width));
+        let (x, y, width, height) = tree.rect(3);
+        let wrapper = tree.rect(2);
+        assert!(y + height <= wrapper.1, "the badge is above its parent");
+        let overflow = tree
+            .context
+            .world()
+            .layout_result(tree.ids[2])
+            .unwrap()
+            .overflow;
+        assert!(
+            overflow.x <= x
+                && overflow.y <= y
+                && overflow.x + overflow.width >= x + width
+                && overflow.y + overflow.height >= y + height,
+            "{overflow:?} holds the badge at {x}, {y}"
+        );
+    }
+}
+
+#[test]
 fn issue200_a_sticky_box_is_a_containing_block() {
     let mut tree = Tree::new(vec![
         (
