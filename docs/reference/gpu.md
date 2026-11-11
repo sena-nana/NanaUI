@@ -93,7 +93,7 @@ Surface 的 HDR 能力由 `SurfaceCapabilities::format_capabilities` 决定，�
 - `host-textures-64` 是“大量小 pass”的情形（bench 自己的 64 个 producer pass 加上 UI pass），开销在驱动。其中 25% 是 bench 自己的 `queue.write_buffer`。在 `command_encoder_finish` 内部，42% 是 wgpu-core 为每个 pass 新开一条 hal 命令列表（`InnerCommandEncoder::open_pass` → `begin_encoding`，DX12 每帧 290 µs，Vulkan 528 µs）。`finish` 里只有 19% 是 wgpu-core 自身代码。
 - NanaUI 自身的开销按 CPU 的包含式占比统计：文字在 `ui-dense-2k` 占 3.5%，在 `text-paint-color` 占 57%（主要是 `RuntimeDocument::flush`，painter 占 9.6%），在 `text-constraint-resize` 占 84%。图标在 `ui-dense-2k` 占 0.5%。`gpu-scene-*` 场景都不画矢量路径，所以这次测量没有覆盖路径的开销；路径另见 §10。
 
-**(a) 结论：不做。** 跳过校验，普通场景每帧最多省 9–35 µs，65 个 pass 的合成场景约省 110–117 µs。在文字为主的帧里不到 CPU 的 1%，这类帧 93–97% 是 NanaUI 自身的工作。只有当真实场景每帧出现数百个 draw 或 pass 时才值得重看；即便那样，逐 pass 开命令列表才是更大的目标。
+**(a) 结论：不做。** 跳过校验，普通场景每帧最多省 9–35 µs，65 个 pass 的合成场景约省 110–117 µs。在文字为主的帧里不到 CPU 的 1%，这类帧 93–97% 是 NanaUI 自身的工作。只有当真实场景每帧出现数百个 draw 或 pass 时才值得重看；即便那样，逐 pass 开命令列表才是更大的目标（已实测，也不做，见 §11）。
 
 **输入到呈现延迟。** `input-latency-probe` 打开一个普通的 hosted 窗口（Mailbox，`desired_maximum_frame_latency` 为 1，wgpu 默认的 `Dx12UseFrameLatencyWaitableObject::Wait`）。驱动线程每隔随机 120–250 ms 投递一次 `WM_LBUTTONDOWN`，每次按下让窗口换色。时间戳全部取 QPC：`post` 在 `PostMessageW` 之前；`input` 在 `RuntimeProgram::input_event` 里（降级和路由之后）；`prepare` 和 `presented` 在帧钩子里（`present` 返回之后，并附上宿主各阶段 gauge）；`screen` 是 Desktop Duplication 第一次出现新颜色的合成桌面帧的 `LastPresentTime`。wgpu 没有为 swapchain 暴露 `GetFrameStatistics`，所以用 DWM 的呈现时间代替 DXGI 帧统计。DWM 把多次更新折进同一帧的样本已剔除。下表单位都是 ms，每行 n = 161–297。
 
@@ -301,6 +301,76 @@ WGPU_BACKEND=dx12 target/release/examples/stack-sampler.exe --delay-ms 3000 --du
   --output $S/sampled-canvas-scroll.json
 # 每帧 CPU µs = stack-sampler 打印的 thread_cpu_ms × 1000 ÷（bench 帧率 × wall_ms ÷ 1000）
 python perf/stack_attribution.py --path-stages --cpu-us-per-frame 6745 $S/canvas-scroll.folded
+```
+
+### 11. 实测：每个 pass 一条原生命令列表（2026-11-11）
+
+问题：§6 发现 wgpu-core 给每个 pass 新开一条原生命令列表，65 个 pass 的合成场景在这上面每帧花 290 µs（DX12）或 528 µs（Vulkan）。要不要改 fork，让多个 pass 共用一条列表？只做测量，fork 和产品帧路径都没有改。
+
+**原因。** `encode_render_pass`（`wgpu-core/src/command/render.rs`）先 `close_if_open` 关掉当前列表，再 `open_pass` 开一条新列表录 pass 本身。录完以后，它才知道这个 pass 需要哪些资源状态转换（`state.pass.scope` 是边校验边合并出来的），于是又开一条 “(wgpu internal) Pre Pass” 列表，写入 barrier、丢弃面修正、查询重置和间接调用校验，再用 `close_and_swap` 把它插到 pass 列表前面。已经录好的原生列表中间插不进命令，而 hal 的 `CommandEncoder` 同一时间只有一条录制中的列表，所以每个 pass 要两条列表：N 个 pass 约 2N+1 条，`queue.submit` 时还会在最前面为初始状态转换补一条。列表本身已经复用：DX12 从 `free_lists` 取出后 `Reset`，不新建；Vulkan 的命令池按 `ALLOCATION_GRANULARITY` 批量分配；分配器和池随编码器在 `CommandAllocator` 里循环使用。稳态帧不创建列表，开销是每条列表都要做的 Reset/Begin、Close 和提交。所以“更积极地复用列表”已经没有可省的了，能省的只有列表的数量。
+
+**真实帧开几条列表。** 用一个临时、未提交的计数补丁（在 `Queue::submit` 里统计每次 hal 提交的命令缓冲数，每 500 次打印一次）跑 `nana-gpu-scene-benchmark --serialize`。新增的 `gpu-scene-ui-effects` 场景是一个密集列表，上面有两块毛玻璃面板（`backdrop-filter: blur(12px)` 加半透明底色）和四张淡出卡片（opacity 0.85，有背景和子节点）。新增的 bench 节点 `frost-panel` 和 `opacity-group` 分别对应这两种效果。DX12 和 Vulkan 的计数完全一样，每次提交都相同：
+
+| 场景 | 每帧列表数 |
+| --- | ---: |
+| `gpu-scene-ui`、`gpu-scene-ui-dense-2k`（普通 UI） | 8 |
+| 1 块毛玻璃 / 2 块 | 18 / 28 |
+| 1 张淡出卡片 / 4 张 | 14 / 26 |
+| `gpu-scene-ui-effects`（2 块毛玻璃 + 4 张卡片） | 46 |
+| 4 块毛玻璃 + 8 张卡片 | 82 |
+| `gpu-scene-host-textures-64`（§6 的合成场景） | 134 |
+
+每块毛玻璃多出约 10 条列表（约 5 个 pass：拷贝、模糊、合成，以及 dest pass 重开）。第一张淡出卡片多出 6 条，之后每张多 4 条（组图层 pass 加 dest pass 重开）。
+
+**每条列表的 CPU 开销。** 新增的 `third_party/wgpu-fork-tests/examples/pass-cost.rs` 只用 `wgpu`：`chain` 模式录 K 个 pass，每个 pass 往自己的 256×256 图层画一个三角形，同时采样上一个图层（每个 pass 都有两个纹理在附件与采样状态之间转换，相当于组图层或模糊的一步）；`single` 模式把同样 K 次 draw 放进一个 pass。每帧计时从 `create_command_encoder` 到 `Queue::submit`，然后等 GPU 完成，任何时候只有一条提交在途，每轮 3 秒。下表是 3 轮 p50 的中位数（µs/帧）：
+
+| 后端 | 模式 | K=1 | K=8 | K=32 | K=64 | 每多一个 pass |
+| --- | --- | ---: | ---: | ---: | ---: | ---: |
+| DX12 | chain | 34.0 | 103.1 | 276.1 | 548.0 | **7.3 µs** |
+| DX12 | single | 28.6 | 30.7 | 39.5 | 85.7 | |
+| Vulkan | chain | 18.3 | 98.6 | 226.0 | 441.0 | **6.1 µs** |
+| Vulkan | single | 19.0 | 28.1 | 51.1 | 59.0 | |
+
+“每多一个 pass” =（K=64 时 chain − single）÷ 63，包括 pass 的全部开销。用 §6 的 `stack-sampler` 采 K=64 的 chain（6 s，每 2 ms 一次），新增的 `perf/stack_attribution.py --list-stages` 把每个非阻塞样本只记到一个阶段。原生列表相关的部分（打开、关闭、回收、提交）在 DX12 上占 58%，在 Vulkan 上占 60%：
+
+| 后端 | 打开（`begin_encoding`） | 关闭（`end_encoding`） | 回收（`reset_all`） | 提交 | barrier | 其余 pass 录制 | 其他 |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| DX12 | 29.8% | 13.6% | 1.2% | 13.1% | 7.2% | 26.7% | 8.5% |
+| Vulkan | 35.2% | 11.0% | 7.7% | 5.8% | 4.3% | 27.2% | 8.7% |
+
+DX12 打开列表的样本里 81% 在驱动的 `ID3D12GraphicsCommandList::Reset` 里，18% 在给列表设调试名（`SetName`）；Vulkan 的几乎全在驱动的 `vkBeginCommandBuffer` 里。按不采样时每个 pass 的开销折算，每条列表约 **2.1 µs（DX12）/ 1.8 µs（Vulkan）**，提交里的固定开销也算进去了，所以是上限。
+
+在 `gpu-scene-ui-effects` 上直接采样（每个后端 3 轮，中位数 [最小–最大]）：每帧 CPU 在 DX12 上是 515 [344–683] µs，其中列表相关 206 [143–274] µs（40%）；在 Vulkan 上是 416 [386–510] µs，其中 109 [50–128] µs（25%）。采样器每次挂起线程都会拖慢它，所以这组数比上面的折算值偏高，且波动大。
+
+**机器负载。** 测量期间 ML 训练任务一直在跑：每轮开始时 GPU 利用率 39–99%，显存占用 13.3 GB，系统内存 47 GB 里用了约 26 GB。CPU 为 Core Ultra 7 265K，GPU 为 RTX 5060 Ti。表里的量都是进程内的 CPU 时间。
+
+**可行的改法和能省多少。** 能保住 wgpu 资源状态校验和正确性的改法只有一种：wgpu-core 给每个命令编码器配两个 hal 编码器交替使用，把下一个 pass 的 barrier 写到上一条还开着的列表末尾，不再单开一条。提交顺序和现在一样，每个 pass 从两条列表变成一条。要做到每个编码器只用一条列表，就得在录 pass 之前先扫一遍命令，重算这个 pass 的使用范围。这等于在校验之外再维护一份状态跟踪，算错了就是 GPU 上的读写冲突，不在考虑范围内。按每条约 2 µs 估算：
+
+| 帧 | 列表 | 列表总开销 | 两编码器交替能省 | 理想情况（一条列表）能省 |
+| --- | ---: | ---: | ---: | ---: |
+| 普通 UI | 8 | ~16 µs | ~8 µs | ~14 µs |
+| 2 块毛玻璃 + 4 张卡片 | 46 | ~90 µs | ~45 µs | ~88 µs |
+| 4 块毛玻璃 + 8 张卡片 | 82 | ~165 µs | ~80 µs | ~160 µs |
+
+**结论：不做。** 真实 NanaUI 帧每帧开 8 条（普通 UI）到约 46 条（有毛玻璃和淡出动画）列表。可行的改法每帧省不到 0.1 ms：普通帧约 8 µs，效果较多的帧约 45 µs。即使理想情况每个编码器只用一条列表，也只省约 0.09 ms，而那需要一份校验之外的状态跟踪。§6 的 290 / 528 µs 来自 bench 自己的 64 个 producer pass（134 条列表）。这种开销随应用自己画的内容增长，与 NanaUI 的 UI 无关；真正的 producer 走 `GpuContext::begin_producer_frame`，在自己的编码器里录制。下列情况再重看：某个受支持的工作负载每帧稳定超过约 100 条列表（约 25 块毛玻璃，或几十个离屏 GPU 节点 pass）；或 hal 加了一个能在已录好的 pass 前插 barrier 的接口（例如 Vulkan 二级命令缓冲、DX12 enhanced barriers 的拆分），而且实测更便宜。
+
+命令（仓库根目录；S 为临时目录；每次只运行一个 GPU 进程）：
+
+```sh
+export CARGO_PROFILE_RELEASE_DEBUG=limited
+cargo build -j 4 --release -p nana-ui --bin nana-gpu-scene-benchmark --features gpu
+cargo build -j 4 --release -p nana-ui --example stack-sampler --features hosted,bundled-fonts
+cargo build -j 4 --release -p nana-wgpu-fork-tests --example pass-cost
+# 每个后端（dx12 | vulkan）、模式（chain | single）和 K（1 | 8 | 32 | 64）各跑 3 轮
+target/release/examples/pass-cost.exe --backend dx12 --mode chain --passes 64 --seconds 3
+target/release/examples/stack-sampler.exe --delay-ms 1500 --duration-ms 6000 --interval-us 2000 \
+  --out $S/pc-dx12-64.folded -- target/release/examples/pass-cost.exe --backend dx12 --mode chain --passes 64 --seconds 9
+python perf/stack_attribution.py --list-stages $S/pc-dx12-64.folded
+# 真实帧：每个后端 3 轮
+WGPU_BACKEND=dx12 target/release/examples/stack-sampler.exe --delay-ms 3500 --duration-ms 6000 --interval-us 2000 \
+  --out $S/fx-dx12.folded -- target/release/nana-gpu-scene-benchmark.exe \
+  --scenario perf/scenarios/gpu-scene-ui-effects.json --serialize --sample-seconds 10 --output $S/fx-dx12.bench.json
+python perf/stack_attribution.py --list-stages --cpu-us-per-frame 515 $S/fx-dx12.folded
 ```
 
 ## 挂载宿主纹理（`HostTexture` + `GpuTextureView`）

@@ -1197,6 +1197,38 @@ fn ui_document(params: &ScenarioParams) -> Result<(RuntimeDocument, DocumentHand
                 "mermaid" => {
                     return Err("ui node mermaid needs the rich-text feature".into());
                 }
+                "opacity-group" | "frost-panel" => {
+                    let panel = document
+                        .context_mut()
+                        .create_component(
+                            document_id,
+                            List::new().style(effect_panel_style(kind == "frost-panel")),
+                        )
+                        .expect("effect panel");
+                    document
+                        .context_mut()
+                        .append_child(root, panel)
+                        .expect("effect panel child");
+                    let label = document
+                        .context_mut()
+                        .create_component(document_id, Text::new(UI_ONLY_TEXT))
+                        .expect("effect label");
+                    document
+                        .context_mut()
+                        .append_child(panel, label)
+                        .expect("effect label child");
+                    let action = document
+                        .context_mut()
+                        .create_component(
+                            document_id,
+                            Button::new("Effect").kind(ButtonKind::Primary),
+                        )
+                        .expect("effect button");
+                    document
+                        .context_mut()
+                        .append_child(panel, action)
+                        .expect("effect button child");
+                }
                 "button" => {
                     let child = document
                         .context_mut()
@@ -1213,7 +1245,8 @@ fn ui_document(params: &ScenarioParams) -> Result<(RuntimeDocument, DocumentHand
                 other => {
                     return Err(format!(
                         "UiOnly ui_nodes contains unknown node {other}; catalog allows \
-                         list/text/icon/gpu-texture-view/gpu-view/button/vector-canvas/mermaid"
+                         list/text/icon/gpu-texture-view/gpu-view/button/vector-canvas/mermaid/\
+                         opacity-group/frost-panel"
                     ));
                 }
             }
@@ -1239,6 +1272,31 @@ fn root_style() -> NodeStyle {
         flex_wrap: FlexWrap::Wrap,
         ..LayoutStyle::default()
     };
+    style
+}
+
+/// A 220×96 card over the list. An opacity group fades its background and
+/// children as one layer; a frost panel blurs what is behind it
+/// (`backdrop-filter: blur(12px)`) under a translucent fill.
+fn effect_panel_style(frost: bool) -> NodeStyle {
+    let mut style = NodeStyle::default();
+    let layout = Arc::make_mut(&mut style.layout);
+    *layout = LayoutStyle {
+        width: Some(LengthSpec::Px(220.0)),
+        height: Some(LengthSpec::Px(96.0)),
+        border_radius: Some(8.0),
+        ..LayoutStyle::default()
+    };
+    if frost {
+        layout.background = Some([0.95, 0.96, 0.98, 0.55]);
+        layout.paint.backdrop_filter = Some(nana_ui_core::BackdropFilter {
+            blur_radius: 12.0,
+            saturate: 1.0,
+        });
+    } else {
+        layout.background = Some([0.18, 0.2, 0.26, 1.0]);
+        layout.opacity = Some(0.85);
+    }
     style
 }
 

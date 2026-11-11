@@ -93,7 +93,7 @@ Shares are of non-blocked samples. The remainder is the `wgpu` front end (≤1.3
 - `host-textures-64` is the many-small-passes case (the bench's 64 producer passes plus the UI pass). Its cost is driver work: 25% is the bench's own `queue.write_buffer` calls, and inside `command_encoder_finish`, 42% is wgpu-core opening a new hal command list per pass (`InnerCommandEncoder::open_pass` → `begin_encoding`, 290 µs/frame on DX12 and 528 µs on Vulkan). Only 19% of `finish` is wgpu-core's own code.
 - NanaUI's own work, by inclusive share of CPU: text is 3.5% in `ui-dense-2k`, 57% in `text-paint-color` (mostly `RuntimeDocument::flush`; the painter is 9.6%) and 84% in `text-constraint-resize`. Icons are 0.5% in `ui-dense-2k`. None of the `gpu-scene-*` scenarios draws vector paths, so this measurement does not cover path cost; paths are measured in §10.
 
-**(a) Verdict: no-go.** Skipping validation would save at most 9–35 µs/frame in ordinary scenes and about 110–117 µs in the 65-pass synthetic. That is under 1% of CPU in text-heavy frames, where NanaUI's own work is 93–97%. Revisit only if a real scene shows hundreds of draws or passes per frame. Even then, the per-pass command-list opening is the larger target.
+**(a) Verdict: no-go.** Skipping validation would save at most 9–35 µs/frame in ordinary scenes and about 110–117 µs in the 65-pass synthetic. That is under 1% of CPU in text-heavy frames, where NanaUI's own work is 93–97%. Revisit only if a real scene shows hundreds of draws or passes per frame. Even then, the per-pass command-list opening is the larger target (measured in §11: also a no-go).
 
 **Input-to-present latency.** `input-latency-probe` opens an ordinary hosted window (Mailbox, `desired_maximum_frame_latency` 1, wgpu's default `Dx12UseFrameLatencyWaitableObject::Wait`). A driver thread posts `WM_LBUTTONDOWN` at random 120–250 ms intervals, and each press flips the window's color. Timestamps are all QPC: `post` before `PostMessageW`, `input` in `RuntimeProgram::input_event` (after lowering and routing), `prepare` and `presented` in the frame hooks (after `present` returned, with the host's stage gauges), and `screen`, the Desktop Duplication `LastPresentTime` of the first composed desktop frame showing the new color. wgpu exposes no `GetFrameStatistics` for the swapchain, so DWM's present time stands in for DXGI frame statistics. Samples where DWM folded more than one update into a frame were dropped. All values are in ms; n = 161–297 per row.
 
@@ -310,6 +310,89 @@ WGPU_BACKEND=dx12 target/release/examples/stack-sampler.exe --delay-ms 3000 --du
   --output $S/sampled-canvas-scroll.json
 # CPU µs per frame = stack-sampler's thread_cpu_ms × 1000 ÷ (bench frame rate × wall_ms ÷ 1000)
 python perf/stack_attribution.py --path-stages --cpu-us-per-frame 6745 $S/canvas-scroll.folded
+```
+
+### 11. Measured: one native command list per pass (2026-11-11)
+
+Question: §6 found that wgpu-core opens a new native command list for every pass. In the synthetic 65-pass scene that cost 290 µs (DX12) or 528 µs (Vulkan) per frame. Should the fork change so that passes share a list? This is a measurement only. Neither the fork nor the product frame path changed.
+
+**Why.** `encode_render_pass` (`wgpu-core/src/command/render.rs`) closes the current list (`close_if_open`), then opens a fresh one (`open_pass`) and records the pass into it. Only after recording does it know which state transitions the pass needs, because `state.pass.scope` is merged as each command is validated. So it opens a second "(wgpu internal) Pre Pass" list for the barriers, discard fixups, query resets and indirect-draw validation, and puts it in front of the pass with `close_and_swap`. Commands cannot be inserted into the middle of a recorded native list, and a hal `CommandEncoder` has only one list recording at a time. Each pass therefore takes two lists: N passes take about 2N+1, and `queue.submit` adds one more in front for the initial transitions. The lists are already reused. DX12 takes them from `free_lists` and calls `Reset` instead of creating new ones. Vulkan allocates from its pool in `ALLOCATION_GRANULARITY` batches. Allocators and pools cycle with their encoders through `CommandAllocator`. A steady-state frame creates no lists; what it pays is the Reset/Begin, Close and submission that every list needs. More aggressive pooling has nothing left to save. Only fewer lists can save anything.
+
+**How many lists a real frame opens.** We used a temporary, uncommitted counter patch: `Queue::submit` counted the command buffers in each hal submission and printed every 500 submissions. We ran `nana-gpu-scene-benchmark --serialize` with it. The new `gpu-scene-ui-effects` scenario is a dense list with two frosted panels (`backdrop-filter: blur(12px)` under a translucent fill) and four fading cards (opacity 0.85 over a background and children). These use the new bench nodes `frost-panel` and `opacity-group`. DX12 and Vulkan gave identical counts, the same on every submission:
+
+| Scene | Lists per frame |
+| --- | ---: |
+| `gpu-scene-ui`, `gpu-scene-ui-dense-2k` (ordinary UI) | 8 |
+| 1 frosted panel / 2 | 18 / 28 |
+| 1 fading card / 4 | 14 / 26 |
+| `gpu-scene-ui-effects` (2 frosted panels + 4 cards) | 46 |
+| 4 frosted panels + 8 cards | 82 |
+| `gpu-scene-host-textures-64` (§6's synthetic scene) | 134 |
+
+Each frosted panel adds about 10 lists, from about 5 passes: copy, blur, composite and the dest pass reopening. The first fading card adds 6 and each further one adds 4 (its group-layer pass plus the dest pass reopening).
+
+**CPU per list.** The new `third_party/wgpu-fork-tests/examples/pass-cost.rs` uses only `wgpu` and has two modes:
+
+- `chain` records K passes. Each draws one triangle into its own 256×256 layer while sampling the previous layer, so every pass moves two textures between attachment and sampled states, like a group layer or a blur step.
+- `single` puts the same K draws into one pass.
+
+Each frame is timed from `create_command_encoder` to `Queue::submit`. The thread then waits for the GPU, so one submission is in flight. Each run lasts 3 s. The table shows the median of 3 runs' p50, in µs per frame:
+
+| Backend | Mode | K=1 | K=8 | K=32 | K=64 | Per extra pass |
+| --- | --- | ---: | ---: | ---: | ---: | ---: |
+| DX12 | chain | 34.0 | 103.1 | 276.1 | 548.0 | **7.3 µs** |
+| DX12 | single | 28.6 | 30.7 | 39.5 | 85.7 | |
+| Vulkan | chain | 18.3 | 98.6 | 226.0 | 441.0 | **6.1 µs** |
+| Vulkan | single | 19.0 | 28.1 | 51.1 | 59.0 | |
+
+"Per extra pass" is (chain − single at K=64) ÷ 63 and covers everything a pass costs. We sampled the K=64 chain with §6's `stack-sampler` (6 s, every 2 ms). The new `perf/stack_attribution.py --list-stages` charges each non-blocked sample to one stage. The native-list stages (open, close, recycle, submit) take 58% on DX12 and 60% on Vulkan:
+
+| Backend | Open (`begin_encoding`) | Close (`end_encoding`) | Recycle (`reset_all`) | Submit | Barriers | Other pass recording | Other |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| DX12 | 29.8% | 13.6% | 1.2% | 13.1% | 7.2% | 26.7% | 8.5% |
+| Vulkan | 35.2% | 11.0% | 7.7% | 5.8% | 4.3% | 27.2% | 8.7% |
+
+On DX12, 81% of the open samples are in the driver's `ID3D12GraphicsCommandList::Reset` and 18% set the list's debug name (`SetName`). On Vulkan nearly all of them are in the driver's `vkBeginCommandBuffer`. Scaled to the unsampled per-pass cost, one list costs about **2.1 µs (DX12) / 1.8 µs (Vulkan)**. That figure includes the fixed part of the submit, so it is an upper bound.
+
+We also sampled `gpu-scene-ui-effects` directly, 3 runs per backend, median [min–max]:
+
+- DX12: 515 [344–683] µs CPU per frame, of which 206 [143–274] µs (40%) is list work.
+- Vulkan: 416 [386–510] µs per frame, of which 109 [50–128] µs (25%) is list work.
+
+Each sample suspends the thread and slows it, so these numbers run higher than the scaled ones above, and they vary more.
+
+**Machine load.** The ML training job ran throughout. At the start of each run GPU utilization was 39–99%, VRAM use 13.3 GB, and about 26 GB of the 47 GB system RAM was in use. CPU: Core Ultra 7 265K; GPU: RTX 5060 Ti. Every number in the tables is in-process CPU time.
+
+**The feasible change and what it would save.** Only one change keeps wgpu's resource-state validation and correctness intact. wgpu-core would give each command encoder two hal encoders and alternate between them. The next pass's barriers would go at the end of the previous list, which is still open, instead of into a list of their own. Submission order stays the same, and each pass takes one list instead of two. One list per encoder would need a scan over the pass's commands before recording, to recompute its usage scope. That means a second state tracker alongside validation, and getting it wrong means read/write hazards on the GPU, so it is not on the table. At about 2 µs per list:
+
+| Frame | Lists | All list work | Two alternating encoders save | Ideal (one list) saves |
+| --- | ---: | ---: | ---: | ---: |
+| Ordinary UI | 8 | ~16 µs | ~8 µs | ~14 µs |
+| 2 frosted panels + 4 cards | 46 | ~90 µs | ~45 µs | ~88 µs |
+| 4 frosted panels + 8 cards | 82 | ~165 µs | ~80 µs | ~160 µs |
+
+**Verdict: no-go.** Real NanaUI frames open 8 lists (ordinary UI) to about 46 (frosted panels and fading animations). The feasible change saves under 0.1 ms per frame: about 8 µs on an ordinary frame and about 45 µs on an effects-heavy one. Even the ideal single list per encoder would save only about 0.09 ms, and it needs a second state tracker alongside validation. §6's 290 / 528 µs came from the bench's own 64 producer passes (134 lists). That cost grows with what the application itself renders, not with NanaUI's UI. Real producers go through `GpuContext::begin_producer_frame` and record in their own encoders. Revisit this if either of these happens:
+
+- A supported workload steadily opens more than about 100 lists per frame, for example about 25 frosted panels or dozens of offscreen GPU-node passes.
+- hal gains a cheaper way to put barriers in front of an already recorded pass, for example Vulkan secondary command buffers or split DX12 enhanced barriers, and it measures cheaper.
+
+Commands (repository root; S is a scratch directory; one GPU process at a time):
+
+```sh
+export CARGO_PROFILE_RELEASE_DEBUG=limited
+cargo build -j 4 --release -p nana-ui --bin nana-gpu-scene-benchmark --features gpu
+cargo build -j 4 --release -p nana-ui --example stack-sampler --features hosted,bundled-fonts
+cargo build -j 4 --release -p nana-wgpu-fork-tests --example pass-cost
+# 3 runs per backend (dx12 | vulkan), mode (chain | single) and K (1 | 8 | 32 | 64)
+target/release/examples/pass-cost.exe --backend dx12 --mode chain --passes 64 --seconds 3
+target/release/examples/stack-sampler.exe --delay-ms 1500 --duration-ms 6000 --interval-us 2000 \
+  --out $S/pc-dx12-64.folded -- target/release/examples/pass-cost.exe --backend dx12 --mode chain --passes 64 --seconds 9
+python perf/stack_attribution.py --list-stages $S/pc-dx12-64.folded
+# The real frame: 3 runs per backend
+WGPU_BACKEND=dx12 target/release/examples/stack-sampler.exe --delay-ms 3500 --duration-ms 6000 --interval-us 2000 \
+  --out $S/fx-dx12.folded -- target/release/nana-gpu-scene-benchmark.exe \
+  --scenario perf/scenarios/gpu-scene-ui-effects.json --serialize --sample-seconds 10 --output $S/fx-dx12.bench.json
+python perf/stack_attribution.py --list-stages --cpu-us-per-frame 515 $S/fx-dx12.folded
 ```
 
 ## Mounting host textures (`HostTexture` + `GpuTextureView`)
