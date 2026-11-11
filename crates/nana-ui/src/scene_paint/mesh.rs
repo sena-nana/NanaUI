@@ -1,5 +1,5 @@
 use std::collections::HashMap;
-use std::sync::Arc;
+use std::sync::{Arc, Weak};
 
 use bytemuck::{Pod, Zeroable};
 use nana_gpu::{__framework, LogicalBinding, LogicalBindingType, ResourceTable, ShaderStage};
@@ -181,25 +181,52 @@ pub(super) struct MeshRange {
     pub instance_count: u32,
 }
 
-/// One custom-paint path vertex (Issue #217). Matches `PathVertexInput` in
-/// `path.wgsl`. Position and extrusion are already in logical scene px.
+/// One custom-paint path vertex (Issue #217), retained on the GPU as the
+/// mesh was built: node-local, before any transform. Matches
+/// `PathVertexInput` in `path.wgsl`. What a frame changes (where the node
+/// is, its opacity and clip) is a [`GpuPathInstance`].
 #[repr(C)]
 #[derive(Clone, Copy, Debug, PartialEq, Pod, Zeroable)]
 struct GpuPathVertex {
     position: [f32; 2],
+    /// [`nana_ui_scene::PathVertex::extrude`], in node space; the vertex
+    /// shader carries it to the screen (`path_screen_extrude`).
     extrude: [f32; 2],
-    coverage: f32,
-    clip_index: u32,
-    color: [f32; 4],
-    /// Gradient-space position; read only when `gradient` is not `NO_GRADIENT`.
+    /// Gradient-space position; read only under a gradient.
     paint_pos: [f32; 2],
+    coverage: f32,
+    /// Linear RGBA, straight alpha, before the draw's opacity.
+    color: [f32; 4],
+}
+
+const _: () = assert!(std::mem::size_of::<GpuPathVertex>() == 44);
+
+/// What one path draw adds to its retained vertices this frame. Matches
+/// `PathInstanceInput` in `path.wgsl`.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, PartialEq, Pod, Zeroable)]
+struct GpuPathInstance {
+    /// The linear part of the node-to-scene affine.
+    abcd: [f32; 4],
+    /// Its translation, then the mesh's origin in the node's layout space.
+    ef_origin: [f32; 4],
+    opacity: f32,
+    clip_index: u32,
     gradient: u32,
     /// The node's `mask-image` as a gradient of the palette, evaluated at the
     /// fragment through the gradient's `space`; `NO_GRADIENT` for none.
     mask: u32,
 }
 
-const _: () = assert!(std::mem::size_of::<GpuPathVertex>() == 56);
+const _: () = assert!(std::mem::size_of::<GpuPathInstance>() == 48);
+
+impl GpuPathInstance {
+    /// Bitwise, so equal draws share an instance (and can merge) whatever
+    /// their floats hold.
+    fn same(&self, other: &Self) -> bool {
+        bytemuck::bytes_of(self) == bytemuck::bytes_of(other)
+    }
+}
 
 const NO_GRADIENT: u32 = u32::MAX;
 /// Colour stops a GPU gradient holds. A gradient with more is resampled.
@@ -395,14 +422,41 @@ fn sample_stops(stops: &[(f32, [f32; 4])], t: f32) -> [f32; 4] {
 
 const INITIAL_PATH_VERTICES: usize = 256;
 const INITIAL_PATH_INDICES: usize = 768;
+const INITIAL_PATH_INSTANCES: usize = 16;
+/// Frames a retained mesh stays on the GPU after the last frame that drew it.
+const PATH_RETAIN_FRAMES: u64 = 120;
+/// Retained path bytes past which a frame keeps only the meshes the frame
+/// before it drew.
+const PATH_ARENA_BUDGET: usize = 64 << 20;
+/// Dead vertices the arena carries before it is compacted, whatever it holds.
+const PATH_COMPACT_MIN_VERTICES: u32 = 16 * 1024;
 
 pub(super) struct PathRange {
     pub first_index: u32,
     pub index_count: u32,
+    /// The draw's [`GpuPathInstance`]. Ranges merge only within one.
+    pub instance: u32,
 }
 
-/// Vertex and index storage for custom-paint path triangles. Separate from
-/// the stroke instances, but drawn with the same globals and clip palette.
+/// Where a retained mesh sits in the path arena.
+struct ResidentPath {
+    /// The scene owns the mesh. While this is held its allocation cannot be
+    /// reused, so its address keys the entry for as long as the entry lives.
+    mesh: Weak<nana_ui_scene::PathMesh>,
+    first_vertex: u32,
+    vertex_count: u32,
+    first_index: u32,
+    index_count: u32,
+    /// The last frame that drew it.
+    frame: u64,
+}
+
+/// Custom-paint path triangles, retained on the GPU per mesh. A mesh's
+/// vertices and indices are written once, when a frame first draws it, at
+/// a range of one shared arena, node-local; each draw then only sends a
+/// [`GpuPathInstance`], so a scroll or a compositor scale moves no vertex.
+/// Separate from the stroke instances, but drawn with the same globals and
+/// clip palette.
 pub(super) struct PathBuffers {
     gradients: ManagedBuffer,
     gradient_capacity: usize,
@@ -415,10 +469,26 @@ pub(super) struct PathBuffers {
     vertex_capacity: usize,
     indices: ManagedBuffer,
     index_capacity: usize,
-    pending_vertices: Vec<GpuPathVertex>,
-    pending_indices: Vec<u32>,
-    uploaded_vertices: Vec<GpuPathVertex>,
-    uploaded_indices: Vec<u32>,
+    resident: HashMap<usize, ResidentPath>,
+    /// The arena's used ends; what lies below them and no entry names is dead.
+    vertex_end: u32,
+    index_end: u32,
+    live_vertices: u32,
+    live_indices: u32,
+    frame: u64,
+    /// Entries placed since the last upload, in arena order, not yet written.
+    unwritten: Vec<usize>,
+    /// Every entry must be written again: the arena was compacted or replaced.
+    rewrite: bool,
+    instances: ManagedBuffer,
+    instance_capacity: usize,
+    pending_instances: Vec<GpuPathInstance>,
+    uploaded_instances: Vec<GpuPathInstance>,
+    scratch_vertices: Vec<GpuPathVertex>,
+    scratch_indices: Vec<u32>,
+    /// [`MeshPipeline::transform_paths_on_cpu`]: this frame's moved copies.
+    #[cfg(test)]
+    cpu_transformed: Option<Vec<Arc<nana_ui_scene::PathMesh>>>,
 }
 
 impl PathBuffers {
@@ -433,11 +503,141 @@ impl PathBuffers {
             vertex_capacity: INITIAL_PATH_VERTICES,
             indices: ManagedBuffer::new(path_index_buffer(device, INITIAL_PATH_INDICES)),
             index_capacity: INITIAL_PATH_INDICES,
-            pending_vertices: Vec::new(),
-            pending_indices: Vec::new(),
-            uploaded_vertices: Vec::new(),
-            uploaded_indices: Vec::new(),
+            resident: HashMap::new(),
+            vertex_end: 0,
+            index_end: 0,
+            live_vertices: 0,
+            live_indices: 0,
+            frame: 0,
+            unwritten: Vec::new(),
+            rewrite: false,
+            instances: ManagedBuffer::new(path_instance_buffer(device, INITIAL_PATH_INSTANCES)),
+            instance_capacity: INITIAL_PATH_INSTANCES,
+            pending_instances: Vec::new(),
+            uploaded_instances: Vec::new(),
+            scratch_vertices: Vec::new(),
+            scratch_indices: Vec::new(),
+            #[cfg(test)]
+            cpu_transformed: None,
         }
+    }
+
+    /// Meshes retained and the bytes their arena allocates.
+    fn counters(&self) -> (u64, u64) {
+        (
+            self.resident.len() as u64,
+            (self.vertex_capacity * std::mem::size_of::<GpuPathVertex>()
+                + self.index_capacity * std::mem::size_of::<u32>()) as u64,
+        )
+    }
+
+    fn live_bytes(&self) -> usize {
+        self.live_vertices as usize * std::mem::size_of::<GpuPathVertex>()
+            + self.live_indices as usize * std::mem::size_of::<u32>()
+    }
+
+    /// Start a frame: drop the meshes the scene let go of, those no frame
+    /// drew for [`PATH_RETAIN_FRAMES`], and over [`PATH_ARENA_BUDGET`] every
+    /// one the last frame did not draw; compact the arena once it is mostly
+    /// dead. Draw ranges are handed out after this, so they stay valid.
+    fn begin_frame(&mut self) {
+        #[cfg(test)]
+        if let Some(kept) = self.cpu_transformed.as_mut() {
+            kept.clear();
+        }
+        self.pending_gradients.clear();
+        self.gradient_intern.clear();
+        self.pending_instances.clear();
+        self.frame += 1;
+        let frame = self.frame;
+        let over_budget = self.live_bytes() > PATH_ARENA_BUDGET;
+        let (mut live_vertices, mut live_indices) = (0u32, 0u32);
+        self.resident.retain(|_, entry| {
+            let keep = entry.mesh.strong_count() > 0
+                && entry.frame + PATH_RETAIN_FRAMES >= frame
+                && !(over_budget && entry.frame + 1 < frame);
+            if keep {
+                live_vertices += entry.vertex_count;
+                live_indices += entry.index_count;
+            }
+            keep
+        });
+        self.live_vertices = live_vertices;
+        self.live_indices = live_indices;
+        let dead_vertices = self.vertex_end - live_vertices;
+        let dead_indices = self.index_end - live_indices;
+        if (live_vertices == 0 && self.vertex_end > 0)
+            || dead_vertices > live_vertices.max(PATH_COMPACT_MIN_VERTICES)
+            || dead_indices > live_indices.max(3 * PATH_COMPACT_MIN_VERTICES)
+        {
+            self.compact();
+        }
+    }
+
+    /// Pack the live entries at the start of the arena, in the order they
+    /// were placed, so ranges that were adjacent stay adjacent.
+    fn compact(&mut self) {
+        let mut order: Vec<(u32, usize)> = self
+            .resident
+            .iter()
+            .map(|(key, entry)| (entry.first_vertex, *key))
+            .collect();
+        order.sort_unstable();
+        let (mut vertex, mut index) = (0u32, 0u32);
+        for (_, key) in &order {
+            let entry = self.resident.get_mut(key).expect("listed entry");
+            entry.first_vertex = vertex;
+            entry.first_index = index;
+            vertex += entry.vertex_count;
+            index += entry.index_count;
+        }
+        self.vertex_end = vertex;
+        self.index_end = index;
+        self.unwritten.clear();
+        self.rewrite = !self.resident.is_empty();
+    }
+
+    /// The arena range of `mesh`'s indices, placing it there the first time.
+    fn resident(&mut self, mesh: &Arc<nana_ui_scene::PathMesh>) -> (u32, u32) {
+        let key = Arc::as_ptr(mesh) as usize;
+        let frame = self.frame;
+        let entry = match self.resident.entry(key) {
+            std::collections::hash_map::Entry::Occupied(entry) => entry.into_mut(),
+            std::collections::hash_map::Entry::Vacant(slot) => {
+                let vertex_count = mesh.vertices.len() as u32;
+                let index_count = mesh.indices.len() as u32;
+                let entry = slot.insert(ResidentPath {
+                    mesh: Arc::downgrade(mesh),
+                    first_vertex: self.vertex_end,
+                    vertex_count,
+                    first_index: self.index_end,
+                    index_count,
+                    frame,
+                });
+                self.vertex_end += vertex_count;
+                self.index_end += index_count;
+                self.live_vertices += vertex_count;
+                self.live_indices += index_count;
+                if !self.rewrite {
+                    self.unwritten.push(key);
+                }
+                entry
+            }
+        };
+        entry.frame = frame;
+        (entry.first_index, entry.index_count)
+    }
+
+    /// Queue `instance`, sharing the last one when it is the same draw state:
+    /// the meshes of one node then draw as one.
+    fn instance(&mut self, instance: GpuPathInstance) -> u32 {
+        if let Some(last) = self.pending_instances.last()
+            && last.same(&instance)
+        {
+            return self.pending_instances.len() as u32 - 1;
+        }
+        self.pending_instances.push(instance);
+        self.pending_instances.len() as u32 - 1
     }
 
     /// Returns whether the gradient buffer was replaced, which invalidates
@@ -479,19 +679,51 @@ impl PathBuffers {
             );
             self.uploaded_gradients.clone_from(&self.pending_gradients);
         }
-        if self.pending_indices.is_empty() {
-            self.uploaded_vertices.clear();
-            self.uploaded_indices.clear();
-            return rebind;
+        self.upload_arena(device, queue, gpu_work);
+        if self.pending_instances.len() > self.instance_capacity {
+            self.uploaded_instances.clear();
+            self.instance_capacity = self.pending_instances.len().next_power_of_two();
+            if let Some(work) = gpu_work {
+                work.replace_buffer(
+                    device,
+                    &mut self.instances,
+                    (self.instance_capacity * std::mem::size_of::<GpuPathInstance>()) as u64,
+                    wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
+                    "nana-ui.scene.mesh.path_instances",
+                );
+                work.record_realloc();
+            } else {
+                self.instances =
+                    ManagedBuffer::new(path_instance_buffer(device, self.instance_capacity));
+            }
         }
-        if self.pending_vertices == self.uploaded_vertices
-            && self.pending_indices == self.uploaded_indices
+        if self.pending_instances != self.uploaded_instances {
+            super::buffer_upload::upload_changed_with_work(
+                queue,
+                &self.instances,
+                bytemuck::cast_slice(&self.uploaded_instances),
+                bytemuck::cast_slice(&self.pending_instances),
+                gpu_work,
+            );
+            self.uploaded_instances.clone_from(&self.pending_instances);
+        }
+        rebind
+    }
+
+    /// Write the meshes placed since the last upload, or every one when the
+    /// arena moved, growing it first, or shrinking it once it is a quarter
+    /// used.
+    fn upload_arena(
+        &mut self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        gpu_work: Option<&crate::gpu_work::GpuWorkSink>,
+    ) {
+        let fit = |end: u32, initial: usize| (end as usize).max(initial).next_power_of_two();
+        let vertex_fit = fit(self.vertex_end, INITIAL_PATH_VERTICES);
+        if self.vertex_end as usize > self.vertex_capacity || self.vertex_capacity > 4 * vertex_fit
         {
-            return rebind;
-        }
-        if self.pending_vertices.len() > self.vertex_capacity {
-            self.uploaded_vertices.clear();
-            self.vertex_capacity = self.pending_vertices.len().next_power_of_two();
+            self.vertex_capacity = vertex_fit;
             if let Some(work) = gpu_work {
                 work.replace_buffer(
                     device,
@@ -500,17 +732,16 @@ impl PathBuffers {
                     wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
                     "nana-ui.scene.mesh.vertices",
                 );
+                work.record_realloc();
             } else {
                 self.vertices =
                     ManagedBuffer::new(path_vertex_buffer(device, self.vertex_capacity));
             }
-            if let Some(work) = gpu_work {
-                work.record_realloc();
-            }
+            self.rewrite = true;
         }
-        if self.pending_indices.len() > self.index_capacity {
-            self.uploaded_indices.clear();
-            self.index_capacity = self.pending_indices.len().next_power_of_two();
+        let index_fit = fit(self.index_end, INITIAL_PATH_INDICES);
+        if self.index_end as usize > self.index_capacity || self.index_capacity > 4 * index_fit {
+            self.index_capacity = index_fit;
             if let Some(work) = gpu_work {
                 work.replace_buffer(
                     device,
@@ -519,34 +750,143 @@ impl PathBuffers {
                     wgpu::BufferUsages::INDEX | wgpu::BufferUsages::COPY_DST,
                     "nana-ui.scene.mesh.indices",
                 );
+                work.record_realloc();
             } else {
                 self.indices = ManagedBuffer::new(path_index_buffer(device, self.index_capacity));
             }
+            self.rewrite = true;
+        }
+        let mut keys = std::mem::take(&mut self.unwritten);
+        if self.rewrite {
+            keys.clear();
+            keys.extend(self.resident.keys().copied());
+            keys.sort_unstable_by_key(|key| self.resident[key].first_vertex);
+            self.rewrite = false;
+        }
+        if keys.is_empty() {
+            self.unwritten = keys;
+            return;
+        }
+        // Meshes placed one after another are written as one run.
+        let mut run: Option<(u32, u32)> = None;
+        for key in &keys {
+            let Some(entry) = self.resident.get(key) else {
+                continue;
+            };
+            // A mesh dropped since it was placed is never drawn.
+            let Some(mesh) = entry.mesh.upgrade() else {
+                continue;
+            };
+            let (first_vertex, first_index) = (entry.first_vertex, entry.first_index);
+            match run {
+                Some((vertex, index))
+                    if vertex + self.scratch_vertices.len() as u32 == first_vertex
+                        && index + self.scratch_indices.len() as u32 == first_index => {}
+                _ => {
+                    if let Some((vertex, index)) = run {
+                        self.write_run(queue, vertex, index, gpu_work);
+                    }
+                    run = Some((first_vertex, first_index));
+                }
+            }
+            append_retained(
+                &mesh,
+                first_vertex,
+                &mut self.scratch_vertices,
+                &mut self.scratch_indices,
+            );
+        }
+        if let Some((vertex, index)) = run {
+            self.write_run(queue, vertex, index, gpu_work);
             if let Some(work) = gpu_work {
-                work.record_realloc();
+                work.record_batch_rebuild();
             }
         }
-        super::buffer_upload::upload_changed_with_work(
-            queue,
-            &self.vertices,
-            bytemuck::cast_slice(&self.uploaded_vertices),
-            bytemuck::cast_slice(&self.pending_vertices),
-            gpu_work,
-        );
-        super::buffer_upload::upload_changed_with_work(
-            queue,
-            &self.indices,
-            bytemuck::cast_slice(&self.uploaded_indices),
-            bytemuck::cast_slice(&self.pending_indices),
-            gpu_work,
-        );
-        self.uploaded_vertices.clone_from(&self.pending_vertices);
-        self.uploaded_indices.clone_from(&self.pending_indices);
-        if let Some(work) = gpu_work {
-            work.record_batch_rebuild();
-        }
-        rebind
+        keys.clear();
+        self.unwritten = keys;
     }
+
+    fn write_run(
+        &mut self,
+        queue: &wgpu::Queue,
+        first_vertex: u32,
+        first_index: u32,
+        gpu_work: Option<&crate::gpu_work::GpuWorkSink>,
+    ) {
+        let write = |buffer: &wgpu::Buffer, offset: u64, bytes: &[u8]| {
+            if bytes.is_empty() {
+                return;
+            }
+            if let Some(work) = gpu_work {
+                work.write_buffer(queue, buffer, offset, bytes);
+            } else {
+                queue.write_buffer(buffer, offset, bytes);
+            }
+        };
+        write(
+            &self.vertices,
+            u64::from(first_vertex) * std::mem::size_of::<GpuPathVertex>() as u64,
+            bytemuck::cast_slice(&self.scratch_vertices),
+        );
+        write(
+            &self.indices,
+            u64::from(first_index) * std::mem::size_of::<u32>() as u64,
+            bytemuck::cast_slice(&self.scratch_indices),
+        );
+        self.scratch_vertices.clear();
+        self.scratch_indices.clear();
+    }
+}
+
+/// `mesh` placed at `origin` and moved through `affine` on the CPU, its
+/// fringe carried as [`screen_extrude`] does: what the GPU drew before path
+/// vertices stayed node-local.
+#[cfg(test)]
+fn cpu_transformed(
+    mesh: &nana_ui_scene::PathMesh,
+    origin: [f32; 2],
+    [a, b, c, d, e, f]: [f32; 6],
+) -> nana_ui_scene::PathMesh {
+    let mut moved = mesh.clone();
+    for vertex in &mut moved.vertices {
+        let x = vertex.position[0] + origin[0];
+        let y = vertex.position[1] + origin[1];
+        vertex.position = [a * x + c * y + e, b * x + d * y + f];
+        vertex.extrude = screen_extrude([a, b, c, d], vertex.extrude);
+    }
+    moved
+}
+
+/// `mesh` as the arena holds it: vertices node-local in linear colour, and
+/// indices into the arena at `first_vertex`.
+fn append_retained(
+    mesh: &nana_ui_scene::PathMesh,
+    first_vertex: u32,
+    vertices: &mut Vec<GpuPathVertex>,
+    indices: &mut Vec<u32>,
+) {
+    let paint = mesh.paint_color.map(pack_paint_color);
+    let mut last_color = ([f32::NAN; 4], [0.0f32; 4]);
+    vertices.extend(mesh.vertices.iter().map(|vertex| {
+        // A mesh is mostly one colour: convert it to linear once, not
+        // three `powf`s a vertex.
+        if vertex.color != last_color.0 {
+            let packed = if let Some([r, g, b, _]) = paint {
+                [r, g, b, vertex.color[3]]
+            } else {
+                pack_linear(vertex.color)
+            };
+            last_color = (vertex.color, packed);
+        }
+        GpuPathVertex {
+            position: vertex.position,
+            extrude: vertex.extrude,
+            paint_pos: vertex.paint_pos,
+            coverage: vertex.coverage,
+            color: last_color.1,
+        }
+    }));
+    indices.extend(mesh.indices.iter().map(|index| first_vertex + index));
 }
 
 fn gradient_buffer(device: &wgpu::Device, capacity: usize) -> wgpu::Buffer {
@@ -576,6 +916,15 @@ fn path_index_buffer(device: &wgpu::Device, capacity: usize) -> wgpu::Buffer {
     })
 }
 
+fn path_instance_buffer(device: &wgpu::Device, capacity: usize) -> wgpu::Buffer {
+    device.create_buffer(&wgpu::BufferDescriptor {
+        label: Some("nana-ui.scene.path.instances"),
+        size: (capacity * std::mem::size_of::<GpuPathInstance>()) as u64,
+        usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
+        mapped_at_creation: false,
+    })
+}
+
 /// A mesh vertex's AA extrude, built in node space to push its edges one
 /// pixel out, carried through the linear part `[a, b, c, d]` of the draw
 /// transform so the edges still move one pixel on screen.
@@ -587,6 +936,10 @@ fn path_index_buffer(device: &wgpu::Device, capacity: usize) -> wgpu::Buffer {
 /// normal stays one pixel long rather than shrinking to a hundredth — and
 /// the miter is rebuilt on screen from the two. A degenerate transform has
 /// no screen normal and gets no fringe.
+///
+/// The reference for `path_screen_extrude` in `path.wgsl`, which does this
+/// per vertex on the GPU so a mesh's vertices stay node-local.
+#[cfg(test)]
 fn screen_extrude([a, b, c, d]: [f32; 4], extrude: [f32; 2]) -> [f32; 2] {
     const MITER_LIMIT: f32 = 4.0;
     let det = a * d - b * c;
@@ -864,22 +1217,21 @@ impl MeshPipeline {
         self.pending_instances.clear();
         self.pending_clips.clear();
         self.clip_intern.clear();
-        self.paths.pending_vertices.clear();
-        self.paths.pending_indices.clear();
-        self.paths.pending_gradients.clear();
-        self.paths.gradient_intern.clear();
+        self.paths.begin_frame();
     }
 
     /// Queue a custom-paint path mesh (Issue #217). `origin` places the
     /// node-local vertices in layout space, then `affine` maps them to the
-    /// scene. The fringe extrusion is carried through the same linear map and
-    /// normalised so it stays one physical pixel under scale.
+    /// scene. Both go to the GPU with the draw, not into the vertices: the
+    /// mesh is written once, when a frame first draws it, and kept while the
+    /// scene holds it. The vertex shader carries the fringe extrusion through
+    /// the same linear map, normalised to stay one physical pixel under scale.
     ///
     /// `node_mask` is the painted node's `mask-image`, evaluated at each
-    /// vertex's node-local position.
+    /// fragment's node-local position.
     pub(super) fn push_path(
         &mut self,
-        mesh: &nana_ui_scene::PathMesh,
+        mesh: &Arc<nana_ui_scene::PathMesh>,
         origin: [f32; 2],
         affine: [f32; 6],
         opacity: f32,
@@ -920,44 +1272,60 @@ impl MeshPipeline {
                 self.paths.pending_gradients.push(gradient);
                 self.paths.pending_gradients.len() as u32 - 1
             });
-        let base = self.paths.pending_vertices.len() as u32;
-        let mut last_color = ([f32::NAN; 4], [0.0f32; 4]);
-        self.paths
-            .pending_vertices
-            .extend(mesh.vertices.iter().map(|vertex| {
-                // A mesh is mostly one colour: convert it to linear once,
-                // not three `powf`s a vertex.
-                if vertex.color != last_color.0 {
-                    let packed = if let Some(paint) = mesh.paint_color {
-                        let [r, g, b, _] = pack_paint_color(paint);
-                        [r, g, b, vertex.color[3] * opacity]
-                    } else {
-                        pack_linear(with_opacity(vertex.color, opacity))
-                    };
-                    last_color = (vertex.color, packed);
-                }
-                let x = vertex.position[0] + origin[0];
-                let y = vertex.position[1] + origin[1];
-                let [ex, ey] = vertex.extrude;
-                GpuPathVertex {
-                    position: [a * x + c * y + e, b * x + d * y + f],
-                    extrude: screen_extrude([a, b, c, d], [ex, ey]),
-                    coverage: vertex.coverage,
-                    clip_index,
-                    color: last_color.1,
-                    paint_pos: vertex.paint_pos,
-                    gradient,
-                    mask,
-                }
-            }));
-        let first_index = self.paths.pending_indices.len() as u32;
-        self.paths
-            .pending_indices
-            .extend(mesh.indices.iter().map(|index| base + index));
+        #[cfg(test)]
+        if let Some(kept) = self.paths.cpu_transformed.as_mut() {
+            // How every frame drew paths before they were retained: each
+            // vertex moved to the scene on the CPU, drawn untransformed.
+            let moved = Arc::new(cpu_transformed(mesh, origin, affine));
+            kept.push(Arc::clone(&moved));
+            let instance = self.paths.instance(GpuPathInstance {
+                abcd: [1.0, 0.0, 0.0, 1.0],
+                ef_origin: [0.0; 4],
+                opacity,
+                clip_index,
+                gradient,
+                mask,
+            });
+            let (first_index, index_count) = self.paths.resident(&moved);
+            return Some(PathRange {
+                first_index,
+                index_count,
+                instance,
+            });
+        }
+        let instance = self.paths.instance(GpuPathInstance {
+            abcd: [a, b, c, d],
+            ef_origin: [e, f, origin[0], origin[1]],
+            opacity,
+            clip_index,
+            gradient,
+            mask,
+        });
+        let (first_index, index_count) = self.paths.resident(mesh);
         Some(PathRange {
             first_index,
-            index_count: mesh.indices.len() as u32,
+            index_count,
+            instance,
         })
+    }
+
+    /// Meshes retained on the GPU and the bytes their arena allocates.
+    pub(super) fn path_counters(&self) -> (u64, u64) {
+        self.paths.counters()
+    }
+
+    /// Draw paths as every frame did before meshes were retained: their
+    /// vertices transformed on the CPU. The reference for pixel tests.
+    #[cfg(test)]
+    pub(super) fn transform_paths_on_cpu(&mut self, on: bool) {
+        self.paths.cpu_transformed = on.then(Vec::new);
+    }
+
+    fn bind_path_buffers(&self, pass: &mut wgpu::RenderPass<'_>) {
+        pass.set_bind_group(0, &self.bind_group, &[]);
+        pass.set_vertex_buffer(0, self.paths.vertices.slice(..));
+        pass.set_vertex_buffer(1, self.paths.instances.slice(..));
+        pass.set_index_buffer(self.paths.indices.slice(..), wgpu::IndexFormat::Uint32);
     }
 
     /// Apply a painter layer's mask to the open group.
@@ -977,14 +1345,12 @@ impl MeshPipeline {
             nana_ui_scene::LayerMaskMode::Tint => &self.tint_pipeline,
             nana_ui_scene::LayerMaskMode::Keep => &self.keep_pipeline,
         });
-        pass.set_bind_group(0, &self.bind_group, &[]);
-        pass.set_vertex_buffer(0, self.paths.vertices.slice(..));
-        pass.set_index_buffer(self.paths.indices.slice(..), wgpu::IndexFormat::Uint32);
+        self.bind_path_buffers(pass);
         pass.set_scissor_rect(scissor.x, scissor.y, scissor.width, scissor.height);
         pass.draw_indexed(
             range.first_index..range.first_index + range.index_count,
             0,
-            0..1,
+            range.instance..range.instance + 1,
         );
         if let Some(work) = gpu_work {
             work.record_draw_batch();
@@ -1008,14 +1374,12 @@ impl MeshPipeline {
         } else {
             &self.path_pipeline
         });
-        pass.set_bind_group(0, &self.bind_group, &[]);
-        pass.set_vertex_buffer(0, self.paths.vertices.slice(..));
-        pass.set_index_buffer(self.paths.indices.slice(..), wgpu::IndexFormat::Uint32);
+        self.bind_path_buffers(pass);
         pass.set_scissor_rect(scissor.x, scissor.y, scissor.width, scissor.height);
         pass.draw_indexed(
             range.first_index..range.first_index + range.index_count,
             0,
-            0..1,
+            range.instance..range.instance + 1,
         );
         if let Some(work) = gpu_work {
             work.record_draw_batch();
@@ -1176,7 +1540,7 @@ impl MeshPipeline {
                 &self.paths.gradients,
             );
         }
-        if self.pending_instances.is_empty() && self.paths.pending_indices.is_empty() {
+        if self.pending_instances.is_empty() && self.paths.pending_instances.is_empty() {
             self.uploaded_instances.clear();
             self.uploaded_clips.clear();
             return;
@@ -1390,7 +1754,8 @@ fn cached_path_pipeline(
                 primitive: 0,
                 blend: 2,
                 depth: 0,
-                vertex_layout: std::mem::size_of::<GpuPathVertex>() as u64,
+                vertex_layout: (std::mem::size_of::<GpuPathVertex>() as u64) << 32
+                    | std::mem::size_of::<GpuPathInstance>() as u64,
             },
             create,
         )
@@ -1421,20 +1786,31 @@ fn create_path_pipeline(
                 vertex: wgpu::VertexState {
                     module: vertex,
                     entry_point: Some("path_vs_main"),
-                    buffers: &[Some(wgpu::VertexBufferLayout {
-                        array_stride: std::mem::size_of::<GpuPathVertex>() as u64,
-                        step_mode: wgpu::VertexStepMode::Vertex,
-                        attributes: &wgpu::vertex_attr_array!(
-                            0 => Float32x2,
-                            1 => Float32x2,
-                            2 => Float32,
-                            3 => Uint32,
-                            4 => Float32x4,
-                            5 => Float32x2,
-                            6 => Uint32,
-                            7 => Uint32,
-                        ),
-                    })],
+                    buffers: &[
+                        Some(wgpu::VertexBufferLayout {
+                            array_stride: std::mem::size_of::<GpuPathVertex>() as u64,
+                            step_mode: wgpu::VertexStepMode::Vertex,
+                            attributes: &wgpu::vertex_attr_array!(
+                                0 => Float32x2,
+                                1 => Float32x2,
+                                2 => Float32x2,
+                                3 => Float32,
+                                4 => Float32x4,
+                            ),
+                        }),
+                        Some(wgpu::VertexBufferLayout {
+                            array_stride: std::mem::size_of::<GpuPathInstance>() as u64,
+                            step_mode: wgpu::VertexStepMode::Instance,
+                            attributes: &wgpu::vertex_attr_array!(
+                                5 => Float32x4,
+                                6 => Float32x4,
+                                7 => Float32,
+                                8 => Uint32,
+                                9 => Uint32,
+                                10 => Uint32,
+                            ),
+                        }),
+                    ],
                     compilation_options: wgpu::PipelineCompilationOptions::default(),
                 },
                 fragment: Some(wgpu::FragmentState {
@@ -3617,6 +3993,13 @@ pub(super) struct MeshPipelineTarget {
     pending_clips: Vec<GpuClip>,
     clip_intern: HashMap<ClipInternKey, u32>,
     uploaded_clips: Vec<GpuClip>,
+}
+
+impl MeshPipelineTarget {
+    /// [`MeshPipeline::path_counters`] of this target's arena.
+    pub(super) fn path_counters(&self) -> (u64, u64) {
+        self.paths.counters()
+    }
 }
 
 impl MeshPipeline {
