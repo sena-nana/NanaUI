@@ -127,7 +127,16 @@ pub(crate) fn flex_parts<const N: usize>(
     let (mut cursor, _) = justify_offsets(justify, main, occupied, 0.0, 0);
     std::array::from_fn(|index| {
         let input = inputs[index]?;
-        let extent = sizes[index].min((main - cursor).max(0.0));
+        // The room left is cut from a part only when the parts really run
+        // past `main`: the cursor adds what shrinking left in another order
+        // than shrinking summed it, and a rounding error past `main` would
+        // otherwise come off a fixed part (a 15 px glyph left 14.999996).
+        let room = (main - cursor).max(0.0);
+        let extent = if sizes[index] <= room + main.abs() * 1e-6 {
+            sizes[index]
+        } else {
+            room
+        };
         let cross_extent = if input.align == AlignSpec::Stretch {
             cross
         } else {
