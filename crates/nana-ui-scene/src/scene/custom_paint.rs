@@ -13,6 +13,17 @@
 //! runtime hands the same recording back. A node that moves, scrolls or is
 //! rebuilt for any other reason re-emits primitives from it without
 //! re-tessellating anything.
+//!
+//! A new recording of the node (content edited live, a canvas that redraws)
+//! starts from the meshes the last one built: each mesh-producing op is keyed
+//! by everything its geometry depends on (see [`MeshReuse`]), and an op whose
+//! key the last recording built keeps that mesh, recoloured if only its paint
+//! changed. Only the ops that really changed are built again.
+
+use std::cell::OnceCell;
+use std::collections::HashMap;
+use std::hash::{BuildHasherDefault, Hasher};
+use std::sync::OnceLock;
 
 use i_overlay::core::fill_rule::FillRule as OverlayFill;
 use i_overlay::core::overlay_rule::OverlayRule;
@@ -187,8 +198,47 @@ pub(super) struct BuiltPaint {
     /// The node's `mask-image` (see [`node_mask`]). Whether there is one
     /// decides how the ops are built: see [`build_ops`].
     node_mask: Option<Arc<NodeMask>>,
-    behind: Arc<[BuiltOp]>,
-    over: Arc<[BuiltOp]>,
+    /// Behind one pointer: the scene keeps a `BuiltPaint` per painted node
+    /// in tables whose every slot is its size.
+    ops: Arc<BuiltOps>,
+}
+
+#[derive(Debug)]
+struct BuiltOps {
+    behind: Box<[BuiltOp]>,
+    over: Box<[BuiltOp]>,
+    /// The meshes and clips built for `behind` and `over`, by key, for the
+    /// node's next recording to start from.
+    meshes: MeshCache,
+}
+
+impl BuiltPaint {
+    /// Build `recording`'s geometry, reusing what `previous` built for any op
+    /// that did not change.
+    fn build(
+        recording: &Arc<PaintRecording>,
+        node_mask: Option<Arc<NodeMask>>,
+        over: bool,
+        previous: Vec<&MeshCache>,
+    ) -> Self {
+        let masked = node_mask.is_some();
+        let mut reuse = MeshReuse::new(previous);
+        let behind = build_ops(&recording.behind_children, masked, &mut reuse).into();
+        let over = if over {
+            build_ops(&recording.over_children, masked, &mut reuse).into()
+        } else {
+            Box::from([])
+        };
+        Self {
+            recording: Arc::clone(recording),
+            node_mask,
+            ops: Arc::new(BuiltOps {
+                behind,
+                over,
+                meshes: reuse.finish(),
+            }),
+        }
+    }
 }
 
 /// The slot namespaces a painted node's own primitives live in. Their paint
@@ -281,13 +331,9 @@ impl UiScene {
                     ..built.clone()
                 }
             }
-            _ => {
-                let built = BuiltPaint {
-                    recording: Arc::clone(recording),
-                    node_mask,
-                    behind: build_ops(&recording.behind_children, masked).into(),
-                    over: build_ops(&recording.over_children, masked).into(),
-                };
+            held => {
+                let previous = held.map(|held| &held.ops.meshes).into_iter().collect();
+                let built = BuiltPaint::build(recording, node_mask, true, previous);
                 self.custom_paint.insert(id, built.clone());
                 built
             }
@@ -357,11 +403,14 @@ impl UiScene {
                 .as_deref()
                 .and_then(|held| held.iter().find(|b| Arc::ptr_eq(&b.recording, recording)))
                 .cloned();
-            built.push(reused.unwrap_or_else(|| BuiltPaint {
-                recording: Arc::clone(recording),
-                node_mask: None,
-                behind: build_ops(&recording.behind_children, false).into(),
-                over: Arc::from([]),
+            // A diagram re-recorded (its source edited) starts from what any
+            // of the document's diagrams built last time.
+            built.push(reused.unwrap_or_else(|| {
+                let previous = held
+                    .iter()
+                    .flat_map(|held| held.iter())
+                    .map(|b| &b.ops.meshes);
+                BuiltPaint::build(recording, None, false, previous.collect())
             }));
             places.push((
                 [bounds.x, bounds.y],
@@ -416,13 +465,9 @@ impl UiScene {
     ) -> BuiltPaint {
         match self.modal_surface_paint.get(&id) {
             Some(built) if Arc::ptr_eq(&built.recording, recording) => built.clone(),
-            _ => {
-                let built = BuiltPaint {
-                    recording: Arc::clone(recording),
-                    node_mask: None,
-                    behind: build_ops(&recording.behind_children, false).into(),
-                    over: Arc::from([]),
-                };
+            held => {
+                let previous = held.map(|held| &held.ops.meshes).into_iter().collect();
+                let built = BuiltPaint::build(recording, None, false, previous);
                 self.modal_surface_paint.insert(id, built.clone());
                 built
             }
@@ -497,8 +542,8 @@ impl UiScene {
         let [width, height] = placement.size;
         for (phase, pre, post) in placement.phases {
             let ops: &[BuiltOp] = match phase {
-                PaintPhaseOps::Behind => &built.behind,
-                PaintPhaseOps::Over => &built.over,
+                PaintPhaseOps::Behind => &built.ops.behind,
+                PaintPhaseOps::Over => &built.ops.over,
                 PaintPhaseOps::None => &[],
             };
             let mut namespace = pre;
@@ -907,6 +952,15 @@ fn clip_region(clip: &LocalClip, origin: [f32; 2], transform: AffineTransform) -
 /// One entry of the clip stack while building: everything pushed so far,
 /// intersected.
 struct ActiveClip {
+    /// What the clip was built from: every clip path pushed so far, with its
+    /// transform. Part of the key of everything built under it.
+    key: Arc<[u32]>,
+    built: Arc<BuiltClip>,
+}
+
+/// A clip stack entry's geometry, kept across recordings like meshes are.
+#[derive(Debug)]
+struct BuiltClip {
     shapes: Shapes,
     /// The clip, triangulated, for cutting meshes that cannot be re-derived
     /// from a polygon (shadow bands carry a coverage ramp).
@@ -914,7 +968,274 @@ struct ActiveClip {
     /// The same clips as GPU clips, when every one of them is exact.
     /// `None`: content the CPU cannot cut goes through a masked layer.
     local: Option<Arc<[LocalClip]>>,
+    /// What a layer cut to this clip erases, once something needed it.
+    erase: OnceLock<Option<Arc<PathMesh>>>,
 }
+
+// ---------------------------------------------------------------------------
+// Reuse across recordings
+// ---------------------------------------------------------------------------
+
+/// Hashes a key's words. Keys are what a node's own painter recorded, not
+/// input chosen to collide, so a multiplicative hash (FxHash's) is enough;
+/// the map still compares the whole key.
+#[derive(Default, Clone, Copy)]
+struct KeyHasher(u64);
+
+impl KeyHasher {
+    fn mix(&mut self, word: u64) {
+        self.0 = (self.0.rotate_left(5) ^ word).wrapping_mul(0x517c_c1b7_2722_0a95);
+    }
+}
+
+impl Hasher for KeyHasher {
+    fn write(&mut self, bytes: &[u8]) {
+        let (chunks, tail) = bytes.as_chunks::<8>();
+        for chunk in chunks {
+            self.mix(u64::from_le_bytes(*chunk));
+        }
+        if !tail.is_empty() {
+            let mut last = [0u8; 8];
+            last[..tail.len()].copy_from_slice(tail);
+            self.mix(u64::from_le_bytes(last));
+        }
+    }
+
+    fn write_usize(&mut self, n: usize) {
+        self.mix(n as u64);
+    }
+
+    fn finish(&self) -> u64 {
+        self.0
+    }
+}
+
+type KeyMap<V> = HashMap<Box<[u32]>, V, BuildHasherDefault<KeyHasher>>;
+
+/// The meshes and clips one recording built, by key. It holds nothing the
+/// recording's ops do not: it is replaced, not added to, by the next
+/// recording, so it costs only the keys.
+#[derive(Debug, Default)]
+pub(super) struct MeshCache {
+    meshes: KeyMap<CachedMesh>,
+    clips: KeyMap<Arc<BuiltClip>>,
+}
+
+#[derive(Debug, Clone)]
+struct CachedMesh {
+    /// `None`: the op draws nothing (an empty path, or one clipped away).
+    mesh: Option<Arc<PathMesh>>,
+    /// The vertex colour it was built with.
+    color: [f32; 4],
+}
+
+/// How a mesh is painted, apart from its geometry: what a theme or colour
+/// change alters without moving a vertex.
+struct MeshPaint {
+    /// Straight sRGB of the vertices (shadow bands scale its alpha).
+    color: [f32; 4],
+    paint_color: Option<nana_ui_core::PaintColor>,
+    gradient: Option<Arc<ResolvedGradient>>,
+}
+
+/// Builds a recording's meshes, reusing the previous recording's where the
+/// op is the same.
+///
+/// Every mesh-producing op (a fill, stroke or shadow, or a rounded
+/// rectangle drawn as paths) is keyed by everything its geometry depends on,
+/// as raw words: its kind and parameters (path verbs and points, fill rule,
+/// stroke style, shadow offset, blur and spread), the painter's transform,
+/// the key of the clip it is cut by, and whether a gradient is evaluated
+/// over it (which places [`PathVertex::paint_pos`]). Curves are flattened at
+/// a fixed node-local tolerance and meshes stay in node-local space (the AA
+/// fringe is extruded on the GPU), so no scale is part of the key. Its
+/// colour is not: a hit with another colour is recoloured, not rebuilt.
+pub(super) struct MeshReuse<'a> {
+    previous: Vec<&'a MeshCache>,
+    next: MeshCache,
+    /// The key being assembled for the current op.
+    key: Vec<u32>,
+    /// Meshes built rather than reused.
+    built: usize,
+}
+
+impl<'a> MeshReuse<'a> {
+    pub(super) fn new(previous: Vec<&'a MeshCache>) -> Self {
+        Self {
+            previous,
+            next: MeshCache::default(),
+            key: Vec::new(),
+            built: 0,
+        }
+    }
+
+    pub(super) fn finish(self) -> MeshCache {
+        self.next
+    }
+
+    /// Start the key of an op of kind `tag` under `t`, cut to `clip`.
+    fn begin(&mut self, tag: u32, t: Affine, clip: Option<&ActiveClip>) {
+        self.key.clear();
+        self.key.push(tag);
+        self.affine(t);
+        match clip {
+            None => self.key.push(u32::MAX),
+            Some(clip) => {
+                self.key.push(clip.key.len() as u32);
+                self.key.extend_from_slice(&clip.key);
+            }
+        }
+    }
+
+    fn word(&mut self, value: f32) {
+        self.key.push(value.to_bits());
+    }
+
+    fn words(&mut self, values: &[f32]) {
+        self.key.extend(values.iter().map(|value| value.to_bits()));
+    }
+
+    fn affine(&mut self, t: Affine) {
+        self.words(&t);
+    }
+
+    fn path(&mut self, path: &PaintPath) {
+        self.key.push(path.fill_rule() as u32);
+        self.key.push(path.verbs().len() as u32);
+        for verb in path.verbs() {
+            match *verb {
+                PathVerb::MoveTo(p) => {
+                    self.key.push(0);
+                    self.words(&p);
+                }
+                PathVerb::LineTo(p) => {
+                    self.key.push(1);
+                    self.words(&p);
+                }
+                PathVerb::QuadTo(c, p) => {
+                    self.key.push(2);
+                    self.words(&c);
+                    self.words(&p);
+                }
+                PathVerb::CubicTo(a, b, p) => {
+                    self.key.push(3);
+                    self.words(&a);
+                    self.words(&b);
+                    self.words(&p);
+                }
+                PathVerb::Close => self.key.push(4),
+            }
+        }
+    }
+
+    /// The mesh for the op keyed so far, painted `paint`: the one built for
+    /// the same key, recoloured if need be, or `build(colour)` if there is
+    /// none.
+    fn mesh(
+        &mut self,
+        paint: &MeshPaint,
+        build: impl FnOnce([f32; 4]) -> Option<PathMesh>,
+    ) -> Option<Arc<PathMesh>> {
+        let dress = |mut mesh: PathMesh| {
+            mesh.paint_color = paint.paint_color;
+            mesh.gradient = paint.gradient.clone();
+            Arc::new(mesh)
+        };
+        if !paint.color.iter().all(|channel| channel.is_finite()) {
+            // Nothing to recolour from or to: build it as asked.
+            self.built += 1;
+            return build(paint.color).map(dress);
+        }
+        if paint.color[3] <= 0.0 {
+            return None;
+        }
+        if let Some(cached) = self.next.meshes.get(self.key.as_slice()) {
+            // The same op twice in one recording.
+            return cached
+                .mesh
+                .as_ref()
+                .map(|mesh| recolored(mesh, cached.color, paint));
+        }
+        let cached = self
+            .previous
+            .iter()
+            .find_map(|previous| previous.meshes.get(self.key.as_slice()));
+        let mesh = match cached {
+            Some(cached) => cached
+                .mesh
+                .as_ref()
+                .map(|mesh| recolored(mesh, cached.color, paint)),
+            None => {
+                self.built += 1;
+                build(paint.color).map(dress)
+            }
+        };
+        self.next.meshes.insert(
+            self.key.as_slice().into(),
+            CachedMesh {
+                mesh: mesh.clone(),
+                color: paint.color,
+            },
+        );
+        mesh
+    }
+
+    /// The clip keyed `key`: the one built for it, or `build()`.
+    fn clip(&mut self, key: &[u32], build: impl FnOnce() -> BuiltClip) -> Arc<BuiltClip> {
+        if let Some(built) = self.next.clips.get(key) {
+            return Arc::clone(built);
+        }
+        let built = self
+            .previous
+            .iter()
+            .find_map(|previous| previous.clips.get(key))
+            .cloned()
+            .unwrap_or_else(|| Arc::new(build()));
+        self.next.clips.insert(key.into(), Arc::clone(&built));
+        built
+    }
+}
+
+/// `mesh`, built painted `from`, painted as `paint` asks. The same mesh when
+/// nothing differs; otherwise a copy with every vertex recoloured. A vertex
+/// of exactly `from` takes the new colour; one whose alpha a shadow band
+/// scaled keeps that scale.
+fn recolored(mesh: &Arc<PathMesh>, from: [f32; 4], paint: &MeshPaint) -> Arc<PathMesh> {
+    let bits = |c: [f32; 4]| c.map(f32::to_bits);
+    let same_color = bits(from) == bits(paint.color);
+    let same_gradient = match (&mesh.gradient, &paint.gradient) {
+        (None, None) => true,
+        (Some(a), Some(b)) => Arc::ptr_eq(a, b) || a == b,
+        _ => false,
+    };
+    if same_color && same_gradient && mesh.paint_color == paint.paint_color {
+        return Arc::clone(mesh);
+    }
+    let mut out = PathMesh::clone(mesh);
+    if !same_color {
+        let to = paint.color;
+        let scale = if from[3] > 0.0 { to[3] / from[3] } else { 0.0 };
+        for vertex in &mut out.vertices {
+            vertex.color = if bits(vertex.color) == bits(from) {
+                to
+            } else {
+                [to[0], to[1], to[2], vertex.color[3] * scale]
+            };
+        }
+    }
+    out.paint_color = paint.paint_color;
+    out.gradient = paint.gradient.clone();
+    Arc::new(out)
+}
+
+/// Key tags of the mesh-producing ops.
+const KEY_FILL: u32 = 1;
+const KEY_STROKE: u32 = 2;
+const KEY_SHADOW: u32 = 3;
+const KEY_BOX_SHADOW: u32 = 4;
+const KEY_BOX_FILL: u32 = 5;
+const KEY_BOX_BORDER: u32 = 6;
+const KEY_CLIP: u32 = 7;
 
 /// What the painter's state says about the op being built.
 #[derive(Clone, Copy)]
@@ -928,7 +1249,7 @@ struct OpState {
 /// none takes the quad shortcut, whose shader evaluates a mask over the
 /// quad's own box — and glyphs, icons and images, which no shader of theirs
 /// masks, each go into a layer the mask is kept on.
-fn build_ops(ops: &[PaintOp], masked: bool) -> Vec<BuiltOp> {
+fn build_ops(ops: &[PaintOp], masked: bool, reuse: &mut MeshReuse) -> Vec<BuiltOp> {
     let mut built = Vec::with_capacity(ops.len());
     let mut stack: Vec<ActiveClip> = Vec::new();
     let no_clips: Arc<[LocalClip]> = Arc::from(Vec::new());
@@ -950,26 +1271,48 @@ fn build_ops(ops: &[PaintOp], masked: bool) -> Vec<BuiltOp> {
             }),
             PaintOp::PopLayer => built.push(BuiltOp::LayerEnd { mask: None }),
             PaintOp::PushClip { path } => {
-                let own = fill_shapes(path, t);
-                let exact = local_clip(path, &own, t);
-                let shapes = match clip {
-                    Some(outer) => intersect(&own, &outer.shapes),
-                    None => own,
-                };
-                let local = match (clip.map(|outer| outer.local.clone()), exact) {
-                    (None, Some(exact)) => Some(Arc::from(vec![exact])),
-                    (Some(Some(outer)), Some(exact)) => {
-                        let mut chain = outer.to_vec();
-                        chain.push(exact);
-                        Some(chain.into())
+                reuse.key.clear();
+                if let Some(outer) = clip {
+                    reuse.key.extend_from_slice(&outer.key);
+                }
+                reuse.key.push(KEY_CLIP);
+                reuse.affine(t);
+                // Whether the path was drawn as a (rounded) rectangle decides
+                // whether the GPU can clip to it exactly.
+                match path.as_rounded_rect_corners() {
+                    None => reuse.key.push(0),
+                    Some((rect, radii)) => {
+                        reuse.key.push(1);
+                        reuse.words(&[rect.x, rect.y, rect.width, rect.height]);
+                        reuse.words(&radii);
                     }
-                    _ => None,
-                };
-                stack.push(ActiveClip {
-                    triangles: triangulate(&shapes),
-                    shapes,
-                    local,
+                }
+                reuse.path(path);
+                let key: Arc<[u32]> = reuse.key.as_slice().into();
+                let built = reuse.clip(&key, || {
+                    let own = fill_shapes(path, t);
+                    let exact = local_clip(path, &own, t);
+                    let shapes = match clip {
+                        Some(outer) => intersect(&own, &outer.built.shapes),
+                        None => own,
+                    };
+                    let local = match (clip.map(|outer| outer.built.local.clone()), exact) {
+                        (None, Some(exact)) => Some(Arc::from(vec![exact])),
+                        (Some(Some(outer)), Some(exact)) => {
+                            let mut chain = outer.to_vec();
+                            chain.push(exact);
+                            Some(chain.into())
+                        }
+                        _ => None,
+                    };
+                    BuiltClip {
+                        triangles: triangulate(&shapes),
+                        shapes,
+                        local,
+                        erase: OnceLock::new(),
+                    }
                 });
+                stack.push(ActiveClip { key, built });
             }
             PaintOp::PopClip => {
                 stack.pop();
@@ -995,7 +1338,11 @@ fn build_ops(ops: &[PaintOp], masked: bool) -> Vec<BuiltOp> {
                     });
                     continue;
                 }
-                push_fill(&mut built, fill_shapes(path, t), paint, state, clip);
+                reuse.begin(KEY_FILL, t, clip);
+                reuse.path(path);
+                push_fill(&mut built, reuse, paint, state, clip, || {
+                    fill_shapes(path, t)
+                });
             }
             PaintOp::StrokePath {
                 path,
@@ -1023,16 +1370,23 @@ fn build_ops(ops: &[PaintOp], masked: bool) -> Vec<BuiltOp> {
                     });
                     continue;
                 }
-                push_fill(
-                    &mut built,
-                    stroke_shapes(path, stroke, t),
-                    paint,
-                    state,
-                    clip,
-                );
+                reuse.begin(KEY_STROKE, t, clip);
+                reuse.words(&[stroke.width, stroke.miter_limit, stroke.dash_offset]);
+                reuse.key.push(stroke.join as u32);
+                reuse.key.push(stroke.cap as u32);
+                reuse.key.push(stroke.dash.len() as u32);
+                reuse.words(&stroke.dash);
+                reuse.path(path);
+                push_fill(&mut built, reuse, paint, state, clip, || {
+                    stroke_shapes(path, stroke, t)
+                });
             }
             PaintOp::Shadow { path, shadow } => {
-                push_shadow(&mut built, fill_shapes(path, t), shadow, alpha, clip);
+                reuse.begin(KEY_SHADOW, t, clip);
+                reuse.path(path);
+                push_shadow(&mut built, reuse, shadow, alpha, clip, || {
+                    fill_shapes(path, t)
+                });
             }
             PaintOp::RoundedRect {
                 rect,
@@ -1081,26 +1435,35 @@ fn build_ops(ops: &[PaintOp], masked: bool) -> Vec<BuiltOp> {
                     });
                     continue;
                 }
-                let outline = rounded_shapes(rect, *radii, t);
+                let outline = OnceCell::new();
+                let outline = || outline.get_or_init(|| rounded_shapes(rect, *radii, t));
+                let key_box = |reuse: &mut MeshReuse, tag: u32| {
+                    reuse.begin(tag, t, clip);
+                    reuse.words(&[rect.x, rect.y, rect.width, rect.height]);
+                    reuse.words(radii);
+                };
                 if let Some(shadow) = shadow {
-                    push_shadow(&mut built, outline.clone(), shadow, alpha, clip);
+                    key_box(reuse, KEY_BOX_SHADOW);
+                    push_shadow(&mut built, reuse, shadow, alpha, clip, || outline().clone());
                 }
                 if let Some(fill) = fill {
-                    push_fill(&mut built, outline.clone(), fill, state, clip);
+                    key_box(reuse, KEY_BOX_FILL);
+                    push_fill(&mut built, reuse, fill, state, clip, || outline().clone());
                 }
                 if let Some((color, width)) = border {
-                    let inner = rounded_shapes(
-                        SceneRect {
-                            x: rect.x + width,
-                            y: rect.y + width,
-                            width: (rect.width - width * 2.0).max(0.0),
-                            height: (rect.height - width * 2.0).max(0.0),
-                        },
-                        radii.map(|radius| (radius - width).max(0.0)),
-                        t,
-                    );
-                    let ring =
-                        outline.overlay(&inner, OverlayRule::Difference, OverlayFill::NonZero);
+                    let ring = || {
+                        let inner = rounded_shapes(
+                            SceneRect {
+                                x: rect.x + width,
+                                y: rect.y + width,
+                                width: (rect.width - width * 2.0).max(0.0),
+                                height: (rect.height - width * 2.0).max(0.0),
+                            },
+                            radii.map(|radius| (radius - width).max(0.0)),
+                            t,
+                        );
+                        outline().overlay(&inner, OverlayRule::Difference, OverlayFill::NonZero)
+                    };
                     let paint =
                         border_paint.map_or(
                             ResolvedPaint::Solid(*color),
@@ -1111,7 +1474,9 @@ fn build_ops(ops: &[PaintOp], masked: bool) -> Vec<BuiltOp> {
                                 _ => unreachable!("border_paint only stores authoring colors"),
                             },
                         );
-                    push_fill(&mut built, ring, &paint, state, clip);
+                    key_box(reuse, KEY_BOX_BORDER);
+                    reuse.word(*width);
+                    push_fill(&mut built, reuse, &paint, state, clip, ring);
                 }
             }
             PaintOp::Image {
@@ -1146,7 +1511,7 @@ fn build_ops(ops: &[PaintOp], masked: bool) -> Vec<BuiltOp> {
             } => {
                 let shapes = fill_shapes(path, t);
                 let shapes = match clip {
-                    Some(outer) => intersect(&shapes, &outer.shapes),
+                    Some(outer) => intersect(&shapes, &outer.built.shapes),
                     None => shapes,
                 };
                 let Some(area) = shapes_bounds(&shapes) else {
@@ -1395,10 +1760,10 @@ fn clipped_op(
     let Some(clip) = clip else {
         return vec![op(Arc::clone(no_clips))];
     };
-    if let Some(local) = &clip.local {
+    if let Some(local) = &clip.built.local {
         return vec![op(Arc::clone(local))];
     }
-    let Some(area) = shapes_bounds(&clip.shapes) else {
+    let Some(area) = shapes_bounds(&clip.built.shapes) else {
         // An empty clip shows nothing.
         return Vec::new();
     };
@@ -1411,7 +1776,12 @@ fn clipped_op(
         },
         op(Arc::clone(no_clips)),
         BuiltOp::LayerEnd {
-            mask: erase_outside(area, &clip.shapes).map(|mesh| (mesh, LayerMaskMode::Erase)),
+            mask: clip
+                .built
+                .erase
+                .get_or_init(|| erase_outside(area, &clip.built.shapes))
+                .clone()
+                .map(|mesh| (mesh, LayerMaskMode::Erase)),
         },
     ]
 }
@@ -1514,53 +1884,74 @@ fn gradient_mesh(
     gradient: &Arc<ResolvedGradient>,
     state: OpState,
 ) -> Option<Arc<PathMesh>> {
-    let mut mesh = MeshBuilder::default();
-    mesh.fill(&shapes, [1.0, 1.0, 1.0, state.opacity]);
-    if let Some(inverse) = affine_inverse(state.transform) {
-        for vertex in &mut mesh.vertices {
-            vertex.paint_pos = affine_apply(inverse, vertex.position);
-        }
-    }
-    let mut mesh = mesh.finish()?;
+    let mut mesh = fill_mesh(
+        shapes,
+        [1.0, 1.0, 1.0, state.opacity],
+        Some(state.transform),
+        None,
+    )?;
     mesh.gradient = Some(Arc::clone(gradient));
     Some(Arc::new(mesh))
 }
 
+/// `shapes` cut to `clip`, filled `color`. With `gradient_space`, the
+/// painter transform a gradient over the mesh was defined before.
+fn fill_mesh(
+    shapes: Shapes,
+    color: [f32; 4],
+    gradient_space: Option<Affine>,
+    clip: Option<&ActiveClip>,
+) -> Option<PathMesh> {
+    let shapes = match clip {
+        Some(clip) => intersect(&shapes, &clip.built.shapes),
+        None => shapes,
+    };
+    let mut mesh = MeshBuilder::default();
+    mesh.fill(&shapes, color);
+    if let Some(inverse) = gradient_space.and_then(affine_inverse) {
+        for vertex in &mut mesh.vertices {
+            vertex.paint_pos = affine_apply(inverse, vertex.position);
+        }
+    }
+    mesh.finish()
+}
+
+/// Fill what `shapes()` returns with `paint`, cut to `clip`. The caller has
+/// keyed the geometry in `reuse`; `shapes` only runs if it was not built.
 fn push_fill(
     built: &mut Vec<BuiltOp>,
-    shapes: Shapes,
+    reuse: &mut MeshReuse,
     paint: &ResolvedPaint,
     state: OpState,
     clip: Option<&ActiveClip>,
+    shapes: impl FnOnce() -> Shapes,
 ) {
     if paint.is_invisible() || state.opacity <= 0.0 {
         return;
     }
-    let shapes = match clip {
-        Some(clip) => intersect(&shapes, &clip.shapes),
-        None => shapes,
+    let paint = match paint {
+        ResolvedPaint::Solid(color) => MeshPaint {
+            color: fade(*color, state.opacity),
+            paint_color: None,
+            gradient: None,
+        },
+        ResolvedPaint::Authoring(color) => MeshPaint {
+            color: fade(color.to_srgb(), state.opacity),
+            paint_color: Some(*color),
+            gradient: None,
+        },
+        ResolvedPaint::Gradient(gradient) => MeshPaint {
+            color: [1.0, 1.0, 1.0, state.opacity],
+            paint_color: None,
+            gradient: Some(Arc::clone(gradient)),
+        },
     };
-    match paint {
-        ResolvedPaint::Solid(color) => {
-            let mut mesh = MeshBuilder::default();
-            mesh.fill(&shapes, fade(*color, state.opacity));
-            if let Some(mesh) = mesh.finish() {
-                built.push(BuiltOp::Mesh(Arc::new(mesh)));
-            }
-        }
-        ResolvedPaint::Authoring(color) => {
-            let mut mesh = MeshBuilder::default();
-            mesh.fill(&shapes, fade(color.to_srgb(), state.opacity));
-            if let Some(mut mesh) = mesh.finish() {
-                mesh.paint_color = Some(*color);
-                built.push(BuiltOp::Mesh(Arc::new(mesh)));
-            }
-        }
-        ResolvedPaint::Gradient(gradient) => {
-            if let Some(mesh) = gradient_mesh(shapes, gradient, state) {
-                built.push(BuiltOp::Mesh(mesh));
-            }
-        }
+    let gradient_space = paint.gradient.is_some().then_some(state.transform);
+    reuse.key.push(u32::from(gradient_space.is_some()));
+    if let Some(mesh) = reuse.mesh(&paint, |color| {
+        fill_mesh(shapes(), color, gradient_space, clip)
+    }) {
+        built.push(BuiltOp::Mesh(mesh));
     }
 }
 
@@ -1606,12 +1997,16 @@ fn scale_paint_alpha(color: nana_ui_core::PaintColor, opacity: f32) -> nana_ui_c
     }
 }
 
+/// The shadow `shadow` casts from what `shapes()` returns, cut to `clip`.
+/// The caller has keyed the outline in `reuse`; `shapes` only runs if it
+/// was not built.
 fn push_shadow(
     built: &mut Vec<BuiltOp>,
-    shapes: Shapes,
+    reuse: &mut MeshReuse,
     shadow: &ComponentElevation,
     alpha: f32,
     clip: Option<&ActiveClip>,
+    shapes: impl FnOnce() -> Shapes,
 ) {
     // Mesh vertices carry straight sRGB and are linearized once by the GPU
     // path uploader; the shadow's own colour rides on the finished mesh for
@@ -1626,27 +2021,34 @@ fn push_shadow(
     if color[3].is_nan() || color[3] <= 0.0 || lengths.iter().any(|length| !length.is_finite()) {
         return;
     }
-    // Past a screen's reach a blur or spread only costs geometry.
-    let paint_color = Some(shadow.color);
-    let shadow = ComponentElevation {
-        color: nana_ui_core::PaintColor::srgb(color),
-        blur_radius: shadow.blur_radius.min(MAX_LENGTH),
-        spread_radius: shadow.spread_radius.clamp(-MAX_LENGTH, MAX_LENGTH),
-        ..*shadow
+    reuse.words(&lengths);
+    reuse.key.push(u32::from(shadow.inset));
+    let paint = MeshPaint {
+        color,
+        paint_color: Some(shadow.color),
+        gradient: None,
     };
-    let mut mesh = MeshBuilder::default();
-    if shadow.inset {
-        mesh.inset_shadow(shapes, &shadow);
-    } else {
-        mesh.shadow(shapes, &shadow, true);
-    }
-    if let Some(clip) = clip {
-        mesh.clip_to(&clip.triangles);
-    }
-    if let Some(mesh) = mesh.finish() {
-        let mut mesh = mesh;
-        mesh.paint_color = paint_color;
-        built.push(BuiltOp::Mesh(Arc::new(mesh)));
+    let mesh = reuse.mesh(&paint, |color| {
+        // Past a screen's reach a blur or spread only costs geometry.
+        let shadow = ComponentElevation {
+            color: nana_ui_core::PaintColor::srgb(color),
+            blur_radius: shadow.blur_radius.min(MAX_LENGTH),
+            spread_radius: shadow.spread_radius.clamp(-MAX_LENGTH, MAX_LENGTH),
+            ..*shadow
+        };
+        let mut mesh = MeshBuilder::default();
+        if shadow.inset {
+            mesh.inset_shadow(shapes(), &shadow);
+        } else {
+            mesh.shadow(shapes(), &shadow, true);
+        }
+        if let Some(clip) = clip {
+            mesh.clip_to(&clip.built.triangles);
+        }
+        mesh.finish()
+    });
+    if let Some(mesh) = mesh {
+        built.push(BuiltOp::Mesh(mesh));
     }
 }
 
@@ -2760,7 +3162,11 @@ mod tests {
 
     /// What an unmasked node builds.
     fn build_ops(ops: &[PaintOp]) -> Vec<BuiltOp> {
-        super::build_ops(ops, false)
+        build_masked(ops, false)
+    }
+
+    fn build_masked(ops: &[PaintOp], masked: bool) -> Vec<BuiltOp> {
+        super::build_ops(ops, masked, &mut MeshReuse::new(Vec::new()))
     }
 
     fn rect_path(x: f32, y: f32, width: f32, height: f32) -> PaintPath {
@@ -3612,12 +4018,12 @@ mod tests {
             },
         ];
         assert_eq!(
-            kinds(&super::build_ops(&ops, false)),
+            kinds(&build_masked(&ops, false)),
             ["quad", "quad", "quad", "text", "image"]
         );
         // The quad shader would evaluate the mask over each quad's own box:
         // every shape is a mesh instead, glyphs and images a kept layer.
-        let masked = super::build_ops(&ops, true);
+        let masked = build_masked(&ops, true);
         assert_eq!(
             kinds(&masked),
             [
@@ -3746,5 +4152,116 @@ mod tests {
             let built = build_ops(&[boxed(0.0, 2.0, red.clone()), op.clone()]);
             assert_eq!(kinds(&built), ["quad", "quad"], "{op:?}");
         }
+    }
+
+    /// A small canvas: a fill, a stroke, a shadow, and a fill under a path
+    /// clip. `moved` shifts the stroke; `clip_r` resizes the clip.
+    fn canvas(color: [f32; 4], moved: f32, clip_r: f32) -> Vec<PaintOp> {
+        let solid = ResolvedPaint::Solid(color);
+        vec![
+            PaintOp::FillPath {
+                path: Arc::new(circle(20.0, 20.0, 12.0)),
+                paint: solid.clone(),
+            },
+            PaintOp::StrokePath {
+                path: Arc::new(circle(60.0 + moved, 20.0, 12.0)),
+                paint: solid.clone(),
+                stroke: StrokeStyle::new(3.0),
+            },
+            PaintOp::Shadow {
+                path: Arc::new(circle(20.0, 60.0, 10.0)),
+                shadow: ComponentElevation {
+                    color: nana_ui_core::PaintColor::srgb([0.0, 0.0, 0.0, 0.4]),
+                    offset_x: 0.0,
+                    offset_y: 2.0,
+                    blur_radius: 4.0,
+                    spread_radius: 0.0,
+                    inset: false,
+                },
+            },
+            PaintOp::PushClip {
+                path: Arc::new(circle(60.0, 60.0, clip_r)),
+            },
+            PaintOp::FillPath {
+                path: Arc::new(rect_path(40.0, 40.0, 30.0, 30.0)),
+                paint: solid,
+            },
+            PaintOp::PopClip,
+        ]
+    }
+
+    fn meshes(built: &[BuiltOp]) -> Vec<Arc<PathMesh>> {
+        built
+            .iter()
+            .filter_map(|op| match op {
+                BuiltOp::Mesh(mesh) => Some(Arc::clone(mesh)),
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// Build `ops` starting from `previous`: the meshes, what the next
+    /// recording would start from, and how many meshes were built.
+    fn rebuild(
+        ops: &[PaintOp],
+        previous: Option<&MeshCache>,
+    ) -> (Vec<Arc<PathMesh>>, MeshCache, usize) {
+        let mut reuse = MeshReuse::new(previous.into_iter().collect());
+        let built = super::build_ops(ops, false, &mut reuse);
+        let count = reuse.built;
+        (meshes(&built), reuse.finish(), count)
+    }
+
+    #[test]
+    fn rerecording_unchanged_ops_builds_no_mesh_and_a_changed_op_only_its_own() {
+        let red = [1.0, 0.0, 0.0, 1.0];
+        let (first, cache, built) = rebuild(&canvas(red, 0.0, 15.0), None);
+        assert_eq!(first.len(), 4);
+        assert_eq!(built, 4);
+
+        // The same ops, recorded again: every mesh is the one already built.
+        let (second, cache, built) = rebuild(&canvas(red, 0.0, 15.0), Some(&cache));
+        assert_eq!(built, 0);
+        for (a, b) in first.iter().zip(&second) {
+            assert!(Arc::ptr_eq(a, b));
+        }
+
+        // The stroke moved: only it is built again.
+        let (third, cache, built) = rebuild(&canvas(red, 5.0, 15.0), Some(&cache));
+        assert_eq!(built, 1);
+        let reused: Vec<bool> = second
+            .iter()
+            .zip(&third)
+            .map(|(a, b)| Arc::ptr_eq(a, b))
+            .collect();
+        assert_eq!(reused, [true, false, true, true]);
+        assert_eq!(*third[1], *rebuild(&canvas(red, 5.0, 15.0), None).0[1]);
+
+        // The clip changed: only what it cuts is built again.
+        let (fourth, _, built) = rebuild(&canvas(red, 5.0, 18.0), Some(&cache));
+        assert_eq!(built, 1);
+        let reused: Vec<bool> = third
+            .iter()
+            .zip(&fourth)
+            .map(|(a, b)| Arc::ptr_eq(a, b))
+            .collect();
+        assert_eq!(reused, [true, true, true, false]);
+    }
+
+    #[test]
+    fn a_new_colour_recolours_the_built_geometry_instead_of_rebuilding_it() {
+        let red = [1.0, 0.0, 0.0, 1.0];
+        let blue = [0.0, 0.2, 1.0, 0.5];
+        let (first, cache, _) = rebuild(&canvas(red, 0.0, 15.0), None);
+        let (recoloured, _, built) = rebuild(&canvas(blue, 0.0, 15.0), Some(&cache));
+        assert_eq!(built, 0);
+        let (fresh, _, _) = rebuild(&canvas(blue, 0.0, 15.0), None);
+        // Fills and strokes come out exactly as if built in the new colour;
+        // the shadow, whose colour did not change, is the same mesh.
+        for index in [0, 1, 3] {
+            assert!(!Arc::ptr_eq(&first[index], &recoloured[index]));
+            assert_eq!(*recoloured[index], *fresh[index]);
+        }
+        assert!(Arc::ptr_eq(&first[2], &recoloured[2]));
     }
 }
