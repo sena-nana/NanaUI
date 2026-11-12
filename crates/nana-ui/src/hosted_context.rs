@@ -8,7 +8,7 @@ use crate::gpu_adapter::{
     GpuAdapterChoice, GpuAdapterInfo, GpuAdapterSelection, automatic_adapter, pick_adapter,
 };
 use crate::{ResolvedSurfaceProfile, SurfacePresentationPolicy, SurfaceProfileFallback};
-use nana_gpu::{__framework, GpuContext, GpuDeviceLost, GpuTextureFormat};
+use nana_gpu::{__framework, GpuBackend, GpuContext, GpuDeviceLost, GpuTextureFormat};
 
 /// Native presentation mechanism, selected before creating the window surface.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -221,6 +221,10 @@ pub struct HostedGpuSurface {
     /// Present-mode support is fixed per surface and adapter, so it is
     /// resolved at surface creation instead of re-queried every live frame.
     live_present_mode: wgpu::PresentMode,
+    /// The window's program keeps redrawing (`FrameDemand::Continuous`).
+    /// On DX12 such a surface runs at DXGI maximum frame latency 2; see
+    /// [`steady_frame_latency`].
+    continuous_redraw: bool,
 }
 
 impl HostedGpuSurface {
@@ -425,7 +429,9 @@ impl HostedGpuSurface {
     #[doc(hidden)]
     pub fn prepare_frame(&mut self, gpu: &GpuContext, live: bool) {
         let size = self.window.surface_size();
-        let mut changed = self.apply_live_resize_policy(live);
+        let latency =
+            steady_frame_latency(live, self.continuous_redraw, gpu.capabilities().backend());
+        let mut changed = self.apply_live_resize_policy(latency);
         if surface_size_changed(
             (self.configuration.width, self.configuration.height),
             (size.width, size.height),
@@ -439,12 +445,18 @@ impl HostedGpuSurface {
         }
     }
 
-    fn apply_live_resize_policy(&mut self, live: bool) -> bool {
+    /// Whether the window's program keeps redrawing. Takes effect at the next
+    /// [`Self::prepare_frame`]; a change reconfigures the swapchain once.
+    pub(crate) fn set_continuous_redraw(&mut self, continuous: bool) {
+        self.continuous_redraw = continuous;
+    }
+
+    fn apply_live_resize_policy(&mut self, frame_latency: u32) -> bool {
         let Some((present_mode, desired_maximum_frame_latency)) = live_resize_policy_change(
             self.configuration.present_mode,
             self.configuration.desired_maximum_frame_latency,
             self.live_present_mode,
-            live,
+            frame_latency,
         ) else {
             return false;
         };
@@ -1144,6 +1156,7 @@ fn configure_surface(
         want_transparent,
         alpha_recreate_attempted: false,
         live_present_mode: preferred_live_present_mode(&capabilities.present_modes),
+        continuous_redraw: false,
     })
 }
 
@@ -1730,24 +1743,32 @@ fn surface_size_changed(configured: (u32, u32), inner: (u32, u32)) -> bool {
     inner.0 > 0 && inner.1 > 0 && configured != inner
 }
 
-fn live_resize_frame_latency(live: bool) -> u32 {
-    if live { 2 } else { 1 }
+/// Maximum frame latency for the next frame. A live resize takes one extra
+/// frame of queue headroom. So does a continuously redrawing DX12 window: at
+/// latency 1 its acquire waits out a whole refresh on the
+/// frame-latency waitable whenever DWM holds the previous present, which puts
+/// a click about 30 ms behind instead of under 10 (`docs/reference/gpu.md` §6).
+/// Idle and on-demand windows keep latency 1.
+fn steady_frame_latency(live: bool, continuous: bool, backend: GpuBackend) -> u32 {
+    if live || (continuous && backend == GpuBackend::Dx12) {
+        2
+    } else {
+        1
+    }
 }
 
-/// Present configuration a surface must move to for the next frame's live
-/// state, or `None` when the current configuration already matches. Steady
-/// frames use the surface's preferred unblocked mode (`Mailbox`, then
-/// `Immediate`, then `AutoVsync`). Entering live keeps that mode and adds one
-/// extra frame of queue headroom; leaving live restores latency 1. Resolving
+/// Present configuration a surface must move to for the next frame, given
+/// that frame's [`steady_frame_latency`], or `None` when the current
+/// configuration already matches. Frames use the surface's preferred
+/// unblocked mode (`Mailbox`, then `Immediate`, then `AutoVsync`). Resolving
 /// this once per frame keeps steady frames reconfigure-free.
 fn live_resize_policy_change(
     current_present_mode: wgpu::PresentMode,
     current_frame_latency: u32,
     live_present_mode: wgpu::PresentMode,
-    live: bool,
+    frame_latency: u32,
 ) -> Option<(wgpu::PresentMode, u32)> {
     let present_mode = live_present_mode;
-    let frame_latency = live_resize_frame_latency(live);
     if present_mode == current_present_mode && frame_latency == current_frame_latency {
         None
     } else {
@@ -1796,9 +1817,9 @@ pub(crate) fn alpha_mode_needs_surface_recreate(
 #[cfg(test)]
 mod tests {
     use super::{
-        alpha_mode_needs_surface_recreate, live_resize_frame_latency, live_resize_policy_change,
-        preferred_alpha_mode, preferred_live_present_mode, preferred_surface_format,
-        resolve_surface_profile_internal, surface_profile_changed, surface_size_changed,
+        alpha_mode_needs_surface_recreate, live_resize_policy_change, preferred_alpha_mode,
+        preferred_live_present_mode, preferred_surface_format, resolve_surface_profile_internal,
+        steady_frame_latency, surface_profile_changed, surface_size_changed,
     };
 
     #[test]
@@ -2390,8 +2411,6 @@ mod tests {
 
     #[test]
     fn live_resize_prefers_unblocked_present_when_the_surface_advertises_it() {
-        assert_eq!(live_resize_frame_latency(true), 2);
-        assert_eq!(live_resize_frame_latency(false), 1);
         assert_eq!(
             preferred_live_present_mode(&[
                 wgpu::PresentMode::Fifo,
@@ -2411,42 +2430,78 @@ mod tests {
     }
 
     #[test]
+    fn continuous_dx12_and_live_resize_queue_one_more_frame() {
+        use nana_gpu::GpuBackend::{Dx12, Metal, Vulkan};
+
+        // Idle and on-demand windows keep latency 1 on every backend.
+        for backend in [Dx12, Vulkan, Metal] {
+            assert_eq!(steady_frame_latency(false, false, backend), 1);
+            assert_eq!(steady_frame_latency(true, false, backend), 2);
+        }
+        // Only a continuously redrawing DX12 window queues the extra frame.
+        assert_eq!(steady_frame_latency(false, true, Dx12), 2);
+        assert_eq!(steady_frame_latency(false, true, Vulkan), 1);
+        assert_eq!(steady_frame_latency(false, true, Metal), 1);
+        // Entering continuous redraw reconfigures once, to latency 2.
+        assert_eq!(
+            live_resize_policy_change(
+                wgpu::PresentMode::Mailbox,
+                1,
+                wgpu::PresentMode::Mailbox,
+                steady_frame_latency(false, true, Dx12),
+            ),
+            Some((wgpu::PresentMode::Mailbox, 2))
+        );
+        // A continuous window leaving a live resize stays at 2: no
+        // reconfigure when the gesture ends.
+        assert_eq!(
+            live_resize_policy_change(
+                wgpu::PresentMode::Mailbox,
+                2,
+                wgpu::PresentMode::Mailbox,
+                steady_frame_latency(false, true, Dx12),
+            ),
+            None
+        );
+    }
+
+    #[test]
     fn live_resize_policy_reconfigures_once_per_session_and_back() {
         use wgpu::PresentMode;
 
         // Entering live from a stale AutoVsync configuration switches to the
         // cached unblocked mode and extra latency before the first moved frame.
         assert_eq!(
-            live_resize_policy_change(PresentMode::AutoVsync, 1, PresentMode::Mailbox, true),
+            live_resize_policy_change(PresentMode::AutoVsync, 1, PresentMode::Mailbox, 2),
             Some((PresentMode::Mailbox, 2))
         );
         // Steady live frames keep the same configuration, so prepare_frame
         // never reconfigures mid-gesture.
         assert_eq!(
-            live_resize_policy_change(PresentMode::Mailbox, 2, PresentMode::Mailbox, true),
+            live_resize_policy_change(PresentMode::Mailbox, 2, PresentMode::Mailbox, 2),
             None
         );
         // Leaving live keeps Mailbox and restores latency 1 exactly once.
         assert_eq!(
-            live_resize_policy_change(PresentMode::Mailbox, 2, PresentMode::Mailbox, false),
+            live_resize_policy_change(PresentMode::Mailbox, 2, PresentMode::Mailbox, 1),
             Some((PresentMode::Mailbox, 1))
         );
         assert_eq!(
-            live_resize_policy_change(PresentMode::Mailbox, 1, PresentMode::Mailbox, false),
+            live_resize_policy_change(PresentMode::Mailbox, 1, PresentMode::Mailbox, 1),
             None
         );
         assert_eq!(
-            live_resize_policy_change(PresentMode::AutoVsync, 1, PresentMode::Mailbox, false),
+            live_resize_policy_change(PresentMode::AutoVsync, 1, PresentMode::Mailbox, 1),
             Some((PresentMode::Mailbox, 1))
         );
         // A surface without an unblocked present mode keeps AutoVsync; only
         // the latency changes, once per side of the gesture.
         assert_eq!(
-            live_resize_policy_change(PresentMode::AutoVsync, 1, PresentMode::AutoVsync, true),
+            live_resize_policy_change(PresentMode::AutoVsync, 1, PresentMode::AutoVsync, 2),
             Some((PresentMode::AutoVsync, 2))
         );
         assert_eq!(
-            live_resize_policy_change(PresentMode::AutoVsync, 2, PresentMode::AutoVsync, false),
+            live_resize_policy_change(PresentMode::AutoVsync, 2, PresentMode::AutoVsync, 1),
             Some((PresentMode::AutoVsync, 1))
         );
     }

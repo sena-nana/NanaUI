@@ -104,6 +104,9 @@ mod probe {
         expect_red: bool,
         surface: Option<WindowSurfaceInfo>,
         backend: String,
+        /// Every presented frame once the measured clicks start: the QPC
+        /// time `present` returned and that frame's acquire wait in ns.
+        frames: Vec<(i64, u64)>,
     }
 
     type State = Arc<Mutex<Shared>>;
@@ -311,10 +314,14 @@ mod probe {
         fn window_frame_presented(
             &mut self,
             _: WindowId,
-            _: &RuntimeProgramContext<()>,
+            context: &RuntimeProgramContext<()>,
         ) -> RuntimeProgramUpdate {
             let now = qpc();
             let mut state = self.state.lock().unwrap();
+            if state.current.is_some_and(|index| index >= WARMUP_CLICKS) {
+                let acquire = stage_values()[3];
+                state.frames.push((now, acquire));
+            }
             if let Some(index) = state.current {
                 let click = &mut state.clicks[index];
                 if click.prepare.is_some() && click.presented.is_none() {
@@ -324,6 +331,9 @@ mod probe {
             }
             if !self.started {
                 self.started = true;
+                // The steady configuration, after the first frame's present
+                // policy; the one asked for at `Ready` predates it.
+                self.surface_request = Some(context.window().surface_info());
                 let state = self.state.clone();
                 std::thread::spawn(move || drive(state));
             }
@@ -598,6 +608,7 @@ mod probe {
                 "post_to_presented": span(&|c| ms(c.post, c.presented.unwrap())),
             },
             "host_stage_ms": stages,
+            "frames": frame_summary(&state.frames, options.continuous, frequency),
         });
         let text = serde_json::to_string_pretty(&report).unwrap();
         println!("{text}");
@@ -606,6 +617,33 @@ mod probe {
             let raw = path.with_extension("clicks.json");
             std::fs::write(raw, serde_json::to_string(&measured).unwrap()).unwrap();
         }
+    }
+
+    /// Presented-frame cadence over the measured clicks: throughput, the
+    /// interval between `present` returns, intervals longer than 1.5 target
+    /// periods (a skipped refresh), and the per-frame acquire wait.
+    fn frame_summary(
+        frames: &[(i64, u64)],
+        continuous: Option<std::num::NonZeroU32>,
+        frequency: i64,
+    ) -> serde_json::Value {
+        if frames.len() < 2 {
+            return serde_json::Value::Null;
+        }
+        let ms = |from: i64, to: i64| (to - from) as f64 * 1e3 / frequency as f64;
+        let intervals: Vec<f64> = frames.windows(2).map(|w| ms(w[0].0, w[1].0)).collect();
+        let span_ms = ms(frames[0].0, frames[frames.len() - 1].0);
+        let long = continuous.map(|fps| {
+            let limit = 1.5e3 / fps.get() as f64;
+            intervals.iter().filter(|&&i| i > limit).count()
+        });
+        serde_json::json!({
+            "count": frames.len(),
+            "fps": (frames.len() - 1) as f64 * 1e3 / span_ms,
+            "interval_ms": summarize(intervals),
+            "long_intervals": long,
+            "acquire_ms": summarize(frames.iter().map(|f| f.1 as f64 / 1e6).collect()),
+        })
     }
 
     pub fn main() -> Result<(), nana_ui::HostedRunError> {

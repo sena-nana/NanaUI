@@ -129,6 +129,27 @@ The controls show how much runs move with no real change. The variant only acts 
 - Only latency 2 came out ahead, by about 4–5 ms, still far from Vulkan's ~5 ms, and it was measured together with the start wait. It is a separate change: it queues one more frame, which can raise latency when the GPU is the bottleneck. It would need its own A/B, without the start wait, before anything ships.
 - Whether DX12 blocks at all depends on the desktop's state, not on NanaUI: the same build, minutes apart, gave 5.9 ms and 33 ms. §6's 32.4 ms is the blocking state, not a constant.
 
+**Latency 2 measured alone (2026-11-12): go, shipped for continuously redrawing DX12 windows.** The row above did not test latency 2. Its patch set only the surface's initial configuration, and the per-frame present policy (`live_resize_policy_change` in `hosted_context.rs`, called from the scene host's `resize_window` on every redraw) put a steady window back to latency 1 on its first frame. This time a temporary build read the steady latency in that policy from an environment variable, and the probe's surface report, taken after the first frame, confirmed 2 in every latency-2 run and 1 in every other run. There was no start wait. The probe now also records every presented frame of the measured clicks (`frames`: throughput, interval between `present` returns, intervals longer than 1.5 periods, and per-frame `acquire`). Interleaved runs: 10 rounds of DX12 `--continuous 60`, DX12 idle and Vulkan `--continuous 60` at 60 clicks per run, the mode order rotating and the variant order alternating each round, then 8 more rounds of DX12 `--continuous 60` alone at 40 clicks. The ML training job kept GPU utilization at 10–99% (mean 56%), and another session was compiling at `-j 4`.
+
+The state is classified by the latency-1 run (blocking when its `acquire` p50 exceeds 5 ms), because latency 2 removes the acquire wait itself. All 18 continuous DX12 latency-1 runs were in the blocking state. The non-blocking state did not occur this time, so it could not be measured directly.
+
+| Window, variant | runs | post→screen p50 / p90 / p99 | run p50: median [range] | `acquire` p50 | prepare→presented | presented→screen | fps | frame interval p50 / p90 / p99 | intervals > 25 ms |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| DX12 continuous 60, latency 1 (blocking) | 18 | 32.7 / 42.8 / 47.5 | 33.8 [24.3–40.4] | 14.03 | 13.0 | 16.5 | 60.0 | 16.7 / 16.9 / 17.8 | 2 of 11,716 |
+| DX12 continuous 60, latency 2 | 18 | **10.0 / 17.5 / 21.6** | 10.1 [8.6–12.5] | 0.02 | 0.6 | 8.7 | 64.7 | 16.6 / 17.2 / 18.6 | 1 of 11,286 |
+| DX12 idle, latency 1 | 10 | 5.3 / 9.3 | 5.2 [4.9–5.8] | 0.02 | | | | | |
+| DX12 idle, latency 2 | 10 | 5.6 / 8.8 | 5.6 [4.8–6.9] | 0.02 | | | | | |
+| Vulkan continuous 60, latency 1 | 10 | 5.2 / 9.7 | 5.1 [4.6–6.3] | 0.03 | 0.5 | 4.1 | 64.8 | 16.6 / 17.1 | |
+| Vulkan continuous 60, latency 2 | 10 | 5.3 / 9.3 | 5.3 [4.1–6.0] | 0.03 | 0.5 | 4.2 | 64.9 | 16.6 / 17.1 | |
+
+Paired Δ (latency 2 − latency 1, run p50 within a round): continuous DX12 −22.8 ms median [−30.5…−14.8], faster in **18/18** rounds (10/10 in the first batch, 8/8 in the second). Idle DX12 +0.2 ms [−0.3…+1.2], faster in 3/10. Continuous Vulkan −0.2 ms [−1.6…+1.2], faster in 6/10. Stage columns are medians of run p50s. Continuous throughput above 60 fps is the click redraws on top of the 60 fps cadence; at latency 1 they are absorbed by the blocked acquire.
+
+- In the blocking state, latency 2 takes the acquire wait out completely (14 → 0.02 ms) and cuts presented → screen from a full refresh to about half of one. The clicked frame now queues behind at most one earlier frame instead of waiting for it in `acquire` and again in DWM. p50 drops by about 23 ms and p90 by about 25 ms, with no extra long frames and no lower throughput. It is still about 5 ms behind Vulkan, which never queues here.
+- The non-blocking state cannot get worse. `SetMaximumFrameLatency` only caps the queue. In that state latency 1 never reaches the cap (`acquire` 0.02 ms), so a cap of 2 changes nothing there. The worst case is still bounded by the 10 ms measured with a queued frame. Vulkan, which never blocks, moves by −0.2 ms.
+- Cost: one more back buffer per such window (wgpu-hal allocates latency + 1), and one swapchain reconfigure whenever the program switches between continuous and on-demand.
+- Shipped: `steady_frame_latency` in `hosted_context.rs` gives latency 2 to a live resize (as before) and to a DX12 surface whose program's own `frame_demand` is `Continuous`. The scene host passes that in `resize_window` on every redraw. A compositor motion or a window output does not count, so short animations do not reconfigure the swapchain. Idle and on-demand windows and the other backends keep latency 1. Metal was not measured.
+- What puts the desktop into the blocking state is still unknown. PresentMon (the FrameView SDK copy on this machine) needs elevation to trace, so present modes (independent flip vs composed) were not recorded. On the previous day about a third of runs did not block. On this day none of 19 did. The probe window was the same 480 × 320 window throughout.
+
 Commands (from the repository root; S is a scratch directory):
 
 ```sh

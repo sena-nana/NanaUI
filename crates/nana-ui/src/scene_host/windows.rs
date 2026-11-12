@@ -1650,9 +1650,17 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
         // window's real size. They do not take the latency-2 policy: leaving
         // it would reconfigure the swapchain again when the gesture ends.
         let live = self.size_move_active(id) || self.custom_frame_resize_active(id);
+        // The program's own cadence only: a compositor motion or a window
+        // output turns demand continuous for a moment, and following it would
+        // reconfigure the swapchain at each start and stop.
+        let continuous = matches!(
+            self.program.frame_demand(id),
+            crate::FrameDemand::Continuous(_)
+        );
         if let Some(host) = self.window_contexts.get_mut(&id)
             && host.surface_retry.is_none()
         {
+            host.surface.set_continuous_redraw(continuous);
             self.graphics.prepare_surface_frame(&mut host.surface, live);
         }
     }
