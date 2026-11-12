@@ -53,6 +53,11 @@ pub struct ScenePainterResourceCounters {
     pub url_texture_cpu_bytes: u64,
     /// Fetches and decodes still running.
     pub url_pending: u64,
+    /// Custom-paint path meshes kept on the GPU, node-local, so that frames
+    /// which only move or scale them write no vertex.
+    pub path_meshes: u64,
+    /// Bytes the vertex and index arenas holding them allocate.
+    pub path_mesh_bytes: u64,
 }
 
 pub(crate) use clip::{covered_span, is_translation_projective, on_grid};
@@ -1119,6 +1124,14 @@ impl SceneWgpuPainter {
                 .filter_map(|state| state.icons.as_ref()),
         );
         let url = self.url_cache.counters();
+        let (path_meshes, path_mesh_bytes) = std::iter::once(self.meshes.path_counters())
+            .chain(
+                self.targets
+                    .values()
+                    .filter_map(|state| state.meshes.as_ref())
+                    .map(mesh::MeshPipelineTarget::path_counters),
+            )
+            .fold((0, 0), |(meshes, bytes), (m, b)| (meshes + m, bytes + b));
         ScenePainterResourceCounters {
             icon_atlases,
             icon_atlas_bytes,
@@ -1126,6 +1139,8 @@ impl SceneWgpuPainter {
             url_texture_gpu_bytes: url.gpu_bytes,
             url_texture_cpu_bytes: url.cpu_bytes,
             url_pending: url.pending,
+            path_meshes,
+            path_mesh_bytes,
         }
     }
 
@@ -3407,6 +3422,7 @@ fn push_path_draw(
     if let Some(target) = batching.target(commands, painted, |command| {
         matches!(command, DrawCommand::Path { range: previous, scissor: open }
             if *open == scissor
+                && previous.instance == range.instance
                 && previous.first_index + previous.index_count == range.first_index)
     }) {
         let DrawCommand::Path {

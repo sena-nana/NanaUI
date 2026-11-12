@@ -91,9 +91,9 @@ Surface 的 HDR 能力由 `SurfaceCapabilities::format_capabilities` 决定，�
 
 - Painter 把 2,000 个节点合成 4 次 draw，逐 draw 校验几乎没有可放大的对象。UI 场景受 GPU 限制：主线程在 `GpuContext::begin_frame` 里等帧槽（`Device::maintain`）。
 - `host-textures-64` 是“大量小 pass”的情形（bench 自己的 64 个 producer pass 加上 UI pass），开销在驱动。其中 25% 是 bench 自己的 `queue.write_buffer`。在 `command_encoder_finish` 内部，42% 是 wgpu-core 为每个 pass 新开一条 hal 命令列表（`InnerCommandEncoder::open_pass` → `begin_encoding`，DX12 每帧 290 µs，Vulkan 528 µs）。`finish` 里只有 19% 是 wgpu-core 自身代码。
-- NanaUI 自身的开销按 CPU 的包含式占比统计：文字在 `ui-dense-2k` 占 3.5%，在 `text-paint-color` 占 57%（主要是 `RuntimeDocument::flush`，painter 占 9.6%），在 `text-constraint-resize` 占 84%。图标在 `ui-dense-2k` 占 0.5%。`gpu-scene-*` 场景都不画矢量路径，所以这次测量没有覆盖路径的开销；路径另见 §10。
+- NanaUI 自身的开销按 CPU 的包含式占比统计：文字在 `ui-dense-2k` 占 3.5%，在 `text-paint-color` 占 57%（主要是 `RuntimeDocument::flush`，painter 占 9.6%；拆开后文本引擎本身几乎为 0，是逐节点重新上色的通用开销，见 §12），在 `text-constraint-resize` 占 84%。图标在 `ui-dense-2k` 占 0.5%。`gpu-scene-*` 场景都不画矢量路径，所以这次测量没有覆盖路径的开销；路径另见 §10。
 
-**(a) 结论：不做。** 跳过校验，普通场景每帧最多省 9–35 µs，65 个 pass 的合成场景约省 110–117 µs。在文字为主的帧里不到 CPU 的 1%，这类帧 93–97% 是 NanaUI 自身的工作。只有当真实场景每帧出现数百个 draw 或 pass 时才值得重看；即便那样，逐 pass 开命令列表才是更大的目标。
+**(a) 结论：不做。** 跳过校验，普通场景每帧最多省 9–35 µs，65 个 pass 的合成场景约省 110–117 µs。在文字为主的帧里不到 CPU 的 1%，这类帧 93–97% 是 NanaUI 自身的工作。只有当真实场景每帧出现数百个 draw 或 pass 时才值得重看；即便那样，逐 pass 开命令列表才是更大的目标（已实测，也不做，见 §11）。
 
 **输入到呈现延迟。** `input-latency-probe` 打开一个普通的 hosted 窗口（Mailbox，`desired_maximum_frame_latency` 为 1，wgpu 默认的 `Dx12UseFrameLatencyWaitableObject::Wait`）。驱动线程每隔随机 120–250 ms 投递一次 `WM_LBUTTONDOWN`，每次按下让窗口换色。时间戳全部取 QPC：`post` 在 `PostMessageW` 之前；`input` 在 `RuntimeProgram::input_event` 里（降级和路由之后）；`prepare` 和 `presented` 在帧钩子里（`present` 返回之后，并附上宿主各阶段 gauge）；`screen` 是 Desktop Duplication 第一次出现新颜色的合成桌面帧的 `LastPresentTime`。wgpu 没有为 swapchain 暴露 `GetFrameStatistics`，所以用 DWM 的呈现时间代替 DXGI 帧统计。DWM 把多次更新折进同一帧的样本已剔除。下表单位都是 ms，每行 n = 161–297。
 
@@ -210,7 +210,7 @@ cargo run -p nana-ui --example surface-resize-probe --features gpu,wgpu-interop 
 
 ### 10. 实测：矢量路径的 CPU 网格化（2026-11-11）
 
-问题：矢量路径能不能直接在 GPU 上画，省掉 CPU 上的转换？现在的路线（`nana-ui-scene` 的 `custom_paint.rs`）是：展平曲线 → `i_overlay` 求填充规则、描边轮廓与裁剪交集 → `lyon` 三角化并加抗锯齿边带 → painter 的 `MeshPipeline::push_path` 把顶点变换到场景坐标、`PathBuffers::upload` 上传。§6 的场景都不画路径，这次补上。只做测量，产品帧路径上没有改任何代码。
+问题：矢量路径能不能直接在 GPU 上画，省掉 CPU 上的转换？现在的路线（`nana-ui-scene` 的 `custom_paint.rs`）是：展平曲线 → `i_overlay` 求填充规则、描边轮廓与裁剪交集 → `lyon` 三角化并加抗锯齿边带 → painter 的 `MeshPipeline::push_path` 把顶点变换到场景坐标、`PathBuffers::upload` 上传。§6 的场景都不画路径，这次补上。测量时产品帧路径上没有改任何代码；之后按结论第 1 项做的改动及其前后数字见本节末尾。
 
 **场景。** 两个新场景，用 `nana-gpu-scene-benchmark` 跑（`--features gpu,rich-text`）：
 
@@ -263,11 +263,52 @@ cargo run -p nana-ui --example surface-resize-probe --features gpu,wgpu-interop 
 
 另外，GPU 端覆盖率不是免费的：曲线仍要上传，描边、虚线和路径裁剪仍要处理；Vello 式 compute 要用计算着色器（wgpu 的 GLES 后端只在 GLES 3.1 以上才有），还会把工作搬到一块正被其他任务占满的共享 GPU 上。更便宜、收益更确定的做法，按先后：
 
-1. 路径顶点按节点局部坐标常驻 GPU，每次 draw 传变换。可省掉滚动与合成缩放帧 79–90% 的 CPU，不碰网格化。
+1. 路径顶点按节点局部坐标常驻 GPU，每次 draw 传变换。可省掉滚动与合成缩放帧 79–90% 的 CPU，不碰网格化。（已实现，见下文。）
 2. 让 `lyon` 能直接处理的路径绕开 `i_overlay`：没有裁剪的简单填充，以及描边（用 `lyon` 的 `StrokeTessellator`）。`i_overlay` 占构建的 37–45%。
 3. 复核展平容差和圆角连接的密度（每个网格 406 / 767 个顶点）。
 
 如果做完 2、3 之后，某个产品仍需要每帧重录 50 条以上的路径（按每条 78–112 µs 计约 4 ms），再重新评估 GPU 覆盖率方案。
+
+**之后：路径顶点常驻 GPU（第 1 项，已实现）。** 网格的顶点与索引在某一帧第一次画它时写进 painter 的一块共享 arena（每个渲染目标一块），保持节点局部坐标，之后不再改动；每次 draw 只送一条 48 字节的实例（仿射、原点、不透明度，以及裁剪、渐变与遮罩的下标）。同一节点相邻的网格，实例相同且在 arena 里相邻时，仍合成一次 draw。抗锯齿边带不在 CPU 上重算：`path.wgsl` 的 `path_screen_extrude` 在顶点着色器里按 draw 的仿射把节点空间的斜接向量映射到屏幕，与原来 CPU 上的 `screen_extrude` 是同一算法。所以任何缩放下边带都是一个物理像素，不需要按缩放阈值重新生成边带，也不用屏幕空间导数。arena 用 `Weak` 记住网格：场景放掉网格的下一帧就回收，120 帧没画过的也回收；常驻字节超过 64 MiB 时只留上一帧画过的。死区多于活区时压缩，用量不到四分之一时缩小。`resource_counters()` 新增 `path_meshes` 与 `path_mesh_bytes`。
+
+同样的命令与机器，前后各 3 轮的中位数（方括号为最小–最大）。测量时训练任务仍在跑，每轮开始时 GPU 利用率 19–100%，显存占用 13.3–13.7 GB。
+
+| 场景 | 情形 | prepare p50 ms 前 → 后 | 每帧 CPU µs 前 → 后 | 顶点变换 + 上传 µs 前 → 后 | 每帧上传 前 → 后 | draw 数 前 → 后 |
+| --- | --- | ---: | ---: | ---: | ---: | ---: |
+| canvas | 滚动 | 3.86 → 0.14 | 7124 [6738–7789] → 427 [317–438] | 6267 → 32 | 7.1 MB → < 1 KB | 2 → 16 |
+| canvas | 合成缩放 | 4.51 → 0.14 | 8066 [7807–8571] → 321 [238–603] | 7336 → 26 | 7.6 MB → < 1 KB | 3 → 22 |
+| canvas | 重录 | 33.6 → 28.6 | 34637 [32343–37586] → 30427 [28900–31635] | 9572 → 5246 | 9.0 MB → 7.4 MB | 3 → 3 |
+| mermaid | 滚动 | 4.59 → 0.52 | 6769 [6300–7533] → 858 [825–990] | 5310 → 22 | 6.7 MB → 8 KB | 30 → 32 |
+| mermaid | 合成缩放 | 4.04 → 0.15 | 7253 [6912–7738] → 481 [405–510] | 6412 → 23 | 6.7 MB → 8 KB | 28 → 30 |
+| mermaid | 重录 | 24.9 → 22.2 | 24979 [23774–26595] → 24236 [23619–25561] | 3034 → 3472 | 0 → 6.6 MB | 28 → 30 |
+
+- **滚动与合成缩放：路径的 CPU 从 5–7 ms 降到 22–32 µs。** 每帧只上传实例（canvas 几十条；mermaid 的 8 KB 主要是文字），整帧 CPU 降到 0.3–0.9 ms。mermaid 滚动剩下的 prepare 是文字与 Runtime 的工作，不是路径。
+- **重录没有变差。** canvas 省掉了 CPU 变换，搬顶点从 9.6 ms 降到 5.2 ms。mermaid 重录时几何不变，原来逐字节比较后不上传；现在每个新的 `Arc` 都重新写进 arena（6.6 MB），搬顶点多了约 0.4 ms，但省掉的变换抵消了它，整帧 CPU 与 prepare 都没有变差。这 6.6 MB 后来去掉了，见下面的“之后（二）”。
+- **静止帧不变。** painter 本来就跳过路径。前后两个版本穿插各跑 3 轮，每帧 CPU 中位数 canvas 201 → 194 µs，mermaid 171 → 203 µs，都在驱动提交 130–330 µs 的波动之内。
+- **画面不变。** `retained_paths_paint_what_cpu_transformed_vertices_did_under_any_scale` 把常驻路径与按原来方式在 CPU 上变换的同一批网格逐像素比较（椭圆、三角形、1px 描边、带渐变的旋转方块），节点缩放取 0.5、1、1.5、2，另加 rotate(25deg) scale(1.4, 0.7)。每个通道相差不超过 2/255。
+- **第 2 项（简单路径绕开 `i_overlay`）没有做。** 边带生成依赖 `i_overlay` 给出的干净轮廓：外轮廓与洞的方向固定，互不相交。绕开它就要先判断轮廓是否简单、方向是否正确；描边改用 `StrokeTessellator` 又拿不到可以生成边带的轮廓。这不是小改动。重录构建仍是 17–23 ms，`i_overlay` 仍是其中最大的一段。
+
+**之后（二）：重录的网格接手旧网格的区间（2026-11-12）。** 上面 mermaid 重录多出的 6.6 MB，是几何没变、只换了新 `Arc` 的网格又写了一遍。现在 arena 的区间按内容共享。painter 第一次见到一个网格时先算探针：顶点数、索引数、边界、显式纯色，再加均匀取的 8 个顶点和 8 个索引的哈希，代价与网格大小无关。已有区间里探针相同的，再逐位比较全部顶点和索引，完全相同才共用。场景放掉的网格，区间多留一帧，区间也持有网格的强引用，好拿来比较。下一帧重录出同样内容时直接接手，不上传。没人接手的区间再下一帧回收，网格的 CPU 内存也在那时释放。同时存在的多个同内容网格也共用一段。64 MiB 上限按区间计字节，共享的只算一次；等待接手的区间算作上一帧画过的。压缩后只重写这一帧要画的区间。`path_meshes` 仍是场景持有的网格数。
+
+同样的命令与机器。前一版是 a02c0eba6，各跑 3 轮取中位数（方括号为最小–最大）。“搬顶点”是 `perf/stack_attribution.py --path-stages` 的内容匹配、`push_path`、路径上传与拷进上传环四段之和，“内容匹配”是新加的一段（`painter: content match (probe + compare)`）。静止、滚动、合成缩放三种情形没有新网格，不经过新代码，只列整帧数字。测量时训练任务仍在跑：每轮开始时 GPU 利用率 20–99%，显存占用 13.25–13.33 GB，系统内存 47 GB 里用了约 27 GB。
+
+| 场景 | 情形 | prepare p50 ms 前 → 后 | 每帧 CPU µs 前 → 后 | 搬顶点 µs 前 → 后 | 其中内容匹配 µs | 每帧上传 前 → 后 |
+| --- | --- | ---: | ---: | ---: | ---: | ---: |
+| canvas | 静止 | 0.006 → 0.007 | 231 [137–258] → 191 [176–234] | — | — | 0 → 0 |
+| canvas | 滚动 | 0.13 → 0.15 | 502 [300–507] → 467 [379–528] | — | — | 48 B → 48 B |
+| canvas | 合成缩放 | 0.14 → 0.16 | 421 [350–496] → 336 [336–455] | — | — | 320 B → 320 B |
+| canvas | 重录 | 31.5 → 30.3 | 30513 [27671–32428] → 32069 [31986–33004] | 5265 → 5071 | 159 | 7.4 MB → 7.4 MB |
+| mermaid | 静止 | 0.012 → 0.012 | 193 [165–242] → 172 [130–306] | — | — | 0 → 0 |
+| mermaid | 滚动 | 0.53 → 0.52 | 840 [819–888] → 760 [710–890] | — | — | 3.3 KB → 7.6 KB |
+| mermaid | 合成缩放 | 0.15 → 0.15 | 384 [378–500] → 477 [446–573] | — | — | 7.6 KB → 7.6 KB |
+| mermaid | 重录 | 21.9 → 21.9 | 25881 [22128–26410] → 21846 [21036–21909] | 3870 → 1175 | 889 | 6.6 MB → 272 B |
+
+- **mermaid 重录的上传回到接近 0。** 6.6 MB 降到 272 B，只剩实例与渐变；搬顶点从 3.9 ms 降到 1.2 ms，整帧 CPU 从 25.9 ms 降到 21.8 ms。剩下的 0.9 ms 是逐位比较：新旧两份各约 6.7 MB，已不在 CPU 缓存里，读它们受内存带宽限制。比较按块无分支地比位模式；用派生的浮点 `==` 比要 1 ms 以上。
+- **为什么不对每个网格做完整哈希。** 先试过对每个新网格算 64 位完整内容哈希：mermaid 要 0.73 ms，可 canvas 重录每帧几何真的变了，也要白付 0.92 ms。探针加命中后比较，canvas 只付探针（0.06–0.16 ms），而且不会因哈希碰撞画错。
+- **canvas 重录没有变差。** 区间不会被接手，新增的代价只有探针。旧网格晚一帧释放，这笔释放从场景的 `emit built ops`（约 0.4 ms）挪到了 painter 的 `begin_frame`（约 0.5 ms），总量没变。两个版本紧挨着各再跑 3 轮，每帧 CPU 中位数 30480 [30076–31857] → 31504 [29276–31876] µs，范围重叠。arena 里多留一代旧区间，压缩更频繁，但不多上传。
+- **其他情形不变。** mermaid 合成缩放紧挨着重测为 506 [331–511] → 490 [407–584] µs；表里其余差别都在各自的范围之内。
+- **测试。** `a_rerecorded_path_with_unchanged_geometry_uploads_no_vertex` 让同一个节点重录 3 次，每次都是几何相同的新 `Arc`，每帧上传不到 1 KB。场景放掉之后区间留一帧，再下一帧回收，旧网格随之释放。
+- **没有做：在场景里按路径操作复用网格。** 重录的大头仍是构建（17–23 ms）。如果场景按路径操作的内容缓存网格，操作相同就沿用旧的 `Arc`，既省掉构建，painter 也不必再比较。这是场景侧的改动，不在这次范围内。
 
 命令（仓库根目录；S 为临时目录；每次只运行一个 GPU 进程）：
 
@@ -284,6 +325,121 @@ WGPU_BACKEND=dx12 target/release/examples/stack-sampler.exe --delay-ms 3000 --du
   --output $S/sampled-canvas-scroll.json
 # 每帧 CPU µs = stack-sampler 打印的 thread_cpu_ms × 1000 ÷（bench 帧率 × wall_ms ÷ 1000）
 python perf/stack_attribution.py --path-stages --cpu-us-per-frame 6745 $S/canvas-scroll.folded
+```
+
+### 11. 实测：每个 pass 一条原生命令列表（2026-11-11）
+
+问题：§6 发现 wgpu-core 给每个 pass 新开一条原生命令列表，65 个 pass 的合成场景在这上面每帧花 290 µs（DX12）或 528 µs（Vulkan）。要不要改 fork，让多个 pass 共用一条列表？只做测量，fork 和产品帧路径都没有改。
+
+**原因。** `encode_render_pass`（`wgpu-core/src/command/render.rs`）先 `close_if_open` 关掉当前列表，再 `open_pass` 开一条新列表录 pass 本身。录完以后，它才知道这个 pass 需要哪些资源状态转换（`state.pass.scope` 是边校验边合并出来的），于是又开一条 “(wgpu internal) Pre Pass” 列表，写入 barrier、丢弃面修正、查询重置和间接调用校验，再用 `close_and_swap` 把它插到 pass 列表前面。已经录好的原生列表中间插不进命令，而 hal 的 `CommandEncoder` 同一时间只有一条录制中的列表，所以每个 pass 要两条列表：N 个 pass 约 2N+1 条，`queue.submit` 时还会在最前面为初始状态转换补一条。列表本身已经复用：DX12 从 `free_lists` 取出后 `Reset`，不新建；Vulkan 的命令池按 `ALLOCATION_GRANULARITY` 批量分配；分配器和池随编码器在 `CommandAllocator` 里循环使用。稳态帧不创建列表，开销是每条列表都要做的 Reset/Begin、Close 和提交。所以“更积极地复用列表”已经没有可省的了，能省的只有列表的数量。
+
+**真实帧开几条列表。** 用一个临时、未提交的计数补丁（在 `Queue::submit` 里统计每次 hal 提交的命令缓冲数，每 500 次打印一次）跑 `nana-gpu-scene-benchmark --serialize`。新增的 `gpu-scene-ui-effects` 场景是一个密集列表，上面有两块毛玻璃面板（`backdrop-filter: blur(12px)` 加半透明底色）和四张淡出卡片（opacity 0.85，有背景和子节点）。新增的 bench 节点 `frost-panel` 和 `opacity-group` 分别对应这两种效果。DX12 和 Vulkan 的计数完全一样，每次提交都相同：
+
+| 场景 | 每帧列表数 |
+| --- | ---: |
+| `gpu-scene-ui`、`gpu-scene-ui-dense-2k`（普通 UI） | 8 |
+| 1 块毛玻璃 / 2 块 | 18 / 28 |
+| 1 张淡出卡片 / 4 张 | 14 / 26 |
+| `gpu-scene-ui-effects`（2 块毛玻璃 + 4 张卡片） | 46 |
+| 4 块毛玻璃 + 8 张卡片 | 82 |
+| `gpu-scene-host-textures-64`（§6 的合成场景） | 134 |
+
+每块毛玻璃多出约 10 条列表（约 5 个 pass：拷贝、模糊、合成，以及 dest pass 重开）。第一张淡出卡片多出 6 条，之后每张多 4 条（组图层 pass 加 dest pass 重开）。
+
+**每条列表的 CPU 开销。** 新增的 `third_party/wgpu-fork-tests/examples/pass-cost.rs` 只用 `wgpu`：`chain` 模式录 K 个 pass，每个 pass 往自己的 256×256 图层画一个三角形，同时采样上一个图层（每个 pass 都有两个纹理在附件与采样状态之间转换，相当于组图层或模糊的一步）；`single` 模式把同样 K 次 draw 放进一个 pass。每帧计时从 `create_command_encoder` 到 `Queue::submit`，然后等 GPU 完成，任何时候只有一条提交在途，每轮 3 秒。下表是 3 轮 p50 的中位数（µs/帧）：
+
+| 后端 | 模式 | K=1 | K=8 | K=32 | K=64 | 每多一个 pass |
+| --- | --- | ---: | ---: | ---: | ---: | ---: |
+| DX12 | chain | 34.0 | 103.1 | 276.1 | 548.0 | **7.3 µs** |
+| DX12 | single | 28.6 | 30.7 | 39.5 | 85.7 | |
+| Vulkan | chain | 18.3 | 98.6 | 226.0 | 441.0 | **6.1 µs** |
+| Vulkan | single | 19.0 | 28.1 | 51.1 | 59.0 | |
+
+“每多一个 pass” =（K=64 时 chain − single）÷ 63，包括 pass 的全部开销。用 §6 的 `stack-sampler` 采 K=64 的 chain（6 s，每 2 ms 一次），新增的 `perf/stack_attribution.py --list-stages` 把每个非阻塞样本只记到一个阶段。原生列表相关的部分（打开、关闭、回收、提交）在 DX12 上占 58%，在 Vulkan 上占 60%：
+
+| 后端 | 打开（`begin_encoding`） | 关闭（`end_encoding`） | 回收（`reset_all`） | 提交 | barrier | 其余 pass 录制 | 其他 |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| DX12 | 29.8% | 13.6% | 1.2% | 13.1% | 7.2% | 26.7% | 8.5% |
+| Vulkan | 35.2% | 11.0% | 7.7% | 5.8% | 4.3% | 27.2% | 8.7% |
+
+DX12 打开列表的样本里 81% 在驱动的 `ID3D12GraphicsCommandList::Reset` 里，18% 在给列表设调试名（`SetName`）；Vulkan 的几乎全在驱动的 `vkBeginCommandBuffer` 里。按不采样时每个 pass 的开销折算，每条列表约 **2.1 µs（DX12）/ 1.8 µs（Vulkan）**，提交里的固定开销也算进去了，所以是上限。
+
+在 `gpu-scene-ui-effects` 上直接采样（每个后端 3 轮，中位数 [最小–最大]）：每帧 CPU 在 DX12 上是 515 [344–683] µs，其中列表相关 206 [143–274] µs（40%）；在 Vulkan 上是 416 [386–510] µs，其中 109 [50–128] µs（25%）。采样器每次挂起线程都会拖慢它，所以这组数比上面的折算值偏高，且波动大。
+
+**机器负载。** 测量期间 ML 训练任务一直在跑：每轮开始时 GPU 利用率 39–99%，显存占用 13.3 GB，系统内存 47 GB 里用了约 26 GB。CPU 为 Core Ultra 7 265K，GPU 为 RTX 5060 Ti。表里的量都是进程内的 CPU 时间。
+
+**可行的改法和能省多少。** 能保住 wgpu 资源状态校验和正确性的改法只有一种：wgpu-core 给每个命令编码器配两个 hal 编码器交替使用，把下一个 pass 的 barrier 写到上一条还开着的列表末尾，不再单开一条。提交顺序和现在一样，每个 pass 从两条列表变成一条。要做到每个编码器只用一条列表，就得在录 pass 之前先扫一遍命令，重算这个 pass 的使用范围。这等于在校验之外再维护一份状态跟踪，算错了就是 GPU 上的读写冲突，不在考虑范围内。按每条约 2 µs 估算：
+
+| 帧 | 列表 | 列表总开销 | 两编码器交替能省 | 理想情况（一条列表）能省 |
+| --- | ---: | ---: | ---: | ---: |
+| 普通 UI | 8 | ~16 µs | ~8 µs | ~14 µs |
+| 2 块毛玻璃 + 4 张卡片 | 46 | ~90 µs | ~45 µs | ~88 µs |
+| 4 块毛玻璃 + 8 张卡片 | 82 | ~165 µs | ~80 µs | ~160 µs |
+
+**结论：不做。** 真实 NanaUI 帧每帧开 8 条（普通 UI）到约 46 条（有毛玻璃和淡出动画）列表。可行的改法每帧省不到 0.1 ms：普通帧约 8 µs，效果较多的帧约 45 µs。即使理想情况每个编码器只用一条列表，也只省约 0.09 ms，而那需要一份校验之外的状态跟踪。§6 的 290 / 528 µs 来自 bench 自己的 64 个 producer pass（134 条列表）。这种开销随应用自己画的内容增长，与 NanaUI 的 UI 无关；真正的 producer 走 `GpuContext::begin_producer_frame`，在自己的编码器里录制。下列情况再重看：某个受支持的工作负载每帧稳定超过约 100 条列表（约 25 块毛玻璃，或几十个离屏 GPU 节点 pass）；或 hal 加了一个能在已录好的 pass 前插 barrier 的接口（例如 Vulkan 二级命令缓冲、DX12 enhanced barriers 的拆分），而且实测更便宜。
+
+命令（仓库根目录；S 为临时目录；每次只运行一个 GPU 进程）：
+
+```sh
+export CARGO_PROFILE_RELEASE_DEBUG=limited
+cargo build -j 4 --release -p nana-ui --bin nana-gpu-scene-benchmark --features gpu
+cargo build -j 4 --release -p nana-ui --example stack-sampler --features hosted,bundled-fonts
+cargo build -j 4 --release -p nana-wgpu-fork-tests --example pass-cost
+# 每个后端（dx12 | vulkan）、模式（chain | single）和 K（1 | 8 | 32 | 64）各跑 3 轮
+target/release/examples/pass-cost.exe --backend dx12 --mode chain --passes 64 --seconds 3
+target/release/examples/stack-sampler.exe --delay-ms 1500 --duration-ms 6000 --interval-us 2000 \
+  --out $S/pc-dx12-64.folded -- target/release/examples/pass-cost.exe --backend dx12 --mode chain --passes 64 --seconds 9
+python perf/stack_attribution.py --list-stages $S/pc-dx12-64.folded
+# 真实帧：每个后端 3 轮
+WGPU_BACKEND=dx12 target/release/examples/stack-sampler.exe --delay-ms 3500 --duration-ms 6000 --interval-us 2000 \
+  --out $S/fx-dx12.folded -- target/release/nana-gpu-scene-benchmark.exe \
+  --scenario perf/scenarios/gpu-scene-ui-effects.json --serialize --sample-seconds 10 --output $S/fx-dx12.bench.json
+python perf/stack_attribution.py --list-stages --cpu-us-per-frame 515 $S/fx-dx12.folded
+```
+
+### 12. 实测：只改文字颜色的帧（2026-11-11）
+
+问题：§6 里 1,000 个标签每帧换前景色的 `text-paint-color`，文字占 CPU 的 57%，大部分在 Runtime 的 flush 里。只换颜色本不该塑形、断行或排版，那这些 CPU 是不是走了多余的失效路径？**结论：不是，不改产品代码。** 只换颜色的帧没有任何文字专属的工作，剩下的是每个节点重新上色都要付的通用开销。只提交了测量（bench 新字段）和文档。
+
+**失效路径。** 场景里每个标签都用 `set_component(Text::new(..).color(role))` 换色。`project_common` 只发出 `SetStyle`。`UiWorld::restyle` 把 `foreground` 归为继承的 paint 变化，只给节点及其子树标 `STYLE | RENDER`，不标 `TEXT`，也不播种 layout。`LayoutStyleChange` 里 `color` 本来就属于 `PAINT`，文本也没有绕过这套分类。文本侧的分级（`TextDirty::PAINT`，见文本引擎文档）同样不碰 shape revision。bench 的工作计数每帧全为 0：塑形、新建 layout、画笔自排、栅格化、atlas 上传、instance 重建与上传。1,000 个 entry 都直接复用（`text_prepare_nodes_skipped` = 1000）。`frame_stages` 里 Layout 一栏是 skipped。每次 flush 更新的场景节点正好 1,000 个，不多一个。
+
+**时间去向。** 机器同 §6，DX12，release 并设 `CARGO_PROFILE_RELEASE_DEBUG=limited`，`--serialize`，每轮采 5 秒。测量时 ML 训练任务一直在跑（GPU 利用率 47%，显存占 13.3 GB），另有一个构建会话并行。bench 现在把应用改动（`app_mutation_ms`，即 1,000 次 `set_component` 及其提交）和 `RuntimeDocument::flush`（`runtime_flush_ms`）分开计时，并报告 `maximum_scene_updated_nodes`。下表是 3 轮 p50 的中位数，方括号里是最小–最大值，单位 ms。
+
+| 场景 | 应用改动 | Runtime flush | painter（`batch`） | 帧率 | 每帧更新的场景节点 |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| `text-paint-color`（换色） | 0.83 [0.82–0.96] | 1.59 [1.52–1.63] | 0.26 [0.25–0.26] | 232 | 1000 |
+| `text-constraint-resize`（重新断行） | 2.05 [2.03–2.11] | 15.60 [14.72–16.03] | 0.91 [0.85–0.99] | 47 | 1002 |
+| `text-retained`（静止） | 0.0001 | 0.055 [0.052–0.055] | 0.45 [0.45–0.45] | 636 | 1 |
+
+换色每个标签约 2.4 µs（应用改动 0.83 µs，flush 1.59 µs），约为重新断行（每个标签约 17.6 µs）的七分之一。用 §6 的 `stack-sampler` 采一轮（6 s，每 2 ms 一次，采样时每帧 CPU 约 3.2 ms），包含式占比如下：
+
+| 阶段 | 占比 | 内容 |
+| --- | ---: | --- |
+| `update_component_staged<Text>` | 27% | 克隆比较组件、`project`、逐个提交（其中 `UiWorld::restyle` 9.8%：intern 样式、重新解析 resolved layout、layout 对比较的记忆） |
+| 场景 `apply_delta_with_moves` | 29% | 其中 `rebuild_node_primitives` 17%（重建节点的 primitive、插入绘制顺序），`VisibilityIndex::update` 2% |
+| `extract_nodes_reusing` | 11% | 每个节点产出一份新的 `ExtractedNode` |
+| `resolve_styles` | 6% | 解析计算样式（其中 `invalidate_text_for_style` 0.8%，判断后不使文本失效） |
+| painter `paint` | 9.5% | glyph entry 全部复用，只改 run 行颜色 |
+| 塑形、排版、`TextLayout` | ≤0.1% | |
+
+§6 的“文字 57%”是按包含式把文本节点触发的所有工作都记给了文字。拆开后，文本引擎本身几乎为 0。
+
+**还能省的地方。** 最大的一块是场景为每个换色节点整份重建 primitive（17%，约 0.55 ms/帧，每个标签约 0.55 µs）。若在 `UiScene` 里加一条“只换 paint 颜色就原地改 primitive 颜色”的路径，最多省这么多，前提是能证明几何、裁剪、顺序和可见性都没变。它不是文本专属的问题，每种 paint-only 变化都走这条路。每帧上千个节点同时换色的界面很少见，所以现在不做。若真实应用出现这种负载，再按这个上限评估。
+
+命令（在仓库根目录执行，S 为临时目录）：
+
+```sh
+export CARGO_PROFILE_RELEASE_DEBUG=limited
+cargo build -j 4 --release -p nana-ui --bin nana-gpu-scene-benchmark --features gpu
+cargo build -j 4 --release -p nana-ui --example stack-sampler --features hosted,bundled-fonts
+# 每个场景（text-paint-color | text-constraint-resize | text-retained）跑 3 轮
+WGPU_BACKEND=dx12 target/release/nana-gpu-scene-benchmark.exe --scenario perf/scenarios/gpu-scene-text-paint-color.json \
+  --serialize --sample-seconds 5 --output $S/text-paint-color-1.json
+# 读 sampling.app_mutation_ms、sampling.runtime_flush_ms、stages.batch_ms 的 p50
+WGPU_BACKEND=dx12 target/release/examples/stack-sampler.exe --delay-ms 3000 --duration-ms 6000 --interval-us 2000 \
+  --out $S/color.folded -- target/release/nana-gpu-scene-benchmark.exe \
+  --scenario perf/scenarios/gpu-scene-text-paint-color.json --serialize --sample-seconds 9 --output $S/color-sampled.json
+python perf/stack_attribution.py $S/color.folded
 ```
 
 ## 挂载宿主纹理（`HostTexture` + `GpuTextureView`）

@@ -91,9 +91,9 @@ Shares are of non-blocked samples. The remainder is the `wgpu` front end (≤1.3
 
 - The painter batches 2,000 nodes into 4 draws, so per-draw validation has almost nothing to scale with. The UI scenes are GPU-bound: the main thread waits in `GpuContext::begin_frame` for a frame slot (`Device::maintain`).
 - `host-textures-64` is the many-small-passes case (the bench's 64 producer passes plus the UI pass). Its cost is driver work: 25% is the bench's own `queue.write_buffer` calls, and inside `command_encoder_finish`, 42% is wgpu-core opening a new hal command list per pass (`InnerCommandEncoder::open_pass` → `begin_encoding`, 290 µs/frame on DX12 and 528 µs on Vulkan). Only 19% of `finish` is wgpu-core's own code.
-- NanaUI's own work, by inclusive share of CPU: text is 3.5% in `ui-dense-2k`, 57% in `text-paint-color` (mostly `RuntimeDocument::flush`; the painter is 9.6%) and 84% in `text-constraint-resize`. Icons are 0.5% in `ui-dense-2k`. None of the `gpu-scene-*` scenarios draws vector paths, so this measurement does not cover path cost; paths are measured in §10.
+- NanaUI's own work, by inclusive share of CPU: text is 3.5% in `ui-dense-2k`, 57% in `text-paint-color` (mostly `RuntimeDocument::flush`; the painter is 9.6%. Split apart, the text engine itself is close to 0: it is the generic cost of repainting each node, see §12) and 84% in `text-constraint-resize`. Icons are 0.5% in `ui-dense-2k`. None of the `gpu-scene-*` scenarios draws vector paths, so this measurement does not cover path cost; paths are measured in §10.
 
-**(a) Verdict: no-go.** Skipping validation would save at most 9–35 µs/frame in ordinary scenes and about 110–117 µs in the 65-pass synthetic. That is under 1% of CPU in text-heavy frames, where NanaUI's own work is 93–97%. Revisit only if a real scene shows hundreds of draws or passes per frame. Even then, the per-pass command-list opening is the larger target.
+**(a) Verdict: no-go.** Skipping validation would save at most 9–35 µs/frame in ordinary scenes and about 110–117 µs in the 65-pass synthetic. That is under 1% of CPU in text-heavy frames, where NanaUI's own work is 93–97%. Revisit only if a real scene shows hundreds of draws or passes per frame. Even then, the per-pass command-list opening is the larger target (measured in §11: also a no-go).
 
 **Input-to-present latency.** `input-latency-probe` opens an ordinary hosted window (Mailbox, `desired_maximum_frame_latency` 1, wgpu's default `Dx12UseFrameLatencyWaitableObject::Wait`). A driver thread posts `WM_LBUTTONDOWN` at random 120–250 ms intervals, and each press flips the window's color. Timestamps are all QPC: `post` before `PostMessageW`, `input` in `RuntimeProgram::input_event` (after lowering and routing), `prepare` and `presented` in the frame hooks (after `present` returned, with the host's stage gauges), and `screen`, the Desktop Duplication `LastPresentTime` of the first composed desktop frame showing the new color. wgpu exposes no `GetFrameStatistics` for the swapchain, so DWM's present time stands in for DXGI frame statistics. Samples where DWM folded more than one update into a frame were dropped. All values are in ms; n = 161–297 per row.
 
@@ -210,7 +210,7 @@ cargo run -p nana-ui --example surface-resize-probe --features gpu,wgpu-interop 
 
 ### 10. Measured: CPU meshing of vector paths (2026-11-11)
 
-The question: could vector paths be drawn directly on the GPU, without converting them on the CPU first? Today's route (`custom_paint.rs` in `nana-ui-scene`) flattens curves, lets `i_overlay` resolve the fill rule, stroke outline and clip intersection, then tessellates with `lyon` and adds an anti-aliasing fringe. The painter's `MeshPipeline::push_path` then transforms the vertices into scene space, and `PathBuffers::upload` uploads them. None of the §6 scenes draws a path, so this fills that gap. This is measurement only: nothing on the product frame path changed.
+The question: could vector paths be drawn directly on the GPU, without converting them on the CPU first? Today's route (`custom_paint.rs` in `nana-ui-scene`) flattens curves, lets `i_overlay` resolve the fill rule, stroke outline and clip intersection, then tessellates with `lyon` and adds an anti-aliasing fringe. The painter's `MeshPipeline::push_path` then transforms the vertices into scene space, and `PathBuffers::upload` uploads them. None of the §6 scenes draws a path, so this fills that gap. The measurement changed nothing on the product frame path. The change made for fix 1 afterwards, with its before and after numbers, is at the end of this section.
 
 **Scenes.** Two new scenarios for `nana-gpu-scene-benchmark` (`--features gpu,rich-text`):
 
@@ -272,11 +272,52 @@ GPU coverage is not free either. Curves still have to be uploaded, and strokes, 
 
 Cheaper fixes with a surer payoff, in order:
 
-1. Keep path vertices resident on the GPU in node-local space and pass the transform per draw. This saves 79–90% of scroll and compositor-scale frame CPU without touching meshing.
+1. Keep path vertices resident on the GPU in node-local space and pass the transform per draw. This saves 79–90% of scroll and compositor-scale frame CPU without touching meshing. (Done; see below.)
 2. Let paths that `lyon` can handle directly skip `i_overlay`: simple fills with no clip, and strokes through `lyon`'s `StrokeTessellator`. `i_overlay` is 37–45% of the build.
 3. Revisit the flattening tolerance and round-join density (406 and 767 vertices per mesh).
 
 Revisit GPU coverage if, after fixes 2 and 3, a product still needs to re-record more than about 50 paths a frame (about 4 ms at 78–112 µs per path).
+
+**After: path vertices resident on the GPU (fix 1, done).** The first frame that draws a mesh writes its vertices and indices into one shared arena of the painter (one per render target), node-local, and nothing changes them after that. Each draw sends only a 48-byte instance: affine, origin, opacity, and the clip, gradient and mask indices. Neighbouring meshes of one node still draw as one when they share an instance and sit next to each other in the arena. The AA fringe is not rebuilt on the CPU. In the vertex shader, `path_screen_extrude` in `path.wgsl` maps each vertex's node-space miter to the screen through the draw's affine, with the same algorithm the CPU's `screen_extrude` ran. So the fringe stays one physical pixel under any scale, with no re-fringe threshold and no screen-space derivatives. The arena remembers meshes through `Weak`. A mesh goes the frame after the scene lets it go, or after 120 frames that did not draw it. Over 64 MiB resident, only what the last frame drew stays. The arena compacts once it holds more dead space than live, and shrinks once it is a quarter used. `resource_counters()` gains `path_meshes` and `path_mesh_bytes`.
+
+Same commands and machine, medians of 3 runs each before and after (brackets: min–max). The training job was still running: GPU utilisation was 19–100% at the start of each run, with 13.3–13.7 GB of video memory in use.
+
+| Scene | Case | prepare p50 ms before → after | CPU µs/frame before → after | Vertex transform + upload µs before → after | Upload/frame before → after | Draws before → after |
+| --- | --- | ---: | ---: | ---: | ---: | ---: |
+| canvas | scroll | 3.86 → 0.14 | 7124 [6738–7789] → 427 [317–438] | 6267 → 32 | 7.1 MB → < 1 KB | 2 → 16 |
+| canvas | compositor scale | 4.51 → 0.14 | 8066 [7807–8571] → 321 [238–603] | 7336 → 26 | 7.6 MB → < 1 KB | 3 → 22 |
+| canvas | re-record | 33.6 → 28.6 | 34637 [32343–37586] → 30427 [28900–31635] | 9572 → 5246 | 9.0 MB → 7.4 MB | 3 → 3 |
+| mermaid | scroll | 4.59 → 0.52 | 6769 [6300–7533] → 858 [825–990] | 5310 → 22 | 6.7 MB → 8 KB | 30 → 32 |
+| mermaid | compositor scale | 4.04 → 0.15 | 7253 [6912–7738] → 481 [405–510] | 6412 → 23 | 6.7 MB → 8 KB | 28 → 30 |
+| mermaid | re-record | 24.9 → 22.2 | 24979 [23774–26595] → 24236 [23619–25561] | 3034 → 3472 | 0 → 6.6 MB | 28 → 30 |
+
+- **Scroll and compositor scale: path CPU drops from 5–7 ms to 22–32 µs.** Each frame uploads only instances (a few dozen for the canvas; mermaid's 8 KB is mostly text), and the whole frame's CPU drops to 0.3–0.9 ms. What remains of mermaid's scroll prepare is text and Runtime work, not paths.
+- **Re-record does not get worse.** The canvas no longer transforms on the CPU, so moving vertices drops from 9.6 ms to 5.2 ms. Mermaid re-records with unchanged geometry. Before, the byte comparison found nothing to upload; now every new `Arc` is written into the arena again (6.6 MB), which adds about 0.4 ms to moving vertices. The transform it saves offsets that, and neither the frame's CPU nor prepare got worse. The 6.6 MB has since been removed; see "After (2)" below.
+- **Still frames are unchanged.** The painter already skipped paths. Interleaving 3 runs of each build, the median CPU per frame was 201 → 194 µs for the canvas and 171 → 203 µs for mermaid, both within the 130–330 µs swing of driver submission.
+- **The picture is unchanged.** `retained_paths_paint_what_cpu_transformed_vertices_did_under_any_scale` compares resident paths pixel by pixel with the same meshes transformed on the CPU as before: an ellipse, a triangle, a 1px stroke and a rotated gradient square. It runs under node scales 0.5, 1, 1.5 and 2, and under rotate(25deg) scale(1.4, 0.7). No channel differs by more than 2/255.
+- **Fix 2 (simple paths skipping `i_overlay`) was not done.** The fringe builder relies on the clean outlines `i_overlay` returns: outer contours and holes wound a fixed way, nothing crossing. Skipping it would first need a test that each contour is simple and correctly wound. Strokes through `StrokeTessellator` give no outline to build a fringe from either. That is not a small change. The re-record build is still 17–23 ms, and `i_overlay` is still its largest stage.
+
+**After (2): a re-recorded mesh takes over its predecessor's range (2026-11-12).** Mermaid's extra 6.6 MB above was unchanged geometry written again because it arrived in a new `Arc`. Arena ranges are now shared by content. The first time the painter sees a mesh it computes a probe: vertex and index counts, bounds, explicit solid, and a hash of 8 evenly spaced vertices and 8 indices, so the probe costs the same for any mesh. A range with the same probe is then compared bit by bit, all vertices and indices, and shared only when they match exactly. When the scene lets a mesh go, its range stays one more frame, and the range holds a strong reference to the mesh so there is something to compare with. If the next frame re-records the same content, the new mesh takes the range over and nothing is uploaded. A range nobody takes over goes the frame after, and the mesh's CPU memory is freed then. Meshes with the same content that exist at the same time share one range too. The 64 MiB bound counts range bytes, a shared range once, and a range waiting to be taken over counts as drawn by the last frame. After compaction only the ranges this frame draws are rewritten. `path_meshes` is still the number of meshes the scene holds.
+
+Same commands and machine. The before build is a02c0eba6, medians of 3 runs each (brackets: min–max). "Moving vertices" is the sum of four `perf/stack_attribution.py --path-stages` stages: content match, `push_path`, path upload, and the copy into the upload ring. "Content match" is the new stage (`painter: content match (probe + compare)`). Still, scroll and compositor scale bring no new meshes and never reach the new code, so only whole-frame numbers are listed for them. The training job was still running: GPU utilisation was 20–99% at the start of each run, video memory in use 13.25–13.33 GB, and about 27 GB of the 47 GB of system memory in use.
+
+| Scene | Case | prepare p50 ms before → after | CPU µs/frame before → after | Moving vertices µs before → after | of which content match µs | Upload/frame before → after |
+| --- | --- | ---: | ---: | ---: | ---: | ---: |
+| canvas | still | 0.006 → 0.007 | 231 [137–258] → 191 [176–234] | — | — | 0 → 0 |
+| canvas | scroll | 0.13 → 0.15 | 502 [300–507] → 467 [379–528] | — | — | 48 B → 48 B |
+| canvas | compositor scale | 0.14 → 0.16 | 421 [350–496] → 336 [336–455] | — | — | 320 B → 320 B |
+| canvas | re-record | 31.5 → 30.3 | 30513 [27671–32428] → 32069 [31986–33004] | 5265 → 5071 | 159 | 7.4 MB → 7.4 MB |
+| mermaid | still | 0.012 → 0.012 | 193 [165–242] → 172 [130–306] | — | — | 0 → 0 |
+| mermaid | scroll | 0.53 → 0.52 | 840 [819–888] → 760 [710–890] | — | — | 3.3 KB → 7.6 KB |
+| mermaid | compositor scale | 0.15 → 0.15 | 384 [378–500] → 477 [446–573] | — | — | 7.6 KB → 7.6 KB |
+| mermaid | re-record | 21.9 → 21.9 | 25881 [22128–26410] → 21846 [21036–21909] | 3870 → 1175 | 889 | 6.6 MB → 272 B |
+
+- **Mermaid's re-record upload is back near 0.** It drops from 6.6 MB to 272 B, only instances and gradients. Moving vertices drops from 3.9 ms to 1.2 ms, and the frame's CPU from 25.9 ms to 21.8 ms. The remaining 0.9 ms is the bitwise comparison. The old and new copies are about 6.7 MB each and no longer in the CPU caches, so reading them is bound by memory bandwidth. The comparison checks bit patterns a chunk at a time without branches; the derived float `==` took over 1 ms.
+- **Why not hash every mesh in full.** A full 64-bit content hash of every new mesh was tried first. It cost mermaid 0.73 ms, but it also cost the canvas re-record 0.92 ms for nothing, because the canvas's geometry really changes every frame. With a probe and a comparison only on a match, the canvas pays only for the probe (0.06–0.16 ms), and a hash collision can never draw the wrong mesh.
+- **The canvas re-record does not get worse.** No range is taken over, and the only new cost is the probe. Old meshes are freed one frame later, which moves that free from the scene's `emit built ops` (about 0.4 ms) to the painter's `begin_frame` (about 0.5 ms); the total is the same. Running the two builds back to back for 3 more runs each gave median CPU per frame of 30480 [30076–31857] → 31504 [29276–31876] µs, and the ranges overlap. The arena holds one more generation of old ranges and compacts more often, but uploads no more.
+- **The other cases are unchanged.** Re-run back to back, mermaid compositor scale was 506 [331–511] → 490 [407–584] µs. Every other difference in the table is within its ranges.
+- **Test.** `a_rerecorded_path_with_unchanged_geometry_uploads_no_vertex` re-records one node 3 times, each time new `Arc`s with the same geometry, and each frame uploads under 1 KB. After the scene lets go, the ranges stay one frame and go the frame after, and the old meshes are freed with them.
+- **Not done: reusing meshes per path op in the scene.** Building is still most of a re-record (17–23 ms). If the scene cached meshes by the content of each path op and kept the old `Arc` for an unchanged op, it would skip the build and the painter would not need to compare at all. That is a scene-side change, outside this one.
 
 Commands (repo root; S is a scratch directory; only one GPU process at a time):
 
@@ -293,6 +334,134 @@ WGPU_BACKEND=dx12 target/release/examples/stack-sampler.exe --delay-ms 3000 --du
   --output $S/sampled-canvas-scroll.json
 # CPU µs per frame = stack-sampler's thread_cpu_ms × 1000 ÷ (bench frame rate × wall_ms ÷ 1000)
 python perf/stack_attribution.py --path-stages --cpu-us-per-frame 6745 $S/canvas-scroll.folded
+```
+
+### 11. Measured: one native command list per pass (2026-11-11)
+
+Question: §6 found that wgpu-core opens a new native command list for every pass. In the synthetic 65-pass scene that cost 290 µs (DX12) or 528 µs (Vulkan) per frame. Should the fork change so that passes share a list? This is a measurement only. Neither the fork nor the product frame path changed.
+
+**Why.** `encode_render_pass` (`wgpu-core/src/command/render.rs`) closes the current list (`close_if_open`), then opens a fresh one (`open_pass`) and records the pass into it. Only after recording does it know which state transitions the pass needs, because `state.pass.scope` is merged as each command is validated. So it opens a second "(wgpu internal) Pre Pass" list for the barriers, discard fixups, query resets and indirect-draw validation, and puts it in front of the pass with `close_and_swap`. Commands cannot be inserted into the middle of a recorded native list, and a hal `CommandEncoder` has only one list recording at a time. Each pass therefore takes two lists: N passes take about 2N+1, and `queue.submit` adds one more in front for the initial transitions. The lists are already reused. DX12 takes them from `free_lists` and calls `Reset` instead of creating new ones. Vulkan allocates from its pool in `ALLOCATION_GRANULARITY` batches. Allocators and pools cycle with their encoders through `CommandAllocator`. A steady-state frame creates no lists; what it pays is the Reset/Begin, Close and submission that every list needs. More aggressive pooling has nothing left to save. Only fewer lists can save anything.
+
+**How many lists a real frame opens.** We used a temporary, uncommitted counter patch: `Queue::submit` counted the command buffers in each hal submission and printed every 500 submissions. We ran `nana-gpu-scene-benchmark --serialize` with it. The new `gpu-scene-ui-effects` scenario is a dense list with two frosted panels (`backdrop-filter: blur(12px)` under a translucent fill) and four fading cards (opacity 0.85 over a background and children). These use the new bench nodes `frost-panel` and `opacity-group`. DX12 and Vulkan gave identical counts, the same on every submission:
+
+| Scene | Lists per frame |
+| --- | ---: |
+| `gpu-scene-ui`, `gpu-scene-ui-dense-2k` (ordinary UI) | 8 |
+| 1 frosted panel / 2 | 18 / 28 |
+| 1 fading card / 4 | 14 / 26 |
+| `gpu-scene-ui-effects` (2 frosted panels + 4 cards) | 46 |
+| 4 frosted panels + 8 cards | 82 |
+| `gpu-scene-host-textures-64` (§6's synthetic scene) | 134 |
+
+Each frosted panel adds about 10 lists, from about 5 passes: copy, blur, composite and the dest pass reopening. The first fading card adds 6 and each further one adds 4 (its group-layer pass plus the dest pass reopening).
+
+**CPU per list.** The new `third_party/wgpu-fork-tests/examples/pass-cost.rs` uses only `wgpu` and has two modes:
+
+- `chain` records K passes. Each draws one triangle into its own 256×256 layer while sampling the previous layer, so every pass moves two textures between attachment and sampled states, like a group layer or a blur step.
+- `single` puts the same K draws into one pass.
+
+Each frame is timed from `create_command_encoder` to `Queue::submit`. The thread then waits for the GPU, so one submission is in flight. Each run lasts 3 s. The table shows the median of 3 runs' p50, in µs per frame:
+
+| Backend | Mode | K=1 | K=8 | K=32 | K=64 | Per extra pass |
+| --- | --- | ---: | ---: | ---: | ---: | ---: |
+| DX12 | chain | 34.0 | 103.1 | 276.1 | 548.0 | **7.3 µs** |
+| DX12 | single | 28.6 | 30.7 | 39.5 | 85.7 | |
+| Vulkan | chain | 18.3 | 98.6 | 226.0 | 441.0 | **6.1 µs** |
+| Vulkan | single | 19.0 | 28.1 | 51.1 | 59.0 | |
+
+"Per extra pass" is (chain − single at K=64) ÷ 63 and covers everything a pass costs. We sampled the K=64 chain with §6's `stack-sampler` (6 s, every 2 ms). The new `perf/stack_attribution.py --list-stages` charges each non-blocked sample to one stage. The native-list stages (open, close, recycle, submit) take 58% on DX12 and 60% on Vulkan:
+
+| Backend | Open (`begin_encoding`) | Close (`end_encoding`) | Recycle (`reset_all`) | Submit | Barriers | Other pass recording | Other |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| DX12 | 29.8% | 13.6% | 1.2% | 13.1% | 7.2% | 26.7% | 8.5% |
+| Vulkan | 35.2% | 11.0% | 7.7% | 5.8% | 4.3% | 27.2% | 8.7% |
+
+On DX12, 81% of the open samples are in the driver's `ID3D12GraphicsCommandList::Reset` and 18% set the list's debug name (`SetName`). On Vulkan nearly all of them are in the driver's `vkBeginCommandBuffer`. Scaled to the unsampled per-pass cost, one list costs about **2.1 µs (DX12) / 1.8 µs (Vulkan)**. That figure includes the fixed part of the submit, so it is an upper bound.
+
+We also sampled `gpu-scene-ui-effects` directly, 3 runs per backend, median [min–max]:
+
+- DX12: 515 [344–683] µs CPU per frame, of which 206 [143–274] µs (40%) is list work.
+- Vulkan: 416 [386–510] µs per frame, of which 109 [50–128] µs (25%) is list work.
+
+Each sample suspends the thread and slows it, so these numbers run higher than the scaled ones above, and they vary more.
+
+**Machine load.** The ML training job ran throughout. At the start of each run GPU utilization was 39–99%, VRAM use 13.3 GB, and about 26 GB of the 47 GB system RAM was in use. CPU: Core Ultra 7 265K; GPU: RTX 5060 Ti. Every number in the tables is in-process CPU time.
+
+**The feasible change and what it would save.** Only one change keeps wgpu's resource-state validation and correctness intact. wgpu-core would give each command encoder two hal encoders and alternate between them. The next pass's barriers would go at the end of the previous list, which is still open, instead of into a list of their own. Submission order stays the same, and each pass takes one list instead of two. One list per encoder would need a scan over the pass's commands before recording, to recompute its usage scope. That means a second state tracker alongside validation, and getting it wrong means read/write hazards on the GPU, so it is not on the table. At about 2 µs per list:
+
+| Frame | Lists | All list work | Two alternating encoders save | Ideal (one list) saves |
+| --- | ---: | ---: | ---: | ---: |
+| Ordinary UI | 8 | ~16 µs | ~8 µs | ~14 µs |
+| 2 frosted panels + 4 cards | 46 | ~90 µs | ~45 µs | ~88 µs |
+| 4 frosted panels + 8 cards | 82 | ~165 µs | ~80 µs | ~160 µs |
+
+**Verdict: no-go.** Real NanaUI frames open 8 lists (ordinary UI) to about 46 (frosted panels and fading animations). The feasible change saves under 0.1 ms per frame: about 8 µs on an ordinary frame and about 45 µs on an effects-heavy one. Even the ideal single list per encoder would save only about 0.09 ms, and it needs a second state tracker alongside validation. §6's 290 / 528 µs came from the bench's own 64 producer passes (134 lists). That cost grows with what the application itself renders, not with NanaUI's UI. Real producers go through `GpuContext::begin_producer_frame` and record in their own encoders. Revisit this if either of these happens:
+
+- A supported workload steadily opens more than about 100 lists per frame, for example about 25 frosted panels or dozens of offscreen GPU-node passes.
+- hal gains a cheaper way to put barriers in front of an already recorded pass, for example Vulkan secondary command buffers or split DX12 enhanced barriers, and it measures cheaper.
+
+Commands (repository root; S is a scratch directory; one GPU process at a time):
+
+```sh
+export CARGO_PROFILE_RELEASE_DEBUG=limited
+cargo build -j 4 --release -p nana-ui --bin nana-gpu-scene-benchmark --features gpu
+cargo build -j 4 --release -p nana-ui --example stack-sampler --features hosted,bundled-fonts
+cargo build -j 4 --release -p nana-wgpu-fork-tests --example pass-cost
+# 3 runs per backend (dx12 | vulkan), mode (chain | single) and K (1 | 8 | 32 | 64)
+target/release/examples/pass-cost.exe --backend dx12 --mode chain --passes 64 --seconds 3
+target/release/examples/stack-sampler.exe --delay-ms 1500 --duration-ms 6000 --interval-us 2000 \
+  --out $S/pc-dx12-64.folded -- target/release/examples/pass-cost.exe --backend dx12 --mode chain --passes 64 --seconds 9
+python perf/stack_attribution.py --list-stages $S/pc-dx12-64.folded
+# The real frame: 3 runs per backend
+WGPU_BACKEND=dx12 target/release/examples/stack-sampler.exe --delay-ms 3500 --duration-ms 6000 --interval-us 2000 \
+  --out $S/fx-dx12.folded -- target/release/nana-gpu-scene-benchmark.exe \
+  --scenario perf/scenarios/gpu-scene-ui-effects.json --serialize --sample-seconds 10 --output $S/fx-dx12.bench.json
+python perf/stack_attribution.py --list-stages --cpu-us-per-frame 515 $S/fx-dx12.folded
+```
+
+### 12. Measured: frames that only change text color (2026-11-11)
+
+Question: in §6, `text-paint-color` (1,000 labels change foreground color every frame) spent 57% of CPU on text, mostly in the Runtime flush. A color change should need no shaping, line breaking or layout. Does that CPU come from an invalidation path that does more than it needs to? **Verdict: no; no product code changes.** A recolor frame does no text-specific work. What is left is the generic cost every node pays to be repainted. Only the measurement (new bench fields) and these docs were committed.
+
+**Invalidation path.** Every label in the scene is recolored with `set_component(Text::new(..).color(role))`. `project_common` emits only a `SetStyle`. `UiWorld::restyle` classifies `foreground` as an inherited paint change and marks the node and its subtree `STYLE | RENDER`: no `TEXT`, and no layout seed. In `LayoutStyleChange`, `color` is already `PAINT`, and text does not bypass that classification. The text-side classification (`TextDirty::PAINT`, see the text engine doc) leaves the shape revision alone as well. Every bench work counter is 0 every frame: shaping, layouts created, painter-side layout, rasterization, atlas upload, and instance rebuild and upload. All 1,000 entries are reused as they are (`text_prepare_nodes_skipped` = 1000). The Layout stage in `frame_stages` is skipped. Each flush updates exactly 1,000 scene nodes, not one more.
+
+**Where the time goes.** Same machine as §6, DX12, release with `CARGO_PROFILE_RELEASE_DEBUG=limited`, `--serialize`, 5 s per round. The ML training job ran throughout (GPU 47% busy, 13.3 GB of VRAM), with one other build session in parallel. The bench now times the application's edits (`app_mutation_ms`: the 1,000 `set_component` calls and their commits) apart from `RuntimeDocument::flush` (`runtime_flush_ms`), and reports `maximum_scene_updated_nodes`. Each cell below is the median of 3 rounds' p50 [min–max], in ms.
+
+| Scenario | App edits | Runtime flush | Painter (`batch`) | FPS | Scene nodes updated per frame |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| `text-paint-color` (recolor) | 0.83 [0.82–0.96] | 1.59 [1.52–1.63] | 0.26 [0.25–0.26] | 232 | 1000 |
+| `text-constraint-resize` (re-wrap) | 2.05 [2.03–2.11] | 15.60 [14.72–16.03] | 0.91 [0.85–0.99] | 47 | 1002 |
+| `text-retained` (static) | 0.0001 | 0.055 [0.052–0.055] | 0.45 [0.45–0.45] | 636 | 1 |
+
+A recolor costs about 2.4 µs per label (0.83 µs of edits, 1.59 µs of flush), about a seventh of a re-wrap (about 17.6 µs per label). One round under §6's `stack-sampler` (6 s, every 2 ms; about 3.2 ms of CPU per frame while sampled), inclusive shares:
+
+| Stage | Share | What it is |
+| --- | ---: | --- |
+| `update_component_staged<Text>` | 27% | Clone and compare the component, `project`, commit one by one (of which `UiWorld::restyle` 9.8%: interning the style, resolving the layout again, the layout-pair memo) |
+| Scene `apply_delta_with_moves` | 29% | Of which `rebuild_node_primitives` 17% (rebuilding the node's primitives, inserting them into paint order), and `VisibilityIndex::update` 2% |
+| `extract_nodes_reusing` | 11% | A fresh `ExtractedNode` per node |
+| `resolve_styles` | 6% | Resolving the computed style (of which `invalidate_text_for_style` 0.8%, which decides not to invalidate the text) |
+| Painter `paint` | 9.5% | Every glyph entry is reused; only the run row's color changes |
+| Shaping, layout, `TextLayout` | ≤0.1% | |
+
+§6's "text 57%" counted, inclusively, everything a text node set off as text. Split apart, the text engine itself is close to 0.
+
+**What could still go.** The largest piece is the scene rebuilding the primitives of every recolored node (17%, about 0.55 ms a frame, about 0.55 µs per label). A path in `UiScene` that patches a primitive's color in place when only paint color changed would save at most that, and only if it can prove geometry, clip, order and visibility unchanged. That is not specific to text: every paint-only change takes this path. Interfaces that recolor a thousand nodes every frame are rare, so this is not done now. If a real application shows that load, weigh it against this ceiling.
+
+Commands (from the repository root, S a scratch directory):
+
+```sh
+export CARGO_PROFILE_RELEASE_DEBUG=limited
+cargo build -j 4 --release -p nana-ui --bin nana-gpu-scene-benchmark --features gpu
+cargo build -j 4 --release -p nana-ui --example stack-sampler --features hosted,bundled-fonts
+# 3 rounds for each scenario (text-paint-color | text-constraint-resize | text-retained)
+WGPU_BACKEND=dx12 target/release/nana-gpu-scene-benchmark.exe --scenario perf/scenarios/gpu-scene-text-paint-color.json \
+  --serialize --sample-seconds 5 --output $S/text-paint-color-1.json
+# read the p50 of sampling.app_mutation_ms, sampling.runtime_flush_ms and stages.batch_ms
+WGPU_BACKEND=dx12 target/release/examples/stack-sampler.exe --delay-ms 3000 --duration-ms 6000 --interval-us 2000 \
+  --out $S/color.folded -- target/release/nana-gpu-scene-benchmark.exe \
+  --scenario perf/scenarios/gpu-scene-text-paint-color.json --serialize --sample-seconds 9 --output $S/color-sampled.json
+python perf/stack_attribution.py $S/color.folded
 ```
 
 ## Mounting host textures (`HostTexture` + `GpuTextureView`)

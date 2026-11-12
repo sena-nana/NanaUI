@@ -843,6 +843,8 @@ _UI_ONLY_NODE_KINDS = {
     "button",
     "vector-canvas",
     "mermaid",
+    "opacity-group",
+    "frost-panel",
 }
 
 _UI_ONLY_GPU_NODE_KINDS = {"gpu-texture-view", "gpu-view"}

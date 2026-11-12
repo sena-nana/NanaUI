@@ -2652,7 +2652,7 @@ python3 perf/contract.py --self-test
 | 门禁 | 每帧动的是什么 | 判据 |
 | --- | --- | --- |
 | `gpu-scene-text-retained` | 一千个标签里一个换文本 | `text_nodes_shaped ≤ 1`、`text_layouts_created ≤ 1`、`paint_shape_cache_misses ≤ 0`、`text_instance_rebuilds ≤ 1`、`glyph_rasterized ≤ 4`、`glyph_upload_bytes ≤ 4096`、`text_instance_upload_bytes ≤ 4096`、`text_prepare_nodes_skipped ≥ 900` |
-| `gpu-scene-text-paint-color` | 每个标签换前景色 | 塑形、排版（Runtime 与画笔两侧）、栅格化、atlas 上传、instance 重建与上传全为 0；`skipped ≥ 900` |
+| `gpu-scene-text-paint-color` | 每个标签换前景色 | 塑形、排版（Runtime 与画笔两侧）、栅格化、atlas 上传、instance 重建与上传全为 0；`skipped ≥ 900`。剩下的 CPU 去向见 [GPU 文档 §12](./gpu.md) |
 | `gpu-scene-text-compositor-opacity` | 容器淡入淡出 | 同上 |
 | `gpu-scene-text-compositor-transform` | 容器在 −1.5° / 0° / +1.5° 间转 | 同上，instance 上传除外（每三帧经过一次恒等） |
 | `gpu-scene-text-compositor-slide`（#223） | 容器每帧用 CSS translate 横移 0.37 px，模拟触控板横向滚动 | 同 paint-color（含 instance 上传为 0，不像 transform 那样豁免） |

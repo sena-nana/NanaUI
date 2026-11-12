@@ -12405,6 +12405,278 @@ fn path_fills_and_strokes_ramp_over_one_device_pixel_centred_on_their_edge() {
     }
 }
 
+/// An ellipse, a triangle, a 1px stroke and a gradient square turned by
+/// the painter: fringes along curves, corners and both gradient kinds.
+fn retained_path_shapes(cx: &mut nana_ui_runtime::PaintContext<'_>) {
+    let mut ellipse = nana_ui_runtime::PaintPath::new();
+    ellipse.ellipse(LayoutBox {
+        x: 12.3,
+        y: 20.6,
+        width: 40.0,
+        height: 24.0,
+    });
+    cx.fill_path(&ellipse, [1.0, 1.0, 1.0, 1.0]);
+    let mut triangle = nana_ui_runtime::PaintPath::new();
+    triangle
+        .move_to(8.3, 56.6)
+        .line_to(30.1, 6.2)
+        .line_to(57.7, 50.4)
+        .close();
+    cx.fill_path(&triangle, [0.2, 0.9, 0.4, 0.6]);
+    let mut line = nana_ui_runtime::PaintPath::new();
+    line.move_to(8.0, 20.3).line_to(56.0, 31.7);
+    cx.stroke_path(
+        &line,
+        nana_ui_runtime::StrokeStyle::new(1.0),
+        [1.0, 0.8, 0.1, 1.0],
+    );
+    cx.translate(44.0, 44.0);
+    cx.rotate(0.4);
+    cx.fill_path(
+        &rect_path(-12.0, -12.0, 24.0, 24.0),
+        nana_ui_runtime::Gradient::linear([-12.0, 0.0], [12.0, 0.0])
+            .stop(0.0, [0.1, 0.4, 0.9, 1.0])
+            .stop(1.0, [0.9, 0.9, 0.2, 0.7]),
+    );
+}
+
+#[test]
+fn retained_paths_paint_what_cpu_transformed_vertices_did_under_any_scale() {
+    // Path vertices stay node-local on the GPU; the vertex stage places them
+    // and carries their AA fringe through the node's transform, where the
+    // CPU once moved every vertex every frame. Under a node scale of 0.5, 1,
+    // 1.5 and 2, and a rotated anisotropic scale, the frame is the one the
+    // CPU-moved vertices drew, edges included, to rounding.
+    let (sin, cos) = 25f32.to_radians().sin_cos();
+    let transforms = [
+        ("scale 0.5", scale_transform(0.5)),
+        ("scale 1", scale_transform(1.0)),
+        ("scale 1.5", scale_transform(1.5)),
+        ("scale 2", scale_transform(2.0)),
+        (
+            "rotate 25deg scale(1.4, 0.7)",
+            Some(PaintTransform {
+                a: cos * 1.4,
+                b: sin * 1.4,
+                c: -sin * 0.7,
+                d: cos * 0.7,
+                ..PaintTransform::default()
+            }),
+        ),
+    ];
+    for (label, transform) in transforms {
+        let paint = |cpu: bool| {
+            paint_painter_node(
+                PaintFn(retained_path_shapes),
+                [64.0, 64.0],
+                96,
+                96,
+                wgpu::TextureFormat::Rgba8Unorm,
+                [0.0, 0.0, 0.0, 1.0],
+                |painter| painter.meshes.transform_paths_on_cpu(cpu),
+                |layout| layout.transform = transform,
+            )
+        };
+        let retained = paint(false);
+        let reference = paint(true);
+        let lit = reference.chunks(4).filter(|p| p[1] > 64).count();
+        assert!(
+            lit > 200,
+            "{label}: the reference drew the shapes ({lit} px)"
+        );
+        let worst = retained
+            .iter()
+            .zip(&reference)
+            .map(|(a, b)| a.abs_diff(*b))
+            .max()
+            .unwrap();
+        assert!(worst <= 2, "{label}: a channel differs by {worst}");
+    }
+}
+
+#[test]
+fn a_scrolled_path_uploads_only_its_draw_and_is_dropped_with_its_scene() {
+    // A node's path meshes are written to the GPU once. A frame that only
+    // moves them (a scroll) sends the draw's transform, not the vertices;
+    // a scene that lets them go frees them on the next frame.
+    let (device, queue) = test_device();
+    let format = wgpu::TextureFormat::Rgba8Unorm;
+    let mut context = AppContext::new();
+    let document = DocumentId::new(1).unwrap();
+    let node = context
+        .create_component(
+            document,
+            nana_ui_runtime::Stack::column(0.0)
+                .with_layout(|layout| {
+                    layout.width = Some(LengthSpec::Px(64.0));
+                    layout.height = Some(LengthSpec::Px(64.0));
+                })
+                .painter(PaintFn(retained_path_shapes)),
+        )
+        .unwrap();
+    context.resolve_styles(&[node.stable_id()]).unwrap();
+    context
+        .layout_document(document, nana_ui_runtime::LayoutViewport::new(64.0, 64.0))
+        .unwrap();
+    let mut scene = UiScene::new();
+    scene.apply_delta(context.world().extract_document(document), []);
+    let mesh_bytes: usize = scene
+        .primitives()
+        .filter_map(|primitive| match &primitive.kind {
+            nana_ui_scene::ScenePrimitiveKind::Path { mesh, .. } => {
+                Some(mesh.vertices.len() * 44 + mesh.indices.len() * 4)
+            }
+            _ => None,
+        })
+        .sum();
+    assert!(
+        mesh_bytes > 4096,
+        "the shapes are meshes ({mesh_bytes} bytes)"
+    );
+    let mut painter = SceneWgpuPainter::for_test(format);
+    let target = test_target(&device, format, 64, 64);
+    let frame = |painter: &mut SceneWgpuPainter, scene: &UiScene, scroll: f32| {
+        let viewport = ScenePaintViewport {
+            logical_size: [64.0, 64.0],
+            physical_size: [64, 64],
+            scale_factor: 1.0,
+            scene_origin: [0.0, scroll],
+            target_origin: [0.0, 0.0],
+            clear_color: [0.0, 0.0, 0.0, 1.0],
+            clear: true,
+        };
+        let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+            label: Some("nana-ui retained paths"),
+        });
+        painter
+            .paint_encoder(scene, &mut encoder, &target, viewport, None, None)
+            .unwrap();
+        queue.submit([encoder.finish()]);
+        painter.last_gpu_work().expect("a frame records GPU work")
+    };
+    let first = frame(&mut painter, &scene, 0.0);
+    assert!(first.gpu_upload_bytes >= mesh_bytes);
+    let retained = painter.resource_counters();
+    assert_eq!(retained.path_meshes, 4);
+    assert!(retained.path_mesh_bytes as usize >= mesh_bytes);
+    for step in 1..4 {
+        let scrolled = frame(&mut painter, &scene, step as f32 * 1.7);
+        assert!(
+            scrolled.gpu_upload_bytes < 1024,
+            "scroll {step} sent {} bytes",
+            scrolled.gpu_upload_bytes
+        );
+        assert_eq!(painter.resource_counters().path_meshes, 4);
+    }
+    drop(scene);
+    frame(&mut painter, &UiScene::new(), 0.0);
+    assert_eq!(painter.resource_counters().path_meshes, 0);
+}
+
+#[test]
+fn a_rerecorded_path_with_unchanged_geometry_uploads_no_vertex() {
+    // Content that re-records every frame hands the painter new meshes with
+    // the geometry the old ones had. They take over the arena ranges the
+    // old ones leave, so the frame writes no vertex or index.
+    let (device, queue) = test_device();
+    let format = wgpu::TextureFormat::Rgba8Unorm;
+    let mut context = AppContext::new();
+    let document = DocumentId::new(1).unwrap();
+    let node = context
+        .create_component(
+            document,
+            nana_ui_runtime::Stack::column(0.0)
+                .with_layout(|layout| {
+                    layout.width = Some(LengthSpec::Px(64.0));
+                    layout.height = Some(LengthSpec::Px(64.0));
+                })
+                .painter(PaintFn(retained_path_shapes)),
+        )
+        .unwrap();
+    context.resolve_styles(&[node.stable_id()]).unwrap();
+    context
+        .layout_document(document, nana_ui_runtime::LayoutViewport::new(64.0, 64.0))
+        .unwrap();
+    let record = || {
+        let mut scene = UiScene::new();
+        scene.apply_delta(context.world().extract_document(document), []);
+        scene
+    };
+    let meshes = |scene: &UiScene| -> Vec<Arc<nana_ui_scene::PathMesh>> {
+        scene
+            .primitives()
+            .filter_map(|primitive| match &primitive.kind {
+                nana_ui_scene::ScenePrimitiveKind::Path { mesh, .. } => Some(Arc::clone(mesh)),
+                _ => None,
+            })
+            .collect()
+    };
+    let mut painter = SceneWgpuPainter::for_test(format);
+    let target = test_target(&device, format, 64, 64);
+    let frame = |painter: &mut SceneWgpuPainter, scene: &UiScene| {
+        let viewport = ScenePaintViewport {
+            logical_size: [64.0, 64.0],
+            physical_size: [64, 64],
+            scale_factor: 1.0,
+            scene_origin: [0.0, 0.0],
+            target_origin: [0.0, 0.0],
+            clear_color: [0.0, 0.0, 0.0, 1.0],
+            clear: true,
+        };
+        let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+            label: Some("nana-ui rerecorded paths"),
+        });
+        painter
+            .paint_encoder(scene, &mut encoder, &target, viewport, None, None)
+            .unwrap();
+        queue.submit([encoder.finish()]);
+        painter.last_gpu_work().expect("a frame records GPU work")
+    };
+    let mut scene = record();
+    let first = frame(&mut painter, &scene);
+    let mesh_bytes: usize = meshes(&scene)
+        .iter()
+        .map(|mesh| mesh.vertices.len() * 44 + mesh.indices.len() * 4)
+        .sum();
+    assert!(first.gpu_upload_bytes >= mesh_bytes);
+    for step in 1..4 {
+        // The old scene, and with it the old meshes, go before the frame,
+        // as a re-recording scene replaces them.
+        let before = meshes(&scene);
+        let rerecorded = record();
+        let after = meshes(&rerecorded);
+        assert_eq!(after.len(), 4);
+        assert!(
+            before
+                .iter()
+                .zip(&after)
+                .all(|(old, new)| !Arc::ptr_eq(old, new) && old.vertices == new.vertices),
+            "step {step}: new meshes with the old geometry"
+        );
+        drop(before);
+        drop(after);
+        scene = rerecorded;
+        let work = frame(&mut painter, &scene);
+        assert!(
+            work.gpu_upload_bytes < 1024,
+            "re-record {step} sent {} bytes",
+            work.gpu_upload_bytes
+        );
+        assert_eq!(painter.resource_counters().path_meshes, 4);
+        assert_eq!(painter.meshes.path_slots(), 4);
+    }
+    // Let go for good, a range lingers one frame, then goes with the mesh
+    // it kept.
+    let kept: Vec<_> = meshes(&scene).iter().map(Arc::downgrade).collect();
+    drop(scene);
+    frame(&mut painter, &UiScene::new());
+    assert_eq!(painter.resource_counters().path_meshes, 0);
+    assert_eq!(painter.meshes.path_slots(), 4);
+    frame(&mut painter, &UiScene::new());
+    assert_eq!(painter.meshes.path_slots(), 0);
+    assert!(kept.iter().all(|mesh| mesh.strong_count() == 0));
+}
+
 #[test]
 fn a_reading_blend_copies_and_composites_only_where_its_group_drew() {
     use nana_ui_runtime::BlendMode;
@@ -12503,6 +12775,7 @@ fn group_extents_union_what_each_group_draws_and_widen_for_filters() {
         range: PathRange {
             first_index: 0,
             index_count: 3,
+            instance: 0,
         },
         scissor,
     };
