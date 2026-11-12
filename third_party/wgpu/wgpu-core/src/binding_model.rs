@@ -40,6 +40,10 @@ pub enum BindGroupLayoutEntryError {
     StorageTextureCube,
     #[error("Atomic storage textures are not allowed by baseline webgpu, they require the native only feature TEXTURE_ADAPTER_SPECIFIC_FORMAT_FEATURES")]
     StorageTextureAtomic,
+    #[error("Rasterizer-ordered storage textures require the native only feature TEXTURE_STORAGE_RASTERIZER_ORDER")]
+    StorageTextureRasterizerOrdered,
+    #[error("Rasterizer-ordered storage textures are only allowed in the fragment stage, got visibility {0:?}")]
+    StorageTextureRasterizerOrderedVisibility(wgt::ShaderStages),
     #[error("Arrays of bindings unsupported for this type of binding")]
     ArrayUnsupported,
     #[error("Multisampled binding with sample type `TextureSampleType::Float` must have filterable set to false.")]

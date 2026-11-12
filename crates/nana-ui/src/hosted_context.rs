@@ -1480,15 +1480,17 @@ impl fmt::Display for HostedRunError {
 
 impl std::error::Error for HostedRunError {}
 
-/// Shared content producers must be able to sample compressed textures on the
-/// host's device. Enabling a supported format does not change UI texture storage;
-/// unsupported formats remain unavailable, including after device recovery.
+/// Shared content producers on the host's device need compressed texture
+/// sampling and rasterizer-ordered storage textures when the adapter offers
+/// them. Enabling supported optional features does not alter UI pipelines;
+/// unsupported features remain off, including after device recovery.
 fn shared_device_features(available: wgpu::Features, requested: wgpu::Features) -> wgpu::Features {
     available
         & (requested
             | wgpu::Features::DUAL_SOURCE_BLENDING
             | wgpu::Features::TEXTURE_COMPRESSION_BC
             | wgpu::Features::TEXTURE_COMPRESSION_ASTC
+            | wgpu::Features::TEXTURE_STORAGE_RASTERIZER_ORDER
             // The device's shader and pipeline cache, which the host may
             // persist (`nana_gpu::GpuContext::load_pipeline_cache`).
             | wgpu::Features::PIPELINE_CACHE)
@@ -1828,11 +1830,13 @@ mod tests {
         let optional = F::DUAL_SOURCE_BLENDING
             | F::TEXTURE_COMPRESSION_BC
             | F::TEXTURE_COMPRESSION_ASTC
+            | F::TEXTURE_STORAGE_RASTERIZER_ORDER
             | F::PIPELINE_CACHE;
         for available in [
             F::empty(),
             F::TEXTURE_COMPRESSION_BC,
             F::TEXTURE_COMPRESSION_ASTC,
+            F::TEXTURE_STORAGE_RASTERIZER_ORDER,
             F::PIPELINE_CACHE,
             optional,
         ] {

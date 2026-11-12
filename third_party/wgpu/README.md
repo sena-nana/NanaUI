@@ -74,7 +74,11 @@ other by path, so:
     the hal's test-only `simulate_device_lost`, DX12 through
     `ID3D12Device5::RemoveDevice`) and checks that polls report
     `PollError::DeviceLost`, the lost callback runs once and pending
-    callbacks resolve.
+    callbacks resolve;
+  - `rasterizer_ordered_storage` checks naga's WGSL/HLSL/SPIR-V/MSL handling of
+    `rasterizer_ordered` storage textures (every OS) and runs validation and
+    high-contention overlapping blend order checks on DX12, Vulkan and (on
+    Apple) Metal.
 
   A GPU test without an adapter skips; `NANA_REQUIRE_WGPU_FORK_TESTS=1`
   makes it fail instead, as the Windows CI job does for DX12.
@@ -219,3 +223,46 @@ finished": polls succeeded and the loss went unnoticed.
   (`#[doc(hidden)]`, tests only) waits for the device to go idle, then makes
   fence waits, fence reads and queue submits return `DeviceError::Lost`, so
   tests reach this path without a real reset.
+
+### Rasterizer-ordered storage textures in fragment shaders
+
+Fragment shaders can read, modify and write back the pixel they cover in
+primitive rasterization order without splitting render passes or copying
+snapshots (`KHR_blend_equation_advanced`-style programmable blending, order-dependent
+compositing and backdrop save/restore).
+
+- **`wgpu::Features::TEXTURE_STORAGE_RASTERIZER_ORDER`** (new native feature,
+  parsed as `"wgpu-texture-storage-rasterizer-order"`). Exposed on:
+  - **DX12** when `ROVsSupported`, `TypedUAVLoadAdditionalFormats` and Shader
+    Model 5.1+ are present;
+  - **Vulkan** when `VK_EXT_fragment_shader_interlock` advertises
+    `fragmentShaderPixelInterlock` alongside `fragmentStoresAndAtomics`
+    (enabling the extension and feature when requested);
+  - **Metal** when `areRasterOrderGroupsSupported`, `fragment_rw_storage`,
+    `MTLReadWriteTextureTier::Tier2` and MSL 2.0+ are present.
+- **`wgpu::StorageTextureAccess::RasterizerOrdered`** (new variant; a break for
+  exhaustive matches on `StorageTextureAccess`). Validated in `wgpu-core`:
+  requires `Features::TEXTURE_STORAGE_RASTERIZER_ORDER`, forbids non-`FRAGMENT`
+  visibility on the bind group layout entry, checks the adapter's hardware
+  `STORAGE_READ_WRITE` support for the texture format directly (so
+  `Rgba8Unorm` and `Rgba16Float` do not also require
+  `TEXTURE_ADAPTER_SPECIFIC_FORMAT_FEATURES`), and tracks the binding as
+  `TextureUses::STORAGE_READ_WRITE`.
+- **`naga`**: `StorageAccess::ORDERED` and
+  `Capabilities::TEXTURE_STORAGE_RASTERIZER_ORDER`, parsed from WGSL access mode
+  `rasterizer_ordered` (`var dst: texture_storage_2d<rgba16float, rasterizer_ordered>;`,
+  implying `LOAD | STORE`). Rejected on storage buffers, cube dimensions,
+  atomic access and non-fragment entry points (including transitive calls
+  through helper functions). Backend writers:
+  - **HLSL**: emits `RasterizerOrderedTexture*` (Shader Model 5.1+) for
+    fragment entry points and omits ordered storage globals/helpers when
+    compiling non-fragment stages from a combined WGSL module; HLSL output for
+    shaders without `rasterizer_ordered` is unchanged.
+  - **SPIR-V**: decorates ordered storage image variables `Coherent`, declares
+    `Capability::FragmentShaderPixelInterlockEXT` +
+    `SPV_EXT_fragment_shader_interlock` + `ExecutionMode::PixelInterlockOrderedEXT`,
+    and wraps the fragment entry point in a single basic block bracketed by
+    `OpBeginInvocationInterlockEXT` / `OpEndInvocationInterlockEXT` so early
+    `return`s inside structured control flow remain valid.
+  - **MSL**: appends `, raster_order_group(0)` to fragment entry point texture
+    binding attributes (`[[texture(N), raster_order_group(0)]]`, MSL 2.0+).

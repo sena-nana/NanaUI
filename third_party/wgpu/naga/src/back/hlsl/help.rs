@@ -182,6 +182,17 @@ impl<W: Write> super::Writer<'_, W> {
         class: crate::ImageClass,
     ) -> BackendResult {
         let access_str = match class {
+            crate::ImageClass::Storage { access, .. }
+                if access.contains(crate::StorageAccess::ORDERED) =>
+            {
+                if self.options.shader_model < super::ShaderModel::V5_1 {
+                    return Err(super::Error::ShaderModelTooLow(
+                        alloc::string::String::from("rasterizer-ordered storage texture"),
+                        super::ShaderModel::V5_1,
+                    ));
+                }
+                "RasterizerOrdered"
+            }
             crate::ImageClass::Storage { .. } => "RW",
             _ => "",
         };
@@ -571,6 +582,11 @@ impl<W: Write> super::Writer<'_, W> {
             crate::ImageClass::Depth { multi: true } => "DepthMS",
             crate::ImageClass::Depth { multi: false } => "Depth",
             crate::ImageClass::Sampled { multi: false, .. } => "",
+            crate::ImageClass::Storage { access, .. }
+                if access.contains(crate::StorageAccess::ORDERED) =>
+            {
+                "RasterizerOrdered"
+            }
             crate::ImageClass::Storage { .. } => "RW",
             crate::ImageClass::External => "External",
         };

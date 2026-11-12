@@ -734,6 +734,9 @@ impl super::CapabilitiesQuery {
             msl_version,
             // macOS 10.11 doesn't support read-write resources
             fragment_rw_storage: available!(macos = 10.12, ios = 8.0, tvos = 8.0, visionos = 1.0),
+            raster_order_groups: available!(macos = 10.13, ios = 11.0, tvos = 11.0, visionos = 1.0)
+                && device_class_responds_to(device, sel!(areRasterOrderGroupsSupported))
+                && device.areRasterOrderGroupsSupported(),
             read_write_texture_tier: rw_texture_tier,
             msaa_desktop: os_type == super::OsType::Macos,
             msaa_apple3: (family_check && device.supportsFamily(MTLGPUFamily::Apple3))
@@ -1275,6 +1278,13 @@ impl super::CapabilitiesQuery {
         features.set(
             F::TEXTURE_ATOMIC,
             self.msl_version >= MTLLanguageVersion::Version3_1,
+        );
+        features.set(
+            F::TEXTURE_STORAGE_RASTERIZER_ORDER,
+            self.raster_order_groups
+                && self.fragment_rw_storage
+                && self.read_write_texture_tier == MTLReadWriteTextureTier::Tier2
+                && self.msl_version >= MTLLanguageVersion::Version2_0,
         );
         features.set(
             F::SHADER_FLOAT32_ATOMIC,

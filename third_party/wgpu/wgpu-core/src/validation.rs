@@ -721,6 +721,9 @@ impl Resource {
                             wgt::StorageTextureAccess::Atomic => {
                                 naga::StorageAccess::ATOMIC | LOAD_STORE
                             }
+                            wgt::StorageTextureAccess::RasterizerOrdered => {
+                                naga::StorageAccess::ORDERED | LOAD_STORE
+                            }
                         };
                         match shader_class {
                             // Formats must match exactly. A write-only shader (but not a
@@ -841,6 +844,9 @@ impl Resource {
                                 LOAD_STORE => wgt::StorageTextureAccess::ReadWrite,
                                 _ if access.contains(naga::StorageAccess::ATOMIC) => {
                                     wgt::StorageTextureAccess::Atomic
+                                }
+                                _ if access.contains(naga::StorageAccess::ORDERED) => {
+                                    wgt::StorageTextureAccess::RasterizerOrdered
                                 }
                                 _ => unreachable!(),
                             }

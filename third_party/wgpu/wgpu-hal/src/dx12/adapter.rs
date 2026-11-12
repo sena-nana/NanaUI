@@ -505,6 +505,13 @@ impl super::Adapter {
         );
 
         features.set(
+            wgt::Features::TEXTURE_STORAGE_RASTERIZER_ORDER,
+            options.ROVsSupported.as_bool()
+                && options.TypedUAVLoadAdditionalFormats.as_bool()
+                && shader_model >= naga::back::hlsl::ShaderModel::V5_1,
+        );
+
+        features.set(
             wgt::Features::TEXTURE_BINDING_ARRAY
                 | wgt::Features::STORAGE_RESOURCE_BINDING_ARRAY
                 | wgt::Features::STORAGE_TEXTURE_ARRAY_NON_UNIFORM_INDEXING

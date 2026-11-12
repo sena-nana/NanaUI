@@ -56,6 +56,9 @@ pub fn map_access_mode(word: &str, span: Span) -> Result<'_, crate::StorageAcces
         "atomic" => Ok(crate::StorageAccess::ATOMIC
             | crate::StorageAccess::LOAD
             | crate::StorageAccess::STORE),
+        "rasterizer_ordered" => Ok(crate::StorageAccess::ORDERED
+            | crate::StorageAccess::LOAD
+            | crate::StorageAccess::STORE),
         _ => Err(Box::new(Error::UnknownAccess(span))),
     }
 }

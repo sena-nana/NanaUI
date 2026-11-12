@@ -437,6 +437,18 @@ pub enum StorageTextureAccess {
     /// var my_storage_image: texture_storage_2d<r32uint, atomic>;
     /// ```
     Atomic,
+    /// The texture can be read and written in fragment shaders in primitive rasterization order,
+    /// and must be annotated with `rasterizer_ordered` in WGSL (NanaUI fork).
+    ///
+    /// [`Features::TEXTURE_STORAGE_RASTERIZER_ORDER`] must be enabled to use this access mode,
+    /// and the bind group layout entry visibility must not include non-fragment stages.
+    ///
+    /// Example WGSL syntax:
+    /// ```rust,ignore
+    /// @group(0) @binding(0)
+    /// var my_storage_image: texture_storage_2d<rgba16float, rasterizer_ordered>;
+    /// ```
+    RasterizerOrdered,
 }
 
 /// Describes a [`TextureView`].

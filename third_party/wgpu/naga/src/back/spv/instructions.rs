@@ -1218,6 +1218,12 @@ impl super::Instruction {
         instruction.add_operand(semantics_id);
         instruction
     }
+    pub(super) const fn begin_invocation_interlock_ext() -> Self {
+        Self::new(Op::BeginInvocationInterlockEXT)
+    }
+    pub(super) const fn end_invocation_interlock_ext() -> Self {
+        Self::new(Op::EndInvocationInterlockEXT)
+    }
 
     // Group Instructions
 

@@ -227,6 +227,8 @@ pub enum Error {
     UnsupportedWritableStorageTexture(ir::ShaderStage),
     #[error("can not use read-write storage textures prior to MSL 1.2")]
     UnsupportedRWStorageTexture,
+    #[error("can not use rasterizer-ordered storage textures prior to MSL 2.0")]
+    UnsupportedRasterizerOrderedTexture,
     #[error("array of '{0}' is not supported for target MSL version")]
     UnsupportedArrayOf(String),
     #[error("array of type '{0:?}' is not supported")]
@@ -875,6 +877,7 @@ pub fn supported_capabilities() -> crate::valid::Capabilities {
         // No DRAW_INDEX
         // No MEMORY_DECORATION_VOLATILE
         | Caps::MEMORY_DECORATION_COHERENT
+        | Caps::TEXTURE_STORAGE_RASTERIZER_ORDER
 }
 
 #[test]

@@ -694,6 +694,9 @@ bitflags::bitflags! {
         const STORE = 0x2;
         /// Storage can be used as a target for atomic ops.
         const ATOMIC = 0x4;
+        /// Storage texture accesses in a fragment shader are ordered across
+        /// overlapping pixel invocations in primitive rasterization order.
+        const ORDERED = 0x8;
     }
 }
 
