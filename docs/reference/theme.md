@@ -953,6 +953,7 @@ style.color_overrides = Some(Arc::new(modeler));
 
 - `nana_ui_core::ColorOverrides`（`nana_ui::theme` 再导出）：`SemanticColorRole → SemanticColor` 的小表。有类型。不是字符串 map。也不复制整份 palette。`new()`、`with(role, color)`、`set`、`get(role)`、`is_empty`、`iter`、`over(&outer)`。
 - `NodeStyle::color_overrides: Option<Arc<ColorOverrides>>`。`El::theme_colors(impl IntoProp<ColorOverrides>)` 绑定它。
+- `SettingsRow::label_colors: Option<Arc<ColorOverrides>>`（视图 `.label_colors(..)`）：只给设置行的名称换色。行每次投影都重建名称的样式，`theme_colors` 挂在行上又会连提示、控件一起换，所以名称单独一个字段；提示、notice 与控件仍用主题色。
 - 解析时一次扁平化。`ComputedStyle::color_scope` 是继承的：节点自己的覆盖写在父作用域之上，内层逐角色盖外层。后代只读这一个 `Arc`。不沿父链往上走。没有覆盖的节点照旧共享父节点的结果。
 - 读到的地方：节点样式按角色取的前景、背景、边框、ring 与各交互态（`SemanticPaint`），组件几何（`derive_component_geometry` 整个函数换成作用域里的 `StyleModelRef`：开关轨道与拇指、状态胶囊的 tone、按钮、复选、单选、滑块、分段、列表行与它们的焦点环），标准视觉前景，文本 span、选区底色、拖入高亮，输入框的计数与后缀。
 - 失效：`color_overrides` 变了按继承前景处理，整棵子树标 STYLE | RENDER，重解析时同一个扁平结果停止向下传播。
