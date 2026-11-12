@@ -11,7 +11,7 @@
 - 边框盒（border box）、内边距盒（padding box）与内容盒（content box）；
 - 首行基线（first baseline）与末行基线（last baseline）；
 - 溢出范围（overflow extent）与滚动范围（scroll extent）；
-- 子节点放置坐标（child placements）与类型化的布局片段/部件（typed layout fragments / parts）；
+- 节点自己的类型化布局片段与部件（typed layout fragments / parts）：文本行与文本段、叠层与滚动视口、内容盒与组件部件；
 - clip 链（`clip`、`clip_parent`）与包含块（containing-block）引用、依赖元数据；
 - 产生该结果的单调递增布局代际（`layout_generation`）。
 
@@ -19,13 +19,15 @@ Runtime 帧更新（`RuntimeFrameUpdate`）对外暴露这一 `layout_generation
 
 `clip` 是最近一个够得着本节点的溢出容器，链沿该容器自己的 `clip` 往上；`clip_parent` 是本节点取裁剪和滚动的节点：一般是父级，包含块在静态溢出容器之外的 `absolute` 节点是它逃出的最外层容器的父级，`fixed` 节点为 `None`（Issue #201，规则见 [布局（CSS 子集）](https://github.com/sena-nana/NanaUI/blob/main/docs/reference/layout.md) 的「clip 链」）。Scene 提取、命中测试与无障碍投影都按 `clip_parent` 挂节点，被跨过的祖先只传变换，不传裁剪和滚动；无障碍节点的 `clip` 是这条链留下的视口区域。祖先改变定位或开始、停止裁剪时，下面节点的这两项随下一次发布更新。滚动范围按同一条链算：会裁剪或滚动的节点，`overflow` 只并入 `clip_parent` 是它的子项，`scroll_extent` 和滚动度量只含它够得着的后代，逃出它的 `absolute` 盒子算进它们的包含块，`fixed` 盒子不算进任何节点。
 
+结果不抄录子节点的盒子。子节点在父级上下文里的放置与片段由 `UiWorld::layout_child_placements` / `layout_child_fragments`（页面坐标）和 `local_layout_child_placements` / `local_layout_child_fragments`（父级边框盒原点起，子节点按自己的参照系量）在询问时从子节点读出，询问一次走一遍父级的子节点；节点没有已发布结果时返回 `None`。所以子节点只在父级盒子里挪动时，父级的结果不重建、不重新发布，也不重新提取；子节点伸出父级盒子（或缩回）时父级的 `overflow` 变，结果照常重建。2026-11-11 之前结果里另有 `child_placements` 字段，`fragments` 前面是每个子节点一条片段、`parts` 里是每个子节点一个 `ChildPlacement` 部件：同一个子节点盒子存三份（每个子节点约 144 B），子节点一动父级就整份重建；迁移时把 `result.child_placements` 换成 `world.layout_child_placements(id)`，按 `node.is_some()` 从 `result.fragments` 里挑子节点片段的改读 `world.layout_child_fragments(id)`，`LayoutPartKind::ChildPlacement` 已删除。
+
 `ExtractedNode::layout_result` 共享这一不可变快照。Scene 的 Sticky placement 从中读取包含块、视口和滚动范围，不重新测量内容；滚动偏移仍读取当前的 `ExtractedNode::scroll_offset`，不会把呈现位置写回快照。
 
 `layout_generation` 独立于世界变更代际：**只有当布局输出实际变化时它才递增**。因此悬停（hover）、不透明度（opacity）、变换（transform）及其他纯绘制改动不会触发任何基于布局派生的几何重建。影响布局的写入会在下一次发布结果前清除受影响节点、后代及依赖祖先的缓存，而拓扑变更仍保持稳定的节点身份（`StableNodeId`）。
 
 ## 格式化上下文与子片段
 
-`formatting_context` 记录该节点排列其子节点（或自身文本）时实际采用的格式化上下文（Issue #197），并决定每个子片段的具体类型：
+`formatting_context` 记录该节点排列其子节点（或自身文本）时实际采用的格式化上下文（Issue #197），并决定 `UiWorld::layout_child_fragments` 给出的每个子片段的具体类型：
 
 | `formatting_context` | 子片段类型 |
 | --- | --- |

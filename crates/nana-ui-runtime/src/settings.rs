@@ -117,6 +117,11 @@ pub struct SettingsRow {
     /// their controls up, card after card. `None` keeps the settings layout:
     /// the copy on the left, the control pushed to the right edge.
     pub label_column: Option<f32>,
+    /// Colours the label takes in place of the theme's, for a row the
+    /// application sets apart by its name's colour (see
+    /// [`nana_ui_core::ColorOverrides`]). Only the label: the hint, the
+    /// notice and the control keep the theme's. `None` keeps the theme's.
+    pub label_colors: Option<Arc<nana_ui_core::ColorOverrides>>,
     /// The application's node after the control, on its line: the row's own
     /// actions. It keeps its width; the control gives way.
     pub trailing: Option<StableNodeId>,
@@ -185,6 +190,7 @@ impl SettingsRow {
             control: None,
             label_accessory: None,
             label_column: None,
+            label_colors: None,
             trailing: None,
             label_slot: None,
             hint_slot: None,
@@ -606,6 +612,7 @@ impl SettingsRow {
                 self.label_line_slot.is_some(),
                 self.label_column.is_some(),
             );
+            text.style.color_overrides = self.label_colors.clone();
             text.project(label, world, mutations);
         }
         if let Some(control) = self.control_slot {

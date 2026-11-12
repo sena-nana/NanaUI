@@ -264,8 +264,9 @@ fn atomic_size_changes_reflow_the_paragraph_and_publish_source_fragments() {
     assert!(after.width > before.width);
     let result = world.layout_result(paragraph.stable_id()).unwrap();
     assert!(
-        result
-            .fragments
+        world
+            .layout_child_fragments(paragraph.stable_id())
+            .unwrap()
             .iter()
             .any(|f| f.node == Some(child.stable_id()) && f.source == Some(7..10))
     );

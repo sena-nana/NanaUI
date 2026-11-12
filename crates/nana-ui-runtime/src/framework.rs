@@ -4697,6 +4697,9 @@ mod scroll_origin_tests;
 mod scrollbar_tests;
 
 #[cfg(test)]
+mod color_scope_tests;
+
+#[cfg(test)]
 mod smooth_scroll_tests;
 
 #[cfg(test)]

@@ -120,7 +120,7 @@ abs(child) = abs(frame) + local(child)
 - 引擎的 `DocumentLayoutCache.boxes` 和 `ContainerPlan` 的原点是相对值，非父节点的参照系另记在 `DocumentLayoutCache.frames`。`place_node_body` 一律以 `Point::ZERO` 为本容器的坐标系原点放置子节点，`place_node_head` 写出的盒子就是相对参照系的偏移。
 - 跨参照系的读取只有几处：定位子节点的包含块内边距盒在包含块自己的坐标系里；静态位置经 `content_origin_in` 沿参照系链换到包含块的坐标系；触发式菜单的菜单项放在页面坐标里，菜单自身的页面原点由 `origin_in` 求出；行内上下文求部件时用盒子自己坐标系里的边框盒。
 - 静态位置的逃逸绝对定位会随包含块与容器之间的盒子移动：`place_remote_overlays` 每遍对未放置容器复查，比较「静态位置换到包含块坐标系后是否变了」，O(逃逸条目数 × 深度)。
-- `LayoutResult` 在本节点坐标里存（边框盒在原点）。`child_placements`、子节点片段和 `ChildPlacement` 部件存子节点的本地盒子；`overflow` 和 `scroll_extent` 只并入参照系是本节点的子节点，`fixed`、逃逸的绝对定位、菜单项在放到页面上时才并入。
+- `LayoutResult` 在本节点坐标里存（边框盒在原点）。结果不抄录子节点的盒子，子节点的放置与片段由 `UiWorld::layout_child_placements` / `layout_child_fragments` 询问时从子节点读（2026-11-11 之前结果里存着每个子节点的本地盒子三份）；`overflow` 和 `scroll_extent` 只并入参照系是本节点的子节点，`fixed`、逃逸的绝对定位、菜单项在放到页面上时才并入。
 - `ContentBoundsIndex`（`world/scroll_bounds.rs`）每条按自己节点的原点存，携带给包含块的范围按落地的包含块的坐标存。落地点可能变的两种情况（`position` 在是否建立包含块之间变化、子树换父节点）让子树里携带范围的条目重读子节点（`reland`）。父节点刷新时只读移动了的子节点，叶子原地写入，上面按层合并一次（`MaxTree::rederive`）。
 - 粘性定位从本地盒子和本地结果算，`StickyAncestor::result` 是祖先自己坐标里的结果。
 
@@ -130,8 +130,8 @@ abs(child) = abs(frame) + local(child)
 
 发布时（`publish_layout_results`）：
 
-- 结果投影出新几何（`layout_result_projects_new_geometry`：自身盒子、内边距盒、内容盒、基线、溢出、滚动、裁剪、参与方式、自己的片段与部件，子节点放置除外）时标 INPUT | RENDER | ACCESSIBILITY；变化超出滚动范围、溢出与基线（`layout_result_reshapes`）时另标 `DirtyMask::RESHAPED`，进 `SystemWork::layout_reshaped`，无障碍据此判断裁剪盒是否还按原来的盒子裁剪。
-- 只有子节点放置变了的结果（固定高度的列里首行加高）投影不出新东西，但提取给它的记录带着结果，所以**只标 RENDER**，否则 Scene 会一直留着旧的子节点放置。
+- 结果投影出新几何（`layout_result_projects_new_geometry`：自身盒子、内边距盒、内容盒、基线、溢出、滚动、裁剪、参与方式、自己的片段与部件，）时标 INPUT | RENDER | ACCESSIBILITY；变化超出滚动范围、溢出与基线（`layout_result_reshapes`）时另标 `DirtyMask::RESHAPED`，进 `SystemWork::layout_reshaped`，无障碍据此判断裁剪盒是否还按原来的盒子裁剪。
+- 子节点只在父级盒子里挪动（固定高度的列里首行加高）时父级的结果不变：结果不记子节点放置，`layout_result_geometry_current` 只核对被覆盖的子节点仍是本节点的、参照系是本节点、盒子仍在 `overflow` 之内，成立就沿用上一份，不重建、不标脏。子节点伸出或缩回时 `overflow` 变，按上一条投影。结果重建了却投影不出自己的新东西时仍**只标 RENDER**：提取给它的记录带着结果，否则 Scene 会一直留着旧的那份。
 
 行盒记忆（「这个盒子有没有流内行盒」，`holds_line_box_in`，存在 `DocumentLayoutCache::line_boxes`）跨帧保留，按种子的改动类别清：`may_move_line_boxes`（`layout_engine.rs`）对只改尺寸、间距、对齐、滚动、变换或指针输入、原因也不涉及流的种子答「不清」；依赖边带进前沿、自己没变的节点也不清。结构性种子（拓扑、可见性、原因未知，`moves_line_boxes_below`）照旧沿所有受影响节点往上清到根，因为祖先派生的隐藏会让整棵子树的答案变。
 
@@ -210,7 +210,7 @@ abs(child) = abs(frame) + local(child)
 ### 5.4 改变换与改子节点放置
 
 - 改变换只重新提取盒子自己，子孙的图元按 `current · inverse(base)` 重定基。`DrawAttributes` 的 `rebased` 记下建图元时的投影和现在的投影，图元与节点自己的裁剪直接画成现在的投影，不再经过逆矩阵，所以从转过改回纯平移时线性部分是精确的 1，painter 照常吸附。剔除索引在祖先投影变了时对那些根 `refresh_subtree`。
-- 只有子节点放置变了的结果标 RENDER（见 3.2），节点重新提取，Scene 持有的结果跟着换。
+- 子节点在父级盒子里挪动不改父级的结果，父级不重新提取（见 3.2）；改了 `overflow` 的照常投影，结果重建而投影不出新东西的标 RENDER，节点重新提取，Scene 持有的结果跟着换。
 
 ### 5.5 公开语义
 
@@ -369,7 +369,7 @@ abs(child) = abs(frame) + local(child)
 - `crates/nana-ui-scene/tests/moved_extraction.rs`：平移、同帧改颜色 / 文字 / 主题，记录与冷提取、图元与冷场景逐位比；`moved_controls_that_read_little_of_the_page_keep_what_they_built`、`an_open_select_moved_keeps_its_menu_until_it_flips`、`a_moved_subtree_that_reads_the_page_paints_like_a_cold_scene`。
 - `crates/nana-ui-scene/tests/turned_container.rs`：容器连续改转角、缩放、原点，夹着平移、滚动、插入；命中网格、无障碍树、场景与孪生页比；`rows_moved_under_a_turn_with_a_popover_open_keep_a_cold_projection`、`rows_grown_under_a_3d_turn_keep_a_cold_projection`。
 - `crates/nana-ui-scene/tests/viewport_frames.rs`：页面根、`fixed`、`sticky`、逃逸的绝对定位连续转与缩放，`AccessibilityPlacements` 核对外接框。
-- `crates/nana-ui-scene/tests/child_placement_records.rs`：只有子节点放置变了的结果，Scene 的每条记录与新提取比。
+- `crates/nana-ui-scene/tests/child_placement_records.rs`：子节点在父级里挪动之后，Scene 的每条记录与新提取比。
 - `crates/nana-ui-scene/tests/select_popup_hit.rs`：图元放到页面上（`place_rect`）再与页面几何比。
 - `crates/nana-ui-runtime/src/world/hit_test/moved_turned_tests.rs`：九种转过的祖先下平移，60 × 36 指针网格与孪生页及合成层遍历（`visit_presentation_roots`）比；`boxes_moved_under_a_planar_3d_turn_answer_as_a_fresh_index`。`moved_scroll_tests.rs`：滚动列表里的平移；`stuck_sticky_boxes_are_built_again_alone`：带一行格子的粘性页眉与 body 为粘性的模态框，不整齐步长滚动，每步只重建两个粘性条目，指针网格与冷建一致，贴住的 body 只在框架排出的 body 盒子里接指针。
 - `crates/nana-ui-runtime/src/world/accessibility/relative_tests.rs`：不整齐步长、滚动、缩放、转过、钉子、Select、原地改尺寸；`placed_corners_are_the_turned_corners_of_a_cold_projection` 是等价性测试；`a_scroll_projects_the_scroller_and_its_pins_alone`：滚动列表里的粘性页眉、`fixed`、绝对定位与嵌套滚动容器，不整齐步长连续滚动、两个容器同帧滚动、滚动夹着平移、最后滚回原点，每帧增量与全量投影逐位相同，只投影容器与钉子。

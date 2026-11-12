@@ -4029,8 +4029,11 @@ impl UiWorld {
         // Compared once; three classifications below read it.
         let presentation_eq = super::node_presentation_eq(&previous, style);
         let inherited_text_changed = facts.inherited_text;
-        let inherited_paint_changed =
-            previous.foreground != style.foreground || facts.inherited_paint;
+        // A colour scope reaches every descendant's colours, as an inherited
+        // foreground does.
+        let inherited_paint_changed = previous.foreground != style.foreground
+            || previous.color_overrides != style.color_overrides
+            || facts.inherited_paint;
         let inherited_opacity_changed = facts.opacity;
         let paint_visibility_changed = facts.paint_visibility;
         let pointer_events_changed = facts.pointer_events;

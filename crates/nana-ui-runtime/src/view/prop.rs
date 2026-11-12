@@ -301,6 +301,7 @@ const_props! {
     nana_ui_core::SemanticColorRole => Option<nana_ui_core::SemanticColorRole>, |v| Some(v);
     Option<nana_ui_core::SemanticColorRole> => Option<nana_ui_core::SemanticColorRole>, |v| v;
     nana_ui_core::RadiusTier => Option<nana_ui_core::RadiusTier>, |v| Some(v);
+    nana_ui_core::ColorOverrides => nana_ui_core::ColorOverrides, |v| v;
     Option<nana_ui_core::RadiusTier> => Option<nana_ui_core::RadiusTier>, |v| v;
     nana_ui_core::Icon => nana_ui_core::Icon, |v| v;
     nana_ui_core::Icon => Option<nana_ui_core::Icon>, |v| Some(v);

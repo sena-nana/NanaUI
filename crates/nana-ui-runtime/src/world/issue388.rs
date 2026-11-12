@@ -400,9 +400,6 @@ fn assert_mirrored(ltr: &AppContext, rtl: &AppContext, controls: &[(Control, Sta
         assert_eq!(kinds(&left_parts), kinds(&right_parts), "{control:?}");
         let mut content = 0;
         for (ours, theirs) in left_parts.iter().zip(right_parts.iter()) {
-            if ours.kind == LayoutPartKind::ChildPlacement {
-                continue;
-            }
             content += usize::from(!matches!(ours.kind, LayoutPartKind::ComponentContent));
             assert_close(
                 theirs.bounds,

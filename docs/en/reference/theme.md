@@ -932,3 +932,32 @@ done
 # Semantic baseline: byte-for-byte identical to clean HEAD this round (both sides had 46 pre-existing CHANGED at the time, since re-recorded)
 cargo run --release -p component-gallery --bin ui-snapshots --features snapshots --locked -- --semantic
 ```
+
+## 8. Subtree colour overrides: the first cut of #104
+
+A node can replace some colour roles for itself and its whole subtree. This is the first cut of #104 ThemeScope. Colours only.
+
+```rust
+use nana_ui::theme::{ColorOverrides, SemanticColor};
+use nana_ui_core::SemanticColorRole;
+
+let modeler = ColorOverrides::new()
+    .with(SemanticColorRole::Accent, SemanticColor::rgb8(124, 77, 210))
+    .with(SemanticColorRole::AccentStrong, SemanticColor::rgb8(104, 58, 186));
+
+// In a view: bind a closure to follow light and dark; an empty set gives the theme back.
+view.theme_colors(modeler.clone());
+// Or on a style:
+style.color_overrides = Some(Arc::new(modeler));
+```
+
+- `nana_ui_core::ColorOverrides` (re-exported from `nana_ui::theme`): a small `SemanticColorRole → SemanticColor` table. Typed. Not a string map, and not a copy of the palette. `new()`, `with(role, color)`, `set`, `get(role)`, `is_empty`, `iter`, `over(&outer)`.
+- `NodeStyle::color_overrides: Option<Arc<ColorOverrides>>`. `El::theme_colors(impl IntoProp<ColorOverrides>)` binds it.
+- `SettingsRow::label_colors: Option<Arc<ColorOverrides>>` (view `.label_colors(..)`): recolours a settings row's label alone. The row rebuilds its label's style on every projection, and `theme_colors` on the row would recolour its hint and control too, so the label has its own field; the hint, notice and control keep the theme's colours.
+- Flattened once at resolution. `ComputedStyle::color_scope` is inherited: the node's own overrides written over its parent's scope, inner over outer role by role. Descendants read that one `Arc` and never walk the parent chain. A node without overrides still shares its parent's result.
+- Where it reaches: role-based foreground, background, border, ring and every interaction state (`SemanticPaint`) of node styles; component geometry (all of `derive_component_geometry` reads the scoped `StyleModelRef`: switch track and thumb, status badge tone, button, checkbox, radio, slider, segmented control, list rows and their focus rings); standard visual foregrounds; text spans, selection fill, drop highlight; a text input's counter and suffix.
+- Invalidation: a changed `color_overrides` is treated like an inherited foreground — the subtree is marked STYLE | RENDER, and an unchanged flattened result stops propagation on re-resolve.
+- Derived roles (`WarningSoft*`, `DangerSoft*`, the code-token roles) follow their base: overriding `Warning` moves `WarningSoft` too. Naming a derived role alone has no effect. `Titlebar` and `OnMedia` can be overridden.
+- Under the default theme no node carries overrides, and the resolution path is byte-for-byte what it was.
+
+Left for #104: typography, metrics, recipe and motion patches; per-window root binding and multi-window checks; scope identity with generation caching (resolution flattens now, so a nested scope allocates its merged result once per resolve); charts (`chart_geometry` caches per size and theme and still reads the installed theme).

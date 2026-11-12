@@ -103,6 +103,38 @@ style_roles! {
     Radius: radius: Option<RadiusTier>, "Corner radius by theme step.";
 }
 
+/// [`NodeStyle::color_overrides`]: what [`El::theme_colors`] binds. An empty
+/// set clears it.
+#[doc(hidden)]
+pub struct ThemeColors;
+
+impl<C: StyledComponent> FieldWrite<C, nana_ui_core::ColorOverrides> for ThemeColors {
+    const FIELD: &'static str = "style.color_overrides";
+
+    fn write(target: &mut C, overrides: nana_ui_core::ColorOverrides) {
+        target.node_style_mut().color_overrides =
+            (!overrides.is_empty()).then(|| Arc::new(overrides));
+    }
+
+    fn differs(target: &C, overrides: &nana_ui_core::ColorOverrides) -> bool {
+        match target.node_style().color_overrides.as_deref() {
+            Some(current) => current != overrides,
+            None => !overrides.is_empty(),
+        }
+    }
+}
+
+impl<C: StyledComponent + crate::ComponentView, K> El<C, K> {
+    /// Give this node and its whole subtree its own values for some theme
+    /// colour roles ([`nana_ui_core::ColorOverrides`]): a switch, badge or
+    /// button inside paints its accent, text or fills from these. Bind a
+    /// closure to follow an appearance; an empty set gives the theme back.
+    #[track_caller]
+    pub fn theme_colors(self, overrides: impl IntoProp<nana_ui_core::ColorOverrides>) -> Self {
+        self.prop::<nana_ui_core::ColorOverrides, ThemeColors>(overrides)
+    }
+}
+
 impl<C: StyledComponent + crate::ComponentView, K> El<C, K> {
     /// Keep the node but take it out of layout, paint and hit testing
     /// (`v-show`). Use [`super::when`] to drop the subtree instead (`v-if`).

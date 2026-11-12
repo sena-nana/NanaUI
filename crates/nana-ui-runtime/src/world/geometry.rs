@@ -108,6 +108,9 @@ impl UiWorld {
         visual: &StandardVisual,
         style: &ComputedStyle,
     ) -> Option<crate::ComponentGeometry> {
+        // Every colour a component draws, in the colour scope the node
+        // resolved in (`ComputedStyle::color_scope`).
+        let style_model = self.scoped_style_model(style.color_scope.as_deref());
         // Keep component-owned chrome on the same geometry accessor as the
         // rest of runtime interaction code.  `component_layout_box` uses the
         // published result whenever the writeback window is closed and only
@@ -135,9 +138,7 @@ impl UiWorld {
                     secondary
                 } else {
                     style.color.unwrap_or_else(|| {
-                        self.style_model
-                            .color(SemanticColorRole::Text)
-                            .as_rgba_array()
+                        style_model.color(SemanticColorRole::Text).as_rgba_array()
                     })
                 }),
                 font_size: size,
@@ -235,7 +236,7 @@ impl UiWorld {
                 // over whatever colour the node's text would take, unless
                 // the recipe marks danger some other way.
                 let title_color = if *danger && recipe.danger_title {
-                    self.style_model
+                    style_model
                         .color(
                             self.theme
                                 .recipes()
@@ -245,7 +246,7 @@ impl UiWorld {
                         .as_rgba_array()
                 } else {
                     style.color.unwrap_or_else(|| {
-                        self.style_model
+                        style_model
                             .color(
                                 self.theme
                                     .recipes()
@@ -321,25 +322,24 @@ impl UiWorld {
                                 None,
                             )
                         }),
-                    background: self
-                        .style_model
+                    background: style_model
                         .color(SemanticColorRole::Surface)
                         .as_rgba_array(),
                     border: [0.0; 4],
                     elevation: crate::ComponentElevation::from_shadow(overlay_shadow),
                     corner_radius: match kind {
-                        crate::ModalSurfaceKind::Drawer(_) => self.style_model.metrics.radius_md,
-                        _ => recipe.radius.resolve(self.style_model.metrics),
+                        crate::ModalSurfaceKind::Drawer(_) => style_model.metrics.radius_md,
+                        _ => recipe.radius.resolve(style_model.metrics),
                     },
                     header_divider: chrome.header_divider_box(surface).zip(
                         recipe
                             .header_divider
-                            .map(|role| self.style_model.color(role).as_rgba_array()),
+                            .map(|role| style_model.color(role).as_rgba_array()),
                     ),
                     footer_divider: chrome.footer_divider_box(surface).zip(
                         recipe
                             .footer_divider
-                            .map(|role| self.style_model.color(role).as_rgba_array()),
+                            .map(|role| style_model.color(role).as_rgba_array()),
                     ),
                     scrim_color: self.theme.effects().modal_scrim.as_rgba_array(),
                     scrim_blur: self.theme.effects().modal_scrim_blur,
@@ -420,8 +420,8 @@ impl UiWorld {
                 let inert = disabled || accessibility.is_some_and(|state| !state.editable);
                 let steppers = steppers
                     .then(|| {
-                        let band = (size.height_in(self.style_model.metrics) / 2.0)
-                            .min(content.height / 2.0);
+                        let band =
+                            (size.height_in(style_model.metrics) / 2.0).min(content.height / 2.0);
                         let width = size.indicator_size();
                         if band <= 0.0 || width <= 0.0 || content.width <= width {
                             return None;
@@ -442,14 +442,8 @@ impl UiWorld {
                             && numeric.is_none_or(|(value, minimum, _)| {
                                 minimum.is_none_or(|minimum| value > minimum)
                             });
-                        let active = self
-                            .style_model
-                            .color(SemanticColorRole::Muted)
-                            .as_rgba_array();
-                        let inert = self
-                            .style_model
-                            .color(SemanticColorRole::Faint)
-                            .as_rgba_array();
+                        let active = style_model.color(SemanticColorRole::Muted).as_rgba_array();
+                        let inert = style_model.color(SemanticColorRole::Faint).as_rgba_array();
                         Some(crate::NumberSteppers {
                             increment: LayoutBox {
                                 x,
@@ -505,11 +499,9 @@ impl UiWorld {
                 });
                 // 附加多光标：与主光标同形，用主光标色的半透明变体区分；
                 // 只随焦点出现（多行编辑器才有附加光标）。
-                let caret_color = style.color.unwrap_or_else(|| {
-                    self.style_model
-                        .color(SemanticColorRole::Text)
-                        .as_rgba_array()
-                });
+                let caret_color = style
+                    .color
+                    .unwrap_or_else(|| style_model.color(SemanticColorRole::Text).as_rgba_array());
                 let additional_caret_color = {
                     let mut color = caret_color;
                     color[3] *= 0.55;
@@ -525,19 +517,16 @@ impl UiWorld {
                     Vec::new()
                 };
                 let marker_color = |severity| match severity {
-                    crate::TextDiagnosticSeverity::Error => self
-                        .style_model
-                        .color(SemanticColorRole::Danger)
-                        .as_rgba_array(),
-                    crate::TextDiagnosticSeverity::Warning => self
-                        .style_model
+                    crate::TextDiagnosticSeverity::Error => {
+                        style_model.color(SemanticColorRole::Danger).as_rgba_array()
+                    }
+                    crate::TextDiagnosticSeverity::Warning => style_model
                         .color(SemanticColorRole::Warning)
                         .as_rgba_array(),
                     crate::TextDiagnosticSeverity::Information
-                    | crate::TextDiagnosticSeverity::Hint => self
-                        .style_model
-                        .color(SemanticColorRole::Muted)
-                        .as_rgba_array(),
+                    | crate::TextDiagnosticSeverity::Hint => {
+                        style_model.color(SemanticColorRole::Muted).as_rgba_array()
+                    }
                 };
                 let diagnostic_markers = presentation
                     .diagnostic_marks
@@ -574,13 +563,10 @@ impl UiWorld {
                 // 色相加深（本地强调系数，与诊断条带的 2px 常量同级的局部约定）。
                 let match_color = |current: bool| -> [f32; 4] {
                     if current {
-                        let accent = self
-                            .style_model
-                            .color(SemanticColorRole::Accent)
-                            .as_rgba_array();
+                        let accent = style_model.color(SemanticColorRole::Accent).as_rgba_array();
                         [accent[0], accent[1], accent[2], 0.45]
                     } else {
-                        self.style_model
+                        style_model
                             .color(SemanticColorRole::AccentSoftHover)
                             .as_rgba_array()
                     }
@@ -601,20 +587,13 @@ impl UiWorld {
                         mapped.icon_bounds = map_chip_box(chip.icon_bounds);
                         mapped.label.bounds = map_chip_box(chip.label.bounds);
                         if mapped.label.color.is_none() {
-                            mapped.label.color = Some(
-                                self.style_model
-                                    .color(SemanticColorRole::Text)
-                                    .as_rgba_array(),
-                            );
+                            mapped.label.color =
+                                Some(style_model.color(SemanticColorRole::Text).as_rgba_array());
                         }
-                        mapped.background = self
-                            .style_model
-                            .color(SemanticColorRole::Subtle)
-                            .as_rgba_array();
-                        mapped.border = self
-                            .style_model
-                            .color(SemanticColorRole::Border)
-                            .as_rgba_array();
+                        mapped.background =
+                            style_model.color(SemanticColorRole::Subtle).as_rgba_array();
+                        mapped.border =
+                            style_model.color(SemanticColorRole::Border).as_rgba_array();
                         mapped
                     })
                     .collect();
@@ -662,9 +641,7 @@ impl UiWorld {
                             width: content.width,
                             height: line_height,
                         },
-                        self.style_model
-                            .color(SemanticColorRole::Hover)
-                            .as_rgba_array(),
+                        style_model.color(SemanticColorRole::Hover).as_rgba_array(),
                     ))
                 } else {
                     None
@@ -682,9 +659,7 @@ impl UiWorld {
                                     width: rect.width,
                                     height: rect.height,
                                 },
-                                self.style_model
-                                    .color(SemanticColorRole::Accent)
-                                    .as_rgba_array(),
+                                style_model.color(SemanticColorRole::Accent).as_rgba_array(),
                             )
                         })
                         .collect()
@@ -705,7 +680,7 @@ impl UiWorld {
                                     width: rect.width,
                                     height: rect.height,
                                 },
-                                self.style_model
+                                style_model
                                     .color(SemanticColorRole::AccentSoft)
                                     .as_rgba_array(),
                             )
@@ -716,10 +691,7 @@ impl UiWorld {
                 };
                 // 空白字符标记：静态结构标记（不随焦点变化），按视口裁剪
                 // ——标记只服务可见行，视口外的空白不产生图元。
-                let whitespace_color = self
-                    .style_model
-                    .color(SemanticColorRole::Faint)
-                    .as_rgba_array();
+                let whitespace_color = style_model.color(SemanticColorRole::Faint).as_rgba_array();
                 let whitespace_marks = presentation
                     .whitespace_marks
                     .iter()
@@ -751,9 +723,7 @@ impl UiWorld {
                                 width: 1.0,
                                 height: content.height,
                             },
-                            self.style_model
-                                .color(SemanticColorRole::Faint)
-                                .as_rgba_array(),
+                            style_model.color(SemanticColorRole::Faint).as_rgba_array(),
                         )
                     })
                     .collect();
@@ -769,9 +739,7 @@ impl UiWorld {
                                 width: rect.width,
                                 height: rect.height,
                             },
-                            self.style_model
-                                .color(SemanticColorRole::Border)
-                                .as_rgba_array(),
+                            style_model.color(SemanticColorRole::Border).as_rgba_array(),
                         )
                     })
                     .collect();
@@ -800,18 +768,15 @@ impl UiWorld {
                 // 新增 = success、修改 = warning、删除 = danger（调色板的
                 // 绿/黄/红三档，与诊断条带同源的语义配色，对应 git 惯例）。
                 let git_color = |kind| match kind {
-                    crate::TextGitMarkKind::Added => self
-                        .style_model
+                    crate::TextGitMarkKind::Added => style_model
                         .color(SemanticColorRole::Success)
                         .as_rgba_array(),
-                    crate::TextGitMarkKind::Modified => self
-                        .style_model
+                    crate::TextGitMarkKind::Modified => style_model
                         .color(SemanticColorRole::Warning)
                         .as_rgba_array(),
-                    crate::TextGitMarkKind::Deleted => self
-                        .style_model
-                        .color(SemanticColorRole::Danger)
-                        .as_rgba_array(),
+                    crate::TextGitMarkKind::Deleted => {
+                        style_model.color(SemanticColorRole::Danger).as_rgba_array()
+                    }
                 };
                 let mut git_geometry = crate::TextGitGutterGeometry {
                     added_color: git_color(crate::TextGitMarkKind::Added),
@@ -887,8 +852,7 @@ impl UiWorld {
                                     },
                                     fold: *fold,
                                     collapsed,
-                                    color: self
-                                        .style_model
+                                    color: style_model
                                         .color(SemanticColorRole::Faint)
                                         .as_rgba_array(),
                                 });
@@ -1012,12 +976,11 @@ impl UiWorld {
                                 .map(nana_ui_core::PaintColor::to_srgb)
                                 .or(style.background)
                                 .unwrap_or_else(|| {
-                                    self.style_model
+                                    style_model
                                         .color(SemanticColorRole::Surface)
                                         .as_rgba_array()
                                 }),
-                            divider_color: self
-                                .style_model
+                            divider_color: style_model
                                 .color(SemanticColorRole::Border)
                                 .as_rgba_array(),
                         }
@@ -1039,7 +1002,7 @@ impl UiWorld {
                         content,
                         scroll_y,
                         line_height,
-                        &self.style_model.palette,
+                        &style_model.palette,
                     ))
                 } else {
                     None
@@ -1054,9 +1017,7 @@ impl UiWorld {
                             width: rect.width,
                             height: rect.height,
                         },
-                        self.style_model
-                            .color(SemanticColorRole::Accent)
-                            .as_rgba_array(),
+                        style_model.color(SemanticColorRole::Accent).as_rgba_array(),
                     )
                 });
                 let geometry = crate::ComponentGeometry::TextInput {
@@ -1070,7 +1031,7 @@ impl UiWorld {
                     diagnostic_labels,
                     match_markers,
                     swatch_markers,
-                    swatch_border_color: self.style_model.color(SemanticColorRole::Border).as_rgba_array(),
+                    swatch_border_color: style_model.color(SemanticColorRole::Border).as_rgba_array(),
                     atom_chips,
                     caret_line,
                     bracket_markers,
@@ -1083,7 +1044,7 @@ impl UiWorld {
                     line_labels,
                     folds: fold_geometry,
                     git_marks: git_geometry,
-                    line_labels_color: self.style_model.color(SemanticColorRole::Faint).as_rgba_array(),
+                    line_labels_color: style_model.color(SemanticColorRole::Faint).as_rgba_array(),
                     line_labels_font_size: size.caption_size_in(self.theme.typography()),
                     text: crate::ComponentTextRegion {
                         bounds: frame.text_bounds(
@@ -1095,12 +1056,12 @@ impl UiWorld {
                         color: Some(if presentation.placeholder {
                             text_input_placeholder_color(
                                 &source.layout,
-                                self.style_model.color(SemanticColorRole::Faint).as_rgba_array(),
+                                style_model.color(SemanticColorRole::Faint).as_rgba_array(),
                             )
                         } else {
                             style
                                 .color
-                                .unwrap_or_else(|| self.style_model.color(SemanticColorRole::Text).as_rgba_array())
+                                .unwrap_or_else(|| style_model.color(SemanticColorRole::Text).as_rgba_array())
                         }),
                         font_size: size.text_size_in(self.theme.typography()),
                         font_weight: style.font_weight,
@@ -1137,7 +1098,7 @@ impl UiWorld {
                                         },
                                         bounds,
                                         size.text_size_in(self.theme.typography()),
-                                        &self.style_model.palette,
+                                        &style_model.palette,
                                     )
                                 })
                         } else {
@@ -1160,7 +1121,7 @@ impl UiWorld {
                                     },
                                     bounds,
                                     size.text_size_in(self.theme.typography()),
-                                    &self.style_model.palette,
+                                    &style_model.palette,
                                 )
                             })
                     },
@@ -1179,7 +1140,7 @@ impl UiWorld {
                                     },
                                     bounds,
                                     size.text_size_in(self.theme.typography()),
-                                    &self.style_model.palette,
+                                    &style_model.palette,
                                     self.chrome_text_measure(id),
                                 )
                             })
@@ -1210,13 +1171,13 @@ impl UiWorld {
                         .map(nana_ui_core::PaintColor::to_srgb)
                         .or(style.selection_background)
                         .unwrap_or_else(|| {
-                            self.style_model
+                            style_model
                                 .color(SemanticColorRole::AccentSoft)
                                 .as_rgba_array()
                         }),
                     caret_color,
                     additional_caret_color,
-                    preedit_color: self.style_model.color(SemanticColorRole::Accent).as_rgba_array(),
+                    preedit_color: style_model.color(SemanticColorRole::Accent).as_rgba_array(),
                     steppers,
                 };
                 Some(if frame.writing.is_vertical() {
@@ -1285,7 +1246,7 @@ impl UiWorld {
                             ..content
                         });
                 let hint_bounds = self.content_part_box(id, LayoutPartKind::Hint);
-                let palette = self.style_model;
+                let palette = style_model;
                 let hovered = self
                     .input
                     .pointer_hover
@@ -1405,7 +1366,7 @@ impl UiWorld {
                 // The installed theme, not the constant: this is the one
                 // scrollbar metric read the runtime makes, so a density change
                 // has to arrive here or it never reaches a scrollbar.
-                let base = self.style_model.metrics.scrollbar;
+                let base = style_model.metrics.scrollbar;
                 let chrome = skin.map(|skin| skin.metrics(base)).unwrap_or(base);
                 let recipe = self.theme.recipes().scrollbar();
                 // The lane runs inside the border, over the padding: a
@@ -1469,7 +1430,7 @@ impl UiWorld {
                         chrome,
                     )?;
                     let paint = recipe.paint(
-                        self.style_model,
+                        style_model,
                         skin,
                         nana_ui_core::ScrollbarPaintState {
                             presence,
@@ -1616,8 +1577,7 @@ impl UiWorld {
                 // thumb of an enabled range that colour too.
                 let caution = caution.map(|from| crate::RangeCaution {
                     from,
-                    color: self
-                        .style_model
+                    color: style_model
                         .color(SemanticColorRole::Warning)
                         .as_rgba_array(),
                     thumb: !disabled && *ratio >= from,
@@ -1644,16 +1604,13 @@ impl UiWorld {
                         // colour: its text is whichever of the accent's and
                         // the body's reads better on it.
                         if !disabled {
-                            let on_accent = self
-                                .style_model
+                            let on_accent = style_model
                                 .color(SemanticColorRole::AccentText)
                                 .as_rgba_array();
                             text.color = Some(match caution.filter(|caution| caution.thumb) {
                                 Some(crate::RangeCaution { color: warning, .. }) => {
-                                    let body = self
-                                        .style_model
-                                        .color(SemanticColorRole::Text)
-                                        .as_rgba_array();
+                                    let body =
+                                        style_model.color(SemanticColorRole::Text).as_rgba_array();
                                     if contrast(body, warning) > contrast(on_accent, warning) {
                                         body
                                     } else {
@@ -1792,9 +1749,7 @@ impl UiWorld {
                 let secondary = self.row_secondary_text_color(
                     id,
                     style.color.unwrap_or_else(|| {
-                        self.style_model
-                            .color(SemanticColorRole::Text)
-                            .as_rgba_array()
+                        style_model.color(SemanticColorRole::Text).as_rgba_array()
                     }),
                 );
                 let secondary_region = |text: &Option<Arc<str>>, kind| {
@@ -1848,8 +1803,7 @@ impl UiWorld {
                 } else {
                     self.theme.typography().meta
                 };
-                let foreground = self
-                    .style_model
+                let foreground = style_model
                     .color(self.theme.recipes().status().role(*tone))
                     .as_rgba_array();
                 let mut background = foreground;
@@ -1882,8 +1836,7 @@ impl UiWorld {
                 let label_bounds = self
                     .content_part_box(id, LayoutPartKind::TextContent)
                     .unwrap_or(content);
-                let foreground = self
-                    .style_model
+                let foreground = style_model
                     .color(match intent {
                         nana_ui_core::ValidationIntent::Warning => SemanticColorRole::Warning,
                         nana_ui_core::ValidationIntent::Danger => SemanticColorRole::Danger,
@@ -1929,9 +1882,7 @@ impl UiWorld {
                     (
                         icon,
                         part(LayoutPartKind::LeadingContent),
-                        self.style_model
-                            .color(SemanticColorRole::Faint)
-                            .as_rgba_array(),
+                        style_model.color(SemanticColorRole::Faint).as_rgba_array(),
                     )
                 });
                 let title_region = crate::ComponentTextRegion {
@@ -1940,9 +1891,7 @@ impl UiWorld {
                     color: Some(if *compact {
                         secondary
                     } else {
-                        self.style_model
-                            .color(SemanticColorRole::Text)
-                            .as_rgba_array()
+                        style_model.color(SemanticColorRole::Text).as_rgba_array()
                     }),
                     font_size: title_size,
                     font_weight: Some(self.theme.typography().semibold),
@@ -1982,11 +1931,7 @@ impl UiWorld {
                     label: crate::ComponentTextRegion {
                         bounds: label_bounds,
                         content: Arc::clone(label).into(),
-                        color: Some(
-                            self.style_model
-                                .color(SemanticColorRole::Faint)
-                                .as_rgba_array(),
-                        ),
+                        color: Some(style_model.color(SemanticColorRole::Faint).as_rgba_array()),
                         font_size: self.theme.typography().hint,
                         font_weight: None,
                     },
@@ -2001,7 +1946,7 @@ impl UiWorld {
                         } else {
                             Arc::clone(value).into()
                         },
-                        color: Some(self.style_model.color(*value_role).as_rgba_array()),
+                        color: Some(style_model.color(*value_role).as_rgba_array()),
                         font_size: value_size,
                         font_weight: Some(*value_weight),
                     },
@@ -2028,25 +1973,18 @@ impl UiWorld {
                     .content_part_box(id, LayoutPartKind::Indicator)
                     .map(|ring| {
                         let (ring_color, dot_color) = if *disabled {
-                            let faint = self
-                                .style_model
-                                .color(SemanticColorRole::Faint)
-                                .as_rgba_array();
+                            let faint = style_model.color(SemanticColorRole::Faint).as_rgba_array();
                             (faint, faint)
                         } else if *selected {
-                            let accent = self
-                                .style_model
-                                .color(SemanticColorRole::Accent)
-                                .as_rgba_array();
+                            let accent =
+                                style_model.color(SemanticColorRole::Accent).as_rgba_array();
                             (accent, accent)
                         } else {
                             (
-                                self.style_model
+                                style_model
                                     .color(SemanticColorRole::BorderStrong)
                                     .as_rgba_array(),
-                                self.style_model
-                                    .color(SemanticColorRole::Accent)
-                                    .as_rgba_array(),
+                                style_model.color(SemanticColorRole::Accent).as_rgba_array(),
                             )
                         };
                         let dot_extent = ring.width / 2.5;
@@ -2070,9 +2008,7 @@ impl UiWorld {
                         icon,
                         bounds,
                         style.color.unwrap_or_else(|| {
-                            self.style_model
-                                .color(SemanticColorRole::Muted)
-                                .as_rgba_array()
+                            style_model.color(SemanticColorRole::Muted).as_rgba_array()
                         }),
                     ))
                 });
@@ -2092,7 +2028,7 @@ impl UiWorld {
                     focus_ring: (*show_focus_ring
                         && self.focus_visible(self.record(id).document) == Some(id))
                     .then(|| {
-                        self.style_model
+                        style_model
                             .color(SemanticColorRole::FocusBorder)
                             .as_rgba_array()
                     }),
@@ -2125,9 +2061,7 @@ impl UiWorld {
                             bounds,
                             content: Arc::clone(label).into(),
                             color: Some(style.color.unwrap_or_else(|| {
-                                self.style_model
-                                    .color(SemanticColorRole::Text)
-                                    .as_rgba_array()
+                                style_model.color(SemanticColorRole::Text).as_rgba_array()
                             })),
                             font_size: typography.meta,
                             font_weight: Some(typography.medium),
@@ -2174,7 +2108,7 @@ impl UiWorld {
                     *control,
                     &parts,
                     &|id| self.component_layout_box(id),
-                    self.style_model,
+                    style_model,
                 )
             }),
             StandardVisual::Toast {
@@ -2209,11 +2143,7 @@ impl UiWorld {
                         crate::ComponentTextRegion {
                             bounds,
                             content: Arc::clone(title).into(),
-                            color: Some(
-                                self.style_model
-                                    .color(SemanticColorRole::Text)
-                                    .as_rgba_array(),
-                            ),
+                            color: Some(style_model.color(SemanticColorRole::Text).as_rgba_array()),
                             font_size: recipe.title.size,
                             font_weight: recipe.title.weight,
                         }
@@ -2273,14 +2203,8 @@ impl UiWorld {
                     } else {
                         0.0
                     },
-                    thumb_color: self
-                        .style_model
-                        .color(SemanticColorRole::Accent)
-                        .as_rgba_array(),
-                    axis_color: self
-                        .style_model
-                        .color(SemanticColorRole::Border)
-                        .as_rgba_array(),
+                    thumb_color: style_model.color(SemanticColorRole::Accent).as_rgba_array(),
+                    axis_color: style_model.color(SemanticColorRole::Border).as_rgba_array(),
                 })
             }),
             StandardVisual::Select {
@@ -2324,7 +2248,7 @@ impl UiWorld {
                     menu_room,
                     style,
                     &source,
-                    self.style_model,
+                    style_model,
                     self.theme.recipes().scrollbar(),
                     viewport,
                     *checkable,
@@ -2352,8 +2276,8 @@ impl UiWorld {
                     query.as_ref(),
                     rows,
                     *highlighted,
-                    &self.style_model.palette,
-                    self.style_model.metrics,
+                    &style_model.palette,
+                    style_model.metrics,
                     &self.framework_strings().menu_search,
                     self.chrome_text_measure(id),
                     &self.theme,
@@ -2384,7 +2308,7 @@ impl UiWorld {
                     trigger_content.is_some(),
                     overlay.is_some_and(|overlay| overlay.trigger_label_gap.is_some()),
                     style,
-                    &self.style_model.palette,
+                    &style_model.palette,
                     surface,
                     &self.component_content_parts(id),
                 ))
@@ -2409,7 +2333,7 @@ impl UiWorld {
                     *disabled,
                     *size,
                     style,
-                    &self.style_model.palette,
+                    &style_model.palette,
                     &self.theme,
                     &parts,
                 ))
@@ -2426,8 +2350,8 @@ impl UiWorld {
                 *size,
                 columns,
                 drop.as_ref(),
-                &self.style_model.palette,
-                self.style_model.metrics,
+                &style_model.palette,
+                style_model.metrics,
             )),
             StandardVisual::CommandPalette {
                 title,
@@ -2442,8 +2366,8 @@ impl UiWorld {
                 placeholder,
                 empty.as_ref(),
                 rows,
-                &self.style_model.palette,
-                self.style_model.metrics,
+                &style_model.palette,
+                style_model.metrics,
                 self.chrome_text_measure(id),
             )),
             StandardVisual::QrCode { modules, width } => own_frame(|| {
@@ -2495,7 +2419,7 @@ impl UiWorld {
                     *max_level,
                     *active,
                     active_title.as_deref(),
-                    &self.style_model.palette,
+                    &style_model.palette,
                     self.chrome_text_measure(id),
                 ))
             }),
@@ -2536,7 +2460,7 @@ impl UiWorld {
                             .filter_map(|child| self.component_layout_box(*child))
                             .collect()
                     } else {
-                        let height = size.height_in(self.style_model.metrics);
+                        let height = size.height_in(style_model.metrics);
                         let step = height + spacing.max(0.0);
                         (0..count)
                             .map(|index| LayoutBox {
@@ -2560,8 +2484,8 @@ impl UiWorld {
                     *size,
                     *spacing,
                     drag.unwrap_or_default(),
-                    &self.style_model.palette,
-                    self.style_model.metrics,
+                    &style_model.palette,
+                    style_model.metrics,
                 ))
             }),
             #[cfg(feature = "rich-text")]
@@ -2572,14 +2496,14 @@ impl UiWorld {
             } => own_frame(|| {
                 let selection_range = selection;
                 let (text, selection_color) =
-                    selectable_text_regions(content, text, style, &self.style_model.palette);
+                    selectable_text_regions(content, text, style, &style_model.palette);
                 let geometry = self.markdown_layout(id, blocks, content);
                 Some(crate::ComponentGeometry::NativeMarkdown {
                     drawing: crate::markdown_drawing::document_with_geometry(
                         blocks,
                         content,
                         &geometry,
-                        self.style_model.metrics,
+                        style_model.metrics,
                         &|scene, scale| self.diagram_drawing(scene, scale),
                     ),
                     text,
@@ -2600,7 +2524,7 @@ impl UiWorld {
             StandardVisual::SelectableRichText { text, selection } => {
                 let selection = self.selectable_rich_text_highlights(id, content, text, *selection);
                 let (text, selection_color) =
-                    selectable_text_regions(content, text, style, &self.style_model.palette);
+                    selectable_text_regions(content, text, style, &style_model.palette);
                 Some(crate::ComponentGeometry::SelectableRichText {
                     text,
                     selection,
@@ -2628,7 +2552,7 @@ impl UiWorld {
                     *viewport_offset_x,
                     *viewport_offset_y,
                     *viewport_zoom,
-                    &self.style_model.palette,
+                    &style_model.palette,
                 ))
             }),
             #[cfg(feature = "graph-canvas")]
@@ -2643,8 +2567,8 @@ impl UiWorld {
                 nodes,
                 indicator.as_ref(),
                 *node_fill,
-                &self.style_model.palette,
-                self.style_model.opacity,
+                &style_model.palette,
+                style_model.opacity,
             )),
             #[cfg(feature = "image-viewer")]
             StandardVisual::ImageViewer {
@@ -2663,20 +2587,20 @@ impl UiWorld {
                     *zoom,
                     *offset_x,
                     *offset_y,
-                    &self.style_model.palette,
+                    &style_model.palette,
                     self.theme.effects().media_scrim,
-                    self.style_model.metrics,
+                    style_model.metrics,
                 ))
             }),
             StandardVisual::KeyCaptureLayer { recording } => Some(key_capture_geometry(
                 content,
                 *recording,
-                self.style_model,
+                style_model,
                 self.chrome_text_measure(id),
             )),
             StandardVisual::KeymapLayer => Some(keymap_geometry(
                 content,
-                self.style_model,
+                style_model,
                 self.chrome_text_measure(id),
             )),
             _ => None,

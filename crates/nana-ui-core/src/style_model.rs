@@ -889,6 +889,120 @@ impl SemanticPalette {
     }
 }
 
+/// A subtree's own values for some theme colour roles (Issue #104, its first
+/// cut: colours only). Set on a node through `NodeStyle::color_overrides`, it
+/// answers for that node and every descendant: each role named here resolves
+/// to this colour instead of the installed theme's. A nested override wins
+/// over an outer one role by role; a role nobody names stays the theme's.
+///
+/// Typed and small on purpose: a handful of `(role, colour)` pairs, never a
+/// string map and never a copy of the whole palette.
+///
+/// Roles the palette derives from another one -- the `*Soft*` warning and
+/// danger washes and the code-token roles -- follow their base role: naming
+/// `Warning` moves `WarningSoft` with it. Naming a derived role itself has no
+/// effect.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct ColorOverrides {
+    entries: Vec<(SemanticColorRole, SemanticColor)>,
+}
+
+impl ColorOverrides {
+    /// No overrides: every role is the theme's.
+    pub const fn new() -> Self {
+        Self {
+            entries: Vec::new(),
+        }
+    }
+
+    /// This set with `role` resolving to `color`.
+    #[must_use]
+    pub fn with(mut self, role: SemanticColorRole, color: SemanticColor) -> Self {
+        self.set(role, color);
+        self
+    }
+
+    /// Make `role` resolve to `color`, replacing what this set said of it.
+    pub fn set(&mut self, role: SemanticColorRole, color: SemanticColor) {
+        match self.entries.iter_mut().find(|(named, _)| *named == role) {
+            Some(entry) => entry.1 = color,
+            None => self.entries.push((role, color)),
+        }
+    }
+
+    /// The colour this set gives `role`, if it names it.
+    pub fn get(&self, role: SemanticColorRole) -> Option<SemanticColor> {
+        self.entries
+            .iter()
+            .find(|(named, _)| *named == role)
+            .map(|(_, color)| *color)
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.entries.is_empty()
+    }
+
+    /// Every role this set names, in the order first named.
+    pub fn iter(&self) -> impl Iterator<Item = (SemanticColorRole, SemanticColor)> + '_ {
+        self.entries.iter().copied()
+    }
+
+    /// `outer` with this set written over it: what a nested scope resolves to.
+    #[must_use]
+    pub fn over(&self, outer: &Self) -> Self {
+        let mut merged = outer.clone();
+        for (role, color) in self.iter() {
+            merged.set(role, color);
+        }
+        merged
+    }
+}
+
+impl SemanticPalette {
+    /// Set the field `role` reads. `false` for a role the palette derives
+    /// rather than stores, which this leaves alone.
+    pub fn set(&mut self, role: SemanticColorRole, color: SemanticColor) -> bool {
+        let field = match role {
+            SemanticColorRole::Background => &mut self.background,
+            SemanticColorRole::Surface => &mut self.surface,
+            SemanticColorRole::Subtle => &mut self.subtle,
+            SemanticColorRole::Raised => &mut self.raised,
+            SemanticColorRole::Header => &mut self.header,
+            SemanticColorRole::Hover => &mut self.hover,
+            SemanticColorRole::Active => &mut self.active,
+            SemanticColorRole::Selected => &mut self.selected,
+            SemanticColorRole::SelectedHover => &mut self.selected_hover,
+            SemanticColorRole::SelectedPressed => &mut self.selected_pressed,
+            SemanticColorRole::Border => &mut self.border,
+            SemanticColorRole::BorderSoft => &mut self.border_soft,
+            SemanticColorRole::BorderStrong => &mut self.border_strong,
+            SemanticColorRole::Text => &mut self.text,
+            SemanticColorRole::Muted => &mut self.muted,
+            SemanticColorRole::Faint => &mut self.faint,
+            SemanticColorRole::Accent => &mut self.accent,
+            SemanticColorRole::AccentStrong => &mut self.accent_strong,
+            SemanticColorRole::AccentSoft => &mut self.accent_soft,
+            SemanticColorRole::AccentSoftHover => &mut self.accent_soft_hover,
+            SemanticColorRole::AccentSoftPressed => &mut self.accent_soft_pressed,
+            SemanticColorRole::AccentOnSoft => &mut self.accent_on_soft,
+            SemanticColorRole::AccentText => &mut self.accent_text,
+            SemanticColorRole::FocusSurface => &mut self.focus_surface,
+            SemanticColorRole::FocusBorder => &mut self.focus_border,
+            SemanticColorRole::FocusText => &mut self.focus_text,
+            SemanticColorRole::Highlight => &mut self.highlight,
+            SemanticColorRole::HighlightHover => &mut self.highlight_hover,
+            SemanticColorRole::HighlightPressed => &mut self.highlight_pressed,
+            SemanticColorRole::HighlightText => &mut self.highlight_text,
+            SemanticColorRole::Success => &mut self.success,
+            SemanticColorRole::Warning => &mut self.warning,
+            SemanticColorRole::Danger => &mut self.danger,
+            _ => return false,
+        };
+        *field = color;
+        true
+    }
+}
+
 /// Index of Style Model pieces that already live in this crate.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct StyleModelRef {
@@ -950,6 +1064,22 @@ impl StyleModelRef {
             SemanticColorRole::OnMedia => self.on_media,
             other => self.palette.get_in(other, self.opacity),
         }
+    }
+
+    /// This model with `overrides` written over its colours: what a node
+    /// under a colour scope reads every role from.
+    #[must_use]
+    pub fn with_color_overrides(mut self, overrides: &ColorOverrides) -> Self {
+        for (role, color) in overrides.iter() {
+            match role {
+                SemanticColorRole::Titlebar => self.titlebar = color,
+                SemanticColorRole::OnMedia => self.on_media = color,
+                other => {
+                    self.palette.set(other, color);
+                }
+            }
+        }
+        self
     }
 
     pub const fn base_text_size(self) -> f32 {

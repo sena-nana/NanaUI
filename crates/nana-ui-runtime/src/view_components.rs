@@ -792,6 +792,7 @@ impl Button {
                 text_horizontal_alignment: TextHorizontalAlignment::Center,
                 text_vertical_alignment: TextVerticalAlignment::Center,
                 painter: None,
+                color_overrides: None,
             },
             style_override: false,
             tool_glyph: false,

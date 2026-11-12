@@ -132,8 +132,20 @@ impl UiWorld {
             .unwrap_or_else(crate::store::interned_default_style);
         let inherited = inherited_style.as_ref();
         let inherited_color = parent.and(inherited.color);
+        // The colour scope: this node's own overrides written over its
+        // parent's. Nested scopes are flattened here, once per resolve, so
+        // nothing downstream walks the chain.
+        let color_scope = {
+            let outer = parent.and(inherited.color_scope.as_ref());
+            match (self.record(id).style.color_overrides.as_ref(), outer) {
+                (None, outer) => outer.cloned(),
+                (Some(own), None) => Some(Arc::clone(own)),
+                (Some(own), Some(outer)) => Some(Arc::new(own.over(outer))),
+            }
+        };
+        let model = self.scoped_style_model(color_scope.as_deref());
         let (foreground, color, background, border_color) =
-            self.palette_paint_colors(id, inherited_color);
+            self.palette_paint_colors(id, inherited_color, model);
         let local_paint = self.semantic_paint(id, &self.record(id).style);
         let color_override = layout.color.is_some()
             || local_paint.foreground.is_some()
@@ -221,7 +233,7 @@ impl UiWorld {
             color,
             background,
             border_color,
-            ring_color: self.palette_ring_color(id),
+            ring_color: self.palette_ring_color(id, model),
             opacity: layout.opacity.unwrap_or(1.0) * inherited.opacity,
             visibility,
             box_visible,
@@ -299,6 +311,7 @@ impl UiWorld {
             text_scale,
             font_size_base,
             line_height_base,
+            color_scope,
         };
         // Written before the early return: a node that declares its own
         // writing mode resolves to the same style when its parent's changes,
@@ -724,23 +737,44 @@ impl UiWorld {
         moved
     }
 
-    /// Read one role out of the token authority, counted for Issue #101 §4.
-    fn theme_color(&self, role: SemanticColorRole) -> [f32; 4] {
+    /// Read one role out of `model` (the token authority under a node's
+    /// colour scope), counted for Issue #101 §4.
+    fn theme_color(&self, model: StyleModelRef, role: SemanticColorRole) -> [f32; 4] {
         self.record_theme_read();
-        self.style_model.color(role).as_rgba_array()
+        model.color(role).as_rgba_array()
     }
 
     /// Resolve a palette mix. One question asked of the theme, so one read —
     /// the roles it blends are the mix's own business.
-    fn theme_mix(&self, mix: nana_ui_core::SemanticColorMix) -> [f32; 4] {
+    fn theme_mix(&self, model: StyleModelRef, mix: nana_ui_core::SemanticColorMix) -> [f32; 4] {
         self.record_theme_read();
-        mix.resolve(self.style_model).as_rgba_array()
+        mix.resolve(model).as_rgba_array()
+    }
+
+    /// The installed style model under `scope`: what a node in that colour
+    /// scope reads every role from. No scope is the installed model itself.
+    pub(crate) fn scoped_style_model(
+        &self,
+        scope: Option<&nana_ui_core::ColorOverrides>,
+    ) -> StyleModelRef {
+        match scope {
+            Some(scope) => self.style_model.with_color_overrides(scope),
+            None => self.style_model,
+        }
+    }
+
+    /// The style model `id` reads its colours from: the installed one under
+    /// the colour scope its resolved style carries
+    /// ([`crate::ComputedStyle::color_scope`]).
+    pub(crate) fn node_style_model(&self, id: StableNodeId) -> StyleModelRef {
+        self.scoped_style_model(self.record(id).resolved.0.color_scope.as_deref())
     }
 
     pub(super) fn palette_paint_colors(
         &self,
         id: StableNodeId,
         inherited_color: Option<[f32; 4]>,
+        model: StyleModelRef,
     ) -> (
         SemanticColorRole,
         Option<[f32; 4]>,
@@ -757,22 +791,22 @@ impl UiWorld {
         let foreground = paint.foreground.unwrap_or(inherited_foreground);
         let color = layout
             .color
-            .or_else(|| paint.foreground_mix.map(|mix| self.theme_mix(mix)))
+            .or_else(|| paint.foreground_mix.map(|mix| self.theme_mix(model, mix)))
             .or_else(|| {
                 paint
                     .foreground
-                    .map(|role| self.theme_color(role))
+                    .map(|role| self.theme_color(model, role))
                     .or(inherited_color)
-                    .or_else(|| Some(self.theme_color(foreground)))
+                    .or_else(|| Some(self.theme_color(model, foreground)))
             });
         let background = layout
             .background
-            .or_else(|| paint.background_mix.map(|mix| self.theme_mix(mix)))
-            .or_else(|| paint.background.map(|role| self.theme_color(role)));
+            .or_else(|| paint.background_mix.map(|mix| self.theme_mix(model, mix)))
+            .or_else(|| paint.background.map(|role| self.theme_color(model, role)));
         let border_color = layout
             .resolved_border_color()
-            .or_else(|| paint.border_mix.map(|mix| self.theme_mix(mix)))
-            .or_else(|| paint.border.map(|role| self.theme_color(role)));
+            .or_else(|| paint.border_mix.map(|mix| self.theme_mix(model, mix)))
+            .or_else(|| paint.border.map(|role| self.theme_color(model, role)));
         if let Some(transition) = self.hover_transitions.get(&id) {
             let [color, background, border_color] = std::array::from_fn(|i| {
                 interpolate_color(
@@ -789,11 +823,15 @@ impl UiWorld {
 
 impl UiWorld {
     /// `id`'s [`crate::NodeStyle::ring`] in the installed palette.
-    pub(super) fn palette_ring_color(&self, id: StableNodeId) -> Option<[f32; 4]> {
+    pub(super) fn palette_ring_color(
+        &self,
+        id: StableNodeId,
+        model: StyleModelRef,
+    ) -> Option<[f32; 4]> {
         self.record(id)
             .style
             .ring
-            .map(|role| self.theme_color(role))
+            .map(|role| self.theme_color(model, role))
     }
 
     pub(super) fn inherited_palette_color(
@@ -802,15 +840,16 @@ impl UiWorld {
     ) -> Option<[f32; 4]> {
         while let Some(id) = parent {
             let local = &self.record(id).style;
+            let model = self.node_style_model(id);
             if let Some(color) = local.layout.color {
                 return Some(color);
             }
             let paint = self.semantic_paint(id, local);
             if let Some(mix) = paint.foreground_mix {
-                return Some(self.theme_mix(mix));
+                return Some(self.theme_mix(model, mix));
             }
             if let Some(role) = paint.foreground {
-                return Some(self.theme_color(role));
+                return Some(self.theme_color(model, role));
             }
             parent = self.record(id).hierarchy.parent;
         }
@@ -893,7 +932,7 @@ impl UiWorld {
             .semantic_paint(id, local)
             .foreground_secondary
             .unwrap_or(SemanticColorRole::Muted);
-        self.theme_color(role)
+        self.theme_color(self.node_style_model(id), role)
     }
 
     /// The colour a list row's note and detail resolve to: the row's own
@@ -908,7 +947,7 @@ impl UiWorld {
     pub(super) fn row_secondary_text_color(&self, id: StableNodeId, primary: [f32; 4]) -> [f32; 4] {
         let local = &self.record(id).style;
         if let Some(role) = self.semantic_paint(id, local).foreground_secondary {
-            return self.theme_color(role);
+            return self.theme_color(self.node_style_model(id), role);
         }
         self.record_theme_read();
         let [r, g, b, a] = primary;
@@ -1260,7 +1299,8 @@ impl UiWorld {
             .hierarchy
             .parent
             .and_then(|parent| self.record(parent).resolved.0.color);
-        let (_, color, background, border) = self.palette_paint_colors(id, inherited);
+        let (_, color, background, border) =
+            self.palette_paint_colors(id, inherited, self.node_style_model(id));
         [color, background, border]
     }
 
@@ -1409,6 +1449,7 @@ fn same_style_on_one_layout(kept: &NodeStyle, style: &NodeStyle) -> bool {
         text_horizontal_alignment,
         text_vertical_alignment,
         painter,
+        color_overrides,
     } = kept;
     Arc::ptr_eq(layout, &style.layout)
         && *foreground == style.foreground
@@ -1431,6 +1472,7 @@ fn same_style_on_one_layout(kept: &NodeStyle, style: &NodeStyle) -> bool {
         && *text_horizontal_alignment == style.text_horizontal_alignment
         && *text_vertical_alignment == style.text_vertical_alignment
         && *painter == style.painter
+        && *color_overrides == style.color_overrides
 }
 
 /// How many recent layouts a world keeps to share. Siblings built alike

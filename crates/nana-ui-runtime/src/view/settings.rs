@@ -61,6 +61,7 @@ pub mod settings_row {
     pub struct first_in_group;
     pub struct last_in_group;
     pub struct label_column;
+    pub struct label_colors;
 }
 
 macro_rules! row_fields {
@@ -103,6 +104,7 @@ row_fields! {
     first_in_group: bool,
     last_in_group: bool,
     label_column: Option<f32>,
+    label_colors: Option<Arc<nana_ui_core::ColorOverrides>>,
 }
 
 impl<K> El<SettingsCollapsibleCard, K> {
@@ -166,6 +168,40 @@ mod tests {
     /// the world.
     fn text(cx: &AppContext, id: StableNodeId) -> String {
         cx.world().text(id).unwrap_or_default().to_owned()
+    }
+
+    /// `label_colors` reaches the label alone, and follows its binding.
+    #[test]
+    fn label_colors_tint_only_the_label() {
+        use nana_ui_core::{ColorOverrides, SemanticColor, SemanticColorRole};
+        let document = DocumentId::new(1).unwrap();
+        let mut cx = AppContext::new();
+        let root = cx.create_component(document, Stack::column(0.0)).unwrap();
+        let purple = Arc::new(
+            ColorOverrides::new().with(SemanticColorRole::Text, SemanticColor::rgb8(151, 66, 165)),
+        );
+        let colors = signal(Some(Arc::clone(&purple)));
+        cx.mount_view(root.stable_id(), move || {
+            settings_row("曲线")
+                .hint("说明")
+                .label_colors(colors)
+                .control(switch("").checked(true))
+        })
+        .unwrap();
+        cx.flush_reactive().unwrap();
+
+        let row = Entity::<SettingsRow>::from_stable_id(children(&cx, root.stable_id())[0]);
+        let (label, hint) = cx
+            .read(row, |row| (row.label_slot.unwrap(), row.hint_slot.unwrap()))
+            .unwrap();
+        let overrides =
+            |cx: &AppContext, id| cx.world().node_style(id).unwrap().color_overrides.clone();
+        assert_eq!(overrides(&cx, label), Some(Arc::clone(&purple)));
+        assert_eq!(overrides(&cx, hint), None);
+
+        colors.set(None);
+        cx.flush_reactive().unwrap();
+        assert_eq!(overrides(&cx, label), None);
     }
 
     /// A row from a view has the shape of one built by hand: its copy (label

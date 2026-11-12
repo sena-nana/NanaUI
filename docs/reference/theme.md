@@ -932,3 +932,32 @@ done
 # 语义基线：本轮与干净 HEAD 逐字节相同（当时两边都有 46 个 pre-existing CHANGED，现已重录）
 cargo run --release -p component-gallery --bin ui-snapshots --features snapshots --locked -- --semantic
 ```
+
+## 8. 子树颜色覆盖：#104 的第一刀
+
+一个节点可以给自己和整棵子树换掉若干颜色角色。这是 #104 ThemeScope 的第一刀。只做语义色。
+
+```rust
+use nana_ui::theme::{ColorOverrides, SemanticColor};
+use nana_ui_core::SemanticColorRole;
+
+let modeler = ColorOverrides::new()
+    .with(SemanticColorRole::Accent, SemanticColor::rgb8(124, 77, 210))
+    .with(SemanticColorRole::AccentStrong, SemanticColor::rgb8(104, 58, 186));
+
+// 视图：绑定闭包就能跟着亮暗外观换；空集合把主题还回来。
+view.theme_colors(modeler.clone());
+// 或者直接写样式：
+style.color_overrides = Some(Arc::new(modeler));
+```
+
+- `nana_ui_core::ColorOverrides`（`nana_ui::theme` 再导出）：`SemanticColorRole → SemanticColor` 的小表。有类型。不是字符串 map。也不复制整份 palette。`new()`、`with(role, color)`、`set`、`get(role)`、`is_empty`、`iter`、`over(&outer)`。
+- `NodeStyle::color_overrides: Option<Arc<ColorOverrides>>`。`El::theme_colors(impl IntoProp<ColorOverrides>)` 绑定它。
+- `SettingsRow::label_colors: Option<Arc<ColorOverrides>>`（视图 `.label_colors(..)`）：只给设置行的名称换色。行每次投影都重建名称的样式，`theme_colors` 挂在行上又会连提示、控件一起换，所以名称单独一个字段；提示、notice 与控件仍用主题色。
+- 解析时一次扁平化。`ComputedStyle::color_scope` 是继承的：节点自己的覆盖写在父作用域之上，内层逐角色盖外层。后代只读这一个 `Arc`。不沿父链往上走。没有覆盖的节点照旧共享父节点的结果。
+- 读到的地方：节点样式按角色取的前景、背景、边框、ring 与各交互态（`SemanticPaint`），组件几何（`derive_component_geometry` 整个函数换成作用域里的 `StyleModelRef`：开关轨道与拇指、状态胶囊的 tone、按钮、复选、单选、滑块、分段、列表行与它们的焦点环），标准视觉前景，文本 span、选区底色、拖入高亮，输入框的计数与后缀。
+- 失效：`color_overrides` 变了按继承前景处理，整棵子树标 STYLE | RENDER，重解析时同一个扁平结果停止向下传播。
+- 派生角色（`WarningSoft*`、`DangerSoft*`、代码 token 角色）跟着基色走：覆盖 `Warning` 会带上 `WarningSoft`。单独点名派生角色不起作用。`Titlebar` 与 `OnMedia` 可以覆盖。
+- 默认主题下没有节点带覆盖，取值路径与以前逐字节相同。
+
+#104 还剩的：typography、metrics、recipe、motion 的 patch；每窗口 root binding 与多窗口验证；scope identity 与 generation 缓存（现在按解析扁平化，嵌套作用域每次解析分配一次合并结果）；图表（`chart_geometry` 有按尺寸与主题的缓存，仍读安装的主题）。
