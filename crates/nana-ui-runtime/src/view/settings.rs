@@ -137,9 +137,16 @@ impl<K> El<SettingsRow, K> {
         self.slot(view, SettingsRow::control_child)
     }
 
-    /// Something after the label, on its line, such as a status pill: it
-    /// keeps its width and the label elides first. The row's name is still
-    /// its label; the accessory is read as itself.
+    /// A mark immediately after the label, before a help button or
+    /// [`Self::label_accessory`], such as a category seal: it keeps its width
+    /// and the label elides first.
+    pub fn label_mark(self, view: impl IntoView) -> Self {
+        self.slot(view, SettingsRow::label_mark)
+    }
+
+    /// Something after the label (and any help button), on its line, such as a
+    /// status pill: it keeps its width and the label elides first. The row's
+    /// name is still its label; the accessory is read as itself.
     pub fn label_accessory(self, view: impl IntoView) -> Self {
         self.slot(view, SettingsRow::label_accessory)
     }
@@ -732,6 +739,63 @@ mod tests {
             let gap = glyph_left - (label_box.x + label_box.width);
             assert!((gap - nana_ui_core::space::XS).abs() < 0.5, "{gap}");
             assert_eq!((help_box.width, help_box.height), (24.0, 24.0));
+        }
+
+        /// A category mark (`label_mark`) stands right after the name, before
+        /// the `(?)` help button and any `label_accessory`, without changing
+        /// the row's single-line height or its control's accessible name.
+        #[test]
+        fn a_label_mark_stands_right_after_the_name_before_help_and_accessory() {
+            let document = DocumentId::new(1).unwrap();
+            let mut cx = AppContext::new();
+            let view = cx
+                .mount_view_root(document, || {
+                    widget(SettingsGroup::new().hint_placement(HintPlacement::Help))
+                        .children((
+                            settings_row("参数平滑")
+                                .label_mark(pill("建模师"))
+                                .hint("按时间常数平滑输入")
+                                .label_accessory(pill("恢复默认"))
+                                .control(switch("")),
+                            settings_row("参数平滑").control(switch("")),
+                        ))
+                        .into_any()
+                })
+                .unwrap();
+            lay_out(&mut cx, document, 480.0);
+            let rows = children(&cx, view.roots()[0]);
+            let (marked, plain) = (rows[0], rows[1]);
+
+            let help = help_of(&cx, marked).expect("a help button");
+            let (_, label, _, line) = row_parts(&cx, marked);
+            let line = line.expect("the name's line holds mark, help, and accessory");
+            let (mark, accessory, control) = cx
+                .read(row(&cx, marked), |row| {
+                    (
+                        row.label_mark.unwrap(),
+                        row.label_accessory.unwrap(),
+                        row.control.unwrap(),
+                    )
+                })
+                .unwrap();
+            assert_eq!(children(&cx, line), [label, mark, help, accessory]);
+            assert!(
+                bounds(&cx, mark).x < bounds(&cx, help).x
+                    && bounds(&cx, help).x < bounds(&cx, accessory).x
+            );
+            assert!(
+                (bounds(&cx, marked).height - bounds(&cx, plain).height).abs() < 0.5,
+                "label_mark keeps the single-line height"
+            );
+            assert_eq!(
+                cx.world()
+                    .project_accessibility(document)
+                    .into_iter()
+                    .find(|node| node.id == control)
+                    .and_then(|node| node.label)
+                    .as_deref(),
+                Some("参数平滑")
+            );
         }
 
         /// The hint opened from the button and the notice stand under the

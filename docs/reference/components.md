@@ -73,7 +73,7 @@ inactive overlay 与关闭菜单属于结构性隐藏。`ComputedStyle::box_visi
 
 设置行的标签给它放的控件起无障碍名字。`SettingsRow` 装配时（视图里的 `settings_row(..).control(..)`、`mount_settings_leaf_row`、`AppearanceSection` 的各行）用 `MutationQueue::set_labelled_by(控件, 标签节点)` 把两者关联起来。控件自己有非空的名字时用它自己的（`switch("静音")`）。没有时（`switch("")`、分段控件、滑块、下拉选择）用行标签。行标签改了，控件的无障碍节点跟着重新投影。这层关联归组合控件所有。存在 `UiWorld` 里。不是控件 `AccessibilityState` 的一部分。所以控件重新投影自己的状态不会冲掉它。任一端被销毁时关联一起去掉。`Select` 的无障碍名字因此不再取它显示的选项。没人给它起名时仍按显示的文字命名。显示的选项是它的值（`value`）。
 
-`SettingsRow::label_accessory` 是标签后面同一行的应用节点（状态胶囊、徽章）。装配只在有附件时给标签和附件套一条行；标签先收窄省略，附件保持宽度；行的无障碍名字仍是标签。`AppContext::flash_settings_row(row)` 让一行闪一下，用于应用把用户带到这一行之后：行下面一块不参与排版、不接指针的 `AccentSoft` 淡底，左右外扩一个列表项内边距，在表现层上按 `MotionRole::Attention` 保持后淡出，结束时连节点一起拿掉；减少动态效果时全色停留同样时长。见 [SettingsRow](https://github.com/sena-nana/NanaUI/blob/main/docs/components/settings-row.md)。
+`SettingsRow::label_mark` 与 `SettingsRow::label_accessory` 都是标签后面同一行的应用节点：`label_mark` 紧跟在标签文字后面、排在问号按钮之前（类别徽标），`label_accessory` 排在问号之后（状态胶囊、恢复默认）。装配只在有徽标、问号或附件时给标签套一条行；标签先收窄省略，徽标与附件保持宽度；行的无障碍名字仍是标签。`AppContext::flash_settings_row(row)` 让一行闪一下，用于应用把用户带到这一行之后：行下面一块不参与排版、不接指针的 `AccentSoft` 淡底，左右外扩一个列表项内边距，在表现层上按 `MotionRole::Attention` 保持后淡出，结束时连节点一起拿掉；减少动态效果时全色停留同样时长。见 [SettingsRow](https://github.com/sena-nana/NanaUI/blob/main/docs/components/settings-row.md)。
 
 设置行之外，视图里的任何元素都能声明同一层关联：`.labelled_by(标题)`（模板 `labelled_by={caption}`，`.vue` 里 `labelled-by="caption"`）。`标题` 是那段文字的 `NodeRef`、节点 id 或选出它的闭包。写在控件之前、之后或另一段视图里都行。标题重建（在 `when` 里）后关联跟到新节点上。字段标题写在旁边的下拉框、滑块、空标签开关都这样起名，不用挂载后再扫描文档。没有可见标题时，`Select` 写自己的 `label`（`aria-label`，不画出来），`RangeField` 写 `label` 加 `show_label(false)`。
 

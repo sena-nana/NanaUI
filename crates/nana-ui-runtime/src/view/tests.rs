@@ -6615,3 +6615,171 @@ fn a_view_deeper_than_the_stack_still_mounts() {
         .expect("mounting the view ran out of stack");
     assert_eq!(levels, 400);
 }
+
+#[test]
+fn list_item_after_label_places_a_mark_between_name_and_detail_and_updates_copy() {
+    use crate::{ListItem, TrailingAlign};
+    let (mut cx, document, _) = setup();
+    let label = signal("双机直播".to_owned());
+    let detail = signal("未开启".to_owned());
+    let (view, (mark, tail)) = cx
+        .mount_view_root(document, {
+            let (label, detail) = (label, detail);
+            move || {
+                let mark = entity_ref::<Text>();
+                let tail = entity_ref::<Text>();
+                let view = widget(ListItem::new("").trailing_align(TrailingAlign::FirstLine))
+                    .label(move || label.get())
+                    .note("LAN")
+                    .detail(move || detail.get())
+                    .after_label(text("DLC").entity_ref(mark))
+                    .trailing(text("开").entity_ref(tail));
+                with_refs(view, (mark, tail))
+            }
+        })
+        .unwrap();
+    cx.layout_document(document, LayoutViewport::new(320.0, 80.0))
+        .unwrap();
+    let item = view.roots()[0];
+    let (mark, tail) = (mark.stable_id(), tail.stable_id());
+    assert_eq!(
+        texts_under(&cx, item),
+        ["双机直播", "LAN", "DLC", "未开启", "开"]
+    );
+    assert_eq!(
+        cx.world()
+            .accessibility(item)
+            .and_then(|state| state.label.as_deref()),
+        Some("双机直播 LAN  未开启")
+    );
+    let mark_box = cx.world().layout_box(mark).unwrap();
+    let tail_box = cx.world().layout_box(tail).unwrap();
+    assert!(
+        mark_box.x < 140.0 && tail_box.x > 260.0,
+        "mark stays after the name ({mark_box:?}) while trailing stays at the row end ({tail_box:?})"
+    );
+
+    label.set("双机接收".to_owned());
+    detail.set("已连接".to_owned());
+    cx.flush_reactive().unwrap();
+    cx.layout_document(document, LayoutViewport::new(320.0, 80.0))
+        .unwrap();
+    assert_eq!(
+        texts_under(&cx, item),
+        ["双机接收", "LAN", "DLC", "已连接", "开"]
+    );
+    assert_eq!(
+        cx.world()
+            .accessibility(item)
+            .and_then(|state| state.label.as_deref()),
+        Some("双机接收 LAN  已连接")
+    );
+}
+
+#[test]
+fn list_item_freely_composes_content_and_children_from_start_to_trailing() {
+    let (mut cx, document, _) = setup();
+    let view = cx
+        .mount_view_root(document, || {
+            column().children((
+                list_item("")
+                    .content(
+                        widget(Stack::row(4.0).width(LengthSpec::Shrink))
+                            .key("content-pair")
+                            .children((text("标题"), text("徽标"))),
+                    )
+                    .trailing(text("右").key("content-tail")),
+                list_item("")
+                    .children((text("甲").key("first"), text("乙").key("second")))
+                    .trailing(text("尾").key("children-tail")),
+            ))
+        })
+        .unwrap();
+    cx.layout_document(document, LayoutViewport::new(320.0, 120.0))
+        .unwrap();
+    let rows = children(&cx, view.roots()[0]);
+
+    let pair = cx.resolve_assembly_path(rows[0], "content-pair").unwrap();
+    let content_tail = cx.resolve_assembly_path(rows[0], "content-tail").unwrap();
+    assert!(
+        cx.world().layout_box(pair).unwrap().x < 24.0,
+        "fit-content .content(..) starts from inline-start instead of shoving to the right"
+    );
+    assert!(
+        cx.world().layout_box(content_tail).unwrap().x > 280.0,
+        "trailing stays pinned to inline-end"
+    );
+
+    let first = cx.resolve_assembly_path(rows[1], "first").unwrap();
+    let second = cx.resolve_assembly_path(rows[1], "second").unwrap();
+    let children_tail = cx.resolve_assembly_path(rows[1], "children-tail").unwrap();
+    let (b1, b2, bt) = (
+        cx.world().layout_box(first).unwrap(),
+        cx.world().layout_box(second).unwrap(),
+        cx.world().layout_box(children_tail).unwrap(),
+    );
+    assert!(
+        b1.x < 24.0 && b2.x > b1.x && b2.x < 120.0 && bt.x > 280.0,
+        "arbitrary .children(..) pack in order from inline-start while trailing pins to inline-end: {b1:?}, {b2:?}, {bt:?}"
+    );
+}
+
+#[test]
+fn focused_list_item_moves_muted_descendants_to_focus_text_unless_plated() {
+    use nana_ui_core::{ColorOverrides, SemanticColor, SemanticColorRole, SemanticPalette};
+    let (mut cx, document, _) = setup();
+    let plate_ink = SemanticColor::rgb8(122, 49, 133);
+    let (view, (note, seal)) = cx
+        .mount_view_root(document, move || {
+            let note = entity_ref::<Text>();
+            let seal = entity_ref::<Text>();
+            let mut plate = Stack::row(0.0).node_style();
+            plate.background = Some(SemanticColorRole::Subtle);
+            let view = list_item("双机直播").children((
+                widget(Text::new("说明").color(SemanticColorRole::Muted)).entity_ref(note),
+                widget(Stack::row(0.0).style(plate))
+                    .theme_colors(move || {
+                        ColorOverrides::new()
+                            .with(SemanticColorRole::Text, plate_ink)
+                            .with(SemanticColorRole::Muted, plate_ink)
+                    })
+                    .children(
+                        widget(Text::new("标").color(SemanticColorRole::Muted)).entity_ref(seal),
+                    ),
+            ));
+            with_refs(view, (note, seal))
+        })
+        .unwrap();
+    let resolve = |cx: &mut AppContext| {
+        cx.layout_document(document, LayoutViewport::new(320.0, 80.0))
+            .unwrap();
+        let work = cx.compat_world_mut().take_system_work();
+        cx.compat_world_mut().resolve_styles(&work.style).unwrap();
+    };
+    resolve(&mut cx);
+    let item = view.roots()[0];
+    let (note, seal) = (note.stable_id(), seal.stable_id());
+    let palette = SemanticPalette::dark();
+    let color_of =
+        |cx: &AppContext, id: StableNodeId| cx.world().extract_nodes(&[id])[0].style.color;
+
+    assert_eq!(color_of(&cx, note), Some(palette.muted.as_rgba_array()));
+    assert_eq!(color_of(&cx, seal), Some(plate_ink.as_rgba_array()));
+
+    assert!(cx.focus_node(document, item).unwrap());
+    resolve(&mut cx);
+    assert_eq!(
+        color_of(&cx, note),
+        Some(palette.focus_text.as_rgba_array()),
+        "a Muted child directly on the focused row follows FOCUS_SURFACE to focus_text"
+    );
+    assert_eq!(
+        color_of(&cx, seal),
+        Some(plate_ink.as_rgba_array()),
+        "a child inside its own painted plate keeps its own ink"
+    );
+
+    cx.clear_focus(document).unwrap();
+    resolve(&mut cx);
+    assert_eq!(color_of(&cx, note), Some(palette.muted.as_rgba_array()));
+}

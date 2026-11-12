@@ -1800,6 +1800,16 @@ pub struct ListItem {
     /// [`Self::disabled`] for a row that could act but cannot now.
     pub read_only: bool,
     pub(crate) slots: ListItemSlots,
+    /// Application node placed immediately after the label (and [`Self::note`]),
+    /// before [`Self::detail`] and the trailing slot. Ignored when a custom
+    /// content slot replaces the label.
+    pub after_label: Option<StableNodeId>,
+    pub(crate) copy_slot: Option<StableNodeId>,
+    pub(crate) label_line_slot: Option<StableNodeId>,
+    pub(crate) label_slot: Option<StableNodeId>,
+    pub(crate) note_slot: Option<StableNodeId>,
+    pub(crate) detail_slot: Option<StableNodeId>,
+    pub(crate) trailing_auto_margin: Option<StableNodeId>,
     pub gap: f32,
     pub size: nana_ui_core::ControlSize,
     pub auto_height: bool,
@@ -1957,6 +1967,13 @@ impl ListItem {
             disabled: false,
             read_only: false,
             slots: ListItemSlots::default(),
+            after_label: None,
+            copy_slot: None,
+            label_line_slot: None,
+            label_slot: None,
+            note_slot: None,
+            detail_slot: None,
+            trailing_auto_margin: None,
             gap: nana_ui_core::space::MD,
             size: nana_ui_core::ControlSize::Small,
             auto_height: false,
@@ -2097,6 +2114,13 @@ impl ListItem {
         self.slots = slots;
         self
     }
+
+    /// Put `node` immediately after the label (and [`Self::note`]), before
+    /// [`Self::detail`] and the trailing slot. Assembled with the row's slots.
+    pub fn after_label(mut self, node: StableNodeId) -> Self {
+        self.after_label = Some(node);
+        self
+    }
     pub fn gap(mut self, gap: f32) -> Self {
         self.gap = gap.max(0.0);
         Arc::make_mut(&mut self.style.layout).gap = Some(nana_ui_core::LengthSpec::Px(self.gap));
@@ -2185,7 +2209,7 @@ impl ListItem {
     /// far down, so it takes only the first line's height in the row and a
     /// one-line row is no taller than a centred one. A trailing band of row
     /// tools that are put away takes no room either.
-    fn band_style(&self, trailing: bool) -> NodeStyle {
+    fn band_style(&self, trailing: bool, push_end: bool) -> NodeStyle {
         let band = self.first_line_band();
         let reach = self.first_line_reach().scaled(-1.0);
         let away = trailing
@@ -2200,6 +2224,10 @@ impl ListItem {
                 layout.theme.margin_top = Some(reach.clone());
                 layout.theme.margin_bottom = Some(reach);
                 layout.hidden = away;
+                if trailing && push_end {
+                    layout.logical_margin.inline_start = Some(nana_ui_core::LengthSpec::Auto);
+                    layout.resolve_logical_box_edges();
+                }
             })
             .node_style()
     }
@@ -2210,6 +2238,7 @@ impl ListItem {
         &self,
         band: StableNodeId,
         trailing: bool,
+        push_end: bool,
         world: &UiWorld,
         mutations: &mut MutationQueue,
     ) {
@@ -2217,7 +2246,7 @@ impl ListItem {
             band,
             world,
             mutations,
-            &self.band_style(trailing),
+            &self.band_style(trailing, push_end),
             InteractionState {
                 pointer_events: false,
                 focusable: false,
@@ -2263,33 +2292,71 @@ impl ListItem {
         })
     }
 
-    /// Patches the tools slot, which another component owns.
-    fn project_tools(&self, world: &UiWorld, mutations: &mut MutationQueue) {
-        let Some(tools) = self.slots.trailing.filter(|_| self.trailing_tools) else {
+    /// Patches the trailing slot's visibility (for row tools) and end push
+    /// (when middle body children pack from the start).
+    fn project_trailing(&self, has_body: bool, world: &UiWorld, mutations: &mut MutationQueue) {
+        let Some(trailing) = self.slots.trailing else {
             return;
         };
-        if world.node(tools).is_none() {
+        if world.node(trailing).is_none() {
             return;
         }
-        let mut style = world.node_style(tools).cloned().unwrap_or_default();
-        if place_row_tools(
-            Arc::make_mut(&mut style.layout),
-            self.tools_shown(),
-            self.tools_rest,
-        ) {
-            mutations.set_style(tools, style);
+        let mut style = world.node_style(trailing).cloned().unwrap_or_default();
+        let layout = Arc::make_mut(&mut style.layout);
+        let mut changed = if self.trailing_tools {
+            place_row_tools(layout, self.tools_shown(), self.tools_rest)
+        } else {
+            false
+        };
+        let wants_auto = has_body && !self.bands_slots();
+        if wants_auto {
+            if layout.logical_margin.inline_start.is_none() && layout.margin_left.is_none() {
+                layout.logical_margin.inline_start = Some(nana_ui_core::LengthSpec::Auto);
+                layout.resolve_logical_box_edges();
+                changed = true;
+            }
+        } else if self.trailing_auto_margin == Some(trailing)
+            && layout.logical_margin.inline_start == Some(nana_ui_core::LengthSpec::Auto)
+        {
+            layout.logical_margin.inline_start = None;
+            layout.margin_left = None;
+            layout.margin_right = None;
+            layout.resolve_logical_box_edges();
+            changed = true;
+        }
+        if changed {
+            mutations.set_style(trailing, style);
         }
     }
 
-    /// 行内子节点的对齐语义：有 trailing 槽时按钮簇贴行尾（与 SidebarRow
-    /// 的行工具同款规则），否则按 start 排。隐藏的槽位子节点不参与 flex 流，
-    /// 不影响其余子节点的分布。
-    #[cfg(test)]
-    fn effective_style(&self) -> NodeStyle {
-        self.effective_style_in(nana_ui_core::UI_METRICS)
+    /// Whether `id` carries middle child nodes (a content slot, an assembled
+    /// `after_label` copy row, or custom `.children(..)`).
+    pub(crate) fn has_body_children(&self, id: StableNodeId, world: &UiWorld) -> bool {
+        if self.slots.content.is_some() || self.copy_slot.is_some() {
+            return true;
+        }
+        let Some(node) = world.node(id) else {
+            return false;
+        };
+        node.children.iter().copied().any(|child| {
+            Some(child) != self.slots.leading
+                && Some(child) != self.slots.trailing
+                && !is_list_item_internal(world, child)
+        })
     }
 
-    fn effective_style_in(&self, metrics: nana_ui_core::ThemeMetrics) -> NodeStyle {
+    /// 行内子节点的对齐语义：无中间子节点时，有 trailing 槽则贴行尾（兼有
+    /// leading 时两端对齐），否则按 start 排；有中间子节点时一律从行首起排，
+    /// 由 trailing 自身的 inline-start auto margin 推向行尾。
+    #[cfg(test)]
+    fn effective_style(&self) -> NodeStyle {
+        self.effective_style_in(
+            nana_ui_core::UI_METRICS,
+            self.slots.content.is_some() || self.copy_slot.is_some(),
+        )
+    }
+
+    fn effective_style_in(&self, metrics: nana_ui_core::ThemeMetrics, has_body: bool) -> NodeStyle {
         let mut style = self.style.clone();
         if self.read_only {
             // Taking the pointer only for a tooltip, it still reads as text.
@@ -2304,7 +2371,7 @@ impl ListItem {
             .map(|padding| padding.resolve(metrics));
         let padded_y = style.control_padding_y.is_some();
         let layout = Arc::make_mut(&mut style.layout);
-        layout.justify_content = if self.visible_trailing().is_some() {
+        layout.justify_content = if self.visible_trailing().is_some() && !has_body {
             if self.slots.leading.is_some() {
                 nana_ui_core::JustifySpec::SpaceBetween
             } else {
@@ -2354,9 +2421,57 @@ impl ListItem {
 /// its slots on its first line.
 pub(crate) const LIST_ITEM_BAND_TAG: &str = "list-item-band";
 
+/// The tag of the middle row a [`ListItem`] assembles for [`ListItem::after_label`].
+pub(crate) const LIST_ITEM_COPY_TAG: &str = "list-item-copy";
+
 /// Whether `id` is a list row's band node.
 pub(crate) fn is_list_item_band(world: &UiWorld, id: StableNodeId) -> bool {
     world.element_tag(id) == Some(LIST_ITEM_BAND_TAG)
+}
+
+/// Whether `id` is an internal child node owned by a [`ListItem`] (a side
+/// band, an assembled `after_label` copy row, or a tooltip anchor).
+pub(crate) fn is_list_item_internal(world: &UiWorld, id: StableNodeId) -> bool {
+    matches!(
+        world.element_tag(id),
+        Some(LIST_ITEM_BAND_TAG | LIST_ITEM_COPY_TAG | crate::framework::TOOLTIP_ANCHOR_TAG)
+    )
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct ListItemCopy;
+
+impl ComponentView for ListItemCopy {
+    fn node_kind(&self) -> NodeKind {
+        NodeKind::Element {
+            tag: LIST_ITEM_COPY_TAG.into(),
+        }
+    }
+
+    fn project(&self, id: StableNodeId, world: &UiWorld, mutations: &mut MutationQueue) {
+        let style = Stack::row(0.0)
+            .grow(1.0)
+            .shrink(1.0)
+            .align(nana_ui_core::AlignSpec::Center)
+            .justify(nana_ui_core::JustifySpec::SpaceBetween)
+            .with_layout(|layout| {
+                layout.min_width = Some(nana_ui_core::LengthSpec::Px(0.0));
+                layout.gap = Some(nana_ui_core::LengthSpec::Px(nana_ui_core::space::MD));
+                layout.theme.gap = Some(crate::theme_intent::space(nana_ui_core::SpacingStep::Md));
+            })
+            .node_style();
+        project_common(
+            id,
+            world,
+            mutations,
+            &style,
+            InteractionState {
+                pointer_events: false,
+                focusable: false,
+            },
+            AccessibilityState::default(),
+        );
+    }
 }
 
 /// The band of `item` that holds `slot`: the row's own child between the
@@ -2371,48 +2486,13 @@ pub(crate) fn list_item_band(
         .then_some(band)
 }
 
-/// Whether `item`'s placed side slots sit in bands exactly when it puts them
-/// on its first line. A slot not placed under the row yet (a view's slot
-/// before it is assembled) is left for the placement that adopts it.
-fn list_item_bands_settled(world: &UiWorld, id: StableNodeId, item: &ListItem) -> bool {
-    let banded = item.bands_slots();
-    [item.slots.leading, item.slots.trailing]
-        .into_iter()
-        .flatten()
-        .all(|slot| match list_item_band(world, id, slot) {
-            Some(_) => banded,
-            None => world.parent_id(slot) != Some(id) || !banded,
-        })
-}
-
-/// Puts a row's side slots into their first-line bands or takes them out,
-/// when what the row says no longer matches its tree: after a build, a
-/// write or a binding changed `auto_height` or `trailing_align`.
-fn assemble_list_item_bands(
+/// Assembles a [`ListItem`]'s `after_label` copy row, first-line bands, child
+/// order and trailing tools.
+fn assemble_list_item(
     cx: &mut crate::AppContext,
     item: crate::Entity<ListItem>,
 ) -> Result<bool, crate::FrameworkError> {
-    let slots = cx.read(item, |row| {
-        (!list_item_bands_settled(cx.world(), item.stable_id(), row)).then_some(row.slots)
-    })?;
-    match slots {
-        Some(slots) => cx.set_list_item_slots(item, slots),
-        None => Ok(false),
-    }
-}
-
-/// A view builds a row's slots before the row, so their nodes join the world
-/// after its first projection: a first-line row's side slots go into their
-/// bands, and the tools are put away, once they have.
-fn assemble_list_item_slots(
-    cx: &mut crate::AppContext,
-    item: crate::Entity<ListItem>,
-) -> Result<bool, crate::FrameworkError> {
-    let placed = assemble_list_item_bands(cx, item)?;
-    if cx.read(item, |item| item.trailing_tools)? {
-        cx.reproject_component(item)?;
-    }
-    Ok(placed)
+    cx.assemble_list_item(item)
 }
 
 impl ComponentView for ListItem {
@@ -2421,8 +2501,8 @@ impl ComponentView for ListItem {
             crate::framework::routes::tools_row(hooks);
         }),
         activation: Some(crate::AppContext::activate_list_item),
-        slot_assembler: Some(assemble_list_item_slots),
-        assembler: Some(assemble_list_item_bands),
+        slot_assembler: Some(assemble_list_item),
+        assembler: Some(assemble_list_item),
         ..crate::TypeBehavior::NONE
     };
 
@@ -2442,14 +2522,12 @@ impl ComponentView for ListItem {
     fn project(&self, id: StableNodeId, world: &UiWorld, mutations: &mut MutationQueue) {
         // 行文本只承载 label；Foundation 发布 note 与 detail 的布局部件
         // （note 紧跟 label，detail 位于行尾），与 label 同行但不挤占
-        // 同一文本。挂了 content 槽的行由槽内容自绘，三者都不渲染。
-        let has_note = self.slots.content.is_none() && !self.note.is_empty();
-        let has_detail = self.slots.content.is_none() && !self.detail.is_empty();
-        let visible_label = if self.slots.content.is_none() {
-            self.label.as_str()
-        } else {
-            ""
-        };
+        // 同一文本。挂了 content、after_label 或自定义子节点时由子节点自绘。
+        let has_body = self.has_body_children(id, world);
+        let draws_parts = !has_body;
+        let has_note_part = draws_parts && !self.note.is_empty();
+        let has_detail_part = draws_parts && !self.detail.is_empty();
+        let visible_label = if draws_parts { self.label.as_str() } else { "" };
         if world.text(id) != Some(visible_label) {
             mutations.set_text(
                 id,
@@ -2460,21 +2538,22 @@ impl ComponentView for ListItem {
         }
         let visual = StandardVisual::ListItem {
             leading: self.slots.leading,
-            content: self.slots.content,
+            content: self.slots.content.or(self.copy_slot),
             trailing: self.visible_trailing(),
-            note: has_note.then(|| Arc::from(self.note.as_str())),
-            detail: has_detail.then(|| Arc::from(self.detail.as_str())),
+            note: has_note_part.then(|| Arc::from(self.note.as_str())),
+            detail: has_detail_part.then(|| Arc::from(self.detail.as_str())),
         };
         if world.standard_visual(id) != Some(visual.clone()) {
             mutations.set_standard_visual(id, Some(visual));
         }
         // A note that does not fit is not drawn, but it is still said.
+        let exposes_secondary = draws_parts || self.copy_slot.is_some();
         let mut accessible = self.label.clone();
-        if has_note {
+        if exposes_secondary && !self.note.is_empty() {
             accessible.push(' ');
             accessible.push_str(&self.note);
         }
-        if has_detail {
+        if exposes_secondary && !self.detail.is_empty() {
             accessible.push_str("  ");
             accessible.push_str(&self.detail);
         }
@@ -2482,7 +2561,7 @@ impl ComponentView for ListItem {
             id,
             world,
             mutations,
-            &self.effective_style_in(world.theme_metrics()),
+            &self.effective_style_in(world.theme_metrics(), has_body),
             InteractionState {
                 pointer_events: self.takes_pointer(),
                 focusable: self.interactive(),
@@ -2506,11 +2585,11 @@ impl ComponentView for ListItem {
                 ..AccessibilityState::default()
             },
         );
-        self.project_tools(world, mutations);
+        self.project_trailing(has_body, world, mutations);
         if self.bands_slots() {
             for (slot, trailing) in [(self.slots.leading, false), (self.slots.trailing, true)] {
                 if let Some(band) = slot.and_then(|slot| list_item_band(world, id, slot)) {
-                    self.project_band(band, trailing, world, mutations);
+                    self.project_band(band, trailing, has_body, world, mutations);
                 }
             }
         }

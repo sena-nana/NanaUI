@@ -795,7 +795,7 @@ impl UiWorld {
             .or_else(|| {
                 paint
                     .foreground
-                    .map(|role| self.theme_color(model, role))
+                    .map(|role| self.theme_color(model, self.effective_foreground_role(id, role)))
                     .or(inherited_color)
                     .or_else(|| Some(self.theme_color(model, foreground)))
             });
@@ -854,6 +854,50 @@ impl UiWorld {
             parent = self.record(id).hierarchy.parent;
         }
         None
+    }
+
+    /// A `Muted` child inside an interactive row whose current state names its
+    /// own [`crate::SemanticPaint::foreground_secondary`] (such as
+    /// [`crate::SemanticPaint::FOCUS_SURFACE`] on keyboard focus) follows that
+    /// secondary role until an intermediate box paints a surface or installs
+    /// colour overrides of its own.
+    fn effective_foreground_role(
+        &self,
+        id: StableNodeId,
+        role: SemanticColorRole,
+    ) -> SemanticColorRole {
+        if role != SemanticColorRole::Muted {
+            return role;
+        }
+        let own = &self.record(id).style;
+        let own_paint = self.semantic_paint(id, own);
+        if let Some(secondary) = own_paint.foreground_secondary {
+            return secondary;
+        }
+        if own.color_overrides.is_some()
+            || own.layout.background.is_some()
+            || own_paint.background.is_some()
+            || own_paint.background_mix.is_some()
+        {
+            return role;
+        }
+        let mut cursor = self.record(id).hierarchy.parent;
+        while let Some(anc) = cursor {
+            let local = &self.record(anc).style;
+            let paint = self.semantic_paint(anc, local);
+            if let Some(secondary) = paint.foreground_secondary {
+                return secondary;
+            }
+            if local.color_overrides.is_some()
+                || local.layout.background.is_some()
+                || paint.background.is_some()
+                || paint.background_mix.is_some()
+            {
+                break;
+            }
+            cursor = self.record(anc).hierarchy.parent;
+        }
+        role
     }
 }
 
@@ -998,7 +1042,11 @@ impl UiWorld {
             let mut work = ThemeWorkCounters::default();
             work.record_paint_invalidation(1);
             self.record_theme_work(work);
-            self.mark(id, DirtyMask::STYLE | DirtyMask::RENDER);
+            if self.record(id).hierarchy.children.is_empty() {
+                self.mark(id, DirtyMask::STYLE | DirtyMask::RENDER);
+            } else {
+                self.mark_subtree(id, DirtyMask::STYLE | DirtyMask::RENDER);
+            }
         }
     }
 }

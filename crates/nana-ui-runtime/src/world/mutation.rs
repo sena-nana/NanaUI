@@ -1527,6 +1527,7 @@ impl UiWorld {
                     stack.extend(snapshot.children.iter().rev().copied());
                     self.layout_results.remove(&id);
                     self.layout_results_suppressed.remove(&id);
+                    self.page_layout_results.get_mut().remove(&id);
                     self.forget_visual_presence(id);
                     self.scroll_content_bounds
                         .get_mut()
@@ -2507,7 +2508,11 @@ impl UiWorld {
                 if let Some(target) = target {
                     self.mark(*target, DirtyMask::STATE);
                     if !self.record(*target).style.interaction.focused.is_empty() {
-                        self.mark(*target, DirtyMask::STYLE | DirtyMask::RENDER);
+                        if self.record(*target).hierarchy.children.is_empty() {
+                            self.mark(*target, DirtyMask::STYLE | DirtyMask::RENDER);
+                        } else {
+                            self.mark_subtree(*target, DirtyMask::STYLE | DirtyMask::RENDER);
+                        }
                     }
                     self.mark_focus_changed(*target);
                 }

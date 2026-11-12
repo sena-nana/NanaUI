@@ -1,11 +1,13 @@
 //! AppContext lifecycle operations.
 
 use super::*;
+use crate::{NodeStyle, Stack, Text};
 
 impl AppContext {
-    /// Atomically attach and order a ListItem's typed slots. Every existing
-    /// slot must be named exactly once; arbitrary nested or duplicate slot
-    /// identities are rejected before retained state changes.
+    /// Atomically attach and order a ListItem's typed slots. Every named slot
+    /// must be unique and live in the row's document; arbitrary body children
+    /// added via `.children(..)` stay in order between the leading and trailing
+    /// slots.
     ///
     /// The content slot is the row's child. A side slot is too, unless the
     /// row puts its slots on its first line ([`crate::TrailingAlign`]): it
@@ -16,7 +18,259 @@ impl AppContext {
         item: Entity<ListItem>,
         slots: ListItemSlots,
     ) -> Result<bool, FrameworkError> {
-        let banded = self.read(item, ListItem::bands_slots)?;
+        self.sync_list_item_children(item, slots)
+    }
+
+    pub(crate) fn assemble_list_item(
+        &mut self,
+        item: Entity<ListItem>,
+    ) -> Result<bool, FrameworkError> {
+        let mut changed = self.assemble_list_item_copy(item)?;
+        let slots = self.read(item, |row| row.slots)?;
+        changed |= self.sync_list_item_children(item, slots)?;
+        if changed || self.read(item, |row| row.trailing_tools)? {
+            self.reproject_component(item)?;
+        }
+        Ok(changed)
+    }
+
+    fn assemble_list_item_copy(&mut self, item: Entity<ListItem>) -> Result<bool, FrameworkError> {
+        let document = self
+            .world
+            .node(item.id)
+            .ok_or(FrameworkError::MissingView(item.id))?
+            .document;
+        let (
+            after_label,
+            content,
+            label,
+            note,
+            detail,
+            copy_slot,
+            label_line_slot,
+            label_slot,
+            note_slot,
+            detail_slot,
+        ) = self.read(item, |row| {
+            (
+                row.after_label,
+                row.slots.content,
+                row.label.clone(),
+                row.note.clone(),
+                row.detail.clone(),
+                row.copy_slot,
+                row.label_line_slot,
+                row.label_slot,
+                row.note_slot,
+                row.detail_slot,
+            )
+        })?;
+        let live = |cx: &Self, id: Option<StableNodeId>| id.filter(|id| cx.world.contains(*id));
+        let mark = if content.is_none() {
+            live(self, after_label)
+        } else {
+            None
+        };
+        let Some(mark) = mark else {
+            let mut cleared = false;
+            if let Some(line) = live(self, label_line_slot) {
+                self.reconcile_children(line, &[])?;
+            }
+            if let Some(copy) = live(self, copy_slot) {
+                self.reconcile_children(copy, &[])?;
+                self.remove_view(
+                    Entity::<crate::view_components::ListItemCopy>::from_stable_id(copy),
+                )?;
+                cleared = true;
+            }
+            if let Some(line) = live(self, label_line_slot) {
+                self.remove_view(Entity::<Stack>::from_stable_id(line))?;
+            }
+            for slot in [label_slot, note_slot, detail_slot] {
+                if let Some(id) = live(self, slot) {
+                    self.remove_view(Entity::<Text>::from_stable_id(id))?;
+                }
+            }
+            if copy_slot.is_some()
+                || label_line_slot.is_some()
+                || label_slot.is_some()
+                || note_slot.is_some()
+                || detail_slot.is_some()
+            {
+                self.update_component(item, |row, _| {
+                    row.copy_slot = None;
+                    row.label_line_slot = None;
+                    row.label_slot = None;
+                    row.note_slot = None;
+                    row.detail_slot = None;
+                })?;
+                cleared = true;
+            }
+            return Ok(cleared);
+        };
+
+        let label_text_style = |hidden: bool| {
+            let mut style = NodeStyle::default();
+            style.text_vertical_alignment = crate::TextVerticalAlignment::Center;
+            let layout = Arc::make_mut(&mut style.layout);
+            layout.flex_shrink = Some(1.0);
+            layout.min_width = Some(LengthSpec::Px(0.0));
+            layout.white_space_nowrap = true;
+            layout.text_overflow_ellipsis = true;
+            layout.hidden = hidden;
+            style
+        };
+        let secondary_style = |hidden: bool, shrink: f32, extra_start_xxs: bool| {
+            let mut style = NodeStyle {
+                foreground: Some(nana_ui_core::SemanticColorRole::Muted),
+                type_role: Some(nana_ui_core::TypeRole::Meta),
+                type_weight: Some(nana_ui_core::TextWeight::Regular),
+                text_vertical_alignment: crate::TextVerticalAlignment::Center,
+                ..NodeStyle::default()
+            };
+            let layout = Arc::make_mut(&mut style.layout);
+            layout.flex_shrink = Some(shrink);
+            if shrink > 0.0 {
+                layout.min_width = Some(LengthSpec::Px(0.0));
+                layout.text_overflow_ellipsis = true;
+            }
+            layout.white_space_nowrap = true;
+            layout.hidden = hidden;
+            if extra_start_xxs {
+                layout.logical_margin.inline_start = Some(LengthSpec::Px(nana_ui_core::space::XXS));
+                layout.resolve_logical_box_edges();
+            }
+            style
+        };
+
+        let mut changed = false;
+        let label_id = match live(self, label_slot) {
+            Some(id) => {
+                self.update_component(Entity::<Text>::from_stable_id(id), |text, _| {
+                    let style = label_text_style(label.is_empty());
+                    if text.value != label || text.style != style {
+                        text.value = label.clone();
+                        text.style = style;
+                    }
+                })?;
+                id
+            }
+            None => {
+                changed = true;
+                self.create_detached_component(
+                    document,
+                    Text::new(label.clone())
+                        .decorative()
+                        .style(label_text_style(label.is_empty())),
+                )?
+                .stable_id()
+            }
+        };
+        let note_id = match (live(self, note_slot), !note.is_empty()) {
+            (Some(id), _) => {
+                self.update_component(Entity::<Text>::from_stable_id(id), |text, _| {
+                    let style = secondary_style(note.is_empty(), 2.0, true);
+                    if text.value != note || text.style != style {
+                        text.value = note.clone();
+                        text.style = style;
+                    }
+                })?;
+                Some(id)
+            }
+            (None, true) => {
+                changed = true;
+                Some(
+                    self.create_detached_component(
+                        document,
+                        Text::new(note.clone())
+                            .decorative()
+                            .style(secondary_style(false, 2.0, true)),
+                    )?
+                    .stable_id(),
+                )
+            }
+            (None, false) => None,
+        };
+        let detail_id = match (live(self, detail_slot), !detail.is_empty()) {
+            (Some(id), _) => {
+                self.update_component(Entity::<Text>::from_stable_id(id), |text, _| {
+                    let style = secondary_style(detail.is_empty(), 0.0, false);
+                    if text.value != detail || text.style != style {
+                        text.value = detail.clone();
+                        text.style = style;
+                    }
+                })?;
+                Some(id)
+            }
+            (None, true) => {
+                changed = true;
+                Some(
+                    self.create_detached_component(
+                        document,
+                        Text::new(detail.clone())
+                            .decorative()
+                            .style(secondary_style(false, 0.0, false)),
+                    )?
+                    .stable_id(),
+                )
+            }
+            (None, false) => None,
+        };
+        let line_id = match live(self, label_line_slot) {
+            Some(id) => id,
+            None => {
+                changed = true;
+                let line = Stack::row(0.0)
+                    .shrink(1.0)
+                    .align(nana_ui_core::AlignSpec::Center)
+                    .with_layout(|layout| {
+                        layout.min_width = Some(LengthSpec::Px(0.0));
+                        layout.gap = Some(LengthSpec::Px(nana_ui_core::space::XS));
+                        layout.theme.gap =
+                            Some(crate::theme_intent::space(nana_ui_core::SpacingStep::Xs));
+                    });
+                self.create_detached_component(document, line)?.stable_id()
+            }
+        };
+        let copy_id = match live(self, copy_slot) {
+            Some(id) => id,
+            None => {
+                changed = true;
+                self.create_detached_component(document, crate::view_components::ListItemCopy)?
+                    .stable_id()
+            }
+        };
+        let line_children: Vec<_> = std::iter::once(label_id)
+            .chain(note_id)
+            .chain(std::iter::once(mark))
+            .collect();
+        changed |= self.reconcile_children(line_id, &line_children)?;
+        let copy_children: Vec<_> = std::iter::once(line_id).chain(detail_id).collect();
+        changed |= self.reconcile_children(copy_id, &copy_children)?;
+        if copy_slot != Some(copy_id)
+            || label_line_slot != Some(line_id)
+            || label_slot != Some(label_id)
+            || note_slot != note_id
+            || detail_slot != detail_id
+        {
+            self.update_component(item, |row, _| {
+                row.copy_slot = Some(copy_id);
+                row.label_line_slot = Some(line_id);
+                row.label_slot = Some(label_id);
+                row.note_slot = note_id;
+                row.detail_slot = detail_id;
+            })?;
+            changed = true;
+        }
+        Ok(changed)
+    }
+
+    fn sync_list_item_children(
+        &mut self,
+        item: Entity<ListItem>,
+        slots: ListItemSlots,
+    ) -> Result<bool, FrameworkError> {
+        let (banded, copy_slot) = self.read(item, |row| (row.bands_slots(), row.copy_slot))?;
         let ordered = [slots.leading, slots.content, slots.trailing]
             .into_iter()
             .flatten()
@@ -36,25 +290,22 @@ impl AppContext {
             item: item.id,
             slot: Some(slot),
         };
-        // The row's children are its slots and the bands holding its side
-        // slots; everything they hold must be named again.
         let mut bands = Vec::new();
+        let mut extra_body = Vec::new();
+        let mut tooltip_anchors = Vec::new();
         for &child in &item_node.children {
-            if unique.contains(&child) {
+            if unique.contains(&child) || Some(child) == copy_slot {
                 continue;
             }
-            if !crate::view_components::is_list_item_band(&self.world, child) {
-                return Err(invalid(child));
+            if crate::view_components::is_list_item_band(&self.world, child) {
+                bands.push(child);
+                continue;
             }
-            if let Some(&unnamed) = self
-                .world
-                .child_ids(child)
-                .iter()
-                .find(|slot| !unique.contains(slot))
-            {
-                return Err(invalid(unnamed));
+            if self.world.element_tag(child) == Some(TOOLTIP_ANCHOR_TAG) {
+                tooltip_anchors.push(child);
+                continue;
             }
-            bands.push(child);
+            extra_body.push(child);
         }
         for &slot in &ordered {
             let Some(node) = self.world.node(slot) else {
@@ -86,11 +337,20 @@ impl AppContext {
         };
         let leading = side(slots.leading);
         let trailing = side(slots.trailing);
-        let children = [leading, slots.content.map(|slot| (slot, None)), trailing]
-            .into_iter()
-            .flatten()
-            .map(|(slot, band)| band.unwrap_or(slot))
-            .collect::<Vec<_>>();
+        let middle = slots.content.or(copy_slot);
+        let has_body = middle.is_some() || !extra_body.is_empty();
+        let mut children = Vec::new();
+        if let Some((slot, band)) = leading {
+            children.push(band.unwrap_or(slot));
+        }
+        if let Some(middle) = middle {
+            children.push(middle);
+        }
+        children.extend(extra_body.iter().copied());
+        if let Some((slot, band)) = trailing {
+            children.push(band.unwrap_or(slot));
+        }
+        children.extend(tooltip_anchors);
         let held = [leading, trailing]
             .into_iter()
             .flatten()
@@ -101,11 +361,25 @@ impl AppContext {
             .copied()
             .filter(|band| !children.contains(band))
             .collect::<Vec<_>>();
+        let auto_margin_target = if has_body && !banded {
+            slots.trailing.filter(|&trailing| {
+                self.world.node_style(trailing).is_none_or(|style| {
+                    style.layout.logical_margin.inline_start.is_none()
+                        && style.layout.margin_left.is_none()
+                })
+            })
+        } else {
+            None
+        };
         let changed = item_node.children != children
             || held
                 .iter()
                 .any(|&(band, slot)| self.world.child_ids(band) != [slot])
-            || self.read(item, |item| item.slots != slots)?;
+            || self.read(item, |row| {
+                row.slots != slots
+                    || (auto_margin_target.is_some()
+                        && row.trailing_auto_margin != auto_margin_target)
+            })?;
         if !changed {
             return Ok(false);
         }
@@ -113,13 +387,22 @@ impl AppContext {
         let mut looks = MutationQueue::new();
         self.read(item, |row| {
             for &(band, slot) in &held {
-                row.project_band(band, Some(slot) == slots.trailing, &self.world, &mut looks);
+                row.project_band(
+                    band,
+                    Some(slot) == slots.trailing,
+                    has_body,
+                    &self.world,
+                    &mut looks,
+                );
             }
         })?;
         let item_id = item.id;
         let document = item_node.document;
-        self.update_component(item, |item, cx| {
-            item.slots = slots;
+        self.update_component(item, |row, cx| {
+            row.slots = slots;
+            if auto_margin_target.is_some() {
+                row.trailing_auto_margin = auto_margin_target;
+            }
             let mutations = cx.mutations();
             for &band in &created {
                 mutations.create(

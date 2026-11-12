@@ -91,19 +91,20 @@ settings_group(Some("外观".into()), vec![
 
 `.control(view)` 把控件放在文案后面。控件自己有非空名字时用它自己的，例如 `switch("静音")`；名字是空的，例如 `switch("")`、分段、滑块、下拉，就用行标签。装配通过 `set_labelled_by` 关联两者。行标签改了，控件的无障碍节点跟着重新投影。
 
-## 标签旁的附件
+## 标签后的徽标与附件
 
-`.label_accessory(view)` 把一个小东西放在标签后面、和标签同一行，例如状态胶囊：「水印去除 [尚未购买]」。
+`.label_mark(view)` 把类别徽标紧贴在标签文字后面，排在 `Help` 问号按钮和 `.label_accessory(view)` 之前；`.label_accessory(view)` 把状态胶囊或行内动作放在问号后面、和标签同一行，例如状态胶囊：「水印去除 [尚未购买]」。
 
 ```rust
 settings_row("水印去除")
+    .label_mark(dlc_seal())
     .label_accessory(status_badge("尚未购买"))
     .control(button("购买"))
 ```
 
-附件紧跟在标签后面，隔一个 `space::XS`，和标签上下居中。行变窄时标签先让：它收窄并省略，附件保持自己的宽度。横排和上下排都一样。行的无障碍名字还是标签，附件按它自己的内容读。
+徽标、问号、附件都在同一条标签行上，彼此隔一个 `space::XS`，和标签上下居中。行变窄时标签先让：它收窄并省略，徽标与附件保持自己的宽度。横排和上下排都一样。行的无障碍名字还是标签，徽标与附件按各自的内容读。
 
-没有附件的行和以前一样：标签直接在文案里，不多一层节点。附件只在有的时候才给标签套一条行。附件的根换成 `when(..)` 就能随状态显隐；手工建的行把 `label_accessory` 写成 `None` 再 `assemble_settings_row`，标签回到文案里，那条行一起拿掉。
+没有徽标、问号和附件的行和以前一样：标签直接在文案里，不多一层节点。只在有其中任一项时才给标签套一条行。根换成 `when(..)` 就能随状态显隐；手工建的行把 `label_mark` / `label_accessory` 写成 `None` 再 `assemble_settings_row`，标签回到文案里，那条行一起拿掉。
 
 ## 标签列（检查器排法）
 
@@ -174,6 +175,7 @@ if let Some(row) = row.get() {
 | `.first_in_group` | — | 标出组的一端 |
 | `.last_in_group` | — | 标出组的一端 |
 | `.loose` | — | 加大间距 |
+| `label_mark` | — | 紧贴标签文字后的类别徽标（排在问号与 `label_accessory` 之前）。视图里用 `.label_mark(view)` 插槽 |
 | `label_accessory` | — | 标签后面同一行的附件。视图里用 `.label_accessory(view)` 插槽 |
 
 ## 事件
@@ -187,7 +189,8 @@ if let Some(row) = row.get() {
 | 插槽 | 说明 |
 | --- | --- |
 | `.control` | 把控件放在文案后面。`mount_settings_leaf_row` 保留标签、提示和控件槽 |
-| `.label_accessory` | 放在标签后面、同一行。标签先省略，附件保持宽度 |
+| `.label_mark` | 紧贴在标签文字后面、问号与附件之前。标签先省略，徽标保持宽度 |
+| `.label_accessory` | 放在标签与问号后面、同一行。标签先省略，附件保持宽度 |
 
 ## 方法
 

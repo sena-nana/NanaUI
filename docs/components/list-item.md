@@ -106,17 +106,27 @@ widget(ListItem::new("模型").tools_rest(RowToolsRest::Reserve))
 | `on_activate`，模板 `@activate` | 不接收参数 | 类型是 `Activate`。函数直接传入；表达式包成 `.on_activate(move \|\| { … })`。`disabled` 为真时不发 |
 | `.on_cx`，模板里三个参数的 `on:Activate` | `&Activate` 和 `ViewContext` | 需要 `ViewContext` 时 |
 
-## 插槽
+## 插槽与自由子节点
 
-三个槽是这一行自己的子节点，顺序是 leading、content、trailing。`.leading(…)` 放在标签前，`.content(…)` 代替标签，`.trailing(…)` 放在标签后。模板里写成 `<template #leading>`、`#content`、`#trailing`。挂了 content 之后，`detail` 不再占行尾。
+行不限制中间放什么业务组件：可以用具名槽，也可以直接 `.children(…)` 往行里塞任意组件。顺序始终是前导（`leading`）、内容或标签区、其余 `.children(…)` 子节点、尾随（`trailing` / `tools`）：主体内容从内边距起向行尾排，尾随槽固定贴在行尾。
+
+- `.leading(…)` 放在行首标签前。
+- `.after_label(…)` 把徽标或标记紧跟在主文本（及非空 `note`）后面，同时保留主文本省略优先级、行尾右对齐的 `detail` 与完整无障碍名（`label + note + detail`）。
+- `.content(…)` 代替内置标签区；挂了之后 `note`、`detail` 和 `after_label` 不再绘制。
+- `.children(…)` 可自由放入任意业务子节点，按声明顺序排在前导与尾随之间。
+- `.trailing(…)` 固定贴在行尾。
+
+键盘聚焦（`FOCUS_SURFACE`）把整行填成聚焦底色时，直接放在行上的 `Muted` 次要文字或图标会跟随行的 `foreground_secondary` 切到 `focus_text`，保持可读对比度；若子节点所在的中间容器自己画了背景或装了 `theme_colors` 覆盖（如自带底色的徽标牌），则保留该容器自己的配色。
 
 前导槽或尾随槽里的子节点隐藏（`hidden`，或 `display: none`）时，这一行按没有这个槽来排：前导槽隐藏后，标签从内边距起排，尾随槽仍在行尾；再显示时恢复原来的排法，不必重建这一行。
 
 | 插槽 | 说明 |
 | --- | --- |
 | `#leading` / `.leading` | 放在标签前 |
-| `#content` / `.content` | 代替标签。挂了之后，`detail` 不再占行尾 |
-| `#trailing` / `.trailing` | 放在标签后 |
+| `.after_label` | 紧跟在主文本（与 `note`）后面，同时保留 `detail` 与完整无障碍名 |
+| `#content` / `.content` | 代替内置标签区。挂了之后，`note`、`detail` 与 `after_label` 不再占位置 |
+| `.children` | 自由组合任意业务组件，按顺序排在前导与尾随之间 |
+| `#trailing` / `.trailing` | 固定贴在行尾 |
 | `.tools` | 占 trailing 的位置，悬停或焦点在行内时显出，见上面的行内工具 |
 
 

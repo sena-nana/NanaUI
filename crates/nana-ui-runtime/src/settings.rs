@@ -108,8 +108,13 @@ pub struct SettingsRow {
     /// only ever covers the edge below.
     pub(crate) rule_above: bool,
     pub control: Option<StableNodeId>,
-    /// The application's node after the label, on the label's line: a status
-    /// pill, a badge. It keeps its width; the label gives way and elides.
+    /// The application's mark right after the label, before a help button or
+    /// [`Self::label_accessory`]: a category seal. It keeps its width; the
+    /// label gives way and elides.
+    pub label_mark: Option<StableNodeId>,
+    /// The application's node after the label (and any help button), on the
+    /// label's line: a status pill, a badge. It keeps its width; the label
+    /// gives way and elides.
     pub label_accessory: Option<StableNodeId>,
     /// Lay the row out as an inspector's: the label in a column this many
     /// logical pixels wide, the control growing from the column's edge and
@@ -188,6 +193,7 @@ impl SettingsRow {
             last_in_group: false,
             rule_above: false,
             control: None,
+            label_mark: None,
             label_accessory: None,
             label_column: None,
             label_colors: None,
@@ -313,8 +319,16 @@ impl SettingsRow {
         self
     }
 
-    /// Put `accessory` right after the label, on its line. Assembled by
+    /// Put `mark` immediately after the label, before a help button or
+    /// [`Self::label_accessory`]. Assembled by
     /// [`AppContext::assemble_settings_row`], like the control.
+    pub fn label_mark(mut self, mark: StableNodeId) -> Self {
+        self.label_mark = Some(mark);
+        self
+    }
+
+    /// Put `accessory` after the label (and any help button), on its line.
+    /// Assembled by [`AppContext::assemble_settings_row`], like the control.
     pub fn label_accessory(mut self, accessory: StableNodeId) -> Self {
         self.label_accessory = Some(accessory);
         self
@@ -541,6 +555,7 @@ impl ComponentView for SettingsRow {
             || self.hint_slot.is_some()
             || self.control.is_some()
             || self.copy_slot.is_some()
+            || self.label_mark.is_some()
             || self.label_accessory.is_some();
         let has_children = world.node(id).is_some_and(|node| !node.children.is_empty());
         let visible_label = if has_slots || has_children {
@@ -3368,8 +3383,13 @@ impl AppContext {
             )
         })?;
         let (label, hint, hint_is_path, control, label_slot, mut hint_slot, copy_slot) = snapshot;
-        let (accessory, line_slot, flash_slot) = self.read(row, |row| {
-            (row.label_accessory, row.label_line_slot, row.flash_slot)
+        let (mark, accessory, line_slot, flash_slot) = self.read(row, |row| {
+            (
+                row.label_mark,
+                row.label_accessory,
+                row.label_line_slot,
+                row.flash_slot,
+            )
         })?;
         let (error, error_shown, wants_notice) = self.read(row, |row| {
             (
@@ -3565,9 +3585,13 @@ impl AppContext {
             changed = true;
         }
         let copy = Entity::<SettingsRowCopy>::from_stable_id(copy_slot);
+        let mark = live(self, mark);
         let accessory = live(self, accessory);
         let live_line = live(self, line_slot);
-        let line = match (accessory.is_some() || help.is_some(), live_line) {
+        let line = match (
+            mark.is_some() || accessory.is_some() || help.is_some(),
+            live_line,
+        ) {
             (true, Some(line)) => Some(line),
             (true, None) => Some(
                 self.create_detached_component(document, SettingsRowLabelLine)?
@@ -3578,6 +3602,7 @@ impl AppContext {
         let line_changed = line != line_slot;
         if let Some(line) = line {
             let on_line: Vec<_> = std::iter::once(label_slot)
+                .chain(mark)
                 .chain(help)
                 .chain(accessory)
                 .collect();

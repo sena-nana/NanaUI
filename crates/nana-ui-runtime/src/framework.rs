@@ -25,7 +25,7 @@ pub(crate) mod routes;
 mod roving_focus;
 pub(crate) use hooks::{ChoiceHooks, DockHooks, NavigateHooks, WorkspaceHooks, hooked, route, via};
 pub use hooks::{NodePointer, NodePointerHooks, NodeWheel, TypeBehavior, TypeHooks};
-pub(crate) use lifecycle::lifecycle_hooks;
+pub(crate) use lifecycle::{TOOLTIP_ANCHOR_TAG, lifecycle_hooks};
 pub(crate) use text_edit::Editable;
 pub use text_edit::EditableHooks;
 mod scroll;

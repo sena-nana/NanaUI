@@ -91,19 +91,20 @@ Which rows are the ends depends on which rows are shown at the moment. Put the r
 
 `.control(view)` puts the control after the copy. When the control has a non-empty name of its own, such as `switch("Mute")`, that name is used; when the name is empty, such as `switch("")`, segmented controls, sliders, and dropdowns, the row label is used. Assembly links the two through `set_labelled_by`. When the row label changes, the control's accessibility node is projected again.
 
-## Label accessory
+## Label mark and accessory
 
-`.label_accessory(view)` puts a small item after the label on the same line, such as a status pill: "Watermark removal [Not purchased]".
+`.label_mark(view)` places a category mark immediately after the label text, before the `Help` button and `.label_accessory(view)`; `.label_accessory(view)` puts a status pill or inline action after the help button on the same line, such as "Watermark removal [Not purchased]".
 
 ```rust
 settings_row("Watermark removal")
+    .label_mark(dlc_seal())
     .label_accessory(status_badge("Not purchased"))
     .control(button("Buy"))
 ```
 
-The accessory follows the label directly, separated by one `space::XS`, and is vertically centered with the label. When the row narrows, the label yields first: it narrows and elides, while the accessory keeps its own width. This holds for both horizontal and stacked arrangements. The row's accessible name is still the label; the accessory is read by its own content.
+The mark, help button, and accessory share the label line, separated by `space::XS` and vertically centered with the label. When the row narrows, the label yields first: it narrows and elides, while the mark and accessory keep their own widths. This holds for both horizontal and stacked arrangements. The row's accessible name is still the label; the mark and accessory are read by their own content.
 
-A row without an accessory is the same as before: the label sits directly in the copy, with no extra node layer. Only when there is an accessory does the label get wrapped in a row. Make the accessory's root a `when(..)` to show and hide it with state; for a hand-built row, set `label_accessory` to `None` and then call `assemble_settings_row`, and the label goes back into the copy and the wrapping row is removed along with it.
+A row with no mark, help button, or accessory is the same as before: the label sits directly in the copy, with no extra node layer. Only when at least one is present does the label get wrapped in a row. Make a slot's root a `when(..)` to show and hide it with state; for a hand-built row, set `label_mark` / `label_accessory` to `None` and then call `assemble_settings_row`, and the label goes back into the copy and the wrapping row is removed along with it.
 
 ## Label column (inspector layout)
 
@@ -174,6 +175,7 @@ If settings use a separate `WorkspaceController`, it does not override the main 
 | `.first_in_group` | — | Marks one end of the group |
 | `.last_in_group` | — | Marks one end of the group |
 | `.loose` | — | Increases spacing |
+| `label_mark` | — | Category mark right after the label text (before the help button and `label_accessory`). In views use the `.label_mark(view)` slot |
 | `label_accessory` | — | Accessory on the same line after the label. In views use the `.label_accessory(view)` slot |
 
 ## Events
@@ -187,7 +189,8 @@ If settings use a separate `WorkspaceController`, it does not override the main 
 | Slot | Description |
 | --- | --- |
 | `.control` | Puts the control after the copy. `mount_settings_leaf_row` keeps the label, hint, and control slot |
-| `.label_accessory` | Goes after the label on the same line. The label elides first; the accessory keeps its width |
+| `.label_mark` | Goes right after the label text, before the help button and accessory. The label elides first; the mark keeps its width |
+| `.label_accessory` | Goes after the label and help button on the same line. The label elides first; the accessory keeps its width |
 
 ## Methods
 

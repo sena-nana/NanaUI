@@ -1209,6 +1209,13 @@ impl<K> El<ListItem, K> {
         })
     }
 
+    /// Immediately after the label (and `note`), before `detail` and
+    /// `trailing`: a category seal, a badge or an inline control. The label
+    /// elides first; `detail` and `trailing` keep their places at the end.
+    pub fn after_label(self, view: impl super::IntoView) -> Self {
+        self.slot(view, ListItem::after_label)
+    }
+
     /// After the label (a count, a shortcut, a control). On a first-line row
     /// it sits in the first line's band, which the row keeps in step with
     /// its alignment; see [`crate::TrailingAlign`].

@@ -2032,7 +2032,10 @@ impl UiWorld {
     }
 
     pub(crate) fn clear_layout_results_subtree(&mut self, root: StableNodeId) {
-        if self.layout_results.is_empty() && self.layout_results_suppressed.is_empty() {
+        if self.layout_results.is_empty()
+            && self.layout_results_suppressed.is_empty()
+            && self.page_layout_results.get_mut().is_empty()
+        {
             // Nothing published yet, so nothing to clear below `root`.
             return;
         }
@@ -2045,6 +2048,7 @@ impl UiWorld {
                 .unwrap_or_default();
             self.layout_results.remove(&id);
             self.layout_results_suppressed.remove(&id);
+            self.page_layout_results.get_mut().remove(&id);
             stack.extend(children.iter().copied());
         }
     }
@@ -2100,6 +2104,7 @@ impl UiWorld {
                 ResultChainWalk::Clear => {
                     self.layout_results.remove(&node);
                     self.layout_results_suppressed.remove(&node);
+                    self.page_layout_results.get_mut().remove(&node);
                 }
                 ResultChainWalk::Suppress => self.suppress_layout_result(node),
             }
@@ -2364,6 +2369,7 @@ impl UiWorld {
             if boxless.contains(&id) {
                 self.layout_results.remove(&id);
                 self.layout_results_suppressed.remove(&id);
+                self.page_layout_results.get_mut().remove(&id);
                 continue;
             }
             if first_publish {
@@ -5858,7 +5864,11 @@ impl UiWorld {
         self.remove_ime(old);
         self.mark(old, DirtyMask::STATE);
         if !self.record(old).style.interaction.focused.is_empty() {
-            self.mark(old, DirtyMask::STYLE | DirtyMask::RENDER);
+            if self.record(old).hierarchy.children.is_empty() {
+                self.mark(old, DirtyMask::STYLE | DirtyMask::RENDER);
+            } else {
+                self.mark_subtree(old, DirtyMask::STYLE | DirtyMask::RENDER);
+            }
         }
         self.mark_focus_changed(old);
     }

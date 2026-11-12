@@ -106,17 +106,27 @@ The event is `on_activate`, of type `Activate`. The handler takes no arguments.
 | `on_activate`, template `@activate` | No arguments | Type is `Activate`. Pass a function directly; an expression is wrapped as `.on_activate(move \|\| { … })`. Not emitted when `disabled` is true |
 | `.on_cx`, template three-argument `on:Activate` | `&Activate` and `ViewContext` | When you need `ViewContext` |
 
-## Slots
+## Slots and unrestricted children
 
-The three slots are the row's own child nodes, in the order leading, content, trailing. `.leading(…)` goes before the label, `.content(…)` replaces the label, and `.trailing(…)` goes after the label. In a template they are `<template #leading>`, `#content`, and `#trailing`. Once content is attached, `detail` no longer occupies the row end.
+A row does not restrict what components an application places inside it: use the named slots or pass arbitrary views directly to `.children(…)`. Children always lay out in the order leading (`leading`), content or label copy, any extra `.children(…)` nodes, and trailing (`trailing` / `tools`): body children pack from the inline start while the trailing slot stays pinned to the inline end.
+
+- `.leading(…)` goes before the label at the row start.
+- `.after_label(…)` places a seal or mark immediately after the main text (and non-empty `note`), while preserving main-text ellipsis priority, the right-aligned `detail`, and the full accessible name (`label + note + detail`).
+- `.content(…)` replaces the built-in label copy; once attached, `note`, `detail`, and `after_label` are not drawn.
+- `.children(…)` freely composes arbitrary application views in declaration order between leading and trailing.
+- `.trailing(…)` stays pinned to the row end.
+
+When keyboard focus (`FOCUS_SURFACE`) fills the row with `focus_surface`, `Muted` secondary text or icons placed on the row follow the row's `foreground_secondary` onto `focus_text` so they stay readable; descendants inside an intermediate container that paints its own background or installs `theme_colors` overrides (such as a tinted seal plate) keep that container's own colors.
 
 When the child node in the leading or trailing slot is hidden (`hidden`, or `display: none`), the row lays out as if that slot did not exist: with the leading slot hidden, the label starts at the padding, and the trailing slot stays at the row end. When it is shown again, the original layout returns without rebuilding the row.
 
 | Slot | Description |
 | --- | --- |
 | `#leading` / `.leading` | Goes before the label |
-| `#content` / `.content` | Replaces the label. Once attached, `detail` no longer occupies the row end |
-| `#trailing` / `.trailing` | Goes after the label |
+| `.after_label` | Follows the main text (and `note`) directly while keeping `detail` and the full accessible name |
+| `#content` / `.content` | Replaces the built-in label copy. Once attached, `note`, `detail`, and `after_label` take no space |
+| `.children` | Freely composes arbitrary application views in order between leading and trailing |
+| `#trailing` / `.trailing` | Stays pinned to the row end |
 | `.tools` | Takes the trailing position; shows on hover or when focus is inside the row. See Inline tools above |
 
 
