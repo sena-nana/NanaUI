@@ -669,7 +669,10 @@ impl GalleryState {
                 self.menu_confirmation.clear();
                 self.popover_open = false;
             }
-            GalleryMessage::BackFromSettings => self.settings_open = false,
+            GalleryMessage::BackFromSettings => {
+                self.settings_open = false;
+                self.settings_runtime = None;
+            }
             GalleryMessage::SelectSettingsTab(tab) => {
                 self.settings.select(&self.settings_model, &tab);
             }
@@ -1147,6 +1150,15 @@ impl GalleryApp {
         let previous_commands = self.state.dock_window_commands.len();
         self.state.update(message);
         let window_commands = self.state.dock_window_commands[previous_commands..].to_vec();
+        const MAX_DOCK_HISTORY: usize = 256;
+        if self.state.dock_window_commands.len() > MAX_DOCK_HISTORY {
+            let excess = self.state.dock_window_commands.len() - MAX_DOCK_HISTORY;
+            self.state.dock_window_commands.drain(..excess);
+        }
+        if self.state.dock_events.len() > MAX_DOCK_HISTORY {
+            let excess = self.state.dock_events.len() - MAX_DOCK_HISTORY;
+            self.state.dock_events.drain(..excess);
+        }
         self.sync_dock_windows();
         self.sync_loading_deadline();
         RuntimeProgramUpdate {

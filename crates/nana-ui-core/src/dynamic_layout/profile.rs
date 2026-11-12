@@ -156,6 +156,20 @@ impl AdaptationProfile {
         }
     }
 
+    /// Shared default [`Self::control`] profile so controls do not allocate per instance.
+    pub fn shared_control() -> crate::shared::Shared<Self> {
+        static CONTROL: std::sync::LazyLock<crate::shared::Shared<AdaptationProfile>> =
+            std::sync::LazyLock::new(|| crate::shared::Shared::from(AdaptationProfile::control()));
+        CONTROL.clone()
+    }
+
+    /// Shared default [`Self::strip`] profile so strips do not allocate per instance.
+    pub fn shared_strip() -> crate::shared::Shared<Self> {
+        static STRIP: std::sync::LazyLock<crate::shared::Shared<AdaptationProfile>> =
+            std::sync::LazyLock::new(|| crate::shared::Shared::from(AdaptationProfile::strip()));
+        STRIP.clone()
+    }
+
     /// What this box declares along an axis.
     pub fn axis(&self, inline: bool) -> &AxisElasticity {
         if inline { &self.inline } else { &self.block }
@@ -276,3 +290,5 @@ mod tests {
         assert!(lower_box(&AxisElasticity::NONE, (16.0, 16.0), 8.0, 3, 6.0, 1).is_rigid());
     }
 }
+
+crate::shared::shared_default!(AdaptationProfile);

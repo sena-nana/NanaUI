@@ -136,7 +136,7 @@ impl DynamicLine<'_> {
         retained: Option<&'p DocumentLayoutCache>,
         commit: bool,
     ) -> Option<DynamicLine<'p>> {
-        let profile = style.adaptation?;
+        let profile = *style.adaptation.as_deref()?;
         (solves(&profile) && single_line && !writing.is_vertical()).then_some(DynamicLine {
             container,
             profile,
@@ -255,7 +255,7 @@ impl DynamicPass {
         retained: Option<&DocumentLayoutCache>,
     ) -> Option<EnvelopeParts> {
         let style = nodes.style(id)?;
-        let profile = style.adaptation?;
+        let profile = *style.adaptation.as_deref()?;
         let fonts = fonts_of(style.as_ref(), parent_font_px);
         let padding = style.resolved_padding_against_fonts(Some(containing_inline), fonts);
         let (start, end) = if inline {

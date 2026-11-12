@@ -106,6 +106,29 @@ pub fn register_host_font_face_styled(
     .unwrap_or(0)
 }
 
+#[cfg(feature = "gpu")]
+pub(crate) fn register_host_font_face_blob(
+    family: &str,
+    blob: nana_text::font::FontBlob,
+    weight: Option<u16>,
+    weight_end: Option<u16>,
+    style: Option<HostFontStyle>,
+) -> usize {
+    let family = family.trim();
+    let len = (*blob).as_ref().len() as u64;
+    if family.is_empty() || len == 0 || len > FONT_FACE_MAX_BYTES {
+        return 0;
+    }
+    crate::text_engine::register_face_blob(
+        family,
+        blob,
+        weight,
+        weight_end,
+        style.map(HostFontStyle::to_font_style),
+    )
+    .unwrap_or(0)
+}
+
 /// Bind `@font-face` `local("Family")` to faces already registered.
 ///
 /// Matches family names and PostScript names, ASCII case-insensitively. Does

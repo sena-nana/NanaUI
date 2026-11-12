@@ -12,10 +12,13 @@
 //! anything it fails on goes to [`SwashGlyphRasterizer`], which also owns the
 //! face table both backends share.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
+use std::ffi::c_void;
 use std::mem::ManuallyDrop;
+use std::sync::atomic::{AtomicU32, Ordering};
 
-use nana_text::font::{AxisCoord, FontInstanceKey};
+use nana_text::font::{AxisCoord, FontBlob, FontInstanceKey};
+use windows::Win32::Foundation::{E_NOINTERFACE, E_POINTER, S_OK};
 use windows::Win32::Graphics::DirectWrite::{
     DWRITE_FACTORY_TYPE_SHARED, DWRITE_FONT_AXIS_TAG, DWRITE_FONT_AXIS_VALUE,
     DWRITE_FONT_FACE_TYPE_BITMAP, DWRITE_FONT_FACE_TYPE_UNKNOWN, DWRITE_FONT_FILE_TYPE,
@@ -33,7 +36,7 @@ use windows::Win32::UI::WindowsAndMessaging::{
     FE_FONTSMOOTHINGCLEARTYPE, SPI_GETFONTSMOOTHING, SPI_GETFONTSMOOTHINGTYPE,
     SYSTEM_PARAMETERS_INFO_UPDATE_FLAGS, SystemParametersInfoW,
 };
-use windows::core::{BOOL, Interface};
+use windows::core::{BOOL, GUID, HRESULT, IUnknown, IUnknown_Vtbl, Interface};
 
 use super::SubpixelOrder;
 use super::gamma::TextContrast;
@@ -53,16 +56,101 @@ pub(super) struct DWriteGlyphRasterizer {
     dwrite: Option<DWrite>,
 }
 
+#[repr(C)]
+struct FontBlobOwner {
+    vtbl: *const IUnknown_Vtbl,
+    refs: AtomicU32,
+    _blob: FontBlob,
+}
+
+impl FontBlobOwner {
+    const VTBL: IUnknown_Vtbl = IUnknown_Vtbl {
+        QueryInterface: Self::query_interface,
+        AddRef: Self::add_ref,
+        Release: Self::release,
+    };
+
+    fn into_unknown(blob: FontBlob) -> IUnknown {
+        let raw = Box::into_raw(Box::new(Self {
+            vtbl: &Self::VTBL,
+            refs: AtomicU32::new(1),
+            _blob: blob,
+        }));
+        // SAFETY: `FontBlobOwner` begins with a valid `IUnknown_Vtbl` pointer
+        // and transfers its initial reference count of 1 to `IUnknown`.
+        unsafe { IUnknown::from_raw(raw.cast()) }
+    }
+
+    unsafe extern "system" fn query_interface(
+        this: *mut c_void,
+        iid: *const GUID,
+        interface: *mut *mut c_void,
+    ) -> HRESULT {
+        if interface.is_null() || iid.is_null() {
+            return E_POINTER;
+        }
+        // SAFETY: `iid` and `interface` were checked non-null above; `this`
+        // points to a live `FontBlobOwner`.
+        unsafe {
+            if *iid == IUnknown::IID {
+                let owner = &*(this as *const Self);
+                owner.refs.fetch_add(1, Ordering::Relaxed);
+                *interface = this;
+                S_OK
+            } else {
+                *interface = std::ptr::null_mut();
+                E_NOINTERFACE
+            }
+        }
+    }
+
+    unsafe extern "system" fn add_ref(this: *mut c_void) -> u32 {
+        // SAFETY: `this` is a live `FontBlobOwner` COM pointer.
+        let owner = unsafe { &*(this as *const Self) };
+        owner.refs.fetch_add(1, Ordering::Relaxed) + 1
+    }
+
+    unsafe extern "system" fn release(this: *mut c_void) -> u32 {
+        // SAFETY: `this` is a live `FontBlobOwner` COM pointer with at least
+        // one outstanding reference.
+        let owner = unsafe { &*(this as *const Self) };
+        let prev = owner.refs.fetch_sub(1, Ordering::Release);
+        if prev == 1 {
+            std::sync::atomic::fence(Ordering::Acquire);
+            // SAFETY: last reference dropped; reclaim the boxed owner.
+            drop(unsafe { Box::from_raw(this as *mut Self) });
+            0
+        } else {
+            prev - 1
+        }
+    }
+}
+
 struct DWrite {
     factory: IDWriteFactory5,
     loader: IDWriteInMemoryFontFileLoader,
     params: IDWriteRenderingParams,
-    /// One in-memory file per face, so the bytes are copied to DirectWrite
-    /// once however many instances of the face are drawn.
-    files: HashMap<nana_text::FontId, Option<IDWriteFontFile>>,
+    /// One zero-copy `IDWriteFontFile` per backing `FontBlob` slice `(ptr, len)`,
+    /// pinned via [`FontBlobOwner`] so DirectWrite reads `nana-text`'s buffer
+    /// directly without copying `.ttc`/`.ttf` files onto the private heap.
+    files: HashMap<(usize, usize), Option<IDWriteFontFile>>,
+    face_files: HashMap<GlyphFontId, (usize, usize)>,
     /// A face instance DirectWrite can draw, or `None` for one it cannot, so
     /// that is asked once.
     faces: HashMap<(GlyphFontId, GlyphVariationId, GlyphSynthesis), Option<IDWriteFontFace>>,
+}
+
+impl Drop for DWrite {
+    fn drop(&mut self) {
+        self.faces.clear();
+        self.files.clear();
+        self.face_files.clear();
+        // SAFETY: unregister our loader from the shared factory after dropping
+        // every font face and file built through it.
+        unsafe {
+            let _ = self.factory.UnregisterFontFileLoader(&self.loader);
+        }
+    }
 }
 
 impl DWriteGlyphRasterizer {
@@ -86,17 +174,26 @@ impl DWriteGlyphRasterizer {
     }
 
     /// See [`SwashGlyphRasterizer::begin_frame`]. The DirectWrite faces
-    /// built for the evicted ids go with them.
+    /// built for evicted variations or unregistered fonts go with them.
     pub(super) fn begin_frame(&mut self) -> Vec<GlyphVariationId> {
         let evicted = self.swash.begin_frame();
-        if !evicted.is_empty()
+        let retired_fonts = self.swash.take_retired_faces();
+        if (!evicted.is_empty() || !retired_fonts.is_empty())
             && let Some(dwrite) = self.dwrite.as_mut()
         {
-            let gone: std::collections::HashSet<GlyphVariationId> =
-                evicted.iter().copied().collect();
-            dwrite
-                .faces
-                .retain(|(_, variation, _), _| !gone.contains(variation));
+            let gone_vars: HashSet<GlyphVariationId> = evicted.iter().copied().collect();
+            let gone_fonts: HashSet<GlyphFontId> = retired_fonts.iter().copied().collect();
+            dwrite.faces.retain(|(font, variation, _), _| {
+                !gone_vars.contains(variation) && !gone_fonts.contains(font)
+            });
+            if !gone_fonts.is_empty() {
+                for font in &gone_fonts {
+                    dwrite.face_files.remove(font);
+                }
+                let live_files: HashSet<(usize, usize)> =
+                    dwrite.face_files.values().copied().collect();
+                dwrite.files.retain(|key, _| live_files.contains(key));
+            }
         }
         evicted
     }
@@ -140,6 +237,7 @@ impl DWrite {
                 loader,
                 params,
                 files: HashMap::new(),
+                face_files: HashMap::new(),
                 faces: HashMap::new(),
             })
         }
@@ -308,26 +406,33 @@ impl DWrite {
         coords: &[AxisCoord],
         synthesis: GlyphSynthesis,
     ) -> Option<IDWriteFontFace> {
-        let (id, data) = swash.face_data(font)?;
+        let (_id, data) = swash.face_data(font)?;
+        let bytes = data.bytes();
+        let file_key = (bytes.as_ptr() as usize, bytes.len());
         let Self {
             factory,
             loader,
             files,
+            face_files,
             ..
         } = self;
+        face_files.insert(font, file_key);
         let file = files
-            .entry(id)
+            .entry(file_key)
             .or_insert_with(|| {
-                let bytes = data.bytes();
-                // SAFETY: with no owner object the loader copies the bytes, so
-                // nothing here has to outlive the call.
+                let len = u32::try_from(bytes.len()).ok()?;
+                let owner = FontBlobOwner::into_unknown(data.blob());
+                // SAFETY: `owner` holds a clone of `FontBlob`, keeping `bytes`
+                // valid and immovable until DirectWrite releases its last
+                // reference to `owner` — so DirectWrite reads the blob in place
+                // without copying `.ttc`/`.ttf` bytes onto the heap.
                 unsafe {
                     loader
                         .CreateInMemoryFontFileReference(
                             &*factory,
                             bytes.as_ptr().cast(),
-                            u32::try_from(bytes.len()).ok()?,
-                            None,
+                            len,
+                            Some(&owner),
                         )
                         .ok()
                 }

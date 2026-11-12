@@ -3424,7 +3424,7 @@ pub struct LayoutStyle {
     pub theme: crate::shared::Shared<crate::theme::ThemeLayout>,
     /// Explicit authoring-space colors retained alongside compatibility RGBA fields.
     #[serde(default)]
-    pub paint_colors: crate::style_model::PaintColorSlots,
+    pub paint_colors: crate::shared::Shared<crate::style_model::PaintColorSlots>,
     /// Isolate descendant layout invalidation when both authored dimensions
     /// are fixed pixels and the box is in normal flow. Other boxes retain
     /// normal dependency propagation.
@@ -3573,7 +3573,7 @@ pub struct LayoutStyle {
     /// solves overflow by compressing its children's (Issue #207). `None`
     /// declares nothing and solves nothing.
     #[serde(default)]
-    pub adaptation: Option<crate::dynamic_layout::AdaptationProfile>,
+    pub adaptation: Option<crate::shared::Shared<crate::dynamic_layout::AdaptationProfile>>,
     pub overflow_x: OverflowSpec,
     pub overflow_y: OverflowSpec,
     /// `text-overflow: ellipsis`（需配合 nowrap / 定宽；Scene text 路径兑现）。
@@ -3709,10 +3709,10 @@ pub struct LayoutStyle {
     pub grid_auto_flow: Option<GridAutoFlow>,
     /// `repeat(auto-fit|auto-fill, …)` 列模式；布局按容器展开。
     #[serde(default)]
-    pub grid_columns_repeat: Option<GridRepeatAuto>,
+    pub grid_columns_repeat: Option<crate::shared::Shared<GridRepeatAuto>>,
     /// 同行模式，针对 `grid-template-rows`。
     #[serde(default)]
-    pub grid_rows_repeat: Option<GridRepeatAuto>,
+    pub grid_rows_repeat: Option<crate::shared::Shared<GridRepeatAuto>>,
     /// `grid-template-columns: subgrid`：布局时继承父网格所跨列轨几何。
     /// 不是轨列表；没有父轨时该轴按 `none` 处理，不假装成 `auto`。
     #[serde(default)]
@@ -4686,7 +4686,7 @@ impl LayoutStyle {
         // foreground. A child with an explicit legacy `color` must suppress
         // the parent's metadata as well, otherwise scene extraction would
         // prefer the inherited OKLCH/HSV value over the child's declaration.
-        if inherit_paint_color {
+        if inherit_paint_color && parent.paint_colors.color.is_some() {
             self.paint_colors.color = parent.paint_colors.color;
         }
         if self.text_decoration.is_none() {
@@ -6303,7 +6303,8 @@ mod tests {
                     alpha: 1.0,
                 }),
                 ..Default::default()
-            },
+            }
+            .into(),
             ..LayoutStyle::default()
         };
         let mut child = LayoutStyle::default();
@@ -6542,4 +6543,4 @@ mod tests {
     }
 }
 
-crate::shared::shared_default!(PaintStyle, LogicalEdges, GridPlacement);
+crate::shared::shared_default!(PaintStyle, LogicalEdges, GridPlacement, GridRepeatAuto);

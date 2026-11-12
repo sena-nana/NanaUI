@@ -3376,13 +3376,13 @@ fn set_grid_template_axis(
     if columns {
         layout.grid_columns = tracks;
         layout.grid_columns_unsupported = unsupported;
-        layout.grid_columns_repeat = repeat;
+        layout.grid_columns_repeat = repeat.map(Into::into);
         layout.grid_columns_subgrid = false;
         layout.grid_column_line_names = names;
     } else {
         layout.grid_rows = tracks;
         layout.grid_rows_unsupported = unsupported;
-        layout.grid_rows_repeat = repeat;
+        layout.grid_rows_repeat = repeat.map(Into::into);
         layout.grid_rows_subgrid = false;
         layout.grid_row_line_names = names;
     }

@@ -203,6 +203,8 @@ mod icu {
     }
 
     impl Cache {
+        const MAX_ENTRIES: usize = 32;
+
         /// The entry for `key` in `map`, built by `build` on a miss.
         fn get<'a, K: std::hash::Hash + Eq, V>(
             counts: &mut FormatterCounts,
@@ -211,6 +213,9 @@ mod icu {
             build: impl FnOnce() -> Option<V>,
         ) -> Option<&'a V> {
             use std::collections::hash_map::Entry;
+            if !map.contains_key(&key) && map.len() >= Self::MAX_ENTRIES {
+                map.clear();
+            }
             match map.entry(key) {
                 Entry::Occupied(entry) => {
                     counts.hits += 1;

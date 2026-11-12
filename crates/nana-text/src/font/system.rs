@@ -1289,6 +1289,9 @@ impl FontSystem {
                     }
                 }
                 if let Some(ch) = memo {
+                    if self.scanned.len() >= 4096 {
+                        self.scanned.clear();
+                    }
                     self.scanned.insert(ch, found);
                 }
                 found

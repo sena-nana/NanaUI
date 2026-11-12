@@ -333,7 +333,7 @@ impl EntryStore {
         &mut self,
         id: u32,
         epoch: u64,
-        mut rect: impl FnMut(GlyphAtlasEntryId) -> Option<([u32; 2], [u32; 2])>,
+        mut rect: impl FnMut(GlyphAtlasEntryId) -> Option<super::atlas::AtlasEntry>,
     ) -> bool {
         let Some(entry) = self.entries.get_mut(id as usize).and_then(Option::as_mut) else {
             return false;
@@ -342,16 +342,34 @@ impl EntryStore {
         let live = entry.glyphs as usize;
         entry.atlas_epoch = epoch;
         let mut intact = true;
+        let mut seg_idx = 0usize;
         for offset in 0..live {
+            while seg_idx + 1 < entry.segments.len()
+                && offset as u32 >= entry.segments[seg_idx].first + entry.segments[seg_idx].count
+            {
+                seg_idx += 1;
+            }
             if self.instances[start + offset].is_solid() {
                 // Samples nothing, so nothing the atlas did moved it.
                 continue;
             }
             let handle = self.handles[start + offset];
             match rect(handle) {
-                Some((origin, size)) => {
-                    self.instances[start + offset] =
-                        self.instances[start + offset].with_placement(origin, size);
+                Some(placed) => {
+                    let page_ok = entry.segments.get(seg_idx).is_some_and(|seg| {
+                        let expected = match placed.kind {
+                            super::atlas::AtlasPageKind::Mask => seg.mask_page,
+                            super::atlas::AtlasPageKind::Color => seg.color_page,
+                        };
+                        placed.page == expected
+                    });
+                    if page_ok {
+                        self.instances[start + offset] = self.instances[start + offset]
+                            .with_placement(placed.origin, placed.size);
+                    } else {
+                        self.instances[start + offset] = self.instances[start + offset].vacated();
+                        intact = false;
+                    }
                 }
                 None => {
                     self.instances[start + offset] = self.instances[start + offset].vacated();

@@ -95,7 +95,8 @@ fn authoring_paint_metadata_follows_inheritance_priority() {
                 paint_colors: nana_ui_core::PaintColorSlots {
                     color: Some(authoring),
                     ..Default::default()
-                },
+                }
+                .into(),
                 ..Default::default()
             }),
             ..Default::default()
@@ -173,4 +174,53 @@ fn paired_style_control_produces_identical_resolved_values() {
         );
     }
     assert_eq!(outputs[0], outputs[1]);
+}
+
+#[test]
+fn plain_subtrees_share_computed_styles_when_sibling_visuals_or_overlays_exist() {
+    let mut ctx = crate::AppContext::new();
+    let document = DocumentId::new(1).unwrap();
+    let root = ctx
+        .create_component(document, crate::Stack::column(0.0))
+        .unwrap();
+    let button = ctx
+        .create_detached_component(document, crate::Button::new("Action"))
+        .unwrap();
+    ctx.append_child(root, button).unwrap();
+    let overlay_host = ctx
+        .create_detached_component(document, crate::OverlayHost::new())
+        .unwrap();
+    ctx.append_child(root, overlay_host).unwrap();
+
+    let branch = ctx
+        .create_detached_component(document, crate::Stack::column(0.0))
+        .unwrap();
+    ctx.append_child(root, branch).unwrap();
+    let leaf = ctx
+        .create_detached_component(document, crate::Text::new("shared"))
+        .unwrap();
+    ctx.append_child(branch, leaf).unwrap();
+
+    let mut shaper = crate::world::reflow_oracle::bundled_face_shaper();
+    crate::world::reflow_oracle::product_frame(
+        &mut ctx,
+        document,
+        crate::LayoutViewport::new(640.0, 480.0),
+        &mut shaper,
+    );
+
+    assert!(
+        Arc::ptr_eq(
+            &ctx.world().record(root.stable_id()).resolved.0,
+            &ctx.world().record(branch.stable_id()).resolved.0,
+        ),
+        "plain Stack must share parent's Arc<ComputedStyle> even with Button + OverlayHost in the world"
+    );
+    assert!(
+        Arc::ptr_eq(
+            &ctx.world().record(branch.stable_id()).resolved.0,
+            &ctx.world().record(leaf.stable_id()).resolved.0,
+        ),
+        "plain Text must share parent's Arc<ComputedStyle> even with Button + OverlayHost in the world"
+    );
 }

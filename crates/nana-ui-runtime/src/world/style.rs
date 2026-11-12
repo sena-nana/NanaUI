@@ -18,10 +18,11 @@ impl UiWorld {
         let Some(parent) = parent else {
             return Ok(false);
         };
-        if !self.layout_length_tracks.is_empty()
-            || !self.overlay_host_nodes.is_empty()
-            || self.nodes.has_visuals()
-            || !self.presentation.is_empty()
+        if self.layout_length_tracks.contains_key(&id)
+            || !self.overlay_branch_active(id)
+            || !self.menu_branch_open(id)
+            || self.nodes.visual(id).is_some()
+            || (!self.presentation.is_empty() && !self.font_axis_overlay(id).is_empty())
             || self.hover_transitions.contains_key(&id)
         {
             return Ok(false);
@@ -61,6 +62,7 @@ impl UiWorld {
             || self.nodes.text_scale(id).is_some()
             || self.responsive.follows(id)
             || self.localized_text(id).is_some()
+            || self.locale_direction(id).is_some()
         {
             return Ok(false);
         }
@@ -196,8 +198,12 @@ impl UiWorld {
                 ))
             }
         });
-        let next = ComputedStyle {
-            paint_colors: nana_ui_core::PaintColorSlots {
+        let paint_colors = if layout.paint_colors.is_shared_default()
+            && inherited.paint_colors.is_shared_default()
+        {
+            nana_ui_core::shared::Shared::default()
+        } else {
+            let slots = nana_ui_core::PaintColorSlots {
                 color: layout.paint_colors.color.or_else(|| {
                     (!color_override)
                         .then_some(inherited.paint_colors.color)
@@ -228,7 +234,15 @@ impl UiWorld {
                         .then_some(inherited.paint_colors.selection_color)
                         .flatten()
                 }),
-            },
+            };
+            if slots == nana_ui_core::PaintColorSlots::default() {
+                nana_ui_core::shared::Shared::default()
+            } else {
+                slots.into()
+            }
+        };
+        let next = ComputedStyle {
+            paint_colors,
             foreground,
             color,
             background,
@@ -1416,7 +1430,7 @@ impl UiWorld {
 mod sharing_tests;
 
 /// How many recent node styles a world keeps to share.
-const RECENT_STYLES: usize = 8;
+const RECENT_STYLES: usize = 32;
 
 /// Node styles written recently, so nodes whose styles are equal hold one
 /// `Arc` instead of a copy each in their record. Only a style with the very
@@ -1525,7 +1539,7 @@ fn same_style_on_one_layout(kept: &NodeStyle, style: &NodeStyle) -> bool {
 
 /// How many recent layouts a world keeps to share. Siblings built alike
 /// (list rows, toolbars) repeat within a few writes.
-const RECENT_LAYOUTS: usize = 8;
+const RECENT_LAYOUTS: usize = 32;
 
 /// Layouts written recently, so nodes and resolutions whose layouts are
 /// equal share one allocation instead of one each. Comparing is cheap: the
@@ -1555,17 +1569,19 @@ impl LayoutInterner {
 /// Whether `style` sets a property children do not inherit: a background,
 /// a border or an outline color.
 fn carries_non_inherited_paint(style: &ComputedStyle) -> bool {
-    let slots = &style.paint_colors;
     style.background.is_some()
         || style.border_color.is_some()
         || style.ring_color.is_some()
-        || slots.background.is_some()
-        || slots.border.is_some()
-        || slots.border_top.is_some()
-        || slots.border_right.is_some()
-        || slots.border_bottom.is_some()
-        || slots.border_left.is_some()
-        || slots.outline.is_some()
+        || (!style.paint_colors.is_shared_default() && {
+            let slots = &style.paint_colors;
+            slots.background.is_some()
+                || slots.border.is_some()
+                || slots.border_top.is_some()
+                || slots.border_right.is_some()
+                || slots.border_bottom.is_some()
+                || slots.border_left.is_some()
+                || slots.outline.is_some()
+        })
 }
 
 impl UiWorld {

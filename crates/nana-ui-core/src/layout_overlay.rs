@@ -116,7 +116,7 @@ overlay! {
     }
     nested {
         theme: shared ThemeLayout,
-        paint_colors: plain PaintColorSlots,
+        paint_colors: shared PaintColorSlots,
         logical_padding: shared LogicalEdges,
         logical_margin: shared LogicalEdges,
         logical_inset: shared LogicalEdges,

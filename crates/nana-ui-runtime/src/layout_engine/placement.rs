@@ -639,7 +639,8 @@ fn replay_child_list_edit(
     if plan
         .style
         .adaptation
-        .is_some_and(|profile| super::dynamic::solves(&profile))
+        .as_deref()
+        .is_some_and(super::dynamic::solves)
     {
         return Ok(None);
     }
@@ -2450,7 +2451,8 @@ fn lay_out_children(
     // takes from its items follows it.
     let mut main_dependent = style
         .adaptation
-        .is_some_and(|profile| super::dynamic::solves(&profile));
+        .as_deref()
+        .is_some_and(super::dynamic::solves);
     // Each child's measured size by id, for the plan: a container with few
     // children finds it in `flow` itself; only a long flow is worth a table.
     let plan_intrinsics: Option<HashMap<StableNodeId, Size>> =

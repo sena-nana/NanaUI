@@ -5,10 +5,12 @@
 //! Local, packaged (`nana://res/`) and `data:` only: remote srcs never reach
 //! the network.
 
-use std::collections::HashSet;
-use std::sync::{Mutex, OnceLock};
+use std::collections::{HashMap, HashSet};
+use std::sync::{Arc, Mutex, OnceLock, Weak};
 
-use crate::nana_text::{HostFontStyle, register_host_font_face_styled};
+use nana_text::font::{FontBlob, font_blob};
+
+use crate::nana_text::{HostFontStyle, register_host_font_face_blob};
 use crate::scene_paint::{resolve_background_image_url, resolved_resource_is_allowed};
 
 const FONT_FACE_MAX_BYTES: usize = 8 * 1024 * 1024;
@@ -41,9 +43,15 @@ struct LoadedFaceKey {
 }
 
 static LOADED_FONT_FACES: OnceLock<Mutex<HashSet<LoadedFaceKey>>> = OnceLock::new();
+type WeakFontBlob = Weak<dyn AsRef<[u8]> + Send + Sync>;
+static LOADED_FONT_BLOBS: OnceLock<Mutex<HashMap<String, WeakFontBlob>>> = OnceLock::new();
 
 fn loaded_faces() -> &'static Mutex<HashSet<LoadedFaceKey>> {
     LOADED_FONT_FACES.get_or_init(|| Mutex::new(HashSet::new()))
+}
+
+fn loaded_blobs() -> &'static Mutex<HashMap<String, WeakFontBlob>> {
+    LOADED_FONT_BLOBS.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
 fn src_key(resolved: &str) -> String {
@@ -101,8 +109,9 @@ fn ingest_one(spec: &HostFontFaceSpec) -> bool {
         if !resolved_resource_is_allowed(url, &resolved) {
             continue;
         }
+        let src = src_key(&resolved);
         let key = LoadedFaceKey {
-            src: src_key(&resolved),
+            src: src.clone(),
             family: family.to_owned(),
             weight: spec.weight,
             weight_end: spec.weight_end,
@@ -111,11 +120,10 @@ fn ingest_one(spec: &HostFontFaceSpec) -> bool {
         if already_loaded(&key) {
             return true;
         }
-        let Some(bytes) = load_font_src_bytes(&resolved) else {
+        let Some(blob) = load_or_reuse_font_blob(&src, &resolved) else {
             continue;
         };
-        if register_host_font_face_styled(family, bytes, spec.weight, spec.weight_end, spec.style)
-            == 0
+        if register_host_font_face_blob(family, blob, spec.weight, spec.weight_end, spec.style) == 0
         {
             continue;
         }
@@ -123,6 +131,26 @@ fn ingest_one(spec: &HostFontFaceSpec) -> bool {
         return true;
     }
     false
+}
+
+fn load_or_reuse_font_blob(src_key: &str, resolved: &str) -> Option<FontBlob> {
+    if let Ok(guard) = loaded_blobs().lock()
+        && let Some(existing) = guard.get(src_key).and_then(Weak::upgrade)
+    {
+        return Some(existing);
+    }
+    let bytes = load_font_src_bytes(resolved)?;
+    let blob = font_blob(bytes);
+    if let Ok(mut guard) = loaded_blobs().lock() {
+        if let Some(existing) = guard.get(src_key).and_then(Weak::upgrade) {
+            return Some(existing);
+        }
+        if guard.len() >= 64 {
+            guard.retain(|_, weak| weak.strong_count() > 0);
+        }
+        guard.insert(src_key.to_owned(), Arc::downgrade(&blob));
+    }
+    Some(blob)
 }
 
 fn load_font_src_bytes(resolved: &str) -> Option<Vec<u8>> {
@@ -289,6 +317,7 @@ mod tests {
 
         let engine = crate::text_engine::nana_text_engine();
         let mut engine = crate::text_engine::lock_engine(&engine);
+        let mut backing_ptrs = Vec::new();
         for family in ["NanaIngestSharedSrcA", "NanaIngestSharedSrcB"] {
             let style = nana_text::TextStyle {
                 font_family: Some(std::sync::Arc::from(family)),
@@ -302,14 +331,22 @@ mod tests {
                 &nana_text::TextConstraints::default(),
                 &mut nana_text::TextWorkCounters::default(),
             );
-            assert!(
-                layout
-                    .runs
-                    .iter()
-                    .filter_map(|run| engine.fonts().describe(run.font))
-                    .any(|face| face.families.iter().any(|f| &**f == family)),
-                "{family} shapes with its own registration"
-            );
+            let run = layout
+                .runs
+                .iter()
+                .find(|run| {
+                    engine
+                        .fonts()
+                        .describe(run.font)
+                        .is_some_and(|face| face.families.iter().any(|f| &**f == family))
+                })
+                .unwrap_or_else(|| panic!("{family} shapes with its own registration"));
+            let data = engine.fonts().face_data(run.font).expect("face data");
+            backing_ptrs.push((data.bytes().as_ptr(), data.bytes().len()));
         }
+        assert_eq!(
+            backing_ptrs[0], backing_ptrs[1],
+            "multiple @font-face rules over one src must share a single FontBlob allocation"
+        );
     }
 }

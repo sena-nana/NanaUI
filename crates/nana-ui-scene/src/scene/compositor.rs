@@ -654,6 +654,17 @@ impl UiScene {
         self.compositor.pending.remove(&id);
         self.compositor.phases.remove(&id);
         self.compositor.requested.remove(&id);
+        let factor_cache = self
+            .layer_factor_cache
+            .get_mut()
+            .expect("scene compositor factors");
+        if !factor_cache.is_empty() {
+            if self.compositor.layers.is_empty() {
+                factor_cache.clear();
+            } else {
+                factor_cache.remove(&id);
+            }
+        }
     }
 
     pub(super) fn invalidate_compositor_cache(&mut self, id: StableNodeId) {

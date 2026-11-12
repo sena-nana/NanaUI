@@ -58,6 +58,7 @@ fn icon_layout_key() -> u64 {
 /// half texel.
 const CELL_GUTTER: u32 = 1;
 const INITIAL_VERTICES: usize = 256;
+const SHRINK_IDLE_FRAMES: u32 = 120;
 
 /// Vertex order of one icon quad, shared by [`IconPipeline::prepare`] and
 /// [`IconPipeline::repack`] so the two cannot disagree about which corner a
@@ -274,6 +275,8 @@ pub(super) struct IconPipeline {
     /// Set when even a maximal atlas could not hold this frame's glyphs, so
     /// the remaining misses fail straight away instead of repacking per icon.
     exhausted: bool,
+    shrink_frames: u32,
+    vertex_shrink_frames: u32,
 }
 
 /// The icon program for targets of `format`: the only part of
@@ -506,6 +509,8 @@ impl IconPipeline {
             entries: HashMap::new(),
             frame_keys: HashSet::new(),
             exhausted: false,
+            shrink_frames: 0,
+            vertex_shrink_frames: 0,
         }
     }
 
@@ -618,7 +623,20 @@ impl IconPipeline {
         queue: &wgpu::Queue,
         work: Option<&crate::gpu_work::GpuWorkSink>,
     ) {
+        self.maybe_shrink_atlas(device, queue, work);
         if self.pending_vertices.is_empty() {
+            if self.vertex_capacity > INITIAL_VERTICES {
+                self.vertex_shrink_frames = self.vertex_shrink_frames.saturating_add(1);
+                if self.vertex_shrink_frames >= SHRINK_IDLE_FRAMES {
+                    self.replace_vertex_buffer(device, INITIAL_VERTICES, work);
+                    self.uploaded_vertices.shrink_to(INITIAL_VERTICES);
+                    self.pending_vertices.shrink_to(INITIAL_VERTICES);
+                    self.frame_slots.shrink_to(INITIAL_VERTICES / 6);
+                    self.vertex_shrink_frames = 0;
+                }
+            } else {
+                self.vertex_shrink_frames = 0;
+            }
             return;
         }
         let globals = (self.physical_size, self.corner_exponent);
@@ -636,30 +654,24 @@ impl IconPipeline {
             }
             self.uploaded_globals = Some(globals);
         }
-        if self.pending_vertices.len() > self.vertex_capacity {
-            self.uploaded_vertices.clear();
-            if let Some(work) = work {
-                work.record_realloc();
+        let fit_vertices = self
+            .pending_vertices
+            .len()
+            .max(INITIAL_VERTICES)
+            .next_power_of_two();
+        if fit_vertices * 4 <= self.vertex_capacity {
+            self.vertex_shrink_frames = self.vertex_shrink_frames.saturating_add(1);
+            if self.vertex_shrink_frames >= SHRINK_IDLE_FRAMES {
+                self.replace_vertex_buffer(device, fit_vertices, work);
+                self.uploaded_vertices.shrink_to(fit_vertices);
+                self.pending_vertices.shrink_to(fit_vertices);
+                self.vertex_shrink_frames = 0;
             }
-            self.vertex_capacity = self.pending_vertices.len().next_power_of_two();
-            let size = (self.vertex_capacity * std::mem::size_of::<IconVertex>()) as u64;
-            let usage = wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST;
-            if let Some(work) = work {
-                work.replace_buffer(
-                    device,
-                    &mut self.vertices,
-                    size,
-                    usage,
-                    "nana-ui.scene.icon.vertices",
-                );
-            } else {
-                self.vertices = ManagedBuffer::new(device.create_buffer(&wgpu::BufferDescriptor {
-                    label: Some("nana-ui.scene.icon.vertices"),
-                    size,
-                    usage,
-                    mapped_at_creation: false,
-                }))
-            };
+        } else {
+            self.vertex_shrink_frames = 0;
+            if self.pending_vertices.len() > self.vertex_capacity {
+                self.replace_vertex_buffer(device, fit_vertices, work);
+            }
         }
         super::buffer_upload::upload_changed_with_work(
             queue,
@@ -669,6 +681,83 @@ impl IconPipeline {
             work,
         );
         self.uploaded_vertices.clone_from(&self.pending_vertices);
+    }
+
+    fn replace_vertex_buffer(
+        &mut self,
+        device: &wgpu::Device,
+        capacity: usize,
+        work: Option<&crate::gpu_work::GpuWorkSink>,
+    ) {
+        self.uploaded_vertices.clear();
+        self.vertex_capacity = capacity;
+        let size = (self.vertex_capacity * std::mem::size_of::<IconVertex>()) as u64;
+        let usage = wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST;
+        if let Some(work) = work {
+            work.record_realloc();
+            work.replace_buffer(
+                device,
+                &mut self.vertices,
+                size,
+                usage,
+                "nana-ui.scene.icon.vertices",
+            );
+        } else {
+            self.vertices = ManagedBuffer::new(device.create_buffer(&wgpu::BufferDescriptor {
+                label: Some("nana-ui.scene.icon.vertices"),
+                size,
+                usage,
+                mapped_at_creation: false,
+            }));
+        }
+    }
+
+    fn maybe_shrink_atlas(
+        &mut self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        work: Option<&crate::gpu_work::GpuWorkSink>,
+    ) {
+        if self.frame_keys.is_empty() {
+            if self.atlas.is_some() {
+                self.shrink_frames = self.shrink_frames.saturating_add(1);
+                if self.shrink_frames >= SHRINK_IDLE_FRAMES {
+                    self.atlas = None;
+                    self.entries.clear();
+                    self.entries.shrink_to_fit();
+                    self.shrink_frames = 0;
+                }
+            } else {
+                self.shrink_frames = 0;
+            }
+            return;
+        }
+        let Some(atlas) = &self.atlas else {
+            self.shrink_frames = 0;
+            return;
+        };
+        if atlas.edge <= ATLAS_START_PX {
+            self.shrink_frames = 0;
+            return;
+        }
+        let needed: u64 = self
+            .frame_keys
+            .iter()
+            .map(|key| {
+                let cell = (key.px + CELL_GUTTER * 2) as u64;
+                cell * cell
+            })
+            .sum();
+        let cap = u64::from(atlas.edge) * u64::from(atlas.edge);
+        if needed.saturating_mul(8) <= cap {
+            self.shrink_frames = self.shrink_frames.saturating_add(1);
+            if self.shrink_frames >= SHRINK_IDLE_FRAMES {
+                self.shrink_frames = 0;
+                let _ = self.repack_with_extra(device, queue, None, work);
+            }
+        } else {
+            self.shrink_frames = 0;
+        }
     }
 
     /// Whether `next` can extend a run that starts at `first` and holds
@@ -820,7 +909,17 @@ impl IconPipeline {
         extra: (AtlasKey, Icon, &[u8]),
         work: Option<&crate::gpu_work::GpuWorkSink>,
     ) -> bool {
-        let (extra_key, extra_icon, extra_rgba) = extra;
+        self.repack_with_extra(device, queue, Some(extra), work)
+    }
+
+    fn repack_with_extra(
+        &mut self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        extra: Option<(AtlasKey, Icon, &[u8])>,
+        work: Option<&crate::gpu_work::GpuWorkSink>,
+    ) -> bool {
+        self.shrink_frames = 0;
         // `frame_keys` gains the caller's key only after `prepare` has placed
         // it, so the glyph that triggered this repack arrives as `extra`.
         let mut keep: Vec<(AtlasKey, Icon)> = self
@@ -828,7 +927,9 @@ impl IconPipeline {
             .iter()
             .filter_map(|key| Some((*key, self.entries.get(key)?.icon)))
             .collect();
-        keep.push((extra_key, extra_icon));
+        if let Some((extra_key, extra_icon, _)) = extra {
+            keep.push((extra_key, extra_icon));
+        }
         // Biggest cells first: a shelf is only reused by its own size, so
         // placing large cells while the sheet is empty avoids stranding them.
         // The glyph order behind that is `frame_keys` iteration order, which
@@ -848,11 +949,7 @@ impl IconPipeline {
             })
             .sum();
         let max_edge = MAX_ATLAS_EDGE.min(device.limits().max_texture_dimension_2d);
-        let current = self
-            .atlas
-            .as_ref()
-            .map_or(ATLAS_START_PX, |atlas| atlas.edge);
-        let mut edge = current.max(ATLAS_START_PX).min(max_edge);
+        let mut edge = ATLAS_START_PX.min(max_edge);
         while (edge as u64) * (edge as u64) < needed * 2 && edge < max_edge {
             edge = (edge * 2).min(max_edge);
         }
@@ -888,7 +985,9 @@ impl IconPipeline {
                 continue;
             };
             let cell = [entry.origin[0] - CELL_GUTTER, entry.origin[1] - CELL_GUTTER];
-            if *key == extra_key {
+            if let Some((extra_key, _, extra_rgba)) = extra
+                && *key == extra_key
+            {
                 self.write_cell(queue, cell, key.px, extra_rgba, work);
                 continue;
             }
@@ -1288,6 +1387,62 @@ mod tests {
             );
         }
     }
+
+    #[test]
+    fn oversized_and_idle_icon_sheets_shrink_back_down() {
+        let (device, queue) = crate::scene_paint::tests::test_device();
+        let mut pipeline = IconPipeline::new(&device, wgpu::TextureFormat::Rgba8Unorm);
+        const PX: u32 = 128;
+        let rgba = vec![255u8; (PX * PX * 4) as usize];
+        let glyph = Icon::Close;
+        let key = |icon: usize| AtlasKey { icon, px: PX };
+
+        pipeline.begin_frame([64; 2]);
+        for icon in 0..16 {
+            assert!(pipeline.insert(&device, &queue, key(icon), PX, glyph, &rgba));
+            pipeline.frame_keys.insert(key(icon));
+        }
+        let peak_edge = pipeline.atlas.as_ref().unwrap().edge;
+        assert!(
+            peak_edge >= 1024,
+            "peak edge should grow to >= 1024, got {peak_edge}"
+        );
+
+        // Sustained small working set (1 small icon) shrinks back to ATLAS_START_PX.
+        for _ in 0..SHRINK_IDLE_FRAMES {
+            pipeline.begin_frame([64; 2]);
+            pipeline
+                .prepare(
+                    &device,
+                    &queue,
+                    LogicalRect::from_xywh(0.0, 0.0, 16.0, 16.0),
+                    clip::IDENTITY_AFFINE,
+                    [0.0; 2],
+                    1.0,
+                    Icon::Search,
+                    nana_ui_core::PaintColor::srgb([1.0; 4]),
+                    1.0,
+                    FragmentClip::PASS,
+                )
+                .expect("prepare single icon");
+            pipeline.upload(&device, &queue, None);
+        }
+        assert_eq!(
+            pipeline.atlas.as_ref().unwrap().edge,
+            ATLAS_START_PX,
+            "icon atlas must shrink from {peak_edge} back to {ATLAS_START_PX}"
+        );
+
+        // Sustained zero-icon frames release the atlas completely.
+        for _ in 0..SHRINK_IDLE_FRAMES {
+            pipeline.begin_frame([64; 2]);
+            pipeline.upload(&device, &queue, None);
+        }
+        assert!(
+            pipeline.atlas.is_none(),
+            "idle icon pipeline must drop its GPU sheet after SHRINK_IDLE_FRAMES"
+        );
+    }
 }
 
 pub(super) struct IconPipelineTarget {
@@ -1305,6 +1460,8 @@ pub(super) struct IconPipelineTarget {
     entries: HashMap<AtlasKey, AtlasEntry>,
     frame_keys: HashSet<AtlasKey>,
     exhausted: bool,
+    shrink_frames: u32,
+    vertex_shrink_frames: u32,
 }
 
 impl IconPipeline {
@@ -1363,6 +1520,8 @@ impl IconPipeline {
                 entries: HashMap::new(),
                 frame_keys: HashSet::new(),
                 exhausted: false,
+                shrink_frames: 0,
+                vertex_shrink_frames: 0,
             }
         });
         std::mem::swap(&mut self.uniform_bind_group, &mut target.uniform_bind_group);
@@ -1378,5 +1537,10 @@ impl IconPipeline {
         std::mem::swap(&mut self.entries, &mut target.entries);
         std::mem::swap(&mut self.frame_keys, &mut target.frame_keys);
         std::mem::swap(&mut self.exhausted, &mut target.exhausted);
+        std::mem::swap(&mut self.shrink_frames, &mut target.shrink_frames);
+        std::mem::swap(
+            &mut self.vertex_shrink_frames,
+            &mut target.vertex_shrink_frames,
+        );
     }
 }

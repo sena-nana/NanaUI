@@ -755,6 +755,13 @@ impl GpuDeviceState {
         }
     }
 
+    pub(crate) fn has_retired(&self) -> bool {
+        let state = self.inner.lock().unwrap_or_else(|e| e.into_inner());
+        !state.retired.is_empty()
+            || !state.retired_pipelines.is_empty()
+            || !state.retired_layouts.is_empty()
+    }
+
     pub fn retire(&self, submission: u64, bytes: u64) {
         self.inner
             .lock()

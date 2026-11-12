@@ -34,9 +34,9 @@ struct Entry {
 }
 
 pub(crate) struct ShapeCache {
-    entries: HashMap<ShapeKey, Entry>,
+    entries: HashMap<Arc<ShapeKey>, Entry>,
     /// Access order: tick -> key. Ticks are unique, so this is exact LRU.
-    order: BTreeMap<u64, ShapeKey>,
+    order: BTreeMap<u64, Arc<ShapeKey>>,
     tick: u64,
     bytes: usize,
     budget: ShapeCacheBudget,
@@ -98,7 +98,8 @@ impl ShapeCache {
         }
         self.tick += 1;
         self.bytes += bytes;
-        self.order.insert(self.tick, key.clone());
+        let key = Arc::new(key);
+        self.order.insert(self.tick, Arc::clone(&key));
         if let Some(previous) = self.entries.insert(
             key,
             Entry {

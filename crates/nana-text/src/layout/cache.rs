@@ -8,7 +8,7 @@
 //! a miss is a *new* text or the same shaped text at new constraints. That is
 //! the number a resize storm is judged by.
 
-use super::ir::{LineBox, TextLayout};
+use super::ir::{LineBox, PlacedEmphasis, PlacedLabel, PlacedObject, PlacedRuby, TextLayout};
 use super::key::LayoutKey;
 use crate::shape::{ShapedGlyph, ShapedRun};
 use std::collections::{BTreeMap, HashMap};
@@ -38,8 +38,8 @@ struct Entry {
 }
 
 pub(super) struct LayoutCache {
-    entries: HashMap<LayoutKey, Entry>,
-    order: BTreeMap<u64, LayoutKey>,
+    entries: HashMap<Arc<LayoutKey>, Entry>,
+    order: BTreeMap<u64, Arc<LayoutKey>>,
     /// Shaped identity -> how many live entries were laid out from it.
     shaped: HashMap<usize, usize>,
     tick: u64,
@@ -47,16 +47,42 @@ pub(super) struct LayoutCache {
     budget: LayoutCacheBudget,
 }
 
+fn runs_bytes(runs: &[ShapedRun]) -> usize {
+    runs.iter()
+        .map(|run| run.glyphs.capacity() * std::mem::size_of::<ShapedGlyph>())
+        .sum::<usize>()
+}
+
 /// Bytes a layout occupies, excluding what the key already charges.
 fn layout_bytes(value: &TextLayout) -> usize {
     std::mem::size_of::<TextLayout>()
         + value.runs.capacity() * std::mem::size_of::<ShapedRun>()
-        + value
-            .runs
-            .iter()
-            .map(|run| run.glyphs.capacity() * std::mem::size_of::<ShapedGlyph>())
-            .sum::<usize>()
+        + runs_bytes(&value.runs)
         + value.lines.capacity() * std::mem::size_of::<LineBox>()
+        + value.objects.capacity() * std::mem::size_of::<PlacedObject>()
+        + value.rubies.capacity() * std::mem::size_of::<PlacedRuby>()
+        + value
+            .rubies
+            .iter()
+            .map(|ruby| {
+                ruby.runs.capacity() * std::mem::size_of::<ShapedRun>() + runs_bytes(&ruby.runs)
+            })
+            .sum::<usize>()
+        + value.labels.capacity() * std::mem::size_of::<PlacedLabel>()
+        + value
+            .labels
+            .iter()
+            .map(|label| {
+                label.runs.capacity() * std::mem::size_of::<ShapedRun>() + runs_bytes(&label.runs)
+            })
+            .sum::<usize>()
+        + value.emphasis.capacity() * std::mem::size_of::<PlacedEmphasis>()
+        + value.emphasis_marks.capacity() * std::mem::size_of::<Vec<ShapedRun>>()
+        + value
+            .emphasis_marks
+            .iter()
+            .map(|runs| runs.capacity() * std::mem::size_of::<ShapedRun>() + runs_bytes(runs))
+            .sum::<usize>()
 }
 
 impl LayoutCache {
@@ -110,7 +136,8 @@ impl LayoutCache {
         self.bytes += bytes;
         let shaped = key.shaped_identity();
         *self.shaped.entry(shaped).or_insert(0) += 1;
-        self.order.insert(self.tick, key.clone());
+        let key = Arc::new(key);
+        self.order.insert(self.tick, Arc::clone(&key));
         if let Some(previous) = self.entries.insert(
             key,
             Entry {
@@ -164,5 +191,45 @@ impl LayoutCache {
 
     pub fn bytes(&self) -> usize {
         self.bytes
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::constraints::TextConstraints;
+    use crate::id::{FontGeneration, TextLayoutId, TextRevision};
+    use crate::layout::ir::{OverflowFlags, TextRect};
+    use crate::style::TextKind;
+
+    #[test]
+    fn layout_bytes_counts_objects_rubies_labels_and_emphasis() {
+        let base = TextLayout {
+            id: TextLayoutId::NULL,
+            kind: TextKind::Paragraph,
+            revision: TextRevision::INITIAL,
+            font_generation: FontGeneration::new(1),
+            constraints: TextConstraints::default(),
+            runs: Vec::new(),
+            lines: Vec::new(),
+            bounds: TextRect::default(),
+            overflow: OverflowFlags::NONE,
+            unsupported_writing_mode: false,
+            objects: Vec::new(),
+            rubies: Vec::new(),
+            rubies_dropped: false,
+            labels: Vec::new(),
+            emphasis: Vec::new(),
+            emphasis_marks: Vec::new(),
+            emphasis_dropped: false,
+        };
+        let empty = layout_bytes(&base);
+        let mut rich = base;
+        rich.objects.reserve(8);
+        rich.rubies.reserve(4);
+        rich.labels.reserve(4);
+        rich.emphasis.reserve(16);
+        rich.emphasis_marks.push(Vec::with_capacity(2));
+        assert!(layout_bytes(&rich) > empty + 512);
     }
 }

@@ -2478,15 +2478,18 @@ fn grid_auto_fit_fills_two_minmax_tracks_in_500px() {
             display: Some(DisplaySpec::Grid),
             width: Some(LengthSpec::Px(500.0)),
             height: Some(LengthSpec::Px(50.0)),
-            grid_columns_repeat: Some(GridRepeatAuto {
-                kind: GridTrackListUnsupported::RepeatAutoFit,
-                tracks: vec![GridTrack::MinMax {
-                    min_px: 200.0,
-                    fr: 1.0,
-                    max_px: None,
-                }],
-                ..Default::default()
-            }),
+            grid_columns_repeat: Some(
+                GridRepeatAuto {
+                    kind: GridTrackListUnsupported::RepeatAutoFit,
+                    tracks: vec![GridTrack::MinMax {
+                        min_px: 200.0,
+                        fr: 1.0,
+                        max_px: None,
+                    }],
+                    ..Default::default()
+                }
+                .into(),
+            ),
             ..LayoutStyle::default()
         },
         children: vec![px_box("a", 50.0, 50.0), px_box("b", 50.0, 50.0)],
@@ -2532,15 +2535,18 @@ fn grid_auto_row_holds_wrapping_content_at_its_column_width() {
             display: Some(DisplaySpec::Grid),
             width: Some(LengthSpec::Px(400.0)),
             gap: Some(LengthSpec::Px(6.0)),
-            grid_columns_repeat: Some(GridRepeatAuto {
-                kind: GridTrackListUnsupported::RepeatAutoFit,
-                tracks: vec![GridTrack::MinMax {
-                    min_px: 132.0,
-                    fr: 1.0,
-                    max_px: None,
-                }],
-                ..Default::default()
-            }),
+            grid_columns_repeat: Some(
+                GridRepeatAuto {
+                    kind: GridTrackListUnsupported::RepeatAutoFit,
+                    tracks: vec![GridTrack::MinMax {
+                        min_px: 132.0,
+                        fr: 1.0,
+                        max_px: None,
+                    }],
+                    ..Default::default()
+                }
+                .into(),
+            ),
             ..LayoutStyle::default()
         },
         children,
@@ -4478,12 +4484,15 @@ fn auto_fill_nth_named_line_uses_expanded_copies() {
             display: Some(DisplaySpec::Grid),
             width: Some(LengthSpec::Px(240.0)),
             height: Some(LengthSpec::Px(40.0)),
-            grid_columns_repeat: Some(GridRepeatAuto {
-                kind: GridTrackListUnsupported::RepeatAutoFill,
-                tracks: vec![GridTrack::Px(80.0)],
-                pattern_line_names: vec![vec!["mid".into()], Vec::new()],
-                ..Default::default()
-            }),
+            grid_columns_repeat: Some(
+                GridRepeatAuto {
+                    kind: GridTrackListUnsupported::RepeatAutoFill,
+                    tracks: vec![GridTrack::Px(80.0)],
+                    pattern_line_names: vec![vec!["mid".into()], Vec::new()],
+                    ..Default::default()
+                }
+                .into(),
+            ),
             // Pattern stored once — engine must expand, not resolve mid 2
             // against this single copy (which would miss and auto-place at 0).
             grid_column_line_names: Some(vec![vec!["mid".into()], Vec::new()]),

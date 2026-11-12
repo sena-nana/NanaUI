@@ -1485,6 +1485,16 @@ impl SceneWgpuPainter {
             && dest.height == dest_physical[1]
         {
             dest.release_prefix();
+            if self
+                .prepared_batch
+                .as_ref()
+                .is_none_or(|batch| batch.max_group_depth == 0)
+            {
+                dest.trim_idle_groups(&self.device, 0, 0, false, Some(&gpu_work));
+            }
+            if !self.backdrop.needs_backdrop() {
+                self.backdrop.finish_frame(&self.device, Some(&gpu_work));
+            }
             dest.set_presentation_parameters(
                 &self.queue,
                 self.presentation_parameters,
@@ -2593,6 +2603,14 @@ impl SceneWgpuPainter {
                 corner_exponent,
                 Some(&gpu_work),
             );
+        } else {
+            self.dest.as_mut().expect("dest target").trim_idle_groups(
+                &self.device,
+                0,
+                0,
+                false,
+                Some(&gpu_work),
+            );
         }
         // Per-glyph presentation moves text alone. While nothing else moves
         // and the batch is the last frame's, the dest as it stood before its
@@ -2788,6 +2806,7 @@ impl SceneWgpuPainter {
             self.dest.as_mut().expect("dest target").mark_prefix(split);
         }
         let encode = encode_started.elapsed();
+        self.backdrop.finish_frame(&self.device, Some(&gpu_work));
         if !reused {
             self.url_cache.trim();
             self.quads.finish_frame(&self.url_cache);

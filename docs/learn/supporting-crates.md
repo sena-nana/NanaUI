@@ -15,7 +15,7 @@ title: 外围支撑 crate 一览
 | `nana-diagnostics` | `event!` / `metric!` / `fault!` / `span!` 宏与静态描述符 | 生产线程零文件 I/O、零字符串格式化、零全局锁、首次注册后零堆分配 |
 | `nana-svg-raster` | CPU 侧 SVG 栅格化（`resvg → pixmap`） | 纯位图光栅化工具，不是绘制器，也不维护 SVG DOM |
 | `nana-app-icon` | 默认应用图标、PNG/ICO/ICNS 编码与 Windows PE 资源嵌入 | 只管图标编码与嵌入；目录打包布局归 `nana-packager` |
-| `nana-icons-tabler` | 自动生成的 Tabler 矢量图标常量表（约 38.4 万行） | 脚本生成物，非 workspace member；未引用图标由链接器自动剔除 |
+| `nana-icons-tabler` | 自动生成的 Tabler 矢量图标常量表（约 32.3 万行） | 脚本生成物，非 workspace member；未引用图标由链接器自动剔除 |
 | `nana-package` | 打包契约的**运行时只读侧**（解析 `package.json` 与 `.nrpack`） | 仅含只读逻辑与纯 Rust 解码器，不含打包或密钥生成代码 |
 | `nana-packager` | 打包契约的**构建期写侧** CLI | 将已编译可执行文件、资源树与 `nana-package.toml` 打成交付物，绝不随应用发布 |
 | `nana-ui-dev` | 开发期热重载公共底座（文件监视、防抖与安全读取） | 顶部带 `#[cfg(not(debug_assertions))] compile_error!`，绝不进入 release/dist 构建 |
@@ -48,7 +48,7 @@ title: 外围支撑 crate 一览
 
 - **`nana-svg-raster`（`crates/nana-svg-raster/src/lib.rs`，243 行）**：基于 `resvg 0.48.1` 将 SVG 栅格化为 `RasterizedSvg { width, height, rgba: Arc<[u8]> }`（`:7`），按消费场景提供四个入口：`rasterize_stretch`（`:21`，独立拉伸到目标宽高）、`rasterize_white_mask`（`:42`，图标图集白色遮罩，自动将 `currentColor` 替换为纯白）、`rasterize_document`（`:58`，按文档尺寸输出直通 alpha）与 `rasterize_document_capped`（`:71`，带最大边长限制的 URL SVG 解码）。它只在 `nana-ui` 的 `svg` feature 打开时链接：SVG 图片要用它，图标不用。它自己不找字体：`<text>` 用哪些字体文件、通用字体族叫什么，由调用方通过 `SvgFonts` 给出（`nana-ui` 给的是字体集 `resolve_font_faces` 的结果，字节共享不复制），不给就不画文字。`rasterize_white_mask` 只剩一个用处：宿主包了一个只有 SVG、没有 shapes 的图标。
 - **`nana-app-icon`（`crates/nana-app-icon/src/lib.rs`，140 行）**：提供 PNG / ICO / ICNS 编码、Windows PE 资源嵌入（`embed` feature）以及运行时默认图标与 macOS Dock `828 / 1024` 网格内缩适配（`runtime` feature，`with_system_grid:32`）。
-- **`nana-icons-tabler`（`crates/nana-icons-tabler/src/lib.rs`）**：由 `scripts/generate_tabler_catalog.py` 从 `@tabler/icons 3.46.0` 生成的静态常量表。每个图标导出为 `pub static *_ICON: IconData { name, shapes, svg }`；图集画的是 `shapes`（`nana-ui/src/scene_paint/icon_raster.rs`）：每个形状是 2 个网格单位宽、圆头圆角的轮廓，`IconShape::Fill` 是填充，用的是给字形做栅格的同一个栅格器（`nana_text::raster::path_coverage`），`svg` 只是它们的来源；由于声明为独立静态常量，链接器会自动剔除所有未被应用引用的图标，不会膨胀最终二进制体积。
+- **`nana-icons-tabler`（`crates/nana-icons-tabler/src/lib.rs`）**：由 `scripts/generate_tabler_catalog.py` 从 `@tabler/icons 3.46.0` 生成的静态常量表。每个图标导出为 `pub static *_ICON: IconData { name, shapes, svg: "" }`；图集画的是 `shapes`（`nana-ui/src/scene_paint/icon_raster.rs`）：每个形状是 2 个网格单位宽、圆头圆角的轮廓，`IconShape::Fill` 是填充，用的是给字形做栅格的同一个栅格器（`nana_text::raster::path_coverage`），已生成 `shapes` 的图标不再保留原始 `svg` 字符串；由于声明为独立静态常量，链接器会自动剔除所有未被应用引用的图标，不会膨胀最终二进制体积。
 
 ### 4. `nana-package` 与 `nana-packager`：打包契约的读侧与写侧
 

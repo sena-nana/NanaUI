@@ -43,7 +43,7 @@ fn vs_main(@builtin(vertex_index) index: u32) -> VertexOutput {
 @fragment
 fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
     let downsample = max(copy.downsample, 1.0);
-    let block = floor(input.position.xy) * downsample;
+    let block = copy.src_origin + floor(input.position.xy) * downsample;
     if downsample < 2.0 {
         return textureSampleLevel(source, source_sampler, (block + 0.5) / copy.dest_size, 0.0);
     }

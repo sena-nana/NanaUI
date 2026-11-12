@@ -176,6 +176,8 @@ pub struct PaintColorSlots {
     pub selection_color: Option<PaintColor>,
 }
 
+crate::shared::shared_default!(PaintColorSlots);
+
 // These constants come from the Oklab conversion matrix. Keep their full
 // precision so the conversion remains stable across semantic paint paths.
 #[allow(clippy::excessive_precision)]

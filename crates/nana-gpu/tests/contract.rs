@@ -902,6 +902,18 @@ fn try_begin_frame_returns_immediately_while_recordings_hold_every_slot() {
 }
 
 #[test]
+fn producer_frames_collect_retired_resources_without_a_presentation_slot() {
+    let gpu = context();
+    let before = gpu.policy().stats().retired_resources;
+    gpu.policy().retire(1, 4096);
+    let _ = gpu
+        .try_begin_producer_frame("background producer")
+        .expect("producer lane has budget")
+        .submit();
+    poll_until(&gpu, || gpu.policy().stats().retired_resources > before);
+}
+
+#[test]
 fn a_frame_can_move_to_another_thread() {
     fn send<T: Send>() {}
     send::<nana_gpu::FrameContext>();

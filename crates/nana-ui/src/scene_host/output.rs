@@ -30,6 +30,7 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
         if config.is_none() {
             self.window_outputs.remove(&id);
             self.ensure_direct_output_trace(id);
+            self.retain_active_presentations();
         }
         config.is_some()
     }
@@ -141,7 +142,7 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
                 scene,
                 frame,
                 gpu,
-                &mut self.painters,
+                &mut self.painter,
                 target,
                 host_textures,
                 gpu_renderers,
@@ -156,7 +157,7 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
                 None,
                 frame,
                 gpu,
-                &mut self.painters,
+                &mut self.painter,
                 None,
                 target,
                 &mut None,
@@ -319,8 +320,8 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
         };
         let targets = state.take_retired_targets();
         let statuses = state.take_statuses();
-        for target in targets {
-            for painter in self.painters.values_mut() {
+        if let Some(painter) = self.painter.as_mut() {
+            for target in targets {
                 painter.remove_target(target);
             }
         }
@@ -349,11 +350,12 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
         let Some(state) = self.window_outputs.remove(&id) else {
             return;
         };
-        for target in state.target_ids() {
-            for painter in self.painters.values_mut() {
+        if let Some(painter) = self.painter.as_mut() {
+            for target in state.target_ids() {
                 painter.remove_target(target);
             }
         }
+        self.retain_active_presentations();
     }
 
     /// A window that cannot present but keeps its output: flush its document

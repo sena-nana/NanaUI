@@ -841,9 +841,9 @@ impl TextGpu {
         atlas: &GlyphAtlasManager,
         work: Option<&GpuWorkSink>,
     ) {
+        let before = self.materials.len();
         self.materials.retain(|_, v| v.strong_count() > 0);
-        self.material_bindings
-            .retain(|k, _| self.materials.contains_key(k));
+        let pruned_materials = self.materials.len() < before;
         self.combinations
             .retain(|_, ks| ks.iter().all(|k| *k == 0 || self.materials.contains_key(k)));
         self.bundles
@@ -964,7 +964,12 @@ fn shade(input:VsOut)->TextShade {
                 self.material_pipelines.insert((programs, dual), pipeline);
             }
         }
+        self.material_bindings
+            .retain(|k, _| self.materials.contains_key(k));
         self.material_pipelines.retain(|k, _| active.contains(k));
+        if pruned_materials {
+            self.material_device.trim();
+        }
     }
 
     pub(super) fn set_material_waker(&mut self, wake: super::super::material::MaterialWaker) {

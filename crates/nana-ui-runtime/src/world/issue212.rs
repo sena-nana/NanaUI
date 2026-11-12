@@ -70,7 +70,7 @@ impl Bar {
             height: Some(LengthSpec::Px(40.0)),
             direction: Some(FlexDirection::Row),
             gap: Some(LengthSpec::Px(8.0)),
-            adaptation: self.solves.then(gap_profile),
+            adaptation: self.solves.then(|| gap_profile().into()),
             ..LayoutStyle::default()
         }
     }
@@ -81,7 +81,7 @@ impl Bar {
             padding_left: Some(LengthSpec::Px(16.0)),
             padding_right: Some(LengthSpec::Px(16.0)),
             flex_shrink: self.shrink,
-            adaptation: self.declares.then(padding_profile),
+            adaptation: self.declares.then(|| padding_profile().into()),
             ..LayoutStyle::default()
         }
     }
@@ -304,7 +304,7 @@ fn issue212_a_toolbar_of_buttons_closes_up_before_it_overflows() {
         let mut toolbar = Toolbar::new();
         if !solving {
             std::sync::Arc::make_mut(&mut toolbar.style.layout).adaptation =
-                Some(AdaptationProfile::RIGID);
+                Some(AdaptationProfile::RIGID.into());
         }
         let toolbar = context
             .create_detached_component(document, toolbar)

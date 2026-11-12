@@ -30,6 +30,7 @@ fn quad_shader() -> String {
 }
 
 const INITIAL_INSTANCES: usize = 256;
+const SHRINK_IDLE_FRAMES: u32 = 120;
 const PAINT_GRADIENT: u32 = 1;
 const PAINT_MASK: u32 = 2;
 const PAINT_URL: u32 = 4;
@@ -208,6 +209,7 @@ pub(super) struct QuadPipeline {
     grid_scale: f32,
     /// The scene's corner curve exponent, set each frame before upload.
     corner_exponent: f32,
+    shrink_frames: u32,
 }
 
 impl QuadPipeline {
@@ -442,6 +444,7 @@ impl QuadPipeline {
             motion_origin: [0.0, 0.0],
             grid_scale: 1.0,
             corner_exponent: 2.0,
+            shrink_frames: 0,
         }
     }
 
@@ -540,6 +543,18 @@ impl QuadPipeline {
         self.pending_paint.clear();
         self.pending_urls.clear();
         self.pending_materials.clear();
+        self.motion_ids = (0, 0);
+        self.motion_origin = [0.0, 0.0];
+    }
+
+    fn prune_materials(&mut self) {
+        if self.material_refs.is_empty()
+            && self.material_bindings.is_empty()
+            && self.material_pipelines.is_empty()
+        {
+            return;
+        }
+        let before = self.material_refs.len();
         self.material_refs
             .retain(|_, value| value.strong_count() > 0);
         self.material_bindings
@@ -553,8 +568,9 @@ impl QuadPipeline {
         self.material_pipelines.retain(|(a, b, _, _), _| {
             (*a == 0 || programs.contains(a)) && (*b == 0 || programs.contains(b))
         });
-        self.motion_ids = (0, 0);
-        self.motion_origin = [0.0, 0.0];
+        if self.material_refs.len() < before {
+            self.material_device.trim();
+        }
     }
 
     pub(super) fn motion_layout(&self) -> &wgpu::BindGroupLayout {
@@ -580,13 +596,15 @@ impl QuadPipeline {
             target.url_bind_groups.clear();
         }
     }
-    /// Drop bindings to URL textures `url_cache` no longer retains; run after
-    /// the painter trims it.
+    /// Drop bindings to URL textures `url_cache` no longer retains, and prune
+    /// dead material bindings after this frame's quads have bound any shared
+    /// textures; run after the painter trims `url_cache`.
     pub(super) fn finish_frame(&mut self, url_cache: &UrlTextureCache) {
         self.url_bind_groups.retain(|key, _| {
             key.as_deref()
                 .is_none_or(|key| url_cache.contains_retained(key))
         });
+        self.prune_materials();
     }
 
     pub(super) fn pending_len(&self) -> u32 {
@@ -1017,59 +1035,47 @@ impl QuadPipeline {
             self.uploaded_uniforms = Some(uniforms);
         }
         if self.pending.is_empty() {
+            if self.instance_capacity > INITIAL_INSTANCES || self.paint_capacity > INITIAL_INSTANCES
+            {
+                self.shrink_frames = self.shrink_frames.saturating_add(1);
+                if self.shrink_frames >= SHRINK_IDLE_FRAMES {
+                    self.resize_buffers(device, INITIAL_INSTANCES, INITIAL_INSTANCES, gpu_work);
+                    self.rebuild_url_bind_groups(device, url_cache);
+                    self.shrink_frames = 0;
+                }
+            } else {
+                self.shrink_frames = 0;
+            }
             return;
         }
-        if self.pending.len() > self.instance_capacity {
-            self.uploaded.clear();
-            self.instance_capacity = self.pending.len().next_power_of_two();
-            let size = (self.instance_capacity * std::mem::size_of::<SolidInstance>()) as u64;
-            let usage = wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST;
-            if let Some(work) = gpu_work {
-                work.replace_buffer(
-                    device,
-                    &mut self.instances,
-                    size,
-                    usage,
-                    "nana-ui.scene.quad.instances",
-                );
-            } else {
-                self.instances = ManagedBuffer::new(device.create_buffer(&wgpu::BufferDescriptor {
-                    label: Some("nana-ui.scene.quad.instances"),
-                    size,
-                    usage,
-                    mapped_at_creation: false,
-                }))
-            };
-            if let Some(work) = gpu_work {
-                work.record_realloc();
+        let fit_instances = self
+            .pending
+            .len()
+            .max(INITIAL_INSTANCES)
+            .next_power_of_two();
+        let fit_paint = self
+            .pending_paint
+            .len()
+            .max(INITIAL_INSTANCES)
+            .next_power_of_two();
+        let mut shrink_now = false;
+        if fit_instances * 4 <= self.instance_capacity || fit_paint * 4 <= self.paint_capacity {
+            self.shrink_frames = self.shrink_frames.saturating_add(1);
+            if self.shrink_frames >= SHRINK_IDLE_FRAMES {
+                shrink_now = true;
+                self.shrink_frames = 0;
             }
+        } else {
+            self.shrink_frames = 0;
         }
-        let paint_reallocated = self.pending_paint.len() > self.paint_capacity;
-        if paint_reallocated {
-            self.uploaded_paint.clear();
-            self.url_bind_groups.clear();
-            self.paint_capacity = self.pending_paint.len().next_power_of_two();
-            let size = (self.paint_capacity * std::mem::size_of::<QuadPaintData>()) as u64;
-            let usage = wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST;
-            if let Some(work) = gpu_work {
-                work.replace_buffer(
-                    device,
-                    &mut self.paint_buffer,
-                    size,
-                    usage,
-                    "nana-ui.scene.quad.paint",
-                );
-            } else {
-                self.paint_buffer =
-                    ManagedBuffer::new(device.create_buffer(&wgpu::BufferDescriptor {
-                        label: Some("nana-ui.scene.quad.paint"),
-                        size,
-                        usage,
-                        mapped_at_creation: false,
-                    }))
-            };
-            if let Some(work) = gpu_work {
-                work.record_realloc();
+        if shrink_now {
+            self.resize_buffers(device, fit_instances, fit_paint, gpu_work);
+        } else {
+            if self.pending.len() > self.instance_capacity {
+                self.replace_instance_buffer(device, fit_instances, gpu_work);
+            }
+            if self.pending_paint.len() > self.paint_capacity {
+                self.replace_paint_buffer(device, fit_paint, gpu_work);
             }
         }
         super::buffer_upload::upload_changed_with_work(
@@ -1091,6 +1097,86 @@ impl QuadPipeline {
         self.rebuild_url_bind_groups(device, url_cache);
         if let Some(work) = gpu_work {
             work.record_batch_rebuild();
+        }
+    }
+
+    fn replace_instance_buffer(
+        &mut self,
+        device: &wgpu::Device,
+        capacity: usize,
+        gpu_work: Option<&crate::gpu_work::GpuWorkSink>,
+    ) {
+        self.uploaded.clear();
+        self.instance_capacity = capacity;
+        let size = (self.instance_capacity * std::mem::size_of::<SolidInstance>()) as u64;
+        let usage = wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST;
+        if let Some(work) = gpu_work {
+            work.replace_buffer(
+                device,
+                &mut self.instances,
+                size,
+                usage,
+                "nana-ui.scene.quad.instances",
+            );
+            work.record_realloc();
+        } else {
+            self.instances = ManagedBuffer::new(device.create_buffer(&wgpu::BufferDescriptor {
+                label: Some("nana-ui.scene.quad.instances"),
+                size,
+                usage,
+                mapped_at_creation: false,
+            }));
+        }
+    }
+
+    fn replace_paint_buffer(
+        &mut self,
+        device: &wgpu::Device,
+        capacity: usize,
+        gpu_work: Option<&crate::gpu_work::GpuWorkSink>,
+    ) {
+        self.uploaded_paint.clear();
+        self.url_bind_groups.clear();
+        self.paint_capacity = capacity;
+        let size = (self.paint_capacity * std::mem::size_of::<QuadPaintData>()) as u64;
+        let usage = wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST;
+        if let Some(work) = gpu_work {
+            work.replace_buffer(
+                device,
+                &mut self.paint_buffer,
+                size,
+                usage,
+                "nana-ui.scene.quad.paint",
+            );
+            work.record_realloc();
+        } else {
+            self.paint_buffer = ManagedBuffer::new(device.create_buffer(&wgpu::BufferDescriptor {
+                label: Some("nana-ui.scene.quad.paint"),
+                size,
+                usage,
+                mapped_at_creation: false,
+            }));
+        }
+    }
+
+    fn resize_buffers(
+        &mut self,
+        device: &wgpu::Device,
+        instance_capacity: usize,
+        paint_capacity: usize,
+        gpu_work: Option<&crate::gpu_work::GpuWorkSink>,
+    ) {
+        if self.instance_capacity != instance_capacity {
+            self.replace_instance_buffer(device, instance_capacity, gpu_work);
+            self.uploaded.shrink_to(instance_capacity);
+            self.pending.shrink_to(instance_capacity);
+            self.pending_urls.shrink_to(instance_capacity);
+            self.pending_materials.shrink_to(instance_capacity);
+        }
+        if self.paint_capacity != paint_capacity {
+            self.replace_paint_buffer(device, paint_capacity, gpu_work);
+            self.uploaded_paint.shrink_to(paint_capacity);
+            self.pending_paint.shrink_to(paint_capacity);
         }
     }
 
@@ -2635,6 +2721,7 @@ pub(super) struct QuadPipelineTarget {
     uploaded_paint: Vec<QuadPaintData>,
     pending_urls: Vec<Option<String>>,
     pending_materials: Vec<(u64, u64, bool)>,
+    shrink_frames: u32,
 }
 
 impl QuadPipeline {
@@ -2672,6 +2759,7 @@ impl QuadPipeline {
             uploaded_paint: Vec::new(),
             pending_urls: Vec::new(),
             pending_materials: Vec::new(),
+            shrink_frames: 0,
         });
         std::mem::swap(&mut self.uniforms, &mut target.uniforms);
         std::mem::swap(&mut self.uploaded_uniforms, &mut target.uploaded_uniforms);
@@ -2686,5 +2774,6 @@ impl QuadPipeline {
         std::mem::swap(&mut self.uploaded_paint, &mut target.uploaded_paint);
         std::mem::swap(&mut self.pending_urls, &mut target.pending_urls);
         std::mem::swap(&mut self.pending_materials, &mut target.pending_materials);
+        std::mem::swap(&mut self.shrink_frames, &mut target.shrink_frames);
     }
 }

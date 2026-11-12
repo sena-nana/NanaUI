@@ -1802,9 +1802,9 @@ impl TextPipeline {
                     return true;
                 }
                 target.counters.instance_patches += 1;
-                target.entries.repair(*id, epoch, |handle| {
-                    atlas.entry(handle).map(|entry| (entry.origin, entry.size))
-                })
+                target
+                    .entries
+                    .repair(*id, epoch, |handle| atlas.entry(handle).copied())
             });
         let entry = match reusable {
             Some(id) => {
@@ -2167,7 +2167,7 @@ impl TextPipeline {
             resolve_requests,
             ..
         } = self;
-        let pages_before = atlas.page_count();
+        let pages_before = atlas.pages_opened();
         // Read before the first placement, not after the last. Faulting a
         // glyph in can repack the atlas, and a repack moves glyphs this same
         // build already wrote instances for; stamping the entry with the
@@ -2317,7 +2317,7 @@ impl TextPipeline {
             }
             place_solids(true, &mut target.entries, &mut placed, &mut segments);
         }
-        target.frame_gpu_allocations += atlas.page_count() - pages_before;
+        target.frame_gpu_allocations += atlas.pages_opened() - pages_before;
         target.entries.finish_build(id, placed);
         let fonts = self.font_generation;
         let entry = self.target.entries.get_mut(id).expect("just built");
@@ -2564,9 +2564,9 @@ impl TextPipeline {
                     // was faulting its own in. Rectangles are re-read through
                     // the handles the entry kept; nothing is reshaped,
                     // re-rasterized or re-uploaded.
-                    let intact = target.entries.repair(entry_id, epoch, |handle| {
-                        atlas.entry(handle).map(|entry| (entry.origin, entry.size))
-                    });
+                    let intact = target
+                        .entries
+                        .repair(entry_id, epoch, |handle| atlas.entry(handle).copied());
                     target.counters.instance_patches += 1;
                     if !intact && let Some(entry) = target.entries.get_mut(entry_id) {
                         entry.damaged = true;

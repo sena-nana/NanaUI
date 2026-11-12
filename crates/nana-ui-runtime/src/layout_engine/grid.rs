@@ -64,7 +64,7 @@ pub(super) fn explicit_column_tracks(
     explicit_tracks(
         style
             .grid_columns_repeat
-            .as_ref()
+            .as_deref()
             .filter(|_| !style.display.is_some_and(DisplaySpec::is_layers)),
         style.active_grid_columns(),
         style
@@ -86,7 +86,7 @@ pub(super) fn explicit_row_tracks(
     explicit_tracks(
         style
             .grid_rows_repeat
-            .as_ref()
+            .as_deref()
             .filter(|_| !style.display.is_some_and(DisplaySpec::is_layers)),
         style.active_grid_rows(),
         style
@@ -535,10 +535,13 @@ pub(super) fn layout_grid_2d(
     let dense = auto_flow.is_dense();
 
     let default_placement = GridPlacement::default();
-    let col_repeat_names =
-        expanded_repeat_line_names(style.grid_columns_repeat.as_ref(), content_inline, col_gap);
+    let col_repeat_names = expanded_repeat_line_names(
+        style.grid_columns_repeat.as_deref(),
+        content_inline,
+        col_gap,
+    );
     let row_repeat_names =
-        expanded_repeat_line_names(style.grid_rows_repeat.as_ref(), content_block, row_gap);
+        expanded_repeat_line_names(style.grid_rows_repeat.as_deref(), content_block, row_gap);
     let col_names = col_repeat_names
         .as_deref()
         .or(style.grid_column_line_names.as_deref());

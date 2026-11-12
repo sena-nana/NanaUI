@@ -329,7 +329,7 @@ impl FrameContext {
                 .unwrap_or_else(|e| e.into_inner())
                 .drain(..)
                 .collect::<Vec<_>>();
-            if !transient_buffers.is_empty() {
+            if !transient_buffers.is_empty() || policy.has_retired() {
                 let queue = self.gpu.inner.queue.clone();
                 queue.on_submitted_work_done(move || {
                     for (key, buffer) in transient_buffers {

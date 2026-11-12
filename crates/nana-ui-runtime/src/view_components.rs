@@ -733,7 +733,7 @@ impl Button {
         layout.white_space_nowrap = true;
         // Declared, not solved: only a strip that solves its overflow reads
         // it (Issue #212).
-        layout.adaptation = Some(nana_ui_core::dynamic_layout::AdaptationProfile::control());
+        layout.adaptation = Some(nana_ui_core::dynamic_layout::AdaptationProfile::shared_control());
         Self {
             label: label.into(),
             content: None,

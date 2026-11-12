@@ -186,7 +186,7 @@ impl Workspace {
                     height: Some(LengthSpec::Px(40.0)),
                     direction: Some(FlexDirection::Row),
                     gap: Some(LengthSpec::Px(8.0)),
-                    adaptation: Some(super::issue212::gap_profile()),
+                    adaptation: Some(super::issue212::gap_profile().into()),
                     ..LayoutStyle::default()
                 },
             );
@@ -197,7 +197,7 @@ impl Workspace {
                         direction: Some(FlexDirection::Row),
                         padding_left: Some(LengthSpec::Px(16.0)),
                         padding_right: Some(LengthSpec::Px(16.0)),
-                        adaptation: Some(super::issue212::padding_profile()),
+                        adaptation: Some(super::issue212::padding_profile().into()),
                         ..LayoutStyle::default()
                     },
                 );

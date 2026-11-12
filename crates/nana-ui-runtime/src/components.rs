@@ -2301,6 +2301,8 @@ impl NodeStyle {
             && self.background.is_none()
             && self.border.is_none()
             && self.ring.is_none()
+            && self.type_role.is_none()
+            && self.type_weight.is_none()
             && self.interaction.is_empty()
             && self.color_overrides.is_none()
     }
@@ -2615,7 +2617,7 @@ impl NodeStyle {
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct ComputedStyle {
-    pub paint_colors: nana_ui_core::PaintColorSlots,
+    pub paint_colors: nana_ui_core::shared::Shared<nana_ui_core::PaintColorSlots>,
     pub foreground: SemanticColorRole,
     pub color: Option<[f32; 4]>,
     pub background: Option<[f32; 4]>,

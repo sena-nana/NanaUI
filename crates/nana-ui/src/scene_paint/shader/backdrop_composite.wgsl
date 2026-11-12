@@ -121,12 +121,16 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
     let local_uv = input.local / max(quad_size, vec2(0.0001));
     let paint = paint_buffer.items[composite.paint_index];
 
-    // The blurred copy holds the padded region shrunk by its downsample;
-    // past its edge texels it holds nothing, so reads stop at them.
-    let blur_lo = composite.padded_origin * composite.blur_scale + 0.5;
-    let blur_hi = (composite.padded_origin + composite.padded_size) * composite.blur_scale - 0.5;
-    let blur_uv = clamp(input.world * composite.blur_scale, blur_lo, max(blur_hi, blur_lo))
-        / composite.dest_size;
+    // The blurred copy holds the padded region shrunk by its downsample at
+    // the texture origin; past its edge texels it holds nothing, so reads
+    // stop at them.
+    let blur_lo = vec2(0.5);
+    let blur_hi = max(composite.padded_size * composite.blur_scale - 0.5, blur_lo);
+    let blur_uv = clamp(
+        (input.world - composite.padded_origin) * composite.blur_scale,
+        blur_lo,
+        blur_hi,
+    ) / vec2<f32>(textureDimensions(blurred));
     var color = textureSample(blurred, blurred_sampler, blur_uv);
 
     if (composite.saturate != 1.0) {

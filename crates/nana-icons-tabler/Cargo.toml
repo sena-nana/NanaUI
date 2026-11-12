@@ -14,9 +14,6 @@ path = "src/lib.rs"
 [dependencies]
 nana-ui-core = { path = "../nana-ui-core" }
 
-[dev-dependencies]
-nana-svg-raster = { path = "../nana-svg-raster" }
-
 # A workspace of its own (it is excluded from NanaUI's and keeps its own
 # Cargo.lock), so cargo does not look for one in an enclosing checkout.
 [workspace]

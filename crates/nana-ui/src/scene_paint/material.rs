@@ -47,7 +47,7 @@ static WHITE: LazyLock<Arc<[u8]>> = LazyLock::new(|| Arc::from([255u8; 4]));
 pub(super) struct MaterialDevice {
     generation: Option<nana_gpu::DeviceGeneration>,
     interface: ShaderInterface,
-    images: Mutex<HashMap<(usize, u32, u32), Arc<MaterialImage>>>,
+    images: Mutex<HashMap<(usize, u32, u32), Weak<MaterialImage>>>,
     pub layout: wgpu::BindGroupLayout,
     pub text_layout: wgpu::BindGroupLayout,
     sampler: wgpu::Sampler,
@@ -372,51 +372,51 @@ impl MaterialDevice {
             queue.write_buffer(&parameters, 0, bytes);
         }
         let mut images = self.images.lock().unwrap_or_else(|e| e.into_inner());
-        images.retain(|_, image| Arc::strong_count(&image._source) > 1);
+        images.retain(|_, image| image.strong_count() > 0);
         let textures: [Arc<MaterialImage>; 2] = std::array::from_fn(|index| {
             let image = material.textures().get(index);
             let [w, h] = image.map_or([1, 1], |image| image.size);
             let rgba = image.map_or_else(|| Arc::clone(&WHITE), |image| image.rgba.clone());
             let key = (rgba.as_ptr() as usize, w, h);
-            images
-                .entry(key)
-                .or_insert_with(|| {
-                    let texture = device.create_texture(&wgpu::TextureDescriptor {
-                        label: Some("material texture"),
-                        size: wgpu::Extent3d {
-                            width: w,
-                            height: h,
-                            depth_or_array_layers: 1,
-                        },
-                        mip_level_count: 1,
-                        sample_count: 1,
-                        dimension: wgpu::TextureDimension::D2,
-                        format: wgpu::TextureFormat::Rgba8UnormSrgb,
-                        usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
-                        view_formats: &[],
-                    });
-                    if let Some(work) = work {
-                        work.write_texture(queue, &texture, [0, 0, 0], &rgba, w * 4, h, [w, h, 1]);
-                    } else {
-                        queue.write_texture(
-                            texture.as_image_copy(),
-                            &rgba,
-                            wgpu::TexelCopyBufferLayout {
-                                offset: 0,
-                                bytes_per_row: Some(w * 4),
-                                rows_per_image: Some(h),
-                            },
-                            texture.size(),
-                        );
-                    }
-                    let view = texture.create_view(&Default::default());
-                    Arc::new(MaterialImage {
-                        _source: rgba,
-                        _texture: texture,
-                        view,
-                    })
-                })
-                .clone()
+            if let Some(existing) = images.get(&key).and_then(Weak::upgrade) {
+                return existing;
+            }
+            let texture = device.create_texture(&wgpu::TextureDescriptor {
+                label: Some("material texture"),
+                size: wgpu::Extent3d {
+                    width: w,
+                    height: h,
+                    depth_or_array_layers: 1,
+                },
+                mip_level_count: 1,
+                sample_count: 1,
+                dimension: wgpu::TextureDimension::D2,
+                format: wgpu::TextureFormat::Rgba8UnormSrgb,
+                usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+                view_formats: &[],
+            });
+            if let Some(work) = work {
+                work.write_texture(queue, &texture, [0, 0, 0], &rgba, w * 4, h, [w, h, 1]);
+            } else {
+                queue.write_texture(
+                    texture.as_image_copy(),
+                    &rgba,
+                    wgpu::TexelCopyBufferLayout {
+                        offset: 0,
+                        bytes_per_row: Some(w * 4),
+                        rows_per_image: Some(h),
+                    },
+                    texture.size(),
+                );
+            }
+            let view = texture.create_view(&Default::default());
+            let created = Arc::new(MaterialImage {
+                _source: rgba,
+                _texture: texture,
+                view,
+            });
+            images.insert(key, Arc::downgrade(&created));
+            created
         });
         let group = device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("material instance"),
@@ -448,6 +448,25 @@ impl MaterialDevice {
         bindings.retain(|_, value| value.strong_count() > 0);
         bindings.insert(material.key(), Arc::downgrade(&binding));
         Some(binding)
+    }
+
+    pub(super) fn trim(&self) {
+        self.bindings
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .retain(|_, value| value.strong_count() > 0);
+        self.images
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .retain(|_, image| image.strong_count() > 0);
+        self.rejected
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .retain(|_, instance| instance.strong_count() > 0);
+        self.pipelines
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .retain(|_, entry| entry.owners.iter().all(|owner| owner.strong_count() > 0));
     }
 }
 fn texture_entry(binding: u32) -> wgpu::BindGroupLayoutEntry {

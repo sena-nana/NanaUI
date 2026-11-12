@@ -56,11 +56,14 @@ pub struct ShapeInput<'a> {
 /// feature and instance combinations.
 const PLANS_PER_FACE: usize = 8;
 
+const MAX_SHAPER_FACES: usize = 64;
+
 struct FaceShaper {
     data: FontData,
     shaper_data: ShaperData,
     /// Most recently used last.
     plans: Vec<ShapePlan>,
+    last_used: u64,
 }
 
 /// Per-face HarfRust acceleration data. Built once per face and dropped
@@ -69,6 +72,7 @@ struct FaceShaper {
 #[derive(Default)]
 pub struct FaceShapers {
     faces: HashMap<FontId, FaceShaper>,
+    tick: u64,
 }
 
 impl FaceShapers {
@@ -83,8 +87,19 @@ impl FaceShapers {
         load: impl FnOnce() -> Option<FontData>,
         input: &ShapeInput<'_>,
     ) -> Option<Vec<RawGlyph>> {
+        self.tick = self.tick.wrapping_add(1);
+        let tick = self.tick;
+        if !self.faces.contains_key(&font) && self.faces.len() >= MAX_SHAPER_FACES {
+            if let Some((&evict, _)) = self.faces.iter().min_by_key(|(_, face)| face.last_used) {
+                self.faces.remove(&evict);
+            }
+        }
         let face = match self.faces.entry(font) {
-            std::collections::hash_map::Entry::Occupied(entry) => entry.into_mut(),
+            std::collections::hash_map::Entry::Occupied(entry) => {
+                let face = entry.into_mut();
+                face.last_used = tick;
+                face
+            }
             std::collections::hash_map::Entry::Vacant(entry) => {
                 let data = load()?;
                 let font_ref = FontRef::from_index(data.bytes(), data.index()).ok()?;
@@ -93,6 +108,7 @@ impl FaceShapers {
                     data,
                     shaper_data,
                     plans: Vec::new(),
+                    last_used: tick,
                 })
             }
         };
@@ -284,5 +300,24 @@ mod tests {
             shape(&mut shapers, "مرحبا", Some(language), &[]);
         }
         assert_eq!(plans(&shapers), PLANS_PER_FACE);
+    }
+
+    #[test]
+    fn face_shapers_evict_lru_faces_past_cap() {
+        let (_, data) = face();
+        let mut shapers = FaceShapers::default();
+        for index in 0..((MAX_SHAPER_FACES + 8) as u32) {
+            let id = FontId::from_parts(index, 1);
+            shapers
+                .shape(id, || Some(data.clone()), &input("مرحبا", None, &[]))
+                .unwrap();
+        }
+        assert_eq!(shapers.faces.len(), MAX_SHAPER_FACES);
+        assert!(!shapers.faces.contains_key(&FontId::from_parts(0, 1)));
+        assert!(
+            shapers
+                .faces
+                .contains_key(&FontId::from_parts((MAX_SHAPER_FACES + 7) as u32, 1))
+        );
     }
 }

@@ -20,7 +20,7 @@ macro_rules! set_opt {
         $(
             #[inline]
             pub fn $name(mut self, value: $ty) -> Self {
-                self.$name = Some(value);
+                self.$name = Some(value.into());
                 self
             }
         )+

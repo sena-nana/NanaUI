@@ -87,6 +87,17 @@ impl UiScene {
                 hierarchy_changed |= old.parent.is_some() || !old.children.is_empty();
                 self.remove_node_primitives(id);
                 self.forget_compositor_node(id);
+                let opacity_cache = self
+                    .opacity_group_cache
+                    .get_mut()
+                    .expect("scene opacity groups");
+                if !opacity_cache.is_empty() {
+                    if self.dest_group_candidates == 0 {
+                        opacity_cache.clear();
+                    } else {
+                        opacity_cache.remove(&id);
+                    }
+                }
                 if !self.custom_paint.is_empty() {
                     self.custom_paint.remove(&id);
                 }

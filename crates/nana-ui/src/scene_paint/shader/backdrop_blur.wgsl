@@ -53,9 +53,10 @@ fn gaussian_weight(offset: f32, sigma: f32) -> f32 {
 // edge texels standing in for everything past them: CSS blurs a backdrop
 // with its edges duplicated, not faded into transparent black.
 fn read(at: vec2<f32>) -> vec4<f32> {
-    let lo = blur.region_origin + 0.5;
-    let hi = blur.region_origin + blur.region_size - 0.5;
-    return textureSampleLevel(source, source_sampler, clamp(at, lo, hi) * blur.texel_size, 0.0);
+    let lo = vec2<f32>(0.5);
+    let hi = max(blur.region_size - 0.5, lo);
+    let inv_size = 1.0 / vec2<f32>(textureDimensions(source));
+    return textureSampleLevel(source, source_sampler, clamp(at, lo, hi) * inv_size, 0.0);
 }
 
 @fragment

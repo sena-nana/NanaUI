@@ -1140,7 +1140,7 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
             self.image_window_keys.remove(&id);
         }
         self.occluded.remove(&id);
-        for painter in self.painters.values_mut() {
+        if let Some(painter) = self.painter.as_mut() {
             painter.remove_target(crate::RenderTargetId(id.0));
         }
         #[cfg(any(target_os = "macos", target_os = "windows"))]
@@ -1184,6 +1184,7 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
                 self.apply_window_shadow(parent);
             }
             drop(host);
+            self.retain_active_presentations();
             nana_diagnostics::event!(nana_diagnostics::framework::window::CLOSED, window = id.0);
             let update = self
                 .program

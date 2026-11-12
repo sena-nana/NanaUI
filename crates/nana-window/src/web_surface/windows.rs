@@ -29,6 +29,7 @@ use windows::Graphics::Capture::{
 use windows::Graphics::DirectX::Direct3D11::IDirect3DDevice;
 use windows::Graphics::DirectX::DirectXPixelFormat;
 use windows::Graphics::SizeInt32;
+use windows::System::DispatcherQueueController;
 use windows::UI::Composition::Desktop::DesktopWindowTarget;
 use windows::UI::Composition::{Compositor, ContainerVisual, Visual};
 use windows::Win32::Foundation::{HMODULE, HWND, LPARAM, LRESULT, POINT, RECT, WPARAM};
@@ -329,7 +330,7 @@ fn run(
 ) {
     let com = unsafe { CoInitializeEx(None, COINIT_APARTMENTTHREADED) };
     match start(policy, desc, frames, shared.clone()) {
-        Ok(engine) => {
+        Ok((engine, dispatcher)) => {
             ENGINE.with(|slot| *slot.borrow_mut() = Some(engine.clone()));
             if let Err(error) = engine.create_webview() {
                 engine.fail(error);
@@ -337,6 +338,8 @@ fn run(
             pump(&engine, &requests);
             ENGINE.with(|slot| slot.borrow_mut().take());
             engine.shutdown();
+            let _ = dispatcher.ShutdownQueueAsync();
+            drop(dispatcher);
         }
         Err(error) => {
             shared.publish(WebSurfaceEvent::State(BrowserState {
@@ -379,17 +382,16 @@ fn start(
     desc: WebSurfaceDesc,
     frames: WebFrameSink,
     shared: Arc<Shared>,
-) -> Result<Rc<Engine>, String> {
+) -> Result<(Rc<Engine>, DispatcherQueueController), String> {
     let error = |error: windows::core::Error| error.message();
     unsafe {
         // Windows.UI.Composition needs a dispatcher queue on this thread.
-        let controller = CreateDispatcherQueueController(DispatcherQueueOptions {
+        let dispatcher = CreateDispatcherQueueController(DispatcherQueueOptions {
             dwSize: std::mem::size_of::<DispatcherQueueOptions>() as u32,
             threadType: DQTYPE_THREAD_CURRENT,
             apartmentType: DQTAT_COM_STA,
         })
         .map_err(error)?;
-        std::mem::forget(controller);
         let compositor = Compositor::new().map_err(error)?;
         let root = compositor.CreateContainerVisual().map_err(error)?;
         let instance = GetModuleHandleW(None).map_err(error)?;
@@ -438,34 +440,37 @@ fn start(
         let direct3d: IDirect3DDevice = CreateDirect3D11DeviceFromDXGIDevice(&dxgi)
             .and_then(|device: IInspectable| device.cast())
             .map_err(error)?;
-        Ok(Rc::new(Engine {
-            hwnd,
-            policy,
-            shared,
-            compositor,
-            root,
-            target: RefCell::new(None),
-            controller: RefCell::new(None),
-            composition: RefCell::new(None),
-            webview: RefCell::new(None),
-            direct3d,
-            capturer: Arc::new(Mutex::new(Capturer {
-                device,
-                context,
-                staging: None,
-                sink: frames,
-                interval: capture_interval(desc.max_fps),
-                last: None,
-                size: desc.frame_size(),
-                sequence: 0,
-            })),
-            capture: RefCell::new(None),
-            desc: Cell::new(desc),
-            interactive: Cell::new(false),
-            loading: Cell::new(false),
-            error: RefCell::new(None),
-            cursor: Cell::new(None),
-        }))
+        Ok((
+            Rc::new(Engine {
+                hwnd,
+                policy,
+                shared,
+                compositor,
+                root,
+                target: RefCell::new(None),
+                controller: RefCell::new(None),
+                composition: RefCell::new(None),
+                webview: RefCell::new(None),
+                direct3d,
+                capturer: Arc::new(Mutex::new(Capturer {
+                    device,
+                    context,
+                    staging: None,
+                    sink: frames,
+                    interval: capture_interval(desc.max_fps),
+                    last: None,
+                    size: desc.frame_size(),
+                    sequence: 0,
+                })),
+                capture: RefCell::new(None),
+                desc: Cell::new(desc),
+                interactive: Cell::new(false),
+                loading: Cell::new(false),
+                error: RefCell::new(None),
+                cursor: Cell::new(None),
+            }),
+            dispatcher,
+        ))
     }
 }
 

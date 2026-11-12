@@ -6,7 +6,10 @@
 //! Resolution is [`CalcExpr::resolve_with_fonts`]; the layout engine only
 //! consumes px.
 
+use std::collections::HashMap;
+use std::collections::hash_map::DefaultHasher;
 use std::fmt;
+use std::hash::{Hash, Hasher};
 use std::sync::{Mutex, OnceLock};
 
 use serde::{Deserialize, Serialize};
@@ -84,20 +87,85 @@ impl<'de> Deserialize<'de> for CalcExprRef {
     }
 }
 
-static CALC_INTERN: OnceLock<Mutex<Vec<&'static CalcExpr>>> = OnceLock::new();
+static CALC_INTERN: OnceLock<Mutex<HashMap<u64, Vec<&'static CalcExpr>>>> = OnceLock::new();
 
-fn calc_intern() -> &'static Mutex<Vec<&'static CalcExpr>> {
-    CALC_INTERN.get_or_init(|| Mutex::new(Vec::new()))
+fn calc_intern() -> &'static Mutex<HashMap<u64, Vec<&'static CalcExpr>>> {
+    CALC_INTERN.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+fn hash_f32_canonical(val: f32, state: &mut impl Hasher) {
+    let bits = if val == 0.0 { 0u32 } else { val.to_bits() };
+    bits.hash(state);
+}
+
+fn hash_calc_expr(expr: &CalcExpr, state: &mut impl Hasher) {
+    match expr {
+        CalcExpr::Number(v) => {
+            0u8.hash(state);
+            hash_f32_canonical(*v, state);
+        }
+        CalcExpr::Px(v) => {
+            1u8.hash(state);
+            hash_f32_canonical(*v, state);
+        }
+        CalcExpr::Percent(v) => {
+            2u8.hash(state);
+            hash_f32_canonical(*v, state);
+        }
+        CalcExpr::Em(v) => {
+            3u8.hash(state);
+            hash_f32_canonical(*v, state);
+        }
+        CalcExpr::Rem(v) => {
+            4u8.hash(state);
+            hash_f32_canonical(*v, state);
+        }
+        CalcExpr::Viewport { axis, value } => {
+            5u8.hash(state);
+            (*axis as u8).hash(state);
+            hash_f32_canonical(*value, state);
+        }
+        CalcExpr::Binary { op, left, right } => {
+            6u8.hash(state);
+            (*op as u8).hash(state);
+            hash_calc_expr(left, state);
+            hash_calc_expr(right, state);
+        }
+        CalcExpr::Neg(inner) => {
+            7u8.hash(state);
+            hash_calc_expr(inner, state);
+        }
+        CalcExpr::Min(a, b) => {
+            8u8.hash(state);
+            hash_calc_expr(a, state);
+            hash_calc_expr(b, state);
+        }
+        CalcExpr::Max(a, b) => {
+            9u8.hash(state);
+            hash_calc_expr(a, state);
+            hash_calc_expr(b, state);
+        }
+        CalcExpr::Clamp { min, val, max } => {
+            10u8.hash(state);
+            hash_calc_expr(min, state);
+            hash_calc_expr(val, state);
+            hash_calc_expr(max, state);
+        }
+    }
 }
 
 /// Box and intern `expr` so it can live on a Copy [`LengthSpec`].
 pub fn intern_calc(expr: Box<CalcExpr>) -> CalcExprRef {
+    let mut hasher = DefaultHasher::new();
+    hash_calc_expr(&expr, &mut hasher);
+    let hash = hasher.finish();
     let mut table = calc_intern().lock().expect("calc intern");
-    if let Some(existing) = table.iter().copied().find(|e| *e == expr.as_ref()) {
+    let bucket = table.entry(hash).or_default();
+    if let Some(existing) = bucket.iter().copied().find(|e| *e == expr.as_ref()) {
         return CalcExprRef(existing);
     }
     let leaked: &'static CalcExpr = Box::leak(expr);
-    table.push(leaked);
+    bucket.push(leaked);
     CalcExprRef(leaked)
 }
 

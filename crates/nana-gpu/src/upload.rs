@@ -244,7 +244,19 @@ impl UploadRing {
     }
 
     fn recycle(&self, mut batch: UploadBatch) {
+        const MAX_SPARE_BYTES: usize = 1 << 20;
+        const MAX_SPARE_WRITES: usize = 256;
+
         batch.clear();
+        if batch.bytes.capacity() > MAX_SPARE_BYTES {
+            batch.bytes.shrink_to(MAX_SPARE_BYTES);
+        }
+        if batch.buffers.capacity() > MAX_SPARE_WRITES {
+            batch.buffers.shrink_to(MAX_SPARE_WRITES);
+        }
+        if batch.textures.capacity() > MAX_SPARE_WRITES {
+            batch.textures.shrink_to(MAX_SPARE_WRITES);
+        }
         let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
         if state.spare.len() < 4 {
             state.spare.push(batch);
@@ -632,5 +644,23 @@ mod tests {
             &[2; 4]
         );
         assert_eq!(first.writes, 2);
+    }
+
+    #[test]
+    fn recycled_batch_caps_spare_cpu_capacity() {
+        let device = device();
+        let ring = UploadRing::new();
+        let target = buffer(&device, 4 << 20);
+        let mut batch = ring.batch();
+        let spike = vec![7u8; 3 << 20];
+        batch.write_buffer(&target, 0, &spike);
+        assert!(batch.bytes.capacity() >= (3 << 20));
+        ring.recycle(batch);
+        let reused = ring.batch();
+        assert!(
+            reused.bytes.capacity() <= (1 << 20),
+            "recycled UploadBatch must cap spare byte capacity at 1 MiB, got {}",
+            reused.bytes.capacity()
+        );
     }
 }

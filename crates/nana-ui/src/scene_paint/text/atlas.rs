@@ -43,6 +43,9 @@ const BYTE_BUDGET: usize = 48 * 1024 * 1024;
 /// repacking reclaims it. A failed allocation with the page nearly full is
 /// just full, and repacking would re-upload every live glyph to learn that.
 const COMPACT_BELOW_OCCUPANCY: u64 = 500;
+/// Consecutive frames a non-placeholder page may sit completely empty before
+/// its GPU texture is dropped.
+const IDLE_PAGE_FRAMES: u32 = 120;
 
 /// Page size and memory ceiling. Separated from the manager so a test can
 /// reach eviction, growth and compaction with a handful of glyphs instead of
@@ -93,6 +96,13 @@ impl AtlasPageKind {
             // Color bitmaps are authored in sRGB, so the sampler decodes them
             // and the shader blends in linear light like everything else.
             Self::Color => wgpu::TextureFormat::Rgba8UnormSrgb,
+        }
+    }
+
+    const fn other(self) -> Self {
+        match self {
+            Self::Mask => Self::Color,
+            Self::Color => Self::Mask,
         }
     }
 }
@@ -178,6 +188,8 @@ struct AtlasPage {
     view: wgpu::TextureView,
     allocator: BucketedAtlasAllocator,
     edge: u32,
+    live_slots: u32,
+    empty_frames: u32,
 }
 
 impl AtlasPage {
@@ -202,7 +214,8 @@ pub(super) struct GlyphAtlasCounters {
 }
 
 pub(super) struct GlyphAtlasManager {
-    pages: Vec<AtlasPage>,
+    pages: Vec<Option<AtlasPage>>,
+    pages_opened: usize,
     slots: Vec<Slot>,
     free_slots: Vec<u32>,
     index: HashMap<GlyphRasterKey, GlyphAtlasEntryId>,
@@ -291,6 +304,7 @@ impl GlyphAtlasManager {
         let max_edge = device.limits().max_texture_dimension_2d.max(1);
         let mut manager = Self {
             pages: Vec::new(),
+            pages_opened: 0,
             slots: Vec::new(),
             free_slots: Vec::new(),
             index: HashMap::new(),
@@ -336,25 +350,46 @@ impl GlyphAtlasManager {
             self.drop_every_placement();
             self.raster_generation = raster_generation;
         }
+        for index in 0..self.pages.len() {
+            if self.placeholders.contains(&(index as u32)) {
+                continue;
+            }
+            let close = match self.pages[index].as_mut() {
+                Some(page) if page.live_slots == 0 => {
+                    page.empty_frames = page.empty_frames.saturating_add(1);
+                    page.empty_frames >= IDLE_PAGE_FRAMES
+                }
+                Some(page) => {
+                    page.empty_frames = 0;
+                    false
+                }
+                None => false,
+            };
+            if close {
+                self.close_page(index);
+            }
+        }
     }
 
     pub(super) fn counters(&self) -> GlyphAtlasCounters {
-        let bytes: usize = self.pages.iter().map(AtlasPage::bytes).sum();
+        let bytes: usize = self.pages.iter().flatten().map(AtlasPage::bytes).sum();
         let texels: u64 = self
             .pages
             .iter()
+            .flatten()
             .map(|page| u64::from(page.edge) * u64::from(page.edge))
             .sum();
         let live: u64 = self
             .pages
             .iter()
+            .flatten()
             .map(|page| page.allocator.allocated_space().max(0) as u64)
             .sum();
         GlyphAtlasCounters {
             hits: self.hits,
             misses: self.misses,
             evictions: self.evictions,
-            pages: self.pages.len() as u32,
+            pages: self.page_count() as u32,
             bytes: bytes as u64,
             occupancy_permille: live.saturating_mul(1000).checked_div(texels).unwrap_or(0) as u32,
             relocations: self.relocations,
@@ -457,6 +492,10 @@ impl GlyphAtlasManager {
             image.height + GLYPH_PADDING * 2,
         ];
         let (page, alloc, min) = self.allocate(device, kind, cell, raster, uploads)?;
+        if let Some(Some(atlas_page)) = self.pages.get_mut(page as usize) {
+            atlas_page.live_slots = atlas_page.live_slots.saturating_add(1);
+            atlas_page.empty_frames = 0;
+        }
         let origin = [min[0] + GLYPH_PADDING, min[1] + GLYPH_PADDING];
         uploads.push(kind, page, min, cell, Arc::clone(image), GLYPH_PADDING);
         let entry = AtlasEntry {
@@ -501,6 +540,30 @@ impl GlyphAtlasManager {
         Some((id, entry))
     }
 
+    fn resolve_live_pages(&self, mask_page: u32, color_page: u32) -> (u32, u32) {
+        let mask = if self
+            .pages
+            .get(mask_page as usize)
+            .and_then(Option::as_ref)
+            .is_some()
+        {
+            mask_page
+        } else {
+            self.placeholders[0]
+        };
+        let color = if self
+            .pages
+            .get(color_page as usize)
+            .and_then(Option::as_ref)
+            .is_some()
+        {
+            color_page
+        } else {
+            self.placeholders[1]
+        };
+        (mask, color)
+    }
+
     /// The bind group that reaches both of a draw segment's pages.
     pub(super) fn bind_group(
         &mut self,
@@ -508,8 +571,9 @@ impl GlyphAtlasManager {
         mask_page: u32,
         color_page: u32,
     ) -> Option<&wgpu::BindGroup> {
-        let mask = self.pages.get(mask_page as usize)?;
-        let color = self.pages.get(color_page as usize)?;
+        let (mask_page, color_page) = self.resolve_live_pages(mask_page, color_page);
+        let mask = self.pages.get(mask_page as usize)?.as_ref()?;
+        let color = self.pages.get(color_page as usize)?.as_ref()?;
         let (mask_view, color_view) = (&mask.view, &color.view);
         let layout = &self.layout;
         let (nearest, linear) = (&self.nearest, &self.linear);
@@ -549,15 +613,23 @@ impl GlyphAtlasManager {
         mask_page: u32,
         color_page: u32,
     ) -> Option<&wgpu::BindGroup> {
-        self.bind_groups.get(&(mask_page, color_page))
+        let pair = self.resolve_live_pages(mask_page, color_page);
+        self.bind_groups.get(&pair)
     }
 
     pub(super) fn page_count(&self) -> usize {
-        self.pages.len()
+        self.pages.iter().flatten().count()
+    }
+
+    pub(super) fn pages_opened(&self) -> usize {
+        self.pages_opened
     }
 
     pub(super) fn page_texture(&self, page: u32) -> Option<&wgpu::Texture> {
-        self.pages.get(page as usize).map(|page| &page.texture)
+        self.pages
+            .get(page as usize)
+            .and_then(Option::as_ref)
+            .map(|page| &page.texture)
     }
 
     /// The 1×1 page of `kind`, for a draw segment that samples only the other
@@ -639,6 +711,9 @@ impl GlyphAtlasManager {
                     continue;
                 }
             }
+            if self.reclaim_cross_kind_page(kind) {
+                continue;
+            }
             return None;
         }
     }
@@ -652,15 +727,17 @@ impl GlyphAtlasManager {
 
     /// Live glyph area per mille of the pages of one kind.
     fn occupancy_permille(&self, kind: AtlasPageKind) -> u64 {
-        let (live, texels) = self.pages.iter().filter(|page| page.kind == kind).fold(
-            (0u64, 0u64),
-            |(live, texels), page| {
+        let (live, texels) = self
+            .pages
+            .iter()
+            .flatten()
+            .filter(|page| page.kind == kind)
+            .fold((0u64, 0u64), |(live, texels), page| {
                 (
                     live + page.allocator.allocated_space().max(0) as u64,
                     texels + u64::from(page.edge) * u64::from(page.edge),
                 )
-            },
-        );
+            });
         live.saturating_mul(1000)
             .checked_div(texels)
             .unwrap_or(1000)
@@ -672,7 +749,10 @@ impl GlyphAtlasManager {
         cell: [u32; 2],
     ) -> Option<(u32, AllocId, [u32; 2])> {
         let size = size2(cell[0] as i32, cell[1] as i32);
-        for (index, page) in self.pages.iter_mut().enumerate() {
+        for (index, slot) in self.pages.iter_mut().enumerate() {
+            let Some(page) = slot.as_mut() else {
+                continue;
+            };
             if page.kind != kind {
                 continue;
             }
@@ -729,12 +809,14 @@ impl GlyphAtlasManager {
             .pages
             .iter()
             .enumerate()
-            .filter(|(_, page)| page.kind == kind)
-            .map(|(index, page)| {
-                (
-                    index,
-                    BucketedAtlasAllocator::new(size2(page.edge as i32, page.edge as i32)),
-                )
+            .filter_map(|(index, page)| {
+                let page = page.as_ref()?;
+                (page.kind == kind).then(|| {
+                    (
+                        index,
+                        BucketedAtlasAllocator::new(size2(page.edge as i32, page.edge as i32)),
+                    )
+                })
             })
             .collect();
         let mut placed = Vec::with_capacity(live.len());
@@ -761,7 +843,10 @@ impl GlyphAtlasManager {
             ));
         }
         for (page, allocator) in trial {
-            self.pages[page].allocator = allocator;
+            if let Some(atlas_page) = self.pages[page].as_mut() {
+                atlas_page.allocator = allocator;
+                atlas_page.live_slots = 0;
+            }
         }
         for (index, image, cell, page, alloc, min) in placed {
             let origin = [min[0] + GLYPH_PADDING, min[1] + GLYPH_PADDING];
@@ -778,13 +863,108 @@ impl GlyphAtlasManager {
                 entry.entry.page = page;
                 entry.entry.origin = origin;
                 entry.alloc = alloc;
+                if let Some(Some(atlas_page)) = self.pages.get_mut(page as usize) {
+                    atlas_page.live_slots = atlas_page.live_slots.saturating_add(1);
+                    atlas_page.empty_frames = 0;
+                }
             }
         }
         nana_diagnostics::event!(
             nana_diagnostics::framework::text::ATLAS_COMPACTED,
-            pages = self.pages.len()
+            pages = self.page_count()
         );
         true
+    }
+
+    fn close_page(&mut self, index: usize) -> bool {
+        let idx = index as u32;
+        if self.placeholders.contains(&idx) {
+            return false;
+        }
+        let Some(page) = self.pages.get(index).and_then(Option::as_ref) else {
+            return false;
+        };
+        if page.live_slots != 0 {
+            return false;
+        }
+        self.pages[index] = None;
+        self.bind_groups
+            .retain(|&(mask, color), _| mask != idx && color != idx);
+        true
+    }
+
+    /// Reclaim one non-placeholder page of `needed_kind.other()` whose glyphs
+    /// are all cold when `needed_kind` is starved by the shared byte budget.
+    fn reclaim_cross_kind_page(&mut self, needed_kind: AtlasPageKind) -> bool {
+        let other = needed_kind.other();
+        for index in 0..self.pages.len() {
+            if self.placeholders.contains(&(index as u32)) {
+                continue;
+            }
+            if self.pages[index]
+                .as_ref()
+                .is_some_and(|page| page.kind == other && page.live_slots == 0)
+                && self.close_page(index)
+            {
+                return true;
+            }
+        }
+        let frame = self.frame;
+        let mut best: Option<(u32, u64, usize)> = None;
+        for (page_index, page_slot) in self.pages.iter().enumerate() {
+            if self.placeholders.contains(&(page_index as u32)) {
+                continue;
+            }
+            let Some(page) = page_slot.as_ref() else {
+                continue;
+            };
+            if page.kind != other {
+                continue;
+            }
+            let mut max_refs = 0u32;
+            let mut max_used = 0u64;
+            let mut in_flight = false;
+            for slot in &self.slots {
+                let Some(live) = slot.live.as_ref() else {
+                    continue;
+                };
+                if live.entry.page as usize != page_index {
+                    continue;
+                }
+                if live.last_used == frame {
+                    in_flight = true;
+                    break;
+                }
+                max_refs = max_refs.max(slot.refs.min(1));
+                max_used = max_used.max(live.last_used);
+            }
+            if in_flight {
+                continue;
+            }
+            let rank = (max_refs, max_used, page_index);
+            if best.is_none_or(|current| rank < current) {
+                best = Some(rank);
+            }
+        }
+        let Some((_, _, victim_page)) = best else {
+            return false;
+        };
+        let mut dropped = 0usize;
+        for slot_index in 0..self.slots.len() as u32 {
+            let on_victim = self.slots[slot_index as usize]
+                .live
+                .as_ref()
+                .is_some_and(|live| live.entry.page as usize == victim_page);
+            if on_victim {
+                self.free_slot(slot_index);
+                self.evictions += 1;
+                dropped += 1;
+            }
+        }
+        if dropped > 0 {
+            nana_diagnostics::metric!(nana_diagnostics::framework::text::ATLAS_EVICTIONS, dropped);
+        }
+        self.close_page(victim_page)
     }
 
     fn open_page(
@@ -794,8 +974,29 @@ impl GlyphAtlasManager {
         requested_edge: u32,
     ) -> Option<u32> {
         let edge = requested_edge.min(self.max_edge).max(1);
-        let bytes: usize = self.pages.iter().map(AtlasPage::bytes).sum();
         let next = (edge as usize) * (edge as usize) * kind.bytes_per_texel();
+        let mut bytes: usize = self.pages.iter().flatten().map(AtlasPage::bytes).sum();
+        if bytes + next > self.limits.byte_budget {
+            for index in 0..self.pages.len() {
+                if bytes + next <= self.limits.byte_budget {
+                    break;
+                }
+                if self.placeholders.contains(&(index as u32)) {
+                    continue;
+                }
+                let reclaimable = self.pages[index]
+                    .as_ref()
+                    .map(|page| {
+                        (page.live_slots == 0 && page.empty_frames >= 1).then_some(page.bytes())
+                    })
+                    .flatten();
+                if let Some(freed) = reclaimable
+                    && self.close_page(index)
+                {
+                    bytes = bytes.saturating_sub(freed);
+                }
+            }
+        }
         if bytes + next > self.limits.byte_budget {
             use nana_diagnostics::framework::text;
             // A full atlas refuses on every miss: count each refusal, but
@@ -828,20 +1029,35 @@ impl GlyphAtlasManager {
             view_formats: &[],
         });
         let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
-        self.pages.push(AtlasPage {
+        let page = AtlasPage {
             kind,
             texture,
             view,
             allocator: BucketedAtlasAllocator::new(size2(edge as i32, edge as i32)),
             edge,
-        });
+            live_slots: 0,
+            empty_frames: 0,
+        };
+        self.pages_opened = self.pages_opened.saturating_add(1);
+        let index = if let Some((index, slot)) = self
+            .pages
+            .iter_mut()
+            .enumerate()
+            .find(|(_, slot)| slot.is_none())
+        {
+            *slot = Some(page);
+            index as u32
+        } else {
+            self.pages.push(Some(page));
+            (self.pages.len() - 1) as u32
+        };
         nana_diagnostics::event!(
             nana_diagnostics::framework::text::ATLAS_PAGE_OPENED,
             edge = edge,
             bytes = next as u64,
             atlas_bytes = (bytes + next) as u64
         );
-        Some((self.pages.len() - 1) as u32)
+        Some(index)
     }
 
     /// Free the coldest glyphs of `kind` that the frame in flight is not
@@ -905,14 +1121,20 @@ impl GlyphAtlasManager {
         slot.refs = 0;
         self.free_slots.push(index);
         self.index.remove(&live.key);
-        if release_rect && let Some(page) = self.pages.get_mut(live.entry.page as usize) {
+        if release_rect && let Some(Some(page)) = self.pages.get_mut(live.entry.page as usize) {
             page.allocator.deallocate(live.alloc);
+            page.live_slots = page.live_slots.saturating_sub(1);
+            if page.live_slots == 0 {
+                page.allocator.clear();
+            }
         }
     }
 
     fn drop_every_placement(&mut self) {
-        for page in &mut self.pages {
+        for page in self.pages.iter_mut().flatten() {
             page.allocator.clear();
+            page.live_slots = 0;
+            page.empty_frames = 0;
         }
         // After the clear, so no `AllocId` reaches a packer that has forgotten
         // it.
@@ -1341,6 +1563,7 @@ mod tests {
                 atlas
                     .pages
                     .iter()
+                    .flatten()
                     .filter(|page| page.kind == AtlasPageKind::Mask && page.edge > 1)
             };
             let fits = pages().next().is_none()
@@ -1371,5 +1594,87 @@ mod tests {
             );
         }
         assert_no_overlap(&atlas);
+    }
+
+    struct ColorSquares {
+        edge: u32,
+    }
+
+    impl GlyphRasterizer for ColorSquares {
+        fn rasterize(&mut self, _request: &GlyphRasterRequest) -> Option<GlyphImage> {
+            Some(GlyphImage {
+                format: GlyphImageFormat::ColorRgba,
+                width: self.edge,
+                height: self.edge,
+                left: 0,
+                top: self.edge as i32,
+                data: vec![255; (self.edge * self.edge * 4) as usize],
+            })
+        }
+    }
+
+    #[test]
+    fn empty_pages_close_after_idle_frames_and_cross_kind_cold_pages_yield_budget() {
+        let (device, _queue) = crate::test_gpu::device();
+        let mut raster = GlyphRasterCache::default();
+        let mut uploads = GlyphUploadQueue::default();
+        // Budget fits either 1 Color page (64*64*4 = 16384 B) OR up to 4 Mask pages (4096 B each),
+        // plus the 2 placeholder pages (5 B).
+        let mut atlas = GlyphAtlasManager::new(
+            &device,
+            raster.generation(),
+            GlyphAtlasLimits {
+                page_edge: 64,
+                byte_budget: 64 * 64 * 4 + 8,
+            },
+            None,
+        );
+
+        // Open a Color page that consumes the entire budget.
+        atlas.begin_frame(raster.generation());
+        let emoji_key = GlyphRasterKey {
+            glyph: 900,
+            ..key(900)
+        };
+        let emoji_img = raster
+            .get_or_rasterize(&mut ColorSquares { edge: 16 }, emoji_key)
+            .expect("color glyph");
+        let (emoji_handle, _) = atlas
+            .insert(&device, emoji_key, &emoji_img, &raster, &mut uploads)
+            .expect("color page fits budget");
+        assert_eq!(atlas.page_count(), 3);
+
+        // Next frame: the emoji is cold, and a Mask glyph needs its own page.
+        // Cross-kind reclamation must evict and close the cold Color page so Mask is not starved.
+        atlas.begin_frame(raster.generation());
+        let mask_placed = fill(
+            &mut atlas,
+            &mut raster,
+            &mut uploads,
+            &mut Squares { edge: 12 },
+            &device,
+            1..5,
+        );
+        assert!(
+            mask_placed.iter().all(|(_, id)| id.is_some()),
+            "Mask glyphs must reclaim budget from the cold Color page"
+        );
+        assert!(atlas.entry(emoji_handle).is_none());
+
+        // Free all Mask slots and verify the empty Mask page closes after IDLE_PAGE_FRAMES.
+        for (_, id) in mask_placed {
+            if let Some(id) = id {
+                atlas.free_slot(id.index);
+            }
+        }
+        assert_eq!(atlas.page_count(), 3);
+        for _ in 0..IDLE_PAGE_FRAMES {
+            atlas.begin_frame(raster.generation());
+        }
+        assert_eq!(
+            atlas.page_count(),
+            2,
+            "empty non-placeholder pages must drop after IDLE_PAGE_FRAMES, leaving only the 2 1x1 placeholders"
+        );
     }
 }

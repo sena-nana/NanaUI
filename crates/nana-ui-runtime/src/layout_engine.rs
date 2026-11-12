@@ -1024,6 +1024,7 @@ impl RetainedLayoutCache {
     /// Release one deleted node without scanning cached nodes or constraints.
     pub fn remove_node(&mut self, document: DocumentId, id: StableNodeId) {
         if let Some(cache) = self.documents.get_mut(&document) {
+            cache.inline_objects.remove(&id);
             cache.intrinsics.remove(&id);
             cache.intrinsic_metrics.remove_content(id.get());
             cache.boxes.remove(&id);
@@ -1038,6 +1039,7 @@ impl RetainedLayoutCache {
             cache.envelopes.remove(&id);
             cache.line_solves.remove(&id);
             cache.applied_adjustments.remove(&id);
+            cache.line_boxes.remove(&id);
         }
     }
 

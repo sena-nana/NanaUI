@@ -275,6 +275,7 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
         self.sync_high_contrast(event_loop);
         self.sync_reduced_transparency(event_loop);
         self.sync_text_scale(event_loop);
+        let now = Instant::now().max(now);
         if self.next_wakeup().is_some_and(|deadline| now >= deadline) {
             self.wake(event_loop, now);
         }
@@ -519,25 +520,29 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
     pub(super) fn wake(&mut self, event_loop: &dyn ActiveEventLoop, now: Instant) {
         // The program may start a reveal or a motion from a message or its
         // own wake, between frames; that is stamped with the clock too.
+        let now = Instant::now().max(now);
         for id in self.known_window_ids() {
-            self.sync_compositor_clock(id);
+            self.sync_compositor_clock_at(id, now);
         }
         let mut update = self.drain_all_program_messages();
         update = update.merge(self.program.wake(now, &self.context()));
+        // Re-read after syncing the compositor clock and running program hooks:
+        // pending lifecycle events report `animation_now` as their deadline, so
+        // checking against an older `now` would leave them permanently undrained.
+        let animation_now = Instant::now().max(now);
         for id in self.known_window_ids() {
             let due = self
                 .program
                 .read_document(id, |document| {
-                    self.animation_clock
-                        .next_wakeup(document.context())
-                        .is_some_and(|deadline| deadline <= now)
+                    animation_due(self.animation_clock, document, animation_now)
                 })
                 .unwrap_or(false);
             if !due {
                 continue;
             }
             let frame = self.program.write_document(id, |document| {
-                self.animation_clock.wake(document.context_mut(), now)
+                self.animation_clock
+                    .wake(document.context_mut(), animation_now)
             });
             let Some(frame) = frame else {
                 continue;
@@ -587,7 +592,11 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
     /// Setting the clock marks nothing dirty; a resting scene keeps the time
     /// it was last presented at.
     pub(super) fn sync_compositor_clock(&mut self, id: WindowId) {
-        let now = self.animation_clock.runtime_time(Instant::now());
+        self.sync_compositor_clock_at(id, Instant::now());
+    }
+
+    pub(super) fn sync_compositor_clock_at(&mut self, id: WindowId, at: Instant) {
+        let now = self.animation_clock.runtime_time(at);
         let _ = self.program.write_document(id, |document| {
             document.sync_presentation_clock(now);
         });
@@ -609,6 +618,16 @@ enum FrameTick {
     None,
     Present,
     GpuOnly,
+}
+
+fn animation_due(
+    clock: RuntimeAnimationClock,
+    document: &nana_ui_scene::RuntimeDocument,
+    now: Instant,
+) -> bool {
+    clock
+        .next_wakeup(document.context())
+        .is_some_and(|deadline| deadline <= now)
 }
 
 pub(super) fn drawable_surface(physical_size: (u32, u32)) -> bool {
@@ -976,6 +995,95 @@ mod tests {
         assert!(
             (29..=31).contains(&capped),
             "a 30 Hz cap presents 30 frames a second, got {capped}"
+        );
+    }
+
+    #[test]
+    fn compositor_clock_sync_during_wake_still_drains_pending_animation_events() {
+        use nana_ui_runtime::{
+            AnimatableProperty, AnimationEventKind, AnimationFillMode, AnimationId,
+            AnimationPlayback, AnimationSpec, DocumentId, Easing, MotionInterrupt, MotionTo,
+            MotionValue, MutationQueue, Stack,
+        };
+        use nana_ui_scene::RuntimeDocument;
+
+        let epoch = Instant::now();
+        let clock = crate::RuntimeAnimationClock::new(epoch);
+        let doc_id = DocumentId::new(1).unwrap();
+        let mut document = RuntimeDocument::new(doc_id);
+        let backdrop = document
+            .context_mut()
+            .create_component(doc_id, Stack::fill_column(0.0))
+            .unwrap();
+        let target = backdrop.stable_id();
+        let anim_id = AnimationId::for_node(target, AnimatableProperty::Opacity);
+
+        let opacity_run = |from: f32, to: f32, start: Duration, duration: Duration| {
+            AnimationSpec::new(
+                anim_id,
+                target,
+                start,
+                duration,
+                Duration::from_millis(16),
+                Easing::Linear,
+            )
+            .with_property(AnimatableProperty::Opacity)
+            .with_range(
+                MotionValue::Scalar(from),
+                MotionTo::Value(MotionValue::Scalar(to)),
+            )
+            .with_interrupt(MotionInterrupt::Replace)
+            .with_playback(AnimationPlayback {
+                fill_mode: AnimationFillMode::Forwards,
+                ..AnimationPlayback::default()
+            })
+        };
+
+        // Start a 220 ms compositor fade at t = 0 and run its initial start
+        // sample so its only remaining deadline is completion at t = 220 ms.
+        let mut queue = MutationQueue::new();
+        queue.start_animation(opacity_run(
+            1.0,
+            0.0,
+            Duration::ZERO,
+            Duration::from_millis(220),
+        ));
+        document.context_mut().commit_mutations(queue).unwrap();
+        let _ = clock.wake(document.context_mut(), epoch);
+        assert_eq!(
+            clock.next_wakeup(document.context()),
+            Some(epoch + Duration::from_millis(220))
+        );
+
+        // Cancelling the in-flight track (e.g. unmounting a background section
+        // or interrupting a transition) leaves no track deadline, only a
+        // pending `Cancelled` event whose deadline tracks `animation_now`.
+        let cancel_at = Duration::from_millis(10);
+        document.sync_presentation_clock(cancel_at);
+        let mut queue = MutationQueue::new();
+        queue.stop_animation(anim_id);
+        document.context_mut().commit_mutations(queue).unwrap();
+
+        let wait_entered = epoch + cancel_at;
+        assert!(super::animation_due(clock, &document, wait_entered));
+
+        // `wake` syncs the compositor clock to wall time before checking due
+        // animations; advancing past `wait_entered` moves a pending event's
+        // reported deadline with it, so `wake` must evaluate against the
+        // post-sync instant rather than the stale `about_to_wait` timestamp.
+        let sync_at = wait_entered + Duration::from_micros(5);
+        document.sync_presentation_clock(clock.runtime_time(sync_at));
+        assert!(!super::animation_due(clock, &document, wait_entered));
+
+        let animation_now = sync_at + Duration::from_micros(2);
+        assert!(super::animation_due(clock, &document, animation_now));
+        let frame = clock.wake(document.context_mut(), animation_now);
+        assert_eq!(frame.events.len(), 1);
+        assert_eq!(frame.events[0].kind, AnimationEventKind::Cancelled);
+        assert_eq!(
+            clock.next_wakeup(document.context()),
+            None,
+            "once pending events drain, an idle document schedules no wakeup"
         );
     }
 }

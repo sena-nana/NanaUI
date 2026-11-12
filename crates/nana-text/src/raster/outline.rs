@@ -56,8 +56,10 @@ pub struct OutlineRasterizer {
     /// between glyphs so a glyph that misses allocates only its image.
     outline: swash::scale::outline::Outline,
     scratch: swash::zeno::Scratch,
-    faces: Vec<crate::FontId>,
+    faces: Vec<Option<crate::FontId>>,
     index: HashMap<crate::FontId, GlyphFontId>,
+    font_generation: u64,
+    retired_faces: Vec<GlyphFontId>,
     /// Axis coordinates behind each [`GlyphVariationId`] a run interned (zero
     /// is the face's default instance). The key carries the id because a
     /// bitmap differs by coordinates; the scaler needs the coordinates
@@ -88,6 +90,8 @@ impl OutlineRasterizer {
             scratch: swash::zeno::Scratch::new(),
             faces: Vec::new(),
             index: HashMap::new(),
+            font_generation: 0,
+            retired_faces: Vec::new(),
             variations: HashMap::new(),
             variation_index: HashMap::new(),
             issued_variations: 0,
@@ -159,6 +163,32 @@ impl OutlineRasterizer {
     /// holds its atlas cells, not the id's coordinates.
     pub fn begin_frame(&mut self) -> Vec<GlyphVariationId> {
         self.frame += 1;
+        if !self.faces.is_empty() {
+            let mut reset_scaler = false;
+            {
+                let engine = crate::lock_text_engine(&self.engine);
+                let generation = engine.fonts().generation().get();
+                if generation != self.font_generation {
+                    self.font_generation = generation;
+                    for (slot_idx, entry) in self.faces.iter_mut().enumerate() {
+                        if let Some(face) = *entry
+                            && engine.fonts().face_data(face).is_none()
+                        {
+                            *entry = None;
+                            self.index.remove(&face);
+                            if self.recent.is_some_and(|(recent, _)| recent == face) {
+                                self.recent = None;
+                            }
+                            self.retired_faces.push(GlyphFontId(slot_idx as u32));
+                            reset_scaler = true;
+                        }
+                    }
+                }
+            }
+            if reset_scaler {
+                self.context = swash::scale::ScaleContext::new();
+            }
+        }
         if self.variations.len() <= VARIATION_CAP {
             return Vec::new();
         }
@@ -184,6 +214,11 @@ impl OutlineRasterizer {
             .collect()
     }
 
+    /// Face ids retired by font unregistration since the last call.
+    pub fn take_retired_faces(&mut self) -> Vec<GlyphFontId> {
+        std::mem::take(&mut self.retired_faces)
+    }
+
     fn intern_face(&mut self, face: crate::FontId) -> GlyphFontId {
         if let Some((recent, font)) = self.recent
             && recent == face
@@ -194,7 +229,7 @@ impl OutlineRasterizer {
             Some(font) => *font,
             None => {
                 let font = GlyphFontId(self.faces.len() as u32);
-                self.faces.push(face);
+                self.faces.push(Some(face));
                 self.index.insert(face, font);
                 font
             }
@@ -206,7 +241,7 @@ impl OutlineRasterizer {
     /// The bytes behind a face id this rasterizer issued, for a backend that
     /// scales the same face by other means.
     pub fn face_data(&self, font: GlyphFontId) -> Option<(crate::FontId, crate::font::FontData)> {
-        let face = *self.faces.get(font.0 as usize)?;
+        let face = (*self.faces.get(font.0 as usize)?)?;
         let engine = crate::lock_text_engine(&self.engine);
         Some((face, engine.fonts().face_data(face)?))
     }
@@ -226,7 +261,7 @@ impl OutlineRasterizer {
 
     #[doc(hidden)]
     pub fn face_count(&self) -> usize {
-        self.faces.len()
+        self.faces.iter().flatten().count()
     }
 }
 
@@ -235,7 +270,7 @@ impl OutlineRasterizer {
     /// draw it. A glyph that is simply blank answers `Some` with an empty
     /// image, so a cache can tell "nothing to draw" from "ask again".
     pub fn rasterize(&mut self, key: &GlyphRasterKey) -> Option<GlyphImage> {
-        let face = *self.faces.get(key.font.0 as usize)?;
+        let face = (*self.faces.get(key.font.0 as usize)?)?;
         let glyph_id = u16::try_from(key.glyph).ok()?;
         // The blob is cloned out of the engine rather than scaled under its
         // lock: a glyph that misses must not hold the lock every other

@@ -548,6 +548,9 @@ impl HitIndex {
             {
                 continue;
             }
+            self.viewport_roots.remove(&id);
+            self.escaped.remove(&id);
+            self.pinned.remove(&id);
             let node = self.entries.remove(&id).unwrap();
             pending.extend(node.children.into_iter().flatten().map(|child| (child, id)));
         }
@@ -555,6 +558,8 @@ impl HitIndex {
 
     pub(super) fn remove(&mut self, id: StableNodeId) {
         self.viewport_roots.remove(&id);
+        self.escaped.remove(&id);
+        self.pinned.remove(&id);
         let Some(node) = self.entries.remove(&id) else {
             return;
         };
@@ -596,6 +601,8 @@ impl HitIndex {
                     && old.entry.order == next.order
             })
         {
+            self.escaped.remove(&root);
+            self.pinned.remove(&root);
             let old = self.entries.remove(&root).unwrap();
             self.remove_descendants(old.children, root);
             self.insert_tree(entry.unwrap(), parent, offset, old.sibling_slot);

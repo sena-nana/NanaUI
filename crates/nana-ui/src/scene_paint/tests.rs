@@ -14860,3 +14860,180 @@ fn boxes_with_nothing_to_paint_add_no_draw_and_no_pixel() {
     assert_eq!(boxed_draws, bare_draws, "empty boxes must not draw");
     assert_eq!(boxed, bare, "empty boxes must not change a pixel");
 }
+
+#[test]
+fn material_textures_share_across_parameter_updates_and_drop_when_removed() {
+    let (device, queue) = test_device();
+    let format = wgpu::TextureFormat::Rgba8Unorm;
+    let mut painter = SceneWgpuPainter::for_test(format);
+    let program = nana_ui_core::MaterialProgram::new(
+        "// material_texture_lifecycle\nfn material(i:MaterialInput)->vec4<f32>{return textureSample(material_texture_0,material_sampler,i.uv)*material_parameters[0];}",
+    );
+    let pixels: std::sync::Arc<[u8]> = vec![255u8; 64 * 64 * 4].into();
+    let weak_pixels = std::sync::Arc::downgrade(&pixels);
+    let tex = nana_ui_core::MaterialTexture {
+        size: [64, 64],
+        rgba: pixels,
+    };
+    let mat_v1 = nana_ui_core::MaterialRef::new(program)
+        .with_textures(std::sync::Arc::from([tex]))
+        .with_parameters(std::sync::Arc::from([[1.0, 0.5, 0.25, 1.0]]));
+
+    let make_scene = |material: Option<nana_ui_core::MaterialRef>| {
+        let mut scene = UiScene::new();
+        scene.apply_delta(
+            [extracted_div(
+                1,
+                &[],
+                0.0,
+                0.0,
+                64.0,
+                64.0,
+                nana_ui_core::LayoutStyle {
+                    background: Some([1.0, 1.0, 1.0, 1.0]),
+                    paint: nana_ui_core::PaintStyle {
+                        background_material: material,
+                        ..Default::default()
+                    }
+                    .into(),
+                    ..Default::default()
+                },
+                Some([1.0, 1.0, 1.0, 1.0]),
+            )],
+            [],
+        );
+        scene
+    };
+
+    let scene_v1 = make_scene(Some(mat_v1.clone()));
+    let _ = square_centre(&device, &queue, &mut painter, &scene_v1);
+    let first_upload = painter.last_gpu_work().unwrap().gpu_upload_bytes;
+    assert!(
+        first_upload >= 64 * 64 * 4,
+        "initial material paint uploads its 64x64 RGBA texture ({first_upload} B)"
+    );
+
+    let mat_v2 = mat_v1.with_parameters(std::sync::Arc::from([[0.25, 1.0, 0.5, 1.0]]));
+    drop(scene_v1);
+    let scene_v2 = make_scene(Some(mat_v2));
+    let _ = square_centre(&device, &queue, &mut painter, &scene_v2);
+    let update_upload = painter.last_gpu_work().unwrap().gpu_upload_bytes;
+    assert!(
+        update_upload < 1024,
+        "updating material parameters must reuse the uploaded texture instead of re-uploading 16 KiB (got {update_upload} B)"
+    );
+    assert!(
+        weak_pixels.strong_count() > 0,
+        "live material keeps its texture alive"
+    );
+
+    drop(scene_v2);
+    let plain_scene = make_scene(None);
+    let _ = square_centre(&device, &queue, &mut painter, &plain_scene);
+    assert_eq!(
+        weak_pixels.strong_count(),
+        0,
+        "removing the last material quad must release both the binding and MaterialDevice::images cache"
+    );
+}
+
+#[test]
+fn backdrop_scratch_and_dest_groups_right_size_and_reclaim_when_idle() {
+    let (device, queue) = test_device();
+    let format = wgpu::TextureFormat::Rgba8Unorm;
+    let mut painter = SceneWgpuPainter::for_test(format);
+    let viewport = ScenePaintViewport {
+        logical_size: [512.0, 512.0],
+        physical_size: [512, 512],
+        scale_factor: 1.0,
+        scene_origin: [0.0, 0.0],
+        target_origin: [0.0, 0.0],
+        clear_color: [0.0, 0.0, 0.0, 1.0],
+        clear: true,
+    };
+    let (_texture, view) = test_copy_target(&device, format, 512, 512);
+
+    let mut blend_group = translucent_parent(10, &[11, 12], 0.0, 0.0, 64.0, 64.0, 0.7);
+    Arc::make_mut(&mut blend_group.source_style.layout).paint = nana_ui_core::PaintStyle {
+        mix_blend: nana_ui_core::MixBlendMode::Difference,
+        ..Default::default()
+    }
+    .into();
+
+    let mut active = UiScene::new();
+    active.apply_delta(
+        [
+            colored_quad_node(1, 0.0, 0.0, 512.0, 512.0, [0.2, 0.4, 0.8, 1.0]),
+            frost_quad_node_with_fill(
+                2,
+                16.0,
+                16.0,
+                32.0,
+                32.0,
+                [1.0, 1.0, 1.0, 0.1],
+                nana_ui_core::BackdropFilter {
+                    blur_radius: 4.0,
+                    saturate: 1.0,
+                },
+            ),
+            blend_group,
+            colored_quad_child(11, 10, 0.0, 0.0, 40.0, 40.0, [1.0, 0.0, 0.0, 1.0]),
+            colored_quad_child(12, 10, 20.0, 20.0, 40.0, 40.0, [0.0, 1.0, 0.0, 1.0]),
+        ],
+        [],
+    );
+
+    let paint_once = |painter: &mut SceneWgpuPainter, scene: &UiScene| {
+        let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+            label: Some("nana-ui-reclaim-test"),
+        });
+        painter
+            .paint_encoder(scene, &mut encoder, &view, viewport, None, None)
+            .unwrap();
+        queue.submit([encoder.finish()]);
+    };
+
+    paint_once(&mut painter, &active);
+    let scratch = painter
+        .backdrop
+        .scratch_size()
+        .expect("backdrop scratch allocated");
+    assert!(
+        scratch[0] <= 128 && scratch[1] <= 128,
+        "32x32 frosted card on 512x512 target must right-size ping/pong to <= 128x128, got {scratch:?}"
+    );
+    let dest = painter.dest.as_ref().expect("dest target");
+    assert!(dest.group_layer_count() >= 1);
+    assert!(dest.has_reading_blend());
+
+    let mut plain = UiScene::new();
+    plain.apply_delta(
+        [colored_quad_node(
+            1,
+            0.0,
+            0.0,
+            512.0,
+            512.0,
+            [0.2, 0.4, 0.8, 1.0],
+        )],
+        [],
+    );
+    for _ in 0..120 {
+        paint_once(&mut painter, &plain);
+    }
+    assert_eq!(
+        painter.backdrop.scratch_size(),
+        None,
+        "idle backdrop scratch textures must drop to None after 120 frames"
+    );
+    let dest = painter.dest.as_ref().expect("dest target");
+    assert_eq!(
+        dest.group_layer_count(),
+        0,
+        "idle compositor group layers must drop after 120 frames"
+    );
+    assert!(
+        !dest.has_reading_blend(),
+        "idle reading_blend target must drop after 120 frames"
+    );
+}

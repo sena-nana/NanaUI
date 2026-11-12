@@ -11493,7 +11493,8 @@ fn an_outline_is_not_painted_in_the_border_colour() {
             paint_colors: nana_ui_core::PaintColorSlots {
                 border: Some(red),
                 ..Default::default()
-            },
+            }
+            .into(),
             paint: nana_ui_core::PaintStyle {
                 outline: nana_ui_core::OutlineSpec {
                     width: 2.0,

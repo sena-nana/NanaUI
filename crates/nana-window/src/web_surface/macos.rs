@@ -103,6 +103,41 @@ struct ConvertJob {
     size: [u32; 2],
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+struct FrameDigest {
+    size: [u32; 2],
+    len: usize,
+    h0: u64,
+    h1: u64,
+}
+
+impl FrameDigest {
+    fn of(size: [u32; 2], bytes: &[u8]) -> Self {
+        let mut h0: u64 = 0xcbf2_9ce4_8422_2325 ^ u64::from(size[0]);
+        let mut h1: u64 = 0x9e37_79b9_7f4a_7c15 ^ u64::from(size[1]);
+        let (chunks, rem) = bytes.as_chunks::<8>();
+        for chunk in chunks {
+            let word = u64::from_ne_bytes(*chunk);
+            h0 = (h0 ^ word)
+                .wrapping_mul(0x0000_0100_0000_01b3)
+                .rotate_left(29);
+            h1 = (h1.wrapping_add(word))
+                .wrapping_mul(0xbf58_476d_1ce4_e5b9)
+                .rotate_left(31);
+        }
+        for &byte in rem {
+            h0 = (h0 ^ u64::from(byte)).wrapping_mul(0x0000_0100_0000_01b3);
+            h1 = (h1 ^ u64::from(byte)).wrapping_mul(0x94d0_49bb_1331_11eb);
+        }
+        Self {
+            size,
+            len: bytes.len(),
+            h0,
+            h1,
+        }
+    }
+}
+
 fn spawn_converter(
     sink: WebFrameSink,
     unchanged: Arc<AtomicU32>,
@@ -113,19 +148,21 @@ fn spawn_converter(
     std::thread::Builder::new()
         .name("nana-web-surface".into())
         .spawn(move || {
-            let mut last: Option<Arc<[u8]>> = None;
+            let mut last: Option<FrameDigest> = None;
             let mut sequence = 0;
             for job in receiver {
                 let Some(rgba) = convert(&job.image, job.size) else {
                     continue;
                 };
-                // A capture equal to the last delivered frame is not a frame.
-                if last.as_deref() == Some(&*rgba) {
+                // Compare a 128-bit digest instead of keeping a second full-frame
+                // RGBA allocation (8-32 MiB) pinned across captures.
+                let digest = FrameDigest::of(job.size, &rgba);
+                if last == Some(digest) {
                     unchanged.fetch_add(1, Ordering::Relaxed);
                     continue;
                 }
                 unchanged.store(0, Ordering::Relaxed);
-                last = Some(rgba.clone());
+                last = Some(digest);
                 sequence += 1;
                 sink(WebFrame {
                     width: job.size[0],

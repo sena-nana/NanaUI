@@ -13,7 +13,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 
 use nana_text::font::{
-    FaceDescriptor, FontError, FontQuery, FontStyle, FontSystem, GenericFamily, font_blob,
+    FaceDescriptor, FontBlob, FontError, FontQuery, FontStyle, FontSystem, GenericFamily, font_blob,
 };
 use nana_text::{NativeTextEngine, SharedTextEngine};
 
@@ -117,6 +117,16 @@ pub(crate) fn register_face_bytes(
     weight_end: Option<u16>,
     style: Option<FontStyle>,
 ) -> Result<usize, FontError> {
+    register_face_blob(family, font_blob(data), weight, weight_end, style)
+}
+
+pub(crate) fn register_face_blob(
+    family: &str,
+    blob: FontBlob,
+    weight: Option<u16>,
+    weight_end: Option<u16>,
+    style: Option<FontStyle>,
+) -> Result<usize, FontError> {
     let descriptor = FaceDescriptor {
         family: Some(Arc::from(family)),
         weight: weight.map(|start| {
@@ -130,7 +140,7 @@ pub(crate) fn register_face_bytes(
     let mut engine = lock_engine(&engine);
     engine
         .fonts_mut()
-        .register_bytes(font_blob(data), &descriptor)
+        .register_bytes(blob, &descriptor)
         .map(|registration| registration.faces.len())
 }
 

@@ -249,14 +249,15 @@ impl CachedSyntectHighlighter {
         use two_face::re_exports::syntect::parsing::{ParseState, ScopeStack};
         // Keep a small document working set. Large one-off previews still receive
         // complete highlighting without retaining their parse snapshots.
-        const MAX_BYTES: usize = 2 * 1024 * 1024;
+        const MAX_DOC_TEXT_BYTES: usize = 1024 * 1024;
+        const MAX_BYTES: usize = 4 * 1024 * 1024;
         const MAX_LINES: usize = 16_384;
         let syntax = syntax_for(language);
         if syntax.name == "Plain Text" {
             return (Vec::new(), 0);
         }
         let lines: Vec<_> = text.split_inclusive('\n').collect();
-        if text.len() > MAX_BYTES / 2 || lines.len() > MAX_LINES / 2 {
+        if text.len() > MAX_DOC_TEXT_BYTES || lines.len() > MAX_LINES / 2 {
             return (syntect_present(text, language), lines.len());
         }
         let mut cache = self.cache.borrow_mut();
@@ -345,10 +346,18 @@ impl CachedSyntectHighlighter {
             }));
             offset += line.text.len();
         }
+        let retained_bytes = language.len()
+            + result.capacity() * std::mem::size_of::<SyntaxLine>()
+            + result
+                .iter()
+                .map(|line| {
+                    line.text.capacity() + line.spans.capacity() * std::mem::size_of::<TextSpan>()
+                })
+                .sum::<usize>();
         cache.push(SyntaxDocument {
             language: language.to_owned(),
             lines: result,
-            bytes: text.len(),
+            bytes: retained_bytes,
         });
         while cache.len() > 4
             || cache.iter().map(|document| document.bytes).sum::<usize>() > MAX_BYTES
@@ -902,5 +911,20 @@ mod incremental_syntax_tests {
         let (actual, parsed) = presenter.present_incremental(&middle, "rs");
         assert_eq!(actual, syntect_present(&middle, "rs"));
         assert_eq!(parsed, 1);
+    }
+
+    #[test]
+    fn syntax_cache_charges_retained_line_and_span_allocations() {
+        let presenter = CachedSyntectHighlighter::default();
+        let source = "fn main() { let a = 1 + 2 + 3; }\n".repeat(32);
+        let _ = presenter.present_incremental(&source, "rs");
+        let cache = presenter.cache.borrow();
+        assert_eq!(cache.len(), 1);
+        assert!(
+            cache[0].bytes > source.len() * 2,
+            "retained syntax document bytes ({}) must charge SyntaxLine + TextSpan capacities, not raw text.len() ({})",
+            cache[0].bytes,
+            source.len()
+        );
     }
 }

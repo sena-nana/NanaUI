@@ -95,10 +95,13 @@ fn row_style(width: f32) -> LayoutStyle {
         width: Some(LengthSpec::Px(width)),
         height: Some(LengthSpec::Px(20.0)),
         direction: Some(FlexDirection::Row),
-        adaptation: Some(AdaptationProfile {
-            solve_overflow: true,
-            ..AdaptationProfile::RIGID
-        }),
+        adaptation: Some(
+            AdaptationProfile {
+                solve_overflow: true,
+                ..AdaptationProfile::RIGID
+            }
+            .into(),
+        ),
         ..LayoutStyle::default()
     }
 }
@@ -109,7 +112,7 @@ fn leaf_style() -> LayoutStyle {
         direction: Some(FlexDirection::Row),
         padding_left: Some(LengthSpec::Px(16.0)),
         padding_right: Some(LengthSpec::Px(16.0)),
-        adaptation: Some(padding_profile()),
+        adaptation: Some(padding_profile().into()),
         ..LayoutStyle::default()
     }
 }
@@ -205,7 +208,7 @@ fn nested(depth: u32, branching: usize, width: f32) -> (AppContext, DocumentId, 
                     direction: Some(FlexDirection::Row),
                     padding_left: Some(LengthSpec::Px(8.0)),
                     padding_right: Some(LengthSpec::Px(8.0)),
-                    adaptation: Some(padding_profile()),
+                    adaptation: Some(padding_profile().into()),
                     ..LayoutStyle::default()
                 },
             );
@@ -231,7 +234,7 @@ fn nested(depth: u32, branching: usize, width: f32) -> (AppContext, DocumentId, 
                 padding_left: Some(LengthSpec::Px(4.0)),
                 padding_right: Some(LengthSpec::Px(4.0)),
                 gap: Some(LengthSpec::Px(4.0)),
-                adaptation: Some(elastic),
+                adaptation: Some(elastic.into()),
                 ..LayoutStyle::default()
             },
         );
@@ -383,7 +386,7 @@ fn issue214_g_kept_envelopes_and_solves_follow_the_tree() {
                 ElasticFloor::Px(2.0 + (frame / 100) as f32),
                 costs::PADDING,
             ));
-            std::sync::Arc::make_mut(&mut style.layout).adaptation = Some(profile);
+            std::sync::Arc::make_mut(&mut style.layout).adaptation = Some(profile.into());
             let mut queue = MutationQueue::new();
             queue.set_style(spare, style);
             toolbar.context.commit_mutations(queue).unwrap();

@@ -598,10 +598,10 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
     pub(super) fn commit_image_sizes(
         &mut self,
         id: WindowId,
-        profile: crate::ScenePresentationProfile,
+        _profile: crate::ScenePresentationProfile,
         targets: impl IntoIterator<Item = crate::RenderTargetId>,
     ) {
-        let Some(painter) = self.painters.get_mut(&profile) else {
+        let Some(painter) = self.painter.as_mut() else {
             return;
         };
         let sizes: Vec<_> = targets
@@ -780,7 +780,7 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
             self.graphics.adapter_info().backend,
         );
         self.retire_window_outputs();
-        self.painters.clear();
+        self.painter = None;
         self.native_renderers.clear();
         self.next_gpu_retry = None;
         self.render_suspended = false;
@@ -851,38 +851,50 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
             }
         }
     }
-    /// Painters are created lazily per presentation profile and own their image waker
-    /// from creation, so the per-frame lookup does no allocation.
+    /// One shared painter serves every presentation profile, sharing glyph and
+    /// icon atlases, text caches, URL textures and skin materials while
+    /// switching working-format pipeline sets on demand.
     pub(super) fn painter_mut(
         &mut self,
         profile: crate::ScenePresentationProfile,
     ) -> &mut SceneWgpuPainter {
-        // Building another painter for it would only compile the same
-        // pipelines again.
-        if self
-            .startup_painter
-            .as_ref()
-            .is_some_and(|(built, _)| *built == profile)
-        {
+        if self.painter.is_none() && self.startup_painter.is_some() {
             self.take_startup_painter(true);
         }
-        // A device switch clears the map; a painter that still names another
+        // A device switch clears the painter; one that still names another
         // device would only refuse every frame.
         let current = self.graphics.gpu().generation();
         if self
-            .painters
-            .get(&profile)
+            .painter
+            .as_ref()
             .is_some_and(|painter| painter.gpu().generation() != current)
         {
-            self.painters.remove(&profile);
+            self.painter = None;
         }
-        if !self.painters.contains_key(&profile) {
+        if self.painter.is_none() {
             let painter = SceneWgpuPainter::new_with_presentation(self.graphics.gpu(), profile);
-            self.adopt_painter(profile, painter);
+            self.adopt_painter(painter);
         }
-        self.painters
-            .get_mut(&profile)
-            .expect("painter was just inserted")
+        let painter = self.painter.as_mut().expect("painter was just inserted");
+        painter.select_presentation(profile);
+        painter
+    }
+
+    pub(super) fn retain_active_presentations(&mut self) {
+        let Some(painter) = self.painter.as_mut() else {
+            return;
+        };
+        let mut profiles: Vec<crate::ScenePresentationProfile> = self
+            .window_contexts
+            .values()
+            .map(|ctx| ctx.surface.profile().scene_profile())
+            .collect();
+        if !self.window_outputs.is_empty() {
+            profiles.push(crate::output::window_output::output_profile());
+        }
+        if !profiles.is_empty() {
+            painter.retain_presentations(&profiles);
+        }
     }
 
     /// Starts saving pipelines compiled from now on to the host's store.
@@ -920,20 +932,15 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
         // the painter; saves from here on cannot race its restore.
         self.watch_pipeline_cache();
         startup::record_device_start(&self.startup.handle, None, Some(built.build));
-        let profile = built.painter.presentation();
-        if !self.painters.contains_key(&profile) {
-            self.adopt_painter(profile, built.painter);
+        if self.painter.is_none() {
+            self.adopt_painter(built.painter);
         }
         true
     }
 
     /// Installs a painter built elsewhere (the startup thread builds the first
     /// one alongside the device) with this host's image waker.
-    pub(super) fn adopt_painter(
-        &mut self,
-        profile: crate::ScenePresentationProfile,
-        mut painter: SceneWgpuPainter,
-    ) {
+    pub(super) fn adopt_painter(&mut self, mut painter: SceneWgpuPainter) {
         let (targets, redraws, proxy) = (
             Arc::clone(&self.image_targets),
             Arc::clone(&self.texture_redraws),
@@ -961,7 +968,7 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
         });
         painter.set_material_waker(Arc::clone(wake));
         self.note_startup_painter();
-        self.painters.insert(profile, painter);
+        self.painter = Some(painter);
     }
 }
 

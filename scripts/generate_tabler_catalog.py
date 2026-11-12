@@ -62,11 +62,25 @@ def emit_icon(ident: str, icon: str, svg: str) -> str:
     rewritten = [b.replace("TMP_PATH_", f"{ident}_PATH_") for b in statics]
     shapes = [s.replace("TMP_PATH_", f"{ident}_PATH_") for s in shapes]
     shape_body = ",\n        ".join(f"IconShape::{s}" for s in shapes)
+    if shapes:
+        return "\n".join(
+            rewritten
+            + [
+                f"static {ident}_SHAPES: &[IconShape] = &[\n        {shape_body},\n    ];",
+                (
+                    f"pub static {ident}_ICON: IconData = IconData {{\n"
+                    f'        name: "{icon}",\n'
+                    f"        shapes: {ident}_SHAPES,\n"
+                    '        svg: "",\n'
+                    "    };"
+                ),
+            ]
+        )
     svg_raw = shared.rust_raw(shared.compact_svg(svg))
     return "\n".join(
         rewritten
         + [
-            f"static {ident}_SHAPES: &[IconShape] = &[\n        {shape_body},\n    ];",
+            f"static {ident}_SHAPES: &[IconShape] = &[];",
             f"static {ident}_SVG: &str = {svg_raw};",
             (
                 f"pub static {ident}_ICON: IconData = IconData {{\n"

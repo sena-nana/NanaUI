@@ -371,7 +371,7 @@ fn reference() -> &'static (Value, Value) {
             nana_ui_core::ThemeToken::Space(nana_ui_core::SpacingStep::Md),
         ));
         layout.layout_isolation = true;
-        layout.adaptation = Some(nana_ui_core::dynamic_layout::AdaptationProfile::RIGID);
+        layout.adaptation = Some(nana_ui_core::dynamic_layout::AdaptationProfile::RIGID.into());
         layout.equal_wrap = true;
         let material = nana_ui_core::MaterialRef::new(nana_ui_core::MaterialProgram::new(
             "fn material(input: MaterialInput) -> vec4<f32> { return input.color; }",

@@ -80,7 +80,7 @@ use crate::runtime_host::{
     HostDocumentAccess, HostFailure, ReportHostFailure, RuntimeProgram, RuntimeProgramContext,
     RuntimeProgramUpdate, RuntimeRedraw, WindowDescriptor,
 };
-use crate::scene_paint::{ScenePaintViewport, ScenePresentationProfile, SceneWgpuPainter};
+use crate::scene_paint::{ScenePaintViewport, SceneWgpuPainter};
 use crate::{
     HostTextureRegistry, HostedGpuError, HostedGpuSurface, HostedRunError, RuntimeAnimationClock,
     TitleBarDragTracker, WindowChromeAction, WindowChromeEvent, WindowChromeState,
@@ -293,7 +293,7 @@ struct WindowManager<Program: RuntimeProgram> {
     /// This says the path *exists*, not that any window is on it: each window
     /// asks for its own target from its descriptor.
     composition: crate::presentation::CompositionAvailability,
-    painters: HashMap<ScenePresentationProfile, SceneWgpuPainter>,
+    painter: Option<SceneWgpuPainter>,
     native_renderers:
         HashMap<nana_gpu::GpuTextureFormat, Arc<crate::native_content::NativeContentRenderer>>,
     text: NanaTextShaper,
@@ -1355,7 +1355,7 @@ fn complete_startup<Program: RuntimeProgram>(
         window_requests: Some(startup_requests),
         next_window_id: 1 << 63,
         graphics,
-        painters: HashMap::new(),
+        painter: None,
         native_renderers: HashMap::new(),
         text: NanaTextShaper::default(),
         proxy,
@@ -1420,13 +1420,19 @@ fn complete_startup<Program: RuntimeProgram>(
     ready.apply_high_contrast(WindowId::PRIMARY);
     // The startup thread is usually still compiling the painter's pipelines:
     // the program initialized meanwhile. Windows present once it arrives (see
-    // `take_startup_painter`); one of another profile is built here.
+    // `take_startup_painter`); if the primary surface chose another profile,
+    // adopt the startup painter and switch its presentation profile instead of
+    // building a second painter.
     match early_painter {
         Some((built, painter)) if built == profile => {
             ready.startup_painter = Some((built, painter));
             ready.take_startup_painter(false);
         }
-        _ => {
+        Some((built, painter)) => {
+            ready.startup_painter = Some((built, painter));
+            let _ = ready.painter_mut(profile);
+        }
+        None => {
             let _ = ready.painter_mut(profile);
             ready.watch_pipeline_cache();
         }

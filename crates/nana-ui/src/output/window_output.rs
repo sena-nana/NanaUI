@@ -35,9 +35,11 @@ use nana_ui_scene::UiScene;
 
 use super::external::{ExternalFramePlan, ExternalSurface, ExternalSurfaceConfig};
 use super::window_trace::{self, WindowTrace};
+#[cfg(test)]
+use crate::SceneWgpuPainter;
 use crate::{
     AlphaEncoding, HostTextureRegistry, RenderTargetId, SceneGpuRendererRegistry,
-    ScenePaintViewport, ScenePresentationProfile, SceneWgpuPainter,
+    ScenePaintViewport, ScenePresentationProfile,
 };
 
 /// Every output is this format: `DXGI_FORMAT_B8G8R8A8_UNORM` holding
@@ -540,7 +542,7 @@ impl WindowOutputState {
         scene: &UiScene,
         frame: &mut FrameContext,
         gpu: &GpuContext,
-        painters: &mut std::collections::HashMap<ScenePresentationProfile, SceneWgpuPainter>,
+        painters: &mut impl super::driver::frame_driver::PresentationPainters,
         target: Option<&nana_gpu::GpuRenderTarget>,
         textures: Option<&HostTextureRegistry>,
         renderers: Option<&SceneGpuRendererRegistry>,

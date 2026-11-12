@@ -508,6 +508,7 @@ pub(super) struct DestTarget {
     presentation_uniforms: ManagedBuffer,
     presentation_uniform: [f32; 4],
     group_layers: Vec<GroupLayer>,
+    group_idle_frames: u32,
     group_pipeline: wgpu::RenderPipeline,
     group_pipeline_multiply: wgpu::RenderPipeline,
     group_pipeline_screen: wgpu::RenderPipeline,
@@ -517,15 +518,19 @@ pub(super) struct DestTarget {
     /// before a reading blend composites onto it. Built on the first frame
     /// that has such a group.
     reading_blend: Option<ReadingBlend>,
+    reading_blend_idle_frames: u32,
     group_bind_layout: wgpu::BindGroupLayout,
     group_sampler: wgpu::Sampler,
     group_uniforms: ManagedBuffer,
     group_uniform_slots: u64,
+    group_uniform_idle_frames: u32,
     slot_blend: Vec<u32>,
     policy: nana_gpu::GpuDeviceState,
     /// Kept only while per-glyph presentation plays; see [`PrefixSplit`].
     prefix: Option<PrefixSnapshot>,
 }
+
+const SHRINK_IDLE_FRAMES: u32 = 120;
 
 /// What a [`DestTarget`] draws its blits and group composites with: layouts
 /// and pipelines, nothing sized. A painter builds its own beside its other
@@ -801,7 +806,8 @@ fn msaa_view(
             sample_count: 4,
             dimension: wgpu::TextureDimension::D2,
             format,
-            usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT
+                | wgpu::TextureUsages::TRANSIENT_ATTACHMENT,
             view_formats: &[],
         })
         .create_view(&wgpu::TextureViewDescriptor::default())
@@ -971,14 +977,17 @@ impl DestTarget {
             presentation_uniforms,
             presentation_uniform: [f32::NAN; 4],
             group_layers: Vec::new(),
+            group_idle_frames: 0,
             group_pipeline,
             group_pipeline_multiply,
             group_pipeline_screen,
             reading_blend: None,
+            reading_blend_idle_frames: 0,
             group_bind_layout,
             group_sampler,
             group_uniforms,
             group_uniform_slots: GROUP_UNIFORM_SLOTS,
+            group_uniform_idle_frames: 0,
             slot_blend: Vec::new(),
             policy: policy.clone(),
             prefix: None,
@@ -991,6 +1000,16 @@ impl DestTarget {
         self.blit_pipeline == pipelines.blit_pipeline
             && self.blit_clear_pipeline == pipelines.blit_clear_pipeline
             && self.group_pipeline == pipelines.group_pipeline
+    }
+
+    #[cfg(test)]
+    pub(super) fn group_layer_count(&self) -> usize {
+        self.group_layers.len()
+    }
+
+    #[cfg(test)]
+    pub(super) fn has_reading_blend(&self) -> bool {
+        self.reading_blend.is_some()
     }
 
     pub(super) fn color_view(&self) -> &wgpu::TextureView {
@@ -1148,12 +1167,63 @@ impl DestTarget {
             }
         }
         self.slot_blend = slots.iter().map(|slot| slot.mix_blend).collect();
-        if self
+        let has_reading_blend = self
             .slot_blend
             .iter()
-            .any(|blend| *blend >= FIRST_READING_BLEND)
-        {
+            .any(|blend| *blend >= FIRST_READING_BLEND);
+        if has_reading_blend {
             self.prepare_reading_blends(device);
+        }
+        self.trim_idle_groups(device, layers, slots.len(), has_reading_blend, gpu_work);
+    }
+
+    pub(super) fn trim_idle_groups(
+        &mut self,
+        device: &wgpu::Device,
+        active_layers: usize,
+        active_slots: usize,
+        active_reading_blend: bool,
+        gpu_work: Option<&crate::gpu_work::GpuWorkSink>,
+    ) {
+        if active_layers == 0 {
+            self.slot_blend.clear();
+        }
+        if self.group_layers.len() > active_layers {
+            self.group_idle_frames = self.group_idle_frames.saturating_add(1);
+            if self.group_idle_frames >= SHRINK_IDLE_FRAMES {
+                self.group_layers.truncate(active_layers);
+                self.group_idle_frames = 0;
+            }
+        } else {
+            self.group_idle_frames = 0;
+        }
+
+        if self.reading_blend.is_some() && !active_reading_blend {
+            self.reading_blend_idle_frames = self.reading_blend_idle_frames.saturating_add(1);
+            if self.reading_blend_idle_frames >= SHRINK_IDLE_FRAMES {
+                self.reading_blend = None;
+                for layer in &mut self.group_layers {
+                    layer.blend_bind_group = None;
+                }
+                self.reading_blend_idle_frames = 0;
+            }
+        } else {
+            self.reading_blend_idle_frames = 0;
+        }
+
+        let target_slots = (active_slots as u64)
+            .next_power_of_two()
+            .max(GROUP_UNIFORM_SLOTS);
+        if self.group_uniform_slots > GROUP_UNIFORM_SLOTS
+            && target_slots * 2 <= self.group_uniform_slots
+        {
+            self.group_uniform_idle_frames = self.group_uniform_idle_frames.saturating_add(1);
+            if self.group_uniform_idle_frames >= SHRINK_IDLE_FRAMES {
+                self.resize_group_uniforms(device, target_slots, gpu_work);
+                self.group_uniform_idle_frames = 0;
+            }
+        } else {
+            self.group_uniform_idle_frames = 0;
         }
     }
 
@@ -1441,7 +1511,7 @@ impl DestTarget {
                 resolve_target: Some(&self.color_view),
                 ops: wgpu::Operations {
                     load: wgpu::LoadOp::Clear(clear),
-                    store: wgpu::StoreOp::Store,
+                    store: wgpu::StoreOp::Discard,
                 },
             })],
             depth_stencil_attachment: None,

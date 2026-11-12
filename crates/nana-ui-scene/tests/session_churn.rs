@@ -122,3 +122,187 @@ fn rows_coming_and_going_leave_nothing_behind() {
         grown / created
     );
 }
+
+#[test]
+fn grouped_escaped_and_queried_rows_leave_nothing_behind() {
+    use nana_ui_core::motion::{AnimatableProperty, Easing, MotionTo, MotionValue};
+    use nana_ui_core::{LayoutStyle, LengthSpec, OverflowSpec, PositionSpec};
+    use nana_ui_runtime::{AnimationId, AnimationSpec, MutationQueue};
+    use std::sync::Arc;
+    use std::time::Duration;
+
+    let document = DocumentId::new(1).unwrap();
+    let mut runtime = RuntimeDocument::new(document);
+    let column = runtime
+        .context_mut()
+        .create_component(
+            document,
+            Stack::column(2.0).with_layout(|layout| {
+                layout.opacity = Some(0.9);
+            }),
+        )
+        .unwrap();
+    let mut now = Duration::ZERO;
+    let mut next_anim = 1u64;
+    {
+        let mut queue = MutationQueue::new();
+        queue.start_animation(
+            AnimationSpec::new(
+                AnimationId::new(next_anim).unwrap(),
+                column.stable_id(),
+                now,
+                Duration::from_secs(3600),
+                Duration::from_millis(16),
+                Easing::Linear,
+            )
+            .with_property(AnimatableProperty::Opacity)
+            .with_range(
+                MotionValue::Scalar(0.85),
+                MotionTo::Value(MotionValue::Scalar(0.95)),
+            ),
+        );
+        next_anim += 1;
+        runtime
+            .context_mut()
+            .compat_world_mut()
+            .commit(queue)
+            .unwrap();
+    }
+    runtime
+        .context_mut()
+        .compat_world_mut()
+        .advance_animations(now);
+    frame(&mut runtime);
+    now += Duration::from_millis(20);
+    runtime
+        .context_mut()
+        .compat_world_mut()
+        .advance_animations(now);
+    frame(&mut runtime);
+    assert!(
+        runtime
+            .scene()
+            .compositor_layer(column.stable_id())
+            .is_some()
+    );
+
+    let mut cycle = |runtime: &mut RuntimeDocument| {
+        let mut rows = Vec::new();
+        let mut anim_queue = MutationQueue::new();
+        for index in 0..8 {
+            let cx = runtime.context_mut();
+            let clip_box = cx
+                .create_detached_component(
+                    document,
+                    Stack::row(2.0).with_layout(|layout| {
+                        layout.width = Some(LengthSpec::Px(120.0));
+                        layout.height = Some(LengthSpec::Px(24.0));
+                        layout.overflow_x = OverflowSpec::Hidden;
+                        layout.overflow_y = OverflowSpec::Hidden;
+                        layout.opacity = Some(0.85);
+                    }),
+                )
+                .unwrap();
+            cx.append_child(column, clip_box).unwrap();
+            anim_queue.start_animation(
+                AnimationSpec::new(
+                    AnimationId::new(next_anim).unwrap(),
+                    clip_box.stable_id(),
+                    now,
+                    Duration::from_secs(3600),
+                    Duration::from_millis(16),
+                    Easing::Linear,
+                )
+                .with_property(AnimatableProperty::Opacity)
+                .with_range(
+                    MotionValue::Scalar(0.7),
+                    MotionTo::Value(MotionValue::Scalar(0.9)),
+                ),
+            );
+            next_anim += 1;
+
+            let label = cx
+                .create_detached_component(document, Text::new(format!("line {index}")))
+                .unwrap();
+            cx.append_child(clip_box, label).unwrap();
+
+            let mut badge_layout = LayoutStyle::default();
+            badge_layout.position = PositionSpec::Absolute;
+            badge_layout.offset_left = Some(LengthSpec::Px(8.0));
+            badge_layout.offset_top = Some(LengthSpec::Px(2.0));
+            let badge = cx
+                .create_detached_component(
+                    document,
+                    Button::new(format!("badge {index}")).layout(Arc::new(badge_layout)),
+                )
+                .unwrap();
+            cx.append_child(clip_box, badge).unwrap();
+            rows.push((clip_box, badge));
+        }
+        runtime
+            .context_mut()
+            .compat_world_mut()
+            .commit(anim_queue)
+            .unwrap();
+        runtime
+            .context_mut()
+            .compat_world_mut()
+            .advance_animations(now);
+        frame(runtime);
+        now += Duration::from_millis(20);
+        runtime
+            .context_mut()
+            .compat_world_mut()
+            .advance_animations(now);
+        frame(runtime);
+        for primitive in runtime.scene().primitives() {
+            let _ = runtime.scene().draw_primitive(primitive.id);
+            let _ = runtime.scene().opacity_groups(primitive.node);
+        }
+        let _ = runtime.context().world().hit_test(document, 12.0, 6.0);
+        for &(clip_box, badge) in &rows {
+            assert!(
+                runtime
+                    .scene()
+                    .compositor_layer(clip_box.stable_id())
+                    .is_some()
+            );
+            assert!(
+                runtime
+                    .context()
+                    .world()
+                    .layout_result(clip_box.stable_id())
+                    .is_some()
+            );
+            let _ = runtime.context().world().layout_result(badge.stable_id());
+        }
+        for (clip_box, _) in rows {
+            runtime.context_mut().remove_view(clip_box).unwrap();
+        }
+        frame(runtime);
+        for primitive in runtime.scene().primitives() {
+            let _ = runtime.scene().draw_primitive(primitive.id);
+            let _ = runtime.scene().opacity_groups(primitive.node);
+        }
+        let _ = runtime.context().world().hit_test(document, 12.0, 6.0);
+    };
+
+    for _ in 0..40 {
+        cycle(&mut runtime);
+    }
+    let settled = LIVE.load(Ordering::Relaxed);
+    let nodes = runtime.context().world().len();
+
+    const CYCLES: isize = 200;
+    for _ in 0..CYCLES {
+        cycle(&mut runtime);
+    }
+    assert_eq!(runtime.context().world().len(), nodes);
+    let grown = LIVE.load(Ordering::Relaxed) - settled;
+    let created = CYCLES * 32;
+    assert!(
+        grown < created * 6,
+        "{grown} bytes more are held after {created} grouped/escaped nodes came and went: {} a node",
+        grown / created
+    );
+}
