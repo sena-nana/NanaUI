@@ -116,7 +116,8 @@ impl std::error::Error for SkipTaskbarError {}
 /// Show or hide the window's taskbar entry.
 ///
 /// On Windows a hidden entry stays hidden when the window is shown again or
-/// Explorer restarts. Other platforms return `Unsupported`.
+/// Explorer restarts, and the window stays capturable by Windows Graphics
+/// Capture. Other platforms return `Unsupported`.
 pub fn set_skip_taskbar<W: raw_window_handle::HasWindowHandle + ?Sized>(
     window: &W,
     skip: bool,

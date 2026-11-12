@@ -646,7 +646,7 @@ let _ = cx.window().set_content_zoom(zoom);
 
 `WindowDescriptor::skip_taskbar = true` 让窗口不出现在任务栏。默认 `false`。主窗照常显示。运行中用 `WindowCommand::SetSkipTaskbar { id, skip_taskbar }` 或 `WindowHandle::set_skip_taskbar` 切换。描述符里的设置在窗口首次显示前应用。结果在 `Ready` 之后回报。失败不撤销创建。每次请求（包括描述符应用和未知窗口）都回报 `WindowEvent::SkipTaskbarChanged { id, skip_taskbar, result }`：`skip_taskbar` 是当前实际状态。失败时保持原值。描述符结果送达前的显式请求会取代它。`WindowHandle` 请求返回同一结果。平台不支持为 `Unsupported`。系统拒绝为 `OperationFailed`。
 
-- Windows：宿主通过 `ITaskbarList` 删除或恢复任务栏按钮。每一步 HRESULT 失败都回报。每当 Explorer 放好按钮并发来 `TaskbarButtonCreated`（每次显示、Explorer 重启后）就再删除一次。不与系统创建按钮竞争。重复请求失败时保留已生效的隐藏。`skip_taskbar: false` 只恢复由这条合同隐藏过的按钮。不会给本来没有任务栏按钮的窗口（例如模态子窗）加按钮。不改 `WS_EX_TOOLWINDOW`。Alt+Tab 行为和标题栏样式不变。
+- Windows：宿主给窗口一扇专属的隐藏 owner 窗口，并去掉 `WS_EX_APPWINDOW`（子类守卫挡住 winit 每次改样式时写回的这一位）。有 owner、没有这一位的窗口，系统本来就不给任务栏按钮：每次显示、Explorer 重启后都一样。不与系统创建按钮竞争。不用 `ITaskbarList::DeleteTab`：被它删过按钮的窗口，Windows Graphics Capture 的 `CreateForWindow` 返回 `E_INVALIDARG`，OBS 等软件的窗口捕获拿不到画面。owner 每扇窗口一扇（共用 owner 的窗口在 z 序里会一起移动），不显示，放在 z 序最底，随窗口关闭而销毁。它是普通 popup，不是 `WS_EX_TOOLWINDOW`：owner 是 tool window 时捕获同样被拒绝。已经有 owner 的窗口（辅助窗、模态子窗）保留原 owner。已显示的窗口先隐藏、再不激活地显示一次：换了 owner 的已显示窗口虽然掉了按钮，捕获要到再次显示后才可用。每一步失败都回报。重复请求不再改动。`skip_taskbar: false` 拿掉 owner、恢复样式位，已显示的窗口用 `ITaskbarList::AddTab` 立即补回按钮（补回的按钮不影响捕获）。只恢复由这条合同隐藏过的按钮。不会给本来没有任务栏按钮的窗口（例如模态子窗）加按钮。不改 `WS_EX_TOOLWINDOW` 和标题栏样式。Alt+Tab 按系统对有 owner 窗口的规则列出。
 - macOS：返回 `Unsupported`。Dock 按应用显示图标。普通窗口没有逐窗 Dock 项。但窗口最小化后仍会进入 Dock。应用图标也始终在 Dock 里。隐藏应用 Dock 图标是应用级激活策略。不属于这条逐窗合同。
 - Linux：返回 `Unsupported`。
 
