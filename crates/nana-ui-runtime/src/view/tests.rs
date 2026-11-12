@@ -6644,7 +6644,7 @@ fn list_item_after_label_places_a_mark_between_name_and_detail_and_updates_copy(
     let (mark, tail) = (mark.stable_id(), tail.stable_id());
     assert_eq!(
         texts_under(&cx, item),
-        ["双机直播", "LAN", "DLC", "未开启", "开"]
+        ["双机直播", "DLC", "LAN", "未开启", "开"]
     );
     assert_eq!(
         cx.world()
@@ -6666,7 +6666,7 @@ fn list_item_after_label_places_a_mark_between_name_and_detail_and_updates_copy(
         .unwrap();
     assert_eq!(
         texts_under(&cx, item),
-        ["双机接收", "LAN", "DLC", "已连接", "开"]
+        ["双机接收", "DLC", "LAN", "已连接", "开"]
     );
     assert_eq!(
         cx.world()
@@ -6676,7 +6676,8 @@ fn list_item_after_label_places_a_mark_between_name_and_detail_and_updates_copy(
     );
 
     // Long secondary detail shrinks and ellipsizes before the primary label +
-    // `after_label` mark, matching `list_text_parts` priority.
+    // `after_label` mark, keeping the exact intrinsic width of `label` (no
+    // sub-pixel shrink that would trip `text-overflow: ellipsis`).
     label.set("纹理剔除".to_owned());
     detail.set("隐藏用不到的部件，跳过它们的纹理".to_owned());
     cx.flush_reactive().unwrap();
@@ -6684,7 +6685,7 @@ fn list_item_after_label_places_a_mark_between_name_and_detail_and_updates_copy(
     let mut shaper = crate::MeasureTextShaper;
     cx.resolve_styles(&work.style).unwrap();
     cx.shape_text(&work.text, &mut shaper).unwrap();
-    cx.layout_document(document, LayoutViewport::new(290.0, 80.0))
+    cx.layout_document(document, LayoutViewport::new(240.0, 80.0))
         .unwrap();
     let label_node = cx
         .read(Entity::<ListItem>::from_stable_id(item), |r| r.label_slot)
@@ -6697,8 +6698,8 @@ fn list_item_after_label_places_a_mark_between_name_and_detail_and_updates_copy(
     let label_box = cx.world().layout_box(label_node).unwrap();
     let detail_box = cx.world().layout_box(detail_node).unwrap();
     assert!(
-        label_box.width >= 47.5 && detail_box.width > 40.0,
-        "primary label keeps its full width ({label_box:?}) while long detail shrinks ({detail_box:?})"
+        label_box.width >= 48.0 && detail_box.width > 40.0 && detail_box.width < 160.0,
+        "primary label keeps its exact full width ({label_box:?}) while long detail shrinks ({detail_box:?})"
     );
 }
 

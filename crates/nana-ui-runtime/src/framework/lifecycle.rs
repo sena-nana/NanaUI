@@ -130,20 +130,23 @@ impl AppContext {
                 ..NodeStyle::default()
             };
             let layout = Arc::make_mut(&mut style.layout);
-            // Match `list_text_parts`: give the primary label + `after_label`
-            // priority so secondary copy shrinks and ellipsizes first, while
-            // `detail` still reserves `min_secondary_width` (`SpacingStep::Xxxl`).
-            layout.flex_shrink = Some(1024.0);
+            // Match `list_text_parts`: `detail` fills whatever room `line`
+            // leaves (down to `min_secondary_width` = `SpacingStep::Xxxl`) so
+            // `line` never loses even a sub-pixel of width to `detail`
+            // overflow and never false-triggers `text-overflow: ellipsis`.
             layout.allow_shrink = true;
             layout.text_overflow_ellipsis = true;
             layout.white_space_nowrap = true;
             layout.hidden = hidden;
             if is_detail {
+                layout.flex_grow = Some(1.0);
+                layout.flex_shrink = Some(0.0);
                 layout.min_width = Some(LengthSpec::Px(nana_ui_core::space::XXXL));
                 layout.theme.min_width =
                     Some(crate::theme_intent::space(nana_ui_core::SpacingStep::Xxxl));
                 layout.text_align = nana_ui_core::TextAlignSpec::End;
             } else {
+                layout.flex_shrink = Some(1024.0);
                 layout.min_width = Some(LengthSpec::Px(0.0));
                 layout.logical_margin.inline_start = Some(LengthSpec::Px(nana_ui_core::space::XXS));
                 layout.resolve_logical_box_edges();
@@ -250,8 +253,8 @@ impl AppContext {
             }
         };
         let line_children: Vec<_> = std::iter::once(label_id)
-            .chain(note_id)
             .chain(std::iter::once(mark))
+            .chain(note_id)
             .collect();
         changed |= self.reconcile_children(line_id, &line_children)?;
         let copy_children: Vec<_> = std::iter::once(line_id).chain(detail_id).collect();
