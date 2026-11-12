@@ -60,9 +60,10 @@ impl UiWorld {
         style: &mut Arc<ComputedStyle>,
         inherited_color: Option<[f32; 4]>,
     ) -> Option<[f32; 4]> {
+        let model = self.scoped_style_model(style.color_scope.as_deref());
         let (foreground, color, background, border_color) =
-            self.palette_paint_colors(id, inherited_color);
-        let ring_color = self.palette_ring_color(id);
+            self.palette_paint_colors(id, inherited_color, model);
+        let ring_color = self.palette_ring_color(id, model);
         if style.foreground != foreground
             || style.color != color
             || style.background != background
@@ -157,6 +158,9 @@ impl UiWorld {
                 memo.color.insert(id, color);
             }
         }
+        // The colours this node paints in: the installed theme under its
+        // colour scope.
+        let model = self.scoped_style_model(style.color_scope.as_deref());
         if !self.inline_presentation_visible_memo(id, memo) {
             let style = Arc::make_mut(&mut style);
             style.visible = false;
@@ -169,8 +173,7 @@ impl UiWorld {
         };
         if let Some((busy, danger, is_confirm)) = self.confirm_action_effect(id) {
             if busy && !is_confirm {
-                Arc::make_mut(&mut style).color =
-                    Some(self.style_model.palette.muted.as_rgba_array());
+                Arc::make_mut(&mut style).color = Some(model.palette.muted.as_rgba_array());
             }
             if is_confirm
                 && let Some(StandardVisual::Button { kind, loading, .. }) = standard_visual.as_mut()
@@ -201,7 +204,7 @@ impl UiWorld {
         }
         let standard_visual_foreground = standard_visual
             .as_ref()
-            .map(|visual| self.standard_visual_foreground(visual, style.color));
+            .map(|visual| self.standard_visual_foreground(model, visual, style.color));
         // The style's painter is already in hand; only a tree someone set a
         // painter on apart from the style pays a lookup.
         let painter = if self.painter_overrides.is_empty() {
@@ -274,7 +277,7 @@ impl UiWorld {
             .selection_background
             .map(nana_ui_core::PaintColor::to_srgb)
             .or(style.selection_background)
-            .unwrap_or_else(|| self.style_model.palette.accent_soft.as_rgba_array());
+            .unwrap_or_else(|| model.palette.accent_soft.as_rgba_array());
         // Only while the node still shows that value's text: spans over other
         // bytes would paint the wrong characters.
         let rich_text = has_text
@@ -346,8 +349,8 @@ impl UiWorld {
                 .flatten(),
             drop_hover: (self.drop_hover.map(|(hover, _)| hover) == Some(id)).then(|| {
                 crate::DropHoverOverlay {
-                    fill: self.style_model.palette.accent_soft.as_rgba_array(),
-                    border: self.style_model.palette.accent.as_rgba_array(),
+                    fill: model.palette.accent_soft.as_rgba_array(),
+                    border: model.palette.accent.as_rgba_array(),
                 }
             }),
             document_text_selection,
@@ -577,6 +580,7 @@ fn measure_paint_text(
 
 impl UiWorld {
     pub(super) fn extracted_text_spans(&self, id: StableNodeId) -> Vec<ExtractedTextSpan> {
+        let model = self.node_style_model(id);
         // A preedit shifts every offset after it; an empty one shifts none.
         if self
             .nodes
@@ -645,7 +649,7 @@ impl UiWorld {
                             .map(move |(start, end)| ExtractedTextSpan {
                                 start,
                                 end,
-                                color: self.style_model.color(span.color).as_rgba_array(),
+                                color: model.color(span.color).as_rgba_array(),
                                 paint_color: None,
                             })
                             .collect::<Vec<_>>()
@@ -667,7 +671,7 @@ impl UiWorld {
             .unwrap_or_default();
         // merge_bracket_glyph_spans 对空括号表原样返回语法 span，无需单独
         // 短路。
-        let palette = &self.style_model.palette;
+        let palette = &model.palette;
         let merged = merge_bracket_glyph_spans(syntax_spans, &bracket_spans, |depth| {
             bracket_depth_color(palette, depth)
         });
@@ -687,9 +691,7 @@ impl UiWorld {
         merge_inlay_glyph_spans(
             merged,
             &inlay_spans,
-            self.style_model
-                .color(SemanticColorRole::Muted)
-                .as_rgba_array(),
+            model.color(SemanticColorRole::Muted).as_rgba_array(),
         )
     }
 }
@@ -1030,6 +1032,7 @@ impl UiWorld {
     /// does not address.
     fn standard_visual_foreground(
         &self,
+        model: StyleModelRef,
         visual: &StandardVisual,
         authored: Option<[f32; 4]>,
     ) -> [f32; 4] {
@@ -1037,7 +1040,7 @@ impl UiWorld {
 
         let recipes = self.theme.recipes();
         let role = |family: ComponentRecipeId, checked: bool| recipes.foreground(family, checked);
-        let paint = |role| self.style_model.color(role).as_rgba_array();
+        let paint = |role| model.color(role).as_rgba_array();
 
         match visual {
             // Families that defer to an authored colour when the caller set one.
@@ -1085,7 +1088,7 @@ impl UiWorld {
                         fill,
                         crate::feedback::PROGRESS_STILL_ALPHA,
                     )
-                    .resolve(self.style_model)
+                    .resolve(model)
                     .as_rgba_array(),
                     _ => paint(fill),
                 }

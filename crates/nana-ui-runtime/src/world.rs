@@ -7649,6 +7649,7 @@ fn node_presentation_eq(left: &NodeStyle, right: &NodeStyle) -> bool {
         && left.text_horizontal_alignment == right.text_horizontal_alignment
         && left.text_vertical_alignment == right.text_vertical_alignment
         && left.painter == right.painter
+        && left.color_overrides == right.color_overrides
 }
 
 /// Equal but for transforms and the cursor, given whether the presentations

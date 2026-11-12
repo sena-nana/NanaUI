@@ -6534,7 +6534,7 @@ impl UiWorld {
                 },
                 content: label.into(),
                 color: Some(
-                    self.style_model
+                    self.node_style_model(id)
                         .color(if count > *limit {
                             nana_ui_core::SemanticColorRole::Danger
                         } else {
@@ -6608,7 +6608,7 @@ impl UiWorld {
                 },
                 content: suffix.as_ref().into(),
                 color: Some(
-                    self.style_model
+                    self.node_style_model(id)
                         .color(nana_ui_core::SemanticColorRole::Muted)
                         .as_rgba_array(),
                 ),

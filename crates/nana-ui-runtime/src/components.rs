@@ -2219,6 +2219,13 @@ pub struct NodeStyle {
     /// 节点自绘（Issue #217）。挂上后由 painter 决定这个节点自己的外观，
     /// 子节点照常绘制；见 [`crate::Painter`]。
     pub painter: Option<crate::NodePainter>,
+    /// This node's own values for some theme colour roles, for it and its
+    /// whole subtree (Issue #104, colours only). Every role this node and its
+    /// descendants resolve -- their fills, text, borders, interaction states
+    /// and the parts a component draws (a switch's track, a badge's tone) --
+    /// reads these first; a nested scope wins role by role. `None` leaves the
+    /// installed theme's colours. See [`nana_ui_core::ColorOverrides`].
+    pub color_overrides: Option<Arc<nana_ui_core::ColorOverrides>>,
 }
 
 impl Default for NodeStyle {
@@ -2255,6 +2262,7 @@ impl PartialEq for NodeStyle {
             text_horizontal_alignment,
             text_vertical_alignment,
             painter,
+            color_overrides,
         } = self;
         foreground == &other.foreground
             && background == &other.background
@@ -2276,6 +2284,7 @@ impl PartialEq for NodeStyle {
             && text_vertical_alignment == &other.text_vertical_alignment
             && interaction == &other.interaction
             && painter == &other.painter
+            && color_overrides == &other.color_overrides
             && (Arc::ptr_eq(layout, &other.layout) || **layout == *other.layout)
     }
 }
@@ -2293,6 +2302,7 @@ impl NodeStyle {
             && self.border.is_none()
             && self.ring.is_none()
             && self.interaction.is_empty()
+            && self.color_overrides.is_none()
     }
 
     /// This style with what `over` sets written over it, the way an
@@ -2393,6 +2403,7 @@ impl NodeStyle {
                 over.text_vertical_alignment
             },
             painter: over.painter.clone().or(self.painter),
+            color_overrides: over.color_overrides.clone().or(self.color_overrides),
         }
     }
 
@@ -2419,6 +2430,7 @@ impl NodeStyle {
             text_horizontal_alignment: TextHorizontalAlignment::Start,
             text_vertical_alignment: TextVerticalAlignment::Top,
             painter: None,
+            color_overrides: None,
         }
     }
 
@@ -2675,6 +2687,10 @@ pub struct ComputedStyle {
     pub font_size_base: f32,
     /// The line height before [`Self::text_scale`]; children inherit it.
     pub line_height_base: Option<LineHeightSpec>,
+    /// The colour scope this node resolves in: its own
+    /// [`NodeStyle::color_overrides`] written over its parent's scope.
+    /// Inherited; `None` is the installed theme.
+    pub color_scope: Option<Arc<nana_ui_core::ColorOverrides>>,
 }
 
 impl ComputedStyle {
@@ -2736,6 +2752,7 @@ impl Default for ComputedStyle {
             text_scale: 1.0,
             font_size_base: UI_BASE_TEXT_SIZE,
             line_height_base: None,
+            color_scope: None,
         }
     }
 }
