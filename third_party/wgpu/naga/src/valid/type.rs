@@ -916,6 +916,24 @@ impl super::Validator {
                     }
                     self.require_type_capability(Capabilities::TEXTURE_EXTERNAL)?;
                 }
+                if let crate::ImageClass::Storage { access, .. } = class {
+                    if access.contains(crate::StorageAccess::ORDERED) {
+                        if dim == crate::ImageDimension::Cube
+                            || access.contains(crate::StorageAccess::ATOMIC)
+                            || !access
+                                .contains(crate::StorageAccess::LOAD | crate::StorageAccess::STORE)
+                        {
+                            return Err(TypeError::UnsupportedImageType {
+                                dim,
+                                arrayed,
+                                class,
+                            });
+                        }
+                        self.require_type_capability(
+                            Capabilities::TEXTURE_STORAGE_RASTERIZER_ORDER,
+                        )?;
+                    }
+                }
                 TypeInfo::new(
                     TypeFlags::ARGUMENT | TypeFlags::CREATION_RESOLVED,
                     Alignment::ONE,

@@ -157,6 +157,9 @@ impl<'iter, 'source> TemplateListIter<'iter, 'source> {
             if let Some(expr) = self.template_list.next() {
                 let (enumerant, span) = ctx.enumerant(*expr)?;
                 let access_mode = conv::map_access_mode(enumerant, span)?;
+                if access_mode.contains(ir::StorageAccess::ORDERED) {
+                    return Err(Box::new(Error::UnknownAccess(span)));
+                }
                 *access = access_mode;
             } else {
                 // defaulting to `read`

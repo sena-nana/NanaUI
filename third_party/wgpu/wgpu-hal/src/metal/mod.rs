@@ -229,6 +229,7 @@ bitflags!(
 struct CapabilitiesQuery {
     msl_version: MTLLanguageVersion,
     fragment_rw_storage: bool,
+    raster_order_groups: bool,
     read_write_texture_tier: MTLReadWriteTextureTier,
     msaa_desktop: bool,
     msaa_apple3: bool,

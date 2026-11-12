@@ -360,7 +360,9 @@ pub fn map_resource_usage(ty: &wgt::BindingType) -> MTLResourceUsage {
         wgt::BindingType::StorageTexture { access, .. } => match access {
             wgt::StorageTextureAccess::WriteOnly => MTLResourceUsage::Write,
             wgt::StorageTextureAccess::ReadOnly => MTLResourceUsage::Read,
-            wgt::StorageTextureAccess::Atomic | wgt::StorageTextureAccess::ReadWrite => {
+            wgt::StorageTextureAccess::Atomic
+            | wgt::StorageTextureAccess::ReadWrite
+            | wgt::StorageTextureAccess::RasterizerOrdered => {
                 MTLResourceUsage::Read | MTLResourceUsage::Write
             }
         },

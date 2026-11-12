@@ -157,6 +157,10 @@ pub struct PhysicalDeviceFeatures {
 
     /// Features provided by `VK_KHR_present_wait` (NanaUI fork).
     present_wait: Option<vk::PhysicalDevicePresentWaitFeaturesKHR<'static>>,
+
+    /// Features provided by `VK_EXT_fragment_shader_interlock` (NanaUI fork).
+    fragment_shader_interlock:
+        Option<vk::PhysicalDeviceFragmentShaderInterlockFeaturesEXT<'static>>,
 }
 
 impl PhysicalDeviceFeatures {
@@ -255,6 +259,9 @@ impl PhysicalDeviceFeatures {
             info = info.push_next(feature);
         }
         if let Some(ref mut feature) = self.present_wait {
+            info = info.push_next(feature);
+        }
+        if let Some(ref mut feature) = self.fragment_shader_interlock {
             info = info.push_next(feature);
         }
         info
@@ -620,6 +627,18 @@ impl PhysicalDeviceFeatures {
             } else {
                 None
             },
+            fragment_shader_interlock: if enabled_extensions
+                .contains(&ext::fragment_shader_interlock::NAME)
+            {
+                let needed =
+                    requested_features.contains(wgt::Features::TEXTURE_STORAGE_RASTERIZER_ORDER);
+                Some(
+                    vk::PhysicalDeviceFragmentShaderInterlockFeaturesEXT::default()
+                        .fragment_shader_pixel_interlock(needed),
+                )
+            } else {
+                None
+            },
             portability_subset: if enabled_extensions.contains(&khr::portability_subset::NAME) {
                 let multisample_array_needed =
                     requested_features.intersects(wgt::Features::MULTISAMPLE_ARRAY);
@@ -843,6 +862,14 @@ impl PhysicalDeviceFeatures {
             features.set(
                 F::SHADER_BARYCENTRICS | F::SHADER_PER_VERTEX,
                 shader_barycentrics.fragment_shader_barycentric != 0,
+            );
+        }
+
+        if let Some(ref fragment_shader_interlock) = self.fragment_shader_interlock {
+            features.set(
+                F::TEXTURE_STORAGE_RASTERIZER_ORDER,
+                self.core.fragment_stores_and_atomics != 0
+                    && fragment_shader_interlock.fragment_shader_pixel_interlock != 0,
             );
         }
 
@@ -1486,6 +1513,10 @@ impl PhysicalDeviceProperties {
         // Require `VK_KHR_cooperative_matrix` if the associated feature was requested
         if requested_features.contains(wgt::Features::EXPERIMENTAL_COOPERATIVE_MATRIX) {
             extensions.push(khr::cooperative_matrix::NAME);
+        }
+
+        if requested_features.contains(wgt::Features::TEXTURE_STORAGE_RASTERIZER_ORDER) {
+            extensions.push(ext::fragment_shader_interlock::NAME);
         }
 
         extensions
@@ -2216,6 +2247,13 @@ impl super::InstanceShared {
                 features2 = features2.push_next(next);
             }
 
+            if capabilities.supports_extension(ext::fragment_shader_interlock::NAME) {
+                let next = features
+                    .fragment_shader_interlock
+                    .insert(vk::PhysicalDeviceFragmentShaderInterlockFeaturesEXT::default());
+                features2 = features2.push_next(next);
+            }
+
             if capabilities.supports_extension(khr::portability_subset::NAME) {
                 let next = features
                     .portability_subset
@@ -2904,6 +2942,10 @@ impl super::Adapter {
 
             if features.contains(wgt::Features::SHADER_DRAW_INDEX) {
                 capabilities.push(spv::Capability::DrawParameters);
+            }
+
+            if features.contains(wgt::Features::TEXTURE_STORAGE_RASTERIZER_ORDER) {
+                capabilities.push(spv::Capability::FragmentShaderPixelInterlockEXT);
             }
 
             let mut flags = spv::WriterFlags::empty();

@@ -470,101 +470,256 @@ unsafe extern "system" fn dialog_hook(code: i32, wparam: usize, lparam: isize) -
 /// Subclass id for the taskbar hook. Distinct from the menu hook.
 const TASKBAR_SUBCLASS_ID: usize = 0x6e61_7462;
 
-#[derive(Clone, Copy)]
-enum TaskbarTab {
-    /// Only confirm the taskbar object is available.
-    Check,
-    Add,
-    Delete,
-}
-
+/// Keeps a window off the taskbar the way the shell itself decides: an owned
+/// window without `WS_EX_APPWINDOW` has no button, on every show and after an
+/// Explorer restart alike. An unowned window is given a [`taskbar_owner`] of
+/// its own.
+///
+/// Not `ITaskbarList::DeleteTab`: Windows Graphics Capture refuses a window
+/// whose button was deleted (`CreateForWindow` returns `E_INVALIDARG`), so
+/// window capture in OBS and similar tools would show nothing.
 pub(crate) fn set_skip_taskbar<W: HasWindowHandle + ?Sized>(
     window: &W,
     skip: bool,
 ) -> Result<(), crate::SkipTaskbarError> {
-    use windows_sys::Win32::UI::Shell::{RemoveWindowSubclass, SetWindowSubclass};
-    use windows_sys::Win32::UI::WindowsAndMessaging::{
-        ChangeWindowMessageFilterEx, IsWindowVisible, MSGFLT_ALLOW,
-    };
-
-    let failed = |reason: &str| Err(crate::SkipTaskbarError::Failed(reason.into()));
     let Some(hwnd) = hwnd(window) else {
-        return failed("window has no Win32 handle");
+        return Err(crate::SkipTaskbarError::Failed(
+            "window has no Win32 handle".into(),
+        ));
     };
-    let hook = taskbar_hook_state(hwnd);
-    let (hooked, had_button) = (hook.is_some(), hook.unwrap_or(0));
-    let visible = unsafe { IsWindowVisible(hwnd) } != 0;
-    if !skip {
-        if !hooked {
-            return Ok(());
-        }
-        // Windows the shell never gives a button (such as owned dialogs) stay
-        // without one. A failed AddTab keeps the hook, so the entry stays hidden;
-        // a hidden window gets its button back on the next show.
-        if visible && had_button != 0 {
-            update_taskbar_tab(hwnd, TaskbarTab::Add)?;
-        }
-        remove_taskbar_hook(hwnd);
-        return Ok(());
-    }
-    if !hooked {
-        // Explorer sends `TaskbarButtonCreated` once a button is in place — on
-        // every show and after an Explorer restart — so deleting it there does
-        // not race the shell creating it.
-        let message = taskbar_button_created_message();
-        if message == 0 {
-            return failed("RegisterWindowMessageW(TaskbarButtonCreated) failed");
-        }
-        // Explorer cannot deliver the message to an elevated window otherwise.
-        if unsafe { ChangeWindowMessageFilterEx(hwnd, message, MSGFLT_ALLOW, std::ptr::null_mut()) }
-            == 0
-        {
-            return failed("ChangeWindowMessageFilterEx failed for TaskbarButtonCreated");
-        }
-        let had_button = usize::from(shell_gives_taskbar_button(hwnd));
-        if unsafe {
-            SetWindowSubclass(
-                hwnd,
-                Some(taskbar_subclass_proc),
-                TASKBAR_SUBCLASS_ID,
-                had_button,
-            )
-        } == 0
-        {
-            return failed("SetWindowSubclass failed for the taskbar hook");
-        }
-        if !TASKBAR_HOOK_PROP.set(hwnd, had_button + 1) {
-            unsafe { RemoveWindowSubclass(hwnd, Some(taskbar_subclass_proc), TASKBAR_SUBCLASS_ID) };
-            return failed("SetPropW failed for the taskbar hook");
-        }
-    }
-    // A hidden window has no button yet; the hook removes the one its show creates.
-    let tab = if visible {
-        TaskbarTab::Delete
+    if skip {
+        hide_taskbar_button(hwnd)
     } else {
-        TaskbarTab::Check
-    };
-    let result = update_taskbar_tab(hwnd, tab);
-    // Only undo a hook this request installed; an earlier success stays in force.
-    if result.is_err() && !hooked {
-        remove_taskbar_hook(hwnd);
+        restore_taskbar_button(hwnd)
     }
-    result
 }
 
-fn remove_taskbar_hook(hwnd: HWND) {
+fn hide_taskbar_button(hwnd: HWND) -> Result<(), crate::SkipTaskbarError> {
+    use windows_sys::Win32::UI::Shell::SetWindowSubclass;
+    use windows_sys::Win32::UI::WindowsAndMessaging::{
+        GW_OWNER, GWLP_HWNDPARENT, GetWindow, IsWindowVisible, SW_HIDE, SW_SHOWNA,
+        SetWindowLongPtrW, ShowWindow, WS_EX_APPWINDOW,
+    };
+
+    if TaskbarHook::get(hwnd).is_some() {
+        return Ok(());
+    }
+    let failed = |reason: &str| Err(crate::SkipTaskbarError::Failed(reason.into()));
+    let ex_style = unsafe { GetWindowLongPtrW(hwnd, GWL_EXSTYLE) };
+    let hook = TaskbarHook {
+        had_button: shell_gives_taskbar_button(hwnd),
+        app_window: ex_style & WS_EX_APPWINDOW as isize != 0,
+    };
+    // A window that already has an owner (an auxiliary window or a modal
+    // dialog) keeps it.
+    let owner = if unsafe { GetWindow(hwnd, GW_OWNER) }.is_null() {
+        let Some(owner) = taskbar_owner() else {
+            return failed("CreateWindowExW failed for the taskbar owner");
+        };
+        owner
+    } else {
+        std::ptr::null_mut()
+    };
+    // Installed first, so a style write from winit cannot slip the bit back
+    // in between.
+    if unsafe { SetWindowSubclass(hwnd, Some(taskbar_subclass_proc), TASKBAR_SUBCLASS_ID, 0) } == 0
+    {
+        destroy_taskbar_owner(owner);
+        return failed("SetWindowSubclass failed for the taskbar hook");
+    }
+    if !TASKBAR_HOOK_PROP.set(hwnd, hook.bits())
+        || (!owner.is_null() && !TASKBAR_OWNER_PROP.set(hwnd, owner as usize))
+    {
+        remove_taskbar_hook(hwnd);
+        destroy_taskbar_owner(owner);
+        return failed("SetPropW failed for the taskbar hook");
+    }
+    // The shell reads a window's ownership when it is shown. A shown window
+    // given an owner loses its button, but capture keeps refusing it until it
+    // is shown again; a hidden one is simply shown without a button later.
+    let reshow = hook.had_button && unsafe { IsWindowVisible(hwnd) } != 0;
+    // SAFETY: `hwnd` is the caller's live window and `owner` this hook's.
+    let owned = unsafe {
+        if reshow {
+            ShowWindow(hwnd, SW_HIDE);
+        }
+        if !owner.is_null() {
+            SetWindowLongPtrW(hwnd, GWLP_HWNDPARENT, owner as isize);
+        }
+        let owned = owner.is_null() || GetWindow(hwnd, GW_OWNER) == owner;
+        if owned && hook.app_window {
+            SetWindowLongPtrW(hwnd, GWL_EXSTYLE, ex_style & !(WS_EX_APPWINDOW as isize));
+        }
+        // Back where it was, without taking activation; winit's own record of
+        // the window as shown stays true.
+        if reshow {
+            ShowWindow(hwnd, SW_SHOWNA);
+        }
+        owned
+    };
+    if !owned {
+        remove_taskbar_hook(hwnd);
+        destroy_taskbar_owner(owner);
+        return failed("the taskbar owner was not installed");
+    }
+    Ok(())
+}
+
+fn restore_taskbar_button(hwnd: HWND) -> Result<(), crate::SkipTaskbarError> {
+    use windows_sys::Win32::UI::WindowsAndMessaging::{
+        GW_OWNER, GWLP_HWNDPARENT, GetWindow, IsWindowVisible, SetWindowLongPtrW, WS_EX_APPWINDOW,
+    };
+
+    let Some(hook) = TaskbarHook::get(hwnd) else {
+        return Ok(());
+    };
+    // The guard goes first, or it would strip the bit restored below.
+    let owner = remove_taskbar_hook(hwnd);
+    // SAFETY: `hwnd` is the caller's live window and `owner` this hook's.
+    unsafe {
+        if !owner.is_null() && GetWindow(hwnd, GW_OWNER) == owner {
+            SetWindowLongPtrW(hwnd, GWLP_HWNDPARENT, 0);
+        }
+        // Destroying an owner destroys the windows it owns.
+        if GetWindow(hwnd, GW_OWNER) != owner {
+            destroy_taskbar_owner(owner);
+        }
+        if hook.app_window {
+            let ex_style = GetWindowLongPtrW(hwnd, GWL_EXSTYLE);
+            SetWindowLongPtrW(hwnd, GWL_EXSTYLE, ex_style | WS_EX_APPWINDOW as isize);
+        }
+    }
+    // Windows the shell never gives a button (such as owned dialogs) stay
+    // without one. A hidden window gets its button back on its next show; a
+    // shown one is added now, which capture accepts (unlike a deleted one).
+    if hook.had_button
+        && unsafe { IsWindowVisible(hwnd) } != 0
+        && let Err(error) = add_taskbar_tab(hwnd)
+    {
+        // The entry is still hidden: keep the hook, so the state reported
+        // stays the state on screen.
+        let _ = hide_taskbar_button(hwnd);
+        return Err(error);
+    }
+    Ok(())
+}
+
+/// Removes the hook and answers the owner it installed, or null.
+fn remove_taskbar_hook(hwnd: HWND) -> HWND {
     use windows_sys::Win32::UI::Shell::RemoveWindowSubclass;
 
     unsafe { RemoveWindowSubclass(hwnd, Some(taskbar_subclass_proc), TASKBAR_SUBCLASS_ID) };
     TASKBAR_HOOK_PROP.remove(hwnd);
+    let owner = TASKBAR_OWNER_PROP.get(hwnd) as HWND;
+    TASKBAR_OWNER_PROP.remove(hwnd);
+    owner
 }
 
-/// Holds `had_button + 1` while the taskbar hook is installed.
+/// Holds the [`TaskbarHook`] bits while the hook is installed.
 const TASKBAR_HOOK_PROP: WindowProp = WindowProp::new("NanaUI.TaskbarHook");
 
-/// `Some(had_button)` when the taskbar hook is installed on `hwnd`.
-fn taskbar_hook_state(hwnd: HWND) -> Option<usize> {
-    TASKBAR_HOOK_PROP.get(hwnd).checked_sub(1)
+/// Holds the [`taskbar_owner`] the hook gave the window, if it gave one.
+const TASKBAR_OWNER_PROP: WindowProp = WindowProp::new("NanaUI.TaskbarOwner");
+
+/// What the taskbar hook found on a window, so that `skip_taskbar: false` puts
+/// it back.
+#[derive(Clone, Copy)]
+struct TaskbarHook {
+    /// The shell gave the window a button before the hook.
+    had_button: bool,
+    /// The window had `WS_EX_APPWINDOW` before the hook.
+    app_window: bool,
+}
+
+impl TaskbarHook {
+    /// Always set, so the property is never zero (absent).
+    const INSTALLED: usize = 1;
+    const HAD_BUTTON: usize = 1 << 1;
+    const APP_WINDOW: usize = 1 << 2;
+
+    /// `Some` while the taskbar hook is installed on `hwnd`.
+    fn get(hwnd: HWND) -> Option<Self> {
+        let bits = TASKBAR_HOOK_PROP.get(hwnd);
+        (bits & Self::INSTALLED != 0).then_some(Self {
+            had_button: bits & Self::HAD_BUTTON != 0,
+            app_window: bits & Self::APP_WINDOW != 0,
+        })
+    }
+
+    fn bits(self) -> usize {
+        let flag = |set: bool, bit: usize| if set { bit } else { 0 };
+        Self::INSTALLED
+            | flag(self.had_button, Self::HAD_BUTTON)
+            | flag(self.app_window, Self::APP_WINDOW)
+    }
+}
+
+/// A hidden window to own one window kept off the taskbar, on the calling
+/// thread (the window's), so ownership does not join two input queues.
+///
+/// One per window: windows sharing an owner move together in the z-order, so
+/// raising one would raise the others. Never shown, minimized or activated,
+/// and sent to the bottom of the z-order, where an owned window is always
+/// above it. An ordinary popup rather than a `WS_EX_TOOLWINDOW`: capture also
+/// refuses a window whose owner is a tool window.
+fn taskbar_owner() -> Option<HWND> {
+    use windows_sys::Win32::System::LibraryLoader::GetModuleHandleW;
+    use windows_sys::Win32::UI::WindowsAndMessaging::{
+        CreateWindowExW, DefWindowProcW, HWND_BOTTOM, RegisterClassW, SWP_NOACTIVATE, SWP_NOMOVE,
+        SWP_NOSIZE, SetWindowPos, WNDCLASSW, WS_POPUP,
+    };
+
+    let class = wide("NanaTaskbarOwner");
+    // SAFETY: the class name and procedure live for the process; a second
+    // registration fails harmlessly and the first one is used.
+    unsafe {
+        let instance = GetModuleHandleW(std::ptr::null());
+        let definition = WNDCLASSW {
+            lpfnWndProc: Some(DefWindowProcW),
+            hInstance: instance,
+            lpszClassName: class.as_ptr(),
+            // SAFETY: all-zero is the documented unset state of WNDCLASSW.
+            ..std::mem::zeroed()
+        };
+        RegisterClassW(&definition);
+        let owner = CreateWindowExW(
+            0,
+            class.as_ptr(),
+            class.as_ptr(),
+            WS_POPUP,
+            0,
+            0,
+            0,
+            0,
+            std::ptr::null_mut(),
+            std::ptr::null_mut(),
+            instance,
+            std::ptr::null(),
+        );
+        if owner.is_null() {
+            return None;
+        }
+        SetWindowPos(
+            owner,
+            HWND_BOTTOM,
+            0,
+            0,
+            0,
+            0,
+            SWP_NOACTIVATE | SWP_NOMOVE | SWP_NOSIZE,
+        );
+        Some(owner)
+    }
+}
+
+/// Destroys a [`taskbar_owner`] that no longer owns its window; null is none.
+fn destroy_taskbar_owner(owner: HWND) {
+    use windows_sys::Win32::UI::WindowsAndMessaging::DestroyWindow;
+
+    if !owner.is_null() {
+        // SAFETY: a hidden window this module created on this thread.
+        unsafe { DestroyWindow(owner) };
+    }
 }
 
 /// Whether the shell gives this window a taskbar button on its own: an
@@ -611,7 +766,8 @@ impl Drop for ComApartment {
     }
 }
 
-fn update_taskbar_tab(hwnd: HWND, tab: TaskbarTab) -> Result<(), crate::SkipTaskbarError> {
+/// Gives a shown window its taskbar button now, instead of on its next show.
+fn add_taskbar_tab(hwnd: HWND) -> Result<(), crate::SkipTaskbarError> {
     use windows::Win32::System::Com::{CLSCTX_INPROC_SERVER, CoCreateInstance};
     use windows::Win32::UI::Shell::{ITaskbarList, TaskbarList};
 
@@ -625,24 +781,9 @@ fn update_taskbar_tab(hwnd: HWND, tab: TaskbarTab) -> Result<(), crate::SkipTask
             .map_err(|error| failed("CoCreateInstance(TaskbarList)", error))?;
         list.HrInit()
             .map_err(|error| failed("ITaskbarList::HrInit", error))?;
-        match tab {
-            TaskbarTab::Check => Ok(()),
-            TaskbarTab::Add => list
-                .AddTab(hwnd)
-                .map_err(|error| failed("ITaskbarList::AddTab", error)),
-            TaskbarTab::Delete => list
-                .DeleteTab(hwnd)
-                .map_err(|error| failed("ITaskbarList::DeleteTab", error)),
-        }
+        list.AddTab(hwnd)
+            .map_err(|error| failed("ITaskbarList::AddTab", error))
     }
-}
-
-fn taskbar_button_created_message() -> u32 {
-    use windows_sys::Win32::UI::WindowsAndMessaging::RegisterWindowMessageW;
-
-    static MESSAGE: std::sync::OnceLock<u32> = std::sync::OnceLock::new();
-    *MESSAGE
-        .get_or_init(|| unsafe { RegisterWindowMessageW(wide("TaskbarButtonCreated").as_ptr()) })
 }
 
 unsafe extern "system" fn taskbar_subclass_proc(
@@ -654,14 +795,225 @@ unsafe extern "system" fn taskbar_subclass_proc(
     _data: usize,
 ) -> isize {
     use windows_sys::Win32::UI::Shell::DefSubclassProc;
-    use windows_sys::Win32::UI::WindowsAndMessaging::WM_NCDESTROY;
+    use windows_sys::Win32::UI::WindowsAndMessaging::{
+        PostMessageW, STYLESTRUCT, WM_CLOSE, WM_NCDESTROY, WM_STYLECHANGING, WS_EX_APPWINDOW,
+    };
 
     let result = unsafe { DefSubclassProc(hwnd, message, wparam, lparam) };
     if message == WM_NCDESTROY {
-        remove_taskbar_hook(hwnd);
-    } else if message == taskbar_button_created_message() {
-        // The request that installed the hook already reported its outcome.
-        let _ = update_taskbar_tab(hwnd, TaskbarTab::Delete);
+        let owner = remove_taskbar_hook(hwnd);
+        if !owner.is_null() {
+            // Closed once this window is gone: destroying an owner reaches
+            // the windows it owns, this one included while it is still being
+            // destroyed. `DefWindowProcW` destroys it on `WM_CLOSE`.
+            unsafe { PostMessageW(owner, WM_CLOSE, 0, 0) };
+        }
+    } else if message == WM_STYLECHANGING && wparam == GWL_EXSTYLE as usize && lparam != 0 {
+        // winit writes `WS_EX_APPWINDOW` back from its own flags on every style
+        // change, and that bit gives even an owned window a button. Applied
+        // after the chain, like the owned-window guard in `auxiliary.rs`.
+        // SAFETY: `WM_STYLECHANGING` passes a `STYLESTRUCT` the handler edits
+        // in place; the sender owns it for the call.
+        let style = unsafe { &mut *(lparam as *mut STYLESTRUCT) };
+        style.styleNew &= !WS_EX_APPWINDOW;
     }
     result
+}
+
+/// On real HWNDs: ownership and taskbar eligibility are Win32 window-manager
+/// state with no model worth asserting against. Restoring a shown window asks
+/// Explorer for a button, so those cases stay with the desktop overlay probe.
+#[cfg(test)]
+mod taskbar_tests {
+    use super::*;
+    use raw_window_handle::{HandleError, Win32WindowHandle, WindowHandle};
+    use std::num::NonZeroIsize;
+    use windows_sys::Win32::UI::WindowsAndMessaging::{
+        CreateWindowExW, DestroyWindow, DispatchMessageW, GW_OWNER, GWLP_HWNDPARENT, GetWindow,
+        IsWindow, IsWindowVisible, MSG, PM_REMOVE, PeekMessageW, SW_SHOWNA, SetWindowLongPtrW,
+        ShowWindow, WS_EX_APPWINDOW, WS_EX_TOOLWINDOW, WS_OVERLAPPEDWINDOW,
+    };
+
+    struct Window(HWND);
+
+    impl Window {
+        /// A hidden top-level window off every screen, with the taskbar bit
+        /// winit gives every unowned window.
+        fn new() -> Self {
+            // SAFETY: STATIC is a system window class; all pointers are valid
+            // for this call.
+            let hwnd = unsafe {
+                CreateWindowExW(
+                    WS_EX_APPWINDOW,
+                    wide("STATIC").as_ptr(),
+                    wide("taskbar fixture").as_ptr(),
+                    WS_OVERLAPPEDWINDOW,
+                    -32000,
+                    -32000,
+                    200,
+                    160,
+                    std::ptr::null_mut(),
+                    std::ptr::null_mut(),
+                    std::ptr::null_mut(),
+                    std::ptr::null(),
+                )
+            };
+            assert!(!hwnd.is_null(), "fixture window");
+            Self(hwnd)
+        }
+
+        fn owner(&self) -> HWND {
+            // SAFETY: a live fixture window.
+            unsafe { GetWindow(self.0, GW_OWNER) }
+        }
+
+        fn ex_style(&self) -> u32 {
+            ex_style(self.0)
+        }
+    }
+
+    impl HasWindowHandle for Window {
+        fn window_handle(&self) -> Result<WindowHandle<'_>, HandleError> {
+            let raw = Win32WindowHandle::new(NonZeroIsize::new(self.0 as isize).unwrap());
+            // SAFETY: this fixture owns the HWND until Drop on the same thread.
+            Ok(unsafe { WindowHandle::borrow_raw(RawWindowHandle::Win32(raw)) })
+        }
+    }
+
+    impl Drop for Window {
+        fn drop(&mut self) {
+            // SAFETY: the fixture's own window, on its creating thread.
+            unsafe { DestroyWindow(self.0) };
+        }
+    }
+
+    fn ex_style(hwnd: HWND) -> u32 {
+        // SAFETY: `hwnd` is a live window.
+        unsafe { GetWindowLongPtrW(hwnd, GWL_EXSTYLE) as u32 }
+    }
+
+    fn alive(hwnd: HWND) -> bool {
+        // SAFETY: IsWindow accepts any handle value.
+        unsafe { IsWindow(hwnd) != 0 }
+    }
+
+    /// Delivers what was posted to this thread's windows.
+    fn pump() {
+        let mut message = MSG::default();
+        // SAFETY: the message stays live through dispatch.
+        unsafe {
+            while PeekMessageW(&mut message, std::ptr::null_mut(), 0, 0, PM_REMOVE) != 0 {
+                DispatchMessageW(&message);
+            }
+        }
+    }
+
+    #[test]
+    fn a_window_off_the_taskbar_is_owned_by_a_hidden_window_of_its_own() {
+        let first = Window::new();
+        let second = Window::new();
+
+        set_skip_taskbar(&first, true).unwrap();
+        set_skip_taskbar(&second, true).unwrap();
+
+        let owner = first.owner();
+        assert!(!owner.is_null());
+        assert_ne!(
+            second.owner(),
+            owner,
+            "windows sharing an owner move together"
+        );
+        // SAFETY: a live window.
+        assert_eq!(unsafe { IsWindowVisible(owner) }, 0);
+        // Capture refuses a window owned by a tool window.
+        assert_eq!(ex_style(owner) & WS_EX_TOOLWINDOW, 0);
+        assert_eq!(first.ex_style() & WS_EX_APPWINDOW, 0);
+
+        // winit rewrites the extended style from its own flags.
+        // SAFETY: a live window.
+        unsafe {
+            SetWindowLongPtrW(
+                first.0,
+                GWL_EXSTYLE,
+                (first.ex_style() | WS_EX_APPWINDOW) as isize,
+            );
+        }
+        assert_eq!(first.ex_style() & WS_EX_APPWINDOW, 0);
+
+        // Asking again changes nothing.
+        set_skip_taskbar(&first, true).unwrap();
+        assert_eq!(first.owner(), owner);
+    }
+
+    #[test]
+    fn showing_the_entry_again_gives_back_what_hiding_it_changed() {
+        let window = Window::new();
+        set_skip_taskbar(&window, true).unwrap();
+        let owner = window.owner();
+
+        set_skip_taskbar(&window, false).unwrap();
+
+        assert!(window.owner().is_null());
+        assert!(!alive(owner));
+        assert_ne!(window.ex_style() & WS_EX_APPWINDOW, 0);
+        // The style guard went with the hook.
+        // SAFETY: a live window.
+        unsafe {
+            SetWindowLongPtrW(
+                window.0,
+                GWL_EXSTYLE,
+                (window.ex_style() & !WS_EX_APPWINDOW) as isize,
+            );
+            SetWindowLongPtrW(
+                window.0,
+                GWL_EXSTYLE,
+                (window.ex_style() | WS_EX_APPWINDOW) as isize,
+            );
+        }
+        assert_ne!(window.ex_style() & WS_EX_APPWINDOW, 0);
+        // A window that was never hidden is left alone.
+        set_skip_taskbar(&window, false).unwrap();
+        assert!(window.owner().is_null());
+    }
+
+    #[test]
+    fn a_window_that_already_has_an_owner_keeps_it() {
+        let parent = Window::new();
+        let window = Window::new();
+        // SAFETY: both fixture windows are live.
+        unsafe { SetWindowLongPtrW(window.0, GWLP_HWNDPARENT, parent.0 as isize) };
+
+        set_skip_taskbar(&window, true).unwrap();
+        assert_eq!(window.owner(), parent.0);
+        set_skip_taskbar(&window, false).unwrap();
+
+        assert_eq!(window.owner(), parent.0);
+        assert!(alive(parent.0));
+    }
+
+    #[test]
+    fn a_shown_window_stays_shown() {
+        let window = Window::new();
+        // SAFETY: a live fixture window, shown off every screen.
+        unsafe { ShowWindow(window.0, SW_SHOWNA) };
+
+        set_skip_taskbar(&window, true).unwrap();
+
+        assert!(!window.owner().is_null());
+        // SAFETY: a live window.
+        assert_ne!(unsafe { IsWindowVisible(window.0) }, 0);
+    }
+
+    #[test]
+    fn the_owner_is_closed_after_its_window_is_destroyed() {
+        let window = Window::new();
+        set_skip_taskbar(&window, true).unwrap();
+        let owner = window.owner();
+
+        drop(window);
+        assert!(alive(owner), "not destroyed while its window is");
+        pump();
+
+        assert!(!alive(owner));
+    }
 }

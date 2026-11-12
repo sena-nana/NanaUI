@@ -867,6 +867,20 @@ bitflags_array! {
         /// This is a native only feature.
         #[name("wgpu-partially-bound-binding-array", "partially-bound-binding-array")]
         const PARTIALLY_BOUND_BINDING_ARRAY = 1 << 13;
+        /// Allows fragment shaders to perform pixel-rasterizer-ordered load/store operations on
+        /// storage textures via [`StorageTextureAccess::RasterizerOrdered`] and WGSL
+        /// `rasterizer_ordered` access mode (NanaUI fork).
+        ///
+        /// Supported platforms:
+        /// - DX12 (ROVsSupported + TypedUAVLoadAdditionalFormats + ShaderModel 5.1+)
+        /// - Vulkan (`VK_EXT_fragment_shader_interlock` `fragmentShaderPixelInterlock` + `fragmentStoresAndAtomics`)
+        /// - Metal (`areRasterOrderGroupsSupported` + `MTLReadWriteTextureTier::Tier2` + MSL 2.0+)
+        ///
+        /// This is a native only feature.
+        ///
+        /// [`StorageTextureAccess::RasterizerOrdered`]: super::StorageTextureAccess::RasterizerOrdered
+        #[name("wgpu-texture-storage-rasterizer-order")]
+        const TEXTURE_STORAGE_RASTERIZER_ORDER = 1 << 14;
         /// Allows the user to call [`RenderPass::multi_draw_indirect_count`] and [`RenderPass::multi_draw_indexed_indirect_count`].
         ///
         /// This allows the use of a buffer containing the actual number of draw calls. This feature being present also implies

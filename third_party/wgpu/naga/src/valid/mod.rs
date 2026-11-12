@@ -218,6 +218,8 @@ bitflags::bitflags! {
         const MEMORY_DECORATION_VOLATILE = 1 << 42;
         /// Support for 16-bit integer types.
         const SHADER_INT16 = 1 << 43;
+        /// Support for rasterizer-ordered storage textures in fragment shaders.
+        const TEXTURE_STORAGE_RASTERIZER_ORDER = 1 << 44;
     }
 }
 

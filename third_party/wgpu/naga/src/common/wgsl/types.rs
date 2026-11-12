@@ -234,7 +234,9 @@ where
                 }
                 Ic::Storage { format, access } => {
                     let format_str = format.to_wgsl();
-                    let access_str = if access.contains(crate::StorageAccess::ATOMIC) {
+                    let access_str = if access.contains(crate::StorageAccess::ORDERED) {
+                        ",rasterizer_ordered"
+                    } else if access.contains(crate::StorageAccess::ATOMIC) {
                         ",atomic"
                     } else if access
                         .contains(crate::StorageAccess::LOAD | crate::StorageAccess::STORE)

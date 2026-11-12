@@ -38,7 +38,8 @@
   - `surface_reconfigure`（Windows）在另一个线程提交的同时，对一个小窗口的 surface 在 DX12 与 Vulkan 上反复重配置；
   - `vulkan_present_tracking`（Windows）在 Vulkan 上、带着在途帧反复缩放窗口，适配器支持的每种 present 跟踪方式各跑一遍，并请求校验层；后端记下任何错误即失败。没有 `VK_LAYER_KHRONOS_validation` 时只检查驱动自己的消息；设 `NANA_REQUIRE_VULKAN_VALIDATION=1` 则缺少校验层就失败；
   - `timed_poll` 在 DX12 与 Vulkan 上让零超时的等待与其他线程的 poll、提交竞争几秒；
-  - `device_lost_poll` 不重置 GPU 就让设备丢失（Vulkan 用 hal 的测试专用 `simulate_device_lost`，DX12 用 `ID3D12Device5::RemoveDevice`），检查 poll 报 `PollError::DeviceLost`、丢失回调只调一次、挂起的回调都有结果。
+  - `device_lost_poll` 不重置 GPU 就让设备丢失（Vulkan 用 hal 的测试专用 `simulate_device_lost`，DX12 用 `ID3D12Device5::RemoveDevice`），检查 poll 报 `PollError::DeviceLost`、丢失回调只调一次、挂起的回调都有结果；
+  - `rasterizer_ordered_storage` 在所有系统上检查 naga 对 `rasterizer_ordered` 存储纹理的 WGSL/HLSL/SPIR-V/MSL 处理，并在 DX12、Vulkan（及 Apple 平台上的 Metal）上运行校验与高竞争重叠混合顺序测试。
 
   没有适配器时 GPU 测试会跳过；设 `NANA_REQUIRE_WGPU_FORK_TESTS=1` 则改为失败，Windows CI 对 DX12 就是这样跑的。这些测试里的 GPU 负载要小且有上限。
 
@@ -102,3 +103,17 @@
 - **`wgpu-core`**：`Device::maintain` 在等围栏或读围栏失败时不再立即返回。`Device::handle_hal_error` 已把设备标为无效并调用设备丢失回调（只一次，原因为 `DeviceLostReason::Unknown`）；随后这次 poll 把所有提交当作已完成，`on_submitted_work_done` 与 `map_async` 的回调都会执行（映射以错误结束，或映射到丢失设备的内存上），"无效且队列为空"的路径释放设备的资源，最后报告丢失。`WaitIdleError::to_poll_error` 把 `DeviceError::Lost` 与 `OutOfMemory`（两者在这里都会让设备丢失）映射为 `PollError::DeviceLost`。丢失设备上的提交本来就会被拒绝，不会 panic。
 - **`wgpu-hal` DX12**：围栏读出 `u64::MAX` 时查 `GetDeviceRemovedReason`；设备已被移除则 `get_fence_value` 与 `wait` 返回 `DeviceError::Lost`。
 - **`wgpu-hal` Vulkan**：`vulkan::Device::simulate_device_lost()`（`#[doc(hidden)]`，仅供测试）先等设备空闲，之后等围栏、读围栏与队列提交都返回 `DeviceError::Lost`，测试不必真的重置就能走到这条路径。
+
+### 片元着色器中的光栅化顺序存储纹理
+
+片元着色器可以按图元光栅化顺序对当前像素执行读取、修改和写回，而不必拆分渲染通道或拷贝快照（用于可编程混合、顺序敏感合成与背景保存/恢复）。
+
+- **`wgpu::Features::TEXTURE_STORAGE_RASTERIZER_ORDER`**（新增原生特性，名称解析为 `"wgpu-texture-storage-rasterizer-order"`）。在以下平台暴露：
+  - **DX12**：同时满足 `ROVsSupported`、`TypedUAVLoadAdditionalFormats` 与 Shader Model 5.1+；
+  - **Vulkan**：`VK_EXT_fragment_shader_interlock` 提供 `fragmentShaderPixelInterlock` 且支持 `fragmentStoresAndAtomics`（请求该特性时启用对应扩展与特性位）；
+  - **Metal**：同时满足 `areRasterOrderGroupsSupported`、`fragment_rw_storage`、`MTLReadWriteTextureTier::Tier2` 与 MSL 2.0+。
+- **`wgpu::StorageTextureAccess::RasterizerOrdered`**（新增变体；对 `StorageTextureAccess` 做穷尽匹配的代码需要改）。`wgpu-core` 校验要求已启用 `Features::TEXTURE_STORAGE_RASTERIZER_ORDER`、绑定组布局条目的可见性不含非 `FRAGMENT` 阶段，并直接按适配器的硬件 `STORAGE_READ_WRITE` 能力校验纹理格式（因此 `Rgba8Unorm` 与 `Rgba16Float` 无需额外开启 `TEXTURE_ADAPTER_SPECIFIC_FORMAT_FEATURES`），资源状态按 `TextureUses::STORAGE_READ_WRITE` 追踪。
+- **`naga`**：新增 `StorageAccess::ORDERED` 与 `Capabilities::TEXTURE_STORAGE_RASTERIZER_ORDER`，WGSL 访问模式写为 `rasterizer_ordered`（如 `var dst: texture_storage_2d<rgba16float, rasterizer_ordered>;`，隐含 `LOAD | STORE`）。拒绝用于存储缓冲区、立方体维度、原子访问以及非片元入口点（含经辅助函数间接引用）。后端输出：
+  - **HLSL**：片元入口点输出 `RasterizerOrderedTexture*`（Shader Model 5.1+），从同一 WGSL 模块编译非片元阶段时省略有序存储全局变量及辅助函数；未使用 `rasterizer_ordered` 的着色器 HLSL 输出完全不变。
+  - **SPIR-V**：为有序存储图像变量添加 `Coherent` 修饰，声明 `Capability::FragmentShaderPixelInterlockEXT`、`SPV_EXT_fragment_shader_interlock` 与 `ExecutionMode::PixelInterlockOrderedEXT`，并用外层单基本块包装函数以一对 `OpBeginInvocationInterlockEXT` / `OpEndInvocationInterlockEXT` 包裹片元入口调用，保证结构化控制流内的提前 `return` 合法。
+  - **MSL**：在片元入口点的纹理绑定属性内追加 `, raster_order_group(0)`（`[[texture(N), raster_order_group(0)]]`，MSL 2.0+）。

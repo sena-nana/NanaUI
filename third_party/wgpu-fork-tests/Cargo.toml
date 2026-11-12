@@ -25,6 +25,11 @@ hashbrown = { version = "0.17", default-features = false, features = ["default-h
 [dev-dependencies]
 # `tests/vulkan_present_tracking.rs` reads the Vulkan backend's log.
 log = "0.4"
+naga = { workspace = true, features = ["wgsl-in", "wgsl-out", "hlsl-out", "spv-out", "msl-out"] }
+spirv = "0.4"
+
+[target.'cfg(target_vendor = "apple")'.dependencies]
+wgpu = { workspace = true, features = ["metal"] }
 
 [target.'cfg(windows)'.dev-dependencies]
 windows = { version = "0.62", features = [

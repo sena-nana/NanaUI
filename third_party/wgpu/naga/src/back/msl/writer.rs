@@ -7636,6 +7636,23 @@ template <typename A>
                     }
                 }
 
+                let is_ordered_storage = var.space == crate::AddressSpace::Handle && {
+                    let inner = match module.types[var.ty].inner {
+                        crate::TypeInner::BindingArray { base, .. } => &module.types[base].inner,
+                        ref inner => inner,
+                    };
+                    matches!(
+                        *inner,
+                        crate::TypeInner::Image {
+                            class: crate::ImageClass::Storage { access, .. },
+                            ..
+                        } if access.contains(crate::StorageAccess::ORDERED)
+                    )
+                };
+                if is_ordered_storage && options.lang_version < (2, 0) {
+                    return Err(Error::UnsupportedRasterizerOrderedTexture);
+                }
+
                 // Check min MSL version for binding arrays
                 match var.space {
                     crate::AddressSpace::Handle => match module.types[var.ty].inner {
@@ -7790,6 +7807,13 @@ template <typename A>
                         let mut binding = String::new();
                         if let Some(resolved) = resolved {
                             resolved.try_fmt(&mut binding)?;
+                            if is_ordered_storage
+                                && ep.stage == crate::ShaderStage::Fragment
+                                && binding.ends_with("]]")
+                            {
+                                binding.truncate(binding.len() - 2);
+                                binding.push_str(", raster_order_group(0)]]");
+                            }
                         }
                         args.push(EntryPointArgument {
                             ty_name: parts.ty_name,

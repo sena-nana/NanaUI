@@ -43,6 +43,8 @@ pub enum GlobalVariableError {
     InitializerNotAllowed(crate::AddressSpace),
     #[error("Storage address space doesn't support write-only access")]
     StorageAddressSpaceWriteOnlyNotSupported,
+    #[error("Storage address space doesn't support rasterizer-ordered access")]
+    StorageAddressSpaceOrderedNotSupported,
     #[error("Type is not valid for use as a immediate data")]
     InvalidImmediateType(#[source] ImmediateError),
     #[error("Task payload must not be zero-sized")]
@@ -1012,6 +1014,9 @@ impl super::Validator {
                 if access == crate::StorageAccess::STORE {
                     return Err(GlobalVariableError::StorageAddressSpaceWriteOnlyNotSupported);
                 }
+                if access.contains(crate::StorageAccess::ORDERED) {
+                    return Err(GlobalVariableError::StorageAddressSpaceOrderedNotSupported);
+                }
                 (
                     TypeFlags::DATA | TypeFlags::HOST_SHAREABLE | TypeFlags::CREATION_RESOLVED,
                     true,
@@ -1468,13 +1473,29 @@ impl super::Validator {
                         crate::TypeInner::Image {
                             class: crate::ImageClass::Storage { access, .. },
                             ..
-                        } => storage_usage(access),
+                        } => {
+                            if access.contains(crate::StorageAccess::ORDERED)
+                                && ep.stage != crate::ShaderStage::Fragment
+                            {
+                                return Err(EntryPointError::ForbiddenStageOperations
+                                    .with_span_handle(var_handle, &module.global_variables));
+                            }
+                            storage_usage(access)
+                        }
                         _ => GlobalUse::READ | GlobalUse::QUERY,
                     },
                     crate::TypeInner::Image {
                         class: crate::ImageClass::Storage { access, .. },
                         ..
-                    } => storage_usage(access),
+                    } => {
+                        if access.contains(crate::StorageAccess::ORDERED)
+                            && ep.stage != crate::ShaderStage::Fragment
+                        {
+                            return Err(EntryPointError::ForbiddenStageOperations
+                                .with_span_handle(var_handle, &module.global_variables));
+                        }
+                        storage_usage(access)
+                    }
                     _ => GlobalUse::READ | GlobalUse::QUERY,
                 },
                 crate::AddressSpace::Private | crate::AddressSpace::WorkGroup => {

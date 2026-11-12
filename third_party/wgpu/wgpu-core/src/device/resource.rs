@@ -1676,7 +1676,18 @@ impl Device {
             self.require_downlevel_flags(wgt::DownlevelFlags::VIEW_FORMATS)?;
         }
 
-        let hal_usage = conv::map_texture_usage_for_texture(desc, &format_features);
+        let mut hal_usage = conv::map_texture_usage_for_texture(desc, &format_features);
+        if self
+            .features
+            .contains(wgt::Features::TEXTURE_STORAGE_RASTERIZER_ORDER)
+            && desc.usage.contains(wgt::TextureUsages::STORAGE_BINDING)
+            && self
+                .get_texture_format_features(desc.format)
+                .flags
+                .contains(wgt::TextureFormatFeatureFlags::STORAGE_READ_WRITE)
+        {
+            hal_usage |= wgt::TextureUses::STORAGE_READ_WRITE;
+        }
 
         let hal_desc = hal::TextureDescriptor {
             label: desc.label.to_hal(self.instance_flags),
@@ -2094,11 +2105,22 @@ impl Device {
 
         // filter the usages based on the other criteria
         let usage = {
-            let resolved_hal_usage = conv::map_texture_usage(
+            let mut resolved_hal_usage = conv::map_texture_usage(
                 resolved_usage,
                 resolved_format.into(),
                 format_features.flags,
             );
+            if self
+                .features
+                .contains(wgt::Features::TEXTURE_STORAGE_RASTERIZER_ORDER)
+                && resolved_usage.contains(wgt::TextureUsages::STORAGE_BINDING)
+                && self
+                    .get_texture_format_features(resolved_format)
+                    .flags
+                    .contains(wgt::TextureFormatFeatureFlags::STORAGE_READ_WRITE)
+            {
+                resolved_hal_usage |= wgt::TextureUses::STORAGE_READ_WRITE;
+            }
             let mask_copy = !(wgt::TextureUses::COPY_SRC | wgt::TextureUses::COPY_DST);
             let mask_dimension = match resolved_dimension {
                 TextureViewDimension::Cube | TextureViewDimension::CubeArray => {
@@ -2841,21 +2863,49 @@ impl Device {
                                 error: BindGroupLayoutEntryError::StorageTextureAtomic,
                             });
                         }
+                        wgt::StorageTextureAccess::RasterizerOrdered => {
+                            if !self
+                                .features
+                                .contains(wgt::Features::TEXTURE_STORAGE_RASTERIZER_ORDER)
+                            {
+                                return Err(CreateBindGroupLayoutError::Entry {
+                                    binding: entry.binding,
+                                    error:
+                                        BindGroupLayoutEntryError::StorageTextureRasterizerOrdered,
+                                });
+                            }
+                            if !(entry.visibility - wgt::ShaderStages::FRAGMENT).is_empty() {
+                                return Err(CreateBindGroupLayoutError::Entry {
+                                    binding: entry.binding,
+                                    error: BindGroupLayoutEntryError::StorageTextureRasterizerOrderedVisibility(
+                                        entry.visibility,
+                                    ),
+                                });
+                            }
+                        }
                         _ => (),
                     }
 
-                    let format_features =
+                    let format_features = if access == Access::RasterizerOrdered {
+                        self.require_features(format.required_features())
+                            .map_err(|error| CreateBindGroupLayoutError::Entry {
+                                binding: entry.binding,
+                                error: BindGroupLayoutEntryError::MissingFeatures(error),
+                            })?;
+                        self.get_texture_format_features(format)
+                    } else {
                         self.describe_format_features(format).map_err(|error| {
                             CreateBindGroupLayoutError::Entry {
                                 binding: entry.binding,
                                 error: BindGroupLayoutEntryError::MissingFeatures(error),
                             }
-                        })?;
+                        })?
+                    };
 
                     let required_feature_flag = match access {
                         Access::WriteOnly => Flags::STORAGE_WRITE_ONLY,
                         Access::ReadOnly => Flags::STORAGE_READ_ONLY,
-                        Access::ReadWrite => Flags::STORAGE_READ_WRITE,
+                        Access::ReadWrite | Access::RasterizerOrdered => Flags::STORAGE_READ_WRITE,
                         Access::Atomic => Flags::STORAGE_ATOMIC,
                     };
 
@@ -2880,6 +2930,11 @@ impl Device {
                             wgt::StorageTextureAccess::ReadWrite => WritableStorage::Yes,
                             wgt::StorageTextureAccess::Atomic => {
                                 required_features |= wgt::Features::TEXTURE_ATOMIC;
+                                WritableStorage::Yes
+                            }
+                            wgt::StorageTextureAccess::RasterizerOrdered => {
+                                required_features |=
+                                    wgt::Features::TEXTURE_STORAGE_RASTERIZER_ORDER;
                                 WritableStorage::Yes
                             }
                         },
@@ -3792,7 +3847,10 @@ impl Device {
                 Ok(match access {
                     wgt::StorageTextureAccess::ReadOnly => wgt::TextureUses::STORAGE_READ_ONLY,
                     wgt::StorageTextureAccess::WriteOnly => wgt::TextureUses::STORAGE_WRITE_ONLY,
-                    wgt::StorageTextureAccess::ReadWrite => wgt::TextureUses::STORAGE_READ_WRITE,
+                    wgt::StorageTextureAccess::ReadWrite
+                    | wgt::StorageTextureAccess::RasterizerOrdered => {
+                        wgt::TextureUses::STORAGE_READ_WRITE
+                    }
                     wgt::StorageTextureAccess::Atomic => wgt::TextureUses::STORAGE_ATOMIC,
                 })
             }

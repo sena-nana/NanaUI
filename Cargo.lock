@@ -2833,7 +2833,9 @@ version = "0.0.0"
 dependencies = [
  "hashbrown 0.17.1",
  "log",
+ "naga",
  "pollster",
+ "spirv",
  "wgpu",
  "windows",
 ]

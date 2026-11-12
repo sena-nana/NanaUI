@@ -536,9 +536,41 @@ impl super::Validator {
                 if index >= function.arguments.len() as u32 {
                     return Err(ExpressionError::FunctionArgumentDoesntExist(index));
                 }
-                ShaderStages::all()
+                let arg_ty = function.arguments[index as usize].ty;
+                let inner = match module.types[arg_ty].inner {
+                    Ti::BindingArray { base, .. } => &module.types[base].inner,
+                    ref inner => inner,
+                };
+                if matches!(
+                    *inner,
+                    Ti::Image {
+                        class: crate::ImageClass::Storage { access, .. },
+                        ..
+                    } if access.contains(crate::StorageAccess::ORDERED)
+                ) {
+                    ShaderStages::FRAGMENT
+                } else {
+                    ShaderStages::all()
+                }
             }
-            E::GlobalVariable(_handle) => ShaderStages::all(),
+            E::GlobalVariable(handle) => {
+                let var = &module.global_variables[handle];
+                let inner = match module.types[var.ty].inner {
+                    Ti::BindingArray { base, .. } => &module.types[base].inner,
+                    ref inner => inner,
+                };
+                if matches!(
+                    *inner,
+                    Ti::Image {
+                        class: crate::ImageClass::Storage { access, .. },
+                        ..
+                    } if access.contains(crate::StorageAccess::ORDERED)
+                ) {
+                    ShaderStages::FRAGMENT
+                } else {
+                    ShaderStages::all()
+                }
+            }
             E::LocalVariable(_handle) => ShaderStages::all(),
             E::Load { pointer } => {
                 match resolver[pointer] {

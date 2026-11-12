@@ -100,6 +100,10 @@ pub fn features_to_naga_capabilities(
         features.contains(wgt::Features::TEXTURE_ATOMIC),
     );
     caps.set(
+        Caps::TEXTURE_STORAGE_RASTERIZER_ORDER,
+        features.contains(wgt::Features::TEXTURE_STORAGE_RASTERIZER_ORDER),
+    );
+    caps.set(
         Caps::TEXTURE_INT64_ATOMIC,
         features.contains(wgt::Features::TEXTURE_INT64_ATOMIC),
     );

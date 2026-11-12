@@ -1799,8 +1799,19 @@ impl Writer {
         debug_info: &Option<DebugInfoInner>,
     ) -> Result<Instruction, Error> {
         let mut interface_ids = Vec::new();
+        let uses_ordered_storage = entry_point.stage == crate::ShaderStage::Fragment
+            && ir_module.global_variables.iter().any(|(handle, var)| {
+                !info[handle].is_empty() && global_is_ordered_storage(ir_module, var)
+            });
+        if uses_ordered_storage {
+            self.require_any(
+                "fragment shader pixel interlock",
+                &[spirv::Capability::FragmentShaderPixelInterlockEXT],
+            )?;
+            self.use_extension("SPV_EXT_fragment_shader_interlock");
+        }
 
-        let function_id = self.write_function(
+        let inner_function_id = self.write_function(
             &entry_point.function,
             info,
             ir_module,
@@ -1813,11 +1824,22 @@ impl Writer {
             }),
             debug_info,
         )?;
+        let function_id = if uses_ordered_storage {
+            self.write_fragment_interlock_wrapper(inner_function_id)
+        } else {
+            inner_function_id
+        };
 
         let exec_model = match entry_point.stage {
             crate::ShaderStage::Vertex => spirv::ExecutionModel::Vertex,
             crate::ShaderStage::Fragment => {
                 self.write_execution_mode(function_id, spirv::ExecutionMode::OriginUpperLeft)?;
+                if uses_ordered_storage {
+                    self.write_execution_mode(
+                        function_id,
+                        spirv::ExecutionMode::PixelInterlockOrderedEXT,
+                    )?;
+                }
                 match entry_point.early_depth_test {
                     Some(crate::EarlyDepthTest::Force) => {
                         self.write_execution_mode(
@@ -3441,15 +3463,24 @@ impl Writer {
 
         let storage_access = match global_variable.space {
             crate::AddressSpace::Storage { access } => Some(access),
-            _ => match ir_module.types[global_variable.ty].inner {
-                crate::TypeInner::Image {
-                    class: crate::ImageClass::Storage { access, .. },
-                    ..
-                } => Some(access),
-                _ => None,
-            },
+            _ => {
+                let inner = match ir_module.types[global_variable.ty].inner {
+                    crate::TypeInner::BindingArray { base, .. } => &ir_module.types[base].inner,
+                    ref inner => inner,
+                };
+                match *inner {
+                    crate::TypeInner::Image {
+                        class: crate::ImageClass::Storage { access, .. },
+                        ..
+                    } => Some(access),
+                    _ => None,
+                }
+            }
         };
         if let Some(storage_access) = storage_access {
+            if storage_access.contains(crate::StorageAccess::ORDERED) {
+                self.decorate(id, Decoration::Coherent, &[]);
+            }
             if !storage_access.contains(crate::StorageAccess::LOAD) {
                 self.decorate(id, Decoration::NonReadable, &[]);
             }
@@ -3967,6 +3998,53 @@ impl Writer {
             print_id,
             &operands,
         ));
+    }
+
+    fn write_fragment_interlock_wrapper(&mut self, inner_id: Word) -> Word {
+        let out_id = self.id_gen.next();
+        let mut function = Function::default();
+        let function_type = self.get_function_type(LookupFunctionType {
+            parameter_type_ids: alloc::vec![],
+            return_type_id: self.void_type,
+        });
+        function.signature = Some(Instruction::function(
+            self.void_type,
+            out_id,
+            spirv::FunctionControl::empty(),
+            function_type,
+        ));
+
+        let mut block = Block::new(self.id_gen.next());
+        block
+            .body
+            .push(Instruction::begin_invocation_interlock_ext());
+        let call_id = self.id_gen.next();
+        block.body.push(Instruction::function_call(
+            self.void_type,
+            call_id,
+            inner_id,
+            &[],
+        ));
+        block.body.push(Instruction::end_invocation_interlock_ext());
+        function.consume(block, Instruction::return_void());
+        function.to_words(&mut self.logical_layout.function_definitions);
+        out_id
+    }
+}
+
+fn global_is_ordered_storage(ir_module: &crate::Module, var: &crate::GlobalVariable) -> bool {
+    var.space == crate::AddressSpace::Handle && {
+        let inner = match ir_module.types[var.ty].inner {
+            crate::TypeInner::BindingArray { base, .. } => &ir_module.types[base].inner,
+            ref inner => inner,
+        };
+        matches!(
+            *inner,
+            crate::TypeInner::Image {
+                class: crate::ImageClass::Storage { access, .. },
+                ..
+            } if access.contains(crate::StorageAccess::ORDERED)
+        )
     }
 }
 

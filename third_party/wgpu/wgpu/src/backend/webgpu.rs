@@ -2152,8 +2152,9 @@ impl dispatch::DeviceInterface for WebDevice {
                             wgt::StorageTextureAccess::ReadWrite => {
                                 webgpu_sys::GpuStorageTextureAccess::ReadWrite
                             }
-                            wgt::StorageTextureAccess::Atomic => {
-                                // Validated out by `BindGroupLayoutEntryError::StorageTextureAtomic`
+                            wgt::StorageTextureAccess::Atomic
+                            | wgt::StorageTextureAccess::RasterizerOrdered => {
+                                // Validated out by `BindGroupLayoutEntryError`
                                 unreachable!()
                             }
                         };

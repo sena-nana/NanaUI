@@ -457,6 +457,21 @@ impl<'a, W: fmt::Write> super::Writer<'a, W> {
         for (handle, function) in module.functions.iter() {
             let info = &module_info[handle];
 
+            // Skip fragment-only rasterizer-ordered storage helpers when compiling a non-fragment stage.
+            if matches!(
+                self.pipeline_options.entry_point,
+                Some((stage, _)) if stage != ShaderStage::Fragment
+            ) && (function
+                .arguments
+                .iter()
+                .any(|arg| type_is_ordered_storage(module, arg.ty))
+                || module.global_variables.iter().any(|(var_handle, var)| {
+                    !info[var_handle].is_empty() && type_is_ordered_storage(module, var.ty)
+                }))
+            {
+                continue;
+            }
+
             // Check if all of the globals are accessible
             if !self.options.fake_missing_bindings {
                 if let Some((var_handle, _)) =
@@ -1033,6 +1048,14 @@ impl<'a, W: fmt::Write> super::Writer<'a, W> {
             TypeInner::BindingArray { ref base, .. } => &module.types[*base].inner,
             _ => inner,
         };
+
+        if matches!(
+            self.pipeline_options.entry_point,
+            Some((stage, _)) if stage != ShaderStage::Fragment
+        ) && type_is_ordered_storage(module, global.ty)
+        {
+            return Ok(());
+        }
 
         // External textures are handled entirely differently, so defer entirely to that method.
         // We do so prior to calling resolve_resource_binding() below, as we even need to resolve
@@ -5103,4 +5126,18 @@ fn get_inner_matrix_of_global_uniform(
         };
     }
     None
+}
+
+fn type_is_ordered_storage(module: &Module, ty: Handle<crate::Type>) -> bool {
+    let inner = match module.types[ty].inner {
+        TypeInner::BindingArray { base, .. } => &module.types[base].inner,
+        ref inner => inner,
+    };
+    matches!(
+        *inner,
+        TypeInner::Image {
+            class: crate::ImageClass::Storage { access, .. },
+            ..
+        } if access.contains(crate::StorageAccess::ORDERED)
+    )
 }
