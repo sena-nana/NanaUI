@@ -114,13 +114,14 @@ impl AppContext {
             style.text_vertical_alignment = crate::TextVerticalAlignment::Center;
             let layout = Arc::make_mut(&mut style.layout);
             layout.flex_shrink = Some(1.0);
+            layout.allow_shrink = true;
             layout.min_width = Some(LengthSpec::Px(0.0));
             layout.white_space_nowrap = true;
             layout.text_overflow_ellipsis = true;
             layout.hidden = hidden;
             style
         };
-        let secondary_style = |hidden: bool, shrink: f32, extra_start_xxs: bool| {
+        let secondary_style = |hidden: bool, is_detail: bool| {
             let mut style = NodeStyle {
                 foreground: Some(nana_ui_core::SemanticColorRole::Muted),
                 type_role: Some(nana_ui_core::TypeRole::Meta),
@@ -129,14 +130,21 @@ impl AppContext {
                 ..NodeStyle::default()
             };
             let layout = Arc::make_mut(&mut style.layout);
-            layout.flex_shrink = Some(shrink);
-            if shrink > 0.0 {
-                layout.min_width = Some(LengthSpec::Px(0.0));
-                layout.text_overflow_ellipsis = true;
-            }
+            // Match `list_text_parts`: give the primary label + `after_label`
+            // priority so secondary copy shrinks and ellipsizes first, while
+            // `detail` still reserves `min_secondary_width` (`SpacingStep::Xxxl`).
+            layout.flex_shrink = Some(1024.0);
+            layout.allow_shrink = true;
+            layout.text_overflow_ellipsis = true;
             layout.white_space_nowrap = true;
             layout.hidden = hidden;
-            if extra_start_xxs {
+            if is_detail {
+                layout.min_width = Some(LengthSpec::Px(nana_ui_core::space::XXXL));
+                layout.theme.min_width =
+                    Some(crate::theme_intent::space(nana_ui_core::SpacingStep::Xxxl));
+                layout.text_align = nana_ui_core::TextAlignSpec::End;
+            } else {
+                layout.min_width = Some(LengthSpec::Px(0.0));
                 layout.logical_margin.inline_start = Some(LengthSpec::Px(nana_ui_core::space::XXS));
                 layout.resolve_logical_box_edges();
             }
@@ -169,7 +177,7 @@ impl AppContext {
         let note_id = match (live(self, note_slot), !note.is_empty()) {
             (Some(id), _) => {
                 self.update_component(Entity::<Text>::from_stable_id(id), |text, _| {
-                    let style = secondary_style(note.is_empty(), 2.0, true);
+                    let style = secondary_style(note.is_empty(), false);
                     if text.value != note || text.style != style {
                         text.value = note.clone();
                         text.style = style;
@@ -184,7 +192,7 @@ impl AppContext {
                         document,
                         Text::new(note.clone())
                             .decorative()
-                            .style(secondary_style(false, 2.0, true)),
+                            .style(secondary_style(false, false)),
                     )?
                     .stable_id(),
                 )
@@ -194,7 +202,7 @@ impl AppContext {
         let detail_id = match (live(self, detail_slot), !detail.is_empty()) {
             (Some(id), _) => {
                 self.update_component(Entity::<Text>::from_stable_id(id), |text, _| {
-                    let style = secondary_style(detail.is_empty(), 0.0, false);
+                    let style = secondary_style(detail.is_empty(), true);
                     if text.value != detail || text.style != style {
                         text.value = detail.clone();
                         text.style = style;
@@ -209,7 +217,7 @@ impl AppContext {
                         document,
                         Text::new(detail.clone())
                             .decorative()
-                            .style(secondary_style(false, 0.0, false)),
+                            .style(secondary_style(false, true)),
                     )?
                     .stable_id(),
                 )
@@ -224,6 +232,7 @@ impl AppContext {
                     .shrink(1.0)
                     .align(nana_ui_core::AlignSpec::Center)
                     .with_layout(|layout| {
+                        layout.allow_shrink = true;
                         layout.min_width = Some(LengthSpec::Px(0.0));
                         layout.gap = Some(LengthSpec::Px(nana_ui_core::space::XS));
                         layout.theme.gap =

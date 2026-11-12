@@ -2455,6 +2455,7 @@ impl ComponentView for ListItemCopy {
             .align(nana_ui_core::AlignSpec::Center)
             .justify(nana_ui_core::JustifySpec::SpaceBetween)
             .with_layout(|layout| {
+                layout.allow_shrink = true;
                 layout.min_width = Some(nana_ui_core::LengthSpec::Px(0.0));
                 layout.gap = Some(nana_ui_core::LengthSpec::Px(nana_ui_core::space::MD));
                 layout.theme.gap = Some(crate::theme_intent::space(nana_ui_core::SpacingStep::Md));

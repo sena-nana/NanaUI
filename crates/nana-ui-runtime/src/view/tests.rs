@@ -6674,6 +6674,32 @@ fn list_item_after_label_places_a_mark_between_name_and_detail_and_updates_copy(
             .and_then(|state| state.label.as_deref()),
         Some("双机接收 LAN  已连接")
     );
+
+    // Long secondary detail shrinks and ellipsizes before the primary label +
+    // `after_label` mark, matching `list_text_parts` priority.
+    label.set("纹理剔除".to_owned());
+    detail.set("隐藏用不到的部件，跳过它们的纹理".to_owned());
+    cx.flush_reactive().unwrap();
+    let work = cx.take_system_work();
+    let mut shaper = crate::MeasureTextShaper;
+    cx.resolve_styles(&work.style).unwrap();
+    cx.shape_text(&work.text, &mut shaper).unwrap();
+    cx.layout_document(document, LayoutViewport::new(290.0, 80.0))
+        .unwrap();
+    let label_node = cx
+        .read(Entity::<ListItem>::from_stable_id(item), |r| r.label_slot)
+        .unwrap()
+        .unwrap();
+    let detail_node = cx
+        .read(Entity::<ListItem>::from_stable_id(item), |r| r.detail_slot)
+        .unwrap()
+        .unwrap();
+    let label_box = cx.world().layout_box(label_node).unwrap();
+    let detail_box = cx.world().layout_box(detail_node).unwrap();
+    assert!(
+        label_box.width >= 47.5 && detail_box.width > 40.0,
+        "primary label keeps its full width ({label_box:?}) while long detail shrinks ({detail_box:?})"
+    );
 }
 
 #[test]
