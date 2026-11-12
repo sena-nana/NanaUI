@@ -612,10 +612,6 @@ struct SwapChain {
     resources: Vec<Direct3D12::ID3D12Resource>,
     /// Handle is freed in [`Self::release_resources()`]
     waitable: Option<Foundation::HANDLE>,
-    /// [`Surface::wait_for_frame_latency`] already took one count of
-    /// `waitable` for the next acquire, which then does not wait again
-    /// (NanaUI fork).
-    latency_waited: bool,
     acquired_count: usize,
     present_mode: wgt::PresentMode,
     format: wgt::TextureFormat,
@@ -665,30 +661,6 @@ impl Surface {
     /// Handle is only valid while the swap chain is alive.
     pub unsafe fn waitable_handle(&self) -> Option<Foundation::HANDLE> {
         self.swap_chain.read().as_ref()?.waitable
-    }
-
-    /// Waits up to `timeout` (`None`: no limit) on the swap chain's
-    /// frame-latency waitable, ahead of the next `acquire_texture`, so a host
-    /// can block before it reads input and builds the frame instead of after.
-    /// Returns `Ok(true)` once a frame may be acquired without blocking: the
-    /// next acquire then skips its own wait. Returns `Ok(true)` at once when
-    /// there is no swap chain or no waitable, or a previous call already
-    /// waited, and `Ok(false)` on timeout (the acquire waits as usual).
-    /// NanaUI fork.
-    pub fn wait_for_frame_latency(
-        &self,
-        timeout: Option<core::time::Duration>,
-    ) -> Result<bool, crate::SurfaceError> {
-        let mut swap_chain = self.swap_chain.write();
-        let Some(sc) = swap_chain.as_mut() else {
-            return Ok(true);
-        };
-        if sc.latency_waited || sc.waitable.is_none() {
-            return Ok(true);
-        }
-        let ready = unsafe { sc.wait(timeout) }?;
-        sc.latency_waited = ready;
-        Ok(ready)
     }
 }
 
@@ -1765,7 +1737,6 @@ impl crate::Surface for Surface {
             raw: swap_chain,
             resources,
             waitable,
-            latency_waited: false,
             acquired_count: 0,
             present_mode: config.present_mode,
             format: config.format,
@@ -1796,13 +1767,9 @@ impl crate::Surface for Surface {
         let mut swapchain = self.swap_chain.write();
         let sc = swapchain.as_mut().unwrap();
 
-        // A count `wait_for_frame_latency` took belongs to this acquire
-        // whatever the waiting mode.
-        let waited = mem::take(&mut sc.latency_waited);
         match self.options.latency_waitable_object {
             wgt::Dx12UseFrameLatencyWaitableObject::None
             | wgt::Dx12UseFrameLatencyWaitableObject::DontWait => {}
-            wgt::Dx12UseFrameLatencyWaitableObject::Wait if waited => {}
             wgt::Dx12UseFrameLatencyWaitableObject::Wait => {
                 unsafe { sc.wait(timeout) }?;
             }

@@ -9,21 +9,6 @@ use crate::hosted_context::SurfaceFrame;
 /// flight. Callers acquire the swapchain only after this returns. Slots free
 /// in completion callbacks, which run when the device is polled: poll once
 /// without waiting before giving up.
-/// How long a continuously redrawing window waits for frame pacing before
-/// building its frame. The waitable signals by the next refresh; past this the
-/// acquire waits as it always did, so a stuck swap chain cannot hold the loop
-/// longer than before.
-const FRAME_LATENCY_WAIT_LIMIT: std::time::Duration = std::time::Duration::from_millis(40);
-
-/// `NANA_FRAME_LATENCY_WAIT=acquire` keeps the wait in the acquire, for A/B
-/// measurements (`docs/reference/gpu.md` §6). Read once.
-fn early_frame_latency_wait() -> bool {
-    static EARLY: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    *EARLY.get_or_init(|| {
-        std::env::var_os("NANA_FRAME_LATENCY_WAIT").is_none_or(|value| value != "acquire")
-    })
-}
-
 fn reserve_scene_host_frame(gpu: &nana_gpu::GpuContext) -> Option<nana_gpu::FrameContext> {
     const LABEL: &str = "NanaUI scene host frame";
     gpu.try_begin_frame(LABEL).or_else(|| {
@@ -178,7 +163,6 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
         if self.defer_native_live_resize(id) {
             return;
         }
-        self.wait_for_frame_latency(id);
         // Before the program's messages and frame hook, which may start a
         // reveal or a motion; once more below, just ahead of the flush.
         self.sync_compositor_clock(id);
@@ -704,28 +688,6 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
     fn discard_frame(&mut self, id: WindowId, frame: wgpu::SurfaceTexture) {
         if let Some(host) = self.window_contexts.get_mut(&id) {
             self.graphics.abandon_frame(&mut host.surface, frame);
-        }
-    }
-
-    /// A window that redraws every frame waits for DX12 frame pacing here,
-    /// before its messages, input and document are read, instead of in
-    /// `acquire_frame` after the frame was built on input already a frame
-    /// old. Idle and on-demand windows keep waiting, if ever, at acquire.
-    fn wait_for_frame_latency(&mut self, id: WindowId) {
-        if !early_frame_latency_wait()
-            || !matches!(
-                self.window_frame_demand(id),
-                crate::FrameDemand::Continuous(_)
-            )
-        {
-            return;
-        }
-        if let Some(host) = self.window_contexts.get(&id)
-            && !host
-                .surface
-                .wait_for_frame_latency(FRAME_LATENCY_WAIT_LIMIT)
-        {
-            nana_diagnostics::metric!(nana_diagnostics::framework::gpu::SURFACE_TIMEOUT);
         }
     }
 
