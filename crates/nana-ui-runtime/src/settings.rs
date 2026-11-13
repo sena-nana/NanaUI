@@ -1,13 +1,11 @@
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
-#[cfg(test)]
-use nana_ui_core::UI_METRICS;
 use nana_ui_core::{
     AlignSpec, AppearanceEvent, AppearanceSettings, BackdropTarget, ButtonKind, CardKind,
     ControlSize, FlexDirection, FlexWrap, Icon, JustifySpec, LengthSpec, LineHeightSpec,
     OverflowSpec, PaddingSpec, SemanticColorRole, SettingsModel, SettingsState, SettingsTabId,
-    ThemeAppearance, ThemeChoice, ThemeId, WindowMaterialMode,
+    ThemeAppearance, ThemeChoice, ThemeId, UI_METRICS, WindowMaterialMode,
 };
 
 use crate::view_components::{
@@ -23,11 +21,13 @@ use crate::{
 
 const ROW_PADDING_Y: f32 = nana_ui_core::space::SM;
 const ROW_GROUP_PADDING_Y: f32 = nana_ui_core::space::XXS;
-const ROW_STACK_GAP: f32 = nana_ui_core::space::SM;
-const ROW_STACK_GAP_LOOSE: f32 = nana_ui_core::space::LG;
+const ROW_MULTILINE_PADDING_Y: f32 = nana_ui_core::space::LG;
+const ROW_MULTILINE_GROUP_PADDING_Y: f32 = nana_ui_core::space::XS;
+const ROW_STACK_GAP: f32 = nana_ui_core::space::MD;
+const ROW_STACK_GAP_LOOSE: f32 = nana_ui_core::space::XL;
 const ROW_INLINE_GAP: f32 = nana_ui_core::space::MD;
 const ROW_INLINE_GAP_LOOSE: f32 = nana_ui_core::space::XXL;
-const ROW_COPY_GAP: f32 = nana_ui_core::space::XXS;
+const ROW_COPY_GAP: f32 = nana_ui_core::space::XS;
 const ROW_LABEL_ACCESSORY_GAP: f32 = nana_ui_core::space::XS;
 /// Between a row's main line and what is under it (the opened hint, the
 /// notice).
@@ -268,6 +268,20 @@ impl SettingsRow {
             && self.hint.as_deref().is_some_and(|hint| !hint.is_empty())
     }
 
+    /// Whether a non-empty hint sits directly under the name in the row's copy.
+    fn shows_below_hint(&self) -> bool {
+        self.effective_hint_placement() == HintPlacement::Below
+            && self.hint.as_deref().is_some_and(|hint| !hint.is_empty())
+    }
+
+    /// Single-line rows have a `ControlSize::Small` box that buffers the
+    /// label inside the row; rows with a below-hint or a stacked control under
+    /// a label place bare copy directly against the row's padding, so they
+    /// step up to `Lg`/`Xs` bands.
+    fn uses_multiline_bands(&self, stacked: bool) -> bool {
+        self.shows_below_hint() || (stacked && !self.label.is_empty())
+    }
+
     /// What the notice line shows, and how: the error first, else the
     /// notice; `None` when it has nothing to show.
     fn shown_notice(&self) -> Option<(&Arc<str>, nana_ui_core::ValidationIntent)> {
@@ -432,32 +446,48 @@ impl SettingsRow {
             layout.theme.padding_top = None;
             layout.theme.padding_bottom = None;
         } else {
+            let (edge_step, edge_px, middle_step, middle_px) = if self.uses_multiline_bands(stacked)
+            {
+                (
+                    nana_ui_core::SpacingStep::Xs,
+                    ROW_MULTILINE_GROUP_PADDING_Y,
+                    nana_ui_core::SpacingStep::Lg,
+                    ROW_MULTILINE_PADDING_Y,
+                )
+            } else {
+                (
+                    nana_ui_core::SpacingStep::Xxs,
+                    ROW_GROUP_PADDING_Y,
+                    nana_ui_core::SpacingStep::Sm,
+                    ROW_PADDING_Y,
+                )
+            };
             let padded_y = layout.padding.is_some() || layout.theme.padding.is_some();
             if !padded_y && layout.padding_top.is_none() && layout.theme.padding_top.is_none() {
                 layout.theme.padding_top =
                     Some(crate::theme_intent::space(if self.first_in_group {
-                        nana_ui_core::SpacingStep::Xxs
+                        edge_step
                     } else {
-                        nana_ui_core::SpacingStep::Sm
+                        middle_step
                     }));
                 layout.padding_top = Some(LengthSpec::Px(if self.first_in_group {
-                    ROW_GROUP_PADDING_Y
+                    edge_px
                 } else {
-                    ROW_PADDING_Y
+                    middle_px
                 }));
             }
             if !padded_y && layout.padding_bottom.is_none() && layout.theme.padding_bottom.is_none()
             {
                 layout.theme.padding_bottom =
                     Some(crate::theme_intent::space(if self.last_in_group {
-                        nana_ui_core::SpacingStep::Xxs
+                        edge_step
                     } else {
-                        nana_ui_core::SpacingStep::Sm
+                        middle_step
                     }));
                 layout.padding_bottom = Some(LengthSpec::Px(if self.last_in_group {
-                    ROW_GROUP_PADDING_Y
+                    edge_px
                 } else {
-                    ROW_PADDING_Y
+                    middle_px
                 }));
             }
         }
@@ -505,8 +535,8 @@ impl SettingsRow {
         layout.flex_wrap = FlexWrap::NoWrap;
         layout.gap = Some(LengthSpec::Px(self.gap(stacked)));
         layout.theme.gap = Some(crate::theme_intent::space(match (stacked, self.loose) {
-            (true, true) => nana_ui_core::SpacingStep::Lg,
-            (true, false) => nana_ui_core::SpacingStep::Sm,
+            (true, true) => nana_ui_core::SpacingStep::Xl,
+            (true, false) => nana_ui_core::SpacingStep::Md,
             (false, true) => nana_ui_core::SpacingStep::Xxl,
             (false, false) => nana_ui_core::SpacingStep::Md,
         }));
@@ -848,10 +878,18 @@ impl SettingsRowCopy {
         layout.align_items = AlignSpec::Stretch;
         layout.width = Some(LengthSpec::Fill);
         layout.gap = Some(LengthSpec::Px(ROW_COPY_GAP));
-        layout.theme.gap = Some(crate::theme_intent::space(nana_ui_core::SpacingStep::Xxs));
+        layout.theme.gap = Some(crate::theme_intent::space(nana_ui_core::SpacingStep::Xs));
         layout.flex_grow = Some(if self.stacked { 0.0 } else { 1.0 });
         layout.flex_shrink = Some(1.0);
         layout.min_width = Some(LengthSpec::Px(0.0));
+        if !self.stacked && self.column.is_none() {
+            // Single-line rows share the small-control band height so switch,
+            // link, value and framed-field rows stand at one uniform height.
+            layout.justify_content = JustifySpec::Center;
+            layout.min_height = Some(LengthSpec::Px(UI_METRICS.compact_control_height));
+            layout.theme.min_height =
+                Some(nana_ui_core::ThemeToken::Control(ControlSize::Small).into());
+        }
         if let (Some(width), false) = (self.column, self.stacked) {
             // the column keeps its width; the control takes the rest
             layout.width = Some(LengthSpec::Px(width));
@@ -4888,7 +4926,7 @@ mod tests {
         assert_eq!(style.layout.gap, Some(LengthSpec::Px(ROW_STACK_GAP_LOOSE)));
         assert_eq!(
             style.layout.padding_top,
-            Some(LengthSpec::Px(ROW_GROUP_PADDING_Y))
+            Some(LengthSpec::Px(ROW_MULTILINE_GROUP_PADDING_Y))
         );
         // Last in its group: the group edge ends it, so no divider.
         assert_eq!(style.border, None);
@@ -4943,6 +4981,85 @@ mod tests {
             authored_style.layout.padding_bottom,
             Some(LengthSpec::Px(nana_ui_core::space::SM))
         );
+
+        let multiline = context
+            .create_component(
+                document(),
+                SettingsRow::new("多行说明").hint("说明直接排在名称下方"),
+            )
+            .unwrap();
+        let multiline_style = context.world().node_style(multiline.stable_id()).unwrap();
+        assert_eq!(
+            (
+                multiline_style.layout.padding_top,
+                multiline_style.layout.padding_bottom,
+            ),
+            (
+                Some(LengthSpec::Px(nana_ui_core::space::LG)),
+                Some(LengthSpec::Px(nana_ui_core::space::LG)),
+            )
+        );
+
+        let help_inline = context
+            .create_component(
+                document(),
+                SettingsRow::new("问号单行")
+                    .hint("说明收进问号，单行保持紧凑留白")
+                    .hint_placement(HintPlacement::Help),
+            )
+            .unwrap();
+        let help_style = context.world().node_style(help_inline.stable_id()).unwrap();
+        assert_eq!(
+            (
+                help_style.layout.padding_top,
+                help_style.layout.padding_bottom,
+            ),
+            (
+                Some(LengthSpec::Px(nana_ui_core::space::SM)),
+                Some(LengthSpec::Px(nana_ui_core::space::SM)),
+            )
+        );
+    }
+
+    #[test]
+    fn single_line_settings_rows_share_one_height_across_control_families() {
+        let mut context = AppContext::new();
+        let mut switch_view = crate::Switch::new("", true);
+        switch_view.style.layout_mut().height = Some(LengthSpec::Px(24.0));
+        switch_view.style.layout_mut().min_height = Some(LengthSpec::Px(24.0));
+        let switch = context
+            .create_detached_component(document(), switch_view)
+            .unwrap()
+            .stable_id();
+        let select = context
+            .create_detached_component(
+                document(),
+                crate::Select::new(Some("a"))
+                    .size(ControlSize::Small)
+                    .options([crate::SelectOption::new("a", "Alpha")]),
+            )
+            .unwrap()
+            .stable_id();
+        let text_value = context
+            .create_detached_component(document(), Text::new("v1.0"))
+            .unwrap()
+            .stable_id();
+        let expected_middle = UI_METRICS.compact_control_height + 2.0 * ROW_PADDING_Y;
+        for (kind, control) in [("switch", switch), ("select", select), ("text", text_value)] {
+            let (row, _) = laid_out_row(&mut context, control, None, |row| {
+                row.first_in_group = false;
+                row.last_in_group = false;
+            });
+            let bounds = context
+                .world()
+                .canonical_layout_box(row.stable_id())
+                .unwrap();
+            assert!(
+                (bounds.height - expected_middle).abs() < 0.5,
+                "{kind} middle row height {} != {expected_middle}",
+                bounds.height
+            );
+        }
     }
 
     fn hint_slot_of(context: &AppContext, row: StableNodeId) -> Option<StableNodeId> {

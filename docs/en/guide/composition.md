@@ -26,14 +26,14 @@ Relationships have names: `SpacingRole`. Pick by relationship, not among adjacen
 
 | Relationship | Role | Step | Provided by |
 | --- | --- | --- | --- |
-| A name and the description below it | `Copy` | `Xxs` | `SettingsRow` |
+| A name and the description below it | `Copy` | `Xxs` (`Xs` in `SettingsRow`, whose label uses a tight `Body` line box) | `SettingsRow` |
 | The icon and text inside one control | — | `Sm` | The control itself |
 | Side-by-side icon tools | `IconTools` | `Xxs` | `heading_tools`; icon rows at the end of a block or row follow this step |
 | Mixed small items at the end of a row (text buttons, keycaps, switches, badges) | `Cluster` | `Xs` | The row that holds them |
 | Side-by-side text buttons | `Buttons` | `Sm` | The `gap` of the row that holds the buttons; `footer_bar` |
 | Things with no frame, held together by distance: the title of a tinted block, the actions below a block, several cards in one group | `Attach` | `Sm` | `settings_group(..).inset()`, `.footer(view)` |
-| A row's label and control | `Label` | `Md` (`Xxl` in a loose layout) | `SettingsRow` |
-| Row to row | — | `Sm` above and below middle rows, `Xxs` at the group edge for the first and last, plus hairlines | `SettingsRow`; the group adds no `gap`, or the hairlines break |
+| A row's label and control | `Label` | `Md` (`Xxl` in a loose layout; stacked `Md` / `Xl` loose) | `SettingsRow` |
+| Row to row | — | Single-line rows: `Sm` above and below middle rows (`Xxs` at the group edge, copy band at least `Small` control height); multi-line rows with a below-hint or stacked label: `Lg` above and below middle rows (`Xs` at the group edge), plus hairlines | `SettingsRow`; the group adds no `gap`, or the hairlines break |
 | A raised card's title and the card | — | `Md` | `settings_group` (the card has an edge and a shadow, so the title can sit one step farther) |
 | Group to group inside a card or panel | `GroupInCard` | `Xl` | The `gap` of the column that holds the groups |
 | Group to group in a window pane | `GroupInPane` | `Xxxl` | Same |

@@ -26,14 +26,14 @@
 
 | 关系 | 角色 | 档位 | 谁给 |
 | --- | --- | --- | --- |
-| 名称与它下面的说明 | `Copy` | `Xxs` | `SettingsRow` |
+| 名称与它下面的说明 | `Copy` | `Xxs`（设置行因标签紧行盒取 `Xs`） | `SettingsRow` |
 | 一个控件里的图标与文字 | — | `Sm` | 控件自己 |
 | 并排的图标工具 | `IconTools` | `Xxs` | `heading_tools`；块尾、行尾的图标排照这一档 |
 | 行尾混排的小件（文字按钮、键帽、开关、徽标） | `Cluster` | `Xs` | 放它们的那一行 |
 | 并排的文字按钮 | `Buttons` | `Sm` | 放按钮的那一行的 `gap`；`footer_bar` |
 | 没有框圈住、靠距离归属的：浅底块的标题、块下的动作、同组里的几张卡 | `Attach` | `Sm` | `settings_group(..).inset()`、`.footer(view)` |
-| 行的标签与控件 | `Label` | `Md`（宽松 `Xxl`） | `SettingsRow` |
-| 行与行 | — | 中间行上下各 `Sm`，首末行贴组边 `Xxs`，加细线 | `SettingsRow`；组不加 `gap`，否则细线断开 |
+| 行的标签与控件 | `Label` | `Md`（宽松 `Xxl`；堆叠 `Md`／宽松 `Xl`） | `SettingsRow` |
+| 行与行 | — | 单行中间上下各 `Sm`（首末贴组边 `Xxs`，行芯不低于 `Small` 控件高）；带下置说明或带标签堆叠的多行中间上下各 `Lg`（首末贴组边 `Xs`），加细线 | `SettingsRow`；组不加 `gap`，否则细线断开 |
 | 凸起卡片的标题与卡片 | — | `Md` | `settings_group`（卡片有边与阴影，标题可以远一档） |
 | 卡片、面板里的组与组 | `GroupInCard` | `Xl` | 放分组的那一列的 `gap` |
 | 窗口栏里的组与组 | `GroupInPane` | `Xxxl` | 同上 |
