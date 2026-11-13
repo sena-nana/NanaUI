@@ -499,17 +499,6 @@ impl DWrite {
     }
 }
 
-impl Drop for DWrite {
-    fn drop(&mut self) {
-        // The factory is shared process-wide; a loader left registered would
-        // outlive this painter.
-        // SAFETY: the loader was registered with this factory in `new`.
-        unsafe {
-            let _ = self.factory.UnregisterFontFileLoader(&self.loader);
-        }
-    }
-}
-
 /// The system's text rendering parameters: DirectWrite's gamma and its two
 /// enhanced contrasts, as the ClearType Text Tuner last left them.
 pub(super) fn system_contrast() -> Option<TextContrast> {
