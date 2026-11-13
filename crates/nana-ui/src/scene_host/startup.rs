@@ -379,11 +379,12 @@ impl<Message: Send + 'static> PendingStartup<Message> {
         // The device request goes first: the splash then overlaps it instead
         // of delaying it. The splash sits above the surface whichever order
         // the two reach the compositor in.
-        let (surface, request) = PendingPrimarySurface::begin(
+        let (surface, request) = PendingPrimarySurface::begin_with_policy(
             Arc::clone(&window),
             wgpu::Features::empty(),
             requested_material.wants_transparent_surface(),
             surface_mode_for(target),
+            self.settings.presentation_policy,
             instance,
             self.options.adapter.clone(),
         )

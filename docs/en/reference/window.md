@@ -100,6 +100,9 @@ These are two questions. Do not merge them into one:
 | --- | --- | --- |
 | GPU backend / adapter / device | **The process**; one shared by all windows | `RuntimeProgram::gpu_backend_policy()` |
 | Surface target (ordinary window surface vs composition visual) | **Each window** | `WindowDescriptor::surface` |
+| Color space and dynamic range (SDR / Display-P3 / HDR scRGB / PQ / HLG) | **Each window** | `WindowDescriptor::presentation_policy` (`SurfacePresentationPolicy`) |
+
+Transparent client areas have an explicit alpha-depth boundary with 10-bit HDR swapchain formats: `Rgb10a2Unorm` (the standard 10-bit format for `HdrPq` / `HdrHlg`) carries only 2 alpha bits and cannot represent smooth translucent edges, so transparent windows reject it with `SurfaceProfileFallback::TransparencyIncompatible` and fall back to full-alpha `Rgba16Float` extended-linear HDR or SDR (while `Rgba16Float` + `Bt2100Pq` / `Bt2100Hlg` remains valid when advertised). See [Live GPU Content and GPU Integration Contract · HDR display info and color space contract](gpu.md#3-hdr-display-info-and-color-space-contract-issue-279--283).
 
 `GpuBackendPolicy::COMPOSITION_CAPABLE` only **makes the composition path available** (on Windows it narrows the backend to DX12, because the DirectComposition visual is a DX12 surface target). It does not put any window on that path. This narrowing is **unrelated** to whether the first window wants composition: otherwise opening an ordinary Settings window first would silently make the whole process lose composition capability, and the main window opened later could never get it. A window asks for it itself with `WindowSurfacePreference`:
 

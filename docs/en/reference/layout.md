@@ -1039,7 +1039,7 @@ Animating `transform` itself goes through the compositor overlay. It does not ch
 
 In `transform-box`, `border-box` and `view-box` are relative to the border box. Under HTML, `view-box` is the border box. There is no SVG viewport. `content-box` and `fill-box` are relative to the content box. The content box is the border box minus border and padding. A padding `%` resolves to 0 when there is no containing block. That matches the other paint-time padding resolution. `stroke-box` does not resolve.
 
-**Painting.** You can use `background`, `background-color`, and `background-image: linear-gradient(...) | radial-gradient(...)`.
+**Painting.** You can use `background`, `background-color`, and `background-image: linear-gradient(...) | repeating-linear-gradient(...) | radial-gradient(...)`. Color syntax supports `#hex`, comma- or space-separated `rgb()` / `rgba()`, `hsl()` / `hsla()`, `hsv()`, `oklch(L C H [/ A])` (including `none` components and unitless `> 1.0` HDR lightness), `color(srgb-linear | scrgb ...)`, and `color-mix(in srgb | srgb-linear | oklch | hsv [<hue>-interpolation], ...)`; linear and radial gradients likewise accept a leading `<color-interpolation-method>` (such as `linear-gradient(in oklch longer hue, ...)`).
 
 The initial value of `background-size` is CSS `auto`. There are also `cover`, `contain`, `stretch`, `scale-down`, and lengths.
 

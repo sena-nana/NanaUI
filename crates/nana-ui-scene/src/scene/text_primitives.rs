@@ -94,7 +94,9 @@ pub(super) fn rich_editor_mark_primitives(
     retained: &nana_ui_runtime::RetainedTextLayout,
     marks: &nana_ui_runtime::RichEditorMarks,
     selection_color: [f32; 4],
+    selection_paint_color: Option<nana_ui_core::PaintColor>,
     caret_color: [f32; 4],
+    caret_paint_color: Option<nana_ui_core::PaintColor>,
 ) -> (Vec<ScenePrimitive>, Option<ScenePrimitive>) {
     let layout = &retained.layout;
     let (page_width, top) = text_frame(bounds, vertical, retained);
@@ -107,7 +109,7 @@ pub(super) fn rich_editor_mark_primitives(
             .enumerate()
             .map(|(index, rect)| {
                 let rect = layout.page_rect(rect, page_width);
-                visual_quad(
+                let mut quad = visual_quad(
                     context,
                     collection_slot(DOCUMENT_TEXT_SELECTION, RICH_EDITOR_SELECTION_BASE + index),
                     SceneRect {
@@ -117,13 +119,17 @@ pub(super) fn rich_editor_mark_primitives(
                         height: rect.height,
                     },
                     VisualQuadStyle::solid(selection_color),
-                )
+                );
+                if let ScenePrimitiveKind::Quad { background, .. } = &mut quad.kind {
+                    *background = selection_paint_color.or(*background);
+                }
+                quad
             })
             .collect()
     };
     let caret = marks.caret.and_then(|byte| {
         let (x, line_top, height) = nana_ui_runtime::rich_editor_caret_box(layout, byte)?;
-        Some(visual_quad(
+        let mut quad = visual_quad(
             context,
             collection_slot(TEXT_EDITOR_CARET, 0),
             SceneRect {
@@ -133,7 +139,11 @@ pub(super) fn rich_editor_mark_primitives(
                 height,
             },
             VisualQuadStyle::solid(caret_color),
-        ))
+        );
+        if let ScenePrimitiveKind::Quad { background, .. } = &mut quad.kind {
+            *background = caret_paint_color.or(*background);
+        }
+        Some(quad)
     });
     (selection, caret)
 }

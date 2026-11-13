@@ -283,6 +283,22 @@ pub fn hlg_encode_display(display: [f32; 3]) -> [f32; 3] {
     display.map(|channel| hlg_encode(channel * scale))
 }
 
+/// Compress negative out-of-BT.2020 channels linearly toward BT.2020 luminance
+/// while leaving in-gamut colours and positive HDR highlights (`> 1.0`) untouched.
+#[must_use]
+pub fn gamut_map_bt2020_rgb(rgb: [f32; 3]) -> [f32; 3] {
+    let lo = rgb[0].min(rgb[1].min(rgb[2]));
+    if lo >= 0.0 {
+        return rgb;
+    }
+    let luma = 0.2627 * rgb[0] + 0.6780 * rgb[1] + 0.0593 * rgb[2];
+    if luma <= 0.0 {
+        return [0.0; 3];
+    }
+    let scale = ((0.0 - luma) / (lo - luma).min(-1.0e-6)).clamp(0.0, 1.0);
+    rgb.map(|channel| (luma + (channel - luma) * scale).max(0.0))
+}
+
 /// Convert linear BT.709/scRGB channels to linear BT.2020 channels.
 #[must_use]
 pub fn linear_sc_rgb_to_bt2020(rgb: [f32; 3]) -> [f32; 3] {

@@ -12280,3 +12280,56 @@ fn an_open_select_menu_paints_row_pictures_in_its_own_layer() {
     );
     assert!(picture.z_index >= 1_000);
 }
+
+#[test]
+fn scene_extended_color_cache_tracks_wide_gamut_and_hdr_deltas() {
+    let mut scene = UiScene::new();
+    let mut card = node(1, None, &[]);
+    card.layout = LayoutBox {
+        x: 0.0,
+        y: 0.0,
+        width: 80.0,
+        height: 40.0,
+    };
+    style_mut(&mut card).background = Some([0.2, 0.4, 0.8, 1.0]);
+    scene.apply_delta([card.clone()], []);
+    assert!(
+        !scene.has_extended_color(),
+        "ordinary sRGB background must not request float working target"
+    );
+
+    // Updating the node to a wide-gamut OKLCH background invalidates the cache and reports true.
+    let wide = nana_ui_core::PaintColor::Oklch {
+        l: 0.7,
+        c: 0.35,
+        h: Some(150.0),
+        alpha: 1.0,
+    };
+    style_mut(&mut card).paint_colors.background = Some(wide);
+    scene.apply_delta([card.clone()], []);
+    assert!(scene.has_extended_color());
+
+    // Replacing it back with sRGB clears the extended-color flag.
+    style_mut(&mut card).paint_colors.background = None;
+    scene.apply_delta([card.clone()], []);
+    assert!(!scene.has_extended_color());
+
+    // Node-level box shadow in HDR linear-scRGB also marks the scene extended.
+    Arc::make_mut(&mut card.source_style.layout)
+        .paint
+        .box_shadows
+        .push(nana_ui_core::BoxShadowSpec {
+            offset_x: 0.0,
+            offset_y: 4.0,
+            blur_radius: 8.0,
+            spread_radius: 0.0,
+            color: [1.0, 1.0, 1.0, 0.5],
+            paint_color: Some(nana_ui_core::PaintColor::LinearScRgb {
+                channels: [2.5, 1.2, 0.2],
+                alpha: 0.5,
+            }),
+            inset: false,
+        });
+    scene.apply_delta([card], []);
+    assert!(scene.has_extended_color());
+}

@@ -370,6 +370,15 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
         } else {
             self.texture_subscriptions.remove(&id);
         }
+        let theme = self.program.theme();
+        let window_background = self.program.window_background();
+        let fetch_host = self.program.resource_fetch_host(id);
+        let viewport = scene_paint_viewport(&geometry, material, theme.as_ref(), window_background);
+        let profile = profile.effective_for_frame(
+            scene.as_ref(),
+            viewport.clear_color,
+            host_textures.as_ref(),
+        );
         // Only the Windows native-content path inserts into the registry.
         #[allow(unused_mut)]
         let mut gpu_renderers = self.program.scene_gpu_renderers(id);
@@ -384,9 +393,10 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
             match self.sync_native_content(id, composition, &scene, geometry.logical_size) {
                 Ok(true) => {
                     // Native content is drawn into the painter's linear
-                    // working target, which is fp16 for P3/HDR profiles.
-                    // Caching it by the acquired surface format would create
-                    // an incompatible pipeline when that target is unorm.
+                    // working target, which is fp16 for P3/HDR profiles and
+                    // extended-color scenes. Caching it by the acquired
+                    // surface format would create an incompatible pipeline
+                    // when that target is unorm.
                     let renderer = self
                         .native_renderers
                         .entry(profile.working_format())
@@ -409,10 +419,6 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
                 }
             }
         }
-        let theme = self.program.theme();
-        let window_background = self.program.window_background();
-        let fetch_host = self.program.resource_fetch_host(id);
-        let viewport = scene_paint_viewport(&geometry, material, theme.as_ref(), window_background);
         // Subpixel text only onto a surface the compositor shows opaque: over
         // a transparent material the per-channel coverage would be composited
         // as colored alpha.

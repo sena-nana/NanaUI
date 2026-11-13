@@ -19,8 +19,8 @@ title: 窗口与平台
 | 邻居 Crate | 协作关系 |
 | --- | --- |
 | `nana-ui-input` | 规范输入合同由 `nana-ui-platform` 再导出（`lib.rs:156`），宿主将原生窗口事件降维送入其中 |
-| `nana-ui` | `WindowService` / `WindowHandle` 将跨线程窗口命令排队回窗口线程执行；`ResolvedWindowPresentation` 在此结算每扇窗口的最终呈现状态 |
-| `nana-gpu` | Surface 透明合成模式与 `SurfacePresentationPolicy` 协商（见 [GPU 与帧生命周期](/learn/gpu-frame)） |
+| `nana-ui` | `WindowService` / `WindowHandle` 将跨线程窗口命令排队回窗口线程执行；`ResolvedWindowPresentation` 在此结算每扇窗口的最终呈现状态与 `SurfacePresentationPolicy` 色彩协商 |
+| `nana-gpu` | 设备、帧与纹理后端合同（见 [GPU 与帧生命周期](/learn/gpu-frame)） |
 | `winit` | `nana-window` 在原生 OS API 与 winit 之间补齐桌面级能力（Win32 无框样式守卫、Layered 窗口合成整平、macOS 无激活显示与红绿灯精确定位） |
 
 ## 关键类型与数据

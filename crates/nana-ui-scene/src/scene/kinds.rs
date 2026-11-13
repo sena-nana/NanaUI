@@ -243,6 +243,165 @@ impl ScenePrimitiveKind {
             Self::Quad { .. } | Self::QuadBatch { .. } | Self::QuadColorBatch { .. }
         )
     }
+
+    /// Returns `true` when this primitive carries wide-gamut or HDR authoring
+    /// colors (or amplifying filters) that require a floating-point linear
+    /// working buffer rather than `[0, 1]`-clamping `Rgba8UnormSrgb`.
+    pub fn has_extended_color(&self) -> bool {
+        match self {
+            Self::Quad {
+                background,
+                border_color,
+                shadow,
+                surface,
+                ..
+            }
+            | Self::QuadBatch {
+                background,
+                border_color,
+                shadow,
+                surface,
+                ..
+            } => {
+                background.is_some_and(nana_ui_core::PaintColor::is_extended_srgb)
+                    || border_color.is_some_and(nana_ui_core::PaintColor::is_extended_srgb)
+                    || shadow.as_ref().is_some_and(|s| s.color.is_extended_srgb())
+                    || surface_has_extended_color(surface)
+            }
+            Self::Text {
+                color,
+                spans,
+                text_shadow,
+                rich,
+                ..
+            } => {
+                color.is_some_and(nana_ui_core::PaintColor::is_extended_srgb)
+                    || spans.iter().any(|s| s.color.is_extended_srgb())
+                    || text_shadow.as_ref().is_some_and(|s| {
+                        s.paint_color
+                            .is_some_and(nana_ui_core::PaintColor::is_extended_srgb)
+                    })
+                    || rich
+                        .as_ref()
+                        .is_some_and(|r| rich_paint_has_extended_color(r))
+            }
+            Self::Icon { color, .. } | Self::Spinner { color, .. } => {
+                color.is_some_and(nana_ui_core::PaintColor::is_extended_srgb)
+            }
+            Self::Path { mesh, .. } => path_mesh_has_extended_color(mesh),
+            Self::LayerEnd { mask } => mask
+                .as_ref()
+                .is_some_and(|m| path_mesh_has_extended_color(&m.mesh)),
+            Self::QuadColorBatch { .. }
+            | Self::IconBatch { .. }
+            | Self::Stroke { .. }
+            | Self::Custom { .. }
+            | Self::LayerBegin { .. }
+            | Self::Chart { .. } => false,
+        }
+    }
+}
+
+pub(super) fn color_filter_has_extended_color(filter: &ColorFilter) -> bool {
+    const EPS: f32 = 1.0e-3;
+    filter.brightness > 1.0 + EPS
+        || filter.saturate > 1.0 + EPS
+        || filter.drop_shadow.as_ref().is_some_and(|s| {
+            s.paint_color
+                .is_some_and(nana_ui_core::PaintColor::is_extended_srgb)
+        })
+}
+
+fn background_image_has_extended_color(image: &BackgroundImage) -> bool {
+    match image {
+        BackgroundImage::Gradient(nana_ui_core::CssGradient::Linear(g)) => {
+            g.stops.iter().any(|s| {
+                s.paint_color
+                    .is_some_and(nana_ui_core::PaintColor::is_extended_srgb)
+            })
+        }
+        BackgroundImage::Gradient(nana_ui_core::CssGradient::Radial(g)) => {
+            g.stops.iter().any(|s| {
+                s.paint_color
+                    .is_some_and(nana_ui_core::PaintColor::is_extended_srgb)
+            })
+        }
+        BackgroundImage::Url { .. } => false,
+    }
+}
+
+fn surface_has_extended_color(surface: &QuadSurfacePaint) -> bool {
+    surface
+        .background_image
+        .as_ref()
+        .is_some_and(background_image_has_extended_color)
+        || surface
+            .background_layers
+            .iter()
+            .any(background_image_has_extended_color)
+        || surface
+            .content_image
+            .as_ref()
+            .is_some_and(background_image_has_extended_color)
+        || surface
+            .filter
+            .as_ref()
+            .is_some_and(color_filter_has_extended_color)
+        || surface
+            .backdrop_filter
+            .as_ref()
+            .is_some_and(|bf| bf.saturate > 1.0 + 1.0e-3)
+        || surface
+            .extra_shadows
+            .iter()
+            .any(|s| s.color.is_extended_srgb())
+        || surface
+            .outline_color
+            .is_some_and(nana_ui_core::PaintColor::is_extended_srgb)
+        || surface
+            .border_colors
+            .iter()
+            .flatten()
+            .any(|c| c.is_extended_srgb())
+        || surface
+            .border_image
+            .as_ref()
+            .is_some_and(|bi| background_image_has_extended_color(&bi.source))
+}
+
+fn text_effects_has_extended_color(fx: &SceneTextEffects) -> bool {
+    fx.decoration_color
+        .is_some_and(nana_ui_core::PaintColor::is_extended_srgb)
+        || fx
+            .emphasis_color
+            .is_some_and(nana_ui_core::PaintColor::is_extended_srgb)
+        || fx.stroke.is_some_and(|s| s.color.is_extended_srgb())
+        || fx.shadows.iter().any(|s| s.color.is_extended_srgb())
+}
+
+fn rich_paint_has_extended_color(rich: &SceneRichPaint) -> bool {
+    text_effects_has_extended_color(&rich.base)
+        || rich
+            .runs
+            .iter()
+            .any(|run| text_effects_has_extended_color(&run.effects))
+}
+
+fn path_mesh_has_extended_color(mesh: &PathMesh) -> bool {
+    const EPS: f32 = 1.0e-3;
+    mesh.paint_color
+        .is_some_and(nana_ui_core::PaintColor::is_extended_srgb)
+        || mesh
+            .gradient
+            .as_ref()
+            .and_then(|g| g.linear_stops.as_ref())
+            .is_some_and(|stops| {
+                stops.iter().any(|(_, [r, g, b, _])| {
+                    [*r, *g, *b]
+                        .into_iter()
+                        .any(|c| c.is_finite() && (c < -EPS || c > 1.0 + EPS))
+                })
+            })
 }
 
 /// Optional dash and per-point colors for [`ScenePrimitiveKind::Stroke`].

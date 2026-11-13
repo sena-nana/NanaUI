@@ -1074,7 +1074,7 @@ Spinner、stroke mesh，以及非 HostTexture 的 Custom，在透视下画 **ide
 
 `transform-box` 里，`border-box` 和 `view-box` 相对边框盒。HTML 下 `view-box` 就是边框盒。没有 SVG viewport。`content-box` 和 `fill-box` 相对内容盒。内容盒是边框盒减去 border 和 padding。padding 的 `%` 没有包含块时按 0。这和其它绘制期的 padding 解析一致。`stroke-box` 不解析。
 
-**绘制。** 你可以用 `background`、`background-color`，以及 `background-image: linear-gradient(...) | radial-gradient(...)`。
+**绘制。** 你可以用 `background`、`background-color`，以及 `background-image: linear-gradient(...) | repeating-linear-gradient(...) | radial-gradient(...)`。颜色语法支持 `#hex`、逗号或空格分隔的 `rgb()` / `rgba()`、`hsl()` / `hsla()`、`hsv()`、`oklch(L C H [/ A])`（含 `none` 分量与无单位 `> 1.0` HDR 亮度）、`color(srgb-linear | scrgb ...)` 以及 `color-mix(in srgb | srgb-linear | oklch | hsv [<hue>-interpolation], ...)`；线性与径向渐变同样支持前置 `<color-interpolation-method>`（如 `linear-gradient(in oklch longer hue, ...)`）。
 
 `background-size` 的初值是 CSS `auto`。另有 `cover`、`contain`、`stretch`、`scale-down` 和长度。
 

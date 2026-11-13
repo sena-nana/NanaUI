@@ -48,12 +48,12 @@ pub use persist::{
 };
 pub use window::{
     CONTENT_ZOOM_RANGE, DisplayBounds, DisplayId, DisplayInfo, FullscreenMode, FullscreenRequest,
-    MousePassthroughMode, SystemAppearance, WindowDescriptor, WindowEvent, WindowGeometry,
-    WindowIcon, WindowIconError, WindowId, WindowLevel, WindowModeState, WindowResizeEdge,
-    WindowRole, WindowSurfacePreference, aspect_minimum_size, aspect_window_size,
-    clamp_position_to_displays, clear_registered_application_icon, display_index_at,
-    fit_window_to_displays, register_application_icon, resolve_window_icon, size_within_limits,
-    valid_aspect_ratio, valid_content_zoom, window_resize_edge,
+    MousePassthroughMode, SurfacePresentationPolicy, SystemAppearance, WindowDescriptor,
+    WindowEvent, WindowGeometry, WindowIcon, WindowIconError, WindowId, WindowLevel,
+    WindowModeState, WindowResizeEdge, WindowRole, WindowSurfacePreference, aspect_minimum_size,
+    aspect_window_size, clamp_position_to_displays, clear_registered_application_icon,
+    display_index_at, fit_window_to_displays, register_application_icon, resolve_window_icon,
+    size_within_limits, valid_aspect_ratio, valid_content_zoom, window_resize_edge,
 };
 #[cfg(feature = "ws")]
 pub use ws::{

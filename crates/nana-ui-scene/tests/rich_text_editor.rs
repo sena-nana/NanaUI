@@ -730,3 +730,81 @@ fn span_backgrounds_paint_under_the_editors_selection_in_both_nodes() {
         }
     }
 }
+
+#[test]
+fn rich_text_editor_preserves_oklch_paint_color_for_selection_and_caret() {
+    let wide_selection = PaintColor::Oklch {
+        l: 0.72,
+        c: 0.3,
+        h: Some(150.0),
+        alpha: 0.45,
+    };
+    let wide_caret = PaintColor::Oklch {
+        l: 0.78,
+        c: 0.32,
+        h: Some(30.0),
+        alpha: 1.0,
+    };
+    let value = RichText::builder().plain("hello world").build();
+    let (mut runtime, _view, editor) = document(value.clone());
+    let mut style = NodeStyle::default();
+    {
+        let layout = Arc::make_mut(&mut style.layout);
+        layout.selection_background = Some(wide_selection.to_srgb());
+        layout.paint_colors.selection_background = Some(wide_selection);
+        layout.color = Some(wide_caret.to_srgb());
+        layout.paint_colors.color = Some(wide_caret);
+    }
+    runtime
+        .context_mut()
+        .set_component(
+            editor,
+            RichTextEditor::new(value)
+                .style(style)
+                .font_size(18.0)
+                .width(LengthSpec::Px(WIDTH)),
+        )
+        .unwrap();
+
+    let mut shaper = NanaTextEngineShaper::new(engine());
+    settle(&mut runtime, &mut shaper);
+    let mut input = HeadlessInput::bind(runtime.context_mut(), document_id());
+    focus(&mut runtime, &mut input, editor);
+
+    // Collapsed selection emits a caret quad with `wide_caret`.
+    settle(&mut runtime, &mut shaper);
+    assert!(
+        runtime.scene().primitives().any(|primitive| {
+            primitive.node == editor.stable_id()
+                && matches!(
+                    primitive.kind,
+                    ScenePrimitiveKind::Quad {
+                        background: Some(bg),
+                        ..
+                    } if bg == wide_caret
+                )
+        }),
+        "editor caret must preserve explicit OKLCH PaintColor"
+    );
+
+    // Range selection emits a selection quad with `wide_selection`.
+    runtime
+        .context_mut()
+        .rich_edit(editor, RichEditCommand::Select(0..5))
+        .unwrap();
+    settle(&mut runtime, &mut shaper);
+    assert!(
+        runtime.scene().primitives().any(|primitive| {
+            primitive.node == editor.stable_id()
+                && matches!(
+                    primitive.kind,
+                    ScenePrimitiveKind::Quad {
+                        background: Some(bg),
+                        ..
+                    } if bg == wide_selection
+                )
+        }),
+        "editor selection must preserve explicit OKLCH PaintColor"
+    );
+    assert!(runtime.scene().has_extended_color());
+}

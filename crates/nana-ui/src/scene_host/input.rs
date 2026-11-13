@@ -34,17 +34,16 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
             return;
         }
         host.monitor = monitor;
-        let profile_changed = host.surface.re_resolve_profile(self.graphics.gpu());
-        if !self.refresh_surface_hdr_info(id) && profile_changed {
-            self.request_redraw(id);
-        }
+        self.refresh_surface_hdr_info(id);
     }
 
     pub(super) fn refresh_surface_hdr_info(&mut self, id: WindowId) -> bool {
         let Some(host) = self.window_contexts.get_mut(&id) else {
             return false;
         };
-        let changed = host.surface.refresh_hdr_info(self.graphics.gpu());
+        let profile_changed = host.surface.re_resolve_profile(self.graphics.gpu());
+        let hdr_changed = host.surface.refresh_hdr_info(self.graphics.gpu());
+        let changed = profile_changed || hdr_changed;
         if changed {
             self.request_redraw(id);
         }
@@ -275,6 +274,7 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
                     self.sync_underlays_of(id);
                     self.sync_auxiliary_window(id);
                     self.sync_auxiliaries_of(id);
+                    self.refresh_surface_hdr_info(id);
                 }
                 if !*focused {
                     self.input_mut(id).clear_pointers();

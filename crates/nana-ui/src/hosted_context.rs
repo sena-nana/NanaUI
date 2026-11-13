@@ -7,7 +7,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use crate::gpu_adapter::{
     GpuAdapterChoice, GpuAdapterInfo, GpuAdapterSelection, automatic_adapter, pick_adapter,
 };
-use crate::{ResolvedSurfaceProfile, SurfacePresentationPolicy, SurfaceProfileFallback};
+use crate::{ResolvedSurfaceProfile, SurfacePresentationPolicy};
 use nana_gpu::{__framework, GpuBackend, GpuContext, GpuDeviceLost, GpuTextureFormat};
 
 /// Native presentation mechanism, selected before creating the window surface.
@@ -287,13 +287,11 @@ impl HostedGpuSurface {
     }
 
     /// Cached multiplier above SDR reference white that the display can drive.
-    /// A value of `1.0` is the deterministic SDR/unknown fallback.  This is
-    /// advisory and must never be used as the sole HDR capability test.
+    /// Active HDR surfaces without live platform metadata fall back to the
+    /// conservative default HDR budget (`16.0`), while SDR surfaces use `1.0`.
+    /// This is advisory and must never be used as the sole HDR capability test.
     pub(crate) fn tone_map_headroom(&self) -> f32 {
-        self.hdr_info
-            .tone_map_headroom()
-            .filter(|value| value.is_finite() && *value >= 1.0)
-            .unwrap_or(1.0)
+        resolve_tone_map_headroom(self.profile, &self.hdr_info)
     }
 
     /// Cached SDR reference white in nits.  wgpu only reports it on platforms
@@ -346,13 +344,14 @@ impl HostedGpuSurface {
         true
     }
 
-    /// Re-query advisory display metadata after an embedder's display/HDR
-    /// notification. Returns `true` when presentation parameters changed.
-    /// Capability/profile selection remains separate and is not altered by
-    /// this query.
+    /// Re-query surface colour capabilities and advisory display metadata after
+    /// an embedder's display/HDR notification. Returns `true` when either the
+    /// resolved surface profile or presentation parameters changed.
     #[cfg(feature = "wgpu-interop")]
     pub fn refresh_display_hdr_info(&mut self, graphics: &HostedGpuShared) -> bool {
-        self.refresh_hdr_info(&graphics.gpu)
+        let profile_changed = self.re_resolve_profile(&graphics.gpu);
+        let hdr_changed = self.refresh_hdr_info(&graphics.gpu);
+        profile_changed || hdr_changed
     }
 
     /// Resolve the profile again against what the surface offers now (on
@@ -841,11 +840,13 @@ impl HostedGpuContext {
             .apply_alpha_mode(&self.shared.instance, &self.shared.gpu, want_transparent)
     }
 
-    /// Refresh the primary surface's cached display HDR metadata after an
-    /// embedder receives a display/system-HDR notification.
+    /// Refresh the primary surface's negotiated profile and cached display HDR
+    /// metadata after an embedder receives a display/system-HDR notification.
     #[cfg(feature = "wgpu-interop")]
     pub fn refresh_display_hdr_info(&mut self) -> bool {
-        self.primary.refresh_hdr_info(&self.shared.gpu)
+        let profile_changed = self.primary.re_resolve_profile(&self.shared.gpu);
+        let hdr_changed = self.primary.refresh_hdr_info(&self.shared.gpu);
+        profile_changed || hdr_changed
     }
 
     pub fn is_drawable(&self) -> bool {
@@ -1209,25 +1210,6 @@ pub(crate) struct PendingPrimarySurface {
 
 impl PendingPrimarySurface {
     /// Creates the surface target and the surface on the window's thread.
-    pub(crate) fn begin(
-        window: Arc<dyn winit::window::Window>,
-        required_features: wgpu::Features,
-        want_transparent: bool,
-        mode: HostedSurfaceMode,
-        instance: Option<ProbedInstance>,
-        choice: GpuAdapterChoice,
-    ) -> Result<(Self, DeviceRequest), HostedGpuError> {
-        Self::begin_with_policy(
-            window,
-            required_features,
-            want_transparent,
-            mode,
-            SurfacePresentationPolicy::Auto,
-            instance,
-            choice,
-        )
-    }
-
     pub(crate) fn begin_with_policy(
         window: Arc<dyn winit::window::Window>,
         required_features: wgpu::Features,
@@ -1557,164 +1539,22 @@ fn preferred_surface_format(formats: &[wgpu::TextureFormat]) -> Option<wgpu::Tex
         .or_else(|| formats.first().copied())
 }
 
-/// Resolve a policy from the complete per-format capability table.  The
-/// ordering is intentional and stable: HDR prefers encoded extended sRGB on
-/// fp16, wide gamut prefers Display-P3 on an 8-bit UNORM target, and every
-/// request has an sRGB SDR escape hatch. PQ/HLG are explicit requests, never
-/// chosen by ordinary HDR, and fall back to extended-linear HDR first. The
-/// 10-bit `Rgb10a2Unorm` PQ/HLG targets have only two alpha bits and are
-/// excluded for transparent windows; fp16 PQ/HLG remains eligible when its
-/// exact capability pair is advertised. `formats` is retained as a fallback
-/// for adapters that do not populate the extended table.
-#[cfg(feature = "wgpu-interop")]
-pub fn resolve_surface_profile(
-    requested: SurfacePresentationPolicy,
-    capabilities: &wgpu::SurfaceCapabilities,
-    transparent: bool,
-) -> Option<ResolvedSurfaceProfile> {
-    resolve_surface_profile_internal(requested, capabilities, transparent)
-}
+pub(crate) use crate::surface_profile::resolve_surface_profile_internal;
+pub use crate::surface_profile::surface_profile_changed;
 
-pub(crate) fn resolve_surface_profile_internal(
-    requested: SurfacePresentationPolicy,
-    capabilities: &wgpu::SurfaceCapabilities,
-    transparent: bool,
-) -> Option<ResolvedSurfaceProfile> {
-    use wgpu::{SurfaceColorSpace as C, SurfaceColorSpaces as S, TextureFormat as F};
-
-    let srgb_formats = [
-        F::Rgba8UnormSrgb,
-        F::Bgra8UnormSrgb,
-        F::Rgba8Unorm,
-        F::Bgra8Unorm,
-    ];
-    let mut rows: Vec<(F, wgpu::SurfaceColorSpaces)> = capabilities
-        .format_capabilities
-        .iter()
-        .map(|row| (row.format, row.color_spaces))
-        .collect();
-    if rows.is_empty() {
-        rows = capabilities
-            .formats
-            .iter()
-            .copied()
-            .filter(|format| srgb_formats.contains(format))
-            .map(|format| (format, S::SRGB))
-            .collect();
-    }
-    if rows.is_empty() {
-        return None;
-    }
-
-    // Display-P3 may be advertised with either an untyped UNORM format (the
-    // shader owns the OETF), an sRGB-typed format (the shader writes linear
-    // values and the attachment applies the OETF), or fp16 (the shader owns
-    // the transfer and preserves the extended working range). Keep the
-    // 8-bit choices first for WideGamut's SDR preference, but retain fp16 as
-    // a capability fallback for HDR-capable P3 surfaces.
-    let p3_formats = [
-        F::Bgra8Unorm,
-        F::Rgba8Unorm,
-        F::Bgra8UnormSrgb,
-        F::Rgba8UnormSrgb,
-        F::Rgba16Float,
-    ];
-    let hdr_formats = [F::Rgba16Float];
-    let broadcast_hdr_formats = [F::Rgb10a2Unorm, F::Rgba16Float];
-    let mut candidates: Vec<(C, &[F])> = match requested {
-        SurfacePresentationPolicy::Hdr => vec![
-            (C::ExtendedSrgb, &hdr_formats),
-            (C::ExtendedSrgbLinear, &hdr_formats),
-            (C::ExtendedDisplayP3, &hdr_formats),
-            (C::DisplayP3, &p3_formats),
-            (C::Srgb, &srgb_formats),
-        ],
-        SurfacePresentationPolicy::HdrPq | SurfacePresentationPolicy::HdrHlg => {
-            let preferred = match requested {
-                SurfacePresentationPolicy::HdrPq => C::Bt2100Pq,
-                _ => C::Bt2100Hlg,
-            };
-            vec![
-                (preferred, &broadcast_hdr_formats),
-                (C::ExtendedSrgbLinear, &hdr_formats),
-                (C::ExtendedSrgb, &hdr_formats),
-                (C::ExtendedDisplayP3, &hdr_formats),
-                (C::DisplayP3, &p3_formats),
-                (C::Srgb, &srgb_formats),
-            ]
-        }
-        SurfacePresentationPolicy::WideGamut => {
-            vec![(C::DisplayP3, &p3_formats), (C::Srgb, &srgb_formats)]
-        }
-        SurfacePresentationPolicy::Sdr | SurfacePresentationPolicy::Auto => {
-            vec![(C::Srgb, &srgb_formats)]
-        }
+fn resolve_tone_map_headroom(
+    profile: ResolvedSurfaceProfile,
+    hdr_info: &wgpu::DisplayHdrInfo,
+) -> f32 {
+    let default_headroom = if profile.is_hdr() {
+        crate::ScenePresentationParameters::default().headroom()
+    } else {
+        1.0
     };
-    for (index, (space, formats)) in candidates.drain(..).enumerate() {
-        let flag = space.to_color_spaces()?;
-        if let Some((format, _)) = formats.iter().find_map(|wanted| {
-            // `Rgb10a2Unorm` has only two alpha bits and is not a stable
-            // premultiplied-alpha contract for transparent composition.  An
-            // fp16 PQ/HLG target carries full alpha on platforms that
-            // advertise that exact pair, so keep it eligible here and let the
-            // surface's negotiated alpha mode remain the authority.
-            if transparent
-                && matches!(space, C::Bt2100Pq | C::Bt2100Hlg)
-                && *wanted == F::Rgb10a2Unorm
-            {
-                return None;
-            }
-            // Providers should emit one row per format, but a few native
-            // adapters have historically split the color-space flags across
-            // duplicate rows. Union rows before matching so a valid pair is
-            // not lost merely because the table was partitioned.
-            let spaces = rows
-                .iter()
-                .filter(|(format, _)| format == wanted)
-                .fold(S::empty(), |acc, (_, spaces)| acc | *spaces);
-            spaces.contains(flag).then_some((wanted, spaces))
-        }) {
-            return Some(ResolvedSurfaceProfile {
-                requested,
-                format: *format,
-                color_space: space,
-                fallback: (index != 0).then_some(SurfaceProfileFallback::CapabilityUnavailable),
-            });
-        }
-    }
-    // Old/native providers may expose another sRGB format. Keep that valid
-    // pair, but never manufacture an sRGB contract for a PQ/HLG-only format.
-    // A surface without any supported pair is incompatible with this policy.
-    let format = rows
-        .iter()
-        .find(|(format, spaces)| srgb_formats.contains(format) && spaces.contains(S::SRGB))
-        .map(|(format, _)| *format)
-        // A malformed native table may omit the default-SDR rows while still
-        // exposing them through `formats`. Only derive sRGB for the known
-        // 8-bit surface formats; never relabel fp16 or 10-bit HDR formats.
-        .or_else(|| {
-            capabilities
-                .formats
-                .iter()
-                .copied()
-                .find(|format| srgb_formats.contains(format))
-        })?;
-    Some(ResolvedSurfaceProfile {
-        requested,
-        format,
-        color_space: C::Srgb,
-        fallback: Some(SurfaceProfileFallback::CapabilityUnavailable),
-    })
-}
-
-/// Whether a profile transition requires reconfiguring the swapchain.
-/// Resizes and present-mode policy remain separate concerns; an identical
-/// profile is explicitly a no-op.
-pub fn surface_profile_changed(
-    current: ResolvedSurfaceProfile,
-    next: ResolvedSurfaceProfile,
-) -> bool {
-    current != next
+    hdr_info
+        .tone_map_headroom()
+        .filter(|value| value.is_finite() && *value >= 1.0)
+        .unwrap_or(default_headroom)
 }
 
 pub(crate) fn preferred_alpha_mode(
@@ -2507,6 +2347,98 @@ mod tests {
         assert_eq!(
             live_resize_policy_change(PresentMode::AutoVsync, 2, PresentMode::AutoVsync, 1),
             Some((PresentMode::AutoVsync, 1))
+        );
+    }
+
+    #[test]
+    fn transparent_pq_and_hlg_report_transparency_incompatible_and_wide_gamut_fallback_keeps_float_working()
+     {
+        use wgpu::{
+            SurfaceColorSpace as C, SurfaceColorSpaces as S, SurfaceFormatCapabilities as Row,
+            TextureFormat as F,
+        };
+        let caps = wgpu::SurfaceCapabilities {
+            formats: vec![F::Rgb10a2Unorm, F::Rgba16Float, F::Bgra8UnormSrgb],
+            format_capabilities: vec![
+                Row {
+                    format: F::Rgb10a2Unorm,
+                    color_spaces: S::BT2100_PQ | S::BT2100_HLG,
+                },
+                Row {
+                    format: F::Rgba16Float,
+                    color_spaces: S::EXTENDED_SRGB_LINEAR,
+                },
+                Row {
+                    format: F::Bgra8UnormSrgb,
+                    color_spaces: S::SRGB,
+                },
+            ],
+            present_modes: vec![wgpu::PresentMode::Fifo],
+            alpha_modes: vec![
+                wgpu::CompositeAlphaMode::Opaque,
+                wgpu::CompositeAlphaMode::PreMultiplied,
+            ],
+            usages: wgpu::TextureUsages::RENDER_ATTACHMENT,
+        };
+        for policy in [
+            crate::SurfacePresentationPolicy::HdrPq,
+            crate::SurfacePresentationPolicy::HdrHlg,
+        ] {
+            let resolved = resolve_surface_profile_internal(policy, &caps, true).unwrap();
+            assert_eq!(resolved.color_space, C::ExtendedSrgbLinear);
+            assert_eq!(resolved.format, F::Rgba16Float);
+            assert_eq!(
+                resolved.fallback,
+                Some(crate::SurfaceProfileFallback::TransparencyIncompatible)
+            );
+        }
+
+        let sdr_only = wgpu::SurfaceCapabilities {
+            formats: vec![F::Bgra8UnormSrgb],
+            format_capabilities: vec![Row {
+                format: F::Bgra8UnormSrgb,
+                color_spaces: S::SRGB,
+            }],
+            ..caps
+        };
+        let wide_fallback = resolve_surface_profile_internal(
+            crate::SurfacePresentationPolicy::WideGamut,
+            &sdr_only,
+            false,
+        )
+        .unwrap();
+        assert_eq!(wide_fallback.color_space, C::Srgb);
+        assert_eq!(
+            wide_fallback.fallback,
+            Some(crate::SurfaceProfileFallback::CapabilityUnavailable)
+        );
+        assert_eq!(
+            wide_fallback.scene_profile().working_format(),
+            nana_gpu::GpuTextureFormat::RGBA16_FLOAT
+        );
+
+        let hdr_profile = resolve_surface_profile_internal(
+            crate::SurfacePresentationPolicy::Hdr,
+            &wgpu::SurfaceCapabilities {
+                formats: vec![F::Rgba16Float],
+                format_capabilities: vec![Row {
+                    format: F::Rgba16Float,
+                    color_spaces: S::EXTENDED_SRGB_LINEAR,
+                }],
+                present_modes: vec![wgpu::PresentMode::Fifo],
+                alpha_modes: vec![wgpu::CompositeAlphaMode::Opaque],
+                usages: wgpu::TextureUsages::RENDER_ATTACHMENT,
+            },
+            false,
+        )
+        .unwrap();
+        assert_eq!(
+            super::resolve_tone_map_headroom(hdr_profile, &wgpu::DisplayHdrInfo::default()),
+            16.0
+        );
+        assert_eq!(
+            super::resolve_tone_map_headroom(wide_fallback, &wgpu::DisplayHdrInfo::default()),
+            1.0
         );
     }
 }

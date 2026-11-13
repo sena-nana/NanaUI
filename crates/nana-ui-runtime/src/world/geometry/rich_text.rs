@@ -27,9 +27,9 @@ pub(in crate::world) fn selectable_text_regions(
         region,
         style
             .paint_colors
-            .selection_color
+            .selection_background
             .map(nana_ui_core::PaintColor::to_srgb)
-            .or(style.selection_color)
+            .or(style.selection_background)
             .unwrap_or_else(|| palette.accent_soft.as_rgba_array()),
     )
 }

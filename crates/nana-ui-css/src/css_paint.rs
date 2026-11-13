@@ -696,8 +696,9 @@ pub fn parse_linear_gradient(input: &str) -> Option<LinearGradient> {
     } else {
         strip_function(trimmed, "linear-gradient")?
     };
-    let (angle_deg, stops_src) = split_gradient_header(inner)?;
+    let (angle_deg, interp, stops_src) = split_gradient_header(inner)?;
     let stops = parse_gradient_stops(stops_src, repeating)?;
+    let stops = apply_gradient_interpolation_method(stops, interp);
     if stops.len() < 2 {
         return None;
     }
@@ -729,8 +730,9 @@ fn parse_mask_image(input: &str) -> Option<MaskImage> {
 
 pub fn parse_radial_gradient(input: &str) -> Option<RadialGradient> {
     let inner = strip_function(input, "radial-gradient")?;
-    let (circle, center, stops_src) = split_radial_header(inner)?;
+    let (circle, center, interp, stops_src) = split_radial_header(inner)?;
     let stops = parse_gradient_stops(stops_src, false)?;
+    let stops = apply_gradient_interpolation_method(stops, interp);
     if stops.len() < 2 {
         return None;
     }
@@ -745,24 +747,35 @@ fn default_radial_center() -> [LengthSpec; 2] {
     [LengthSpec::Percent(50.0), LengthSpec::Percent(50.0)]
 }
 
-fn split_radial_header(input: &str) -> Option<(bool, [LengthSpec; 2], &str)> {
+fn split_radial_header(
+    input: &str,
+) -> Option<(
+    bool,
+    [LengthSpec; 2],
+    Option<crate::style::ColorInterpolationMethod>,
+    &str,
+)> {
     let trimmed = input.trim();
     if trimmed.is_empty() {
         return None;
     }
-    let comma = trimmed.find(',')?;
-    let head = trimmed[..comma].trim();
+    let comma = first_top_level_comma(trimmed)?;
+    let head_raw = trimmed[..comma].trim();
     let tail = trimmed[comma + 1..].trim();
+    let (head, interp) = extract_gradient_interpolation(head_raw)?;
+    let head = head.trim();
     let lower = head.to_ascii_lowercase();
     let circle = !lower.starts_with("ellipse");
     let center = if let Some(at_idx) = lower.find(" at ") {
         parse_radial_center(&head[at_idx + 4..])?
-    } else if split_color_and_rest(head).is_some() {
-        return Some((circle, default_radial_center(), trimmed));
+    } else if lower.starts_with("at ") {
+        parse_radial_center(&head[3..])?
+    } else if interp.is_none() && split_color_and_rest(head).is_some() {
+        return Some((circle, default_radial_center(), None, trimmed));
     } else {
         default_radial_center()
     };
-    Some((circle, center, tail))
+    Some((circle, center, interp, tail))
 }
 
 fn parse_radial_center(input: &str) -> Option<[LengthSpec; 2]> {
@@ -1442,25 +1455,190 @@ fn parse_shape_radius(input: &str) -> Option<ClipShapeRadius> {
     }
 }
 
-fn split_gradient_header(input: &str) -> Option<(f32, &str)> {
+fn first_top_level_comma(input: &str) -> Option<usize> {
+    let mut depth = 0i32;
+    for (idx, ch) in input.char_indices() {
+        match ch {
+            '(' | '[' => depth += 1,
+            ')' | ']' => depth = depth.saturating_sub(1),
+            ',' if depth == 0 => return Some(idx),
+            _ => {}
+        }
+    }
+    None
+}
+
+fn extract_gradient_interpolation(
+    head: &str,
+) -> Option<(String, Option<crate::style::ColorInterpolationMethod>)> {
+    let tokens = split_css_space_tokens(head.trim());
+    let Some(in_idx) = tokens.iter().position(|t| t.eq_ignore_ascii_case("in")) else {
+        return Some((head.trim().to_string(), None));
+    };
+    let end = if in_idx + 3 < tokens.len() && tokens[in_idx + 3].eq_ignore_ascii_case("hue") {
+        in_idx + 4
+    } else if in_idx + 1 < tokens.len() {
+        in_idx + 2
+    } else {
+        return None;
+    };
+    let method = crate::style::parse_color_interpolation_method(&tokens[in_idx..end].join(" "))?;
+    let mut rest = Vec::with_capacity(tokens.len().saturating_sub(end - in_idx));
+    rest.extend_from_slice(&tokens[..in_idx]);
+    rest.extend_from_slice(&tokens[end..]);
+    Some((rest.join(" "), Some(method)))
+}
+
+fn stop_to_css_paint_color(stop: &GradientStop) -> crate::style::CssPaintColor {
+    match stop.paint_color {
+        Some(nana_ui_core::PaintColor::Srgb { rgba }) => crate::style::CssPaintColor::Srgb(rgba),
+        Some(nana_ui_core::PaintColor::Oklch { l, c, h, alpha }) => {
+            crate::style::CssPaintColor::Oklch { l, c, h, alpha }
+        }
+        Some(nana_ui_core::PaintColor::Hsv { h, s, v, alpha }) => {
+            crate::style::CssPaintColor::Hsv { h, s, v, alpha }
+        }
+        Some(nana_ui_core::PaintColor::LinearScRgb { channels, alpha }) => {
+            crate::style::CssPaintColor::LinearScRgb { channels, alpha }
+        }
+        None => crate::style::CssPaintColor::Srgb(stop.color),
+    }
+}
+
+fn gradient_stop_from_css(position: f32, paint: crate::style::CssPaintColor) -> GradientStop {
+    GradientStop {
+        paint_color: Some(paint.to_core()),
+        position,
+        color: paint.to_srgb(),
+    }
+}
+
+fn apply_gradient_interpolation_method(
+    stops: Vec<GradientStop>,
+    method: Option<crate::style::ColorInterpolationMethod>,
+) -> Vec<GradientStop> {
+    let Some(method) = method else {
+        return stops;
+    };
+    match method {
+        crate::style::ColorInterpolationMethod::Srgb => stops
+            .into_iter()
+            .map(|stop| {
+                let srgb = stop_to_css_paint_color(&stop).to_srgb();
+                GradientStop {
+                    paint_color: Some(nana_ui_core::PaintColor::srgb(srgb)),
+                    position: stop.position,
+                    color: srgb,
+                }
+            })
+            .collect(),
+        crate::style::ColorInterpolationMethod::SrgbLinear => stops
+            .into_iter()
+            .map(|stop| {
+                let (channels, alpha) = stop_to_css_paint_color(&stop).to_linear_sc_rgb();
+                let paint = crate::style::CssPaintColor::LinearScRgb { channels, alpha };
+                gradient_stop_from_css(stop.position, paint)
+            })
+            .collect(),
+        crate::style::ColorInterpolationMethod::Oklch(_)
+        | crate::style::ColorInterpolationMethod::Hsv(_) => {
+            if stops.len() < 2 {
+                return stops;
+            }
+            if stops.len() >= MAX_GRADIENT_STOPS {
+                return stops
+                    .into_iter()
+                    .map(|stop| {
+                        let c = stop_to_css_paint_color(&stop);
+                        gradient_stop_from_css(
+                            stop.position,
+                            crate::style::interpolate_paint_colors(method, c, c, 0.0),
+                        )
+                    })
+                    .collect();
+            }
+            let budget = MAX_GRADIENT_STOPS - stops.len();
+            let seg_count = stops.len() - 1;
+            let lengths: Vec<f32> = stops
+                .windows(2)
+                .map(|w| (w[1].position - w[0].position).max(0.0))
+                .collect();
+            let total_len: f32 = lengths.iter().sum();
+            let mut extra = vec![0usize; seg_count];
+            if total_len > 1.0e-5 {
+                let mut assigned = 0usize;
+                for (i, &len) in lengths.iter().enumerate() {
+                    let share = ((len / total_len) * budget as f32).floor() as usize;
+                    extra[i] = share;
+                    assigned += share;
+                }
+                for (i, &len) in lengths.iter().enumerate() {
+                    if assigned >= budget {
+                        break;
+                    }
+                    if len > 1.0e-5 {
+                        extra[i] += 1;
+                        assigned += 1;
+                    }
+                }
+            }
+            let mut out = Vec::with_capacity(MAX_GRADIENT_STOPS);
+            for (seg_idx, window) in stops.windows(2).enumerate() {
+                let a = stop_to_css_paint_color(&window[0]);
+                let b = stop_to_css_paint_color(&window[1]);
+                out.push(gradient_stop_from_css(
+                    window[0].position,
+                    crate::style::interpolate_paint_colors(method, a, b, 0.0),
+                ));
+                let subdivisions = extra[seg_idx] + 1;
+                for step in 1..subdivisions {
+                    let u = step as f32 / subdivisions as f32;
+                    let pos = window[0].position + (window[1].position - window[0].position) * u;
+                    out.push(gradient_stop_from_css(
+                        pos,
+                        crate::style::interpolate_paint_colors(method, a, b, u),
+                    ));
+                }
+            }
+            if let Some(last) = stops.last() {
+                let c = stop_to_css_paint_color(last);
+                out.push(gradient_stop_from_css(
+                    last.position,
+                    crate::style::interpolate_paint_colors(method, c, c, 1.0),
+                ));
+            }
+            out.truncate(MAX_GRADIENT_STOPS);
+            out
+        }
+    }
+}
+
+fn split_gradient_header(
+    input: &str,
+) -> Option<(f32, Option<crate::style::ColorInterpolationMethod>, &str)> {
     let trimmed = input.trim();
     if trimmed.is_empty() {
         return None;
     }
-    if let Some(idx) = trimmed.find(',') {
-        let head = trimmed[..idx].trim();
+    if let Some(idx) = first_top_level_comma(trimmed) {
+        let head_raw = trimmed[..idx].trim();
         let tail = trimmed[idx + 1..].trim();
+        let (head, interp) = extract_gradient_interpolation(head_raw)?;
+        let head = head.trim();
+        if head.is_empty() && interp.is_some() {
+            return Some((180.0, interp, tail));
+        }
         if is_gradient_angle_token(head) {
             let angle_deg = parse_gradient_angle(head)?;
-            return Some((angle_deg, tail));
+            return Some((angle_deg, interp, tail));
         }
-        if split_color_and_rest(head).is_some() {
-            return Some((180.0, trimmed));
+        if interp.is_none() && split_color_and_rest(head_raw).is_some() {
+            return Some((180.0, None, trimmed));
         }
         return None;
     }
     if split_color_and_rest(trimmed).is_some() {
-        return Some((180.0, trimmed));
+        return Some((180.0, None, trimmed));
     }
     None
 }
@@ -3292,5 +3470,78 @@ mod tests {
         assert_eq!(layout.paint.box_shadows.len(), 4);
         assert!(layout.paint.box_shadows[0].inset);
         assert!(!layout.paint.box_shadows[1].inset);
+    }
+
+    #[test]
+    fn linear_and_radial_gradients_support_oklch_color_interpolation_method() {
+        let mut oklch_layout = LayoutStyle::default();
+        oklch_layout.apply_css_text(
+            "background-image: linear-gradient(in oklch to right, oklch(0.7 0.25 30), oklch(0.7 0.25 150))",
+            None,
+            None,
+        );
+        let Some(BackgroundImage::Gradient(CssGradient::Linear(oklch_grad))) =
+            &oklch_layout.paint.background_image
+        else {
+            panic!("expected linear gradient in oklch");
+        };
+        assert_eq!(oklch_grad.angle_deg, 90.0);
+        assert!(
+            oklch_grad.stops.len() > 2,
+            "non-linear authoring-space interpolation should resample intermediate stops"
+        );
+
+        let mut linear_layout = LayoutStyle::default();
+        linear_layout.apply_css_text(
+            "background-image: linear-gradient(in srgb-linear, oklch(0.7 0.25 30), oklch(0.7 0.25 150))",
+            None,
+            None,
+        );
+        let Some(BackgroundImage::Gradient(CssGradient::Linear(linear_grad))) =
+            &linear_layout.paint.background_image
+        else {
+            panic!("expected linear gradient in srgb-linear");
+        };
+        assert_eq!(linear_grad.stops.len(), 2);
+
+        // Midpoint of `in oklch` between 30deg and 150deg goes through yellow (90deg),
+        // which differs substantially from straight linear-scRGB chord midpoint.
+        let (mid_oklch, _) = oklch_grad
+            .stops
+            .iter()
+            .min_by(|a, b| {
+                (a.position - 0.5)
+                    .abs()
+                    .total_cmp(&(b.position - 0.5).abs())
+            })
+            .unwrap()
+            .paint_color
+            .unwrap()
+            .to_linear_sc_rgb();
+        let (start_sc, _) = linear_grad.stops[0].paint_color.unwrap().to_linear_sc_rgb();
+        let (end_sc, _) = linear_grad.stops[1].paint_color.unwrap().to_linear_sc_rgb();
+        let mid_chord = [
+            0.5 * (start_sc[0] + end_sc[0]),
+            0.5 * (start_sc[1] + end_sc[1]),
+            0.5 * (start_sc[2] + end_sc[2]),
+        ];
+        let diff = (mid_oklch[0] - mid_chord[0]).abs()
+            + (mid_oklch[1] - mid_chord[1]).abs()
+            + (mid_oklch[2] - mid_chord[2]).abs();
+        assert!(
+            diff > 0.1,
+            "oklch midpoint {mid_oklch:?} should not equal linear chord midpoint {mid_chord:?}"
+        );
+
+        let mut radial_layout = LayoutStyle::default();
+        radial_layout.apply_css_text(
+            "background-image: radial-gradient(circle in oklch longer hue, red, blue)",
+            None,
+            None,
+        );
+        assert!(matches!(
+            radial_layout.paint.background_image,
+            Some(BackgroundImage::Gradient(CssGradient::Radial(_)))
+        ));
     }
 }

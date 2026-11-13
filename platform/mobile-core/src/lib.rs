@@ -30,6 +30,7 @@ pub use runtime::{
 pub use schedule::FrameDemand;
 pub use viewport::{MobileViewport, SafeArea};
 
+pub use nana_ui::SurfacePresentationPolicy;
 pub use nana_ui::runtime::ScrollPhysics;
 
 /// Install the waker the view task executor calls when a future is ready.

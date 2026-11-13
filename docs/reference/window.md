@@ -99,6 +99,9 @@ DX12 的 HWND swapchain 硬编码只上报 `Opaque`（`wgpu-hal` `dx12/adapter.r
 | --- | --- | --- |
 | GPU backend / adapter / device | **进程**，所有窗口共用一份 | `RuntimeProgram::gpu_backend_policy()` |
 | surface target（普通窗口 surface vs 合成 visual） | **每扇窗口** | `WindowDescriptor::surface` |
+| 色彩空间与动态范围（SDR / Display-P3 / HDR scRGB / PQ / HLG） | **每扇窗口** | `WindowDescriptor::presentation_policy`（`SurfacePresentationPolicy`） |
+
+透明客户区与 10 位 HDR 交换链格式有明确的 alpha 位宽边界：`Rgb10a2Unorm`（`HdrPq` / `HdrHlg` 的常见 10 位格式）仅有 2 位 alpha，不能表达平滑半透明边缘，因此在透明窗口上会被拒绝并记录 `SurfaceProfileFallback::TransparencyIncompatible`，回退到支持完整 8/16 位 alpha 的 `Rgba16Float` 线性扩展或 SDR 表面（若底层能力声明了 `Rgba16Float` + `Bt2100Pq`/`Bt2100Hlg`，则保留全精度透明 HDR）。详见 [实时画面与 GPU 集成合同 · HDR 显示信息与色彩空间合同](https://github.com/sena-nana/NanaUI/blob/main/docs/reference/gpu.md#3-hdr-显示信息与色彩空间合同issue-279--283)。
 
 `GpuBackendPolicy::COMPOSITION_CAPABLE` 只是把合成路径**变得可用**（Windows 上把后端收窄到 DX12。因为 DirectComposition visual 是 DX12 的 surface target）。它不把任何窗口放上那条路。这个收窄跟第一扇窗口要不要合成**无关**：否则先开一扇普通 Settings 窗就会悄悄让整个进程失去合成能力。后面的主窗再也拿不到。窗口自己用 `WindowSurfacePreference` 要：
 

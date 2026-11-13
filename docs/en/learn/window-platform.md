@@ -19,8 +19,8 @@ In dependency order: `nana-ui-core`, `nana-ui-input` → `nana-ui-platform` → 
 | Neighbor crate | Collaboration |
 | --- | --- |
 | `nana-ui-input` | The canonical input contract is re-exported by `nana-ui-platform` (`lib.rs:156`); the host lowers native window events into it |
-| `nana-ui` | `WindowService` / `WindowHandle` queue cross-thread window commands back to the window thread for execution; `ResolvedWindowPresentation` settles each window's final presentation state here |
-| `nana-gpu` | Surface transparent composition mode and `SurfacePresentationPolicy` negotiation (see [GPU and frame lifecycle](/learn/gpu-frame)) |
+| `nana-ui` | `WindowService` / `WindowHandle` queue cross-thread window commands back to the window thread for execution; `ResolvedWindowPresentation` settles each window's final presentation state and `SurfacePresentationPolicy` color negotiation here |
+| `nana-gpu` | Device, frame, and texture backend contract (see [GPU and frame lifecycle](/learn/gpu-frame)) |
 | `winit` | `nana-window` fills desktop-level capabilities between native OS APIs and winit (Win32 frameless style guards, layered window composition settling, macOS show-without-activation and precise traffic-light placement) |
 
 ## Key types and data

@@ -771,3 +771,278 @@ fn headroom_update_reuses_scene_and_changes_only_presentation_blit() {
     assert_eq!(second_counts.blit, 1);
     assert_eq!(painter.presentation_parameters().headroom(), 16.0);
 }
+
+#[test]
+fn plain_sdr_profile_keeps_srgb_fast_path_and_auto_promotes_extended_scene_and_host_textures() {
+    let profile = ScenePresentationProfile::sdr(nana_gpu::GpuTextureFormat::RGBA8_UNORM_SRGB);
+    let gpu = crate::test_gpu::context();
+    let device = nana_gpu::__framework::device(&gpu);
+    let queue = nana_gpu::__framework::queue(&gpu);
+    let (texture, view) = target(device, profile);
+    let mut painter = SceneWgpuPainter::new_with_presentation(&gpu, profile);
+
+    // 1. Ordinary sRGB scene keeps the zero-extra-VRAM 8-bit SDR working target (4 B/px, no fp16 pipeline set).
+    let srgb_scene = scene_with_fill(PaintColor::srgb([0.2, 0.4, 0.8, 1.0]));
+    let (srgb_encoder, srgb_counts) = encode_paint(
+        &mut painter,
+        &srgb_scene,
+        &view,
+        ScenePresentationParameters::default(),
+    );
+    let _ = readback(device, queue, srgb_encoder, &texture, 4);
+    assert_eq!(
+        painter.working_format(),
+        nana_gpu::GpuTextureFormat::RGBA8_UNORM_SRGB
+    );
+    assert!(
+        painter.pipeline_sets.is_empty(),
+        "pure sRGB scenes must not allocate secondary float pipeline sets"
+    );
+    assert_eq!(srgb_counts.blit, 1);
+
+    // 2. Over-white / wide-gamut scene automatically promotes to RGBA16_FLOAT working target
+    // and applies controlled shoulder + gamut compression instead of [255, 255, 0] hardware clipping.
+    let extended_scene = scene_with_fill(PaintColor::LinearScRgb {
+        channels: [2.0, -0.2, 0.5],
+        alpha: 1.0,
+    });
+    let (ext_encoder, ext_counts) = encode_paint(
+        &mut painter,
+        &extended_scene,
+        &view,
+        ScenePresentationParameters::default(),
+    );
+    let ext_bytes = readback(device, queue, ext_encoder, &texture, 4);
+    let ext_pixel = rgba8(&ext_bytes);
+    assert_eq!(
+        painter.working_format(),
+        nana_gpu::GpuTextureFormat::RGBA16_FLOAT
+    );
+    assert_eq!(ext_counts.blit, 1);
+
+    let mapped = super::presentation_color::gamut_map_rgb(
+        super::presentation_color::tone_map_headroom_rgb([2.0, -0.2, 0.5], 1.0),
+    );
+    let encode_srgb = |value: f32| {
+        let encoded = if value <= 0.003_130_8 {
+            value * 12.92
+        } else {
+            1.055 * value.powf(1.0 / 2.4) - 0.055
+        };
+        (encoded * 255.0).round() as u8
+    };
+    for (actual, expected) in ext_pixel[..3].iter().zip(mapped.map(encode_srgb)) {
+        assert!(
+            actual.abs_diff(expected) <= 3,
+            "auto-promoted SDR pixel={ext_pixel:?}, expected={mapped:?}"
+        );
+    }
+
+    // 3. Returning to an ordinary sRGB scene drops back to the 8-bit SDR working target.
+    let (back_encoder, back_counts) = encode_paint(
+        &mut painter,
+        &srgb_scene,
+        &view,
+        ScenePresentationParameters::default(),
+    );
+    let _ = readback(device, queue, back_encoder, &texture, 4);
+    assert_eq!(
+        painter.working_format(),
+        nana_gpu::GpuTextureFormat::RGBA8_UNORM_SRGB
+    );
+    assert_eq!(back_counts.blit, 1);
+
+    // 4. An RGBA16_FLOAT HostTexture on an otherwise empty/sRGB scene also promotes to float working.
+    let mut context = AppContext::new();
+    let document = DocumentId::new(1).expect("doc");
+    let preview = context
+        .create_component(document, nana_ui_runtime::GpuTextureView::new("hdr_tex"))
+        .expect("gpu texture view");
+    let mut layout = nana_ui_runtime::MutationQueue::new();
+    layout.write_layout(
+        preview.stable_id(),
+        LayoutBox {
+            x: 0.0,
+            y: 0.0,
+            width: WIDTH as f32,
+            height: HEIGHT as f32,
+        },
+    );
+    context.commit_mutations(layout).expect("commit layout");
+    let work = context.take_system_work();
+    context.resolve_styles(&work.style).expect("resolve styles");
+    let mut tex_scene = UiScene::new();
+    tex_scene.apply_delta(
+        context.world().extract_nodes(&work.render_extraction),
+        work.render_removals,
+    );
+    let fp16_tex = device.create_texture(&wgpu::TextureDescriptor {
+        label: Some("hdr host texture"),
+        size: wgpu::Extent3d {
+            width: WIDTH,
+            height: HEIGHT,
+            depth_or_array_layers: 1,
+        },
+        mip_level_count: 1,
+        sample_count: 1,
+        dimension: wgpu::TextureDimension::D2,
+        format: wgpu::TextureFormat::Rgba16Float,
+        usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::RENDER_ATTACHMENT,
+        view_formats: &[],
+    });
+    let fp16_view = fp16_tex.create_view(&wgpu::TextureViewDescriptor::default());
+    let mut init_encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+        label: Some("hdr host texture clear"),
+    });
+    {
+        let _pass = init_encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+            label: Some("clear hdr tex"),
+            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                view: &fp16_view,
+                resolve_target: None,
+                depth_slice: None,
+                ops: wgpu::Operations {
+                    load: wgpu::LoadOp::Clear(wgpu::Color {
+                        r: 2.0,
+                        g: 0.5,
+                        b: 0.0,
+                        a: 1.0,
+                    }),
+                    store: wgpu::StoreOp::Store,
+                },
+            })],
+            depth_stencil_attachment: None,
+            timestamp_writes: None,
+            occlusion_query_set: None,
+            multiview_mask: None,
+        });
+    }
+    let registry = crate::HostTextureRegistry::new();
+    registry.register(
+        "hdr_tex",
+        crate::HostTexture::new(&crate::test_gpu::wrap_view(&fp16_view)),
+        WIDTH,
+        HEIGHT,
+        crate::HostTextureAlphaMode::Premultiplied,
+    );
+    painter
+        .paint_encoder(
+            &tex_scene,
+            &mut init_encoder,
+            &view,
+            ScenePaintViewport {
+                logical_size: [WIDTH as f32, HEIGHT as f32],
+                physical_size: [WIDTH, HEIGHT],
+                scale_factor: 1.0,
+                scene_origin: [0.0, 0.0],
+                target_origin: [0.0, 0.0],
+                clear_color: [0.0; 4],
+                clear: true,
+            },
+            Some(&registry),
+            None,
+        )
+        .expect("paint hdr host texture");
+    let tex_counts = painter.last_dest_pass_counts.expect("pass counts");
+    let tex_bytes = readback(device, queue, init_encoder, &texture, 4);
+    let tex_pixel = rgba8(&tex_bytes);
+    assert_eq!(
+        painter.working_format(),
+        nana_gpu::GpuTextureFormat::RGBA16_FLOAT
+    );
+    assert_eq!(tex_counts.blit, 1);
+    assert!(
+        tex_pixel[1] < 220,
+        "tone-mapped [2.0, 0.5, 0.0] highlight keeps orange ratio rather than clipping green high: {tex_pixel:?}"
+    );
+}
+
+#[test]
+fn display_p3_sdr_tone_maps_over_white_highlights_and_soft_light_handles_negative_backdrop() {
+    let p3_profile = ScenePresentationProfile::new(
+        nana_gpu::GpuTextureFormat::RGBA8_UNORM_SRGB,
+        ScenePresentationColorSpace::DisplayP3,
+    );
+    let (p3_bytes, p3_counts) = paint(
+        p3_profile,
+        scene_with_fill(PaintColor::LinearScRgb {
+            channels: [2.0, 0.5, 0.0],
+            alpha: 1.0,
+        }),
+        [0.0; 4],
+    );
+    let p3_pixel = rgba8(&p3_bytes);
+    assert_eq!(p3_counts.blit, 1);
+    // Without tone mapping `[2.0, 0.5, 0.0]` would clip red at 1.0 while leaving green disproportionately high.
+    let expected_p3 =
+        super::presentation_color::gamut_map_rgb(super::presentation_color::linear_srgb_to_p3(
+            super::presentation_color::tone_map_headroom_rgb([2.0, 0.5, 0.0], 1.0),
+        ));
+    let encode_srgb = |value: f32| {
+        let encoded = if value <= 0.003_130_8 {
+            value * 12.92
+        } else {
+            1.055 * value.powf(1.0 / 2.4) - 0.055
+        };
+        (encoded * 255.0).round() as u8
+    };
+    for (actual, expected) in p3_pixel[..3].iter().zip(expected_p3.map(encode_srgb)) {
+        assert!(
+            actual.abs_diff(expected) <= 3,
+            "Display-P3 SDR tone-mapped pixel={p3_pixel:?}, expected={expected_p3:?}"
+        );
+    }
+
+    // Soft-light blend over a negative wide-gamut backdrop must remain finite (no sqrt(<0) NaN).
+    let mut context = AppContext::new();
+    let document = DocumentId::new(1).expect("doc");
+    let root = context
+        .create_component(
+            document,
+            Stack::column(0.0)
+                .with_layout(|layout| {
+                    layout.width = Some(LengthSpec::Px(WIDTH as f32));
+                    layout.height = Some(LengthSpec::Px(HEIGHT as f32));
+                })
+                .painter(Fill(PaintColor::LinearScRgb {
+                    channels: [-0.25, 0.8, -0.1],
+                    alpha: 1.0,
+                })),
+        )
+        .expect("backdrop");
+    let overlay = context
+        .create_component(
+            document,
+            Stack::column(0.0)
+                .with_layout(|layout| {
+                    layout.width = Some(LengthSpec::Px(WIDTH as f32));
+                    layout.height = Some(LengthSpec::Px(HEIGHT as f32));
+                    layout.paint.mix_blend = nana_ui_core::MixBlendMode::SoftLight;
+                })
+                .painter(Fill(PaintColor::srgb([0.8, 0.7, 0.6, 1.0]))),
+        )
+        .expect("overlay");
+    context.append_child(root, overlay).expect("append");
+    context
+        .resolve_styles(&[root.stable_id(), overlay.stable_id()])
+        .expect("styles");
+    context
+        .layout_document(
+            document,
+            nana_ui_runtime::LayoutViewport::new(WIDTH as f32, HEIGHT as f32),
+        )
+        .expect("layout");
+    let mut blend_scene = UiScene::new();
+    blend_scene.apply_delta(context.world().extract_document(document), []);
+
+    let hdr_profile = ScenePresentationProfile::new(
+        nana_gpu::GpuTextureFormat::RGBA16_FLOAT,
+        ScenePresentationColorSpace::ExtendedSrgbLinear,
+    );
+    let (blend_bytes, _) = paint(hdr_profile, blend_scene, [0.0; 4]);
+    let blend_pixel = rgba16(&blend_bytes);
+    assert!(
+        blend_pixel.iter().all(|channel| channel.is_finite()),
+        "soft-light over negative wide-gamut backdrop produced non-finite pixel: {blend_pixel:?}"
+    );
+}

@@ -102,11 +102,11 @@ pub fn parse_css_paint_color(input: &str) -> Option<CssPaintColor> {
             (rest.trim(), 1.0)
         };
         let parts: Vec<_> = body.split_whitespace().collect();
-        if parts.len() >= 3 {
+        if parts.len() == 3 {
             return Some(CssPaintColor::Oklch {
                 l: parse_oklch_lightness(parts[0])?,
                 c: parse_oklch_chroma(parts[1])?,
-                h: parse_oklch_hue(parts[2]),
+                h: parse_oklch_hue(parts[2])?,
                 alpha: alpha.clamp(0.0, 1.0),
             });
         }
@@ -119,9 +119,9 @@ pub fn parse_css_paint_color(input: &str) -> Option<CssPaintColor> {
             (rest.trim(), 1.0)
         };
         let parts: Vec<_> = body.split_whitespace().collect();
-        if parts.len() >= 3 {
+        if parts.len() == 3 {
             return Some(CssPaintColor::Hsv {
-                h: parse_oklch_hue(parts[0]).unwrap_or(0.0),
+                h: parse_oklch_hue(parts[0])?.unwrap_or(0.0),
                 s: parse_unit_interval(parts[1])?,
                 v: parse_unit_interval(parts[2])?,
                 alpha: alpha.clamp(0.0, 1.0),
@@ -137,8 +137,12 @@ pub fn parse_css_paint_color(input: &str) -> Option<CssPaintColor> {
     }
     // A malformed recognized function must fail closed. Sending it back
     // through `parse_css_color` would recurse because that parser delegates
-    // OKLCH/HSV functions here (outline tokenization can expose such pieces).
-    if lower.starts_with("oklch(") || lower.starts_with("hsv(") {
+    // OKLCH/HSV/color-mix/light-dark functions here.
+    if lower.starts_with("oklch(")
+        || lower.starts_with("hsv(")
+        || lower.starts_with("color(")
+        || lower.starts_with("light-dark(")
+    {
         return None;
     }
     parse_css_color(input).map(CssPaintColor::Srgb)
@@ -193,25 +197,17 @@ pub fn parse_css_color(input: &str) -> Option<[f32; 4]> {
     let lower = s.to_ascii_lowercase();
     if let Some(rest) = lower
         .strip_prefix("rgba(")
+        .or_else(|| lower.strip_prefix("rgb("))
         .and_then(|r| r.strip_suffix(')'))
     {
-        let parts: Vec<_> = rest.split(',').map(str::trim).collect();
-        if parts.len() == 4 {
-            let r = parse_rgb_channel(parts[0])?;
-            let g = parse_rgb_channel(parts[1])?;
-            let b = parse_rgb_channel(parts[2])?;
-            let a = parse_finite_f32(parts[3])?.clamp(0.0, 1.0);
-            return Some([r, g, b, a]);
-        }
+        return parse_rgb_fn(rest);
     }
-    if let Some(rest) = lower.strip_prefix("rgb(").and_then(|r| r.strip_suffix(')')) {
-        let parts: Vec<_> = rest.split(',').map(str::trim).collect();
-        if parts.len() == 3 {
-            let r = parse_rgb_channel(parts[0])?;
-            let g = parse_rgb_channel(parts[1])?;
-            let b = parse_rgb_channel(parts[2])?;
-            return Some([r, g, b, 1.0]);
-        }
+    if let Some(rest) = lower
+        .strip_prefix("hsla(")
+        .or_else(|| lower.strip_prefix("hsl("))
+        .and_then(|r| r.strip_suffix(')'))
+    {
+        return parse_hsl_fn(rest);
     }
     // CSS Color 4 OKLCH, converted through OKLab and linear sRGB.
     if lower.starts_with("oklch(")
@@ -271,7 +267,132 @@ fn paren_depth(s: &str) -> usize {
     deepest
 }
 
-/// CSS Color 5 `color-mix(in srgb|oklch, A P%, B)`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum HueInterpolationMethod {
+    Shorter,
+    Longer,
+    Increasing,
+    Decreasing,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ColorInterpolationMethod {
+    Srgb,
+    SrgbLinear,
+    Oklch(HueInterpolationMethod),
+    Hsv(HueInterpolationMethod),
+}
+
+pub(crate) fn parse_color_interpolation_method(space: &str) -> Option<ColorInterpolationMethod> {
+    let tokens: Vec<_> = space.split_whitespace().collect();
+    let [in_kw, color_space, rest @ ..] = tokens.as_slice() else {
+        return None;
+    };
+    if !in_kw.eq_ignore_ascii_case("in") {
+        return None;
+    }
+    let parse_hue_method = |tail: &[&str]| -> Option<HueInterpolationMethod> {
+        match tail {
+            [] => Some(HueInterpolationMethod::Shorter),
+            [dir, hue_kw] if hue_kw.eq_ignore_ascii_case("hue") => {
+                match dir.to_ascii_lowercase().as_str() {
+                    "shorter" => Some(HueInterpolationMethod::Shorter),
+                    "longer" => Some(HueInterpolationMethod::Longer),
+                    "increasing" => Some(HueInterpolationMethod::Increasing),
+                    "decreasing" => Some(HueInterpolationMethod::Decreasing),
+                    _ => None,
+                }
+            }
+            _ => None,
+        }
+    };
+    match color_space.to_ascii_lowercase().as_str() {
+        "srgb" if rest.is_empty() => Some(ColorInterpolationMethod::Srgb),
+        "srgb-linear" if rest.is_empty() => Some(ColorInterpolationMethod::SrgbLinear),
+        "oklch" => parse_hue_method(rest).map(ColorInterpolationMethod::Oklch),
+        "hsv" => parse_hue_method(rest).map(ColorInterpolationMethod::Hsv),
+        _ => None,
+    }
+}
+
+pub(crate) fn interpolate_paint_colors(
+    method: ColorInterpolationMethod,
+    a: CssPaintColor,
+    b: CssPaintColor,
+    progress: f32,
+) -> CssPaintColor {
+    interpolate_paint_colors_scaled(method, a, b, progress, 1.0)
+}
+
+fn interpolate_paint_colors_scaled(
+    method: ColorInterpolationMethod,
+    a: CssPaintColor,
+    b: CssPaintColor,
+    progress: f32,
+    alpha_scale: f32,
+) -> CssPaintColor {
+    let u = progress.clamp(0.0, 1.0);
+    let t = 1.0 - u;
+    // CSS Color 4 §12.3: components interpolate premultiplied by alpha (hue
+    // excepted), so a transparent endpoint adds no colour of its own: half
+    // red and half `transparent` is red at half alpha, not dark red.
+    let mix = |a: f32, a_alpha: f32, b: f32, b_alpha: f32| {
+        let alpha = a_alpha * t + b_alpha * u;
+        if alpha > 0.0 {
+            (a * a_alpha * t + b * b_alpha * u) / alpha
+        } else {
+            a * t + b * u
+        }
+    };
+    match method {
+        ColorInterpolationMethod::Oklch(hue_method) => {
+            let a = paint_to_oklch(a);
+            let b = paint_to_oklch(b);
+            CssPaintColor::Oklch {
+                l: mix(a.0, a.3, b.0, b.3),
+                c: mix(a.1, a.3, b.1, b.3),
+                h: interpolate_hue_with_method(a.2, b.2, a.1, b.1, u, hue_method),
+                alpha: (a.3 * t + b.3 * u) * alpha_scale,
+            }
+        }
+        ColorInterpolationMethod::Hsv(hue_method) => {
+            let a = paint_to_hsv(a);
+            let b = paint_to_hsv(b);
+            let h = interpolate_hue_with_method(Some(a.0), Some(b.0), a.1, b.1, u, hue_method)
+                .unwrap_or(0.0);
+            CssPaintColor::Hsv {
+                h,
+                s: mix(a.1, a.3, b.1, b.3),
+                v: mix(a.2, a.3, b.2, b.3),
+                alpha: (a.3 * t + b.3 * u) * alpha_scale,
+            }
+        }
+        ColorInterpolationMethod::SrgbLinear => {
+            let (ca, aa) = a.to_linear_sc_rgb();
+            let (cb, ab) = b.to_linear_sc_rgb();
+            CssPaintColor::LinearScRgb {
+                channels: [
+                    mix(ca[0], aa, cb[0], ab),
+                    mix(ca[1], aa, cb[1], ab),
+                    mix(ca[2], aa, cb[2], ab),
+                ],
+                alpha: (aa * t + ab * u) * alpha_scale,
+            }
+        }
+        ColorInterpolationMethod::Srgb => {
+            let a = a.to_srgb();
+            let b = b.to_srgb();
+            CssPaintColor::Srgb([
+                mix(a[0], a[3], b[0], b[3]),
+                mix(a[1], a[3], b[1], b[3]),
+                mix(a[2], a[3], b[2], b[3]),
+                (a[3] * t + b[3] * u) * alpha_scale,
+            ])
+        }
+    }
+}
+
+/// CSS Color 5 `color-mix(in srgb|srgb-linear|oklch|hsv, A P%, B)`.
 fn parse_color_mix(input: &str) -> Option<[f32; 4]> {
     parse_color_mix_paint(input).map(CssPaintColor::to_srgb)
 }
@@ -292,10 +413,7 @@ fn parse_color_mix_paint(input: &str) -> Option<CssPaintColor> {
         .trim_end()
         .strip_suffix(')')?;
     let (space, colors) = rest.split_once(',')?;
-    let space = space.trim();
-    if !space.starts_with("in ") {
-        return None;
-    }
+    let method = parse_color_interpolation_method(space.trim())?;
     let (left, right) = split_top_level_comma_pair(colors.trim())?;
     let (color_a, pct_a) = split_color_and_optional_percent(left.trim())?;
     let (color_b, pct_b) = split_color_and_optional_percent(right.trim())?;
@@ -313,62 +431,13 @@ fn parse_color_mix_paint(input: &str) -> Option<CssPaintColor> {
     // CSS Color 5 makes an under-specified mix translucent by the missing
     // weight; weights above 100% are normalized without further attenuation.
     let alpha_scale = (supplied / 100.0).min(1.0);
-    // CSS Color 4 §12.3: components interpolate premultiplied by alpha (hue
-    // excepted), so a transparent endpoint adds no colour of its own: half
-    // red and half `transparent` is red at half alpha, not dark red.
-    let mix = |a: f32, a_alpha: f32, b: f32, b_alpha: f32| {
-        let alpha = a_alpha * t + b_alpha * (1.0 - t);
-        if alpha > 0.0 {
-            (a * a_alpha * t + b * b_alpha * (1.0 - t)) / alpha
-        } else {
-            a * t + b * (1.0 - t)
-        }
-    };
-    if space.eq_ignore_ascii_case("in oklch") {
-        let a = paint_to_oklch(a);
-        let b = paint_to_oklch(b);
-        return Some(CssPaintColor::Oklch {
-            l: mix(a.0, a.3, b.0, b.3),
-            c: mix(a.1, a.3, b.1, b.3),
-            h: interpolate_hue(a.2, b.2, a.1, b.1, t),
-            alpha: (a.3 * t + b.3 * (1.0 - t)) * alpha_scale,
-        });
-    }
-    if space.eq_ignore_ascii_case("in hsv") {
-        let a = paint_to_hsv(a);
-        let b = paint_to_hsv(b);
-        // A zero-saturation HSV endpoint has no meaningful hue. Borrow the
-        // other endpoint's hue while interpolating so a neutral-to-chromatic
-        // mix does not take an arbitrary detour through red.
-        let a_powerless = a.1.abs() < 1.0e-7;
-        let b_powerless = b.1.abs() < 1.0e-7;
-        let ha = if a_powerless { b.0 } else { a.0 };
-        let hb = if b_powerless { a.0 } else { b.0 };
-        let mut delta = hb - ha;
-        if delta > 180.0 {
-            delta -= 360.0;
-        }
-        if delta < -180.0 {
-            delta += 360.0;
-        }
-        return Some(CssPaintColor::Hsv {
-            h: wrap_hue(ha + delta * (1.0 - t)),
-            s: mix(a.1, a.3, b.1, b.3),
-            v: mix(a.2, a.3, b.2, b.3),
-            alpha: (a.3 * t + b.3 * (1.0 - t)) * alpha_scale,
-        });
-    }
-    if !space.eq_ignore_ascii_case("in srgb") {
-        return None;
-    }
-    let a = a.to_srgb();
-    let b = b.to_srgb();
-    Some(CssPaintColor::Srgb([
-        mix(a[0], a[3], b[0], b[3]),
-        mix(a[1], a[3], b[1], b[3]),
-        mix(a[2], a[3], b[2], b[3]),
-        (a[3] * t + b[3] * (1.0 - t)) * alpha_scale,
-    ]))
+    Some(interpolate_paint_colors_scaled(
+        method,
+        a,
+        b,
+        1.0 - t,
+        alpha_scale,
+    ))
 }
 
 fn paint_to_oklch(color: CssPaintColor) -> (f32, f32, Option<f32>, f32) {
@@ -405,7 +474,9 @@ fn parse_linear_scrgb(input: &str) -> Option<CssPaintColor> {
     }
     let mut values = [0.0; 3];
     for (slot, raw) in values.iter_mut().zip(parts) {
-        *slot = if let Some(percent) = raw.strip_suffix('%') {
+        *slot = if raw.eq_ignore_ascii_case("none") {
+            0.0
+        } else if let Some(percent) = raw.strip_suffix('%') {
             parse_finite_f32(percent)? / 100.0
         } else {
             parse_finite_f32(raw)?
@@ -477,16 +548,22 @@ fn split_top_level_comma_pair(input: &str) -> Option<(&str, &str)> {
 
 fn parse_oklch_lightness(raw: &str) -> Option<f32> {
     let s = raw.trim();
-    if let Some(p) = s.strip_suffix('%') {
-        return Some(parse_finite_f32(p)? / 100.0);
+    if s.eq_ignore_ascii_case("none") {
+        return Some(0.0);
     }
-    let v = parse_finite_f32(s)?;
-    // CSS allows L as 0..1 or 0..100 without `%` in some serializations.
-    Some(if v > 1.0 { v / 100.0 } else { v })
+    if let Some(p) = s.strip_suffix('%') {
+        return Some((parse_finite_f32(p)? / 100.0).max(0.0));
+    }
+    // CSS Color 4 defines unitless OKLCH lightness on `0..=1` (`1` = 100% SDR
+    // white), while values `> 1.0` represent HDR diffuse highlights.
+    Some(parse_finite_f32(s)?.max(0.0))
 }
 
 fn parse_oklch_alpha(raw: &str) -> Option<f32> {
     let s = raw.trim();
+    if s.eq_ignore_ascii_case("none") {
+        return Some(0.0);
+    }
     if let Some(p) = s.strip_suffix('%') {
         return Some(parse_finite_f32(p)? / 100.0);
     }
@@ -503,23 +580,28 @@ fn parse_oklch_chroma(raw: &str) -> Option<f32> {
         return Some(0.0);
     }
     if let Some(p) = s.strip_suffix('%') {
-        return Some(parse_finite_f32(p)? * 0.4 / 100.0);
+        return Some((parse_finite_f32(p)? * 0.4 / 100.0).max(0.0));
     }
     Some(parse_finite_f32(s)?.max(0.0))
 }
 
 fn parse_unit_interval(raw: &str) -> Option<f32> {
     let s = raw.trim();
+    if s.eq_ignore_ascii_case("none") {
+        return Some(0.0);
+    }
     if let Some(p) = s.strip_suffix('%') {
         return Some((parse_finite_f32(p)? / 100.0).clamp(0.0, 1.0));
     }
     Some(parse_finite_f32(s)?.clamp(0.0, 1.0))
 }
 
-fn parse_oklch_hue(raw: &str) -> Option<f32> {
+/// Parses a CSS `<hue> | none`. Returns `Some(None)` for explicit `none` and
+/// `None` when the token is syntactically invalid.
+fn parse_oklch_hue(raw: &str) -> Option<Option<f32>> {
     let s = raw.trim();
     if s.eq_ignore_ascii_case("none") {
-        return None;
+        return Some(None);
     }
     let (value, scale) = if let Some(v) = s.strip_suffix("deg") {
         (v, 1.0)
@@ -532,7 +614,7 @@ fn parse_oklch_hue(raw: &str) -> Option<f32> {
     } else {
         (s, 1.0)
     };
-    Some(wrap_hue(parse_finite_f32(value)? * scale))
+    Some(Some(wrap_hue(parse_finite_f32(value)? * scale)))
 }
 
 fn parse_finite_f32(raw: &str) -> Option<f32> {
@@ -590,26 +672,154 @@ fn linear_sc_rgb_to_oklch([r, g, b]: [f32; 3], alpha: f32) -> (f32, f32, Option<
     (l0, chroma, hue, alpha)
 }
 
-fn interpolate_hue(a: Option<f32>, b: Option<f32>, ca: f32, cb: f32, t: f32) -> Option<f32> {
-    let a_powerless = ca.abs() < 1e-7;
-    let b_powerless = cb.abs() < 1e-7;
+fn interpolate_hue_with_method(
+    a: Option<f32>,
+    b: Option<f32>,
+    ca: f32,
+    cb: f32,
+    progress: f32,
+    method: HueInterpolationMethod,
+) -> Option<f32> {
+    let a_powerless = a.is_none() || ca.abs() < 1e-7;
+    let b_powerless = b.is_none() || cb.abs() < 1e-7;
     if a_powerless && b_powerless {
         return None;
     }
-    // A powerless OKLCH hue inherits the other endpoint's hue for the whole
-    // interpolation. If both endpoints are powerless, the result has no hue.
-    let (ha, hb) = (
-        if a_powerless { b } else { a }.unwrap_or(0.0),
-        if b_powerless { a } else { b }.unwrap_or(0.0),
-    );
+    // A missing (`none`) or powerless (`chroma == 0`) endpoint carries forward
+    // the chromatic endpoint's hue across the interpolation.
+    if a_powerless {
+        return Some(wrap_hue(b.unwrap_or(0.0)));
+    }
+    if b_powerless {
+        return Some(wrap_hue(a.unwrap_or(0.0)));
+    }
+    let ha = wrap_hue(a.unwrap_or(0.0));
+    let hb = wrap_hue(b.unwrap_or(0.0));
     let mut delta = hb - ha;
-    if delta > 180.0 {
-        delta -= 360.0;
+    match method {
+        HueInterpolationMethod::Shorter => {
+            if delta > 180.0 {
+                delta -= 360.0;
+            } else if delta < -180.0 {
+                delta += 360.0;
+            }
+        }
+        HueInterpolationMethod::Longer => {
+            if delta > 0.0 && delta < 180.0 {
+                delta -= 360.0;
+            } else if delta > -180.0 && delta <= 0.0 {
+                delta += 360.0;
+            }
+        }
+        HueInterpolationMethod::Increasing => {
+            if delta < 0.0 {
+                delta += 360.0;
+            }
+        }
+        HueInterpolationMethod::Decreasing => {
+            if delta > 0.0 {
+                delta -= 360.0;
+            }
+        }
     }
-    if delta < -180.0 {
-        delta += 360.0;
+    Some(wrap_hue(ha + delta * progress))
+}
+
+fn parse_rgb_fn(rest: &str) -> Option<[f32; 4]> {
+    if rest.contains(',') {
+        let parts: Vec<_> = rest.split(',').map(str::trim).collect();
+        return match parts.as_slice() {
+            [r, g, b] => Some([
+                parse_rgb_channel(r)?,
+                parse_rgb_channel(g)?,
+                parse_rgb_channel(b)?,
+                1.0,
+            ]),
+            [r, g, b, a] => Some([
+                parse_rgb_channel(r)?,
+                parse_rgb_channel(g)?,
+                parse_rgb_channel(b)?,
+                parse_oklch_alpha(a)?.clamp(0.0, 1.0),
+            ]),
+            _ => None,
+        };
     }
-    Some(wrap_hue(ha + delta * (1.0 - t)))
+    let (channels, alpha) = if let Some((lhs, rhs)) = rest.split_once('/') {
+        (lhs.trim(), parse_oklch_alpha(rhs.trim())?.clamp(0.0, 1.0))
+    } else {
+        (rest.trim(), 1.0)
+    };
+    let parts: Vec<_> = channels.split_whitespace().collect();
+    if parts.len() != 3 {
+        return None;
+    }
+    Some([
+        parse_rgb_channel(parts[0])?,
+        parse_rgb_channel(parts[1])?,
+        parse_rgb_channel(parts[2])?,
+        alpha,
+    ])
+}
+
+fn parse_hsl_fn(rest: &str) -> Option<[f32; 4]> {
+    let (h_raw, s_raw, l_raw, alpha) = if rest.contains(',') {
+        let parts: Vec<_> = rest.split(',').map(str::trim).collect();
+        match parts.as_slice() {
+            [h, s, l] => (*h, *s, *l, 1.0),
+            [h, s, l, a] => (*h, *s, *l, parse_oklch_alpha(a)?.clamp(0.0, 1.0)),
+            _ => return None,
+        }
+    } else {
+        let (channels, alpha) = if let Some((lhs, rhs)) = rest.split_once('/') {
+            (lhs.trim(), parse_oklch_alpha(rhs.trim())?.clamp(0.0, 1.0))
+        } else {
+            (rest.trim(), 1.0)
+        };
+        let parts: Vec<_> = channels.split_whitespace().collect();
+        let [h, s, l] = parts.as_slice() else {
+            return None;
+        };
+        (*h, *s, *l, alpha)
+    };
+    let h = parse_oklch_hue(h_raw)?.unwrap_or(0.0);
+    let s = parse_hsl_percentage(s_raw)?;
+    let l = parse_hsl_percentage(l_raw)?;
+    Some(hsl_to_srgb(h, s, l, alpha))
+}
+
+fn parse_hsl_percentage(raw: &str) -> Option<f32> {
+    let s = raw.trim();
+    if s.eq_ignore_ascii_case("none") {
+        return Some(0.0);
+    }
+    let p = s.strip_suffix('%')?;
+    Some((parse_finite_f32(p)? / 100.0).clamp(0.0, 1.0))
+}
+
+fn hsl_to_srgb(h: f32, s: f32, l: f32, alpha: f32) -> [f32; 4] {
+    let c = (1.0 - (2.0 * l - 1.0).abs()) * s;
+    let h_prime = wrap_hue(h) / 60.0;
+    let x = c * (1.0 - (h_prime % 2.0 - 1.0).abs());
+    let (r1, g1, b1) = if h_prime < 1.0 {
+        (c, x, 0.0)
+    } else if h_prime < 2.0 {
+        (x, c, 0.0)
+    } else if h_prime < 3.0 {
+        (0.0, c, x)
+    } else if h_prime < 4.0 {
+        (0.0, x, c)
+    } else if h_prime < 5.0 {
+        (x, 0.0, c)
+    } else {
+        (c, 0.0, x)
+    };
+    let m = l - c * 0.5;
+    [
+        (r1 + m).clamp(0.0, 1.0),
+        (g1 + m).clamp(0.0, 1.0),
+        (b1 + m).clamp(0.0, 1.0),
+        alpha,
+    ]
 }
 
 fn parse_hex_color(hex: &str) -> Option<[f32; 4]> {
@@ -644,6 +854,9 @@ fn parse_hex_color(hex: &str) -> Option<[f32; 4]> {
 }
 
 fn parse_rgb_channel(s: &str) -> Option<f32> {
+    if s.eq_ignore_ascii_case("none") {
+        return Some(0.0);
+    }
     if let Some(p) = s.strip_suffix('%') {
         return Some((parse_finite_f32(p)? / 100.0).clamp(0.0, 1.0));
     }
@@ -674,16 +887,18 @@ pub fn is_non_token_css_color(raw: &str) -> bool {
     if SemanticColorRole::from_css_token_name(s).is_some() {
         return false;
     }
+    let lower = s.to_ascii_lowercase();
     s.starts_with('#')
-        || s.to_ascii_lowercase().starts_with("rgb(")
-        || s.to_ascii_lowercase().starts_with("rgba(")
-        || s.to_ascii_lowercase().starts_with("hsl(")
-        || s.to_ascii_lowercase().starts_with("oklch(")
-        || s.to_ascii_lowercase().starts_with("hsv(")
-        || s.to_ascii_lowercase().starts_with("color(srgb-linear ")
-        || s.to_ascii_lowercase().starts_with("color(scrgb ")
-        || s.to_ascii_lowercase().starts_with("color-mix(")
-        || s.to_ascii_lowercase().starts_with("light-dark(")
+        || lower.starts_with("rgb(")
+        || lower.starts_with("rgba(")
+        || lower.starts_with("hsl(")
+        || lower.starts_with("hsla(")
+        || lower.starts_with("oklch(")
+        || lower.starts_with("hsv(")
+        || lower.starts_with("color(srgb-linear ")
+        || lower.starts_with("color(scrgb ")
+        || lower.starts_with("color-mix(")
+        || lower.starts_with("light-dark(")
 }
 
 #[cfg(test)]
@@ -910,5 +1125,75 @@ mod tests {
         assert_eq!(role, SemanticColorRole::Accent);
         assert_eq!(color, nana_ui_core::SemanticPalette::light().accent);
         assert!(map_css_color_for_tokens("#e74c3c", ThemeAppearance::Light).is_none());
+    }
+
+    #[test]
+    fn oklch_invalid_hue_fails_closed_while_none_and_unitless_hdr_lightness_work() {
+        assert!(parse_css_paint_color("oklch(0.7 0.1 foo)").is_none());
+        assert!(parse_css_paint_color("hsv(foo 50% 50%)").is_none());
+
+        let hdr_white = parse_css_paint_color("oklch(1.5 0 none)").unwrap();
+        assert_eq!(
+            hdr_white,
+            CssPaintColor::Oklch {
+                l: 1.5,
+                c: 0.0,
+                h: None,
+                alpha: 1.0,
+            }
+        );
+        assert!(hdr_white.to_linear_sc_rgb().0[0] > 2.0);
+
+        // Explicit `none` hue with non-zero chroma carries forward the peer's hue in color-mix.
+        let carried = parse_css_paint_color(
+            "color-mix(in oklch, oklch(0.7 0.2 none) 50%, oklch(0.7 0.2 240))",
+        )
+        .unwrap();
+        let CssPaintColor::Oklch { h: Some(hue), .. } = carried else {
+            panic!("expected OKLCH hue carry-forward, got {carried:?}");
+        };
+        assert!((hue - 240.0).abs() < 0.01);
+
+        // `longer hue` takes the long arc between 350deg and 10deg -> 180deg.
+        let longer = parse_css_paint_color(
+            "color-mix(in oklch longer hue, oklch(60% .2 350) 50%, oklch(60% .2 10))",
+        )
+        .unwrap();
+        let CssPaintColor::Oklch {
+            h: Some(long_hue), ..
+        } = longer
+        else {
+            panic!("expected OKLCH longer hue, got {longer:?}");
+        };
+        assert!((long_hue - 180.0).abs() < 0.01);
+
+        // `in srgb-linear` mixes in linear light rather than gamma-encoded sRGB.
+        let (linear_mid, _) = parse_css_paint_color("color-mix(in srgb-linear, white 50%, black)")
+            .unwrap()
+            .to_linear_sc_rgb();
+        assert!((linear_mid[0] - 0.5).abs() < 0.01);
+    }
+
+    #[test]
+    fn parses_hsl_hsla_and_space_separated_rgb() {
+        let green = parse_css_paint_color("hsl(120deg 100% 50% / 50%)")
+            .unwrap()
+            .to_srgb();
+        assert!(green[0] < 0.01 && (green[1] - 1.0).abs() < 0.01 && green[2] < 0.01);
+        assert!((green[3] - 0.5).abs() < 0.01);
+
+        let blue = parse_css_paint_color("hsla(240, 100%, 50%, 0.25)")
+            .unwrap()
+            .to_srgb();
+        assert!(blue[0] < 0.01 && blue[1] < 0.01 && (blue[2] - 1.0).abs() < 0.01);
+        assert!((blue[3] - 0.25).abs() < 0.01);
+
+        let spaced = parse_css_paint_color("rgb(255 0 128 / 50%)")
+            .unwrap()
+            .to_srgb();
+        assert!((spaced[0] - 1.0).abs() < 0.01);
+        assert!(spaced[1] < 0.01);
+        assert!((spaced[2] - 128.0 / 255.0).abs() < 0.01);
+        assert!((spaced[3] - 0.5).abs() < 0.01);
     }
 }

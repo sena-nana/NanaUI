@@ -162,4 +162,54 @@ mod tests {
             ]
         );
     }
+
+    #[test]
+    fn selectable_rich_text_selection_uses_selection_background_paint_color() {
+        let document = DocumentId::new(1).unwrap();
+        let mut runtime = RuntimeDocument::new(document);
+        let wide_selection = nana_ui_core::PaintColor::Oklch {
+            l: 0.72,
+            c: 0.3,
+            h: Some(150.0),
+            alpha: 0.5,
+        };
+        let mut node_style = nana_ui_runtime::NodeStyle::default();
+        let layout = std::sync::Arc::make_mut(&mut node_style.layout);
+        layout.selection_background = Some(wide_selection.to_srgb());
+        layout.paint_colors.selection_background = Some(wide_selection);
+        // Distinct `selection_color` (foreground) must NOT bleed into selection background quads.
+        layout.selection_color = Some([1.0, 0.0, 0.0, 1.0]);
+
+        let view = SelectableRichText::new([RichSpan::plain("hello world")]).style(node_style);
+        let bounds = nana_ui_runtime::LayoutBox {
+            x: 0.0,
+            y: 0.0,
+            width: 200.0,
+            height: 20.0,
+        };
+        view.pointer_down(0.0, 2.0, bounds);
+        view.pointer_move(100.0, 2.0, bounds);
+        let _ = view.pointer_up(100.0, 2.0, bounds);
+
+        let text = runtime
+            .context_mut()
+            .create_component(document, view)
+            .unwrap();
+        runtime
+            .flush(LayoutViewport::new(320.0, 120.0), &mut LineShaper)
+            .unwrap();
+
+        let selection = runtime
+            .scene()
+            .primitive(PrimitiveId {
+                node: text.stable_id(),
+                slot: 1,
+            })
+            .expect("selected rich text emits a selection QuadBatch");
+        let ScenePrimitiveKind::QuadBatch { background, .. } = &selection.kind else {
+            panic!("expected selection QuadBatch, got {:?}", selection.kind);
+        };
+        assert_eq!(*background, Some(wide_selection));
+        assert!(runtime.scene().has_extended_color());
+    }
 }

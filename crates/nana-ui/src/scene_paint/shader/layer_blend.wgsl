@@ -41,7 +41,7 @@ fn blend_channel(mode: u32, cb: f32, cs: f32) -> f32 {
             if cs <= 0.5 {
                 return cb - (1.0 - 2.0 * cs) * cb * (1.0 - cb);
             }
-            let d = select(sqrt(cb), ((16.0 * cb - 12.0) * cb + 4.0) * cb, cb <= 0.25);
+            let d = select(sqrt(max(cb, 0.0)), ((16.0 * cb - 12.0) * cb + 4.0) * cb, cb <= 0.25);
             return cb + (2.0 * cs - 1.0) * (d - cb);
         }
         case 10u: {

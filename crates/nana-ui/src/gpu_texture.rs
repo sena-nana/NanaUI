@@ -498,6 +498,17 @@ impl HostTexture {
             .generation()
     }
 
+    pub(crate) fn format(&self) -> nana_gpu::GpuTextureFormat {
+        self.state
+            .texture
+            .state
+            .read()
+            .expect("versioned resource lock")
+            .resource
+            .texture
+            .format()
+    }
+
     /// Returns the monotonically increasing content version.
     pub fn version(&self) -> u64 {
         self.state.version.load(Ordering::Acquire)

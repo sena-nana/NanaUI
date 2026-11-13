@@ -145,12 +145,27 @@ fn hlg_oetf3(scene_luminance: vec3<f32>) -> vec3<f32> {
     return select(hi, lo, value <= vec3<f32>(1.0 / 12.0));
 }
 
+// Compress negative out-of-BT.2020 channels toward BT.2020 luminance while
+// leaving in-gamut values and positive HDR highlights (> 1.0) untouched.
+fn gamut_map_bt2020(rgb: vec3<f32>) -> vec3<f32> {
+    let lo = min(rgb.x, min(rgb.y, rgb.z));
+    if (lo >= 0.0) {
+        return rgb;
+    }
+    let luma = dot(rgb, vec3<f32>(0.2627, 0.6780, 0.0593));
+    if (!(luma > 0.0)) {
+        return vec3<f32>(0.0);
+    }
+    let scale = clamp((0.0 - luma) / min(lo - luma, -1.0e-6), 0.0, 1.0);
+    return max(vec3<f32>(luma) + (rgb - vec3<f32>(luma)) * scale, vec3<f32>(0.0));
+}
+
 // `mode`: SDR sRGB/P3, extended linear/sRGB/P3, HDR-to-SDR sRGB/P3, or
 // BT.2100 PQ/HLG (7/8).
 fn presentation_rgb(straight: vec3<f32>, mode: u32) -> vec3<f32> {
     switch mode {
-        case 0u: { return gamut_map(straight); }
-        case 1u: { return gamut_map(sc_to_p3(straight)); }
+        case 0u: { return gamut_map(tone_map_headroom3(straight, 1.0)); }
+        case 1u: { return gamut_map(sc_to_p3(tone_map_headroom3(straight, 1.0))); }
         case 2u: { return tone_map_headroom3(straight, presentation_params.x) * presentation_params.z; }
         case 3u: { return tone_map_headroom3(straight, presentation_params.x); }
         case 4u: { return sc_to_p3(tone_map_headroom3(straight, presentation_params.x)); }
@@ -159,13 +174,15 @@ fn presentation_rgb(straight: vec3<f32>, mode: u32) -> vec3<f32> {
         case 7u: {
             let headroom = presentation_params.x;
             let white_nits = max(presentation_params.y, 1.0);
-            return pq_oetf3(sc_to_bt2020(tone_map_headroom3(straight, headroom)) * white_nits / 10000.0);
+            let bt2020 = gamut_map_bt2020(sc_to_bt2020(tone_map_headroom3(straight, headroom)));
+            return pq_oetf3(bt2020 * white_nits / 10000.0);
         }
         case 8u: {
             let headroom = presentation_params.x;
             let white_nits = max(presentation_params.y, 1.0);
+            let bt2020 = gamut_map_bt2020(sc_to_bt2020(tone_map_headroom3(straight, headroom)));
             let display = clamp(
-                sc_to_bt2020(tone_map_headroom3(straight, headroom)) * white_nits / 1000.0,
+                bt2020 * white_nits / 1000.0,
                 vec3<f32>(0.0),
                 vec3<f32>(1.0),
             );

@@ -148,7 +148,61 @@ fn normalize_clear_color(mut color: [f32; 4]) -> [f32; 4] {
     color
 }
 
+fn clear_color_is_extended(color: [f32; 4]) -> bool {
+    const EPS: f32 = 1.0e-3;
+    if color[3].is_finite() && color[3] <= 0.0 {
+        return false;
+    }
+    color[..3]
+        .iter()
+        .any(|c| c.is_finite() && (*c < -EPS || *c > 1.0 + EPS))
+}
+
+fn scene_uses_float_host_texture(
+    scene: &UiScene,
+    host_textures: Option<&HostTextureRegistry>,
+) -> bool {
+    let Some(host_textures) = host_textures else {
+        return false;
+    };
+    let Ok(plan) = scene.frame_plan() else {
+        return false;
+    };
+    plan.custom_nodes.iter().any(|id| {
+        scene
+            .primitive(*id)
+            .and_then(|primitive| match &primitive.kind {
+                ScenePrimitiveKind::Custom { node, .. }
+                    if node.renderer.as_ref() == "nana.host-texture" =>
+                {
+                    host_textures.get(node.resource.as_ref())
+                }
+                _ => None,
+            })
+            .is_some_and(|binding| binding.texture.format() == GpuTextureFormat::RGBA16_FLOAT)
+    })
+}
+
 impl ScenePresentationProfile {
+    pub(crate) fn effective_for_frame(
+        self,
+        scene: &UiScene,
+        clear_color: [f32; 4],
+        host_textures: Option<&HostTextureRegistry>,
+    ) -> Self {
+        if self.is_direct_linear() || self.requires_float_working_target() {
+            return self;
+        }
+        if scene.has_extended_color()
+            || clear_color_is_extended(clear_color)
+            || scene_uses_float_host_texture(scene, host_textures)
+        {
+            self.with_force_float_working()
+        } else {
+            self
+        }
+    }
+
     /// Construct a host presentation profile. Scene composition stays in
     /// linear scRGB; the selected colour space is applied exactly once at the
     /// surface boundary. For a native surface, pass the format/colour-space
@@ -239,12 +293,16 @@ impl ScenePresentationProfile {
             return wgpu::Color::TRANSPARENT;
         }
         let mut rgb = [color[0], color[1], color[2]];
-        let tone_map = self.force_float_working;
-        let headroom = if tone_map { 1.0 } else { parameters.headroom() };
-        let gamut_transform = tone_map
-            || matches!(self.color_space, ScenePresentationColorSpace::DisplayP3)
-            || (matches!(self.color_space, ScenePresentationColorSpace::Srgb)
-                && !self.target_format.is_srgb());
+        let sdr_space = matches!(
+            self.color_space,
+            ScenePresentationColorSpace::Srgb | ScenePresentationColorSpace::DisplayP3
+        );
+        let headroom = if self.force_float_working || sdr_space {
+            1.0
+        } else {
+            parameters.headroom()
+        };
+        let gamut_transform = self.force_float_working || sdr_space;
         let encode = |value: f32| {
             let sign = value.signum();
             let absolute = value.abs();
@@ -267,6 +325,7 @@ impl ScenePresentationProfile {
             && !self.force_float_working
             && encoding == AlphaEncoding::Linear
             && self.target_format.is_srgb()
+            && !clear_color_is_extended(color)
         {
             return wgpu::Color {
                 r: (color[0] * alpha) as f64,
@@ -275,9 +334,9 @@ impl ScenePresentationProfile {
                 a: alpha as f64,
             };
         }
-        if tone_map {
-            // The SDR fallback has no room above white whatever the display
-            // reports: the same curve as an HDR target at headroom 1.
+        if self.force_float_working || sdr_space {
+            // SDR output has no room above white whatever the display reports:
+            // scale over-white highlights as a whole to preserve hue.
             rgb = tone_map_headroom_rgb(rgb, 1.0);
         } else if matches!(
             self.color_space,
@@ -313,11 +372,11 @@ impl ScenePresentationProfile {
         let encoded = match self.color_space {
             ScenePresentationColorSpace::ExtendedSrgbLinear => rgb,
             ScenePresentationColorSpace::Bt2100Pq => {
-                let rgb = linear_sc_rgb_to_bt2020(rgb);
+                let rgb = presentation_color::gamut_map_bt2020_rgb(linear_sc_rgb_to_bt2020(rgb));
                 rgb.map(|value| pq_encode_nits(value * parameters.reference_white_nits()))
             }
             ScenePresentationColorSpace::Bt2100Hlg => {
-                let rgb = linear_sc_rgb_to_bt2020(rgb);
+                let rgb = presentation_color::gamut_map_bt2020_rgb(linear_sc_rgb_to_bt2020(rgb));
                 presentation_color::hlg_encode_display(
                     rgb.map(|value| value * parameters.reference_white_nits() / 1_000.0),
                 )
@@ -444,6 +503,7 @@ pub struct SceneWgpuPainter {
     /// profiles and write the final encoding only in the presentation pass.
     format: wgpu::TextureFormat,
     working_format: wgpu::TextureFormat,
+    configured_presentation: ScenePresentationProfile,
     presentation: ScenePresentationProfile,
     presentation_parameters: ScenePresentationParameters,
     // The active `PipelineSet` is spread over `quads`, `meshes`, the
@@ -776,6 +836,7 @@ impl SceneWgpuPainter {
             queue: queue.clone(),
             format,
             working_format: format,
+            configured_presentation: presentation,
             presentation,
             presentation_parameters: ScenePresentationParameters::default(),
             quads,
@@ -815,7 +876,7 @@ impl SceneWgpuPainter {
     /// Format of the surface/target view passed to [`Self::paint`]. Wide and
     /// HDR profiles may use a different internal [`Self::working_format`].
     pub fn format(&self) -> GpuTextureFormat {
-        self.presentation.target_format
+        self.configured_presentation.target_format
     }
 
     /// Format used by Scene primitives and custom GPU nodes while composing.
@@ -826,7 +887,7 @@ impl SceneWgpuPainter {
     }
 
     pub fn presentation(&self) -> ScenePresentationProfile {
-        self.presentation
+        self.configured_presentation
     }
 
     /// Paint the next targets for `presentation`. A target keeps the profile
@@ -836,6 +897,11 @@ impl SceneWgpuPainter {
     /// transfer. One of another format swaps that format's [`PipelineSet`]
     /// in, building it on first use; atlases and caches carry over.
     pub(crate) fn select_presentation(&mut self, presentation: ScenePresentationProfile) {
+        self.configured_presentation = presentation;
+        self.apply_presentation(presentation);
+    }
+
+    fn apply_presentation(&mut self, presentation: ScenePresentationProfile) {
         if presentation == self.presentation {
             return;
         }
@@ -854,6 +920,20 @@ impl SceneWgpuPainter {
             self.url_cache.set_srgb_source(next.srgb_source);
         }
         self.presentation = presentation;
+    }
+
+    fn sync_effective_presentation(
+        &mut self,
+        scene: &UiScene,
+        viewport: &ScenePaintViewport,
+        host_textures: Option<&HostTextureRegistry>,
+    ) {
+        let effective = self.configured_presentation.effective_for_frame(
+            scene,
+            viewport.clear_color,
+            host_textures,
+        );
+        self.apply_presentation(effective);
     }
 
     /// The pipeline families for targets of `format`, over this painter's
@@ -1218,6 +1298,7 @@ impl SceneWgpuPainter {
         gpu_renderers: Option<&SceneGpuRendererRegistry>,
     ) -> Result<(), ScenePaintError> {
         self.begin_frame(Some(id), frame, target)?;
+        self.sync_effective_presentation(scene, &viewport, host_textures);
         let mut state = self.targets.remove(&id).unwrap_or_default();
         if state.image_revision != self.image_revision {
             state.painted = None;
@@ -1357,6 +1438,7 @@ impl SceneWgpuPainter {
         gpu_renderers: Option<&SceneGpuRendererRegistry>,
     ) -> Result<(), ScenePaintError> {
         self.begin_frame(None, frame, target)?;
+        self.sync_effective_presentation(scene, &viewport, host_textures);
         let link = crate::gpu_work::FrameLink::of(frame);
         let result = self.paint_recorded(
             scene,
@@ -4177,6 +4259,7 @@ impl SceneWgpuPainter {
         gpu_renderers: Option<&SceneGpuRendererRegistry>,
     ) -> Result<(), ScenePaintError> {
         self.outside_frames();
+        self.sync_effective_presentation(scene, &viewport, host_textures);
         self.paint_recorded(
             scene,
             encoder,
@@ -4207,6 +4290,7 @@ impl SceneWgpuPainter {
         gpu_renderers: Option<&SceneGpuRendererRegistry>,
     ) -> Result<(), ScenePaintError> {
         self.outside_frames();
+        self.sync_effective_presentation(scene, &viewport, host_textures);
         let mut state = self.targets.remove(&id).unwrap_or_default();
         if state.image_revision != self.image_revision {
             state.painted = None;

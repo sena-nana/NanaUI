@@ -540,6 +540,35 @@ pub struct WindowDescriptor {
     pub icon: Option<WindowIcon>,
     /// How this window's frames should reach the screen.
     pub surface: WindowSurfacePreference,
+    /// Requested colour space and dynamic range policy for this window's surface.
+    pub presentation_policy: SurfacePresentationPolicy,
+}
+
+/// Host-owned colour presentation request for a native surface.
+///
+/// The request is deliberately independent of a renderer or a device. The host
+/// resolves it against the complete `SurfaceCapabilities` table at each surface
+/// bind, so a window can move between displays without creating another device
+/// or queue.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
+pub enum SurfacePresentationPolicy {
+    /// Prefer the safe sRGB SDR profile, with deterministic capability fallbacks.
+    #[default]
+    Auto,
+    /// Request sRGB SDR output.
+    Sdr,
+    /// Request Display-P3 SDR output, falling back through SDR profiles.
+    WideGamut,
+    /// Request extended-sRGB HDR output, falling back through wide-gamut and SDR.
+    Hdr,
+    /// Explicitly request BT.2100 PQ output. If the surface cannot present it,
+    /// prefer extended-linear HDR, then encoded HDR, wide-gamut SDR and sRGB.
+    /// Transparent windows use PQ only when a full-alpha format (normally
+    /// fp16) is advertised; two-alpha-bit targets fall back deterministically.
+    HdrPq,
+    /// Explicitly request BT.2100 HLG output for a host whose output contract
+    /// benefits from HLG. Uses the same deterministic fallback as [`Self::HdrPq`].
+    HdrHlg,
 }
 
 /// How a window's frames should reach the screen.
@@ -614,12 +643,19 @@ impl WindowDescriptor {
             host_managed_drag: false,
             icon: None,
             surface: WindowSurfacePreference::Auto,
+            presentation_policy: SurfacePresentationPolicy::Auto,
         }
     }
 
     /// Choose how this window's frames reach the screen.
     pub const fn surface(mut self, surface: WindowSurfacePreference) -> Self {
         self.surface = surface;
+        self
+    }
+
+    /// Choose the colour space and dynamic range policy for this window's surface.
+    pub const fn presentation_policy(mut self, policy: SurfacePresentationPolicy) -> Self {
+        self.presentation_policy = policy;
         self
     }
 
@@ -1242,5 +1278,16 @@ mod tests {
         assert_eq!(descriptor.content_aspect_ratio, None);
         let descriptor = descriptor.content_aspect_ratio(Some(1.5));
         assert_eq!(descriptor.content_aspect_ratio, Some(1.5));
+    }
+
+    #[test]
+    fn window_descriptor_presentation_policy_defaults_to_auto_and_sets_policy() {
+        let descriptor = WindowDescriptor::new("Color");
+        assert_eq!(
+            descriptor.presentation_policy,
+            SurfacePresentationPolicy::Auto
+        );
+        let hdr = descriptor.presentation_policy(SurfacePresentationPolicy::Hdr);
+        assert_eq!(hdr.presentation_policy, SurfacePresentationPolicy::Hdr);
     }
 }

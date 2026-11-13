@@ -6,13 +6,15 @@ use wgpu::{
 };
 
 use nana_ui::{
-    GpuContext, GpuRenderTarget, GpuTextureFormat, HostTextureRegistry, ScenePaintViewport,
-    SceneWgpuPainter,
+    AlphaEncoding, GpuContext, GpuRenderTarget, HostTextureRegistry, ResolvedSurfaceProfile,
+    ScenePaintViewport, ScenePresentationParameters, SceneWgpuPainter, SurfacePresentationPolicy,
+    resolve_surface_profile,
 };
 
 use crate::runtime::MobileRuntime;
 
-/// How the surface composites with the native layers around it.
+/// How the surface composites with the native layers around it and negotiates
+/// its colour space and dynamic range.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct SurfaceOptions {
     /// Premultiplied alpha instead of opaque, for a native layer under the
@@ -20,6 +22,8 @@ pub struct SurfaceOptions {
     /// transparent shows the layer below. Costs the system compositor a
     /// blend, so opaque stays the default.
     pub transparent: bool,
+    /// Requested colour space and dynamic range policy for the surface.
+    pub presentation_policy: SurfacePresentationPolicy,
 }
 
 struct AttachedSurface {
@@ -34,6 +38,7 @@ pub struct MobileRenderer {
     adapter: Adapter,
     gpu: GpuContext,
     painter: SceneWgpuPainter,
+    profile: ResolvedSurfaceProfile,
     format: TextureFormat,
     options: SurfaceOptions,
     surface: Option<AttachedSurface>,
@@ -82,11 +87,15 @@ impl MobileRenderer {
         }))
         .map_err(|error| format!("request_device: {error}"))?;
         let gpu = GpuContext::from_wgpu(adapter.clone(), device, queue);
-        let config = surface_config(&surface, &adapter, physical_size, options)?;
+        let (config, profile, hdr_info) =
+            surface_config(&surface, &adapter, physical_size, options)?;
         surface.configure(gpu.wgpu().device(), &config);
         let format = config.format;
+        let mut painter = SceneWgpuPainter::new_with_presentation(&gpu, profile.scene_profile());
+        configure_painter_for_surface(&mut painter, &config, profile, &hdr_info);
         Ok(Self {
-            painter: SceneWgpuPainter::new(&gpu, GpuTextureFormat::from_wgpu(format)),
+            painter,
+            profile,
             instance,
             adapter,
             gpu,
@@ -112,13 +121,16 @@ impl MobileRenderer {
         // SAFETY: forwarded from the caller.
         let surface = unsafe { self.instance.create_surface_unsafe(target) }
             .map_err(|error| format!("create_surface: {error}"))?;
-        let config = surface_config(&surface, &self.adapter, physical_size, self.options)?;
+        let (config, profile, hdr_info) =
+            surface_config(&surface, &self.adapter, physical_size, self.options)?;
         surface.configure(self.gpu.wgpu().device(), &config);
-        if config.format != self.format {
-            self.format = config.format;
+        if profile.scene_profile() != self.profile.scene_profile() {
             self.painter =
-                SceneWgpuPainter::new(&self.gpu, GpuTextureFormat::from_wgpu(self.format));
+                SceneWgpuPainter::new_with_presentation(&self.gpu, profile.scene_profile());
         }
+        self.profile = profile;
+        self.format = config.format;
+        configure_painter_for_surface(&mut self.painter, &config, profile, &hdr_info);
         self.surface = Some(AttachedSurface { surface, config });
         Ok(())
     }
@@ -216,30 +228,60 @@ impl MobileRenderer {
     }
 }
 
+fn configure_painter_for_surface(
+    painter: &mut SceneWgpuPainter,
+    config: &SurfaceConfiguration,
+    profile: ResolvedSurfaceProfile,
+    hdr_info: &wgpu::DisplayHdrInfo,
+) {
+    let opaque = config.alpha_mode == CompositeAlphaMode::Opaque
+        && matches!(
+            profile.scene_profile().color_space,
+            nana_ui::ScenePresentationColorSpace::Srgb
+        );
+    painter.set_alpha_encoding(if opaque {
+        AlphaEncoding::Linear
+    } else {
+        AlphaEncoding::Gamma
+    });
+    let default_headroom = if profile.is_hdr() {
+        ScenePresentationParameters::default().headroom()
+    } else {
+        1.0
+    };
+    let headroom = hdr_info
+        .tone_map_headroom()
+        .filter(|value| value.is_finite() && *value >= 1.0)
+        .unwrap_or(default_headroom);
+    let white_nits = hdr_info
+        .luminance
+        .and_then(|luminance| luminance.sdr_white_nits)
+        .filter(|value| value.is_finite() && *value > 0.0)
+        .unwrap_or(80.0);
+    painter.set_presentation_parameters(
+        ScenePresentationParameters::new(headroom, white_nits).normalized(),
+    );
+}
+
 fn surface_config(
     surface: &Surface<'_>,
     adapter: &Adapter,
     physical_size: (u32, u32),
     options: SurfaceOptions,
-) -> Result<SurfaceConfiguration, String> {
+) -> Result<
+    (
+        SurfaceConfiguration,
+        ResolvedSurfaceProfile,
+        wgpu::DisplayHdrInfo,
+    ),
+    String,
+> {
     let caps = surface.get_capabilities(adapter);
-    // Take the first format the table lists in sRGB rather than the first
-    // format: wgpu 30 can advertise formats only valid in another colour
-    // space.
-    let (format, color_space) = caps
-        .format_capabilities
-        .iter()
-        .find_map(|row| {
-            row.color_spaces
-                .contains(wgpu::SurfaceColorSpaces::SRGB)
-                .then_some((row.format, wgpu::SurfaceColorSpace::Srgb))
-        })
-        .or_else(|| {
-            caps.formats
-                .first()
-                .map(|format| (*format, wgpu::SurfaceColorSpace::Srgb))
-        })
-        .ok_or_else(|| "no surface formats".to_string())?;
+    let profile = resolve_surface_profile(options.presentation_policy, &caps, options.transparent)
+        .ok_or_else(|| "no compatible surface profile".to_string())?;
+    let format = profile.format();
+    let color_space = profile.color_space();
+    let hdr_info = surface.display_hdr_info(adapter);
     // Metal offers only Opaque and PostMultiplied, and the latter is what
     // clears `CAMetalLayer.opaque`: Core Animation composites the layer
     // premultiplied either way. Falling back to Opaque would paint every
@@ -269,15 +311,19 @@ fn surface_config(
             .copied()
             .unwrap_or(PresentMode::Fifo)
     };
-    Ok(SurfaceConfiguration {
-        usage: TextureUsages::RENDER_ATTACHMENT,
-        format,
-        color_space,
-        width: physical_size.0.max(1),
-        height: physical_size.1.max(1),
-        present_mode,
-        desired_maximum_frame_latency: 2,
-        alpha_mode,
-        view_formats: vec![],
-    })
+    Ok((
+        SurfaceConfiguration {
+            usage: TextureUsages::RENDER_ATTACHMENT,
+            format,
+            color_space,
+            width: physical_size.0.max(1),
+            height: physical_size.1.max(1),
+            present_mode,
+            desired_maximum_frame_latency: 2,
+            alpha_mode,
+            view_formats: vec![],
+        },
+        profile,
+        hdr_info,
+    ))
 }

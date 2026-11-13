@@ -314,7 +314,10 @@ pub unsafe fn create(
             wgpu::Backends::METAL,
             layer_target(layer),
             (width, height),
-            SurfaceOptions { transparent },
+            SurfaceOptions {
+                transparent,
+                ..SurfaceOptions::default()
+            },
         )
     };
     let Ok(renderer) = renderer else {

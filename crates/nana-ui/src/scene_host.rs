@@ -946,10 +946,11 @@ fn attach_primary_surface(
         create_primary_window(event_loop, settings, target, theme, material_mode)?;
     let want_transparent = requested_material.wants_transparent_surface();
     let surface = graphics
-        .create_surface_with_mode(
+        .create_surface_with_mode_policy(
             Arc::clone(&window),
             want_transparent,
             surface_mode_for(target),
+            settings.presentation_policy,
         )
         .map_err(|error| error.to_string())?;
     // Kept: the material applied above belongs to the window that survived.

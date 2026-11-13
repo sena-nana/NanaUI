@@ -71,6 +71,7 @@ pub(crate) struct RetainedPresentation {
     pub revision: u64,
     pub viewport: ScenePaintViewport,
     pub alpha: AlphaEncoding,
+    pub parameters: ScenePresentationParameters,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -394,7 +395,7 @@ impl PresentationFrameDriver {
     ) -> Result<RecordedRetained, ExternalSurfaceError> {
         painter.set_subpixel_text(None);
         painter.set_alpha_encoding(request.alpha);
-        painter.set_presentation_parameters(Default::default());
+        painter.set_presentation_parameters(request.parameters);
         if let Err(error) = surface.record(
             &plan,
             frame,

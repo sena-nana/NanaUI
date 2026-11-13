@@ -685,6 +685,7 @@ impl PresentationDriver {
                             OutputAlpha::GammaPremultiplied => AlphaEncoding::Gamma,
                             _ => AlphaEncoding::Linear,
                         },
+                        parameters: Default::default(),
                     },
                 )),
                 Some(self.planner.plan()),

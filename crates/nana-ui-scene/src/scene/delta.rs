@@ -576,6 +576,9 @@ impl UiScene {
             if order_rebuilt || stacking_changed {
                 self.sort_primitives();
             }
+            if !rebuild.is_empty() || removed_nodes != 0 {
+                self.extended_color.take();
+            }
             if order_rebuilt || stacking_changed || removed_nodes != 0 || self.structure_changed {
                 self.frame_plan.take();
                 self.visibility.take();

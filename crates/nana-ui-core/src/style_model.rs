@@ -141,6 +141,31 @@ impl PaintColor {
         }
     }
 
+    /// Returns `true` when this color falls outside the unit `[0, 1]` sRGB cube
+    /// (wide-gamut negative linear-scRGB channels or HDR `> 1.0` channels) beyond
+    /// floating-point matrix rounding tolerance.
+    pub fn is_extended_srgb(self) -> bool {
+        const EPS: f32 = 1.0e-3;
+        match self {
+            Self::Srgb { rgba: [r, g, b, a] } => {
+                a.is_finite()
+                    && a > 0.0
+                    && [r, g, b]
+                        .into_iter()
+                        .any(|c| c.is_finite() && (c < -EPS || c > 1.0 + EPS))
+            }
+            Self::Hsv { .. } => false,
+            Self::Oklch { .. } | Self::LinearScRgb { .. } => {
+                let (channels, alpha) = self.to_linear_sc_rgb();
+                alpha.is_finite()
+                    && alpha > 0.0
+                    && channels
+                        .into_iter()
+                        .any(|c| c.is_finite() && (c < -EPS || c > 1.0 + EPS))
+            }
+        }
+    }
+
     fn gamma_encode(v: f32) -> f32 {
         let v = v.max(0.0);
         if v <= 0.0031308 {
@@ -177,6 +202,26 @@ pub struct PaintColorSlots {
 }
 
 crate::shared::shared_default!(PaintColorSlots);
+
+impl PaintColorSlots {
+    pub fn has_extended_srgb(&self) -> bool {
+        [
+            self.color,
+            self.background,
+            self.border,
+            self.border_top,
+            self.border_right,
+            self.border_bottom,
+            self.border_left,
+            self.outline,
+            self.selection_background,
+            self.selection_color,
+        ]
+        .into_iter()
+        .flatten()
+        .any(PaintColor::is_extended_srgb)
+    }
+}
 
 // These constants come from the Oklab conversion matrix. Keep their full
 // precision so the conversion remains stable across semantic paint paths.
@@ -1557,5 +1602,48 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn extended_srgb_detection_distinguishes_in_gamut_wide_gamut_and_hdr_paint_colors() {
+        let srgb_white = PaintColor::srgb([1.0, 1.0, 1.0, 1.0]);
+        assert!(!srgb_white.is_extended_srgb());
+
+        // OKLCH conversion of sRGB white has ~1e-6 float noise around 1.0; must not trigger extended promotion.
+        let oklch_white = PaintColor::Oklch {
+            l: 1.0,
+            c: 0.0,
+            h: None,
+            alpha: 1.0,
+        };
+        assert!(!oklch_white.is_extended_srgb());
+
+        // Wide-gamut OKLCH green has negative linear-scRGB red/blue channels.
+        let wide_gamut = PaintColor::Oklch {
+            l: 0.7,
+            c: 0.35,
+            h: Some(150.0),
+            alpha: 1.0,
+        };
+        assert!(wide_gamut.is_extended_srgb());
+
+        // Above-white HDR linear-scRGB triggers extended color detection.
+        let hdr_highlight = PaintColor::LinearScRgb {
+            channels: [2.0, 0.5, 0.0],
+            alpha: 1.0,
+        };
+        assert!(hdr_highlight.is_extended_srgb());
+
+        // Fully transparent colors are invisible and do not force float promotion.
+        let transparent_hdr = PaintColor::LinearScRgb {
+            channels: [4.0, 4.0, 4.0],
+            alpha: 0.0,
+        };
+        assert!(!transparent_hdr.is_extended_srgb());
+
+        let mut slots = crate::PaintColorSlots::default();
+        assert!(!slots.has_extended_srgb());
+        slots.selection_background = Some(wide_gamut);
+        assert!(slots.has_extended_srgb());
     }
 }

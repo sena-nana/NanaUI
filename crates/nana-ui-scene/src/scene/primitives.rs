@@ -573,7 +573,9 @@ impl UiScene {
                             layout,
                             marks,
                             node.document_text_selection_color,
+                            node.style.paint_colors.selection_background,
                             caret_color,
+                            node.style.paint_colors.color,
                         )
                     });
                 let (editor_selection, editor_caret) = editor_marks.unwrap_or_default();

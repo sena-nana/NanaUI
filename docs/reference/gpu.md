@@ -25,12 +25,12 @@ Issue #186 的评估结论为 **NO-GO**：WGPU 仍是 NanaUI 的唯一正式图�
 
 `GpuContext::policy()` 按设备代际（`DeviceGeneration`）维护共享的管线注册表（pipeline registry）与工作计数。`SceneWgpuPainter` 的静态管线通过它跨窗口复用底层 WGPU 对象；`GpuWorkSink` 将缓冲上传与重分配统一记入设备统计（`GpuPolicyStats`：含 `upload_bytes`、`upload_writes`、`upload_copies`、`upload_flushes`、`upload_ring_allocations`、`upload_ring_waits`、`frame_slot_waits`、`frame_slot_stalls` 等），公开边界始终保持为纯 `nana-gpu` 类型。
 
-### 3. HDR 显示信息与色彩空间合同（Issue #283）
+### 3. HDR 显示信息与色彩空间合同（Issue #279 / #283）
 
-Surface 的 HDR 能力由 `SurfaceCapabilities::format_capabilities` 决定，而 `wgpu::Surface::display_hdr_info` 返回的是当前显示器的运行时建议值（仅用于调节最终的色调映射 tone-map：Apple EDR 提供相对 headroom，Windows 提供峰值亮度与 SDR 参考白 nit 值，缺失仅代表未知而非 SDR，不能单凭它决定是否开启 HDR Surface）：
+窗口通过 `WindowDescriptor::presentation_policy`（移动端为 `SurfaceOptions::presentation_policy`）声明 `SurfacePresentationPolicy`（`Auto`、`Sdr`、`WideGamut`、`Hdr`、`HdrPq`、`HdrHlg`）。Surface 的广色域与 HDR 能力由 `SurfaceCapabilities::format_capabilities` 决定，而 `wgpu::Surface::display_hdr_info` 返回的是当前显示器的运行时建议值（仅用于调节最终的色调映射 tone-map：Apple EDR 提供相对 headroom，Windows 提供峰值亮度与 SDR 参考白 nit 值，缺失仅代表未知而非 SDR，不能单凭它决定是否开启 HDR Surface）：
 
-- **事件驱动刷新**：宿主在创建 Surface、设备恢复以及窗口移动、缩放、resize 等显示事件中缓存并更新 `DisplayHdrInfo`（稳态帧不轮询操作系统，Metal 查询始终在事件线程执行）。数值未变时不触发重绘；数值变化时仅更新呈现 uniform，不重建 Runtime 或 Scene 状态。安全 headroom 取值为 `DisplayHdrInfo::tone_map_headroom().unwrap_or(1.0)`，SDR 参考白缺省按 `80 nit` scRGB 约定处理。嵌入式宿主收到系统显示通知时，可在窗口线程调用 `EmbeddedRuntime::refresh_display_hdr_info()`（或 `HostedGpuContext` 的同名方法）。
-- **线性 scRGB 工作空间**：`SceneWgpuPainter` 的内部合成工作空间统一为**预乘线性 scRGB（premultiplied linear scRGB）**。图表标记（`ScenePrimitiveKind::Chart`）由折线、面积、形状三条解析式抗锯齿管线绘制（边缘为 1 设备像素过渡，不依赖 MSAA），顶点与样式数组按 revision 常驻于目标 GPU 缓冲，首次遇到图表时才惰性编译管线。
+- **事件驱动刷新**：宿主在创建 Surface、设备恢复以及窗口移动、缩放、resize、重新聚焦（`Focused(true)`，捕获后台期间系统 HDR 开关变化）等事件中重新协商 `ResolvedSurfaceProfile` 并缓存更新 `DisplayHdrInfo`（稳态帧不轮询操作系统，Metal 查询始终在事件线程执行）。能力变化时重配交换链；仅元数据变化时只更新呈现 uniform，不重建 Runtime 或 Scene 状态。已协商为 HDR 的表面在平台未提供实时元数据时使用保守默认 headroom（`16.0`），SDR 表面固定使用 `1.0`；SDR 参考白缺省按 `80 nit` scRGB 约定处理。嵌入式宿主收到系统显示通知时，可在窗口线程调用 `EmbeddedRuntime::refresh_display_hdr_info()`（或 `HostedGpuContext` 的同名方法，同时覆盖 profile 重解析与元数据刷新）。
+- **线性 scRGB 工作空间与按需 fp16 提升**：`SceneWgpuPainter` 的内部合成工作空间统一为**预乘线性 scRGB（premultiplied linear scRGB）**。在 8 位 sRGB SDR 表面上，纯 sRGB 场景保持 8 位 sRGB 工作目标（4 B/px，不额外分配半精度浮点附件或编译第二套管线）；当场景、`clear_color` 携带广色域（线性 scRGB `< 0`）或 HDR（`> 1`）颜色、绑定 `RGBA16_FLOAT` `HostTexture`，或 `WideGamut` / `Hdr` 请求回退到 SDR 表面时，当前帧自动提升到 `RGBA16_FLOAT` 工作目标并经呈现着色器完成色域压缩与高光滚降，避免硬件按通道 `[0, 1]` 截断造成色相偏移。图表标记（`ScenePrimitiveKind::Chart`）由折线、面积、形状三条解析式抗锯齿管线绘制（边缘为 1 设备像素过渡，不依赖 MSAA），顶点与样式数组按 revision 常驻于目标 GPU 缓冲，首次遇到图表时才惰性编译管线。
 - **跨线程与离屏导出的色彩元数据**：`FrameExchange` 仅按字节复制纹素而不做色彩空间转换。生产端需要跨线程传递色彩空间时，应调用 `copy_from_with_metadata` 附带 `FrameColorMetadata`（声明原色 primaries、传递函数 transfer 与 alpha 语义），消费端从 `FrameLease::color_metadata()` 或 `FrameBinding::color_metadata()` 读取（旧 `copy_from` 标记为 `Unknown`，消费端严禁将其静默假定为 sRGB）。`FrameBinding` 默认只直接接收全范围 sRGB 或 80-nit 线性 scRGB；已声明的 P3、PQ、HLG、有限范围或非预乘 alpha 帧会留在收件箱中不被误采样，需由生产端先行转换或由自定义消费端处理。
 - **`nana-ui-devtools::offscreen` 快照边界**：固定使用 `BGRA8_UNORM_SRGB`。导出 PNG 应使用 `readback_image` / `paint_image` 返回的 `SnapshotImage` 并调用 `into_png_srgb` 或 `write_png_with_metadata`（自动完成预乘 sRGB 到直通 alpha sRGB 的转换并写入 PNG sRGB 块）。
 

@@ -881,10 +881,11 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
                 backdrop_opacity,
                 window_background,
             );
-            match self.graphics.create_surface_with_mode(
+            match self.graphics.create_surface_with_mode_policy(
                 Arc::clone(&window),
                 requested_material.wants_transparent_surface(),
                 super::surface_mode_for(attempt.resolved),
+                settings.presentation_policy,
             ) {
                 Ok(surface) => {
                     provisional.0 = None;

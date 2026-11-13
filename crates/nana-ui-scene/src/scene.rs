@@ -105,6 +105,7 @@ struct RetainedPrimitive {
 pub struct UiScene {
     frame_plan: OnceLock<Arc<FramePlan>>,
     visibility: OnceLock<VisibilityIndex>,
+    extended_color: OnceLock<bool>,
     attribute_epoch: u64,
     projections: NodeMap<(u64, AffineTransform, usize)>,
     /// Projections that cannot be adjusted by an inverse delta. Usually empty;
@@ -223,6 +224,7 @@ impl Default for UiScene {
         Self {
             frame_plan: OnceLock::new(),
             visibility: OnceLock::new(),
+            extended_color: OnceLock::new(),
             attribute_epoch: 0,
             projections: NodeMap::default(),
             unadjustable_projections: NodeSet::default(),
@@ -266,6 +268,7 @@ impl Clone for UiScene {
         Self {
             frame_plan: self.frame_plan.clone(),
             visibility: self.visibility.clone(),
+            extended_color: self.extended_color.clone(),
             attribute_epoch: self.attribute_epoch,
             projections: self.projections.clone(),
             unadjustable_projections: self.unadjustable_projections.clone(),
@@ -477,8 +480,38 @@ impl UiScene {
         held.build = build;
         self.frame_plan.take();
         self.visibility.take();
+        self.extended_color.take();
         self.instance = next_scene_instance();
         true
+    }
+
+    /// Returns `true` when any retained primitive or isolating group in this
+    /// scene carries wide-gamut or HDR authoring colors (`< 0` or `> 1` in
+    /// linear scRGB) that require a floating-point working target to avoid
+    /// hardware `[0, 1]` clamping. Cached across frames until a scene delta
+    /// modifies or removes primitives.
+    pub fn has_extended_color(&self) -> bool {
+        *self.extended_color.get_or_init(|| {
+            self.primitives
+                .values()
+                .any(|held| held.primitive.kind.has_extended_color())
+                || self.nodes.values().any(|node| {
+                    let paint = &node.source_style.layout.paint;
+                    node.style.paint_colors.has_extended_srgb()
+                        || paint
+                            .filter
+                            .as_ref()
+                            .is_some_and(kinds::color_filter_has_extended_color)
+                        || paint
+                            .backdrop_filter
+                            .as_ref()
+                            .is_some_and(|bf| bf.saturate > 1.0 + 1.0e-3)
+                        || paint.box_shadows.iter().any(|s| {
+                            s.paint_color
+                                .is_some_and(nana_ui_core::PaintColor::is_extended_srgb)
+                        })
+                })
+        })
     }
 }
 

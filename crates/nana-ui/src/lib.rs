@@ -107,13 +107,21 @@ pub use web_surface::{
 };
 pub mod overlay;
 pub mod pane;
+pub use nana_ui_platform::SurfacePresentationPolicy;
+#[cfg(feature = "gpu")]
+mod surface_profile;
+#[cfg(all(feature = "gpu", feature = "wgpu-interop"))]
+pub use surface_profile::resolve_surface_profile;
+#[cfg(feature = "gpu")]
+pub use surface_profile::{
+    ResolvedSurfaceProfile, SurfaceProfileFallback, surface_profile_changed,
+};
 #[cfg(feature = "hosted")]
 mod presentation;
 #[cfg(feature = "hosted")]
 pub use presentation::{
-    GpuBackendPolicy, NativeChromePolicy, ResolvedSurfaceProfile, ResolvedWindowPresentation,
-    SurfaceAlphaMode, SurfacePresentationPolicy, SurfaceProfileFallback, SurfaceTargetFallback,
-    WindowSurfaceTarget,
+    GpuBackendPolicy, NativeChromePolicy, ResolvedWindowPresentation, SurfaceAlphaMode,
+    SurfaceTargetFallback, WindowSurfaceTarget,
 };
 mod runtime_animation;
 #[cfg(feature = "hosted")]
@@ -227,10 +235,6 @@ pub use graph::{
 };
 #[cfg(all(feature = "hosted", feature = "wgpu-interop"))]
 pub use hosted_context::HostedSurfaceFrame;
-#[cfg(all(feature = "hosted", feature = "wgpu-interop"))]
-pub use hosted_context::resolve_surface_profile;
-#[cfg(feature = "hosted")]
-pub use hosted_context::surface_profile_changed;
 #[cfg(feature = "hosted")]
 pub use hosted_context::{
     HostedGpuContext, HostedGpuError, HostedGpuShared, HostedGpuSurface, HostedRunError,
