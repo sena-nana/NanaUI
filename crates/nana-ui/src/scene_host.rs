@@ -2539,6 +2539,7 @@ fn forward_pointer_action(
     mode: MousePassthroughMode,
     os_passthrough: bool,
     hits_content: bool,
+    gesture_active: bool,
     event: &WinitWindowEvent,
 ) -> ForwardPointerAction {
     if !forward_pointer_event(event) {
@@ -2551,6 +2552,12 @@ fn forward_pointer_action(
         return ForwardPointerAction::IgnoreUntilRecovered;
     }
     if mode != MousePassthroughMode::Forward {
+        return ForwardPointerAction::Dispatch;
+    }
+    if gesture_active {
+        // Keep hit-testing active until a held press, drag, window move, or
+        // frame resize ends so crossing transparent gaps or client edges never
+        // cancels it mid-gesture.
         return ForwardPointerAction::Dispatch;
     }
     match event {
@@ -5850,28 +5857,73 @@ mod tests {
         use super::forward_pointer_action;
         let down = pointer_down_event();
         assert_eq!(
-            forward_pointer_action(MousePassthroughMode::Forward, true, true, &down),
+            forward_pointer_action(MousePassthroughMode::Forward, true, true, false, &down),
             ForwardPointerAction::IgnoreUntilRecovered,
             "OS pointer, including Down, must not reach widgets while hit-testing is still off"
         );
         assert_eq!(
-            forward_pointer_action(MousePassthroughMode::Forward, false, true, &down),
+            forward_pointer_action(MousePassthroughMode::Forward, true, true, true, &down),
+            ForwardPointerAction::IgnoreUntilRecovered,
+            "OS pointer stays ignored while passthrough is enabled even if gesture state is active"
+        );
+        assert_eq!(
+            forward_pointer_action(MousePassthroughMode::Forward, false, true, false, &down),
             ForwardPointerAction::Dispatch,
             "Down is delivered only after sampling recovered hit-testing over content"
         );
         assert_eq!(
-            forward_pointer_action(MousePassthroughMode::Forward, false, false, &down),
+            forward_pointer_action(MousePassthroughMode::Forward, false, false, false, &down),
             ForwardPointerAction::RestorePassthrough
         );
         assert_eq!(
-            forward_pointer_action(MousePassthroughMode::Off, true, true, &down),
+            forward_pointer_action(MousePassthroughMode::Off, true, true, false, &down),
             ForwardPointerAction::IgnoreUntilRecovered,
             "a failed native disable must not let pointer input reach widgets"
         );
         assert_eq!(
-            forward_pointer_action(MousePassthroughMode::Passthrough, true, true, &down),
+            forward_pointer_action(MousePassthroughMode::Passthrough, true, true, false, &down),
             ForwardPointerAction::IgnoreUntilRecovered,
             "whole-window passthrough must keep native pointer input out"
+        );
+    }
+
+    #[test]
+    fn forward_passthrough_keeps_active_gesture_across_transparent_gaps_and_leaves() {
+        use super::forward_pointer_action;
+        let moved = WinitWindowEvent::PointerMoved {
+            device_id: None,
+            position: PhysicalPosition::new(10.0, 10.0),
+            primary: true,
+            source: PointerSource::Mouse,
+        };
+        let left = WinitWindowEvent::PointerLeft {
+            device_id: None,
+            position: Some(PhysicalPosition::new(-4.0, 10.0)),
+            primary: true,
+            kind: PointerKind::Mouse,
+        };
+        let up = WinitWindowEvent::PointerButton {
+            device_id: None,
+            state: ElementState::Released,
+            position: PhysicalPosition::new(10.0, 10.0),
+            primary: true,
+            button: ButtonSource::Mouse(MouseButton::Left),
+            is_macos_activation_click: false,
+        };
+        for event in [&moved, &left, &up] {
+            assert_eq!(
+                forward_pointer_action(MousePassthroughMode::Forward, false, false, true, event),
+                ForwardPointerAction::Dispatch,
+                "active gesture must not restore passthrough mid-gesture: {event:?}"
+            );
+        }
+        assert_eq!(
+            forward_pointer_action(MousePassthroughMode::Forward, false, false, false, &moved),
+            ForwardPointerAction::RestorePassthrough
+        );
+        assert_eq!(
+            forward_pointer_action(MousePassthroughMode::Forward, false, false, false, &left),
+            ForwardPointerAction::RestorePassthrough
         );
     }
 }

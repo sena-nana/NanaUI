@@ -130,6 +130,7 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
             let scale = self.scale_factor(id);
             self.input_mut(id).set_cursor_physical(*position, scale);
         }
+        let gesture_was_active = self.forward_gesture_active(id);
         if self.forward_pointer_action_for(id, &event) == ForwardPointerAction::RestorePassthrough {
             self.restore_forward_passthrough(event_loop, id);
             return;
@@ -146,12 +147,28 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
             .and_then(|window| window_screen_origin(window.as_ref(), self.content_zoom_of(id)));
         let now = self.animation_clock.runtime_time(Instant::now());
         if let Some(lowered) = self.input_mut(id).map(&event, scale, origin, now) {
+            let resample_cursor = !forward_pointer_event(&event);
             if self.consume_frame_move(event_loop, id, &lowered.payload)
                 || self.consume_frame_resize(event_loop, id, &lowered.payload)
             {
+                self.settle_forward_passthrough_after_gesture(
+                    event_loop,
+                    id,
+                    gesture_was_active,
+                    resample_cursor,
+                );
                 return;
             }
             let disposition = self.deliver_input(event_loop, id, lowered);
+            if !self.window_contexts.contains_key(&id) {
+                return;
+            }
+            self.settle_forward_passthrough_after_gesture(
+                event_loop,
+                id,
+                gesture_was_active,
+                resample_cursor,
+            );
             if !self.window_contexts.contains_key(&id) {
                 return;
             }
@@ -277,6 +294,7 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
                     self.refresh_surface_hdr_info(id);
                 }
                 if !*focused {
+                    let gesture_was_active = self.forward_gesture_active(id);
                     self.input_mut(id).clear_pointers();
                     #[cfg(any(target_os = "macos", target_os = "windows"))]
                     self.end_live_frame_resize(id);
@@ -284,6 +302,15 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
                     // over, so it runs last: that dispatch may close `id`.
                     #[cfg(any(target_os = "macos", target_os = "windows"))]
                     self.end_live_frame_move(event_loop, id);
+                    if !self.window_contexts.contains_key(&id) {
+                        return;
+                    }
+                    self.settle_forward_passthrough_after_gesture(
+                        event_loop,
+                        id,
+                        gesture_was_active,
+                        true,
+                    );
                     if !self.window_contexts.contains_key(&id) {
                         return;
                     }

@@ -572,6 +572,16 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
             .get(&id)
             .map(|host| host.input.cursor)
             .unwrap_or((0.0, 0.0));
+        let size = self.content_geometry_of(id).logical_size;
+        if !cursor.0.is_finite()
+            || !cursor.1.is_finite()
+            || cursor.0 < 0.0
+            || cursor.1 < 0.0
+            || cursor.0 >= size.0
+            || cursor.1 >= size.1
+        {
+            return false;
+        }
         if self.frame_resize_edge_at(id, cursor.0, cursor.1).is_some() {
             return true;
         }
@@ -583,6 +593,16 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
                     .is_some()
             })
             .unwrap_or(false)
+    }
+
+    fn samples_forward_passthrough(&self, id: WindowId, host: &WindowContext) -> bool {
+        host.passthrough_mode == MousePassthroughMode::Forward
+            && host.os_mouse_passthrough
+            // The sample only asks where the cursor is, not what is on top or
+            // whether the window is shown; skip occluded and hidden windows so
+            // hidden tool windows neither wake the 8ms timer nor reclaim input.
+            && !self.occluded.contains(&id)
+            && host.surface.window().is_visible() != Some(false)
     }
 
     fn sample_client_pointer(&self, id: WindowId) -> Option<(f32, f32)> {
@@ -597,10 +617,8 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
 
     pub(super) fn passthrough_forward_wakeup(&self) -> Option<Instant> {
         self.window_contexts
-            .values()
-            .any(|host| {
-                host.passthrough_mode == MousePassthroughMode::Forward && host.os_mouse_passthrough
-            })
+            .iter()
+            .any(|(id, host)| self.samples_forward_passthrough(*id, host))
             .then(|| Instant::now() + Duration::from_millis(8))
     }
 
@@ -608,13 +626,7 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
         let ids: Vec<_> = self
             .window_contexts
             .iter()
-            .filter(|(id, host)| {
-                host.passthrough_mode == MousePassthroughMode::Forward
-                    && host.os_mouse_passthrough
-                    // The sample only asks where the cursor is, not what is
-                    // on top there; it would bring an occluded window back.
-                    && !self.occluded.contains(*id)
-            })
+            .filter(|(id, host)| self.samples_forward_passthrough(**id, host))
             .map(|(id, _)| *id)
             .collect();
         for id in ids {
@@ -709,6 +721,7 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
             host.passthrough_mode,
             host.os_mouse_passthrough,
             false,
+            false,
             event,
         ) == ForwardPointerAction::IgnoreUntilRecovered
     }
@@ -722,11 +735,14 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
             Some(host) => (host.passthrough_mode, host.os_mouse_passthrough),
             None => return ForwardPointerAction::Dispatch,
         };
+        let gesture_active = self.forward_gesture_active(id);
         let hits_content = mode == MousePassthroughMode::Forward
             && !os_passthrough
+            && !gesture_active
             && forward_pointer_event(event)
+            && !matches!(event, WinitWindowEvent::PointerLeft { .. })
             && self.forward_hits_content(id);
-        forward_pointer_action(mode, os_passthrough, hits_content, event)
+        forward_pointer_action(mode, os_passthrough, hits_content, gesture_active, event)
     }
 
     pub(super) fn restore_forward_passthrough(
@@ -737,6 +753,38 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
         self.dispatch_forward_leave(event_loop, id);
         if self.window_contexts.contains_key(&id) {
             let _ = self.apply_os_mouse_passthrough(event_loop, id, true, false);
+        }
+    }
+
+    /// Re-evaluates Forward passthrough once an active press, window move, or
+    /// window resize ends while native hit-testing is recovered.
+    pub(super) fn settle_forward_passthrough_after_gesture(
+        &mut self,
+        event_loop: &dyn ActiveEventLoop,
+        id: WindowId,
+        was_active: bool,
+        resample_cursor: bool,
+    ) {
+        if !was_active || self.forward_gesture_active(id) {
+            return;
+        }
+        let active_forward = self.window_contexts.get(&id).is_some_and(|host| {
+            host.passthrough_mode == MousePassthroughMode::Forward && !host.os_mouse_passthrough
+        });
+        if !active_forward {
+            return;
+        }
+        if resample_cursor {
+            match self.sample_client_pointer(id) {
+                Some(point) => self.input_mut(id).cursor = point,
+                None => {
+                    self.restore_forward_passthrough(event_loop, id);
+                    return;
+                }
+            }
+        }
+        if !self.forward_hits_content(id) {
+            self.restore_forward_passthrough(event_loop, id);
         }
     }
 
@@ -1947,6 +1995,32 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
             let _ = id;
             false
         }
+    }
+
+    /// Whether a host-driven frame resize owns `id`'s pointer right now.
+    pub(super) fn frame_resize_active(&self, id: WindowId) -> bool {
+        #[cfg(any(target_os = "macos", target_os = "windows"))]
+        {
+            self.live_frame_resize
+                .as_ref()
+                .is_some_and(|(session, _)| *session == id)
+        }
+        #[cfg(not(any(target_os = "macos", target_os = "windows")))]
+        {
+            let _ = id;
+            false
+        }
+    }
+
+    /// Whether `id` is in the middle of a held pointer gesture, window move, or
+    /// frame resize that must keep native hit-testing until it finishes.
+    pub(super) fn forward_gesture_active(&self, id: WindowId) -> bool {
+        self.frame_move_active(id)
+            || self.frame_resize_active(id)
+            || self
+                .window_contexts
+                .get(&id)
+                .is_some_and(|host| host.input.buttons != 0)
     }
     pub(super) fn consume_frame_resize(
         &mut self,
