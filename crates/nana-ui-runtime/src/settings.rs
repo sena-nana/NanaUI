@@ -21,8 +21,8 @@ use crate::{
     StableNodeId, StandardVisual, TextContent, UiWorld,
 };
 
-const ROW_PADDING_Y: f32 = nana_ui_core::space::LG;
-const ROW_GROUP_PADDING_Y: f32 = nana_ui_core::space::XS;
+const ROW_PADDING_Y: f32 = nana_ui_core::space::SM;
+const ROW_GROUP_PADDING_Y: f32 = nana_ui_core::space::XXS;
 const ROW_STACK_GAP: f32 = nana_ui_core::space::SM;
 const ROW_STACK_GAP_LOOSE: f32 = nana_ui_core::space::LG;
 const ROW_INLINE_GAP: f32 = nana_ui_core::space::MD;
@@ -425,28 +425,42 @@ impl SettingsRow {
         } else {
             self.line_layout(layout, stacked);
         }
-        layout.theme.padding_top = Some(crate::theme_intent::space(if self.first_in_group {
-            nana_ui_core::SpacingStep::Xs
+        if self.label_column.is_some() {
+            // An inspector row: no band above or below the control.
+            layout.padding_top = Some(LengthSpec::Px(0.0));
+            layout.padding_bottom = Some(LengthSpec::Px(0.0));
+            layout.theme.padding_top = None;
+            layout.theme.padding_bottom = None;
         } else {
-            nana_ui_core::SpacingStep::Lg
-        }));
-        layout.theme.padding_bottom = Some(crate::theme_intent::space(if self.last_in_group {
-            nana_ui_core::SpacingStep::Xs
-        } else {
-            nana_ui_core::SpacingStep::Lg
-        }));
-        layout.theme.border_bottom_width = divider
-            .then(|| nana_ui_core::ThemeToken::Border(nana_ui_core::BorderWidth::Hairline).into());
-        layout.padding_top = Some(LengthSpec::Px(if self.first_in_group {
-            ROW_GROUP_PADDING_Y
-        } else {
-            ROW_PADDING_Y
-        }));
-        layout.padding_bottom = Some(LengthSpec::Px(if self.last_in_group {
-            ROW_GROUP_PADDING_Y
-        } else {
-            ROW_PADDING_Y
-        }));
+            let padded_y = layout.padding.is_some() || layout.theme.padding.is_some();
+            if !padded_y && layout.padding_top.is_none() && layout.theme.padding_top.is_none() {
+                layout.theme.padding_top =
+                    Some(crate::theme_intent::space(if self.first_in_group {
+                        nana_ui_core::SpacingStep::Xxs
+                    } else {
+                        nana_ui_core::SpacingStep::Sm
+                    }));
+                layout.padding_top = Some(LengthSpec::Px(if self.first_in_group {
+                    ROW_GROUP_PADDING_Y
+                } else {
+                    ROW_PADDING_Y
+                }));
+            }
+            if !padded_y && layout.padding_bottom.is_none() && layout.theme.padding_bottom.is_none()
+            {
+                layout.theme.padding_bottom =
+                    Some(crate::theme_intent::space(if self.last_in_group {
+                        nana_ui_core::SpacingStep::Xxs
+                    } else {
+                        nana_ui_core::SpacingStep::Sm
+                    }));
+                layout.padding_bottom = Some(LengthSpec::Px(if self.last_in_group {
+                    ROW_GROUP_PADDING_Y
+                } else {
+                    ROW_PADDING_Y
+                }));
+            }
+        }
         // Only the bottom edge, and the top one under other content, are
         // named; the others fall back to the unset uniform width, which is
         // none.
@@ -457,13 +471,6 @@ impl SettingsRow {
         layout.border_top_width = rule_above.then_some(nana_ui_core::HAIRLINE);
         layout.theme.border_top_width = rule_above
             .then(|| nana_ui_core::ThemeToken::Border(nana_ui_core::BorderWidth::Hairline).into());
-        if self.label_column.is_some() {
-            // An inspector row: no band above or below the control.
-            layout.padding_top = Some(LengthSpec::Px(0.0));
-            layout.padding_bottom = Some(LengthSpec::Px(0.0));
-            layout.theme.padding_top = None;
-            layout.theme.padding_bottom = None;
-        }
         layout.font_size = Some(nana_ui_core::type_scale::BODY);
         crate::theme_intent::font(layout, nana_ui_core::TypeRole::Body);
         layout.line_height = Some(LineHeightSpec::Absolute(nana_ui_core::type_scale::BODY));
@@ -4897,6 +4904,45 @@ mod tests {
                 assert_eq!(row.control, Some(control.stable_id()));
             })
             .unwrap();
+    }
+
+    #[test]
+    fn settings_row_uses_compact_default_bands_and_keeps_authored_padding() {
+        let mut context = AppContext::new();
+        let middle = context
+            .create_component(document(), SettingsRow::new("中间行"))
+            .unwrap();
+        let middle_style = context.world().node_style(middle.stable_id()).unwrap();
+        assert_eq!(
+            (
+                middle_style.layout.padding_top,
+                middle_style.layout.padding_bottom,
+            ),
+            (
+                Some(LengthSpec::Px(nana_ui_core::space::SM)),
+                Some(LengthSpec::Px(nana_ui_core::space::SM)),
+            )
+        );
+
+        let mut custom = NodeStyle::default();
+        custom.layout_mut().padding_top = Some(LengthSpec::Px(10.0));
+        let authored = context
+            .create_component(
+                document(),
+                SettingsRow::new("显式上留白")
+                    .first_in_group()
+                    .style(custom),
+            )
+            .unwrap();
+        let authored_style = context.world().node_style(authored.stable_id()).unwrap();
+        assert_eq!(
+            authored_style.layout.padding_top,
+            Some(LengthSpec::Px(10.0))
+        );
+        assert_eq!(
+            authored_style.layout.padding_bottom,
+            Some(LengthSpec::Px(nana_ui_core::space::SM))
+        );
     }
 
     fn hint_slot_of(context: &AppContext, row: StableNodeId) -> Option<StableNodeId> {

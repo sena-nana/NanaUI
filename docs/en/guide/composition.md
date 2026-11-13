@@ -33,7 +33,7 @@ Relationships have names: `SpacingRole`. Pick by relationship, not among adjacen
 | Side-by-side text buttons | `Buttons` | `Sm` | The `gap` of the row that holds the buttons; `footer_bar` |
 | Things with no frame, held together by distance: the title of a tinted block, the actions below a block, several cards in one group | `Attach` | `Sm` | `settings_group(..).inset()`, `.footer(view)` |
 | A row's label and control | `Label` | `Md` (`Xxl` in a loose layout) | `SettingsRow` |
-| Row to row | — | `Lg` above and below middle rows, `Xs` at the group edge for the first and last, plus hairlines | `SettingsRow`; the group adds no `gap`, or the hairlines break |
+| Row to row | — | `Sm` above and below middle rows, `Xxs` at the group edge for the first and last, plus hairlines | `SettingsRow`; the group adds no `gap`, or the hairlines break |
 | A raised card's title and the card | — | `Md` | `settings_group` (the card has an edge and a shadow, so the title can sit one step farther) |
 | Group to group inside a card or panel | `GroupInCard` | `Xl` | The `gap` of the column that holds the groups |
 | Group to group in a window pane | `GroupInPane` | `Xxxl` | Same |

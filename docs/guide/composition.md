@@ -33,7 +33,7 @@
 | 并排的文字按钮 | `Buttons` | `Sm` | 放按钮的那一行的 `gap`；`footer_bar` |
 | 没有框圈住、靠距离归属的：浅底块的标题、块下的动作、同组里的几张卡 | `Attach` | `Sm` | `settings_group(..).inset()`、`.footer(view)` |
 | 行的标签与控件 | `Label` | `Md`（宽松 `Xxl`） | `SettingsRow` |
-| 行与行 | — | 中间行上下各 `Lg`，首末行贴组边 `Xs`，加细线 | `SettingsRow`；组不加 `gap`，否则细线断开 |
+| 行与行 | — | 中间行上下各 `Sm`，首末行贴组边 `Xxs`，加细线 | `SettingsRow`；组不加 `gap`，否则细线断开 |
 | 凸起卡片的标题与卡片 | — | `Md` | `settings_group`（卡片有边与阴影，标题可以远一档） |
 | 卡片、面板里的组与组 | `GroupInCard` | `Xl` | 放分组的那一列的 `gap` |
 | 窗口栏里的组与组 | `GroupInPane` | `Xxxl` | 同上 |
