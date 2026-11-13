@@ -225,6 +225,7 @@ pub struct TooltipConfig {
     pub gap: f32,
     pub viewport_padding: f32,
     pub max_width: f32,
+    pub overlay_mount: crate::OverlayMount,
 }
 
 impl TooltipConfig {
@@ -232,6 +233,11 @@ impl TooltipConfig {
     pub const PADDING_Y: f32 = space::XS;
     pub const RADIUS: f32 = space::XS;
     pub const FONT_SIZE: f32 = type_scale::HINT;
+
+    pub const fn overlay_mount(mut self, overlay_mount: crate::OverlayMount) -> Self {
+        self.overlay_mount = overlay_mount;
+        self
+    }
 }
 
 impl Default for TooltipConfig {
@@ -242,6 +248,7 @@ impl Default for TooltipConfig {
             gap: space::SM,
             viewport_padding: space::XS,
             max_width: 280.0,
+            overlay_mount: crate::OverlayMount::NearestModal,
         }
     }
 }

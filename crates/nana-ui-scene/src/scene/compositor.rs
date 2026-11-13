@@ -662,7 +662,8 @@ impl UiScene {
             if self.compositor.layers.is_empty() {
                 factor_cache.clear();
             } else {
-                factor_cache.remove(&id);
+                factor_cache.remove(&super::VisualNode::Node(id));
+                factor_cache.remove(&super::VisualNode::Overlay(id));
             }
         }
     }
@@ -763,6 +764,9 @@ impl UiScene {
     }
 
     pub(super) fn resolved_local_opacity(&self, node: &ExtractedNode) -> f32 {
+        if super::is_triggered_menu(node) {
+            return local_opacity(node);
+        }
         self.compositor
             .opacity(node.id)
             .unwrap_or_else(|| local_opacity(node))
@@ -770,34 +774,17 @@ impl UiScene {
 
     /// Logical primitive opacity multiplied by compositor layer factors.
     pub fn compositor_paint_opacity(&self, node: StableNodeId, logical_opacity: f32) -> f32 {
-        self.layered_paint_opacity(node, logical_opacity, true)
+        self.layered_paint_opacity(super::VisualNode::Node(node), logical_opacity, true)
     }
 
     /// [`Self::compositor_paint_opacity`] for one primitive: a modal frame's
-    /// scrim leaves out its node's own layer, which fades the card; the
-    /// scrim fades on its own clock, and its ancestors' layers still reach it.
+    /// scrim leaves out its node's own layer, which fades the card; triggered
+    /// overlay surfaces and select menus use [`super::VisualNode::Overlay`] so
+    /// their trigger stays unaffected and their floating surface follows its
+    /// [`nana_ui_core::OverlayMount`].
     pub fn compositor_primitive_opacity(&self, primitive: &super::ScenePrimitive) -> f32 {
-        if super::is_triggered_overlay_surface(primitive.id)
-            && self
-                .nodes
-                .get(&primitive.node)
-                .is_some_and(|node| super::triggered_overlay_isolates(node))
-        {
-            return (primitive.opacity * self.layer_opacity_factor(primitive.node)).clamp(0.0, 1.0);
-        }
-        if super::is_select_menu_slot(primitive.id.slot)
-            && self
-                .nodes
-                .get(&primitive.node)
-                .is_some_and(|node| super::select_menu_isolates(node))
-        {
-            return primitive.opacity.clamp(0.0, 1.0);
-        }
-        self.layered_paint_opacity(
-            primitive.node,
-            primitive.opacity,
-            !self.is_modal_scrim(primitive),
-        )
+        let vn = super::primitive_visual_node(&self.nodes, primitive);
+        self.layered_paint_opacity(vn, primitive.opacity, !self.is_modal_scrim(primitive))
     }
 
     /// Whether `primitive` is a modal frame's scrim.
@@ -811,56 +798,49 @@ impl UiScene {
             })
     }
 
-    fn layered_paint_opacity(&self, node: StableNodeId, logical_opacity: f32, own: bool) -> f32 {
+    fn layered_paint_opacity(&self, vn: super::VisualNode, logical_opacity: f32, own: bool) -> f32 {
         if !self.compositor.has_presentation() {
             return logical_opacity.clamp(0.0, 1.0);
         }
         // `draw_primitive` asks this for every primitive, so the ancestor half
         // is memoized the same way dest groups are: a container's factor is
-        // its parent's times its own. The queried node's own factor is not
-        // stored — every primitive names a different node.
+        // its visual parent's times its own. The queried visual node's own
+        // factor is not stored — every primitive names a different node/slot.
         let own = if own {
-            self.layer_opacity_factor(node)
+            self.visual_layer_opacity_factor(vn)
         } else {
             1.0
         };
-        let inherited = if let Some(extracted) = self.nodes.get(&node)
-            && super::isolates_from_ancestors(extracted)
-        {
-            if let Some(menu_id) = super::is_isolated_hanging_menu_item(&self.nodes, extracted) {
-                self.layer_opacity_factor(menu_id)
-            } else {
-                1.0
+        let inherited = match super::visual_parent_of(&self.nodes, vn) {
+            Some(parent_vn) => {
+                let mut cache = self
+                    .layer_factor_cache
+                    .lock()
+                    .expect("scene compositor factors");
+                self.ancestor_layer_factor(&mut cache, parent_vn, 0)
             }
-        } else {
-            match self.nodes.get(&node).and_then(|node| node.parent) {
-                Some(parent) => {
-                    let mut cache = self
-                        .layer_factor_cache
-                        .lock()
-                        .expect("scene compositor factors");
-                    self.ancestor_layer_factor(&mut cache, parent, 0)
-                }
-                None => 1.0,
-            }
+            None => 1.0,
         };
         (logical_opacity * own * inherited).clamp(0.0, 1.0)
     }
 
-    /// What this node's own layer does to the opacity below it: the presented
-    /// opacity divided by the logical one it was derived from.
-    fn layer_opacity_factor(&self, id: StableNodeId) -> f32 {
-        if self
-            .nodes
-            .get(&id)
-            .is_some_and(|node| super::is_opacity_group(&self.nodes, node))
-        {
+    /// What this visual node's own layer does to the opacity below it: the
+    /// presented opacity divided by the logical one it was derived from.
+    fn visual_layer_opacity_factor(&self, vn: super::VisualNode) -> f32 {
+        if super::visual_is_opacity_group(&self.nodes, vn) {
             return 1.0;
         }
-        let Some(opacity) = self.compositor.opacity(id) else {
+        let id = vn.node_id();
+        let Some(extracted) = self.nodes.get(&id) else {
             return 1.0;
         };
-        let Some(extracted) = self.nodes.get(&id) else {
+        let triggered_menu = super::is_triggered_menu(extracted);
+        match vn {
+            super::VisualNode::Node(_) if triggered_menu => return 1.0,
+            super::VisualNode::Overlay(_) if !triggered_menu => return 1.0,
+            _ => {}
+        }
+        let Some(opacity) = self.compositor.opacity(id) else {
             return 1.0;
         };
         let logical = local_opacity(extracted);
@@ -873,66 +853,61 @@ impl UiScene {
 
     fn ancestor_layer_factor(
         &self,
-        cache: &mut super::LayerFactorCache,
-        id: StableNodeId,
+        cache: &mut super::HashMap<super::VisualNode, ((u64, u64), f32)>,
+        vn: super::VisualNode,
         depth: usize,
     ) -> f32 {
         if depth >= super::MAX_ANCESTOR_DEPTH {
             return 1.0;
         }
         let stamp = (self.instance_id(), self.attribute_epoch);
-        if let Some((held, factor)) = cache.get(&id)
+        if let Some((held, factor)) = cache.get(&vn)
             && *held == stamp
         {
             return *factor;
         }
-        let Some(extracted) = self.nodes.get(&id) else {
+        if !self.nodes.contains_key(&vn.node_id()) {
             return 1.0;
+        }
+        let inherited = match super::visual_parent_of(&self.nodes, vn) {
+            Some(parent_vn) => self.ancestor_layer_factor(cache, parent_vn, depth + 1),
+            None => 1.0,
         };
-        let inherited = if super::isolates_from_ancestors(extracted) {
-            if let Some(menu_id) = super::is_isolated_hanging_menu_item(&self.nodes, extracted) {
-                self.layer_opacity_factor(menu_id)
-            } else {
-                1.0
-            }
-        } else {
-            match extracted.parent {
-                Some(parent) => self.ancestor_layer_factor(cache, parent, depth + 1),
-                None => 1.0,
-            }
-        };
-        let factor = inherited * self.layer_opacity_factor(id);
-        cache.insert(id, (stamp, factor));
+        let factor = inherited * self.visual_layer_opacity_factor(vn);
+        cache.insert(vn, (stamp, factor));
         factor
     }
 
-    /// Nested compositor opacity: product of ancestor (and self) layer opacities.
+    /// Nested compositor opacity: product of visual-ancestor (and self) layer
+    /// opacities.
     pub fn composed_layer_opacity(&self, node: StableNodeId) -> f32 {
         if !self.compositor.has_presentation() {
             return 1.0;
         }
         let mut opacity = 1.0;
-        for id in super::ancestor_ids(&self.nodes, node) {
-            if let Some(presented) = self.compositor.opacity(id) {
-                opacity *= presented;
-            }
-            if let Some(extracted) = self.nodes.get(&id)
-                && super::isolates_from_ancestors(extracted)
-            {
-                if let Some(menu_id) = super::is_isolated_hanging_menu_item(&self.nodes, extracted)
-                    && let Some(presented) = self.compositor.opacity(menu_id)
-                {
-                    let logical: f32 = self
-                        .nodes
-                        .get(&menu_id)
-                        .map_or(1.0, |node| local_opacity(node));
-                    opacity *= if logical.abs() < 1e-8 {
-                        presented
-                    } else {
-                        presented / logical
-                    };
+        for (vn, extracted) in
+            super::visual_ancestor_nodes(&self.nodes, super::VisualNode::Node(node))
+        {
+            match vn {
+                super::VisualNode::Node(id) => {
+                    if !super::is_triggered_menu(extracted)
+                        && let Some(presented) = self.compositor.opacity(id)
+                    {
+                        opacity *= presented;
+                    }
                 }
-                break;
+                super::VisualNode::Overlay(id) => {
+                    if super::is_triggered_menu(extracted)
+                        && let Some(presented) = self.compositor.opacity(id)
+                    {
+                        let logical = local_opacity(extracted);
+                        opacity *= if logical.abs() < 1e-8 {
+                            presented
+                        } else {
+                            presented / logical
+                        };
+                    }
+                }
             }
         }
         opacity.clamp(0.0, 1.0)
@@ -960,23 +935,28 @@ impl UiScene {
     /// only the node's own layer so the painter can strip that overlay without
     /// double-applying ancestor presentation. Opacity walks ancestors.
     pub fn compositor_gpu_motion_ids(&self, node: StableNodeId) -> (u32, u32) {
-        self.gpu_motion_ids(node, true)
+        self.gpu_motion_ids(super::VisualNode::Node(node), true)
     }
 
     /// [`Self::compositor_gpu_motion_ids`], with or without the node's own
     /// opacity overlay.
-    fn gpu_motion_ids(&self, node: StableNodeId, own_opacity: bool) -> (u32, u32) {
+    fn gpu_motion_ids(&self, vn: super::VisualNode, own_opacity: bool) -> (u32, u32) {
         // A triggered menu's transform overlay is not evaluated in its own
         // place: its trigger keeps the logical transform, and the surface and
         // items it moves take it on the CPU (`hanging_transform`).
-        let mut transform = if self
-            .nodes
-            .get(&node)
-            .is_some_and(|node| super::is_triggered_menu(node))
-        {
-            0
-        } else {
-            self.gpu_motion_id_for(node, 0)
+        let mut transform = match vn {
+            super::VisualNode::Overlay(_) => 0,
+            super::VisualNode::Node(node) => {
+                if self
+                    .nodes
+                    .get(&node)
+                    .is_some_and(|n| super::is_triggered_menu(n))
+                {
+                    0
+                } else {
+                    self.gpu_motion_id_for(node, 0)
+                }
+            }
         };
         // The shader evaluates the overlay in the node's own place, so it owes
         // the same refusal [`Self::resolved_local_transform`] makes, or the
@@ -984,52 +964,58 @@ impl UiScene {
         // two reads false for every node without both a `matrix3d` and an
         // overlay of its own.
         if transform != 0
+            && let super::VisualNode::Node(node) = vn
             && let Some(extracted) = self.nodes.get(&node)
             && extracted.source_style.layout.transform_3d.is_some()
             && self.draw_ancestor_state(extracted).3
         {
             transform = 0;
         }
-        let isolates = |id| {
-            self.nodes
-                .get(&id)
-                .is_some_and(|node| super::is_opacity_group(&self.nodes, node))
+        let isolates = |v: super::VisualNode| super::visual_is_opacity_group(&self.nodes, v);
+        let own_opacity_id = |v: super::VisualNode| -> u32 {
+            match v {
+                super::VisualNode::Node(id) => {
+                    if self
+                        .nodes
+                        .get(&id)
+                        .is_some_and(|n| super::is_triggered_menu(n))
+                    {
+                        0
+                    } else {
+                        self.gpu_motion_id_for(id, 1)
+                    }
+                }
+                super::VisualNode::Overlay(id) => {
+                    if self
+                        .nodes
+                        .get(&id)
+                        .is_some_and(|n| super::is_triggered_menu(n))
+                    {
+                        self.gpu_motion_id_for(id, 1)
+                    } else {
+                        0
+                    }
+                }
+            }
         };
-        let mut opacity = if own_opacity && !isolates(node) {
-            self.gpu_motion_id_for(node, 1)
+        let mut opacity = if own_opacity && !isolates(vn) {
+            own_opacity_id(vn)
         } else {
             0
         };
-        if opacity == 0 && !isolates(node) {
-            if let Some(extracted) = self.nodes.get(&node)
-                && super::isolates_from_ancestors(extracted)
-            {
-                if let Some(menu_id) = super::is_isolated_hanging_menu_item(&self.nodes, extracted)
-                    && !isolates(menu_id)
-                {
-                    opacity = self.gpu_motion_id_for(menu_id, 1);
+        if opacity == 0 && !isolates(vn) {
+            let mut cursor = super::visual_parent_of(&self.nodes, vn);
+            let mut depth = 0usize;
+            while let Some(cur) = cursor {
+                if depth >= super::MAX_ANCESTOR_DEPTH || isolates(cur) {
+                    break;
                 }
-            } else if let Some(parent) = self.nodes.get(&node).and_then(|node| node.parent) {
-                for id in super::ancestor_ids(&self.nodes, parent) {
-                    if isolates(id) {
-                        break;
-                    }
-                    opacity = self.gpu_motion_id_for(id, 1);
-                    if opacity != 0 {
-                        break;
-                    }
-                    if let Some(extracted) = self.nodes.get(&id)
-                        && super::isolates_from_ancestors(extracted)
-                    {
-                        if let Some(menu_id) =
-                            super::is_isolated_hanging_menu_item(&self.nodes, extracted)
-                            && !isolates(menu_id)
-                        {
-                            opacity = self.gpu_motion_id_for(menu_id, 1);
-                        }
-                        break;
-                    }
+                depth += 1;
+                opacity = own_opacity_id(cur);
+                if opacity != 0 {
+                    break;
                 }
+                cursor = super::visual_parent_of(&self.nodes, cur);
             }
         }
         (transform, opacity)
@@ -1063,17 +1049,17 @@ impl UiScene {
 
     /// Paint opacity with the GPU-evaluated overlay factored out.
     pub fn compositor_gpu_encode_opacity(&self, node: StableNodeId, paint_opacity: f32) -> f32 {
-        self.gpu_encode_opacity(node, paint_opacity, true)
+        self.gpu_encode_opacity(super::VisualNode::Node(node), paint_opacity, true)
     }
 
-    fn gpu_encode_opacity(&self, node: StableNodeId, paint_opacity: f32, own: bool) -> f32 {
-        let (_, opacity_id) = self.gpu_motion_ids(node, own);
+    fn gpu_encode_opacity(&self, vn: super::VisualNode, paint_opacity: f32, own: bool) -> f32 {
+        let (_, opacity_id) = self.gpu_motion_ids(vn, own);
         if opacity_id == 0 {
             return paint_opacity;
         }
         let index = opacity_id - 1;
-        for id in super::ancestor_ids(&self.nodes, node) {
-            if let Some(layer) = self.compositor.layer(id)
+        for (anc_vn, _) in super::visual_ancestor_nodes(&self.nodes, vn) {
+            if let Some(layer) = self.compositor.layer(anc_vn.node_id())
                 && layer
                     .bindings
                     .iter()
@@ -1099,7 +1085,13 @@ impl UiScene {
         composed: AffineTransform,
         paint_opacity: f32,
     ) -> CompositorPaintEncode {
-        self.paint_encode(node, kind, composed, paint_opacity, true)
+        self.paint_encode(
+            super::VisualNode::Node(node),
+            kind,
+            composed,
+            paint_opacity,
+            true,
+        )
     }
 
     /// [`Self::compositor_paint_encode`] for one primitive, which a modal
@@ -1111,8 +1103,9 @@ impl UiScene {
         composed: AffineTransform,
         paint_opacity: f32,
     ) -> CompositorPaintEncode {
+        let vn = super::primitive_visual_node(&self.nodes, primitive);
         self.paint_encode(
-            primitive.node,
+            vn,
             &primitive.kind,
             composed,
             paint_opacity,
@@ -1122,20 +1115,24 @@ impl UiScene {
 
     fn paint_encode(
         &self,
-        node: StableNodeId,
+        vn: super::VisualNode,
         kind: &super::ScenePrimitiveKind,
         composed: AffineTransform,
         paint_opacity: f32,
         own_opacity: bool,
     ) -> CompositorPaintEncode {
         if kind.evaluates_compositor_motion_on_gpu() {
-            let (transform, transform_origin) =
-                self.compositor_gpu_encode_transform(node, composed);
+            let (transform, transform_origin) = match vn {
+                super::VisualNode::Node(node) => {
+                    self.compositor_gpu_encode_transform(node, composed)
+                }
+                super::VisualNode::Overlay(_) => (composed, [0.0, 0.0]),
+            };
             CompositorPaintEncode {
                 transform,
                 transform_origin,
-                opacity: self.gpu_encode_opacity(node, paint_opacity, own_opacity),
-                motion_ids: self.gpu_motion_ids(node, own_opacity),
+                opacity: self.gpu_encode_opacity(vn, paint_opacity, own_opacity),
+                motion_ids: self.gpu_motion_ids(vn, own_opacity),
             }
         } else {
             CompositorPaintEncode {
@@ -1382,6 +1379,8 @@ mod tests {
             id: id(value),
             kind: Arc::new(NodeKind::Element { tag: "div".into() }),
             parent: parent.map(id),
+            visual_parent: None,
+            overlay_visual_parent: None,
             children: Arc::new(children.iter().copied().map(id).collect()),
             layout: LayoutBox {
                 x: 0.0,

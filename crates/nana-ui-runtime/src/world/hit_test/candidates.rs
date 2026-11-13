@@ -63,10 +63,34 @@ pub(in crate::world) struct HitScratch {
 }
 
 impl UiWorld {
-    // Fixed branches are separate spatial roots. Paint already stops the
-    // stacking-group prefix at `position: fixed` so menus leave a parent
-    // isolation group; hit order must use the same cut, or a later sibling
-    // card steals clicks from an open Popover.
+    fn overlay_mount_visual_parent(
+        &self,
+        id: StableNodeId,
+        overlay_surface: bool,
+    ) -> Option<crate::VisualParent> {
+        if overlay_surface {
+            match self.nodes.visual(id) {
+                Some(StandardVisual::MenuSurface {
+                    overlay: Some(overlay),
+                    ..
+                }) => Some(self.resolve_overlay_mount(id, overlay.overlay_mount)),
+                Some(StandardVisual::Select { overlay_mount, .. }) => {
+                    Some(self.resolve_overlay_mount(id, *overlay_mount))
+                }
+                _ => None,
+            }
+        } else if let Some(mount) = self.overlay_mount(id) {
+            Some(self.resolve_overlay_mount(id, mount))
+        } else {
+            self.parent_triggered_overlay_id(id)
+                .map(crate::VisualParent::Overlay)
+        }
+    }
+
+    // Fixed branches are separate spatial roots unless `OverlayMount` mounts
+    // them into an enclosing modal, `TopLayer`, or inline under their parent.
+    // Hit order uses the same visual parent chain as `UiScene`, so floating
+    // overlays match paint stacking inside and outside modals.
     fn hit_paint_key(
         &self,
         index: &HitIndex,
@@ -76,35 +100,137 @@ impl UiWorld {
         key: &mut HitPaintKey,
     ) {
         key.clear();
-        if self.triggered_overlays.contains(&target) && self.hanging_surface_contains(target, x, y)
-        {
-            // The surface is a root-level layer at its content's level, below
-            // every item of that content (each has a longer path there).
-            key.groups.push((crate::popover::MENU_OVERLAY_Z_INDEX, 0));
-            return;
-        }
-        let menu_hit = self.menu_region_contains(index, target, x, y);
-        // An open select menu is a root-level layer at the menu's level, as
-        // the scene paints it, ordered by where its field sits.
-        let select_menu = menu_hit && self.select_menus.contains(&target);
-        let mut cursor = Some(target);
-        while let Some(id) = cursor {
+        let mut dom = Some(target);
+        while let Some(id) = dom {
             key.chain.push(id);
-            if self.hit_motion_layout(id).position == PositionSpec::Fixed {
-                break;
-            }
-            cursor = self.parent_id(id);
+            dom = self.parent_id(id);
         }
-        let mut inherited_z = 0;
         for &id in key.chain.iter().rev() {
-            let node = self.record(id);
-            let style = self.hit_motion_layout(id);
             key.path
                 .push(index.entries.get(&id).map_or(0, |entry| entry.entry.order));
-            if select_menu {
+        }
+        let dom_len = |id: StableNodeId| -> usize {
+            key.chain
+                .iter()
+                .position(|&dom_id| dom_id == id)
+                .map_or(0, |pos| key.chain.len() - pos)
+        };
+        let triggered_surface = self.triggered_overlays.contains(&target)
+            && self.hanging_surface_contains(target, x, y);
+        let menu_hit = !triggered_surface && self.menu_region_contains(index, target, x, y);
+        let select_menu = menu_hit && self.select_menus.contains(&target);
+        let mut steps: Vec<(StableNodeId, bool, Option<i32>)> = Vec::new();
+        let mut cursor = Some((target, triggered_surface || select_menu));
+        let mut remaining = self.nodes.len().saturating_add(1);
+        while let Some((id, overlay_surface)) = cursor {
+            if remaining == 0 {
+                break;
+            }
+            remaining -= 1;
+            if overlay_surface {
+                let base_z = if select_menu && id == target {
+                    self.hit_motion_layout(id)
+                        .z_index
+                        .unwrap_or(0)
+                        .max(crate::popover::MENU_OVERLAY_Z_INDEX)
+                } else {
+                    crate::popover::MENU_OVERLAY_Z_INDEX
+                };
+                match self
+                    .overlay_mount_visual_parent(id, true)
+                    .unwrap_or(crate::VisualParent::Root)
+                {
+                    crate::VisualParent::Root => {
+                        steps.push((id, true, Some(base_z)));
+                        break;
+                    }
+                    crate::VisualParent::TopLayer => {
+                        steps.push((
+                            id,
+                            true,
+                            Some(base_z.max(crate::popover::TOP_LAYER_Z_INDEX)),
+                        ));
+                        break;
+                    }
+                    crate::VisualParent::Modal(modal_id) => {
+                        let modal_z = self.hit_motion_layout(modal_id).z_index.unwrap_or(0);
+                        steps.push((id, true, Some(modal_z.saturating_add(base_z))));
+                        cursor = Some((modal_id, false));
+                    }
+                    crate::VisualParent::Node(parent_id) => {
+                        steps.push((id, true, Some(base_z)));
+                        cursor = Some((parent_id, false));
+                    }
+                    crate::VisualParent::Overlay(menu_id) => {
+                        steps.push((id, true, Some(base_z)));
+                        cursor = Some((menu_id, true));
+                    }
+                }
                 continue;
             }
-            inherited_z = style.z_index.unwrap_or(inherited_z);
+            let explicit_vp = self.overlay_mount_visual_parent(id, false);
+            let style_z = self.hit_motion_layout(id).z_index;
+            match explicit_vp {
+                Some(crate::VisualParent::Root) => {
+                    steps.push((
+                        id,
+                        false,
+                        Some(
+                            style_z
+                                .unwrap_or(0)
+                                .max(crate::popover::MENU_OVERLAY_Z_INDEX),
+                        ),
+                    ));
+                    break;
+                }
+                Some(crate::VisualParent::TopLayer) => {
+                    steps.push((
+                        id,
+                        false,
+                        Some(style_z.unwrap_or(0).max(crate::popover::TOP_LAYER_Z_INDEX)),
+                    ));
+                    break;
+                }
+                Some(crate::VisualParent::Modal(modal_id)) => {
+                    let modal_z = self.hit_motion_layout(modal_id).z_index.unwrap_or(0);
+                    let z = modal_z.saturating_add(
+                        style_z
+                            .unwrap_or(0)
+                            .max(crate::popover::MENU_OVERLAY_Z_INDEX),
+                    );
+                    steps.push((id, false, Some(z)));
+                    cursor = Some((modal_id, false));
+                }
+                Some(crate::VisualParent::Node(parent_id)) => {
+                    steps.push((id, false, None));
+                    cursor = Some((parent_id, false));
+                }
+                Some(crate::VisualParent::Overlay(menu_id)) => {
+                    steps.push((id, false, None));
+                    cursor = Some((menu_id, true));
+                }
+                None => {
+                    steps.push((id, false, None));
+                    if self.hit_motion_layout(id).position == PositionSpec::Fixed {
+                        break;
+                    }
+                    cursor = self.parent_id(id).map(|parent| (parent, false));
+                }
+            }
+        }
+        let mut inherited_z = 0;
+        for &(id, overlay_surface, z_override) in steps.iter().rev() {
+            let path_len = dom_len(id);
+            if overlay_surface {
+                inherited_z = z_override
+                    .unwrap_or(crate::popover::MENU_OVERLAY_Z_INDEX)
+                    .max(inherited_z);
+                key.groups.push((inherited_z, path_len));
+                continue;
+            }
+            let node = self.record(id);
+            let style = self.hit_motion_layout(id);
+            inherited_z = z_override.unwrap_or_else(|| style.z_index.unwrap_or(inherited_z));
             let children = node
                 .hierarchy
                 .children
@@ -132,25 +258,25 @@ impl UiWorld {
                 Some(StandardVisual::Scrollbar { visibility, .. })
                     if *visibility != nana_ui_core::ScrollbarVisibility::Hidden
             );
-            let group = (children
-                && (style.creates_paint_stacking_context()
-                    || (opacity > 0.0 && opacity < 1.0)
-                    || scrollbar_chrome))
+            let modal_frame = matches!(
+                self.nodes.visual(id),
+                Some(StandardVisual::ModalFrame { .. })
+            );
+            let group = modal_frame
+                || (children
+                    && (style.creates_paint_stacking_context()
+                        || (opacity > 0.0 && opacity < 1.0)
+                        || scrollbar_chrome))
                 || filter_group
                 || !style.paint.mix_blend.is_normal();
             if group || id == target {
                 let z = if id == target && !group && menu_hit {
-                    inherited_z.max(1000)
+                    inherited_z.max(crate::popover::MENU_OVERLAY_Z_INDEX)
                 } else {
                     inherited_z
                 };
-                key.groups.push((z, key.path.len()));
+                key.groups.push((z, path_len));
             }
-        }
-        if select_menu {
-            let z = self.hit_motion_layout(target).z_index.unwrap_or(0);
-            key.groups
-                .push((z.max(crate::popover::MENU_OVERLAY_Z_INDEX), key.path.len()));
         }
     }
 

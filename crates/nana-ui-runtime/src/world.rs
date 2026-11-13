@@ -4764,6 +4764,15 @@ impl UiWorld {
         }
     }
 
+    /// Visual mounting scope of `id`, if one was assigned via
+    /// [`MutationQueue::set_overlay_mount`].
+    pub fn overlay_mount(&self, id: StableNodeId) -> Option<nana_ui_core::OverlayMount> {
+        if !self.nodes.has_overlay_mounts() {
+            return None;
+        }
+        self.nodes.overlay_mount(id).copied()
+    }
+
     pub fn overlay_host(&self, id: StableNodeId) -> Option<OverlayHostState> {
         self.nodes.overlay_host(id).copied()
     }
@@ -5207,6 +5216,56 @@ impl UiWorld {
                 ..
             } if overlay.trigger_content != Some(id) => Some(*overlay),
             _ => None,
+        }
+    }
+
+    pub(crate) fn parent_triggered_overlay_id(&self, id: StableNodeId) -> Option<StableNodeId> {
+        if !self.nodes.has_visuals() {
+            return None;
+        }
+        let parent = self.record(id).hierarchy.parent?;
+        match self.nodes.visual(parent)? {
+            StandardVisual::MenuSurface {
+                open: true,
+                overlay: Some(overlay),
+                ..
+            } if overlay.trigger_content != Some(id) => Some(parent),
+            _ => None,
+        }
+    }
+
+    pub(crate) fn resolve_overlay_mount(
+        &self,
+        id: StableNodeId,
+        mount: nana_ui_core::OverlayMount,
+    ) -> crate::VisualParent {
+        match mount {
+            nana_ui_core::OverlayMount::TopLayer => crate::VisualParent::TopLayer,
+            nana_ui_core::OverlayMount::NearestModal => {
+                let mut cursor = self.record(id).hierarchy.parent;
+                while let Some(ancestor) = cursor {
+                    if matches!(
+                        self.nodes.visual(ancestor),
+                        Some(StandardVisual::ModalFrame { .. })
+                    ) {
+                        return crate::VisualParent::Modal(ancestor);
+                    }
+                    cursor = self
+                        .nodes
+                        .get(ancestor)
+                        .and_then(|record| record.hierarchy.parent);
+                }
+                crate::VisualParent::Root
+            }
+            nana_ui_core::OverlayMount::Inline => {
+                if let Some(menu_id) = self.parent_triggered_overlay_id(id) {
+                    crate::VisualParent::Overlay(menu_id)
+                } else if let Some(parent) = self.record(id).hierarchy.parent {
+                    crate::VisualParent::Node(parent)
+                } else {
+                    crate::VisualParent::Root
+                }
+            }
         }
     }
 
@@ -7469,11 +7528,12 @@ fn apply_triggered_overlay(
     overlay: crate::TriggeredMenuOverlay,
 ) {
     layout.position = PositionSpec::Fixed;
-    layout.isolate_from_ancestors = overlay.isolate_from_ancestors;
     layout.width = Some(LengthSpec::Px(
         (overlay.width - overlay.padding * 2.0).max(0.0),
     ));
-    layout.z_index = Some(crate::popover::MENU_OVERLAY_Z_INDEX);
+    layout
+        .z_index
+        .get_or_insert(crate::popover::MENU_OVERLAY_Z_INDEX);
 }
 
 fn is_triggered_menu_overlay(visual: Option<&StandardVisual>) -> bool {

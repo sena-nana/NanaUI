@@ -9446,6 +9446,7 @@ fn icon_button_tooltip_uses_hover_clock_and_real_overlay_child() {
                     gap: 6.0,
                     viewport_padding: 4.0,
                     max_width: 120.0,
+                    ..Default::default()
                 },
             ),
         )

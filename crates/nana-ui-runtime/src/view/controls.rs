@@ -677,6 +677,10 @@ menu_fields! {
         "Whether the menu is open; it also opens and closes itself.",
         |target, value| target.popover.open = value,
         |menu| menu.popover.open;
+    overlay_mount: nana_ui_core::OverlayMount,
+        "Where the floating menu surface mounts visually in the scene tree.",
+        |target, value| target.popover.overlay_mount = value,
+        |menu| menu.popover.overlay_mount;
 }
 
 /// One command of an [`action_menu`]; `.on_activate(..)` runs it.
@@ -720,6 +724,8 @@ pub mod fields {
         pub struct accessible_name;
         /// Whether the menu is open.
         pub struct open;
+        /// Where the floating menu surface mounts visually.
+        pub struct overlay_mount;
     }
 
     /// [`crate::ReorderList`] fields (the `controls` feature).

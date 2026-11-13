@@ -54,6 +54,28 @@ where
     }
 }
 
+/// Where a floating overlay surface mounts visually in the scene tree.
+///
+/// Logical ownership, events, focus, and theme tokens always stay with the
+/// component's declared parent; only visual inheritance (ancestor opacity,
+/// scroll edge fades, ancestor clips, and paint stacking) follows the mount.
+#[derive(
+    Debug, Clone, Copy, Default, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize,
+)]
+pub enum OverlayMount {
+    /// Escape local cards, lists, scroll fades, and clips up to the nearest
+    /// enclosing modal dialog (`ModalFrame`) when inside one, or the document
+    /// root otherwise.
+    #[default]
+    NearestModal,
+    /// Escape all ancestors—including any enclosing modal dialog—to the
+    /// top-level document overlay layer.
+    TopLayer,
+    /// Remain visually nested inside the declaring parent hierarchy and
+    /// inherit its clips, opacity groups, and scroll fades.
+    Inline,
+}
+
 #[cfg(test)]
 mod tests {
     use super::ExclusiveOverlay;

@@ -69,7 +69,7 @@ Popover::new().trigger_icon(Icon::Add, "更多").trigger_style(round)
 
 打开之后页面滚动，弹出层留在原处，直到下一次布局。
 
-表面是 viewport-fixed，默认开启 `isolate_from_ancestors = true`，不继承祖先的不透明度、滤镜、混合模式、合成层淡出与滚动边缘渐隐，面板的 overflow 也裁不到它；只保留浮层自身的开合淡入淡出，而留在文档流里的触发器仍受祖先效果影响。需要随所在祖先一起渐隐或受滤镜影响时传 `.isolate_from_ancestors(false)`。
+表面是 viewport-fixed，默认 `.overlay_mount(OverlayMount::NearestModal)`：当触发器在普通页面或滚动区（包括带 `edge_fade` 的滚动列表）里时，浮层挂到根顶层、完全摆脱中间滚动区与卡片的不透明度、滤镜、混合模式和边缘渐隐，面板的 overflow 也裁不到它；当触发器在模态框（`Dialog` / `ConfirmDialog` / `Drawer`）内部时，浮层挂到最近的那层模态框，只逃逸模态框内部的滚动画布渐隐与容器效果、跟随模态框自身层级并停在更高模态框下方；需要跨出所有模态框时传 `OverlayMount::TopLayer`，需要随直接祖先一起淡出或受滤镜影响时传 `OverlayMount::Inline`。触发器本身留在文档流里，始终按直接祖先合成。
 
 ## 关闭
 
@@ -102,7 +102,7 @@ Popover::new().trigger_icon(Icon::Add, "更多").trigger_style(round)
 | `.width` | — | 有最小宽度 |
 | `.gap` | — | 小于 0 时收成 0 |
 | `.padding` | — | 小于 0 时收成 0 |
-| `.isolate_from_ancestors` | `true` | 为 `true` 时浮层不受祖先透明、滤镜、边缘渐隐、合成层透明度与溢出裁剪影响；设 `false` 重新继承 |
+| `.overlay_mount` | `OverlayMount` | 浮层视觉挂载范围：默认 `NearestModal`（页面中挂到根顶层，模态框内挂到最近模态框并避开内部效果）；`TopLayer` 跨出所有模态框；`Inline` 留在祖先链中继承效果 |
 
 ## 事件
 

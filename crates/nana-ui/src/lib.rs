@@ -349,7 +349,7 @@ pub use nana_window::{
 };
 #[cfg(feature = "hosted")]
 pub use nana_window::{RevealError, reveal_in_file_manager};
-pub use overlay::ExclusiveOverlay;
+pub use overlay::{ExclusiveOverlay, OverlayMount};
 pub use pane::ratio_pane_split;
 pub use runtime_animation::RuntimeAnimationClock;
 #[cfg(feature = "hosted")]

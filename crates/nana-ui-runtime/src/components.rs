@@ -1040,10 +1040,9 @@ pub enum StandardVisual {
         /// as a native `<select>` sizes itself, rather than only the label it
         /// shows. See [`crate::Select::fit_options`].
         fit_options: bool,
-        /// Whether the open dropdown menu isolates itself from ancestor
-        /// visual effects (`opacity`, `OpacityGroup`, `FilterGroup`, compositor
-        /// layer opacity). The closed field remains inside its ancestors.
-        isolate_from_ancestors: bool,
+        /// Visual mounting scope of the open dropdown menu (`NearestModal`,
+        /// `TopLayer`, or `Inline`). The closed field remains in-flow.
+        overlay_mount: nana_ui_core::OverlayMount,
     },
     MenuSurface {
         kind: MenuSurfaceKind,
@@ -1275,9 +1274,9 @@ pub struct TriggeredMenuOverlay {
     /// A labelled tool trigger ([`crate::Popover::trigger_tool`]): the gap
     /// between its glyph and its label. `None` for a glyph or a label alone.
     pub trigger_label_gap: Option<f32>,
-    /// Whether the hanging popup surface and its items isolate themselves from
-    /// ancestor visual and clip effects while keeping the trigger in-flow.
-    pub isolate_from_ancestors: bool,
+    /// Visual mounting scope of the hanging popup surface and its items
+    /// while the trigger stays in-flow.
+    pub overlay_mount: nana_ui_core::OverlayMount,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -2464,14 +2463,6 @@ impl NodeStyle {
         Arc::make_mut(&mut self.layout)
             .theme
             .set(property, Some(expression.into()));
-        self
-    }
-
-    /// Sever visual and clip inheritance from ancestor components (`opacity`,
-    /// `OpacityGroup` / scroll-edge fade / color filters / blend modes,
-    /// `FilterGroup`, compositor layer opacity, and overflow clips).
-    pub fn isolate_from_ancestors(mut self, isolate: bool) -> Self {
-        Arc::make_mut(&mut self.layout).isolate_from_ancestors = isolate;
         self
     }
 
@@ -5073,6 +5064,28 @@ pub struct RichEditorMarks {
     pub show_editor_objects: bool,
 }
 
+/// Where a node or floating overlay surface mounts visually in the scene tree.
+///
+/// Logical ownership, events, focus, and theme tokens always remain with the
+/// declared [`ExtractedNode::parent`]; only visual inheritance and paint/hit
+/// stacking follow the resolved visual parent.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
+pub enum VisualParent {
+    /// Document root overlay scope (`OverlayMount::NearestModal` outside any modal).
+    #[default]
+    Root,
+    /// Top-layer overlay scope (`OverlayMount::TopLayer`), escaping and stacking above all modals.
+    TopLayer,
+    /// Scoped to an enclosing `ModalFrame` (`OverlayMount::NearestModal` inside a modal):
+    /// inherits the modal's visual groups/opacity, skips everything inside the modal body,
+    /// and stacks above the modal's body/footer while staying below higher or later modals.
+    Modal(StableNodeId),
+    /// Normal visual child of `Node(id)` (`OverlayMount::Inline` or ordinary tree hierarchy).
+    Node(StableNodeId),
+    /// Child of `id`'s floating overlay surface (`VisualNode::Overlay(id)`).
+    Overlay(StableNodeId),
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct ExtractedNode {
     /// Shared canonical geometry, including content/viewport/scroll extents,
@@ -5085,6 +5098,13 @@ pub struct ExtractedNode {
     /// Shared with `UiWorld` so idle extract is an Arc bump, not a `NodeKind` clone.
     pub kind: Arc<NodeKind>,
     pub parent: Option<StableNodeId>,
+    /// Visual parent for `VisualNode::Node(self.id)` when it differs from
+    /// [`Self::parent`] (e.g., an item inside a triggered menu or a standalone
+    /// floating overlay with `OverlayMount`). `None` derives from `parent`.
+    pub visual_parent: Option<VisualParent>,
+    /// Visual parent for `VisualNode::Overlay(self.id)` (triggered overlay
+    /// surfaces and open `Select` menus). `None` mounts at `Root`.
+    pub overlay_visual_parent: Option<VisualParent>,
     /// Shared with retained hierarchy. Idle extract does not clone the child list.
     pub children: Arc<Vec<StableNodeId>>,
     /// Where the box stood on the page when this record was extracted. A

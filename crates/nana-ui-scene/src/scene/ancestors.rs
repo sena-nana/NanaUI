@@ -38,16 +38,20 @@ impl UiScene {
         visual: bool,
     ) -> AncestorState {
         // What the answer depends on, beyond the chain itself: whether this
-        // node breaks out of it, and whether the caller wants the presented
-        // values or the logical ones.
+        // node breaks out of it, its visual mount target, its clip link, and
+        // whether the caller wants the presented values or the logical ones.
         let fixed = node.source_style.layout.position == nana_ui_core::PositionSpec::Fixed;
-        let isolates = isolates_from_ancestors(node);
+        let visual_parent = effective_visual_parent(&self.nodes, node);
         // A plain child takes exactly what its parent hands down, and the
         // rebuild pass remembers that per parent: a deep chain of only
         // children would miss the one-entry cache below on every node.
         if let Some(parent) = node.parent
             && !fixed
-            && !isolates
+            && visual_parent.is_none()
+            && self
+                .nodes
+                .get(&parent)
+                .is_some_and(|parent_node| !is_triggered_menu(parent_node))
             && clip_link(node) == Some(parent)
             && !is_workspace_resize_handle(node)
             && self.rebuild_scratch.lock().is_ok_and(|cache| cache.active)
@@ -57,7 +61,7 @@ impl UiScene {
         }
         let key = node
             .parent
-            .map(|parent| (parent, fixed, isolates, clip_link(node), visual));
+            .map(|parent| (parent, fixed, visual_parent, clip_link(node), visual));
         if let Some(key) = key
             && let Ok(cache) = self.rebuild_scratch.lock()
         {
@@ -119,6 +123,23 @@ impl UiScene {
         self.fold_ancestor_chain(ancestors, &hung, Some(node), fixed, visual)
     }
 
+    pub(super) fn visual_ancestor_opacity(&self, start: VisualNode, visual: bool) -> f32 {
+        let mut opacity = 1.0;
+        let Some(first) = visual_parent_of(&self.nodes, start) else {
+            return opacity;
+        };
+        for (vn, ancestor) in visual_ancestor_nodes(&self.nodes, first) {
+            if matches!(vn, VisualNode::Node(_)) && !is_opacity_group(&self.nodes, ancestor) {
+                opacity *= if visual {
+                    self.resolved_local_opacity(ancestor)
+                } else {
+                    local_opacity(ancestor)
+                };
+            }
+        }
+        opacity.clamp(0.0, 1.0)
+    }
+
     /// [`Self::compute_ancestor_state`] over an explicit chain: `ancestors`
     /// innermost first, `hung` the clip chain's links nearest first. Without a
     /// `node` the answer is the one a plain child of the innermost ancestor
@@ -170,19 +191,29 @@ impl UiScene {
             }
             _ => AffineTransform::IDENTITY,
         };
-        // Ancestor visual isolation (groups, non-group opacity, clips) ends at
-        // the innermost `isolate_from_ancestors` boundary.
-        let visual_start = if node.is_some_and(isolates_from_ancestors) {
-            ancestors.len()
+        let opacity = if let Some(node) = node {
+            if effective_visual_parent(&self.nodes, node).is_some() {
+                node_dependent = true;
+            }
+            self.visual_ancestor_opacity(VisualNode::Node(node.id), visual)
+        } else if let Some(innermost) = ancestors.last().copied() {
+            let own = if !is_opacity_group(&self.nodes, innermost) {
+                if visual {
+                    self.resolved_local_opacity(innermost)
+                } else {
+                    local_opacity(innermost)
+                }
+            } else {
+                1.0
+            };
+            (own * self.visual_ancestor_opacity(VisualNode::Node(innermost.id), visual))
+                .clamp(0.0, 1.0)
         } else {
-            ancestors
-                .iter()
-                .rposition(|ancestor| isolates_from_ancestors(ancestor))
-                .unwrap_or(0)
+            1.0
         };
         let mut fold = AncestorFold {
             transform,
-            opacity: 1.0,
+            opacity,
             clips: Vec::new(),
             blocks_3d: false,
         };
@@ -200,18 +231,15 @@ impl UiScene {
                 visual,
                 index >= geometry_start,
                 reaches,
-                index >= visual_start,
             );
         }
         (fold.finish(), node_dependent)
     }
 
     /// Folds one ancestor, outermost first, into what the chain hands down.
-    /// `geometry` is false above the nearest fixed boundary, `reaches`
-    /// whether the clip chain hangs from this ancestor, and `visual_reaches`
-    /// false above the innermost `isolate_from_ancestors` boundary. Returns
-    /// whether the answer read anything about `node` its siblings do not share.
-    #[allow(clippy::too_many_arguments)]
+    /// `geometry` is false above the nearest fixed boundary and `reaches`
+    /// whether the clip chain hangs from this ancestor. Returns whether the
+    /// answer read anything about `node` its siblings do not share.
     fn fold_ancestor(
         &self,
         fold: &mut AncestorFold,
@@ -220,15 +248,7 @@ impl UiScene {
         visual: bool,
         geometry: bool,
         reaches: bool,
-        visual_reaches: bool,
     ) -> bool {
-        if visual_reaches && !is_opacity_group(&self.nodes, ancestor) {
-            fold.opacity *= if visual {
-                self.resolved_local_opacity(ancestor)
-            } else {
-                local_opacity(ancestor)
-            };
-        }
         if !geometry {
             return false;
         }
@@ -257,81 +277,79 @@ impl UiScene {
         }
         let transform = handed;
         let mut node_dependent = false;
-        if visual_reaches {
-            let clips = &mut fold.clips;
-            if let Some(region) = overflow_clip_region(
-                ancestor.source_style.layout.as_ref(),
-                SceneRect {
-                    x: layout.x,
-                    y: layout.y,
-                    width: layout.width,
-                    height: layout.height,
-                },
-                transform,
-            ) && !node.is_some_and(|node| {
-                is_workspace_resize_handle(node) && Some(ancestor.id) == node.parent
-            }) {
-                clips.push(region);
-            }
-            if let Some(ComponentGeometry::EmptyState { root_clip, .. }) =
-                ancestor.component_geometry.as_deref()
-            {
-                clips.push(ClipRegion {
-                    bounds: offset_rect(scene_rect(*root_clip), geometry_origin),
-                    transform,
-                    corner_radius: 0.0,
-                    polygon_clip: None,
-                });
-            }
-            if let Some(ComponentGeometry::ModalFrame { surface, body, .. }) =
-                ancestor.component_geometry.as_deref()
-            {
-                node_dependent = true;
-                let surface = offset_rect(scene_rect(*surface), geometry_origin);
-                let focus_inset = if node.is_some_and(|node| node.focused) {
-                    3.0
-                } else {
-                    0.0
-                };
-                clips.push(ClipRegion {
-                    bounds: SceneRect {
-                        x: surface.x - focus_inset,
-                        y: surface.y - focus_inset,
-                        width: surface.width + focus_inset * 2.0,
-                        height: surface.height + focus_inset * 2.0,
-                    },
-                    transform,
-                    corner_radius: 0.0,
-                    polygon_clip: None,
-                });
-                if let Some(StandardVisual::ModalFrame { slots, .. }) =
-                    ancestor.standard_visual.as_ref()
-                    && let Some(node) = node
-                    && slots
-                        .body
-                        .is_some_and(|body_root| self.node_descends_from(node.id, body_root))
-                {
-                    clips.push(ClipRegion {
-                        bounds: offset_rect(scene_rect(*body), geometry_origin),
-                        transform,
-                        corner_radius: 0.0,
-                        polygon_clip: None,
-                    });
-                }
-            }
-            let ancestor_bounds = SceneRect {
+        let clips = &mut fold.clips;
+        if let Some(region) = overflow_clip_region(
+            ancestor.source_style.layout.as_ref(),
+            SceneRect {
                 x: layout.x,
                 y: layout.y,
                 width: layout.width,
                 height: layout.height,
-            };
-            if let Some(region) = clip_path_region(
-                ancestor.source_style.layout.as_ref(),
-                ancestor_bounds,
+            },
+            transform,
+        ) && !node.is_some_and(|node| {
+            is_workspace_resize_handle(node) && Some(ancestor.id) == node.parent
+        }) {
+            clips.push(region);
+        }
+        if let Some(ComponentGeometry::EmptyState { root_clip, .. }) =
+            ancestor.component_geometry.as_deref()
+        {
+            clips.push(ClipRegion {
+                bounds: offset_rect(scene_rect(*root_clip), geometry_origin),
                 transform,
-            ) {
-                clips.push(region);
+                corner_radius: 0.0,
+                polygon_clip: None,
+            });
+        }
+        if let Some(ComponentGeometry::ModalFrame { surface, body, .. }) =
+            ancestor.component_geometry.as_deref()
+        {
+            node_dependent = true;
+            let surface = offset_rect(scene_rect(*surface), geometry_origin);
+            let focus_inset = if node.is_some_and(|node| node.focused) {
+                3.0
+            } else {
+                0.0
+            };
+            clips.push(ClipRegion {
+                bounds: SceneRect {
+                    x: surface.x - focus_inset,
+                    y: surface.y - focus_inset,
+                    width: surface.width + focus_inset * 2.0,
+                    height: surface.height + focus_inset * 2.0,
+                },
+                transform,
+                corner_radius: 0.0,
+                polygon_clip: None,
+            });
+            if let Some(StandardVisual::ModalFrame { slots, .. }) =
+                ancestor.standard_visual.as_ref()
+                && let Some(node) = node
+                && slots
+                    .body
+                    .is_some_and(|body_root| self.node_descends_from(node.id, body_root))
+            {
+                clips.push(ClipRegion {
+                    bounds: offset_rect(scene_rect(*body), geometry_origin),
+                    transform,
+                    corner_radius: 0.0,
+                    polygon_clip: None,
+                });
             }
+        }
+        let ancestor_bounds = SceneRect {
+            x: layout.x,
+            y: layout.y,
+            width: layout.width,
+            height: layout.height,
+        };
+        if let Some(region) = clip_path_region(
+            ancestor.source_style.layout.as_ref(),
+            ancestor_bounds,
+            transform,
+        ) {
+            clips.push(region);
         }
         fold.transform = handed.then(AffineTransform::from_matrix([
             1.0,
@@ -383,6 +401,9 @@ impl UiScene {
                 break held.clone();
             }
             let node = self.nodes.get(&cursor)?;
+            if effective_visual_parent(&self.nodes, node).is_some() || is_triggered_menu(node) {
+                break None;
+            }
             let fixed = node.source_style.layout.position == nana_ui_core::PositionSpec::Fixed;
             let follows = if fixed {
                 clip_link(node).is_none()
@@ -440,11 +461,14 @@ impl UiScene {
             fold.blocks_3d = false;
             inherited = None;
         }
-        if isolates_from_ancestors(ancestor) {
-            fold.opacity = 1.0;
-            inherited = None;
+        if !is_opacity_group(&self.nodes, ancestor) {
+            fold.opacity *= if visual {
+                self.resolved_local_opacity(ancestor)
+            } else {
+                local_opacity(ancestor)
+            };
         }
-        if self.fold_ancestor(&mut fold, ancestor, None, visual, true, true, true) {
+        if self.fold_ancestor(&mut fold, ancestor, None, visual, true, true) {
             return None;
         }
         let clips = match inherited {
@@ -674,10 +698,16 @@ pub(super) fn ancestor_nodes(
 }
 
 /// Which chain an [`AncestorState`] was read for: the parent it starts at,
-/// whether the node breaks out of it, whether it isolates from ancestors, the
-/// clip parent it hangs from (#201), and whether the caller wanted the
-/// presented values or the logical ones.
-pub(super) type AncestorStateKey = (StableNodeId, bool, bool, Option<StableNodeId>, bool);
+/// whether the node breaks out of it, its visual parent override, the clip
+/// parent it hangs from (#201), and whether the caller wanted the presented
+/// values or the logical ones.
+pub(super) type AncestorStateKey = (
+    StableNodeId,
+    bool,
+    Option<nana_ui_runtime::VisualParent>,
+    Option<StableNodeId>,
+    bool,
+);
 
 /// What a remembered draw-time answer is stamped with. See
 /// [`UiScene::draw_stamp`].

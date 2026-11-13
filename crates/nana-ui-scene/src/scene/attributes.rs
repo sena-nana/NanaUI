@@ -394,6 +394,8 @@ mod tests {
             id: id(value),
             kind: Arc::new(NodeKind::Element { tag: "div".into() }),
             parent: parent.map(id),
+            visual_parent: None,
+            overlay_visual_parent: None,
             children: Arc::new(children.iter().copied().map(id).collect()),
             layout: LayoutBox {
                 x: 0.0,

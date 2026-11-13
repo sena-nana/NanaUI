@@ -90,9 +90,10 @@ pub struct Dropdown {
     /// Resting field has no fill and no border, like a toolbar picker. Hover
     /// and the open state still wash it so the hit target stays visible.
     pub bare_trigger: bool,
-    /// Isolate the open dropdown menu from ancestor visual effects (defaults to
-    /// `true`); the closed field stays inside its ancestor chain.
-    pub isolate_from_ancestors: bool,
+    /// Visual mounting scope for the open dropdown menu (defaults to
+    /// [`nana_ui_core::OverlayMount::NearestModal`]). The closed field
+    /// remains inside its ancestor chain.
+    pub overlay_mount: nana_ui_core::OverlayMount,
     pub style: NodeStyle,
 }
 
@@ -130,7 +131,7 @@ impl Dropdown {
             highlighted: None,
             menu_scroll: SelectMenuScroll::default(),
             bare_trigger: false,
-            isolate_from_ancestors: true,
+            overlay_mount: nana_ui_core::OverlayMount::NearestModal,
             style: crate::select::field_style_for_size(ControlSize::Medium),
         }
     }
@@ -190,10 +191,10 @@ impl Dropdown {
         self
     }
 
-    /// Control whether the open dropdown menu isolates itself from ancestor
-    /// visual effects (defaults to `true`).
-    pub fn isolate_from_ancestors(mut self, isolate: bool) -> Self {
-        self.isolate_from_ancestors = isolate;
+    /// Set where the open dropdown menu mounts visually in the scene tree
+    /// (defaults to [`nana_ui_core::OverlayMount::NearestModal`]).
+    pub fn overlay_mount(mut self, mount: nana_ui_core::OverlayMount) -> Self {
+        self.overlay_mount = mount;
         self
     }
 
@@ -519,7 +520,7 @@ impl ComponentView for Dropdown {
             menu_room: crate::select::menu_room(self.opened && !self.inactive(), id, world),
             checkable: matches!(self.selection, DropdownSelection::Multiple(_)),
             fit_options: false,
-            isolate_from_ancestors: self.isolate_from_ancestors,
+            overlay_mount: self.overlay_mount,
         };
         if world.standard_visual(id) != Some(visual.clone()) {
             mutations.set_standard_visual(id, Some(visual));

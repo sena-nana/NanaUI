@@ -140,7 +140,7 @@ pub use motion::{
     track_completion_deadline,
 };
 pub use number_field::NumberFieldSpec;
-pub use overlay::ExclusiveOverlay;
+pub use overlay::{ExclusiveOverlay, OverlayMount};
 pub use packaged::{
     PACKAGED_URL_PREFIX, PackagedReadError, PackagedResourceSource, install_packaged_source,
     is_packaged_url, packaged_logical_path, packaged_source_installed, packaged_url, read_packaged,

@@ -249,9 +249,9 @@ pub use components::{
     TextMatchMarker, TextMatchSpan, TextMetrics, TextMinimapGeometry, TextSelection,
     TextShapeConstraints, TextShaper, TextShaping, TextSignatureHelp, TextSignaturePopup,
     TextSnippet, TextStickyLineGeometry, TextValue, TextVerticalAlignment, TextWhitespaceKind,
-    TooltipVisual, TriggeredMenuOverlay, decode_virtual_menu_item, decode_virtual_tree_item,
-    decode_virtual_tree_toggle, menu_row_index, menu_row_slots, virtual_listbox_id,
-    virtual_menu_item_id, virtual_tree_item_id, virtual_tree_toggle_id,
+    TooltipVisual, TriggeredMenuOverlay, VisualParent, decode_virtual_menu_item,
+    decode_virtual_tree_item, decode_virtual_tree_toggle, menu_row_index, menu_row_slots,
+    virtual_listbox_id, virtual_menu_item_id, virtual_tree_item_id, virtual_tree_toggle_id,
 };
 pub use curve_field::{
     CurveChanged, CurveDragState, CurveDragging, CurveField, CurveInput, CurvePoint,
@@ -366,7 +366,7 @@ pub use nana_ui_core::{
     GraphPoint, GraphPort, GraphPortId, GraphPortKind, GraphPortSide, GraphRect, GraphSelection,
     GraphSize, GraphTarget, GraphTargetDescriptor, GraphTargetId, GraphTargetKind, GraphViewport,
     Icon, IconData, IconPathCommand, IconShape, ImageSampling, JustifySpec, KeyContext,
-    LayoutStyle, LengthAtom, LengthSpec, LineBreakSpec, LineHeightSpec, OverflowSpec,
+    LayoutStyle, LengthAtom, LengthSpec, LineBreakSpec, LineHeightSpec, OverflowSpec, OverlayMount,
     PaintTransform, PhysicalEdge, PointerEventsSpec, PopoverAlignment, PopoverPlacement,
     PositionSpec, RadiusTier, SemanticColorMix, SemanticColorRole, ShapeRecipe, ShapeRole,
     StatusTone, TITLE_BAR_HEIGHT, TabDragGroup, TabDragLease, TabDragRect, TabDragSurface,
@@ -398,7 +398,7 @@ pub use path_field::{BrowseRequested, PathField};
 pub use placeholders::{LevelMeter, Skeleton};
 pub use popover::{
     ActionMenu, AnchorOverflow, MENU_OVERLAY_Z_INDEX, Popover, PopoverClosed, PopoverToggled,
-    resolve_anchored_surface, resolve_popover_origin,
+    TOP_LAYER_Z_INDEX, resolve_anchored_surface, resolve_popover_origin,
 };
 pub use presence::{PresenceLifecycle, PresencePhase, PresenceSettled};
 pub use presentation::{

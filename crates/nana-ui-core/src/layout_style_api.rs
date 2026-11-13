@@ -192,7 +192,6 @@ impl LayoutStyle {
         box_sizing: BoxSizing,
         position: PositionSpec,
         isolation: bool,
-        isolate_from_ancestors: bool,
         transform_box: TransformBox,
         preserve_3d: bool,
         logical_padding: LogicalEdges,

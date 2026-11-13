@@ -93,163 +93,154 @@ impl UiScene {
     /// The stamp covers scene changes and presentation samples: groups retain
     /// their membership across a track while their compositing alpha changes.
     pub fn opacity_groups(&self, node: StableNodeId) -> Arc<[OpacityGroup]> {
+        self.visual_opacity_groups(VisualNode::Node(node))
+    }
+
+    pub(super) fn visual_opacity_groups(&self, vn: VisualNode) -> Arc<[OpacityGroup]> {
         if self.dest_group_candidates == 0 && self.nodes.opacity_motion.is_empty() {
             return empty_opacity_groups();
         }
-        let Some(candidate) = self.nodes.get(&node) else {
+        if !self.nodes.contains_key(&vn.node_id()) {
             return empty_opacity_groups();
-        };
-        let base = match candidate.parent {
-            Some(parent) => {
+        }
+        let base = match visual_parent_of(&self.nodes, vn) {
+            Some(parent_vn) => {
                 let mut cache = self
                     .opacity_group_cache
                     .lock()
                     .expect("scene opacity groups");
-                let groups = self.ancestor_opacity_groups(&mut cache, parent, 0);
-                self.inherited_opacity_groups(parent, candidate, groups)
+                let groups = self.ancestor_visual_opacity_groups(&mut cache, parent_vn, 0);
+                self.inherited_visual_opacity_groups(parent_vn, vn, groups)
             }
             None => empty_opacity_groups(),
         };
-        if is_dest_group(&self.nodes, candidate) {
+        if let Some(own) = self.visual_node_own_opacity_group(vn) {
             let mut groups = base.to_vec();
-            groups.push(self.presented_dest_group(node, candidate));
+            groups.push(own);
             return Arc::from(groups);
         }
         base
     }
 
-    fn ancestor_opacity_groups(
+    fn ancestor_visual_opacity_groups(
         &self,
         cache: &mut OpacityGroupCache,
-        id: StableNodeId,
+        vn: VisualNode,
         depth: usize,
     ) -> Arc<[OpacityGroup]> {
         if depth >= MAX_ANCESTOR_DEPTH {
             return empty_opacity_groups();
         }
-        if let Some((stamp, groups)) = cache.get(&id)
+        if let Some((stamp, groups)) = cache.get(&vn)
             && *stamp == self.draw_stamp()
         {
             return Arc::clone(groups);
         }
-        let Some(candidate) = self.nodes.get(&id) else {
+        if !self.nodes.contains_key(&vn.node_id()) {
             return empty_opacity_groups();
-        };
-        let base = match candidate.parent {
-            Some(parent) => {
-                let groups = self.ancestor_opacity_groups(cache, parent, depth + 1);
-                self.inherited_opacity_groups(parent, candidate, groups)
+        }
+        let base = match visual_parent_of(&self.nodes, vn) {
+            Some(parent_vn) => {
+                let groups = self.ancestor_visual_opacity_groups(cache, parent_vn, depth + 1);
+                self.inherited_visual_opacity_groups(parent_vn, vn, groups)
             }
             None => empty_opacity_groups(),
         };
-        let groups = if is_dest_group(&self.nodes, candidate) {
+        let groups = if let Some(own) = self.visual_node_own_opacity_group(vn) {
             let mut groups = base.to_vec();
-            groups.push(self.presented_dest_group(id, candidate));
+            groups.push(own);
             Arc::from(groups)
         } else {
             base
         };
-        cache.insert(id, (self.draw_stamp(), Arc::clone(&groups)));
+        cache.insert(vn, (self.draw_stamp(), Arc::clone(&groups)));
         groups
     }
 
     /// Destination groups for this draw. A modal scrim inherits outer groups,
     /// but never the card's own opacity: it has an independent presence track.
-    /// A triggered menu's trigger is outside its menu's fade the same way:
-    /// only the hanging surface and its items fade in. Surfaces painting at the
-    /// root drop outer scroll edge fades so popovers and open select menus
-    /// remain opaque across the scrollport edge.
+    /// Triggered overlay surfaces (`VisualNode::Overlay`) strip bypassed
+    /// scroll edge fades; scrollbars strip their own scroll container's edge fade.
     pub fn primitive_opacity_groups(&self, primitive: &ScenePrimitive) -> Arc<[OpacityGroup]> {
         if self.is_modal_scrim(primitive) {
-            let Some(node) = self.nodes.get(&primitive.node) else {
+            let vn = VisualNode::Node(primitive.node);
+            let Some(parent_vn) = visual_parent_of(&self.nodes, vn) else {
                 return empty_opacity_groups();
             };
-            let Some(parent) = node.parent else {
-                return empty_opacity_groups();
-            };
-            return self.inherited_opacity_groups(parent, node, self.opacity_groups(parent));
+            let mut cache = self
+                .opacity_group_cache
+                .lock()
+                .expect("scene opacity groups");
+            let parent_groups = self.ancestor_visual_opacity_groups(&mut cache, parent_vn, 0);
+            return self.inherited_visual_opacity_groups(parent_vn, vn, parent_groups);
         }
-        let groups = self.opacity_groups(primitive.node);
+        let vn = primitive_visual_node(&self.nodes, primitive);
+        let groups = self.visual_opacity_groups(vn);
         if is_scrollbar_chrome_slot(primitive.id.slot) {
             return without_edge_fade(primitive.node, groups);
         }
-        if is_triggered_overlay_surface(primitive.id)
-            && let Some(menu) = self.nodes.get(&primitive.node)
-            && triggered_overlay_isolates(menu)
-        {
-            return self.hanging_menu_opacity_group(menu);
-        }
-        if is_select_menu_slot(primitive.id.slot)
-            && self
-                .nodes
-                .get(&primitive.node)
-                .is_some_and(|node| select_menu_isolates(node))
-        {
-            return empty_opacity_groups();
-        }
-        if paints_at_root(&self.nodes, primitive) {
-            return without_edge_fades(groups, |_| false);
-        }
-        match self.nodes.get(&primitive.node) {
-            Some(menu) if is_triggered_menu(menu) => self.without_menu_fade(menu, groups),
-            _ => groups,
+        groups
+    }
+
+    fn visual_node_own_opacity_group(&self, vn: VisualNode) -> Option<OpacityGroup> {
+        match vn {
+            VisualNode::Node(id) => {
+                let candidate = self.nodes.get(&id)?;
+                is_dest_group(&self.nodes, candidate)
+                    .then(|| self.presented_dest_group(id, candidate))
+            }
+            VisualNode::Overlay(id) => {
+                if !visual_is_opacity_group(&self.nodes, vn) {
+                    return None;
+                }
+                let menu = self.nodes.get(&id)?;
+                let presented = self.compositor.opacity(id)?;
+                let logical = local_opacity(menu);
+                let fade = if logical > 1e-6 {
+                    (presented / logical).clamp(0.0, 1.0)
+                } else {
+                    presented.clamp(0.0, 1.0)
+                };
+                if (fade - 1.0).abs() < 1e-6 {
+                    return None;
+                }
+                Some(OpacityGroup {
+                    node: id,
+                    opacity: fade,
+                    filter: ColorFilter::default(),
+                    mix_blend: MixBlendMode::Normal,
+                    inset_shadow: None,
+                    edge_fade: None,
+                })
+            }
         }
     }
 
-    /// Pure open/close presentation fade group of an isolated triggered menu
-    /// (`menu`), stripping outer ancestor groups and any trigger-only styles.
-    fn hanging_menu_opacity_group(&self, menu: &ExtractedNode) -> Arc<[OpacityGroup]> {
-        if !is_dest_group(&self.nodes, menu) {
-            return empty_opacity_groups();
-        }
-        let Some(presented) = self.compositor.opacity(menu.id) else {
-            return empty_opacity_groups();
-        };
-        let logical = local_opacity(menu);
-        let fade = if logical > 1e-6 {
-            (presented / logical).clamp(0.0, 1.0)
-        } else {
-            presented.clamp(0.0, 1.0)
-        };
-        if (fade - 1.0).abs() < 1e-6 {
-            return empty_opacity_groups();
-        }
-        Arc::from([OpacityGroup {
-            node: menu.id,
-            opacity: fade,
-            filter: ColorFilter::default(),
-            mix_blend: MixBlendMode::Normal,
-            inset_shadow: None,
-            edge_fade: None,
-        }])
-    }
-
-    /// `groups`, inherited by `child` from `parent`: severed completely when
-    /// `child` isolates itself from ancestors (retaining only its menu's open/
-    /// close fade for hanging items); otherwise outside `parent`'s menu fade
-    /// when `child` draws its trigger, and without the `edge_fade` of any
-    /// scroll ancestor whose overflow clip `child` escapes.
-    fn inherited_opacity_groups(
+    /// `groups`, inherited by `child_vn` from `parent_vn`: floating overlay
+    /// surfaces (`VisualNode::Overlay`) and `position: fixed` nodes strip
+    /// bypassed scroll edge fades, and escaping absolute boxes strip scroll
+    /// edge fades of containers they are not clipped by.
+    fn inherited_visual_opacity_groups(
         &self,
-        parent: StableNodeId,
-        child: &ExtractedNode,
+        parent_vn: VisualNode,
+        child_vn: VisualNode,
         groups: Arc<[OpacityGroup]>,
     ) -> Arc<[OpacityGroup]> {
-        if isolates_from_ancestors(child) {
-            if let Some(menu) = self
-                .nodes
-                .get(&parent)
-                .filter(|menu| is_triggered_menu(menu) && !is_trigger_content(menu, child.id))
-            {
-                return self.hanging_menu_opacity_group(menu);
-            }
-            return empty_opacity_groups();
+        if matches!(child_vn, VisualNode::Overlay(_)) {
+            return without_edge_fades(groups, |_| false);
         }
-        let groups = self.trigger_content_groups(parent, child.id, groups);
+        let VisualNode::Node(child_id) = child_vn else {
+            return groups;
+        };
+        let Some(child) = self.nodes.get(&child_id) else {
+            return empty_opacity_groups();
+        };
         if child.source_style.layout.position == nana_ui_core::PositionSpec::Fixed {
             return without_edge_fades(groups, |_| false);
         }
-        if clip_link(child) == Some(parent) {
+        if let VisualNode::Node(parent_id) = parent_vn
+            && clip_link(child) == Some(parent_id)
+        {
             return groups;
         }
         if !groups.iter().any(|group| group.edge_fade.is_some()) {
@@ -257,44 +248,6 @@ impl UiScene {
         }
         let hung = clip_chain_parents(&self.nodes, child);
         without_edge_fades(groups, |node| hung.contains(&node))
-    }
-
-    /// `groups`, inherited by `child` from `parent`, outside `parent`'s fade
-    /// when `child` draws the trigger of a triggered menu `parent`.
-    fn trigger_content_groups(
-        &self,
-        parent: StableNodeId,
-        child: StableNodeId,
-        groups: Arc<[OpacityGroup]>,
-    ) -> Arc<[OpacityGroup]> {
-        match self.nodes.get(&parent) {
-            Some(menu) if is_trigger_content(menu, child) => self.without_menu_fade(menu, groups),
-            _ => groups,
-        }
-    }
-
-    /// `groups`, ending with `menu`'s own, with that group reduced to what
-    /// the menu's logical style composites: its presentation fades only its
-    /// hanging surface and items. Dropped when that leaves nothing to
-    /// composite.
-    fn without_menu_fade(
-        &self,
-        menu: &ExtractedNode,
-        groups: Arc<[OpacityGroup]>,
-    ) -> Arc<[OpacityGroup]> {
-        let Some((own, outer)) = groups.split_last().filter(|(own, _)| own.node == menu.id) else {
-            return groups;
-        };
-        let logical = dest_group(&self.nodes, menu.id, menu, self.placed_layout(menu));
-        if logical.is_identity() {
-            return Arc::from(outer);
-        }
-        if *own == logical {
-            return groups;
-        }
-        let mut groups = outer.to_vec();
-        groups.push(logical);
-        Arc::from(groups)
     }
 
     fn presented_dest_group(&self, id: StableNodeId, node: &ExtractedNode) -> OpacityGroup {
@@ -371,11 +324,23 @@ pub(super) fn may_be_dest_group(node: &ExtractedNode) -> bool {
 
 pub(super) fn is_opacity_group(nodes: &SceneNodes, node: &ExtractedNode) -> bool {
     let translucent = is_translucent(node) && has_extracted_child(nodes, node);
-    nodes.opacity_motion.contains(&node.id)
+    (nodes.opacity_motion.contains(&node.id) && !is_triggered_menu(node))
         || translucent
         || dest_filter_applies(nodes, node)
         || !node.source_style.layout.paint.mix_blend.is_normal()
         || (has_scroll_edge_fade(node) && has_extracted_child(nodes, node))
+}
+
+pub(super) fn visual_is_opacity_group(nodes: &SceneNodes, vn: VisualNode) -> bool {
+    match vn {
+        VisualNode::Node(id) => nodes
+            .get(&id)
+            .is_some_and(|node| is_opacity_group(nodes, node)),
+        VisualNode::Overlay(id) => {
+            nodes.opacity_motion.contains(&id)
+                && nodes.get(&id).is_some_and(|node| is_triggered_menu(node))
+        }
+    }
 }
 
 /// A vertically clipping box styled with an edge fade. It is a group however
@@ -538,10 +503,10 @@ fn dest_group(
 
 fn filter_groups_from(nodes: &SceneNodes, node: StableNodeId) -> Vec<FilterGroup> {
     let mut groups = Vec::new();
-    for (id, candidate) in ancestor_nodes(nodes, node) {
-        if is_filter_group(nodes, candidate) {
+    for (vn, candidate) in visual_ancestor_nodes(nodes, VisualNode::Node(node)) {
+        if matches!(vn, VisualNode::Node(_)) && is_filter_group(nodes, candidate) {
             groups.push(FilterGroup {
-                node: id,
+                node: vn.node_id(),
                 filter: candidate
                     .source_style
                     .layout
@@ -549,9 +514,6 @@ fn filter_groups_from(nodes: &SceneNodes, node: StableNodeId) -> Vec<FilterGroup
                     .filter
                     .unwrap_or_default(),
             });
-        }
-        if isolates_from_ancestors(candidate) {
-            break;
         }
     }
     groups.reverse();

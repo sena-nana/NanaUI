@@ -264,7 +264,6 @@ layout_style_fields! {
     anchor: POSITION,
     z_index: STACKING,
     isolation: STACKING,
-    isolate_from_ancestors: STACKING,
     transform: TRANSFORM,
     transform_3d: TRANSFORM,
     unsupported_transform: TRANSFORM,

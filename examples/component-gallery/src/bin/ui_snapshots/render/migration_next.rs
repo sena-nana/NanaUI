@@ -297,6 +297,7 @@ fn tooltip_fixture_config(state: &str) -> TooltipConfig {
         gap: 6.0,
         viewport_padding: 4.0,
         max_width: 280.0,
+        ..Default::default()
     }
 }
 

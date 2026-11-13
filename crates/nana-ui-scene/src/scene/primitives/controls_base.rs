@@ -677,12 +677,9 @@ pub(super) fn build(context: &GeometryPaintContext<'_>, emit: &mut impl FnMut(Sc
                 node_order,
             );
             if let Some(menu) = menu {
-                let menu_z = node.z_index.max(1_000);
-                let menu_opacity = if crate::scene::select_menu_isolates(node) {
-                    1.0
-                } else {
-                    opacity
-                };
+                let menu_z = context.overlay_visual_z;
+                let menu_opacity =
+                    (local_opacity(node) * context.overlay_visual_opacity).clamp(0.0, 1.0);
                 emit(ScenePrimitive {
                     id: PrimitiveId {
                         node: id,

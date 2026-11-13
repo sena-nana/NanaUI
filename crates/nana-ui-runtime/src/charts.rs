@@ -327,6 +327,7 @@ impl LabelMeasure for ChartLabelMeasure<'_> {
 #[derive(Debug, Clone, PartialEq)]
 pub struct ChartTooltip {
     pub content: Arc<TooltipContent>,
+    pub overlay_mount: nana_ui_core::OverlayMount,
     pub style: NodeStyle,
 }
 
@@ -341,8 +342,16 @@ impl ChartTooltip {
     pub(crate) fn new(content: Arc<TooltipContent>) -> Self {
         Self {
             content,
+            overlay_mount: nana_ui_core::OverlayMount::NearestModal,
             style: tooltip_style(),
         }
+    }
+
+    /// Set where the floating chart tooltip mounts visually in the scene tree
+    /// (defaults to [`nana_ui_core::OverlayMount::NearestModal`]).
+    pub fn overlay_mount(mut self, mount: nana_ui_core::OverlayMount) -> Self {
+        self.overlay_mount = mount;
+        self
     }
 
     pub(crate) fn line_height() -> f32 {
@@ -385,7 +394,6 @@ fn tooltip_style() -> NodeStyle {
     NodeStyle {
         layout: Arc::new(nana_ui_core::LayoutStyle {
             position: nana_ui_core::PositionSpec::Fixed,
-            isolate_from_ancestors: true,
             border_width: Some(nana_ui_core::HAIRLINE),
             border_radius: Some(nana_ui_core::TooltipConfig::RADIUS),
             pointer_events: Some(nana_ui_core::PointerEventsSpec::None),
@@ -411,6 +419,9 @@ impl ComponentView for ChartTooltip {
     }
 
     fn project(&self, id: StableNodeId, world: &UiWorld, mutations: &mut MutationQueue) {
+        if world.overlay_mount(id) != Some(self.overlay_mount) {
+            mutations.set_overlay_mount(id, Some(self.overlay_mount));
+        }
         let visual = StandardVisual::ChartTooltip {
             content: Arc::clone(&self.content),
         };

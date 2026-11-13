@@ -48,9 +48,25 @@ struct GeometryPaintContext<'a> {
     /// for the rare geometry put on the page's pixel grid.
     #[cfg_attr(not(feature = "charts"), allow(dead_code))]
     page_origin: [f32; 2],
+    overlay_visual_z: i32,
+    overlay_visual_opacity: f32,
 }
 
 impl UiScene {
+    fn resolve_overlay_mount_z(&self, node: &ExtractedNode, base_z: i32) -> i32 {
+        match crate::scene::effective_overlay_visual_parent(&self.nodes, node) {
+            nana_ui_runtime::VisualParent::TopLayer => {
+                base_z.max(nana_ui_runtime::TOP_LAYER_Z_INDEX)
+            }
+            nana_ui_runtime::VisualParent::Modal(modal_id) => self
+                .nodes
+                .get(&modal_id)
+                .map_or(0, |modal| modal.z_index)
+                .saturating_add(base_z),
+            _ => base_z,
+        }
+    }
+
     /// Rebuild one node's primitives, in place.
     ///
     /// The node's primitives are not dropped first: a rebuild almost always
@@ -755,8 +771,28 @@ impl UiScene {
             if pixel_snapped {
                 self.origin_bound.insert(id);
             }
+            let (overlay_visual_z, overlay_visual_opacity) =
+                match node.component_geometry.as_deref() {
+                    Some(ComponentGeometry::Select { menu: Some(_), .. }) => (
+                        self.resolve_overlay_mount_z(
+                            &node,
+                            node.z_index.max(nana_ui_runtime::MENU_OVERLAY_Z_INDEX),
+                        ),
+                        self.visual_ancestor_opacity(crate::scene::VisualNode::Overlay(id), false),
+                    ),
+                    Some(ComponentGeometry::MenuSurface {
+                        trigger_surface: Some(_),
+                        ..
+                    }) => (
+                        self.resolve_overlay_mount_z(&node, nana_ui_runtime::MENU_OVERLAY_Z_INDEX),
+                        self.visual_ancestor_opacity(crate::scene::VisualNode::Overlay(id), false),
+                    ),
+                    _ => (0, 1.0),
+                };
             let context = GeometryPaintContext {
                 page_origin,
+                overlay_visual_z,
+                overlay_visual_opacity,
                 node: &node,
                 bounds,
                 transform,

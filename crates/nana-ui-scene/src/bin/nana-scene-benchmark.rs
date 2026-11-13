@@ -183,6 +183,8 @@ fn leaf(value: u64, shade: f32) -> ExtractedNode {
         id: id(value),
         kind: Arc::new(NodeKind::Element { tag: "div".into() }),
         parent: None,
+        visual_parent: None,
+        overlay_visual_parent: None,
         children: Arc::new(Vec::new()),
         layout: LayoutBox {
             x: 0.0,

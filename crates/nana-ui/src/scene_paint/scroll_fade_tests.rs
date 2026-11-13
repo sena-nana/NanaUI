@@ -3,7 +3,9 @@
 //! fades, and the bars stay whole.
 use super::tests::{readback_rgba, test_copy_target, test_device};
 use super::*;
-use nana_ui_core::{LengthSpec, PopoverAlignment, PopoverPlacement, ScrollbarVisibility};
+use nana_ui_core::{
+    LengthSpec, OverlayMount, PopoverAlignment, PopoverPlacement, ScrollbarVisibility,
+};
 use nana_ui_runtime::view::{entity_ref, text, widget, with_refs};
 use nana_ui_runtime::{
     ComputedStyle, DocumentId, Entity, LayoutViewport, Popover, ScrollAxes, ScrollOffset,
@@ -197,7 +199,7 @@ fn render_popover_in_scrollport(
     queue: &wgpu::Queue,
     fade: Option<(f32, f32)>,
     ancestor_opacity: Option<f32>,
-    isolate_from_ancestors: bool,
+    overlay_mount: OverlayMount,
 ) -> (Vec<u8>, nana_ui_scene::SceneRect) {
     use std::time::Duration;
 
@@ -239,7 +241,7 @@ fn render_popover_in_scrollport(
                             .alignment(PopoverAlignment::Start)
                             .width(160.0)
                             .padding(8.0)
-                            .isolate_from_ancestors(isolate_from_ancestors),
+                            .overlay_mount(overlay_mount),
                     )
                     .entity_ref(popover)
                     .trigger(
@@ -289,9 +291,15 @@ fn render_popover_in_scrollport(
 #[test]
 fn an_open_popover_is_not_faded_across_the_scrollport_edge() {
     let (device, queue) = test_device();
-    let (faded, rect) =
-        render_popover_in_scrollport(&device, &queue, Some((14.0, 64.0)), None, true);
-    let (plain, _) = render_popover_in_scrollport(&device, &queue, None, None, true);
+    let (faded, rect) = render_popover_in_scrollport(
+        &device,
+        &queue,
+        Some((14.0, 64.0)),
+        None,
+        OverlayMount::NearestModal,
+    );
+    let (plain, _) =
+        render_popover_in_scrollport(&device, &queue, None, None, OverlayMount::NearestModal);
     let probe_x = (rect.x + rect.width * 0.5) as u32;
     let outside_x = 260u32;
     // Inside the popover panel, pixels remain solid and identical to the unfaded control across the bottom fade band and scrollport edge.
@@ -317,17 +325,28 @@ fn an_open_popover_is_not_faded_across_the_scrollport_edge() {
 #[test]
 fn an_open_popover_is_isolated_from_translucent_ancestors_by_default() {
     let (device, queue) = test_device();
-    let (plain, _) = render_popover_in_scrollport(&device, &queue, None, None, true);
-    let (isolated, rect) =
-        render_popover_in_scrollport(&device, &queue, Some((14.0, 64.0)), Some(0.35), true);
-    let (inherited, _) =
-        render_popover_in_scrollport(&device, &queue, Some((14.0, 64.0)), Some(0.35), false);
+    let (plain, _) =
+        render_popover_in_scrollport(&device, &queue, None, None, OverlayMount::NearestModal);
+    let (isolated, rect) = render_popover_in_scrollport(
+        &device,
+        &queue,
+        Some((14.0, 64.0)),
+        Some(0.35),
+        OverlayMount::NearestModal,
+    );
+    let (inherited, _) = render_popover_in_scrollport(
+        &device,
+        &queue,
+        Some((14.0, 64.0)),
+        Some(0.35),
+        OverlayMount::Inline,
+    );
     let probe_x = (rect.x + rect.width * 0.5) as u32;
     let outside_x = 260u32;
     let y_in_band = 190u32;
     let y_past_port = 208u32;
 
-    // Default isolate_from_ancestors = true: floating panel is solid across both ancestor opacity and scroll edge fade.
+    // Default OverlayMount::NearestModal (outside any modal -> Root): floating panel is solid across both ancestor opacity and scroll edge fade.
     assert_eq!(
         pixel(&isolated, probe_x, y_in_band),
         pixel(&plain, probe_x, y_in_band)
@@ -341,15 +360,15 @@ fn an_open_popover_is_isolated_from_translucent_ancestors_by_default() {
         pixel(&isolated, outside_x, 100)[3] < 120 && pixel(&isolated, outside_x, y_in_band)[3] < 25,
         "list content still inherits ancestor opacity and edge fade"
     );
-    // Explicit opt-out isolate_from_ancestors(false): inherits ancestor 0.35 opacity while still escaping bypassed scroll edge fade.
+    // Explicit opt-out OverlayMount::Inline: inherits ancestor 0.35 opacity while still escaping bypassed scroll edge fade.
     let opt_out_band = pixel(&inherited, probe_x, y_in_band);
     let opt_out_past = pixel(&inherited, probe_x, y_past_port);
     assert!(
         opt_out_band[3] > 60 && opt_out_band[3] < 120,
-        "opt-out popover inherits ancestor opacity: {opt_out_band:?}"
+        "inline popover inherits ancestor opacity: {opt_out_band:?}"
     );
     assert_eq!(
         opt_out_band[3], opt_out_past[3],
-        "opt-out popover still escapes the bypassed scroll edge fade"
+        "inline popover still escapes the bypassed scroll edge fade"
     );
 }

@@ -30,6 +30,8 @@ fn node(id: u64, bounds: [f32; 4], background: Option<[f32; 4]>) -> ExtractedNod
         id: StableNodeId::new(id).unwrap(),
         kind: Arc::new(NodeKind::Element { tag: "div".into() }),
         parent: None,
+        visual_parent: None,
+        overlay_visual_parent: None,
         children: Arc::new(Vec::new()),
         layout: LayoutBox {
             x: bounds[0],

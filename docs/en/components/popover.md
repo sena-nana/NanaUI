@@ -69,7 +69,7 @@ When the preferred side does not fit and the opposite side does, it flips to the
 
 After it opens, scrolling the page leaves the popup where it was until the next layout.
 
-The surface is viewport-fixed and defaults to `isolate_from_ancestors = true`, so it does not inherit ancestor opacity, filters, blend modes, compositor layer opacity, or scroll edge fades, and the panel's overflow cannot clip it; the floating overlay keeps only its own open/close fade while the in-flow trigger remains subject to ancestor effects. Pass `.isolate_from_ancestors(false)` to inherit ancestor effects again.
+The surface is viewport-fixed and defaults to `.overlay_mount(OverlayMount::NearestModal)`: when triggered inside normal page content or a scroll view (including one with `edge_fade`), the floating overlay mounts at the root above ancestor opacity, filters, blend modes, compositor fades, scroll edge fades, and overflow clips; when triggered inside a modal (`Dialog`, `ConfirmDialog`, or `Drawer`), it mounts onto the nearest enclosing modal so it escapes inner scroll fades and containers inside the modal while still staying scoped beneath higher modals. Pass `OverlayMount::TopLayer` to rise above all modals, or `OverlayMount::Inline` to stay in the ancestor visual chain. The in-flow trigger always stays in document order and inherits ancestor effects.
 
 ## Closing
 
@@ -102,7 +102,7 @@ There is no "use an arbitrary node as the anchor" path; the anchor is the trigge
 | `.width` | — | Has a minimum width |
 | `.gap` | — | Collapses to 0 when below 0 |
 | `.padding` | — | Collapses to 0 when below 0 |
-| `.isolate_from_ancestors` | `true` | When `true`, isolates the floating overlay from ancestor opacity, filters, edge fades, compositor opacity, and overflow clips; pass `false` to inherit them |
+| `.overlay_mount` | `OverlayMount` | Visual mount scope of the overlay: `NearestModal` by default (root on a normal page, nearest enclosing modal inside a dialog); `TopLayer` above all modals; `Inline` inheriting ancestor effects |
 
 ## Events
 

@@ -153,7 +153,7 @@ pub struct UiScene {
     /// Ancestor compositor-layer opacity factors, stamped with the scene
     /// instance and the attribute epoch. See
     /// [`UiScene::compositor_paint_opacity`].
-    pub(super) layer_factor_cache: std::sync::Mutex<LayerFactorCache>,
+    layer_factor_cache: std::sync::Mutex<LayerFactorCache>,
     /// What the primitive-rebuild pass would otherwise recompute for every
     /// node it touches. See [`RebuildScratch`].
     rebuild_scratch: std::sync::Mutex<RebuildScratch>,
@@ -519,12 +519,12 @@ impl UiScene {
 /// from.
 type PlacedClipCache = HashMap<PrimitiveId, (PlacedClipStamp, Arc<[ClipRegion]>)>;
 
-/// Dest groups per node, stamped with scene and presentation projection.
-type OpacityGroupCache = NodeMap<(DrawStamp, Arc<[OpacityGroup]>)>;
+/// Dest groups per visual node, stamped with scene and presentation projection.
+type OpacityGroupCache = HashMap<VisualNode, (DrawStamp, Arc<[OpacityGroup]>)>;
 
 /// Ancestor layer factors, stamped with the scene instance and the attribute
 /// epoch.
-pub(super) type LayerFactorCache = NodeMap<((u64, u64), f32)>;
+type LayerFactorCache = HashMap<VisualNode, ((u64, u64), f32)>;
 
 /// The scene's nodes.
 ///

@@ -87,7 +87,7 @@ overlay! {
     LayoutStyle {
         layout_isolation, direction, dir, writing_mode, unsupported_writing_mode,
         text_orientation, flex_reverse, order, flex_wrap, equal_wrap, display,
-        box_sizing, position, anchor, z_index, isolation, isolate_from_ancestors, transform, transform_3d,
+        box_sizing, position, anchor, z_index, isolation, transform, transform_3d,
         unsupported_transform, transform_origin, css_perspective, preserve_3d,
         transform_box, gap, row_gap, column_gap, padding, padding_top,
         padding_right, padding_bottom, padding_left, margin, margin_top,

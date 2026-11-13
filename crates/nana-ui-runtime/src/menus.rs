@@ -294,6 +294,7 @@ pub struct AnchoredActionMenu {
     pub placement: AnchoredMenuPlacement,
     pub width: f32,
     pub height: f32,
+    pub overlay_mount: nana_ui_core::OverlayMount,
     pub style: NodeStyle,
 }
 
@@ -314,6 +315,7 @@ impl AnchoredActionMenu {
             placement: AnchoredMenuPlacement::BottomStart,
             width: MENU_WIDTH,
             height: 0.0,
+            overlay_mount: nana_ui_core::OverlayMount::NearestModal,
             style: menu_surface_style(MENU_WIDTH, MENU_PADDING),
         };
         menu.apply_anchor();
@@ -331,10 +333,10 @@ impl AnchoredActionMenu {
         self
     }
 
-    /// Control whether the floating menu surface isolates itself from ancestor
-    /// visual and clip effects (defaults to `true`).
-    pub fn isolate_from_ancestors(mut self, isolate: bool) -> Self {
-        Arc::make_mut(&mut self.style.layout).isolate_from_ancestors = isolate;
+    /// Set where the floating menu surface mounts visually in the scene tree
+    /// (defaults to [`nana_ui_core::OverlayMount::NearestModal`]).
+    pub fn overlay_mount(mut self, mount: nana_ui_core::OverlayMount) -> Self {
+        self.overlay_mount = mount;
         self
     }
 
@@ -412,6 +414,7 @@ impl crate::ComponentView for AnchoredActionMenu {
             MenuSurfaceKind::ActionMenu,
             &self.style,
             self.open,
+            self.overlay_mount,
             "menu",
         );
     }
@@ -541,6 +544,9 @@ pub struct ContextMenu {
     /// Bounds the surface is kept inside; `None` anchors verbatim.
     /// See [`Self::place_in`].
     pub viewport: Option<LayoutBox>,
+    /// Visual mounting scope for the floating context menu (defaults to
+    /// [`nana_ui_core::OverlayMount::NearestModal`]).
+    pub overlay_mount: nana_ui_core::OverlayMount,
 }
 
 impl ContextMenu {
@@ -565,6 +571,7 @@ impl ContextMenu {
             searchable: false,
             state: TextInputState::new(""),
             viewport: None,
+            overlay_mount: nana_ui_core::OverlayMount::NearestModal,
         };
         menu.apply_anchor();
         menu
@@ -587,10 +594,10 @@ impl ContextMenu {
         self
     }
 
-    /// Control whether the floating context menu isolates itself from ancestor
-    /// visual and clip effects (defaults to `true`).
-    pub fn isolate_from_ancestors(mut self, isolate: bool) -> Self {
-        Arc::make_mut(&mut self.style.layout).isolate_from_ancestors = isolate;
+    /// Set where the floating context menu mounts visually in the scene tree
+    /// (defaults to [`nana_ui_core::OverlayMount::NearestModal`]).
+    pub fn overlay_mount(mut self, mount: nana_ui_core::OverlayMount) -> Self {
+        self.overlay_mount = mount;
         self
     }
 
@@ -835,6 +842,9 @@ impl crate::ComponentView for ContextMenu {
                 mark: item.mark,
             })
             .collect();
+        if world.overlay_mount(id) != Some(self.overlay_mount) {
+            mutations.set_overlay_mount(id, Some(self.overlay_mount));
+        }
         if open {
             let visual = StandardVisual::MenuSurface {
                 kind: MenuSurfaceKind::ContextMenu,

@@ -6,12 +6,13 @@
 
 use std::time::Duration;
 
-use nana_ui_core::{ColorFilter, LengthSpec, PositionSpec, ScrollbarVisibility};
+use nana_ui_core::{ColorFilter, LengthSpec, OverlayMount, PositionSpec, ScrollbarVisibility};
 use nana_ui_runtime::view::{button, entity_ref, row, text, widget, with_refs};
 use nana_ui_runtime::{
-    ActionMenu, ActionMenuItem, ComputedStyle, ContextMenu, ContextMenuItem, DocumentId, Entity,
-    HoverCard, LayoutViewport, Popover, ScrollAxes, ScrollOffset, ScrollView, Select, SelectOption,
-    StableNodeId, Stack, TextContent, TextMetrics, TextShapeConstraints, TextShaper, Tooltip,
+    ActionMenu, ActionMenuItem, ComputedStyle, ContextMenu, ContextMenuItem, Dialog, DocumentId,
+    Entity, HoverCard, LayoutViewport, OverlayHost, Popover, ScrollAxes, ScrollOffset, ScrollView,
+    Select, SelectOption, StableNodeId, Stack, TextContent, TextMetrics, TextShapeConstraints,
+    TextShaper, Tooltip,
 };
 use nana_ui_scene::{RuntimeDocument, SceneRect};
 
@@ -814,13 +815,12 @@ fn opt_out_and_opt_in_control_ancestor_isolation_and_delta_updates() {
         )
         .unwrap();
 
-    let (_, (pop, pop_item, plain_fixed, opt_in_fixed)) = runtime
+    let (_, (pop, pop_item, plain_fixed)) = runtime
         .context_mut()
         .mount_view(root.stable_id(), || {
             let pop = entity_ref::<Popover>();
             let pop_item = entity_ref::<nana_ui_runtime::Button>();
             let plain_fixed = entity_ref::<Stack>();
-            let opt_in_fixed = entity_ref::<Stack>();
             let tree = widget(
                 ScrollView::new(ScrollAxes::Vertical)
                     .edge_fade(10.0, 40.0)
@@ -833,7 +833,7 @@ fn opt_out_and_opt_in_control_ancestor_isolation_and_delta_updates() {
                 widget(
                     Popover::new()
                         .trigger("Toggle")
-                        .isolate_from_ancestors(false)
+                        .overlay_mount(OverlayMount::Inline)
                         .width(120.0),
                 )
                 .entity_ref(pop)
@@ -847,19 +847,9 @@ fn opt_out_and_opt_in_control_ancestor_isolation_and_delta_updates() {
                     layout.height = Some(LengthSpec::Px(40.0));
                 }))
                 .entity_ref(plain_fixed),
-                widget(
-                    Stack::column(0.0)
-                        .isolate_from_ancestors(true)
-                        .with_layout(|layout| {
-                            layout.position = PositionSpec::Fixed;
-                            layout.width = Some(LengthSpec::Px(40.0));
-                            layout.height = Some(LengthSpec::Px(40.0));
-                        }),
-                )
-                .entity_ref(opt_in_fixed),
                 widget(Stack::column(0.0).height(LengthSpec::Px(400.0))),
             ));
-            with_refs(tree, (pop, pop_item, plain_fixed, opt_in_fixed))
+            with_refs(tree, (pop, pop_item, plain_fixed))
         })
         .unwrap();
 
@@ -874,7 +864,7 @@ fn opt_out_and_opt_in_control_ancestor_isolation_and_delta_updates() {
 
     let root_id = root.stable_id();
     let scene = runtime.scene();
-    // Plain Fixed stays non-isolated and inherits outer structural opacity & filter.
+    // Plain Fixed stays in-flow visually and inherits outer structural opacity & filter.
     assert!(
         scene
             .opacity_groups(plain_fixed.stable_id())
@@ -888,15 +878,11 @@ fn opt_out_and_opt_in_control_ancestor_isolation_and_delta_updates() {
             .any(|g| g.node == root_id)
     );
 
-    // Opt-in Fixed Stack isolates completely from ancestors.
-    assert!(scene.opacity_groups(opt_in_fixed.stable_id()).is_empty());
-    assert!(scene.filter_groups(opt_in_fixed.stable_id()).is_empty());
-
-    // Popover with isolate_from_ancestors(false) inherits outer opacity & filter.
+    // Popover with OverlayMount::Inline inherits outer opacity & filter.
     let item_prim = scene
         .primitives()
         .find(|p| p.node == pop_item.stable_id())
-        .expect("opt-out popover item");
+        .expect("inline popover item");
     assert!(
         scene
             .primitive_opacity_groups(item_prim)
@@ -910,17 +896,232 @@ fn opt_out_and_opt_in_control_ancestor_isolation_and_delta_updates() {
             .any(|g| g.node == root_id)
     );
 
-    // Incremental toggle: isolate_from_ancestors(false -> true) strips ancestor groups cleanly.
+    // Incremental toggle: OverlayMount::Inline -> OverlayMount::NearestModal strips ancestor groups cleanly.
     runtime
         .context_mut()
-        .update_component(pop, |p, _| p.isolate_from_ancestors = true)
+        .update_component(pop, |p, _| p.overlay_mount = OverlayMount::NearestModal)
         .unwrap();
     flush(&mut runtime);
     let scene = runtime.scene();
     let item_prim = scene
         .primitives()
         .find(|p| p.node == pop_item.stable_id())
-        .expect("isolated popover item");
+        .expect("nearest-modal popover item");
     assert!(scene.primitive_opacity_groups(item_prim).is_empty());
     assert!(scene.filter_groups(pop_item.stable_id()).is_empty());
+}
+
+#[test]
+fn nearest_modal_overlay_escapes_inner_scroll_fade_stays_under_higher_modal_and_top_layer_escapes_all()
+ {
+    let document = DocumentId::new(1).unwrap();
+    let mut runtime = RuntimeDocument::new(document);
+    let root = runtime
+        .context_mut()
+        .create_component(document, Stack::column(0.0))
+        .unwrap();
+
+    let (
+        _,
+        (
+            (host1, dialog1, scroll_in_modal, popover, pop_panel, footer_btn),
+            (host2, dialog2, dialog2_body),
+        ),
+    ) = runtime
+        .context_mut()
+        .mount_view(root.stable_id(), || {
+            let host1 = entity_ref::<OverlayHost>();
+            let dialog1 = entity_ref::<Dialog>();
+            let scroll_in_modal = entity_ref::<ScrollView>();
+            let popover = entity_ref::<Popover>();
+            let pop_panel = entity_ref::<nana_ui_runtime::Button>();
+            let footer_btn = entity_ref::<nana_ui_runtime::Button>();
+            let host2 = entity_ref::<OverlayHost>();
+            let dialog2 = entity_ref::<Dialog>();
+            let dialog2_body = entity_ref::<Stack>();
+
+            let mut d1 = Dialog::new("Modal 1");
+            {
+                let layout = d1.style.layout_mut();
+                layout.opacity = Some(0.5);
+                layout.z_index = Some(2_000);
+            }
+            let d1_tree = widget(OverlayHost::new()).entity_ref(host1).children(
+                widget(d1)
+                    .entity_ref(dialog1)
+                    .body(
+                        widget(
+                            ScrollView::new(ScrollAxes::Vertical)
+                                .edge_fade(12.0, 48.0)
+                                .scrollbars(ScrollbarVisibility::Hidden)
+                                .with_layout(|layout| {
+                                    layout.width = Some(LengthSpec::Px(320.0));
+                                    layout.height = Some(LengthSpec::Px(140.0));
+                                }),
+                        )
+                        .entity_ref(scroll_in_modal)
+                        .children(
+                            widget(Stack::column(0.0).height(LengthSpec::Px(400.0))).children((
+                                widget(Stack::column(0.0).height(LengthSpec::Px(60.0))),
+                                widget(
+                                    Popover::new()
+                                        .trigger("Inside modal")
+                                        .width(160.0)
+                                        .padding(6.0),
+                                )
+                                .entity_ref(popover)
+                                .trigger(
+                                    widget(Stack::row(0.0).height(LengthSpec::Px(24.0)))
+                                        .children(text("Inside modal")),
+                                )
+                                .children({
+                                    let mut pop_btn = nana_ui_runtime::Button::new("Action");
+                                    let layout = pop_btn.style.layout_mut();
+                                    layout.width = Some(LengthSpec::Px(140.0));
+                                    layout.height = Some(LengthSpec::Px(80.0));
+                                    widget(pop_btn).entity_ref(pop_panel)
+                                }),
+                            )),
+                        ),
+                    )
+                    .footer(button("OK").entity_ref(footer_btn)),
+            );
+            let mut d2 = Dialog::new("Modal 2");
+            d2.style.layout_mut().z_index = Some(3_000);
+            let d2_tree = widget(OverlayHost::new()).entity_ref(host2).children(
+                widget(d2).entity_ref(dialog2).body(
+                    widget(Stack::column(0.0).with_layout(|layout| {
+                        layout.width = Some(LengthSpec::Px(320.0));
+                        layout.height = Some(LengthSpec::Px(160.0));
+                        layout.background = Some([0.8, 0.2, 0.2, 1.0]);
+                    }))
+                    .entity_ref(dialog2_body),
+                ),
+            );
+            with_refs(
+                widget(Stack::column(0.0)).children((d1_tree, d2_tree)),
+                (
+                    (
+                        host1,
+                        dialog1,
+                        scroll_in_modal,
+                        popover,
+                        pop_panel,
+                        footer_btn,
+                    ),
+                    (host2, dialog2, dialog2_body),
+                ),
+            )
+        })
+        .unwrap();
+
+    runtime
+        .context_mut()
+        .advance_animations(Duration::from_millis(1000));
+    flush(&mut runtime);
+    let cx = runtime.context_mut();
+    assert!(cx.activate_overlay(host1, dialog1).unwrap());
+    assert!(cx.activate_overlay(host2, dialog2).unwrap());
+    flush(&mut runtime);
+    runtime
+        .context_mut()
+        .update_component(popover, |p, _| p.open = true)
+        .unwrap();
+    runtime
+        .context_mut()
+        .advance_animations(Duration::from_millis(3000));
+    flush(&mut runtime);
+
+    let scene = runtime.scene();
+    let d1_id = dialog1.stable_id();
+    let scroll_id = scroll_in_modal.stable_id();
+    let item_prim = scene
+        .primitives()
+        .find(|p| p.node == pop_panel.stable_id())
+        .expect("popover panel primitive");
+    let groups = scene.primitive_opacity_groups(item_prim);
+    assert!(
+        !groups.iter().any(|g| g.node == scroll_id),
+        "NearestModal popover must escape inner scroll edge fade"
+    );
+    assert!(
+        groups
+            .iter()
+            .any(|g| g.node == d1_id && (g.opacity - 0.5).abs() < 1e-4),
+        "NearestModal popover must inherit enclosing ModalFrame's group: {groups:?}"
+    );
+
+    let pos = |target: StableNodeId| {
+        scene
+            .primitives()
+            .position(|p| p.node == target)
+            .expect("primitive in paint order")
+    };
+    let surface_pos = scene
+        .primitives()
+        .position(|p| p.node == popover.stable_id() && p.id.slot == TRIGGERED_SURFACE_SLOT)
+        .expect("popover surface in paint order");
+    assert!(
+        surface_pos > pos(footer_btn.stable_id()) && pos(pop_panel.stable_id()) > surface_pos,
+        "NearestModal popover must paint above its modal footer"
+    );
+    assert!(
+        pos(pop_panel.stable_id()) < pos(dialog2_body.stable_id()),
+        "NearestModal popover in Modal 1 must paint below higher Modal 2"
+    );
+
+    let panel_bounds = scene.draw_node_bounds(pop_panel.stable_id()).unwrap();
+    let (hx, hy) = (
+        panel_bounds.x + panel_bounds.width * 0.5,
+        panel_bounds.y + panel_bounds.height * 0.5,
+    );
+    let nearest_hit = runtime.context().world().hit_test(document, hx, hy);
+    assert_ne!(
+        nearest_hit,
+        Some(pop_panel.stable_id()),
+        "higher Modal 2 must block clicks on Modal 1's NearestModal popover"
+    );
+    assert_ne!(
+        nearest_hit,
+        Some(popover.stable_id()),
+        "higher Modal 2 must block clicks on Modal 1's NearestModal popover surface"
+    );
+
+    // Promote to OverlayMount::TopLayer: escapes Modal 1's opacity AND paints/hits above Modal 2.
+    runtime
+        .context_mut()
+        .update_component(popover, |p, _| p.overlay_mount = OverlayMount::TopLayer)
+        .unwrap();
+    flush(&mut runtime);
+
+    let scene = runtime.scene();
+    let item_prim = scene
+        .primitives()
+        .find(|p| p.node == pop_panel.stable_id())
+        .expect("TopLayer popover panel primitive");
+    assert!(
+        scene.primitive_opacity_groups(item_prim).is_empty(),
+        "TopLayer popover must escape enclosing ModalFrame's opacity group"
+    );
+    let surface_pos = scene
+        .primitives()
+        .position(|p| p.node == popover.stable_id() && p.id.slot == TRIGGERED_SURFACE_SLOT)
+        .expect("TopLayer popover surface in paint order");
+    let d2_body_pos = scene
+        .primitives()
+        .position(|p| p.node == dialog2_body.stable_id())
+        .expect("dialog2 body in paint order");
+    let panel_pos = scene
+        .primitives()
+        .position(|p| p.node == pop_panel.stable_id())
+        .expect("TopLayer popover panel in paint order");
+    assert!(
+        surface_pos > d2_body_pos && panel_pos > surface_pos,
+        "TopLayer popover must paint above higher Modal 2"
+    );
+    assert_eq!(
+        runtime.context().world().hit_test(document, hx, hy),
+        Some(pop_panel.stable_id()),
+        "TopLayer popover must win hit testing above higher Modal 2"
+    );
 }

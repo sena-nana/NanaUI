@@ -288,11 +288,29 @@ impl UiWorld {
                     .is_some_and(|text| text.value.as_str() == rich.text())
             })
             .cloned();
+        let visual_parent = if let Some(mount) = self.overlay_mount(id) {
+            Some(self.resolve_overlay_mount(id, mount))
+        } else {
+            self.parent_triggered_overlay_id(id)
+                .map(crate::VisualParent::Overlay)
+        };
+        let overlay_visual_parent = match standard_visual.as_ref() {
+            Some(StandardVisual::MenuSurface {
+                overlay: Some(overlay),
+                ..
+            }) => Some(self.resolve_overlay_mount(id, overlay.overlay_mount)),
+            Some(StandardVisual::Select { overlay_mount, .. }) => {
+                Some(self.resolve_overlay_mount(id, *overlay_mount))
+            }
+            _ => None,
+        };
         Some(ExtractedNode {
             layout_result: self.local_layout_result(id).cloned(),
             id,
             kind,
             parent: hierarchy_parent,
+            visual_parent,
+            overlay_visual_parent,
             children: hierarchy_children,
             layout,
             local_layout,
@@ -912,6 +930,8 @@ fn extracted_fields_differ(a: &ExtractedNode, b: &ExtractedNode) -> Vec<&'static
         id,
         kind,
         parent,
+        visual_parent,
+        overlay_visual_parent,
         children,
         layout,
         local_layout,
@@ -953,6 +973,11 @@ fn extracted_fields_differ(a: &ExtractedNode, b: &ExtractedNode) -> Vec<&'static
     check("id", *id == b.id);
     check("kind", *kind == b.kind);
     check("parent", *parent == b.parent);
+    check("visual_parent", *visual_parent == b.visual_parent);
+    check(
+        "overlay_visual_parent",
+        *overlay_visual_parent == b.overlay_visual_parent,
+    );
     check("children", *children == b.children);
     check("layout", bits(layout) == bits(&b.layout));
     check("local_layout", bits(local_layout) == bits(&b.local_layout));

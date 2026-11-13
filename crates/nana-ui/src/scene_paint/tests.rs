@@ -5472,6 +5472,8 @@ fn overflow_parent(
         id: StableNodeId::new(value).unwrap(),
         kind: Arc::new(NodeKind::Element { tag: "div".into() }),
         parent: None,
+        visual_parent: None,
+        overlay_visual_parent: None,
         children: Arc::new(
             children
                 .iter()
@@ -5536,6 +5538,8 @@ fn translucent_parent(
         id: StableNodeId::new(value).unwrap(),
         kind: Arc::new(NodeKind::Element { tag: "div".into() }),
         parent: None,
+        visual_parent: None,
+        overlay_visual_parent: None,
         children: Arc::new(
             children
                 .iter()
@@ -5598,6 +5602,8 @@ fn overflowing_text_child(
         id: StableNodeId::new(value).unwrap(),
         kind: Arc::new(NodeKind::Text),
         parent: Some(StableNodeId::new(parent).unwrap()),
+        visual_parent: None,
+        overlay_visual_parent: None,
         children: Arc::new(Vec::new()),
         layout: LayoutBox {
             x,
@@ -5668,6 +5674,8 @@ fn host_texture_child(
         id: StableNodeId::new(value).unwrap(),
         kind: Arc::new(NodeKind::Element { tag: "div".into() }),
         parent: Some(StableNodeId::new(parent).unwrap()),
+        visual_parent: None,
+        overlay_visual_parent: None,
         children: Arc::new(Vec::new()),
         layout: LayoutBox {
             x,
@@ -5733,6 +5741,8 @@ fn extracted_div(
         id: StableNodeId::new(value).unwrap(),
         kind: Arc::new(NodeKind::Element { tag: "div".into() }),
         parent: None,
+        visual_parent: None,
+        overlay_visual_parent: None,
         children: Arc::new(
             children
                 .iter()

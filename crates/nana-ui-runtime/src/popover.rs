@@ -31,6 +31,8 @@ pub(crate) const TREE_DEPTH_STEP: f32 = nana_ui_core::space::XL;
 /// content is viewport-fixed at this level in the root stacking context, and
 /// its surface paints and takes the pointer there too, above the page.
 pub const MENU_OVERLAY_Z_INDEX: i32 = 1_000;
+/// Paint z-index base for floating overlays mounted at [`nana_ui_core::OverlayMount::TopLayer`].
+pub const TOP_LAYER_Z_INDEX: i32 = 100_000;
 /// The trigger is a real button, so it matches the compact control height
 /// rather than hugging its glyphs.
 #[cfg(test)]
@@ -99,10 +101,10 @@ pub struct Popover {
     /// Show [`Self::trigger`] beside [`Self::trigger_icon`] instead of only
     /// speaking it. See [`Self::trigger_tool`].
     pub trigger_labelled: bool,
-    /// Isolate the floating popover surface and its items from ancestor visual
-    /// and clip effects (defaults to `true`); the in-flow trigger stays in its
-    /// ancestor chain.
-    pub isolate_from_ancestors: bool,
+    /// Visual mounting scope for the floating popover surface and its items
+    /// (defaults to [`nana_ui_core::OverlayMount::NearestModal`]). The in-flow
+    /// trigger always remains in its ancestor chain.
+    pub overlay_mount: nana_ui_core::OverlayMount,
 }
 
 impl Popover {
@@ -128,7 +130,7 @@ impl Popover {
             trigger_style: None,
             trigger_kind: None,
             trigger_labelled: false,
-            isolate_from_ancestors: true,
+            overlay_mount: nana_ui_core::OverlayMount::NearestModal,
         }
     }
 
@@ -260,10 +262,10 @@ impl Popover {
         self
     }
 
-    /// Control whether the floating popover surface isolates itself from
-    /// ancestor visual and clip effects (defaults to `true`).
-    pub fn isolate_from_ancestors(mut self, isolate: bool) -> Self {
-        self.isolate_from_ancestors = isolate;
+    /// Set where the floating popover surface mounts visually in the scene tree
+    /// (defaults to [`nana_ui_core::OverlayMount::NearestModal`]).
+    pub fn overlay_mount(mut self, mount: nana_ui_core::OverlayMount) -> Self {
+        self.overlay_mount = mount;
         self
     }
 }
@@ -329,7 +331,7 @@ impl crate::ComponentView for Popover {
                 labelled: self.trigger_labelled,
             },
             false,
-            self.isolate_from_ancestors,
+            self.overlay_mount,
         );
     }
 }
@@ -433,10 +435,10 @@ impl ActionMenu {
         self
     }
 
-    /// Control whether the floating menu surface isolates itself from ancestor
-    /// visual and clip effects (defaults to `true`).
-    pub fn isolate_from_ancestors(mut self, isolate: bool) -> Self {
-        self.popover = self.popover.isolate_from_ancestors(isolate);
+    /// Set where the floating menu surface mounts visually in the scene tree
+    /// (defaults to [`nana_ui_core::OverlayMount::NearestModal`]).
+    pub fn overlay_mount(mut self, mount: nana_ui_core::OverlayMount) -> Self {
+        self.popover = self.popover.overlay_mount(mount);
         self
     }
 }
@@ -505,7 +507,7 @@ impl crate::ComponentView for ActionMenu {
                 labelled: self.popover.trigger_labelled,
             },
             self.disabled,
-            self.popover.isolate_from_ancestors,
+            self.popover.overlay_mount,
         );
     }
 }
@@ -540,12 +542,16 @@ pub(crate) fn project_menu_surface(
     trigger_style: Option<&NodeStyle>,
     tool: TriggerTool,
     disabled: bool,
-    isolate_from_ancestors: bool,
+    overlay_mount: nana_ui_core::OverlayMount,
 ) {
     let open = world.project_menu_presence(id, open && !disabled, mutations);
     // A child that draws the trigger only counts while it is one.
     let trigger_content = trigger_content.filter(|content| world.parent_id(*content) == Some(id));
     let has_trigger = trigger.is_some() || trigger_icon.is_some() || trigger_content.is_some();
+    let desired_mount = (!has_trigger && open).then_some(overlay_mount);
+    if world.overlay_mount(id) != desired_mount {
+        mutations.set_overlay_mount(id, desired_mount);
+    }
     let labelled = tool.labelled
         && trigger_icon.is_some()
         && trigger_content.is_none()
@@ -579,7 +585,7 @@ pub(crate) fn project_menu_surface(
                 trigger_content,
                 trigger_icon_size: trigger_icon_size.filter(|_| trigger_icon.is_some()),
                 trigger_label_gap: labelled_gap,
-                isolate_from_ancestors,
+                overlay_mount,
             }),
             query: None,
             rows: Arc::from([]),
@@ -617,7 +623,6 @@ pub(crate) fn project_menu_surface(
             open,
             width,
             padding,
-            isolate_from_ancestors,
         )
     };
     let style = if let (true, Some(gap), Some(glyph)) =
@@ -769,7 +774,6 @@ fn triggered_menu_style(
     open: bool,
     width: f32,
     padding: f32,
-    isolate_from_ancestors: bool,
 ) -> NodeStyle {
     if icon_trigger {
         return trigger_icon_button_style();
@@ -794,7 +798,6 @@ fn triggered_menu_style(
     }
     NodeStyle {
         layout: Arc::new(nana_ui_core::LayoutStyle {
-            isolate_from_ancestors,
             width: Some(LengthSpec::Px(width.max(MENU_MIN_WIDTH))),
             min_width: Some(LengthSpec::Px(MENU_MIN_WIDTH)),
             direction: Some(FlexDirection::Column),
@@ -892,7 +895,6 @@ pub(crate) fn menu_surface_style(width: f32, padding: f32) -> NodeStyle {
     NodeStyle {
         layout: Arc::new(nana_ui_core::LayoutStyle {
             position: PositionSpec::Fixed,
-            isolate_from_ancestors: true,
             width: Some(LengthSpec::Px(width)),
             min_width: Some(LengthSpec::Px(MENU_MIN_WIDTH)),
             direction: Some(FlexDirection::Column),
@@ -921,9 +923,13 @@ pub(crate) fn project_anchored_menu(
     kind: MenuSurfaceKind,
     style: &NodeStyle,
     open: bool,
+    overlay_mount: nana_ui_core::OverlayMount,
     label: &str,
 ) {
     let open = world.project_menu_presence(id, open, mutations);
+    if world.overlay_mount(id) != Some(overlay_mount) {
+        mutations.set_overlay_mount(id, Some(overlay_mount));
+    }
     if open {
         let visual = StandardVisual::MenuSurface {
             kind,
@@ -2023,7 +2029,7 @@ mod tests {
                         trigger_content: None,
                         trigger_icon_size: size,
                         trigger_label_gap: None,
-                        isolate_from_ancestors: true,
+                        overlay_mount: nana_ui_core::OverlayMount::NearestModal,
                     }),
                     query: None,
                     rows: Arc::from([]),

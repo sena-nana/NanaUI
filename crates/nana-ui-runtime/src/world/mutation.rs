@@ -427,7 +427,7 @@ impl<'a> ValidationPlan<'a> {
                         self.require_exists(*label)?;
                     }
                 }
-                UiMutation::SetLive { id, .. } => {
+                UiMutation::SetLive { id, .. } | UiMutation::SetOverlayMount { id, .. } => {
                     self.require_exists(*id)?;
                 }
                 UiMutation::SetSurfaceOpen { id, open, .. } => {
@@ -2101,7 +2101,7 @@ impl UiWorld {
                     modal_presentation_changed,
                     modal_state_changed,
                     menu_state_changed,
-                    menu_isolation_changed,
+                    overlay_mount_changed,
                     menu_accessibility_changed,
                     select_hit_changed,
                     text_folds_changed,
@@ -2152,9 +2152,22 @@ impl UiWorld {
                                     overlay: Some(next),
                                     ..
                                 }),
-                            ) => prev.isolate_from_ancestors != next.isolate_from_ancestors,
+                            ) => prev.overlay_mount != next.overlay_mount,
+                            (
+                                Some(StandardVisual::Select {
+                                    opened: true,
+                                    overlay_mount: prev,
+                                    ..
+                                }),
+                                Some(StandardVisual::Select {
+                                    opened: true,
+                                    overlay_mount: next,
+                                    ..
+                                }),
+                            ) => prev != next,
                             _ => false,
-                        },
+                        } || (matches!(previous_visual, Some(StandardVisual::ModalFrame { .. }))
+                            != matches!(visual.as_ref(), Some(StandardVisual::ModalFrame { .. }))),
                         super::menu_surface_accessibility_changed(previous_visual, visual.as_ref()),
                         select_menu_hit_shape(previous_visual)
                             != select_menu_hit_shape(visual.as_ref()),
@@ -2326,8 +2339,8 @@ impl UiWorld {
                             | DirtyMask::RENDER,
                     );
                     self.mark_ancestors(*id, DirtyMask::RENDER);
-                } else if menu_isolation_changed {
-                    self.mark_subtree(*id, DirtyMask::STYLE | DirtyMask::RENDER);
+                } else if overlay_mount_changed {
+                    self.mark_subtree(*id, DirtyMask::STYLE | DirtyMask::INPUT | DirtyMask::RENDER);
                 }
                 if menu_accessibility_changed && !menu_state_changed {
                     self.mark_subtree(*id, DirtyMask::ACCESSIBILITY);
@@ -2356,6 +2369,12 @@ impl UiWorld {
                 if self.live(*id) != *live {
                     self.set_live(*id, *live);
                     self.mark(*id, DirtyMask::ACCESSIBILITY);
+                }
+            }
+            UiMutation::SetOverlayMount { id, mount } => {
+                if self.nodes.overlay_mount(*id).copied() != *mount {
+                    self.nodes.set_overlay_mount(*id, *mount);
+                    self.mark_subtree(*id, DirtyMask::RENDER | DirtyMask::INPUT);
                 }
             }
             UiMutation::SetAccessibility { id, accessibility } => {

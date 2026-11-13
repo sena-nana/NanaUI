@@ -162,35 +162,159 @@ pub(super) fn is_select_menu_slot(slot: u64) -> bool {
             .contains(&(slot >> 32))
 }
 
-pub(super) fn isolates_from_ancestors(node: &ExtractedNode) -> bool {
-    node.source_style.layout.isolate_from_ancestors
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub(super) enum VisualNode {
+    Node(StableNodeId),
+    Overlay(StableNodeId),
 }
 
-pub(super) fn triggered_overlay_isolates(node: &ExtractedNode) -> bool {
-    node.standard_visual
-        .as_ref()
-        .and_then(StandardVisual::triggered_menu_overlay)
-        .is_some_and(|overlay| overlay.isolate_from_ancestors)
+impl VisualNode {
+    pub(super) const fn node_id(self) -> StableNodeId {
+        match self {
+            Self::Node(id) | Self::Overlay(id) => id,
+        }
+    }
 }
 
-pub(super) fn select_menu_isolates(node: &ExtractedNode) -> bool {
+pub(super) fn primitive_visual_node(nodes: &SceneNodes, primitive: &ScenePrimitive) -> VisualNode {
+    let is_overlay = is_triggered_overlay_surface(primitive.id)
+        || (is_select_menu_slot(primitive.id.slot)
+            && nodes.get(&primitive.node).is_some_and(|node| {
+                matches!(node.standard_visual, Some(StandardVisual::Select { .. }))
+            }));
+    if is_overlay {
+        VisualNode::Overlay(primitive.node)
+    } else {
+        VisualNode::Node(primitive.node)
+    }
+}
+
+fn is_modal_frame_node(node: &ExtractedNode) -> bool {
     matches!(
         node.standard_visual,
-        Some(StandardVisual::Select {
-            isolate_from_ancestors: true,
-            ..
-        })
+        Some(StandardVisual::ModalFrame { .. })
+    ) || matches!(
+        node.component_geometry.as_deref(),
+        Some(nana_ui_runtime::ComponentGeometry::ModalFrame { .. })
     )
 }
 
-pub(super) fn is_isolated_hanging_menu_item(
+fn resolve_scene_overlay_mount(
     nodes: &SceneNodes,
     node: &ExtractedNode,
-) -> Option<StableNodeId> {
-    if !isolates_from_ancestors(node) {
-        return None;
+    mount: nana_ui_core::OverlayMount,
+) -> nana_ui_runtime::VisualParent {
+    match mount {
+        nana_ui_core::OverlayMount::TopLayer => nana_ui_runtime::VisualParent::TopLayer,
+        nana_ui_core::OverlayMount::NearestModal => {
+            let mut cursor = node.parent;
+            let mut depth = 0usize;
+            while let Some(ancestor_id) = cursor {
+                if depth >= MAX_ANCESTOR_DEPTH {
+                    break;
+                }
+                depth += 1;
+                let Some(ancestor) = nodes.get(&ancestor_id) else {
+                    break;
+                };
+                if is_modal_frame_node(ancestor) {
+                    return nana_ui_runtime::VisualParent::Modal(ancestor_id);
+                }
+                cursor = ancestor.parent;
+            }
+            nana_ui_runtime::VisualParent::Root
+        }
+        nana_ui_core::OverlayMount::Inline => {
+            let Some(parent_id) = node.parent else {
+                return nana_ui_runtime::VisualParent::Root;
+            };
+            let Some(parent) = nodes.get(&parent_id) else {
+                return nana_ui_runtime::VisualParent::Root;
+            };
+            if is_triggered_menu(parent) && !is_trigger_content(parent, node.id) {
+                nana_ui_runtime::VisualParent::Overlay(parent_id)
+            } else {
+                nana_ui_runtime::VisualParent::Node(parent_id)
+            }
+        }
     }
-    let parent_id = node.parent?;
-    let parent = nodes.get(&parent_id)?;
-    (is_triggered_menu(parent) && !is_trigger_content(parent, node.id)).then_some(parent_id)
+}
+
+pub(super) fn effective_visual_parent(
+    nodes: &SceneNodes,
+    node: &ExtractedNode,
+) -> Option<nana_ui_runtime::VisualParent> {
+    node.visual_parent.or_else(|| {
+        let parent_id = node.parent?;
+        let parent = nodes.get(&parent_id)?;
+        (is_triggered_menu(parent) && !is_trigger_content(parent, node.id))
+            .then_some(nana_ui_runtime::VisualParent::Overlay(parent_id))
+    })
+}
+
+pub(super) fn effective_overlay_visual_parent(
+    nodes: &SceneNodes,
+    node: &ExtractedNode,
+) -> nana_ui_runtime::VisualParent {
+    node.overlay_visual_parent.unwrap_or_else(|| {
+        let mount = match node.standard_visual.as_ref() {
+            Some(StandardVisual::MenuSurface {
+                overlay: Some(overlay),
+                ..
+            }) => overlay.overlay_mount,
+            Some(StandardVisual::Select { overlay_mount, .. }) => *overlay_mount,
+            _ => nana_ui_core::OverlayMount::NearestModal,
+        };
+        resolve_scene_overlay_mount(nodes, node, mount)
+    })
+}
+
+pub(super) const fn visual_parent_to_node(vp: nana_ui_runtime::VisualParent) -> Option<VisualNode> {
+    match vp {
+        nana_ui_runtime::VisualParent::Root | nana_ui_runtime::VisualParent::TopLayer => None,
+        nana_ui_runtime::VisualParent::Modal(id) | nana_ui_runtime::VisualParent::Node(id) => {
+            Some(VisualNode::Node(id))
+        }
+        nana_ui_runtime::VisualParent::Overlay(id) => Some(VisualNode::Overlay(id)),
+    }
+}
+
+pub(super) fn visual_parent_of(nodes: &SceneNodes, vn: VisualNode) -> Option<VisualNode> {
+    match vn {
+        VisualNode::Overlay(id) => {
+            let node = nodes.get(&id)?;
+            visual_parent_to_node(effective_overlay_visual_parent(nodes, node))
+                .filter(|parent| nodes.contains_key(&parent.node_id()))
+        }
+        VisualNode::Node(id) => {
+            let node = nodes.get(&id)?;
+            match effective_visual_parent(nodes, node) {
+                Some(vp) => {
+                    visual_parent_to_node(vp).filter(|parent| nodes.contains_key(&parent.node_id()))
+                }
+                None => node
+                    .parent
+                    .filter(|parent| nodes.contains_key(parent))
+                    .map(VisualNode::Node),
+            }
+        }
+    }
+}
+
+pub(super) fn visual_ancestor_nodes(
+    nodes: &SceneNodes,
+    start: VisualNode,
+) -> impl Iterator<Item = (VisualNode, &ExtractedNode)> {
+    let mut current = Some(start);
+    let mut depth = 0usize;
+    std::iter::from_fn(move || {
+        let vn = current.take()?;
+        if depth >= MAX_ANCESTOR_DEPTH {
+            return None;
+        }
+        depth += 1;
+        let entry = nodes.get(&vn.node_id())?;
+        current = visual_parent_of(nodes, vn);
+        Some((vn, entry.as_ref()))
+    })
 }

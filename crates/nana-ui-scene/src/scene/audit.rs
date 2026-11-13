@@ -27,22 +27,20 @@ impl UiScene {
         if self.nodes.len() > RETAINED_AUDIT_LIMIT {
             return;
         }
-        let mut stacks: HashMap<StableNodeId, GroupPrefix> = HashMap::new();
+        let mut stacks: HashMap<VisualNode, GroupPrefix> = HashMap::new();
         let fresh: BTreeSet<SceneOrderKey> = self
             .primitives
             .values()
             .map(|held| {
                 let primitive = &held.primitive;
-                if let Some(key) = root_layer_key(&self.nodes, primitive) {
-                    return key;
-                }
                 if self.splits_paint(primitive.node) {
                     return order_key(&self.nodes, &self.node_order, primitive);
                 }
-                let stack = stacks.entry(primitive.node).or_insert_with(|| {
+                let vn = primitive_visual_node(&self.nodes, primitive);
+                let stack = stacks.entry(vn).or_insert_with(|| {
                     let prefix: GroupPrefix =
-                        group_prefix(&self.nodes, &self.node_order, primitive.node).into();
-                    order_stack(&self.nodes, &prefix, primitive)
+                        group_prefix(&self.nodes, &self.node_order, vn).into();
+                    order_stack(&self.nodes, &prefix, vn, primitive)
                 });
                 SceneOrderKey::at(Arc::clone(stack), primitive)
             })

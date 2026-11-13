@@ -95,7 +95,8 @@ impl UiScene {
                     if self.dest_group_candidates == 0 {
                         opacity_cache.clear();
                     } else {
-                        opacity_cache.remove(&id);
+                        opacity_cache.remove(&VisualNode::Node(id));
+                        opacity_cache.remove(&VisualNode::Overlay(id));
                     }
                 }
                 if !self.custom_paint.is_empty() {
@@ -246,8 +247,9 @@ impl UiScene {
                     || old.layout != node.layout
                     || inherited_layout_changed(&old.source_style.layout, &node.source_style.layout)
                     || inherited_component_clip(old) != inherited_component_clip(&node)
-                    || triggered_overlay_isolates(old) != triggered_overlay_isolates(&node)
-                    || select_menu_isolates(old) != select_menu_isolates(&node)
+                    || old.visual_parent != node.visual_parent
+                    || old.overlay_visual_parent != node.overlay_visual_parent
+                    || is_triggered_menu(old) != is_triggered_menu(&node)
             });
             if inherited_changed {
                 // Retained descendants may not be extracted when an ancestor's
@@ -305,8 +307,8 @@ impl UiScene {
             if previous.is_some_and(|old| {
                 inherited_opacity(&self.nodes, old).to_bits()
                     != inherited_opacity(&self.nodes, &node).to_bits()
-                    || old.source_style.layout.isolate_from_ancestors
-                        != node.source_style.layout.isolate_from_ancestors
+                    || old.visual_parent != node.visual_parent
+                    || old.overlay_visual_parent != node.overlay_visual_parent
             }) {
                 subtree_rebuild.push(node.id);
             }
@@ -811,6 +813,8 @@ pub(super) struct PaintOrderFacts {
     /// A scroll view whose bars can show opens a group for them.
     scrollbar_chrome: bool,
     pub(super) scroll_edge_fade: bool,
+    pub(super) visual_parent: Option<nana_ui_runtime::VisualParent>,
+    pub(super) overlay_visual_parent: Option<nana_ui_runtime::VisualParent>,
 }
 
 /// [`moved_only`], with the same result: what the node paints is in its own
@@ -863,6 +867,8 @@ fn paint_order_facts(node: &ExtractedNode) -> PaintOrderFacts {
         custom_paint: node.custom_paint.is_some(),
         scrollbar_chrome: has_scrollbar_chrome(node),
         scroll_edge_fade: has_scroll_edge_fade(node),
+        visual_parent: node.visual_parent,
+        overlay_visual_parent: node.overlay_visual_parent,
     }
 }
 
@@ -941,7 +947,7 @@ pub(super) struct RebuildScratch {
     /// Every node's paint-order prefix the pass has asked for: siblings share
     /// their parent's, and a node's is its parent's plus its own entry. See
     /// [`group_prefix_memo`].
-    pub(super) group_prefixes: NodeMap<GroupPrefix>,
+    pub(super) group_prefixes: HashMap<VisualNode, GroupPrefix>,
     /// Whether a node is inside a rasterized SVG, or in flow inside an icon,
     /// for every node the pass has walked through. See [`ancestor_answer`].
     pub(super) in_rasterized_svg: NodeMap<bool>,
@@ -968,7 +974,7 @@ impl RebuildScratch {
         self.active = false;
         self.ancestor_state = None;
         self.order_stack = None;
-        self.group_prefixes = NodeMap::default();
+        self.group_prefixes = HashMap::default();
         self.in_rasterized_svg = NodeMap::default();
         self.in_icon_visual = NodeMap::default();
         self.walk = Vec::new();

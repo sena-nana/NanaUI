@@ -212,6 +212,12 @@ pub enum UiMutation {
         host: StableNodeId,
         state: OverlayHostState,
     },
+    /// Visual mounting scope for standalone floating overlay surfaces (`Tooltip`,
+    /// `ChartTooltip`, `ContextMenu`, `AnchoredActionMenu`, etc.).
+    SetOverlayMount {
+        id: StableNodeId,
+        mount: Option<nana_ui_core::OverlayMount>,
+    },
     CapturePointer {
         pointer_id: u64,
         target: StableNodeId,
@@ -685,6 +691,15 @@ impl MutationQueue {
     pub fn set_overlay_host(&mut self, host: StableNodeId, state: OverlayHostState) {
         self.mutations
             .push(UiMutation::SetOverlayHost { host, state });
+    }
+
+    pub fn set_overlay_mount(
+        &mut self,
+        id: StableNodeId,
+        mount: Option<nana_ui_core::OverlayMount>,
+    ) {
+        self.mutations
+            .push(UiMutation::SetOverlayMount { id, mount });
     }
 
     pub fn capture_pointer(&mut self, pointer_id: u64, target: StableNodeId) {

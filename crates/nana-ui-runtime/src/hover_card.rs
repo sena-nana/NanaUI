@@ -53,10 +53,10 @@ pub struct HoverCard {
     pub close_on_escape: bool,
     /// Keep an outside editor focused during pointer interaction; keyboard navigation stays free.
     pub preserve_editor_focus: bool,
-    /// Isolate the floating card surface and its content from ancestor visual
-    /// and clip effects (defaults to `true`); the in-flow trigger stays in its
-    /// ancestor chain.
-    pub isolate_from_ancestors: bool,
+    /// Visual mounting scope for the floating card surface and its content
+    /// (defaults to [`nana_ui_core::OverlayMount::NearestModal`]). The in-flow
+    /// trigger remains in its ancestor chain.
+    pub overlay_mount: nana_ui_core::OverlayMount,
 }
 
 impl HoverCard {
@@ -76,7 +76,7 @@ impl HoverCard {
             close_delay_ms: DEFAULT_CLOSE_DELAY_MS,
             close_on_escape: true,
             preserve_editor_focus: false,
-            isolate_from_ancestors: true,
+            overlay_mount: nana_ui_core::OverlayMount::NearestModal,
         }
     }
 
@@ -159,10 +159,10 @@ impl HoverCard {
         self
     }
 
-    /// Control whether the floating hover card isolates itself from ancestor
-    /// visual and clip effects (defaults to `true`).
-    pub fn isolate_from_ancestors(mut self, isolate: bool) -> Self {
-        self.isolate_from_ancestors = isolate;
+    /// Set where the floating hover card mounts visually in the scene tree
+    /// (defaults to [`nana_ui_core::OverlayMount::NearestModal`]).
+    pub fn overlay_mount(mut self, mount: nana_ui_core::OverlayMount) -> Self {
+        self.overlay_mount = mount;
         self
     }
 
@@ -312,7 +312,7 @@ impl ComponentView for HoverCard {
                 gap: self.gap,
                 trigger_content: None,
                 trigger_label_gap: None,
-                isolate_from_ancestors: self.isolate_from_ancestors,
+                overlay_mount: self.overlay_mount,
             }),
             query: None,
             rows: Arc::from([]),

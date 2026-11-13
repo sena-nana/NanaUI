@@ -30,6 +30,8 @@ fn node(value: u64, parent: Option<u64>, children: &[u64]) -> ExtractedNode {
         id: id(value),
         kind: Arc::new(NodeKind::Element { tag: "div".into() }),
         parent: parent.map(id),
+        visual_parent: None,
+        overlay_visual_parent: None,
         children: Arc::new(children.iter().copied().map(id).collect()),
         layout: LayoutBox {
             x: 0.0,
@@ -10076,8 +10078,8 @@ fn the_rebuild_scratch_does_not_hand_one_parents_prefix_to_another() {
     scene.apply_delta(nodes, []);
     let mut scratch = RebuildScratch::default();
     scratch.begin();
-    let under_two = scene.group_prefix_of(&mut scratch, id(20));
-    let under_three = scene.group_prefix_of(&mut scratch, id(30));
+    let under_two = scene.group_prefix_of(&mut scratch, VisualNode::Node(id(20)));
+    let under_three = scene.group_prefix_of(&mut scratch, VisualNode::Node(id(30)));
     assert_ne!(
         under_two, under_three,
         "children of two different stacking containers cannot share a prefix"

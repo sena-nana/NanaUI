@@ -142,13 +142,11 @@ fn primitive_bounds(scene: &UiScene, id: PrimitiveId) -> Option<Bounds> {
     // A scroll edge fade moves none, and a long list under one must still cull.
     // The groups are the ones the primitive is painted in: a triggered menu's
     // trigger is outside the fade its hanging surface opens with, a modal's
-    // scrim outside its card's. The node's groups hold the primitive's, so
-    // none there is none here.
-    if !scene.opacity_groups(id.node).is_empty()
-        && scene
-            .primitive_opacity_groups(primitive)
-            .iter()
-            .any(|group| !group.is_edge_fade_only())
+    // scrim outside its card's.
+    if scene
+        .primitive_opacity_groups(primitive)
+        .iter()
+        .any(|group| !group.is_edge_fade_only())
     {
         return None;
     }

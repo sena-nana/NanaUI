@@ -452,12 +452,8 @@ pub(super) fn build(context: &GeometryPaintContext<'_>, emit: &mut impl FnMut(Sc
                             TRIGGERED_OVERLAY_SURFACE_SLOT,
                             AffineTransform::IDENTITY,
                             Arc::from([]),
-                            nana_ui_runtime::MENU_OVERLAY_Z_INDEX,
-                            if crate::scene::triggered_overlay_isolates(node) {
-                                1.0
-                            } else {
-                                opacity
-                            },
+                            context.overlay_visual_z,
+                            context.overlay_visual_opacity.clamp(0.0, 1.0),
                         )
                     } else {
                         (

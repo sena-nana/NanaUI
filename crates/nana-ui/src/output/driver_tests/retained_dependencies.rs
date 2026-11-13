@@ -12,6 +12,8 @@ fn quad(layout: LayoutStyle) -> ExtractedNode {
         id: StableNodeId::new(1).unwrap(),
         kind: Arc::new(NodeKind::Element { tag: "div".into() }),
         parent: None,
+        visual_parent: None,
+        overlay_visual_parent: None,
         children: Arc::new(Vec::new()),
         layout: LayoutBox {
             x: 0.0,

@@ -67,9 +67,10 @@ pub struct SearchDropdown {
     /// starts it over.
     pub menu_scroll: SelectMenuScroll,
     pub state: TextInputState,
-    /// Isolate the open dropdown menu from ancestor visual effects (defaults to
-    /// `true`); the field itself stays inside its ancestor chain.
-    pub isolate_from_ancestors: bool,
+    /// Visual mounting scope for the open dropdown menu (defaults to
+    /// [`nana_ui_core::OverlayMount::NearestModal`]). The field itself
+    /// remains inside its ancestor chain.
+    pub overlay_mount: nana_ui_core::OverlayMount,
     pub style: NodeStyle,
 }
 
@@ -95,7 +96,7 @@ impl SearchDropdown {
             highlighted: None,
             menu_scroll: SelectMenuScroll::default(),
             state: TextInputState::new(""),
-            isolate_from_ancestors: true,
+            overlay_mount: nana_ui_core::OverlayMount::NearestModal,
             style: field_style_for_size(ControlSize::Medium),
         }
     }
@@ -117,10 +118,10 @@ impl SearchDropdown {
         self
     }
 
-    /// Control whether the open dropdown menu isolates itself from ancestor
-    /// visual effects (defaults to `true`).
-    pub fn isolate_from_ancestors(mut self, isolate: bool) -> Self {
-        self.isolate_from_ancestors = isolate;
+    /// Set where the open dropdown menu mounts visually in the scene tree
+    /// (defaults to [`nana_ui_core::OverlayMount::NearestModal`]).
+    pub fn overlay_mount(mut self, mount: nana_ui_core::OverlayMount) -> Self {
+        self.overlay_mount = mount;
         self
     }
 
@@ -424,7 +425,7 @@ impl ComponentView for SearchDropdown {
             menu_room: crate::select::menu_room(self.opened && !self.inactive(), id, world),
             checkable: false,
             fit_options: false,
-            isolate_from_ancestors: self.isolate_from_ancestors,
+            overlay_mount: self.overlay_mount,
         };
         if world.standard_visual(id) != Some(visual.clone()) {
             mutations.set_standard_visual(id, Some(visual));

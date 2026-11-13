@@ -773,6 +773,7 @@ pub(crate) struct NodeStore {
     event_listeners: HashMap<StableNodeId, EventListeners>,
     component_types: HashMap<StableNodeId, ComponentTypeId>,
     overlay_hosts: HashMap<StableNodeId, OverlayHostState>,
+    overlay_mounts: HashMap<StableNodeId, nana_ui_core::OverlayMount>,
     scroll_metrics: HashMap<StableNodeId, ScrollMetrics>,
     /// Every text editor's session: its committed text, selections and IME
     /// composition, stored once (Issue #182).
@@ -1028,6 +1029,7 @@ impl NodeStore {
         self.event_listeners.remove(&id);
         self.component_types.remove(&id);
         self.overlay_hosts.remove(&id);
+        self.overlay_mounts.remove(&id);
         self.scroll_metrics.remove(&id);
         self.editors.remove(&id);
         self.highlights.remove(&id);
@@ -1115,6 +1117,16 @@ impl NodeStore {
         OverlayHostState,
         overlay_host,
         set_overlay_host
+    );
+    pub(crate) fn has_overlay_mounts(&self) -> bool {
+        !self.overlay_mounts.is_empty()
+    }
+
+    sparse!(
+        overlay_mounts,
+        nana_ui_core::OverlayMount,
+        overlay_mount,
+        set_overlay_mount
     );
     sparse!(
         scroll_metrics,
