@@ -621,7 +621,7 @@ pub(super) fn clip_link(node: &ExtractedNode) -> Option<StableNodeId> {
 
 /// The ancestors whose clips and scroll reach `node`, nearest first, by its
 /// clip chain's links.
-fn clip_chain_parents(nodes: &SceneNodes, node: &ExtractedNode) -> Vec<StableNodeId> {
+pub(super) fn clip_chain_parents(nodes: &SceneNodes, node: &ExtractedNode) -> Vec<StableNodeId> {
     let mut parents = Vec::new();
     let mut cursor = clip_link(node);
     while let Some(id) = cursor

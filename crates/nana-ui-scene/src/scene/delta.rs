@@ -242,6 +242,7 @@ impl UiScene {
             let inherited_changed = previous.map_or(!node.children.is_empty(), |old| {
                 sticky_geometry_changed
                     || old.parent != node.parent
+                    || clip_link(old) != clip_link(&node)
                     || old.layout != node.layout
                     || inherited_layout_changed(&old.source_style.layout, &node.source_style.layout)
                     || inherited_component_clip(old) != inherited_component_clip(&node)
@@ -267,6 +268,7 @@ impl UiScene {
             // changed attribute roots rather than guessing from paint counts.
             if previous.is_none_or(|old| {
                 old.parent != node.parent
+                    || clip_link(old) != clip_link(&node)
                     || old.layout != node.layout
                     || inherited_layout_changed(&old.source_style.layout, &node.source_style.layout)
                     || inherited_component_clip(old) != inherited_component_clip(&node)

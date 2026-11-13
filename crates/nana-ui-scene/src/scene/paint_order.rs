@@ -3,34 +3,16 @@
 
 use super::*;
 
-/// A triggered surface's paint-order key: its own `(z_index, document_order)`
-/// at the root, where `z_index` is the menu content's level, so it sits under
-/// the content (later in document order) and over its trigger and the rest
-/// of the page, whatever groups the trigger is inside.
-fn triggered_overlay_surface_key(primitive: &ScenePrimitive) -> Option<SceneOrderKey> {
-    is_triggered_overlay_surface(primitive.id).then(|| {
-        SceneOrderKey::at(
-            Arc::from([(primitive.z_index, primitive.document_order)]),
-            primitive,
-        )
-    })
-}
-
-/// An open select menu's paint-order key, as a triggered surface's: its own
-/// `(z_index, document_order)` at the root, where `z_index` is the menu's
-/// level. Inside its field's groups, the group of a later sibling painted over
-/// the rows the menu opened across. Hit testing ranks the menu the same way.
-fn select_menu_key(nodes: &SceneNodes, primitive: &ScenePrimitive) -> Option<SceneOrderKey> {
-    (is_select_menu_slot(primitive.id.slot)
-        && nodes.get(&primitive.node).is_some_and(|node| {
-            matches!(node.standard_visual, Some(StandardVisual::Select { .. }))
-        }))
-    .then(|| {
-        SceneOrderKey::at(
-            Arc::from([(primitive.z_index, primitive.document_order)]),
-            primitive,
-        )
-    })
+/// Whether `primitive` paints in the root stacking context rather than inside
+/// the groups around its node: a triggered menu's hanging surface, or an open
+/// select menu's surface, rows and scrollbar. Inside those groups, a later
+/// sibling or a scroll view's edge fade would paint over or dim the popup.
+pub(super) fn paints_at_root(nodes: &SceneNodes, primitive: &ScenePrimitive) -> bool {
+    is_triggered_overlay_surface(primitive.id)
+        || (is_select_menu_slot(primitive.id.slot)
+            && nodes.get(&primitive.node).is_some_and(|node| {
+                matches!(node.standard_visual, Some(StandardVisual::Select { .. }))
+            }))
 }
 
 /// The paint-order key a primitive takes at the root, out of the groups
@@ -39,7 +21,12 @@ pub(super) fn root_layer_key(
     nodes: &SceneNodes,
     primitive: &ScenePrimitive,
 ) -> Option<SceneOrderKey> {
-    triggered_overlay_surface_key(primitive).or_else(|| select_menu_key(nodes, primitive))
+    paints_at_root(nodes, primitive).then(|| {
+        SceneOrderKey::at(
+            Arc::from([(primitive.z_index, primitive.document_order)]),
+            primitive,
+        )
+    })
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]

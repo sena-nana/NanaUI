@@ -3,10 +3,11 @@
 //! fades, and the bars stay whole.
 use super::tests::{readback_rgba, test_copy_target, test_device};
 use super::*;
-use nana_ui_core::{LengthSpec, ScrollbarVisibility};
+use nana_ui_core::{LengthSpec, PopoverAlignment, PopoverPlacement, ScrollbarVisibility};
+use nana_ui_runtime::view::{entity_ref, text, widget, with_refs};
 use nana_ui_runtime::{
-    ComputedStyle, DocumentId, Entity, LayoutViewport, ScrollAxes, ScrollOffset, ScrollView,
-    StableNodeId, Stack, TextContent, TextMetrics, TextShapeConstraints, TextShaper,
+    ComputedStyle, DocumentId, Entity, LayoutViewport, Popover, ScrollAxes, ScrollOffset,
+    ScrollView, StableNodeId, Stack, TextContent, TextMetrics, TextShapeConstraints, TextShaper,
 };
 use nana_ui_scene::RuntimeDocument;
 
@@ -189,4 +190,115 @@ fn the_bars_are_not_faded() {
     let bar = pixel(&plain, x, y);
     assert!(bar[3] > 0, "the thumb is drawn at {x},{y}");
     assert_eq!(pixel(&faded, x, y), bar);
+}
+
+#[test]
+fn an_open_popover_is_not_faded_across_the_scrollport_edge() {
+    use std::time::Duration;
+
+    let (device, queue) = test_device();
+    let paint_popover = |fade: Option<(f32, f32)>| {
+        let document = DocumentId::new(1).unwrap();
+        let mut runtime = RuntimeDocument::new(document);
+        let root = runtime
+            .context_mut()
+            .create_component(document, Stack::column(0.0))
+            .unwrap();
+        let (_, (scroll, popover, panel)) = runtime
+            .context_mut()
+            .mount_view(root.stable_id(), || {
+                let scroll = entity_ref::<ScrollView>();
+                let popover = entity_ref::<Popover>();
+                let panel = entity_ref::<Stack>();
+                let mut view = ScrollView::new(ScrollAxes::Vertical)
+                    .scrollbars(ScrollbarVisibility::Hidden)
+                    .with_layout(|layout| {
+                        layout.width = Some(LengthSpec::Px(300.0));
+                        layout.height = Some(LengthSpec::Px(200.0));
+                    });
+                if let Some((top, bottom)) = fade {
+                    view = view.edge_fade(top, bottom);
+                }
+                let tree = widget(view).entity_ref(scroll).children(
+                    widget(
+                        Stack::column(0.0)
+                            .height(LengthSpec::Px(500.0))
+                            .with_layout(|layout| {
+                                layout.background = Some([1.0, 1.0, 1.0, 1.0]);
+                            }),
+                    )
+                    .children((
+                        widget(Stack::column(0.0).height(LengthSpec::Px(120.0))),
+                        widget(
+                            Popover::new()
+                                .trigger("Pick")
+                                .placement(PopoverPlacement::Bottom)
+                                .alignment(PopoverAlignment::Start)
+                                .width(160.0)
+                                .padding(8.0),
+                        )
+                        .entity_ref(popover)
+                        .trigger(
+                            widget(Stack::row(0.0).height(LengthSpec::Px(24.0)))
+                                .children(text("Pick")),
+                        )
+                        .children(
+                            widget(Stack::column(0.0).with_layout(|layout| {
+                                layout.width = Some(LengthSpec::Px(140.0));
+                                layout.height = Some(LengthSpec::Px(80.0));
+                                layout.background = Some([0.2, 0.5, 0.9, 1.0]);
+                            }))
+                            .entity_ref(panel),
+                        ),
+                    )),
+                );
+                with_refs(tree, (scroll, popover, panel))
+            })
+            .unwrap();
+        runtime
+            .context_mut()
+            .advance_animations(Duration::from_millis(1000));
+        flush(&mut runtime);
+        scroll_to(&mut runtime, scroll, 20.0);
+        runtime
+            .context_mut()
+            .update_component(popover, |popover, _| popover.open = true)
+            .unwrap();
+        runtime
+            .context_mut()
+            .advance_animations(Duration::from_millis(2000));
+        flush(&mut runtime);
+        let box_rect = runtime
+            .scene()
+            .draw_node_bounds(panel.stable_id())
+            .expect("popover content bounds");
+        assert!(
+            box_rect.y >= 136.0 && box_rect.y < 190.0 && box_rect.y + box_rect.height > 205.0,
+            "popover panel must straddle both the bottom fade band [136..200] and scrollport edge y=200: {box_rect:?}"
+        );
+        (paint(&device, &queue, runtime.scene()), box_rect)
+    };
+
+    let (faded, rect) = paint_popover(Some((14.0, 64.0)));
+    let (plain, _) = paint_popover(None);
+    let probe_x = (rect.x + rect.width * 0.5) as u32;
+    let outside_x = 260u32;
+    // Inside the popover panel, pixels remain solid and identical to the unfaded control across the bottom fade band and scrollport edge.
+    let y_in_band = 190u32;
+    let y_past_port = 208u32;
+    assert_eq!(pixel(&faded, probe_x, y_in_band)[3], 255);
+    assert_eq!(pixel(&faded, probe_x, y_past_port)[3], 255);
+    assert_eq!(
+        pixel(&faded, probe_x, y_in_band),
+        pixel(&plain, probe_x, y_in_band)
+    );
+    assert_eq!(
+        pixel(&faded, probe_x, y_past_port),
+        pixel(&plain, probe_x, y_past_port)
+    );
+    // Meanwhile, the list content beside the popover still fades across the bottom band.
+    assert!(
+        pixel(&faded, outside_x, 190)[3] < 60 && pixel(&faded, outside_x, 208)[3] == 0,
+        "list beside popover still fades at bottom edge"
+    );
 }

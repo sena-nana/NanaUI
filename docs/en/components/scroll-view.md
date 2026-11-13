@@ -83,7 +83,7 @@ When a node inside a scroll area has a `PointerDragged` handler (see dragging in
 
 ## Edge fade
 
-`.edge_fade(top, bottom)` fades the content at the top and bottom edges of the scrollport, with lengths in logical pixels. The scroll area and everything it holds are composited as one layer, and that layer's alpha falls linearly to 0 at the edge within each fade band: whatever is behind shows through, whether a transparent background or the gaps between floating cards on a stage, and no surface color is drawn. The scroll area's scrollbar does not fade.
+`.edge_fade(top, bottom)` fades the content at the top and bottom edges of the scrollport, with lengths in logical pixels. The scroll area and everything it holds are composited as one layer, and that layer's alpha falls linearly to 0 at the edge within each fade band: whatever is behind shows through, whether a transparent background or the gaps between floating cards on a stage, and no surface color is drawn. The scroll area's scrollbar does not fade; floating surfaces opened from inside the scroll area (`Popover`, `ActionMenu`, `HoverCard`, `Tooltip`, open `Select` dropdown menus, and similar root-painted or fixed overlays) and positioned boxes that escape the scroll area's clip chain do not fade with it either (while any nested scroll area inside such an overlay still keeps its own edge fade).
 
 ```rust
 use nana_ui::runtime::{ScrollAxes, ScrollView};
