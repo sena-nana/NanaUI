@@ -69,7 +69,7 @@ Popover::new().trigger_icon(Icon::Add, "更多").trigger_style(round)
 
 打开之后页面滚动，弹出层留在原处，直到下一次布局。
 
-表面是 viewport-fixed，不进父级 isolation group，面板的 overflow 裁不到它。
+表面是 viewport-fixed，默认开启 `isolate_from_ancestors = true`，不继承祖先的不透明度、滤镜、混合模式、合成层淡出与滚动边缘渐隐，面板的 overflow 也裁不到它；只保留浮层自身的开合淡入淡出，而留在文档流里的触发器仍受祖先效果影响。需要随所在祖先一起渐隐或受滤镜影响时传 `.isolate_from_ancestors(false)`。
 
 ## 关闭
 
@@ -102,6 +102,7 @@ Popover::new().trigger_icon(Icon::Add, "更多").trigger_style(round)
 | `.width` | — | 有最小宽度 |
 | `.gap` | — | 小于 0 时收成 0 |
 | `.padding` | — | 小于 0 时收成 0 |
+| `.isolate_from_ancestors` | `true` | 为 `true` 时浮层不受祖先透明、滤镜、边缘渐隐、合成层透明度与溢出裁剪影响；设 `false` 重新继承 |
 
 ## 事件
 

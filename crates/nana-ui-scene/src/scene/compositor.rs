@@ -175,7 +175,7 @@ impl CompositorRegistry {
         self.layers.get(&node)
     }
 
-    fn opacity(&self, node: StableNodeId) -> Option<f32> {
+    pub(super) fn opacity(&self, node: StableNodeId) -> Option<f32> {
         self.layer(node)
             .map(|layer| layer.opacity)
             .or_else(|| self.pending.get(&node).map(|pending| pending.opacity))
@@ -777,6 +777,22 @@ impl UiScene {
     /// scrim leaves out its node's own layer, which fades the card; the
     /// scrim fades on its own clock, and its ancestors' layers still reach it.
     pub fn compositor_primitive_opacity(&self, primitive: &super::ScenePrimitive) -> f32 {
+        if super::is_triggered_overlay_surface(primitive.id)
+            && self
+                .nodes
+                .get(&primitive.node)
+                .is_some_and(|node| super::triggered_overlay_isolates(node))
+        {
+            return (primitive.opacity * self.layer_opacity_factor(primitive.node)).clamp(0.0, 1.0);
+        }
+        if super::is_select_menu_slot(primitive.id.slot)
+            && self
+                .nodes
+                .get(&primitive.node)
+                .is_some_and(|node| super::select_menu_isolates(node))
+        {
+            return primitive.opacity.clamp(0.0, 1.0);
+        }
         self.layered_paint_opacity(
             primitive.node,
             primitive.opacity,
@@ -808,15 +824,25 @@ impl UiScene {
         } else {
             1.0
         };
-        let inherited = match self.nodes.get(&node).and_then(|node| node.parent) {
-            Some(parent) => {
-                let mut cache = self
-                    .layer_factor_cache
-                    .lock()
-                    .expect("scene compositor factors");
-                self.ancestor_layer_factor(&mut cache, parent, 0)
+        let inherited = if let Some(extracted) = self.nodes.get(&node)
+            && super::isolates_from_ancestors(extracted)
+        {
+            if let Some(menu_id) = super::is_isolated_hanging_menu_item(&self.nodes, extracted) {
+                self.layer_opacity_factor(menu_id)
+            } else {
+                1.0
             }
-            None => 1.0,
+        } else {
+            match self.nodes.get(&node).and_then(|node| node.parent) {
+                Some(parent) => {
+                    let mut cache = self
+                        .layer_factor_cache
+                        .lock()
+                        .expect("scene compositor factors");
+                    self.ancestor_layer_factor(&mut cache, parent, 0)
+                }
+                None => 1.0,
+            }
         };
         (logical_opacity * own * inherited).clamp(0.0, 1.0)
     }
@@ -863,9 +889,17 @@ impl UiScene {
         let Some(extracted) = self.nodes.get(&id) else {
             return 1.0;
         };
-        let inherited = match extracted.parent {
-            Some(parent) => self.ancestor_layer_factor(cache, parent, depth + 1),
-            None => 1.0,
+        let inherited = if super::isolates_from_ancestors(extracted) {
+            if let Some(menu_id) = super::is_isolated_hanging_menu_item(&self.nodes, extracted) {
+                self.layer_opacity_factor(menu_id)
+            } else {
+                1.0
+            }
+        } else {
+            match extracted.parent {
+                Some(parent) => self.ancestor_layer_factor(cache, parent, depth + 1),
+                None => 1.0,
+            }
         };
         let factor = inherited * self.layer_opacity_factor(id);
         cache.insert(id, (stamp, factor));
@@ -881,6 +915,24 @@ impl UiScene {
         for id in super::ancestor_ids(&self.nodes, node) {
             if let Some(presented) = self.compositor.opacity(id) {
                 opacity *= presented;
+            }
+            if let Some(extracted) = self.nodes.get(&id)
+                && super::isolates_from_ancestors(extracted)
+            {
+                if let Some(menu_id) = super::is_isolated_hanging_menu_item(&self.nodes, extracted)
+                    && let Some(presented) = self.compositor.opacity(menu_id)
+                {
+                    let logical: f32 = self
+                        .nodes
+                        .get(&menu_id)
+                        .map_or(1.0, |node| local_opacity(node));
+                    opacity *= if logical.abs() < 1e-8 {
+                        presented
+                    } else {
+                        presented / logical
+                    };
+                }
+                break;
             }
         }
         opacity.clamp(0.0, 1.0)
@@ -948,17 +1000,35 @@ impl UiScene {
         } else {
             0
         };
-        if opacity == 0
-            && !isolates(node)
-            && let Some(parent) = self.nodes.get(&node).and_then(|node| node.parent)
-        {
-            for id in super::ancestor_ids(&self.nodes, parent) {
-                if isolates(id) {
-                    break;
+        if opacity == 0 && !isolates(node) {
+            if let Some(extracted) = self.nodes.get(&node)
+                && super::isolates_from_ancestors(extracted)
+            {
+                if let Some(menu_id) = super::is_isolated_hanging_menu_item(&self.nodes, extracted)
+                    && !isolates(menu_id)
+                {
+                    opacity = self.gpu_motion_id_for(menu_id, 1);
                 }
-                opacity = self.gpu_motion_id_for(id, 1);
-                if opacity != 0 {
-                    break;
+            } else if let Some(parent) = self.nodes.get(&node).and_then(|node| node.parent) {
+                for id in super::ancestor_ids(&self.nodes, parent) {
+                    if isolates(id) {
+                        break;
+                    }
+                    opacity = self.gpu_motion_id_for(id, 1);
+                    if opacity != 0 {
+                        break;
+                    }
+                    if let Some(extracted) = self.nodes.get(&id)
+                        && super::isolates_from_ancestors(extracted)
+                    {
+                        if let Some(menu_id) =
+                            super::is_isolated_hanging_menu_item(&self.nodes, extracted)
+                            && !isolates(menu_id)
+                        {
+                            opacity = self.gpu_motion_id_for(menu_id, 1);
+                        }
+                        break;
+                    }
                 }
             }
         }

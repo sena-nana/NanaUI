@@ -385,6 +385,7 @@ fn tooltip_style() -> NodeStyle {
     NodeStyle {
         layout: Arc::new(nana_ui_core::LayoutStyle {
             position: nana_ui_core::PositionSpec::Fixed,
+            isolate_from_ancestors: true,
             border_width: Some(nana_ui_core::HAIRLINE),
             border_radius: Some(nana_ui_core::TooltipConfig::RADIUS),
             pointer_events: Some(nana_ui_core::PointerEventsSpec::None),

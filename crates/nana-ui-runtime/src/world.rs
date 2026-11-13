@@ -7469,6 +7469,7 @@ fn apply_triggered_overlay(
     overlay: crate::TriggeredMenuOverlay,
 ) {
     layout.position = PositionSpec::Fixed;
+    layout.isolate_from_ancestors = overlay.isolate_from_ancestors;
     layout.width = Some(LengthSpec::Px(
         (overlay.width - overlay.padding * 2.0).max(0.0),
     ));

@@ -1040,6 +1040,10 @@ pub enum StandardVisual {
         /// as a native `<select>` sizes itself, rather than only the label it
         /// shows. See [`crate::Select::fit_options`].
         fit_options: bool,
+        /// Whether the open dropdown menu isolates itself from ancestor
+        /// visual effects (`opacity`, `OpacityGroup`, `FilterGroup`, compositor
+        /// layer opacity). The closed field remains inside its ancestors.
+        isolate_from_ancestors: bool,
     },
     MenuSurface {
         kind: MenuSurfaceKind,
@@ -1271,6 +1275,9 @@ pub struct TriggeredMenuOverlay {
     /// A labelled tool trigger ([`crate::Popover::trigger_tool`]): the gap
     /// between its glyph and its label. `None` for a glyph or a label alone.
     pub trigger_label_gap: Option<f32>,
+    /// Whether the hanging popup surface and its items isolate themselves from
+    /// ancestor visual and clip effects while keeping the trigger in-flow.
+    pub isolate_from_ancestors: bool,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -2457,6 +2464,14 @@ impl NodeStyle {
         Arc::make_mut(&mut self.layout)
             .theme
             .set(property, Some(expression.into()));
+        self
+    }
+
+    /// Sever visual and clip inheritance from ancestor components (`opacity`,
+    /// `OpacityGroup` / scroll-edge fade / color filters / blend modes,
+    /// `FilterGroup`, compositor layer opacity, and overflow clips).
+    pub fn isolate_from_ancestors(mut self, isolate: bool) -> Self {
+        Arc::make_mut(&mut self.layout).isolate_from_ancestors = isolate;
         self
     }
 

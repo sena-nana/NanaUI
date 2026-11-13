@@ -2101,6 +2101,7 @@ impl UiWorld {
                     modal_presentation_changed,
                     modal_state_changed,
                     menu_state_changed,
+                    menu_isolation_changed,
                     menu_accessibility_changed,
                     select_hit_changed,
                     text_folds_changed,
@@ -2139,6 +2140,21 @@ impl UiWorld {
                         // surface's own open state, so opening it has to reach
                         // them the way an overlay host reaches its branch.
                         menu_surface_open(previous_visual) != menu_surface_open(visual.as_ref()),
+                        match (previous_visual, visual.as_ref()) {
+                            (
+                                Some(StandardVisual::MenuSurface {
+                                    open: true,
+                                    overlay: Some(prev),
+                                    ..
+                                }),
+                                Some(StandardVisual::MenuSurface {
+                                    open: true,
+                                    overlay: Some(next),
+                                    ..
+                                }),
+                            ) => prev.isolate_from_ancestors != next.isolate_from_ancestors,
+                            _ => false,
+                        },
                         super::menu_surface_accessibility_changed(previous_visual, visual.as_ref()),
                         select_menu_hit_shape(previous_visual)
                             != select_menu_hit_shape(visual.as_ref()),
@@ -2310,6 +2326,8 @@ impl UiWorld {
                             | DirtyMask::RENDER,
                     );
                     self.mark_ancestors(*id, DirtyMask::RENDER);
+                } else if menu_isolation_changed {
+                    self.mark_subtree(*id, DirtyMask::STYLE | DirtyMask::RENDER);
                 }
                 if menu_accessibility_changed && !menu_state_changed {
                     self.mark_subtree(*id, DirtyMask::ACCESSIBILITY);

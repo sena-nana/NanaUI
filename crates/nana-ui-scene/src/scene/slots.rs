@@ -161,3 +161,36 @@ pub(super) fn is_select_menu_slot(slot: u64) -> bool {
         || (u64::from(SELECT_MENU_IMAGE_BACKDROPS)..=u64::from(SELECT_MENU_IMAGES))
             .contains(&(slot >> 32))
 }
+
+pub(super) fn isolates_from_ancestors(node: &ExtractedNode) -> bool {
+    node.source_style.layout.isolate_from_ancestors
+}
+
+pub(super) fn triggered_overlay_isolates(node: &ExtractedNode) -> bool {
+    node.standard_visual
+        .as_ref()
+        .and_then(StandardVisual::triggered_menu_overlay)
+        .is_some_and(|overlay| overlay.isolate_from_ancestors)
+}
+
+pub(super) fn select_menu_isolates(node: &ExtractedNode) -> bool {
+    matches!(
+        node.standard_visual,
+        Some(StandardVisual::Select {
+            isolate_from_ancestors: true,
+            ..
+        })
+    )
+}
+
+pub(super) fn is_isolated_hanging_menu_item(
+    nodes: &SceneNodes,
+    node: &ExtractedNode,
+) -> Option<StableNodeId> {
+    if !isolates_from_ancestors(node) {
+        return None;
+    }
+    let parent_id = node.parent?;
+    let parent = nodes.get(&parent_id)?;
+    (is_triggered_menu(parent) && !is_trigger_content(parent, node.id)).then_some(parent_id)
+}

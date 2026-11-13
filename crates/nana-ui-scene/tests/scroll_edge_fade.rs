@@ -6,12 +6,12 @@
 
 use std::time::Duration;
 
-use nana_ui_core::{LengthSpec, PositionSpec, ScrollbarVisibility};
+use nana_ui_core::{ColorFilter, LengthSpec, PositionSpec, ScrollbarVisibility};
 use nana_ui_runtime::view::{button, entity_ref, row, text, widget, with_refs};
 use nana_ui_runtime::{
-    ComputedStyle, DocumentId, Entity, LayoutViewport, Popover, ScrollAxes, ScrollOffset,
-    ScrollView, Select, SelectOption, StableNodeId, Stack, TextContent, TextMetrics,
-    TextShapeConstraints, TextShaper,
+    ActionMenu, ActionMenuItem, ComputedStyle, ContextMenu, ContextMenuItem, DocumentId, Entity,
+    HoverCard, LayoutViewport, Popover, ScrollAxes, ScrollOffset, ScrollView, Select, SelectOption,
+    StableNodeId, Stack, TextContent, TextMetrics, TextShapeConstraints, TextShaper, Tooltip,
 };
 use nana_ui_scene::{RuntimeDocument, SceneRect};
 
@@ -28,6 +28,8 @@ impl TextShaper for NoText {
         TextMetrics::default()
     }
 }
+
+const TRIGGERED_SURFACE_SLOT: u64 = 0xFFFF_FFE0 << 32;
 
 fn flush(runtime: &mut RuntimeDocument) {
     runtime
@@ -359,20 +361,18 @@ fn a_triggered_popover_escapes_the_scrollports_edge_fade() {
         "mid-fade surface and fixed content share the exact same group list"
     );
     assert!(
-        surface_groups
-            .iter()
-            .all(|group| group.node != outer_id && group.edge_fade.is_none()),
-        "popover strips outer scroll edge fade mid-fade: {surface_groups:?}"
+        surface_groups.iter().all(|group| group.node != root_id
+            && group.node != outer_id
+            && group.edge_fade.is_none()),
+        "isolated popover strips outer ancestor opacity and scroll edge fade mid-fade: {surface_groups:?}"
     );
     assert!(
         surface_groups
             .iter()
-            .any(|group| group.node == root_id && (group.opacity - 0.5).abs() < 1e-4)
-            && surface_groups.iter().any(|group| group.node == popover_id
-                && group.opacity > 0.0
-                && group.opacity < 1.0),
-        "popover retains outer structural opacity and its own fade: {surface_groups:?}"
+            .any(|group| group.node == popover_id && group.opacity > 0.0 && group.opacity < 1.0),
+        "isolated popover retains its own open/close fade: {surface_groups:?}"
     );
+    let _ = root_id;
 
     let inner_row_groups = scene.opacity_groups(inner_row.stable_id());
     assert!(
@@ -547,4 +547,380 @@ fn an_escaping_absolute_box_drops_only_bypassed_edge_fades() {
         escaping_groups.iter().all(|g| g.node != inner_id),
         "escaping absolute box drops bypassed inner scroll edge fade: {escaping_groups:?}"
     );
+}
+
+#[test]
+fn isolated_menus_and_overlays_do_not_inherit_ancestor_effects() {
+    let document = DocumentId::new(1).unwrap();
+    let mut runtime = RuntimeDocument::new(document);
+    let root = runtime
+        .context_mut()
+        .create_component(
+            document,
+            Stack::column(0.0).with_layout(|layout| {
+                layout.opacity = Some(0.45);
+                layout.paint.filter = Some(ColorFilter {
+                    blur_radius: 4.0,
+                    ..ColorFilter::default()
+                });
+                layout.width = Some(LengthSpec::Px(800.0));
+                layout.height = Some(LengthSpec::Px(600.0));
+            }),
+        )
+        .unwrap();
+
+    let (
+        _,
+        (
+            (scroll, pop, pop_mark, pop_item),
+            (menu, menu_mark, menu_item),
+            (card, card_item, select, ctx, tip),
+        ),
+    ) = runtime
+        .context_mut()
+        .mount_view(root.stable_id(), || {
+            let scroll = entity_ref::<ScrollView>();
+            let pop = entity_ref::<Popover>();
+            let pop_mark = entity_ref::<Stack>();
+            let pop_item = entity_ref::<nana_ui_runtime::Button>();
+            let menu = entity_ref::<ActionMenu>();
+            let menu_mark = entity_ref::<Stack>();
+            let menu_item = entity_ref::<ActionMenuItem>();
+            let card = entity_ref::<HoverCard>();
+            let card_item = entity_ref::<nana_ui_runtime::Button>();
+            let select = entity_ref::<Select>();
+            let ctx = entity_ref::<ContextMenu>();
+            let tip = entity_ref::<Tooltip>();
+
+            let tree = widget(
+                ScrollView::new(ScrollAxes::Vertical)
+                    .edge_fade(14.0, 64.0)
+                    .with_layout(|layout| {
+                        layout.width = Some(LengthSpec::Px(420.0));
+                        layout.height = Some(LengthSpec::Px(260.0));
+                    }),
+            )
+            .entity_ref(scroll)
+            .children((
+                widget(Stack::column(0.0).height(LengthSpec::Px(140.0))),
+                widget(Popover::new().trigger("Pop").width(140.0))
+                    .entity_ref(pop)
+                    .trigger(
+                        widget(Stack::row(0.0).height(LengthSpec::Px(24.0)))
+                            .entity_ref(pop_mark)
+                            .children(text("Pop")),
+                    )
+                    .children(button("Item").entity_ref(pop_item)),
+                widget(ActionMenu::new().trigger("Menu"))
+                    .entity_ref(menu)
+                    .trigger(
+                        widget(Stack::row(0.0).height(LengthSpec::Px(24.0)))
+                            .entity_ref(menu_mark)
+                            .children(text("Menu")),
+                    )
+                    .children(widget(ActionMenuItem::new("One")).entity_ref(menu_item)),
+                widget(HoverCard::new().trigger("Card").width(140.0))
+                    .entity_ref(card)
+                    .children(button("Details").entity_ref(card_item)),
+                widget(Select::new(Some("x")).options(vec![
+                    SelectOption::new("x", "X"),
+                    SelectOption::new("y", "Y"),
+                ]))
+                .entity_ref(select),
+                widget(
+                    ContextMenu::new(120.0, 120.0).items(vec![ContextMenuItem::new("c", "Copy")]),
+                )
+                .entity_ref(ctx),
+                widget(Tooltip::new("Hint")).entity_ref(tip),
+                widget(Stack::column(0.0).height(LengthSpec::Px(500.0))),
+            ));
+            with_refs(
+                tree,
+                (
+                    (scroll, pop, pop_mark, pop_item),
+                    (menu, menu_mark, menu_item),
+                    (card, card_item, select, ctx, tip),
+                ),
+            )
+        })
+        .unwrap();
+
+    runtime
+        .context_mut()
+        .advance_animations(Duration::from_millis(1000));
+    flush(&mut runtime);
+    let cx = runtime.context_mut();
+    cx.update_component(pop, |p, _| p.open = true).unwrap();
+    cx.update_component(menu, |m, _| m.popover.open = true)
+        .unwrap();
+    cx.update_component(card, |c, _| c.open = true).unwrap();
+    cx.toggle_select(select).unwrap();
+    // Advance mid-fade (30 ms past 1000 ms) to verify open fade stays intact without inheriting outer ancestors.
+    cx.advance_animations(Duration::from_millis(1030));
+    flush(&mut runtime);
+
+    let scene = runtime.scene();
+    let root_id = root.stable_id();
+    let scroll_id = scroll.stable_id();
+
+    for trigger in [pop_mark.stable_id(), menu_mark.stable_id()] {
+        let groups = scene.opacity_groups(trigger);
+        assert!(
+            groups
+                .iter()
+                .any(|g| g.node == root_id && (g.opacity - 0.45).abs() < 1e-4)
+                && groups
+                    .iter()
+                    .any(|g| g.node == scroll_id && g.edge_fade.is_some()),
+            "in-flow trigger {trigger:?} keeps ancestor opacity and scroll edge fade: {groups:?}"
+        );
+        assert!(
+            scene
+                .filter_groups(trigger)
+                .iter()
+                .any(|g| g.node == root_id),
+            "in-flow trigger {trigger:?} keeps ancestor filter group"
+        );
+    }
+    let card_trigger_prim = scene
+        .primitives()
+        .find(|p| p.node == card.stable_id() && p.id.slot != TRIGGERED_SURFACE_SLOT)
+        .expect("hover card trigger primitive");
+    let card_trigger_groups = scene.primitive_opacity_groups(card_trigger_prim);
+    assert!(
+        card_trigger_groups
+            .iter()
+            .any(|g| g.node == root_id && (g.opacity - 0.45).abs() < 1e-4)
+            && card_trigger_groups
+                .iter()
+                .any(|g| g.node == scroll_id && g.edge_fade.is_some()),
+        "hover card trigger stays inside ancestor opacity and scroll edge fade: {card_trigger_groups:?}"
+    );
+
+    for (owner_id, item_id, expects_fade) in [
+        (pop.stable_id(), pop_item.stable_id(), true),
+        (menu.stable_id(), menu_item.stable_id(), true),
+        (card.stable_id(), card_item.stable_id(), false),
+    ] {
+        // The owner node itself hosts the in-flow trigger, so its own filter_groups retain `root_id`,
+        // while the floating surface primitive and hanging items isolate from outer ancestors.
+        assert!(
+            scene
+                .filter_groups(owner_id)
+                .iter()
+                .any(|g| g.node == root_id),
+            "in-flow trigger node {owner_id:?} keeps ancestor filter group"
+        );
+        let surface = scene
+            .primitives()
+            .find(|p| p.node == owner_id && p.id.slot == TRIGGERED_SURFACE_SLOT)
+            .expect("triggered overlay surface");
+        let groups = scene.primitive_opacity_groups(surface);
+        assert!(
+            groups
+                .iter()
+                .all(|g| g.node == owner_id && g.edge_fade.is_none() && g.filter.is_identity()),
+            "isolated overlay {owner_id:?} strips outer opacity, filter & edge_fade while keeping only own fade: {groups:?}"
+        );
+        if expects_fade {
+            assert!(
+                groups
+                    .iter()
+                    .any(|g| g.node == owner_id && g.opacity > 0.0 && g.opacity < 1.0),
+                "isolated overlay {owner_id:?} preserves its own open fade: {groups:?}"
+            );
+        } else {
+            assert!(
+                groups.is_empty(),
+                "settled isolated overlay {owner_id:?} has no groups: {groups:?}"
+            );
+        }
+        let item_prim = scene
+            .primitives()
+            .find(|p| p.node == item_id)
+            .expect("menu item");
+        assert_eq!(
+            scene.primitive_opacity_groups(item_prim).as_ref(),
+            groups.as_ref()
+        );
+        assert!(
+            scene.filter_groups(item_id).is_empty(),
+            "hanging menu item {item_id:?} drops ancestor filter groups"
+        );
+    }
+
+    // Select open menu primitives isolate from ancestor opacity, filters, and edge fade while field stays inside.
+    let mut saw_select_menu = false;
+    let mut saw_select_field = false;
+    for primitive in scene.primitives().filter(|p| p.node == select.stable_id()) {
+        let slot_ns = primitive.id.slot >> 32;
+        if primitive.id.slot == 8 || (9..=13).contains(&slot_ns) || (17..=18).contains(&slot_ns) {
+            saw_select_menu = true;
+            assert!(scene.primitive_opacity_groups(primitive).is_empty());
+        } else if primitive.id.slot == 0 {
+            saw_select_field = true;
+            let groups = scene.primitive_opacity_groups(primitive);
+            assert!(groups.iter().any(|g| g.node == root_id));
+            assert!(
+                groups
+                    .iter()
+                    .any(|g| g.node == scroll_id && g.edge_fade.is_some())
+            );
+        }
+    }
+    assert!(saw_select_field && saw_select_menu);
+
+    // ContextMenu & Tooltip isolate their floating surface from ancestor opacity, filter, and edge fade.
+    for floating_node in [ctx.stable_id(), tip.stable_id()] {
+        assert!(
+            scene.filter_groups(floating_node).is_empty(),
+            "floating component {floating_node:?} drops ancestor filter"
+        );
+        assert!(scene.opacity_groups(floating_node).is_empty());
+        let mut saw_primitive = false;
+        for primitive in scene.primitives().filter(|p| p.node == floating_node) {
+            saw_primitive = true;
+            let prim_groups = scene.primitive_opacity_groups(primitive);
+            assert!(
+                prim_groups.is_empty(),
+                "floating primitive {:?} of {floating_node:?} drops ancestor groups: {prim_groups:?}",
+                primitive.id
+            );
+        }
+        assert!(
+            saw_primitive,
+            "floating component {floating_node:?} painted primitives"
+        );
+    }
+}
+
+#[test]
+fn opt_out_and_opt_in_control_ancestor_isolation_and_delta_updates() {
+    let document = DocumentId::new(1).unwrap();
+    let mut runtime = RuntimeDocument::new(document);
+    let root = runtime
+        .context_mut()
+        .create_component(
+            document,
+            Stack::column(0.0).with_layout(|layout| {
+                layout.opacity = Some(0.5);
+                layout.paint.filter = Some(ColorFilter {
+                    blur_radius: 3.0,
+                    ..ColorFilter::default()
+                });
+                layout.width = Some(LengthSpec::Px(800.0));
+                layout.height = Some(LengthSpec::Px(600.0));
+            }),
+        )
+        .unwrap();
+
+    let (_, (pop, pop_item, plain_fixed, opt_in_fixed)) = runtime
+        .context_mut()
+        .mount_view(root.stable_id(), || {
+            let pop = entity_ref::<Popover>();
+            let pop_item = entity_ref::<nana_ui_runtime::Button>();
+            let plain_fixed = entity_ref::<Stack>();
+            let opt_in_fixed = entity_ref::<Stack>();
+            let tree = widget(
+                ScrollView::new(ScrollAxes::Vertical)
+                    .edge_fade(10.0, 40.0)
+                    .with_layout(|layout| {
+                        layout.width = Some(LengthSpec::Px(300.0));
+                        layout.height = Some(LengthSpec::Px(200.0));
+                    }),
+            )
+            .children((
+                widget(
+                    Popover::new()
+                        .trigger("Toggle")
+                        .isolate_from_ancestors(false)
+                        .width(120.0),
+                )
+                .entity_ref(pop)
+                .trigger(
+                    widget(Stack::row(0.0).height(LengthSpec::Px(24.0))).children(text("Toggle")),
+                )
+                .children(button("Row").entity_ref(pop_item)),
+                widget(Stack::column(0.0).with_layout(|layout| {
+                    layout.position = PositionSpec::Fixed;
+                    layout.width = Some(LengthSpec::Px(40.0));
+                    layout.height = Some(LengthSpec::Px(40.0));
+                }))
+                .entity_ref(plain_fixed),
+                widget(
+                    Stack::column(0.0)
+                        .isolate_from_ancestors(true)
+                        .with_layout(|layout| {
+                            layout.position = PositionSpec::Fixed;
+                            layout.width = Some(LengthSpec::Px(40.0));
+                            layout.height = Some(LengthSpec::Px(40.0));
+                        }),
+                )
+                .entity_ref(opt_in_fixed),
+                widget(Stack::column(0.0).height(LengthSpec::Px(400.0))),
+            ));
+            with_refs(tree, (pop, pop_item, plain_fixed, opt_in_fixed))
+        })
+        .unwrap();
+
+    runtime
+        .context_mut()
+        .advance_animations(Duration::from_millis(1000));
+    flush(&mut runtime);
+    let cx = runtime.context_mut();
+    cx.update_component(pop, |p, _| p.open = true).unwrap();
+    cx.advance_animations(Duration::from_millis(2000));
+    flush(&mut runtime);
+
+    let root_id = root.stable_id();
+    let scene = runtime.scene();
+    // Plain Fixed stays non-isolated and inherits outer structural opacity & filter.
+    assert!(
+        scene
+            .opacity_groups(plain_fixed.stable_id())
+            .iter()
+            .any(|g| g.node == root_id && (g.opacity - 0.5).abs() < 1e-4)
+    );
+    assert!(
+        scene
+            .filter_groups(plain_fixed.stable_id())
+            .iter()
+            .any(|g| g.node == root_id)
+    );
+
+    // Opt-in Fixed Stack isolates completely from ancestors.
+    assert!(scene.opacity_groups(opt_in_fixed.stable_id()).is_empty());
+    assert!(scene.filter_groups(opt_in_fixed.stable_id()).is_empty());
+
+    // Popover with isolate_from_ancestors(false) inherits outer opacity & filter.
+    let item_prim = scene
+        .primitives()
+        .find(|p| p.node == pop_item.stable_id())
+        .expect("opt-out popover item");
+    assert!(
+        scene
+            .primitive_opacity_groups(item_prim)
+            .iter()
+            .any(|g| g.node == root_id && (g.opacity - 0.5).abs() < 1e-4)
+    );
+    assert!(
+        scene
+            .filter_groups(pop_item.stable_id())
+            .iter()
+            .any(|g| g.node == root_id)
+    );
+
+    // Incremental toggle: isolate_from_ancestors(false -> true) strips ancestor groups cleanly.
+    runtime
+        .context_mut()
+        .update_component(pop, |p, _| p.isolate_from_ancestors = true)
+        .unwrap();
+    flush(&mut runtime);
+    let scene = runtime.scene();
+    let item_prim = scene
+        .primitives()
+        .find(|p| p.node == pop_item.stable_id())
+        .expect("isolated popover item");
+    assert!(scene.primitive_opacity_groups(item_prim).is_empty());
+    assert!(scene.filter_groups(pop_item.stable_id()).is_empty());
 }

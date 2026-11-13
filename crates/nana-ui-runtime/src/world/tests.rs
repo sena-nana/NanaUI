@@ -8519,6 +8519,7 @@ pub(super) fn open_menu_overlay_visual() -> StandardVisual {
             gap: 6.0,
             trigger_content: None,
             trigger_label_gap: None,
+            isolate_from_ancestors: true,
         }),
         query: None,
         rows: Arc::from([]),

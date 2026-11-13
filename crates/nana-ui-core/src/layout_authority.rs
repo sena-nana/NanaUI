@@ -275,6 +275,7 @@ pub fn resolve_layout_intent(
                 "anchor",
                 "z_index",
                 "isolation",
+                "isolate_from_ancestors",
                 "float",
                 "clear",
             ][..],

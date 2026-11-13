@@ -135,6 +135,9 @@ pub struct Select {
     /// native `<select>` sizes itself, rather than to the label it shows.
     /// See [`Self::fit_options`].
     pub fit_options: bool,
+    /// Isolate the open dropdown menu from ancestor visual effects (defaults to
+    /// `true`); the closed field stays inside its ancestor chain.
+    pub isolate_from_ancestors: bool,
     pub style: NodeStyle,
 }
 
@@ -162,6 +165,7 @@ impl Select {
             highlighted: None,
             menu_scroll: SelectMenuScroll::default(),
             fit_options: false,
+            isolate_from_ancestors: true,
             style: field_style_for_size(ControlSize::Medium),
         }
     }
@@ -204,6 +208,13 @@ impl Select {
     pub fn size(mut self, size: ControlSize) -> Self {
         self.size = size;
         apply_field_size(&mut self.style, size);
+        self
+    }
+
+    /// Control whether the open dropdown menu isolates itself from ancestor
+    /// visual effects (defaults to `true`).
+    pub fn isolate_from_ancestors(mut self, isolate: bool) -> Self {
+        self.isolate_from_ancestors = isolate;
         self
     }
 
@@ -521,6 +532,7 @@ impl crate::ComponentView for Select {
             menu_room: menu_room(self.menu_open(), id, world),
             checkable: false,
             fit_options: self.fit_options,
+            isolate_from_ancestors: self.isolate_from_ancestors,
         };
         if world.standard_visual(id) != Some(visual.clone()) {
             mutations.set_standard_visual(id, Some(visual));

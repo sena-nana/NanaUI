@@ -173,6 +173,20 @@ impl UiScene {
         if is_scrollbar_chrome_slot(primitive.id.slot) {
             return without_edge_fade(primitive.node, groups);
         }
+        if is_triggered_overlay_surface(primitive.id)
+            && let Some(menu) = self.nodes.get(&primitive.node)
+            && triggered_overlay_isolates(menu)
+        {
+            return self.hanging_menu_opacity_group(menu);
+        }
+        if is_select_menu_slot(primitive.id.slot)
+            && self
+                .nodes
+                .get(&primitive.node)
+                .is_some_and(|node| select_menu_isolates(node))
+        {
+            return empty_opacity_groups();
+        }
         if paints_at_root(&self.nodes, primitive) {
             return without_edge_fades(groups, |_| false);
         }
@@ -182,8 +196,38 @@ impl UiScene {
         }
     }
 
-    /// `groups`, inherited by `child` from `parent`: outside `parent`'s menu
-    /// fade when `child` draws its trigger, and without the `edge_fade` of any
+    /// Pure open/close presentation fade group of an isolated triggered menu
+    /// (`menu`), stripping outer ancestor groups and any trigger-only styles.
+    fn hanging_menu_opacity_group(&self, menu: &ExtractedNode) -> Arc<[OpacityGroup]> {
+        if !is_dest_group(&self.nodes, menu) {
+            return empty_opacity_groups();
+        }
+        let Some(presented) = self.compositor.opacity(menu.id) else {
+            return empty_opacity_groups();
+        };
+        let logical = local_opacity(menu);
+        let fade = if logical > 1e-6 {
+            (presented / logical).clamp(0.0, 1.0)
+        } else {
+            presented.clamp(0.0, 1.0)
+        };
+        if (fade - 1.0).abs() < 1e-6 {
+            return empty_opacity_groups();
+        }
+        Arc::from([OpacityGroup {
+            node: menu.id,
+            opacity: fade,
+            filter: ColorFilter::default(),
+            mix_blend: MixBlendMode::Normal,
+            inset_shadow: None,
+            edge_fade: None,
+        }])
+    }
+
+    /// `groups`, inherited by `child` from `parent`: severed completely when
+    /// `child` isolates itself from ancestors (retaining only its menu's open/
+    /// close fade for hanging items); otherwise outside `parent`'s menu fade
+    /// when `child` draws its trigger, and without the `edge_fade` of any
     /// scroll ancestor whose overflow clip `child` escapes.
     fn inherited_opacity_groups(
         &self,
@@ -191,6 +235,16 @@ impl UiScene {
         child: &ExtractedNode,
         groups: Arc<[OpacityGroup]>,
     ) -> Arc<[OpacityGroup]> {
+        if isolates_from_ancestors(child) {
+            if let Some(menu) = self
+                .nodes
+                .get(&parent)
+                .filter(|menu| is_triggered_menu(menu) && !is_trigger_content(menu, child.id))
+            {
+                return self.hanging_menu_opacity_group(menu);
+            }
+            return empty_opacity_groups();
+        }
         let groups = self.trigger_content_groups(parent, child.id, groups);
         if child.source_style.layout.position == nana_ui_core::PositionSpec::Fixed {
             return without_edge_fades(groups, |_| false);
@@ -495,6 +549,9 @@ fn filter_groups_from(nodes: &SceneNodes, node: StableNodeId) -> Vec<FilterGroup
                     .filter
                     .unwrap_or_default(),
             });
+        }
+        if isolates_from_ancestors(candidate) {
+            break;
         }
     }
     groups.reverse();

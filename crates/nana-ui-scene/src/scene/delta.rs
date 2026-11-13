@@ -246,6 +246,8 @@ impl UiScene {
                     || old.layout != node.layout
                     || inherited_layout_changed(&old.source_style.layout, &node.source_style.layout)
                     || inherited_component_clip(old) != inherited_component_clip(&node)
+                    || triggered_overlay_isolates(old) != triggered_overlay_isolates(&node)
+                    || select_menu_isolates(old) != select_menu_isolates(&node)
             });
             if inherited_changed {
                 // Retained descendants may not be extracted when an ancestor's
@@ -303,6 +305,8 @@ impl UiScene {
             if previous.is_some_and(|old| {
                 inherited_opacity(&self.nodes, old).to_bits()
                     != inherited_opacity(&self.nodes, &node).to_bits()
+                    || old.source_style.layout.isolate_from_ancestors
+                        != node.source_style.layout.isolate_from_ancestors
             }) {
                 subtree_rebuild.push(node.id);
             }

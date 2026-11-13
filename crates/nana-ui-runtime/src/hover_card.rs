@@ -53,6 +53,10 @@ pub struct HoverCard {
     pub close_on_escape: bool,
     /// Keep an outside editor focused during pointer interaction; keyboard navigation stays free.
     pub preserve_editor_focus: bool,
+    /// Isolate the floating card surface and its content from ancestor visual
+    /// and clip effects (defaults to `true`); the in-flow trigger stays in its
+    /// ancestor chain.
+    pub isolate_from_ancestors: bool,
 }
 
 impl HoverCard {
@@ -72,6 +76,7 @@ impl HoverCard {
             close_delay_ms: DEFAULT_CLOSE_DELAY_MS,
             close_on_escape: true,
             preserve_editor_focus: false,
+            isolate_from_ancestors: true,
         }
     }
 
@@ -151,6 +156,13 @@ impl HoverCard {
     /// keyboard focus leaves this card on dismissal. Disabled by default.
     pub fn preserve_editor_focus(mut self, enabled: bool) -> Self {
         self.preserve_editor_focus = enabled;
+        self
+    }
+
+    /// Control whether the floating hover card isolates itself from ancestor
+    /// visual and clip effects (defaults to `true`).
+    pub fn isolate_from_ancestors(mut self, isolate: bool) -> Self {
+        self.isolate_from_ancestors = isolate;
         self
     }
 
@@ -300,6 +312,7 @@ impl ComponentView for HoverCard {
                 gap: self.gap,
                 trigger_content: None,
                 trigger_label_gap: None,
+                isolate_from_ancestors: self.isolate_from_ancestors,
             }),
             query: None,
             rows: Arc::from([]),

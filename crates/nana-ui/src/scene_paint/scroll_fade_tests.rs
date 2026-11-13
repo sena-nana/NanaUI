@@ -192,95 +192,106 @@ fn the_bars_are_not_faded() {
     assert_eq!(pixel(&faded, x, y), bar);
 }
 
-#[test]
-fn an_open_popover_is_not_faded_across_the_scrollport_edge() {
+fn render_popover_in_scrollport(
+    device: &wgpu::Device,
+    queue: &wgpu::Queue,
+    fade: Option<(f32, f32)>,
+    ancestor_opacity: Option<f32>,
+    isolate_from_ancestors: bool,
+) -> (Vec<u8>, nana_ui_scene::SceneRect) {
     use std::time::Duration;
 
-    let (device, queue) = test_device();
-    let paint_popover = |fade: Option<(f32, f32)>| {
-        let document = DocumentId::new(1).unwrap();
-        let mut runtime = RuntimeDocument::new(document);
-        let root = runtime
-            .context_mut()
-            .create_component(document, Stack::column(0.0))
-            .unwrap();
-        let (_, (scroll, popover, panel)) = runtime
-            .context_mut()
-            .mount_view(root.stable_id(), || {
-                let scroll = entity_ref::<ScrollView>();
-                let popover = entity_ref::<Popover>();
-                let panel = entity_ref::<Stack>();
-                let mut view = ScrollView::new(ScrollAxes::Vertical)
-                    .scrollbars(ScrollbarVisibility::Hidden)
-                    .with_layout(|layout| {
-                        layout.width = Some(LengthSpec::Px(300.0));
-                        layout.height = Some(LengthSpec::Px(200.0));
-                    });
-                if let Some((top, bottom)) = fade {
-                    view = view.edge_fade(top, bottom);
-                }
-                let tree = widget(view).entity_ref(scroll).children(
+    let document = DocumentId::new(1).unwrap();
+    let mut runtime = RuntimeDocument::new(document);
+    let root = runtime
+        .context_mut()
+        .create_component(document, Stack::column(0.0))
+        .unwrap();
+    let (_, (scroll, popover, panel)) = runtime
+        .context_mut()
+        .mount_view(root.stable_id(), || {
+            let scroll = entity_ref::<ScrollView>();
+            let popover = entity_ref::<Popover>();
+            let panel = entity_ref::<Stack>();
+            let mut view = ScrollView::new(ScrollAxes::Vertical)
+                .scrollbars(ScrollbarVisibility::Hidden)
+                .with_layout(|layout| {
+                    layout.width = Some(LengthSpec::Px(300.0));
+                    layout.height = Some(LengthSpec::Px(200.0));
+                });
+            if let Some((top, bottom)) = fade {
+                view = view.edge_fade(top, bottom);
+            }
+            let scroll_tree = widget(view).entity_ref(scroll).children(
+                widget(
+                    Stack::column(0.0)
+                        .height(LengthSpec::Px(500.0))
+                        .with_layout(|layout| {
+                            layout.background = Some([1.0, 1.0, 1.0, 1.0]);
+                        }),
+                )
+                .children((
+                    widget(Stack::column(0.0).height(LengthSpec::Px(120.0))),
                     widget(
-                        Stack::column(0.0)
-                            .height(LengthSpec::Px(500.0))
-                            .with_layout(|layout| {
-                                layout.background = Some([1.0, 1.0, 1.0, 1.0]);
-                            }),
+                        Popover::new()
+                            .trigger("Pick")
+                            .placement(PopoverPlacement::Bottom)
+                            .alignment(PopoverAlignment::Start)
+                            .width(160.0)
+                            .padding(8.0)
+                            .isolate_from_ancestors(isolate_from_ancestors),
                     )
-                    .children((
-                        widget(Stack::column(0.0).height(LengthSpec::Px(120.0))),
-                        widget(
-                            Popover::new()
-                                .trigger("Pick")
-                                .placement(PopoverPlacement::Bottom)
-                                .alignment(PopoverAlignment::Start)
-                                .width(160.0)
-                                .padding(8.0),
-                        )
-                        .entity_ref(popover)
-                        .trigger(
-                            widget(Stack::row(0.0).height(LengthSpec::Px(24.0)))
-                                .children(text("Pick")),
-                        )
-                        .children(
-                            widget(Stack::column(0.0).with_layout(|layout| {
-                                layout.width = Some(LengthSpec::Px(140.0));
-                                layout.height = Some(LengthSpec::Px(80.0));
-                                layout.background = Some([0.2, 0.5, 0.9, 1.0]);
-                            }))
-                            .entity_ref(panel),
-                        ),
-                    )),
-                );
-                with_refs(tree, (scroll, popover, panel))
-            })
-            .unwrap();
-        runtime
-            .context_mut()
-            .advance_animations(Duration::from_millis(1000));
-        flush(&mut runtime);
-        scroll_to(&mut runtime, scroll, 20.0);
-        runtime
-            .context_mut()
-            .update_component(popover, |popover, _| popover.open = true)
-            .unwrap();
-        runtime
-            .context_mut()
-            .advance_animations(Duration::from_millis(2000));
-        flush(&mut runtime);
-        let box_rect = runtime
-            .scene()
-            .draw_node_bounds(panel.stable_id())
-            .expect("popover content bounds");
-        assert!(
-            box_rect.y >= 136.0 && box_rect.y < 190.0 && box_rect.y + box_rect.height > 205.0,
-            "popover panel must straddle both the bottom fade band [136..200] and scrollport edge y=200: {box_rect:?}"
-        );
-        (paint(&device, &queue, runtime.scene()), box_rect)
-    };
+                    .entity_ref(popover)
+                    .trigger(
+                        widget(Stack::row(0.0).height(LengthSpec::Px(24.0))).children(text("Pick")),
+                    )
+                    .children(
+                        widget(Stack::column(0.0).with_layout(|layout| {
+                            layout.width = Some(LengthSpec::Px(140.0));
+                            layout.height = Some(LengthSpec::Px(80.0));
+                            layout.background = Some([0.2, 0.5, 0.9, 1.0]);
+                        }))
+                        .entity_ref(panel),
+                    ),
+                )),
+            );
+            let outer = widget(Stack::column(0.0).with_layout(move |layout| {
+                layout.opacity = ancestor_opacity;
+            }))
+            .children(scroll_tree);
+            with_refs(outer, (scroll, popover, panel))
+        })
+        .unwrap();
+    runtime
+        .context_mut()
+        .advance_animations(Duration::from_millis(1000));
+    flush(&mut runtime);
+    scroll_to(&mut runtime, scroll, 20.0);
+    runtime
+        .context_mut()
+        .update_component(popover, |popover, _| popover.open = true)
+        .unwrap();
+    runtime
+        .context_mut()
+        .advance_animations(Duration::from_millis(2000));
+    flush(&mut runtime);
+    let box_rect = runtime
+        .scene()
+        .draw_node_bounds(panel.stable_id())
+        .expect("popover content bounds");
+    assert!(
+        box_rect.y >= 136.0 && box_rect.y < 190.0 && box_rect.y + box_rect.height > 205.0,
+        "popover panel must straddle both the bottom fade band [136..200] and scrollport edge y=200: {box_rect:?}"
+    );
+    (paint(device, queue, runtime.scene()), box_rect)
+}
 
-    let (faded, rect) = paint_popover(Some((14.0, 64.0)));
-    let (plain, _) = paint_popover(None);
+#[test]
+fn an_open_popover_is_not_faded_across_the_scrollport_edge() {
+    let (device, queue) = test_device();
+    let (faded, rect) =
+        render_popover_in_scrollport(&device, &queue, Some((14.0, 64.0)), None, true);
+    let (plain, _) = render_popover_in_scrollport(&device, &queue, None, None, true);
     let probe_x = (rect.x + rect.width * 0.5) as u32;
     let outside_x = 260u32;
     // Inside the popover panel, pixels remain solid and identical to the unfaded control across the bottom fade band and scrollport edge.
@@ -300,5 +311,45 @@ fn an_open_popover_is_not_faded_across_the_scrollport_edge() {
     assert!(
         pixel(&faded, outside_x, 190)[3] < 60 && pixel(&faded, outside_x, 208)[3] == 0,
         "list beside popover still fades at bottom edge"
+    );
+}
+
+#[test]
+fn an_open_popover_is_isolated_from_translucent_ancestors_by_default() {
+    let (device, queue) = test_device();
+    let (plain, _) = render_popover_in_scrollport(&device, &queue, None, None, true);
+    let (isolated, rect) =
+        render_popover_in_scrollport(&device, &queue, Some((14.0, 64.0)), Some(0.35), true);
+    let (inherited, _) =
+        render_popover_in_scrollport(&device, &queue, Some((14.0, 64.0)), Some(0.35), false);
+    let probe_x = (rect.x + rect.width * 0.5) as u32;
+    let outside_x = 260u32;
+    let y_in_band = 190u32;
+    let y_past_port = 208u32;
+
+    // Default isolate_from_ancestors = true: floating panel is solid across both ancestor opacity and scroll edge fade.
+    assert_eq!(
+        pixel(&isolated, probe_x, y_in_band),
+        pixel(&plain, probe_x, y_in_band)
+    );
+    assert_eq!(
+        pixel(&isolated, probe_x, y_past_port),
+        pixel(&plain, probe_x, y_past_port)
+    );
+    // Surrounding scrolled content inside the same ancestor is still dimmed by ancestor opacity + edge fade.
+    assert!(
+        pixel(&isolated, outside_x, 100)[3] < 120 && pixel(&isolated, outside_x, y_in_band)[3] < 25,
+        "list content still inherits ancestor opacity and edge fade"
+    );
+    // Explicit opt-out isolate_from_ancestors(false): inherits ancestor 0.35 opacity while still escaping bypassed scroll edge fade.
+    let opt_out_band = pixel(&inherited, probe_x, y_in_band);
+    let opt_out_past = pixel(&inherited, probe_x, y_past_port);
+    assert!(
+        opt_out_band[3] > 60 && opt_out_band[3] < 120,
+        "opt-out popover inherits ancestor opacity: {opt_out_band:?}"
+    );
+    assert_eq!(
+        opt_out_band[3], opt_out_past[3],
+        "opt-out popover still escapes the bypassed scroll edge fade"
     );
 }

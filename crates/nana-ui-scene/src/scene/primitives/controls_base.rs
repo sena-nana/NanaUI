@@ -678,6 +678,11 @@ pub(super) fn build(context: &GeometryPaintContext<'_>, emit: &mut impl FnMut(Sc
             );
             if let Some(menu) = menu {
                 let menu_z = node.z_index.max(1_000);
+                let menu_opacity = if crate::scene::select_menu_isolates(node) {
+                    1.0
+                } else {
+                    opacity
+                };
                 emit(ScenePrimitive {
                     id: PrimitiveId {
                         node: id,
@@ -687,7 +692,7 @@ pub(super) fn build(context: &GeometryPaintContext<'_>, emit: &mut impl FnMut(Sc
                     bounds: scene_rect(menu.surface),
                     transform,
                     clips: Arc::clone(parent_clips),
-                    opacity,
+                    opacity: menu_opacity,
                     z_index: menu_z,
                     document_order: node_order,
                     kind: ScenePrimitiveKind::Quad {
@@ -749,7 +754,7 @@ pub(super) fn build(context: &GeometryPaintContext<'_>, emit: &mut impl FnMut(Sc
                             node,
                             transform,
                             Arc::clone(menu_clips),
-                            opacity,
+                            menu_opacity,
                             node_order,
                         );
                         mark.z_index = menu_z;
@@ -761,7 +766,7 @@ pub(super) fn build(context: &GeometryPaintContext<'_>, emit: &mut impl FnMut(Sc
                                 node: id,
                                 transform,
                                 clips: menu_clips,
-                                opacity,
+                                opacity: menu_opacity,
                                 z_index: menu_z,
                                 document_order: node_order,
                             },
@@ -786,7 +791,7 @@ pub(super) fn build(context: &GeometryPaintContext<'_>, emit: &mut impl FnMut(Sc
                                 node: id,
                                 transform,
                                 clips: menu_clips,
-                                opacity,
+                                opacity: menu_opacity,
                                 z_index: menu_z,
                                 document_order: node_order,
                             },
@@ -805,7 +810,7 @@ pub(super) fn build(context: &GeometryPaintContext<'_>, emit: &mut impl FnMut(Sc
                         node,
                         transform,
                         Arc::clone(menu_clips),
-                        opacity,
+                        menu_opacity,
                         node_order,
                     );
                     if let Some(content) = option.rich_content.as_ref()
@@ -829,7 +834,7 @@ pub(super) fn build(context: &GeometryPaintContext<'_>, emit: &mut impl FnMut(Sc
                             node,
                             transform,
                             Arc::clone(menu_clips),
-                            opacity,
+                            menu_opacity,
                             node_order,
                         );
                         hint.z_index = menu_z;
@@ -841,7 +846,7 @@ pub(super) fn build(context: &GeometryPaintContext<'_>, emit: &mut impl FnMut(Sc
                         node: id,
                         transform,
                         clips: menu_clips,
-                        opacity,
+                        opacity: menu_opacity,
                         z_index: menu_z,
                         document_order: node_order,
                     };

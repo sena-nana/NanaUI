@@ -99,6 +99,10 @@ pub struct Popover {
     /// Show [`Self::trigger`] beside [`Self::trigger_icon`] instead of only
     /// speaking it. See [`Self::trigger_tool`].
     pub trigger_labelled: bool,
+    /// Isolate the floating popover surface and its items from ancestor visual
+    /// and clip effects (defaults to `true`); the in-flow trigger stays in its
+    /// ancestor chain.
+    pub isolate_from_ancestors: bool,
 }
 
 impl Popover {
@@ -124,6 +128,7 @@ impl Popover {
             trigger_style: None,
             trigger_kind: None,
             trigger_labelled: false,
+            isolate_from_ancestors: true,
         }
     }
 
@@ -254,6 +259,13 @@ impl Popover {
         self.compact_trigger = compact;
         self
     }
+
+    /// Control whether the floating popover surface isolates itself from
+    /// ancestor visual and clip effects (defaults to `true`).
+    pub fn isolate_from_ancestors(mut self, isolate: bool) -> Self {
+        self.isolate_from_ancestors = isolate;
+        self
+    }
 }
 
 impl Default for Popover {
@@ -317,6 +329,7 @@ impl crate::ComponentView for Popover {
                 labelled: self.trigger_labelled,
             },
             false,
+            self.isolate_from_ancestors,
         );
     }
 }
@@ -419,6 +432,13 @@ impl ActionMenu {
         self.popover = self.popover.trigger_tool(icon, label, kind);
         self
     }
+
+    /// Control whether the floating menu surface isolates itself from ancestor
+    /// visual and clip effects (defaults to `true`).
+    pub fn isolate_from_ancestors(mut self, isolate: bool) -> Self {
+        self.popover = self.popover.isolate_from_ancestors(isolate);
+        self
+    }
 }
 
 impl Default for ActionMenu {
@@ -485,6 +505,7 @@ impl crate::ComponentView for ActionMenu {
                 labelled: self.popover.trigger_labelled,
             },
             self.disabled,
+            self.popover.isolate_from_ancestors,
         );
     }
 }
@@ -519,6 +540,7 @@ pub(crate) fn project_menu_surface(
     trigger_style: Option<&NodeStyle>,
     tool: TriggerTool,
     disabled: bool,
+    isolate_from_ancestors: bool,
 ) {
     let open = world.project_menu_presence(id, open && !disabled, mutations);
     // A child that draws the trigger only counts while it is one.
@@ -557,6 +579,7 @@ pub(crate) fn project_menu_surface(
                 trigger_content,
                 trigger_icon_size: trigger_icon_size.filter(|_| trigger_icon.is_some()),
                 trigger_label_gap: labelled_gap,
+                isolate_from_ancestors,
             }),
             query: None,
             rows: Arc::from([]),
@@ -594,6 +617,7 @@ pub(crate) fn project_menu_surface(
             open,
             width,
             padding,
+            isolate_from_ancestors,
         )
     };
     let style = if let (true, Some(gap), Some(glyph)) =
@@ -745,6 +769,7 @@ fn triggered_menu_style(
     open: bool,
     width: f32,
     padding: f32,
+    isolate_from_ancestors: bool,
 ) -> NodeStyle {
     if icon_trigger {
         return trigger_icon_button_style();
@@ -769,6 +794,7 @@ fn triggered_menu_style(
     }
     NodeStyle {
         layout: Arc::new(nana_ui_core::LayoutStyle {
+            isolate_from_ancestors,
             width: Some(LengthSpec::Px(width.max(MENU_MIN_WIDTH))),
             min_width: Some(LengthSpec::Px(MENU_MIN_WIDTH)),
             direction: Some(FlexDirection::Column),
@@ -866,6 +892,7 @@ pub(crate) fn menu_surface_style(width: f32, padding: f32) -> NodeStyle {
     NodeStyle {
         layout: Arc::new(nana_ui_core::LayoutStyle {
             position: PositionSpec::Fixed,
+            isolate_from_ancestors: true,
             width: Some(LengthSpec::Px(width)),
             min_width: Some(LengthSpec::Px(MENU_MIN_WIDTH)),
             direction: Some(FlexDirection::Column),
@@ -1996,6 +2023,7 @@ mod tests {
                         trigger_content: None,
                         trigger_icon_size: size,
                         trigger_label_gap: None,
+                        isolate_from_ancestors: true,
                     }),
                     query: None,
                     rows: Arc::from([]),

@@ -4900,6 +4900,13 @@ impl Tooltip {
             style,
         }
     }
+
+    /// Control whether the floating tooltip isolates itself from ancestor
+    /// visual and clip effects (defaults to `true`).
+    pub fn isolate_from_ancestors(mut self, isolate: bool) -> Self {
+        Arc::make_mut(&mut self.style.layout).isolate_from_ancestors = isolate;
+        self
+    }
 }
 
 impl ComponentView for Tooltip {
@@ -4957,6 +4964,7 @@ fn tooltip_surface_style(max_width: f32) -> NodeStyle {
         layout: Arc::new(nana_ui_core::LayoutStyle {
             theme: theme.into(),
             position: nana_ui_core::PositionSpec::Fixed,
+            isolate_from_ancestors: true,
             max_width: Some(nana_ui_core::LengthSpec::Px(max_width)),
             padding_left: Some(nana_ui_core::LengthSpec::Px(
                 nana_ui_core::TooltipConfig::PADDING_X,
@@ -6709,6 +6717,12 @@ impl Stack {
     /// 直接改字段，不必把整个容器换掉再重建。
     pub fn layout_mut(&mut self) -> &mut nana_ui_core::LayoutStyle {
         Arc::make_mut(&mut self.style_mut().layout)
+    }
+
+    /// 隔离来自祖先组件的视觉与裁剪效果（`opacity`、透明/滤镜/混色组、`backdrop-filter`、合成层透明度、溢出裁剪）。
+    pub fn isolate_from_ancestors(mut self, isolate: bool) -> Self {
+        Arc::make_mut(&mut self.style_mut().layout).isolate_from_ancestors = isolate;
+        self
     }
 
     pub(crate) fn style_ref(&self) -> &NodeStyle {

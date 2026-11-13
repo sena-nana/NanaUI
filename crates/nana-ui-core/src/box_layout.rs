@@ -3470,6 +3470,10 @@ pub struct LayoutStyle {
     /// CSS `isolation: isolate`. Paint-order stacking context; not a layout box.
     #[serde(default)]
     pub isolation: bool,
+    /// Sever visual and clip inheritance from ancestor components (opacity groups,
+    /// non-group opacity, backdrop filter groups, compositor layer opacity, and clips).
+    #[serde(default)]
+    pub isolate_from_ancestors: bool,
     /// Paint-only 2D `transform` subset. It never participates in flex/grid
     /// measurement. Planar CSS 3D is [`Self::transform_3d`]; parent
     /// `perspective` / `preserve-3d` are [`Self::css_perspective`] /
@@ -3809,6 +3813,7 @@ impl Default for LayoutStyle {
             anchor: None,
             z_index: None,
             isolation: false,
+            isolate_from_ancestors: false,
             transform: None,
             transform_3d: None,
             unsupported_transform: None,

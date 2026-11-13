@@ -331,6 +331,13 @@ impl AnchoredActionMenu {
         self
     }
 
+    /// Control whether the floating menu surface isolates itself from ancestor
+    /// visual and clip effects (defaults to `true`).
+    pub fn isolate_from_ancestors(mut self, isolate: bool) -> Self {
+        Arc::make_mut(&mut self.style.layout).isolate_from_ancestors = isolate;
+        self
+    }
+
     pub fn menu_size(mut self, width: f32, height: f32) -> Self {
         self.width = width.max(MENU_MIN_WIDTH);
         self.height = if height >= MENU_MIN_HEIGHT {
@@ -577,6 +584,13 @@ impl ContextMenu {
     pub fn width(mut self, width: f32) -> Self {
         self.width = width.max(MENU_MIN_WIDTH);
         Arc::make_mut(&mut self.style.layout).width = Some(LengthSpec::Px(self.width));
+        self
+    }
+
+    /// Control whether the floating context menu isolates itself from ancestor
+    /// visual and clip effects (defaults to `true`).
+    pub fn isolate_from_ancestors(mut self, isolate: bool) -> Self {
+        Arc::make_mut(&mut self.style.layout).isolate_from_ancestors = isolate;
         self
     }
 

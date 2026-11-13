@@ -446,23 +446,35 @@ pub(super) fn build(context: &GeometryPaintContext<'_>, emit: &mut impl FnMut(Sc
                 // stacking context at the content's own level, above the
                 // trigger and whatever the page stacks after it. A context
                 // menu's surface is its own node's box and stays with it.
-                let (slot, transform, clips, z_index) = if trigger_surface.is_some() {
-                    (
-                        TRIGGERED_OVERLAY_SURFACE_SLOT,
-                        AffineTransform::IDENTITY,
-                        Arc::from([]),
-                        nana_ui_runtime::MENU_OVERLAY_Z_INDEX,
-                    )
-                } else {
-                    (0, transform, Arc::clone(parent_clips), node.z_index)
-                };
+                let (slot, transform, clips, z_index, surface_opacity) =
+                    if trigger_surface.is_some() {
+                        (
+                            TRIGGERED_OVERLAY_SURFACE_SLOT,
+                            AffineTransform::IDENTITY,
+                            Arc::from([]),
+                            nana_ui_runtime::MENU_OVERLAY_Z_INDEX,
+                            if crate::scene::triggered_overlay_isolates(node) {
+                                1.0
+                            } else {
+                                opacity
+                            },
+                        )
+                    } else {
+                        (
+                            0,
+                            transform,
+                            Arc::clone(parent_clips),
+                            node.z_index,
+                            opacity,
+                        )
+                    };
                 emit(ScenePrimitive {
                     id: PrimitiveId { node: id, slot },
                     node: id,
                     bounds: scene_rect(*surface),
                     transform,
                     clips,
-                    opacity,
+                    opacity: surface_opacity,
                     z_index,
                     document_order: node_order,
                     kind: ScenePrimitiveKind::Quad {
