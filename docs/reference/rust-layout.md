@@ -19,7 +19,7 @@ Row/Column 预设直接写入 `display: flex` 与方向，进入同一个 Flex f
 - 同一组里没有逻辑边时，这条记录不起作用。所以 CSS 补丁全部套完后（`view/style.rs` 的 `apply`），会用 `LayoutStyle::drop_inert_physical_edges` 丢掉它，让 CSS 和 Rust 写同一条边时得到同一份意图。
 - 同一组里有逻辑边时，记录保留，层叠先后不变。
 
-预设构造器、视图函数 `row()` 和带预设意图的 `from_layout` 挂上同一种组件、同样的节点和意图，首帧、局部修改和空闲帧的布局工作量相同（`world/issue204.rs` 的 `issue204_facades_share_identity_and_layout_work`）。CSS 在构建期降为 `from_layout` 加样式数据，走同一条路径。写法之间唯一有意的差别在命中：Rust 预设默认不参与命中，`from_layout` 和 CSS 布局盒默认可点。
+预设构造器、视图函数 `row()` 和带预设意图的 `from_layout` 挂上同一种组件、同样的节点和意图，首帧、局部修改和空闲帧的布局工作量相同（`world/tests/layout_foundations.rs` 的 `issue204_facades_share_identity_and_layout_work`）。CSS 在构建期降为 `from_layout` 加样式数据，走同一条路径。写法之间唯一有意的差别在命中：Rust 预设默认不参与命中，`from_layout` 和 CSS 布局盒默认可点。
 
 ```rust
 use nana_ui::runtime::{JustifySpec, SemanticColorRole, Stack};

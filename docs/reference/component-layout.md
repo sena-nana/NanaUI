@@ -64,7 +64,7 @@ Button、Chip 和 ActionMenuItem 的旧 API 保持不变。组件内容声明为
 - `cargo test --locked -p nana-ui-runtime --lib issue388`：#388 的四项取舍，见上节。
 - `cargo test --locked -p nana-ui-runtime --lib issue385`：EmptyState、Card、装配后 Toast 的前置部件在作者 padding、主题切换、部件显隐下与冷布局相同；padding 只是声明的那份，部件从 content box 起点开始，子节点在带子之后。
 - `cargo test --locked -p nana-ui-runtime --lib issue199`：1k 实际组件跨 context / 正常流与脱流切换，保留状态、焦点和资源身份。
-- `cargo test --locked -p nana-ui-devtools --features runtime-agent --test issue205_component_pixels`：实际 GPU 的组件图像和 hover；设置 `NANA_COMPONENT_REQUIRE_GPU=1` 时无 GPU 必须失败。
+- `cargo test --locked -p nana-ui-devtools --features runtime-agent --test devtools_pixels component_pixels`：实际 GPU 的组件图像和 hover；设置 `NANA_COMPONENT_REQUIRE_GPU=1` 时无 GPU 必须失败。
 
 Card 标题复用 Runtime 的 retained paragraph，具有独立的单行字形预算与字号/字重；这些文字样式不继承到 body。Header baseline 与所有 context 的 intrinsic baseline 共用同一部件，标题高度只由 band 保留一次。spinner 相位为 paint-only；窄标题的溢出字形裁剪到 Header，不能占用 spinner 间隔。
 

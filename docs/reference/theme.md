@@ -698,7 +698,7 @@ cargo test -p nana-ui-scene --lib a_menu_surface_paints_the_radius_it_was_handed
 # 意图解析的代价被计数器看见（F12）
 cargo test -p nana-ui-runtime --lib resolving_layout_intent_reports_the_layout_it_had_to_copy
 # 解析点决策所依赖的那个尺寸前提
-cargo test -p nana-ui-runtime --test layout_style_size
+cargo test -p nana-ui-runtime --test contracts layout_style_size
 
 # renderer 不再读主题常量（应为 0）
 rg -c "UI_METRICS" -g '!*tests.rs' crates/nana-ui-scene/src

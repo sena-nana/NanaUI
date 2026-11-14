@@ -1507,8 +1507,12 @@ mod tests {
 
     #[test]
     fn font_face_src_tries_next_url_when_first_missing() {
-        let jail =
-            std::env::temp_dir().join(format!("nanaui-font-src-fallback-{}", std::process::id()));
+        static SEQ: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+        let seq = SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let jail = std::env::temp_dir().join(format!(
+            "nanaui-font-src-fallback-{}-{seq}",
+            std::process::id()
+        ));
         let _ = std::fs::remove_dir_all(&jail);
         std::fs::create_dir_all(&jail).expect("jail");
         std::fs::write(jail.join("ok.ttf"), b"dummy-font-bytes").expect("ttf");
@@ -1682,7 +1686,10 @@ mod tests {
 
     #[test]
     fn font_read_size_cap_skips_oversize() {
-        let jail = std::env::temp_dir().join(format!("nanaui-font-cap-{}", std::process::id()));
+        static SEQ: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+        let seq = SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let jail =
+            std::env::temp_dir().join(format!("nanaui-font-cap-{}-{seq}", std::process::id()));
         let _ = std::fs::remove_dir_all(&jail);
         std::fs::create_dir_all(&jail).expect("jail");
         std::fs::write(jail.join("big.ttf"), vec![0u8; 64]).expect("font");

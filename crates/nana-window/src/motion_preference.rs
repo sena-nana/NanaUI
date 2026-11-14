@@ -71,6 +71,7 @@ mod tests {
 
     #[test]
     fn only_the_animation_setting_marks_a_change_and_taking_clears_it() {
+        let _serial = crate::test_serial_lock();
         let _ = take_reduced_motion_change();
         observe_setting_change(0x0030);
         assert!(!take_reduced_motion_change());

@@ -10,16 +10,11 @@ fn recorded_transfers_emit_diagnostics_even_when_the_consumer_frame_is_discarded
     if std::env::var_os(CHILD).is_none() {
         // Installing global diagnostics must not enable instrumentation in
         // unrelated, concurrently executing GPU tests.
-        let output = std::process::Command::new(std::env::current_exe().unwrap())
-            .args(["--exact", "output::driver_tests::diagnostics::recorded_transfers_emit_diagnostics_even_when_the_consumer_frame_is_discarded", "--test-threads=1", "--nocapture"])
-            .env(CHILD, "1")
-            .output()
-            .expect("run isolated output diagnostics fixture");
-        assert!(
-            output.status.success(),
-            "isolated diagnostics fixture failed:\n{}\n{}",
-            String::from_utf8_lossy(&output.stdout),
-            String::from_utf8_lossy(&output.stderr)
+        let _guard = test_gpu::lock();
+        test_gpu::run_child_with_timeout(
+            "output::driver_tests::diagnostics::recorded_transfers_emit_diagnostics_even_when_the_consumer_frame_is_discarded",
+            CHILD,
+            "1",
         );
         return;
     }

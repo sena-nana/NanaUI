@@ -135,7 +135,7 @@ fn readback(
     device
         .poll(wgpu::PollType::Wait {
             submission_index: Some(submission),
-            timeout: None,
+            timeout: Some(std::time::Duration::from_secs(10)),
         })
         .expect("presentation readback poll");
     let mapped = slice.get_mapped_range().expect("presentation readback map");

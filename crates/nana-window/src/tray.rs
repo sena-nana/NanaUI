@@ -497,6 +497,7 @@ mod tests {
 
     #[test]
     fn a_tray_choice_runs_the_installed_wake_and_removal_drops_it() {
+        let _serial = crate::test_serial_lock();
         static WOKEN: AtomicUsize = AtomicUsize::new(0);
         if let Ok(mut slot) = WAKE.lock() {
             *slot = Some(Arc::new(|| {

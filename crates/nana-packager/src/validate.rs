@@ -955,7 +955,9 @@ fn self_check(
     env: &[(String, String)],
     drop_env: &[String],
 ) -> Result<SelfCheck, String> {
-    let cwd = std::env::temp_dir().join(format!("nana-validate-cwd-{}", std::process::id()));
+    static SEQ: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+    let seq = SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let cwd = std::env::temp_dir().join(format!("nana-validate-cwd-{}-{seq}", std::process::id()));
     std::fs::create_dir_all(&cwd).map_err(|e| e.to_string())?;
     let mut command = Command::new(exe);
     command

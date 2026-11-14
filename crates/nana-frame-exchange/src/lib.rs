@@ -360,7 +360,13 @@ impl Drop for Retirement {
         let _ = std::thread::Builder::new()
             .name("nana-frame-exchange-retire".into())
             .spawn(move || {
-                let _ = __framework::poll(&gpu, wgpu::PollType::wait_indefinitely());
+                let _ = __framework::poll(
+                    &gpu,
+                    wgpu::PollType::Wait {
+                        submission_index: None,
+                        timeout: Some(std::time::Duration::from_secs(15)),
+                    },
+                );
                 drop(textures);
                 drop(gpu);
             });
@@ -999,18 +1005,23 @@ mod tests {
     }
 
     fn test_gpu() -> GpuContext {
-        let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
-            backends: wgpu::Backends::from_env().unwrap_or_default(),
-            ..wgpu::InstanceDescriptor::new_without_display_handle()
+        static DEVICE: std::sync::OnceLock<(wgpu::Adapter, wgpu::Device, wgpu::Queue)> =
+            std::sync::OnceLock::new();
+        let (adapter, device, queue) = DEVICE.get_or_init(|| {
+            let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
+                backends: wgpu::Backends::from_env().unwrap_or_default(),
+                ..wgpu::InstanceDescriptor::new_without_display_handle()
+            });
+            let adapter = pollster::block_on(wgpu::util::initialize_adapter_from_env_or_default(
+                &instance, None,
+            ))
+            .expect("frame exchange test requires a WGPU adapter");
+            let (device, queue) =
+                pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor::default()))
+                    .expect("frame exchange test requires a WGPU device");
+            (adapter, device, queue)
         });
-        let adapter = pollster::block_on(wgpu::util::initialize_adapter_from_env_or_default(
-            &instance, None,
-        ))
-        .expect("frame exchange test requires a WGPU adapter");
-        let (device, queue) =
-            pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor::default()))
-                .expect("frame exchange test requires a WGPU device");
-        __framework::adopt(adapter, device, queue)
+        __framework::adopt(adapter.clone(), device.clone(), queue.clone())
     }
 
     #[test]
@@ -1082,7 +1093,10 @@ mod tests {
 
     fn wait(gpu: &GpuContext) {
         __framework::device(gpu)
-            .poll(wgpu::PollType::wait_indefinitely())
+            .poll(wgpu::PollType::Wait {
+                submission_index: None,
+                timeout: Some(std::time::Duration::from_secs(15)),
+            })
             .unwrap();
     }
 

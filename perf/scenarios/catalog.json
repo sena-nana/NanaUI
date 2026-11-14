@@ -157,7 +157,7 @@
   "nana_layout_gates": [
     {
       "id": "static-and-paint",
-      "source": "crates/nana-ui-runtime/src/world/issue261.rs",
+      "source": "crates/nana-ui-runtime/src/world/tests/incremental_work.rs",
       "filter": "issue261",
       "counters": [
         "layout_measure_nodes",
@@ -168,7 +168,7 @@
     },
     {
       "id": "context-transition",
-      "source": "crates/nana-ui-runtime/src/world/issue199.rs",
+      "source": "crates/nana-ui-runtime/src/world/tests/layout_foundations.rs",
       "filter": "issue199",
       "counters": [
         "entities_spawned",
@@ -179,7 +179,7 @@
     },
     {
       "id": "component-migration",
-      "source": "crates/nana-ui-runtime/src/world/issue205.rs",
+      "source": "crates/nana-ui-runtime/src/world/tests/component_parts.rs",
       "filter": "issue205",
       "counters": [
         "entities_total",
@@ -190,7 +190,7 @@
     },
     {
       "id": "local-metrics-and-scaling",
-      "source": "crates/nana-ui-runtime/src/world/issue259.rs",
+      "source": "crates/nana-ui-runtime/src/world/tests/incremental_work.rs",
       "filter": "issue259",
       "counters": [
         "layout_dependency_edges_visited",
@@ -201,7 +201,7 @@
     },
     {
       "id": "ordinary-scroll",
-      "source": "crates/nana-ui-runtime/src/world/issue201.rs",
+      "source": "crates/nana-ui-runtime/src/world/tests/layout_foundations.rs",
       "filter": "issue201",
       "counters": [
         "layout_measure_nodes",
@@ -213,7 +213,7 @@
     },
     {
       "id": "scroll-and-sticky",
-      "source": "crates/nana-ui-scene/tests/issue200_sticky.rs",
+      "source": "crates/nana-ui-scene/tests/scene_contracts/sticky_scroll.rs",
       "filter": "issue200_sticky",
       "counters": [
         "layout_nodes",
@@ -223,7 +223,7 @@
     },
     {
       "id": "replaced-content",
-      "source": "crates/nana-ui-runtime/src/world/issue263.rs",
+      "source": "crates/nana-ui-runtime/src/world/tests/replaced_media.rs",
       "filter": "issue263",
       "counters": [
         "layout_measure_nodes",
@@ -233,7 +233,7 @@
     },
     {
       "id": "replaced-participation",
-      "source": "crates/nana-ui-runtime/src/world/issue202.rs",
+      "source": "crates/nana-ui-runtime/src/world/tests/layout_foundations.rs",
       "filter": "issue202",
       "counters": [
         "layout_full_document_fallbacks"
@@ -241,7 +241,7 @@
     },
     {
       "id": "virtualization",
-      "source": "crates/nana-ui-runtime/src/world/issue262.rs",
+      "source": "crates/nana-ui-runtime/src/world/tests/incremental_work.rs",
       "filter": "issue262",
       "counters": [
         "entities_spawned",
@@ -251,7 +251,7 @@
     },
     {
       "id": "dynamic-layout",
-      "source": "crates/nana-ui-runtime/src/world/issue214.rs",
+      "source": "crates/nana-ui-runtime/src/world/tests/dynamic_layout.rs",
       "filter": "issue214",
       "counters": [
         "dynamic_solver_runs",
@@ -261,19 +261,19 @@
     },
     {
       "id": "component-memory",
-      "source": "crates/nana-ui-runtime/tests/node_memory.rs",
+      "source": "crates/nana-ui-runtime/tests/perf_contracts/node_memory.rs",
       "filter": "laid_out_nodes_keep_bounded_live_memory",
       "counters": []
     },
     {
       "id": "authoring-parity",
-      "source": "crates/nana-ui-runtime/tests/view_macro.rs",
+      "source": "crates/nana-ui-runtime/tests/contracts/view_macro.rs",
       "filter": "issue204",
       "counters": []
     },
     {
       "id": "native-mixed-inline",
-      "source": "crates/nana-ui-scene/tests/inline_content.rs",
+      "source": "crates/nana-ui-scene/tests/scene_contracts/inline_content.rs",
       "filter": "paint_and_equal_atomic_metrics_do_not_reflow_the_inline_parent",
       "counters": [
         "inline_reflows",
@@ -285,7 +285,7 @@
     },
     {
       "id": "list-row-entity-and-idle",
-      "source": "crates/nana-ui-runtime/src/world/issue205.rs",
+      "source": "crates/nana-ui-runtime/src/world/tests/component_parts.rs",
       "filter": "issue205_ten_thousand_rows_keep_one_entity_and_bounded_parts",
       "counters": [
         "entities_spawned",
@@ -296,7 +296,7 @@
     },
     {
       "id": "value-part-local-update",
-      "source": "crates/nana-ui-runtime/src/world/issue205.rs",
+      "source": "crates/nana-ui-runtime/src/world/tests/component_parts.rs",
       "filter": "issue205_value_parts_keep_action_at_the_end_and_match_cold",
       "counters": [
         "entities_spawned",

@@ -147,7 +147,7 @@ The `k`-th successful stage reservation (counting from 0) uses ready value `2k +
 There is no CPU wait anywhere. While the consumer has not released the previous frame, `stage` returns `Deferred(ConsumerBusy)` and records no commands; window output then reports `NativeDeferred` and keeps producing same-device texture frames. If the consumer has not released for more than 2 seconds, the old pool retires (reported as `NativeRetired`). The host holds `NativeExportRetirement` until the last token comes back and the consumer's GPU fence actually reaches release; dropping an accepted token is not GPU completion. Each window keeps at most two retired pools that are not yet released; at that budget it keeps reporting `NativeDeferred` and stops allocating new pools, while existing same-device output continues. A size change, an alpha/export mode switch or a device rebuild also retires the old pool, and the next token carries the new `pool_generation`. Except where `Straight` is requested explicitly, pixels are sRGB-encoded with premultiplied alpha. The export path does no CPU readback; the D3D11 readbacks in tests and `window-output-probe` are for acceptance checking only.
 
 ```powershell
-cargo test -p nana-gpu --features native-export --test native_export
+cargo test -p nana-gpu --features native-export --test gpu_loss_and_export native_export
 cargo run -p nana-ui --example window-output-probe --features hosted,bundled-fonts,native-export
 ```
 

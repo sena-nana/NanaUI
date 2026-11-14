@@ -503,9 +503,15 @@ mod tests {
         assert!(!is_absolute_local_url("nana://res/a.ttf"));
     }
 
+    fn unique_test_dir(prefix: &str) -> PathBuf {
+        static NEXT_ID: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+        let id = NEXT_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        std::env::temp_dir().join(format!("{prefix}-{}-{id}", std::process::id()))
+    }
+
     #[test]
     fn relative_font_urls_cannot_climb_out_of_the_base() {
-        let root = std::env::temp_dir().join(format!("nana-font-jail-{}", std::process::id()));
+        let root = unique_test_dir("nana-font-jail");
         let base = root.join("resources");
         std::fs::create_dir_all(&base).unwrap();
         std::fs::write(root.join("outside.ttf"), b"x").unwrap();
@@ -550,10 +556,27 @@ mod tests {
     /// Serves one canned response, then closes.
     fn one_response_server(status: &str, body: Vec<u8>) -> (String, std::thread::JoinHandle<()>) {
         let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).expect("bind");
+        listener.set_nonblocking(true).expect("nonblocking");
         let url = format!("http://{}/a.png", listener.local_addr().expect("addr"));
         let status = status.to_owned();
         let handle = std::thread::spawn(move || {
-            let (mut stream, _) = listener.accept().expect("accept");
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+            let mut stream = loop {
+                match listener.accept() {
+                    Ok((stream, _)) => break stream,
+                    Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                        assert!(
+                            std::time::Instant::now() < deadline,
+                            "timed out waiting for image_url loopback connection"
+                        );
+                        std::thread::sleep(std::time::Duration::from_millis(5));
+                    }
+                    Err(error) => panic!("accept failed: {error}"),
+                }
+            };
+            stream.set_nonblocking(false).expect("blocking stream");
+            let _ = stream.set_read_timeout(Some(std::time::Duration::from_secs(5)));
+            let _ = stream.set_write_timeout(Some(std::time::Duration::from_secs(5)));
             let mut request = Vec::new();
             let mut chunk = [0_u8; 256];
             while !request.windows(4).any(|window| window == b"\r\n\r\n") {
@@ -657,8 +680,7 @@ mod tests {
 
     #[test]
     fn set_background_image_url_base_prefixes_relative() {
-        let base =
-            std::env::temp_dir().join(format!("nana-url-base-{}-{}", std::process::id(), "prefix"));
+        let base = unique_test_dir("nana-url-base").join("prefix");
         set_background_image_url_base(base.clone());
         let resolved = resolve_background_image_url("assets/icon.png").unwrap();
         assert_eq!(
@@ -693,9 +715,8 @@ mod tests {
 
     #[test]
     fn local_file_outside_jail_is_not_read() {
-        let pid = std::process::id();
-        let jail = std::env::temp_dir().join(format!("nanaui-img-jail-{pid}"));
-        let outside = std::env::temp_dir().join(format!("nanaui-img-out-{pid}"));
+        let jail = unique_test_dir("nanaui-img-jail");
+        let outside = unique_test_dir("nanaui-img-out");
         let _ = std::fs::remove_dir_all(&jail);
         let _ = std::fs::remove_dir_all(&outside);
         std::fs::create_dir_all(&jail).expect("jail");
@@ -762,7 +783,7 @@ mod tests {
     #[cfg(feature = "svg")]
     #[test]
     fn svg_image_href_does_not_read_local_file() {
-        let dir = std::env::temp_dir().join(format!("nanaui-svg-href-{}", std::process::id()));
+        let dir = unique_test_dir("nanaui-svg-href");
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).expect("dir");
         let secret = dir.join("secret.png");

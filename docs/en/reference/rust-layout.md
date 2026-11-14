@@ -19,7 +19,7 @@ Positioning and scrolling are likewise only projections of Foundation capabiliti
 - When the same group has no logical edge, that entry has no effect. So after all CSS patches are applied (`apply` in `view/style.rs`), `LayoutStyle::drop_inert_physical_edges` drops it, so that CSS and Rust writing the same edge produce the same intent.
 - When the same group has a logical edge, the entry is kept and the cascade order is unchanged.
 
-A preset constructor, the view function `row()`, and `from_layout` with the preset's intent mount the same component with the same nodes and intent, and do the same layout work on the first frame, on local changes, and on idle frames (`issue204_facades_share_identity_and_layout_work` in `world/issue204.rs`). CSS is lowered at build time to `from_layout` plus style data and takes the same path. The only intentional difference between authoring styles is hit testing: Rust presets do not participate in hit testing by default, while `from_layout` and CSS layout boxes are clickable by default.
+A preset constructor, the view function `row()`, and `from_layout` with the preset's intent mount the same component with the same nodes and intent, and do the same layout work on the first frame, on local changes, and on idle frames (`issue204_facades_share_identity_and_layout_work` in `world/tests/layout_foundations.rs`). CSS is lowered at build time to `from_layout` plus style data and takes the same path. The only intentional difference between authoring styles is hit testing: Rust presets do not participate in hit testing by default, while `from_layout` and CSS layout boxes are clickable by default.
 
 ```rust
 use nana_ui::runtime::{JustifySpec, SemanticColorRole, Stack};

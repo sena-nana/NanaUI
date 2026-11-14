@@ -7,7 +7,118 @@
 //! hangs with every worker stuck in a GPU test. Tests only rely on their own
 //! painters, targets and resources, never on owning the device.
 
-use std::sync::OnceLock;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Condvar, Mutex, OnceLock, PoisonError};
+
+static GPU_TEST_STATE: Mutex<(u64, usize)> = Mutex::new((0, 0));
+static GPU_TEST_FREE: Condvar = Condvar::new();
+
+thread_local! {
+    static THREAD_TOKEN: u64 = {
+        static NEXT: AtomicU64 = AtomicU64::new(1);
+        NEXT.fetch_add(1, Ordering::Relaxed)
+    };
+}
+
+/// Thread-reentrant process guard serializing GPU test execution across libtest worker threads.
+pub(crate) struct GpuTestGuard;
+
+impl Drop for GpuTestGuard {
+    fn drop(&mut self) {
+        let mut state = GPU_TEST_STATE
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        state.1 = state.1.saturating_sub(1);
+        if state.1 == 0 {
+            state.0 = 0;
+            GPU_TEST_FREE.notify_one();
+        }
+    }
+}
+
+pub(crate) fn lock() -> GpuTestGuard {
+    let token = THREAD_TOKEN.with(|token| *token);
+    let mut state = GPU_TEST_STATE
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner);
+    while state.1 > 0 && state.0 != token {
+        state = GPU_TEST_FREE
+            .wait(state)
+            .unwrap_or_else(PoisonError::into_inner);
+    }
+    state.0 = token;
+    state.1 += 1;
+    GpuTestGuard
+}
+
+/// Runs an isolated child test binary with a wall-clock timeout so a hung
+/// child never stalls the parent `cargo test` runner.
+pub(crate) fn run_child_with_timeout(test_filter: &str, env_key: &str, env_val: &str) {
+    let exe = std::env::current_exe().expect("locate test executable");
+    let mut cmd = std::process::Command::new(exe);
+    cmd.args(["--exact", test_filter, "--test-threads=1", "--nocapture"])
+        .env(env_key, env_val)
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped());
+    let mut child = cmd.spawn().expect("spawn isolated test child");
+    let stdout_pipe = child.stdout.take();
+    let stderr_pipe = child.stderr.take();
+    let stdout_reader = std::thread::spawn(move || {
+        use std::io::Read as _;
+        let mut buf = Vec::new();
+        if let Some(mut pipe) = stdout_pipe {
+            let _ = pipe.read_to_end(&mut buf);
+        }
+        buf
+    });
+    let stderr_reader = std::thread::spawn(move || {
+        use std::io::Read as _;
+        let mut buf = Vec::new();
+        if let Some(mut pipe) = stderr_pipe {
+            let _ = pipe.read_to_end(&mut buf);
+        }
+        buf
+    });
+
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(15);
+    let status = loop {
+        match child.try_wait() {
+            Ok(Some(status)) => break Ok(status),
+            Ok(None) if std::time::Instant::now() < deadline => {
+                std::thread::sleep(std::time::Duration::from_millis(20));
+            }
+            Ok(None) => {
+                let _ = child.kill();
+                let _ = child.wait();
+                break Err(format!(
+                    "isolated child test `{test_filter}` timed out after 15s"
+                ));
+            }
+            Err(error) => {
+                let _ = child.kill();
+                let _ = child.wait();
+                break Err(format!(
+                    "failed waiting on isolated child test `{test_filter}`: {error}"
+                ));
+            }
+        }
+    };
+    let stdout = stdout_reader.join().unwrap_or_default();
+    let stderr = stderr_reader.join().unwrap_or_default();
+    match status {
+        Ok(status) => assert!(
+            status.success(),
+            "isolated child test `{test_filter}` failed ({status}):\n{}\n{}",
+            String::from_utf8_lossy(&stdout),
+            String::from_utf8_lossy(&stderr),
+        ),
+        Err(message) => panic!(
+            "{message}:\n{}\n{}",
+            String::from_utf8_lossy(&stdout),
+            String::from_utf8_lossy(&stderr),
+        ),
+    }
+}
 
 use nana_gpu::{
     __framework, GpuContext, GpuTexture, GpuTextureDescriptor, GpuTextureFormat, GpuTextureUsages,
@@ -61,6 +172,7 @@ pub(crate) fn context() -> GpuContext {
 
 /// A device of its own, created as [`context`]'s was.
 pub(crate) fn fresh_context() -> GpuContext {
+    let _guard = lock();
     let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
         backends: wgpu::Backends::from_env().unwrap_or_default(),
         ..wgpu::InstanceDescriptor::new_without_display_handle()

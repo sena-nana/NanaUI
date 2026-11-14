@@ -105,7 +105,7 @@
 
 ```bash
 cargo test -p nana-ui-diagram
-NANA_DIAGRAM_BLESS=1 cargo test -p nana-ui-diagram --test golden   # 有意改动后重写 golden
+NANA_DIAGRAM_BLESS=1 cargo test -p nana-ui-diagram --test diagram golden   # 有意改动后重写 golden
 cargo test -p nana-ui-runtime --features rich-text --lib markdown
 cargo test -p nana-ui-scene --features rich-text --lib markdown
 cargo run -p nana-ui-devtools --features runtime-agent,nana-ui/components --example diagram-probe -- target/diagram-probe

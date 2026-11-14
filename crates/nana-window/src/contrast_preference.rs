@@ -109,6 +109,7 @@ mod tests {
 
     #[test]
     fn only_the_high_contrast_setting_marks_a_change_and_taking_clears_it() {
+        let _serial = crate::test_serial_lock();
         let _ = take_high_contrast_change();
         observe_setting_change(0x0030);
         assert!(!take_high_contrast_change());
@@ -121,6 +122,7 @@ mod tests {
 
     #[test]
     fn a_forced_flag_replaces_the_platform_read() {
+        let _serial = crate::test_serial_lock();
         force_high_contrast(Some(true));
         assert_eq!(system_high_contrast(), Some(true));
         force_high_contrast(Some(false));

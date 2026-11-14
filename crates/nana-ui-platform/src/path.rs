@@ -206,14 +206,9 @@ mod tests {
 
     #[test]
     fn canonicalization_preserves_identity_special_names_and_errors() {
-        let root = std::env::temp_dir().join(format!(
-            "nana-path-{}-{}",
-            std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_nanos()
-        ));
+        static NEXT_ID: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        let seq = NEXT_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let root = std::env::temp_dir().join(format!("nana-path-{}-{seq}", std::process::id(),));
         std::fs::create_dir(&root).unwrap();
         let file = root.join("Nana 模型.json");
         std::fs::write(&file, b"model").unwrap();

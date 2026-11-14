@@ -27,7 +27,7 @@ view! {
 ## 测试
 
 ```bash
-cargo test -p nana-ui-runtime --features view-macro --test view_macro
+cargo test -p nana-ui-runtime --features view-macro --test contracts view_macro
 ```
 
 这条测试检查模板与等价的手写函数挂出同一棵树、以同样方式更新。其余检查见 [`.github/workflows/ci.yml`](../../.github/workflows/ci.yml)。

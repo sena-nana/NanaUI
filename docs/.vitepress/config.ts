@@ -107,6 +107,7 @@ const EN: Record<string, string> = {
   "表单绑定": "Form bindings",
   "表格与树": "Tables and trees",
   "覆盖矩阵": "Coverage matrix",
+  "测试与门禁": "Testing and gates",
   "视图写法": "Writing views",
   "视觉": "Look",
   "计算值": "Computed values",
@@ -133,12 +134,12 @@ const zhNav = [
   {
     text: "参考",
     link: "/reference/how-it-works",
-    activeMatch: "/reference/(?!theme|text-engine|input-conformance|input-cost|third-party)",
+    activeMatch: "/reference/(?!theme|text-engine|input-conformance|input-cost|third-party|testing)",
   },
   {
     text: "维护者",
     link: "/reference/theme",
-    activeMatch: "/reference/(theme|text-engine|input-conformance|input-cost|third-party)",
+    activeMatch: "/reference/(theme|text-engine|input-conformance|input-cost|third-party|testing)",
   },
 ];
 
@@ -461,6 +462,7 @@ const zhSidebar = {
         { text: "输入验收矩阵", link: "/reference/input-conformance" },
         { text: "输入成本", link: "/reference/input-cost" },
         { text: "第三方代码与许可证", link: "/reference/third-party" },
+        { text: "测试与门禁", link: "/reference/testing" },
       ],
     },
   ],

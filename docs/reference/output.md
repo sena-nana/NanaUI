@@ -147,7 +147,7 @@ Electron 参考在生产端非阻塞观察 ready 后发送 handle。成功 impor
 全程没有 CPU 等待。当消费方尚未释放上一帧时，`stage` 返回 `Deferred(ConsumerBusy)` 且不录制任何命令；窗口输出此时上报 `NativeDeferred`，并继续产出同设备纹理帧。若消费方超过 2 秒未释放，旧池退役（上报 `NativeRetired`）。宿主持有 `NativeExportRetirement`，直到最后一枚 token 归还且消费方 GPU 围栏实际到达 release；不能把已接受 token 的 drop 当作 GPU 完成。每扇窗口最多保留两份尚未释放的退役池，达到预算时继续报告 `NativeDeferred` 并停止新池分配；已有同设备输出仍可继续。尺寸变化、alpha/导出模式切换或设备重建同样会退役旧池，下一枚 token 将携带新的 `pool_generation`。除显式要求 `Straight` 外，像素均为 sRGB 编码、预乘 alpha。导出路径不做任何 CPU 回读；测试与 `window-output-probe` 中的 D3D11 回读仅用于验收核对。
 
 ```powershell
-cargo test -p nana-gpu --features native-export --test native_export
+cargo test -p nana-gpu --features native-export --test gpu_loss_and_export native_export
 cargo run -p nana-ui --example window-output-probe --features hosted,bundled-fonts,native-export
 ```
 

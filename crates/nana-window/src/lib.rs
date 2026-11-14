@@ -36,6 +36,13 @@ mod web_surface;
 mod win32;
 mod work_area;
 
+#[cfg(test)]
+pub(crate) fn test_serial_lock() -> std::sync::MutexGuard<'static, ()> {
+    static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    LOCK.lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
 #[cfg(any(target_os = "macos", target_os = "windows"))]
 pub use chrome::LiveFrameResize;
 pub use chrome::arm_frameless_guard;
@@ -51,6 +58,7 @@ pub use chrome::set_frameless_styles;
 pub use chrome::set_native_window_controls_visible;
 pub use chrome::set_non_client_rendering;
 pub use chrome::set_present_transaction;
+
 #[cfg(any(target_os = "macos", target_os = "windows"))]
 pub use chrome::{FrameGrab, LiveFrameMove};
 pub use chrome::{FrameResizeEdge, NonClientRenderingStrategy};

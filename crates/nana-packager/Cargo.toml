@@ -19,6 +19,7 @@ path = "src/lib.rs"
 [[bin]]
 name = "nana-packager"
 path = "src/main.rs"
+test = false
 
 [dependencies]
 nana-package.workspace = true

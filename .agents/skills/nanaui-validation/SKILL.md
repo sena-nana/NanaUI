@@ -12,8 +12,9 @@ Select evidence from the changed contract; do not run an unrelated full matrix b
 - **Visual:** render the affected real workspace or component path and inspect the produced image plus any diff report. Re-record a baseline only when the visual change is intended and reviewable.
 - **Window:** test the public outcome contract and require a real target-platform window for native effects, chrome, resize, or cleanup.
 - **Compatibility:** when a public boundary changes, inspect exports, feature gates, manifests, lockfiles, serialized data, and every in-repository consumer.
-- **Packaging (Issue #226):** run `python3 scripts/check-package-boundary.py`, `cargo test -p nana-package -p nana-packager` (includes the Steam delta gates in `tests/steam_delta.rs`), and, for runtime or layout changes, package `examples/package-fixture` and run `nana-packager validate <app> --run --tamper-suite` as the CI `packaging` job does. A foreign-target package reports its launch checks as not executed; say so. See `docs/reference/packaging.md`.
+- **Packaging (Issue #226):** run `python3 scripts/check-package-boundary.py`, `cargo test -p nana-package -p nana-packager` (includes the Steam delta gates under `crates/nana-packager/tests/packager/steam_delta.rs`, runnable directly via `cargo test -p nana-packager --test packager steam_delta`), and, for runtime or layout changes, package `examples/package-fixture` and run `nana-packager validate <app> --run --tamper-suite` as the CI `packaging` job does. A foreign-target package reports its launch checks as not executed; say so. See `docs/reference/packaging.md`.
 - **Performance:** use the repository's maintained performance contract and report measured regressions separately from unavailable platform or environment evidence.
+- **Test hygiene:** verify target count caps, `test = false` / `doctest = false` hygiene, and anti-hang rules with `python3 scripts/check-test-hygiene.py` whenever adding or reorganizing tests. See `docs/reference/testing.md`.
 
 ## GPU load safety
 

@@ -158,16 +158,11 @@ fn exhausted_host_frame_slots_report_deferred_without_encoding_or_submitting() {
     if std::env::var_os(CHILD).is_none() {
         // Intentionally exhausting the shared pool must not starve parallel
         // GPU tests. A separate process still owns exactly one test device.
-        let output = std::process::Command::new(std::env::current_exe().unwrap())
-            .args(["--exact", "output::driver_tests::exhausted_host_frame_slots_report_deferred_without_encoding_or_submitting", "--test-threads=1", "--nocapture"])
-            .env(CHILD, "1")
-            .output()
-            .expect("run isolated frame-slot exhaustion fixture");
-        assert!(
-            output.status.success(),
-            "isolated frame-slot fixture failed:\n{}\n{}",
-            String::from_utf8_lossy(&output.stdout),
-            String::from_utf8_lossy(&output.stderr)
+        let _guard = test_gpu::lock();
+        test_gpu::run_child_with_timeout(
+            "output::driver_tests::exhausted_host_frame_slots_report_deferred_without_encoding_or_submitting",
+            CHILD,
+            "1",
         );
         return;
     }

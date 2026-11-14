@@ -237,18 +237,37 @@ pub struct OffscreenSnapshots {
     image_ready: std::sync::mpsc::Receiver<()>,
 }
 
+fn gpu_serial_lock() -> std::sync::MutexGuard<'static, ()> {
+    static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    LOCK.lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
 impl OffscreenSnapshots {
     pub fn new() -> Result<Self, Box<dyn std::error::Error>> {
-        let (_instance, adapter) = request_adapter()?;
-        let (raw_device, raw_queue) =
-            pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
-                label: Some("nana-ui snapshot device"),
-                required_features: wgpu::Features::empty(),
-                required_limits: wgpu::Limits::default(),
-                memory_hints: wgpu::MemoryHints::MemoryUsage,
-                trace: wgpu::Trace::Off,
-                experimental_features: wgpu::ExperimentalFeatures::disabled(),
-            }))?;
+        static SHARED_DEVICE: std::sync::OnceLock<(wgpu::Adapter, wgpu::Device, wgpu::Queue)> =
+            std::sync::OnceLock::new();
+        let (adapter, raw_device, raw_queue) = if let Some(cached) = SHARED_DEVICE.get() {
+            cached.clone()
+        } else {
+            let _serial = gpu_serial_lock();
+            if let Some(cached) = SHARED_DEVICE.get() {
+                cached.clone()
+            } else {
+                let (_instance, adapter) = request_adapter()?;
+                let (raw_device, raw_queue) =
+                    pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
+                        label: Some("nana-ui snapshot device"),
+                        required_features: wgpu::Features::empty(),
+                        required_limits: wgpu::Limits::default(),
+                        memory_hints: wgpu::MemoryHints::MemoryUsage,
+                        trace: wgpu::Trace::Off,
+                        experimental_features: wgpu::ExperimentalFeatures::disabled(),
+                    }))?;
+                let created = (adapter, raw_device, raw_queue);
+                SHARED_DEVICE.get_or_init(|| created).clone()
+            }
+        };
         let gpu = __framework::adopt(adapter, raw_device, raw_queue);
         let mut painter = SceneWgpuPainter::new(&gpu, FORMAT);
         let (wake, image_ready) = std::sync::mpsc::sync_channel(1);
@@ -390,72 +409,78 @@ impl OffscreenSnapshots {
             if std::time::Instant::now() >= deadline {
                 return Err("snapshot timed out waiting for URL images".into());
             }
-            // Every attempt starts from the same owned target contents.
-            if layers.first().is_none_or(|(_, clears)| !clears) {
-                let mut frame = self.gpu.begin_frame("nana-ui snapshot clear");
-                __framework::encoder(&mut frame).begin_render_pass(&wgpu::RenderPassDescriptor {
-                    label: Some("nana-ui snapshot clear"),
-                    color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                        view: __framework::texture_view(&texture),
-                        depth_slice: None,
-                        resolve_target: None,
-                        ops: wgpu::Operations {
-                            load: wgpu::LoadOp::Clear(wgpu_clear_color(clear)),
-                            store: wgpu::StoreOp::Store,
+            let image_revision = {
+                let _serial = gpu_serial_lock();
+                // Every attempt starts from the same owned target contents.
+                if layers.first().is_none_or(|(_, clears)| !clears) {
+                    let mut frame = self.gpu.begin_frame("nana-ui snapshot clear");
+                    __framework::encoder(&mut frame).begin_render_pass(
+                        &wgpu::RenderPassDescriptor {
+                            label: Some("nana-ui snapshot clear"),
+                            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                                view: __framework::texture_view(&texture),
+                                depth_slice: None,
+                                resolve_target: None,
+                                ops: wgpu::Operations {
+                                    load: wgpu::LoadOp::Clear(wgpu_clear_color(clear)),
+                                    store: wgpu::StoreOp::Store,
+                                },
+                            })],
+                            depth_stencil_attachment: None,
+                            timestamp_writes: None,
+                            occlusion_query_set: None,
+                            multiview_mask: None,
                         },
-                    })],
-                    depth_stencil_attachment: None,
-                    timestamp_writes: None,
-                    occlusion_query_set: None,
-                    multiview_mask: None,
-                });
-                let clear_submit = frame.submit();
-                __framework::device(&self.gpu)
-                    .poll(wgpu::PollType::Wait {
-                        submission_index: Some(
-                            __framework::submission_index(&clear_submit).clone(),
-                        ),
-                        timeout: None,
-                    })
-                    .map_err(|error| format!("snapshot clear poll failed: {error:?}"))?;
-            }
-            let image_revision = self.painter.image_revision();
-            for (scene, layer_clear) in layers {
-                let mut frame = self.gpu.begin_frame("nana-ui snapshot paint");
-                let viewport = ScenePaintViewport {
-                    logical_size: [
-                        size.width as f32 / scale_factor,
-                        size.height as f32 / scale_factor,
-                    ],
-                    physical_size: [size.width, size.height],
-                    scale_factor,
-                    scene_origin: [0.0, 0.0],
-                    target_origin: [0.0, 0.0],
-                    clear_color: if *layer_clear {
-                        wgpu_clear(clear)
-                    } else {
-                        [0.0; 4]
-                    },
-                    clear: *layer_clear,
-                };
-                self.painter
-                    .paint(
-                        scene,
-                        &mut frame,
-                        &target,
-                        viewport,
-                        host_textures,
-                        gpu_renderers,
-                    )
-                    .map_err(paint_error)?;
-                let paint = frame.submit();
-                __framework::device(&self.gpu)
-                    .poll(wgpu::PollType::Wait {
-                        submission_index: Some(__framework::submission_index(&paint).clone()),
-                        timeout: None,
-                    })
-                    .map_err(|error| format!("snapshot paint poll failed: {error:?}"))?;
-            }
+                    );
+                    let clear_submit = frame.submit();
+                    __framework::device(&self.gpu)
+                        .poll(wgpu::PollType::Wait {
+                            submission_index: Some(
+                                __framework::submission_index(&clear_submit).clone(),
+                            ),
+                            timeout: Some(std::time::Duration::from_secs(15)),
+                        })
+                        .map_err(|error| format!("snapshot clear poll failed: {error:?}"))?;
+                }
+                let image_revision = self.painter.image_revision();
+                for (scene, layer_clear) in layers {
+                    let mut frame = self.gpu.begin_frame("nana-ui snapshot paint");
+                    let viewport = ScenePaintViewport {
+                        logical_size: [
+                            size.width as f32 / scale_factor,
+                            size.height as f32 / scale_factor,
+                        ],
+                        physical_size: [size.width, size.height],
+                        scale_factor,
+                        scene_origin: [0.0, 0.0],
+                        target_origin: [0.0, 0.0],
+                        clear_color: if *layer_clear {
+                            wgpu_clear(clear)
+                        } else {
+                            [0.0; 4]
+                        },
+                        clear: *layer_clear,
+                    };
+                    self.painter
+                        .paint(
+                            scene,
+                            &mut frame,
+                            &target,
+                            viewport,
+                            host_textures,
+                            gpu_renderers,
+                        )
+                        .map_err(paint_error)?;
+                    let paint = frame.submit();
+                    __framework::device(&self.gpu)
+                        .poll(wgpu::PollType::Wait {
+                            submission_index: Some(__framework::submission_index(&paint).clone()),
+                            timeout: Some(std::time::Duration::from_secs(15)),
+                        })
+                        .map_err(|error| format!("snapshot paint poll failed: {error:?}"))?;
+                }
+                image_revision
+            };
             // Completion during a later layer also requires repainting the earlier
             // layers. Waiting and readback remain confined to this snapshot host.
             if image_revision != self.painter.image_revision() {
@@ -596,6 +621,7 @@ pub fn readback_image(
         )
         .into());
     }
+    let _serial = gpu_serial_lock();
     let device = __framework::device(gpu);
     let mut frame = gpu.begin_frame("nana-ui snapshot copy");
     let unpadded = rgba8_len(Size::new(size.width, 1))?;
@@ -642,11 +668,11 @@ pub fn readback_image(
     device
         .poll(wgpu::PollType::Wait {
             submission_index: Some(__framework::submission_index(&submission).clone()),
-            timeout: None,
+            timeout: Some(std::time::Duration::from_secs(15)),
         })
         .map_err(|error| format!("snapshot readback poll failed: {error:?}"))?;
     map_result
-        .recv()
+        .recv_timeout(std::time::Duration::from_secs(15))
         .map_err(|error| format!("snapshot readback map callback failed: {error}"))?
         .map_err(|error| format!("snapshot readback map failed: {error:?}"))?;
     let mapped = slice
@@ -1108,10 +1134,28 @@ mod tests {
         )
         .write_to(&mut png, image::ImageFormat::Png)
         .unwrap();
+        let mut gpu = OffscreenSnapshots::new().unwrap();
         let listener = std::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0)).unwrap();
+        listener.set_nonblocking(true).unwrap();
         let url = format!("http://{}/blue.png", listener.local_addr().unwrap());
         let server = std::thread::spawn(move || {
-            let (mut stream, _) = listener.accept().unwrap();
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+            let mut stream = loop {
+                match listener.accept() {
+                    Ok((stream, _)) => break stream,
+                    Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                        assert!(
+                            std::time::Instant::now() < deadline,
+                            "timed out waiting for offscreen image fetch"
+                        );
+                        std::thread::sleep(std::time::Duration::from_millis(5));
+                    }
+                    Err(error) => panic!("accept failed: {error}"),
+                }
+            };
+            stream.set_nonblocking(false).unwrap();
+            let _ = stream.set_read_timeout(Some(std::time::Duration::from_secs(5)));
+            let _ = stream.set_write_timeout(Some(std::time::Duration::from_secs(5)));
             let mut request = [0; 1024];
             // The stub answers every request identically; the byte count and a
             // client that closes early are both uninteresting here.
@@ -1159,7 +1203,6 @@ mod tests {
                 .flush(LayoutViewport::new(64.0, 64.0), &mut shaper)
                 .unwrap();
         }
-        let mut gpu = OffscreenSnapshots::new().unwrap();
         gpu.set_resource_fetch_host(Some(nana_ui::shared_fetch_host(LoopbackFetchHost {
             policy: nana_ui::FetchPolicy::default(),
         })));

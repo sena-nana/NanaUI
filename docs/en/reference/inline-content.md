@@ -55,10 +55,10 @@ Mixed content requires the host to use the product `NanaTextEngineShaper`. A Tex
 
 ## Verification entry points and remaining migration
 
-- `cargo test --locked -p nana-ui-scene --test inline_content`: real fonts, wrapping, replacement, source map, RTL/vertical, margins, clamping, identity, nested interaction, and zero parent reflow.
-- `cargo test --locked -p nana-ui-runtime --features view-macro --test view_macro inline_`: Rust/template, dynamic spans, and wrapper-free projection.
-- `NANA_COMPONENT_REQUIRE_GPU=1 cargo test --locked -p nana-ui-devtools --features runtime-agent --test inline_content_pixels`: real pixels, independent atomic text, opacity, and hover.
-- `cargo test --release --locked -p nana-ui-scene --features benchmark --test inline_cost -- --nocapture`: 1k/10k plain Text/Button retained allocator bytes, RSS observation, and idle flush p50/p95/p99. Set `NANA_INLINE_COST_OUTPUT` to write JSON. Keep the pre-migration executable, run the before and after executables interleaved, and use `perf/contract.py --evaluate-inline-cost <manifest.json>` to judge p95 ≤5%, retained memory ≤8%, and the entity and allocation gates. The manifest contains a fixed `machine` name and at least three distinct relative paths each for the `before` and `after` reports.
+- `cargo test --locked -p nana-ui-scene --test scene_contracts inline_content`: real fonts, wrapping, replacement, source map, RTL/vertical, margins, clamping, identity, nested interaction, and zero parent reflow.
+- `cargo test --locked -p nana-ui-runtime --features view-macro --test contracts inline_`: Rust/template, dynamic spans, and wrapper-free projection.
+- `NANA_COMPONENT_REQUIRE_GPU=1 cargo test --locked -p nana-ui-devtools --features runtime-agent --test devtools_pixels inline_content_pixels`: real pixels, independent atomic text, opacity, and hover.
+- `cargo test --release --locked -p nana-ui-scene --features benchmark --test scene_perf inline_cost -- --nocapture`: 1k/10k plain Text/Button retained allocator bytes, RSS observation, and idle flush p50/p95/p99. Set `NANA_INLINE_COST_OUTPUT` to write JSON. Keep the pre-migration executable, run the before and after executables interleaved, and use `perf/contract.py --evaluate-inline-cost <manifest.json>` to judge p95 ≤5%, retained memory ≤8%, and the entity and allocation gates. The manifest contains a fixed `machine` name and at least three distinct relative paths each for the `before` and `after` reports.
 
 The CPU scope of the cost fixture is idle flush; it cannot be used to claim that first-layout or dirty-frame CPU cost has passed acceptance. Timings taken while other builds/tests are running are observations only. All layout evidence continues to feed into the existing WorkCounters/catalog. `inline_reflows` counts native paragraph placements, and `inline_atomic_measure_requests` counts the requests those placements send to the shared cache; it does not claim each request is a full subtree measure.
 

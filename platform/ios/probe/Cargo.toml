@@ -11,6 +11,7 @@ license = "MIT OR Apache-2.0"
 name = "nana_ios_probe"
 path = "src/lib.rs"
 crate-type = ["staticlib", "rlib"]
+doctest = false
 
 [dependencies]
 nana-ios-host = { path = ".." }

@@ -319,7 +319,10 @@ mod tests {
 
     #[test]
     fn bare_app_layout_includes_plist_and_icns() {
-        let dir = std::env::temp_dir().join(format!("nana-packager-bare-{}", std::process::id()));
+        static SEQ: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+        let seq = SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let dir =
+            std::env::temp_dir().join(format!("nana-packager-bare-{}-{seq}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         let exe = dir.join("dummy-bin");

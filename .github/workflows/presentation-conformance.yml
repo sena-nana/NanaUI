@@ -37,7 +37,7 @@ jobs:
       - name: Test actual backend loss and native resource ownership
         run: |
           New-Item -ItemType Directory -Force target/conformance | Out-Null
-          cargo test --release --locked -p nana-gpu --features native-export,wgpu-interop --test controlled_device_loss --test native_export -- --test-threads=1 --nocapture 2>&1 | Tee-Object target/conformance/native-tests.log
+          cargo test --release --locked -p nana-gpu --features native-export,wgpu-interop --test gpu_loss_and_export -- controlled_device_loss native_export --test-threads=1 --nocapture 2>&1 | Tee-Object target/conformance/native-tests.log
           if ($LASTEXITCODE -ne 0) { throw "Native or controlled-loss test failed" }
       - name: Measure five native and Electron rounds serially
         timeout-minutes: 10

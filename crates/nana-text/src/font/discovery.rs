@@ -158,7 +158,10 @@ mod tests {
 
     #[test]
     fn ohos_scan_reads_faces_from_the_configured_dir_under_the_root() {
-        let root = std::env::temp_dir().join(format!("nana-text-ohos-scan-{}", std::process::id()));
+        static SEQ: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+        let seq = SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let root =
+            std::env::temp_dir().join(format!("nana-text-ohos-scan-{}-{seq}", std::process::id()));
         let _ = std::fs::remove_dir_all(&root);
         let fonts = root.join("vendor/fonts");
         std::fs::create_dir_all(&fonts).unwrap();

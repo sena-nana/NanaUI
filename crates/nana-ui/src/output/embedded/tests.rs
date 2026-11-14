@@ -571,13 +571,57 @@ fn cloned_bindings_remain_safe_after_detach_until_their_last_reference_retires()
     ));
 }
 
+struct StepBarrier {
+    parties: usize,
+    state: std::sync::Mutex<(usize, usize)>,
+    cv: std::sync::Condvar,
+}
+
+impl StepBarrier {
+    fn new(parties: usize) -> Self {
+        Self {
+            parties,
+            state: std::sync::Mutex::new((0, 0)),
+            cv: std::sync::Condvar::new(),
+        }
+    }
+
+    fn wait(&self) {
+        let mut state = self
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let generation = state.1;
+        state.0 += 1;
+        if state.0 == self.parties {
+            state.0 = 0;
+            state.1 += 1;
+            self.cv.notify_all();
+            return;
+        }
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while state.1 == generation {
+            let remaining = deadline.saturating_duration_since(std::time::Instant::now());
+            assert!(
+                !remaining.is_zero(),
+                "timed out waiting at concurrent_retained_refresh barrier"
+            );
+            let (next, _) = self
+                .cv
+                .wait_timeout(state, remaining)
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            state = next;
+        }
+    }
+}
+
 #[test]
 fn concurrent_retained_refresh_never_overwrites_a_replacement_owner() {
     let (_child, node, _newest) = two_pinned_revisions();
     let registry = HostTextureRegistry::new();
     let old = node.host_texture().clone();
     let replacement = HostTexture::new(&target(&test_gpu::context()));
-    let barriers = Arc::new(std::sync::Barrier::new(3));
+    let barriers = Arc::new(StepBarrier::new(3));
     let mut ownership_preserved = true;
     std::thread::scope(|scope| {
         let (refresh, refresh_old, refresh_barriers) =

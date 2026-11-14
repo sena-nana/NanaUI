@@ -39,7 +39,7 @@ All counts live on `WorkCounters`:
 - `component_state_layout_seeds`: seeds emitted by hover, press, focus, interaction, and accessibility state changes;
 - `equivalent_style_layout_skips`: equivalent style writes.
 
-The gates are in `world/issue261.rs`: hover causes zero layout; a palette switch does no shaping, measuring, or placement; changing Button's
+The gates are in `world/tests/incremental_work.rs`: hover causes zero layout; a palette switch does no shaping, measuring, or placement; changing Button's
 padding tier seeds only those buttons; the cost of changing one button's padding is the same at 1k and 10k controls;
 1000 equivalent writes emit no seeds; a recipe change causes zero layout; metric changes and intent-only writes are compared pass by pass with a full layout.
 #259 also added theme workloads: on 1k, 10k, and 100k pages, switching palette and metrics both cause zero layout.
@@ -96,7 +96,7 @@ produced in, and it also decides the kind of child fragment `UiWorld::layout_chi
 `ChildPlacement`). A container that generates no box establishes no context: when a container that was already laid out later becomes `NoBox`,
 it and the nodes inside it drop the contexts they established, and the boxes collapse to empty boxes at the origin, the same as a cold layout. This does not count as a
 context switch and does not count toward `layout_context_transitions`; it only advances the context generation. When shown again,
-the whole subtree is placed again and its contexts are recorded again (Issue #392, gate in `world/issue392.rs`).
+the whole subtree is placed again and its contexts are recorded again (Issue #392, gate in `world/tests/layout_foundations.rs`).
 
 `Layers` is stacking, synonymous with SwiftUI `ZStack`, Compose `Box`, and Flutter `Stack`: in-flow children share
 the same area, aligned by `justify-items` / `align-items` (the child's `justify-self` / `align-self`
@@ -105,10 +105,10 @@ order, with later children on top. It runs the grid algorithm: one `auto` row tr
 grid positions and track declarations on the container have no effect. Measure uses content-sized tracks, so the container follows the largest child;
 placement then stretches the cell to fill the container's content box, so alignment is relative to the whole container. The Row/Column presets are still
 `Flex`; `Stack::layers()` / `Stack::overlay_layer()` are what produce stacking, and flex and stacking no longer share one kind of
-context. Gates are in `world/issue204.rs` (shared area, follows the largest child, nine anchors, RTL, `stretch`,
+context. Gates are in `world/tests/layout_foundations.rs` (shared area, follows the largest child, nine anchors, RTL, `stretch`,
 child overrides, the later layer catches the pointer, same as cold layout) and in `tests/view_macro.rs`
 `issue204_layers_css_and_rust_share_one_overlay_context`; the thousand-component
-switching sequence in `world/issue199.rs` also goes through `Layers`.
+switching sequence in `world/tests/layout_foundations.rs` also goes through `Layers`.
 
 A context switch (the same set of children going Flex → Grid → Inline) only replaces the context record, its generation,
 the children's participation, and the layout results; plans compared by style pointer are invalidated naturally. The children's ids, components, state, focus,
@@ -117,7 +117,7 @@ listeners, and mounts do not change, and no node is created or destroyed. Each c
 DevTools `inspect`'s `layout_node` gives the node, an intent summary, content, established context, parent
 context, participation, and the three generations: metrics, context, and result.
 
-The gates are in `world/issue197.rs`: the same set of children (a labeled inline-block, inline text, a replaced image,
+The gates are in `world/tests/layout_foundations.rs`: the same set of children (a labeled inline-block, inline text, a replaced image,
 a nested grid) goes through Flex → Grid → Inline → Flex; each step records exactly one switch, no node is created or destroyed,
 participation follows the parent, and every item matches a cold layout; static, paint-only, and equivalent writes record no switch.
 The component version in `framework/tests.rs` confirms that TextInput's content and focus and Button's handler are all preserved.
@@ -125,7 +125,7 @@ The component version in `framework/tests.rs` confirms that TextInput's content 
 The Flex, Grid, Inline, and Overlay algorithms each live in their own module under `layout_engine/` (`flex.rs`,
 `grid.rs`, `inline.rs`, `overlay.rs`); `Layers` reuses `grid.rs`. `context.rs` is the dispatch shared by both passes, and it is also where modals are
 recognized: a node with the `ModalFrame` visual establishes `Overlay` regardless of `display`,
-and `overlay.rs` then places the children by the slot contract. The gate is `world/issue199.rs`
+and `overlay.rs` then places the children by the slot contract. The gate is `world/tests/layout_foundations.rs`
 `issue199_a_modal_frame_places_its_slots_as_overlay_items` (the slots are `OverlayItem`, relayout records no
 context switch, incremental matches cold layout; if the dispatch does not recognize the modal, the placement assertion fails). When the same container switches back and forth among Flex → Grid → Layers → Inline for 20 rounds, the retained cache stops changing after the
 first round, and on returning to Flex it equals a cold cache that has only laid out Flex (`issue199_repeated_context_switches_keep_the_retained_cache_flat`).
@@ -162,12 +162,12 @@ box. The padding is only what the box declares (written by the author, or the co
 does not include the parts, and the author's padding and the parts' space neither add up nor replace each other. Leading parts go into the measure
 plan's input comparison along with `VisualContent`; grid increments do not re-solve boxes with leading parts. In use: EmptyState's icon, title, and description (before the action
 buttons), the title band of a Card with a title (before the body), and an assembled Toast's mark and gap (before the copy). The gate is
-`world/issue385.rs`: all three are compared step by step with a cold layout under author padding, theme switches, and part visibility changes, and it checks that the
+`world/tests/component_parts.rs`: all three are compared step by step with a cold layout under author padding, theme switches, and part visibility changes, and it checks that the
 content box equals the padding box minus the declared padding, the parts start at the content box start, and the first child comes
 after the band.
 
 A box whose text is cleared gives up its old metrics: when a box's text becomes the empty string, the next text pass resolves it as
-"no text", the metrics go to zero, layout measures it again, and the result matches a cold layout. The gate is `world/issue205.rs`
+"no text", the metrics go to zero, layout measures it again, and the result matches a cold layout. The gate is `world/tests/component_parts.rs`
 `issue205_a_cleared_label_lays_out_as_a_cold_unlabelled_control`.
 
 ## Incremental reflow frontier
@@ -274,7 +274,7 @@ an incremental frame, and the following are compared node by node:
 State left between incremental frames (shaping results, plans, retained sizes) exists only on the incremental side; the cold world has none of it,
 so errors in that state cannot hide. The gates of #256 and #259 both end with this layer.
 
-`world/issue259.rs` is #259's scale matrix and covers these dimensions:
+`world/tests/incremental_work.rs` is #259's scale matrix and covers these dimensions:
 - document size: 1k, 10k, 100k nodes;
 - edits in the same frame: 1, 8, 100;
 - edit position: head, middle, tail;
@@ -284,7 +284,7 @@ so errors in that state cannot hide. The gates of #256 and #259 both end with th
 There are nine scenarios: paint-only, content within a fixed boundary, sequential size change, parent constraint, flex redistribution, grid contribution,
 inline reflow, language scope (#260, see "Language scopes and external metrics" in [Text engine](./text-engine.md)),
 and font-size scaling scope (#266, see "Font-size scaling scope" in [Text engine](./text-engine.md)).
-The scale gate with a scope holding 2000 paragraphs inside a 100k-node document is in `world/issue266.rs`.
+The scale gate with a scope holding 2000 paragraphs inside a 100k-node document is in `world/tests/localization.rs`.
 
 The gates read only counters, not time:
 - For paint-only changes, all layout counters are zero.
@@ -400,7 +400,7 @@ All counts live on `WorkCounters`:
 - `resize_context_solves`: formatting contexts solved from scratch in the pass triggered by a constraint change, that is, containers whose plan could not be reused
   or that had no plan.
 
-The gates are in `world/issue264.rs`. "Measured" reads the nodes layout actually computed (the test-only
+The gates are in `world/tests/incremental_work.rs`. "Measured" reads the nodes layout actually computed (the test-only
 `layout_engine::measure_trace`, recorded only after getting past this pass's memo and the retained intrinsics), not the frontier's
 MEASURE bit: a changed memo key also remeasures, and the frontier cannot see that work. The layout-verify guard's own full
 layout pass is not recorded.
@@ -459,7 +459,7 @@ All counts live on `WorkCounters`:
 - `replaced_content_only_layout_invalidations`: seeds emitted by content-only updates; should be 0;
 - `resource_intrinsic_dependents_notified`: nodes notified through the resource index.
 
-The gates are in `world/issue263.rs`:
+The gates are in `world/tests/replaced_media.rs`:
 - 1200 video frames cause zero layout, and the intrinsic generation does not change;
 - when an image's natural size arrives, only the box that reads it relays out; a fixed 300×200 box only repaints; a box 400 wide derives its height proportionally;
 - one shared image notifies 100 nodes through the index at the same cost in 10k and 100k documents, and only the 50 that read the size relay out;
@@ -486,7 +486,7 @@ layout.
 - Fit for `<video>` and `<gpu>` in markup: the cascaded `object-fit` takes precedence and the `fit` attribute is a presentational hint;
   both accept all five keywords (previously the attribute accepted only `contain` and treated everything else as `fill`).
 
-Gates in `world/issue202.rs`:
+Gates in `world/tests/layout_foundations.rs`:
 - A: the same pair of images (no size, width only) placed in Flex, a stretched Flex row, Grid, a stretched Grid, inline, and absolute;
   after the natural size arrives, size, participation, and cold layout are compared one by one.
 - B: images and CustomRender sit with their bottom edge on the text baseline in a flex row with `align-items: baseline` and in a native paragraph.
@@ -525,7 +525,7 @@ Baseline: replaced content aligns by its bottom edge (`aligns_by_bottom_edge`), 
   The same derivation pass also searches forward for the first line box to get the first baseline (#382). First and last line boxes are searched in flow order. Each pass records the result per node and used
   size in `LayoutInputMap::derived_baselines`; every place that reads an atom's ascent (block measure and placement,
   measure plan comparison and increments, native paragraphs) calls `prime_atom_baselines` first, and `baseline_metrics` then reads it, so
-  there is only this one derivation. `justify-content`, reversal, wrapping into columns, floats beside the line (gates E, F, G in `world/issue382.rs`,
+  there is only this one derivation. `justify-content`, reversal, wrapping into columns, floats beside the line (gates E, F, G in `world/tests/layout_foundations.rs`,
   css-parity `T-FL07`), auto margins, equal-width line splitting, and `clear` in block flow all follow placement's result,
   and there are no remaining cases that fall back to an approximation. For the baselines of flex and grid containers see below; subgrid and vertical writing do not derive and are still the approximation of the first line of their own font;
 - replaced content, inline-blocks whose `overflow` is not visible, and inline-blocks without in-flow line boxes (`UiWorld::atom_sits_on_line_box`)
@@ -551,7 +551,7 @@ Baseline: replaced content aligns by its bottom edge (`aligns_by_bottom_edge`), 
     The text stage rereads only candidates and schedules layout through the text-metric-change path only when the value changed; changing only the font size does not reread (the stored value is per px),
     and language does not take part in choosing the preferred face, so it does not reread a new value either. The IFC measure plan records the strut it used and compares it.
     In tests and `layout-verify` builds, after each text stage every retained strut is compared with a fresh reread
-    (`UiWorld::audit_block_struts`), and a missed candidate is reported as an error immediately. The gate is B in `world/issue382.rs`.
+    (`UiWorld::audit_block_struts`), and a missed candidate is reported as an error immediately. The gate is B in `world/tests/layout_foundations.rs`.
 
 A flex row with `align-items: baseline` aligns items by their first baseline; replaced content takes the bottom of its border box (CSS Align synthesizes the baseline from the border box in flex / grid).
 An item whose line boxes are all in descendants (`UiWorld::aligns_by_first_baseline` and
@@ -560,7 +560,7 @@ An item whose line boxes are all in descendants (`UiWorld::aligns_by_first_basel
 baselines, `prime_first_baselines` runs first, and `baseline_metrics`' first baseline then reads it; in tests and `layout-verify` builds,
 reading without priming is reported as an error immediately. Such items also read content (`atom_baseline_reads_content`), and a fixed size is no longer a metric boundary:
 changes to the font size or text of descendants inside, or to the height of a block above, realign the line; changes that leave the first line in place move no item. The gate is
-D in `world/issue382.rs`. When grid items align by baseline, those items in the same starting row share one baseline: each item aligns its own
+D in `world/tests/layout_foundations.rs`. When grid items align by baseline, those items in the same starting row share one baseline: each item aligns its own
 first baseline plus top margin to the deepest one in the row (`grid::arrange_grid_2d`, #394). The line's baseline is published on the TextLine fragment of `LayoutResult`. `LayoutStyle` has no
 `vertical-align`; the default `baseline` is the whole behavior. This is not a rule specific to replaced content.
 
@@ -577,7 +577,7 @@ A grid container's baseline (CSS Grid 2 §11.8, per Chrome measurements) is like
 `inline::grid_first_baseline`): take the first row where an item starts; if the row has items aligned by baseline, take their shared baseline, otherwise take
 the first item in grid order in that row (the smallest column number, rightmost under RTL, regardless of DOM order; an item spanning rows counts in the row it starts in);
 without line boxes take the bottom of its border box; the last baseline is again the first baseline. Grid items likewise read content.
-The gates are in `world/issue394.rs`, and the Chrome measurements are css-parity `T-FX01`–`T-FX03`, `T-GB01`, `T-GB02`. Not done yet:
+The gates are in `world/tests/layout_foundations.rs`, and the Chrome measurements are css-parity `T-FX01`–`T-FX03`, `T-GB01`, `T-GB02`. Not done yet:
 inline-flex and inline-grid are still laid out as block-level on a block's line (not as inline atoms); the cross size of a flex row aligned by baseline and the size of grid
 tracks do not account for the space moved out by baseline alignment (CSS's baseline shim); grid's distribution of spanning items to auto row sizes
 and the width of a block-level grid inside an inline-block differ from Chrome.
@@ -637,7 +637,7 @@ All counts live on `WorkCounters`:
 - `virtual_scroll_extent_updates`: the number of times the list's total height changed;
 - `virtual_rows_materialized_from_layout`: rows newly created for the window.
 
-The gates are in `world/issue262.rs`. One million rows, a 40-row viewport, 8 rows of overscan above and below:
+The gates are in `world/tests/incremental_work.rs`. One million rows, a 40-row viewport, 8 rows of overscan above and below:
 - A: one visible row grows by 8 px. No logical row is looked up (cap 64), only this one row is measured; index writes stay within one chunk plus
   O(log C) entries; the rows below only translate their origin.
 - B: a cell changes from "99" to "98" and the row height stays the same: the list's total height and the other rows' placement are unchanged, and the list does not relay out.
@@ -697,7 +697,7 @@ All counts live on `WorkCounters`:
 - `container_query_convergence_rounds`: evaluation rounds in which some rule switched buckets;
 - `container_query_cycle_fallbacks`: bucket switches stopped for convergence.
 
-The gates are in `world/issue265.rs`:
+The gates are in `world/tests/dynamic_layout.rs`:
 - A: 100 rules under one panel; a panel width change evaluates only those 100, at the same cost in 10,000- and 100,000-node documents;
 - B: 240 consecutive resizes within the same bucket: no rule switches buckets, variants emit no seeds, and rows are not measured;
 - C: crossing one breakpoint: only the 10 rules that break there switch buckets, each emitting one seed, and the other 90 fixed rows are not measured;
@@ -783,10 +783,10 @@ Retention (#213):
 Counts live in `WorkCounters.dynamic` (`DynamicLayoutCounters`): lines considered, solves, lines needing no adjustment, solves that touch only one level, envelope queries / hits / misses / rebuilds, segments read, candidates created and pruned, refinement, beam width, child settlements, child rearrangements, structural adaptation, budget fallbacks, scratch allocations and peak, reuse, incremental re-shares, cold solves, and participants skipped by class. The four benchmarks and the perf schema emit them as `dynamic_<field>`. Diagnostics are layout domain ids 6–8.
 
 Gates:
-- `world/issue212.rs`: a line that fits is box-for-box identical to one with no declaration; on overflow it takes gap before padding; shrink only consumes what is left; a container that does not solve does not read declarations; during a drag every pass is compared with a full layout; inspect.
-- `world/issue213.rs`: within one level, scaling only re-shares and builds no envelope; crossing levels cold-solves once; coming from above and from below to the same width gives the same result.
-- `world/issue214.rs`: A, a static frame and a paint-only change do not solve; B, a cheap gap over 1k items reads one segment per item, 1k→2k is linear, and scaling within a level allocates nothing; C, a nested tree with 4 branches settles each node at most once per pass and the work grows with the node count; E, 240 scalings cross three levels and cold-solve only where they cross; F, a line over budget falls back exactly once and deterministically; G, across 500 frames of scaling, adding and removing items, and changing declarations, the retained envelopes and solves follow the tree.
-- Gate E in `world/issue264.rs`; the `dynamic_layout` unit tests in `nana-ui-core` (including the exhaustive check that an incremental re-share of every gap within a level equals a cold solve).
+- `world/tests/dynamic_layout.rs`: a line that fits is box-for-box identical to one with no declaration; on overflow it takes gap before padding; shrink only consumes what is left; a container that does not solve does not read declarations; during a drag every pass is compared with a full layout; inspect.
+- `world/tests/dynamic_layout.rs`: within one level, scaling only re-shares and builds no envelope; crossing levels cold-solves once; coming from above and from below to the same width gives the same result.
+- `world/tests/dynamic_layout.rs`: A, a static frame and a paint-only change do not solve; B, a cheap gap over 1k items reads one segment per item, 1k→2k is linear, and scaling within a level allocates nothing; C, a nested tree with 4 branches settles each node at most once per pass and the work grows with the node count; E, 240 scalings cross three levels and cold-solve only where they cross; F, a line over budget falls back exactly once and deterministically; G, across 500 frames of scaling, adding and removing items, and changing declarations, the retained envelopes and solves follow the tree.
+- Gate E in `world/tests/incremental_work.rs`; the `dynamic_layout` unit tests in `nana-ui-core` (including the exhaustive check that an incremental re-share of every gap within a level equals a cold solve).
 
 ## What works
 
@@ -936,11 +936,11 @@ Each box's published `LayoutResult` records this chain: `clip` is the nearest ov
 
 Scene extraction, the hit index, accessibility, and Select menu room all hang boxes from `clip_parent` and do not derive the chain along ancestors themselves. The walks that clip an area by the boxes above it (menu room, and the chrome clipping of EmptyState and dialogs in accessibility) go through `UiWorld::clip_ancestors`, that is, up along the published `clip_parent`: a `fixed` box (the field itself or one above it) ends it, and a menu opened by a `fixed` field takes the whole window (#205 gate `issue205_menu_room_and_chrome_clips_follow_the_clip_chain`). In the hit index an escaped box hangs under its `clip_parent`'s entry, the translation of the container it escaped does not carry it while scrolling, and the points it covers are ordered by paint order. An accessibility node's `bounds` is still the whole box, and `clip` is the piece of viewport the overflow containers on the chain leave for it at this scroll position, or `None` when there is no container on the chain; what is painted and what the pointer can hit is the part of `bounds` inside `clip`. Scrolling still does not run layout. When an ancestor changes positioning or starts or stops clipping, the chain recorded below it is republished with it.
 
-The gates are in the `clip_chain` module of `world/issue201.rs`: a positioned page holds a static scroll container, inside it a positioned card with a static scroll container holding a line of in-flow boxes, an `absolute` box whose containing block is the card, and a `fixed` box; after the card a static clipping box holds an `absolute` box whose containing block is the page. Assert each one's `clip` / `clip_parent`; scroll the two containers to several offsets, and for each, without running layout, accessibility position and clipping and pointer hits (both the hit index patched in place and the rebuilt one) follow the chain; Select menu room is likewise clipped only by the containers on the chain; when the card and the inner container change positioning or overflow, the result matches a cold layout item by item (including accessibility `clip`), and the hit index patched in place (letting the scroll translation live first, then changing the chain) gives the same hits and candidates on a page-sized grid as a rebuilt one; a skipped ancestor's transform (on the style and presented by a compositor animation) still applies to the escaped box; a sibling later in tree order that covers the escaped box catches the pointer, however the index orders them. `runtime_document_clip_chain_tests.rs` in `nana-ui-scene` runs real `RuntimeDocument` frames and compares Scene's painted positions and clips, accessibility `bounds` / `clip`, hits, and culling one by one, the same after scrolling and after the chain changes.
+The gates are in the `clip_chain` module of `world/tests/layout_foundations.rs`: a positioned page holds a static scroll container, inside it a positioned card with a static scroll container holding a line of in-flow boxes, an `absolute` box whose containing block is the card, and a `fixed` box; after the card a static clipping box holds an `absolute` box whose containing block is the page. Assert each one's `clip` / `clip_parent`; scroll the two containers to several offsets, and for each, without running layout, accessibility position and clipping and pointer hits (both the hit index patched in place and the rebuilt one) follow the chain; Select menu room is likewise clipped only by the containers on the chain; when the card and the inner container change positioning or overflow, the result matches a cold layout item by item (including accessibility `clip`), and the hit index patched in place (letting the scroll translation live first, then changing the chain) gives the same hits and candidates on a page-sized grid as a rebuilt one; a skipped ancestor's transform (on the style and presented by a compositor animation) still applies to the escaped box; a sibling later in tree order that covers the escaped box catches the pointer, however the index orders them. `runtime_document_clip_chain_tests.rs` in `nana-ui-scene` runs real `RuntimeDocument` frames and compares Scene's painted positions and clips, accessibility `bounds` / `clip`, hits, and culling one by one, the same after scrolling and after the chain changes.
 
-Scroll range is computed along this chain too (CSS Overflow 3: a box counts into the scrollable overflow of the boxes on its containing block chain). An `absolute` box counts into its containing block's range and not into the static scroll container it escaped; a `fixed` box and everything under it count into no container. See "Overflow" below. The gates are in the `scroll_range` module of `world/issue201.rs`: a static scroll container holds an `absolute` box whose containing block is the page and which sits far below, and a `fixed` box further down (with an `absolute` box inside it); the container's scrollable distance, `LayoutResult::overflow`, `scroll_extent`, and offset clamping all exclude them, and the `absolute` box counts into the page that reaches it; when the container becomes `relative` and the box switches between `absolute` and `fixed`, the range moves with the chain and matches a cold layout item by item (including metrics and the clamped offset); scrolling the two containers runs no layout, and the range does not change. `out_of_flow_boxes_count_where_their_clip_chain_reaches_them` in `world/scroll_bounds.rs` compares, at the index level, a full walk along the clip chain with a fresh index: positioning flips, a subtree moving between containing blocks, parking and re-attaching, the top layer starting to clip while parked, and a trigger menu opening (menu items become `fixed`) and closing again.
+Scroll range is computed along this chain too (CSS Overflow 3: a box counts into the scrollable overflow of the boxes on its containing block chain). An `absolute` box counts into its containing block's range and not into the static scroll container it escaped; a `fixed` box and everything under it count into no container. See "Overflow" below. The gates are in the `scroll_range` module of `world/tests/layout_foundations.rs`: a static scroll container holds an `absolute` box whose containing block is the page and which sits far below, and a `fixed` box further down (with an `absolute` box inside it); the container's scrollable distance, `LayoutResult::overflow`, `scroll_extent`, and offset clamping all exclude them, and the `absolute` box counts into the page that reaches it; when the container becomes `relative` and the box switches between `absolute` and `fixed`, the range moves with the chain and matches a cold layout item by item (including metrics and the clamped offset); scrolling the two containers runs no layout, and the range does not change. `out_of_flow_boxes_count_where_their_clip_chain_reaches_them` in `world/scroll_bounds.rs` compares, at the index level, a full walk along the clip chain with a fresh index: positioning flips, a subtree moving between containing blocks, parking and re-attaching, the top layer starting to clip while parked, and a trigger menu opening (menu items become `fixed`) and closing again.
 
-Incremental layout tracks by containing block: when a containing block moves or changes size, the boxes hanging from it replay even if none of the static boxes in between were laid out this pass; when only a static box in between moves, the box does not move. When an ancestor starts or stops being a containing block, the boxes below re-hang from the new one, and the published `LayoutResult::containing_block` updates with them. The gates are in `world/issue200.rs`: every step compares boxes, results, hits, and accessibility against a cold layout.
+Incremental layout tracks by containing block: when a containing block moves or changes size, the boxes hanging from it replay even if none of the static boxes in between were laid out this pass; when only a static box in between moves, the box does not move. When an ancestor starts or stops being a containing block, the boxes below re-hang from the new one, and the published `LayoutResult::containing_block` updates with them. The gates are in `world/tests/layout_foundations.rs`: every step compares boxes, results, hits, and accessibility against a cold layout.
 
 `sticky` resolves its inset against the nearest scroll viewport and is constrained by its normal-flow containing block: it is released at the end of the parent container. An axis with no inset scrolls as usual. A nested Sticky continues from the parent's presented position; nested scroll containers each own their viewport. Runtime's hit testing, accessibility, and Scene painting share one placement projection, and scrolling triggers no content measure, layout, or text shaping. Changing the containing block's size or remounting invalidates only its registered Sticky branch.
 
@@ -957,7 +957,7 @@ When one `AppContext` carries several documents, each document's frame takes wor
 
 This is the "flip, then pull in" part of CSS anchor positioning. Every anchored overlay shares this one resolver: ContextMenu, AnchoredActionMenu, trigger menus, HoverCard, Popover, and the Select drop-down. When Select fits on neither side, it takes the wider side and truncates.
 
-When the window resizes, layout replays these surfaces directly without reprojecting the component. Hit testing and accessibility read the box layout gives. This field has no CSS spelling; controls write it. The gates are in `world/issue200.rs`.
+When the window resizes, layout replays these surfaces directly without reprojecting the component. Hit testing and accessibility read the box layout gives. This field has no CSS spelling; controls write it. The gates are in `world/tests/layout_foundations.rs`.
 
 The menus of Select, Dropdown, and SearchDropdown are not layout boxes; they are the field's component geometry: they are placed with the same resolver from the field's box and "the space the menu can be seen in" (`SelectMenuRoom`: the window, minus the clips on the field's clip chain, at the current scroll position). What Scene paints, what `select_option_at` selects, and the menu surface carried by the field's entry in the hit index all come from this one geometry. The space is recorded when the field projects; after each layout pass (after scroll retention), the engine computes the space again for the menus open in the document against the layout just published, and writes it back only when it changed, so when the window resizes or the field or an outer container is moved, the menu flips and truncates again without waiting for the field to reproject, and the hit index rebuilds the field's entry with it. Only scrolling runs no layout: while the page scrolls the menu follows the field and is placed again at the next change, and painting and hits still use the same one. Gate `issue200_a_select_menu_follows_the_viewport_and_hits_where_it_paints`: the window gets shorter and then taller, the menu flips up and down, and at every step the row painted at a point is the row the pointer selects, the hit on the field is that point, the old position no longer hits, and it matches the menu a cold layout produces. The field's (`ComboBox`) range is its layout box; while the menu is open there is a list box under the field, one option node for each row that shows, and its range likewise comes from this geometry (the row intersected with the menu viewport, with "the space that can be seen" at this moment, then through the field's transform), so what a screen reader reads, what is painted, and what the pointer selects are the same row; see [Select's screen reader](https://github.com/sena-nana/NanaUI/blob/main/docs/components/select.md#读屏). The gates are in the same file: `issue200_a_select_listbox_*`, `issue200_an_open_select_menu_reads_as_a_listbox_of_its_rows`, and others.
 
@@ -965,9 +965,9 @@ When an out-of-flow box has no height written and does not write both `top` and 
 
 This applies only to the children inside it. The box's own percentage `min-height` / `max-height` still resolves against the containing block's height: for `fixed` that is the viewport, for `absolute` its containing block. An out-of-flow box's containing block always has a definite height (CSS 2.1 §10.7). So a card with `position: fixed; max-height: 80%` grows with its content up to 80% of the viewport. It does not have to be rewritten as `80vh`.
 
-For an out-of-flow box with `aspect-ratio`, the height is derived from the width left by `left` / `right` and the width's bounds, as in flex, grid, and inline: `width: 120px; max-width: 60px; aspect-ratio: 1.5` gives 60×40, and `left: 0; right: 480px` in a 600-wide containing block gives 120×80 (#382, gate A in `world/issue382.rs`, css-parity `T-P21`). A box that writes both `top` and `bottom` still takes its height between the two insets.
+For an out-of-flow box with `aspect-ratio`, the height is derived from the width left by `left` / `right` and the width's bounds, as in flex, grid, and inline: `width: 120px; max-width: 60px; aspect-ratio: 1.5` gives 60×40, and `left: 0; right: 480px` in a 600-wide containing block gives 120×80 (#382, gate A in `world/tests/layout_foundations.rs`, css-parity `T-P21`). A box that writes both `top` and `bottom` still takes its height between the two insets.
 
-These rules are the same in every context (CSS Sizing 4 §5.1). The ratio converts between the box `box-sizing` names: `border-box; padding: 6px; width: 120px; max-width: 60px; aspect-ratio: 1.5` gives a 60×40 border box, and `content-box; padding: 6px; width: 120px` gives a 120×80 content box and a 132×92 border box. The derived height is then constrained by the box's own `min-height` / `max-height`: the example plus `min-height: 50px` gives 60×50. The auto height of a flow container also reads this height (#393, gate A in `world/issue382.rs`, css-parity `T-S23`).
+These rules are the same in every context (CSS Sizing 4 §5.1). The ratio converts between the box `box-sizing` names: `border-box; padding: 6px; width: 120px; max-width: 60px; aspect-ratio: 1.5` gives a 60×40 border box, and `content-box; padding: 6px; width: 120px` gives a 120×80 content box and a 132×92 border box. The derived height is then constrained by the box's own `min-height` / `max-height`: the example plus `min-height: 50px` gives 60×50. The auto height of a flow container also reads this height (#393, gate A in `world/tests/layout_foundations.rs`, css-parity `T-S23`).
 
 **Stacking context subset.** Scene sorts by `(z_index, document_order)`. It treats an isolated group as one layer. These groups are: a group whose `opacity` is between 0 and 1, `isolation: isolate`, and a `position` other than static with a written `z-index`.
 
@@ -1137,7 +1137,7 @@ The counts on the scroll path are on `WorkCounters` (#381), always on, add-only:
 - There is no `scroll_layout_reflows`. The "pure scrolling does not lay out" assertion rests on existing counts: `layout_measure_nodes`, `layout_placement_nodes`, and `text_shaped` are all 0.
 - A virtual list gets no name of its own. Rows created for a new window are `virtual_rows_materialized_from_layout`; the entities of those rows are `entities_spawned`, and the entities of rows leaving the window are `entities_despawned`.
 
-The gates are in `world/issue381.rs`. The page is as tall as the viewport and holds two lists, each with a sticky header carrying two children and 50 rows:
+The gates are in `world/tests/layout_foundations.rs`. The page is as tall as the viewport and holds two lists, each with a sticky header carrying two children and 50 rows:
 - a scroll-only frame: no layout, and viewport and extent are both 0. Scrolling one list counts 3 clips, which is its sticky branch, excluding its 50 rows and the other list's header; scrolling both counts 6; scrolling the page counts 0.
 - the viewport goes from 600 to 500: only the page, which follows the viewport, counts one viewport change, with 1 extent recompute (only the page's own entry) and 0 clips. Storing identical metrics does not count. A row in a list gets taller, so the extent changes, and the viewport does not count.
 - a virtual list scrolls past its window: all three scroll-frame counts are 0. After syncing, the number of rows created equals the row count of the new window; the entities created next frame are the new window's, and those removed are the old window's. Extent recomputes do not exceed the number of published batches times the entity count, and the set is the same for ten thousand rows and a million rows.

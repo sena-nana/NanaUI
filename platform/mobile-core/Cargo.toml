@@ -10,6 +10,7 @@ license = "MIT OR Apache-2.0"
 [lib]
 name = "nana_mobile_host"
 path = "src/lib.rs"
+doctest = false
 
 [dependencies]
 nana-ui-core.workspace = true

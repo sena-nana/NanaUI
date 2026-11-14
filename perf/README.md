@@ -362,7 +362,7 @@ fixture 版本、设备代际、固定 BGRA extent 和预热范围必须符合�
 ## 平滑滚轮 CPU 采样诊断
 
 ```sh
-CARGO_INCREMENTAL=0 RUSTC_WRAPPER= CARGO_PROFILE_TEST_DEBUG=0 CARGO_PROFILE_DEV_DEBUG=0 cargo test -p nana-ui-runtime --test smooth_scroll_cost --no-default-features --locked -- --ignored --nocapture
+CARGO_INCREMENTAL=0 RUSTC_WRAPPER= CARGO_PROFILE_TEST_DEBUG=0 CARGO_PROFILE_DEV_DEBUG=0 cargo test -p nana-ui-runtime --test perf_contracts smooth_scroll_cost --no-default-features --locked -- --ignored --nocapture
 ```
 
 这是独立的 Runtime 微测量，不属于共享场景门禁。每种组合先预热 32 次，再测 512 次上下交替的 180ms 滚动；覆盖隐藏/自动隐藏滚动条、有/无事件监听器。报告采样数、线程内分配/重分配次数及每次完整过渡的 CPU 时间中位数和 p95；计时包含启用分配计数器的成本。测量包含动画 deadline 查询、采样和 system-work drain，不含起始滚轮输入、实际样式/布局执行、场景抽取、命中索引更新或 GPU 呈现。
@@ -371,7 +371,7 @@ CARGO_INCREMENTAL=0 RUSTC_WRAPPER= CARGO_PROFILE_TEST_DEBUG=0 CARGO_PROFILE_DEV_
 
 本轮改动的同机交替测量和边界见 [2026-10-16 采样开销记录](https://github.com/sena-nana/NanaUI/tree/docs-archive/archive/docs-notes/smooth-scroll-cost-2026-10-16.md)。
 
-Inline plain-label 固定机器成本使用 `crates/nana-ui-scene/tests/inline_cost.rs`。保留前后 executable，交错运行各至少三次；`NANA_INLINE_COST_OUTPUT` 写原始报告。manifest 的 `machine` 标明固定机器，`before` / `after` 是互不重复的报告相对路径数组。`python3 perf/contract.py --evaluate-inline-cost <manifest>` 复用现有 contract CLI，执行 idle p95 ≤1.05、retained live bytes ≤1.08、无新增 idle 分配及单实体门禁。它不推断 dirty-frame 成本，也不把进程 RSS 当作 live allocator bytes。
+Inline plain-label 固定机器成本使用 `crates/nana-ui-scene/tests/scene_perf/inline_cost.rs`。保留前后 executable，交错运行各至少三次；`NANA_INLINE_COST_OUTPUT` 写原始报告。manifest 的 `machine` 标明固定机器，`before` / `after` 是互不重复的报告相对路径数组。`python3 perf/contract.py --evaluate-inline-cost <manifest>` 复用现有 contract CLI，执行 idle p95 ≤1.05、retained live bytes ≤1.08、无新增 idle 分配及单实体门禁。它不推断 dirty-frame 成本，也不把进程 RSS 当作 live allocator bytes。
 
 同一 fixture 的 `list_item_fixed_machine_cost` 单独覆盖 1k/10k label/note/detail 行，默认 ignored，使用 `--exact list_item_fixed_machine_cost --ignored --nocapture` 运行。它与 plain-label fixture 不并发执行，避免同一进程的全局 allocator 计数互相污染。对应 manifest 设置 `workload_family: "list_item"`；默认 `plain_label` 仍要求原有四项，行系列要求两项完整 workload，均沿用同一组比例门槛。
 

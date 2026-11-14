@@ -31,8 +31,8 @@
 CARGO_BUILD_JOBS=2 cargo test -p nana-ui-runtime --all-features --lib markdown
 CARGO_BUILD_JOBS=2 cargo test -p nana-ui-diagram
 CARGO_BUILD_JOBS=2 cargo test -p nana-ui-scene --features rich-text --lib markdown
-CARGO_BUILD_JOBS=2 cargo test -p nana-ui --features components --test text_input_max_length --test text_area_resize --test scroll_workspace_surface
-CARGO_BUILD_JOBS=2 cargo test -p nana-ui-scene --features components --test image_viewer_content_order
+CARGO_BUILD_JOBS=2 cargo test -p nana-ui --features components --test ui_contracts -- text_input_max_length text_area_resize scroll_workspace_surface
+CARGO_BUILD_JOBS=2 cargo test -p nana-ui-scene --features components --test scene_contracts image_viewer_content_order
 CARGO_BUILD_JOBS=2 cargo run -p nana-ui-devtools --features runtime-agent,nana-ui/components --example restored-content-probe -- target/restored-content-probe
 CARGO_BUILD_JOBS=2 cargo run -p nana-ui-devtools --features runtime-agent,nana-ui/components --example diagram-probe -- target/diagram-probe
 ```

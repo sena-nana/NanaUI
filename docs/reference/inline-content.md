@@ -55,10 +55,10 @@ Mixed 内容需要宿主使用产品 `NanaTextEngineShaper`；只有尺寸估计
 
 ## 验证入口与剩余迁移
 
-- `cargo test --locked -p nana-ui-scene --test inline_content`：真实字体、换行、替换、source map、RTL/vertical、margin、clamp、identity、nested interaction 与零父 reflow。
-- `cargo test --locked -p nana-ui-runtime --features view-macro --test view_macro inline_`：Rust/template、动态 span 与无 wrapper 投影。
-- `NANA_COMPONENT_REQUIRE_GPU=1 cargo test --locked -p nana-ui-devtools --features runtime-agent --test inline_content_pixels`：真实 pixels，独立 atomic 文字、opacity 与 hover。
-- `cargo test --release --locked -p nana-ui-scene --features benchmark --test inline_cost -- --nocapture`：1k/10k plain Text/Button retained allocator bytes、RSS 观察与 idle flush p50/p95/p99。设置 `NANA_INLINE_COST_OUTPUT` 写 JSON。保留迁移前 executable，交错执行前后 executable，使用 `perf/contract.py --evaluate-inline-cost <manifest.json>` 判断 p95 ≤5%、retained memory ≤8%、entity 与 allocation 门禁；manifest 包含固定 `machine` 名称及至少三次互不重复的 `before`、`after` 报告相对路径。
+- `cargo test --locked -p nana-ui-scene --test scene_contracts inline_content`：真实字体、换行、替换、source map、RTL/vertical、margin、clamp、identity、nested interaction 与零父 reflow。
+- `cargo test --locked -p nana-ui-runtime --features view-macro --test contracts inline_`：Rust/template、动态 span 与无 wrapper 投影。
+- `NANA_COMPONENT_REQUIRE_GPU=1 cargo test --locked -p nana-ui-devtools --features runtime-agent --test devtools_pixels inline_content_pixels`：真实 pixels，独立 atomic 文字、opacity 与 hover。
+- `cargo test --release --locked -p nana-ui-scene --features benchmark --test scene_perf inline_cost -- --nocapture`：1k/10k plain Text/Button retained allocator bytes、RSS 观察与 idle flush p50/p95/p99。设置 `NANA_INLINE_COST_OUTPUT` 写 JSON。保留迁移前 executable，交错执行前后 executable，使用 `perf/contract.py --evaluate-inline-cost <manifest.json>` 判断 p95 ≤5%、retained memory ≤8%、entity 与 allocation 门禁；manifest 包含固定 `machine` 名称及至少三次互不重复的 `before`、`after` 报告相对路径。
 
 成本 fixture 的 CPU 范围是 idle flush，不能据此声称首次布局或 dirty-frame CPU 成本已经验收。正在运行其他编译/测试时的 timing 只作观察。所有布局证据继续汇入现有 WorkCounters/catalog；`inline_reflows` 统计 native paragraph placement，`inline_atomic_measure_requests` 统计其向 shared cache 发出的请求，不声称每次请求都是完整 subtree measure。
 

@@ -44,7 +44,7 @@ let view = cx.mount_view_root(document, counter).unwrap();
 
 ```bash
 cargo test -p nana-ui-runtime
-cargo test -p nana-ui-runtime --features view-macro --test view_macro --test view_stack --test theme_layout
+cargo test -p nana-ui-runtime --features view-macro --test contracts --test perf_contracts -- view_macro view_stack theme_layout
 ```
 
 `view_macro`、`view_stack` 和 `theme_layout` 不带 `view-macro` 时会编译为空并显示通过。基准需要 `benchmark` feature：

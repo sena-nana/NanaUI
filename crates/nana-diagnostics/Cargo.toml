@@ -18,11 +18,13 @@ path = "src/lib.rs"
 [[bin]]
 name = "nana-nlog"
 path = "src/bin/nana-nlog.rs"
+test = false
 
 [[bin]]
 name = "nana-diagnostics-benchmark"
 path = "src/bin/nana-diagnostics-benchmark.rs"
 required-features = ["benchmark"]
+test = false
 
 # Worker thread priority, the monotonic clock origin, the stall
 # watchdog's stack samples, and the native crash handler.

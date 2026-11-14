@@ -690,7 +690,9 @@ mod tests {
 
     #[test]
     fn loose_source_reads_logical_paths_inside_its_root_only() {
-        let root = std::env::temp_dir().join(format!("nana-loose-{}", std::process::id()));
+        static SEQ: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+        let seq = SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let root = std::env::temp_dir().join(format!("nana-loose-{}-{seq}", std::process::id()));
         let _ = std::fs::remove_dir_all(&root);
         std::fs::create_dir_all(root.join("ui")).unwrap();
         std::fs::write(root.join("ui/a%41.css"), b"x").unwrap();

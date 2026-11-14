@@ -5,6 +5,16 @@ edition = "2024"
 rust-version = "1.98"
 publish = false
 
+[lib]
+name = "runtime_host_fixture"
+path = "src/lib.rs"
+doctest = false
+
+[[bin]]
+name = "runtime-host-fixture"
+path = "src/main.rs"
+test = false
+
 [build-dependencies]
 nana-app-icon = { workspace = true, features = ["embed"] }
 

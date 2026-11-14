@@ -4,7 +4,7 @@
 use std::time::{Duration, Instant, SystemTime};
 
 use nana_diagnostics::nlog::{self, Entry};
-use nana_diagnostics::stall::{self, Callback, STALL_THRESHOLD};
+use nana_diagnostics::stall::{self, Callback};
 use nana_diagnostics::{DiagnosticsConfig, DiagnosticsPaths, PersistMode, SessionMetadata};
 
 /// Spins past the threshold, as a loop on the event-loop thread would.
@@ -32,13 +32,17 @@ fn a_stuck_callback_is_reported_with_its_stack_and_its_recovery() {
     )
     .unwrap();
 
-    stall::watch_current_thread();
+    stall::watch_current_thread_with_timings_for_test(
+        Duration::from_millis(80),
+        Duration::from_millis(15),
+        Duration::from_millis(20),
+    );
     {
         let _busy = stall::busy(Callback::WindowEvent);
-        stall_watchdog_stuck_callback(Instant::now() + STALL_THRESHOLD + Duration::from_secs(1));
+        stall_watchdog_stuck_callback(Instant::now() + Duration::from_millis(220));
     }
-    // One watchdog poll notices the return.
-    std::thread::sleep(Duration::from_millis(600));
+    // Two short watchdog polls notice the return.
+    std::thread::sleep(Duration::from_millis(80));
     drop(guard);
 
     let logs: Vec<_> = std::fs::read_dir(dir.join("logs"))

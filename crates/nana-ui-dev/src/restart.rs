@@ -286,14 +286,27 @@ mod tests {
 
     #[test]
     fn a_failing_build_reports_its_diagnostics() {
+        // Verify the cargo invocation shape without spawning `cargo build` inside
+        // `cargo test` (nested Cargo processes contend on target locks).
+        let cargo_cmd = RebuildCommand::cargo_package("nana-example");
+        assert_eq!(cargo_cmd.program, "cargo");
+        assert_eq!(
+            cargo_cmd.args,
+            vec!["build", "-p", "nana-example", "--message-format=short"]
+        );
+
         // A build that fails silently is the worst outcome a dev loop can have:
-        // the developer saves, nothing happens, and nothing says why.
-        match RebuildCommand::cargo_package("nana-does-not-exist").run() {
+        // exercise stderr/exit capture against a fast, lock-free failing command.
+        let failing = RebuildCommand {
+            program: "rustc".into(),
+            args: vec!["--definitely-invalid-nanaui-test-flag".into()],
+        };
+        match failing.run() {
             RebuildOutcome::Failed(text) => assert!(
                 !text.trim().is_empty(),
                 "a failed build must carry something the developer can act on"
             ),
-            RebuildOutcome::Rebuilt => panic!("that package does not exist"),
+            RebuildOutcome::Rebuilt => panic!("an invalid flag must fail"),
         }
     }
 }

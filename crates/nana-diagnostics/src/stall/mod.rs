@@ -106,6 +106,9 @@ struct Watch {
     since: AtomicU64,
     callback: AtomicU8,
     thread: platform::Thread,
+    threshold: Duration,
+    poll: Duration,
+    sample_gap: Duration,
 }
 
 impl Watch {
@@ -124,6 +127,19 @@ thread_local! {
 /// Watch the calling thread, typically the event-loop thread, and start the
 /// watchdog. One thread per process is watched; later calls do nothing.
 pub fn watch_current_thread() {
+    watch_current_thread_with_timings(STALL_THRESHOLD, POLL, SAMPLE_GAP);
+}
+
+#[doc(hidden)]
+pub fn watch_current_thread_with_timings_for_test(
+    threshold: Duration,
+    poll: Duration,
+    sample_gap: Duration,
+) {
+    watch_current_thread_with_timings(threshold, poll, sample_gap);
+}
+
+fn watch_current_thread_with_timings(threshold: Duration, poll: Duration, sample_gap: Duration) {
     let mut installed = false;
     let watch = WATCH.get_or_init(|| {
         installed = true;
@@ -132,6 +148,9 @@ pub fn watch_current_thread() {
             since: AtomicU64::new(0),
             callback: AtomicU8::new(0),
             thread: platform::Thread::current(),
+            threshold,
+            poll,
+            sample_gap,
         }
     });
     if !installed {
@@ -228,7 +247,7 @@ impl Stall {
 
     fn poll(&mut self, watch: &Watch) {
         let due = match self.reports {
-            0 => STALL_THRESHOLD,
+            0 => watch.threshold,
             n => match FOLLOW_UPS.get(n - 1) {
                 Some(due) => *due,
                 None => return,
@@ -245,7 +264,7 @@ impl Stall {
         let mut taken: Vec<Vec<u64>> = Vec::with_capacity(samples);
         for index in 0..samples {
             if index > 0 {
-                std::thread::sleep(SAMPLE_GAP);
+                std::thread::sleep(watch.sample_gap);
             }
             if !self.still_running(watch) {
                 break;
@@ -333,7 +352,7 @@ impl Stall {
 fn run(watch: &'static Watch) {
     let mut current: Option<Stall> = None;
     loop {
-        std::thread::sleep(POLL);
+        std::thread::sleep(watch.poll);
         let since = watch.since.load(Ordering::Acquire);
         if let Some(stall) = &mut current {
             if stall.since == since {

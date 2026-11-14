@@ -1567,6 +1567,7 @@ mod tests {
     #[cfg(target_os = "windows")]
     #[test]
     fn the_style_guard_shares_wm_stylechanging_with_another_subclass() {
+        let _serial = crate::test_serial_lock();
         use std::sync::atomic::{AtomicUsize, Ordering};
         use windows_sys::Win32::Foundation::HWND;
         use windows_sys::Win32::UI::Shell::{DefSubclassProc, SetWindowSubclass};

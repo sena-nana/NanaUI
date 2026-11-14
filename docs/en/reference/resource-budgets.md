@@ -78,7 +78,7 @@ Tests: `tree_view::tests::data_deeper_than_the_stack_walks_clones_compares_and_d
 | `view::tests::a_view_deeper_than_the_stack_still_mounts` | A 400-level view mounts, lays out, and drops on a 1 MiB thread | `cargo test -p nana-ui-runtime --lib a_view_deeper` |
 | `scripts/audit-stack-frames.py` | Stack frame of a single function | See below |
 | `framework::tests::context_and_world_stay_small_enough_to_move` | `AppContext` ≤ 6 KiB and `UiWorld` ≤ 10 KiB, both moved by value during construction | `cargo test -p nana-ui-runtime --lib context_and_world` |
-| `deep_nesting::railroad_at_its_depth_limit_fits_half_the_thread` | The seven kinds of railroad nesting render at the limit depth on a 256 KiB thread | `cargo test -p nana-ui-diagram --test deep_nesting railroad`, then again with `--release` |
+| `deep_nesting::railroad_at_its_depth_limit_fits_half_the_thread` | The seven kinds of railroad nesting render at the limit depth on a 256 KiB thread | `cargo test -p nana-ui-diagram --test diagram deep_nesting::railroad`, then again with `--release` |
 
 `WorkCounters` publishes `layout_measure_stack_per_level`, `layout_placement_stack_per_level` (stack per level, in bytes, maximum over a frame), and `layout_placement_boundaries` (how many subtrees placement drained from the queue).
 

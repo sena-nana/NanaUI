@@ -612,7 +612,10 @@ mod tests {
         buffer.slice(..).map_async(wgpu::MapMode::Read, |_| {});
         gpu.inner
             .device
-            .poll(wgpu::PollType::wait_indefinitely())
+            .poll(wgpu::PollType::Wait {
+                submission_index: None,
+                timeout: Some(std::time::Duration::from_secs(15)),
+            })
             .unwrap();
         let mapped = buffer.slice(..).get_mapped_range().unwrap();
         let mut bytes = Vec::new();
@@ -686,7 +689,10 @@ mod tests {
         frame.discard();
         gpu.inner
             .device
-            .poll(wgpu::PollType::wait_indefinitely())
+            .poll(wgpu::PollType::Wait {
+                submission_index: None,
+                timeout: Some(std::time::Duration::from_secs(15)),
+            })
             .unwrap();
         let recycled = await_slot(&mut pool);
         assert!(recycled.release_value() > 0);
@@ -695,7 +701,10 @@ mod tests {
         drop(input);
         gpu.inner
             .device
-            .poll(wgpu::PollType::wait_indefinitely())
+            .poll(wgpu::PollType::Wait {
+                submission_index: None,
+                timeout: Some(std::time::Duration::from_secs(15)),
+            })
             .unwrap();
         drop(await_slot(&mut pool));
         pool.retire();
@@ -730,7 +739,10 @@ mod tests {
         frame.discard();
         gpu.inner
             .device
-            .poll(wgpu::PollType::wait_indefinitely())
+            .poll(wgpu::PollType::Wait {
+                submission_index: None,
+                timeout: Some(std::time::Duration::from_secs(15)),
+            })
             .unwrap();
     }
 

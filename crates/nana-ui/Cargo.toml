@@ -232,6 +232,7 @@ required-features = ["hosted", "bundled-fonts"]
 name = "nana-a11y-benchmark"
 path = "src/bin/nana-a11y-benchmark.rs"
 required-features = ["accesskit-tree"]
+test = false
 
 [[bin]]
 name = "nana-gpu-scene-benchmark"
@@ -242,13 +243,11 @@ required-features = ["gpu"]
 name = "nana-text-paint-benchmark"
 path = "src/bin/nana-text-paint-benchmark.rs"
 required-features = ["gpu"]
+test = false
 
 [[test]]
-name = "text_device_recreation"
-required-features = ["gpu", "wgpu-interop"]
-
-[[test]]
-name = "text_lost_device"
+name = "ui_gpu"
+path = "tests/ui_gpu/main.rs"
 required-features = ["gpu", "wgpu-interop"]
 
 
@@ -267,6 +266,7 @@ required-features = ["hosted", "bundled-fonts", "native-export"]
 [[example]]
 name = "presentation-output-probe"
 required-features = ["hosted", "bundled-fonts"]
+test = true
 
 [[example]]
 name = "input-latency-probe"
@@ -275,15 +275,18 @@ required-features = ["hosted", "bundled-fonts"]
 [[example]]
 name = "openvr-output-probe"
 required-features = ["gpu", "bundled-fonts", "native-export", "wgpu-interop"]
+test = true
 
 [[example]]
 name = "web-output-producer"
 required-features = ["gpu", "bundled-fonts", "native-export", "wgpu-interop"]
+test = true
 
 [[bin]]
 name = "nana-output-benchmark"
 path = "src/bin/nana-output-benchmark.rs"
 required-features = ["gpu"]
+test = false
 
 [[example]]
 name = "native-content-probe"

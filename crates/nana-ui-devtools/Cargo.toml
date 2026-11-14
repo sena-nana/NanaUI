@@ -16,12 +16,14 @@ path = "src/lib.rs"
 name = "nana-runtime-agent"
 path = "src/bin/nana-runtime-agent.rs"
 required-features = ["runtime-agent"]
+test = false
 
 # Per-event input routing cost on the L3 path, without paint.
 [[bin]]
 name = "nana-input-benchmark"
 path = "src/bin/nana-input-benchmark.rs"
 required-features = ["runtime-agent"]
+test = false
 
 [features]
 default = []
@@ -75,9 +77,6 @@ name = "diagram-probe"
 required-features = ["runtime-agent", "nana-ui/components"]
 
 [[test]]
-name = "chart_controls"
-required-features = ["runtime-agent", "nana-ui/components"]
-
-[[test]]
-name = "content_measurement"
+name = "devtools_components"
+path = "tests/devtools_components/main.rs"
 required-features = ["runtime-agent", "nana-ui/components"]

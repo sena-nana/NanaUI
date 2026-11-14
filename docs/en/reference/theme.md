@@ -698,7 +698,7 @@ cargo test -p nana-ui-scene --lib a_menu_surface_paints_the_radius_it_was_handed
 # The cost of intent resolution is visible to counters (F12)
 cargo test -p nana-ui-runtime --lib resolving_layout_intent_reports_the_layout_it_had_to_copy
 # The size premise the resolution-point decision depends on
-cargo test -p nana-ui-runtime --test layout_style_size
+cargo test -p nana-ui-runtime --test contracts layout_style_size
 
 # The renderer no longer reads theme constants (should be 0)
 rg -c "UI_METRICS" -g '!*tests.rs' crates/nana-ui-scene/src

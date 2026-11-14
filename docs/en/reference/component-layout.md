@@ -64,7 +64,7 @@ Several items were kept as they were during the #205 migration and left to be de
 - `cargo test --locked -p nana-ui-runtime --lib issue388`: the four #388 decisions, see the section above.
 - `cargo test --locked -p nana-ui-runtime --lib issue385`: the leading parts of EmptyState, Card and an assembled Toast match cold layout under author padding, theme switching and part visibility; padding is only the declared one, parts start at the content box start, and child nodes follow the band.
 - `cargo test --locked -p nana-ui-runtime --lib issue199`: 1k real components switching across contexts / normal flow and detached flow keep state, focus and resource identity.
-- `cargo test --locked -p nana-ui-devtools --features runtime-agent --test issue205_component_pixels`: component pixels and hover on a real GPU; with `NANA_COMPONENT_REQUIRE_GPU=1` a missing GPU must fail.
+- `cargo test --locked -p nana-ui-devtools --features runtime-agent --test devtools_pixels component_pixels`: component pixels and hover on a real GPU; with `NANA_COMPONENT_REQUIRE_GPU=1` a missing GPU must fail.
 
 The Card title reuses Runtime's retained paragraph with its own single-line glyph budget and font size/weight; those text styles do not inherit into the body. The Header baseline shares one part with the intrinsic baseline of every context, and the title height is reserved once by the band. The spinner phase is paint-only; overflow glyphs of a narrow title are clipped to the Header and cannot take the spinner gap.
 

@@ -1684,7 +1684,10 @@ impl TextTargetGpu {
                 result.expect("read back");
             });
             device
-                .poll(wgpu::PollType::wait_indefinitely())
+                .poll(wgpu::PollType::Wait {
+                    submission_index: None,
+                    timeout: Some(std::time::Duration::from_secs(15)),
+                })
                 .expect("the copy completes");
             buffer
                 .slice(..)

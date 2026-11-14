@@ -328,18 +328,28 @@ mod tests {
     /// It is held to the iOS Simulator's 15 inter-stage variables (Metal's
     /// Apple2 family), so a shader that outgrows them fails here as well.
     fn headless_gpu() -> Option<GpuContext> {
-        let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle());
-        let adapter =
-            pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions::default()))
+        static DEVICE: std::sync::OnceLock<Option<(wgpu::Adapter, wgpu::Device, wgpu::Queue)>> =
+            std::sync::OnceLock::new();
+        let (adapter, device, queue) = DEVICE
+            .get_or_init(|| {
+                let instance =
+                    wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle());
+                let adapter = pollster::block_on(
+                    instance.request_adapter(&wgpu::RequestAdapterOptions::default()),
+                )
                 .ok()?;
-        let (device, queue) = pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
-            required_limits: wgpu::Limits {
-                max_inter_stage_shader_variables: 15,
-                ..adapter.limits()
-            },
-            ..wgpu::DeviceDescriptor::default()
-        }))
-        .ok()?;
+                let (device, queue) =
+                    pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
+                        required_limits: wgpu::Limits {
+                            max_inter_stage_shader_variables: 15,
+                            ..adapter.limits()
+                        },
+                        ..wgpu::DeviceDescriptor::default()
+                    }))
+                    .ok()?;
+                Some((adapter, device, queue))
+            })
+            .clone()?;
         Some(GpuContext::from_wgpu(adapter, device, queue))
     }
 

@@ -910,6 +910,7 @@ mod taskbar_tests {
 
     #[test]
     fn a_window_off_the_taskbar_is_owned_by_a_hidden_window_of_its_own() {
+        let _serial = crate::test_serial_lock();
         let first = Window::new();
         let second = Window::new();
 
@@ -947,6 +948,7 @@ mod taskbar_tests {
 
     #[test]
     fn showing_the_entry_again_gives_back_what_hiding_it_changed() {
+        let _serial = crate::test_serial_lock();
         let window = Window::new();
         set_skip_taskbar(&window, true).unwrap();
         let owner = window.owner();
@@ -978,6 +980,7 @@ mod taskbar_tests {
 
     #[test]
     fn a_window_that_already_has_an_owner_keeps_it() {
+        let _serial = crate::test_serial_lock();
         let parent = Window::new();
         let window = Window::new();
         // SAFETY: both fixture windows are live.
@@ -993,6 +996,7 @@ mod taskbar_tests {
 
     #[test]
     fn a_shown_window_stays_shown() {
+        let _serial = crate::test_serial_lock();
         let window = Window::new();
         // SAFETY: a live fixture window, shown off every screen.
         unsafe { ShowWindow(window.0, SW_SHOWNA) };
@@ -1006,6 +1010,7 @@ mod taskbar_tests {
 
     #[test]
     fn the_owner_is_closed_after_its_window_is_destroyed() {
+        let _serial = crate::test_serial_lock();
         let window = Window::new();
         set_skip_taskbar(&window, true).unwrap();
         let owner = window.owner();

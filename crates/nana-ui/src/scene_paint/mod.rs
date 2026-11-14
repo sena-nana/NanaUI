@@ -558,6 +558,8 @@ pub struct SceneWgpuPainter {
     /// with; swapped per target like `painted`.
     bound_fetch_host: Option<SharedFetchHost>,
     alpha_encoding: AlphaEncoding,
+    #[cfg(test)]
+    _test_gpu_guard: Option<crate::test_gpu::GpuTestGuard>,
 }
 
 /// How a paint stores its premultiplied pixels. Blending is linear either
@@ -870,6 +872,8 @@ impl SceneWgpuPainter {
             fetch_host: None,
             bound_fetch_host: None,
             alpha_encoding: AlphaEncoding::Linear,
+            #[cfg(test)]
+            _test_gpu_guard: None,
         }
     }
 
@@ -4243,10 +4247,13 @@ fn rect_meets_target(
 #[cfg(test)]
 impl SceneWgpuPainter {
     pub(crate) fn for_test(format: wgpu::TextureFormat) -> Self {
-        Self::new(
+        let guard = crate::test_gpu::lock();
+        let mut painter = Self::new(
             &crate::test_gpu::context(),
             __framework::format_from_wgpu(format),
-        )
+        );
+        painter._test_gpu_guard = Some(guard);
+        painter
     }
 
     pub(crate) fn paint_encoder(

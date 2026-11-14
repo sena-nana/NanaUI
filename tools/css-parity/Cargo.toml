@@ -7,9 +7,15 @@ description = "CSS layout parity fixtures: LayoutStyle measure vs fixture expect
 license = "MIT OR Apache-2.0"
 publish = false
 
+[lib]
+name = "nana_css_parity"
+path = "src/lib.rs"
+doctest = false
+
 [[bin]]
 name = "css-parity"
 path = "src/bin/css_parity.rs"
+test = false
 
 [dependencies]
 # Same font as the shipped measure path, so text boxes match the fixtures.

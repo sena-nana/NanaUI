@@ -6824,74 +6824,44 @@ mod tests {
     }
 
     #[test]
-    fn omitted_flex_shrink_stays_unspecified() {
-        let mut layout = LayoutStyle::default();
-        layout.apply_css_text("width:150px;height:40px", None, None);
-        assert_eq!(layout.flex_shrink, None);
-    }
+    fn flex_shorthands_resolve_css_grow_shrink_and_basis() {
+        let mut unspecified = LayoutStyle::default();
+        unspecified.apply_css_text("width:150px;height:40px", None, None);
+        assert_eq!(unspecified.flex_shrink, None);
 
-    #[test]
-    fn flex_initial_writes_css_shrink() {
-        let mut layout = LayoutStyle::default();
-        layout.apply_css_text("flex: initial", None, None);
-        assert_eq!(layout.flex_grow, Some(0.0));
-        assert_eq!(layout.flex_shrink, Some(1.0));
-        assert_eq!(layout.flex_basis, Some(LengthSpec::Auto));
-    }
+        for (css, grow, shrink, basis, expected_grows) in [
+            ("flex: initial", 0.0, 1.0, LengthSpec::Auto, false),
+            ("flex: none", 0.0, 0.0, LengthSpec::Auto, false),
+            ("flex: auto", 1.0, 1.0, LengthSpec::Auto, true),
+            ("flex:0 0 220px", 0.0, 0.0, LengthSpec::Px(220.0), false),
+        ] {
+            let mut layout = LayoutStyle::default();
+            layout.apply_css_text(css, None, None);
+            assert_eq!(layout.flex_grow, Some(grow), "{css}");
+            assert_eq!(layout.flex_shrink, Some(shrink), "{css}");
+            assert_eq!(layout.flex_basis, Some(basis), "{css}");
+            assert_eq!(layout.grows(), expected_grows, "{css}");
+            assert!(layout.width.is_none(), "{css}");
+            if css == "flex:0 0 220px" {
+                assert_eq!(
+                    layout.child_main_length(FlexDirection::Row),
+                    Some(LengthSpec::Px(220.0))
+                );
+            }
+        }
 
-    #[test]
-    fn flex_none_writes_zero_grow_shrink_auto_basis() {
-        let mut layout = LayoutStyle::default();
-        layout.apply_css_text("flex: none", None, None);
-        assert_eq!(layout.flex_grow, Some(0.0));
-        assert_eq!(layout.flex_shrink, Some(0.0));
-        assert_eq!(layout.flex_basis, Some(LengthSpec::Auto));
-        assert!(!layout.grows());
-    }
-
-    #[test]
-    fn flex_auto_writes_css_grow_and_shrink() {
-        let mut layout = LayoutStyle::default();
-        layout.apply_css_text("flex: auto", None, None);
-        assert_eq!(layout.flex_grow, Some(1.0));
-        assert_eq!(layout.flex_shrink, Some(1.0));
-        assert_eq!(layout.flex_basis, Some(LengthSpec::Auto));
-        assert!(layout.grows());
-    }
-
-    #[test]
-    fn flex_one_sets_grow_not_blind_width() {
-        let mut layout = LayoutStyle::default();
-        layout.apply_css_text("flex: 1", None, None);
-        assert_eq!(layout.flex_grow, Some(1.0));
-        assert!(layout.grows());
-        assert!(layout.width.is_none(), "flex:1 must not force width Fill");
+        let mut flex_one = LayoutStyle::default();
+        flex_one.apply_css_text("flex: 1", None, None);
+        assert_eq!(flex_one.flex_grow, Some(1.0));
+        assert!(flex_one.grows());
+        assert!(flex_one.width.is_none(), "flex:1 must not force width Fill");
         assert_eq!(
-            layout.child_main_length(FlexDirection::Row),
+            flex_one.child_main_length(FlexDirection::Row),
             Some(LengthSpec::Fill)
         );
         assert_eq!(
-            layout.child_main_length(FlexDirection::Column),
+            flex_one.child_main_length(FlexDirection::Column),
             Some(LengthSpec::Fill)
-        );
-    }
-
-    #[test]
-    fn flex_basis_without_width_drives_main_axis() {
-        // T-L04 / sidebar class hint: `flex:0 0 220px` with no width.
-        let mut layout = LayoutStyle::default();
-        layout.apply_css_text("flex:0 0 220px", None, None);
-        assert_eq!(layout.flex_grow, Some(0.0));
-        assert_eq!(layout.flex_shrink, Some(0.0));
-        assert_eq!(layout.flex_basis, Some(LengthSpec::Px(220.0)));
-        assert!(layout.width.is_none());
-        assert!(
-            !layout.grows(),
-            "grow 0 must not map to Fill via child_main_length"
-        );
-        assert_eq!(
-            layout.child_main_length(FlexDirection::Row),
-            Some(LengthSpec::Px(220.0))
         );
     }
 
@@ -7822,36 +7792,30 @@ html[data-theme="dark"], [data-theme="dark"] { --bg: #181818; }
     }
 
     #[test]
-    fn border_radius_four_value_shorthand() {
-        let mut layout = LayoutStyle::default();
-        layout.apply_css_text("border-radius: 4px 8px 12px 16px", None, None);
-        let radii = layout.paint.border_radii.expect("four corners");
+    fn border_radius_shorthand_and_percent_resolve_against_box_size() {
+        let mut four = LayoutStyle::default();
+        four.apply_css_text("border-radius: 4px 8px 12px 16px", None, None);
+        let radii = four.paint.border_radii.expect("four corners");
         assert_eq!(radii[0], LengthSpec::Px(4.0));
         assert_eq!(radii[1], LengthSpec::Px(8.0));
         assert_eq!(radii[2], LengthSpec::Px(12.0));
         assert_eq!(radii[3], LengthSpec::Px(16.0));
-        assert!(layout.border_radius.is_none());
-    }
+        assert!(four.border_radius.is_none());
 
-    #[test]
-    fn border_radius_100_percent_resolves_to_circle_on_square() {
-        let mut layout = LayoutStyle::default();
-        layout.apply_css_text("border-radius: 100%", None, None);
-        let radii = layout.paint.border_radii.expect("corners");
+        let mut hundred = LayoutStyle::default();
+        hundred.apply_css_text("border-radius: 100%", None, None);
+        let radii = hundred.paint.border_radii.expect("corners");
         assert_eq!(radii[0], LengthSpec::Percent(100.0));
-        let resolved = layout.resolved_border_radii(100.0, 100.0);
-        assert!((resolved[0] - 50.0).abs() < 0.01);
-        assert!(layout.border_radius.is_none());
-    }
+        assert!((hundred.resolved_border_radii(100.0, 100.0)[0] - 50.0).abs() < 0.01);
+        assert!(hundred.border_radius.is_none());
 
-    #[test]
-    fn border_radius_percent_resolves_against_box_size() {
-        let mut layout = LayoutStyle::default();
-        layout.apply_css_text("border-radius: 50%", None, None);
-        let radii = layout.resolved_border_radii(100.0, 100.0);
-        assert!((radii[0] - 50.0).abs() < 0.01);
-        let rect = layout.resolved_border_radii(200.0, 100.0);
-        assert!((rect[0] - 50.0).abs() < 0.01, "min(50% w, 50% h)");
+        let mut half = LayoutStyle::default();
+        half.apply_css_text("border-radius: 50%", None, None);
+        assert!((half.resolved_border_radii(100.0, 100.0)[0] - 50.0).abs() < 0.01);
+        assert!(
+            (half.resolved_border_radii(200.0, 100.0)[0] - 50.0).abs() < 0.01,
+            "min(50% w, 50% h)"
+        );
     }
 
     #[test]

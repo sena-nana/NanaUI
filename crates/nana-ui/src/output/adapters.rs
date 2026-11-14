@@ -807,16 +807,11 @@ mod tests {
             // Marking the shared context lost must not poison parallel GPU
             // tests. The child owns one ordinary test device; loss itself is
             // a host notification, not a physical GPU reset.
-            let output = std::process::Command::new(std::env::current_exe().unwrap())
-                .args(["--exact", "output::adapters::tests::a_lost_overlay_device_never_publishes_ready_copies_or_drops_foreign_receipts", "--test-threads=1", "--nocapture"])
-                .env(CHILD, "1")
-                .output()
-                .expect("run isolated overlay loss fixture");
-            assert!(
-                output.status.success(),
-                "isolated overlay loss fixture failed:\n{}\n{}",
-                String::from_utf8_lossy(&output.stdout),
-                String::from_utf8_lossy(&output.stderr)
+            let _guard = test_gpu::lock();
+            test_gpu::run_child_with_timeout(
+                "output::adapters::tests::a_lost_overlay_device_never_publishes_ready_copies_or_drops_foreign_receipts",
+                CHILD,
+                "1",
             );
             return;
         }

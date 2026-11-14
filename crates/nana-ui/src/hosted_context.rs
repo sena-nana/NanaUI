@@ -2172,7 +2172,9 @@ mod tests {
     fn dx12_uses_the_dxc_shipped_beside_the_executable() {
         use super::dx12_shader_compiler;
 
-        let dir = std::env::temp_dir().join(format!("nana-dxc-{}", std::process::id()));
+        static SEQ: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+        let seq = SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let dir = std::env::temp_dir().join(format!("nana-dxc-{}-{seq}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let exe = dir.join("app.exe");
         assert!(matches!(

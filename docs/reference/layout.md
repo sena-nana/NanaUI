@@ -40,7 +40,7 @@ paint-only 更新不再扫描整棵投影树；视口变化按约束轴传播（
 - `component_state_layout_seeds`：悬停、按下、焦点、交互和无障碍状态变化排出的 seed；
 - `equivalent_style_layout_skips`：等价的样式写入。
 
-门禁在 `world/issue261.rs`：悬停零布局；调色板切换不整形、不测量、不放置；改 Button 的
+门禁在 `world/tests/incremental_work.rs`：悬停零布局；调色板切换不整形、不测量、不放置；改 Button 的
 padding 档位只排这些按钮的 seed；单个按钮改 padding 的开销在 1k 与 10k 控件下相同；
 1000 次等价写入不排 seed；配方变化零布局；度量变化与只改意图的写入逐趟对照全量布局。
 #259 也加了主题负载：1k、10k、100k 页面上切换调色板和度量都零布局。
@@ -98,7 +98,7 @@ context、父级 context、参与方式、context generation 和结果 generatio
 `ChildPlacement`）。不生成盒子的容器不建立 context：已经布局过的容器后来变成 `NoBox`，
 它和里面的节点撤掉各自建立的 context，盒子收成原点处的空盒，与冷布局相同；这不算一次
 context 切换，不计 `layout_context_transitions`，只推进 context generation。再显示时
-整棵子树重新放置，重新记下 context（Issue #392，门禁在 `world/issue392.rs`）。
+整棵子树重新放置，重新记下 context（Issue #392，门禁在 `world/tests/layout_foundations.rs`）。
 
 `Layers` 是叠层，和 SwiftUI `ZStack`、Compose `Box`、Flutter `Stack` 同义：在流子项共用
 同一块区域，按 `justify-items` / `align-items`（子项的 `justify-self` / `align-self`
@@ -107,9 +107,9 @@ context 切换，不计 `layout_context_transitions`，只推进 context generat
 的网格位置和容器上的轨道声明都不起作用；measure 用随内容的轨道，所以容器随最大的子项，
 placement 再把这一格撑满容器的内容盒，对齐因此以整个容器为参照。Row/Column 预设仍是
 `Flex`，`Stack::layers()` / `Stack::overlay_layer()` 才是叠层，flex 与叠层不再共用一种
-context。门禁在 `world/issue204.rs`（共用区域、随最大子项、九个锚点、RTL、`stretch`、
+context。门禁在 `world/tests/layout_foundations.rs`（共用区域、随最大子项、九个锚点、RTL、`stretch`、
 子项覆盖、后写的那层接住指针、与冷布局相同）和 `tests/view_macro.rs` 的
-`issue204_layers_css_and_rust_share_one_overlay_context`；`world/issue199.rs` 的千组件
+`issue204_layers_css_and_rust_share_one_overlay_context`；`world/tests/layout_foundations.rs` 的千组件
 切换序列也经过 `Layers`。
 
 context 切换（同一组子项 Flex → Grid → Inline）只换 context 记录、它的 generation、
@@ -119,7 +119,7 @@ context 切换（同一组子项 Flex → Grid → Inline）只换 context 记�
 DevTools `inspect` 的 `layout_node` 给出节点、意图摘要、内容、建立的 context、父级
 context、参与方式，以及 metrics、context 和结果三个 generation。
 
-门禁在 `world/issue197.rs`：同一组子项（带标签的 inline-block、行内文本、替换图片、
+门禁在 `world/tests/layout_foundations.rs`：同一组子项（带标签的 inline-block、行内文本、替换图片、
 嵌套 grid）经过 Flex → Grid → Inline → Flex，每一步只记一次切换、没有节点生灭、
 参与方式随父级变化，并与冷布局逐项相同；静态、只改绘制和等价写入不记切换。
 `framework/tests.rs` 里的组件版本确认 TextInput 的内容、焦点和 Button 的处理函数都保留。
@@ -127,7 +127,7 @@ context、参与方式，以及 metrics、context 和结果三个 generation。
 Flex、Grid、Inline、Overlay 的算法各在 `layout_engine/` 下自己的模块里（`flex.rs`、
 `grid.rs`、`inline.rs`、`overlay.rs`），`Layers` 复用 `grid.rs`；`context.rs` 是两趟共用的
 分派，模态框也在这里认出：带 `ModalFrame` 视觉的节点不论 `display` 都建立 `Overlay`，
-再由 `overlay.rs` 按槽位契约放子项。门禁是 `world/issue199.rs` 的
+再由 `overlay.rs` 按槽位契约放子项。门禁是 `world/tests/layout_foundations.rs` 的
 `issue199_a_modal_frame_places_its_slots_as_overlay_items`（槽位是 `OverlayItem`，重排不记
 context 切换，增量与冷布局相同；分派不认模态框时 placement 的断言失败）。同一容器在 Flex → Grid → Layers → Inline 之间来回切换 20 轮，保留缓存在第
 一轮后不再变化，回到 Flex 时与只排过 Flex 的冷缓存相同（`issue199_repeated_context_switches_keep_the_retained_cache_flat`）。
@@ -164,12 +164,12 @@ LTR 在左边，RTL 在右边，`LeadingParts::end`，#388）的带子，长 `ex
 不含部件，作者的 padding 与部件空间既不叠加也不互相顶替。前置部件随 `VisualContent` 进测量
 计划的输入比较；grid 增量不重解带前置部件的盒子。已用：EmptyState 的图标、标题、说明（操作
 按钮之前）、带标题 Card 的标题带（正文之前）、装配后 Toast 的记号与间隔（文案之前）。门禁是
-`world/issue385.rs`：三者在作者 padding、主题切换、部件显隐下逐步与冷布局对照，并核对
+`world/tests/component_parts.rs`：三者在作者 padding、主题切换、部件显隐下逐步与冷布局对照，并核对
 content box 等于 padding box 减去声明的 padding、部件从 content box 起点开始、首个子节点在
 带子之后。
 
 文字被清空的盒子交出原来的度量：一个盒子的文字变成空串时，下一次文字工作把它解析成
-「没有文字」，度量归零、布局重新量它，结果与冷布局相同。门禁是 `world/issue205.rs` 的
+「没有文字」，度量归零、布局重新量它，结果与冷布局相同。门禁是 `world/tests/component_parts.rs` 的
 `issue205_a_cleared_label_lays_out_as_a_cold_unlabelled_control`。
 
 ## Incremental reflow frontier
@@ -276,7 +276,7 @@ measure 计划沿用的前提是节点自己的输入都没变：约束、样式
 增量帧之间留下的状态（整形结果、计划、保留尺寸）只存在于增量那一边，冷的世界没有，
 所以这些状态出的错藏不住。#256 和 #259 的门禁都以这一层收尾。
 
-`world/issue259.rs` 是 #259 的规模矩阵，覆盖这些维度：
+`world/tests/incremental_work.rs` 是 #259 的规模矩阵，覆盖这些维度：
 - 文档规模：1k、10k、100k 节点；
 - 同一帧的编辑：1、8、100 处；
 - 编辑位置：头、中、尾；
@@ -286,7 +286,7 @@ measure 计划沿用的前提是节点自己的输入都没变：约束、样式
 场景有九种：只改绘制、固定边界内的内容、顺序尺寸变化、父约束、flex 重新分配、grid 贡献、
 行内重排、语言作用域（#260，见 [文本引擎](https://github.com/sena-nana/NanaUI/blob/main/docs/reference/text-engine.md) 的「语言作用域与外部度量」）、
 字号缩放作用域（#266，见 [文本引擎](https://github.com/sena-nana/NanaUI/blob/main/docs/reference/text-engine.md) 的「字号缩放作用域」）。
-有 2000 段文字的作用域放在 100k 节点文档里的规模门禁，在 `world/issue266.rs`。
+有 2000 段文字的作用域放在 100k 节点文档里的规模门禁，在 `world/tests/localization.rs`。
 
 门禁只读计数，不看时间：
 - 只改绘制时，所有布局计数为零。
@@ -402,7 +402,7 @@ PR CI 只以计数为硬门禁，计时不在 CI 里判定。每周的 Runtime p
 - `resize_context_solves`：约束变化触发的那一趟里，从头求解的格式化上下文，即计划无法复用
   或没有计划的容器。
 
-门禁在 `world/issue264.rs`。"测量"读的是布局真正算过的节点（测试用的
+门禁在 `world/tests/incremental_work.rs`。"测量"读的是布局真正算过的节点（测试用的
 `layout_engine::measure_trace`，越过本趟 memo 和保留 intrinsic 之后才记），不是 frontier 的
 MEASURE 位：memo 的键变了也会重测，frontier 看不到这种工作。layout-verify 守卫自己那趟全量
 布局不记。
@@ -461,7 +461,7 @@ Gate E（可用尺寸仍落在缓存的包络段里时不重排）见下文「Dy
 - `replaced_content_only_layout_invalidations`：只换内容的更新排出的 seed，应当为 0；
 - `resource_intrinsic_dependents_notified`：经资源索引通知到的节点。
 
-门禁在 `world/issue263.rs`：
+门禁在 `world/tests/replaced_media.rs`：
 - 1200 帧视频零布局，intrinsic generation 不变；
 - 图片自然尺寸到达，只重排读取它的那个盒子；固定 300×200 的只重绘；宽 400 的按比例得出高度；
 - 一张共享图片经索引通知 100 个节点，在 10k 与 100k 文档里开销相同，只有读尺寸的 50 个重新布局；
@@ -488,7 +488,7 @@ fit 只有一份数学：`ContentFit::fitted_size`（`nana-ui-core`）。fit 是
 - 标记里 `<video>` 与 `<gpu>` 的 fit：层叠出的 `object-fit` 优先，`fit` 属性是 presentational hint，
   两者都认全部五个关键字（原先属性只认 `contain`，其余都当 `fill`）。
 
-`world/issue202.rs` 的门禁：
+`world/tests/layout_foundations.rs` 的门禁：
 - A：同一对图片（无尺寸、只写宽）放进 Flex、拉伸的 Flex 行、Grid、拉伸的 Grid、行内与 absolute，
   自然尺寸到达后逐一对照尺寸、participation 和冷布局。
 - B：图片和 CustomRender 在 `align-items: baseline` 的 flex 行与原生段落里以底边落在文字基线上。
@@ -527,7 +527,7 @@ fit 只有一份数学：`ContentFit::fitted_size`（`nana-ui-core`）。fit 是
   同一趟推导也正着找首个行盒，得出首个基线（#382）。找首末行盒的顺序是流的顺序。每趟按节点和所用
   尺寸记在 `LayoutInputMap::derived_baselines`，读原子 ascent 的每一处（块的测量与 placement、
   measure plan 的比对与增量、原生段落）先 `prime_atom_baselines`，`baseline_metrics` 再读它，所以
-  只有这一份推导。`justify-content`、反向、换行成列、行旁的浮动（门禁 `world/issue382.rs` 的
+  只有这一份推导。`justify-content`、反向、换行成列、行旁的浮动（门禁 `world/tests/layout_foundations.rs` 的
   E、F、G，css-parity `T-FL07`）、自动 margin、等宽分行和块级流里的 `clear` 都按 placement 的结果，
   不再有退回近似的情形。flex、grid 容器的基线见下文；subgrid 和竖排不推导，仍是自身字体首行的近似；
 - 替换内容、`overflow` 非 visible 的 inline-block、没有流内行盒的 inline-block（`UiWorld::atom_sits_on_line_box`）
@@ -553,7 +553,7 @@ fit 只有一份数学：`ContentFit::fitted_size`（`nana-ui-core`）。fit 是
     文字阶段只重读候选，值变了才按文字度量变化的路径排布局；只改字号不重读（存的是每 px 的值），
     语言不参与首选字面的选择，也不重读出新值。IFC 的 measure plan 记下它用的 strut 并比对。
     测试与 `layout-verify` 构建里，每趟文字阶段后把每个保留的 strut 和重读的比一遍
-    （`UiWorld::audit_block_struts`），漏掉的候选直接报错。门禁在 `world/issue382.rs` 的 B。
+    （`UiWorld::audit_block_struts`），漏掉的候选直接报错。门禁在 `world/tests/layout_foundations.rs` 的 B。
 
 `align-items: baseline` 的 flex 行按项目的首个基线对齐，替换内容取边框盒底边（CSS Align 在 flex / grid
 里从边框盒合成基线）。行盒都在后代里的项目（`UiWorld::aligns_by_first_baseline` 且
@@ -562,7 +562,7 @@ fit 只有一份数学：`ContentFit::fitted_size`（`nana-ui-core`）。fit 是
 基线前都先 `prime_first_baselines`，`baseline_metrics` 的首个基线再读它；测试与 `layout-verify` 构建里
 没预备就读会直接报错。这样的项目也读内容（`atom_baseline_reads_content`），固定尺寸不再是度量边界，
 里面后代的字号、文字、上方块的高度变化会让这一行重新对齐；首行没动的变化不移动任何项目。门禁在
-`world/issue382.rs` 的 D。grid 项目按基线对齐时，同一起始行里的这些项目共享一条基线：每个项目按自己的
+`world/tests/layout_foundations.rs` 的 D。grid 项目按基线对齐时，同一起始行里的这些项目共享一条基线：每个项目按自己的
 首个基线加上方 margin，对齐到这一行里最深的那个（`grid::arrange_grid_2d`，#394）。行的基线发布在 `LayoutResult` 的 TextLine 片段上。`LayoutStyle` 没有
 `vertical-align`，默认的 `baseline` 就是全部行为。这不是 replaced 专有的规则。
 
@@ -579,7 +579,7 @@ grid 容器的基线（CSS Grid 2 §11.8，按 Chrome 实测）同样从项目�
 `inline::grid_first_baseline`）：取有项目起始的第一行，行里有按基线对齐的项目时取它们共享的基线，否则取
 这一行里 grid 顺序的第一个项目（列号最小的，RTL 下在最右边，不看 DOM 顺序；跨行的项目算在它起始的那一行），
 没有行盒时取它的边框盒底边；末基线也就是首基线。grid 项目同样读内容。
-门禁在 `world/issue394.rs`，Chrome 实测是 css-parity `T-FX01`–`T-FX03`、`T-GB01`、`T-GB02`。还没做的：
+门禁在 `world/tests/layout_foundations.rs`，Chrome 实测是 css-parity `T-FX01`–`T-FX03`、`T-GB01`、`T-GB02`。还没做的：
 inline-flex、inline-grid 在块的行上仍排成块级（不是行内原子）；按基线对齐的 flex 行的交叉尺寸、grid
 轨道的尺寸都没把基线对齐挪出来的空间算进去（CSS 的 baseline shim）；grid 里跨行项目对 auto 行的尺寸
 分配、inline-block 里块级 grid 的宽度和 Chrome 有出入。
@@ -639,7 +639,7 @@ inline-flex、inline-grid 在块的行上仍排成块级（不是行内原子）
 - `virtual_scroll_extent_updates`：列表总高变化的次数；
 - `virtual_rows_materialized_from_layout`：为窗口新建的行。
 
-门禁在 `world/issue262.rs`。一百万行，视口 40 行，上下各 8 行 overscan：
+门禁在 `world/tests/incremental_work.rs`。一百万行，视口 40 行，上下各 8 行 overscan：
 - A：可见的一行高 8 px。不查任何逻辑行（上限 64），只量出这一行；索引写入不超过一个块加
   O(log C) 项；下面的行只做原点平移。
 - B：单元格从 "99" 改成 "98"，行高不变：列表总高、其他行的放置都不变，列表不重排。
@@ -699,7 +699,7 @@ ResponsiveRule)`。
 - `container_query_convergence_rounds`：有规则换桶的评估轮数；
 - `container_query_cycle_fallbacks`：为收敛停下的换桶。
 
-门禁在 `world/issue265.rs`：
+门禁在 `world/tests/dynamic_layout.rs`：
 - A：一个面板下 100 条规则，面板宽度变化只评估这 100 条，在 1 万与 10 万节点的文档里开销相同；
 - B：同一个桶里连续缩放 240 次，没有规则换桶，变体不排 seed，行不测量；
 - C：跨过一个断点，只有在这里断开的 10 条规则换桶，每条排一个 seed，其余 90 个固定行不测量；
@@ -807,13 +807,13 @@ x86_64 Windows（MSVC）上每层的栈：放置 debug 从 25.8 KiB 降到 9.0 K
 四个基准和 perf schema 以 `dynamic_<字段>` 输出。诊断在 layout 域 id 6–8。
 
 门禁：
-- `world/issue212.rs`：放得下的行与无声明的逐盒相同；溢出时先收 gap 再收 padding；shrink 只吃剩下的；
+- `world/tests/dynamic_layout.rs`：放得下的行与无声明的逐盒相同；溢出时先收 gap 再收 padding；shrink 只吃剩下的；
   不求解的容器不读声明；拖动中每趟对照全量布局；inspect。
-- `world/issue213.rs`：同一级里缩放只重分、不建包络；跨级冷解一次；从上从下到同一宽度结果相同。
-- `world/issue214.rs`：A 静态帧和只改绘制不求解；B 1k 项的便宜缺口每项读一段、1k→2k 线性、级内
+- `world/tests/dynamic_layout.rs`：同一级里缩放只重分、不建包络；跨级冷解一次；从上从下到同一宽度结果相同。
+- `world/tests/dynamic_layout.rs`：A 静态帧和只改绘制不求解；B 1k 项的便宜缺口每项读一段、1k→2k 线性、级内
   缩放不分配；C 分支 4 的嵌套树每节点每趟至多落实一次、工作随节点数增长；E 240 次缩放跨三级，只在
   跨级处冷解；F 超出预算的行恰回退一次且确定；G 500 帧缩放、增删项、改声明后保留的包络和求解跟着树走。
-- `world/issue264.rs` 的 Gate E；`nana-ui-core` 的 `dynamic_layout` 单测（含同一级里每个缺口的增量
+- `world/tests/incremental_work.rs` 的 Gate E；`nana-ui-core` 的 `dynamic_layout` 单测（含同一级里每个缺口的增量
   重分等于冷解的穷举）。
 
 ## 能用的
@@ -971,11 +971,11 @@ flex 项和 grid 项上的 float，按 CSS 被块化，然后忽略。
 
 Scene 抽取、命中索引、无障碍和 Select 菜单的可用空间都按 `clip_parent` 挂盒子，不各自沿祖先推导。要按上方的盒子截一块区域的遍历（菜单的可用空间、无障碍里 EmptyState 与对话框的铬裁剪）都走 `UiWorld::clip_ancestors`，即沿发布的 `clip_parent` 往上：`fixed` 盒子（字段自己或它上方的一个）到此为止，`fixed` 的字段打开的菜单取整个窗口（#205 门禁 `issue205_menu_room_and_chrome_clips_follow_the_clip_chain`）。命中索引里逃出的盒子挂在 `clip_parent` 的条目下，滚动时它逃出的那个容器的平移不带上它，它覆盖的点按绘制顺序排先后。无障碍节点的 `bounds` 仍是整个盒子，`clip` 是链上各溢出容器按此刻的滚动留给它的那块视口，链上没有容器时为 `None`；画出来的、指针点得到的就是 `bounds` 落在 `clip` 里的部分。滚动仍然不跑布局。祖先改变定位或开始、停止裁剪时，下面记着的链跟着重新发布。
 
-门禁在 `world/issue201.rs` 的 `clip_chain` 模块：定位的页面里有静态滚动容器，里面一张定位卡片带一个静态滚动容器，放一行流内盒子、一个以卡片为包含块的 `absolute` 盒子和一个 `fixed` 盒子；卡片后面一个静态裁剪盒放一个以页面为包含块的 `absolute` 盒子。断言各自的 `clip` / `clip_parent`；两个容器滚到几组偏移，每组不跑布局，无障碍的位置和裁剪、指针命中（就地打补丁的命中索引和重建的都算）都按链；Select 菜单的空间同样只被链上的容器截；卡片和里层容器改变定位、溢出时与冷布局逐项相同（含无障碍的 `clip`），就地打补丁的命中索引（先让滚动平移活着，再变链）在整页网格上的命中和候选与重建的相同；被跨过的祖先的变换（样式上的和合成器动画呈现的）照样作用于逃出的盒子；一个树序在后、盖住逃出盒子的兄弟接住指针，不论索引怎样排它们。`nana-ui-scene` 的 `runtime_document_clip_chain_tests.rs` 走真实的 `RuntimeDocument` 帧，逐个比较 Scene 画出的位置和裁剪、无障碍的 `bounds` / `clip`、命中和剔除，滚动和链变化后都相同。
+门禁在 `world/tests/layout_foundations.rs` 的 `clip_chain` 模块：定位的页面里有静态滚动容器，里面一张定位卡片带一个静态滚动容器，放一行流内盒子、一个以卡片为包含块的 `absolute` 盒子和一个 `fixed` 盒子；卡片后面一个静态裁剪盒放一个以页面为包含块的 `absolute` 盒子。断言各自的 `clip` / `clip_parent`；两个容器滚到几组偏移，每组不跑布局，无障碍的位置和裁剪、指针命中（就地打补丁的命中索引和重建的都算）都按链；Select 菜单的空间同样只被链上的容器截；卡片和里层容器改变定位、溢出时与冷布局逐项相同（含无障碍的 `clip`），就地打补丁的命中索引（先让滚动平移活着，再变链）在整页网格上的命中和候选与重建的相同；被跨过的祖先的变换（样式上的和合成器动画呈现的）照样作用于逃出的盒子；一个树序在后、盖住逃出盒子的兄弟接住指针，不论索引怎样排它们。`nana-ui-scene` 的 `runtime_document_clip_chain_tests.rs` 走真实的 `RuntimeDocument` 帧，逐个比较 Scene 画出的位置和裁剪、无障碍的 `bounds` / `clip`、命中和剔除，滚动和链变化后都相同。
 
-滚动范围也按这条链算（CSS Overflow 3：盒子只算进它包含块链上的 scrollable overflow）。`absolute` 盒子算进它包含块的范围，不算进它逃出的静态滚动容器；`fixed` 盒子和它下面的一切不算进任何容器。见下文「溢出」。门禁在 `world/issue201.rs` 的 `scroll_range` 模块：静态滚动容器里放一个以页面为包含块、远在下方的 `absolute` 盒子和一个更远的 `fixed` 盒子（里面再放一个 `absolute` 盒子），容器的可滚距离、`LayoutResult::overflow`、`scroll_extent` 和偏移夹取都不含它们，`absolute` 盒子算进够得着它的页面；容器改成 `relative`、盒子在 `absolute` 与 `fixed` 之间切换时范围随链移动，与冷布局逐项相同（含度量和夹取后的偏移）；两个容器滚动时不跑布局，范围不变。`world/scroll_bounds.rs` 的 `out_of_flow_boxes_count_where_their_clip_chain_reaches_them` 在索引层面对照按 clip 链走的全遍历和新建的索引：定位翻转、子树在包含块之间搬动、停放后接回、停放时顶层开始裁剪、触发式菜单打开（菜单项变 `fixed`）再关上。
+滚动范围也按这条链算（CSS Overflow 3：盒子只算进它包含块链上的 scrollable overflow）。`absolute` 盒子算进它包含块的范围，不算进它逃出的静态滚动容器；`fixed` 盒子和它下面的一切不算进任何容器。见下文「溢出」。门禁在 `world/tests/layout_foundations.rs` 的 `scroll_range` 模块：静态滚动容器里放一个以页面为包含块、远在下方的 `absolute` 盒子和一个更远的 `fixed` 盒子（里面再放一个 `absolute` 盒子），容器的可滚距离、`LayoutResult::overflow`、`scroll_extent` 和偏移夹取都不含它们，`absolute` 盒子算进够得着它的页面；容器改成 `relative`、盒子在 `absolute` 与 `fixed` 之间切换时范围随链移动，与冷布局逐项相同（含度量和夹取后的偏移）；两个容器滚动时不跑布局，范围不变。`world/scroll_bounds.rs` 的 `out_of_flow_boxes_count_where_their_clip_chain_reaches_them` 在索引层面对照按 clip 链走的全遍历和新建的索引：定位翻转、子树在包含块之间搬动、停放后接回、停放时顶层开始裁剪、触发式菜单打开（菜单项变 `fixed`）再关上。
 
-增量布局按包含块追踪：包含块挪动或改变尺寸时，挂在它上面的盒子会重放，即使中间的静态盒子这一趟没被放过；只有中间的静态盒子移动时，盒子不动。祖先开始或停止成为包含块时，下面的盒子改挂到新的包含块，发布的 `LayoutResult::containing_block` 也跟着更新。门禁在 `world/issue200.rs`：每一步都和冷布局逐个比对盒子、结果、命中和无障碍。
+增量布局按包含块追踪：包含块挪动或改变尺寸时，挂在它上面的盒子会重放，即使中间的静态盒子这一趟没被放过；只有中间的静态盒子移动时，盒子不动。祖先开始或停止成为包含块时，下面的盒子改挂到新的包含块，发布的 `LayoutResult::containing_block` 也跟着更新。门禁在 `world/tests/layout_foundations.rs`：每一步都和冷布局逐个比对盒子、结果、命中和无障碍。
 
 `sticky` 相对最近的滚动视口解析 inset，并受正常流包含块约束：到父容器末端会释放。没有 inset 的轴照常滚动。嵌套 Sticky 从父级的呈现位置继续计算；嵌套滚动容器各自拥有视口。Runtime 的命中、无障碍和 Scene 绘制共用同一个 placement 投影，滚动不触发内容 measure、layout 或文本塑形。改变包含块尺寸或重新挂载时，只失效其登记的 Sticky 分支。
 
@@ -992,7 +992,7 @@ Scene 抽取、命中索引、无障碍和 Select 菜单的可用空间都按 `c
 
 这是 CSS anchor positioning 里「翻面再收进来」的那一部分。所有锚定的浮层共用这一个解析器：ContextMenu、AnchoredActionMenu、触发菜单、HoverCard、Popover，以及 Select 的下拉。Select 两侧都放不下时，取宽的一侧并截短。
 
-窗口改变大小时，布局直接重放这些表面，不用重新投影组件。命中和无障碍读的都是布局给出的盒子。这个字段没有 CSS 写法，由控件写。门禁在 `world/issue200.rs`。
+窗口改变大小时，布局直接重放这些表面，不用重新投影组件。命中和无障碍读的都是布局给出的盒子。这个字段没有 CSS 写法，由控件写。门禁在 `world/tests/layout_foundations.rs`。
 
 Select、Dropdown、SearchDropdown 的菜单不是布局盒子，是字段的组件几何：按字段的盒子和「菜单看得见的空间」（`SelectMenuRoom`：窗口，再扣掉字段 clip 链上的裁剪，按此刻的滚动位置）用同一个解析器摆放。Scene 画的、`select_option_at` 选的、命中索引里字段那一项带的菜单表面，都从这一份几何来。空间由字段投影时记下；每一趟布局结束后（滚动保留之后），引擎再为文档里开着的菜单按刚发布的布局算一次空间，变了才写回，所以窗口改变大小、字段或外层容器被挪动时，菜单不用等字段重新投影就重新翻面、截高，命中索引随之重建字段那一项。只有滚动不跑布局：页面滚动时菜单跟着字段走，到下一次变化再重新摆放，画和命中仍是同一份。门禁 `issue200_a_select_menu_follows_the_viewport_and_hits_where_it_paints`：窗口变矮再变高，菜单翻上翻下，每一步画在某点的那一行就是指针选中的一行、命中给字段的一点，旧位置不再命中，与冷布局得到的菜单相同。字段（`ComboBox`）的范围是它的布局盒子；菜单打开时，字段下有一个列表框，每个露出来的行一个选项节点，范围同样取自这份几何（行与菜单视口、此刻的「看得见的空间」相交，再经字段的变换），所以读屏读到的、画出来的和指针选中的是同一行，见 [Select 的读屏](https://github.com/sena-nana/NanaUI/blob/main/docs/components/select.md#读屏)。门禁在同一个文件：`issue200_a_select_listbox_*`、`issue200_an_open_select_menu_reads_as_a_listbox_of_its_rows` 等。
 
@@ -1000,9 +1000,9 @@ Select、Dropdown、SearchDropdown 的菜单不是布局盒子，是字段的组
 
 这条只管它里面的子项。盒子自己的百分比 `min-height` / `max-height` 仍按包含块的高度兑现：`fixed` 是视口，`absolute` 是它的包含块。脱流盒子的包含块总有确定的高度（CSS 2.1 §10.7）。所以 `position: fixed; max-height: 80%` 的卡片按内容长高，最高到视口的 80%。不用改写成 `80vh`。
 
-写了 `aspect-ratio` 的脱流盒子，高度按 `left` / `right` 和宽度的上下限留下的宽度换算，和 flex、grid、行内里一样：`width: 120px; max-width: 60px; aspect-ratio: 1.5` 得 60×40，`left: 0; right: 480px` 在 600 宽的包含块里得 120×80（#382，门禁 `world/issue382.rs` 的 A，css-parity `T-P21`）。同时写了 `top` 和 `bottom` 的盒子，高度仍取两个 inset 之间。
+写了 `aspect-ratio` 的脱流盒子，高度按 `left` / `right` 和宽度的上下限留下的宽度换算，和 flex、grid、行内里一样：`width: 120px; max-width: 60px; aspect-ratio: 1.5` 得 60×40，`left: 0; right: 480px` 在 600 宽的包含块里得 120×80（#382，门禁 `world/tests/layout_foundations.rs` 的 A，css-parity `T-P21`）。同时写了 `top` 和 `bottom` 的盒子，高度仍取两个 inset 之间。
 
-这几条所有 context 都一样（CSS Sizing 4 §5.1）。比例在 `box-sizing` 指定的盒子之间换算：`border-box; padding: 6px; width: 120px; max-width: 60px; aspect-ratio: 1.5` 的边框盒是 60×40，`content-box; padding: 6px; width: 120px` 的内容盒是 120×80、边框盒 132×92。换算出的高度再受盒子自己的 `min-height` / `max-height` 约束：上例加 `min-height: 50px` 得 60×50。流内容器的 auto 高度读的也是这个高度（#393，门禁 `world/issue382.rs` 的 A，css-parity `T-S23`）。
+这几条所有 context 都一样（CSS Sizing 4 §5.1）。比例在 `box-sizing` 指定的盒子之间换算：`border-box; padding: 6px; width: 120px; max-width: 60px; aspect-ratio: 1.5` 的边框盒是 60×40，`content-box; padding: 6px; width: 120px` 的内容盒是 120×80、边框盒 132×92。换算出的高度再受盒子自己的 `min-height` / `max-height` 约束：上例加 `min-height: 50px` 得 60×50。流内容器的 auto 高度读的也是这个高度（#393，门禁 `world/tests/layout_foundations.rs` 的 A，css-parity `T-S23`）。
 
 **层叠上下文子集。** Scene 按 `(z_index, document_order)` 排序。它把隔离组当成一层。这些组是：`opacity` 介于 0 和 1 的组、`isolation: isolate`，以及 `position` 非 static 且写了 `z-index`。
 
@@ -1172,7 +1172,7 @@ CSS `url()` 的帧仍走 4× MSAA。它和 HostTexture、backdrop 的 interleave
 - 没有 `scroll_layout_reflows`。“纯滚动不排版”断言在已有的计数上：`layout_measure_nodes`、`layout_placement_nodes`、`text_shaped` 都是 0。
 - 虚拟列表不另起名字。为窗口新建的行是 `virtual_rows_materialized_from_layout`；这些行的实体是 `entities_spawned`，离开窗口的行的实体是 `entities_despawned`。
 
-门禁在 `world/issue381.rs`。页面和视口一样高，里面两个列表，各有一个带两个子节点的粘性表头和 50 行：
+门禁在 `world/tests/layout_foundations.rs`。页面和视口一样高，里面两个列表，各有一个带两个子节点的粘性表头和 50 行：
 - 只滚动的帧：不排版，视口和范围都是 0。滚一个列表，clip 计 3，就是它的粘性分支，不含它的 50 行，也不含另一个列表的表头；两个都滚计 6；滚页面计 0。
 - 视口从 600 改成 500：只有跟着视口走的页面计一次视口变化，范围重算 1 次（只有页面自己的条目），clip 是 0。存进相同的度量不计。列表里一行变高，范围变了，视口不计。
 - 虚拟列表滚到窗口之外：滚动帧三项都是 0。同步后，新建行数等于新窗口的行数；下一帧新建的实体是新窗口的，删掉的是旧窗口的。范围重算不超过发布批次数乘以实体数，一万行和一百万行的集合相同。

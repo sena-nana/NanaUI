@@ -10,7 +10,7 @@
 
 ```bash
 cargo test -p nana-ui-view-codegen
-cargo test -p nana-ui-runtime --features view-macro --test view_macro
+cargo test -p nana-ui-runtime --features view-macro --test contracts view_macro
 ```
 
 更多内容见 [作者工具链](../../docs/learn/toolchain.md)。

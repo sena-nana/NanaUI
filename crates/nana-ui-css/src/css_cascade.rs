@@ -5383,8 +5383,12 @@ pub(crate) mod tests {
     #[test]
     fn filesystem_jail_rejects_dotdot_and_absolute_escape() {
         use crate::css_at_rule::{FsStylesheetLoader, ParseStylesheetOptions};
-        let root =
-            std::env::temp_dir().join(format!("nanaui-css-jail-{}-escape", std::process::id()));
+        static SEQ: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+        let seq = SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let root = std::env::temp_dir().join(format!(
+            "nanaui-css-jail-{}-{seq}-escape",
+            std::process::id()
+        ));
         let jail = root.join("jail");
         let _ = std::fs::remove_dir_all(&root);
         std::fs::create_dir_all(&jail).expect("jail");
@@ -5427,7 +5431,10 @@ pub(crate) mod tests {
         use crate::css_at_rule::{
             FsStylesheetLoader, ParseStylesheetOptions, with_stylesheet_byte_cap,
         };
-        let jail = std::env::temp_dir().join(format!("nanaui-css-jail-{}-cap", std::process::id()));
+        static SEQ: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+        let seq = SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let jail =
+            std::env::temp_dir().join(format!("nanaui-css-jail-{}-{seq}-cap", std::process::id()));
         let _ = std::fs::remove_dir_all(&jail);
         std::fs::create_dir_all(&jail).expect("jail");
         std::fs::write(jail.join("big.css"), "x".repeat(64)).expect("big");
@@ -5455,8 +5462,12 @@ pub(crate) mod tests {
         use crate::css_at_rule::{
             FsStylesheetLoader, ParseStylesheetOptions, font_face_url_src, load_font_face_bytes,
         };
-        let jail =
-            std::env::temp_dir().join(format!("nanaui-css-jail-{}-font-rel", std::process::id()));
+        static SEQ: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+        let seq = SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let jail = std::env::temp_dir().join(format!(
+            "nanaui-css-jail-{}-{seq}-font-rel",
+            std::process::id()
+        ));
         let sheets = jail.join("sheets");
         let fonts = sheets.join("fonts");
         let _ = std::fs::remove_dir_all(&jail);

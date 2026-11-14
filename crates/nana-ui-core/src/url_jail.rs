@@ -371,10 +371,12 @@ mod tests {
 
     #[test]
     fn jail_skips_path_outside_root() {
+        static SEQ: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+        let seq = SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         let jail =
-            std::env::temp_dir().join(format!("nanaui-url-jail-{}-{}", std::process::id(), "in"));
+            std::env::temp_dir().join(format!("nanaui-url-jail-{}-{seq}-in", std::process::id()));
         let outside =
-            std::env::temp_dir().join(format!("nanaui-url-jail-{}-{}", std::process::id(), "out"));
+            std::env::temp_dir().join(format!("nanaui-url-jail-{}-{seq}-out", std::process::id()));
         let _ = std::fs::remove_dir_all(&jail);
         let _ = std::fs::remove_dir_all(&outside);
         std::fs::create_dir_all(&jail).expect("jail");
@@ -431,8 +433,12 @@ mod tests {
 
     #[test]
     fn windows_verbatim_disk_canonical_path_is_allowed_inside_jail() {
-        let jail =
-            std::env::temp_dir().join(format!("nanaui-url-jail-{}-verbatim", std::process::id()));
+        static SEQ: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+        let seq = SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let jail = std::env::temp_dir().join(format!(
+            "nanaui-url-jail-{}-{seq}-verbatim",
+            std::process::id()
+        ));
         let _ = std::fs::remove_dir_all(&jail);
         std::fs::create_dir_all(&jail).expect("jail");
         std::fs::write(jail.join("ok.ttf"), b"dummy-font-bytes").expect("ttf");

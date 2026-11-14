@@ -7,7 +7,7 @@
 本 crate 没有自己的测试，表的内容由两侧的展开检验：
 
 ```bash
-cargo test -p nana-ui-runtime --features view-macro --test view_macro
+cargo test -p nana-ui-runtime --features view-macro --test contracts view_macro
 ```
 
 更多内容见 [作者工具链](../../docs/learn/toolchain.md)。

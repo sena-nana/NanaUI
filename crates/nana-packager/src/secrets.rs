@@ -240,7 +240,10 @@ mod tests {
 
     #[test]
     fn leak_scan_finds_every_encoding() {
-        let dir = std::env::temp_dir().join(format!("nana-packager-leak-{}", std::process::id()));
+        static SEQ: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+        let seq = SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let dir =
+            std::env::temp_dir().join(format!("nana-packager-leak-{}-{seq}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(dir.join("sub")).unwrap();
         let mut secrets = LoadedSecrets::empty();
@@ -271,7 +274,10 @@ mod tests {
 
     #[test]
     fn in_tree_key_files_are_refused() {
-        let root = std::env::temp_dir().join(format!("nana-packager-tree-{}", std::process::id()));
+        static SEQ: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+        let seq = SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let root =
+            std::env::temp_dir().join(format!("nana-packager-tree-{}-{seq}", std::process::id()));
         let _ = std::fs::remove_dir_all(&root);
         std::fs::create_dir_all(root.join(".git")).unwrap();
         let file = root.join("key.hex");

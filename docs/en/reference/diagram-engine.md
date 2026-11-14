@@ -105,7 +105,7 @@ Theme settings such as `theme` and `themeVariables` are read but have no effect:
 
 ```bash
 cargo test -p nana-ui-diagram
-NANA_DIAGRAM_BLESS=1 cargo test -p nana-ui-diagram --test golden   # rewrite golden files after an intentional change
+NANA_DIAGRAM_BLESS=1 cargo test -p nana-ui-diagram --test diagram golden   # rewrite golden files after an intentional change
 cargo test -p nana-ui-runtime --features rich-text --lib markdown
 cargo test -p nana-ui-scene --features rich-text --lib markdown
 cargo run -p nana-ui-devtools --features runtime-agent,nana-ui/components --example diagram-probe -- target/diagram-probe

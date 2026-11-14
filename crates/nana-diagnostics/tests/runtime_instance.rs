@@ -39,11 +39,16 @@ static FAULT: EventDescriptor = EventDescriptor::new(
 static CONFLICT: EventDescriptor = EventDescriptor::new(D, 1, "test.other", Severity::Info, &[]);
 
 fn temp_dir(name: &str) -> PathBuf {
+    static SEQ: AtomicUsize = AtomicUsize::new(0);
     let nanos = SystemTime::now()
         .duration_since(SystemTime::UNIX_EPOCH)
         .unwrap()
         .as_nanos();
-    let dir = std::env::temp_dir().join(format!("nana-diag-{name}-{}-{nanos}", std::process::id()));
+    let seq = SEQ.fetch_add(1, Ordering::Relaxed);
+    let dir = std::env::temp_dir().join(format!(
+        "nana-diag-{name}-{}-{seq}-{nanos}",
+        std::process::id()
+    ));
     fs::create_dir_all(&dir).unwrap();
     dir
 }

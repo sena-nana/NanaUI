@@ -6034,7 +6034,7 @@ pub(super) fn readback_rgba(
     device
         .poll(wgpu::PollType::Wait {
             submission_index: Some(submission),
-            timeout: None,
+            timeout: Some(std::time::Duration::from_secs(10)),
         })
         .expect("document-order readback poll");
     let mapped = slice

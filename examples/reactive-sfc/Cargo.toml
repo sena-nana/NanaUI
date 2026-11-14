@@ -6,6 +6,21 @@ rust-version = "1.98"
 publish = false
 description = "Views written as .vue files with Rust scripts, compiled by nana-ui-sfc in build.rs"
 
+[lib]
+name = "reactive_sfc"
+path = "src/lib.rs"
+doctest = false
+
+[[bin]]
+name = "reactive-sfc"
+path = "src/main.rs"
+test = false
+
+[[bin]]
+name = "sfc-benchmark"
+path = "src/bin/sfc-benchmark.rs"
+test = false
+
 [dependencies]
 nana-ui = { path = "../../crates/nana-ui", default-features = false, features = ["hosted", "bundled-fonts", "view-macro", "wgpu-backends"] }
 nana-ui-platform.workspace = true

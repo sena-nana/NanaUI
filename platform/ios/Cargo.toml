@@ -12,6 +12,7 @@ license = "MIT OR Apache-2.0"
 [lib]
 name = "nana_ios_host"
 path = "src/lib.rs"
+doctest = false
 
 [dependencies]
 nana-mobile-host = { path = "../mobile-core" }

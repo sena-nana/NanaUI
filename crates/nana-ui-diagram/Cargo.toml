@@ -24,6 +24,7 @@ unicode-linebreak = "0.1.5"
 name = "nana-diagram-benchmark"
 path = "src/bin/nana-diagram-benchmark.rs"
 required-features = ["benchmark"]
+test = false
 
 [dev-dependencies]
 nana-ui-core.workspace = true

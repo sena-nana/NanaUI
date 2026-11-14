@@ -2666,12 +2666,16 @@ mod tests {
     /// nowhere.
     #[test]
     fn the_committed_semantic_baseline_still_describes_what_the_theme_resolves_to() {
-        let output =
-            std::env::temp_dir().join(format!("nana-ui-semantic-verify-{}", std::process::id()));
+        static SEQ: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+        let output = std::env::temp_dir().join(format!(
+            "nana-ui-semantic-verify-{}-{}",
+            std::process::id(),
+            SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+        ));
         let _ = std::fs::remove_dir_all(&output);
         let mut recorder = Recorder::new(Options {
             mode: Mode::Verify,
-            output,
+            output: output.clone(),
             baseline_root: PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("snapshots"),
             platform: "semantic".to_owned(),
             adapter: "none (semantic)".to_owned(),
@@ -2680,6 +2684,7 @@ mod tests {
             generate_semantic(&mut recorder, theme).expect("semantic pass runs");
         }
         let report = recorder.finish().expect("finish");
+        let _ = std::fs::remove_dir_all(&output);
         assert_eq!(
             report.failures, 0,
             "semantic baseline disagrees; re-record with `--semantic --bless` only after \

@@ -143,6 +143,17 @@ codegen-units = 1
 panic = "abort"
 strip = "symbols"
 
+# Keep panic backtrace line numbers without paying full DWARF bloat and
+# linker stalls locally (matches CI's line-tables-only policy).
+[profile.dev]
+debug = "line-tables-only"
+
+[profile.test]
+debug = "line-tables-only"
+
+[profile.dev.package."*"]
+debug = false
+
 # Pack sealing, hashing and decoding run 20-50x slower unoptimized; the
 # packager tests (a 20 MiB Steam delta corpus) and any debug build reading
 # encrypted packs would crawl. Only these leaf crates are optimized.

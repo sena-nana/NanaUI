@@ -28,7 +28,7 @@ let scene = render(
 
 ```bash
 cargo test -p nana-ui-diagram
-NANA_DIAGRAM_BLESS=1 cargo test -p nana-ui-diagram --test golden
+NANA_DIAGRAM_BLESS=1 cargo test -p nana-ui-diagram --test diagram golden
 ```
 
 The second command rewrites `tests/golden/` after an intentional change. The parse and layout benchmarks need the `benchmark` feature:

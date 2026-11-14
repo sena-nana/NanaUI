@@ -11,6 +11,7 @@ license = "MIT OR Apache-2.0"
 name = "nana_android_host"
 path = "src/lib.rs"
 crate-type = ["cdylib", "rlib"]
+doctest = false
 
 [features]
 default = []

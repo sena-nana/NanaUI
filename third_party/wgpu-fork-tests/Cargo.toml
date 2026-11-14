@@ -15,6 +15,7 @@ publish = false
 
 [lib]
 path = "src/lib.rs"
+doctest = false
 
 [dependencies]
 wgpu = { workspace = true, features = ["dx12", "vulkan"] }

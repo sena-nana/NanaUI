@@ -311,10 +311,11 @@ mod tests {
     use super::*;
 
     fn temp_dir(name: &str) -> PathBuf {
+        static NEXT_ID: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        let seq = NEXT_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         let dir = std::env::temp_dir().join(format!(
-            "nana-diag-marker-{name}-{}-{}",
+            "nana-diag-marker-{name}-{}-{seq}",
             std::process::id(),
-            crate::session::unix_now_ns()
         ));
         fs::create_dir_all(&dir).unwrap();
         dir

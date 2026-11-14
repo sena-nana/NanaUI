@@ -104,6 +104,7 @@ mod tests {
 
     #[test]
     fn a_marked_change_is_taken_once() {
+        let _serial = crate::test_serial_lock();
         let _ = take_text_scale_change();
         assert!(!take_text_scale_change());
         mark_changed();

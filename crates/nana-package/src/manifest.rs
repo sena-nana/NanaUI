@@ -578,8 +578,10 @@ pub(crate) mod tests {
     }
 
     fn temp_dir(name: &str) -> std::path::PathBuf {
+        static NEXT_ID: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        let seq = NEXT_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         let dir = std::env::temp_dir().join(format!(
-            "nana-package-manifest-{name}-{}",
+            "nana-package-manifest-{name}-{}-{seq}",
             std::process::id()
         ));
         let _ = std::fs::remove_dir_all(&dir);

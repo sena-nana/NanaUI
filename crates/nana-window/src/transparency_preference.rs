@@ -43,6 +43,7 @@ mod tests {
     // One test owns CHANGED: parallel tests taking it would race.
     #[test]
     fn a_marked_change_is_taken_once_and_the_macos_notification_marks_it() {
+        let _serial = crate::test_serial_lock();
         let _ = take_reduced_transparency_change();
         assert!(!take_reduced_transparency_change());
         mark_changed();

@@ -26,6 +26,8 @@ jobs:
         run: python3 scripts/audit-framework-strings.py
       - name: Check packaging dependency boundary
         run: python3 scripts/check-package-boundary.py
+      - name: Check test target and anti-hang hygiene
+        run: python3 scripts/check-test-hygiene.py
       - name: Self-test repository gate scripts
         run: python3 -m unittest discover -s scripts/tests -v
 
@@ -70,7 +72,7 @@ jobs:
       - name: Check Gallery package boundary
         run: cargo check -p component-gallery --bin component-gallery --locked
       - name: Run default-feature tests
-        run: cargo test --workspace --all-targets --locked
+        run: cargo test --workspace --locked
       # `scene_paint::precompiled`: the quad family from its DXIL paints what
       # it paints from WGSL. The DXIL's freshness against the WGSL, layout and
       # locked wgpu is checked by the default-feature tests on every OS.
@@ -92,8 +94,8 @@ jobs:
         shell: bash
         run: |
           cargo test -p nana-ui --lib --features gpu --locked output:: -- --test-threads=1
-          cargo test -p nana-ui --test output_trace_owner --features gpu,wgpu-interop --locked -- --test-threads=1
-          cargo test -p nana-gpu --features wgpu-interop --test controlled_device_loss --locked -- --test-threads=1
+          cargo test -p nana-ui --test ui_gpu --features gpu,wgpu-interop --locked output_trace_owner -- --test-threads=1
+          cargo test -p nana-gpu --features wgpu-interop --test gpu_loss_and_export --locked controlled_device_loss -- --test-threads=1
           cargo run -p nana-ui --features gpu --bin nana-output-benchmark --locked -- \
             --output target/performance/output-live.json
           for workload in static multi nested conversion slow recovery incompatible; do
@@ -140,7 +142,7 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p target/performance
-          cargo test -p nana-gpu --features native-export --test native_export --locked -- \
+          cargo test -p nana-gpu --features native-export --test gpu_loss_and_export --locked native_export -- \
             --test-threads=1 --nocapture 2>&1 | tee target/performance/output-native-tests.log
           cargo run -p nana-ui --example window-output-probe --features hosted,bundled-fonts,native-export --locked \
             | tee target/performance/output-native-window.jsonl
@@ -183,7 +185,7 @@ jobs:
       # the offscreen pixel tests genuinely execute there; elsewhere they skip
       # visibly through `offscreen::pixels_available`.
       - name: Run headless Agent tests
-        run: cargo test -p nana-ui-devtools --features runtime-agent,nana-ui/components --all-targets --locked
+        run: cargo test -p nana-ui-devtools --features runtime-agent,nana-ui/components --locked -- --test-threads=1
       # Self-verifying real-window hosts: one event loop, shared device, close and
       # re-create. Windows runners have a desktop and the WARP adapter.
       - name: Run multi-window lifecycle hosts
@@ -316,7 +318,7 @@ jobs:
         run: |
           # libtest is substring match; `|` is not a regex and `--exact` needs
           # the module-prefixed name. Unique function names are the filter.
-          for name in \
+          cargo test -p nana-ui-runtime --lib --locked -- \
             dirty_work_is_incremental_and_static_world_stays_idle \
             scheduled_ui_frames_are_zero_after_static_settle_and_nonzero_when_paint_stays_dirty \
             paint_only_style_change_does_not_schedule_subtree_layout \
@@ -349,61 +351,35 @@ jobs:
             virtual_table_materializes_a_bounded_grid_and_reuses_both_axes \
             virtual_tree_materializes_only_visible_rows_and_reuses_overlap_on_scroll_and_expand \
             inline_content::tests \
-            issue199 \
-            issue200 \
-            issue201 \
-            issue202 \
-            issue204 \
-            issue205 \
-            issue211 \
-            issue212 \
-            issue213 \
-            issue214 \
-            issue255 \
-            issue256 \
-            issue257 \
-            issue259 \
-            issue260 \
-            issue261 \
-            issue262 \
-            issue263 \
-            issue264 \
-            issue265 \
-            issue266 \
-            issue268 \
-            issue269 \
-            issue270
-          do
-            cargo test -p nana-ui-runtime --lib --locked "$name"
-          done
-          cargo test --locked -p nana-ui-scene --test inline_content
+            world::tests::layout_foundations \
+            world::tests::component_parts \
+            world::tests::dynamic_layout \
+            world::tests::incremental_work \
+            world::tests::localization \
+            world::tests::replaced_media
+          cargo test --locked -p nana-ui-scene --test scene_contracts -- \
+            inline_content retained_text_node sticky_scroll
           # Dynamic Layout's contract and solver (Issues #208, #209, #210).
           cargo test -p nana-ui-core --lib --locked dynamic_layout
           # Issue #211 Gate D: the CJK line decision stays near linear, the
           # pretty beam within K·C per line, and a resize never reshapes.
-          cargo test -p nana-text --locked --test line_decision_gate
+          cargo test -p nana-text --locked --test text_contracts line_decision_gate
           # Issue #89 keeps the Issue #33 head-layout sweep as the text
           # migration baseline; this asserts the 2k/4k/8k cells are still in it.
           cargo test -p nana-ui-scene --features benchmark --locked \
             --bin nana-dirty-frame-benchmark \
             the_migration_grid_still_spans_two_four_and_eight_thousand_nodes
-          # Issue #95: retained text nodes. Paint / transform / opacity never
-          # reach shaping or layout, a static frame does zero text work, and
-          # every #33 head-dirty candidate is decided on revision alone.
-          cargo test -p nana-ui-scene --locked --test retained_text_node
-          # Layout Foundation: Sticky scroll keeps layout/text work at zero;
-          # Rust/template/CSS authoring agrees on structured layout output.
-          cargo test -p nana-ui-scene --locked --test issue200_sticky
-          cargo test -p nana-ui-runtime --features view-macro --locked --test view_macro issue204
+          # Layout Foundation: Rust/template/CSS authoring agrees on structured layout output.
+          cargo test -p nana-ui-runtime --features view-macro --locked --test contracts view_macro::issue204
           # Issue #206: laid-out Text/Button/ListItem keep bounded live memory
           # per node at 1k and 10k, and equal nodes share one layout.
-          cargo test -p nana-ui-runtime --locked --test node_memory
+          cargo test -p nana-ui-runtime --locked --test perf_contracts node_memory
           # Issue #250: steady pointer moves allocate nothing on the routing
           # path, an uncaptured move costs one hit query and a captured one
           # none. Counted, so it holds on a loaded runner.
-          cargo test -p nana-ui-runtime --all-features --locked --test input_alloc
+          cargo test -p nana-ui-runtime --all-features --locked --test perf_contracts input_alloc
           # Issue #270: a steady localized message update allocates the same at any size.
-          cargo test -p nana-ui-runtime --all-features --locked --test i18n_alloc
+          cargo test -p nana-ui-runtime --all-features --locked --test perf_contracts i18n_alloc
           python3 scripts/validate-runtime-performance.py --self-test
           python3 perf/contract.py --self-test
           mkdir -p target/performance/issue8/invariants

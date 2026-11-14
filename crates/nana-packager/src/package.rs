@@ -708,7 +708,9 @@ mod tests {
 
     #[test]
     fn resolve_path_matches_existing_and_future_paths() {
-        let base = std::env::temp_dir().join(format!("nana-resolve-{}", std::process::id()));
+        static SEQ: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+        let seq = SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let base = std::env::temp_dir().join(format!("nana-resolve-{}-{seq}", std::process::id()));
         std::fs::create_dir_all(&base).unwrap();
         let existing = resolve_path(&base);
         // Not created yet, reached through `..`: still inside `base`.

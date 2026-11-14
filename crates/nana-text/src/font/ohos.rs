@@ -359,8 +359,12 @@ mod tests {
 
     impl Root {
         fn new(name: &str) -> Self {
-            let path =
-                std::env::temp_dir().join(format!("nana-text-ohos-{name}-{}", std::process::id()));
+            static SEQ: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+            let seq = SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            let path = std::env::temp_dir().join(format!(
+                "nana-text-ohos-{name}-{}-{seq}",
+                std::process::id()
+            ));
             let _ = std::fs::remove_dir_all(&path);
             std::fs::create_dir_all(&path).unwrap();
             Self(path)

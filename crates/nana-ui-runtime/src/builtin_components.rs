@@ -3618,21 +3618,95 @@ mod tests {
     }
 
     #[test]
-    fn switch_from_semantic_css_size_overrides_control_tokens() {
-        let type_id = ComponentTypeId::new("nana.switch").unwrap();
+    fn controls_from_semantic_css_size_override_control_tokens() {
         let layout = Arc::new(css_size_override_layout());
-        let spec = spec_with(&type_id, &layout, &[], &[], &[], "", "On");
-        let switch = Switch::from_semantic(&spec);
+
+        let switch = Switch::from_semantic(&spec_with(
+            &ComponentTypeId::new("nana.switch").unwrap(),
+            &layout,
+            &[],
+            &[],
+            &[],
+            "",
+            "On",
+        ));
         assert_l2_css_size_overlaid(&switch.style.layout);
         assert_eq!(switch.size, nana_ui_core::ControlSize::Medium);
+
+        let checkbox = Checkbox::from_semantic(&spec_with(
+            &ComponentTypeId::new("nana.checkbox").unwrap(),
+            &layout,
+            &[],
+            &[],
+            &[],
+            "",
+            "Agree",
+        ));
+        assert_l2_css_size_overlaid(&checkbox.style.layout);
+        assert_eq!(checkbox.size, nana_ui_core::ControlSize::Medium);
+
+        let select = Select::from_semantic(&spec_with(
+            &ComponentTypeId::new("nana.select").unwrap(),
+            &layout,
+            &[],
+            &[],
+            &[],
+            "",
+            "Pick",
+        ));
+        assert_l2_css_size_overlaid(&select.style.layout);
+        assert_eq!(select.size, nana_ui_core::ControlSize::Medium);
+
+        let dropdown = Dropdown::from_semantic(&spec_with(
+            &ComponentTypeId::new("nana.dropdown").unwrap(),
+            &layout,
+            &[],
+            &[],
+            &[],
+            "",
+            "Pick",
+        ));
+        assert_l2_css_size_overlaid(&dropdown.style.layout);
+        assert_eq!(dropdown.size, nana_ui_core::ControlSize::Medium);
+
+        let field = RangeField::from_semantic(&spec_with(
+            &ComponentTypeId::new("nana.range-field").unwrap(),
+            &layout,
+            &[],
+            &[],
+            &[],
+            "",
+            "Volume",
+        ));
+        assert_l2_css_size_overlaid(&field.style.layout);
+        assert_eq!(field.size, nana_ui_core::ControlSize::Medium);
+        assert!(field.show_value);
+
+        let area = TextArea::from_semantic(&spec_with(
+            &ComponentTypeId::new("nana.textarea").unwrap(),
+            &layout,
+            &[],
+            &[],
+            &[],
+            "",
+            "Notes",
+        ));
+        assert_l2_css_size_overlaid(&area.style.layout);
     }
 
     #[test]
-    fn switch_from_semantic_without_css_keeps_control_size() {
-        let type_id = ComponentTypeId::new("nana.switch").unwrap();
+    fn controls_from_semantic_without_css_keep_control_size() {
         let layout = Arc::new(LayoutStyle::default());
-        let spec = spec_with(&type_id, &layout, &[], &[], &[], "", "On");
-        let switch = Switch::from_semantic(&spec);
+
+        let switch = Switch::from_semantic(&spec_with(
+            &ComponentTypeId::new("nana.switch").unwrap(),
+            &layout,
+            &[],
+            &[],
+            &[],
+            "",
+            "On",
+        ));
         assert_eq!(
             switch.style.control_height,
             Some(nana_ui_core::ControlHeight::Min(
@@ -3642,24 +3716,16 @@ mod tests {
         assert!(switch.style.layout.height.is_none());
         assert!(switch.style.layout.min_height.is_none());
         assert!(switch.style.layout.width.is_none());
-    }
 
-    #[test]
-    fn checkbox_from_semantic_css_size_overrides_control_tokens() {
-        let type_id = ComponentTypeId::new("nana.checkbox").unwrap();
-        let layout = Arc::new(css_size_override_layout());
-        let spec = spec_with(&type_id, &layout, &[], &[], &[], "", "Agree");
-        let checkbox = Checkbox::from_semantic(&spec);
-        assert_l2_css_size_overlaid(&checkbox.style.layout);
-        assert_eq!(checkbox.size, nana_ui_core::ControlSize::Medium);
-    }
-
-    #[test]
-    fn checkbox_from_semantic_without_css_keeps_control_size() {
-        let type_id = ComponentTypeId::new("nana.checkbox").unwrap();
-        let layout = Arc::new(LayoutStyle::default());
-        let spec = spec_with(&type_id, &layout, &[], &[], &[], "", "Agree");
-        let checkbox = Checkbox::from_semantic(&spec);
+        let checkbox = Checkbox::from_semantic(&spec_with(
+            &ComponentTypeId::new("nana.checkbox").unwrap(),
+            &layout,
+            &[],
+            &[],
+            &[],
+            "",
+            "Agree",
+        ));
         assert_eq!(
             checkbox.style.control_height,
             Some(nana_ui_core::ControlHeight::Min(
@@ -3669,24 +3735,16 @@ mod tests {
         assert!(checkbox.style.layout.min_height.is_none());
         assert!(checkbox.style.layout.height.is_none());
         assert!(checkbox.style.layout.width.is_none());
-    }
 
-    #[test]
-    fn select_from_semantic_css_size_overrides_control_tokens() {
-        let type_id = ComponentTypeId::new("nana.select").unwrap();
-        let layout = Arc::new(css_size_override_layout());
-        let spec = spec_with(&type_id, &layout, &[], &[], &[], "", "Pick");
-        let select = Select::from_semantic(&spec);
-        assert_l2_css_size_overlaid(&select.style.layout);
-        assert_eq!(select.size, nana_ui_core::ControlSize::Medium);
-    }
-
-    #[test]
-    fn select_from_semantic_without_css_keeps_control_size() {
-        let type_id = ComponentTypeId::new("nana.select").unwrap();
-        let layout = Arc::new(LayoutStyle::default());
-        let spec = spec_with(&type_id, &layout, &[], &[], &[], "", "Pick");
-        let select = Select::from_semantic(&spec);
+        let select = Select::from_semantic(&spec_with(
+            &ComponentTypeId::new("nana.select").unwrap(),
+            &layout,
+            &[],
+            &[],
+            &[],
+            "",
+            "Pick",
+        ));
         assert_eq!(
             select.style.control_height,
             Some(nana_ui_core::ControlHeight::Exact(
@@ -3698,27 +3756,6 @@ mod tests {
     }
 
     #[test]
-    fn dropdown_from_semantic_css_size_overrides_control_tokens() {
-        let type_id = ComponentTypeId::new("nana.dropdown").unwrap();
-        let layout = Arc::new(css_size_override_layout());
-        let spec = spec_with(&type_id, &layout, &[], &[], &[], "", "Pick");
-        let dropdown = Dropdown::from_semantic(&spec);
-        assert_l2_css_size_overlaid(&dropdown.style.layout);
-        assert_eq!(dropdown.size, nana_ui_core::ControlSize::Medium);
-    }
-
-    #[test]
-    fn range_field_from_semantic_css_size_overrides_control_tokens() {
-        let type_id = ComponentTypeId::new("nana.range-field").unwrap();
-        let layout = Arc::new(css_size_override_layout());
-        let spec = spec_with(&type_id, &layout, &[], &[], &[], "", "Volume");
-        let field = RangeField::from_semantic(&spec);
-        assert_l2_css_size_overlaid(&field.style.layout);
-        assert_eq!(field.size, nana_ui_core::ControlSize::Medium);
-        assert!(field.show_value);
-    }
-
-    #[test]
     fn range_field_from_semantic_can_hide_the_value_readout() {
         let type_id = ComponentTypeId::new("nana.range-field").unwrap();
         let layout = Arc::new(LayoutStyle::default());
@@ -3726,15 +3763,6 @@ mod tests {
         let spec = spec_with(&type_id, &layout, &attrs, &[], &[], "", "Seek");
         let field = RangeField::from_semantic(&spec);
         assert!(!field.show_value);
-    }
-
-    #[test]
-    fn textarea_from_semantic_css_size_overrides_control_tokens() {
-        let type_id = ComponentTypeId::new("nana.textarea").unwrap();
-        let layout = Arc::new(css_size_override_layout());
-        let spec = spec_with(&type_id, &layout, &[], &[], &[], "", "Notes");
-        let area = TextArea::from_semantic(&spec);
-        assert_l2_css_size_overlaid(&area.style.layout);
     }
 
     fn project_layout(component: impl crate::ComponentView) -> Arc<LayoutStyle> {
@@ -3752,65 +3780,80 @@ mod tests {
     }
 
     #[test]
-    fn select_from_semantic_projects_overlay_css_size_into_world() {
-        let type_id = ComponentTypeId::new("nana.select").unwrap();
+    fn controls_from_semantic_project_overlay_css_size_into_world() {
         let layout = Arc::new(css_size_override_layout());
-        let spec = spec_with(&type_id, &layout, &[], &[], &[], "", "Pick");
-        let projected = project_layout(Select::from_semantic(&spec));
-        assert_eq!(projected.height, Some(LengthSpec::Px(48.0)));
-        assert_eq!(projected.width, Some(LengthSpec::Px(120.0)));
-        assert_ne!(
-            projected.height,
-            Some(LengthSpec::Px(
-                nana_ui_core::ControlSize::Medium.height_in(nana_ui_core::UI_METRICS)
-            ))
-        );
-    }
+        let expected_default =
+            nana_ui_core::ControlSize::Medium.height_in(nana_ui_core::UI_METRICS);
+        for (tag, projected) in [
+            (
+                "select",
+                project_layout(Select::from_semantic(&spec_with(
+                    &ComponentTypeId::new("nana.select").unwrap(),
+                    &layout,
+                    &[],
+                    &[],
+                    &[],
+                    "",
+                    "Pick",
+                ))),
+            ),
+            (
+                "dropdown",
+                project_layout(Dropdown::from_semantic(&spec_with(
+                    &ComponentTypeId::new("nana.dropdown").unwrap(),
+                    &layout,
+                    &[],
+                    &[],
+                    &[],
+                    "",
+                    "Pick",
+                ))),
+            ),
+        ] {
+            assert_eq!(projected.height, Some(LengthSpec::Px(48.0)), "{tag}");
+            assert_eq!(projected.width, Some(LengthSpec::Px(120.0)), "{tag}");
+            assert_ne!(
+                projected.height,
+                Some(LengthSpec::Px(expected_default)),
+                "{tag}"
+            );
+        }
 
-    #[test]
-    fn dropdown_from_semantic_projects_overlay_css_size_into_world() {
-        let type_id = ComponentTypeId::new("nana.dropdown").unwrap();
-        let layout = Arc::new(css_size_override_layout());
-        let spec = spec_with(&type_id, &layout, &[], &[], &[], "", "Pick");
-        let projected = project_layout(Dropdown::from_semantic(&spec));
-        assert_eq!(projected.height, Some(LengthSpec::Px(48.0)));
-        assert_eq!(projected.width, Some(LengthSpec::Px(120.0)));
-        assert_ne!(
-            projected.height,
-            Some(LengthSpec::Px(
-                nana_ui_core::ControlSize::Medium.height_in(nana_ui_core::UI_METRICS)
-            ))
-        );
-    }
-
-    #[test]
-    fn switch_from_semantic_projects_overlay_css_size_without_control_min_height() {
-        let type_id = ComponentTypeId::new("nana.switch").unwrap();
-        let layout = Arc::new(LayoutStyle {
+        let compact = Arc::new(LayoutStyle {
             height: Some(LengthSpec::Px(20.0)),
             width: Some(LengthSpec::Px(80.0)),
             ..LayoutStyle::default()
         });
-        let spec = spec_with(&type_id, &layout, &[], &[], &[], "", "On");
-        let projected = project_layout(Switch::from_semantic(&spec));
-        assert_eq!(projected.height, Some(LengthSpec::Px(20.0)));
-        assert_eq!(projected.width, Some(LengthSpec::Px(80.0)));
-        assert!(projected.min_height.is_none());
-    }
-
-    #[test]
-    fn range_field_from_semantic_projects_overlay_css_size_without_control_min_height() {
-        let type_id = ComponentTypeId::new("nana.range-field").unwrap();
-        let layout = Arc::new(LayoutStyle {
-            height: Some(LengthSpec::Px(20.0)),
-            width: Some(LengthSpec::Px(80.0)),
-            ..LayoutStyle::default()
-        });
-        let spec = spec_with(&type_id, &layout, &[], &[], &[], "", "Volume");
-        let projected = project_layout(RangeField::from_semantic(&spec));
-        assert_eq!(projected.height, Some(LengthSpec::Px(20.0)));
-        assert_eq!(projected.width, Some(LengthSpec::Px(80.0)));
-        assert!(projected.min_height.is_none());
+        for (tag, projected) in [
+            (
+                "switch",
+                project_layout(Switch::from_semantic(&spec_with(
+                    &ComponentTypeId::new("nana.switch").unwrap(),
+                    &compact,
+                    &[],
+                    &[],
+                    &[],
+                    "",
+                    "On",
+                ))),
+            ),
+            (
+                "range-field",
+                project_layout(RangeField::from_semantic(&spec_with(
+                    &ComponentTypeId::new("nana.range-field").unwrap(),
+                    &compact,
+                    &[],
+                    &[],
+                    &[],
+                    "",
+                    "Volume",
+                ))),
+            ),
+        ] {
+            assert_eq!(projected.height, Some(LengthSpec::Px(20.0)), "{tag}");
+            assert_eq!(projected.width, Some(LengthSpec::Px(80.0)), "{tag}");
+            assert!(projected.min_height.is_none(), "{tag}");
+        }
     }
 
     #[test]
@@ -4030,90 +4073,37 @@ mod tests {
     }
 
     #[test]
-    fn stack_tags_resolve_to_stack_and_aliases() {
+    fn component_tags_resolve_aliases_without_html_collisions() {
         let context = AppContext::new();
-        assert_eq!(
-            context
-                .resolve_component_tag("stack")
-                .map(ComponentTypeId::as_str),
-            Some("nana.stack")
-        );
-        assert_eq!(
-            context
-                .resolve_component_tag("column")
-                .map(ComponentTypeId::as_str),
-            Some("nana.column")
-        );
-        assert!(
-            context.resolve_component_tag("div").is_none(),
-            "HTML div stays a layout box; the column alias owns `column`"
-        );
-        assert_eq!(
-            context
-                .resolve_component_tag("row")
-                .map(ComponentTypeId::as_str),
-            Some("nana.row")
-        );
-        assert_eq!(
-            context
-                .resolve_component_tag("box")
-                .map(ComponentTypeId::as_str),
-            Some("nana.box")
-        );
+        for (tag, expected) in [
+            ("stack", Some("nana.stack")),
+            ("column", Some("nana.column")),
+            ("div", None),
+            ("row", Some("nana.row")),
+            ("box", Some("nana.box")),
+            ("icon", Some("nana.icon")),
+            ("i", Some("nana.icon")),
+            ("nana-icon", Some("nana.icon")),
+            ("icon-button", Some("nana.icon-button")),
+            ("svg", None),
+            ("video", Some("nana.video")),
+            ("nana-video", Some("nana.video")),
+        ] {
+            assert_eq!(
+                context
+                    .resolve_component_tag(tag)
+                    .map(ComponentTypeId::as_str),
+                expected,
+                "tag `{tag}`"
+            );
+        }
+
         let type_id = ComponentTypeId::new("nana.row").unwrap();
         let layout = Arc::new(LayoutStyle::default());
         let stack = Stack::from_semantic(&SemanticSpec::from_parts(&type_id, &layout));
         assert_eq!(
             stack.node_style().layout.direction,
             Some(nana_ui_core::FlexDirection::Row)
-        );
-    }
-
-    #[test]
-    fn icon_and_icon_button_tags_do_not_collide() {
-        let context = AppContext::new();
-        assert_eq!(
-            context
-                .resolve_component_tag("icon")
-                .map(ComponentTypeId::as_str),
-            Some("nana.icon")
-        );
-        assert_eq!(
-            context
-                .resolve_component_tag("i")
-                .map(ComponentTypeId::as_str),
-            Some("nana.icon")
-        );
-        assert_eq!(
-            context
-                .resolve_component_tag("nana-icon")
-                .map(ComponentTypeId::as_str),
-            Some("nana.icon")
-        );
-        assert_eq!(
-            context
-                .resolve_component_tag("icon-button")
-                .map(ComponentTypeId::as_str),
-            Some("nana.icon-button")
-        );
-        assert!(context.resolve_component_tag("svg").is_none());
-    }
-
-    #[test]
-    fn video_tag_resolves_to_single_video_component() {
-        let context = AppContext::new();
-        assert_eq!(
-            context
-                .resolve_component_tag("video")
-                .map(ComponentTypeId::as_str),
-            Some("nana.video"),
-            "HTML <video> is the same-name Runtime control tag"
-        );
-        assert_eq!(
-            context
-                .resolve_component_tag("nana-video")
-                .map(ComponentTypeId::as_str),
-            Some("nana.video")
         );
     }
 

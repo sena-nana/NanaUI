@@ -1126,11 +1126,15 @@ mod tests {
             let first = scope.spawn(move || {
                 shared.pipeline(key, || {
                     started.send(()).unwrap();
-                    released.recv().unwrap();
+                    released
+                        .recv_timeout(std::time::Duration::from_secs(5))
+                        .unwrap();
                     test_pipeline(device)
                 })
             });
-            compiling.recv().unwrap();
+            compiling
+                .recv_timeout(std::time::Duration::from_secs(5))
+                .unwrap();
             let second = scope
                 .spawn(move || shared.pipeline(key, || panic!("the pipeline was compiled twice")));
             // Give the second request time to reach the compile it waits on;

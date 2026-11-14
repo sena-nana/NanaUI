@@ -385,9 +385,17 @@ mod tests {
         }
     }
 
+    struct StopOnDrop(Arc<AtomicBool>);
+    impl Drop for StopOnDrop {
+        fn drop(&mut self) {
+            self.0.store(true, Ordering::Relaxed);
+        }
+    }
+
     #[test]
     fn samples_name_the_function_a_thread_spins_in() {
         let stop = Arc::new(AtomicBool::new(false));
+        let _stop_guard = StopOnDrop(Arc::clone(&stop));
         let (sender, receiver) = std::sync::mpsc::channel();
         let spinning = {
             let stop = Arc::clone(&stop);
@@ -396,7 +404,9 @@ mod tests {
                 stall_test_spin(&stop);
             })
         };
-        let thread = receiver.recv().unwrap();
+        let thread = receiver
+            .recv_timeout(Duration::from_secs(5))
+            .expect("spinner thread started within 5s");
         std::thread::sleep(Duration::from_millis(50));
         let before = thread.cpu_time().unwrap();
         let mut frames = Vec::new();

@@ -28,7 +28,7 @@ let scene = render(
 
 ```bash
 cargo test -p nana-ui-diagram
-NANA_DIAGRAM_BLESS=1 cargo test -p nana-ui-diagram --test golden
+NANA_DIAGRAM_BLESS=1 cargo test -p nana-ui-diagram --test diagram golden
 ```
 
 第二条在有意改动后重写 `tests/golden/`。解析与布局基准需要 `benchmark` feature：

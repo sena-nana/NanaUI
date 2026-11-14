@@ -94,18 +94,22 @@ libc = "0.2.190"
 name = "nana-runtime-benchmark"
 path = "src/bin/nana-runtime-benchmark.rs"
 required-features = ["benchmark"]
+test = false
 
 [[bin]]
 name = "nana-framework-benchmark"
 path = "src/bin/nana-framework-benchmark.rs"
 required-features = ["benchmark"]
+test = false
 
 [[bin]]
 name = "nana-reactive-benchmark"
 path = "src/bin/nana-reactive-benchmark.rs"
 required-features = ["benchmark"]
+test = false
 
 [[bin]]
 name = "nana-theme-benchmark"
 path = "src/bin/nana-theme-benchmark.rs"
 required-features = ["benchmark"]
+test = false

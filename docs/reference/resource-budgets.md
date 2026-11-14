@@ -78,7 +78,7 @@ railroad 的嵌套上限按「括号与调用」数（`MAX_DEPTH` 48 个 primary
 | `view::tests::a_view_deeper_than_the_stack_still_mounts` | 400 层视图在 1 MiB 线程上挂载、布局、析构 | `cargo test -p nana-ui-runtime --lib a_view_deeper` |
 | `scripts/audit-stack-frames.py` | 单个函数的栈帧 | 见下 |
 | `framework::tests::context_and_world_stay_small_enough_to_move` | 构造时按值搬动的 `AppContext` ≤ 6 KiB、`UiWorld` ≤ 10 KiB | `cargo test -p nana-ui-runtime --lib context_and_world` |
-| `deep_nesting::railroad_at_its_depth_limit_fits_half_the_thread` | railroad 七种嵌套在上限深度下 256 KiB 线程上渲染 | `cargo test -p nana-ui-diagram --test deep_nesting railroad`，再加 `--release` |
+| `deep_nesting::railroad_at_its_depth_limit_fits_half_the_thread` | railroad 七种嵌套在上限深度下 256 KiB 线程上渲染 | `cargo test -p nana-ui-diagram --test diagram deep_nesting::railroad`，再加 `--release` |
 
 `WorkCounters` 发布 `layout_measure_stack_per_level`、`layout_placement_stack_per_level`（每层的栈，字节，一帧取最大）和 `layout_placement_boundaries`（放置从队列里放了几棵子树）。
 

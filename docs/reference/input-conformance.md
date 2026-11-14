@@ -11,7 +11,7 @@
 | 有界队列容量、`PointerMove` / `Wheel` 相邻事件合并、端点 `generation` 推进与重计数 | `cargo test -p nana-ui-input --lib --locked` |
 | 源绑定、断连清理、失焦、指针捕获、剪贴板、文件拖放（`InputPayload::FileDrag`）、空端点 drain 为 0；按键策略同时观测物理键、逻辑键、repeat 与统一修饰键 | `cargo test -p nana-ui-runtime --all-features --lib framework::input --locked` |
 | `Keymap` 按逻辑键匹配（四位修饰键与 `InputModifiers` 严格一致，按键释放不误触发） | `cargo test -p nana-ui-runtime --all-features --lib key_layers --locked` |
-| 未捕获指针移动每次仅 1 次命中查询、捕获期间 0 次查询，稳态移动零堆分配；连续 1,000 次同位置或跨行 `PointerMove` 下 layout frontier 与 scene extract 均为空 | `cargo test -p nana-ui-runtime --all-features --test input_alloc --locked` |
+| 未捕获指针移动每次仅 1 次命中查询、捕获期间 0 次查询，稳态移动零堆分配；连续 1,000 次同位置或跨行 `PointerMove` 下 layout frontier 与 scene extract 均为空 | `cargo test -p nana-ui-runtime --all-features --test perf_contracts input_alloc --locked` |
 | 单文档命中测试跟随呈现层（presentation）的平移、缩放、3D 投影与裁剪链 | `cargo test -p nana-ui-runtime --all-features --lib world::hit_test --locked` |
 | 宿主以 240 Hz 轮询而静态窗口保持 `FrameDemand::OnDemand` 时，240 次轮询期间 `present` 次数为 0 | `cargo test -p nana-ui --features hosted --lib scene_host::schedule::tests::a_static_window_polled_at_240hz_presents_nothing --locked` |
 

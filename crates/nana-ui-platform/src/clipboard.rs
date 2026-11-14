@@ -404,6 +404,7 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "mutates live OS desktop clipboard; run explicitly with --ignored"]
     #[cfg(not(any(target_os = "android", target_os = "ios", target_env = "ohos")))]
     fn os_clipboard_roundtrip_when_available() {
         let mut clip = OsClipboard::new();

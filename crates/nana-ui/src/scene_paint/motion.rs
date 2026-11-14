@@ -691,7 +691,7 @@ fn readback_motion(
     slice.map_async(wgpu::MapMode::Read, |_| {});
     let _ = device.poll(wgpu::PollType::Wait {
         submission_index: Some(index),
-        timeout: None,
+        timeout: Some(std::time::Duration::from_secs(10)),
     });
     let data = slice
         .get_mapped_range()

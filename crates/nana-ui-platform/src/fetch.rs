@@ -951,6 +951,28 @@ mod tests {
         bytes
     }
 
+    fn accept_with_timeout(listener: &TcpListener) -> std::net::TcpStream {
+        listener.set_nonblocking(true).expect("nonblocking");
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        let stream = loop {
+            match listener.accept() {
+                Ok((stream, _)) => break stream,
+                Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                    assert!(
+                        std::time::Instant::now() < deadline,
+                        "timed out waiting for loopback test client"
+                    );
+                    thread::sleep(Duration::from_millis(5));
+                }
+                Err(error) => panic!("accept loopback request failed: {error}"),
+            }
+        };
+        stream.set_nonblocking(false).expect("blocking stream");
+        let _ = stream.set_read_timeout(Some(Duration::from_secs(5)));
+        let _ = stream.set_write_timeout(Some(Duration::from_secs(5)));
+        stream
+    }
+
     fn one_response_server(
         response: Vec<u8>,
     ) -> (String, mpsc::Receiver<Vec<u8>>, thread::JoinHandle<()>) {
@@ -958,7 +980,7 @@ mod tests {
         let address = listener.local_addr().unwrap();
         let (request_tx, request_rx) = mpsc::channel();
         let join = thread::spawn(move || {
-            let (mut stream, _) = listener.accept().expect("accept loopback request");
+            let mut stream = accept_with_timeout(&listener);
             let request = read_request(&mut stream);
             request_tx.send(request).unwrap();
             stream
@@ -1173,7 +1195,12 @@ mod tests {
                 body: br#"{"enabled":true}"#.to_vec(),
             })
             .unwrap();
-        let request = String::from_utf8(request_rx.recv().unwrap()).unwrap();
+        let request = String::from_utf8(
+            request_rx
+                .recv_timeout(Duration::from_secs(5))
+                .expect("receive loopback HTTP request"),
+        )
+        .unwrap();
         join.join().unwrap();
 
         assert!(request.starts_with("PATCH /items HTTP/1.1\r\n"));
@@ -1195,7 +1222,7 @@ mod tests {
         let origin = format!("http://{}", listener.local_addr().unwrap());
         let (waiting_tx, waiting_rx) = mpsc::sync_channel(1);
         let server = thread::spawn(move || {
-            let (mut stream, _) = listener.accept().unwrap();
+            let mut stream = accept_with_timeout(&listener);
             let _ = read_request(&mut stream);
             waiting_tx.send(()).unwrap();
             let mut byte = [0_u8; 1];
@@ -1234,14 +1261,14 @@ mod tests {
         let address = listener.local_addr().unwrap();
         let origin = format!("http://{address}");
         let join = thread::spawn(move || {
-            let (mut first, _) = listener.accept().unwrap();
+            let mut first = accept_with_timeout(&listener);
             let _ = read_request(&mut first);
             first
                 .write_all(
                     b"HTTP/1.1 302 Found\r\nLocation: /final\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
                 )
                 .unwrap();
-            let (mut second, _) = listener.accept().unwrap();
+            let mut second = accept_with_timeout(&listener);
             let request = read_request(&mut second);
             assert!(String::from_utf8_lossy(&request).starts_with("GET /final HTTP/1.1\r\n"));
             let body = br#"{"source":"nana"}"#;
@@ -1294,9 +1321,9 @@ mod tests {
         // instantly and the timeout never fired.
         let (release, wait_for_release) = mpsc::channel::<()>();
         let join = thread::spawn(move || {
-            let (mut stream, _) = listener.accept().unwrap();
+            let mut stream = accept_with_timeout(&listener);
             let _ = read_request(&mut stream);
-            let _ = wait_for_release.recv();
+            let _ = wait_for_release.recv_timeout(Duration::from_secs(5));
             let _ = stream
                 .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nok");
         });

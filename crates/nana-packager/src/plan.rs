@@ -468,8 +468,12 @@ mod tests {
     }
 
     fn tree(name: &str, files: &[(&str, usize)]) -> Tree {
-        let dir =
-            std::env::temp_dir().join(format!("nana-packager-plan-{name}-{}", std::process::id()));
+        static SEQ: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+        let seq = SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let dir = std::env::temp_dir().join(format!(
+            "nana-packager-plan-{name}-{}-{seq}",
+            std::process::id()
+        ));
         let _ = std::fs::remove_dir_all(&dir);
         for (path, size) in files {
             let path = dir.join("assets").join(path);

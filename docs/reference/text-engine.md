@@ -1042,7 +1042,7 @@ renderer。#99 才把产品路径的段落换成 `TextLayout`）和可编辑路�
 - `text_language_scope_invalidations`：被语言变化触及的文本；
 - `text_literal_nodes_invalidated_by_language`：语言没变却因语言失效被重新整形的文本。正常为 0，用来防止有人把语言失效改回粗粒度。
 
-门禁在 `world/issue260.rs`，五项：
+门禁在 `world/tests/localization.rs`，五项：
 - 1k 与 10k 文档中固定输入框连续输入，开销相同；
 - `"99"→"98"` 零父级重排；
 - 240 次宽度变化不重新整形；
@@ -1092,7 +1092,7 @@ renderer。#99 才把产品路径的段落换成 `TextLayout`）和可编辑路�
 
 作用域访问数和等价跳过在提交变更时就数了，但记在处理这次变更的那一帧上。
 
-门禁在 `world/issue266.rs`，五项：
+门禁在 `world/tests/localization.rs`，五项：
 - 10k 与 100k 节点的文档里，一个有 2000 段文字的固定面板从 1 缩放到 1.25。只访问面板自己的 3001 个节点；钉住缩放的嵌套作用域不访问；面板外没有文字、样式或测量发生变化；两种规模的开销相同；
 - 1000 个固定尺寸的按钮：标签在按钮里重新排版，父级零重排，按钮之间的间隔元素不进布局；
 - 基线：按基线对齐的一行重新对齐，钉住缩放的那个按钮被对齐到新的基线；不按基线对齐的一行，以及作用域外的基线行，都不测量；
@@ -1154,7 +1154,7 @@ locale 作用域有三层：
 
 切换在提交时就数了，记在处理它的那一帧上。
 
-门禁在 `world/issue268.rs`（五项）与 `world/issue269.rs`（六项）：
+门禁在 `world/tests/localization.rs`（五项）与 `world/tests/localization.rs`（六项）：
 - 静态帧不查目录、不访问作用域、不解析；
 - 10 万节点、约 5% 本地化：只换消息时恰好通知这些本地化节点，字面节点、语言、方向都不动；
 - 两个窗口：切一个，另一个的文字、样式和布局都不进下一帧；
@@ -1204,7 +1204,7 @@ locale 作用域有三层：
 `message_patterns_compiled`、`args_revisions`、`formatted_output_changed` / `formatted_output_unchanged`、
 `catalog_messages_invalidated`、`formatter_allocations`（构建的格式化器）。
 
-门禁在 `world/issue270.rs`（五项）与 `tests/i18n_alloc.rs`：
+门禁在 `world/tests/localization.rs`（五项）与 `tests/perf_contracts/i18n_alloc.rs`：
 - 1 万个本地化节点里，一个计数器每帧换数：每帧一次格式化请求，不漏查目录，别的节点不格式化，只有计数器排版；
 - 取整吸收的参数变化：输出不变，不排版、不布局；
 - 一万个数字在一个 locale 下：模式编译一次，格式化器建一个；切到德语后格式化器缓存命中率不低于 99%；
@@ -3019,7 +3019,7 @@ python3 scripts/check-engine-boundary.py
 python3 -m unittest discover -s scripts/tests
 python3 scripts/build-text-corpus-fonts.py --check   # 需要 fonttools
 # 平台系统字体验收（读本机字体，不进 CI）
-cargo test -p nana-text --release --test font_system_platform_acceptance -- --ignored --nocapture
+cargo test -p nana-text --release --test text_platform font_system_platform_acceptance -- --ignored --nocapture
 ```
 
 证明它一条边都没有（dev 边也没有）：

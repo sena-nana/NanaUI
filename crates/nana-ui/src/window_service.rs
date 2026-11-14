@@ -730,7 +730,9 @@ mod tests {
         let (service, rx) = WindowService::channel(Arc::new(|| {}));
         let handle = service.handle(WindowId(7));
         let worker = std::thread::spawn(move || handle.set_title("worker").wait());
-        let Request::Control(id, _, control, reply) = rx.recv().unwrap() else {
+        let Request::Control(id, _, control, reply) =
+            rx.recv_timeout(std::time::Duration::from_secs(5)).unwrap()
+        else {
             panic!("unexpected request")
         };
         let Control::Command(WindowCommand::SetTitle { title, .. }) = *control else {

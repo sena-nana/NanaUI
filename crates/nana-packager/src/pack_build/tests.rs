@@ -5,7 +5,10 @@ pub(crate) struct Scratch(pub PathBuf);
 
 impl Scratch {
     pub(crate) fn new(name: &str) -> Self {
-        let dir = std::env::temp_dir().join(format!("nana-packager-{name}-{}", std::process::id()));
+        static SEQ: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+        let seq = SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let dir =
+            std::env::temp_dir().join(format!("nana-packager-{name}-{}-{seq}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         Self(dir)

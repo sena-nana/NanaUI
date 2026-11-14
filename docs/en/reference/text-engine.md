@@ -1015,7 +1015,7 @@ The counters are all on `WorkCounters`:
 - `text_language_scope_invalidations`: text touched by a language change;
 - `text_literal_nodes_invalidated_by_language`: text reshaped by a language invalidation although its language did not change. Normally 0; it guards against anyone making language invalidation coarse again.
 
-The gate is in `world/issue260.rs`, five items:
+The gate is in `world/tests/localization.rs`, five items:
 - Typing continuously into a fixed input in a 1k and in a 10k document costs the same;
 - `"99"→"98"` reflows zero parents;
 - 240 width changes trigger no reshaping;
@@ -1065,7 +1065,7 @@ The counters are all on `WorkCounters`:
 
 Scope visit counts and equivalent skips are counted at commit, but recorded on the frame that processes the change.
 
-The gate is in `world/issue266.rs`, five items:
+The gate is in `world/tests/localization.rs`, five items:
 - In a 10k and in a 100k node document, a fixed panel with 2000 text runs scales from 1 to 1.25. Only the panel's own 3001 nodes are visited; a nested scope that pins its scale is not visited; no text, style, or measurement outside the panel changes; both sizes cost the same;
 - 1000 fixed-size buttons: labels are laid out again inside the buttons, the parent reflows zero times, and the spacer elements between the buttons do not enter layout;
 - Baseline: a baseline-aligned line realigns, and the button that pins its scale aligns to the new baseline; a line that is not baseline-aligned, and baseline lines outside the scope, are not measured;
@@ -1122,7 +1122,7 @@ The counters are on `WorkCounters::i18n` (`I18nCounters`):
 
 Switches are counted at commit and recorded on the frame that processes them.
 
-The gates are in `world/issue268.rs` (five items) and `world/issue269.rs` (six items):
+The gates are in `world/tests/localization.rs` (five items) and `world/tests/localization.rs` (six items):
 - A static frame does not query the catalog, visit a scope, or resolve;
 - 100k nodes, about 5% localized: a message-only switch notifies exactly those localized nodes; literal nodes, language, and direction stay put;
 - Two windows: switching one leaves the other window's text, style, and layout out of the next frame;
@@ -1171,7 +1171,7 @@ Formatting counters are on `I18nCounters` too: `format_requests`, `format_cache_
 `message_patterns_compiled`, `args_revisions`, `formatted_output_changed` / `formatted_output_unchanged`,
 `catalog_messages_invalidated`, `formatter_allocations` (formatters built).
 
-The gates are in `world/issue270.rs` (five items) and `tests/i18n_alloc.rs`:
+The gates are in `world/tests/localization.rs` (five items) and `tests/perf_contracts/i18n_alloc.rs`:
 - Among 10k localized nodes, one counter changes its number every frame: one format request per frame, no extra catalog lookups, no other node formatted, and only the counter is laid out;
 - An argument change absorbed by rounding: the output is unchanged, so neither text layout nor box layout runs;
 - 10k numbers under one locale: the pattern is compiled once and one formatter is built; after switching to German the formatter cache hit rate is at least 99%;
@@ -3095,7 +3095,7 @@ python3 scripts/check-engine-boundary.py
 python3 -m unittest discover -s scripts/tests
 python3 scripts/build-text-corpus-fonts.py --check   # requires fonttools
 # Platform system-font acceptance (reads local fonts, not in CI)
-cargo test -p nana-text --release --test font_system_platform_acceptance -- --ignored --nocapture
+cargo test -p nana-text --release --test text_platform font_system_platform_acceptance -- --ignored --nocapture
 ```
 
 Prove it has not one edge (not even a dev edge):

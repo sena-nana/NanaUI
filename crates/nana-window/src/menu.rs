@@ -127,6 +127,7 @@ mod tests {
 
     #[test]
     fn activations_drain_in_order_and_leave_the_queue_empty() {
+        let _serial = crate::test_serial_lock();
         // The queue is process-global; drain whatever a parallel test left.
         let _ = take_menu_activations();
         push_activation(7);
