@@ -124,104 +124,16 @@ pub trait AgentSession {
                 .resolve_agent_id(agent_id)
                 .ok_or_else(|| AgentError(format!("unknown agent_id {agent_id}")));
         }
-        if let Some(path) = &target.agent_path {
-            return self
-                .accessibility_nodes()
-                .into_iter()
-                .find(|node| node.agent_path.as_deref() == Some(path.as_str()))
-                .map(|node| node.id)
-                .ok_or_else(|| AgentError(format!("unknown agent_path {path}")));
-        }
-        if target.role.is_none() && target.label.is_none() {
-            return Err(AgentError(
-                "target needs one of node, agent_id, role/label, or x+y".into(),
-            ));
-        }
-        let matches: Vec<_> = self
-            .accessibility_nodes()
-            .into_iter()
-            .filter(|node| {
-                target.role.as_ref().is_none_or(|role| &node.role == role)
-                    && target
-                        .label
-                        .as_ref()
-                        .is_none_or(|label| node.label.as_deref() == Some(label.as_str()))
-            })
-            .collect();
-        match (matches.len(), target.nth) {
-            (0, _) => Err(AgentError(format!(
-                "no node matches role={:?} label={:?}",
-                target.role, target.label
-            ))),
-            (_, Some(nth)) => matches.get(nth).map(|node| node.id).ok_or_else(|| {
-                AgentError(format!(
-                    "nth={nth} is out of range, {} matched",
-                    matches.len()
-                ))
-            }),
-            (1, None) => Ok(matches[0].id),
-            // An arbitrary pick would silently test the wrong widget.
-            (count, None) => Err(AgentError(format!(
-                "{count} nodes match role={:?} label={:?}; pass nth. First: {:?}",
-                target.role,
-                target.label,
-                matches
-                    .iter()
-                    .take(3)
-                    .map(|node| (node.id, node.label.clone()))
-                    .collect::<Vec<_>>()
-            ))),
-        }
+        resolve_target_in(&self.accessibility_nodes(), target)
     }
 
     /// Centre of a node's accessibility box, for synthesizing a pointer.
     fn node_center(&self, node: u64) -> Option<(f32, f32)> {
-        self.accessibility_nodes()
-            .into_iter()
-            .find(|candidate| candidate.id == node)
-            .filter(|candidate| candidate.bounds.width > 0.0 || candidate.bounds.height > 0.0)
-            .map(|candidate| {
-                (
-                    candidate.bounds.x + candidate.bounds.width * 0.5,
-                    candidate.bounds.y + candidate.bounds.height * 0.5,
-                )
-            })
+        node_center_in(&self.accessibility_nodes(), node)
     }
 
     fn filtered_accessibility(&self, filter: &A11yFilter) -> (Vec<AccessibilityDumpNode>, bool) {
-        let all = self.accessibility_nodes();
-        if filter == &A11yFilter::default() {
-            return (all, false);
-        }
-        let total = all.len();
-        let depths = node_depths(&all);
-        let subtree = filter.root.map(|root| subtree_of(&all, root));
-        let kept: Vec<_> = all
-            .into_iter()
-            .filter(|node| {
-                subtree
-                    .as_ref()
-                    .is_none_or(|allowed| allowed.contains(&node.id))
-                    && filter.role.as_ref().is_none_or(|role| &node.role == role)
-                    && filter.label.as_ref().is_none_or(|label| {
-                        node.label
-                            .as_deref()
-                            .is_some_and(|value| value.contains(label.as_str()))
-                    })
-                    && filter.agent_id_prefix.as_ref().is_none_or(|prefix| {
-                        node.agent_id
-                            .as_deref()
-                            .or(node.agent_path.as_deref())
-                            .is_some_and(|value| value.starts_with(prefix.as_str()))
-                    })
-                    && (!filter.interactive_only || INTERACTIVE_ROLES.contains(&node.role.as_str()))
-                    && filter
-                        .depth
-                        .is_none_or(|depth| depths.get(&node.id).copied().unwrap_or(0) <= depth)
-            })
-            .collect();
-        let truncated = kept.len() < total;
-        (kept, truncated)
+        filter_accessibility_nodes(self.accessibility_nodes(), filter)
     }
 
     fn execute(&mut self, command: AgentCommand) -> AgentReply {
@@ -515,6 +427,122 @@ fn subtree_of(nodes: &[AccessibilityDumpNode], root: u64) -> std::collections::H
         }
     }
     kept
+}
+
+/// Resolve an agent [`Target`] against a snapshot of accessibility nodes.
+pub fn resolve_target_in(
+    nodes: &[AccessibilityDumpNode],
+    target: &Target,
+) -> Result<u64, AgentError> {
+    if let Some(node) = target.node {
+        return Ok(node);
+    }
+    if let Some(agent_id) = &target.agent_id {
+        return nodes
+            .iter()
+            .find(|node| node.agent_id.as_deref() == Some(agent_id.as_str()))
+            .map(|node| node.id)
+            .ok_or_else(|| AgentError(format!("unknown agent_id {agent_id}")));
+    }
+    if let Some(path) = &target.agent_path {
+        return nodes
+            .iter()
+            .find(|node| node.agent_path.as_deref() == Some(path.as_str()))
+            .map(|node| node.id)
+            .ok_or_else(|| AgentError(format!("unknown agent_path {path}")));
+    }
+    if target.role.is_none() && target.label.is_none() {
+        return Err(AgentError(
+            "target needs one of node, agent_id, role/label, or x+y".into(),
+        ));
+    }
+    let matches: Vec<_> = nodes
+        .iter()
+        .filter(|node| {
+            target.role.as_ref().is_none_or(|role| &node.role == role)
+                && target
+                    .label
+                    .as_ref()
+                    .is_none_or(|label| node.label.as_deref() == Some(label.as_str()))
+        })
+        .collect();
+    match (matches.len(), target.nth) {
+        (0, _) => Err(AgentError(format!(
+            "no node matches role={:?} label={:?}",
+            target.role, target.label
+        ))),
+        (_, Some(nth)) => matches.get(nth).map(|node| node.id).ok_or_else(|| {
+            AgentError(format!(
+                "nth={nth} is out of range, {} matched",
+                matches.len()
+            ))
+        }),
+        (1, None) => Ok(matches[0].id),
+        // An arbitrary pick would silently test the wrong widget.
+        (count, None) => Err(AgentError(format!(
+            "{count} nodes match role={:?} label={:?}; pass nth. First: {:?}",
+            target.role,
+            target.label,
+            matches
+                .iter()
+                .take(3)
+                .map(|node| (node.id, node.label.clone()))
+                .collect::<Vec<_>>()
+        ))),
+    }
+}
+
+/// Compute the center of `node`'s accessibility bounding box.
+pub fn node_center_in(nodes: &[AccessibilityDumpNode], node: u64) -> Option<(f32, f32)> {
+    nodes
+        .iter()
+        .find(|candidate| candidate.id == node)
+        .filter(|candidate| candidate.bounds.width > 0.0 || candidate.bounds.height > 0.0)
+        .map(|candidate| {
+            (
+                candidate.bounds.x + candidate.bounds.width * 0.5,
+                candidate.bounds.y + candidate.bounds.height * 0.5,
+            )
+        })
+}
+
+/// Filter `nodes` according to an [`A11yFilter`]. The boolean marks whether nodes were dropped.
+pub fn filter_accessibility_nodes(
+    all: Vec<AccessibilityDumpNode>,
+    filter: &A11yFilter,
+) -> (Vec<AccessibilityDumpNode>, bool) {
+    if filter == &A11yFilter::default() {
+        return (all, false);
+    }
+    let total = all.len();
+    let depths = node_depths(&all);
+    let subtree = filter.root.map(|root| subtree_of(&all, root));
+    let kept: Vec<_> = all
+        .into_iter()
+        .filter(|node| {
+            subtree
+                .as_ref()
+                .is_none_or(|allowed| allowed.contains(&node.id))
+                && filter.role.as_ref().is_none_or(|role| &node.role == role)
+                && filter.label.as_ref().is_none_or(|label| {
+                    node.label
+                        .as_deref()
+                        .is_some_and(|value| value.contains(label.as_str()))
+                })
+                && filter.agent_id_prefix.as_ref().is_none_or(|prefix| {
+                    node.agent_id
+                        .as_deref()
+                        .or(node.agent_path.as_deref())
+                        .is_some_and(|value| value.starts_with(prefix.as_str()))
+                })
+                && (!filter.interactive_only || INTERACTIVE_ROLES.contains(&node.role.as_str()))
+                && filter
+                    .depth
+                    .is_none_or(|depth| depths.get(&node.id).copied().unwrap_or(0) <= depth)
+        })
+        .collect();
+    let truncated = kept.len() < total;
+    (kept, truncated)
 }
 
 #[derive(serde::Deserialize)]

@@ -440,119 +440,11 @@ impl AgentSession for RuntimeAgentSession {
     }
 
     fn inspect(&self, node: u64) -> Result<super::protocol::InspectDump, AgentError> {
-        use super::protocol::{
-            AppliedDump, CauseDump, DynamicDump, FieldDump, InspectDump, LayoutCauseDump,
-            LayoutNodeDump, SegmentDump,
-        };
-        let target =
-            StableNodeId::new(node).ok_or_else(|| AgentError("node id 0 is reserved".into()))?;
-        let context = self.document.context();
-        let inspection = context
-            .inspect(target)
-            .ok_or_else(|| AgentError(format!("node {node} does not exist")))?;
-        #[cfg(feature = "reactive-trace")]
-        let causes = context
-            .why_updated(target)
-            .map(|why| {
-                why.causes
-                    .iter()
-                    .map(|cause| CauseDump {
-                        written_at: cause.written_at.to_string(),
-                        signal_created: cause.signal_created.map(|at| at.to_string()),
-                    })
-                    .collect()
-            })
-            .unwrap_or_default();
-        #[cfg(not(feature = "reactive-trace"))]
-        let causes: Vec<CauseDump> = Vec::new();
-        Ok(InspectDump {
-            control: inspection.control.map(str::to_owned),
-            element: inspection
-                .source_element
-                .map(|at| at.to_string())
-                .or_else(|| inspection.element.map(|at| at.to_string())),
-            fields: inspection
-                .fields
-                .into_iter()
-                .map(|field| FieldDump {
-                    name: field.name.to_owned(),
-                    value: field.value,
-                    bound_at: field
-                        .source_bound_at
-                        .map(|at| at.to_string())
-                        .or_else(|| field.bound_at.map(|at| at.to_string())),
-                })
-                .collect(),
-            causes,
-            layout: inspection.layout.map(|cause| {
-                let invalidation = cause.invalidation;
-                LayoutCauseDump {
-                    pending: cause.pending,
-                    seed: cause.seed,
-                    source: format!("{:?}", invalidation.source).to_ascii_lowercase(),
-                    reasons: invalidation.reason.names().map(str::to_owned).collect(),
-                    stages: invalidation.kind.names().map(str::to_owned).collect(),
-                    changed: invalidation
-                        .changed_inputs
-                        .names()
-                        .map(str::to_owned)
-                        .collect(),
-                    dependencies: invalidation
-                        .affected_axes
-                        .names()
-                        .map(str::to_owned)
-                        .collect(),
-                }
-            }),
-            dynamic: inspection.dynamic.map(|dynamic| DynamicDump {
-                generation: dynamic.generation,
-                segments: dynamic
-                    .segments
-                    .iter()
-                    .map(|segment| SegmentDump {
-                        capacity: segment.capacity.0,
-                        cost: segment.marginal_cost.finite(),
-                        kind: format!("{:?}", segment.kind).to_ascii_lowercase(),
-                        class: format!("{:?}", segment.execution_class).to_ascii_lowercase(),
-                        sources: segment.sources,
-                    })
-                    .collect(),
-                applied: dynamic.applied.map(|applied| AppliedDump {
-                    axis: if applied.inline { "inline" } else { "block" }.to_owned(),
-                    amount: applied.amount.0,
-                    padding: applied.padding.0,
-                }),
-            }),
-            layout_node: inspection.layout_node.map(|layout| {
-                let view = layout.view;
-                let lower = |value: &dyn std::fmt::Debug| format!("{value:?}").to_ascii_lowercase();
-                LayoutNodeDump {
-                    node: view.id.get(),
-                    intent: format!(
-                        "display={} direction={} position={}",
-                        view.intent.display.map_or("auto".into(), |d| lower(&d)),
-                        view.intent.direction.map_or("auto".into(), |d| lower(&d)),
-                        lower(&view.intent.position),
-                    ),
-                    content: lower(&view.content),
-                    established: view.established.map(|kind| lower(&kind)),
-                    parent_context: view.parent_context.map(|kind| lower(&kind)),
-                    participation: view.participation.map(|kind| lower(&kind)),
-                    metrics_generation: layout.metrics_generation,
-                    context_generation: view.context_generation,
-                    result_generation: view.result_generation,
-                }
-            }),
-        })
+        document_inspect(&self.document, node)
     }
 
     fn set_field(&mut self, node: u64, field: &str, value: &str) -> Result<(), AgentError> {
-        let target =
-            StableNodeId::new(node).ok_or_else(|| AgentError("node id 0 is reserved".into()))?;
-        self.document
-            .context_mut()
-            .set_field(target, field, value)
-            .map_err(AgentError)?;
+        document_set_field(&mut self.document, node, field, value)?;
         Self::flush(self).map(drop)
     }
 
@@ -576,23 +468,14 @@ impl AgentSession for RuntimeAgentSession {
     }
 
     fn hit_test(&self, x: f32, y: f32) -> Vec<HitDump> {
-        let candidates =
-            self.document
-                .context()
-                .world()
-                .hit_test_candidates(self.document.document(), x, y);
-        scene_probe::hits(&self.accessibility_dump(), &candidates)
+        document_hit_test(&self.document, x, y)
     }
 
     fn scene_probe(&self, node: u64) -> Option<SceneProbeDump> {
-        let id = StableNodeId::new(node)?;
-        scene_probe::probe(
-            id,
-            self.document.scene(),
-            self.document.context().world().layout_box(id),
-            self.width as f32,
-            self.height as f32,
-            |x, y| self.hit_test(x, y),
+        document_scene_probe(
+            &self.document,
+            (self.width as f32, self.height as f32),
+            node,
         )
     }
 
@@ -608,6 +491,158 @@ impl AgentSession for RuntimeAgentSession {
     }
 }
 
+/// Inspect a retained node inside `document`.
+pub fn document_inspect(
+    document: &RuntimeDocument,
+    node: u64,
+) -> Result<super::protocol::InspectDump, AgentError> {
+    use super::protocol::{
+        AppliedDump, CauseDump, DynamicDump, FieldDump, InspectDump, LayoutCauseDump,
+        LayoutNodeDump, SegmentDump,
+    };
+    let target =
+        StableNodeId::new(node).ok_or_else(|| AgentError("node id 0 is reserved".into()))?;
+    let context = document.context();
+    let inspection = context
+        .inspect(target)
+        .ok_or_else(|| AgentError(format!("node {node} does not exist")))?;
+    #[cfg(feature = "reactive-trace")]
+    let causes = context
+        .why_updated(target)
+        .map(|why| {
+            why.causes
+                .iter()
+                .map(|cause| CauseDump {
+                    written_at: cause.written_at.to_string(),
+                    signal_created: cause.signal_created.map(|at| at.to_string()),
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    #[cfg(not(feature = "reactive-trace"))]
+    let causes: Vec<CauseDump> = Vec::new();
+    Ok(InspectDump {
+        control: inspection.control.map(str::to_owned),
+        element: inspection
+            .source_element
+            .map(|at| at.to_string())
+            .or_else(|| inspection.element.map(|at| at.to_string())),
+        fields: inspection
+            .fields
+            .into_iter()
+            .map(|field| FieldDump {
+                name: field.name.to_owned(),
+                value: field.value,
+                bound_at: field
+                    .source_bound_at
+                    .map(|at| at.to_string())
+                    .or_else(|| field.bound_at.map(|at| at.to_string())),
+            })
+            .collect(),
+        causes,
+        layout: inspection.layout.map(|cause| {
+            let invalidation = cause.invalidation;
+            LayoutCauseDump {
+                pending: cause.pending,
+                seed: cause.seed,
+                source: format!("{:?}", invalidation.source).to_ascii_lowercase(),
+                reasons: invalidation.reason.names().map(str::to_owned).collect(),
+                stages: invalidation.kind.names().map(str::to_owned).collect(),
+                changed: invalidation
+                    .changed_inputs
+                    .names()
+                    .map(str::to_owned)
+                    .collect(),
+                dependencies: invalidation
+                    .affected_axes
+                    .names()
+                    .map(str::to_owned)
+                    .collect(),
+            }
+        }),
+        dynamic: inspection.dynamic.map(|dynamic| DynamicDump {
+            generation: dynamic.generation,
+            segments: dynamic
+                .segments
+                .iter()
+                .map(|segment| SegmentDump {
+                    capacity: segment.capacity.0,
+                    cost: segment.marginal_cost.finite(),
+                    kind: format!("{:?}", segment.kind).to_ascii_lowercase(),
+                    class: format!("{:?}", segment.execution_class).to_ascii_lowercase(),
+                    sources: segment.sources,
+                })
+                .collect(),
+            applied: dynamic.applied.map(|applied| AppliedDump {
+                axis: if applied.inline { "inline" } else { "block" }.to_owned(),
+                amount: applied.amount.0,
+                padding: applied.padding.0,
+            }),
+        }),
+        layout_node: inspection.layout_node.map(|layout| {
+            let view = layout.view;
+            let lower = |value: &dyn std::fmt::Debug| format!("{value:?}").to_ascii_lowercase();
+            LayoutNodeDump {
+                node: view.id.get(),
+                intent: format!(
+                    "display={} direction={} position={}",
+                    view.intent.display.map_or("auto".into(), |d| lower(&d)),
+                    view.intent.direction.map_or("auto".into(), |d| lower(&d)),
+                    lower(&view.intent.position),
+                ),
+                content: lower(&view.content),
+                established: view.established.map(|kind| lower(&kind)),
+                parent_context: view.parent_context.map(|kind| lower(&kind)),
+                participation: view.participation.map(|kind| lower(&kind)),
+                metrics_generation: layout.metrics_generation,
+                context_generation: view.context_generation,
+                result_generation: view.result_generation,
+            }
+        }),
+    })
+}
+
+/// Set an inspector field on a retained node inside `document`.
+pub fn document_set_field(
+    document: &mut RuntimeDocument,
+    node: u64,
+    field: &str,
+    value: &str,
+) -> Result<(), AgentError> {
+    let target =
+        StableNodeId::new(node).ok_or_else(|| AgentError("node id 0 is reserved".into()))?;
+    document
+        .context_mut()
+        .set_field(target, field, value)
+        .map_err(AgentError)
+}
+
+/// Hit-test `(x, y)` against `document`'s retained world and accessibility tree.
+pub fn document_hit_test(document: &RuntimeDocument, x: f32, y: f32) -> Vec<HitDump> {
+    let candidates = document
+        .context()
+        .world()
+        .hit_test_candidates(document.document(), x, y);
+    scene_probe::hits(&super::accessibility_dump(document), &candidates)
+}
+
+/// Probe how `node` painted into `document`'s scene and responded to hit testing.
+pub fn document_scene_probe(
+    document: &RuntimeDocument,
+    viewport: (f32, f32),
+    node: u64,
+) -> Option<SceneProbeDump> {
+    let id = StableNodeId::new(node)?;
+    scene_probe::probe(
+        id,
+        document.scene(),
+        document.context().world().layout_box(id),
+        viewport.0,
+        viewport.1,
+        |x, y| document_hit_test(document, x, y),
+    )
+}
+
 fn modifiers(stroke: &KeyStroke) -> InputModifiers {
     InputModifiers {
         alt: stroke.alt,
@@ -618,7 +653,7 @@ fn modifiers(stroke: &KeyStroke) -> InputModifiers {
 }
 
 /// Platform button mask for a button index, matching the hosted adapter.
-const fn button_mask(button: i16) -> u16 {
+pub(crate) const fn button_mask(button: i16) -> u16 {
     match button {
         0 => 1,
         1 => 4,

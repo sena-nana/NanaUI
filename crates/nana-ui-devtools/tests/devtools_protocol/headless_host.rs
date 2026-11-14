@@ -2,6 +2,8 @@
 //! for, a file dialog and routed input, then pixels.
 
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::time::{Duration, Instant};
 
 use nana_ui::runtime::{RuntimeDocument, Task};
 use nana_ui::{
@@ -9,7 +11,7 @@ use nana_ui::{
     WindowDescriptor,
 };
 use nana_ui_core::{FileDialogKind, FileDialogRequest, FileFilter};
-use nana_ui_devtools::agent::fixtures;
+use nana_ui_devtools::agent::{A11yFilter, Target, fixtures};
 use nana_ui_devtools::headless::{
     HeadlessFileDialog, HeadlessHost, HeadlessOptions, headless_geometry,
 };
@@ -23,6 +25,7 @@ enum Message {
     Browse,
     Export,
     Zoom(f32),
+    ScheduleWake(Instant),
 }
 
 #[derive(Default)]
@@ -31,6 +34,7 @@ struct Seen {
     inputs: usize,
     prepared: usize,
     presented: usize,
+    woken: usize,
     aux: Option<WindowId>,
     picked: Vec<PathBuf>,
     picked_filter: Option<usize>,
@@ -39,6 +43,7 @@ struct Seen {
 struct Probe {
     primary: RuntimeDocument,
     aux: Option<(WindowId, RuntimeDocument)>,
+    wake_at: Option<Instant>,
     seen: Seen,
 }
 
@@ -54,6 +59,7 @@ impl RuntimeProgram for Probe {
             Self {
                 primary,
                 aux: None,
+                wake_at: None,
                 seen: Seen::default(),
             },
             Vec::new(),
@@ -143,7 +149,27 @@ impl RuntimeProgram for Probe {
                 }],
                 ..RuntimeProgramUpdate::default()
             },
+            Message::ScheduleWake(at) => {
+                self.wake_at = Some(at);
+                RuntimeProgramUpdate::default()
+            }
         }
+    }
+
+    fn next_wakeup(&self) -> Option<Instant> {
+        self.wake_at
+    }
+
+    fn wake(
+        &mut self,
+        now: Instant,
+        _context: &RuntimeProgramContext<Message>,
+    ) -> RuntimeProgramUpdate {
+        if self.wake_at.is_some_and(|due| due <= now) {
+            self.wake_at = None;
+            self.seen.woken += 1;
+        }
+        RuntimeProgramUpdate::default()
     }
 
     fn initialize_window(
@@ -370,4 +396,115 @@ fn a_screenshot_paints_at_the_content_zoom() {
         zoomed.1 + 3 >= (plain.1 * 2).min(surface.1),
         "{plain:?} -> {zoomed:?}"
     );
+}
+
+#[test]
+fn manual_clock_drives_wakeups_and_quiesce_without_wall_sleep() {
+    let Some(mut host) = host() else { return };
+    host.use_manual_clock();
+    assert!(host.is_manual_clock());
+
+    let now = host.now_instant();
+    host.dispatch(Message::ScheduleWake(now + Duration::from_millis(500)));
+    host.step(Duration::from_millis(100));
+    assert_eq!(host.next_wakeup(), Some(now + Duration::from_millis(500)));
+    assert_eq!(host.program().seen.woken, 0);
+
+    let wall_start = Instant::now();
+    host.step(Duration::from_millis(400));
+    assert_eq!(host.program().seen.woken, 1);
+    assert!(wall_start.elapsed() < Duration::from_millis(250));
+
+    let quiesced = host.turn_until_quiescent(Duration::from_millis(16), 32);
+    assert!(quiesced.settled);
+    assert!(quiesced.turns >= 1);
+
+    host.use_system_clock();
+    assert!(!host.is_manual_clock());
+}
+
+#[test]
+fn headless_host_exposes_target_inspection_and_png_diff() {
+    static SEQ: AtomicUsize = AtomicUsize::new(0);
+    let Some(mut host) = host() else { return };
+    host.use_manual_clock();
+    let quiesced = host.turn_until_quiescent(Duration::from_millis(16), 32);
+    assert!(quiesced.settled);
+
+    let (all, truncated_all) =
+        host.filtered_accessibility(WindowId::PRIMARY, &A11yFilter::default());
+    assert!(!truncated_all);
+    let (interactive, _) = host.filtered_accessibility(
+        WindowId::PRIMARY,
+        &A11yFilter {
+            interactive_only: true,
+            ..A11yFilter::default()
+        },
+    );
+    assert!(!interactive.is_empty() && interactive.len() <= all.len());
+
+    let button_target = Target {
+        label: Some("Increment 0".into()),
+        ..Target::default()
+    };
+    let node = host
+        .resolve_target(WindowId::PRIMARY, &button_target)
+        .expect("resolve button");
+    let center = host
+        .target_point(WindowId::PRIMARY, &button_target)
+        .expect("button point");
+    let hits = host
+        .hit_test(WindowId::PRIMARY, center.0, center.1)
+        .expect("hit test");
+    assert!(!hits.is_empty());
+    let probe = host
+        .scene_probe(WindowId::PRIMARY, &button_target)
+        .expect("scene probe");
+    assert!(probe.in_viewport && probe.primitive_count > 0);
+    let inspect = host
+        .inspect(
+            WindowId::PRIMARY,
+            &Target {
+                node: Some(node),
+                ..Target::default()
+            },
+        )
+        .expect("inspect");
+    assert!(inspect.layout_node.is_some());
+
+    host.click_target(WindowId::PRIMARY, &button_target)
+        .expect("click target");
+    host.turn_until_quiescent(Duration::from_millis(16), 32);
+    let updated = Target {
+        label: Some("Increment 1".into()),
+        ..Target::default()
+    };
+    host.activate_target(WindowId::PRIMARY, &updated)
+        .expect("activate target");
+    host.turn_until_quiescent(Duration::from_millis(16), 32);
+    assert!(
+        host.resolve_target(
+            WindowId::PRIMARY,
+            &Target {
+                label: Some("Increment 2".into()),
+                ..Target::default()
+            }
+        )
+        .is_ok()
+    );
+
+    let png_path = std::env::temp_dir().join(format!(
+        "nana-headless-host-{}-{}.png",
+        std::process::id(),
+        SEQ.fetch_add(1, Ordering::Relaxed)
+    ));
+    let stats = host
+        .screenshot_png(WindowId::PRIMARY, [0.0, 0.0, 0.0, 1.0], &png_path)
+        .expect("screenshot png");
+    assert!(stats.unique_colors > 1);
+    let diff = host
+        .diff_screenshot(WindowId::PRIMARY, [0.0, 0.0, 0.0, 1.0], &png_path, 0)
+        .expect("diff screenshot");
+    assert_eq!(diff.changed_pixels, 0);
+    let _ = std::fs::remove_file(&png_path);
 }

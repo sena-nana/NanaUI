@@ -14,7 +14,7 @@ NanaUI 的无头会话与离屏快照，给开发工具和测试用。
 
 - `offscreen`：离屏绘制与 CPU 回读，读写 PNG。
 - `runtime-agent`：在 `offscreen` 之上加 JSON 协议、`RuntimeAgentSession` 和命令行。
-- `headless-host`：在 `runtime-agent` 之上加 `HeadlessHost`，按原生宿主的钩子顺序运行整个 `RuntimeProgram`。
+- `headless-host`：在 `runtime-agent` 之上加 `HeadlessHost`，按原生宿主的钩子顺序运行整个 `RuntimeProgram`（并提供可控时钟与稳态推进、目标定位、命中测试、场景探针、视图检查、直通 PNG 导出与像素比对）。
 - `reactive-trace`：视图检查结果附带节点最近一次变化的原因。
 
 ## 示例

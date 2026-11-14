@@ -22,8 +22,13 @@ pub use protocol::{
     PixelDiff, PixelStats, PointerGesture, RectDump, SceneProbeDump, SegmentDump,
     SemanticDumpWidget, SessionInfo, Target, ThemeName,
 };
-pub use runtime::RuntimeAgentSession;
-pub use session::{AgentSession, run_stdio};
+pub use runtime::{
+    RuntimeAgentSession, document_hit_test, document_inspect, document_scene_probe,
+    document_set_field,
+};
+pub use session::{
+    AgentSession, filter_accessibility_nodes, node_center_in, resolve_target_in, run_stdio,
+};
 
 use std::collections::BTreeMap;
 

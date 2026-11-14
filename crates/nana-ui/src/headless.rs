@@ -17,11 +17,11 @@
 //!   only lands in [`HeadlessRuntime::take_window_commands`].
 //! - A file dialog is answered at once from [`HeadlessFileDialog`].
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::mpsc::{Receiver, SyncSender, channel};
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use nana_ui_core::{CompiledTheme, FileDialogError, FileDialogResult, SharedStore, memory_store};
 use nana_ui_platform::host::WindowCommand;
@@ -30,7 +30,7 @@ use nana_ui_platform::{
     WindowId,
 };
 use nana_ui_runtime::{
-    AccessibilityActionRequest, FrameworkError, HeadlessInput, LayoutViewport, Task, WorkCounters,
+    AccessibilityActionRequest, FrameworkError, HeadlessInput, LayoutViewport, Task,
 };
 use nana_ui_scene::{DocumentAccessError, RuntimeDocument};
 
@@ -97,8 +97,20 @@ pub struct HeadlessReport {
 /// One turn's UI work.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct HeadlessTurn {
-    /// The work of every flush that did something.
-    pub work: WorkCounters,
+    /// Whether the turn processed input, window requests, program messages,
+    /// non-idle flushes, due wakeups, or animation frames.
+    pub did_work: bool,
+}
+
+/// Result of [`HeadlessRuntime::turn_until_quiescent`].
+#[derive(Debug, Clone, Copy, Default)]
+pub struct HeadlessQuiesce {
+    /// Number of [`HeadlessRuntime::turn`] calls executed.
+    pub turns: usize,
+    /// Simulated elapsed time advanced while settling animations.
+    pub elapsed: Duration,
+    /// `true` when the runtime reached a quiescent state before hitting `max_steps`.
+    pub settled: bool,
 }
 
 struct WindowState {
@@ -119,12 +131,15 @@ pub struct HeadlessRuntime<P: RuntimeProgram> {
     windows: BTreeMap<WindowId, WindowState>,
     service: WindowService,
     requests: Receiver<Request>,
+    pending_requests: VecDeque<Request>,
     dispatch: Arc<dyn Fn(P::Message) + Send + Sync>,
     messages: Receiver<P::Message>,
+    pending_messages: VecDeque<P::Message>,
     tasks: SyncSender<Task<P::Message>>,
     startup: StartupHandle,
     store: SharedStore,
     clock: RuntimeAnimationClock,
+    manual_now: Option<Instant>,
     installed_theme: Arc<CompiledTheme>,
     text: NanaTextShaper,
     bind_after_present: BTreeSet<WindowId>,
@@ -190,12 +205,15 @@ impl<P: RuntimeProgram> HeadlessRuntime<P> {
             windows,
             service,
             requests,
+            pending_requests: VecDeque::new(),
             dispatch,
             messages,
+            pending_messages: VecDeque::new(),
             tasks,
             startup,
             store,
             clock: RuntimeAnimationClock::now(),
+            manual_now: None,
             installed_theme,
             text: NanaTextShaper::default(),
             // Natively the message that installs a program also binds its
@@ -237,6 +255,130 @@ impl<P: RuntimeProgram> HeadlessRuntime<P> {
     /// The clock animations and input are stamped on.
     pub fn clock(&self) -> RuntimeAnimationClock {
         self.clock
+    }
+
+    fn now(&self) -> Instant {
+        self.manual_now.unwrap_or_else(Instant::now)
+    }
+
+    /// Pin this runtime's internal clock to simulated time so subsequent turns
+    /// no longer advance with wall time unless [`Self::advance_clock`] is called.
+    pub fn use_manual_clock(&mut self) -> Instant {
+        let current = self
+            .manual_now
+            .unwrap_or_else(|| Instant::now().max(self.clock.epoch()));
+        self.manual_now = Some(current);
+        current
+    }
+
+    /// Return this runtime to the system wall clock.
+    pub fn use_system_clock(&mut self) {
+        self.manual_now = None;
+    }
+
+    /// Whether the runtime is driven by a manual simulated clock.
+    pub fn is_manual_clock(&self) -> bool {
+        self.manual_now.is_some()
+    }
+
+    /// Current timestamp seen by [`Self::turn`], [`Self::wake`], [`Self::present`], and [`Self::input`].
+    pub fn now_instant(&self) -> Instant {
+        self.now()
+    }
+
+    /// Advance the simulated clock by `delta`, switching to manual clock mode if needed.
+    pub fn advance_clock(&mut self, delta: Duration) -> Instant {
+        let current = self.use_manual_clock();
+        let next = current + delta;
+        self.manual_now = Some(next);
+        next
+    }
+
+    /// Advance the simulated clock by `delta` and execute one host turn.
+    pub fn step(&mut self, delta: Duration) -> HeadlessTurn {
+        self.advance_clock(delta);
+        self.turn()
+    }
+
+    /// Earliest scheduled wake deadline from the program or any window document's animations.
+    pub fn next_wakeup(&self) -> Option<Instant> {
+        let mut earliest = self.program.next_wakeup();
+        if let Some(doc_due) = self.next_document_wakeup() {
+            earliest = Some(earliest.map_or(doc_due, |current| current.min(doc_due)));
+        }
+        earliest
+    }
+
+    fn next_document_wakeup(&self) -> Option<Instant> {
+        let clock = self.clock;
+        let mut earliest: Option<Instant> = None;
+        for id in self.windows.keys() {
+            if let Some(due) = self
+                .program
+                .with_document(*id, |document| clock.next_wakeup(document.context()))
+                .ok()
+                .flatten()
+                .flatten()
+            {
+                earliest = Some(earliest.map_or(due, |current| current.min(due)));
+            }
+        }
+        earliest
+    }
+
+    fn has_active_presentation(&self) -> bool {
+        let clock = self.clock;
+        self.windows.iter().any(|(id, state)| {
+            state.window.visible
+                && self
+                    .program
+                    .with_document(*id, |document| {
+                        document.compositor_needs_tick()
+                            || clock.next_wakeup(document.context()).is_some()
+                    })
+                    .ok()
+                    .flatten()
+                    .unwrap_or(false)
+        })
+    }
+
+    fn has_pending_queued_work(&mut self) -> bool {
+        self.pending_requests.extend(self.requests.try_iter());
+        self.pending_messages.extend(self.messages.try_iter());
+        !self.pending_requests.is_empty() || !self.pending_messages.is_empty()
+    }
+
+    /// Run turns until queued messages, layout flushes, and active document/compositor
+    /// animations become quiescent, or until `max_steps` turns have executed.
+    ///
+    /// When `step` is non-zero and an animation or compositor transition remains active after
+    /// immediate work settles, the simulated clock advances by `step` per turn without sleeping.
+    pub fn turn_until_quiescent(&mut self, step: Duration, max_steps: usize) -> HeadlessQuiesce {
+        let start = self.now();
+        let mut report = HeadlessQuiesce::default();
+        for _ in 0..max_steps {
+            let turn = self.turn();
+            report.turns += 1;
+
+            let queued = self.has_pending_queued_work();
+            let due_now = self
+                .next_document_wakeup()
+                .is_some_and(|due| due <= self.now());
+            if turn.did_work || queued || due_now {
+                continue;
+            }
+
+            if step > Duration::ZERO && self.has_active_presentation() {
+                self.advance_clock(step);
+                continue;
+            }
+
+            report.elapsed = self.now().saturating_duration_since(start);
+            report.settled = true;
+            return report;
+        }
+        report.elapsed = self.now().saturating_duration_since(start);
+        report
     }
 
     /// The context the program sees for `id`, for calling a hook directly.
@@ -330,11 +472,17 @@ impl<P: RuntimeProgram> HeadlessRuntime<P> {
         self.process_message(message);
     }
 
+    fn update_did_work(update: &RuntimeProgramUpdate) -> bool {
+        update.exit
+            || !matches!(update.redraw, RuntimeRedraw::None)
+            || !update.window_commands.is_empty()
+    }
+
     /// Wake the program now, as the host does once its deadline passes: for
     /// work a caller queued where the program only looks when woken.
     pub fn wake(&mut self) {
-        let update = self.wake_program(Instant::now());
-        let update = update.merge(self.drain_all_program_messages());
+        let update = self.wake_program(self.now());
+        let update = update.merge(self.drain_all_program_messages().0);
         self.apply_update(update);
     }
 
@@ -342,15 +490,22 @@ impl<P: RuntimeProgram> HeadlessRuntime<P> {
     /// and animation frames, then a frame of every visible window.
     pub fn turn(&mut self) -> HeadlessTurn {
         let mut turn = HeadlessTurn::default();
-        self.drain_window_requests();
-        self.drain_messages();
-        let now = Instant::now();
-        let mut update = self.drain_all_program_messages();
+        let did_requests = self.drain_window_requests();
+        let did_messages = self.drain_messages();
+        let now = self.now();
+        let (mut update, mut did_program_messages) = self.drain_all_program_messages();
+        let mut did_wake = false;
         if self.program.next_wakeup().is_some_and(|due| due <= now) {
-            update = update.merge(self.wake_program(now));
+            let wake_update = self.wake_program(now);
+            did_wake = Self::update_did_work(&wake_update);
+            update = update.merge(wake_update);
         }
-        update = update.merge(self.animation_frames(now));
-        update = update.merge(self.drain_all_program_messages());
+        let (anim_update, did_anim) = self.animation_frames(now);
+        update = update.merge(anim_update);
+        let (more_update, more_program_messages) = self.drain_all_program_messages();
+        did_program_messages |= more_program_messages;
+        update = update.merge(more_update);
+        let did_update = Self::update_did_work(&update);
         self.apply_update(update);
         let visible: Vec<_> = self
             .windows
@@ -358,27 +513,39 @@ impl<P: RuntimeProgram> HeadlessRuntime<P> {
             .filter(|(_, state)| state.window.visible)
             .map(|(id, _)| *id)
             .collect();
+        let mut did_present = false;
         for id in visible {
-            if let Some(work) = self.present(id) {
-                turn.work.accumulate(work);
-            }
+            let (_, presented_work) = self.present_tracked(id);
+            did_present |= presented_work;
         }
+        turn.did_work = did_requests
+            || did_messages
+            || did_program_messages
+            || did_wake
+            || did_anim
+            || did_update
+            || did_present;
         turn
     }
 
     /// One frame of `id`, as a native redraw does it, without painting:
     /// queued messages, `prepare_window_frame`, layout, then
-    /// `window_frame_presented` and `bind_window` when due. Returns the
-    /// flush's work when it did any.
-    pub fn present(&mut self, id: WindowId) -> Option<WorkCounters> {
+    /// `window_frame_presented` and `bind_window` when due. Returns whether
+    /// the flush did any work.
+    pub fn present(&mut self, id: WindowId) -> bool {
+        self.present_tracked(id).0
+    }
+
+    fn present_tracked(&mut self, id: WindowId) -> (bool, bool) {
         if !self.windows.contains_key(&id) {
-            return None;
+            return (false, false);
         }
-        let queued = self.drain_program_messages(id);
+        let (queued, had_queued) = self.drain_program_messages_tracked(id);
+        let did_queued = had_queued || Self::update_did_work(&queued);
         self.apply_update(queued);
         let context = self.context_for(id);
         self.program.prepare_window_frame(id, &context);
-        let now = self.clock.runtime_time(Instant::now());
+        let now = self.clock.runtime_time(self.now());
         let (width, height) = context.content_geometry().logical_size;
         let text = &mut self.text;
         let flushed = self.program.write_document(id, |document| {
@@ -387,30 +554,32 @@ impl<P: RuntimeProgram> HeadlessRuntime<P> {
             }
             document
                 .flush(LayoutViewport::new(width, height), text)
-                .map(|update| (!update.is_idle()).then(|| document.context().last_work_counters()))
+                .map(|update| !update.is_idle())
         });
-        let work = match flushed {
-            Some(Ok(work)) => work,
+        let non_idle = match flushed {
+            Some(Ok(non_idle)) => non_idle,
             Some(Err(error)) => {
                 self.program
                     .report_host_failure(HostFailure::FrameDidNotSettle {
                         window: id,
                         error: error.to_string(),
                     });
-                return None;
+                return (false, did_queued);
             }
             None => {
                 self.program
                     .report_host_failure(HostFailure::MissingDocument { window: id });
-                return None;
+                return (false, did_queued);
             }
         };
         let mut update = self.program.window_frame_presented(id, &context);
-        if self.bind_after_present.remove(&id) {
+        let bound = self.bind_after_present.remove(&id);
+        if bound {
             update = update.merge(self.program.bind_window(id, &context));
         }
+        let did_post_update = Self::update_did_work(&update);
         self.apply_update(update);
-        work
+        (non_idle, did_queued || non_idle || bound || did_post_update)
     }
 
     /// Where the pointer is over `id` without telling the window: what a
@@ -441,7 +610,7 @@ impl<P: RuntimeProgram> HeadlessRuntime<P> {
             InputPayload::PointerLeave { .. } => self.set_pointer(id, None),
             _ => {}
         }
-        let now = self.clock.runtime_time(Instant::now());
+        let now = self.clock.runtime_time(self.now());
         let mut input = self.bound_input(id)?;
         input.set_now(now.max(input.now()));
         let pressed = input.stamp(payload);
@@ -594,15 +763,23 @@ impl<P: RuntimeProgram> HeadlessRuntime<P> {
         self.apply_update(update);
     }
 
-    fn drain_messages(&mut self) {
-        let messages: Vec<_> = self.messages.try_iter().collect();
+    fn drain_messages(&mut self) -> bool {
+        self.pending_messages.extend(self.messages.try_iter());
+        let messages: Vec<_> = self.pending_messages.drain(..).collect();
+        let drained = !messages.is_empty();
         for message in messages {
             self.process_message(message);
         }
+        drained
     }
 
     fn drain_program_messages(&mut self, id: WindowId) -> RuntimeProgramUpdate {
+        self.drain_program_messages_tracked(id).0
+    }
+
+    fn drain_program_messages_tracked(&mut self, id: WindowId) -> (RuntimeProgramUpdate, bool) {
         let mut update = RuntimeProgramUpdate::default();
+        let mut any_queued = false;
         for _ in 0..MAX_PROGRAM_DISPATCHES {
             let queued = self
                 .program
@@ -613,6 +790,7 @@ impl<P: RuntimeProgram> HeadlessRuntime<P> {
             if queued.is_empty() {
                 break;
             }
+            any_queued = true;
             self.bind_after_present.insert(id);
             for boxed in queued {
                 let Ok(message) = boxed.downcast::<P::Message>() else {
@@ -621,22 +799,26 @@ impl<P: RuntimeProgram> HeadlessRuntime<P> {
                 update = update.merge(self.apply_message(id, *message));
             }
         }
-        update
+        (update, any_queued)
     }
 
-    fn drain_all_program_messages(&mut self) -> RuntimeProgramUpdate {
+    fn drain_all_program_messages(&mut self) -> (RuntimeProgramUpdate, bool) {
         let ids: Vec<_> = self.windows.keys().copied().collect();
         let mut update = RuntimeProgramUpdate::default();
+        let mut any_queued = false;
         for id in ids {
-            update = update.merge(self.drain_program_messages(id));
+            let (window_update, queued) = self.drain_program_messages_tracked(id);
+            any_queued |= queued;
+            update = update.merge(window_update);
         }
-        update
+        (update, any_queued)
     }
 
-    fn animation_frames(&mut self, now: Instant) -> RuntimeProgramUpdate {
+    fn animation_frames(&mut self, now: Instant) -> (RuntimeProgramUpdate, bool) {
         let clock = self.clock;
         let ids: Vec<_> = self.windows.keys().copied().collect();
         let mut update = RuntimeProgramUpdate::default();
+        let mut active = false;
         for id in ids {
             let due = self
                 .program
@@ -656,11 +838,15 @@ impl<P: RuntimeProgram> HeadlessRuntime<P> {
                 continue;
             };
             let had_samples = frame.has_updates();
+            active |= had_samples;
             match self
                 .program
                 .animation_frame(id, frame, &self.context_for(id))
             {
-                Ok(frame_update) => update = update.merge(frame_update),
+                Ok(frame_update) => {
+                    active |= Self::update_did_work(&frame_update);
+                    update = update.merge(frame_update);
+                }
                 Err(error) => self
                     .program
                     .report_host_failure(HostFailure::AnimationFrame {
@@ -672,7 +858,7 @@ impl<P: RuntimeProgram> HeadlessRuntime<P> {
                 update = update.merge(RuntimeProgramUpdate::redraw(id));
             }
         }
-        update
+        (update, active)
     }
 
     /// A new theme reaches the documents of windows already open.
@@ -723,8 +909,14 @@ impl<P: RuntimeProgram> HeadlessRuntime<P> {
         }
     }
 
-    fn drain_window_requests(&mut self) {
-        while let Ok(request) = self.requests.try_recv() {
+    fn drain_window_requests(&mut self) -> bool {
+        let mut drained = false;
+        loop {
+            self.pending_requests.extend(self.requests.try_iter());
+            let Some(request) = self.pending_requests.pop_front() else {
+                break;
+            };
+            drained = true;
             match request {
                 Request::Displays(reply) => reply.finish(Ok(Vec::new())),
                 Request::SurfaceInfo(id, generation, reply) => {
@@ -776,6 +968,7 @@ impl<P: RuntimeProgram> HeadlessRuntime<P> {
                 }
             }
         }
+        drained
     }
 
     fn open_window(&mut self, id: WindowId, descriptor: WindowDescriptor) -> Result<(), String> {
@@ -818,7 +1011,7 @@ impl<P: RuntimeProgram> HeadlessRuntime<P> {
             return;
         };
         if state.input.is_some() {
-            let now = self.clock.runtime_time(Instant::now());
+            let now = self.clock.runtime_time(self.now());
             self.program.write_document(id, |document| {
                 let _ = document
                     .context_mut()

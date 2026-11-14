@@ -14,7 +14,7 @@ With no features on, this crate is empty. Each feature includes the one before i
 
 - `offscreen`: offscreen painting and CPU readback, reading and writing PNG.
 - `runtime-agent`: adds the JSON protocol, `RuntimeAgentSession`, and the command line on top of `offscreen`.
-- `headless-host`: adds `HeadlessHost` on top of `runtime-agent`, running a whole `RuntimeProgram` in the native host's hook order.
+- `headless-host`: adds `HeadlessHost` on top of `runtime-agent`, running a whole `RuntimeProgram` in the native host's hook order (with deterministic `HeadlessRuntime` manual clock/quiescence, target resolution, hit testing, scene probe, view inspection, unpremultiplied PNG export, and pixel diff).
 - `reactive-trace`: view inspection results include the reason for each node's most recent change.
 
 ## Example
