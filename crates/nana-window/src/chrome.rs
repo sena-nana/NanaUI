@@ -341,7 +341,7 @@ pub struct LiveFrameResize {
 #[cfg(target_os = "macos")]
 impl LiveFrameResize {
     pub fn begin<W: HasWindowHandle + ?Sized>(window: &W, edge: FrameResizeEdge) -> Option<Self> {
-        let window = appkit_window(window)?;
+        let window = appkit_movable_window(window)?;
         let frame = window.frame();
         let mouse = objc2_app_kit::NSEvent::mouseLocation();
         let min_size = window.minSize();
@@ -362,7 +362,7 @@ impl LiveFrameResize {
     }
 
     pub fn update<W: HasWindowHandle + ?Sized>(&self, window: &W) -> bool {
-        let Some(window) = appkit_window(window) else {
+        let Some(window) = appkit_movable_window(window) else {
             return false;
         };
         let mouse = objc2_app_kit::NSEvent::mouseLocation();
@@ -390,7 +390,7 @@ impl LiveFrameResize {
 #[cfg(target_os = "windows")]
 impl LiveFrameResize {
     pub fn begin<W: HasWindowHandle + ?Sized>(window: &W, edge: FrameResizeEdge) -> Option<Self> {
-        let hwnd = win32_hwnd(window)?;
+        let hwnd = win32_movable_hwnd(window)?;
         let mut rect = windows_sys::Win32::Foundation::RECT::default();
         let mut mouse = windows_sys::Win32::Foundation::POINT::default();
         unsafe {
@@ -419,7 +419,7 @@ impl LiveFrameResize {
     }
 
     pub fn update<W: HasWindowHandle + ?Sized>(&self, window: &W) -> bool {
-        let Some(hwnd) = win32_hwnd(window) else {
+        let Some(hwnd) = win32_movable_hwnd(window) else {
             return false;
         };
         let mut mouse = windows_sys::Win32::Foundation::POINT::default();
@@ -530,7 +530,7 @@ impl LiveFrameMove {
     /// Where the cursor holds `window` now. AppKit screen space is bottom-up,
     /// so it is flipped here and the grab is top-down like on Windows.
     pub fn grab<W: HasWindowHandle + ?Sized>(window: &W) -> Option<FrameGrab> {
-        let frame = appkit_window(window)?.frame();
+        let frame = appkit_movable_window(window)?.frame();
         let mouse = objc2_app_kit::NSEvent::mouseLocation();
         let top = frame.origin.y + frame.size.height;
         Some(FrameGrab::at(
@@ -545,7 +545,7 @@ impl LiveFrameMove {
     /// Starts a move with the (just restored) frame placed under the cursor
     /// at `grab`.
     pub fn begin_at<W: HasWindowHandle + ?Sized>(window: &W, grab: FrameGrab) -> Option<Self> {
-        let appkit = appkit_window(window)?;
+        let appkit = appkit_movable_window(window)?;
         let size = appkit.frame().size;
         let mouse = objc2_app_kit::NSEvent::mouseLocation();
         let (left, top) = grab.origin(size.width, size.height, mouse.x, -mouse.y);
@@ -560,7 +560,7 @@ impl LiveFrameMove {
     }
 
     pub fn begin<W: HasWindowHandle + ?Sized>(window: &W) -> Option<Self> {
-        let window = appkit_window(window)?;
+        let window = appkit_movable_window(window)?;
         let origin = window.frame().origin;
         let mouse = objc2_app_kit::NSEvent::mouseLocation();
         Some(Self {
@@ -588,7 +588,7 @@ impl LiveFrameMove {
     }
 
     fn set_origin<W: HasWindowHandle + ?Sized>(&self, window: &W, x: f64, y: f64) -> bool {
-        let Some(window) = appkit_window(window) else {
+        let Some(window) = appkit_movable_window(window) else {
             return false;
         };
         window.setFrameOrigin(objc2_foundation::NSPoint::new(x, y));
@@ -618,7 +618,7 @@ impl LiveFrameMove {
 
     /// Where the cursor holds `window` now, in screen pixels.
     pub fn grab<W: HasWindowHandle + ?Sized>(window: &W) -> Option<FrameGrab> {
-        let (rect, mouse) = Self::window_rect_and_cursor(win32_hwnd(window)?)?;
+        let (rect, mouse) = Self::window_rect_and_cursor(win32_movable_hwnd(window)?)?;
         Some(FrameGrab::at(
             f64::from(rect.left),
             f64::from(rect.top),
@@ -631,7 +631,7 @@ impl LiveFrameMove {
     /// Starts a move with the (just restored) frame placed under the cursor
     /// at `grab`.
     pub fn begin_at<W: HasWindowHandle + ?Sized>(window: &W, grab: FrameGrab) -> Option<Self> {
-        let (rect, mouse) = Self::window_rect_and_cursor(win32_hwnd(window)?)?;
+        let (rect, mouse) = Self::window_rect_and_cursor(win32_movable_hwnd(window)?)?;
         let (left, top) = grab.origin(
             f64::from(rect.right - rect.left),
             f64::from(rect.bottom - rect.top),
@@ -649,17 +649,7 @@ impl LiveFrameMove {
     }
 
     pub fn begin<W: HasWindowHandle + ?Sized>(window: &W) -> Option<Self> {
-        let hwnd = win32_hwnd(window)?;
-        let mut rect = windows_sys::Win32::Foundation::RECT::default();
-        let mut mouse = windows_sys::Win32::Foundation::POINT::default();
-        unsafe {
-            if windows_sys::Win32::UI::WindowsAndMessaging::GetWindowRect(hwnd, &mut rect) == 0 {
-                return None;
-            }
-            if windows_sys::Win32::UI::WindowsAndMessaging::GetCursorPos(&mut mouse) == 0 {
-                return None;
-            }
-        }
+        let (rect, mouse) = Self::window_rect_and_cursor(win32_movable_hwnd(window)?)?;
         Some(Self {
             origin_x: f64::from(rect.left),
             origin_y: f64::from(rect.top),
@@ -688,7 +678,7 @@ impl LiveFrameMove {
     }
 
     fn set_origin<W: HasWindowHandle + ?Sized>(&self, window: &W, x: f64, y: f64) -> bool {
-        let Some(hwnd) = win32_hwnd(window) else {
+        let Some(hwnd) = win32_movable_hwnd(window) else {
             return false;
         };
         unsafe {
@@ -948,7 +938,7 @@ fn drag<W: HasWindowHandle + ?Sized>(window: &W) -> bool {
     let Some(mtm) = MainThreadMarker::new() else {
         return false;
     };
-    let Some(window) = appkit_window(window) else {
+    let Some(window) = appkit_movable_window(window) else {
         return false;
     };
     let Some(event) = NSApplication::sharedApplication(mtm).currentEvent() else {
@@ -989,6 +979,17 @@ fn appkit_window<W: HasWindowHandle + ?Sized>(
     };
     let view = unsafe { handle.ns_view.cast::<NSView>().as_ref() };
     view.window()
+}
+
+#[cfg(target_os = "macos")]
+fn appkit_movable_window<W: HasWindowHandle + ?Sized>(
+    window: &W,
+) -> Option<objc2::rc::Retained<objc2_app_kit::NSWindow>> {
+    let window = appkit_window(window)?;
+    (!window
+        .styleMask()
+        .contains(objc2_app_kit::NSWindowStyleMask::FullScreen))
+    .then_some(window)
 }
 
 // Used by the macOS and Windows live-resize paths; on other targets only the
@@ -1073,6 +1074,14 @@ fn win32_hwnd<W: HasWindowHandle + ?Sized>(
 }
 
 #[cfg(target_os = "windows")]
+fn win32_movable_hwnd<W: HasWindowHandle + ?Sized>(
+    window: &W,
+) -> Option<windows_sys::Win32::Foundation::HWND> {
+    let hwnd = win32_hwnd(window)?;
+    (!crate::work_area::hwnd_active(hwnd)).then_some(hwnd)
+}
+
+#[cfg(target_os = "windows")]
 pub(crate) fn win32_min_track_size(hwnd: windows_sys::Win32::Foundation::HWND) -> (f64, f64) {
     use windows_sys::Win32::UI::WindowsAndMessaging::{MINMAXINFO, SendMessageW, WM_GETMINMAXINFO};
 
@@ -1123,20 +1132,15 @@ fn hit_test_for_edge(edge: FrameResizeEdge) -> usize {
 
 #[cfg(target_os = "windows")]
 fn send_nc_lbutton_down<W: HasWindowHandle + ?Sized>(window: &W, hit: usize) -> bool {
-    use raw_window_handle::RawWindowHandle;
-    use windows_sys::Win32::Foundation::{HWND, POINT};
+    use windows_sys::Win32::Foundation::POINT;
     use windows_sys::Win32::UI::Input::KeyboardAndMouse::ReleaseCapture;
     use windows_sys::Win32::UI::WindowsAndMessaging::{
         GetCursorPos, PostMessageW, WM_NCLBUTTONDOWN,
     };
 
-    let Ok(handle) = window.window_handle() else {
+    let Some(hwnd) = win32_movable_hwnd(window) else {
         return false;
     };
-    let RawWindowHandle::Win32(handle) = handle.as_raw() else {
-        return false;
-    };
-    let hwnd = handle.hwnd.get() as HWND;
     unsafe {
         ReleaseCapture();
         let mut point = POINT { x: 0, y: 0 };

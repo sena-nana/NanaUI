@@ -6,7 +6,7 @@ use nana_ui::{
     RuntimeProgramContext, RuntimeProgramUpdate, WindowDescriptor, WindowError, WindowHandle,
     WindowLevel,
 };
-use nana_ui_platform::{WindowId, WindowModeState};
+use nana_ui_platform::{WindowId, WindowModeState, WindowResizeEdge};
 use std::{
     collections::HashMap,
     sync::{Mutex, mpsc},
@@ -266,12 +266,21 @@ impl ApplicationState for App {
                 wait_for_appearance(&modes_rx, second.id(), |mode| {
                     mode.fullscreen.is_some() && mode.display.is_none_or(|shown| shown == display)
                 })?;
+                let drag = second.begin_drag().wait();
+                if !matches!(drag, Err(WindowError::OperationFailed(_))) {
+                    return Err(format!("fullscreen drag reported {drag:?}"));
+                }
+                let resize = second.begin_resize(WindowResizeEdge::SouthEast).wait();
+                if !matches!(resize, Err(WindowError::OperationFailed(_))) {
+                    return Err(format!("fullscreen resize reported {resize:?}"));
+                }
                 second
                     .set_window_level(WindowLevel::AlwaysOnTop)
                     .wait()
                     .map_err(|e| e.to_string())?;
                 wait_for_appearance(&modes_rx, second.id(), |mode| {
                     mode.level == WindowLevel::AlwaysOnTop
+                        && mode.fullscreen == Some(FullscreenMode::Simple)
                 })?;
                 second
                     .set_fullscreen(None)

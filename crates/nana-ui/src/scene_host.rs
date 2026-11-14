@@ -1925,6 +1925,9 @@ fn apply_resolved_presentation(
 /// Starts a native window drag; `Ok` means the drag started and the platform
 /// now owns the button release.
 fn drag_scene_window(window: &dyn winit::window::Window) -> Result<(), winit::error::RequestError> {
+    if covers_display(window) {
+        return Err(winit::error::RequestError::Ignored);
+    }
     if nana_window::drag_custom_title_bar(window) {
         return Ok(());
     }
@@ -1941,6 +1944,9 @@ fn drag_scene_window(window: &dyn winit::window::Window) -> Result<(), winit::er
 }
 
 fn resize_scene_window(window: &dyn winit::window::Window, edge: WindowResizeEdge) {
+    if covers_display(window) {
+        return;
+    }
     if resize_custom_frame(window, frame_resize_edge(edge)) {
         return;
     }
@@ -2740,7 +2746,7 @@ fn window_geometry(window: &dyn winit::window::Window) -> WindowGeometry {
 /// directly, so ordinary windows still persist their actual maximized state.
 #[cfg(target_os = "macos")]
 fn geometry_maximized(window: &dyn winit::window::Window) -> bool {
-    if window.fullscreen().is_some() || WindowExtMacOS::simple_fullscreen(window) {
+    if covers_display(window) {
         false
     } else {
         nana_window::native_window_maximized(window).unwrap_or(false)
@@ -2749,13 +2755,18 @@ fn geometry_maximized(window: &dyn winit::window::Window) -> bool {
 
 #[cfg(not(target_os = "macos"))]
 fn geometry_maximized(window: &dyn winit::window::Window) -> bool {
-    window.is_maximized()
+    !covers_display(window) && window.is_maximized()
 }
 
-/// winit's fullscreen, or the Windows one that fills the work area (see
+/// winit's fullscreen, or a Simple fullscreen that does not go through it
+/// (macOS simple fullscreen, Windows work-area fullscreen; see
 /// `apply_fullscreen`): either way the window has no frame to resize or move
 /// and no shadow to show.
 fn covers_display(window: &dyn winit::window::Window) -> bool {
+    #[cfg(target_os = "macos")]
+    if WindowExtMacOS::simple_fullscreen(window) {
+        return true;
+    }
     window.fullscreen().is_some() || nana_window::work_area_fullscreen(window)
 }
 

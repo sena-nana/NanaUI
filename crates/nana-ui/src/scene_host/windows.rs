@@ -1848,6 +1848,14 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
         event_loop: &dyn ActiveEventLoop,
         id: WindowId,
     ) -> Result<(), winit::error::RequestError> {
+        let Some(window) = self.window(id).cloned() else {
+            return Ok(());
+        };
+        // A fullscreen window has nowhere to move to, whether the host or the
+        // platform would drive the gesture.
+        if covers_display(window.as_ref()) {
+            return Err(winit::error::RequestError::Ignored);
+        }
         #[cfg(any(target_os = "macos", target_os = "windows"))]
         if let Some(button) = held_mouse_button(self.input_of(id).buttons)
             && uses_host_managed_drag(
@@ -1858,18 +1866,15 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
                     .any(|host| host.settings.parent == Some(id) && host.underlay.is_some()),
             )
         {
-            // A gesture the host declines — a fullscreen window has nowhere to
-            // move to — reports that, rather than falling back to the platform,
-            // which would take a press it cannot end for a caption drag.
+            // A gesture the host declines reports that, rather than falling
+            // back to the platform, which would take a press it cannot end for
+            // a caption drag.
             return if self.start_frame_move(id, button) {
                 Ok(())
             } else {
                 Err(winit::error::RequestError::Ignored)
             };
         }
-        let Some(window) = self.window(id).cloned() else {
-            return Ok(());
-        };
         drag_scene_window(window.as_ref())?;
         self.begin_native_drag_presence(id);
         self.dispatch_pointer_cancel(event_loop, id);
@@ -2118,6 +2123,9 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
         let Some(window) = self.window(id).cloned() else {
             return;
         };
+        if covers_display(window.as_ref()) {
+            return;
+        }
         #[cfg(any(target_os = "macos", target_os = "windows"))]
         {
             if let Some(live) =
@@ -2689,6 +2697,9 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
             }
             Control::Redraw => window.request_redraw(),
             Control::Resize(edge) => {
+                if covers_display(window.as_ref()) {
+                    return Err(window_request_error(winit::error::RequestError::Ignored));
+                }
                 if !resize_custom_frame(window.as_ref(), frame_resize_edge(edge)) {
                     window
                         .drag_resize_window(match edge {

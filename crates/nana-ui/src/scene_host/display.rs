@@ -124,9 +124,9 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
         id: WindowId,
         request: Option<FullscreenRequest>,
     ) -> Result<(), WindowError> {
-        let Some(host) = self.window_contexts.get_mut(&id) else {
+        if !self.window_contexts.contains_key(&id) {
             return Err(WindowError::WindowClosed);
-        };
+        }
         let monitor =
             match request.and_then(|request| request.display) {
                 Some(display) => Some(find_monitor(event_loop, display).ok_or_else(|| {
@@ -134,6 +134,14 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
                 })?),
                 None => None,
             };
+        #[cfg(any(target_os = "macos", target_os = "windows"))]
+        if request.is_some() {
+            self.end_live_frame_resize(id);
+            self.end_live_frame_move(event_loop, id);
+        }
+        let Some(host) = self.window_contexts.get_mut(&id) else {
+            return Err(WindowError::WindowClosed);
+        };
         host.pending_fullscreen = None;
         self.apply_fullscreen(id, request, monitor);
         self.sync_window_mode(event_loop, id);
