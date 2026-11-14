@@ -668,18 +668,45 @@ where
             }
         }
         let Some(scroll) = self.scroll(cx)? else {
+            // Unmount already-mounted items if the surrounding scroll area
+            // detached so removed store keys cannot keep stale row watchers.
+            if !self.state.mounted_keys().is_empty() || !self.geometry.units.units.is_empty() {
+                self.geometry = Geometry::default();
+                self.synced = None;
+                self.version += 1;
+                cx.sync_virtual_list_in_viewport(
+                    self.list,
+                    &mut self.state,
+                    &self.geometry.layout,
+                    nana_ui_core::VirtualViewport::vertical(0.0, 0.0, 0.0),
+                    self.version,
+                    &[],
+                    |_| unreachable!(),
+                    |_| None,
+                    |_, _| unreachable!(),
+                    |_, _, _, _| Ok(()),
+                )?;
+                self.publish_geometry(None);
+            }
             return Ok(());
         };
         let viewport = cx.virtual_list_viewport(scroll, self.list, 0.0)?;
         let follow_end = cx.read(scroll, |view| view.follow_end)?;
         let mut request = self.with_shared(|shared| shared.request.take());
         let columns = self.units_columns(cx);
+        let effective_columns = columns.or_else(|| {
+            (!self.geometry.units.units.is_empty()).then_some(self.geometry.units.columns.max(1))
+        });
         let regroup = self.synced != Some(items.stamp)
             || columns.is_some_and(|columns| columns != self.geometry.units.columns);
         // A grid with no width yet groups nothing and stays unsynced, so its
         // first width regroups even when that fits the one column units
-        // start at.
-        let units = regroup.then(|| self.units(columns, &items.items)).flatten();
+        // start at. If items are already mounted when width temporarily hits
+        // zero, keep regrouping with the previous column count so removals
+        // still unmount stale rows immediately.
+        let units = regroup
+            .then(|| self.units(effective_columns, &items.items))
+            .flatten();
         let focus = columns
             .is_some_and(|columns| columns != self.geometry.units.columns)
             .then(|| self.grid_focus(cx))
@@ -734,12 +761,12 @@ where
                     index,
                     keys,
                     positions,
-                    columns: columns.unwrap_or(kept.columns),
+                    columns: effective_columns.unwrap_or(kept.columns),
                     grid: self.grid.is_some(),
                 };
                 self.version += 1;
             }
-            self.synced = Some(items.stamp);
+            self.synced = columns.is_some().then_some(items.stamp);
         }
         if let Some(focus) = &focus
             && geometry.unit_of(&focus.key).is_some()
@@ -832,6 +859,19 @@ where
         };
         // Readers get copies of the units and the layout made only when they
         // changed: a scroll that measures nothing copies neither.
+        self.publish_geometry(again);
+        if self.within.is_some() || self.grid.is_some() || self.measured {
+            // Content above the list, the list's own width, or the height a
+            // measured row lays out at -- rows mounted now, or a row whose
+            // content grew -- can change with no scroll or viewport change:
+            // look again after the next layout pass (one only happens when
+            // something changed).
+            cx.notify_laid_out(scroll);
+        }
+        Ok(())
+    }
+
+    fn publish_geometry(&mut self, request: Option<Request<K>>) {
         let units = (self.published.0 != self.version).then(|| self.geometry.units.clone());
         let measurements = self.state.measurements();
         let layout = (units.is_some() || self.published.1 != measurements)
@@ -850,18 +890,9 @@ where
             published.extent = geometry.extent;
             published.rows.clone_from(&geometry.rows);
             if shared.request.is_none() {
-                shared.request = again;
+                shared.request = request;
             }
         });
-        if self.within.is_some() || self.grid.is_some() || self.measured {
-            // Content above the list, the list's own width, or the height a
-            // measured row lays out at -- rows mounted now, or a row whose
-            // content grew -- can change with no scroll or viewport change:
-            // look again after the next layout pass (one only happens when
-            // something changed).
-            cx.notify_laid_out(scroll);
-        }
-        Ok(())
     }
 
     fn with_shared<R>(&self, f: impl FnOnce(&mut Shared<K>) -> R) -> R {

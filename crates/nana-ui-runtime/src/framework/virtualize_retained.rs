@@ -495,7 +495,7 @@ impl AppContext {
     /// The range gate and commit of [`Self::sync_virtual_list_retained_with`]
     /// against a viewport the caller already read from the ScrollView.
     #[allow(clippy::too_many_arguments)]
-    fn sync_virtual_list_in_viewport<K, C>(
+    pub(crate) fn sync_virtual_list_in_viewport<K, C>(
         &mut self,
         list: Entity<List>,
         items: &mut VirtualListItems<K, C>,

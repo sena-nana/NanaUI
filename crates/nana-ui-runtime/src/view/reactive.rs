@@ -165,6 +165,7 @@ struct EffectNode {
     /// A signal it read changed; otherwise a queued effect only checks its
     /// computed dependencies before it runs ([`confirm`]).
     dirty: bool,
+    scope_depth: u32,
     context: u64,
     target: EffectTarget,
     run: Option<Box<dyn FnMut()>>,
@@ -177,6 +178,7 @@ struct ScopeNode {
     /// a swap-remove, not a scan: a list dropping each of n rows would
     /// otherwise pay O(n²).
     slot: u32,
+    depth: u32,
     signals: Vec<SignalKey>,
     effects: Vec<EffectKey>,
     children: Vec<ScopeKey>,
@@ -915,12 +917,17 @@ pub(crate) fn create_effect(
 ) -> EffectKey {
     with_rt(|rt| {
         let deps = rt.pool.pop().unwrap_or_default();
+        let scope_depth = rt
+            .current_scope
+            .and_then(|scope| rt.scopes.get(scope.index, scope.generation))
+            .map_or(0, |node| node.depth);
         let (index, generation) = rt.effects.insert(EffectNode {
             deps,
             queued: false,
             dirty: false,
             context,
             target,
+            scope_depth,
             run,
             site,
         });
@@ -955,6 +962,10 @@ pub(crate) fn effect_site(key: EffectKey) -> Option<&'static Location<'static>> 
 /// away whose nodes stay in the world to play their leave.
 pub(crate) fn effect_alive(key: EffectKey) -> bool {
     with_rt(|rt| rt.effect_mut(key).is_some())
+}
+
+pub(crate) fn effect_scope_depth(key: EffectKey) -> u32 {
+    with_rt(|rt| rt.effect_mut(key).map_or(0, |node| node.scope_depth))
 }
 
 pub(crate) fn dispose_effect(key: EffectKey) {
@@ -1034,12 +1045,13 @@ pub(crate) fn drop_pending(context: u64) {
 
 pub(crate) fn create_scope(parent: Option<ScopeKey>) -> ScopeKey {
     with_rt(|rt| {
-        let slot = parent
-            .and_then(|parent| rt.scopes.get(parent.index, parent.generation))
-            .map_or(0, |parent| parent.children.len() as u32);
+        let parent_node = parent.and_then(|parent| rt.scopes.get(parent.index, parent.generation));
+        let slot = parent_node.map_or(0, |parent| parent.children.len() as u32);
+        let depth = parent_node.map_or(1, |parent| parent.depth.saturating_add(1));
         let (index, generation) = rt.scopes.insert(ScopeNode {
             parent,
             slot,
+            depth,
             signals: Vec::new(),
             effects: Vec::new(),
             children: Vec::new(),

@@ -308,12 +308,9 @@ pub trait StorePath: Copy + Send + 'static {
     /// Read and track. Panics if the path leads to a list item that is gone.
     #[track_caller]
     fn with<R>(&self, f: impl FnOnce(&Self::Value) -> R) -> R {
-        self.try_with(f).unwrap_or_else(|| {
-            panic!(
-                "store path read at {} leads to a removed item",
-                Location::caller()
-            )
-        })
+        let at = Location::caller();
+        read(self, at, Some(true), f)
+            .unwrap_or_else(|| panic!("store path read at {at} leads to a removed item"))
     }
 
     /// Read and track; `None` once a list item on the path is gone.
@@ -335,12 +332,9 @@ pub trait StorePath: Copy + Send + 'static {
     where
         Self::Value: Clone,
     {
-        read(self, Location::caller(), None, Self::Value::clone).unwrap_or_else(|| {
-            panic!(
-                "store path read at {} leads to a removed item",
-                Location::caller()
-            )
-        })
+        let at = Location::caller();
+        read(self, at, None, Self::Value::clone)
+            .unwrap_or_else(|| panic!("store path read at {at} leads to a removed item"))
     }
 
     /// Replace the value and notify its readers, those of the paths below

@@ -355,9 +355,9 @@ impl AppContext {
         rx::has_pending(self.reactive.tag)
     }
 
-    /// Apply every binding whose signals changed: run watchers, rebuild
-    /// keyed lists and conditional blocks, then stage each changed node once
-    /// and commit them together. Input routing and
+    /// Apply every binding whose signals changed: rebuild keyed lists and
+    /// conditional blocks (outermost scopes first), run watchers, then stage
+    /// each changed node once and commit them together. Input routing and
     /// [`Self::take_system_work`] call this; call it yourself after writing
     /// signals outside both.
     pub fn flush_reactive(&mut self) -> Result<(), FrameworkError> {
@@ -382,6 +382,7 @@ impl AppContext {
         let tag = self.reactive.tag;
         let mut queue = std::mem::take(&mut self.reactive.queue);
         let mut patches = std::mem::take(&mut self.reactive.patches);
+        let mut structural = Vec::new();
         let mut outcome = Ok(());
         let (mut patched, mut commits) = (0, 0);
         for _ in 0..MAX_ROUNDS {
@@ -390,28 +391,37 @@ impl AppContext {
             if queue.is_empty() {
                 break;
             }
-            // An effect reached only through computeds that recomputed to
-            // the same value has nothing to do.
-            queue.retain(|&(effect, _)| rx::confirm(effect));
             #[cfg(feature = "reactive-trace")]
             let round = rx::with_trace(|trace| trace.begin_round());
             #[cfg(not(feature = "reactive-trace"))]
             let round = 0;
-            for &(effect, target) in &queue {
-                if target == EffectTarget::User {
-                    rx::run_user_effect(effect);
+            // Rebuild structural blocks outermost-first before confirming user
+            // effects or node computeds inside rows that are about to unmount.
+            structural.clear();
+            structural.extend(queue.iter().filter_map(|&(effect, target)| match target {
+                EffectTarget::Structural(node) => {
+                    Some((rx::effect_scope_depth(effect), effect, node))
                 }
+                _ => None,
+            }));
+            if structural.len() > 1 {
+                structural.sort_by_key(|&(depth, _, _)| depth);
             }
-            for &(effect, target) in &queue {
-                if let EffectTarget::Structural(node) = target {
+            for &(_, effect, node) in &structural {
+                if rx::confirm(effect) {
                     outcome = outcome.and(self.run_structural(node, effect));
                 }
             }
             // Rows and branches are placed now.
             rx::run_mounted(self);
+            for &(effect, target) in &queue {
+                if target == EffectTarget::User && rx::confirm(effect) {
+                    rx::run_user_effect(effect);
+                }
+            }
             patches.clear();
             patches.extend(queue.iter().filter_map(|&(effect, target)| match target {
-                EffectTarget::Node(node) => Some((node, effect)),
+                EffectTarget::Node(node) if rx::confirm(effect) => Some((node, effect)),
                 _ => None,
             }));
             if !patches.is_empty() {

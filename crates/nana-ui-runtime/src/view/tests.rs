@@ -6810,3 +6810,132 @@ fn focused_list_item_moves_muted_descendants_to_focus_text_unless_plated() {
     resolve(&mut cx);
     assert_eq!(color_of(&cx, note), Some(palette.muted.as_rgba_array()));
 }
+
+#[test]
+fn shrinking_store_list_unmounts_rows_before_running_row_computeds_watchers_and_nested_when() {
+    let (mut cx, _, parent) = setup();
+    let board = std::cell::Cell::new(None);
+    let view = cx
+        .mount_view(parent, || {
+            let state = store(Board {
+                tasks: (1..=3).map(task).collect(),
+            });
+            board.set(Some(state));
+            state.tasks().keyed(|task| task.id).each(|task| {
+                let upper = computed(move || task.title().get().to_uppercase());
+                watch_effect(move || {
+                    let _ = task.done().get();
+                });
+                column().children((
+                    text(upper).key("title"),
+                    when(
+                        move || task.done().get(),
+                        move || text(move || task.title().get()).key("detail"),
+                    ),
+                ))
+            })
+        })
+        .unwrap();
+    let board = board.get().unwrap();
+    let list = view.roots()[0];
+    let tasks = board.tasks().keyed(|task| task.id);
+
+    tasks.at(&2).done().set(true);
+    cx.flush_reactive().unwrap();
+    assert_eq!(children(&cx, list).len(), 3);
+
+    // Dirty the removed row's computed, watcher, and nested `when` in the same
+    // flush round as shrinking the list so structural unmounting must run
+    // outermost-first before any removed-item reads occur.
+    tasks.at(&2).title().set(String::from("updated"));
+    tasks.at(&2).done().set(false);
+    board.tasks().update(|list| list.retain(|t| t.id != 2));
+    cx.flush_reactive().unwrap();
+    assert_eq!(children(&cx, list).len(), 2);
+}
+
+#[test]
+fn zero_width_virtual_grid_unmounts_removed_store_items_immediately() {
+    let (mut cx, document, parent) = setup();
+    let board = std::cell::Cell::new(None);
+    let view = cx
+        .mount_view(parent, || {
+            let state = store(Board {
+                tasks: (1..=4).map(task).collect(),
+            });
+            board.set(Some(state));
+            state
+                .tasks()
+                .keyed(|task| task.id)
+                .each_virtual(40.0, |task| {
+                    let upper = computed(move || task.title().get().to_uppercase());
+                    watch_effect(move || {
+                        let _ = task.done().get();
+                    });
+                    text(upper)
+                })
+                .grid(80.0, 4.0)
+                .overscan(0.0)
+                .height(200.0)
+        })
+        .unwrap();
+    let board = board.get().unwrap();
+    let scroll = view.roots()[0];
+    let list = children(&cx, scroll)[0];
+    let tasks = board.tasks().keyed(|task| task.id);
+
+    settle(&mut cx, document, LayoutViewport::new(300.0, 300.0));
+    assert!(!children(&cx, list).is_empty());
+
+    // Collapse the grid to zero width while rows remain mounted.
+    settle(&mut cx, document, LayoutViewport::new(0.0, 300.0));
+    assert_eq!(cx.world().layout_box(list).unwrap().width, 0.0);
+
+    // Removing an item while width is still zero must unmount its stale unit
+    // immediately rather than leaving row observers alive on the removed item.
+    tasks.at(&2).title().set(String::from("updated"));
+    tasks.at(&2).done().set(true);
+    board.tasks().update(|list| list.retain(|t| t.id != 2));
+    cx.flush_reactive().unwrap();
+
+    tasks.at(&1).title().set(String::from("still here"));
+    cx.flush_reactive().unwrap();
+
+    board.tasks().set(Vec::new());
+    cx.flush_reactive().unwrap();
+    assert!(children(&cx, list).is_empty());
+}
+
+#[test]
+fn store_path_removed_item_panic_reports_caller_location() {
+    fn assert_caller_panic(f: impl FnOnce() + std::panic::UnwindSafe) {
+        let err = std::panic::catch_unwind(f).unwrap_err();
+        let msg = err
+            .downcast_ref::<String>()
+            .map(String::as_str)
+            .or_else(|| err.downcast_ref::<&'static str>().copied())
+            .unwrap_or("");
+        assert!(msg.contains("tests.rs:"), "unexpected panic payload: {msg}");
+        assert!(
+            msg.contains("leads to a removed item"),
+            "unexpected panic payload: {msg}"
+        );
+        assert!(
+            !msg.contains("store.rs:"),
+            "panic should report caller site instead of store.rs: {msg}"
+        );
+    }
+
+    let board = store(Board {
+        tasks: vec![task(1)],
+    });
+    let title = board.tasks().keyed(|t| t.id).at(&1).title();
+    board.tasks().set(Vec::new());
+
+    assert_caller_panic(|| {
+        let _ = title.get();
+    });
+    assert_caller_panic(|| {
+        let _ = title.get_untracked();
+    });
+}
