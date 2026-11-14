@@ -3137,7 +3137,9 @@ impl AppContext {
     }
 
     pub fn pointer_target(&self, document: DocumentId, x: f32, y: f32) -> Option<StableNodeId> {
-        self.world.hit_test(document, x, y)
+        self.world
+            .hit_test(document, x, y)
+            .or_else(|| self.scrollbar_lane_target(document, x, y))
     }
 
     pub fn set_pointer_hover(

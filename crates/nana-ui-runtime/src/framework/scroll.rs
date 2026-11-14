@@ -724,6 +724,21 @@ impl AppContext {
         }
     }
 
+    /// Find a scroll container in `document` whose shown scrollbar lane lies
+    /// under `(x, y)` even when the container itself has `pointer-events: none`
+    /// so its empty scrollport interior passes through.
+    pub(super) fn scrollbar_lane_target(
+        &self,
+        document: DocumentId,
+        x: f32,
+        y: f32,
+    ) -> Option<StableNodeId> {
+        self.world
+            .active_scrollbar_containers(document)
+            .into_iter()
+            .find(|&id| self.is_scroll_view(id) && self.scrollbar_axis_at(id, x, y).is_some())
+    }
+
     /// Find the innermost scroll container whose scrollbar lane is under a
     /// point.
     ///
@@ -735,7 +750,7 @@ impl AppContext {
         x: f32,
         y: f32,
     ) -> Option<(StableNodeId, nana_ui_core::ScrollbarAxis)> {
-        via!(self.scrollbar_target_near_hit(x, y, self.world.hit_test(document, x, y)))
+        via!(self.scrollbar_target_near_hit(x, y, self.pointer_target(document, x, y)))
     }
 
     /// [`Self::scrollbar_target_near`] with the point already hit-tested.

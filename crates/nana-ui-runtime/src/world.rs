@@ -5789,6 +5789,83 @@ impl UiWorld {
         None
     }
 
+    pub(crate) fn has_active_scrollbar_chrome(&self, id: StableNodeId) -> bool {
+        let shown = matches!(
+            self.nodes.visual(id),
+            Some(StandardVisual::Scrollbar {
+                visibility,
+                presence,
+                ..
+            }) if *visibility == nana_ui_core::ScrollbarVisibility::Always
+                || (*visibility == nana_ui_core::ScrollbarVisibility::AutoHide && *presence > 0.0)
+        );
+        shown
+            && matches!(
+                self.component_geometry(id),
+                Some(crate::ComponentGeometry::Scrollbar {
+                    horizontal: Some(_),
+                    ..
+                }) | Some(crate::ComponentGeometry::Scrollbar {
+                    vertical: Some(_),
+                    ..
+                })
+            )
+    }
+
+    fn scrollbar_subtree_visible(&self, id: StableNodeId) -> bool {
+        let mut current = Some(id);
+        while let Some(node_id) = current {
+            let Some(node) = self.nodes.get(node_id) else {
+                return false;
+            };
+            if !node.resolved.0.box_visible
+                || !node.resolved.0.visible
+                || node.resolved.0.opacity <= 0.0
+                || self.motion_blocks_input(node_id)
+            {
+                return false;
+            }
+            current = self.parent_id(node_id);
+        }
+        true
+    }
+
+    /// Scroll containers of `document` that currently appear in the hit index
+    /// and have shown scrollbar chrome, ordered topmost-first.
+    pub(crate) fn active_scrollbar_containers(&self, document: DocumentId) -> Vec<StableNodeId> {
+        let Some(index) = self.hit_test_index.get(&document) else {
+            return Vec::new();
+        };
+        let mut containers: Vec<_> = self
+            .scroll_containers
+            .iter()
+            .copied()
+            .filter_map(|id| {
+                if self.document_of(id) != Some(document)
+                    || !self.is_mounted(id)
+                    || !self.has_active_scrollbar_chrome(id)
+                {
+                    return None;
+                }
+                let node = self.nodes.get(id)?;
+                if !node.interaction.pointer_events || !self.scrollbar_subtree_visible(id) {
+                    return None;
+                }
+                let indexed = index.entries.get(&id)?;
+                Some((
+                    id,
+                    (
+                        indexed.entry.z_index,
+                        node.hierarchy.depth,
+                        indexed.entry.order,
+                    ),
+                ))
+            })
+            .collect();
+        containers.sort_by(|(_, a), (_, b)| b.cmp(a));
+        containers.into_iter().map(|(id, _)| id).collect()
+    }
+
     /// Whether `target` can be what a pointer of `document` is over: the
     /// hover and capture owner routing writes each sample.
     pub(crate) fn accepts_pointer(&self, document: DocumentId, target: StableNodeId) -> bool {
@@ -5807,13 +5884,15 @@ impl UiWorld {
         if node.document != document {
             return Err(UiWorldError::PointerDocument { document, target });
         }
-        if !self.is_mounted(target) {
+        if !self.is_mounted(target) || !node.interaction.pointer_events {
             return Err(UiWorldError::NotPointerInteractive(target));
         }
-        if !node.interaction.pointer_events || !self.used_pointer_events(target).hittable() {
-            return Err(UiWorldError::NotPointerInteractive(target));
-        }
-        if !node.resolved.0.pointer_events.hittable() {
+        if !self.used_pointer_events(target).hittable()
+            || !node.resolved.0.pointer_events.hittable()
+        {
+            if self.has_active_scrollbar_chrome(target) && self.scrollbar_subtree_visible(target) {
+                return Ok(());
+            }
             return Err(UiWorldError::NotPointerInteractive(target));
         }
         Ok(())

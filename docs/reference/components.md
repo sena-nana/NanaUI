@@ -321,9 +321,9 @@ IME 预编辑存在 world 的 `ime` 槽里，不在编辑器的 `value` 里。�
 
 `ScrollView::scrollbars` 选三种：`AutoHide`（悬停或滚动时淡入，离开后保持主题的 `hide_delay` 再淡出）、`Always`（能滚就常驻，带轨道）、`Hidden`（不画，滚轮与 `scroll_to` 照常）。不写时跟随主题的策略 `ScrollbarRecipe::visibility`（内置 `AutoHide`），应用用 `ThemeDefinition::with_scrollbar_visibility` 一次改全部。
 
-滚动条是 overlay，不占布局。车道位于 padding box 边缘往内 `track_inset` 处，容器在末端留出不小于 `track_inset + thickness` 的 padding，滚动条就不碰内容。滚动条画在滚动区所有后代之上，但仍在它的裁剪与层叠上下文里。指针落在看得见的车道上时，悬停与按下都归滚动区：车道激活、滑块变粗，下面的行不显示悬停。两轴都能滚时各让出拐角，互不重叠。
+滚动条是 overlay，不占布局。车道位于 padding box 边缘往内 `track_inset` 处，容器在末端留出不小于 `track_inset + thickness` 的 padding，滚动条就不碰内容。滚动条画在滚动区所有后代之上，但仍在它的裁剪与层叠上下文里。指针落在看得见的车道上时（包括容器自身为 `pointer-events: none` 但仍绘制着滚动条车道的滚动区），悬停与按下都归滚动区：车道激活、滑块变粗，下面的行不显示悬停。两轴都能滚时各让出拐角，互不重叠。
 
-几何在 `nana-ui-core` 的 `scrollbar` 模块（`scrollbar_layout`）。尺寸在 `ThemeMetrics::scrollbar`；颜色、动效与显隐策略在主题的 `ScrollbarRecipe`。`::-webkit-scrollbar` / `::-webkit-scrollbar-thumb` 经 `ScrollbarSkin` 覆盖单个节点的厚度和颜色，仍走同一份几何与普通 Scene quad，不另做一套 thumb 几何引擎。滑块拖拽与轨道点击（按下即把滑块居中到落点）由 `AppContext::begin_scrollbar_drag` 一族处理，走指针 capture。
+几何在 `nana-ui-core` 的 `scrollbar` 模块（`scrollbar_layout`）。尺寸在 `ThemeMetrics::scrollbar`；颜色、描边、动效与显隐策略在主题的 `ScrollbarRecipe`（含 `track`、`media_track` / `media_track_hot` 与 `track_border` / `thumb_border` / `thumb_border_hot` 槽）。`::-webkit-scrollbar` / `::-webkit-scrollbar-thumb` 或 Rust 侧样式经 `ScrollbarSkin`（含 `over_media`、`track_hot_color`、`thumb_hot_color` 与描边颜色覆盖）覆盖单个节点的厚度、表面语境和颜色，仍走同一份几何与普通 Scene quad，不另做一套 thumb 几何引擎。滑块拖拽与轨道点击（按下即把滑块居中到落点）由 `AppContext::begin_scrollbar_drag` 一族处理，走指针 capture。
 
 ## 自己加一种控件
 

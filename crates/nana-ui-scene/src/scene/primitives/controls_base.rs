@@ -854,8 +854,12 @@ pub(super) fn build(context: &GeometryPaintContext<'_>, emit: &mut impl FnMut(Sc
                             scene_rect(bar.track),
                             VisualQuadStyle {
                                 background: Some(background),
-                                border_color: None,
-                                border_width: 0.0,
+                                border_color: bar.track_border,
+                                border_width: if bar.track_border.is_some() {
+                                    bar.border_width
+                                } else {
+                                    0.0
+                                },
                                 corner_radius: corner_radii(bar.track_radius),
                             },
                         ));
@@ -866,8 +870,12 @@ pub(super) fn build(context: &GeometryPaintContext<'_>, emit: &mut impl FnMut(Sc
                         scene_rect(bar.thumb),
                         VisualQuadStyle {
                             background: Some(bar.thumb_background),
-                            border_color: None,
-                            border_width: 0.0,
+                            border_color: bar.thumb_border,
+                            border_width: if bar.thumb_border.is_some() {
+                                bar.border_width
+                            } else {
+                                0.0
+                            },
                             corner_radius: corner_radii(bar.thumb_radius),
                         },
                     ));

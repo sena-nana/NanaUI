@@ -127,13 +127,13 @@ ScrollView::new(ScrollAxes::Vertical).edge_fade(14.0, 64.0)
 
 滚动条画在这个滚动区所有后代之上，不论后代的 z-index；它仍在自己的祖先裁剪与层叠上下文里，后面的兄弟节点和 viewport-fixed 浮层照样能盖住它。能显示滚动条的滚动区因此是一个层叠组。
 
-只有看得见的车道接收指针，淡入中的也算。指针落在车道上时，悬停目标是滚动区本身：下面的行不显示悬停底色或 tooltip，车道激活、滑块变粗。在车道上按下即抓住滑块；按在空轨道上，先把滑块居中到落点。
+只有看得见的车道接收指针，淡入中的也算；滚动区自身设了 `pointer-events: none` 让空白区域穿透时，只要滚动条正在显示，指针落在看得见的车道上仍归该滚动条。指针落在车道上时，悬停目标是滚动区本身：下面的行不显示悬停底色或 tooltip，车道激活、滑块变粗。在车道上按下即抓住滑块；按在空轨道上，先把滑块居中到落点。
 
 ### 动效与样式
 
 淡入、淡出和变粗按主题的 `ScrollbarRecipe::motion` 播放；减少动态效果时直接到终点。空闲时不留任何 deadline。
 
-尺寸在 `ThemeMetrics::scrollbar`；颜色、动效与显隐策略在 `ScrollbarRecipe`，用 `ThemeDefinition::with_scrollbar` 安装。单个节点可以用 `PaintStyle::scrollbar`（`ScrollbarSkin`）改尺寸或颜色。CSS 的 `::-webkit-scrollbar` 与 `::-webkit-scrollbar-thumb` 写的就是它；CSS 指定的滑块宽度在悬停时不变粗。滚动区伸进容器边距、滚动条落在边距里时，用 `ScrollbarSkin::room` 给出边距宽度：边距放不下主题的车道和两侧内缩时，车道收窄到放得下，滑块不超过车道；绘制时才按已装主题解析，主题本身更窄时以主题为准。
+尺寸在 `ThemeMetrics::scrollbar`；颜色、描边、动效与显隐策略在 `ScrollbarRecipe`（支持普通表面与媒体/透明浮层两套轨道槽，以及轨道/滑块细描边），用 `ThemeDefinition::with_scrollbar` 安装。单个节点可以用 `PaintStyle::scrollbar`（`ScrollbarSkin`）改尺寸、声明 `over_media: true`（如浮在舞台上的滚动区）或覆盖颜色/描边。CSS 的 `::-webkit-scrollbar` 与 `::-webkit-scrollbar-thumb` 写的就是它；CSS 指定的滑块宽度在悬停时不变粗。滚动区伸进容器边距、滚动条落在边距里时，用 `ScrollbarSkin::room` 给出边距宽度：边距放不下主题的车道和两侧内缩时，车道收窄到放得下，滑块不超过车道；绘制时才按已装主题解析，主题本身更窄时以主题为准。
 
 `overflow: auto` 和 `overflow: scroll` 共用同一份 `ScrollOffset` 和裁剪，不再另画一套滑块。自定义滚动条铬只属于 `ScrollView`。
 

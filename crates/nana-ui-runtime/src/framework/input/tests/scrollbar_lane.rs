@@ -238,3 +238,87 @@ fn a_fixed_surface_over_the_lane_keeps_the_pointer() {
     assert_eq!(context.world().pointer_hover(document(), 1), Some(surface));
     assert_eq!(hot(&context, scroll), None);
 }
+
+#[test]
+fn pointer_events_none_scroll_view_passes_empty_area_through_and_grabs_shown_lane() {
+    let mut context = AppContext::new();
+    let mut style = NodeStyle::default();
+    {
+        let layout = Arc::make_mut(&mut style.layout);
+        layout.width = Some(LengthSpec::Px(200.0));
+        layout.height = Some(LengthSpec::Px(120.0));
+        layout.pointer_events = Some(nana_ui_core::PointerEventsSpec::None);
+    }
+    let scroll = context
+        .create_component(
+            document(),
+            ScrollView::new(ScrollAxes::Vertical)
+                .scrollbars(ScrollbarVisibility::Always)
+                .style(style),
+        )
+        .unwrap();
+    let child_style = {
+        let mut s = NodeStyle::default();
+        let layout = Arc::make_mut(&mut s.layout);
+        layout.width = Some(LengthSpec::Px(180.0));
+        layout.height = Some(LengthSpec::Px(320.0));
+        layout.pointer_events = Some(nana_ui_core::PointerEventsSpec::None);
+        s
+    };
+    let child = context
+        .create_detached_component(document(), Stack::column(0.0).style(child_style))
+        .unwrap();
+    context.append_child(scroll, child).unwrap();
+    context
+        .layout_document(document(), crate::LayoutViewport::new(400.0, 300.0))
+        .unwrap();
+    context.rebuild_hit_test(document());
+
+    assert_eq!(context.pointer_target(document(), 60.0, 20.0), None);
+    let current = bar(&context, scroll);
+    let lane_center_x = current.lane.x + current.lane.width / 2.0;
+    assert_eq!(
+        context.pointer_target(document(), lane_center_x, 20.0),
+        Some(scroll.stable_id())
+    );
+
+    let mut adapter = TestInput::default();
+    adapter
+        .dispatch_at(
+            &mut context,
+            document(),
+            &pointer_at(PointerPhase::Move, lane_center_x, 20.0),
+            Duration::ZERO,
+        )
+        .unwrap();
+    assert_eq!(
+        context.world().pointer_hover(document(), 1),
+        Some(scroll.stable_id())
+    );
+    assert_eq!(hot(&context, scroll), Some(ScrollbarAxis::Vertical));
+
+    let thumb = bar(&context, scroll).thumb;
+    let grab = (thumb.x + thumb.width / 2.0, thumb.y + thumb.height / 2.0);
+    adapter
+        .dispatch_at(
+            &mut context,
+            document(),
+            &pointer_at(PointerPhase::Down, grab.0, grab.1),
+            Duration::from_millis(10),
+        )
+        .unwrap();
+    assert_eq!(
+        context.world().pointer_capture(document(), 1),
+        Some(scroll.stable_id())
+    );
+    adapter
+        .dispatch_at(
+            &mut context,
+            document(),
+            &pointer_at(PointerPhase::Move, grab.0, grab.1 + 30.0),
+            Duration::from_millis(20),
+        )
+        .unwrap();
+    let offset_y = context.world().scroll_offset(scroll.stable_id()).unwrap().y;
+    assert!(offset_y > 0.0, "expected scroll offset > 0, got {offset_y}");
+}

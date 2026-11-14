@@ -93,8 +93,25 @@ pub struct ScrollbarSkin {
     pub thumb_active_thickness: Option<f32>,
     /// Track fill. `None` keeps the theme's.
     pub track_color: Option<[f32; 4]>,
+    /// Hot / dragged track fill override. `None` keeps the theme's.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub track_hot_color: Option<[f32; 4]>,
     /// Thumb fill. `None` keeps the theme's.
     pub thumb_color: Option<[f32; 4]>,
+    /// Hot / dragged thumb fill override. `None` keeps the theme's.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub thumb_hot_color: Option<[f32; 4]>,
+    /// Track border stroke override. `None` keeps the theme's.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub track_border_color: Option<[f32; 4]>,
+    /// Thumb border stroke override. `None` keeps the theme's.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub thumb_border_color: Option<[f32; 4]>,
+    /// Whether this scrollbar sits over stage / transparent / media content
+    /// rather than an opaque panel or card surface, selecting the theme
+    /// recipe's `media_track` / `media_track_hot` slots when set.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub over_media: bool,
     /// The margin the bar runs in, when that is narrower than the theme's
     /// lane and its inset on both sides: the lane narrows to fit it, and the
     /// thumbs stay no wider than the lane. Resolved against the installed
@@ -158,13 +175,22 @@ impl ScrollEdgeFade {
     }
 }
 
+fn is_false(value: &bool) -> bool {
+    !*value
+}
+
 impl ScrollbarSkin {
     pub fn is_empty(self) -> bool {
         self.thickness.is_none()
             && self.thumb_thickness.is_none()
             && self.thumb_active_thickness.is_none()
             && self.track_color.is_none()
+            && self.track_hot_color.is_none()
             && self.thumb_color.is_none()
+            && self.thumb_hot_color.is_none()
+            && self.track_border_color.is_none()
+            && self.thumb_border_color.is_none()
+            && !self.over_media
             && self.room.is_none()
     }
 
@@ -651,6 +677,21 @@ mod tests {
         )
         .expect("old skin loads");
         assert_eq!(skin.thumb_active_thickness, None);
+        assert!(!skin.over_media);
+
+        let full = ScrollbarSkin {
+            track_hot_color: Some([0.1, 0.2, 0.3, 0.4]),
+            thumb_hot_color: Some([0.5, 0.6, 0.7, 0.8]),
+            track_border_color: Some([0.2, 0.2, 0.2, 0.5]),
+            thumb_border_color: Some([0.0, 0.0, 0.0, 0.8]),
+            over_media: true,
+            ..ScrollbarSkin::default()
+        };
+        assert!(ScrollbarSkin::default().is_empty());
+        assert!(!full.is_empty());
+        let encoded = serde_json::to_string(&full).expect("encode full skin");
+        let decoded: ScrollbarSkin = serde_json::from_str(&encoded).expect("decode full skin");
+        assert_eq!(decoded, full);
     }
 
     fn extent(viewport: f32, content: f32, offset: f32) -> ScrollbarExtent {

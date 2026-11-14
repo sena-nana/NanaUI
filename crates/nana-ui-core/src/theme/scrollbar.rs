@@ -78,12 +78,29 @@ pub struct ScrollbarRecipe {
     pub thumb_hot: SemanticColorMix,
     /// The thumb while it is dragged.
     pub thumb_active: SemanticColorMix,
+    /// The track behind a visible auto-hiding bar at rest (and fallback for a
+    /// resident bar); `None` draws no resting track for auto-hiding bars.
+    pub track: Option<SemanticColorMix>,
     /// The track while the lane is hot or the thumb is dragged; `None` draws
-    /// none.
+    /// none unless a resting track applies.
     pub track_hot: Option<SemanticColorMix>,
     /// The track of a resident ([`ScrollbarVisibility::Always`]) bar at rest;
-    /// `None` draws none.
+    /// `None` falls back to [`Self::track`].
     pub track_resident: Option<SemanticColorMix>,
+    /// Resting track when [`ScrollbarSkin::over_media`] is set (e.g. over
+    /// stage or transparent surfaces); `None` falls back to the ordinary
+    /// resting track.
+    pub media_track: Option<SemanticColorMix>,
+    /// Hot/dragged track when [`ScrollbarSkin::over_media`] is set; `None`
+    /// falls back to [`Self::track_hot`].
+    pub media_track_hot: Option<SemanticColorMix>,
+    /// Border stroke around a visible track; `None` draws none.
+    pub track_border: Option<SemanticColorMix>,
+    /// Border stroke around the thumb at rest; `None` draws none.
+    pub thumb_border: Option<SemanticColorMix>,
+    /// Border stroke around the thumb while hot or dragged; `None` keeps
+    /// [`Self::thumb_border`].
+    pub thumb_border_hot: Option<SemanticColorMix>,
     pub motion: ScrollbarMotion,
 }
 
@@ -96,18 +113,25 @@ impl ScrollbarRecipe {
         thumb: SemanticColorMix::role(SemanticColorRole::BorderStrong),
         thumb_hot: SemanticColorMix::role(SemanticColorRole::Muted),
         thumb_active: SemanticColorMix::role(SemanticColorRole::Muted),
+        track: None,
         track_hot: Some(SemanticColorMix::role(SemanticColorRole::Subtle)),
         track_resident: Some(SemanticColorMix::role(SemanticColorRole::Subtle)),
+        media_track: None,
+        media_track_hot: None,
+        track_border: None,
+        thumb_border: None,
+        thumb_border_hot: None,
         motion: ScrollbarMotion::DEFAULT,
     };
 
     /// The colours one axis of a bar paints with.
     ///
-    /// A skin colour (CSS `::-webkit-scrollbar*`) wins over the recipe. The
-    /// thumb blends from its resting role to its hot one as the lane heats
-    /// up and takes the active role while dragged; the track blends from the
-    /// resident track (or nothing) to the hot one. Both fade with the bar's
-    /// presence.
+    /// A skin colour (CSS `::-webkit-scrollbar*` or explicit overrides) wins
+    /// over the recipe. The thumb blends from its resting role to its hot one
+    /// as the lane heats up and takes the active role while dragged; the track
+    /// blends from the resting track (or `track_resident`, or nothing; choosing
+    /// `media_track` / `media_track_hot` when `skin.over_media` is set) to
+    /// the hot one. All parts and borders fade with the bar's presence.
     pub fn paint(
         &self,
         model: StyleModelRef,
@@ -121,30 +145,51 @@ impl ScrollbarRecipe {
             unit(state.expand)
         };
         let skin_color = |rgba: [f32; 4]| SemanticColor::rgba(rgba[0], rgba[1], rgba[2], rgba[3]);
-        let thumb = match skin.and_then(|skin| skin.thumb_color) {
-            Some(rgba) => skin_color(rgba),
-            None if state.dragging => self.thumb_active.resolve(model),
-            None => blend(
+        let over_media = skin.is_some_and(|skin| skin.over_media);
+        let thumb = match (
+            skin.and_then(|s| s.thumb_color),
+            skin.and_then(|s| s.thumb_hot_color),
+        ) {
+            (Some(rest), Some(hot)) => blend(skin_color(rest), skin_color(hot), expand),
+            (Some(rest), None) => skin_color(rest),
+            (None, Some(hot)) => blend(self.thumb.resolve(model), skin_color(hot), expand),
+            (None, None) if state.dragging => self.thumb_active.resolve(model),
+            (None, None) => blend(
                 self.thumb.resolve(model),
                 self.thumb_hot.resolve(model),
                 expand,
             ),
         };
-        let track = match skin.and_then(|skin| skin.track_color) {
-            Some(rgba) => Some(skin_color(rgba)),
-            None => {
-                let resting = self
-                    .track_resident
-                    .filter(|_| state.resident)
-                    .map(|mix| mix.resolve(model));
-                let hot = self.track_hot.map(|mix| mix.resolve(model));
-                match (resting, hot) {
-                    (None, None) => None,
-                    (resting, hot) => {
-                        let clear = SemanticColor::rgba(0.0, 0.0, 0.0, 0.0);
-                        let from = resting.unwrap_or(clear);
-                        Some(blend(from, hot.unwrap_or(from), expand))
-                    }
+        let track = {
+            let surface_rest = if state.resident {
+                self.track_resident.or(self.track)
+            } else {
+                self.track
+            };
+            let resting_mix = if over_media {
+                self.media_track.or(surface_rest)
+            } else {
+                surface_rest
+            };
+            let hot_mix = if over_media {
+                self.media_track_hot.or(self.track_hot)
+            } else {
+                self.track_hot
+            };
+            let resting = skin
+                .and_then(|s| s.track_color)
+                .map(skin_color)
+                .or_else(|| resting_mix.map(|mix| mix.resolve(model)));
+            let hot = skin
+                .and_then(|s| s.track_hot_color.or(s.track_color))
+                .map(skin_color)
+                .or_else(|| hot_mix.map(|mix| mix.resolve(model)));
+            match (resting, hot) {
+                (None, None) => None,
+                (resting, hot) => {
+                    let clear = SemanticColor::rgba(0.0, 0.0, 0.0, 0.0);
+                    let from = resting.unwrap_or(clear);
+                    Some(blend(from, hot.unwrap_or(from), expand))
                 }
             }
         };
@@ -155,9 +200,42 @@ impl ScrollbarRecipe {
             }
             .as_rgba_array()
         };
+        let faded_track = track.map(fade).filter(|rgba| rgba[3] > 0.0);
+        let track_border = faded_track.and_then(|_| {
+            skin.and_then(|s| s.track_border_color)
+                .map(skin_color)
+                .or_else(|| self.track_border.map(|mix| mix.resolve(model)))
+                .map(fade)
+                .filter(|rgba| rgba[3] > 0.0)
+        });
+        let thumb_border = {
+            let rest = skin
+                .and_then(|s| s.thumb_border_color)
+                .map(skin_color)
+                .or_else(|| self.thumb_border.map(|mix| mix.resolve(model)));
+            let hot = skin
+                .and_then(|s| s.thumb_border_color)
+                .map(skin_color)
+                .or_else(|| {
+                    self.thumb_border_hot
+                        .or(self.thumb_border)
+                        .map(|mix| mix.resolve(model))
+                });
+            match (rest, hot) {
+                (None, None) => None,
+                (rest, hot) => {
+                    let clear = SemanticColor::rgba(0.0, 0.0, 0.0, 0.0);
+                    let from = rest.unwrap_or(clear);
+                    Some(fade(blend(from, hot.unwrap_or(from), expand)))
+                        .filter(|rgba| rgba[3] > 0.0)
+                }
+            }
+        };
         ScrollbarPaint {
             thumb: fade(thumb),
-            track: track.map(fade).filter(|rgba| rgba[3] > 0.0),
+            track: faded_track,
+            track_border,
+            thumb_border,
         }
     }
 }
@@ -187,6 +265,10 @@ pub struct ScrollbarPaint {
     pub thumb: [f32; 4],
     /// `None` paints no track.
     pub track: Option<[f32; 4]>,
+    /// `None` paints no border around the track.
+    pub track_border: Option<[f32; 4]>,
+    /// `None` paints no border around the thumb.
+    pub thumb_border: Option<[f32; 4]>,
 }
 
 fn unit(value: f32) -> f32 {
@@ -319,5 +401,54 @@ mod tests {
             },
         );
         assert_eq!(painted.track, None);
+    }
+
+    #[test]
+    fn auto_hide_resting_track_media_track_and_borders_follow_expand_and_presence() {
+        let recipe = ScrollbarRecipe {
+            thumb: SemanticColorMix::role(SemanticColorRole::Surface),
+            thumb_hot: SemanticColorMix::role(SemanticColorRole::Surface),
+            thumb_active: SemanticColorMix::role(SemanticColorRole::Surface),
+            track: Some(SemanticColorMix::alpha(SemanticColorRole::Text, 0.14)),
+            track_hot: Some(SemanticColorMix::alpha(SemanticColorRole::Text, 0.24)),
+            track_resident: Some(SemanticColorMix::alpha(SemanticColorRole::Text, 0.14)),
+            media_track: Some(SemanticColorMix::alpha(SemanticColorRole::Surface, 0.08)),
+            media_track_hot: Some(SemanticColorMix::alpha(SemanticColorRole::Surface, 0.16)),
+            track_border: Some(SemanticColorMix::alpha(SemanticColorRole::Text, 0.16)),
+            thumb_border: Some(SemanticColorMix::alpha(SemanticColorRole::Text, 0.70)),
+            thumb_border_hot: Some(SemanticColorMix::alpha(SemanticColorRole::Text, 0.85)),
+            ..ScrollbarRecipe::DEFAULT
+        };
+
+        let surface_rest = recipe.paint(model(), None, state(1.0, 0.0));
+        assert!(surface_rest.track.is_some());
+        assert!((surface_rest.track.unwrap()[3] - 0.14).abs() < 1e-5);
+        assert!((surface_rest.track_border.unwrap()[3] - 0.16).abs() < 1e-5);
+        assert!((surface_rest.thumb_border.unwrap()[3] - 0.70).abs() < 1e-5);
+
+        let surface_hot = recipe.paint(model(), None, state(1.0, 1.0));
+        assert!((surface_hot.track.unwrap()[3] - 0.24).abs() < 1e-5);
+        assert!((surface_hot.thumb_border.unwrap()[3] - 0.85).abs() < 1e-5);
+
+        let media_skin = Some(ScrollbarSkin {
+            over_media: true,
+            ..ScrollbarSkin::default()
+        });
+        let media_rest = recipe.paint(model(), media_skin, state(0.5, 0.0));
+        assert!((media_rest.track.unwrap()[3] - 0.04).abs() < 1e-5);
+        assert_eq!(
+            media_rest.track.unwrap()[0],
+            role(SemanticColorRole::Surface)[0]
+        );
+        assert!((media_rest.track_border.unwrap()[3] - 0.08).abs() < 1e-5);
+        assert!((media_rest.thumb_border.unwrap()[3] - 0.35).abs() < 1e-5);
+
+        let media_hot = recipe.paint(model(), media_skin, state(1.0, 1.0));
+        assert!((media_hot.track.unwrap()[3] - 0.16).abs() < 1e-5);
+
+        let gone = recipe.paint(model(), media_skin, state(0.0, 1.0));
+        assert_eq!(gone.track, None);
+        assert_eq!(gone.track_border, None);
+        assert_eq!(gone.thumb_border, None);
     }
 }

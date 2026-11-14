@@ -1404,6 +1404,12 @@ pub struct ScrollbarBar {
     /// `None` paints no track.
     pub track_background: Option<[f32; 4]>,
     pub thumb_background: [f32; 4],
+    /// Hairline border width for [`Self::track_border`] / [`Self::thumb_border`].
+    pub border_width: f32,
+    /// Optional stroke around the track when painted.
+    pub track_border: Option<[f32; 4]>,
+    /// Optional stroke around the thumb.
+    pub thumb_border: Option<[f32; 4]>,
     pub track_radius: f32,
     pub thumb_radius: f32,
     /// Smallest and largest content offsets this axis can reach.

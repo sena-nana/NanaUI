@@ -6607,6 +6607,9 @@ fn vertical_bar(thumb_y: f32, track_background: Option<[f32; 4]>) -> ComponentGe
             },
             track_background,
             thumb_background: [0.6, 0.6, 0.6, 1.0],
+            border_width: 0.0,
+            track_border: None,
+            thumb_border: None,
             track_radius: 4.0,
             thumb_radius: 3.0,
             min_offset: 0.0,
@@ -6751,6 +6754,9 @@ fn scrollbar_skin_thickness_still_paints_ordinary_quads() {
             },
             track_background: Some([0.2, 0.2, 0.2, 1.0]),
             thumb_background: [1.0, 0.0, 0.0, 1.0],
+            border_width: 1.0,
+            track_border: Some([0.3, 0.3, 0.3, 0.5]),
+            thumb_border: Some([0.0, 0.0, 0.0, 0.8]),
             track_radius: 2.0,
             thumb_radius: 2.0,
             min_offset: 0.0,
@@ -6778,17 +6784,26 @@ fn scrollbar_skin_thickness_still_paints_ordinary_quads() {
             background: Some(nana_ui_core::PaintColor::Srgb {
                 rgba: [0.2, 0.2, 0.2, 1.0]
             }),
+            border_color: Some(nana_ui_core::PaintColor::Srgb {
+                rgba: [0.3, 0.3, 0.3, 0.5]
+            }),
+            border_width,
             ..
-        }
+        } if (border_width - 1.0).abs() < f32::EPSILON
     ));
     assert_eq!(track.bounds.width, 4.0);
     assert!(matches!(
         thumb.kind,
         ScenePrimitiveKind::Quad {
             background: Some(nana_ui_core::PaintColor::Srgb { rgba: [1.0, 0.0, 0.0, 1.0] }),
+            border_color: Some(nana_ui_core::PaintColor::Srgb {
+                rgba: [0.0, 0.0, 0.0, 0.8]
+            }),
+            border_width,
             corner_radius,
             ..
-        } if corner_radius.iter().all(|r| (*r - 2.0).abs() < f32::EPSILON)
+        } if (border_width - 1.0).abs() < f32::EPSILON
+            && corner_radius.iter().all(|r| (*r - 2.0).abs() < f32::EPSILON)
     ));
     assert_eq!(thumb.bounds.width, 4.0);
     assert_eq!(thumb.bounds.x, 192.0);
