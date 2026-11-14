@@ -402,7 +402,7 @@ impl crate::AppContext {
                 || open::<crate::Select>(self, id, |select| select.opened)
                 || open::<crate::Dropdown>(self, id, |dropdown| dropdown.opened)
                 || open::<crate::SearchDropdown>(self, id, |dropdown| dropdown.opened)
-                || open::<crate::ColorField>(self, id, |field| field.opened)
+                || open::<crate::ColorField>(self, id, |field| field.opened || field.sampling)
             {
                 return true;
             }

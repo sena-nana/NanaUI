@@ -12,7 +12,8 @@ pub(crate) use fallback::{
 #[cfg(target_os = "macos")]
 pub(crate) use macos::{
     apply, build_menu, clear, describe_configured_panel, install_menu_bar, installed_menu_bar,
-    open_file_dialog, set_application_icon_png, set_presentation_hold, show_without_activation,
+    open_file_dialog, pick_screen_color, set_application_icon_png, set_presentation_hold,
+    show_without_activation,
 };
 #[cfg(target_os = "windows")]
 pub(crate) use windows::{

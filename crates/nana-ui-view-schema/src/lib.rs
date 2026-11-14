@@ -270,6 +270,7 @@ macro_rules! for_each_control {
                 value: [f32; 4] = builder,
                 label: Option<Arc<str>> = set,
                 disabled: bool = set,
+                eyedropper: bool = set,
             }
             with { on_change: ColorChanged };
             ActionMenuItem => action_menu_item(label: text) for ActionMenuItem {

@@ -10,6 +10,11 @@ pub use browser::{
 mod aspect;
 mod auxiliary;
 pub use auxiliary::{AuxiliaryWindow, AuxiliaryWindowError};
+mod color_sampler;
+#[cfg(target_os = "linux")]
+mod color_sampler_linux;
+#[cfg(target_os = "windows")]
+mod color_sampler_windows;
 mod contrast_preference;
 #[cfg(target_os = "windows")]
 mod dcomp;
@@ -62,6 +67,10 @@ pub use chrome::set_present_transaction;
 #[cfg(any(target_os = "macos", target_os = "windows"))]
 pub use chrome::{FrameGrab, LiveFrameMove};
 pub use chrome::{FrameResizeEdge, NonClientRenderingStrategy};
+pub use color_sampler::{
+    ColorSamplerError, ColorSamplerHandle, ColorSamplerResult, ColorSamplerSupport,
+    color_sampler_support, pick_screen_color,
+};
 pub use contrast_preference::{
     force_high_contrast, system_high_contrast, take_high_contrast_change,
 };

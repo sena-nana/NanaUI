@@ -92,6 +92,7 @@ framework_strings! {
     size_field_height = "size_field.height" => "高度";
     size_field_presets = "size_field.presets" => "预设尺寸";
     color_field_label = "color_field.label" => "颜色";
+    color_field_eyedropper = "color_field.eyedropper" => "吸取颜色";
     path_field_label = "path_field.label" => "路径";
     path_field_browse = "path_field.browse" => "浏览";
     browser_view_label = "browser_view.label" => "网页";

@@ -3082,6 +3082,50 @@ static CIRCLE_X: IconData = IconData {
     svg: CIRCLE_X_SVG,
 };
 
+static COLOR_PICKER_PATH_0: &[IconPathCommand] = &[
+    IconPathCommand::MoveTo([11.0, 7.0]),
+    IconPathCommand::LineTo([17.0, 13.0]),
+];
+static COLOR_PICKER_PATH_1: &[IconPathCommand] = &[
+    IconPathCommand::MoveTo([4.0, 16.0]),
+    IconPathCommand::LineTo([15.7, 4.3]),
+    IconPathCommand::CubicTo {
+        control_a: [16.0888, 3.9189],
+        control_b: [16.7112, 3.9189],
+        to: [17.1, 4.3],
+    },
+    IconPathCommand::LineTo([19.7, 6.9]),
+    IconPathCommand::CubicTo {
+        control_a: [20.0811, 7.2888],
+        control_b: [20.0811, 7.9112],
+        to: [19.7, 8.3],
+    },
+    IconPathCommand::LineTo([8.0, 20.0]),
+    IconPathCommand::LineTo([4.0, 20.0]),
+    IconPathCommand::LineTo([4.0, 16.0]),
+];
+static COLOR_PICKER_SHAPES: &[IconShape] = &[
+    IconShape::Path(COLOR_PICKER_PATH_0),
+    IconShape::Path(COLOR_PICKER_PATH_1),
+];
+static COLOR_PICKER_SVG: &str = r#"<svg
+  xmlns="http://www.w3.org/2000/svg"
+  width="24"
+  height="24"
+  viewBox="0 0 24 24"
+  fill="none"
+  stroke="currentColor"
+  stroke-width="2"
+  stroke-linecap="round"
+  stroke-linejoin="round"
+  class="icon icon-tabler icons-tabler-outline icon-tabler-color-picker"
+><path stroke="none" d="M0 0h24v24H0z" fill="none" /><path d="M11 7l6 6" /><path d="M4 16l11.7 -11.7a1 1 0 0 1 1.4 0l2.6 2.6a1 1 0 0 1 0 1.4l-11.7 11.7h-4v-4z" /></svg>"#;
+static COLOR_PICKER: IconData = IconData {
+    name: "color-picker",
+    shapes: COLOR_PICKER_SHAPES,
+    svg: COLOR_PICKER_SVG,
+};
+
 #[allow(non_upper_case_globals)]
 impl Icon {
     pub const About: Self = Self(&ABOUT);
@@ -3096,6 +3140,7 @@ impl Icon {
     pub const ChevronUp: Self = Self(&CHEVRON_UP);
     pub const Chart: Self = Self(&CHART);
     pub const Close: Self = Self(&CLOSE);
+    pub const ColorPicker: Self = Self(&COLOR_PICKER);
     pub const Eye: Self = Self(&EYE);
     pub const File: Self = Self(&FILE);
     pub const Folder: Self = Self(&FOLDER);

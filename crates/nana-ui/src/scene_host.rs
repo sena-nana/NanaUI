@@ -4,6 +4,7 @@
 
 mod accessibility;
 mod browser;
+mod color_sampler;
 mod dialogs;
 mod display;
 mod host_services;
@@ -301,6 +302,7 @@ struct WindowManager<Program: RuntimeProgram> {
     message_tx: Sender<Program::Message>,
     messages: Receiver<Program::Message>,
     file_dialogs: dialogs::FileDialogs,
+    color_samplers: color_sampler::ColorSamplers,
     tasks: SyncSender<Task<Program::Message>>,
     animation_clock: RuntimeAnimationClock,
     surface_generation: u64,
@@ -1363,6 +1365,7 @@ fn complete_startup<Program: RuntimeProgram>(
         message_tx,
         messages: message_rx,
         file_dialogs: dialogs::FileDialogs::default(),
+        color_samplers: color_sampler::ColorSamplers::default(),
         browsers: HashMap::new(),
         web_surfaces: HashMap::new(),
         tasks,
@@ -1418,6 +1421,7 @@ fn complete_startup<Program: RuntimeProgram>(
         .program
         .sync_animation_clock(ready.animation_clock.epoch());
     ready.sync_document_reduced_motion(WindowId::PRIMARY);
+    ready.sync_document_eyedropper(WindowId::PRIMARY);
     ready.apply_high_contrast(WindowId::PRIMARY);
     // The startup thread is usually still compiling the painter's pipelines:
     // the program initialized meanwhile. Windows present once it arrives (see
@@ -1558,6 +1562,7 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
             self.browsers.clear();
             self.web_surfaces.clear();
             self.close_all_file_dialogs();
+            self.close_all_color_samplers();
             let ids = self.known_window_ids();
             for id in ids {
                 self.close_window(event_loop, id);

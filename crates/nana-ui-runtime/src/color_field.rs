@@ -18,13 +18,13 @@ use nana_ui_core::{
 };
 
 use crate::view_components::{
-    RangeChanged, RangeField, RangeInput, TextChanged, TextInput, project_common,
+    IconButton, RangeChanged, RangeField, RangeInput, TextChanged, TextInput, project_common,
 };
 use crate::{
-    AccessibilityRole, AccessibilityState, AppContext, ComponentView, Entity, FocusWithinChanged,
-    FrameworkError, InteractionState, MutationQueue, NodeKind, NodeStyle, Popover, PopoverToggled,
-    StableNodeId, Stack, TextContent, UiWorld, XYPad, XYPadEvent, XYPadSurface, XYPadValue,
-    xy_pad_height,
+    AccessibilityRole, AccessibilityState, Activate, AppContext, ComponentView, Entity,
+    FocusWithinChanged, FrameworkError, InteractionState, MutationQueue, NodeKind, NodeStyle,
+    Popover, PopoverToggled, StableNodeId, Stack, TextContent, UiWorld, XYPad, XYPadEvent,
+    XYPadSurface, XYPadValue, xy_pad_height,
 };
 
 /// The gap between the frame's inner edge and the well, on its top, bottom
@@ -42,6 +42,11 @@ fn swatch_side(size: ControlSize, metrics: nana_ui_core::ThemeMetrics) -> f32 {
 pub struct ColorChanged {
     pub value: [f32; 4],
 }
+
+/// Emitted when the user activates the picker's eyedropper button so the host
+/// can sample a screen pixel and finish with [`AppContext::complete_color_pick`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ColorPickRequested;
 
 /// Live RGBA while the picker is dragged.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -70,6 +75,10 @@ pub struct ColorField {
     pub picker: Option<StableNodeId>,
     pub pad: Option<StableNodeId>,
     pub hue_slider: Option<StableNodeId>,
+    pub eyedropper: bool,
+    pub eyedropper_button: Option<StableNodeId>,
+    pub bottom_row: Option<StableNodeId>,
+    pub(crate) sampling: bool,
     pub style: NodeStyle,
     /// Focus is somewhere in the field (the hex text, the well): the frame
     /// draws the focus border for its borderless parts, as `:focus-within`.
@@ -109,6 +118,10 @@ impl ColorField {
             picker: None,
             pad: None,
             hue_slider: None,
+            eyedropper: true,
+            eyedropper_button: None,
+            bottom_row: None,
+            sampling: false,
             style: field_style(ControlSize::Medium),
             focus_within: false,
         }
@@ -122,6 +135,11 @@ impl ColorField {
 
     pub fn disabled(mut self, disabled: bool) -> Self {
         self.disabled = disabled;
+        self
+    }
+
+    pub fn eyedropper(mut self, enabled: bool) -> Self {
+        self.eyedropper = enabled;
         self
     }
 
@@ -195,11 +213,15 @@ impl ComponentView for ColorField {
         // committed value is the application's.
         if next.disabled {
             next.opened = false;
+            next.sampling = false;
         } else if self.value == next.value {
             next.opened = self.opened;
             next.hue = self.hue;
             next.sat = self.sat;
             next.val = self.val;
+            next.sampling = self.sampling;
+        } else {
+            next.sampling = self.sampling;
         }
         // Child identities are runtime-owned either way.
         next.swatch = self.swatch;
@@ -207,6 +229,8 @@ impl ComponentView for ColorField {
         next.picker = self.picker;
         next.pad = self.pad;
         next.hue_slider = self.hue_slider;
+        next.eyedropper_button = self.eyedropper_button;
+        next.bottom_row = self.bottom_row;
         next.focus_within = self.focus_within;
         *self = next;
     }
@@ -288,6 +312,28 @@ impl AppContext {
             Some(id) => Entity::<RangeField>::from_stable_id(id),
             None => self.create_detached_component(document, hue_strip(&snapshot))?,
         };
+        let show_eyedropper = snapshot.eyedropper && self.world().eyedropper_supported();
+        let bottom_row = match snapshot.bottom_row.filter(|id| self.world().contains(*id)) {
+            Some(id) => Entity::<Stack>::from_stable_id(id),
+            None => {
+                self.create_detached_component(document, Stack::bar(nana_ui_core::space::SM))?
+            }
+        };
+        let (eyedropper, eyedropper_created) = match snapshot
+            .eyedropper_button
+            .filter(|id| self.world().contains(*id))
+        {
+            Some(id) => (Some(Entity::<IconButton>::from_stable_id(id)), false),
+            None if show_eyedropper => {
+                let label = Arc::clone(&self.world().framework_strings().color_field_eyedropper);
+                let button = self.create_detached_component(
+                    document,
+                    eyedropper_button(label, snapshot.disabled),
+                )?;
+                (Some(button), true)
+            }
+            None => (None, false),
+        };
         let picker = match snapshot.picker.filter(|id| self.world().contains(*id)) {
             Some(id) => Entity::<Popover>::from_stable_id(id),
             None => {
@@ -295,6 +341,18 @@ impl AppContext {
                 self.create_detached_component(document, picker_popover(&snapshot, swatch, name))?
             }
         };
+
+        if eyedropper_created && let Some(button) = eyedropper {
+            self.observe(button, field, |field, _: &Activate, cx| {
+                if field.disabled || !field.eyedropper {
+                    return;
+                }
+                field.opened = false;
+                field.sampling = true;
+                cx.reassemble();
+                cx.emit(ColorPickRequested);
+            })?;
+        }
 
         if created {
             self.on(field, |field, event: &FocusWithinChanged, _| {
@@ -368,6 +426,14 @@ impl AppContext {
             range.value = snapshot.hue as f64;
             range.disabled = snapshot.disabled;
         })?;
+        if let Some(button) = eyedropper {
+            let label = Arc::clone(&self.world().framework_strings().color_field_eyedropper);
+            self.update_component(button, |button, _| {
+                let tooltip_open = button.tooltip_open;
+                *button = eyedropper_button(label, snapshot.disabled);
+                button.tooltip_open = tooltip_open;
+            })?;
+        }
         let name = self.color_field_name(&snapshot);
         self.update_component(picker, |popover, _| {
             *popover =
@@ -379,14 +445,58 @@ impl AppContext {
             field.picker = Some(picker.stable_id());
             field.pad = Some(pad.stable_id());
             field.hue_slider = Some(hue.stable_id());
+            field.eyedropper_button = eyedropper.map(|b| b.stable_id());
+            field.bottom_row = Some(bottom_row.stable_id());
         })?;
 
-        self.append_children(
+        if show_eyedropper && let Some(button) = eyedropper {
+            self.reconcile_children(
+                bottom_row.stable_id(),
+                &[button.stable_id(), hue.stable_id()],
+            )?;
+        } else {
+            self.reconcile_children(bottom_row.stable_id(), &[hue.stable_id()])?;
+        }
+        self.reconcile_children(
             picker.stable_id(),
-            &[swatch.stable_id(), pad.stable_id(), hue.stable_id()],
+            &[swatch.stable_id(), pad.stable_id(), bottom_row.stable_id()],
         )?;
         self.append_children(field.stable_id(), &[picker.stable_id(), hex.stable_id()])?;
         Ok(created)
+    }
+
+    /// Completes an active screen color pick on `id`, updating RGB while keeping
+    /// the field's existing alpha when `rgb` is `Some`, or cancelling sampling
+    /// when `None`. Returns `true` if `id` refers to a live `ColorField` whose
+    /// state changed.
+    pub fn complete_color_pick(&mut self, id: StableNodeId, rgb: Option<[f32; 3]>) -> bool {
+        let entity = Entity::<ColorField>::from_stable_id(id);
+        let Ok(updated) = self.update_component(entity, |field, cx| {
+            let was_sampling = field.sampling;
+            field.sampling = false;
+            match rgb {
+                Some(rgb) => {
+                    let clamp = |v: f32| {
+                        if v.is_finite() {
+                            v.clamp(0.0, 1.0)
+                        } else {
+                            0.0
+                        }
+                    };
+                    let value = [clamp(rgb[0]), clamp(rgb[1]), clamp(rgb[2]), field.value[3]];
+                    field.apply_rgb(value);
+                    field.invalid = false;
+                    cx.reassemble();
+                    cx.emit(ColorInput { value: field.value });
+                    cx.emit(ColorChanged { value: field.value });
+                    true
+                }
+                None => was_sampling,
+            }
+        }) else {
+            return false;
+        };
+        updated
     }
 
     /// What the field is called: its own label, or the framework's.
@@ -535,11 +645,23 @@ fn gradient_stop(position: f32, color: [f32; 4]) -> GradientStop {
     }
 }
 
+/// The screen eyedropper trigger beside the hue strip.
+fn eyedropper_button(label: Arc<str>, disabled: bool) -> IconButton {
+    IconButton::tool(nana_ui_core::Icon::ColorPicker, label).disabled(disabled)
+}
+
 /// The hue slider: a bare spectrum strip from 0 to 360 degrees, no readout.
 fn hue_strip(field: &ColorField) -> RangeField {
-    RangeField::new(field.hue as f64, 0.0, 360.0, 1.0)
+    let mut range = RangeField::new(field.hue as f64, 0.0, 360.0, 1.0)
         .show_value(false)
-        .track_gradient(hue_spectrum())
+        .track_gradient(hue_spectrum());
+    let layout = Arc::make_mut(&mut range.style.layout);
+    layout.width = Some(LengthSpec::Fill);
+    layout.flex_grow = Some(1.0);
+    layout.flex_shrink = Some(1.0);
+    layout.min_width = Some(LengthSpec::Px(0.0));
+    layout.allow_shrink = true;
+    range
 }
 
 /// The hue circle unrolled, 0 to 360 degrees: red, yellow, green, cyan,
@@ -1083,5 +1205,167 @@ mod tests {
             })
             .unwrap();
         assert!(swatch.is_some() && hex.is_some());
+    }
+
+    #[test]
+    fn eyedropper_appears_only_when_supported_and_enabled_and_shares_bottom_row() {
+        let mut context = AppContext::new();
+        let document = DocumentId::new(1).unwrap();
+        let root = context
+            .create_component(document, crate::Stack::column(nana_ui_core::space::SM))
+            .unwrap();
+        let supported = context
+            .create_component(document, ColorField::new([1.0, 0.0, 0.0, 1.0]))
+            .unwrap();
+        let opted_out = context
+            .create_component(
+                document,
+                ColorField::new([0.0, 1.0, 0.0, 1.0]).eyedropper(false),
+            )
+            .unwrap();
+        context
+            .append_children(
+                root.stable_id(),
+                &[supported.stable_id(), opted_out.stable_id()],
+            )
+            .unwrap();
+        context.assemble_color_field(supported).unwrap();
+        context.assemble_color_field(opted_out).unwrap();
+
+        // Host support starts false.
+        let s_snap = context.read(supported, Clone::clone).unwrap();
+        assert!(s_snap.eyedropper_button.is_none());
+        let row_children = &context
+            .world()
+            .node(s_snap.bottom_row.unwrap())
+            .unwrap()
+            .children;
+        assert_eq!(row_children, &[s_snap.hue_slider.unwrap()]);
+
+        // Turning host support on reassembles existing fields without rebuilding opted-out ones.
+        context.set_eyedropper_supported(true);
+        let s_snap = context.read(supported, Clone::clone).unwrap();
+        let o_snap = context.read(opted_out, Clone::clone).unwrap();
+        let btn_id = s_snap.eyedropper_button.expect("eyedropper created");
+        assert!(o_snap.eyedropper_button.is_none());
+        assert_eq!(
+            context
+                .world()
+                .node(s_snap.bottom_row.unwrap())
+                .unwrap()
+                .children,
+            vec![btn_id, s_snap.hue_slider.unwrap()]
+        );
+
+        // Open the picker and verify bottom_row places [eyedropper | hue] cleanly side by side.
+        assert!(context.activate_node(s_snap.picker.unwrap()).unwrap());
+        context
+            .layout_document(document, crate::LayoutViewport::new(640.0, 480.0))
+            .unwrap();
+        let btn_bounds = context.world().layout_box(btn_id).unwrap();
+        let hue_bounds = context
+            .world()
+            .layout_box(s_snap.hue_slider.unwrap())
+            .unwrap();
+        let row_bounds = context
+            .world()
+            .layout_box(s_snap.bottom_row.unwrap())
+            .unwrap();
+        assert!(btn_bounds.width > 0.0 && hue_bounds.width > 0.0);
+        assert!(
+            hue_bounds.x >= btn_bounds.x + btn_bounds.width,
+            "hue slider should start after eyedropper: btn={btn_bounds:?} hue={hue_bounds:?}"
+        );
+        assert!(
+            hue_bounds.x + hue_bounds.width <= row_bounds.x + row_bounds.width + 0.5,
+            "hue slider must fit inside bottom row: row={row_bounds:?} hue={hue_bounds:?}"
+        );
+
+        // Switching host support back off parks the eyedropper cleanly.
+        context.set_eyedropper_supported(false);
+        let s_snap = context.read(supported, Clone::clone).unwrap();
+        assert_eq!(
+            context
+                .world()
+                .node(s_snap.bottom_row.unwrap())
+                .unwrap()
+                .children,
+            vec![s_snap.hue_slider.unwrap()]
+        );
+    }
+
+    #[test]
+    fn eyedropper_closes_popover_queues_request_and_completes_preserving_alpha() {
+        let mut context = AppContext::new();
+        context.set_eyedropper_supported(true);
+        let document = DocumentId::new(1).unwrap();
+        let field = context
+            .create_component(document, ColorField::new([1.0, 0.0, 0.0, 0.35]))
+            .unwrap();
+        context.assemble_color_field(field).unwrap();
+        let snap = context.read(field, Clone::clone).unwrap();
+        let picker = Entity::<Popover>::from_stable_id(snap.picker.unwrap());
+        let btn_id = snap.eyedropper_button.unwrap();
+
+        let requested = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let req_hook = std::sync::Arc::clone(&requested);
+        context
+            .on(field, move |_, _: &ColorPickRequested, _| {
+                req_hook.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            })
+            .unwrap();
+        let events = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let ev_in = std::sync::Arc::clone(&events);
+        context
+            .on(field, move |_, event: &ColorInput, _| {
+                ev_in.lock().unwrap().push(("input", event.value));
+            })
+            .unwrap();
+        let ev_ch = std::sync::Arc::clone(&events);
+        context
+            .on(field, move |_, event: &ColorChanged, _| {
+                ev_ch.lock().unwrap().push(("changed", event.value));
+            })
+            .unwrap();
+
+        assert!(context.activate_node(picker.stable_id()).unwrap());
+        assert!(context.read(picker, |p| p.open).unwrap());
+
+        assert!(context.activate_node(btn_id).unwrap());
+        assert!(!context.read(picker, |p| p.open).unwrap());
+        assert!(!context.read(field, |f| f.opened).unwrap());
+        assert!(context.read(field, |f| f.sampling).unwrap());
+        assert!(context.overlay_locks(document, field.stable_id()).menu_open);
+        assert_eq!(requested.load(std::sync::atomic::Ordering::SeqCst), 1);
+        assert_eq!(context.take_color_pick_requests(), vec![field.stable_id()]);
+        assert!(context.take_color_pick_requests().is_empty());
+
+        // Cancelling clears sampling without mutating value or emitting change events.
+        assert!(context.complete_color_pick(field.stable_id(), None));
+        assert!(!context.read(field, |f| f.sampling).unwrap());
+        assert!(!context.overlay_locks(document, field.stable_id()).menu_open);
+        assert!(events.lock().unwrap().is_empty());
+
+        // Picking a color updates RGB, keeps alpha 0.35, syncs hex, and emits Input + Changed.
+        assert!(context.activate_node(picker.stable_id()).unwrap());
+        assert!(context.activate_node(btn_id).unwrap());
+        let _ = context.take_color_pick_requests();
+        assert!(context.complete_color_pick(field.stable_id(), Some([0.2, 0.4, 0.8])));
+        assert!(!context.read(field, |f| f.sampling).unwrap());
+        let updated = context.read(field, |f| f.value).unwrap();
+        assert!((updated[0] - 0.2).abs() < 1e-5);
+        assert!((updated[1] - 0.4).abs() < 1e-5);
+        assert!((updated[2] - 0.8).abs() < 1e-5);
+        assert!((updated[3] - 0.35).abs() < 1e-5);
+        let hex_entity = Entity::<TextInput>::from_stable_id(snap.hex.unwrap());
+        assert_eq!(
+            context
+                .read(hex_entity, |i| i.state.value.to_string())
+                .unwrap(),
+            "#3366cc59"
+        );
+        let evs = events.lock().unwrap();
+        let kinds: Vec<_> = evs.iter().map(|(k, _)| *k).collect();
+        assert_eq!(kinds, ["input", "changed"]);
     }
 }

@@ -56,6 +56,80 @@ pub(crate) fn set_application_icon_png(png: &[u8]) {
     }
 }
 
+pub(crate) fn pick_screen_color<F>(
+    request_id: u64,
+    completion: F,
+) -> Result<crate::color_sampler::ColorSamplerHandle, crate::color_sampler::ColorSamplerError>
+where
+    F: FnOnce(crate::color_sampler::ColorSamplerResult) + Send + 'static,
+{
+    use std::sync::{Arc, Mutex};
+
+    use block2::RcBlock;
+    use objc2::MainThreadMarker;
+    use objc2_app_kit::{NSColor, NSColorSampler, NSColorSpace};
+
+    use crate::color_sampler::{ColorSamplerError, ColorSamplerHandle, ColorSamplerResult};
+
+    if MainThreadMarker::new().is_none() {
+        return Err(ColorSamplerError::Platform(
+            "NSColorSampler requires the AppKit main thread".into(),
+        ));
+    }
+
+    fn color_to_srgb_rgb(color: &NSColor) -> Option<[f32; 3]> {
+        let converted = color
+            .colorUsingColorSpace(&NSColorSpace::sRGBColorSpace())
+            .or_else(|| color.colorUsingColorSpace(&NSColorSpace::deviceRGBColorSpace()))?;
+        Some([
+            converted.redComponent() as f32,
+            converted.greenComponent() as f32,
+            converted.blueComponent() as f32,
+        ])
+    }
+
+    type Completion = dyn FnOnce(ColorSamplerResult) + Send;
+    let slot: Arc<Mutex<Option<Box<Completion>>>> =
+        Arc::new(Mutex::new(Some(Box::new(completion))));
+    let cancel_slot = Arc::clone(&slot);
+    let handler_slot = Arc::clone(&slot);
+
+    let sampler = NSColorSampler::new();
+    let handler = RcBlock::new(move |color_ptr: *mut NSColor| {
+        let result = if color_ptr.is_null() {
+            ColorSamplerResult::cancelled(request_id)
+        } else {
+            // SAFETY: AppKit passes null on cancel or a valid main-thread `NSColor*` until the block returns.
+            let color = unsafe { &*color_ptr };
+            match color_to_srgb_rgb(color) {
+                Some(rgb) => ColorSamplerResult::picked(request_id, rgb),
+                None => ColorSamplerResult::failed(
+                    request_id,
+                    ColorSamplerError::Platform("picked NSColor has no sRGB representation".into()),
+                ),
+            }
+        };
+        if let Ok(mut guard) = handler_slot.lock()
+            && let Some(done) = guard.take()
+        {
+            done(result);
+        }
+    });
+
+    // SAFETY: Running on the AppKit main thread checked above; AppKit retains both sampler and block until completion.
+    unsafe {
+        sampler.showSamplerWithSelectionHandler(&handler);
+    }
+
+    Ok(ColorSamplerHandle::new(move || {
+        if let Ok(mut guard) = cancel_slot.lock()
+            && let Some(done) = guard.take()
+        {
+            done(ColorSamplerResult::cancelled(request_id));
+        }
+    }))
+}
+
 // One ObjC object receives every menu selection and turns it back into an id.
 //
 // A menu item's target must be an ObjC object, so there has to be a class; it

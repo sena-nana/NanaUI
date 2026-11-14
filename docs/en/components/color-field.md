@@ -13,7 +13,7 @@ The whole field has one frame, the way Ant Design's ColorPicker and Mantine's Co
 
 ## What the picker looks like
 
-The picker paints the color it takes its value from. Saturation / value is a picture pad (`XYPadSurface::Picture`, twice the height of a large pad): the background is the solid color of the current hue, a white layer fades out from left to right above it (saturation), then a black layer fades in from top to bottom above that (value) — the standard HSV square; when the hue changes, the square changes its background with it. Hue is a spectrum bar without a readout (`RangeField::track_gradient(hue_spectrum())`, 0 to 360 degrees: red, yellow, green, cyan, blue, magenta, back to red). Both mark the current value with a contrasting ring, with no crosshair axes and no accent fill. The hue bar is still a screen-reader `Slider` and can be stepped with the keyboard.
+The picker paints the color it takes its value from. Saturation / value is a picture pad (`XYPadSurface::Picture`, twice the height of a large pad): the background is the solid color of the current hue, a white layer fades out from left to right above it (saturation), then a black layer fades in from top to bottom above that (value) — the standard HSV square; when the hue changes, the square changes its background with it. Hue is a spectrum bar without a readout (`RangeField::track_gradient(hue_spectrum())`, 0 to 360 degrees: red, yellow, green, cyan, blue, magenta, back to red). Both mark the current value with a contrasting ring, with no crosshair axes and no accent fill. The hue bar is still a screen-reader `Slider` and can be stepped with the keyboard. When the host supports screen color sampling and `.eyedropper(false)` has not been set, an eyedropper `IconButton` sits to the left of the hue bar (`[ eyedropper | hue ]`); clicking it immediately closes the popover and invokes the platform screen color sampler, writing the picked sRGB color back while preserving the field's alpha (cancelling via Esc or right-click leaves the color unchanged).
 
 The control table has no `<ColorField>`.
 
@@ -95,6 +95,7 @@ The default accessible name is "Color".
 | `.disabled` | — | The same as for field controls. While disabled, `.opened` is forced closed, clicking the swatch does nothing, and the picker stays closed |
 | `.invalid` | — | The same as for field controls |
 | `.opened` | — | Opening and closing are written on the field's own `opened`. A click on the swatch toggles it. Forced closed while disabled |
+| `.eyedropper` | `bool` | Defaults to `true`; shows the screen eyedropper button to the left of the hue bar when the host supports screen color sampling, and hides automatically on unsupported platforms (such as iOS or Wayland without a portal) |
 
 ## Events
 

@@ -782,7 +782,9 @@ impl AppContext {
                 self.component_lifecycle
                     .tooltips
                     .iter()
-                    .filter(|(target, _)| self.world.is_mounted(**target))
+                    .filter(|(target, _)| {
+                        self.world.is_mounted(**target) && self.world.is_overlay_reachable(**target)
+                    })
                     .filter_map(|(_, tooltip)| tooltip.show_at),
             )
             .chain(

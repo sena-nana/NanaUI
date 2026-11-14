@@ -1038,6 +1038,7 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
         }
         pending_native.0 = None;
         self.sync_document_reduced_motion(id);
+        self.sync_document_eyedropper(id);
         self.window_ids.insert(window.id(), id);
         self.apply_high_contrast(id);
         let level = auxiliary_level(
@@ -1170,6 +1171,7 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
         }
         self.browsers.retain(|(window, _), _| *window != id);
         self.close_file_dialog(event_loop, id);
+        self.close_color_sampler(event_loop, id);
         self.chrome.remove(&id);
         self.native_content.remove(&id);
         self.bind_after_present.remove(&id);

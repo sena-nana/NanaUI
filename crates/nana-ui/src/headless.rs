@@ -58,6 +58,26 @@ pub enum HeadlessFileDialog {
     SelectWithFilter(Vec<PathBuf>, usize),
 }
 
+/// How the next screen color pick requested by a [`nana_ui_runtime::ColorField`]
+/// is answered in a headless session. `Pick` is consumed once and then resets
+/// to `Cancel`; `Unsupported` persists and hides the eyedropper button on open
+/// windows.
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+pub enum HeadlessColorSampler {
+    #[default]
+    Cancel,
+    Unsupported,
+    Pick([f32; 3]),
+}
+
+impl HeadlessColorSampler {
+    /// Whether the simulated host advertises screen color sampling support.
+    #[must_use]
+    pub const fn is_supported(self) -> bool {
+        !matches!(self, Self::Unsupported)
+    }
+}
+
 /// A virtual window.
 #[derive(Debug, Clone)]
 pub struct HeadlessWindow {
@@ -148,6 +168,7 @@ pub struct HeadlessRuntime<P: RuntimeProgram> {
     next_window_id: u64,
     commands: Vec<WindowCommand>,
     file_dialog: HeadlessFileDialog,
+    color_sampler: HeadlessColorSampler,
     report: HeadlessReport,
     quiet: Option<QuietMessages<P::Message>>,
 }
@@ -225,6 +246,7 @@ impl<P: RuntimeProgram> HeadlessRuntime<P> {
             next_window_id: 1 << 63,
             commands: Vec::new(),
             file_dialog: HeadlessFileDialog::Cancel,
+            color_sampler: HeadlessColorSampler::Cancel,
             report: HeadlessReport::default(),
             quiet: None,
         };
@@ -445,6 +467,36 @@ impl<P: RuntimeProgram> HeadlessRuntime<P> {
     /// Answer the next file dialog the program opens with `answer`.
     pub fn set_file_dialog(&mut self, answer: HeadlessFileDialog) {
         self.file_dialog = answer;
+    }
+
+    /// Answer screen color picks on open [`nana_ui_runtime::ColorField`] widgets,
+    /// syncing eyedropper availability across every open window document.
+    pub fn set_color_sampler(&mut self, answer: HeadlessColorSampler) {
+        self.color_sampler = answer;
+        let supported = answer.is_supported();
+        let ids: Vec<_> = self.windows.keys().copied().collect();
+        for id in ids {
+            if self.program.write_document(id, |document| {
+                let changed = document.context().world().eyedropper_supported() != supported;
+                if changed {
+                    document.context_mut().set_eyedropper_supported(supported);
+                }
+                changed
+            }) == Some(true)
+            {
+                self.bind_after_present.insert(id);
+            }
+        }
+    }
+
+    fn take_color_sampler_answer(&mut self) -> Option<[f32; 3]> {
+        match self.color_sampler {
+            HeadlessColorSampler::Pick(rgb) => {
+                self.color_sampler = HeadlessColorSampler::Cancel;
+                Some(rgb)
+            }
+            HeadlessColorSampler::Cancel | HeadlessColorSampler::Unsupported => None,
+        }
     }
 
     /// Leave updates for these messages out of
@@ -789,13 +841,17 @@ impl<P: RuntimeProgram> HeadlessRuntime<P> {
         let mut update = RuntimeProgramUpdate::default();
         let mut any_queued = false;
         for _ in 0..MAX_PROGRAM_DISPATCHES {
-            let queued = self
+            let (queued, pick_requests) = self
                 .program
                 .write_document(id, |document| {
-                    document.context_mut().take_program_messages()
+                    let context = document.context_mut();
+                    (
+                        context.take_program_messages(),
+                        context.take_color_pick_requests(),
+                    )
                 })
                 .unwrap_or_default();
-            if queued.is_empty() {
+            if queued.is_empty() && pick_requests.is_empty() {
                 break;
             }
             any_queued = true;
@@ -805,6 +861,20 @@ impl<P: RuntimeProgram> HeadlessRuntime<P> {
                     continue;
                 };
                 update = update.merge(self.apply_message(id, *message));
+            }
+            if !pick_requests.is_empty() {
+                let mut completed_picks = Vec::with_capacity(pick_requests.len());
+                for node in pick_requests {
+                    let picked = self.take_color_sampler_answer();
+                    completed_picks.push((node, picked));
+                }
+                let _ = self.program.write_document(id, |document| {
+                    let context = document.context_mut();
+                    for (node, picked) in completed_picks {
+                        context.complete_color_pick(node, picked);
+                    }
+                });
+                update = update.merge(RuntimeProgramUpdate::redraw(id));
             }
         }
         (update, any_queued)
@@ -889,6 +959,7 @@ impl<P: RuntimeProgram> HeadlessRuntime<P> {
         let _ = self.program.write_document(id, |document| {
             let context = document.context_mut();
             context.set_system_reduced_motion(options.reduced_motion);
+            context.set_eyedropper_supported(self.color_sampler.is_supported());
             context.set_high_contrast(options.high_contrast);
         });
     }

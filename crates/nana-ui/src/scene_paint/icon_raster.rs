@@ -311,6 +311,7 @@ mod tests {
         Icon::Paperclip,
         Icon::Restore,
         Icon::Search,
+        Icon::ColorPicker,
         Icon::Settings,
         Icon::ShieldCheck,
         Icon::Sidebar,

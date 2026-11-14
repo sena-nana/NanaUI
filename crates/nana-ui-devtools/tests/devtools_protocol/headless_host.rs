@@ -5,7 +5,8 @@ use std::path::PathBuf;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
 
-use nana_ui::runtime::{RuntimeDocument, Task};
+use nana_ui::runtime::view::widget;
+use nana_ui::runtime::{ColorChanged, ColorField, DocumentId, RuntimeDocument, Stack, Task};
 use nana_ui::{
     DocumentAccessError, RoutedInput, RuntimeProgram, RuntimeProgramContext, RuntimeProgramUpdate,
     WindowDescriptor,
@@ -13,7 +14,7 @@ use nana_ui::{
 use nana_ui_core::{FileDialogKind, FileDialogRequest, FileFilter};
 use nana_ui_devtools::agent::{A11yFilter, Target, fixtures};
 use nana_ui_devtools::headless::{
-    HeadlessFileDialog, HeadlessHost, HeadlessOptions, headless_geometry,
+    HeadlessColorSampler, HeadlessFileDialog, HeadlessHost, HeadlessOptions, headless_geometry,
 };
 use nana_ui_devtools::offscreen;
 use nana_ui_platform::host::WindowCommand;
@@ -507,4 +508,195 @@ fn headless_host_exposes_target_inspection_and_png_diff() {
         .expect("diff screenshot");
     assert_eq!(diff.changed_pixels, 0);
     let _ = std::fs::remove_file(&png_path);
+}
+
+enum ColorMessage {
+    Changed([f32; 4]),
+}
+
+struct ColorProbe {
+    primary: RuntimeDocument,
+    changed: Vec<[f32; 4]>,
+}
+
+impl RuntimeProgram for ColorProbe {
+    type Message = ColorMessage;
+    type Error = String;
+
+    fn initialize(
+        _context: &RuntimeProgramContext<ColorMessage>,
+    ) -> Result<(Self, Vec<ColorMessage>), String> {
+        let id = DocumentId::new(1).expect("document 1");
+        let mut primary = RuntimeDocument::new(id);
+        primary
+            .context_mut()
+            .mount_view_root(id, || {
+                widget(Stack::column(8.0)).key("root").children((widget(
+                    ColorField::new([0.2, 0.4, 0.8, 0.35]).label("Tint"),
+                )
+                .key("color")
+                .on_cx(|_: &mut ColorField, event: &ColorChanged, cx| {
+                    cx.dispatch_program_all(ColorMessage::Changed(event.value));
+                }),))
+            })
+            .map_err(|error| error.to_string())?;
+        Ok((
+            Self {
+                primary,
+                changed: Vec::new(),
+            },
+            Vec::new(),
+        ))
+    }
+
+    fn with_document<R>(
+        &self,
+        id: WindowId,
+        f: impl FnOnce(&RuntimeDocument) -> R,
+    ) -> Result<Option<R>, DocumentAccessError> {
+        if id == WindowId::PRIMARY {
+            return Ok(Some(f(&self.primary)));
+        }
+        Ok(None)
+    }
+
+    fn with_document_mut<R>(
+        &mut self,
+        id: WindowId,
+        f: impl FnOnce(&mut RuntimeDocument) -> R,
+    ) -> Result<Option<R>, DocumentAccessError> {
+        if id == WindowId::PRIMARY {
+            return Ok(Some(f(&mut self.primary)));
+        }
+        Ok(None)
+    }
+
+    fn update(
+        &mut self,
+        message: ColorMessage,
+        _context: &RuntimeProgramContext<ColorMessage>,
+    ) -> RuntimeProgramUpdate {
+        match message {
+            ColorMessage::Changed(value) => self.changed.push(value),
+        }
+        RuntimeProgramUpdate::default()
+    }
+}
+
+#[test]
+fn color_field_eyedropper_picks_once_cancels_and_hides_when_unsupported() {
+    let Some(gpu) = offscreen::optional().map(|offscreen| offscreen.gpu) else {
+        return;
+    };
+    let mut host = HeadlessHost::<ColorProbe>::new(
+        gpu,
+        WindowDescriptor::new("Color"),
+        headless_geometry((420.0, 400.0), 1.0),
+        HeadlessOptions::default(),
+    )
+    .expect("color headless host");
+    host.use_manual_clock();
+    host.set_color_sampler(HeadlessColorSampler::Pick([1.0, 0.5, 0.0]));
+    assert!(
+        host.turn_until_quiescent(Duration::from_millis(16), 32)
+            .settled
+    );
+
+    let swatch = Target {
+        role: Some("menu".into()),
+        label: Some("Tint".into()),
+        ..Target::default()
+    };
+    let eyedropper = Target {
+        role: Some("button".into()),
+        label: Some("吸取颜色".into()),
+        ..Target::default()
+    };
+
+    host.click_target(WindowId::PRIMARY, &swatch)
+        .expect("open color picker");
+    assert!(
+        host.turn_until_quiescent(Duration::from_millis(16), 32)
+            .settled
+    );
+    assert!(
+        host.resolve_target(WindowId::PRIMARY, &eyedropper).is_ok(),
+        "eyedropper button should appear when supported"
+    );
+
+    host.click_target(WindowId::PRIMARY, &eyedropper)
+        .expect("activate eyedropper");
+    assert!(
+        host.turn_until_quiescent(Duration::from_millis(16), 32)
+            .settled
+    );
+    assert!(
+        host.resolve_target(WindowId::PRIMARY, &eyedropper).is_err(),
+        "picker closes when sampling completes"
+    );
+    assert_eq!(host.program().changed.len(), 1);
+    let picked = host.program().changed[0];
+    assert!(
+        (picked[0] - 1.0).abs() < 0.01
+            && (picked[1] - 0.5).abs() < 0.01
+            && picked[2].abs() < 0.01
+            && (picked[3] - 0.35).abs() < 0.01,
+        "expected orange with preserved alpha 0.35, got {picked:?}"
+    );
+    assert!(
+        host.accessibility(WindowId::PRIMARY)
+            .iter()
+            .any(|node| node.role == "text-input" && node.value.as_deref() == Some("#ff800059")),
+        "hex field should update to #ff800059"
+    );
+
+    // Reopening consumes the default `Cancel` answer without altering the color.
+    host.click_target(WindowId::PRIMARY, &swatch)
+        .expect("reopen color picker");
+    assert!(
+        host.turn_until_quiescent(Duration::from_millis(16), 32)
+            .settled
+    );
+    host.click_target(WindowId::PRIMARY, &eyedropper)
+        .expect("activate eyedropper again");
+    let quiesced = host.turn_until_quiescent(Duration::from_millis(16), 32);
+    assert!(
+        quiesced.settled,
+        "cancel pick did not settle: {quiesced:?}, changed={:?}, a11y={:?}",
+        host.program().changed,
+        host.accessibility(WindowId::PRIMARY)
+            .iter()
+            .map(|n| (&n.role, &n.label, &n.value, n.focused))
+            .collect::<Vec<_>>()
+    );
+    assert_eq!(host.program().changed.len(), 1);
+    assert!(
+        host.accessibility(WindowId::PRIMARY)
+            .iter()
+            .any(|node| node.role == "text-input" && node.value.as_deref() == Some("#ff800059")),
+    );
+
+    // When unsupported, opening the picker hides the eyedropper button while keeping the SV pad and hue bar.
+    host.set_color_sampler(HeadlessColorSampler::Unsupported);
+    assert!(
+        host.turn_until_quiescent(Duration::from_millis(16), 32)
+            .settled
+    );
+    host.click_target(WindowId::PRIMARY, &swatch)
+        .expect("open picker without eyedropper support");
+    assert!(
+        host.turn_until_quiescent(Duration::from_millis(16), 32)
+            .settled
+    );
+    let sliders: Vec<_> = host
+        .accessibility(WindowId::PRIMARY)
+        .into_iter()
+        .filter(|node| node.role == "slider")
+        .collect();
+    assert_eq!(
+        sliders.len(),
+        2,
+        "expected SV pad and hue slider in open picker: {sliders:?}"
+    );
+    assert!(host.resolve_target(WindowId::PRIMARY, &eyedropper).is_err());
 }

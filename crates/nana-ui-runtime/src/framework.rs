@@ -1224,6 +1224,8 @@ pub struct AppContext {
     system_reduced_motion: bool,
     /// The application's own choice, which wins over the system's.
     reduced_motion_override: Option<bool>,
+    /// `ColorField` nodes waiting for the host to launch a native screen color sampler.
+    color_pick_requests: Vec<StableNodeId>,
 }
 
 /// Bookkeeping for multi-click selection inside a text editor.
@@ -1585,6 +1587,7 @@ impl AppContext {
             reactive: reactive::ReactiveHost::default(),
             system_reduced_motion: false,
             reduced_motion_override: None,
+            color_pick_requests: Vec::new(),
         };
         context
             .install(builtins)
@@ -1704,6 +1707,33 @@ impl AppContext {
             // preference on its next projection.
             let _ = reproject(self, id);
         }
+    }
+
+    /// Updates whether the active host provides screen color picking, reassembling existing
+    /// [`crate::ColorField`] popovers when availability changes.
+    pub fn set_eyedropper_supported(&mut self, supported: bool) {
+        if !self.world.set_eyedropper_supported(supported) {
+            return;
+        }
+        let ids: Vec<StableNodeId> = self
+            .views
+            .iter()
+            .filter_map(|(&id, view)| view.is::<crate::ColorField>().then_some(id))
+            .collect();
+        for id in ids {
+            let _ = self.reproject_component(Entity::<crate::ColorField>::from_stable_id(id));
+        }
+    }
+
+    pub(crate) fn request_color_pick(&mut self, id: StableNodeId) {
+        if !self.color_pick_requests.contains(&id) {
+            self.color_pick_requests.push(id);
+        }
+    }
+
+    /// Takes queued [`crate::ColorField`] node ids requesting native screen color sampling.
+    pub fn take_color_pick_requests(&mut self) -> Vec<StableNodeId> {
+        std::mem::take(&mut self.color_pick_requests)
     }
 
     /// Whether the last layout pass dropped lines of this text to honour its
@@ -4446,6 +4476,7 @@ impl AppContext {
         self.child_structure_owners
             .retain(|node, owner| !removed.contains(node) && !removed.contains(owner));
         self.pending_modal_syncs.retain(|id| !removed.contains(id));
+        self.color_pick_requests.retain(|id| !removed.contains(id));
         // The tables below hold an entry per component or per keyed child.
         // Walked in full, they made removing one node cost the size of the
         // whole tree (2.4 ms among 100,000 buttons), and an assembly

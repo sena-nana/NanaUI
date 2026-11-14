@@ -1011,6 +1011,8 @@ pub struct UiWorld {
     /// The reduce-motion preference the application context resolved:
     /// surfaces open and close at once while it holds.
     reduced_motion: bool,
+    /// Whether the active platform/session host provides a screen color sampler.
+    eyedropper_supported: bool,
     hover_transitions: HashMap<StableNodeId, style::HoverTransition, BuildIdHasher>,
     animation_deadlines: BTreeSet<(Duration, AnimationId)>,
     /// The installed design system. This is the authority; `style_model` below
@@ -1360,6 +1362,7 @@ impl UiWorld {
             #[cfg(feature = "controls")]
             reorder_previews: HashMap::default(),
             reduced_motion: false,
+            eyedropper_supported: false,
             hover_transitions: HashMap::default(),
             animation_deadlines: BTreeSet::new(),
             theme: nana_ui_core::builtin_theme_arc(ThemeAppearance::default()),
@@ -1753,6 +1756,20 @@ impl UiWorld {
 
     pub(crate) fn set_framework_strings(&mut self, strings: Arc<nana_ui_core::FrameworkStrings>) {
         self.framework_strings = strings;
+    }
+
+    /// Whether the active host advertises native screen color sampling.
+    pub const fn eyedropper_supported(&self) -> bool {
+        self.eyedropper_supported
+    }
+
+    /// Records host screen color sampling capability, returning `true` when it changed.
+    pub fn set_eyedropper_supported(&mut self, supported: bool) -> bool {
+        if self.eyedropper_supported == supported {
+            return false;
+        }
+        self.eyedropper_supported = supported;
+        true
     }
 
     pub(crate) fn layout_source_epoch(&self) -> u64 {

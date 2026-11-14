@@ -218,8 +218,8 @@ pub use calendar::{
 pub use charts::{Chart, ChartEvent, ChartHoverVisual, ChartSpec, ChartTooltip};
 pub use chip::{Chip, ChipDismissed};
 pub use color_field::{
-    ColorChanged, ColorField, ColorInput, format_hex, hsv_to_rgb, hue_spectrum, parse_hex,
-    rgb_to_hsv, sanitize_rgba,
+    ColorChanged, ColorField, ColorInput, ColorPickRequested, format_hex, hsv_to_rgb, hue_spectrum,
+    parse_hex, rgb_to_hsv, sanitize_rgba,
 };
 pub use command_palette::CommandPalette;
 pub use component_registry::{

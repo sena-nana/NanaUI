@@ -22,8 +22,8 @@ use nana_ui_platform::{
 };
 
 pub use nana_ui::headless::{
-    HeadlessFileDialog, HeadlessOptions, HeadlessQuiesce, HeadlessReport, HeadlessRuntime,
-    HeadlessTurn, HeadlessWindow, headless_geometry,
+    HeadlessColorSampler, HeadlessFileDialog, HeadlessOptions, HeadlessQuiesce, HeadlessReport,
+    HeadlessRuntime, HeadlessTurn, HeadlessWindow, headless_geometry,
 };
 
 use crate::agent::pixels::{pixel_diff, pixel_stats};

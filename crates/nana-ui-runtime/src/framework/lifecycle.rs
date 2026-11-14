@@ -1603,12 +1603,14 @@ impl AppContext {
         let Some(lifecycle) = self.component_lifecycle.tooltips.get(&target).copied() else {
             return Ok(false);
         };
-        if lifecycle.open {
+        if let Some(lifecycle) = self.component_lifecycle.tooltips.get_mut(&target) {
+            lifecycle.show_at = None;
+        }
+        if lifecycle.open || !self.world.is_overlay_reachable(target) {
             return Ok(false);
         }
         self.position_tooltip(target, lifecycle.overlay)?;
         if let Some(lifecycle) = self.component_lifecycle.tooltips.get_mut(&target) {
-            lifecycle.show_at = None;
             lifecycle.open = true;
         }
         self.set_tooltip_visible(target, Some(lifecycle.overlay))?;

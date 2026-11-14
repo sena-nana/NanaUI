@@ -392,6 +392,9 @@ impl AppContext {
         let mut touched: Vec<super::TouchedObserver> = Vec::new();
         let mut delivered = 0;
         while let Some((emitter, event_type, event)) = events.pop_front() {
+            if event_type == TypeId::of::<crate::ColorPickRequested>() {
+                self.request_color_pick(emitter);
+            }
             delivered += 1;
             if delivered > MAX_EVENTS_PER_UPDATE {
                 return Err(FrameworkError::EventOverflow(emitter));

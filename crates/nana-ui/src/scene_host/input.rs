@@ -84,6 +84,8 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
                 return;
             }
         }
+        #[cfg(not(target_os = "android"))]
+        self.drain_color_pick_requests(event_loop, id);
         // Presence is window state, reported even while a modal child or Forward
         // passthrough keeps the pointer itself from reaching widgets. A window
         // the host is moving is the exception: the pointer holds it, so every
@@ -670,6 +672,9 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
         }
         self.sync_appearance();
         self.apply_update(event_loop, update, None);
+        if !event_loop.exiting() && self.window_contexts.contains_key(&id) {
+            self.drain_color_pick_requests(event_loop, id);
+        }
         disposition
     }
 

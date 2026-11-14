@@ -243,6 +243,7 @@ mod tests {
             Icon::ChevronUp,
             Icon::Chart,
             Icon::Close,
+            Icon::ColorPicker,
             Icon::Eye,
             Icon::File,
             Icon::Folder,
@@ -263,6 +264,7 @@ mod tests {
             Icon::Workspace,
         ] {
             assert!(!icon.shapes().is_empty(), "{icon:?}");
+            assert!(!icon.svg().is_empty(), "{icon:?}");
         }
     }
 
