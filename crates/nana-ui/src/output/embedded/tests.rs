@@ -225,6 +225,7 @@ fn extents_and_sampling_metadata_are_explicit() {
 
 #[test]
 fn static_child_in_120_and_240_submitted_parent_frames_has_zero_producer_work() {
+    let _gpu_guard = test_gpu::lock();
     let gpu = test_gpu::context();
     let mut child = surface();
     let scene = child_scene([1.0, 0.0, 0.0, 1.0]);
@@ -312,6 +313,7 @@ fn static_child_in_120_and_240_submitted_parent_frames_has_zero_producer_work() 
 
 #[test]
 fn registry_clone_keeps_display_storage_safe_after_node_drop_and_child_updates() {
+    let _gpu_guard = test_gpu::lock();
     let gpu = test_gpu::context();
     let mut child = surface();
     let red = child_scene([1.0, 0.0, 0.0, 1.0]);
@@ -346,6 +348,7 @@ fn registry_clone_keeps_display_storage_safe_after_node_drop_and_child_updates()
 
 #[test]
 fn child_replacement_retains_identity_and_mapping_without_parent_tree_mutation() {
+    let _gpu_guard = test_gpu::lock();
     let mut child = surface();
     let mut embedded = EmbeddedSurfaceNode::from_frame(
         render(&mut child, &child_scene([1.0, 0.0, 0.0, 1.0]), 0),
@@ -401,6 +404,7 @@ fn next_preparation(child: &mut super::super::ExternalSurface) -> super::super::
 
 #[test]
 fn detach_drops_the_nodes_own_display_lease_even_without_registry_attachments() {
+    let _gpu_guard = test_gpu::lock();
     let (mut child, node, _newest) = two_pinned_revisions();
     assert!(matches!(
         next_preparation(&mut child),
@@ -430,6 +434,7 @@ fn detach_drops_the_nodes_own_display_lease_even_without_registry_attachments() 
 
 #[test]
 fn detach_withdraws_only_owned_attachments_and_notifies_each_registry_outside_its_lock() {
+    let _gpu_guard = test_gpu::lock();
     let (_child, node, _newest) = two_pinned_revisions();
     let first = HostTextureRegistry::new();
     let second = HostTextureRegistry::new();
@@ -482,6 +487,7 @@ fn detach_withdraws_only_owned_attachments_and_notifies_each_registry_outside_it
 
 #[test]
 fn detach_preserves_recorded_parent_leases_until_discard_or_actual_completion() {
+    let _gpu_guard = test_gpu::lock();
     let gpu = test_gpu::context();
     for submit in [false, true] {
         let (mut child, node, _newest) = two_pinned_revisions();
@@ -529,6 +535,7 @@ fn detach_preserves_recorded_parent_leases_until_discard_or_actual_completion() 
 
 #[test]
 fn cloned_bindings_remain_safe_after_detach_until_their_last_reference_retires() {
+    let _gpu_guard = test_gpu::lock();
     let gpu = test_gpu::context();
     let (mut child, node, _newest) = two_pinned_revisions();
     let registry = HostTextureRegistry::new();
@@ -619,6 +626,7 @@ impl StepBarrier {
 
 #[test]
 fn concurrent_retained_refresh_never_overwrites_a_replacement_owner() {
+    let _gpu_guard = test_gpu::lock();
     let (_child, node, _newest) = two_pinned_revisions();
     let registry = HostTextureRegistry::new();
     let old = node.host_texture().clone();
@@ -678,6 +686,7 @@ fn concurrent_retained_refresh_never_overwrites_a_replacement_owner() {
 
 #[test]
 fn gamma_or_untyped_srgb_output_requires_explicit_conversion() {
+    let _gpu_guard = test_gpu::lock();
     let gpu = test_gpu::context();
     let mut child = super::super::ExternalSurface::new(
         &gpu,
@@ -700,6 +709,7 @@ fn gamma_or_untyped_srgb_output_requires_explicit_conversion() {
 
 #[test]
 fn replacing_child_pixels_reaches_cached_parent_without_scene_mutation() {
+    let _gpu_guard = test_gpu::lock();
     let gpu = test_gpu::context();
     let mut child = surface();
     let mut embedded = EmbeddedSurfaceNode::from_frame(
@@ -746,6 +756,7 @@ fn replacing_child_pixels_reaches_cached_parent_without_scene_mutation() {
 
 #[test]
 fn one_child_can_be_recorded_by_multiple_parents_and_discarded() {
+    let _gpu_guard = test_gpu::lock();
     let gpu = test_gpu::context();
     let mut child = surface();
     let scene = child_scene([1.0, 0.0, 0.0, 1.0]);
@@ -803,6 +814,7 @@ fn one_child_can_be_recorded_by_multiple_parents_and_discarded() {
 
 #[test]
 fn replacing_a_child_before_parent_submit_keeps_the_recorded_revision_pinned() {
+    let _gpu_guard = test_gpu::lock();
     let gpu = test_gpu::context();
     let mut child = surface();
     let mut embedded = EmbeddedSurfaceNode::from_frame(
@@ -858,6 +870,7 @@ fn replacing_a_child_before_parent_submit_keeps_the_recorded_revision_pinned() {
 
 #[test]
 fn a_delayed_child_revision_cannot_roll_back_the_persistent_binding() {
+    let _gpu_guard = test_gpu::lock();
     let mut child = surface();
     let red = child_scene([1.0, 0.0, 0.0, 1.0]);
     let older = render(&mut child, &red, 0);
@@ -890,6 +903,7 @@ fn a_delayed_child_revision_cannot_roll_back_the_persistent_binding() {
 
 #[test]
 fn replacing_with_another_child_does_not_alias_equal_revision_numbers() {
+    let _gpu_guard = test_gpu::lock();
     fn first_revision(
         surface: &mut super::super::ExternalSurface,
         scene: &UiScene,

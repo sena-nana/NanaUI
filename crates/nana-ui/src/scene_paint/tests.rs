@@ -1581,6 +1581,7 @@ fn spinner_ticks_paint_capsule_coverage_on_gpu() {
 #[test]
 #[cfg(feature = "graph-canvas")]
 fn graph_canvas_stroke_gpu_upload_scales_with_segment_count() {
+    let _gpu_guard = crate::test_gpu::lock();
     let (device, queue) = test_device();
     let format = wgpu::TextureFormat::Rgba8Unorm;
     // Compare cold uploads. Reusing the previous scene's buffers measures only

@@ -169,6 +169,21 @@ impl Default for Helper {
         )
         self.assertEqual(picked["counts"]["elevation"], 1)
 
+    def test_non_visual_integer_constants_are_not_counted_as_design_constants(self):
+        root = self.scratch(
+            "const PAGE_BITS: u32 = 6;\n"
+            "const MODAL_SCRIM_SLOT: u64 = 10;\n"
+            "const ROLE_SHIFT: u32 = 1;\n"
+            "const TEXT_LINE_LABELS_NS: u32 = 1;\n"
+            "const FONT_WEIGHT: u16 = 600;\n"
+            "const DEFAULT_CLOSE_DELAY_MS: u64 = 120;\n"
+            "const CORNER: f32 = 12.0;\n"
+        )
+        entries = audit.scan_module_constants(root)
+        self.assertEqual(len(entries), 1)
+        names = [item["name"] for item in entries[0]["constants"]]
+        self.assertEqual(names, ["FONT_WEIGHT", "DEFAULT_CLOSE_DELAY_MS", "CORNER"])
+
     def test_the_committed_baseline_is_current(self):
         """`--check` is only useful if the recorded numbers are the real ones.
 

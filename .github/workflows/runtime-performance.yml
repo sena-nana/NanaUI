@@ -76,7 +76,7 @@ jobs:
       - name: Run and judge catalog GpuScene UiOnly encode
         run: |
           mkdir -p target/performance/issue8
-          cargo run --release --locked -p nana-ui --features gpu --bin nana-gpu-scene-benchmark -- \
+          cargo run --release --locked -p nana-ui --features gpu,runtime-wgsl --bin nana-gpu-scene-benchmark -- \
             --scenario perf/scenarios/gpu-scene-ui.json \
             --output target/performance/gpu-scene-ui.json
           python3 perf/runners/nana/run.py --scenario gpu-scene-ui \

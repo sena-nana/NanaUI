@@ -164,6 +164,49 @@ fn dx12_poll_reports_removed_device() {
     use windows::Win32::Graphics::Direct3D12::ID3D12Device5;
     use windows::core::Interface as _;
 
+    // ID3D12Device5::RemoveDevice() removes the adapter for the whole process,
+    // which would break sibling DX12 tests running concurrently in the same
+    // fork_headless binary. Run the destructive call in an isolated child.
+    if std::env::var_os("NANA_WGPU_FORK_REMOVED_DEVICE_CHILD").is_none() {
+        let exe = std::env::current_exe().expect("locate test executable");
+        let mut child = std::process::Command::new(exe)
+            .args([
+                "--exact",
+                "device_lost_poll::dx12_poll_reports_removed_device",
+                "--test-threads=1",
+                "--nocapture",
+            ])
+            .env("NANA_WGPU_FORK_REMOVED_DEVICE_CHILD", "1")
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .spawn()
+            .expect("spawn isolated dx12 RemoveDevice child");
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(15);
+        let status = loop {
+            match child.try_wait() {
+                Ok(Some(status)) => break status,
+                Ok(None) if std::time::Instant::now() < deadline => {
+                    std::thread::sleep(std::time::Duration::from_millis(20));
+                }
+                Ok(None) => {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    panic!("isolated dx12_poll_reports_removed_device child timed out after 15s");
+                }
+                Err(error) => {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    panic!("failed waiting on isolated child: {error}");
+                }
+            }
+        };
+        assert!(
+            status.success(),
+            "isolated dx12 RemoveDevice child failed ({status})"
+        );
+        return;
+    }
+
     check(
         "dx12_poll_reports_removed_device",
         wgpu::Backends::DX12,

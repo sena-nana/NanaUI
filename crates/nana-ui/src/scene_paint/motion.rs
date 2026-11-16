@@ -1942,6 +1942,7 @@ mod tests {
     }
 
     fn assert_same_frame_motion(first: &UiScene, second: &UiScene) {
+        let _gpu_guard = crate::test_gpu::lock();
         let expected = [alone_in_frame(first), alone_in_frame(second)];
         assert_ne!(
             expected[0], expected[1],
@@ -2050,6 +2051,7 @@ mod tests {
 
     #[test]
     fn same_frame_discard_reuploads_the_last_scenes_motion() {
+        let _gpu_guard = crate::test_gpu::lock();
         let (_, first, _) = animated_opacity_scene(Duration::from_millis(100));
         let (_, second, _, _) = compositor_motion_scene(
             opacity_spec(

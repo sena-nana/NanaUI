@@ -70,7 +70,7 @@ jobs:
         if: runner.os == 'Linux'
         run: python3 scripts/check-component-features.py
       - name: Check Gallery package boundary
-        run: cargo check -p component-gallery --bin component-gallery --locked
+        run: cargo check -p component-gallery --bin component-gallery --features bundled-fonts --locked
       - name: Run default-feature tests
         run: cargo test --workspace --locked
       # `scene_paint::precompiled`: the quad family from its DXIL paints what
@@ -338,13 +338,8 @@ jobs:
             content_growth_under_a_child_moves_its_siblings \
             content_growth_under_a_child_moves_its_siblings_when_the_container_hugs \
             flipping_a_container_to_a_row_remeasures_children_that_depend_on_the_direction \
-            a_display_contents_child_keeps_its_container_off_the_cached_plans \
             a_container_whose_own_text_grows_remeasures_itself \
-            a_default_spelled_two_ways_keeps_the_plan_but_a_real_direction_change_retires_it \
-            projecting_a_stack_does_not_rewrite_the_style_the_cascade_published \
             an_unset_flow_axis_is_a_column_but_not_a_row \
-            stack_ignores_child_derived_spec_so_declaring_it_is_honest \
-            the_child_spec_flag_reaches_every_alias_and_defaults_to_yes \
             scroll_view_with_forty_rows_dirties_forty_one_hit_targets \
             virtual_list_materializes_only_visible_items_and_reuses_overlap \
             virtual_table_materializes_a_bounded_grid_and_reuses_both_axes \

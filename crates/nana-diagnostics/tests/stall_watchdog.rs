@@ -1,7 +1,8 @@
 //! A callback that does not return is reported from the watchdog thread,
 //! and its end is recorded once it does.
 
-use std::time::{Duration, Instant, SystemTime};
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::time::{Duration, Instant};
 
 use nana_diagnostics::nlog::{self, Entry};
 use nana_diagnostics::stall::{self, Callback};
@@ -17,11 +18,9 @@ fn stall_watchdog_stuck_callback(until: Instant) {
 
 #[test]
 fn a_stuck_callback_is_reported_with_its_stack_and_its_recovery() {
-    let nanos = SystemTime::now()
-        .duration_since(SystemTime::UNIX_EPOCH)
-        .unwrap()
-        .as_nanos();
-    let dir = std::env::temp_dir().join(format!("nana-diag-stall-{nanos}"));
+    static NEXT_DIR: AtomicUsize = AtomicUsize::new(0);
+    let seq = NEXT_DIR.fetch_add(1, Ordering::Relaxed);
+    let dir = std::env::temp_dir().join(format!("nana-diag-stall-{}-{seq}", std::process::id()));
     let guard = nana_diagnostics::install(
         DiagnosticsConfig {
             persist: PersistMode::Essential,

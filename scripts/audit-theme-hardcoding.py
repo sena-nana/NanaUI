@@ -189,6 +189,14 @@ DESIGN_CONST = re.compile(
     r"(?:pub(?:\([^)]*\))?\s+)?const\s+(\w+)\s*:\s*(f32|f64|u16|u32|u64)\s*=\s*(" + NUMBER + r")\s*;"
 )
 
+
+def _is_design_constant(name: str, kind: str) -> bool:
+    """Keep float design literals and visual integer constants (weights, delays);
+    skip internal IDs, bitmasks, shifts, slots, namespaces, and count limits."""
+    if kind in ("f32", "f64"):
+        return True
+    return "WEIGHT" in name or (name.endswith("_MS") and name != "FRAME_BUDGET_MS")
+
 COUNT_KEYS = ("color_role", "color_literal", "design_number", "motion", "elevation")
 
 # Application code: a literal length where a view should name a step.
@@ -445,6 +453,7 @@ def scan_module_constants(root: Path) -> list[dict[str, object]]:
         names = [
             {"name": name, "type": kind, "value": float(value)}
             for name, kind, value in DESIGN_CONST.findall(text)
+            if _is_design_constant(name, kind)
         ]
         if names:
             files.append(

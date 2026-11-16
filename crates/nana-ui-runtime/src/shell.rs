@@ -671,7 +671,9 @@ impl AppTitleBarControls {
         }
         let layout = Arc::make_mut(&mut style.layout);
         if self.capsule {
-            layout.border_width = Some(1.0);
+            layout.border_width = Some(nana_ui_core::HAIRLINE);
+            layout.theme.border_width =
+                Some(nana_ui_core::ThemeToken::Border(nana_ui_core::BorderWidth::Hairline).into());
         }
         if self.native {
             let width = NATIVE_WINDOW_CONTROLS_WIDTH;

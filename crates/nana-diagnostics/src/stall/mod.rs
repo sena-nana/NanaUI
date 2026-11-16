@@ -127,7 +127,7 @@ thread_local! {
 /// Watch the calling thread, typically the event-loop thread, and start the
 /// watchdog. One thread per process is watched; later calls do nothing.
 pub fn watch_current_thread() {
-    watch_current_thread_with_timings(STALL_THRESHOLD, POLL, SAMPLE_GAP);
+    let _ = watch_current_thread_with_timings(STALL_THRESHOLD, POLL, SAMPLE_GAP, None);
 }
 
 #[doc(hidden)]
@@ -136,10 +136,18 @@ pub fn watch_current_thread_with_timings_for_test(
     poll: Duration,
     sample_gap: Duration,
 ) {
-    watch_current_thread_with_timings(threshold, poll, sample_gap);
+    let (tx, rx) = std::sync::mpsc::sync_channel(1);
+    if watch_current_thread_with_timings(threshold, poll, sample_gap, Some(tx)) {
+        let _ = rx.recv_timeout(Duration::from_secs(2));
+    }
 }
 
-fn watch_current_thread_with_timings(threshold: Duration, poll: Duration, sample_gap: Duration) {
+fn watch_current_thread_with_timings(
+    threshold: Duration,
+    poll: Duration,
+    sample_gap: Duration,
+    ready: Option<std::sync::mpsc::SyncSender<()>>,
+) -> bool {
     let mut installed = false;
     let watch = WATCH.get_or_init(|| {
         installed = true;
@@ -154,12 +162,13 @@ fn watch_current_thread_with_timings(threshold: Duration, poll: Duration, sample
         }
     });
     if !installed {
-        return;
+        return false;
     }
     WATCHED.with(|watched| watched.set(true));
     let _ = std::thread::Builder::new()
         .name("nana-stall-watchdog".into())
-        .spawn(move || run(watch));
+        .spawn(move || run(watch, ready));
+    true
 }
 
 /// Mark one callback on the watched thread; the stall clock runs until the
@@ -349,7 +358,10 @@ impl Stall {
     }
 }
 
-fn run(watch: &'static Watch) {
+fn run(watch: &'static Watch, ready: Option<std::sync::mpsc::SyncSender<()>>) {
+    if let Some(tx) = ready {
+        let _ = tx.send(());
+    }
     let mut current: Option<Stall> = None;
     loop {
         std::thread::sleep(watch.poll);

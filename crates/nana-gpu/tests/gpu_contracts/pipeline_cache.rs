@@ -170,10 +170,18 @@ fn only_a_grown_cache_is_saved_again() {
     let store = MemoryStore::default();
     build_pipeline(&gpu, 0.5);
     assert!(gpu.persist_pipeline_cache(&store));
+    let initial_len = gpu.pipeline_cache_data().map_or(0, |bytes| bytes.len());
     // Nothing built since: the bytes are not even fetched.
     assert!(!gpu.persist_pipeline_cache_if_grown(&store));
-    // A pipeline compiled after that one is saved.
+    // A pipeline compiled after that one is saved when the driver grows its cache
+    // (software Vulkan drivers such as Mesa lavapipe return only a fixed header).
     build_pipeline(&gpu, 0.75);
+    let after_second_len = gpu.pipeline_cache_data().map_or(0, |bytes| bytes.len());
+    if after_second_len <= initial_len {
+        assert!(!gpu.persist_pipeline_cache_if_grown(&store));
+        assert_eq!(store.saves(), 1);
+        return;
+    }
     assert!(gpu.persist_pipeline_cache_if_grown(&store));
     assert!(!gpu.persist_pipeline_cache_if_grown(&store));
     assert_eq!(store.saves(), 2);
@@ -205,6 +213,7 @@ fn the_saver_persists_a_late_pipeline_and_nothing_else() {
     let store = Arc::new(MemoryStore::default());
     build_pipeline(&gpu, 0.5);
     assert!(gpu.persist_pipeline_cache(store.as_ref()));
+    let initial_len = gpu.pipeline_cache_data().map_or(0, |bytes| bytes.len());
 
     let interval = Duration::from_millis(10);
     let saver = PipelineCacheSaver::spawn(&gpu, store.clone(), interval).expect("saver");
@@ -215,6 +224,11 @@ fn the_saver_persists_a_late_pipeline_and_nothing_else() {
     // A pipeline compiled after startup reaches the store once compiles
     // settle, without a finish.
     build_pipeline(&gpu, 0.25);
+    if gpu.pipeline_cache_data().map_or(0, |bytes| bytes.len()) <= initial_len {
+        saver.finish();
+        assert_eq!(store.saves(), 1);
+        return;
+    }
     let deadline = Instant::now() + Duration::from_secs(5);
     while store.saves() == 1 && Instant::now() < deadline {
         std::thread::sleep(interval);

@@ -1004,9 +1004,63 @@ mod tests {
         assert_ne!(unknown, FrameColorMetadata::srgb(FrameAlphaMode::Opaque));
     }
 
-    fn test_gpu() -> GpuContext {
+    struct GpuTestGuard;
+
+    static GPU_TEST_STATE: std::sync::Mutex<(u64, usize)> = std::sync::Mutex::new((0, 0));
+    static GPU_TEST_FREE: std::sync::Condvar = std::sync::Condvar::new();
+
+    thread_local! {
+        static GPU_THREAD_TOKEN: u64 = {
+            static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+            NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+        };
+    }
+
+    impl Drop for GpuTestGuard {
+        fn drop(&mut self) {
+            let mut state = GPU_TEST_STATE
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            state.1 = state.1.saturating_sub(1);
+            if state.1 == 0 {
+                state.0 = 0;
+                GPU_TEST_FREE.notify_one();
+            }
+        }
+    }
+
+    fn lock_test_gpu() -> GpuTestGuard {
+        let token = GPU_THREAD_TOKEN.with(|token| *token);
+        let mut state = GPU_TEST_STATE
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        while state.1 > 0 && state.0 != token {
+            state = GPU_TEST_FREE
+                .wait(state)
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+        }
+        state.0 = token;
+        state.1 += 1;
+        GpuTestGuard
+    }
+
+    struct TestGpu {
+        gpu: GpuContext,
+        _guard: GpuTestGuard,
+    }
+
+    impl std::ops::Deref for TestGpu {
+        type Target = GpuContext;
+
+        fn deref(&self) -> &Self::Target {
+            &self.gpu
+        }
+    }
+
+    fn test_gpu() -> TestGpu {
         static DEVICE: std::sync::OnceLock<(wgpu::Adapter, wgpu::Device, wgpu::Queue)> =
             std::sync::OnceLock::new();
+        let guard = lock_test_gpu();
         let (adapter, device, queue) = DEVICE.get_or_init(|| {
             let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
                 backends: wgpu::Backends::from_env().unwrap_or_default(),
@@ -1021,7 +1075,10 @@ mod tests {
                     .expect("frame exchange test requires a WGPU device");
             (adapter, device, queue)
         });
-        __framework::adopt(adapter.clone(), device.clone(), queue.clone())
+        TestGpu {
+            gpu: __framework::adopt(adapter.clone(), device.clone(), queue.clone()),
+            _guard: guard,
+        }
     }
 
     #[test]
