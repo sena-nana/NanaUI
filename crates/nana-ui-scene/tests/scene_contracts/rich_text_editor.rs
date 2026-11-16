@@ -750,7 +750,7 @@ fn rich_text_editor_preserves_oklch_paint_color_for_selection_and_caret() {
     let mut style = NodeStyle::default();
     {
         let layout = Arc::make_mut(&mut style.layout);
-        layout.selection_background = Some(wide_selection.to_srgb());
+        layout.text_ext.selection_background = Some(wide_selection.to_srgb());
         layout.paint_colors.selection_background = Some(wide_selection);
         layout.color = Some(wide_caret.to_srgb());
         layout.paint_colors.color = Some(wide_caret);

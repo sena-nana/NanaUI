@@ -3,6 +3,7 @@
 //! Lookup/insert are the only hit/miss sources for `text_layout_cache_*`.
 //! This is not a glyph atlas; per-glyph advances live on [`crate::GlyphCache`].
 
+use std::cell::RefCell;
 use std::collections::{HashMap, VecDeque};
 use std::sync::Arc;
 
@@ -12,35 +13,113 @@ use crate::{ComputedStyle, TextContent, TextMetrics, TextShapeConstraints, TextS
 
 /// Bounded FIFO cache. Eviction is a real event, not a stand-in for glyph trim.
 const DEFAULT_CAP: usize = 2048;
+const STYLE_INTERN_SLOTS: usize = 16;
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
-pub(crate) struct TextLayoutKey {
-    text: Arc<str>,
+struct TextLayoutStyleKey {
     font_size_bits: u32,
     font_weight: u16,
+    italic: bool,
     font_family: Option<Arc<str>>,
     line_height: Option<(u8, u32)>,
     letter_spacing_bits: u32,
-    font_features: Vec<nana_ui_core::FontFeatureSetting>,
-    font_variations: Vec<nana_ui_core::FontVariationSetting>,
+    font_features: Box<[nana_ui_core::FontFeatureSetting]>,
+    font_variations: Box<[nana_ui_core::FontVariationSetting]>,
     font_kerning: nana_ui_core::FontKerningSpec,
     word_break: nana_ui_core::WordBreakSpec,
     line_break: nana_ui_core::LineBreakSpec,
     typography: nana_ui_core::UsedTextTypography,
     writing_mode: nana_ui_core::WritingModeSpec,
     text_orientation: nana_ui_core::TextOrientationSpec,
+    /// The host's font generation: metrics measured against a font set that
+    /// has since changed must miss rather than answer for the new one.
+    font_generation: u64,
+}
+
+impl TextLayoutStyleKey {
+    fn encode_line_height(spec: Option<LineHeightSpec>) -> Option<(u8, u32)> {
+        spec.map(|spec| match spec {
+            LineHeightSpec::Relative(value) => (0, value.to_bits()),
+            LineHeightSpec::Absolute(value) => (1, value.to_bits()),
+        })
+    }
+
+    fn matches(&self, style: &ComputedStyle, font_generation: u64) -> bool {
+        self.font_generation == font_generation
+            && self.font_size_bits == style.font_size.to_bits()
+            && self.font_weight == style.font_weight.unwrap_or(0)
+            && self.italic == style.italic
+            && self.font_family == style.font_family
+            && self.line_height == Self::encode_line_height(style.line_height)
+            && self.letter_spacing_bits == style.letter_spacing.to_bits()
+            && self.font_features.as_ref() == style.font_features.as_slice()
+            && self.font_variations.as_ref() == style.font_variations.as_slice()
+            && self.font_kerning == style.font_kerning
+            && self.word_break == style.word_break
+            && self.line_break == style.line_break
+            && self.typography == style.used_text_typography()
+            && self.writing_mode == style.writing_mode
+            && self.text_orientation == style.text_orientation
+    }
+
+    fn from_style(style: &ComputedStyle, font_generation: u64) -> Self {
+        Self {
+            font_size_bits: style.font_size.to_bits(),
+            font_weight: style.font_weight.unwrap_or(0),
+            italic: style.italic,
+            font_family: style.font_family.clone(),
+            line_height: Self::encode_line_height(style.line_height),
+            letter_spacing_bits: style.letter_spacing.to_bits(),
+            font_features: style.font_features.clone().into_boxed_slice(),
+            font_variations: style.font_variations.clone().into_boxed_slice(),
+            font_kerning: style.font_kerning,
+            word_break: style.word_break,
+            line_break: style.line_break,
+            typography: style.used_text_typography(),
+            writing_mode: style.writing_mode,
+            text_orientation: style.text_orientation,
+            font_generation,
+        }
+    }
+}
+
+thread_local! {
+    static STYLE_INTERN_RING: RefCell<[Option<Arc<TextLayoutStyleKey>>; STYLE_INTERN_SLOTS]> =
+        const { RefCell::new([const { None }; STYLE_INTERN_SLOTS]) };
+}
+
+fn intern_text_style_key(style: &ComputedStyle, font_generation: u64) -> Arc<TextLayoutStyleKey> {
+    STYLE_INTERN_RING.with(|cell| {
+        let mut ring = cell.borrow_mut();
+        for (idx, slot) in ring.iter().enumerate() {
+            let Some(entry) = slot else {
+                break;
+            };
+            if entry.matches(style, font_generation) {
+                let hit = Arc::clone(entry);
+                ring[..=idx].rotate_right(1);
+                return hit;
+            }
+        }
+        let created = Arc::new(TextLayoutStyleKey::from_style(style, font_generation));
+        ring.rotate_right(1);
+        ring[0] = Some(Arc::clone(&created));
+        created
+    })
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub(crate) struct TextLayoutKey {
+    text: Arc<str>,
+    style: Arc<TextLayoutStyleKey>,
     wrap: bool,
     ellipsis: bool,
     max_lines: Option<u16>,
     preserve_lines: bool,
     wrap_break: nana_ui_core::TextWrapBreak,
-    italic: bool,
     shaping: u8,
     max_width_bits: Option<u32>,
     max_height_bits: Option<u32>,
-    /// The host's font generation: metrics measured against a font set that
-    /// has since changed must miss rather than answer for the new one.
-    font_generation: u64,
 }
 
 impl TextLayoutKey {
@@ -51,30 +130,13 @@ impl TextLayoutKey {
         font_generation: u64,
     ) -> Self {
         Self {
-            font_generation,
-            text: Arc::from(text.value.as_str()),
-            font_size_bits: style.font_size.to_bits(),
-            font_weight: style.font_weight.unwrap_or(0),
-            font_family: style.font_family.clone(),
-            line_height: style.line_height.map(|spec| match spec {
-                LineHeightSpec::Relative(value) => (0, value.to_bits()),
-                LineHeightSpec::Absolute(value) => (1, value.to_bits()),
-            }),
-            letter_spacing_bits: style.letter_spacing.to_bits(),
-            font_features: style.font_features.clone(),
-            font_variations: style.font_variations.clone(),
-            font_kerning: style.font_kerning,
-            word_break: style.word_break,
-            line_break: style.line_break,
-            typography: style.used_text_typography(),
-            writing_mode: style.writing_mode,
-            text_orientation: style.text_orientation,
+            text: text.value.to_shared_str(),
+            style: intern_text_style_key(style, font_generation),
             wrap: constraints.wrap,
             ellipsis: constraints.ellipsis,
             max_lines: constraints.max_lines,
             preserve_lines: constraints.preserve_lines,
             wrap_break: constraints.wrap_break,
-            italic: style.italic,
             shaping: match constraints.shaping {
                 TextShaping::Auto => 0,
                 TextShaping::Advanced => 1,
@@ -196,5 +258,25 @@ mod tests {
         assert_eq!(hits, 2);
         assert_eq!(misses, 3);
         assert_eq!(evictions, 1);
+    }
+
+    #[test]
+    fn key_interns_identical_styles_and_shares_static_or_arc_text() {
+        let shared: Arc<str> = Arc::from("shared text");
+        let content_a = TextContent {
+            value: Arc::clone(&shared).into(),
+        };
+        let content_b = TextContent {
+            value: Arc::clone(&shared).into(),
+        };
+        let style = ComputedStyle::default();
+        let k1 = TextLayoutKey::new(&content_a, &style, TextShapeConstraints::default(), 3);
+        let k2 = TextLayoutKey::new(&content_b, &style, TextShapeConstraints::default(), 3);
+        assert!(Arc::ptr_eq(&k1.style, &k2.style));
+        assert!(Arc::ptr_eq(&k1.text, &k2.text));
+        assert_eq!(k1, k2);
+
+        let k_diff_gen = TextLayoutKey::new(&content_a, &style, TextShapeConstraints::default(), 4);
+        assert_ne!(k1, k_diff_gen);
     }
 }

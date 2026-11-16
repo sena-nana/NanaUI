@@ -396,7 +396,7 @@ impl RuntimeProgram for Probe {
         FrameDemand::Continuous(NonZeroU32::new(30).unwrap())
     }
 
-    fn prepare_window_frame(&mut self, _: WindowId, _: &RuntimeProgramContext<()>) {
+    fn prepare_window_frame(&mut self, _: WindowId, context: &RuntimeProgramContext<()>) {
         if let Some(perf) = &mut self.perf {
             #[cfg(all(windows, feature = "native-export"))]
             if !perf.measurement_started
@@ -430,10 +430,8 @@ impl RuntimeProgram for Probe {
         }
         // The last frame reused a completed output of unchanged content.
         if self.settling()
-            && self
-                .document
-                .context()
-                .last_work_counters()
+            && context
+                .presentation_work()
                 .output_idle_reuse_frames
                 .is_some_and(|frames| frames > 0)
         {
@@ -452,10 +450,10 @@ impl RuntimeProgram for Probe {
     fn window_frame_presented(
         &mut self,
         _: WindowId,
-        _: &RuntimeProgramContext<()>,
+        context: &RuntimeProgramContext<()>,
     ) -> RuntimeProgramUpdate {
         if let Some(perf) = self.perf.as_mut() {
-            let work = self.document.context().last_work_counters();
+            let work = context.presentation_work();
             if perf.measured_source_frame {
                 let (
                     Some(renders),

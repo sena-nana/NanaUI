@@ -6,9 +6,7 @@ use crate::view::{
     AnyView, EntityRef, IntoView, button, column, entity_ref, icon_button, list_item, widget,
     with_refs,
 };
-use crate::{
-    Button, Entity, IconButton, LayoutViewport, ListItem, RowToolsRest, SidebarRow, StandardVisual,
-};
+use crate::{Button, Entity, IconButton, LayoutViewport, ListItem, RowToolsRest, SidebarRow};
 use nana_ui_core::Icon;
 
 struct Fixture {
@@ -105,9 +103,13 @@ impl Fixture {
     }
 
     fn trailing(&self) -> Option<StableNodeId> {
-        match self.cx.world().standard_visual(self.row) {
-            Some(StandardVisual::ListItem { trailing, .. }) => trailing,
-            other => panic!("row should draw as a list item, got {other:?}"),
+        match self
+            .cx
+            .world()
+            .widget_visual_as::<crate::ListItemVisual>(self.row)
+        {
+            Some(visual) => visual.trailing,
+            None => panic!("row should draw as a list item"),
         }
     }
 

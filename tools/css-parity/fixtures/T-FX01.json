@@ -9,7 +9,7 @@
   "tolerance_px": 2,
   "tree": {
     "id": "root",
-    "style": "display:block;width:600px",
+    "style": "width:600px",
     "children": [
       {
         "id": "a-row",
@@ -25,21 +25,21 @@
             "children": [
               {
                 "id": "a-p",
-                "style": "display:block;width:60px;margin-top:5px",
+                "style": "width:60px;margin-top:5px",
                 "children": [
                   {
                     "id": "a-pa",
-                    "style": "display:inline-block;width:20px;height:20px"
+                    "style": "display:inline-flex;width:20px;height:20px"
                   }
                 ]
               },
               {
                 "id": "a-q",
-                "style": "display:block;width:60px",
+                "style": "width:60px",
                 "children": [
                   {
                     "id": "a-qa",
-                    "style": "display:inline-block;width:40px;height:40px"
+                    "style": "display:inline-flex;width:40px;height:40px"
                   }
                 ]
               }
@@ -61,21 +61,21 @@
             "children": [
               {
                 "id": "b-p",
-                "style": "display:block;width:60px",
+                "style": "width:60px",
                 "children": [
                   {
                     "id": "b-pa",
-                    "style": "display:inline-block;width:20px;height:20px"
+                    "style": "display:inline-flex;width:20px;height:20px"
                   }
                 ]
               },
               {
                 "id": "b-q",
-                "style": "display:block;width:60px",
+                "style": "width:60px",
                 "children": [
                   {
                     "id": "b-qa",
-                    "style": "display:inline-block;width:40px;height:40px"
+                    "style": "display:inline-flex;width:40px;height:40px"
                   }
                 ]
               }
@@ -101,11 +101,11 @@
               },
               {
                 "id": "c-q",
-                "style": "display:block;width:60px",
+                "style": "width:60px",
                 "children": [
                   {
                     "id": "c-qa",
-                    "style": "display:inline-block;width:40px;height:40px"
+                    "style": "display:inline-flex;width:40px;height:40px"
                   }
                 ]
               }
@@ -127,21 +127,21 @@
             "children": [
               {
                 "id": "d-p",
-                "style": "display:block;width:60px",
+                "style": "width:60px",
                 "children": [
                   {
                     "id": "d-pa",
-                    "style": "display:inline-block;width:20px;height:20px"
+                    "style": "display:inline-flex;width:20px;height:20px"
                   }
                 ]
               },
               {
                 "id": "d-q",
-                "style": "display:block;width:60px",
+                "style": "width:60px",
                 "children": [
                   {
                     "id": "d-qa",
-                    "style": "display:inline-block;width:40px;height:40px"
+                    "style": "display:inline-flex;width:40px;height:40px"
                   }
                 ]
               }
@@ -163,31 +163,31 @@
             "children": [
               {
                 "id": "g-p",
-                "style": "display:block;width:60px",
+                "style": "width:60px",
                 "children": [
                   {
                     "id": "g-pa",
-                    "style": "display:inline-block;width:20px;height:20px"
+                    "style": "display:inline-flex;width:20px;height:20px"
                   }
                 ]
               },
               {
                 "id": "g-q",
-                "style": "display:block;width:60px",
+                "style": "width:60px",
                 "children": [
                   {
                     "id": "g-qa",
-                    "style": "display:inline-block;width:40px;height:40px"
+                    "style": "display:inline-flex;width:40px;height:40px"
                   }
                 ]
               },
               {
                 "id": "g-s",
-                "style": "display:block;width:60px",
+                "style": "width:60px",
                 "children": [
                   {
                     "id": "g-sa",
-                    "style": "display:inline-block;width:10px;height:10px"
+                    "style": "display:inline-flex;width:10px;height:10px"
                   }
                 ]
               }
@@ -209,21 +209,21 @@
             "children": [
               {
                 "id": "h-p",
-                "style": "display:block;width:60px",
+                "style": "width:60px",
                 "children": [
                   {
                     "id": "h-pa",
-                    "style": "display:inline-block;width:20px;height:20px"
+                    "style": "display:inline-flex;width:20px;height:20px"
                   }
                 ]
               },
               {
                 "id": "h-q",
-                "style": "display:block;width:60px",
+                "style": "width:60px",
                 "children": [
                   {
                     "id": "h-qa",
-                    "style": "display:inline-block;width:40px;height:40px"
+                    "style": "display:inline-flex;width:40px;height:40px"
                   }
                 ]
               }
@@ -245,31 +245,31 @@
             "children": [
               {
                 "id": "i-p",
-                "style": "display:block;width:60px",
+                "style": "width:60px",
                 "children": [
                   {
                     "id": "i-pa",
-                    "style": "display:inline-block;width:20px;height:20px"
+                    "style": "display:inline-flex;width:20px;height:20px"
                   }
                 ]
               },
               {
                 "id": "i-q",
-                "style": "display:block;width:60px",
+                "style": "width:60px",
                 "children": [
                   {
                     "id": "i-qa",
-                    "style": "display:inline-block;width:40px;height:40px"
+                    "style": "display:inline-flex;width:40px;height:40px"
                   }
                 ]
               },
               {
                 "id": "i-s",
-                "style": "display:block;width:60px",
+                "style": "width:60px",
                 "children": [
                   {
                     "id": "i-sa",
-                    "style": "display:inline-block;width:10px;height:10px"
+                    "style": "display:inline-flex;width:10px;height:10px"
                   }
                 ]
               }
@@ -291,21 +291,21 @@
             "children": [
               {
                 "id": "j-p",
-                "style": "display:block;width:60px",
+                "style": "width:60px",
                 "children": [
                   {
                     "id": "j-pa",
-                    "style": "display:inline-block;width:20px;height:20px"
+                    "style": "display:inline-flex;width:20px;height:20px"
                   }
                 ]
               },
               {
                 "id": "j-q",
-                "style": "display:block;width:60px",
+                "style": "width:60px",
                 "children": [
                   {
                     "id": "j-qa",
-                    "style": "display:inline-block;width:40px;height:40px"
+                    "style": "display:inline-flex;width:40px;height:40px"
                   }
                 ]
               }
@@ -327,21 +327,21 @@
             "children": [
               {
                 "id": "k-p",
-                "style": "display:block;width:60px;margin-top:auto",
+                "style": "width:60px;margin-top:auto",
                 "children": [
                   {
                     "id": "k-pa",
-                    "style": "display:inline-block;width:20px;height:20px"
+                    "style": "display:inline-flex;width:20px;height:20px"
                   }
                 ]
               },
               {
                 "id": "k-q",
-                "style": "display:block;width:60px",
+                "style": "width:60px",
                 "children": [
                   {
                     "id": "k-qa",
-                    "style": "display:inline-block;width:40px;height:40px"
+                    "style": "display:inline-flex;width:40px;height:40px"
                   }
                 ]
               }

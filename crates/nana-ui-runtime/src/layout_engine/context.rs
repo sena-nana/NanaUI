@@ -46,7 +46,7 @@ pub(super) fn establish_context(
         {
             FormattingContextKind::Inline
         }
-        _ => FormattingContextKind::Flow,
+        _ => FormattingContextKind::Flex,
     };
     EstablishedContext {
         kind,

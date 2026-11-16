@@ -207,15 +207,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "ar_archive_writer"
-version = "0.5.3"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "73cd58deff2140a0a8eae87e417bd01db68a33e148aa93d1e8cd837e55e312b6"
-dependencies = [
- "object 0.39.1",
-]
-
-[[package]]
 name = "arboard"
 version = "3.6.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -513,6 +504,9 @@ name = "bitflags"
 version = "2.13.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "3ded4057c258ba199e2d26386d3af3780957ecaee6c4ef4041c6b4b8b97c0b06"
+dependencies = [
+ "serde_core",
+]
 
 [[package]]
 name = "blake3"
@@ -1568,6 +1562,7 @@ dependencies = [
  "cfg-if",
  "crunchy",
  "num-traits",
+ "serde",
  "zerocopy",
 ]
 
@@ -1603,6 +1598,8 @@ dependencies = [
  "allocator-api2",
  "equivalent",
  "foldhash",
+ "serde",
+ "serde_core",
 ]
 
 [[package]]
@@ -1984,6 +1981,8 @@ checksum = "cc4e190f5d26ca7051642629da2c52fc03bde85a03197c99408dcd291734c855"
 dependencies = [
  "equivalent",
  "hashbrown 0.17.1",
+ "serde",
+ "serde_core",
 ]
 
 [[package]]
@@ -2402,6 +2401,7 @@ dependencies = [
  "num-traits",
  "once_cell",
  "rustc-hash 1.1.0",
+ "serde",
  "spirv",
  "thiserror 2.0.21",
  "unicode-ident",
@@ -2414,6 +2414,7 @@ dependencies = [
  "hashbrown 0.17.1",
  "indexmap",
  "rustc-hash 1.1.0",
+ "serde",
  "thiserror 2.0.21",
 ]
 
@@ -2559,7 +2560,7 @@ dependencies = [
  "nana-app-icon",
  "nana-package",
  "nana-ui-platform",
- "object 0.40.0",
+ "object",
  "serde",
  "serde_json",
  "toml",
@@ -2581,16 +2582,16 @@ version = "0.1.0"
 dependencies = [
  "fontdb 0.24.0",
  "harfrust",
- "icu_properties",
  "memmap2",
  "nana-ui-core",
+ "png",
  "serde",
  "serde_json",
  "skrifa",
- "swash",
  "unicode-bidi",
  "unicode-linebreak",
  "unicode-segmentation",
+ "zeno",
 ]
 
 [[package]]
@@ -2602,10 +2603,12 @@ dependencies = [
  "accesskit_unix",
  "accesskit_windows",
  "base64 0.23.1",
+ "bincode",
  "bytemuck",
  "egui",
  "egui-wgpu",
  "etagere",
+ "flate2",
  "image",
  "log",
  "naga",
@@ -2655,7 +2658,6 @@ name = "nana-ui-css"
 version = "0.1.0"
 dependencies = [
  "nana-ui-core",
- "serde_json",
 ]
 
 [[package]]
@@ -2762,7 +2764,6 @@ dependencies = [
  "ratex-types",
  "serde",
  "serde_json",
- "stacker",
  "two-face",
  "unicode-segmentation",
  "unicode-width",
@@ -2777,7 +2778,6 @@ dependencies = [
  "lyon_tessellation",
  "nana-diagnostics",
  "nana-text",
- "nana-ui-charts",
  "nana-ui-core",
  "nana-ui-input",
  "nana-ui-runtime",
@@ -2808,7 +2808,6 @@ dependencies = [
  "nana-ui-view-schema",
  "proc-macro2",
  "quote",
- "serde_json",
  "syn 2.0.119",
 ]
 
@@ -3211,15 +3210,6 @@ dependencies = [
 
 [[package]]
 name = "object"
-version = "0.39.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2e5a6c098c7a3b6547378093f5cc30bc54fd361ce711e05293a5cc589562739b"
-dependencies = [
- "memchr",
-]
-
-[[package]]
-name = "object"
 version = "0.40.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "dd229a0361b9d0d4396176e02d65897f487eebeab7caa6d443855ee152ca0b9c"
@@ -3609,16 +3599,6 @@ name = "profiling"
 version = "1.0.18"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "3d595e54a326bc53c1c197b32d295e14b169e3cfeaa8dc82b529f947fba6bcf5"
-
-[[package]]
-name = "psm"
-version = "0.1.32"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "4dcd034599e63b970727f70d79e02d62390a4a84f7c6b827c27c46d5ac3fa622"
-dependencies = [
- "ar_archive_writer",
- "cc",
-]
 
 [[package]]
 name = "pulldown-cmark"
@@ -4423,19 +4403,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "6ce2be8dc25455e1f91df71bfa12ad37d7af1092ae736f3a6cd0e37bc7810596"
 
 [[package]]
-name = "stacker"
-version = "0.1.25"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "707f49d46706bacf8a2b00d51dace3f9de527c13eec3778f570c411f89e69967"
-dependencies = [
- "cc",
- "cfg-if",
- "libc",
- "psm",
- "windows-sys 0.61.2",
-]
-
-[[package]]
 name = "static_assertions"
 version = "1.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4464,17 +4431,6 @@ checksum = "695b5790b3131dafa99b3bbfd25a216edb3d216dad9ca208d4657bfb8f2abc3d"
 dependencies = [
  "kurbo",
  "siphasher",
-]
-
-[[package]]
-name = "swash"
-version = "0.2.10"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6c2499c2d826531388872b2268718aed907a39bd785ab0dcfe57fab26283f92e"
-dependencies = [
- "skrifa",
- "yazi",
- "zeno",
 ]
 
 [[package]]
@@ -6195,12 +6151,6 @@ checksum = "56c1936c4cc7a1c9ab21a1ebb602eb942ba868cbd44a99cb7cdc5892335e1c85"
 dependencies = [
  "linked-hash-map",
 ]
-
-[[package]]
-name = "yazi"
-version = "0.2.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e01738255b5a16e78bbb83e7fbba0a1e7dd506905cfc53f4622d89015a03fbb5"
 
 [[package]]
 name = "yoke"

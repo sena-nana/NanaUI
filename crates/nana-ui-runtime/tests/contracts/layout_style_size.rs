@@ -1,34 +1,58 @@
-//! The size that decides where theme intent gets resolved.
+//! Layout and style struct size contracts across hot/cold splits.
 //!
-//! `docs/reference/theme.md` §1.5 resolves sizing intent when a node's style is
-//! *written*, not when it is read, and resolves colour the other way round.
-//! The only reason for the split is that a colour is 16 bytes and a
-//! `LayoutStyle` is three orders of magnitude larger: putting the box on the
-//! read path meant copying it per control per frame, which measured +196% on
-//! a palette switch.
-//!
-//! So the rationale rests on a number. If `LayoutStyle` ever becomes small,
-//! the split stops being justified and should be revisited rather than
-//! inherited. This test is what makes that a decision instead of an accident.
-
-/// Measured 4808 bytes on 2026-09-19. The bound is deliberately loose: the
-/// exact figure moves with field layout and is not the point. "Too big to
-/// copy on a hot path" is the point.
-const TOO_BIG_TO_COPY_PER_FRAME: usize = 1024;
+//! `docs/reference/theme.md` §1.5 originally chose to resolve sizing intent on
+//! write rather than read when `LayoutStyle` was 4808 bytes; even after cold-group
+//! sharing (`<= 464 B`), write-time resolution avoids cloning/updating `LayoutStyle`
+//! and its cold shared groups per control per frame while `ComputedStyle` stays `<= 80 B`.
 
 #[test]
-fn layout_style_is_still_too_big_to_resolve_on_the_read_path() {
+fn length_spec_and_optional_length_fit_in_8_bytes() {
+    assert_eq!(size_of::<nana_ui_core::LengthSpec>(), 8);
+    assert_eq!(size_of::<Option<nana_ui_core::LengthSpec>>(), 8);
+}
+
+#[test]
+fn layout_style_fits_within_subbatch_2b3_budget() {
     let layout = size_of::<nana_ui_core::LayoutStyle>();
+    let computed = size_of::<nana_ui_runtime::ComputedStyle>();
     assert!(
-        layout > TOO_BIG_TO_COPY_PER_FRAME,
-        "LayoutStyle is now {layout} bytes. It was 4808 when theme.md \u{00a7}1.5 \
-         chose to resolve sizing intent on write instead of on read, purely to \
-         avoid copying it per control per frame. If it is genuinely small now, \
-         revisit that choice and this test; do not just widen the bound."
+        layout <= 464,
+        "LayoutStyle regressed to {layout} bytes (expected <= 464)"
     );
     assert!(
-        size_of::<nana_ui_runtime::ComputedStyle>() < layout,
-        "colour resolution rides on ComputedStyle and is cheap to redo \
-         downstream precisely because it is the smaller of the two"
+        computed < layout,
+        "colour resolution rides on ComputedStyle ({computed} B) and stays smaller than LayoutStyle ({layout} B)"
+    );
+}
+
+#[test]
+fn resolve_logical_box_edges_does_not_allocate_default_cold_edges() {
+    let mut layout = nana_ui_core::LayoutStyle {
+        padding_left: Some(nana_ui_core::LengthSpec::Px(4.0)),
+        ..Default::default()
+    };
+    layout.resolve_logical_box_edges();
+    assert!(
+        layout.logical_edges.is_shared_default(),
+        "resolving a plain physical style must keep Shared::empty() for logical_edges"
+    );
+}
+
+#[test]
+fn computed_and_node_style_sizes_stay_within_subbatch_2b2_budget() {
+    let computed = size_of::<nana_ui_runtime::ComputedStyle>();
+    let inherited = size_of::<nana_ui_runtime::InheritedStyle>();
+    let node_style = size_of::<nana_ui_runtime::NodeStyle>();
+    assert!(
+        computed <= 80,
+        "ComputedStyle regressed to {computed} bytes (expected <= 80)"
+    );
+    assert!(
+        inherited <= 112,
+        "InheritedStyle regressed to {inherited} bytes (expected <= 112)"
+    );
+    assert!(
+        node_style <= 80,
+        "NodeStyle regressed to {node_style} bytes (expected <= 80)"
     );
 }

@@ -1,10 +1,8 @@
-//! Backend-neutral metadata for the single layout intent/resolution authority.
+//! Backend-neutral metadata for layout field groups.
 //!
 //! The mask is intentionally independent from `nana-ui-css`: CSS, semantic
 //! projection, and Rust L3 can all describe the same ownership
 //! contract without importing a parser or a runtime tree.
-
-use crate::FlexDirection;
 
 /// `names(self)` for a set of flag constants, from a `FLAG: "name"` table:
 /// the name of every flag the set holds, in table order.
@@ -20,17 +18,6 @@ macro_rules! flag_names {
     };
 }
 pub(crate) use flag_names;
-
-/// Origin of a layout value before it is resolved into a retained node.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum LayoutOrigin {
-    ComponentRequired,
-    ComponentDefault,
-    Author,
-    RuntimeConstraint,
-    LayoutOutput,
-    ScrollProjection,
-}
 
 /// Coarse field groups used for ownership and invalidation. A group is the
 /// smallest stable public unit needed by the current layout engine; individual
@@ -94,6 +81,25 @@ impl LayoutFieldMask {
     /// Classify a CSS longhand (or the corresponding L3 field name).
     pub fn from_property(property: &str) -> Self {
         let property = property.trim().to_ascii_lowercase();
+        let property = if property.starts_with("grid.") {
+            return Self::GRID;
+        } else if property.starts_with("transforms.") {
+            return Self::TRANSFORM;
+        } else if property.starts_with("logical_edges.") {
+            return if property.contains("inset") {
+                Self::POSITION
+            } else {
+                Self::SPACING
+            };
+        } else if property.starts_with("border_sides.") {
+            return Self::PAINT;
+        } else if property.starts_with("container.") {
+            return Self::INTRINSIC;
+        } else if let Some(rest) = property.strip_prefix("text_ext.") {
+            rest
+        } else {
+            property.as_str()
+        };
         if property.contains("font")
             || property.contains("text")
             || property.contains("line-height")
@@ -151,293 +157,9 @@ impl LayoutFieldMask {
     }
 }
 
-/// Typed ownership for a node's layout intent. Required fields win over
-/// author intent; default fields are author-overridable by the resolver.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub struct LayoutOwnership {
-    pub required: LayoutFieldMask,
-    pub defaults: LayoutFieldMask,
-}
-
-impl LayoutOwnership {
-    pub const fn component_default(mask: LayoutFieldMask) -> Self {
-        Self {
-            required: LayoutFieldMask::NONE,
-            defaults: mask,
-        }
-    }
-
-    pub const fn component_required(mask: LayoutFieldMask) -> Self {
-        Self {
-            required: mask,
-            defaults: LayoutFieldMask::NONE,
-        }
-    }
-
-    pub const fn allows_author(self, fields: LayoutFieldMask) -> LayoutFieldMask {
-        LayoutFieldMask(fields.bits() & !self.required.bits())
-    }
-}
-
-/// Minimal component intent used by adapters that need to seed the resolver.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct LayoutIntent {
-    pub origin: LayoutOrigin,
-    pub ownership: LayoutOwnership,
-    pub default_direction: Option<FlexDirection>,
-}
-
-impl LayoutIntent {
-    pub const fn component_default(ownership: LayoutOwnership) -> Self {
-        Self {
-            origin: LayoutOrigin::ComponentDefault,
-            ownership,
-            default_direction: None,
-        }
-    }
-
-    pub const fn row_default() -> Self {
-        Self {
-            origin: LayoutOrigin::ComponentDefault,
-            ownership: LayoutOwnership::component_default(LayoutFieldMask::FLOW),
-            default_direction: Some(FlexDirection::Row),
-        }
-    }
-}
-
-/// Resolve a component layout against author intent using the typed ownership
-/// contract. The JSON representation is used only at mutation time; it keeps
-/// this adapter independent from the large and evolving `LayoutStyle` field
-/// list while preserving exact field values and defaults.
-pub fn resolve_layout_intent(
-    component: &crate::LayoutStyle,
-    author: &crate::LayoutStyle,
-    ownership: LayoutOwnership,
-    author_fields: LayoutFieldMask,
-) -> crate::LayoutStyle {
-    let mut resolved = serde_json::to_value(component).expect("layout serializes");
-    let authored = serde_json::to_value(author).expect("layout serializes");
-    let groups = [
-        (
-            LayoutFieldMask::FLOW,
-            &[
-                "direction",
-                "dir",
-                "flex_reverse",
-                "order",
-                "flex_wrap",
-                "display",
-            ][..],
-        ),
-        (
-            LayoutFieldMask::SIZING,
-            &[
-                "box_sizing",
-                "width",
-                "height",
-                "min_width",
-                "max_width",
-                "min_height",
-                "max_height",
-                "allow_shrink",
-                "aspect_ratio",
-            ][..],
-        ),
-        (
-            LayoutFieldMask::SPACING,
-            &[
-                "gap",
-                "row_gap",
-                "column_gap",
-                "padding",
-                "padding_top",
-                "padding_right",
-                "padding_bottom",
-                "padding_left",
-                "margin",
-                "margin_top",
-                "margin_right",
-                "margin_bottom",
-                "margin_left",
-                "offset_top",
-                "offset_right",
-                "offset_bottom",
-                "offset_left",
-                "logical_padding",
-                "logical_margin",
-                "logical_inset",
-            ][..],
-        ),
-        (
-            LayoutFieldMask::POSITION,
-            &[
-                "position",
-                "anchor",
-                "z_index",
-                "isolation",
-                "float",
-                "clear",
-            ][..],
-        ),
-        (
-            LayoutFieldMask::ALIGNMENT,
-            &[
-                "align_items",
-                "align_self",
-                "align_content",
-                "justify_content",
-                "justify_items",
-                "justify_self",
-                "flex_grow",
-                "flex_shrink",
-                "flex_basis",
-                "adaptation",
-            ][..],
-        ),
-        (
-            LayoutFieldMask::GRID,
-            &[
-                "grid_columns",
-                "grid_rows",
-                "grid_columns_unsupported",
-                "grid_rows_unsupported",
-                "grid_auto_columns",
-                "grid_auto_rows",
-                "grid_auto_flow",
-                "grid_columns_repeat",
-                "grid_rows_repeat",
-                "grid_placement",
-                "grid_template_areas",
-                "grid_column_line_names",
-                "grid_row_line_names",
-                "grid_columns_subgrid",
-                "grid_rows_subgrid",
-            ][..],
-        ),
-        (
-            LayoutFieldMask::TYPOGRAPHY,
-            &[
-                "font_size",
-                "font_weight",
-                "font_italic",
-                "font_family",
-                "line_height",
-                "letter_spacing",
-                "font_features",
-                "font_variation_settings",
-                "font_kerning",
-                "line_break",
-                "text_typography",
-                "text_orientation",
-                "text_align",
-                "white_space",
-                "white_space_nowrap",
-                "word_break",
-                "overflow_wrap",
-                "text_decoration",
-                "text_emphasis_style",
-                "text_emphasis_position",
-                "text_emphasis_color",
-            ][..],
-        ),
-        (
-            LayoutFieldMask::PAINT,
-            &[
-                "paint",
-                "opacity",
-                "background",
-                "border_radius",
-                "border_width",
-                "border_top_width",
-                "border_right_width",
-                "border_bottom_width",
-                "border_left_width",
-                "border_color",
-                "border_top_color",
-                "border_right_color",
-                "border_bottom_color",
-                "border_left_color",
-                "border_style",
-                "border_top_style",
-                "border_right_style",
-                "border_bottom_style",
-                "border_left_style",
-                "color",
-                "placeholder_color",
-                "placeholder_opacity",
-                "selection_background",
-                "selection_color",
-            ][..],
-        ),
-        (LayoutFieldMask::VISIBILITY, &["hidden"][..]),
-        (
-            LayoutFieldMask::INTERACTION,
-            &["pointer_events", "cursor", "user_select"][..],
-        ),
-        (
-            LayoutFieldMask::TRANSFORM,
-            &[
-                "transform",
-                "transform_3d",
-                "unsupported_transform",
-                "transform_origin",
-                "css_perspective",
-                "preserve_3d",
-                "transform_box",
-            ][..],
-        ),
-        (
-            LayoutFieldMask::SCROLL,
-            &[
-                "overflow_x",
-                "overflow_y",
-                "text_overflow_ellipsis",
-                "line_clamp",
-            ][..],
-        ),
-        (
-            LayoutFieldMask::INTRINSIC,
-            &[
-                "layout_isolation",
-                "writing_mode",
-                "unsupported_writing_mode",
-                "unsupported_font_variation",
-            ][..],
-        ),
-    ];
-    for (group, fields) in groups {
-        if ownership.required.intersects(group) || !author_fields.intersects(group) {
-            continue;
-        }
-        for field in fields {
-            if let (Some(target), Some(source)) = (resolved.get_mut(field), authored.get(field)) {
-                *target = source.clone();
-            }
-        }
-    }
-    serde_json::from_value(resolved).expect("resolved layout deserializes")
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn author_can_override_component_default_but_not_required_fields() {
-        let ownership = LayoutOwnership::component_default(LayoutFieldMask::FLOW);
-        assert!(
-            ownership
-                .allows_author(LayoutFieldMask::FLOW)
-                .contains(LayoutFieldMask::FLOW)
-        );
-
-        let required = LayoutOwnership::component_required(LayoutFieldMask::FLOW);
-        assert!(
-            !required
-                .allows_author(LayoutFieldMask::FLOW)
-                .intersects(LayoutFieldMask::FLOW)
-        );
-    }
 
     #[test]
     fn css_property_groups_are_stable() {
@@ -448,51 +170,5 @@ mod tests {
         assert!(
             LayoutFieldMask::from_property("background-color").contains(LayoutFieldMask::PAINT)
         );
-    }
-
-    #[test]
-    fn resolver_preserves_component_defaults_without_author_fields() {
-        let component = crate::LayoutStyle {
-            direction: Some(FlexDirection::Row),
-            ..Default::default()
-        };
-        let author = crate::LayoutStyle {
-            direction: Some(FlexDirection::Column),
-            ..Default::default()
-        };
-        let resolved = resolve_layout_intent(
-            &component,
-            &author,
-            LayoutOwnership::component_default(LayoutFieldMask::FLOW),
-            LayoutFieldMask::NONE,
-        );
-        assert_eq!(resolved.direction, Some(FlexDirection::Row));
-    }
-
-    #[test]
-    fn resolver_applies_author_fields_and_protects_required_fields() {
-        let component = crate::LayoutStyle {
-            direction: Some(FlexDirection::Row),
-            ..Default::default()
-        };
-        let author = crate::LayoutStyle {
-            direction: Some(FlexDirection::Column),
-            ..Default::default()
-        };
-        let resolved = resolve_layout_intent(
-            &component,
-            &author,
-            LayoutOwnership::component_default(LayoutFieldMask::FLOW),
-            LayoutFieldMask::FLOW,
-        );
-        assert_eq!(resolved.direction, Some(FlexDirection::Column));
-
-        let required = resolve_layout_intent(
-            &component,
-            &author,
-            LayoutOwnership::component_required(LayoutFieldMask::FLOW),
-            LayoutFieldMask::FLOW,
-        );
-        assert_eq!(required.direction, Some(FlexDirection::Row));
     }
 }

@@ -19,11 +19,11 @@ use nana_ui_platform::SharedFetchHost;
 use nana_ui_scene::UiScene;
 
 use super::provenance::{OutputProvenance, OutputSurfaceId};
+use super::trace::OutputWorkObservation;
 use crate::{
     AlphaEncoding, HostTextureRegistry, SceneGpuRendererRegistry, ScenePaintError,
     ScenePaintViewport, ScenePresentationProfile, SceneWgpuPainter,
 };
-use nana_ui_core::{OutputWorkObservation, WorkCounters};
 
 const DEFAULT_SLOTS: usize = 3;
 const MIN_SLOTS: usize = 2;
@@ -559,13 +559,6 @@ impl ExternalSurface {
     /// does not change this observation because sampling is consumer work.
     pub const fn last_work(&self) -> OutputWorkObservation {
         self.last_work
-    }
-
-    /// Fold the last producer observation into a Runtime frame snapshot.
-    /// Output producers do not own the caller's `WorkCounters`, so this seam
-    /// is explicit at the frame-driver boundary.
-    pub fn record_last_work(&self, counters: &mut WorkCounters) {
-        counters.record_output_work(self.last_work);
     }
 
     /// Resize or change the presentation profile at a configuration boundary.

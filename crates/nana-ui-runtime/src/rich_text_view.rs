@@ -99,7 +99,7 @@ impl RichTextView {
 
     /// The node's own font family list (CSS `font-family` syntax).
     pub fn font_family(mut self, family: impl Into<String>) -> Self {
-        Arc::make_mut(&mut self.style.layout).font_family = Some(family.into());
+        Arc::make_mut(&mut self.style.layout).text_ext.font_family = Some(family.into());
         self
     }
 
@@ -179,6 +179,9 @@ impl crate::AppContext {
 }
 
 impl ComponentView for RichTextView {
+    const TYPE_ID: Option<&'static str> =
+        Some(crate::component_descriptors::RICH_TEXT_VIEW.type_id);
+
     fn share_layouts(
         &mut self,
         share: &mut dyn FnMut(&mut std::sync::Arc<nana_ui_core::LayoutStyle>),

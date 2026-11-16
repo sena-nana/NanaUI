@@ -81,21 +81,18 @@ use crate::{
     ScrollLaidOut, ScrollMetrics, ScrollOffset, ScrollView, ScrollViewportChanged, SearchDropdown,
     SearchDropdownEvent, SecondaryPress, SegmentedControl, SegmentedOption,
     SegmentedSelectionRequested, Select, SettingsCollapsibleCard, SidebarFooterButton, SidebarRow,
-    SidebarSection, SizeChanged, StableNodeId, Switch, Table, TableCell, TableRow, Tabs, TextArea,
-    TextChanged, TextClamped, TextInput, TextInputState, TextPresenter, TextSelection,
+    SidebarSection, SizeChanged, StableNodeId, Stack, Switch, Table, TableCell, TableRow, Tabs,
+    TextArea, TextChanged, TextClamped, TextInput, TextInputState, TextPresenter, TextSelection,
     ToggleChanged, Tooltip, TreeView, UiWorld, UiWorldError, Workspace, XYPad, XYPadDragState,
     XYPadEvent,
-    component_registry::{
-        ComponentBindKind, ComponentBindRequest, ComponentRegistry, ComponentTypeId,
-        RegisterableComponent, SemanticSpec, alias_entry, registerable_entry, tag_entry,
-    },
+    component_registry::{ComponentRegistry, ComponentTypeId, RegisterableComponent},
 };
 
 mod assemble;
 mod auto_overlay;
 pub(crate) use auto_overlay::OverlayActivity;
 mod build;
-pub(crate) use assemble::AssembledKey;
+pub(crate) use assemble::{AssembledKey, AssemblyKey};
 mod document_text;
 mod overlay;
 mod reactive;
@@ -116,12 +113,6 @@ pub use text_history::TextEditOrigin;
 
 const MAX_EVENTS_PER_UPDATE: usize = 16_384;
 
-/// Whether this test run makes [`AppContext::new`] typed; tests that need
-/// tag-based binding skip themselves when it does.
-#[cfg(test)]
-pub(crate) fn typed_builtins_under_test() -> bool {
-    std::env::var_os("NANA_TEST_TYPED_BUILTINS").is_some()
-}
 /// Joins assembly keys into a path ([`AppContext::assembly_path`]). Keys may
 /// not contain it, so every keyed node stays reachable by path.
 pub const ASSEMBLY_PATH_SEPARATOR: &str = "/";
@@ -761,8 +752,7 @@ impl ExtensionRegistrar {
     }
 
     pub fn register_component<C: RegisterableComponent>(&mut self) -> Result<(), FrameworkError> {
-        let (entry, tags) = registerable_entry::<C>()?;
-        self.components.insert_with_tags(entry, tags)
+        self.components.register::<C>()
     }
 
     /// Register pointer/keyboard activation for `C`.
@@ -803,30 +793,7 @@ impl ExtensionRegistrar {
         type_id: &'static str,
         tags: &'static [&'static str],
     ) -> Result<(), FrameworkError> {
-        let (entry, tags) = tag_entry(type_id, tags)?;
-        self.components.insert_with_tags(entry, tags)
-    }
-
-    /// Register extra type ids / tags that bind through `C::from_semantic`.
-    pub fn register_component_alias<C: RegisterableComponent>(
-        &mut self,
-        type_id: &'static str,
-        tags: &'static [&'static str],
-    ) -> Result<(), FrameworkError> {
-        let (entry, tags) = alias_entry::<C>(type_id, tags)?;
-        self.components.insert_with_tags(entry, tags)
-    }
-
-    /// Register an identity only (see [`BuiltinComponents::Typed`]).
-    pub(crate) fn register_identity<C: RegisterableComponent>(
-        &mut self,
-        type_id: &'static str,
-        rust_type: Option<TypeId>,
-        tags: &'static [&'static str],
-    ) -> Result<(), FrameworkError> {
-        let (entry, tags) =
-            crate::component_registry::identity_entry::<C>(type_id, rust_type, tags)?;
-        self.components.insert_with_tags(entry, tags)
+        self.components.register_tags(type_id, tags)
     }
 }
 
@@ -1084,20 +1051,6 @@ impl From<FrameworkError> for String {
     }
 }
 
-/// How much of the built-in component machinery a context installs.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub enum BuiltinComponents {
-    /// Every built-in component can also be built from a tag and attributes
-    /// (`bind_semantic`). Links every built-in component.
-    #[default]
-    Full,
-    /// Built-in components are created from their Rust types only (`build`,
-    /// `mount`, declarative views). Their ids still stamp nodes and resolve
-    /// by tag, but nothing that builds one from a tag is linked, so a program
-    /// links only the components it creates.
-    Typed,
-}
-
 /// Owns typed view state while [`UiWorld`] remains the retained UI authority.
 pub struct AppContext {
     pub(crate) theme_signals: Vec<crate::view::Signal<Arc<nana_ui_core::CompiledTheme>>>,
@@ -1107,24 +1060,20 @@ pub struct AppContext {
     /// away costs the hot paths nothing measurable; see
     /// `docs/reference/resource-budgets.md`.
     world: Box<UiWorld>,
-    views: HashMap<StableNodeId, Box<dyn Any + Send>, crate::BuildIdHasher>,
+    views: crate::NodeMap<Box<dyn Any + Send>>,
     /// Opt-in reproject entry points keyed by node, registered from
     /// [`ComponentView::wants_child_reproject`] when a component view is
     /// stamped. The stored function reprojects through the typed
     /// `update_component` pipeline.
     child_reproject_views: HashMap<StableNodeId, ChildReprojectFn, crate::BuildIdHasher>,
-    /// Opt-in reproject when installed metrics change, registered from
-    /// [`ComponentView::wants_metrics_reproject`].
-    metrics_reproject_views: HashMap<StableNodeId, ChildReprojectFn, crate::BuildIdHasher>,
-    /// Opt-in reproject when the installed component recipes change,
-    /// registered from [`ComponentView::wants_recipe_reproject`].
-    recipe_reproject_views: HashMap<StableNodeId, ChildReprojectFn, crate::BuildIdHasher>,
-    /// Opt-in reproject when the reduce-motion preference changes,
-    /// registered from [`ComponentView::wants_reduced_motion_reproject`].
-    reduced_motion_reproject_views: HashMap<StableNodeId, ChildReprojectFn, crate::BuildIdHasher>,
-    /// Opt-in reproject when the host's text backend changes, registered from
-    /// [`ComponentView::wants_text_backend_reproject`].
-    text_backend_reproject_views: HashMap<StableNodeId, ChildReprojectFn, crate::BuildIdHasher>,
+    /// Opt-in reproject when installed metrics change, keyed by component type.
+    metrics_reproject_types: HashMap<TypeId, ChildReprojectFn, crate::BuildIdHasher>,
+    /// Opt-in reproject when the installed component recipes change, keyed by type.
+    recipe_reproject_types: HashMap<TypeId, ChildReprojectFn, crate::BuildIdHasher>,
+    /// Opt-in reproject when the reduce-motion preference changes, keyed by type.
+    reduced_motion_reproject_types: HashMap<TypeId, ChildReprojectFn, crate::BuildIdHasher>,
+    /// Opt-in reproject when the host's text backend changes, keyed by type.
+    text_backend_reproject_types: HashMap<TypeId, ChildReprojectFn, crate::BuildIdHasher>,
     /// Nodes whose children another view's projection reads, and that view:
     /// a child-structure change under the node reprojects it as well
     /// ([`Self::watch_child_structure`]).
@@ -1174,12 +1123,13 @@ pub struct AppContext {
     size_watchers: HashMap<StableNodeId, events::SizeWatch, crate::BuildIdHasher>,
     /// Router hooks installed by the types created so far.
     type_hooks: TypeHooks,
-    assembled:
-        HashMap<StableNodeId, HashMap<String, assemble::AssembledChild>, crate::BuildIdHasher>,
-    /// Reverse of `assembled`: a keyed child's declared parent and key. The
-    /// declared parent is identity; the world parent is placement, and the
-    /// two differ only for nodes in `placed_assembled`.
-    assembled_parent: HashMap<StableNodeId, (StableNodeId, String), crate::BuildIdHasher>,
+    assembled: HashMap<StableNodeId, assemble::ParentAssembly, crate::BuildIdHasher>,
+    /// Reverse of `assembled`: a keyed child's declared parent and key when
+    /// not kept inline on `NodeRecord::auto_view_slot`. The declared parent is
+    /// identity; the world parent is placement, and the two differ only for
+    /// nodes in `placed_assembled`.
+    assembled_parent:
+        HashMap<StableNodeId, (StableNodeId, assemble::AssemblyKey), crate::BuildIdHasher>,
     /// Keyed children [`Self::place_assembled`] moved out from under their
     /// declared parent. Reassembling that parent leaves them where they are;
     /// despawning it despawns them.
@@ -1187,7 +1137,7 @@ pub struct AppContext {
     /// The key a slot's root was declared with (`El::slot`): the composite
     /// places it, not the assembly, so it is no keyed child of anything, but
     /// [`Self::assembly_path`] still names it by that key.
-    slot_keys: HashMap<StableNodeId, String, crate::BuildIdHasher>,
+    slot_keys: HashMap<StableNodeId, assemble::AssemblyKey, crate::BuildIdHasher>,
     /// Components whose assembler is running, so the `update_component` calls
     /// an assembler makes do not re-enter it.
     assembling: HashSet<StableNodeId, crate::BuildIdHasher>,
@@ -1284,8 +1234,6 @@ pub struct VirtualListItems<K, C: ComponentView> {
     /// under. While both hold, the indices they were placed at are current
     /// and a pass looks none of their keys up again.
     placed_under: Option<(u64, usize)>,
-    /// The layout's row index writes already counted (Issue #262).
-    index_writes_seen: u64,
 }
 
 /// Application-owned visible row/cell identities for a virtual Table. The
@@ -1417,7 +1365,6 @@ impl<K, C: ComponentView> Default for VirtualListItems<K, C> {
             pending_measure: false,
             measurements: 0,
             placed_under: None,
-            index_writes_seen: 0,
         }
     }
 }
@@ -1501,14 +1448,12 @@ impl Default for AppContext {
 
 impl AppContext {
     pub fn new() -> Self {
-        // `NANA_TEST_TYPED_BUILTINS=1 cargo test -p nana-ui-runtime` runs this
-        // crate's suite on typed contexts: a type hook a creation path forgot
-        // to install fails the test that needs it.
-        #[cfg(test)]
-        if typed_builtins_under_test() {
-            return Self::typed();
-        }
         Self::from_world(UiWorld::new())
+    }
+
+    /// Alias for [`Self::new`]; retained for source compatibility.
+    pub fn typed() -> Self {
+        Self::new()
     }
 
     /// Wrap an existing retained tree.
@@ -1518,29 +1463,16 @@ impl AppContext {
     /// skips live or retired IDs; do not treat allocated chrome IDs as host
     /// tree identities.
     pub fn from_world(world: UiWorld) -> Self {
-        Self::with_builtins(world, &crate::builtin_components::NanaBuiltinComponents)
-    }
-
-    /// A context whose built-in components are created from their Rust types
-    /// only ([`BuiltinComponents::Typed`]). Call this directly: choosing
-    /// between it and [`Self::new`] at run time links both.
-    pub fn typed() -> Self {
-        Self::with_builtins(
-            UiWorld::new(),
-            &crate::builtin_components::NanaBuiltinIdentities,
-        )
-    }
-
-    fn with_builtins(world: UiWorld, builtins: &impl UiExtension) -> Self {
+        #[allow(unused_mut)]
         let mut context = Self {
             world: Box::new(world),
-            views: HashMap::default(),
+            views: crate::NodeMap::default(),
             child_reproject_views: HashMap::default(),
             theme_signals: Vec::new(),
-            metrics_reproject_views: HashMap::default(),
-            recipe_reproject_views: HashMap::default(),
-            reduced_motion_reproject_views: HashMap::default(),
-            text_backend_reproject_views: HashMap::default(),
+            metrics_reproject_types: HashMap::default(),
+            recipe_reproject_types: HashMap::default(),
+            reduced_motion_reproject_types: HashMap::default(),
+            text_backend_reproject_types: HashMap::default(),
             child_structure_owners: HashMap::default(),
             pending_child_reprojects: Vec::new(),
             draining_child_reprojects: false,
@@ -1589,9 +1521,6 @@ impl AppContext {
             reduced_motion_override: None,
             color_pick_requests: Vec::new(),
         };
-        context
-            .install(builtins)
-            .expect("builtin component registry");
         #[cfg(feature = "syntax-highlighting")]
         {
             context
@@ -1694,15 +1623,11 @@ impl AppContext {
             self.finish_wheel_scrolls();
             self.finish_touch_scrolls();
         }
-        let ids: Vec<_> = self
-            .reduced_motion_reproject_views
-            .keys()
-            .copied()
-            .collect();
-        for id in ids {
-            let Some(reproject) = self.reduced_motion_reproject_views.get(&id).copied() else {
+        for (id, reproject) in self.collect_reproject_targets(&self.reduced_motion_reproject_types)
+        {
+            if !self.views.contains_key(&id) {
                 continue;
-            };
+            }
             // A view that cannot project now (one mid-update) reads the
             // preference on its next projection.
             let _ = reproject(self, id);
@@ -1758,10 +1683,43 @@ impl AppContext {
     /// `create_component` were never keyed and have none; callers must have a
     /// second way to address those.
     pub fn assembly_key(&self, parent: StableNodeId, child: StableNodeId) -> Option<&str> {
-        self.assembled_parent
-            .get(&child)
-            .filter(|(declared, _)| *declared == parent)
-            .map(|(_, key)| key.as_str())
+        if let Some((declared, key)) = self.assembled_parent.get(&child) {
+            return (*declared == parent).then_some(key.as_str());
+        }
+        (self.world.parent_id(child) == Some(parent))
+            .then(|| {
+                self.world
+                    .auto_view_slot(child)
+                    .map(assemble::auto_view_key_str)
+            })
+            .flatten()
+    }
+
+    fn declared_assembly_parent(
+        &self,
+        child: StableNodeId,
+    ) -> Option<(StableNodeId, assemble::AssemblyKey)> {
+        if let Some((declared, key)) = self.assembled_parent.get(&child) {
+            return Some((*declared, key.clone()));
+        }
+        let declared = self.world.parent_id(child)?;
+        let slot = self.world.auto_view_slot(child)?;
+        Some((declared, assemble::AssemblyKey::auto_view(slot as usize)))
+    }
+
+    fn promote_auto_view_slot(&mut self, id: StableNodeId) {
+        if self.assembled_parent.contains_key(&id) {
+            return;
+        }
+        if let (Some(declared), Some(slot)) =
+            (self.world.parent_id(id), self.world.auto_view_slot(id))
+        {
+            self.world.set_auto_view_slot(id, None);
+            self.assembled_parent.insert(
+                id,
+                (declared, assemble::AssemblyKey::auto_view(slot as usize)),
+            );
+        }
     }
 
     /// `/`-joined assembly keys from the outermost keyed ancestor down to `id`.
@@ -1773,18 +1731,20 @@ impl AppContext {
     /// continues at its world parent, so a control keeps its name inside the
     /// row or region that holds it. `None` when no ancestor keyed this node.
     pub fn assembly_path(&self, id: StableNodeId) -> Option<String> {
-        let mut segments = Vec::new();
+        let mut segments: Vec<std::borrow::Cow<'_, str>> = Vec::new();
         let mut cursor = Some(id);
         let mut steps = 0usize;
         while let Some(node) = cursor {
             cursor = match self.assembled_parent.get(&node) {
                 Some((parent, key)) => {
-                    segments.push(key.as_str());
+                    segments.push(std::borrow::Cow::Borrowed(key.as_str()));
                     Some(*parent)
                 }
                 None => {
-                    if let Some(key) = self.slot_keys.get(&node) {
-                        segments.push(key.as_str());
+                    if let Some(slot) = self.world.auto_view_slot(node) {
+                        segments.push(std::borrow::Cow::Owned(format!("#v{slot}")));
+                    } else if let Some(key) = self.slot_keys.get(&node) {
+                        segments.push(std::borrow::Cow::Borrowed(key.as_str()));
                     }
                     self.world.parent_id(node)
                 }
@@ -1852,9 +1812,8 @@ impl AppContext {
         parent: StableNodeId,
     ) -> Result<(), FrameworkError> {
         let declared = self
-            .assembled_parent
-            .get(&node)
-            .map(|(declared, _)| *declared)
+            .declared_assembly_parent(node)
+            .map(|(declared, _)| declared)
             .ok_or(FrameworkError::InvalidInput)?;
         let snapshot = self
             .world
@@ -1880,6 +1839,7 @@ impl AppContext {
         if parent == declared {
             self.placed_assembled.remove(&node);
         } else {
+            self.promote_auto_view_slot(node);
             self.placed_assembled.insert(node);
         }
         Ok(())
@@ -1889,7 +1849,7 @@ impl AppContext {
     pub(super) fn store_assembled(
         &mut self,
         parent: StableNodeId,
-        slots: HashMap<String, assemble::AssembledChild>,
+        slots: assemble::ParentAssembly,
     ) {
         if let Some(previous) = self.assembled.remove(&parent) {
             for child in previous.values() {
@@ -1899,15 +1859,27 @@ impl AppContext {
                     .is_some_and(|(declared, _)| *declared == parent)
                 {
                     self.assembled_parent.remove(&child.id);
+                } else if self.world.parent_id(child.id) == Some(parent)
+                    && self.world.auto_view_slot(child.id).is_some()
+                {
+                    self.world.set_auto_view_slot(child.id, None);
                 }
             }
         }
         if slots.is_empty() {
             return;
         }
-        for (key, child) in &slots {
-            self.assembled_parent
-                .insert(child.id, (parent, key.clone()));
+        for (key, child) in slots.iter() {
+            if let Some(slot) = assemble::AssemblyKey::parse_auto_view(key.as_str())
+                && self.world.parent_id(child.id) == Some(parent)
+                && !self.placed_assembled.contains(&child.id)
+            {
+                self.assembled_parent.remove(&child.id);
+                self.world.set_auto_view_slot(child.id, Some(slot as u16));
+            } else {
+                self.world.set_auto_view_slot(child.id, None);
+                self.assembled_parent.insert(child.id, (parent, key));
+            }
         }
         self.assembled.insert(parent, slots);
     }
@@ -1919,12 +1891,9 @@ impl AppContext {
         parent: StableNodeId,
         child: StableNodeId,
     ) -> Option<AssembledKey> {
-        let (declared, key) = self.assembled_parent.get(&child)?;
-        let entry = self.assembled.get(declared)?.get(key)?;
-        (*declared == parent && entry.id == child).then(|| AssembledKey {
-            key: key.clone(),
-            child: *entry,
-        })
+        let (declared, key) = self.declared_assembly_parent(child)?;
+        let entry = self.assembled.get(&declared)?.get(key.as_str())?;
+        (declared == parent && entry.id == child).then_some(AssembledKey { key, child: *entry })
     }
 
     /// Key `key.child` under `parent` again, displacing whichever node holds
@@ -1937,15 +1906,34 @@ impl AppContext {
         let slots = self.assembled.entry(parent).or_default();
         if let Some(previous) = slots.insert(key.key.clone(), key.child)
             && previous.id != key.child.id
-            && self
+        {
+            if self
                 .assembled_parent
                 .get(&previous.id)
                 .is_some_and(|(declared, held)| *declared == parent && *held == key.key)
-        {
-            self.assembled_parent.remove(&previous.id);
+            {
+                self.assembled_parent.remove(&previous.id);
+            } else if self.world.parent_id(previous.id) == Some(parent)
+                && self.world.auto_view_slot(previous.id).is_some_and(|slot| {
+                    assemble::AssemblyKey::parse_auto_view(key.key.as_str())
+                        == Some(u32::from(slot))
+                })
+            {
+                self.world.set_auto_view_slot(previous.id, None);
+            }
         }
-        self.assembled_parent
-            .insert(key.child.id, (parent, key.key));
+        if let Some(slot) = assemble::AssemblyKey::parse_auto_view(key.key.as_str())
+            && self.world.parent_id(key.child.id) == Some(parent)
+            && !self.placed_assembled.contains(&key.child.id)
+        {
+            self.assembled_parent.remove(&key.child.id);
+            self.world
+                .set_auto_view_slot(key.child.id, Some(slot as u16));
+        } else {
+            self.world.set_auto_view_slot(key.child.id, None);
+            self.assembled_parent
+                .insert(key.child.id, (parent, key.key));
+        }
     }
 
     /// Whether `id` is a keyed child placed away from its declared parent.
@@ -1965,10 +1953,53 @@ impl AppContext {
 
     /// Resolve a retained node only when it currently owns the requested view type.
     pub fn view_entity<C: View>(&self, id: StableNodeId) -> Option<Entity<C>> {
+        let matches = self.views.get(&id).is_some_and(|view| view.is::<C>())
+            || (TypeId::of::<C>() == TypeId::of::<Stack>() && self.world.is_elided_stack(id));
+        matches.then(|| Entity::from_stable_id(id))
+    }
+
+    #[inline]
+    pub(crate) fn view_type_id(&self, id: StableNodeId) -> Option<TypeId> {
         self.views
             .get(&id)
-            .is_some_and(|view| view.is::<C>())
-            .then(|| Entity::from_stable_id(id))
+            .map(|view| view.as_ref().type_id())
+            .or_else(|| {
+                self.world
+                    .is_elided_stack(id)
+                    .then_some(TypeId::of::<Stack>())
+            })
+    }
+
+    pub(super) fn store_component_view(
+        &mut self,
+        id: StableNodeId,
+        component: Box<dyn Any + Send>,
+    ) {
+        if let Some(stack) = component.downcast_ref::<Stack>() {
+            self.views.remove(&id);
+            self.world.set_elided_stack_flags(id, stack.elided_flags());
+        } else {
+            self.world.set_elided_stack_flags(id, 0);
+            self.views.insert(id, component);
+        }
+    }
+
+    fn collect_reproject_targets(
+        &self,
+        types: &HashMap<TypeId, ChildReprojectFn, crate::BuildIdHasher>,
+    ) -> Vec<(StableNodeId, ChildReprojectFn)> {
+        if types.is_empty() {
+            return Vec::new();
+        }
+        self.views
+            .iter()
+            .filter_map(|(&id, view)| {
+                types
+                    .get(&view.as_ref().type_id())
+                    .copied()
+                    .map(|reproject| (id, reproject))
+            })
+            .collect()
     }
 
     fn focused_editor<C: EditableText>(&self, document: DocumentId) -> Option<Entity<C>> {
@@ -2047,9 +2078,6 @@ impl AppContext {
         // A structural no-op only matches nodes that exist in a consistent
         // relation, so there is nothing to validate either.
         if !mutations.is_empty() && self.world.is_noop_batch(&mutations) {
-            for mutation in mutations.as_slice() {
-                self.world.note_noop_text_scale(mutation);
-            }
             for id in wheel_writes {
                 self.component_lifecycle.wheel_scrolls.remove(&id);
             }
@@ -2076,7 +2104,7 @@ impl AppContext {
                 | crate::UiMutation::Detach { id: root }
                 | crate::UiMutation::Insert { child: root, .. }
                 | crate::UiMutation::SetInteraction { id: root, .. }
-                | crate::UiMutation::SetStandardVisual { id: root, .. }
+                | crate::UiMutation::SetWidgetVisual { id: root, .. }
                 | crate::UiMutation::SetStyle { id: root, .. }
                 | crate::UiMutation::SetOverlayHost { host: root, .. }
                 | crate::UiMutation::SetSurfaceOpen { id: root, .. } => {
@@ -2115,12 +2143,41 @@ impl AppContext {
         } else {
             self.menu_focus_before_removal(&previous_focus, &despawned)
         };
+        let mut promoted_auto_slots = Vec::new();
+        for mutation in mutations.as_slice() {
+            let target = match mutation {
+                crate::UiMutation::ParkSubtree { root }
+                | crate::UiMutation::DespawnSubtree { root }
+                | crate::UiMutation::Detach { id: root } => Some(*root),
+                crate::UiMutation::Insert { parent, child, .. }
+                    if self.world.parent_id(*child) != Some(*parent) =>
+                {
+                    Some(*child)
+                }
+                _ => None,
+            };
+            if let Some(id) = target
+                && !self.assembled_parent.contains_key(&id)
+                && let (Some(declared), Some(slot)) =
+                    (self.world.parent_id(id), self.world.auto_view_slot(id))
+            {
+                promoted_auto_slots.push((id, declared, slot));
+            }
+        }
         let written_editors = self.text_histories_written_by(&mutations);
         let captures_before = self.world.pointer_capture_change_count();
         let (report, parked, inserted) = self
             .world
             .commit_with_mount_lifecycle(mutations, placements)
             .map_err(FrameworkError::from)?;
+        for (id, declared, slot) in promoted_auto_slots {
+            if self.world.contains(id) {
+                self.world.set_auto_view_slot(id, None);
+            }
+            self.assembled_parent
+                .entry(id)
+                .or_insert_with(|| (declared, assemble::AssemblyKey::auto_view(slot as usize)));
+        }
         let lost_captures: Vec<_> = self
             .world
             .pointer_captures_released_since(captures_before)
@@ -2249,12 +2306,10 @@ impl AppContext {
     /// temporarily absent (mid-update or not yet installed by a build) wait
     /// for the next commit instead.
     fn reproject_metrics_views(&mut self) -> Result<(), FrameworkError> {
-        let ids: Vec<_> = self.metrics_reproject_views.keys().copied().collect();
-        for id in ids {
-            let Some(reproject) = self.metrics_reproject_views.get(&id).copied() else {
-                continue;
-            };
-            reproject(self, id)?;
+        for (id, reproject) in self.collect_reproject_targets(&self.metrics_reproject_types) {
+            if self.views.contains_key(&id) {
+                reproject(self, id)?;
+            }
         }
         Ok(())
     }
@@ -2263,27 +2318,25 @@ impl AppContext {
     /// last text pass saw a new backend. Returns whether any did, since their
     /// projection can move layout the pass already measured against.
     pub(crate) fn reproject_text_backend_views(&mut self) -> Result<bool, FrameworkError> {
-        if !self.world.take_text_backend_changed() || self.text_backend_reproject_views.is_empty() {
+        if !self.world.take_text_backend_changed() || self.text_backend_reproject_types.is_empty() {
             return Ok(false);
         }
-        let ids: Vec<_> = self.text_backend_reproject_views.keys().copied().collect();
-        for id in ids {
-            let Some(reproject) = self.text_backend_reproject_views.get(&id).copied() else {
-                continue;
-            };
-            reproject(self, id)?;
+        let mut ran = false;
+        for (id, reproject) in self.collect_reproject_targets(&self.text_backend_reproject_types) {
+            if self.views.contains_key(&id) {
+                reproject(self, id)?;
+                ran = true;
+            }
         }
-        Ok(true)
+        Ok(ran)
     }
 
     /// Same shape as [`Self::reproject_metrics_views`], different trigger.
     fn reproject_recipe_views(&mut self) -> Result<(), FrameworkError> {
-        let ids: Vec<_> = self.recipe_reproject_views.keys().copied().collect();
-        for id in ids {
-            let Some(reproject) = self.recipe_reproject_views.get(&id).copied() else {
-                continue;
-            };
-            reproject(self, id)?;
+        for (id, reproject) in self.collect_reproject_targets(&self.recipe_reproject_types) {
+            if self.views.contains_key(&id) {
+                reproject(self, id)?;
+            }
         }
         Ok(())
     }
@@ -2310,7 +2363,7 @@ impl AppContext {
                 let Some(reproject) = self.child_reproject_views.get(&id).copied() else {
                     continue;
                 };
-                if !self.views.contains_key(&id) {
+                if !self.views.contains_key(&id) && !self.world.is_elided_stack(id) {
                     deferred.push(id);
                     continue;
                 }
@@ -2485,7 +2538,7 @@ impl AppContext {
         let mut queue = MutationQueue::new();
         queue.create(id, document, kind);
         self.world.commit(queue)?;
-        self.views.insert(id, Box::new(view));
+        self.store_component_view(id, Box::new(view));
         Ok(Entity::from_stable_id(id))
     }
 
@@ -2501,13 +2554,25 @@ impl AppContext {
         let mut queue = MutationQueue::with_capacity(8);
         queue.create(id, document, component.node_kind());
         component.project(id, &self.world, &mut queue);
-        self.commit_created(
-            id,
-            queue,
-            &registry::ViewType::of::<C>(),
-            Box::new(component),
-            false,
-        )?;
+        if TypeId::of::<C>() == TypeId::of::<Stack>() {
+            // SAFETY: `TypeId` matched `Stack`.
+            let flags = unsafe { &*std::ptr::from_ref(&component).cast::<Stack>() }.elided_flags();
+            self.commit_created_elided_stack(
+                id,
+                queue,
+                &registry::ViewType::of::<C>(),
+                flags,
+                false,
+            )?;
+        } else {
+            self.commit_created(
+                id,
+                queue,
+                &registry::ViewType::of::<C>(),
+                Box::new(component),
+                false,
+            )?;
+        }
         Ok(Entity::from_stable_id(id))
     }
 
@@ -2531,6 +2596,26 @@ impl AppContext {
         self.world.commit(queue)?;
         self.views.insert(id, component);
         self.sync_component_lifecycle(id)
+    }
+
+    /// [`Self::commit_created`] for an elided [`Stack`], skipping boxing and
+    /// `views` storage while recording its flags directly on the world node.
+    #[inline(never)]
+    fn commit_created_elided_stack(
+        &mut self,
+        id: StableNodeId,
+        mut queue: MutationQueue,
+        view: &registry::ViewType,
+        flags: u8,
+        park: bool,
+    ) -> Result<(), FrameworkError> {
+        self.stamp_component_type_erased(id, &mut queue, view);
+        if park {
+            queue.park_subtree(id);
+        }
+        self.world.commit(queue)?;
+        self.world.set_elided_stack_flags(id, flags);
+        Ok(())
     }
 
     /// Let `component` share its layouts with equal ones already written.
@@ -2560,7 +2645,15 @@ impl AppContext {
         component.project(id, &self.world, &mut queue);
         self.stamp_component_type::<C>(id, &mut queue);
         self.commit_mutations(queue)?;
-        self.views.insert(id, Box::new(component));
+        if TypeId::of::<C>() == TypeId::of::<Stack>() {
+            // SAFETY: `TypeId` matched `Stack`.
+            let flags = unsafe { &*std::ptr::from_ref(&component).cast::<Stack>() }.elided_flags();
+            self.views.remove(&id);
+            self.world.set_elided_stack_flags(id, flags);
+        } else {
+            self.world.set_elided_stack_flags(id, 0);
+            self.views.insert(id, Box::new(component));
+        }
         self.sync_component_lifecycle(id)?;
         Ok(Entity::from_stable_id(id))
     }
@@ -2578,13 +2671,25 @@ impl AppContext {
         let mut queue = MutationQueue::with_capacity(8);
         queue.create(id, document, component.node_kind());
         component.project(id, &self.world, &mut queue);
-        self.commit_created(
-            id,
-            queue,
-            &registry::ViewType::of::<C>(),
-            Box::new(component),
-            true,
-        )?;
+        if TypeId::of::<C>() == TypeId::of::<Stack>() {
+            // SAFETY: `TypeId` matched `Stack`.
+            let flags = unsafe { &*std::ptr::from_ref(&component).cast::<Stack>() }.elided_flags();
+            self.commit_created_elided_stack(
+                id,
+                queue,
+                &registry::ViewType::of::<C>(),
+                flags,
+                true,
+            )?;
+        } else {
+            self.commit_created(
+                id,
+                queue,
+                &registry::ViewType::of::<C>(),
+                Box::new(component),
+                true,
+            )?;
+        }
         Ok(Entity::from_stable_id(id))
     }
 
@@ -2696,9 +2801,8 @@ impl AppContext {
         for (ids, others, hovered) in [(&left, &entered, false), (&entered, &left, true)] {
             for &id in ids.iter().filter(|id| !others.contains(id)) {
                 let emit = self
-                    .views
-                    .get(&id)
-                    .and_then(|view| self.emitters.get(&view.as_ref().type_id()))
+                    .view_type_id(id)
+                    .and_then(|type_id| self.emitters.get(&type_id))
                     .copied();
                 if let Some(emit) = emit {
                     emit_erased(self, emit, id, PointerHoverChanged { hovered })?;
@@ -2784,11 +2888,11 @@ impl AppContext {
                 if !self.world.contains(id) {
                     continue;
                 }
-                let Some(view) = self.views.get(&id) else {
+                let Some(type_id) = self.view_type_id(id) else {
                     waiting.push((id, focused));
                     continue;
                 };
-                let emit = self.emitters.get(&view.as_ref().type_id()).copied();
+                let emit = self.emitters.get(&type_id).copied();
                 if self.is_tools_row(id) {
                     outcome = outcome.and(via!(self.sync_row_tools(Some(id), None, Some(focused))));
                 }
@@ -2880,13 +2984,11 @@ impl AppContext {
     fn enclosing_hover_card(&self, id: StableNodeId) -> Option<StableNodeId> {
         let mut current = Some(id);
         while let Some(id) = current {
-            if matches!(
-                self.world.standard_visual(id),
-                Some(crate::StandardVisual::MenuSurface {
-                    kind: crate::MenuSurfaceKind::HoverCard,
-                    ..
-                })
-            ) {
+            if self
+                .world
+                .widget_visual_as::<crate::MenuSurfaceVisual>(id)
+                .is_some_and(|v| v.kind == crate::MenuSurfaceKind::HoverCard)
+            {
                 return Some(id);
             }
             current = self.world.parent_id(id);
@@ -3147,9 +3249,8 @@ impl AppContext {
             }
         }
         let handler = self
-            .views
-            .get(&id)
-            .and_then(|view| self.activations.get(&view.as_ref().type_id()).cloned());
+            .view_type_id(id)
+            .and_then(|type_id| self.activations.get(&type_id).cloned());
         match handler {
             Some(handler) => handler(self, id),
             None => Ok(false),
@@ -3816,13 +3917,23 @@ impl AppContext {
         if !self.world.contains(entity.id) {
             return Err(FrameworkError::MissingView(entity.id));
         }
-        let view = self
-            .views
-            .get(&entity.id)
-            .ok_or(FrameworkError::MissingView(entity.id))?
-            .downcast_ref::<V>()
-            .ok_or(FrameworkError::ViewType(entity.id))?;
-        Ok(read(view))
+        if let Some(view) = self.views.get(&entity.id) {
+            let view = view
+                .downcast_ref::<V>()
+                .ok_or(FrameworkError::ViewType(entity.id))?;
+            return Ok(read(view));
+        }
+        if TypeId::of::<V>() == TypeId::of::<Stack>()
+            && let Some(stack) = self.world.elided_stack(entity.id)
+        {
+            // SAFETY: `TypeId` matched `Stack`.
+            let view = unsafe { &*std::ptr::from_ref(&stack).cast::<V>() };
+            return Ok(read(view));
+        }
+        if self.world.is_elided_stack(entity.id) {
+            return Err(FrameworkError::ViewType(entity.id));
+        }
+        Err(FrameworkError::MissingView(entity.id))
     }
 
     fn inherit_segmented_option_surface<T: 'static>(&self, id: StableNodeId, staged: &mut T) {
@@ -3957,13 +4068,37 @@ impl AppContext {
         if !self.world.contains(entity.id) {
             return Err(FrameworkError::MissingView(entity.id));
         }
-        let boxed = self
-            .views
-            .remove(&entity.id)
-            .ok_or(FrameworkError::MissingView(entity.id))?;
-        let Some(component) = boxed.downcast_ref::<C>() else {
-            self.views.insert(entity.id, boxed);
-            return Err(FrameworkError::ViewType(entity.id));
+        let removed_box = self.views.remove(&entity.id);
+        let elided_stack = if removed_box.is_none() {
+            if !self.world.is_elided_stack(entity.id) {
+                return Err(FrameworkError::MissingView(entity.id));
+            }
+            if TypeId::of::<C>() != TypeId::of::<Stack>() {
+                return Err(FrameworkError::ViewType(entity.id));
+            }
+            Some(
+                self.world
+                    .elided_stack(entity.id)
+                    .ok_or(FrameworkError::MissingView(entity.id))?,
+            )
+        } else {
+            None
+        };
+        let component: &C = match removed_box.as_ref() {
+            Some(boxed) => match boxed.downcast_ref::<C>() {
+                Some(component) => component,
+                None => {
+                    self.views
+                        .insert(entity.id, removed_box.expect("some boxed"));
+                    return Err(FrameworkError::ViewType(entity.id));
+                }
+            },
+            None => {
+                // SAFETY: `TypeId` matched `Stack`.
+                unsafe {
+                    &*std::ptr::from_ref(elided_stack.as_ref().expect("some stack")).cast::<C>()
+                }
+            }
         };
         let mut staged = component.clone();
         let mut mutations = MutationQueue::new();
@@ -4007,16 +4142,19 @@ impl AppContext {
             }
             if !projected || self.world.is_noop_batch(&mutations) {
                 self.program_messages = program_messages;
-                self.views.insert(entity.id, boxed);
+                if let Some(boxed) = removed_box {
+                    self.store_component_view(entity.id, boxed);
+                }
                 return Ok(());
             }
         }
+        let previous = removed_box.unwrap_or_else(|| Box::new(elided_stack.expect("some stack")));
         self.finish_component_update(
             entity.id,
             TypeId::of::<C>(),
             StagedUpdate {
                 staged: Box::new(staged),
-                previous: boxed,
+                previous,
                 mutations,
                 events,
                 program_messages,
@@ -4061,8 +4199,7 @@ impl AppContext {
         }
         let commit =
             delivered.and_then(|observers| self.commit_mutations(mutations).map(|_| observers));
-        self.views
-            .insert(id, if commit.is_ok() { staged } else { previous });
+        self.store_component_view(id, if commit.is_ok() { staged } else { previous });
         let observers = commit?;
         let suspended = if self.world.is_mounted(id) {
             Ok(())
@@ -4148,9 +4285,8 @@ impl AppContext {
         projection: Projection,
     ) -> Result<(), FrameworkError> {
         let reproject = self
-            .views
-            .get(&id)
-            .and_then(|view| self.reprojector(view.as_ref().type_id()));
+            .view_type_id(id)
+            .and_then(|type_id| self.reprojector(type_id));
         match reproject {
             Some(reproject) => reproject(self, id, projection, None),
             None => Ok(()),
@@ -4158,13 +4294,9 @@ impl AppContext {
     }
 
     /// The type-erased [`Self::reproject_component`] for a component type,
-    /// known once any instance of it was created or its type registered.
+    /// known once any instance of it was created.
     fn reprojector(&self, type_id: TypeId) -> Option<UpdateErasedFn> {
-        self.reprojectors.get(&type_id).copied().or_else(|| {
-            self.components
-                .get_by_rust(type_id)
-                .and_then(|entry| entry.reproject)
-        })
+        self.reprojectors.get(&type_id).copied()
     }
 
     fn run_component_assembler(
@@ -4223,12 +4355,22 @@ impl AppContext {
         if !self.world.contains(entity.id) {
             return Err(FrameworkError::MissingView(entity.id));
         }
-        let mut boxed = self
-            .views
-            .remove(&entity.id)
-            .ok_or(FrameworkError::MissingView(entity.id))?;
+        let mut boxed = match self.views.remove(&entity.id) {
+            Some(boxed) => boxed,
+            None if self.world.is_elided_stack(entity.id) => {
+                if TypeId::of::<V>() != TypeId::of::<Stack>() {
+                    return Err(FrameworkError::ViewType(entity.id));
+                }
+                let stack = self
+                    .world
+                    .elided_stack(entity.id)
+                    .ok_or(FrameworkError::MissingView(entity.id))?;
+                Box::new(stack)
+            }
+            None => return Err(FrameworkError::MissingView(entity.id)),
+        };
         if !boxed.is::<V>() {
-            self.views.insert(entity.id, boxed);
+            self.store_component_view(entity.id, boxed);
             return Err(FrameworkError::ViewType(entity.id));
         }
         let view = boxed
@@ -4262,7 +4404,7 @@ impl AppContext {
         }
         let commit =
             delivered.and_then(|observers| self.commit_mutations(mutations).map(|_| observers));
-        self.views.insert(entity.id, boxed);
+        self.store_component_view(entity.id, boxed);
         let observers = commit?;
         if !self.world.is_mounted(entity.id) {
             self.suspend(entity.id)?;
@@ -4281,10 +4423,15 @@ impl AppContext {
     #[doc(hidden)]
     pub fn remove_view<V: View>(&mut self, entity: Entity<V>) -> Result<V, FrameworkError> {
         self.read(entity, |_| ())?;
-        let boxed = self
-            .views
-            .remove(&entity.id)
-            .expect("validated view must remain present");
+        let boxed = match self.views.remove(&entity.id) {
+            Some(boxed) => boxed,
+            None if TypeId::of::<V>() == TypeId::of::<Stack>() => Box::new(
+                self.world
+                    .elided_stack(entity.id)
+                    .expect("validated view must remain present"),
+            ),
+            None => unreachable!("validated view must remain present"),
+        };
         self.despawn_node(entity.id)?;
         boxed
             .downcast::<V>()
@@ -4481,15 +4628,7 @@ impl AppContext {
         // Walked in full, they made removing one node cost the size of the
         // whole tree (2.4 ms among 100,000 buttons), and an assembly
         // dropping a hundred children paid that two hundred times.
-        for views in [
-            &mut self.child_reproject_views,
-            &mut self.metrics_reproject_views,
-            &mut self.recipe_reproject_views,
-            &mut self.reduced_motion_reproject_views,
-            &mut self.text_backend_reproject_views,
-        ] {
-            forget_nodes(views, removed);
-        }
+        forget_nodes(&mut self.child_reproject_views, removed);
         forget_nodes(&mut self.slot_keys, removed);
         if self.placed_assembled.len() <= removed.len() {
             self.placed_assembled.retain(|id| !removed.contains(id));
@@ -4559,15 +4698,8 @@ impl AppContext {
     #[cfg(test)]
     fn assert_forgotten(&self, removed: &HashSet<StableNodeId>) {
         let gone = |id: &StableNodeId| removed.contains(id);
-        let reprojects = [
-            &self.child_reproject_views,
-            &self.metrics_reproject_views,
-            &self.recipe_reproject_views,
-            &self.reduced_motion_reproject_views,
-            &self.text_backend_reproject_views,
-        ];
         assert!(
-            !reprojects.iter().any(|views| views.keys().any(gone)),
+            !self.child_reproject_views.keys().any(gone),
             "a removed node is still registered for reprojection"
         );
         assert!(

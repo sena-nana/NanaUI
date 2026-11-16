@@ -846,11 +846,11 @@ impl AppContext {
             .or_else(|| {
                 candidates.first().copied().filter(|candidate| {
                     *candidate != root
-                        || match self.world.component_geometry(root) {
-                            Some(crate::ComponentGeometry::ModalFrame { surface, .. }) => {
+                        || match self.world.modal_frame_geometry(root) {
+                            Some(crate::ModalFrameGeometry { surface, .. }) => {
                                 surface.contains(x, y)
                             }
-                            _ => true,
+                            None => true,
                         }
                 })
             })

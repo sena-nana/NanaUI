@@ -686,7 +686,7 @@ mod tests {
             .cx
             .update_component(picture, |picture, _| {
                 *picture = picture.clone().with_layout(|layout| {
-                    layout.transform = Some(PaintTransform {
+                    layout.transforms.transform = Some(PaintTransform {
                         e: 200.0,
                         f: 100.0,
                         ..PaintTransform::default()
@@ -755,10 +755,12 @@ mod tests {
         for end in [Up, Cancel] {
             let mut stage = AutoHideStage::new(true);
             let seek = stage.cx.read(stage.bar, |bar| bar.seek()).unwrap().unwrap();
-            let track = match stage.cx.world().component_geometry(seek.stable_id()) {
-                Some(crate::ComponentGeometry::Range { track, .. }) => track,
-                _ => panic!("seek range geometry expected"),
-            };
+            let track = stage
+                .cx
+                .world()
+                .range_geometry(seek.stable_id())
+                .expect("seek range geometry expected")
+                .track;
             let (x, y) = (track.x + track.width / 2.0, track.y + track.height / 2.0);
             stage.pointer(Down, x, y);
             assert!(

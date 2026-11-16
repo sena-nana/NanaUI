@@ -30,7 +30,7 @@ use nana_ui_platform::{
     WindowId,
 };
 use nana_ui_runtime::{
-    AccessibilityActionRequest, FrameworkError, HeadlessInput, LayoutViewport, Task, WorkCounters,
+    AccessibilityActionRequest, FrameworkError, HeadlessInput, LayoutViewport, Task,
 };
 use nana_ui_scene::{DocumentAccessError, RuntimeDocument};
 
@@ -117,8 +117,8 @@ pub struct HeadlessReport {
 /// One turn's UI work.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct HeadlessTurn {
-    /// The work of every flush that did something.
-    pub work: WorkCounters,
+    /// How many visible window flushes did non-idle work in this turn.
+    pub flushes: usize,
     /// Whether the turn processed input, window requests, program messages,
     /// non-idle flushes, due wakeups, or animation frames.
     pub did_work: bool,
@@ -569,10 +569,8 @@ impl<P: RuntimeProgram> HeadlessRuntime<P> {
             .collect();
         let mut did_present = false;
         for id in visible {
-            let (work, presented_work) = self.present_tracked(id);
-            if let Some(work) = work {
-                turn.work.accumulate(work);
-            }
+            let (did_flush, presented_work) = self.present_tracked(id);
+            turn.flushes += usize::from(did_flush);
             did_present |= presented_work;
         }
         turn.did_work = did_requests
@@ -587,15 +585,15 @@ impl<P: RuntimeProgram> HeadlessRuntime<P> {
 
     /// One frame of `id`, as a native redraw does it, without painting:
     /// queued messages, `prepare_window_frame`, layout, then
-    /// `window_frame_presented` and `bind_window` when due. Returns the
-    /// flush's work when it did any.
-    pub fn present(&mut self, id: WindowId) -> Option<WorkCounters> {
+    /// `window_frame_presented` and `bind_window` when due. Returns `true`
+    /// when the flush did non-idle work.
+    pub fn present(&mut self, id: WindowId) -> bool {
         self.present_tracked(id).0
     }
 
-    fn present_tracked(&mut self, id: WindowId) -> (Option<WorkCounters>, bool) {
+    fn present_tracked(&mut self, id: WindowId) -> (bool, bool) {
         if !self.windows.contains_key(&id) {
-            return (None, false);
+            return (false, false);
         }
         let (queued, had_queued) = self.drain_program_messages_tracked(id);
         let did_queued = had_queued || Self::update_did_work(&queued);
@@ -611,22 +609,22 @@ impl<P: RuntimeProgram> HeadlessRuntime<P> {
             }
             document
                 .flush(LayoutViewport::new(width, height), text)
-                .map(|update| (!update.is_idle()).then(|| document.context().last_work_counters()))
+                .map(|update| !update.is_idle())
         });
-        let work = match flushed {
-            Some(Ok(work)) => work,
+        let did_flush = match flushed {
+            Some(Ok(did_flush)) => did_flush,
             Some(Err(error)) => {
                 self.program
                     .report_host_failure(HostFailure::FrameDidNotSettle {
                         window: id,
                         error: error.to_string(),
                     });
-                return (None, did_queued);
+                return (false, did_queued);
             }
             None => {
                 self.program
                     .report_host_failure(HostFailure::MissingDocument { window: id });
-                return (None, did_queued);
+                return (false, did_queued);
             }
         };
         let mut update = self.program.window_frame_presented(id, &context);
@@ -637,8 +635,8 @@ impl<P: RuntimeProgram> HeadlessRuntime<P> {
         let did_post_update = Self::update_did_work(&update);
         self.apply_update(update);
         (
-            work,
-            did_queued || work.is_some() || bound || did_post_update,
+            did_flush,
+            did_queued || did_flush || bound || did_post_update,
         )
     }
 

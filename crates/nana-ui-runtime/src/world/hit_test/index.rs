@@ -652,18 +652,6 @@ pub(in crate::world) fn find_hit_transform(index: &HitIndex, id: StableNodeId) -
     Some(transform)
 }
 
-/// Entries in `entry`'s tree, counted on a heap stack: the tree is as deep
-/// as the world's.
-pub(in crate::world) fn count_hit_entries(entry: &HitEntry) -> usize {
-    let mut count = 0;
-    let mut open = vec![entry];
-    while let Some(entry) = open.pop() {
-        count += 1;
-        open.extend(&entry.children);
-    }
-    count
-}
-
 pub(in crate::world) fn retain_hit_tree(index: &mut HitIndex, id: StableNodeId) {
     index.remove(id);
 }

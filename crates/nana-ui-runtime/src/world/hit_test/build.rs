@@ -72,7 +72,11 @@ impl UiWorld {
             && self.overlay_host_nodes.is_empty()
             && self.z_index_nodes == 0
             && self.detached_mounted.is_empty()
-            && !self.nodes.has_visuals()
+            && !self.nodes.has_widget_visuals()
+            && self.triggered_overlays.is_empty()
+            && self.menu_surfaces == 0
+            && self.modal_frames == 0
+            && self.list_leading_visuals == 0
         {
             let record = self.record(id);
             if record.mount == crate::MountState::Mounted
@@ -88,26 +92,22 @@ impl UiWorld {
     /// Gap between a HoverCard trigger and its overlay; that strip is outside the subtree.
     fn overlay_connector_hit(&self, id: StableNodeId) -> Option<LayoutBox> {
         let parent = self.parent_id(id)?;
-        match self.nodes.visual(parent)? {
-            StandardVisual::MenuSurface {
-                kind: crate::MenuSurfaceKind::HoverCard,
-                open: true,
-                overlay: Some(overlay),
-                ..
-            } if self.record(parent).hierarchy.children.first().copied() == Some(id) => {
-                {
-                    // The card is viewport-fixed; the trigger is wherever the
-                    // scroll offsets above it put its layout box.
-                    let trigger = self.component_layout_box(parent)?;
-                    overlay_connector_box(
-                        self.project_input_bounds(parent, trigger)
-                            .unwrap_or(trigger),
-                        crate::popover::overlay_surface_from_items(self, parent, Some(overlay)),
-                    )
-                }
-            }
-            _ => None,
+        let visual = self.widget_visual_as::<crate::MenuSurfaceVisual>(parent)?;
+        if visual.kind != crate::MenuSurfaceKind::HoverCard || !visual.open {
+            return None;
         }
+        let overlay = visual.overlay?;
+        if self.record(parent).hierarchy.children.first().copied() != Some(id) {
+            return None;
+        }
+        // The card is viewport-fixed; the trigger is wherever the
+        // scroll offsets above it put its layout box.
+        let trigger = self.component_layout_box(parent)?;
+        overlay_connector_box(
+            self.project_input_bounds(parent, trigger)
+                .unwrap_or(trigger),
+            crate::popover::overlay_surface_from_items(self, parent, Some(&overlay)),
+        )
     }
 
     /// Build hit entries for `seeds` and their visible descendants. Each seed
@@ -185,11 +185,14 @@ impl UiWorld {
         let mut child_states: Vec<(([f32; 6], [f32; 2]), bool)> = Vec::new();
         let mut deferred = Vec::new();
         let mut memo = AncestorMemo::default();
-        let visuals = self.nodes.has_visuals();
+        let visuals = self.nodes.has_widget_visuals();
         let plain_layout = self.layout_length_tracks.is_empty()
             && self.overlay_host_nodes.is_empty()
             && self.z_index_nodes == 0
             && self.detached_mounted.is_empty()
+            && self.clip_visuals == 0
+            && self.select_menus.is_empty()
+            && self.triggered_overlays.is_empty()
             && !visuals;
         let retained_boxes = self.layout_results.is_empty();
         while let Some((
@@ -239,10 +242,10 @@ impl UiWorld {
                     record.style.layout.pointer_events,
                     computed.pointer_events,
                     record.local_layout,
-                    (record.layout_frame, record.hierarchy.parent),
+                    (record.layout_frame(), record.hierarchy.parent),
                     plain_style.then(|| Arc::clone(&record.resolved_layout)),
                     default_box,
-                    record.scroll_offset,
+                    self.nodes.scroll_offset(id),
                     Arc::clone(&record.hierarchy.children),
                     record.interaction,
                     record.style.painter.is_some() || !self.painter_overrides.is_empty(),
@@ -426,7 +429,7 @@ impl UiWorld {
             };
             let mut reads_page =
                 offset_pinned || escaped || space.contains(crate::node_space::NodeSpace::STICKY);
-            let local = if parent_blocks_3d && node_style.transform_3d.is_some() {
+            let local = if parent_blocks_3d && node_style.transforms.transform_3d.is_some() {
                 (IDENTITY_AFFINE, [0.0, 0.0])
             } else {
                 node_style
@@ -469,15 +472,10 @@ impl UiWorld {
             if let Some((x, y, w, h)) =
                 node_style.overflow_clip_box(layout.x, layout.y, layout.width, layout.height)
             {
-                let overlay_menu = visuals
-                    && matches!(
-                        self.nodes.visual(id),
-                        Some(StandardVisual::MenuSurface {
-                            open: true,
-                            overlay: Some(_),
-                            ..
-                        })
-                    );
+                let overlay_menu = !self.triggered_overlays.is_empty()
+                    && self
+                        .widget_visual_as::<crate::MenuSurfaceVisual>(id)
+                        .is_some_and(|v| v.open && v.overlay.is_some());
                 if !overlay_menu {
                     child_clips.push((
                         LayoutBox {
@@ -490,25 +488,27 @@ impl UiWorld {
                     ));
                 }
             }
-            if visuals && self.clip_visuals != 0 {
-                if matches!(
-                    self.nodes.visual(id),
-                    Some(StandardVisual::EmptyState { .. })
-                ) {
+            if self.clip_visuals != 0 {
+                if self
+                    .widget_visual_ref(id)
+                    .is_some_and(crate::WidgetVisualHandle::clips_descendants)
+                {
                     child_clips.push((layout, transform));
                 }
-                if let Some(crate::ComponentGeometry::ModalFrame { surface, .. }) =
-                    self.component_geometry(id)
+                let modal_frames = self.modal_frames != 0;
+                if modal_frames
+                    && let Some(crate::ModalFrameGeometry { surface, .. }) =
+                        self.modal_frame_geometry(id)
                 {
                     reads_page = true;
                     child_clips.push((own_space(surface, page_origin()), transform));
                 }
-                if let Some(parent_id) = self.parent_id(id)
-                    && let Some(StandardVisual::ModalFrame { slots, .. }) =
-                        self.nodes.visual(parent_id)
-                    && slots.body == Some(id)
-                    && let Some(crate::ComponentGeometry::ModalFrame { body, .. }) =
-                        self.component_geometry(parent_id)
+                if modal_frames
+                    && let Some(parent_id) = self.parent_id(id)
+                    && let Some(modal) = self.widget_visual_as::<crate::ModalFrameVisual>(parent_id)
+                    && modal.slots.body == Some(id)
+                    && let Some(crate::ModalFrameGeometry { body, .. }) =
+                        self.modal_frame_geometry(parent_id)
                 {
                     reads_page = true;
                     // Tested past the origin, which holds the sticky offset
@@ -530,19 +530,22 @@ impl UiWorld {
                 && used_pe.hittable()
                 && computed_pointer.hittable()
                 && !confirm_busy;
-            let menu = (visuals && hittable)
-                .then(|| {
-                    self.component_geometry(id)
-                        .and_then(|geometry| match geometry {
-                            crate::ComponentGeometry::Select {
-                                menu: Some(menu), ..
-                            } => Some(menu.surface),
-                            _ => None,
-                        })
-                        .or_else(|| self.overlay_connector_hit(id))
-                })
-                .flatten()
-                .map(|menu| own_space(menu, page_origin()));
+            let menu = (hittable
+                && (visuals
+                    || !self.select_menus.is_empty()
+                    || !self.triggered_overlays.is_empty()))
+            .then(|| {
+                if self.select_menus.contains(&id) {
+                    self.select_geometry(id)
+                        .and_then(|geometry| geometry.menu.map(|menu| menu.surface))
+                } else if visuals || !self.triggered_overlays.is_empty() {
+                    self.overlay_connector_hit(id)
+                } else {
+                    None
+                }
+            })
+            .flatten()
+            .map(|menu| own_space(menu, page_origin()));
             reads_page |= menu.is_some();
             let index = built.len();
             built.push(BuiltHit {
@@ -637,12 +640,8 @@ impl UiWorld {
 }
 
 impl UiWorld {
-    /// Every build path funnels through here, so recording once keeps the
-    /// sentinel honest for both a scoped patch and a full rebuild.
-    pub(in crate::world) fn note_hit_nodes_built(&mut self, forest: &[HitEntry]) {
-        let built = forest.iter().map(count_hit_entries).sum::<usize>();
-        self.bump_last_counters(|counters| counters.record_hit_test_rebuild(built));
-    }
+    /// Kept as a hook for hit-test rebuild paths.
+    pub(in crate::world) fn note_hit_nodes_built(&mut self, _forest: &[HitEntry]) {}
 }
 
 impl UiWorld {
@@ -673,7 +672,6 @@ impl UiWorld {
             .filter(|node| node.parent.is_none() && self.parent_id(node.entry.id).is_some())
             .map(|node| node.entry.id)
             .collect();
-        self.bump_last_counters(|counters| counters.record_hit_test_rebuild(entries.len()));
         let mut index = HitIndex::from_entries(entries);
         index.viewport_roots = viewport_roots;
         self.hit_test_index.insert(document, index);

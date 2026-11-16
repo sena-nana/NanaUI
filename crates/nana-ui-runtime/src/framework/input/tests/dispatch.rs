@@ -4,12 +4,11 @@ use nana_ui_core::{LayoutStyle, OverflowSpec};
 
 use super::*;
 use crate::{
-    ActionMenu, ActionMenuItem, Activate, Button, Card, ComponentGeometry, Dialog, Dock, DockAxis,
-    DockNode, Entity, LayoutBox, MeasureTextShaper, ModalSlots, MutationQueue, NodeKind, NodeStyle,
-    OverlayHost, OverlayHostState, RangeField, ScrollAxes, ScrollMetrics, ScrollView,
-    SegmentedControl, SegmentedOption, SegmentedSelectionRequested, Table, TableCell, TableRow,
-    Text, TextArea, TextChanged, TextFindScope, TextInput, TextSearchOptions, TextSelection,
-    UserSelectSpec,
+    ActionMenu, ActionMenuItem, Activate, Button, Card, Dialog, Dock, DockAxis, DockNode, Entity,
+    LayoutBox, MeasureTextShaper, ModalSlots, MutationQueue, NodeKind, NodeStyle, OverlayHost,
+    OverlayHostState, RangeField, ScrollAxes, ScrollMetrics, ScrollView, SegmentedControl,
+    SegmentedOption, SegmentedSelectionRequested, Table, TableCell, TableRow, Text, TextArea,
+    TextChanged, TextFindScope, TextInput, TextSearchOptions, TextSelection, UserSelectSpec,
 };
 #[cfg(feature = "calendar")]
 use crate::{CalendarHeatmap, CalendarHeatmapDatum};
@@ -159,10 +158,10 @@ fn text_area_resize_routes_grip_drag_cancel_and_park_without_editing_text() {
         .unwrap();
     context.layout_document(document, viewport).unwrap();
     context.rebuild_hit_test(document);
-    let Some(ComponentGeometry::TextInput {
-        resize_grip: Some(grip),
-        ..
-    }) = context.world().component_geometry(area.stable_id())
+    let Some(grip) = context
+        .world()
+        .text_input_geometry(area.stable_id())
+        .and_then(|g| g.resize_grip)
     else {
         panic!("resize grip must be projected")
     };
@@ -318,11 +317,11 @@ fn markdown_link_pointer_uses_the_painted_padded_content_and_cancels_stolen_capt
         .layout_document(document, crate::LayoutViewport::new(300.0, 160.0))
         .unwrap();
     context.rebuild_hit_test(document);
-    let Some(ComponentGeometry::NativeMarkdown { drawing, .. }) =
-        context.world().component_geometry(markdown.stable_id())
-    else {
-        panic!("markdown geometry")
-    };
+    let drawing = context
+        .world()
+        .native_markdown_layout(markdown.stable_id())
+        .expect("markdown layout")
+        .drawing;
     let bounds = drawing
         .commands
         .iter()
@@ -605,9 +604,9 @@ fn focused_textarea_caret_uses_text_color_and_clears_on_outside_press() {
         .unwrap();
     context.rebuild_hit_test(document);
 
-    let Some(ComponentGeometry::TextInput {
+    let Some(crate::TextInputGeometry {
         caret, caret_color, ..
-    }) = context.world().component_geometry(editor.stable_id())
+    }) = context.world().text_input_geometry(editor.stable_id())
     else {
         panic!("expected text input geometry");
     };
@@ -625,8 +624,8 @@ fn focused_textarea_caret_uses_text_color_and_clears_on_outside_press() {
         .unwrap();
     assert_eq!(context.world().focused(document), None);
     assert!(matches!(
-        context.world().component_geometry(editor.stable_id()),
-        Some(ComponentGeometry::TextInput { caret: None, .. })
+        context.world().text_input_geometry(editor.stable_id()),
+        Some(crate::TextInputGeometry { caret: None, .. })
     ));
 
     assert!(context.focus_node(document, editor.stable_id()).unwrap());
@@ -2118,10 +2117,11 @@ fn range_field_quantizes_keyboard_and_cancels_captured_drag() {
     );
     assert_eq!(context.read(range, |range| range.value).unwrap(), 0.0);
 
-    let track = match context.world().component_geometry(range.stable_id()) {
-        Some(crate::ComponentGeometry::Range { track, .. }) => track,
-        _ => panic!("range geometry expected"),
-    };
+    let track = context
+        .world()
+        .range_geometry(range.stable_id())
+        .expect("range geometry expected")
+        .track;
     let drag_x = track.x + track.width * 0.8;
     assert!(
         adapter
@@ -2181,10 +2181,11 @@ fn a_pointer_drag_on_a_range_commits_once_on_release() {
             observed.lock().unwrap().push(event.value);
         })
         .unwrap();
-    let track = match context.world().component_geometry(range.stable_id()) {
-        Some(ComponentGeometry::Range { track, .. }) => track,
-        _ => panic!("range geometry expected"),
-    };
+    let track = context
+        .world()
+        .range_geometry(range.stable_id())
+        .expect("range geometry expected")
+        .track;
     let mut adapter = TestInput::default();
     for (phase, fraction) in [
         (PointerPhase::Down, 0.2),
@@ -2610,8 +2611,8 @@ fn a_press_on_the_hanging_surface_stays_in_the_menu() {
     context.rebuild_hit_test(document);
 
     let item_box = context.world().layout_box(item.stable_id()).unwrap();
-    let Some(ComponentGeometry::MenuSurface { surface, .. }) =
-        context.world().component_geometry(menu.stable_id())
+    let Some(crate::MenuSurfaceGeometry { surface, .. }) =
+        context.world().menu_surface_geometry(menu.stable_id())
     else {
         panic!("the open menu's geometry");
     };
@@ -3854,9 +3855,9 @@ fn pointer_press_places_the_caret_and_multi_click_selects() {
             height: 32.0,
         },
     );
-    layout.set_standard_visual(
+    layout.set_widget_visual(
         node,
-        Some(crate::StandardVisual::TextInput {
+        Some(crate::TextInputVisual {
             placeholder: std::sync::Arc::from(""),
             size: nana_ui_core::ControlSize::Medium,
             secure: false,
@@ -3975,9 +3976,9 @@ fn pointer_drag_extends_the_selection_from_the_press_anchor() {
             height: 32.0,
         },
     );
-    layout.set_standard_visual(
+    layout.set_widget_visual(
         node,
-        Some(crate::StandardVisual::TextInput {
+        Some(crate::TextInputVisual {
             placeholder: std::sync::Arc::from(""),
             size: nana_ui_core::ControlSize::Medium,
             secure: false,
@@ -5291,11 +5292,8 @@ fn pointer_press_on_fold_gutter_toggles_the_fold() {
         .unwrap();
     let gutter = context
         .world()
-        .component_geometry(node)
-        .and_then(|geometry| match geometry {
-            crate::ComponentGeometry::TextInput { folds, .. } => folds.gutters.first().copied(),
-            _ => None,
-        })
+        .text_input_geometry(node)
+        .and_then(|geometry| geometry.folds.gutters.first().copied())
         .expect("fold gutter geometry");
     let center = (
         gutter.bounds.x + gutter.bounds.width / 2.0,
@@ -5352,11 +5350,8 @@ fn pointer_press_on_fold_gutter_toggles_the_fold() {
     // 再次点击箭头：展开。
     let gutter = context
         .world()
-        .component_geometry(node)
-        .and_then(|geometry| match geometry {
-            crate::ComponentGeometry::TextInput { folds, .. } => folds.gutters.first().copied(),
-            _ => None,
-        })
+        .text_input_geometry(node)
+        .and_then(|geometry| geometry.folds.gutters.first().copied())
         .expect("fold gutter geometry");
     let center = (
         gutter.bounds.x + gutter.bounds.width / 2.0,
@@ -5900,9 +5895,9 @@ fn alt_click_adds_and_removes_cursors_and_plain_click_collapses() {
             height: 64.0,
         },
     );
-    layout.set_standard_visual(
+    layout.set_widget_visual(
         node,
-        Some(crate::StandardVisual::TextInput {
+        Some(crate::TextInputVisual {
             placeholder: std::sync::Arc::from(""),
             size: nana_ui_core::ControlSize::Medium,
             secure: false,
@@ -6125,12 +6120,12 @@ fn completion_popup_geometry(
     context: &AppContext,
     node: StableNodeId,
 ) -> crate::TextCompletionPopup {
-    match context.world().component_geometry(node) {
-        Some(crate::ComponentGeometry::TextInput {
-            completion_popup, ..
-        }) => completion_popup.expect("completion popup geometry"),
-        _ => panic!("text input geometry"),
-    }
+    context
+        .world()
+        .text_input_geometry(node)
+        .expect("text input geometry")
+        .completion_popup
+        .expect("completion popup geometry")
 }
 
 #[test]
@@ -6462,12 +6457,13 @@ fn completion_click_accepts_row_and_wheel_scrolls_overlay() {
         })
         .unwrap();
     shape_completion_editor(&mut context, document, node);
-    let hover_panel = match context.world().component_geometry(node) {
-        Some(crate::ComponentGeometry::TextInput { hover_popup, .. }) => {
-            hover_popup.expect("hover popup").panel
-        }
-        _ => panic!("text input geometry"),
-    };
+    let hover_panel = context
+        .world()
+        .text_input_geometry(node)
+        .expect("text input geometry")
+        .hover_popup
+        .expect("hover popup")
+        .panel;
     assert!(
         adapter
             .dispatch(
@@ -6508,12 +6504,13 @@ fn hover_wheel_scrolls_without_editor_focus() {
     );
     context.commit_mutations(layout).unwrap();
     shape_completion_editor(&mut context, document, node);
-    let hover_panel = match context.world().component_geometry(node) {
-        Some(crate::ComponentGeometry::TextInput { hover_popup, .. }) => {
-            hover_popup.expect("hover popup").panel
-        }
-        _ => panic!("text input geometry"),
-    };
+    let hover_panel = context
+        .world()
+        .text_input_geometry(node)
+        .expect("text input geometry")
+        .hover_popup
+        .expect("hover popup")
+        .panel;
     let mut adapter = TestInput::default();
 
     // 编辑器未聚焦：滚轮落在 hover 面板内仍滚动该面板（命中测试驱动，
@@ -6713,8 +6710,8 @@ fn the_pointer_moves_an_open_context_menu_highlight() {
             sink.lock().unwrap().push(event.clone())
         })
         .unwrap();
-    let Some(ComponentGeometry::MenuSurface { options, .. }) =
-        context.world().component_geometry(menu.stable_id())
+    let Some(crate::MenuSurfaceGeometry { options, .. }) =
+        context.world().menu_surface_geometry(menu.stable_id())
     else {
         panic!("an open context menu draws its rows");
     };
@@ -6782,10 +6779,11 @@ fn another_button_does_not_end_a_left_drag() {
             observed.lock().unwrap().push(event.value);
         })
         .unwrap();
-    let track = match context.world().component_geometry(range.stable_id()) {
-        Some(ComponentGeometry::Range { track, .. }) => track,
-        _ => panic!("range geometry expected"),
-    };
+    let track = context
+        .world()
+        .range_geometry(range.stable_id())
+        .expect("range geometry expected")
+        .track;
     let at = |fraction: f32| track.x + track.width * fraction;
     let middle = |phase: PointerPhase, x: f32| {
         pointer_fixture! {
@@ -6939,10 +6937,11 @@ fn a_range_in_a_scrolled_view_follows_the_pointer_where_it_shows() {
         .unwrap();
     context.layout_document(document, layout_viewport).unwrap();
     context.rebuild_hit_test(document);
-    let track = match context.world().component_geometry(range.stable_id()) {
-        Some(ComponentGeometry::Range { track, .. }) => track,
-        _ => panic!("range geometry expected"),
-    };
+    let track = context
+        .world()
+        .range_geometry(range.stable_id())
+        .expect("range geometry expected")
+        .track;
     // Shown 300 px left of its layout box.
     let shown_x = |fraction: f32| track.x - 300.0 + track.width * fraction;
     let y = track.y + track.height / 2.0;
@@ -7129,9 +7128,7 @@ fn an_unfocused_field_shows_its_start_and_its_focusing_click_lands_there() {
     let mut text_x = |context: &mut AppContext| {
         context.resolve_styles(&[node]).unwrap();
         context.shape_text(&[node], &mut shaper).unwrap();
-        let Some(ComponentGeometry::TextInput { text, .. }) =
-            context.world().component_geometry(node)
-        else {
+        let Some(text) = context.world().text_input_geometry(node).map(|g| g.text) else {
             panic!("no field geometry");
         };
         text.bounds.x

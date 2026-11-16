@@ -281,14 +281,13 @@ impl ErasedBehavior {
 impl AppContext {
     /// The behavior of the node's type, if the node has a view.
     pub(crate) fn behavior(&self, id: StableNodeId) -> Option<ErasedBehavior> {
-        let view = self.views.get(&id)?;
-        self.behaviors.get(&view.as_ref().type_id()).copied()
+        let type_id = self.view_type_id(id)?;
+        self.behaviors.get(&type_id).copied()
     }
 
     /// The node's pointer hooks: its type's, or an extension's.
     pub(crate) fn pointer_hooks(&self, id: StableNodeId) -> Option<&'static dyn ErasedPointer> {
-        let view = self.views.get(&id)?;
-        let type_id = view.as_ref().type_id();
+        let type_id = self.view_type_id(id)?;
         self.behaviors
             .get(&type_id)
             .and_then(|behavior| behavior.pointer)

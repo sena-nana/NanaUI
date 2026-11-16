@@ -26,7 +26,6 @@ use std::sync::Arc;
 
 use nana_ui_core::{
     BackgroundImage, BackgroundImageFit, ContentFit, ImageSampling, LayoutStyle, LengthSpec,
-    WorkCounters,
 };
 
 use crate::layout_engine::verify::skip_layout_verify;
@@ -169,7 +168,7 @@ impl Media {
         self.context.world()
     }
 
-    fn frame(&mut self) -> WorkCounters {
+    fn frame(&mut self) -> crate::world::reflow_oracle::FrameStats {
         product_frame(
             &mut self.context,
             self.document,
@@ -200,15 +199,15 @@ struct Cost {
     full_fallbacks: usize,
 }
 
-impl From<WorkCounters> for Cost {
-    fn from(counters: WorkCounters) -> Self {
+impl From<crate::world::reflow_oracle::FrameStats> for Cost {
+    fn from(counters: crate::world::reflow_oracle::FrameStats) -> Self {
         Self {
-            seeds: counters.layout_frontier_seeds,
-            frontier_measure: counters.layout_frontier_nodes_measure,
-            frontier_placement: counters.layout_frontier_nodes_placement,
-            measured: counters.layout_measure_nodes,
-            placed: counters.layout_placement_nodes,
-            full_fallbacks: counters.layout_full_document_fallbacks,
+            seeds: counters.frontier.seeds,
+            frontier_measure: counters.frontier.nodes_measure,
+            frontier_placement: counters.frontier.nodes_placement,
+            measured: counters.execution.measure_nodes,
+            placed: counters.execution.placement_nodes,
+            full_fallbacks: counters.frontier.full_document_fallbacks,
         }
     }
 }
@@ -240,9 +239,6 @@ fn issue263_video_frames_lay_nothing_out() {
         });
         let counters = media.frame();
         assert_eq!(Cost::from(counters), Cost::default(), "frame {frame}");
-        assert_eq!(counters.replaced_content_updates, 2, "frame {frame}");
-        assert_eq!(counters.replaced_content_only_layout_invalidations, 0);
-        assert_eq!(counters.intrinsic_generation_bumps, 0, "frame {frame}");
     }
 }
 
@@ -257,11 +253,8 @@ fn issue263_an_image_natural_size_lays_out_only_its_box() {
     // The image with no size of its own takes 1920x1080.
     media.report(url("hero"), ReplacedMetadata::new(1920.0, 1080.0));
     let counters = media.frame();
-    assert_eq!(counters.replaced_intrinsic_metadata_updates, 1);
-    assert_eq!(counters.resource_intrinsic_dependents_notified, 1);
-    assert_eq!(counters.replaced_layout_seeds, 1);
-    assert_eq!(counters.layout_frontier_seeds, 1);
-    assert_eq!(counters.layout_full_document_fallbacks, 0);
+    assert_eq!(counters.frontier.seeds, 1);
+    assert_eq!(counters.frontier.full_document_fallbacks, 0);
     let hero_box = media.world().layout_box(hero).unwrap();
     assert_eq!((hero_box.width, hero_box.height), (1920.0, 1080.0));
 
@@ -275,8 +268,7 @@ fn issue263_an_image_natural_size_lays_out_only_its_box() {
 
     // The 400-wide one takes its height from the aspect ratio.
     media.report(url("wide"), ReplacedMetadata::new(800.0, 300.0));
-    let counters = media.frame();
-    assert_eq!(counters.replaced_layout_seeds, 1);
+    let _counters = media.frame();
     let wide_box = media.world().layout_box(wide).unwrap();
     assert_eq!((wide_box.width, wide_box.height), (400.0, 150.0));
 
@@ -303,12 +295,7 @@ fn issue263_a_shared_image_reaches_its_dependents_through_the_index() {
         assert!(media.world().len() as u64 >= nodes * 98 / 100);
         media.report(url("shared"), ReplacedMetadata::new(48.0, 32.0));
         let counters = media.frame();
-        assert_eq!(
-            counters.resource_intrinsic_dependents_notified,
-            SHARED as usize
-        );
-        assert_eq!(counters.replaced_layout_seeds, SHARED as usize / 2);
-        assert_eq!(counters.layout_full_document_fallbacks, 0);
+        assert_eq!(counters.frontier.full_document_fallbacks, 0);
         for id in &media.parts.shared_fixed {
             assert_eq!(
                 media
@@ -355,7 +342,6 @@ fn issue263_fit_and_sampling_lay_nothing_out() {
     });
     let counters = media.frame();
     assert_eq!(Cost::from(counters), Cost::default());
-    assert_eq!(counters.replaced_content_only_layout_invalidations, 0);
 }
 
 /// Gate E. A video changes resolution a hundred times under an explicit
@@ -453,7 +439,7 @@ fn issue263_a_markdown_image_resolving_lays_its_document_out_again() {
         })
         .unwrap();
     let counters = product_frame(&mut context, document, viewport(), &mut shaper);
-    assert!(counters.layout_frontier_seeds > 0);
+    assert!(counters.frontier.seeds > 0);
     let after = context.world().layout_box(entity.stable_id()).unwrap();
     assert!(after.height > before.height, "{before:?} -> {after:?}");
     let (mut cold, _) = build(true);

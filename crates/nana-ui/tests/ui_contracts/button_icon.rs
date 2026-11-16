@@ -55,27 +55,35 @@ fn button_leading_icon_measures_real_text_and_centers_the_group() {
         .unwrap();
         layout(&mut cx, doc, &ids);
         let outer = cx.world().layout_box(icon.stable_id()).unwrap();
-        let ComponentGeometry::Button {
-            icon: Some((glyph, rect)),
-            label,
-            spinner,
-            ..
-        } = cx.world().component_geometry(icon.stable_id()).unwrap()
-        else {
-            panic!("icon geometry")
-        };
-        assert_eq!(glyph, Icon::File);
-        assert_eq!(label.font_size, 18.0);
-        assert_eq!(label.font_weight, Some(700));
+        let visual = cx
+            .world()
+            .widget_visual_as::<ButtonVisual>(icon.stable_id())
+            .expect("icon visual");
+        let rect = cx
+            .world()
+            .content_part_box(icon.stable_id(), LayoutPartKind::LeadingContent)
+            .expect("icon part");
+        let label_bounds = cx
+            .world()
+            .content_part_box(icon.stable_id(), LayoutPartKind::TextContent)
+            .expect("label part");
+        let style = cx.world().computed_style(icon.stable_id()).unwrap();
+        assert_eq!(visual.icon, Some(Icon::File));
+        assert_eq!(style.font_size, 18.0);
+        assert_eq!(style.font_weight, Some(700));
         assert_eq!(rect.width, 15.0);
-        assert!(spinner.is_none());
-        assert!((label.bounds.x - rect.x - rect.width - 6.0).abs() < 0.1);
         assert!(
-            ((rect.x + label.bounds.x + label.bounds.width) / 2.0 - (outer.x + outer.width / 2.0))
+            cx.world()
+                .content_part_box(icon.stable_id(), LayoutPartKind::Spinner)
+                .is_none()
+        );
+        assert!((label_bounds.x - rect.x - rect.width - 6.0).abs() < 0.1);
+        assert!(
+            ((rect.x + label_bounds.x + label_bounds.width) / 2.0 - (outer.x + outer.width / 2.0))
                 .abs()
                 < 0.1
         );
-        assert!(label.bounds.x + label.bounds.width <= outer.x + outer.width);
+        assert!(label_bounds.x + label_bounds.width <= outer.x + outer.width);
     }
 }
 
@@ -123,19 +131,26 @@ fn button_trailing_icon_follows_the_label_inside_one_centred_group() {
         .unwrap();
         layout(&mut cx, doc, &ids);
         let outer = cx.world().layout_box(both.stable_id()).unwrap();
-        let ComponentGeometry::Button {
-            icon: Some((_, lead)),
-            trailing_icon: Some((glyph, trail)),
-            label,
-            ..
-        } = cx.world().component_geometry(both.stable_id()).unwrap()
-        else {
-            panic!("both glyphs")
-        };
-        assert_eq!(glyph, Icon::ChevronDown);
+        let visual = cx
+            .world()
+            .widget_visual_as::<ButtonVisual>(both.stable_id())
+            .expect("both visual");
+        assert_eq!(visual.trailing_icon, Some(Icon::ChevronDown));
+        let lead = cx
+            .world()
+            .content_part_box(both.stable_id(), LayoutPartKind::LeadingContent)
+            .expect("leading part");
+        let trail = cx
+            .world()
+            .content_part_box(both.stable_id(), LayoutPartKind::TrailingContent)
+            .expect("trailing part");
+        let label_bounds = cx
+            .world()
+            .content_part_box(both.stable_id(), LayoutPartKind::TextContent)
+            .expect("label part");
         assert_eq!(trail.width, 15.0, "the label gives up width first");
-        assert!((label.bounds.x - lead.x - lead.width - 6.0).abs() < 0.1);
-        assert!((trail.x - label.bounds.x - label.bounds.width - 6.0).abs() < 0.1);
+        assert!((label_bounds.x - lead.x - lead.width - 6.0).abs() < 0.1);
+        assert!((trail.x - label_bounds.x - label_bounds.width - 6.0).abs() < 0.1);
         assert!(
             ((lead.x + trail.x + trail.width) / 2.0 - (outer.x + outer.width / 2.0)).abs() < 0.1,
             "the group is centred"
@@ -180,11 +195,18 @@ fn button_loading_replaces_icon_and_preserves_normal_activation_gates() {
         .unwrap();
     layout(&mut cx, doc, &ids);
     assert_eq!(cx.world().layout_box(ids[0]).unwrap().width, width);
-    let ComponentGeometry::Button { icon, spinner, .. } =
-        cx.world().component_geometry(ids[0]).unwrap()
-    else {
-        panic!("button")
-    };
+    let visual = cx
+        .world()
+        .widget_visual_as::<nana_ui_runtime::ButtonVisual>(ids[0])
+        .expect("button visual");
+    let (_, effective_loading) = visual.effective_in(ids[0], cx.world());
+    assert!(effective_loading);
+    let icon = cx
+        .world()
+        .content_part_box(ids[0], nana_ui_runtime::LayoutPartKind::LeadingContent);
+    let spinner = cx
+        .world()
+        .content_part_box(ids[0], nana_ui_runtime::LayoutPartKind::Spinner);
     assert!(icon.is_none());
     assert_eq!(spinner.unwrap().width, 14.0);
     adapter.route(&mut cx, enter.clone()).unwrap();
@@ -211,12 +233,14 @@ fn button_slot_changes_invalidate_layout_but_spinner_phase_only_repaints() {
         .create_component(doc, Button::new("保存").loading(true))
         .unwrap();
     cx.take_system_work();
-    let mut visual = cx.world().standard_visual(button.stable_id()).unwrap();
-    if let StandardVisual::Button { loading_phase, .. } = &mut visual {
-        *loading_phase = 0.4;
-    }
+    let mut visual = cx
+        .world()
+        .widget_visual_as::<nana_ui_runtime::ButtonVisual>(button.stable_id())
+        .unwrap()
+        .clone();
+    visual.loading_phase = 0.4;
     let mut changes = MutationQueue::default();
-    changes.set_standard_visual(button.stable_id(), Some(visual));
+    changes.set_widget_visual(button.stable_id(), Some(visual));
     cx.commit_mutations(changes).unwrap();
     let work = cx.take_system_work();
     assert!(work.layout_frontier_seeds.is_empty());

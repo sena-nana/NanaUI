@@ -22,9 +22,25 @@ fn style_mut(node: &mut ExtractedNode) -> &mut ComputedStyle {
     Arc::make_mut(&mut node.style)
 }
 
+fn set_text_input_paint(input: &mut ExtractedNode, geometry: &nana_ui_runtime::TextInputGeometry) {
+    let padding = input
+        .source_style
+        .layout
+        .resolved_padding_against(Some(input.layout.width));
+    let border = input.source_style.layout.resolved_border_width();
+    input.widget_paint = Some(Arc::new(
+        nana_ui_runtime::TextInputVisual::paint_with_geometry(
+            geometry,
+            input.layout,
+            padding,
+            border,
+        ),
+    ));
+}
+
 fn node(value: u64, parent: Option<u64>, children: &[u64]) -> ExtractedNode {
     ExtractedNode {
-        layout_result: None,
+        extracted_layout: None,
         custom_paint: None,
         chrome_radii: nana_ui_core::ChromeRadii::default(),
         id: id(value),
@@ -52,9 +68,7 @@ fn node(value: u64, parent: Option<u64>, children: &[u64]) -> ExtractedNode {
         focused: false,
         editable: false,
         text_spans: Vec::new(),
-        standard_visual: None,
-        component_geometry: None,
-        standard_visual_foreground: None,
+        widget_paint: None,
         custom_render: None,
         drop_hover: None,
         document_text_selection: Vec::new(),
@@ -68,6 +82,40 @@ fn node(value: u64, parent: Option<u64>, children: &[u64]) -> ExtractedNode {
 
 #[test]
 fn unlabeled_spinner_centers_in_the_node_labeled_spinner_stays_leading() {
+    use nana_ui_runtime::{SpinnerVisual, UiWorld, WidgetPaintCtx, WidgetVisual as _};
+
+    let world = UiWorld::new();
+    let theme = world.theme();
+    let style_model = world.style_model();
+    let paint_spinner = |id, width, height, label: &str, size| {
+        let bounds = LayoutBox {
+            x: 0.0,
+            y: 0.0,
+            width,
+            height,
+        };
+        let style = ComputedStyle::default();
+        let source_style = NodeStyle::default();
+        Arc::new(
+            SpinnerVisual {
+                label: Arc::from(label),
+                size,
+                phase: 0.0,
+            }
+            .paint(&WidgetPaintCtx {
+                id,
+                world: &world,
+                bounds,
+                content: bounds,
+                style: &style,
+                source_style: &source_style,
+                style_model,
+                theme,
+                chrome_radii: Default::default(),
+            }),
+        )
+    };
+
     let mut cover = node(1, None, &[]);
     cover.layout = LayoutBox {
         x: 10.0,
@@ -75,11 +123,7 @@ fn unlabeled_spinner_centers_in_the_node_labeled_spinner_stays_leading() {
         width: 160.0,
         height: 90.0,
     };
-    cover.standard_visual = Some(StandardVisual::Spinner {
-        label: Arc::from(""),
-        size: 28.0,
-        phase: 0.0,
-    });
+    cover.widget_paint = Some(paint_spinner(cover.id, 160.0, 90.0, "", 28.0));
     let mut caption = node(2, None, &[]);
     caption.layout = LayoutBox {
         x: 0.0,
@@ -87,11 +131,7 @@ fn unlabeled_spinner_centers_in_the_node_labeled_spinner_stays_leading() {
         width: 120.0,
         height: 14.0,
     };
-    caption.standard_visual = Some(StandardVisual::Spinner {
-        label: Arc::from("Loading"),
-        size: 14.0,
-        phase: 0.0,
-    });
+    caption.widget_paint = Some(paint_spinner(caption.id, 120.0, 14.0, "Loading", 14.0));
     let mut scene = UiScene::new();
     scene.apply_delta([cover, caption], []);
     assert_eq!(
@@ -530,24 +570,7 @@ fn text_input_clip_em_padding_uses_computed_font_size() {
         }),
         ..Default::default()
     };
-    input.standard_visual = Some(StandardVisual::TextInput {
-        placeholder: Arc::from(""),
-        size: nana_ui_core::ControlSize::Medium,
-        secure: false,
-        invalid: false,
-        steppers: false,
-        character_counter: None,
-        diagnostics: Arc::from([]),
-        matches: Arc::from([]),
-        color_swatches: Arc::from([]),
-        atoms: Arc::from([]),
-        line_numbers: false,
-        indent_guides: None,
-        folds: Arc::from([]),
-        git_marks: Arc::from([]),
-        editor_options: nana_ui_runtime::TextEditorRenderOptions::default(),
-    });
-    input.component_geometry = Some(Box::new(ComponentGeometry::TextInput {
+    let geometry = nana_ui_runtime::TextInputGeometry {
         resize_grip: None,
         character_counter: None,
         suffix: None,
@@ -602,7 +625,8 @@ fn text_input_clip_em_padding_uses_computed_font_size() {
         completion_popup: None,
         hover_popup: None,
         signature_popup: None,
-    }));
+    };
+    set_text_input_paint(&mut input, &geometry);
     let mut scene = UiScene::new();
     scene.apply_delta([input], []);
     let text = scene
@@ -781,41 +805,69 @@ fn selection_option_emits_surface_text_icon_and_focus_slots() {
         }),
         ..Default::default()
     };
-    option.standard_visual = Some(StandardVisual::SelectionOption {
-        label: Arc::from("Preview"),
-        icon: Some(nana_ui_core::Icon::Search),
-        selected: true,
-        disabled: false,
-        size: ControlSize::Medium,
-        show_focus_ring: true,
-        indicator: false,
-    });
-    option.component_geometry = Some(Box::new(ComponentGeometry::SelectionOption {
-        icon: Some((
-            nana_ui_core::Icon::Search,
-            LayoutBox {
-                x: 20.0,
-                y: 26.0,
-                width: 14.0,
-                height: 14.0,
-            },
-            [0.8, 0.8, 0.8, 1.0],
-        )),
-        label: ComponentTextRegion {
+    let mut paint = nana_ui_runtime::WidgetPaintOutput {
+        owns_node_text: true,
+        ..nana_ui_runtime::WidgetPaintOutput::new()
+    };
+    paint.push(
+        2,
+        nana_ui_runtime::WidgetPaintOp::Text(nana_ui_runtime::WidgetText {
             bounds: LayoutBox {
-                x: 39.0,
-                y: 20.0,
+                x: 29.0,
+                y: 0.0,
                 width: 57.0,
                 height: 26.0,
             },
             content: nana_ui_runtime::TextValue::from("Preview"),
             color: Some([1.0, 1.0, 1.0, 1.0]),
+            paint_color: None,
             font_size: 13.0,
             font_weight: Some(500),
+            horizontal_alignment: TextHorizontalAlignment::Start,
+            vertical_alignment: TextVerticalAlignment::Center,
+            ellipsis: false,
+            wrap: false,
+            max_lines: None,
+            italic: None,
+            underline: None,
+            line_through: None,
+            suppress_spans: true,
+            preserve_lines: None,
+            unstyled_glyph: false,
+            line_height: None,
+            retained_text: nana_ui_runtime::WidgetRetainedText::None,
+            tabular_nums: false,
+            ..Default::default()
+        }),
+    );
+    paint.push(
+        3,
+        nana_ui_runtime::WidgetPaintOp::Icon(nana_ui_runtime::WidgetIcon {
+            bounds: LayoutBox {
+                x: 10.0,
+                y: 6.0,
+                width: 14.0,
+                height: 14.0,
+            },
+            glyph: nana_ui_runtime::WidgetGlyph::Icon(nana_ui_core::Icon::Search),
+            color: Some([0.8, 0.8, 0.8, 1.0]),
+            paint_color: None,
+            align_to_adjacent_text: false,
+        }),
+    );
+    paint.push(
+        7,
+        nana_ui_runtime::WidgetPaintOp::FocusRing {
+            bounds: LayoutBox {
+                x: 0.0,
+                y: 0.0,
+                ..option.layout
+            },
+            color: [0.2, 0.6, 1.0, 1.0],
+            extra_outset: 1.0,
         },
-        focus_ring: Some([0.2, 0.6, 1.0, 1.0]),
-        indicator: None,
-    }));
+    );
+    option.widget_paint = Some(Arc::new(paint));
     let mut scene = UiScene::new();
     scene.apply_delta([option], []);
     for slot in [0, 2, 3, 7] {
@@ -884,7 +936,7 @@ fn a_menu_surface_paints_the_radius_it_was_handed_not_the_constant() {
             md,
             ..nana_ui_core::ChromeRadii::default()
         };
-        menu.standard_visual = Some(StandardVisual::MenuSurface {
+        let visual = nana_ui_runtime::MenuSurfaceVisual {
             trigger_image: None,
             open: true,
             kind: nana_ui_runtime::MenuSurfaceKind::ContextMenu,
@@ -895,8 +947,8 @@ fn a_menu_surface_paints_the_radius_it_was_handed_not_the_constant() {
             query: None,
             rows: Arc::from([]),
             highlighted: None,
-        });
-        menu.component_geometry = Some(Box::new(ComponentGeometry::MenuSurface {
+        };
+        let geometry = nana_ui_runtime::MenuSurfaceGeometry {
             trigger_image: None,
             trigger_surface: None,
             trigger: None,
@@ -917,7 +969,15 @@ fn a_menu_surface_paints_the_radius_it_was_handed_not_the_constant() {
             },
             background: [0.1, 0.1, 0.1, 1.0],
             border: [0.2, 0.2, 0.2, 1.0],
-        }));
+        };
+        menu.widget_paint = Some(Arc::new(visual.paint_with_geometry(
+            &geometry,
+            menu.source_style.layout.as_ref(),
+            &menu.style,
+            nana_ui_core::StyleModelRef::new(nana_ui_core::ThemeAppearance::Dark),
+            &nana_ui_core::CompiledTheme::default(),
+            menu.chrome_radii,
+        )));
         let mut scene = UiScene::new();
         scene.apply_delta([menu], []);
         match scene
@@ -962,7 +1022,7 @@ fn a_menu_trigger_paints_the_corners_its_style_resolved_to() {
         layout.paint.border_radii =
             corners.map(|corners| corners.map(nana_ui_core::LengthSpec::Px));
         let image = image.then(|| Arc::<str>::from("avatar"));
-        menu.standard_visual = Some(StandardVisual::MenuSurface {
+        let visual = nana_ui_runtime::MenuSurfaceVisual {
             trigger_image: image.clone(),
             open: false,
             kind: nana_ui_runtime::MenuSurfaceKind::Popover,
@@ -973,8 +1033,8 @@ fn a_menu_trigger_paints_the_corners_its_style_resolved_to() {
             query: None,
             rows: Arc::from([]),
             highlighted: None,
-        });
-        menu.component_geometry = Some(Box::new(ComponentGeometry::MenuSurface {
+        };
+        let geometry = nana_ui_runtime::MenuSurfaceGeometry {
             trigger_image: image,
             trigger_surface: Some(nana_ui_runtime::ComponentTriggerSurface {
                 bounds,
@@ -997,7 +1057,15 @@ fn a_menu_trigger_paints_the_corners_its_style_resolved_to() {
             },
             background: [0.0; 4],
             border: [0.0; 4],
-        }));
+        };
+        menu.widget_paint = Some(Arc::new(visual.paint_with_geometry(
+            &geometry,
+            menu.source_style.layout.as_ref(),
+            &menu.style,
+            nana_ui_core::StyleModelRef::new(nana_ui_core::ThemeAppearance::Dark),
+            &nana_ui_core::CompiledTheme::default(),
+            menu.chrome_radii,
+        )));
         let mut scene = UiScene::new();
         scene.apply_delta([menu], []);
         match scene
@@ -1033,7 +1101,7 @@ fn menu_surface_paints_row_icon_and_iconless_labels() {
         width: 200.0,
         height: 72.0,
     };
-    menu.standard_visual = Some(StandardVisual::MenuSurface {
+    let visual = nana_ui_runtime::MenuSurfaceVisual {
         trigger_image: None,
         open: true,
         kind: nana_ui_runtime::MenuSurfaceKind::ContextMenu,
@@ -1069,8 +1137,8 @@ fn menu_surface_paints_row_icon_and_iconless_labels() {
             },
         ]),
         highlighted: None,
-    });
-    menu.component_geometry = Some(Box::new(ComponentGeometry::MenuSurface {
+    };
+    let geometry = nana_ui_runtime::MenuSurfaceGeometry {
         trigger_image: None,
         trigger_surface: None,
         trigger: None,
@@ -1162,7 +1230,15 @@ fn menu_surface_paints_row_icon_and_iconless_labels() {
         },
         background: [0.1, 0.1, 0.1, 1.0],
         border: [0.2, 0.2, 0.2, 1.0],
-    }));
+    };
+    menu.widget_paint = Some(Arc::new(visual.paint_with_geometry(
+        &geometry,
+        menu.source_style.layout.as_ref(),
+        &menu.style,
+        nana_ui_core::StyleModelRef::new(nana_ui_core::ThemeAppearance::Dark),
+        &nana_ui_core::CompiledTheme::default(),
+        menu.chrome_radii,
+    )));
     let mut scene = UiScene::new();
     scene.apply_delta([menu], []);
     assert_eq!(
@@ -1241,7 +1317,11 @@ fn rotate_pivot_follows_transform_origin() {
     centered.custom_render = Some(CustomRenderNode::new("test", "resource", 0));
     centered.source_style = NodeStyle {
         layout: Arc::new(nana_ui_core::LayoutStyle {
-            transform: Some(rotate_90),
+            transforms: nana_ui_core::TransformStyle {
+                transform: Some(rotate_90),
+                ..Default::default()
+            }
+            .into(),
             ..Default::default()
         }),
         ..Default::default()
@@ -1251,11 +1331,15 @@ fn rotate_pivot_follows_transform_origin() {
     corner.custom_render = Some(CustomRenderNode::new("test", "resource", 1));
     corner.source_style = NodeStyle {
         layout: Arc::new(nana_ui_core::LayoutStyle {
-            transform: Some(rotate_90),
-            transform_origin: Some(nana_ui_core::TransformOrigin {
-                x: nana_ui_core::LengthSpec::Px(0.0),
-                y: nana_ui_core::LengthSpec::Px(0.0),
-            }),
+            transforms: nana_ui_core::TransformStyle {
+                transform: Some(rotate_90),
+                origin: Some(nana_ui_core::TransformOrigin {
+                    x: nana_ui_core::LengthSpec::Px(0.0),
+                    y: nana_ui_core::LengthSpec::Px(0.0),
+                }),
+                ..Default::default()
+            }
+            .into(),
             ..Default::default()
         }),
         ..Default::default()
@@ -1294,7 +1378,11 @@ fn perspective_rotate_y_stores_projective_on_the_primitive() {
     card.custom_render = Some(CustomRenderNode::new("test", "resource", 0));
     card.source_style = NodeStyle {
         layout: Arc::new(nana_ui_core::LayoutStyle {
-            transform_3d: Some(mat),
+            transforms: nana_ui_core::TransformStyle {
+                transform_3d: Some(mat),
+                ..Default::default()
+            }
+            .into(),
             ..Default::default()
         }),
         ..Default::default()
@@ -1326,7 +1414,11 @@ fn parent_preserve_3d_fail_closes_child_3d() {
     let mut parent = node(1, None, &[2]);
     parent.source_style = NodeStyle {
         layout: Arc::new(nana_ui_core::LayoutStyle {
-            preserve_3d: true,
+            transforms: nana_ui_core::TransformStyle {
+                preserve_3d: true,
+                ..Default::default()
+            }
+            .into(),
             ..Default::default()
         }),
         ..Default::default()
@@ -1341,7 +1433,11 @@ fn parent_preserve_3d_fail_closes_child_3d() {
     child.custom_render = Some(CustomRenderNode::new("test", "resource", 0));
     child.source_style = NodeStyle {
         layout: Arc::new(nana_ui_core::LayoutStyle {
-            transform_3d: Some(mat),
+            transforms: nana_ui_core::TransformStyle {
+                transform_3d: Some(mat),
+                ..Default::default()
+            }
+            .into(),
             ..Default::default()
         }),
         ..Default::default()
@@ -1361,7 +1457,11 @@ fn parent_perspective_fail_closes_child_3d() {
     let mut parent = node(1, None, &[2]);
     parent.source_style = NodeStyle {
         layout: Arc::new(nana_ui_core::LayoutStyle {
-            css_perspective: Some(800.0),
+            transforms: nana_ui_core::TransformStyle {
+                css_perspective: Some(800.0),
+                ..Default::default()
+            }
+            .into(),
             ..Default::default()
         }),
         ..Default::default()
@@ -1376,7 +1476,11 @@ fn parent_perspective_fail_closes_child_3d() {
     child.custom_render = Some(CustomRenderNode::new("test", "resource", 0));
     child.source_style = NodeStyle {
         layout: Arc::new(nana_ui_core::LayoutStyle {
-            transform_3d: Some(mat),
+            transforms: nana_ui_core::TransformStyle {
+                transform_3d: Some(mat),
+                ..Default::default()
+            }
+            .into(),
             ..Default::default()
         }),
         ..Default::default()
@@ -1482,10 +1586,14 @@ fn ancestor_clip_transform_and_opacity_are_composed() {
         layout: Arc::new(nana_ui_core::LayoutStyle {
             overflow_x: nana_ui_core::OverflowSpec::Hidden,
             opacity: Some(0.5),
-            transform: Some(nana_ui_core::PaintTransform {
-                e: 4.0,
+            transforms: nana_ui_core::TransformStyle {
+                transform: Some(nana_ui_core::PaintTransform {
+                    e: 4.0,
+                    ..Default::default()
+                }),
                 ..Default::default()
-            }),
+            }
+            .into(),
             ..Default::default()
         }),
         ..Default::default()
@@ -1810,10 +1918,14 @@ fn moving_one_subtree_leaves_the_culling_index_right_for_both() {
             layout: Arc::new(nana_ui_core::LayoutStyle {
                 background: Some([0.0, 0.0, 1.0, 1.0]),
                 overflow_y: nana_ui_core::OverflowSpec::Scroll,
-                transform: transform.map(|dx| nana_ui_core::PaintTransform {
-                    e: dx,
-                    ..nana_ui_core::PaintTransform::default()
-                }),
+                transforms: nana_ui_core::TransformStyle {
+                    transform: transform.map(|dx| nana_ui_core::PaintTransform {
+                        e: dx,
+                        ..nana_ui_core::PaintTransform::default()
+                    }),
+                    ..Default::default()
+                }
+                .into(),
                 ..Default::default()
             }),
             ..Default::default()
@@ -1925,7 +2037,11 @@ fn a_subtree_that_was_not_re_extracted_draws_where_rebuilding_it_would() {
                 background: Some([0.0, 0.0, 1.0, 1.0]),
                 overflow_x: nana_ui_core::OverflowSpec::Hidden,
                 overflow_y: nana_ui_core::OverflowSpec::Hidden,
-                transform: Some(turned(angle)),
+                transforms: nana_ui_core::TransformStyle {
+                    transform: Some(turned(angle)),
+                    ..Default::default()
+                }
+                .into(),
                 ..Default::default()
             }),
             ..Default::default()
@@ -1945,7 +2061,11 @@ fn a_subtree_that_was_not_re_extracted_draws_where_rebuilding_it_would() {
         inner.source_style = NodeStyle {
             layout: Arc::new(nana_ui_core::LayoutStyle {
                 background: Some([1.0, 1.0, 0.0, 1.0]),
-                transform: Some(turned(0.2)),
+                transforms: nana_ui_core::TransformStyle {
+                    transform: Some(turned(0.2)),
+                    ..Default::default()
+                }
+                .into(),
                 ..Default::default()
             }),
             ..Default::default()
@@ -2471,7 +2591,8 @@ fn document_selection_fill_paints_under_glyphs() {
     );
 }
 
-fn editor_input_with_markers_and_line_labels() -> ExtractedNode {
+fn editor_input_with_markers_and_line_labels() -> (ExtractedNode, nana_ui_runtime::TextInputGeometry)
+{
     let mut input = node(1, None, &[]);
     input.source_style = NodeStyle {
         layout: Arc::new(nana_ui_core::LayoutStyle {
@@ -2480,24 +2601,7 @@ fn editor_input_with_markers_and_line_labels() -> ExtractedNode {
         }),
         ..NodeStyle::default()
     };
-    input.standard_visual = Some(StandardVisual::TextInput {
-        placeholder: Arc::from(""),
-        size: nana_ui_core::ControlSize::Medium,
-        secure: false,
-        invalid: false,
-        steppers: false,
-        character_counter: None,
-        diagnostics: Arc::from([]),
-        matches: Arc::from([]),
-        color_swatches: Arc::from([]),
-        atoms: Arc::from([]),
-        line_numbers: true,
-        indent_guides: None,
-        folds: Arc::from([]),
-        git_marks: Arc::from([]),
-        editor_options: nana_ui_runtime::TextEditorRenderOptions::default(),
-    });
-    input.component_geometry = Some(Box::new(ComponentGeometry::TextInput {
+    let geometry = nana_ui_runtime::TextInputGeometry {
         resize_grip: None,
         character_counter: None,
         suffix: None,
@@ -2582,24 +2686,19 @@ fn editor_input_with_markers_and_line_labels() -> ExtractedNode {
         steppers: None,
         minimap: None,
         sticky_line: None,
-    }));
+    };
+    set_text_input_paint(&mut input, &geometry);
 
-    input
+    (input, geometry)
 }
 
 #[test]
 fn long_editor_line_numbers_and_diagnostics_survive_updates_without_collisions() {
-    let mut input = editor_input_with_markers_and_line_labels();
-    let Some(ComponentGeometry::TextInput {
-        line_labels,
-        diagnostic_markers,
-        diagnostic_labels,
-        sticky_line,
-        ..
-    }) = input.component_geometry.as_deref_mut()
-    else {
-        unreachable!()
-    };
+    let (mut input, mut geometry) = editor_input_with_markers_and_line_labels();
+    let line_labels = &mut geometry.line_labels;
+    let diagnostic_markers = &mut geometry.diagnostic_markers;
+    let diagnostic_labels = &mut geometry.diagnostic_labels;
+    let sticky_line = &mut geometry.sticky_line;
     *line_labels = (0..320)
         .map(|index| nana_ui_runtime::LineLabel {
             y: index as f32 * 16.0,
@@ -2662,6 +2761,7 @@ fn long_editor_line_numbers_and_diagnostics_survive_updates_without_collisions()
         background: [1.0; 4],
         divider_color: [0.2, 0.2, 0.2, 1.0],
     });
+    set_text_input_paint(&mut input, &geometry);
     let mut scene = UiScene::new();
     scene.apply_delta([input.clone()], []);
     let text_count = |scene: &UiScene, diagnostic: bool| {
@@ -2708,18 +2808,10 @@ fn long_editor_line_numbers_and_diagnostics_survive_updates_without_collisions()
             .count(),
         320
     );
-    let Some(ComponentGeometry::TextInput {
-        line_labels,
-        diagnostic_markers,
-        diagnostic_labels,
-        ..
-    }) = input.component_geometry.as_deref_mut()
-    else {
-        unreachable!()
-    };
-    line_labels.truncate(3);
-    diagnostic_markers.truncate(2);
-    diagnostic_labels.truncate(2);
+    geometry.line_labels.truncate(3);
+    geometry.diagnostic_markers.truncate(2);
+    geometry.diagnostic_labels.truncate(2);
+    set_text_input_paint(&mut input, &geometry);
     scene.apply_delta([input], []);
     assert_eq!(
         text_count(&scene, false),
@@ -2741,7 +2833,7 @@ fn long_editor_line_numbers_and_diagnostics_survive_updates_without_collisions()
 
 #[test]
 fn text_input_editor_markers_and_line_labels_paint() {
-    let input = editor_input_with_markers_and_line_labels();
+    let (input, _) = editor_input_with_markers_and_line_labels();
     let mut scene = UiScene::new();
     scene.apply_delta([input], []);
     // 每个标记一条 quad（颜色不同）。
@@ -2786,24 +2878,7 @@ fn text_input_editor_markers_and_line_labels_paint() {
 #[test]
 fn text_input_match_markers_paint_as_batches_and_current_match_emphasizes() {
     let mut input = node(1, None, &[]);
-    input.standard_visual = Some(StandardVisual::TextInput {
-        placeholder: Arc::from(""),
-        size: nana_ui_core::ControlSize::Medium,
-        secure: false,
-        invalid: false,
-        steppers: false,
-        character_counter: None,
-        diagnostics: Arc::from([]),
-        matches: Arc::from([]),
-        color_swatches: Arc::from([]),
-        atoms: Arc::from([]),
-        line_numbers: false,
-        indent_guides: None,
-        folds: Arc::from([]),
-        git_marks: Arc::from([]),
-        editor_options: nana_ui_runtime::TextEditorRenderOptions::default(),
-    });
-    input.component_geometry = Some(Box::new(ComponentGeometry::TextInput {
+    let geometry = nana_ui_runtime::TextInputGeometry {
         resize_grip: None,
         character_counter: None,
         suffix: None,
@@ -2887,7 +2962,8 @@ fn text_input_match_markers_paint_as_batches_and_current_match_emphasizes() {
         steppers: None,
         minimap: None,
         sticky_line: None,
-    }));
+    };
+    set_text_input_paint(&mut input, &geometry);
 
     let mut scene = UiScene::new();
     scene.apply_delta([input], []);
@@ -2940,24 +3016,7 @@ fn text_input_match_markers_paint_as_batches_and_current_match_emphasizes() {
 #[test]
 fn text_input_color_swatches_paint_as_one_per_item_color_batch_and_clear_with_feed() {
     let mut input = node(1, None, &[]);
-    input.standard_visual = Some(StandardVisual::TextInput {
-        placeholder: Arc::from(""),
-        size: nana_ui_core::ControlSize::Medium,
-        secure: false,
-        invalid: false,
-        steppers: false,
-        character_counter: None,
-        diagnostics: Arc::from([]),
-        matches: Arc::from([]),
-        color_swatches: Arc::from([]),
-        atoms: Arc::from([]),
-        line_numbers: false,
-        indent_guides: None,
-        folds: Arc::from([]),
-        git_marks: Arc::from([]),
-        editor_options: nana_ui_runtime::TextEditorRenderOptions::default(),
-    });
-    input.component_geometry = Some(Box::new(ComponentGeometry::TextInput {
+    let mut geometry = nana_ui_runtime::TextInputGeometry {
         resize_grip: None,
         character_counter: None,
         suffix: None,
@@ -3031,7 +3090,8 @@ fn text_input_color_swatches_paint_as_one_per_item_color_batch_and_clear_with_fe
         steppers: None,
         minimap: None,
         sticky_line: None,
-    }));
+    };
+    set_text_input_paint(&mut input, &geometry);
 
     let mut scene = UiScene::new();
     scene.apply_delta([input.clone()], []);
@@ -3059,11 +3119,8 @@ fn text_input_color_swatches_paint_as_one_per_item_color_batch_and_clear_with_fe
     assert_eq!(*border_width, 1.0);
 
     // 清空宿主 feed 后 swatch 图元消失。
-    if let Some(ComponentGeometry::TextInput { swatch_markers, .. }) =
-        input.component_geometry.as_deref_mut()
-    {
-        swatch_markers.clear();
-    }
+    geometry.swatch_markers.clear();
+    set_text_input_paint(&mut input, &geometry);
     scene.apply_delta([input], []);
     assert!(!scene.primitives().any(|primitive| primitive.id.slot == 23));
 }
@@ -3071,24 +3128,7 @@ fn text_input_color_swatches_paint_as_one_per_item_color_batch_and_clear_with_fe
 #[test]
 fn text_input_minimap_paints_panel_bars_and_indicator_batches() {
     let mut input = node(1, None, &[]);
-    input.standard_visual = Some(StandardVisual::TextInput {
-        placeholder: Arc::from(""),
-        size: nana_ui_core::ControlSize::Medium,
-        secure: false,
-        invalid: false,
-        steppers: false,
-        character_counter: None,
-        diagnostics: Arc::from([]),
-        matches: Arc::from([]),
-        color_swatches: Arc::from([]),
-        atoms: Arc::from([]),
-        line_numbers: false,
-        indent_guides: None,
-        folds: Arc::from([]),
-        git_marks: Arc::from([]),
-        editor_options: nana_ui_runtime::TextEditorRenderOptions::default(),
-    });
-    input.component_geometry = Some(Box::new(ComponentGeometry::TextInput {
+    let geometry = nana_ui_runtime::TextInputGeometry {
         resize_grip: None,
         character_counter: None,
         suffix: None,
@@ -3181,7 +3221,8 @@ fn text_input_minimap_paints_panel_bars_and_indicator_batches() {
         caret_color: [0.0; 4],
         preedit_color: [0.0; 4],
         steppers: None,
-    }));
+    };
+    set_text_input_paint(&mut input, &geometry);
     let mut scene = UiScene::new();
     scene.apply_delta([input], []);
 
@@ -3257,24 +3298,7 @@ fn occurrence_whitespace_and_wrap_guides_paint_in_dedicated_slots() {
     let occurrence_color = [0.48, 0.73, 0.94, 0.14];
     let faint = [0.35, 0.35, 0.35, 1.0];
     let mut input = node(1, None, &[]);
-    input.standard_visual = Some(StandardVisual::TextInput {
-        placeholder: Arc::from(""),
-        size: nana_ui_core::ControlSize::Medium,
-        secure: false,
-        invalid: false,
-        steppers: false,
-        character_counter: None,
-        diagnostics: Arc::from([]),
-        matches: Arc::from([]),
-        color_swatches: Arc::from([]),
-        atoms: Arc::from([]),
-        line_numbers: false,
-        indent_guides: None,
-        folds: Arc::from([]),
-        git_marks: Arc::from([]),
-        editor_options: nana_ui_runtime::TextEditorRenderOptions::default(),
-    });
-    input.component_geometry = Some(Box::new(ComponentGeometry::TextInput {
+    let geometry = nana_ui_runtime::TextInputGeometry {
         resize_grip: None,
         character_counter: None,
         suffix: None,
@@ -3399,7 +3423,8 @@ fn occurrence_whitespace_and_wrap_guides_paint_in_dedicated_slots() {
         steppers: None,
         minimap: None,
         sticky_line: None,
-    }));
+    };
+    set_text_input_paint(&mut input, &geometry);
 
     let mut scene = UiScene::new();
     scene.apply_delta([input], []);
@@ -3453,24 +3478,7 @@ fn occurrence_whitespace_and_wrap_guides_paint_in_dedicated_slots() {
 #[test]
 fn text_input_without_editor_extras_paints_no_occurrence_whitespace_or_wrap_slots() {
     let mut input = node(1, None, &[]);
-    input.standard_visual = Some(StandardVisual::TextInput {
-        placeholder: Arc::from(""),
-        size: nana_ui_core::ControlSize::Medium,
-        secure: false,
-        invalid: false,
-        steppers: false,
-        character_counter: None,
-        diagnostics: Arc::from([]),
-        matches: Arc::from([]),
-        color_swatches: Arc::from([]),
-        atoms: Arc::from([]),
-        line_numbers: false,
-        indent_guides: None,
-        folds: Arc::from([]),
-        git_marks: Arc::from([]),
-        editor_options: nana_ui_runtime::TextEditorRenderOptions::default(),
-    });
-    input.component_geometry = Some(Box::new(ComponentGeometry::TextInput {
+    let geometry = nana_ui_runtime::TextInputGeometry {
         resize_grip: None,
         character_counter: None,
         suffix: None,
@@ -3525,7 +3533,8 @@ fn text_input_without_editor_extras_paints_no_occurrence_whitespace_or_wrap_slot
         steppers: None,
         minimap: None,
         sticky_line: None,
-    }));
+    };
+    set_text_input_paint(&mut input, &geometry);
 
     let mut scene = UiScene::new();
     scene.apply_delta([input], []);
@@ -3538,7 +3547,10 @@ fn text_input_without_editor_extras_paints_no_occurrence_whitespace_or_wrap_slot
 }
 
 /// git gutter 批次测试的输入节点：多行 TextInput + 指定 git 几何。
-fn git_gutter_input(node_id: u64, git: nana_ui_runtime::TextGitGutterGeometry) -> ExtractedNode {
+fn git_gutter_input(
+    node_id: u64,
+    git: nana_ui_runtime::TextGitGutterGeometry,
+) -> (ExtractedNode, nana_ui_runtime::TextInputGeometry) {
     let mut input = node(node_id, None, &[]);
     // 宿主预留的 gutter 宽度（行号标签按它门控）。
     input.source_style = NodeStyle {
@@ -3548,24 +3560,7 @@ fn git_gutter_input(node_id: u64, git: nana_ui_runtime::TextGitGutterGeometry) -
         }),
         ..NodeStyle::default()
     };
-    input.standard_visual = Some(StandardVisual::TextInput {
-        placeholder: Arc::from(""),
-        size: nana_ui_core::ControlSize::Medium,
-        secure: false,
-        invalid: false,
-        steppers: false,
-        character_counter: None,
-        diagnostics: Arc::from([]),
-        matches: Arc::from([]),
-        color_swatches: Arc::from([]),
-        atoms: Arc::from([]),
-        line_numbers: true,
-        indent_guides: None,
-        folds: Arc::from([]),
-        git_marks: Arc::from([]),
-        editor_options: nana_ui_runtime::TextEditorRenderOptions::default(),
-    });
-    input.component_geometry = Some(Box::new(ComponentGeometry::TextInput {
+    let geometry = nana_ui_runtime::TextInputGeometry {
         resize_grip: None,
         character_counter: None,
         suffix: None,
@@ -3644,8 +3639,9 @@ fn git_gutter_input(node_id: u64, git: nana_ui_runtime::TextGitGutterGeometry) -
         steppers: None,
         minimap: None,
         sticky_line: None,
-    }));
-    input
+    };
+    set_text_input_paint(&mut input, &geometry);
+    (input, geometry)
 }
 
 #[test]
@@ -3682,7 +3678,7 @@ fn text_input_git_gutter_renders_kind_batches_and_coexists_with_gutter_slots() {
         deleted_color: [0.9, 0.3, 0.3, 1.0],
     };
     let mut scene = UiScene::new();
-    scene.apply_delta([git_gutter_input(1, git)], []);
+    scene.apply_delta([git_gutter_input(1, git).0], []);
 
     // 三类各一个 quad 批次（slot 18 新增 / 19 修改 / 8 删除），批次内
     // 同色合批、bounds 逐一对应。
@@ -3777,7 +3773,7 @@ fn text_input_git_gutter_renders_kind_batches_and_coexists_with_gutter_slots() {
         ..nana_ui_runtime::TextGitGutterGeometry::default()
     };
     let mut scene = UiScene::new();
-    scene.apply_delta([git_gutter_input(1, only_modified)], []);
+    scene.apply_delta([git_gutter_input(1, only_modified).0], []);
     for slot in [8, 18] {
         assert!(
             scene.primitive(PrimitiveId { node: id(1), slot }).is_none(),
@@ -3797,39 +3793,37 @@ fn text_input_git_gutter_renders_kind_batches_and_coexists_with_gutter_slots() {
 #[test]
 fn text_input_sticky_line_paints_panel_divider_and_head_text() {
     let mut scene = UiScene::new();
-    let mut input = git_gutter_input(1, nana_ui_runtime::TextGitGutterGeometry::default());
-    if let Some(ComponentGeometry::TextInput { sticky_line, .. }) =
-        input.component_geometry.as_deref_mut()
-    {
-        *sticky_line = Some(nana_ui_runtime::TextStickyLineGeometry {
-            panel: LayoutBox {
+    let (mut input, mut geometry) =
+        git_gutter_input(1, nana_ui_runtime::TextGitGutterGeometry::default());
+    geometry.sticky_line = Some(nana_ui_runtime::TextStickyLineGeometry {
+        panel: LayoutBox {
+            x: 0.0,
+            y: 0.0,
+            width: 200.0,
+            height: 14.0,
+        },
+        divider: LayoutBox {
+            x: 0.0,
+            y: 13.0,
+            width: 200.0,
+            height: 1.0,
+        },
+        text: nana_ui_runtime::ComponentTextRegion {
+            bounds: LayoutBox {
                 x: 0.0,
                 y: 0.0,
                 width: 200.0,
                 height: 14.0,
             },
-            divider: LayoutBox {
-                x: 0.0,
-                y: 13.0,
-                width: 200.0,
-                height: 1.0,
-            },
-            text: nana_ui_runtime::ComponentTextRegion {
-                bounds: LayoutBox {
-                    x: 0.0,
-                    y: 0.0,
-                    width: 200.0,
-                    height: 14.0,
-                },
-                content: nana_ui_runtime::TextValue::from("fn outer() {"),
-                color: Some([1.0; 4]),
-                font_size: 13.0,
-                font_weight: None,
-            },
-            background: [1.0, 1.0, 1.0, 1.0],
-            divider_color: [0.2, 0.2, 0.2, 1.0],
-        });
-    }
+            content: nana_ui_runtime::TextValue::from("fn outer() {"),
+            color: Some([1.0; 4]),
+            font_size: 13.0,
+            font_weight: None,
+        },
+        background: [1.0, 1.0, 1.0, 1.0],
+        divider_color: [0.2, 0.2, 0.2, 1.0],
+    });
+    set_text_input_paint(&mut input, &geometry);
     scene.apply_delta([input], []);
 
     // 背景条与底缘分割线各一个 quad，头行文本复用正文字形管线；
@@ -3865,10 +3859,7 @@ fn text_input_sticky_line_paints_panel_divider_and_head_text() {
 
     let mut scene = UiScene::new();
     scene.apply_delta(
-        [git_gutter_input(
-            1,
-            nana_ui_runtime::TextGitGutterGeometry::default(),
-        )],
+        [git_gutter_input(1, nana_ui_runtime::TextGitGutterGeometry::default()).0],
         [],
     );
     for slot in [80, 81, 82] {
@@ -3897,24 +3888,7 @@ fn fold_gutter_marks_paint_as_two_batches_and_survive_beyond_the_slot_cap() {
         });
     }
     let mut input = node(1, None, &[]);
-    input.standard_visual = Some(StandardVisual::TextInput {
-        placeholder: Arc::from(""),
-        size: nana_ui_core::ControlSize::Medium,
-        secure: false,
-        invalid: false,
-        steppers: false,
-        character_counter: None,
-        diagnostics: Arc::from([]),
-        matches: Arc::from([]),
-        color_swatches: Arc::from([]),
-        atoms: Arc::from([]),
-        line_numbers: false,
-        indent_guides: None,
-        folds: Arc::from([]),
-        git_marks: Arc::from([]),
-        editor_options: nana_ui_runtime::TextEditorRenderOptions::default(),
-    });
-    input.component_geometry = Some(Box::new(ComponentGeometry::TextInput {
+    let geometry = nana_ui_runtime::TextInputGeometry {
         resize_grip: None,
         character_counter: None,
         suffix: None,
@@ -3972,7 +3946,8 @@ fn fold_gutter_marks_paint_as_two_batches_and_survive_beyond_the_slot_cap() {
         steppers: None,
         minimap: None,
         sticky_line: None,
-    }));
+    };
+    set_text_input_paint(&mut input, &geometry);
 
     let mut scene = UiScene::new();
     scene.apply_delta([input], []);
@@ -4055,24 +4030,7 @@ fn tab_arrows_paint_as_one_batch_and_survive_beyond_the_slot_cap() {
         ));
     }
     let mut input = node(1, None, &[]);
-    input.standard_visual = Some(StandardVisual::TextInput {
-        placeholder: Arc::from(""),
-        size: nana_ui_core::ControlSize::Medium,
-        secure: false,
-        invalid: false,
-        steppers: false,
-        character_counter: None,
-        diagnostics: Arc::from([]),
-        matches: Arc::from([]),
-        color_swatches: Arc::from([]),
-        atoms: Arc::from([]),
-        line_numbers: false,
-        indent_guides: None,
-        folds: Arc::from([]),
-        git_marks: Arc::from([]),
-        editor_options: nana_ui_runtime::TextEditorRenderOptions::default(),
-    });
-    input.component_geometry = Some(Box::new(ComponentGeometry::TextInput {
+    let geometry = nana_ui_runtime::TextInputGeometry {
         resize_grip: None,
         character_counter: None,
         suffix: None,
@@ -4127,7 +4085,8 @@ fn tab_arrows_paint_as_one_batch_and_survive_beyond_the_slot_cap() {
         steppers: None,
         minimap: None,
         sticky_line: None,
-    }));
+    };
+    set_text_input_paint(&mut input, &geometry);
 
     let mut scene = UiScene::new();
     scene.apply_delta([input], []);
@@ -4177,24 +4136,7 @@ fn tab_arrows_paint_as_one_batch_and_survive_beyond_the_slot_cap() {
 #[test]
 fn text_input_paints_additional_cursors_as_a_batch_beside_the_primary_caret() {
     let mut input = node(1, None, &[]);
-    input.standard_visual = Some(StandardVisual::TextInput {
-        placeholder: Arc::from(""),
-        size: nana_ui_core::ControlSize::Medium,
-        secure: false,
-        invalid: false,
-        steppers: false,
-        character_counter: None,
-        diagnostics: Arc::from([]),
-        matches: Arc::from([]),
-        color_swatches: Arc::from([]),
-        atoms: Arc::from([]),
-        line_numbers: false,
-        indent_guides: None,
-        folds: Arc::from([]),
-        git_marks: Arc::from([]),
-        editor_options: nana_ui_runtime::TextEditorRenderOptions::default(),
-    });
-    input.component_geometry = Some(Box::new(ComponentGeometry::TextInput {
+    let geometry = nana_ui_runtime::TextInputGeometry {
         resize_grip: None,
         character_counter: None,
         suffix: None,
@@ -4267,7 +4209,8 @@ fn text_input_paints_additional_cursors_as_a_batch_beside_the_primary_caret() {
         completion_popup: None,
         hover_popup: None,
         signature_popup: None,
-    }));
+    };
+    set_text_input_paint(&mut input, &geometry);
 
     let mut scene = UiScene::new();
     scene.apply_delta([input], []);
@@ -4304,24 +4247,7 @@ fn text_input_paints_additional_cursors_as_a_batch_beside_the_primary_caret() {
 #[test]
 fn text_input_editor_chrome_paints_caret_line_brackets_and_indent_guides() {
     let mut input = node(1, None, &[]);
-    input.standard_visual = Some(StandardVisual::TextInput {
-        placeholder: Arc::from(""),
-        size: nana_ui_core::ControlSize::Medium,
-        secure: false,
-        invalid: false,
-        steppers: false,
-        character_counter: None,
-        diagnostics: Arc::from([]),
-        matches: Arc::from([]),
-        color_swatches: Arc::from([]),
-        atoms: Arc::from([]),
-        line_numbers: false,
-        indent_guides: Some(Arc::from("\t")),
-        folds: Arc::from([]),
-        git_marks: Arc::from([]),
-        editor_options: nana_ui_runtime::TextEditorRenderOptions::default(),
-    });
-    input.component_geometry = Some(Box::new(ComponentGeometry::TextInput {
+    let geometry = nana_ui_runtime::TextInputGeometry {
         resize_grip: None,
         character_counter: None,
         suffix: None,
@@ -4425,7 +4351,8 @@ fn text_input_editor_chrome_paints_caret_line_brackets_and_indent_guides() {
         steppers: None,
         minimap: None,
         sticky_line: None,
-    }));
+    };
+    set_text_input_paint(&mut input, &geometry);
 
     let mut scene = UiScene::new();
     scene.apply_delta([input], []);
@@ -4489,33 +4416,20 @@ fn text_input_geometry_paints_selection_text_caret_preedit_and_focus_in_order() 
             border_radius: Some(6.0),
             overflow_x: nana_ui_core::OverflowSpec::Hidden,
             opacity: Some(0.5),
-            transform: Some(nana_ui_core::PaintTransform {
-                e: 4.0,
-                f: 6.0,
+            transforms: nana_ui_core::TransformStyle {
+                transform: Some(nana_ui_core::PaintTransform {
+                    e: 4.0,
+                    f: 6.0,
+                    ..Default::default()
+                }),
                 ..Default::default()
-            }),
+            }
+            .into(),
             ..Default::default()
         }),
         ..Default::default()
     };
-    input.standard_visual = Some(StandardVisual::TextInput {
-        placeholder: Arc::from(""),
-        size: nana_ui_core::ControlSize::Medium,
-        secure: false,
-        invalid: false,
-        steppers: false,
-        character_counter: None,
-        diagnostics: Arc::from([]),
-        matches: Arc::from([]),
-        color_swatches: Arc::from([]),
-        atoms: Arc::from([]),
-        line_numbers: false,
-        indent_guides: None,
-        folds: Arc::from([]),
-        git_marks: Arc::from([]),
-        editor_options: nana_ui_runtime::TextEditorRenderOptions::default(),
-    });
-    input.component_geometry = Some(Box::new(ComponentGeometry::TextInput {
+    let geometry = nana_ui_runtime::TextInputGeometry {
         resize_grip: None,
         character_counter: None,
         suffix: None,
@@ -4595,7 +4509,8 @@ fn text_input_geometry_paints_selection_text_caret_preedit_and_focus_in_order() 
         completion_popup: None,
         hover_popup: None,
         signature_popup: None,
-    }));
+    };
+    set_text_input_paint(&mut input, &geometry);
 
     let mut scene = UiScene::new();
     scene.apply_delta([input], []);
@@ -4626,24 +4541,7 @@ fn text_input_geometry_paints_selection_text_caret_preedit_and_focus_in_order() 
     }
 
     let mut single_line = node(2, None, &[]);
-    single_line.standard_visual = Some(StandardVisual::TextInput {
-        placeholder: Arc::from(""),
-        size: nana_ui_core::ControlSize::Medium,
-        secure: false,
-        invalid: false,
-        steppers: false,
-        character_counter: None,
-        diagnostics: Arc::from([]),
-        matches: Arc::from([]),
-        color_swatches: Arc::from([]),
-        atoms: Arc::from([]),
-        line_numbers: false,
-        indent_guides: None,
-        folds: Arc::from([]),
-        git_marks: Arc::from([]),
-        editor_options: nana_ui_runtime::TextEditorRenderOptions::default(),
-    });
-    single_line.component_geometry = input_component_geometry(false);
+    set_text_input_paint(&mut single_line, &input_text_geometry(false));
     scene.apply_delta([single_line], []);
     assert!(matches!(
         scene
@@ -4661,8 +4559,8 @@ fn text_input_geometry_paints_selection_text_caret_preedit_and_focus_in_order() 
     ));
 }
 
-fn input_component_geometry(multiline: bool) -> Option<Box<ComponentGeometry>> {
-    Some(Box::new(ComponentGeometry::TextInput {
+fn input_text_geometry(multiline: bool) -> nana_ui_runtime::TextInputGeometry {
+    nana_ui_runtime::TextInputGeometry {
         resize_grip: None,
         character_counter: None,
         suffix: None,
@@ -4717,130 +4615,194 @@ fn input_component_geometry(multiline: bool) -> Option<Box<ComponentGeometry>> {
         completion_popup: None,
         hover_popup: None,
         signature_popup: None,
-    }))
+    }
 }
 
 #[test]
 fn feedback_geometry_emits_semantic_quad_text_and_icon_primitives() {
-    let region = |content: &'static str, y, size, weight| ComponentTextRegion {
-        bounds: LayoutBox {
-            x: 20.0,
-            y,
-            width: 120.0,
-            height: 18.0,
-        },
-        content: nana_ui_runtime::TextValue::from(content),
-        color: Some([0.8, 0.9, 1.0, 1.0]),
-        font_size: size,
-        font_weight: weight,
+    let widget_text = |content: &str, y: f32, size: f32, weight: Option<u16>| {
+        nana_ui_runtime::WidgetPaintOp::Text(nana_ui_runtime::WidgetText {
+            bounds: LayoutBox {
+                x: 16.0,
+                y,
+                width: 80.0,
+                height: 16.0,
+            },
+            content: content.into(),
+            color: None,
+            paint_color: None,
+            font_size: size,
+            font_weight: weight,
+            horizontal_alignment: TextHorizontalAlignment::Start,
+            vertical_alignment: TextVerticalAlignment::Top,
+            ellipsis: false,
+            wrap: false,
+            max_lines: None,
+            italic: None,
+            underline: None,
+            line_through: None,
+            suppress_spans: true,
+            preserve_lines: None,
+            unstyled_glyph: false,
+            line_height: None,
+            retained_text: nana_ui_runtime::WidgetRetainedText::None,
+            tabular_nums: false,
+            ..Default::default()
+        })
     };
     let mut badge = node(1, None, &[]);
     badge.source_style.layout = Arc::new(nana_ui_core::LayoutStyle {
         background: Some([0.1, 0.2, 0.3, 1.0]),
         ..Default::default()
     });
-    badge.standard_visual = Some(StandardVisual::StatusBadge {
-        label: Arc::from("Online"),
-        tone: nana_ui_core::StatusTone::Success,
-        compact: true,
-    });
-    badge.component_geometry = Some(Box::new(ComponentGeometry::StatusBadge {
-        indicator: LayoutBox {
-            x: 8.0,
-            y: 8.0,
-            width: 3.0,
-            height: 3.0,
-        },
-        label: region("Online", 0.0, 11.0, Some(500)),
-        background: [0.1, 0.8, 0.4, 0.12],
-        foreground: [0.1, 0.8, 0.4, 1.0],
-    }));
+    let mut badge_paint = nana_ui_runtime::WidgetPaintOutput {
+        owns_node_text: true,
+        root_surface: Some(nana_ui_runtime::WidgetRootSurface {
+            background: Some(Some([0.1, 0.8, 0.4, 0.12])),
+            ..Default::default()
+        }),
+        ..nana_ui_runtime::WidgetPaintOutput::new()
+    };
+    badge_paint.push(2, widget_text("Online", 0.0, 11.0, Some(500)));
+    badge_paint.push(
+        3,
+        nana_ui_runtime::WidgetPaintOp::Quad(nana_ui_runtime::WidgetQuad {
+            rect: LayoutBox {
+                x: 8.0,
+                y: 8.0,
+                width: 3.0,
+                height: 3.0,
+            },
+            fill: Some([0.1, 0.8, 0.4, 1.0]),
+            corner_radius: [1.5; 4],
+            ..Default::default()
+        }),
+    );
+    badge.widget_paint = Some(Arc::new(badge_paint));
 
     let mut validation = node(2, None, &[]);
-    validation.standard_visual = Some(StandardVisual::ValidationMessage {
-        message: Arc::from("Required"),
-        intent: nana_ui_core::ValidationIntent::Danger,
-        compact: true,
-    });
-    validation.component_geometry = Some(Box::new(ComponentGeometry::ValidationMessage {
-        indicator: LayoutBox {
-            x: 4.0,
-            y: 7.0,
-            width: 5.0,
-            height: 5.0,
-        },
-        label: region("Required", 0.0, 11.0, None),
-        foreground: [0.9, 0.2, 0.2, 1.0],
-    }));
+    let mut validation_paint = nana_ui_runtime::WidgetPaintOutput {
+        owns_node_text: true,
+        ..nana_ui_runtime::WidgetPaintOutput::new()
+    };
+    validation_paint.push(2, widget_text("Required", 0.0, 11.0, None));
+    validation_paint.push(
+        3,
+        nana_ui_runtime::WidgetPaintOp::Quad(nana_ui_runtime::WidgetQuad {
+            rect: LayoutBox {
+                x: 4.0,
+                y: 7.0,
+                width: 5.0,
+                height: 5.0,
+            },
+            border: Some(([0.9, 0.2, 0.2, 1.0], 1.0)),
+            corner_radius: [2.5; 4],
+            ..Default::default()
+        }),
+    );
+    validation.widget_paint = Some(Arc::new(validation_paint));
 
     let mut empty = node(3, None, &[]);
-    empty.standard_visual = Some(StandardVisual::EmptyState {
-        title: Arc::from("No files"),
-        message: Some(Arc::from("Create one")),
-        icon: Some(nana_ui_core::Icon::Folder),
-        compact: false,
-        action: None,
-    });
-    empty.component_geometry = Some(Box::new(ComponentGeometry::EmptyState {
-        root_clip: empty.layout,
-        content_clip: LayoutBox {
-            x: 16.0,
-            y: 24.0,
-            width: 68.0,
-            height: 52.0,
-        },
-        icon: Some((
-            nana_ui_core::Icon::Folder,
-            LayoutBox {
-                x: 40.0,
-                y: 2.0,
-                width: 22.0,
-                height: 22.0,
-            },
-            [0.5, 0.5, 0.5, 1.0],
-        )),
-        title: region("No files", 26.0, 13.0, Some(600)),
-        message: Some(region("Create one", 46.0, 12.0, None)),
-        action: None,
-    }));
+    let empty_clip = LayoutBox {
+        x: 16.0,
+        y: 24.0,
+        width: 68.0,
+        height: 52.0,
+    };
+    let mut empty_paint = nana_ui_runtime::WidgetPaintOutput {
+        owns_node_text: true,
+        suppress_root_surface: true,
+        clips_descendants: true,
+        ..nana_ui_runtime::WidgetPaintOutput::new()
+    };
+    empty_paint.push_tagged(
+        nana_ui_runtime::WidgetTaggedOp::new(
+            2,
+            nana_ui_runtime::WidgetPaintOp::Text(nana_ui_runtime::WidgetText {
+                wrap: true,
+                vertical_alignment: nana_ui_runtime::TextVerticalAlignment::Top,
+                line_height: Some(None),
+                ..match widget_text("No files", 26.0, 13.0, Some(600)) {
+                    nana_ui_runtime::WidgetPaintOp::Text(text) => text,
+                    _ => unreachable!(),
+                }
+            }),
+        )
+        .with_extra_clip(empty_clip),
+    );
+    empty_paint.push_tagged(
+        nana_ui_runtime::WidgetTaggedOp::new(
+            3,
+            nana_ui_runtime::WidgetPaintOp::Icon(nana_ui_runtime::WidgetIcon {
+                bounds: LayoutBox {
+                    x: 40.0,
+                    y: 2.0,
+                    width: 22.0,
+                    height: 22.0,
+                },
+                glyph: nana_ui_runtime::WidgetGlyph::Icon(nana_ui_core::Icon::Folder),
+                color: Some([0.5, 0.5, 0.5, 1.0]),
+                paint_color: None,
+                align_to_adjacent_text: false,
+            }),
+        )
+        .with_extra_clip(empty_clip),
+    );
+    empty_paint.push_tagged(
+        nana_ui_runtime::WidgetTaggedOp::new(
+            4,
+            nana_ui_runtime::WidgetPaintOp::Text(nana_ui_runtime::WidgetText {
+                wrap: true,
+                vertical_alignment: nana_ui_runtime::TextVerticalAlignment::Top,
+                line_height: Some(None),
+                ..match widget_text("Create one", 46.0, 12.0, None) {
+                    nana_ui_runtime::WidgetPaintOp::Text(text) => text,
+                    _ => unreachable!(),
+                }
+            }),
+        )
+        .with_extra_clip(empty_clip),
+    );
+    empty.widget_paint = Some(Arc::new(empty_paint));
 
     let mut labeled = node(4, None, &[]);
-    labeled.standard_visual = Some(StandardVisual::LabeledValue {
-        label: Arc::from("Revision"),
-        value: Arc::from("42"),
-        value_is_path: false,
-        value_role: nana_ui_core::SemanticColorRole::Text,
-        value_weight: 600,
-        compact: true,
-        action: None,
-    });
-    labeled.component_geometry = Some(Box::new(ComponentGeometry::LabeledValue {
-        label: region("Revision", 0.0, 11.0, None),
-        value: region("42", 14.0, 12.0, Some(600)),
-        action: None,
-    }));
+    let mut labeled_paint = nana_ui_runtime::WidgetPaintOutput {
+        owns_node_text: true,
+        ..nana_ui_runtime::WidgetPaintOutput::new()
+    };
+    labeled_paint.push(2, widget_text("Revision", 0.0, 11.0, None));
+    labeled_paint.push(3, widget_text("42", 14.0, 12.0, Some(600)));
+    labeled.widget_paint = Some(Arc::new(labeled_paint));
 
     let mut compact_empty = node(5, None, &[]);
-    compact_empty.standard_visual = Some(StandardVisual::EmptyState {
-        title: Arc::from("空状态"),
-        message: None,
-        icon: None,
-        compact: true,
-        action: None,
-    });
-    compact_empty.component_geometry = Some(Box::new(ComponentGeometry::EmptyState {
-        root_clip: compact_empty.layout,
-        content_clip: LayoutBox {
-            x: 6.0,
-            y: 8.0,
-            width: 88.0,
-            height: 84.0,
-        },
-        icon: None,
-        title: region("空状态", 2.0, 12.0, Some(600)),
-        message: None,
-        action: None,
-    }));
+    let compact_clip = LayoutBox {
+        x: 6.0,
+        y: 8.0,
+        width: 88.0,
+        height: 84.0,
+    };
+    let mut compact_paint = nana_ui_runtime::WidgetPaintOutput {
+        owns_node_text: true,
+        suppress_root_surface: true,
+        clips_descendants: true,
+        ..nana_ui_runtime::WidgetPaintOutput::new()
+    };
+    compact_paint.push_tagged(
+        nana_ui_runtime::WidgetTaggedOp::new(
+            2,
+            nana_ui_runtime::WidgetPaintOp::Text(nana_ui_runtime::WidgetText {
+                wrap: true,
+                vertical_alignment: nana_ui_runtime::TextVerticalAlignment::Top,
+                line_height: Some(None),
+                ..match widget_text("空状态", 2.0, 12.0, Some(600)) {
+                    nana_ui_runtime::WidgetPaintOp::Text(text) => text,
+                    _ => unreachable!(),
+                }
+            }),
+        )
+        .with_extra_clip(compact_clip),
+    );
+    compact_empty.widget_paint = Some(Arc::new(compact_paint));
 
     let mut scene = UiScene::new();
     scene.apply_delta([badge, validation, empty, labeled, compact_empty], []);
@@ -4974,44 +4936,64 @@ fn labeled_value_and_card_text_primitives_enable_ellipsis() {
     // 长文本区域(label/value/标题)必须开启省略截断,否则 Start/End 对齐
     // 的溢出会盖过属性行对侧内容(如完整文件路径)。
     let long_path: Arc<str> = Arc::from("/Users/dev/workspace/very-long-project/assets/textures");
-    let region = |content: Arc<str>, y| ComponentTextRegion {
-        bounds: LayoutBox {
-            x: 12.0,
-            y,
-            width: 96.0,
-            height: 16.0,
-        },
-        content: content.into(),
-        color: None,
-        font_size: 12.0,
-        font_weight: None,
-    };
 
     let mut labeled = node(1, None, &[]);
-    labeled.standard_visual = Some(StandardVisual::LabeledValue {
-        label: Arc::from("Source"),
-        value: long_path.clone(),
-        value_is_path: false,
-        value_role: nana_ui_core::SemanticColorRole::Text,
-        value_weight: 600,
-        compact: false,
-        action: None,
-    });
-    labeled.component_geometry = Some(Box::new(ComponentGeometry::LabeledValue {
-        label: region(Arc::from("Source"), 0.0),
-        value: region(long_path.clone(), 14.0),
-        action: None,
-    }));
+    let mut labeled_paint = nana_ui_runtime::WidgetPaintOutput {
+        owns_node_text: true,
+        ..nana_ui_runtime::WidgetPaintOutput::new()
+    };
+    let widget_region =
+        |content: Arc<str>, y: f32, horizontal_alignment: TextHorizontalAlignment| {
+            nana_ui_runtime::WidgetPaintOp::Text(nana_ui_runtime::WidgetText {
+                bounds: LayoutBox {
+                    x: 12.0,
+                    y,
+                    width: 96.0,
+                    height: 16.0,
+                },
+                content: content.into(),
+                color: None,
+                paint_color: None,
+                font_size: 12.0,
+                font_weight: None,
+                horizontal_alignment,
+                vertical_alignment: TextVerticalAlignment::Top,
+                ellipsis: true,
+                wrap: false,
+                max_lines: None,
+                italic: None,
+                underline: None,
+                line_through: None,
+                suppress_spans: true,
+                preserve_lines: None,
+                unstyled_glyph: false,
+                line_height: None,
+                retained_text: nana_ui_runtime::WidgetRetainedText::None,
+                tabular_nums: false,
+                ..Default::default()
+            })
+        };
+    labeled_paint.push(
+        2,
+        widget_region(Arc::from("Source"), 0.0, TextHorizontalAlignment::Start),
+    );
+    labeled_paint.push(
+        3,
+        widget_region(long_path.clone(), 14.0, TextHorizontalAlignment::End),
+    );
+    labeled.widget_paint = Some(Arc::new(labeled_paint));
 
     let mut card = node(2, None, &[]);
-    card.standard_visual = Some(StandardVisual::Card {
-        title: Some(Arc::from("渲染管线")),
-        kind: nana_ui_core::CardKind::Surface,
-        loading: false,
-        loading_phase: 0.0,
-    });
-    card.component_geometry = Some(Box::new(ComponentGeometry::Card {
-        title: Some(ComponentTextRegion {
+    let mut card_paint = nana_ui_runtime::WidgetPaintOutput {
+        owns_node_text: true,
+        child_text_suppression: nana_ui_runtime::WidgetChildTextSuppression::Matching(Arc::from(
+            "渲染管线",
+        )),
+        ..nana_ui_runtime::WidgetPaintOutput::new()
+    };
+    card_paint.push(
+        2,
+        nana_ui_runtime::WidgetPaintOp::Text(nana_ui_runtime::WidgetText {
             bounds: LayoutBox {
                 x: 10.0,
                 y: 8.0,
@@ -5020,18 +5002,27 @@ fn labeled_value_and_card_text_primitives_enable_ellipsis() {
             },
             content: nana_ui_runtime::TextValue::from("渲染管线 / Render Pipeline Settings"),
             color: None,
+            paint_color: None,
             font_size: 13.0,
             font_weight: Some(600),
+            horizontal_alignment: TextHorizontalAlignment::Start,
+            vertical_alignment: TextVerticalAlignment::Center,
+            ellipsis: true,
+            wrap: false,
+            max_lines: Some(1),
+            italic: None,
+            underline: None,
+            line_through: None,
+            suppress_spans: false,
+            preserve_lines: Some(false),
+            unstyled_glyph: false,
+            line_height: Some(Some(nana_ui_core::LineHeightSpec::Absolute(18.0))),
+            retained_text: nana_ui_runtime::WidgetRetainedText::AlwaysClipOverflow,
+            tabular_nums: false,
+            ..Default::default()
         }),
-        content: LayoutBox {
-            x: 10.0,
-            y: 36.0,
-            width: 80.0,
-            height: 34.0,
-        },
-        elevation: None,
-        spinner: None,
-    }));
+    );
+    card.widget_paint = Some(Arc::new(card_paint));
 
     let mut scene = UiScene::new();
     scene.apply_delta([labeled, card], []);
@@ -5077,50 +5068,66 @@ fn labeled_value_and_card_text_primitives_enable_ellipsis() {
 
 #[test]
 fn action_menu_item_label_and_hint_text_primitives_enable_ellipsis() {
-    let region = |content: &'static str, x, width| ComponentTextRegion {
-        bounds: LayoutBox {
-            x,
-            y: 4.0,
-            width,
-            height: 18.0,
-        },
-        content: nana_ui_runtime::TextValue::from(content),
-        color: None,
-        font_size: 13.0,
-        font_weight: None,
+    let text = |content: &'static str, x, width, align| {
+        nana_ui_runtime::WidgetPaintOp::Text(nana_ui_runtime::WidgetText {
+            bounds: LayoutBox {
+                x,
+                y: 4.0,
+                width,
+                height: 18.0,
+            },
+            content: nana_ui_runtime::TextValue::from(content),
+            color: None,
+            paint_color: None,
+            font_size: 13.0,
+            font_weight: None,
+            horizontal_alignment: align,
+            vertical_alignment: TextVerticalAlignment::Center,
+            ellipsis: true,
+            retained_text: nana_ui_runtime::WidgetRetainedText::NodeTextIfRich,
+            ..Default::default()
+        })
     };
 
     let mut item = node(1, None, &[]);
-    item.standard_visual = Some(StandardVisual::ActionMenuItem {
-        label: Arc::from("Reveal in Finder"),
-        hint: Some(Arc::from("/Users/dev/very-long-project-folder-name")),
-        icon: Some(nana_ui_core::Icon::Folder),
-        image: None,
-        danger: false,
-        active: false,
-        disabled: false,
-        size: nana_ui_core::ControlSize::Medium,
-    });
-    item.component_geometry = Some(Box::new(ComponentGeometry::ActionMenuItem {
-        icon: Some((
-            nana_ui_core::Icon::Folder,
-            LayoutBox {
+    let mut paint = nana_ui_runtime::WidgetPaintOutput {
+        owns_node_text: true,
+        ..nana_ui_runtime::WidgetPaintOutput::new()
+    };
+    paint.push(
+        3,
+        nana_ui_runtime::WidgetPaintOp::Icon(nana_ui_runtime::WidgetIcon {
+            bounds: LayoutBox {
                 x: 8.0,
                 y: 6.0,
                 width: 16.0,
                 height: 16.0,
             },
-            [0.8, 0.8, 0.8, 1.0],
-        )),
-        image: None,
-        label: region("/Users/dev/very-long-project-folder-name", 32.0, 100.0),
-        hint: Some(region(
+            glyph: nana_ui_runtime::WidgetGlyph::Icon(nana_ui_core::Icon::Folder),
+            color: Some([0.8, 0.8, 0.8, 1.0]),
+            paint_color: None,
+            align_to_adjacent_text: false,
+        }),
+    );
+    paint.push(
+        2,
+        text(
+            "/Users/dev/very-long-project-folder-name",
+            32.0,
+            100.0,
+            TextHorizontalAlignment::Start,
+        ),
+    );
+    paint.push(
+        4,
+        text(
             "/Users/dev/very-long-project-folder-name",
             132.0,
             60.0,
-        )),
-        background: None,
-    }));
+            TextHorizontalAlignment::End,
+        ),
+    );
+    item.widget_paint = Some(Arc::new(paint));
 
     let mut scene = UiScene::new();
     scene.apply_delta([item], []);
@@ -5157,7 +5164,7 @@ fn action_menu_item_label_and_hint_text_primitives_enable_ellipsis() {
 #[test]
 fn modal_frame_emits_distinct_scrim_surface_and_intrinsic_text_slots() {
     let mut modal = node(50, None, &[]);
-    modal.standard_visual = Some(StandardVisual::ModalFrame {
+    let visual = nana_ui_runtime::ModalFrameVisual {
         title: Arc::from("Delete project"),
         description: Some(Arc::from("This cannot be undone")),
         body_text: None,
@@ -5166,7 +5173,7 @@ fn modal_frame_emits_distinct_scrim_surface_and_intrinsic_text_slots() {
         danger: false,
         slots: nana_ui_runtime::ModalSlots::default(),
         surface_painter: None,
-    });
+    };
     let text = |content: &'static str, y, height, size, weight| ComponentTextRegion {
         bounds: LayoutBox {
             x: 206.0,
@@ -5179,7 +5186,7 @@ fn modal_frame_emits_distinct_scrim_surface_and_intrinsic_text_slots() {
         font_size: size,
         font_weight: weight,
     };
-    modal.component_geometry = Some(Box::new(ComponentGeometry::ModalFrame {
+    let mut geometry = nana_ui_runtime::ModalFrameGeometry {
         scrim: LayoutBox {
             x: 0.0,
             y: 0.0,
@@ -5220,7 +5227,10 @@ fn modal_frame_emits_distinct_scrim_surface_and_intrinsic_text_slots() {
         scrim_blur: 0.0,
         scrim_opacity: 1.0,
         surface_paint: None,
-    }));
+    };
+    modal.widget_paint = Some(Arc::new(
+        visual.paint_with_geometry(&geometry, modal.layout),
+    ));
     let mut scene = UiScene::default();
     scene.apply_delta([modal.clone()], []);
     assert!(matches!(
@@ -5281,11 +5291,10 @@ fn modal_frame_emits_distinct_scrim_surface_and_intrinsic_text_slots() {
 
     // A title content slot leaves the title text empty: nothing is drawn
     // for it, and the description stays.
-    if let Some(ComponentGeometry::ModalFrame { title, .. }) =
-        modal.component_geometry.as_deref_mut()
-    {
-        title.content = nana_ui_runtime::TextValue::from("");
-    }
+    geometry.title.content = nana_ui_runtime::TextValue::from("");
+    modal.widget_paint = Some(Arc::new(
+        visual.paint_with_geometry(&geometry, modal.layout),
+    ));
     scene.apply_delta([modal], []);
     let slot = |slot| scene.primitive(PrimitiveId { node: id(50), slot });
     assert!(slot(12).is_none());
@@ -5298,7 +5307,7 @@ fn modal_frame_emits_distinct_scrim_surface_and_intrinsic_text_slots() {
 #[test]
 fn modal_frame_paints_the_recipe_radius_and_section_dividers() {
     let mut modal = node(51, None, &[]);
-    modal.standard_visual = Some(StandardVisual::ModalFrame {
+    let visual = nana_ui_runtime::ModalFrameVisual {
         title: Arc::from("新建文件夹"),
         description: None,
         body_text: None,
@@ -5307,7 +5316,7 @@ fn modal_frame_paints_the_recipe_radius_and_section_dividers() {
         danger: false,
         slots: nana_ui_runtime::ModalSlots::default(),
         surface_painter: None,
-    });
+    };
     let surface = LayoutBox {
         x: 140.0,
         y: 72.0,
@@ -5325,7 +5334,7 @@ fn modal_frame_paints_the_recipe_radius_and_section_dividers() {
         ..surface
     };
     let rule_color = [0.2, 0.2, 0.2, 1.0];
-    modal.component_geometry = Some(Box::new(ComponentGeometry::ModalFrame {
+    let geometry = nana_ui_runtime::ModalFrameGeometry {
         scrim: LayoutBox {
             x: 0.0,
             y: 0.0,
@@ -5371,7 +5380,10 @@ fn modal_frame_paints_the_recipe_radius_and_section_dividers() {
         scrim_blur: 2.0,
         scrim_opacity: 1.0,
         surface_paint: None,
-    }));
+    };
+    modal.widget_paint = Some(Arc::new(
+        visual.paint_with_geometry(&geometry, modal.layout),
+    ));
     let mut scene = UiScene::default();
     scene.apply_delta([modal], []);
     let quad = |slot| {
@@ -5431,7 +5443,7 @@ fn a_modal_frames_layer_fades_and_turns_its_card_not_its_scrim() {
         width: 800.0,
         height: 600.0,
     };
-    modal.standard_visual = Some(StandardVisual::ModalFrame {
+    let visual = nana_ui_runtime::ModalFrameVisual {
         title: Arc::from("导出"),
         description: None,
         body_text: None,
@@ -5440,14 +5452,14 @@ fn a_modal_frames_layer_fades_and_turns_its_card_not_its_scrim() {
         danger: false,
         slots: nana_ui_runtime::ModalSlots::default(),
         surface_painter: None,
-    });
+    };
     let surface = LayoutBox {
         x: 140.0,
         y: 72.0,
         width: 520.0,
         height: 200.0,
     };
-    modal.component_geometry = Some(Box::new(ComponentGeometry::ModalFrame {
+    let geometry = nana_ui_runtime::ModalFrameGeometry {
         scrim: modal.layout,
         surface,
         body: surface,
@@ -5479,7 +5491,10 @@ fn a_modal_frames_layer_fades_and_turns_its_card_not_its_scrim() {
         scrim_blur: 0.0,
         scrim_opacity: 0.4,
         surface_paint: None,
-    }));
+    };
+    modal.widget_paint = Some(Arc::new(
+        visual.paint_with_geometry(&geometry, modal.layout),
+    ));
     let mut scene = UiScene::default();
     scene.apply_delta([modal], []);
     let track = |track, property, from, to| {
@@ -5568,13 +5583,6 @@ fn a_modal_frames_layer_fades_and_turns_its_card_not_its_scrim() {
 #[test]
 fn command_palette_title_and_query_sort_above_surface_quads() {
     let mut palette = node(60, None, &[]);
-    palette.standard_visual = Some(StandardVisual::CommandPalette {
-        title: Arc::from("命令"),
-        query: Arc::from("工作区"),
-        placeholder: Arc::from("搜索操作"),
-        empty: None,
-        rows: Arc::from([]),
-    });
     let text = |content: &'static str, y, height, size, weight| ComponentTextRegion {
         bounds: LayoutBox {
             x: 24.0,
@@ -5587,7 +5595,7 @@ fn command_palette_title_and_query_sort_above_surface_quads() {
         font_size: size,
         font_weight: weight,
     };
-    palette.component_geometry = Some(Box::new(ComponentGeometry::CommandPalette {
+    let layout = nana_ui_runtime::CommandPaletteLayout {
         scrim: LayoutBox {
             x: 0.0,
             y: 0.0,
@@ -5623,7 +5631,10 @@ fn command_palette_title_and_query_sort_above_surface_quads() {
             spread_radius: 0.0,
             inset: false,
         },
-    }));
+    };
+    palette.widget_paint = Some(Arc::new(
+        layout.to_widget_paint(palette.chrome_radii, &palette.style),
+    ));
 
     let mut scene = UiScene::default();
     scene.apply_delta([palette], []);
@@ -5679,7 +5690,7 @@ fn command_palette_title_and_query_sort_above_surface_quads() {
 #[test]
 fn docked_drawer_extends_the_flush_edge_so_clipping_squares_that_side() {
     let mut drawer = node(52, None, &[]);
-    drawer.standard_visual = Some(StandardVisual::ModalFrame {
+    let visual = nana_ui_runtime::ModalFrameVisual {
         title: Arc::from("Inspector"),
         description: None,
         body_text: None,
@@ -5688,8 +5699,8 @@ fn docked_drawer_extends_the_flush_edge_so_clipping_squares_that_side() {
         danger: false,
         slots: nana_ui_runtime::ModalSlots::default(),
         surface_painter: None,
-    });
-    drawer.component_geometry = Some(Box::new(ComponentGeometry::ModalFrame {
+    };
+    let geometry = nana_ui_runtime::ModalFrameGeometry {
         scrim: LayoutBox {
             x: 0.0,
             y: 0.0,
@@ -5741,7 +5752,10 @@ fn docked_drawer_extends_the_flush_edge_so_clipping_squares_that_side() {
         scrim_blur: 0.0,
         scrim_opacity: 1.0,
         surface_paint: None,
-    }));
+    };
+    drawer.widget_paint = Some(Arc::new(
+        visual.paint_with_geometry(&geometry, drawer.layout),
+    ));
     let mut scene = UiScene::default();
     scene.apply_delta([drawer], []);
     let surface = scene
@@ -5759,46 +5773,64 @@ fn docked_drawer_extends_the_flush_edge_so_clipping_squares_that_side() {
 #[test]
 fn confirm_action_scene_restores_label_after_busy_spinner_clears() {
     let mut action = node(51, None, &[]);
-    let label = ComponentTextRegion {
-        bounds: LayoutBox {
-            x: 10.0,
-            y: 10.0,
-            width: 80.0,
-            height: 24.0,
-        },
-        content: nana_ui_runtime::TextValue::from("Delete"),
-        color: Some([1.0; 4]),
-        font_size: 13.0,
-        font_weight: Some(500),
+    let label_op = |bounds| {
+        nana_ui_runtime::WidgetPaintOp::Text(nana_ui_runtime::WidgetText {
+            bounds,
+            content: nana_ui_runtime::TextValue::from("Delete"),
+            color: Some([1.0; 4]),
+            paint_color: None,
+            font_size: 13.0,
+            font_weight: Some(500),
+            horizontal_alignment: TextHorizontalAlignment::Center,
+            vertical_alignment: nana_ui_runtime::TextVerticalAlignment::Center,
+            ellipsis: true,
+            wrap: false,
+            max_lines: None,
+            italic: None,
+            underline: None,
+            line_through: None,
+            suppress_spans: false,
+            preserve_lines: None,
+            unstyled_glyph: false,
+            line_height: None,
+            retained_text: nana_ui_runtime::WidgetRetainedText::NodeTextIfRich,
+            tabular_nums: false,
+            ..Default::default()
+        })
     };
-    action.standard_visual = Some(StandardVisual::Button {
-        icon: None,
-        trailing_icon: None,
-        icon_size: 14.0,
-        icon_gap: 6.0,
-        label: Arc::from("Delete"),
-        kind: nana_ui_core::ButtonKind::Danger,
-        size: nana_ui_core::ControlSize::Medium,
-        loading: true,
-        loading_phase: 0.5,
-        invalid: false,
-        content_align: nana_ui_runtime::TextHorizontalAlignment::Center,
-    });
-    action.component_geometry = Some(Box::new(ComponentGeometry::Button {
-        icon: None,
-        trailing_icon: None,
-        label: label.clone(),
-        spinner: Some(LayoutBox {
-            x: 42.0,
-            y: 14.0,
-            width: 16.0,
-            height: 16.0,
+    let label_bounds = LayoutBox {
+        x: 10.0,
+        y: 10.0,
+        width: 80.0,
+        height: 24.0,
+    };
+    let mut busy_paint = nana_ui_runtime::WidgetPaintOutput {
+        owns_node_text: true,
+        root_surface: Some(nana_ui_runtime::WidgetRootSurface {
+            background: Some(Some([0.8, 0.1, 0.1, 1.0])),
+            border_color: Some(None),
+            border_width: Some(0.0),
+            ..Default::default()
         }),
-        background: Some([0.8, 0.1, 0.1, 1.0]),
-        border: None,
-        border_width: 0.0,
-        focus_ring: None,
-    }));
+        ..nana_ui_runtime::WidgetPaintOutput::new()
+    };
+    busy_paint.push(2, label_op(label_bounds));
+    busy_paint.push(
+        3,
+        nana_ui_runtime::WidgetPaintOp::Icon(nana_ui_runtime::WidgetIcon {
+            bounds: LayoutBox {
+                x: 42.0,
+                y: 14.0,
+                width: 16.0,
+                height: 16.0,
+            },
+            glyph: nana_ui_runtime::WidgetGlyph::Spinner { phase: 4 },
+            color: None,
+            paint_color: None,
+            align_to_adjacent_text: false,
+        }),
+    );
+    action.widget_paint = Some(Arc::new(busy_paint));
     let mut scene = UiScene::new();
     scene.apply_delta([action.clone()], []);
     assert!(matches!(
@@ -5812,29 +5844,18 @@ fn confirm_action_scene_restores_label_after_busy_spinner_clears() {
         ScenePrimitiveKind::Spinner { .. }
     ));
 
-    action.standard_visual = Some(StandardVisual::Button {
-        icon: None,
-        trailing_icon: None,
-        icon_size: 14.0,
-        icon_gap: 6.0,
-        label: Arc::from("Delete"),
-        kind: nana_ui_core::ButtonKind::Primary,
-        size: nana_ui_core::ControlSize::Medium,
-        loading: false,
-        loading_phase: 0.0,
-        invalid: false,
-        content_align: nana_ui_runtime::TextHorizontalAlignment::Center,
-    });
-    action.component_geometry = Some(Box::new(ComponentGeometry::Button {
-        icon: None,
-        trailing_icon: None,
-        label,
-        spinner: None,
-        background: Some([0.2, 0.4, 0.8, 1.0]),
-        border: None,
-        border_width: 0.0,
-        focus_ring: None,
-    }));
+    let mut restored_paint = nana_ui_runtime::WidgetPaintOutput {
+        owns_node_text: true,
+        root_surface: Some(nana_ui_runtime::WidgetRootSurface {
+            background: Some(Some([0.2, 0.4, 0.8, 1.0])),
+            border_color: Some(None),
+            border_width: Some(0.0),
+            ..Default::default()
+        }),
+        ..nana_ui_runtime::WidgetPaintOutput::new()
+    };
+    restored_paint.push(2, label_op(label_bounds));
+    action.widget_paint = Some(Arc::new(restored_paint));
     scene.apply_delta([action], []);
     assert!(
         scene
@@ -5865,57 +5886,99 @@ fn empty_state_separates_intrinsic_clip_from_focused_action_root_clip() {
         height: 2.0,
     };
     let mut empty = node(10, None, &[11]);
-    empty.standard_visual = Some(StandardVisual::EmptyState {
-        title: Arc::from("Title"),
-        message: Some(Arc::from("Message")),
-        icon: Some(nana_ui_core::Icon::Folder),
-        compact: false,
-        action: Some(id(11)),
-    });
-    empty.component_geometry = Some(Box::new(ComponentGeometry::EmptyState {
-        root_clip: empty.layout,
-        content_clip,
-        icon: Some((
-            nana_ui_core::Icon::Folder,
-            LayoutBox {
-                x: 0.0,
-                y: 0.0,
-                width: 22.0,
-                height: 22.0,
-            },
-            [0.5, 0.5, 0.5, 1.0],
-        )),
-        title: ComponentTextRegion {
-            bounds: LayoutBox {
-                x: 0.0,
-                y: 22.0,
-                width: 40.0,
-                height: 30.0,
-            },
-            content: nana_ui_runtime::TextValue::from("Title"),
-            color: Some([1.0; 4]),
-            font_size: 13.0,
-            font_weight: Some(600),
-        },
-        message: Some(ComponentTextRegion {
-            bounds: LayoutBox {
-                x: 0.0,
-                y: 58.0,
-                width: 60.0,
-                height: 40.0,
-            },
-            content: nana_ui_runtime::TextValue::from("Message"),
-            color: Some([0.7; 4]),
-            font_size: 12.0,
-            font_weight: None,
-        }),
-        action: Some(LayoutBox {
-            x: 20.0,
-            y: 53.0,
-            width: 60.0,
-            height: 24.0,
-        }),
-    }));
+    let mut empty_paint = nana_ui_runtime::WidgetPaintOutput {
+        owns_node_text: true,
+        suppress_root_surface: true,
+        clips_descendants: true,
+        ..nana_ui_runtime::WidgetPaintOutput::new()
+    };
+    empty_paint.push_tagged(
+        nana_ui_runtime::WidgetTaggedOp::new(
+            2,
+            nana_ui_runtime::WidgetPaintOp::Text(nana_ui_runtime::WidgetText {
+                bounds: LayoutBox {
+                    x: 0.0,
+                    y: 22.0,
+                    width: 40.0,
+                    height: 30.0,
+                },
+                content: nana_ui_runtime::TextValue::from("Title"),
+                color: Some([1.0; 4]),
+                paint_color: None,
+                font_size: 13.0,
+                font_weight: Some(600),
+                horizontal_alignment: nana_ui_runtime::TextHorizontalAlignment::Start,
+                vertical_alignment: nana_ui_runtime::TextVerticalAlignment::Top,
+                ellipsis: false,
+                wrap: true,
+                max_lines: None,
+                italic: None,
+                underline: None,
+                line_through: None,
+                suppress_spans: false,
+                preserve_lines: None,
+                unstyled_glyph: false,
+                line_height: Some(None),
+                retained_text: nana_ui_runtime::WidgetRetainedText::None,
+                tabular_nums: false,
+                ..Default::default()
+            }),
+        )
+        .with_extra_clip(content_clip),
+    );
+    empty_paint.push_tagged(
+        nana_ui_runtime::WidgetTaggedOp::new(
+            3,
+            nana_ui_runtime::WidgetPaintOp::Icon(nana_ui_runtime::WidgetIcon {
+                bounds: LayoutBox {
+                    x: 0.0,
+                    y: 0.0,
+                    width: 22.0,
+                    height: 22.0,
+                },
+                glyph: nana_ui_runtime::WidgetGlyph::Icon(nana_ui_core::Icon::Folder),
+                color: Some([0.5, 0.5, 0.5, 1.0]),
+                paint_color: None,
+                align_to_adjacent_text: false,
+            }),
+        )
+        .with_extra_clip(content_clip),
+    );
+    empty_paint.push_tagged(
+        nana_ui_runtime::WidgetTaggedOp::new(
+            4,
+            nana_ui_runtime::WidgetPaintOp::Text(nana_ui_runtime::WidgetText {
+                bounds: LayoutBox {
+                    x: 0.0,
+                    y: 58.0,
+                    width: 60.0,
+                    height: 40.0,
+                },
+                content: nana_ui_runtime::TextValue::from("Message"),
+                color: Some([0.7; 4]),
+                paint_color: None,
+                font_size: 12.0,
+                font_weight: None,
+                horizontal_alignment: nana_ui_runtime::TextHorizontalAlignment::Start,
+                vertical_alignment: nana_ui_runtime::TextVerticalAlignment::Top,
+                ellipsis: false,
+                wrap: true,
+                max_lines: None,
+                italic: None,
+                underline: None,
+                line_through: None,
+                suppress_spans: false,
+                preserve_lines: None,
+                unstyled_glyph: false,
+                line_height: Some(None),
+                retained_text: nana_ui_runtime::WidgetRetainedText::None,
+                tabular_nums: false,
+                ..Default::default()
+            }),
+        )
+        .with_extra_clip(content_clip),
+    );
+    empty.widget_paint = Some(Arc::new(empty_paint));
     let mut action = node(11, Some(10), &[]);
     action.layout = LayoutBox {
         x: 20.0,
@@ -5924,40 +5987,59 @@ fn empty_state_separates_intrinsic_clip_from_focused_action_root_clip() {
         height: 24.0,
     };
     action.focused = true;
-    action.standard_visual = Some(StandardVisual::Button {
-        icon: None,
-        trailing_icon: None,
-        icon_size: 14.0,
-        icon_gap: 6.0,
-        label: Arc::from("Action"),
-        kind: nana_ui_core::ButtonKind::Primary,
-        size: nana_ui_core::ControlSize::Medium,
-        loading: false,
-        loading_phase: 0.0,
-        invalid: false,
-        content_align: nana_ui_runtime::TextHorizontalAlignment::Center,
-    });
-    action.component_geometry = Some(Box::new(ComponentGeometry::Button {
-        icon: None,
-        trailing_icon: None,
-        label: ComponentTextRegion {
+    let mut action_paint = nana_ui_runtime::WidgetPaintOutput {
+        owns_node_text: true,
+        root_surface: Some(nana_ui_runtime::WidgetRootSurface {
+            background: Some(Some([0.2, 0.4, 0.8, 1.0])),
+            border_color: Some(None),
+            border_width: Some(0.0),
+            ..Default::default()
+        }),
+        ..nana_ui_runtime::WidgetPaintOutput::new()
+    };
+    action_paint.push(
+        2,
+        nana_ui_runtime::WidgetPaintOp::Text(nana_ui_runtime::WidgetText {
             bounds: LayoutBox {
-                x: 20.0,
-                y: 53.0,
-                width: 60.0,
-                height: 24.0,
+                x: 0.0,
+                y: 0.0,
+                ..action.layout
             },
             content: nana_ui_runtime::TextValue::from("Action"),
             color: Some([1.0; 4]),
+            paint_color: None,
             font_size: 13.0,
             font_weight: None,
+            horizontal_alignment: TextHorizontalAlignment::Center,
+            vertical_alignment: nana_ui_runtime::TextVerticalAlignment::Center,
+            ellipsis: true,
+            wrap: false,
+            max_lines: None,
+            italic: None,
+            underline: None,
+            line_through: None,
+            suppress_spans: false,
+            preserve_lines: None,
+            unstyled_glyph: false,
+            line_height: None,
+            retained_text: nana_ui_runtime::WidgetRetainedText::NodeTextIfRich,
+            tabular_nums: false,
+            ..Default::default()
+        }),
+    );
+    action_paint.push(
+        7,
+        nana_ui_runtime::WidgetPaintOp::FocusRing {
+            bounds: LayoutBox {
+                x: 0.0,
+                y: 0.0,
+                ..action.layout
+            },
+            color: [0.3, 0.6, 1.0, 1.0],
+            extra_outset: 0.0,
         },
-        spinner: None,
-        background: Some([0.2, 0.4, 0.8, 1.0]),
-        border: None,
-        border_width: 0.0,
-        focus_ring: Some([0.3, 0.6, 1.0, 1.0]),
-    }));
+    );
+    action.widget_paint = Some(Arc::new(action_paint));
 
     let mut scene = UiScene::new();
     scene.apply_delta([empty, action], []);
@@ -6018,47 +6100,114 @@ fn empty_state_separates_intrinsic_clip_from_focused_action_root_clip() {
     assert_eq!(ring.y + ring.height, root.bounds.height);
 }
 
+fn default_range_geometry(bounds: LayoutBox, track_girth: f32) -> nana_ui_runtime::RangeGeometry {
+    nana_ui_runtime::RangeGeometry {
+        caution: None,
+        label: None,
+        value: nana_ui_runtime::ComponentTextRegion {
+            bounds: LayoutBox::default(),
+            content: Arc::<str>::from("").into(),
+            color: None,
+            font_size: 12.0,
+            font_weight: None,
+        },
+        unit: None,
+        track: LayoutBox {
+            x: bounds.x + 7.0,
+            y: bounds.y + (bounds.height - 14.0) / 2.0,
+            width: (bounds.width - 14.0).max(0.0),
+            height: 14.0,
+        },
+        track_girth,
+        border_width: 1.0,
+        thumb_ring: None,
+        bounds: None,
+        value_thumb: None,
+    }
+}
+
+fn apply_range_paint(
+    node: &mut ExtractedNode,
+    visual: &nana_ui_runtime::RangeVisual,
+    geometry: &nana_ui_runtime::RangeGeometry,
+    focus_color: [f32; 4],
+) {
+    node.widget_paint = Some(Arc::new(visual.paint_with_geometry(
+        geometry,
+        node.layout.width,
+        &node.style,
+        node.focused,
+        focus_color,
+        nana_ui_core::FOCUS_RING_METRICS,
+    )));
+}
+
 #[test]
 fn standard_control_visuals_expand_without_backend_tag_matching() {
     let mut checkbox = node(1, None, &[]);
     checkbox.text = Some(TextContent {
         value: "Notifications".into(),
     });
-    checkbox.standard_visual = Some(StandardVisual::Checkbox {
-        checked: true,
-        indeterminate: false,
-        size: nana_ui_core::ControlSize::Medium,
-    });
     // The boxes Runtime publishes as the checkbox's Indicator and
     // TextContent parts; the scene draws them and places neither itself.
     let indicator = nana_ui_core::ControlSize::Medium.indicator_size();
-    checkbox.component_geometry = Some(Box::new(ComponentGeometry::Checkbox {
-        indicator: LayoutBox {
-            x: 0.0,
-            y: (80.0 - indicator) / 2.0,
-            width: indicator,
-            height: indicator,
-        },
-        label: nana_ui_runtime::ComponentTextRegion {
-            bounds: LayoutBox {
-                x: 24.0,
-                y: 0.0,
-                width: 76.0,
-                height: 80.0,
-            },
-            content: "Notifications".into(),
+    let indicator_rect = LayoutBox {
+        x: 0.0,
+        y: (80.0 - indicator) / 2.0,
+        width: indicator,
+        height: indicator,
+    };
+    let mut checkbox_paint = nana_ui_runtime::WidgetPaintOutput {
+        suppress_root_surface: true,
+        node_text_bounds: Some(LayoutBox {
+            x: 24.0,
+            y: 0.0,
+            width: 76.0,
+            height: 80.0,
+        }),
+        ..nana_ui_runtime::WidgetPaintOutput::new()
+    };
+    checkbox_paint.push(
+        3,
+        nana_ui_runtime::WidgetPaintOp::Quad(nana_ui_runtime::WidgetQuad {
+            rect: indicator_rect,
+            fill: Some([0.2, 0.5, 0.9, 1.0]),
+            border: Some(([0.1, 0.2, 0.3, 1.0], 1.0)),
+            ..Default::default()
+        }),
+    );
+    checkbox_paint.push(
+        4,
+        nana_ui_runtime::WidgetPaintOp::Text(nana_ui_runtime::WidgetText {
+            bounds: indicator_rect,
+            content: "✓".into(),
             color: None,
-            font_size: 14.0,
-            font_weight: None,
-        },
-        border_width: 1.0,
-        check_weight: 700,
-    }));
+            paint_color: None,
+            font_size: indicator * 0.75,
+            font_weight: Some(700),
+            horizontal_alignment: TextHorizontalAlignment::Center,
+            vertical_alignment: TextVerticalAlignment::Center,
+            ellipsis: false,
+            wrap: false,
+            max_lines: None,
+            italic: None,
+            underline: None,
+            line_through: None,
+            suppress_spans: true,
+            preserve_lines: None,
+            unstyled_glyph: false,
+            line_height: None,
+            retained_text: nana_ui_runtime::WidgetRetainedText::None,
+            tabular_nums: false,
+            ..Default::default()
+        }),
+    );
+    checkbox.widget_paint = Some(Arc::new(checkbox_paint));
     style_mut(&mut checkbox).background = Some([0.2, 0.5, 0.9, 1.0]);
     style_mut(&mut checkbox).border_color = Some([0.1, 0.2, 0.3, 1.0]);
 
     let mut slider = node(2, None, &[]);
-    slider.standard_visual = Some(StandardVisual::Range {
+    let slider_visual = nana_ui_runtime::RangeVisual {
         caution: None,
         label: None,
         value: Arc::from("25"),
@@ -6074,9 +6223,11 @@ fn standard_control_visuals_expand_without_backend_tag_matching() {
         editing: false,
         bounds: None,
         reset: false,
-    });
+    };
+    let slider_geometry = default_range_geometry(slider.layout, 4.0);
     style_mut(&mut slider).background = Some([0.2, 0.5, 0.9, 1.0]);
     style_mut(&mut slider).border_color = Some([0.4, 0.4, 0.4, 1.0]);
+    apply_range_paint(&mut slider, &slider_visual, &slider_geometry, [0.0; 4]);
 
     let mut scene = UiScene::new();
     scene.apply_delta([checkbox, slider], []);
@@ -6121,7 +6272,7 @@ fn a_rail_range_draws_its_girth_and_shows_the_thumb_only_with_visible_focus() {
         width: 200.0,
         height: 16.0,
     };
-    range.standard_visual = Some(StandardVisual::Range {
+    let visual = nana_ui_runtime::RangeVisual {
         caution: None,
         label: None,
         value: Arc::from(""),
@@ -6137,27 +6288,15 @@ fn a_rail_range_draws_its_girth_and_shows_the_thumb_only_with_visible_focus() {
         editing: false,
         bounds: None,
         reset: false,
-    });
-    range.component_geometry = Some(Box::new(ComponentGeometry::Range {
-        caution: None,
-        label: None,
-        value: nana_ui_runtime::ComponentTextRegion {
-            bounds: LayoutBox::default(),
-            content: Arc::<str>::from("").into(),
-            color: None,
-            font_size: 12.0,
-            font_weight: None,
-        },
-        unit: None,
+    };
+    let geometry = nana_ui_runtime::RangeGeometry {
         track: range.layout,
         track_girth: 2.0,
-        border_width: 1.0,
-        thumb_ring: None,
-        bounds: None,
-        value_thumb: None,
-    }));
+        ..default_range_geometry(range.layout, 2.0)
+    };
     style_mut(&mut range).background = Some([0.2, 0.5, 0.9, 1.0]);
     style_mut(&mut range).border_color = Some([0.4, 0.4, 0.4, 1.0]);
+    apply_range_paint(&mut range, &visual, &geometry, [0.0; 4]);
     let slot = |scene: &UiScene, slot| {
         scene
             .primitive(PrimitiveId { node: id(1), slot })
@@ -6175,6 +6314,7 @@ fn a_rail_range_draws_its_girth_and_shows_the_thumb_only_with_visible_focus() {
     assert!(slot(&scene, 5).is_none(), "no thumb without visible focus");
 
     range.focused = true;
+    apply_range_paint(&mut range, &visual, &geometry, [0.0; 4]);
     let mut scene = UiScene::new();
     scene.apply_delta([range], []);
     assert!(slot(&scene, 5).is_some(), "the thumb marks visible focus");
@@ -6193,7 +6333,7 @@ fn a_ranges_caution_zone_repaints_the_rail_and_the_fill_past_where_it_begins() {
             width: 200.0,
             height: 16.0,
         };
-        range.standard_visual = Some(StandardVisual::Range {
+        let visual = nana_ui_runtime::RangeVisual {
             caution: Some(0.25),
             label: None,
             value: Arc::from(""),
@@ -6209,31 +6349,20 @@ fn a_ranges_caution_zone_repaints_the_rail_and_the_fill_past_where_it_begins() {
             editing: false,
             bounds: None,
             reset: false,
-        });
-        range.component_geometry = Some(Box::new(ComponentGeometry::Range {
+        };
+        let geometry = nana_ui_runtime::RangeGeometry {
             caution: Some(nana_ui_runtime::RangeCaution {
                 from: 0.25,
                 color: [0.9, 0.7, 0.1, 1.0],
                 thumb: ratio >= 0.25,
             }),
-            label: None,
-            value: nana_ui_runtime::ComponentTextRegion {
-                bounds: LayoutBox::default(),
-                content: Arc::<str>::from("").into(),
-                color: None,
-                font_size: 12.0,
-                font_weight: None,
-            },
-            unit: None,
             track: range.layout,
             track_girth: 2.0,
-            border_width: 1.0,
-            thumb_ring: None,
-            bounds: None,
-            value_thumb: None,
-        }));
+            ..default_range_geometry(range.layout, 2.0)
+        };
         style_mut(&mut range).background = Some([0.2, 0.5, 0.9, 1.0]);
         style_mut(&mut range).border_color = Some([0.4, 0.4, 0.4, 1.0]);
+        apply_range_paint(&mut range, &visual, &geometry, [0.0; 4]);
         let mut scene = UiScene::new();
         scene.apply_delta([range], []);
         scene
@@ -6359,7 +6488,7 @@ fn a_gradient_range_paints_its_stops_and_rings_the_value() {
         width: 200.0,
         height: 24.0,
     };
-    range.standard_visual = Some(StandardVisual::Range {
+    let visual = nana_ui_runtime::RangeVisual {
         caution: None,
         label: None,
         value: Arc::from(""),
@@ -6375,18 +6504,8 @@ fn a_gradient_range_paints_its_stops_and_rings_the_value() {
         editing: false,
         bounds: None,
         reset: false,
-    });
-    range.component_geometry = Some(Box::new(ComponentGeometry::Range {
-        caution: None,
-        label: None,
-        value: nana_ui_runtime::ComponentTextRegion {
-            bounds: LayoutBox::default(),
-            content: Arc::<str>::from("").into(),
-            color: None,
-            font_size: 12.0,
-            font_weight: None,
-        },
-        unit: None,
+    };
+    let geometry = nana_ui_runtime::RangeGeometry {
         track: LayoutBox {
             x: 8.0,
             y: 4.0,
@@ -6394,13 +6513,12 @@ fn a_gradient_range_paints_its_stops_and_rings_the_value() {
             height: 16.0,
         },
         track_girth: nana_ui_core::space::XL,
-        border_width: 1.0,
         thumb_ring: Some(TEST_RING),
-        bounds: None,
-        value_thumb: None,
-    }));
+        ..default_range_geometry(range.layout, nana_ui_core::space::XL)
+    };
     style_mut(&mut range).background = Some([0.2, 0.5, 0.9, 1.0]);
     style_mut(&mut range).border_color = Some([0.4, 0.4, 0.4, 1.0]);
+    apply_range_paint(&mut range, &visual, &geometry, [0.0; 4]);
 
     let mut scene = UiScene::new();
     scene.apply_delta([range.clone()], []);
@@ -6460,6 +6578,7 @@ fn a_gradient_range_paints_its_stops_and_rings_the_value() {
     );
 
     range.focused = true;
+    apply_range_paint(&mut range, &visual, &geometry, [0.0; 4]);
     let mut scene = UiScene::new();
     scene.apply_delta([range], []);
     let (focus, ..) = quad_parts(&scene, 1, 8).expect("focus rings the thumb");
@@ -6509,16 +6628,7 @@ fn a_picture_xy_pad_strokes_its_frame_over_the_paint_and_rings_the_value() {
     }
     style_mut(&mut pad).background = Some([1.0, 0.0, 0.0, 1.0]);
     style_mut(&mut pad).border_color = Some([0.4, 0.4, 0.4, 1.0]);
-    pad.standard_visual = Some(StandardVisual::XYPad {
-        value: nana_ui_core::XYPadValue::new(0.5, 0.5),
-        nx: 0.5,
-        ny: 0.5,
-        size: nana_ui_core::ControlSize::Medium,
-        invalid: false,
-        disabled: false,
-        picture: true,
-    });
-    pad.component_geometry = Some(Box::new(ComponentGeometry::XYPad {
+    let layout = nana_ui_runtime::XYPadLayout {
         pad: pad_box,
         thumb: LayoutBox {
             x: 93.0,
@@ -6534,7 +6644,10 @@ fn a_picture_xy_pad_strokes_its_frame_over_the_paint_and_rings_the_value() {
         border_width: 1.0,
         thumb_color: [0.2, 0.5, 0.9, 1.0],
         axis_color: [0.4, 0.4, 0.4, 1.0],
-    }));
+    };
+    pad.widget_paint = Some(Arc::new(
+        layout.to_widget_paint(&pad.style, &pad.source_style),
+    ));
 
     let mut scene = UiScene::new();
     scene.apply_delta([pad], []);
@@ -6565,60 +6678,61 @@ fn a_picture_xy_pad_strokes_its_frame_over_the_paint_and_rings_the_value() {
     assert!(quad_parts(&scene, 1, 4).is_some() && quad_parts(&scene, 1, 5).is_some());
 }
 
-/// A scroll view's bar visual: one vertical axis, shown at `presence`.
-fn scrollbar_visual(
-    visibility: nana_ui_core::ScrollbarVisibility,
-    presence: f32,
-) -> StandardVisual {
-    StandardVisual::Scrollbar {
-        axes: nana_ui_runtime::ScrollAxes::Vertical,
-        visibility,
-        shown: true,
-        hot: None,
-        dragging: None,
-        presence,
-        expand: [0.0; 2],
-    }
+fn scrollbar_chrome_slot(index: u32) -> u64 {
+    nana_ui_runtime::scrollbar_chrome_slot(index as u64)
 }
 
-/// A 200×120 scrollport's vertical bar: a 12px lane 2px inside its right
-/// edge, an 8px track and a 6px thumb on its centre line.
-fn vertical_bar(thumb_y: f32, track_background: Option<[f32; 4]>) -> ComponentGeometry {
-    ComponentGeometry::Scrollbar {
-        horizontal: None,
-        vertical: Some(nana_ui_runtime::ScrollbarBar {
-            lane: LayoutBox {
-                x: 186.0,
-                y: 2.0,
-                width: 12.0,
-                height: 116.0,
-            },
-            track: LayoutBox {
-                x: 188.0,
-                y: 2.0,
-                width: 8.0,
-                height: 116.0,
-            },
-            thumb: LayoutBox {
+/// A scroll view's widget paint: one vertical axis whose chrome flag reflects `visibility`.
+fn scrollbar_paint(
+    visibility: nana_ui_core::ScrollbarVisibility,
+    thumb_y: Option<f32>,
+    track_background: Option<[f32; 4]>,
+) -> nana_ui_runtime::WidgetPaintOutput {
+    let mut out = nana_ui_runtime::WidgetPaintOutput {
+        has_scrollbar_chrome: visibility != nana_ui_core::ScrollbarVisibility::Hidden,
+        ..nana_ui_runtime::WidgetPaintOutput::new()
+    };
+    let Some(thumb_y) = thumb_y else {
+        return out;
+    };
+    if let Some(track_background) = track_background {
+        out.push(
+            scrollbar_chrome_slot(2),
+            nana_ui_runtime::WidgetPaintOp::Quad(nana_ui_runtime::WidgetQuad {
+                rect: LayoutBox {
+                    x: 188.0,
+                    y: 2.0,
+                    width: 8.0,
+                    height: 116.0,
+                },
+                fill: Some(track_background),
+                corner_radius: [4.0; 4],
+                ..Default::default()
+            }),
+        );
+    }
+    out.push(
+        scrollbar_chrome_slot(3),
+        nana_ui_runtime::WidgetPaintOp::Quad(nana_ui_runtime::WidgetQuad {
+            rect: LayoutBox {
                 x: 189.0,
                 y: thumb_y,
                 width: 6.0,
                 height: 70.0,
             },
-            track_background,
-            thumb_background: [0.6, 0.6, 0.6, 1.0],
-            border_width: 0.0,
-            track_border: None,
-            thumb_border: None,
-            track_radius: 4.0,
-            thumb_radius: 3.0,
-            min_offset: 0.0,
-            max_offset: 80.0,
+            fill: Some([0.6, 0.6, 0.6, 1.0]),
+            corner_radius: [3.0; 4],
+            ..Default::default()
         }),
-    }
+    );
+    out
 }
 
-fn scroller(value: u64, children: &[u64], visual: StandardVisual) -> ExtractedNode {
+fn scroller(
+    value: u64,
+    children: &[u64],
+    paint: nana_ui_runtime::WidgetPaintOutput,
+) -> ExtractedNode {
     let mut scroller = node(value, None, children);
     scroller.layout = LayoutBox {
         x: 0.0,
@@ -6631,7 +6745,7 @@ fn scroller(value: u64, children: &[u64], visual: StandardVisual) -> ExtractedNo
         layout.overflow_x = nana_ui_core::OverflowSpec::Scroll;
         layout.overflow_y = nana_ui_core::OverflowSpec::Scroll;
     }
-    scroller.standard_visual = Some(visual);
+    scroller.widget_paint = Some(Arc::new(paint));
     scroller
 }
 
@@ -6655,12 +6769,15 @@ fn filled(value: u64, parent: Option<u64>, color: [f32; 4]) -> ExtractedNode {
 
 #[test]
 fn scrollbar_chrome_paints_ordinary_quads_over_the_scrollport() {
-    let mut scroller = scroller(
+    let scroller = scroller(
         1,
         &[],
-        scrollbar_visual(nana_ui_core::ScrollbarVisibility::Always, 1.0),
+        scrollbar_paint(
+            nana_ui_core::ScrollbarVisibility::Always,
+            Some(2.0),
+            Some([0.1, 0.1, 0.1, 1.0]),
+        ),
     );
-    scroller.component_geometry = Some(Box::new(vertical_bar(2.0, Some([0.1, 0.1, 0.1, 1.0]))));
 
     let mut scene = UiScene::new();
     scene.apply_delta([scroller], []);
@@ -6726,43 +6843,41 @@ fn scrollbar_chrome_paints_ordinary_quads_over_the_scrollport() {
 
 #[test]
 fn scrollbar_skin_thickness_still_paints_ordinary_quads() {
-    let mut scroller = scroller(
-        1,
-        &[],
-        scrollbar_visual(nana_ui_core::ScrollbarVisibility::Always, 1.0),
-    );
-    scroller.component_geometry = Some(Box::new(ComponentGeometry::Scrollbar {
-        horizontal: None,
-        vertical: Some(nana_ui_runtime::ScrollbarBar {
-            lane: LayoutBox {
-                x: 190.0,
-                y: 0.0,
-                width: 8.0,
-                height: 120.0,
-            },
-            track: LayoutBox {
+    let mut paint = nana_ui_runtime::WidgetPaintOutput {
+        has_scrollbar_chrome: true,
+        ..nana_ui_runtime::WidgetPaintOutput::new()
+    };
+    paint.push(
+        scrollbar_chrome_slot(2),
+        nana_ui_runtime::WidgetPaintOp::Quad(nana_ui_runtime::WidgetQuad {
+            rect: LayoutBox {
                 x: 192.0,
                 y: 0.0,
                 width: 4.0,
                 height: 120.0,
             },
-            thumb: LayoutBox {
+            fill: Some([0.2, 0.2, 0.2, 1.0]),
+            border: Some(([0.3, 0.3, 0.3, 0.5], 1.0)),
+            corner_radius: [2.0; 4],
+            ..Default::default()
+        }),
+    );
+    paint.push(
+        scrollbar_chrome_slot(3),
+        nana_ui_runtime::WidgetPaintOp::Quad(nana_ui_runtime::WidgetQuad {
+            rect: LayoutBox {
                 x: 192.0,
                 y: 8.0,
                 width: 4.0,
                 height: 48.0,
             },
-            track_background: Some([0.2, 0.2, 0.2, 1.0]),
-            thumb_background: [1.0, 0.0, 0.0, 1.0],
-            border_width: 1.0,
-            track_border: Some([0.3, 0.3, 0.3, 0.5]),
-            thumb_border: Some([0.0, 0.0, 0.0, 0.8]),
-            track_radius: 2.0,
-            thumb_radius: 2.0,
-            min_offset: 0.0,
-            max_offset: 80.0,
+            fill: Some([1.0, 0.0, 0.0, 1.0]),
+            border: Some(([0.0, 0.0, 0.0, 0.8], 1.0)),
+            corner_radius: [2.0; 4],
+            ..Default::default()
         }),
-    }));
+    );
+    let scroller = scroller(1, &[], paint);
 
     let mut scene = UiScene::new();
     scene.apply_delta([scroller], []);
@@ -6818,9 +6933,12 @@ fn scrollbar_chrome_paints_over_the_content_it_scrolls() {
     let mut scroll = scroller(
         1,
         &[2, 3, 5],
-        scrollbar_visual(nana_ui_core::ScrollbarVisibility::AutoHide, 1.0),
+        scrollbar_paint(
+            nana_ui_core::ScrollbarVisibility::AutoHide,
+            Some(2.0),
+            Some([0.1, 0.1, 0.1, 1.0]),
+        ),
     );
-    scroll.component_geometry = Some(Box::new(vertical_bar(2.0, Some([0.1, 0.1, 0.1, 1.0]))));
     let row = filled(2, Some(1), [1.0, 0.0, 0.0, 1.0]);
     let mut raised = filled(3, Some(1), [0.0, 1.0, 0.0, 1.0]);
     raised.z_index = 100;
@@ -6866,22 +6984,22 @@ fn scrollbar_chrome_paints_over_the_content_it_scrolls() {
     );
 
     // Fading the bars or moving the thumb only repaints them.
-    scroll.standard_visual = Some(scrollbar_visual(
+    scroll.widget_paint = Some(Arc::new(scrollbar_paint(
         nana_ui_core::ScrollbarVisibility::AutoHide,
-        0.5,
-    ));
-    scroll.component_geometry = Some(Box::new(vertical_bar(30.0, None)));
+        Some(30.0),
+        None,
+    )));
     let delta = scene.apply_delta([scroll.clone()], []);
     assert!(!delta.order_changed, "a fade or a scroll must not re-sort");
     assert!(position(&scene, thumb) > first_of(&scene, 3));
 
     // A view whose bars never show stops grouping what it holds, so the
     // raised row escapes it again: that is the one change that re-sorts.
-    scroll.standard_visual = Some(scrollbar_visual(
+    scroll.widget_paint = Some(Arc::new(scrollbar_paint(
         nana_ui_core::ScrollbarVisibility::Hidden,
-        0.0,
-    ));
-    scroll.component_geometry = None;
+        None,
+        None,
+    )));
     let delta = scene.apply_delta([scroll], []);
     assert!(delta.order_changed);
     assert!(first_of(&scene, 3) > first_of(&scene, 4));
@@ -6897,11 +7015,26 @@ fn focused_icon_does_not_paint_an_external_ring() {
         height: 28.0,
     };
     icon.focused = true;
-    icon.standard_visual = Some(StandardVisual::Icon {
-        icon: nana_ui_core::Icon::Settings,
-        size: 16.0,
-        tooltip: None,
-    });
+    let mut paint = nana_ui_runtime::WidgetPaintOutput {
+        suppresses_in_flow_descendants: true,
+        ..nana_ui_runtime::WidgetPaintOutput::new()
+    };
+    paint.push(
+        3,
+        nana_ui_runtime::WidgetPaintOp::Icon(nana_ui_runtime::WidgetIcon {
+            bounds: LayoutBox {
+                x: 6.0,
+                y: 6.0,
+                width: 16.0,
+                height: 16.0,
+            },
+            glyph: nana_ui_runtime::WidgetGlyph::Icon(nana_ui_core::Icon::Settings),
+            color: None,
+            paint_color: None,
+            align_to_adjacent_text: true,
+        }),
+    );
+    icon.widget_paint = Some(Arc::new(paint));
     style_mut(&mut icon).border_color = Some([0.2, 0.6, 1.0, 1.0]);
     style_mut(&mut icon).background = Some([0.2, 0.2, 0.2, 1.0]);
     let mut scene = UiScene::new();
@@ -6934,14 +7067,23 @@ fn focused_list_item_paints_an_external_keyboard_ring() {
         height: 32.0,
     };
     item.focused = true;
-    item.standard_visual = Some(StandardVisual::ListItem {
-        leading: None,
-        content: None,
-        trailing: None,
-        note: None,
-        detail: None,
-    });
-    item.standard_visual_foreground = Some([0.2, 0.6, 1.0, 1.0]);
+    let mut paint = nana_ui_runtime::WidgetPaintOutput {
+        aligns_child_icon_to_text: true,
+        ..nana_ui_runtime::WidgetPaintOutput::new()
+    };
+    paint.push(
+        7,
+        nana_ui_runtime::WidgetPaintOp::FocusRing {
+            bounds: LayoutBox {
+                x: 0.0,
+                y: 0.0,
+                ..item.layout
+            },
+            color: [0.2, 0.6, 1.0, 1.0],
+            extra_outset: 0.0,
+        },
+    );
+    item.widget_paint = Some(Arc::new(paint));
     item.text = Some(TextContent {
         value: "Open".into(),
     });
@@ -6986,14 +7128,23 @@ fn the_theme_focus_ring_sets_the_ring_stroke_and_offset() {
         height: 32.0,
     };
     item.focused = true;
-    item.standard_visual = Some(StandardVisual::ListItem {
-        leading: None,
-        content: None,
-        trailing: None,
-        note: None,
-        detail: None,
-    });
-    item.standard_visual_foreground = Some([0.2, 0.6, 1.0, 1.0]);
+    let mut paint = nana_ui_runtime::WidgetPaintOutput {
+        aligns_child_icon_to_text: true,
+        ..nana_ui_runtime::WidgetPaintOutput::new()
+    };
+    paint.push(
+        7,
+        nana_ui_runtime::WidgetPaintOp::FocusRing {
+            bounds: LayoutBox {
+                x: 0.0,
+                y: 0.0,
+                ..item.layout
+            },
+            color: [0.2, 0.6, 1.0, 1.0],
+            extra_outset: 0.0,
+        },
+    );
+    item.widget_paint = Some(Arc::new(paint));
 
     let mut scene = UiScene::new();
     let before = scene.instance_id();
@@ -7041,13 +7192,10 @@ fn compact_leading_icon_centers_on_the_parent_text_line() {
     row.text = Some(TextContent {
         value: "舞台".into(),
     });
-    row.standard_visual = Some(StandardVisual::ListItem {
-        leading: Some(id(2)),
-        content: None,
-        trailing: None,
-        note: None,
-        detail: None,
-    });
+    row.widget_paint = Some(Arc::new(nana_ui_runtime::WidgetPaintOutput {
+        aligns_child_icon_to_text: true,
+        ..nana_ui_runtime::WidgetPaintOutput::new()
+    }));
     row.source_style.text_vertical_alignment = TextVerticalAlignment::Center;
     style_mut(&mut row).font_size = 12.0;
     style_mut(&mut row).line_height = Some(LineHeightSpec::Absolute(12.0));
@@ -7059,11 +7207,26 @@ fn compact_leading_icon_centers_on_the_parent_text_line() {
         width: 12.0,
         height: 12.0,
     };
-    icon.standard_visual = Some(StandardVisual::Icon {
-        icon: nana_ui_core::Icon::Workspace,
-        size: 12.0,
-        tooltip: None,
-    });
+    let mut paint = nana_ui_runtime::WidgetPaintOutput {
+        suppresses_in_flow_descendants: true,
+        ..nana_ui_runtime::WidgetPaintOutput::new()
+    };
+    paint.push(
+        3,
+        nana_ui_runtime::WidgetPaintOp::Icon(nana_ui_runtime::WidgetIcon {
+            bounds: LayoutBox {
+                x: 0.0,
+                y: 0.0,
+                width: 12.0,
+                height: 12.0,
+            },
+            glyph: nana_ui_runtime::WidgetGlyph::Icon(nana_ui_core::Icon::Workspace),
+            color: None,
+            paint_color: None,
+            align_to_adjacent_text: true,
+        }),
+    );
+    icon.widget_paint = Some(Arc::new(paint));
 
     let mut scene = UiScene::new();
     scene.apply_delta([row, icon], []);
@@ -7093,7 +7256,7 @@ fn an_icon_trigger_paints_a_centered_glyph_instead_of_label_text() {
         width: 28.0,
         height: 28.0,
     };
-    menu.standard_visual = Some(StandardVisual::MenuSurface {
+    let visual = nana_ui_runtime::MenuSurfaceVisual {
         trigger_image: None,
         open: false,
         kind: nana_ui_runtime::MenuSurfaceKind::ActionMenu,
@@ -7104,8 +7267,8 @@ fn an_icon_trigger_paints_a_centered_glyph_instead_of_label_text() {
         query: None,
         rows: Arc::from([]),
         highlighted: None,
-    });
-    menu.component_geometry = Some(Box::new(ComponentGeometry::MenuSurface {
+    };
+    let geometry = nana_ui_runtime::MenuSurfaceGeometry {
         trigger_image: None,
         trigger_surface: Some(nana_ui_runtime::ComponentTriggerSurface {
             bounds: LayoutBox {
@@ -7148,7 +7311,15 @@ fn an_icon_trigger_paints_a_centered_glyph_instead_of_label_text() {
         },
         background: [0.1, 0.1, 0.1, 1.0],
         border: [0.3, 0.3, 0.3, 1.0],
-    }));
+    };
+    menu.widget_paint = Some(Arc::new(visual.paint_with_geometry(
+        &geometry,
+        menu.source_style.layout.as_ref(),
+        &menu.style,
+        nana_ui_core::StyleModelRef::new(nana_ui_core::ThemeAppearance::Dark),
+        &nana_ui_core::CompiledTheme::default(),
+        menu.chrome_radii,
+    )));
 
     let mut scene = UiScene::new();
     scene.apply_delta([menu], []);
@@ -7175,7 +7346,7 @@ fn a_focused_range_adds_a_thumb_focus_ring_and_keeps_the_rail_untouched() {
     let range = |focused: bool| {
         let mut range = node(1, None, &[]);
         range.focused = focused;
-        range.standard_visual = Some(StandardVisual::Range {
+        let visual = nana_ui_runtime::RangeVisual {
             caution: None,
             label: None,
             value: Arc::from("50"),
@@ -7191,9 +7362,10 @@ fn a_focused_range_adds_a_thumb_focus_ring_and_keeps_the_rail_untouched() {
             editing: false,
             bounds: None,
             reset: false,
-        });
+        };
+        let geometry = default_range_geometry(range.layout, 4.0);
         style_mut(&mut range).border_color = Some([0.4, 0.4, 0.45, 1.0]);
-        range.standard_visual_foreground = Some([0.2, 0.5, 1.0, 1.0]);
+        apply_range_paint(&mut range, &visual, &geometry, [0.2, 0.5, 1.0, 1.0]);
         range
     };
 
@@ -7261,7 +7433,7 @@ fn a_focused_range_adds_a_thumb_focus_ring_and_keeps_the_rail_untouched() {
 #[test]
 fn a_range_marker_paints_on_the_track_under_the_thumb() {
     let mut range = node(1, None, &[]);
-    range.standard_visual = Some(StandardVisual::Range {
+    let visual = nana_ui_runtime::RangeVisual {
         caution: None,
         label: None,
         value: Arc::from("50"),
@@ -7277,9 +7449,11 @@ fn a_range_marker_paints_on_the_track_under_the_thumb() {
         editing: false,
         bounds: None,
         reset: false,
-    });
+    };
+    let geometry = default_range_geometry(range.layout, 4.0);
     style_mut(&mut range).background = Some([0.2, 0.5, 0.9, 1.0]);
     style_mut(&mut range).border_color = Some([0.4, 0.4, 0.45, 1.0]);
+    apply_range_paint(&mut range, &visual, &geometry, [0.0; 4]);
     let mut scene = UiScene::new();
     scene.apply_delta([range], []);
     let tick = scene
@@ -7309,31 +7483,43 @@ fn migrated_components_consume_runtime_subregion_geometry() {
         width: 32.0,
         height: 32.0,
     };
-    icon.standard_visual = Some(StandardVisual::Icon {
-        icon: nana_ui_core::Icon::Search,
-        size: 16.0,
-        tooltip: None,
-    });
+    let mut icon_paint = nana_ui_runtime::WidgetPaintOutput {
+        suppresses_in_flow_descendants: true,
+        ..nana_ui_runtime::WidgetPaintOutput::new()
+    };
+    icon_paint.push(
+        3,
+        nana_ui_runtime::WidgetPaintOp::Icon(nana_ui_runtime::WidgetIcon {
+            bounds: LayoutBox {
+                x: 8.0,
+                y: 8.0,
+                width: 16.0,
+                height: 16.0,
+            },
+            glyph: nana_ui_runtime::WidgetGlyph::Icon(nana_ui_core::Icon::Search),
+            color: Some([0.1, 0.6, 0.9, 1.0]),
+            paint_color: None,
+            align_to_adjacent_text: true,
+        }),
+    );
+    icon.widget_paint = Some(Arc::new(icon_paint));
     style_mut(&mut icon).background = Some([0.2, 0.3, 0.4, 1.0]);
     style_mut(&mut icon).border_color = Some([0.4, 0.5, 0.6, 1.0]);
     style_mut(&mut icon).color = Some([0.9, 0.9, 0.9, 1.0]);
-    icon.standard_visual_foreground = Some([0.1, 0.6, 0.9, 1.0]);
 
     let mut switch = node(2, None, &[]);
-    switch.standard_visual = Some(StandardVisual::Switch {
-        thumb_progress: 1.0,
-        label: Arc::from("Enabled"),
-        hint: Some(Arc::from("Starts with the workspace")),
-        checked: true,
-        control_position: nana_ui_core::SwitchControlPosition::End,
-        size: nana_ui_core::ControlSize::Medium,
-        loading: false,
-        loading_phase: 0.0,
-        invalid: false,
-    });
-    switch.component_geometry = Some(Box::new(ComponentGeometry::Switch {
-        thumb_progress: 1.0,
-        label: ComponentTextRegion {
+    let mut switch_paint = nana_ui_runtime::WidgetPaintOutput {
+        owns_node_text: true,
+        root_surface: Some(nana_ui_runtime::WidgetRootSurface {
+            border_color: Some(None),
+            border_width: Some(0.0),
+            ..Default::default()
+        }),
+        ..nana_ui_runtime::WidgetPaintOutput::new()
+    };
+    switch_paint.push(
+        2,
+        nana_ui_runtime::WidgetPaintOp::Text(nana_ui_runtime::WidgetText {
             bounds: LayoutBox {
                 x: 0.0,
                 y: 8.0,
@@ -7342,10 +7528,29 @@ fn migrated_components_consume_runtime_subregion_geometry() {
             },
             content: nana_ui_runtime::TextValue::from("Enabled"),
             color: Some([0.9, 0.9, 0.9, 1.0]),
+            paint_color: None,
             font_size: 13.0,
             font_weight: Some(500),
-        },
-        hint: Some(ComponentTextRegion {
+            horizontal_alignment: TextHorizontalAlignment::Start,
+            vertical_alignment: TextVerticalAlignment::Center,
+            ellipsis: true,
+            wrap: false,
+            max_lines: None,
+            italic: None,
+            underline: None,
+            line_through: None,
+            suppress_spans: false,
+            preserve_lines: None,
+            unstyled_glyph: false,
+            line_height: Some(Some(nana_ui_core::LineHeightSpec::Absolute(18.0))),
+            retained_text: nana_ui_runtime::WidgetRetainedText::None,
+            tabular_nums: false,
+            ..Default::default()
+        }),
+    );
+    switch_paint.push(
+        3,
+        nana_ui_runtime::WidgetPaintOp::Text(nana_ui_runtime::WidgetText {
             bounds: LayoutBox {
                 x: 0.0,
                 y: 28.0,
@@ -7354,26 +7559,77 @@ fn migrated_components_consume_runtime_subregion_geometry() {
             },
             content: nana_ui_runtime::TextValue::from("Starts with the workspace"),
             color: Some([0.6, 0.6, 0.6, 1.0]),
+            paint_color: None,
             font_size: 12.0,
             font_weight: Some(400),
+            horizontal_alignment: TextHorizontalAlignment::Start,
+            vertical_alignment: TextVerticalAlignment::Center,
+            ellipsis: true,
+            wrap: false,
+            max_lines: None,
+            italic: None,
+            underline: None,
+            line_through: None,
+            suppress_spans: false,
+            preserve_lines: None,
+            unstyled_glyph: false,
+            line_height: Some(Some(nana_ui_core::LineHeightSpec::Absolute(16.0))),
+            retained_text: nana_ui_runtime::WidgetRetainedText::None,
+            tabular_nums: false,
+            ..Default::default()
         }),
-        control: LayoutBox {
-            x: 170.0,
-            y: 18.0,
-            width: 30.0,
-            height: 16.0,
-        },
-        track_background: [0.2, 0.5, 0.9, 1.0],
-        border_width: 1.0,
-        track_border: [0.1, 0.4, 0.8, 1.0],
-        thumb_background: [1.0, 1.0, 1.0, 1.0],
-    }));
+    );
+    switch_paint.push(
+        4,
+        nana_ui_runtime::WidgetPaintOp::Quad(nana_ui_runtime::WidgetQuad {
+            rect: LayoutBox {
+                x: 170.0,
+                y: 18.0,
+                width: 30.0,
+                height: 16.0,
+            },
+            fill: Some([0.2, 0.5, 0.9, 1.0]),
+            border: Some(([0.1, 0.4, 0.8, 1.0], 1.0)),
+            corner_radius: [8.0; 4],
+            ..Default::default()
+        }),
+    );
+    switch_paint.push(
+        5,
+        nana_ui_runtime::WidgetPaintOp::Quad(nana_ui_runtime::WidgetQuad {
+            rect: LayoutBox {
+                x: 187.0,
+                y: 21.0,
+                width: 10.0,
+                height: 10.0,
+            },
+            fill: Some([1.0, 1.0, 1.0, 1.0]),
+            corner_radius: [5.0; 4],
+            ..Default::default()
+        }),
+    );
+    switch_paint.push(
+        7,
+        nana_ui_runtime::WidgetPaintOp::Quad(nana_ui_runtime::WidgetQuad {
+            rect: LayoutBox {
+                x: 166.0,
+                y: 14.0,
+                width: 38.0,
+                height: 24.0,
+            },
+            fill: None,
+            border: Some(([0.3, 0.6, 1.0, 1.0], 2.0)),
+            corner_radius: [12.0; 4],
+            ..Default::default()
+        }),
+    );
+    switch.widget_paint = Some(Arc::new(switch_paint));
     switch.layout.width = 200.0;
     switch.layout.height = 52.0;
     switch.focused = true;
 
     let mut range = node(3, None, &[]);
-    range.standard_visual = Some(StandardVisual::Range {
+    let range_visual = nana_ui_runtime::RangeVisual {
         caution: None,
         label: Some(Arc::from("Opacity")),
         value: Arc::from("25"),
@@ -7389,8 +7645,8 @@ fn migrated_components_consume_runtime_subregion_geometry() {
         editing: false,
         bounds: None,
         reset: false,
-    });
-    range.component_geometry = Some(Box::new(ComponentGeometry::Range {
+    };
+    let range_geometry = nana_ui_runtime::RangeGeometry {
         caution: None,
         label: Some(ComponentTextRegion {
             bounds: LayoutBox {
@@ -7439,23 +7695,41 @@ fn migrated_components_consume_runtime_subregion_geometry() {
         thumb_ring: None,
         bounds: None,
         value_thumb: None,
-    }));
+    };
     range.layout.width = 240.0;
     range.layout.height = 40.0;
     style_mut(&mut range).background = Some([0.2, 0.5, 0.9, 1.0]);
     style_mut(&mut range).border_color = Some([0.4, 0.4, 0.4, 1.0]);
+    apply_range_paint(&mut range, &range_visual, &range_geometry, [0.0; 4]);
 
     let mut card = node(4, None, &[]);
-    card.standard_visual = Some(StandardVisual::Card {
-        title: Some(Arc::from("Actions")),
-        kind: nana_ui_core::CardKind::Surface,
-        loading: true,
-        loading_phase: 0.5,
-    });
     style_mut(&mut card).background = Some([0.12, 0.12, 0.12, 1.0]);
     style_mut(&mut card).border_color = Some([0.3, 0.3, 0.3, 1.0]);
-    card.component_geometry = Some(Box::new(ComponentGeometry::Card {
-        title: Some(ComponentTextRegion {
+    let mut card_paint = nana_ui_runtime::WidgetPaintOutput {
+        owns_node_text: true,
+        child_text_suppression: nana_ui_runtime::WidgetChildTextSuppression::Matching(Arc::from(
+            "Actions",
+        )),
+        root_surface: Some(nana_ui_runtime::WidgetRootSurface {
+            background: None,
+            border_color: None,
+            border_width: None,
+            fallback_elevation: Some(ComponentElevation {
+                color: nana_ui_core::PaintColor::Srgb {
+                    rgba: [0.0, 0.0, 0.0, 0.25],
+                },
+                offset_x: 0.0,
+                offset_y: 3.0,
+                blur_radius: 8.0,
+                spread_radius: 0.0,
+                inset: false,
+            }),
+        }),
+        ..nana_ui_runtime::WidgetPaintOutput::new()
+    };
+    card_paint.push(
+        2,
+        nana_ui_runtime::WidgetPaintOp::Text(nana_ui_runtime::WidgetText {
             bounds: LayoutBox {
                 x: 10.0,
                 y: 8.0,
@@ -7464,55 +7738,56 @@ fn migrated_components_consume_runtime_subregion_geometry() {
             },
             content: nana_ui_runtime::TextValue::from("Actions"),
             color: None,
+            paint_color: None,
             font_size: 13.0,
             font_weight: Some(600),
+            horizontal_alignment: TextHorizontalAlignment::Start,
+            vertical_alignment: TextVerticalAlignment::Center,
+            ellipsis: true,
+            wrap: false,
+            max_lines: Some(1),
+            italic: None,
+            underline: None,
+            line_through: None,
+            suppress_spans: false,
+            preserve_lines: Some(false),
+            unstyled_glyph: false,
+            line_height: Some(Some(nana_ui_core::LineHeightSpec::Absolute(18.0))),
+            retained_text: nana_ui_runtime::WidgetRetainedText::AlwaysClipOverflow,
+            tabular_nums: false,
+            ..Default::default()
         }),
-        content: LayoutBox {
-            x: 10.0,
-            y: 36.0,
-            width: 80.0,
-            height: 34.0,
-        },
-        elevation: Some(ComponentElevation {
-            color: nana_ui_core::PaintColor::Srgb {
-                rgba: [0.0, 0.0, 0.0, 0.25],
+    );
+    card_paint.push(
+        3,
+        nana_ui_runtime::WidgetPaintOp::Icon(nana_ui_runtime::WidgetIcon {
+            bounds: LayoutBox {
+                x: 68.0,
+                y: 10.0,
+                width: 14.0,
+                height: 14.0,
             },
-            offset_x: 0.0,
-            offset_y: 3.0,
-            blur_radius: 8.0,
-            spread_radius: 0.0,
-            inset: false,
+            glyph: nana_ui_runtime::WidgetGlyph::Spinner { phase: 4 },
+            color: None,
+            paint_color: None,
+            align_to_adjacent_text: false,
         }),
-        spinner: Some(LayoutBox {
-            x: 68.0,
-            y: 10.0,
-            width: 14.0,
-            height: 14.0,
-        }),
-    }));
+    );
+    card.widget_paint = Some(Arc::new(card_paint));
 
     let mut list_item = node(5, None, &[]);
     list_item.text = Some(TextContent {
         value: "Project".into(),
     });
-    list_item.standard_visual = Some(StandardVisual::ListItem {
-        leading: None,
-        content: None,
-        trailing: None,
-        note: None,
-        detail: None,
-    });
-    list_item.component_geometry = Some(Box::new(ComponentGeometry::ListItem {
-        leading: None,
-        content: Some(LayoutBox {
+    list_item.widget_paint = Some(Arc::new(nana_ui_runtime::WidgetPaintOutput {
+        aligns_child_icon_to_text: true,
+        node_text_bounds: Some(LayoutBox {
             x: 30.0,
             y: 6.0,
             width: 55.0,
             height: 22.0,
         }),
-        trailing: None,
-        note: None,
-        detail: None,
+        ..nana_ui_runtime::WidgetPaintOutput::new()
     }));
     style_mut(&mut list_item).background = Some([0.15, 0.15, 0.15, 1.0]);
 
@@ -7820,39 +8095,34 @@ fn scroll_offset_delta_updates_attributes_without_rebuilding_descendant_geometry
 #[cfg(feature = "graph-canvas")]
 fn graph_canvas_high_slots_stay_in_paint_order_across_incremental_updates() {
     let edge = vec![[8.0, 20.0], [48.0, 22.0]];
-    let geometry = |edges: Vec<(Vec<[f32; 2]>, [f32; 4])>| ComponentGeometry::GraphCanvas {
-        nodes: Vec::new(),
-        separators: Vec::new(),
-        ports: Vec::new(),
-        port_labels: Vec::new(),
-        edges,
-        edge_labels: Vec::new(),
-        grid: Vec::new(),
-        background: [0.1, 0.1, 0.1, 1.0],
-        grid_color: [0.2, 0.2, 0.2, 0.5],
-        separator_color: [0.2, 0.2, 0.2, 1.0],
-    };
-    let mut canvas = node(1, None, &[]);
-    canvas.layout = LayoutBox {
+    let layout = LayoutBox {
         x: 0.0,
         y: 0.0,
         width: 200.0,
         height: 120.0,
     };
-    canvas.standard_visual = Some(StandardVisual::GraphCanvas {
-        nodes: Arc::from([]),
-        ports: Arc::from([]),
-        edges: Arc::from([]),
-        connecting: None,
-        grid_spacing: 24.0,
-        viewport_offset_x: 0.0,
-        viewport_offset_y: 0.0,
-        viewport_zoom: 1.0,
-    });
-    canvas.component_geometry = Some(Box::new(geometry(vec![(
-        edge.clone(),
-        [0.5, 0.5, 0.5, 1.0],
-    )])));
+    let chrome_radii = nana_ui_core::ChromeRadii::default();
+    let style = Arc::new(ComputedStyle::default());
+    let paint = |edges: Vec<(Vec<[f32; 2]>, [f32; 4])>| {
+        Arc::new(
+            nana_ui_runtime::GraphCanvasLayout {
+                nodes: Vec::new(),
+                separators: Vec::new(),
+                ports: Vec::new(),
+                port_labels: Vec::new(),
+                edges,
+                edge_labels: Vec::new(),
+                grid: Vec::new(),
+                background: [0.1, 0.1, 0.1, 1.0],
+                grid_color: [0.2, 0.2, 0.2, 0.5],
+                separator_color: [0.2, 0.2, 0.2, 1.0],
+            }
+            .to_widget_paint(layout, chrome_radii, &style),
+        )
+    };
+    let mut canvas = node(1, None, &[]);
+    canvas.layout = layout;
+    canvas.widget_paint = Some(paint(vec![(edge.clone(), [0.5, 0.5, 0.5, 1.0])]));
 
     let mut scene = UiScene::new();
     scene.apply_delta([canvas.clone()], []);
@@ -7867,10 +8137,10 @@ fn graph_canvas_high_slots_stay_in_paint_order_across_incremental_updates() {
             .any(|primitive| primitive.id.slot == (1u64 << 32) + 1)
     );
 
-    canvas.component_geometry = Some(Box::new(geometry(vec![
+    canvas.widget_paint = Some(paint(vec![
         (edge.clone(), [0.5, 0.5, 0.5, 1.0]),
         (edge.clone(), [0.2, 0.6, 1.0, 1.0]),
-    ])));
+    ]));
     scene.apply_delta([canvas.clone()], []);
     assert!(
         scene
@@ -7885,7 +8155,7 @@ fn graph_canvas_high_slots_stay_in_paint_order_across_incremental_updates() {
         "selected/connecting overlay must enter paint order on the next extract"
     );
 
-    canvas.component_geometry = Some(Box::new(geometry(vec![(edge, [0.5, 0.5, 0.5, 1.0])])));
+    canvas.widget_paint = Some(paint(vec![(edge, [0.5, 0.5, 0.5, 1.0])]));
     scene.apply_delta([canvas], []);
     assert!(
         scene
@@ -7916,15 +8186,7 @@ fn new_component_geometry_paints_owned_quads_and_skips_generic_text() {
     markdown.text = Some(TextContent {
         value: "hello".into(),
     });
-    markdown.standard_visual = Some(StandardVisual::NativeMarkdown {
-        blocks: nana_ui_runtime::NativeMarkdown::from_source("hello")
-            .blocks()
-            .to_vec()
-            .into(),
-        text: Arc::from("hello"),
-        selection: Some((0, 5)),
-    });
-    markdown.component_geometry = Some(Box::new(ComponentGeometry::NativeMarkdown {
+    let layout = nana_ui_runtime::NativeMarkdownLayout {
         drawing: nana_ui_runtime::NativeMarkdown::from_source("hello").drawing(markdown.layout),
         text: ComponentTextRegion {
             bounds: LayoutBox {
@@ -7945,7 +8207,8 @@ fn new_component_geometry_paints_owned_quads_and_skips_generic_text() {
             height: 48.0,
         }],
         selection_color: [0.2, 0.4, 0.8, 0.14],
-    }));
+    };
+    markdown.widget_paint = Some(Arc::new(layout.to_widget_paint(&markdown.style)));
 
     let mut scene = UiScene::new();
     scene.apply_delta([markdown], []);
@@ -8020,41 +8283,40 @@ fn host_and_child_text_extract_one_visible_text_primitive() {
     button.text = Some(TextContent {
         value: "Open".into(),
     });
-    let label = ComponentTextRegion {
-        bounds: LayoutBox {
-            x: 8.0,
-            y: 8.0,
-            width: 48.0,
-            height: 20.0,
-        },
-        content: nana_ui_runtime::TextValue::from("Open"),
-        color: Some([0.1, 0.1, 0.1, 1.0]),
-        font_size: 13.0,
-        font_weight: Some(500),
-    };
-    button.standard_visual = Some(StandardVisual::Button {
-        icon: None,
-        trailing_icon: None,
-        icon_size: 14.0,
-        icon_gap: 6.0,
-        label: Arc::from("Open"),
-        kind: nana_ui_core::ButtonKind::Ghost,
-        size: nana_ui_core::ControlSize::Medium,
-        loading: false,
-        loading_phase: 0.0,
-        invalid: false,
-        content_align: nana_ui_runtime::TextHorizontalAlignment::Center,
-    });
-    button.component_geometry = Some(Box::new(ComponentGeometry::Button {
-        icon: None,
-        trailing_icon: None,
-        label,
-        spinner: None,
-        background: None,
-        border: None,
-        border_width: 0.0,
-        focus_ring: None,
-    }));
+    let mut paint = nana_ui_runtime::WidgetPaintOutput::new();
+    paint.owns_node_text = true;
+    paint.push(
+        2,
+        nana_ui_runtime::WidgetPaintOp::Text(nana_ui_runtime::WidgetText {
+            bounds: LayoutBox {
+                x: 8.0,
+                y: 8.0,
+                width: 48.0,
+                height: 20.0,
+            },
+            content: nana_ui_runtime::TextValue::from("Open"),
+            color: Some([0.1, 0.1, 0.1, 1.0]),
+            paint_color: None,
+            font_size: 13.0,
+            font_weight: Some(500),
+            horizontal_alignment: nana_ui_runtime::TextHorizontalAlignment::Center,
+            vertical_alignment: nana_ui_runtime::TextVerticalAlignment::Center,
+            ellipsis: true,
+            wrap: false,
+            max_lines: None,
+            italic: None,
+            underline: None,
+            line_through: None,
+            suppress_spans: false,
+            preserve_lines: None,
+            unstyled_glyph: false,
+            line_height: None,
+            retained_text: nana_ui_runtime::WidgetRetainedText::NodeTextIfRich,
+            tabular_nums: false,
+            ..Default::default()
+        }),
+    );
+    button.widget_paint = Some(Arc::new(paint));
     let mut scene = UiScene::new();
     scene.apply_delta([button, text_node(2, 1, "Open")], []);
     assert_eq!(visible_text_count(&scene, &[id(1), id(2)]), 1);
@@ -8072,34 +8334,50 @@ fn host_and_child_text_extract_one_visible_text_primitive() {
 fn card_body_text_is_painted_independently_of_its_optional_title() {
     for title in [None, Some("Card heading")] {
         let mut card = node(1, None, &[2, 3]);
-        card.standard_visual = Some(StandardVisual::Card {
-            title: title.map(Arc::from),
-            kind: nana_ui_core::CardKind::Surface,
-            loading: false,
-            loading_phase: 0.0,
-        });
-        card.component_geometry = Some(Box::new(ComponentGeometry::Card {
-            title: title.map(|content| ComponentTextRegion {
-                bounds: LayoutBox {
-                    x: 10.0,
-                    y: 8.0,
-                    width: 160.0,
-                    height: 18.0,
-                },
-                content: nana_ui_runtime::TextValue::from(content),
-                color: None,
-                font_size: 13.0,
-                font_weight: None,
-            }),
-            content: LayoutBox {
-                x: 10.0,
-                y: 30.0,
-                width: 160.0,
-                height: 90.0,
+        let mut card_paint = nana_ui_runtime::WidgetPaintOutput {
+            owns_node_text: true,
+            child_text_suppression: match title {
+                Some(title) => {
+                    nana_ui_runtime::WidgetChildTextSuppression::Matching(Arc::from(title))
+                }
+                None => nana_ui_runtime::WidgetChildTextSuppression::Allow,
             },
-            elevation: None,
-            spinner: None,
-        }));
+            ..nana_ui_runtime::WidgetPaintOutput::new()
+        };
+        if let Some(content) = title {
+            card_paint.push(
+                2,
+                nana_ui_runtime::WidgetPaintOp::Text(nana_ui_runtime::WidgetText {
+                    bounds: LayoutBox {
+                        x: 10.0,
+                        y: 8.0,
+                        width: 160.0,
+                        height: 18.0,
+                    },
+                    content: nana_ui_runtime::TextValue::from(content),
+                    color: None,
+                    paint_color: None,
+                    font_size: 13.0,
+                    font_weight: None,
+                    horizontal_alignment: TextHorizontalAlignment::Start,
+                    vertical_alignment: TextVerticalAlignment::Center,
+                    ellipsis: true,
+                    wrap: false,
+                    max_lines: Some(1),
+                    italic: None,
+                    underline: None,
+                    line_through: None,
+                    suppress_spans: false,
+                    preserve_lines: Some(false),
+                    unstyled_glyph: false,
+                    line_height: Some(Some(nana_ui_core::LineHeightSpec::Absolute(18.0))),
+                    retained_text: nana_ui_runtime::WidgetRetainedText::AlwaysClipOverflow,
+                    tabular_nums: false,
+                    ..Default::default()
+                }),
+            );
+        }
+        card.widget_paint = Some(Arc::new(card_paint));
         let mut scene = UiScene::new();
         scene.apply_delta(
             [
@@ -8128,14 +8406,16 @@ fn card_child_list_item_keeps_its_label() {
     card.text = Some(TextContent {
         value: "Outputs".into(),
     });
-    card.standard_visual = Some(StandardVisual::Card {
-        title: Some(Arc::from("Outputs")),
-        kind: nana_ui_core::CardKind::Surface,
-        loading: false,
-        loading_phase: 0.0,
-    });
-    card.component_geometry = Some(Box::new(ComponentGeometry::Card {
-        title: Some(ComponentTextRegion {
+    let mut card_paint = nana_ui_runtime::WidgetPaintOutput {
+        owns_node_text: true,
+        child_text_suppression: nana_ui_runtime::WidgetChildTextSuppression::Matching(Arc::from(
+            "Outputs",
+        )),
+        ..nana_ui_runtime::WidgetPaintOutput::new()
+    };
+    card_paint.push(
+        2,
+        nana_ui_runtime::WidgetPaintOp::Text(nana_ui_runtime::WidgetText {
             bounds: LayoutBox {
                 x: 10.0,
                 y: 8.0,
@@ -8144,18 +8424,27 @@ fn card_child_list_item_keeps_its_label() {
             },
             content: nana_ui_runtime::TextValue::from("Outputs"),
             color: None,
+            paint_color: None,
             font_size: 13.0,
             font_weight: Some(600),
+            horizontal_alignment: TextHorizontalAlignment::Start,
+            vertical_alignment: TextVerticalAlignment::Center,
+            ellipsis: true,
+            wrap: false,
+            max_lines: Some(1),
+            italic: None,
+            underline: None,
+            line_through: None,
+            suppress_spans: false,
+            preserve_lines: Some(false),
+            unstyled_glyph: false,
+            line_height: Some(Some(nana_ui_core::LineHeightSpec::Absolute(18.0))),
+            retained_text: nana_ui_runtime::WidgetRetainedText::AlwaysClipOverflow,
+            tabular_nums: false,
+            ..Default::default()
         }),
-        content: LayoutBox {
-            x: 10.0,
-            y: 36.0,
-            width: 160.0,
-            height: 36.0,
-        },
-        elevation: None,
-        spinner: None,
-    }));
+    );
+    card.widget_paint = Some(Arc::new(card_paint));
 
     let mut item = node(2, Some(1), &[]);
     item.kind = Arc::new(NodeKind::Element {
@@ -8164,24 +8453,15 @@ fn card_child_list_item_keeps_its_label() {
     item.text = Some(TextContent {
         value: "Window".into(),
     });
-    item.standard_visual = Some(StandardVisual::ListItem {
-        leading: None,
-        content: None,
-        trailing: None,
-        note: None,
-        detail: None,
-    });
-    item.component_geometry = Some(Box::new(ComponentGeometry::ListItem {
-        leading: None,
-        content: Some(LayoutBox {
+    item.widget_paint = Some(Arc::new(nana_ui_runtime::WidgetPaintOutput {
+        aligns_child_icon_to_text: true,
+        node_text_bounds: Some(LayoutBox {
             x: 10.0,
             y: 36.0,
             width: 160.0,
             height: 36.0,
         }),
-        trailing: None,
-        note: None,
-        detail: None,
+        ..nana_ui_runtime::WidgetPaintOutput::new()
     }));
 
     let mut scene = UiScene::new();
@@ -8565,7 +8845,11 @@ fn css_box_shadow_layers_outline_and_line_clamp_travel() {
     painted.source_style = NodeStyle {
         layout: Arc::new(nana_ui_core::LayoutStyle {
             background: Some([1.0, 1.0, 1.0, 1.0]),
-            line_clamp: Some(2),
+            text_ext: nana_ui_core::TextStyleExt {
+                line_clamp: Some(2),
+                ..Default::default()
+            }
+            .into(),
             text_overflow_ellipsis: true,
             paint: nana_ui_core::PaintStyle {
                 box_shadows: vec![
@@ -8913,7 +9197,11 @@ fn a_role_coloured_bottom_border_strokes_only_the_bottom() {
     painted.source_style = NodeStyle {
         layout: Arc::new(nana_ui_core::LayoutStyle {
             border_width: Some(0.0),
-            border_bottom_width: Some(1.0),
+            border_sides: nana_ui_core::BorderSides {
+                bottom_width: Some(1.0),
+                ..Default::default()
+            }
+            .into(),
             ..Default::default()
         }),
         ..Default::default()
@@ -9138,11 +9426,26 @@ fn rasterized_svg_host_texture_skips_vector_children() {
 #[test]
 fn icon_visual_skips_vector_children() {
     let mut icon = node(1, None, &[2]);
-    icon.standard_visual = Some(StandardVisual::Icon {
-        icon: nana_ui_core::Icon::Search,
-        size: 16.0,
-        tooltip: None,
-    });
+    let mut icon_paint = nana_ui_runtime::WidgetPaintOutput {
+        suppresses_in_flow_descendants: true,
+        ..nana_ui_runtime::WidgetPaintOutput::new()
+    };
+    icon_paint.push(
+        3,
+        nana_ui_runtime::WidgetPaintOp::Icon(nana_ui_runtime::WidgetIcon {
+            bounds: LayoutBox {
+                x: 42.0,
+                y: 32.0,
+                width: 16.0,
+                height: 16.0,
+            },
+            glyph: nana_ui_runtime::WidgetGlyph::Icon(nana_ui_core::Icon::Search),
+            color: None,
+            paint_color: None,
+            align_to_adjacent_text: true,
+        }),
+    );
+    icon.widget_paint = Some(Arc::new(icon_paint));
     let mut path = node(2, Some(1), &[]);
     path.kind = Arc::new(NodeKind::Element { tag: "path".into() });
     path.source_style = NodeStyle {
@@ -9175,11 +9478,26 @@ fn icon_visual_skips_vector_children() {
 #[test]
 fn an_icon_visual_still_paints_the_surface_it_only_hosts() {
     let mut icon = node(1, None, &[2]);
-    icon.standard_visual = Some(StandardVisual::Icon {
-        icon: nana_ui_core::Icon::Search,
-        size: 16.0,
-        tooltip: None,
-    });
+    let mut icon_paint = nana_ui_runtime::WidgetPaintOutput {
+        suppresses_in_flow_descendants: true,
+        ..nana_ui_runtime::WidgetPaintOutput::new()
+    };
+    icon_paint.push(
+        3,
+        nana_ui_runtime::WidgetPaintOp::Icon(nana_ui_runtime::WidgetIcon {
+            bounds: LayoutBox {
+                x: 42.0,
+                y: 32.0,
+                width: 16.0,
+                height: 16.0,
+            },
+            glyph: nana_ui_runtime::WidgetGlyph::Icon(nana_ui_core::Icon::Search),
+            color: None,
+            paint_color: None,
+            align_to_adjacent_text: true,
+        }),
+    );
+    icon.widget_paint = Some(Arc::new(icon_paint));
     let mut tooltip = node(2, Some(1), &[]);
     tooltip.kind = Arc::new(NodeKind::Element {
         tag: "tooltip".into(),
@@ -9211,23 +9529,6 @@ fn an_icon_visual_still_paints_the_surface_it_only_hosts() {
 #[test]
 fn completion_and_hover_overlays_paint_above_editor_layers() {
     let mut input = node(1, None, &[]);
-    input.standard_visual = Some(StandardVisual::TextInput {
-        placeholder: Arc::from(""),
-        size: nana_ui_core::ControlSize::Medium,
-        secure: false,
-        invalid: false,
-        steppers: false,
-        character_counter: None,
-        diagnostics: Arc::from([]),
-        matches: Arc::from([]),
-        color_swatches: Arc::from([]),
-        atoms: Arc::from([]),
-        line_numbers: false,
-        indent_guides: None,
-        folds: Arc::from([]),
-        git_marks: Arc::from([]),
-        editor_options: nana_ui_runtime::TextEditorRenderOptions::default(),
-    });
     let row_rect = |index: usize| LayoutBox {
         x: 10.0,
         y: 20.0 + index as f32 * 14.0,
@@ -9241,7 +9542,7 @@ fn completion_and_hover_overlays_paint_above_editor_layers() {
         font_size: 12.0,
         font_weight: None,
     };
-    input.component_geometry = Some(Box::new(ComponentGeometry::TextInput {
+    let geometry = nana_ui_runtime::TextInputGeometry {
         resize_grip: None,
         character_counter: None,
         suffix: None,
@@ -9336,7 +9637,8 @@ fn completion_and_hover_overlays_paint_above_editor_layers() {
         steppers: None,
         minimap: None,
         sticky_line: None,
-    }));
+    };
+    set_text_input_paint(&mut input, &geometry);
     let mut scene = UiScene::new();
     scene.apply_delta([input], []);
 
@@ -9389,23 +9691,6 @@ fn completion_and_hover_overlays_paint_above_editor_layers() {
 #[test]
 fn completion_doc_rows_and_hover_overlay_coexist_without_slot_clashes() {
     let mut input = node(1, None, &[]);
-    input.standard_visual = Some(StandardVisual::TextInput {
-        placeholder: Arc::from(""),
-        size: nana_ui_core::ControlSize::Medium,
-        secure: false,
-        invalid: false,
-        steppers: false,
-        character_counter: None,
-        diagnostics: Arc::from([]),
-        matches: Arc::from([]),
-        color_swatches: Arc::from([]),
-        atoms: Arc::from([]),
-        line_numbers: false,
-        indent_guides: None,
-        folds: Arc::from([]),
-        git_marks: Arc::from([]),
-        editor_options: nana_ui_runtime::TextEditorRenderOptions::default(),
-    });
     let row_rect = |index: usize| LayoutBox {
         x: 10.0,
         y: 20.0 + index as f32 * 28.0,
@@ -9419,7 +9704,7 @@ fn completion_doc_rows_and_hover_overlay_coexist_without_slot_clashes() {
         font_size: 12.0,
         font_weight: None,
     };
-    input.component_geometry = Some(Box::new(ComponentGeometry::TextInput {
+    let geometry = nana_ui_runtime::TextInputGeometry {
         resize_grip: None,
         character_counter: None,
         suffix: None,
@@ -9500,7 +9785,8 @@ fn completion_doc_rows_and_hover_overlay_coexist_without_slot_clashes() {
         steppers: None,
         minimap: None,
         sticky_line: None,
-    }));
+    };
+    set_text_input_paint(&mut input, &geometry);
     let mut scene = UiScene::new();
     scene.apply_delta([input], []);
 
@@ -9566,24 +9852,7 @@ fn text_input_main_text_region_keeps_display_space_spans_but_labels_do_not() {
     // 行号标签绘制在左内边距区域：预留 gutter 宽度让标签层真实发出。
     Arc::make_mut(&mut input.source_style.layout).padding_left =
         Some(nana_ui_core::LengthSpec::Px(46.0));
-    input.standard_visual = Some(StandardVisual::TextInput {
-        placeholder: Arc::from(""),
-        size: nana_ui_core::ControlSize::Medium,
-        secure: false,
-        invalid: false,
-        steppers: false,
-        character_counter: None,
-        diagnostics: Arc::from([]),
-        matches: Arc::from([]),
-        color_swatches: Arc::from([]),
-        atoms: Arc::from([]),
-        line_numbers: true,
-        indent_guides: None,
-        folds: Arc::from([]),
-        git_marks: Arc::from([]),
-        editor_options: nana_ui_runtime::TextEditorRenderOptions::default(),
-    });
-    input.component_geometry = Some(Box::new(ComponentGeometry::TextInput {
+    let geometry = nana_ui_runtime::TextInputGeometry {
         resize_grip: None,
         character_counter: None,
         suffix: None,
@@ -9631,7 +9900,8 @@ fn text_input_main_text_region_keeps_display_space_spans_but_labels_do_not() {
         steppers: None,
         minimap: None,
         sticky_line: None,
-    }));
+    };
+    set_text_input_paint(&mut input, &geometry);
     input.text_spans = vec![
         nana_ui_runtime::ExtractedTextSpan {
             start: 0,
@@ -9687,58 +9957,102 @@ fn text_input_main_text_region_keeps_display_space_spans_but_labels_do_not() {
     );
 }
 
-#[cfg(feature = "charts")]
-fn chart_geometry(option: &nana_ui_charts::ChartOption, motion: bool) -> ComponentGeometry {
-    let palette = nana_ui_core::SemanticPalette::dark();
-    let theme = nana_ui_charts::ChartTheme::new(&palette, option, |_| [0.5; 4]);
-    let mut layout = nana_ui_charts::layout(&nana_ui_charts::LayoutInput {
-        option,
-        size: [300.0, 200.0],
-        theme: &theme,
-        measure: &nana_ui_charts::ApproximateMeasure,
-        state: &nana_ui_charts::ChartViewState::default(),
+fn widget_custom_gpu_paint(
+    transition_until: Option<std::time::Duration>,
+) -> nana_ui_runtime::WidgetPaintOutput {
+    use nana_ui_runtime::{
+        CustomGpuPayload, TextHorizontalAlignment, TextVerticalAlignment, WidgetPaintOp,
+        WidgetPaintOutput, WidgetText,
+    };
+
+    let mut custom = CustomRenderNode::new(nana_ui_runtime::CHART_RENDERER, "", 0);
+    custom.payload = Some(CustomGpuPayload::new(42_u32));
+    custom.transition_until = transition_until;
+    custom.ink_bounds = Some(nana_ui_core::LogicalRect {
+        x: -4.0,
+        y: -4.0,
+        width: 108.0,
+        height: 88.0,
     });
-    if motion {
-        nana_ui_charts::transition::begin(&mut layout, None, option, std::time::Duration::ZERO);
-    } else {
-        nana_ui_charts::transition::settle(&mut layout);
+
+    let mut output = WidgetPaintOutput {
+        suppress_root_surface: true,
+        ..WidgetPaintOutput::new()
+    };
+    output.push(
+        11,
+        WidgetPaintOp::CustomGpu {
+            bounds: LayoutBox {
+                x: 0.0,
+                y: 0.0,
+                width: 100.0,
+                height: 80.0,
+            },
+            node: custom,
+        },
+    );
+    for (index, label) in ["Mon", "Tue", "Wed"].into_iter().enumerate() {
+        output.push(
+            (41_u64 << 32) | (index as u64),
+            WidgetPaintOp::Text(WidgetText {
+                bounds: LayoutBox {
+                    x: index as f32 * 30.0,
+                    y: 60.0,
+                    width: 24.0,
+                    height: 16.0,
+                },
+                content: label.into(),
+                color: Some([1.0; 4]),
+                paint_color: None,
+                font_size: 12.0,
+                font_weight: None,
+                horizontal_alignment: TextHorizontalAlignment::Start,
+                vertical_alignment: TextVerticalAlignment::Center,
+                ellipsis: false,
+                wrap: false,
+                max_lines: None,
+                italic: None,
+                underline: None,
+                line_through: None,
+                suppress_spans: false,
+                preserve_lines: None,
+                unstyled_glyph: false,
+                line_height: None,
+                retained_text: nana_ui_runtime::WidgetRetainedText::None,
+                tabular_nums: false,
+                ..Default::default()
+            }),
+        );
     }
-    ComponentGeometry::Chart {
-        layout: Arc::new(layout),
-        hover: nana_ui_charts::hit::HoverState::default(),
-        origin: [10.0, 20.0],
-    }
+    output
 }
 
 #[test]
-#[cfg(feature = "charts")]
-fn a_chart_is_one_marks_primitive_and_its_labels() {
-    use nana_ui_charts::{Axis, ChartOption, LineSeries};
-    let option = ChartOption::new()
-        .x_axis(Axis::category((0..300).map(|i| i.to_string())))
-        .y_axis(Axis::value())
-        .series(LineSeries::new(
-            "v",
-            (0..300).map(f64::from).collect::<Vec<_>>(),
-        ));
-    let mut chart = node(1, None, &[]);
-    chart.component_geometry = Some(Box::new(chart_geometry(&option, false)));
+fn widget_custom_gpu_emits_one_custom_primitive_and_slotted_labels() {
+    let mut widget = node(1, None, &[]);
+    widget.widget_paint = Some(Arc::new(widget_custom_gpu_paint(None)));
     let mut scene = UiScene::new();
-    scene.apply_delta([chart], []);
-    let marks: Vec<_> = scene
+    scene.apply_delta([widget], []);
+    let custom: Vec<_> = scene
         .primitives()
-        .filter(|primitive| matches!(primitive.kind, ScenePrimitiveKind::Chart { .. }))
+        .filter(|primitive| matches!(primitive.kind, ScenePrimitiveKind::Custom { .. }))
         .collect();
-    assert_eq!(marks.len(), 1, "every series and guide in one primitive");
-    let Some(ScenePrimitiveKind::Chart { origin, .. }) = marks.first().map(|p| &p.kind) else {
+    assert_eq!(custom.len(), 1, "every custom payload in one primitive");
+    let ScenePrimitiveKind::Custom { node, .. } = &custom[0].kind else {
         unreachable!()
     };
-    assert_eq!(*origin, [10.0, 20.0]);
+    assert_eq!(node.renderer.as_ref(), nana_ui_runtime::CHART_RENDERER);
+    assert_eq!(
+        node.payload
+            .as_ref()
+            .and_then(|payload| payload.downcast_ref::<u32>()),
+        Some(&42)
+    );
     let labels = scene
         .primitives()
         .filter(|primitive| matches!(primitive.kind, ScenePrimitiveKind::Text { .. }))
         .count();
-    assert!(labels > 2, "axis labels paint as text: {labels}");
+    assert_eq!(labels, 3);
     // Labels live in their own namespace, past the fixed slots.
     assert!(
         scene
@@ -9746,25 +10060,21 @@ fn a_chart_is_one_marks_primitive_and_its_labels() {
             .filter(|primitive| matches!(primitive.kind, ScenePrimitiveKind::Text { .. }))
             .all(|primitive| primitive.id.slot > 255)
     );
-    assert!(!scene.chart_presentation_live());
+    assert!(!scene.gpu_payload_live());
 }
 
 #[test]
-#[cfg(feature = "charts")]
-fn a_chart_in_motion_keeps_the_scene_ticking() {
-    use nana_ui_charts::{Axis, BarSeries, ChartOption};
-    let option = ChartOption::new()
-        .x_axis(Axis::category(["a", "b"]))
-        .y_axis(Axis::value())
-        .series(BarSeries::new("b", [1.0, 2.0]));
-    let mut chart = node(1, None, &[]);
-    chart.component_geometry = Some(Box::new(chart_geometry(&option, true)));
+fn widget_custom_gpu_in_motion_keeps_the_scene_ticking() {
+    let mut widget = node(1, None, &[]);
+    widget.widget_paint = Some(Arc::new(widget_custom_gpu_paint(Some(
+        std::time::Duration::from_secs(3_600),
+    ))));
     let mut scene = UiScene::new();
-    scene.apply_delta([chart.clone()], []);
-    assert!(scene.chart_presentation_live());
+    scene.apply_delta([widget.clone()], []);
+    assert!(scene.gpu_payload_live());
     assert!(scene.compositor_needs_tick());
-    scene.apply_delta([], [chart.id]);
-    assert!(!scene.chart_presentation_live());
+    scene.apply_delta([], [widget.id]);
+    assert!(!scene.gpu_payload_live());
 }
 
 #[cfg(feature = "graph-canvas")]
@@ -9783,23 +10093,28 @@ fn large_graph_primitive_families_do_not_overwrite_each_other() {
         font_size: 13.0,
         font_weight: None,
     };
-    let geometry = |count| ComponentGeometry::GraphCanvas {
-        nodes: vec![(bounds, text.clone(), [0.2; 4], Some([1.0; 4])); count],
-        separators: vec![bounds],
-        ports: vec![(bounds, [0.3; 4], [1.0; 4], 1.0); count],
-        port_labels: vec![(text.clone(), TextHorizontalAlignment::Start); count],
-        edges: vec![(vec![[0.0, 0.0], [100.0, 20.0]], [0.4; 4]); count],
-        edge_labels: vec![text.clone(); count],
-        grid: vec![bounds],
-        background: [0.1; 4],
-        grid_color: [0.2; 4],
-        separator_color: [0.3; 4],
-    };
     let mut canvas = node(993, None, &[]);
     canvas.layout = bounds;
+    let paint = |count| {
+        Arc::new(
+            nana_ui_runtime::GraphCanvasLayout {
+                nodes: vec![(bounds, text.clone(), [0.2; 4], Some([1.0; 4])); count],
+                separators: vec![bounds],
+                ports: vec![(bounds, [0.3; 4], [1.0; 4], 1.0); count],
+                port_labels: vec![(text.clone(), TextHorizontalAlignment::Start); count],
+                edges: vec![(vec![[0.0, 0.0], [100.0, 20.0]], [0.4; 4]); count],
+                edge_labels: vec![text.clone(); count],
+                grid: vec![bounds],
+                background: [0.1; 4],
+                grid_color: [0.2; 4],
+                separator_color: [0.3; 4],
+            }
+            .to_widget_paint(bounds, canvas.chrome_radii, &canvas.style),
+        )
+    };
     let mut scene = UiScene::new();
     for count in [300, 2, 300, 0] {
-        canvas.component_geometry = Some(Box::new(geometry(count)));
+        canvas.widget_paint = Some(paint(count));
         scene.apply_delta([canvas.clone()], []);
         let primitives = scene
             .primitives()
@@ -9907,11 +10222,15 @@ fn viewport_fixed_draws_and_descendants_escape_outer_geometry_in_full_and_scroll
         overflow_x: nana_ui_core::OverflowSpec::Hidden,
         overflow_y: nana_ui_core::OverflowSpec::Scroll,
         opacity: Some(0.5),
-        transform: Some(nana_ui_core::PaintTransform {
-            e: 35.0,
-            f: 25.0,
+        transforms: nana_ui_core::TransformStyle {
+            transform: Some(nana_ui_core::PaintTransform {
+                e: 35.0,
+                f: 25.0,
+                ..Default::default()
+            }),
             ..Default::default()
-        }),
+        }
+        .into(),
         ..Default::default()
     });
     let mut fixed = node(2, Some(1), &[3]);
@@ -9923,11 +10242,15 @@ fn viewport_fixed_draws_and_descendants_escape_outer_geometry_in_full_and_scroll
     };
     fixed.source_style.layout = Arc::new(nana_ui_core::LayoutStyle {
         position: nana_ui_core::PositionSpec::Fixed,
-        transform: Some(nana_ui_core::PaintTransform {
-            e: 3.0,
-            f: 4.0,
+        transforms: nana_ui_core::TransformStyle {
+            transform: Some(nana_ui_core::PaintTransform {
+                e: 3.0,
+                f: 4.0,
+                ..Default::default()
+            }),
             ..Default::default()
-        }),
+        }
+        .into(),
         ..Default::default()
     });
     style_mut(&mut fixed).background = Some([1.0, 0.0, 0.0, 1.0]);
@@ -10052,10 +10375,14 @@ fn a_rebuilt_subtree_lands_in_the_order_a_full_sort_would_give_it() {
     // subtrees through the same reuse, one container straight after the other.
     let mut moved = node(1, None, &[2, 3]);
     moved.source_style.layout = Arc::new(nana_ui_core::LayoutStyle {
-        transform: Some(nana_ui_core::PaintTransform {
-            e: 12.0,
-            ..nana_ui_core::PaintTransform::default()
-        }),
+        transforms: nana_ui_core::TransformStyle {
+            transform: Some(nana_ui_core::PaintTransform {
+                e: 12.0,
+                ..nana_ui_core::PaintTransform::default()
+            }),
+            ..Default::default()
+        }
+        .into(),
         ..nana_ui_core::LayoutStyle::default()
     });
     scene.apply_delta([moved], []);
@@ -10131,7 +10458,7 @@ fn what_a_parent_hands_down_is_what_walking_the_chain_gives() {
             layout.opacity = Some(0.75);
         }
         if value % 5 == 0 {
-            layout.transform = Some(nana_ui_core::PaintTransform {
+            layout.transforms.transform = Some(nana_ui_core::PaintTransform {
                 e: 4.0,
                 f: -2.0,
                 ..Default::default()
@@ -10447,7 +10774,11 @@ fn rotating_a_container_refreshes_bounds_without_rebuilding_the_index() {
         };
         node.source_style = NodeStyle {
             layout: Arc::new(nana_ui_core::LayoutStyle {
-                transform,
+                transforms: nana_ui_core::TransformStyle {
+                    transform,
+                    ..Default::default()
+                }
+                .into(),
                 ..Default::default()
             }),
             ..Default::default()
@@ -10648,7 +10979,11 @@ fn a_colour_change_on_a_rotated_parent_does_not_move_its_descendants() {
         };
         node.source_style = NodeStyle {
             layout: Arc::new(nana_ui_core::LayoutStyle {
-                transform: Some(rotation),
+                transforms: nana_ui_core::TransformStyle {
+                    transform: Some(rotation),
+                    ..Default::default()
+                }
+                .into(),
                 background: Some(background),
                 ..Default::default()
             }),
@@ -10733,7 +11068,11 @@ fn a_colour_change_tolerates_a_few_ulps_of_base_transform_drift() {
     };
     container.source_style = NodeStyle {
         layout: Arc::new(nana_ui_core::LayoutStyle {
-            transform: Some(rotation),
+            transforms: nana_ui_core::TransformStyle {
+                transform: Some(rotation),
+                ..Default::default()
+            }
+            .into(),
             background: Some([0.0, 0.0, 1.0, 1.0]),
             ..Default::default()
         }),
@@ -10780,7 +11119,11 @@ fn a_colour_change_tolerates_a_few_ulps_of_base_transform_drift() {
     let before = scene.draw_primitive(descendant).expect("draw").transform;
     container.source_style = NodeStyle {
         layout: Arc::new(nana_ui_core::LayoutStyle {
-            transform: Some(rotation),
+            transforms: nana_ui_core::TransformStyle {
+                transform: Some(rotation),
+                ..Default::default()
+            }
+            .into(),
             background: Some([0.0, 1.0, 0.0, 1.0]),
             ..Default::default()
         }),
@@ -11142,7 +11485,7 @@ mod custom_paint {
         );
         {
             let layout = Arc::make_mut(&mut child.source_style.layout);
-            layout.transform = Some(nana_ui_core::PaintTransform {
+            layout.transforms.transform = Some(nana_ui_core::PaintTransform {
                 a: 1.0,
                 b: 0.2,
                 c: 0.0,
@@ -11600,24 +11943,47 @@ fn a_toast_paints_its_recipe_mark_and_lift() {
             width: 360.0,
             height: 45.0,
         };
-        toast.standard_visual = Some(StandardVisual::Toast {
-            title: Arc::from("Saved"),
-            description: None,
-            tone: nana_ui_core::ToastTone::Success,
-            dismissible: false,
-            assembled: false,
-            icon: None,
-        });
-        toast.standard_visual_foreground = Some(tone);
-        toast.component_geometry = Some(Box::new(ComponentGeometry::Toast {
-            indicator: indicator.then_some(LayoutBox {
+        let mut paint = nana_ui_runtime::WidgetPaintOutput {
+            owns_node_text: true,
+            root_surface: Some(nana_ui_runtime::WidgetRootSurface {
+                fallback_elevation: Some(lift),
+                ..Default::default()
+            }),
+            ..nana_ui_runtime::WidgetPaintOutput::new()
+        };
+        if indicator {
+            let indicator_box = LayoutBox {
                 x: 12.0,
                 y: 14.5,
                 width: 16.0,
                 height: 16.0,
-            }),
-            glyph: mark,
-            title: Some(ComponentTextRegion {
+            };
+            if let Some(glyph) = mark {
+                paint.push(
+                    1,
+                    nana_ui_runtime::WidgetPaintOp::Icon(nana_ui_runtime::WidgetIcon {
+                        bounds: indicator_box,
+                        glyph: nana_ui_runtime::WidgetGlyph::Icon(glyph),
+                        color: Some(tone),
+                        paint_color: None,
+                        align_to_adjacent_text: false,
+                    }),
+                );
+            } else {
+                paint.push(
+                    1,
+                    nana_ui_runtime::WidgetPaintOp::Quad(nana_ui_runtime::WidgetQuad {
+                        rect: indicator_box,
+                        fill: Some(tone),
+                        corner_radius: [8.0; 4],
+                        ..Default::default()
+                    }),
+                );
+            }
+        }
+        paint.push(
+            2,
+            nana_ui_runtime::WidgetPaintOp::Text(nana_ui_runtime::WidgetText {
                 bounds: LayoutBox {
                     x: 36.0,
                     y: 16.5,
@@ -11626,13 +11992,27 @@ fn a_toast_paints_its_recipe_mark_and_lift() {
                 },
                 content: nana_ui_runtime::TextValue::from("Saved"),
                 color: Some([0.87, 0.87, 0.87, 1.0]),
+                paint_color: None,
                 font_size: 12.0,
                 font_weight: Some(600),
+                horizontal_alignment: TextHorizontalAlignment::Start,
+                vertical_alignment: TextVerticalAlignment::Center,
+                ellipsis: false,
+                wrap: false,
+                max_lines: None,
+                italic: None,
+                underline: None,
+                line_through: None,
+                suppress_spans: true,
+                preserve_lines: None,
+                unstyled_glyph: false,
+                line_height: None,
+                retained_text: nana_ui_runtime::WidgetRetainedText::None,
+                tabular_nums: false,
+                ..Default::default()
             }),
-            description: None,
-            dismiss: None,
-            elevation: Some(lift),
-        }));
+        );
+        toast.widget_paint = Some(Arc::new(paint));
         style_mut(&mut toast).background = Some([0.13, 0.13, 0.13, 1.0]);
         toast
     };
@@ -11696,28 +12076,25 @@ fn an_assembled_toast_paints_no_text_regions_of_its_own() {
         width: 280.0,
         height: 38.0,
     };
-    toast.standard_visual = Some(StandardVisual::Toast {
-        title: Arc::from("Optimizing models"),
-        description: Some(Arc::from("2 of 5")),
-        tone: nana_ui_core::ToastTone::Success,
-        dismissible: true,
-        assembled: true,
-        icon: None,
-    });
-    toast.standard_visual_foreground = Some(tone);
-    toast.component_geometry = Some(Box::new(ComponentGeometry::Toast {
-        indicator: Some(LayoutBox {
-            x: 13.0,
-            y: 16.0,
-            width: 6.0,
-            height: 6.0,
+    let mut paint = nana_ui_runtime::WidgetPaintOutput {
+        owns_node_text: true,
+        ..nana_ui_runtime::WidgetPaintOutput::new()
+    };
+    paint.push(
+        1,
+        nana_ui_runtime::WidgetPaintOp::Quad(nana_ui_runtime::WidgetQuad {
+            rect: LayoutBox {
+                x: 13.0,
+                y: 16.0,
+                width: 6.0,
+                height: 6.0,
+            },
+            fill: Some(tone),
+            corner_radius: [3.0; 4],
+            ..Default::default()
         }),
-        glyph: None,
-        title: None,
-        description: None,
-        dismiss: None,
-        elevation: None,
-    }));
+    );
+    toast.widget_paint = Some(Arc::new(paint));
     style_mut(&mut toast).background = Some([0.13, 0.13, 0.13, 1.0]);
 
     let mut scene = UiScene::new();
@@ -11742,24 +12119,7 @@ fn an_assembled_toast_paints_no_text_regions_of_its_own() {
 #[test]
 fn character_counter_paints_outside_the_shared_editor_clip_and_updates_incrementally() {
     let mut input = node(1, None, &[]);
-    input.standard_visual = Some(StandardVisual::TextInput {
-        placeholder: Arc::from(""),
-        size: nana_ui_core::ControlSize::Medium,
-        secure: false,
-        invalid: false,
-        steppers: false,
-        character_counter: Some(40),
-        diagnostics: Arc::from([]),
-        matches: Arc::from([]),
-        color_swatches: Arc::from([]),
-        atoms: Arc::from([]),
-        line_numbers: false,
-        indent_guides: None,
-        folds: Arc::from([]),
-        git_marks: Arc::from([]),
-        editor_options: nana_ui_runtime::TextEditorRenderOptions::default(),
-    });
-    input.component_geometry = input_component_geometry(false);
+    let mut geometry = input_text_geometry(false);
     let editor_bounds = LayoutBox {
         x: 8.0,
         y: 4.0,
@@ -11772,17 +12132,7 @@ fn character_counter_paints_outside_the_shared_editor_clip_and_updates_increment
         width: 40.0,
         height: 24.0,
     };
-    let Some(ComponentGeometry::TextInput {
-        character_counter,
-        selection,
-        caret,
-        preedit,
-        ..
-    }) = input.component_geometry.as_deref_mut()
-    else {
-        unreachable!();
-    };
-    *character_counter = Some(nana_ui_runtime::TextInputCharacterCounter {
+    geometry.character_counter = Some(nana_ui_runtime::TextInputCharacterCounter {
         text: ComponentTextRegion {
             bounds: label_bounds,
             content: "40/40".into(),
@@ -11792,18 +12142,19 @@ fn character_counter_paints_outside_the_shared_editor_clip_and_updates_increment
         },
         editor_bounds,
     });
-    *selection = vec![LayoutBox {
+    geometry.selection = vec![LayoutBox {
         width: 100.0,
         ..editor_bounds
     }];
-    *caret = Some(LayoutBox {
+    geometry.caret = Some(LayoutBox {
         width: 1.0,
         ..editor_bounds
     });
-    *preedit = vec![LayoutBox {
+    geometry.preedit = vec![LayoutBox {
         width: 100.0,
         ..editor_bounds
     }];
+    set_text_input_paint(&mut input, &geometry);
     let mut scene = UiScene::new();
     scene.apply_delta([input.clone()], []);
     for slot in [1, 2, 4, 5] {
@@ -11827,14 +12178,11 @@ fn character_counter_paints_outside_the_shared_editor_clip_and_updates_increment
     assert!(
         matches!(&primitive.kind, ScenePrimitiveKind::Text { content, .. } if content == "40/40")
     );
-    if let Some(ComponentGeometry::TextInput {
-        character_counter: Some(counter),
-        ..
-    }) = input.component_geometry.as_deref_mut()
-    {
+    if let Some(counter) = geometry.character_counter.as_mut() {
         counter.text.content = "41/40".into();
         counter.text.color = Some([1.0, 0.0, 0.0, 1.0]);
     }
+    set_text_input_paint(&mut input, &geometry);
     scene.apply_delta([input.clone()], []);
     let primitive = scene
         .primitive(PrimitiveId {
@@ -11845,12 +12193,8 @@ fn character_counter_paints_outside_the_shared_editor_clip_and_updates_increment
     assert!(
         matches!(&primitive.kind, ScenePrimitiveKind::Text { content, color: Some(color), .. } if content == "41/40" && color.to_srgb() == [1.0,0.0,0.0,1.0])
     );
-    if let Some(ComponentGeometry::TextInput {
-        character_counter, ..
-    }) = input.component_geometry.as_deref_mut()
-    {
-        *character_counter = None;
-    }
+    geometry.character_counter = None;
+    set_text_input_paint(&mut input, &geometry);
     scene.apply_delta([input], []);
     assert!(
         scene
@@ -11890,10 +12234,10 @@ fn composer_trailing_action_icon_survives_editor_clip_in_the_bottom_footer() {
         cx.shape_text(&[area.stable_id()], &mut nana_ui_runtime::MeasureTextShaper)
             .unwrap();
     }
-    let ComponentGeometry::TextInput {
+    let nana_ui_runtime::TextInputGeometry {
         character_counter: Some(counter),
         ..
-    } = cx.world().component_geometry(area.stable_id()).unwrap()
+    } = cx.world().text_input_geometry(area.stable_id()).unwrap()
     else {
         panic!("missing counter")
     };
@@ -12002,88 +12346,6 @@ fn frozen_glyph_effect_keeps_its_pose_without_looping_frames() {
     .unwrap();
     assert_eq!(scene.live_until(), Some(std::time::Duration::ZERO));
     assert_eq!(scene.effects_of(1).len(), 1);
-}
-
-/// A right-to-left switch's thumb travels toward the track's left edge, its
-/// "on" end being the track's inline end, and its loading spinner sits at
-/// the inline start: the mirror image of the left-to-right switch (#388).
-#[test]
-fn issue388_a_right_to_left_switch_thumb_is_the_mirror_image() {
-    let track = LayoutBox {
-        x: 170.0,
-        y: 18.0,
-        width: 30.0,
-        height: 16.0,
-    };
-    let paint = |direction, progress: f32| {
-        let mut switch = node(1, None, &[]);
-        switch.standard_visual = Some(StandardVisual::Switch {
-            thumb_progress: progress,
-            label: Arc::from("Enabled"),
-            hint: None,
-            checked: progress > 0.5,
-            control_position: nana_ui_core::SwitchControlPosition::End,
-            size: nana_ui_core::ControlSize::Medium,
-            loading: true,
-            loading_phase: 0.0,
-            invalid: false,
-        });
-        switch.component_geometry = Some(Box::new(ComponentGeometry::Switch {
-            thumb_progress: progress,
-            label: ComponentTextRegion {
-                bounds: LayoutBox {
-                    x: 0.0,
-                    y: 18.0,
-                    width: 160.0,
-                    height: 16.0,
-                },
-                content: nana_ui_runtime::TextValue::from("Enabled"),
-                color: Some([0.9, 0.9, 0.9, 1.0]),
-                font_size: 13.0,
-                font_weight: Some(500),
-            },
-            hint: None,
-            control: track,
-            track_background: [0.2, 0.5, 0.9, 1.0],
-            border_width: 1.0,
-            track_border: [0.1, 0.4, 0.8, 1.0],
-            thumb_background: [1.0, 1.0, 1.0, 1.0],
-        }));
-        switch.layout.width = 200.0;
-        switch.layout.height = 52.0;
-        style_mut(&mut switch).direction = direction;
-        let mut scene = UiScene::new();
-        scene.apply_delta([switch], []);
-        let bounds = |slot| {
-            scene
-                .primitive(PrimitiveId { node: id(1), slot })
-                .expect("switch primitive")
-                .bounds
-        };
-        (bounds(5), bounds(6))
-    };
-    let mirror = |rect: SceneRect| SceneRect {
-        x: 2.0 * track.x + track.width - rect.x - rect.width,
-        ..rect
-    };
-    for progress in [0.0, 0.25, 1.0] {
-        let (thumb, spinner) = paint(nana_ui_core::DirSpec::Ltr, progress);
-        let (rtl_thumb, rtl_spinner) = paint(nana_ui_core::DirSpec::Rtl, progress);
-        for (ours, theirs) in [(rtl_thumb, mirror(thumb)), (rtl_spinner, mirror(spinner))] {
-            assert!(
-                (ours.x - theirs.x).abs() < 1e-4
-                    && ours.y == theirs.y
-                    && ours.width == theirs.width
-                    && ours.height == theirs.height,
-                "{progress}: {ours:?} != {theirs:?}"
-            );
-        }
-    }
-    // On is the right edge left to right, the left edge right to left.
-    let (on, _) = paint(nana_ui_core::DirSpec::Ltr, 1.0);
-    let (rtl_on, _) = paint(nana_ui_core::DirSpec::Rtl, 1.0);
-    assert!(on.x > track.x + track.width / 2.0);
-    assert!(rtl_on.x + rtl_on.width < track.x + track.width / 2.0);
 }
 
 /// Lays `build`'s document out, extracts it, and returns the scene with the
@@ -12195,38 +12457,57 @@ fn menu_row_pictures_paint_their_host_texture_slot_over_a_placeholder_circle() {
         ["thumb.alice", "thumb.bob"]
     );
     // The empty slots still paint their circle.
-    let ComponentGeometry::ActionMenuItem {
-        image: Some(empty), ..
-    } = scene
-        .nodes
-        .get(&nobody)
-        .unwrap()
-        .component_geometry
-        .as_deref()
-        .unwrap()
-    else {
-        panic!("placeholder geometry");
-    };
-    assert_eq!(
-        picture_placeholders(&scene, nobody, scene_rect(empty.bounds)),
-        1
+    let empty_bounds = scene
+        .primitive(PrimitiveId {
+            node: nobody,
+            slot: 5,
+        })
+        .expect("placeholder backdrop")
+        .bounds;
+    assert_eq!(picture_placeholders(&scene, nobody, empty_bounds), 1);
+    let empty_backdrop = scene
+        .primitive(PrimitiveId {
+            node: menu,
+            slot: nana_ui_runtime::widget_collection_slot(
+                nana_ui_runtime::CONTEXT_MENU_IMAGE_BACKDROPS,
+                1,
+            ),
+        })
+        .expect("placeholder backdrop row");
+    assert_eq!(picture_placeholders(&scene, menu, empty_backdrop.bounds), 1);
+    assert!(
+        scene
+            .primitive(PrimitiveId {
+                node: menu,
+                slot: nana_ui_runtime::widget_collection_slot(
+                    nana_ui_runtime::CONTEXT_MENU_IMAGES,
+                    1,
+                ),
+            })
+            .is_none()
     );
-    let ComponentGeometry::MenuSurface { options, .. } = scene
-        .nodes
-        .get(&menu)
-        .unwrap()
-        .component_geometry
-        .as_deref()
-        .unwrap()
-    else {
-        panic!("menu geometry");
-    };
-    let empty = options[1].image.as_ref().expect("placeholder row");
-    assert_eq!(
-        picture_placeholders(&scene, menu, scene_rect(empty.bounds)),
-        1
+    assert!(
+        scene
+            .primitive(PrimitiveId {
+                node: menu,
+                slot: nana_ui_runtime::widget_collection_slot(
+                    nana_ui_runtime::CONTEXT_MENU_IMAGE_BACKDROPS,
+                    2,
+                ),
+            })
+            .is_none()
     );
-    assert!(options[2].image.is_none());
+    assert!(
+        scene
+            .primitive(PrimitiveId {
+                node: menu,
+                slot: nana_ui_runtime::widget_collection_slot(
+                    nana_ui_runtime::CONTEXT_MENU_IMAGES,
+                    2,
+                ),
+            })
+            .is_none()
+    );
 }
 
 #[test]
@@ -12292,7 +12573,7 @@ fn an_open_select_menu_paints_row_pictures_in_its_own_layer() {
         .find(|primitive| matches!(primitive.kind, ScenePrimitiveKind::Custom { .. }))
         .unwrap();
     assert!(
-        is_select_menu_slot(picture.id.slot),
+        nana_ui_runtime::is_select_menu_slot(picture.id.slot),
         "drawn with the menu's rows"
     );
     assert!(picture.z_index >= 1_000);

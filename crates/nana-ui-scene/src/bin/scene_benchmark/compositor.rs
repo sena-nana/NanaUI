@@ -305,7 +305,6 @@ fn promote(world: &mut UiWorld, ids: &[nana_ui_runtime::StableNodeId]) -> UiScen
     world.advance_animations(Duration::ZERO);
     let _ = world.take_system_work();
     let extracted = world.extract_nodes(ids);
-    world.record_extract(&extracted);
     let mut scene = UiScene::new();
     scene.apply_delta(extracted, []);
     scene.apply_presentation(

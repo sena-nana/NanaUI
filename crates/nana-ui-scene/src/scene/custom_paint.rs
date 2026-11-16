@@ -25,12 +25,19 @@ use std::collections::HashMap;
 use std::hash::{BuildHasherDefault, Hasher};
 use std::sync::OnceLock;
 
+#[cfg(feature = "vector-boolean")]
 use i_overlay::core::fill_rule::FillRule as OverlayFill;
+#[cfg(feature = "vector-boolean")]
 use i_overlay::core::overlay_rule::OverlayRule;
+#[cfg(feature = "vector-boolean")]
 use i_overlay::float::simplify::SimplifyShape;
+#[cfg(feature = "vector-boolean")]
 use i_overlay::float::single::SingleFloatOverlay;
+#[cfg(feature = "vector-boolean")]
 use i_overlay::mesh::float::outline::offset::OutlineOffset;
+#[cfg(feature = "vector-boolean")]
 use i_overlay::mesh::float::stroke::offset::StrokeOffset;
+#[cfg(feature = "vector-boolean")]
 use i_overlay::mesh::float::style::{
     LineCap as OverlayCap, LineJoin as OverlayJoin, OutlineStyle, StrokeStyle as OverlayStroke,
 };
@@ -247,20 +254,9 @@ pub(super) const PAINT_BEHIND_PRE: u32 = 0xFFFF_FFF0;
 pub(super) const PAINT_BEHIND_POST: u32 = 0xFFFF_FFF1;
 pub(super) const PAINT_OVER_PRE: u32 = 0xFFFF_FFF2;
 pub(super) const PAINT_OVER_POST: u32 = 0xFFFF_FFF3;
-/// The namespace a modal card's surface painter's primitives live in
-/// ([`nana_ui_runtime::Dialog::surface_painter`]). It paints at the card's
-/// own layer: over the scrim, under the card's dividers and text. See
-/// `primitive_paint_layer`.
-pub(super) const MODAL_SURFACE_PAINT: u32 = 0xFFFF_FFD0;
-/// The namespace Markdown diagrams' primitives live in. Each diagram of a
-/// document takes a block of [`MARKDOWN_DIAGRAM_BLOCK`] slots, in document
-/// order; past every built-in Markdown slot, so diagrams paint over their
-/// block's selection band.
-#[cfg(feature = "rich-text")]
-pub(super) const MARKDOWN_DIAGRAM_PAINT: u32 = 14;
-/// Slots per diagram. A diagram's display list is bounded well below it.
-#[cfg(feature = "rich-text")]
-pub(super) const MARKDOWN_DIAGRAM_BLOCK: usize = 1 << 18;
+/// Namespace for vector recordings emitted through [`nana_ui_runtime::WidgetPaintOp::Vector`].
+pub(super) const WIDGET_VECTOR_PAINT: u32 = 19;
+pub(super) const WIDGET_VECTOR_BLOCK: usize = 1 << 18;
 
 /// The stacking entry a painted node's primitive sorts under, after the
 /// node's own prefix (a painted node is always a stacking group).
@@ -375,36 +371,26 @@ impl UiScene {
         );
     }
 
-    /// Emit the native diagrams in a Markdown document's drawing. Each
-    /// diagram's recording is triangulated once and reused for as long as
-    /// the runtime hands the same recording back: scrolling, selection and
-    /// moving the document do not re-triangulate. A document with no
-    /// diagrams left drops what it held.
-    #[cfg(feature = "rich-text")]
-    pub(super) fn emit_markdown_diagrams(
+    /// Emit vector recordings emitted through [`nana_ui_runtime::WidgetPaintOp::Vector`],
+    /// reusing built meshes across frames while the recording `Arc` is unchanged.
+    #[allow(clippy::too_many_arguments)]
+    pub(super) fn emit_widget_vector_paint(
         &mut self,
         node: &ExtractedNode,
-        drawing: &nana_ui_runtime::MarkdownDrawing,
+        vectors: &[(u64, nana_ui_runtime::LayoutBox, Arc<PaintRecording>)],
         transform: AffineTransform,
         clips: &Arc<[ClipRegion]>,
         opacity: f32,
         node_order: usize,
     ) {
-        let held = self.markdown_diagram_paint.get(&node.id).cloned();
-        let mut built = Vec::new();
-        let mut places = Vec::new();
-        for command in &drawing.commands {
-            let nana_ui_runtime::MarkdownDrawingCommand::Diagram { bounds, drawing } = command
-            else {
-                continue;
-            };
-            let recording = &drawing.recording;
+        let held = self.widget_vector_paint.get(&node.id).cloned();
+        let mut built = Vec::with_capacity(vectors.len());
+        let mut places = Vec::with_capacity(vectors.len());
+        for (slot, bounds, recording) in vectors {
             let reused = held
                 .as_deref()
                 .and_then(|held| held.iter().find(|b| Arc::ptr_eq(&b.recording, recording)))
                 .cloned();
-            // A diagram re-recorded (its source edited) starts from what any
-            // of the document's diagrams built last time.
             built.push(reused.unwrap_or_else(|| {
                 let previous = held
                     .iter()
@@ -413,20 +399,19 @@ impl UiScene {
                 BuiltPaint::build(recording, None, false, previous.collect())
             }));
             places.push((
+                *slot,
                 [bounds.x, bounds.y],
                 [bounds.width.max(0.0), bounds.height.max(0.0)],
             ));
         }
-        if built.is_empty() {
-            if !self.markdown_diagram_paint.is_empty() {
-                self.markdown_diagram_paint.remove(&node.id);
-            }
-            return;
-        }
         let built: Arc<[BuiltPaint]> = built.into();
-        self.markdown_diagram_paint
-            .insert(node.id, Arc::clone(&built));
-        for (index, (paint, (origin, size))) in built.iter().zip(places).enumerate() {
+        self.widget_vector_paint.insert(node.id, Arc::clone(&built));
+        for (index, (paint, (slot, origin, size))) in built.iter().zip(places).enumerate() {
+            let namespace = if (1..=255).contains(&slot) {
+                nana_ui_runtime::WIDGET_VECTOR_LAYER_BASE | (slot as u32)
+            } else {
+                WIDGET_VECTOR_PAINT
+            };
             self.emit_built_ops(
                 node,
                 paint,
@@ -434,19 +419,11 @@ impl UiScene {
                     origin,
                     size,
                     phases: [
-                        (
-                            PaintPhaseOps::Behind,
-                            MARKDOWN_DIAGRAM_PAINT,
-                            MARKDOWN_DIAGRAM_PAINT,
-                        ),
-                        (
-                            PaintPhaseOps::None,
-                            MARKDOWN_DIAGRAM_PAINT,
-                            MARKDOWN_DIAGRAM_PAINT,
-                        ),
+                        (PaintPhaseOps::Behind, namespace, namespace),
+                        (PaintPhaseOps::None, namespace, namespace),
                     ],
                     adjust_default: false,
-                    index_base: index * MARKDOWN_DIAGRAM_BLOCK,
+                    index_base: index * WIDGET_VECTOR_BLOCK,
                 },
                 transform,
                 clips,
@@ -454,67 +431,6 @@ impl UiScene {
                 node_order,
             );
         }
-    }
-
-    /// The geometry of a modal frame's card surface recording, built once
-    /// per recording and kept apart from the node's own painter's.
-    pub(super) fn prepare_modal_surface_paint(
-        &mut self,
-        id: StableNodeId,
-        recording: &Arc<PaintRecording>,
-    ) -> BuiltPaint {
-        match self.modal_surface_paint.get(&id) {
-            Some(built) if Arc::ptr_eq(&built.recording, recording) => built.clone(),
-            held => {
-                let previous = held.map(|held| &held.ops.meshes).into_iter().collect();
-                let built = BuiltPaint::build(recording, None, false, previous);
-                self.modal_surface_paint.insert(id, built.clone());
-                built
-            }
-        }
-    }
-
-    /// Emit a modal frame's card surface primitives over `surface`, in the
-    /// card's own coordinates, at the card's layer. `draw_default()` in the
-    /// recording leaves the theme's card in (it is emitted with the frame's
-    /// built-ins) and adjusts nothing.
-    #[allow(clippy::too_many_arguments)]
-    pub(super) fn emit_modal_surface_paint(
-        &mut self,
-        node: &ExtractedNode,
-        surface: nana_ui_runtime::LayoutBox,
-        built: &BuiltPaint,
-        transform: AffineTransform,
-        clips: &Arc<[ClipRegion]>,
-        opacity: f32,
-        node_order: usize,
-    ) {
-        self.emit_built_ops(
-            node,
-            built,
-            PaintPlacement {
-                origin: [surface.x, surface.y],
-                size: [surface.width.max(0.0), surface.height.max(0.0)],
-                phases: [
-                    (
-                        PaintPhaseOps::Behind,
-                        MODAL_SURFACE_PAINT,
-                        MODAL_SURFACE_PAINT,
-                    ),
-                    (
-                        PaintPhaseOps::None,
-                        MODAL_SURFACE_PAINT,
-                        MODAL_SURFACE_PAINT,
-                    ),
-                ],
-                adjust_default: false,
-                index_base: 0,
-            },
-            transform,
-            clips,
-            opacity,
-            node_order,
-        );
     }
 
     /// Emit a recording's built ops at `placement` for `node`.
@@ -1462,7 +1378,7 @@ fn build_ops(ops: &[PaintOp], masked: bool, reuse: &mut MeshReuse) -> Vec<BuiltO
                             radii.map(|radius| (radius - width).max(0.0)),
                             t,
                         );
-                        outline().overlay(&inner, OverlayRule::Difference, OverlayFill::NonZero)
+                        difference_shapes(outline(), &inner)
                     };
                     let paint =
                         border_paint.map_or(
@@ -1864,19 +1780,35 @@ fn local_area(rect: SceneRect, reach: f32, t: Affine) -> Option<SceneRect> {
 fn erase_outside(area: SceneRect, shapes: &Shapes) -> Option<Arc<PathMesh>> {
     let bounds = rect_shapes(area);
     let outside = if shapes.is_empty() {
-        bounds
+        bounds.clone()
     } else {
-        bounds.overlay(shapes, OverlayRule::Difference, OverlayFill::NonZero)
+        difference_shapes(&bounds, shapes)
     };
     let mut mesh = MeshBuilder::default();
     mesh.fill(&outside, [0.0, 0.0, 0.0, 1.0]);
+    #[cfg(not(feature = "vector-boolean"))]
+    if !shapes.is_empty() {
+        mesh.clip_to(&triangulate(&bounds));
+    }
     mesh.finish().map(Arc::new)
 }
 
 fn rect_shapes(rect: SceneRect) -> Shapes {
+    if !rect.x.is_finite()
+        || !rect.y.is_finite()
+        || !rect.width.is_finite()
+        || !rect.height.is_finite()
+        || rect.width <= 0.0
+        || rect.height <= 0.0
+    {
+        return Vec::new();
+    }
     let (x0, y0) = (f64::from(rect.x), f64::from(rect.y));
     let (x1, y1) = (x0 + f64::from(rect.width), y0 + f64::from(rect.height));
-    vec![vec![vec![[x0, y0], [x1, y0], [x1, y1], [x0, y1]]]].simplify_shape(OverlayFill::NonZero)
+    simplify_contours(
+        vec![vec![[x0, y0], [x1, y0], [x1, y1], [x0, y1]]],
+        FillRule::NonZero,
+    )
 }
 
 fn gradient_mesh(
@@ -1902,12 +1834,17 @@ fn fill_mesh(
     gradient_space: Option<Affine>,
     clip: Option<&ActiveClip>,
 ) -> Option<PathMesh> {
+    #[cfg(feature = "vector-boolean")]
     let shapes = match clip {
         Some(clip) => intersect(&shapes, &clip.built.shapes),
         None => shapes,
     };
     let mut mesh = MeshBuilder::default();
     mesh.fill(&shapes, color);
+    #[cfg(not(feature = "vector-boolean"))]
+    if let Some(clip) = clip {
+        mesh.clip_to(&triangulate(&clip.built.shapes));
+    }
     if let Some(inverse) = gradient_space.and_then(affine_inverse) {
         for vertex in &mut mesh.vertices {
             vertex.paint_pos = affine_apply(inverse, vertex.position);
@@ -2269,6 +2206,186 @@ fn same(a: Point, b: Point) -> bool {
     (a[0] - b[0]).abs() < 1e-4 && (a[1] - b[1]).abs() < 1e-4
 }
 
+#[cfg(feature = "vector-boolean")]
+fn simplify_contours(contours: Vec<Contour>, rule: FillRule) -> Shapes {
+    if contours.is_empty() {
+        return Vec::new();
+    }
+    let rule = match rule {
+        FillRule::NonZero => OverlayFill::NonZero,
+        FillRule::EvenOdd => OverlayFill::EvenOdd,
+    };
+    contours.simplify_shape(rule)
+}
+
+#[cfg(not(feature = "vector-boolean"))]
+fn contour_signed_area(contour: &[Point]) -> f64 {
+    let n = contour.len();
+    if n < 3 {
+        return 0.0;
+    }
+    let mut area = 0.0;
+    for i in 0..n {
+        let a = contour[i];
+        let b = contour[(i + 1) % n];
+        area += a[0] * b[1] - b[0] * a[1];
+    }
+    area * 0.5
+}
+
+#[cfg(not(feature = "vector-boolean"))]
+fn orient_contour(mut contour: Contour, positive: bool) -> Contour {
+    let area = contour_signed_area(&contour);
+    if (positive && area < 0.0) || (!positive && area > 0.0) {
+        contour.reverse();
+    }
+    contour
+}
+
+#[cfg(not(feature = "vector-boolean"))]
+fn point_in_contour(p: Point, contour: &[Point]) -> bool {
+    let mut inside = false;
+    let n = contour.len();
+    let mut j = n.saturating_sub(1);
+    for i in 0..n {
+        let a = contour[i];
+        let b = contour[j];
+        if (a[1] > p[1]) != (b[1] > p[1]) {
+            let x_cross = (b[0] - a[0]) * (p[1] - a[1]) / (b[1] - a[1]) + a[0];
+            if p[0] < x_cross {
+                inside = !inside;
+            }
+        }
+        j = i;
+    }
+    inside
+}
+
+#[cfg(not(feature = "vector-boolean"))]
+fn simplify_contours(contours: Vec<Contour>, rule: FillRule) -> Shapes {
+    let mut cleaned: Vec<(f64, Contour)> = contours
+        .into_iter()
+        .filter_map(|contour| {
+            if contour.len() < 3 {
+                return None;
+            }
+            let area = contour_signed_area(&contour);
+            (area.abs() > 1e-9).then_some((area, contour))
+        })
+        .collect();
+    if cleaned.is_empty() {
+        return Vec::new();
+    }
+    if cleaned.len() == 1 {
+        let (_, contour) = cleaned.pop().expect("len is 1");
+        return vec![vec![orient_contour(contour, true)]];
+    }
+    // Larger contours first so outers are placed before their holes.
+    cleaned.sort_by(|a, b| b.0.abs().total_cmp(&a.0.abs()));
+    let mut shapes: Shapes = Vec::new();
+    let mut outer_signs: Vec<bool> = Vec::new();
+    for (area, contour) in cleaned {
+        let probe = contour[0];
+        let mut enclosing: Vec<usize> = shapes
+            .iter()
+            .enumerate()
+            .filter_map(|(idx, shape)| point_in_contour(probe, &shape[0]).then_some(idx))
+            .collect();
+        if let Some(&parent) = enclosing.last() {
+            let is_hole = match rule {
+                FillRule::EvenOdd => enclosing.len() % 2 == 1,
+                FillRule::NonZero => {
+                    (area >= 0.0) != outer_signs[parent] && enclosing.len() % 2 == 1
+                }
+            };
+            if is_hole {
+                shapes[parent].push(orient_contour(contour, false));
+                continue;
+            }
+        }
+        enclosing.clear();
+        outer_signs.push(area >= 0.0);
+        shapes.push(vec![orient_contour(contour, true)]);
+    }
+    shapes
+}
+
+#[cfg(feature = "vector-boolean")]
+fn difference_shapes(outer: &Shapes, inner: &Shapes) -> Shapes {
+    if inner.is_empty() {
+        return outer.clone();
+    }
+    outer.overlay(inner, OverlayRule::Difference, OverlayFill::NonZero)
+}
+
+#[cfg(not(feature = "vector-boolean"))]
+fn difference_shapes(outer: &Shapes, inner: &Shapes) -> Shapes {
+    if inner.is_empty() {
+        return outer.clone();
+    }
+    outer
+        .iter()
+        .map(|outer_shape| {
+            let mut combined = outer_shape.clone();
+            let outer_positive = shape_outward_sign(outer_shape) >= 0.0;
+            for inner_shape in inner {
+                if let Some((first, holes)) = inner_shape.split_first() {
+                    combined.push(orient_contour(first.clone(), !outer_positive));
+                    for hole in holes {
+                        combined.push(orient_contour(hole.clone(), outer_positive));
+                    }
+                }
+            }
+            combined
+        })
+        .collect()
+}
+
+#[cfg(feature = "vector-boolean")]
+fn outline_shapes(shapes: Shapes, offset: f32) -> Shapes {
+    shapes.outline(&OutlineStyle::new(f64::from(offset)).line_join(OverlayJoin::Round(0.1)))
+}
+
+#[cfg(not(feature = "vector-boolean"))]
+fn outline_shapes(shapes: Shapes, offset: f32) -> Shapes {
+    let offset64 = f64::from(offset);
+    shapes
+        .into_iter()
+        .filter_map(|shape| {
+            let sign = shape_outward_sign(&shape);
+            let mut out_contours = Vec::with_capacity(shape.len());
+            for (idx, contour) in shape.into_iter().enumerate() {
+                if contour.len() < 3 {
+                    continue;
+                }
+                let orig_area = contour_signed_area(&contour);
+                let points: Vec<[f32; 2]> =
+                    contour.iter().map(|p| [p[0] as f32, p[1] as f32]).collect();
+                let ms = miters(&points, sign);
+                let shifted: Contour = contour
+                    .iter()
+                    .zip(ms.iter())
+                    .map(|(p, m)| {
+                        [
+                            p[0] + f64::from(m[0]) * offset64,
+                            p[1] + f64::from(m[1]) * offset64,
+                        ]
+                    })
+                    .collect();
+                let new_area = contour_signed_area(&shifted);
+                if orig_area * new_area <= 1e-9 {
+                    if idx == 0 {
+                        return None;
+                    }
+                    continue;
+                }
+                out_contours.push(shifted);
+            }
+            (!out_contours.is_empty()).then_some(out_contours)
+        })
+        .collect()
+}
+
 /// The region a path fills, as clean polygons: outer contours one way round,
 /// holes the other, nothing overlapping.
 fn fill_shapes(path: &PaintPath, t: Affine) -> Shapes {
@@ -2277,14 +2394,7 @@ fn fill_shapes(path: &PaintPath, t: Affine) -> Shapes {
         .map(|(contour, _)| contour)
         .filter(|contour| contour.len() >= 3)
         .collect();
-    if contours.is_empty() {
-        return Vec::new();
-    }
-    let rule = match path.fill_rule() {
-        FillRule::NonZero => OverlayFill::NonZero,
-        FillRule::EvenOdd => OverlayFill::EvenOdd,
-    };
-    contours.simplify_shape(rule)
+    simplify_contours(contours, path.fill_rule())
 }
 
 /// The region a stroke covers, as clean polygons.
@@ -2292,6 +2402,7 @@ fn fill_shapes(path: &PaintPath, t: Affine) -> Shapes {
 /// The stroke — width, joins, caps, dashes — is laid out in the painter's
 /// coordinates before its local transform, then the outline is transformed:
 /// a stroke scales with the transform, as on a Canvas.
+#[cfg(feature = "vector-boolean")]
 fn stroke_shapes(path: &PaintPath, stroke: &StrokeStyle, t: Affine) -> Shapes {
     if !stroke.width.is_finite() || stroke.width <= 0.0 || !path_is_drawable(path, t) {
         return Vec::new();
@@ -2348,9 +2459,172 @@ fn stroke_shapes(path: &PaintPath, stroke: &StrokeStyle, t: Affine) -> Shapes {
     // Sub-paths and dashes overlap each other; one union keeps a translucent
     // stroke from darkening where they cross.
     let mut shapes = contours.simplify_shape(OverlayFill::NonZero);
+    transform_stroke_shapes(&mut shapes, t);
+    shapes
+}
+
+#[cfg(not(feature = "vector-boolean"))]
+fn stroke_polyline_open(points: &[Point], hw: f64, stroke: &StrokeStyle) -> Option<Vec<Contour>> {
+    let mut dedup: Vec<Point> = Vec::with_capacity(points.len());
+    for &p in points {
+        if let Some(last) = dedup.last()
+            && ((p[0] - last[0]).powi(2) + (p[1] - last[1]).powi(2)).sqrt() <= 1e-7
+        {
+            continue;
+        }
+        dedup.push(p);
+    }
+    if dedup.len() < 2 {
+        return None;
+    }
+    let dir = |a: Point, b: Point| -> [f64; 2] {
+        let [dx, dy] = [b[0] - a[0], b[1] - a[1]];
+        let len = (dx * dx + dy * dy).sqrt();
+        if len > 1e-12 {
+            [dx / len, dy / len]
+        } else {
+            [1.0, 0.0]
+        }
+    };
+    let n = dedup.len();
+    let d_start = dir(dedup[0], dedup[1]);
+    let d_end = dir(dedup[n - 2], dedup[n - 1]);
+    if stroke.cap == LineCap::Square {
+        dedup[0] = [dedup[0][0] - d_start[0] * hw, dedup[0][1] - d_start[1] * hw];
+        dedup[n - 1] = [
+            dedup[n - 1][0] + d_end[0] * hw,
+            dedup[n - 1][1] + d_end[1] * hw,
+        ];
+    }
+    let miter_limit = if stroke.miter_limit.is_finite() {
+        stroke.miter_limit.max(1.0) as f64
+    } else {
+        10.0
+    };
+    let mut left: Vec<Point> = Vec::with_capacity(n + 4);
+    let mut right: Vec<Point> = Vec::with_capacity(n + 4);
+    for i in 0..n {
+        if i == 0 {
+            let nl = [-d_start[1], d_start[0]];
+            left.push([dedup[0][0] + nl[0] * hw, dedup[0][1] + nl[1] * hw]);
+            right.push([dedup[0][0] - nl[0] * hw, dedup[0][1] - nl[1] * hw]);
+        } else if i + 1 == n {
+            let nl = [-d_end[1], d_end[0]];
+            left.push([dedup[i][0] + nl[0] * hw, dedup[i][1] + nl[1] * hw]);
+            right.push([dedup[i][0] - nl[0] * hw, dedup[i][1] - nl[1] * hw]);
+        } else {
+            let d1 = dir(dedup[i - 1], dedup[i]);
+            let d2 = dir(dedup[i], dedup[i + 1]);
+            let n1 = [-d1[1], d1[0]];
+            let n2 = [-d2[1], d2[0]];
+            let denom = 1.0 + n1[0] * n2[0] + n1[1] * n2[1];
+            if stroke.join == LineJoin::Miter && denom > 1e-3 {
+                let m = [(n1[0] + n2[0]) / denom, (n1[1] + n2[1]) / denom];
+                if (m[0] * m[0] + m[1] * m[1]).sqrt() <= miter_limit {
+                    left.push([dedup[i][0] + m[0] * hw, dedup[i][1] + m[1] * hw]);
+                    right.push([dedup[i][0] - m[0] * hw, dedup[i][1] - m[1] * hw]);
+                    continue;
+                }
+            }
+            left.push([dedup[i][0] + n1[0] * hw, dedup[i][1] + n1[1] * hw]);
+            left.push([dedup[i][0] + n2[0] * hw, dedup[i][1] + n2[1] * hw]);
+            right.push([dedup[i][0] - n1[0] * hw, dedup[i][1] - n1[1] * hw]);
+            right.push([dedup[i][0] - n2[0] * hw, dedup[i][1] - n2[1] * hw]);
+        }
+    }
+    let mut ring = left;
+    if stroke.cap == LineCap::Round {
+        let base_angle = (-d_end[1]).atan2(d_end[0]);
+        let center = dedup[n - 1];
+        for step in 1..6 {
+            let angle = base_angle - std::f64::consts::PI * (step as f64 / 6.0);
+            let (s, c) = angle.sin_cos();
+            ring.push([center[0] + c * hw, center[1] - s * hw]);
+        }
+    }
+    ring.extend(right.into_iter().rev());
+    if stroke.cap == LineCap::Round {
+        let base_angle = d_start[1].atan2(-d_start[0]);
+        let center = dedup[0];
+        for step in 1..6 {
+            let angle = base_angle - std::f64::consts::PI * (step as f64 / 6.0);
+            let (s, c) = angle.sin_cos();
+            ring.push([center[0] + c * hw, center[1] - s * hw]);
+        }
+    }
+    Some(vec![orient_contour(ring, true)])
+}
+
+#[cfg(not(feature = "vector-boolean"))]
+fn stroke_polyline_closed(points: &[Point], hw: f64) -> Option<Vec<Contour>> {
+    if points.len() < 3 {
+        return None;
+    }
+    let ring = orient_contour(points.to_vec(), true);
+    let f32_pts: Vec<[f32; 2]> = ring.iter().map(|p| [p[0] as f32, p[1] as f32]).collect();
+    let ms = miters(&f32_pts, 1.0);
+    let outer: Contour = ring
+        .iter()
+        .zip(ms.iter())
+        .map(|(p, m)| [p[0] + f64::from(m[0]) * hw, p[1] + f64::from(m[1]) * hw])
+        .collect();
+    let mut inner: Contour = ring
+        .iter()
+        .zip(ms.iter())
+        .map(|(p, m)| [p[0] - f64::from(m[0]) * hw, p[1] - f64::from(m[1]) * hw])
+        .collect();
+    inner.reverse();
+    if contour_signed_area(&inner) < -1e-6 {
+        Some(vec![orient_contour(outer, true), inner])
+    } else {
+        Some(vec![orient_contour(outer, true)])
+    }
+}
+
+#[cfg(not(feature = "vector-boolean"))]
+fn stroke_shapes(path: &PaintPath, stroke: &StrokeStyle, t: Affine) -> Shapes {
+    if !stroke.width.is_finite() || stroke.width <= 0.0 || !path_is_drawable(path, t) {
+        return Vec::new();
+    }
+    let hw = f64::from(stroke.width.min(MAX_LENGTH)) * 0.5;
+    let tolerance = TOLERANCE / affine_scale(t).max(1e-3);
+    let dash = dash_pattern(&stroke.dash);
+    let mut shapes: Shapes = Vec::new();
+    for (points, closed) in flatten(path, AFFINE_IDENTITY, tolerance) {
+        if points.len() < 2 {
+            continue;
+        }
+        match &dash {
+            Some(pattern) if !too_many_dashes(&points, closed, pattern) => {
+                for piece in dashes(&points, closed, pattern, stroke.dash_offset) {
+                    if let Some(shape) = stroke_polyline_open(&piece, hw, stroke) {
+                        shapes.push(shape);
+                    }
+                }
+            }
+            _ if closed => {
+                if let Some(shape) = stroke_polyline_closed(&points, hw) {
+                    shapes.push(shape);
+                }
+            }
+            _ => {
+                if let Some(shape) = stroke_polyline_open(&points, hw, stroke) {
+                    shapes.push(shape);
+                }
+            }
+        }
+    }
+    if shapes.is_empty() {
+        return Vec::new();
+    }
+    transform_stroke_shapes(&mut shapes, t);
+    shapes
+}
+
+fn transform_stroke_shapes(shapes: &mut Shapes, t: Affine) {
     if t != AFFINE_IDENTITY {
         let flips = t[0] * t[3] - t[1] * t[2] < 0.0;
-        for shape in &mut shapes {
+        for shape in shapes.iter_mut() {
             for contour in shape.iter_mut() {
                 for point in contour.iter_mut() {
                     let [x, y] = affine_apply(t, [point[0] as f32, point[1] as f32]);
@@ -2364,7 +2638,6 @@ fn stroke_shapes(path: &PaintPath, stroke: &StrokeStyle, t: Affine) -> Shapes {
             }
         }
     }
-    shapes
 }
 
 /// A usable dash pattern: `None` for a solid stroke.
@@ -2450,11 +2723,138 @@ fn dashes(points: &Contour, closed: bool, pattern: &[f64], offset: f32) -> Vec<C
     pieces
 }
 
+#[cfg(feature = "vector-boolean")]
 fn intersect(subject: &Shapes, clip: &Shapes) -> Shapes {
     if subject.is_empty() || clip.is_empty() {
         return Vec::new();
     }
     subject.overlay(clip, OverlayRule::Intersect, OverlayFill::NonZero)
+}
+
+#[cfg(not(feature = "vector-boolean"))]
+fn is_convex_contour(contour: &[Point]) -> bool {
+    if contour.len() < 3 {
+        return false;
+    }
+    let mut sign = 0i8;
+    let n = contour.len();
+    for i in 0..n {
+        let a = contour[i];
+        let b = contour[(i + 1) % n];
+        let c = contour[(i + 2) % n];
+        let z = (b[0] - a[0]) * (c[1] - b[1]) - (b[1] - a[1]) * (c[0] - b[0]);
+        if z.abs() > 1e-9 {
+            let s = if z > 0.0 { 1 } else { -1 };
+            if sign == 0 {
+                sign = s;
+            } else if sign != s {
+                return false;
+            }
+        }
+    }
+    sign != 0
+}
+
+#[cfg(not(feature = "vector-boolean"))]
+fn clip_contour_to_convex(subject: &[Point], positive_convex: &[Point]) -> Contour {
+    let mut output = subject.to_vec();
+    let m = positive_convex.len();
+    for edge in 0..m {
+        if output.is_empty() {
+            break;
+        }
+        let a = positive_convex[edge];
+        let b = positive_convex[(edge + 1) % m];
+        let inside =
+            |p: Point| (b[0] - a[0]) * (p[1] - a[1]) - (b[1] - a[1]) * (p[0] - a[0]) >= -1e-9;
+        let line_intersect = |p1: Point, p2: Point| -> Point {
+            let d1 = (b[0] - a[0]) * (p1[1] - a[1]) - (b[1] - a[1]) * (p1[0] - a[0]);
+            let d2 = (b[0] - a[0]) * (p2[1] - a[1]) - (b[1] - a[1]) * (p2[0] - a[0]);
+            let denom = d1 - d2;
+            if denom.abs() <= 1e-12 {
+                p1
+            } else {
+                let t = d1 / denom;
+                [p1[0] + (p2[0] - p1[0]) * t, p1[1] + (p2[1] - p1[1]) * t]
+            }
+        };
+        let input = std::mem::take(&mut output);
+        let n = input.len();
+        for i in 0..n {
+            let cur = input[i];
+            let prev = input[(i + n - 1) % n];
+            let cur_in = inside(cur);
+            let prev_in = inside(prev);
+            if cur_in {
+                if !prev_in {
+                    output.push(line_intersect(prev, cur));
+                }
+                output.push(cur);
+            } else if prev_in {
+                output.push(line_intersect(prev, cur));
+            }
+        }
+    }
+    output
+}
+
+#[cfg(not(feature = "vector-boolean"))]
+fn clip_shapes_to_convex(shapes: &Shapes, convex: &[Point]) -> Shapes {
+    let positive_convex = orient_contour(convex.to_vec(), true);
+    shapes
+        .iter()
+        .filter_map(|shape| {
+            let (outer, holes) = shape.split_first()?;
+            let clipped_outer = clip_contour_to_convex(outer, &positive_convex);
+            if clipped_outer.len() < 3 || contour_signed_area(&clipped_outer).abs() <= 1e-9 {
+                return None;
+            }
+            let mut out = vec![orient_contour(clipped_outer, true)];
+            for hole in holes {
+                let clipped_hole = clip_contour_to_convex(hole, &positive_convex);
+                if clipped_hole.len() >= 3 && contour_signed_area(&clipped_hole).abs() > 1e-9 {
+                    out.push(orient_contour(clipped_hole, false));
+                }
+            }
+            Some(out)
+        })
+        .collect()
+}
+
+#[cfg(not(feature = "vector-boolean"))]
+fn intersect(subject: &Shapes, clip: &Shapes) -> Shapes {
+    if subject.is_empty() || clip.is_empty() {
+        return Vec::new();
+    }
+    if clip.len() == 1 && clip[0].len() == 1 && is_convex_contour(&clip[0][0]) {
+        return clip_shapes_to_convex(subject, &clip[0][0]);
+    }
+    if subject.len() == 1 && subject[0].len() == 1 && is_convex_contour(&subject[0][0]) {
+        return clip_shapes_to_convex(clip, &subject[0][0]);
+    }
+    let subject_tris = triangulate(subject);
+    let clip_tris = triangulate(clip);
+    let mut out = Vec::new();
+    for s_tri in &subject_tris {
+        let s_poly: Contour = s_tri
+            .iter()
+            .map(|p| [f64::from(p[0]), f64::from(p[1])])
+            .collect();
+        for c_tri in &clip_tris {
+            let c_poly = orient_contour(
+                c_tri
+                    .iter()
+                    .map(|p| [f64::from(p[0]), f64::from(p[1])])
+                    .collect(),
+                true,
+            );
+            let piece = clip_contour_to_convex(&s_poly, &c_poly);
+            if piece.len() >= 3 && contour_signed_area(&piece).abs() > 1e-9 {
+                out.push(vec![orient_contour(piece, true)]);
+            }
+        }
+    }
+    out
 }
 
 fn rounded_shapes(rect: SceneRect, radii: [f32; 4], t: Affine) -> Shapes {
@@ -2805,10 +3205,7 @@ impl MeshBuilder {
             return shapes;
         }
         if shadow.spread_radius.abs() > 0.01 {
-            shapes = shapes.outline(
-                &OutlineStyle::new(f64::from(shadow.spread_radius))
-                    .line_join(OverlayJoin::Round(0.1)),
-            );
+            shapes = outline_shapes(shapes, shadow.spread_radius);
         }
         let offset = [f64::from(shadow.offset_x), f64::from(shadow.offset_y)];
         for point in shapes.iter_mut().flatten().flatten() {
@@ -2928,17 +3325,14 @@ impl MeshBuilder {
             point[1] += f64::from(shadow.offset_y);
         }
         if shadow.spread_radius.abs() > 0.01 {
-            hole = hole.outline(
-                &OutlineStyle::new(-f64::from(shadow.spread_radius))
-                    .line_join(OverlayJoin::Round(0.1)),
-            );
+            hole = outline_shapes(hole, -shadow.spread_radius);
         }
         let blur = shadow.blur_radius.max(0.0);
         if blur < 0.5 || hole.is_empty() {
             let dark = if hole.is_empty() {
                 shapes
             } else {
-                shapes.overlay(&hole, OverlayRule::Difference, OverlayFill::NonZero)
+                difference_shapes(&shapes, &hole)
             };
             self.fill(&dark, shadow.color.to_srgb());
         } else {
@@ -2958,8 +3352,11 @@ impl MeshBuilder {
             }
             // And solid past the band: past its actual outer edge, whose
             // corners are mitred, so the two never cover a point twice.
+            #[cfg(feature = "vector-boolean")]
             let grown = reach.simplify_shape(OverlayFill::NonZero);
-            let beyond = shapes.overlay(&grown, OverlayRule::Difference, OverlayFill::NonZero);
+            #[cfg(not(feature = "vector-boolean"))]
+            let grown = reach;
+            let beyond = difference_shapes(&shapes, &grown);
             for shape in &beyond {
                 if let Some(Tessellation {
                     vertices, indices, ..
@@ -3311,11 +3708,13 @@ mod tests {
     #[test]
     fn every_outline_vertex_of_a_fill_moves_in_with_its_inner_ring() {
         // A frame whose points f32 cannot hold exactly, around a hole.
-        let shapes: Shapes = vec![vec![
-            vec![[0.1, 0.1], [40.3, 0.7], [41.9, 30.1], [0.3, 29.7]],
-            vec![[10.1, 10.3], [20.7, 20.9], [30.3, 10.1]],
-        ]]
-        .simplify_shape(OverlayFill::EvenOdd);
+        let shapes = simplify_contours(
+            vec![
+                vec![[0.1, 0.1], [40.3, 0.7], [41.9, 30.1], [0.3, 29.7]],
+                vec![[10.1, 10.3], [20.7, 20.9], [30.3, 10.1]],
+            ],
+            FillRule::EvenOdd,
+        );
         let mut mesh = MeshBuilder::default();
         mesh.fill(&shapes, [1.0; 4]);
         let solid: Vec<_> = mesh

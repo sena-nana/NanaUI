@@ -5,12 +5,13 @@ use std::collections::BTreeMap;
 use std::fmt;
 use std::sync::Arc;
 
-use nana_ui_core::{SemanticColor, SemanticPalette};
+use nana_ui_core::{SemanticColor, SemanticPalette, TooltipConfig};
 
 use crate::view_components::project_common;
 use crate::{
-    AccessibilityRole, AccessibilityState, ComponentView, InteractionState, LayoutBox, LengthSpec,
-    MutationQueue, NodeKind, NodeStyle, StableNodeId, StandardVisual, UiWorld,
+    AccessibilityRole, AccessibilityState, ComponentTextRegion, ComponentView, InteractionState,
+    LayoutBox, LengthSpec, MutationQueue, NodeKind, NodeStyle, StableNodeId,
+    TextHorizontalAlignment, UiWorld,
 };
 
 const DAYS_PER_WEEK: usize = 7;
@@ -696,10 +697,313 @@ impl<T: Clone> CalendarHeatmap<T> {
     }
 }
 
+/// Derived hover ring and tooltip geometry for a hovered calendar cell.
+#[derive(Debug, Clone, PartialEq)]
+pub struct CalendarHoverGeometry {
+    pub ring: LayoutBox,
+    pub tooltip: LayoutBox,
+    pub title: ComponentTextRegion,
+    pub ring_color: [f32; 4],
+    pub tooltip_fill: [f32; 4],
+    pub tooltip_border: [f32; 4],
+}
+
+/// Resolved paint geometry of a [`CalendarHeatmap`] under a bounding box.
+#[derive(Debug, Clone, PartialEq)]
+pub struct CalendarHeatmapLayout {
+    pub cells: Vec<(LayoutBox, [f32; 4])>,
+    pub labels: Vec<ComponentTextRegion>,
+    pub hover: Option<CalendarHoverGeometry>,
+}
+
+/// Open visual model projected by [`CalendarHeatmap`].
+#[derive(Debug, Clone, PartialEq)]
+pub struct CalendarHeatmapVisual {
+    pub cells: Arc<[CalendarHeatmapCellPaint]>,
+    pub month_labels: Arc<[CalendarHeatmapLabelPaint]>,
+    pub day_labels: Arc<[CalendarHeatmapLabelPaint]>,
+    pub cell_size: f32,
+    pub cell_radius: f32,
+    pub max_level: u8,
+    pub active: Option<usize>,
+    pub active_title: Option<Arc<str>>,
+}
+
+impl CalendarHeatmapVisual {
+    pub(crate) fn layout_at(
+        &self,
+        bounds: LayoutBox,
+        palette: &SemanticPalette,
+        measure: crate::text_width::ChromeTextMeasure<'_>,
+    ) -> CalendarHeatmapLayout {
+        let cells = self
+            .cells
+            .iter()
+            .enumerate()
+            .map(|(index, cell)| {
+                let is_active = Some(index) == self.active;
+                let fill = if is_active && cell.level >= self.max_level {
+                    palette.accent
+                } else {
+                    let level = if is_active {
+                        cell.level.saturating_add(1).max(1)
+                    } else {
+                        cell.level
+                    };
+                    calendar_cell_fill(*palette, level, self.max_level)
+                };
+                (
+                    LayoutBox {
+                        x: bounds.x + cell.x,
+                        y: bounds.y + cell.y,
+                        width: self.cell_size,
+                        height: self.cell_size,
+                    },
+                    fill.as_rgba_array(),
+                )
+            })
+            .collect();
+        let mut labels = Vec::with_capacity(self.month_labels.len() + self.day_labels.len());
+        labels.extend(self.month_labels.iter().map(|label| {
+            calendar_axis_label_region(
+                bounds,
+                &label.text,
+                label.x,
+                label.y,
+                nana_ui_core::type_scale::HINT,
+                true,
+                palette,
+                measure,
+            )
+        }));
+        labels.extend(self.day_labels.iter().map(|label| {
+            calendar_axis_label_region(
+                bounds,
+                &label.text,
+                label.x,
+                label.y,
+                nana_ui_core::type_scale::HINT,
+                false,
+                palette,
+                measure,
+            )
+        }));
+        let hover = self
+            .active
+            .and_then(|index| self.cells.get(index))
+            .map(|cell| {
+                calendar_hover_chrome(
+                    bounds,
+                    cell,
+                    self.cell_size,
+                    self.active_title.as_deref().unwrap_or(""),
+                    palette,
+                    measure,
+                )
+            });
+        CalendarHeatmapLayout {
+            cells,
+            labels,
+            hover,
+        }
+    }
+}
+
+impl crate::WidgetVisual for CalendarHeatmapVisual {
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+
+    fn dyn_eq(&self, other: &dyn std::any::Any) -> bool {
+        other.downcast_ref::<Self>().is_some_and(|rhs| self == rhs)
+    }
+
+    fn measures_text(&self) -> bool {
+        true
+    }
+
+    fn paint(&self, ctx: &crate::WidgetPaintCtx<'_>) -> crate::WidgetPaintOutput {
+        let layout = self.layout_at(
+            ctx.bounds,
+            &ctx.style_model.palette,
+            ctx.world.chrome_text_measure(ctx.id),
+        );
+        let mut out = crate::WidgetPaintOutput {
+            owns_node_text: true,
+            suppress_root_surface: true,
+            ..crate::WidgetPaintOutput::new()
+        };
+        let mut groups: Vec<([f32; 4], Vec<LayoutBox>)> = Vec::new();
+        for (cell, color) in &layout.cells {
+            match groups.iter_mut().find(|(existing, _)| existing == color) {
+                Some((_, rects)) => rects.push(*cell),
+                None => groups.push((*color, vec![*cell])),
+            }
+        }
+        for (index, (color, rects)) in groups.into_iter().enumerate() {
+            if rects.is_empty() {
+                continue;
+            }
+            let bounds = crate::widget_visual::union_layout_rects(&rects);
+            out.push(
+                10u64.saturating_add(index as u64),
+                crate::WidgetPaintOp::QuadBatch(crate::WidgetQuadBatch {
+                    bounds,
+                    rects: rects.into(),
+                    colors: crate::WidgetBatchColors::Uniform(color),
+                    fill_paint: None,
+                    border: None,
+                    corner_radius: [ctx.chrome_radii.xs; 4],
+                }),
+            );
+        }
+        for (index, label) in layout.labels.iter().enumerate() {
+            out.push(
+                40u64.saturating_add(index as u64),
+                crate::WidgetPaintOp::Text(crate::widget_visual::widget_text_region(
+                    label,
+                    ctx,
+                    TextHorizontalAlignment::Start,
+                    false,
+                )),
+            );
+        }
+        if let Some(hover) = &layout.hover {
+            out.push(
+                70,
+                crate::WidgetPaintOp::Quad(crate::WidgetQuad {
+                    rect: hover.ring,
+                    border: Some((hover.ring_color, 1.5)),
+                    corner_radius: [ctx.chrome_radii.xs + 1.0; 4],
+                    ..Default::default()
+                }),
+            );
+            out.push(
+                71,
+                crate::WidgetPaintOp::Quad(crate::WidgetQuad {
+                    rect: hover.tooltip,
+                    fill: Some(hover.tooltip_fill),
+                    border: Some((hover.tooltip_border, 1.0)),
+                    corner_radius: [TooltipConfig::RADIUS; 4],
+                    ..Default::default()
+                }),
+            );
+            out.push(
+                72,
+                crate::WidgetPaintOp::Text(crate::widget_visual::widget_text_region(
+                    &hover.title,
+                    ctx,
+                    TextHorizontalAlignment::Start,
+                    false,
+                )),
+            );
+        }
+        out
+    }
+}
+
+fn calendar_hover_chrome(
+    bounds: LayoutBox,
+    cell: &CalendarHeatmapCellPaint,
+    cell_size: f32,
+    title: &str,
+    palette: &SemanticPalette,
+    measure: crate::text_width::ChromeTextMeasure<'_>,
+) -> CalendarHoverGeometry {
+    let pad_x = TooltipConfig::PADDING_X;
+    let pad_y = TooltipConfig::PADDING_Y;
+    let font_size = TooltipConfig::FONT_SIZE;
+    let gap = TooltipConfig::default().gap;
+    let max_width = TooltipConfig::default().max_width;
+    let text_width = measure.width(title, font_size, None);
+    let tooltip_width = (text_width + pad_x * 2.0).clamp(font_size + pad_x * 2.0, max_width);
+    let tooltip_height = font_size + pad_y * 2.0;
+    let ring = LayoutBox {
+        x: bounds.x + cell.x - nana_ui_core::HAIRLINE,
+        y: bounds.y + cell.y - nana_ui_core::HAIRLINE,
+        width: cell_size + nana_ui_core::HAIRLINE * 2.0,
+        height: cell_size + nana_ui_core::HAIRLINE * 2.0,
+    };
+    let tooltip_x = if cell.x > bounds.width / 2.0 {
+        (cell.x + cell_size - tooltip_width).max(0.0)
+    } else {
+        cell.x.min((bounds.width - tooltip_width).max(0.0))
+    };
+    let tooltip_y = if cell.y < bounds.height / 2.0 {
+        (cell.y + cell_size + gap).min((bounds.height - tooltip_height).max(0.0))
+    } else {
+        (cell.y - tooltip_height - gap).max(0.0)
+    };
+    let tooltip = LayoutBox {
+        x: bounds.x + tooltip_x,
+        y: bounds.y + tooltip_y,
+        width: tooltip_width,
+        height: tooltip_height,
+    };
+    CalendarHoverGeometry {
+        ring,
+        tooltip,
+        title: ComponentTextRegion {
+            bounds: LayoutBox {
+                x: tooltip.x + pad_x,
+                y: tooltip.y + pad_y,
+                width: (tooltip_width - pad_x * 2.0).max(0.0),
+                height: font_size,
+            },
+            content: crate::TextValue::from(title),
+            color: Some(palette.text.as_rgba_array()),
+            font_size,
+            font_weight: None,
+        },
+        ring_color: palette.text.as_rgba_array(),
+        tooltip_fill: palette.surface.as_rgba_array(),
+        tooltip_border: palette.border_soft.as_rgba_array(),
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn calendar_axis_label_region(
+    bounds: LayoutBox,
+    text: &Arc<str>,
+    x: f32,
+    y: f32,
+    font_size: f32,
+    center: bool,
+    palette: &SemanticPalette,
+    measure: crate::text_width::ChromeTextMeasure<'_>,
+) -> ComponentTextRegion {
+    let width = measure.width(text, font_size, None) + nana_ui_core::space::XXS;
+    ComponentTextRegion {
+        bounds: LayoutBox {
+            x: bounds.x + x - if center { width * 0.5 } else { 0.0 },
+            y: bounds.y + y,
+            width,
+            height: font_size + nana_ui_core::space::XXS,
+        },
+        content: Arc::clone(text).into(),
+        color: Some(palette.muted.as_rgba_array()),
+        font_size,
+        font_weight: None,
+    }
+}
+
+impl UiWorld {
+    /// Resolves `id`'s calendar heatmap cells, axis labels, and active tooltip geometry.
+    pub fn calendar_heatmap_layout(&self, id: StableNodeId) -> Option<CalendarHeatmapLayout> {
+        let visual = self.widget_visual_as::<CalendarHeatmapVisual>(id)?;
+        let bounds = self.component_layout_box(id)?;
+        let style_model = self.node_style_model(id);
+        Some(visual.layout_at(bounds, &style_model.palette, self.chrome_text_measure(id)))
+    }
+}
+
 impl<T> ComponentView for CalendarHeatmap<T>
 where
     T: Clone + PartialEq + Send + 'static,
 {
+    const TYPE_ID: Option<&'static str> =
+        Some(crate::component_descriptors::CALENDAR_HEATMAP.type_id);
+
     fn node_kind(&self) -> NodeKind {
         NodeKind::Element {
             tag: "calendar-heatmap".into(),
@@ -708,7 +1012,7 @@ where
 
     fn project(&self, id: StableNodeId, world: &UiWorld, mutations: &mut MutationQueue) {
         let model = self.model();
-        let visual = StandardVisual::CalendarHeatmap {
+        let visual = CalendarHeatmapVisual {
             cells: self.paint_cells(),
             month_labels: self.paint_month_labels(world.framework_strings()),
             day_labels: self.paint_day_labels(world.framework_strings()),
@@ -721,8 +1025,8 @@ where
                 .and_then(|index| model.cells.get(index))
                 .map(|cell| Arc::from(cell.title.as_str())),
         };
-        if world.standard_visual(id) != Some(visual.clone()) {
-            mutations.set_standard_visual(id, Some(visual));
+        if world.widget_visual_as::<CalendarHeatmapVisual>(id) != Some(&visual) {
+            mutations.set_widget_visual(id, Some(visual));
         }
         project_common(
             id,
@@ -1016,10 +1320,11 @@ fn date_key_from_days(day: i64) -> String {
 mod tests {
     use super::{
         CalendarHeatmap, CalendarHeatmapDatum, CalendarHeatmapEvent, CalendarHeatmapOptions,
-        CalendarLevelStrategy, build_calendar_heatmap_model, civil_from_days, days_from_civil,
+        CalendarHeatmapVisual, CalendarLevelStrategy, build_calendar_heatmap_model,
+        civil_from_days, days_from_civil,
     };
     use crate::framework::AppContext;
-    use crate::{DocumentId, LayoutBox, LengthSpec, MutationQueue, NodeKind, StandardVisual};
+    use crate::{DocumentId, LayoutBox, LengthSpec, MutationQueue, NodeKind};
     use std::sync::Arc;
 
     fn document() -> DocumentId {
@@ -1239,10 +1544,12 @@ mod tests {
             context.world().node(id).unwrap().kind,
             NodeKind::Element { tag } if tag == "calendar-heatmap"
         ));
-        assert!(matches!(
-            context.world().standard_visual(id),
-            Some(StandardVisual::CalendarHeatmap { .. })
-        ));
+        assert!(
+            context
+                .world()
+                .widget_visual_as::<CalendarHeatmapVisual>(id)
+                .is_some()
+        );
         let style = context.world().node_style(id).unwrap();
         assert_eq!(style.layout.width, Some(LengthSpec::Px(55.0)));
         assert_eq!(style.layout.height, Some(LengthSpec::Px(111.0)));
@@ -1255,11 +1562,11 @@ mod tests {
     }
 
     #[test]
-    fn heatmap_commits_calendar_heatmap_standard_visual() {
+    fn heatmap_commits_calendar_heatmap_widget_visual() {
         let mut context = AppContext::new();
         let view = CalendarHeatmap::new(june_sample());
         let model = view.model();
-        let expected = StandardVisual::CalendarHeatmap {
+        let expected = CalendarHeatmapVisual {
             cells: view.paint_cells(),
             month_labels: view.paint_month_labels(&nana_ui_core::FrameworkStrings::default()),
             day_labels: view.paint_day_labels(&nana_ui_core::FrameworkStrings::default()),
@@ -1271,8 +1578,10 @@ mod tests {
         };
         let heatmap = context.create_component(document(), view).unwrap();
         assert_eq!(
-            context.world().standard_visual(heatmap.stable_id()),
-            Some(expected)
+            context
+                .world()
+                .widget_visual_as::<CalendarHeatmapVisual>(heatmap.stable_id()),
+            Some(&expected)
         );
     }
 
@@ -1319,23 +1628,19 @@ mod tests {
                     .expect("index")
             )
         );
-        let Some(StandardVisual::CalendarHeatmap {
-            active_title,
-            active,
-            ..
-        }) = context.world().standard_visual(heatmap.stable_id())
+        let Some(visual) = context
+            .world()
+            .widget_visual_as::<CalendarHeatmapVisual>(heatmap.stable_id())
         else {
             panic!("hovered calendar must keep a heatmap visual");
         };
-        assert!(active.is_some());
-        assert_eq!(active_title.as_deref(), Some("2026-06-03: 8"));
-        let crate::ComponentGeometry::CalendarHeatmap { hover, .. } = context
+        assert!(visual.active.is_some());
+        assert_eq!(visual.active_title.as_deref(), Some("2026-06-03: 8"));
+        let hover = context
             .world()
-            .component_geometry(heatmap.stable_id())
-            .expect("hovered geometry")
-        else {
-            panic!("expected calendar geometry");
-        };
+            .calendar_heatmap_layout(heatmap.stable_id())
+            .expect("hovered layout")
+            .hover;
         let hover = hover.expect("hovered cell paints hover chrome");
         assert_eq!(hover.title.content.as_ref(), "2026-06-03: 8");
         assert!(hover.tooltip.width < 176.0);

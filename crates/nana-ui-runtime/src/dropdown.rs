@@ -8,8 +8,8 @@ use crate::select::{menu_option_label, select_option_at};
 use crate::view_components::project_common;
 use crate::{
     AccessibilityRole, AccessibilityState, ComponentView, InteractionState, MutationQueue,
-    NodeKind, NodeStyle, SelectMenuScroll, SelectOptionData, SemanticPaint, StableNodeId,
-    StandardVisual, TextContent, UiWorld,
+    NodeKind, NodeStyle, SelectMenuScroll, SelectOptionData, SelectVisual, SemanticPaint,
+    StableNodeId, TextContent, UiWorld,
 };
 
 /// Option identity stays application-owned. Disabled options remain visible.
@@ -452,6 +452,8 @@ fn bare_field_style(mut style: NodeStyle, open: bool, invalid: bool) -> NodeStyl
 }
 
 impl ComponentView for Dropdown {
+    const TYPE_ID: Option<&'static str> = Some(crate::component_descriptors::DROPDOWN.type_id);
+
     const BEHAVIOR: crate::TypeBehavior<Self> = crate::TypeBehavior {
         activation: Some(crate::AppContext::toggle_dropdown),
         activate_at: Some(crate::AppContext::activate_dropdown_at),
@@ -505,7 +507,7 @@ impl ComponentView for Dropdown {
 
     fn project(&self, id: StableNodeId, world: &UiWorld, mutations: &mut MutationQueue) {
         let (label, placeholder) = self.display_label();
-        let visual = StandardVisual::Select {
+        let visual = SelectVisual {
             label: Arc::clone(&label),
             hint: None,
             image: None,
@@ -522,8 +524,8 @@ impl ComponentView for Dropdown {
             fit_options: false,
             overlay_mount: self.overlay_mount,
         };
-        if world.standard_visual(id) != Some(visual.clone()) {
-            mutations.set_standard_visual(id, Some(visual));
+        if world.widget_visual_as::<SelectVisual>(id) != Some(&visual) {
+            mutations.set_widget_visual(id, Some(visual));
         }
         if world.text(id) != Some(label.as_ref()) {
             mutations.set_text(
@@ -695,7 +697,8 @@ mod tests {
         let dropdown = context.create_component(document(), sample()).unwrap();
         let id = dropdown.stable_id();
         assert_eq!(context.world().text(id), Some("关闭, 最大"));
-        let Some(StandardVisual::Select { options, .. }) = context.world().standard_visual(id)
+        let Some(SelectVisual { options, .. }) =
+            context.world().widget_visual_as::<SelectVisual>(id)
         else {
             panic!("dropdown visual");
         };

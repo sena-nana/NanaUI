@@ -20,7 +20,7 @@ use crate::i18n::{
     default_formatter, fallback_chain,
 };
 use nana_text::font::LanguageTag;
-use nana_ui_core::{DirSpec, I18nCounters};
+use nana_ui_core::DirSpec;
 
 /// The scope a localized node reads its locale from.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -138,12 +138,11 @@ impl UiWorld {
     /// Install the catalog messages come from; `None` leaves only the
     /// missing-message policy. Every localized node resolves again.
     pub fn set_message_catalog(&mut self, catalog: Option<Arc<dyn MessageCatalog>>) {
-        let shown = self.i18n_shown();
         self.i18n.catalog = catalog;
         self.i18n.catalog_generation += 1;
         self.i18n.lookups.clear();
-        self.resolve_every_localized();
-        self.note_shown_since(shown);
+        let changed = self.resolve_every_localized();
+        self.note_i18n_generation(changed);
     }
 
     /// Install `catalog`, in which only `changed` messages differ from the
@@ -155,14 +154,11 @@ impl UiWorld {
         catalog: Arc<dyn MessageCatalog>,
         changed: &[MessageId],
     ) {
-        let shown = self.i18n_shown();
         self.i18n.catalog = Some(catalog);
         self.i18n.catalog_generation += 1;
         self.i18n
             .lookups
             .retain(|(_, message), _| !changed.contains(message));
-        let mut counts = I18nCounters::default();
-        counts.switch_transactions += 1;
         let mut ids: Vec<StableNodeId> = changed
             .iter()
             .filter_map(|message| self.i18n.message_dependents.get(message))
@@ -170,13 +166,11 @@ impl UiWorld {
             .collect();
         ids.sort_unstable();
         ids.dedup();
-        counts.catalog_messages_invalidated += ids.len();
+        let mut any_changed = false;
         for id in ids {
-            self.resolve_localized(id, self.localized_language(id), &mut counts);
+            any_changed |= self.resolve_localized(id, self.localized_language(id));
         }
-        counts.switch_commits += 1;
-        self.counters.pending_drain_counts.i18n.accumulate(counts);
-        self.note_shown_since(shown);
+        self.note_i18n_generation(any_changed);
     }
 
     /// How many catalogs were installed or updated.
@@ -187,10 +181,9 @@ impl UiWorld {
     /// Format messages through `formatter` instead of the default; every
     /// localized node resolves again.
     pub fn set_locale_formatter(&mut self, formatter: Arc<dyn LocaleFormatter>) {
-        let shown = self.i18n_shown();
         self.i18n.formatter = Some(formatter);
-        self.resolve_every_localized();
-        self.note_shown_since(shown);
+        let changed = self.resolve_every_localized();
+        self.note_i18n_generation(changed);
     }
 
     /// The locale every fallback chain ends in, after the scope's own; the
@@ -199,11 +192,10 @@ impl UiWorld {
         if self.i18n.fallback == locale {
             return;
         }
-        let shown = self.i18n_shown();
         self.i18n.fallback = locale;
         self.i18n.lookups.clear();
-        self.resolve_every_localized();
-        self.note_shown_since(shown);
+        let changed = self.resolve_every_localized();
+        self.note_i18n_generation(changed);
     }
 
     /// What a message no locale has shows; see [`MissingMessage`].
@@ -211,10 +203,9 @@ impl UiWorld {
         if self.i18n.missing == policy {
             return;
         }
-        let shown = self.i18n_shown();
         self.i18n.missing = policy;
-        self.resolve_every_localized();
-        self.note_shown_since(shown);
+        let changed = self.resolve_every_localized();
+        self.note_i18n_generation(changed);
     }
 
     /// The application's locale, which every window without its own takes.
@@ -222,7 +213,6 @@ impl UiWorld {
         if self.i18n.application == locale {
             return;
         }
-        let shown = self.i18n_shown();
         let before = self.i18n.application.clone();
         self.i18n.application = locale;
         // Windows with localized text, and windows whose roots take its
@@ -244,8 +234,8 @@ impl UiWorld {
             .filter(|document| !self.i18n.documents.contains_key(document))
             .map(|document| (LocaleScope::Document(document), before.clone()))
             .collect();
-        self.switch_locale(reached);
-        self.note_shown_since(shown);
+        let changed = self.switch_locale(reached);
+        self.note_i18n_generation(changed);
     }
 
     /// `document`'s locale; `None` takes the application's again.
@@ -253,30 +243,20 @@ impl UiWorld {
         if self.i18n.documents.get(&document) == locale.as_ref() {
             return;
         }
-        let shown = self.i18n_shown();
         let before = self.scope_locale(LocaleScope::Document(document)).cloned();
         match locale {
             Some(locale) => self.i18n.documents.insert(document, locale),
             None => self.i18n.documents.remove(&document),
         };
-        self.switch_locale(vec![(LocaleScope::Document(document), before)]);
-        self.note_shown_since(shown);
-    }
-
-    /// What localization changed that a frame shows, counted since the last
-    /// drain: text shown, the language it shapes in, a scope's direction.
-    fn i18n_shown(&self) -> usize {
-        let counts = &self.counters.pending_drain_counts.i18n;
-        counts.resolved_content_changed
-            + counts.language_changed_nodes
-            + counts.direction_changed_scopes
+        let changed = self.switch_locale(vec![(LocaleScope::Document(document), before)]);
+        self.note_i18n_generation(changed);
     }
 
     /// A change the application made outside a commit that changed what
     /// shows moves the world's generation, as a commit does, so a host that
     /// draws when the generation moves draws it.
-    fn note_shown_since(&mut self, before: usize) {
-        if self.i18n_shown() != before {
+    fn note_i18n_generation(&mut self, changed: bool) {
+        if changed {
             self.generation = self.generation.wrapping_add(1);
         }
     }
@@ -336,16 +316,11 @@ impl UiWorld {
             }
             return;
         };
-        let mut counts = I18nCounters::default();
         match self.i18n.nodes.get_mut(&id) {
             Some(entry) => {
                 let said = std::mem::replace(&mut entry.text, text).message;
                 let says = entry.text.message;
-                if said == says {
-                    // The same message with new arguments: a revision of
-                    // them, formatted again; the locale it resolved in holds.
-                    counts.args_revisions += 1;
-                } else {
+                if said != says {
                     unlink(&mut self.i18n.message_dependents, said, id);
                     link(&mut self.i18n.message_dependents, says, id);
                 }
@@ -364,8 +339,7 @@ impl UiWorld {
                 );
             }
         }
-        self.resolve_localized(id, self.localized_language(id), &mut counts);
-        self.counters.pending_drain_counts.i18n.accumulate(counts);
+        let _ = self.resolve_localized(id, self.localized_language(id));
     }
 
     /// `id` becomes a locale scope for its subtree, takes another locale, or
@@ -490,22 +464,6 @@ impl UiWorld {
         !self.i18n.documents.is_empty() || self.i18n.application.is_some()
     }
 
-    /// The index sizes, for the drain's counters.
-    pub(super) fn i18n_gauges(&self) -> I18nCounters {
-        let localized = self.i18n.nodes.len();
-        I18nCounters {
-            localized_nodes: localized,
-            message_dependencies: localized,
-            // A localized node shapes in its locale's language unless it
-            // names its own; either way the dependency is held.
-            language_dependencies: localized,
-            direction_dependencies: self.i18n.scopes.len()
-                + self.i18n.documents.len()
-                + usize::from(self.i18n.application.is_some()),
-            ..I18nCounters::default()
-        }
-    }
-
     // --- resolution -----------------------------------------------------
 
     /// The scope `id` reads: the nearest subtree scope at or above it, else
@@ -567,11 +525,7 @@ impl UiWorld {
                 entry.scope = to;
             }
         }
-        let mut counts = I18nCounters::default();
-        counts.switch_transactions += 1;
-        self.switch_scope(to, before, &moved, false, &mut counts);
-        counts.switch_commits += 1;
-        self.counters.pending_drain_counts.i18n.accumulate(counts);
+        let _ = self.switch_scope(to, before, &moved, false);
     }
 
     /// Whether `node` is `root` or under it, walking up no further than
@@ -597,25 +551,21 @@ impl UiWorld {
 
     /// Resolve every localized node again: the catalog, the fallback or the
     /// missing-message policy changed. One transaction.
-    fn resolve_every_localized(&mut self) {
-        let mut counts = I18nCounters::default();
-        counts.switch_transactions += 1;
+    fn resolve_every_localized(&mut self) -> bool {
         let mut ids: Vec<StableNodeId> = self.i18n.nodes.keys().copied().collect();
         ids.sort_unstable();
-        counts.scope_dependents_notified += ids.len();
+        let mut changed = false;
         for id in ids {
-            self.resolve_localized(id, self.localized_language(id), &mut counts);
+            changed |= self.resolve_localized(id, self.localized_language(id));
         }
-        counts.switch_commits += 1;
-        self.counters.pending_drain_counts.i18n.accumulate(counts);
+        changed
     }
 
     /// The locales of `scopes` changed from what each held before: one
     /// transaction over the localized nodes they hold and their roots'
     /// direction.
-    fn switch_locale(&mut self, scopes: Vec<(LocaleScope, Option<Locale>)>) {
-        let mut counts = I18nCounters::default();
-        counts.switch_transactions += 1;
+    fn switch_locale(&mut self, scopes: Vec<(LocaleScope, Option<Locale>)>) -> bool {
+        let mut changed = false;
         for (scope, before) in scopes {
             let mut nodes: Vec<StableNodeId> = self
                 .i18n
@@ -624,10 +574,9 @@ impl UiWorld {
                 .map(|nodes| nodes.iter().copied().collect())
                 .unwrap_or_default();
             nodes.sort_unstable();
-            self.switch_scope(scope, before, &nodes, true, &mut counts);
+            changed |= self.switch_scope(scope, before, &nodes, true);
         }
-        counts.switch_commits += 1;
-        self.counters.pending_drain_counts.i18n.accumulate(counts);
+        changed
     }
 
     fn switch_scope(
@@ -636,11 +585,10 @@ impl UiWorld {
         before: Option<Locale>,
         nodes: &[StableNodeId],
         own_root: bool,
-        counts: &mut I18nCounters,
-    ) {
+    ) -> bool {
         let after = self.scope_locale(scope).cloned();
         if before == after {
-            return;
+            return false;
         }
         let messages_moved =
             before.as_ref().map(Locale::messages) != after.as_ref().map(Locale::messages);
@@ -655,10 +603,10 @@ impl UiWorld {
         generations.language += u64::from(language_moved);
         generations.formatting += u64::from(formatting_moved);
         generations.direction += u64::from(direction_moved);
-        counts.scope_dependents_notified += nodes.len();
         // What a node shaped in before: the language the old locale named,
         // else the locale its message came from.
         let named = before.as_ref().and_then(Locale::language);
+        let mut changed = false;
         for &id in nodes {
             let language = named
                 .cloned()
@@ -667,14 +615,14 @@ impl UiWorld {
             // moved alone, only the ones that format a number, a date or a
             // plural.
             if messages_moved || (formatting_moved && self.localized_formats(id)) {
-                self.resolve_localized(id, language, counts);
+                changed |= self.resolve_localized(id, language);
             } else if language_moved && self.localized_language(id) != language {
-                self.mark_localized_language(id, counts);
+                self.mark_localized_language(id);
+                changed = true;
             }
         }
         if direction_moved && own_root {
-            counts.direction_changed_scopes += 1;
-            let seeds_before = self.layout_seeds_created;
+            changed = true;
             match scope {
                 LocaleScope::Node(root) => self.restyle(root, None),
                 LocaleScope::Document(document) => {
@@ -689,29 +637,22 @@ impl UiWorld {
                     }
                 }
             }
-            counts.layout_seeds += (self.layout_seeds_created - seeds_before) as usize;
         }
+        changed
     }
 
     /// `id`'s language follows its locale's, which moved: its style resolves
     /// again and its text shapes again.
-    fn mark_localized_language(&mut self, id: StableNodeId, counts: &mut I18nCounters) {
-        counts.language_changed_nodes += 1;
+    fn mark_localized_language(&mut self, id: StableNodeId) {
         self.mark(id, DirtyMask::STYLE | DirtyMask::TEXT);
     }
 
     /// Resolve `id`'s message in its scope's locale and show the result when
     /// it differs from what the node shows. `language` is what it shaped in
     /// before; its language is marked when that moved.
-    fn resolve_localized(
-        &mut self,
-        id: StableNodeId,
-        language: Option<LanguageTag>,
-        counts: &mut I18nCounters,
-    ) {
+    fn resolve_localized(&mut self, id: StableNodeId, language: Option<LanguageTag>) -> bool {
         let Some(entry) = self.i18n.nodes.get(&id) else {
-            counts.literal_nodes += 1;
-            return;
+            return false;
         };
         let message = entry.text.message;
         let args = entry.text.args.clone();
@@ -721,13 +662,7 @@ impl UiWorld {
             .as_ref()
             .map(|locale| locale.messages().clone())
             .or_else(|| self.i18n.fallback.clone());
-        counts.nodes_resolved += 1;
-        // In a row a virtual list mounted; walked only while a list is noted.
-        let in_list = !self.i18n.virtual_lists.is_empty()
-            && std::iter::successors(self.parent_id(id), |node| self.parent_id(*node))
-                .any(|node| self.i18n.virtual_lists.contains(&node));
-        counts.virtual_rows_resolved += usize::from(in_list);
-        let found = asked.and_then(|asked| self.lookup_message(&asked, message, counts));
+        let found = asked.and_then(|asked| self.lookup_message(&asked, message));
         let mut shown = std::mem::take(&mut self.i18n.scratch);
         shown.clear();
         let wrote = match &found {
@@ -740,7 +675,6 @@ impl UiWorld {
                     .unwrap_or_else(|| resolved.clone());
                 let formatter =
                     Arc::clone(self.i18n.formatter.get_or_insert_with(default_formatter));
-                let before = formatter.counts();
                 let mut issues = Vec::new();
                 compiled.format(
                     &formatting,
@@ -749,11 +683,6 @@ impl UiWorld {
                     &mut shown,
                     &mut issues,
                 );
-                let after = formatter.counts();
-                counts.format_requests += 1;
-                counts.format_cache_hits += after.hits - before.hits;
-                counts.format_cache_misses += after.misses - before.misses;
-                counts.formatter_allocations += after.built - before.built;
                 // The output names each argument it lacks; the event says
                 // which node.
                 for FormatIssue::Argument(_) in issues {
@@ -775,12 +704,12 @@ impl UiWorld {
         if let Some(entry) = self.i18n.nodes.get_mut(&id) {
             entry.resolved = found.map(|(locale, _)| locale);
         }
+        let mut changed = false;
         if self.localized_language(id) != language {
-            self.mark_localized_language(id, counts);
+            self.mark_localized_language(id);
+            changed = true;
         }
-        if wrote && self.record(id).text.value.as_str() != shown {
-            counts.resolved_content_changed += 1;
-            counts.formatted_output_changed += 1;
+        if wrote && self.nodes.text_content(id).value.as_str() != shown {
             self.replace_text_content(
                 id,
                 TextContent {
@@ -791,11 +720,10 @@ impl UiWorld {
                 id,
                 DirtyMask::TEXT | DirtyMask::RENDER | DirtyMask::ACCESSIBILITY,
             );
-        } else {
-            counts.resolved_content_unchanged += 1;
-            counts.formatted_output_unchanged += 1;
+            changed = true;
         }
         self.i18n.scratch = shown;
+        changed
     }
 
     /// Whether `id`'s message, as last resolved, formats a number, a date or
@@ -824,15 +752,11 @@ impl UiWorld {
         &mut self,
         asked: &LanguageTag,
         message: MessageId,
-        counts: &mut I18nCounters,
     ) -> Option<(LanguageTag, Arc<CompiledMessage>)> {
-        counts.catalog_lookups += 1;
         let key = (asked.clone(), message);
         if let Some(found) = self.i18n.lookups.get(&key) {
-            counts.catalog_cache_hits += 1;
             return found.clone();
         }
-        counts.catalog_cache_misses += 1;
         let pattern = self.i18n.catalog.as_ref().and_then(|catalog| {
             let fallback = self.i18n.fallback.iter().flat_map(fallback_chain);
             fallback_chain(asked)
@@ -840,7 +764,6 @@ impl UiWorld {
                 .find_map(|tag| catalog.pattern(&tag, message).map(|pattern| (tag, pattern)))
         });
         let found = pattern.map(|(tag, pattern)| {
-            counts.message_patterns_compiled += 1;
             let compiled = CompiledMessage::parse(&pattern).unwrap_or_else(|error| {
                 nana_diagnostics::fault!(
                     nana_diagnostics::framework::text::I18N_PATTERN_INVALID,

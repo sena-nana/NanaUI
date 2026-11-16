@@ -184,7 +184,9 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
         let geometry = self.content_geometry_of(id);
         let material = self.material_of(id);
         let viewport = LayoutViewport::new(geometry.logical_size.0, geometry.logical_size.1);
+        let a11y_enabled = self.is_accessibility_activated(id);
         let Some(flush) = self.program.write_document(id, |document| {
+            document.set_accessibility_enabled(a11y_enabled);
             crate::output::driver::flush_presentation(document, viewport, &mut self.text)
         }) else {
             self.program
@@ -512,11 +514,7 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
         output_work.ui_renders += usize::from(direct_ui);
         output_work.submissions = 1;
         let gpu_work = encoded_presentation.gpu_work;
-        self.program.write_document(id, |document| {
-            let context = document.context_mut();
-            context.record_output_work(output_work);
-            context.record_presentation_gpu_work(gpu_work);
-        });
+        self.record_presentation_work(id, output_work, gpu_work);
         if frame_started.is_some() {
             crate::host_diagnostics::watch_submission(self.graphics.gpu().raw_queue());
         }

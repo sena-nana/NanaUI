@@ -31,7 +31,10 @@ use accesskit::DeactivationHandler;
 #[cfg(all(feature = "hosted", not(target_os = "android")))]
 use accesskit::{ActionHandler, ActivationHandler};
 #[cfg(all(feature = "hosted", not(target_os = "android")))]
-use std::sync::{Arc, Mutex};
+use std::sync::{
+    Arc, Mutex,
+    atomic::{AtomicBool, Ordering},
+};
 
 /// Stateful conversion from NanaUI's backend-neutral semantics to AccessKit.
 ///
@@ -586,29 +589,54 @@ fn runtime_roots(nodes: &BTreeMap<StableNodeId, AccessibilityNode>) -> Vec<Stabl
 
 #[cfg(all(feature = "hosted", not(target_os = "android")))]
 #[derive(Clone)]
-struct CurrentTree(Arc<Mutex<AccessibilityProjector>>);
+struct CurrentTree {
+    projector: Arc<Mutex<AccessibilityProjector>>,
+    activated: Arc<AtomicBool>,
+    window: Option<Arc<dyn winit::window::Window>>,
+}
 
 #[cfg(all(feature = "hosted", not(target_os = "android")))]
 impl ActivationHandler for CurrentTree {
     fn request_initial_tree(&mut self) -> Option<TreeUpdate> {
-        Some(self.0.lock().ok()?.full_update())
+        self.activated.store(true, Ordering::Release);
+        if let Some(window) = &self.window {
+            window.request_redraw();
+        }
+        Some(self.projector.lock().ok()?.full_update())
     }
 }
 
 #[cfg(all(feature = "hosted", not(target_os = "android")))]
 impl CurrentTree {
-    fn unpublished(interactive: bool, scale_factor: f32) -> Self {
-        Self(Arc::new(Mutex::new(AccessibilityProjector::retain(
-            Vec::new(),
-            interactive,
-            scale_factor,
-            None,
-            true,
-        ))))
+    fn unpublished(
+        interactive: bool,
+        scale_factor: f32,
+        window: Option<Arc<dyn winit::window::Window>>,
+    ) -> Self {
+        Self {
+            projector: Arc::new(Mutex::new(AccessibilityProjector::retain(
+                Vec::new(),
+                interactive,
+                scale_factor,
+                None,
+                true,
+            ))),
+            activated: Arc::new(AtomicBool::new(false)),
+            window,
+        }
+    }
+
+    #[cfg(test)]
+    fn from_projector(projector: Arc<Mutex<AccessibilityProjector>>) -> Self {
+        Self {
+            projector,
+            activated: Arc::new(AtomicBool::new(false)),
+            window: None,
+        }
     }
 
     fn synchronize(&self, update: AccessibilityUpdate, scale_factor: f32) -> Option<TreeUpdate> {
-        let mut projector = self.0.lock().expect("accessibility projector");
+        let mut projector = self.projector.lock().expect("accessibility projector");
         match update {
             AccessibilityUpdate::Full { generation, nodes } => {
                 projector.synchronize_full(nodes, scale_factor, generation)
@@ -703,7 +731,9 @@ fn native_adapter(
         target_os = "openbsd"
     )
 ))]
-struct UnixDeactivation;
+struct UnixDeactivation {
+    activated: Arc<AtomicBool>,
+}
 
 #[cfg(all(
     feature = "hosted",
@@ -716,7 +746,9 @@ struct UnixDeactivation;
     )
 ))]
 impl DeactivationHandler for UnixDeactivation {
-    fn deactivate_accessibility(&mut self) {}
+    fn deactivate_accessibility(&mut self) {
+        self.activated.store(false, Ordering::Release);
+    }
 }
 
 /// Wayland cannot report outer position; X11 can. `surface_position` is relative
@@ -767,7 +799,10 @@ fn native_adapter(
     activation: CurrentTree,
     action: QueuedActions,
 ) -> accesskit_unix::Adapter {
-    accesskit_unix::Adapter::new(activation, action, UnixDeactivation)
+    let deactivation = UnixDeactivation {
+        activated: Arc::clone(&activation.activated),
+    };
+    accesskit_unix::Adapter::new(activation, action, deactivation)
 }
 
 #[cfg(all(
@@ -922,7 +957,8 @@ impl HostedAccessibility {
         // and mounting/replacing documents must not replace the HWND provider.
         // A prepared document is not necessarily a presented document. Keep
         // activation limited to the native root until the first publication.
-        let current_tree = CurrentTree::unpublished(interactive, scale_factor);
+        let current_tree =
+            CurrentTree::unpublished(interactive, scale_factor, Some(Arc::clone(&window)));
         let requests = Arc::new(Mutex::new(VecDeque::new()));
         let actions = QueuedActions {
             requests: Arc::clone(&requests),
@@ -936,9 +972,13 @@ impl HostedAccessibility {
         }
     }
 
+    pub(crate) fn is_activated(&self) -> bool {
+        self.current_tree.activated.load(Ordering::Acquire)
+    }
+
     pub(crate) fn retained_generation(&self) -> Option<u64> {
         self.current_tree
-            .0
+            .projector
             .lock()
             .expect("accessibility projector")
             .generation
@@ -987,7 +1027,7 @@ impl HostedAccessibility {
     pub(crate) fn scale_factor_changed(&self, scale_factor: f32) -> bool {
         (self
             .current_tree
-            .0
+            .projector
             .lock()
             .expect("accessibility projector")
             .scale_factor
@@ -1011,7 +1051,11 @@ impl HostedAccessibility {
             };
             std::mem::take(&mut *requests)
         };
-        let projector = self.current_tree.0.lock().expect("accessibility projector");
+        let projector = self
+            .current_tree
+            .projector
+            .lock()
+            .expect("accessibility projector");
         requests
             .into_iter()
             .filter_map(|request| projector.project_action_request(request))
@@ -1517,14 +1561,16 @@ mod tests {
     #[cfg(all(feature = "hosted", not(target_os = "android")))]
     #[test]
     fn unpublished_window_exposes_only_its_root_until_the_first_publication() {
-        let mut current = CurrentTree::unpublished(true, 1.0);
+        let mut current = CurrentTree::unpublished(true, 1.0, None);
+        assert!(!current.activated.load(Ordering::Acquire));
         let initial = current.request_initial_tree().unwrap();
+        assert!(current.activated.load(Ordering::Acquire));
         assert_eq!(initial.nodes.len(), 1);
         assert_eq!(initial.nodes[0].0, FOREST_ROOT_ID);
         assert_eq!(initial.nodes[0].1.role(), Role::Window);
         assert!(initial.nodes[0].1.children().is_empty());
         assert_eq!(initial.focus, FOREST_ROOT_ID);
-        assert_eq!(current.0.lock().unwrap().generation, None);
+        assert_eq!(current.projector.lock().unwrap().generation, None);
 
         let mut control = node(2, Some(1), &[]);
         control.role = AccessibilityRole::Button;
@@ -1547,7 +1593,7 @@ mod tests {
                 .iter()
                 .any(|(id, value)| *id == NodeId(2) && value.label() == Some("Published button"))
         );
-        assert_eq!(current.0.lock().unwrap().generation, Some(7));
+        assert_eq!(current.projector.lock().unwrap().generation, Some(7));
     }
 
     fn node(id: u64, parent: Option<u64>, children: &[u64]) -> AccessibilityNode {
@@ -3324,15 +3370,11 @@ mod tests {
         editor.editable = true;
         editor.value = Some("Before".into());
         nodes[1] = editor.clone();
-        let current = CurrentTree(Arc::new(Mutex::new(AccessibilityProjector::retain(
-            nodes,
-            true,
-            1.0,
-            Some(0),
-            true,
-        ))));
+        let current = CurrentTree::from_projector(Arc::new(Mutex::new(
+            AccessibilityProjector::retain(nodes, true, 1.0, Some(0), true),
+        )));
         let mut activation = current.clone();
-        assert_eq!(current.0.lock().unwrap().full_updates.get(), 0);
+        assert_eq!(current.projector.lock().unwrap().full_updates.get(), 0);
         for generation in 1..=4 {
             editor.value = Some(format!("Edited {generation}").into());
             editor.focused = true;
@@ -3349,11 +3391,19 @@ mod tests {
             assert_eq!(update.focus, NodeId(2));
             assert_eq!(update.nodes.len(), 2); // Editor and its text run.
             assert!(update.tree.is_none());
-            assert!(current.0.try_lock().is_ok()); // Native callbacks may reenter now.
+            assert!(current.projector.try_lock().is_ok()); // Native callbacks may reenter now.
         }
-        assert_eq!(current.0.lock().unwrap().full_updates.get(), 0);
+        assert_eq!(current.projector.lock().unwrap().full_updates.get(), 0);
         let before = activation.request_initial_tree().unwrap();
-        assert_eq!(current.0.lock().unwrap().global_reconciliations.get(), 1);
+        assert_eq!(
+            current
+                .projector
+                .lock()
+                .unwrap()
+                .global_reconciliations
+                .get(),
+            1
+        );
         assert_eq!(before.tree.as_ref().unwrap().root, FOREST_ROOT_ID);
         assert_eq!(
             before
@@ -3375,13 +3425,13 @@ mod tests {
                 1.0,
             )
             .unwrap();
-        assert_eq!(current.0.lock().unwrap().full_updates.get(), 1);
+        assert_eq!(current.projector.lock().unwrap().full_updates.get(), 1);
         let after = activation.request_initial_tree().unwrap();
         assert_eq!(after.focus, FOREST_ROOT_ID);
         assert!(after.nodes.iter().all(|(id, _)| *id != NodeId(2)));
         assert!(before.nodes.iter().any(|(id, _)| *id == NodeId(2)));
         assert_eq!(after.nodes.len(), 10_001); // Runtime nodes plus the window, no orphan text run.
-        assert_eq!(current.0.lock().unwrap().full_updates.get(), 2);
+        assert_eq!(current.projector.lock().unwrap().full_updates.get(), 2);
     }
 
     #[cfg(all(feature = "hosted", not(target_os = "android")))]
@@ -3389,7 +3439,7 @@ mod tests {
     fn activation_always_returns_the_latest_complete_tree() {
         let (initial, _) = AccessibilityProjector::new(vec![node(1, None, &[])], false, 1.0);
         let current = Arc::new(Mutex::new(initial));
-        let mut activation = CurrentTree(Arc::clone(&current));
+        let mut activation = CurrentTree::from_projector(Arc::clone(&current));
 
         assert_eq!(
             activation

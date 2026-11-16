@@ -355,7 +355,7 @@ impl ConstraintClass {
 
     /// `(tag, values)` of [`Self::normalized`], read in one match: what
     /// equality and hashing compare, on the hot path of every cache lookup.
-    fn canonical(self) -> (u8, (u32, u32)) {
+    pub(crate) fn canonical(self) -> (u8, (u32, u32)) {
         const UNCONSTRAINED: (u8, (u32, u32)) = (0, (0, 0));
         // A finite extent, clamped at zero, with one zero.
         let bits = |value: f32| {

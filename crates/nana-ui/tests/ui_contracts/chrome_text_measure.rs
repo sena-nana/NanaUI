@@ -90,11 +90,11 @@ fn key_capture_badge_fits_its_measured_label() {
         .unwrap();
     let mut shaper = NanaTextShaper::default();
     frame(&mut cx, doc, &mut shaper);
-    let Some(ComponentGeometry::KeyCaptureLayer { badge, .. }) =
-        cx.world().component_geometry(layer.stable_id())
-    else {
-        panic!("key capture geometry");
-    };
+    let badge = cx
+        .world()
+        .key_capture_layer_layout(layer.stable_id())
+        .expect("key capture geometry")
+        .badge;
     assert_eq!(badge.content.as_ref(), "Recording");
     assert_eq!(badge.font_weight, Some(600));
     let text = measured(&cx, &mut shaper, layer.stable_id(), &badge);
@@ -116,11 +116,11 @@ fn action_menu_hint_is_as_wide_as_its_measured_text() {
         .unwrap();
     let mut shaper = NanaTextShaper::default();
     frame(&mut cx, doc, &mut shaper);
-    let Some(ComponentGeometry::ActionMenuItem {
+    let Some(ActionMenuItemGeometry {
         label,
         hint: Some(hint),
         ..
-    }) = cx.world().component_geometry(item.stable_id())
+    }) = cx.world().action_menu_item_geometry(item.stable_id())
     else {
         panic!("action menu item geometry with a hint");
     };
@@ -139,19 +139,45 @@ fn labeled_value_columns_take_their_measured_widths() {
         .unwrap();
     let mut shaper = NanaTextShaper::default();
     frame(&mut cx, doc, &mut shaper);
-    let Some(ComponentGeometry::LabeledValue { label, value, .. }) =
-        cx.world().component_geometry(row.stable_id())
+    let paint = cx.world().widget_paint(row.stable_id()).unwrap();
+    let Some(WidgetPaintOp::Text(label)) = paint
+        .ops
+        .iter()
+        .find(|tagged| tagged.slot == 2)
+        .map(|tagged| &tagged.op)
     else {
-        panic!("labeled value geometry");
+        panic!("labeled value label");
+    };
+    let Some(WidgetPaintOp::Text(value)) = paint
+        .ops
+        .iter()
+        .find(|tagged| tagged.slot == 3)
+        .map(|tagged| &tagged.op)
+    else {
+        panic!("labeled value text");
     };
     // Both fit, so each column is its text's natural width.
     assert_eq!(
         label.bounds.width,
-        measured(&cx, &mut shaper, row.stable_id(), &label)
+        measured_text(
+            &cx,
+            &mut shaper,
+            row.stable_id(),
+            &label.content,
+            label.font_size,
+            label.font_weight,
+        )
     );
     assert_eq!(
         value.bounds.width,
-        measured(&cx, &mut shaper, row.stable_id(), &value)
+        measured_text(
+            &cx,
+            &mut shaper,
+            row.stable_id(),
+            &value.content,
+            value.font_size,
+            value.font_weight,
+        )
     );
     assert_ne!(
         value.bounds.width,
@@ -175,11 +201,11 @@ fn command_palette_shortcut_is_as_wide_as_its_measured_text() {
         .unwrap();
     let mut shaper = NanaTextShaper::default();
     frame(&mut cx, doc, &mut shaper);
-    let Some(ComponentGeometry::CommandPalette { rows, .. }) =
-        cx.world().component_geometry(palette.stable_id())
-    else {
-        panic!("command palette geometry");
-    };
+    let rows = cx
+        .world()
+        .command_palette_layout(palette.stable_id())
+        .expect("command palette geometry")
+        .rows;
     let shortcut = rows[0].shortcut.as_ref().expect("shortcut region");
     let text = measured(&cx, &mut shaper, palette.stable_id(), shortcut);
     assert_eq!(shortcut.bounds.width, text);
@@ -210,11 +236,10 @@ fn chart_labels_take_their_measured_widths() {
         .unwrap();
     let mut shaper = NanaTextShaper::default();
     frame(&mut cx, doc, &mut shaper);
-    let Some(ComponentGeometry::Chart { layout, .. }) =
-        cx.world().component_geometry(chart.stable_id())
-    else {
-        panic!("chart geometry");
-    };
+    let layout = cx
+        .world()
+        .chart_layout(chart.stable_id())
+        .expect("chart geometry");
     for name in ["Revenue", "成本", "一月", "February"] {
         let label = layout
             .texts
@@ -253,11 +278,11 @@ fn calendar_axis_labels_take_their_measured_widths() {
         .unwrap();
     let mut shaper = NanaTextShaper::default();
     frame(&mut cx, doc, &mut shaper);
-    let Some(ComponentGeometry::CalendarHeatmap { labels, .. }) =
-        cx.world().component_geometry(heatmap.stable_id())
-    else {
-        panic!("calendar geometry");
-    };
+    let labels = cx
+        .world()
+        .calendar_heatmap_layout(heatmap.stable_id())
+        .expect("calendar geometry")
+        .labels;
     assert!(!labels.is_empty());
     for label in &labels {
         assert_eq!(
@@ -292,10 +317,10 @@ fn line_number_gutter_is_measured_once_an_engine_has_shaped() {
     let before = padding_left(&cx, area.stable_id());
     let mut shaper = NanaTextShaper::default();
     frame(&mut cx, doc, &mut shaper);
-    let Some(ComponentGeometry::TextInput {
+    let Some(TextInputGeometry {
         line_labels_font_size: label_size,
         ..
-    }) = cx.world().component_geometry(area.stable_id())
+    }) = cx.world().text_input_geometry(area.stable_id())
     else {
         panic!("text input geometry");
     };
@@ -340,16 +365,16 @@ fn a_number_fields_unit_stands_before_its_steppers() {
     let mut shaper = NanaTextShaper::default();
     frame(&mut cx, plain_doc, &mut shaper);
     frame(&mut cx, doc, &mut shaper);
-    let Some(ComponentGeometry::TextInput { suffix: None, .. }) =
-        cx.world().component_geometry(plain.stable_id())
+    let Some(TextInputGeometry { suffix: None, .. }) =
+        cx.world().text_input_geometry(plain.stable_id())
     else {
         panic!("a field without a unit draws none");
     };
-    let Some(ComponentGeometry::TextInput {
+    let Some(TextInputGeometry {
         suffix: Some(suffix),
         steppers: Some(steppers),
         ..
-    }) = cx.world().component_geometry(field.stable_id())
+    }) = cx.world().text_input_geometry(field.stable_id())
     else {
         panic!("the unit and the steppers");
     };
@@ -387,9 +412,9 @@ fn diagnostic_label_is_as_wide_as_its_measured_message() {
         .unwrap();
     let mut shaper = NanaTextShaper::default();
     frame(&mut cx, doc, &mut shaper);
-    let Some(ComponentGeometry::TextInput {
+    let Some(TextInputGeometry {
         diagnostic_labels, ..
-    }) = cx.world().component_geometry(area.stable_id())
+    }) = cx.world().text_input_geometry(area.stable_id())
     else {
         panic!("text input geometry");
     };
@@ -418,10 +443,10 @@ fn signature_help_splits_at_measured_widths() {
         .unwrap();
     let mut shaper = NanaTextShaper::default();
     frame(&mut cx, doc, &mut shaper);
-    let Some(ComponentGeometry::TextInput {
+    let Some(TextInputGeometry {
         signature_popup: Some(popup),
         ..
-    }) = cx.world().component_geometry(area.stable_id())
+    }) = cx.world().text_input_geometry(area.stable_id())
     else {
         panic!("text input geometry with a signature popup");
     };

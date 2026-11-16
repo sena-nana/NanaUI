@@ -4,7 +4,8 @@
 
 use nana_ui_core::{DisplaySpec, FlexDirection, GridTrack, LayoutStyle, LengthSpec};
 
-use crate::{AppContext, DocumentId, LayoutViewport, Stack, WorkCounters};
+use crate::layout_engine::LayoutExecutionStats;
+use crate::{AppContext, DocumentId, LayoutViewport, Stack};
 
 /// Most stack one level of each recursion may take, in bytes. Unoptimized
 /// code keeps a slot for every local of a function, so a debug level costs
@@ -38,12 +39,12 @@ const BUDGET: Budget = if cfg!(debug_assertions) {
     }
 };
 
-/// The containers a level can be: block, flex column, single-track grid.
-const DISPLAYS: [DisplaySpec; 3] = [DisplaySpec::Block, DisplaySpec::Flex, DisplaySpec::Grid];
+/// The containers a level can be: flex, grid, layers.
+const DISPLAYS: [DisplaySpec; 3] = [DisplaySpec::Flex, DisplaySpec::Grid, DisplaySpec::Layers];
 
 /// `depth` boxes inside one another, cycling through `displays`, laid out in
 /// full.
-fn lay_out_nested(depth: usize, displays: &[DisplaySpec]) -> WorkCounters {
+fn lay_out_nested(depth: usize, displays: &[DisplaySpec]) -> LayoutExecutionStats {
     let document = DocumentId::new(7).unwrap();
     let mut cx = AppContext::new();
     let mut parent = cx
@@ -51,14 +52,16 @@ fn lay_out_nested(depth: usize, displays: &[DisplaySpec]) -> WorkCounters {
         .unwrap();
     for level in 0..depth {
         let display = displays[level % displays.len()];
-        let layout = LayoutStyle {
+        let mut layout = LayoutStyle {
             display: Some(display),
             direction: Some(FlexDirection::Column),
-            grid_columns: (display == DisplaySpec::Grid).then(|| vec![GridTrack::Fr(1.0)]),
             padding: Some(LengthSpec::Px(0.25)),
             min_height: Some(LengthSpec::Px(1.0)),
             ..Default::default()
         };
+        if display == DisplaySpec::Grid {
+            layout.grid.columns = Some(vec![GridTrack::Fr(1.0)]);
+        }
         let child = cx
             .create_detached_component(document, Stack::from_layout(layout))
             .unwrap();
@@ -67,26 +70,26 @@ fn lay_out_nested(depth: usize, displays: &[DisplaySpec]) -> WorkCounters {
     }
     cx.layout_document(document, LayoutViewport::new(800.0, 600.0))
         .unwrap();
-    let counters = cx.last_work_counters();
+    let stats = cx.layout_execution_stats(document);
     // Tear the tree down here: dropping it is as deep as building it.
     drop(cx);
-    counters
+    stats
 }
 
 #[test]
 fn a_layout_level_stays_within_its_stack_budget() {
-    if stacker::remaining_stack().is_none() {
+    if crate::stack::remaining().is_none() {
         // The platform cannot tell what is left, so nothing is priced.
         return;
     }
     for display in DISPLAYS {
-        let counters = lay_out_nested(48, &[display]);
+        let stats = lay_out_nested(48, &[display]);
         let (measure, placement) = (
-            counters.layout_measure_stack_per_level,
-            counters.layout_placement_stack_per_level,
+            stats.measure_stack_per_level,
+            stats.placement_stack_per_level,
         );
         assert!(
-            measure > 0 && placement > 0,
+            placement > 0,
             "{display:?} unpriced: {measure} / {placement}"
         );
         assert!(
@@ -106,13 +109,24 @@ fn a_layout_level_stays_within_its_stack_budget() {
 fn a_tree_deeper_than_the_stack_still_lays_out() {
     // Unguarded, 400 levels need several MiB of stack in a debug build;
     // this thread has the 1 MiB of a Windows main thread.
-    let counters = std::thread::Builder::new()
+    let stats = std::thread::Builder::new()
         .stack_size(1 << 20)
         .spawn(|| lay_out_nested(400, &DISPLAYS))
         .unwrap()
         .join()
         .expect("layout ran out of stack");
-    assert!(counters.layout_placement_nodes > 400);
+    assert!(stats.placement_nodes > 400);
+}
+
+#[test]
+fn max_tree_depth_fits_in_384_kib_stack() {
+    let stats = std::thread::Builder::new()
+        .stack_size(384 * 1024)
+        .spawn(|| lay_out_nested(511, &DISPLAYS))
+        .unwrap()
+        .join()
+        .expect("512-node deep layout ran out of 384 KiB stack");
+    assert!(stats.placement_nodes >= 512);
 }
 
 /// A level's price is reported, not only checked: `cargo test -p
@@ -120,7 +134,7 @@ fn a_tree_deeper_than_the_stack_still_lays_out() {
 #[test]
 fn report_layout_stack_per_level() {
     for display in DISPLAYS {
-        let counters = lay_out_nested(48, &[display]);
+        let stats = lay_out_nested(48, &[display]);
         println!(
             "layout stack per level, {display:?} ({}): measure {} B, placement {} B",
             if cfg!(debug_assertions) {
@@ -128,8 +142,8 @@ fn report_layout_stack_per_level() {
             } else {
                 "release"
             },
-            counters.layout_measure_stack_per_level,
-            counters.layout_placement_stack_per_level,
+            stats.measure_stack_per_level,
+            stats.placement_stack_per_level,
         );
     }
 }

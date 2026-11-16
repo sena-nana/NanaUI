@@ -15,7 +15,7 @@
 //! again.
 #![cfg(test)]
 
-use nana_ui_core::{AlignSpec, DisplaySpec, FlexDirection, FloatSpec, LayoutStyle, LengthSpec};
+use nana_ui_core::{AlignSpec, DisplaySpec, FlexDirection, LayoutStyle, LengthSpec};
 use nana_ui_core::{OverflowSpec, PositionSpec};
 
 use super::reflow_oracle::{Builder, assert_matches_cold, bundled_face_shaper, product_frame};
@@ -44,9 +44,8 @@ struct Spec {
     label: &'static str,
     /// The first item omits its box.
     item_hidden: bool,
-    /// The third item's inline-block atom.
+    /// The third item's inline-flex atom.
     atom_position: PositionSpec,
-    atom_float: FloatSpec,
     /// The extra row stands before the third row; otherwise it is detached.
     extra_row: bool,
     /// The second row aligns its items by their first baselines.
@@ -62,7 +61,6 @@ impl Default for Spec {
             label: "Label",
             item_hidden: false,
             atom_position: PositionSpec::Static,
-            atom_float: FloatSpec::None,
             extra_row: false,
             baseline: true,
         }
@@ -102,7 +100,6 @@ fn row_style(baseline: bool) -> LayoutStyle {
 
 fn block(hidden: bool) -> LayoutStyle {
     LayoutStyle {
-        display: Some(DisplaySpec::Block),
         hidden,
         ..LayoutStyle::default()
     }
@@ -117,13 +114,12 @@ fn leaf_style(min_height: f32, display: Option<DisplaySpec>) -> LayoutStyle {
     }
 }
 
-fn atom_style(position: PositionSpec, float: FloatSpec) -> LayoutStyle {
+fn atom_style(position: PositionSpec) -> LayoutStyle {
     LayoutStyle {
-        display: Some(DisplaySpec::InlineBlock),
+        display: Some(DisplaySpec::InlineFlex),
         width: Some(LengthSpec::Px(20.0)),
         height: Some(LengthSpec::Px(10.0)),
         position,
-        float,
         ..LayoutStyle::default()
     }
 }
@@ -161,7 +157,7 @@ fn page(spec: Spec) -> (AppContext, NanaTextEngineShaper, Ids) {
     let bare = b.element(baseline_row, block(false));
     let leaf = b.element(bare, leaf_style(spec.leaf_min_height, spec.leaf_display));
     let holder = b.element(baseline_row, block(false));
-    let atom = b.element(holder, atom_style(spec.atom_position, spec.atom_float));
+    let atom = b.element(holder, atom_style(spec.atom_position));
     let mut rows = Vec::new();
     let mut leaves = Vec::new();
     for index in 0..4 {
@@ -273,8 +269,8 @@ fn display_changes_move_the_line_box() {
     let mut spec = Spec::default();
     let (mut warm, mut shaper, ids) = page(spec);
     for display in [
-        Some(DisplaySpec::InlineBlock),
-        Some(DisplaySpec::Block),
+        Some(DisplaySpec::InlineFlex),
+        Some(DisplaySpec::Flex),
         Some(DisplaySpec::Inline),
         Some(DisplaySpec::None),
         None,
@@ -292,22 +288,16 @@ fn display_changes_move_the_line_box() {
     }
 }
 
-/// The inline-block atom leaves the flow (absolute, then floated) and comes
-/// back: its block holds no line box while it is out.
+/// The inline-flex atom leaves the flow (`absolute`) and comes back: its
+/// block holds no line box while it is out.
 #[test]
 fn an_atom_leaving_the_flow_moves_the_line_box() {
     let mut spec = Spec::default();
     let (mut warm, mut shaper, ids) = page(spec);
-    for (position, float) in [
-        (PositionSpec::Absolute, FloatSpec::None),
-        (PositionSpec::Static, FloatSpec::None),
-        (PositionSpec::Static, FloatSpec::Left),
-        (PositionSpec::Static, FloatSpec::None),
-    ] {
+    for position in [PositionSpec::Absolute, PositionSpec::Static] {
         spec.atom_position = position;
-        spec.atom_float = float;
         step(&mut warm, &mut shaper, spec, |queue| {
-            queue.set_style(ids.atom, style(atom_style(position, float)));
+            queue.set_style(ids.atom, style(atom_style(position)));
         });
     }
 }

@@ -348,13 +348,13 @@ fn reading_blend_pipeline(
             },
         ],
     });
-    let group_blend_shader = super::wgsl::Program::joined(
+    let group_blend_shader = super::wgsl::program_joined!(
         "nana-ui.scene.group.blend.shader",
-        &[
+        [
             super::wgsl::COLOR,
             super::wgsl::LAYER,
             super::wgsl::LAYER_BLEND,
-        ],
+        ]
     );
     let group_blend_pipeline_layout =
         device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
@@ -364,33 +364,38 @@ fn reading_blend_pipeline(
         });
     let group_pipeline_blend =
         cached_dest_pipeline(policy, format, 6, dest_group_layout_key(), || {
-            wgpu::Device::create_render_pipeline(
+            group_blend_shader.pipeline(
                 device,
-                &wgpu::RenderPipelineDescriptor {
-                    label: Some("nana-ui.scene.group.pipeline.blend"),
-                    layout: Some(&group_blend_pipeline_layout),
-                    vertex: wgpu::VertexState {
-                        module: &group_blend_shader.stage(device, "vs_main").module,
-                        entry_point: Some("vs_main"),
-                        buffers: &[],
-                        compilation_options: wgpu::PipelineCompilationOptions::default(),
-                    },
-                    fragment: Some(wgpu::FragmentState {
-                        module: &group_blend_shader.stage(device, "fs_blend").module,
-                        entry_point: Some("fs_blend"),
-                        // The shader already composited against the backdrop copy.
-                        targets: &[Some(wgpu::ColorTargetState {
-                            format,
-                            blend: None,
-                            write_mask: wgpu::ColorWrites::ALL,
-                        })],
-                        compilation_options: wgpu::PipelineCompilationOptions::default(),
-                    }),
-                    primitive: wgpu::PrimitiveState::default(),
-                    depth_stencil: None,
-                    multisample: wgpu::MultisampleState::default(),
-                    multiview_mask: None,
-                    cache: None,
+                "vs_main",
+                "fs_blend",
+                &[],
+                |vs_module, vs_ep, fs_module, fs_ep, _| {
+                    device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+                        label: Some("nana-ui.scene.group.pipeline.blend"),
+                        layout: Some(&group_blend_pipeline_layout),
+                        vertex: wgpu::VertexState {
+                            module: vs_module,
+                            entry_point: Some(vs_ep),
+                            buffers: &[],
+                            compilation_options: wgpu::PipelineCompilationOptions::default(),
+                        },
+                        fragment: Some(wgpu::FragmentState {
+                            module: fs_module,
+                            entry_point: Some(fs_ep),
+                            // The shader already composited against the backdrop copy.
+                            targets: &[Some(wgpu::ColorTargetState {
+                                format,
+                                blend: None,
+                                write_mask: wgpu::ColorWrites::ALL,
+                            })],
+                            compilation_options: wgpu::PipelineCompilationOptions::default(),
+                        }),
+                        primitive: wgpu::PrimitiveState::default(),
+                        depth_stencil: None,
+                        multisample: wgpu::MultisampleState::default(),
+                        multiview_mask: None,
+                        cache: None,
+                    })
                 },
             )
         });
@@ -405,31 +410,39 @@ fn make_group_pipeline(
     blend: wgpu::BlendState,
     label: &'static str,
 ) -> wgpu::RenderPipeline {
-    device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-        label: Some(label),
-        layout: Some(layout),
-        vertex: wgpu::VertexState {
-            module: &shader.stage(device, "vs_main").module,
-            entry_point: Some("vs_main"),
-            buffers: &[],
-            compilation_options: wgpu::PipelineCompilationOptions::default(),
+    shader.pipeline(
+        device,
+        "vs_main",
+        "fs_main",
+        &[],
+        |vs_module, vs_ep, fs_module, fs_ep, _| {
+            device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+                label: Some(label),
+                layout: Some(layout),
+                vertex: wgpu::VertexState {
+                    module: vs_module,
+                    entry_point: Some(vs_ep),
+                    buffers: &[],
+                    compilation_options: wgpu::PipelineCompilationOptions::default(),
+                },
+                fragment: Some(wgpu::FragmentState {
+                    module: fs_module,
+                    entry_point: Some(fs_ep),
+                    targets: &[Some(wgpu::ColorTargetState {
+                        format,
+                        blend: Some(blend),
+                        write_mask: wgpu::ColorWrites::ALL,
+                    })],
+                    compilation_options: wgpu::PipelineCompilationOptions::default(),
+                }),
+                primitive: wgpu::PrimitiveState::default(),
+                depth_stencil: None,
+                multisample: wgpu::MultisampleState::default(),
+                multiview_mask: None,
+                cache: None,
+            })
         },
-        fragment: Some(wgpu::FragmentState {
-            module: &shader.stage(device, "fs_main").module,
-            entry_point: Some("fs_main"),
-            targets: &[Some(wgpu::ColorTargetState {
-                format,
-                blend: Some(blend),
-                write_mask: wgpu::ColorWrites::ALL,
-            })],
-            compilation_options: wgpu::PipelineCompilationOptions::default(),
-        }),
-        primitive: wgpu::PrimitiveState::default(),
-        depth_stencil: None,
-        multisample: wgpu::MultisampleState::default(),
-        multiview_mask: None,
-        cache: None,
-    })
+    )
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -610,10 +623,13 @@ impl DestPipelines {
             })
         };
         let blit_program = OnceCell::new();
-        let make_blit = |entry_point: &str, label: &str, blend: Option<wgpu::BlendState>| {
+        let make_blit = |entry_point: &str,
+                         constants: &[(&str, f64)],
+                         label: &str,
+                         blend: Option<wgpu::BlendState>| {
             let (shader, pipeline_layout) = blit_program.get_or_init(|| {
                 let shader =
-                    super::wgsl::Program::new("nana-ui.scene.dest.blit.shader", super::wgsl::BLIT);
+                    super::wgsl::program!("nana-ui.scene.dest.blit.shader", super::wgsl::BLIT);
                 let pipeline_layout =
                     device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
                         label: Some("nana-ui.scene.dest.blit.pipeline"),
@@ -622,73 +638,93 @@ impl DestPipelines {
                     });
                 (shader, pipeline_layout)
             });
-            device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-                label: Some(label),
-                layout: Some(pipeline_layout),
-                vertex: wgpu::VertexState {
-                    module: &shader.stage(device, "vs_main").module,
-                    entry_point: Some("vs_main"),
-                    buffers: &[],
-                    compilation_options: wgpu::PipelineCompilationOptions::default(),
+            shader.pipeline(
+                device,
+                "vs_main",
+                entry_point,
+                constants,
+                |vs_module, vs_ep, fs_module, fs_ep, fs_constants| {
+                    device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+                        label: Some(label),
+                        layout: Some(pipeline_layout),
+                        vertex: wgpu::VertexState {
+                            module: vs_module,
+                            entry_point: Some(vs_ep),
+                            buffers: &[],
+                            compilation_options: wgpu::PipelineCompilationOptions::default(),
+                        },
+                        fragment: Some(wgpu::FragmentState {
+                            module: fs_module,
+                            entry_point: Some(fs_ep),
+                            targets: &[Some(wgpu::ColorTargetState {
+                                format: target_format,
+                                blend,
+                                write_mask: wgpu::ColorWrites::ALL,
+                            })],
+                            compilation_options: wgpu::PipelineCompilationOptions {
+                                constants: fs_constants,
+                                ..Default::default()
+                            },
+                        }),
+                        primitive: wgpu::PrimitiveState::default(),
+                        depth_stencil: None,
+                        multisample: wgpu::MultisampleState::default(),
+                        multiview_mask: None,
+                        cache: None,
+                    })
                 },
-                fragment: Some(wgpu::FragmentState {
-                    module: &shader.stage(device, entry_point).module,
-                    entry_point: Some(entry_point),
-                    targets: &[Some(wgpu::ColorTargetState {
-                        format: target_format,
-                        blend,
-                        write_mask: wgpu::ColorWrites::ALL,
-                    })],
-                    compilation_options: wgpu::PipelineCompilationOptions::default(),
-                }),
-                primitive: wgpu::PrimitiveState::default(),
-                depth_stencil: None,
-                multisample: wgpu::MultisampleState::default(),
-                multiview_mask: None,
-                cache: None,
-            })
+            )
         };
         let blit_pipeline =
             cached_dest_pipeline(policy, target_format, 1, dest_blit_layout_key(), || {
                 make_blit(
                     "fs_main",
+                    &[],
                     "nana-ui.scene.dest.blit.pipeline",
                     Some(wgpu::BlendState::PREMULTIPLIED_ALPHA_BLENDING),
                 )
             });
         let blit_clear_pipeline =
             cached_dest_pipeline(policy, target_format, 0x80, dest_blit_layout_key(), || {
-                make_blit("fs_main", "nana-ui.scene.dest.blit.clear.pipeline", None)
+                make_blit(
+                    "fs_main",
+                    &[],
+                    "nana-ui.scene.dest.blit.clear.pipeline",
+                    None,
+                )
             });
         // `direct_linear` is the compatibility path used by the public
         // offscreen constructor. It must retain the old raw-linear bytes and
         // therefore must not acquire a presentation pass.
         let direct_srgb =
             !presentation.is_direct_linear() && !presentation.requires_float_working_target();
-        let presentation_name = match presentation.color_space {
-            ScenePresentationColorSpace::Srgb if presentation.force_float_working => "hdr_srgb",
-            ScenePresentationColorSpace::Srgb => "srgb",
-            ScenePresentationColorSpace::DisplayP3 if presentation.force_float_working => "hdr_p3",
-            ScenePresentationColorSpace::DisplayP3 => "p3",
-            ScenePresentationColorSpace::ExtendedSrgbLinear => "linear",
-            ScenePresentationColorSpace::ExtendedSrgb => "extended_srgb",
-            ScenePresentationColorSpace::ExtendedDisplayP3 => "extended_p3",
-            ScenePresentationColorSpace::Bt2100Pq => "bt2100_pq",
-            ScenePresentationColorSpace::Bt2100Hlg => "bt2100_hlg",
+        let presentation_mode = match (presentation.color_space, presentation.force_float_working) {
+            (ScenePresentationColorSpace::Srgb, false) => 0.0,
+            (ScenePresentationColorSpace::DisplayP3, false) => 1.0,
+            (ScenePresentationColorSpace::ExtendedSrgbLinear, _) => 2.0,
+            (ScenePresentationColorSpace::ExtendedSrgb, _) => 3.0,
+            (ScenePresentationColorSpace::ExtendedDisplayP3, _) => 4.0,
+            (ScenePresentationColorSpace::Srgb, true) => 5.0,
+            (ScenePresentationColorSpace::DisplayP3, true) => 6.0,
+            (ScenePresentationColorSpace::Bt2100Pq, _) => 7.0,
+            (ScenePresentationColorSpace::Bt2100Hlg, _) => 8.0,
         };
         let make_presentation = |gamma: bool, clear: bool| {
-            let entry = if direct_srgb && gamma {
-                "fs_gamma_premultiplied".to_owned()
+            let (entry, constants_buf);
+            let constants: &[(&str, f64)] = if direct_srgb && gamma {
+                entry = "fs_gamma_premultiplied";
+                &[]
             } else {
-                format!(
-                    "fs_present_{presentation_name}{}{}",
-                    if target_format.is_srgb() {
-                        "_typed"
-                    } else {
-                        ""
-                    },
-                    if gamma { "_gamma" } else { "" },
-                )
+                entry = "fs_present";
+                constants_buf = [
+                    ("PRESENT_MODE", presentation_mode),
+                    ("GAMMA_ALPHA", if gamma { 1.0 } else { 0.0 }),
+                    (
+                        "SRGB_TARGET",
+                        if target_format.is_srgb() { 1.0 } else { 0.0 },
+                    ),
+                ];
+                &constants_buf
             };
             let material = if clear { 0x180 } else { 0x100 }
                 + presentation.color_space as u64
@@ -706,7 +742,7 @@ impl DestPipelines {
                 target_format,
                 material,
                 dest_blit_layout_key(),
-                || make_blit(&entry, label, blend),
+                || make_blit(entry, constants, label, blend),
             )
         };
         let blit_gamma_pipeline =
@@ -740,9 +776,9 @@ impl DestPipelines {
         let group_program = OnceCell::new();
         let make_group = |blend, label| {
             let (shader, layout) = group_program.get_or_init(|| {
-                let group_shader = super::wgsl::Program::joined(
+                let group_shader = super::wgsl::program_joined!(
                     "nana-ui.scene.group.shader",
-                    &[super::wgsl::COLOR, super::wgsl::LAYER],
+                    [super::wgsl::COLOR, super::wgsl::LAYER]
                 );
                 let group_pipeline_layout =
                     device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
@@ -784,6 +820,81 @@ impl DestPipelines {
             group_pipeline,
             group_pipeline_multiply,
             group_pipeline_screen,
+        }
+    }
+
+    #[cfg(all(test, target_vendor = "apple"))]
+    pub(super) fn prewarm_all_for_msl_regen(
+        device: &wgpu::Device,
+        policy: &nana_gpu::GpuDeviceState,
+    ) {
+        let format = wgpu::TextureFormat::Rgba16Float;
+        let dest = Self::new(
+            device,
+            format,
+            wgpu::TextureFormat::Bgra8UnormSrgb,
+            crate::ScenePresentationProfile::sdr(nana_gpu::GpuTextureFormat::BGRA8_UNORM_SRGB),
+            policy,
+        );
+        let _ = reading_blend_pipeline(device, format, policy);
+        let blit = super::wgsl::program!("nana-ui.scene.dest.blit.shader", super::wgsl::BLIT);
+        let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label: Some("nana-ui.scene.dest.blit.regen.pipeline"),
+            bind_group_layouts: &[Some(&dest.bind_layout)],
+            immediate_size: 0,
+        });
+        for mode in 0u32..=8 {
+            for gamma in [false, true] {
+                for srgb_target in [false, true] {
+                    let target_format = if srgb_target {
+                        wgpu::TextureFormat::Bgra8UnormSrgb
+                    } else {
+                        wgpu::TextureFormat::Bgra8Unorm
+                    };
+                    let constants = [
+                        ("PRESENT_MODE", f64::from(mode)),
+                        ("GAMMA_ALPHA", if gamma { 1.0 } else { 0.0 }),
+                        ("SRGB_TARGET", if srgb_target { 1.0 } else { 0.0 }),
+                    ];
+                    let _ = blit.pipeline(
+                        device,
+                        "vs_main",
+                        "fs_present",
+                        &constants,
+                        |vs_module, vs_ep, fs_module, fs_ep, fs_constants| {
+                            device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+                                label: Some("nana-ui.scene.dest.blit.regen"),
+                                layout: Some(&pipeline_layout),
+                                vertex: wgpu::VertexState {
+                                    module: vs_module,
+                                    entry_point: Some(vs_ep),
+                                    buffers: &[],
+                                    compilation_options: wgpu::PipelineCompilationOptions::default(
+                                    ),
+                                },
+                                fragment: Some(wgpu::FragmentState {
+                                    module: fs_module,
+                                    entry_point: Some(fs_ep),
+                                    targets: &[Some(wgpu::ColorTargetState {
+                                        format: target_format,
+                                        blend: Some(wgpu::BlendState::PREMULTIPLIED_ALPHA_BLENDING),
+                                        write_mask: wgpu::ColorWrites::ALL,
+                                    })],
+                                    compilation_options: wgpu::PipelineCompilationOptions {
+                                        constants: fs_constants,
+                                        ..Default::default()
+                                    },
+                                }),
+                                primitive: wgpu::PrimitiveState::default(),
+                                depth_stencil: None,
+                                multisample: wgpu::MultisampleState::default(),
+                                multiview_mask: None,
+                                cache: None,
+                            })
+                        },
+                    );
+                }
+            }
         }
     }
 }

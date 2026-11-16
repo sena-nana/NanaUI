@@ -1,5 +1,10 @@
 use std::any::TypeId;
-use std::collections::HashSet;
+use std::borrow::{Borrow, Cow};
+use std::fmt;
+use std::hash::{Hash, Hasher};
+use std::io::Write as _;
+use std::ops::Deref;
+use std::sync::{Arc, LazyLock, Mutex};
 
 use crate::world::child_order::{common_ends, longest_increasing, positions_in};
 use crate::{ComponentView, DocumentId, Entity, MutationQueue, StableNodeId, View};
@@ -7,16 +12,297 @@ use crate::{ComponentView, DocumentId, Entity, MutationQueue, StableNodeId, View
 use super::{AppContext, FrameworkError};
 
 #[derive(Clone, Copy)]
+#[repr(u8)]
+pub(crate) enum InlineLen {
+    L0 = 0,
+    L1 = 1,
+    L2 = 2,
+    L3 = 3,
+    L4 = 4,
+    L5 = 5,
+    L6 = 6,
+    L7 = 7,
+    L8 = 8,
+    L9 = 9,
+    L10 = 10,
+    L11 = 11,
+    L12 = 12,
+    L13 = 13,
+    L14 = 14,
+}
+
+impl InlineLen {
+    #[inline]
+    fn from_usize(len: usize) -> Option<Self> {
+        match len {
+            0 => Some(Self::L0),
+            1 => Some(Self::L1),
+            2 => Some(Self::L2),
+            3 => Some(Self::L3),
+            4 => Some(Self::L4),
+            5 => Some(Self::L5),
+            6 => Some(Self::L6),
+            7 => Some(Self::L7),
+            8 => Some(Self::L8),
+            9 => Some(Self::L9),
+            10 => Some(Self::L10),
+            11 => Some(Self::L11),
+            12 => Some(Self::L12),
+            13 => Some(Self::L13),
+            14 => Some(Self::L14),
+            _ => None,
+        }
+    }
+}
+
+/// Compact assembly key: stores UTF-8 strings up to 14 bytes inline in 16 B total.
+#[derive(Clone)]
+pub(crate) enum AssemblyKey {
+    Inline { len: InlineLen, buf: [u8; 14] },
+    Shared(Arc<String>),
+}
+
+const _: () = assert!(std::mem::size_of::<AssemblyKey>() == 16);
+
+impl AssemblyKey {
+    #[inline]
+    pub(crate) fn as_str(&self) -> &str {
+        match self {
+            Self::Inline { len, buf } => {
+                let n = (*len as usize).min(14);
+                std::str::from_utf8(&buf[..n]).unwrap_or("")
+            }
+            Self::Shared(text) => text.as_str(),
+        }
+    }
+
+    pub(crate) fn auto_kind(kind: &'static str, index: usize) -> Self {
+        let mut buf = [0u8; 14];
+        let mut cursor = std::io::Cursor::new(&mut buf[..]);
+        if write!(cursor, "#{kind}-{index}").is_ok() {
+            let written = cursor.position() as usize;
+            if let Some(len) = InlineLen::from_usize(written) {
+                return Self::Inline { len, buf };
+            }
+        }
+        Self::Shared(Arc::new(format!("#{kind}-{index}")))
+    }
+
+    pub(crate) fn auto_view(index: usize) -> Self {
+        let mut buf = [0u8; 14];
+        let mut cursor = std::io::Cursor::new(&mut buf[..]);
+        if write!(cursor, "#v{index}").is_ok() {
+            let written = cursor.position() as usize;
+            if let Some(len) = InlineLen::from_usize(written) {
+                return Self::Inline { len, buf };
+            }
+        }
+        Self::Shared(Arc::new(format!("#v{index}")))
+    }
+
+    /// Parses canonical positional keys (`"#v0"` or `"#v"` followed by a nonzero decimal
+    /// `< u16::MAX`) that round-trip byte-for-byte via [`Self::auto_view`].
+    #[inline]
+    pub(crate) fn parse_auto_view(key: &str) -> Option<u32> {
+        let rest = key.strip_prefix("#v")?;
+        let bytes = rest.as_bytes();
+        if bytes.is_empty() {
+            return None;
+        }
+        if bytes.len() > 1 && bytes[0] == b'0' {
+            return None;
+        }
+        let idx = rest.parse::<u32>().ok()?;
+        (idx < u32::from(u16::MAX)).then_some(idx)
+    }
+}
+
+static AUTO_VIEW_STRS: LazyLock<Mutex<hashbrown::HashMap<u16, &'static str>>> =
+    LazyLock::new(|| Mutex::new(hashbrown::HashMap::new()));
+
+/// Cached `&'static str` for `#v{slot}` when `AppContext::assembly_key` inspects a positional slot.
+pub(crate) fn auto_view_key_str(slot: u16) -> &'static str {
+    let mut guard = AUTO_VIEW_STRS
+        .lock()
+        .unwrap_or_else(|poison| poison.into_inner());
+    *guard
+        .entry(slot)
+        .or_insert_with(|| Box::leak(format!("#v{slot}").into_boxed_str()))
+}
+
+impl Deref for AssemblyKey {
+    type Target = str;
+
+    #[inline]
+    fn deref(&self) -> &str {
+        self.as_str()
+    }
+}
+
+impl AsRef<str> for AssemblyKey {
+    #[inline]
+    fn as_ref(&self) -> &str {
+        self.as_str()
+    }
+}
+
+impl Borrow<str> for AssemblyKey {
+    #[inline]
+    fn borrow(&self) -> &str {
+        self.as_str()
+    }
+}
+
+impl PartialEq for AssemblyKey {
+    #[inline]
+    fn eq(&self, other: &Self) -> bool {
+        self.as_str() == other.as_str()
+    }
+}
+
+impl Eq for AssemblyKey {}
+
+impl Hash for AssemblyKey {
+    #[inline]
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        self.as_str().hash(state);
+    }
+}
+
+impl fmt::Debug for AssemblyKey {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+impl fmt::Display for AssemblyKey {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+impl From<&str> for AssemblyKey {
+    fn from(value: &str) -> Self {
+        if let Some(len) = InlineLen::from_usize(value.len()) {
+            let mut buf = [0u8; 14];
+            buf[..value.len()].copy_from_slice(value.as_bytes());
+            Self::Inline { len, buf }
+        } else {
+            Self::Shared(Arc::new(value.to_owned()))
+        }
+    }
+}
+
+impl From<String> for AssemblyKey {
+    fn from(value: String) -> Self {
+        if let Some(len) = InlineLen::from_usize(value.len()) {
+            let mut buf = [0u8; 14];
+            buf[..value.len()].copy_from_slice(value.as_bytes());
+            Self::Inline { len, buf }
+        } else {
+            Self::Shared(Arc::new(value))
+        }
+    }
+}
+
+impl From<&String> for AssemblyKey {
+    fn from(value: &String) -> Self {
+        Self::from(value.as_str())
+    }
+}
+
+impl From<Cow<'_, str>> for AssemblyKey {
+    fn from(value: Cow<'_, str>) -> Self {
+        match value {
+            Cow::Borrowed(s) => Self::from(s),
+            Cow::Owned(s) => Self::from(s),
+        }
+    }
+}
+
+#[derive(Clone, Copy)]
 pub(crate) struct AssembledChild {
     pub id: StableNodeId,
-    pub type_id: TypeId,
+}
+
+const _: () = assert!(std::mem::size_of::<Option<AssembledChild>>() == 8);
+
+/// Keyed children under one parent: positional `#v{n}` slots avoid hash buckets.
+#[derive(Clone, Default)]
+pub(crate) struct ParentAssembly {
+    positional: Vec<Option<AssembledChild>>,
+    named: hashbrown::HashMap<AssemblyKey, AssembledChild>,
+}
+
+impl ParentAssembly {
+    pub(crate) fn is_empty(&self) -> bool {
+        self.named.is_empty() && self.positional.iter().all(Option::is_none)
+    }
+
+    pub(crate) fn get(&self, key: &str) -> Option<&AssembledChild> {
+        if let Some(slot) = AssemblyKey::parse_auto_view(key) {
+            return self.positional.get(slot as usize).and_then(Option::as_ref);
+        }
+        self.named.get(key)
+    }
+
+    pub(crate) fn insert(
+        &mut self,
+        key: AssemblyKey,
+        child: AssembledChild,
+    ) -> Option<AssembledChild> {
+        if let Some(slot) = AssemblyKey::parse_auto_view(key.as_str()) {
+            let idx = slot as usize;
+            if idx >= self.positional.len() {
+                self.positional.resize(idx + 1, None);
+            }
+            return self.positional[idx].replace(child);
+        }
+        self.named.insert(key, child)
+    }
+
+    pub(crate) fn retain(&mut self, mut keep: impl FnMut(&str, &mut AssembledChild) -> bool) {
+        for (idx, slot) in self.positional.iter_mut().enumerate() {
+            if let Some(child) = slot {
+                let key = AssemblyKey::auto_view(idx);
+                if !keep(key.as_str(), child) {
+                    *slot = None;
+                }
+            }
+        }
+        while matches!(self.positional.last(), Some(None)) {
+            self.positional.pop();
+        }
+        self.named.retain(|key, child| keep(key.as_str(), child));
+    }
+
+    pub(crate) fn iter(&self) -> impl Iterator<Item = (AssemblyKey, &AssembledChild)> {
+        self.positional
+            .iter()
+            .enumerate()
+            .filter_map(|(idx, slot)| {
+                slot.as_ref()
+                    .map(|child| (AssemblyKey::auto_view(idx), child))
+            })
+            .chain(self.named.iter().map(|(key, child)| (key.clone(), child)))
+    }
+
+    pub(crate) fn values(&self) -> impl Iterator<Item = &AssembledChild> {
+        self.positional.iter().flatten().chain(self.named.values())
+    }
+
+    pub(crate) fn shrink_positional_excess(&mut self) {
+        if self.positional.capacity() > self.positional.len().saturating_add(64) {
+            self.positional.shrink_to_fit();
+        }
+    }
 }
 
 /// One entry of a parent's key table, taken out to be put back
 /// ([`AppContext::assembled_key`], [`AppContext::rekey_assembled`]).
 #[derive(Clone)]
 pub(crate) struct AssembledKey {
-    pub(super) key: String,
+    pub(super) key: AssemblyKey,
     pub(super) child: AssembledChild,
 }
 
@@ -26,8 +312,8 @@ pub struct AssemblyScope<'a> {
     parent: StableNodeId,
     document: DocumentId,
     /// The keys declared so far, in order, and as a set.
-    seen: Vec<String>,
-    seen_keys: hashbrown::HashSet<String>,
+    seen: Vec<AssemblyKey>,
+    seen_keys: hashbrown::HashSet<AssemblyKey>,
 }
 
 impl AppContext {
@@ -87,12 +373,12 @@ impl AppContext {
     }
 
     /// Every keyed child of `parent`, with its key, in no particular order.
-    pub(crate) fn assembled_children(&self, parent: StableNodeId) -> Vec<(String, StableNodeId)> {
+    pub(crate) fn assembled_children(
+        &self,
+        parent: StableNodeId,
+    ) -> Vec<(AssemblyKey, StableNodeId)> {
         self.assembled.get(&parent).map_or_else(Vec::new, |slots| {
-            slots
-                .iter()
-                .map(|(key, child)| (key.clone(), child.id))
-                .collect()
+            slots.iter().map(|(key, child)| (key, child.id)).collect()
         })
     }
 
@@ -125,7 +411,7 @@ enum Claim {
     /// The node the key named, of the same type.
     Reuse(StableNodeId),
     /// No such node: create one and record it under this key.
-    Create(String),
+    Create(AssemblyKey),
 }
 
 impl AssemblyScope<'_> {
@@ -137,19 +423,19 @@ impl AssemblyScope<'_> {
 
     pub fn child<C: ComponentView>(
         &mut self,
-        key: impl Into<String>,
+        key: impl AsRef<str>,
         component: C,
     ) -> Result<Entity<C>, FrameworkError> {
-        self.upsert(key.into(), component)
+        self.upsert(AssemblyKey::from(key.as_ref()), component)
     }
 
     pub fn with_child<C: ComponentView>(
         &mut self,
-        key: impl Into<String>,
+        key: impl AsRef<str>,
         component: C,
         children: impl FnOnce(&mut AssemblyScope<'_>) -> Result<(), FrameworkError>,
     ) -> Result<Entity<C>, FrameworkError> {
-        let entity = self.upsert(key.into(), component)?;
+        let entity = self.upsert(AssemblyKey::from(key.as_ref()), component)?;
         let document = self.document;
         let mut nested = AssemblyScope {
             context: self.context,
@@ -165,7 +451,7 @@ impl AssemblyScope<'_> {
 
     fn upsert<C: ComponentView>(
         &mut self,
-        key: String,
+        key: AssemblyKey,
         component: C,
     ) -> Result<Entity<C>, FrameworkError> {
         let type_id = TypeId::of::<C>();
@@ -180,7 +466,7 @@ impl AssemblyScope<'_> {
                 let entity = self
                     .context
                     .create_detached_component(self.document, component)?;
-                self.record(key, entity.id, type_id)?;
+                self.record(key, entity.id)?;
                 Ok(entity)
             }
         }
@@ -190,14 +476,14 @@ impl AssemblyScope<'_> {
     /// key is checked and marked seen, and the node it named is reused or
     /// removed. Not generic, so it is compiled once.
     #[inline(never)]
-    fn claim(&mut self, key: String, type_id: TypeId) -> Result<Claim, FrameworkError> {
+    fn claim(&mut self, key: AssemblyKey, type_id: TypeId) -> Result<Claim, FrameworkError> {
         if !super::valid_assembly_key(&key) {
             return Err(FrameworkError::InvalidInput);
         }
         if !self.seen_keys.insert(key.clone()) {
             return Err(FrameworkError::DuplicateAssemblyKey {
                 parent: self.parent,
-                key,
+                key: key.to_string(),
             });
         }
         self.seen.push(key.clone());
@@ -205,10 +491,10 @@ impl AssemblyScope<'_> {
             .context
             .assembled
             .get(&self.parent)
-            .and_then(|slots| slots.get(&key))
+            .and_then(|slots| slots.get(key.as_str()))
             .copied()
         {
-            if existing.type_id == type_id {
+            if self.context.view_type_id(existing.id) == Some(type_id) {
                 return Ok(Claim::Reuse(existing.id));
             }
             self.context.despawn_node(existing.id)?;
@@ -219,12 +505,7 @@ impl AssemblyScope<'_> {
     /// The keyed half of [`Self::upsert`] after a new node: it goes under
     /// the parent and into the parent's key table.
     #[inline(never)]
-    fn record(
-        &mut self,
-        key: String,
-        id: StableNodeId,
-        type_id: TypeId,
-    ) -> Result<(), FrameworkError> {
+    fn record(&mut self, key: AssemblyKey, id: StableNodeId) -> Result<(), FrameworkError> {
         self.context.attach_child(self.parent, id)?;
         // Into the parent's table as it stands. Copying the table to add one
         // key made a parent's first assembly cost the square of its children
@@ -233,7 +514,7 @@ impl AssemblyScope<'_> {
             self.parent,
             AssembledKey {
                 key,
-                child: AssembledChild { id, type_id },
+                child: AssembledChild { id },
             },
         );
         Ok(())
@@ -245,13 +526,13 @@ impl AssemblyScope<'_> {
             .assembled
             .get(&self.parent)
             .into_iter()
-            .flatten()
+            .flat_map(|slots| slots.iter())
             .filter(|(key, _)| !self.seen_keys.contains(key.as_str()))
             .map(|(_, child)| child.id)
             .collect();
         self.context.despawn_nodes(&unused)?;
         if let Some(mut slots) = self.context.assembled.get(&self.parent).cloned() {
-            slots.retain(|key, _| self.seen_keys.contains(key.as_str()));
+            slots.retain(|key, _| self.seen_keys.contains(key));
             self.context.store_assembled(self.parent, slots);
         }
         // A child placed under another parent keeps its identity here but is
@@ -263,7 +544,7 @@ impl AssemblyScope<'_> {
                 self.context
                     .assembled
                     .get(&self.parent)?
-                    .get(key)
+                    .get(key.as_str())
                     .map(|child| child.id)
             })
             .filter(|&id| !self.context.is_placed_elsewhere(id))
@@ -274,7 +555,7 @@ impl AssemblyScope<'_> {
             .node(self.parent)
             .map(|node| node.children.clone())
             .unwrap_or_default();
-        let assembled: HashSet<_> = desired.iter().copied().collect();
+        let assembled: hashbrown::HashSet<_> = desired.iter().copied().collect();
         let mut ordered: Vec<_> = current
             .iter()
             .copied()
@@ -680,5 +961,65 @@ mod tests {
             .collect();
         assert_eq!(run.len(), 3);
         assert!(run.windows(2).all(|pair| pair[0] < pair[1]));
+    }
+
+    #[test]
+    fn assembly_key_is_16_bytes_and_preserves_borrow_eq_hash() {
+        assert_eq!(std::mem::size_of::<AssemblyKey>(), 16);
+        let short = AssemblyKey::from("0123456789abcd");
+        let empty = AssemblyKey::from("");
+        let long = AssemblyKey::from("0123456789abcde".to_owned());
+        assert!(matches!(short, AssemblyKey::Inline { .. }));
+        assert!(matches!(empty, AssemblyKey::Inline { .. }));
+        assert!(matches!(long, AssemblyKey::Shared(_)));
+        assert_eq!(short.as_str(), "0123456789abcd");
+        assert_eq!(long.as_str(), "0123456789abcde");
+
+        let auto_short = AssemblyKey::auto_view(42);
+        let auto_kind = AssemblyKey::auto_kind("Stack", 123);
+        assert_eq!(auto_short.as_str(), "#v42");
+        assert_eq!(auto_kind.as_str(), "#Stack-123");
+        assert!(matches!(auto_short, AssemblyKey::Inline { .. }));
+        assert!(matches!(auto_kind, AssemblyKey::Inline { .. }));
+
+        let mut set = hashbrown::HashSet::new();
+        set.insert(short.clone());
+        set.insert(long.clone());
+        assert!(set.contains("0123456789abcd"));
+        assert!(set.contains("0123456789abcde"));
+
+        assert_eq!(AssemblyKey::parse_auto_view("#v0"), Some(0));
+        assert_eq!(AssemblyKey::parse_auto_view("#v42"), Some(42));
+        assert_eq!(AssemblyKey::parse_auto_view("#v01"), None);
+        assert_eq!(AssemblyKey::parse_auto_view("#v65534"), Some(65534));
+        assert_eq!(AssemblyKey::parse_auto_view("#v65535"), None);
+    }
+
+    #[test]
+    fn parent_assembly_splits_positional_and_named_keys() {
+        let mut slots = ParentAssembly::default();
+        let a = AssembledChild {
+            id: StableNodeId::new(1).unwrap(),
+        };
+        let b = AssembledChild {
+            id: StableNodeId::new(2).unwrap(),
+        };
+        let c = AssembledChild {
+            id: StableNodeId::new(3).unwrap(),
+        };
+        slots.insert(AssemblyKey::auto_view(2), a);
+        slots.insert(AssemblyKey::from("header"), b);
+        slots.insert(AssemblyKey::from("#v01"), c);
+        assert_eq!(slots.get("#v2").map(|e| e.id), Some(a.id));
+        assert_eq!(slots.get("header").map(|e| e.id), Some(b.id));
+        assert_eq!(slots.get("#v01").map(|e| e.id), Some(c.id));
+        assert!(slots.named.contains_key("#v01"));
+        assert!(!slots.named.contains_key("#v2"));
+
+        slots.retain(|key, _| key == "header");
+        assert!(slots.positional.is_empty());
+        assert_eq!(slots.get("#v2").map(|e| e.id), None);
+        assert_eq!(slots.get("#v01").map(|e| e.id), None);
+        assert_eq!(slots.get("header").map(|e| e.id), Some(b.id));
     }
 }

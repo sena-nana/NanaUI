@@ -271,7 +271,7 @@ fn tree(view: impl FnOnce() -> AnyView) -> Vec<String> {
         // CSS `padding` also records which edges were declared physically;
         // `Stack::padding_xy` sets the same edges without that record.
         let mut layout = (*cx.world().node_style(id).unwrap().layout).clone();
-        layout.logical_padding = Default::default();
+        layout = layout.logical_padding(Default::default());
         out.push(format!(
             "{:?} {:?} {layout:?}",
             node.kind,

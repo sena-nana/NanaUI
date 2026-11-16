@@ -161,9 +161,6 @@ impl UiWorld {
         if previous == metadata {
             return;
         }
-        self.counters
-            .pending_drain_counts
-            .replaced_intrinsic_metadata_updates += 1;
         let mut dependents: Vec<StableNodeId> = self
             .replaced
             .dependents
@@ -171,9 +168,6 @@ impl UiWorld {
             .map(|nodes| nodes.iter().copied().collect())
             .unwrap_or_default();
         dependents.sort_unstable();
-        self.counters
-            .pending_drain_counts
-            .resource_intrinsic_dependents_notified += dependents.len();
         for id in dependents {
             let _ = self.mark(id, DirtyMask::RENDER);
             if self.reads_natural_size(id) {
@@ -208,7 +202,6 @@ impl UiWorld {
     /// The natural size `id` shows moved: it measures again and exports its
     /// new size and baseline, as text whose metrics moved does.
     fn seed_natural_size(&mut self, id: StableNodeId) {
-        let seeds_before = self.layout_seeds_created;
         self.record_layout_invalidation(
             id,
             LayoutInvalidation::new(
@@ -219,7 +212,5 @@ impl UiWorld {
                 METRIC_EXPORTS,
             ),
         );
-        self.counters.pending_drain_counts.replaced_layout_seeds +=
-            (self.layout_seeds_created - seeds_before) as usize;
     }
 }

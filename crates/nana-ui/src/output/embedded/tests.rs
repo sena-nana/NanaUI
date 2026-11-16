@@ -24,7 +24,7 @@ fn viewport() -> ScenePaintViewport {
 
 fn node(id: u64, bounds: [f32; 4], background: Option<[f32; 4]>) -> ExtractedNode {
     ExtractedNode {
-        layout_result: None,
+        extracted_layout: None,
         custom_paint: None,
         chrome_radii: Default::default(),
         id: StableNodeId::new(id).unwrap(),
@@ -55,9 +55,7 @@ fn node(id: u64, bounds: [f32; 4], background: Option<[f32; 4]>) -> ExtractedNod
         focused: false,
         editable: false,
         text_spans: Vec::new(),
-        standard_visual: None,
-        component_geometry: None,
-        standard_visual_foreground: None,
+        widget_paint: None,
         custom_render: None,
         drop_hover: None,
         document_text_selection: Vec::new(),
@@ -122,10 +120,14 @@ fn parent_anchor(offset: f32, opacity: f32) -> ExtractedNode {
     parent.source_style.layout = Arc::new(LayoutStyle {
         overflow_x: OverflowSpec::Hidden,
         overflow_y: OverflowSpec::Hidden,
-        transform: Some(PaintTransform {
-            e: offset,
+        transforms: nana_ui_core::TransformStyle {
+            transform: Some(PaintTransform {
+                e: offset,
+                ..Default::default()
+            }),
             ..Default::default()
-        }),
+        }
+        .into(),
         opacity: Some(opacity),
         ..Default::default()
     });

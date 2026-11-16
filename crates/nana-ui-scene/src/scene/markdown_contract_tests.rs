@@ -106,7 +106,7 @@ fn markdown_fences_keep_host_presenter_identity_without_duplicate_scene_text() {
         assert!(runtime.scene().primitives().all(|p| p.node != child));
     }
     let diagram_slot = |p: &ScenePrimitive| {
-        p.id.slot >> 32 == u64::from(crate::scene::custom_paint::MARKDOWN_DIAGRAM_PAINT)
+        p.id.slot >> 32 == u64::from(crate::scene::custom_paint::WIDGET_VECTOR_PAINT)
     };
     let text = runtime
         .scene()
@@ -157,7 +157,7 @@ fn markdown_diagrams_draw_as_vector_geometry_reused_until_dropped() {
     let id = markdown.stable_id();
     let in_namespace = |p: &&ScenePrimitive| {
         p.node == id
-            && p.id.slot >> 32 == u64::from(crate::scene::custom_paint::MARKDOWN_DIAGRAM_PAINT)
+            && p.id.slot >> 32 == u64::from(crate::scene::custom_paint::WIDGET_VECTOR_PAINT)
     };
     let meshes = |runtime: &crate::RuntimeDocument| -> Vec<Arc<PathMesh>> {
         runtime
@@ -184,15 +184,13 @@ fn markdown_diagrams_draw_as_vector_geometry_reused_until_dropped() {
         .scene()
         .primitives()
         .filter(in_namespace)
-        .map(|p| {
-            (p.id.slot & 0xFFFF_FFFF) / crate::scene::custom_paint::MARKDOWN_DIAGRAM_BLOCK as u64
-        })
+        .map(|p| (p.id.slot & 0xFFFF_FFFF) / crate::scene::custom_paint::WIDGET_VECTOR_BLOCK as u64)
         .collect();
     assert_eq!(blocks.len(), 2);
     assert_eq!(
         runtime
             .scene()
-            .markdown_diagram_paint
+            .widget_vector_paint
             .get(&id)
             .map(|b| b.len()),
         Some(2)
@@ -218,7 +216,7 @@ fn markdown_diagrams_draw_as_vector_geometry_reused_until_dropped() {
         .unwrap();
     flush(&mut runtime);
     assert!(meshes(&runtime).is_empty());
-    assert!(runtime.scene().markdown_diagram_paint.is_empty());
+    assert!(runtime.scene().widget_vector_paint.is_empty());
 }
 
 #[test]
@@ -271,4 +269,133 @@ fn markdown_inline_decorations_share_scene_strokes_and_clear_on_update() {
             .any(|p| p.node == markdown.stable_id()
                 && matches!(p.kind, ScenePrimitiveKind::Stroke { .. }))
     );
+}
+
+struct SelectableRichTextLineShaper;
+
+impl nana_ui_runtime::TextShaper for SelectableRichTextLineShaper {
+    fn shape(
+        &mut self,
+        _id: nana_ui_runtime::StableNodeId,
+        text: &nana_ui_runtime::TextContent,
+        _style: &nana_ui_runtime::ComputedStyle,
+        constraints: nana_ui_runtime::TextShapeConstraints,
+    ) -> nana_ui_runtime::TextMetrics {
+        let intrinsic = text.value.len() as f32 * 8.0;
+        nana_ui_runtime::TextMetrics {
+            width: constraints.max_width.unwrap_or(intrinsic).min(intrinsic),
+            height: 18.0,
+            ascent: None,
+        }
+    }
+}
+
+/// The span roles of a selectable rich text reach its one text primitive
+/// as byte ranges in the installed palette's colors.
+#[test]
+fn selectable_rich_text_paints_span_roles_on_its_text_primitive() {
+    use nana_ui_runtime::{RichSpan, SelectableRichText, SemanticColorRole};
+    let document = DocumentId::new(1).unwrap();
+    let mut runtime = crate::RuntimeDocument::new(document);
+    let text = runtime
+        .context_mut()
+        .create_component(
+            document,
+            SelectableRichText::new([
+                RichSpan::plain("pub").color(SemanticColorRole::Keyword),
+                RichSpan::plain(" fn"),
+                RichSpan::plain(" // 注释").color(SemanticColorRole::Muted),
+            ]),
+        )
+        .unwrap();
+    runtime
+        .flush(
+            LayoutViewport::new(320.0, 120.0),
+            &mut SelectableRichTextLineShaper,
+        )
+        .unwrap();
+    let palette = runtime.context().world().style_model();
+    let color = |role| nana_ui_core::PaintColor::Srgb {
+        rgba: palette.color(role).as_rgba_array(),
+    };
+    let primitive = runtime
+        .scene()
+        .primitive(PrimitiveId {
+            node: text.stable_id(),
+            slot: 2,
+        })
+        .expect("the rich text paints one text primitive");
+    let ScenePrimitiveKind::Text { content, spans, .. } = &primitive.kind else {
+        panic!("expected a text primitive, got {:?}", primitive.kind);
+    };
+    assert_eq!(content.as_ref(), "pub fn // 注释");
+    assert_eq!(
+        spans,
+        &vec![
+            SceneTextSpan {
+                start: 0,
+                end: 3,
+                color: color(SemanticColorRole::Keyword),
+            },
+            SceneTextSpan {
+                start: "pub fn".len(),
+                end: content.len(),
+                color: color(SemanticColorRole::Muted),
+            },
+        ]
+    );
+}
+
+#[test]
+fn selectable_rich_text_selection_uses_selection_background_paint_color() {
+    use nana_ui_runtime::{RichSpan, SelectableRichText};
+    let document = DocumentId::new(1).unwrap();
+    let mut runtime = crate::RuntimeDocument::new(document);
+    let wide_selection = nana_ui_core::PaintColor::Oklch {
+        l: 0.72,
+        c: 0.3,
+        h: Some(150.0),
+        alpha: 0.5,
+    };
+    let mut node_style = nana_ui_runtime::NodeStyle::default();
+    let layout = std::sync::Arc::make_mut(&mut node_style.layout);
+    layout.text_ext.selection_background = Some(wide_selection.to_srgb());
+    layout.paint_colors.selection_background = Some(wide_selection);
+    // Distinct `selection_color` (foreground) must NOT bleed into selection background quads.
+    layout.text_ext.selection_color = Some([1.0, 0.0, 0.0, 1.0]);
+
+    let view = SelectableRichText::new([RichSpan::plain("hello world")]).style(node_style);
+    let bounds = nana_ui_runtime::LayoutBox {
+        x: 0.0,
+        y: 0.0,
+        width: 200.0,
+        height: 20.0,
+    };
+    view.pointer_down(0.0, 2.0, bounds);
+    view.pointer_move(100.0, 2.0, bounds);
+    let _ = view.pointer_up(100.0, 2.0, bounds);
+
+    let text = runtime
+        .context_mut()
+        .create_component(document, view)
+        .unwrap();
+    runtime
+        .flush(
+            LayoutViewport::new(320.0, 120.0),
+            &mut SelectableRichTextLineShaper,
+        )
+        .unwrap();
+
+    let selection = runtime
+        .scene()
+        .primitive(PrimitiveId {
+            node: text.stable_id(),
+            slot: 1,
+        })
+        .expect("selected rich text emits a selection QuadBatch");
+    let ScenePrimitiveKind::QuadBatch { background, .. } = &selection.kind else {
+        panic!("expected selection QuadBatch, got {:?}", selection.kind);
+    };
+    assert_eq!(*background, Some(wide_selection));
+    assert!(runtime.scene().has_extended_color());
 }

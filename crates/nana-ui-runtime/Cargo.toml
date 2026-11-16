@@ -8,13 +8,14 @@ license = "MIT OR Apache-2.0"
 
 [features]
 calendar = []
-charts = []
+charts = ["dep:nana-ui-charts"]
 controls = []
 graph-canvas = []
 image-viewer = []
+qr-code = ["dep:qrcode"]
 rich-text = ["dep:pulldown-cmark", "dep:nana-ui-diagram", "dep:ratex-parser", "dep:ratex-layout", "dep:ratex-svg", "dep:ratex-types"]
-components = ["calendar", "charts", "controls", "graph-canvas", "image-viewer", "rich-text"]
-default = ["icu", "snippet-transforms"]
+components = ["calendar", "charts", "controls", "graph-canvas", "image-viewer", "qr-code", "rich-text"]
+default = []
 # Locale-aware message formatting with ICU4X and its compiled CLDR data:
 # plural rules, numbers, dates and times. Without it messages format with
 # `PlainFormatter`.
@@ -53,7 +54,7 @@ foldhash = "0.2.0"
 nana-ui-view-schema = { path = "../nana-ui-view-schema" }
 futures-core.workspace = true
 nana-ui-core.workspace = true
-nana-ui-charts.workspace = true
+nana-ui-charts = { workspace = true, optional = true }
 nana-diagnostics.workspace = true
 # Canonical input and the host services contract. Input routing, focus and IME
 # state are Runtime responsibilities; the contract crate has no platform deps.
@@ -68,7 +69,7 @@ ratex-layout = { version = "=0.1.14", optional = true }
 ratex-svg = { version = "=0.1.14", features = ["embed-fonts"], optional = true }
 ratex-types = { version = "=0.1.14", optional = true }
 pulldown-cmark = { version = "0.13.4", default-features = false, optional = true }
-qrcode = { version = "0.14.1", default-features = false }
+qrcode = { version = "0.14.1", default-features = false, optional = true }
 unicode-segmentation.workspace = true
 unicode-width.workspace = true
 serde = { workspace = true, features = ["derive"] }
@@ -84,10 +85,9 @@ icu_provider = { version = "2.3", features = ["sync"], optional = true }
 icu_time = { version = "2.3", optional = true }
 fixed_decimal = { version = "0.7", features = ["ryu"], optional = true }
 writeable = { version = "0.6", optional = true }
-stacker = "0.1.25"
 
-# The thread's own stack bounds, where `stacker` cannot read them (`stack`).
-[target.'cfg(any(target_os = "android", target_os = "ios", target_os = "tvos", target_os = "watchos", target_os = "visionos"))'.dependencies]
+# Native thread stack bounds for stack-budget instrumentation (`stack`).
+[target.'cfg(unix)'.dependencies]
 libc = "0.2.190"
 
 [[bin]]

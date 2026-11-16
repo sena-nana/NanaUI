@@ -62,6 +62,9 @@ impl UiScene {
             let ScenePrimitiveKind::Custom { node: custom, .. } = &primitive.kind else {
                 continue;
             };
+            if custom.payload.is_some() {
+                continue;
+            }
             let claim = (&custom.renderer, custom.revision);
             match seen.get(&custom.resource) {
                 Some(previous) if *previous != claim => {
@@ -86,6 +89,9 @@ impl UiScene {
             else {
                 continue;
             };
+            if node.payload.is_some() {
+                continue;
+            }
             if let Some(previous) =
                 revisions.insert(&node.resource, (&node.renderer, node.revision))
                 && previous != (&node.renderer, node.revision)
@@ -124,6 +130,9 @@ impl UiScene {
             let ScenePrimitiveKind::Custom { node: custom, .. } = &primitive.kind else {
                 continue;
             };
+            if custom.payload.is_some() {
+                continue;
+            }
             custom_nodes
                 .entry(custom.resource.clone())
                 .or_insert((primitive.id, custom.clone()));
@@ -226,7 +235,7 @@ impl UiScene {
             };
         for primitive in self.primitives() {
             match &primitive.kind {
-                ScenePrimitiveKind::Custom { node: custom, .. } => {
+                ScenePrimitiveKind::Custom { node: custom, .. } if custom.payload.is_none() => {
                     flush_standard(&mut graph, &mut pass_id, &mut standard)?;
                     let resource = custom_resources[&custom.resource].0;
                     let read = ResourceAccess {

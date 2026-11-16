@@ -1,11 +1,10 @@
 //! Typed theme expressions retained until a theme is installed.
 use super::{BorderWidth, CompiledTheme, LineRole, RadiusTier, SpacingStep, TextWeight, TypeRole};
 use crate::{LayoutStyle, LengthSpec, LineHeightSpec};
-use serde::{Deserialize, Serialize};
 
 /// A typed token reference; no strings are looked up on the runtime path.
 /// More tokens may come, so a `match` on one needs a wildcard arm.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[non_exhaustive]
 pub enum ThemeToken {
     Space(SpacingStep),
@@ -38,7 +37,7 @@ impl ThemeToken {
     }
 }
 /// A linear combination of theme tokens and a logical-pixel offset.
-#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq)]
 pub struct ThemeExpr {
     pub constant: f32,
     pub terms: Vec<(ThemeToken, f32)>,
@@ -87,7 +86,7 @@ impl From<ThemeToken> for ThemeExpr {
     }
 }
 /// Layout fields accepting theme expressions, shared by Rust and compiled CSS.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum ThemeProperty {
     Gap,
     RowGap,
@@ -126,8 +125,7 @@ pub enum ThemeProperty {
 }
 /// Unresolved layout expressions. Literal CSS declarations clear their matching
 /// expression, preserving cascade and responsive override precedence.
-#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
-#[serde(default)]
+#[derive(Debug, Clone, Default, PartialEq)]
 pub struct ThemeLayout {
     pub gap: Option<ThemeExpr>,
     pub row_gap: Option<ThemeExpr>,
@@ -165,7 +163,6 @@ pub struct ThemeLayout {
     pub border_radius: Option<ThemeExpr>,
     /// The margin a scroll container's bar runs in
     /// ([`crate::ScrollbarSkin::room`]), resolved onto the node's skin.
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub scrollbar_room: Option<ThemeExpr>,
 }
 impl ThemeLayout {
@@ -375,7 +372,7 @@ impl ThemeLayout {
         }
         if let Some(expr) = &self.letter_spacing {
             let value = expr.resolve(theme);
-            layout.letter_spacing = Some(value);
+            layout.text_ext.letter_spacing = Some(value);
         }
         if let Some(expr) = &self.border_width {
             let value = expr.resolve(theme);
@@ -383,19 +380,19 @@ impl ThemeLayout {
         }
         if let Some(expr) = &self.border_top_width {
             let value = expr.resolve(theme);
-            layout.border_top_width = Some(value);
+            layout.border_sides.top_width = Some(value);
         }
         if let Some(expr) = &self.border_right_width {
             let value = expr.resolve(theme);
-            layout.border_right_width = Some(value);
+            layout.border_sides.right_width = Some(value);
         }
         if let Some(expr) = &self.border_bottom_width {
             let value = expr.resolve(theme);
-            layout.border_bottom_width = Some(value);
+            layout.border_sides.bottom_width = Some(value);
         }
         if let Some(expr) = &self.border_left_width {
             let value = expr.resolve(theme);
-            layout.border_left_width = Some(value);
+            layout.border_sides.left_width = Some(value);
         }
         if let Some(expr) = &self.border_radius {
             let value = expr.resolve(theme);

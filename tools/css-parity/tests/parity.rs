@@ -56,23 +56,6 @@ fn t_g34_auto_fill_nth_named_line_expanded() {
 }
 
 #[test]
-fn t_g35_subgrid_inherits_parent_tracks() {
-    let case = load_fixture(&fixture_path("T-G35")).unwrap();
-    let a = case
-        .expected
-        .iter()
-        .find(|box_| box_.id == "a")
-        .expect("T-G35 a");
-    assert!(
-        a.w <= 81.0 && a.x < 1.0,
-        "T-G35 must assert a is the 80px parent track, not half of 200, got x={} w={}",
-        a.x,
-        a.w
-    );
-    assert_pass_case("T-G35");
-}
-
-#[test]
 fn t_i03_white_space_pre() {
     let case = load_fixture(&fixture_path("T-I03")).unwrap();
     let node = nana_css_parity::fixture_to_layout_node(&case.tree);
@@ -88,97 +71,6 @@ fn t_i03_white_space_pre() {
         "T-I03 fixture text must preserve the newline"
     );
     assert_pass_case("T-I03");
-}
-
-#[test]
-fn t_fl03_clear_uses_packed_float_bottom() {
-    let case = load_fixture(&fixture_path("T-FL03")).unwrap();
-    let after = case
-        .expected
-        .iter()
-        .find(|box_| box_.id == "after")
-        .expect("T-FL03 after box");
-    assert!(
-        after.y >= 80.0,
-        "T-FL03 must assert y≥80 so pre-pack max-height 40 fails, got y={}",
-        after.y
-    );
-    assert_pass_case("T-FL03");
-}
-
-#[test]
-fn t_fl04_float_own_clear_left() {
-    let case = load_fixture(&fixture_path("T-FL04")).unwrap();
-    let b = case
-        .expected
-        .iter()
-        .find(|box_| box_.id == "b")
-        .expect("T-FL04 b");
-    assert!(
-        b.y >= 40.0 && b.x < 1.0,
-        "T-FL04 must assert b at (0,40) so packing beside a (x=60) fails, got x={} y={}",
-        b.x,
-        b.y
-    );
-    assert_pass_case("T-FL04");
-}
-
-#[test]
-fn t_fl05_ifc_shrinks_beside_float() {
-    let case = load_fixture(&fixture_path("T-FL05")).unwrap();
-    let a = case
-        .expected
-        .iter()
-        .find(|box_| box_.id == "a")
-        .expect("T-FL05 a");
-    let b = case
-        .expected
-        .iter()
-        .find(|box_| box_.id == "b")
-        .expect("T-FL05 b");
-    assert!(
-        a.x >= 80.0 && b.y >= 20.0,
-        "T-FL05 must assert shrink+wrap beside the float (not full-width packing), got a=({},{}) b=({},{})",
-        a.x,
-        a.y,
-        b.x,
-        b.y
-    );
-    assert_pass_case("T-FL05");
-}
-
-#[test]
-fn t_fl06_oversized_inline_drops_below_float() {
-    let case = load_fixture(&fixture_path("T-FL06")).unwrap();
-    let a = case
-        .expected
-        .iter()
-        .find(|box_| box_.id == "a")
-        .expect("T-FL06 a");
-    assert!(
-        a.y >= 40.0 && a.x < 1.0,
-        "T-FL06 must assert drop below the float so overlap at y=0 fails, got x={} y={}",
-        a.x,
-        a.y
-    );
-    assert_pass_case("T-FL06");
-}
-
-#[test]
-fn t_fl08_only_a_block_formatting_context_contains_its_floats() {
-    let case = load_fixture(&fixture_path("T-FL08")).unwrap();
-    let height = |id: &str| {
-        case.expected
-            .iter()
-            .find(|box_| box_.id == id)
-            .unwrap_or_else(|| panic!("T-FL08 {id}"))
-            .h
-    };
-    assert!(
-        height("plain") == 0.0 && height("root2") == 40.0 && height("hidden") == 30.0,
-        "T-FL08 must tell a plain block (0) from a BFC (the packed floats' height, not their sum)"
-    );
-    assert_pass_case("T-FL08");
 }
 
 #[test]

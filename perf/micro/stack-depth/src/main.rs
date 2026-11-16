@@ -147,7 +147,7 @@ fn nana_page(cx: &mut AppContext, document: DocumentId, rows: usize, cells: usiz
         let list = if rotated {
             let (sin, cos) = 0.05_f32.sin_cos();
             list.with_layout(|layout| {
-                layout.transform = Some(nana_ui_core::PaintTransform {
+                layout.transforms.transform = Some(nana_ui_core::PaintTransform {
                     a: cos,
                     b: sin,
                     c: -sin,
@@ -495,7 +495,7 @@ fn nana_edits(rows: usize, cells: usize, edit: &str, runs: usize) -> (f64, f64) 
             let step = if on { 0.01 } else { 0.0 };
             let (sin, cos) = (turn + step as f32).sin_cos();
             let scale = 1.01 + step as f32;
-            std::sync::Arc::make_mut(&mut style.layout).transform = Some(if edit == "transform" {
+            std::sync::Arc::make_mut(&mut style.layout).transforms.transform = Some(if edit == "transform" {
                 nana_ui_core::PaintTransform {
                     a: cos,
                     b: sin,
@@ -553,31 +553,6 @@ fn nana_edits(rows: usize, cells: usize, edit: &str, runs: usize) -> (f64, f64) 
                 .map(|(stage, micros)| format!("{stage:?} {micros:.0}"))
                 .collect();
             eprintln!("{edit}: least {} (µs)", stages.join(", "));
-        }
-        if run + 1 == runs && std::env::var_os("PRINT_COUNTERS").is_some() {
-            let w = runtime.context().last_work_counters();
-            eprintln!(
-                "{edit}: seeds {} full {} local {} measure {} hits {} misses {} place {} reused {} changed {} origin {} commits {} children {} plans {}/{} suffix {} translations {}/{} hit moved {} rebuilt {:?}",
-                w.layout_frontier_seeds,
-                w.layout_full_document_fallbacks,
-                w.layout_local_subtree_fallbacks,
-                w.layout_measure_nodes,
-                w.layout_measure_cache_hits,
-                w.layout_measure_cache_misses,
-                w.layout_placement_nodes,
-                w.layout_result_reused,
-                w.layout_result_changed,
-                w.layout_origin_only_updates,
-                w.layout_delta_commits,
-                w.layout_result_children_visited,
-                w.layout_placement_plans_reused,
-                w.layout_measure_plans_reused,
-                w.layout_suffixes_replayed,
-                w.layout_translations,
-                w.layout_translated_nodes,
-                w.hit_test_entries_moved,
-                w.hit_test_nodes_rebuilt,
-            );
         }
     }
     (layout, whole)
@@ -686,35 +661,6 @@ fn nana_insert(rows: usize, size: usize, shape: &str, runs: usize) -> (f64, f64)
                 Some((_, held)) => *held = held.min(micros),
                 None => least.push((timing.stage, micros)),
             }
-        }
-        if run + 1 == runs && std::env::var_os("PRINT_COUNTERS").is_some() {
-            let w = runtime.context().last_work_counters();
-            eprintln!(
-                "{shape} {size}: edges {} stopped {} frontier measure {} place {} total {} changed {} measure {} hits {} misses {} place {} reused {} changed {} origin {} commits {} children {} seeds {} full {} local {} extracted {} render changed {} a11y {} hit rebuilt {:?} moved {}",
-                w.layout_dependency_edges_visited,
-                w.layout_propagations_stopped,
-                w.layout_frontier_nodes_measure,
-                w.layout_frontier_nodes_placement,
-                w.entities_total,
-                w.entities_changed,
-                w.layout_measure_nodes,
-                w.layout_measure_cache_hits,
-                w.layout_measure_cache_misses,
-                w.layout_placement_nodes,
-                w.layout_result_reused,
-                w.layout_result_changed,
-                w.layout_origin_only_updates,
-                w.layout_delta_commits,
-                w.layout_result_children_visited,
-                w.layout_frontier_seeds,
-                w.layout_full_document_fallbacks,
-                w.layout_local_subtree_fallbacks,
-                w.render_nodes_extracted,
-                w.render_nodes_changed,
-                w.accessibility_nodes_updated,
-                w.hit_test_nodes_rebuilt,
-                w.hit_test_entries_moved,
-            );
         }
     }
     if std::env::var_os("PRINT_STAGES").is_some() {

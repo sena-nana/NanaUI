@@ -5,7 +5,7 @@ use unicode_segmentation::UnicodeSegmentation;
 
 use crate::{
     AccessibilityRole, AccessibilityState, ComponentView, InteractionState, LengthSpec,
-    MutationQueue, NodeKind, NodeStyle, StableNodeId, StandardVisual, TextContent, UiWorld,
+    MutationQueue, NodeKind, NodeStyle, StableNodeId, TextContent, UiWorld,
 };
 
 /// Single-line path with width-aware middle elision and a full-path tooltip.
@@ -30,7 +30,76 @@ impl PathText {
     }
 }
 
+/// Visual state for [`PathText`] nodes.
+#[derive(Debug, Clone, PartialEq)]
+pub struct PathTextVisual {
+    pub value: Arc<str>,
+}
+
+impl crate::WidgetVisual for PathTextVisual {
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+
+    fn dyn_eq(&self, other: &dyn std::any::Any) -> bool {
+        other.downcast_ref::<Self>().is_some_and(|rhs| self == rhs)
+    }
+
+    fn measures_text(&self) -> bool {
+        true
+    }
+
+    fn paint(&self, ctx: &crate::WidgetPaintCtx<'_>) -> crate::WidgetPaintOutput {
+        let shortened = shorten_path(&self.value, ctx.content.width, |text| {
+            ctx.world.chrome_text_measure(ctx.id).width(
+                text,
+                ctx.style.font_size,
+                ctx.style.font_weight,
+            )
+        });
+        let color = ctx.style.color.unwrap_or_else(|| {
+            ctx.style_model
+                .color(crate::SemanticColorRole::Text)
+                .as_rgba_array()
+        });
+        let mut out = crate::WidgetPaintOutput {
+            owns_node_text: true,
+            suppress_root_surface: true,
+            ..crate::WidgetPaintOutput::new()
+        };
+        out.push(
+            2,
+            crate::WidgetPaintOp::Text(crate::WidgetText {
+                bounds: ctx.content,
+                content: Arc::<str>::from(shortened).into(),
+                color: Some(color),
+                paint_color: ctx.matching_text_paint(color),
+                font_size: ctx.style.font_size,
+                font_weight: ctx.style.font_weight,
+                horizontal_alignment: crate::TextHorizontalAlignment::Start,
+                vertical_alignment: crate::TextVerticalAlignment::Center,
+                ellipsis: false,
+                wrap: false,
+                max_lines: None,
+                italic: None,
+                underline: None,
+                line_through: None,
+                suppress_spans: false,
+                preserve_lines: None,
+                unstyled_glyph: false,
+                line_height: None,
+                retained_text: crate::WidgetRetainedText::None,
+                tabular_nums: false,
+                ..Default::default()
+            }),
+        );
+        out
+    }
+}
+
 impl ComponentView for PathText {
+    const TYPE_ID: Option<&'static str> = Some(crate::component_descriptors::PATH_TEXT.type_id);
+
     fn share_layouts(&mut self, share: &mut dyn FnMut(&mut Arc<nana_ui_core::LayoutStyle>)) {
         share(&mut self.style.layout);
     }
@@ -70,11 +139,11 @@ impl ComponentView for PathText {
                 ..AccessibilityState::default()
             },
         );
-        let visual = StandardVisual::PathText {
+        let visual = PathTextVisual {
             value: Arc::clone(&self.value),
         };
-        if world.standard_visual(id) != Some(visual.clone()) {
-            mutations.set_standard_visual(id, Some(visual));
+        if world.widget_visual_as::<PathTextVisual>(id) != Some(&visual) {
+            mutations.set_widget_visual(id, Some(visual));
         }
     }
 }
@@ -212,10 +281,10 @@ mod tests {
                 height,
             },
         );
-        if let Some(StandardVisual::LabeledValue {
-            action: Some(action),
-            ..
-        }) = cx.world().standard_visual(root)
+        if let Some(lv) = cx
+            .world()
+            .widget_visual_as::<crate::LabeledValueVisual>(root)
+            && let Some(action) = lv.action
         {
             queue.write_layout(
                 action,
@@ -285,21 +354,35 @@ mod tests {
         let full = "/characters/very-long-directory/Haru.model3.json";
         let path = cx.create_component(doc, PathText::new(full)).unwrap();
         layout(&mut cx, doc, 150.0, 32.0);
-        let Some(crate::ComponentGeometry::PathText { text }) =
-            cx.world().component_geometry(path.stable_id())
-        else {
-            panic!("path geometry");
-        };
+        let paint = cx
+            .world()
+            .widget_paint(path.stable_id())
+            .expect("path paint");
+        let text = paint
+            .ops
+            .iter()
+            .find_map(|tagged| match &tagged.op {
+                crate::WidgetPaintOp::Text(text) if tagged.slot == 2 => Some(text),
+                _ => None,
+            })
+            .expect("path text");
         assert_ne!(text.content.as_str(), full);
         assert!(text.content.as_str().ends_with(".json"));
         let accessibility = cx.world().accessibility(path.stable_id()).unwrap();
         assert_eq!(accessibility.label.as_deref(), Some(full));
         layout(&mut cx, doc, 1200.0, 32.0);
-        let Some(crate::ComponentGeometry::PathText { text }) =
-            cx.world().component_geometry(path.stable_id())
-        else {
-            panic!("path geometry");
-        };
+        let paint = cx
+            .world()
+            .widget_paint(path.stable_id())
+            .expect("path paint");
+        let text = paint
+            .ops
+            .iter()
+            .find_map(|tagged| match &tagged.op {
+                crate::WidgetPaintOp::Text(text) if tagged.slot == 2 => Some(text),
+                _ => None,
+            })
+            .expect("path text");
         assert_eq!(text.content.as_str(), full);
     }
 
@@ -367,14 +450,16 @@ mod tests {
         cx.set_labeled_value_action(row, Some(action.stable_id()))
             .unwrap();
         layout(&mut cx, doc, 240.0, 40.0);
-        let Some(crate::ComponentGeometry::LabeledValue {
-            value,
-            action: bounds,
-            ..
-        }) = cx.world().component_geometry(row.stable_id())
+        let paint = cx.world().widget_paint(row.stable_id()).unwrap();
+        let Some(crate::WidgetPaintOp::Text(value)) = paint
+            .ops
+            .iter()
+            .find(|tagged| tagged.slot == 3)
+            .map(|tagged| &tagged.op)
         else {
-            panic!("path row");
+            panic!("path row value");
         };
+        let bounds = cx.world().layout_box(action.stable_id());
         assert!(value.content.as_str().contains('…'), "{value:?}");
         assert!(bounds.is_some());
         assert_eq!(

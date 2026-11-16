@@ -4,48 +4,29 @@
 //! are; only compositor tracks move, and they all go when the drag ends.
 use super::*;
 use crate::component_animation_kinds::{REORDER_PREVIEW, REORDER_SHIFT};
-use crate::reorder_list::{REORDER_PREVIEW_Z_INDEX, ReorderDragVisual};
+use crate::reorder_list::{REORDER_PREVIEW_Z_INDEX, ReorderDragVisual, ReorderListVisual};
 use nana_ui_core::PaintTransform;
 
 /// The drag of a list visual, while it previews.
-fn preview_drag(visual: Option<&StandardVisual>) -> Option<&ReorderDragVisual> {
-    match visual {
-        Some(StandardVisual::ReorderList {
-            drag: Some(drag), ..
-        }) if drag.preview => Some(drag),
-        _ => None,
-    }
+fn preview_drag(visual: Option<&ReorderListVisual>) -> Option<&ReorderDragVisual> {
+    visual.and_then(|visual| visual.drag.as_ref().filter(|drag| drag.preview))
 }
 
 /// Whether going from `previous` to `next` changes what a list paints. In a
 /// previewed drag the list draws no drag marks, so a pointer move — which
 /// only moves its rows' presentation — leaves the list itself as it was.
 pub(super) fn reorder_list_paints_same(
-    previous: Option<&StandardVisual>,
-    next: Option<&StandardVisual>,
+    previous: Option<&ReorderListVisual>,
+    next: Option<&ReorderListVisual>,
 ) -> bool {
-    let (
-        Some(StandardVisual::ReorderList {
-            rows: previous_rows,
-            size: previous_size,
-            spacing: previous_spacing,
-            ..
-        }),
-        Some(StandardVisual::ReorderList {
-            rows,
-            size,
-            spacing,
-            ..
-        }),
-        Some(previous_drag),
-        Some(drag),
-    ) = (previous, next, preview_drag(previous), preview_drag(next))
+    let (Some(previous), Some(next), Some(previous_drag), Some(drag)) =
+        (previous, next, preview_drag(previous), preview_drag(next))
     else {
         return false;
     };
-    previous_rows == rows
-        && previous_size == size
-        && previous_spacing == spacing
+    previous.rows == next.rows
+        && previous.size == next.size
+        && previous.spacing == next.spacing
         && previous_drag.source == drag.source
 }
 
@@ -62,8 +43,8 @@ impl UiWorld {
     pub(super) fn sync_reorder_list_motion(
         &mut self,
         id: StableNodeId,
-        previous: Option<&StandardVisual>,
-        next: Option<&StandardVisual>,
+        previous: Option<&ReorderListVisual>,
+        next: Option<&ReorderListVisual>,
     ) {
         let had_preview = preview_drag(previous).is_some();
         let drag = preview_drag(next).cloned();

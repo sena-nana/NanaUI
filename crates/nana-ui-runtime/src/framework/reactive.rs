@@ -127,12 +127,24 @@ impl MountedView {
 pub(crate) fn bound_view<C: ComponentView>(
     cx: &AppContext,
     id: StableNodeId,
-) -> Result<&C, FrameworkError> {
-    cx.views
-        .get(&id)
-        .ok_or(FrameworkError::MissingView(id))?
-        .downcast_ref::<C>()
-        .ok_or(FrameworkError::ViewType(id))
+) -> Result<std::borrow::Cow<'_, C>, FrameworkError> {
+    if let Some(view) = cx.views.get(&id) {
+        return view
+            .downcast_ref::<C>()
+            .map(std::borrow::Cow::Borrowed)
+            .ok_or(FrameworkError::ViewType(id));
+    }
+    if TypeId::of::<C>() == TypeId::of::<crate::Stack>()
+        && let Some(stack) = cx.world.elided_stack(id)
+    {
+        // SAFETY: `TypeId` matched `Stack`.
+        let cloned = unsafe { &*std::ptr::from_ref(&stack).cast::<C>() }.clone();
+        return Ok(std::borrow::Cow::Owned(cloned));
+    }
+    if cx.world.is_elided_stack(id) {
+        return Err(FrameworkError::ViewType(id));
+    }
+    Err(FrameworkError::MissingView(id))
 }
 
 /// Apply a node's bindings to a staged copy of its view and project it.
@@ -143,13 +155,8 @@ pub(crate) fn stage_bound_node<C: ComponentView>(
     mutations: &mut MutationQueue,
     apply: impl FnOnce(&mut C),
 ) -> Result<Option<Box<dyn Any + Send>>, FrameworkError> {
-    let current = cx
-        .views
-        .get(&id)
-        .ok_or(FrameworkError::MissingView(id))?
-        .downcast_ref::<C>()
-        .ok_or(FrameworkError::ViewType(id))?;
-    let mut staged = current.clone();
+    let current = bound_view::<C>(cx, id)?;
+    let mut staged: C = (*current).clone();
     apply(&mut staged);
     cx.inherit_segmented_option_surface(id, &mut staged);
     if staged == *current {
@@ -610,7 +617,7 @@ impl AppContext {
         let mut changed = Vec::with_capacity(staged.len());
         for (node, view) in staged {
             changed.push((node, Any::type_id(&*view)));
-            self.views.insert(node, view);
+            self.store_component_view(node, view);
         }
         for (node, type_id) in changed {
             if !self.world.contains(node) {
@@ -681,7 +688,8 @@ impl AppContext {
     }
 
     pub(crate) fn view_is<C: 'static>(&self, node: StableNodeId) -> bool {
-        self.views.get(&node).is_some_and(|view| view.is::<C>())
+        (TypeId::of::<C>() == TypeId::of::<crate::Stack>() && self.world.is_elided_stack(node))
+            || self.views.get(&node).is_some_and(|view| view.is::<C>())
     }
 
     /// `node` as the view layer sees it: its control's fields and values
@@ -712,6 +720,11 @@ impl AppContext {
             .views
             .get(&node)
             .and_then(|view| crate::view::inspect_control(&**view))
+            .or_else(|| {
+                self.world
+                    .elided_stack(node)
+                    .and_then(|stack| crate::view::inspect_control(&stack))
+            })
             .map_or((None, Vec::new()), |(tag, fields)| (Some(tag), fields));
         Some(crate::view::Inspection {
             node,

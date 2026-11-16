@@ -71,7 +71,7 @@ impl Painter for BandedCard {
 }
 
 /// The slot namespace the scene gives a card surface painter's primitives.
-const MODAL_SURFACE_PAINT: u64 = 0xFFFF_FFD0;
+const MODAL_SURFACE_PAINT: u64 = (nana_ui_runtime::WIDGET_VECTOR_LAYER_BASE | 11) as u64;
 
 fn open(themed: bool) -> (RuntimeDocument, StableNodeId) {
     open_with_motion(themed, true)

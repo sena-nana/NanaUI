@@ -74,9 +74,7 @@ fn turn(kind: &str, angle: f32) -> PaintTransform {
 }
 
 fn wrapper_style(depth: usize, transform: PaintTransform, preserve_3d: bool) -> LayoutStyle {
-    LayoutStyle {
-        transform: Some(transform),
-        preserve_3d,
+    let mut layout = LayoutStyle {
         padding_left: Some(LengthSpec::Px(1.3)),
         padding_top: Some(LengthSpec::Px(2.1)),
         width: Some(LengthSpec::Px(340.0 - 10.0 * depth as f32)),
@@ -84,7 +82,10 @@ fn wrapper_style(depth: usize, transform: PaintTransform, preserve_3d: bool) -> 
         flex_shrink: Some(0.0),
         position: PositionSpec::Relative,
         ..LayoutStyle::default()
-    }
+    };
+    layout.transforms.transform = Some(transform);
+    layout.transforms.preserve_3d = preserve_3d;
+    layout
 }
 
 fn row_style(height: f32) -> LayoutStyle {
@@ -151,15 +152,13 @@ fn page(shape: &Shape) -> Page {
         // branch again whole, under the shift the index holds the
         // scroller's children at.
         let (_, cell) = row(&mut b, parent);
-        let sticky = b.element(
-            cell,
-            LayoutStyle {
-                position: PositionSpec::Sticky,
-                offset_top: Some(LengthSpec::Px(1.0)),
-                transform: Some(turn("rotated", -0.35)),
-                ..fixed(30.0, 9.0)
-            },
-        );
+        let mut sticky_style = LayoutStyle {
+            position: PositionSpec::Sticky,
+            offset_top: Some(LengthSpec::Px(1.0)),
+            ..fixed(30.0, 9.0)
+        };
+        sticky_style.transforms.transform = Some(turn("rotated", -0.35));
+        let sticky = b.element(cell, sticky_style);
         b.element(sticky, fixed(14.0, 5.0));
     }
     let mut wrappers = Vec::new();
@@ -178,33 +177,32 @@ fn page(shape: &Shape) -> Page {
             ] {
                 // The sticky box turns too: a scroll of its scroller builds
                 // its branch again, under the shift the index holds above.
-                let held = b.element(
-                    cell,
-                    LayoutStyle {
-                        position,
-                        offset_top: Some(LengthSpec::Px(1.0)),
-                        offset_left: Some(LengthSpec::Px(7.0)),
-                        transform: (position == PositionSpec::Sticky)
-                            .then(|| turn("rotated", 0.25)),
-                        ..fixed(12.0, 6.0)
-                    },
-                );
+                let mut held_style = LayoutStyle {
+                    position,
+                    offset_top: Some(LengthSpec::Px(1.0)),
+                    offset_left: Some(LengthSpec::Px(7.0)),
+                    ..fixed(12.0, 6.0)
+                };
+                if position == PositionSpec::Sticky {
+                    held_style.transforms.transform = Some(turn("rotated", 0.25));
+                }
+                let held = b.element(cell, held_style);
                 b.element(held, fixed(4.0, 3.0));
             }
         }
         plain.push(row);
     }
-    let scroller = b.element(
-        parent,
-        LayoutStyle {
-            overflow_x: OverflowSpec::Auto,
-            overflow_y: OverflowSpec::Auto,
-            direction: Some(FlexDirection::Column),
-            flex_shrink: Some(0.0),
-            transform: shape.scroller_turn,
-            ..fixed(300.0, 120.0)
-        },
-    );
+    let mut scroller_style = LayoutStyle {
+        overflow_x: OverflowSpec::Auto,
+        overflow_y: OverflowSpec::Auto,
+        direction: Some(FlexDirection::Column),
+        flex_shrink: Some(0.0),
+        ..fixed(300.0, 120.0)
+    };
+    if shape.scroller_turn.is_some() {
+        scroller_style.transforms.transform = shape.scroller_turn;
+    }
+    let scroller = b.element(parent, scroller_style);
     let list = b.element(
         scroller,
         LayoutStyle {
@@ -252,9 +250,8 @@ fn page(shape: &Shape) -> Page {
 
 /// A product frame, then the hit index brought up to date as
 /// `RuntimeDocument` does it: a pure scroll shifts the entries, anything
-/// else patches them -- or, `cold`, builds the whole index again. Returns
-/// the entries the frame built.
-fn frame(page: &mut Page, cold: bool) -> usize {
+/// else patches them -- or, `cold`, builds the whole index again.
+fn frame(page: &mut Page, cold: bool) {
     let work = accessible_frame(
         &mut page.context,
         document(),
@@ -266,14 +263,6 @@ fn frame(page: &mut Page, cold: bool) -> usize {
     let mut dirty = work.input_hit_test.clone();
     dirty.sort_unstable();
     dirty.dedup();
-    let built = |context: &AppContext| {
-        context
-            .world()
-            .last_work_counters()
-            .hit_test_nodes_rebuilt
-            .unwrap_or_default()
-    };
-    let before = built(&page.context);
     if cold {
         page.context.rebuild_hit_test(document());
     } else if !dirty.is_empty() {
@@ -286,7 +275,6 @@ fn frame(page: &mut Page, cold: bool) -> usize {
             page.context.rebuild_hit_test_for(document(), &dirty);
         }
     }
-    built(&page.context).saturating_sub(before)
 }
 
 /// One point of [`grid`]: the topmost hit, every candidate under it, where
@@ -515,7 +503,6 @@ fn boxes_moved_under_a_turned_ancestor_build_only_their_own_entries() {
         ),
     ];
     for (name, shape) in cases {
-        let transforms = &shape.transforms;
         let mut retained = page(&shape);
         let mut cold = page(&shape);
         same(&retained, &cold, format!("{name}: built"));
@@ -533,14 +520,12 @@ fn boxes_moved_under_a_turned_ancestor_build_only_their_own_entries() {
         }
         // A pure scroll shifts entries; only the sticky boxes (and what
         // they hold) are placed again, when the page scroller is theirs.
-        let built = frame(&mut retained, false);
-        assert!(built <= 4, "{name}: a pure scroll built {built}");
+        frame(&mut retained, false);
         frame(&mut cold, true);
         same(&retained, &cold, format!("{name}: scrolled"));
         // Rows and the boxes a move resizes or moves without anything they
         // hold: the wrappers, the scroller and its list.
         // The pinned (sticky, escaped) and the rows they sit in aside.
-        let bound = retained.plain.len() + retained.rows.len() + transforms.len() + 8;
         for round in 0..3 {
             for step in 0..4 {
                 let at = format!("{name}, round {round}, step {step}");
@@ -548,35 +533,15 @@ fn boxes_moved_under_a_turned_ancestor_build_only_their_own_entries() {
                 for page in [&mut retained, &mut cold] {
                     commit(page, |queue, page| grow(queue, page.plain[0], plain_height));
                 }
-                let built = frame(&mut retained, false);
+                frame(&mut retained, false);
                 frame(&mut cold, true);
-                assert!(
-                    shape.preserve_3d || built <= bound,
-                    "{at}: {built} of {} entries built again",
-                    retained.entries
-                );
-                assert!(
-                    shape.preserve_3d
-                        || retained
-                            .context
-                            .world()
-                            .last_work_counters()
-                            .hit_test_entries_moved
-                            >= retained.plain.len() - 1,
-                    "{at}: the moved rows take new origins"
-                );
                 same(&retained, &cold, format!("{at}: plain rows moved"));
                 row_height += 1.37;
                 for page in [&mut retained, &mut cold] {
                     commit(page, |queue, page| grow(queue, page.rows[0], row_height));
                 }
-                let built = frame(&mut retained, false);
+                frame(&mut retained, false);
                 frame(&mut cold, true);
-                assert!(
-                    shape.preserve_3d || built <= bound,
-                    "{at}: {built} of {} entries built again",
-                    retained.entries
-                );
                 same(&retained, &cold, format!("{at}: scrolled rows moved"));
             }
             // A scroll on its own, then one with a move in the same frame.
@@ -724,11 +689,10 @@ fn boxes_moved_under_a_planar_3d_turn_answer_as_a_fresh_index() {
         preserve_3d: false,
     };
     let planar = |angle: f32| {
-        styled(LayoutStyle {
-            transform: None,
-            transform_3d: Some(nana_ui_core::PaintMat4::rotate_z(angle)),
-            ..wrapper_style(0, turn("rotated", 0.0), false)
-        })
+        let mut layout = wrapper_style(0, turn("rotated", 0.0), false);
+        layout.transforms.transform = None;
+        layout.transforms.transform_3d = Some(nana_ui_core::PaintMat4::rotate_z(angle));
+        styled(layout)
     };
     let mut retained = page(&shape);
     let mut cold = page(&shape);

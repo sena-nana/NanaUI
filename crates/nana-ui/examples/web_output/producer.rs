@@ -162,7 +162,7 @@ fn quantiles(values: &mut [f64]) -> Value {
     json!({"p50":at(0.5),"p95":at(0.95),"p99":at(0.99)})
 }
 
-fn work_report(work: nana_ui_core::OutputWorkObservation) -> Value {
+fn work_report(work: nana_ui::OutputWorkObservation) -> Value {
     json!({"ui_renders":work.ui_renders,"gpu_copies":work.gpu_copies,
         "gpu_copy_bytes":work.gpu_copy_bytes,"extra_passes":work.extra_passes,
         "submissions":work.submissions,"cpu_readbacks":work.cpu_readbacks,
@@ -254,11 +254,11 @@ pub fn run() -> Result<()> {
     let mut emitted = 0_u64;
     let mut source_revision = None;
     let mut revision = 0_u64;
-    let setup_work = nana_ui_core::OutputWorkObservation {
+    let setup_work = nana_ui::OutputWorkObservation {
         target_recreates: surface.config().slots + nana_gpu::NATIVE_EXPORT_SLOTS,
         ..Default::default()
     };
-    let mut work = nana_ui_core::OutputWorkObservation::default();
+    let mut work = nana_ui::OutputWorkObservation::default();
     let mut warmup_work = Value::Null;
     let mut warmup_proof = Value::Null;
     let mut warmup_ready_observations = 0;

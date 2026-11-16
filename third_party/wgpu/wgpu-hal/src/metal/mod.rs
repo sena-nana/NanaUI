@@ -1109,6 +1109,7 @@ pub enum ShaderModuleSource {
 pub struct PassthroughShader {
     pub library: Retained<ProtocolObject<dyn MTLLibrary>>,
     pub num_workgroups: HashMap<String, (u32, u32, u32)>,
+    pub sized_bindings: HashMap<String, Vec<(naga::ResourceBinding, u32)>>,
 }
 
 #[cfg(send_sync)]

@@ -43,7 +43,7 @@ def main():
             if result.returncode == 0 or "E0432" not in result.stderr or component not in result.stderr:
                 raise SystemExit(f"disabled {family} remains reachable or probe failed unexpectedly:\n{result.stderr}")
         result = run(cargo + ["tree", "--manifest-path", str(probe / "Cargo.toml"), "--prefix", "none", *offline], env=environment)
-        if result.returncode or any(dependency in result.stdout for dependency in ("pulldown-cmark", "two-face", "nana-ui-diagram", "mermaid-svg")):
+        if result.returncode or any(dependency in result.stdout for dependency in ("pulldown-cmark", "two-face", "nana-ui-diagram", "mermaid-svg", "nana-ui-charts", "qrcode", "i_overlay", "icu_properties", "ureq", "swash", "yazi")):
             raise SystemExit("base build retains family-only dependencies\n" + result.stderr)
     print("disabled Rust APIs and family-only dependencies: OK")
 

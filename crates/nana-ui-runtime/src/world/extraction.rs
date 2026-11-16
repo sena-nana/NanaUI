@@ -64,18 +64,19 @@ impl UiWorld {
         let (foreground, color, background, border_color) =
             self.palette_paint_colors(id, inherited_color, model);
         let ring_color = self.palette_ring_color(id, model);
-        if style.foreground != foreground
-            || style.color != color
-            || style.background != background
+        if style.foreground != foreground || style.color != color {
+            let inherited = Arc::make_mut(&mut Arc::make_mut(style).inherited);
+            inherited.foreground = foreground;
+            inherited.color = color;
+        }
+        if style.background != background
             || style.border_color != border_color
             || style.ring_color != ring_color
         {
-            let style = Arc::make_mut(style);
-            style.foreground = foreground;
-            style.color = color;
-            style.background = background;
-            style.border_color = border_color;
-            style.ring_color = ring_color;
+            let computed = Arc::make_mut(style);
+            computed.background = background;
+            computed.border_color = border_color;
+            computed.ring_color = ring_color;
         }
         color
     }
@@ -85,7 +86,7 @@ impl UiWorld {
     pub(super) fn painted_style(&self, id: StableNodeId) -> Option<Arc<ComputedStyle>> {
         let node = self.nodes.get(id)?;
         let mut style = Arc::clone(&node.resolved.0);
-        if node.resolved.1 != self.palette_epoch {
+        if node.resolved.1 != self.resolved_palette_epoch() {
             let inherited_color = self.inherited_palette_color(node.hierarchy.parent);
             self.repaint_style(id, &mut style, inherited_color);
         }
@@ -121,7 +122,7 @@ impl UiWorld {
         ) = {
             let node = self.nodes.get(id)?;
             let kind = Arc::clone(&node.kind);
-            let has_text = matches!(kind.as_ref(), NodeKind::Text) || !node.text.value.is_empty();
+            let has_text = matches!(kind.as_ref(), NodeKind::Text) || node.has_text;
             (
                 Arc::clone(&node.resolved.0),
                 node.resolved.1,
@@ -132,14 +133,14 @@ impl UiWorld {
                 Arc::clone(&node.resolved_layout),
                 node.hierarchy.parent,
                 Arc::clone(&node.hierarchy.children),
-                node.scroll_offset,
-                has_text.then(|| node.text.clone()),
-                has_text.then_some(node.text_metrics),
+                self.nodes.scroll_offset(id),
+                has_text.then(|| self.nodes.text_content(id).clone()),
+                has_text.then(|| self.nodes.text_metrics(id)),
                 node.document,
-                node.layout_padding,
+                self.nodes.layout_padding(id),
                 node.style.layout.white_space.preserve_newlines(),
                 node.local_layout,
-                node.layout_frame,
+                node.layout_frame(),
             )
         };
         // Extraction also runs during retained writeback, before the next
@@ -147,7 +148,7 @@ impl UiWorld {
         // this transitional projection; scene/hit geometry uses canonical
         // accessors once the batch is committed.
         let layout = self.component_layout_box(id)?;
-        if resolved_epoch != self.palette_epoch {
+        if resolved_epoch != self.resolved_palette_epoch() {
             let inherited_color = parent.and_then(|parent| {
                 memo.color
                     .get(&parent)
@@ -166,45 +167,19 @@ impl UiWorld {
             style.visible = false;
             style.box_visible = false;
         }
-        let mut standard_visual = if self.nodes.has_visuals() {
-            self.nodes.visual(id).cloned()
+        if let Some((busy, _, is_confirm)) = self.confirm_action_effect(id)
+            && busy
+            && !is_confirm
+        {
+            Arc::make_mut(&mut style).color = Some(model.palette.muted.as_rgba_array());
+        }
+        let widget_paint = if self.nodes.has_widget_visuals() {
+            self.nodes
+                .widget_visual(id)
+                .and_then(|visual| self.local_widget_paint(id, visual, style.as_ref()))
         } else {
             None
         };
-        if let Some((busy, danger, is_confirm)) = self.confirm_action_effect(id) {
-            if busy && !is_confirm {
-                Arc::make_mut(&mut style).color = Some(model.palette.muted.as_rgba_array());
-            }
-            if is_confirm
-                && let Some(StandardVisual::Button { kind, loading, .. }) = standard_visual.as_mut()
-            {
-                *kind = if danger {
-                    nana_ui_core::ButtonKind::Danger
-                } else {
-                    nana_ui_core::ButtonKind::Primary
-                };
-                *loading = busy;
-            }
-        }
-        let mut component_geometry = standard_visual
-            .as_ref()
-            .and_then(|visual| self.local_component_geometry(id, visual, style.as_ref()))
-            .map(Box::new);
-        if self.caret_hidden(id)
-            && let Some(crate::ComponentGeometry::TextInput {
-                caret,
-                additional_carets,
-                ..
-            }) = component_geometry.as_deref_mut()
-        {
-            // The hidden half of the blink. The caret's geometry stays
-            // where the IME and scrolling read it.
-            *caret = None;
-            additional_carets.clear();
-        }
-        let standard_visual_foreground = standard_visual
-            .as_ref()
-            .map(|visual| self.standard_visual_foreground(model, visual, style.color));
         // The style's painter is already in hand; only a tree someone set a
         // painter on apart from the style pays a lookup.
         let painter = if self.painter_overrides.is_empty() {
@@ -241,7 +216,9 @@ impl UiWorld {
         {
             let layout = Arc::make_mut(&mut source_style.layout);
             layout.padding = None;
-            layout.logical_padding = Default::default();
+            if !layout.logical_edges.is_shared_default() {
+                layout.logical_edges.padding = Default::default();
+            }
             layout.padding_top = Some(nana_ui_core::LengthSpec::Px(padding.top));
             layout.padding_right = Some(nana_ui_core::LengthSpec::Px(padding.right));
             layout.padding_bottom = Some(nana_ui_core::LengthSpec::Px(padding.bottom));
@@ -294,18 +271,12 @@ impl UiWorld {
             self.parent_triggered_overlay_id(id)
                 .map(crate::VisualParent::Overlay)
         };
-        let overlay_visual_parent = match standard_visual.as_ref() {
-            Some(StandardVisual::MenuSurface {
-                overlay: Some(overlay),
-                ..
-            }) => Some(self.resolve_overlay_mount(id, overlay.overlay_mount)),
-            Some(StandardVisual::Select { overlay_mount, .. }) => {
-                Some(self.resolve_overlay_mount(id, *overlay_mount))
-            }
-            _ => None,
-        };
+        let overlay_visual_parent = self
+            .widget_visual_ref(id)
+            .and_then(crate::WidgetVisualHandle::overlay_mount)
+            .map(|mount| self.resolve_overlay_mount(id, mount));
         Some(ExtractedNode {
-            layout_result: self.local_layout_result(id).cloned(),
+            extracted_layout: self.extracted_layout(id),
             id,
             kind,
             parent: hierarchy_parent,
@@ -331,7 +302,10 @@ impl UiWorld {
             // Not gated on `has_text`: an editor's displayed value is built
             // by its presentation, not held in `text`, and it is exactly the
             // node whose newlines must survive.
-            text_preserve_lines: if self.nodes.has_visuals() {
+            text_preserve_lines: if self.nodes.has_widget_visuals()
+                || self.nodes.has_text_inputs()
+                || self.nodes.rich_editor_marks(id).is_some()
+            {
                 self.text_preserves_lines(id)
             } else {
                 preserve_newlines
@@ -353,9 +327,7 @@ impl UiWorld {
                 }
                 marks
             }),
-            standard_visual,
-            component_geometry,
-            standard_visual_foreground,
+            widget_paint,
             chrome_radii: nana_ui_core::ChromeRadii::resolve(
                 self.style_model.metrics,
                 self.theme.recipes().shape(),
@@ -454,7 +426,7 @@ impl UiWorld {
     /// `id`'s card surface painter's output for a card `surface` divided
     /// into `sections`, recorded only when the painter's key, the card's size
     /// or sections, or the theme moved since the last geometry.
-    pub(super) fn modal_surface_paint(
+    pub(crate) fn modal_surface_paint(
         &self,
         id: StableNodeId,
         painter: &crate::NodePainter,
@@ -550,7 +522,7 @@ impl UiWorld {
     /// built-in interaction paint reads.
     pub(super) fn paint_state(&self, id: StableNodeId) -> crate::PaintState {
         let record = self.record(id);
-        let accessibility = &record.accessibility;
+        let accessibility = self.nodes.accessibility(id);
         crate::PaintState {
             hovered: self
                 .input
@@ -614,10 +586,7 @@ impl UiWorld {
         {
             return Vec::new();
         }
-        if matches!(
-            self.nodes.visual(id),
-            Some(StandardVisual::TextInput { secure: true, .. })
-        ) {
+        if self.text_input_is_secure(id) {
             return Vec::new();
         }
         // 括号配对着色：与语法高亮同一字形管线（ExtractedTextSpan →
@@ -630,10 +599,8 @@ impl UiWorld {
         // 与 shape 路径同门（`text_input_presentation_source` 仅多行态构
         // 视图）：单行输入不构折叠/inlay 显示视图，两条路径对单行喂入
         // 的 inlay 一致不呈现。
-        let display_view = if self
-            .nodes
-            .get(id)
-            .is_some_and(|node| node.accessibility.multiline)
+        let display_view = if self.nodes.contains(id)
+            && self.nodes.accessibility(id).multiline
             && (self.nodes.text_inlays(id).is_some()
                 || self
                     .nodes
@@ -757,10 +724,11 @@ impl UiWorld {
             // whose menu no longer lands where its record has it.
             if self.only_moved_since(id, epoch)
                 && let Some(held) = previous(id)
-                && !held
-                    .standard_visual
-                    .as_ref()
-                    .is_some_and(StandardVisual::geometry_reads_page)
+                && (!self.nodes.has_widget_visuals()
+                    || !self
+                        .nodes
+                        .widget_visual(id)
+                        .is_some_and(crate::WidgetVisualHandle::geometry_reads_page))
                 && self.keeps_select_menu(id, held)
             {
                 moved.extend(self.extract_move_memo(id, held, &mut memo));
@@ -778,7 +746,12 @@ impl UiWorld {
         #[cfg(any(test, feature = "layout-verify"))]
         self.check_records_kept_under_moves(ids, &previous);
         // Marks from here on say why the next call's nodes are dirty.
-        self.render_epoch.set(epoch.wrapping_add(1));
+        let next_epoch = epoch.wrapping_add(1);
+        self.render_epoch.set(if next_epoch == u32::MAX {
+            0
+        } else {
+            next_epoch
+        });
         (extracted, moved)
     }
 
@@ -807,7 +780,8 @@ impl UiWorld {
             let (Some(held), Some(record)) = (previous(root), self.nodes.get(root)) else {
                 continue;
             };
-            if held.local_layout == record.local_layout && held.layout_frame == record.layout_frame
+            if held.local_layout == record.local_layout
+                && held.layout_frame == record.layout_frame()
             {
                 continue;
             }
@@ -837,9 +811,9 @@ impl UiWorld {
     /// Whether the only mark on `id` since `epoch` began is a move above it
     /// asking whether its open menu still lands where its record has it
     /// (`settle_layout_moves`).
-    fn only_room_asked_since(&self, id: StableNodeId, epoch: u64) -> bool {
+    fn only_room_asked_since(&self, id: StableNodeId, epoch: u32) -> bool {
         self.nodes.get(id).is_some_and(|node| {
-            node.render_room_epoch == epoch
+            self.nodes.render_room_epoch(id) == epoch
                 && node.render_full_epoch != epoch
                 && node.render_moved_epoch != epoch
         })
@@ -851,21 +825,33 @@ impl UiWorld {
     /// in the field's coordinates ([`Self::local_select_menu_surface`]); the
     /// rest of the record is the field's own. Any other record keeps.
     fn keeps_select_menu(&self, id: StableNodeId, held: &ExtractedNode) -> bool {
-        let Some(StandardVisual::Select { opened: true, .. }) = held.standard_visual.as_ref()
-        else {
+        let Some(paint) = held.widget_paint.as_deref() else {
             return true;
         };
-        let Some(crate::ComponentGeometry::Select {
-            menu: Some(menu), ..
-        }) = held.component_geometry.as_deref()
+        let Some(overlay) = paint.floating_overlay.as_ref() else {
+            return true;
+        };
+        if overlay.kind != crate::WidgetFloatingOverlayKind::AttachedPopup {
+            return true;
+        }
+        let Some(surface) = paint
+            .ops
+            .iter()
+            .find_map(|tagged| {
+                (tagged.slot == crate::SELECT_MENU_SURFACE_SLOT).then_some(&tagged.op)
+            })
+            .and_then(|op| match op {
+                crate::WidgetPaintOp::Quad(quad) => Some(quad.rect),
+                _ => None,
+            })
         else {
             return false;
         };
         self.local_select_menu_surface(id)
-            .is_some_and(|surface| same_box(surface, menu.surface))
+            .is_some_and(|current| same_box(current, surface))
     }
 
-    fn only_moved_since(&self, id: StableNodeId, epoch: u64) -> bool {
+    fn only_moved_since(&self, id: StableNodeId, epoch: u32) -> bool {
         self.nodes
             .get(id)
             .is_some_and(|node| node.render_moved_epoch == epoch && node.render_full_epoch != epoch)
@@ -888,15 +874,15 @@ impl UiWorld {
             id,
             layout: self.record_layout_box(record),
             local_layout: record.local_layout,
-            layout_frame: record.layout_frame,
-            layout_result: self.local_layout_result(id).cloned(),
+            layout_frame: record.layout_frame(),
+            extracted_layout: self.extracted_layout(id),
         };
         #[cfg(any(test, feature = "layout-verify"))]
         {
             let mut reused = held.clone();
             reused.local_layout = moved.local_layout;
             reused.layout_frame = moved.layout_frame;
-            reused.layout_result = moved.layout_result.clone();
+            reused.extracted_layout = moved.extracted_layout;
             let mut full = self
                 .extract_node_memo(id, &mut AncestorMemo::default())
                 .expect("a live node extracts");
@@ -926,7 +912,7 @@ const KEPT_RECORD_AUDIT_LIMIT: usize = 1024;
 #[cfg(any(test, feature = "layout-verify"))]
 fn extracted_fields_differ(a: &ExtractedNode, b: &ExtractedNode) -> Vec<&'static str> {
     let ExtractedNode {
-        layout_result,
+        extracted_layout,
         id,
         kind,
         parent,
@@ -950,9 +936,7 @@ fn extracted_fields_differ(a: &ExtractedNode, b: &ExtractedNode) -> Vec<&'static
         rich_text,
         rich_editor,
         glyph_presentation,
-        standard_visual,
-        component_geometry,
-        standard_visual_foreground,
+        widget_paint,
         chrome_radii,
         custom_render,
         drop_hover,
@@ -969,7 +953,7 @@ fn extracted_fields_differ(a: &ExtractedNode, b: &ExtractedNode) -> Vec<&'static
             differ.push(name);
         }
     };
-    check("layout_result", *layout_result == b.layout_result);
+    check("extracted_layout", *extracted_layout == b.extracted_layout);
     check("id", *id == b.id);
     check("kind", *kind == b.kind);
     check("parent", *parent == b.parent);
@@ -1002,15 +986,7 @@ fn extracted_fields_differ(a: &ExtractedNode, b: &ExtractedNode) -> Vec<&'static
         "glyph_presentation",
         *glyph_presentation == b.glyph_presentation,
     );
-    check("standard_visual", *standard_visual == b.standard_visual);
-    check(
-        "component_geometry",
-        *component_geometry == b.component_geometry,
-    );
-    check(
-        "standard_visual_foreground",
-        *standard_visual_foreground == b.standard_visual_foreground,
-    );
+    check("widget_paint", *widget_paint == b.widget_paint);
     check("chrome_radii", *chrome_radii == b.chrome_radii);
     check("custom_render", *custom_render == b.custom_render);
     check("drop_hover", *drop_hover == b.drop_hover);
@@ -1038,130 +1014,6 @@ impl UiWorld {
                     .filter(|node| node.style.visible)
             })
             .collect()
-    }
-}
-
-impl UiWorld {
-    /// Which colour a `StandardVisual` paints its own foreground with.
-    ///
-    /// This used to be a 25-arm `match` that named a palette field per visual.
-    /// The arms are still here, but they now answer *which component family
-    /// this is*; the family's role is the installed theme's
-    /// [`ComponentRecipe`](nana_ui_core::ComponentRecipe). The decision moved,
-    /// the dispatch did not — and because it resolves here, per extract, an
-    /// installed recipe reaches live nodes without reprojecting anything.
-    ///
-    /// `authored` is the node's own resolved colour. Four families let it win:
-    /// an icon, a button, a field and a selection row all take a caller's
-    /// explicit colour ahead of the recipe. The rest paint chrome the caller
-    /// does not address.
-    fn standard_visual_foreground(
-        &self,
-        model: StyleModelRef,
-        visual: &StandardVisual,
-        authored: Option<[f32; 4]>,
-    ) -> [f32; 4] {
-        use nana_ui_core::ComponentRecipeId;
-
-        let recipes = self.theme.recipes();
-        let role = |family: ComponentRecipeId, checked: bool| recipes.foreground(family, checked);
-        let paint = |role| model.color(role).as_rgba_array();
-
-        match visual {
-            // Families that defer to an authored colour when the caller set one.
-            StandardVisual::Icon { .. } => {
-                authored.unwrap_or_else(|| paint(role(ComponentRecipeId::Icon, false)))
-            }
-            StandardVisual::Button { .. } => {
-                authored.unwrap_or_else(|| paint(role(ComponentRecipeId::Button, false)))
-            }
-            StandardVisual::TextInput { .. } => {
-                authored.unwrap_or_else(|| paint(role(ComponentRecipeId::TextInput, false)))
-            }
-            StandardVisual::SelectionOption { .. } => {
-                authored.unwrap_or_else(|| paint(role(ComponentRecipeId::Selection, false)))
-            }
-
-            // Indicator families: the recipe carries an on-state role.
-            StandardVisual::Checkbox {
-                checked,
-                indeterminate,
-                ..
-            } => paint(role(
-                ComponentRecipeId::Checkbox,
-                *checked || *indeterminate,
-            )),
-            StandardVisual::Switch { checked, .. } => {
-                paint(role(ComponentRecipeId::Switch, *checked))
-            }
-
-            // Status-driven surfaces read the tone table, not a family.
-            StandardVisual::Toast { tone, .. } => paint(recipes.status().role(tone.status())),
-            StandardVisual::LevelMeter { tone, .. } => paint(recipes.status().role(*tone)),
-
-            StandardVisual::ModalFrame { .. } => paint(role(ComponentRecipeId::Overlay, false)),
-            StandardVisual::Scrollbar { .. } => paint(role(ComponentRecipeId::Scrollbar, false)),
-            StandardVisual::Range { .. } => paint(role(ComponentRecipeId::Range, false)),
-            StandardVisual::Card { .. } => paint(role(ComponentRecipeId::Card, false)),
-            StandardVisual::ListItem { .. } => paint(role(ComponentRecipeId::ListItem, false)),
-            // A bar may name its own fill; a still indeterminate one keeps
-            // only a trace of it, so the full track reads as no amount.
-            StandardVisual::Progress { mode, fill, .. } => {
-                let fill = fill.unwrap_or_else(|| role(ComponentRecipeId::Indicator, false));
-                match mode {
-                    crate::ProgressMode::Still => nana_ui_core::SemanticColorMix::alpha(
-                        fill,
-                        crate::feedback::PROGRESS_STILL_ALPHA,
-                    )
-                    .resolve(model)
-                    .as_rgba_array(),
-                    _ => paint(fill),
-                }
-            }
-            StandardVisual::StatusBadge { .. }
-            | StandardVisual::ValidationMessage { .. }
-            | StandardVisual::EmptyState { .. }
-            | StandardVisual::PathText { .. }
-            | StandardVisual::LabeledValue { .. }
-            | StandardVisual::Spinner { .. }
-            | StandardVisual::FormField { .. } => paint(role(ComponentRecipeId::Indicator, false)),
-            StandardVisual::Select { .. }
-            | StandardVisual::MenuSurface { .. }
-            | StandardVisual::ActionMenuItem { .. }
-            | StandardVisual::TreeView { .. }
-            | StandardVisual::CommandPalette { .. } => paint(role(ComponentRecipeId::Menu, false)),
-
-            // A QR code's ink is not a theme colour. The quiet zone has to stay
-            // scannable, so it is black on white whatever the theme says.
-            StandardVisual::QrCode { .. } => [0.0, 0.0, 0.0, 1.0],
-
-            StandardVisual::XYPad { .. } => paint(role(ComponentRecipeId::Content, false)),
-            #[cfg(feature = "calendar")]
-            StandardVisual::CalendarHeatmap { .. } => {
-                paint(role(ComponentRecipeId::Content, false))
-            }
-            #[cfg(feature = "charts")]
-            StandardVisual::Chart { .. } | StandardVisual::ChartTooltip { .. } => {
-                paint(role(ComponentRecipeId::Content, false))
-            }
-            #[cfg(feature = "controls")]
-            StandardVisual::ReorderList { .. } => paint(role(ComponentRecipeId::Content, false)),
-            #[cfg(feature = "rich-text")]
-            StandardVisual::NativeMarkdown { .. } => paint(role(ComponentRecipeId::Content, false)),
-            #[cfg(feature = "rich-text")]
-            StandardVisual::SelectableRichText { .. } => {
-                paint(role(ComponentRecipeId::Content, false))
-            }
-            #[cfg(feature = "graph-canvas")]
-            StandardVisual::GraphCanvas { .. } => paint(role(ComponentRecipeId::Content, false)),
-            #[cfg(feature = "graph-canvas")]
-            StandardVisual::GraphMinimap { .. } => paint(role(ComponentRecipeId::Content, false)),
-            #[cfg(feature = "image-viewer")]
-            StandardVisual::ImageViewer { .. } => paint(role(ComponentRecipeId::Content, false)),
-            StandardVisual::KeyCaptureLayer { .. } | StandardVisual::KeymapLayer => {
-                paint(role(ComponentRecipeId::Content, false))
-            }
-        }
     }
 }
 

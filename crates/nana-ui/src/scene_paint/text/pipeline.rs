@@ -334,7 +334,8 @@ fn shade(input: VsOut) -> TextShade {
 
 /// The text program: the shared stages, then the entry point for targets
 /// that blend one output or, with `dual_source`, the one for subpixel text.
-fn text_shader(dual_source: bool) -> String {
+#[cfg(any(test, feature = "runtime-wgsl"))]
+pub(in crate::scene_paint) fn text_shader(dual_source: bool) -> String {
     let (prelude, fragment) = if dual_source {
         ("enable dual_source_blending;\n", TEXT_FRAGMENT_DUAL_SOURCE)
     } else {
@@ -350,11 +351,32 @@ fn text_shader(dual_source: bool) -> String {
     .concat()
 }
 
-/// [`text_shader`] as a program, whose pipelines load the precompiled stages
+/// Text shader as a program, whose pipelines load the precompiled stages
 /// when `precompiled` (the device runs them) and they are current.
 fn text_program(dual_source: bool, precompiled: bool) -> super::super::wgsl::Program {
-    let program =
-        super::super::wgsl::Program::new("nana-ui.scene.text.shader", text_shader(dual_source));
+    let program = if dual_source {
+        super::super::wgsl::program_concat!(
+            "nana-ui.scene.text.shader",
+            [
+                "enable dual_source_blending;\n",
+                super::super::wgsl::COLOR,
+                super::super::wgsl::TEXT_ATLAS,
+                TEXT_STAGES,
+                TEXT_FRAGMENT_DUAL_SOURCE,
+            ]
+        )
+    } else {
+        super::super::wgsl::program_concat!(
+            "nana-ui.scene.text.shader",
+            [
+                "",
+                super::super::wgsl::COLOR,
+                super::super::wgsl::TEXT_ATLAS,
+                TEXT_STAGES,
+                TEXT_FRAGMENT,
+            ]
+        )
+    };
     #[cfg(target_os = "windows")]
     let program = program.precompiled(
         if dual_source {
@@ -838,6 +860,7 @@ impl TextGpu {
         &mut self,
         device: &wgpu::Device,
         queue: &wgpu::Queue,
+        #[cfg_attr(not(feature = "runtime-wgsl"), allow(unused_variables))]
         atlas: &GlyphAtlasManager,
         work: Option<&GpuWorkSink>,
     ) {
@@ -913,24 +936,32 @@ impl TextGpu {
             let sources = materials
                 .each_ref()
                 .map(|m| std::sync::Arc::clone(m.program()));
-            let layouts = [
-                self.globals_layout.clone(),
-                atlas.layout().clone(),
-                self.material_device.text_layout.clone(),
-            ];
-            let (worker, format, owned) = (device.clone(), self.format, sources.clone());
-            let built = self.material_device.pipeline((if dual{13}else{12},format,1,{use std::hash::{Hash,Hasher};let mut hash=std::collections::hash_map::DefaultHasher::new();programs.hash(&mut hash);hash.finish()},0),&sources.iter().collect::<Vec<_>>(),device,self.material_waker.as_ref(),move || {
-                let device = worker;
-                let native=text_shader(dual);
-                let mut source=native.replace("if duration > 0.0 {", "if duration > 0.0 && text_glyph_fx[fx+12u]==0u {");
-                for (i,m) in owned.iter().enumerate() {
-                    source.push_str(&super::super::material::program_source_at(m, ["nm_text_","nm_enter_","nm_exit_"][i],2,i as u32*4)?);
-                }
-                source=source.replace("out.color = input.color.rgb;", "let nm = nm_text_material(nm_text_MaterialInput(input.material_position,input.glyph_uv,input.glyph_size,input.glyph_uv,vec4<f32>(input.color.rgb,1.),1.,input.text_position,vec2<f32>(1.))); out.color = nm.rgb;")
-                    .replace("input.color.a * corrected * clip_cover", "input.color.a * clamp(nm.a,0.,1.) * corrected * clip_cover")
-                    .replace("* (input.color.a * clip_cover)", "* (input.color.a * clamp(nm.a,0.,1.) * clip_cover)")
-                    .replace("fn shade(input: VsOut)", "fn native_shade(input: VsOut)");
-                source.push_str(r#"
+            let key = {
+                use std::hash::{Hash, Hasher};
+                let mut hash = std::collections::hash_map::DefaultHasher::new();
+                programs.hash(&mut hash);
+                hash.finish()
+            };
+            #[cfg(feature = "runtime-wgsl")]
+            let built = {
+                let layouts = [
+                    self.globals_layout.clone(),
+                    atlas.layout().clone(),
+                    self.material_device.text_layout.clone(),
+                ];
+                let (worker, format, owned) = (device.clone(), self.format, sources.clone());
+                self.material_device.pipeline((if dual{13}else{12},format,1,key,0),&sources.iter().collect::<Vec<_>>(),device,self.material_waker.as_ref(),move || {
+                    let device = worker;
+                    let native=text_shader(dual);
+                    let mut source=native.replace("if duration > 0.0 {", "if duration > 0.0 && text_glyph_fx[fx+12u]==0u {");
+                    for (i,m) in owned.iter().enumerate() {
+                        source.push_str(&super::super::material::program_source_at(m, ["nm_text_","nm_enter_","nm_exit_"][i],2,i as u32*4)?);
+                    }
+                    source=source.replace("out.color = input.color.rgb;", "let nm = nm_text_material(nm_text_MaterialInput(input.material_position,input.glyph_uv,input.glyph_size,input.glyph_uv,vec4<f32>(input.color.rgb,1.),1.,input.text_position,vec2<f32>(1.))); out.color = nm.rgb;")
+                        .replace("input.color.a * corrected * clip_cover", "input.color.a * clamp(nm.a,0.,1.) * corrected * clip_cover")
+                        .replace("* (input.color.a * clip_cover)", "* (input.color.a * clamp(nm.a,0.,1.) * clip_cover)")
+                        .replace("fn shade(input: VsOut)", "fn native_shade(input: VsOut)");
+                    source.push_str(r#"
 fn shade(input:VsOut)->TextShade {
     var result=native_shade(input);
     let fx=input.transition.x;
@@ -952,13 +983,22 @@ fn shade(input:VsOut)->TextShade {
     return result;
 }
 "#);
-                let [globals, atlas, materials] = &layouts;
-                let layout=device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {label:Some("text color and transition materials"),bind_group_layouts:&[Some(globals),Some(atlas),Some(materials)],immediate_size:0});
-                let blend=if dual {let c=wgpu::BlendComponent{src_factor:wgpu::BlendFactor::Src1,dst_factor:wgpu::BlendFactor::OneMinusSrc1,operation:wgpu::BlendOperation::Add};wgpu::BlendState{color:c,alpha:c}}else{wgpu::BlendState::ALPHA_BLENDING};
-                let program =
-                    super::super::wgsl::Program::material("nana-ui.scene.text.shader", source);
-                Some(build_pipeline(&device,&layout,format,&program,blend))
-            });
+                    let [globals, atlas, materials] = &layouts;
+                    let layout=device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {label:Some("text color and transition materials"),bind_group_layouts:&[Some(globals),Some(atlas),Some(materials)],immediate_size:0});
+                    let blend=if dual {let c=wgpu::BlendComponent{src_factor:wgpu::BlendFactor::Src1,dst_factor:wgpu::BlendFactor::OneMinusSrc1,operation:wgpu::BlendOperation::Add};wgpu::BlendState{color:c,alpha:c}}else{wgpu::BlendState::ALPHA_BLENDING};
+                    let program =
+                        super::super::wgsl::Program::material("nana-ui.scene.text.shader", source);
+                    Some(build_pipeline(&device,&layout,format,&program,blend))
+                })
+            };
+            #[cfg(not(feature = "runtime-wgsl"))]
+            let built = self.material_device.pipeline(
+                (if dual { 13 } else { 12 }, self.format, 1, key, 0),
+                &sources.iter().collect::<Vec<_>>(),
+                device,
+                self.material_waker.as_ref(),
+                || None,
+            );
             // Still compiling: the glyphs draw natively until it is ready.
             if let super::super::material::MaterialPipeline::Ready(pipeline) = built {
                 self.material_pipelines.insert((programs, dual), pipeline);
@@ -1475,40 +1515,46 @@ fn build_pipeline(
     program: &super::super::wgsl::Program,
     blend: wgpu::BlendState,
 ) -> wgpu::RenderPipeline {
-    program.pipeline(device, "vs_main", "fs_main", &[], |vertex, fragment, _| {
-        device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-            label: Some("nana-ui.scene.text.pipeline"),
-            layout: Some(layout),
-            vertex: wgpu::VertexState {
-                module: vertex,
-                entry_point: Some("vs_main"),
-                buffers: &[Some(wgpu::VertexBufferLayout {
-                    array_stride: INDEX_BYTES,
-                    step_mode: wgpu::VertexStepMode::Instance,
-                    attributes: &wgpu::vertex_attr_array!(0 => Uint32),
-                })],
-                compilation_options: wgpu::PipelineCompilationOptions::default(),
-            },
-            fragment: Some(wgpu::FragmentState {
-                module: fragment,
-                entry_point: Some("fs_main"),
-                targets: &[Some(wgpu::ColorTargetState {
-                    format,
-                    blend: Some(blend),
-                    write_mask: wgpu::ColorWrites::ALL,
-                })],
-                compilation_options: wgpu::PipelineCompilationOptions::default(),
-            }),
-            primitive: wgpu::PrimitiveState {
-                topology: wgpu::PrimitiveTopology::TriangleStrip,
-                ..Default::default()
-            },
-            depth_stencil: None,
-            multisample: wgpu::MultisampleState::default(),
-            multiview_mask: None,
-            cache: None,
-        })
-    })
+    program.pipeline(
+        device,
+        "vs_main",
+        "fs_main",
+        &[],
+        |vertex, vs_ep, fragment, fs_ep, _| {
+            device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+                label: Some("nana-ui.scene.text.pipeline"),
+                layout: Some(layout),
+                vertex: wgpu::VertexState {
+                    module: vertex,
+                    entry_point: Some(vs_ep),
+                    buffers: &[Some(wgpu::VertexBufferLayout {
+                        array_stride: INDEX_BYTES,
+                        step_mode: wgpu::VertexStepMode::Instance,
+                        attributes: &wgpu::vertex_attr_array!(0 => Uint32),
+                    })],
+                    compilation_options: wgpu::PipelineCompilationOptions::default(),
+                },
+                fragment: Some(wgpu::FragmentState {
+                    module: fragment,
+                    entry_point: Some(fs_ep),
+                    targets: &[Some(wgpu::ColorTargetState {
+                        format,
+                        blend: Some(blend),
+                        write_mask: wgpu::ColorWrites::ALL,
+                    })],
+                    compilation_options: wgpu::PipelineCompilationOptions::default(),
+                }),
+                primitive: wgpu::PrimitiveState {
+                    topology: wgpu::PrimitiveTopology::TriangleStrip,
+                    ..Default::default()
+                },
+                depth_stencil: None,
+                multisample: wgpu::MultisampleState::default(),
+                multiview_mask: None,
+                cache: None,
+            })
+        },
+    )
 }
 
 const INSTANCE_BYTES: u64 = std::mem::size_of::<GlyphInstance>() as u64;

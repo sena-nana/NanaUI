@@ -36,8 +36,12 @@ fn container(display: DisplaySpec, direction: Option<FlexDirection>) -> LayoutSt
         display: Some(display),
         direction,
         width: Some(LengthSpec::Px(SIDE as f32)),
-        grid_columns: (display == DisplaySpec::Grid)
-            .then(|| vec![GridTrack::Px(CELL), GridTrack::Px(CELL)]),
+        grid: nana_ui_core::GridStyle {
+            columns: (display == DisplaySpec::Grid)
+                .then(|| vec![GridTrack::Px(CELL), GridTrack::Px(CELL)]),
+            ..Default::default()
+        }
+        .into(),
         ..LayoutStyle::default()
     }
 }

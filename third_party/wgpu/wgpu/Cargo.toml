@@ -71,10 +71,16 @@ fragile-send-sync-non-atomic-wasm = [
 gles = ["wgpu-core?/gles"]
 glsl = [
     "naga/glsl-in",
+    "naga-translation",
     "wgpu-core?/glsl",
 ]
 metal = ["wgpu-core?/metal"]
-naga-ir = ["dep:naga"]
+naga-ir = [
+    "dep:naga",
+    "naga/deserialize",
+    "naga-translation",
+]
+naga-translation = ["wgpu-core?/naga-translation"]
 noop = [
     "wgpu-core/noop",
     "dep:wgpu-hal",
@@ -87,6 +93,7 @@ serde = [
 ]
 spirv = [
     "naga/spv-in",
+    "naga-translation",
     "wgpu-core?/spirv",
 ]
 static-dxc = ["wgpu-core?/static-dxc"]
@@ -135,7 +142,10 @@ webgpu = [
     "web-sys/WorkerGlobalScope",
     "web-sys/WorkerNavigator",
 ]
-wgsl = ["wgpu-core?/wgsl"]
+wgsl = [
+    "naga-translation",
+    "wgpu-core?/wgsl",
+]
 
 [lib]
 name = "wgpu"
@@ -260,7 +270,6 @@ path = "../wgpu-core"
 version = "30.0.0"
 features = [
     "renderdoc",
-    "wgsl",
     "portable-atomic",
 ]
 

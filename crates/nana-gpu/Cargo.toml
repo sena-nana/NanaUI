@@ -37,7 +37,7 @@ windows = { version = "0.62", optional = true, features = [
 ] }
 
 [dev-dependencies]
-wgpu = { workspace = true, features = ["dx12", "gles", "metal", "vulkan"] }
+wgpu = { workspace = true, features = ["dx12", "gles", "metal", "vulkan", "wgsl"] }
 pollster.workspace = true
 
 # The native-export tests open the exported handles on a D3D11 device.

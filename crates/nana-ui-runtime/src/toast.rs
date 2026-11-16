@@ -300,7 +300,7 @@ impl Toast {
     }
 
     fn project_assembled(&self, id: StableNodeId, world: &UiWorld, mutations: &mut MutationQueue) {
-        let visual = crate::StandardVisual::Toast {
+        let visual = ToastVisual {
             title: Arc::clone(&self.title),
             description: self.resolved_description(),
             tone: self.tone,
@@ -308,8 +308,8 @@ impl Toast {
             assembled: true,
             icon: self.icon,
         };
-        if world.standard_visual(id) != Some(visual.clone()) {
-            mutations.set_standard_visual(id, Some(visual));
+        if world.widget_visual_as::<ToastVisual>(id) != Some(&visual) {
+            mutations.set_widget_visual(id, Some(visual));
         }
         // The copy is child text. A toast assembled after it was shown bare
         // drops the title it painted itself.
@@ -405,7 +405,9 @@ fn copy_style(text: RecipeText, role: SemanticColorRole, lines: u16) -> NodeStyl
     layout.font_size = Some(text.size);
     layout.font_weight = text.weight;
     layout.line_height = Some(LineHeightSpec::Absolute(line_box(text.size)));
-    layout.line_clamp = (lines > 0).then_some(lines);
+    if lines > 0 {
+        layout.text_ext.line_clamp = Some(lines);
+    }
     style
 }
 
@@ -585,7 +587,7 @@ impl AppContext {
             layout.flex_shrink = Some(0.0);
             layout.min_width = Some(LengthSpec::Px(percent_width));
             // Tabular digits where the font has them: every number as wide.
-            layout.font_features = Some(vec![FontFeatureSetting::new(*b"tnum", 1)]);
+            layout.text_ext.font_features = Some(vec![FontFeatureSetting::new(*b"tnum", 1)]);
             layout.hidden = percent.is_none();
             text.style = style;
         })?;
@@ -688,6 +690,8 @@ impl AppContext {
 }
 
 impl ComponentView for Toast {
+    const TYPE_ID: Option<&'static str> = Some(crate::component_descriptors::TOAST.type_id);
+
     const BEHAVIOR: crate::TypeBehavior<Self> = crate::TypeBehavior {
         hooks: Some(|hooks| {
             crate::framework::routes::toast_stack(hooks);
@@ -744,7 +748,7 @@ impl ComponentView for Toast {
             self.project_assembled(id, world, mutations);
             return;
         }
-        let visual = crate::StandardVisual::Toast {
+        let visual = ToastVisual {
             title: Arc::clone(&self.title),
             description: self.resolved_description(),
             tone: self.tone,
@@ -752,8 +756,8 @@ impl ComponentView for Toast {
             assembled: false,
             icon: None,
         };
-        if world.standard_visual(id) != Some(visual.clone()) {
-            mutations.set_standard_visual(id, Some(visual));
+        if world.widget_visual_as::<ToastVisual>(id) != Some(&visual) {
+            mutations.set_widget_visual(id, Some(visual));
         }
         if world.text(id) != Some(self.title.as_ref()) {
             mutations.set_text(
@@ -780,6 +784,263 @@ impl ComponentView for Toast {
                 ..AccessibilityState::default()
             },
         );
+    }
+}
+
+/// Visual state for [`Toast`] nodes (bare and assembled).
+#[derive(Debug, Clone, PartialEq)]
+pub struct ToastVisual {
+    pub title: Arc<str>,
+    pub description: Option<Arc<str>>,
+    pub tone: ToastTone,
+    pub dismissible: bool,
+    pub assembled: bool,
+    pub icon: Option<Icon>,
+}
+
+impl ToastVisual {
+    fn inputs(
+        &self,
+        id: StableNodeId,
+        world: &UiWorld,
+    ) -> crate::layout_engine::parts::ToastInputs {
+        let recipe = world.theme().recipes().toast();
+        let bare = !self.assembled;
+        let inputs = crate::layout_engine::parts::toast_inputs(
+            recipe,
+            recipe.control_size.height_in(world.theme_metrics()),
+            bare && self.dismissible,
+            bare && self.description.is_some(),
+        );
+        crate::layout_engine::parts::ToastInputs {
+            reverse: world.right_to_left(id),
+            title: inputs.title
+                + if bare {
+                    world.toast_title_wrap(id)
+                } else {
+                    0.0
+                },
+            ..inputs
+        }
+    }
+}
+
+impl crate::WidgetVisual for ToastVisual {
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+
+    fn dyn_eq(&self, other: &dyn std::any::Any) -> bool {
+        other.downcast_ref::<Self>().is_some_and(|rhs| self == rhs)
+    }
+
+    fn reads_toast_recipe(&self) -> bool {
+        true
+    }
+
+    fn content_layout_changed(&self, prev: Option<&dyn std::any::Any>) -> bool {
+        let Some(old) = prev.and_then(|any| any.downcast_ref::<Self>()) else {
+            return false;
+        };
+        (self.description.is_some(), self.dismissible)
+            != (old.description.is_some(), old.dismissible)
+    }
+
+    fn invalidates_node_text_constraint(&self) -> bool {
+        true
+    }
+
+    fn clamped_node_text_lines(&self) -> Option<usize> {
+        (!self.assembled).then_some(2)
+    }
+
+    fn intrinsic_chrome_content(
+        &self,
+        id: StableNodeId,
+        world: &UiWorld,
+    ) -> crate::WidgetVisualContent {
+        if self.assembled {
+            return crate::WidgetVisualContent::default();
+        }
+        let border = world.resolved_border_edges(id);
+        let chrome = self
+            .inputs(id, world)
+            .chrome(crate::layout_engine::Size::new(
+                border.left + border.right,
+                border.top + border.bottom,
+            ));
+        crate::WidgetVisualContent {
+            width: chrome.width,
+            height: chrome.height,
+            text: 0.0,
+        }
+    }
+
+    fn solve_content_parts(
+        &self,
+        id: StableNodeId,
+        world: &UiWorld,
+        bounds: LayoutBox,
+        content: LayoutBox,
+        _writing: nana_ui_core::WritingContext,
+        _own_frame: bool,
+    ) -> Option<crate::layout_engine::parts::ContentParts> {
+        let inputs = self.inputs(id, world);
+        Some(if self.assembled {
+            inputs.assembled_mark(
+                content,
+                line_box(world.theme().recipes().toast().title.size),
+            )
+        } else {
+            crate::layout_engine::parts::toast_parts(bounds, inputs)
+        })
+    }
+
+    fn leading_parts(
+        &self,
+        id: StableNodeId,
+        world: &UiWorld,
+    ) -> Option<crate::layout_engine::parts::LeadingParts> {
+        self.assembled.then(|| {
+            let inputs = self.inputs(id, world);
+            crate::layout_engine::parts::LeadingParts {
+                axis: FlexDirection::Row,
+                extent: inputs.lead(),
+                breadth: inputs.mark.unwrap_or(0.0),
+                end: inputs.reverse,
+            }
+        })
+    }
+
+    fn node_text_max_width(
+        &self,
+        id: StableNodeId,
+        world: &UiWorld,
+        layout: LayoutBox,
+        _available_width: f32,
+        _available_height: f32,
+    ) -> Option<f32> {
+        if self.assembled {
+            return None;
+        }
+        let inputs = self.inputs(id, world);
+        crate::layout_engine::parts::part_bounds(
+            &crate::layout_engine::parts::toast_parts(layout, inputs),
+            crate::LayoutPartKind::TextContent,
+        )
+        .map(|part| part.width.max(0.0))
+    }
+
+    fn paint(&self, ctx: &crate::WidgetPaintCtx<'_>) -> crate::WidgetPaintOutput {
+        let recipe = ctx.theme.recipes().toast();
+        let elevation = recipe
+            .elevation
+            .map(|role| crate::ComponentElevation::from_shadow(ctx.theme.shadow(role)));
+        let parts = ctx.content_parts();
+        let part = |kind| crate::layout_engine::parts::part_bounds(&parts, kind);
+        let tone_color = ctx
+            .style_model
+            .color(ctx.theme.recipes().status().role(self.tone.status()))
+            .as_rgba_array();
+        let mut out = crate::WidgetPaintOutput {
+            suppress_root_surface: false,
+            owns_node_text: !self.assembled,
+            root_surface: Some(crate::WidgetRootSurface {
+                fallback_elevation: elevation,
+                ..crate::WidgetRootSurface::default()
+            }),
+            ..crate::WidgetPaintOutput::new()
+        };
+        if let Some(bounds) = part(crate::LayoutPartKind::LeadingContent) {
+            match recipe.indicator {
+                nana_ui_core::ToastIndicator::Glyph { glyphs, .. } => {
+                    let glyph = self.icon.unwrap_or_else(|| glyphs.get(self.tone));
+                    out.push(
+                        1,
+                        crate::WidgetPaintOp::Icon(crate::WidgetIcon {
+                            bounds,
+                            glyph: crate::WidgetGlyph::Icon(glyph),
+                            color: Some(tone_color),
+                            paint_color: None,
+                            align_to_adjacent_text: false,
+                        }),
+                    );
+                }
+                _ => {
+                    out.push(
+                        1,
+                        crate::WidgetPaintOp::Quad(crate::WidgetQuad {
+                            rect: bounds,
+                            fill: Some(tone_color),
+                            corner_radius: [999.0; 4],
+                            ..crate::WidgetQuad::default()
+                        }),
+                    );
+                }
+            }
+        }
+        if !self.assembled {
+            if let Some(bounds) = part(crate::LayoutPartKind::TextContent) {
+                out.push(
+                    2,
+                    crate::WidgetPaintOp::Text(crate::widget_visual::widget_text_region(
+                        &crate::ComponentTextRegion {
+                            bounds,
+                            content: crate::TextValue::from(Arc::clone(&self.title)),
+                            color: Some(
+                                ctx.style_model
+                                    .color(SemanticColorRole::Text)
+                                    .as_rgba_array(),
+                            ),
+                            font_size: recipe.title.size,
+                            font_weight: recipe.title.weight,
+                        },
+                        ctx,
+                        TextHorizontalAlignment::Start,
+                        true,
+                    )),
+                );
+            }
+            if let Some((description, bounds)) = self
+                .description
+                .as_ref()
+                .zip(part(crate::LayoutPartKind::Detail))
+            {
+                out.push(
+                    3,
+                    crate::WidgetPaintOp::Text(crate::widget_visual::widget_text_region(
+                        &crate::ComponentTextRegion {
+                            bounds,
+                            content: crate::TextValue::from(Arc::clone(description)),
+                            color: Some(ctx.secondary_text_color()),
+                            font_size: recipe.description.size,
+                            font_weight: recipe.description.weight,
+                        },
+                        ctx,
+                        TextHorizontalAlignment::Start,
+                        true,
+                    )),
+                );
+            }
+            if let Some(dismiss) = part(crate::LayoutPartKind::TrailingContent) {
+                out.push(
+                    4,
+                    crate::WidgetPaintOp::Text(crate::widget_visual::widget_text_region(
+                        &crate::ComponentTextRegion {
+                            bounds: dismiss,
+                            content: crate::TextValue::from("×"),
+                            color: ctx.style.color,
+                            font_size: 15.0,
+                            font_weight: None,
+                        },
+                        ctx,
+                        TextHorizontalAlignment::Center,
+                        false,
+                    )),
+                );
+            }
+        }
+        out
     }
 }
 
@@ -831,8 +1092,8 @@ mod tests {
             NodeKind::Element { tag } if tag == "toast"
         ));
         assert!(matches!(
-            context.world().standard_visual(id),
-            Some(crate::StandardVisual::Toast {
+            context.world().widget_visual_as::<ToastVisual>(id),
+            Some(ToastVisual {
                 tone: ToastTone::Success,
                 dismissible: false,
                 ..
@@ -1135,20 +1396,36 @@ mod tests {
             },
         );
         context.commit_mutations(mutations).unwrap();
-        let geometry = |context: &AppContext| match context.world().component_geometry(id) {
-            Some(crate::ComponentGeometry::Toast {
-                indicator,
-                glyph,
-                title,
-                elevation,
-                ..
-            }) => (
-                indicator,
-                glyph,
-                title.expect("a bare toast paints its title"),
-                elevation,
-            ),
-            other => panic!("toast geometry, got {other:?}"),
+        let geometry = |context: &AppContext| {
+            let paint = context.world().widget_paint(id).expect("toast paint");
+            let mark_op = paint
+                .ops
+                .iter()
+                .find(|tagged| tagged.slot == 1)
+                .map(|tagged| &tagged.op);
+            let (indicator, glyph) = match mark_op {
+                Some(crate::WidgetPaintOp::Icon(icon)) => match icon.glyph {
+                    crate::WidgetGlyph::Icon(g) => (Some(icon.bounds), Some(g)),
+                    crate::WidgetGlyph::Spinner { .. } => (Some(icon.bounds), None),
+                },
+                Some(crate::WidgetPaintOp::Quad(quad)) => (Some(quad.rect), None),
+                None => (None, None),
+                other => panic!("unexpected toast mark op: {other:?}"),
+            };
+            let title = match paint
+                .ops
+                .iter()
+                .find(|tagged| tagged.slot == 2)
+                .map(|tagged| &tagged.op)
+            {
+                Some(crate::WidgetPaintOp::Text(text)) => text.clone(),
+                other => panic!("a bare toast paints its title, got {other:?}"),
+            };
+            let elevation = paint
+                .root_surface
+                .as_ref()
+                .and_then(|surface| surface.fallback_elevation);
+            (indicator, glyph, title, elevation)
         };
         let (indicator, glyph, title, elevation) = geometry(&context);
         assert_eq!(indicator.map(|mark| mark.width), Some(6.0));
@@ -1366,8 +1643,8 @@ mod tests {
         }
         assert_eq!(context.world().text(id), Some(""), "no text of its own");
         assert!(matches!(
-            context.world().standard_visual(id),
-            Some(crate::StandardVisual::Toast {
+            context.world().widget_visual_as::<ToastVisual>(id),
+            Some(ToastVisual {
                 assembled: true,
                 ..
             })
@@ -1435,7 +1712,7 @@ mod tests {
         let style = context.world().node_style(parts.percent).unwrap();
         assert_eq!(style.foreground, Some(SemanticColorRole::Muted));
         assert_eq!(
-            style.layout.font_features,
+            style.layout.text_ext.font_features,
             Some(vec![FontFeatureSetting::new(*b"tnum", 1)])
         );
         let Some(LengthSpec::Px(width)) = style.layout.min_width else {
@@ -1606,18 +1883,20 @@ mod tests {
     #[test]
     fn an_icon_replaces_the_tone_glyph_where_the_recipe_marks_tones_with_glyphs() {
         use nana_ui_core::{ThemeDefinition, ToastGlyphs};
-        let glyph = |context: &AppContext, id| match context.world().component_geometry(id) {
-            Some(crate::ComponentGeometry::Toast {
-                glyph,
-                title,
-                description,
-                dismiss,
-                ..
-            }) => {
-                assert!(title.is_none() && description.is_none() && dismiss.is_none());
-                glyph
+        let glyph = |context: &AppContext, id| {
+            let paint = context.world().widget_paint(id).expect("toast paint");
+            assert!(
+                paint.ops.iter().all(|op| !matches!(op.slot, 2 | 3 | 4)),
+                "assembled toast does not emit parts"
+            );
+            match paint.ops.iter().find(|op| op.slot == 1).map(|op| &op.op) {
+                Some(crate::WidgetPaintOp::Icon(icon)) => match icon.glyph {
+                    crate::WidgetGlyph::Icon(glyph) => Some(glyph),
+                    other => panic!("toast icon glyph: {other:?}"),
+                },
+                Some(crate::WidgetPaintOp::Quad(_)) | None => None,
+                other => panic!("toast glyph op: {other:?}"),
             }
-            other => panic!("toast geometry, got {other:?}"),
         };
         let mut context = AppContext::new();
         let toast = assembled(
@@ -1723,13 +2002,21 @@ mod tests {
             "the title wraps in a narrow place: {title:?}"
         );
         assert!(bounds.width <= 220.0, "{bounds:?}");
-        let Some(crate::ComponentGeometry::Toast {
-            indicator: Some(mark),
-            ..
-        }) = context.world().component_geometry(id)
-        else {
-            panic!("an assembled toast keeps its mark");
-        };
+        let mark = context
+            .world()
+            .widget_paint(id)
+            .and_then(|paint| {
+                paint
+                    .ops
+                    .iter()
+                    .find(|op| op.slot == 1)
+                    .map(|op| match &op.op {
+                        crate::WidgetPaintOp::Quad(quad) => quad.rect,
+                        crate::WidgetPaintOp::Icon(icon) => icon.bounds,
+                        other => panic!("toast mark: {other:?}"),
+                    })
+            })
+            .expect("an assembled toast keeps its mark");
         let mark_centre = mark.y + mark.height / 2.0;
         assert!(
             (mark_centre - (title.y + line / 2.0)).abs() < 0.01,
@@ -1750,8 +2037,15 @@ mod tests {
 
         // The built-in recipe clamps the title and the description to a
         // line each; zero does not clamp.
-        let clamp =
-            |context: &AppContext, id| context.world().node_style(id).unwrap().layout.line_clamp;
+        let clamp = |context: &AppContext, id| {
+            context
+                .world()
+                .node_style(id)
+                .unwrap()
+                .layout
+                .text_ext
+                .line_clamp
+        };
         assert_eq!(clamp(&context, parts.title), Some(1));
         assert_eq!(clamp(&context, parts.description), Some(1));
         let wide = nana_ui_core::ThemeDefinition::NANA_DARK.with_toast(ToastRecipe {
@@ -1902,22 +2196,17 @@ mod tests {
         assert!(children(&context, id).is_empty());
         assert_eq!(context.world().text(id), Some("Saved"));
         assert!(matches!(
-            context.world().standard_visual(id),
-            Some(crate::StandardVisual::Toast {
+            context.world().widget_visual_as::<ToastVisual>(id),
+            Some(ToastVisual {
                 assembled: false,
                 icon: None,
                 ..
             })
         ));
-        assert!(matches!(
-            context.world().component_geometry(id),
-            Some(crate::ComponentGeometry::Toast {
-                title: Some(_),
-                description: Some(_),
-                dismiss: Some(_),
-                ..
-            })
-        ));
+        let paint = context.world().widget_paint(id).expect("toast paint");
+        assert!(paint.ops.iter().any(|op| op.slot == 2));
+        assert!(paint.ops.iter().any(|op| op.slot == 3));
+        assert!(paint.ops.iter().any(|op| op.slot == 4));
         assert_eq!(context.world().live(id), None);
         assert_eq!(
             context.world().node_style(id).unwrap().layout.width,

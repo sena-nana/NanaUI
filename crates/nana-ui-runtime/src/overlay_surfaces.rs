@@ -6,8 +6,478 @@ use nana_ui_core::{
 
 use crate::{
     AccessibilityRole, AccessibilityState, ComponentView, InteractionState, MutationQueue,
-    NodeKind, NodeStyle, StableNodeId, StandardVisual, UiWorld, view_components::project_common,
+    NodeKind, NodeStyle, StableNodeId, UiWorld, view_components::project_common,
 };
+
+/// Open visual contract attached to a modal frame (`Dialog`, `ConfirmDialog`, `Drawer`).
+#[derive(Debug, Clone, PartialEq)]
+pub struct ModalFrameVisual {
+    pub title: Arc<str>,
+    pub description: Option<Arc<str>>,
+    pub body_text: Option<Arc<str>>,
+    pub kind: ModalSurfaceKind,
+    pub busy: bool,
+    pub danger: bool,
+    pub slots: ModalSlots,
+    /// Paints the card in place of the theme's; see
+    /// [`crate::Dialog::surface_painter`].
+    pub surface_painter: Option<crate::NodePainter>,
+}
+
+/// Page-space or local geometry projected by [`ModalFrameVisual`].
+#[derive(Debug, Clone, PartialEq)]
+pub struct ModalFrameGeometry {
+    pub scrim: crate::LayoutBox,
+    pub surface: crate::LayoutBox,
+    pub body: crate::LayoutBox,
+    pub title: crate::ComponentTextRegion,
+    pub description: Option<crate::ComponentTextRegion>,
+    pub body_text: Option<crate::ComponentTextRegion>,
+    pub background: [f32; 4],
+    pub border: [f32; 4],
+    pub elevation: crate::ComponentElevation,
+    /// The card's corner radius: a dialog's recipe step, resolved.
+    pub corner_radius: f32,
+    /// The hairline under the header and its colour, when the recipe
+    /// draws one.
+    pub header_divider: Option<(crate::LayoutBox, [f32; 4])>,
+    /// The hairline over the footer and its colour, when the recipe
+    /// draws one.
+    pub footer_divider: Option<(crate::LayoutBox, [f32; 4])>,
+    /// The scrim's colour: the theme's modal scrim.
+    pub scrim_color: [f32; 4],
+    /// How much the scrim blurs what is behind it: CSS `blur(r)`, `r`
+    /// the standard deviation in logical px.
+    pub scrim_blur: f32,
+    /// How much of the scrim shows, 0 to 1: CSS `opacity` on the
+    /// overlay. It fades the scrim's colour and its blur together while
+    /// the frame comes and goes; 1 at rest.
+    pub scrim_opacity: f32,
+    /// The card as its surface painter recorded it, in the card's own
+    /// coordinates; `None` paints the theme's card.
+    pub surface_paint: Option<Arc<crate::PaintRecording>>,
+}
+
+impl ModalFrameGeometry {
+    /// Transform pivot offset relative to `bounds` origin (centre of the card).
+    pub fn presentation_pivot(&self, bounds: crate::LayoutBox) -> [f32; 2] {
+        [
+            self.surface.x + self.surface.width / 2.0 - bounds.x,
+            self.surface.y + self.surface.height / 2.0 - bounds.y,
+        ]
+    }
+}
+
+impl ModalFrameVisual {
+    /// Derives [`ModalFrameGeometry`] for `id` in `bounds`.
+    pub fn geometry_for(
+        &self,
+        id: StableNodeId,
+        world: &UiWorld,
+        bounds: crate::LayoutBox,
+        style: &crate::ComputedStyle,
+        style_model: nana_ui_core::StyleModelRef,
+        theme: &nana_ui_core::CompiledTheme,
+    ) -> Option<ModalFrameGeometry> {
+        let crate::world::content_parts::ModalFrameLayout {
+            chrome,
+            surface,
+            title_content,
+            ..
+        } = world.modal_frame_layout(id, bounds)?;
+        let secondary = world.secondary_text_color(id);
+        let text_region = |bounds, content: Arc<str>, muted: bool, size: f32, weight| {
+            crate::ComponentTextRegion {
+                bounds,
+                content: content.into(),
+                color: Some(if muted {
+                    secondary
+                } else {
+                    style.color.unwrap_or_else(|| {
+                        style_model
+                            .color(nana_ui_core::SemanticColorRole::Text)
+                            .as_rgba_array()
+                    })
+                }),
+                font_size: size,
+                font_weight: weight,
+            }
+        };
+        let recipe = theme.recipes().dialog();
+        let parts = world.component_content_parts(id);
+        let part = |kind| crate::layout_engine::parts::part_bounds(&parts, kind);
+        let title_box = part(crate::LayoutPartKind::Header).unwrap_or(crate::LayoutBox {
+            x: surface.x,
+            y: surface.y,
+            ..crate::LayoutBox::default()
+        });
+        let description_box = part(crate::LayoutPartKind::Detail);
+        let title_type = modal_title_type(self.kind, recipe, theme.typography());
+        let body = chrome.body_box(surface);
+        let surface_paint = self.surface_painter.as_ref().map(|painter| {
+            let local = |section: crate::LayoutBox| crate::LayoutBox {
+                x: section.x - surface.x,
+                y: section.y - surface.y,
+                ..section
+            };
+            // The header band stops where its divider starts, so a
+            // shape drawn to its height meets the rule, not its far edge.
+            let header_height = chrome
+                .header_divider_box(surface)
+                .map_or(chrome.header_height, |rule| rule.y - surface.y);
+            let sections = crate::ModalSurfaceSections {
+                header: crate::LayoutBox {
+                    x: 0.0,
+                    y: 0.0,
+                    width: surface.width,
+                    height: header_height,
+                },
+                // The title and the description under it.
+                title: local(crate::LayoutBox {
+                    height: description_box.map_or(title_box.height, |description| {
+                        description.y + description.height - title_box.y
+                    }),
+                    ..title_box
+                }),
+                icon: chrome.icon_box(surface).map(local),
+                close: chrome.close_box(surface).map(local),
+                body: local(body),
+                footer: (chrome.footer_height > 0.0).then_some(crate::LayoutBox {
+                    x: 0.0,
+                    y: surface.height - chrome.footer_height,
+                    width: surface.width,
+                    height: chrome.footer_height,
+                }),
+            };
+            world.modal_surface_paint(id, painter, surface, sections)
+        });
+        // A danger dialog speaks in the status recipe's danger tone,
+        // over whatever colour the node's text would take, unless
+        // the recipe marks danger some other way.
+        let title_color = if self.danger && recipe.danger_title {
+            style_model
+                .color(
+                    theme
+                        .recipes()
+                        .status()
+                        .role(nana_ui_core::StatusTone::Danger),
+                )
+                .as_rgba_array()
+        } else {
+            style.color.unwrap_or_else(|| {
+                style_model
+                    .color(
+                        theme
+                            .recipes()
+                            .foreground(nana_ui_core::ComponentRecipeId::Overlay, false),
+                    )
+                    .as_rgba_array()
+            })
+        };
+        let overlay_shadow = theme.shadow(nana_ui_core::ElevationRole::Overlay);
+        // The scrim rides the card's move on the frame's own layer,
+        // so it reaches past the frame by as much as the move and
+        // the entrance scale could pull its edge in: an even colour
+        // that still covers the window wherever the card is.
+        let motion = recipe.motion;
+        let scrim = match self.kind {
+            ModalSurfaceKind::Drawer(_) => bounds,
+            _ if motion.moves() => {
+                let scale = motion.enter_scale.max(f32::EPSILON);
+                let reach = bounds.width.max(bounds.height) * (1.0 / scale - 1.0).max(0.0)
+                    + motion.enter_offset_y.abs() / scale
+                    + 1.0;
+                crate::LayoutBox {
+                    x: bounds.x - reach,
+                    y: bounds.y - reach,
+                    width: bounds.width + reach * 2.0,
+                    height: bounds.height + reach * 2.0,
+                }
+            }
+            _ => bounds,
+        };
+        Some(ModalFrameGeometry {
+            scrim,
+            surface,
+            body,
+            title: crate::ComponentTextRegion {
+                color: Some(title_color),
+                ..text_region(
+                    title_box,
+                    if title_content.is_some() {
+                        Arc::from("")
+                    } else {
+                        Arc::clone(&self.title)
+                    },
+                    false,
+                    title_type.size,
+                    title_type.weight,
+                )
+            },
+            description: self.description.as_ref().zip(description_box).map(
+                |(description, bounds)| {
+                    text_region(
+                        bounds,
+                        Arc::clone(description),
+                        true,
+                        theme.typography().meta,
+                        None,
+                    )
+                },
+            ),
+            body_text: self
+                .body_text
+                .as_ref()
+                .zip(part(crate::LayoutPartKind::Note))
+                .map(|(message, bounds)| {
+                    text_region(
+                        bounds,
+                        Arc::clone(message),
+                        false,
+                        theme.typography().body,
+                        None,
+                    )
+                }),
+            background: style_model
+                .color(nana_ui_core::SemanticColorRole::Surface)
+                .as_rgba_array(),
+            border: [0.0; 4],
+            elevation: crate::ComponentElevation::from_shadow(overlay_shadow),
+            corner_radius: match self.kind {
+                ModalSurfaceKind::Drawer(_) => style_model.metrics.radius_md,
+                _ => recipe.radius.resolve(style_model.metrics),
+            },
+            header_divider: chrome.header_divider_box(surface).zip(
+                recipe
+                    .header_divider
+                    .map(|role| style_model.color(role).as_rgba_array()),
+            ),
+            footer_divider: chrome.footer_divider_box(surface).zip(
+                recipe
+                    .footer_divider
+                    .map(|role| style_model.color(role).as_rgba_array()),
+            ),
+            scrim_color: theme.effects().modal_scrim.as_rgba_array(),
+            scrim_blur: theme.effects().modal_scrim_blur,
+            surface_paint,
+            scrim_opacity: world.scrim_presence(id),
+        })
+    }
+
+    /// Emits node-local [`crate::WidgetPaintOutput`] operations from precomputed `geometry`.
+    pub fn paint_with_geometry(
+        &self,
+        geometry: &ModalFrameGeometry,
+        bounds: crate::LayoutBox,
+    ) -> crate::WidgetPaintOutput {
+        let mut output = crate::WidgetPaintOutput {
+            owns_node_text: true,
+            presentation_pivot: Some(geometry.presentation_pivot(bounds)),
+            modal_frame: Some(crate::WidgetModalFrame {
+                surface: geometry.surface,
+                body: geometry.body,
+                body_root: self.slots.body,
+                scrim_slot: Some(crate::MODAL_SCRIM_SLOT),
+            }),
+            ..Default::default()
+        };
+        // The scrim fades by its own opacity, not its node's layer (the card's).
+        output.push_tagged(
+            crate::WidgetTaggedOp::new(
+                crate::MODAL_SCRIM_SLOT,
+                crate::WidgetPaintOp::Quad(crate::WidgetQuad {
+                    rect: geometry.scrim,
+                    fill: Some(geometry.scrim_color),
+                    backdrop_blur: geometry.scrim_blur,
+                    ..Default::default()
+                }),
+            )
+            .with_opacity_multiplier(geometry.scrim_opacity.clamp(0.0, 1.0)),
+        );
+        let docked = match self.kind {
+            ModalSurfaceKind::Drawer(side) => Some(side),
+            _ => None,
+        };
+        let radius = geometry.corner_radius;
+        let mut surface_bounds = geometry.surface;
+        if let Some(side) = docked {
+            match side {
+                DrawerSide::Right => surface_bounds.width += radius,
+                DrawerSide::Left => {
+                    surface_bounds.x -= radius;
+                    surface_bounds.width += radius;
+                }
+                DrawerSide::Bottom => surface_bounds.height += radius,
+            }
+        }
+        // A dialog that paints its own card leaves the theme's out, unless
+        // its painter asked for it with `draw_default()`.
+        let themed_card = geometry
+            .surface_paint
+            .as_ref()
+            .is_none_or(|recording| recording.default_phase().is_some());
+        if themed_card {
+            let mut op = crate::WidgetTaggedOp::new(
+                11,
+                crate::WidgetPaintOp::Quad(crate::WidgetQuad {
+                    rect: surface_bounds,
+                    fill: Some(geometry.background),
+                    corner_radius: [radius; 4],
+                    elevation: Some(geometry.elevation),
+                    ..Default::default()
+                }),
+            );
+            if docked.is_some() {
+                op = op.with_extra_clip(geometry.scrim);
+            }
+            output.push_tagged(op);
+        }
+        if let Some(recording) = &geometry.surface_paint {
+            output.push(
+                11,
+                crate::WidgetPaintOp::Vector {
+                    bounds: geometry.surface,
+                    recording: Arc::clone(recording),
+                },
+            );
+        }
+        // The card's section dividers: hairlines across the whole card, inside
+        // its edges, so the card's own clip trims them.
+        for (slot, divider) in [(15, geometry.header_divider), (16, geometry.footer_divider)] {
+            if let Some((rect, color)) = divider {
+                output.push(
+                    slot,
+                    crate::WidgetPaintOp::Quad(crate::WidgetQuad {
+                        rect,
+                        fill: Some(color),
+                        ..Default::default()
+                    }),
+                );
+            }
+        }
+        let mut emit_text = |slot: u64, region: &crate::ComponentTextRegion| {
+            output.push(
+                slot,
+                crate::WidgetPaintOp::Text(crate::WidgetText {
+                    bounds: region.bounds,
+                    content: region.content.clone(),
+                    color: region.color,
+                    font_size: region.font_size,
+                    font_weight: region.font_weight,
+                    horizontal_alignment: crate::TextHorizontalAlignment::Start,
+                    vertical_alignment: crate::TextVerticalAlignment::Top,
+                    ellipsis: true,
+                    wrap: true,
+                    line_height: Some(None),
+                    retained_text: crate::WidgetRetainedText::NodeTextIfRich,
+                    ..Default::default()
+                }),
+            );
+        };
+        if !geometry.title.content.is_empty() {
+            emit_text(12, &geometry.title);
+        }
+        if let Some(description) = &geometry.description {
+            emit_text(13, description);
+        }
+        if let Some(body_text) = &geometry.body_text {
+            emit_text(14, body_text);
+        }
+        output
+    }
+}
+
+impl crate::WidgetVisual for ModalFrameVisual {
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+
+    fn dyn_eq(&self, other: &dyn std::any::Any) -> bool {
+        other.downcast_ref::<Self>() == Some(self)
+    }
+
+    fn measures_text(&self) -> bool {
+        true
+    }
+
+    fn is_confirm_modal(&self) -> bool {
+        matches!(self.kind, ModalSurfaceKind::Confirm(_))
+    }
+
+    fn is_modal_frame(&self) -> bool {
+        true
+    }
+
+    fn owns_intrinsic_text(&self) -> bool {
+        true
+    }
+
+    fn text_visual_key(&self) -> Option<(std::any::TypeId, u64)> {
+        Some((std::any::TypeId::of::<Self>(), 0))
+    }
+
+    fn modal_slots(&self) -> Option<ModalSlots> {
+        Some(self.slots.clone())
+    }
+
+    fn modal_layout_input(
+        &self,
+        id: StableNodeId,
+        world: &UiWorld,
+    ) -> Option<crate::ModalLayoutInput> {
+        let presentation = world.modal_text_metrics(id);
+        Some(crate::ModalLayoutInput {
+            kind: self.kind,
+            slots: self.slots.clone(),
+            title: presentation.title,
+            description: presentation.description,
+            body_text: presentation.body,
+        })
+    }
+
+    fn paint_depends_on_child(&self, child: StableNodeId) -> bool {
+        self.slots.body == Some(child)
+    }
+
+    fn presentation_pivot(
+        &self,
+        id: StableNodeId,
+        world: &UiWorld,
+        bounds: crate::LayoutBox,
+    ) -> Option<[f32; 2]> {
+        let frame = world.modal_frame_layout(id, bounds)?;
+        Some([
+            frame.surface.x + frame.surface.width / 2.0 - bounds.x,
+            frame.surface.y + frame.surface.height / 2.0 - bounds.y,
+        ])
+    }
+
+    fn solve_content_parts(
+        &self,
+        id: StableNodeId,
+        world: &UiWorld,
+        bounds: crate::LayoutBox,
+        _content: crate::LayoutBox,
+        _writing: nana_ui_core::WritingContext,
+        _own_frame: bool,
+    ) -> Option<crate::layout_engine::parts::ContentParts> {
+        Some(world.modal_text_parts(id, bounds))
+    }
+
+    fn paint(&self, ctx: &crate::WidgetPaintCtx<'_>) -> crate::WidgetPaintOutput {
+        let Some(geometry) = self.geometry_for(
+            ctx.id,
+            ctx.world,
+            ctx.bounds,
+            ctx.style,
+            ctx.style_model,
+            ctx.theme,
+        ) else {
+            return crate::WidgetPaintOutput::default();
+        };
+        self.paint_with_geometry(&geometry, ctx.bounds)
+    }
+}
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum ModalSurfaceKind {
@@ -362,6 +832,9 @@ impl ModalSurface for ConfirmDialog {
 }
 
 impl ComponentView for ConfirmDialog {
+    const TYPE_ID: Option<&'static str> =
+        Some(crate::component_descriptors::CONFIRM_DIALOG.type_id);
+
     const BEHAVIOR: crate::TypeBehavior<Self> = crate::TypeBehavior {
         hooks: Some(|hooks| {
             crate::framework::routes::modal(hooks);
@@ -488,6 +961,8 @@ impl ModalSurface for Drawer {
 }
 
 impl ComponentView for Drawer {
+    const TYPE_ID: Option<&'static str> = Some(crate::component_descriptors::DRAWER.type_id);
+
     const BEHAVIOR: crate::TypeBehavior<Self> = crate::TypeBehavior {
         hooks: Some(|hooks| {
             crate::framework::routes::modal(hooks);
@@ -544,7 +1019,7 @@ pub(crate) fn project_modal(
     slots: &ModalSlots,
     surface_painter: Option<&crate::NodePainter>,
 ) {
-    let visual = StandardVisual::ModalFrame {
+    let visual = ModalFrameVisual {
         title: Arc::clone(title),
         description: description.map(Arc::from),
         body_text: body_text.map(Arc::from),
@@ -554,8 +1029,8 @@ pub(crate) fn project_modal(
         slots: slots.clone(),
         surface_painter: surface_painter.cloned(),
     };
-    if world.standard_visual(id) != Some(visual.clone()) {
-        mutations.set_standard_visual(id, Some(visual));
+    if world.widget_visual_as::<ModalFrameVisual>(id) != Some(&visual) {
+        mutations.set_widget_visual(id, Some(visual));
     }
     project_common(
         id,
@@ -982,7 +1457,7 @@ mod tests {
     /// The built-in dialog card's header and body insets.
     const HEADER: nana_ui_core::DialogInsets = nana_ui_core::DialogRecipe::DEFAULT.header;
     const BODY: nana_ui_core::DialogInsets = nana_ui_core::DialogRecipe::DEFAULT.body;
-    use crate::{AppContext, Button, DocumentId, MountState, StandardVisual};
+    use crate::{AppContext, Button, DocumentId, MountState};
     use std::sync::{Arc, Mutex};
     use unicode_segmentation::UnicodeSegmentation;
 
@@ -1228,15 +1703,12 @@ mod tests {
         .unwrap();
         cx.layout_document(document, crate::LayoutViewport::new(800.0, 600.0))
             .unwrap();
-        let crate::ComponentGeometry::ModalFrame {
+        let ModalFrameGeometry {
             scrim,
             surface,
             body: body_region,
             ..
-        } = cx.world().component_geometry(drawer.stable_id()).unwrap()
-        else {
-            panic!("modal geometry")
-        };
+        } = cx.world().modal_frame_geometry(drawer.stable_id()).unwrap();
         assert_eq!((scrim.width, scrim.height), (800.0, 600.0));
         assert_eq!(surface.width, 800.0);
         assert_eq!(surface.y + surface.height, 600.0);
@@ -1281,11 +1753,12 @@ mod tests {
             height: 8.0,
         };
         let mut translated_style = cx.world().node_style(body.stable_id()).unwrap().clone();
-        Arc::make_mut(&mut translated_style.layout).transform =
-            Some(nana_ui_core::PaintTransform {
-                f: 20.0,
-                ..nana_ui_core::PaintTransform::default()
-            });
+        Arc::make_mut(&mut translated_style.layout)
+            .transforms
+            .transform = Some(nana_ui_core::PaintTransform {
+            f: 20.0,
+            ..nana_ui_core::PaintTransform::default()
+        });
         let mut translated = MutationQueue::new();
         translated.write_layout(body.stable_id(), translated_body);
         translated.write_layout(body_child.stable_id(), translated_body);
@@ -1316,11 +1789,8 @@ mod tests {
                 .unwrap();
             cx.layout_document(document, crate::LayoutViewport::new(800.0, 600.0))
                 .unwrap();
-            let crate::ComponentGeometry::ModalFrame { surface, .. } =
-                cx.world().component_geometry(drawer.stable_id()).unwrap()
-            else {
-                panic!("drawer geometry")
-            };
+            let ModalFrameGeometry { surface, .. } =
+                cx.world().modal_frame_geometry(drawer.stable_id()).unwrap();
             assert_eq!(surface.width, DRAWER_WIDTH);
             assert_eq!(surface.height, 600.0);
             assert_eq!(
@@ -1446,11 +1916,8 @@ mod tests {
     }
 
     fn dialog_frame(cx: &AppContext, dialog: StableNodeId) -> (crate::LayoutBox, crate::LayoutBox) {
-        let crate::ComponentGeometry::ModalFrame { surface, body, .. } =
-            cx.world().component_geometry(dialog).unwrap()
-        else {
-            panic!("dialog geometry")
-        };
+        let ModalFrameGeometry { surface, body, .. } =
+            cx.world().modal_frame_geometry(dialog).unwrap();
         (surface, body)
     }
 
@@ -1540,8 +2007,8 @@ mod tests {
         assert!(body_box.y + body_box.height <= surface.y + surface.height);
     }
 
-    fn modal_geometry(cx: &AppContext, modal: StableNodeId) -> crate::ComponentGeometry {
-        cx.world().component_geometry(modal).unwrap()
+    fn modal_geometry(cx: &AppContext, modal: StableNodeId) -> ModalFrameGeometry {
+        cx.world().modal_frame_geometry(modal).unwrap()
     }
 
     fn shaped_layout(cx: &mut AppContext, document: DocumentId, width: f32, height: f32) {
@@ -1595,15 +2062,12 @@ mod tests {
         let text = palette
             .color(nana_ui_core::SemanticColorRole::Text)
             .as_rgba_array();
-        let crate::ComponentGeometry::ModalFrame {
+        let ModalFrameGeometry {
             surface,
             body,
             title,
             ..
-        } = modal_geometry(&cx, dialog.stable_id())
-        else {
-            panic!("dialog geometry")
-        };
+        } = modal_geometry(&cx, dialog.stable_id());
         assert_eq!(title.color, Some(danger));
         let recipe = nana_ui_core::DialogRecipe::DEFAULT;
         let icon_box = cx.world().canonical_layout_box(icon.stable_id()).unwrap();
@@ -1652,17 +2116,9 @@ mod tests {
             .unwrap();
         cx.assemble_confirm_dialog(confirm).unwrap();
         shaped_layout(&mut cx, document, 800.0, 600.0);
-        let crate::ComponentGeometry::ModalFrame { title, .. } =
-            modal_geometry(&cx, plain.stable_id())
-        else {
-            panic!("dialog geometry")
-        };
+        let ModalFrameGeometry { title, .. } = modal_geometry(&cx, plain.stable_id());
         assert_eq!(title.color, Some(text));
-        let crate::ComponentGeometry::ModalFrame { title, .. } =
-            modal_geometry(&cx, confirm.stable_id())
-        else {
-            panic!("confirm geometry")
-        };
+        let ModalFrameGeometry { title, .. } = modal_geometry(&cx, confirm.stable_id());
         assert_eq!(title.color, Some(danger));
     }
 
@@ -1719,20 +2175,18 @@ mod tests {
             vec![icon, content.stable_id(), close],
             "the row holds the icon, the content and the close button in order"
         );
-        let crate::ComponentGeometry::ModalFrame {
+        let ModalFrameGeometry {
             surface,
             body,
             title,
             ..
-        } = modal_geometry(&cx, dialog.stable_id())
-        else {
-            panic!("dialog geometry")
-        };
+        } = modal_geometry(&cx, dialog.stable_id());
         assert!(title.content.is_empty(), "the title text is not drawn");
         assert_eq!(
             cx.world()
                 .accessibility(dialog.stable_id())
-                .and_then(|state| state.label.as_deref()),
+                .and_then(|state| state.label.clone())
+                .as_deref(),
             Some("资源库"),
             "the title stays the accessible name"
         );
@@ -1784,11 +2238,7 @@ mod tests {
         cx.update_component(content, |stack, _| stack.layout_mut().hidden = false)
             .unwrap();
         shaped_layout(&mut cx, document, 800.0, 600.0);
-        let crate::ComponentGeometry::ModalFrame { title, .. } =
-            modal_geometry(&cx, dialog.stable_id())
-        else {
-            panic!("dialog geometry")
-        };
+        let ModalFrameGeometry { title, .. } = modal_geometry(&cx, dialog.stable_id());
         assert!(title.content.is_empty(), "shown again, it stands in again");
 
         cx.set_modal_slots(dialog, text_only).unwrap();
@@ -1821,15 +2271,12 @@ mod tests {
             .create_component(document, crate::Dialog::new("导出"))
             .unwrap();
         shaped_layout(&mut cx, document, 800.0, 600.0);
-        let crate::ComponentGeometry::ModalFrame {
+        let ModalFrameGeometry {
             surface,
             body,
             title,
             ..
-        } = modal_geometry(&cx, dialog.stable_id())
-        else {
-            panic!("dialog geometry")
-        };
+        } = modal_geometry(&cx, dialog.stable_id());
         assert_eq!(
             body.y,
             surface.y + HEADER.top + 40.0 + HEADER.bottom + BODY.top
@@ -1898,7 +2345,7 @@ mod tests {
             .color(SemanticColorRole::BorderSoft)
             .as_rgba_array();
         let radius_xl = theme.metrics().radius_xl;
-        let crate::ComponentGeometry::ModalFrame {
+        let ModalFrameGeometry {
             surface,
             title,
             corner_radius,
@@ -1907,7 +2354,7 @@ mod tests {
             ..
         } = modal_geometry(&cx, dialog.stable_id())
         else {
-            panic!("a divided dialog")
+            panic!("modal geometry")
         };
         assert_eq!(corner_radius, radius_xl);
         assert_eq!((header_color, footer_color), (soft, soft));
@@ -1943,11 +2390,7 @@ mod tests {
             "the card ends at the footer's bottom inset"
         );
 
-        let crate::ComponentGeometry::ModalFrame { surface, .. } =
-            modal_geometry(&cx, confirm.stable_id())
-        else {
-            panic!("confirm geometry")
-        };
+        let ModalFrameGeometry { surface, .. } = modal_geometry(&cx, confirm.stable_id());
         let slots = cx
             .read(confirm, |confirm| confirm.confirm_slots().cloned())
             .unwrap()
@@ -2040,16 +2483,13 @@ mod tests {
         )
         .unwrap();
         shaped_layout(&mut cx, document, 800.0, 600.0);
-        let crate::ComponentGeometry::ModalFrame {
+        let ModalFrameGeometry {
             surface,
             corner_radius,
             header_divider,
             footer_divider,
             ..
-        } = modal_geometry(&cx, dialog.stable_id())
-        else {
-            panic!("dialog geometry")
-        };
+        } = modal_geometry(&cx, dialog.stable_id());
         assert_eq!(corner_radius, cx.world().theme().metrics().radius_md);
         assert_eq!((header_divider, footer_divider), (None, None));
         let footer_box = cx.world().canonical_layout_box(footer.stable_id()).unwrap();
@@ -2108,7 +2548,7 @@ mod tests {
             .unwrap();
         shaped_layout(&mut cx, document, 800.0, 600.0);
 
-        let crate::ComponentGeometry::ModalFrame {
+        let ModalFrameGeometry {
             surface,
             body,
             title,
@@ -2116,7 +2556,7 @@ mod tests {
             ..
         } = modal_geometry(&cx, confirm.stable_id())
         else {
-            panic!("a painted card")
+            panic!("modal geometry")
         };
         let sections = seen
             .lock()
@@ -2144,21 +2584,17 @@ mod tests {
         assert!(recording.over_children.is_empty());
 
         let asked = seen.lock().unwrap().len();
-        let crate::ComponentGeometry::ModalFrame {
+        let ModalFrameGeometry {
             surface_paint: Some(again),
             ..
         } = modal_geometry(&cx, confirm.stable_id())
         else {
-            panic!("a painted card")
+            panic!("modal geometry")
         };
         assert!(Arc::ptr_eq(&recording, &again), "the recording is reused");
         assert_eq!(seen.lock().unwrap().len(), asked, "and not asked again");
 
-        let crate::ComponentGeometry::ModalFrame { surface_paint, .. } =
-            modal_geometry(&cx, plain.stable_id())
-        else {
-            panic!("dialog geometry")
-        };
+        let ModalFrameGeometry { surface_paint, .. } = modal_geometry(&cx, plain.stable_id());
         assert!(surface_paint.is_none(), "the theme's card");
     }
 
@@ -2188,13 +2624,13 @@ mod tests {
                 .unwrap();
             cx.assemble_confirm_dialog(confirm).unwrap();
             shaped_layout(&mut cx, document, 800.0, 600.0);
-            let crate::ComponentGeometry::ModalFrame {
+            let ModalFrameGeometry {
                 surface,
                 body_text: Some(message),
                 ..
             } = modal_geometry(&cx, confirm.stable_id())
             else {
-                panic!("a confirm with a message")
+                panic!("modal geometry")
             };
             (surface.height, message.bounds.height)
         };
@@ -2250,14 +2686,14 @@ mod tests {
             .style_model()
             .color(theme.recipes().status().role(StatusTone::Danger))
             .as_rgba_array();
-        let crate::ComponentGeometry::ModalFrame {
+        let ModalFrameGeometry {
             surface,
             title,
             header_divider: Some((rule, _)),
             ..
         } = modal_geometry(&cx, confirm.stable_id())
         else {
-            panic!("a tab-headed confirm")
+            panic!("modal geometry")
         };
         assert_eq!((title.font_size, title.font_weight), (15.0, Some(700)));
         assert_ne!(title.color, Some(danger), "danger shows elsewhere");
@@ -2279,11 +2715,7 @@ mod tests {
             .expect("recorded as a card surface");
         assert_eq!(sections.header.height, rule.y - surface.y);
 
-        let crate::ComponentGeometry::ModalFrame { title, .. } =
-            modal_geometry(&cx, drawer.stable_id())
-        else {
-            panic!("drawer geometry")
-        };
+        let ModalFrameGeometry { title, .. } = modal_geometry(&cx, drawer.stable_id());
         assert_eq!(
             (title.font_size, title.font_weight),
             (
@@ -2306,14 +2738,11 @@ mod tests {
         let drawer = cx.create_component(document, Drawer::new("筛选")).unwrap();
         shaped_layout(&mut cx, document, 800.0, 600.0);
         for modal in [dialog.stable_id(), drawer.stable_id()] {
-            let crate::ComponentGeometry::ModalFrame {
+            let ModalFrameGeometry {
                 scrim_color,
                 scrim_blur,
                 ..
-            } = modal_geometry(&cx, modal)
-            else {
-                panic!("modal geometry")
-            };
+            } = modal_geometry(&cx, modal);
             assert_eq!(scrim_color, [0.0, 0.0, 0.0, 0.45]);
             assert_eq!(scrim_blur, 0.0);
         }
@@ -2326,14 +2755,11 @@ mod tests {
             .unwrap();
         shaped_layout(&mut cx, document, 800.0, 600.0);
         for modal in [dialog.stable_id(), drawer.stable_id()] {
-            let crate::ComponentGeometry::ModalFrame {
+            let ModalFrameGeometry {
                 scrim_color,
                 scrim_blur,
                 ..
-            } = modal_geometry(&cx, modal)
-            else {
-                panic!("modal geometry")
-            };
+            } = modal_geometry(&cx, modal);
             assert_eq!(scrim_color, [0.0, 0.0, 0.0, css]);
             assert_eq!(scrim_blur, 2.0);
         }
@@ -2424,14 +2850,11 @@ mod tests {
         assert_eq!((start.a, start.d, start.f), (0.98, 0.98, -8.0));
 
         // The body follows the card about the card's centre.
-        let crate::ComponentGeometry::ModalFrame {
+        let ModalFrameGeometry {
             surface,
             scrim_opacity,
             ..
-        } = modal_geometry(&cx, id)
-        else {
-            panic!("dialog geometry")
-        };
+        } = modal_geometry(&cx, id);
         assert_eq!(scrim_opacity, 0.0, "the scrim starts unseen");
         let logical = cx.world().canonical_layout_box(body).unwrap();
         let shown = cx.world().presentation_input_bounds(body).unwrap();
@@ -2444,10 +2867,7 @@ mod tests {
 
         cx.advance_animations(Duration::from_millis(1080));
         assert!((cx.world().scrim_presence(id) - 0.5).abs() < 0.01);
-        let crate::ComponentGeometry::ModalFrame { scrim_opacity, .. } = modal_geometry(&cx, id)
-        else {
-            panic!("dialog geometry")
-        };
+        let ModalFrameGeometry { scrim_opacity, .. } = modal_geometry(&cx, id);
         assert!((scrim_opacity - 0.5).abs() < 0.01, "{scrim_opacity}");
         let Some(MotionValue::Scalar(card)) = presented(&cx, id, AnimatableProperty::Opacity)
         else {
@@ -2760,15 +3180,15 @@ mod tests {
             .unwrap();
         assert!(!cx.shape_text_for_layout(document, &mut shaper).unwrap());
 
-        let crate::ComponentGeometry::ModalFrame {
+        let ModalFrameGeometry {
             surface,
             title,
             description: Some(description),
             body,
             ..
-        } = cx.world().component_geometry(dialog.stable_id()).unwrap()
+        } = cx.world().modal_frame_geometry(dialog.stable_id()).unwrap()
         else {
-            panic!("dialog geometry")
+            panic!("modal geometry")
         };
         assert_eq!(surface.y, 90.0);
         assert!(surface.height <= 456.0);
@@ -2795,16 +3215,19 @@ mod tests {
         cx.shape_text(&work.text, &mut shaper).unwrap();
         cx.layout_document(document, crate::LayoutViewport::new(560.0, 280.0))
             .unwrap();
-        let crate::ComponentGeometry::ModalFrame {
+        let ModalFrameGeometry {
             surface,
             title,
             description,
             body_text: Some(message),
             border,
             ..
-        } = cx.world().component_geometry(confirm.stable_id()).unwrap()
+        } = cx
+            .world()
+            .modal_frame_geometry(confirm.stable_id())
+            .unwrap()
         else {
-            panic!("confirm geometry")
+            panic!("modal geometry")
         };
         assert!(description.is_none());
         assert_eq!(message.font_size, MODAL_BODY_TEXT_SIZE);
@@ -2856,13 +3279,16 @@ mod tests {
             cx.shape_text(&work.text, &mut shaper).unwrap();
             cx.layout_document(document, crate::LayoutViewport::new(560.0, 280.0))
                 .unwrap();
-            let crate::ComponentGeometry::ModalFrame {
+            let ModalFrameGeometry {
                 title,
                 body_text: Some(message),
                 ..
-            } = cx.world().component_geometry(confirm.stable_id()).unwrap()
+            } = cx
+                .world()
+                .modal_frame_geometry(confirm.stable_id())
+                .unwrap()
             else {
-                panic!("confirm geometry")
+                panic!("modal geometry")
             };
             message.bounds.y - (title.bounds.y + title.bounds.height)
         }
@@ -2948,11 +3374,8 @@ mod tests {
             cx.layout_document(document, crate::LayoutViewport::new(800.0, 600.0))
                 .unwrap();
             let world = cx.world();
-            let crate::ComponentGeometry::ModalFrame { surface, .. } =
-                world.component_geometry(confirm.stable_id()).unwrap()
-            else {
-                panic!("confirm geometry")
-            };
+            let ModalFrameGeometry { surface, .. } =
+                world.modal_frame_geometry(confirm.stable_id()).unwrap();
             Laid {
                 surface,
                 footer: footer.map(|footer| world.layout_box(footer.stable_id()).unwrap()),
@@ -3173,19 +3596,13 @@ mod tests {
             .find(|node| node.id == commit.stable_id())
             .unwrap();
         assert!(commit_a11y.disabled);
-        let extracted = cx
-            .world()
-            .extract_nodes(&[commit.stable_id()])
-            .pop()
-            .unwrap();
-        assert!(matches!(
-            extracted.standard_visual,
-            Some(StandardVisual::Button {
-                kind: nana_ui_core::ButtonKind::Danger,
-                loading: true,
-                ..
-            })
-        ));
+        assert_eq!(
+            cx.world()
+                .widget_visual_as::<crate::ButtonVisual>(commit.stable_id())
+                .unwrap()
+                .effective_in(commit.stable_id(), cx.world()),
+            (nana_ui_core::ButtonKind::Danger, true),
+        );
         cx.rebuild_hit_test(document);
         let commit_bounds = cx.world().canonical_layout_box(commit.stable_id()).unwrap();
         let commit_center = (
@@ -3240,19 +3657,13 @@ mod tests {
             .find(|node| node.id == commit.stable_id())
             .unwrap();
         assert!(!restored_a11y.disabled);
-        let restored = cx
-            .world()
-            .extract_nodes(&[commit.stable_id()])
-            .pop()
-            .unwrap();
-        assert!(matches!(
-            restored.standard_visual,
-            Some(StandardVisual::Button {
-                kind: nana_ui_core::ButtonKind::Primary,
-                loading: false,
-                ..
-            })
-        ));
+        assert_eq!(
+            cx.world()
+                .widget_visual_as::<crate::ButtonVisual>(commit.stable_id())
+                .unwrap()
+                .effective_in(commit.stable_id(), cx.world()),
+            (nana_ui_core::ButtonKind::Primary, false),
+        );
     }
 
     #[test]

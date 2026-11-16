@@ -10,14 +10,14 @@ use std::collections::HashMap;
 use std::collections::hash_map::DefaultHasher;
 use std::fmt;
 use std::hash::{Hash, Hasher};
+use std::num::NonZeroU32;
+use std::sync::atomic::{AtomicPtr, Ordering};
 use std::sync::{Mutex, OnceLock};
-
-use serde::{Deserialize, Serialize};
 
 use super::{FontSizeContext, LengthAtom, LengthSpec, ViewportAxes, ViewportAxis};
 
 /// Binary operator inside [`CalcExpr`].
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CalcBinOp {
     Add,
     Sub,
@@ -26,7 +26,7 @@ pub enum CalcBinOp {
 }
 
 /// Nested calc / min / max / clamp expression. Children are boxed.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum CalcExpr {
     Number(f32),
     Px(f32),
@@ -52,45 +52,54 @@ pub enum CalcExpr {
     },
 }
 
-/// Interned `Box<CalcExpr>` handle. Copy-sized so [`LengthSpec`] stays Copy.
-#[derive(Clone, Copy)]
-pub struct CalcExprRef(&'static CalcExpr);
+/// Compact 4-byte interned `Box<CalcExpr>` handle with a zero niche, keeping
+/// `Option<LengthSpec>` at 8 bytes.
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+pub struct CalcExprRef(NonZeroU32);
+
+const _: () = assert!(std::mem::size_of::<CalcExprRef>() == 4);
+const _: () = assert!(std::mem::size_of::<Option<CalcExprRef>>() == 4);
+
+const PAGE_SHIFT: usize = 10;
+const PAGE_SIZE: usize = 1 << PAGE_SHIFT;
+const MAX_PAGES: usize = 1024;
+
+static CALC_PAGES: [OnceLock<Box<[AtomicPtr<CalcExpr>]>>; MAX_PAGES] =
+    [const { OnceLock::new() }; MAX_PAGES];
+
+#[derive(Default)]
+struct CalcInternTable {
+    buckets: HashMap<u64, Vec<CalcExprRef>>,
+    next_index: u32,
+}
+
+static CALC_INTERN: OnceLock<Mutex<CalcInternTable>> = OnceLock::new();
+
+fn calc_intern() -> &'static Mutex<CalcInternTable> {
+    CALC_INTERN.get_or_init(|| Mutex::new(CalcInternTable::default()))
+}
 
 impl CalcExprRef {
     pub fn inner(self) -> &'static CalcExpr {
-        self.0
+        let idx = (self.0.get() - 1) as usize;
+        let page = CALC_PAGES[idx >> PAGE_SHIFT]
+            .get()
+            .expect("valid CalcExprRef page");
+        let ptr = page[idx & (PAGE_SIZE - 1)].load(Ordering::Acquire);
+        // SAFETY: `intern_calc` publishes a non-null `Box::leak` `'static`
+        // pointer with `Ordering::Release` before returning `CalcExprRef`.
+        unsafe { &*ptr }
     }
-}
 
-impl PartialEq for CalcExprRef {
-    fn eq(&self, other: &Self) -> bool {
-        std::ptr::eq(self.0, other.0) || self.0 == other.0
+    pub const fn raw(self) -> u32 {
+        self.0.get()
     }
 }
 
 impl fmt::Debug for CalcExprRef {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        self.0.fmt(f)
+        self.inner().fmt(f)
     }
-}
-
-impl Serialize for CalcExprRef {
-    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-        self.0.serialize(serializer)
-    }
-}
-
-impl<'de> Deserialize<'de> for CalcExprRef {
-    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
-        let expr = CalcExpr::deserialize(deserializer)?;
-        Ok(intern_calc(Box::new(expr)))
-    }
-}
-
-static CALC_INTERN: OnceLock<Mutex<HashMap<u64, Vec<&'static CalcExpr>>>> = OnceLock::new();
-
-fn calc_intern() -> &'static Mutex<HashMap<u64, Vec<&'static CalcExpr>>> {
-    CALC_INTERN.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
 fn hash_f32_canonical(val: f32, state: &mut impl Hasher) {
@@ -160,13 +169,61 @@ pub fn intern_calc(expr: Box<CalcExpr>) -> CalcExprRef {
     hash_calc_expr(&expr, &mut hasher);
     let hash = hasher.finish();
     let mut table = calc_intern().lock().expect("calc intern");
-    let bucket = table.entry(hash).or_default();
-    if let Some(existing) = bucket.iter().copied().find(|e| *e == expr.as_ref()) {
-        return CalcExprRef(existing);
+    if let Some(bucket) = table.buckets.get(&hash)
+        && let Some(&existing) = bucket.iter().find(|r| r.inner() == expr.as_ref())
+    {
+        return existing;
     }
+    let idx = table.next_index;
+    let page_idx = (idx as usize) >> PAGE_SHIFT;
+    let slot_idx = (idx as usize) & (PAGE_SIZE - 1);
+    assert!(
+        page_idx < MAX_PAGES,
+        "calc intern table overflow ({} expressions)",
+        idx
+    );
+    let page = CALC_PAGES[page_idx].get_or_init(|| {
+        (0..PAGE_SIZE)
+            .map(|_| AtomicPtr::new(std::ptr::null_mut()))
+            .collect::<Vec<_>>()
+            .into_boxed_slice()
+    });
     let leaked: &'static CalcExpr = Box::leak(expr);
-    bucket.push(leaked);
-    CalcExprRef(leaked)
+    page[slot_idx].store(
+        leaked as *const CalcExpr as *mut CalcExpr,
+        Ordering::Release,
+    );
+    let id = CalcExprRef(NonZeroU32::new(idx + 1).expect("calc index + 1 is non-zero"));
+    table.next_index = idx + 1;
+    table.buckets.entry(hash).or_default().push(id);
+    id
+}
+
+impl LengthAtom {
+    pub fn to_calc_expr(self) -> CalcExpr {
+        let offset = |base: CalcExpr, offset_px: f32| CalcExpr::Binary {
+            op: CalcBinOp::Add,
+            left: Box::new(base),
+            right: Box::new(CalcExpr::Px(offset_px)),
+        };
+        match self {
+            Self::Px(v) => CalcExpr::Px(v),
+            Self::Percent(p) => CalcExpr::Percent(p),
+            Self::Em(v) => CalcExpr::Em(v),
+            Self::Rem(v) => CalcExpr::Rem(v),
+            Self::Viewport { axis, value } => CalcExpr::Viewport { axis, value },
+            Self::CalcPercent { percent, offset_px } => {
+                offset(CalcExpr::Percent(percent), offset_px)
+            }
+            Self::CalcViewport {
+                axis,
+                value,
+                offset_px,
+            } => offset(CalcExpr::Viewport { axis, value }, offset_px),
+            Self::CalcEm { em, offset_px } => offset(CalcExpr::Em(em), offset_px),
+            Self::CalcRem { rem, offset_px } => offset(CalcExpr::Rem(rem), offset_px),
+        }
+    }
 }
 
 #[derive(Clone, Copy)]
@@ -178,6 +235,64 @@ enum CalcType {
 impl CalcExpr {
     pub fn depends_on_viewport(&self) -> bool {
         self.viewport_axes().any()
+    }
+
+    pub fn reads_percent(&self) -> bool {
+        match self {
+            Self::Percent(_) => true,
+            Self::Number(_) | Self::Px(_) | Self::Em(_) | Self::Rem(_) | Self::Viewport { .. } => {
+                false
+            }
+            Self::Binary { left, right, .. } => left.reads_percent() || right.reads_percent(),
+            Self::Neg(inner) => inner.reads_percent(),
+            Self::Min(a, b) | Self::Max(a, b) => a.reads_percent() || b.reads_percent(),
+            Self::Clamp { min, val, max } => {
+                min.reads_percent() || val.reads_percent() || max.reads_percent()
+            }
+        }
+    }
+
+    pub fn as_length_atom(&self) -> Option<LengthAtom> {
+        match self {
+            Self::Px(v) => Some(LengthAtom::Px(*v)),
+            Self::Percent(p) => Some(LengthAtom::Percent(*p)),
+            Self::Em(v) => Some(LengthAtom::Em(*v)),
+            Self::Rem(v) => Some(LengthAtom::Rem(*v)),
+            Self::Viewport { axis, value } => Some(LengthAtom::Viewport {
+                axis: *axis,
+                value: *value,
+            }),
+            Self::Binary {
+                op: CalcBinOp::Add,
+                left,
+                right,
+            } => {
+                let Self::Px(offset_px) = right.as_ref() else {
+                    return None;
+                };
+                match left.as_ref() {
+                    Self::Percent(percent) => Some(LengthAtom::CalcPercent {
+                        percent: *percent,
+                        offset_px: *offset_px,
+                    }),
+                    Self::Em(em) => Some(LengthAtom::CalcEm {
+                        em: *em,
+                        offset_px: *offset_px,
+                    }),
+                    Self::Rem(rem) => Some(LengthAtom::CalcRem {
+                        rem: *rem,
+                        offset_px: *offset_px,
+                    }),
+                    Self::Viewport { axis, value } => Some(LengthAtom::CalcViewport {
+                        axis: *axis,
+                        value: *value,
+                        offset_px: *offset_px,
+                    }),
+                    _ => None,
+                }
+            }
+            _ => None,
+        }
     }
 
     /// The sides of the viewport the expression reads.
@@ -365,9 +480,9 @@ impl CalcExpr {
     /// existing simple variant (`Px`, `%±px`, `min` of two atoms, …).
     pub fn simplify_to_length_spec(&self) -> Option<LengthSpec> {
         match self {
-            Self::Min(a, b) => Some(LengthSpec::Min2(expr_to_atom(a)?, expr_to_atom(b)?)),
-            Self::Max(a, b) => Some(LengthSpec::Max2(expr_to_atom(a)?, expr_to_atom(b)?)),
-            Self::Clamp { min, val, max } => Some(LengthSpec::Clamp3(
+            Self::Min(a, b) => Some(LengthSpec::min2(expr_to_atom(a)?, expr_to_atom(b)?)),
+            Self::Max(a, b) => Some(LengthSpec::max2(expr_to_atom(a)?, expr_to_atom(b)?)),
+            Self::Clamp { min, val, max } => Some(LengthSpec::clamp3(
                 expr_to_atom(min)?,
                 expr_to_atom(val)?,
                 expr_to_atom(max)?,
@@ -590,72 +705,35 @@ fn terms_to_spec(t: LengthTerms) -> Option<LengthSpec> {
                 Some(LengthSpec::Percent(t.percent.clamp(0.0, 100.0)))
             }
         } else {
-            Some(LengthSpec::CalcPercentOffset {
-                percent: t.percent,
-                offset_px: t.px,
-            })
+            Some(LengthSpec::percent_offset(t.percent, t.px))
         };
     }
     if t.em != 0.0 {
         return if t.px == 0.0 {
             Some(LengthSpec::Em(t.em))
         } else {
-            Some(LengthSpec::CalcEmOffset {
-                em: t.em,
-                offset_px: t.px,
-            })
+            Some(LengthSpec::em_offset(t.em, t.px))
         };
     }
     if t.rem != 0.0 {
         return if t.px == 0.0 {
             Some(LengthSpec::Rem(t.rem))
         } else {
-            Some(LengthSpec::CalcRemOffset {
-                rem: t.rem,
-                offset_px: t.px,
-            })
+            Some(LengthSpec::rem_offset(t.rem, t.px))
         };
     }
     if let Some((axis, value)) = t.viewport {
         return if t.px == 0.0 {
             Some(LengthSpec::Viewport { axis, value })
         } else {
-            Some(LengthSpec::CalcViewportOffset {
-                axis,
-                value,
-                offset_px: t.px,
-            })
+            Some(LengthSpec::viewport_offset(axis, value, t.px))
         };
     }
     Some(LengthSpec::Px(t.px.max(0.0)))
 }
 
 fn expr_to_atom(expr: &CalcExpr) -> Option<LengthAtom> {
-    match expr.simplify_to_length_spec()? {
-        LengthSpec::Px(v) => Some(LengthAtom::Px(v)),
-        LengthSpec::Percent(p) => Some(LengthAtom::Percent(p)),
-        LengthSpec::Em(v) => Some(LengthAtom::Em(v)),
-        LengthSpec::Rem(v) => Some(LengthAtom::Rem(v)),
-        LengthSpec::Fill => Some(LengthAtom::Percent(100.0)),
-        LengthSpec::CalcPercentOffset { percent, offset_px } => {
-            Some(LengthAtom::CalcPercent { percent, offset_px })
-        }
-        LengthSpec::Viewport { axis, value } => Some(LengthAtom::Viewport { axis, value }),
-        LengthSpec::CalcViewportOffset {
-            axis,
-            value,
-            offset_px,
-        } => Some(LengthAtom::CalcViewport {
-            axis,
-            value,
-            offset_px,
-        }),
-        LengthSpec::CalcEmOffset { em, offset_px } => Some(LengthAtom::CalcEm { em, offset_px }),
-        LengthSpec::CalcRemOffset { rem, offset_px } => {
-            Some(LengthAtom::CalcRem { rem, offset_px })
-        }
-        _ => None,
-    }
+    expr.simplify_to_length_spec()?.as_atom()
 }
 
 #[cfg(test)]
@@ -680,10 +758,7 @@ mod tests {
         );
         assert_eq!(
             expr.simplify_to_length_spec(),
-            Some(LengthSpec::CalcPercentOffset {
-                percent: 100.0,
-                offset_px: 10.0,
-            })
+            Some(LengthSpec::percent_offset(100.0, 10.0))
         );
     }
 

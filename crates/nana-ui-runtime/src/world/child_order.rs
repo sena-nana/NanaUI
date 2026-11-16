@@ -334,7 +334,7 @@ mod tests {
             .map(|id| {
                 (
                     id,
-                    world.local_layout_result(id).is_some(),
+                    world.has_local_layout_result(id),
                     world.scroll_content_bounds.borrow().stale(id),
                 )
             })

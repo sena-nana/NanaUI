@@ -61,11 +61,10 @@ fn width_overlay(id: u64, target: StableNodeId, from: f32, to: f32) -> Animation
 }
 
 fn style_with_transform(transform: PaintTransform) -> NodeStyle {
+    let mut layout = LayoutStyle::default();
+    layout.transforms.transform = Some(transform);
     NodeStyle {
-        layout: Arc::new(LayoutStyle {
-            transform: Some(transform),
-            ..LayoutStyle::default()
-        }),
+        layout: Arc::new(layout),
         ..NodeStyle::default()
     }
 }
@@ -124,7 +123,12 @@ fn hit_test_follows_presentation_translate_not_logical_target() {
         before
     );
     assert_eq!(
-        world.node_style(node(1)).unwrap().layout.transform,
+        world
+            .node_style(node(1))
+            .unwrap()
+            .layout
+            .transforms
+            .transform,
         Some(target),
         "logical transform stays at the target"
     );
@@ -400,26 +404,24 @@ fn hit_test_follows_projective_parent_and_motion_overlay() {
     queue.insert(parent, child, None);
     queue.write_layout(parent, box_at(0.0, 0.0, 128.0, 96.0));
     queue.write_layout(child, box_at(20.0, 20.0, 24.0, 24.0));
+    let mut parent_layout = LayoutStyle::default();
+    parent_layout.transforms.transform_3d = Some(mat);
     queue.set_style(
         parent,
         NodeStyle {
-            layout: Arc::new(LayoutStyle {
-                transform_3d: Some(mat),
-                ..LayoutStyle::default()
-            }),
+            layout: Arc::new(parent_layout),
             ..NodeStyle::default()
         },
     );
+    let mut child_layout = LayoutStyle::default();
+    child_layout.transforms.origin = Some(nana_ui_core::TransformOrigin {
+        x: nana_ui_core::LengthSpec::Percent(25.0),
+        y: nana_ui_core::LengthSpec::Percent(75.0),
+    });
     queue.set_style(
         child,
         NodeStyle {
-            layout: Arc::new(LayoutStyle {
-                transform_origin: Some(nana_ui_core::TransformOrigin {
-                    x: nana_ui_core::LengthSpec::Percent(25.0),
-                    y: nana_ui_core::LengthSpec::Percent(75.0),
-                }),
-                ..LayoutStyle::default()
-            }),
+            layout: Arc::new(child_layout),
             ..NodeStyle::default()
         },
     );
@@ -461,12 +463,11 @@ fn hit_test_follows_projective_parent_and_motion_overlay() {
         "hit-test must follow the normalized projective presentation"
     );
 
-    let parent_transform = LayoutStyle {
-        transform_3d: Some(mat),
-        ..LayoutStyle::default()
-    }
-    .world_scene_transform(0.0, 0.0, 128.0, 96.0)
-    .expect("parent projective transform");
+    let mut parent_style = LayoutStyle::default();
+    parent_style.transforms.transform_3d = Some(mat);
+    let parent_transform = parent_style
+        .world_scene_transform(0.0, 0.0, 128.0, 96.0)
+        .expect("parent projective transform");
     let old_center = forward(
         super::then_hit(
             parent_transform,
@@ -601,7 +602,12 @@ fn layout_width_animation_writes_px_not_scale() {
     };
     assert!((width - 60.0).abs() < 1e-3, "got {width}");
     assert_eq!(
-        world.node_style(node(1)).unwrap().layout.transform,
+        world
+            .node_style(node(1))
+            .unwrap()
+            .layout
+            .transforms
+            .transform,
         None,
         "width animation must not steal a scale transform"
     );
@@ -700,7 +706,15 @@ fn flip_play_keeps_last_layout_and_hit_test_follows_presentation() {
     world.rebuild_hit_test(document(1));
 
     assert_eq!(world.layout_box(node(1)).unwrap().x, 40.0);
-    assert_eq!(world.node_style(node(1)).unwrap().layout.transform, None);
+    assert_eq!(
+        world
+            .node_style(node(1))
+            .unwrap()
+            .layout
+            .transforms
+            .transform,
+        None
+    );
     match world.presentation_applied_value(node(1), AnimatableProperty::Transform, Duration::ZERO) {
         Some(MotionValue::Transform(transform)) => {
             assert!((transform.e + 30.0).abs() < 1e-3, "got {}", transform.e);
@@ -815,27 +829,25 @@ fn a_closed_3d_context_refuses_a_presented_transform_for_the_pointer_too() {
         queue.insert(node(1), node(2), None);
         queue.write_layout(node(1), box_at(0.0, 0.0, 80.0, 40.0));
         queue.write_layout(node(2), box_at(0.0, 0.0, 40.0, 40.0));
+        let mut persp_layout = LayoutStyle::default();
+        persp_layout.transforms.css_perspective = Some(800.0);
         queue.set_style(
             node(1),
             NodeStyle {
-                layout: Arc::new(LayoutStyle {
-                    css_perspective: Some(800.0),
-                    ..LayoutStyle::default()
-                }),
+                layout: Arc::new(persp_layout),
                 ..NodeStyle::default()
             },
+        );
+        let mut child_layout = LayoutStyle::default();
+        child_layout.transforms.transform_3d = Some(
+            nana_ui_core::PaintMat4::perspective(800.0)
+                .unwrap()
+                .then(nana_ui_core::PaintMat4::rotate_y(30_f32.to_radians())),
         );
         queue.set_style(
             node(2),
             NodeStyle {
-                layout: Arc::new(LayoutStyle {
-                    transform_3d: Some(
-                        nana_ui_core::PaintMat4::perspective(800.0)
-                            .unwrap()
-                            .then(nana_ui_core::PaintMat4::rotate_y(30_f32.to_radians())),
-                    ),
-                    ..LayoutStyle::default()
-                }),
+                layout: Arc::new(child_layout),
                 ..NodeStyle::default()
             },
         );

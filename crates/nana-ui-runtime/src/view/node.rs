@@ -193,7 +193,7 @@ impl<C: ComponentView> NodePatch for NodeBindings<C> {
         // Field-level check first: a re-run that reproduces the node's
         // values copies and projects nothing.
         let current = crate::framework::bound_view::<C>(cx, id)?;
-        let changed = self.evaluate(current);
+        let changed = self.evaluate(&current);
         // The classes may give another responsive rule while the layout
         // they compose stays: it goes out in this batch either way.
         if let Some(responsive) = &mut self.responsive {
@@ -338,6 +338,18 @@ struct Level {
     detached: bool,
 }
 
+enum ViewTask {
+    Build(AnyView),
+    LeaveEl {
+        id: StableNodeId,
+        type_id: TypeId,
+        assemble: bool,
+        pending: Option<Cow<'static, str>>,
+        nested_ui: bool,
+    },
+    ClearPendingKey,
+}
+
 pub(crate) struct ViewState {
     pub(crate) tag: u64,
     levels: Vec<Level>,
@@ -347,6 +359,8 @@ pub(crate) struct ViewState {
     /// Where a detached build's roots are keyed: the container a structural
     /// view places them in afterwards.
     pub(crate) root_keys: Option<RootKeys>,
+    tasks: Vec<ViewTask>,
+    trampoline_active: bool,
 }
 
 /// [`ViewState::root_keys`]: a structural view building roots for a
@@ -370,6 +384,8 @@ impl ViewState {
             parts: ViewParts::default(),
             pending_key: None,
             root_keys: None,
+            tasks: Vec::new(),
+            trampoline_active: false,
         }
     }
 }
@@ -388,11 +404,11 @@ impl<'a> ViewBuilder<'_, 'a, '_> {
 
     /// Position is identity for undeclared keys: static structure is built
     /// once, so the n-th child stays the n-th child.
-    pub(crate) fn auto_key(&mut self) -> String {
+    pub(crate) fn auto_key(&mut self) -> crate::framework::AssemblyKey {
         let level = self.level();
         let index = level.next_auto;
         level.next_auto += 1;
-        format!("#v{index}")
+        crate::framework::AssemblyKey::auto_view(index)
     }
 
     /// Create `component` as a root of this level: keyed under the current
@@ -408,7 +424,7 @@ impl<'a> ViewBuilder<'_, 'a, '_> {
             self.ui.detached(component)
         } else {
             let key = match &declared {
-                Some(key) => key.to_string(),
+                Some(key) => crate::framework::AssemblyKey::from(key.as_ref()),
                 None => self.auto_key(),
             };
             let root_key = self
@@ -418,8 +434,7 @@ impl<'a> ViewBuilder<'_, 'a, '_> {
                 .map(|keys| (keys.container, key.clone()));
             let entity = self.ui.child(key, component);
             if let Some((container, key)) = root_key {
-                self.ui
-                    .key_parked_root(container, key, entity.stable_id(), TypeId::of::<C>());
+                self.ui.key_parked_root(container, key, entity.stable_id());
             }
             entity
         };
@@ -456,17 +471,57 @@ impl<'a> ViewBuilder<'_, 'a, '_> {
         self.st.levels.push(Level::default());
         let st = &mut *self.st;
         let ui = &mut *self.ui;
-        // One view level per element: a tree deeper than the thread's stack
-        // carries on in a new segment (see `crate::stack`).
-        crate::stack::level(|| ui.nest_dyn(parent, &mut |ui| f(&mut ViewBuilder { ui, st })));
+        ui.nest_dyn(parent, &mut |ui| f(&mut ViewBuilder { ui, st }));
         self.st.levels.pop();
         self.st.pending_key = pending;
+    }
+
+    fn should_defer(&self) -> bool {
+        self.st.trampoline_active
+    }
+
+    fn push_build_any(&mut self, view: AnyView) {
+        self.st.tasks.push(ViewTask::Build(view));
+    }
+
+    fn push_clear_pending_key(&mut self) {
+        self.st.tasks.push(ViewTask::ClearPendingKey);
+    }
+
+    fn run_trampoline(&mut self, root: impl IntoView) {
+        let was_active = self.st.trampoline_active;
+        let floor = self.st.tasks.len();
+        self.st.trampoline_active = true;
+        root.build(self);
+        while self.st.tasks.len() > floor {
+            match self.st.tasks.pop().expect("tasks len checked above") {
+                ViewTask::Build(view) => view.build(self),
+                ViewTask::LeaveEl {
+                    id,
+                    type_id,
+                    assemble,
+                    pending,
+                    nested_ui,
+                } => {
+                    self.ui.leave_nest(nested_ui);
+                    self.st.levels.pop();
+                    self.st.pending_key = pending;
+                    if assemble {
+                        self.st.parts.assemble.push((id, type_id));
+                    }
+                }
+                ViewTask::ClearPendingKey => {
+                    self.st.pending_key = None;
+                }
+            }
+        }
+        self.st.trampoline_active = was_active;
     }
 
     /// Build `view` at the current level and return the roots it added.
     pub(crate) fn build_collect(&mut self, view: impl IntoView) -> Vec<StableNodeId> {
         let start = self.level().roots.len();
-        view.build(self);
+        self.run_trampoline(view);
         self.level().roots[start..].to_vec()
     }
 
@@ -481,7 +536,7 @@ impl<'a> ViewBuilder<'_, 'a, '_> {
             detached: true,
             ..Level::default()
         });
-        view.build(self);
+        self.run_trampoline(view);
         let roots = self
             .st
             .levels
@@ -500,18 +555,75 @@ pub trait IntoView: Sized + 'static {
 
     /// Erase the type, e.g. to return different views from one branch.
     fn into_any(self) -> AnyView {
-        AnyView(Box::new(move |vb: &mut ViewBuilder<'_, '_, '_>| {
+        AnyView(Some(Box::new(move |vb: &mut ViewBuilder<'_, '_, '_>| {
             self.build(vb)
-        }))
+        })))
+    }
+}
+
+trait AnyViewFn: 'static {
+    fn call(self: Box<Self>, vb: &mut ViewBuilder<'_, '_, '_>);
+}
+
+impl<F> AnyViewFn for F
+where
+    F: for<'u, 'a, 's> FnOnce(&mut ViewBuilder<'u, 'a, 's>) + 'static,
+{
+    fn call(self: Box<Self>, vb: &mut ViewBuilder<'_, '_, '_>) {
+        (*self)(vb)
     }
 }
 
 /// A type-erased view.
-pub struct AnyView(Box<dyn for<'u, 'a, 's> FnOnce(&mut ViewBuilder<'u, 'a, 's>)>);
+pub struct AnyView(Option<Box<dyn AnyViewFn>>);
+
+impl Drop for AnyView {
+    fn drop(&mut self) {
+        let Some(first) = self.0.take() else {
+            return;
+        };
+        thread_local! {
+            static DROP_QUEUE: std::cell::RefCell<Option<Vec<Box<dyn AnyViewFn>>>> =
+                const { std::cell::RefCell::new(None) };
+        }
+        let top_first = DROP_QUEUE.with(|q| {
+            let mut q = q.borrow_mut();
+            if let Some(queue) = q.as_mut() {
+                queue.push(first);
+                None
+            } else {
+                *q = Some(Vec::new());
+                Some(first)
+            }
+        });
+        let Some(first) = top_first else {
+            return;
+        };
+        struct ResetQueue;
+        impl Drop for ResetQueue {
+            fn drop(&mut self) {
+                DROP_QUEUE.with(|q| {
+                    *q.borrow_mut() = None;
+                });
+            }
+        }
+        let _reset = ResetQueue;
+        drop(first);
+        loop {
+            let next = DROP_QUEUE.with(|q| q.borrow_mut().as_mut().and_then(Vec::pop));
+            let Some(item) = next else {
+                break;
+            };
+            drop(item);
+        }
+    }
+}
 
 impl IntoView for AnyView {
-    fn build(self, vb: &mut ViewBuilder<'_, '_, '_>) {
-        (self.0)(vb)
+    fn build(mut self, vb: &mut ViewBuilder<'_, '_, '_>) {
+        if let Some(inner) = self.0.take() {
+            inner.call(vb);
+        }
     }
 
     fn into_any(self) -> AnyView {
@@ -526,17 +638,37 @@ impl IntoView for () {
 impl<V: IntoView> IntoView for Option<V> {
     fn build(self, vb: &mut ViewBuilder<'_, '_, '_>) {
         if let Some(view) = self {
+            if vb.should_defer() {
+                vb.push_build_any(view.into_any());
+                return;
+            }
             view.build(vb);
         }
     }
 }
 
 impl<V: IntoView> IntoView for Vec<V> {
-    fn build(self, vb: &mut ViewBuilder<'_, '_, '_>) {
+    fn build(mut self, vb: &mut ViewBuilder<'_, '_, '_>) {
+        if vb.should_defer() {
+            while let Some(view) = self.pop() {
+                vb.push_build_any(view.into_any());
+            }
+            return;
+        }
         for view in self {
             view.build(vb);
         }
     }
+}
+
+macro_rules! push_rev {
+    ($vb:expr, $last:ident) => {
+        $vb.push_build_any($last.into_any());
+    };
+    ($vb:expr, $first:ident, $($rest:ident),+) => {
+        push_rev!($vb, $($rest),+);
+        $vb.push_build_any($first.into_any());
+    };
 }
 
 macro_rules! tuple_views {
@@ -545,6 +677,10 @@ macro_rules! tuple_views {
             #[allow(non_snake_case)]
             fn build(self, vb: &mut ViewBuilder<'_, '_, '_>) {
                 let ($($name,)+) = self;
+                if vb.should_defer() {
+                    push_rev!(vb, $($name),+);
+                    return;
+                }
                 $($name.build(vb);)+
             }
         }
@@ -732,6 +868,12 @@ pub fn keyed<V: IntoView>(key: impl Into<Cow<'static, str>>, view: V) -> Keyed<V
 
 impl<V: IntoView> IntoView for Keyed<V> {
     fn build(self, vb: &mut ViewBuilder<'_, '_, '_>) {
+        if vb.should_defer() {
+            vb.push_clear_pending_key();
+            vb.st.pending_key = Some(self.key);
+            vb.push_build_any(self.view.into_any());
+            return;
+        }
         vb.st.pending_key = Some(self.key);
         self.view.build(vb);
         vb.st.pending_key = None;
@@ -1139,7 +1281,8 @@ impl<C: ComponentView> El<C> {
                         adopt.push((*root, key.take()));
                     } else if let Some(key) = key.take() {
                         // the composite places it; its path still names it
-                        vb.ui.key_slot(*root, key.into_owned());
+                        vb.ui
+                            .key_slot(*root, crate::framework::AssemblyKey::from(key));
                     }
                 }
                 // A failed build already recorded its error.
@@ -1221,6 +1364,10 @@ impl<C: ComponentView> El<C> {
 impl<C: ComponentView, K: IntoView> IntoView for El<C, K> {
     fn build(self, vb: &mut ViewBuilder<'_, '_, '_>) {
         let (head, children) = self.split();
+        if vb.should_defer() {
+            build_el_deferred(head, vb, children.into_any());
+            return;
+        }
         let mut children = Some(children);
         build_el(head, vb, &mut |vb| {
             if let Some(children) = children.take() {
@@ -1228,6 +1375,35 @@ impl<C: ComponentView, K: IntoView> IntoView for El<C, K> {
             }
         });
     }
+}
+
+/// Build `head`'s node and push its `children` and cleanup scope onto `vb`'s
+/// heap task stack so arbitrary tree depths use O(1) call stack.
+#[inline(never)]
+fn build_el_deferred<C: ComponentView>(
+    head: El<C>,
+    vb: &mut ViewBuilder<'_, '_, '_>,
+    children: AnyView,
+) {
+    let Some((entity, adopt)) = head.place_node(vb) else {
+        return;
+    };
+    let id = entity.stable_id();
+    let pending = vb.st.pending_key.take();
+    vb.st.levels.push(Level::default());
+    let nested_ui = vb.ui.enter_nest(id);
+    for (root, key) in adopt {
+        vb.ui.adopt_as(root, key);
+    }
+    let assemble = C::BEHAVIOR.slot_assembler.is_some() || C::BEHAVIOR.assembler.is_some();
+    vb.st.tasks.push(ViewTask::LeaveEl {
+        id,
+        type_id: TypeId::of::<C>(),
+        assemble,
+        pending,
+        nested_ui,
+    });
+    vb.push_build_any(children);
 }
 
 /// Build `head`'s node and, under it, its adopted slot roots and then
@@ -1245,7 +1421,7 @@ fn build_el<C: ComponentView>(
     let id = entity.stable_id();
     vb.nest_dyn(id, &mut |vb| {
         for (root, key) in std::mem::take(&mut adopt) {
-            vb.ui.adopt_as(root, TypeId::of::<AnyView>(), key);
+            vb.ui.adopt_as(root, key);
         }
         children(vb);
     });

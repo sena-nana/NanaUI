@@ -12,7 +12,7 @@ impl UiWorld {
         let Some(node) = self.nodes.get(id) else {
             return false;
         };
-        if node.accessibility.hidden || self.inline_box_omitted(id) {
+        if self.nodes.accessibility(id).hidden || self.inline_box_omitted(id) {
             return true;
         }
         node.hierarchy
@@ -29,7 +29,7 @@ impl UiWorld {
             memo.hidden.insert(id, false);
             return false;
         };
-        if node.accessibility.hidden || self.inline_box_omitted(id) {
+        if self.nodes.accessibility(id).hidden || self.inline_box_omitted(id) {
             memo.hidden.insert(id, true);
             return true;
         }
@@ -43,12 +43,13 @@ impl UiWorld {
     /// labels: its own label, or its text.
     fn accessible_text(&self, id: StableNodeId) -> Option<Arc<str>> {
         let node = self.nodes.get(id)?;
-        node.accessibility
+        self.nodes
+            .accessibility(id)
             .label
             .clone()
             .filter(|label| !label.is_empty())
             .or_else(|| {
-                (!node.text.value.is_empty())
+                node.has_text
                     .then(|| self.inline_text(id, true).unwrap_or_default().into())
             })
     }
@@ -61,18 +62,22 @@ impl UiWorld {
         if !self.layout_length_tracks.is_empty()
             || !self.presentation.is_empty()
             || self.z_index_nodes != 0
-            || self.nodes.has_visuals()
+            || self.nodes.has_widget_visuals()
+            || self.modal_frames != 0
+            || self.menu_surfaces != 0
+            || !self.select_menus.is_empty()
+            || !self.triggered_overlays.is_empty()
             || !self.overlay_host_nodes.is_empty()
             || self.clip_visuals != 0
             || self.nodes.has_inline_content()
             || !self.detached_mounted.is_empty()
+            || self.nodes.has_scroll_offsets()
+            || self.nodes.any_hidden_accessibility()
         {
             return false;
         }
         self.nodes.records().all(|node| {
             node.mount == crate::MountState::Mounted
-                && node.scroll_offset == crate::ScrollOffset::default()
-                && !node.accessibility.hidden
                 && node.resolved.0.visible
                 && node.resolved.0.box_visible
                 && !matches!(node.kind.as_ref(), NodeKind::Comment)
@@ -108,12 +113,12 @@ impl UiWorld {
                 Arc::clone(&node.hierarchy.children),
                 Arc::clone(&node.kind),
                 if node.resolved.0.visible {
-                    node.accessibility.as_ref().clone()
+                    self.nodes.accessibility(id).into_owned()
                 } else {
                     AccessibilityState::default()
                 },
                 if node.resolved.0.visible {
-                    node.text.value.clone()
+                    self.nodes.text_content(id).value.clone()
                 } else {
                     crate::TextValue::default()
                 },
@@ -143,16 +148,13 @@ impl UiWorld {
                 (role, _) => role,
             }
         };
-        let secure = self.nodes.has_visuals()
-            && matches!(
-                self.nodes.visual(id),
-                Some(StandardVisual::TextInput { secure: true, .. })
-            );
+        let secure = self.text_input_is_secure(id);
         // Scroll positions are part of the semantic node, rather than a
         // second visual-only state. Publish an axis only when the retained
         // geometry says it can actually move; this keeps ordinary containers
         // from advertising meaningless scroll actions.
-        let scroll_metrics = (visible && (scrolls || self.nodes.has_visuals()))
+        let scroll_metrics = (visible
+            && (scrolls || self.nodes.has_widget_visuals() || self.modal_frames != 0))
             .then(|| {
                 self.is_scroll_container(id)
                     .then(|| self.scroll_metrics(id))
@@ -210,7 +212,7 @@ impl UiWorld {
                         && (node.resolved.0.visible || !node.hierarchy.children.is_empty())
                         && !matches!(node.kind.as_ref(), NodeKind::Comment)
                         && !(chain.hidden
-                            || node.accessibility.hidden
+                            || self.nodes.accessibility(child).hidden
                             || self.inline_box_omitted(child))
                         && (self.axis_aligned_under(child, node, chain.aligned, memo) || {
                             match map.as_ref().and_then(|map| map.finite_under(node, id)) {
@@ -267,25 +269,22 @@ impl UiWorld {
             }
             kept
         };
-        if self.nodes.has_visuals()
-            && let Some(StandardVisual::MenuSurface {
-                kind: crate::MenuSurfaceKind::ContextMenu,
-                open: true,
-                rows,
-                ..
-            }) = self.nodes.visual(id)
+        if self.menu_surfaces != 0
+            && let Some(menu) = self.widget_visual_as::<crate::MenuSurfaceVisual>(id)
+            && menu.kind == crate::MenuSurfaceKind::ContextMenu
+            && menu.open
         {
             children.extend(
-                crate::menu_row_slots(rows)
+                crate::menu_row_slots(&menu.rows)
                     .into_iter()
                     .filter_map(|slot| crate::virtual_menu_item_id(id, slot)),
             );
         }
-        if self.nodes.has_visuals()
-            && let Some(StandardVisual::TreeView { rows, .. }) = self.nodes.visual(id)
+        if self.nodes.has_widget_visuals()
+            && let Some(tree) = self.widget_visual_as::<crate::TreeViewVisual>(id)
         {
             children.extend(
-                (0..rows.len())
+                (0..tree.rows.len())
                     .map_while(|index| u16::try_from(index + 1).ok())
                     .filter_map(|slot| crate::virtual_tree_item_id(id, slot)),
             );
@@ -410,31 +409,26 @@ impl UiWorld {
         let Some(mut node) = self.project_accessibility_node(id, plain, memo) else {
             return Vec::new();
         };
-        if self.nodes.has_visuals()
-            && matches!(self.nodes.visual(id), Some(StandardVisual::Select { .. }))
+        if self.nodes.has_widget_visuals()
+            && self.widget_visual_as::<crate::SelectVisual>(id).is_some()
         {
             let menu = self.project_select_menu(&mut node, pages, memo);
             let mut entries = vec![node];
             entries.extend(menu);
             return entries;
         }
-        if self.nodes.has_visuals()
-            && matches!(self.nodes.visual(id), Some(StandardVisual::TreeView { .. }))
+        if self.nodes.has_widget_visuals()
+            && self.widget_visual_as::<crate::TreeViewVisual>(id).is_some()
         {
             let rows = self.project_virtual_tree_items(&node, pages, memo);
             let mut entries = vec![node];
             entries.extend(rows);
             return entries;
         }
-        let open_context_menu = self.nodes.has_visuals()
-            && matches!(
-                self.nodes.visual(id),
-                Some(StandardVisual::MenuSurface {
-                    kind: crate::MenuSurfaceKind::ContextMenu,
-                    open: true,
-                    ..
-                })
-            );
+        let open_context_menu = self.menu_surfaces != 0
+            && self
+                .widget_visual_as::<crate::MenuSurfaceVisual>(id)
+                .is_some_and(|menu| menu.kind == crate::MenuSurfaceKind::ContextMenu && menu.open);
         if !open_context_menu {
             return vec![node];
         }

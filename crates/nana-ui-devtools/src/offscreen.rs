@@ -1116,7 +1116,7 @@ mod tests {
                 })?;
             let policy = nana_ui::FetchPolicy::default()
                 .with_allowed_origin(&format!("http://{authority}"))?;
-            nana_ui::NativeFetchHost::new(policy).fetch(request)
+            nana_ui_platform::NativeFetchHost::new(policy).fetch(request)
         }
 
         fn policy(&self) -> &nana_ui::FetchPolicy {

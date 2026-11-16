@@ -1486,7 +1486,7 @@ mod styles {
             };
             rules.push(cx.world().responsive_rule(row).cloned().expect("a rule"));
             assert_eq!(
-                layout_of(&cx, card).container_type,
+                layout_of(&cx, card).container.container_type,
                 nana_ui_core::ContainerType::InlineSize
             );
             frames(&mut cx, document);
@@ -2357,7 +2357,13 @@ fn issue204_grid_css_and_rust_share_tracks_participation_and_fragments() {
             let grid=if css_path {
                 widget(Stack::from_layout(LayoutStyle::default())).css(css! {display:grid;grid-template-columns:80px 120px;width:240px;align-items:flex-start;flex-direction:column;})
             } else {
-                widget(Stack::from_layout(LayoutStyle {display:Some(DisplaySpec::Grid),grid_columns:Some(vec![GridTrack::Px(80.0),GridTrack::Px(120.0)]),width:Some(LengthSpec::Px(240.0)),..Default::default()}))
+                let mut layout = LayoutStyle {
+                    display: Some(DisplaySpec::Grid),
+                    width: Some(LengthSpec::Px(240.0)),
+                    ..Default::default()
+                };
+                layout.grid.columns = Some(vec![GridTrack::Px(80.0), GridTrack::Px(120.0)]);
+                widget(Stack::from_layout(layout))
             };
             grid.children((text("first"),text("second"))).into_any()
         }).unwrap();
@@ -2525,7 +2531,7 @@ fn issue204_position_and_scroll_css_and_rust_share_structured_results() {
             .collect();
         // scrollport, content, header, body, badge
         let part = |i: usize| snapshot[i].0.1;
-        assert_eq!(part(2), Some(ParticipationKind::FlowItem));
+        assert_eq!(part(2), Some(ParticipationKind::FlexItem));
         assert_eq!(part(4), Some(ParticipationKind::Absolute));
         assert_eq!(
             snapshot[0].2.0.height, 600.0,

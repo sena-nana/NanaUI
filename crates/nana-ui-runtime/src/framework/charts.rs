@@ -4,7 +4,7 @@ use super::*;
 use crate::charts::{
     ChartDrag, ChartEvent, ChartHoverVisual, ChartSpec, ChartTooltip, ChromeLabelMeasure, ZoomGrab,
 };
-use crate::{Chart, NodePointer, NodePointerHooks, NodeWheel, StandardVisual};
+use crate::{Chart, ChartVisual, NodePointer, NodePointerHooks, NodeWheel};
 use nana_ui_charts::hit::{ChartHover, NO_HOVER, TooltipContent};
 use nana_ui_charts::{ChartLayout, DataZoomKind, EmphasisFocus, Series};
 
@@ -24,13 +24,9 @@ const CLICK_SLOP: f32 = nana_ui_core::space::XS;
 const HANDLE_REACH: f32 = nana_ui_core::space::MD;
 
 fn shown(cx: &AppContext, id: StableNodeId) -> Option<(Arc<ChartSpec>, Arc<ChartLayout>)> {
-    match cx.world.standard_visual(id)? {
-        StandardVisual::Chart { spec, .. } => {
-            let layout = spec.shown()?;
-            Some((spec, layout))
-        }
-        _ => None,
-    }
+    let spec = Arc::clone(&cx.world.widget_visual_as::<ChartVisual>(id)?.spec);
+    let layout = spec.shown().or_else(|| cx.world.chart_layout(id))?;
+    Some((spec, layout))
 }
 
 fn focus_of(spec: &ChartSpec, series: u32) -> u32 {
@@ -538,13 +534,10 @@ mod tests {
     }
 
     fn layout_of(context: &AppContext, chart: Entity<Chart>) -> Arc<ChartLayout> {
-        let nodes = context.world().extract_nodes(&[chart.stable_id()]);
-        let Some(crate::ComponentGeometry::Chart { layout, .. }) =
-            nodes[0].component_geometry.as_deref()
-        else {
-            panic!("chart geometry");
-        };
-        Arc::clone(layout)
+        context
+            .world()
+            .chart_layout(chart.stable_id())
+            .expect("chart geometry")
     }
 
     #[test]

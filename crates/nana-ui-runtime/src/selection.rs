@@ -8,7 +8,7 @@ use nana_ui_core::{
 use crate::view_components::project_common;
 use crate::{
     AccessibilityRole, AccessibilityState, ComponentView, InteractionState, InteractionStyle,
-    MutationQueue, NodeKind, NodeStyle, SemanticPaint, StableNodeId, StandardVisual, TextContent,
+    MutationQueue, NodeKind, NodeStyle, SemanticPaint, StableNodeId, TextContent,
     TextHorizontalAlignment, TextVerticalAlignment, UiWorld,
 };
 
@@ -310,6 +310,9 @@ impl Default for SegmentedControl {
 }
 
 impl ComponentView for SegmentedControl {
+    const TYPE_ID: Option<&'static str> =
+        Some(crate::component_descriptors::SEGMENTED_CONTROL.type_id);
+
     const BEHAVIOR: crate::TypeBehavior<Self> = crate::TypeBehavior {
         hooks: Some(|hooks| {
             crate::framework::routes::segmented(hooks);
@@ -347,6 +350,252 @@ impl ComponentView for SegmentedControl {
                 ..AccessibilityState::default()
             },
         );
+    }
+}
+
+/// Visual state for [`SegmentedOption`] (Segmented, Tabs, and Radio) nodes.
+#[derive(Debug, Clone, PartialEq)]
+pub struct SelectionOptionVisual {
+    pub label: Arc<str>,
+    pub icon: Option<Icon>,
+    pub selected: bool,
+    pub disabled: bool,
+    pub size: ControlSize,
+    pub show_focus_ring: bool,
+    pub indicator: bool,
+}
+
+impl SelectionOptionVisual {
+    fn parts(
+        &self,
+        id: StableNodeId,
+        world: &UiWorld,
+        text: crate::layout_engine::Size,
+    ) -> [Option<crate::layout_engine::parts::FlexPart>; 3] {
+        let gap = world.theme().spacing().xs;
+        let icon = self.icon.map(|_| {
+            let extent = if self.indicator {
+                self.size.icon_size()
+            } else {
+                world
+                    .computed_style(id)
+                    .map_or(self.size.text_size(), |style| style.font_size)
+            };
+            (extent, gap)
+        });
+        crate::layout_engine::parts::selection_option_parts(
+            self.indicator
+                .then(|| (self.size.indicator_size(), self.size.indicator_gap())),
+            icon,
+            text,
+        )
+    }
+}
+
+impl crate::WidgetVisual for SelectionOptionVisual {
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+
+    fn dyn_eq(&self, other: &dyn std::any::Any) -> bool {
+        other.downcast_ref::<Self>().is_some_and(|rhs| self == rhs)
+    }
+
+    fn visual_parts_read_theme(&self) -> bool {
+        self.icon.is_some()
+    }
+
+    fn is_document_select_target(&self) -> bool {
+        true
+    }
+
+    fn content_layout_changed(&self, prev: Option<&dyn std::any::Any>) -> bool {
+        let Some(old) = prev.and_then(|any| any.downcast_ref::<Self>()) else {
+            return false;
+        };
+        (self.icon.is_some(), self.indicator, self.size)
+            != (old.icon.is_some(), old.indicator, old.size)
+    }
+
+    fn invalidates_node_text_constraint(&self) -> bool {
+        true
+    }
+
+    fn intrinsic_chrome_content(
+        &self,
+        id: StableNodeId,
+        world: &UiWorld,
+    ) -> crate::WidgetVisualContent {
+        let parts = self.parts(id, world, crate::layout_engine::Size::default());
+        let chrome = crate::layout_engine::parts::chrome_extent(&parts);
+        crate::WidgetVisualContent {
+            width: chrome.width,
+            height: chrome.height,
+            text: 0.0,
+        }
+    }
+
+    fn solve_content_parts(
+        &self,
+        id: StableNodeId,
+        world: &UiWorld,
+        _bounds: crate::LayoutBox,
+        content: crate::LayoutBox,
+        _writing: nana_ui_core::WritingContext,
+        _own_frame: bool,
+    ) -> Option<crate::layout_engine::parts::ContentParts> {
+        let text = world.text_metrics(id).unwrap_or_default();
+        let inputs = self.parts(
+            id,
+            world,
+            crate::layout_engine::Size::new(text.width, text.height),
+        );
+        Some(crate::layout_engine::parts::selection_option_row(
+            content,
+            inputs,
+            world.selection_option_icon_line(id),
+            world.right_to_left(id),
+        ))
+    }
+
+    fn node_text_max_width(
+        &self,
+        id: StableNodeId,
+        world: &UiWorld,
+        _layout: crate::LayoutBox,
+        available_width: f32,
+        available_height: f32,
+    ) -> Option<f32> {
+        let parts = self.parts(id, world, crate::layout_engine::Size::default());
+        Some(crate::layout_engine::parts::text_budget(
+            parts,
+            crate::layout_engine::Size::new(available_width, available_height),
+        ))
+    }
+
+    fn paint(&self, ctx: &crate::WidgetPaintCtx<'_>) -> crate::WidgetPaintOutput {
+        let mut out = crate::WidgetPaintOutput {
+            suppress_root_surface: false,
+            owns_node_text: true,
+            ..crate::WidgetPaintOutput::new()
+        };
+        let indicator_box = ctx.content_part(crate::LayoutPartKind::Indicator);
+        let label_bounds = ctx
+            .content_part(crate::LayoutPartKind::TextContent)
+            .unwrap_or(ctx.content);
+        let label_color = ctx.style.color.unwrap_or_else(|| {
+            ctx.style_model
+                .color(SemanticColorRole::Text)
+                .as_rgba_array()
+        });
+        out.push(
+            2,
+            crate::WidgetPaintOp::Text(crate::widget_visual::widget_text_region(
+                &crate::ComponentTextRegion {
+                    bounds: label_bounds,
+                    content: crate::TextValue::from(Arc::clone(&self.label)),
+                    color: Some(label_color),
+                    font_size: ctx.style.font_size,
+                    font_weight: ctx.style.font_weight,
+                },
+                ctx,
+                if indicator_box.is_some() {
+                    TextHorizontalAlignment::Start
+                } else {
+                    TextHorizontalAlignment::Center
+                },
+                true,
+            )),
+        );
+        if let Some(ring) = indicator_box {
+            let (ring_color, dot_color) = if self.disabled {
+                let faint = ctx
+                    .style_model
+                    .color(SemanticColorRole::Faint)
+                    .as_rgba_array();
+                (faint, faint)
+            } else if self.selected {
+                let accent = ctx
+                    .style_model
+                    .color(SemanticColorRole::Accent)
+                    .as_rgba_array();
+                (accent, accent)
+            } else {
+                (
+                    ctx.style_model
+                        .color(SemanticColorRole::BorderStrong)
+                        .as_rgba_array(),
+                    ctx.style_model
+                        .color(SemanticColorRole::Accent)
+                        .as_rgba_array(),
+                )
+            };
+            let dot_extent = ring.width / 2.5;
+            out.push(
+                8,
+                crate::WidgetPaintOp::Quad(crate::WidgetQuad {
+                    rect: ring,
+                    border: Some((ring_color, if self.selected { 2.0 } else { 1.0 })),
+                    border_paint: ctx
+                        .matching_text_paint(ring_color)
+                        .or_else(|| ctx.matching_border_paint(ring_color)),
+                    corner_radius: [ring.height / 2.0; 4],
+                    ..crate::WidgetQuad::default()
+                }),
+            );
+            if self.selected {
+                let dot = crate::LayoutBox {
+                    x: ring.x + (ring.width - dot_extent) / 2.0,
+                    y: ring.y + (ring.height - dot_extent) / 2.0,
+                    width: dot_extent,
+                    height: dot_extent,
+                };
+                out.push(
+                    9,
+                    crate::WidgetPaintOp::Quad(crate::WidgetQuad {
+                        rect: dot,
+                        fill: Some(dot_color),
+                        fill_paint: ctx.matching_text_paint(dot_color),
+                        corner_radius: [dot.height / 2.0; 4],
+                        ..crate::WidgetQuad::default()
+                    }),
+                );
+            }
+        }
+        if let Some((icon, bounds)) = self
+            .icon
+            .zip(ctx.content_part(crate::LayoutPartKind::LeadingContent))
+        {
+            let color = ctx.style.color.unwrap_or_else(|| {
+                ctx.style_model
+                    .color(SemanticColorRole::Muted)
+                    .as_rgba_array()
+            });
+            out.push(
+                3,
+                crate::WidgetPaintOp::Icon(crate::WidgetIcon {
+                    bounds,
+                    glyph: crate::WidgetGlyph::Icon(icon),
+                    color: Some(color),
+                    paint_color: ctx.matching_text_paint(color),
+                    align_to_adjacent_text: false,
+                }),
+            );
+        }
+        if self.show_focus_ring && ctx.is_focus_visible() {
+            out.push(
+                7,
+                crate::WidgetPaintOp::FocusRing {
+                    bounds: ctx.bounds,
+                    color: ctx
+                        .style_model
+                        .color(SemanticColorRole::FocusBorder)
+                        .as_rgba_array(),
+                    extra_outset: 1.0,
+                },
+            );
+        }
+        out
     }
 }
 
@@ -455,7 +704,7 @@ impl SegmentedOption {
             layout.flex_grow = None;
             layout.flex_shrink = None;
             layout.white_space_nowrap = false;
-            layout.overflow_wrap = Some(nana_ui_core::OverflowWrapSpec::Anywhere);
+            layout.text_ext.overflow_wrap = Some(nana_ui_core::OverflowWrapSpec::Anywhere);
         }
     }
 }
@@ -677,7 +926,8 @@ fn segmented_option_style(size: ControlSize, chrome: SelectionChrome, fill: bool
                 ..SemanticPaint::default()
             },
             ..Default::default()
-        },
+        }
+        .into(),
         text_horizontal_alignment: if radio {
             TextHorizontalAlignment::Start
         } else {
@@ -737,7 +987,7 @@ impl ComponentView for SegmentedOption {
                 },
             );
         }
-        let visual = StandardVisual::SelectionOption {
+        let visual = SelectionOptionVisual {
             label: Arc::clone(&self.label),
             icon: self.icon,
             selected: self.selected,
@@ -746,8 +996,8 @@ impl ComponentView for SegmentedOption {
             show_focus_ring: matches!(self.chrome, SelectionChrome::Radio),
             indicator: matches!(self.chrome, SelectionChrome::Radio),
         };
-        if world.standard_visual(id) != Some(visual.clone()) {
-            mutations.set_standard_visual(id, Some(visual));
+        if world.widget_visual_as::<SelectionOptionVisual>(id) != Some(&visual) {
+            mutations.set_widget_visual(id, Some(visual));
         }
         let mut effective_style = self.style.clone();
         let metrics = world.theme_metrics();
@@ -933,15 +1183,19 @@ mod tests {
             )
             .unwrap();
         assert!(matches!(
-            context.world().standard_visual(tab.stable_id()),
-            Some(StandardVisual::SelectionOption {
+            context
+                .world()
+                .widget_visual_as::<SelectionOptionVisual>(tab.stable_id()),
+            Some(SelectionOptionVisual {
                 show_focus_ring: false,
                 ..
             })
         ));
         assert!(matches!(
-            context.world().standard_visual(segmented.stable_id()),
-            Some(StandardVisual::SelectionOption {
+            context
+                .world()
+                .widget_visual_as::<SelectionOptionVisual>(segmented.stable_id()),
+            Some(SelectionOptionVisual {
                 show_focus_ring: false,
                 ..
             })
@@ -1007,8 +1261,10 @@ mod tests {
         // construction, so the group stays the single source of surface truth.
         for option in [manual, automatic] {
             assert!(matches!(
-                context.world().standard_visual(option.stable_id()),
-                Some(StandardVisual::SelectionOption {
+                context
+                    .world()
+                    .widget_visual_as::<SelectionOptionVisual>(option.stable_id()),
+                Some(SelectionOptionVisual {
                     indicator: true,
                     show_focus_ring: true,
                     ..
@@ -1072,24 +1328,34 @@ mod tests {
         }
         context.commit_mutations(mutations).unwrap();
 
-        let ring = |option: crate::Entity<SegmentedOption>| match context
-            .world()
-            .component_geometry(option.stable_id())
-        {
-            Some(crate::ComponentGeometry::SelectionOption { indicator, .. }) => indicator,
-            other => panic!("expected selection option geometry, got {other:?}"),
+        let ring = |option: crate::Entity<SegmentedOption>| {
+            let paint = context
+                .world()
+                .widget_paint(option.stable_id())
+                .expect("selection option paint");
+            let quad = |slot| {
+                paint
+                    .ops
+                    .iter()
+                    .find(|tagged| tagged.slot == slot)
+                    .map(|tagged| match &tagged.op {
+                        crate::WidgetPaintOp::Quad(quad) => quad.rect,
+                        other => panic!("expected quad at slot {slot}, got {other:?}"),
+                    })
+            };
+            (quad(8), quad(9))
         };
-        let unselected = ring(manual).expect("radio ring");
-        let selected = ring(automatic).expect("radio ring");
-        assert!(unselected.dot.is_none());
-        let (dot, _) = selected.dot.expect("selected radio dot");
+        let (unselected_ring, unselected_dot) = ring(manual);
+        let (selected_ring, selected_dot) = ring(automatic);
+        let unselected = unselected_ring.expect("radio ring");
+        let selected = selected_ring.expect("radio ring");
+        assert!(unselected_dot.is_none());
+        let dot = selected_dot.expect("selected radio dot");
         // The dot sits concentric inside the ring.
-        assert!(
-            (dot.x + dot.width / 2.0 - (selected.ring.x + selected.ring.width / 2.0)).abs() < 0.001
-        );
-        assert!(dot.width < selected.ring.width);
+        assert!((dot.x + dot.width / 2.0 - (selected.x + selected.width / 2.0)).abs() < 0.001);
+        assert!(dot.width < selected.width);
         assert_eq!(
-            unselected.ring.x,
+            unselected.x,
             nana_ui_core::RADIO_ROW_INSET,
             "ring hugs the row inset"
         );

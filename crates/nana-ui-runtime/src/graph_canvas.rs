@@ -2,7 +2,7 @@
 //!
 //! Applications own [`GraphModel`], viewport, selection, and persistence.
 //! This component owns transient pointer state and emits [`GraphCanvasEvent`].
-//! Default paint is [`StandardVisual::GraphCanvas`]: grid lines, node frames,
+//! Default paint is [`GraphCanvasVisual`]: grid lines, node frames,
 //! ports, and sampled edge curves. Node interiors are optional child Regions
 //! or `"nana.host-texture"` slots ([`GraphNodeContent`]); this component does
 //! not rasterize mermaid, math, or formula pixels. Unslotted nodes keep the
@@ -20,7 +20,7 @@ use nana_ui_core::{
     GRAPH_NODE_TITLE_HEIGHT, GRAPH_PORT_INSET, GraphCanvasId, GraphEndpoint, GraphModel,
     GraphNodeId, GraphPoint, GraphPortId, GraphPortKind, GraphPortSide, GraphSelection, GraphSize,
     GraphTargetDescriptor, GraphViewport, LengthSpec, OverflowSpec, PositionSpec,
-    SemanticColorRole, port_tangent,
+    SemanticColorRole, SemanticPalette, cubic_point, port_tangent,
 };
 
 #[cfg(test)]
@@ -28,9 +28,11 @@ use nana_ui_core::{GRAPH_MAX_ZOOM, GraphEdge, GraphNode, GraphPort};
 
 use crate::view_components::project_common;
 use crate::{
-    AccessibilityRole, AccessibilityState, ComponentView, CustomRenderNode, HOST_TEXTURE_RENDERER,
-    InteractionState, InteractionStyle, LayoutBox, MutationQueue, NodeKind, NodeStyle,
-    SemanticPaint, StableNodeId, StandardVisual, UiWorld,
+    AccessibilityRole, AccessibilityState, ComponentTextRegion, ComponentView, ComputedStyle,
+    CustomRenderNode, HOST_TEXTURE_RENDERER, InteractionState, InteractionStyle, LayoutBox,
+    LineCap, MutationQueue, NodeKind, NodeStyle, SemanticPaint, StableNodeId,
+    TextHorizontalAlignment, UiWorld, WidgetBatchColors, WidgetPaintCtx, WidgetPaintOp,
+    WidgetPaintOutput, WidgetQuad, WidgetQuadBatch, WidgetStroke, WidgetVisual,
 };
 
 pub const GRAPH_CANVAS_RENDERER: &str = "graph-canvas";
@@ -179,6 +181,500 @@ pub struct GraphEdgePaint {
     pub hovered: bool,
     pub connecting: bool,
     pub label: Option<Arc<str>>,
+}
+
+/// Resolved geometry and paint primitives for a [`GraphCanvas`] node.
+#[derive(Debug, Clone, PartialEq)]
+pub struct GraphCanvasLayout {
+    pub nodes: Vec<(LayoutBox, ComponentTextRegion, [f32; 4], Option<[f32; 4]>)>,
+    pub separators: Vec<LayoutBox>,
+    pub ports: Vec<(LayoutBox, [f32; 4], [f32; 4], f32)>,
+    pub port_labels: Vec<(ComponentTextRegion, TextHorizontalAlignment)>,
+    pub edges: Vec<(Vec<[f32; 2]>, [f32; 4])>,
+    pub edge_labels: Vec<ComponentTextRegion>,
+    pub grid: Vec<LayoutBox>,
+    pub background: [f32; 4],
+    pub grid_color: [f32; 4],
+    pub separator_color: [f32; 4],
+}
+
+impl GraphCanvasLayout {
+    /// Lowers this resolved layout into node-local widget paint operations.
+    #[must_use]
+    pub fn to_widget_paint(
+        &self,
+        bounds: LayoutBox,
+        chrome_radii: nana_ui_core::ChromeRadii,
+        style: &ComputedStyle,
+    ) -> WidgetPaintOutput {
+        let mut out = WidgetPaintOutput::new();
+        out.owns_node_text = true;
+        out.suppress_root_surface = true;
+
+        out.push(
+            10,
+            WidgetPaintOp::Quad(WidgetQuad {
+                rect: bounds,
+                fill: Some(self.background),
+                ..WidgetQuad::default()
+            }),
+        );
+        if !self.grid.is_empty() {
+            out.push(
+                11,
+                WidgetPaintOp::QuadBatch(WidgetQuadBatch {
+                    bounds: crate::widget_visual::union_layout_rects(&self.grid),
+                    rects: Arc::from(self.grid.as_slice()),
+                    colors: WidgetBatchColors::Uniform(self.grid_color),
+                    fill_paint: None,
+                    border: None,
+                    corner_radius: [0.0; 4],
+                }),
+            );
+        }
+        for (index, (points, color)) in self.edges.iter().enumerate() {
+            if points.len() < 2 {
+                continue;
+            }
+            out.push(
+                graph_slot(1, index),
+                WidgetPaintOp::Stroke(WidgetStroke {
+                    points: points.clone(),
+                    width: 1.6,
+                    color: *color,
+                    cap: LineCap::Round,
+                    dash: None,
+                    snap_hairline: false,
+                }),
+            );
+        }
+        for (index, (node_bounds, label, fill, border)) in self.nodes.iter().enumerate() {
+            out.push(
+                graph_slot(2, index),
+                WidgetPaintOp::Quad(WidgetQuad {
+                    rect: *node_bounds,
+                    fill: Some(*fill),
+                    border: border.map(|color| (color, 1.0)),
+                    corner_radius: [chrome_radii.sm; 4],
+                    ..WidgetQuad::default()
+                }),
+            );
+            out.push(
+                graph_slot(4, index),
+                WidgetPaintOp::Text(crate::widget_visual::styled_text_region(
+                    label,
+                    style,
+                    TextHorizontalAlignment::Start,
+                    true,
+                )),
+            );
+        }
+        if !self.separators.is_empty() {
+            out.push(
+                graph_slot(3, 0),
+                WidgetPaintOp::QuadBatch(WidgetQuadBatch {
+                    bounds: crate::widget_visual::union_layout_rects(&self.separators),
+                    rects: Arc::from(self.separators.as_slice()),
+                    colors: WidgetBatchColors::Uniform(self.separator_color),
+                    fill_paint: None,
+                    border: None,
+                    corner_radius: [0.0; 4],
+                }),
+            );
+        }
+        for (index, (port, fill, border, border_width)) in self.ports.iter().enumerate() {
+            out.push(
+                graph_slot(5, index),
+                WidgetPaintOp::Quad(WidgetQuad {
+                    rect: *port,
+                    fill: Some(*fill),
+                    border: Some((*border, *border_width)),
+                    corner_radius: [999.0; 4],
+                    ..WidgetQuad::default()
+                }),
+            );
+        }
+        for (index, (label, alignment)) in self.port_labels.iter().enumerate() {
+            out.push(
+                graph_slot(6, index),
+                WidgetPaintOp::Text(crate::widget_visual::styled_text_region(
+                    label, style, *alignment, true,
+                )),
+            );
+        }
+        for (index, label) in self.edge_labels.iter().enumerate() {
+            out.push(
+                graph_slot(7, index),
+                WidgetPaintOp::Text(crate::widget_visual::styled_text_region(
+                    label,
+                    style,
+                    TextHorizontalAlignment::Center,
+                    true,
+                )),
+            );
+        }
+        out
+    }
+}
+
+/// Visual payload projected by [`GraphCanvas`].
+#[derive(Debug, Clone, PartialEq)]
+pub struct GraphCanvasVisual {
+    pub nodes: Arc<[GraphNodePaint]>,
+    pub ports: Arc<[GraphPortPaint]>,
+    pub edges: Arc<[GraphEdgePaint]>,
+    pub connecting: Option<GraphEdgePaint>,
+    pub grid_spacing: f32,
+    pub viewport_offset_x: f32,
+    pub viewport_offset_y: f32,
+    pub viewport_zoom: f32,
+}
+
+impl GraphCanvasVisual {
+    /// Resolves `bounds`-relative node, port, edge, and grid geometry against `palette`.
+    #[must_use]
+    pub fn layout_at(&self, bounds: LayoutBox, palette: &SemanticPalette) -> GraphCanvasLayout {
+        let mut painted_edges = Vec::new();
+        let mut edge_labels = Vec::new();
+        for edge in self.edges.iter().chain(self.connecting.as_ref()) {
+            let color = graph_edge_stroke_color(palette, edge);
+            painted_edges.push((sample_curve(bounds, edge.curve), color));
+            if !edge.connecting
+                && self.viewport_zoom >= 0.7
+                && let Some(label) = edge.label.as_ref()
+            {
+                let center = cubic_point(edge.curve, 0.5);
+                if let Some(label_bounds) = crate::world::intersect_layout_boxes(
+                    bounds,
+                    LayoutBox {
+                        x: bounds.x + center.x - 40.0,
+                        y: bounds.y + center.y - 16.0,
+                        width: 80.0,
+                        height: 12.0,
+                    },
+                ) {
+                    edge_labels.push(ComponentTextRegion {
+                        bounds: label_bounds,
+                        content: Arc::clone(label).into(),
+                        color: Some(palette.muted.as_rgba_array()),
+                        font_size: nana_ui_core::type_scale::HINT,
+                        font_weight: None,
+                    });
+                }
+            }
+        }
+        let mut separators = Vec::new();
+        let nodes = self
+            .nodes
+            .iter()
+            .filter_map(|node| {
+                let raw = LayoutBox {
+                    x: bounds.x + node.x,
+                    y: bounds.y + node.y,
+                    width: node.width.max(0.0),
+                    height: node.height.max(0.0),
+                };
+                let node_bounds = crate::world::intersect_layout_boxes(bounds, raw)?;
+                let title_height = node.title_height.clamp(18.0, node_bounds.height.max(18.0));
+                if node_bounds.width >= 32.0
+                    && node_bounds.height >= title_height
+                    && let Some(separator) = crate::world::intersect_layout_boxes(
+                        bounds,
+                        LayoutBox {
+                            x: node_bounds.x,
+                            y: node_bounds.y + title_height,
+                            width: node_bounds.width,
+                            height: 1.0,
+                        },
+                    )
+                {
+                    separators.push(separator);
+                }
+                let label = ComponentTextRegion {
+                    bounds: crate::world::intersect_layout_boxes(
+                        bounds,
+                        LayoutBox {
+                            x: raw.x + 10.0,
+                            y: raw.y,
+                            width: (raw.width - 20.0).max(0.0),
+                            height: title_height.min(raw.height),
+                        },
+                    )
+                    .unwrap_or(LayoutBox {
+                        x: node_bounds.x,
+                        y: node_bounds.y,
+                        width: 0.0,
+                        height: 0.0,
+                    }),
+                    content: Arc::clone(&node.label).into(),
+                    color: Some(palette.text.as_rgba_array()),
+                    font_size: (nana_ui_core::type_scale::META * self.viewport_zoom)
+                        .clamp(NODE_TITLE_SIZE_MIN, nana_ui_core::type_scale::BODY),
+                    font_weight: Some(nana_ui_core::type_scale::MEDIUM),
+                };
+                let fill = if node.selected {
+                    palette.selected.as_rgba_array()
+                } else if node.hovered {
+                    palette.hover.as_rgba_array()
+                } else {
+                    palette.surface.as_rgba_array()
+                };
+                let border = if node.selected {
+                    Some(palette.border_strong.as_rgba_array())
+                } else {
+                    Some(palette.border.as_rgba_array())
+                };
+                Some((node_bounds, label, fill, border))
+            })
+            .collect();
+        let mut port_labels = Vec::new();
+        let ports = self
+            .ports
+            .iter()
+            .filter_map(|port| {
+                let radius = port.radius.max(0.0);
+                let disc = crate::world::intersect_layout_boxes(
+                    bounds,
+                    LayoutBox {
+                        x: bounds.x + port.x - radius,
+                        y: bounds.y + port.y - radius,
+                        width: radius * 2.0,
+                        height: radius * 2.0,
+                    },
+                )?;
+                let kind = match port.kind {
+                    GraphPortKind::Input => palette.muted.as_rgba_array(),
+                    GraphPortKind::Output => palette.accent.as_rgba_array(),
+                    GraphPortKind::Bidirectional => palette.warning.as_rgba_array(),
+                };
+                if self.viewport_zoom >= 0.72 && !port.label.is_empty() {
+                    let (mut label, alignment) =
+                        port_label_region(bounds, port, palette.muted.as_rgba_array());
+                    if let Some(clipped) =
+                        crate::world::intersect_layout_boxes(bounds, label.bounds)
+                    {
+                        label.bounds = clipped;
+                        port_labels.push((label, alignment));
+                    }
+                }
+                Some((
+                    disc,
+                    palette.background.as_rgba_array(),
+                    kind,
+                    if port.selected { 2.4 } else { 1.6 },
+                ))
+            })
+            .collect();
+        GraphCanvasLayout {
+            nodes,
+            separators,
+            ports,
+            port_labels,
+            edges: painted_edges,
+            edge_labels,
+            grid: graph_grid_lines(
+                bounds,
+                self.grid_spacing,
+                self.viewport_offset_x,
+                self.viewport_offset_y,
+                self.viewport_zoom,
+            ),
+            background: palette.background.as_rgba_array(),
+            grid_color: {
+                let mut color = palette.border_soft.as_rgba_array();
+                color[3] *= 0.72;
+                color
+            },
+            separator_color: palette.border_soft.as_rgba_array(),
+        }
+    }
+}
+
+fn graph_slot(family: u64, index: usize) -> u64 {
+    (family << 32) | u64::from(u32::try_from(index).expect("graph primitive family exceeds u32"))
+}
+
+impl WidgetVisual for GraphCanvasVisual {
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+
+    fn dyn_eq(&self, other: &dyn std::any::Any) -> bool {
+        other.downcast_ref::<Self>() == Some(self)
+    }
+
+    fn paint(&self, ctx: &WidgetPaintCtx<'_>) -> WidgetPaintOutput {
+        self.layout_at(ctx.bounds, &ctx.style_model.palette)
+            .to_widget_paint(ctx.bounds, ctx.chrome_radii, ctx.style)
+    }
+}
+
+pub(crate) fn graph_edge_stroke_color(
+    palette: &SemanticPalette,
+    edge: &GraphEdgePaint,
+) -> [f32; 4] {
+    if edge.connecting {
+        let mut accent = palette.accent.as_rgba_array();
+        accent[3] *= 0.8;
+        accent
+    } else if edge.selected {
+        palette.text.as_rgba_array()
+    } else if edge.hovered {
+        palette.muted.as_rgba_array()
+    } else {
+        palette.border_strong.as_rgba_array()
+    }
+}
+
+pub(crate) const CURVE_FLATNESS: f32 = 0.75;
+
+pub(crate) fn sample_curve(bounds: LayoutBox, curve: [GraphPoint; 4]) -> Vec<[f32; 2]> {
+    let origin = [bounds.x, bounds.y];
+    let mut points = vec![[origin[0] + curve[0].x, origin[1] + curve[0].y]];
+    flatten_cubic(&mut points, curve, origin, 0);
+    points
+}
+
+/// Screen-space flatness (`edge_curve` is already in view space).
+fn flatten_cubic(
+    points: &mut Vec<[f32; 2]>,
+    [p0, p1, p2, p3]: [GraphPoint; 4],
+    origin: [f32; 2],
+    depth: u32,
+) {
+    let deviation = line_offset(p1, p0, p3).max(line_offset(p2, p0, p3));
+    if depth >= 16 || deviation <= CURVE_FLATNESS {
+        points.push([origin[0] + p3.x, origin[1] + p3.y]);
+        return;
+    }
+    let mid = |a: GraphPoint, b: GraphPoint| GraphPoint::new((a.x + b.x) * 0.5, (a.y + b.y) * 0.5);
+    let p01 = mid(p0, p1);
+    let p12 = mid(p1, p2);
+    let p23 = mid(p2, p3);
+    let p012 = mid(p01, p12);
+    let p123 = mid(p12, p23);
+    let split = mid(p012, p123);
+    flatten_cubic(points, [p0, p01, p012, split], origin, depth + 1);
+    flatten_cubic(points, [split, p123, p23, p3], origin, depth + 1);
+}
+
+fn line_offset(point: GraphPoint, start: GraphPoint, end: GraphPoint) -> f32 {
+    let abx = end.x - start.x;
+    let aby = end.y - start.y;
+    let length_sq = abx * abx + aby * aby;
+    if length_sq <= f32::EPSILON {
+        return point.distance_squared(start).sqrt();
+    }
+    ((point.x - start.x) * aby - (point.y - start.y) * abx).abs() / length_sq.sqrt()
+}
+
+fn graph_grid_lines(
+    bounds: LayoutBox,
+    base_spacing: f32,
+    offset_x: f32,
+    offset_y: f32,
+    zoom: f32,
+) -> Vec<LayoutBox> {
+    if !base_spacing.is_finite() || base_spacing <= 0.0 {
+        return Vec::new();
+    }
+    let mut spacing = base_spacing
+        * if zoom.is_finite() && zoom > 0.0 {
+            zoom
+        } else {
+            1.0
+        };
+    while spacing < 16.0 {
+        spacing *= 2.0;
+    }
+    while spacing > 96.0 {
+        spacing *= 0.5;
+    }
+    if !spacing.is_finite() || spacing < 1.0 {
+        return Vec::new();
+    }
+    let mut lines = Vec::new();
+    let mut x = offset_x.rem_euclid(spacing);
+    while x <= bounds.width {
+        lines.push(LayoutBox {
+            x: bounds.x + x,
+            y: bounds.y,
+            width: 1.0,
+            height: bounds.height,
+        });
+        x += spacing;
+    }
+    let mut y = offset_y.rem_euclid(spacing);
+    while y <= bounds.height {
+        lines.push(LayoutBox {
+            x: bounds.x,
+            y: bounds.y + y,
+            width: bounds.width,
+            height: 1.0,
+        });
+        y += spacing;
+    }
+    lines
+}
+
+fn port_label_region(
+    bounds: LayoutBox,
+    port: &GraphPortPaint,
+    color: [f32; 4],
+) -> (ComponentTextRegion, TextHorizontalAlignment) {
+    let width = PORT_LABEL_WIDTH;
+    let (x, y, height, align) = match port.side {
+        GraphPortSide::Top => (
+            port.x - nana_ui_core::space::PAGE_TIGHT * 2.0,
+            port.y + nana_ui_core::space::MD,
+            nana_ui_core::type_scale::META,
+            TextHorizontalAlignment::Center,
+        ),
+        GraphPortSide::Right => (
+            port.x - (width + nana_ui_core::space::MD),
+            port.y - nana_ui_core::space::SM,
+            nana_ui_core::type_scale::SECTION,
+            TextHorizontalAlignment::End,
+        ),
+        GraphPortSide::Bottom => (
+            port.x - nana_ui_core::space::PAGE_TIGHT * 2.0,
+            port.y - nana_ui_core::space::PAGE_TIGHT,
+            nana_ui_core::type_scale::META,
+            TextHorizontalAlignment::Center,
+        ),
+        GraphPortSide::Left => (
+            port.x + nana_ui_core::space::MD,
+            port.y - nana_ui_core::space::SM,
+            nana_ui_core::type_scale::SECTION,
+            TextHorizontalAlignment::Start,
+        ),
+    };
+    (
+        ComponentTextRegion {
+            bounds: LayoutBox {
+                x: bounds.x + x,
+                y: bounds.y + y,
+                width,
+                height,
+            },
+            content: Arc::clone(&port.label).into(),
+            color: Some(color),
+            font_size: PORT_LABEL_SIZE,
+            font_weight: None,
+        },
+        align,
+    )
+}
+
+impl UiWorld {
+    /// Resolves `id`'s graph-canvas nodes, ports, edges, labels, and grid geometry.
+    #[must_use]
+    pub fn graph_canvas_layout(&self, id: StableNodeId) -> Option<GraphCanvasLayout> {
+        let visual = self.widget_visual_as::<GraphCanvasVisual>(id)?;
+        let bounds = self.component_layout_box(id)?;
+        let style_model = self.node_style_model(id);
+        Some(visual.layout_at(bounds, &style_model.palette))
+    }
 }
 
 /// Host-drawn interior of one graph node.
@@ -793,7 +1289,7 @@ impl GraphCanvas {
 
     /// Identity for a host-registered Scene GPU painter.
     ///
-    /// Default paint is [`StandardVisual::GraphCanvas`] (grid, frames, edges).
+    /// Default paint is [`GraphCanvasVisual`] (grid, frames, edges).
     /// [`ComponentView::project`] does **not** attach this node. Hosts that
     /// register `"graph-canvas"` may call this and `set_custom_render` themselves.
     /// The default Scene painter rejects the unregistered key.
@@ -861,6 +1357,8 @@ impl GraphCanvas {
 }
 
 impl ComponentView for GraphCanvas {
+    const TYPE_ID: Option<&'static str> = Some(crate::component_descriptors::GRAPH_CANVAS.type_id);
+
     const BEHAVIOR: crate::TypeBehavior<Self> = crate::TypeBehavior {
         slot_assembler: Some(crate::AppContext::assemble_graph_canvas_contents),
         ..crate::TypeBehavior::NONE
@@ -883,7 +1381,7 @@ impl ComponentView for GraphCanvas {
     }
 
     fn project(&self, id: StableNodeId, world: &UiWorld, mutations: &mut MutationQueue) {
-        let visual = StandardVisual::GraphCanvas {
+        let visual = GraphCanvasVisual {
             nodes: self.paint_nodes(),
             ports: self.paint_ports(),
             edges: self.paint_edges(),
@@ -893,8 +1391,8 @@ impl ComponentView for GraphCanvas {
             viewport_offset_y: self.viewport.offset.y,
             viewport_zoom: self.viewport.zoom,
         };
-        if world.standard_visual(id) != Some(visual.clone()) {
-            mutations.set_standard_visual(id, Some(visual));
+        if world.widget_visual_as::<GraphCanvasVisual>(id) != Some(&visual) {
+            mutations.set_widget_visual(id, Some(visual));
         }
         project_common(
             id,
@@ -1144,7 +1642,7 @@ impl crate::AppContext {
     ///
     /// Region children are host-owned and only reparented. Allocated children
     /// sample [`HOST_TEXTURE_RENDERER`] in document order. The canvas itself
-    /// keeps [`StandardVisual::GraphCanvas`] and does not attach GPU content.
+    /// keeps [`GraphCanvasVisual`] and does not attach GPU content.
     pub fn assemble_graph_canvas_contents(
         &mut self,
         canvas: crate::Entity<GraphCanvas>,
@@ -1309,7 +1807,8 @@ fn canvas_style() -> NodeStyle {
                 ..SemanticPaint::default()
             },
             ..InteractionStyle::default()
-        },
+        }
+        .into(),
         ..NodeStyle::default()
     }
 }
@@ -1907,11 +2406,11 @@ mod tests {
         let accessibility = context.world().accessibility(canvas.stable_id()).unwrap();
         assert_eq!(accessibility.label.as_deref(), Some("Workflow"));
         assert!(matches!(
-            context.world().standard_visual(canvas.stable_id()),
-            Some(StandardVisual::GraphCanvas {
-                ref nodes,
-                ref ports,
-                ref edges,
+            context.world().widget_visual_as::<GraphCanvasVisual>(canvas.stable_id()),
+            Some(GraphCanvasVisual {
+                nodes,
+                ports,
+                edges,
                 connecting: None,
                 ..
             }) if nodes.len() == 2 && ports.len() == 2 && edges.len() == 1
@@ -1989,11 +2488,11 @@ mod tests {
         let work = context.take_system_work();
         context.resolve_styles(&work.style).unwrap();
         context.resolve_styles(&[id]).unwrap();
-        let Some(crate::ComponentGeometry::GraphCanvas { nodes, .. }) =
-            context.world().component_geometry(id)
-        else {
-            panic!("graph geometry");
-        };
+        let layout = context
+            .world()
+            .graph_canvas_layout(id)
+            .expect("graph layout");
+        let nodes = layout.nodes;
         assert!(
             nodes.iter().all(|(bounds, _, _, _)| {
                 bounds.x >= 0.0 && bounds.x + bounds.width <= 400.0 + 0.01
@@ -2030,19 +2529,19 @@ mod tests {
                 .create_component(document(), canvas)
                 .unwrap()
                 .stable_id();
-            context.world().standard_visual(id).unwrap().clone()
+            context
+                .world()
+                .widget_visual_as::<GraphCanvasVisual>(id)
+                .unwrap()
+                .clone()
         };
-        match visual {
-            StandardVisual::GraphCanvas {
-                grid_spacing,
-                viewport_zoom,
-                ..
-            } => {
-                assert_eq!(grid_spacing, DEFAULT_GRID_SPACING);
-                assert_eq!(viewport_zoom, 1.0);
-            }
-            _ => panic!("graph visual"),
-        }
+        let GraphCanvasVisual {
+            grid_spacing,
+            viewport_zoom,
+            ..
+        } = visual;
+        assert_eq!(grid_spacing, DEFAULT_GRID_SPACING);
+        assert_eq!(viewport_zoom, 1.0);
     }
 
     #[test]
@@ -2080,11 +2579,11 @@ mod tests {
         );
         assert!(context.world().custom_render(canvas.stable_id()).is_none());
         assert!(matches!(
-            context.world().standard_visual(canvas.stable_id()),
-            Some(StandardVisual::GraphCanvas {
-                ref nodes,
-                ref ports,
-                ref edges,
+            context.world().widget_visual_as::<GraphCanvasVisual>(canvas.stable_id()),
+            Some(GraphCanvasVisual {
+                nodes,
+                ports,
+                edges,
                 connecting: None,
                 ..
             }) if nodes.len() == 2 && ports.len() == 2 && edges.len() == 1
@@ -2123,10 +2622,10 @@ mod tests {
         assert_eq!(custom.resource.as_ref(), "formula.source");
         assert!(context.world().custom_render(canvas.stable_id()).is_none());
         assert!(matches!(
-            context.world().standard_visual(canvas.stable_id()),
-            Some(StandardVisual::GraphCanvas {
-                ref nodes,
-                ref edges,
+            context.world().widget_visual_as::<GraphCanvasVisual>(canvas.stable_id()),
+            Some(GraphCanvasVisual {
+                nodes,
+                edges,
                 ..
             }) if nodes.len() == 2 && edges.len() == 1
         ));
@@ -2163,8 +2662,8 @@ mod tests {
                 .is_empty()
         );
         assert!(matches!(
-            context.world().standard_visual(canvas.stable_id()),
-            Some(StandardVisual::GraphCanvas { ref nodes, .. }) if nodes.len() == 2
+            context.world().widget_visual_as::<GraphCanvasVisual>(canvas.stable_id()),
+            Some(GraphCanvasVisual { nodes, .. }) if nodes.len() == 2
         ));
     }
 

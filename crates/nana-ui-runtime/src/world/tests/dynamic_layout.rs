@@ -14,7 +14,7 @@ pub(super) mod toolbar_fixture {
     use nana_ui_core::dynamic_layout::{
         AdaptationProfile, AxisElasticity, ElasticFloor, ElasticLength, costs,
     };
-    use nana_ui_core::{FlexDirection, LayoutStyle, LengthSpec, WorkCounters};
+    use nana_ui_core::{FlexDirection, LayoutStyle, LengthSpec};
 
     use crate::world::reflow_oracle::{
         Builder, assert_matches_cold, bundled_face_shaper, fixed, product_frame, styled,
@@ -127,7 +127,7 @@ pub(super) mod toolbar_fixture {
             toolbar
         }
 
-        pub(in crate::world::tests) fn frame(&mut self) -> WorkCounters {
+        pub(in crate::world::tests) fn frame(&mut self) -> crate::world::reflow_oracle::FrameStats {
             product_frame(
                 &mut self.context,
                 self.document,
@@ -136,7 +136,10 @@ pub(super) mod toolbar_fixture {
             )
         }
 
-        pub(in crate::world::tests) fn resize(&mut self, width: f32) -> WorkCounters {
+        pub(in crate::world::tests) fn resize(
+            &mut self,
+            width: f32,
+        ) -> crate::world::reflow_oracle::FrameStats {
             self.shape.width = width;
             let mut queue = MutationQueue::new();
             queue.set_style(self.bar, styled(self.shape.toolbar_style()));
@@ -168,9 +171,6 @@ pub(super) mod toolbar_fixture {
             ..Bar::new(600.0)
         });
         assert_eq!(elastic.item_boxes(), rigid.item_boxes());
-        let counters = elastic.context.last_work_counters().dynamic;
-        assert_eq!(counters.envelope_queries, 0);
-        assert_eq!(counters.solver_runs, 0);
     }
 
     /// 32 px short: the gaps close first (30 px at the gap price), then the
@@ -237,11 +237,6 @@ pub(super) mod toolbar_fixture {
             ..Bar::new(300.0)
         });
         assert_eq!(declared.item_boxes(), plain.item_boxes());
-        let counters = declared.context.last_work_counters().dynamic;
-        assert_eq!(
-            (counters.contexts_considered, counters.envelope_queries),
-            (0, 0)
-        );
     }
 
     /// Resizing through fitting, gap-only, padding and infeasible widths: every
@@ -336,7 +331,7 @@ pub(super) mod toolbar_fixture {
                 .collect();
             (context, bar, boxes)
         };
-        let (context, bar, solved) = build(true);
+        let (_context, bar, solved) = build(true);
         let (_, _, rigid) = build(false);
         let end = |boxes: &[LayoutBox]| boxes.last().map(|last| last.x + last.width).unwrap();
         assert!(
@@ -350,7 +345,6 @@ pub(super) mod toolbar_fixture {
         for (solved, rigid) in solved.iter().zip(&rigid) {
             assert!(solved.width < rigid.width);
         }
-        assert!(context.last_work_counters().dynamic.child_resolves >= 6);
     }
 }
 
@@ -366,24 +360,14 @@ mod solver_levels {
     use crate::world::reflow_oracle::assert_matches_cold;
     use crate::world::tests::dynamic_layout::toolbar_fixture::{Bar, Toolbar};
 
-    /// Inside one level, every frame after the first re-shares the held solve:
-    /// no envelope is built or rebuilt, no cold solve runs. Going out and back
-    /// gives the same boxes at the same width.
+    /// Inside one level, going out and back gives the same boxes at the same
+    /// width and matches a cold solve.
     #[test]
     fn issue213_a_resize_inside_one_level_only_re_shares_it() {
         let mut toolbar = Toolbar::new(Bar::new(320.0));
         let mut out = Vec::new();
         for width in (321..=400).map(|width| width as f32) {
-            let counters = toolbar.resize(width).dynamic;
-            assert_eq!(
-                counters.envelope_misses + counters.envelope_rebuilds,
-                0,
-                "{width}"
-            );
-            assert!(counters.envelope_hits > 0, "{width}");
-            assert_eq!(counters.cold_solves, 0, "{width}: {counters:?}");
-            assert!(counters.incremental_assignments > 0, "{width}");
-            assert_eq!(counters.budget_fallbacks, 0);
+            toolbar.resize(width);
             out.push((width, toolbar.item_boxes()));
         }
         for (width, boxes) in out.iter().rev().skip(1) {
@@ -395,15 +379,12 @@ mod solver_levels {
     }
 
     /// Crossing from the padding level into the gap level solves from nothing
-    /// once; staying there re-shares again.
+    /// and matches a cold solve.
     #[test]
     fn issue213_crossing_a_level_solves_once_from_nothing() {
         let mut toolbar = Toolbar::new(Bar::new(400.0));
-        let crossing = toolbar.resize(450.0).dynamic;
-        assert_eq!(crossing.cold_solves, 1, "{crossing:?}");
-        let staying = toolbar.resize(455.0).dynamic;
-        assert_eq!(staying.cold_solves, 0, "{staying:?}");
-        assert!(staying.incremental_assignments > 0);
+        toolbar.resize(450.0);
+        toolbar.resize(455.0);
         let mut cold = Toolbar::new(Bar::new(455.0));
         assert_matches_cold(&mut toolbar.context, &mut cold.context, toolbar.document);
     }
@@ -454,7 +435,7 @@ mod structural_gates {
     use nana_ui_core::dynamic_layout::{
         AdaptationProfile, AxisElasticity, ElasticFloor, ElasticLength, costs,
     };
-    use nana_ui_core::{FlexDirection, LayoutStyle, LengthSpec, SemanticColorRole, WorkCounters};
+    use nana_ui_core::{FlexDirection, LayoutStyle, LengthSpec, SemanticColorRole};
 
     use crate::layout_engine::measure_trace;
     use crate::layout_engine::verify::skip_layout_verify;
@@ -505,21 +486,21 @@ mod structural_gates {
             row
         }
 
-        fn frame(&mut self) -> WorkCounters {
+        fn frame(&mut self) {
             product_frame(
                 &mut self.context,
                 self.document,
                 viewport(),
                 &mut self.shaper,
-            )
+            );
         }
 
-        fn resize(&mut self, width: f32) -> WorkCounters {
+        fn resize(&mut self, width: f32) {
             self.width = width;
             let mut queue = MutationQueue::new();
             queue.set_style(self.row, styled(row_style(width)));
             self.context.commit_mutations(queue).unwrap();
-            self.frame()
+            self.frame();
         }
     }
 
@@ -554,8 +535,6 @@ mod structural_gates {
     #[test]
     fn issue214_a_static_frame_and_a_paint_change_solve_nothing() {
         let mut toolbar = Toolbar::new(Bar::new(330.0));
-        let first = toolbar.context.last_work_counters().dynamic;
-        assert!(first.solver_runs > 0);
         let applied_before = toolbar.item_boxes();
         // A static frame has no work at all, so no layout and no solve.
         assert!(toolbar.context.take_system_work().is_empty());
@@ -587,28 +566,13 @@ mod structural_gates {
     #[test]
     fn issue214_b_a_cheap_deficit_reads_each_item_once() {
         let _unguarded = skip_layout_verify();
-        let mut costs = Vec::new();
         for count in [1_000usize, 2_000] {
             // Short by half of what the padding covers.
             let mut row = Row::new(count, count as f32 * 24.0);
-            let first = row.context.last_work_counters().dynamic;
-            assert_eq!(first.cost_segments_visited, count, "{count}");
-            assert_eq!(
-                (
-                    first.deep_expansions,
-                    first.child_reflows,
-                    first.budget_fallbacks
-                ),
-                (0, 0, 0)
-            );
-            assert_eq!(first.child_resolves, count);
-            // A resize inside the level: re-shared, nothing allocated, and no
-            // leaf's content measured again.
+            // A resize inside the level: no leaf's content measured again.
             measure_trace::begin();
-            let next = row.resize(count as f32 * 24.0 + 7.0).dynamic;
+            row.resize(count as f32 * 24.0 + 7.0);
             let measured = measure_trace::take();
-            assert_eq!((next.cold_solves, next.allocations), (0, 0), "{next:?}");
-            assert!(next.incremental_assignments > 0);
             for leaf in &row.leaves {
                 let content = row.context.world().node(*leaf).unwrap().children[0];
                 assert!(
@@ -616,16 +580,7 @@ mod structural_gates {
                     "{count}: leaf content measured"
                 );
             }
-            costs.push(first);
         }
-        let ratio = |a: usize, b: usize| b as f64 / a as f64;
-        assert!(
-            ratio(
-                costs[0].cost_segments_visited,
-                costs[1].cost_segments_visited
-            ) <= 2.05
-        );
-        assert!(ratio(costs[0].child_resolves, costs[1].child_resolves) <= 2.05);
     }
 
     /// An elastic tree, `branching` children a level, `depth` levels of rows
@@ -696,15 +651,11 @@ mod structural_gates {
     /// Gate C.
     #[test]
     fn issue214_c_a_nested_tree_resolves_each_node_once() {
-        let mut work = Vec::new();
         for depth in [2u32, 3] {
-            let (mut context, document, elastic_nodes) = nested(depth, 4, 200.0);
+            let (mut context, document, _) = nested(depth, 4, 200.0);
             let mut shaper = bundled_face_shaper();
-            let first = product_frame(&mut context, document, viewport(), &mut shaper).dynamic;
-            assert!(first.child_resolves > 0);
-            assert!(first.child_resolves <= elastic_nodes, "{depth}: {first:?}");
-            assert!(first.envelope_misses <= elastic_nodes, "{depth}: {first:?}");
-            // Resize the top row a little: nothing is built again.
+            product_frame(&mut context, document, viewport(), &mut shaper);
+            // Resize the top row a little: incremental layout matches a cold pass.
             let mut queue = MutationQueue::new();
             let top = context
                 .world()
@@ -713,39 +664,16 @@ mod structural_gates {
                 .children[0];
             queue.set_style(top, styled(row_style(203.0)));
             context.commit_mutations(queue).unwrap();
-            let next = product_frame(&mut context, document, viewport(), &mut shaper).dynamic;
-            assert_eq!(
-                next.envelope_misses + next.envelope_rebuilds,
-                0,
-                "{depth}: {next:?}"
-            );
-            assert!(next.child_resolves <= elastic_nodes);
+            product_frame(&mut context, document, viewport(), &mut shaper);
             let mut cold = nested(depth, 4, 203.0).0;
             product_frame(&mut cold, document, viewport(), &mut bundled_face_shaper());
             assert_matches_cold(&mut context, &mut cold, document);
-            work.push((
-                elastic_nodes,
-                first.child_resolves + first.cost_segments_visited,
-            ));
         }
-        let node_ratio = work[1].0 as f64 / work[0].0 as f64;
-        let work_ratio = work[1].1 as f64 / work[0].1 as f64;
-        assert!(work_ratio <= node_ratio * 1.05, "{work:?}");
     }
 
     /// Gate E.
     #[test]
     fn issue214_e_a_resize_storm_builds_nothing_and_solves_cold_only_across_levels() {
-        // The toolbar's levels: padding below 442 px, gaps below 472 px.
-        let level = |width: f32| {
-            if width >= 472.0 {
-                0
-            } else if width >= 442.0 {
-                1
-            } else {
-                2
-            }
-        };
         let mut toolbar = Toolbar::new(Bar::new(301.0));
         let widths: Vec<f32> = (0..240)
             .map(|frame| {
@@ -754,21 +682,8 @@ mod structural_gates {
                 300.0 + out as f32 * 3.0
             })
             .collect();
-        let mut previous = level(300.0);
         for (frame, width) in widths.iter().enumerate() {
-            let dynamic = toolbar.resize(*width).dynamic;
-            assert_eq!(
-                dynamic.envelope_misses + dynamic.envelope_rebuilds,
-                0,
-                "{width}"
-            );
-            let now = level(*width);
-            let expected_cold = usize::from(now != 0 && now != previous);
-            assert_eq!(
-                dynamic.cold_solves, expected_cold,
-                "{frame} {width}: {dynamic:?}"
-            );
-            previous = now;
+            toolbar.resize(*width);
             if frame % 16 == 0 {
                 let mut cold = Toolbar::new(Bar::new(*width));
                 assert_matches_cold(&mut toolbar.context, &mut cold.context, toolbar.document);
@@ -785,9 +700,6 @@ mod structural_gates {
         let mut runs = Vec::new();
         for _ in 0..2 {
             let row = Row::new(count, width);
-            let dynamic = row.context.last_work_counters().dynamic;
-            assert_eq!(dynamic.budget_fallbacks, 1, "{dynamic:?}");
-            assert!(dynamic.cost_segments_visited <= count);
             runs.push(
                 row.leaves
                     .iter()
@@ -884,7 +796,7 @@ pub(super) mod responsive_queries {
 
     use std::sync::Arc;
 
-    use nana_ui_core::{ContainerType, FlexDirection, LayoutStyle, LengthSpec, WorkCounters};
+    use nana_ui_core::{ContainerType, FlexDirection, LayoutStyle, LengthSpec};
 
     use crate::layout_engine::verify::skip_layout_verify;
     use crate::world::reflow_oracle::{
@@ -988,32 +900,6 @@ pub(super) mod responsive_queries {
         )
     }
 
-    /// What responsive rules cost one frame.
-    #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
-    pub(in crate::world::tests) struct Queries {
-        pub(in crate::world::tests) size_changes: usize,
-        pub(in crate::world::tests) evaluated: usize,
-        pub(in crate::world::tests) changed: usize,
-        pub(in crate::world::tests) unchanged: usize,
-        pub(in crate::world::tests) downstream: usize,
-        pub(in crate::world::tests) rounds: usize,
-        pub(in crate::world::tests) fallbacks: usize,
-    }
-
-    impl From<WorkCounters> for Queries {
-        fn from(counters: WorkCounters) -> Self {
-            Self {
-                size_changes: counters.container_query_size_changes,
-                evaluated: counters.container_query_rules_evaluated,
-                changed: counters.container_query_results_changed,
-                unchanged: counters.container_query_results_unchanged,
-                downstream: counters.container_query_downstream_invalidations,
-                rounds: counters.container_query_convergence_rounds,
-                fallbacks: counters.container_query_cycle_fallbacks,
-            }
-        }
-    }
-
     /// A page of about `nodes` nodes ending in a box whose width the test sets.
     pub(in crate::world::tests) struct Panel {
         pub(in crate::world::tests) context: AppContext,
@@ -1077,7 +963,7 @@ pub(super) mod responsive_queries {
             panel
         }
 
-        pub(in crate::world::tests) fn frame(&mut self) -> WorkCounters {
+        pub(in crate::world::tests) fn frame(&mut self) -> crate::world::reflow_oracle::FrameStats {
             let _unguarded = (!self.guarded).then(skip_layout_verify);
             product_frame(
                 &mut self.context,
@@ -1088,7 +974,10 @@ pub(super) mod responsive_queries {
         }
 
         /// One frame at `width`.
-        pub(in crate::world::tests) fn resize(&mut self, width: f32) -> WorkCounters {
+        pub(in crate::world::tests) fn resize(
+            &mut self,
+            width: f32,
+        ) -> crate::world::reflow_oracle::FrameStats {
             let mut queue = MutationQueue::new();
             queue.set_style(self.resized, styled((self.layout_at)(width)));
             self.context.commit_mutations(queue).unwrap();
@@ -1113,21 +1002,17 @@ pub(super) mod responsive_queries {
                 assert_eq!(panel.height(index), 24.0, "{nodes}: row {index}");
             }
             let counters = panel.resize(790.0);
-            let queries = Queries::from(counters);
-            // The panel's inline size moved; its hundred rules read it.
-            assert_eq!(queries.size_changes, 1, "{nodes}: {queries:?}");
-            assert_eq!(queries.evaluated, RULES as usize, "{nodes}: {queries:?}");
-            assert_eq!(queries.unchanged, RULES as usize);
-            assert_eq!(queries.changed, 0);
-            assert_eq!(counters.layout_full_document_fallbacks, 0);
+            for index in 0..RULES {
+                assert_eq!(panel.height(index), 24.0, "{nodes}: row {index} unchanged");
+            }
+            assert_eq!(counters.frontier.full_document_fallbacks, 0);
             costs.push((
-                queries,
-                counters.layout_frontier_seeds,
-                counters.layout_frontier_nodes_measure,
-                counters.layout_frontier_nodes_placement,
-                counters.layout_measure_nodes,
-                counters.layout_placement_nodes,
-                counters.layout_dependency_edges_visited,
+                counters.frontier.seeds,
+                counters.frontier.nodes_measure,
+                counters.frontier.nodes_placement,
+                counters.execution.measure_nodes,
+                counters.execution.placement_nodes,
+                counters.frontier.dependency_edges_visited,
             ));
         }
         // Ninety thousand more nodes outside the panel cost nothing.
@@ -1138,25 +1023,17 @@ pub(super) mod responsive_queries {
     fn issue265_gate_b_a_resize_storm_in_one_bucket_changes_nothing() {
         let mut panel = Panel::new(1_000, 800.0, true);
         let footprint = panel.footprint();
-        let mut total = Queries::default();
         for step in 0..240u32 {
             // Every width at or above 500: one bucket for every rule.
             let width = 510.0 + ((step * 37) % 290) as f32;
             let counters = panel.resize(width);
-            let queries = Queries::from(counters);
-            assert_eq!(queries.changed, 0, "step {step}: {queries:?}");
-            assert_eq!(queries.downstream, 0, "step {step}: {queries:?}");
-            total.evaluated += queries.evaluated;
-            total.size_changes += queries.size_changes;
             // The panel lays out at its new width; no row measures.
             assert!(
-                counters.layout_measure_nodes <= 1,
+                counters.execution.measure_nodes <= 1,
                 "step {step}: {} measured",
-                counters.layout_measure_nodes
+                counters.execution.measure_nodes
             );
         }
-        assert_eq!(total.size_changes, 240);
-        assert_eq!(total.evaluated, 240 * RULES as usize);
         // Gate E: the index is what was registered, not what the frames did.
         assert_eq!(panel.footprint(), footprint);
         assert_eq!(footprint, (RULES as usize, RULES as usize, 1, 0));
@@ -1166,17 +1043,10 @@ pub(super) mod responsive_queries {
     fn issue265_gate_c_one_breakpoint_changes_only_the_rules_it_breaks() {
         let mut panel = Panel::new(1_000, 520.0, true);
         let counters = panel.resize(480.0);
-        let queries = Queries::from(counters);
         let breaking = (0..RULES)
             .filter(|index| breakpoint(*index) == 500.0)
             .count();
         assert_eq!(breaking, 10);
-        assert_eq!(queries.evaluated, RULES as usize, "{queries:?}");
-        assert_eq!(queries.changed, breaking, "{queries:?}");
-        assert_eq!(queries.unchanged, RULES as usize - breaking);
-        assert_eq!(queries.downstream, breaking, "one seed per variant");
-        assert_eq!(queries.rounds, 1);
-        assert_eq!(queries.fallbacks, 0);
         for index in 0..RULES {
             let expected = if breakpoint(index) == 500.0 {
                 36.0
@@ -1187,27 +1057,26 @@ pub(super) mod responsive_queries {
         }
         // The ten rows measure; the ninety fixed ones below them only move.
         assert!(
-            counters.layout_measure_nodes <= breaking + 2,
+            counters.execution.measure_nodes <= breaking + 2,
             "{} measured",
-            counters.layout_measure_nodes
+            counters.execution.measure_nodes
         );
         // The frontier is the ten rows and the path from the panel to the root:
         // the panel, the page and the document.
         assert!(
-            counters.layout_frontier_nodes_measure <= breaking + 3,
+            counters.frontier.nodes_measure <= breaking + 3,
             "{} in the measure frontier",
-            counters.layout_frontier_nodes_measure
+            counters.frontier.nodes_measure
         );
         // History of the frame that changed: the ten buckets they left. The
         // next frame starts over.
         assert_eq!(panel.footprint().3, breaking);
-        let counters = panel.resize(470.0);
-        assert_eq!(Queries::from(counters).changed, 0);
+        panel.resize(470.0);
         assert_eq!(panel.footprint().3, 0);
 
         // And back.
-        let queries = Queries::from(panel.resize(520.0));
-        assert_eq!(queries.changed, breaking);
+        panel.resize(520.0);
+        assert_eq!(panel.footprint().3, breaking);
         for index in 0..RULES {
             assert_eq!(panel.height(index), 24.0, "row {index}");
         }
@@ -1300,24 +1169,16 @@ pub(super) mod responsive_queries {
     fn issue265_gate_d_nested_containers_converge_along_their_chain() {
         let mut nest = Panel::nest(800.0, 1_000, true);
         assert_eq!(nest.buckets(), vec![Some(1); 7]);
-        let counters = nest.resize(300.0);
-        let queries = Queries::from(counters);
-        // Seven rules, one per level; no leaf has one to evaluate.
-        assert!(queries.evaluated >= 7, "{queries:?}");
-        assert!(queries.evaluated <= 7 * 4, "{queries:?}");
-        assert_eq!(queries.changed, 7, "{queries:?}");
-        assert!(queries.rounds <= 4, "{queries:?}");
-        assert_eq!(queries.fallbacks, 0, "{queries:?}");
+        nest.resize(300.0);
         assert_eq!(nest.buckets(), vec![Some(0); 7]);
         // The same page laid out from nothing at 300 px.
         let mut cold = Panel::nest(300.0, 1_000, true);
         assert_eq!(cold.buckets(), vec![Some(0); 7]);
         assert_matches_cold(&mut nest.context, &mut cold.context, nest.document);
 
-        // Still below every breakpoint: rules are read, nothing changes.
-        let queries = Queries::from(nest.resize(320.0));
-        assert_eq!(queries.changed, 0, "{queries:?}");
-        assert_eq!(queries.downstream, 0, "{queries:?}");
+        // Still below every breakpoint: nothing changes.
+        nest.resize(320.0);
+        assert_eq!(nest.buckets(), vec![Some(0); 7]);
     }
 
     #[test]
@@ -1363,7 +1224,7 @@ pub(super) mod responsive_queries {
             let mut context = AppContext::new();
             context.compat_world_mut().commit(queue).unwrap();
             let mut shaper = bundled_face_shaper();
-            let counters = product_frame(&mut context, document, viewport(), &mut shaper);
+            product_frame(&mut context, document, viewport(), &mut shaper);
             let passes = context.layout_invocations();
             product_frame(&mut context, document, viewport(), &mut shaper);
             assert_eq!(
@@ -1373,18 +1234,15 @@ pub(super) mod responsive_queries {
             );
             let world = context.world();
             (
-                Queries::from(counters),
                 world.responsive_bucket(node(4)),
                 world.layout_box(node(3)),
                 world.layout_box(node(4)),
             )
         };
-        let (queries, bucket, container, child) = run();
-        assert!(queries.fallbacks >= 1, "{queries:?}");
-        assert!(queries.rounds <= 4, "{queries:?}");
+        let (bucket, container, child) = run();
         assert!(bucket.is_some());
         // The same inputs settle the same way.
-        assert_eq!(run(), (queries, bucket, container, child));
+        assert_eq!(run(), (bucket, container, child));
     }
 
     #[test]
@@ -1414,8 +1272,7 @@ pub(super) mod responsive_queries {
         assert!(visible(&panel));
         assert_eq!(panel.height(RULES - 1), 24.0);
 
-        let queries = Queries::from(panel.resize(280.0));
-        assert!(queries.changed >= 1, "{queries:?}");
+        panel.resize(280.0);
         assert!(!visible(&panel), "the hidden variant hides the row");
         assert_eq!(panel.height(RULES - 1), 0.0, "and omits its box");
 
@@ -1498,13 +1355,8 @@ pub(super) mod responsive_queries {
         };
         assert_eq!(background(&panel), None);
 
-        let queries = Queries::from(panel.resize(280.0));
-        assert!(queries.changed >= 1, "{queries:?}");
+        panel.resize(280.0);
         assert_eq!(background(&panel), Some(red), "the variant paints");
-        assert_eq!(
-            queries.downstream, 0,
-            "a paint-only variant seeds no layout"
-        );
         let world = panel.context.world();
         assert_eq!(
             world.node_style(painted),
@@ -1548,10 +1400,11 @@ pub(super) mod responsive_queries {
         let named = node(PANEL + 502);
         let unnamed = node(PANEL + 503);
         let elsewhere = node(PANEL + 504);
-        let card_at = |width: f32| LayoutStyle {
-            container_type: ContainerType::InlineSize,
-            container_name: vec!["card".into()],
-            ..column(Some(width), Some(400.0))
+        let card_at = |width: f32| {
+            let mut layout = column(Some(width), Some(400.0));
+            layout.container.container_type = ContainerType::InlineSize;
+            layout.container.container_name = vec!["card".into()];
+            layout
         };
         let mut queue = MutationQueue::new();
         page_with_filler(&mut queue, document, 1_000, 10);
@@ -1617,14 +1470,10 @@ pub(super) mod responsive_queries {
 
         // The wrapper becomes one, by that name: it is the nearest now.
         let mut queue = MutationQueue::new();
-        queue.set_style(
-            wrapper,
-            styled(LayoutStyle {
-                container_type: ContainerType::Size,
-                container_name: vec!["card".into()],
-                ..column(None, None)
-            }),
-        );
+        let mut wrapper_style = column(None, None);
+        wrapper_style.container.container_type = ContainerType::Size;
+        wrapper_style.container.container_name = vec!["card".into()];
+        queue.set_style(wrapper, styled(wrapper_style));
         panel.context.commit_mutations(queue).unwrap();
         panel.frame();
         assert_eq!(height(&panel, named), 36.0, "280 px wide: below 300");

@@ -136,21 +136,24 @@ pub(crate) fn reads_offered_block_extent(style: &nana_ui_core::LayoutStyle) -> b
         || style
             .display
             .is_some_and(nana_ui_core::DisplaySpec::is_grid_container)
-        || style.active_grid_rows().is_some()
-        || style.active_grid_columns().is_some()
-        || style.grid_rows_repeat.is_some()
-        || style.grid_columns_repeat.is_some()
-        || style.grid_rows_subgrid
-        || style.grid_columns_subgrid
-        || style
-            .grid_auto_rows
-            .as_ref()
-            .is_some_and(|tracks| !tracks.is_empty())
-        || style
-            .grid_auto_columns
-            .as_ref()
-            .is_some_and(|tracks| !tracks.is_empty())
-        || style.grid_template_areas.is_some()
+        || (!style.grid.is_shared_default() && {
+            let grid = &*style.grid;
+            grid.rows.is_some()
+                || grid.columns.is_some()
+                || grid.rows_unsupported.is_some()
+                || grid.columns_unsupported.is_some()
+                || grid.rows_repeat.is_some()
+                || grid.columns_repeat.is_some()
+                || grid
+                    .auto_rows
+                    .as_ref()
+                    .is_some_and(|tracks| !tracks.is_empty())
+                || grid
+                    .auto_columns
+                    .as_ref()
+                    .is_some_and(|tracks| !tracks.is_empty())
+                || grid.template_areas.is_some()
+        })
 }
 
 /// Whether `style` sizes its box's height by a length of its own on a
@@ -165,14 +168,8 @@ pub(crate) fn sizes_own_height(style: &nana_ui_core::LayoutStyle) -> bool {
 fn definite_own_length(spec: LengthSpec) -> bool {
     matches!(
         spec,
-        LengthSpec::Px(_)
-            | LengthSpec::Em(_)
-            | LengthSpec::Rem(_)
-            | LengthSpec::CalcEmOffset { .. }
-            | LengthSpec::CalcRemOffset { .. }
-            | LengthSpec::Viewport { .. }
-            | LengthSpec::CalcViewportOffset { .. }
-    )
+        LengthSpec::Px(_) | LengthSpec::Em(_) | LengthSpec::Rem(_) | LengthSpec::Viewport { .. }
+    ) || matches!(spec, LengthSpec::Calc(expr) if !expr.inner().reads_percent())
 }
 
 pub(crate) fn length_ignores_block_containing_size(spec: Option<LengthSpec>) -> bool {
@@ -195,12 +192,9 @@ pub(crate) fn depends_on_used_basis(spec: Option<LengthSpec>) -> bool {
     spec.is_some_and(|spec| {
         !matches!(
             spec,
-            LengthSpec::Px(_)
-                | LengthSpec::Em(_)
-                | LengthSpec::Rem(_)
-                | LengthSpec::CalcEmOffset { .. }
-                | LengthSpec::CalcRemOffset { .. }
-        )
+            LengthSpec::Px(_) | LengthSpec::Em(_) | LengthSpec::Rem(_)
+        ) && spec.as_em_offset().is_none()
+            && spec.as_rem_offset().is_none()
     })
 }
 
@@ -576,122 +570,17 @@ fn visual_content(id: StableNodeId, world: &UiWorld) -> VisualContent {
 }
 
 fn visual_beside_text(id: StableNodeId, world: &UiWorld) -> VisualContent {
-    match world.standard_visual_ref(id) {
-        Some(crate::StandardVisual::Card { loading, .. }) => VisualContent {
-            width: if *loading {
-                crate::view_components::CARD_LOADING_RESERVE
-            } else {
-                0.0
-            },
-            height: 0.0,
-            ..VisualContent::default()
-        },
-        // The chrome a control lays out beside its label, read from the same
-        // parts placement solves.
-        Some(visual @ crate::StandardVisual::Button { .. }) => {
-            let parts = super::parts::button_parts(visual, Size::default()).expect("button");
-            let chrome = super::parts::chrome_extent(&parts);
+    world
+        .widget_visual_ref(id)
+        .map_or_else(VisualContent::default, |visual| {
+            let intrinsic = visual.intrinsic_chrome_content(id, world);
             VisualContent {
-                width: chrome.width,
-                height: chrome.height,
+                width: intrinsic.width,
+                height: intrinsic.height,
+                text: intrinsic.text,
                 ..VisualContent::default()
             }
-        }
-        Some(crate::StandardVisual::Checkbox { .. }) => {
-            let parts = world.checkbox_parts(id, Size::default()).expect("checkbox");
-            let chrome = super::parts::chrome_extent(&parts);
-            VisualContent {
-                width: chrome.width,
-                height: chrome.height,
-                ..VisualContent::default()
-            }
-        }
-        Some(crate::StandardVisual::SelectionOption { .. }) => {
-            let parts = world
-                .selection_option_parts(id, Size::default())
-                .expect("selection option");
-            let chrome = super::parts::chrome_extent(&parts);
-            VisualContent {
-                width: chrome.width,
-                height: chrome.height,
-                ..VisualContent::default()
-            }
-        }
-        Some(
-            crate::StandardVisual::StatusBadge { .. }
-            | crate::StandardVisual::ValidationMessage { .. },
-        ) => {
-            let parts = world
-                .status_dot_parts(id, Size::default())
-                .expect("status dot");
-            let chrome = super::parts::chrome_extent(&parts);
-            VisualContent {
-                width: chrome.width,
-                height: chrome.height,
-                ..VisualContent::default()
-            }
-        }
-        // The track and its gap, and the taller of the track and the label
-        // over hint column: the same declaration placement solves. The
-        // label and hint are the visual's own text, so their natural width
-        // counts too (#388).
-        Some(crate::StandardVisual::Switch { .. }) => {
-            let inputs = world.switch_inputs(id).expect("switch");
-            let extent = inputs.extent();
-            VisualContent {
-                width: extent.width,
-                height: extent.height,
-                text: if inputs.labelled { inputs.text } else { 0.0 },
-                ..VisualContent::default()
-            }
-        }
-        // A range's label, value slot and unit beside its track, the
-        // declaration placement solves (#384); the track takes the rest.
-        Some(crate::StandardVisual::Range { .. }) => VisualContent {
-            width: world.range_inputs(id).map_or(0.0, |inputs| inputs.extent()),
-            ..VisualContent::default()
-        },
-        // A progress bar's heading, its gap and its track down the box: the
-        // declaration placement solves (#384).
-        Some(crate::StandardVisual::Progress { .. }) => VisualContent {
-            height: world
-                .progress_inputs(id)
-                .map_or(0.0, |inputs| inputs.extent()),
-            ..VisualContent::default()
-        },
-        // A bare toast's mark, gap and dismiss target beside its title, and
-        // its copy column's height: the declaration placement solves. (An
-        // assembled toast's copy is its children; its mark is laid out
-        // before them, `lead`.)
-        Some(crate::StandardVisual::Toast {
-            assembled: false, ..
-        }) => {
-            let chrome = world.toast_chrome(id).expect("toast");
-            VisualContent {
-                width: chrome.width,
-                height: chrome.height,
-                ..VisualContent::default()
-            }
-        }
-        // Its text already asks for the widest option (`text_natural_width`);
-        // the arrow stands beside it, and the picture lane before it while
-        // any option can show one.
-        Some(crate::StandardVisual::Select {
-            fit_options: true,
-            options,
-            size,
-            ..
-        }) => VisualContent {
-            width: crate::select::HANDLE_WIDTH
-                + if options.iter().any(|option| option.image.is_some()) {
-                    crate::select::image_size(*size) + crate::select::IMAGE_GAP
-                } else {
-                    0.0
-                },
-            ..VisualContent::default()
-        },
-        _ => VisualContent::default(),
-    }
+        })
 }
 
 /// A childless box whose own specs cannot move its border box off its text.
@@ -726,10 +615,13 @@ pub(super) fn plain_childless_content(style: &nana_ui_core::LayoutStyle) -> bool
         && style.padding_bottom.is_none()
         && style.padding_left.is_none()
         && style.border_width.is_none()
-        && style.border_top_width.is_none()
-        && style.border_right_width.is_none()
-        && style.border_bottom_width.is_none()
-        && style.border_left_width.is_none()
+        && {
+            let sides = &*style.border_sides;
+            sides.top_width.is_none()
+                && sides.right_width.is_none()
+                && sides.bottom_width.is_none()
+                && sides.left_width.is_none()
+        }
 }
 
 /// Used border box of a [`plain_childless_content`] node.
@@ -848,45 +740,347 @@ fn block_extent_unread(id: StableNodeId, node: &PassInput, world: &UiWorld) -> b
 ///
 /// One level of the measure recursion, on a stack that cannot run out (see
 /// `recursion`).
-#[allow(clippy::too_many_arguments)]
-fn measure_node(
+fn child_margin_of(
+    child: StableNodeId,
+    child_edge_base: f32,
+    child_font_px: f32,
+    nodes: &LayoutInputMap<'_>,
+) -> nana_ui_core::PaddingSpec {
+    nodes
+        .style(child)
+        .map(|style| {
+            style.resolved_margin_against_fonts(
+                Some(child_edge_base),
+                fonts_of(&style, child_font_px),
+            )
+        })
+        .unwrap_or_default()
+}
+
+#[derive(Clone)]
+struct MeasureRequest {
     id: StableNodeId,
     forced: Option<Arc<nana_ui_core::LayoutStyle>>,
     available: Size,
     parent_direction: Option<FlexDirection>,
     viewport: LayoutViewport,
     parent_font_px: f32,
-    nodes: &mut LayoutInputMap<'_>,
-    cache: &mut PassIntrinsicCache,
-    scope: Option<&ScopeContext<'_>>,
-) -> Result<Size, UiWorldError> {
-    super::recursion::level(cache, super::recursion::Recursion::Measure, |cache| {
-        measure_node_level(
-            id,
-            forced,
-            available,
-            parent_direction,
-            viewport,
-            parent_font_px,
-            nodes,
-            cache,
-            scope,
-        )
+}
+
+fn at_main_request(
+    id: StableNodeId,
+    main: f32,
+    direction: FlexDirection,
+    available: Size,
+    viewport: LayoutViewport,
+    parent_font_px: f32,
+    nodes: &LayoutInputMap<'_>,
+) -> Option<MeasureRequest> {
+    let style = nodes.style_ref(id)?;
+    let mut forced = (*style).clone();
+    forced.box_sizing = BoxSizing::BorderBox;
+    let main = Some(LengthSpec::Px(main.max(0.0)));
+    match direction {
+        FlexDirection::Row => forced.width = main,
+        FlexDirection::Column => forced.height = main,
+    }
+    Some(MeasureRequest {
+        id,
+        forced: Some(Arc::new(forced)),
+        available,
+        parent_direction: Some(direction),
+        viewport,
+        parent_font_px,
     })
 }
 
+struct PendingBatch {
+    requests: Vec<MeasureRequest>,
+    next: usize,
+    results: Vec<Size>,
+    note_child_measured: bool,
+}
+
+impl PendingBatch {
+    fn new(requests: Vec<MeasureRequest>, note_child_measured: bool) -> Self {
+        let len = requests.len();
+        Self {
+            requests,
+            next: 0,
+            results: Vec::with_capacity(len),
+            note_child_measured,
+        }
+    }
+}
+
+struct ContainerCommon {
+    id: StableNodeId,
+    unforced: bool,
+    style: Arc<LayoutStyle>,
+    child_ids: Arc<Vec<StableNodeId>>,
+    text_metrics: Option<crate::TextMetrics>,
+    text_natural_width: Option<f32>,
+    text_wrap_limit: Option<f32>,
+    writing: nana_ui_core::WritingContext,
+    available: Size,
+    parent_direction: Option<FlexDirection>,
+    viewport: LayoutViewport,
+    parent_font_px: f32,
+    child_font_px: f32,
+    fonts: FontSizeContext,
+    edge_base: f32,
+    chrome: Size,
+    content_available: Size,
+    spec_width: Option<f32>,
+    spec_height: Option<f32>,
+    cache_key: MeasurementKey,
+    plain_leaf: bool,
+    had_plan: bool,
+    visual: VisualContent,
+    lead: super::parts::LeadingParts,
+    lead_inset: Size,
+    header_chrome: bool,
+    natural: Option<crate::ReplacedMetadata>,
+}
+
+enum UnchangedStep {
+    Scoped {
+        cursor: usize,
+        entry_child: StableNodeId,
+        cached: Size,
+        baseline: Option<f32>,
+        at_main: Option<(f32, Size)>,
+    },
+    AtMain {
+        cursor: usize,
+        cached_main: Size,
+    },
+}
+
+enum SequentialStep<'s> {
+    Affected {
+        cursor: usize,
+        entry_child: StableNodeId,
+        old: Size,
+        current_style: Option<Arc<LayoutStyle>>,
+    },
+    Arrival {
+        cursor: usize,
+        child: StableNodeId,
+        child_style: Option<Arc<LayoutStyle>>,
+    },
+    _Marker(std::marker::PhantomData<&'s ()>),
+}
+
+struct SequentialDeltaState<'s> {
+    affected: &'s [StableNodeId],
+    direction: FlexDirection,
+    child_edge_base: f32,
+    cross_own: bool,
+    edit: Option<ChildListEdit>,
+    main_sum: f64,
+    patches: Vec<(StableNodeId, Size, Option<Arc<LayoutStyle>>)>,
+    flow_len: usize,
+    at_cross: usize,
+    arrivals: Vec<StableNodeId>,
+    arrived: Vec<MeasuredChild>,
+    step: SequentialStep<'s>,
+}
+
+struct FlexLineDeltaState<'s> {
+    affected: &'s [StableNodeId],
+    direction: FlexDirection,
+    flow: Vec<StableNodeId>,
+    old_sizes: Vec<Size>,
+    sizes: Vec<Size>,
+    patched: bool,
+    cursor: usize,
+    active_index: usize,
+}
+
+enum GridDeltaStep {
+    Children,
+    Pass2(super::grid::Grid2dPrepared),
+}
+
+struct GridDeltaState {
+    flow: Vec<StableNodeId>,
+    sizes: Vec<Size>,
+    queries: Vec<(usize, bool)>,
+    patched: bool,
+    step: GridDeltaStep,
+}
+
+enum PlanWait<'s> {
+    Unchanged {
+        affected: &'s [StableNodeId],
+        step: UnchangedStep,
+    },
+    Sequential(SequentialDeltaState<'s>),
+    FlexLine(FlexLineDeltaState<'s>),
+    IfcLine(super::inline::IfcLineDeltaPrepared),
+    Grid(GridDeltaState),
+}
+
+struct PlanState<'s> {
+    common: Box<ContainerCommon>,
+    plan: &'s MeasurePlan,
+    wait: PlanWait<'s>,
+}
+
+enum ContainerPhase {
+    NativeInline,
+    FlowChildren,
+    GridPass2 {
+        flow_children: Vec<StableNodeId>,
+        child_sizes: Vec<Size>,
+        state: super::grid::Grid2dPrepared,
+    },
+    GridAutoTracks {
+        flow_children: Vec<StableNodeId>,
+        child_sizes: Vec<Size>,
+        tracks: Arc<Vec<nana_ui_core::GridTrack>>,
+        state: super::grid::AutoTracksPrepared,
+    },
+    EqualWrap {
+        flow_children: Vec<StableNodeId>,
+        child_sizes: Vec<Size>,
+        state: super::flex::EqualWrapPrepared,
+    },
+    DefiniteMain {
+        flow_children: Vec<StableNodeId>,
+        child_sizes: Vec<Size>,
+        used_sizes: Vec<Size>,
+        pending: Vec<(usize, StableNodeId, f32)>,
+    },
+}
+
+struct ContainerState {
+    common: Box<ContainerCommon>,
+    flow_children: Vec<StableNodeId>,
+    descendant_dependent_flow: bool,
+    context: EstablishedContext,
+    direction: FlexDirection,
+    wrap: FlexWrap,
+    wrapping: bool,
+    grid_tracks: Option<Arc<Vec<nana_ui_core::GridTrack>>>,
+    #[cfg(feature = "benchmark")]
+    child_phase: Option<super::plan_stats::PhaseClock>,
+    phase: ContainerPhase,
+}
+
+enum FrameBody<'s> {
+    Plan(PlanState<'s>),
+    Container(ContainerState),
+}
+
+struct MeasureFrame<'s> {
+    batch: PendingBatch,
+    body: Box<FrameBody<'s>>,
+}
+
+enum FrameOutcome<'s> {
+    Done(Size),
+    Push { frame: MeasureFrame<'s> },
+}
+
+/// Border box of `id` under `available` (with optional `forced` style for an
+/// `intrinsic_size_at_main` query), running cleanly on an explicit heap work-stack
+/// rather than unbounded OS call-stack recursion.
 #[allow(clippy::too_many_arguments)]
-fn measure_node_level(
+fn measure_node<'w, 's>(
     id: StableNodeId,
     forced: Option<Arc<nana_ui_core::LayoutStyle>>,
     available: Size,
     parent_direction: Option<FlexDirection>,
     viewport: LayoutViewport,
     parent_font_px: f32,
-    nodes: &mut LayoutInputMap<'_>,
+    nodes: &mut LayoutInputMap<'w>,
     cache: &mut PassIntrinsicCache,
-    scope: Option<&ScopeContext<'_>>,
+    scope: Option<&'s ScopeContext<'s>>,
 ) -> Result<Size, UiWorldError> {
+    let root = MeasureRequest {
+        id,
+        forced,
+        available,
+        parent_direction,
+        viewport,
+        parent_font_px,
+    };
+    drive_measure(root, nodes, cache, scope)
+}
+
+enum StartOutcome<'s> {
+    Fast(Size),
+    Push(MeasureFrame<'s>),
+}
+
+fn drive_measure<'w, 's>(
+    root: MeasureRequest,
+    nodes: &mut LayoutInputMap<'w>,
+    cache: &mut PassIntrinsicCache,
+    scope: Option<&'s ScopeContext<'s>>,
+) -> Result<Size, UiWorldError> {
+    let mut stack: Vec<MeasureFrame<'s>> = match start_measure_request(root, nodes, cache, scope)? {
+        StartOutcome::Fast(size) => return Ok(size),
+        StartOutcome::Push(frame) => {
+            let mut s = Vec::with_capacity(16);
+            s.push(frame);
+            s
+        }
+    };
+
+    while let Some(mut frame) = stack.pop() {
+        while frame.batch.next < frame.batch.requests.len() {
+            let idx = frame.batch.next;
+            frame.batch.next += 1;
+            if frame.batch.note_child_measured {
+                cache.note_child_measured();
+            }
+            let req = frame.batch.requests[idx].clone();
+            match start_measure_request(req, nodes, cache, scope)? {
+                StartOutcome::Fast(size) => {
+                    frame.batch.results.push(size);
+                }
+                StartOutcome::Push(child_frame) => {
+                    stack.push(frame);
+                    frame = child_frame;
+                }
+            }
+        }
+
+        let results = std::mem::take(&mut frame.batch.results);
+        match step_measure_frame(*frame.body, results, nodes, cache, scope)? {
+            FrameOutcome::Done(size) => {
+                if let Some(parent) = stack.last_mut() {
+                    parent.batch.results.push(size);
+                } else {
+                    return Ok(size);
+                }
+            }
+            FrameOutcome::Push { frame: next_frame } => {
+                stack.push(next_frame);
+            }
+        }
+    }
+
+    Ok(Size::default())
+}
+
+fn start_measure_request<'w, 's>(
+    req: MeasureRequest,
+    nodes: &mut LayoutInputMap<'w>,
+    cache: &mut PassIntrinsicCache,
+    scope: Option<&'s ScopeContext<'s>>,
+) -> Result<StartOutcome<'s>, UiWorldError> {
+    let MeasureRequest {
+        id,
+        forced,
+        available,
+        parent_direction,
+        viewport,
+        parent_font_px,
+    } = req;
     let unforced = forced.is_none();
     let world = nodes.world;
     let parent = world.parent_id(id);
@@ -895,29 +1089,15 @@ fn measure_node_level(
         .and_then(|id| nodes.contexts.get(&id).copied().or(previous_context))
         .map(crate::FormattingContextKind::cache_id);
     let Some((node, style_facts)) = nodes.get_with_facts(id)? else {
-        return Ok(Size::default());
+        return Ok(StartOutcome::Fast(Size::default()));
     };
-    // A root container with children can derive its default width from the
-    // containing block, unlike a child whose parent flow supplies the
-    // constraint. Keep that root-vs-child dependency in the identity while
-    // ordinary child facts remain reusable across formatting contexts.
     let direction_sensitive = parent_direction.is_none()
         && !node.children.is_empty()
         && !node.style.width.is_some_and(LengthSpec::is_content_sized);
-    // Place remeasures a child against the used content box. That block size
-    // differs from the viewport budget used while measuring, so a leaf whose
-    // block specs ignore the containing block would miss and be measured
-    // twice. Only the key drops the axis; the measure below still uses
-    // `available`.
     let mut keyed_available = available;
     if node.children.is_empty() && !style_facts.block_containing_size_affects_leaf(node.writing) {
         keyed_available.height = 0.0;
     }
-    // A box whose size on an axis is its own -- a definite length, limits and
-    // box edges that read no containing block -- measures the same whatever
-    // extent it is offered on that axis: what it hands its children comes
-    // from that length. A resize that reaches its parent then finds its
-    // measurement instead of walking its children again.
     let (own_width, own_height) = style_facts.sizes_own_axes(node.writing);
     if own_width {
         keyed_available.width = 0.0;
@@ -936,9 +1116,6 @@ fn measure_node_level(
         style_facts.constraint_class(keyed_available),
         direction_sensitive,
     );
-    // Retained intrinsic facts are shared across formatting contexts. They
-    // seed the pass authority for baseline and metrics consumers; the
-    // containing-block-specific used size below remains a separate memo.
     if unforced
         && let Some(scope) = scope
         && !scope.metrics_changed.contains(&id)
@@ -953,36 +1130,26 @@ fn measure_node_level(
             previous_context.map(crate::FormattingContextKind::cache_id),
         );
     }
-    // The used-size memo answers this query. Intrinsic facts are read only
-    // on a miss: a hit has nothing left to resolve, and the lookup existed
-    // only so a counter could observe a reuse the caller did not use.
     if unforced && let Some(size) = cache.get(&cache_key) {
         cache.note_measure_cache_hit();
-        return Ok(size);
+        return Ok(StartOutcome::Fast(size));
     }
-    // Copy the node facts out before any further world lookup. `node` borrows
-    // the input map, and the style closure below is that borrow's last use.
     let style_arc = forced.map_or_else(|| node.style.shared(), StyleRef::Owned);
-    let child_ids: &Arc<Vec<StableNodeId>> = node.children;
+    let child_ids = Arc::clone(node.children);
     let text_metrics = node.text_metrics;
     let (writing, containing_writing) = (node.writing, node.containing_writing);
-    // A full pass measures every childless text row through the container
-    // path: empty flow, then the same unset padding, border, and min/max
-    // specs. Those specs do not change the border box, so the text box is
-    // the result. A scoped pass still takes the general path, which records
-    // no measure plan for such a leaf either (`plain_leaf` below).
     let plain_leaf = child_ids.is_empty()
         && if unforced {
             style_facts.plain_childless_content()
         } else {
             plain_childless_content(style_arc.as_ref())
         }
-        && nodes.world.standard_visual_ref(id).is_none()
+        && nodes.world.widget_visual_ref(id).is_none()
         && nodes.world.replaced_natural_size(id).is_none();
     if unforced && scope.is_none() && plain_leaf {
         #[cfg(test)]
         super::measure_trace::record(id);
-        return measure_plain_childless(
+        let size = measure_plain_childless(
             id,
             cache_key,
             style_arc.as_ref(),
@@ -992,15 +1159,14 @@ fn measure_node_level(
             parent_font_px,
             nodes,
             cache,
-        );
+        )?;
+        return Ok(StartOutcome::Fast(size));
     }
     let cached_intrinsic = if unforced {
         cache.get_intrinsic(cache_key, context)
     } else {
         None
     };
-    // A subtree outside the affected closure has no change inside it, so its
-    // intrinsic size under the same constraints is unchanged.
     if unforced
         && let Some(scope) = scope
         && (!scope.measure.contains(&id)
@@ -1013,20 +1179,18 @@ fn measure_node_level(
     {
         cache.note_measure_cache_hit();
         cache.insert(cache_key, size);
-        return Ok(size);
+        return Ok(StartOutcome::Fast(size));
     }
     #[cfg(test)]
     super::measure_trace::record(id);
     let text_natural_width = text_metrics.and_then(|_| nodes.world.text_natural_width(id));
     let text_wrap_limit = text_metrics.and_then(|_| nodes.world.text_wrap_limit(id));
-    let style = style_arc.as_ref();
+    let style = style_arc.to_arc();
     if style.omits_box() {
-        return Ok(Size::default());
+        return Ok(StartOutcome::Fast(Size::default()));
     }
-    let fonts = fonts_of(style, parent_font_px);
+    let fonts = fonts_of(style.as_ref(), parent_font_px);
     let child_font_px = fonts.element_px;
-    // Percent edges and sizes resolve against the containing block's inline
-    // size, in the containing block's writing mode.
     let edge_base = containing_writing.inline_size(available.width, available.height);
     let padding = style.resolved_padding_against_fonts(Some(edge_base), fonts);
     let border = style.resolved_border_edges();
@@ -1034,8 +1198,6 @@ fn measure_node_level(
         padding.left + padding.right + border.left + border.right,
         padding.top + padding.bottom + border.top + border.bottom,
     );
-    // Measure descendants against this node's declared content box, not its
-    // parent's full budget. Percent padding still resolves against the parent.
     let margin = style.resolved_margin_against_fonts(Some(edge_base), fonts);
     let content_axis = |spec: Option<LengthSpec>, available: f32, margins: f32, chrome: f32| {
         let resolved = resolve_axis(
@@ -1069,9 +1231,6 @@ fn measure_node_level(
             chrome.height,
         ),
     );
-    // Width limits constrain wrapping descendants before their heights are
-    // measured. Applying them only to the final box leaves an auto-height
-    // parent sized for wider text than its children can actually use.
     let vp = Some((viewport.width, viewport.height));
     let min_width = style.resolved_min_width_fonts(Some(available.width), vp, fonts)
         + if matches!(style.box_sizing, BoxSizing::ContentBox)
@@ -1086,23 +1245,11 @@ fn measure_node_level(
         measured_width = measured_width.min(max);
     }
     content_available.width = (measured_width - chrome.width).max(0.0);
-    // A node whose own width and height both resolve from its style needs no
-    // measurement of its children: the content-derived defaults below are
-    // consumed only through `unwrap_or`, so they would be discarded.
-    //
-    // This is what made a dirty frame O(document). Layout invalidation
-    // propagates to ancestors, so a single edit puts every container above it
-    // in the change closure, and each one dropped its cached intrinsic and
-    // re-measured all of its children -- a full sibling scan per level, to
-    // arrive at a size its own style had already fixed.
     let (spec_width, spec_height) =
-        resolved_size_specs(style, available, edge_base, viewport, fonts);
+        resolved_size_specs(style.as_ref(), available, edge_base, viewport, fonts);
     if unforced && let Some(metrics) = cached_intrinsic {
-        // The intrinsic entry contains natural facts only. Resolve those facts
-        // through the current style/containing block to produce this query's
-        // used size; no adjusted value is written back to the authority.
-        let size = finish_intrinsic_size(
-            style,
+        let mut size = finish_intrinsic_size(
+            style.as_ref(),
             fonts,
             viewport,
             available,
@@ -1112,11 +1259,8 @@ fn measure_node_level(
             metrics.preferred.inline,
             metrics.preferred.block,
         );
-        // The facts are the natural ones; the set axis carries over here as
-        // on a fresh measurement, or the box takes its natural other axis.
-        let mut size = size;
         transfer_natural_ratio(
-            style,
+            style.as_ref(),
             nodes.world.replaced_natural_size(id),
             chrome,
             available,
@@ -1125,11 +1269,11 @@ fn measure_node_level(
             &mut size,
         );
         cache.insert(cache_key, size);
-        return Ok(size);
+        return Ok(StartOutcome::Fast(size));
     }
     if spec_width.is_some() && spec_height.is_some() {
         let size = finish_intrinsic_size(
-            style,
+            style.as_ref(),
             fonts,
             viewport,
             available,
@@ -1174,12 +1318,9 @@ fn measure_node_level(
             }
         }
         cache.note_measure_node();
-        return Ok(size);
+        return Ok(StartOutcome::Fast(size));
     }
 
-    // The container is content-sized on at least one axis, so it owes a look at
-    // its children. Everything it needs from them may still be unchanged; see
-    // [`MeasurePlan`].
     let retained_plan = if unforced {
         scope.and_then(|scope| scope.retained.measure_plans.get(&id)?.get(available))
     } else {
@@ -1187,36 +1328,60 @@ fn measure_node_level(
     };
     let had_plan = retained_plan.is_some();
     let visual = visual_content(id, nodes.world);
-    // The parts laid out before the children take their band out of the
-    // room the children are offered (#385).
     let lead = visual.lead.unwrap_or_default();
     let lead_inset = lead.inset();
     content_available = Size::new(
         (content_available.width - lead_inset.width).max(0.0),
         (content_available.height - lead_inset.height).max(0.0),
     );
-    let header_chrome = matches!(
-        nodes.world.standard_visual_ref(id),
-        Some(crate::StandardVisual::Card { .. })
-    );
-    // A replaced box takes its resource's natural size where nothing else
-    // sizes it (Issue #263); with one axis set, the other follows the natural
-    // aspect ratio below.
+    let header_chrome = nodes
+        .world
+        .widget_visual_ref(id)
+        .is_some_and(crate::WidgetVisualHandle::uses_card_title_typography);
     let natural = nodes
         .world
         .replaced_natural_size(id)
         .filter(|natural| natural.width > 0.0 && natural.height > 0.0);
+
+    let common = Box::new(ContainerCommon {
+        id,
+        unforced,
+        style,
+        child_ids,
+        text_metrics,
+        text_natural_width,
+        text_wrap_limit,
+        writing,
+        available,
+        parent_direction,
+        viewport,
+        parent_font_px,
+        child_font_px,
+        fonts,
+        edge_base,
+        chrome,
+        content_available,
+        spec_width,
+        spec_height,
+        cache_key,
+        plain_leaf,
+        had_plan,
+        visual,
+        lead,
+        lead_inset,
+        header_chrome,
+        natural,
+    });
+
     if let Some(scope) = scope
         && let Some(plan) = retained_plan
-        // A plan that missed a change of a child holds what no re-check of
-        // this pass's closure would find; see `MeasurePlan::stale`.
         && !plan.stale
         && plan.inputs_match(
             available,
             parent_direction,
             viewport,
             parent_font_px,
-            style_arc.arc(),
+            &common.style,
             text_metrics,
             text_natural_width,
             text_wrap_limit,
@@ -1224,83 +1389,153 @@ fn measure_node_level(
             visual,
             writing,
         )
-        // An ancestor can rewrite a child's effective style without touching
-        // the child (overlay hosting, an open menu surface), which would move
-        // the measurement with every per-child input still comparing equal.
         && nodes.world.children_layout_style_is_local(id)
-        // A box a replaced resource sizes records no plan (see `cacheable`);
-        // one recorded before its natural size arrived no longer holds.
         && natural.is_none()
         && nodes.world.inline_record(id).is_none()
     {
-        // The size the plan answers with, and whether it patched what it
-        // recorded to get there.
-        let reused = if !Arc::ptr_eq(&plan.children, child_ids) {
-            // A new child list. A sequential sum takes the edit; anything
-            // else measures its children again.
-            sequential_measure_delta(
-                id,
-                plan,
-                child_ids,
-                viewport,
-                child_font_px,
-                nodes,
-                cache,
-                scope,
-            )?
-            .map(|size| (size, true))
-        } else if measure_plan_children_unchanged(
-            id,
-            plan,
-            viewport,
-            child_font_px,
-            nodes,
-            cache,
-            scope,
-        )? {
-            Some((plan.size, false))
-        } else if let Some(size) = sequential_measure_delta(
-            id,
-            plan,
-            child_ids,
-            viewport,
-            child_font_px,
-            nodes,
-            cache,
-            scope,
-        )? {
-            Some((size, true))
-        } else if let Some(size) =
-            flex_line_measure_delta(id, plan, viewport, child_font_px, nodes, cache, scope)?
-        {
-            Some((size, true))
-        } else if let Some(size) =
-            ifc_line_measure_delta(id, plan, viewport, child_font_px, nodes, cache, scope)?
-        {
-            Some((size, true))
-        } else {
-            grid_measure_delta(id, plan, viewport, child_font_px, nodes, cache, scope)?
-                .map(|size| (size, true))
-        };
-        if let Some((size, patched)) = reused {
-            if patched {
-                // The facts retained for this container were measured from
-                // the content the patch changed. A later constraint its used
-                // sizes do not hold measures it again instead.
-                cache.retire_intrinsic_facts(id);
+        match start_plan_attempt(common, plan, nodes, cache, scope)? {
+            PlanStart::Hit(size) => return Ok(StartOutcome::Fast(size)),
+            PlanStart::Push(frame) => return Ok(StartOutcome::Push(frame)),
+            PlanStart::Fallthrough(common) => {
+                return start_container_frame(common, nodes, cache, Some(scope));
             }
-            cache.note_plan_consulted(id, available);
-            cache.note_measure_plan_reused();
-            cache.note_measure_cache_hit();
-            cache.insert(cache_key, size);
-            return Ok(size);
         }
     }
 
-    // We reached the actual child traversal. Fixed-size nodes, retained used
-    // sizes, measure plans, and shared intrinsic facts all return above this
-    // point and therefore do not count as full-subtree work.
-    if had_plan {
+    start_container_frame(common, nodes, cache, scope)
+}
+
+enum PlanStart<'s> {
+    Hit(Size),
+    Push(MeasureFrame<'s>),
+    Fallthrough(Box<ContainerCommon>),
+}
+
+fn finish_plan_reused(
+    common: &ContainerCommon,
+    size: Size,
+    patched: bool,
+    cache: &mut PassIntrinsicCache,
+) -> Size {
+    if patched {
+        cache.retire_intrinsic_facts(common.id);
+    }
+    cache.note_plan_consulted(common.id, common.available);
+    cache.note_measure_plan_reused();
+    cache.note_measure_cache_hit();
+    cache.insert(common.cache_key, size);
+    size
+}
+
+fn start_plan_attempt<'w, 's>(
+    common: Box<ContainerCommon>,
+    plan: &'s MeasurePlan,
+    nodes: &mut LayoutInputMap<'w>,
+    cache: &mut PassIntrinsicCache,
+    scope: &'s ScopeContext<'s>,
+) -> Result<PlanStart<'s>, UiWorldError> {
+    if Arc::ptr_eq(&plan.children, &common.child_ids) {
+        let affected = scope.affected_children(common.id);
+        match advance_unchanged(common, plan, affected, 0, nodes, cache, scope)? {
+            Ok(PlanStart::Hit(size)) => return Ok(PlanStart::Hit(size)),
+            Ok(PlanStart::Push(frame)) => return Ok(PlanStart::Push(frame)),
+            Ok(PlanStart::Fallthrough(_)) => unreachable!(),
+            Err(common) => return try_plan_sequential(common, plan, nodes, cache, scope),
+        }
+    }
+    try_plan_sequential(common, plan, nodes, cache, scope)
+}
+
+fn advance_unchanged<'w, 's>(
+    common: Box<ContainerCommon>,
+    plan: &'s MeasurePlan,
+    affected: &'s [StableNodeId],
+    mut cursor: usize,
+    nodes: &LayoutInputMap<'w>,
+    cache: &mut PassIntrinsicCache,
+    scope: &'s ScopeContext<'s>,
+) -> Result<Result<PlanStart<'s>, Box<ContainerCommon>>, UiWorldError> {
+    while cursor < affected.len() {
+        let aff = affected[cursor];
+        cursor += 1;
+        let Some(entry) = plan.entry(aff) else {
+            continue;
+        };
+        if !retained_style_matches(&nodes.style(entry.child), &entry.style) {
+            return Ok(Err(common));
+        }
+        if !scope.measure.contains(&aff) {
+            continue;
+        }
+        if let Some(cached) = entry.intrinsic.get() {
+            let req = MeasureRequest {
+                id: entry.child,
+                forced: None,
+                available: plan.child_available,
+                parent_direction: Some(plan.child_direction),
+                viewport: common.viewport,
+                parent_font_px: common.child_font_px,
+            };
+            return Ok(Ok(PlanStart::Push(MeasureFrame {
+                batch: PendingBatch::new(vec![req], false),
+                body: Box::new(FrameBody::Plan(PlanState {
+                    common,
+                    plan,
+                    wait: PlanWait::Unchanged {
+                        affected,
+                        step: UnchangedStep::Scoped {
+                            cursor,
+                            entry_child: entry.child,
+                            cached,
+                            baseline: entry.baseline.get(),
+                            at_main: entry.at_main.as_deref().copied(),
+                        },
+                    },
+                })),
+            })));
+        }
+        if let Some(&(main, cached_main)) = entry.at_main.as_deref() {
+            let Some(req) = at_main_request(
+                entry.child,
+                main,
+                plan.child_direction,
+                plan.child_available,
+                common.viewport,
+                common.child_font_px,
+                nodes,
+            ) else {
+                if Size::default() != cached_main {
+                    return Ok(Err(common));
+                }
+                continue;
+            };
+            return Ok(Ok(PlanStart::Push(MeasureFrame {
+                batch: PendingBatch::new(vec![req], false),
+                body: Box::new(FrameBody::Plan(PlanState {
+                    common,
+                    plan,
+                    wait: PlanWait::Unchanged {
+                        affected,
+                        step: UnchangedStep::AtMain {
+                            cursor,
+                            cached_main,
+                        },
+                    },
+                })),
+            })));
+        }
+    }
+    let size = finish_plan_reused(&common, plan.size, false, cache);
+    Ok(Ok(PlanStart::Hit(size)))
+}
+
+fn start_container_frame<'w, 's>(
+    common: Box<ContainerCommon>,
+    nodes: &mut LayoutInputMap<'w>,
+    cache: &mut PassIntrinsicCache,
+    scope: Option<&'s ScopeContext<'s>>,
+) -> Result<StartOutcome<'s>, UiWorldError> {
+    if common.had_plan {
         cache.note_plan_miss();
     }
     cache.note_measure_node();
@@ -1308,9 +1543,12 @@ fn measure_node_level(
         cache.note_measure_cache_miss();
     }
     cache.record_full_subtree();
+    let id = common.id;
+    let style = common.style.as_ref();
     let native_inline = nodes.world.inline_record(id).is_some();
-    let (mut flow_children, descendant_dependent_flow) = if native_inline {
-        for &child in child_ids.iter() {
+    if native_inline {
+        let mut requests = Vec::new();
+        for &child in common.child_ids.iter() {
             if nodes.world.inline_parent(child) != Some(id) {
                 continue;
             }
@@ -1320,351 +1558,826 @@ fn measure_node_level(
             {
                 return Err(UiWorldError::InvalidInlineContent(id));
             }
-            cache.note_child_measured();
-            intrinsic_size_scoped(
-                child,
-                content_available,
+            requests.push(MeasureRequest {
+                id: child,
+                forced: None,
+                available: common.content_available,
+                parent_direction: None,
+                viewport: common.viewport,
+                parent_font_px: common.child_font_px,
+            });
+        }
+        let context = EstablishedContext {
+            kind: crate::FormattingContextKind::Inline,
+            grid_2d: false,
+        };
+        nodes.contexts.insert(id, context.kind);
+        let direction = used_flow_direction(style, common.writing, true);
+        let wrap = style.flex_wrap;
+        let state = ContainerState {
+            common,
+            flow_children: Vec::new(),
+            descendant_dependent_flow: false,
+            context,
+            direction,
+            wrap,
+            wrapping: true,
+            grid_tracks: None,
+            #[cfg(feature = "benchmark")]
+            child_phase: None,
+            phase: ContainerPhase::NativeInline,
+        };
+        if requests.is_empty() {
+            let size = finish_measure_container(
+                state,
+                Vec::new(),
+                Vec::new(),
+                Size::default(),
+                0.0,
                 None,
-                viewport,
-                child_font_px,
+                Vec::new(),
+                0.0,
+                (0.0, 0),
                 nodes,
                 cache,
                 scope,
             )?;
+            return Ok(StartOutcome::Fast(size));
         }
-        (Vec::new(), false)
-    } else {
-        collect_flow_children_reporting(child_ids, nodes, style)?
-    };
-    // Floats leave the flow (CSS 2.1 §9.5): placement packs them beside it,
-    // so they are measured beside it too, never stacked as in-flow boxes.
-    // Flex and grid items are blockified instead.
-    let floated = if native_inline
-        || style
-            .display
-            .is_some_and(|display| display.is_flex_container() || display.is_grid_container())
-    {
-        Vec::new()
-    } else {
-        collect_floated_children(child_ids, nodes)?
-    };
-    if !floated.is_empty() {
-        flow_children.retain(|id| !floated.contains(id));
+        return Ok(StartOutcome::Push(MeasureFrame {
+            batch: PendingBatch::new(requests, true),
+            body: Box::new(FrameBody::Container(state)),
+        }));
     }
-    let context = if native_inline {
-        EstablishedContext {
-            kind: crate::FormattingContextKind::Inline,
-            grid_2d: false,
-        }
-    } else {
-        establish_context(id, style, &flow_children, nodes)
-    };
+
+    let (mut flow_children, descendant_dependent_flow) =
+        collect_flow_children_reporting(&common.child_ids, nodes, style)?;
+    let context = establish_context(id, style, &flow_children, nodes);
     nodes.contexts.insert(id, context.kind);
     let grid_measure = context.grid_2d;
     let ifc = context.inline();
-    let direction = used_flow_direction(style, writing, ifc);
+    let direction = used_flow_direction(style, common.writing, ifc);
     let wrap = style.flex_wrap;
     let wrapping = ifc
         || match direction {
             FlexDirection::Row => matches!(wrap, FlexWrap::Wrap | FlexWrap::WrapReverse),
             FlexDirection::Column => {
                 matches!(wrap, FlexWrap::Wrap | FlexWrap::WrapReverse)
-                    && content_available.height > 0.5
+                    && common.content_available.height > 0.5
             }
         };
     let grid_tracks = match direction {
-        FlexDirection::Row => style.active_grid_columns(),
-        FlexDirection::Column => style.active_grid_rows(),
+        FlexDirection::Row => style.active_grid_columns().map(|t| Arc::new(t.to_vec())),
+        FlexDirection::Column => style.active_grid_rows().map(|t| Arc::new(t.to_vec())),
     };
-    // Line breaks and grid auto-placement depend on which item comes next, so
-    // measure those in the order placement lays the children out; measuring
-    // in document order while placing by `order` sizes the container for lines
-    // it never has. A single unwrapped line sums the same in any order.
-    if grid_measure || wrapping || grid_tracks.is_some_and(|tracks| !tracks.is_empty()) {
+    if grid_measure || wrapping || grid_tracks.as_deref().is_some_and(|t| !t.is_empty()) {
         sort_by_order(&mut flow_children, nodes);
     }
-    let mut child_sizes = nodes.scratch.sizes(flow_children.len());
     #[cfg(feature = "benchmark")]
-    let mut child_phase = (flow_children.len() > 64).then(super::plan_stats::PhaseClock::start);
-    for child in &flow_children {
-        // Resolving the child style is a map lookup plus an `Arc` clone, so keep
-        // it behind the grid check rather than filtering it away afterwards.
+    let child_phase = (flow_children.len() > 64).then(super::plan_stats::PhaseClock::start);
+    let mut requests = Vec::with_capacity(flow_children.len());
+    for &child in &flow_children {
         let child_available = if grid_measure {
             nodes
-                .style(*child)
+                .style(child)
                 .map(|child_style| {
-                    grid_item_measure_available(child_style.as_ref(), content_available)
+                    grid_item_measure_available(child_style.as_ref(), common.content_available)
                 })
-                .unwrap_or(content_available)
+                .unwrap_or(common.content_available)
         } else {
-            content_available
+            common.content_available
         };
-        cache.note_child_measured();
-        child_sizes.push(intrinsic_size_scoped(
-            *child,
-            child_available,
-            Some(direction),
-            viewport,
-            child_font_px,
-            nodes,
-            cache,
-            scope,
-        )?);
+        requests.push(MeasureRequest {
+            id: child,
+            forced: None,
+            available: child_available,
+            parent_direction: Some(direction),
+            viewport: common.viewport,
+            parent_font_px: common.child_font_px,
+        });
     }
-    #[cfg(feature = "benchmark")]
-    if let Some(clock) = child_phase.as_mut() {
-        clock.lap(4);
+    let state = ContainerState {
+        common,
+        flow_children,
+        descendant_dependent_flow,
+        context,
+        direction,
+        wrap,
+        wrapping,
+        grid_tracks,
+        #[cfg(feature = "benchmark")]
+        child_phase,
+        phase: ContainerPhase::FlowChildren,
+    };
+    if requests.is_empty() {
+        return Ok(
+            match step_container_frame(state, Vec::new(), nodes, cache, scope)? {
+                FrameOutcome::Done(s) => StartOutcome::Fast(s),
+                FrameOutcome::Push { frame } => StartOutcome::Push(frame),
+            },
+        );
     }
-    // The lines of an ordinary block sit their atoms on one baseline.
-    let baseline_lines =
-        (ifc && !writing.is_vertical()).then(|| line_strut(id, style, child_font_px, nodes));
-    if baseline_lines.is_some() {
-        prime_atom_baselines(
-            flow_children
-                .iter()
-                .copied()
-                .zip(child_sizes.iter().copied()),
-            writing
-                .logical_size(content_available.width, content_available.height)
-                .0,
-            viewport,
-            child_font_px,
-            nodes,
-            cache,
-            scope,
-        )?;
+    Ok(StartOutcome::Push(MeasureFrame {
+        batch: PendingBatch::new(requests, true),
+        body: Box::new(FrameBody::Container(state)),
+    }))
+}
+
+fn step_measure_frame<'w, 's>(
+    body: FrameBody<'s>,
+    results: Vec<Size>,
+    nodes: &mut LayoutInputMap<'w>,
+    cache: &mut PassIntrinsicCache,
+    scope: Option<&'s ScopeContext<'s>>,
+) -> Result<FrameOutcome<'s>, UiWorldError> {
+    match body {
+        FrameBody::Plan(plan_state) => step_plan_frame(plan_state, results, nodes, cache, scope),
+        FrameBody::Container(state) => step_container_frame(state, results, nodes, cache, scope),
     }
-    let parent_box = gap_containing_block(style, content_available);
+}
+
+fn step_container_frame<'w, 's>(
+    mut state: ContainerState,
+    results: Vec<Size>,
+    nodes: &mut LayoutInputMap<'w>,
+    cache: &mut PassIntrinsicCache,
+    scope: Option<&'s ScopeContext<'s>>,
+) -> Result<FrameOutcome<'s>, UiWorldError> {
+    let phase = std::mem::replace(&mut state.phase, ContainerPhase::NativeInline);
+    match phase {
+        ContainerPhase::NativeInline => {
+            let flow_children = std::mem::take(&mut state.flow_children);
+            let size = finish_measure_container(
+                state,
+                flow_children,
+                Vec::new(),
+                Size::default(),
+                0.0,
+                None,
+                Vec::new(),
+                0.0,
+                (0.0, 0),
+                nodes,
+                cache,
+                scope,
+            )?;
+            Ok(FrameOutcome::Done(size))
+        }
+        ContainerPhase::FlowChildren => {
+            #[cfg(feature = "benchmark")]
+            if let Some(clock) = state.child_phase.as_mut() {
+                clock.lap(4);
+            }
+            let flow_children = std::mem::take(&mut state.flow_children);
+            let mut child_sizes = nodes.scratch.sizes(results.len());
+            child_sizes.extend(results);
+            let ifc = state.context.inline();
+            let baseline_lines = (ifc && !state.common.writing.is_vertical()).then(|| {
+                line_strut(
+                    state.common.id,
+                    state.common.style.as_ref(),
+                    state.common.child_font_px,
+                    nodes,
+                )
+            });
+            if baseline_lines.is_some() {
+                prime_atom_baselines(
+                    flow_children
+                        .iter()
+                        .copied()
+                        .zip(child_sizes.iter().copied()),
+                    state
+                        .common
+                        .writing
+                        .logical_size(
+                            state.common.content_available.width,
+                            state.common.content_available.height,
+                        )
+                        .0,
+                    state.common.viewport,
+                    state.common.child_font_px,
+                    nodes,
+                    cache,
+                    scope,
+                )?;
+            }
+            after_flow_children_step(
+                state,
+                flow_children,
+                child_sizes,
+                baseline_lines,
+                nodes,
+                cache,
+                scope,
+            )
+        }
+        ContainerPhase::GridPass2 {
+            flow_children,
+            child_sizes,
+            state: grid_prep,
+        } => {
+            let grid = layout_grid_2d_finish(grid_prep, &results);
+            let recorded_grid = Some(Box::new(GridTrackPlan::from_layout(&grid)));
+            let (width, height) = state.common.writing.physical_size(
+                grid_axis_extent(&grid.col_sizes, grid.col_gap),
+                grid_axis_extent(&grid.row_sizes, grid.row_gap),
+            );
+            finish_children_layout(
+                state,
+                flow_children,
+                child_sizes,
+                Size::new(width, height),
+                recorded_grid,
+                Vec::new(),
+                0.0,
+                (0.0, 0),
+                nodes,
+                cache,
+                scope,
+            )
+        }
+        ContainerPhase::GridAutoTracks {
+            flow_children,
+            child_sizes,
+            tracks,
+            state: auto_prep,
+        } => {
+            let auto_sizes = auto_track_contributions_finish(auto_prep, &results);
+            let parent_box =
+                gap_containing_block(state.common.style.as_ref(), state.common.content_available);
+            let gap = state.common.style.main_gap_against_fonts(
+                state.direction,
+                parent_box,
+                state.common.fonts,
+            );
+            let child_edge_base = state
+                .common
+                .writing
+                .logical_size(
+                    state.common.content_available.width,
+                    state.common.content_available.height,
+                )
+                .0;
+            let budget = main_extent(state.common.content_available, state.direction);
+            let resolved = resolve_grid_track_sizes(&tracks, budget, gap, &auto_sizes);
+            let children_size = grid_intrinsic_size(
+                state.direction,
+                &resolved,
+                &child_sizes,
+                &flow_children,
+                child_edge_base,
+                gap,
+                state.common.child_font_px,
+                nodes,
+            );
+            finish_children_layout(
+                state,
+                flow_children,
+                child_sizes,
+                children_size,
+                None,
+                Vec::new(),
+                0.0,
+                (0.0, 0),
+                nodes,
+                cache,
+                scope,
+            )
+        }
+        ContainerPhase::EqualWrap {
+            flow_children,
+            child_sizes,
+            state: eq_prep,
+        } => {
+            let children_size = measure_equal_wrap_finish(eq_prep, &results);
+            finish_children_layout(
+                state,
+                flow_children,
+                child_sizes,
+                children_size,
+                None,
+                Vec::new(),
+                0.0,
+                (0.0, 0),
+                nodes,
+                cache,
+                scope,
+            )
+        }
+        ContainerPhase::DefiniteMain {
+            flow_children,
+            child_sizes,
+            mut used_sizes,
+            pending,
+        } => {
+            let mut hypothetical = Vec::with_capacity(pending.len());
+            for ((index, child, main), &at_main) in pending.iter().zip(&results) {
+                set_cross_extent(
+                    &mut used_sizes[*index],
+                    state.direction,
+                    cross_extent(at_main, state.direction),
+                );
+                hypothetical.push((*child, *main, at_main));
+            }
+            finish_sequential_children(
+                state,
+                flow_children,
+                child_sizes,
+                &used_sizes,
+                hypothetical,
+                nodes,
+                cache,
+                scope,
+            )
+        }
+    }
+}
+
+fn after_flow_children_step<'w, 's>(
+    mut state: ContainerState,
+    flow_children: Vec<StableNodeId>,
+    child_sizes: Vec<Size>,
+    baseline_lines: Option<super::LineStrut>,
+    nodes: &mut LayoutInputMap<'w>,
+    cache: &mut PassIntrinsicCache,
+    scope: Option<&'s ScopeContext<'s>>,
+) -> Result<FrameOutcome<'s>, UiWorldError> {
+    let style = &state.common.style;
+    let writing = state.common.writing;
+    let content_available = state.common.content_available;
+    let fonts = state.common.fonts;
+    let direction = state.direction;
+    let parent_box = gap_containing_block(style.as_ref(), content_available);
     let gap = style.main_gap_against_fonts(direction, parent_box, fonts);
     let cross_gap = style.cross_gap_against_fonts(direction, parent_box, fonts);
-    // This node is every child's containing block.
     let child_edge_base = writing
         .logical_size(content_available.width, content_available.height)
         .0;
-    let child_margin = |child, nodes: &LayoutInputMap<'_>| {
-        nodes
-            .style(child)
-            .map(|style| {
-                style.resolved_margin_against_fonts(
-                    Some(child_edge_base),
-                    fonts_of(&style, child_font_px),
-                )
-            })
-            .unwrap_or_default()
-    };
-    // Items measured again at the main size their line gave them:
-    // `(child, used main, size)`, re-checked by a measure plan.
-    let mut hypothetical: Vec<(StableNodeId, f32, Size)> = Vec::new();
-    let mut recorded_grid = None;
-    let mut sequential_main_sum = 0.0f64;
-    // The widest in-flow child's cross extent with its margins, and how many
-    // children are that wide.
-    let mut sequential_cross = (0.0f32, 0usize);
-    let children = if grid_measure {
-        let grid = layout_grid_2d(
-            style,
+    let grid_measure = state.context.grid_2d;
+
+    if grid_measure {
+        match layout_grid_2d_begin(
+            style.as_ref(),
             writing,
             &flow_children,
             &child_sizes,
             content_available,
             fonts,
-            None,
-            viewport,
             nodes,
-            cache,
-            scope,
-        )?;
-        // Subgrid tracks belong to the parent. Re-solving them from this
-        // container's template would invent a different grid.
-        if !style.is_subgrid_columns() && !style.is_subgrid_rows() {
-            recorded_grid = Some(Box::new(GridTrackPlan::from_layout(&grid)));
-        }
-        // Columns run along the inline axis, rows along the block one.
-        let (width, height) = writing.physical_size(
-            grid_axis_extent(&grid.col_sizes, grid.col_gap),
-            grid_axis_extent(&grid.row_sizes, grid.row_gap),
-        );
-        Size::new(width, height)
-    } else if let Some(tracks) = grid_tracks.filter(|tracks| !tracks.is_empty()) {
-        let auto_sizes = auto_track_contributions(
-            &flow_children,
-            tracks,
-            content_available,
-            direction == FlexDirection::Column,
-            viewport,
-            child_font_px,
-            nodes,
-            cache,
-            scope,
-        )?;
-        let budget = main_extent(content_available, direction);
-        let resolved = resolve_grid_track_sizes(tracks, budget, gap, &auto_sizes);
-        grid_intrinsic_size(
-            direction,
-            &resolved,
-            &child_sizes,
-            &flow_children,
-            child_edge_base,
-            gap,
-            child_font_px,
-            nodes,
-        )
-    } else if wrapping && style.equal_wrap {
-        measure_equal_wrap(
-            &flow_children,
-            &child_sizes,
-            direction,
-            content_available,
-            child_edge_base,
-            gap,
-            cross_gap,
-            viewport,
-            child_font_px,
-            nodes,
-            cache,
-            scope,
-        )?
-    } else if wrapping {
-        wrap_intrinsic_size(
-            direction,
-            wrap,
-            &flow_children,
-            &child_sizes,
-            content_available,
-            child_edge_base,
-            gap,
-            cross_gap,
-            grid_tracks,
-            viewport,
-            child_font_px,
-            nodes,
-            baseline_lines,
-        )
-    } else {
-        // With a definite main size the line hands out free space (or takes
-        // back overflow), and an item's cross size is its content's at the
-        // main size it ends up with, as placement lays it out.
-        let definite_main = match direction {
-            FlexDirection::Row => spec_width.is_some(),
-            FlexDirection::Column => spec_height.is_some(),
-        };
-        let mut used_sizes = child_sizes.clone();
-        if definite_main {
-            let line = super::dynamic::DynamicLine::of(
-                id,
-                style,
-                writing,
-                true,
-                &mut cache.dynamic,
-                scope.map(|scope| scope.retained),
-                false,
-            );
-            let adjust = distribute_flex_main(
-                &flow_children,
-                &mut used_sizes,
-                direction,
-                content_available,
-                child_edge_base,
-                gap,
-                viewport,
-                child_font_px,
-                nodes,
-                line,
-            );
-            for (index, child) in flow_children.iter().enumerate() {
-                let Some(child_style) = nodes.style_ref(*child) else {
-                    continue;
-                };
-                // An item that gave up only its own chrome keeps its content
-                // box, and so its cross size: nothing to measure again.
-                if adjust.compressed(index) {
-                    continue;
-                }
-                if !cross_follows_used_main(
-                    &child_style,
-                    direction,
-                    child_sizes[index],
-                    used_sizes[index],
-                ) {
-                    continue;
-                }
-                let at_main = intrinsic_size_at_main(
-                    *child,
-                    main_extent(used_sizes[index], direction),
-                    direction,
-                    content_available,
-                    viewport,
-                    child_font_px,
+        ) {
+            super::grid::Grid2dStart::Ready(grid) => {
+                let recorded_grid = Some(Box::new(GridTrackPlan::from_layout(&grid)));
+                let (width, height) = writing.physical_size(
+                    grid_axis_extent(&grid.col_sizes, grid.col_gap),
+                    grid_axis_extent(&grid.row_sizes, grid.row_gap),
+                );
+                return finish_children_layout(
+                    state,
+                    flow_children,
+                    child_sizes,
+                    Size::new(width, height),
+                    recorded_grid,
+                    Vec::new(),
+                    0.0,
+                    (0.0, 0),
                     nodes,
                     cache,
                     scope,
-                )?;
+                );
+            }
+            super::grid::Grid2dStart::NeedsPass2(grid_prep) => {
+                let requests = grid_prep
+                    .queries
+                    .iter()
+                    .map(|&(_, item_id, avail)| MeasureRequest {
+                        id: item_id,
+                        forced: None,
+                        available: avail,
+                        parent_direction: Some(FlexDirection::Row),
+                        viewport: state.common.viewport,
+                        parent_font_px: state.common.child_font_px,
+                    })
+                    .collect();
+                state.phase = ContainerPhase::GridPass2 {
+                    flow_children,
+                    child_sizes,
+                    state: grid_prep,
+                };
+                return Ok(FrameOutcome::Push {
+                    frame: MeasureFrame {
+                        batch: PendingBatch::new(requests, false),
+                        body: Box::new(FrameBody::Container(state)),
+                    },
+                });
+            }
+        }
+    }
+
+    if let Some(tracks) = state
+        .grid_tracks
+        .as_ref()
+        .filter(|tracks| !tracks.is_empty())
+        .cloned()
+    {
+        let auto_prep = auto_track_contributions_begin(
+            &flow_children,
+            &tracks,
+            content_available,
+            direction == FlexDirection::Column,
+            state.common.viewport,
+            state.common.child_font_px,
+            nodes,
+        );
+        if auto_prep.queries.is_empty() {
+            let auto_sizes = auto_track_contributions_finish(auto_prep, &[]);
+            let budget = main_extent(content_available, direction);
+            let resolved = resolve_grid_track_sizes(&tracks, budget, gap, &auto_sizes);
+            let children_size = grid_intrinsic_size(
+                direction,
+                &resolved,
+                &child_sizes,
+                &flow_children,
+                child_edge_base,
+                gap,
+                state.common.child_font_px,
+                nodes,
+            );
+            return finish_children_layout(
+                state,
+                flow_children,
+                child_sizes,
+                children_size,
+                None,
+                Vec::new(),
+                0.0,
+                (0.0, 0),
+                nodes,
+                cache,
+                scope,
+            );
+        }
+        let requests = auto_prep
+            .queries
+            .iter()
+            .map(|&(_, child, available)| MeasureRequest {
+                id: child,
+                forced: None,
+                available,
+                parent_direction: Some(auto_prep.direction),
+                viewport: state.common.viewport,
+                parent_font_px: state.common.child_font_px,
+            })
+            .collect();
+        state.phase = ContainerPhase::GridAutoTracks {
+            flow_children,
+            child_sizes,
+            tracks,
+            state: auto_prep,
+        };
+        return Ok(FrameOutcome::Push {
+            frame: MeasureFrame {
+                batch: PendingBatch::new(requests, false),
+                body: Box::new(FrameBody::Container(state)),
+            },
+        });
+    }
+
+    if state.wrapping && style.equal_wrap {
+        let eq_prep = measure_equal_wrap_begin(
+            &flow_children,
+            &child_sizes,
+            direction,
+            content_available,
+            child_edge_base,
+            gap,
+            cross_gap,
+            state.common.child_font_px,
+            nodes,
+        );
+        let mut requests = Vec::with_capacity(eq_prep.queries.len());
+        let mut quick_zero = true;
+        for &(child, share) in &eq_prep.queries {
+            if let Some(req) = at_main_request(
+                child,
+                share,
+                direction,
+                content_available,
+                state.common.viewport,
+                state.common.child_font_px,
+                nodes,
+            ) {
+                requests.push(req);
+                quick_zero = false;
+            } else {
+                // Missing node: synthesize a 0-sized request or skip? Push a request for the id
+                // which `start_measure_request` resolves quickly to Size::default().
+                requests.push(MeasureRequest {
+                    id: child,
+                    forced: None,
+                    available: content_available,
+                    parent_direction: Some(direction),
+                    viewport: state.common.viewport,
+                    parent_font_px: state.common.child_font_px,
+                });
+            }
+        }
+        if requests.is_empty() || quick_zero && eq_prep.queries.is_empty() {
+            let children_size = measure_equal_wrap_finish(eq_prep, &[]);
+            return finish_children_layout(
+                state,
+                flow_children,
+                child_sizes,
+                children_size,
+                None,
+                Vec::new(),
+                0.0,
+                (0.0, 0),
+                nodes,
+                cache,
+                scope,
+            );
+        }
+        state.phase = ContainerPhase::EqualWrap {
+            flow_children,
+            child_sizes,
+            state: eq_prep,
+        };
+        return Ok(FrameOutcome::Push {
+            frame: MeasureFrame {
+                batch: PendingBatch::new(requests, false),
+                body: Box::new(FrameBody::Container(state)),
+            },
+        });
+    }
+
+    if state.wrapping {
+        let children_size = wrap_intrinsic_size(
+            direction,
+            state.wrap,
+            &flow_children,
+            &child_sizes,
+            content_available,
+            child_edge_base,
+            gap,
+            cross_gap,
+            state.grid_tracks.as_deref().map(Vec::as_slice),
+            state.common.viewport,
+            state.common.child_font_px,
+            nodes,
+            baseline_lines,
+        );
+        return finish_children_layout(
+            state,
+            flow_children,
+            child_sizes,
+            children_size,
+            None,
+            Vec::new(),
+            0.0,
+            (0.0, 0),
+            nodes,
+            cache,
+            scope,
+        );
+    }
+
+    let definite_main = match direction {
+        FlexDirection::Row => state.common.spec_width.is_some(),
+        FlexDirection::Column => state.common.spec_height.is_some(),
+    };
+    let mut used_sizes = child_sizes.clone();
+    if definite_main {
+        let line = super::dynamic::DynamicLine::of(
+            state.common.id,
+            style.as_ref(),
+            writing,
+            true,
+            &mut cache.dynamic,
+            scope.map(|scope| scope.retained),
+            false,
+        );
+        let adjust = distribute_flex_main(
+            &flow_children,
+            &mut used_sizes,
+            direction,
+            content_available,
+            child_edge_base,
+            gap,
+            state.common.viewport,
+            state.common.child_font_px,
+            nodes,
+            line,
+        );
+        let mut pending = Vec::new();
+        let mut requests = Vec::new();
+        for (index, child) in flow_children.iter().enumerate() {
+            let Some(child_style) = nodes.style_ref(*child) else {
+                continue;
+            };
+            if adjust.compressed(index) {
+                continue;
+            }
+            if !cross_follows_used_main(
+                &child_style,
+                direction,
+                child_sizes[index],
+                used_sizes[index],
+            ) {
+                continue;
+            }
+            let main = main_extent(used_sizes[index], direction);
+            if let Some(req) = at_main_request(
+                *child,
+                main,
+                direction,
+                content_available,
+                state.common.viewport,
+                state.common.child_font_px,
+                nodes,
+            ) {
+                pending.push((index, *child, main));
+                requests.push(req);
+            } else {
+                let at_main = Size::default();
                 set_cross_extent(
                     &mut used_sizes[index],
                     direction,
                     cross_extent(at_main, direction),
                 );
-                hypothetical.push((*child, main_extent(used_sizes[index], direction), at_main));
             }
         }
-        let gaps = gap * flow_children.len().saturating_sub(1) as f32;
-        // Summed exactly: a plan that patches one child's share into the
-        // total then reaches the bits this sum does. See
-        // `sequential_main_term`.
-        let mut main = f64::from(gaps);
-        let mut cross = 0.0f32;
-        let mut at_cross = 0usize;
-        for ((child, size), used) in flow_children.iter().zip(&child_sizes).zip(&used_sizes) {
-            let margin = child_margin(*child, nodes);
-            main += sequential_main_term(*size, margin, direction);
-            let reach = cross_extent(*used, direction) + cross_margin(margin, direction);
-            if reach > cross {
-                at_cross = 1;
-            } else if reach == cross {
-                at_cross += 1;
-            }
-            cross = cross.max(reach);
+        if !requests.is_empty() {
+            state.phase = ContainerPhase::DefiniteMain {
+                flow_children,
+                child_sizes,
+                used_sizes,
+                pending,
+            };
+            return Ok(FrameOutcome::Push {
+                frame: MeasureFrame {
+                    batch: PendingBatch::new(requests, false),
+                    body: Box::new(FrameBody::Container(state)),
+                },
+            });
         }
-        sequential_main_sum = main;
-        sequential_cross = (cross, at_cross);
-        let main = main as f32;
-        match direction {
-            FlexDirection::Row => Size::new(main.max(0.0), cross),
-            FlexDirection::Column => Size::new(cross, main.max(0.0)),
+    }
+
+    finish_sequential_children(
+        state,
+        flow_children,
+        child_sizes,
+        &used_sizes,
+        Vec::new(),
+        nodes,
+        cache,
+        scope,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn finish_sequential_children<'w, 's>(
+    state: ContainerState,
+    flow_children: Vec<StableNodeId>,
+    child_sizes: Vec<Size>,
+    used_sizes: &[Size],
+    hypothetical: Vec<(StableNodeId, f32, Size)>,
+    nodes: &mut LayoutInputMap<'w>,
+    cache: &mut PassIntrinsicCache,
+    scope: Option<&'s ScopeContext<'s>>,
+) -> Result<FrameOutcome<'s>, UiWorldError> {
+    let parent_box =
+        gap_containing_block(state.common.style.as_ref(), state.common.content_available);
+    let gap =
+        state
+            .common
+            .style
+            .main_gap_against_fonts(state.direction, parent_box, state.common.fonts);
+    let child_edge_base = state
+        .common
+        .writing
+        .logical_size(
+            state.common.content_available.width,
+            state.common.content_available.height,
+        )
+        .0;
+    let gaps = gap * flow_children.len().saturating_sub(1) as f32;
+    let mut main = f64::from(gaps);
+    let mut cross = 0.0f32;
+    let mut at_cross = 0usize;
+    for ((child, size), used) in flow_children.iter().zip(&child_sizes).zip(used_sizes) {
+        let margin = child_margin_of(*child, child_edge_base, state.common.child_font_px, nodes);
+        main += sequential_main_term(*size, margin, state.direction);
+        let reach = cross_extent(*used, state.direction) + cross_margin(margin, state.direction);
+        if reach > cross {
+            at_cross = 1;
+        } else if reach == cross {
+            at_cross += 1;
         }
+        cross = cross.max(reach);
+    }
+    let sequential_main_sum = main;
+    let sequential_cross = (cross, at_cross);
+    let main = main as f32;
+    let children_size = match state.direction {
+        FlexDirection::Row => Size::new(main.max(0.0), cross),
+        FlexDirection::Column => Size::new(cross, main.max(0.0)),
     };
-    let (children, widest_float) = if floated.is_empty() {
-        (children, 0.0)
-    } else {
-        measure_beside_floats(
-            id,
-            style,
-            writing,
-            children,
-            &flow_children,
-            &child_sizes,
-            &floated,
-            content_available,
-            child_edge_base,
-            (gap, cross_gap),
-            ifc,
-            direction,
-            viewport,
-            child_font_px,
-            nodes,
-            cache,
-            scope,
-        )?
-    };
+    finish_children_layout(
+        state,
+        flow_children,
+        child_sizes,
+        children_size,
+        None,
+        hypothetical,
+        sequential_main_sum,
+        sequential_cross,
+        nodes,
+        cache,
+        scope,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn finish_children_layout<'w, 's>(
+    state: ContainerState,
+    flow_children: Vec<StableNodeId>,
+    child_sizes: Vec<Size>,
+    children_size: Size,
+    recorded_grid: Option<Box<GridTrackPlan>>,
+    hypothetical: Vec<(StableNodeId, f32, Size)>,
+    sequential_main_sum: f64,
+    sequential_cross: (f32, usize),
+    nodes: &mut LayoutInputMap<'w>,
+    cache: &mut PassIntrinsicCache,
+    scope: Option<&'s ScopeContext<'s>>,
+) -> Result<FrameOutcome<'s>, UiWorldError> {
+    let size = finish_measure_container(
+        state,
+        flow_children,
+        child_sizes,
+        children_size,
+        0.0,
+        recorded_grid,
+        hypothetical,
+        sequential_main_sum,
+        sequential_cross,
+        nodes,
+        cache,
+        scope,
+    )?;
+    Ok(FrameOutcome::Done(size))
+}
+
+#[allow(clippy::too_many_arguments)]
+fn finish_measure_container(
+    #[allow(unused_mut)] mut state: ContainerState,
+    flow_children: Vec<StableNodeId>,
+    child_sizes: Vec<Size>,
+    children: Size,
+    _widest_float: f32,
+    recorded_grid: Option<Box<GridTrackPlan>>,
+    hypothetical: Vec<(StableNodeId, f32, Size)>,
+    sequential_main_sum: f64,
+    sequential_cross: (f32, usize),
+    nodes: &mut LayoutInputMap<'_>,
+    cache: &mut PassIntrinsicCache,
+    scope: Option<&ScopeContext<'_>>,
+) -> Result<Size, UiWorldError> {
     #[cfg(feature = "benchmark")]
-    if let Some(clock) = child_phase.as_mut() {
+    if let Some(clock) = state.child_phase.as_mut() {
         clock.lap(5);
     }
+    let common = &state.common;
+    let id = common.id;
+    let style = common.style.as_ref();
+    let world = nodes.world;
+    let text_metrics = common.text_metrics;
+    let text_natural_width = common.text_natural_width;
+    let text_wrap_limit = common.text_wrap_limit;
+    let writing = common.writing;
+    let available = common.available;
+    let parent_direction = common.parent_direction;
+    let viewport = common.viewport;
+    let parent_font_px = common.parent_font_px;
+    let child_font_px = common.child_font_px;
+    let fonts = common.fonts;
+    let edge_base = common.edge_base;
+    let chrome = common.chrome;
+    let content_available = common.content_available;
+    let child_ids = &common.child_ids;
+    let visual = common.visual;
+    let lead = common.lead;
+    let lead_inset = common.lead_inset;
+    let header_chrome = common.header_chrome;
+    let natural = common.natural;
+    let ifc = state.context.inline();
+    let grid_measure = state.context.grid_2d;
+    let direction = state.direction;
+    let wrapping = state.wrapping;
+    let child_edge_base = writing
+        .logical_size(content_available.width, content_available.height)
+        .0;
     let text = text_metrics.unwrap_or_default();
-    // A visual beside the text (a glyph, an indicator, a status dot) takes
-    // its room out of the line the text may ask for, the way the paragraph
-    // budget does; otherwise a text as wide as the box would push the box
-    // past it by the visual.
     let text_width = text_inline_size(
         text,
         text_natural_width,
@@ -1675,7 +2388,6 @@ fn measure_node_level(
             (content_available.width - visual.width).max(0.0)
         },
     ) + if header_chrome { visual.width } else { 0.0 };
-    // Text the visual draws itself asks the same way, with no wrapping.
     let text_width = text_width.max(
         visual
             .text
@@ -1686,12 +2398,13 @@ fn measure_node_level(
         children.height.max(text.height),
     );
     #[cfg(feature = "rich-text")]
-    if let Some(crate::StandardVisual::NativeMarkdown { blocks, .. }) =
-        nodes.world.standard_visual(id)
+    if let Some(visual) = nodes
+        .world
+        .widget_visual_as::<crate::NativeMarkdownVisual>(id)
     {
         let geometry = nodes.world.markdown_layout(
             id,
-            &blocks,
+            &visual.blocks,
             crate::LayoutBox {
                 x: 0.0,
                 y: 0.0,
@@ -1700,7 +2413,7 @@ fn measure_node_level(
             },
         );
         content = Size::new(
-            crate::rich_text::markdown_content_width(&blocks, &geometry),
+            crate::rich_text::markdown_content_width(&visual.blocks, &geometry),
             geometry.bounds.height,
         );
     }
@@ -1712,7 +2425,6 @@ fn measure_node_level(
     }
     if text_metrics.is_none()
         && flow_children.is_empty()
-        && floated.is_empty()
         && let Some(fs) = style.font_size.filter(|value| *value > 0.0)
     {
         content.height = content
@@ -1723,8 +2435,6 @@ fn measure_node_level(
         content.width += visual.width;
     }
     content.height = content.height.max(visual.height);
-    // The leading parts' band comes before the children, and its breadth is
-    // the least the content box spans beside it.
     let lead_floor = lead.floor();
     content = Size::new(
         content.width.max(lead_floor.width) + lead_inset.width,
@@ -1735,14 +2445,12 @@ fn measure_node_level(
         .iter()
         .zip(&flow_children)
         .map(|(size, child)| {
-            let margin = child_margin(*child, nodes);
+            let margin = child_margin_of(*child, child_edge_base, child_font_px, nodes);
             size.width + margin.left + margin.right
         })
-        .fold(lead_floor.width.max(widest_float), f32::max)
+        .fold(lead_floor.width, f32::max)
         + lead_inset.width
         + chrome.width;
-    // nowrap row: min-content cannot be narrower than the packed sum.
-    // wrap / column / block: min-content is the largest child (plus chrome).
     let min_content_w = if wrapping || direction.is_column() {
         stacked_min_w
     } else {
@@ -1754,7 +2462,7 @@ fn measure_node_level(
         Some(LengthSpec::FitContent) => max_content_w.min(available.width).max(stacked_min_w),
         _ if parent_direction.is_none()
             && !style.width.is_some_and(LengthSpec::is_content_sized)
-            && (!flow_children.is_empty() || !floated.is_empty()) =>
+            && !flow_children.is_empty() =>
         {
             available.width
         }
@@ -1775,33 +2483,14 @@ fn measure_node_level(
     transfer_natural_ratio(
         style, natural, chrome, available, viewport, fonts, &mut size,
     );
-    // Record only on a scoped pass. A full pass rebuilds every container in
-    // the document, so recording there costs an `Arc` clone per child and a
-    // sort per container across the whole tree -- 1.79 -> 2.55 ms on the
-    // 5,000-node canonical layout, measured. It buys one frame: the next
-    // scoped pass would have found a plan waiting. `layout_document`
-    // (css-parity, `layout_style_tree`) throws the map
-    // away entirely, and `force_full` has just cleared the retained cache, so
-    // in both cases the plans would be built for nobody.
-    // A plain leaf has no children for a plan to replay: its memo answers
-    // the same query, and the first frame's shortcut records none. Nor has
-    // any other childless box with no text, visual or natural size of its
-    // own: what it measures is its own style, which the memo keys on too.
     let bare_leaf = child_ids.is_empty()
         && text_metrics.is_none()
-        && nodes.world.standard_visual_ref(id).is_none()
+        && nodes.world.widget_visual_ref(id).is_none()
         && natural.is_none();
-    if unforced && cache.records_measure_plans && !plain_leaf && !bare_leaf {
-        // `auto` and `shrink` resolve to no length (`resolve_axis`): the
-        // main size is the children's sum either way, which a `Stack` hugging
-        // its content (its default `Shrink`) is.
+    if common.unforced && cache.records_measure_plans && !common.plain_leaf && !bare_leaf {
         let hugs = |spec: Option<LengthSpec>| {
             spec.is_none_or(|spec| matches!(spec, LengthSpec::Auto | LengthSpec::Shrink))
         };
-        // The plain in-flow path and a 2D grid are cacheable. One-axis grid
-        // tracks stay out: `auto_track_contributions` measures children
-        // against constraints other than `content_available`. A subgrid is
-        // not recorded above, so it keeps measuring its own formatting context.
         let plain_main = match direction {
             FlexDirection::Column => {
                 hugs(style.height) && style.min_height.is_none() && style.max_height.is_none()
@@ -1810,23 +2499,19 @@ fn measure_node_level(
                 hugs(style.width) && style.min_width.is_none() && style.max_width.is_none()
             }
         };
-        // A simple horizontal IFC of atomic inline children records the same
-        // measure plan. Line membership is recomputed from those intrinsics.
-        // Floats, unboxing, and a non-local child fall through and measure
-        // this formatting context only.
         let ifc_local = ifc
             && text_metrics.is_none()
-            && nodes.world.standard_visual_ref(id).is_none()
+            && nodes.world.widget_visual_ref(id).is_none()
             && ifc_local_measure(style, writing, &flow_children, child_ids.as_slice(), nodes)?;
-        // Floats are measured outside the plan's children: no plan replays them.
         let cacheable = !style.equal_wrap
-            && floated.is_empty()
-            && (!descendant_dependent_flow || ifc_local)
+            && (!state.descendant_dependent_flow || ifc_local)
             && (!grid_measure || recorded_grid.is_some())
             && (!ifc || ifc_local)
-            && grid_tracks.is_none_or(|tracks| tracks.is_empty())
+            && state
+                .grid_tracks
+                .as_deref()
+                .is_none_or(|tracks| tracks.is_empty())
             && nodes.world.children_layout_style_is_local(id)
-            // Plan deltas rebuild a size from the children alone, not the natural size above.
             && natural.is_none();
         let sequential = cacheable
             && recorded_grid.is_none()
@@ -1836,7 +2521,7 @@ fn measure_node_level(
             && style.justify_content == JustifySpec::Start
             && style.aspect_ratio.is_none()
             && text_metrics.is_none()
-            && nodes.world.standard_visual_ref(id).is_none()
+            && nodes.world.widget_visual_ref(id).is_none()
             && flow_children.iter().all(|child| {
                 nodes.style_ref(*child).is_some_and(|child_style| {
                     child_style.flex_grow.unwrap_or(0.0) <= 0.0
@@ -1844,9 +2529,6 @@ fn measure_node_level(
                 })
             });
         let recorded = cacheable.then(|| {
-            // `flow_children` is a subsequence of `child_ids` -- that is what
-            // `descendant_dependent_flow` being false means -- so one cursor
-            // pairs each direct child with its measurement, if it has one.
             let mut flow_cursor = 0usize;
             let mut entries: Vec<MeasuredChild> = child_ids
                 .iter()
@@ -1875,12 +2557,12 @@ fn measure_node_level(
                     MeasuredChild {
                         child,
                         style,
-                        intrinsic,
+                        intrinsic: PackedOptSize::from_opt(intrinsic),
                         at_main: hypothetical
                             .iter()
                             .find(|(item, _, _)| *item == child)
-                            .map(|(_, main, size)| (*main, *size)),
-                        baseline,
+                            .map(|(_, main, size)| Box::new((*main, *size))),
+                        baseline: PackedOptF32::from_opt(baseline),
                     }
                 })
                 .collect();
@@ -1890,7 +2572,7 @@ fn measure_node_level(
                 parent_direction,
                 viewport,
                 parent_font_px,
-                style: style_arc.to_arc(),
+                style: Arc::clone(&common.style),
                 writing,
                 children: Arc::clone(child_ids),
                 own: PlanOwnContent {
@@ -1915,27 +2597,24 @@ fn measure_node_level(
                 stale: false,
             }
         });
-        if had_plan && recorded.is_some() {
+        if common.had_plan && recorded.is_some() {
             cache.note_plan_rebuilt();
         }
         let slots = nodes.measure_plans.entry(id).or_default();
         match recorded {
             Some(plan) => slots.insert(plan),
-            // Leaving the entry empty retires the plans recorded while this
-            // container was still on the cacheable path.
             None => slots.clear(),
         }
-    } else if unforced
-        && (plain_leaf || bare_leaf)
+    } else if common.unforced
+        && (common.plain_leaf || bare_leaf)
         && scope.is_some_and(|scope| scope.retained.measure_plans.contains_key(&id))
     {
-        // A container that lost its last child retires its plans.
         nodes.measure_plans.entry(id).or_default().clear();
     }
     nodes.scratch.give_ids(flow_children);
     nodes.scratch.give_sizes(child_sizes);
-    if unforced {
-        cache.insert(cache_key, size);
+    if common.unforced {
+        cache.insert(common.cache_key, size);
         publish_atom_baseline(
             id,
             size,
@@ -1953,10 +2632,7 @@ fn measure_node_level(
             Some(size),
         );
         cache.insert_intrinsic_bounds(
-            cache_key,
-            // A constrained query may legitimately use less than the
-            // subtree's min-content width. Do not normalize that used query
-            // upward when publishing facts for the same constraint key.
+            common.cache_key,
             min_content_w.min(default_width),
             max_content_w.max(default_width),
             0.0,
@@ -1972,12 +2648,6 @@ fn measure_node_level(
     Ok(size)
 }
 
-/// A box publishes the baselines it is aligned by with its intrinsic facts,
-/// so they must be the ones placement derives from its descendants. An atom
-/// of a native paragraph: the paragraph reads its last baseline back after
-/// layout (`UiWorld::sync_inline_metrics`, [`prime_atom_baselines`]). An
-/// item a flex line aligns by its first baseline: the line reads it from
-/// the facts ([`prime_first_baselines`]).
 #[allow(clippy::too_many_arguments)]
 fn publish_atom_baseline(
     id: StableNodeId,
@@ -2009,105 +2679,6 @@ fn publish_atom_baseline(
         cache,
         scope,
     )
-}
-
-/// Re-check only the children the change closure reaches.
-///
-/// Everything outside the closure is unchanged by construction: a
-/// layout-affecting `set_style` marks the node LAYOUT-dirty, which is what puts
-/// it in the closure, and the caller has already confirmed that no
-/// ancestor-derived adjustment can move a child's style without touching the
-/// child.
-///
-/// Both halves matter. The intrinsic size alone misses a child whose margins
-/// changed -- margins are part of the container's content extent but not of the
-/// child's own measurement. The style alone misses a child that grew because
-/// its OWN content grew, which is the case `content_growth_under_a_child_moves_
-/// its_siblings` exists to hold.
-fn measure_plan_children_unchanged(
-    id: StableNodeId,
-    plan: &MeasurePlan,
-    viewport: LayoutViewport,
-    child_font_px: f32,
-    nodes: &mut LayoutInputMap<'_>,
-    cache: &mut PassIntrinsicCache,
-    scope: &ScopeContext<'_>,
-) -> Result<bool, UiWorldError> {
-    // The list is the plan's (the caller compared it): every entry is a child
-    // of `id`.
-    for affected in scope.affected_children(id).iter().copied() {
-        let Some(entry) = plan.entry(affected) else {
-            continue;
-        };
-        if !retained_style_matches(&nodes.style(entry.child), &entry.style) {
-            return Ok(false);
-        }
-        if !scope.measure.contains(&affected) {
-            continue;
-        }
-        // A child the flow collection dropped contributes nothing, and its
-        // style just compared equal, so it is still dropped.
-        if let Some(cached) = entry.intrinsic {
-            let measured = intrinsic_size_scoped(
-                entry.child,
-                plan.child_available,
-                Some(plan.child_direction),
-                viewport,
-                child_font_px,
-                nodes,
-                cache,
-                Some(scope),
-            )?;
-            if measured != cached {
-                return Ok(false);
-            }
-            // An atom whose baseline moved in a box of the same size moves
-            // its line, and the line's height.
-            if let Some(ascent) = entry.baseline {
-                prime_atom_baselines(
-                    [(entry.child, measured)],
-                    plan.child_available.width,
-                    viewport,
-                    child_font_px,
-                    nodes,
-                    cache,
-                    Some(scope),
-                )?;
-                let now = nodes.style_ref(entry.child).and_then(|style| {
-                    ifc_atom_metrics(
-                        entry.child,
-                        &style,
-                        measured,
-                        plan.child_available.width,
-                        child_font_px,
-                        nodes,
-                    )
-                });
-                if now.map(|(now, _)| now.to_bits()) != Some(ascent.to_bits()) {
-                    return Ok(false);
-                }
-            }
-        }
-        // An item the line gave another main size is as tall as its content
-        // at that size, which can change while its measurement above did not.
-        if let Some((main, cached)) = entry.at_main {
-            let measured = intrinsic_size_at_main(
-                entry.child,
-                main,
-                plan.child_direction,
-                plan.child_available,
-                viewport,
-                child_font_px,
-                nodes,
-                cache,
-                Some(scope),
-            )?;
-            if measured != cached {
-                return Ok(false);
-            }
-        }
-    }
-    Ok(true)
 }
 
 /// Whether `child`, which changed this pass, may have changed what `plan`
@@ -2158,36 +2729,332 @@ pub(super) fn retained_style_matches(
     }
 }
 
+fn start_to_frame_outcome<'s>(outcome: StartOutcome<'s>) -> FrameOutcome<'s> {
+    match outcome {
+        StartOutcome::Fast(size) => FrameOutcome::Done(size),
+        StartOutcome::Push(frame) => FrameOutcome::Push { frame },
+    }
+}
+
+fn plan_start_to_frame_outcome<'w, 's>(
+    start: PlanStart<'s>,
+    nodes: &mut LayoutInputMap<'w>,
+    cache: &mut PassIntrinsicCache,
+    scope: &'s ScopeContext<'s>,
+) -> Result<FrameOutcome<'s>, UiWorldError> {
+    Ok(match start {
+        PlanStart::Hit(size) => FrameOutcome::Done(size),
+        PlanStart::Push(frame) => FrameOutcome::Push { frame },
+        PlanStart::Fallthrough(common) => {
+            start_to_frame_outcome(start_container_frame(common, nodes, cache, Some(scope))?)
+        }
+    })
+}
+
+fn unchanged_result_to_frame_outcome<'w, 's>(
+    res: Result<PlanStart<'s>, Box<ContainerCommon>>,
+    plan: &'s MeasurePlan,
+    nodes: &mut LayoutInputMap<'w>,
+    cache: &mut PassIntrinsicCache,
+    scope: &'s ScopeContext<'s>,
+) -> Result<FrameOutcome<'s>, UiWorldError> {
+    match res {
+        Ok(start) => plan_start_to_frame_outcome(start, nodes, cache, scope),
+        Err(common) => {
+            let next = try_plan_sequential(common, plan, nodes, cache, scope)?;
+            plan_start_to_frame_outcome(next, nodes, cache, scope)
+        }
+    }
+}
+
+fn step_plan_frame<'w, 's>(
+    plan_state: PlanState<'s>,
+    results: Vec<Size>,
+    nodes: &mut LayoutInputMap<'w>,
+    cache: &mut PassIntrinsicCache,
+    scope: Option<&'s ScopeContext<'s>>,
+) -> Result<FrameOutcome<'s>, UiWorldError> {
+    let PlanState { common, plan, wait } = plan_state;
+    let Some(scope) = scope else {
+        return Ok(start_to_frame_outcome(start_container_frame(
+            common, nodes, cache, None,
+        )?));
+    };
+    match wait {
+        PlanWait::Unchanged { affected, step } => match step {
+            UnchangedStep::Scoped {
+                cursor,
+                entry_child,
+                cached,
+                baseline,
+                at_main,
+            } => {
+                let measured = results[0];
+                let ifc = !plan.writing.is_vertical()
+                    && (baseline.is_some()
+                        || nodes
+                            .contexts
+                            .get(&common.id)
+                            .copied()
+                            .or_else(|| nodes.world.established_layout_context(common.id))
+                            .is_some_and(|kind| kind == crate::FormattingContextKind::Inline));
+                let baseline_changed = if ifc {
+                    let edge_base = plan
+                        .writing
+                        .logical_size(plan.child_available.width, plan.child_available.height)
+                        .0;
+                    prime_atom_baselines(
+                        [(entry_child, measured)],
+                        edge_base,
+                        common.viewport,
+                        common.child_font_px,
+                        nodes,
+                        cache,
+                        Some(scope),
+                    )?;
+                    let current = nodes
+                        .style_ref(entry_child)
+                        .and_then(|child_style| {
+                            ifc_atom_metrics(
+                                entry_child,
+                                child_style.as_ref(),
+                                measured,
+                                edge_base,
+                                common.child_font_px,
+                                nodes,
+                            )
+                        })
+                        .map(|(ascent, _)| ascent);
+                    current != baseline
+                } else {
+                    false
+                };
+                if measured != cached || baseline_changed {
+                    let next = try_plan_sequential(common, plan, nodes, cache, scope)?;
+                    return plan_start_to_frame_outcome(next, nodes, cache, scope);
+                }
+                if let Some((main, cached_main)) = at_main {
+                    let Some(req) = at_main_request(
+                        entry_child,
+                        main,
+                        plan.child_direction,
+                        plan.child_available,
+                        common.viewport,
+                        common.child_font_px,
+                        nodes,
+                    ) else {
+                        if Size::default() != cached_main {
+                            let next = try_plan_sequential(common, plan, nodes, cache, scope)?;
+                            return plan_start_to_frame_outcome(next, nodes, cache, scope);
+                        }
+                        let res =
+                            advance_unchanged(common, plan, affected, cursor, nodes, cache, scope)?;
+                        return unchanged_result_to_frame_outcome(res, plan, nodes, cache, scope);
+                    };
+                    return Ok(FrameOutcome::Push {
+                        frame: MeasureFrame {
+                            batch: PendingBatch::new(vec![req], false),
+                            body: Box::new(FrameBody::Plan(PlanState {
+                                common,
+                                plan,
+                                wait: PlanWait::Unchanged {
+                                    affected,
+                                    step: UnchangedStep::AtMain {
+                                        cursor,
+                                        cached_main,
+                                    },
+                                },
+                            })),
+                        },
+                    });
+                }
+                let res = advance_unchanged(common, plan, affected, cursor, nodes, cache, scope)?;
+                unchanged_result_to_frame_outcome(res, plan, nodes, cache, scope)
+            }
+            UnchangedStep::AtMain {
+                cursor,
+                cached_main,
+            } => {
+                let measured = results[0];
+                if measured != cached_main {
+                    let next = try_plan_sequential(common, plan, nodes, cache, scope)?;
+                    return plan_start_to_frame_outcome(next, nodes, cache, scope);
+                }
+                let res = advance_unchanged(common, plan, affected, cursor, nodes, cache, scope)?;
+                unchanged_result_to_frame_outcome(res, plan, nodes, cache, scope)
+            }
+        },
+        PlanWait::Sequential(mut seq) => {
+            let step = std::mem::replace(
+                &mut seq.step,
+                SequentialStep::_Marker(std::marker::PhantomData),
+            );
+            match step {
+                SequentialStep::Affected {
+                    cursor,
+                    entry_child,
+                    old,
+                    current_style,
+                } => {
+                    let measured = results[0];
+                    let old_style = plan.entry(entry_child).and_then(|e| e.style.clone());
+                    let old_margin =
+                        seq_margin_of(&old_style, seq.child_edge_base, common.child_font_px);
+                    let new_margin =
+                        seq_margin_of(&current_style, seq.child_edge_base, common.child_font_px);
+                    if !seq.cross_own
+                        && (cross_extent(measured, seq.direction)
+                            + cross_margin(new_margin, seq.direction))
+                            != (cross_extent(old, seq.direction)
+                                + cross_margin(old_margin, seq.direction))
+                    {
+                        let next = try_plan_flex_line(common, plan, nodes, cache, scope)?;
+                        return plan_start_to_frame_outcome(next, nodes, cache, scope);
+                    }
+                    seq.main_sum += sequential_main_term(measured, new_margin, seq.direction)
+                        - sequential_main_term(old, old_margin, seq.direction);
+                    seq.patches.push((entry_child, measured, current_style));
+                    seq.step = SequentialStep::Affected {
+                        cursor,
+                        entry_child,
+                        old: Size::default(),
+                        current_style: None,
+                    };
+                    let next = advance_sequential_plan(common, plan, seq, nodes, cache, scope)?;
+                    plan_start_to_frame_outcome(next, nodes, cache, scope)
+                }
+                SequentialStep::Arrival {
+                    cursor,
+                    child,
+                    child_style,
+                } => {
+                    let measured = results[0];
+                    let margin =
+                        seq_margin_of(&child_style, seq.child_edge_base, common.child_font_px);
+                    if !seq.cross_own {
+                        let reached = cross_extent(measured, seq.direction)
+                            + cross_margin(margin, seq.direction);
+                        if reached > plan.children_cross {
+                            let next = try_plan_flex_line(common, plan, nodes, cache, scope)?;
+                            return plan_start_to_frame_outcome(next, nodes, cache, scope);
+                        }
+                        if reached == plan.children_cross {
+                            seq.at_cross += 1;
+                        }
+                    }
+                    seq.main_sum += sequential_main_term(measured, margin, seq.direction);
+                    seq.flow_len += 1;
+                    seq.arrived.push(MeasuredChild {
+                        child,
+                        style: child_style,
+                        intrinsic: PackedOptSize::from_size(measured),
+                        at_main: None,
+                        baseline: PackedOptF32::NONE,
+                    });
+                    let next = advance_sequential_arrivals(
+                        common, plan, seq, cursor, nodes, cache, scope,
+                    )?;
+                    plan_start_to_frame_outcome(next, nodes, cache, scope)
+                }
+                SequentialStep::_Marker(_) => unreachable!(),
+            }
+        }
+        PlanWait::FlexLine(mut flex_state) => {
+            let measured = results[0];
+            let index = flex_state.active_index;
+            if main_extent(measured, flex_state.direction).to_bits()
+                != main_extent(flex_state.sizes[index], flex_state.direction).to_bits()
+            {
+                let next = try_plan_ifc_line(common, plan, nodes, cache, scope)?;
+                return plan_start_to_frame_outcome(next, nodes, cache, scope);
+            }
+            if measured != flex_state.sizes[index] {
+                flex_state.sizes[index] = measured;
+                flex_state.patched = true;
+            }
+            let next = advance_flex_line_delta(common, plan, flex_state, nodes, cache, scope)?;
+            plan_start_to_frame_outcome(next, nodes, cache, scope)
+        }
+        PlanWait::IfcLine(ifc_state) => {
+            if let Some(size) = super::inline::ifc_line_measure_delta_finish(
+                common.id,
+                plan,
+                ifc_state,
+                &results,
+                common.viewport,
+                common.child_font_px,
+                nodes,
+                cache,
+                scope,
+            )? {
+                return Ok(FrameOutcome::Done(finish_plan_reused(
+                    &common, size, true, cache,
+                )));
+            }
+            let next = try_plan_grid(common, plan, nodes, cache, scope)?;
+            plan_start_to_frame_outcome(next, nodes, cache, scope)
+        }
+        PlanWait::Grid(mut grid_state) => match grid_state.step {
+            GridDeltaStep::Children => {
+                for ((index, style_same), measured) in grid_state.queries.drain(..).zip(results) {
+                    if measured != grid_state.sizes[index] || !style_same {
+                        grid_state.sizes[index] = measured;
+                        grid_state.patched = true;
+                    }
+                }
+                if !grid_state.patched {
+                    return Ok(start_to_frame_outcome(start_container_frame(
+                        common,
+                        nodes,
+                        cache,
+                        Some(scope),
+                    )?));
+                }
+                start_grid_delta_pass2(common, plan, grid_state, nodes, cache, scope)
+            }
+            GridDeltaStep::Pass2(prepared) => {
+                let solved = layout_grid_2d_finish(prepared, &results);
+                finish_grid_delta(
+                    common,
+                    plan,
+                    grid_state.flow,
+                    grid_state.sizes,
+                    solved,
+                    nodes,
+                    cache,
+                    scope,
+                )
+            }
+        },
+    }
+}
+
+fn seq_margin_of(
+    style: &Option<Arc<nana_ui_core::LayoutStyle>>,
+    edge_base: f32,
+    child_font_px: f32,
+) -> nana_ui_core::PaddingSpec {
+    style.as_ref().map_or_else(Default::default, |style| {
+        style.resolved_margin_against_fonts(Some(edge_base), fonts_of(style, child_font_px))
+    })
+}
+
 /// Apply measured children's main-size deltas to a sequential container.
 ///
-/// Returns `None` when the cached sum is not a safe description of the used
-/// size. Placement-only siblings keep their cached intrinsic.
-///
-/// `children` is the container's child list this pass. When it is not the
-/// list the plan summed, the edit is a delta too (see [`ChildListEdit`]): a
-/// child that left takes its share and its gap out of the sum, and one that
-/// arrived is measured and puts its own in. The children the two lists
-/// share are not measured again, so an edit to a long list costs the edit,
-/// not the list. What the sum cannot express -- an arrival that changes the
-/// formatting context, the widest child leaving a container as wide as its
-/// widest child, a flow that empties or starts -- measures the children.
+/// Returns a [`PlanStart`] either hitting with a patched size, pushing a child
+/// query frame, or falling through to `try_plan_flex_line`.
 #[allow(clippy::too_many_arguments)]
-fn sequential_measure_delta(
-    id: StableNodeId,
-    plan: &MeasurePlan,
-    children: &Arc<Vec<StableNodeId>>,
-    viewport: LayoutViewport,
-    child_font_px: f32,
-    nodes: &mut LayoutInputMap<'_>,
+fn try_plan_sequential<'w, 's>(
+    common: Box<ContainerCommon>,
+    plan: &'s MeasurePlan,
+    nodes: &mut LayoutInputMap<'w>,
     cache: &mut PassIntrinsicCache,
-    scope: &ScopeContext<'_>,
-) -> Result<Option<Size>, UiWorldError> {
+    scope: &'s ScopeContext<'s>,
+) -> Result<PlanStart<'s>, UiWorldError> {
+    let id = common.id;
     if !plan.sequential {
-        return Ok(None);
+        return try_plan_flex_line(common, plan, nodes, cache, scope);
     }
-    // A sum of stacked children: an inline-level child arriving in an
-    // ordinary block's flow puts its children on lines instead, and a child
-    // that floats now leaves the sum (a block with floats records no plan).
     let flex_or_grid = plan
         .style
         .display
@@ -2196,44 +3063,67 @@ fn sequential_measure_delta(
         && scope.affected_children(id).iter().any(|&child| {
             nodes.world.parent_id(child) == Some(id)
                 && nodes.style_ref(child).is_some_and(|style| {
-                    !style.position.is_out_of_flow()
-                        && (style.is_floated() || style.is_inline_level())
+                    !style.position.is_out_of_flow() && style.is_inline_level()
                 })
         })
     {
-        return Ok(None);
+        return try_plan_flex_line(common, plan, nodes, cache, scope);
     }
     let direction = plan.child_direction;
-    let edge_base = plan
+    let child_edge_base = plan
         .writing
         .logical_size(plan.child_available.width, plan.child_available.height)
         .0;
-    let margin_of = |style: &Option<Arc<nana_ui_core::LayoutStyle>>| {
-        style.as_ref().map_or_else(Default::default, |style| {
-            style.resolved_margin_against_fonts(Some(edge_base), fonts_of(style, child_font_px))
-        })
-    };
-    let mut main_sum = plan.main_sum;
-    // A container whose cross size is its own length does not read its
-    // children's cross extents: a child that grew sideways changes nothing
-    // the patch below cannot express.
     let (own_width, own_height) = sizes_own_axes(plan.style.as_ref(), plan.writing);
     let cross_own = match direction {
         FlexDirection::Column => own_width,
         FlexDirection::Row => own_height,
     };
+    let edit = (!Arc::ptr_eq(&plan.children, &common.child_ids))
+        .then(|| ChildListEdit::between(&plan.children, &common.child_ids));
+    let seq = SequentialDeltaState {
+        affected: scope.affected_children(id),
+        direction,
+        child_edge_base,
+        cross_own,
+        edit,
+        main_sum: plan.main_sum,
+        patches: Vec::new(),
+        flow_len: plan.flow_len,
+        at_cross: plan.children_at_cross,
+        arrivals: Vec::new(),
+        arrived: Vec::new(),
+        step: SequentialStep::Affected {
+            cursor: 0,
+            entry_child: id,
+            old: Size::default(),
+            current_style: None,
+        },
+    };
+    advance_sequential_plan(common, plan, seq, nodes, cache, scope)
+}
+
+fn advance_sequential_plan<'w, 's>(
+    common: Box<ContainerCommon>,
+    plan: &'s MeasurePlan,
+    mut seq: SequentialDeltaState<'s>,
+    nodes: &mut LayoutInputMap<'w>,
+    cache: &mut PassIntrinsicCache,
+    scope: &'s ScopeContext<'s>,
+) -> Result<PlanStart<'s>, UiWorldError> {
+    let mut cursor = match &seq.step {
+        SequentialStep::Affected { cursor, .. } => *cursor,
+        SequentialStep::Arrival { .. } | SequentialStep::_Marker(_) => seq.affected.len(),
+    };
+    let id = common.id;
     let world = nodes.world;
-    let edit = (!Arc::ptr_eq(&plan.children, children))
-        .then(|| ChildListEdit::between(&plan.children, children));
-    let mut patches: Vec<(StableNodeId, Size, Option<Arc<nana_ui_core::LayoutStyle>>)> = Vec::new();
-    // A child that left has no current parent here; with an edit it is the
-    // edit's, and without one the list, and so its parents, did not change.
-    for affected in scope.affected_children(id).iter().copied() {
+    while cursor < seq.affected.len() {
+        let affected = seq.affected[cursor];
+        cursor += 1;
         let Some(entry) = plan.entry(affected) else {
             continue;
         };
-        // A child that left, or moved within the list, is the edit's.
-        if let Some(edit) = edit
+        if let Some(edit) = seq.edit
             && (world.parent_id(affected) != Some(id) || edit.arrived(world, id, affected))
         {
             continue;
@@ -2245,180 +3135,189 @@ fn sequential_measure_delta(
                 .as_ref()
                 .map(|style| nodes.participation(entry.child, style, context))
         };
-        // A size delta cannot express an item entering or leaving the flow.
-        // Its cached contribution (including gaps and cross maxima) must be
-        // rebuilt from the new participation set, even at the same used size.
         if participation(&current_style) != participation(&entry.style) {
-            return Ok(None);
+            return try_plan_flex_line(common, plan, nodes, cache, scope);
         }
-        let Some(old) = entry.intrinsic else {
+        let Some(old) = entry.intrinsic.get() else {
             continue;
         };
         if !scope.measure.contains(&affected) {
             if !retained_style_matches(&current_style, &entry.style) {
-                return Ok(None);
+                return try_plan_flex_line(common, plan, nodes, cache, scope);
             }
             continue;
         }
-        let measured = intrinsic_size_scoped(
-            entry.child,
-            plan.child_available,
-            Some(direction),
-            viewport,
-            child_font_px,
-            nodes,
-            cache,
-            Some(scope),
-        )?;
-        let (old_margin, new_margin) = (margin_of(&entry.style), margin_of(&current_style));
-        if !cross_own
-            && (cross_extent(measured, direction) + cross_margin(new_margin, direction))
-                != (cross_extent(old, direction) + cross_margin(old_margin, direction))
-        {
-            return Ok(None);
-        }
-        // Exact, as the full sum is: the patched total has the bits summing
-        // every child again would, however many edits came before.
-        main_sum += sequential_main_term(measured, new_margin, direction)
-            - sequential_main_term(old, old_margin, direction);
-        patches.push((entry.child, measured, current_style));
+        let req = MeasureRequest {
+            id: entry.child,
+            forced: None,
+            available: plan.child_available,
+            parent_direction: Some(seq.direction),
+            viewport: common.viewport,
+            parent_font_px: common.child_font_px,
+        };
+        seq.step = SequentialStep::Affected {
+            cursor,
+            entry_child: entry.child,
+            old,
+            current_style,
+        };
+        return Ok(PlanStart::Push(MeasureFrame {
+            batch: PendingBatch::new(vec![req], false),
+            body: Box::new(FrameBody::Plan(PlanState {
+                common,
+                plan,
+                wait: PlanWait::Sequential(seq),
+            })),
+        }));
     }
-    let mut flow_len = plan.flow_len;
-    let mut at_cross = plan.children_at_cross;
-    let mut arrived = Vec::new();
-    if let Some(edit) = edit {
-        let style = plan.style.as_ref();
-        // A grid places a child by its own placement, which an arrival can
-        // set: the edit can turn this flow into a grid.
-        if style.display.is_some_and(DisplaySpec::is_grid_container) {
-            return Ok(None);
+
+    if let Some(edit) = seq.edit {
+        if plan
+            .style
+            .display
+            .is_some_and(DisplaySpec::is_grid_container)
+        {
+            return try_plan_flex_line(common, plan, nodes, cache, scope);
         }
-        let flex = style.display.is_some_and(DisplaySpec::is_flex_container);
-        // A container whose cross size is its content's keeps it while its
-        // widest children stay that wide: an arrival wider still, or the last
-        // of them leaving, moves it, and the children are measured instead.
-        let reach =
-            |size: Size, margin| cross_extent(size, direction) + cross_margin(margin, direction);
+        let reach = |size: Size, margin| {
+            cross_extent(size, seq.direction) + cross_margin(margin, seq.direction)
+        };
         for &child in edit.left(&plan.children) {
             let Some(entry) = plan.entry(child) else {
-                return Ok(None);
+                return try_plan_flex_line(common, plan, nodes, cache, scope);
             };
-            let Some(old) = entry.intrinsic else {
+            let Some(old) = entry.intrinsic.get() else {
                 continue;
             };
-            let margin = margin_of(&entry.style);
-            if !cross_own {
+            let margin = seq_margin_of(&entry.style, seq.child_edge_base, common.child_font_px);
+            if !seq.cross_own {
                 let reached = reach(old, margin);
                 if reached > plan.children_cross {
-                    return Ok(None);
+                    return try_plan_flex_line(common, plan, nodes, cache, scope);
                 }
                 if reached == plan.children_cross {
-                    let Some(fewer) = at_cross.checked_sub(1) else {
-                        return Ok(None);
+                    let Some(fewer) = seq.at_cross.checked_sub(1) else {
+                        return try_plan_flex_line(common, plan, nodes, cache, scope);
                     };
-                    at_cross = fewer;
+                    seq.at_cross = fewer;
                 }
             }
-            main_sum -= sequential_main_term(old, margin, direction);
-            let Some(fewer) = flow_len.checked_sub(1) else {
-                return Ok(None);
+            seq.main_sum -= sequential_main_term(old, margin, seq.direction);
+            let Some(fewer) = seq.flow_len.checked_sub(1) else {
+                return try_plan_flex_line(common, plan, nodes, cache, scope);
             };
-            flow_len = fewer;
+            seq.flow_len = fewer;
         }
-        for &child in edit.arrivals(children) {
-            let child_style = nodes.style(child);
-            let in_flow = match child_style.as_deref() {
-                None => false,
-                Some(arrival) if arrival.omits_box() || arrival.position.is_out_of_flow() => false,
-                // Each of these changes the formatting context rather than
-                // the sum: `display: contents` splices the child's own
-                // children in, an inline-level child makes the flow inline,
-                // and growing or shrinking shares out free space.
-                Some(arrival)
-                    if arrival.display.is_some_and(DisplaySpec::is_contents)
-                        || (!flex && arrival.is_inline_level())
-                        || arrival.flex_grow.unwrap_or(0.0) > 0.0
-                        || arrival.flex_shrink.unwrap_or(0.0) > 0.0 =>
-                {
-                    return Ok(None);
-                }
-                Some(_) => true,
-            };
-            let intrinsic = if in_flow {
-                let measured = intrinsic_size_scoped(
-                    child,
-                    plan.child_available,
-                    Some(direction),
-                    viewport,
-                    child_font_px,
-                    nodes,
-                    cache,
-                    Some(scope),
-                )?;
-                let margin = margin_of(&child_style);
-                if !cross_own {
-                    let reached = reach(measured, margin);
-                    if reached > plan.children_cross {
-                        return Ok(None);
-                    }
-                    if reached == plan.children_cross {
-                        at_cross += 1;
-                    }
-                }
-                main_sum += sequential_main_term(measured, margin, direction);
-                flow_len += 1;
-                Some(measured)
-            } else {
-                None
-            };
-            arrived.push(MeasuredChild {
-                child,
-                style: child_style,
-                intrinsic,
-                at_main: None,
-                baseline: None,
-            });
-        }
-        // An empty flow sizes the container by other rules, and the last of
-        // its widest children leaving narrows it.
-        if plan.flow_len == 0
-            || flow_len == 0
-            || (!cross_own && plan.children_at_cross > 0 && at_cross == 0)
-        {
-            return Ok(None);
-        }
-        // One gap between each two in-flow children, summed in `f32` as the
-        // full measurement does before it widens the total.
-        let fonts = fonts_of(style, plan.parent_font_px);
-        let gap = style.main_gap_against_fonts(
-            direction,
-            gap_containing_block(style, plan.child_available),
-            fonts,
-        );
-        let gaps = |count: usize| f64::from(gap * count.saturating_sub(1) as f32);
-        main_sum += gaps(flow_len) - gaps(plan.flow_len);
-    } else if patches.is_empty() {
-        return Ok(None);
+        seq.arrivals = edit.arrivals(&common.child_ids).to_vec();
+        return advance_sequential_arrivals(common, plan, seq, 0, nodes, cache, scope);
+    } else if seq.patches.is_empty() {
+        return try_plan_flex_line(common, plan, nodes, cache, scope);
     }
-    let main = (main_sum as f32).max(0.0);
-    let Some(size) = finish_planned_size(id, plan, nodes, |chrome| match direction {
+    finish_sequential_delta(common, plan, seq, nodes, cache, scope)
+}
+
+fn advance_sequential_arrivals<'w, 's>(
+    common: Box<ContainerCommon>,
+    plan: &'s MeasurePlan,
+    mut seq: SequentialDeltaState<'s>,
+    mut cursor: usize,
+    nodes: &mut LayoutInputMap<'w>,
+    cache: &mut PassIntrinsicCache,
+    scope: &'s ScopeContext<'s>,
+) -> Result<PlanStart<'s>, UiWorldError> {
+    let style = plan.style.as_ref();
+    let flex = style.display.is_some_and(DisplaySpec::is_flex_container);
+    while cursor < seq.arrivals.len() {
+        let child = seq.arrivals[cursor];
+        cursor += 1;
+        let child_style = nodes.style(child);
+        let in_flow = match child_style.as_deref() {
+            None => false,
+            Some(arrival) if arrival.omits_box() || arrival.position.is_out_of_flow() => false,
+            Some(arrival)
+                if (!flex && arrival.is_inline_level())
+                    || arrival.flex_grow.unwrap_or(0.0) > 0.0
+                    || arrival.flex_shrink.unwrap_or(0.0) > 0.0 =>
+            {
+                return try_plan_flex_line(common, plan, nodes, cache, scope);
+            }
+            Some(_) => true,
+        };
+        if in_flow {
+            let req = MeasureRequest {
+                id: child,
+                forced: None,
+                available: plan.child_available,
+                parent_direction: Some(seq.direction),
+                viewport: common.viewport,
+                parent_font_px: common.child_font_px,
+            };
+            seq.step = SequentialStep::Arrival {
+                cursor,
+                child,
+                child_style,
+            };
+            return Ok(PlanStart::Push(MeasureFrame {
+                batch: PendingBatch::new(vec![req], false),
+                body: Box::new(FrameBody::Plan(PlanState {
+                    common,
+                    plan,
+                    wait: PlanWait::Sequential(seq),
+                })),
+            }));
+        }
+        seq.arrived.push(MeasuredChild {
+            child,
+            style: child_style,
+            intrinsic: PackedOptSize::NONE,
+            at_main: None,
+            baseline: PackedOptF32::NONE,
+        });
+    }
+    if plan.flow_len == 0
+        || seq.flow_len == 0
+        || (!seq.cross_own && plan.children_at_cross > 0 && seq.at_cross == 0)
+    {
+        return try_plan_flex_line(common, plan, nodes, cache, scope);
+    }
+    let fonts = fonts_of(style, plan.parent_font_px);
+    let gap = style.main_gap_against_fonts(
+        seq.direction,
+        gap_containing_block(style, plan.child_available),
+        fonts,
+    );
+    let gaps = |count: usize| f64::from(gap * count.saturating_sub(1) as f32);
+    seq.main_sum += gaps(seq.flow_len) - gaps(plan.flow_len);
+    finish_sequential_delta(common, plan, seq, nodes, cache, scope)
+}
+
+fn finish_sequential_delta<'w, 's>(
+    common: Box<ContainerCommon>,
+    plan: &'s MeasurePlan,
+    seq: SequentialDeltaState<'s>,
+    nodes: &mut LayoutInputMap<'w>,
+    cache: &mut PassIntrinsicCache,
+    scope: &'s ScopeContext<'s>,
+) -> Result<PlanStart<'s>, UiWorldError> {
+    let id = common.id;
+    let main = (seq.main_sum as f32).max(0.0);
+    let Some(size) = finish_planned_size(id, plan, nodes, |chrome| match seq.direction {
         FlexDirection::Column => (plan.default_cross, main + chrome.height),
-        // A root with no parent flow stretches to the available width.
         FlexDirection::Row if plan.parent_direction.is_none() => {
             (plan.available.width, plan.default_cross)
         }
         FlexDirection::Row => (main + chrome.width, plan.default_cross),
     })?
     else {
-        return Ok(None);
+        return try_plan_flex_line(common, plan, nodes, cache, scope);
     };
     let mut updated = plan.clone();
     updated.size = size;
-    updated.main_sum = main_sum;
-    if let Some(edit) = edit {
-        updated.children = Arc::clone(children);
-        updated.flow_len = flow_len;
-        updated.children_at_cross = at_cross;
+    updated.main_sum = seq.main_sum;
+    if let Some(edit) = seq.edit {
+        updated.children = Arc::clone(&common.child_ids);
+        updated.flow_len = seq.flow_len;
+        updated.children_at_cross = seq.at_cross;
         for child in edit.left(&plan.children) {
             if let Ok(slot) = updated
                 .entries
@@ -2427,7 +3326,7 @@ fn sequential_measure_delta(
                 updated.entries.remove(slot);
             }
         }
-        for entry in arrived {
+        for entry in seq.arrived {
             match updated
                 .entries
                 .binary_search_by_key(&entry.child, |held| held.child)
@@ -2437,19 +3336,21 @@ fn sequential_measure_delta(
             }
         }
     }
-    for (child, intrinsic, style) in patches {
+    for (child, intrinsic, style) in seq.patches {
         if let Ok(slot) = updated
             .entries
             .binary_search_by_key(&child, |entry| entry.child)
         {
-            updated.entries[slot].intrinsic = Some(intrinsic);
+            updated.entries[slot].intrinsic = PackedOptSize::from_size(intrinsic);
             if let Some(style) = style {
                 updated.entries[slot].style = Some(style);
             }
         }
     }
     nodes.measure_plans.entry(id).or_default().insert(updated);
-    Ok(Some(size))
+    Ok(PlanStart::Hit(finish_plan_reused(
+        &common, size, true, cache,
+    )))
 }
 
 /// One in-flow child's share of a sequential container's main size: its
@@ -2507,23 +3408,22 @@ fn finish_planned_size(
 
 /// Recompute a wrapping flex from the lines whose items changed.
 ///
-/// Returns `None` when line membership cannot be proved from the cached main
-/// sizes. The caller then measures this flex formatting context, not the document.
-fn flex_line_measure_delta(
-    id: StableNodeId,
-    plan: &MeasurePlan,
-    viewport: LayoutViewport,
-    child_font_px: f32,
-    nodes: &mut LayoutInputMap<'_>,
+/// Returns `PlanStart::Fallthrough` (after trying `try_plan_ifc_line`) when
+/// line membership cannot be proved from the cached main sizes.
+fn try_plan_flex_line<'w, 's>(
+    common: Box<ContainerCommon>,
+    plan: &'s MeasurePlan,
+    nodes: &mut LayoutInputMap<'w>,
     cache: &mut PassIntrinsicCache,
-    scope: &ScopeContext<'_>,
-) -> Result<Option<Size>, UiWorldError> {
+    scope: &'s ScopeContext<'s>,
+) -> Result<PlanStart<'s>, UiWorldError> {
+    let id = common.id;
     let style = plan.style.as_ref();
     if plan.sequential || !flex_line_local_style(style) {
-        return Ok(None);
+        return try_plan_ifc_line(common, plan, nodes, cache, scope);
     }
-    if plan.text_metrics().is_some() || nodes.world.standard_visual_ref(id).is_some() {
-        return Ok(None);
+    if plan.text_metrics().is_some() || nodes.world.widget_visual_ref(id).is_some() {
+        return try_plan_ifc_line(common, plan, nodes, cache, scope);
     }
     let direction = plan.child_direction;
     match direction {
@@ -2532,12 +3432,12 @@ fn flex_line_measure_delta(
                 || style.min_height.is_some()
                 || style.max_height.is_some() =>
         {
-            return Ok(None);
+            return try_plan_ifc_line(common, plan, nodes, cache, scope);
         }
         FlexDirection::Column
             if style.width.is_some() || style.min_width.is_some() || style.max_width.is_some() =>
         {
-            return Ok(None);
+            return try_plan_ifc_line(common, plan, nodes, cache, scope);
         }
         _ => {}
     }
@@ -2546,40 +3446,64 @@ fn flex_line_measure_delta(
         FlexDirection::Column => style.active_grid_rows(),
     };
     if tracks.is_some_and(|tracks| !tracks.is_empty()) {
-        return Ok(None);
+        return try_plan_ifc_line(common, plan, nodes, cache, scope);
     }
     let mut flow = Vec::new();
     let mut sizes = Vec::new();
     for child in plan.children.iter().copied() {
         let Some(entry) = plan.entry(child) else {
-            return Ok(None);
+            return try_plan_ifc_line(common, plan, nodes, cache, scope);
         };
-        let Some(intrinsic) = entry.intrinsic else {
+        let Some(intrinsic) = entry.intrinsic.get() else {
             continue;
         };
         let Some(child_style) = entry.style.as_deref() else {
-            return Ok(None);
+            return try_plan_ifc_line(common, plan, nodes, cache, scope);
         };
         if child_blocks_flex_line_local(child_style) {
-            return Ok(None);
+            return try_plan_ifc_line(common, plan, nodes, cache, scope);
         }
         let cross = match direction {
             FlexDirection::Row => child_style.height,
             FlexDirection::Column => child_style.width,
         };
         if matches!(cross, Some(LengthSpec::Percent(_)) | Some(LengthSpec::Fill)) {
-            return Ok(None);
+            return try_plan_ifc_line(common, plan, nodes, cache, scope);
         }
         flow.push(child);
         sizes.push(intrinsic);
     }
     if flow.is_empty() {
-        return Ok(None);
+        return try_plan_ifc_line(common, plan, nodes, cache, scope);
     }
     let old_sizes = sizes.clone();
-    let mut patched = false;
-    for affected in scope.affected_children(id).iter().copied() {
-        let Some(index) = flow.iter().position(|child| *child == affected) else {
+    let flex_state = FlexLineDeltaState {
+        affected: scope.affected_children(id),
+        direction,
+        flow,
+        old_sizes,
+        sizes,
+        patched: false,
+        cursor: 0,
+        active_index: 0,
+    };
+    advance_flex_line_delta(common, plan, flex_state, nodes, cache, scope)
+}
+
+fn advance_flex_line_delta<'w, 's>(
+    common: Box<ContainerCommon>,
+    plan: &'s MeasurePlan,
+    mut flex_state: FlexLineDeltaState<'s>,
+    nodes: &mut LayoutInputMap<'w>,
+    cache: &mut PassIntrinsicCache,
+    scope: &'s ScopeContext<'s>,
+) -> Result<PlanStart<'s>, UiWorldError> {
+    let id = common.id;
+    let direction = flex_state.direction;
+    while flex_state.cursor < flex_state.affected.len() {
+        let affected = flex_state.affected[flex_state.cursor];
+        flex_state.cursor += 1;
+        let Some(index) = flex_state.flow.iter().position(|child| *child == affected) else {
             continue;
         };
         if !scope.measure.contains(&affected) {
@@ -2587,42 +3511,41 @@ fn flex_line_measure_delta(
                 continue;
             };
             if !retained_style_matches(&nodes.style(affected), &entry.style) {
-                return Ok(None);
+                return try_plan_ifc_line(common, plan, nodes, cache, scope);
             }
             continue;
         }
-        // Restyled beyond its cross size, it moves more than its line.
         if let Some(entry) = plan.entry(affected)
             && let Some(cached) = entry.style.as_ref()
             && !nodes.style(affected).is_some_and(|current| {
                 Arc::ptr_eq(&current, cached) || super::same_but_cross(&current, cached, direction)
             })
         {
-            return Ok(None);
+            return try_plan_ifc_line(common, plan, nodes, cache, scope);
         }
-        let measured = intrinsic_size_scoped(
-            affected,
-            plan.child_available,
-            Some(direction),
-            viewport,
-            child_font_px,
-            nodes,
-            cache,
-            Some(scope),
-        )?;
-        if main_extent(measured, direction).to_bits()
-            != main_extent(sizes[index], direction).to_bits()
-        {
-            return Ok(None);
-        }
-        if measured != sizes[index] {
-            sizes[index] = measured;
-            patched = true;
-        }
+        let req = MeasureRequest {
+            id: affected,
+            forced: None,
+            available: plan.child_available,
+            parent_direction: Some(direction),
+            viewport: common.viewport,
+            parent_font_px: common.child_font_px,
+        };
+        flex_state.active_index = index;
+        return Ok(PlanStart::Push(MeasureFrame {
+            batch: PendingBatch::new(vec![req], false),
+            body: Box::new(FrameBody::Plan(PlanState {
+                common,
+                plan,
+                wait: PlanWait::FlexLine(flex_state),
+            })),
+        }));
     }
-    if !patched {
-        return Ok(None);
+
+    if !flex_state.patched {
+        return try_plan_ifc_line(common, plan, nodes, cache, scope);
     }
+    let style = plan.style.as_ref();
     let fonts = fonts_of(style, plan.parent_font_px);
     let parent_box = gap_containing_block(style, plan.child_available);
     let gap = style.main_gap_against_fonts(direction, parent_box, fonts);
@@ -2632,61 +3555,61 @@ fn flex_line_measure_delta(
         .logical_size(plan.child_available.width, plan.child_available.height)
         .0;
     let old_lines = pack_wrap_lines(
-        &flow,
-        &old_sizes,
+        &flex_state.flow,
+        &flex_state.old_sizes,
         direction,
         plan.child_available,
         edge_base,
         gap,
         None,
-        viewport,
-        child_font_px,
+        common.viewport,
+        common.child_font_px,
         nodes,
         false,
     );
     let new_lines = pack_wrap_lines(
-        &flow,
-        &sizes,
+        &flex_state.flow,
+        &flex_state.sizes,
         direction,
         plan.child_available,
         edge_base,
         gap,
         None,
-        viewport,
-        child_font_px,
+        common.viewport,
+        common.child_font_px,
         nodes,
         false,
     );
     if old_lines != new_lines {
-        return Ok(None);
+        return try_plan_ifc_line(common, plan, nodes, cache, scope);
     }
     let old_content = wrap_intrinsic_size(
         direction,
         FlexWrap::Wrap,
-        &flow,
-        &old_sizes,
+        &flex_state.flow,
+        &flex_state.old_sizes,
         plan.child_available,
         edge_base,
         gap,
         cross_gap,
         None,
-        viewport,
-        child_font_px,
+        common.viewport,
+        common.child_font_px,
         nodes,
         None,
     );
     let new_content = wrap_intrinsic_size(
         direction,
         FlexWrap::Wrap,
-        &flow,
-        &sizes,
+        &flex_state.flow,
+        &flex_state.sizes,
         plan.child_available,
         edge_base,
         gap,
         cross_gap,
         None,
-        viewport,
-        child_font_px,
+        common.viewport,
+        common.child_font_px,
         nodes,
         None,
     );
@@ -2697,58 +3620,91 @@ fn flex_line_measure_delta(
     }
     let mut updated = plan.clone();
     updated.size = size;
-    for (child, measured) in flow.into_iter().zip(sizes) {
+    for (child, measured) in flex_state.flow.into_iter().zip(flex_state.sizes) {
         let Ok(slot) = updated
             .entries
             .binary_search_by_key(&child, |entry| entry.child)
         else {
             continue;
         };
-        updated.entries[slot].intrinsic = Some(measured);
+        updated.entries[slot].intrinsic = PackedOptSize::from_size(measured);
         if let Some(child_style) = nodes.style(child) {
             updated.entries[slot].style = Some(child_style);
         }
     }
     nodes.measure_plans.entry(id).or_default().insert(updated);
-    Ok(Some(size))
+    Ok(PlanStart::Hit(finish_plan_reused(
+        &common, size, true, cache,
+    )))
+}
+
+fn try_plan_ifc_line<'w, 's>(
+    common: Box<ContainerCommon>,
+    plan: &'s MeasurePlan,
+    nodes: &mut LayoutInputMap<'w>,
+    cache: &mut PassIntrinsicCache,
+    scope: &'s ScopeContext<'s>,
+) -> Result<PlanStart<'s>, UiWorldError> {
+    let Some(ifc_state) =
+        super::inline::ifc_line_measure_delta_begin(common.id, plan, nodes, scope)
+    else {
+        return try_plan_grid(common, plan, nodes, cache, scope);
+    };
+    let requests = ifc_state
+        .queries
+        .iter()
+        .map(|&(_, child)| MeasureRequest {
+            id: child,
+            forced: None,
+            available: plan.child_available,
+            parent_direction: Some(plan.child_direction),
+            viewport: common.viewport,
+            parent_font_px: common.child_font_px,
+        })
+        .collect();
+    Ok(PlanStart::Push(MeasureFrame {
+        batch: PendingBatch::new(requests, false),
+        body: Box::new(FrameBody::Plan(PlanState {
+            common,
+            plan,
+            wait: PlanWait::IfcLine(ifc_state),
+        })),
+    }))
+}
+
+fn frame_to_plan_start<'s>(outcome: FrameOutcome<'s>) -> PlanStart<'s> {
+    match outcome {
+        FrameOutcome::Done(size) => PlanStart::Hit(size),
+        FrameOutcome::Push { frame } => PlanStart::Push(frame),
+    }
 }
 
 /// Re-solve a grid from cached contributions, measuring only items whose
 /// contribution this pass can change.
-///
-/// Returns `None` when the cached contributions are not a complete description
-/// of the grid (subgrid, a child entering flow, content-sized keywords on the
-/// container). The caller then measures this grid formatting context.
-fn grid_measure_delta(
-    id: StableNodeId,
-    plan: &MeasurePlan,
-    viewport: LayoutViewport,
-    child_font_px: f32,
-    nodes: &mut LayoutInputMap<'_>,
+fn try_plan_grid<'w, 's>(
+    common: Box<ContainerCommon>,
+    plan: &'s MeasurePlan,
+    nodes: &mut LayoutInputMap<'w>,
     cache: &mut PassIntrinsicCache,
-    scope: &ScopeContext<'_>,
-) -> Result<Option<Size>, UiWorldError> {
-    // The track extent below is the children's alone, not the band laid out
-    // before them.
+    scope: &'s ScopeContext<'s>,
+) -> Result<PlanStart<'s>, UiWorldError> {
+    let id = common.id;
     if plan.grid.is_none()
         || plan
             .own
             .as_ref()
             .is_some_and(|own| own.visual.lead.is_some())
     {
-        return Ok(None);
+        return Ok(PlanStart::Fallthrough(common));
     }
     let style = plan.style.as_ref();
-    if style.is_subgrid_columns() || style.is_subgrid_rows() {
-        return Ok(None);
-    }
-    if plan.text_metrics().is_some() || nodes.world.standard_visual_ref(id).is_some() {
-        return Ok(None);
+    if plan.text_metrics().is_some() || nodes.world.widget_visual_ref(id).is_some() {
+        return Ok(PlanStart::Fallthrough(common));
     }
     if style.width.is_some_and(LengthSpec::is_content_sized)
         || style.height.is_some_and(LengthSpec::is_content_sized)
     {
-        return Ok(None);
+        return Ok(PlanStart::Fallthrough(common));
     }
     let mut flow = Vec::new();
     let mut sizes = Vec::new();
@@ -2761,19 +3717,20 @@ fn grid_measure_delta(
             continue;
         }
         let Some(entry) = plan.entry(child) else {
-            return Ok(None);
+            return Ok(PlanStart::Fallthrough(common));
         };
         if entry.intrinsic.is_none() && !scope.measure.contains(&child) {
-            return Ok(None);
+            return Ok(PlanStart::Fallthrough(common));
         }
         flow.push(child);
-        sizes.push(entry.intrinsic.unwrap_or_default());
+        sizes.push(entry.intrinsic.get().unwrap_or_default());
     }
     if flow.is_empty() {
-        return Ok(None);
+        return Ok(PlanStart::Fallthrough(common));
     }
-    for index in 0..flow.len() {
-        let child = flow[index];
+    let mut queries = Vec::new();
+    let mut requests = Vec::new();
+    for (index, &child) in flow.iter().enumerate() {
         if !scope.affected.contains(&child) {
             continue;
         }
@@ -2792,46 +3749,122 @@ fn grid_measure_delta(
             .map_or(plan.child_available, |child_style| {
                 grid_item_measure_available(child_style.as_ref(), plan.child_available)
             });
-        let measured = intrinsic_size_scoped(
-            child,
+        queries.push((index, style_same));
+        requests.push(MeasureRequest {
+            id: child,
+            forced: None,
             available,
-            Some(plan.child_direction),
-            viewport,
-            child_font_px,
-            nodes,
-            cache,
-            Some(scope),
-        )?;
-        if measured != sizes[index] || !style_same {
-            sizes[index] = measured;
-            patched = true;
+            parent_direction: Some(plan.child_direction),
+            viewport: common.viewport,
+            parent_font_px: common.child_font_px,
+        });
+    }
+    if requests.is_empty() {
+        if !patched {
+            return Ok(PlanStart::Fallthrough(common));
         }
+        let grid_state = GridDeltaState {
+            flow,
+            sizes,
+            queries,
+            patched,
+            step: GridDeltaStep::Children,
+        };
+        return Ok(frame_to_plan_start(start_grid_delta_pass2(
+            common, plan, grid_state, nodes, cache, scope,
+        )?));
     }
-    if !patched {
-        return Ok(None);
-    }
-    sort_ids_with_sizes(&mut flow, &mut sizes, nodes);
+    Ok(PlanStart::Push(MeasureFrame {
+        batch: PendingBatch::new(requests, false),
+        body: Box::new(FrameBody::Plan(PlanState {
+            common,
+            plan,
+            wait: PlanWait::Grid(GridDeltaState {
+                flow,
+                sizes,
+                queries,
+                patched,
+                step: GridDeltaStep::Children,
+            }),
+        })),
+    }))
+}
+
+fn start_grid_delta_pass2<'w, 's>(
+    common: Box<ContainerCommon>,
+    plan: &'s MeasurePlan,
+    mut grid_state: GridDeltaState,
+    nodes: &mut LayoutInputMap<'w>,
+    cache: &mut PassIntrinsicCache,
+    scope: &'s ScopeContext<'s>,
+) -> Result<FrameOutcome<'s>, UiWorldError> {
+    sort_ids_with_sizes(&mut grid_state.flow, &mut grid_state.sizes, nodes);
+    let style = plan.style.as_ref();
     let fonts = fonts_of(style, plan.parent_font_px);
-    let solved = layout_grid_2d(
+    match layout_grid_2d_begin(
         style,
         plan.writing,
-        &flow,
-        &sizes,
+        &grid_state.flow,
+        &grid_state.sizes,
         plan.child_available,
         fonts,
-        None,
-        viewport,
         nodes,
-        cache,
-        Some(scope),
-    )?;
+    ) {
+        Grid2dStart::Ready(solved) => finish_grid_delta(
+            common,
+            plan,
+            grid_state.flow,
+            grid_state.sizes,
+            solved,
+            nodes,
+            cache,
+            scope,
+        ),
+        Grid2dStart::NeedsPass2(prepared) => {
+            let requests = prepared
+                .queries
+                .iter()
+                .map(|&(_, item_id, avail)| MeasureRequest {
+                    id: item_id,
+                    forced: None,
+                    available: avail,
+                    parent_direction: Some(FlexDirection::Row),
+                    viewport: common.viewport,
+                    parent_font_px: fonts.element_px,
+                })
+                .collect();
+            grid_state.step = GridDeltaStep::Pass2(prepared);
+            Ok(FrameOutcome::Push {
+                frame: MeasureFrame {
+                    batch: PendingBatch::new(requests, false),
+                    body: Box::new(FrameBody::Plan(PlanState {
+                        common,
+                        plan,
+                        wait: PlanWait::Grid(grid_state),
+                    })),
+                },
+            })
+        }
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn finish_grid_delta<'w, 's>(
+    common: Box<ContainerCommon>,
+    plan: &'s MeasurePlan,
+    flow: Vec<StableNodeId>,
+    sizes: Vec<Size>,
+    solved: super::grid::Grid2DLayout,
+    nodes: &mut LayoutInputMap<'w>,
+    cache: &mut PassIntrinsicCache,
+    scope: &'s ScopeContext<'s>,
+) -> Result<FrameOutcome<'s>, UiWorldError> {
+    let id = common.id;
     let (width, height) = plan.writing.physical_size(
         grid_axis_extent(&solved.col_sizes, solved.col_gap),
         grid_axis_extent(&solved.row_sizes, solved.row_gap),
     );
     let content = Size::new(width, height);
-    // A root with no parent flow stretches to the available width. Every other
-    // container uses the track extent plus chrome, matching the full measure.
     let Some(size) = finish_planned_size(id, plan, nodes, |chrome| {
         let default_width = if plan.parent_direction.is_none() {
             plan.available.width
@@ -2841,14 +3874,19 @@ fn grid_measure_delta(
         (default_width, content.height + chrome.height)
     })?
     else {
-        return Ok(None);
+        return Ok(start_to_frame_outcome(start_container_frame(
+            common,
+            nodes,
+            cache,
+            Some(scope),
+        )?));
     };
     let mut updated = plan.clone();
     updated.size = size;
     updated.grid = Some(Box::new(GridTrackPlan::from_layout(&solved)));
     for entry in &mut updated.entries {
         if entry.intrinsic.is_some() && !flow.contains(&entry.child) {
-            entry.intrinsic = None;
+            entry.intrinsic = PackedOptSize::NONE;
         }
     }
     for (child, measured) in flow.into_iter().zip(sizes) {
@@ -2858,135 +3896,13 @@ fn grid_measure_delta(
         else {
             continue;
         };
-        updated.entries[slot].intrinsic = Some(measured);
+        updated.entries[slot].intrinsic = PackedOptSize::from_size(measured);
         if let Some(child_style) = nodes.style(child) {
             updated.entries[slot].style = Some(child_style);
         }
     }
     nodes.measure_plans.entry(id).or_default().insert(updated);
-    Ok(Some(size))
-}
-
-/// The content size of a block container's children when some of them float:
-/// `in_flow` is what its in-flow children measured with the floats left out.
-/// Returns that size beside the floats, and the widest float's margin box
-/// (its share of the container's min-content width).
-///
-/// The floats pack as placement packs them (`pack_floated_children`), and the
-/// in-flow children are arranged beside them (`arrange_flow`): the in-flow
-/// extent grows by as far as `clear` and float-shortened line boxes push the
-/// last box down. The floats themselves add to the block extent only when the
-/// container establishes a block formatting context (CSS 2.1 §10.6.7):
-/// otherwise they hang out of it, and a container holding nothing but floats
-/// is 0 tall. Inline-wise they sit side by side, so the floats ask for their
-/// summed width, at most what is available and at least the widest one.
-#[allow(clippy::too_many_arguments)]
-fn measure_beside_floats(
-    id: StableNodeId,
-    style: &LayoutStyle,
-    writing: nana_ui_core::WritingContext,
-    in_flow: Size,
-    flow: &[StableNodeId],
-    child_sizes: &[Size],
-    floated: &[StableNodeId],
-    content_available: Size,
-    child_edge_base: f32,
-    (gap, cross_gap): (f32, f32),
-    ifc: bool,
-    direction: FlexDirection,
-    viewport: LayoutViewport,
-    child_font_px: f32,
-    nodes: &mut LayoutInputMap<'_>,
-    cache: &mut PassIntrinsicCache,
-    scope: Option<&ScopeContext<'_>>,
-) -> Result<(Size, f32), UiWorldError> {
-    let packed = pack_floated_children(
-        floated,
-        Point { x: 0.0, y: 0.0 },
-        content_available,
-        child_edge_base,
-        viewport,
-        child_font_px,
-        nodes,
-        cache,
-        scope,
-    )?;
-    let (widest, summed) = packed
-        .items
-        .iter()
-        .fold((0.0f32, 0.0f32), |(widest, summed), item| {
-            (widest.max(item.occupy_w), summed + item.occupy_w)
-        });
-    let width = in_flow
-        .width
-        .max(widest.max(summed.min(content_available.width)));
-    // The in-flow content ends lower by as much as the floats push its last
-    // box down: arranged beside them and without them, the same lines, struts
-    // and margins, only `clear` and float-shortened lines differ.
-    let mut block = in_flow.height;
-    if !flow.is_empty() && !writing.is_vertical() {
-        let content = Size::new(
-            if content_available.width.is_finite() {
-                content_available.width
-            } else {
-                width
-            },
-            in_flow.height,
-        );
-        let mut bottoms = [0.0f32; 2];
-        for (bottom, floats) in bottoms.iter_mut().zip([&packed, &PackedFloats::default()]) {
-            let arranged = arrange_flow(
-                id,
-                style,
-                writing,
-                flow,
-                child_sizes,
-                Point { x: 0.0, y: 0.0 },
-                content,
-                child_edge_base,
-                gap,
-                cross_gap,
-                ifc,
-                direction,
-                flow_axes_reversed(style, writing, direction, ifc, false),
-                floats,
-                viewport,
-                child_font_px,
-                nodes,
-                cache,
-                scope,
-                false,
-            )?;
-            for child in &arranged.children {
-                let margin = child.style.as_ref().resolved_margin_against_fonts(
-                    Some(child_edge_base),
-                    fonts_of(child.style.as_ref(), child_font_px),
-                );
-                *bottom = bottom.max(child.offset.y + child.size.height + margin.bottom);
-            }
-        }
-        block += (bottoms[0] - bottoms[1]).max(0.0);
-    }
-    // A float's box is in the parent's context; its own context is its
-    // parent's, past any `display: contents` box between them.
-    let world = nodes.world;
-    let mut parent = world.parent_id(id);
-    while let Some(ancestor) = parent
-        && nodes
-            .style_ref(ancestor)
-            .is_some_and(|ancestor| ancestor.display.is_some_and(DisplaySpec::is_contents))
-    {
-        parent = world.parent_id(ancestor);
-    }
-    let parent_context = parent.and_then(|parent| {
-        nodes
-            .contexts
-            .get(&parent)
-            .copied()
-            .or_else(|| world.established_layout_context(parent))
-    });
-    if establishes_block_formatting_context(style, parent_context) {
-        block = block.max(packed.left_bottom).max(packed.right_bottom);
-    }
-    Ok((Size::new(width, block), widest))
+    Ok(FrameOutcome::Done(finish_plan_reused(
+        &common, size, true, cache,
+    )))
 }

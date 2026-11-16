@@ -20,8 +20,10 @@ use nana_ui_core::{CompiledTheme, SemanticColorRole, SemanticPalette};
 
 use crate::view_components::project_common;
 use crate::{
-    AccessibilityRole, AccessibilityState, ComponentView, InteractionState, LengthSpec,
-    MutationQueue, NodeKind, NodeStyle, StableNodeId, StandardVisual, UiWorld,
+    AccessibilityRole, AccessibilityState, ComponentView, CustomGpuPayload, CustomRenderNode,
+    InteractionState, LayoutBox, LineCap, MutationQueue, NodeKind, NodeStyle, StableNodeId,
+    TextHorizontalAlignment, TextVerticalAlignment, UiWorld, WidgetBatchColors, WidgetPaintCtx,
+    WidgetPaintOp, WidgetPaintOutput, WidgetQuadBatch, WidgetStroke, WidgetText, WidgetVisual,
 };
 
 /// One option and view, laid out once per box size and theme.
@@ -231,18 +233,17 @@ impl Chart {
     fn effective_style(&self) -> NodeStyle {
         let mut style = self.style.clone();
         let layout = Arc::make_mut(&mut style.layout);
-        layout.width.get_or_insert(LengthSpec::Fill);
+        layout.width.get_or_insert(crate::LengthSpec::Fill);
         layout
             .height
-            .get_or_insert(LengthSpec::Px(Self::INTRINSIC_HEIGHT));
+            .get_or_insert(crate::LengthSpec::Px(Self::INTRINSIC_HEIGHT));
         style
     }
 
     fn spec(&self, world: &UiWorld, id: StableNodeId) -> Arc<ChartSpec> {
-        let current = match world.standard_visual(id) {
-            Some(StandardVisual::Chart { spec, .. }) => Some(spec),
-            _ => None,
-        };
+        let current = world
+            .widget_visual_as::<ChartVisual>(id)
+            .map(|visual| Arc::clone(&visual.spec));
         match current {
             Some(spec) if Arc::ptr_eq(&spec.option, &self.option) && spec.view == self.view => spec,
             current => {
@@ -263,6 +264,8 @@ impl Chart {
 }
 
 impl ComponentView for Chart {
+    const TYPE_ID: Option<&'static str> = Some(crate::component_descriptors::CHART.type_id);
+
     const BEHAVIOR: crate::TypeBehavior<Self> = crate::TypeBehavior {
         pointer: Some(&crate::framework::CHART_POINTER),
         ..crate::TypeBehavior::NONE
@@ -279,12 +282,12 @@ impl ComponentView for Chart {
     }
 
     fn project(&self, id: StableNodeId, world: &UiWorld, mutations: &mut MutationQueue) {
-        let visual = StandardVisual::Chart {
+        let visual = ChartVisual {
             spec: self.spec(world, id),
             hover: self.hover,
         };
-        if world.standard_visual(id).as_ref() != Some(&visual) {
-            mutations.set_standard_visual(id, Some(visual));
+        if world.widget_visual_as::<ChartVisual>(id) != Some(&visual) {
+            mutations.set_widget_visual(id, Some(visual));
         }
         project_common(
             id,
@@ -422,11 +425,11 @@ impl ComponentView for ChartTooltip {
         if world.overlay_mount(id) != Some(self.overlay_mount) {
             mutations.set_overlay_mount(id, Some(self.overlay_mount));
         }
-        let visual = StandardVisual::ChartTooltip {
+        let visual = ChartTooltipVisual {
             content: Arc::clone(&self.content),
         };
-        if world.standard_visual(id).as_ref() != Some(&visual) {
-            mutations.set_standard_visual(id, Some(visual));
+        if world.widget_visual_as::<ChartTooltipVisual>(id) != Some(&visual) {
+            mutations.set_widget_visual(id, Some(visual));
         }
         let label: Arc<str> = std::iter::once(self.content.title.to_string())
             .chain(
@@ -451,5 +454,369 @@ impl ComponentView for ChartTooltip {
                 ..AccessibilityState::default()
             },
         );
+    }
+}
+
+/// Visual state attached to a [`Chart`] node on the open [`WidgetVisual`] path.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ChartVisual {
+    pub spec: Arc<ChartSpec>,
+    pub hover: ChartHoverVisual,
+}
+
+impl WidgetVisual for ChartVisual {
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+
+    fn dyn_eq(&self, other: &dyn std::any::Any) -> bool {
+        other.downcast_ref::<Self>().is_some_and(|rhs| self == rhs)
+    }
+
+    fn measures_text(&self) -> bool {
+        true
+    }
+
+    fn paint(&self, ctx: &WidgetPaintCtx<'_>) -> WidgetPaintOutput {
+        let mut output = WidgetPaintOutput {
+            suppress_root_surface: true,
+            ..WidgetPaintOutput::new()
+        };
+        let origin = [ctx.bounds.x, ctx.bounds.y];
+        let at = |p: [f32; 2]| [origin[0] + p[0], origin[1] + p[1]];
+        let layout = self.spec.layout_for(
+            [ctx.bounds.width, ctx.bounds.height],
+            ctx.theme,
+            |role| ctx.style_model.color(role).as_rgba_array(),
+            ctx.world.chrome_text_measure(ctx.id),
+            ctx.world.animation_now(),
+        );
+        let [line_color, band_color] = layout.pointer_colors;
+        if let Some(nana_ui_charts::PointerGeometry::Band(band)) = self.hover.pointer {
+            let [x0, y0] = at([band[0], band[1]]);
+            let [x1, y1] = at([band[2], band[3]]);
+            output.push(
+                10,
+                WidgetPaintOp::QuadBatch(WidgetQuadBatch {
+                    bounds: ctx.bounds,
+                    rects: Arc::from([LayoutBox {
+                        x: x0,
+                        y: y0,
+                        width: x1 - x0,
+                        height: y1 - y0,
+                    }]),
+                    colors: WidgetBatchColors::Uniform(band_color),
+                    fill_paint: None,
+                    border: None,
+                    corner_radius: [0.0; 4],
+                }),
+            );
+        }
+        if !layout.marks.is_empty() {
+            let mut node = CustomRenderNode::new(crate::CHART_RENDERER, "", 0);
+            node.payload = Some(CustomGpuPayload::new(nana_ui_charts::ChartGpuPayload {
+                origin,
+                marks: layout.marks.clone(),
+                hover: nana_ui_charts::ChartGpuHover {
+                    current: self.hover.current,
+                    previous: self.hover.previous,
+                    focus: self.hover.focus,
+                    since: self.hover.since,
+                    duration: nana_ui_charts::hit::HOVER_DURATION,
+                    growth: nana_ui_charts::hit::EMPHASIS_GROWTH,
+                },
+            }));
+            let until = layout
+                .marks
+                .transition
+                .map_or(Duration::ZERO, |motion| motion.end())
+                .max(self.hover.live_until());
+            node.transition_until = (until > Duration::ZERO).then_some(until);
+            node.ink_bounds = layout.marks.extent.map(|[x0, y0, x1, y1]| {
+                let reach = nana_ui_charts::hit::EMPHASIS_GROWTH + 2.0;
+                nana_ui_core::LogicalRect {
+                    x: origin[0] + x0 - reach,
+                    y: origin[1] + y0 - reach,
+                    width: (x1 - x0) + reach * 2.0,
+                    height: (y1 - y0) + reach * 2.0,
+                }
+            });
+            output.push(
+                11,
+                WidgetPaintOp::CustomGpu {
+                    bounds: ctx.bounds,
+                    node,
+                },
+            );
+        }
+        match self.hover.pointer {
+            Some(nana_ui_charts::PointerGeometry::Line { from, to }) => {
+                output.push(
+                    12,
+                    WidgetPaintOp::Stroke(WidgetStroke {
+                        points: vec![at(from), at(to)],
+                        width: 1.0,
+                        color: line_color,
+                        cap: LineCap::Butt,
+                        dash: Some(vec![4.0, 3.0]),
+                        snap_hairline: true,
+                    }),
+                );
+            }
+            Some(nana_ui_charts::PointerGeometry::Cross { center, plot }) => {
+                let c = at(center);
+                let (x0, y0) = (origin[0] + plot[0], origin[1] + plot[1]);
+                let (x1, y1) = (origin[0] + plot[2], origin[1] + plot[3]);
+                output.push(
+                    12,
+                    WidgetPaintOp::Stroke(WidgetStroke {
+                        points: vec![[c[0], y0], [c[0], y1]],
+                        width: 1.0,
+                        color: line_color,
+                        cap: LineCap::Butt,
+                        dash: Some(vec![4.0, 3.0]),
+                        snap_hairline: true,
+                    }),
+                );
+                output.push(
+                    13,
+                    WidgetPaintOp::Stroke(WidgetStroke {
+                        points: vec![[x0, c[1]], [x1, c[1]]],
+                        width: 1.0,
+                        color: line_color,
+                        cap: LineCap::Butt,
+                        dash: Some(vec![4.0, 3.0]),
+                        snap_hairline: true,
+                    }),
+                );
+            }
+            _ => {}
+        }
+        for (index, text) in layout.texts.iter().enumerate() {
+            output.push(
+                (41_u64 << 32) | (index as u64),
+                WidgetPaintOp::Text(WidgetText {
+                    bounds: LayoutBox {
+                        x: origin[0] + text.rect[0],
+                        y: origin[1] + text.rect[1],
+                        width: (text.rect[2] - text.rect[0]).max(0.0),
+                        height: (text.rect[3] - text.rect[1]).max(0.0),
+                    },
+                    content: text.text.clone().into(),
+                    color: Some(text.color),
+                    paint_color: ctx.matching_text_paint(text.color),
+                    font_size: text.size,
+                    font_weight: text.weight,
+                    horizontal_alignment: TextHorizontalAlignment::Start,
+                    vertical_alignment: TextVerticalAlignment::Center,
+                    ellipsis: false,
+                    wrap: false,
+                    max_lines: None,
+                    italic: None,
+                    underline: None,
+                    line_through: None,
+                    suppress_spans: false,
+                    preserve_lines: None,
+                    unstyled_glyph: false,
+                    line_height: None,
+                    retained_text: crate::WidgetRetainedText::None,
+                    tabular_nums: false,
+                    ..Default::default()
+                }),
+            );
+        }
+        output
+    }
+}
+
+/// Visual state attached to a [`ChartTooltip`] node on the open [`WidgetVisual`] path.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ChartTooltipVisual {
+    pub content: Arc<TooltipContent>,
+}
+
+impl WidgetVisual for ChartTooltipVisual {
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+
+    fn dyn_eq(&self, other: &dyn std::any::Any) -> bool {
+        other.downcast_ref::<Self>().is_some_and(|rhs| self == rhs)
+    }
+
+    fn measures_text(&self) -> bool {
+        true
+    }
+
+    fn paint(&self, ctx: &WidgetPaintCtx<'_>) -> WidgetPaintOutput {
+        let mut output = WidgetPaintOutput::new();
+        let measure = ChromeLabelMeasure(ctx.world.chrome_text_measure(ctx.id));
+        let palette = ctx.style_model.palette;
+        let line = ChartTooltip::line_height();
+        let left = ctx.bounds.x + ChartTooltip::PADDING_X;
+        let right = ctx.bounds.x + ctx.bounds.width - ChartTooltip::PADDING_X;
+        let mut y = ctx.bounds.y + ChartTooltip::PADDING_Y;
+        let mut dot_rects = Vec::new();
+        let mut dot_colors = Vec::new();
+        let mut text_index = 0usize;
+        let mut push_text =
+            |x: f32, y: f32, width: f32, text: &Arc<str>, color: [f32; 4], weight| {
+                output.push(
+                    (42_u64 << 32) | (text_index as u64),
+                    WidgetPaintOp::Text(WidgetText {
+                        bounds: LayoutBox {
+                            x,
+                            y,
+                            width: width.max(0.0),
+                            height: line,
+                        },
+                        content: text.clone().into(),
+                        color: Some(color),
+                        paint_color: ctx.matching_text_paint(color),
+                        font_size: ChartTooltip::FONT,
+                        font_weight: weight,
+                        horizontal_alignment: TextHorizontalAlignment::Start,
+                        vertical_alignment: TextVerticalAlignment::Center,
+                        ellipsis: true,
+                        wrap: false,
+                        max_lines: None,
+                        italic: None,
+                        underline: None,
+                        line_through: None,
+                        suppress_spans: false,
+                        preserve_lines: None,
+                        unstyled_glyph: false,
+                        line_height: None,
+                        retained_text: crate::WidgetRetainedText::None,
+                        tabular_nums: false,
+                        ..Default::default()
+                    }),
+                );
+                text_index += 1;
+            };
+        if !self.content.title.is_empty() {
+            push_text(
+                left,
+                y,
+                right - left,
+                &self.content.title,
+                palette.text.as_rgba_array(),
+                Some(nana_ui_core::type_scale::MEDIUM),
+            );
+            y += line + ChartTooltip::ROW_GAP;
+        }
+        for row in &self.content.rows {
+            let mut x = left;
+            if let Some(color) = row.color {
+                let size = ChartTooltip::DOT;
+                dot_rects.push(LayoutBox {
+                    x,
+                    y: y + (line - size) * 0.5,
+                    width: size,
+                    height: size,
+                });
+                dot_colors.push(color);
+                x += size + nana_ui_core::space::SM;
+            }
+            let value_width = measure.measure(&row.value, ChartTooltip::FONT)[0];
+            push_text(
+                x,
+                y,
+                right - x - value_width,
+                &row.name,
+                palette.muted.as_rgba_array(),
+                None,
+            );
+            if !row.value.is_empty() {
+                push_text(
+                    right - value_width,
+                    y,
+                    value_width + 1.0,
+                    &row.value,
+                    palette.text.as_rgba_array(),
+                    Some(nana_ui_core::type_scale::MEDIUM),
+                );
+            }
+            y += line + ChartTooltip::ROW_GAP;
+        }
+        if !dot_rects.is_empty() {
+            output.push(
+                10,
+                WidgetPaintOp::QuadBatch(WidgetQuadBatch {
+                    bounds: ctx.bounds,
+                    rects: Arc::from(dot_rects),
+                    colors: WidgetBatchColors::PerQuad(Arc::from(dot_colors)),
+                    fill_paint: None,
+                    border: None,
+                    corner_radius: [ChartTooltip::DOT * 0.5; 4],
+                }),
+            );
+        }
+        output
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{AppContext, DocumentId, LayoutViewport, LengthSpec};
+    use nana_ui_charts::{Axis, ChartGpuPayload, ChartOption, LineSeries};
+
+    #[test]
+    fn chart_extracts_custom_gpu_payload_and_labels() {
+        let mut context = AppContext::new();
+        let document = DocumentId::new(1).unwrap();
+        let mut style = NodeStyle::default();
+        let layout = Arc::make_mut(&mut style.layout);
+        layout.width = Some(LengthSpec::Px(300.0));
+        layout.height = Some(LengthSpec::Px(200.0));
+        let option = ChartOption::new()
+            .x_axis(Axis::category(["Mon", "Tue", "Wed"]))
+            .y_axis(Axis::value())
+            .series(LineSeries::new("v", [1.0, 3.0, 2.0]));
+        let chart = context
+            .create_component(document, Chart::new(option).style(style))
+            .unwrap();
+        context
+            .layout_document(document, LayoutViewport::new(400.0, 300.0))
+            .unwrap();
+
+        let extracted = context.world().extract_nodes(&[chart.stable_id()]);
+        let paint = extracted[0]
+            .widget_paint
+            .as_deref()
+            .expect("chart widget_paint");
+        assert!(paint.suppress_root_surface);
+        let custom: Vec<_> = paint
+            .ops
+            .iter()
+            .filter_map(|op| match &op.op {
+                WidgetPaintOp::CustomGpu { node, .. } => Some((op.slot, node)),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(custom.len(), 1);
+        assert_eq!(custom[0].0, 11);
+        assert_eq!(custom[0].1.renderer.as_ref(), crate::CHART_RENDERER);
+        let payload = custom[0]
+            .1
+            .payload
+            .as_ref()
+            .and_then(|p| p.downcast_ref::<ChartGpuPayload>())
+            .expect("chart GPU payload");
+        assert_eq!(payload.origin, [0.0, 0.0]);
+        assert!(!payload.marks.is_empty());
+        assert!(custom[0].1.transition_until.is_some());
+
+        let text_slots: Vec<_> = paint
+            .ops
+            .iter()
+            .filter_map(|op| match op.op {
+                WidgetPaintOp::Text(_) => Some(op.slot),
+                _ => None,
+            })
+            .collect();
+        assert!(text_slots.len() > 2);
+        assert!(text_slots.iter().all(|slot| *slot >= (41_u64 << 32)));
     }
 }

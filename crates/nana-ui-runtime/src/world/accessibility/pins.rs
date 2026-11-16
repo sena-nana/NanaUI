@@ -54,7 +54,7 @@ impl UiWorld {
                 let Some(above) = self.nodes.get(id) else {
                     break None;
                 };
-                match above.layout_frame {
+                match above.layout_frame() {
                     crate::LayoutFrame::Parent => {}
                     crate::LayoutFrame::Block(block) => frames.push(block),
                     crate::LayoutFrame::Page => break None,
@@ -195,7 +195,7 @@ impl UiWorld {
             let Some(record) = self.nodes.get(id) else {
                 continue;
             };
-            let follows = match record.layout_frame {
+            let follows = match record.layout_frame() {
                 crate::LayoutFrame::Parent => true,
                 crate::LayoutFrame::Block(block) => inside(block),
                 crate::LayoutFrame::Page => false,
@@ -297,7 +297,7 @@ impl UiWorld {
         if parent.is_some_and(|parent| {
             self.nodes.get(parent).is_some_and(|record| {
                 record.resolved_layout.clips_overflow()
-                    || record.scroll_offset != ScrollOffset::default()
+                    || self.nodes.scroll_offset(parent) != ScrollOffset::default()
             })
         }) {
             return false;

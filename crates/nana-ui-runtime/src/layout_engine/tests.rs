@@ -1,10 +1,10 @@
 use std::sync::Arc;
 
 use nana_ui_core::{
-    AlignSpec, BoxSizing, CalcBinOp, CalcExpr, ClearSpec, DirSpec, DisplaySpec, FlexDirection,
-    FlexWrap, FloatSpec, GridLine, GridPlacement, GridRepeatAuto, GridTrack,
-    GridTrackListUnsupported, JustifySpec, LayoutStyle, LengthSpec, LineHeightSpec, PositionSpec,
-    TextOrientationSpec, WhiteSpaceSpec, WritingModeSpec,
+    AlignSpec, BoxSizing, CalcBinOp, CalcExpr, DirSpec, DisplaySpec, FlexDirection, FlexWrap,
+    GridLine, GridPlacement, GridRepeatAuto, GridTrack, GridTrackListUnsupported, JustifySpec,
+    LayoutStyle, LengthSpec, LineHeightSpec, PositionSpec, TextOrientationSpec, WhiteSpaceSpec,
+    WritingModeSpec,
 };
 
 use crate::{
@@ -479,7 +479,7 @@ fn repeated_viewport_resize_keeps_intrinsic_history_bounded() {
     let variants = memo
         .intrinsics
         .values()
-        .map(|node| node.measurements.iter().flatten().count())
+        .map(RetainedIntrinsic::len)
         .sum::<usize>();
     assert!(variants <= world.len() * 2);
 }
@@ -873,7 +873,7 @@ fn lays_out_shaped_controls_without_application_geometry() {
 /// layout under `cfg(test)`).
 #[test]
 fn a_button_that_gains_or_loses_a_glyph_is_measured_again() {
-    use crate::{AppContext, Button, MeasureTextShaper, Stack, StandardVisual};
+    use crate::{AppContext, Button, ButtonVisual, MeasureTextShaper, Stack};
     let document = DocumentId::new(1).unwrap();
     let mut cx = AppContext::new();
     let page = cx
@@ -920,11 +920,13 @@ fn a_button_that_gains_or_loses_a_glyph_is_measured_again() {
     })
     .unwrap();
     frame(&mut cx);
-    let Some(StandardVisual::Button {
+    let Some(ButtonVisual {
         icon_size,
         icon_gap,
         ..
-    }) = cx.world().standard_visual(button.stable_id())
+    }) = cx
+        .world()
+        .widget_visual_as::<ButtonVisual>(button.stable_id())
     else {
         panic!("button visual");
     };
@@ -1929,17 +1931,18 @@ fn grid_template_columns_split_free_space() {
     queue.create(id(3), document, NodeKind::Element { tag: "div".into() });
     queue.insert(id(1), id(2), None);
     queue.insert(id(1), id(3), None);
+    let mut root_layout = LayoutStyle {
+        display: Some(DisplaySpec::Grid),
+        direction: Some(FlexDirection::Row),
+        width: Some(LengthSpec::Px(800.0)),
+        height: Some(LengthSpec::Px(400.0)),
+        ..LayoutStyle::default()
+    };
+    root_layout.grid.columns = Some(vec![GridTrack::Px(220.0), GridTrack::Fr(1.0)]);
     queue.set_style(
         id(1),
         NodeStyle {
-            layout: Arc::new(LayoutStyle {
-                display: Some(DisplaySpec::Grid),
-                direction: Some(FlexDirection::Row),
-                width: Some(LengthSpec::Px(800.0)),
-                height: Some(LengthSpec::Px(400.0)),
-                grid_columns: Some(vec![GridTrack::Px(220.0), GridTrack::Fr(1.0)]),
-                ..LayoutStyle::default()
-            }),
+            layout: Arc::new(root_layout),
             ..NodeStyle::default()
         },
     );
@@ -2348,50 +2351,17 @@ fn an_auto_cross_size_stretches_like_an_unset_one() {
 }
 
 #[test]
-fn display_contents_hoists_children_into_flex_row_gap() {
-    let tree = StyleLayoutNode {
-        id: "root".into(),
-        style: LayoutStyle {
-            direction: Some(FlexDirection::Row),
-            width: Some(LengthSpec::Px(200.0)),
-            height: Some(LengthSpec::Px(40.0)),
-            gap: Some(LengthSpec::Px(10.0)),
-            align_items: AlignSpec::Start,
-            ..LayoutStyle::default()
-        },
-        children: vec![StyleLayoutNode {
-            id: "contents".into(),
-            style: LayoutStyle {
-                display: Some(DisplaySpec::Contents),
-                ..LayoutStyle::default()
-            },
-            children: vec![px_box("a", 50.0, 40.0), px_box("b", 50.0, 40.0)],
-            text: None,
-        }],
-        text: None,
-    };
-    let boxes = box_map(&tree, 200.0, 40.0);
-    assert!(
-        !boxes.contains_key("contents"),
-        "display:contents must be absent from the box map"
-    );
-    assert!((boxes["a"].x - 0.0).abs() < 0.01);
-    assert!((boxes["b"].x - 60.0).abs() < 0.01);
-    assert_eq!(boxes["a"].width, 50.0);
-    assert_eq!(boxes["b"].width, 50.0);
-}
-
-#[test]
 fn grid_2d_auto_flow_wraps_fourth_item_to_second_row() {
+    let mut style = LayoutStyle {
+        display: Some(DisplaySpec::Grid),
+        width: Some(LengthSpec::Px(100.0)),
+        height: Some(LengthSpec::Px(100.0)),
+        ..LayoutStyle::default()
+    };
+    style.grid.columns = Some(vec![GridTrack::Px(50.0), GridTrack::Px(50.0)]);
     let tree = StyleLayoutNode {
         id: "root".into(),
-        style: LayoutStyle {
-            display: Some(DisplaySpec::Grid),
-            width: Some(LengthSpec::Px(100.0)),
-            height: Some(LengthSpec::Px(100.0)),
-            grid_columns: Some(vec![GridTrack::Px(50.0), GridTrack::Px(50.0)]),
-            ..LayoutStyle::default()
-        },
+        style,
         children: (0..4)
             .map(|i| px_box(&format!("i{i}"), 50.0, 50.0))
             .collect(),
@@ -2410,33 +2380,35 @@ fn grid_2d_auto_flow_wraps_fourth_item_to_second_row() {
 
 #[test]
 fn grid_column_span_two_on_three_columns() {
+    let mut first_style = LayoutStyle {
+        height: Some(LengthSpec::Px(50.0)),
+        ..LayoutStyle::default()
+    };
+    first_style.grid.placement = GridPlacement {
+        column_start: GridLine::Span(2),
+        ..GridPlacement::default()
+    }
+    .into();
     let first = StyleLayoutNode {
         id: "a".into(),
-        style: LayoutStyle {
-            height: Some(LengthSpec::Px(50.0)),
-            grid_placement: GridPlacement {
-                column_start: GridLine::Span(2),
-                ..GridPlacement::default()
-            }
-            .into(),
-            ..LayoutStyle::default()
-        },
+        style: first_style,
         children: Vec::new(),
         text: None,
     };
+    let mut root_style = LayoutStyle {
+        display: Some(DisplaySpec::Grid),
+        width: Some(LengthSpec::Px(150.0)),
+        height: Some(LengthSpec::Px(100.0)),
+        ..LayoutStyle::default()
+    };
+    root_style.grid.columns = Some(vec![
+        GridTrack::Px(50.0),
+        GridTrack::Px(50.0),
+        GridTrack::Px(50.0),
+    ]);
     let tree = StyleLayoutNode {
         id: "root".into(),
-        style: LayoutStyle {
-            display: Some(DisplaySpec::Grid),
-            width: Some(LengthSpec::Px(150.0)),
-            height: Some(LengthSpec::Px(100.0)),
-            grid_columns: Some(vec![
-                GridTrack::Px(50.0),
-                GridTrack::Px(50.0),
-                GridTrack::Px(50.0),
-            ]),
-            ..LayoutStyle::default()
-        },
+        style: root_style,
         children: vec![first, px_box("b", 50.0, 50.0), px_box("c", 50.0, 50.0)],
         text: None,
     };
@@ -2453,15 +2425,16 @@ fn grid_column_span_two_on_three_columns() {
 fn grid_justify_self_end_in_definite_column() {
     let mut item = px_box("item", 50.0, 50.0);
     item.style.justify_self = Some(AlignSpec::End);
+    let mut style = LayoutStyle {
+        display: Some(DisplaySpec::Grid),
+        width: Some(LengthSpec::Px(200.0)),
+        height: Some(LengthSpec::Px(50.0)),
+        ..LayoutStyle::default()
+    };
+    style.grid.columns = Some(vec![GridTrack::Px(200.0)]);
     let tree = StyleLayoutNode {
         id: "root".into(),
-        style: LayoutStyle {
-            display: Some(DisplaySpec::Grid),
-            width: Some(LengthSpec::Px(200.0)),
-            height: Some(LengthSpec::Px(50.0)),
-            grid_columns: Some(vec![GridTrack::Px(200.0)]),
-            ..LayoutStyle::default()
-        },
+        style,
         children: vec![item],
         text: None,
     };
@@ -2472,26 +2445,27 @@ fn grid_justify_self_end_in_definite_column() {
 
 #[test]
 fn grid_auto_fit_fills_two_minmax_tracks_in_500px() {
+    let mut style = LayoutStyle {
+        display: Some(DisplaySpec::Grid),
+        width: Some(LengthSpec::Px(500.0)),
+        height: Some(LengthSpec::Px(50.0)),
+        ..LayoutStyle::default()
+    };
+    style.grid.columns_repeat = Some(
+        GridRepeatAuto {
+            kind: GridTrackListUnsupported::RepeatAutoFit,
+            tracks: vec![GridTrack::MinMax {
+                min_px: 200.0,
+                fr: 1.0,
+                max_px: None,
+            }],
+            ..Default::default()
+        }
+        .into(),
+    );
     let tree = StyleLayoutNode {
         id: "root".into(),
-        style: LayoutStyle {
-            display: Some(DisplaySpec::Grid),
-            width: Some(LengthSpec::Px(500.0)),
-            height: Some(LengthSpec::Px(50.0)),
-            grid_columns_repeat: Some(
-                GridRepeatAuto {
-                    kind: GridTrackListUnsupported::RepeatAutoFit,
-                    tracks: vec![GridTrack::MinMax {
-                        min_px: 200.0,
-                        fr: 1.0,
-                        max_px: None,
-                    }],
-                    ..Default::default()
-                }
-                .into(),
-            ),
-            ..LayoutStyle::default()
-        },
+        style,
         children: vec![px_box("a", 50.0, 50.0), px_box("b", 50.0, 50.0)],
         text: None,
     };
@@ -2529,28 +2503,31 @@ fn wrapping_chips(id: &str, width: Option<LengthSpec>) -> StyleLayoutNode {
 /// chip per line (124px) and an auto-width one all on one line.
 #[test]
 fn grid_auto_row_holds_wrapping_content_at_its_column_width() {
-    let grid = |children| StyleLayoutNode {
-        id: "root".into(),
-        style: LayoutStyle {
+    let grid = |children| {
+        let mut style = LayoutStyle {
             display: Some(DisplaySpec::Grid),
             width: Some(LengthSpec::Px(400.0)),
             gap: Some(LengthSpec::Px(6.0)),
-            grid_columns_repeat: Some(
-                GridRepeatAuto {
-                    kind: GridTrackListUnsupported::RepeatAutoFit,
-                    tracks: vec![GridTrack::MinMax {
-                        min_px: 132.0,
-                        fr: 1.0,
-                        max_px: None,
-                    }],
-                    ..Default::default()
-                }
-                .into(),
-            ),
             ..LayoutStyle::default()
-        },
-        children,
-        text: None,
+        };
+        style.grid.columns_repeat = Some(
+            GridRepeatAuto {
+                kind: GridTrackListUnsupported::RepeatAutoFit,
+                tracks: vec![GridTrack::MinMax {
+                    min_px: 132.0,
+                    fr: 1.0,
+                    max_px: None,
+                }],
+                ..Default::default()
+            }
+            .into(),
+        );
+        StyleLayoutNode {
+            id: "root".into(),
+            style,
+            children,
+            text: None,
+        }
     };
     for width in [
         Some(LengthSpec::Percent(100.0)),
@@ -2588,7 +2565,7 @@ fn a_grid_auto_row_follows_its_columns_when_the_grid_resizes() {
                 layout.display = Some(DisplaySpec::Grid);
                 layout.width = Some(LengthSpec::Px(400.0));
                 layout.gap = Some(LengthSpec::Px(6.0));
-                layout.grid_columns = Some(vec![GridTrack::Fr(1.0), GridTrack::Fr(1.0)]);
+                layout.grid.columns = Some(vec![GridTrack::Fr(1.0), GridTrack::Fr(1.0)]);
             }),
         )
         .unwrap();
@@ -2643,7 +2620,7 @@ fn white_space_pre_measures_explicit_newlines() {
     let tree = StyleLayoutNode {
         id: "root".into(),
         style: LayoutStyle {
-            display: Some(DisplaySpec::Block),
+            display: None,
             width: Some(LengthSpec::Px(200.0)),
             font_size: Some(16.0),
             line_height: Some(LineHeightSpec::Absolute(20.0)),
@@ -2666,7 +2643,7 @@ fn white_space_pre_wrap_keeps_newlines_and_wraps_long_lines() {
     let tree = StyleLayoutNode {
         id: "root".into(),
         style: LayoutStyle {
-            display: Some(DisplaySpec::Block),
+            display: None,
             width: Some(LengthSpec::Px(200.0)),
             font_size: Some(16.0),
             line_height: Some(LineHeightSpec::Absolute(20.0)),
@@ -2687,11 +2664,10 @@ fn white_space_pre_wrap_keeps_newlines_and_wraps_long_lines() {
 #[test]
 fn measure_text_pre_wrap_wraps_long_line_against_max_width() {
     let mut shaper = crate::MeasureTextShaper;
-    let style = ComputedStyle {
-        font_size: 16.0,
-        line_height: Some(LineHeightSpec::Absolute(20.0)),
-        ..ComputedStyle::default()
-    };
+    let style = ComputedStyle::with(|s| {
+        s.font_size = 16.0;
+        s.line_height = Some(LineHeightSpec::Absolute(20.0));
+    });
     let metrics = shaper.shape(
         StableNodeId::new(1).unwrap(),
         &crate::TextContent {
@@ -2850,15 +2826,16 @@ fn grid_percent_and_fill_resolve_against_final_cell() {
         children: Vec::new(),
         text: None,
     };
+    let mut style = LayoutStyle {
+        display: Some(DisplaySpec::Grid),
+        width: Some(LengthSpec::Px(300.0)),
+        height: Some(LengthSpec::Px(40.0)),
+        ..LayoutStyle::default()
+    };
+    style.grid.columns = Some(vec![GridTrack::Px(100.0), GridTrack::Fr(1.0)]);
     let tree = StyleLayoutNode {
         id: "root".into(),
-        style: LayoutStyle {
-            display: Some(DisplaySpec::Grid),
-            width: Some(LengthSpec::Px(300.0)),
-            height: Some(LengthSpec::Px(40.0)),
-            grid_columns: Some(vec![GridTrack::Px(100.0), GridTrack::Fr(1.0)]),
-            ..LayoutStyle::default()
-        },
+        style,
         children: vec![fill("a"), fill("b")],
         text: None,
     };
@@ -2915,17 +2892,18 @@ fn grid_cell_resolves_unsimplified_calc_against_cell() {
         children: Vec::new(),
         text: None,
     };
+    let mut root_style = LayoutStyle {
+        display: Some(DisplaySpec::Grid),
+        width: Some(LengthSpec::Px(400.0)),
+        height: Some(LengthSpec::Px(40.0)),
+        align_items: AlignSpec::Start,
+        justify_items: Some(AlignSpec::Start),
+        ..LayoutStyle::default()
+    };
+    root_style.grid.columns = Some(vec![GridTrack::Px(400.0)]);
     let tree = StyleLayoutNode {
         id: "root".into(),
-        style: LayoutStyle {
-            display: Some(DisplaySpec::Grid),
-            width: Some(LengthSpec::Px(400.0)),
-            height: Some(LengthSpec::Px(40.0)),
-            grid_columns: Some(vec![GridTrack::Px(400.0)]),
-            align_items: AlignSpec::Start,
-            justify_items: Some(AlignSpec::Start),
-            ..LayoutStyle::default()
-        },
+        style: root_style,
         children: vec![child],
         text: None,
     };
@@ -2945,17 +2923,18 @@ fn empty_grid_item_stretches_into_track() {
         children: Vec::new(),
         text: None,
     };
+    let mut root_style = LayoutStyle {
+        display: Some(DisplaySpec::Grid),
+        width: Some(LengthSpec::Px(300.0)),
+        height: Some(LengthSpec::Px(40.0)),
+        // CSS `display:grid` initial align-items is stretch (css_map sets this).
+        align_items: AlignSpec::Stretch,
+        ..LayoutStyle::default()
+    };
+    root_style.grid.columns = Some(vec![GridTrack::Px(100.0), GridTrack::Fr(1.0)]);
     let tree = StyleLayoutNode {
         id: "root".into(),
-        style: LayoutStyle {
-            display: Some(DisplaySpec::Grid),
-            width: Some(LengthSpec::Px(300.0)),
-            height: Some(LengthSpec::Px(40.0)),
-            grid_columns: Some(vec![GridTrack::Px(100.0), GridTrack::Fr(1.0)]),
-            // CSS `display:grid` initial align-items is stretch (css_map sets this).
-            align_items: AlignSpec::Stretch,
-            ..LayoutStyle::default()
-        },
+        style: root_style,
         children: vec![empty("a"), empty("b")],
         text: None,
     };
@@ -2972,242 +2951,18 @@ fn empty_grid_item_stretches_into_track() {
     );
 }
 
-#[test]
-fn same_side_floats_do_not_overlap() {
-    let floated = |id: &str| StyleLayoutNode {
-        id: id.into(),
-        style: LayoutStyle {
-            width: Some(LengthSpec::Px(60.0)),
-            height: Some(LengthSpec::Px(40.0)),
-            float: FloatSpec::Left,
-            ..LayoutStyle::default()
-        },
-        children: Vec::new(),
-        text: None,
-    };
-    let tree = StyleLayoutNode {
-        id: "root".into(),
-        style: LayoutStyle {
-            display: Some(DisplaySpec::Block),
-            width: Some(LengthSpec::Px(80.0)),
-            height: Some(LengthSpec::Px(80.0)),
-            ..LayoutStyle::default()
-        },
-        children: vec![floated("a"), floated("b")],
-        text: None,
-    };
-    let boxes = box_map(&tree, 80.0, 80.0);
-    assert!((boxes["a"].x - 0.0).abs() < 0.5);
-    assert!((boxes["a"].y - 0.0).abs() < 0.5);
-    assert!(
-        (boxes["b"].y - 40.0).abs() < 0.5,
-        "second left float must wrap below, got {:?}",
-        boxes["b"]
-    );
-    assert!((boxes["b"].x - 0.0).abs() < 0.5);
-}
-
-#[test]
-fn float_own_clear_starts_below_packed_same_side() {
-    let left = |id: &str, clear: ClearSpec| StyleLayoutNode {
-        id: id.into(),
-        style: LayoutStyle {
-            width: Some(LengthSpec::Px(60.0)),
-            height: Some(LengthSpec::Px(40.0)),
-            float: FloatSpec::Left,
-            clear,
-            ..LayoutStyle::default()
-        },
-        children: Vec::new(),
-        text: None,
-    };
-    let tree = StyleLayoutNode {
-        id: "root".into(),
-        style: LayoutStyle {
-            display: Some(DisplaySpec::Block),
-            width: Some(LengthSpec::Px(200.0)),
-            height: Some(LengthSpec::Px(80.0)),
-            ..LayoutStyle::default()
-        },
-        children: vec![left("a", ClearSpec::None), left("b", ClearSpec::Left)],
-        text: None,
-    };
-    let boxes = box_map(&tree, 200.0, 80.0);
-    assert!((boxes["a"].x - 0.0).abs() < 0.5);
-    assert!((boxes["a"].y - 0.0).abs() < 0.5);
-    assert!(
-        (boxes["b"].y - 40.0).abs() < 0.5 && (boxes["b"].x - 0.0).abs() < 0.5,
-        "float with clear:left must start below packed left, not beside it, got {:?}",
-        boxes["b"]
-    );
-}
-
-#[test]
-fn subgrid_inherits_parent_column_track_sizes() {
-    let cell = |id: &str| StyleLayoutNode {
-        id: id.into(),
-        style: LayoutStyle {
-            width: Some(LengthSpec::Fill),
-            height: Some(LengthSpec::Fill),
-            ..LayoutStyle::default()
-        },
-        children: Vec::new(),
-        text: None,
-    };
-    let sub = StyleLayoutNode {
-        id: "sub".into(),
-        style: LayoutStyle {
-            display: Some(DisplaySpec::Grid),
-            grid_columns_subgrid: true,
-            grid_placement: GridPlacement {
-                column_start: GridLine::Index(1),
-                column_end: GridLine::Index(-1),
-                ..GridPlacement::default()
-            }
-            .into(),
-            align_items: AlignSpec::Stretch,
-            ..LayoutStyle::default()
-        },
-        children: vec![cell("a"), cell("b")],
-        text: None,
-    };
-    let tree = StyleLayoutNode {
-        id: "root".into(),
-        style: LayoutStyle {
-            display: Some(DisplaySpec::Grid),
-            width: Some(LengthSpec::Px(200.0)),
-            height: Some(LengthSpec::Px(40.0)),
-            grid_columns: Some(vec![GridTrack::Px(80.0), GridTrack::Px(120.0)]),
-            align_items: AlignSpec::Stretch,
-            ..LayoutStyle::default()
-        },
-        children: vec![sub],
-        text: None,
-    };
-    let boxes = box_map(&tree, 200.0, 40.0);
-    assert!(
-        (boxes["a"].width - 80.0).abs() < 0.5 && (boxes["a"].x - 0.0).abs() < 0.5,
-        "subgrid col 1 must inherit 80px, not split the 200px cell, got {:?}",
-        boxes["a"]
-    );
-    assert!(
-        (boxes["b"].width - 120.0).abs() < 0.5 && (boxes["b"].x - 80.0).abs() < 0.5,
-        "subgrid col 2 must inherit 120px, got {:?}",
-        boxes["b"]
-    );
-}
-
-/// The pitch of a line of 20px-high empty inline-blocks in a block of the
+/// The pitch of a line of 20px-high empty inline-flex items in an unset container of the
 /// default font (16px, `line-height` 1.2): they sit on the baseline by their
-/// bottom edge, and the block's strut adds its descent below them, the
+/// bottom edge, and the container's strut adds its descent below them, the
 /// font's 0.2em and half of the 0.2em leading (CSS 2.1 §10.8.1).
 const STRUT_LINE: f32 = 20.0 + 16.0 * (1.0 - nana_ui_core::TEXT_APPROX_ASCENT_EM) + 16.0 * 0.1;
-
-#[test]
-fn ifc_wraps_inline_around_left_float() {
-    let inline = |id: &str| StyleLayoutNode {
-        id: id.into(),
-        style: LayoutStyle {
-            display: Some(DisplaySpec::InlineBlock),
-            width: Some(LengthSpec::Px(70.0)),
-            height: Some(LengthSpec::Px(20.0)),
-            ..LayoutStyle::default()
-        },
-        children: Vec::new(),
-        text: None,
-    };
-    let tree = StyleLayoutNode {
-        id: "root".into(),
-        style: LayoutStyle {
-            display: Some(DisplaySpec::Block),
-            width: Some(LengthSpec::Px(200.0)),
-            height: Some(LengthSpec::Px(80.0)),
-            ..LayoutStyle::default()
-        },
-        children: vec![
-            StyleLayoutNode {
-                id: "float".into(),
-                style: LayoutStyle {
-                    float: FloatSpec::Left,
-                    width: Some(LengthSpec::Px(80.0)),
-                    height: Some(LengthSpec::Px(40.0)),
-                    ..LayoutStyle::default()
-                },
-                children: Vec::new(),
-                text: None,
-            },
-            inline("a"),
-            inline("b"),
-            inline("c"),
-        ],
-        text: None,
-    };
-    let boxes = box_map(&tree, 200.0, 80.0);
-    assert!(
-        (boxes["float"].x - 0.0).abs() < 0.5 && (boxes["float"].y - 0.0).abs() < 0.5,
-        "float stays packed at origin, got {:?}",
-        boxes["float"]
-    );
-    assert!(
-        (boxes["a"].x - 80.0).abs() < 0.5 && (boxes["a"].y - 0.0).abs() < 0.5,
-        "first inline must start after the left float band, got {:?}",
-        boxes["a"]
-    );
-    assert!(
-        (boxes["b"].x - 80.0).abs() < 0.5 && (boxes["b"].y - STRUT_LINE).abs() < 0.5,
-        "second inline wraps in the shortened band, got {:?}",
-        boxes["b"]
-    );
-    assert!(
-        (boxes["c"].y - 2.0 * STRUT_LINE).abs() < 0.5 && (boxes["c"].x - 0.0).abs() < 0.5,
-        "third inline drops below the float to full width, got {:?}",
-        boxes["c"]
-    );
-}
-
-#[test]
-fn flex_item_float_is_blockified_not_floated() {
-    let tree = StyleLayoutNode {
-        id: "root".into(),
-        style: LayoutStyle {
-            display: Some(DisplaySpec::Flex),
-            direction: Some(FlexDirection::Row),
-            width: Some(LengthSpec::Px(200.0)),
-            height: Some(LengthSpec::Px(40.0)),
-            align_items: AlignSpec::Start,
-            ..LayoutStyle::default()
-        },
-        children: vec![
-            StyleLayoutNode {
-                id: "a".into(),
-                style: LayoutStyle {
-                    float: FloatSpec::Left,
-                    width: Some(LengthSpec::Px(50.0)),
-                    height: Some(LengthSpec::Px(40.0)),
-                    ..LayoutStyle::default()
-                },
-                children: Vec::new(),
-                text: None,
-            },
-            px_box("b", 50.0, 40.0),
-        ],
-        text: None,
-    };
-    let boxes = box_map(&tree, 200.0, 40.0);
-    assert!(
-        (boxes["a"].x - 0.0).abs() < 0.5 && (boxes["b"].x - 50.0).abs() < 0.5,
-        "flex item float must stay a flex item, not pack as a float, got a={:?} b={:?}",
-        boxes["a"],
-        boxes["b"]
-    );
-}
 
 #[test]
 fn ifc_block_sibling_starts_new_line() {
     let inline = |id: &str, x: f32| StyleLayoutNode {
         id: id.into(),
         style: LayoutStyle {
-            display: Some(DisplaySpec::InlineBlock),
+            display: Some(DisplaySpec::InlineFlex),
             width: Some(LengthSpec::Px(x)),
             height: Some(LengthSpec::Px(20.0)),
             ..LayoutStyle::default()
@@ -3218,7 +2973,7 @@ fn ifc_block_sibling_starts_new_line() {
     let block = StyleLayoutNode {
         id: "mid".into(),
         style: LayoutStyle {
-            display: Some(DisplaySpec::Block),
+            display: Some(DisplaySpec::Flex),
             width: Some(LengthSpec::Px(40.0)),
             height: Some(LengthSpec::Px(20.0)),
             ..LayoutStyle::default()
@@ -3229,7 +2984,7 @@ fn ifc_block_sibling_starts_new_line() {
     let tree = StyleLayoutNode {
         id: "root".into(),
         style: LayoutStyle {
-            display: Some(DisplaySpec::Block),
+            display: None,
             width: Some(LengthSpec::Px(200.0)),
             height: Some(LengthSpec::Px(80.0)),
             ..LayoutStyle::default()
@@ -3256,7 +3011,7 @@ fn ifc_block_in_inline_unboxes_like_block_siblings() {
     let inline_block = |id: &str| StyleLayoutNode {
         id: id.into(),
         style: LayoutStyle {
-            display: Some(DisplaySpec::InlineBlock),
+            display: Some(DisplaySpec::InlineFlex),
             width: Some(LengthSpec::Px(40.0)),
             height: Some(LengthSpec::Px(20.0)),
             ..LayoutStyle::default()
@@ -3267,7 +3022,7 @@ fn ifc_block_in_inline_unboxes_like_block_siblings() {
     let mid = StyleLayoutNode {
         id: "mid".into(),
         style: LayoutStyle {
-            display: Some(DisplaySpec::Block),
+            display: Some(DisplaySpec::Flex),
             width: Some(LengthSpec::Px(40.0)),
             height: Some(LengthSpec::Px(20.0)),
             ..LayoutStyle::default()
@@ -3278,7 +3033,7 @@ fn ifc_block_in_inline_unboxes_like_block_siblings() {
     let tree = StyleLayoutNode {
         id: "root".into(),
         style: LayoutStyle {
-            display: Some(DisplaySpec::Block),
+            display: None,
             width: Some(LengthSpec::Px(200.0)),
             height: Some(LengthSpec::Px(80.0)),
             ..LayoutStyle::default()
@@ -3297,7 +3052,7 @@ fn ifc_block_in_inline_unboxes_like_block_siblings() {
     let boxes = box_map(&tree, 200.0, 80.0);
     assert!(
         (boxes["a"].y - 0.0).abs() < 0.5,
-        "first inline-block stays on the first line, got {:?}",
+        "first inline-flex stays on the first line, got {:?}",
         boxes["a"]
     );
     assert!(
@@ -3307,7 +3062,7 @@ fn ifc_block_in_inline_unboxes_like_block_siblings() {
     );
     assert!(
         (boxes["c"].y - STRUT_LINE - 20.0).abs() < 0.5,
-        "trailing inline-block starts after the hoisted block, got {:?}",
+        "trailing inline-flex starts after the hoisted block, got {:?}",
         boxes["c"]
     );
 }
@@ -3317,7 +3072,7 @@ fn flex_item_inline_with_block_is_not_unboxed() {
     let mid = StyleLayoutNode {
         id: "mid".into(),
         style: LayoutStyle {
-            display: Some(DisplaySpec::Block),
+            display: Some(DisplaySpec::Flex),
             width: Some(LengthSpec::Px(50.0)),
             height: Some(LengthSpec::Px(40.0)),
             ..LayoutStyle::default()
@@ -3379,7 +3134,7 @@ fn ifc_text_align_start_packs_to_right_in_rtl() {
     let inline = StyleLayoutNode {
         id: "a".into(),
         style: LayoutStyle {
-            display: Some(DisplaySpec::InlineBlock),
+            display: Some(DisplaySpec::InlineFlex),
             width: Some(LengthSpec::Px(40.0)),
             height: Some(LengthSpec::Px(20.0)),
             ..LayoutStyle::default()
@@ -3390,7 +3145,7 @@ fn ifc_text_align_start_packs_to_right_in_rtl() {
     let tree = StyleLayoutNode {
         id: "root".into(),
         style: LayoutStyle {
-            display: Some(DisplaySpec::Block),
+            display: None,
             width: Some(LengthSpec::Px(200.0)),
             height: Some(LengthSpec::Px(40.0)),
             dir: Some(DirSpec::Rtl),
@@ -3413,7 +3168,7 @@ fn ifc_rtl_places_first_tree_item_at_inline_start() {
     let inline = |id: &str| StyleLayoutNode {
         id: id.into(),
         style: LayoutStyle {
-            display: Some(DisplaySpec::InlineBlock),
+            display: Some(DisplaySpec::InlineFlex),
             width: Some(LengthSpec::Px(40.0)),
             height: Some(LengthSpec::Px(20.0)),
             ..LayoutStyle::default()
@@ -3424,7 +3179,7 @@ fn ifc_rtl_places_first_tree_item_at_inline_start() {
     let tree = StyleLayoutNode {
         id: "root".into(),
         style: LayoutStyle {
-            display: Some(DisplaySpec::Block),
+            display: None,
             width: Some(LengthSpec::Px(200.0)),
             height: Some(LengthSpec::Px(40.0)),
             dir: Some(DirSpec::Rtl),
@@ -3446,219 +3201,12 @@ fn ifc_rtl_places_first_tree_item_at_inline_start() {
     );
 }
 
-fn floated_box(id: &str, side: FloatSpec, width: f32, height: f32) -> StyleLayoutNode {
-    StyleLayoutNode {
-        id: id.into(),
-        style: LayoutStyle {
-            width: Some(LengthSpec::Px(width)),
-            height: Some(LengthSpec::Px(height)),
-            float: side,
-            ..LayoutStyle::default()
-        },
-        children: Vec::new(),
-        text: None,
-    }
-}
-
-fn inline_box(id: &str, width: f32, height: f32) -> StyleLayoutNode {
-    StyleLayoutNode {
-        id: id.into(),
-        style: LayoutStyle {
-            display: Some(DisplaySpec::InlineBlock),
-            width: Some(LengthSpec::Px(width)),
-            height: Some(LengthSpec::Px(height)),
-            ..LayoutStyle::default()
-        },
-        children: Vec::new(),
-        text: None,
-    }
-}
-
-#[test]
-fn ifc_line_box_shrinks_around_float_left() {
-    let tree = StyleLayoutNode {
-        id: "root".into(),
-        style: LayoutStyle {
-            display: Some(DisplaySpec::Block),
-            width: Some(LengthSpec::Px(200.0)),
-            height: Some(LengthSpec::Px(80.0)),
-            ..LayoutStyle::default()
-        },
-        children: vec![
-            floated_box("fl", FloatSpec::Left, 80.0, 40.0),
-            inline_box("a", 50.0, 20.0),
-        ],
-        text: None,
-    };
-    let boxes = box_map(&tree, 200.0, 80.0);
-    assert!((boxes["fl"].x - 0.0).abs() < 0.5);
-    assert!(
-        (boxes["a"].x - 80.0).abs() < 0.5 && (boxes["a"].y - 0.0).abs() < 0.5,
-        "IFC line box must start after the left float, not overlap, got {:?}",
-        boxes["a"]
-    );
-    assert!(
-        boxes["a"].x + 0.5 >= boxes["fl"].x + boxes["fl"].width
-            || boxes["a"].y + 0.5 >= boxes["fl"].y + boxes["fl"].height,
-        "inline vs float must not overlap, a={:?} fl={:?}",
-        boxes["a"],
-        boxes["fl"]
-    );
-}
-
-#[test]
-fn ifc_inlines_wrap_in_width_beside_float() {
-    let tree = StyleLayoutNode {
-        id: "root".into(),
-        style: LayoutStyle {
-            display: Some(DisplaySpec::Block),
-            width: Some(LengthSpec::Px(200.0)),
-            height: Some(LengthSpec::Px(80.0)),
-            ..LayoutStyle::default()
-        },
-        children: vec![
-            floated_box("fl", FloatSpec::Left, 80.0, 40.0),
-            inline_box("a", 70.0, 20.0),
-            inline_box("b", 70.0, 20.0),
-        ],
-        text: None,
-    };
-    let boxes = box_map(&tree, 200.0, 80.0);
-    assert!(
-        (boxes["a"].x - 80.0).abs() < 0.5 && (boxes["a"].y - 0.0).abs() < 0.5,
-        "first inline sits in the shortened line, got {:?}",
-        boxes["a"]
-    );
-    assert!(
-        (boxes["b"].x - 80.0).abs() < 0.5 && (boxes["b"].y - STRUT_LINE).abs() < 0.5,
-        "70+70 exceeds remaining 120 so b wraps beside the float, got {:?}",
-        boxes["b"]
-    );
-}
-
-#[test]
-fn ifc_uses_full_width_below_float() {
-    let tree = StyleLayoutNode {
-        id: "root".into(),
-        style: LayoutStyle {
-            display: Some(DisplaySpec::Block),
-            width: Some(LengthSpec::Px(200.0)),
-            height: Some(LengthSpec::Px(80.0)),
-            ..LayoutStyle::default()
-        },
-        children: vec![
-            floated_box("fl", FloatSpec::Left, 80.0, 40.0),
-            inline_box("a", 70.0, 20.0),
-            inline_box("b", 70.0, 20.0),
-            inline_box("c", 70.0, 20.0),
-        ],
-        text: None,
-    };
-    let boxes = box_map(&tree, 200.0, 80.0);
-    assert!(
-        (boxes["c"].x - 0.0).abs() < 0.5 && (boxes["c"].y - 2.0 * STRUT_LINE).abs() < 0.5,
-        "below the float the line box is full width, got {:?}",
-        boxes["c"]
-    );
-}
-
-#[test]
-fn ifc_oversized_inline_drops_below_float() {
-    let tree = StyleLayoutNode {
-        id: "root".into(),
-        style: LayoutStyle {
-            display: Some(DisplaySpec::Block),
-            width: Some(LengthSpec::Px(200.0)),
-            height: Some(LengthSpec::Px(80.0)),
-            ..LayoutStyle::default()
-        },
-        children: vec![
-            floated_box("fl", FloatSpec::Left, 80.0, 40.0),
-            inline_box("a", 150.0, 20.0),
-        ],
-        text: None,
-    };
-    let boxes = box_map(&tree, 200.0, 80.0);
-    assert!(
-        (boxes["a"].x - 0.0).abs() < 0.5 && (boxes["a"].y - 40.0).abs() < 0.5,
-        "item wider than remaining width must drop below the float, got {:?}",
-        boxes["a"]
-    );
-}
-
-#[test]
-fn ifc_line_box_shrinks_between_left_and_right_floats() {
-    let tree = StyleLayoutNode {
-        id: "root".into(),
-        style: LayoutStyle {
-            display: Some(DisplaySpec::Block),
-            width: Some(LengthSpec::Px(300.0)),
-            height: Some(LengthSpec::Px(80.0)),
-            ..LayoutStyle::default()
-        },
-        children: vec![
-            floated_box("left", FloatSpec::Left, 80.0, 40.0),
-            floated_box("right", FloatSpec::Right, 80.0, 40.0),
-            inline_box("a", 40.0, 20.0),
-        ],
-        text: None,
-    };
-    let boxes = box_map(&tree, 300.0, 80.0);
-    assert!((boxes["left"].x - 0.0).abs() < 0.5);
-    assert!((boxes["right"].x - 220.0).abs() < 0.5);
-    assert!(
-        (boxes["a"].x - 80.0).abs() < 0.5 && (boxes["a"].y - 0.0).abs() < 0.5,
-        "line box sits between left and right floats, got {:?}",
-        boxes["a"]
-    );
-    assert!(
-        boxes["a"].x + boxes["a"].width <= boxes["right"].x + 0.5,
-        "inline must not overlap the right float, a={:?} right={:?}",
-        boxes["a"],
-        boxes["right"]
-    );
-}
-
-#[test]
-fn in_flow_block_does_not_shrink_beside_float() {
-    let tree = StyleLayoutNode {
-        id: "root".into(),
-        style: LayoutStyle {
-            display: Some(DisplaySpec::Block),
-            width: Some(LengthSpec::Px(200.0)),
-            height: Some(LengthSpec::Px(80.0)),
-            ..LayoutStyle::default()
-        },
-        children: vec![
-            floated_box("fl", FloatSpec::Left, 80.0, 40.0),
-            StyleLayoutNode {
-                id: "block".into(),
-                style: LayoutStyle {
-                    display: Some(DisplaySpec::Block),
-                    width: Some(LengthSpec::Px(100.0)),
-                    height: Some(LengthSpec::Px(20.0)),
-                    ..LayoutStyle::default()
-                },
-                children: Vec::new(),
-                text: None,
-            },
-        ],
-        text: None,
-    };
-    let boxes = box_map(&tree, 200.0, 80.0);
-    assert!(
-        (boxes["block"].x - 0.0).abs() < 0.5 && (boxes["block"].y - 0.0).abs() < 0.5,
-        "block formatting does not shrink beside floats, got {:?}",
-        boxes["block"]
-    );
-}
-
 #[test]
 fn writing_mode_vertical_rl_ifc_advances_inline_down_block_from_right() {
     let inline = |id: &str| StyleLayoutNode {
         id: id.into(),
         style: LayoutStyle {
-            display: Some(DisplaySpec::InlineBlock),
+            display: Some(DisplaySpec::InlineFlex),
             width: Some(LengthSpec::Px(20.0)),
             height: Some(LengthSpec::Px(40.0)),
             ..LayoutStyle::default()
@@ -3669,7 +3217,7 @@ fn writing_mode_vertical_rl_ifc_advances_inline_down_block_from_right() {
     let tree = StyleLayoutNode {
         id: "root".into(),
         style: LayoutStyle {
-            display: Some(DisplaySpec::Block),
+            display: None,
             width: Some(LengthSpec::Px(80.0)),
             height: Some(LengthSpec::Px(80.0)),
             writing_mode: Some(WritingModeSpec::VerticalRl),
@@ -3696,7 +3244,7 @@ fn writing_mode_vertical_lr_ifc_places_first_line_on_the_left() {
     let inline = |id: &str| StyleLayoutNode {
         id: id.into(),
         style: LayoutStyle {
-            display: Some(DisplaySpec::InlineBlock),
+            display: Some(DisplaySpec::InlineFlex),
             width: Some(LengthSpec::Px(20.0)),
             height: Some(LengthSpec::Px(40.0)),
             ..LayoutStyle::default()
@@ -3707,7 +3255,7 @@ fn writing_mode_vertical_lr_ifc_places_first_line_on_the_left() {
     let tree = StyleLayoutNode {
         id: "root".into(),
         style: LayoutStyle {
-            display: Some(DisplaySpec::Block),
+            display: None,
             width: Some(LengthSpec::Px(80.0)),
             height: Some(LengthSpec::Px(80.0)),
             writing_mode: Some(WritingModeSpec::VerticalLr),
@@ -3812,16 +3360,17 @@ fn rtl_grid_mirrors_column_order_and_justify_self() {
         children: Vec::new(),
         text: None,
     };
+    let mut root_style = LayoutStyle {
+        display: Some(DisplaySpec::Grid),
+        width: Some(LengthSpec::Px(200.0)),
+        height: Some(LengthSpec::Px(20.0)),
+        dir: Some(DirSpec::Rtl),
+        ..LayoutStyle::default()
+    };
+    root_style.grid.columns = Some(vec![GridTrack::Px(80.0), GridTrack::Px(120.0)]);
     let tree = StyleLayoutNode {
         id: "root".into(),
-        style: LayoutStyle {
-            display: Some(DisplaySpec::Grid),
-            width: Some(LengthSpec::Px(200.0)),
-            height: Some(LengthSpec::Px(20.0)),
-            grid_columns: Some(vec![GridTrack::Px(80.0), GridTrack::Px(120.0)]),
-            dir: Some(DirSpec::Rtl),
-            ..LayoutStyle::default()
-        },
+        style: root_style,
         children: vec![cell("a", AlignSpec::Start), cell("b", AlignSpec::Start)],
         text: None,
     };
@@ -3857,20 +3406,23 @@ fn a_vertical_grid_lays_columns_down_the_inline_axis_and_rows_from_the_right() {
         children: Vec::new(),
         text: None,
     };
-    let grid = |dir| StyleLayoutNode {
-        id: "root".into(),
-        style: LayoutStyle {
+    let grid = |dir| {
+        let mut style = LayoutStyle {
             display: Some(DisplaySpec::Grid),
             width: Some(LengthSpec::Px(100.0)),
             height: Some(LengthSpec::Px(200.0)),
             writing_mode: Some(WritingModeSpec::VerticalRl),
             dir: Some(dir),
-            grid_columns: Some(vec![GridTrack::Px(40.0), GridTrack::Px(60.0)]),
-            grid_rows: Some(vec![GridTrack::Px(20.0), GridTrack::Px(30.0)]),
             ..LayoutStyle::default()
-        },
-        children: vec![cell("a"), cell("b"), cell("c")],
-        text: None,
+        };
+        style.grid.columns = Some(vec![GridTrack::Px(40.0), GridTrack::Px(60.0)]);
+        style.grid.rows = Some(vec![GridTrack::Px(20.0), GridTrack::Px(30.0)]);
+        StyleLayoutNode {
+            id: "root".into(),
+            style,
+            children: vec![cell("a"), cell("b"), cell("c")],
+            text: None,
+        }
     };
     let near = |boxes: &HashMap<String, LayoutBox>, id: &str, expected: (f32, f32, f32, f32)| {
         let got = boxes[id];
@@ -4002,7 +3554,11 @@ fn rtl_grid_tracks_overflow_the_start_edge_instead_of_stacking() {
             display: Some(DisplaySpec::Grid),
             width: Some(LengthSpec::Px(300.0)),
             height: Some(LengthSpec::Px(20.0)),
-            grid_columns: Some(vec![GridTrack::Px(200.0), GridTrack::Px(200.0)]),
+            grid: nana_ui_core::GridStyle {
+                columns: Some(vec![GridTrack::Px(200.0), GridTrack::Px(200.0)]),
+                ..Default::default()
+            }
+            .into(),
             dir: Some(DirSpec::Rtl),
             ..LayoutStyle::default()
         },
@@ -4049,7 +3605,11 @@ fn rtl_grid_keeps_ltr_geometry_when_direction_is_default() {
             display: Some(DisplaySpec::Grid),
             width: Some(LengthSpec::Px(200.0)),
             height: Some(LengthSpec::Px(20.0)),
-            grid_columns: Some(vec![GridTrack::Px(80.0), GridTrack::Px(120.0)]),
+            grid: nana_ui_core::GridStyle {
+                columns: Some(vec![GridTrack::Px(80.0), GridTrack::Px(120.0)]),
+                ..Default::default()
+            }
+            .into(),
             ..LayoutStyle::default()
         },
         children: vec![cell("a"), cell("b")],
@@ -4141,7 +3701,7 @@ fn writing_mode_vertical_rtl_starts_the_inline_axis_at_the_bottom() {
     let inline = |id: &str| StyleLayoutNode {
         id: id.into(),
         style: LayoutStyle {
-            display: Some(DisplaySpec::InlineBlock),
+            display: Some(DisplaySpec::InlineFlex),
             width: Some(LengthSpec::Px(20.0)),
             height: Some(LengthSpec::Px(20.0)),
             ..LayoutStyle::default()
@@ -4149,10 +3709,10 @@ fn writing_mode_vertical_rtl_starts_the_inline_axis_at_the_bottom() {
         children: Vec::new(),
         text: None,
     };
-    let container = |display, direction| StyleLayoutNode {
+    let container = |display: Option<DisplaySpec>, direction| StyleLayoutNode {
         id: "root".into(),
         style: LayoutStyle {
-            display: Some(display),
+            display,
             direction,
             width: Some(LengthSpec::Px(80.0)),
             height: Some(LengthSpec::Px(80.0)),
@@ -4165,13 +3725,10 @@ fn writing_mode_vertical_rtl_starts_the_inline_axis_at_the_bottom() {
         text: None,
     };
     for (what, tree) in [
-        (
-            "inline formatting context",
-            container(DisplaySpec::Block, None),
-        ),
+        ("inline formatting context", container(None, None)),
         (
             "flex-direction: row",
-            container(DisplaySpec::Flex, Some(FlexDirection::Row)),
+            container(Some(DisplaySpec::Flex), Some(FlexDirection::Row)),
         ),
     ] {
         let boxes = box_map(&tree, 80.0, 80.0);
@@ -4318,11 +3875,10 @@ fn writing_mode_vertical_shaper_keeps_horizontal_metrics() {
         &TextContent {
             value: "Hello".into(),
         },
-        &ComputedStyle {
-            writing_mode: WritingModeSpec::VerticalRl,
-            font_size: 10.0,
-            ..ComputedStyle::default()
-        },
+        &ComputedStyle::with(|s| {
+            s.writing_mode = WritingModeSpec::VerticalRl;
+            s.font_size = 10.0;
+        }),
         crate::TextShapeConstraints::default(),
     );
     assert!(
@@ -4425,10 +3981,14 @@ fn named_line_nth_uses_second_foo() {
         id: "cell".into(),
         style: LayoutStyle {
             height: Some(LengthSpec::Px(40.0)),
-            grid_placement: GridPlacement {
-                column_start: GridLine::NthName("foo".into(), 2),
-                column_end: GridLine::Name("foo".into()),
-                ..GridPlacement::default()
+            grid: nana_ui_core::GridStyle {
+                placement: GridPlacement {
+                    column_start: GridLine::NthName("foo".into(), 2),
+                    column_end: GridLine::Name("foo".into()),
+                    ..GridPlacement::default()
+                }
+                .into(),
+                ..Default::default()
             }
             .into(),
             ..LayoutStyle::default()
@@ -4442,12 +4002,16 @@ fn named_line_nth_uses_second_foo() {
             display: Some(DisplaySpec::Grid),
             width: Some(LengthSpec::Px(200.0)),
             height: Some(LengthSpec::Px(40.0)),
-            grid_columns: Some(vec![GridTrack::Px(80.0), GridTrack::Px(120.0)]),
-            grid_column_line_names: Some(vec![
-                vec!["foo".into()],
-                vec!["foo".into()],
-                vec!["foo".into()],
-            ]),
+            grid: nana_ui_core::GridStyle {
+                columns: Some(vec![GridTrack::Px(80.0), GridTrack::Px(120.0)]),
+                column_line_names: Some(vec![
+                    vec!["foo".into()],
+                    vec!["foo".into()],
+                    vec!["foo".into()],
+                ]),
+                ..Default::default()
+            }
+            .into(),
             ..LayoutStyle::default()
         },
         children: vec![item],
@@ -4467,10 +4031,14 @@ fn auto_fill_nth_named_line_uses_expanded_copies() {
         id: "cell".into(),
         style: LayoutStyle {
             height: Some(LengthSpec::Px(40.0)),
-            grid_placement: GridPlacement {
-                column_start: GridLine::NthName("mid".into(), 2),
-                column_end: GridLine::Name("mid".into()),
-                ..GridPlacement::default()
+            grid: nana_ui_core::GridStyle {
+                placement: GridPlacement {
+                    column_start: GridLine::NthName("mid".into(), 2),
+                    column_end: GridLine::Name("mid".into()),
+                    ..GridPlacement::default()
+                }
+                .into(),
+                ..Default::default()
             }
             .into(),
             ..LayoutStyle::default()
@@ -4484,18 +4052,22 @@ fn auto_fill_nth_named_line_uses_expanded_copies() {
             display: Some(DisplaySpec::Grid),
             width: Some(LengthSpec::Px(240.0)),
             height: Some(LengthSpec::Px(40.0)),
-            grid_columns_repeat: Some(
-                GridRepeatAuto {
-                    kind: GridTrackListUnsupported::RepeatAutoFill,
-                    tracks: vec![GridTrack::Px(80.0)],
-                    pattern_line_names: vec![vec!["mid".into()], Vec::new()],
-                    ..Default::default()
-                }
-                .into(),
-            ),
-            // Pattern stored once — engine must expand, not resolve mid 2
-            // against this single copy (which would miss and auto-place at 0).
-            grid_column_line_names: Some(vec![vec!["mid".into()], Vec::new()]),
+            grid: nana_ui_core::GridStyle {
+                columns_repeat: Some(
+                    GridRepeatAuto {
+                        kind: GridTrackListUnsupported::RepeatAutoFill,
+                        tracks: vec![GridTrack::Px(80.0)],
+                        pattern_line_names: vec![vec!["mid".into()], Vec::new()],
+                        ..Default::default()
+                    }
+                    .into(),
+                ),
+                // Pattern stored once — engine must expand, not resolve mid 2
+                // against this single copy (which would miss and auto-place at 0).
+                column_line_names: Some(vec![vec!["mid".into()], Vec::new()]),
+                ..Default::default()
+            }
+            .into(),
             ..LayoutStyle::default()
         },
         children: vec![item],
@@ -4668,7 +4240,11 @@ fn spacing_grid_padding_and_margin_use_final_cell() {
                 display: Some(DisplaySpec::Grid),
                 width: Some(LengthSpec::Px(300.0)),
                 height: Some(LengthSpec::Px(100.0)),
-                grid_columns: Some(vec![GridTrack::Px(100.0), GridTrack::Px(200.0)]),
+                grid: nana_ui_core::GridStyle {
+                    columns: Some(vec![GridTrack::Px(100.0), GridTrack::Px(200.0)]),
+                    ..Default::default()
+                }
+                .into(),
                 ..Default::default()
             },
         ),
@@ -4767,7 +4343,11 @@ fn spacing_grid_content_box_keeps_padding_in_border_size() {
                 display: Some(DisplaySpec::Grid),
                 width: Some(LengthSpec::Px(200.0)),
                 height: Some(LengthSpec::Px(100.0)),
-                grid_columns: Some(vec![GridTrack::Px(200.0)]),
+                grid: nana_ui_core::GridStyle {
+                    columns: Some(vec![GridTrack::Px(200.0)]),
+                    ..Default::default()
+                }
+                .into(),
                 ..Default::default()
             },
         ),
@@ -4794,7 +4374,6 @@ fn lazy_layout_input_avoids_a_single_item_projection_batch() {
     queue.create(id(1), DocumentId::new(1).unwrap(), NodeKind::Text);
     world.commit(queue).unwrap();
     let expected = world.layout_inputs(&[id(1)]).unwrap().pop().unwrap();
-    let before = world.last_work_counters().allocations;
     let mut inputs = LayoutInputMap::new(&world);
     let matches = |view: &PassInput<'_>| {
         **view.children == *expected.children
@@ -4807,8 +4386,6 @@ fn lazy_layout_input_avoids_a_single_item_projection_batch() {
     assert!(inputs.get(id(1)).unwrap().is_some_and(matches));
     assert!(inputs.get(id(2)).unwrap().is_none());
     assert_eq!(inputs.materialized, 1);
-    // This counter covers projection output batches, not the map's own storage.
-    assert_eq!(world.last_work_counters().allocations, before);
 }
 
 // ---------------------------------------------------------------------------
@@ -5747,8 +5324,7 @@ fn a_patched_measurement_retires_the_facts_measured_before_it() {
     let container_facts = |retained: &RetainedLayoutCache| {
         retained.documents[&document]
             .intrinsic_metrics
-            .by_content
-            .contains_key(&id(2).get())
+            .contains_content(id(2).get())
     };
     // The first scoped pass measures the container's rows and records its
     // plans and facts; the second patches the plan.
@@ -6113,7 +5689,11 @@ fn container_that_only_moves(position: PositionSpec) {
         LayoutStyle {
             display: Some(DisplaySpec::Grid),
             width: Some(LengthSpec::Px(100.0)),
-            grid_columns: Some(vec![GridTrack::Px(40.0), GridTrack::Px(60.0)]),
+            grid: nana_ui_core::GridStyle {
+                columns: Some(vec![GridTrack::Px(40.0), GridTrack::Px(60.0)]),
+                ..Default::default()
+            }
+            .into(),
             ..LayoutStyle::default()
         },
     );
@@ -6445,7 +6025,11 @@ fn grid_cell_intrinsic_change_does_not_measure_unaffected_cells() {
     let container = LayoutStyle {
         display: Some(DisplaySpec::Grid),
         width: Some(LengthSpec::Px(180.0)),
-        grid_columns: Some(vec![GridTrack::Auto, GridTrack::Auto, GridTrack::Auto]),
+        grid: nana_ui_core::GridStyle {
+            columns: Some(vec![GridTrack::Auto, GridTrack::Auto, GridTrack::Auto]),
+            ..Default::default()
+        }
+        .into(),
         align_items: AlignSpec::Start,
         justify_items: Some(AlignSpec::Start),
         justify_content: JustifySpec::Start,
@@ -6765,118 +6349,6 @@ fn flipping_a_container_to_a_row_remeasures_children_that_depend_on_the_directio
         column_box,
         "the child's measurement must actually depend on the parent direction, \
          or this test cannot detect a plan that ignores it"
-    );
-}
-
-/// `display:contents` splices a child's own children into its parent's flow
-/// list, so the parent's measurement is a function of a grandchild list that
-/// neither plan records: the plans index their entries by DIRECT child id.
-///
-/// The edit that proves the refusal to cache such a container is load-bearing
-/// is a change to a GRANDCHILD. It resizes what the container actually
-/// measures while every direct child id, and every direct child's style, stays
-/// byte-identical -- so the per-child checks have nothing to catch it with, and
-/// only declining the plan outright is correct. (Flipping the spliced child
-/// itself would be caught by the ordinary style compare, and proves nothing
-/// about this guard.)
-#[test]
-fn a_display_contents_child_keeps_its_container_off_the_cached_plans() {
-    let viewport = LayoutViewport::new(320.0, 600.0);
-    let hug = LayoutStyle {
-        width: Some(LengthSpec::Px(300.0)),
-        height: None,
-        direction: Some(FlexDirection::Column),
-        ..LayoutStyle::default()
-    };
-    let leaf = |height: f32| LayoutStyle {
-        width: Some(LengthSpec::Px(60.0)),
-        height: Some(LengthSpec::Px(height)),
-        ..LayoutStyle::default()
-    };
-    // Padding so unboxing actually changes the container's content height: as
-    // `contents` the grandchildren stack bare, as a block the padding counts.
-    let wrapper = |display: Option<DisplaySpec>| LayoutStyle {
-        display,
-        padding: Some(LengthSpec::Px(12.0)),
-        box_sizing: BoxSizing::ContentBox,
-        ..LayoutStyle::default()
-    };
-    let (mut world, document) = hugging_container_world(
-        &[
-            (3, leaf(20.0), vec![]),
-            (
-                4,
-                wrapper(Some(DisplaySpec::Contents)),
-                vec![(6, leaf(20.0)), (7, leaf(20.0))],
-            ),
-            (5, leaf(20.0), vec![]),
-        ],
-        hug,
-    );
-    let mut retained = RetainedLayoutCache::default();
-    let emitted = RuntimeLayoutEngine
-        .layout_document_with_frontier(&world, document, viewport, &[], &mut retained, true)
-        .unwrap();
-    write_changed_boxes(&mut world, &emitted);
-    let _ = world.take_system_work();
-    prime_measure_plans(&mut world, document, viewport, &mut retained, id(3));
-    let spliced = retained.documents[&document].page_boxes(&world)[&id(2)];
-
-    // A grandchild grows. Every DIRECT child of the container keeps its style
-    // and its id, so the per-child checks see nothing at all.
-    let mut queue = MutationQueue::new();
-    queue.set_style(
-        id(6),
-        NodeStyle {
-            layout: Arc::new(leaf(53.0)),
-            ..NodeStyle::default()
-        },
-    );
-    world.commit(queue).unwrap();
-    let before = world.node_style(id(4)).unwrap().layout.clone();
-    scoped_step_matches_full(
-        &mut world,
-        document,
-        viewport,
-        &mut retained,
-        "grandchild spliced in by display:contents grew",
-    );
-    assert!(
-        Arc::ptr_eq(&before, &world.node_style(id(4)).unwrap().layout),
-        "the spliced child's own style must be untouched, or this test is not \
-         exercising the case the direct-child entries cannot see"
-    );
-    assert_ne!(
-        retained.documents[&document].page_boxes(&world)[&id(2)].height,
-        spliced.height,
-        "the grandchild must actually move the container's height, or this test \
-         cannot detect a plan that cached across it"
-    );
-
-    // And the ordinary case on the same tree: the spliced child becomes a real
-    // box, which changes what the container measures through the flow list.
-    let spliced = retained.documents[&document].page_boxes(&world)[&id(2)];
-    let mut queue = MutationQueue::new();
-    queue.set_style(
-        id(4),
-        NodeStyle {
-            layout: Arc::new(wrapper(None)),
-            ..NodeStyle::default()
-        },
-    );
-    world.commit(queue).unwrap();
-    scoped_step_matches_full(
-        &mut world,
-        document,
-        viewport,
-        &mut retained,
-        "display:contents child became a box",
-    );
-    assert_ne!(
-        retained.documents[&document].page_boxes(&world)[&id(2)].height,
-        spliced.height,
-        "unboxing must change the container's own height, or this test cannot \
-         detect a plan that cached across it"
     );
 }
 
@@ -7212,7 +6684,7 @@ fn constrained_auto_height_contains_wrapped_markdown_and_flow_actions() {
             None,
         ),
         (
-            LengthSpec::Min2(
+            LengthSpec::min2(
                 nana_ui_core::LengthAtom::Percent(76.0),
                 nana_ui_core::LengthAtom::Px(620.0),
             ),
@@ -7353,12 +6825,16 @@ fn an_upright_vertical_box_lays_out_left_to_right() {
         let tree = StyleLayoutNode {
             id: "root".into(),
             style: LayoutStyle {
-                display: Some(DisplaySpec::Block),
+                display: None,
                 width: Some(LengthSpec::Px(200.0)),
                 height: Some(LengthSpec::Px(200.0)),
                 writing_mode: Some(WritingModeSpec::VerticalRl),
                 dir: Some(DirSpec::Rtl),
-                text_orientation: orientation,
+                text_ext: nana_ui_core::TextStyleExt {
+                    text_orientation: orientation,
+                    ..Default::default()
+                }
+                .into(),
                 ..LayoutStyle::default()
             },
             children: vec![StyleLayoutNode {
@@ -7403,7 +6879,10 @@ fn logical_edges_land_in_the_inherited_direction() {
         align_items: AlignSpec::Start,
         ..LayoutStyle::default()
     };
-    inner.logical_padding.set_start(Some(LengthSpec::Px(30.0)));
+    inner
+        .logical_edges
+        .padding
+        .set_start(Some(LengthSpec::Px(30.0)));
     inner.bake_logical_edges();
     assert_eq!(inner.padding_left, Some(LengthSpec::Px(30.0)));
     let tree = StyleLayoutNode {
@@ -7442,7 +6921,7 @@ fn an_inherited_writing_context_lays_out_like_a_declared_one() {
     let inline_block = |id: String| StyleLayoutNode {
         id,
         style: LayoutStyle {
-            display: Some(DisplaySpec::InlineBlock),
+            display: Some(DisplaySpec::InlineFlex),
             width: Some(LengthSpec::Px(30.0)),
             height: Some(LengthSpec::Px(20.0)),
             ..LayoutStyle::default()
@@ -7451,13 +6930,7 @@ fn an_inherited_writing_context_lays_out_like_a_declared_one() {
         text: None,
     };
     let containers: [(&str, LayoutStyle); 3] = [
-        (
-            "ifc",
-            LayoutStyle {
-                display: Some(DisplaySpec::Block),
-                ..LayoutStyle::default()
-            },
-        ),
+        ("ifc", LayoutStyle::default()),
         (
             "flex-wrap",
             LayoutStyle {
@@ -7472,7 +6945,11 @@ fn an_inherited_writing_context_lays_out_like_a_declared_one() {
             "grid",
             LayoutStyle {
                 display: Some(DisplaySpec::Grid),
-                grid_columns: Some(vec![GridTrack::Px(40.0), GridTrack::Px(40.0)]),
+                grid: nana_ui_core::GridStyle {
+                    columns: Some(vec![GridTrack::Px(40.0), GridTrack::Px(40.0)]),
+                    ..Default::default()
+                }
+                .into(),
                 ..LayoutStyle::default()
             },
         ),
@@ -7495,7 +6972,7 @@ fn an_inherited_writing_context_lays_out_like_a_declared_one() {
                     let tree = StyleLayoutNode {
                         id: "root".into(),
                         style: LayoutStyle {
-                            display: Some(DisplaySpec::Block),
+                            display: None,
                             width: Some(LengthSpec::Px(200.0)),
                             height: Some(LengthSpec::Px(200.0)),
                             writing_mode: Some(mode),
@@ -7522,60 +6999,6 @@ fn an_inherited_writing_context_lays_out_like_a_declared_one() {
                 }
             }
         }
-    }
-}
-
-/// A line that a float shortens does not shrink its items' percentage
-/// margins: they resolve against the container's inline size, like every
-/// other percentage edge (CSS Box Model §5), not against what the line has
-/// left.
-#[test]
-fn a_float_shortened_line_keeps_the_containers_percent_base() {
-    let layout = |display: DisplaySpec, margin: LengthSpec| {
-        let tree = StyleLayoutNode {
-            id: "root".into(),
-            style: LayoutStyle {
-                display: Some(DisplaySpec::Block),
-                width: Some(LengthSpec::Px(200.0)),
-                height: Some(LengthSpec::Px(100.0)),
-                ..LayoutStyle::default()
-            },
-            children: vec![
-                StyleLayoutNode {
-                    id: "float".into(),
-                    style: LayoutStyle {
-                        width: Some(LengthSpec::Px(50.0)),
-                        height: Some(LengthSpec::Px(40.0)),
-                        float: FloatSpec::Left,
-                        ..LayoutStyle::default()
-                    },
-                    children: Vec::new(),
-                    text: None,
-                },
-                StyleLayoutNode {
-                    id: "a".into(),
-                    style: LayoutStyle {
-                        display: Some(display),
-                        width: Some(LengthSpec::Px(30.0)),
-                        height: Some(LengthSpec::Px(20.0)),
-                        margin_left: Some(margin),
-                        ..LayoutStyle::default()
-                    },
-                    children: Vec::new(),
-                    text: None,
-                },
-            ],
-            text: None,
-        };
-        box_map(&tree, 200.0, 100.0)["a"]
-    };
-    for display in [DisplaySpec::InlineBlock, DisplaySpec::Block] {
-        let percent = layout(display, LengthSpec::Percent(10.0));
-        let px = layout(display, LengthSpec::Px(20.0));
-        assert_eq!(
-            percent, px,
-            "{display:?}: 10% of the 200px container is 20px"
-        );
     }
 }
 
@@ -7699,7 +7122,7 @@ fn issue199_inline_span_keeps_atomic_descendants_and_unboxes_only_real_blocks() 
     let atomic = StyleLayoutNode {
         id: "atom".into(),
         style: LayoutStyle {
-            display: Some(DisplaySpec::InlineBlock),
+            display: Some(DisplaySpec::InlineFlex),
             width: Some(LengthSpec::Px(40.0)),
             height: Some(LengthSpec::Px(20.0)),
             ..Default::default()
@@ -7719,7 +7142,7 @@ fn issue199_inline_span_keeps_atomic_descendants_and_unboxes_only_real_blocks() 
     let root = |child| StyleLayoutNode {
         id: "root".into(),
         style: LayoutStyle {
-            display: Some(DisplaySpec::Block),
+            display: None,
             width: Some(LengthSpec::Px(200.0)),
             ..Default::default()
         },
@@ -7733,7 +7156,7 @@ fn issue199_inline_span_keeps_atomic_descendants_and_unboxes_only_real_blocks() 
     );
     let mut block = atomic;
     block.id = "block".into();
-    block.style.display = Some(DisplaySpec::Block);
+    block.style.display = Some(DisplaySpec::Flex);
     let boxes = box_map(&root(span("outer", span("inner", block))), 200.0, 100.0);
     assert_eq!(boxes["block"].width, 40.0);
     assert_eq!(
@@ -7752,10 +7175,8 @@ fn a_pass_input_slot_stays_small() {
     assert!(std::mem::size_of::<Option<(StableNodeId, PassInput<'static>)>>() <= 56);
 }
 
-/// CSS block layout has no `align-items`: under `display: block`,
-/// `flow-root` or an unset `display` a block-level child whose width is
-/// `auto` fills the containing block less its margins, as CSS 2.1 §10.3.3
-/// and Taffy have it, though `align_items` is left at the Rust default
+/// Under an unset `display`, a block-level child whose width is `auto` fills
+/// the containing block less its margins, even when `align_items` is left at
 /// `Start`. A flex column aligns by `align_items` and keeps the child at its
 /// content width.
 #[test]
@@ -7771,7 +7192,7 @@ fn block_children_with_auto_width_fill_the_containing_block() {
         children: vec![StyleLayoutNode {
             id: format!("{id}-child"),
             style: LayoutStyle {
-                display: Some(DisplaySpec::Block),
+                display: None,
                 margin_left: Some(LengthSpec::Px(10.0)),
                 margin_right: Some(LengthSpec::Px(30.0)),
                 ..LayoutStyle::default()
@@ -7789,21 +7210,17 @@ fn block_children_with_auto_width_fill_the_containing_block() {
             ..LayoutStyle::default()
         },
         children: vec![
-            parent("block", Some(DisplaySpec::Block)),
-            parent("flow-root", Some(DisplaySpec::FlowRoot)),
             parent("unset", None),
             parent("flex", Some(DisplaySpec::Flex)),
         ],
         text: None,
     };
     let boxes = box_map(&tree, 800.0, 600.0);
-    for id in ["block", "flow-root", "unset"] {
-        let child = boxes[&format!("{id}-child")];
-        assert!(
-            (child.x - 10.0).abs() < 0.01 && (child.width - 360.0).abs() < 0.01,
-            "{id}: an auto-width block fills 400 less its margins, got {child:?}"
-        );
-    }
+    let child = boxes["unset-child"];
+    assert!(
+        (child.x - 10.0).abs() < 0.01 && (child.width - 360.0).abs() < 0.01,
+        "unset: an auto-width block fills 400 less its margins, got {child:?}"
+    );
     let child = boxes["flex-child"];
     assert!(
         (child.width - 50.0).abs() < 0.01,

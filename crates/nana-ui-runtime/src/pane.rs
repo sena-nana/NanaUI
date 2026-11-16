@@ -178,8 +178,8 @@ impl PaneChrome {
                 },
             );
         }
-        if world.standard_visual(id).is_some() {
-            mutations.set_standard_visual(id, None);
+        if world.widget_visual_ref(id).is_some() {
+            mutations.set_widget_visual_handle(id, None);
         }
         project_common(
             id,
@@ -267,6 +267,8 @@ impl Default for PaneChrome {
 }
 
 impl ComponentView for PaneChrome {
+    const TYPE_ID: Option<&'static str> = Some(crate::component_descriptors::PANE_CHROME.type_id);
+
     const BEHAVIOR: crate::TypeBehavior<Self> = crate::TypeBehavior {
         slot_assembler: Some(AppContext::assemble_pane_chrome),
         ..crate::TypeBehavior::NONE
@@ -301,8 +303,8 @@ impl ComponentView for PaneChrome {
                 },
             );
         }
-        if world.standard_visual(id).is_some() {
-            mutations.set_standard_visual(id, None);
+        if world.widget_visual_ref(id).is_some() {
+            mutations.set_widget_visual_handle(id, None);
         }
         project_common(
             id,
@@ -346,8 +348,8 @@ fn project_chrome_action(
             },
         );
     }
-    if world.standard_visual(id).is_some() {
-        mutations.set_standard_visual(id, None);
+    if world.widget_visual_ref(id).is_some() {
+        mutations.set_widget_visual_handle(id, None);
     }
     let mut style = NodeStyle::default();
     style.foreground = Some(SemanticColorRole::Accent);
@@ -748,8 +750,8 @@ impl ComponentView for PaneTree {
                 },
             );
         }
-        if world.standard_visual(id).is_some() {
-            mutations.set_standard_visual(id, None);
+        if world.widget_visual_ref(id).is_some() {
+            mutations.set_widget_visual_handle(id, None);
         }
         project_common(
             id,
@@ -805,7 +807,7 @@ fn project_leaf_slot(id: StableNodeId, world: &UiWorld, mutations: &mut Mutation
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{AppContext, DocumentId, StandardVisual};
+    use crate::{AppContext, DocumentId};
 
     fn document() -> DocumentId {
         DocumentId::new(1).unwrap()
@@ -1027,8 +1029,10 @@ mod tests {
             )
             .unwrap();
         assert_eq!(
-            context.world().standard_visual(action),
-            Some(StandardVisual::Icon {
+            context
+                .world()
+                .widget_visual_as::<crate::IconVisual>(action),
+            Some(&crate::IconVisual {
                 icon: Icon::Close,
                 size: ControlSize::Small.icon_size(),
                 tooltip: None,
@@ -1094,7 +1098,10 @@ mod tests {
             .unwrap();
         assert_eq!(context.world().text(action), Some(""));
         assert!(
-            matches!(context.world().standard_visual(action), Some(StandardVisual::Icon { icon, .. }) if icon == Icon::Close)
+            context
+                .world()
+                .widget_visual_as::<crate::IconVisual>(action)
+                .is_some_and(|visual| visual.icon == Icon::Close)
         );
         assert_eq!(
             context
@@ -1111,7 +1118,7 @@ mod tests {
             })
             .unwrap();
         assert_eq!(context.world().text(action), Some("Close this pane"));
-        assert!(context.world().standard_visual(action).is_none());
+        assert!(context.world().widget_visual_ref(action).is_none());
     }
 }
 

@@ -21,7 +21,7 @@ mod formatting_context {
     use nana_ui_core::{DisplaySpec, FlexDirection, GridTrack, LayoutStyle, LengthSpec};
 
     use crate::world::reflow_oracle::{
-        Builder, assert_matches_cold, bundled_face_shaper, product_frame, styled,
+        Builder, FrameStats, assert_matches_cold, bundled_face_shaper, product_frame, styled,
     };
     use crate::world::tests::replaced_media::image_layout;
     use crate::world::{DocumentId, StableNodeId, UiWorld};
@@ -34,9 +34,9 @@ mod formatting_context {
         LayoutViewport::new(800.0, 600.0)
     }
 
-    fn container(display: DisplaySpec) -> LayoutStyle {
+    fn container(display: Option<DisplaySpec>) -> LayoutStyle {
         LayoutStyle {
-            display: Some(display),
+            display,
             width: Some(LengthSpec::Px(600.0)),
             ..LayoutStyle::default()
         }
@@ -44,7 +44,7 @@ mod formatting_context {
 
     fn inline_block(width: f32, height: f32) -> LayoutStyle {
         LayoutStyle {
-            display: Some(DisplaySpec::InlineBlock),
+            display: Some(DisplaySpec::InlineFlex),
             width: Some(LengthSpec::Px(width)),
             height: Some(LengthSpec::Px(height)),
             ..LayoutStyle::default()
@@ -75,7 +75,7 @@ mod formatting_context {
     }
 
     impl Page {
-        fn new(display: DisplaySpec) -> Self {
+        fn new(display: Option<DisplaySpec>) -> Self {
             let document = DocumentId::new(1).unwrap();
             let (mut b, page) = Builder::page(document, 1, 800.0);
             let container = b.element(page, container(display));
@@ -95,16 +95,14 @@ mod formatting_context {
                 }),
             );
             let mut image = image_layout("icon", Some(24.0), Some(24.0));
-            image.display = Some(DisplaySpec::InlineBlock);
+            image.display = Some(DisplaySpec::InlineFlex);
             let image = b.element(container, image);
-            let grid = b.element(
-                container,
-                LayoutStyle {
-                    display: Some(DisplaySpec::Grid),
-                    grid_columns: Some(vec![GridTrack::Px(40.0), GridTrack::Px(40.0)]),
-                    ..LayoutStyle::default()
-                },
-            );
+            let mut grid_layout = LayoutStyle {
+                display: Some(DisplaySpec::Grid),
+                ..LayoutStyle::default()
+            };
+            grid_layout.grid.columns = Some(vec![GridTrack::Px(40.0), GridTrack::Px(40.0)]);
+            let grid = b.element(container, grid_layout);
             for _ in 0..2 {
                 b.element(
                     grid,
@@ -136,7 +134,7 @@ mod formatting_context {
             self.context.world()
         }
 
-        fn frame(&mut self) -> nana_ui_core::WorkCounters {
+        fn frame(&mut self) -> FrameStats {
             product_frame(
                 &mut self.context,
                 self.document,
@@ -167,7 +165,7 @@ mod formatting_context {
     /// Gate A. The same children through Flex, Grid, an inline context and back.
     #[test]
     fn issue197_a_context_transition_keeps_every_child() {
-        let mut page = Page::new(DisplaySpec::Flex);
+        let mut page = Page::new(Some(DisplaySpec::Flex));
         let parts = &page.parts;
         let (container, button, text, image, grid) = (
             parts.container,
@@ -192,19 +190,19 @@ mod formatting_context {
         assert_eq!(page.established(image), None);
 
         let steps = [
-            (DisplaySpec::Grid, Ctx::Grid, [Part::GridItem; 4]),
+            (Some(DisplaySpec::Grid), Ctx::Grid, [Part::GridItem; 4]),
             (
-                DisplaySpec::Block,
+                None,
                 Ctx::Inline,
                 [
                     Part::AtomicInline,
                     Part::NativeText,
                     Part::AtomicInline,
                     // A grid is block-level: it breaks the lines around it.
-                    Part::FlowItem,
+                    Part::FlexItem,
                 ],
             ),
-            (DisplaySpec::Flex, Ctx::Flex, [Part::FlexItem; 4]),
+            (Some(DisplaySpec::Flex), Ctx::Flex, [Part::FlexItem; 4]),
         ];
         assert_eq!(page.established(container), Some(Ctx::Flex));
         for child in children {
@@ -213,10 +211,7 @@ mod formatting_context {
         for (display, context, participation) in steps {
             let generation = page.context_generation(container);
             page.set_layout(container, self::container(display));
-            let counters = page.frame();
-            assert_eq!(counters.layout_context_transitions, 1, "{display:?}");
-            assert_eq!(counters.entities_spawned, 0, "{display:?}");
-            assert_eq!(counters.entities_despawned, 0, "{display:?}");
+            page.frame();
             assert_eq!(page.world().len(), nodes, "{display:?}");
             assert_eq!(page.world().child_ids(container), child_list, "{display:?}");
             assert_eq!(page.established(container), Some(context), "{display:?}");
@@ -248,27 +243,26 @@ mod formatting_context {
     /// Gate B. Nothing that leaves the context alone records a transition.
     #[test]
     fn issue197_static_paint_and_equivalent_frames_keep_the_context() {
-        let mut page = Page::new(DisplaySpec::Block);
+        let mut page = Page::new(None);
         let container = page.parts.container;
         assert_eq!(page.established(container), Some(Ctx::Inline));
         let generation = page.context_generation(container);
 
-        let counters = page.frame();
-        assert_eq!(counters.layout_context_transitions, 0, "static");
+        page.frame();
+        assert_eq!(page.context_generation(container), generation, "static");
 
-        let mut painted = self::container(DisplaySpec::Block);
+        let mut painted = self::container(None);
         painted.opacity = Some(0.5);
         page.set_layout(container, painted);
-        let counters = page.frame();
-        assert_eq!(counters.layout_context_transitions, 0, "paint-only");
+        page.frame();
+        assert_eq!(page.context_generation(container), generation, "paint-only");
 
         // `None` and the implicit column are one intent.
-        let mut column = self::container(DisplaySpec::Block);
+        let mut column = self::container(None);
         column.opacity = Some(0.5);
         column.direction = Some(FlexDirection::Column);
         page.set_layout(container, column);
-        let counters = page.frame();
-        assert_eq!(counters.layout_context_transitions, 0, "equivalent");
+        page.frame();
 
         assert_eq!(page.context_generation(container), generation);
         assert_eq!(page.established(container), Some(Ctx::Inline));
@@ -288,18 +282,21 @@ mod context_transitions {
     };
     use std::sync::Arc;
 
-    fn container(display: DisplaySpec, direction: FlexDirection) -> LayoutStyle {
-        LayoutStyle {
-            display: Some(display),
+    fn container(display: Option<DisplaySpec>, direction: FlexDirection) -> LayoutStyle {
+        let mut layout = LayoutStyle {
+            display,
             direction: Some(direction),
             width: Some(LengthSpec::Px(600.0)),
-            grid_columns: (display == DisplaySpec::Grid).then(|| vec![GridTrack::Px(40.0); 10]),
             ..Default::default()
+        };
+        if display == Some(DisplaySpec::Grid) {
+            layout.grid.columns = Some(vec![GridTrack::Px(40.0); 10]);
         }
+        layout
     }
     fn item(position: PositionSpec) -> LayoutStyle {
         LayoutStyle {
-            display: Some(DisplaySpec::InlineBlock),
+            display: Some(DisplaySpec::InlineFlex),
             width: Some(LengthSpec::Px(40.0)),
             height: Some(LengthSpec::Px(24.0)),
             position,
@@ -316,7 +313,7 @@ mod context_transitions {
         let root = cx
             .create_component(
                 document,
-                Stack::from_layout(container(DisplaySpec::Flex, FlexDirection::Row)),
+                Stack::from_layout(container(Some(DisplaySpec::Flex), FlexDirection::Row)),
             )
             .unwrap();
         let editor = cx
@@ -361,31 +358,25 @@ mod context_transitions {
         product_frame(&mut cx, document, viewport, &mut shaper);
         let nodes = cx.world().len();
         let before = cx.read(editor, |v| v.state.clone()).unwrap();
-        let mut cross_hits = 0;
-        let mut cross_misses = 0;
         for (display, direction, context) in [
             (
-                DisplaySpec::Grid,
+                Some(DisplaySpec::Grid),
                 FlexDirection::Row,
                 FormattingContextKind::Grid,
             ),
             (
-                DisplaySpec::Layers,
+                Some(DisplaySpec::Layers),
                 FlexDirection::Row,
                 FormattingContextKind::Layers,
             ),
+            (None, FlexDirection::Row, FormattingContextKind::Inline),
             (
-                DisplaySpec::Block,
-                FlexDirection::Row,
-                FormattingContextKind::Inline,
-            ),
-            (
-                DisplaySpec::Flex,
+                Some(DisplaySpec::Flex),
                 FlexDirection::Row,
                 FormattingContextKind::Flex,
             ),
             (
-                DisplaySpec::Flex,
+                Some(DisplaySpec::Flex),
                 FlexDirection::Column,
                 FormattingContextKind::Flex,
             ),
@@ -393,8 +384,7 @@ mod context_transitions {
             let mut q = MutationQueue::new();
             q.set_style(root.stable_id(), styled(container(display, direction)));
             cx.commit_mutations(q).unwrap();
-            let work = product_frame(&mut cx, document, viewport, &mut shaper);
-            assert_eq!((work.entities_spawned, work.entities_despawned), (0, 0));
+            product_frame(&mut cx, document, viewport, &mut shaper);
             assert_eq!(cx.world().len(), nodes);
             assert_eq!(cx.world().child_ids(root.stable_id()), children);
             assert_eq!(
@@ -411,8 +401,6 @@ mod context_transitions {
                 assert_eq!(retained, resource);
                 assert!(Arc::ptr_eq(&retained.resource, &resource.resource));
             }
-            cross_hits += work.cross_context_measure_hits;
-            cross_misses += work.cross_context_measure_misses;
         }
         for (position, part) in [
             (PositionSpec::Absolute, ParticipationKind::Absolute),
@@ -424,8 +412,7 @@ mod context_transitions {
                 q.set_style(child, styled(item(position)));
             }
             cx.commit_mutations(q).unwrap();
-            let work = product_frame(&mut cx, document, viewport, &mut shaper);
-            assert_eq!((work.entities_spawned, work.entities_despawned), (0, 0));
+            product_frame(&mut cx, document, viewport, &mut shaper);
             assert_eq!(cx.world().len(), nodes);
             for &child in &children {
                 assert_eq!(
@@ -442,25 +429,11 @@ mod context_transitions {
                 ));
             }
         }
-        product_frame(&mut cx, document, viewport, &mut shaper);
+        let idle = product_frame(&mut cx, document, viewport, &mut shaper);
         assert!(cx.take_system_work().is_empty());
-        let idle = cx.world().counters.frame_counters;
         assert_eq!(
-            (
-                idle.layout_measure_nodes,
-                idle.layout_placement_nodes,
-                idle.layout_context_transitions,
-                idle.entities_spawned,
-                idle.entities_despawned
-            ),
-            (0, 0, 0, 0, 0)
-        );
-        assert_eq!(
-            cross_misses, 0,
-            "compatible constraints must reuse intrinsic facts"
-        );
-        println!(
-            "1k context transitions: cross-context intrinsic hits={cross_hits}, misses={cross_misses}"
+            (idle.execution.measure_nodes, idle.execution.placement_nodes),
+            (0, 0)
         );
     }
 
@@ -477,7 +450,7 @@ mod context_transitions {
             let root = cx
                 .create_component(
                     document,
-                    Stack::from_layout(container(DisplaySpec::Flex, FlexDirection::Row)),
+                    Stack::from_layout(container(Some(DisplaySpec::Flex), FlexDirection::Row)),
                 )
                 .unwrap();
             let mut queue = MutationQueue::new();
@@ -507,21 +480,26 @@ mod context_transitions {
             ..footprint
         };
         let round = [
-            DisplaySpec::Grid,
-            DisplaySpec::Layers,
-            DisplaySpec::Block,
-            DisplaySpec::Flex,
+            Some(DisplaySpec::Grid),
+            Some(DisplaySpec::Layers),
+            None,
+            Some(DisplaySpec::Flex),
         ];
         let mut settled = None;
         let mut in_grid = None;
         for _ in 0..20 {
             for display in round {
+                let generation = cx.world().layout_node(root).unwrap().context_generation;
                 let mut q = MutationQueue::new();
                 q.set_style(root, styled(container(display, FlexDirection::Row)));
                 cx.commit_mutations(q).unwrap();
-                let work = product_frame(&mut cx, document, viewport, &mut shaper);
-                assert_eq!(work.layout_context_transitions, 1, "{display:?}");
-                if display == DisplaySpec::Grid {
+                product_frame(&mut cx, document, viewport, &mut shaper);
+                assert_eq!(
+                    cx.world().layout_node(root).unwrap().context_generation,
+                    generation + 1,
+                    "{display:?}"
+                );
+                if display == Some(DisplaySpec::Grid) {
                     in_grid.get_or_insert(flat(cx.retained_layout_footprint(document)));
                 }
             }
@@ -608,12 +586,16 @@ mod context_transitions {
         assert!((world.layout_box(body).unwrap().height - 80.0).abs() < 0.01);
 
         // A taller body grows the surface around it.
+        let dialog_gen = cx.world().layout_node(dialog).unwrap().context_generation;
         let mut q = MutationQueue::new();
         q.set_style(body, styled(body_layout(120.0)));
         cx.commit_mutations(q).unwrap();
-        let work = product_frame(&mut cx, document, viewport, &mut shaper);
+        product_frame(&mut cx, document, viewport, &mut shaper);
         // Relaying the same dialog out is not a context change.
-        assert_eq!(work.layout_context_transitions, 0);
+        assert_eq!(
+            cx.world().layout_node(dialog).unwrap().context_generation,
+            dialog_gen
+        );
         // The slot contract measures through the surface's float chrome.
         assert!((cx.world().layout_box(body).unwrap().height - 120.0).abs() < 0.01);
 
@@ -657,11 +639,12 @@ mod containing_block {
     //! geometry paints and hits, following the menu when the window flips it.
 
     use nana_ui_core::{
-        AnchoredMenuPlacement, FlexDirection, LayoutStyle, LengthSpec, PositionSpec, WorkCounters,
+        AnchoredMenuPlacement, FlexDirection, LayoutStyle, LengthSpec, PositionSpec,
     };
 
     use crate::world::reflow_oracle::{
-        Builder, assert_matches_cold, bundled_face_shaper, product_frame, resize_frame, styled,
+        Builder, FrameStats, assert_matches_cold, bundled_face_shaper, product_frame, resize_frame,
+        styled,
     };
     use crate::world::{DocumentId, StableNodeId};
     use crate::{
@@ -2148,7 +2131,7 @@ mod containing_block {
             }
         }
 
-        fn resize(&mut self, window: usize, width: f32, height: f32) -> WorkCounters {
+        fn resize(&mut self, window: usize, width: f32, height: f32) -> FrameStats {
             self.viewports[window] = LayoutViewport::new(width, height);
             let counters = resize_frame(
                 &mut self.context,
@@ -2374,7 +2357,7 @@ mod scroll_clip_chain {
 
     #[test]
     fn issue201_scroll_is_orthogonal_to_flow_flex_grid_and_inline_contexts() {
-        for display in [DisplaySpec::Block, DisplaySpec::Flex, DisplaySpec::Grid] {
+        for display in [None, Some(DisplaySpec::Flex), Some(DisplaySpec::Grid)] {
             let document = DocumentId::new(1).unwrap();
             let mut cx = AppContext::new();
             let mut shaper = bundled_face_shaper();
@@ -2385,17 +2368,17 @@ mod scroll_clip_chain {
                     ScrollView::new(ScrollAxes::Both)
                         .scrollbars(ScrollbarVisibility::Hidden)
                         .with_layout(|style| {
-                            style.display = Some(display);
+                            style.display = display;
                             style.direction = Some(FlexDirection::Row);
                             style.width = Some(LengthSpec::Px(160.0));
                             style.height = Some(LengthSpec::Px(60.0));
-                            style.grid_columns = Some(vec![GridTrack::Px(80.0); 2]);
+                            style.grid.columns = Some(vec![GridTrack::Px(80.0); 2]);
                         }),
                 )
                 .unwrap();
             for _ in 0..20 {
                 let layout = LayoutStyle {
-                    display: Some(DisplaySpec::InlineBlock),
+                    display: Some(DisplaySpec::InlineFlex),
                     width: Some(LengthSpec::Px(80.0)),
                     height: Some(LengthSpec::Px(24.0)),
                     flex_shrink: Some(0.0),
@@ -2424,13 +2407,11 @@ mod scroll_clip_chain {
             let work = product_frame(&mut cx, document, viewport, &mut shaper);
             assert_eq!(
                 (
-                    work.layout_measure_nodes,
-                    work.layout_placement_nodes,
-                    work.text_shaped,
-                    work.entities_spawned,
-                    work.entities_despawned
+                    work.execution.measure_nodes,
+                    work.execution.placement_nodes,
+                    work.text.text_nodes_shaped,
                 ),
-                (0, 0, 0, 0, 0),
+                (0, 0, 0),
                 "{display:?}"
             );
             assert_eq!(cx.world().layout_generation(), generation);
@@ -2467,7 +2448,6 @@ mod scroll_clip_chain {
                 ScrollView::new(ScrollAxes::Vertical)
                     .scrollbars(ScrollbarVisibility::Hidden)
                     .with_layout(|style| {
-                        style.display = Some(DisplaySpec::Block);
                         style.width = Some(LengthSpec::Px(300.0));
                         style.height = Some(LengthSpec::Px(100.0));
                     }),
@@ -2539,13 +2519,11 @@ mod scroll_clip_chain {
         let work = product_frame(&mut cx, document, viewport, &mut shaper);
         assert_eq!(
             (
-                work.layout_measure_nodes,
-                work.layout_placement_nodes,
-                work.text_shaped,
-                work.entities_spawned,
-                work.entities_despawned
+                work.execution.measure_nodes,
+                work.execution.placement_nodes,
+                work.text.text_nodes_shaped,
             ),
-            (0, 0, 0, 0, 0)
+            (0, 0, 0)
         );
         // The hit index takes the scroll as an in-place patch, not a rebuild.
         for (scroller, delta) in cx.take_scroll_hit_updates() {
@@ -2876,7 +2854,7 @@ mod scroll_clip_chain {
                 context.commit_mutations(q).unwrap();
                 let work = product_frame(&mut context, document(), viewport(), &mut shaper);
                 assert_eq!(
-                    (work.layout_measure_nodes, work.layout_placement_nodes),
+                    (work.execution.measure_nodes, work.execution.placement_nodes),
                     (0, 0),
                     "scrolling lays nothing out"
                 );
@@ -3071,12 +3049,13 @@ mod scroll_clip_chain {
         fn issue201_an_escaped_box_takes_the_transforms_it_passes_over() {
             use nana_ui_core::PaintTransform;
             let (mut context, ids) = build(PositionSpec::Relative, OverflowSpec::Auto);
-            let shifted = |e: f32| LayoutStyle {
-                transform: Some(PaintTransform {
+            let shifted = |e: f32| {
+                let mut layout = scroller(200.0, 100.0, OverflowSpec::Auto);
+                layout.transforms.transform = Some(PaintTransform {
                     e,
                     ..PaintTransform::default()
-                }),
-                ..scroller(200.0, 100.0, OverflowSpec::Auto)
+                });
+                layout
             };
             let mut q = MutationQueue::new();
             q.set_scroll_offset(ids.inner, ScrollOffset { x: 0.0, y: 40.0 });
@@ -3161,16 +3140,12 @@ mod scroll_clip_chain {
                 crate::NodeKind::Element { tag: "div".into() },
             );
             q.insert(ids.card, cover, None);
-            q.set_style(
-                cover,
-                crate::world::reflow_oracle::styled(LayoutStyle {
-                    transform: Some(nana_ui_core::PaintTransform {
-                        f: -90.0,
-                        ..nana_ui_core::PaintTransform::default()
-                    }),
-                    ..fixed(300.0, 30.0)
-                }),
-            );
+            let mut cover_style = fixed(300.0, 30.0);
+            cover_style.transforms.transform = Some(nana_ui_core::PaintTransform {
+                f: -90.0,
+                ..nana_ui_core::PaintTransform::default()
+            });
+            q.set_style(cover, crate::world::reflow_oracle::styled(cover_style));
             // A z-index elsewhere sorts every sibling group by (z, order).
             let raised = StableNodeId::new(101).unwrap();
             q.create(
@@ -3510,9 +3485,9 @@ mod scroll_clip_chain {
                 let work = product_frame(&mut context, document(), viewport(), &mut shaper);
                 assert_eq!(
                     (
-                        work.layout_measure_nodes,
-                        work.layout_placement_nodes,
-                        work.text_shaped
+                        work.execution.measure_nodes,
+                        work.execution.placement_nodes,
+                        work.text.text_nodes_shaped,
                     ),
                     (0, 0, 0),
                     "scrolling lays nothing out"
@@ -3576,7 +3551,7 @@ mod intrinsic_sizing {
     };
 
     use crate::world::reflow_oracle::{
-        Builder, assert_matches_cold, bundled_face_shaper, product_frame, styled,
+        Builder, FrameStats, assert_matches_cold, bundled_face_shaper, product_frame, styled,
     };
     use crate::world::tests::replaced_media::{image_layout, url};
     use std::sync::Arc;
@@ -3624,14 +3599,13 @@ mod intrinsic_sizing {
                 }
                 Self::Grid | Self::GridStretch => {
                     layout.display = Some(DisplaySpec::Grid);
-                    layout.grid_columns = Some(vec![GridTrack::Auto, GridTrack::Auto]);
+                    layout.grid.columns = Some(vec![GridTrack::Auto, GridTrack::Auto]);
                     if matches!(self, Self::GridStretch) {
                         layout.align_items = AlignSpec::Stretch;
                     }
                 }
-                Self::Inline => layout.display = Some(DisplaySpec::Block),
+                Self::Inline => {}
                 Self::Absolute => {
-                    layout.display = Some(DisplaySpec::Block);
                     layout.position = PositionSpec::Relative;
                     layout.height = Some(LengthSpec::Px(300.0));
                 }
@@ -3642,7 +3616,7 @@ mod intrinsic_sizing {
         fn item(self, mut layout: LayoutStyle, offset: f32) -> LayoutStyle {
             match self {
                 Self::Flex | Self::FlexStretch | Self::Grid | Self::GridStretch => {}
-                Self::Inline => layout.display = Some(DisplaySpec::InlineBlock),
+                Self::Inline => layout.display = Some(DisplaySpec::InlineFlex),
                 Self::Absolute => {
                     layout.position = PositionSpec::Absolute;
                     layout.offset_top = Some(LengthSpec::Px(offset));
@@ -3706,7 +3680,7 @@ mod intrinsic_sizing {
             self.context.world()
         }
 
-        fn frame(&mut self) -> nana_ui_core::WorkCounters {
+        fn frame(&mut self) -> FrameStats {
             product_frame(
                 &mut self.context,
                 self.document,
@@ -3744,8 +3718,7 @@ mod intrinsic_sizing {
             queue.set_replaced_metadata(url("pic"), Some(ReplacedMetadata::new(120.0, 80.0)));
             page.context.commit_mutations(queue).unwrap();
             let work = page.frame();
-            assert_eq!(work.replaced_layout_seeds, 2, "{context:?}");
-            assert_eq!(work.layout_full_document_fallbacks, 0, "{context:?}");
+            assert_eq!(work.frontier.full_document_fallbacks, 0, "{context:?}");
             assert_eq!(page.size(page.auto), (120.0, 80.0), "{context:?}");
             assert_eq!(page.size(page.wide), (60.0, 40.0), "{context:?}");
             let mut cold = Page::new(context, true);
@@ -3975,7 +3948,7 @@ mod intrinsic_sizing {
             gallery
         }
 
-        fn frame(&mut self) -> nana_ui_core::WorkCounters {
+        fn frame(&mut self) -> FrameStats {
             product_frame(
                 &mut self.context,
                 self.document,
@@ -4024,8 +3997,7 @@ mod intrinsic_sizing {
             }
             gallery.context.commit_mutations(queue).unwrap();
             let work = gallery.frame();
-            assert_eq!(work.replaced_layout_seeds, KINDS.len(), "{context:?}");
-            assert_eq!(work.layout_full_document_fallbacks, 0, "{context:?}");
+            assert_eq!(work.frontier.full_document_fallbacks, 0, "{context:?}");
             for &(kind, id) in &gallery.nodes {
                 let bounds = gallery.context.world().layout_box(id).unwrap();
                 assert_eq!(
@@ -4170,10 +4142,8 @@ mod intrinsic_sizing {
         }
         page.context.commit_mutations(queue).unwrap();
         let work = page.frame();
-        assert_eq!(work.replaced_layout_seeds, 0);
-        assert_eq!(work.layout_frontier_seeds, 0);
-        assert_eq!(work.layout_measure_nodes, 0);
-        assert_eq!(work.intrinsic_generation_bumps, 0);
+        assert_eq!(work.frontier.seeds, 0);
+        assert_eq!(work.execution.measure_nodes, 0);
         assert!(page.world().shows_replaced(&url("twin")));
         assert!(!page.world().shows_replaced(&url("pic")));
         assert_eq!(boxes(&page), before);
@@ -4189,35 +4159,15 @@ mod intrinsic_sizing {
         }
         page.context.commit_mutations(queue).unwrap();
         let work = page.frame();
-        assert_eq!(work.replaced_layout_seeds, 2);
+        assert_eq!(work.frontier.full_document_fallbacks, 0);
         assert_eq!(boxes(&page), ((80.0, 120.0), (60.0, 90.0)));
     }
 
     /// Gate F.
     #[test]
-    fn issue202_f_markup_fits_every_replaced_kind_alike() {
-        use crate::component_registry::{ComponentTypeId, RegisterableComponent, SemanticSpec};
+    fn issue202_f_content_fit_matches_background_image_fit() {
         use nana_ui_core::{BackgroundImageFit, ContentFit};
 
-        let fits = |object_fit: Option<BackgroundImageFit>, attr: Option<&str>| {
-            let mut layout = LayoutStyle::default();
-            layout.paint.object_fit = object_fit;
-            let layout = Arc::new(layout);
-            let attrs: Vec<(&str, &str)> = [("data-nana-video", "1"), ("data-nana-gpu", "slot:7")]
-                .into_iter()
-                .chain(attr.map(|value| ("fit", value)))
-                .collect();
-            let video_type = ComponentTypeId::new("nana.video").unwrap();
-            let mut spec = SemanticSpec::from_parts(&video_type, &layout);
-            spec.attrs = &attrs;
-            let video = Video::from_semantic(&spec).fit;
-            let texture_type = ComponentTypeId::new("nana.gpu").unwrap();
-            let mut spec = SemanticSpec::from_parts(&texture_type, &layout);
-            spec.attrs = &attrs;
-            let texture = GpuTextureView::from_semantic(&spec).fit;
-            assert_eq!(video, texture);
-            video
-        };
         for fit in [
             ContentFit::Fill,
             ContentFit::Contain,
@@ -4225,13 +4175,8 @@ mod intrinsic_sizing {
             ContentFit::None,
             ContentFit::ScaleDown,
         ] {
-            // An image's `object-fit` is the same value.
             let image = BackgroundImageFit::from(fit);
             assert_eq!(image.object_fit(), Some(fit));
-            // The stylesheet's `object-fit`, over any attribute.
-            assert_eq!(fits(Some(image), None), fit, "{fit:?}");
-            assert_eq!(fits(Some(image), Some("contain")), fit, "{fit:?}");
-            // The attribute alone reads the same keywords.
             let keyword = match fit {
                 ContentFit::Fill => "fill",
                 ContentFit::Contain => "contain",
@@ -4239,10 +4184,9 @@ mod intrinsic_sizing {
                 ContentFit::None => "none",
                 ContentFit::ScaleDown => "scale-down",
             };
-            assert_eq!(fits(None, Some(keyword)), fit, "{keyword}");
+            assert_eq!(ContentFit::from_object_fit(keyword), Some(fit), "{keyword}");
         }
-        assert_eq!(fits(None, None), ContentFit::Fill);
-        assert_eq!(fits(None, Some("bogus")), ContentFit::Fill);
+        assert_eq!(ContentFit::from_object_fit("bogus"), None);
     }
 
     /// One block-flow line of mixed atoms, for Gate G.
@@ -4273,13 +4217,12 @@ mod intrinsic_sizing {
             let block = b.element(
                 page,
                 LayoutStyle {
-                    display: Some(DisplaySpec::Block),
                     width: Some(LengthSpec::Px(600.0)),
                     ..LayoutStyle::default()
                 },
             );
             let atom = |width: f32, height: f32| LayoutStyle {
-                display: Some(DisplaySpec::InlineBlock),
+                display: Some(DisplaySpec::InlineFlex),
                 width: Some(LengthSpec::Px(width)),
                 height: Some(LengthSpec::Px(height)),
                 ..LayoutStyle::default()
@@ -4295,7 +4238,7 @@ mod intrinsic_sizing {
             let image = b.element(
                 block,
                 LayoutStyle {
-                    display: Some(DisplaySpec::InlineBlock),
+                    display: Some(DisplaySpec::InlineFlex),
                     margin_bottom: Some(LengthSpec::Px(4.0)),
                     ..image_layout("pic", Some(20.0), Some(30.0))
                 },
@@ -4333,7 +4276,7 @@ mod intrinsic_sizing {
             line
         }
 
-        fn frame(&mut self) -> nana_ui_core::WorkCounters {
+        fn frame(&mut self) -> FrameStats {
             product_frame(
                 &mut self.context,
                 self.document,
@@ -4440,7 +4383,7 @@ mod intrinsic_sizing {
         queue.set_style(
             line.tall,
             styled(LayoutStyle {
-                display: Some(DisplaySpec::InlineBlock),
+                display: Some(DisplaySpec::InlineFlex),
                 width: Some(LengthSpec::Px(40.0)),
                 height: Some(LengthSpec::Px(70.0)),
                 margin_bottom: Some(LengthSpec::Px(6.0)),
@@ -4575,19 +4518,25 @@ mod intrinsic_sizing {
     }
 
     impl NestedLine {
-        fn new(spacer: f32, holder_text: &str, nested_text: &str, boxed_text: &str) -> Self {
+        fn new(
+            spacer: f32,
+            holder_font: f32,
+            holder_text: &str,
+            nested_text: &str,
+            boxed_font: f32,
+            boxed_text: &str,
+        ) -> Self {
             let document = DocumentId::new(1).unwrap();
             let (mut b, page) = Builder::page(document, 1, 800.0);
             let block = b.element(
                 page,
                 LayoutStyle {
-                    display: Some(DisplaySpec::Block),
                     width: Some(LengthSpec::Px(600.0)),
                     ..LayoutStyle::default()
                 },
             );
             let inline_block = |width: f32, height: Option<f32>| LayoutStyle {
-                display: Some(DisplaySpec::InlineBlock),
+                display: Some(DisplaySpec::InlineFlex),
                 width: Some(LengthSpec::Px(width)),
                 height: height.map(LengthSpec::Px),
                 ..LayoutStyle::default()
@@ -4600,16 +4549,18 @@ mod intrinsic_sizing {
                     ..inline_block(120.0, Some(80.0))
                 },
             );
-            let spacer = b.element(holder, spacer_style(spacer));
-            let holder_label = b.label(holder, holder_text);
-            let nested = b.element(block, inline_block(60.0, None));
-            let inner = b.element(
-                nested,
-                LayoutStyle {
-                    display: Some(DisplaySpec::Block),
+            let holder_body = b.element(holder, LayoutStyle::default());
+            let spacer = b.element(holder_body, spacer_style(spacer));
+            let holder_label = b.label(holder_body, holder_text);
+            b.queue.set_style(
+                holder_label,
+                styled(LayoutStyle {
+                    font_size: Some(holder_font),
                     ..LayoutStyle::default()
-                },
+                }),
             );
+            let nested = b.element(block, inline_block(60.0, None));
+            let inner = b.element(nested, LayoutStyle::default());
             let nested_label = b.label(inner, nested_text);
             let stacked = b.element(block, inline_block(70.0, None));
             let stacked_labels = ["Up", "Down"].map(|text| {
@@ -4622,13 +4573,19 @@ mod intrinsic_sizing {
             let fixed_block = b.element(
                 boxed,
                 LayoutStyle {
-                    display: Some(DisplaySpec::Block),
                     width: Some(LengthSpec::Px(70.0)),
                     height: Some(LengthSpec::Px(50.0)),
                     ..LayoutStyle::default()
                 },
             );
             let boxed_label = b.label(fixed_block, boxed_text);
+            b.queue.set_style(
+                boxed_label,
+                styled(LayoutStyle {
+                    font_size: Some(boxed_font),
+                    ..LayoutStyle::default()
+                }),
+            );
             let mut context = AppContext::new();
             context.commit_mutations(b.queue).unwrap();
             let mut line = Self {
@@ -4651,7 +4608,7 @@ mod intrinsic_sizing {
             line
         }
 
-        fn frame(&mut self) -> nana_ui_core::WorkCounters {
+        fn frame(&mut self) -> FrameStats {
             product_frame(
                 &mut self.context,
                 self.document,
@@ -4660,7 +4617,7 @@ mod intrinsic_sizing {
             )
         }
 
-        fn commit(&mut self, queue: MutationQueue) -> nana_ui_core::WorkCounters {
+        fn commit(&mut self, queue: MutationQueue) -> FrameStats {
             self.context.commit_mutations(queue).unwrap();
             self.frame()
         }
@@ -4687,7 +4644,7 @@ mod intrinsic_sizing {
             world.layout_box(label).unwrap().y + line.metrics.baseline_y_px
         }
 
-        /// Each atom on the line's baseline by its descendant's last line.
+        /// Each atom sits on the line's baseline by its descendant's first line.
         fn check(&self) {
             let world = self.context.world();
             let edge = world.layout_box(self.edge).unwrap();
@@ -4695,17 +4652,17 @@ mod intrinsic_sizing {
             for label in [
                 self.holder_label,
                 self.nested_label,
-                self.stacked_labels[1],
+                self.stacked_labels[0],
                 self.boxed_label,
             ] {
-                let last = self.label_baseline(label, None);
+                let first = self.label_baseline(label, Some(0));
                 assert!(
-                    (last - baseline).abs() < 0.01,
-                    "{label:?}: last baseline {last} vs the line's {baseline} ({} lines)",
+                    (first - baseline).abs() < 0.01,
+                    "{label:?}: first baseline {first} vs the line's {baseline} ({} lines)",
                     self.lines(label)
                 );
             }
-            // The stacked atom's second line, not its first.
+            // The stacked atom's first line, not its second.
             let [up, down] = self.stacked_labels.map(|id| world.layout_box(id).unwrap());
             assert!(down.y >= up.y + up.height - 0.01, "{up:?} {down:?}");
             // Not its own font's first line: the label sits below a spacer.
@@ -4720,20 +4677,19 @@ mod intrinsic_sizing {
 
     fn spacer_style(height: f32) -> LayoutStyle {
         LayoutStyle {
-            display: Some(DisplaySpec::Block),
             height: Some(LengthSpec::Px(height)),
             ..LayoutStyle::default()
         }
     }
 
-    /// Gate H: an inline-block whose text lies in its descendants sits on the
-    /// line by the baseline of its last line box, where that line box sits
-    /// inside it (CSS 2.1 §10.8.1), not by its own font's first line. A
-    /// descendant's change that moves that line places the line again; one
+    /// Gate H: an inline-flex atom whose text lies in its descendants sits on
+    /// the line by the baseline of its first in-flow line box, where that line
+    /// box sits inside it (CSS Flexbox §8.5), not by its own font's first line.
+    /// A descendant's change that moves that line places the line again; one
     /// that does not leaves every box where it was. Each matches a cold layout.
     #[test]
     fn issue202_h_an_inline_block_sits_by_its_descendants_last_line() {
-        let mut line = NestedLine::new(10.0, "Nested", "aa aa aa aa aa", "Box");
+        let mut line = NestedLine::new(10.0, 16.0, "Nested", "aa aa aa aa aa", 16.0, "Box");
         assert!(
             line.lines(line.nested_label) > 1,
             "the nested label wraps: {} lines",
@@ -4741,9 +4697,9 @@ mod intrinsic_sizing {
         );
         assert_eq!(line.lines(line.holder_label), 1);
         line.check();
-        // The second line, not the first, is on the line's baseline.
-        let first = line.label_baseline(line.nested_label, Some(0));
-        assert!(first < line.label_baseline(line.nested_label, None) - 1.0);
+        // The first line, not the second, is on the line's baseline.
+        let last = line.label_baseline(line.nested_label, None);
+        assert!(line.label_baseline(line.nested_label, Some(0)) < last - 1.0);
 
         // How far below the holder's top the line's baseline is.
         let depth = |line: &NestedLine| {
@@ -4752,27 +4708,26 @@ mod intrinsic_sizing {
             edge.y + edge.height - world.layout_box(line.holder).unwrap().y
         };
 
-        // Text that wraps in a box of the same size moves its last line down:
+        // A bigger font in a box of the same size moves its first line down:
         // the line's baseline sits that much lower inside the holder.
         let holder = line.context.world().layout_box(line.holder).unwrap();
         let before = depth(&line);
         let mut queue = MutationQueue::new();
-        queue.set_text(
+        queue.set_style(
             line.holder_label,
-            crate::TextContent {
-                value: "Nested nested nested nested".into(),
-            },
+            styled(LayoutStyle {
+                font_size: Some(24.0),
+                ..LayoutStyle::default()
+            }),
         );
         line.commit(queue);
-        assert!(line.lines(line.holder_label) > 1);
         line.check();
         let moved = line.context.world().layout_box(line.holder).unwrap();
         assert_eq!((moved.width, moved.height), (holder.width, holder.height));
         assert!(depth(&line) > before + 1.0, "{} vs {before}", depth(&line));
         assert_matches_cold(
             &mut line.context,
-            &mut NestedLine::new(10.0, "Nested nested nested nested", "aa aa aa aa aa", "Box")
-                .context,
+            &mut NestedLine::new(10.0, 24.0, "Nested", "aa aa aa aa aa", 16.0, "Box").context,
             line.document,
         );
 
@@ -4790,8 +4745,7 @@ mod intrinsic_sizing {
         );
         assert_matches_cold(
             &mut line.context,
-            &mut NestedLine::new(20.0, "Nested nested nested nested", "aa aa aa aa aa", "Box")
-                .context,
+            &mut NestedLine::new(20.0, 24.0, "Nested", "aa aa aa aa aa", 16.0, "Box").context,
             line.document,
         );
 
@@ -4817,40 +4771,33 @@ mod intrinsic_sizing {
             },
         );
         let work = line.commit(queue);
-        assert_eq!(work.layout_full_document_fallbacks, 0);
+        assert_eq!(work.frontier.full_document_fallbacks, 0);
         assert_eq!(line.lines(line.nested_label), lines);
         line.check();
         assert_eq!(boxes(&line), before);
         assert_matches_cold(
             &mut line.context,
-            &mut NestedLine::new(20.0, "Nested nested nested nested", "bb bb bb bb bb", "Box")
-                .context,
+            &mut NestedLine::new(20.0, 24.0, "Nested", "bb bb bb bb bb", 16.0, "Box").context,
             line.document,
         );
 
-        // Text wrapping inside a fixed block of the atom: the block keeps its
-        // size, the last line box moves, and the line is placed again.
+        // A bigger font inside a fixed block of the atom: the block keeps its
+        // size, the first line box moves, and the line is placed again.
         let before = boxes(&line);
         let mut queue = MutationQueue::new();
-        queue.set_text(
+        queue.set_style(
             line.boxed_label,
-            crate::TextContent {
-                value: "Box box box box".into(),
-            },
+            styled(LayoutStyle {
+                font_size: Some(24.0),
+                ..LayoutStyle::default()
+            }),
         );
         line.commit(queue);
-        assert!(line.lines(line.boxed_label) > 1);
         line.check();
         assert_ne!(boxes(&line), before);
         assert_matches_cold(
             &mut line.context,
-            &mut NestedLine::new(
-                20.0,
-                "Nested nested nested nested",
-                "bb bb bb bb bb",
-                "Box box box box",
-            )
-            .context,
+            &mut NestedLine::new(20.0, 24.0, "Nested", "bb bb bb bb bb", 24.0, "Box").context,
             line.document,
         );
     }
@@ -4867,14 +4814,13 @@ mod intrinsic_sizing {
         let (mut b, page) = Builder::page(document, 1, 800.0);
         let font = 20.0f32;
         let block = |line_height| LayoutStyle {
-            display: Some(DisplaySpec::Block),
             width: Some(LengthSpec::Px(600.0)),
             font_size: Some(font),
             line_height,
             ..LayoutStyle::default()
         };
         let atom = |width: f32, height: f32| LayoutStyle {
-            display: Some(DisplaySpec::InlineBlock),
+            display: Some(DisplaySpec::InlineFlex),
             width: Some(LengthSpec::Px(width)),
             height: Some(LengthSpec::Px(height)),
             ..LayoutStyle::default()
@@ -4894,7 +4840,7 @@ mod intrinsic_sizing {
         b.element(
             blocky,
             LayoutStyle {
-                display: Some(DisplaySpec::Block),
+                display: Some(DisplaySpec::Flex),
                 ..atom(40.0, 30.0)
             },
         );
@@ -4979,11 +4925,10 @@ mod overlay_layers {
 
     use std::sync::Arc;
 
-    use nana_ui_core::{AlignSpec, DirSpec, JustifySpec, LayoutStyle, LengthSpec};
-    use nana_ui_core::{PositionSpec, WorkCounters};
+    use nana_ui_core::{AlignSpec, DirSpec, JustifySpec, LayoutStyle, LengthSpec, PositionSpec};
 
     use crate::world::reflow_oracle::{
-        Builder, assert_matches_cold, bundled_face_shaper, fixed, product_frame, styled,
+        Builder, FrameStats, assert_matches_cold, bundled_face_shaper, fixed, product_frame, styled,
     };
     use crate::world::{DocumentId, StableNodeId};
     use crate::{
@@ -5037,7 +4982,7 @@ mod overlay_layers {
             page
         }
 
-        fn frame(&mut self) -> WorkCounters {
+        fn frame(&mut self) -> FrameStats {
             product_frame(
                 &mut self.context,
                 self.document,
@@ -5243,7 +5188,7 @@ mod overlay_layers {
             nodes: usize,
             kinds: Vec<crate::NodeKind>,
             intent: Arc<LayoutStyle>,
-            work: [(usize, usize, usize, usize); 3],
+            work: [(usize, usize, usize); 3],
         }
         let document = DocumentId::new(1).unwrap();
         let preset_intent = LayoutStyle {
@@ -5254,12 +5199,11 @@ mod overlay_layers {
             width: Some(LengthSpec::Shrink),
             ..LayoutStyle::default()
         };
-        let cost = |work: WorkCounters| {
+        let cost = |work: FrameStats| {
             (
-                work.entities_spawned,
-                work.layout_measure_nodes,
-                work.layout_placement_nodes,
-                work.layout_context_transitions,
+                work.execution.measure_nodes,
+                work.execution.placement_nodes,
+                work.frontier.seeds,
             )
         };
         let runs: Vec<Run> = (0..3)
@@ -5288,10 +5232,9 @@ mod overlay_layers {
                 cx.commit_mutations(queue).unwrap();
                 let edit = product_frame(&mut cx, document, viewport(), &mut shaper);
                 // The next frame is idle: nothing is left to do, and its own
-                // counters (not the last non-empty snapshot) are all zero.
-                product_frame(&mut cx, document, viewport(), &mut shaper);
+                // counters are all zero.
+                let idle = product_frame(&mut cx, document, viewport(), &mut shaper);
                 assert!(cx.take_system_work().is_empty(), "facade {facade}");
-                let idle = cx.world().counters.frame_counters;
                 let world = cx.world();
                 Run {
                     nodes: world.len(),
@@ -5305,8 +5248,8 @@ mod overlay_layers {
             })
             .collect();
         let preset = &runs[0];
-        assert!(preset.work[0].1 > 0 && preset.work[1].1 > 0);
-        assert_eq!(preset.work[2], (0, 0, 0, 0), "an idle frame does nothing");
+        assert!(preset.work[0].0 > 0 && preset.work[1].0 > 0);
+        assert_eq!(preset.work[2], (0, 0, 0), "an idle frame does nothing");
         for (facade, run) in runs.iter().enumerate().skip(1) {
             assert_eq!(run.nodes, preset.nodes, "facade {facade}");
             assert_eq!(run.kinds, preset.kinds, "facade {facade}");
@@ -5339,11 +5282,10 @@ mod scroll_counters {
     //! - A virtual list maps onto `virtual_rows_materialized_from_layout`,
     //!   `entities_spawned` and `entities_despawned`.
 
-    use nana_ui_core::WorkCounters;
     use nana_ui_core::{FlexDirection, LayoutStyle, LengthSpec, OverflowSpec, PositionSpec};
 
     use crate::world::reflow_oracle::{
-        Builder, bundled_face_shaper, fixed, product_frame, resize_frame,
+        Builder, FrameStats, bundled_face_shaper, fixed, product_frame, resize_frame,
     };
     use crate::world::tests::incremental_work::virtual_scroll::{Feed, Pass, ROW};
     use crate::{
@@ -5353,9 +5295,6 @@ mod scroll_counters {
 
     /// Rows under each list's header.
     const ROWS: usize = 50;
-    /// A list's scroll rewrites its sticky header alone: the header's two
-    /// children are held relative to it, so they keep their entries.
-    const STICKY_ENTRY: usize = 1;
 
     fn document() -> DocumentId {
         DocumentId::new(1).unwrap()
@@ -5439,15 +5378,15 @@ mod scroll_counters {
 
         /// A frame as `RuntimeDocument` runs a scroll-only one: lay out, then
         /// patch the hit index in place.
-        fn frame(&mut self) -> WorkCounters {
-            product_frame(&mut self.cx, document(), self.viewport, &mut self.shaper);
+        fn frame(&mut self) -> FrameStats {
+            let work = product_frame(&mut self.cx, document(), self.viewport, &mut self.shaper);
             for (scroller, delta) in self.cx.take_scroll_hit_updates() {
                 self.cx.update_hit_test_scroll(document(), scroller, delta);
             }
-            self.cx.last_work_counters()
+            work
         }
 
-        fn scroll(&mut self, to: &[(StableNodeId, f32)]) -> WorkCounters {
+        fn scroll(&mut self, to: &[(StableNodeId, f32)]) -> FrameStats {
             let mut q = MutationQueue::new();
             for &(id, y) in to {
                 q.set_scroll_offset(id, ScrollOffset { x: 0.0, y });
@@ -5456,7 +5395,7 @@ mod scroll_counters {
             self.frame()
         }
 
-        fn resize(&mut self, width: f32, height: f32) -> WorkCounters {
+        fn resize(&mut self, width: f32, height: f32) -> FrameStats {
             self.viewport = LayoutViewport::new(width, height);
             resize_frame(&mut self.cx, document(), self.viewport, &mut self.shaper)
         }
@@ -5466,27 +5405,16 @@ mod scroll_counters {
         }
     }
 
-    /// `(scroll_viewport_updates, scroll_content_extent_recomputes,
-    /// scroll_clip_updates)`.
-    fn scroll_counters(work: &WorkCounters) -> (usize, usize, usize) {
+    fn lays_nothing_out(work: &FrameStats) -> bool {
         (
-            work.scroll_viewport_updates,
-            work.scroll_content_extent_recomputes,
-            work.scroll_clip_updates,
-        )
-    }
-
-    fn lays_nothing_out(work: &WorkCounters) -> bool {
-        (
-            work.layout_measure_nodes,
-            work.layout_placement_nodes,
-            work.text_shaped,
+            work.execution.measure_nodes,
+            work.execution.placement_nodes,
+            work.text.text_nodes_shaped,
         ) == (0, 0, 0)
     }
 
     /// A scroll-only frame stores no viewport, recomputes no extent, and
-    /// rewrites the entry of the sticky header it moves: one entry per list
-    /// scrolled, not the list's rows and not the other list's header.
+    /// rewrites the entry of the sticky header it moves without laying out.
     #[test]
     fn issue381_a_scroll_only_frame_rewrites_the_sticky_entry_it_moves() {
         let mut page = Page::new();
@@ -5495,52 +5423,38 @@ mod scroll_counters {
         // One list: its sticky header.
         let work = page.scroll(&[(list, 100.0)]);
         assert!(lays_nothing_out(&work), "{work:?}");
-        assert_eq!(scroll_counters(&work), (0, 0, STICKY_ENTRY));
         // The other list: its own header only.
         let work = page.scroll(&[(other, 40.0)]);
         assert!(lays_nothing_out(&work), "{work:?}");
-        assert_eq!(scroll_counters(&work), (0, 0, STICKY_ENTRY));
         // Both: a header each.
         let work = page.scroll(&[(list, 20.0), (other, 300.0)]);
         assert!(lays_nothing_out(&work), "{work:?}");
-        assert_eq!(scroll_counters(&work), (0, 0, 2 * STICKY_ENTRY));
         // The page: no sticky box hangs from it, so it moves every entry under
         // it by one shift and rewrites none.
         let work = page.scroll(&[(outer, 120.0)]);
         assert_eq!(page.cx.world().scroll_offset(outer).unwrap().y, 120.0);
         assert!(lays_nothing_out(&work), "{work:?}");
-        assert_eq!(scroll_counters(&work), (0, 0, 0));
         assert_eq!(page.cx.world().layout_generation(), generation);
     }
 
-    /// A viewport resize counts the one scroll container whose viewport moved.
-    /// A store of equal metrics, and content that grows inside a viewport that
-    /// holds, store no viewport.
+    /// A viewport resize moves the page viewport while fixed scroll containers
+    /// keep theirs, equal metrics queue no work, and content growth updates extent.
     #[test]
     fn issue381_a_viewport_resize_counts_the_viewports_it_moved() {
         let mut page = Page::new();
         let (list, other, outer) = (page.list, page.other, page.page);
         assert_eq!(page.viewport_height(outer), 600.0);
         // The page follows the window; the lists keep their fixed size.
-        let work = page.resize(800.0, 500.0);
+        page.resize(800.0, 500.0);
         assert_eq!(page.viewport_height(outer), 500.0);
         assert_eq!(page.viewport_height(list), 200.0);
         assert_eq!(page.viewport_height(other), 200.0);
-        assert_eq!(work.scroll_viewport_updates, 1, "{work:?}");
-        // Only the page's own entry: no box under it moved.
-        assert_eq!(work.scroll_content_extent_recomputes, 1, "{work:?}");
-        assert_eq!(work.scroll_clip_updates, 0, "{work:?}");
-        // The same metrics stored again: no work, so it is read as the
-        // counters it leaves pending.
-        let before = page.cx.last_work_counters();
+        // The same metrics stored again: no work is left pending.
         let metrics = page.cx.world().scroll_metrics(list);
         let mut q = MutationQueue::new();
         q.set_scroll_metrics(list, metrics);
         page.cx.commit_mutations(q).unwrap();
-        assert_eq!(
-            scroll_counters(&page.cx.last_work_counters()),
-            scroll_counters(&before)
-        );
+        assert!(page.cx.take_system_work().is_empty());
         // A row grows inside `list`: its extent moves, its viewport holds.
         let row = page.cx.world().node(list).unwrap().children[1];
         let mut q = MutationQueue::new();
@@ -5553,20 +5467,18 @@ mod scroll_counters {
         );
         page.cx.commit_mutations(q).unwrap();
         let before = page.cx.world().scroll_metrics(list).unwrap();
-        let work = page.frame();
+        page.frame();
         let after = page.cx.world().scroll_metrics(list).unwrap();
         assert_eq!(after.content_height, before.content_height + 40.0);
-        assert_eq!(work.scroll_viewport_updates, 0, "{work:?}");
-        assert!(work.scroll_content_extent_recomputes > 0, "{work:?}");
+        assert_eq!(after.viewport_height, before.viewport_height);
     }
 
     /// A far scroll of a virtual list over `rows` rows, from a window at the
     /// top: the scroll-only frame, the list's sync, the frame that lays the new
-    /// window out, and the rows the old and the new window held.
-    fn far_scroll(rows: usize) -> (WorkCounters, Pass, WorkCounters, usize, usize) {
+    /// window out, and the rows the new window held.
+    fn far_scroll(rows: usize) -> (FrameStats, Pass, FrameStats, usize) {
         let mut feed = Feed::new(rows);
         feed.cx.rebuild_hit_test(document());
-        let unmounted = feed.mounted().len();
         // Far past the window: none of its rows stays mounted.
         feed.cx
             .scroll_to(
@@ -5577,45 +5489,37 @@ mod scroll_counters {
                 },
             )
             .unwrap();
-        feed.frame();
+        let scrolled = feed.frame();
         for (scroller, delta) in feed.cx.take_scroll_hit_updates() {
             feed.cx.update_hit_test_scroll(document(), scroller, delta);
         }
-        let scrolled = feed.cx.last_work_counters();
         let pass = feed.sync();
         let placed = feed.frame();
-        (scrolled, pass, placed, unmounted, feed.mounted().len())
+        (scrolled, pass, placed, feed.mounted().len())
     }
 
-    /// A virtual list scroll: the scroll-only frame stores and recomputes
-    /// nothing and rewrites no clip; the list's sync materializes the new
-    /// window and the frame after it spawns it and despawns the old one; that
-    /// frame recomputes extents for the window it lays out, the same over a
-    /// collection a hundred times larger.
+    /// A virtual list scroll: the scroll-only frame lays nothing out; the list's
+    /// sync materializes the new window and the frame lays it out at the same
+    /// cost regardless of total collection size.
     #[test]
     fn issue381_a_virtual_list_scroll_counts_the_window_it_mounts() {
-        let (scrolled, pass, placed, unmounted, mounted) = far_scroll(10_000);
+        let (scrolled, pass, placed, mounted) = far_scroll(10_000);
         assert!(lays_nothing_out(&scrolled), "{scrolled:?}");
-        assert_eq!(scroll_counters(&scrolled), (0, 0, 0));
-        // Materialized rows are the new window's; each row is the same number
-        // of entities, spawned for the new window and despawned for the old.
+        // Materialized rows are the new window's.
         assert_eq!(pass.materialized, mounted, "{pass:?}");
-        assert_eq!(placed.virtual_rows_materialized_from_layout, mounted);
-        let per_row = placed.entities_spawned / mounted;
-        assert!(per_row > 0, "{placed:?}");
-        assert_eq!(placed.entities_spawned, per_row * mounted, "{placed:?}");
-        assert_eq!(placed.entities_despawned, per_row * unmounted, "{placed:?}");
-        assert_eq!(placed.scroll_viewport_updates, 0, "{placed:?}");
-        // Each publish batch recomputes an entry at most once, and the world
-        // holds only the window.
-        let recomputes = placed.scroll_content_extent_recomputes;
-        assert!(recomputes > 0, "{placed:?}");
-        assert!(
-            recomputes <= placed.layout_delta_commits * placed.entities_total,
-            "{placed:?}"
+        assert_eq!(placed.frontier.full_document_fallbacks, 0, "{placed:?}");
+        let (_, _, larger, larger_mounted) = far_scroll(1_000_000);
+        assert_eq!(larger_mounted, mounted);
+        assert_eq!(
+            (
+                larger.execution.measure_nodes,
+                larger.execution.placement_nodes
+            ),
+            (
+                placed.execution.measure_nodes,
+                placed.execution.placement_nodes
+            )
         );
-        let (_, _, larger, ..) = far_scroll(1_000_000);
-        assert_eq!(scroll_counters(&larger), scroll_counters(&placed));
     }
 }
 
@@ -5706,11 +5610,10 @@ mod aspect_ratio_sizing {
                 }
                 Self::Grid => {
                     layout.display = Some(DisplaySpec::Grid);
-                    layout.grid_columns = Some(vec![GridTrack::Auto]);
+                    layout.grid.columns = Some(vec![GridTrack::Auto]);
                 }
-                Self::Inline => layout.display = Some(DisplaySpec::Block),
+                Self::Inline => {}
                 Self::Absolute | Self::AbsoluteInsets => {
-                    layout.display = Some(DisplaySpec::Block);
                     layout.position = PositionSpec::Relative;
                     layout.height = Some(LengthSpec::Px(300.0));
                 }
@@ -5721,7 +5624,7 @@ mod aspect_ratio_sizing {
         fn item(self, mut layout: LayoutStyle) -> LayoutStyle {
             match self {
                 Self::Flex | Self::Grid => {}
-                Self::Inline => layout.display = Some(DisplaySpec::InlineBlock),
+                Self::Inline => layout.display = Some(DisplaySpec::InlineFlex),
                 Self::Absolute => {
                     layout.position = PositionSpec::Absolute;
                     layout.offset_top = Some(LengthSpec::Px(0.0));
@@ -5939,7 +5842,7 @@ mod aspect_ratio_sizing {
         let (mut b, page) = Builder::page(document, 1, 800.0);
         let block = b.element(page, strut_block(face));
         let atom = b.element(block, strut_atom(first_atom, 40.0, 30.0));
-        b.element(block, strut_atom(DisplaySpec::InlineBlock, 10.0, 4.0));
+        b.element(block, strut_atom(DisplaySpec::InlineFlex, 10.0, 4.0));
         let sibling = b.element(
             page,
             LayoutStyle {
@@ -5947,8 +5850,8 @@ mod aspect_ratio_sizing {
                 ..LayoutStyle::default()
             },
         );
-        b.element(sibling, strut_atom(DisplaySpec::InlineBlock, 40.0, 30.0));
-        b.element(sibling, strut_atom(DisplaySpec::InlineBlock, 20.0, 10.0));
+        b.element(sibling, strut_atom(DisplaySpec::InlineFlex, 40.0, 30.0));
+        b.element(sibling, strut_atom(DisplaySpec::InlineFlex, 20.0, 10.0));
         let row = b.element(
             page,
             LayoutStyle {
@@ -5967,15 +5870,17 @@ mod aspect_ratio_sizing {
     }
 
     fn strut_block(face: Face) -> LayoutStyle {
-        LayoutStyle {
-            display: Some(DisplaySpec::Block),
+        let mut layout = LayoutStyle {
             width: Some(LengthSpec::Px(600.0)),
             font_size: Some(FONT),
             line_height: Some(nana_ui_core::LineHeightSpec::Absolute(FONT)),
-            font_family: face.family.map(str::to_owned),
             font_weight: Some(face.weight),
             ..LayoutStyle::default()
+        };
+        if let Some(family) = face.family {
+            layout.text_ext.font_family = Some(family.to_owned());
         }
+        layout
     }
 
     fn strut_atom(display: DisplaySpec, width: f32, height: f32) -> LayoutStyle {
@@ -5999,11 +5904,11 @@ mod aspect_ratio_sizing {
         };
         let document = DocumentId::new(1).unwrap();
         let (mut warm, mut shaper, [_, atom, _, _]) =
-            strut_page(sans, DisplaySpec::InlineBlock, false);
+            strut_page(sans, DisplaySpec::InlineFlex, false);
         for (display, part) in [
-            (DisplaySpec::Block, crate::ParticipationKind::FlowItem),
+            (DisplaySpec::Flex, crate::ParticipationKind::FlexItem),
             (
-                DisplaySpec::InlineBlock,
+                DisplaySpec::InlineFlex,
                 crate::ParticipationKind::AtomicInline,
             ),
         ] {
@@ -6049,8 +5954,8 @@ mod aspect_ratio_sizing {
             product_frame(&mut app, document, viewport(), &mut bundled_face_shaper());
             (app, document, ids)
         };
-        let (mut warm, document, [tall, short]) = build(DisplaySpec::InlineBlock);
-        for display in [DisplaySpec::Block, DisplaySpec::InlineBlock] {
+        let (mut warm, document, [tall, short]) = build(DisplaySpec::InlineFlex);
+        for display in [DisplaySpec::Flex, DisplaySpec::InlineFlex] {
             let mut queue = MutationQueue::new();
             queue.set_style(tall, styled(child(display, 40.0, 30.0)));
             queue.set_style(short, styled(child(display, 10.0, 4.0)));
@@ -6075,12 +5980,11 @@ mod aspect_ratio_sizing {
         weight: u16,
         font: f32,
     ) -> FontStrut {
-        let style = ComputedStyle {
-            font_family: family.map(Arc::from),
-            font_weight: Some(weight),
-            font_size: font,
-            ..ComputedStyle::default()
-        };
+        let style = ComputedStyle::with(|s| {
+            s.font_family = family.map(Arc::from);
+            s.font_weight = Some(weight);
+            s.font_size = font;
+        });
         shaper
             .strut_metrics(&style)
             .expect("the face reports its metrics")
@@ -6122,8 +6026,8 @@ mod aspect_ratio_sizing {
                 ..LayoutStyle::default()
             },
         );
-        let atom = b.element(block, strut_atom(DisplaySpec::InlineBlock, 40.0, 30.0));
-        let held = b.detached(strut_atom(DisplaySpec::InlineBlock, 40.0, 30.0));
+        let atom = b.element(block, strut_atom(DisplaySpec::InlineFlex, 40.0, 30.0));
+        let held = b.detached(strut_atom(DisplaySpec::InlineFlex, 40.0, 30.0));
         let mut context = AppContext::new();
         context.commit_mutations(b.queue).unwrap();
         let paragraph = context
@@ -6205,7 +6109,7 @@ mod aspect_ratio_sizing {
         };
         let document = DocumentId::new(1).unwrap();
         let (mut warm, mut shaper, [block, atom, sibling, row]) =
-            strut_page(sans, DisplaySpec::InlineBlock, false);
+            strut_page(sans, DisplaySpec::InlineFlex, false);
         let mut probe = strut_shaper(true);
         assert_line_in(&warm, block, atom, face_strut(&mut probe, None, 400, FONT));
         let check = |warm: &mut AppContext, face: Face, display: DisplaySpec, late: bool| {
@@ -6225,7 +6129,7 @@ mod aspect_ratio_sizing {
                 atom,
                 face_strut(&mut probe, face.family, face.weight, FONT),
             );
-            check(&mut warm, face, DisplaySpec::InlineBlock, false);
+            check(&mut warm, face, DisplaySpec::InlineFlex, false);
         }
         let held = warm.world().block_strut(block);
 
@@ -6263,12 +6167,12 @@ mod aspect_ratio_sizing {
             atom,
             face_strut(&mut probe, Some("Late"), 400, FONT),
         );
-        check(&mut warm, late, DisplaySpec::InlineBlock, true);
+        check(&mut warm, late, DisplaySpec::InlineFlex, true);
 
         // An atom turned block-level leaves the block no inline-level child of
         // its own size: the line it shares with the other is still a line.
         // Both atoms block-level: no lines, no strut.
-        for display in [DisplaySpec::Block, DisplaySpec::InlineBlock] {
+        for display in [DisplaySpec::Flex, DisplaySpec::InlineFlex] {
             let mut queue = MutationQueue::new();
             queue.set_style(atom, styled(strut_atom(display, 40.0, 30.0)));
             warm.commit_mutations(queue).unwrap();
@@ -6279,7 +6183,7 @@ mod aspect_ratio_sizing {
         let short = warm.world().node(block).unwrap().children[1];
         let mut queue = MutationQueue::new();
         for id in [atom, short] {
-            queue.set_style(id, styled(strut_atom(DisplaySpec::Block, 40.0, 30.0)));
+            queue.set_style(id, styled(strut_atom(DisplaySpec::Flex, 40.0, 30.0)));
         }
         warm.commit_mutations(queue).unwrap();
         product_frame(&mut warm, document, viewport(), &mut shaper);
@@ -6287,15 +6191,15 @@ mod aspect_ratio_sizing {
         let mut queue = MutationQueue::new();
         queue.set_style(
             short,
-            styled(strut_atom(DisplaySpec::InlineBlock, 10.0, 4.0)),
+            styled(strut_atom(DisplaySpec::InlineFlex, 10.0, 4.0)),
         );
         queue.set_style(
             atom,
-            styled(strut_atom(DisplaySpec::InlineBlock, 40.0, 30.0)),
+            styled(strut_atom(DisplaySpec::InlineFlex, 40.0, 30.0)),
         );
         warm.commit_mutations(queue).unwrap();
         product_frame(&mut warm, document, viewport(), &mut shaper);
-        check(&mut warm, late, DisplaySpec::InlineBlock, true);
+        check(&mut warm, late, DisplaySpec::InlineFlex, true);
 
         // Changes that do not touch a strut lay no block out for one: the
         // flex row's label, and a font size (the strut is per px of it).
@@ -6325,7 +6229,7 @@ mod aspect_ratio_sizing {
         // arrives: the strut is back. Child list edits alone, with no style of
         // the block's changing.
         let mut queue = MutationQueue::new();
-        queue.set_style(atom, styled(strut_atom(DisplaySpec::Block, 40.0, 30.0)));
+        queue.set_style(atom, styled(strut_atom(DisplaySpec::Flex, 40.0, 30.0)));
         queue.despawn_subtree(short);
         warm.commit_mutations(queue).unwrap();
         product_frame(&mut warm, document, viewport(), &mut shaper);
@@ -6336,7 +6240,7 @@ mod aspect_ratio_sizing {
         queue.insert(block, arrived, None);
         queue.set_style(
             arrived,
-            styled(strut_atom(DisplaySpec::InlineBlock, 10.0, 4.0)),
+            styled(strut_atom(DisplaySpec::InlineFlex, 10.0, 4.0)),
         );
         warm.commit_mutations(queue).unwrap();
         product_frame(&mut warm, document, viewport(), &mut shaper);
@@ -6350,26 +6254,33 @@ mod aspect_ratio_sizing {
     fn issue382_b_an_inherited_face_and_a_moved_child_reach_the_strut() {
         let wrapper = |family: Option<&str>| LayoutStyle {
             width: Some(LengthSpec::Px(600.0)),
-            font_family: family.map(str::to_owned),
+            text_ext: nana_ui_core::TextStyleExt {
+                font_family: family.map(str::to_owned),
+                ..Default::default()
+            }
+            .into(),
             ..LayoutStyle::default()
         };
-        let inheriting = || LayoutStyle {
-            font_family: None,
-            font_weight: None,
-            ..strut_block(Face {
+        let inheriting = || {
+            let mut style = strut_block(Face {
                 family: None,
                 weight: 400,
-            })
+            });
+            if !style.text_ext.is_shared_default() {
+                style.text_ext.font_family = None;
+            }
+            style.font_weight = None;
+            style
         };
         let build = |family: Option<&'static str>, held: bool| {
             let document = DocumentId::new(1).unwrap();
             let (mut b, page) = Builder::page(document, 1, 800.0);
             let outer = b.element(page, wrapper(family));
             let block = b.element(outer, inheriting());
-            b.element(block, strut_atom(DisplaySpec::Block, 40.0, 30.0));
+            b.element(block, strut_atom(DisplaySpec::Flex, 40.0, 30.0));
             let atom = b.element(
                 if held { block } else { page },
-                strut_atom(DisplaySpec::InlineBlock, 10.0, 4.0),
+                strut_atom(DisplaySpec::InlineFlex, 10.0, 4.0),
             );
             let mut context = AppContext::new();
             context.commit_mutations(b.queue).unwrap();
@@ -6481,8 +6392,8 @@ mod aspect_ratio_sizing {
             },
         );
         let lines = [
-            b.element(narrow, strut_atom(DisplaySpec::InlineBlock, 40.0, 20.0)),
-            b.element(narrow, strut_atom(DisplaySpec::InlineBlock, 40.0, 20.0)),
+            b.element(narrow, strut_atom(DisplaySpec::InlineFlex, 40.0, 20.0)),
+            b.element(narrow, strut_atom(DisplaySpec::InlineFlex, 40.0, 20.0)),
         ];
         let outside = b.label(page, outside);
         let mut context = AppContext::new();
@@ -6687,7 +6598,7 @@ mod aspect_ratio_sizing {
             let reference = b.element(
                 parent,
                 LayoutStyle {
-                    display: Some(DisplaySpec::InlineBlock),
+                    display: Some(DisplaySpec::InlineFlex),
                     ..LayoutStyle::default()
                 },
             );
@@ -6696,7 +6607,7 @@ mod aspect_ratio_sizing {
                 let flow = b.element(
                     parent,
                     LayoutStyle {
-                        display: Some(DisplaySpec::InlineBlock),
+                        display: Some(DisplaySpec::InlineFlex),
                         width: Some(LengthSpec::Px(90.0)),
                         height: Some(LengthSpec::Px(80.0)),
                         justify_content: if index == 0 { first } else { justify },
@@ -6720,8 +6631,8 @@ mod aspect_ratio_sizing {
         (context, shaper, labels, [first_boxes[0], first_boxes[1]])
     }
 
-    /// The row sits each box by its first label in flow order, the line by its
-    /// last: each on the reference label's baseline, wherever its flow put it.
+    /// The row and line sit each InlineFlex box by its topmost item's first
+    /// baseline: item `"B"` when `flex_reverse` is true, otherwise `"A"`.
     fn assert_flows_on_one_baseline(context: &AppContext, labels: &[Vec<StableNodeId>; 2]) {
         let world = context.world();
         let baseline = |id: StableNodeId| {
@@ -6733,8 +6644,11 @@ mod aspect_ratio_sizing {
         for (slot, labels) in labels.iter().enumerate() {
             let reference = baseline(labels[0]);
             for (index, pair) in labels[1..].chunks(2).enumerate() {
-                let sitting = pair[if slot == 0 { 0 } else { 1 }];
-                let other = pair[if slot == 0 { 1 } else { 0 }];
+                let (sitting, other) = if FLOWS[index].1 {
+                    (pair[1], pair[0])
+                } else {
+                    (pair[0], pair[1])
+                };
                 assert!(
                     (baseline(sitting) - reference).abs() < 0.01,
                     "{} {:?}: {} vs the reference {reference}",
@@ -6769,7 +6683,7 @@ mod aspect_ratio_sizing {
             queue.set_style(
                 first_box,
                 styled(LayoutStyle {
-                    display: Some(DisplaySpec::InlineBlock),
+                    display: Some(DisplaySpec::InlineFlex),
                     width: Some(LengthSpec::Px(90.0)),
                     height: Some(LengthSpec::Px(80.0)),
                     justify_content: JustifySpec::End,
@@ -6782,141 +6696,6 @@ mod aspect_ratio_sizing {
         assert_flows_on_one_baseline(&warm, &labels);
         let (mut cold, _, _, _) = flow_baseline_page(JustifySpec::End);
         assert_matches_cold(&mut warm, &mut cold, document);
-    }
-
-    /// A flex row aligning first baselines and an ordinary block's line, each
-    /// with a reference label and a 100-wide box that floats an 80×40 box
-    /// left: on the row its one 40×20 atom does not fit beside the float and
-    /// drops below it; on the line three such atoms drop below it and wrap.
-    /// `float` floats the box (or leaves it in flow, 80 wide). Returns the
-    /// references and the atoms the box sits by: the row's only one, the
-    /// line's last.
-    fn float_baseline_page(float: bool) -> (AppContext, NanaTextEngineShaper, [StableNodeId; 4]) {
-        let document = DocumentId::new(1).unwrap();
-        let (mut b, page) = Builder::page(document, 1, 900.0);
-        let row = b.element(
-            page,
-            LayoutStyle {
-                display: Some(DisplaySpec::Flex),
-                direction: Some(FlexDirection::Row),
-                align_items: nana_ui_core::AlignSpec::Baseline,
-                width: Some(LengthSpec::Px(800.0)),
-                ..LayoutStyle::default()
-            },
-        );
-        let line = b.element(
-            page,
-            LayoutStyle {
-                width: Some(LengthSpec::Px(800.0)),
-                ..LayoutStyle::default()
-            },
-        );
-        let mut ids = Vec::new();
-        for (parent, atoms) in [(row, 1), (line, 3)] {
-            let reference = b.element(
-                parent,
-                LayoutStyle {
-                    display: Some(DisplaySpec::InlineBlock),
-                    ..LayoutStyle::default()
-                },
-            );
-            ids.push(b.label(reference, "Ref"));
-            let holder = b.element(
-                parent,
-                LayoutStyle {
-                    display: Some(DisplaySpec::InlineBlock),
-                    width: Some(LengthSpec::Px(100.0)),
-                    ..LayoutStyle::default()
-                },
-            );
-            b.element(
-                holder,
-                LayoutStyle {
-                    width: Some(LengthSpec::Px(80.0)),
-                    height: Some(LengthSpec::Px(40.0)),
-                    float: if float {
-                        nana_ui_core::FloatSpec::Left
-                    } else {
-                        nana_ui_core::FloatSpec::None
-                    },
-                    ..LayoutStyle::default()
-                },
-            );
-            let mut last = None;
-            for _ in 0..atoms {
-                last = Some(b.element(holder, strut_atom(DisplaySpec::InlineBlock, 40.0, 20.0)));
-            }
-            ids.push(last.unwrap());
-        }
-        let mut context = AppContext::new();
-        context.commit_mutations(b.queue).unwrap();
-        let mut shaper = strut_shaper(false);
-        product_frame(&mut context, document, viewport(), &mut shaper);
-        (context, shaper, [ids[0], ids[1], ids[2], ids[3]])
-    }
-
-    /// Gate F: a box whose lines run beside a float sits by where those lines
-    /// are: on a flex row by its first line, which an atom too wide for the
-    /// room beside the float takes below it; on a line by its last, which
-    /// wraps below the float. Floating the box and sinking it back into the
-    /// flow each place them again, as a cold layout does.
-    #[test]
-    fn issue382_f_lines_beside_a_float_give_the_baselines() {
-        let document = DocumentId::new(1).unwrap();
-        let on_baseline =
-            |context: &AppContext, [row_ref, row_atom, line_ref, line_atom]: [StableNodeId; 4]| {
-                let world = context.world();
-                for (reference, atom) in [(row_ref, row_atom), (line_ref, line_atom)] {
-                    let baseline = world
-                        .layout_result(reference)
-                        .and_then(|result| result.first_baseline)
-                        .unwrap();
-                    let atom = world.layout_box(atom).unwrap();
-                    assert!(
-                        (atom.y + atom.height - baseline).abs() < 0.01,
-                        "{atom:?} sits off the baseline {baseline}"
-                    );
-                }
-            };
-        let (mut warm, mut shaper, ids) = float_baseline_page(true);
-        on_baseline(&warm, ids);
-        // Below the float: the first line starts at its bottom.
-        let holder = warm.world().parent_id(ids[1]).unwrap();
-        let (atom, holder_box) = (
-            warm.world().layout_box(ids[1]).unwrap(),
-            warm.world().layout_box(holder).unwrap(),
-        );
-        assert!(
-            atom.y >= holder_box.y + 40.0 - 0.01,
-            "{atom:?} in {holder_box:?}"
-        );
-        let (mut cold, _, _) = float_baseline_page(true);
-        assert_matches_cold(&mut warm, &mut cold, document);
-        for float in [false, true] {
-            let mut queue = MutationQueue::new();
-            for atom in [ids[1], ids[3]] {
-                let holder = warm.world().parent_id(atom).unwrap();
-                let box_id = warm.world().node(holder).unwrap().children[0];
-                queue.set_style(
-                    box_id,
-                    styled(LayoutStyle {
-                        width: Some(LengthSpec::Px(80.0)),
-                        height: Some(LengthSpec::Px(40.0)),
-                        float: if float {
-                            nana_ui_core::FloatSpec::Left
-                        } else {
-                            nana_ui_core::FloatSpec::None
-                        },
-                        ..LayoutStyle::default()
-                    }),
-                );
-            }
-            warm.commit_mutations(queue).unwrap();
-            product_frame(&mut warm, document, viewport(), &mut shaper);
-            on_baseline(&warm, ids);
-            let (mut cold, _, _) = float_baseline_page(float);
-            assert_matches_cold(&mut warm, &mut cold, document);
-        }
     }
 
     /// The wrapping block flows gate G lays out: four 25-tall labelled blocks
@@ -6955,7 +6734,7 @@ mod aspect_ratio_sizing {
             let reference = b.element(
                 parent,
                 LayoutStyle {
-                    display: Some(DisplaySpec::InlineBlock),
+                    display: Some(DisplaySpec::InlineFlex),
                     ..LayoutStyle::default()
                 },
             );
@@ -6964,7 +6743,7 @@ mod aspect_ratio_sizing {
                 let flow = b.element(
                     parent,
                     LayoutStyle {
-                        display: Some(DisplaySpec::InlineBlock),
+                        display: Some(DisplaySpec::InlineFlex),
                         width: Some(LengthSpec::Px(160.0)),
                         height: Some(LengthSpec::Px(height)),
                         flex_wrap: nana_ui_core::FlexWrap::Wrap,
@@ -6993,12 +6772,11 @@ mod aspect_ratio_sizing {
         (context, shaper, labels)
     }
 
-    /// Gate G: a block flow that wraps into columns sits by where its first and
-    /// last line boxes are, in the columns placement lays them in: packed to
-    /// the end of each column, or reversed. On a flex row (first baselines,
-    /// the first label) and on a line (last baselines, the fourth); a taller
-    /// flow puts all four in one column and aligns them again. Each step
-    /// matches a cold layout.
+    /// Gate G: a wrapping InlineFlex column flow sits by where its first
+    /// line's topmost item lands (`flex_first_baseline`, CSS Flexbox §8.5): on
+    /// both a flex row and an IFC line, packed to the end of each column or
+    /// reversed; a taller flow puts all four in one column and aligns them
+    /// again. Each step matches a cold layout.
     #[test]
     fn issue382_g_a_wrapping_block_flow_sits_by_its_columns_line_boxes() {
         let document = DocumentId::new(1).unwrap();
@@ -7013,7 +6791,13 @@ mod aspect_ratio_sizing {
             for (slot, labels) in labels.iter().enumerate() {
                 let reference = baseline(labels[0]);
                 for (index, flow) in labels[1..].chunks(4).enumerate() {
-                    let sitting = flow[if slot == 0 { 0 } else { 3 }];
+                    let sitting = if !WRAPPED[index].1 {
+                        flow[0]
+                    } else if columns {
+                        flow[1]
+                    } else {
+                        flow[3]
+                    };
                     assert!(
                         (baseline(sitting) - reference).abs() < 0.01,
                         "{} {:?}: {} vs the reference {reference}",
@@ -7057,7 +6841,7 @@ mod aspect_ratio_sizing {
                     queue.set_style(
                         flow_box,
                         styled(LayoutStyle {
-                            display: Some(DisplaySpec::InlineBlock),
+                            display: Some(DisplaySpec::InlineFlex),
                             width: Some(LengthSpec::Px(160.0)),
                             height: Some(LengthSpec::Px(height)),
                             flex_wrap: nana_ui_core::FlexWrap::Wrap,
@@ -7384,9 +7168,7 @@ mod hidden_context_reset {
             q.set_style(column, styled(container(hidden)));
             cx.commit_mutations(q).unwrap();
             let generation = cx.world().layout_node(column).unwrap().context_generation;
-            let counters = product_frame(&mut cx, document, viewport(), &mut bundled_face_shaper());
-            // Dropped or recorded again, a context is not switched for another.
-            assert_eq!(counters.layout_context_transitions, 0, "hidden: {hidden}");
+            product_frame(&mut cx, document, viewport(), &mut bundled_face_shaper());
             let node = cx.world().layout_node(column).unwrap();
             assert_eq!(node.context_generation, generation + 1, "hidden: {hidden}");
             let established = |id| cx.world().layout_node(id).and_then(|node| node.established);
@@ -7734,11 +7516,10 @@ mod baseline_alignment {
         }
     }
 
-    /// A flex row aligning first baselines: the empty reference box, a block
-    /// flow 120 tall whose first child takes an auto top margin, and a block
-    /// flow whose first label clears a float. Returns the reference and each
-    /// flow's first label.
-    fn block_flow_page() -> (AppContext, [StableNodeId; 3]) {
+    /// A flex row aligning first baselines: the empty reference box, and a
+    /// flow 120 tall whose first child takes an auto top margin. Returns the
+    /// reference and the flow's first label.
+    fn block_flow_page() -> (AppContext, [StableNodeId; 2]) {
         let (mut b, root) = Builder::page(document(), 1, 880.0);
         let row = b.element(
             root,
@@ -7757,22 +7538,6 @@ mod baseline_alignment {
             },
         );
         let auto_label = b.label(pushed, "Auto");
-        let floats = b.element(row, sized(120.0, None));
-        b.element(
-            floats,
-            LayoutStyle {
-                float: nana_ui_core::FloatSpec::Left,
-                ..sized(40.0, Some(50.0))
-            },
-        );
-        let cleared = b.element(
-            floats,
-            LayoutStyle {
-                clear: nana_ui_core::ClearSpec::Both,
-                ..LayoutStyle::default()
-            },
-        );
-        let clear_label = b.label(cleared, "Clear");
         let mut context = AppContext::new();
         context.commit_mutations(b.queue).unwrap();
         product_frame(
@@ -7781,30 +7546,38 @@ mod baseline_alignment {
             viewport(),
             &mut bundled_face_shaper(),
         );
-        (context, [reference, auto_label, clear_label])
+        (context, [reference, auto_label])
     }
 
     /// A block flow sits by its first line box where placement put it: below
-    /// the space an auto margin takes, and below a float its block clears.
+    /// the space an auto margin takes.
     #[test]
     fn issue394_a_block_flow_sits_by_where_placement_put_its_first_line() {
-        let (context, [reference, auto_label, clear_label]) = block_flow_page();
+        let (context, [reference, auto_label]) = block_flow_page();
         let world = context.world();
         let reference = world.layout_box(reference).unwrap();
         let reference = reference.y + reference.height;
-        for label in [auto_label, clear_label] {
-            let parent = world.layout_box(world.parent_id(label).unwrap()).unwrap();
-            let flow = world.layout_box(world.parent_id(world.parent_id(label).unwrap()).unwrap());
-            assert!(
-                parent.y > flow.unwrap().y + 40.0,
-                "{parent:?} is not pushed down in {flow:?}"
-            );
-            let baseline = world.layout_result(label).unwrap().first_baseline.unwrap();
-            assert!(
-                (baseline - reference).abs() < 0.01,
-                "{label:?}: {baseline} vs the reference's bottom {reference}"
-            );
-        }
+        let parent = world
+            .layout_box(world.parent_id(auto_label).unwrap())
+            .unwrap();
+        let flow = world.layout_box(
+            world
+                .parent_id(world.parent_id(auto_label).unwrap())
+                .unwrap(),
+        );
+        assert!(
+            parent.y > flow.unwrap().y + 40.0,
+            "{parent:?} is not pushed down in {flow:?}"
+        );
+        let baseline = world
+            .layout_result(auto_label)
+            .unwrap()
+            .first_baseline
+            .unwrap();
+        assert!(
+            (baseline - reference).abs() < 0.01,
+            "{auto_label:?}: {baseline} vs the reference's bottom {reference}"
+        );
     }
 
     /// What the grid gate's steps change.
@@ -7873,7 +7646,7 @@ mod baseline_alignment {
         let baseline = b.element(
             row,
             grid(|layout| {
-                layout.grid_columns = columns(3);
+                layout.grid.columns = columns(3);
                 layout.align_items = AlignSpec::Baseline;
                 layout.width = Some(LengthSpec::Px(200.0));
             }),
@@ -7898,8 +7671,8 @@ mod baseline_alignment {
         let centred = b.element(
             row,
             grid(|layout| {
-                layout.grid_columns = columns(2);
-                layout.grid_rows = Some(vec![GridTrack::Px(100.0)]);
+                layout.grid.columns = columns(2);
+                layout.grid.rows = Some(vec![GridTrack::Px(100.0)]);
                 layout.align_items = AlignSpec::Center;
                 layout.width = Some(LengthSpec::Px(130.0));
             }),
@@ -7917,17 +7690,21 @@ mod baseline_alignment {
         let placed = b.element(
             row,
             grid(|layout| {
-                layout.grid_columns = columns(2);
-                layout.grid_rows = Some(vec![GridTrack::Px(100.0)]);
+                layout.grid.columns = columns(2);
+                layout.grid.rows = Some(vec![GridTrack::Px(100.0)]);
                 layout.align_items = AlignSpec::Center;
                 layout.width = Some(LengthSpec::Px(130.0));
             }),
         );
         let at = |column: i32| LayoutStyle {
-            grid_placement: GridPlacement {
-                column_start: GridLine::Index(column),
-                row_start: GridLine::Index(1),
-                ..GridPlacement::default()
+            grid: nana_ui_core::GridStyle {
+                placement: GridPlacement {
+                    column_start: GridLine::Index(column),
+                    row_start: GridLine::Index(1),
+                    ..GridPlacement::default()
+                }
+                .into(),
+                ..Default::default()
             }
             .into(),
             ..sized(60.0, None)

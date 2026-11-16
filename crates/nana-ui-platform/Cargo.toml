@@ -9,7 +9,7 @@ license = "MIT OR Apache-2.0"
 [lints]
 
 [features]
-default = ["clipboard", "fetch"]
+default = ["clipboard"]
 clipboard = ["dep:arboard", "dep:objc2-app-kit", "dep:windows-sys"]
 fetch = ["dep:url", "dep:ureq"]
 ws = ["dep:url", "dep:tungstenite"]

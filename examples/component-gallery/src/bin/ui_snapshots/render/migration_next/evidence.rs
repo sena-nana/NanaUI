@@ -17,8 +17,9 @@ pub(super) fn write_evidence(
         )
     });
     let accessibility = world.accessibility(runtime.target);
+    let accessibility = accessibility.as_deref();
     let text_input = world.text_input(runtime.target);
-    let geometry = world.component_geometry(runtime.target);
+    let geometry = world.text_input_geometry(runtime.target);
     // What the painter draws: each primitive put where its node stands on
     // the page, cut by its clips as drawn. The scene keeps a node's own
     // geometry and clips in the node's coordinates.
@@ -89,7 +90,7 @@ pub(super) fn write_evidence(
         match (bounds, geometry.as_ref()) {
             (
                 Some(bounds),
-                Some(nana_ui::runtime::ComponentGeometry::TextInput {
+                Some(nana_ui::runtime::TextInputGeometry {
                     text,
                     multiline,
                     selection,
@@ -248,18 +249,23 @@ pub(super) fn write_evidence(
                     && node.disabled == disabled
             });
             let option_bounds = world.layout_box(*id);
-            let option_geometry = world.component_geometry(*id);
+            let option_paint = world.widget_paint(*id);
             let option_surface = primitives
                 .iter()
                 .find(|primitive| primitive.node == *id && primitive.id.slot == 0);
             let option_text = primitives
                 .iter()
                 .find(|primitive| primitive.node == *id && primitive.id.slot == 2);
-            match (option_bounds, option_geometry) {
-                (
-                    Some(option_bounds),
-                    Some(nana_ui::runtime::ComponentGeometry::SelectionOption { label, .. }),
-                ) => {
+            let option_label = option_paint.as_ref().and_then(|paint| {
+                paint.ops.iter().find_map(|op| {
+                    (op.slot == 2).then_some(&op.op).and_then(|op| match op {
+                        nana_ui::runtime::WidgetPaintOp::Text(text) => Some(text),
+                        _ => None,
+                    })
+                })
+            });
+            match (option_bounds, option_label) {
+                (Some(option_bounds), Some(label)) => {
                     if !(option_bounds.height > 0.0
                         && (option_bounds.height - expected_option_height).abs() < 0.01)
                     {
@@ -331,13 +337,9 @@ pub(super) fn write_evidence(
                     // component for the opposite of its own contract. Checking
                     // both directions still catches a ring that was requested
                     // and never drawn, or drawn and never requested.
-                    let wants_ring = matches!(
-                        world.component_geometry(id),
-                        Some(nana_ui::runtime::ComponentGeometry::SelectionOption {
-                            focus_ring: Some(_),
-                            ..
-                        })
-                    );
+                    let wants_ring = world
+                        .widget_paint(id)
+                        .is_some_and(|paint| paint.ops.iter().any(|op| op.slot == 7));
                     match ring {
                         None if !wants_ring => {}
                         Some(_) if !wants_ring => {
@@ -393,145 +395,176 @@ pub(super) fn write_evidence(
         }),
         _ => true,
     };
-    let feedback_geometry_ok = match geometry.as_ref() {
-        Some(nana_ui::runtime::ComponentGeometry::StatusBadge {
-            indicator, label, ..
-        }) if fixture.component == Component::StatusBadge => {
-            label.content.as_ref() == status_badge_label(fixture.state)
-                && (label.font_size - nana_ui::theme::type_scale::HINT).abs() < 0.01
-                && label.font_weight == Some(nana_ui::theme::type_scale::MEDIUM)
-                && label.bounds.x - (indicator.x + indicator.width) >= 4.9
-                && primitive(0).is_some_and(|primitive| {
-                    matches!(primitive.kind, ScenePrimitiveKind::Quad { .. })
+    let target_paint = world.widget_paint(runtime.target);
+    let paint_text = |slot: u64| {
+        target_paint.as_ref().and_then(|paint| {
+            paint.ops.iter().find_map(|op| {
+                (op.slot == slot).then_some(&op.op).and_then(|op| match op {
+                    nana_ui::runtime::WidgetPaintOp::Text(text) => Some(text),
+                    _ => None,
                 })
-                && primitive(2).is_some_and(|primitive| {
-                    matches!(
-                        &primitive.kind,
-                        ScenePrimitiveKind::Text {
-                            size,
-                            weight: Some(nana_ui::theme::type_scale::MEDIUM),
-                            ..
-                        } if (*size - nana_ui::theme::type_scale::HINT).abs() < 0.01
-                    )
+            })
+        })
+    };
+    let paint_quad = |slot: u64| {
+        target_paint.as_ref().and_then(|paint| {
+            paint.ops.iter().find_map(|op| {
+                (op.slot == slot).then_some(&op.op).and_then(|op| match op {
+                    nana_ui::runtime::WidgetPaintOp::Quad(quad) => Some(quad),
+                    _ => None,
                 })
-                && primitive(3).is_some_and(|primitive| {
-                    matches!(
-                        primitive.kind,
-                        ScenePrimitiveKind::Quad {
-                            background: Some(_),
-                            border_width,
-                            ..
-                        } if border_width == 0.0
-                    )
-                })
-        }
-        Some(nana_ui::runtime::ComponentGeometry::ValidationMessage {
-            indicator, label, ..
-        }) if fixture.component == Component::ValidationMessage => {
-            // The message leaves its weight to the theme; geometry and scene
-            // carry the theme's resolved regular weight.
-            label.content.as_ref() == validation_message(fixture.state)
-                && (label.font_size - nana_ui::theme::type_scale::HINT).abs() < 0.01
-                && label.font_weight == Some(nana_ui::theme::type_scale::REGULAR)
-                && label.bounds.x - (indicator.x + indicator.width) >= 4.9
-                && primitive(2).is_some_and(|primitive| {
-                    matches!(
-                        &primitive.kind,
-                        ScenePrimitiveKind::Text {
-                            size,
-                            weight: Some(nana_ui::theme::type_scale::REGULAR),
-                            ..
-                        } if (*size - nana_ui::theme::type_scale::HINT).abs() < 0.01
-                    )
-                })
-                && primitive(3).is_some_and(|primitive| {
-                    matches!(
-                        primitive.kind,
-                        ScenePrimitiveKind::Quad {
-                            background: None,
-                            border_color: Some(_),
-                            border_width,
-                            ..
-                        } if (border_width - 1.0).abs() < 0.01
-                    )
-                })
-        }
-        Some(nana_ui::runtime::ComponentGeometry::EmptyState {
-            root_clip,
-            content_clip,
-            icon,
-            title,
-            message,
-            action,
-        }) if fixture.component == Component::EmptyState => {
-            let expects_content = fixture.state != "title-only";
-            let intrinsic_scene_clipped = [2_u64, 3, 4].into_iter().all(|slot| {
-                primitive(slot).is_none_or(|primitive| has_clip(primitive, *content_clip))
-            });
-            let action_scene_clipped = world
-                .node(runtime.target)
-                .and_then(|node| node.children.first().copied())
-                .is_none_or(|action| {
-                    primitives
-                        .iter()
-                        .filter(|primitive| primitive.node == action)
-                        .all(|primitive| has_clip(primitive, *root_clip))
-                });
-            let ordering_ok = icon
-                .as_ref()
-                .is_none_or(|(_, icon, _)| icon.y + icon.height <= title.bounds.y + 0.01)
-                && message.as_ref().is_none_or(|message| {
-                    title.bounds.y + title.bounds.height <= message.bounds.y + 0.01
-                        && action.is_none_or(|action| {
-                            message.bounds.y + message.bounds.height <= action.y + 0.01
-                        })
-                });
-            let alignment_ok = if fixture.state == "compact" {
-                (title.bounds.x - content_clip.x).abs() < 0.01
-            } else {
-                let title_center = title.bounds.x + title.bounds.width / 2.0;
-                let clip_center = content_clip.x + content_clip.width / 2.0;
-                (title_center - clip_center).abs() < 0.01
-            };
-            let wrap_ok = !matches!(fixture.state, "narrow-cjk" | "extreme-clip")
-                || title.bounds.height > title.font_size * 1.2
-                || message
-                    .as_ref()
-                    .is_some_and(|message| message.bounds.height > message.font_size * 1.2);
-            let extreme_clip_ok = fixture.state != "extreme-clip"
-                || message.as_ref().is_some_and(|message| {
-                    message.bounds.y + message.bounds.height > content_clip.y + content_clip.height
-                });
-            title.content.as_ref() == empty_title(fixture.state)
-                && (title.font_size
-                    - if fixture.state == "compact" {
-                        12.0
-                    } else {
-                        13.0
+            })
+        })
+    };
+    let feedback_geometry_ok = match fixture.component {
+        Component::StatusBadge => paint_quad(3)
+            .zip(paint_text(2))
+            .is_some_and(|(indicator, label)| {
+                label.content.as_ref() == status_badge_label(fixture.state)
+                    && (label.font_size - nana_ui::theme::type_scale::HINT).abs() < 0.01
+                    && label.font_weight == Some(nana_ui::theme::type_scale::MEDIUM)
+                    && label.bounds.x - (indicator.rect.x + indicator.rect.width) >= 4.9
+                    && primitive(0).is_some_and(|primitive| {
+                        matches!(primitive.kind, ScenePrimitiveKind::Quad { .. })
                     })
-                .abs()
-                    < 0.01
-                && title.font_weight == Some(600)
-                && (icon.is_some() == expects_content)
-                && (message.is_some() == expects_content)
-                && (action.is_some() == (fixture.state == "complete-action"))
-                && intrinsic_scene_clipped
-                && action_scene_clipped
-                && ordering_ok
-                && alignment_ok
-                && wrap_ok
-                && extreme_clip_ok
+                    && primitive(2).is_some_and(|primitive| {
+                        matches!(
+                            &primitive.kind,
+                            ScenePrimitiveKind::Text {
+                                size,
+                                weight: Some(nana_ui::theme::type_scale::MEDIUM),
+                                ..
+                            } if (*size - nana_ui::theme::type_scale::HINT).abs() < 0.01
+                        )
+                    })
+                    && primitive(3).is_some_and(|primitive| {
+                        matches!(
+                            primitive.kind,
+                            ScenePrimitiveKind::Quad {
+                                background: Some(_),
+                                border_width,
+                                ..
+                            } if border_width == 0.0
+                        )
+                    })
+            }),
+        Component::ValidationMessage => {
+            paint_quad(3)
+                .zip(paint_text(2))
+                .is_some_and(|(indicator, label)| {
+                    // The message leaves its weight to the theme; geometry and scene
+                    // carry the theme's resolved regular weight.
+                    label.content.as_ref() == validation_message(fixture.state)
+                        && (label.font_size - nana_ui::theme::type_scale::HINT).abs() < 0.01
+                        && label.font_weight == Some(nana_ui::theme::type_scale::REGULAR)
+                        && label.bounds.x - (indicator.rect.x + indicator.rect.width) >= 4.9
+                        && primitive(2).is_some_and(|primitive| {
+                            matches!(
+                                &primitive.kind,
+                                ScenePrimitiveKind::Text {
+                                    size,
+                                    weight: Some(nana_ui::theme::type_scale::REGULAR),
+                                    ..
+                                } if (*size - nana_ui::theme::type_scale::HINT).abs() < 0.01
+                            )
+                        })
+                        && primitive(3).is_some_and(|primitive| {
+                            matches!(
+                                primitive.kind,
+                                ScenePrimitiveKind::Quad {
+                                    background: None,
+                                    border_color: Some(_),
+                                    border_width,
+                                    ..
+                                } if (border_width - 1.0).abs() < 0.01
+                            )
+                        })
+                })
         }
-        Some(nana_ui::runtime::ComponentGeometry::LabeledValue {
-            label,
-            value,
-            action,
-        }) if fixture.component == Component::LabeledValue => {
+        Component::EmptyState => world.empty_state_geometry(runtime.target).is_some_and(
+            |nana_ui::runtime::EmptyStateGeometry {
+                 root_clip,
+                 content_clip,
+                 icon,
+                 title,
+                 message,
+                 action,
+             }| {
+                let expects_content = fixture.state != "title-only";
+                let intrinsic_scene_clipped = [2_u64, 3, 4].into_iter().all(|slot| {
+                    primitive(slot).is_none_or(|primitive| has_clip(primitive, content_clip))
+                });
+                let action_scene_clipped = world
+                    .node(runtime.target)
+                    .and_then(|node| node.children.first().copied())
+                    .is_none_or(|action| {
+                        primitives
+                            .iter()
+                            .filter(|primitive| primitive.node == action)
+                            .all(|primitive| has_clip(primitive, root_clip))
+                    });
+                let ordering_ok = icon
+                    .as_ref()
+                    .is_none_or(|(_, icon, _)| icon.y + icon.height <= title.bounds.y + 0.01)
+                    && message.as_ref().is_none_or(|message| {
+                        title.bounds.y + title.bounds.height <= message.bounds.y + 0.01
+                            && action.is_none_or(|action| {
+                                message.bounds.y + message.bounds.height <= action.y + 0.01
+                            })
+                    });
+                let alignment_ok = if fixture.state == "compact" {
+                    (title.bounds.x - content_clip.x).abs() < 0.01
+                } else {
+                    let title_center = title.bounds.x + title.bounds.width / 2.0;
+                    let clip_center = content_clip.x + content_clip.width / 2.0;
+                    (title_center - clip_center).abs() < 0.01
+                };
+                let wrap_ok = !matches!(fixture.state, "narrow-cjk" | "extreme-clip")
+                    || title.bounds.height > title.font_size * 1.2
+                    || message
+                        .as_ref()
+                        .is_some_and(|message| message.bounds.height > message.font_size * 1.2);
+                let extreme_clip_ok = fixture.state != "extreme-clip"
+                    || message.as_ref().is_some_and(|message| {
+                        message.bounds.y + message.bounds.height
+                            > content_clip.y + content_clip.height
+                    });
+                title.content.as_ref() == empty_title(fixture.state)
+                    && (title.font_size
+                        - if fixture.state == "compact" {
+                            12.0
+                        } else {
+                            13.0
+                        })
+                    .abs()
+                        < 0.01
+                    && title.font_weight == Some(600)
+                    && (icon.is_some() == expects_content)
+                    && (message.is_some() == expects_content)
+                    && (action.is_some() == (fixture.state == "complete-action"))
+                    && intrinsic_scene_clipped
+                    && action_scene_clipped
+                    && ordering_ok
+                    && alignment_ok
+                    && wrap_ok
+                    && extreme_clip_ok
+            },
+        ),
+        Component::LabeledValue => paint_text(2).zip(paint_text(3)).is_some_and(|(label, value)| {
             let expected_weight = if fixture.state == "strong" {
                 nana_ui::theme::type_scale::SEMIBOLD
             } else {
                 nana_ui::theme::type_scale::MEDIUM
             };
+            let action = world
+                .widget_visual_as::<nana_ui::runtime::LabeledValueVisual>(runtime.target)
+                .and_then(|visual| visual.action)
+                .filter(|slot| {
+                    world
+                        .node_style(*slot)
+                        .is_none_or(|style| !style.layout.omits_box())
+                })
+                .and_then(|slot| world.layout_box(slot));
             label.content.as_ref() == "Revision"
                 && value.content.as_ref() == "42"
                 && (label.font_size - nana_ui::theme::type_scale::HINT).abs() < 0.01
@@ -547,14 +580,8 @@ pub(super) fn write_evidence(
                 && primitive(3).is_some_and(|primitive| {
                     matches!(primitive.kind, ScenePrimitiveKind::Text { size, weight: Some(weight), .. } if (size - nana_ui::theme::type_scale::META).abs() < 0.01 && weight == expected_weight)
                 })
-        }
-        _ => !matches!(
-            fixture.component,
-            Component::StatusBadge
-                | Component::ValidationMessage
-                | Component::EmptyState
-                | Component::LabeledValue
-        ),
+        }),
+        _ => true,
     };
     let tooltip = matches!(
         fixture.component,
@@ -697,11 +724,9 @@ pub(super) fn write_evidence(
         || fixture.state != "dismissible"
         || world.node(runtime.target).is_some_and(|node| {
             node.children.iter().any(|child| {
-                matches!(
-                    world.standard_visual(*child),
-                    Some(nana_ui::runtime::StandardVisual::Icon { icon, .. })
-                        if icon == Icon::Close
-                )
+                world
+                    .widget_visual_as::<nana_ui::runtime::IconVisual>(*child)
+                    .is_some_and(|visual| visual.icon == Icon::Close)
             })
         });
     let action_state = (fixture.component == Component::TextInput && fixture.state == "invalid")
@@ -787,7 +812,8 @@ pub(super) fn write_evidence(
             | Component::ScrubField
             | Component::PropertyGrid
             | Component::TimelineEditor
-    ) || geometry.is_some();
+    ) || geometry.is_some()
+        || target_paint.is_some();
     let layout_ok = bounds.is_some_and(|bounds| match fixture.component {
         Component::Text if matches!(fixture.state, "wrap" | "ellipsis") => {
             (bounds.width - 180.0).abs() < 0.01
@@ -825,10 +851,7 @@ pub(super) fn write_evidence(
         }
         Component::Chip => bounds.height + 0.01 >= UI_METRICS.compact_control_height,
         Component::Dialog | Component::ConfirmDialog | Component::Drawer => {
-            matches!(
-                geometry,
-                Some(nana_ui::runtime::ComponentGeometry::ModalFrame { .. })
-            )
+            world.modal_frame_geometry(runtime.target).is_some()
         }
         _ => true,
     });
@@ -919,7 +942,7 @@ pub(super) fn write_evidence(
                     "secure" => accessibility.is_some_and(|node| node.value.is_none()),
                     "selection" => matches!(
                         geometry,
-                        Some(nana_ui::runtime::ComponentGeometry::TextInput {
+                        Some(nana_ui::runtime::TextInputGeometry {
                             ref selection,
                             ..
                         }) if !selection.is_empty()

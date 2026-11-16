@@ -9,7 +9,7 @@
   "tolerance_px": 2,
   "tree": {
     "id": "root",
-    "style": "display:block;width:600px",
+    "style": "width:600px",
     "children": [
       {
         "id": "ga-row",
@@ -25,21 +25,21 @@
             "children": [
               {
                 "id": "ga-p",
-                "style": "display:block;margin-top:5px",
+                "style": "margin-top:5px",
                 "children": [
                   {
                     "id": "ga-pa",
-                    "style": "display:inline-block;width:20px;height:20px"
+                    "style": "display:inline-flex;width:20px;height:20px"
                   }
                 ]
               },
               {
                 "id": "ga-q",
-                "style": "display:block",
+                "style": "",
                 "children": [
                   {
                     "id": "ga-qa",
-                    "style": "display:inline-block;width:40px;height:40px"
+                    "style": "display:inline-flex;width:40px;height:40px"
                   }
                 ]
               }
@@ -61,21 +61,21 @@
             "children": [
               {
                 "id": "gb-p",
-                "style": "display:block",
+                "style": "",
                 "children": [
                   {
                     "id": "gb-pa",
-                    "style": "display:inline-block;width:20px;height:20px"
+                    "style": "display:inline-flex;width:20px;height:20px"
                   }
                 ]
               },
               {
                 "id": "gb-q",
-                "style": "display:block",
+                "style": "",
                 "children": [
                   {
                     "id": "gb-qa",
-                    "style": "display:inline-block;width:40px;height:40px"
+                    "style": "display:inline-flex;width:40px;height:40px"
                   }
                 ]
               }
@@ -101,11 +101,11 @@
               },
               {
                 "id": "gc-q",
-                "style": "display:block",
+                "style": "",
                 "children": [
                   {
                     "id": "gc-qa",
-                    "style": "display:inline-block;width:40px;height:40px"
+                    "style": "display:inline-flex;width:40px;height:40px"
                   }
                 ]
               }
@@ -127,21 +127,21 @@
             "children": [
               {
                 "id": "ge-p",
-                "style": "display:block;grid-row:2;grid-column:2",
+                "style": "grid-row:2;grid-column:2",
                 "children": [
                   {
                     "id": "ge-pa",
-                    "style": "display:inline-block;width:20px;height:20px"
+                    "style": "display:inline-flex;width:20px;height:20px"
                   }
                 ]
               },
               {
                 "id": "ge-q",
-                "style": "display:block;grid-row:2;grid-column:1",
+                "style": "grid-row:2;grid-column:1",
                 "children": [
                   {
                     "id": "ge-qa",
-                    "style": "display:inline-block;width:40px;height:40px"
+                    "style": "display:inline-flex;width:40px;height:40px"
                   }
                 ]
               }
@@ -163,61 +163,61 @@
             "children": [
               {
                 "id": "gf-a",
-                "style": "display:block",
+                "style": "",
                 "children": [
                   {
                     "id": "gf-aa",
-                    "style": "display:inline-block;width:20px;height:20px"
+                    "style": "display:inline-flex;width:20px;height:20px"
                   }
                 ]
               },
               {
                 "id": "gf-b",
-                "style": "display:block",
+                "style": "",
                 "children": [
                   {
                     "id": "gf-ba",
-                    "style": "display:inline-block;width:40px;height:40px"
+                    "style": "display:inline-flex;width:40px;height:40px"
                   }
                 ]
               },
               {
                 "id": "gf-c",
-                "style": "display:block",
+                "style": "",
                 "children": [
                   {
                     "id": "gf-ca",
-                    "style": "display:inline-block;width:10px;height:10px"
+                    "style": "display:inline-flex;width:10px;height:10px"
                   }
                 ]
               },
               {
                 "id": "gf-d",
-                "style": "display:block",
+                "style": "",
                 "children": [
                   {
                     "id": "gf-da",
-                    "style": "display:inline-block;width:30px;height:30px"
+                    "style": "display:inline-flex;width:30px;height:30px"
                   }
                 ]
               },
               {
                 "id": "gf-e",
-                "style": "display:block;align-self:start",
+                "style": "align-self:start",
                 "children": [
                   {
                     "id": "gf-ea",
-                    "style": "display:inline-block;width:10px;height:10px"
+                    "style": "display:inline-flex;width:10px;height:10px"
                   }
                 ]
               },
               {
                 "id": "gf-f",
-                "style": "display:block",
+                "style": "",
                 "children": [
                   {
                     "id": "gf-fa",
-                    "style": "display:inline-block;width:50px;height:50px"
+                    "style": "display:inline-flex;width:50px;height:50px"
                   }
                 ]
               }
@@ -239,21 +239,21 @@
             "children": [
               {
                 "id": "gh-p",
-                "style": "display:block",
+                "style": "",
                 "children": [
                   {
                     "id": "gh-pa",
-                    "style": "display:inline-block;width:20px;height:20px"
+                    "style": "display:inline-flex;width:20px;height:20px"
                   }
                 ]
               },
               {
                 "id": "gh-q",
-                "style": "display:block",
+                "style": "",
                 "children": [
                   {
                     "id": "gh-qa",
-                    "style": "display:inline-block;width:40px;height:40px"
+                    "style": "display:inline-flex;width:40px;height:40px"
                   }
                 ]
               }
@@ -275,31 +275,31 @@
             "children": [
               {
                 "id": "gs-p",
-                "style": "display:block;grid-row:1 / span 2",
+                "style": "grid-row:1 / span 2",
                 "children": [
                   {
                     "id": "gs-pa",
-                    "style": "display:inline-block;width:20px;height:20px"
+                    "style": "display:inline-flex;width:20px;height:20px"
                   }
                 ]
               },
               {
                 "id": "gs-q",
-                "style": "display:block",
+                "style": "",
                 "children": [
                   {
                     "id": "gs-qa",
-                    "style": "display:inline-block;width:40px;height:40px"
+                    "style": "display:inline-flex;width:40px;height:40px"
                   }
                 ]
               },
               {
                 "id": "gs-r",
-                "style": "display:block",
+                "style": "",
                 "children": [
                   {
                     "id": "gs-ra",
-                    "style": "display:inline-block;width:30px;height:30px"
+                    "style": "display:inline-flex;width:30px;height:30px"
                   }
                 ]
               }

@@ -1483,7 +1483,10 @@ fn shared_device_features(available: wgpu::Features, requested: wgpu::Features) 
 /// (`scene_paint::precompiled`). Only NanaUI creates passthrough modules, from
 /// DXIL built into the binary; skin and application shaders stay WGSL.
 fn precompiled_stage_features(adapter: &wgpu::Adapter) -> wgpu::Features {
-    if adapter.get_info().backend == wgpu::Backend::Dx12 {
+    if matches!(
+        adapter.get_info().backend,
+        wgpu::Backend::Dx12 | wgpu::Backend::Metal
+    ) {
         adapter.features() & wgpu::Features::PASSTHROUGH_SHADERS
     } else {
         wgpu::Features::empty()

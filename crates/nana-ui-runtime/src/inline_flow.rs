@@ -37,6 +37,8 @@ impl InlineFlow {
     }
 }
 impl ComponentView for InlineFlow {
+    const TYPE_ID: Option<&'static str> = Some(crate::component_descriptors::INLINE_FLOW.type_id);
+
     fn node_kind(&self) -> NodeKind {
         NodeKind::Text
     }

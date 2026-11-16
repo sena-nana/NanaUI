@@ -4,14 +4,20 @@ use std::sync::Arc;
 use nana_ui_core::UI_METRICS;
 use nana_ui_core::{
     FlexDirection, Icon, LengthSpec, OverflowSpec, PopoverAlignment, PopoverPlacement,
-    PositionSpec, SemanticColorRole, SemanticPalette, UI_BASE_TEXT_SIZE,
+    PositionSpec, SemanticColorRole, SemanticPalette, StyleModelRef, UI_BASE_TEXT_SIZE,
 };
 
 use crate::view_components::project_common;
+use crate::widget_visual::push_component_image;
 use crate::{
-    AccessibilityRole, AccessibilityState, ComponentElevation, ComponentGeometry,
-    ComponentTextRegion, InteractionState, LayoutBox, MenuSurfaceKind, MutationQueue, NodeKind,
-    NodeStyle, StableNodeId, StandardVisual, TriggeredMenuOverlay, UiWorld,
+    AccessibilityRole, AccessibilityState, CONTEXT_MENU_HINTS, CONTEXT_MENU_IMAGE_BACKDROPS,
+    CONTEXT_MENU_IMAGES, ComponentElevation, ComponentTextRegion, ComponentTriggerSurface,
+    ComputedStyle, InteractionState, LayoutBox, MenuSurfaceKind, MutationQueue, NodeKind,
+    NodeStyle, SelectOptionData, SelectOptionGeometry, StableNodeId,
+    TRIGGERED_OVERLAY_SURFACE_SLOT, TextHorizontalAlignment, TextVerticalAlignment,
+    TriggeredMenuOverlay, UiWorld, WidgetFloatingOverlay, WidgetFloatingOverlayKind, WidgetGlyph,
+    WidgetIcon, WidgetPaintCtx, WidgetPaintOp, WidgetPaintOutput, WidgetQuad, WidgetTaggedOp,
+    WidgetText, WidgetVisual, widget_collection_slot,
 };
 
 pub(crate) const POPOVER_WIDTH: f32 = 240.0;
@@ -277,6 +283,8 @@ impl Default for Popover {
 }
 
 impl crate::ComponentView for Popover {
+    const TYPE_ID: Option<&'static str> = Some(crate::component_descriptors::POPOVER.type_id);
+
     const BEHAVIOR: crate::TypeBehavior<Self> = crate::TypeBehavior {
         hooks: Some(|hooks| {
             crate::framework::routes::popover(hooks);
@@ -450,6 +458,8 @@ impl Default for ActionMenu {
 }
 
 impl crate::ComponentView for ActionMenu {
+    const TYPE_ID: Option<&'static str> = Some(crate::component_descriptors::ACTION_MENU.type_id);
+
     fn wants_metrics_reproject() -> bool {
         true
     }
@@ -568,7 +578,7 @@ pub(crate) fn project_menu_surface(
     let labelled_gap = labelled.then(|| world.theme().spacing().sm);
     let has_chrome = open || has_trigger;
     if has_chrome {
-        let visual = StandardVisual::MenuSurface {
+        let visual = MenuSurfaceVisual {
             kind,
             open,
             // The label is the accessible name only while content draws it.
@@ -591,11 +601,11 @@ pub(crate) fn project_menu_surface(
             rows: Arc::from([]),
             highlighted: None,
         };
-        if world.standard_visual(id) != Some(visual.clone()) {
-            mutations.set_standard_visual(id, Some(visual));
+        if world.widget_visual_as::<MenuSurfaceVisual>(id) != Some(&visual) {
+            mutations.set_widget_visual(id, Some(visual));
         }
-    } else if world.standard_visual(id).is_some() {
-        mutations.set_standard_visual(id, None);
+    } else if world.widget_visual(id).is_some() {
+        mutations.set_widget_visual::<MenuSurfaceVisual>(id, None);
     }
     // The trigger label is measured like any other button label, so the closed
     // surface can size itself to the text instead of a fixed box. Icon
@@ -702,21 +712,16 @@ pub(crate) fn project_menu_surface(
 /// `None` while closed, and for a menu with no trigger, whose surface is its
 /// own in-flow box.
 pub(crate) fn hanging_surface(world: &UiWorld, id: StableNodeId) -> Option<LayoutBox> {
-    let crate::StandardVisual::MenuSurface {
+    let MenuSurfaceVisual {
         open: true,
         overlay: Some(overlay),
-        trigger,
-        trigger_icon,
-        trigger_image,
         ..
-    } = world.standard_visual_ref(id)?
+    } = world.widget_visual_as::<MenuSurfaceVisual>(id)?
     else {
         return None;
     };
-    let has_trigger = trigger.is_some()
-        || trigger_icon.is_some()
-        || trigger_image.is_some()
-        || overlay.trigger_content.is_some();
+    let visual = world.widget_visual_as::<MenuSurfaceVisual>(id)?;
+    let has_trigger = visual.has_trigger();
     let surface = overlay_surface_from_items(world, id, Some(overlay));
     (has_trigger && surface.width > 0.0 && surface.height > 0.0).then_some(surface)
 }
@@ -931,7 +936,7 @@ pub(crate) fn project_anchored_menu(
         mutations.set_overlay_mount(id, Some(overlay_mount));
     }
     if open {
-        let visual = StandardVisual::MenuSurface {
+        let visual = MenuSurfaceVisual {
             kind,
             open,
             trigger: None,
@@ -943,11 +948,11 @@ pub(crate) fn project_anchored_menu(
             rows: Arc::from([]),
             highlighted: None,
         };
-        if world.standard_visual(id) != Some(visual.clone()) {
-            mutations.set_standard_visual(id, Some(visual));
+        if world.widget_visual_as::<MenuSurfaceVisual>(id) != Some(&visual) {
+            mutations.set_widget_visual(id, Some(visual));
         }
-    } else if world.standard_visual(id).is_some() {
-        mutations.set_standard_visual(id, None);
+    } else if world.widget_visual(id).is_some() {
+        mutations.set_widget_visual::<MenuSurfaceVisual>(id, None);
     }
     let mut style = style.clone();
     Arc::make_mut(&mut style.layout).hidden = !open;
@@ -968,6 +973,533 @@ pub(crate) fn project_anchored_menu(
     );
 }
 
+/// Visual contract attached to triggered menus, action menus, hover cards,
+/// and pointer-anchored context menus.
+#[derive(Debug, Clone, PartialEq)]
+pub struct MenuSurfaceVisual {
+    pub kind: MenuSurfaceKind,
+    pub open: bool,
+    pub trigger: Option<Arc<str>>,
+    pub trigger_icon: Option<Icon>,
+    /// Host-texture trigger (hover-card avatar). Painted by the node's own
+    /// custom render slot; the label never becomes a text region.
+    pub trigger_image: Option<Arc<str>>,
+    pub gap: f32,
+    /// Present when this node is an in-flow trigger; the menu items layout
+    /// as a separate overlay column and must not share this node's box.
+    pub overlay: Option<TriggeredMenuOverlay>,
+    pub query: Option<Arc<str>>,
+    pub rows: Arc<[SelectOptionData]>,
+    pub highlighted: Option<usize>,
+}
+
+/// Projected geometry for a [`MenuSurfaceVisual`].
+#[derive(Debug, Clone, PartialEq)]
+pub struct MenuSurfaceGeometry {
+    pub trigger: Option<ComponentTextRegion>,
+    pub trigger_icon: Option<(Icon, LayoutBox)>,
+    /// Image trigger (hover-card avatar): the chrome is circular and the
+    /// texture rides the node's own custom render slot.
+    pub trigger_image: Option<Arc<str>>,
+    pub trigger_surface: Option<ComponentTriggerSurface>,
+    pub surface: LayoutBox,
+    pub search: Option<ComponentTextRegion>,
+    pub search_field: Option<LayoutBox>,
+    pub options: Vec<SelectOptionGeometry>,
+    pub elevation: ComponentElevation,
+    pub background: [f32; 4],
+    pub border: [f32; 4],
+}
+
+impl MenuSurfaceGeometry {
+    /// Indexed access to projected context-menu rows.
+    pub fn option(&self, index: usize) -> Option<&SelectOptionGeometry> {
+        self.options.get(index)
+    }
+}
+
+impl MenuSurfaceVisual {
+    pub(crate) fn has_trigger(&self) -> bool {
+        self.trigger.is_some()
+            || self.trigger_icon.is_some()
+            || self.trigger_image.is_some()
+            || self.overlay.is_some_and(|o| o.trigger_content.is_some())
+    }
+
+    pub(crate) fn geometry_for(
+        &self,
+        id: StableNodeId,
+        world: &UiWorld,
+        bounds: LayoutBox,
+        style: &ComputedStyle,
+        style_model: StyleModelRef,
+        theme: &nana_ui_core::CompiledTheme,
+    ) -> MenuSurfaceGeometry {
+        if self.kind == MenuSurfaceKind::ContextMenu
+            && (self.query.is_some() || !self.rows.is_empty())
+        {
+            return crate::menus::context_menu_geometry_in(
+                bounds,
+                self.query.as_ref(),
+                &self.rows,
+                self.highlighted,
+                &style_model.palette,
+                style_model.metrics,
+                &world.framework_strings().menu_search,
+                world.chrome_text_measure(id),
+                theme,
+            );
+        }
+        let trigger_content = self.overlay.and_then(|overlay| overlay.trigger_content);
+        let has_trigger = self.has_trigger();
+        let surface = if has_trigger {
+            if self.open {
+                overlay_surface_from_items(world, id, self.overlay.as_ref())
+            } else {
+                LayoutBox::default()
+            }
+        } else {
+            bounds
+        };
+        menu_surface_geometry(
+            bounds,
+            self.trigger.as_ref(),
+            self.trigger_icon,
+            self.trigger_image.as_ref(),
+            trigger_content.is_some(),
+            self.overlay
+                .is_some_and(|overlay| overlay.trigger_label_gap.is_some()),
+            style,
+            &style_model.palette,
+            surface,
+            &world.component_content_parts(id),
+        )
+    }
+}
+
+impl WidgetVisual for MenuSurfaceVisual {
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+
+    fn dyn_eq(&self, other: &dyn std::any::Any) -> bool {
+        other.downcast_ref::<Self>() == Some(self)
+    }
+
+    fn is_menu_surface(&self) -> bool {
+        true
+    }
+
+    fn geometry_reads_page(&self) -> bool {
+        self.open
+    }
+
+    fn has_virtual_nodes(&self) -> bool {
+        self.open && self.kind == MenuSurfaceKind::ContextMenu
+    }
+
+    fn is_action_menu_open(&self) -> bool {
+        self.open && self.kind == MenuSurfaceKind::ActionMenu
+    }
+
+    fn closed_menu_hides(&self, child: StableNodeId) -> bool {
+        !self.open && self.overlay.and_then(|overlay| overlay.trigger_content) != Some(child)
+    }
+
+    fn triggered_menu_overlay(&self) -> Option<TriggeredMenuOverlay> {
+        self.open
+            .then_some(self.overlay)
+            .flatten()
+            .filter(|_| self.has_trigger())
+    }
+
+    fn overlay_mount(&self) -> Option<nana_ui_core::OverlayMount> {
+        self.overlay.map(|overlay| overlay.overlay_mount)
+    }
+
+    fn paint_depends_on_child(&self, child: StableNodeId) -> bool {
+        self.open
+            && self
+                .overlay
+                .is_some_and(|overlay| overlay.trigger_content != Some(child))
+    }
+
+    fn presentation_pivot(
+        &self,
+        id: StableNodeId,
+        world: &UiWorld,
+        bounds: LayoutBox,
+    ) -> Option<[f32; 2]> {
+        if !self.open || !self.has_trigger() {
+            return None;
+        }
+        let surface = overlay_surface_from_items(world, id, self.overlay.as_ref());
+        let x = (bounds.x + bounds.width / 2.0)
+            .min(surface.x + surface.width)
+            .max(surface.x);
+        let y = (bounds.y + bounds.height / 2.0)
+            .min(surface.y + surface.height)
+            .max(surface.y);
+        Some([x - bounds.x, y - bounds.y])
+    }
+
+    fn invalidates_node_text_constraint(&self) -> bool {
+        true
+    }
+
+    fn content_layout_changed(&self, prev: Option<&dyn std::any::Any>) -> bool {
+        prev.and_then(|prev| prev.downcast_ref::<Self>())
+            .is_some_and(|old| {
+                old.overlay.and_then(|overlay| overlay.trigger_icon_size)
+                    != self.overlay.and_then(|overlay| overlay.trigger_icon_size)
+            })
+    }
+
+    fn solve_content_parts(
+        &self,
+        id: StableNodeId,
+        world: &UiWorld,
+        bounds: LayoutBox,
+        _content: LayoutBox,
+        _writing: nana_ui_core::WritingContext,
+        _own_frame: bool,
+    ) -> Option<crate::layout_engine::parts::ContentParts> {
+        use crate::layout_engine::parts::{NO_CONTENT_PARTS, content_parts};
+        if let (Some(_), Some(gap)) = (
+            self.trigger_icon,
+            self.overlay.and_then(|overlay| overlay.trigger_label_gap),
+        ) {
+            let padding = world.used_layout_padding(id);
+            let extent = self
+                .overlay
+                .and_then(|overlay| overlay.trigger_icon_size)
+                .unwrap_or(TRIGGER_ICON_SIZE)
+                .min(bounds.height);
+            let lane = bounds.x + padding.left;
+            return Some(content_parts([
+                Some(crate::LayoutPart::new(
+                    crate::LayoutPartKind::LeadingContent,
+                    LayoutBox {
+                        x: lane - gap - extent,
+                        y: bounds.y + (bounds.height - extent) / 2.0,
+                        width: extent,
+                        height: extent,
+                    },
+                )),
+                Some(crate::LayoutPart::new(
+                    crate::LayoutPartKind::TextContent,
+                    LayoutBox {
+                        x: lane,
+                        width: (bounds.width - padding.left - padding.right).max(0.0),
+                        ..bounds
+                    },
+                )),
+            ]));
+        }
+        if self.trigger_icon.is_some() {
+            let extent = self
+                .overlay
+                .and_then(|overlay| overlay.trigger_icon_size)
+                .unwrap_or(TRIGGER_ICON_SIZE)
+                .min(bounds.width)
+                .min(bounds.height);
+            return Some(content_parts([Some(crate::LayoutPart::new(
+                crate::LayoutPartKind::LeadingContent,
+                LayoutBox {
+                    x: bounds.x + (bounds.width - extent) / 2.0,
+                    y: bounds.y + (bounds.height - extent) / 2.0,
+                    width: extent,
+                    height: extent,
+                },
+            ))]));
+        }
+        if self.trigger_image.is_none()
+            && self.trigger.as_ref().is_some_and(|label| !label.is_empty())
+        {
+            let padding = world.used_layout_padding(id);
+            return Some(content_parts([Some(crate::LayoutPart::new(
+                crate::LayoutPartKind::TextContent,
+                LayoutBox {
+                    x: bounds.x + padding.left,
+                    width: (bounds.width - padding.left - padding.right).max(0.0),
+                    ..bounds
+                },
+            ))]));
+        }
+        Some(NO_CONTENT_PARTS)
+    }
+
+    fn node_text_max_width(
+        &self,
+        id: StableNodeId,
+        world: &UiWorld,
+        _layout: LayoutBox,
+        available_width: f32,
+        _available_height: f32,
+    ) -> Option<f32> {
+        Some(
+            world
+                .component_content_box(id)
+                .and_then(|_| {
+                    crate::layout_engine::parts::part_bounds(
+                        &world.component_content_parts(id),
+                        crate::LayoutPartKind::TextContent,
+                    )
+                })
+                .map_or(available_width, |part| part.width.max(0.0)),
+        )
+    }
+
+    fn paint(&self, ctx: &WidgetPaintCtx<'_>) -> WidgetPaintOutput {
+        let geometry = self.geometry_for(
+            ctx.id,
+            ctx.world,
+            ctx.bounds,
+            ctx.style,
+            ctx.style_model,
+            ctx.theme,
+        );
+        let mut out = self.paint_with_geometry(
+            &geometry,
+            ctx.source_style.layout.as_ref(),
+            ctx.style,
+            ctx.style_model,
+            ctx.theme,
+            ctx.chrome_radii,
+        );
+        if let Some(overlay) = self.triggered_menu_overlay() {
+            out.floating_overlay = Some(WidgetFloatingOverlay {
+                kind: WidgetFloatingOverlayKind::TriggeredSurface,
+                overlay_mount: overlay.overlay_mount,
+                trigger_content: overlay.trigger_content,
+            });
+            out.presentation_pivot = self.presentation_pivot(ctx.id, ctx.world, ctx.bounds);
+        }
+        out
+    }
+}
+
+impl MenuSurfaceVisual {
+    pub fn paint_with_geometry(
+        &self,
+        geometry: &MenuSurfaceGeometry,
+        layout: &nana_ui_core::LayoutStyle,
+        style: &crate::ComputedStyle,
+        style_model: StyleModelRef,
+        theme: &nana_ui_core::CompiledTheme,
+        chrome_radii: nana_ui_core::ChromeRadii,
+    ) -> WidgetPaintOutput {
+        let mut out = WidgetPaintOutput {
+            owns_node_text: true,
+            suppress_css_root_surface: true,
+            geometry_on_page: self.open,
+            ..WidgetPaintOutput::default()
+        };
+        let matching_text_paint = |target: [f32; 4]| {
+            crate::widget_visual::matching_paint_color(style.paint_colors.color, target)
+        };
+        if let Some(chrome) = geometry.trigger_surface
+            && (chrome.background.is_some() || chrome.border.is_some())
+        {
+            let corner_radius = if geometry.trigger_image.is_some() {
+                [chrome.bounds.width.min(chrome.bounds.height) * 0.5; 4]
+            } else if layout.border_radius.is_some() || layout.paint.border_radii.is_some() {
+                let mut radii =
+                    layout.resolved_border_radii(chrome.bounds.width, chrome.bounds.height);
+                if let Some(nana_ui_core::ClipPath::Inset(inset)) = layout.paint.clip_path.as_ref()
+                {
+                    let round = inset.resolve_round(chrome.bounds.width, chrome.bounds.height);
+                    if round > 0.0 {
+                        radii = radii.map(|radius| radius.max(round));
+                    }
+                }
+                radii
+            } else {
+                [chrome_radii.sm; 4]
+            };
+            out.push(
+                1,
+                WidgetPaintOp::Quad(WidgetQuad {
+                    rect: chrome.bounds,
+                    fill: chrome.background,
+                    border: chrome.border.map(|border| (border, 1.0)),
+                    corner_radius,
+                    ..WidgetQuad::default()
+                }),
+            );
+        }
+        if let Some((icon, icon_bounds)) = geometry.trigger_icon {
+            let (color, paint_color) = if let Some(ref label) = geometry.trigger {
+                let fallback = label.color.or(style.color);
+                let paint = style
+                    .paint_colors
+                    .color
+                    .filter(|paint| label.color.is_none_or(|c| c == paint.to_srgb()));
+                (fallback, paint)
+            } else {
+                let menu_fg = style_model
+                    .color(
+                        theme
+                            .recipes()
+                            .foreground(nana_ui_core::ComponentRecipeId::Menu, false),
+                    )
+                    .as_rgba_array();
+                (Some(menu_fg), matching_text_paint(menu_fg))
+            };
+            out.push(
+                2,
+                WidgetPaintOp::Icon(WidgetIcon {
+                    bounds: icon_bounds,
+                    glyph: WidgetGlyph::Icon(icon),
+                    color,
+                    paint_color,
+                    align_to_adjacent_text: false,
+                }),
+            );
+        }
+        if let Some(ref trigger) = geometry.trigger {
+            out.push(
+                if geometry.trigger_icon.is_some() {
+                    3
+                } else {
+                    2
+                },
+                WidgetPaintOp::Text(WidgetText {
+                    bounds: trigger.bounds,
+                    content: trigger.content.clone(),
+                    color: trigger.color,
+                    paint_color: trigger.color.and_then(matching_text_paint),
+                    font_size: trigger.font_size,
+                    font_weight: trigger.font_weight,
+                    horizontal_alignment: TextHorizontalAlignment::Start,
+                    vertical_alignment: TextVerticalAlignment::Center,
+                    ellipsis: false,
+                    ..WidgetText::default()
+                }),
+            );
+        }
+        if geometry.surface.height > 1.0 && geometry.surface.width > 1.0 {
+            let quad = WidgetQuad {
+                rect: geometry.surface,
+                fill: Some(geometry.background),
+                border: Some((geometry.border, 1.0)),
+                corner_radius: [chrome_radii.md; 4],
+                elevation: Some(geometry.elevation),
+                use_parent_clips: geometry.trigger_surface.is_none(),
+                ..WidgetQuad::default()
+            };
+            if geometry.trigger_surface.is_some() {
+                out.push_tagged(
+                    WidgetTaggedOp::new(TRIGGERED_OVERLAY_SURFACE_SLOT, WidgetPaintOp::Quad(quad))
+                        .with_floating_overlay(),
+                );
+            } else {
+                out.push(0, WidgetPaintOp::Quad(quad));
+            }
+        }
+        if let Some(field) = geometry.search_field {
+            out.push(
+                3,
+                WidgetPaintOp::Quad(WidgetQuad {
+                    rect: field,
+                    fill: Some(geometry.background),
+                    border: Some((geometry.border, 1.0)),
+                    corner_radius: [chrome_radii.field; 4],
+                    ..WidgetQuad::default()
+                }),
+            );
+        }
+        if let Some(ref search) = geometry.search {
+            out.push(
+                4,
+                WidgetPaintOp::Text(WidgetText {
+                    bounds: search.bounds,
+                    content: search.content.clone(),
+                    color: search.color,
+                    paint_color: search.color.and_then(matching_text_paint),
+                    font_size: search.font_size,
+                    font_weight: search.font_weight,
+                    horizontal_alignment: TextHorizontalAlignment::Start,
+                    vertical_alignment: TextVerticalAlignment::Center,
+                    ellipsis: true,
+                    ..WidgetText::default()
+                }),
+            );
+        }
+        for (index, option) in geometry.options.iter().enumerate() {
+            if let Some(background) = option.background {
+                out.push(
+                    10u64.saturating_add(index as u64),
+                    WidgetPaintOp::Quad(WidgetQuad {
+                        rect: option.bounds,
+                        fill: Some(background),
+                        corner_radius: [chrome_radii.menu_row; 4],
+                        ..WidgetQuad::default()
+                    }),
+                );
+            }
+            if let Some(ref image) = option.image {
+                push_component_image(
+                    &mut out,
+                    widget_collection_slot(CONTEXT_MENU_IMAGE_BACKDROPS, index),
+                    widget_collection_slot(CONTEXT_MENU_IMAGES, index),
+                    image,
+                    |op| op,
+                );
+            }
+            if let Some((icon, icon_bounds, color)) = option.icon {
+                out.push(
+                    80u64.saturating_add(index as u64),
+                    WidgetPaintOp::Icon(WidgetIcon {
+                        bounds: icon_bounds,
+                        glyph: WidgetGlyph::Icon(icon),
+                        color: Some(color),
+                        paint_color: matching_text_paint(color),
+                        align_to_adjacent_text: false,
+                    }),
+                );
+            }
+            out.push(
+                40u64.saturating_add(index as u64),
+                WidgetPaintOp::Text(WidgetText {
+                    bounds: option.label.bounds,
+                    content: option.label.content.clone(),
+                    color: option.label.color,
+                    paint_color: option.label.color.and_then(matching_text_paint),
+                    font_size: option.label.font_size,
+                    font_weight: option.label.font_weight,
+                    horizontal_alignment: TextHorizontalAlignment::Start,
+                    vertical_alignment: TextVerticalAlignment::Center,
+                    ellipsis: true,
+                    rich_text: option
+                        .rich_content
+                        .as_ref()
+                        .and_then(|c| c.rich_text().cloned()),
+                    ..WidgetText::default()
+                }),
+            );
+            if let Some(ref hint) = option.hint {
+                out.push(
+                    widget_collection_slot(CONTEXT_MENU_HINTS, index),
+                    WidgetPaintOp::Text(WidgetText {
+                        bounds: hint.bounds,
+                        content: hint.content.clone(),
+                        color: hint.color,
+                        paint_color: hint.color.and_then(matching_text_paint),
+                        font_size: hint.font_size,
+                        font_weight: hint.font_weight,
+                        horizontal_alignment: TextHorizontalAlignment::End,
+                        vertical_alignment: TextVerticalAlignment::Center,
+                        ellipsis: true,
+                        ..WidgetText::default()
+                    }),
+                );
+            }
+        }
+        out
+    }
+}
+
 /// A triggered menu's paint over its published trigger parts: the label in
 /// its `TextContent` lane, the glyph in its `LeadingContent` square
 /// (`UiWorld::solve_content_parts_at`). Neither is placed here.
@@ -982,7 +1514,7 @@ pub(crate) fn menu_surface_geometry(
     palette: &SemanticPalette,
     surface: LayoutBox,
     parts: &crate::layout_engine::parts::ContentParts,
-) -> ComponentGeometry {
+) -> MenuSurfaceGeometry {
     use crate::LayoutPartKind;
     use crate::layout_engine::parts::part_bounds;
     let is_light = palette.background.as_rgba_array()[0] > 0.5;
@@ -1002,7 +1534,7 @@ pub(crate) fn menu_surface_geometry(
         width: bounds.width,
         height: trigger_h,
     };
-    ComponentGeometry::MenuSurface {
+    MenuSurfaceGeometry {
         trigger: label
             .zip(part_bounds(parts, LayoutPartKind::TextContent))
             .map(|(value, bounds)| ComponentTextRegion {
@@ -1545,10 +2077,11 @@ mod tests {
         layout(&mut context);
         context.toggle_action_menu(menu).unwrap();
         layout(&mut context);
-        let open_surface = match context.world().component_geometry(menu.stable_id()) {
-            Some(crate::ComponentGeometry::MenuSurface { surface, .. }) => surface,
-            other => panic!("open menu geometry: {other:?}"),
-        };
+        let open_surface = context
+            .world()
+            .menu_surface_geometry(menu.stable_id())
+            .expect("open menu geometry")
+            .surface;
         assert!(
             open_surface.width > 1.0 && open_surface.height > 1.0,
             "{open_surface:?}"
@@ -1556,10 +2089,11 @@ mod tests {
         context.toggle_action_menu(menu).unwrap();
         context.advance_animations(Duration::from_millis(400));
         layout(&mut context);
-        let closed_surface = match context.world().component_geometry(menu.stable_id()) {
-            Some(crate::ComponentGeometry::MenuSurface { surface, .. }) => surface,
-            other => panic!("closed menu geometry: {other:?}"),
-        };
+        let closed_surface = context
+            .world()
+            .menu_surface_geometry(menu.stable_id())
+            .expect("closed menu geometry")
+            .surface;
         assert!(
             closed_surface.width <= 1.0 && closed_surface.height <= 1.0,
             "card still painted: {closed_surface:?}"
@@ -1656,9 +2190,9 @@ mod tests {
                 value: "Actions".into(),
             },
         );
-        queue.set_standard_visual(
+        queue.set_widget_visual(
             id,
-            Some(StandardVisual::MenuSurface {
+            Some(MenuSurfaceVisual {
                 kind: MenuSurfaceKind::ActionMenu,
                 open: false,
                 trigger: Some(Arc::from("Actions")),
@@ -1673,30 +2207,23 @@ mod tests {
         );
         world.commit(queue).unwrap();
         world.resolve_styles(&[id]).unwrap();
-        let Some(ComponentGeometry::MenuSurface {
-            trigger,
-            trigger_surface,
-            ..
-        }) = world.component_geometry(id)
-        else {
-            panic!("expected menu surface geometry");
-        };
-        let chrome = trigger_surface.expect("trigger chrome");
+        let geometry = world
+            .menu_surface_geometry(id)
+            .expect("expected menu surface geometry");
+        let chrome = geometry.trigger_surface.expect("trigger chrome");
         let idle = chrome.background.expect("trigger has a filled surface");
         assert_eq!(chrome.bounds.height, TRIGGER_HEIGHT);
-        let label = trigger.expect("trigger label");
+        let label = geometry.trigger.expect("trigger label");
         assert!(label.bounds.x > 0.0, "label sits inside the button padding");
 
         world.set_pointer_hover(document(), 1, Some(id)).unwrap();
         world.advance_animations(nana_ui_core::motion::HOVER_COLOR);
         world.resolve_styles(&[id]).unwrap();
-        let Some(ComponentGeometry::MenuSurface {
-            trigger_surface, ..
-        }) = world.component_geometry(id)
-        else {
-            panic!("expected menu surface geometry");
-        };
-        let hovered = trigger_surface
+        let geometry = world
+            .menu_surface_geometry(id)
+            .expect("expected menu surface geometry");
+        let hovered = geometry
+            .trigger_surface
             .expect("trigger chrome")
             .background
             .expect("hovered trigger stays filled");
@@ -1735,8 +2262,8 @@ mod tests {
             .unwrap();
         let id = popover.stable_id();
         assert!(matches!(
-            context.world().standard_visual(id),
-            Some(StandardVisual::MenuSurface {
+            context.world().widget_visual_as::<MenuSurfaceVisual>(id),
+            Some(MenuSurfaceVisual {
                 kind: MenuSurfaceKind::Popover,
                 trigger: Some(label),
                 ..
@@ -1836,9 +2363,9 @@ mod tests {
             geometry_id,
             bare_trigger_style(trigger_icon_button_style(), false),
         );
-        queue.set_standard_visual(
+        queue.set_widget_visual(
             geometry_id,
-            Some(StandardVisual::MenuSurface {
+            Some(MenuSurfaceVisual {
                 kind: MenuSurfaceKind::Popover,
                 open: false,
                 trigger: None,
@@ -1853,13 +2380,11 @@ mod tests {
         );
         world.commit(queue).unwrap();
         world.resolve_styles(&[geometry_id]).unwrap();
-        let Some(ComponentGeometry::MenuSurface {
-            trigger_surface, ..
-        }) = world.component_geometry(geometry_id)
-        else {
-            panic!("expected menu surface geometry");
-        };
-        let chrome = trigger_surface.expect("trigger chrome");
+        let chrome = world
+            .menu_surface_geometry(geometry_id)
+            .expect("expected menu surface geometry")
+            .trigger_surface
+            .expect("trigger chrome");
         assert!(
             chrome.background.is_none(),
             "a bare trigger has no resting fill"
@@ -1871,12 +2396,10 @@ mod tests {
             .unwrap();
         world.advance_animations(nana_ui_core::motion::HOVER_COLOR);
         world.resolve_styles(&[geometry_id]).unwrap();
-        let Some(ComponentGeometry::MenuSurface {
-            trigger_surface, ..
-        }) = world.component_geometry(geometry_id)
-        else {
-            panic!("expected menu surface geometry");
-        };
+        let trigger_surface = world
+            .menu_surface_geometry(geometry_id)
+            .expect("expected menu surface geometry")
+            .trigger_surface;
         assert!(
             trigger_surface
                 .expect("trigger chrome")
@@ -1906,12 +2429,12 @@ mod tests {
             .unwrap();
         let id = menu.stable_id();
         assert!(matches!(
-            context.world().standard_visual(id),
-            Some(StandardVisual::MenuSurface {
+            context.world().widget_visual_as::<MenuSurfaceVisual>(id),
+            Some(MenuSurfaceVisual {
                 trigger: Some(trigger),
                 trigger_icon: Some(icon),
                 ..
-            }) if trigger.as_ref() == "添加" && icon == Icon::Add
+            }) if trigger.as_ref() == "添加" && *icon == Icon::Add
         ));
         // The label stays the accessible name only; the icon trigger measures
         // no text and its hit target is the square trigger box.
@@ -1945,9 +2468,9 @@ mod tests {
             },
         );
         queue.set_style(id, trigger_icon_button_style());
-        queue.set_standard_visual(
+        queue.set_widget_visual(
             id,
-            Some(StandardVisual::MenuSurface {
+            Some(MenuSurfaceVisual {
                 kind: MenuSurfaceKind::ActionMenu,
                 open: false,
                 trigger: None,
@@ -1962,15 +2485,14 @@ mod tests {
         );
         world.commit(queue).unwrap();
         world.resolve_styles(&[id]).unwrap();
-        let Some(ComponentGeometry::MenuSurface {
+        let MenuSurfaceGeometry {
             trigger,
             trigger_icon,
             trigger_surface,
             ..
-        }) = world.component_geometry(id)
-        else {
-            panic!("expected menu surface geometry");
-        };
+        } = world
+            .menu_surface_geometry(id)
+            .expect("expected menu surface geometry");
         assert!(trigger.is_none(), "icon trigger carries no text region");
         let (icon, icon_bounds) = trigger_icon.expect("trigger glyph box");
         assert_eq!(icon, Icon::Add);
@@ -2011,9 +2533,9 @@ mod tests {
                 },
             );
             queue.set_style(id, trigger_icon_button_style());
-            queue.set_standard_visual(
+            queue.set_widget_visual(
                 id,
-                Some(StandardVisual::MenuSurface {
+                Some(MenuSurfaceVisual {
                     kind: MenuSurfaceKind::ActionMenu,
                     open: false,
                     trigger: None,
@@ -2038,11 +2560,10 @@ mod tests {
             );
             world.commit(queue).unwrap();
             world.resolve_styles(&[id]).unwrap();
-            let Some(ComponentGeometry::MenuSurface { trigger_icon, .. }) =
-                world.component_geometry(id)
-            else {
-                panic!("expected menu surface geometry");
-            };
+            let trigger_icon = world
+                .menu_surface_geometry(id)
+                .expect("expected menu surface geometry")
+                .trigger_icon;
             trigger_icon.expect("trigger glyph box").1
         };
         let standard = glyph_for(None);
@@ -2419,9 +2940,9 @@ mod tests {
             },
         );
         queue.set_style(id, style);
-        queue.set_standard_visual(
+        queue.set_widget_visual(
             id,
-            Some(StandardVisual::MenuSurface {
+            Some(MenuSurfaceVisual {
                 kind: MenuSurfaceKind::Popover,
                 open: false,
                 trigger: Some(Arc::from("Actions")),
@@ -2437,13 +2958,11 @@ mod tests {
         world.commit(queue).unwrap();
         fn background(world: &mut UiWorld, id: StableNodeId) -> [f32; 4] {
             world.resolve_styles(&[id]).unwrap();
-            let Some(ComponentGeometry::MenuSurface {
-                trigger_surface: Some(chrome),
-                ..
-            }) = world.component_geometry(id)
-            else {
-                panic!("expected trigger chrome");
-            };
+            let chrome = world
+                .menu_surface_geometry(id)
+                .expect("expected trigger chrome")
+                .trigger_surface
+                .expect("expected trigger chrome");
             chrome.background.expect("a filled trigger")
         }
         let idle = background(&mut world, id);

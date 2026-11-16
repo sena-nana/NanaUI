@@ -64,8 +64,8 @@ impl UiWorld {
                 }
                 let record = self.record(parent);
                 // A shallow walk up costs less than remembering it.
-                let skips = (record.hierarchy.depth > DIRECT_DEPTH).then_some(&mut *skips);
-                index.live_child_seed(parent, record.scroll_offset, skips)?
+                let skips = (record.depth > DIRECT_DEPTH).then_some(&mut *skips);
+                index.live_child_seed(parent, self.nodes.scroll_offset(parent), skips)?
             }
             None => (IDENTITY_AFFINE, [0.0, 0.0]),
         };
@@ -145,13 +145,8 @@ impl UiWorld {
             return Vec::new();
         };
         let mut touched: Vec<StableNodeId> = Vec::with_capacity(rebuilt.len());
-        let mut moved = 0usize;
-        let built = rebuilt.len();
         for (id, mut entry) in rebuilt {
             if let Some(hit) = index.entries.get_mut(&id) {
-                if entry.origin != hit.entry.origin {
-                    moved += 1;
-                }
                 if entry.pinned {
                     index.pinned.insert(id);
                 }
@@ -161,10 +156,6 @@ impl UiWorld {
             }
         }
         index.refresh_bounds_of(&touched);
-        self.bump_last_counters(|counters| {
-            counters.hit_test_entries_moved += moved;
-            counters.record_hit_test_rebuild(built);
-        });
         touched
     }
 

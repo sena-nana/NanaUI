@@ -53,24 +53,19 @@ pub(super) fn collect_flow_children_into(
         if participation == Participation::NoBox {
             continue;
         }
-        if participation == Participation::Contents {
-            *descendant_dependent = true;
-            let nested = match nodes.get(child)? {
-                Some(node) => (*node.children).clone(),
-                None => continue,
-            };
-            collect_flow_children_into(&nested, nodes, parent_style, out, descendant_dependent)?;
-            continue;
-        }
         if matches!(
             participation,
             Participation::Absolute | Participation::Fixed
         ) {
             continue;
         }
-        // `inline-block` is an atomic box. Only a non-atomic `inline` hoists a
-        // block descendant into the parent formatting context.
-        if participation == Participation::InlineSpan {
+        // `inline-flex`/`inline-grid` are atomic boxes. Only a non-atomic
+        // `inline` under a non-flex/grid container hoists a block descendant.
+        let inline_span = participation == Participation::InlineSpan
+            || (parent_style.display.is_none()
+                && nodes.participation(child, &style, Context::Inline)
+                    == Participation::InlineSpan);
+        if inline_span {
             // Whichever way the test goes, the answer came from the child's
             // subtree, so a plan over this container cannot be re-checked from
             // the direct child list alone.
@@ -110,23 +105,17 @@ pub(super) fn inline_contains_block(
         let participation = nodes.participation(grandchild, &style, Context::Inline);
         if matches!(
             participation,
-            Participation::NoBox
-                | Participation::Absolute
-                | Participation::Fixed
-                | Participation::Float
+            Participation::NoBox | Participation::Absolute | Participation::Fixed
         ) {
             continue;
         }
-        if matches!(
-            participation,
-            Participation::Contents | Participation::InlineSpan
-        ) {
+        if participation == Participation::InlineSpan {
             if inline_contains_block(grandchild, nodes)? {
                 return Ok(true);
             }
             continue;
         }
-        if participation == Participation::FlowItem {
+        if participation == Participation::FlexItem {
             return Ok(true);
         }
     }
@@ -151,16 +140,8 @@ pub(super) fn collect_positioned_children_into(
         let Some(style) = nodes.style_ref(child) else {
             continue;
         };
-        let participation = nodes.participation(child, &style, Context::Flow);
+        let participation = nodes.participation(child, &style, Context::Flex);
         if participation == Participation::NoBox {
-            continue;
-        }
-        if participation == Participation::Contents {
-            let nested = match nodes.get(child)? {
-                Some(node) => (*node.children).clone(),
-                None => continue,
-            };
-            collect_positioned_children_into(&nested, nodes, out)?;
             continue;
         }
         if matches!(
@@ -173,134 +154,6 @@ pub(super) fn collect_positioned_children_into(
     Ok(())
 }
 
-pub(super) fn collect_floated_children(
-    children: &[StableNodeId],
-    nodes: &mut LayoutInputMap<'_>,
-) -> Result<Vec<StableNodeId>, UiWorldError> {
-    let mut out = Vec::new();
-    collect_floated_children_into(children, nodes, &mut out)?;
-    Ok(out)
-}
-
-pub(super) fn collect_floated_children_into(
-    children: &[StableNodeId],
-    nodes: &mut LayoutInputMap<'_>,
-    out: &mut Vec<StableNodeId>,
-) -> Result<(), UiWorldError> {
-    for child in children.iter().copied() {
-        let Some(style) = nodes.style_ref(child) else {
-            continue;
-        };
-        let participation = nodes.participation(child, &style, Context::Flow);
-        if participation == Participation::NoBox {
-            continue;
-        }
-        if participation == Participation::Contents {
-            let nested = match nodes.get(child)? {
-                Some(node) => (*node.children).clone(),
-                None => continue,
-            };
-            collect_floated_children_into(&nested, nodes, out)?;
-            continue;
-        }
-        if participation == Participation::Float {
-            out.push(child);
-        }
-    }
-    Ok(())
-}
-
-/// Whether a box with `style`, taking part in its parent's `parent` context
-/// (`None` for a root), establishes a block formatting context of its own
-/// (CSS 2.1 §9.4.1, CSS Display 3 §2.1): a root, a float, an absolutely
-/// positioned box, an inline-block, a box whose `overflow` is not `visible`,
-/// `display: flow-root`, and every flex, grid, layer and overlay item. Such a
-/// box's `auto` height contains its floats (CSS 2.1 §10.6.7); any other block
-/// lets them hang out of its content box.
-pub(super) fn establishes_block_formatting_context(
-    style: &LayoutStyle,
-    parent: Option<Context>,
-) -> bool {
-    let own = style.is_floated()
-        || style.position.is_out_of_flow()
-        || style.overflow_x != nana_ui_core::OverflowSpec::Visible
-        || style.overflow_y != nana_ui_core::OverflowSpec::Visible
-        || style
-            .display
-            .is_some_and(|display| display == DisplaySpec::InlineBlock || display.is_flow_root());
-    own || !matches!(parent, Some(Context::Flow | Context::Inline))
-}
-
-#[derive(Debug, Clone, Copy)]
-pub(super) struct PackedFloat {
-    pub(super) id: StableNodeId,
-    pub(super) origin: Point,
-    pub(super) size: Size,
-    pub(super) side: FloatSpec,
-    /// Margin-box left in the same space as [`Self::origin`].
-    pub(super) occupy_x: f32,
-    pub(super) occupy_y: f32,
-    pub(super) occupy_w: f32,
-    pub(super) occupy_h: f32,
-}
-
-#[derive(Debug, Default)]
-pub(super) struct PackedFloats {
-    pub(super) items: Vec<PackedFloat>,
-    /// Occupied bottom of left floats after pack/wrap, relative to content origin.
-    pub(super) left_bottom: f32,
-    /// Occupied bottom of right floats after pack/wrap, relative to content origin.
-    pub(super) right_bottom: f32,
-}
-
-impl PackedFloats {
-    /// Left/right insets at content-relative `y` (line-box top), from sibling
-    /// float margin boxes. Not ancestor intrusion / `shape-outside`.
-    pub(super) fn insets_at_y(
-        &self,
-        content_origin: Point,
-        content_width: f32,
-        y: f32,
-    ) -> (f32, f32) {
-        let abs_y = content_origin.y + y;
-        let mut left = 0.0f32;
-        let mut right = 0.0f32;
-        for item in &self.items {
-            let top = item.occupy_y;
-            let bottom = item.occupy_y + item.occupy_h;
-            if abs_y + 0.5 < top || abs_y >= bottom - 0.5 {
-                continue;
-            }
-            match item.side {
-                FloatSpec::Right => {
-                    let occupy_left = item.occupy_x - content_origin.x;
-                    right = right.max((content_width - occupy_left).max(0.0));
-                }
-                _ => {
-                    let occupy_right = item.occupy_x + item.occupy_w - content_origin.x;
-                    left = left.max(occupy_right.max(0.0));
-                }
-            }
-        }
-        (left, right)
-    }
-
-    /// Nearest float margin-box bottom below `y` among floats that occupy `y`.
-    pub(super) fn next_bottom_after(&self, content_origin: Point, y: f32) -> Option<f32> {
-        let abs_y = content_origin.y + y;
-        let mut best: Option<f32> = None;
-        for item in &self.items {
-            let top = item.occupy_y;
-            let bottom = item.occupy_y + item.occupy_h - content_origin.y;
-            if top > abs_y + 0.5 || bottom <= y + 0.5 {
-                continue;
-            }
-            best = Some(best.map_or(bottom, |value| value.min(bottom)));
-        }
-        best
-    }
-}
-
 /// The strut a line box of an ordinary block starts from: its ascent and
 /// descent about the baseline ([`super::inline::line_strut`]).
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -309,123 +162,16 @@ pub(super) struct LineStrut {
     pub(super) descent: f32,
 }
 
-/// One wrap line: child indices plus the shortened IFC line box (full width when
-/// not avoiding floats).
+/// One wrap line: child indices plus the shortened IFC line box.
 #[derive(Debug, Clone)]
 pub(super) struct LineBoxSlot {
     pub(super) indices: Vec<usize>,
     pub(super) main_start: f32,
     pub(super) main_available: f32,
-    /// Content-relative cross start after float drop / `clear` (IFC only).
+    /// Content-relative cross start (IFC only).
     pub(super) cross_y: f32,
     pub(super) pin_cross: bool,
     /// A line of an ordinary block's inline-level items: they sit on one
     /// baseline (CSS 2.1 §10.8.1), not at the line's top.
     pub(super) baseline_aligned: bool,
-}
-
-/// Geometric same-side pack/wrap. Bottoms are the occupied extent after wrapping,
-/// not the pre-pack max of each float's own height (so `clear` clears the second row).
-#[allow(clippy::too_many_arguments)]
-pub(super) fn pack_floated_children(
-    floated: &[StableNodeId],
-    content_origin: Point,
-    content: Size,
-    // Percent base of the children's margins: the container's inline size.
-    edge_base: f32,
-    viewport: LayoutViewport,
-    child_font_px: f32,
-    nodes: &mut LayoutInputMap<'_>,
-    intrinsic: &mut PassIntrinsicCache,
-    scope: Option<&ScopeContext<'_>>,
-) -> Result<PackedFloats, UiWorldError> {
-    let mut items = Vec::with_capacity(floated.len());
-    let mut left_cursor_x = content_origin.x;
-    let mut left_line_y = content_origin.y;
-    let mut left_line_bottom = content_origin.y;
-    let mut right_cursor_x = content_origin.x + content.width;
-    let mut right_line_y = content_origin.y;
-    let mut right_line_bottom = content_origin.y;
-    for child in floated {
-        let Some(child_style) = nodes.style(*child) else {
-            continue;
-        };
-        let child_style = child_style.as_ref();
-        let child_size = intrinsic_size_scoped(
-            *child,
-            content,
-            Some(FlexDirection::Row),
-            viewport,
-            child_font_px,
-            nodes,
-            intrinsic,
-            scope,
-        )?;
-        let child_fonts = fonts_of(child_style, child_font_px);
-        let margin = child_style.resolved_margin_against_fonts(Some(edge_base), child_fonts);
-        let outer_w = child_size.width + margin.left + margin.right;
-        // A float's own `clear` uses packed bottoms of earlier floats, same
-        // contract as in-flow clear (not the pre-pack max of each float).
-        let clear_bottom = match child_style.clear {
-            ClearSpec::None => None,
-            ClearSpec::Left => Some(left_line_bottom),
-            ClearSpec::Right => Some(right_line_bottom),
-            ClearSpec::Both => Some(left_line_bottom.max(right_line_bottom)),
-        };
-        let (x, y) = match child_style.float {
-            FloatSpec::Right => {
-                if let Some(bottom) = clear_bottom
-                    && bottom > right_line_y + 0.5
-                {
-                    right_cursor_x = content_origin.x + content.width;
-                    right_line_y = bottom;
-                }
-                if right_cursor_x < content_origin.x + content.width - 0.5
-                    && right_cursor_x - outer_w < content_origin.x - 0.5
-                {
-                    right_cursor_x = content_origin.x + content.width;
-                    right_line_y = right_line_bottom;
-                }
-                let x = (right_cursor_x - child_size.width - margin.right).max(content_origin.x);
-                let y = right_line_y + margin.top;
-                right_cursor_x = x - margin.left;
-                right_line_bottom = right_line_bottom.max(y + child_size.height + margin.bottom);
-                (x, y)
-            }
-            _ => {
-                if let Some(bottom) = clear_bottom
-                    && bottom > left_line_y + 0.5
-                {
-                    left_cursor_x = content_origin.x;
-                    left_line_y = bottom;
-                }
-                if left_cursor_x > content_origin.x + 0.5
-                    && left_cursor_x + outer_w > content_origin.x + content.width + 0.5
-                {
-                    left_cursor_x = content_origin.x;
-                    left_line_y = left_line_bottom;
-                }
-                let x = left_cursor_x + margin.left;
-                let y = left_line_y + margin.top;
-                left_cursor_x = x + child_size.width + margin.right;
-                left_line_bottom = left_line_bottom.max(y + child_size.height + margin.bottom);
-                (x, y)
-            }
-        };
-        items.push(PackedFloat {
-            id: *child,
-            origin: Point { x, y },
-            size: child_size,
-            side: child_style.float,
-            occupy_x: x - margin.left,
-            occupy_y: y - margin.top,
-            occupy_w: outer_w,
-            occupy_h: child_size.height + margin.top + margin.bottom,
-        });
-    }
-    Ok(PackedFloats {
-        items,
-        left_bottom: (left_line_bottom - content_origin.y).max(0.0),
-        right_bottom: (right_line_bottom - content_origin.y).max(0.0),
-    })
 }

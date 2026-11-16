@@ -1,11 +1,12 @@
 use std::any::{Any, TypeId};
-use std::collections::{HashMap, HashSet};
+
+use hashbrown::{HashMap, HashSet};
 
 use crate::{
     ComponentView, DocumentId, Entity, MutationQueue, StableNodeId, Stack, View, ViewContext,
 };
 
-use super::assemble::AssembledChild;
+use super::assemble::{AssembledChild, AssemblyKey, ParentAssembly};
 use super::{AppContext, FrameworkError};
 
 const DUMMY_NODE: StableNodeId = match StableNodeId::new(u64::MAX) {
@@ -16,9 +17,9 @@ const DUMMY_NODE: StableNodeId = match StableNodeId::new(u64::MAX) {
 struct Level {
     parent: Option<StableNodeId>,
     /// Keys used at this level, in order.
-    seen: Vec<String>,
+    seen: Vec<AssemblyKey>,
     /// [`Self::seen`] as a set, for membership in wide levels.
-    seen_keys: HashSet<String>,
+    seen_keys: HashSet<AssemblyKey>,
     autos: HashMap<&'static str, usize>,
 }
 
@@ -29,7 +30,7 @@ enum ChildClaim {
     /// The node the key named last time, of the same type.
     Reuse(StableNodeId),
     /// No such node: create one and attach it by this key.
-    Create(String),
+    Create(AssemblyKey),
 }
 
 /// Nested tree builder that commits one mutation batch, then installs handlers.
@@ -38,18 +39,19 @@ pub(crate) struct UiBuilder<'a> {
     document: DocumentId,
     stack: Vec<Level>,
     queue: MutationQueue,
-    working: HashMap<StableNodeId, HashMap<String, AssembledChild>>,
-    pending_views: HashMap<StableNodeId, Box<dyn Any + Send>>,
+    working: HashMap<StableNodeId, ParentAssembly, crate::BuildIdHasher>,
+    pending_views: crate::NodeMap<Box<dyn Any + Send>>,
+    pending_stacks: Vec<(StableNodeId, u8)>,
     pending_ons: Vec<Box<dyn FnOnce(&mut AppContext) -> Result<(), FrameworkError>>>,
     /// How many `on` calls this build has already made for a given
     /// `(node, event type)`. The count is the handler's identity, so rebuilding
     /// the same tree replaces its handlers instead of stacking new ones.
     on_slots: HashMap<(StableNodeId, TypeId), usize>,
-    pending_forget: HashSet<StableNodeId>,
+    pending_forget: std::collections::HashSet<StableNodeId>,
     /// Children this build's queue appends under each parent, in order.
-    appended: HashMap<StableNodeId, Vec<StableNodeId>>,
+    appended: HashMap<StableNodeId, Vec<StableNodeId>, crate::BuildIdHasher>,
     /// Nodes [`UiBuilder::adopt`] moved in this build.
-    adopted: HashSet<StableNodeId>,
+    adopted: HashSet<StableNodeId, crate::BuildIdHasher>,
     lifecycle: Vec<StableNodeId>,
     park_roots: bool,
     error: Option<FrameworkError>,
@@ -119,13 +121,14 @@ impl<'a> UiBuilder<'a> {
                 autos: HashMap::new(),
             }],
             queue: MutationQueue::new(),
-            working: HashMap::new(),
-            pending_views: HashMap::new(),
+            working: HashMap::default(),
+            pending_views: crate::NodeMap::default(),
+            pending_stacks: Vec::new(),
             pending_ons: Vec::new(),
             on_slots: HashMap::new(),
-            pending_forget: HashSet::new(),
-            appended: HashMap::new(),
-            adopted: HashSet::new(),
+            pending_forget: std::collections::HashSet::new(),
+            appended: HashMap::default(),
+            adopted: HashSet::default(),
             lifecycle: Vec::new(),
             park_roots,
             error: None,
@@ -160,11 +163,35 @@ impl<'a> UiBuilder<'a> {
         Entity::from_stable_id(DUMMY_NODE)
     }
 
-    fn auto_key(&mut self, kind: &'static str) -> String {
+    fn auto_key(&mut self, kind: &'static str) -> AssemblyKey {
         let n = self.current_mut().autos.entry(kind).or_insert(0);
         let index = *n;
         *n += 1;
-        format!("#{kind}-{index}")
+        AssemblyKey::auto_kind(kind, index)
+    }
+
+    fn install_component<C: ComponentView>(&mut self, id: StableNodeId, component: C) {
+        let view_type = super::registry::ViewType::of::<C>();
+        if TypeId::of::<C>() == TypeId::of::<Stack>() {
+            // SAFETY: `TypeId` matched `Stack`.
+            let stack = unsafe { &*std::ptr::from_ref(&component).cast::<Stack>() };
+            self.context
+                .stamp_component_type_erased(id, &mut self.queue, &view_type);
+            self.pending_stacks.push((id, stack.elided_flags()));
+            self.pending_views.remove(&id);
+        } else {
+            self.install_view(id, &view_type, Box::new(component));
+        }
+    }
+
+    fn builder_view_type_id(&self, id: StableNodeId) -> Option<TypeId> {
+        if let Some(view) = self.pending_views.get(&id) {
+            return Some(view.as_ref().type_id());
+        }
+        if self.pending_stacks.iter().rev().any(|&(sid, _)| sid == id) {
+            return Some(TypeId::of::<Stack>());
+        }
+        self.context.view_type_id(id)
     }
 
     fn spawn<C: ComponentView>(&mut self, mut component: C) -> Entity<C> {
@@ -172,11 +199,7 @@ impl<'a> UiBuilder<'a> {
         let id = self.context.allocate_id();
         self.queue.create(id, self.document, component.node_kind());
         component.project(id, &self.context.world, &mut self.queue);
-        self.install_view(
-            id,
-            &super::registry::ViewType::of::<C>(),
-            Box::new(component),
-        );
+        self.install_component(id, component);
         Entity::from_stable_id(id)
     }
 
@@ -196,7 +219,7 @@ impl<'a> UiBuilder<'a> {
         self.lifecycle.push(id);
     }
 
-    fn slots(&mut self, parent: StableNodeId) -> &mut HashMap<String, AssembledChild> {
+    fn slots(&mut self, parent: StableNodeId) -> &mut ParentAssembly {
         if !self.working.contains_key(&parent) {
             let inherited = self
                 .context
@@ -217,21 +240,19 @@ impl<'a> UiBuilder<'a> {
     pub(crate) fn key_parked_root(
         &mut self,
         parent: StableNodeId,
-        key: String,
+        key: AssemblyKey,
         root: StableNodeId,
-        type_id: TypeId,
     ) {
         if self.error.is_some() || self.stack.len() != 1 || self.current().parent.is_some() {
             return;
         }
-        self.slots(parent)
-            .insert(key, AssembledChild { id: root, type_id });
+        self.slots(parent).insert(key, AssembledChild { id: root });
     }
 
     /// Create or reuse a keyed component under the current parent.
     pub(crate) fn child<C: ComponentView>(
         &mut self,
-        key: impl Into<String>,
+        key: impl Into<AssemblyKey>,
         component: C,
     ) -> Entity<C> {
         let type_id = TypeId::of::<C>();
@@ -239,16 +260,12 @@ impl<'a> UiBuilder<'a> {
             ChildClaim::Failed => Entity::from_stable_id(DUMMY_NODE),
             ChildClaim::Reuse(id) => {
                 component.project(id, &self.context.world, &mut self.queue);
-                self.install_view(
-                    id,
-                    &super::registry::ViewType::of::<C>(),
-                    Box::new(component),
-                );
+                self.install_component(id, component);
                 Entity::from_stable_id(id)
             }
             ChildClaim::Create(key) => {
                 let entity = self.spawn(component);
-                self.attach_child(key, entity.id, type_id);
+                self.attach_child(key, entity.id);
                 entity
             }
         }
@@ -258,7 +275,7 @@ impl<'a> UiBuilder<'a> {
     /// projected: the key is checked and marked seen, and the node it named
     /// in the last build is either reused or queued for removal.
     #[inline(never)]
-    fn claim_child(&mut self, key: String, type_id: TypeId) -> ChildClaim {
+    fn claim_child(&mut self, key: AssemblyKey, type_id: TypeId) -> ChildClaim {
         if self.error.is_some() {
             return ChildClaim::Failed;
         }
@@ -268,14 +285,17 @@ impl<'a> UiBuilder<'a> {
         }
         if !self.current_mut().seen_keys.insert(key.clone()) {
             let parent = self.current().parent.unwrap_or(DUMMY_NODE);
-            self.fail::<Stack>(FrameworkError::DuplicateAssemblyKey { parent, key });
+            self.fail::<Stack>(FrameworkError::DuplicateAssemblyKey {
+                parent,
+                key: key.to_string(),
+            });
             return ChildClaim::Failed;
         }
         self.current_mut().seen.push(key.clone());
         if let Some(parent) = self.current().parent
-            && let Some(existing) = self.slots(parent).get(&key).copied()
+            && let Some(existing) = self.slots(parent).get(key.as_str()).copied()
         {
-            if existing.type_id == type_id {
+            if self.builder_view_type_id(existing.id) == Some(type_id) {
                 return ChildClaim::Reuse(existing.id);
             }
             self.queue_despawn(existing.id);
@@ -286,12 +306,11 @@ impl<'a> UiBuilder<'a> {
     /// The keyed half of [`Self::child`] that follows a new node: it goes
     /// under the current parent by `key`, or is parked as a detached root.
     #[inline(never)]
-    fn attach_child(&mut self, key: String, id: StableNodeId, type_id: TypeId) {
+    fn attach_child(&mut self, key: AssemblyKey, id: StableNodeId) {
         if let Some(parent) = self.current().parent {
             self.queue.insert(parent, id, None);
             self.appended.entry(parent).or_default().push(id);
-            self.slots(parent)
-                .insert(key, AssembledChild { id, type_id });
+            self.slots(parent).insert(key, AssembledChild { id });
         } else if self.park_roots {
             self.queue.park_subtree(id);
         }
@@ -363,7 +382,7 @@ impl<'a> UiBuilder<'a> {
 
     /// Name `root`, a slot's root the composite places itself, by the key
     /// its view declared, for [`AppContext::assembly_path`].
-    pub(crate) fn key_slot(&mut self, root: StableNodeId, key: String) {
+    pub(crate) fn key_slot(&mut self, root: StableNodeId, key: AssemblyKey) {
         if self.error.is_some() || root == DUMMY_NODE {
             return;
         }
@@ -375,7 +394,6 @@ impl<'a> UiBuilder<'a> {
     pub(crate) fn adopt_as(
         &mut self,
         child: StableNodeId,
-        type_id: TypeId,
         key: Option<std::borrow::Cow<'static, str>>,
     ) {
         if self.error.is_some() || child == DUMMY_NODE {
@@ -386,19 +404,21 @@ impl<'a> UiBuilder<'a> {
             return;
         };
         let key = match key {
-            Some(key) => key.into_owned(),
+            Some(key) => AssemblyKey::from(key),
             None => self.auto_key("adopt"),
         };
         if !self.current_mut().seen_keys.insert(key.clone()) {
-            self.fail::<Stack>(FrameworkError::DuplicateAssemblyKey { parent, key });
+            self.fail::<Stack>(FrameworkError::DuplicateAssemblyKey {
+                parent,
+                key: key.to_string(),
+            });
             return;
         }
         self.current_mut().seen.push(key.clone());
         self.queue.insert(parent, child, None);
         self.appended.entry(parent).or_default().push(child);
         self.adopted.insert(child);
-        self.slots(parent)
-            .insert(key, AssembledChild { id: child, type_id });
+        self.slots(parent).insert(key, AssembledChild { id: child });
     }
 
     /// Temporarily set `parent` as the current insertion parent.
@@ -420,6 +440,13 @@ impl<'a> UiBuilder<'a> {
     /// [`Self::nest`] without generics: `children` runs exactly once.
     #[inline(never)]
     pub(crate) fn nest_dyn(&mut self, parent: StableNodeId, children: &mut dyn FnMut(&mut Self)) {
+        let nested = self.enter_nest(parent);
+        children(self);
+        self.leave_nest(nested);
+    }
+
+    /// Push a nesting scope onto `self` without running `children` in a closure.
+    pub(crate) fn enter_nest(&mut self, parent: StableNodeId) -> bool {
         let nested = self.error.is_none() && parent != DUMMY_NODE;
         if nested {
             self.stack.push(Level {
@@ -429,7 +456,11 @@ impl<'a> UiBuilder<'a> {
                 autos: HashMap::new(),
             });
         }
-        children(self);
+        nested
+    }
+
+    /// Close a nesting scope started by [`Self::enter_nest`].
+    pub(crate) fn leave_nest(&mut self, nested: bool) {
         if nested {
             self.finish_level();
             self.stack.pop();
@@ -462,7 +493,7 @@ impl<'a> UiBuilder<'a> {
         let unused: Vec<_> = self
             .slots(parent)
             .iter()
-            .filter(|(key, _)| !seen_keys.contains(*key))
+            .filter(|(key, _)| !seen_keys.contains(key.as_str()))
             .map(|(_, child)| child.id)
             .collect();
         for id in unused {
@@ -478,7 +509,7 @@ impl<'a> UiBuilder<'a> {
         let slots = self.slots(parent);
         let desired: Vec<_> = seen
             .iter()
-            .filter_map(|key| slots.get(key).map(|child| child.id))
+            .filter_map(|key| slots.get(key.as_str()).map(|child| child.id))
             .collect::<Vec<_>>()
             .into_iter()
             .filter(|&id| !self.context.is_placed_elsewhere(id))
@@ -531,6 +562,7 @@ impl<'a> UiBuilder<'a> {
         }
         let queue = self.queue;
         let pending_views = self.pending_views;
+        let pending_stacks = self.pending_stacks;
         let pending_ons = self.pending_ons;
         let pending_forget = self.pending_forget;
         let lifecycle = self.lifecycle;
@@ -546,7 +578,12 @@ impl<'a> UiBuilder<'a> {
                 continue;
             }
             slots.retain(|_, child| self.context.world.contains(child.id));
+            slots.shrink_positional_excess();
             self.context.store_assembled(parent, slots);
+        }
+        for (id, flags) in pending_stacks {
+            self.context.views.remove(&id);
+            self.context.world.set_elided_stack_flags(id, flags);
         }
         self.context.views.extend(pending_views);
         for id in lifecycle {

@@ -44,7 +44,6 @@ use nana_ui_css::{
 };
 use proc_macro2::{Span, TokenStream};
 use quote::{format_ident, quote};
-use serde_json::{Map, Value};
 use syn::{Expr, Lit};
 
 /// Where a rule stands in the cascade: later wins.
@@ -53,7 +52,7 @@ type Rank = (bool, (u16, u16, u16), u32);
 struct Rule {
     classes: Vec<String>,
     rank: Rank,
-    /// The patch's JSON.
+    /// Rust setter statements using the local `__nana_patch` module alias.
     patch: String,
     /// The `@container` query guarding the rule, in [`Sheet::queries`].
     query: Option<usize>,
@@ -187,17 +186,16 @@ fn sheet_vars(sheet: &nana_ui_css::ParsedStylesheet) -> BTreeMap<String, String>
     collect_document_custom_properties_from_rules(&sheet.static_rules, "light")
 }
 
-/// The Style Model fields `entries` write, as a patch: the value of each,
-/// keyed by its dotted path. A field written with the value the default
-/// layout has is still in it, so the patch resets what an element was
-/// built with.
-fn patch(entries: &[&DeclarationEntry]) -> Map<String, Value> {
+/// Compiled `nana_ui_core::style_patch::set` statements for every leaf the
+/// declarations wrote (including defaults written explicitly), referencing the
+/// local `__nana_patch` module alias bound inside each emitted closure.
+fn patch(entries: &[&DeclarationEntry]) -> String {
     written_layout(|layout| {
         for entry in entries {
             layout.apply_css_property(&entry.property, &entry.value, None, None);
         }
     })
-    .patch()
+    .patch_rust_stmts("__nana_patch")
 }
 
 /// The class rules among `rules` as patches, one for a rule's normal and
@@ -223,13 +221,12 @@ fn compile_rules(
             if patch.is_empty() {
                 continue;
             }
-            let patch = Value::Object(patch);
             for selector in &rule.selectors {
                 if let Some(classes) = class_selector(selector) {
                     out.push(Rule {
                         classes: classes.to_vec(),
                         rank: rank(important, selector.specificity, rule.source_order),
-                        patch: patch.to_string(),
+                        patch: patch.clone(),
                         query,
                     });
                 }
@@ -741,26 +738,19 @@ fn check_block(
     }
 }
 
-/// A patch (its JSON: each written field's dotted path to the field's value)
-/// as the code that applies it: one assignment per field. The value stays
-/// the field's own JSON and is read as the field's type where it is
-/// assigned, so the generated code names no Style Model type and the
-/// application links the decoding of only the field types its styles write.
-fn patch_tokens(json: &str, runtime: &TokenStream) -> TokenStream {
-    let Ok(Value::Object(fields)) = serde_json::from_str::<Value>(json) else {
-        unreachable!("a patch is a JSON object");
-    };
-    let writes = fields.iter().map(|(path, value)| {
-        let field = path.split('.').map(|segment| {
-            syn::parse_str::<syn::Ident>(segment).unwrap_or_else(|_| {
-                proc_macro2::Ident::new_raw(segment, proc_macro2::Span::call_site())
-            })
-        });
-        let value = value.to_string();
-        quote!(__nana_layout.#(#field).* = #runtime::view::__style_value(#value);)
-    });
+/// Emit a typed [`StylePatch`] closure body from compiled setter statements
+/// (`stmts`), binding the runtime crate's `view::__patch` module as
+/// `__nana_patch` without interpolating `$crate` through string parsing.
+fn patch_tokens(stmts: &str, runtime: &TokenStream) -> TokenStream {
+    let stmts: TokenStream = stmts
+        .parse()
+        .expect("compiled style patch statements parse as Rust tokens");
     quote! {
-        |__nana_layout: &mut #runtime::LayoutStyle| { #(#writes)* }
+        |__nana_layout: &mut #runtime::LayoutStyle| {
+            #[allow(unused_imports)]
+            use #runtime::view::__patch as __nana_patch;
+            #stmts
+        }
     }
 }
 
@@ -1678,21 +1668,83 @@ mod tests {
                 .1
                 .contains("`@container` is not compiled in `css!`")
         );
-        // Each written field is one assignment, its value the field's JSON.
+        // Each written field compiles directly into a typed setter call.
         let tokens: String = tokens
             .to_string()
             .chars()
             .filter(|character| !character.is_whitespace())
             .collect();
         assert!(
-            tokens.contains(r#"__nana_layout.opacity=x::view::__style_value("0.5");"#),
+            tokens.contains("usex::view::__patchas__nana_patch;"),
             "{tokens}"
         );
         assert!(
-            tokens.contains(r#"__nana_layout.padding=x::view::__style_value("{\"Px\":4.0}");"#),
+            tokens.contains("__nana_patch::set::opacity(__nana_layout,Some(0.5_f32));"),
             "{tokens}"
         );
-        assert!(!tokens.contains(r#"{\"Px\":2.0}"#), "{tokens}");
+        assert!(
+            tokens.contains(
+                "__nana_patch::set::padding(__nana_layout,Some(__nana_patch::LengthSpec::Px(4.0_f32)));"
+            ),
+            "{tokens}"
+        );
+        assert!(!tokens.contains("__style_value"), "{tokens}");
+        assert!(!tokens.contains("2.0_f32"), "{tokens}");
         assert!(!tokens.contains("SheetQuery"), "{tokens}");
+    }
+
+    #[test]
+    fn complex_css_declarations_emit_valid_rust_patch_tokens() {
+        let declarations = "\
+            width: calc(50% - 8px); \
+            max-width: min(76%, 620px); \
+            background-image: linear-gradient(90deg, red, blue); \
+            box-shadow: 0 2px 4px oklch(0.7 0.1 120); \
+            grid-template-columns: [a] 1fr minmax(10px, 2fr); \
+            transform: translate(4px, 8px); \
+            padding: theme(space-md); \
+            color: oklch(0.6 0.15 240);";
+        let (tokens, warnings) = compile_inline(declarations, &quote!(x));
+        assert!(warnings.is_empty(), "{warnings:?}");
+        syn::parse2::<syn::Expr>(tokens.clone()).expect("compiled tokens are valid Rust expr");
+        let compact: String = tokens
+            .to_string()
+            .chars()
+            .filter(|c| !c.is_whitespace())
+            .collect();
+        assert!(!compact.contains("__style_value"), "{compact}");
+        assert!(
+            compact.contains("usex::view::__patchas__nana_patch;"),
+            "{compact}"
+        );
+        assert!(compact.contains("__nana_patch::set::width("), "{compact}");
+        assert!(
+            compact.contains("__nana_patch::set::max_width("),
+            "{compact}"
+        );
+        assert!(
+            compact.contains("__nana_patch::set::paint::background_image("),
+            "{compact}"
+        );
+        assert!(
+            compact.contains("__nana_patch::set::paint::box_shadows("),
+            "{compact}"
+        );
+        assert!(
+            compact.contains("__nana_patch::set::grid::columns("),
+            "{compact}"
+        );
+        assert!(
+            compact.contains("__nana_patch::set::transforms::transform("),
+            "{compact}"
+        );
+        assert!(
+            compact.contains("__nana_patch::set::theme::padding("),
+            "{compact}"
+        );
+        assert!(
+            compact.contains("__nana_patch::set::paint_colors::color("),
+            "{compact}"
+        );
     }
 }

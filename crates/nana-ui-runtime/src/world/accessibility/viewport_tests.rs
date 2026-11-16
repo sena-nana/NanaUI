@@ -274,33 +274,31 @@ fn accessible_bounds_follow_incremental_scroll_hit_updates() {
 fn accessible_bounds_use_the_accumulated_affine_transform() {
     let mut world = fixture();
     let mut queue = MutationQueue::new();
+    let mut parent_layout = LayoutStyle::default();
+    parent_layout.transforms.transform = Some(PaintTransform {
+        a: 1.5,
+        d: 1.5,
+        e: 15.0,
+        f: 25.0,
+        ..Default::default()
+    });
     queue.set_style(
         node(1),
         NodeStyle {
-            layout: Arc::new(LayoutStyle {
-                transform: Some(PaintTransform {
-                    a: 1.5,
-                    d: 1.5,
-                    e: 15.0,
-                    f: 25.0,
-                    ..Default::default()
-                }),
-                ..Default::default()
-            }),
+            layout: Arc::new(parent_layout),
             ..Default::default()
         },
     );
+    let mut child_layout = LayoutStyle::default();
+    child_layout.transforms.transform = Some(PaintTransform {
+        e: 12.0,
+        f: -10.0,
+        ..Default::default()
+    });
     queue.set_style(
         node(2),
         NodeStyle {
-            layout: Arc::new(LayoutStyle {
-                transform: Some(PaintTransform {
-                    e: 12.0,
-                    f: -10.0,
-                    ..Default::default()
-                }),
-                ..Default::default()
-            }),
+            layout: Arc::new(child_layout),
             ..Default::default()
         },
     );
@@ -401,16 +399,15 @@ fn accessible_projection_uses_committed_transforms_before_hit_rebuild() {
     let mut world = fixture();
     let previous = button_bounds(&world);
     let mut queue = MutationQueue::new();
+    let mut layout = LayoutStyle::default();
+    layout.transforms.transform = Some(PaintTransform {
+        e: 100.0,
+        ..Default::default()
+    });
     queue.set_style(
         node(1),
         NodeStyle {
-            layout: Arc::new(LayoutStyle {
-                transform: Some(PaintTransform {
-                    e: 100.0,
-                    ..Default::default()
-                }),
-                ..Default::default()
-            }),
+            layout: Arc::new(layout),
             ..Default::default()
         },
     );

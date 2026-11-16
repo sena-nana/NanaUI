@@ -258,7 +258,7 @@ impl ComponentView for ToastSlot {
         layout.direction = Some(FlexDirection::Column);
         // What scales is the slot: its entrance, exit and change in place
         // grow out of the point the theme names.
-        layout.transform_origin = Some(world.theme().recipes().toast().motion.origin);
+        layout.transforms.origin = Some(world.theme().recipes().toast().motion.origin);
         // As wide as its toast, never wider than the stack: the stack's
         // alignment places it.
         layout.width = Some(LengthSpec::FitContent);
@@ -1953,7 +1953,7 @@ mod tests {
             context
                 .world()
                 .node_style(slot)
-                .and_then(|style| style.layout.transform_origin),
+                .and_then(|style| style.layout.transforms.origin),
             Some(corner),
         );
     }

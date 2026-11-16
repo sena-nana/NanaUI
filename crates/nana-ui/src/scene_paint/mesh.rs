@@ -1200,14 +1200,14 @@ impl MeshPipeline {
         policy: Option<&nana_gpu::GpuDeviceState>,
         precompiled: bool,
     ) -> Self {
-        let shader = super::wgsl::Program::joined(
+        let shader = super::wgsl::program_joined!(
             "nana-ui.scene.triangle.solid.shader",
-            &[
+            [
                 super::wgsl::TRIANGLE,
                 super::wgsl::TRIANGLE_SOLID,
                 super::wgsl::PATH,
                 super::wgsl::COLOR,
-            ],
+            ]
         );
         #[cfg(target_os = "windows")]
         let shader = shader.precompiled(&super::precompiled::MESH, precompiled, mesh_layout_key);
@@ -1954,13 +1954,13 @@ fn create_path_pipeline(
         "path_vs_main",
         fragment_entry,
         &[("PATH_SAMPLES", f64::from(sample_count))],
-        |vertex, fragment, constants| {
+        |vertex, vertex_entry, fragment, resolved_fragment_entry, constants| {
             device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
                 label: Some("nana-ui.scene.path.pipeline"),
                 layout: Some(layout),
                 vertex: wgpu::VertexState {
                     module: vertex,
-                    entry_point: Some("path_vs_main"),
+                    entry_point: Some(vertex_entry),
                     buffers: &[
                         Some(wgpu::VertexBufferLayout {
                             array_stride: std::mem::size_of::<GpuPathVertex>() as u64,
@@ -1990,7 +1990,7 @@ fn create_path_pipeline(
                 },
                 fragment: Some(wgpu::FragmentState {
                     module: fragment,
-                    entry_point: Some(fragment_entry),
+                    entry_point: Some(resolved_fragment_entry),
                     targets: &[Some(wgpu::ColorTargetState {
                         format,
                         blend: Some(blend),
@@ -2032,13 +2032,13 @@ fn mesh_pipeline(
         "solid_vs_main",
         "solid_fs_main",
         &[],
-        |vertex, fragment, _| {
+        |vertex, vs_ep, fragment, fs_ep, _| {
             device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
                 label: Some("nana-ui.scene.triangle.solid.pipeline"),
                 layout: Some(layout),
                 vertex: wgpu::VertexState {
                     module: vertex,
-                    entry_point: Some("solid_vs_main"),
+                    entry_point: Some(vs_ep),
                     buffers: &[Some(wgpu::VertexBufferLayout {
                         array_stride: std::mem::size_of::<MeshInstance>() as u64,
                         step_mode: wgpu::VertexStepMode::Instance,
@@ -2059,7 +2059,7 @@ fn mesh_pipeline(
                     module: fragment,
                     // Both sample counts share the analytic-coverage fragment: MSAA
                     // samples geometry, not the SDF, so it cannot own the edge.
-                    entry_point: Some("solid_fs_main"),
+                    entry_point: Some(fs_ep),
                     targets: &[Some(wgpu::ColorTargetState {
                         format,
                         // Premultiplied alpha, not BlendState::MAX (MAX would also

@@ -23,7 +23,7 @@ use crate::view_components::project_common;
 use crate::{
     AccessibilityRole, AccessibilityState, AppContext, ComponentView, CustomRenderNode, Entity,
     FrameworkError, HOST_TEXTURE_RENDERER, InteractionState, MutationQueue, NodeKind, NodePointer,
-    NodePointerHooks, NodeStyle, StableNodeId, Stack, StandardVisual, TextContent, UiWorld,
+    NodePointerHooks, NodeStyle, SpinnerVisual, StableNodeId, Stack, TextContent, UiWorld,
 };
 
 /// Width ÷ height when the host does not declare an aspect.
@@ -384,6 +384,8 @@ fn hover(
 }
 
 impl ComponentView for Thumbnail {
+    const TYPE_ID: Option<&'static str> = Some(crate::component_descriptors::THUMBNAIL.type_id);
+
     const BEHAVIOR: crate::TypeBehavior<Self> = crate::TypeBehavior {
         pointer: Some(&THUMBNAIL_POINTER),
         ..crate::TypeBehavior::NONE
@@ -421,13 +423,13 @@ impl ComponentView for Thumbnail {
         if world.custom_render(id) != custom.as_ref() {
             mutations.set_custom_render(id, custom);
         }
-        let visual = (self.state == ThumbnailState::Loading).then(|| StandardVisual::Spinner {
+        let visual = (self.state == ThumbnailState::Loading).then(|| SpinnerVisual {
             label: Arc::from(""),
             size: SPINNER_SIZE.min(self.box_extent(world.theme_metrics()).1),
             phase: 0.0,
         });
-        if world.standard_visual(id) != visual {
-            mutations.set_standard_visual(id, visual);
+        if world.widget_visual_as::<SpinnerVisual>(id) != visual.as_ref() {
+            mutations.set_widget_visual(id, visual);
         }
         project_common(
             id,
@@ -545,17 +547,14 @@ mod tests {
         );
         let (world, id) = mount(Thumbnail::loading());
         assert!(world.custom_render(id).is_none());
-        assert!(matches!(
-            world.standard_visual(id),
-            Some(StandardVisual::Spinner { .. })
-        ));
+        assert!(world.widget_visual_as::<SpinnerVisual>(id).is_some());
         assert!(world.accessibility(id).unwrap().busy);
-        match world.standard_visual(id) {
-            Some(StandardVisual::Spinner { size, label, .. }) => {
-                assert_eq!(size, SPINNER_SIZE);
+        match world.widget_visual_as::<SpinnerVisual>(id) {
+            Some(SpinnerVisual { size, label, .. }) => {
+                assert_eq!(*size, SPINNER_SIZE);
                 assert!(label.is_empty());
             }
-            other => panic!("loading thumbnail must project a spinner, got {other:?}"),
+            None => panic!("loading thumbnail must project a spinner"),
         }
         let (world, id) = mount(Thumbnail::unavailable());
         assert!(world.accessibility(id).unwrap().invalid);

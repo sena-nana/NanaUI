@@ -8,9 +8,9 @@ use nana_ui_input::{
 };
 
 use crate::{
-    AccessibilityAction, AccessibilityActionRequest, AccessibilityRole, AppContext,
-    ComponentGeometry, DocumentId, Entity, HeadlessInput, IconButton, LayoutBox, LayoutPartKind,
-    LayoutViewport, RangeChanged, RangeField, RangeInput, RangeValueThumb,
+    AccessibilityAction, AccessibilityActionRequest, AccessibilityRole, AppContext, DocumentId,
+    Entity, HeadlessInput, IconButton, LayoutBox, LayoutPartKind, LayoutViewport, RangeChanged,
+    RangeField, RangeInput, RangeValueThumb,
 };
 
 fn document() -> DocumentId {
@@ -59,12 +59,11 @@ fn relayout(cx: &mut AppContext) {
 
 /// The track (the span a thumb's centre travels) and the value thumb.
 fn geometry(cx: &AppContext, range: Entity<RangeField>) -> (LayoutBox, Option<RangeValueThumb>) {
-    match cx.world().component_geometry(range.stable_id()) {
-        Some(ComponentGeometry::Range {
-            track, value_thumb, ..
-        }) => (track, value_thumb),
-        other => panic!("{other:?}"),
-    }
+    let geometry = cx
+        .world()
+        .range_geometry(range.stable_id())
+        .expect("range geometry");
+    (geometry.track, geometry.value_thumb)
 }
 
 fn value(cx: &AppContext, range: Entity<RangeField>) -> f64 {
@@ -198,10 +197,10 @@ fn the_value_thumb_stays_on_the_track_between_the_bounds() {
         );
         assert!(minimum.x + minimum.width < maximum.x);
         assert!(maximum.x + maximum.width <= reset.x);
-        let Some(ComponentGeometry::Range {
+        let Some(crate::RangeGeometry {
             bounds: Some([low, high]),
             ..
-        }) = cx.world().component_geometry(range.stable_id())
+        }) = cx.world().range_geometry(range.stable_id())
         else {
             panic!("bounds are drawn");
         };
@@ -249,10 +248,10 @@ fn bounds_alone_lay_the_track_between_them_beside_the_readout() {
     assert!(minimum.x + minimum.width < track.x);
     assert!(track.x + track.width < maximum.x);
     assert!(maximum.x + maximum.width <= readout.x);
-    let Some(ComponentGeometry::Range {
+    let Some(crate::RangeGeometry {
         bounds: Some([low, high]),
         ..
-    }) = cx.world().component_geometry(range.stable_id())
+    }) = cx.world().range_geometry(range.stable_id())
     else {
         panic!("bounds are drawn");
     };
@@ -311,10 +310,10 @@ fn a_click_on_the_value_thumb_types_enter_commits_and_escape_reverts() {
     let field = cx.world().layout_box(parts.input).unwrap();
     let centre = field.x + field.width / 2.0;
     assert!((centre - x).abs() < 1.0, "{field:?} over {capsule:?}");
-    let Some(ComponentGeometry::Range {
+    let Some(crate::RangeGeometry {
         value_thumb: Some(thumb),
         ..
-    }) = cx.world().component_geometry(range.stable_id())
+    }) = cx.world().range_geometry(range.stable_id())
     else {
         panic!("value thumb");
     };
@@ -371,7 +370,7 @@ fn the_reset_button_is_disabled_at_the_default_and_puts_it_back() {
     let heard = listen(&mut cx, range);
     let parts = cx.read(range, |range| range.parts).unwrap().unwrap();
     let reset = Entity::<IconButton>::from_stable_id(parts.reset);
-    let node = |cx: &AppContext| cx.world().accessibility(parts.reset).unwrap().clone();
+    let node = |cx: &AppContext| cx.world().accessibility(parts.reset).unwrap().into_owned();
     assert_eq!(node(&cx).role, AccessibilityRole::Button);
     assert_eq!(node(&cx).label.as_deref(), Some("恢复默认"));
     assert!(node(&cx).disabled, "at the default");

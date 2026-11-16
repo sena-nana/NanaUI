@@ -156,6 +156,20 @@ fn paired_style_control_produces_identical_resolved_values() {
                         ..Default::default()
                     },
                 );
+            } else if value % 5 == 0 {
+                queue.set_style(
+                    id(value),
+                    NodeStyle {
+                        layout: Arc::new(LayoutStyle {
+                            background: Some([0.1, 0.2, 0.3, 1.0]),
+                            border_color: Some([0.4, 0.5, 0.6, 1.0]),
+                            gap: Some(crate::LengthSpec::Px(8.0)),
+                            padding: Some(crate::LengthSpec::Px(12.0)),
+                            ..Default::default()
+                        }),
+                        ..Default::default()
+                    },
+                );
             }
         }
         world.commit(queue).unwrap();
@@ -222,5 +236,65 @@ fn plain_subtrees_share_computed_styles_when_sibling_visuals_or_overlays_exist()
             &ctx.world().record(leaf.stable_id()).resolved.0,
         ),
         "plain Text must share parent's Arc<ComputedStyle> even with Button + OverlayHost in the world"
+    );
+}
+
+#[test]
+fn children_under_painted_containers_share_inherited_and_unpainted_styles() {
+    let mut ctx = crate::AppContext::new();
+    let document = DocumentId::new(1).unwrap();
+    let root = ctx
+        .create_component(document, crate::Stack::column(0.0))
+        .unwrap();
+    let painted = ctx
+        .create_detached_component(
+            document,
+            crate::Stack::column(6.0)
+                .surface(nana_ui_core::SemanticColorRole::Surface)
+                .border(nana_ui_core::SemanticColorRole::Border, 1.0)
+                .ring(nana_ui_core::SemanticColorRole::Accent, 2.0)
+                .padding(12.0)
+                .gap(6.0),
+        )
+        .unwrap();
+    ctx.append_child(root, painted).unwrap();
+
+    let row = ctx
+        .create_detached_component(
+            document,
+            crate::Stack::row(8.0).width(crate::LengthSpec::Percent(100.0)),
+        )
+        .unwrap();
+    ctx.append_child(painted, row).unwrap();
+
+    let leaf = ctx
+        .create_detached_component(document, crate::Text::new("shared"))
+        .unwrap();
+    ctx.append_child(row, leaf).unwrap();
+
+    let mut shaper = crate::world::reflow_oracle::bundled_face_shaper();
+    crate::world::reflow_oracle::product_frame(
+        &mut ctx,
+        document,
+        crate::LayoutViewport::new(640.0, 480.0),
+        &mut shaper,
+    );
+
+    let root_style = &ctx.world().record(root.stable_id()).resolved.0;
+    let painted_style = &ctx.world().record(painted.stable_id()).resolved.0;
+    let row_style = &ctx.world().record(row.stable_id()).resolved.0;
+    let leaf_style = &ctx.world().record(leaf.stable_id()).resolved.0;
+
+    assert!(
+        Arc::ptr_eq(&root_style.inherited, &painted_style.inherited),
+        "painted container must share inherited Arc<InheritedStyle> with unpainted root"
+    );
+    assert!(
+        Arc::ptr_eq(root_style, row_style),
+        "unpainted child row under painted container must share unpainted Arc<ComputedStyle> with root"
+    );
+    assert!(
+        Arc::ptr_eq(root_style, leaf_style),
+        "leaf Text under painted container must share unpainted Arc<ComputedStyle> with root"
     );
 }

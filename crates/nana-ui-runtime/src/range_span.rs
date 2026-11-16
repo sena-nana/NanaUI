@@ -700,14 +700,8 @@ fn thumb_offsets(
     along: f32,
     girth: f32,
 ) -> (LengthSpec, LengthSpec) {
-    let at = |ratio: f32| LengthSpec::CalcPercentOffset {
-        percent: ratio * 100.0,
-        offset_px: -ratio * along,
-    };
-    let centred = LengthSpec::CalcPercentOffset {
-        percent: 50.0,
-        offset_px: -girth / 2.0,
-    };
+    let at = |ratio: f32| LengthSpec::percent_offset_inline(ratio * 100.0, -ratio * along);
+    let centred = LengthSpec::percent_offset_inline(50.0, -girth / 2.0);
     match orientation {
         RangeSpanOrientation::Horizontal => (at(ratio), centred),
         RangeSpanOrientation::Vertical => (centred, at(1.0 - ratio)),
@@ -1461,14 +1455,11 @@ impl AppContext {
                 // difference between the field and the thumb.
                 let (left, top) = thumb_offsets(snapshot.orientation, ratio, travel, girth);
                 let shift = (travel - along) / 2.0;
-                let shifted = |offset: LengthSpec| match offset {
-                    LengthSpec::CalcPercentOffset { percent, offset_px } => {
-                        LengthSpec::CalcPercentOffset {
-                            percent,
-                            offset_px: offset_px + shift,
-                        }
+                let shifted = |offset: LengthSpec| match offset.as_percent_offset() {
+                    Some((percent, offset_px)) => {
+                        LengthSpec::percent_offset_inline(percent, offset_px + shift)
                     }
-                    other => other,
+                    None => offset,
                 };
                 let (left, top) = match snapshot.orientation {
                     RangeSpanOrientation::Horizontal => (shifted(left), top),

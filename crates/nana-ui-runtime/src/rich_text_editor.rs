@@ -340,7 +340,7 @@ impl RichTextEditor {
     }
 
     pub fn font_family(mut self, family: impl Into<String>) -> Self {
-        Arc::make_mut(&mut self.style.layout).font_family = Some(family.into());
+        Arc::make_mut(&mut self.style.layout).text_ext.font_family = Some(family.into());
         self
     }
 
@@ -1011,6 +1011,9 @@ impl Geometry {
 }
 
 impl ComponentView for RichTextEditor {
+    const TYPE_ID: Option<&'static str> =
+        Some(crate::component_descriptors::RICH_TEXT_EDITOR.type_id);
+
     const BEHAVIOR: crate::TypeBehavior<Self> = crate::TypeBehavior {
         hooks: Some(|hooks| {
             crate::framework::routes::rich_text_editor(hooks);

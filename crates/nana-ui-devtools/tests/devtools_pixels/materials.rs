@@ -23,10 +23,10 @@ fn render(material: Option<MaterialRef>, border: Option<MaterialRef>, rich: bool
                     l.background = Some([0.2, 0.2, 0.2, 1.]);
                     l.border_radius = Some(16.);
                     l.border_color = Some([1., 1., 1., 1.]);
-                    l.border_top_width = Some(6.);
-                    l.border_right_width = Some(6.);
-                    l.border_bottom_width = Some(6.);
-                    l.border_left_width = Some(6.);
+                    l.border_sides.top_width = Some(6.);
+                    l.border_sides.right_width = Some(6.);
+                    l.border_sides.bottom_width = Some(6.);
+                    l.border_sides.left_width = Some(6.);
                     l.border_style = Some(nana_ui_core::BorderStyle::Solid);
                     l.paint.background_material = material.clone();
                     l.paint.border_material = border;

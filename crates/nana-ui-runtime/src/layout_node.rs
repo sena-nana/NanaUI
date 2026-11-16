@@ -26,12 +26,9 @@ use crate::{LayoutFragmentKind, StableNodeId};
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[non_exhaustive]
 pub enum FormattingContextKind {
-    /// Block flow: `display: block` or unset. Children stack along the
-    /// container's direction (column unless the intent says row).
-    Flow,
-    /// `display: flex` / `inline-flex`.
+    /// Flex container: `display: flex` / `inline-flex`, or unset container intent.
     Flex,
-    /// `display: grid` / `inline-grid`.
+    /// Grid container: `display: grid` / `inline-grid`.
     Grid,
     /// A line-based inline context. A container whose in-flow children
     /// include inline-level boxes establishes it, and so does a text leaf for
@@ -49,12 +46,11 @@ pub enum FormattingContextKind {
 impl FormattingContextKind {
     pub(crate) const fn cache_id(self) -> crate::FormattingContextId {
         crate::FormattingContextId::new(match self {
-            Self::Flow => 0,
-            Self::Flex => 1,
-            Self::Grid => 2,
-            Self::Inline => 3,
-            Self::Overlay => 4,
-            Self::Layers => 5,
+            Self::Flex => 0,
+            Self::Grid => 1,
+            Self::Inline => 2,
+            Self::Overlay => 3,
+            Self::Layers => 4,
         })
     }
     /// The context a style alone selects, before layout has run. Layout
@@ -65,8 +61,8 @@ impl FormattingContextKind {
         match style.display {
             Some(DisplaySpec::Layers) => Self::Layers,
             Some(display) if display.is_grid_container() => Self::Grid,
-            Some(display) if display.is_flex_container() => Self::Flex,
-            _ => Self::Flow,
+            Some(DisplaySpec::Inline) => Self::Inline,
+            _ => Self::Flex,
         }
     }
 
@@ -74,10 +70,9 @@ impl FormattingContextKind {
     #[must_use]
     pub const fn child_fragment_kind(self) -> LayoutFragmentKind {
         match self {
-            Self::Flex => LayoutFragmentKind::FlexChildPlacement,
+            Self::Flex | Self::Overlay => LayoutFragmentKind::FlexChildPlacement,
             Self::Grid | Self::Layers => LayoutFragmentKind::GridChildPlacement,
             Self::Inline => LayoutFragmentKind::InlineAtomic,
-            Self::Flow | Self::Overlay => LayoutFragmentKind::ChildPlacement,
         }
     }
 }
@@ -88,9 +83,6 @@ impl FormattingContextKind {
 pub enum ParticipationKind {
     /// A document root: no parent context.
     Root,
-    /// An in-flow box in block flow, or a block-level box that breaks an
-    /// inline context's lines.
-    FlowItem,
     FlexItem,
     GridItem,
     /// An in-flow child of a `display: layers` container: one layer.
@@ -101,16 +93,13 @@ pub enum ParticipationKind {
     /// An inline-level element with children of its own: its content joins
     /// the parent's lines (and is split around a block it contains).
     InlineSpan,
-    /// Any other inline-level box (`inline-block`, a control, replaced
-    /// content) in an inline context: one unbreakable box on a line.
+    /// Any other inline-level box (`inline-flex`, `inline-grid`, a control,
+    /// replaced content) in an inline context: one unbreakable box on a line.
     AtomicInline,
-    Float,
     Absolute,
     Fixed,
     /// A child placed by an overlay's slot contract.
     OverlayItem,
-    /// `display: contents`: no box; the children take part in this context.
-    Contents,
     /// `display: none` or hidden: no box.
     NoBox,
 }
@@ -129,9 +118,6 @@ impl ParticipationKind {
         if child.omits_box() {
             return Self::NoBox;
         }
-        if child.display.is_some_and(DisplaySpec::is_contents) {
-            return Self::Contents;
-        }
         if parent != FormattingContextKind::Overlay {
             match child.position {
                 PositionSpec::Absolute => return Self::Absolute,
@@ -144,23 +130,8 @@ impl ParticipationKind {
             FormattingContextKind::Flex => Self::FlexItem,
             FormattingContextKind::Grid => Self::GridItem,
             FormattingContextKind::Layers => Self::LayerItem,
-            FormattingContextKind::Flow => {
-                if child.is_floated() {
-                    Self::Float
-                } else if child.display == Some(DisplaySpec::Inline)
-                    && content == LayoutContentKind::Children
-                {
-                    // Under a block parent an inline element is only out of
-                    // an inline context when it was unboxed around a block.
-                    Self::InlineSpan
-                } else {
-                    Self::FlowItem
-                }
-            }
             FormattingContextKind::Inline => {
-                if child.is_floated() {
-                    Self::Float
-                } else if child.display == Some(DisplaySpec::Inline) {
+                if child.display == Some(DisplaySpec::Inline) {
                     match content {
                         LayoutContentKind::Text => Self::NativeText,
                         LayoutContentKind::Children => Self::InlineSpan,
@@ -171,7 +142,7 @@ impl ParticipationKind {
                 } else if child.is_inline_level() {
                     Self::AtomicInline
                 } else {
-                    Self::FlowItem
+                    Self::FlexItem
                 }
             }
         }
@@ -217,7 +188,7 @@ pub struct LayoutNode {
 
 #[cfg(test)]
 mod tests {
-    use nana_ui_core::{FloatSpec, LengthSpec};
+    use nana_ui_core::LengthSpec;
 
     use super::*;
 
@@ -242,50 +213,51 @@ mod tests {
 
     #[test]
     fn participation_is_decided_by_the_parent_context() {
-        let block = LayoutStyle::default();
+        let default_box = LayoutStyle::default();
         let inline = display(DisplaySpec::Inline);
-        let inline_block = display(DisplaySpec::InlineBlock);
-        let floated = LayoutStyle {
-            float: FloatSpec::Left,
-            ..LayoutStyle::default()
-        };
+        let inline_flex = display(DisplaySpec::InlineFlex);
         let cases = [
-            (Ctx::Flex, &block, Content::Children, Part::FlexItem),
+            (Ctx::Flex, &default_box, Content::Children, Part::FlexItem),
             (Ctx::Flex, &inline, Content::Text, Part::FlexItem),
-            (Ctx::Flex, &inline_block, Content::Replaced, Part::FlexItem),
-            (Ctx::Flex, &floated, Content::Empty, Part::FlexItem),
-            (Ctx::Grid, &block, Content::Children, Part::GridItem),
+            (Ctx::Flex, &inline_flex, Content::Replaced, Part::FlexItem),
+            (Ctx::Grid, &default_box, Content::Children, Part::GridItem),
             (Ctx::Grid, &inline, Content::Text, Part::GridItem),
-            (Ctx::Grid, &inline_block, Content::Replaced, Part::GridItem),
-            (Ctx::Layers, &block, Content::Children, Part::LayerItem),
+            (Ctx::Grid, &inline_flex, Content::Replaced, Part::GridItem),
+            (
+                Ctx::Layers,
+                &default_box,
+                Content::Children,
+                Part::LayerItem,
+            ),
             (Ctx::Layers, &inline, Content::Text, Part::LayerItem),
             (
                 Ctx::Layers,
-                &inline_block,
+                &inline_flex,
                 Content::Replaced,
                 Part::LayerItem,
             ),
-            (Ctx::Flow, &block, Content::Text, Part::FlowItem),
-            (Ctx::Flow, &floated, Content::Empty, Part::Float),
-            (Ctx::Flow, &inline, Content::Children, Part::InlineSpan),
             (Ctx::Inline, &inline, Content::Text, Part::NativeText),
             (Ctx::Inline, &inline, Content::Children, Part::InlineSpan),
             (Ctx::Inline, &inline, Content::Replaced, Part::AtomicInline),
             (
                 Ctx::Inline,
-                &inline_block,
+                &inline_flex,
                 Content::Children,
                 Part::AtomicInline,
             ),
             (
                 Ctx::Inline,
-                &inline_block,
+                &inline_flex,
                 Content::Replaced,
                 Part::AtomicInline,
             ),
-            (Ctx::Inline, &block, Content::Text, Part::FlowItem),
-            (Ctx::Inline, &floated, Content::Empty, Part::Float),
-            (Ctx::Overlay, &block, Content::Children, Part::OverlayItem),
+            (Ctx::Inline, &default_box, Content::Text, Part::FlexItem),
+            (
+                Ctx::Overlay,
+                &default_box,
+                Content::Children,
+                Part::OverlayItem,
+            ),
             (
                 Ctx::Overlay,
                 &positioned(PositionSpec::Fixed),
@@ -306,15 +278,10 @@ mod tests {
     #[test]
     fn out_of_flow_and_boxless_children_do_not_depend_on_the_context() {
         let none = display(DisplaySpec::None);
-        let contents = display(DisplaySpec::Contents);
         let absolute = positioned(PositionSpec::Absolute);
         let fixed = positioned(PositionSpec::Fixed);
-        for parent in [Ctx::Flow, Ctx::Flex, Ctx::Grid, Ctx::Layers, Ctx::Inline] {
+        for parent in [Ctx::Flex, Ctx::Grid, Ctx::Layers, Ctx::Inline] {
             assert_eq!(Part::classify(parent, &none, Content::Text), Part::NoBox);
-            assert_eq!(
-                Part::classify(parent, &contents, Content::Children),
-                Part::Contents
-            );
             assert_eq!(
                 Part::classify(parent, &absolute, Content::Empty),
                 Part::Absolute

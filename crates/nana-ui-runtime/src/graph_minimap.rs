@@ -10,16 +10,138 @@
 use std::sync::Arc;
 
 use nana_ui_core::{
-    GraphModel, GraphPoint, GraphRect, GraphSize, GraphViewport, OverflowSpec, SemanticColorRole,
+    GraphModel, GraphPoint, GraphRect, GraphSize, GraphViewport, OpacityTokens, OverflowSpec,
+    SemanticColorRole, SemanticPalette,
 };
 
 use crate::view_components::project_common;
 use crate::{
     AccessibilityRole, AccessibilityState, ComponentView, InteractionState, LayoutBox,
-    MutationQueue, NodeKind, NodeStyle, StableNodeId, StandardVisual, UiWorld,
+    MutationQueue, NodeKind, NodeStyle, StableNodeId, UiWorld, WidgetBatchColors, WidgetPaintCtx,
+    WidgetPaintOp, WidgetPaintOutput, WidgetQuad, WidgetQuadBatch, WidgetVisual,
 };
 
 const DEFAULT_LABEL: &str = "Graph minimap";
+
+/// Resolved geometry and colours for a [`GraphMinimap`] component.
+#[derive(Debug, Clone, PartialEq)]
+pub struct GraphMinimapLayout {
+    pub nodes: Vec<LayoutBox>,
+    pub node_fill: [f32; 4],
+    pub indicator: Option<LayoutBox>,
+    pub indicator_fill: [f32; 4],
+    pub indicator_border: [f32; 4],
+}
+
+/// Visual payload projected by [`GraphMinimap`].
+#[derive(Debug, Clone, PartialEq)]
+pub struct GraphMinimapVisual {
+    pub bounds: GraphRect,
+    pub nodes: Arc<[GraphRect]>,
+    pub indicator: Option<GraphRect>,
+    pub node_fill: Option<SemanticColorRole>,
+}
+
+impl GraphMinimapVisual {
+    /// Resolves `box_bounds`-relative node rects and viewport indicator against `palette` and `opacity`.
+    #[must_use]
+    pub fn layout_at(
+        &self,
+        box_bounds: LayoutBox,
+        palette: &SemanticPalette,
+        // The fill role is application data; the theme owns the soft alphas.
+        opacity: OpacityTokens,
+    ) -> GraphMinimapLayout {
+        let fill = palette
+            .get_in(self.node_fill.unwrap_or(SemanticColorRole::Muted), opacity)
+            .as_rgba_array();
+        let mut indicator_fill = palette.accent.as_rgba_array();
+        indicator_fill[3] *= 0.16;
+        let indicator_border = palette.accent.as_rgba_array();
+        let projection = GraphMinimapProjection::new(
+            GraphSize::new(box_bounds.width, box_bounds.height),
+            self.bounds,
+        );
+        let project = |rect: &GraphRect| {
+            projection
+                .map(|projection| projection.local_rect(*rect))
+                .map(|rect| LayoutBox {
+                    x: box_bounds.x + rect.origin.x,
+                    y: box_bounds.y + rect.origin.y,
+                    width: rect.size.width,
+                    height: rect.size.height,
+                })
+        };
+        GraphMinimapLayout {
+            nodes: self.nodes.iter().filter_map(&project).collect(),
+            node_fill: fill,
+            indicator: self
+                .indicator
+                .as_ref()
+                .and_then(project)
+                .and_then(|mapped| crate::world::intersect_layout_boxes(box_bounds, mapped)),
+            indicator_fill,
+            indicator_border,
+        }
+    }
+}
+
+impl WidgetVisual for GraphMinimapVisual {
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+
+    fn dyn_eq(&self, other: &dyn std::any::Any) -> bool {
+        other.downcast_ref::<Self>() == Some(self)
+    }
+
+    fn paint(&self, ctx: &WidgetPaintCtx<'_>) -> WidgetPaintOutput {
+        let layout = self.layout_at(
+            ctx.bounds,
+            &ctx.style_model.palette,
+            ctx.style_model.opacity,
+        );
+        let mut out = WidgetPaintOutput::new();
+        out.suppress_root_surface = true;
+
+        if !layout.nodes.is_empty() {
+            out.push(
+                10,
+                WidgetPaintOp::QuadBatch(WidgetQuadBatch {
+                    bounds: crate::widget_visual::union_layout_rects(&layout.nodes),
+                    rects: Arc::from(layout.nodes),
+                    colors: WidgetBatchColors::Uniform(layout.node_fill),
+                    fill_paint: None,
+                    border: None,
+                    corner_radius: [0.0; 4],
+                }),
+            );
+        }
+        if let Some(indicator) = layout.indicator {
+            out.push(
+                11,
+                WidgetPaintOp::Quad(WidgetQuad {
+                    rect: indicator,
+                    fill: Some(layout.indicator_fill),
+                    border: Some((layout.indicator_border, 1.5)),
+                    ..WidgetQuad::default()
+                }),
+            );
+        }
+        out
+    }
+}
+
+impl UiWorld {
+    /// Resolves `id`'s graph-minimap node rectangles and visible-world indicator.
+    #[must_use]
+    pub fn graph_minimap_layout(&self, id: StableNodeId) -> Option<GraphMinimapLayout> {
+        let visual = self.widget_visual_as::<GraphMinimapVisual>(id)?;
+        let bounds = self.component_layout_box(id)?;
+        let style_model = self.node_style_model(id);
+        Some(visual.layout_at(bounds, &style_model.palette, style_model.opacity))
+    }
+}
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum GraphMinimapEvent {
@@ -254,7 +376,7 @@ impl ComponentView for GraphMinimap {
     }
 
     fn project(&self, id: StableNodeId, world: &UiWorld, mutations: &mut MutationQueue) {
-        let visual = StandardVisual::GraphMinimap {
+        let visual = GraphMinimapVisual {
             bounds: self.model.bounds().unwrap_or_default(),
             nodes: self
                 .model
@@ -265,8 +387,8 @@ impl ComponentView for GraphMinimap {
             indicator: self.visible_world_rect(),
             node_fill: self.node_fill,
         };
-        if world.standard_visual(id) != Some(visual.clone()) {
-            mutations.set_standard_visual(id, Some(visual));
+        if world.widget_visual_as::<GraphMinimapVisual>(id) != Some(&visual) {
+            mutations.set_widget_visual(id, Some(visual));
         }
         project_common(
             id,
@@ -499,13 +621,13 @@ mod tests {
             .unwrap();
         layout(&mut context, minimap.stable_id(), 180.0, 135.0);
         assert!(matches!(
-            context.world().standard_visual(minimap.stable_id()),
-            Some(StandardVisual::GraphMinimap {
+            context.world().widget_visual_as::<GraphMinimapVisual>(minimap.stable_id()),
+            Some(GraphMinimapVisual {
                 bounds,
-                ref nodes,
+                nodes,
                 indicator: Some(indicator),
                 node_fill: None,
-            }) if bounds
+            }) if *bounds
                 == GraphRect::new(GraphPoint::new(10.0, 20.0), GraphSize::new(360.0, 80.0))
                 && nodes.as_ref()
                     == [
@@ -513,21 +635,21 @@ mod tests {
                         GraphRect::new(GraphPoint::new(250.0, 20.0), GraphSize::new(120.0, 80.0)),
                     ]
                 .as_slice()
-                && indicator == GraphRect::new(GraphPoint::new(100.0, 50.0), GraphSize::new(200.0, 50.0))
+                && *indicator == GraphRect::new(GraphPoint::new(100.0, 50.0), GraphSize::new(200.0, 50.0))
         ));
 
         let work = context.take_system_work();
         context.resolve_styles(&work.style).unwrap();
         context.resolve_styles(&[minimap.stable_id()]).unwrap();
-        let Some(crate::ComponentGeometry::GraphMinimap {
+        let GraphMinimapLayout {
             nodes,
             indicator,
             indicator_border,
             ..
-        }) = context.world().component_geometry(minimap.stable_id())
-        else {
-            panic!("minimap geometry");
-        };
+        } = context
+            .world()
+            .graph_minimap_layout(minimap.stable_id())
+            .expect("minimap layout");
         assert_eq!(
             nodes,
             vec![
@@ -565,8 +687,10 @@ mod tests {
             .unwrap();
         layout(&mut context, minimap.stable_id(), 180.0, 135.0);
         assert!(matches!(
-            context.world().standard_visual(minimap.stable_id()),
-            Some(StandardVisual::GraphMinimap {
+            context
+                .world()
+                .widget_visual_as::<GraphMinimapVisual>(minimap.stable_id()),
+            Some(GraphMinimapVisual {
                 indicator: None,
                 ..
             })
@@ -694,9 +818,9 @@ mod tests {
         let events = collect_events(&mut context, minimap);
 
         assert!(matches!(
-            context.world().standard_visual(minimap.stable_id()),
-            Some(StandardVisual::GraphMinimap {
-                ref nodes,
+            context.world().widget_visual_as::<GraphMinimapVisual>(minimap.stable_id()),
+            Some(GraphMinimapVisual {
+                nodes,
                 indicator: None,
                 ..
             }) if nodes.is_empty()

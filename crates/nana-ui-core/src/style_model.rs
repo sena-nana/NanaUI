@@ -184,8 +184,7 @@ impl PaintColor {
     }
 }
 
-#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
-#[serde(default)]
+#[derive(Debug, Clone, Default, PartialEq)]
 pub struct PaintColorSlots {
     pub color: Option<PaintColor>,
     pub background: Option<PaintColor>,
@@ -239,6 +238,50 @@ fn oklch_to_linear(l: f32, c: f32, hue: Option<f32>) -> [f32; 3] {
         -0.0041960863 * ll - 0.7034186147 * mm + 1.7076147010 * ss,
     ]
 }
+
+/// `[L, C, h°]` of an sRGB color.
+#[doc(hidden)]
+#[allow(clippy::excessive_precision)]
+pub fn srgb_to_oklch([r, g, b, _]: [f32; 4]) -> [f32; 3] {
+    let (r, g, b) = (
+        PaintColor::gamma_decode(r),
+        PaintColor::gamma_decode(g),
+        PaintColor::gamma_decode(b),
+    );
+    let l = (0.412_221_47 * r + 0.536_332_55 * g + 0.051_445_995 * b).cbrt();
+    let m = (0.211_903_5 * r + 0.680_699_5 * g + 0.107_396_96 * b).cbrt();
+    let s = (0.088_302_46 * r + 0.281_718_85 * g + 0.629_978_7 * b).cbrt();
+    let lightness = 0.210_454_26 * l + 0.793_617_8 * m - 0.004_072_047 * s;
+    let a = 1.977_998_5 * l - 2.428_592_2 * m + 0.450_593_7 * s;
+    let bb = 0.025_904_037 * l + 0.782_771_77 * m - 0.808_675_77 * s;
+    let chroma = (a * a + bb * bb).sqrt();
+    let hue = bb.atan2(a).to_degrees().rem_euclid(360.0);
+    [lightness, chroma, hue]
+}
+
+#[doc(hidden)]
+pub fn oklch_to_srgb(lightness: f32, chroma: f32, hue: f32) -> [f32; 4] {
+    // Reduce chroma until the color fits sRGB, so a hue never clips into a
+    // different-looking color.
+    let mut chroma = chroma;
+    loop {
+        let rgb = oklch_to_linear(lightness, chroma, Some(hue));
+        let fits = rgb.iter().all(|c| (-1e-4..=1.0 + 1e-4).contains(c));
+        if fits || chroma <= 0.005 {
+            return [
+                PaintColor::gamma_encode(rgb[0]),
+                PaintColor::gamma_encode(rgb[1]),
+                PaintColor::gamma_encode(rgb[2]),
+                1.0,
+            ];
+        }
+        chroma -= 0.005;
+    }
+}
+
+/// Hue steps from the accent, in degrees. Neighbours stay far apart so the
+/// first few series read as distinct; later entries fill the gaps.
+const SERIES_HUE_STEPS: [f32; 9] = [0.0, 140.0, 75.0, 300.0, 200.0, 35.0, 250.0, 105.0, 335.0];
 
 fn hsv_to_srgb(h: f32, s: f32, v: f32, alpha: f32) -> [f32; 4] {
     let h = ((h % 360.0) + 360.0) % 360.0 / 60.0;
@@ -849,6 +892,29 @@ impl SemanticPalette {
         })
     }
 
+    /// Categorical data palette derived from `accent` and `surface`: the
+    /// accent first, then hues at the accent's perceived lightness and shared
+    /// chroma, so no series shouts over another.
+    pub fn series_palette(&self) -> [[f32; 4]; 9] {
+        let accent = self.accent.as_rgba_array();
+        let surface = self.surface.as_rgba_array();
+        let [l, c, h] = srgb_to_oklch(accent);
+        let dark_surface = srgb_to_oklch(surface)[0] < 0.5;
+        let lightness = if dark_surface {
+            l.clamp(0.68, 0.76)
+        } else {
+            l.clamp(0.58, 0.68)
+        };
+        let chroma = c.clamp(0.10, 0.15);
+        std::array::from_fn(|index| {
+            if index == 0 {
+                accent
+            } else {
+                oklch_to_srgb(lightness, chroma, h + SERIES_HUE_STEPS[index])
+            }
+        })
+    }
+
     /// Resolve a role against this palette and the theme's state-layer alphas.
     ///
     /// The `opacity` argument is not ceremony. The soft warning and danger
@@ -1164,7 +1230,8 @@ impl Default for ControlSemantics {
 #[cfg(test)]
 mod tests {
     use super::{
-        OpacityTokens, PaintColor, SemanticColor, SemanticColorRole, SemanticPalette, StyleModelRef,
+        OpacityTokens, PaintColor, SemanticColor, SemanticColorRole, SemanticPalette,
+        StyleModelRef, oklch_to_srgb, srgb_to_oklch,
     };
     use crate::theme::ThemeAppearance;
 
@@ -1645,5 +1712,34 @@ mod tests {
         assert!(!slots.has_extended_srgb());
         slots.selection_background = Some(wide_gamut);
         assert!(slots.has_extended_srgb());
+    }
+
+    #[test]
+    fn oklch_round_trips_srgb() {
+        for color in [
+            [0.2, 0.4, 0.8, 1.0],
+            [0.9, 0.3, 0.1, 1.0],
+            [0.5, 0.5, 0.5, 1.0],
+        ] {
+            let [l, c, h] = srgb_to_oklch(color);
+            let back = oklch_to_srgb(l, c, h);
+            for i in 0..3 {
+                assert!((back[i] - color[i]).abs() < 2e-3, "{color:?} -> {back:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn series_palette_starts_with_the_accent_and_stays_distinct() {
+        for semantic in [SemanticPalette::dark(), SemanticPalette::light()] {
+            let palette = semantic.series_palette();
+            assert_eq!(palette[0], semantic.accent.as_rgba_array());
+            for (i, a) in palette.iter().enumerate() {
+                for b in &palette[i + 1..] {
+                    let distance: f32 = (0..3).map(|k| (a[k] - b[k]).abs()).sum();
+                    assert!(distance > 0.12, "{a:?} vs {b:?}");
+                }
+            }
+        }
     }
 }

@@ -19,7 +19,7 @@ use crate::popover::{MENU_OVERLAY_Z_INDEX, trigger_button_style};
 use crate::view_components::project_common;
 use crate::{
     AccessibilityRole, AccessibilityState, ComponentView, CustomRenderNode, InteractionState,
-    MenuSurfaceKind, MutationQueue, NodeKind, NodeStyle, StableNodeId, StandardVisual,
+    MenuSurfaceKind, MenuSurfaceVisual, MutationQueue, NodeKind, NodeStyle, StableNodeId,
     TriggeredMenuOverlay, UiWorld,
 };
 
@@ -293,7 +293,7 @@ impl ComponentView for HoverCard {
         let trigger = (self.trigger_icon.is_none() && self.trigger_image.is_none())
             .then(|| Arc::clone(&self.trigger))
             .filter(|label| !label.is_empty());
-        let visual = StandardVisual::MenuSurface {
+        let visual = MenuSurfaceVisual {
             kind: MenuSurfaceKind::HoverCard,
             open: self.open,
             trigger: trigger.clone(),
@@ -318,8 +318,8 @@ impl ComponentView for HoverCard {
             rows: Arc::from([]),
             highlighted: None,
         };
-        if world.standard_visual(id) != Some(visual.clone()) {
-            mutations.set_standard_visual(id, Some(visual));
+        if world.widget_visual_as::<MenuSurfaceVisual>(id) != Some(&visual) {
+            mutations.set_widget_visual(id, Some(visual));
         }
         // Glyph and avatar triggers carry no text; their label lives in the
         // accessibility state only.
@@ -1188,7 +1188,7 @@ mod tests {
         assert!(context.read(card, |card| card.open).unwrap());
         let extracted = context.world().extract_nodes(&[card.stable_id()]);
         let layout = extracted[0].source_style.layout.as_ref();
-        assert!(layout.transform.is_none());
+        assert!(layout.transforms.transform.is_none());
         assert!(layout.opacity.is_none() || layout.opacity == Some(1.0));
         assert_eq!(layout.z_index, Some(MENU_OVERLAY_Z_INDEX));
     }

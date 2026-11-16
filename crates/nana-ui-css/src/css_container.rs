@@ -1400,10 +1400,7 @@ mod tests {
         assert_eq!(tally.report().container_queries, 0);
         assert!(tally.report().is_empty());
         // A node's style and its container rules are counted apart.
-        let sideways = LayoutStyle {
-            unsupported_writing_mode: true,
-            ..LayoutStyle::default()
-        };
+        let sideways = LayoutStyle::with(|s| s.text_ext.unsupported_writing_mode = true);
         tally.observe(3, &sideways);
         tally.observe_container_queries(3, true);
         tally.observe(3, &LayoutStyle::default());
@@ -1519,7 +1516,10 @@ mod tests {
         let applied = |declarations: &str| {
             let mut layout = LayoutStyle::default();
             layout.apply_css_text(declarations, None, None);
-            (layout.container_type, layout.container_name)
+            (
+                layout.container.container_type,
+                layout.container.container_name.clone(),
+            )
         };
         assert_eq!(
             applied("container-type: inline-size").0,

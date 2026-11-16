@@ -307,7 +307,7 @@ fn stroke_and_shadows_reach_the_scene_and_plain_decorations_draw_no_box_strokes(
 #[test]
 fn css_text_effects_are_the_base_a_span_overrides() {
     let mut layout = label_layout();
-    layout.text_decoration = Some(nana_ui_core::TextDecorationLine {
+    layout.text_ext.text_decoration = Some(nana_ui_core::TextDecorationLine {
         underline: true,
         line_through: false,
     });
@@ -952,10 +952,11 @@ fn css_emphasis_grows_the_line_and_a_new_position_relays_out_without_reshaping()
         queue.set_style(
             id(LABEL),
             NodeStyle {
-                layout: Arc::new(LayoutStyle {
-                    text_emphasis_style: Some(dot()),
-                    text_emphasis_position: Some(position),
-                    ..label_layout()
+                layout: Arc::new({
+                    let mut layout = label_layout();
+                    layout.text_ext.text_emphasis_style = Some(dot());
+                    layout.text_ext.text_emphasis_position = Some(position);
+                    layout
                 }),
                 ..NodeStyle::default()
             },

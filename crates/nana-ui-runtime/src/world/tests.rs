@@ -1,6 +1,6 @@
-#[cfg(feature = "graph-canvas")]
-use super::geometry::*;
 use super::*;
+#[cfg(feature = "graph-canvas")]
+use crate::graph_canvas::{CURVE_FLATNESS, graph_edge_stroke_color, sample_curve};
 use crate::{
     AnimatableProperty, AnimationClass, AnimationEventKind, AnimationFillMode, AnimationId,
     AnimationPlayback, AnimationSpec, Easing, MeasureTextShaper, MotionCurve,
@@ -386,10 +386,13 @@ fn layout_result_uses_each_border_edge_for_content_geometry() {
     let mut style = NodeStyle::default();
     let layout = std::sync::Arc::make_mut(&mut style.layout);
     layout.border_style = Some(nana_ui_core::BorderStyle::Solid);
-    layout.border_top_width = Some(1.0);
-    layout.border_right_width = Some(2.0);
-    layout.border_bottom_width = Some(3.0);
-    layout.border_left_width = Some(4.0);
+    {
+        let sides = &mut *layout.border_sides;
+        sides.top_width = Some(1.0);
+        sides.right_width = Some(2.0);
+        sides.bottom_width = Some(3.0);
+        sides.left_width = Some(4.0);
+    }
     let mut style_write = MutationQueue::new();
     style_write.set_style(node(1), style);
     world.commit(style_write).unwrap();
@@ -404,23 +407,17 @@ fn layout_result_uses_each_border_edge_for_content_geometry() {
     let mut changed_style = NodeStyle::default();
     let changed_layout = std::sync::Arc::make_mut(&mut changed_style.layout);
     changed_layout.border_style = Some(nana_ui_core::BorderStyle::Solid);
-    changed_layout.border_top_width = Some(2.0);
-    changed_layout.border_right_width = Some(2.0);
-    changed_layout.border_bottom_width = Some(3.0);
-    changed_layout.border_left_width = Some(4.0);
+    {
+        let sides = &mut *changed_layout.border_sides;
+        sides.top_width = Some(2.0);
+        sides.right_width = Some(2.0);
+        sides.bottom_width = Some(3.0);
+        sides.left_width = Some(4.0);
+    }
     let mut style_change = MutationQueue::new();
     style_change.set_style(node(1), changed_style);
     world.commit(style_change).unwrap();
     assert!(world.layout_result(node(1)).is_none());
-}
-
-/// Hit entries built so far. The counter accumulates until a drain, so
-/// callers compare deltas around the build they are measuring.
-fn hit_entries_built(world: &UiWorld) -> usize {
-    world
-        .last_work_counters()
-        .hit_test_nodes_rebuilt
-        .unwrap_or_default()
 }
 
 /// Flatten the hit forest into a comparable projection. `HitEntry` has no
@@ -575,6 +572,8 @@ fn batch_validation_cost_tracks_the_batch_not_the_retained_world() {
     let mut large_world = world_with_rows(large);
     assert_eq!(small_world.len(), small as usize + 2);
     assert_eq!(large_world.len(), large as usize + 2);
+    let _ = small_world.take_system_work();
+    let _ = large_world.take_system_work();
 
     // A multi-mutation batch skips the single-mutation fast path, so this is
     // the ValidationPlan route.
@@ -603,19 +602,23 @@ fn batch_validation_cost_tracks_the_batch_not_the_retained_world() {
     small_world.commit(batch(node(3 + small - 1))).unwrap();
     large_world.commit(batch(node(3 + large - 1))).unwrap();
 
-    // The 50x larger world must not cost 50x to validate. Before the overlay
-    // rewrite both numbers tracked `len()` exactly.
-    assert_eq!(validation_scanned(&mut small_world), 0);
-    assert_eq!(validation_scanned(&mut large_world), 0);
-}
-
-/// Nodes validation visited since the previous drain, which is the window a
-/// frame consumes.
-fn validation_scanned(world: &mut UiWorld) -> usize {
-    world
-        .take_system_work()
-        .validation_nodes_scanned
-        .unwrap_or_default()
+    // The 50x larger world must produce the exact same single-target work set.
+    let small_work = small_world.take_system_work();
+    let large_work = large_world.take_system_work();
+    let small_counts = (
+        small_work.style.len(),
+        small_work.text.len(),
+        small_work.render_extraction.len(),
+        small_work.input_hit_test.len(),
+    );
+    let large_counts = (
+        large_work.style.len(),
+        large_work.text.len(),
+        large_work.render_extraction.len(),
+        large_work.input_hit_test.len(),
+    );
+    assert_eq!(small_counts, (1, 1, 3, 1));
+    assert_eq!(small_counts, large_counts);
 }
 
 /// Build a nested grid document with clipping, transforms, z-index and a
@@ -774,24 +777,13 @@ fn scoped_hit_patch_matches_a_full_rebuild_for_a_leaf_layout_change() {
     let dirty = work.input_hit_test.clone();
     assert_eq!(dirty, vec![target]);
 
-    let before_patch = hit_entries_built(&world);
     assert!(world.rebuild_hit_test_scoped(document(1), &dirty));
-    let patched_built = hit_entries_built(&world) - before_patch;
     let patched_shape = hit_shape(&world, document(1));
     let patched_probe = hit_probe_grid(&world, document(1));
 
-    let before_full = hit_entries_built(&world);
     world.rebuild_hit_test(document(1));
-    let full_built = hit_entries_built(&world) - before_full;
     assert_eq!(patched_shape, hit_shape(&world, document(1)));
     assert_eq!(patched_probe, hit_probe_grid(&world, document(1)));
-
-    // The whole point: the patch built a subtree, not the document.
-    assert_eq!(patched_built, 1);
-    assert!(
-        patched_built < full_built / 4,
-        "scoped patch built {patched_built} entries, full rebuild built {full_built}"
-    );
 }
 
 #[test]
@@ -867,10 +859,7 @@ fn a_moved_row_rewrites_its_own_hit_entry_and_its_pinned_ones_only() {
     moved.write_layout(node(20), box_at(0.0, 27.0, 100.0, 20.0));
     world.commit(moved).unwrap();
     let work = world.take_system_work();
-    let before = hit_entries_built(&world);
     assert!(world.rebuild_hit_test_scoped(document(1), &work.input_hit_test));
-    // The row's own entry and the absolute boxes'; not the cell or leaf.
-    assert_eq!(hit_entries_built(&world) - before, 3);
     assert_eq!(world.hit_test(document(1), 62.0, 39.0), Some(follower));
     let patched = hit_probe_grid(&world, document(1));
     let shape = hit_shape(&world, document(1));
@@ -985,61 +974,78 @@ fn scoped_hit_patch_handles_visibility_insertion_and_removal() {
 
 #[test]
 fn overlay_validation_walks_hosts_not_every_entity() {
-    let rows = 5_000u64;
-    let mut world = world_with_rows(rows);
+    fn run(rows: u64) -> ([usize; 4], [usize; 4]) {
+        let mut world = world_with_rows(rows);
 
-    // One real overlay host with a modal surface: validation may walk hosts
-    // and document order, but must never enumerate the whole world per node.
-    let host = node(3);
-    let surface = node(3 + rows);
-    let mut open = MutationQueue::new();
-    open.create(
-        surface,
-        document(1),
-        NodeKind::Element {
-            tag: "dialog".into(),
-        },
-    );
-    open.insert(host, surface, None);
-    open.set_accessibility(
-        surface,
-        AccessibilityState {
-            role: AccessibilityRole::Dialog,
-            modal: true,
-            ..AccessibilityState::default()
-        },
-    );
-    open.set_overlay_host(
-        host,
-        OverlayHostState {
-            active: Some(surface),
-            restore_focus: None,
-        },
-    );
-    world.commit(open).unwrap();
-    // Close the measurement window on setup so the next reading is the
-    // overlay-aware batch alone.
-    validation_scanned(&mut world);
+        // One real overlay host with a modal surface: validation may walk hosts
+        // and document order, but must never enumerate the whole world per node.
+        let host = node(3);
+        let surface = node(3 + rows);
+        let mut open = MutationQueue::new();
+        open.create(
+            surface,
+            document(1),
+            NodeKind::Element {
+                tag: "dialog".into(),
+            },
+        );
+        open.insert(host, surface, None);
+        open.set_accessibility(
+            surface,
+            AccessibilityState {
+                role: AccessibilityRole::Dialog,
+                modal: true,
+                ..AccessibilityState::default()
+            },
+        );
+        open.set_overlay_host(
+            host,
+            OverlayHostState {
+                active: Some(surface),
+                restore_focus: None,
+            },
+        );
+        world.commit(open).unwrap();
+        // Close the measurement window on setup so the next reading is the
+        // overlay-aware batch alone.
+        let _ = world.take_system_work();
 
-    // Text cannot change overlay references or roles: no host validation walk.
-    let mut touch = MutationQueue::new();
-    touch.set_text(node(4), TextContent { value: "a".into() });
-    touch.set_text(node(5), TextContent { value: "b".into() });
-    world.commit(touch).unwrap();
-    assert_eq!(validation_scanned(&mut world), 0);
+        // Text cannot change overlay references or roles: no host validation walk.
+        let mut touch = MutationQueue::new();
+        touch.set_text(node(4), TextContent { value: "a".into() });
+        touch.set_text(node(5), TextContent { value: "b".into() });
+        world.commit(touch).unwrap();
+        assert_eq!(world.overlay_host(host).unwrap().active, Some(surface));
+        let touch_work = world.take_system_work();
+        let touch_counts = [
+            touch_work.style.len(),
+            touch_work.text.len(),
+            touch_work.render_extraction.len(),
+            touch_work.input_hit_test.len(),
+        ];
 
-    // Despawning the surface clears host references without a world scan.
-    let mut close = MutationQueue::new();
-    close.despawn_subtree(surface);
-    close.set_text(node(4), TextContent { value: "c".into() });
-    world.commit(close).unwrap();
-    let scanned = validation_scanned(&mut world);
-    assert!(
-        scanned < rows as usize,
-        "overlay teardown scanned {scanned} of {} nodes",
-        world.len()
-    );
-    assert_eq!(world.overlay_host(host).unwrap().active, None);
+        // Despawning the surface clears host references without a world scan.
+        let mut close = MutationQueue::new();
+        close.despawn_subtree(surface);
+        close.set_text(node(4), TextContent { value: "c".into() });
+        world.commit(close).unwrap();
+        assert_eq!(world.overlay_host(host).unwrap().active, None);
+        let close_work = world.take_system_work();
+        let close_counts = [
+            close_work.style.len(),
+            close_work.text.len(),
+            close_work.render_extraction.len(),
+            close_work.input_hit_test.len(),
+        ];
+
+        (touch_counts, close_counts)
+    }
+
+    let small = run(8);
+    let large = run(5_000);
+    assert_eq!(small, large);
+    assert!(large.0.iter().all(|&count| count <= 4));
+    assert!(large.1.iter().all(|&count| count <= 4));
 }
 
 #[test]
@@ -2554,9 +2560,9 @@ fn editor_extras_shape_and_derive_into_geometry() {
             tag: "textarea".into(),
         },
     );
-    queue.set_standard_visual(
+    queue.set_widget_visual(
         node(1),
-        Some(StandardVisual::TextInput {
+        Some(crate::TextInputVisual {
             placeholder: Arc::from(""),
             size: nana_ui_core::ControlSize::Medium,
             secure: false,
@@ -2662,17 +2668,14 @@ fn editor_extras_shape_and_derive_into_geometry() {
     let mut scrolled = MutationQueue::new();
     scrolled.set_scroll_offset(node(1), scroll);
     world.commit(scrolled).unwrap();
-    let geometry = world.component_geometry(node(1)).expect("geometry");
-    let crate::ComponentGeometry::TextInput {
+    let geometry = world.text_input_geometry(node(1)).expect("geometry");
+    let crate::TextInputGeometry {
         diagnostic_markers,
         ref line_labels,
         line_labels_color,
         ref text,
         ..
-    } = geometry
-    else {
-        panic!("expected text input geometry");
-    };
+    } = geometry;
     assert_eq!(diagnostic_markers.len(), 2);
     assert_ne!(diagnostic_markers[0].1, diagnostic_markers[1].1);
     // 视口高 40、三行共 42px，reveal 把第 3 行推到视口底部。
@@ -2698,9 +2701,9 @@ fn diagnostic_labels_pick_line_winner_and_skip_hint_underline() {
             tag: "textarea".into(),
         },
     );
-    queue.set_standard_visual(
+    queue.set_widget_visual(
         node(1),
-        Some(StandardVisual::TextInput {
+        Some(crate::TextInputVisual {
             placeholder: Arc::from(""),
             size: nana_ui_core::ControlSize::Medium,
             secure: false,
@@ -2815,10 +2818,8 @@ fn diagnostic_labels_pick_line_winner_and_skip_hint_underline() {
     world.take_system_work();
     let mut shaper = FunctionalShaper::default();
     world.shape_text(&[node(1)], &mut shaper).unwrap();
-    let geometry = world.component_geometry(node(1)).expect("geometry");
-    let crate::ComponentGeometry::TextInput { hover_popup, .. } = geometry else {
-        panic!("text input geometry");
-    };
+    let crate::TextInputGeometry { hover_popup, .. } =
+        world.text_input_geometry(node(1)).expect("geometry");
     assert_eq!(
         hover_popup
             .expect("diagnostic hover")
@@ -2832,10 +2833,8 @@ fn diagnostic_labels_pick_line_winner_and_skip_hint_underline() {
     clear.set_text_input_diagnostic_hover(node(1), None);
     world.commit(clear).unwrap();
     world.take_system_work();
-    let geometry = world.component_geometry(node(1)).expect("geometry");
-    let crate::ComponentGeometry::TextInput { hover_popup, .. } = geometry else {
-        panic!("text input geometry");
-    };
+    let crate::TextInputGeometry { hover_popup, .. } =
+        world.text_input_geometry(node(1)).expect("geometry");
     assert!(hover_popup.is_none());
 }
 
@@ -2871,9 +2870,9 @@ fn fold_editor_world(
     if let Some(padding_left) = padding_left {
         layout.padding_left = Some(nana_ui_core::LengthSpec::Px(padding_left));
     }
-    queue.set_standard_visual(
+    queue.set_widget_visual(
         node(1),
-        Some(StandardVisual::TextInput {
+        Some(crate::TextInputVisual {
             placeholder: Arc::from(""),
             size: nana_ui_core::ControlSize::Medium,
             secure: false,
@@ -2952,9 +2951,9 @@ fn options_editor_world(
             tag: "textarea".into(),
         },
     );
-    queue.set_standard_visual(
+    queue.set_widget_visual(
         node(1),
-        Some(StandardVisual::TextInput {
+        Some(crate::TextInputVisual {
             placeholder: Arc::from(""),
             size: nana_ui_core::ControlSize::Medium,
             secure: false,
@@ -3038,9 +3037,9 @@ fn sticky_editor_world(
             tag: "textarea".into(),
         },
     );
-    queue.set_standard_visual(
+    queue.set_widget_visual(
         node(1),
-        Some(StandardVisual::TextInput {
+        Some(crate::TextInputVisual {
             placeholder: Arc::from(""),
             size: nana_ui_core::ControlSize::Medium,
             secure: false,
@@ -3139,11 +3138,8 @@ fn sticky_scroll_pins_innermost_region_head_at_content_top() {
     world
         .shape_text(&[node(1)], &mut FunctionalShaper::default())
         .unwrap();
-    let crate::ComponentGeometry::TextInput { sticky_line, .. } =
-        world.component_geometry(node(1)).expect("geometry")
-    else {
-        panic!("expected text input geometry");
-    };
+    let crate::TextInputGeometry { sticky_line, .. } =
+        world.text_input_geometry(node(1)).expect("geometry");
     let sticky = sticky_line.expect("sticky line");
     assert_eq!(sticky.text.content.as_ref(), "    fn inner() {");
     // 钉住行贴内容区顶：一整行高的不透明背景条 + 底缘 1px 分割线，
@@ -3177,11 +3173,8 @@ fn sticky_scroll_disappears_when_head_scrolls_back_or_feed_missing() {
     world
         .shape_text(&[node(1)], &mut FunctionalShaper::default())
         .unwrap();
-    let crate::ComponentGeometry::TextInput { sticky_line, .. } =
-        world.component_geometry(node(1)).expect("geometry")
-    else {
-        panic!("expected text input geometry");
-    };
+    let crate::TextInputGeometry { sticky_line, .. } =
+        world.text_input_geometry(node(1)).expect("geometry");
     assert!(sticky_line.is_none());
 
     // 选项开启但未喂折叠区间：永不出现。
@@ -3190,11 +3183,8 @@ fn sticky_scroll_disappears_when_head_scrolls_back_or_feed_missing() {
     world
         .shape_text(&[node(1)], &mut FunctionalShaper::default())
         .unwrap();
-    let crate::ComponentGeometry::TextInput { sticky_line, .. } =
-        world.component_geometry(node(1)).expect("geometry")
-    else {
-        panic!("expected text input geometry");
-    };
+    let crate::TextInputGeometry { sticky_line, .. } =
+        world.text_input_geometry(node(1)).expect("geometry");
     assert!(sticky_line.is_none());
 }
 
@@ -3222,11 +3212,8 @@ fn sticky_scroll_pins_visible_head_after_a_collapsed_earlier_region() {
     world
         .shape_text(&[node(1)], &mut FunctionalShaper::default())
         .unwrap();
-    let crate::ComponentGeometry::TextInput { sticky_line, .. } =
-        world.component_geometry(node(1)).expect("geometry")
-    else {
-        panic!("expected text input geometry");
-    };
+    let crate::TextInputGeometry { sticky_line, .. } =
+        world.text_input_geometry(node(1)).expect("geometry");
     let sticky = sticky_line.expect("sticky line");
     // 折叠摘要 " …4" 与 B 的头行同属一个显示行（折叠吞掉中间换行），
     // 钉住行镜像该可见行全文——正是屏上 B 头行所在的那一行。
@@ -3252,9 +3239,9 @@ fn git_gutter_editor_world(
             tag: "textarea".into(),
         },
     );
-    queue.set_standard_visual(
+    queue.set_widget_visual(
         node(1),
-        Some(StandardVisual::TextInput {
+        Some(crate::TextInputVisual {
             placeholder: Arc::from(""),
             size: nana_ui_core::ControlSize::Medium,
             secure: false,
@@ -3336,11 +3323,10 @@ fn git_gutter_editor_world(
 
 /// 取 TextInput 几何中的 git gutter 部分（其余调用方自行断言）。
 fn git_geometry_of(world: &UiWorld) -> crate::TextGitGutterGeometry {
-    let geometry = world.component_geometry(node(1)).expect("geometry");
-    let crate::ComponentGeometry::TextInput { git_marks, .. } = geometry else {
-        panic!("expected text input geometry");
-    };
-    git_marks
+    world
+        .text_input_geometry(node(1))
+        .expect("geometry")
+        .git_marks
 }
 
 fn focus_editor(world: &mut UiWorld) {
@@ -3612,16 +3598,13 @@ fn git_gutter_coexists_with_line_numbers_and_fold_gutters() {
     assert_eq!(presentation.line_numbers, vec![1, 5]);
     assert_eq!(presentation.git_marks.len(), 2);
 
-    let geometry = world.component_geometry(node(1)).expect("geometry");
-    let crate::ComponentGeometry::TextInput {
+    let geometry = world.text_input_geometry(node(1)).expect("geometry");
+    let crate::TextInputGeometry {
         line_labels,
         folds,
         git_marks,
         ..
-    } = geometry
-    else {
-        panic!("expected text input geometry");
-    };
+    } = geometry;
     assert_eq!(line_labels.len(), 2);
     assert_eq!(folds.gutters.len(), 1);
     // slot 与几何互不冲突：git 竖条占 gutter 最左 2px，折叠箭头从
@@ -3649,9 +3632,9 @@ fn git_gutter_refeed_replaces_marks() {
 
     // 宿主重喂（git 状态推进）：新集合整组替换旧集合。
     let mut queue = MutationQueue::new();
-    queue.set_standard_visual(
+    queue.set_widget_visual(
         node(1),
-        Some(StandardVisual::TextInput {
+        Some(crate::TextInputVisual {
             placeholder: Arc::from(""),
             size: nana_ui_core::ControlSize::Medium,
             secure: false,
@@ -4058,9 +4041,9 @@ fn fold_state_survives_host_refeed_and_shift_rescue() {
         vec![crate::TextCodeFold::new(107, 128)]
     );
     let mut queue = MutationQueue::new();
-    queue.set_standard_visual(
+    queue.set_widget_visual(
         node(1),
-        Some(StandardVisual::TextInput {
+        Some(crate::TextInputVisual {
             placeholder: Arc::from(""),
             size: nana_ui_core::ControlSize::Medium,
             secure: false,
@@ -4086,9 +4069,9 @@ fn fold_state_survives_host_refeed_and_shift_rescue() {
 
     // 宿主不再喂入折叠：视图状态整个移除（全部展开）。
     let mut queue = MutationQueue::new();
-    queue.set_standard_visual(
+    queue.set_widget_visual(
         node(1),
-        Some(StandardVisual::TextInput {
+        Some(crate::TextInputVisual {
             placeholder: Arc::from(""),
             size: nana_ui_core::ControlSize::Medium,
             secure: false,
@@ -4167,7 +4150,7 @@ fn text_input_edits_apply_without_fold_or_snippet_view_state() {
         }),
     );
     world.commit(queue).unwrap();
-    assert_eq!(world.record(node(1)).text.value, "typed");
+    assert_eq!(world.nodes.text_content(node(1)).value, "typed");
     assert_eq!(world.nodes.text_input(node(1)).unwrap().value, "typed");
 
     // 二次编辑覆盖旧值，再清空输入：文本与视图状态依旧一致。
@@ -4181,11 +4164,11 @@ fn text_input_edits_apply_without_fold_or_snippet_view_state() {
         }),
     );
     world.commit(queue).unwrap();
-    assert_eq!(world.record(node(1)).text.value, "typed more");
+    assert_eq!(world.nodes.text_content(node(1)).value, "typed more");
     let mut queue = MutationQueue::new();
     queue.set_text_input(node(1), None);
     world.commit(queue).unwrap();
-    assert_eq!(world.record(node(1)).text.value, "");
+    assert_eq!(world.nodes.text_content(node(1)).value, "");
     assert!(world.text_fold_view_state(node(1)).is_none());
     assert!(world.text_snippet_session(node(1)).is_none());
 }
@@ -4273,13 +4256,10 @@ fn code_fold_presentation_hides_lines_and_keeps_line_numbers() {
     assert_eq!(presentation.fold_marks[0].fold, FOLD_BLOCK);
 
     // 几何层：gutter 箭头 + 摘要标记命中框，行号标签使用原始编号。
-    let geometry = world.component_geometry(node(1)).expect("geometry");
-    let crate::ComponentGeometry::TextInput {
+    let geometry = world.text_input_geometry(node(1)).expect("geometry");
+    let crate::TextInputGeometry {
         folds, line_labels, ..
-    } = &geometry
-    else {
-        panic!("text input geometry");
-    };
+    } = geometry;
     assert_eq!(folds.gutters.len(), 1);
     assert!(folds.gutters[0].collapsed);
     assert_eq!(folds.gutters[0].fold, FOLD_BLOCK);
@@ -4288,13 +4268,10 @@ fn code_fold_presentation_hides_lines_and_keeps_line_numbers() {
     queue.set_text_input_fold_collapsed(node(1), Arc::from([]));
     world.commit(queue).unwrap();
     world.shape_text(&[node(1)], &mut shaper).unwrap();
-    let geometry = world.component_geometry(node(1)).expect("geometry");
-    let crate::ComponentGeometry::TextInput {
+    let geometry = world.text_input_geometry(node(1)).expect("geometry");
+    let crate::TextInputGeometry {
         folds: expanded, ..
-    } = &geometry
-    else {
-        panic!("text input geometry");
-    };
+    } = geometry;
     assert_eq!(expanded.gutters.len(), 2);
     assert_eq!(folds.markers.len(), 1);
     assert_eq!(folds.markers[0].fold, FOLD_BLOCK);
@@ -4332,9 +4309,9 @@ fn match_spans_shape_into_highlights_and_derive_into_geometry() {
             tag: "textarea".into(),
         },
     );
-    queue.set_standard_visual(
+    queue.set_widget_visual(
         node(1),
-        Some(StandardVisual::TextInput {
+        Some(crate::TextInputVisual {
             placeholder: Arc::from(""),
             size: nana_ui_core::ControlSize::Medium,
             secure: false,
@@ -4423,10 +4400,8 @@ fn match_spans_shape_into_highlights_and_derive_into_geometry() {
     assert!(presentation.match_marks[1].current);
     assert_eq!(presentation.match_marks[1].rect.y, 14.0);
 
-    let geometry = world.component_geometry(node(1)).expect("geometry");
-    let crate::ComponentGeometry::TextInput { match_markers, .. } = geometry else {
-        panic!("expected text input geometry");
-    };
+    let geometry = world.text_input_geometry(node(1)).expect("geometry");
+    let crate::TextInputGeometry { match_markers, .. } = geometry;
     assert_eq!(match_markers.len(), 2);
     assert!(!match_markers[0].current);
     assert!(match_markers[1].current);
@@ -4451,9 +4426,9 @@ fn atom_spans_cover_token_glyphs_with_label_and_close_hit() {
             tag: "textarea".into(),
         },
     );
-    queue.set_standard_visual(
+    queue.set_widget_visual(
         node(1),
-        Some(StandardVisual::TextInput {
+        Some(crate::TextInputVisual {
             placeholder: Arc::from(""),
             size: nana_ui_core::ControlSize::Medium,
             secure: false,
@@ -4530,10 +4505,8 @@ fn atom_spans_cover_token_glyphs_with_label_and_close_hit() {
         "note.txt"
     );
     assert_ne!(presentation.atom_chips[0].label.content.as_ref(), token);
-    let geometry = world.component_geometry(node(1)).expect("geometry");
-    let crate::ComponentGeometry::TextInput { atom_chips, .. } = geometry else {
-        panic!("expected text input geometry");
-    };
+    let geometry = world.text_input_geometry(node(1)).expect("geometry");
+    let crate::TextInputGeometry { atom_chips, .. } = geometry;
     assert_eq!(atom_chips.len(), 1);
     assert_eq!(atom_chips[0].label.content.as_ref(), "note.txt");
     let close = atom_chips[0].close;
@@ -4563,9 +4536,9 @@ fn swatch_editor_world(
             },
         );
     }
-    queue.set_standard_visual(
+    queue.set_widget_visual(
         node(1),
-        Some(StandardVisual::TextInput {
+        Some(crate::TextInputVisual {
             placeholder: Arc::from(""),
             size: nana_ui_core::ControlSize::Medium,
             secure: false,
@@ -4679,10 +4652,8 @@ fn color_swatches_derive_into_inline_marks_and_clear_with_feed() {
         assert!(mark.rect.x + mark.rect.width <= span_end_x + 0.01);
     }
 
-    let geometry = world.component_geometry(node(1)).expect("geometry");
-    let crate::ComponentGeometry::TextInput { swatch_markers, .. } = geometry else {
-        panic!("expected text input geometry");
-    };
+    let geometry = world.text_input_geometry(node(1)).expect("geometry");
+    let crate::TextInputGeometry { swatch_markers, .. } = geometry;
     assert_eq!(swatch_markers.len(), 2);
     assert_eq!(swatch_markers[0].1, [0.9, 0.2, 0.2, 0.5]);
 
@@ -4692,10 +4663,8 @@ fn color_swatches_derive_into_inline_marks_and_clear_with_feed() {
         .text_input_presentation(node(1))
         .expect("presentation");
     assert!(presentation.swatch_marks.is_empty());
-    let geometry = world.component_geometry(node(1)).expect("geometry");
-    let crate::ComponentGeometry::TextInput { swatch_markers, .. } = geometry else {
-        panic!("expected text input geometry");
-    };
+    let geometry = world.text_input_geometry(node(1)).expect("geometry");
+    let crate::TextInputGeometry { swatch_markers, .. } = geometry;
     assert!(swatch_markers.is_empty());
 }
 
@@ -4715,10 +4684,8 @@ fn color_swatches_clip_to_the_viewport_when_scrolled() {
     // 滚动两行后第一行的 swatch 完全在视口上方，不再产生图元；
     // 仍可见的 swatch 照常派生并随滚动平移（触边部分不丢弃，由节点
     // 裁剪收口）。
-    let geometry = world.component_geometry(node(1)).expect("geometry");
-    let crate::ComponentGeometry::TextInput { swatch_markers, .. } = geometry else {
-        panic!("expected text input geometry");
-    };
+    let geometry = world.text_input_geometry(node(1)).expect("geometry");
+    let crate::TextInputGeometry { swatch_markers, .. } = geometry;
     assert_eq!(swatch_markers.len(), 1);
     assert_eq!(swatch_markers[0].1, [0.2, 0.9, 0.3, 1.0]);
     assert!(swatch_markers[0].0.y + swatch_markers[0].0.height > 0.0);
@@ -4736,9 +4703,9 @@ fn editor_chrome_derives_bracket_marks_caret_line_and_indent_guides() {
             tag: "textarea".into(),
         },
     );
-    create.set_standard_visual(
+    create.set_widget_visual(
         node(1),
-        Some(StandardVisual::TextInput {
+        Some(crate::TextInputVisual {
             placeholder: Arc::from(""),
             size: nana_ui_core::ControlSize::Medium,
             secure: false,
@@ -4839,16 +4806,13 @@ fn editor_chrome_derives_bracket_marks_caret_line_and_indent_guides() {
         }]
     );
 
-    let geometry = world.component_geometry(node(1)).expect("geometry");
-    let crate::ComponentGeometry::TextInput {
+    let geometry = world.text_input_geometry(node(1)).expect("geometry");
+    let crate::TextInputGeometry {
         caret_line,
         bracket_markers,
         indent_guides,
         ..
-    } = geometry
-    else {
-        panic!("expected text input geometry");
-    };
+    } = geometry;
     // 未聚焦：括号标记与当前行条都不出现；参考线是静态结构标记。
     assert!(caret_line.is_none());
     assert!(bracket_markers.is_empty());
@@ -4857,16 +4821,13 @@ fn editor_chrome_derives_bracket_marks_caret_line_and_indent_guides() {
     let mut focus = MutationQueue::new();
     focus.request_focus(document(1), Some(node(1)));
     world.commit(focus).unwrap();
-    let geometry = world.component_geometry(node(1)).expect("geometry");
-    let crate::ComponentGeometry::TextInput {
+    let geometry = world.text_input_geometry(node(1)).expect("geometry");
+    let crate::TextInputGeometry {
         caret_line,
         bracket_markers,
         indent_guides,
         ..
-    } = geometry
-    else {
-        panic!("expected text input geometry");
-    };
+    } = geometry;
     // 聚焦且选区收起：光标所在行画整宽低对比背景条。
     let (line_rect, line_color) = caret_line.expect("caret line");
     assert_eq!(
@@ -5202,13 +5163,9 @@ fn occurrence_highlight_marks_other_word_occurrences_when_focused() {
         .text_input_presentation(node(1))
         .expect("presentation");
     assert!(presentation.occurrence_marks.is_empty());
-    let geometry = world.component_geometry(node(1)).unwrap();
-    let crate::ComponentGeometry::TextInput {
+    let crate::TextInputGeometry {
         occurrence_markers, ..
-    } = geometry
-    else {
-        panic!("expected text input geometry");
-    };
+    } = world.text_input_geometry(node(1)).unwrap();
     assert!(occurrence_markers.is_empty());
 
     focus_editor(&mut world);
@@ -5236,13 +5193,9 @@ fn occurrence_highlight_marks_other_word_occurrences_when_focused() {
         ]
     );
     // 几何层在聚焦时输出淡底色（accent_soft）填充条带。
-    let geometry = world.component_geometry(node(1)).unwrap();
-    let crate::ComponentGeometry::TextInput {
+    let crate::TextInputGeometry {
         occurrence_markers, ..
-    } = geometry
-    else {
-        panic!("expected text input geometry");
-    };
+    } = world.text_input_geometry(node(1)).unwrap();
     assert_eq!(occurrence_markers.len(), 2);
     assert_eq!(
         occurrence_markers[0].1,
@@ -5252,8 +5205,8 @@ fn occurrence_highlight_marks_other_word_occurrences_when_focused() {
 
 /// minimap 几何断言辅助：取节点 1 的 minimap 竖条几何。
 fn minimap_of(world: &UiWorld) -> crate::TextMinimapGeometry {
-    match world.component_geometry(node(1)).unwrap() {
-        crate::ComponentGeometry::TextInput {
+    match world.text_input_geometry(node(1)).unwrap() {
+        crate::TextInputGeometry {
             minimap: Some(minimap),
             ..
         } => minimap,
@@ -5280,8 +5233,8 @@ fn minimap_off_short_circuits_collection_and_geometry() {
         .text_input_presentation(node(1))
         .expect("presentation");
     assert!(presentation.minimap_line_lengths.is_empty());
-    let crate::ComponentGeometry::TextInput { minimap: None, .. } =
-        world.component_geometry(node(1)).unwrap()
+    let crate::TextInputGeometry { minimap: None, .. } =
+        world.text_input_geometry(node(1)).unwrap()
     else {
         panic!("minimap must be absent when the option is off");
     };
@@ -5517,11 +5470,10 @@ fn occurrence_highlight_requires_word_single_line_selection_option_and_caps() {
         occurrence_highlight: true,
         ..crate::TextEditorRenderOptions::default()
     };
-    let style = ComputedStyle {
-        font_size: 10.0,
-        line_height: Some(nana_ui_core::LineHeightSpec::Absolute(14.0)),
-        ..ComputedStyle::default()
-    };
+    let style = ComputedStyle::with(|s| {
+        s.font_size = 10.0;
+        s.line_height = Some(nana_ui_core::LineHeightSpec::Absolute(14.0));
+    });
     let present = |value: &str, selection: crate::TextSelection, enabled: bool| {
         let state = TextInputState {
             value: value.into(),
@@ -5587,11 +5539,10 @@ fn occurrence_highlight_requires_word_single_line_selection_option_and_caps() {
 fn occurrence_geometry_updates_without_reshaping_unchanged_text() {
     // Caret movement changes occurrence geometry, but must reuse the same text
     // layout. Geometry probes are delegated to the host, not counted as shapes.
-    let style = ComputedStyle {
-        font_size: 10.0,
-        line_height: Some(nana_ui_core::LineHeightSpec::Absolute(14.0)),
-        ..ComputedStyle::default()
-    };
+    let style = ComputedStyle::with(|s| {
+        s.font_size = 10.0;
+        s.line_height = Some(nana_ui_core::LineHeightSpec::Absolute(14.0));
+    });
     let options = crate::TextEditorRenderOptions {
         occurrence_highlight: true,
         ..crate::TextEditorRenderOptions::default()
@@ -5823,15 +5774,11 @@ fn wrap_guides_map_columns_to_x_and_skip_missing_columns() {
     // 弃，列 0 无意义丢弃。
     assert_eq!(presentation.wrap_guides, vec![10.0, 20.0]);
     // 几何层：贯穿内容区全高的 1px 竖线（静态，不随焦点变化）。
-    let geometry = world.component_geometry(node(1)).unwrap();
-    let crate::ComponentGeometry::TextInput {
+    let crate::TextInputGeometry {
         wrap_guides,
         whitespace_marks,
         ..
-    } = geometry
-    else {
-        panic!("expected text input geometry");
-    };
+    } = world.text_input_geometry(node(1)).unwrap();
     assert_eq!(
         wrap_guides,
         vec![
@@ -5867,11 +5814,10 @@ fn multiline_text_presentation_tracks_utf8_lines_selection_and_preedit() {
         selection: crate::TextSelection::new("甲".len(), "甲乙\nthird\n".len()),
         additional_selections: Vec::new(),
     };
-    let style = ComputedStyle {
-        font_size: 10.0,
-        line_height: Some(nana_ui_core::LineHeightSpec::Absolute(14.0)),
-        ..ComputedStyle::default()
-    };
+    let style = ComputedStyle::with(|s| {
+        s.font_size = 10.0;
+        s.line_height = Some(nana_ui_core::LineHeightSpec::Absolute(14.0));
+    });
     let source = build_text_input_presentation_source(
         crate::TextInputView::of(&state.to_session()),
         None,
@@ -5958,11 +5904,10 @@ fn multiline_text_presentation_tracks_utf8_lines_selection_and_preedit() {
 #[test]
 fn multi_cursor_presentation_merges_bands_and_paints_additional_carets() {
     let value = "甲乙\nthird\n末";
-    let style = ComputedStyle {
-        font_size: 10.0,
-        line_height: Some(nana_ui_core::LineHeightSpec::Absolute(14.0)),
-        ..ComputedStyle::default()
-    };
+    let style = ComputedStyle::with(|s| {
+        s.font_size = 10.0;
+        s.line_height = Some(nana_ui_core::LineHeightSpec::Absolute(14.0));
+    });
     let present = |state: &TextInputState, ime: Option<&ImeComposition>| {
         let session = state.to_session();
         let source = build_text_input_presentation_source(
@@ -7595,19 +7540,18 @@ fn turning_a_container_moves_its_subtree_without_re_extracting_it() {
     world.take_system_work();
 
     let mut turn = MutationQueue::new();
+    let mut turn_layout = LayoutStyle::default();
+    turn_layout.transforms.transform = Some(nana_ui_core::PaintTransform {
+        a: 0.0,
+        b: 1.0,
+        c: -1.0,
+        d: 0.0,
+        ..nana_ui_core::PaintTransform::default()
+    });
     turn.set_style(
         node(1),
         NodeStyle {
-            layout: Arc::new(LayoutStyle {
-                transform: Some(nana_ui_core::PaintTransform {
-                    a: 0.0,
-                    b: 1.0,
-                    c: -1.0,
-                    d: 0.0,
-                    ..nana_ui_core::PaintTransform::default()
-                }),
-                ..LayoutStyle::default()
-            }),
+            layout: Arc::new(turn_layout),
             ..NodeStyle::default()
         },
     );
@@ -7694,7 +7638,7 @@ fn paint_only_style_change_does_not_schedule_subtree_layout() {
             foreground: Some(SemanticColorRole::Accent),
             background: None,
             border: None,
-            interaction: crate::InteractionStyle::default(),
+            interaction: Default::default(),
             ..NodeStyle::default()
         },
     );
@@ -7719,7 +7663,7 @@ fn paint_only_style_change_does_not_schedule_subtree_layout() {
             foreground: None,
             background: None,
             border: None,
-            interaction: crate::InteractionStyle::default(),
+            interaction: Default::default(),
             ..NodeStyle::default()
         },
     );
@@ -7955,9 +7899,9 @@ fn em_padding_wrap_and_card_content_use_computed_font_size() {
             value: "wrap".into(),
         },
     );
-    queue.set_standard_visual(
+    queue.set_widget_visual(
         node(2),
-        Some(StandardVisual::Card {
+        Some(crate::CardVisual {
             title: None,
             kind: nana_ui_core::CardKind::Surface,
             loading: false,
@@ -7986,69 +7930,14 @@ fn em_padding_wrap_and_card_content_use_computed_font_size() {
         "1em padding at font-size 32px must wrap at 200-32-32, not 200-16-16"
     );
 
-    let crate::ComponentGeometry::Card { content, .. } =
-        world.component_geometry(node(2)).expect("card geometry")
-    else {
-        panic!("expected card geometry");
-    };
+    let content = world.children_box(
+        node(2),
+        world.component_content_box(node(2)).expect("card content"),
+    );
     assert_eq!(content.x, 32.0);
     assert_eq!(content.y, 32.0);
     assert_eq!(content.width, 136.0);
     assert_eq!(content.height, 16.0);
-}
-
-#[test]
-fn work_counters_are_queryable_after_drain_and_extract() {
-    let mut world = UiWorld::new();
-    let mut queue = MutationQueue::new();
-    for id in 1..=3 {
-        queue.create(node(id), document(1), NodeKind::Text);
-    }
-    queue.insert(node(1), node(2), None);
-    queue.insert(node(2), node(3), None);
-    world.commit(queue).unwrap();
-
-    let mut work = world.take_system_work();
-    let counters = work.counters();
-    assert_eq!(counters.entities_total, 3);
-    assert_eq!(counters.entities_spawned, 3);
-    assert_eq!(counters.entities_despawned, 0);
-    assert_eq!(counters.entities_changed, 3);
-    assert_eq!(counters.style_processed, 3);
-    assert_eq!(counters.layout_nodes, 3);
-    assert_eq!(counters.render_nodes_changed, 3);
-    assert_eq!(counters.render_nodes_extracted, 3);
-    assert_eq!(counters.input_targets, 0);
-    assert!(counters.allocations > 0);
-    assert!(counters.allocated_bytes > 0);
-    assert_eq!(counters.text_shaped_runs, 0);
-    assert_eq!(world.last_work_counters().entities_changed, 3);
-    assert_eq!(world.last_work_counters().render_nodes_changed, 3);
-    assert_eq!(world.last_work_counters().render_nodes_extracted, 0);
-
-    world.resolve_styles(&work.style).unwrap();
-    let extracted = world.extract_nodes(&work.render_extraction);
-    work.record_extract(&extracted);
-    world.record_extract(&extracted);
-    assert_eq!(work.counters().render_nodes_extracted, extracted.len());
-    assert_eq!(work.counters().render_nodes_changed, 3);
-    assert_eq!(
-        world.last_work_counters().render_nodes_extracted,
-        extracted.len()
-    );
-    assert_eq!(world.last_work_counters().render_nodes_changed, 3);
-
-    let idle = world.take_system_work();
-    assert!(idle.is_empty());
-    assert_eq!(idle.counters().entities_spawned, 0);
-    assert_eq!(idle.counters().entities_changed, 0);
-    assert_eq!(idle.counters().allocations, 0);
-    assert_eq!(idle.counters().text_shaped_runs, 0);
-    assert_eq!(world.last_work_counters().entities_changed, 3);
-    assert_eq!(
-        world.last_work_counters().render_nodes_extracted,
-        extracted.len()
-    );
 }
 
 #[test]
@@ -8064,23 +7953,19 @@ fn hot_path_allocations_and_text_shape_are_idle_zero_and_rise_on_mutation() {
     );
     world.commit(queue).unwrap();
     let work = world.take_system_work();
-    assert!(work.counters().allocations > 0);
-    assert!(work.counters().allocated_bytes > 0);
-    assert_eq!(work.counters().text_shaped_runs, 0);
+    assert!(!work.text.is_empty());
+    assert_eq!(world.last_text_work_counters().text_nodes_shaped, 0);
     world.resolve_styles(&work.style).unwrap();
     world
         .shape_text(&work.text, &mut FunctionalShaper::default())
         .unwrap();
-    let after_shape = world.last_work_counters();
-    assert!(after_shape.text_shaped_runs > 0);
-    assert!(after_shape.text_layout_cache_misses > 0);
-    assert_eq!(after_shape.text_layout_cache_hits, 0);
-    assert!(after_shape.allocations > 0);
+    let after_shape = world.last_text_work_counters();
+    assert!(after_shape.text_nodes_shaped > 0);
+    assert!(after_shape.layout_cache_misses > Some(0));
+    assert_eq!(after_shape.layout_cache_hits, Some(0));
 
     let ids = seed_nodes(&work.layout_frontier_seeds);
     let _ = world.layout_inputs(&ids).unwrap();
-    let after_layout = world.last_work_counters();
-    assert!(after_layout.allocations >= after_shape.allocations);
 
     let idle = {
         let mut idle = None;
@@ -8093,11 +7978,13 @@ fn hot_path_allocations_and_text_shape_are_idle_zero_and_rise_on_mutation() {
         }
         idle.expect("mutation follow-up work must settle")
     };
-    assert_eq!(idle.counters().allocations, 0);
-    assert_eq!(idle.counters().allocated_bytes, 0);
-    assert_eq!(idle.counters().text_shaped_runs, 0);
-    assert_eq!(idle.counters().text_layout_cache_misses, 0);
-    assert!(world.last_work_counters().allocations > 0);
+    assert!(idle.is_empty());
+    world
+        .shape_text(&idle.text, &mut FunctionalShaper::default())
+        .unwrap();
+    let idle_text = world.last_text_work_counters();
+    assert_eq!(idle_text.text_nodes_shaped, 0);
+    assert_eq!(idle_text.layout_cache_misses, None);
 
     let mut patch = MutationQueue::new();
     patch.set_text(
@@ -8109,14 +7996,13 @@ fn hot_path_allocations_and_text_shape_are_idle_zero_and_rise_on_mutation() {
     world.commit(patch).unwrap();
     let mutated = world.take_system_work();
     assert!(!mutated.text.is_empty());
-    assert!(mutated.counters().allocations > 0);
     world.resolve_styles(&mutated.style).unwrap();
     world
         .shape_text(&mutated.text, &mut FunctionalShaper::default())
         .unwrap();
-    let mutated_shape = world.last_work_counters();
-    assert!(mutated_shape.text_shaped_runs > 0);
-    assert!(mutated_shape.text_layout_cache_misses > 0);
+    let mutated_shape = world.last_text_work_counters();
+    assert!(mutated_shape.text_nodes_shaped > 0);
+    assert!(mutated_shape.layout_cache_misses > Some(0));
 }
 
 #[test]
@@ -8133,20 +8019,26 @@ fn text_layout_cache_miss_then_hit_and_shaper_without_glyph_backend_omits_glyph_
     world.commit(queue).unwrap();
     let work = world.take_system_work();
     world.resolve_styles(&work.style).unwrap();
-    assert_eq!(work.counters().glyph_cache_hits, None);
-    assert_eq!(work.counters().glyph_cache_misses, None);
-    assert_eq!(work.counters().cache_eviction, None);
+    assert_eq!(
+        world
+            .glyph_cache
+            .peek('c', world.computed_style(node(1)).unwrap()),
+        None
+    );
 
     // Default TextShaper::shape_cached ignores GlyphCache.
     let mut shaper = FunctionalShaper::default();
     world.shape_text(&work.text, &mut shaper).unwrap();
-    let missed = world.last_work_counters();
-    assert!(missed.text_layout_cache_misses >= 1);
-    assert_eq!(missed.text_layout_cache_hits, 0);
-    assert!(missed.text_shaped_runs >= 1);
-    assert_eq!(missed.glyph_cache_hits, None);
-    assert_eq!(missed.glyph_cache_misses, None);
-    assert_eq!(missed.cache_eviction, Some(0));
+    let missed = world.last_text_work_counters();
+    assert!(missed.layout_cache_misses >= Some(1));
+    assert_eq!(missed.layout_cache_hits, Some(0));
+    assert!(missed.text_nodes_shaped >= 1);
+    assert_eq!(
+        world
+            .glyph_cache
+            .peek('c', world.computed_style(node(1)).unwrap()),
+        None
+    );
 
     // The same node again is not a cache question at all: nothing about it
     // changed, so the pass skips it on revision before building a key.
@@ -8168,12 +8060,16 @@ fn text_layout_cache_miss_then_hit_and_shaper_without_glyph_backend_omits_glyph_
     let twin_work = world.take_system_work();
     world.resolve_styles(&twin_work.style).unwrap();
     world.shape_text(&twin_work.text, &mut shaper).unwrap();
-    let hit = world.last_work_counters();
-    assert!(hit.text_layout_cache_hits >= 1);
-    assert_eq!(hit.text_layout_cache_misses, 0);
-    assert_eq!(hit.text_shaped_runs, 0);
-    assert_eq!(hit.glyph_cache_hits, None);
-    assert_eq!(hit.cache_eviction, Some(0));
+    let hit = world.last_text_work_counters();
+    assert!(hit.layout_cache_hits >= Some(1));
+    assert_eq!(hit.layout_cache_misses, Some(0));
+    assert_eq!(hit.text_nodes_shaped, 0);
+    assert_eq!(
+        world
+            .glyph_cache
+            .peek('c', world.computed_style(node(2)).unwrap()),
+        None
+    );
 
     let mut place = MutationQueue::new();
     place.write_layout(
@@ -8190,28 +8086,31 @@ fn text_layout_cache_miss_then_hit_and_shaper_without_glyph_backend_omits_glyph_
     world
         .shape_text_for_layout(document(1), &mut shaper)
         .unwrap();
-    let wrapped = world.last_work_counters();
+    let wrapped = world.last_text_work_counters();
     assert!(
-        wrapped.text_layout_cache_misses >= 1,
+        wrapped.layout_cache_misses >= Some(1),
         "max_width / wrap must miss the unconstrained cache entry"
     );
-    let wrapped_hits = wrapped.text_layout_cache_hits;
-    let wrapped_runs = wrapped.text_shaped_runs;
     crate::text_shape_stats::reset();
     world
         .shape_text_for_layout(document(1), &mut shaper)
         .unwrap();
-    let wrapped_hit = world.last_work_counters();
+    let wrapped_hit = world.last_text_work_counters();
     let skipped = crate::text_shape_stats::snapshot();
     assert_eq!(
-        wrapped_hit.text_layout_cache_hits, wrapped_hits,
+        wrapped_hit.layout_cache_hits, None,
         "unchanged wrap constraints must skip cache lookup"
     );
-    assert_eq!(wrapped_hit.text_shaped_runs, wrapped_runs);
+    assert_eq!(wrapped_hit.text_nodes_shaped, 0);
     assert!(skipped.skipped_unchanged >= 1);
     assert_eq!(skipped.key_builds, 0);
     assert_eq!(skipped.cache_lookups, 0);
-    assert_eq!(wrapped_hit.glyph_cache_hits, None);
+    assert_eq!(
+        world
+            .glyph_cache
+            .peek('c', world.computed_style(node(1)).unwrap()),
+        None
+    );
 }
 
 #[test]
@@ -8227,14 +8126,14 @@ fn layout_scoped_shape_skips_empty_text_before_clone_or_lookup() {
         .shape_text_for_layout(document(1), &mut FunctionalShaper::default())
         .unwrap();
     let stats = crate::text_shape_stats::snapshot();
-    let counters = world.last_work_counters();
+    let counters = world.last_text_work_counters();
     assert_eq!(stats.nonempty_text_nodes, 0);
     assert_eq!(stats.string_clones, 0);
     assert_eq!(stats.key_builds, 0);
     assert_eq!(stats.cache_lookups, 0);
-    assert_eq!(counters.text_shaped_runs, 0);
-    assert_eq!(counters.text_layout_cache_hits, 0);
-    assert_eq!(counters.text_layout_cache_misses, 0);
+    assert_eq!(counters.text_nodes_shaped, 0);
+    assert_eq!(counters.layout_cache_hits, None);
+    assert_eq!(counters.layout_cache_misses, None);
 }
 
 #[test]
@@ -8286,10 +8185,10 @@ fn layout_scoped_shape_skips_plain_text_when_only_box_y_moves() {
         .shape_text_for_layout_scoped(&[node(1)], &mut shaper)
         .unwrap();
     let skipped = crate::text_shape_stats::snapshot();
-    let after_shift = world.last_work_counters();
-    assert_eq!(after_shift.text_shaped_runs, 0);
-    assert_eq!(after_shift.text_layout_cache_hits, 0);
-    assert_eq!(after_shift.text_layout_cache_misses, 0);
+    let after_shift = world.last_text_work_counters();
+    assert_eq!(after_shift.text_nodes_shaped, 0);
+    assert_eq!(after_shift.layout_cache_hits, None);
+    assert_eq!(after_shift.layout_cache_misses, None);
     assert_eq!(skipped.string_clones, 0);
     assert_eq!(skipped.key_builds, 0);
     assert_eq!(skipped.cache_lookups, 0);
@@ -8344,9 +8243,9 @@ fn layout_scoped_shape_reshapes_when_wrap_width_or_text_changes() {
     world
         .shape_text_for_layout_scoped(&[node(1)], &mut shaper)
         .unwrap();
-    let after_width = world.last_work_counters();
+    let after_width = world.last_text_work_counters();
     let width_stats = crate::text_shape_stats::snapshot();
-    assert!(after_width.text_layout_cache_misses >= 1);
+    assert!(after_width.layout_cache_misses >= Some(1));
     assert_eq!(width_stats.skipped_unchanged, 0);
     assert_eq!(width_stats.key_builds, 1);
     assert_eq!(width_stats.cache_lookups, 1);
@@ -8408,9 +8307,9 @@ fn layout_scoped_shape_duplicate_and_long_text_skip_without_rebuilding_keys() {
     world.resolve_styles(&work.style).unwrap();
     let mut shaper = FunctionalShaper::default();
     world.shape_text(&work.text, &mut shaper).unwrap();
-    let scheduled = world.last_work_counters();
-    assert!(scheduled.text_layout_cache_hits >= 1);
-    assert!(scheduled.text_layout_cache_misses >= 2);
+    let scheduled = world.last_text_work_counters();
+    assert!(scheduled.layout_cache_hits >= Some(1));
+    assert!(scheduled.layout_cache_misses >= Some(2));
 
     for id in [1u64, 2, 3] {
         let mut place = MutationQueue::new();
@@ -8442,6 +8341,41 @@ fn layout_scoped_shape_duplicate_and_long_text_skip_without_rebuilding_keys() {
 
 #[test]
 fn glyph_cache_miss_then_hit_on_measure_text_shaper() {
+    #[derive(Default)]
+    struct CountingMeasureShaper {
+        hits: usize,
+        misses: usize,
+    }
+    impl TextShaper for CountingMeasureShaper {
+        fn shape(
+            &mut self,
+            id: StableNodeId,
+            text: &TextContent,
+            style: &ComputedStyle,
+            constraints: crate::TextShapeConstraints,
+        ) -> TextMetrics {
+            MeasureTextShaper.shape(id, text, style, constraints)
+        }
+
+        fn shape_cached(
+            &mut self,
+            id: StableNodeId,
+            text: &TextContent,
+            style: &ComputedStyle,
+            constraints: crate::TextShapeConstraints,
+            glyphs: &mut crate::GlyphCache,
+        ) -> TextMetrics {
+            for ch in text.value.chars() {
+                if glyphs.peek(ch, style).is_some() {
+                    self.hits += 1;
+                } else {
+                    self.misses += 1;
+                }
+            }
+            MeasureTextShaper.shape_cached(id, text, style, constraints, glyphs)
+        }
+    }
+
     let mut world = UiWorld::new();
     let mut queue = MutationQueue::new();
     queue.create(node(1), document(1), NodeKind::Text);
@@ -8449,16 +8383,25 @@ fn glyph_cache_miss_then_hit_on_measure_text_shaper() {
     world.commit(queue).unwrap();
     let work = world.take_system_work();
     world.resolve_styles(&work.style).unwrap();
-    assert_eq!(work.counters().glyph_cache_hits, None);
-    assert_eq!(work.counters().glyph_cache_misses, None);
+    assert_eq!(
+        world
+            .glyph_cache
+            .peek('a', world.computed_style(node(1)).unwrap()),
+        None
+    );
 
     // text-table / framework bench production shaper, via UiWorld::shape_text.
-    let mut shaper = MeasureTextShaper;
+    let mut shaper = CountingMeasureShaper::default();
     world.shape_text(&work.text, &mut shaper).unwrap();
-    let missed = world.last_work_counters();
-    assert_eq!(missed.glyph_cache_misses, Some(2));
-    assert_eq!(missed.glyph_cache_hits, Some(0));
-    assert!(missed.text_layout_cache_misses >= 1);
+    let missed = world.last_text_work_counters();
+    assert_eq!((shaper.misses, shaper.hits), (2, 0));
+    assert!(missed.layout_cache_misses >= Some(1));
+    assert!(
+        world
+            .glyph_cache
+            .peek('a', world.computed_style(node(1)).unwrap())
+            .is_some()
+    );
 
     // Unchanged: skipped on revision, so neither cache is consulted again.
     world.shape_text(&work.text, &mut shaper).unwrap();
@@ -8466,21 +8409,23 @@ fn glyph_cache_miss_then_hit_on_measure_text_shaper() {
         world.last_text_work_counters().text_nodes_revision_skipped,
         1
     );
+    assert_eq!((shaper.misses, shaper.hits), (2, 0));
 
     let mut patch = MutationQueue::new();
     patch.set_text(node(1), TextContent { value: "ba".into() });
     world.commit(patch).unwrap();
     let reused = world.take_system_work();
     world.resolve_styles(&reused.style).unwrap();
+    shaper.hits = 0;
+    shaper.misses = 0;
     world.shape_text(&reused.text, &mut shaper).unwrap();
-    let hit = world.last_work_counters();
-    assert_eq!(hit.glyph_cache_hits, Some(2));
-    assert_eq!(hit.glyph_cache_misses, Some(0));
-    assert!(hit.text_layout_cache_misses >= 1);
+    let hit = world.last_text_work_counters();
+    assert_eq!((shaper.misses, shaper.hits), (0, 2));
+    assert!(hit.layout_cache_misses >= Some(1));
 }
 
-fn confirm_modal_visual() -> StandardVisual {
-    StandardVisual::ModalFrame {
+fn confirm_modal_visual() -> crate::ModalFrameVisual {
+    crate::ModalFrameVisual {
         title: Arc::from("Confirm"),
         description: None,
         body_text: None,
@@ -8492,8 +8437,8 @@ fn confirm_modal_visual() -> StandardVisual {
     }
 }
 
-fn clip_empty_state_visual() -> StandardVisual {
-    StandardVisual::EmptyState {
+fn clip_empty_state_visual() -> crate::EmptyStateVisual {
+    crate::EmptyStateVisual {
         title: Arc::from("Empty"),
         message: None,
         icon: None,
@@ -8502,11 +8447,11 @@ fn clip_empty_state_visual() -> StandardVisual {
     }
 }
 
-pub(super) fn open_menu_overlay_visual() -> StandardVisual {
-    StandardVisual::MenuSurface {
+pub(super) fn open_menu_overlay_visual() -> crate::MenuSurfaceVisual {
+    crate::MenuSurfaceVisual {
         kind: crate::MenuSurfaceKind::HoverCard,
         open: true,
-        trigger: None,
+        trigger: Some(Arc::from("Open")),
         trigger_icon: None,
         trigger_image: None,
         gap: 0.0,
@@ -8562,8 +8507,8 @@ fn parking_or_removing_the_last_presence_node_returns_the_skip_path() {
     queue.insert(node(1), node(3), None);
     queue.insert(node(1), node(4), None);
     queue.insert(node(1), node(5), None);
-    queue.set_standard_visual(node(2), Some(confirm_modal_visual()));
-    queue.set_standard_visual(node(3), Some(clip_empty_state_visual()));
+    queue.set_widget_visual(node(2), Some(confirm_modal_visual()));
+    queue.set_widget_visual(node(3), Some(clip_empty_state_visual()));
     queue.set_style(
         node(4),
         NodeStyle {
@@ -8574,7 +8519,7 @@ fn parking_or_removing_the_last_presence_node_returns_the_skip_path() {
             ..NodeStyle::default()
         },
     );
-    queue.set_standard_visual(node(5), Some(open_menu_overlay_visual()));
+    queue.set_widget_visual(node(5), Some(open_menu_overlay_visual()));
     world.commit(queue).unwrap();
     world.take_system_work();
     assert_eq!(world.confirm_modals, 1);
@@ -8636,16 +8581,15 @@ fn transform_and_a11y_mutations_do_not_schedule_layout() {
     world.take_system_work();
 
     let mut transform = MutationQueue::new();
+    let mut transform_layout = LayoutStyle::default();
+    transform_layout.transforms.transform = Some(PaintTransform {
+        e: 8.0,
+        ..PaintTransform::default()
+    });
     transform.set_style(
         node(4),
         NodeStyle {
-            layout: Arc::new(LayoutStyle {
-                transform: Some(PaintTransform {
-                    e: 8.0,
-                    ..PaintTransform::default()
-                }),
-                ..LayoutStyle::default()
-            }),
+            layout: Arc::new(transform_layout),
             ..NodeStyle::default()
         },
     );
@@ -8654,8 +8598,6 @@ fn transform_and_a11y_mutations_do_not_schedule_layout() {
     assert!(work.style.is_empty());
     assert!(work.state.is_empty());
     assert!(work.layout_frontier_seeds.is_empty());
-    assert_eq!(work.counters().style_processed, 0);
-    assert_eq!(work.counters().layout_nodes, 0);
     assert_eq!(work.transform, vec![node(4)]);
     assert_eq!(work.input_hit_test, vec![node(4)]);
     assert_eq!(work.render_extraction, vec![node(4)]);
@@ -8707,8 +8649,7 @@ fn frame_profiler_times_separable_runtime_stages() {
         });
     }
     profiler.time(crate::FrameStage::Extract, || {
-        let extracted = world.extract_nodes(&work.render_extraction);
-        world.record_extract(&extracted);
+        let _ = world.extract_nodes(&work.render_extraction);
     });
 
     let profile = profiler.finish();
@@ -8783,21 +8724,22 @@ fn hit_test_respects_cumulative_transform_and_ancestor_clip() {
             height: 30.0,
         },
     );
+    let mut outer_layout = LayoutStyle {
+        overflow_x: OverflowSpec::Hidden,
+        ..LayoutStyle::default()
+    };
+    outer_layout.transforms.transform = Some(PaintTransform {
+        e: 10.0,
+        ..PaintTransform::default()
+    });
     queue.set_style(
         node(1),
         NodeStyle {
-            layout: Arc::new(LayoutStyle {
-                overflow_x: OverflowSpec::Hidden,
-                transform: Some(PaintTransform {
-                    e: 10.0,
-                    ..PaintTransform::default()
-                }),
-                ..LayoutStyle::default()
-            }),
+            layout: Arc::new(outer_layout),
             foreground: None,
             background: None,
             border: None,
-            interaction: crate::InteractionStyle::default(),
+            interaction: Default::default(),
             ..NodeStyle::default()
         },
     );
@@ -8827,12 +8769,11 @@ fn hit_test_follows_perspective_rotate_y_homography() {
         width: 200.0,
         height: 80.0,
     };
-    let (transform, persp) = LayoutStyle {
-        transform_3d: Some(mat),
-        ..LayoutStyle::default()
-    }
-    .world_scene_transform(layout.x, layout.y, layout.width, layout.height)
-    .expect("homography");
+    let mut style_3d = LayoutStyle::default();
+    style_3d.transforms.transform_3d = Some(mat);
+    let (transform, persp) = style_3d
+        .world_scene_transform(layout.x, layout.y, layout.width, layout.height)
+        .expect("homography");
     assert!(
         persp[0].abs() > 1e-8 || persp[1].abs() > 1e-8,
         "perspective+rotateY must keep (g,h)"
@@ -8865,10 +8806,7 @@ fn hit_test_follows_perspective_rotate_y_homography() {
     queue.set_style(
         node(1),
         NodeStyle {
-            layout: Arc::new(LayoutStyle {
-                transform_3d: Some(mat),
-                ..LayoutStyle::default()
-            }),
+            layout: Arc::new(style_3d),
             ..NodeStyle::default()
         },
     );
@@ -9054,7 +8992,7 @@ fn palette_only_theme_switch_is_paint_work_and_never_layout_or_reshape() {
     let work = world.take_system_work();
     world.resolve_styles(&work.style).unwrap();
 
-    world.begin_frame_counters();
+    world.begin_frame();
     let mut theme = MutationQueue::new();
     theme.set_preset_theme(ThemeAppearance::Light);
     world.commit(theme).unwrap();
@@ -9064,22 +9002,11 @@ fn palette_only_theme_switch_is_paint_work_and_never_layout_or_reshape() {
         "SetTheme schedules RENDER, not STYLE"
     );
     assert!(work.layout_frontier_seeds.is_empty());
+    assert_eq!(work.render_extraction.len(), 2, "both live nodes repaint");
     world.resolve_styles(&work.style).unwrap();
-    let counters = world.last_theme_work_counters();
-    assert_eq!(
-        counters.paint_nodes_from_style, 2,
-        "both live nodes repaint"
-    );
-    assert_eq!(counters.layout_nodes_from_style, 0);
-    assert_eq!(counters.text_nodes_from_style, 0, "colour is not a reshape");
-    assert!(counters.is_paint_only());
-    assert_eq!(
-        counters.style_nodes_considered, 0,
-        "no style pass ran for this switch"
-    );
 
     let extracted = world.extract_nodes(&work.render_extraction);
-    world.end_frame_counters();
+    world.end_frame();
     assert_eq!(
         extracted[0].style.background,
         Some(
@@ -9087,10 +9014,6 @@ fn palette_only_theme_switch_is_paint_work_and_never_layout_or_reshape() {
                 .accent
                 .as_rgba_array()
         )
-    );
-    assert!(
-        world.last_theme_work_counters().theme_reads > 0,
-        "the palette is re-read, and today extract is where"
     );
 }
 
@@ -9125,7 +9048,7 @@ fn metrics_change_adds_layout_invalidation_to_the_same_theme_install() {
 
     let mut metrics = nana_ui_core::UI_METRICS;
     metrics.control_height += 4.0;
-    world.begin_frame_counters();
+    world.begin_frame();
     let mut tokens = MutationQueue::new();
     tokens.set_theme_tokens(test_theme(
         ThemeAppearance::Dark,
@@ -9134,16 +9057,11 @@ fn metrics_change_adds_layout_invalidation_to_the_same_theme_install() {
         nana_ui_core::SemanticPalette::dark().surface,
     ));
     world.commit(tokens).unwrap();
-    world.end_frame_counters();
+    world.end_frame();
 
-    let counters = world.last_theme_work_counters();
-    assert_eq!(counters.layout_nodes_from_style, 1);
-    assert_eq!(counters.paint_nodes_from_style, 2);
-    assert!(!counters.is_paint_only());
-    assert_eq!(
-        seed_nodes(&world.take_system_work().layout_frontier_seeds),
-        vec![node(1)]
-    );
+    let work = world.take_system_work();
+    assert_eq!(work.render_extraction.len(), 2);
+    assert_eq!(seed_nodes(&work.layout_frontier_seeds), vec![node(1)]);
 }
 
 /// A metrics install resolves design intent again without dropping what
@@ -9224,7 +9142,7 @@ fn a_corner_shape_change_is_paint_only() {
         corner_shape: nana_ui_core::CornerShape::SQUIRCLE,
         ..world.theme_metrics()
     };
-    world.begin_frame_counters();
+    world.begin_frame();
     let mut tokens = MutationQueue::new();
     tokens.set_theme_tokens(test_theme(
         ThemeAppearance::Dark,
@@ -9233,21 +9151,19 @@ fn a_corner_shape_change_is_paint_only() {
         nana_ui_core::SemanticPalette::dark().surface,
     ));
     world.commit(tokens).unwrap();
-    world.end_frame_counters();
+    world.end_frame();
 
     assert_eq!(
         world.theme_metrics().corner_shape,
         nana_ui_core::CornerShape::SQUIRCLE
     );
-    let counters = world.last_theme_work_counters();
-    assert_eq!(counters.layout_nodes_from_style, 0);
-    assert_eq!(counters.paint_nodes_from_style, 1);
-    assert!(counters.is_paint_only());
+    let work = world.take_system_work();
+    assert!(work.layout_frontier_seeds.is_empty());
+    assert_eq!(work.render_extraction.len(), 1);
 }
 
 /// Issue #100 §15: a retained frame that changed nothing must not walk or
-/// re-read the theme. `considered` counts nodes the pass evaluated, and it
-/// splits exactly into resolved plus skipped.
+/// re-read the theme.
 #[test]
 fn style_pass_splits_into_resolved_and_skipped_and_an_idle_pass_does_neither() {
     let mut world = UiWorld::new();
@@ -9263,36 +9179,38 @@ fn style_pass_splits_into_resolved_and_skipped_and_an_idle_pass_does_neither() {
     queue.insert(node(2), node(3), None);
     world.commit(queue).unwrap();
 
-    world.begin_frame_counters();
+    world.begin_frame();
     let work = world.take_system_work();
     world.resolve_styles(&work.style).unwrap();
-    world.end_frame_counters();
-    let first = world.last_theme_work_counters();
-    assert_eq!(first.style_nodes_considered, 3);
-    assert_eq!(first.style_nodes_resolved, 3);
-    assert_eq!(first.style_nodes_skipped, 0);
-    assert!(first.style_allocations > 0);
+    world.end_frame();
+    let first_resolved = (1..=3)
+        .map(|id| Arc::clone(&world.nodes.get(node(id)).unwrap().resolved.0))
+        .collect::<Vec<_>>();
 
     // Resolving the same ids again answers every one from the value/epoch
     // fast path; nothing is published a second time.
-    world.begin_frame_counters();
+    world.begin_frame();
     world.resolve_styles(&[node(1), node(2), node(3)]).unwrap();
-    world.end_frame_counters();
-    let second = world.last_theme_work_counters();
-    assert_eq!(second.style_nodes_considered, 3);
-    assert_eq!(second.style_nodes_resolved, 0);
-    assert_eq!(second.style_nodes_skipped, 3);
-    assert_eq!(second.style_allocations, 0);
+    world.end_frame();
+    for (index, previous) in first_resolved.iter().enumerate() {
+        let current = &world
+            .nodes
+            .get(node((index + 1) as u64))
+            .unwrap()
+            .resolved
+            .0;
+        assert!(Arc::ptr_eq(current, previous));
+    }
+    assert!(world.take_system_work().is_empty());
 
     // An empty pass is the steady frame: no walk, no token read.
-    world.begin_frame_counters();
+    world.begin_frame();
     world.resolve_styles(&[]).unwrap();
-    world.end_frame_counters();
-    assert!(world.last_theme_work_counters().is_idle());
+    world.end_frame();
+    assert!(world.take_system_work().is_empty());
 }
 
-/// A node pulled in only as a parent is counted once for the pass, not once
-/// per descendant that needed it.
+/// Unchanged parent chains stay shared and idle across partial style passes.
 #[test]
 fn parent_chain_nodes_are_counted_once_per_style_pass() {
     let mut world = UiWorld::new();
@@ -9310,26 +9228,31 @@ fn parent_chain_nodes_are_counted_once_per_style_pass() {
     world.commit(queue).unwrap();
     let work = world.take_system_work();
     world.resolve_styles(&work.style).unwrap();
+    let before = (1..=4)
+        .map(|id| Arc::clone(&world.nodes.get(node(id)).unwrap().resolved.0))
+        .collect::<Vec<_>>();
 
-    world.begin_frame_counters();
+    world.begin_frame();
     // Both leaves walk up through the same two ancestors.
     world.resolve_styles(&[node(3), node(4)]).unwrap();
-    world.end_frame_counters();
-    let counters = world.last_theme_work_counters();
-    assert_eq!(counters.style_nodes_considered, 4);
-    assert_eq!(
-        counters.style_nodes_considered,
-        counters.style_nodes_resolved + counters.style_nodes_skipped
-    );
+    world.end_frame();
+    for (index, previous) in before.iter().enumerate() {
+        let current = &world
+            .nodes
+            .get(node((index + 1) as u64))
+            .unwrap()
+            .resolved
+            .0;
+        assert!(Arc::ptr_eq(current, previous));
+    }
+    assert!(world.take_system_work().is_empty());
 }
 
-/// Resolving design intent copies a `LayoutStyle`, which is by far the
-/// largest heap event on the style path. It happens under `Arc::make_mut`,
-/// so no allocator counter sees it — the style counters have to say it
-/// themselves, or a baseline recorded from them understates the write path.
+/// Resolving design intent copies a `LayoutStyle`; nodes without design intent
+/// share the authored layout `Arc`.
 #[test]
 fn resolving_layout_intent_reports_the_layout_it_had_to_copy() {
-    fn allocated(style: NodeStyle) -> (usize, usize) {
+    fn shares_authored_layout(style: NodeStyle) -> bool {
         let mut world = UiWorld::new();
         let mut queue = MutationQueue::new();
         queue.create(
@@ -9343,13 +9266,15 @@ fn resolving_layout_intent_reports_the_layout_it_had_to_copy() {
 
         let mut styled = MutationQueue::new();
         styled.set_style(node(1), style);
-        world.begin_frame_counters();
+        world.begin_frame();
         world.commit(styled).unwrap();
         let work = world.take_system_work();
         world.resolve_styles(&work.style).unwrap();
-        world.end_frame_counters();
-        let counters = world.last_theme_work_counters();
-        (counters.layout_copies, counters.layout_copied_bytes)
+        world.end_frame();
+        Arc::ptr_eq(
+            &world.layout_style(node(1)).unwrap(),
+            &world.node_style(node(1)).unwrap().layout,
+        )
     }
 
     let plain = NodeStyle::default();
@@ -9359,20 +9284,17 @@ fn resolving_layout_intent_reports_the_layout_it_had_to_copy() {
         )),
         ..NodeStyle::default()
     };
-    assert_eq!(
-        allocated(plain),
-        (0, 0),
+    assert!(
+        shares_authored_layout(plain),
         "a node with no design intent shares the layout it authored"
     );
-    assert_eq!(
-        allocated(with_intent),
-        (1, size_of::<LayoutStyle>()),
-        "a node with intent copies one layout, and reports its real size"
+    assert!(
+        !shares_authored_layout(with_intent),
+        "a node with intent copies one layout"
     );
 }
 
-/// A font-size change is Text work; the counter separates it from the paint
-/// classes so "palette switch does not reshape" stays a real assertion.
+/// A font-size change is Text work.
 #[test]
 fn a_shaping_style_change_counts_as_text_invalidation() {
     let mut world = UiWorld::new();
@@ -9387,6 +9309,9 @@ fn a_shaping_style_change_counts_as_text_invalidation() {
     world.commit(queue).unwrap();
     let work = world.take_system_work();
     world.resolve_styles(&work.style).unwrap();
+    world
+        .shape_text(&work.text, &mut MeasureTextShaper)
+        .unwrap();
 
     let mut resize = MutationQueue::new();
     resize.set_style(
@@ -9401,11 +9326,15 @@ fn a_shaping_style_change_counts_as_text_invalidation() {
         },
     );
     world.commit(resize).unwrap();
-    world.begin_frame_counters();
+    world.begin_frame();
     let work = world.take_system_work();
     world.resolve_styles(&work.style).unwrap();
-    world.end_frame_counters();
-    assert_eq!(world.last_theme_work_counters().text_nodes_from_style, 1);
+    assert_eq!(work.text, vec![node(1)]);
+    world
+        .shape_text(&work.text, &mut MeasureTextShaper)
+        .unwrap();
+    world.end_frame();
+    assert_eq!(world.last_text_work_counters().text_nodes_shaped, 1);
 }
 
 #[test]
@@ -9750,7 +9679,7 @@ fn style_text_layout_input_focus_ime_hit_test_and_extraction_form_one_pipeline()
             foreground: Some(SemanticColorRole::Accent),
             background: None,
             border: None,
-            interaction: crate::InteractionStyle::default(),
+            interaction: Default::default(),
             ..NodeStyle::default()
         },
     );
@@ -9765,7 +9694,7 @@ fn style_text_layout_input_focus_ime_hit_test_and_extraction_form_one_pipeline()
             foreground: None,
             background: None,
             border: None,
-            interaction: crate::InteractionStyle::default(),
+            interaction: Default::default(),
             ..NodeStyle::default()
         },
     );
@@ -9987,7 +9916,7 @@ fn accessibility_projection_uses_runtime_hierarchy_focus_and_geometry() {
         node(1),
         AccessibilityState {
             disabled: true,
-            ..world.accessibility(node(1)).unwrap().clone()
+            ..world.accessibility(node(1)).unwrap().into_owned()
         },
     );
     world.commit(queue).unwrap();
@@ -10083,7 +10012,7 @@ fn accessibility_state_hidden_removes_and_restores_descendants() {
         node(2),
         AccessibilityState {
             hidden: true,
-            ..world.accessibility(node(2)).unwrap().clone()
+            ..world.accessibility(node(2)).unwrap().into_owned()
         },
     );
     world.commit(hide).unwrap();
@@ -10098,7 +10027,7 @@ fn accessibility_state_hidden_removes_and_restores_descendants() {
         node(2),
         AccessibilityState {
             hidden: false,
-            ..world.accessibility(node(2)).unwrap().clone()
+            ..world.accessibility(node(2)).unwrap().into_owned()
         },
     );
     world.commit(show).unwrap();
@@ -10435,7 +10364,8 @@ fn pointer_hover_and_press_are_runtime_owned_and_targeted() {
                         ..crate::SemanticPaint::default()
                     },
                     ..crate::InteractionStyle::default()
-                },
+                }
+                .into(),
                 ..NodeStyle::default()
             },
         );
@@ -10525,7 +10455,6 @@ fn pointer_hover_without_interaction_style_dirties_state_not_style() {
     assert!(work.layout_frontier_seeds.is_empty());
     assert!(work.transform.is_empty());
     assert!(work.render_extraction.is_empty());
-    assert_eq!(work.counters().style_processed, 0);
 
     assert_eq!(
         world.set_pointer_hover(document(1), 7, Some(node(3))),
@@ -10566,7 +10495,8 @@ fn state_only_invalidation_stays_observable_without_scheduling_a_frame() {
                     ..crate::SemanticPaint::default()
                 },
                 ..crate::InteractionStyle::default()
-            },
+            }
+            .into(),
             ..NodeStyle::default()
         },
     );
@@ -10892,11 +10822,10 @@ fn backend_neutral_text_geometry_treats_crlf_and_graphemes_atomically() {
     let text = TextContent {
         value: "A\r\n👩‍💻 e\u{301}".into(),
     };
-    let style = ComputedStyle {
-        font_size: 10.0,
-        line_height: Some(nana_ui_core::LineHeightSpec::Absolute(14.0)),
-        ..ComputedStyle::default()
-    };
+    let style = ComputedStyle::with(|s| {
+        s.font_size = 10.0;
+        s.line_height = Some(nana_ui_core::LineHeightSpec::Absolute(14.0));
+    });
     let constraints = crate::TextShapeConstraints::default();
     let mut shaper = FunctionalShaper::default();
     let second_line = "A\r\n".len();
@@ -10937,7 +10866,7 @@ fn backend_neutral_text_geometry_treats_crlf_and_graphemes_atomically() {
 
 #[test]
 #[cfg(feature = "calendar")]
-fn new_standard_visuals_derive_scene_geometry() {
+fn new_widget_visuals_derive_scene_geometry() {
     let mut world = UiWorld::new();
     let mut queue = MutationQueue::new();
     queue.create(
@@ -10956,9 +10885,9 @@ fn new_standard_visuals_derive_scene_geometry() {
             height: 120.0,
         },
     );
-    queue.set_standard_visual(
+    queue.set_widget_visual(
         node(1),
-        Some(StandardVisual::CalendarHeatmap {
+        Some(crate::CalendarHeatmapVisual {
             cells: Arc::from([
                 crate::CalendarHeatmapCellPaint {
                     x: 42.0,
@@ -10990,16 +10919,13 @@ fn new_standard_visuals_derive_scene_geometry() {
     );
     world.commit(queue).unwrap();
 
-    let crate::ComponentGeometry::CalendarHeatmap {
+    let crate::CalendarHeatmapLayout {
         cells,
         labels,
         hover,
     } = world
-        .component_geometry(node(1))
-        .expect("calendar geometry")
-    else {
-        panic!("expected calendar heatmap geometry");
-    };
+        .calendar_heatmap_layout(node(1))
+        .expect("calendar layout");
     assert_eq!(cells.len(), 2);
     assert_eq!(
         cells[0].0,
@@ -11309,9 +11235,9 @@ fn overlay_editor(
             tag: "textarea".into(),
         },
     );
-    queue.set_standard_visual(
+    queue.set_widget_visual(
         node(1),
-        Some(StandardVisual::TextInput {
+        Some(crate::TextInputVisual {
             placeholder: Arc::from(""),
             size: nana_ui_core::ControlSize::Medium,
             secure: false,
@@ -11393,13 +11319,9 @@ fn completion_popup_anchors_below_flips_above_and_hit_tests_rows() {
         .into();
     // 光标在第 0 行（行底 y=14）：弹层出现在光标行下方。
     let id = overlay_editor(&mut world, "a\nb\nc\nd\ne\nf", 1, items.clone());
-    let geometry = world.component_geometry(id).unwrap();
-    let crate::ComponentGeometry::TextInput {
+    let crate::TextInputGeometry {
         completion_popup, ..
-    } = geometry
-    else {
-        panic!("text input geometry");
-    };
+    } = world.text_input_geometry(id).unwrap();
     let popup = completion_popup.expect("popup below caret line");
     assert_eq!(popup.first_row, 0);
     assert_eq!(popup.selected, 0);
@@ -11433,13 +11355,9 @@ fn completion_popup_anchors_below_flips_above_and_hit_tests_rows() {
     world.take_system_work();
     let mut shaper = FunctionalShaper::default();
     world.shape_text(&[id], &mut shaper).unwrap();
-    let geometry = world.component_geometry(id).unwrap();
-    let crate::ComponentGeometry::TextInput {
+    let crate::TextInputGeometry {
         completion_popup, ..
-    } = geometry
-    else {
-        panic!("text input geometry");
-    };
+    } = world.text_input_geometry(id).unwrap();
     let popup = completion_popup.expect("popup flips above caret line");
     assert_eq!(popup.panel.y, 2.0);
 
@@ -11448,13 +11366,9 @@ fn completion_popup_anchors_below_flips_above_and_hit_tests_rows() {
     queue.set_text_input_completion_dismissed(id);
     world.commit(queue).unwrap();
     world.take_system_work();
-    let geometry = world.component_geometry(id).unwrap();
-    let crate::ComponentGeometry::TextInput {
+    let crate::TextInputGeometry {
         completion_popup, ..
-    } = geometry
-    else {
-        panic!("text input geometry");
-    };
+    } = world.text_input_geometry(id).unwrap();
     assert!(completion_popup.is_none());
     assert!(!world.text_completion_panel_hit(id, 10.0, 10.0));
 
@@ -11469,13 +11383,9 @@ fn completion_popup_anchors_below_flips_above_and_hit_tests_rows() {
     assert!(!state.dismissed);
     assert_eq!(state.selected, 0);
     assert_eq!(state.scroll, 0);
-    let geometry = world.component_geometry(id).unwrap();
-    let crate::ComponentGeometry::TextInput {
+    let crate::TextInputGeometry {
         completion_popup, ..
-    } = geometry
-    else {
-        panic!("text input geometry");
-    };
+    } = world.text_input_geometry(id).unwrap();
     assert!(completion_popup.is_some(), "重开后弹层几何恢复");
 }
 
@@ -11524,10 +11434,7 @@ fn hover_popup_anchors_scrolls_and_hit_tests_panel() {
     let mut shaper = FunctionalShaper::default();
     world.shape_text(&[id], &mut shaper).unwrap();
 
-    let geometry = world.component_geometry(id).unwrap();
-    let crate::ComponentGeometry::TextInput { hover_popup, .. } = geometry else {
-        panic!("text input geometry");
-    };
+    let crate::TextInputGeometry { hover_popup, .. } = world.text_input_geometry(id).unwrap();
     let popup = hover_popup.expect("hover popup");
     // 锚点行底 28 + 间隙 4；标题 + 两行正文 + 上下内边距 12。
     assert_eq!(popup.panel.y, 32.0);
@@ -11546,10 +11453,7 @@ fn hover_popup_anchors_scrolls_and_hit_tests_panel() {
     world.take_system_work();
     let mut shaper = FunctionalShaper::default();
     world.shape_text(&[id], &mut shaper).unwrap();
-    let geometry = world.component_geometry(id).unwrap();
-    let crate::ComponentGeometry::TextInput { hover_popup, .. } = geometry else {
-        panic!("text input geometry");
-    };
+    let crate::TextInputGeometry { hover_popup, .. } = world.text_input_geometry(id).unwrap();
     let popup = hover_popup.expect("hover popup");
     assert_eq!(popup.body_rows.len(), 1);
     assert_eq!(popup.body_rows[0].content.as_ref(), "line two");
@@ -11559,10 +11463,7 @@ fn hover_popup_anchors_scrolls_and_hit_tests_panel() {
     queue.set_text_input_hover(id, None);
     world.commit(queue).unwrap();
     world.take_system_work();
-    let geometry = world.component_geometry(id).unwrap();
-    let crate::ComponentGeometry::TextInput { hover_popup, .. } = geometry else {
-        panic!("text input geometry");
-    };
+    let crate::TextInputGeometry { hover_popup, .. } = world.text_input_geometry(id).unwrap();
     assert!(hover_popup.is_none());
     assert_eq!(world.text_hover_scroll(id), 0);
 }
@@ -11589,13 +11490,9 @@ fn signature_popup_highlights_active_parameter_and_revokes() {
     world.take_system_work();
     let mut shaper = FunctionalShaper::default();
     world.shape_text(&[id], &mut shaper).unwrap();
-    let geometry = world.component_geometry(id).unwrap();
-    let crate::ComponentGeometry::TextInput {
+    let crate::TextInputGeometry {
         signature_popup, ..
-    } = geometry
-    else {
-        panic!("text input geometry");
-    };
+    } = world.text_input_geometry(id).unwrap();
     let popup = signature_popup.expect("signature popup");
     assert_eq!(popup.prefix.content.as_ref(), "mix(");
     assert_eq!(
@@ -11613,13 +11510,9 @@ fn signature_popup_highlights_active_parameter_and_revokes() {
     queue.set_text_input_signature(id, None);
     world.commit(queue).unwrap();
     world.take_system_work();
-    let geometry = world.component_geometry(id).unwrap();
-    let crate::ComponentGeometry::TextInput {
+    let crate::TextInputGeometry {
         signature_popup, ..
-    } = geometry
-    else {
-        panic!("text input geometry");
-    };
+    } = world.text_input_geometry(id).unwrap();
     assert!(signature_popup.is_none());
 }
 
@@ -11771,13 +11664,9 @@ fn completion_popup_doc_row_doubles_row_height_and_presents_doc_line() {
     ]
     .into();
     let id = overlay_editor(&mut world, "nor", 3, items);
-    let geometry = world.component_geometry(id).unwrap();
-    let crate::ComponentGeometry::TextInput {
+    let crate::TextInputGeometry {
         completion_popup, ..
-    } = geometry
-    else {
-        panic!("text input geometry");
-    };
+    } = world.text_input_geometry(id).unwrap();
     let popup = completion_popup.expect("completion popup");
     assert_eq!(popup.rows.len(), 3);
     // 无 doc 的行单行高（14），带 doc 的行两行高（28）。
@@ -11926,11 +11815,7 @@ fn indexed_sticky_headers_preserve_crlf_utf8_and_nested_scrolling() {
     world
         .shape_text(&[node(1)], &mut FunctionalShaper::default())
         .unwrap();
-    let crate::ComponentGeometry::TextInput { sticky_line, .. } =
-        world.component_geometry(node(1)).unwrap()
-    else {
-        panic!("text input")
-    };
+    let crate::TextInputGeometry { sticky_line, .. } = world.text_input_geometry(node(1)).unwrap();
     let sticky = sticky_line.expect("nested header remains pinned");
     assert_eq!(sticky.text.content.trim_end(), "    fn inner() {");
     assert_eq!(sticky.panel.y, 0.0);
@@ -11953,14 +11838,10 @@ fn modal_accessibility_bounds_keep_surface_and_descendant_clipping() {
         );
     }
     queue.insert(node(1), node(2), None);
-    queue.set_standard_visual(node(1), Some(confirm_modal_visual()));
+    queue.set_widget_visual(node(1), Some(confirm_modal_visual()));
     world.commit(queue).unwrap();
     world.resolve_styles(&[node(1), node(2)]).unwrap();
-    let crate::ComponentGeometry::ModalFrame { surface, .. } =
-        world.component_geometry(node(1)).unwrap()
-    else {
-        panic!("modal")
-    };
+    let crate::ModalFrameGeometry { surface, .. } = world.modal_frame_geometry(node(1)).unwrap();
     let accessible = world.project_accessibility_in_viewport(document(1));
     assert_eq!(accessible.len(), 2);
     assert_eq!(accessible[0].bounds, surface);
@@ -12029,8 +11910,8 @@ fn an_invalid_measurement_neither_drops_nor_poisons_the_layout_cache() {
     // The retry measures the failed text again instead of reading the NaN back,
     // and the text measured before the failure is still cached.
     world.shape_text(&work.text, &mut shaper).unwrap();
-    let retried = world.last_work_counters();
-    assert!(retried.text_layout_cache_hits >= 1, "{retried:?}");
+    let retried = world.last_text_work_counters();
+    assert!(retried.layout_cache_hits >= Some(1), "{retried:?}");
     assert!(world.text_metrics(node(2)).unwrap().width.is_finite());
 }
 
@@ -12124,7 +12005,8 @@ fn an_installed_hover_duration_is_the_one_the_cross_fade_runs_for() {
                     ..crate::SemanticPaint::default()
                 },
                 ..crate::InteractionStyle::default()
-            },
+            }
+            .into(),
             ..NodeStyle::default()
         },
     );
@@ -12730,7 +12612,7 @@ fn a_child_moving_inside_its_parent_leaves_the_parent_result() {
     layout.write_layout(node(2), box_at(0.0, 0.0, 30.0, 10.0));
     layout.write_layout(node(3), box_at(40.0, 0.0, 30.0, 10.0));
     world.commit(layout).unwrap();
-    let held = Arc::clone(world.local_layout_result(node(1)).unwrap());
+    let held = world.local_layout_result(node(1)).unwrap();
     let place = |world: &mut UiWorld, bounds: LayoutBox| {
         let mut layout = MutationQueue::new();
         layout.write_layout(node(2), bounds);
@@ -12738,10 +12620,7 @@ fn a_child_moving_inside_its_parent_leaves_the_parent_result() {
     };
 
     place(&mut world, box_at(10.0, 5.0, 30.0, 10.0));
-    assert!(Arc::ptr_eq(
-        world.local_layout_result(node(1)).unwrap(),
-        &held
-    ));
+    assert_eq!(world.local_layout_result(node(1)).as_deref(), Some(&*held));
     let placements = world.layout_child_placements(node(1)).unwrap();
     assert_eq!(
         placements

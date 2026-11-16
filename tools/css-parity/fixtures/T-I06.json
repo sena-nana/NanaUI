@@ -6,10 +6,10 @@
   "tolerance_px": 2,
   "tree": {
     "id": "root",
-    "style": "display:block;width:300px;font-size:20px;line-height:20px",
+    "style": "width:300px;font-size:20px;line-height:20px",
     "children": [
-      { "id": "a", "style": "display:inline-block;width:40px;height:30px" },
-      { "id": "b", "style": "display:inline-block;width:10px;height:4px" }
+      { "id": "a", "style": "display:inline-flex;width:40px;height:30px" },
+      { "id": "b", "style": "display:inline-flex;width:10px;height:4px" }
     ]
   },
   "expected": [

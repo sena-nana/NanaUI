@@ -117,3 +117,19 @@
   - **HLSL**：片元入口点输出 `RasterizerOrderedTexture*`（Shader Model 5.1+），从同一 WGSL 模块编译非片元阶段时省略有序存储全局变量及辅助函数；未使用 `rasterizer_ordered` 的着色器 HLSL 输出完全不变。
   - **SPIR-V**：为有序存储图像变量添加 `Coherent` 修饰，声明 `Capability::FragmentShaderPixelInterlockEXT`、`SPV_EXT_fragment_shader_interlock` 与 `ExecutionMode::PixelInterlockOrderedEXT`，并用外层单基本块包装函数以一对 `OpBeginInvocationInterlockEXT` / `OpEndInvocationInterlockEXT` 包裹片元入口调用，保证结构化控制流内的提前 `return` 合法。
   - **MSL**：在片元入口点的纹理绑定属性内追加 `, raster_order_group(0)`（`[[texture(N), raster_order_group(0)]]`，MSL 2.0+）。
+
+### 无 `wgpu-core/wgsl` 特性时创建设备
+
+上游 `wgpu-core` 即使在未启用 `wgsl` 特性编译时，仍会依据 `InstanceFlags` 开启间接调用校验和自动时间戳归一化，随后在 `IndirectValidation::new` 与 `TimestampNormalizer::new` 内因无法在运行时解析内置 WGSL 而 panic。
+
+- **`wgpu-core`**：`Device::new` 以 `cfg!(feature = "wgsl")` 门控 `enable_indirect_validation`，`TimestampNormalizer::new` 在 `!cfg!(feature = "wgsl")` 时提前返回 `Ok(Self { state: None })`。仅启用 `wgpu/naga-ir` 而不启用 `wgpu/wgsl` 的构建无需关闭默认 `InstanceFlags` 即可创建设备；`wgpu::` 公共 API 无变化。
+- **`wgpu` 清单**：移除 `[target.'cfg(not(target_arch = "wasm32"))'.dependencies.wgpu-core]` 中无条件启用的 `"wgsl"`，使原生目标在 `default-features = false` 且未显式请求 `wgpu/wgsl` 时真正省略 `wgpu-core/wgsl` 与 `naga/wgsl-in`（`default` 仍包含 `"wgsl"`）。
+
+### Metal MSL 透传与 `naga-translation` 特性门控
+
+NanaUI 在 Apple 平台上通过 `Device::create_shader_module_passthrough` 直接加载预生成的 Metal Shading Language，使默认 Apple 构建不再包含运行时 Naga WGSL/IR 转译逻辑。
+
+- **`wgt::PassthroughShaderEntryPoint::metal_sized_bindings`**（新增字段 `Cow<'a, [(u32, u32, u32)]>`，表示 `(group, binding, array_index)`，并实现 `Default`；对未使用 `..Default::default()` 的结构体字面量属于破坏性变更）。将无界数组存储缓冲区的长度绑定信息（`sized_bindings`）经 `ShaderInput::Msl` 与 `wgpu_hal::metal::PassthroughShader` 传入 Metal 渲染/计算管线的阶段信息中。
+- **`wgpu-hal` Metal**：`ShaderInput::Msl` 编译包裹在 `autoreleasepool` 中，按 `private_caps.msl_version` 设置 `MTLCompileOptions::setLanguageVersion` 并开启 `setPreserveInvariance(true)`；`load_shader` 与 `create_compute_pipeline` 统一使用 `.get(...).unwrap_or(...)` 安全读取透传表。在启用 `naga-translation` 且打开 `wgpu_hal::metal::stage_meta` `debug` 日志时，`load_shader` 输出转译后入口名、工作组大小、尺寸绑定与完整 MSL 源码供离线采集。
+- **`wgpu-core`**：`Device::create_shader_module_passthrough` 在 Metal 后端免除对 `Features::PASSTHROUGH_SHADERS` 的要求，使通过 `wgpu-interop` 以默认特性创建的外部 Metal 设备也能使用预编译 MSL。
+- **`naga-translation` 特性**（在 `wgpu-hal`、`wgpu-core`、`wgpu` 中新增，由 `wgsl`、`spirv`、`glsl`、`replay` 与 `naga-ir` 自动启用）：门控运行时的 `ShaderModuleSource::Naga` 与 `Device::create_shader_module` 转译路径，使仅开启 `metal` 的无运行时编译器构建在 LTO 下彻底裁剪 Naga 校验与后端转译代码。

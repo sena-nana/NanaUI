@@ -2532,6 +2532,7 @@ pub enum ShaderInput<'a> {
     Msl {
         shader: &'a str,
         num_workgroups: hashbrown::HashMap<String, (u32, u32, u32)>,
+        sized_bindings: hashbrown::HashMap<String, Vec<(nt::ResourceBinding, u32)>>,
     },
     SpirV(&'a [u32]),
     Dxil {

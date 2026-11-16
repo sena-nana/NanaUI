@@ -1,7 +1,5 @@
 //! What a box declares about its own elasticity.
 
-use serde::{Deserialize, Serialize};
-
 use super::{
     AdjustmentKind, AdjustmentSegment, EnvelopeShape, ExecutionClass, LayoutCost, LayoutUnits,
     costs,
@@ -9,7 +7,7 @@ use super::{
 
 /// How far one length of a box may close up, and what each pixel of that
 /// costs.
-#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub struct ElasticLength {
     pub floor: ElasticFloor,
     pub cost: LayoutCost,
@@ -31,7 +29,7 @@ impl ElasticLength {
 }
 
 /// The least a length closes up to.
-#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub enum ElasticFloor {
     Px(f32),
     /// Parts in 255 of the resolved length.
@@ -41,7 +39,7 @@ pub enum ElasticFloor {
 /// What a box may give up along one axis: its padding (both edges), the gap
 /// between its children, and a gap inside the box that is not a child's (a
 /// button's icon against its label).
-#[derive(Debug, Clone, Copy, PartialEq, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
 pub struct AxisElasticity {
     pub padding: Option<ElasticLength>,
     pub gap: Option<ElasticLength>,
@@ -61,7 +59,7 @@ impl AxisElasticity {
 }
 
 /// Whether a box keeps with a neighbour across a break.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum KeepWith {
     #[default]
     None,
@@ -71,7 +69,7 @@ pub enum KeepWith {
 
 /// One discrete arrangement a box may switch to, and what switching saves
 /// and costs.
-#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub struct DiscreteCandidate {
     pub saves_px: f32,
     pub cost: LayoutCost,
@@ -82,7 +80,7 @@ pub struct DiscreteCandidate {
 /// candidate in use is the component's own state, an input to the solve;
 /// `hysteresis_px` is how far past a switch point the extent must move
 /// before the component switches back.
-#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub struct DiscreteAdaptation {
     pub candidates: [Option<DiscreteCandidate>; 4],
     pub hysteresis_px: f32,
@@ -96,7 +94,7 @@ pub struct DiscreteAdaptation {
 /// runs the solver at all when it overflows. A container that does not --
 /// most do not -- never reads its children's declarations, so declaring costs
 /// nothing until a container asks.
-#[derive(Debug, Clone, Copy, PartialEq, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
 pub struct AdaptationProfile {
     pub inline: AxisElasticity,
     pub block: AxisElasticity,
@@ -157,16 +155,16 @@ impl AdaptationProfile {
     }
 
     /// Shared default [`Self::control`] profile so controls do not allocate per instance.
-    pub fn shared_control() -> crate::shared::Shared<Self> {
-        static CONTROL: std::sync::LazyLock<crate::shared::Shared<AdaptationProfile>> =
-            std::sync::LazyLock::new(|| crate::shared::Shared::from(AdaptationProfile::control()));
+    pub fn shared_control() -> std::sync::Arc<Self> {
+        static CONTROL: std::sync::LazyLock<std::sync::Arc<AdaptationProfile>> =
+            std::sync::LazyLock::new(|| std::sync::Arc::new(AdaptationProfile::control()));
         CONTROL.clone()
     }
 
     /// Shared default [`Self::strip`] profile so strips do not allocate per instance.
-    pub fn shared_strip() -> crate::shared::Shared<Self> {
-        static STRIP: std::sync::LazyLock<crate::shared::Shared<AdaptationProfile>> =
-            std::sync::LazyLock::new(|| crate::shared::Shared::from(AdaptationProfile::strip()));
+    pub fn shared_strip() -> std::sync::Arc<Self> {
+        static STRIP: std::sync::LazyLock<std::sync::Arc<AdaptationProfile>> =
+            std::sync::LazyLock::new(|| std::sync::Arc::new(AdaptationProfile::strip()));
         STRIP.clone()
     }
 
@@ -290,5 +288,3 @@ mod tests {
         assert!(lower_box(&AxisElasticity::NONE, (16.0, 16.0), 8.0, 3, 6.0, 1).is_rigid());
     }
 }
-
-crate::shared::shared_default!(AdaptationProfile);

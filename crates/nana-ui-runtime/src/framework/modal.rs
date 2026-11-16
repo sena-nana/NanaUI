@@ -23,7 +23,9 @@ impl AppContext {
         // Opening and closing update the host and the surface: one that is
         // out being updated right now (the insert came from its own update)
         // is asked again once it is back.
-        if !self.views.contains_key(&root) || !self.views.contains_key(&host) {
+        if (!self.views.contains_key(&root) && !self.world.is_elided_stack(root))
+            || (!self.views.contains_key(&host) && !self.world.is_elided_stack(host))
+        {
             if !self.pending_modal_syncs.contains(&root) {
                 self.pending_modal_syncs.push(root);
             }

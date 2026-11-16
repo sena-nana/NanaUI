@@ -64,13 +64,13 @@ impl Composer {
     }
 
     fn counter(&self) -> TextInputCharacterCounter {
-        let ComponentGeometry::TextInput {
+        let TextInputGeometry {
             character_counter: Some(counter),
             ..
         } = self
             .cx
             .world()
-            .component_geometry(self.area.stable_id())
+            .text_input_geometry(self.area.stable_id())
             .unwrap()
         else {
             panic!("missing counter")

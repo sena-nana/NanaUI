@@ -517,19 +517,37 @@ fn a_click_past_a_wrapped_cjk_line_end_keeps_the_caret_after_that_line() {
 fn an_editors_frames_never_key_the_runtime_layout_cache() {
     let mut fixture = Fixture::new(&paragraphs(30));
     let document = fixture.document;
-    let cache = |fixture: &Fixture| {
-        let counters = fixture.runtime.context().last_work_counters();
+    let runtime_cache_delta = |work: TextWorkCounters,
+                               before: nana_text::LayoutCounters,
+                               after: nana_text::LayoutCounters| {
+        let engine_hits = after.layout_cache_hits - before.layout_cache_hits;
+        let engine_misses = after.layout_cache_misses - before.layout_cache_misses;
         (
-            counters.text_layout_cache_hits,
-            counters.text_layout_cache_misses,
+            work.layout_cache_hits
+                .unwrap_or(0)
+                .saturating_sub(engine_hits),
+            work.layout_cache_misses
+                .unwrap_or(0)
+                .saturating_sub(engine_misses),
         )
     };
     // The mount is exempt: the first measurement happens before the node has
     // any geometry to be measured from (the measure pass never creates it --
     // it would be under the layout pass's constraints, not the probes').
-    assert_eq!(cache(&fixture).0, 0, "nothing is answered from the cache");
+    assert_eq!(
+        fixture
+            .runtime
+            .context()
+            .world()
+            .last_text_work_counters()
+            .layout_cache_hits
+            .unwrap_or(0),
+        0,
+        "nothing is answered from the cache"
+    );
 
     // A caret move: no text work is owed at all.
+    let before_caret = nana_text::lock_text_engine(&fixture.engine).layout_counters();
     let Fixture {
         runtime, shaper, ..
     } = &mut fixture;
@@ -539,11 +557,18 @@ fn an_editors_frames_never_key_the_runtime_layout_cache() {
             .move_focused_text_caret(document, TextCaretIntent::Up, false, Some(shaper))
             .unwrap()
     );
-    fixture.flush();
-    assert_eq!(cache(&fixture), (0, 0), "a caret move");
+    let caret_work = fixture.flush();
+    let after_caret = nana_text::lock_text_engine(&fixture.engine).layout_counters();
+    assert_eq!(caret_work.layout_cache_lookups, 0, "a caret move");
+    assert_eq!(
+        runtime_cache_delta(caret_work, before_caret, after_caret),
+        (0, 0),
+        "a caret move"
+    );
 
     // An edit: the paragraph it changed is laid out again, still without the
     // Runtime cache in front of the editor.
+    let before_edit = nana_text::lock_text_engine(&fixture.engine).layout_counters();
     assert!(
         fixture
             .runtime
@@ -552,8 +577,14 @@ fn an_editors_frames_never_key_the_runtime_layout_cache() {
             .unwrap()
     );
     let work = fixture.flush();
+    let after_edit = nana_text::lock_text_engine(&fixture.engine).layout_counters();
     assert_eq!(work.editable_mutations, 1);
-    assert_eq!(cache(&fixture), (0, 0), "an edit");
+    assert_eq!(work.paragraphs_relayout_from_edit, 1);
+    assert_eq!(
+        runtime_cache_delta(work, before_edit, after_edit),
+        (0, 0),
+        "an edit"
+    );
 }
 
 /// Arrow keys follow visual order, not logical order. The clearest case a

@@ -207,7 +207,7 @@ impl UiWorld {
     /// Whether `record`, `id`'s, neither scrolls, transforms nor places
     /// itself off its parent's coordinates.
     fn box_axis_aligned(&self, id: StableNodeId, record: &NodeRecord) -> bool {
-        !(record.scroll_offset != ScrollOffset::default()
+        !(self.nodes.scroll_offset(id) != ScrollOffset::default()
             || !record.space.aligned_by_style()
             || (!self.triggered_overlays.is_empty() && self.parent_triggered_overlay(id).is_some()))
     }
@@ -478,7 +478,7 @@ impl UiWorld {
     /// the origin, about its transform origin): `None` without one.
     fn own_accessible_transform(&self, _id: StableNodeId, record: &NodeRecord) -> Option<[f32; 6]> {
         let style = record.resolved_layout.as_ref();
-        style.transform?;
+        style.transforms.transform?;
         let local = record.local_layout;
         style
             .world_scene_transform(0.0, 0.0, local.width, local.height)
@@ -494,10 +494,10 @@ impl UiWorld {
         id: StableNodeId,
         memo: &mut ProjectionMemo,
     ) -> [f32; 2] {
-        let Some(record) = self.nodes.get(id) else {
+        if !self.nodes.contains(id) {
             return [0.0, 0.0];
-        };
-        let scroll = record.scroll_offset;
+        }
+        let scroll = self.nodes.scroll_offset(id);
         if scroll == ScrollOffset::default() {
             return [0.0, 0.0];
         }

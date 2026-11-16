@@ -279,6 +279,11 @@ pub(super) struct IconPipeline {
     vertex_shrink_frames: u32,
 }
 
+#[cfg(test)]
+pub(super) fn icon_shader() -> String {
+    [super::wgsl::COLOR, ICON_STAGES].concat()
+}
+
 /// The icon program for targets of `format`: the only part of
 /// [`IconPipeline`] that depends on the working format.
 fn icon_pipeline(
@@ -294,50 +299,58 @@ fn icon_pipeline(
         immediate_size: 0,
     });
     let create_pipeline = || {
-        let shader = super::wgsl::Program::new(
+        let shader = super::wgsl::program_concat!(
             "nana-ui.scene.icon.shader",
-            [super::wgsl::COLOR, ICON_STAGES].concat(),
+            [super::wgsl::COLOR, ICON_STAGES]
         );
-        device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-            label: Some("nana-ui.scene.icon.pipeline"),
-            layout: Some(&pipeline_layout),
-            vertex: wgpu::VertexState {
-                module: &shader.stage(device, "vs_main").module,
-                entry_point: Some("vs_main"),
-                buffers: &[Some(wgpu::VertexBufferLayout {
-                    array_stride: std::mem::size_of::<IconVertex>() as u64,
-                    step_mode: wgpu::VertexStepMode::Vertex,
-                    attributes: &wgpu::vertex_attr_array!(
-                        0 => Float32x2,
-                        1 => Float32x2,
-                        2 => Float32x4,
-                        3 => Float32x4,
-                        4 => Float32x4,
-                        5 => Float32x3,
-                        6 => Float32x4,
-                    ),
-                })],
-                compilation_options: wgpu::PipelineCompilationOptions::default(),
+        shader.pipeline(
+            device,
+            "vs_main",
+            "fs_main",
+            &[],
+            |vs_module, vs_ep, fs_module, fs_ep, _| {
+                device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+                    label: Some("nana-ui.scene.icon.pipeline"),
+                    layout: Some(&pipeline_layout),
+                    vertex: wgpu::VertexState {
+                        module: vs_module,
+                        entry_point: Some(vs_ep),
+                        buffers: &[Some(wgpu::VertexBufferLayout {
+                            array_stride: std::mem::size_of::<IconVertex>() as u64,
+                            step_mode: wgpu::VertexStepMode::Vertex,
+                            attributes: &wgpu::vertex_attr_array!(
+                                0 => Float32x2,
+                                1 => Float32x2,
+                                2 => Float32x4,
+                                3 => Float32x4,
+                                4 => Float32x4,
+                                5 => Float32x3,
+                                6 => Float32x4,
+                            ),
+                        })],
+                        compilation_options: wgpu::PipelineCompilationOptions::default(),
+                    },
+                    fragment: Some(wgpu::FragmentState {
+                        module: fs_module,
+                        entry_point: Some(fs_ep),
+                        targets: &[Some(wgpu::ColorTargetState {
+                            format,
+                            blend: Some(wgpu::BlendState::ALPHA_BLENDING),
+                            write_mask: wgpu::ColorWrites::ALL,
+                        })],
+                        compilation_options: wgpu::PipelineCompilationOptions::default(),
+                    }),
+                    primitive: wgpu::PrimitiveState {
+                        topology: wgpu::PrimitiveTopology::TriangleList,
+                        ..Default::default()
+                    },
+                    depth_stencil: None,
+                    multisample: wgpu::MultisampleState::default(),
+                    multiview_mask: None,
+                    cache: None,
+                })
             },
-            fragment: Some(wgpu::FragmentState {
-                module: &shader.stage(device, "fs_main").module,
-                entry_point: Some("fs_main"),
-                targets: &[Some(wgpu::ColorTargetState {
-                    format,
-                    blend: Some(wgpu::BlendState::ALPHA_BLENDING),
-                    write_mask: wgpu::ColorWrites::ALL,
-                })],
-                compilation_options: wgpu::PipelineCompilationOptions::default(),
-            }),
-            primitive: wgpu::PrimitiveState {
-                topology: wgpu::PrimitiveTopology::TriangleList,
-                ..Default::default()
-            },
-            depth_stencil: None,
-            multisample: wgpu::MultisampleState::default(),
-            multiview_mask: None,
-            cache: None,
-        })
+        )
     };
     if let Some(policy) = policy {
         nana_gpu::__framework::render_pipeline_state(

@@ -288,14 +288,18 @@ fn colour_opacity_and_transform_changes_never_reach_shaping_or_layout() {
         }),
         ("transform", || {
             label_style(LayoutStyle {
-                transform: Some(PaintTransform {
-                    a: 1.0,
-                    b: 0.0,
-                    c: 0.0,
-                    d: 1.0,
-                    e: 12.0,
-                    f: 4.0,
-                }),
+                transforms: nana_ui_core::TransformStyle {
+                    transform: Some(PaintTransform {
+                        a: 1.0,
+                        b: 0.0,
+                        c: 0.0,
+                        d: 1.0,
+                        e: 12.0,
+                        f: 4.0,
+                    }),
+                    ..Default::default()
+                }
+                .into(),
                 ..LayoutStyle::default()
             })
         }),
@@ -619,10 +623,14 @@ fn a_feature_or_variation_change_reshapes_without_touching_content() {
         queue.set_style(
             label,
             label_style(LayoutStyle {
-                font_features: Some(vec![FontFeatureSetting {
-                    tag: *b"liga",
-                    value: 0,
-                }]),
+                text_ext: nana_ui_core::TextStyleExt {
+                    font_features: Some(vec![FontFeatureSetting {
+                        tag: *b"liga",
+                        value: 0,
+                    }]),
+                    ..Default::default()
+                }
+                .into(),
                 ..LayoutStyle::default()
             }),
         )
@@ -1111,9 +1119,9 @@ fn a_font_set_change_also_remeasures_text_that_is_never_stamped() {
         );
         queue.insert(id(COLUMN), empty, None);
         queue.set_style(empty, NodeStyle::default());
-        queue.set_standard_visual(
+        queue.set_widget_visual(
             empty,
-            Some(nana_ui_runtime::StandardVisual::EmptyState {
+            Some(nana_ui_runtime::EmptyStateVisual {
                 title: "Nothing here".into(),
                 message: None,
                 icon: None,
@@ -1254,9 +1262,9 @@ fn a_label_that_becomes_an_empty_state_releases_its_layout() {
     settle(&mut runtime, &mut shaper);
     assert_eq!(runtime.context().world().retained_text_layouts(), rows);
     commit(&mut runtime, |queue| {
-        queue.set_standard_visual(
+        queue.set_widget_visual(
             label_id(0),
-            Some(nana_ui_runtime::StandardVisual::EmptyState {
+            Some(nana_ui_runtime::EmptyStateVisual {
                 title: "Nothing here".into(),
                 message: None,
                 icon: None,
@@ -1304,7 +1312,11 @@ fn an_authored_line_clamp_change_relays_the_retained_layout_out() {
         label_style(LayoutStyle {
             width: Some(LengthSpec::Px(90.0)),
             height: Some(LengthSpec::Px(200.0)),
-            line_clamp: lines,
+            text_ext: nana_ui_core::TextStyleExt {
+                line_clamp: lines,
+                ..Default::default()
+            }
+            .into(),
             ..LayoutStyle::default()
         })
     };
@@ -1409,11 +1421,7 @@ fn a_language_change_remeasures_component_text_through_the_engine_host() {
     let update = runtime.flush(viewport(), &mut shaper).unwrap();
     assert!(!update.is_idle());
     assert!(
-        runtime
-            .context()
-            .last_work_counters()
-            .text_layout_cache_misses
-            > 0,
+        text_work(&runtime).layout_cache_misses.unwrap_or(0) > 0,
         "measurements taken under the old language are not reused"
     );
 }
@@ -1512,9 +1520,9 @@ fn a_leading_checkbox_is_a_constraint_change_for_the_label_beside_it() {
     let mut shaper = NanaTextEngineShaper::new(engine());
     settle(&mut runtime, &mut shaper);
     commit(&mut runtime, |queue| {
-        queue.set_standard_visual(
+        queue.set_widget_visual(
             label,
-            Some(nana_ui_runtime::StandardVisual::Checkbox {
+            Some(nana_ui_runtime::CheckboxVisual {
                 checked: false,
                 indeterminate: false,
                 size: nana_ui_core::ControlSize::Large,
@@ -1584,6 +1592,7 @@ fn an_alignment_change_is_not_text_work_for_a_host_measured_label() {
 fn a_font_set_change_drops_cached_glyph_advances() {
     struct GlyphHost {
         generation: u64,
+        misses: usize,
     }
     impl TextShaper for GlyphHost {
         fn shape(
@@ -1604,6 +1613,11 @@ fn a_font_set_change_drops_cached_glyph_advances() {
             constraints: nana_ui_runtime::TextShapeConstraints,
             glyphs: &mut nana_ui_runtime::GlyphCache,
         ) -> nana_ui_runtime::TextMetrics {
+            self.misses += text
+                .value
+                .chars()
+                .filter(|&ch| glyphs.peek(ch, style).is_none())
+                .count();
             MeasureTextShaper.shape_cached(id, text, style, constraints, glyphs)
         }
 
@@ -1612,14 +1626,19 @@ fn a_font_set_change_drops_cached_glyph_advances() {
         }
     }
     let (mut runtime, _) = document(["x".to_owned()]);
-    let mut shaper = GlyphHost { generation: 0 };
+    let mut shaper = GlyphHost {
+        generation: 0,
+        misses: 0,
+    };
     settle(&mut runtime, &mut shaper);
+    let settled_misses = shaper.misses;
+    assert!(settled_misses > 0);
     shaper.generation = 1;
     runtime.flush(viewport(), &mut shaper).unwrap();
-    let counters = runtime.context().last_work_counters();
     assert!(
-        counters.glyph_cache_misses.unwrap_or(0) > 0,
-        "the advance was measured again under the new font set: {counters:?}"
+        shaper.misses > settled_misses,
+        "the advance was measured again under the new font set: before={settled_misses}, after={}",
+        shaper.misses
     );
 }
 

@@ -125,11 +125,14 @@ fn mounted_shell_and_menu_glyphs_keep_geometry_focus_and_actions_through_theme_c
             let font = size.text_size_in(cx.world().theme().typography());
             painted_icon(&scene, footer.stable_id(), font);
             painted_icon(&scene, menu.stable_id(), font);
-            let ComponentGeometry::ActionMenuItem {
+            let ActionMenuItemGeometry {
                 icon: Some((_, icon, _)),
                 label,
                 ..
-            } = cx.world().component_geometry(menu.stable_id()).unwrap()
+            } = cx
+                .world()
+                .action_menu_item_geometry(menu.stable_id())
+                .unwrap()
             else {
                 panic!("menu icon geometry");
             };

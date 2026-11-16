@@ -2,9 +2,11 @@
 //! allocation and keep source rendering distinct from consumer processing.
 
 use nana_gpu::{DeviceGeneration, GpuTextureFormat};
-use nana_ui_core::OutputWorkObservation;
 
-use super::trace::{OutputRecreateReason, OutputTraceRole, OutputTraceSnapshot, OutputTraceWait};
+use super::trace::{
+    OutputRecreateReason, OutputTraceRole, OutputTraceSnapshot, OutputTraceWait,
+    OutputWorkObservation,
+};
 use super::{OutputConsumerId, OutputPath};
 
 pub(super) const PRODUCER: usize = 0;

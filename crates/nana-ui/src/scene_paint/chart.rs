@@ -9,9 +9,9 @@
 use std::collections::{HashMap, HashSet};
 
 use bytemuck::{Pod, Zeroable};
-use nana_ui_charts::{ChartMarks, GpuStyle, MarkPass, draw_flags};
+use nana_ui_charts::{ChartGpuHover, ChartMarks, GpuStyle, MarkPass, draw_flags};
 use nana_ui_core::Easing;
-use nana_ui_scene::{PrimitiveId, SceneChartHover};
+use nana_ui_scene::PrimitiveId;
 
 use super::clip::FragmentClip;
 use super::color::{orthographic_scaled, pack_linear};
@@ -117,9 +117,9 @@ impl ChartPipeline {
         format: wgpu::TextureFormat,
         motion_layout: &wgpu::BindGroupLayout,
     ) -> Self {
-        let shader = super::wgsl::Program::joined(
+        let shader = super::wgsl::program_joined!(
             "nana-ui.scene.chart.shader",
-            &[super::wgsl::CHART, super::wgsl::COLOR],
+            [super::wgsl::CHART, super::wgsl::COLOR]
         );
         let both = wgpu::ShaderStages::VERTEX | wgpu::ShaderStages::FRAGMENT;
         let layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
@@ -139,40 +139,48 @@ impl ChartPipeline {
             immediate_size: 0,
         });
         let build = |vs: &str, fs: &str, samples: u32| {
-            device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-                label: Some("nana-ui.scene.chart"),
-                layout: Some(&pipeline_layout),
-                vertex: wgpu::VertexState {
-                    module: &shader.stage(device, vs).module,
-                    entry_point: Some(vs),
-                    buffers: &[],
-                    compilation_options: wgpu::PipelineCompilationOptions::default(),
+            shader.pipeline(
+                device,
+                vs,
+                fs,
+                &[],
+                |vs_module, vs_ep, fs_module, fs_ep, _| {
+                    device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+                        label: Some("nana-ui.scene.chart"),
+                        layout: Some(&pipeline_layout),
+                        vertex: wgpu::VertexState {
+                            module: vs_module,
+                            entry_point: Some(vs_ep),
+                            buffers: &[],
+                            compilation_options: wgpu::PipelineCompilationOptions::default(),
+                        },
+                        fragment: Some(wgpu::FragmentState {
+                            module: fs_module,
+                            // Every edge is analytic coverage; MSAA samples
+                            // geometry only, so both sample counts share it.
+                            entry_point: Some(fs_ep),
+                            targets: &[Some(wgpu::ColorTargetState {
+                                format,
+                                blend: Some(wgpu::BlendState::PREMULTIPLIED_ALPHA_BLENDING),
+                                write_mask: wgpu::ColorWrites::ALL,
+                            })],
+                            compilation_options: wgpu::PipelineCompilationOptions::default(),
+                        }),
+                        primitive: wgpu::PrimitiveState {
+                            topology: wgpu::PrimitiveTopology::TriangleList,
+                            ..Default::default()
+                        },
+                        depth_stencil: None,
+                        multisample: wgpu::MultisampleState {
+                            count: samples,
+                            mask: !0,
+                            alpha_to_coverage_enabled: false,
+                        },
+                        multiview_mask: None,
+                        cache: None,
+                    })
                 },
-                fragment: Some(wgpu::FragmentState {
-                    module: &shader.stage(device, fs).module,
-                    // Every edge is analytic coverage; MSAA samples
-                    // geometry only, so both sample counts share it.
-                    entry_point: Some(fs),
-                    targets: &[Some(wgpu::ColorTargetState {
-                        format,
-                        blend: Some(wgpu::BlendState::PREMULTIPLIED_ALPHA_BLENDING),
-                        write_mask: wgpu::ColorWrites::ALL,
-                    })],
-                    compilation_options: wgpu::PipelineCompilationOptions::default(),
-                }),
-                primitive: wgpu::PrimitiveState {
-                    topology: wgpu::PrimitiveTopology::TriangleList,
-                    ..Default::default()
-                },
-                depth_stencil: None,
-                multisample: wgpu::MultisampleState {
-                    count: samples,
-                    mask: !0,
-                    alpha_to_coverage_enabled: false,
-                },
-                multiview_mask: None,
-                cache: None,
-            })
+            )
         };
         let family = |vs: &str, fs: &str| SAMPLE_COUNTS.map(|samples| build(vs, fs, samples));
         Self {
@@ -211,7 +219,7 @@ pub(super) struct ChartPipelineTarget {
 pub(super) struct ChartPlacement<'a> {
     pub marks: &'a ChartMarks,
     pub origin: [f32; 2],
-    pub hover: &'a SceneChartHover,
+    pub hover: &'a ChartGpuHover,
     pub affine: [f32; 6],
     pub opacity: f32,
     pub clip: FragmentClip,

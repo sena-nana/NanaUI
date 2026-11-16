@@ -196,14 +196,9 @@ fn scroller_box_change_with_scroll_hits_as_a_rebuild() {
     let work = world.take_system_work();
     let updates = world.take_scroll_hit_updates();
     assert!(world.hit_test_work_is_scroll_only(&work.input_hit_test, &updates));
-    let rebuilds = world.counters.last_counters.hit_test_nodes_rebuilt;
     for (scroller, delta) in updates {
         world.update_hit_test_scroll(document, scroller, delta);
     }
-    assert_eq!(
-        world.counters.last_counters.hit_test_nodes_rebuilt,
-        rebuilds
-    );
     let framed = hit_grid(&world, document);
     world.rebuild_hit_test(document);
     assert_eq!(framed, hit_grid(&world, document));

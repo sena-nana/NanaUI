@@ -10,19 +10,12 @@ use std::sync::Arc;
 
 use nana_ui_core::ContentFit;
 
-use crate::component_registry::{RegisterableComponent, SemanticSpec};
-use crate::gpu_slots::{fill_layout, finite_opacity, finite_radius, semantic_content_fit};
+use crate::gpu_slots::{fill_layout, finite_opacity, finite_radius};
 use crate::view_components::project_common;
 use crate::{
     AccessibilityRole, AccessibilityState, ComponentView, CustomRenderNode, InteractionState,
     MutationQueue, NodeKind, NodeStyle, StableNodeId, UiWorld,
 };
-
-/// Builds the video host-texture slot for a numeric surface id. The frame
-/// bridge must agree on it.
-fn video_slot(id: u64) -> Option<String> {
-    (id > 0).then(|| format!("video:{id}"))
-}
 
 /// Displays a host-fed video surface inside a layout region.
 ///
@@ -93,6 +86,8 @@ impl Video {
 }
 
 impl ComponentView for Video {
+    const TYPE_ID: Option<&'static str> = Some(crate::component_descriptors::VIDEO.type_id);
+
     fn share_layouts(
         &mut self,
         share: &mut dyn FnMut(&mut std::sync::Arc<nana_ui_core::LayoutStyle>),
@@ -128,70 +123,10 @@ impl ComponentView for Video {
     }
 }
 
-impl RegisterableComponent for Video {
-    const TYPE_ID: &'static str = "nana.video";
-    const TAGS: &'static [&'static str] = &["video"];
-    fn from_semantic(spec: &SemanticSpec<'_>) -> Self {
-        let slot = spec
-            .attr("data-nana-video")
-            .and_then(|raw| raw.trim().parse::<u64>().ok())
-            .and_then(video_slot)
-            .unwrap_or_default();
-        let mut video = Video::new(slot);
-        video.style.layout = Arc::clone(spec.layout);
-        if let Some(opacity) = spec.layout.opacity {
-            video.opacity = finite_opacity(opacity);
-        }
-        if let Some(radius) = spec.layout.border_radius {
-            video.corner_radius = finite_radius(radius);
-        }
-        if let Some(fit) = semantic_content_fit(spec) {
-            video.fit = fit;
-        }
-        if spec.attr("pointer-events").is_some_and(|value| {
-            let value = value.trim();
-            value.is_empty()
-                || value.eq_ignore_ascii_case("auto")
-                || value.eq_ignore_ascii_case("true")
-        }) {
-            video.pointer_events = true;
-        }
-        video.autoplay = is_attr_enabled(spec.attr("autoplay"));
-        video.loop_ = is_attr_enabled(spec.attr("loop"));
-        video.muted = is_attr_enabled(spec.attr("muted"));
-        video
-    }
-}
-
-/// HTML-style boolean attribute: bare presence or `true` enables.
-fn is_attr_enabled(value: Option<&str>) -> bool {
-    value.is_some_and(|value| {
-        let value = value.trim();
-        value.is_empty() || value.eq_ignore_ascii_case("true")
-    })
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::component_registry::ComponentTypeId;
     use nana_ui_core::LayoutStyle;
-
-    fn spec<'a>(
-        type_id: &'a ComponentTypeId,
-        attrs: &'a [(&'a str, &'a str)],
-        layout: &'a Arc<LayoutStyle>,
-    ) -> SemanticSpec<'a> {
-        let mut spec = SemanticSpec::from_parts(type_id, layout);
-        spec.attrs = attrs;
-        spec
-    }
-
-    #[test]
-    fn video_slot_rejects_zero_and_builds_prefix() {
-        assert_eq!(video_slot(7).as_deref(), Some("video:7"));
-        assert_eq!(video_slot(0), None);
-    }
 
     #[test]
     fn custom_render_uses_host_texture_renderer_and_fit() {
@@ -207,46 +142,6 @@ mod tests {
     #[test]
     fn empty_resource_omits_custom_render() {
         assert!(Video::new("").custom_render().is_none());
-    }
-
-    #[test]
-    fn from_semantic_reads_slot_and_declarative_attrs() {
-        let type_id = ComponentTypeId::new("nana.video").expect("valid id");
-        let layout = Arc::new(LayoutStyle::default());
-        let attrs = [
-            ("data-nana-video", "7"),
-            ("fit", "contain"),
-            ("autoplay", "true"),
-            ("loop", ""),
-            ("muted", "false"),
-            ("pointer-events", "auto"),
-        ];
-        let video = Video::from_semantic(&spec(&type_id, &attrs, &layout));
-        assert_eq!(video.resource.as_ref(), "video:7");
-        assert_eq!(video.fit, ContentFit::Contain);
-        assert!(video.autoplay);
-        assert!(video.loop_);
-        assert!(!video.muted);
-        assert!(video.pointer_events);
-    }
-
-    #[test]
-    fn from_semantic_without_slot_stays_blank() {
-        let type_id = ComponentTypeId::new("nana.video").expect("valid id");
-        let layout = Arc::new(LayoutStyle::default());
-        let video = Video::from_semantic(&spec(&type_id, &[], &layout));
-        assert_eq!(video.resource.as_ref(), "");
-        assert!(video.custom_render().is_none());
-        assert!(!video.autoplay);
-    }
-
-    #[test]
-    fn from_semantic_rejects_non_positive_slot_ids() {
-        let type_id = ComponentTypeId::new("nana.video").expect("valid id");
-        let layout = Arc::new(LayoutStyle::default());
-        let attrs = [("data-nana-video", "0")];
-        let video = Video::from_semantic(&spec(&type_id, &attrs, &layout));
-        assert_eq!(video.resource.as_ref(), "");
     }
 
     fn mount(video: Video) -> (crate::UiWorld, StableNodeId) {

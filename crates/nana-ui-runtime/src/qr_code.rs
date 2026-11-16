@@ -72,6 +72,7 @@ impl QrCode {
 
     /// Encode `data` (`qrcode::QrCode::new`, dark modules = true), then paint via [`Self::from_modules`].
     /// Quiet-zone modules are added at paint time, not in the matrix.
+    #[cfg(feature = "qr-code")]
     pub fn encode(data: impl AsRef<[u8]>, size: f32) -> Result<Self, QrCodeError> {
         let code = qrcode::QrCode::new(data.as_ref()).map_err(|_| QrCodeError::EncodeFailed)?;
         let width = code.width();
@@ -172,7 +173,89 @@ pub(crate) fn module_geometry(bounds: LayoutBox, module_width: usize) -> (f32, (
 
 pub(crate) const QUIET_ZONE_MODULES: usize = QrCode::QUIET_ZONE_MODULES;
 
+/// Visual state for [`QrCode`] nodes.
+#[derive(Debug, Clone, PartialEq)]
+pub struct QrCodeVisual {
+    pub modules: Arc<[bool]>,
+    pub width: usize,
+}
+
+impl crate::WidgetVisual for QrCodeVisual {
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+
+    fn dyn_eq(&self, other: &dyn std::any::Any) -> bool {
+        other.downcast_ref::<Self>().is_some_and(|rhs| self == rhs)
+    }
+
+    fn paint(&self, ctx: &crate::WidgetPaintCtx<'_>) -> crate::WidgetPaintOutput {
+        let (module_size, (ox, oy)) = module_geometry(ctx.bounds, self.width);
+        let quiet = QUIET_ZONE_MODULES as f32;
+        let field = LayoutBox {
+            x: ctx.bounds.x + ox,
+            y: ctx.bounds.y + oy,
+            width: module_size * (self.width as f32 + quiet * 2.0),
+            height: module_size * (self.width as f32 + quiet * 2.0),
+        };
+        let mut out = crate::WidgetPaintOutput {
+            suppress_root_surface: true,
+            ..crate::WidgetPaintOutput::new()
+        };
+        out.push(
+            0,
+            crate::WidgetPaintOp::Quad(crate::WidgetQuad {
+                rect: field,
+                fill: Some([1.0, 1.0, 1.0, 1.0]),
+                fill_paint: None,
+                border: None,
+                border_paint: None,
+                corner_radius: [ctx.chrome_radii.md.max(0.0); 4],
+                elevation: None,
+                use_parent_clips: false,
+                content_image: None,
+                background_image: None,
+                ..Default::default()
+            }),
+        );
+        if self.width > 0 {
+            let dark: Vec<LayoutBox> = self
+                .modules
+                .iter()
+                .enumerate()
+                .filter(|(_, dark)| **dark)
+                .map(|(index, _)| {
+                    let x = index % self.width;
+                    let y = index / self.width;
+                    LayoutBox {
+                        x: ctx.bounds.x + ox + (x as f32 + quiet) * module_size,
+                        y: ctx.bounds.y + oy + (y as f32 + quiet) * module_size,
+                        width: module_size,
+                        height: module_size,
+                    }
+                })
+                .collect();
+            if !dark.is_empty() {
+                out.push(
+                    1,
+                    crate::WidgetPaintOp::QuadBatch(crate::WidgetQuadBatch {
+                        bounds: field,
+                        rects: Arc::from(dark),
+                        colors: crate::WidgetBatchColors::Uniform([0.0, 0.0, 0.0, 1.0]),
+                        fill_paint: None,
+                        border: None,
+                        corner_radius: [0.0; 4],
+                    }),
+                );
+            }
+        }
+        out
+    }
+}
+
 impl ComponentView for QrCode {
+    const TYPE_ID: Option<&'static str> = Some(crate::component_descriptors::QR_CODE.type_id);
+
     fn node_kind(&self) -> NodeKind {
         NodeKind::Element {
             tag: "qr-code".into(),
@@ -180,13 +263,12 @@ impl ComponentView for QrCode {
     }
 
     fn project(&self, id: StableNodeId, world: &UiWorld, mutations: &mut MutationQueue) {
-        // scene: QrCode { modules, width }
-        let visual = crate::StandardVisual::QrCode {
+        let visual = QrCodeVisual {
             modules: Arc::clone(&self.modules),
             width: self.width,
         };
-        if world.standard_visual(id) != Some(visual.clone()) {
-            mutations.set_standard_visual(id, Some(visual));
+        if world.widget_visual_as::<QrCodeVisual>(id) != Some(&visual) {
+            mutations.set_widget_visual(id, Some(visual));
         }
         project_common(
             id,
@@ -239,6 +321,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "qr-code")]
     fn encode_builds_square_matrix_from_payload() {
         let code = QrCode::encode(
             "lilia-remote://pair?v=1&ticket=abc&challenge=def&bridge=http%3A%2F%2F10.0.0.2%3A41478",
@@ -253,6 +336,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "qr-code")]
     fn encode_rejects_oversized_payload_and_non_finite_size() {
         assert_eq!(
             QrCode::encode(vec![0u8; 16_384], QrCode::DEFAULT_SIZE),
@@ -330,8 +414,8 @@ mod tests {
         assert_eq!(style.foreground, None);
         assert_eq!(context.world().interaction(id), Some(inert()));
         assert!(matches!(
-            context.world().standard_visual(id),
-            Some(crate::StandardVisual::QrCode { width: 2, .. })
+            context.world().widget_visual_as::<QrCodeVisual>(id),
+            Some(QrCodeVisual { width: 2, .. })
         ));
 
         context

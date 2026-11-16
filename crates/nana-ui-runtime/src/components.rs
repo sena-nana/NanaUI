@@ -1,13 +1,14 @@
 use nana_ui_core::sort::CompactSort as _;
 use std::{
     collections::BTreeSet,
+    ops::{Deref, DerefMut},
     sync::{Arc, LazyLock},
 };
 
 use nana_ui_core::{
-    CardKind, ControlSize, FontFeatureSetting, FontKerningSpec, FontVariationSetting, Icon,
-    LayoutStyle, LineBreakSpec, LineHeightSpec, PopoverAlignment, PopoverPlacement,
-    SemanticColorRole, SwitchControlPosition, UI_BASE_TEXT_SIZE, WordBreakSpec,
+    ControlSize, FontFeatureSetting, FontKerningSpec, FontVariationSetting, Icon, LayoutStyle,
+    LineBreakSpec, LineHeightSpec, PopoverAlignment, PopoverPlacement, SemanticColorRole,
+    UI_BASE_TEXT_SIZE, WordBreakSpec,
 };
 
 /// The **default theme's** status-tone mapping.
@@ -747,425 +748,48 @@ pub struct TextSignaturePopup {
     pub active_background: [f32; 4],
 }
 
+/// Visual configuration for text-editing fields (`TextField`, `NumberInput`, `TextArea`).
 #[derive(Debug, Clone, PartialEq)]
-pub enum StandardVisual {
-    ModalFrame {
-        title: Arc<str>,
-        description: Option<Arc<str>>,
-        body_text: Option<Arc<str>>,
-        kind: crate::ModalSurfaceKind,
-        busy: bool,
-        danger: bool,
-        slots: crate::ModalSlots,
-        /// Paints the card in place of the theme's; see
-        /// [`crate::Dialog::surface_painter`].
-        surface_painter: Option<crate::NodePainter>,
-    },
-    Button {
-        label: Arc<str>,
-        icon: Option<nana_ui_core::Icon>,
-        /// A glyph after the label, such as the chevron of a picker. Same
-        /// size and gap as the leading one.
-        trailing_icon: Option<nana_ui_core::Icon>,
-        icon_size: f32,
-        icon_gap: f32,
-        kind: nana_ui_core::ButtonKind,
-        size: ControlSize,
-        loading: bool,
-        loading_phase: f32,
-        invalid: bool,
-        /// Where the glyph–label group sits in the content box.
-        content_align: TextHorizontalAlignment,
-    },
-    TextInput {
-        placeholder: Arc<str>,
-        size: ControlSize,
-        secure: bool,
-        invalid: bool,
-        /// Numeric spinner affordance at the trailing edge. `NumberInput` is a
-        /// text input that also steps, so it reuses this visual instead of
-        /// growing a second editable contract.
-        steppers: bool,
-        /// Optional display-only Unicode scalar limit, excluding IME preedit.
-        character_counter: Option<usize>,
-        /// 代码编辑器扩展：编译诊断 span 标记（含可选 message）。偏移由宿主
-        /// 维护——文本变化后由宿主更新或清除，渲染层仅做越界钳制，不做偏移
-        /// 迁移。Error/Warning 画 squiggle；有 message 时画行尾文案并可悬停。
-        diagnostics: Arc<[TextDiagnosticSpan]>,
-        /// 查找匹配高亮 span（普通匹配与当前匹配，见 [`TextMatchSpan`]）。
-        /// 偏移同样由宿主维护。
-        matches: Arc<[TextMatchSpan]>,
-        /// 颜色装饰 span（行内色块，见 [`TextColorSwatchSpan`]）。偏移同样
-        /// 由宿主维护；纯装饰不参与布局与命中，仅多行态派生几何。
-        color_swatches: Arc<[TextColorSwatchSpan]>,
-        /// Atomic inline chips (see [`TextAtomSpan`]). Hosts feed these with
-        /// the committed token range plus display label/icon. Painters cover
-        /// the token glyphs with a chip; close hits delete the range.
-        atoms: Arc<[TextAtomSpan]>,
-        /// 行号栏。行号绘制在节点左内边距区域，宿主需预留足够的 padding。
-        line_numbers: bool,
-        /// 缩进参考线。`Some(indent_unit)` 时在每个逻辑行的前导空白处按
-        /// 缩进单位宽度画竖线（仅多行态生效）。
-        indent_guides: Option<Arc<str>>,
-        /// 代码折叠区间（见 [`TextCodeFold`]）。宿主在文本变化后重新喂；
-        /// 哪些区间处于折叠态由组件内部维护，渲染按折叠后的视图展示。
-        folds: Arc<[TextCodeFold]>,
-        /// git gutter 标记（见 [`TextGitMark`]）。宿主在 git 状态与文本
-        /// 变化后重新喂；行号无效或被折叠隐藏的标记在几何派生时静默跳过。
-        git_marks: Arc<[TextGitMark]>,
-        /// 多行编辑器的内部派生渲染选项（出现高亮、相对行号、空白字符
-        /// 显示、wrap guide 列参考线）。全部默认关闭；开启的特征由世界侧
-        /// 从输入状态派生几何，不给宿主增加喂入负担。
-        editor_options: TextEditorRenderOptions,
-    },
-    Checkbox {
-        checked: bool,
-        /// Mixed state. Wins over `checked` when painting and in a11y.
-        indeterminate: bool,
-        size: ControlSize,
-    },
-    Icon {
-        icon: Icon,
-        size: f32,
-        tooltip: Option<TooltipVisual>,
-    },
-    Switch {
-        thumb_progress: f32,
-        label: Arc<str>,
-        hint: Option<Arc<str>>,
-        checked: bool,
-        control_position: SwitchControlPosition,
-        size: ControlSize,
-        loading: bool,
-        loading_phase: f32,
-        invalid: bool,
-    },
-    Range {
-        label: Option<Arc<str>>,
-        value: Arc<str>,
-        /// The minimum and the maximum formatted as `value`
-        /// is, at the step's precision, while the readout shows: the value's
-        /// slot is as wide as the wider of them, so a value moving between
-        /// them repaints without laying anything out (#384).
-        limits: Option<[Arc<str>; 2]>,
-        unit: Option<Arc<str>>,
-        size: ControlSize,
-        ratio: f32,
-        /// Positions along the track, each in `0.0..=1.0`.
-        markers: Arc<[f32]>,
-        /// `Some(ratio)`: the track from there to its end is a caution zone
-        /// (`RangeField::caution_from`).
-        caution: Option<f32>,
-        invalid: bool,
-        /// `Some(girth)`, finite and positive: a rail that thick across the
-        /// whole content box, with no thumb unless focus is visible on the
-        /// range.
-        rail: Option<f32>,
-        /// `Some(stops)`: the track is this gradient, start to end, with no
-        /// fill, and the thumb is a [`ContrastRing`]. See
-        /// `RangeField::track_gradient`.
-        track_gradient: Option<Arc<[nana_ui_core::GradientStop]>>,
-        /// `Some(text)`: the thumb is a wide capsule with the value written
-        /// in it (`RangeField::value_thumb`); no readout slot is laid out
-        /// and `limits` size the capsule.
-        value_thumb: Option<Arc<str>>,
-        /// The value is being typed: the capsule makes way for the number
-        /// field laid over it.
-        editing: bool,
-        /// The formatted minimum and maximum (the maximum with the unit),
-        /// written at the ends of the track (`RangeField::show_bounds`).
-        bounds: Option<[Arc<str>; 2]>,
-        /// The row ends with the reset button's square
-        /// (`RangeField::default_value`).
-        reset: bool,
-    },
-    /// Scroll container chrome. Carries policy and the bars' animated state
-    /// only: the lane, track and thumb boxes come from the authoritative
-    /// [`ScrollOffset`] / [`ScrollMetrics`] at extraction time, so no scroll
-    /// position is duplicated here.
-    Scrollbar {
-        axes: crate::ScrollAxes,
-        /// The view's own visibility, else the installed theme's policy.
-        visibility: nana_ui_core::ScrollbarVisibility,
-        /// The view asks its auto-hiding bars to show: the pointer is inside
-        /// it, a lane is hot, a thumb is dragged, or a hold after a scroll or
-        /// a leave has not run out.
-        shown: bool,
-        /// The axis whose lane the pointer is on.
-        hot: Option<nana_ui_core::ScrollbarAxis>,
-        dragging: Option<nana_ui_core::ScrollbarAxis>,
-        /// How far the bars have faded in, `0..=1`: animated toward `shown`
-        /// under `AutoHide`, 1 for `Always`, 0 for `Hidden`.
-        presence: f32,
-        /// How far each axis's thumb has grown toward its active thickness,
-        /// `[horizontal, vertical]`, `0..=1`.
-        expand: [f32; 2],
-    },
-    Card {
-        title: Option<Arc<str>>,
-        kind: CardKind,
-        loading: bool,
-        loading_phase: f32,
-    },
-    ListItem {
-        leading: Option<StableNodeId>,
-        content: Option<StableNodeId>,
-        trailing: Option<StableNodeId>,
-        /// 紧跟主文本的次要文字；Foundation Note part 提供位置。
-        note: Option<Arc<str>>,
-        /// 单行补充信息；Foundation Detail part 提供行尾位置。
-        detail: Option<Arc<str>>,
-    },
-    StatusBadge {
-        label: Arc<str>,
-        tone: nana_ui_core::StatusTone,
-        compact: bool,
-    },
-    ValidationMessage {
-        message: Arc<str>,
-        intent: nana_ui_core::ValidationIntent,
-        compact: bool,
-    },
-    EmptyState {
-        title: Arc<str>,
-        message: Option<Arc<str>>,
-        icon: Option<Icon>,
-        compact: bool,
-        action: Option<StableNodeId>,
-    },
-    PathText {
-        value: Arc<str>,
-    },
-    LabeledValue {
-        label: Arc<str>,
-        value: Arc<str>,
-        value_is_path: bool,
-        value_role: SemanticColorRole,
-        value_weight: u16,
-        compact: bool,
-        action: Option<StableNodeId>,
-    },
-    SelectionOption {
-        label: Arc<str>,
-        icon: Option<Icon>,
-        selected: bool,
-        disabled: bool,
-        size: ControlSize,
-        show_focus_ring: bool,
-        /// Draws a radio ring, and a dot when selected, before the label.
-        indicator: bool,
-    },
-    Progress {
-        value_ratio: f32,
-        label: Option<Arc<str>>,
-        cancellable: bool,
-        /// What the fill shows: the value, a sweep, or a still fill.
-        mode: crate::ProgressMode,
-        /// The track's thickness.
-        thickness: f32,
-        /// The fill's colour; `None` is the Indicator recipe's.
-        fill: Option<nana_ui_core::SemanticColorRole>,
-    },
-    Spinner {
-        label: Arc<str>,
-        size: f32,
-        phase: f32,
-    },
-    LevelMeter {
-        value_ratio: f32,
-        girth: f32,
-        tone: nana_ui_core::StatusTone,
-    },
-    FormField {
-        label: Arc<str>,
-        hint: Option<Arc<str>>,
-        error: Option<Arc<str>>,
-        size: ControlSize,
-        control: Option<StableNodeId>,
-    },
-    QrCode {
-        modules: Arc<[bool]>,
-        width: usize,
-    },
-    Toast {
-        title: Arc<str>,
-        description: Option<Arc<str>>,
-        tone: nana_ui_core::ToastTone,
-        dismissible: bool,
-        /// Built by `AppContext::assemble_toast`: its copy, progress and
-        /// buttons are child nodes, so the toast paints only its surface,
-        /// hairline, lift and tone mark, the mark in the title's first line.
-        assembled: bool,
-        /// The glyph an assembled toast shows in place of its recipe's tone
-        /// glyph, when the recipe marks tones with glyphs.
-        icon: Option<Icon>,
-    },
-    XYPad {
-        value: nana_ui_core::XYPadValue,
-        nx: f32,
-        ny: f32,
-        size: ControlSize,
-        invalid: bool,
-        disabled: bool,
-        /// The pad's own paint is the picture (`XYPadSurface::Picture`): no
-        /// axes, a [`ContrastRing`] thumb, the frame stroked above the paint.
-        picture: bool,
-    },
-    Select {
-        label: Arc<str>,
-        /// The quieter text drawn after `label` in the field: the hint of the
-        /// option it shows. See [`crate::SelectOption::hint`].
-        hint: Option<Arc<str>>,
-        /// The round picture in front of `label`: the image of the option it
-        /// shows. See [`crate::SelectOption::image`].
-        image: Option<crate::TextureSlotName>,
-        placeholder: bool,
-        size: ControlSize,
-        opened: bool,
-        invalid: bool,
-        loading: bool,
-        options: Arc<[SelectOptionData]>,
-        highlighted: Option<usize>,
-        /// How the open menu's rows are scrolled and its scrollbar held.
-        menu_scroll: SelectMenuScroll,
-        /// Where the open menu can be seen, taken when the field last
-        /// projected and again after each layout pass that moves it;
-        /// `None` before it has been laid out.
-        menu_room: Option<SelectMenuRoom>,
-        /// Whether this menu can ever draw check marks (a multi-select
-        /// dropdown). The check lane is reserved for the whole menu when it
-        /// can, so labels do not shift as options are checked and unchecked.
-        checkable: bool,
-        /// Whether the field's content holds its widest option and its arrow,
-        /// as a native `<select>` sizes itself, rather than only the label it
-        /// shows. See [`crate::Select::fit_options`].
-        fit_options: bool,
-        /// Visual mounting scope of the open dropdown menu (`NearestModal`,
-        /// `TopLayer`, or `Inline`). The closed field remains in-flow.
-        overlay_mount: nana_ui_core::OverlayMount,
-    },
-    MenuSurface {
-        kind: MenuSurfaceKind,
-        open: bool,
-        trigger: Option<Arc<str>>,
-        trigger_icon: Option<Icon>,
-        /// Host-texture trigger (hover-card avatar). Painted by the node's own
-        /// custom render slot; the label never becomes a text region.
-        trigger_image: Option<Arc<str>>,
-        gap: f32,
-        /// Present when this node is an in-flow trigger; the menu items layout
-        /// as a separate overlay column and must not share this node's box.
-        overlay: Option<TriggeredMenuOverlay>,
-        query: Option<Arc<str>>,
-        rows: Arc<[SelectOptionData]>,
-        highlighted: Option<usize>,
-    },
-    ActionMenuItem {
-        label: Arc<str>,
-        hint: Option<Arc<str>>,
-        icon: Option<Icon>,
-        /// A round picture in the icon's place; see
-        /// [`crate::ActionMenuItem::leading_image`].
-        image: Option<crate::TextureSlotName>,
-        danger: bool,
-        active: bool,
-        disabled: bool,
-        size: ControlSize,
-    },
-    TreeView {
-        rows: Arc<[crate::tree_view::TreeRowData]>,
-        size: ControlSize,
-        /// The toggle columns' icons.
-        columns: Arc<[nana_ui_core::Icon]>,
-        /// The toggle columns' names: what assistive technology calls each
-        /// row's toggle in that column.
-        column_labels: Arc<[Arc<str>]>,
-        /// Where a drag in progress would land.
-        drop: Option<crate::TreeDropIntent>,
-        /// The active row: the one assistive technology is on while the
-        /// tree has the focus.
-        active: Option<Arc<str>>,
-    },
-    CommandPalette {
-        title: Arc<str>,
-        query: Arc<str>,
-        placeholder: Arc<str>,
-        empty: Option<Arc<str>>,
-        rows: Arc<[crate::command_palette::PaletteRowData]>,
-    },
-    #[cfg(feature = "calendar")]
-    CalendarHeatmap {
-        cells: Arc<[crate::calendar::CalendarHeatmapCellPaint]>,
-        month_labels: Arc<[crate::calendar::CalendarHeatmapLabelPaint]>,
-        day_labels: Arc<[crate::calendar::CalendarHeatmapLabelPaint]>,
-        cell_size: f32,
-        cell_radius: f32,
-        max_level: u8,
-        active: Option<usize>,
-        active_title: Option<Arc<str>>,
-    },
-    #[cfg(feature = "charts")]
-    Chart {
-        spec: Arc<crate::ChartSpec>,
-        hover: crate::ChartHoverVisual,
-    },
-    #[cfg(feature = "charts")]
-    ChartTooltip {
-        content: Arc<nana_ui_charts::hit::TooltipContent>,
-    },
-    #[cfg(feature = "controls")]
-    ReorderList {
-        rows: Arc<[crate::reorder_list::ReorderRowPaint]>,
-        size: ControlSize,
-        spacing: f32,
-        /// The row being dragged and where it would land.
-        drag: Option<crate::reorder_list::ReorderDragVisual>,
-    },
-    #[cfg(feature = "rich-text")]
-    NativeMarkdown {
-        blocks: Arc<[crate::MarkdownBlock]>,
-        text: Arc<str>,
-        selection: Option<(usize, usize)>,
-    },
-    #[cfg(feature = "rich-text")]
-    SelectableRichText {
-        text: Arc<str>,
-        selection: Option<(usize, usize)>,
-    },
-    #[cfg(feature = "graph-canvas")]
-    GraphCanvas {
-        nodes: Arc<[crate::graph_canvas::GraphNodePaint]>,
-        ports: Arc<[crate::graph_canvas::GraphPortPaint]>,
-        edges: Arc<[crate::graph_canvas::GraphEdgePaint]>,
-        connecting: Option<crate::graph_canvas::GraphEdgePaint>,
-        grid_spacing: f32,
-        viewport_offset_x: f32,
-        viewport_offset_y: f32,
-        viewport_zoom: f32,
-    },
-    /// Overview minimap policy. Node rectangles and the indicator stay in
-    /// world space; the uniform map projection resolves at extraction time
-    /// against the final widget box.
-    #[cfg(feature = "graph-canvas")]
-    GraphMinimap {
-        bounds: nana_ui_core::GraphRect,
-        nodes: Arc<[nana_ui_core::GraphRect]>,
-        indicator: Option<nana_ui_core::GraphRect>,
-        node_fill: Option<nana_ui_core::SemanticColorRole>,
-    },
-    #[cfg(feature = "image-viewer")]
-    ImageViewer {
-        intrinsic_size: Option<(u32, u32)>,
-        name: Option<Arc<str>>,
-        metadata: Option<Arc<str>>,
-        zoom: f32,
-        offset_x: f32,
-        offset_y: f32,
-    },
-    KeyCaptureLayer {
-        recording: bool,
-    },
-    KeymapLayer,
+pub struct TextInputVisual {
+    pub placeholder: Arc<str>,
+    pub size: ControlSize,
+    pub secure: bool,
+    pub invalid: bool,
+    /// Numeric spinner affordance at the trailing edge. `NumberInput` is a
+    /// text input that also steps, so it reuses this visual instead of
+    /// growing a second editable contract.
+    pub steppers: bool,
+    /// Optional display-only Unicode scalar limit, excluding IME preedit.
+    pub character_counter: Option<usize>,
+    /// 代码编辑器扩展：编译诊断 span 标记（含可选 message）。偏移由宿主
+    /// 维护——文本变化后由宿主更新或清除，渲染层仅做越界钳制，不做偏移
+    /// 迁移。Error/Warning 画 squiggle；有 message 时画行尾文案并可悬停。
+    pub diagnostics: Arc<[TextDiagnosticSpan]>,
+    /// 查找匹配高亮 span（普通匹配与当前匹配，见 [`TextMatchSpan`]）。
+    /// 偏移同样由宿主维护。
+    pub matches: Arc<[TextMatchSpan]>,
+    /// 颜色装饰 span（行内色块，见 [`TextColorSwatchSpan`]）。偏移同样
+    /// 由宿主维护；纯装饰不参与布局与命中，仅多行态派生几何。
+    pub color_swatches: Arc<[TextColorSwatchSpan]>,
+    /// Atomic inline chips (see [`TextAtomSpan`]). Hosts feed these with
+    /// the committed token range plus display label/icon. Painters cover
+    /// the token glyphs with a chip; close hits delete the range.
+    pub atoms: Arc<[TextAtomSpan]>,
+    /// 行号栏。行号绘制在节点左内边距区域，宿主需预留足够的 padding。
+    pub line_numbers: bool,
+    /// 缩进参考线。`Some(indent_unit)` 时在每个逻辑行的前导空白处按
+    /// 缩进单位宽度画竖线（仅多行态生效）。
+    pub indent_guides: Option<Arc<str>>,
+    /// 代码折叠区间（见 [`TextCodeFold`]）。宿主在文本变化后重新喂；
+    /// 哪些区间处于折叠态由组件内部维护，渲染按折叠后的视图展示。
+    pub folds: Arc<[TextCodeFold]>,
+    /// git gutter 标记（见 [`TextGitMark`]）。宿主在 git 状态与文本
+    /// 变化后重新喂；行号无效或被折叠隐藏的标记在几何派生时静默跳过。
+    pub git_marks: Arc<[TextGitMark]>,
+    /// 多行编辑器的内部派生渲染选项（出现高亮、相对行号、空白字符
+    /// 显示、wrap guide 列参考线）。全部默认关闭；开启的特征由世界侧
+    /// 从输入状态派生几何，不给宿主增加喂入负担。
+    pub editor_options: TextEditorRenderOptions,
 }
 
 /// How a menu row participates in selection.
@@ -1381,15 +1005,6 @@ fn contains(bounds: LayoutBox, x: f32, y: f32) -> bool {
     x >= bounds.x && x < bounds.x + bounds.width && y >= bounds.y && y < bounds.y + bounds.height
 }
 
-/// Resolved radio ring chrome for one selection option.
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub struct RadioIndicator {
-    pub ring: LayoutBox,
-    pub ring_color: [f32; 4],
-    /// Present only while the option is selected.
-    pub dot: Option<(LayoutBox, [f32; 4])>,
-}
-
 /// One axis of resolved scrollbar chrome.
 ///
 /// `lane` is the band the bar is hovered and grabbed in; `track` is the
@@ -1460,6 +1075,13 @@ impl ScrollbarBar {
     }
 }
 
+/// Active horizontal and vertical scrollbar bars derived for a scroll container.
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+pub struct ScrollbarBars {
+    pub horizontal: Option<ScrollbarBar>,
+    pub vertical: Option<ScrollbarBar>,
+}
+
 /// Where a scroll view's bars are heading: how present, and how grown on
 /// each axis (`[horizontal, vertical]`), each `0..=1`.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -1496,21 +1118,6 @@ impl ScrollbarTargets {
                 grown(ScrollbarAxis::Vertical),
             ],
         }
-    }
-
-    /// The targets a scrollbar visual asks for; `None` for any other visual.
-    pub(crate) fn of(visual: &StandardVisual) -> Option<Self> {
-        let StandardVisual::Scrollbar {
-            visibility,
-            shown,
-            hot,
-            dragging,
-            ..
-        } = visual
-        else {
-            return None;
-        };
-        Some(Self::new(*visibility, *shown, *hot, *dragging))
     }
 }
 
@@ -1589,417 +1196,85 @@ impl ContrastRing {
     }
 }
 
+/// Derived layout & paint geometry for a [`TextInputVisual`] field.
 #[derive(Debug, Clone, PartialEq)]
-pub struct CalendarHoverGeometry {
-    pub ring: LayoutBox,
-    pub tooltip: LayoutBox,
-    pub title: ComponentTextRegion,
-    pub ring_color: [f32; 4],
-    pub tooltip_fill: [f32; 4],
-    pub tooltip_border: [f32; 4],
-}
-
-#[derive(Debug, Clone, PartialEq)]
-// Keep the extracted geometry contract inline: boxing the hot text variant adds
-// an allocation per projection and changes the shared Runtime/Scene DTO.
-#[allow(clippy::large_enum_variant)]
-pub enum ComponentGeometry {
-    /// Resolved checkbox chrome and label share Runtime's measurement inputs.
-    Checkbox {
-        indicator: LayoutBox,
-        label: ComponentTextRegion,
-        border_width: f32,
-        check_weight: u16,
-    },
-    ModalFrame {
-        scrim: LayoutBox,
-        surface: LayoutBox,
-        body: LayoutBox,
-        title: ComponentTextRegion,
-        description: Option<ComponentTextRegion>,
-        body_text: Option<ComponentTextRegion>,
-        background: [f32; 4],
-        border: [f32; 4],
-        elevation: ComponentElevation,
-        /// The card's corner radius: a dialog's recipe step, resolved.
-        corner_radius: f32,
-        /// The hairline under the header and its colour, when the recipe
-        /// draws one.
-        header_divider: Option<(LayoutBox, [f32; 4])>,
-        /// The hairline over the footer and its colour, when the recipe
-        /// draws one.
-        footer_divider: Option<(LayoutBox, [f32; 4])>,
-        /// The scrim's colour: the theme's modal scrim.
-        scrim_color: [f32; 4],
-        /// How much the scrim blurs what is behind it: CSS `blur(r)`, `r`
-        /// the standard deviation in logical px.
-        scrim_blur: f32,
-        /// How much of the scrim shows, 0 to 1: CSS `opacity` on the
-        /// overlay. It fades the scrim's colour and its blur together while
-        /// the frame comes and goes; 1 at rest.
-        scrim_opacity: f32,
-        /// The card as its surface painter recorded it, in the card's own
-        /// coordinates; `None` paints the theme's card.
-        surface_paint: Option<Arc<crate::PaintRecording>>,
-    },
-    Button {
-        icon: Option<(nana_ui_core::Icon, LayoutBox)>,
-        trailing_icon: Option<(nana_ui_core::Icon, LayoutBox)>,
-        label: ComponentTextRegion,
-        spinner: Option<LayoutBox>,
-        background: Option<[f32; 4]>,
-        border: Option<[f32; 4]>,
-        border_width: f32,
-        focus_ring: Option<[f32; 4]>,
-    },
-    TextInput {
-        resize_grip: Option<LayoutBox>,
-        character_counter: Option<TextInputCharacterCounter>,
-        suffix: Option<TextInputSuffix>,
-        text: ComponentTextRegion,
-        multiline: bool,
-        /// `None` for a single-line field, whose scroll only follows its caret.
-        scroll: Option<TextInputScroll>,
-        selection: Vec<LayoutBox>,
-        caret: Option<LayoutBox>,
-        /// 附加多光标（收起态）的 caret 矩形；主光标仍在 `caret`。
-        additional_carets: Vec<LayoutBox>,
-        /// 附加光标颜色（主光标 `caret_color` 的半透明变体，保持同形）。
-        additional_caret_color: [f32; 4],
-        preedit: Vec<LayoutBox>,
-        /// 诊断下划线条带（节点空间矩形 + 已解析的颜色）。
-        diagnostic_markers: Vec<(LayoutBox, [f32; 4])>,
-        /// 行尾诊断文案（节点空间文字区域 + 已解析颜色）。
-        diagnostic_labels: Vec<ComponentTextRegion>,
-        /// 查找匹配高亮条带（节点空间矩形 + 已解析的颜色；`current` 为当前
-        /// 匹配，绘制层级在普通匹配之上）。
-        match_markers: Vec<TextMatchMarker>,
-        /// 颜色装饰 swatch（节点空间矩形 + 宿主给定的颜色；单一批次绘制）。
-        swatch_markers: Vec<(LayoutBox, [f32; 4])>,
-        /// swatch 细描边的统一颜色（与空白字符 `whitespace_color` 同为
-        /// 世界按令牌解析的共享色）。
-        swatch_border_color: [f32; 4],
-        /// Inline atom chips covering token glyphs (icon + label + close).
-        atom_chips: Vec<TextAtomChip>,
-        /// 光标所在行的低对比背景条。仅聚焦且选区收起时存在，占用选区层
-        /// （选区与当前行条互斥）。
-        caret_line: Option<(LayoutBox, [f32; 4])>,
-        /// 光标相邻括号与其配对端的描边框（节点空间矩形 + 已解析的颜色）。
-        bracket_markers: Vec<(LayoutBox, [f32; 4])>,
-        /// 出现高亮填充条带（节点空间矩形 + 已解析的颜色；聚焦时存在，
-        /// 弱于查找匹配的淡底色）。
-        occurrence_markers: Vec<(LayoutBox, [f32; 4])>,
-        /// 拖拽移动选中文本的落点指示线（节点空间细竖线 + 已解析的
-        /// 颜色）。仅在选区拖拽态存在；纯视觉指示，无命中框。
-        drop_indicator: Option<(LayoutBox, [f32; 4])>,
-        /// 空白字符标记（节点空间字符单元矩形 + 种类；颜色统一由
-        /// `whitespace_color` 给出，几何层按视口裁剪）。
-        whitespace_marks: Vec<(LayoutBox, TextWhitespaceKind)>,
-        whitespace_color: [f32; 4],
-        /// wrap guide 全高竖线（节点空间矩形 + 已解析的颜色）。
-        wrap_guides: Vec<(LayoutBox, [f32; 4])>,
-        /// 缩进参考线竖线（节点空间矩形 + 已解析的颜色）。
-        indent_guides: Vec<(LayoutBox, [f32; 4])>,
-        /// 行号标签（节点空间 y，行号从 1 起）。
-        line_labels: Vec<LineLabel>,
-        /// 折叠几何：gutter 箭头（可点击切换）与折叠摘要标记命中框。
-        folds: TextFoldGeometry,
-        /// git gutter 竖条（按种类分组，节点空间矩形 + 已解析的颜色）。
-        git_marks: TextGitGutterGeometry,
-        /// 行号文本颜色与字号。
-        line_labels_color: [f32; 4],
-        line_labels_font_size: f32,
-        /// 补全弹层（聚焦多行编辑器 + 非空候选会话时存在）。绘制在
-        /// 全部编辑器覆盖层之上（slot 90+）。
-        completion_popup: Option<TextCompletionPopup>,
-        /// hover 文档浮窗（宿主喂入时存在，纯展示；slot 120+）。
-        hover_popup: Option<TextHoverPopup>,
-        /// 签名帮助浮窗（宿主喂入时存在，锚定 caret；slot 140+）。
-        signature_popup: Option<TextSignaturePopup>,
-        /// minimap 竖条（开启选项的多行编辑器存在；slot 70/71/72）。
-        minimap: Option<TextMinimapGeometry>,
-        /// sticky scroll 钉住行（开启选项且滚动视口落在宿主喂入的折叠区间
-        /// 内部时存在；slot 80-82）。
-        sticky_line: Option<TextStickyLineGeometry>,
-        background: Option<[f32; 4]>,
-        border: Option<[f32; 4]>,
-        border_width: f32,
-        focus_ring: Option<[f32; 4]>,
-        selection_color: [f32; 4],
-        caret_color: [f32; 4],
-        preedit_color: [f32; 4],
-        steppers: Option<NumberSteppers>,
-    },
-    Switch {
-        thumb_progress: f32,
-        label: ComponentTextRegion,
-        hint: Option<ComponentTextRegion>,
-        control: LayoutBox,
-        border_width: f32,
-        track_background: [f32; 4],
-        track_border: [f32; 4],
-        thumb_background: [f32; 4],
-    },
-    Range {
-        label: Option<ComponentTextRegion>,
-        value: ComponentTextRegion,
-        unit: Option<ComponentTextRegion>,
-        track: LayoutBox,
-        /// Theme-resolved thickness of the painted rail inside the thumb band.
-        track_girth: f32,
-        border_width: f32,
-        /// The ring a gradient track's thumb is drawn as; `None` for the
-        /// regular filled track.
-        thumb_ring: Option<ContrastRing>,
-        /// The minimum and the maximum written at the track's ends.
-        bounds: Option<[ComponentTextRegion; 2]>,
-        /// The capsule a value thumb is drawn as, at the current value.
-        value_thumb: Option<RangeValueThumb>,
-        /// The caution zone and its theme-resolved colours.
-        caution: Option<RangeCaution>,
-    },
-    Scrollbar {
-        horizontal: Option<ScrollbarBar>,
-        vertical: Option<ScrollbarBar>,
-    },
-    Card {
-        title: Option<ComponentTextRegion>,
-        content: LayoutBox,
-        elevation: Option<ComponentElevation>,
-        spinner: Option<LayoutBox>,
-    },
-    ListItem {
-        leading: Option<LayoutBox>,
-        content: Option<LayoutBox>,
-        trailing: Option<LayoutBox>,
-        note: Option<ComponentTextRegion>,
-        detail: Option<ComponentTextRegion>,
-    },
-    StatusBadge {
-        indicator: LayoutBox,
-        label: ComponentTextRegion,
-        background: [f32; 4],
-        foreground: [f32; 4],
-    },
-    ValidationMessage {
-        indicator: LayoutBox,
-        label: ComponentTextRegion,
-        foreground: [f32; 4],
-    },
-    EmptyState {
-        root_clip: LayoutBox,
-        content_clip: LayoutBox,
-        icon: Option<(Icon, LayoutBox, [f32; 4])>,
-        title: ComponentTextRegion,
-        message: Option<ComponentTextRegion>,
-        action: Option<LayoutBox>,
-    },
-    PathText {
-        text: ComponentTextRegion,
-    },
-    LabeledValue {
-        label: ComponentTextRegion,
-        value: ComponentTextRegion,
-        action: Option<LayoutBox>,
-    },
-    SelectionOption {
-        icon: Option<(Icon, LayoutBox, [f32; 4])>,
-        label: ComponentTextRegion,
-        focus_ring: Option<[f32; 4]>,
-        indicator: Option<RadioIndicator>,
-    },
-    Progress {
-        track: LayoutBox,
-        fill: LayoutBox,
-        label: Option<ComponentTextRegion>,
-        cancel: Option<LayoutBox>,
-        corner_radius: f32,
-    },
-    FormField {
-        label: ComponentTextRegion,
-        support: Option<ComponentTextRegion>,
-        indicator: Option<(LayoutBox, [f32; 4])>,
-        control: Option<LayoutBox>,
-    },
-    QrCode {
-        field: LayoutBox,
-        module_size: f32,
-        dark: Vec<LayoutBox>,
-    },
-    Toast {
-        /// The tone mark's square before the copy; `None` when the toast
-        /// recipe draws no mark.
-        indicator: Option<LayoutBox>,
-        /// The glyph drawn in the indicator's square in the tone colour; a
-        /// dot when there is none.
-        glyph: Option<Icon>,
-        /// `None` on an assembled toast, whose copy is child text.
-        title: Option<ComponentTextRegion>,
-        description: Option<ComponentTextRegion>,
-        dismiss: Option<LayoutBox>,
-        /// The theme's lift under the toast, when its recipe names one.
-        elevation: Option<ComponentElevation>,
-    },
-    XYPad {
-        pad: LayoutBox,
-        thumb: LayoutBox,
-        /// The centre axes; `None` on a picture pad.
-        h_axis: Option<LayoutBox>,
-        v_axis: Option<LayoutBox>,
-        /// `Some` on a picture pad: the thumb is this ring, not a dot in
-        /// `thumb_color`, and the frame is stroked again above the pad's
-        /// paint.
-        thumb_ring: Option<ContrastRing>,
-        background: Option<[f32; 4]>,
-        border: Option<[f32; 4]>,
-        border_width: f32,
-        thumb_color: [f32; 4],
-        axis_color: [f32; 4],
-    },
-    Select {
-        label: ComponentTextRegion,
-        /// The shown option's hint after the label, when there is room.
-        hint: Option<ComponentTextRegion>,
-        /// The shown option's picture in front of the label.
-        image: Option<ComponentImage>,
-        handle: LayoutBox,
-        handle_color: [f32; 4],
-        background: Option<[f32; 4]>,
-        border: Option<[f32; 4]>,
-        border_width: f32,
-        menu: Option<SelectMenuGeometry>,
-    },
-    MenuSurface {
-        trigger: Option<ComponentTextRegion>,
-        trigger_icon: Option<(Icon, LayoutBox)>,
-        /// Image trigger (hover-card avatar): the chrome is circular and the
-        /// texture rides the node's own custom render slot.
-        trigger_image: Option<Arc<str>>,
-        trigger_surface: Option<ComponentTriggerSurface>,
-        surface: LayoutBox,
-        search: Option<ComponentTextRegion>,
-        search_field: Option<LayoutBox>,
-        options: Vec<SelectOptionGeometry>,
-        elevation: ComponentElevation,
-        background: [f32; 4],
-        border: [f32; 4],
-    },
-    ActionMenuItem {
-        icon: Option<(Icon, LayoutBox, [f32; 4])>,
-        image: Option<ComponentImage>,
-        label: ComponentTextRegion,
-        hint: Option<ComponentTextRegion>,
-        background: Option<[f32; 4]>,
-    },
-    TreeView {
-        rows: Vec<crate::tree_view::TreeRowGeometry>,
-        drop: Option<crate::tree_view::TreeDropMark>,
-    },
-    CommandPalette {
-        scrim: LayoutBox,
-        surface: LayoutBox,
-        title: ComponentTextRegion,
-        /// The search field's frame: its background, border and hit area.
-        input_box: LayoutBox,
-        /// The query (or placeholder) text, inset inside `input_box` by the
-        /// field's horizontal control padding.
-        input: ComponentTextRegion,
-        empty: Option<ComponentTextRegion>,
-        rows: Vec<crate::command_palette::PaletteRowGeometry>,
-        background: [f32; 4],
-        input_background: [f32; 4],
-        input_border: [f32; 4],
-        elevation: ComponentElevation,
-    },
-    CalendarHeatmap {
-        cells: Vec<(LayoutBox, [f32; 4])>,
-        labels: Vec<ComponentTextRegion>,
-        hover: Option<CalendarHoverGeometry>,
-    },
-    /// A laid-out chart: its marks, its text and its hover. Everything in
-    /// `layout` is node-local; `origin` is the node's box in layout space.
-    Chart {
-        layout: Arc<nana_ui_charts::ChartLayout>,
-        hover: nana_ui_charts::hit::HoverState,
-        origin: [f32; 2],
-    },
-    /// A chart tooltip's color dots and text.
-    ChartTooltip {
-        dots: Vec<(LayoutBox, [f32; 4])>,
-        texts: Vec<ComponentTextRegion>,
-    },
-    ReorderList {
-        rows: Vec<(LayoutBox, ComponentTextRegion, Option<[f32; 4]>)>,
-        insert: Option<(LayoutBox, [f32; 4])>,
-        /// The row a tree drop goes inside, outlined in this colour.
-        inside: Option<(LayoutBox, [f32; 4])>,
-        /// The dragged row's box, outlined in this colour while it moves.
-        dragged: Option<(LayoutBox, [f32; 4])>,
-    },
-    NativeMarkdown {
-        #[cfg(feature = "rich-text")]
-        drawing: crate::MarkdownDrawing,
-        text: ComponentTextRegion,
-        selection: Vec<LayoutBox>,
-        selection_color: [f32; 4],
-    },
-    SelectableRichText {
-        text: ComponentTextRegion,
-        selection: Vec<LayoutBox>,
-        selection_color: [f32; 4],
-    },
-    GraphCanvas {
-        nodes: Vec<(LayoutBox, ComponentTextRegion, [f32; 4], Option<[f32; 4]>)>,
-        separators: Vec<LayoutBox>,
-        ports: Vec<(LayoutBox, [f32; 4], [f32; 4], f32)>,
-        port_labels: Vec<(ComponentTextRegion, crate::TextHorizontalAlignment)>,
-        edges: Vec<(Vec<[f32; 2]>, [f32; 4])>,
-        edge_labels: Vec<ComponentTextRegion>,
-        grid: Vec<LayoutBox>,
-        background: [f32; 4],
-        grid_color: [f32; 4],
-        separator_color: [f32; 4],
-    },
-    GraphMinimap {
-        nodes: Vec<LayoutBox>,
-        node_fill: [f32; 4],
-        indicator: Option<LayoutBox>,
-        indicator_fill: [f32; 4],
-        indicator_border: [f32; 4],
-    },
-    /// The viewer's painted chrome. Its controls are child nodes
-    /// ([`crate::AppContext::assemble_image_viewer`]), not part of this.
-    ImageViewer {
-        scrim: LayoutBox,
-        surface: LayoutBox,
-        stage: LayoutBox,
-        name: Option<ComponentTextRegion>,
-        metadata: Option<ComponentTextRegion>,
-        content: LayoutBox,
-        scrim_color: [f32; 4],
-        surface_color: [f32; 4],
-        stage_color: [f32; 4],
-    },
-    KeyCaptureLayer {
-        badge: ComponentTextRegion,
-        background: Option<[f32; 4]>,
-    },
-    KeymapLayer {
-        badge: ComponentTextRegion,
-    },
-}
-
-impl ComponentGeometry {
-    /// Indexed access shared by select and context-menu row projections.
-    pub fn menu_option(&self, index: usize) -> Option<&SelectOptionGeometry> {
-        match self {
-            Self::Select {
-                menu: Some(menu), ..
-            } => menu.option(index),
-            Self::MenuSurface { options, .. } => options.get(index),
-            _ => None,
-        }
-    }
+pub struct TextInputGeometry {
+    pub resize_grip: Option<LayoutBox>,
+    pub character_counter: Option<TextInputCharacterCounter>,
+    pub suffix: Option<TextInputSuffix>,
+    pub text: ComponentTextRegion,
+    pub multiline: bool,
+    /// `None` for a single-line field, whose scroll only follows its caret.
+    pub scroll: Option<TextInputScroll>,
+    pub selection: Vec<LayoutBox>,
+    pub caret: Option<LayoutBox>,
+    /// 附加多光标（收起态）的 caret 矩形；主光标仍在 `caret`。
+    pub additional_carets: Vec<LayoutBox>,
+    /// 附加光标颜色（主光标 `caret_color` 的半透明变体，保持同形）。
+    pub additional_caret_color: [f32; 4],
+    pub preedit: Vec<LayoutBox>,
+    /// 诊断下划线条带（节点空间矩形 + 已解析的颜色）。
+    pub diagnostic_markers: Vec<(LayoutBox, [f32; 4])>,
+    /// 行尾诊断文案（节点空间文字区域 + 已解析颜色）。
+    pub diagnostic_labels: Vec<ComponentTextRegion>,
+    /// 查找匹配高亮条带（节点空间矩形 + 已解析的颜色；`current` 为当前
+    /// 匹配，绘制层级在普通匹配之上）。
+    pub match_markers: Vec<TextMatchMarker>,
+    /// 颜色装饰 swatch（节点空间矩形 + 宿主给定的颜色；单一批次绘制）。
+    pub swatch_markers: Vec<(LayoutBox, [f32; 4])>,
+    /// swatch 细描边的统一颜色（与空白字符 `whitespace_color` 同为
+    /// 世界按令牌解析的共享色）。
+    pub swatch_border_color: [f32; 4],
+    /// Inline atom chips covering token glyphs (icon + label + close).
+    pub atom_chips: Vec<TextAtomChip>,
+    /// 光标所在行的低对比背景条。仅聚焦且选区收起时存在，占用选区层
+    /// （选区与当前行条互斥）。
+    pub caret_line: Option<(LayoutBox, [f32; 4])>,
+    /// 光标相邻括号与其配对端的描边框（节点空间矩形 + 已解析的颜色）。
+    pub bracket_markers: Vec<(LayoutBox, [f32; 4])>,
+    /// 出现高亮填充条带（节点空间矩形 + 已解析的颜色；聚焦时存在，
+    /// 弱于查找匹配的淡底色）。
+    pub occurrence_markers: Vec<(LayoutBox, [f32; 4])>,
+    /// 拖拽移动选中文本的落点指示线（节点空间细竖线 + 已解析的
+    /// 颜色）。仅在选区拖拽态存在；纯视觉指示，无命中框。
+    pub drop_indicator: Option<(LayoutBox, [f32; 4])>,
+    /// 空白字符标记（节点空间字符单元矩形 + 种类；颜色统一由
+    /// `whitespace_color` 给出，几何层按视口裁剪）。
+    pub whitespace_marks: Vec<(LayoutBox, TextWhitespaceKind)>,
+    pub whitespace_color: [f32; 4],
+    /// wrap guide 全高竖线（节点空间矩形 + 已解析的颜色）。
+    pub wrap_guides: Vec<(LayoutBox, [f32; 4])>,
+    /// 缩进参考线竖线（节点空间矩形 + 已解析的颜色）。
+    pub indent_guides: Vec<(LayoutBox, [f32; 4])>,
+    /// 行号标签（节点空间 y，行号从 1 起）。
+    pub line_labels: Vec<LineLabel>,
+    /// 折叠几何：gutter 箭头（可点击切换）与折叠摘要标记命中框。
+    pub folds: TextFoldGeometry,
+    /// git gutter 竖条（按种类分组，节点空间矩形 + 已解析的颜色）。
+    pub git_marks: TextGitGutterGeometry,
+    /// 行号文本颜色与字号。
+    pub line_labels_color: [f32; 4],
+    pub line_labels_font_size: f32,
+    /// 补全弹层（聚焦多行编辑器 + 非空候选会话时存在）。绘制在
+    /// 全部编辑器覆盖层之上（slot 90+）。
+    pub completion_popup: Option<TextCompletionPopup>,
+    /// hover 文档浮窗（宿主喂入时存在，纯展示；slot 120+）。
+    pub hover_popup: Option<TextHoverPopup>,
+    /// 签名帮助浮窗（宿主喂入时存在，锚定 caret；slot 140+）。
+    pub signature_popup: Option<TextSignaturePopup>,
+    /// minimap 竖条（开启选项的多行编辑器存在；slot 70/71/72）。
+    pub minimap: Option<TextMinimapGeometry>,
+    /// sticky scroll 钉住行（开启选项且滚动视口落在宿主喂入的折叠区间
+    /// 内部时存在；slot 80-82）。
+    pub sticky_line: Option<TextStickyLineGeometry>,
+    pub background: Option<[f32; 4]>,
+    pub border: Option<[f32; 4]>,
+    pub border_width: f32,
+    pub focus_ring: Option<[f32; 4]>,
+    pub selection_color: [f32; 4],
+    pub caret_color: [f32; 4],
+    pub preedit_color: [f32; 4],
+    pub steppers: Option<NumberSteppers>,
 }
 
 /// An open Select, Dropdown or SearchDropdown menu.
@@ -2137,6 +1412,8 @@ impl InteractionStyle {
     }
 }
 
+nana_ui_core::shared::shared_default!(InteractionStyle);
+
 #[derive(Debug, Clone)]
 pub struct NodeStyle {
     pub layout: Arc<LayoutStyle>,
@@ -2225,7 +1502,7 @@ pub struct NodeStyle {
     /// Inset steps, horizontal then vertical, resolved against the installed
     /// [`nana_ui_core::SpacingTokens`] into the four padding edges.
     pub padding_step: Option<[nana_ui_core::SpacingStep; 2]>,
-    pub interaction: InteractionStyle,
+    pub interaction: nana_ui_core::shared::Shared<InteractionStyle>,
     pub text_horizontal_alignment: TextHorizontalAlignment,
     pub text_vertical_alignment: TextVerticalAlignment,
     /// 节点自绘（Issue #217）。挂上后由 painter 决定这个节点自己的外观，
@@ -2308,14 +1585,14 @@ impl NodeStyle {
     /// `resolved_layout`, not in [`ComputedStyle`], so they stay out of this
     /// check. A node that passes it resolves to its parent's computed style.
     pub(crate) fn computed_style_is_inherited(&self) -> bool {
-        layout_style_is_default(&self.layout)
+        (layout_style_is_default(&self.layout) || !self.layout.overrides_computed_style())
             && self.foreground.is_none()
             && self.background.is_none()
             && self.border.is_none()
             && self.ring.is_none()
             && self.type_role.is_none()
             && self.type_weight.is_none()
-            && self.interaction.is_empty()
+            && self.interaction.is_shared_default()
             && self.color_overrides.is_none()
     }
 
@@ -2356,21 +1633,28 @@ impl NodeStyle {
         fn unless<T>(written: bool, base: Option<T>) -> Option<T> {
             base.filter(|_| !written)
         }
-        let interaction = InteractionStyle {
-            base: self.interaction.base.overlay(over.interaction.base),
-            selected: self.interaction.selected.overlay(over.interaction.selected),
-            selected_hovered: self
-                .interaction
-                .selected_hovered
-                .overlay(over.interaction.selected_hovered),
-            selected_pressed: self
-                .interaction
-                .selected_pressed
-                .overlay(over.interaction.selected_pressed),
-            hovered: self.interaction.hovered.overlay(over.interaction.hovered),
-            pressed: self.interaction.pressed.overlay(over.interaction.pressed),
-            focused: self.interaction.focused.overlay(over.interaction.focused),
-            disabled: self.interaction.disabled.overlay(over.interaction.disabled),
+        let interaction = if self.interaction.is_shared_default() {
+            over.interaction.clone()
+        } else if over.interaction.is_shared_default() {
+            self.interaction.clone()
+        } else {
+            InteractionStyle {
+                base: self.interaction.base.overlay(over.interaction.base),
+                selected: self.interaction.selected.overlay(over.interaction.selected),
+                selected_hovered: self
+                    .interaction
+                    .selected_hovered
+                    .overlay(over.interaction.selected_hovered),
+                selected_pressed: self
+                    .interaction
+                    .selected_pressed
+                    .overlay(over.interaction.selected_pressed),
+                hovered: self.interaction.hovered.overlay(over.interaction.hovered),
+                pressed: self.interaction.pressed.overlay(over.interaction.pressed),
+                focused: self.interaction.focused.overlay(over.interaction.focused),
+                disabled: self.interaction.disabled.overlay(over.interaction.disabled),
+            }
+            .into()
         };
         let unset = NodeStyle::default();
         NodeStyle {
@@ -2440,7 +1724,7 @@ impl NodeStyle {
             type_weight: None,
             gap_step: None,
             padding_step: None,
-            interaction: InteractionStyle::default(),
+            interaction: Default::default(),
             text_horizontal_alignment: TextHorizontalAlignment::Start,
             text_vertical_alignment: TextVerticalAlignment::Top,
             painter: None,
@@ -2627,15 +1911,42 @@ impl NodeStyle {
     }
 }
 
+/// Cold inherited text/selection/scope attributes stored behind [`nana_ui_core::shared::Shared`]
+/// so nodes leaving them default pay zero inline bytes and zero heap allocations.
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct InheritedStyleExt {
+    /// Author `::selection` background after inheritance. `None` uses theme accent.
+    pub selection_background: Option<[f32; 4]>,
+    /// Author `::selection` foreground after inheritance. `None` keeps text color.
+    pub selection_color: Option<[f32; 4]>,
+    pub font_features: Vec<FontFeatureSetting>,
+    pub font_variations: Vec<FontVariationSetting>,
+    /// CSS `text-spacing-trim`, `text-autospace`, `text-justify`,
+    /// `text-wrap-style` and whether `text-align` is `justify`, after
+    /// inherit; unset ones stay `None` (Issue #211). Read through
+    /// [`InheritedStyle::used_text_typography`].
+    pub text_typography: nana_ui_core::TextTypography,
+    /// CSS `text-emphasis-style`, `-position` and `-color` after inherit.
+    pub text_emphasis: nana_ui_core::TextEmphasis,
+    /// The language text under this node is shaped in: the node's own
+    /// (`lang`), else its parent's, else the application's default, else the
+    /// text engine's fallback. `None` when none of them names one.
+    pub language: Option<nana_text::font::LanguageTag>,
+    /// The colour scope this node resolves in: its own
+    /// [`NodeStyle::color_overrides`] written over its parent's scope.
+    /// Inherited; `None` is the installed theme.
+    pub color_scope: Option<Arc<nana_ui_core::ColorOverrides>>,
+}
+
+nana_ui_core::shared::shared_default!(InheritedStyleExt);
+
+/// Inherited portion of a node's resolved computed style, shared via `Arc`
+/// across subtrees (including through painted containers whose own background,
+/// border, or ring differs from their children).
 #[derive(Debug, Clone, PartialEq)]
-pub struct ComputedStyle {
-    pub paint_colors: nana_ui_core::shared::Shared<nana_ui_core::PaintColorSlots>,
+pub struct InheritedStyle {
     pub foreground: SemanticColorRole,
     pub color: Option<[f32; 4]>,
-    pub background: Option<[f32; 4]>,
-    pub border_color: Option<[f32; 4]>,
-    /// [`NodeStyle::ring`] resolved against the installed palette.
-    pub ring_color: Option<[f32; 4]>,
     pub opacity: f32,
     /// CSS `visibility` after inheritance (`visible` / `hidden`).
     pub visibility: nana_ui_core::VisibilitySpec,
@@ -2655,10 +1966,6 @@ pub struct ComputedStyle {
     pub cursor_specified: bool,
     /// CSS `user-select` after inheritance (initial `auto`).
     pub user_select: nana_ui_core::UserSelectSpec,
-    /// Author `::selection` background after inheritance. `None` uses theme accent.
-    pub selection_background: Option<[f32; 4]>,
-    /// Author `::selection` foreground after inheritance. `None` keeps text color.
-    pub selection_color: Option<[f32; 4]>,
     /// The size text is set at: [`Self::font_size_base`] times
     /// [`Self::text_scale`].
     pub font_size: f32,
@@ -2670,28 +1977,15 @@ pub struct ComputedStyle {
     /// one follows [`Self::font_size`].
     pub line_height: Option<LineHeightSpec>,
     pub letter_spacing: f32,
-    pub font_features: Vec<FontFeatureSetting>,
-    pub font_variations: Vec<FontVariationSetting>,
     pub font_kerning: FontKerningSpec,
     pub word_break: WordBreakSpec,
     pub line_break: LineBreakSpec,
-    /// CSS `text-spacing-trim`, `text-autospace`, `text-justify`,
-    /// `text-wrap-style` and whether `text-align` is `justify`, after
-    /// inherit; unset ones stay `None` (Issue #211). Read through
-    /// [`Self::used_text_typography`].
-    pub text_typography: nana_ui_core::TextTypography,
-    /// CSS `text-emphasis-style`, `-position` and `-color` after inherit.
-    pub text_emphasis: nana_ui_core::TextEmphasis,
     /// CSS `direction` after inherit (initial LTR).
     pub direction: nana_ui_core::DirSpec,
     /// CSS `writing-mode` after inherit (initial `horizontal-tb`).
     pub writing_mode: nana_ui_core::WritingModeSpec,
     /// CSS `text-orientation` after inherit (initial `mixed`).
     pub text_orientation: nana_ui_core::TextOrientationSpec,
-    /// The language text under this node is shaped in: the node's own
-    /// (`lang`), else its parent's, else the application's default, else the
-    /// text engine's fallback. `None` when none of them names one.
-    pub language: Option<nana_text::font::LanguageTag>,
     /// The typography scale text under this node is set at: the node's own
     /// ([`crate::MutationQueue::set_text_scale`]), else its parent's, else
     /// its window's, else the application's. 1 unless one of them sets one.
@@ -2701,13 +1995,64 @@ pub struct ComputedStyle {
     pub font_size_base: f32,
     /// The line height before [`Self::text_scale`]; children inherit it.
     pub line_height_base: Option<LineHeightSpec>,
-    /// The colour scope this node resolves in: its own
-    /// [`NodeStyle::color_overrides`] written over its parent's scope.
-    /// Inherited; `None` is the installed theme.
-    pub color_scope: Option<Arc<nana_ui_core::ColorOverrides>>,
+    pub ext: nana_ui_core::shared::Shared<InheritedStyleExt>,
 }
 
-impl ComputedStyle {
+static INTERNED_DEFAULT_INHERITED: LazyLock<Arc<InheritedStyle>> =
+    LazyLock::new(|| Arc::new(InheritedStyle::default()));
+
+pub(crate) fn interned_default_inherited_style() -> Arc<InheritedStyle> {
+    Arc::clone(&INTERNED_DEFAULT_INHERITED)
+}
+
+impl Default for InheritedStyle {
+    fn default() -> Self {
+        Self {
+            foreground: SemanticColorRole::Text,
+            color: None,
+            opacity: 1.0,
+            visibility: nana_ui_core::VisibilitySpec::Visible,
+            box_visible: true,
+            visible: true,
+            pointer_events: nana_ui_core::PointerEventsSpec::Auto,
+            cursor: nana_ui_core::CursorSpec::Default,
+            cursor_specified: false,
+            user_select: nana_ui_core::UserSelectSpec::Auto,
+            font_size: UI_BASE_TEXT_SIZE,
+            font_weight: None,
+            italic: false,
+            font_family: None,
+            line_height: None,
+            letter_spacing: 0.0,
+            font_kerning: FontKerningSpec::Auto,
+            word_break: WordBreakSpec::Normal,
+            line_break: LineBreakSpec::Auto,
+            direction: nana_ui_core::DirSpec::Ltr,
+            writing_mode: nana_ui_core::WritingModeSpec::HorizontalTb,
+            text_orientation: nana_ui_core::TextOrientationSpec::Mixed,
+            text_scale: 1.0,
+            font_size_base: UI_BASE_TEXT_SIZE,
+            line_height_base: None,
+            ext: Default::default(),
+        }
+    }
+}
+
+impl Deref for InheritedStyle {
+    type Target = InheritedStyleExt;
+
+    fn deref(&self) -> &Self::Target {
+        &self.ext
+    }
+}
+
+impl DerefMut for InheritedStyle {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.ext
+    }
+}
+
+impl InheritedStyle {
     /// The writing mode and direction this node lays out in, after
     /// inheritance. See [`nana_ui_core::WritingContext`].
     pub fn writing_context(&self) -> nana_ui_core::WritingContext {
@@ -2719,55 +2064,119 @@ impl ComputedStyle {
     /// `text-spacing-trim` says otherwise; every other language, and every
     /// other property, starts off.
     pub fn used_text_typography(&self) -> nana_ui_core::UsedTextTypography {
-        let cjk = self
-            .language
-            .as_ref()
-            .is_some_and(|language| language.matches_prefix("zh") || language.matches_prefix("ja"));
-        self.text_typography.used(cjk)
+        let cjk =
+            self.ext.language.as_ref().is_some_and(|language| {
+                language.matches_prefix("zh") || language.matches_prefix("ja")
+            });
+        self.ext.text_typography.used(cjk)
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct ComputedStyle {
+    pub inherited: Arc<InheritedStyle>,
+    pub paint_colors: nana_ui_core::shared::Shared<nana_ui_core::PaintColorSlots>,
+    pub background: Option<[f32; 4]>,
+    pub border_color: Option<[f32; 4]>,
+    /// [`NodeStyle::ring`] resolved against the installed palette.
+    pub ring_color: Option<[f32; 4]>,
+}
+
+impl ComputedStyle {
+    /// Construct a `ComputedStyle` from the default by mutating fields in a closure.
+    pub fn with(configure: impl FnOnce(&mut Self)) -> Self {
+        let mut style = Self::default();
+        configure(&mut style);
+        style
+    }
+
+    /// The writing mode and direction this node lays out in, after
+    /// inheritance. See [`nana_ui_core::WritingContext`].
+    pub fn writing_context(&self) -> nana_ui_core::WritingContext {
+        self.inherited.writing_context()
+    }
+
+    /// The typography text under this node is laid out with: Chinese and
+    /// Japanese close their punctuation up at fixed amounts unless
+    /// `text-spacing-trim` says otherwise; every other language, and every
+    /// other property, starts off.
+    pub fn used_text_typography(&self) -> nana_ui_core::UsedTextTypography {
+        self.inherited.used_text_typography()
+    }
+
+    pub(crate) fn has_local_paint(&self) -> bool {
+        self.background.is_some()
+            || self.border_color.is_some()
+            || self.ring_color.is_some()
+            || (!self.paint_colors.is_shared_default() && {
+                let slots = &self.paint_colors;
+                slots.background.is_some()
+                    || slots.border.is_some()
+                    || slots.border_top.is_some()
+                    || slots.border_right.is_some()
+                    || slots.border_bottom.is_some()
+                    || slots.border_left.is_some()
+                    || slots.outline.is_some()
+            })
+    }
+
+    pub(crate) fn without_local_paint(&self) -> Self {
+        let paint_colors = if self.paint_colors.is_shared_default() {
+            Default::default()
+        } else {
+            let src = &*self.paint_colors;
+            nana_ui_core::PaintColorSlots {
+                color: src.color,
+                selection_background: src.selection_background,
+                selection_color: src.selection_color,
+                ..Default::default()
+            }
+            .into()
+        };
+        Self {
+            inherited: Arc::clone(&self.inherited),
+            paint_colors,
+            background: None,
+            border_color: None,
+            ring_color: None,
+        }
     }
 }
 
 impl Default for ComputedStyle {
     fn default() -> Self {
         Self {
+            inherited: interned_default_inherited_style(),
             paint_colors: Default::default(),
-            foreground: SemanticColorRole::Text,
-            color: None,
             background: None,
             border_color: None,
             ring_color: None,
-            opacity: 1.0,
-            visibility: nana_ui_core::VisibilitySpec::Visible,
-            box_visible: true,
-            visible: true,
-            pointer_events: nana_ui_core::PointerEventsSpec::Auto,
-            cursor: nana_ui_core::CursorSpec::Default,
-            cursor_specified: false,
-            user_select: nana_ui_core::UserSelectSpec::Auto,
-            selection_background: None,
-            selection_color: None,
-            font_size: UI_BASE_TEXT_SIZE,
-            font_weight: None,
-            italic: false,
-            font_family: None,
-            line_height: None,
-            letter_spacing: 0.0,
-            font_features: Vec::new(),
-            font_variations: Vec::new(),
-            font_kerning: FontKerningSpec::Auto,
-            word_break: WordBreakSpec::Normal,
-            line_break: LineBreakSpec::Auto,
-            text_typography: nana_ui_core::TextTypography::INHERIT,
-            text_emphasis: nana_ui_core::TextEmphasis::default(),
-            direction: nana_ui_core::DirSpec::Ltr,
-            writing_mode: nana_ui_core::WritingModeSpec::HorizontalTb,
-            text_orientation: nana_ui_core::TextOrientationSpec::Mixed,
-            language: None,
-            text_scale: 1.0,
-            font_size_base: UI_BASE_TEXT_SIZE,
-            line_height_base: None,
-            color_scope: None,
         }
+    }
+}
+
+impl PartialEq for ComputedStyle {
+    fn eq(&self, other: &Self) -> bool {
+        self.background == other.background
+            && self.border_color == other.border_color
+            && self.ring_color == other.ring_color
+            && self.paint_colors == other.paint_colors
+            && (Arc::ptr_eq(&self.inherited, &other.inherited)
+                || *self.inherited == *other.inherited)
+    }
+}
+
+impl Deref for ComputedStyle {
+    type Target = InheritedStyle;
+
+    fn deref(&self) -> &Self::Target {
+        &self.inherited
+    }
+}
+
+impl DerefMut for ComputedStyle {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        Arc::make_mut(&mut self.inherited)
     }
 }
 
@@ -3495,39 +2904,6 @@ pub struct TextOverlayMetrics {
     pub completion: Option<TextCompletionPopupMetrics>,
     /// hover 锚点（文本空间 `(x, y)`，`offset` 所在行的字形位置）。
     pub hover_anchor: Option<(f32, f32)>,
-}
-
-impl ComponentGeometry {
-    /// Where a presentation transform of this node pivots, from the corner
-    /// of its layout box `bounds`, when it is not the node's own
-    /// `transform-origin`: a modal frame's node is its whole scrim, and its
-    /// entrance scales and moves the card about the card's own centre, the
-    /// way CSS pivots a transform on the card. A triggered menu's node is its
-    /// trigger, and its entrance is the hanging surface's: it grows out of the
-    /// point of the surface nearest the trigger's centre.
-    pub fn presentation_pivot(&self, bounds: LayoutBox) -> Option<[f32; 2]> {
-        match self {
-            Self::ModalFrame { surface, .. } => Some([
-                surface.x + surface.width / 2.0 - bounds.x,
-                surface.y + surface.height / 2.0 - bounds.y,
-            ]),
-            Self::MenuSurface {
-                trigger_surface: Some(trigger),
-                surface,
-                ..
-            } => {
-                let trigger = trigger.bounds;
-                let x = (trigger.x + trigger.width / 2.0)
-                    .min(surface.x + surface.width)
-                    .max(surface.x);
-                let y = (trigger.y + trigger.height / 2.0)
-                    .min(surface.y + surface.height)
-                    .max(surface.y);
-                Some([x - bounds.x, y - bounds.y])
-            }
-            _ => None,
-        }
-    }
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -4962,6 +4338,13 @@ pub struct CustomRenderNode {
     /// `painted_extent` 准备尺寸；[`nana_ui_core::ImageSampling::Mipmap`]
     /// 对宿主提供的 mip 链做三线性采样。
     pub sampling: nana_ui_core::ImageSampling,
+    /// Type-erased payload for inline custom GPU renderers (for example charts),
+    /// keeping `nana-ui-scene` decoupled from component model crates.
+    pub payload: Option<crate::CustomGpuPayload>,
+    /// Animation deadline for an inline GPU payload's active transition or hover.
+    pub transition_until: Option<std::time::Duration>,
+    /// Node-local ink bounds extending beyond `LayoutBox` when specified.
+    pub ink_bounds: Option<nana_ui_core::LogicalRect>,
 }
 
 impl CustomRenderNode {
@@ -4980,6 +4363,9 @@ impl CustomRenderNode {
             checkerboard: false,
             zoom: 1.0,
             sampling: nana_ui_core::ImageSampling::Resample,
+            payload: None,
+            transition_until: None,
+            ink_bounds: None,
         }
     }
 
@@ -5021,6 +4407,27 @@ impl CustomRenderNode {
     /// Requests a dedicated render pass for this node.
     pub const fn with_dedicated_pass(mut self, dedicated_pass: bool) -> Self {
         self.dedicated_pass = dedicated_pass;
+        self
+    }
+
+    /// Attaches an opaque component payload for inline GPU rendering.
+    pub fn with_payload(mut self, payload: crate::CustomGpuPayload) -> Self {
+        self.payload = Some(payload);
+        self
+    }
+
+    /// Records the animation deadline when an inline GPU payload is in motion.
+    pub const fn with_transition_until(
+        mut self,
+        transition_until: Option<std::time::Duration>,
+    ) -> Self {
+        self.transition_until = transition_until;
+        self
+    }
+
+    /// Sets node-local ink bounds for culling and dirty-region accounting.
+    pub const fn with_ink_bounds(mut self, ink_bounds: Option<nana_ui_core::LogicalRect>) -> Self {
+        self.ink_bounds = ink_bounds;
         self
     }
 
@@ -5092,14 +4499,23 @@ pub enum VisualParent {
     Overlay(StableNodeId),
 }
 
+/// Compact per-node layout facts exported at the extract boundary instead
+/// of retaining/cloning a full `Arc<LayoutResult>` per extracted node.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct ExtractedLayout {
+    pub generation: u64,
+    pub clip_parent: Option<StableNodeId>,
+    pub scroll_metrics: Option<crate::ScrollMetrics>,
+    pub atomic_inline: bool,
+    pub sticky_boxes: crate::StickyBoxes,
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct ExtractedNode {
-    /// Shared canonical geometry, including content/viewport/scroll extents,
-    /// in the node's own coordinates: its border box at the origin, as
-    /// [`crate::UiWorld::local_layout_result`] keeps it, so a node that only
-    /// moved keeps it. [`Self::layout`] is where it stands. Scrolling keeps
-    /// the logical layout snapshot and its generation intact.
-    pub layout_result: Option<Arc<crate::LayoutResult>>,
+    /// Canonical geometry facts exported at extraction time in the node's own
+    /// coordinates (border box at the origin), so a node that only moved keeps
+    /// them and scrolling keeps the logical layout generation intact.
+    pub extracted_layout: Option<ExtractedLayout>,
     pub id: StableNodeId,
     /// Shared with `UiWorld` so idle extract is an Arc bump, not a `NodeKind` clone.
     pub kind: Arc<NodeKind>,
@@ -5159,24 +4575,11 @@ pub struct ExtractedNode {
     pub rich_editor: Option<RichEditorMarks>,
     /// The node's per-glyph presentation (effects table and reveal).
     pub glyph_presentation: Option<nana_ui_core::GlyphPresentation>,
-    pub standard_visual: Option<StandardVisual>,
-    /// In the node's own coordinates, its border box at the origin, so a
-    /// node that only moved keeps it -- except for a visual whose geometry
-    /// reads the page ([`StandardVisual::geometry_reads_page`]), which is on
-    /// the page, where [`Self::layout`] is.
-    ///
-    /// Boxed: the `TextInput` variant alone is ~1.8 KB, which would otherwise
-    /// dominate `ExtractedNode` and be memcpy'd for every extracted node.
-    pub component_geometry: Option<Box<ComponentGeometry>>,
-    pub standard_visual_foreground: Option<[f32; 4]>,
     /// Radius steps resolved against the installed theme, for the framework
     /// chrome the Scene paints around this node's visual.
     ///
-    /// Sibling of [`Self::standard_visual_foreground`] one field up, for the
-    /// same reason: a value the theme decided, carried to the renderer so the
-    /// renderer does not go looking for it. Before this the Scene read the
-    /// `UI_METRICS` constant and a themed radius could not reach menu
-    /// surfaces, modal frames or palette rows.
+    /// A value the theme decided, carried to the renderer so the renderer
+    /// does not go looking for it (`UI_METRICS`).
     pub chrome_radii: nana_ui_core::ChromeRadii,
     pub custom_render: Option<CustomRenderNode>,
     /// File-drop hover overlay resolved from the theme. Scene paints this as a
@@ -5194,6 +4597,8 @@ pub struct ExtractedNode {
     /// installed theme (Issue #217). `None` for every node without a painter,
     /// which keeps the built-in paint path.
     pub custom_paint: Option<Arc<crate::PaintRecording>>,
+    /// Node-local paint output projected from [`WidgetVisual`] (open widget visual path).
+    pub widget_paint: Option<Arc<crate::WidgetPaintOutput>>,
 }
 
 /// A node layout only moved since the renderer's last extraction: its
@@ -5209,7 +4614,7 @@ pub struct ExtractedMove {
     pub layout: LayoutBox,
     pub local_layout: LayoutBox,
     pub layout_frame: crate::LayoutFrame,
-    pub layout_result: Option<Arc<crate::LayoutResult>>,
+    pub extracted_layout: Option<ExtractedLayout>,
 }
 
 /// Scene layer promotion hint produced at extract. Empty for layout/paint tracks.
@@ -5237,92 +4642,6 @@ pub struct ExtractedTextSpan {
     /// Explicit authoring-space foreground, such as CSS `::selection`.
     /// `color` remains the compatibility value for legacy renderers.
     pub paint_color: Option<nana_ui_core::PaintColor>,
-}
-
-impl StandardVisual {
-    /// Whether this visual's [`ComponentGeometry`] is derived on the page
-    /// rather than in its node's own coordinates.
-    ///
-    /// An open menu surface places its items on the page: its geometry
-    /// depends on where the node stands. It is carried on the page
-    /// ([`ExtractedNode::component_geometry`]) and its node is extracted again
-    /// whenever it or a box above it moves. Closed, it reaches none of its
-    /// items.
-    ///
-    /// Every other visual's geometry -- a Markdown document's among them --
-    /// is in its node's own coordinates, its border box at the origin, and a
-    /// node that only moved keeps it. An open select is among them: its menu
-    /// is fitted to its room moved into the field's coordinates, and a field
-    /// that only moved keeps its record while the menu's surface lands on the
-    /// same box there (`UiWorld::local_select_menu_surface`).
-    pub fn geometry_reads_page(&self) -> bool {
-        match self {
-            Self::MenuSurface { open, .. } => *open,
-            _ => false,
-        }
-    }
-
-    /// The overlay of a triggered menu (Popover, ActionMenu, HoverCard): an
-    /// in-flow trigger with a surface hanging off it. Its node's presentation
-    /// layers belong to that surface: they fade and scale the surface and the
-    /// items it places, never the trigger or its trigger content.
-    pub fn triggered_menu_overlay(&self) -> Option<TriggeredMenuOverlay> {
-        match self {
-            Self::MenuSurface {
-                trigger,
-                trigger_icon,
-                trigger_image,
-                overlay: Some(overlay),
-                ..
-            } if trigger.is_some()
-                || trigger_icon.is_some()
-                || trigger_image.is_some()
-                || overlay.trigger_content.is_some() =>
-            {
-                Some(*overlay)
-            }
-            _ => None,
-        }
-    }
-
-    /// Whether this node's own paint, clip and hit area are sized from
-    /// `child`'s box, so a change to that box changes them although this
-    /// node's box did not: a modal frame's surface fits its body slot, an
-    /// open triggered menu's hanging surface fits its items.
-    pub(crate) fn paint_depends_on_child(&self, child: StableNodeId) -> bool {
-        match self {
-            Self::ModalFrame { slots, .. } => slots.body == Some(child),
-            Self::MenuSurface {
-                open: true,
-                overlay: Some(overlay),
-                ..
-            } => overlay.trigger_content != Some(child),
-            _ => false,
-        }
-    }
-
-    /// Optional component family owning this visual; base geometry has no feature.
-    pub fn required_feature(&self) -> Option<&'static str> {
-        match self {
-            #[cfg(feature = "calendar")]
-            Self::CalendarHeatmap { .. } => Some("calendar"),
-            #[cfg(feature = "charts")]
-            Self::Chart { .. } | Self::ChartTooltip { .. } => Some("charts"),
-            #[cfg(feature = "controls")]
-            Self::ReorderList { .. } => Some("controls"),
-            #[cfg(feature = "rich-text")]
-            Self::NativeMarkdown { .. } => Some("rich-text"),
-            #[cfg(feature = "rich-text")]
-            Self::SelectableRichText { .. } => Some("rich-text"),
-            #[cfg(feature = "graph-canvas")]
-            Self::GraphCanvas { .. } => Some("graph-canvas"),
-            #[cfg(feature = "graph-canvas")]
-            Self::GraphMinimap { .. } => Some("graph-canvas"),
-            #[cfg(feature = "image-viewer")]
-            Self::ImageViewer { .. } => Some("image-viewer"),
-            _ => None,
-        }
-    }
 }
 
 #[cfg(test)]

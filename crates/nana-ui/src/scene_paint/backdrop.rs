@@ -310,21 +310,21 @@ impl BackdropPipeline {
                 ],
             })
         };
-        let copy_shader = super::wgsl::Program::new(
+        let copy_shader = super::wgsl::program!(
             "nana-ui.scene.backdrop.copy.shader",
-            super::wgsl::BACKDROP_COPY,
+            super::wgsl::BACKDROP_COPY
         );
-        let blur_shader = super::wgsl::Program::new(
+        let blur_shader = super::wgsl::program!(
             "nana-ui.scene.backdrop.blur.shader",
-            super::wgsl::BACKDROP_BLUR,
+            super::wgsl::BACKDROP_BLUR
         );
-        let composite_shader = super::wgsl::Program::joined(
+        let composite_shader = super::wgsl::program_joined!(
             "nana-ui.scene.backdrop.composite.shader",
-            &[
+            [
                 super::wgsl::COLOR,
                 super::wgsl::QUAD_PAINT_DATA,
                 super::wgsl::BACKDROP_COMPOSITE,
-            ],
+            ]
         );
         let copy_pipeline = cached_fullscreen_pipeline(policy, format, 1, || {
             Self::fullscreen_pipeline(
@@ -351,32 +351,37 @@ impl BackdropPipeline {
                 immediate_size: 0,
             });
         let composite_pipeline = cached_fullscreen_pipeline(policy, format, 3, || {
-            wgpu::Device::create_render_pipeline(
+            composite_shader.pipeline(
                 device,
-                &wgpu::RenderPipelineDescriptor {
-                    label: Some("nana-ui.scene.backdrop.composite.pipeline"),
-                    layout: Some(&composite_pipeline_layout),
-                    vertex: wgpu::VertexState {
-                        module: &composite_shader.stage(device, "vs_main").module,
-                        entry_point: Some("vs_main"),
-                        buffers: &[],
-                        compilation_options: wgpu::PipelineCompilationOptions::default(),
-                    },
-                    fragment: Some(wgpu::FragmentState {
-                        module: &composite_shader.stage(device, "fs_main").module,
-                        entry_point: Some("fs_main"),
-                        targets: &[Some(wgpu::ColorTargetState {
-                            format,
-                            blend: Some(wgpu::BlendState::PREMULTIPLIED_ALPHA_BLENDING),
-                            write_mask: wgpu::ColorWrites::ALL,
-                        })],
-                        compilation_options: wgpu::PipelineCompilationOptions::default(),
-                    }),
-                    primitive: wgpu::PrimitiveState::default(),
-                    depth_stencil: None,
-                    multisample: wgpu::MultisampleState::default(),
-                    multiview_mask: None,
-                    cache: None,
+                "vs_main",
+                "fs_main",
+                &[],
+                |vs_module, vs_ep, fs_module, fs_ep, _| {
+                    device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+                        label: Some("nana-ui.scene.backdrop.composite.pipeline"),
+                        layout: Some(&composite_pipeline_layout),
+                        vertex: wgpu::VertexState {
+                            module: vs_module,
+                            entry_point: Some(vs_ep),
+                            buffers: &[],
+                            compilation_options: wgpu::PipelineCompilationOptions::default(),
+                        },
+                        fragment: Some(wgpu::FragmentState {
+                            module: fs_module,
+                            entry_point: Some(fs_ep),
+                            targets: &[Some(wgpu::ColorTargetState {
+                                format,
+                                blend: Some(wgpu::BlendState::PREMULTIPLIED_ALPHA_BLENDING),
+                                write_mask: wgpu::ColorWrites::ALL,
+                            })],
+                            compilation_options: wgpu::PipelineCompilationOptions::default(),
+                        }),
+                        primitive: wgpu::PrimitiveState::default(),
+                        depth_stencil: None,
+                        multisample: wgpu::MultisampleState::default(),
+                        multiview_mask: None,
+                        cache: None,
+                    })
                 },
             )
         });
@@ -535,31 +540,39 @@ impl BackdropPipeline {
             bind_group_layouts: &[Some(bind_layout)],
             immediate_size: 0,
         });
-        device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-            label: Some(&format!("{label}.pipeline")),
-            layout: Some(&layout),
-            vertex: wgpu::VertexState {
-                module: &shader.stage(device, "vs_main").module,
-                entry_point: Some("vs_main"),
-                buffers: &[],
-                compilation_options: wgpu::PipelineCompilationOptions::default(),
+        shader.pipeline(
+            device,
+            "vs_main",
+            "fs_main",
+            &[],
+            |vs_module, vs_ep, fs_module, fs_ep, _| {
+                device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+                    label: Some(&format!("{label}.pipeline")),
+                    layout: Some(&layout),
+                    vertex: wgpu::VertexState {
+                        module: vs_module,
+                        entry_point: Some(vs_ep),
+                        buffers: &[],
+                        compilation_options: wgpu::PipelineCompilationOptions::default(),
+                    },
+                    fragment: Some(wgpu::FragmentState {
+                        module: fs_module,
+                        entry_point: Some(fs_ep),
+                        targets: &[Some(wgpu::ColorTargetState {
+                            format,
+                            blend: Some(wgpu::BlendState::REPLACE),
+                            write_mask: wgpu::ColorWrites::ALL,
+                        })],
+                        compilation_options: wgpu::PipelineCompilationOptions::default(),
+                    }),
+                    primitive: wgpu::PrimitiveState::default(),
+                    depth_stencil: None,
+                    multisample: wgpu::MultisampleState::default(),
+                    multiview_mask: None,
+                    cache: None,
+                })
             },
-            fragment: Some(wgpu::FragmentState {
-                module: &shader.stage(device, "fs_main").module,
-                entry_point: Some("fs_main"),
-                targets: &[Some(wgpu::ColorTargetState {
-                    format,
-                    blend: Some(wgpu::BlendState::REPLACE),
-                    write_mask: wgpu::ColorWrites::ALL,
-                })],
-                compilation_options: wgpu::PipelineCompilationOptions::default(),
-            }),
-            primitive: wgpu::PrimitiveState::default(),
-            depth_stencil: None,
-            multisample: wgpu::MultisampleState::default(),
-            multiview_mask: None,
-            cache: None,
-        })
+        )
     }
 
     fn scratch_extent(&self, device: &wgpu::Device) -> Option<[u32; 2]> {

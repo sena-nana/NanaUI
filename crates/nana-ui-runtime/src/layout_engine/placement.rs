@@ -25,7 +25,6 @@ pub(super) fn place_node(
         intrinsic,
         output,
         None,
-        None,
     )
 }
 
@@ -96,7 +95,6 @@ fn place_unvisited_reaching(
             intrinsic,
             output,
             Some(scope),
-            None,
         )?;
     }
     Ok(())
@@ -176,8 +174,8 @@ fn check_plan_children(
             entry.intrinsic
         };
         let at_main_moved = on_measure
-            && match entry.at_main {
-                Some((main, cached)) => {
+            && match entry.at_main.as_deref() {
+                Some(&(main, cached)) => {
                     intrinsic_size_at_main(
                         child,
                         main,
@@ -207,7 +205,7 @@ fn check_plan_children(
             )?;
         }
         let baseline_moved = on_measure
-            && entry.baseline.is_some_and(|aligned| {
+            && entry.baseline.get().is_some_and(|aligned| {
                 let font_px = fonts_of(&current, plan.child_font_px).element_px;
                 intrinsic
                     .baseline(child, crate::Baseline::First)
@@ -305,8 +303,6 @@ fn replay_sequential_suffix(
     let mut entries = plan.entries.borrow_mut();
     for (index, origin) in shifted {
         entries[index].origin = origin;
-        // Moved by a difference: see `PlannedChild::offset`.
-        entries[index].offset = None;
     }
     for (slot, entry) in entries[from..].iter_mut().zip(replayed) {
         *slot = entry;
@@ -489,7 +485,6 @@ fn replay_sequential_run(
                 intrinsic,
                 output,
                 Some(scope),
-                None,
             )?;
         }
         replayed.push(PlannedChild {
@@ -499,11 +494,10 @@ fn replay_sequential_run(
             // Nothing redistributes main sizes on the sequential path.
             at_main: None,
             origin: child_origin,
-            offset: Some(child_offset),
             size: child_size,
             cursor_before,
             // A sequential line aligns nothing by baseline.
-            baseline: None,
+            baseline: PackedOptF32::NONE,
         });
     }
     Ok(Some(replayed))
@@ -579,7 +573,6 @@ fn shift_reversed_prefix(
             intrinsic,
             output,
             Some(scope),
-            None,
         )?;
         shifted.push((index, origin));
     }
@@ -680,8 +673,7 @@ fn replay_child_list_edit(
             continue;
         }
         if style.position.is_out_of_flow()
-            || style.display.is_some_and(DisplaySpec::is_contents)
-            || (block && (style.is_floated() || style.is_inline_level()))
+            || (block && style.is_inline_level())
             || style.order != 0
             || style.margin_auto_left()
             || style.margin_auto_right()
@@ -758,34 +750,39 @@ fn replay_child_list_edit(
     let mut entries = prefix;
     for (index, origin) in shifted {
         entries[index].origin = origin;
-        entries[index].offset = None;
     }
     entries.extend(replayed);
     // The children before the edit keep their index, the ones after it move
     // by the arrivals less the children that left, and the arrivals take
     // the indices in between. Still sorted by child but for the arrivals,
     // which the stable sort merges in as one short run.
-    let mut by_child: Vec<(StableNodeId, u32)> = plan
-        .by_child
-        .iter()
-        .filter_map(|&(child, index)| {
-            let index = index as usize;
-            if index < at {
-                Some((child, index as u32))
-            } else if index < at + left.len() {
-                None
-            } else {
-                Some((child, (index - left.len() + arrivals.len()) as u32))
-            }
-        })
-        .collect();
-    by_child.extend(
-        arrivals
+    let by_child = if entries.len() <= super::BY_CHILD_LINEAR_CAP {
+        None
+    } else if let Some(prev_by_child) = plan.by_child.as_deref() {
+        let mut by_child: Vec<(StableNodeId, u32)> = prev_by_child
             .iter()
-            .enumerate()
-            .map(|(offset, &child)| (child, (at + offset) as u32)),
-    );
-    by_child.sort_by_key(|(child, _)| *child);
+            .filter_map(|&(child, index)| {
+                let index = index as usize;
+                if index < at {
+                    Some((child, index as u32))
+                } else if index < at + left.len() {
+                    None
+                } else {
+                    Some((child, (index - left.len() + arrivals.len()) as u32))
+                }
+            })
+            .collect();
+        by_child.extend(
+            arrivals
+                .iter()
+                .enumerate()
+                .map(|(offset, &child)| (child, (at + offset) as u32)),
+        );
+        by_child.sort_by_key(|(child, _)| *child);
+        Some(by_child.into_boxed_slice())
+    } else {
+        super::build_by_child_index(&entries)
+    };
     Ok(Some(ContainerPlan {
         origin: plan.origin,
         size: plan.size,
@@ -976,17 +973,12 @@ fn replay_wrapped_flex_line(
             intrinsic,
             output,
             Some(scope),
-            None,
         )?;
     }
     let mut entries = plan.entries.borrow_mut();
     for (child, origin, size, index) in jobs {
         let entry = &mut entries[index];
         entry.child = child;
-        // Carried by the lines before it: see `PlannedChild::offset`.
-        if entry.origin != origin {
-            entry.offset = None;
-        }
         entry.origin = origin;
         entry.size = size;
         entry.intrinsic = size;
@@ -1020,9 +1012,6 @@ fn replay_grid(
         return Ok(false);
     };
     let style = plan.style.as_ref();
-    if style.is_subgrid_columns() || style.is_subgrid_rows() {
-        return Ok(false);
-    }
     let entries = plan.entries.borrow().clone();
     let entry_of = |child: StableNodeId| {
         plan.entry_index(child)
@@ -1074,7 +1063,6 @@ fn replay_grid(
         &sizes,
         content,
         fonts,
-        None,
         viewport,
         nodes,
         intrinsic,
@@ -1157,15 +1145,7 @@ fn replay_grid(
     updated.content = content;
     updated.content_origin = content_origin;
     updated.grid = Some(Box::new(GridTrackPlan::from_layout(&solved)));
-    updated.by_child = {
-        let mut by_child: Vec<(StableNodeId, u32)> = recorded
-            .iter()
-            .enumerate()
-            .map(|(index, entry)| (entry.child, index as u32))
-            .collect();
-        by_child.sort_unstable_by_key(|(child, _)| *child);
-        by_child
-    };
+    updated.by_child = super::build_by_child_index(&recorded);
     updated.entries = RefCell::new(recorded);
     nodes.container_plans.rebuild(id, updated);
     Ok(true)
@@ -1190,7 +1170,6 @@ pub(super) fn place_node_scoped(
     intrinsic: &mut PassIntrinsicCache,
     output: &mut PassOutput,
     scope: Option<&ScopeContext<'_>>,
-    inherited_grid: Option<&InheritedGridTracks>,
 ) -> Result<(), UiWorldError> {
     if intrinsic.placement_levels.depth() == 0 {
         return place_subtree(
@@ -1204,7 +1183,6 @@ pub(super) fn place_node_scoped(
             intrinsic,
             output,
             scope,
-            inherited_grid,
         );
     }
     place_level(
@@ -1218,7 +1196,6 @@ pub(super) fn place_node_scoped(
         intrinsic,
         output,
         scope,
-        inherited_grid,
     )
 }
 
@@ -1238,7 +1215,6 @@ fn place_subtree(
     intrinsic: &mut PassIntrinsicCache,
     output: &mut PassOutput,
     scope: Option<&ScopeContext<'_>>,
-    inherited_grid: Option<&InheritedGridTracks>,
 ) -> Result<(), UiWorldError> {
     place_level(
         id,
@@ -1251,7 +1227,6 @@ fn place_subtree(
         intrinsic,
         output,
         scope,
-        inherited_grid,
     )?;
     place_boundaries(viewport, nodes, intrinsic, output, scope)
 }
@@ -1271,7 +1246,6 @@ fn place_level(
     intrinsic: &mut PassIntrinsicCache,
     output: &mut PassOutput,
     scope: Option<&ScopeContext<'_>>,
-    inherited_grid: Option<&InheritedGridTracks>,
 ) -> Result<(), UiWorldError> {
     let depth = intrinsic.placement_levels.depth();
     super::recursion::level(
@@ -1302,7 +1276,6 @@ fn place_level(
                 parent_font_px,
                 nodes,
                 scope,
-                inherited_grid,
             ) {
                 intrinsic.note_moved_subtree_kept();
                 #[cfg(any(test, feature = "layout-verify"))]
@@ -1320,7 +1293,6 @@ fn place_level(
                         size,
                         containing,
                         parent_font_px,
-                        inherited: inherited_grid.cloned(),
                     },
                 );
                 return Ok(());
@@ -1336,7 +1308,6 @@ fn place_level(
                 intrinsic,
                 output,
                 scope,
-                inherited_grid,
             )
         },
     )
@@ -1371,12 +1342,11 @@ fn keeps_moved_subtree(
     parent_font_px: f32,
     nodes: &LayoutInputMap<'_>,
     scope: Option<&ScopeContext<'_>>,
-    inherited_grid: Option<&InheritedGridTracks>,
 ) -> bool {
     let Some(scope) = scope else {
         return false;
     };
-    if facts.children.is_empty() || facts.modal.is_some() || inherited_grid.is_some() {
+    if facts.children.is_empty() || facts.modal.is_some() {
         return false;
     }
     // Affected only to be placed again: reached by an edge from its parent
@@ -1419,7 +1389,7 @@ fn keeps_moved_subtree(
         ),
         fonts,
     );
-    if scope.retained.used_padding.get(&id).copied() != Some(padding) {
+    if scope.retained.used_padding_of(id) != Some(padding) {
         return false;
     }
     if scope.retained.remote_overlays.contains(&id)
@@ -1469,7 +1439,6 @@ fn place_boundaries(
                     intrinsic,
                     output,
                     scope,
-                    boundary.inherited.as_ref(),
                 )
             },
         )?;
@@ -1497,6 +1466,7 @@ fn place_node_head<'a>(
     scope: Option<&ScopeContext<'_>>,
 ) -> Result<Option<PlacedHead<'a>>, UiWorldError> {
     let Some(node) = nodes.get(id)? else {
+        nodes.omitted_boxes.insert(id);
         output.insert(
             id,
             LayoutBox {
@@ -1533,6 +1503,7 @@ fn place_node_head<'a>(
         nodes.frames.insert(id, crate::LayoutFrame::Parent);
     }
     if style.omits_box() {
+        nodes.omitted_boxes.insert(id);
         output.insert(
             id,
             LayoutBox {
@@ -1598,7 +1569,6 @@ fn place_node_body<'a>(
     intrinsic: &mut PassIntrinsicCache,
     output: &mut PassOutput,
     scope: Option<&ScopeContext<'_>>,
-    inherited_grid: Option<&InheritedGridTracks>,
 ) -> Result<(), UiWorldError> {
     let facts = match facts {
         Some(facts) => facts,
@@ -1641,7 +1611,14 @@ fn place_node_body<'a>(
         nodes,
         scope.map(|scope| scope.retained),
     );
-    nodes.used_padding.insert(id, padding);
+    if scope.is_some_and(|scope| scope.retained.omitted_boxes.contains(&id)) {
+        nodes.unomitted_boxes.insert(id);
+    }
+    if padding != nana_ui_core::PaddingSpec::default() {
+        nodes.used_padding.insert(id, padding);
+    } else if scope.is_some_and(|scope| scope.retained.used_padding.contains_key(&id)) {
+        nodes.cleared_padding.insert(id);
+    }
 
     if let Some(modal) = modal.as_ref() {
         let context = establish_context(id, style, child_ids, nodes);
@@ -1718,7 +1695,6 @@ fn place_node_body<'a>(
         writing,
         content_origin,
         content,
-        inherited_grid,
         nodes,
         intrinsic,
         output,
@@ -1743,7 +1719,6 @@ fn place_node_body<'a>(
         writing,
         content_origin,
         content,
-        inherited_grid,
         nodes,
         intrinsic,
         output,
@@ -1755,7 +1730,6 @@ fn place_node_body<'a>(
     let ChildrenLayout {
         descend,
         positioned,
-        packed_floats,
         plan_entries,
         gap,
         plan_sequential,
@@ -1782,7 +1756,6 @@ fn place_node_body<'a>(
         intrinsic,
         output,
         scope,
-        inherited_grid,
     )?;
     place_descendants(
         descend,
@@ -1807,15 +1780,7 @@ fn place_node_body<'a>(
                 content_origin,
                 gap,
                 sequential: plan_sequential,
-                by_child: {
-                    let mut by_child: Vec<(StableNodeId, u32)> = entries
-                        .iter()
-                        .enumerate()
-                        .map(|(index, entry)| (entry.child, index as u32))
-                        .collect();
-                    by_child.sort_unstable_by_key(|(child, _)| *child);
-                    by_child
-                },
+                by_child: super::build_by_child_index(&entries),
                 origin,
                 size,
                 containing,
@@ -1838,37 +1803,6 @@ fn place_node_body<'a>(
                 overlay: Vec::new(),
             },
         );
-    }
-    for packed in &packed_floats.items {
-        let Some(child_style) = nodes.style_ref(packed.id) else {
-            continue;
-        };
-        let child_style = child_style.as_ref();
-        let child_fonts = fonts_of(child_style, child_font_px);
-        if !subtree_unchanged(
-            packed.id,
-            packed.origin,
-            packed.size,
-            content,
-            child_style,
-            child_fonts,
-            writing,
-            scope,
-        ) {
-            place_node_scoped(
-                packed.id,
-                packed.origin,
-                packed.size,
-                content,
-                viewport,
-                child_font_px,
-                nodes,
-                intrinsic,
-                output,
-                scope,
-                None,
-            )?;
-        }
     }
     if let Some(overlay) = triggered_menu_overlay(nodes.world, id) {
         // The items hang off the viewport: they are placed from where the
@@ -1934,7 +1868,6 @@ fn place_edited_child_list(
     writing: nana_ui_core::WritingContext,
     content_origin: Point,
     content: Size,
-    inherited_grid: Option<&InheritedGridTracks>,
     nodes: &mut LayoutInputMap<'_>,
     intrinsic: &mut PassIntrinsicCache,
     output: &mut PassOutput,
@@ -1944,7 +1877,6 @@ fn place_edited_child_list(
     // edit stay, the ones after it move, and nothing it kept is measured
     // again. See `ChildListEdit`.
     if let Some(scope) = scope
-        && inherited_grid.is_none()
         && let Some(plan) = scope.retained.container_plans.get(&id)
         && plan.sequential
         && !Arc::ptr_eq(&plan.children, child_ids)
@@ -2032,14 +1964,12 @@ fn place_from_plan(
     writing: nana_ui_core::WritingContext,
     content_origin: Point,
     content: Size,
-    inherited_grid: Option<&InheritedGridTracks>,
     nodes: &mut LayoutInputMap<'_>,
     intrinsic: &mut PassIntrinsicCache,
     output: &mut PassOutput,
     scope: Option<&ScopeContext<'_>>,
 ) -> Result<bool, UiWorldError> {
     if let Some(scope) = scope
-        && inherited_grid.is_none()
         && let Some(plan) = scope.retained.container_plans.get(&id)
         && Arc::ptr_eq(&plan.children, child_ids)
         && plan.can_reuse_flow(
@@ -2092,7 +2022,6 @@ fn place_from_plan(
                         intrinsic,
                         output,
                         Some(scope),
-                        None,
                     )?;
                 }
                 finish_positioned_overlay(
@@ -2211,7 +2140,6 @@ pub(super) struct Descend {
     pub(super) size: Size,
     /// Its containing block: the container's content box, or its grid cell.
     pub(super) containing: Size,
-    pub(super) inherited: Option<InheritedGridTracks>,
 }
 
 /// Places each of `children` in order, and hands the emptied list back to
@@ -2237,7 +2165,6 @@ fn place_descendants(
             intrinsic,
             output,
             scope,
-            child.inherited.as_ref(),
         )?;
     }
     nodes.scratch.give_descend(children);
@@ -2250,7 +2177,6 @@ struct ChildrenLayout {
     /// In-flow children whose subtrees are placed again, in order.
     descend: Vec<Descend>,
     positioned: Vec<StableNodeId>,
-    packed_floats: PackedFloats,
     plan_entries: Option<Vec<PlannedChild>>,
     gap: f32,
     plan_sequential: bool,
@@ -2264,11 +2190,10 @@ struct ChildrenLayout {
     child_phase: Option<super::plan_stats::PhaseClock>,
 }
 
-/// A container's walk of its children: measure them, pack floats and lines,
-/// align, and decide every in-flow child's box. It places no in-flow
-/// subtree: the caller descends into `descend`
-/// once this frame is gone, so a level of the placement recursion does not
-/// carry the walk's locals (see `recursion`).
+/// A container's walk of its children: measure them, pack lines, align, and
+/// decide every in-flow child's box. It places no in-flow subtree: the caller
+/// descends into `descend` once this frame is gone, so a level of the
+/// placement recursion does not carry the walk's locals (see `recursion`).
 #[allow(clippy::too_many_arguments)]
 // Its own frame, taken only on the path that calls it (see `recursion`).
 #[inline(never)]
@@ -2287,7 +2212,6 @@ fn lay_out_children(
     intrinsic: &mut PassIntrinsicCache,
     output: &mut PassOutput,
     scope: Option<&ScopeContext<'_>>,
-    inherited_grid: Option<&InheritedGridTracks>,
 ) -> Result<ChildrenLayout, UiWorldError> {
     let style = style_arc.as_ref();
     let mut descend = nodes.scratch.descend();
@@ -2300,38 +2224,11 @@ fn lay_out_children(
         retire_omitted_children(child_ids, nodes, output, scope);
     }
     let mut positioned = collect_positioned_children(child_ids, nodes)?;
-    let floated = if style
-        .display
-        .is_some_and(|d| d.is_flex_container() || d.is_grid_container())
-    {
-        Vec::new()
-    } else {
-        collect_floated_children(child_ids, nodes)?
-    };
-    if !floated.is_empty() {
-        flow.retain(|id| !floated.contains(id));
-    }
     sort_by_order(&mut flow, nodes);
     sort_by_order(&mut positioned, nodes);
     // This container is its children's containing block: their percentage
-    // margins resolve against its inline size, whatever a line or a float
-    // leaves them.
+    // margins resolve against its inline size.
     let child_edge_base = writing.inline_size(content.width, content.height);
-    let packed_floats = if floated.is_empty() {
-        PackedFloats::default()
-    } else {
-        pack_floated_children(
-            &floated,
-            content_origin,
-            content,
-            child_edge_base,
-            viewport,
-            child_font_px,
-            nodes,
-            intrinsic,
-            scope,
-        )?
-    };
     let context = establish_context(id, style, &flow, nodes);
     nodes.contexts.insert(id, context.kind);
     let grid_2d = context.grid_2d;
@@ -2430,16 +2327,11 @@ fn lay_out_children(
     // cannot answer "is this affected id one of my entries?".
     // Recorded on full passes too, so the first scoped pass after a mount or a
     // viewport change already has a plan to reuse.
-    let grid_recordable = grid_2d
-        && inherited_grid.is_none()
-        && !style.is_subgrid_columns()
-        && !style.is_subgrid_rows();
-    let cacheable = inherited_grid.is_none()
-        && !descendant_dependent_flow
+    let grid_recordable = grid_2d;
+    let cacheable = !descendant_dependent_flow
         && (grid_recordable || !grid_2d)
         && !ifc
         && !style.equal_wrap
-        && floated.is_empty()
         && triggered_menu_overlay(nodes.world, id).is_none()
         && nodes.world.children_layout_style_is_local(id);
     let mut plan_entries: Option<Vec<PlannedChild>> =
@@ -2486,7 +2378,6 @@ fn lay_out_children(
             &child_sizes,
             content,
             fonts,
-            inherited_grid,
             viewport,
             nodes,
             intrinsic,
@@ -2529,7 +2420,6 @@ fn lay_out_children(
             ifc,
             direction,
             (main_reversed, cross_reversed),
-            &packed_floats,
             viewport,
             child_font_px,
             nodes,
@@ -2582,12 +2472,11 @@ fn lay_out_children(
                     child,
                     style: item.style.to_arc(),
                     intrinsic: child_intrinsic,
-                    at_main: item.at_main,
+                    at_main: item.at_main.map(Box::new),
                     origin: child_origin,
-                    offset: Some(item.offset),
                     size: child_size,
                     cursor_before: item.cursor_before,
-                    baseline: item.baseline,
+                    baseline: PackedOptF32::from_opt(item.baseline),
                 });
             }
             if !subtree_unchanged(
@@ -2605,7 +2494,6 @@ fn lay_out_children(
                     origin: child_origin,
                     size: child_size,
                     containing: content,
-                    inherited: None,
                 });
             }
         }
@@ -2617,7 +2505,6 @@ fn lay_out_children(
     Ok(ChildrenLayout {
         descend,
         positioned,
-        packed_floats,
         plan_entries,
         gap,
         plan_sequential,
@@ -2691,7 +2578,7 @@ pub(super) fn arrange_flow<'a>(
     writing: nana_ui_core::WritingContext,
     flow: &[StableNodeId],
     child_sizes: &[Size],
-    content_origin: Point,
+    _content_origin: Point,
     content: Size,
     child_edge_base: f32,
     mut gap: f32,
@@ -2699,7 +2586,6 @@ pub(super) fn arrange_flow<'a>(
     ifc: bool,
     direction: FlexDirection,
     (main_reversed, cross_reversed): (bool, bool),
-    packed_floats: &PackedFloats,
     viewport: LayoutViewport,
     child_font_px: f32,
     nodes: &mut LayoutInputMap<'a>,
@@ -2707,8 +2593,6 @@ pub(super) fn arrange_flow<'a>(
     scope: Option<&ScopeContext<'_>>,
     commit: bool,
 ) -> Result<ArrangedFlow<'a>, UiWorldError> {
-    let float_left_bottom = packed_floats.left_bottom;
-    let float_right_bottom = packed_floats.right_bottom;
     let mut children = nodes.scratch.arranged(flow.len());
     let mut lines = nodes.scratch.lines();
     let wrap = if ifc { FlexWrap::Wrap } else { style.flex_wrap };
@@ -2765,7 +2649,6 @@ pub(super) fn arrange_flow<'a>(
             pack_ifc_line_boxes(
                 flow,
                 child_sizes,
-                content_origin,
                 content.width,
                 gap,
                 cross_gap,
@@ -2773,7 +2656,6 @@ pub(super) fn arrange_flow<'a>(
                 child_font_px,
                 line_strut(id, style, child_font_px, nodes),
                 nodes,
-                packed_floats,
             )
         } else {
             pack_wrap_lines(
@@ -3121,14 +3003,6 @@ pub(super) fn arrange_flow<'a>(
             };
             let child_style = child_style_arc.as_ref();
             let child_fonts = fonts_of(child_style, child_font_px);
-            let clear_y = clear_offset(child_style.clear, float_left_bottom, float_right_bottom);
-            if clear_y > 0.0 {
-                if direction.is_column() {
-                    cursor = cursor.max(clear_y);
-                } else {
-                    cross_cursor = cross_cursor.max(clear_y);
-                }
-            }
             let mut margin = child_style.resolved_margin_against_fonts(
                 Some(writing.inline_size(content.width, content.height)),
                 child_fonts,
@@ -3363,6 +3237,7 @@ fn retire_omitted_children(
         {
             continue;
         }
+        nodes.omitted_boxes.insert(child);
         // No box, and so no frame other than a cold layout's.
         let framed = scope.retained.frames.contains_key(&child);
         if framed {
@@ -3530,7 +3405,7 @@ pub(super) fn place_positioned_child(
             static_origin.y - base_origin.y,
         )
     };
-    let inset = match child_style.anchor.filter(|_| fixed) {
+    let inset = match child_style.anchor.as_deref().copied().filter(|_| fixed) {
         // Anchor positioning: hung from its anchor, at the size it measured,
         // by the one resolver every anchored surface shares.
         Some(anchor) => {
@@ -3582,7 +3457,6 @@ pub(super) fn place_positioned_child(
             intrinsic,
             output,
             scope,
-            None,
         )?;
     }
     // A box that generates none keeps its parent's frame, as a cold layout
@@ -4164,14 +4038,10 @@ fn triggered_menu_overlay(
     world: &crate::UiWorld,
     id: StableNodeId,
 ) -> Option<crate::TriggeredMenuOverlay> {
-    match world.standard_visual(id) {
-        Some(crate::StandardVisual::MenuSurface {
-            open: true,
-            overlay: Some(overlay),
-            ..
-        }) => Some(overlay),
-        _ => None,
-    }
+    world
+        .widget_visual_as::<crate::MenuSurfaceVisual>(id)
+        .filter(|v| v.open)
+        .and_then(|v| v.overlay)
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -4275,7 +4145,6 @@ fn place_triggered_menu_items(
                 intrinsic,
                 output,
                 scope,
-                None,
             )?;
         }
         if has_box {

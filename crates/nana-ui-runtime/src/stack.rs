@@ -1,61 +1,16 @@
-//! Recursions over the tree that must not run out of stack, whatever the
-//! tree's depth and whatever the thread they run on.
+//! Remaining thread-stack queries via native platform APIs.
 //!
-//! Only the passes that recurse by nature go through here: measure (sizes
-//! come up from the children a constraint goes down to) and building a view
-//! (an element builds its children inside its own scope). Every other walk
-//! of the tree keeps its open levels on the heap, and placement descends a
-//! bounded number of levels before handing the rest to its scheduler (see
-//! `layout_engine::recursion`), so neither needs this.
-//!
-//! A recursion reads how much stack it has left at each level: below
-//! [`RED_ZONE`] it carries on in a fresh [`SEGMENT`] (`stacker::grow`).
-//! `stacker` reads the limit on desktop targets and OpenHarmony (a Linux
-//! target); on iOS and Android, where it cannot, [`remaining`] asks the
-//! thread itself. So the guard holds on every platform the framework
-//! supports; a target where neither can tell would run each level where it
-//! is.
-
-/// Stack left below which a level moves to a new segment: room for one level
-/// and the non-recursive work it calls before the next level checks again.
-pub(crate) const RED_ZONE: usize = 256 << 10;
-/// What a level that moves gets.
-pub(crate) const SEGMENT: usize = 4 << 20;
+//! All tree traversals that can scale with `MAX_TREE_DEPTH` run on explicit heap
+//! work-stacks or bounded `recursion::SPAN` queues; only layout stack-budget
+//! instrumentation reads how much stack remains on the calling thread.
 
 /// Stack left on this thread, in bytes; `None` where the platform cannot
 /// tell.
 pub(crate) fn remaining() -> Option<usize> {
-    // Inside a segment `stacker` knows its bounds on every platform; on a
-    // thread's own stack it knows them on desktop targets only.
-    stacker::remaining_stack().or_else(native::remaining)
+    native::remaining()
 }
 
-/// Runs one level of a recursion: here, or on a new segment when this stack
-/// is nearly used up.
-pub(crate) fn level<T>(run: impl FnOnce() -> T) -> T {
-    if remaining().is_some_and(|left| left < RED_ZONE) {
-        stacker::grow(SEGMENT, run)
-    } else {
-        run()
-    }
-}
-
-/// Runs `run` in a frame of its own.
-///
-/// Unoptimized code keeps a stack slot for every local of a function, so a
-/// `match` whose arms each build something large holds all of their locals
-/// at once, whichever arm runs: a debug frame of 100 KiB on the per-frame
-/// path. An arm moved in here takes its locals only when it runs. An
-/// optimized build inlines it, so it costs nothing there.
-#[inline(always)]
-pub(crate) fn own_frame<T>(run: impl FnOnce() -> T) -> T {
-    run()
-}
-
-#[cfg(any(
-    target_os = "android",
-    all(target_vendor = "apple", not(target_os = "macos"))
-))]
+#[cfg(any(target_vendor = "apple", target_os = "linux", target_os = "android"))]
 mod native {
     use std::cell::Cell;
 
@@ -88,7 +43,7 @@ mod native {
         top.checked_sub(size)
     }
 
-    #[cfg(target_os = "android")]
+    #[cfg(any(target_os = "linux", target_os = "android"))]
     fn lowest_address() -> Option<usize> {
         // SAFETY: `attr` is initialised by `pthread_getattr_np` before it is
         // read, and destroyed once.
@@ -106,9 +61,30 @@ mod native {
     }
 }
 
+#[cfg(target_os = "windows")]
+mod native {
+    #[link(name = "kernel32")]
+    unsafe extern "system" {
+        fn GetCurrentThreadStackLimits(low_limit: *mut usize, high_limit: *mut usize);
+    }
+
+    pub(super) fn remaining() -> Option<usize> {
+        let marker = 0u8;
+        let here = std::ptr::addr_of!(marker) as usize;
+        let mut low = 0usize;
+        let mut high = 0usize;
+        // SAFETY: `GetCurrentThreadStackLimits` writes the valid stack bounds
+        // of the calling thread into the two provided pointers.
+        unsafe { GetCurrentThreadStackLimits(&mut low, &mut high) };
+        (low != 0 && here >= low && here <= high).then(|| here - low)
+    }
+}
+
 #[cfg(not(any(
+    target_vendor = "apple",
+    target_os = "linux",
     target_os = "android",
-    all(target_vendor = "apple", not(target_os = "macos"))
+    target_os = "windows"
 )))]
 mod native {
     pub(super) fn remaining() -> Option<usize> {

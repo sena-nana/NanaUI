@@ -11,7 +11,7 @@ use std::time::Duration;
 use nana_ui_core::motion::Easing;
 use nana_ui_core::{DialogMotion, DialogRecipe, DialogTransition, LengthSpec, ThemeDefinition};
 use nana_ui_runtime::{
-    ComponentGeometry, ComputedStyle, Dialog, DocumentId, LayoutViewport, ModalSlots, OverlayHost,
+    ComputedStyle, Dialog, DocumentId, LayoutViewport, ModalFrameGeometry, ModalSlots, OverlayHost,
     StableNodeId, Stack, TextContent, TextMetrics, TextShapeConstraints, TextShaper,
 };
 use nana_ui_scene::{PrimitiveId, RuntimeDocument};
@@ -150,11 +150,11 @@ fn a_dialogs_card_moves_on_its_layer_and_its_scrim_fades_on_its_own() {
     advance(&mut runtime, 1080);
 
     let id = dialog.stable_id();
-    let Some(ComponentGeometry::ModalFrame {
+    let Some(ModalFrameGeometry {
         surface,
         scrim_opacity,
         ..
-    }) = runtime.context().world().component_geometry(id)
+    }) = runtime.context().world().modal_frame_geometry(id)
     else {
         panic!("dialog geometry")
     };

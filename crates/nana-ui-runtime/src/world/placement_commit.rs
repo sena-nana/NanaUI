@@ -116,7 +116,7 @@ fn left(cx: &mut AppContext) -> impl PartialEq + std::fmt::Debug {
                 world.layout_box(id),
                 world.local_layout_box(id),
                 world.layout_frame(id),
-                world.local_layout_result(id).is_some(),
+                world.has_local_layout_result(id),
                 world.scroll_content_bounds.borrow().stale(id),
                 world.scroll_metrics(id),
             )

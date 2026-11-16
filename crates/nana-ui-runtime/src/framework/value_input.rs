@@ -190,13 +190,7 @@ impl AppContext {
     }
 
     fn number_steppers(&self, id: StableNodeId) -> Option<crate::NumberSteppers> {
-        match self.world.component_geometry(id) {
-            Some(crate::ComponentGeometry::TextInput {
-                steppers: Some(steppers),
-                ..
-            }) => Some(steppers),
-            _ => None,
-        }
+        self.world.text_input_geometry(id)?.steppers
     }
 
     /// Resolve a stepper press inside a numeric field to a signed step count.
@@ -333,7 +327,7 @@ impl AppContext {
     }
 
     /// Starts dragging the range at `x`, in the field's layout space (the
-    /// space of its [`crate::ComponentGeometry::Range`] track).
+    /// space of its [`crate::RangeGeometry`] track).
     ///
     /// The press picks the value under it, except on a value thumb's
     /// capsule, where the drag starts from the value the range holds. A
@@ -356,13 +350,12 @@ impl AppContext {
         if disabled {
             return Ok(false);
         }
-        let capsule = match self.world.component_geometry(target) {
-            Some(crate::ComponentGeometry::Range {
-                value_thumb: Some(thumb),
-                ..
-            }) if value_thumb => Some(thumb.capsule),
-            _ => None,
-        };
+        let capsule = self
+            .world
+            .range_geometry(target)
+            .filter(|_| value_thumb)
+            .and_then(|g| g.value_thumb)
+            .map(|thumb| thumb.capsule);
         let on_thumb =
             capsule.is_some_and(|capsule| x >= capsule.x && x <= capsule.x + capsule.width);
         self.update_component(Entity::<RangeField>::from_stable_id(target), |range, cx| {
@@ -414,10 +407,10 @@ impl AppContext {
         if !via!(self.is_range_field(target)) {
             return Ok(false);
         }
-        let track = match self.world.component_geometry(target) {
-            Some(crate::ComponentGeometry::Range { track, .. }) => track,
-            _ => return Ok(false),
+        let Some(geometry) = self.world.range_geometry(target) else {
+            return Ok(false);
         };
+        let track = geometry.track;
         if track.width <= 0.0 {
             return Ok(false);
         }

@@ -853,7 +853,8 @@ mod tests {
                 .node_style(id)
                 .unwrap()
                 .layout
-                .border_bottom_width
+                .border_sides
+                .bottom_width
                 .expect("a divided row rules its bottom edge");
             assert!(
                 notice_box.y + notice_box.height <= row_box.y + row_box.height - divider + 0.5,
@@ -929,10 +930,11 @@ mod tests {
                 Some(nana_ui_core::SemanticColorRole::Text),
                 "a caution reads in the text colour"
             );
-            let icon = |cx: &AppContext| match cx.world().standard_visual(glyph) {
-                Some(crate::StandardVisual::Icon { icon, .. }) => icon,
-                other => panic!("a glyph, got {other:?}"),
-            };
+            let icon =
+                |cx: &AppContext| match cx.world().widget_visual_as::<crate::IconVisual>(glyph) {
+                    Some(visual) => visual.icon,
+                    None => panic!("expected an icon visual on glyph node"),
+                };
             assert_eq!(icon(&cx), nana_ui_core::Icon::AlertTriangle);
             let spoken = cx.world().accessibility(id).unwrap();
             assert!(!spoken.invalid, "a caution is no error");

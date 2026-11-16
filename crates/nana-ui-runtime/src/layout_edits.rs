@@ -33,14 +33,17 @@ impl LengthBits {
             LengthSpec::Percent(value) => Self(2, value.to_bits(), 0),
             LengthSpec::Em(value) => Self(3, value.to_bits(), 0),
             LengthSpec::Rem(value) => Self(4, value.to_bits(), 0),
-            LengthSpec::CalcPercentOffset { percent, offset_px } => {
-                Self(5, percent.to_bits(), offset_px.to_bits())
+            LengthSpec::PercentOffset { offset_q7, percent } => {
+                Self(5, percent.to_bits(), offset_q7 as i32 as u32)
             }
-            LengthSpec::CalcEmOffset { em, offset_px } => {
-                Self(6, em.to_bits(), offset_px.to_bits())
-            }
-            LengthSpec::CalcRemOffset { rem, offset_px } => {
-                Self(7, rem.to_bits(), offset_px.to_bits())
+            LengthSpec::Calc(_) => {
+                if let Some((em, offset_px)) = spec.as_em_offset() {
+                    Self(6, em.to_bits(), offset_px.to_bits())
+                } else if let Some((rem, offset_px)) = spec.as_rem_offset() {
+                    Self(7, rem.to_bits(), offset_px.to_bits())
+                } else {
+                    return None;
+                }
             }
             LengthSpec::Fill => Self(8, 0, 0),
             LengthSpec::Shrink => Self(9, 0, 0),
@@ -48,12 +51,7 @@ impl LengthBits {
             LengthSpec::MinContent => Self(11, 0, 0),
             LengthSpec::MaxContent => Self(12, 0, 0),
             LengthSpec::FitContent => Self(13, 0, 0),
-            LengthSpec::Viewport { .. }
-            | LengthSpec::CalcViewportOffset { .. }
-            | LengthSpec::Min2(..)
-            | LengthSpec::Max2(..)
-            | LengthSpec::Clamp3(..)
-            | LengthSpec::Calc(_) => return None,
+            LengthSpec::Viewport { .. } => return None,
         })
     }
 }

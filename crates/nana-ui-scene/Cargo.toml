@@ -12,19 +12,19 @@ charts = ["nana-ui-runtime/charts"]
 controls = ["nana-ui-runtime/controls"]
 graph-canvas = ["nana-ui-runtime/graph-canvas"]
 image-viewer = ["nana-ui-runtime/image-viewer"]
-rich-text = ["nana-ui-runtime/rich-text"]
-components = ["calendar", "charts", "controls", "graph-canvas", "image-viewer", "rich-text"]
-default = ["icu"]
+vector-boolean = ["dep:i_overlay"]
+rich-text = ["nana-ui-runtime/rich-text", "vector-boolean"]
+components = ["calendar", "charts", "controls", "graph-canvas", "image-viewer", "rich-text", "vector-boolean"]
+default = []
 icu = ["nana-ui-runtime/icu"]
 benchmark = ["dep:serde", "dep:serde_json", "dep:nana-text", "nana-ui-core/bundled-font-regular", "nana-ui-runtime/benchmark"]
 
 [dependencies]
 nana-diagnostics.workspace = true
 nana-ui-core.workspace = true
-nana-ui-charts.workspace = true
 nana-ui-runtime.workspace = true
 lyon_tessellation.workspace = true
-i_overlay.workspace = true
+i_overlay = { workspace = true, optional = true }
 # Grapheme ordinals of per-glyph presentation.
 unicode-segmentation.workspace = true
 # Benchmark only: `nana-dirty-frame-benchmark --engine nana-text`.

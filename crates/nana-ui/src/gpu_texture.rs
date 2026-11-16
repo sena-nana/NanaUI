@@ -1498,7 +1498,7 @@ impl GpuTexturePipeline {
         policy: Option<&nana_gpu::GpuDeviceState>,
         gpu: Option<&GpuContext>,
     ) -> Self {
-        let shader = crate::scene_paint::wgsl::Program::new("nana-ui host texture shader", SOURCE);
+        let shader = crate::scene_paint::wgsl::program!("nana-ui host texture shader", SOURCE);
         let logical_layout = gpu.map(|gpu| {
             let table = ResourceTable::new(
                 [
@@ -1578,31 +1578,39 @@ impl GpuTexturePipeline {
             immediate_size: 0,
         });
         let create_pipeline = || {
-            device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-                label: Some("nana-ui host texture pipeline"),
-                layout: Some(&pipeline_layout),
-                vertex: wgpu::VertexState {
-                    module: &shader.stage(device, "vertex_main").module,
-                    entry_point: Some("vertex_main"),
-                    buffers: &[],
-                    compilation_options: wgpu::PipelineCompilationOptions::default(),
+            shader.pipeline(
+                device,
+                "vertex_main",
+                "fragment_main",
+                &[],
+                |vs_module, vs_ep, fs_module, fs_ep, _| {
+                    device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+                        label: Some("nana-ui host texture pipeline"),
+                        layout: Some(&pipeline_layout),
+                        vertex: wgpu::VertexState {
+                            module: vs_module,
+                            entry_point: Some(vs_ep),
+                            buffers: &[],
+                            compilation_options: wgpu::PipelineCompilationOptions::default(),
+                        },
+                        fragment: Some(wgpu::FragmentState {
+                            module: fs_module,
+                            entry_point: Some(fs_ep),
+                            targets: &[Some(wgpu::ColorTargetState {
+                                format,
+                                blend: Some(wgpu::BlendState::PREMULTIPLIED_ALPHA_BLENDING),
+                                write_mask: wgpu::ColorWrites::ALL,
+                            })],
+                            compilation_options: wgpu::PipelineCompilationOptions::default(),
+                        }),
+                        primitive: wgpu::PrimitiveState::default(),
+                        depth_stencil: None,
+                        multisample: wgpu::MultisampleState::default(),
+                        multiview_mask: None,
+                        cache: None,
+                    })
                 },
-                fragment: Some(wgpu::FragmentState {
-                    module: &shader.stage(device, "fragment_main").module,
-                    entry_point: Some("fragment_main"),
-                    targets: &[Some(wgpu::ColorTargetState {
-                        format,
-                        blend: Some(wgpu::BlendState::PREMULTIPLIED_ALPHA_BLENDING),
-                        write_mask: wgpu::ColorWrites::ALL,
-                    })],
-                    compilation_options: wgpu::PipelineCompilationOptions::default(),
-                }),
-                primitive: wgpu::PrimitiveState::default(),
-                depth_stencil: None,
-                multisample: wgpu::MultisampleState::default(),
-                multiview_mask: None,
-                cache: None,
-            })
+            )
         };
         let pipeline = if let Some(policy) = policy {
             nana_gpu::__framework::render_pipeline_state(

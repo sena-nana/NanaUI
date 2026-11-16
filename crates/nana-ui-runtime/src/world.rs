@@ -24,7 +24,7 @@ mod replaced;
 mod responsive;
 pub(crate) use block_reads::BlockExtentReads;
 pub use replaced::{ReplacedMetadata, ReplacedResource};
-mod content_parts;
+pub(crate) mod content_parts;
 pub(crate) mod inline_content;
 mod scroll_bounds;
 mod sticky;
@@ -33,29 +33,24 @@ mod style_pairs;
 mod text;
 use hit_test::*;
 pub(crate) use text::TextDisplayView;
-pub(crate) use text::text_visual_key;
 use text::*;
 
 use std::{
     cell::{Cell, RefCell},
     collections::{BTreeSet, HashMap, HashSet},
     fmt,
-    mem::size_of,
     sync::Arc,
     time::Duration,
 };
 
 use nana_ui_core::{
-    ControlSize, InvalidationKind, InvalidationReason, LayoutDependencyFootprint, LayoutFieldMask,
+    InvalidationKind, InvalidationReason, LayoutDependencyFootprint, LayoutFieldMask,
     LayoutInvalidation, LayoutInvalidationSource, LayoutStyle, LengthSpec, PointerEventsSpec,
-    PositionSpec, SemanticColorRole, SemanticPalette, StyleModelRef, SwitchControlPosition,
-    ThemeAppearance, ThemeWorkCounters,
+    PositionSpec, SemanticColorRole, SemanticPalette, StyleModelRef, ThemeAppearance,
 };
 
-#[cfg(feature = "calendar")]
-use nana_ui_core::TooltipConfig;
-#[cfg(feature = "graph-canvas")]
-use nana_ui_core::{GraphPoint, GraphPortKind, GraphPortSide, GraphRect, GraphSize, cubic_point};
+#[cfg(all(test, feature = "graph-canvas"))]
+use nana_ui_core::{GraphPoint, cubic_point};
 
 use crate::{
     AccessibilityDelta, AccessibilityLive, AccessibilityNode, AccessibilityRole,
@@ -63,8 +58,8 @@ use crate::{
     CustomRenderNode, EventListeners, EventRoute, ExtractedMove, ExtractedNode, ExtractedTextSpan,
     HighlightRequest, ImeComposition, InteractionState, LayoutBox, LayoutInput, MotionWorkCounters,
     MountState, MutationQueue, NodeStyle, OverlayHostState, PointerCaptureChange, ScrollMetrics,
-    ScrollOffset, StandardVisual, TextContent, TextMetrics, TextPresentation, TextPresenter,
-    TextShaper, TextVerticalAlignment, UiMutation, WorkCounters,
+    ScrollOffset, TextContent, TextMetrics, TextPresentation, TextPresenter, TextShaper,
+    TextVerticalAlignment, UiMutation,
     animation::ActiveAnimation,
     components::{
         EmptyStateTextPresentation, ModalTextPresentation, TextColorSwatchSpan,
@@ -156,22 +151,251 @@ pub type NodeMap<V> = HashMap<StableNodeId, V, BuildIdHasher>;
 /// [`HashSet`] of nodes, hashed by [`IdHasher`].
 pub type NodeSet = HashSet<StableNodeId, BuildIdHasher>;
 
-/// Lists one publish builds every result's slices in, reused node to node so
-/// a result's slices are allocated once, at their final length.
-/// A published layout result, kept in the node's own coordinates: its
-/// border box at the origin, each child's placement as the child's local
-/// box (see [`crate::LayoutFrame`]). A box that only moves keeps it.
-#[derive(Debug, Clone)]
-pub(crate) struct RetainedLayoutResult {
-    pub(crate) local: Arc<crate::LayoutResult>,
+pub(crate) const TEXT_SOURCE_NONE_SENTINEL: u32 = u32::MAX;
+const TEXT_SOURCE_MISSING: u32 = u32::MAX - 1;
+const TEXT_SOURCE_MAX_LEN: usize = (u32::MAX - 2) as usize;
+
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct PublishedRareGeometry {
+    pub(crate) padding_box: LayoutBox,
+    pub(crate) clip: Option<StableNodeId>,
+    pub(crate) clip_parent: Option<StableNodeId>,
+    pub(crate) containing_block: Option<StableNodeId>,
 }
 
-/// A result placed on the page, and the local result and origin it was
-/// placed from: it answers while both hold.
-struct PageLayoutResult {
-    local: Arc<crate::LayoutResult>,
-    origin: [u32; 2],
-    placed: Arc<crate::LayoutResult>,
+/// Compact per-node published layout metadata held inline inside
+/// `DenseNodeMap<PublishedLayoutMeta>`.
+///
+/// Ordinary flow/flex containers and single-run text leaves store everything
+/// inline with zero side heap allocations; rare scroll/clip/native-text/part
+/// payloads spill into `Box<PublishedLayoutExt>`, and non-trivial border/clip/
+/// containing-block metadata spills into `Box<PublishedRareGeometry>`. Full
+/// `Arc<LayoutResult>` snapshots are reconstructed on demand in
+/// [`UiWorld::local_layout_result`] and [`UiWorld::layout_result`].
+#[derive(Debug, Clone)]
+pub(crate) struct PublishedLayoutMeta {
+    pub(crate) generation: u64,
+    pub(crate) deps_hash: u64,
+    pub(crate) width: f32,
+    pub(crate) height: f32,
+    pub(crate) content_box: LayoutBox,
+    pub(crate) overflow: LayoutBox,
+    first_baseline_raw: f32,
+    pub(crate) single_text_source: u32,
+    pub(crate) rare: Option<Box<PublishedRareGeometry>>,
+    pub(crate) ext: Option<Box<PublishedLayoutExt>>,
+    pub(crate) formatting_context: Option<crate::FormattingContextKind>,
+    pub(crate) participation: Option<crate::ParticipationKind>,
+    pub(crate) source: crate::LayoutResultSource,
+    pub(crate) suppressed: bool,
+    pub(crate) overflow_is_text_box: bool,
+    #[cfg(test)]
+    pub(crate) publish_seq: u64,
+}
+
+#[cfg(not(test))]
+const _: () = assert!(std::mem::size_of::<PublishedLayoutMeta>() <= 88);
+
+#[derive(Debug, Clone)]
+pub(crate) struct PublishedLayoutExt {
+    pub(crate) last_baseline: Option<f32>,
+    pub(crate) scroll_extent: LayoutBox,
+    pub(crate) scroll_offset: ScrollOffset,
+    pub(crate) scroll_metrics: Option<crate::ScrollMetrics>,
+    pub(crate) fragments: Arc<[crate::LayoutFragment]>,
+    pub(crate) parts: Arc<[crate::LayoutPart]>,
+}
+
+impl PublishedLayoutMeta {
+    fn bounds(&self) -> LayoutBox {
+        LayoutBox {
+            x: 0.0,
+            y: 0.0,
+            width: self.width,
+            height: self.height,
+        }
+    }
+
+    #[inline]
+    pub(crate) fn first_baseline(&self) -> Option<f32> {
+        (!self.first_baseline_raw.is_nan()).then_some(self.first_baseline_raw)
+    }
+
+    #[inline]
+    pub(crate) fn padding_box(&self) -> LayoutBox {
+        match self.rare.as_deref() {
+            Some(rare) => rare.padding_box,
+            None => self.bounds(),
+        }
+    }
+
+    #[inline]
+    pub(crate) fn clip(&self) -> Option<StableNodeId> {
+        self.rare.as_deref().and_then(|rare| rare.clip)
+    }
+
+    #[inline]
+    pub(crate) fn clip_parent(&self) -> Option<StableNodeId> {
+        self.rare.as_deref().and_then(|rare| rare.clip_parent)
+    }
+
+    #[inline]
+    pub(crate) fn containing_block(&self) -> Option<StableNodeId> {
+        self.rare.as_deref().and_then(|rare| rare.containing_block)
+    }
+
+    fn last_baseline(&self) -> Option<f32> {
+        match self.ext.as_ref() {
+            Some(ext) => ext.last_baseline,
+            None => self.first_baseline(),
+        }
+    }
+
+    fn overflow_box(&self) -> LayoutBox {
+        if self.overflow_is_text_box {
+            self.bounds()
+        } else {
+            self.overflow
+        }
+    }
+
+    pub(crate) fn inline_text_box(&self) -> LayoutBox {
+        if self.overflow_is_text_box {
+            self.overflow
+        } else {
+            self.content_box
+        }
+    }
+
+    fn scroll_extent(&self) -> LayoutBox {
+        match self.ext.as_ref() {
+            Some(ext) => ext.scroll_extent,
+            None => self.overflow_box(),
+        }
+    }
+
+    fn scroll_offset(&self) -> ScrollOffset {
+        match self.ext.as_ref() {
+            Some(ext) => ext.scroll_offset,
+            None => ScrollOffset::default(),
+        }
+    }
+
+    fn scroll_metrics(&self) -> Option<crate::ScrollMetrics> {
+        self.ext.as_ref().and_then(|ext| ext.scroll_metrics)
+    }
+
+    fn sticky_boxes(&self) -> crate::StickyBoxes {
+        crate::StickyBoxes {
+            padding_box: self.padding_box(),
+            content_box: self.content_box,
+            scroll_extent: self.scroll_extent(),
+        }
+    }
+
+    fn extracted_layout(&self) -> crate::ExtractedLayout {
+        crate::ExtractedLayout {
+            generation: self.generation,
+            clip_parent: self.clip_parent(),
+            scroll_metrics: self.scroll_metrics(),
+            atomic_inline: self.participation == Some(crate::ParticipationKind::AtomicInline),
+            sticky_boxes: self.sticky_boxes(),
+        }
+    }
+
+    fn single_text_range(&self) -> Option<std::ops::Range<usize>> {
+        match self.single_text_source {
+            TEXT_SOURCE_NONE_SENTINEL | TEXT_SOURCE_MISSING => None,
+            len => Some(0..len as usize),
+        }
+    }
+
+    fn fragments_and_parts_eq(&self, other: &Self) -> bool {
+        match (self.ext.as_ref(), other.ext.as_ref()) {
+            (None, None) => {
+                self.content_box == other.content_box
+                    && self.inline_text_box() == other.inline_text_box()
+                    && self.first_baseline() == other.first_baseline()
+                    && self.single_text_source == other.single_text_source
+            }
+            (Some(a), Some(b)) => a.fragments == b.fragments && a.parts == b.parts,
+            (Some(ext), None) => compact_matches_ext(other, ext),
+            (None, Some(ext)) => compact_matches_ext(self, ext),
+        }
+    }
+
+    fn geometry_eq(&self, other: &Self) -> bool {
+        self.width == other.width
+            && self.height == other.height
+            && self.padding_box() == other.padding_box()
+            && self.content_box == other.content_box
+            && self.first_baseline() == other.first_baseline()
+            && self.last_baseline() == other.last_baseline()
+            && self.overflow_box() == other.overflow_box()
+            && self.scroll_extent() == other.scroll_extent()
+            && self.scroll_metrics() == other.scroll_metrics()
+            && self.fragments_and_parts_eq(other)
+            && self.clip() == other.clip()
+            && self.clip_parent() == other.clip_parent()
+            && self.containing_block() == other.containing_block()
+            && self.deps_hash == other.deps_hash
+            && self.formatting_context == other.formatting_context
+            && self.participation == other.participation
+    }
+}
+
+fn compact_matches_ext(compact: &PublishedLayoutMeta, ext: &PublishedLayoutExt) -> bool {
+    if compact.single_text_source == TEXT_SOURCE_NONE_SENTINEL {
+        return ext.fragments.is_empty()
+            && ext.parts.len() == 1
+            && ext.parts[0]
+                == crate::LayoutPart::new(
+                    crate::LayoutPartKind::ComponentContent,
+                    compact.content_box,
+                );
+    }
+    let text_box = compact.inline_text_box();
+    let source = compact.single_text_range();
+    let baseline = compact.first_baseline();
+    ext.fragments.len() == 2
+        && ext.fragments[0].kind == crate::LayoutFragmentKind::TextLine
+        && ext.fragments[0].node.is_none()
+        && ext.fragments[0].index == 0
+        && ext.fragments[0].bounds == text_box
+        && ext.fragments[0].first_baseline == baseline
+        && ext.fragments[0].last_baseline == baseline
+        && ext.fragments[0].source == source
+        && ext.fragments[1].kind == crate::LayoutFragmentKind::TextRun
+        && ext.fragments[1].node.is_none()
+        && ext.fragments[1].index == 0
+        && ext.fragments[1].bounds == text_box
+        && ext.fragments[1].first_baseline == baseline
+        && ext.fragments[1].last_baseline == baseline
+        && ext.fragments[1].source == source
+        && ext.parts.len() == 2
+        && ext.parts[0] == crate::LayoutPart::new(crate::LayoutPartKind::TextContent, text_box)
+        && ext.parts[1]
+            == crate::LayoutPart::new(crate::LayoutPartKind::ComponentContent, compact.content_box)
+}
+
+struct OwnLayoutBuild {
+    result: crate::LayoutResult,
+    deps_hash: u64,
+    single_text_source: u32,
+    text_box: LayoutBox,
+    has_extra_parts: bool,
+    fixed_or_clips: bool,
+}
+
+fn hash_dependencies(deps: &[StableNodeId]) -> u64 {
+    let mut hash = 0xcbf2_9ce4_8422_2325u64;
+    hash ^= deps.len() as u64;
+    hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
+    for &id in deps {
+        hash ^= id.get();
+        hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
+    }
+    hash
 }
 
 /// Where the content-box part goes among a result's own `parts`: after its
@@ -261,18 +485,21 @@ fn sorted_unique(mut ids: Vec<StableNodeId>) -> Vec<StableNodeId> {
 }
 
 /// See [`UiWorld::is_scroll_container`].
-fn scroll_container(layout: &nana_ui_core::LayoutStyle, visual: Option<&StandardVisual>) -> bool {
+fn scroll_container(
+    layout: &nana_ui_core::LayoutStyle,
+    widget_visual: Option<&crate::WidgetVisualHandle>,
+) -> bool {
     layout.overflow_x.scrolls()
         || layout.overflow_y.scrolls()
-        || matches!(visual, Some(StandardVisual::Scrollbar { .. }))
+        || widget_visual.is_some_and(crate::WidgetVisualHandle::is_scroll_container)
 }
 
 /// See [`UiWorld::overflow_contained_axes`].
 fn overflow_contained_axes(
     layout: &nana_ui_core::LayoutStyle,
-    visual: Option<&StandardVisual>,
+    widget_visual: Option<&crate::WidgetVisualHandle>,
 ) -> [bool; 2] {
-    if scroll_container(layout, visual) {
+    if scroll_container(layout, widget_visual) {
         [true, true]
     } else {
         [layout.overflow_x.clips(), layout.overflow_y.clips()]
@@ -402,81 +629,52 @@ pub enum NodeKind {
     Comment,
 }
 
-fn menu_surface_open(visual: Option<&StandardVisual>) -> Option<bool> {
-    match visual {
-        Some(StandardVisual::MenuSurface { open, .. }) => Some(*open),
-        _ => None,
-    }
-}
-
 /// Menu rows are painted from one retained surface, so their virtual
 /// accessibility children change without a retained child mutation. Keep the
 /// semantic projection in sync when rows, filtering, or the highlighted item
 /// changes even though the surface remains open.
 pub(crate) fn menu_surface_accessibility_changed(
-    previous: Option<&StandardVisual>,
-    next: Option<&StandardVisual>,
+    previous: Option<&crate::WidgetVisualHandle>,
+    next: Option<&crate::WidgetVisualHandle>,
 ) -> bool {
-    match (previous, next) {
-        (
-            Some(StandardVisual::MenuSurface {
-                open: previous_open,
-                rows: previous_rows,
-                highlighted: previous_highlighted,
-                query: previous_query,
-                ..
-            }),
-            Some(StandardVisual::MenuSurface {
-                open: next_open,
-                rows: next_rows,
-                highlighted: next_highlighted,
-                query: next_query,
-                ..
-            }),
-        ) => {
-            previous_open != next_open
-                || previous_rows != next_rows
-                || previous_highlighted != next_highlighted
-                || previous_query != next_query
+    match (
+        previous.and_then(|v| v.downcast_ref::<crate::MenuSurfaceVisual>()),
+        next.and_then(|v| v.downcast_ref::<crate::MenuSurfaceVisual>()),
+    ) {
+        (Some(prev), Some(next)) => {
+            prev.open != next.open
+                || prev.rows != next.rows
+                || prev.highlighted != next.highlighted
+                || prev.query != next.query
         }
-        (Some(StandardVisual::MenuSurface { .. }), _)
-        | (_, Some(StandardVisual::MenuSurface { .. })) => true,
-        // A select field's open menu is a list box of virtual options: they
-        // follow its rows, its highlight, and where it is placed and
-        // scrolled. The pointer heating the scrollbar changes none of them.
-        (
-            Some(StandardVisual::Select {
-                opened: previous_open,
-                options: previous_options,
-                highlighted: previous_highlighted,
-                menu_scroll: previous_scroll,
-                menu_room: previous_room,
-                size: previous_size,
-                fit_options: previous_fit,
-                ..
-            }),
-            Some(StandardVisual::Select {
-                opened,
-                options,
-                highlighted,
-                menu_scroll,
-                menu_room,
-                size,
-                fit_options,
-                ..
-            }),
-        ) => {
-            previous_open != opened
-                || (*opened
-                    && (previous_options != options
-                        || previous_highlighted != highlighted
-                        || previous_scroll.offset != menu_scroll.offset
-                        || previous_room != menu_room
-                        || previous_size != size
-                        || previous_fit != fit_options))
+        (Some(_), None) | (None, Some(_)) => true,
+        (None, None) => false,
+    }
+}
+
+/// A select field's open menu is a list box of virtual options: they
+/// follow its rows, its highlight, and where it is placed and scrolled.
+/// The pointer heating the scrollbar changes none of them.
+pub(crate) fn select_accessibility_changed(
+    previous: Option<&crate::WidgetVisualHandle>,
+    next: Option<&crate::WidgetVisualHandle>,
+) -> bool {
+    match (
+        previous.and_then(|visual| visual.downcast_ref::<crate::SelectVisual>()),
+        next.and_then(|visual| visual.downcast_ref::<crate::SelectVisual>()),
+    ) {
+        (Some(previous), Some(next)) => {
+            previous.opened != next.opened
+                || (next.opened
+                    && (previous.options != next.options
+                        || previous.highlighted != next.highlighted
+                        || previous.menu_scroll.offset != next.menu_scroll.offset
+                        || previous.menu_room != next.menu_room
+                        || previous.size != next.size
+                        || previous.fit_options != next.fit_options))
         }
-        (Some(StandardVisual::Select { .. }), _) | (_, Some(StandardVisual::Select { .. })) => true,
-        _ => false,
+        (Some(_), None) | (None, Some(_)) => true,
+        (None, None) => false,
     }
 }
 
@@ -484,44 +682,25 @@ pub(crate) fn menu_surface_accessibility_changed(
 /// its semantics follow the visible rows (toggle states included), the
 /// active one and the toggle columns' names.
 pub(crate) fn tree_view_accessibility_changed(
-    previous: Option<&StandardVisual>,
-    next: Option<&StandardVisual>,
+    previous: Option<&crate::WidgetVisualHandle>,
+    next: Option<&crate::WidgetVisualHandle>,
 ) -> bool {
-    match (previous, next) {
-        (
-            Some(StandardVisual::TreeView {
-                rows: previous_rows,
-                active: previous_active,
-                column_labels: previous_labels,
-                ..
-            }),
-            Some(StandardVisual::TreeView {
-                rows,
-                active,
-                column_labels,
-                ..
-            }),
-        ) => previous_rows != rows || previous_active != active || previous_labels != column_labels,
-        (Some(StandardVisual::TreeView { .. }), _) | (_, Some(StandardVisual::TreeView { .. })) => {
-            true
+    match (
+        previous.and_then(|visual| visual.downcast_ref::<crate::TreeViewVisual>()),
+        next.and_then(|visual| visual.downcast_ref::<crate::TreeViewVisual>()),
+    ) {
+        (Some(previous), Some(next)) => {
+            previous.rows != next.rows
+                || previous.active != next.active
+                || previous.column_labels != next.column_labels
         }
-        _ => false,
+        (Some(_), None) | (None, Some(_)) => true,
+        (None, None) => false,
     }
 }
 
 /// Whether a menu surface with `visual` hides its child `child`: a closed
 /// surface hides its items, never the content that draws its trigger.
-pub(crate) fn closed_menu_hides(visual: Option<&StandardVisual>, child: StableNodeId) -> bool {
-    match visual {
-        Some(StandardVisual::MenuSurface {
-            open: false,
-            overlay,
-            ..
-        }) => overlay.and_then(|overlay| overlay.trigger_content) != Some(child),
-        _ => false,
-    }
-}
-
 #[derive(Debug, Clone)]
 struct HitEntry {
     id: StableNodeId,
@@ -704,7 +883,7 @@ pub enum UiWorldError {
     InvalidIme(StableNodeId),
     InvalidCustomRender(StableNodeId),
     InvalidEventListener(StableNodeId),
-    InvalidStandardVisual(StableNodeId),
+    InvalidWidgetVisual(StableNodeId),
     InvalidInlineContent(StableNodeId),
     InlineTextEngineRequired(StableNodeId),
     InvalidOverlayHost(StableNodeId),
@@ -832,10 +1011,10 @@ impl fmt::Display for UiWorldError {
                     id.get()
                 )
             }
-            Self::InvalidStandardVisual(id) => {
+            Self::InvalidWidgetVisual(id) => {
                 write!(
                     formatter,
-                    "node {} has invalid standard visual state",
+                    "node {} has invalid widget visual state",
                     id.get()
                 )
             }
@@ -893,22 +1072,6 @@ pub enum InputModality {
     Pointer,
 }
 
-/// The work counters a world keeps: the last drain's, the frame's being
-/// accumulated, and two sets counted between drains. Boxed in [`UiWorld`].
-#[derive(Default)]
-struct WorldCounters {
-    last_counters: WorkCounters,
-    frame_counters: WorkCounters,
-    /// What the layout mutation authority classified since the last fold.
-    /// An effective-equivalent write dirties nothing, so its count cannot
-    /// wait for a non-empty drain to be seen.
-    pending_layout_invalidations_counted: WorkCounters,
-    /// What changes made between frames cost, counted when they were made.
-    /// Their cost belongs to the frame that resolves them: these wait for
-    /// that frame's first drain, not for the start of the frame.
-    pending_drain_counts: WorkCounters,
-}
-
 /// The sole authoritative retained identity and hierarchy store.
 pub struct UiWorld {
     input: input::WorldInputState,
@@ -960,7 +1123,7 @@ pub struct UiWorld {
     /// Markdown diagrams recorded against the theme, by laid-out scene and
     /// palette epoch. Cleared when the epoch moves; bounded.
     #[cfg(feature = "rich-text")]
-    diagram_recordings: RefCell<Vec<(u64, crate::markdown_diagram::DiagramDrawing)>>,
+    pub(crate) diagram_recordings: RefCell<Vec<(u64, crate::markdown_diagram::DiagramDrawing)>>,
     /// Last recording of each modal frame's card surface painter
     /// ([`crate::Dialog::surface_painter`]), apart from the node's own
     /// painter: a frame can have both. Geometry reads through it; despawn
@@ -969,7 +1132,7 @@ pub struct UiWorld {
     /// The `nana-text` engine the host last shaped with, for painters that
     /// measure text while recording. `None` until a host shapes through one;
     /// painters then measure with the em-based fallback.
-    paint_text_engine: Option<nana_text::SharedTextEngine>,
+    pub(crate) paint_text_engine: Option<nana_text::SharedTextEngine>,
     /// Painters set on nodes apart from their style
     /// ([`crate::UiMutation::SetPainter`]). Empty in a tree nobody paints.
     painter_overrides: crate::NodeMap<crate::NodePainter>,
@@ -1036,17 +1199,12 @@ pub struct UiWorld {
     layout_source_epoch: u64,
     /// What the framework's own controls say; see [`Self::framework_strings`].
     framework_strings: Arc<nana_ui_core::FrameworkStrings>,
-    /// Canonical render/input-facing geometry. `NodeRecord::layout` remains a
+    /// Canonical render/input-facing geometry metadata. `NodeRecord::layout` remains a
     /// compatibility cache for old internal paths; all public geometry reads
     /// go through this table when a result has been published.
-    layout_results: crate::NodeMap<RetainedLayoutResult>,
-    /// Results hidden after a typed invalidation until publish confirms them.
-    /// The `Arc` stays so a bit-equivalent recompute can keep the same object
-    /// and generation; [`Self::layout_result`] reports these as absent.
-    layout_results_suppressed: NodeSet,
-    /// [`Self::layout_result`]'s answers: each result placed where its box
-    /// stands on the page, while it and its box hold.
-    page_layout_results: RefCell<crate::NodeMap<PageLayoutResult>>,
+    layout_results: crate::store::DenseNodeMap<PublishedLayoutMeta>,
+    #[cfg(test)]
+    layout_publish_seq: u64,
     /// Boxes the commit being applied wrote with a new origin, and whether
     /// that is all that changed, and every box it wrote with a new origin or
     /// size: the boxes under the first move with them
@@ -1061,7 +1219,7 @@ pub struct UiWorld {
     layout_reframe_roots: Vec<StableNodeId>,
     /// Counts [`Self::extract_nodes_reusing`] calls: a node's render marks
     /// (`NodeRecord::render_full_epoch`) say why it is dirty since the last.
-    render_epoch: Cell<u64>,
+    render_epoch: Cell<u32>,
     /// While extraction derives a component's geometry in the component's
     /// own coordinates ([`Self::local_component_geometry`]): that node. Every
     /// box read meanwhile is measured from its border-box origin, so the
@@ -1098,21 +1256,7 @@ pub struct UiWorld {
     /// Cursor declarations changed since the last system-work drain.
     cursor_style_dirty: bool,
     presenters: HashMap<String, Box<dyn TextPresenter>>,
-    spawned_since_drain: usize,
-    despawned_since_drain: usize,
-    /// Boxed with the other two sets below them: each is 1.7 KiB, and inline
-    /// the four were almost half of the world, which every construction of
-    /// a context moves.
-    counters: Box<WorldCounters>,
-    frame_extracted_nodes: usize,
-    frame_extracted_spans: usize,
     accumulating_frame: bool,
-    /// Layout/document-order allocs recorded from `&self` hot paths.
-    pending_hot_allocations: Cell<usize>,
-    pending_hot_allocated_bytes: Cell<usize>,
-    /// Layout seeds queued since the world was made: a running count the
-    /// paths that make them read before and after, to say whose they were.
-    layout_seeds_created: u64,
     /// Nodes whose style declares design intent (a radius tier, a control
     /// height or padding step, a surface inset): the only ones a metrics
     /// install can resolve differently.
@@ -1155,32 +1299,27 @@ pub struct UiWorld {
     /// Nodes style resolution turned visible since the last scheduled text
     /// pass, which re-resolves them alongside its own work.
     text_shown: Vec<StableNodeId>,
-    /// Theme/style work (Issue #101) of the last style pass or theme install,
-    /// or of the last frame that ran one.
-    theme_work: ThemeWorkCounters,
-    /// Theme/style work of the frame being accumulated.
-    theme_frame_work: ThemeWorkCounters,
-    /// Token-authority reads recorded from the `&self` palette paths. Folded
-    /// into `theme_work` by the pass that made them. Counted in its own
-    /// `Cell` rather than through a pending `ThemeWorkCounters`: this is the
-    /// hottest observation on the style path — once per role a resolve reads
-    /// — and a whole-struct read-modify-write per read is measurable.
-    pending_theme_reads: Cell<usize>,
-    /// `LayoutStyle` copies recorded from the style-write paths, folded on
-    /// the same boundary. Separate from the reads because a write is rare
-    /// and the two are never observed together.
-    pending_layout_copies: Cell<usize>,
     /// Recently written layouts, shared by nodes whose layouts are equal.
     layouts: style::LayoutInterner,
     /// Recently written node styles, shared by records whose styles are equal.
     node_styles: style::NodeStyleInterner,
+    /// Recently resolved inherited styles, shared across non-parent siblings.
+    inherited_styles: style::InheritedStyleInterner,
+    /// Recently resolved computed styles, shared across matching widgets.
+    computed_styles: style::ComputedStyleInterner,
     /// Recent pairs of resolved layouts a restyle compared, and what it found.
     layout_pairs: style_pairs::LayoutPairMemo,
     /// Live Confirm modal frames. Extract, a11y, and hit-test skip ancestor
     /// confirm walks when this is zero.
     confirm_modals: usize,
+    /// Live ModalFrame visuals (places modal slots & descendant bounds clips).
+    modal_frames: usize,
+    /// Live MenuSurface visuals (gates `closed_menu_hides` & layout locality).
+    menu_surfaces: usize,
     /// Live EmptyState + ModalFrame visuals that clip descendants.
     clip_visuals: usize,
+    /// Live widget visuals implementing [`WidgetVisual::lone_list_trailing_slots`].
+    list_leading_visuals: usize,
     /// Nodes with an authored `z-index`, or an open triggered menu overlay
     /// whose children inject z-index. Stacking walks skip when this is zero.
     z_index_nodes: usize,
@@ -1279,12 +1418,8 @@ pub struct UiWorld {
     /// Live regions and how they announce, as the composites that own them
     /// set them ([`MutationQueue::set_live`]).
     live_regions: HashMap<StableNodeId, AccessibilityLive, BuildIdHasher>,
-    /// Nodes visited by mutation validation since the last drain, summed over
-    /// every commit the next frame will consume. Validation must scale with the
-    /// batch, not the retained world; this is the sentinel for that invariant.
-    validation_nodes_scanned: usize,
     /// Bumped on `SetTheme`; extract skips a second palette walk when it matches.
-    palette_epoch: u64,
+    pub(crate) palette_epoch: u64,
     /// Parents whose child list changed since the last drain (insert, detach,
     /// despawn). Consumers take the list once per commit to schedule opt-in
     /// component reprojections; see `ComponentView::wants_child_reproject`.
@@ -1373,9 +1508,9 @@ impl UiWorld {
             layout_generation: 0,
             layout_source_epoch: 1,
             framework_strings: Arc::default(),
-            layout_results: crate::NodeMap::default(),
-            layout_results_suppressed: NodeSet::default(),
-            page_layout_results: RefCell::default(),
+            layout_results: crate::store::DenseNodeMap::default(),
+            #[cfg(test)]
+            layout_publish_seq: 0,
             layout_moved_roots: Vec::new(),
             layout_written: NodeSet::default(),
             pending_document_layouts: Vec::new(),
@@ -1393,15 +1528,7 @@ impl UiWorld {
             layout_anchor_roots: HashSet::new(),
             cursor_style_dirty: false,
             presenters: HashMap::new(),
-            spawned_since_drain: 0,
-            despawned_since_drain: 0,
-            counters: Box::default(),
-            frame_extracted_nodes: 0,
-            frame_extracted_spans: 0,
             accumulating_frame: false,
-            pending_hot_allocations: Cell::new(0),
-            pending_hot_allocated_bytes: Cell::new(0),
-            layout_seeds_created: 0,
             intent_nodes: HashSet::default(),
             replaced: replaced::ReplacedIndex::default(),
             responsive: responsive::ResponsiveIndex::default(),
@@ -1419,15 +1546,16 @@ impl UiWorld {
             text_frame_work: nana_text::TextWorkCounters::default(),
             pending_edit_work: nana_text::TextWorkCounters::default(),
             text_shown: Vec::new(),
-            theme_work: ThemeWorkCounters::default(),
-            theme_frame_work: ThemeWorkCounters::default(),
-            pending_theme_reads: Cell::new(0),
-            pending_layout_copies: Cell::new(0),
             layouts: style::LayoutInterner::default(),
             node_styles: style::NodeStyleInterner::default(),
+            inherited_styles: style::InheritedStyleInterner::default(),
+            computed_styles: style::ComputedStyleInterner::default(),
             layout_pairs: style_pairs::LayoutPairMemo::default(),
             confirm_modals: 0,
+            modal_frames: 0,
+            menu_surfaces: 0,
             clip_visuals: 0,
+            list_leading_visuals: 0,
             z_index_nodes: 0,
             sticky_nodes: crate::StickyDependencies::default(),
             triggered_overlays: HashSet::default(),
@@ -1462,7 +1590,6 @@ impl UiWorld {
             labelled_by: HashMap::default(),
             labels: HashMap::default(),
             live_regions: HashMap::default(),
-            validation_nodes_scanned: 0,
             palette_epoch: 1,
             structural_change_parents: Vec::new(),
             strut_candidates: Vec::new(),
@@ -1550,19 +1677,7 @@ impl UiWorld {
             return;
         }
         if invalidation.is_empty() {
-            self.counters
-                .pending_layout_invalidations_counted
-                .layout_invalidations_zero_delta += 1;
             return;
-        }
-        self.counters
-            .pending_layout_invalidations_counted
-            .layout_invalidations_created += 1;
-        self.layout_seeds_created += 1;
-        if invalidation.source == LayoutInvalidationSource::Text {
-            self.counters
-                .pending_layout_invalidations_counted
-                .text_reflow_seeds += 1;
         }
         self.queue_layout_invalidation(id, invalidation);
         // A fixed border box absorbs an inner metric. Drop that box so a
@@ -1578,27 +1693,6 @@ impl UiWorld {
             || invalidation.affected_axes.intersects(metric_export);
         self.suppress_layout_result_chain(id, changes_border);
         let _ = self.mark_scroll_compatible(id, crate::schedule::DirtyMask::LAYOUT);
-    }
-
-    /// A virtual list's pass cost `rows`.
-    pub(crate) fn note_virtual_rows(&mut self, rows: VirtualRowCounts) {
-        let pending = &mut self.counters.pending_drain_counts;
-        pending.virtual_row_metric_updates += rows.metric_updates;
-        pending.virtual_prefix_index_updates += rows.prefix_index_updates;
-        pending.virtual_rows_remeasured += rows.rows_remeasured;
-        pending.virtual_rows_repositioned += rows.rows_repositioned;
-        pending.virtual_logical_rows_scanned += rows.logical_rows_scanned;
-        pending.virtual_scroll_extent_updates += rows.scroll_extent_updates;
-        pending.virtual_rows_materialized_from_layout += rows.rows_materialized;
-    }
-
-    /// The layout seeds queued since `before` were a component state
-    /// change's.
-    pub(crate) fn note_state_seeds(&mut self, before: u64) {
-        let seeds = (self.layout_seeds_created - before) as usize;
-        self.counters
-            .pending_drain_counts
-            .component_state_layout_seeds += seeds;
     }
 
     /// Queue `invalidation` for `id`, merged into a cause already pending:
@@ -1795,38 +1889,138 @@ impl UiWorld {
         self.layout_generation
     }
 
+    pub(crate) fn published_layout_meta(&self, id: StableNodeId) -> Option<&PublishedLayoutMeta> {
+        self.layout_results.get(&id).filter(|meta| !meta.suppressed)
+    }
+
+    pub(crate) fn has_local_layout_result(&self, id: StableNodeId) -> bool {
+        self.published_layout_meta(id).is_some()
+    }
+
+    pub(crate) fn sticky_boxes(&self, id: StableNodeId) -> Option<crate::StickyBoxes> {
+        self.published_layout_meta(id)
+            .map(PublishedLayoutMeta::sticky_boxes)
+    }
+
+    pub(crate) fn extracted_layout(&self, id: StableNodeId) -> Option<crate::ExtractedLayout> {
+        self.published_layout_meta(id)
+            .map(PublishedLayoutMeta::extracted_layout)
+    }
+
     /// Canonical geometry for `id`, if the node has been laid out, on the
-    /// page: its result placed where its box stands. Placed once per result
-    /// and position; [`Self::local_layout_result`] is the result as kept.
+    /// page: its result placed where its box stands. [`Self::local_layout_result`]
+    /// is the result in `id`'s own coordinates.
     pub fn layout_result(&self, id: StableNodeId) -> Option<Arc<crate::LayoutResult>> {
-        let local = self.local_layout_result(id)?;
+        let meta = self.published_layout_meta(id)?;
         let origin = self.layout_origin(id)?;
-        let key = [origin[0].to_bits(), origin[1].to_bits()];
-        if let Some(page) = self.page_layout_results.borrow().get(&id)
-            && page.origin == key
-            && Arc::ptr_eq(&page.local, local)
-        {
-            return Some(Arc::clone(&page.placed));
-        }
-        let placed = Arc::new(self.place_layout_result_on_page(id, local, origin));
-        self.page_layout_results.borrow_mut().insert(
-            id,
-            PageLayoutResult {
-                local: Arc::clone(local),
-                origin: key,
-                placed: Arc::clone(&placed),
-            },
-        );
-        Some(placed)
+        let local = self.reconstruct_local_layout_result(id, meta);
+        Some(Arc::new(
+            self.place_layout_result_on_page(id, local, origin),
+        ))
     }
 
     /// `id`'s published result in its own coordinates: its border box at the
     /// origin. A box that only moved keeps it.
-    pub fn local_layout_result(&self, id: StableNodeId) -> Option<&Arc<crate::LayoutResult>> {
-        if self.layout_results_suppressed.contains(&id) {
-            return None;
+    pub fn local_layout_result(&self, id: StableNodeId) -> Option<Arc<crate::LayoutResult>> {
+        let meta = self.published_layout_meta(id)?;
+        Some(Arc::new(self.reconstruct_local_layout_result(id, meta)))
+    }
+
+    fn reconstruct_local_layout_result(
+        &self,
+        id: StableNodeId,
+        meta: &PublishedLayoutMeta,
+    ) -> crate::LayoutResult {
+        let bounds = meta.bounds();
+        let (last_baseline, scroll_extent, scroll_offset, scroll_metrics, fragments, parts) =
+            if let Some(ext) = meta.ext.as_ref() {
+                (
+                    ext.last_baseline,
+                    ext.scroll_extent,
+                    ext.scroll_offset,
+                    ext.scroll_metrics,
+                    Arc::clone(&ext.fragments),
+                    Arc::clone(&ext.parts),
+                )
+            } else if meta.single_text_source != TEXT_SOURCE_NONE_SENTINEL {
+                let text_box = meta.inline_text_box();
+                let source = meta.single_text_range();
+                let first_baseline = meta.first_baseline();
+                let mut line =
+                    crate::LayoutFragment::new(crate::LayoutFragmentKind::TextLine, text_box);
+                line.first_baseline = first_baseline;
+                line.last_baseline = first_baseline;
+                line.source = source.clone();
+                let mut run =
+                    crate::LayoutFragment::new(crate::LayoutFragmentKind::TextRun, text_box);
+                run.first_baseline = first_baseline;
+                run.last_baseline = first_baseline;
+                run.source = source;
+                (
+                    first_baseline,
+                    meta.overflow_box(),
+                    ScrollOffset::default(),
+                    None,
+                    Arc::from([line, run]),
+                    Arc::from([
+                        crate::LayoutPart::new(crate::LayoutPartKind::TextContent, text_box),
+                        crate::LayoutPart::new(
+                            crate::LayoutPartKind::ComponentContent,
+                            meta.content_box,
+                        ),
+                    ]),
+                )
+            } else {
+                (
+                    meta.first_baseline(),
+                    meta.overflow_box(),
+                    ScrollOffset::default(),
+                    None,
+                    Arc::default(),
+                    Arc::from([crate::LayoutPart::new(
+                        crate::LayoutPartKind::ComponentContent,
+                        meta.content_box,
+                    )]),
+                )
+            };
+        let mut deps = Vec::new();
+        if let Some(node) = self.nodes.get(id) {
+            deps.extend_from_slice(&node.hierarchy.children);
         }
-        self.layout_results.get(&id).map(|result| &result.local)
+        let clip = meta.clip();
+        let clip_parent = meta.clip_parent();
+        let containing_block = meta.containing_block();
+        if let Some(clip) = clip {
+            deps.push(clip);
+        }
+        if let Some(cb) = containing_block {
+            deps.push(cb);
+        }
+        deps.sort_unstable();
+        deps.dedup();
+        crate::LayoutResult {
+            bounds,
+            border_box: bounds,
+            padding_box: meta.padding_box(),
+            content_box: meta.content_box,
+            first_baseline: meta.first_baseline(),
+            last_baseline,
+            overflow: meta.overflow_box(),
+            scroll_extent,
+            scroll_offset,
+            scroll_metrics,
+            fragments,
+            parts,
+            clip,
+            clip_parent,
+            containing_block,
+            dependencies: shared_slice(&deps),
+            formatting_context: meta.formatting_context,
+            participation: meta.participation,
+            dependency_generation: meta.generation,
+            generation: meta.generation,
+            source: meta.source,
+        }
     }
 
     /// Where each of `id`'s children sits in `id`'s formatting context, in
@@ -1841,7 +2035,9 @@ impl UiWorld {
         &self,
         id: StableNodeId,
     ) -> Option<Vec<crate::LayoutChildPlacement>> {
-        self.local_layout_result(id)?;
+        if !self.has_local_layout_result(id) {
+            return None;
+        }
         let origin = self.layout_origin(id)?;
         Some(
             self.child_layout_boxes(id, Some(origin))
@@ -1860,7 +2056,9 @@ impl UiWorld {
         &self,
         id: StableNodeId,
     ) -> Option<Vec<crate::LayoutChildPlacement>> {
-        self.local_layout_result(id)?;
+        if !self.has_local_layout_result(id) {
+            return None;
+        }
         Some(
             self.child_layout_boxes(id, None)
                 .map(|(index, node, bounds)| crate::LayoutChildPlacement {
@@ -1878,7 +2076,9 @@ impl UiWorld {
     /// `id` has no published result. Read from the children when asked, as
     /// [`Self::layout_child_placements`] is.
     pub fn layout_child_fragments(&self, id: StableNodeId) -> Option<Vec<crate::LayoutFragment>> {
-        self.local_layout_result(id)?;
+        if !self.has_local_layout_result(id) {
+            return None;
+        }
         let origin = self.layout_origin(id)?;
         Some(self.child_fragments(id, Some(origin)))
     }
@@ -1888,7 +2088,9 @@ impl UiWorld {
         &self,
         id: StableNodeId,
     ) -> Option<Vec<crate::LayoutFragment>> {
-        self.local_layout_result(id)?;
+        if !self.has_local_layout_result(id) {
+            return None;
+        }
         Some(self.child_fragments(id, None))
     }
 
@@ -1937,10 +2139,10 @@ impl UiWorld {
                 let bounds = match origin {
                     None => record.local_layout,
                     Some(origin) => {
-                        let at = if record.layout_frame == crate::LayoutFrame::Parent {
+                        let at = if record.layout_frame() == crate::LayoutFrame::Parent {
                             origin
                         } else {
-                            self.frame_origin_of(record, record.layout_frame)
+                            self.frame_origin_of(record, record.layout_frame())
                         };
                         crate::layout_result::place_box(at, record.local_layout)
                     }
@@ -1949,40 +2151,16 @@ impl UiWorld {
             })
     }
 
-    /// `local`, `id`'s result, placed with its border box at `origin`: its
-    /// own geometry moved there. Children measured from another frame join
-    /// the overflow here, on the page.
-    /// Whether the result [`Self::layout_result`] last placed on the page
-    /// for `local` still joins `id`'s children from other frames where they
-    /// stand now. One placed for another result or another position, or
-    /// none, is not what a read gives now: the next read places it afresh.
-    fn placed_layout_result_holds(
-        &self,
-        id: StableNodeId,
-        local: &Arc<crate::LayoutResult>,
-    ) -> bool {
-        let Some(origin) = self.layout_origin(id) else {
-            return true;
-        };
-        let key = [origin[0].to_bits(), origin[1].to_bits()];
-        let pages = self.page_layout_results.borrow();
-        let Some(page) = pages
-            .get(&id)
-            .filter(|page| page.origin == key && Arc::ptr_eq(&page.local, local))
-        else {
-            return true;
-        };
-        let placed = self.place_layout_result_on_page(id, local, origin);
-        page.placed.overflow == placed.overflow && page.placed.scroll_extent == placed.scroll_extent
-    }
-
     fn place_layout_result_on_page(
         &self,
         id: StableNodeId,
-        local: &crate::LayoutResult,
+        mut local: crate::LayoutResult,
         origin: [f32; 2],
     ) -> crate::LayoutResult {
-        let mut result = local.clone().placed_frame(origin);
+        let local_has_scroll_metrics = local.scroll_metrics.is_some();
+        let local_fragments = std::mem::take(&mut local.fragments);
+        let local_parts = std::mem::take(&mut local.parts);
+        let mut result = local.placed_frame(origin);
         result.bounds.x = origin[0];
         result.bounds.y = origin[1];
         result.border_box.x = origin[0];
@@ -1990,33 +2168,31 @@ impl UiWorld {
         let mut escaping = None;
         let node = self.nodes.get(id);
         let joins_every_child = node.is_some_and(|node| !node.resolved_layout.clips_overflow())
-            && local.scroll_metrics.is_none();
+            && !local_has_scroll_metrics;
         for &child in node.map_or(&[][..], |node| node.hierarchy.children.as_ref()) {
             let Some(record) = self.nodes.get(child) else {
                 continue;
             };
-            if record.layout_frame == crate::LayoutFrame::Parent {
+            if record.layout_frame() == crate::LayoutFrame::Parent {
                 continue;
             }
             if joins_every_child || self.clip_parent_of(child) == Some(id) {
-                let at = self.frame_origin_of(record, record.layout_frame);
+                let at = self.frame_origin_of(record, record.layout_frame());
                 let bounds = crate::layout_result::place_box(at, record.local_layout);
                 escaping = Some(escaping.map_or(bounds, |all| union_layout_boxes(all, bounds)));
             }
         }
-        result.fragments = local
-            .fragments
+        result.fragments = local_fragments
             .iter()
             .map(|fragment| crate::LayoutResult::place_fragment(origin, fragment))
             .collect();
-        result.parts = local
-            .parts
+        result.parts = local_parts
             .iter()
             .map(|part| crate::LayoutResult::place_part(origin, part))
             .collect();
         if let Some(escaping) = escaping {
             result.overflow = union_layout_boxes(result.overflow, escaping);
-            if local.scroll_metrics.is_none() {
+            if !local_has_scroll_metrics {
                 result.scroll_extent = result.overflow;
             }
         }
@@ -2031,7 +2207,7 @@ impl UiWorld {
         child: StableNodeId,
     ) -> Option<LayoutBox> {
         let record = self.nodes.get(child)?;
-        let from_owner = match record.layout_frame {
+        let from_owner = match record.layout_frame() {
             crate::LayoutFrame::Parent => record.hierarchy.parent == Some(owner),
             crate::LayoutFrame::Block(block) => block == owner,
             crate::LayoutFrame::Page => false,
@@ -2048,11 +2224,21 @@ impl UiWorld {
         })
     }
 
+    pub(crate) fn slot_box_in_frame(
+        &self,
+        owner: StableNodeId,
+        slot: StableNodeId,
+        own_frame: bool,
+    ) -> Option<LayoutBox> {
+        if own_frame {
+            self.layout_box_from(owner, slot)
+        } else {
+            self.component_layout_box(slot)
+        }
+    }
+
     pub(crate) fn clear_layout_results_subtree(&mut self, root: StableNodeId) {
-        if self.layout_results.is_empty()
-            && self.layout_results_suppressed.is_empty()
-            && self.page_layout_results.get_mut().is_empty()
-        {
+        if self.layout_results.is_empty() {
             // Nothing published yet, so nothing to clear below `root`.
             return;
         }
@@ -2064,8 +2250,6 @@ impl UiWorld {
                 .map(|node| node.hierarchy.children.clone())
                 .unwrap_or_default();
             self.layout_results.remove(&id);
-            self.layout_results_suppressed.remove(&id);
-            self.page_layout_results.get_mut().remove(&id);
             stack.extend(children.iter().copied());
         }
     }
@@ -2077,7 +2261,7 @@ impl UiWorld {
     /// so the walk stops there. `start_changes_border` continues through
     /// `start` itself when that node's own border box is what changed.
     fn clear_layout_result_chain(&mut self, start: StableNodeId, start_changes_border: bool) {
-        if self.layout_results.is_empty() && self.layout_results_suppressed.is_empty() {
+        if self.layout_results.is_empty() {
             // Nothing published yet, so nothing to clear up the chain.
             return;
         }
@@ -2120,8 +2304,6 @@ impl UiWorld {
             match walk {
                 ResultChainWalk::Clear => {
                     self.layout_results.remove(&node);
-                    self.layout_results_suppressed.remove(&node);
-                    self.page_layout_results.get_mut().remove(&node);
                 }
                 ResultChainWalk::Suppress => self.suppress_layout_result(node),
             }
@@ -2171,14 +2353,11 @@ impl UiWorld {
         let mut current = Some(node);
         while let Some(node) = current {
             let done = match walk {
-                ResultChainWalk::Clear => {
-                    !self.layout_results.contains_key(&node)
-                        && !self.layout_results_suppressed.contains(&node)
-                }
-                ResultChainWalk::Suppress => {
-                    !self.layout_results.contains_key(&node)
-                        || self.layout_results_suppressed.contains(&node)
-                }
+                ResultChainWalk::Clear => !self.layout_results.contains_key(&node),
+                ResultChainWalk::Suppress => self
+                    .layout_results
+                    .get(&node)
+                    .is_none_or(|meta| meta.suppressed),
             };
             assert!(
                 done,
@@ -2245,8 +2424,8 @@ impl UiWorld {
     }
 
     fn suppress_layout_result(&mut self, id: StableNodeId) {
-        if self.layout_results.contains_key(&id) {
-            self.layout_results_suppressed.insert(id);
+        if let Some(meta) = self.layout_results.get_mut(&id) {
+            meta.suppressed = true;
         }
     }
 
@@ -2355,46 +2534,27 @@ impl UiWorld {
         // against: every result is built, and only how many children it
         // covers is counted.
         let first_publish = self.layout_results.is_empty();
-        let (covered, mut children_visited) = if first_publish {
-            let count = unique
-                .iter()
-                .filter(|&&id| self.parent_id(id).is_some())
-                .count();
-            (Vec::new(), count)
+        let covered = if first_publish {
+            Vec::new()
         } else {
             let mut covered: Vec<(StableNodeId, StableNodeId)> = unique
                 .iter()
                 .filter_map(|&id| Some((self.parent_id(id)?, id)))
                 .collect();
             covered.sort_unstable();
-            (covered, 0usize)
+            covered
         };
         let covered_ids: Vec<StableNodeId> = covered.iter().map(|&(_, id)| id).collect();
         #[cfg(feature = "benchmark")]
         let mut phase = crate::layout_engine::plan_stats::PhaseClock::start();
         let mut built = Vec::with_capacity(unique.len());
         let mut scratch = ResultScratch::default();
-        let mut reused = 0usize;
-        // Parents with a covered child measured from another frame, in
-        // order. That child joins the parent's overflow only on the page,
-        // where the placed result is kept by the local result's identity:
-        // such a parent is published anew when its local result is the
-        // same but the one placed on the page no longer is, and is
-        // re-extracted with it.
-        let mut escaped: Vec<StableNodeId> = Vec::new();
         for &id in &unique {
             if boxless.contains(&id) {
                 self.layout_results.remove(&id);
-                self.layout_results_suppressed.remove(&id);
-                self.page_layout_results.get_mut().remove(&id);
                 continue;
             }
             if first_publish {
-                children_visited = children_visited.saturating_add(
-                    self.nodes
-                        .get(id)
-                        .map_or(0, |node| node.hierarchy.children.len()),
-                );
                 if let Some(result) = self.build_layout_result(id, source, &mut scratch) {
                     built.push((id, result));
                 }
@@ -2403,24 +2563,12 @@ impl UiWorld {
             let start = covered.partition_point(|&(parent, _)| parent < id);
             let end = start + covered[start..].partition_point(|&(parent, _)| parent == id);
             let covered = &covered_ids[start..end];
-            children_visited = children_visited.saturating_add(covered.len());
-            if covered.iter().any(|&child| {
-                self.nodes
-                    .get(child)
-                    .is_some_and(|record| record.layout_frame != crate::LayoutFrame::Parent)
-            }) {
-                escaped.push(id);
-            }
             if self.layout_result_geometry_current(id, covered) {
-                self.layout_results_suppressed.remove(&id);
-                reused = reused.saturating_add(1);
+                if let Some(meta) = self.layout_results.get_mut(&id) {
+                    meta.suppressed = false;
+                }
                 continue;
             }
-            children_visited = children_visited.saturating_add(
-                self.nodes
-                    .get(id)
-                    .map_or(0, |node| node.hierarchy.children.len()),
-            );
             if let Some(result) = self.build_layout_result(id, source, &mut scratch) {
                 built.push((id, result));
             }
@@ -2433,79 +2581,67 @@ impl UiWorld {
             if first_publish {
                 return true;
             }
-            if self.layout_results.get(id).is_some_and(|previous| {
-                previous.local.geometry_eq(&result.local)
-                    && (escaped.binary_search(id).is_err()
-                        || self.placed_layout_result_holds(*id, &previous.local))
-            }) {
+            if self
+                .layout_results
+                .get(id)
+                .is_some_and(|previous| previous.geometry_eq(result))
+            {
                 self.nodes.note_text_fragments(*id);
-                self.layout_results_suppressed.remove(id);
-                reused = reused.saturating_add(1);
+                if let Some(meta) = self.layout_results.get_mut(id) {
+                    meta.suppressed = false;
+                }
                 return false;
             }
             true
         });
         if published.is_empty() {
-            self.note_layout_result_publish(reused, 0, 0, children_visited);
             return;
         }
-        let changed = published.len();
-        // A first publish fills an empty table: size it once.
-        if self.layout_results.is_empty() {
-            self.layout_results.reserve(changed);
+        // Size the dense table once up to the highest published ID instead of
+        // letting per-entry inserts double the backing buffer repeatedly.
+        if let Some(&(highest, _)) = published.last() {
+            self.layout_results
+                .reserve_through(highest, self.layout_results.len() + published.len());
         }
-        self.note_layout_result_publish(reused, changed, 1, children_visited);
         self.layout_generation = self.layout_generation.wrapping_add(1);
         let generation = self.layout_generation;
         // `published` and `requested` are both sorted: one cursor walks
         // the second as the first goes.
         let mut requested = requested.iter().peekable();
-        for (id, mut retained) in published {
-            let result = Arc::get_mut(&mut retained.local).expect("a result just built");
+        for (id, mut meta) in published {
             while requested.next_if(|requested| **requested < id).is_some() {}
             let requested_here = requested.peek() == Some(&&id);
-            // One lookup for the held result: read it, then replace it.
-            let held = self.layout_results.entry(id);
-            let previous = match &held {
-                std::collections::hash_map::Entry::Occupied(held) => Some(&*held.get().local),
-                std::collections::hash_map::Entry::Vacant(_) => None,
+            let (part_budget_changed, sticky_changed, project, reshaped) = {
+                let previous = self.layout_results.get(&id);
+                // The menu's growing label slot depends on chrome and its offered
+                // box, not on label advance. A changed slot must reach text even
+                // when the outer box stays fixed (for example a changed hint).
+                let part_budget_changed = self
+                    .nodes
+                    .widget_visual(id)
+                    .is_some_and(crate::WidgetVisualHandle::tracks_text_content_part_budget)
+                    && previous.is_none_or(|previous| {
+                        text_content_part_width(previous) != text_content_part_width(&meta)
+                    });
+                let sticky_changed = self.sticky_nodes.has_dependents(id)
+                    && previous
+                        .is_none_or(|previous| previous.sticky_boxes() != meta.sticky_boxes());
+                let project = requested_here
+                    && previous.is_none_or(|previous| {
+                        layout_result_projects_new_geometry(previous, &meta)
+                    });
+                let reshaped = project
+                    && previous.is_none_or(|previous| layout_result_reshapes(previous, &meta));
+                (part_budget_changed, sticky_changed, project, reshaped)
             };
-            // The menu's growing label slot depends on chrome and its offered
-            // box, not on label advance. A changed slot must reach text even
-            // when the outer box stays fixed (for example a changed hint).
-            let part_budget_changed = matches!(
-                self.nodes.visual(id),
-                Some(
-                    StandardVisual::ActionMenuItem { .. }
-                        | StandardVisual::ListItem { content: None, .. }
-                        | StandardVisual::Card { .. }
-                )
-            ) && previous.is_none_or(|previous| {
-                let width = |result: &crate::LayoutResult| {
-                    result.parts.iter().find_map(|part| {
-                        (part.kind == crate::LayoutPartKind::TextContent)
-                            .then_some(part.bounds.width)
-                    })
-                };
-                width(previous) != width(result)
-            });
-            let sticky_changed = self.sticky_nodes.has_dependents(id)
-                && previous.is_none_or(|previous| {
-                    (
-                        previous.content_box,
-                        previous.padding_box,
-                        previous.scroll_extent,
-                    ) != (result.content_box, result.padding_box, result.scroll_extent)
-                });
-            let project = requested_here
-                && previous
-                    .is_none_or(|previous| layout_result_projects_new_geometry(previous, result));
-            let reshaped =
-                project && previous.is_none_or(|previous| layout_result_reshapes(previous, result));
-            result.generation = generation;
-            result.dependency_generation = generation;
-            held.insert_entry(retained);
-            self.layout_results_suppressed.remove(&id);
+            meta.generation = generation;
+            meta.suppressed = false;
+            #[cfg(test)]
+            {
+                self.layout_publish_seq = self.layout_publish_seq.wrapping_add(1);
+                meta.publish_seq = self.layout_publish_seq;
+            }
+            self.layout_results.insert(id, meta);
             self.nodes.note_text_fragments(id);
             if part_budget_changed {
                 self.nodes
@@ -2618,7 +2754,7 @@ impl UiWorld {
         id: StableNodeId,
         source: crate::LayoutResultSource,
         scratch: &mut ResultScratch,
-    ) -> Option<RetainedLayoutResult> {
+    ) -> Option<PublishedLayoutMeta> {
         let local = self.build_own_layout_result(id, source, scratch)?;
         self.join_layout_children(id, local, scratch)
     }
@@ -2633,7 +2769,7 @@ impl UiWorld {
         id: StableNodeId,
         source: crate::LayoutResultSource,
         scratch: &mut ResultScratch,
-    ) -> Option<crate::LayoutResult> {
+    ) -> Option<OwnLayoutBuild> {
         scratch.clear();
         let ResultScratch {
             own_parts: parts,
@@ -2654,10 +2790,13 @@ impl UiWorld {
         let text_box =
             crate::layout_engine::parts::primary_text_box(&component_parts, result.content_box);
         result.source = source;
-        result.scroll_offset = node.scroll_offset;
+        result.scroll_offset = self.nodes.scroll_offset(id);
         result.formatting_context = established_context(node);
-        result.participation = self.layout_node(id).and_then(|node| node.participation);
+        result.participation = self.layout_node_participation(id);
         let scroll_metrics = self.scroll_metrics(id);
+        let fixed = node.resolved_layout.position == nana_ui_core::PositionSpec::Fixed;
+        let clips = node.resolved_layout.clips_overflow();
+        let mut single_text_source = TEXT_SOURCE_NONE_SENTINEL;
         if record_has_text(node) && self.needs_native_text_fragments(id) {
             let (native, first, last) = self.native_text_fragments(id, text_box)?;
             fragments.extend(native);
@@ -2667,9 +2806,16 @@ impl UiWorld {
                 crate::LayoutPartKind::TextContent,
                 text_box,
             ));
-        } else if matches!(node.kind.as_ref(), NodeKind::Text) || !node.text.value.is_empty() {
+        } else if matches!(node.kind.as_ref(), NodeKind::Text) || node.has_text {
             let baseline = self.single_text_baseline(id, text_box);
-            let source = self.text_layout(id).map(|_| 0..node.text.value.len());
+            let source = self
+                .text_layout(id)
+                .map(|_| 0..self.nodes.text_content(id).value.len());
+            single_text_source = match &source {
+                None => TEXT_SOURCE_MISSING,
+                Some(range) if range.len() <= TEXT_SOURCE_MAX_LEN => range.len() as u32,
+                Some(_) => TEXT_SOURCE_NONE_SENTINEL,
+            };
             let mut line =
                 crate::LayoutFragment::new(crate::LayoutFragmentKind::TextLine, text_box);
             line.first_baseline = baseline;
@@ -2694,7 +2840,7 @@ impl UiWorld {
         // projection. Keep that semantic part alongside the ordinary
         // content box so Scene, hit testing and accessibility can share
         // the same classification without reopening component geometry.
-        if node.resolved_layout.position == nana_ui_core::PositionSpec::Fixed {
+        if fixed {
             fragments.push(crate::LayoutFragment::new(
                 crate::LayoutFragmentKind::Overlay,
                 result.bounds,
@@ -2704,7 +2850,7 @@ impl UiWorld {
                 result.bounds,
             ));
         }
-        if node.resolved_layout.clips_overflow() {
+        if clips {
             fragments.push(crate::LayoutFragment::new(
                 crate::LayoutFragmentKind::ScrollViewport,
                 result.padding_box,
@@ -2724,18 +2870,27 @@ impl UiWorld {
         }
         dependencies.sort_unstable();
         dependencies.dedup();
+        let deps_hash = hash_dependencies(dependencies);
+        let extra_start = parts.len();
         parts.extend(
             component_parts
                 .into_iter()
                 .flatten()
                 .filter(|part| part.kind != crate::LayoutPartKind::TextContent),
         );
+        let has_extra_parts = parts.len() > extra_start;
         result.scroll_metrics = scroll_metrics;
         result.clip = anchors.clip;
         result.clip_parent = anchors.clip_parent;
         result.containing_block = anchors.containing_block;
-        result.dependencies = shared_slice(dependencies);
-        Some(result)
+        Some(OwnLayoutBuild {
+            result,
+            deps_hash,
+            single_text_source,
+            text_box,
+            has_extra_parts,
+            fixed_or_clips: fixed || clips,
+        })
     }
 
     /// `local`, `id`'s own geometry, joined with its children: the overflow
@@ -2747,9 +2902,9 @@ impl UiWorld {
     fn join_layout_children(
         &self,
         id: StableNodeId,
-        mut result: crate::LayoutResult,
+        own: OwnLayoutBuild,
         scratch: &mut ResultScratch,
-    ) -> Option<RetainedLayoutResult> {
+    ) -> Option<PublishedLayoutMeta> {
         let ResultScratch {
             parts,
             own_fragments,
@@ -2758,6 +2913,14 @@ impl UiWorld {
             shared_fragments,
             ..
         } = scratch;
+        let OwnLayoutBuild {
+            mut result,
+            deps_hash,
+            single_text_source,
+            text_box,
+            has_extra_parts,
+            fixed_or_clips,
+        } = own;
         parts.clear();
         let node = self.nodes.get(id)?;
         let mut overflow = result.bounds;
@@ -2770,13 +2933,12 @@ impl UiWorld {
             !node.resolved_layout.clips_overflow() && result.scroll_metrics.is_none();
         for &child in node.hierarchy.children.iter() {
             if let Some(record) = self.nodes.get(child)
-                && record.layout_frame == crate::LayoutFrame::Parent
+                && record.layout_frame() == crate::LayoutFrame::Parent
                 && (joins_every_child || self.clip_parent_of(child) == Some(id))
             {
                 overflow = union_layout_boxes(overflow, record.local_layout);
             }
         }
-        result.fragments = shared_fragments.share(own_fragments);
         let content = content_part_index(own_parts.as_slice());
         parts.extend(own_parts[..content].iter().copied());
         parts.push(crate::LayoutPart::new(
@@ -2784,7 +2946,6 @@ impl UiWorld {
             result.content_box,
         ));
         parts.extend(own_parts[content..].iter().copied());
-        result.parts = shared_parts.share(parts);
         // Only scroll containers need the retained descendant index. Avoid
         // materializing that index for ordinary nodes while still publishing
         // the full scroll extent where a consumer can actually use it.
@@ -2818,8 +2979,82 @@ impl UiWorld {
         } else {
             result.scroll_extent = overflow;
         }
-        Some(RetainedLayoutResult {
-            local: Arc::new(result),
+        let compact_non_text = single_text_source == TEXT_SOURCE_NONE_SENTINEL
+            && own_fragments.is_empty()
+            && parts.len() == 1
+            && parts[0].kind == crate::LayoutPartKind::ComponentContent
+            && parts[0].bounds == result.content_box;
+        let text_box_eq_content = text_box == result.content_box;
+        let overflow_eq_bounds = result.overflow == result.bounds;
+        let compact_single_text = single_text_source != TEXT_SOURCE_NONE_SENTINEL
+            && (text_box_eq_content || overflow_eq_bounds)
+            && own_fragments.len() == 2
+            && parts.len() == 2;
+        let can_inline = !has_extra_parts
+            && !fixed_or_clips
+            && result.scroll_metrics.is_none()
+            && result.scroll_offset == ScrollOffset::default()
+            && result.last_baseline == result.first_baseline
+            && result.scroll_extent == result.overflow
+            && (compact_non_text || compact_single_text);
+        let (single_text_source, ext, overflow, overflow_is_text_box) = if can_inline {
+            let overflow_is_text_box =
+                single_text_source != TEXT_SOURCE_NONE_SENTINEL && !text_box_eq_content;
+            let overflow = if overflow_is_text_box {
+                text_box
+            } else {
+                result.overflow
+            };
+            (single_text_source, None, overflow, overflow_is_text_box)
+        } else {
+            (
+                TEXT_SOURCE_NONE_SENTINEL,
+                Some(Box::new(PublishedLayoutExt {
+                    last_baseline: result.last_baseline,
+                    scroll_extent: result.scroll_extent,
+                    scroll_offset: result.scroll_offset,
+                    scroll_metrics: result.scroll_metrics,
+                    fragments: shared_fragments.share(own_fragments),
+                    parts: shared_parts.share(parts),
+                })),
+                result.overflow,
+                false,
+            )
+        };
+        let rare = (result.padding_box != result.bounds
+            || result.clip.is_some()
+            || result.clip_parent.is_some()
+            || result.containing_block.is_some())
+        .then(|| {
+            Box::new(PublishedRareGeometry {
+                padding_box: result.padding_box,
+                clip: result.clip,
+                clip_parent: result.clip_parent,
+                containing_block: result.containing_block,
+            })
+        });
+        let first_baseline_raw = result
+            .first_baseline
+            .filter(|value| !value.is_nan())
+            .unwrap_or(f32::NAN);
+        Some(PublishedLayoutMeta {
+            generation: 0,
+            deps_hash,
+            width: result.bounds.width,
+            height: result.bounds.height,
+            content_box: result.content_box,
+            overflow,
+            first_baseline_raw,
+            single_text_source,
+            rare,
+            ext,
+            formatting_context: result.formatting_context,
+            participation: result.participation,
+            source: result.source,
+            suppressed: false,
+            overflow_is_text_box,
+            #[cfg(test)]
+            publish_seq: 0,
         })
     }
 
@@ -2830,29 +3065,22 @@ impl UiWorld {
     /// recorded. Checking the covered children is checking them all, without
     /// a walk of a wide container's children for an edit in one of them.
     fn layout_result_geometry_current(&self, id: StableNodeId, covered: &[StableNodeId]) -> bool {
-        if self.local_layout_result(id).is_some_and(|result| {
-            result.participation != self.layout_node(id).and_then(|node| node.participation)
-        }) {
-            return false;
-        }
-
-        // Provenance is not geometry. A held result whose geometry still
-        // holds is kept with its stamp, which is what a rebuild would end in
-        // (`geometry_eq` ignores the source), so a different `source` alone
-        // does not force one: the writeback commit publishes as a
-        // compatibility write and the pass publishes again as layout, and
-        // rebuilding every ancestor for each would copy a wide container's
-        // placements twice a frame.
         let Some(held) = self.layout_results.get(&id) else {
             return false;
         };
-        // Everything is compared where it was built, from the border box's
-        // origin, and each child as its local box.
-        let previous = &held.local;
+        if !held.suppressed && held.participation != self.layout_node_participation(id) {
+            return false;
+        }
         let Some(facts) = self.layout_result_facts(id) else {
             return false;
         };
-        if facts.fixed || facts.clips || self.scroll_metrics(id).is_some() {
+        if facts.fixed
+            || facts.clips
+            || self.scroll_metrics(id).is_some()
+            || held.ext.as_ref().is_some_and(|ext| {
+                ext.scroll_metrics.is_some() || ext.scroll_extent != held.overflow_box()
+            })
+        {
             return false;
         }
         let Some(local) = self.local_layout_box(id).map(|bounds| LayoutBox {
@@ -2862,10 +3090,7 @@ impl UiWorld {
         }) else {
             return false;
         };
-        if previous.bounds != local
-            || previous.border_box != local
-            || previous.scroll_offset != facts.scroll_offset
-        {
+        if held.bounds() != local || held.scroll_offset() != facts.scroll_offset {
             return false;
         }
         let padding = self.used_layout_padding(id);
@@ -2883,16 +3108,10 @@ impl UiWorld {
             padding.bottom,
             padding.left,
         );
-        if previous.padding_box != padding_box || previous.content_box != content_box {
+        if held.padding_box() != padding_box || held.content_box != content_box {
             return false;
         }
-        // The overflow is the box joined with the children measured from
-        // it (this box neither clips nor scrolls, so it joins them all). A
-        // held overflow that is the box itself had every such child inside
-        // it; the children no publish covered still are, so the overflow
-        // holds while each covered one is inside too. A held overflow past
-        // the box is rebuilt: the child that made it may have moved back.
-        if previous.overflow != local {
+        if held.overflow_box() != local {
             return false;
         }
         for &child in covered {
@@ -2902,17 +3121,12 @@ impl UiWorld {
             if record.hierarchy.parent != Some(id) {
                 return false;
             }
-            // A child measured from another frame joins the overflow on the
-            // page, where the placed result is kept by this result's
-            // identity: a new one goes with every such child published.
-            if record.layout_frame != crate::LayoutFrame::Parent
+            if record.layout_frame() != crate::LayoutFrame::Parent
                 || union_layout_boxes(local, record.local_layout) != local
             {
                 return false;
             }
         }
-        // Everything below is solved where a rebuild solves it, with the
-        // border box at the origin.
         let component_parts = self.solve_content_parts_at(id, content_box, local);
         let text_box = crate::layout_engine::parts::primary_text_box(&component_parts, content_box);
         let placed_text = text_box;
@@ -2924,16 +3138,19 @@ impl UiWorld {
                 .copied()
         };
         if facts.text && self.needs_native_text_fragments(id) {
+            let Some(ext) = held.ext.as_ref() else {
+                return false;
+            };
             let current = self
                 .nodes
                 .text_node(id)
                 .is_some_and(|text| text.fragments_layout == text.layout);
-            let content_current = previous
+            let content_current = ext
                 .parts
                 .iter()
                 .find(|part| part.kind == crate::LayoutPartKind::TextContent)
                 .is_some_and(|part| part.bounds == placed_text);
-            let parts_current = previous
+            let parts_current = ext
                 .parts
                 .iter()
                 .filter(|part| {
@@ -2956,46 +3173,62 @@ impl UiWorld {
             return current
                 && content_current
                 && parts_current
-                && previous.formatting_context == facts.context
-                && self.layout_anchors(id).recorded_in(previous);
+                && held.formatting_context == facts.context
+                && self.layout_anchors(id).recorded_in_meta(held);
         }
         let baseline = facts
             .text
             .then(|| self.single_text_baseline(id, text_box))
             .flatten();
-        if facts.text {
-            let source = self
-                .text_layout(id)
-                .and_then(|_| self.text(id))
-                .map(|text| 0..text.len());
-            if previous
-                .fragments
-                .get(..2)
-                .is_none_or(|fragments| fragments.iter().any(|fragment| fragment.source != source))
+        if held.first_baseline() != baseline
+            || held.last_baseline() != baseline
+            || held.formatting_context != facts.context
+        {
+            return false;
+        }
+        if let Some(ext) = held.ext.as_ref() {
+            if facts.text {
+                let source = self
+                    .text_layout(id)
+                    .and_then(|_| self.text(id))
+                    .map(|text| 0..text.len());
+                if ext.fragments.get(..2).is_none_or(|fragments| {
+                    fragments.iter().any(|fragment| fragment.source != source)
+                }) {
+                    return false;
+                }
+            }
+            if !retained_projection_current(
+                &ext.fragments,
+                &ext.parts,
+                content_box,
+                placed_text,
+                baseline,
+                facts.text,
+                extra,
+            ) {
+                return false;
+            }
+        } else {
+            if facts.text {
+                let source = self
+                    .text_layout(id)
+                    .and_then(|_| self.text(id))
+                    .map(|text| 0..text.len());
+                if held.single_text_source == TEXT_SOURCE_NONE_SENTINEL
+                    || held.single_text_range() != source
+                    || placed_text != held.inline_text_box()
+                    || extra().next().is_some()
+                {
+                    return false;
+                }
+            } else if held.single_text_source != TEXT_SOURCE_NONE_SENTINEL
+                || extra().next().is_some()
             {
                 return false;
             }
         }
-        if previous.first_baseline != baseline || previous.last_baseline != baseline {
-            return false;
-        }
-        if previous.formatting_context != facts.context {
-            return false;
-        }
-        if !retained_projection_current(
-            previous,
-            content_box,
-            placed_text,
-            baseline,
-            facts.text,
-            extra,
-        ) {
-            return false;
-        }
-        // The dependencies are the children plus the two anchors: with the
-        // box and the overflow where the result recorded them, only the
-        // anchors are left to move.
-        self.layout_anchors(id).recorded_in(previous)
+        self.layout_anchors(id).recorded_in_meta(held)
     }
 
     fn layout_result_facts(&self, id: StableNodeId) -> Option<LayoutResultFacts> {
@@ -3003,7 +3236,7 @@ impl UiWorld {
         Some(LayoutResultFacts {
             fixed: node.resolved_layout.position == PositionSpec::Fixed,
             clips: node.resolved_layout.clips_overflow(),
-            scroll_offset: node.scroll_offset,
+            scroll_offset: self.nodes.scroll_offset(id),
             text: record_has_text(node),
             border: node.resolved_layout.resolved_border_edges(),
             context: established_context(node),
@@ -3021,13 +3254,15 @@ impl UiWorld {
         self.nodes.note_node_space(id);
         // Whether a block holds a strut reads its children's display, and
         // which strut its own face (`resolve_block_struts`).
+        let text_ext_diff = !previous.text_ext.ptr_eq(&next.text_ext);
         if previous.display != next.display
             || previous.position != next.position
-            || previous.float != next.float
-            || previous.font_family != next.font_family
             || previous.font_weight != next.font_weight
             || previous.font_italic != next.font_italic
-            || previous.font_variation_settings != next.font_variation_settings
+            || (text_ext_diff
+                && (previous.text_ext.font_family != next.text_ext.font_family
+                    || previous.text_ext.font_variation_settings
+                        != next.text_ext.font_variation_settings))
         {
             self.strut_candidates.push(id);
             if let Some(parent) = self.parent_id(id) {
@@ -3055,7 +3290,7 @@ impl UiWorld {
         // turned block-level is a flow item where its box stays put, and its
         // result, not republished for a box that did not move, would say it
         // is still atomic.
-        if previous.display != next.display || previous.float != next.float {
+        if previous.display != next.display {
             self.layout_anchor_roots.insert(id);
         }
     }
@@ -3088,8 +3323,8 @@ impl UiWorld {
                 let Some(node) = self.nodes.get(id) else {
                     continue;
                 };
-                if let Some(result) = self.layout_results.get(&id)
-                    && !self.layout_anchors(id).recorded_in(&result.local)
+                if let Some(meta) = self.layout_results.get(&id)
+                    && !self.layout_anchors(id).recorded_in_meta(meta)
                 {
                     moved.push(id);
                 }
@@ -3225,370 +3460,36 @@ impl UiWorld {
         self.pending_work_revision
     }
 
-    /// Algorithm-level counters from the last non-empty drain, or the current
-    /// frame accumulator while a product flush is running. An idle
-    /// [`Self::take_system_work`] does not replace this snapshot.
-    pub fn last_work_counters(&self) -> WorkCounters {
-        let mut counters = self.counters.last_counters;
-        counters.record_hot_path_allocation(
-            self.pending_hot_allocations.get(),
-            self.pending_hot_allocated_bytes.get(),
-        );
-        add_pending_counts(
-            &mut counters,
-            self.counters.pending_layout_invalidations_counted,
-        );
-        add_pending_counts(&mut counters, self.counters.pending_drain_counts);
-        counters.scroll_content_extent_recomputes += self.pending_scroll_extent_recomputes();
-        counters.i18n.accumulate(self.i18n_gauges());
-        counters
-    }
-
-    pub fn record_presentation_gpu_work(&mut self, work: Option<nana_ui_core::GpuWorkObservation>) {
-        let mut observed = WorkCounters::default();
-        if let Some(work) = work {
-            observed.record_gpu_work(work);
-        }
-        self.counters.last_counters.batch_rebuilds = observed.batch_rebuilds;
-        self.counters.last_counters.draw_batches = observed.draw_batches;
-        self.counters.last_counters.draw_calls = observed.draw_calls;
-        self.counters.last_counters.gpu_upload_bytes = observed.gpu_upload_bytes;
-        self.counters.last_counters.gpu_buffer_reallocations = observed.gpu_buffer_reallocations;
-    }
-
-    pub fn record_output_work(&mut self, work: nana_ui_core::OutputWorkObservation) {
-        let mut observed = WorkCounters::default();
-        observed.record_output_work(work);
-        macro_rules! replace { ($($field:ident),* $(,)?) => { $(self.counters.last_counters.$field = observed.$field;)* }; }
-        replace!(
-            output_extra_passes,
-            output_gpu_copies,
-            output_target_recreates,
-            output_content_revisions,
-            output_idle_reuse_frames,
-            output_resolve_count,
-            output_gpu_copy_bytes,
-            output_gpu_convert_passes,
-            output_plan_rebuilds,
-            output_ui_renders,
-            output_submissions,
-            output_cpu_readbacks,
-            output_deferred
-        );
-    }
-
     /// Start a multi-pass frame accumulator. Idle drains still leave the
     /// previous snapshot in place until a non-empty pass runs.
-    pub fn begin_frame_counters(&mut self) {
+    pub fn begin_frame(&mut self) {
         self.begin_responsive_frame();
-        self.commit_pending_hot_allocs();
-        self.commit_pending_layout_invalidation_counts();
-        self.commit_pending_theme_work();
-        self.counters.frame_counters = WorkCounters::default();
         self.text_frame_work = nana_text::TextWorkCounters::default();
-        self.theme_frame_work = ThemeWorkCounters::default();
-        self.frame_extracted_nodes = 0;
-        self.frame_extracted_spans = 0;
         self.accumulating_frame = true;
     }
 
-    pub fn end_frame_counters(&mut self) {
+    pub fn end_frame(&mut self) {
         self.accumulating_frame = false;
     }
 
-    /// Record extract output onto the last drained work counters. Draw batches
-    /// and GPU upload bytes are omitted; extraction does not measure them.
-    pub fn record_extract(&mut self, extracted: &[ExtractedNode]) {
-        let spans = extracted.iter().map(|node| node.text_spans.len()).sum();
-        self.record_extracted(extracted.len(), spans);
-    }
-
-    /// [`Self::record_extract`] for what
-    /// [`Self::extract_nodes_reusing`] gave: a move counts as an extracted
-    /// node, and its spans are the ones the renderer already holds.
-    pub fn record_extract_reusing(&mut self, extracted: &[ExtractedNode], moved: &[ExtractedMove]) {
-        let spans = extracted.iter().map(|node| node.text_spans.len()).sum();
-        self.record_extracted(extracted.len() + moved.len(), spans);
-    }
-
-    fn record_extracted(&mut self, nodes: usize, spans: usize) {
-        if self.accumulating_frame {
-            self.frame_extracted_nodes = self.frame_extracted_nodes.saturating_add(nodes);
-            self.frame_extracted_spans = self.frame_extracted_spans.saturating_add(spans);
-            self.counters.last_counters.render_nodes_extracted = self.frame_extracted_nodes;
-            self.counters.last_counters.extracted_text_spans = self.frame_extracted_spans;
-        } else {
-            self.counters.last_counters.render_nodes_extracted = nodes;
-            self.counters.last_counters.extracted_text_spans = spans;
-        }
-    }
-
-    /// Observe a CPU hot-path heap event from a `&self` path (layout inputs,
-    /// document order). Folded into [`Self::last_work_counters`].
-    pub fn record_hot_path_allocation(&self, count: usize, bytes: usize) {
-        if count == 0 && bytes == 0 {
-            return;
-        }
-        self.pending_hot_allocations
-            .set(self.pending_hot_allocations.get().saturating_add(count));
-        self.pending_hot_allocated_bytes
-            .set(self.pending_hot_allocated_bytes.get().saturating_add(bytes));
-    }
-
-    fn commit_pending_hot_allocs(&mut self) {
-        let count = self.pending_hot_allocations.replace(0);
-        let bytes = self.pending_hot_allocated_bytes.replace(0);
-        self.counters
-            .last_counters
-            .record_hot_path_allocation(count, bytes);
-        if self.accumulating_frame {
-            self.counters
-                .frame_counters
-                .record_hot_path_allocation(count, bytes);
-        }
-    }
-
-    fn commit_pending_layout_invalidation_counts(&mut self) {
-        let counted = std::mem::take(&mut self.counters.pending_layout_invalidations_counted);
-        self.bump_last_counters(|counters| add_pending_counts(counters, counted));
-    }
-
     /// Text work (Issue #95) of the last shaping pass, or of every pass of
-    /// the last frame [`Self::begin_frame_counters`] accumulated that ran one: nodes
+    /// the last frame [`Self::begin_frame`] accumulated that ran one: nodes
     /// considered, skipped on revision alone, shaped, and what the passes
     /// cloned, hashed and looked up to get there.
     pub fn last_text_work_counters(&self) -> nana_text::TextWorkCounters {
         self.text_work
     }
 
-    /// Theme/style work (Issue #101 §4) of the last style pass or theme
-    /// install, or of every pass of the last frame
-    /// [`Self::begin_frame_counters`] accumulated that ran one: nodes
-    /// considered, resolved and skipped, token reads, and what the pass cost
-    /// Layout, Text and Paint.
-    ///
-    /// An idle frame leaves the previous snapshot in place, like
-    /// [`Self::last_work_counters`].
-    ///
-    /// One theme change is more than one event — the install marks the world,
-    /// the drain schedules it, the style pass resolves it — so measure it
-    /// inside [`Self::begin_frame_counters`] / [`Self::end_frame_counters`].
-    /// Outside that accumulator each event replaces the last, exactly as
-    /// [`Self::last_text_work_counters`] does.
-    pub fn last_theme_work_counters(&self) -> ThemeWorkCounters {
-        let mut counters = self.theme_work;
-        counters.accumulate(self.pending_theme_work());
-        counters
-    }
-
-    /// The theme/style work observed since the last fold, as counters.
-    fn pending_theme_work(&self) -> ThemeWorkCounters {
-        let mut pending = ThemeWorkCounters::default();
-        pending.record_theme_reads(self.pending_theme_reads.get());
-        pending.record_layout_copy(
-            self.pending_layout_copies.get(),
-            self.pending_layout_copies
-                .get()
-                .saturating_mul(size_of::<nana_ui_core::LayoutStyle>()),
-        );
-        pending
-    }
-
-    /// Take that work, leaving nothing behind for the next window.
-    fn take_pending_theme_work(&self) -> ThemeWorkCounters {
-        let pending = self.pending_theme_work();
-        self.pending_theme_reads.set(0);
-        self.pending_layout_copies.set(0);
-        pending
-    }
-
-    /// Observe one read of the token authority from a `&self` palette path.
-    fn record_theme_read(&self) {
-        self.pending_theme_reads
-            .set(self.pending_theme_reads.get().saturating_add(1));
-    }
-
-    /// Observe the `LayoutStyle` a style write had to copy to hold the
-    /// resolved value beside the authored intent. It is the largest heap
-    /// event on the style path and would otherwise go unwatched: it happens
-    /// under `Arc::make_mut`, which no allocator counter sees.
-    fn record_resolved_layout_copy(&self) {
-        self.pending_layout_copies
-            .set(self.pending_layout_copies.get().saturating_add(1));
-    }
-
-    /// Close the pending work onto the window it was observed in, so an event
-    /// from before [`Self::begin_frame_counters`] is not charged to the frame
-    /// that follows it.
-    fn commit_pending_theme_work(&mut self) {
-        let pending = self.take_pending_theme_work();
-        if pending == ThemeWorkCounters::default() {
-            return;
-        }
-        self.theme_work.accumulate(pending);
-        if self.accumulating_frame {
-            self.theme_frame_work.accumulate(pending);
-        }
-    }
-
-    fn record_theme_work(&mut self, mut work: ThemeWorkCounters) {
-        work.accumulate(self.take_pending_theme_work());
-        if self.accumulating_frame {
-            self.theme_frame_work.accumulate(work);
-            self.theme_work = self.theme_frame_work;
-        } else {
-            self.theme_work = work;
-        }
-    }
-
     fn record_text_work(&mut self, mut work: nana_text::TextWorkCounters) {
         work.accumulate(std::mem::take(&mut self.pending_edit_work));
-        // The CJK line decision is Dynamic Layout's text side (Issue #211).
-        if work.line_opportunities_considered > 0 || work.line_break_comparisons > 0 {
-            self.bump_last_counters(|counters| {
-                let dynamic = &mut counters.dynamic;
-                dynamic.opportunities_considered += work.line_opportunities_considered;
-                dynamic.break_comparisons += work.line_break_comparisons;
-                dynamic.beam_states = dynamic.beam_states.max(work.line_beam_states);
-                dynamic.budget_fallbacks += work.line_budget_fallbacks;
-            });
-        }
         if self.accumulating_frame {
             // Published as the frame goes, so an idle frame (no text pass)
-            // leaves the last frame that had one in place, as
-            // `last_work_counters` does.
+            // leaves the last frame that had one in place.
             self.text_frame_work.accumulate(work);
             self.text_work = self.text_frame_work;
         } else {
             self.text_work = work;
         }
-    }
-
-    fn bump_last_counters(&mut self, update: impl Fn(&mut WorkCounters)) {
-        update(&mut self.counters.last_counters);
-        if self.accumulating_frame {
-            update(&mut self.counters.frame_counters);
-        }
-    }
-
-    pub(crate) fn record_intrinsic_measure_counters(
-        &mut self,
-        counters: crate::IntrinsicCacheCounters,
-    ) {
-        self.bump_last_counters(|work| {
-            work.record_intrinsic_measure(
-                counters.intrinsic_measure_requests,
-                counters.intrinsic_measure_cache_hits,
-                counters.intrinsic_measure_cache_misses,
-                counters.intrinsic_measure_full_subtrees,
-                counters.generation_bumps,
-                counters.baseline_queries,
-                counters.cross_context_hits,
-                counters.cross_context_misses,
-            );
-        });
-    }
-
-    /// Fold structural layout-frontier observations from the retained engine
-    /// into the same frame counters as the coarse dirty drain.
-    pub(crate) fn record_layout_execution(
-        &mut self,
-        stats: crate::layout_engine::LayoutExecutionStats,
-    ) {
-        self.bump_last_counters(|counters| {
-            counters.record_layout_execution(
-                stats.measure_nodes,
-                stats.measure_cache_hits,
-                stats.measure_cache_misses,
-                stats.placement_nodes,
-                stats.origin_only_updates,
-            );
-            counters.record_layout_stack_per_level(
-                stats.measure_stack_per_level,
-                stats.placement_stack_per_level,
-            );
-            counters.record_layout_placement_boundaries(stats.placement_boundaries);
-            counters.record_layout_plans(
-                stats.placement_plans_reused,
-                stats.measure_plans_reused,
-                stats.suffixes_replayed,
-                stats.children_measured,
-                stats.containers_uncacheable,
-                stats.plan_misses,
-                stats.plan_rebuilds,
-                stats.local_context_fallbacks,
-                stats.retain_sweeps,
-            );
-            counters.inline_reflows += stats.inline_reflows;
-            counters.inline_atomic_measure_requests += stats.inline_atomic_measure_requests;
-            counters.dynamic.accumulate(stats.dynamic);
-        });
-    }
-
-    fn note_layout_result_publish(
-        &mut self,
-        reused: usize,
-        changed: usize,
-        delta_commits: usize,
-        children_visited: usize,
-    ) {
-        self.bump_last_counters(|counters| {
-            counters.record_layout_result_publish(reused, changed, delta_commits, children_visited);
-        });
-    }
-
-    pub(crate) fn record_layout_frontier(&mut self, stats: crate::LayoutFrontierStats) {
-        self.bump_last_counters(|counters| {
-            counters.record_constraint_dependents(
-                stats.constraint.seeds,
-                stats.constraint.considered,
-                stats.constraint.remeasured,
-                stats.constraint.considered - stats.constraint.remeasured,
-            );
-            counters.record_layout_frontier(
-                stats.seeds,
-                stats.seed_merges,
-                stats.nodes_measure,
-                stats.nodes_placement,
-                stats.contexts,
-                stats.nodes_writing,
-                stats.dependency_edges_visited,
-                stats.propagations_stopped,
-                stats.local_subtree_fallbacks,
-                stats.full_document_fallbacks,
-            );
-            counters.record_layout_scratch(
-                stats.scratch_entries,
-                stats
-                    .scratch_entries
-                    .saturating_mul(crate::LayoutDependencyGraph::ENTRY_BYTES),
-            );
-        });
-    }
-
-    /// A pass a constraint change seeded solved `solves` formatting contexts
-    /// from scratch.
-    pub(crate) fn record_resize_context_solves(&mut self, solves: usize) {
-        if solves > 0 {
-            self.bump_last_counters(|counters| {
-                counters.resize_context_solves =
-                    counters.resize_context_solves.saturating_add(solves);
-            });
-        }
-    }
-
-    fn record_id_list_alloc(&self, len: usize) {
-        if len == 0 {
-            return;
-        }
-        self.record_hot_path_allocation(1, len.saturating_mul(size_of::<StableNodeId>()));
-    }
-
-    fn record_string_clone(&self, len: usize) {
-        if len == 0 {
-            return;
-        }
-        self.record_hot_path_allocation(1, len);
     }
 
     pub fn theme_appearance(&self) -> nana_ui_core::ThemeAppearance {
@@ -3655,14 +3556,10 @@ impl UiWorld {
         let ours = |world: &Self, id: StableNodeId| {
             document.is_none_or(|document| world.document_of(id) == Some(document))
         };
-        self.counters
-            .pending_drain_counts
-            .scroll_content_extent_recomputes += self.take_scroll_extent_recomputes();
         let mut ids = std::mem::take(&mut self.dirty_entities)
             .into_iter()
             .collect::<Vec<_>>();
         ids.sort_unstable();
-        let dirty_len = ids.len();
         let mut work = SystemWork {
             generation: self.generation,
             style: Vec::new(),
@@ -3683,34 +3580,6 @@ impl UiWorld {
             )),
             render_extraction: Vec::new(),
             render_removals: sorted_unique(std::mem::take(&mut self.pending_render_removals)),
-            entities_total: self.nodes.len(),
-            entities_changed: 0,
-            entities_spawned: std::mem::take(&mut self.spawned_since_drain),
-            entities_despawned: std::mem::take(&mut self.despawned_since_drain),
-            input_targets: self.live_input_target_count(),
-            render_nodes_changed: 0,
-            render_nodes_extracted: 0,
-            extracted_text_spans: 0,
-            allocations: 0,
-            allocated_bytes: 0,
-            text_shaped_runs: 0,
-            text_layout_cache_hits: 0,
-            text_layout_cache_misses: 0,
-            text_wrap_layouts: 0,
-            intrinsic_measure_requests: 0,
-            intrinsic_measure_cache_hits: 0,
-            intrinsic_measure_cache_misses: 0,
-            intrinsic_measure_full_subtrees: 0,
-            intrinsic_generation_bumps: 0,
-            baseline_queries: 0,
-            cross_context_measure_hits: 0,
-            cross_context_measure_misses: 0,
-            glyph_cache_hits: None,
-            glyph_cache_misses: None,
-            cache_eviction: None,
-            // A drain always follows the commits it drains, so 0 here is an
-            // observed "validated nothing", not a missing measurement.
-            validation_nodes_scanned: Some(std::mem::take(&mut self.validation_nodes_scanned)),
         };
         work.render_removals.sort_unstable();
         work.accessibility_removals.sort_unstable();
@@ -3734,14 +3603,11 @@ impl UiWorld {
             // empty is still shaped once, to nothing: the metrics it held
             // sized its box, and a box laid out cold without text has none.
             let has_text = matches!(self.record(id).kind.as_ref(), NodeKind::Text)
-                || !self.record(id).text.value.is_empty()
-                || self.record(id).text_metrics != TextMetrics::default()
-                || matches!(
-                    self.nodes.visual(id),
-                    Some(StandardVisual::TextInput { .. })
-                        | Some(StandardVisual::EmptyState { .. })
-                        | Some(StandardVisual::ModalFrame { .. })
-                );
+                || self.record(id).has_text
+                || self.nodes.text_metrics(id) != TextMetrics::default()
+                || self
+                    .widget_visual_ref(id)
+                    .is_some_and(|w| w.owns_intrinsic_text() || w.is_text_input());
             let bits = if has_text {
                 bits
             } else {
@@ -3755,9 +3621,6 @@ impl UiWorld {
                 }
                 bits & !DirtyMask::TEXT
             };
-            if bits != 0 {
-                work.entities_changed += 1;
-            }
             push_work(&mut work, id, bits);
         }
         // Retain any typed entry queued by a post-drain authority. Sorting
@@ -3782,60 +3645,6 @@ impl UiWorld {
             .collect::<Vec<_>>();
         remaining.compact_sort_by_key(|seed| seed.node);
         work.layout_frontier_seeds.extend(remaining);
-        work.render_nodes_changed = work.render_extraction.len();
-        work.render_nodes_extracted = work.render_extraction.len();
-        let mut drain_allocs = 0usize;
-        let mut drain_bytes = 0usize;
-        let mut bump_list = |len: usize| {
-            if len > 0 {
-                drain_allocs = drain_allocs.saturating_add(1);
-                drain_bytes =
-                    drain_bytes.saturating_add(len.saturating_mul(size_of::<StableNodeId>()));
-            }
-        };
-        bump_list(dirty_len);
-        bump_list(work.style.len());
-        bump_list(work.state.len());
-        bump_list(work.text.len());
-        bump_list(work.layout_frontier_seeds.len());
-        bump_list(work.transform.len());
-        bump_list(work.transform_kept.len());
-        bump_list(work.input_hit_test.len());
-        bump_list(work.focus_ime.len());
-        bump_list(work.accessibility.len());
-        bump_list(work.accessibility_removals.len());
-        bump_list(work.render_extraction.len());
-        bump_list(work.render_removals.len());
-        work.record_hot_path_allocation(drain_allocs, drain_bytes);
-        if !work.is_empty() {
-            self.pending_hot_allocations.set(0);
-            self.pending_hot_allocated_bytes.set(0);
-            let mut counters = work.counters();
-            let counted = std::mem::take(&mut self.counters.pending_layout_invalidations_counted);
-            add_pending_counts(&mut counters, counted);
-            add_pending_counts(
-                &mut counters,
-                std::mem::take(&mut self.counters.pending_drain_counts),
-            );
-            counters.i18n.accumulate(self.i18n_gauges());
-            // Extracted node/span fields are filled by [`Self::record_extract`]
-            // on the product path, not by the planned render list.
-            counters.render_nodes_extracted = 0;
-            counters.extracted_text_spans = 0;
-            if self.accumulating_frame {
-                self.counters.frame_counters.accumulate(counters);
-                self.counters.last_counters = self.counters.frame_counters;
-                self.counters.last_counters.render_nodes_extracted = self.frame_extracted_nodes;
-                self.counters.last_counters.extracted_text_spans = self.frame_extracted_spans;
-            } else {
-                self.counters.last_counters = counters;
-            }
-        } else {
-            self.commit_pending_hot_allocs();
-            self.commit_pending_layout_invalidation_counts();
-            let pending = std::mem::take(&mut self.counters.pending_drain_counts);
-            self.bump_last_counters(|counters| add_pending_counts(counters, pending));
-        }
         work
     }
 
@@ -3899,12 +3708,6 @@ impl UiWorld {
         self.pending_render_removals.extend(work.render_removals);
         self.pending_render_removals.sort_unstable();
         self.pending_render_removals.dedup();
-        self.spawned_since_drain = self
-            .spawned_since_drain
-            .saturating_add(work.entities_spawned);
-        self.despawned_since_drain = self
-            .despawned_since_drain
-            .saturating_add(work.entities_despawned);
     }
 
     /// Whether `id` is a document root node.
@@ -3968,7 +3771,7 @@ impl UiWorld {
     /// A text field the user can type into now: an editor that is neither
     /// disabled nor read-only.
     fn takes_typing(&self, id: StableNodeId) -> bool {
-        self.nodes.text_input(id).is_some() && self.record(id).accessibility.editable
+        self.nodes.text_input(id).is_some() && self.nodes.accessibility(id).editable
     }
 
     pub fn focused_text_input(
@@ -3981,9 +3784,8 @@ impl UiWorld {
 
     pub fn text(&self, id: StableNodeId) -> Option<&str> {
         self.nodes
-            .get(id)
-            .map(|n| &n.text)
-            .map(|text| text.value.as_str())
+            .contains(id)
+            .then(|| self.nodes.text_content(id).value.as_str())
     }
 
     pub fn document_text_selection(
@@ -4036,12 +3838,13 @@ impl UiWorld {
     /// Projection code uses this accessor so it cannot render, hit-test, or
     /// expose a retained box that has not been committed to a result yet.
     pub fn canonical_layout_box(&self, id: StableNodeId) -> Option<LayoutBox> {
-        let local = self.local_layout_result(id)?;
+        let meta = self.published_layout_meta(id)?;
         let [x, y] = self.layout_origin(id)?;
         Some(LayoutBox {
             x,
             y,
-            ..local.bounds
+            width: meta.width,
+            height: meta.height,
         })
     }
 
@@ -4075,13 +3878,18 @@ impl UiWorld {
 
     /// What `id`'s [`Self::local_layout_box`] is measured from.
     pub fn layout_frame(&self, id: StableNodeId) -> Option<crate::LayoutFrame> {
-        self.nodes.get(id).map(|node| node.layout_frame)
+        self.nodes.get(id).map(NodeRecord::layout_frame)
+    }
+
+    #[inline]
+    pub(crate) fn resolved_palette_epoch(&self) -> u32 {
+        (self.palette_epoch as u32).max(1)
     }
 
     /// The node whose border-box origin `record`'s local box is measured
     /// from; `None` for the page's.
     fn frame_node(&self, record: &NodeRecord) -> Option<StableNodeId> {
-        match record.layout_frame {
+        match record.layout_frame() {
             crate::LayoutFrame::Parent => record.hierarchy.parent,
             crate::LayoutFrame::Block(block) => Some(block),
             crate::LayoutFrame::Page => None,
@@ -4222,49 +4030,68 @@ impl UiWorld {
         [origin[0] - fx, origin[1] - fy]
     }
 
-    /// `id`'s component geometry in its own coordinates: every rectangle
-    /// measured from its border-box origin, so a node that only moved has
-    /// the geometry it had. The page geometry ([`Self::component_geometry`])
-    /// is this placed at the node's page origin, up to rounding. A visual
-    /// whose geometry reads the page ([`StandardVisual::geometry_reads_page`])
-    /// comes back on the page instead.
-    pub(super) fn local_component_geometry(
+    pub(super) fn local_widget_paint(
         &self,
         id: StableNodeId,
-        visual: &StandardVisual,
+        visual: &crate::WidgetVisualHandle,
         style: &ComputedStyle,
-    ) -> Option<crate::ComponentGeometry> {
+    ) -> Option<Arc<crate::WidgetPaintOutput>> {
         if visual.geometry_reads_page() {
-            return self.page_component_geometry(id, visual, style);
+            return self.page_widget_paint(id, visual, style);
         }
         let previous = self.geometry_frame.replace(Some(id));
         let read_before = self.geometry_read_page.replace(false);
-        let geometry = self.derive_component_geometry(id, visual, style);
+        let paint = self.derive_widget_paint(id, visual, style);
         let read_page = self.geometry_read_page.replace(read_before);
         self.geometry_frame.set(previous);
         debug_assert!(
             !read_page,
             "{id:?}: {visual:?} derives its geometry from the page; list it in \
-             `StandardVisual::geometry_reads_page`"
+             `WidgetVisual::geometry_reads_page`"
         );
-        geometry
+        paint.map(Arc::new)
     }
 
-    /// [`Self::derive_component_geometry`] on the page, whatever frame
-    /// extraction is deriving in.
-    fn page_component_geometry(
+    fn page_widget_paint(
         &self,
         id: StableNodeId,
-        visual: &StandardVisual,
+        visual: &crate::WidgetVisualHandle,
         style: &ComputedStyle,
-    ) -> Option<crate::ComponentGeometry> {
+    ) -> Option<Arc<crate::WidgetPaintOutput>> {
         let previous = self.geometry_frame.replace(None);
         if previous.is_some() {
             self.geometry_read_page.set(true);
         }
-        let geometry = self.derive_component_geometry(id, visual, style);
+        let paint = self.derive_widget_paint(id, visual, style);
         self.geometry_frame.set(previous);
-        geometry
+        paint.map(Arc::new)
+    }
+
+    fn derive_widget_paint(
+        &self,
+        id: StableNodeId,
+        visual: &crate::WidgetVisualHandle,
+        style: &ComputedStyle,
+    ) -> Option<crate::WidgetPaintOutput> {
+        let style_model = self.scoped_style_model(style.color_scope.as_deref());
+        let bounds = self.component_layout_box(id)?;
+        let mut source_style = NodeStyle::clone(&self.nodes.get(id)?.style);
+        source_style.layout = Arc::clone(&self.record(id).resolved_layout);
+        let content = self.component_content_box(id)?;
+        let chrome_radii =
+            nana_ui_core::ChromeRadii::resolve(style_model.metrics, self.theme.recipes().shape());
+        let ctx = crate::WidgetPaintCtx {
+            id,
+            world: self,
+            bounds,
+            content,
+            style,
+            source_style: &source_style,
+            style_model,
+            theme: &self.theme,
+            chrome_radii,
+        };
+        Some(visual.paint(&ctx))
     }
 
     /// Compatibility accessor for callers that need the retained box during
@@ -4277,16 +4104,16 @@ impl UiWorld {
     /// editor reports where it is drawn — that request clamped to its value
     /// and, while focused, moved to show the caret.
     pub fn scroll_offset(&self, id: StableNodeId) -> Option<ScrollOffset> {
-        let node = self.nodes.get(id)?;
+        let _ = self.nodes.get(id)?;
         if let Some(offset) = self.rich_editor_scroll_offset(id) {
             return Some(offset);
         }
-        if node.accessibility.multiline
+        if self.nodes.accessibility(id).multiline
             && let Some(frame) = self.editor_frame(id)
         {
             return Some(frame.scroll_offset());
         }
-        Some(node.scroll_offset)
+        Some(self.nodes.scroll_offset(id))
     }
 
     /// The scrolling area a scroll offset is clamped to. A multiline text
@@ -4294,7 +4121,9 @@ impl UiWorld {
     /// other container's is the one last published for it.
     /// The offset last set on `id`, which a multiline editor is drawn from.
     pub(crate) fn scroll_request(&self, id: StableNodeId) -> Option<ScrollOffset> {
-        self.nodes.get(id).map(|node| node.scroll_offset)
+        self.nodes
+            .contains(id)
+            .then(|| self.nodes.scroll_offset(id))
     }
 
     pub fn scroll_metrics(&self, id: StableNodeId) -> Option<ScrollMetrics> {
@@ -4310,11 +4139,11 @@ impl UiWorld {
             record.style.layout.overflow_x.scrolls() || record.style.layout.overflow_y.scrolls()
         });
         scrolls
-            || (self.nodes.has_visuals()
-                && matches!(
-                    self.nodes.visual(id),
-                    Some(StandardVisual::Scrollbar { .. })
-                ))
+            || (self.nodes.has_widget_visuals()
+                && self
+                    .nodes
+                    .widget_visual(id)
+                    .is_some_and(crate::WidgetVisualHandle::is_scroll_container))
     }
 
     /// The axes (`[horizontal, vertical]`) on which `id` keeps what
@@ -4325,7 +4154,7 @@ impl UiWorld {
     /// the axis `overflow: hidden` clips.
     pub fn overflow_contained_axes(&self, id: StableNodeId) -> [bool; 2] {
         self.nodes.get(id).map_or([false; 2], |record| {
-            overflow_contained_axes(&record.style.layout, self.nodes.visual(id))
+            overflow_contained_axes(&record.style.layout, self.nodes.widget_visual(id))
         })
     }
 
@@ -4552,7 +4381,7 @@ impl UiWorld {
         self.nodes
             .text_input(id)
             .map(|state| state.value_shared())
-            .unwrap_or_else(|| self.record(id).text.value.clone())
+            .unwrap_or_else(|| self.nodes.text_content(id).value.clone())
     }
 
     /// The per-glyph presentation of a rich text node.
@@ -4571,7 +4400,7 @@ impl UiWorld {
     }
 
     pub fn text_metrics(&self, id: StableNodeId) -> Option<TextMetrics> {
-        self.nodes.get(id).map(|node| node.text_metrics)
+        self.nodes.contains(id).then(|| self.nodes.text_metrics(id))
     }
 
     /// The width a plain text that wrapped to its box takes unwrapped, when
@@ -4685,29 +4514,212 @@ impl UiWorld {
             .collect()
     }
 
-    pub fn standard_visual(&self, id: StableNodeId) -> Option<StandardVisual> {
-        self.nodes.visual(id).cloned()
+    /// Returns the open widget visual attached to `id` without cloning the handle.
+    pub(crate) fn widget_visual_ref(&self, id: StableNodeId) -> Option<&crate::WidgetVisualHandle> {
+        self.nodes.widget_visual(id)
     }
 
-    /// [`Self::standard_visual`] without the copy, for projections that
-    /// compare before they write.
-    pub(crate) fn standard_visual_ref(&self, id: StableNodeId) -> Option<&StandardVisual> {
-        self.nodes.visual(id)
+    /// Returns the open widget visual attached to `id`, if any.
+    pub fn widget_visual(&self, id: StableNodeId) -> Option<crate::WidgetVisualHandle> {
+        self.nodes.widget_visual(id).cloned()
     }
 
-    /// The chrome `id` paints, its text colours in the installed palette as
-    /// extraction paints them (#398).
-    pub fn component_geometry(&self, id: StableNodeId) -> Option<crate::ComponentGeometry> {
-        let visual = self.nodes.visual(id)?;
+    /// Returns a typed reference to `id`'s open widget visual when it matches `V`.
+    pub fn widget_visual_as<V: crate::WidgetVisual>(&self, id: StableNodeId) -> Option<&V> {
+        self.nodes.widget_visual(id)?.downcast_ref::<V>()
+    }
+
+    /// Returns a cloned copy of `id`'s [`crate::TextInputVisual`] when attached.
+    pub fn text_input_visual(&self, id: StableNodeId) -> Option<crate::TextInputVisual> {
+        self.widget_visual_as::<crate::TextInputVisual>(id).cloned()
+    }
+
+    /// Returns a typed reference to `id`'s [`crate::TextInputVisual`] without cloning.
+    pub(crate) fn text_input_visual_ref(
+        &self,
+        id: StableNodeId,
+    ) -> Option<&crate::TextInputVisual> {
+        self.widget_visual_as::<crate::TextInputVisual>(id)
+    }
+
+    /// Active horizontal and vertical scrollbar bars derived for `id` in page coordinates.
+    pub fn scrollbar_bars(&self, id: StableNodeId) -> Option<crate::ScrollbarBars> {
+        let visual = self.widget_visual_as::<crate::ScrollbarVisual>(id)?;
         let style = self.painted_style(id)?;
-        self.page_component_geometry(id, visual, &style)
+        let previous = self.geometry_frame.replace(None);
+        let bounds = self.component_layout_box(id);
+        let resolved = &self.record(id).resolved_layout;
+        let style_model = self.scoped_style_model(style.color_scope.as_deref());
+        let bars = bounds.and_then(|bounds| {
+            visual.bars_in(id, self, bounds, resolved, style_model, &self.theme)
+        });
+        self.geometry_frame.set(previous);
+        bars
+    }
+
+    /// Projects `id`'s open widget visual in page coordinates, matching extraction.
+    pub fn widget_paint(&self, id: StableNodeId) -> Option<Arc<crate::WidgetPaintOutput>> {
+        let visual = self.nodes.widget_visual(id)?;
+        let style = self.painted_style(id)?;
+        self.page_widget_paint(id, visual, &style)
+    }
+
+    /// Page-space geometry of an [`EmptyStateVisual`] node, matching extraction.
+    pub fn empty_state_geometry(&self, id: StableNodeId) -> Option<crate::EmptyStateGeometry> {
+        let visual = self.widget_visual_as::<crate::EmptyStateVisual>(id)?;
+        let style = self.painted_style(id)?;
+        let previous = self.geometry_frame.replace(None);
+        let bounds = self.component_layout_box(id);
+        let content = self.component_content_box(id);
+        let style_model = self.scoped_style_model(style.color_scope.as_deref());
+        let secondary = self.secondary_text_color(id);
+        let geometry = bounds.zip(content).map(|(bounds, content)| {
+            visual.geometry_in(id, self, bounds, content, style_model, secondary)
+        });
+        self.geometry_frame.set(previous);
+        geometry
+    }
+
+    pub(crate) fn empty_state_text(
+        &self,
+        id: StableNodeId,
+    ) -> Option<&crate::components::EmptyStateTextPresentation> {
+        self.nodes.empty_state_text(id)
+    }
+
+    /// Page-space geometry of an [`ActionMenuItemVisual`] node, matching extraction.
+    pub fn action_menu_item_geometry(
+        &self,
+        id: StableNodeId,
+    ) -> Option<crate::ActionMenuItemGeometry> {
+        let visual = self.widget_visual_as::<crate::ActionMenuItemVisual>(id)?;
+        let style = self.painted_style(id)?;
+        let previous = self.geometry_frame.replace(None);
+        let style_model = self.scoped_style_model(style.color_scope.as_deref());
+        let parts = self.component_content_parts(id);
+        let geometry =
+            visual.geometry_from_parts(&style, &style_model.palette, &self.theme, &parts);
+        self.geometry_frame.set(previous);
+        Some(geometry)
+    }
+
+    pub(crate) fn select_menu_paint_room(
+        &self,
+        id: StableNodeId,
+        opened: bool,
+        menu_room: Option<crate::SelectMenuRoom>,
+    ) -> (Option<crate::SelectMenuRoom>, Option<crate::LayoutViewport>) {
+        if self.geometry_frame.get() == Some(id) {
+            (self.local_select_menu_room(id, opened, menu_room), None)
+        } else {
+            (
+                menu_room,
+                opened.then(|| self.document_viewport_of(id)).flatten(),
+            )
+        }
+    }
+
+    pub(crate) fn select_fitted_options_width(
+        &self,
+        id: StableNodeId,
+        fit_options: bool,
+    ) -> Option<f32> {
+        fit_options
+            .then(|| {
+                self.text_natural_width(id)
+                    .or_else(|| self.text_metrics(id).map(|metrics| metrics.width))
+            })
+            .flatten()
+    }
+
+    /// Page-space geometry of a [`SelectVisual`] node, matching extraction.
+    pub fn select_geometry(&self, id: StableNodeId) -> Option<crate::SelectGeometry> {
+        let visual = self.widget_visual_as::<crate::SelectVisual>(id)?;
+        let style = self.painted_style(id)?;
+        let previous = self.geometry_frame.replace(None);
+        let bounds = self.component_layout_box(id);
+        let style_model = self.scoped_style_model(style.color_scope.as_deref());
+        let parts = self.component_content_parts(id);
+        let (menu_room, viewport) =
+            self.select_menu_paint_room(id, visual.opened, visual.menu_room);
+        let fitted = self.select_fitted_options_width(id, visual.fit_options);
+        let geometry = bounds.map(|bounds| {
+            visual.geometry_from_parts(
+                bounds,
+                menu_room,
+                viewport,
+                &style,
+                style_model,
+                self.theme.recipes().scrollbar(),
+                &parts,
+                self.chrome_text_measure(id),
+                fitted,
+            )
+        });
+        self.geometry_frame.set(previous);
+        geometry
+    }
+
+    /// Page-space geometry of a [`MenuSurfaceVisual`] node, matching extraction.
+    pub fn menu_surface_geometry(&self, id: StableNodeId) -> Option<crate::MenuSurfaceGeometry> {
+        let visual = self.widget_visual_as::<crate::MenuSurfaceVisual>(id)?;
+        let style = self.painted_style(id)?;
+        let previous = self.geometry_frame.replace(None);
+        let bounds = self.component_layout_box(id);
+        let style_model = self.scoped_style_model(style.color_scope.as_deref());
+        let geometry = bounds
+            .map(|bounds| visual.geometry_for(id, self, bounds, &style, style_model, &self.theme));
+        self.geometry_frame.set(previous);
+        geometry
+    }
+
+    /// Page-space geometry of a [`ModalFrameVisual`] node, matching extraction.
+    pub fn modal_frame_geometry(&self, id: StableNodeId) -> Option<crate::ModalFrameGeometry> {
+        let visual = self.widget_visual_as::<crate::ModalFrameVisual>(id)?;
+        let style = self.painted_style(id)?;
+        let previous = self.geometry_frame.replace(None);
+        let bounds = self.component_layout_box(id);
+        let style_model = self.scoped_style_model(style.color_scope.as_deref());
+        let geometry = bounds.and_then(|bounds| {
+            visual.geometry_for(id, self, bounds, &style, style_model, &self.theme)
+        });
+        self.geometry_frame.set(previous);
+        geometry
+    }
+
+    /// Page-space geometry of a [`RangeVisual`] node, matching extraction.
+    pub fn range_geometry(&self, id: StableNodeId) -> Option<crate::RangeGeometry> {
+        let visual = self.widget_visual_as::<crate::RangeVisual>(id)?;
+        let style = self.painted_style(id)?;
+        let previous = self.geometry_frame.replace(None);
+        let content = self.component_content_box(id);
+        let style_model = self.scoped_style_model(style.color_scope.as_deref());
+        let secondary = self.secondary_text_color(id);
+        let geometry = content
+            .map(|content| visual.geometry_in(id, self, content, &style, style_model, secondary));
+        self.geometry_frame.set(previous);
+        geometry
+    }
+
+    /// Computes a chart's current layout under its node box and theme without running extraction.
+    #[cfg(feature = "charts")]
+    pub fn chart_layout(&self, id: StableNodeId) -> Option<Arc<nana_ui_charts::ChartLayout>> {
+        let visual = self.widget_visual_as::<crate::ChartVisual>(id)?;
+        let bounds = self.component_layout_box(id)?;
+        Some(visual.spec.layout_for(
+            [bounds.width, bounds.height],
+            self.theme(),
+            |role| self.style_model.color(role).as_rgba_array(),
+            self.chrome_text_measure(id),
+            self.animation_now(),
+        ))
     }
 
     pub(crate) fn component_content_box(&self, id: StableNodeId) -> Option<LayoutBox> {
-        if let Some(result) = self.local_layout_result(id) {
+        if let Some(meta) = self.published_layout_meta(id) {
             return Some(crate::layout_result::place_box(
                 self.layout_origin(id)?,
-                result.content_box,
+                meta.content_box,
             ));
         }
         let node = self.nodes.get(id)?;
@@ -4724,8 +4736,21 @@ impl UiWorld {
         })
     }
 
-    pub fn accessibility(&self, id: StableNodeId) -> Option<&AccessibilityState> {
-        self.nodes.get(id).map(|node| node.accessibility.as_ref())
+    pub fn accessibility(
+        &self,
+        id: StableNodeId,
+    ) -> Option<std::borrow::Cow<'_, AccessibilityState>> {
+        self.nodes
+            .contains(id)
+            .then(|| self.nodes.accessibility(id))
+    }
+
+    pub(crate) fn accessibility_eq(&self, id: StableNodeId, expected: &AccessibilityState) -> bool {
+        self.nodes.accessibility_eq(id, expected)
+    }
+
+    pub(crate) fn accessible_label_arc(&self, id: StableNodeId) -> Option<Arc<str>> {
+        self.nodes.accessible_label_arc(id)
     }
 
     /// The node whose text names `id` when it has no label of its own; see
@@ -4835,20 +4860,16 @@ impl UiWorld {
     }
 
     pub fn layout_inputs(&self, ids: &[StableNodeId]) -> Result<Vec<LayoutInput>, UiWorldError> {
-        if !ids.is_empty() {
-            self.record_hot_path_allocation(1, ids.len().saturating_mul(size_of::<LayoutInput>()));
-        }
         ids.iter().map(|&id| self.layout_input(id)).collect()
     }
 
     /// Whether `id` is a modal frame, whose children are placed by the modal
     /// slot contract (the Overlay formatting context).
     pub(crate) fn places_modal_slots(&self, id: StableNodeId) -> bool {
-        self.nodes.has_visuals()
-            && matches!(
-                self.nodes.visual(id),
-                Some(StandardVisual::ModalFrame { .. })
-            )
+        self.modal_frames != 0
+            && self
+                .widget_visual_ref(id)
+                .is_some_and(crate::WidgetVisualHandle::is_modal_frame)
     }
 
     /// Project a single layout input without allocating a batch container.
@@ -4876,20 +4897,10 @@ impl UiWorld {
     /// What a modal frame's slots lay out from: its kind, slots and the
     /// metrics of its texts. `None` for every other node.
     pub(crate) fn modal_layout_input(&self, id: StableNodeId) -> Option<crate::ModalLayoutInput> {
-        if !self.nodes.has_visuals() {
+        if self.modal_frames == 0 {
             return None;
         }
-        let StandardVisual::ModalFrame { kind, slots, .. } = self.nodes.visual(id)? else {
-            return None;
-        };
-        let presentation = self.nodes.modal_text(id).copied().unwrap_or_default();
-        Some(crate::ModalLayoutInput {
-            kind: *kind,
-            slots: slots.clone(),
-            title: presentation.title,
-            description: presentation.description,
-            body_text: presentation.body,
-        })
+        self.widget_visual_ref(id)?.modal_layout_input(id, self)
     }
 
     /// [`Self::layout_input`] as a view of the record: the child list and,
@@ -4906,21 +4917,25 @@ impl UiWorld {
             && self.overlay_host_nodes.is_empty()
             && self.z_index_nodes == 0
             && self.detached_mounted.is_empty()
-            && !self.nodes.has_visuals();
+            && !self.nodes.has_widget_visuals()
+            && self.modal_frames == 0
+            && self.menu_surfaces == 0
+            && self.list_leading_visuals == 0;
         let record = self.nodes.get(id).ok_or(UiWorldError::MissingNode(id))?;
-        let has_text =
-            matches!(record.kind.as_ref(), NodeKind::Text) || !record.text.value.is_empty();
+        let has_text = matches!(record.kind.as_ref(), NodeKind::Text) || record.has_text;
         // Header block space is already represented by Card's title band.
         // Its text still contributes preferred inline width, not body height.
-        let text_metrics = has_text.then_some(record.text_metrics).map(|mut metrics| {
-            if matches!(
-                self.standard_visual_ref(id),
-                Some(StandardVisual::Card { .. })
-            ) {
-                metrics.height = 0.0;
-            }
-            metrics
-        });
+        let text_metrics = has_text
+            .then(|| self.nodes.text_metrics(id))
+            .map(|mut metrics| {
+                if self
+                    .widget_visual_ref(id)
+                    .is_some_and(crate::WidgetVisualHandle::uses_card_title_typography)
+                {
+                    metrics.height = 0.0;
+                }
+                metrics
+            });
         let resolved_layout = &record.resolved_layout;
         let style = if plain_world
             && record.mount == MountState::Mounted
@@ -4961,9 +4976,8 @@ impl UiWorld {
         id: StableNodeId,
         padding: nana_ui_core::PaddingSpec,
     ) -> bool {
-        let record = self.record_mut(id);
-        let changed = record.layout_padding != Some(padding);
-        record.layout_padding = Some(padding);
+        let changed = self.nodes.layout_padding(id) != Some(padding);
+        self.nodes.set_layout_padding(id, padding);
         if changed {
             self.nodes
                 .invalidate_text(id, crate::text_node::TextDirty::CONSTRAINT);
@@ -4976,14 +4990,50 @@ impl UiWorld {
     /// Record which page axes layout placed `id`'s children from the far
     /// end. Returns whether that changed, which moves the scroll origin.
     pub(crate) fn write_layout_far_start(&mut self, id: StableNodeId, far: [bool; 2]) -> bool {
-        let record = self.record_mut(id);
-        let changed = record.layout_far_start != Some(far);
-        record.layout_far_start = Some(far);
+        let changed = self.nodes.layout_far_start(id) != Some(far);
+        self.nodes.set_layout_far_start(id, far);
         changed
     }
 
     pub(crate) fn layout_far_start(&self, id: StableNodeId) -> Option<[bool; 2]> {
-        self.nodes.get(id)?.layout_far_start
+        self.nodes
+            .contains(id)
+            .then(|| self.nodes.layout_far_start(id))
+            .flatten()
+    }
+
+    #[inline]
+    pub(crate) fn auto_view_slot(&self, id: StableNodeId) -> Option<u16> {
+        self.nodes.auto_view_slot(id)
+    }
+
+    #[inline]
+    pub(crate) fn set_auto_view_slot(&mut self, id: StableNodeId, slot: Option<u16>) {
+        self.nodes.set_auto_view_slot(id, slot);
+    }
+
+    #[inline]
+    pub(crate) fn is_elided_stack(&self, id: StableNodeId) -> bool {
+        self.nodes.elided_stack_flags(id) != 0
+    }
+
+    #[inline]
+    pub(crate) fn set_elided_stack_flags(&mut self, id: StableNodeId, flags: u8) {
+        self.nodes.set_elided_stack_flags(id, flags);
+    }
+
+    pub(crate) fn elided_stack(&self, id: StableNodeId) -> Option<crate::view_components::Stack> {
+        let flags = self.nodes.elided_stack_flags(id);
+        if flags == 0 {
+            return None;
+        }
+        let record = self.nodes.get(id)?;
+        let style = self
+            .responsive
+            .authored(id)
+            .map(|authored| Arc::new(authored.clone()))
+            .unwrap_or_else(|| Arc::clone(&record.style));
+        Some(crate::view_components::Stack::from_elided(style, flags))
     }
 
     /// Record the formatting context layout ran for `id`'s children, or
@@ -5004,11 +5054,28 @@ impl UiWorld {
         if previous == context {
             return false;
         }
-        record.layout_context_generation = record.layout_context_generation.wrapping_add(1);
-        if previous.is_some() && context.is_some() {
-            self.bump_last_counters(|counters| counters.record_layout_context_transitions(1));
-        }
+        self.nodes.bump_layout_context_generation(id);
         previous.is_some()
+    }
+
+    fn layout_node_participation(&self, id: StableNodeId) -> Option<crate::ParticipationKind> {
+        let node = self.nodes.get(id)?;
+        let content = self.layout_content_kind(id)?;
+        let parent = node
+            .hierarchy
+            .parent
+            .and_then(|parent| self.nodes.get(parent));
+        let parent_context = parent.and_then(|parent| parent.layout_context);
+        match parent {
+            None => Some(crate::ParticipationKind::Root),
+            Some(_) => parent_context.map(|context| {
+                if self.inline_parent(id).is_some() && !node.resolved_layout.omits_box() {
+                    crate::ParticipationKind::AtomicInline
+                } else {
+                    crate::ParticipationKind::classify(context, &node.resolved_layout, content)
+                }
+            }),
+        }
     }
 
     /// The layout view of `id` (Issue #197): its resolved intent, content,
@@ -5039,8 +5106,8 @@ impl UiWorld {
             established: established_context(node),
             parent_context,
             participation,
-            context_generation: node.layout_context_generation,
-            result_generation: self.local_layout_result(id).map(|result| result.generation),
+            context_generation: self.nodes.layout_context_generation(id),
+            result_generation: self.published_layout_meta(id).map(|meta| meta.generation),
         })
     }
 
@@ -5067,7 +5134,7 @@ impl UiWorld {
     /// Padding resolved by the layout pass, including its containing block and font.
     pub(crate) fn used_layout_padding(&self, id: StableNodeId) -> nana_ui_core::PaddingSpec {
         let record = self.record(id);
-        record.layout_padding.unwrap_or_else(|| {
+        self.nodes.layout_padding(id).unwrap_or_else(|| {
             // Intent (radius / control height / padding) lives on
             // `resolved_layout`. Falling back to the authored box would
             // report 0 for every control that named its inset instead of
@@ -5115,10 +5182,9 @@ impl UiWorld {
     /// Reporting false is always safe: it only costs the caller its fast path.
     pub(crate) fn children_layout_style_is_local(&self, parent: StableNodeId) -> bool {
         (self.overlay_host_nodes.is_empty() || self.overlay_host(parent).is_none())
-            && !matches!(
-                self.nodes.visual(parent),
-                Some(StandardVisual::MenuSurface { .. })
-            )
+            && !self
+                .widget_visual_ref(parent)
+                .is_some_and(crate::WidgetVisualHandle::is_menu_surface)
     }
 
     /// Whether `id` lays out with no box of its own: its style omits one, or
@@ -5171,16 +5237,14 @@ impl UiWorld {
         if style.justify_content != nana_ui_core::JustifySpec::SpaceBetween {
             return false;
         }
-        let Some(StandardVisual::ListItem {
-            leading: Some(leading),
-            content,
-            ..
-        }) = self.nodes.visual(id)
+        let Some((leading, content)) = self
+            .widget_visual_ref(id)
+            .and_then(crate::WidgetVisualHandle::lone_list_trailing_slots)
         else {
             return false;
         };
         let no_box = |slot: StableNodeId| !self.contains(slot) || self.omits_layout_box(slot);
-        no_box(*leading) && content.is_none_or(no_box)
+        no_box(leading) && content.is_none_or(no_box)
     }
 
     /// Whether `id`, a child of an open action menu, is a plain column that
@@ -5191,17 +5255,11 @@ impl UiWorld {
         id: StableNodeId,
         style: &nana_ui_core::LayoutStyle,
     ) -> bool {
-        self.nodes.visual(id).is_none()
+        self.widget_visual_ref(id).is_none()
             && matches!(style.direction, Some(nana_ui_core::FlexDirection::Column))
             && self.record(id).hierarchy.parent.is_some_and(|parent| {
-                matches!(
-                    self.nodes.visual(parent),
-                    Some(StandardVisual::MenuSurface {
-                        kind: crate::MenuSurfaceKind::ActionMenu,
-                        open: true,
-                        ..
-                    })
-                )
+                self.widget_visual_ref(parent)
+                    .is_some_and(crate::WidgetVisualHandle::is_action_menu_open)
             })
     }
 
@@ -5226,29 +5284,21 @@ impl UiWorld {
 
     fn parent_triggered_overlay(&self, id: StableNodeId) -> Option<crate::TriggeredMenuOverlay> {
         let parent = self.record(id).hierarchy.parent?;
-        match self.nodes.visual(parent)? {
-            StandardVisual::MenuSurface {
-                open: true,
-                overlay: Some(overlay),
-                ..
-            } if overlay.trigger_content != Some(id) => Some(*overlay),
-            _ => None,
-        }
+        let overlay = self
+            .widget_visual_ref(parent)
+            .and_then(crate::WidgetVisualHandle::triggered_menu_overlay)?;
+        (overlay.trigger_content != Some(id)).then_some(overlay)
     }
 
     pub(crate) fn parent_triggered_overlay_id(&self, id: StableNodeId) -> Option<StableNodeId> {
-        if !self.nodes.has_visuals() {
+        if self.triggered_overlays.is_empty() {
             return None;
         }
         let parent = self.record(id).hierarchy.parent?;
-        match self.nodes.visual(parent)? {
-            StandardVisual::MenuSurface {
-                open: true,
-                overlay: Some(overlay),
-                ..
-            } if overlay.trigger_content != Some(id) => Some(parent),
-            _ => None,
-        }
+        let overlay = self
+            .widget_visual_ref(parent)
+            .and_then(crate::WidgetVisualHandle::triggered_menu_overlay)?;
+        (overlay.trigger_content != Some(id)).then_some(parent)
     }
 
     pub(crate) fn resolve_overlay_mount(
@@ -5261,10 +5311,10 @@ impl UiWorld {
             nana_ui_core::OverlayMount::NearestModal => {
                 let mut cursor = self.record(id).hierarchy.parent;
                 while let Some(ancestor) = cursor {
-                    if matches!(
-                        self.nodes.visual(ancestor),
-                        Some(StandardVisual::ModalFrame { .. })
-                    ) {
+                    if self
+                        .widget_visual_ref(ancestor)
+                        .is_some_and(crate::WidgetVisualHandle::is_modal_frame)
+                    {
                         return crate::VisualParent::Modal(ancestor);
                     }
                     cursor = self
@@ -5286,6 +5336,15 @@ impl UiWorld {
         }
     }
 
+    pub(crate) fn flex_row_main_gap(&self, id: StableNodeId, width: f32, height: f32) -> f32 {
+        self.nodes.get(id).map_or(0.0, |node| {
+            node.resolved_layout.main_gap_against(
+                nana_ui_core::FlexDirection::Row,
+                nana_ui_core::ParentBox::from_viewport(width, height),
+            )
+        })
+    }
+
     fn record(&self, id: StableNodeId) -> &NodeRecord {
         self.nodes
             .get(id)
@@ -5302,7 +5361,7 @@ impl UiWorld {
     fn invalidate_text_content(&mut self, id: StableNodeId) {
         self.nodes
             .invalidate_text(id, crate::text_node::TextDirty::CONTENT);
-        if self.record(id).text.value.is_empty() {
+        if !self.record(id).has_text {
             // Emptied text has nothing to draw, and a non-Text element without
             // text never reaches a text pass that could release it later.
             self.nodes.release_text_layout(id);
@@ -5319,7 +5378,7 @@ impl UiWorld {
         use crate::text_node::TextDirty;
         let previous = self.nodes.rich_text(id).cloned();
         let text_changed =
-            rich.is_some_and(|rich| self.record(id).text.value.as_str() != rich.text());
+            rich.is_some_and(|rich| self.nodes.text_content(id).value.as_str() != rich.text());
         if text_changed && self.nodes.rich_editor_marks(id).is_some() {
             self.nodes.set_text_viewport_pin(id, None);
         }
@@ -5360,8 +5419,10 @@ impl UiWorld {
         if text_changed {
             self.mark_inline_text_owners(id);
             let rich = rich.expect("text only changes when a value was given");
-            self.record_mut(id).text =
-                crate::TextContent::new(std::sync::Arc::clone(rich.shared_text()));
+            self.nodes.set_text_content(
+                id,
+                crate::TextContent::new(std::sync::Arc::clone(rich.shared_text())),
+            );
             self.invalidate_text_content(id);
             marks |= DirtyMask::TEXT | DirtyMask::RENDER | DirtyMask::ACCESSIBILITY;
         }
@@ -5410,6 +5471,20 @@ impl UiWorld {
         self.record(id).resolved_layout.border_radius
     }
 
+    /// Border width carried by `id`'s resolved layout, or `0.0` when absent.
+    pub(crate) fn resolved_border_width(&self, id: StableNodeId) -> f32 {
+        self.nodes
+            .get(id)
+            .map_or(0.0, |record| record.resolved_layout.resolved_border_width())
+    }
+
+    /// Resolved border edges carried by `id`'s resolved layout.
+    pub(crate) fn resolved_border_edges(&self, id: StableNodeId) -> nana_ui_core::PaddingSpec {
+        self.nodes.get(id).map_or_else(Default::default, |record| {
+            record.resolved_layout.resolved_border_edges()
+        })
+    }
+
     /// The node's parent, without copying the node as [`Self::node`] does.
     pub fn parent_id(&self, id: StableNodeId) -> Option<StableNodeId> {
         self.nodes.get(id)?.hierarchy.parent
@@ -5430,15 +5505,6 @@ impl UiWorld {
         self.nodes
             .get(id)
             .map_or(&[], |node| node.hierarchy.children.as_slice())
-    }
-
-    fn live_input_target_count(&self) -> usize {
-        let mut ids = HashSet::new();
-        ids.extend(self.input.focused.values().copied());
-        ids.extend(self.input.pointer_hover.values().copied());
-        ids.extend(self.input.pointer_press.values().copied());
-        ids.extend(self.input.pointer_captures.values().copied());
-        ids.len()
     }
 
     pub(crate) fn presence_live(&self, id: StableNodeId) -> bool {
@@ -5494,20 +5560,24 @@ impl UiWorld {
     }
 
     fn presence_flags_of(&self, id: StableNodeId) -> PresenceFlags {
-        let visual = self.nodes.visual(id);
+        let widget_visual = self.widget_visual_ref(id);
         let record = self.nodes.get(id);
         debug_assert!(
             record.is_none_or(|record| record.layout_depends_on_viewport
                 == record.resolved_layout.depends_on_viewport()),
             "{id:?}'s cached viewport dependency went stale"
         );
+        let triggered = widget_visual.is_some_and(|w| w.triggered_menu_overlay().is_some());
         PresenceFlags {
-            confirm: is_confirm_modal(visual),
-            clip: is_clip_visual(visual),
+            confirm: widget_visual.is_some_and(crate::WidgetVisualHandle::is_confirm_modal),
+            modal_frame: widget_visual.is_some_and(crate::WidgetVisualHandle::is_modal_frame),
+            menu_surface: widget_visual.is_some_and(crate::WidgetVisualHandle::is_menu_surface),
+            clip: widget_visual.is_some_and(|w| w.clips_descendants() || w.is_modal_frame()),
+            list_leading: widget_visual.is_some_and(|w| w.lone_list_trailing_slots().is_some()),
             z_index: record.is_some_and(|record| record.resolved_layout.z_index.is_some())
-                || is_triggered_menu_overlay(visual),
-            triggered: is_triggered_menu_overlay(visual),
-            select_menu: matches!(visual, Some(StandardVisual::Select { opened: true, .. })),
+                || triggered,
+            triggered,
+            select_menu: widget_visual.is_some_and(crate::WidgetVisualHandle::is_open_select_menu),
             viewport: record.is_some_and(|record| record.layout_depends_on_viewport),
         }
     }
@@ -5520,7 +5590,22 @@ impl UiWorld {
             return;
         }
         self.note_presence_counts(previous.confirm, next.confirm, previous.clip, next.clip);
+        bump_presence(
+            &mut self.modal_frames,
+            previous.modal_frame,
+            next.modal_frame,
+        );
+        bump_presence(
+            &mut self.menu_surfaces,
+            previous.menu_surface,
+            next.menu_surface,
+        );
         self.note_z_index_presence(previous.z_index, next.z_index);
+        bump_presence(
+            &mut self.list_leading_visuals,
+            previous.list_leading,
+            next.list_leading,
+        );
         bump_presence(
             &mut self.viewport_basis_nodes,
             previous.viewport,
@@ -5745,6 +5830,33 @@ impl UiWorld {
         self.nodes.get(id).map(|node| node.document)
     }
 
+    pub(crate) fn is_focus_visible_node(&self, id: StableNodeId) -> bool {
+        self.document_of(id)
+            .and_then(|document| self.focus_visible(document))
+            == Some(id)
+    }
+
+    pub(crate) fn is_focused_node(&self, id: StableNodeId) -> bool {
+        self.document_of(id)
+            .and_then(|document| self.focused(document))
+            == Some(id)
+    }
+
+    pub(crate) fn widget_interaction_state(&self, id: StableNodeId) -> (bool, bool, bool) {
+        let hovered = self
+            .input
+            .pointer_hover
+            .values()
+            .any(|target| *target == id);
+        let pressed = self
+            .input
+            .pointer_press
+            .values()
+            .any(|target| *target == id);
+        let disabled = self.nodes.accessibility(id).disabled;
+        (hovered, pressed, disabled)
+    }
+
     fn note_z_index_presence(&mut self, was_present: bool, now_present: bool) {
         bump_presence(&mut self.z_index_nodes, was_present, now_present);
     }
@@ -5775,20 +5887,16 @@ impl UiWorld {
         false
     }
 
-    fn confirm_action_effect(&self, id: StableNodeId) -> Option<(bool, bool, bool)> {
+    pub(crate) fn confirm_action_effect(&self, id: StableNodeId) -> Option<(bool, bool, bool)> {
         if self.confirm_modals == 0 {
             return None;
         }
         let mut current = self.parent_id(id);
         while let Some(ancestor) = current {
-            if let Some(StandardVisual::ModalFrame {
-                kind: crate::ModalSurfaceKind::Confirm(_),
-                busy,
-                danger,
-                slots,
-                ..
-            }) = self.nodes.visual(ancestor)
+            if let Some(modal) = self.widget_visual_as::<crate::ModalFrameVisual>(ancestor)
+                && matches!(modal.kind, crate::ModalSurfaceKind::Confirm(_))
             {
+                let slots = &modal.slots;
                 let close = slots
                     .close_action
                     .is_some_and(|root| self.is_descendant_or_self(id, root));
@@ -5798,7 +5906,11 @@ impl UiWorld {
                     .copied()
                     .find(|root| self.is_descendant_or_self(id, *root));
                 if close || action.is_some() {
-                    return Some((*busy, *danger, action == slots.actions.last().copied()));
+                    return Some((
+                        modal.busy,
+                        modal.danger,
+                        action == slots.actions.last().copied(),
+                    ));
                 }
             }
             current = self.parent_id(ancestor);
@@ -5807,26 +5919,9 @@ impl UiWorld {
     }
 
     pub(crate) fn has_active_scrollbar_chrome(&self, id: StableNodeId) -> bool {
-        let shown = matches!(
-            self.nodes.visual(id),
-            Some(StandardVisual::Scrollbar {
-                visibility,
-                presence,
-                ..
-            }) if *visibility == nana_ui_core::ScrollbarVisibility::Always
-                || (*visibility == nana_ui_core::ScrollbarVisibility::AutoHide && *presence > 0.0)
-        );
-        shown
-            && matches!(
-                self.component_geometry(id),
-                Some(crate::ComponentGeometry::Scrollbar {
-                    horizontal: Some(_),
-                    ..
-                }) | Some(crate::ComponentGeometry::Scrollbar {
-                    vertical: Some(_),
-                    ..
-                })
-            )
+        self.widget_visual_as::<crate::ScrollbarVisual>(id)
+            .is_some_and(crate::ScrollbarVisual::is_shown)
+            && self.scrollbar_bars(id).is_some()
     }
 
     fn scrollbar_subtree_visible(&self, id: StableNodeId) -> bool {
@@ -5869,14 +5964,7 @@ impl UiWorld {
                     return None;
                 }
                 let indexed = index.entries.get(&id)?;
-                Some((
-                    id,
-                    (
-                        indexed.entry.z_index,
-                        node.hierarchy.depth,
-                        indexed.entry.order,
-                    ),
-                ))
+                Some((id, (indexed.entry.z_index, node.depth, indexed.entry.order)))
             })
             .collect();
         containers.sort_by(|(_, a), (_, b)| b.cmp(a));
@@ -5916,7 +6004,7 @@ impl UiWorld {
     }
 
     fn used_pointer_events(&self, id: StableNodeId) -> PointerEventsSpec {
-        if self.record(id).hierarchy.depth > page_origins::DIRECT_DEPTH
+        if self.record(id).depth > page_origins::DIRECT_DEPTH
             && let Ok(mut memo) = self.pointer_events_memo.try_borrow_mut()
             && let Some(memo) = memo.as_mut()
         {
@@ -6236,7 +6324,7 @@ impl UiWorld {
     /// A closed menu keeps its items in the tree but out of the frame. They
     /// would otherwise stretch the in-flow trigger they hang under.
     fn menu_branch_open(&self, id: StableNodeId) -> bool {
-        if !self.nodes.has_visuals() {
+        if self.menu_surfaces == 0 {
             return true;
         }
         let Some(parent) = self.record(id).hierarchy.parent else {
@@ -6245,7 +6333,9 @@ impl UiWorld {
         if !self.nodes.contains(parent) {
             return true;
         };
-        !closed_menu_hides(self.nodes.visual(parent), id)
+        !self
+            .widget_visual_ref(parent)
+            .is_some_and(|w| w.closed_menu_hides(id))
     }
 
     /// Whether a live retained root currently belongs to this document.
@@ -6312,7 +6402,6 @@ impl UiWorld {
             order.push(id);
             stack.extend(self.record(id).hierarchy.children.iter().rev().copied());
         }
-        self.record_id_list_alloc(order.len());
         order
     }
 
@@ -6564,7 +6653,13 @@ impl UiWorld {
                 // stop at its border; the outer inline formatting
                 // context does not reflow.
                 let atomic_border = has_definite_size
-                    && parent_display == Some(nana_ui_core::DisplaySpec::InlineBlock);
+                    && matches!(
+                        parent_display,
+                        Some(
+                            nana_ui_core::DisplaySpec::InlineFlex
+                                | nana_ui_core::DisplaySpec::InlineGrid
+                        )
+                    );
                 let is_formatting_context = !atomic_border
                     && parent_display.is_some_and(|display| {
                         display.is_flex_container()
@@ -6667,14 +6762,15 @@ impl UiWorld {
                         let Some(parent_style) = parent_style.as_deref() else {
                             continue;
                         };
-                        let is_icon =
-                            matches!(self.nodes.visual(child), Some(StandardVisual::Icon { .. }));
+                        let is_icon = self
+                            .widget_visual_ref(child)
+                            .is_some_and(crate::WidgetVisualHandle::is_icon_visual);
                         let Some(child_record) = self.nodes.get(child) else {
                             continue;
                         };
                         let has_wrapping_text = child_record.resolved_layout.text_wraps()
                             && (matches!(child_record.kind.as_ref(), NodeKind::Text)
-                                || !child_record.text.value.is_empty());
+                                || child_record.has_text);
                         let (edge, pass) = Self::child_constraint_descent(
                             child_record.resolved_layout.as_ref(),
                             parent_style,
@@ -7058,29 +7154,35 @@ impl UiWorld {
     }
 
     /// Gives `root` depth `depth` and its descendants theirs below it; see
-    /// [`crate::store::Hierarchy::depth`]. Walks the subtree on the heap.
+    /// [`crate::store::NodeRecord::depth`]. Walks the subtree on the heap.
     pub(super) fn set_subtree_depth(&mut self, root: StableNodeId, depth: u16) {
-        let hierarchy = self.hierarchy_mut(root);
-        if hierarchy.children.is_empty() {
-            hierarchy.depth = depth;
+        let record = self.record_mut(root);
+        if record.hierarchy.children.is_empty() {
+            record.depth = depth;
             return;
         }
         let mut open = vec![(root, depth)];
         while let Some((id, depth)) = open.pop() {
-            let hierarchy = self.hierarchy_mut(id);
-            if hierarchy.depth == depth && id != root {
+            let record = self.record_mut(id);
+            if record.depth == depth && id != root {
                 // Moved with the rest of its subtree before: already right.
                 continue;
             }
-            hierarchy.depth = depth;
+            record.depth = depth;
             let below = depth.saturating_add(1);
-            open.extend(hierarchy.children.iter().map(|&child| (child, below)));
+            open.extend(
+                record
+                    .hierarchy
+                    .children
+                    .iter()
+                    .map(|&child| (child, below)),
+            );
         }
     }
 
     /// Levels from the root down to `id`, counting it.
     pub(super) fn node_depth(&self, id: StableNodeId) -> Option<usize> {
-        let depth = usize::from(self.nodes.get(id)?.hierarchy.depth);
+        let depth = usize::from(self.nodes.get(id)?.depth);
         #[cfg(test)]
         {
             // Every test checks the kept depth against the walk it replaces.
@@ -7219,7 +7321,6 @@ impl UiWorld {
                 && matches!(style.width, Some(nana_ui_core::LengthSpec::Px(value)) if value.is_finite() && value>=0.0)
                 && matches!(style.height, Some(nana_ui_core::LengthSpec::Px(value)) if value.is_finite() && value>=0.0)
                 && style.position==nana_ui_core::PositionSpec::Static
-                && style.float==nana_ui_core::FloatSpec::None
                 && !style.display.is_some_and(nana_ui_core::DisplaySpec::is_grid_container)
                 && style.min_width.is_none() && style.max_width.is_none()
                 && style.min_height.is_none() && style.max_height.is_none()
@@ -7292,12 +7393,11 @@ impl UiWorld {
         // either: the seed stays on the atomic, which is only placed again.
         // One whose baseline its text puts is not fixed (see
         // `is_fixed_metric_boundary`): its line aligns again.
-        let atomic = display == Some(nana_ui_core::DisplaySpec::InlineBlock);
-        if fixed
-            && (atomic
-                || !display
-                    .is_some_and(|display| display.is_inline_level() || display.is_contents()))
-        {
+        let atomic = matches!(
+            display,
+            Some(nana_ui_core::DisplaySpec::InlineFlex | nana_ui_core::DisplaySpec::InlineGrid)
+        );
+        if fixed && (atomic || !display.is_some_and(nana_ui_core::DisplaySpec::is_inline_level)) {
             let (kind, fields) = if atomic {
                 (InvalidationKind::PLACEMENT, LayoutFieldMask::TYPOGRAPHY)
             } else {
@@ -7317,7 +7417,6 @@ impl UiWorld {
                 ),
             );
             self.mark_scroll_compatible(id, DirtyMask::RENDER);
-            self.bump_last_counters(|counters| counters.record_text_metrics(1, 0, 0));
             return false;
         }
         self.record_layout_invalidation(
@@ -7333,7 +7432,7 @@ impl UiWorld {
         // Keep the original paint invalidation for the node whose shaped
         // metrics changed; the typed layout cause above remains narrow.
         self.mark_scroll_compatible(id, DirtyMask::RENDER);
-        let mut parent_reflows = 0;
+        let mut parent_reflows = false;
         if let Some(parent) = self.parent_id(id) {
             if self.is_fixed_metric_boundary(parent) {
                 self.record_layout_invalidation(
@@ -7365,39 +7464,11 @@ impl UiWorld {
                     ),
                 );
                 self.mark_ancestors(parent, DirtyMask::LAYOUT | DirtyMask::RENDER);
-                parent_reflows = 1;
+                parent_reflows = true;
             }
         }
-        self.bump_last_counters(|counters| counters.record_text_metrics(1, 0, parent_reflows));
-        parent_reflows > 0
+        parent_reflows
     }
-}
-
-/// Adds counts observed between drains onto `counters`. They carry no live
-/// entity count, so `counters` keeps its own.
-fn add_pending_counts(counters: &mut WorkCounters, mut pending: WorkCounters) {
-    pending.entities_total = counters.entities_total;
-    counters.accumulate(pending);
-}
-
-/// What a virtual list's pass cost (Issue #262). Counted into the next
-/// drain: the frame that lays the pass's commits out.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-pub(crate) struct VirtualRowCounts {
-    /// Row extents that moved in the row index.
-    pub(crate) metric_updates: usize,
-    /// Row index entries written since the list last placed its rows.
-    pub(crate) prefix_index_updates: usize,
-    /// Mounted rows the list took a new height from.
-    pub(crate) rows_remeasured: usize,
-    /// Mounted rows whose placement the list patched.
-    pub(crate) rows_repositioned: usize,
-    /// Logical rows looked up, by index or by key.
-    pub(crate) logical_rows_scanned: usize,
-    /// Moves of the list's total height.
-    pub(crate) scroll_extent_updates: usize,
-    /// Rows created for the window.
-    pub(crate) rows_materialized: usize,
 }
 
 /// A typography scale text can be set at: a positive finite number.
@@ -7474,6 +7545,7 @@ fn record_writing(record: &NodeRecord) -> nana_ui_core::WritingContext {
         declared.writing_mode.unwrap_or(inherited.mode),
         declared.dir.unwrap_or(inherited.direction),
         declared
+            .text_ext
             .text_orientation
             .unwrap_or(record.inherited_orientation),
     )
@@ -7570,7 +7642,10 @@ const IDENTITY_AFFINE: [f32; 6] = [1.0, 0.0, 0.0, 1.0, 0.0, 0.0];
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 struct PresenceFlags {
     confirm: bool,
+    modal_frame: bool,
+    menu_surface: bool,
     clip: bool,
+    list_leading: bool,
     z_index: bool,
     /// An open triggered menu, whose surface hangs above the page.
     triggered: bool,
@@ -7583,7 +7658,10 @@ struct PresenceFlags {
 impl PresenceFlags {
     const NONE: Self = Self {
         confirm: false,
+        modal_frame: false,
+        menu_surface: false,
         clip: false,
+        list_leading: false,
         z_index: false,
         triggered: false,
         select_menu: false,
@@ -7602,23 +7680,6 @@ fn bump_presence(count: &mut usize, was_present: bool, now_present: bool) {
     }
 }
 
-fn is_confirm_modal(visual: Option<&StandardVisual>) -> bool {
-    matches!(
-        visual,
-        Some(StandardVisual::ModalFrame {
-            kind: crate::ModalSurfaceKind::Confirm(_),
-            ..
-        })
-    )
-}
-
-fn is_clip_visual(visual: Option<&StandardVisual>) -> bool {
-    matches!(
-        visual,
-        Some(StandardVisual::EmptyState { .. } | StandardVisual::ModalFrame { .. })
-    )
-}
-
 fn apply_triggered_overlay(
     layout: &mut nana_ui_core::LayoutStyle,
     overlay: crate::TriggeredMenuOverlay,
@@ -7632,17 +7693,6 @@ fn apply_triggered_overlay(
         .get_or_insert(crate::popover::MENU_OVERLAY_Z_INDEX);
 }
 
-fn is_triggered_menu_overlay(visual: Option<&StandardVisual>) -> bool {
-    matches!(
-        visual,
-        Some(StandardVisual::MenuSurface {
-            open: true,
-            overlay: Some(_),
-            ..
-        })
-    )
-}
-
 fn text_intrinsic_changed(previous: TextMetrics, next: TextMetrics) -> bool {
     // Baseline is an exported metric consumed by baseline-aligned parents.
     // Width/height-only comparison lets a baseline-only shape update leave a
@@ -7651,7 +7701,7 @@ fn text_intrinsic_changed(previous: TextMetrics, next: TextMetrics) -> bool {
     previous.width != next.width || previous.height != next.height || previous.ascent != next.ascent
 }
 
-fn intersect_layout_boxes(left: LayoutBox, right: LayoutBox) -> Option<LayoutBox> {
+pub(crate) fn intersect_layout_boxes(left: LayoutBox, right: LayoutBox) -> Option<LayoutBox> {
     let x = left.x.max(right.x);
     let y = left.y.max(right.y);
     let right_edge = (left.x + left.width).min(right.x + right.width);
@@ -7681,10 +7731,22 @@ struct LayoutAnchors {
 }
 
 impl LayoutAnchors {
-    fn recorded_in(self, result: &crate::LayoutResult) -> bool {
-        result.clip == self.clip
-            && result.clip_parent == self.clip_parent
-            && result.containing_block == self.containing_block
+    fn recorded_in_meta(self, meta: &PublishedLayoutMeta) -> bool {
+        meta.clip() == self.clip
+            && meta.clip_parent() == self.clip_parent
+            && meta.containing_block() == self.containing_block
+    }
+}
+
+fn text_content_part_width(meta: &PublishedLayoutMeta) -> Option<f32> {
+    if let Some(ext) = meta.ext.as_ref() {
+        ext.parts.iter().find_map(|part| {
+            (part.kind == crate::LayoutPartKind::TextContent).then_some(part.bounds.width)
+        })
+    } else if meta.single_text_source != TEXT_SOURCE_NONE_SENTINEL {
+        Some(meta.inline_text_box().width)
+    } else {
+        None
     }
 }
 
@@ -7717,21 +7779,20 @@ fn established_context(node: &NodeRecord) -> Option<crate::FormattingContextKind
 }
 
 fn record_has_text(node: &NodeRecord) -> bool {
-    matches!(node.kind.as_ref(), NodeKind::Text) || !node.text.value.is_empty()
+    matches!(node.kind.as_ref(), NodeKind::Text) || node.has_text
 }
 
 /// The held result's fragments and parts are still what the current content
 /// box and baseline make, placed where the box stands.
 fn retained_projection_current<I: Iterator<Item = crate::LayoutPart>>(
-    previous: &crate::LayoutResult,
+    fragments: &[crate::LayoutFragment],
+    parts: &[crate::LayoutPart],
     content_box: LayoutBox,
     text_box: LayoutBox,
     baseline: Option<f32>,
     text: bool,
     extra_parts: impl Fn() -> I,
 ) -> bool {
-    let fragments = previous.fragments.as_ref();
-    let parts = previous.parts.as_ref();
     let text_fragments = usize::from(text) * 2;
     if fragments.len() != text_fragments
         || parts.len() != 1 + usize::from(text) + extra_parts().count()
@@ -7859,27 +7920,27 @@ fn style_change_is_layout_geometry_only(
 /// Own box, padding, fragment, and clip. Child placements stay on the children,
 /// so a parent republished only for those must not patch hit testing from the root.
 fn layout_result_projects_new_geometry(
-    previous: &crate::LayoutResult,
-    next: &crate::LayoutResult,
+    previous: &PublishedLayoutMeta,
+    next: &PublishedLayoutMeta,
 ) -> bool {
     // `geometry_eq` with the containing block and dependencies left out, field by field so a box that moved answers
     // before any list is compared.
-    let own_changed = previous.bounds != next.bounds
-        || previous.border_box != next.border_box
-        || previous.padding_box != next.padding_box
+    let own_changed = previous.width != next.width
+        || previous.height != next.height
+        || previous.padding_box() != next.padding_box()
         || previous.content_box != next.content_box
-        || previous.first_baseline != next.first_baseline
-        || previous.last_baseline != next.last_baseline
-        || previous.overflow != next.overflow
-        || previous.scroll_extent != next.scroll_extent
-        || previous.scroll_metrics != next.scroll_metrics
-        || previous.clip != next.clip
-        || previous.clip_parent != next.clip_parent
+        || previous.first_baseline() != next.first_baseline()
+        || previous.last_baseline() != next.last_baseline()
+        || previous.overflow_box() != next.overflow_box()
+        || previous.scroll_extent() != next.scroll_extent()
+        || previous.scroll_metrics() != next.scroll_metrics()
+        || previous.clip() != next.clip()
+        || previous.clip_parent() != next.clip_parent()
         || previous.formatting_context != next.formatting_context
         || previous.participation != next.participation;
     // A result holds nothing of where its children sit: a child whose box
     // moved publishes and projects itself, and its parent is not marked.
-    own_changed || previous.fragments != next.fragments || previous.parts != next.parts
+    own_changed || !previous.fragments_and_parts_eq(next)
 }
 
 /// Whether `next` changes more of [`layout_result_projects_new_geometry`]
@@ -7887,17 +7948,16 @@ fn layout_result_projects_new_geometry(
 /// its inner boxes, its clip links, its context or its own fragments and
 /// parts. A result that changes only those leaves what the box clips cut by
 /// the same box.
-fn layout_result_reshapes(previous: &crate::LayoutResult, next: &crate::LayoutResult) -> bool {
-    previous.bounds != next.bounds
-        || previous.border_box != next.border_box
-        || previous.padding_box != next.padding_box
+fn layout_result_reshapes(previous: &PublishedLayoutMeta, next: &PublishedLayoutMeta) -> bool {
+    previous.width != next.width
+        || previous.height != next.height
+        || previous.padding_box() != next.padding_box()
         || previous.content_box != next.content_box
-        || previous.clip != next.clip
-        || previous.clip_parent != next.clip_parent
+        || previous.clip() != next.clip()
+        || previous.clip_parent() != next.clip_parent()
         || previous.formatting_context != next.formatting_context
         || previous.participation != next.participation
-        || previous.fragments != next.fragments
-        || previous.parts != next.parts
+        || !previous.fragments_and_parts_eq(next)
 }
 
 /// Classify a style mutation at the layout authority boundary: the
@@ -8053,7 +8113,6 @@ fn layout_style_invalidation(
 
 mod block_stretch;
 mod deep_walk_tests;
-mod float_containment;
 mod line_box_memo;
 mod list_item_tooltip;
 mod mount_under_narrow_row;

@@ -170,6 +170,9 @@ impl Default for InteractionRequestCard {
 }
 
 impl ComponentView for InteractionRequestCard {
+    const TYPE_ID: Option<&'static str> =
+        Some(crate::component_descriptors::INTERACTION_REQUEST_CARD.type_id);
+
     const BEHAVIOR: crate::TypeBehavior<Self> = crate::TypeBehavior {
         assembler: Some(crate::AppContext::assemble_interaction_request_card),
         slot_assembler: Some(crate::AppContext::assemble_interaction_request_card),

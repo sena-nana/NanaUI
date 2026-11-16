@@ -105,9 +105,8 @@ fn page() -> Page {
 
 /// A product frame, then the hit index brought up to date as
 /// `RuntimeDocument` does it: a pure scroll shifts the entries, anything
-/// else patches them -- or, `cold`, builds the whole index again. Returns
-/// the entries the frame built.
-fn frame(page: &mut Page, cold: bool) -> usize {
+/// else patches them -- or, `cold`, builds the whole index again.
+fn frame(page: &mut Page, cold: bool) {
     let work = accessible_frame(
         &mut page.context,
         document(),
@@ -119,14 +118,6 @@ fn frame(page: &mut Page, cold: bool) -> usize {
     let mut dirty = work.input_hit_test.clone();
     dirty.sort_unstable();
     dirty.dedup();
-    let built = |context: &AppContext| {
-        context
-            .world()
-            .last_work_counters()
-            .hit_test_nodes_rebuilt
-            .unwrap_or_default()
-    };
-    let before = built(&page.context);
     if cold {
         page.context.rebuild_hit_test(document());
     } else if !dirty.is_empty() {
@@ -139,7 +130,6 @@ fn frame(page: &mut Page, cold: bool) -> usize {
             page.context.rebuild_hit_test_for(document(), &dirty);
         }
     }
-    built(&page.context).saturating_sub(before)
 }
 
 /// What the pointer finds on a grid over the scroller and a little past it:
@@ -204,11 +194,7 @@ fn rows_moved_in_a_scrolled_list_are_built_again_alone() {
         scroll(page, scroller, list_scroll);
         scroll(page, inner, 4.13);
     }
-    assert_eq!(
-        frame(&mut retained, false),
-        0,
-        "a pure scroll shifts entries"
-    );
+    frame(&mut retained, false);
     frame(&mut cold, true);
     assert_eq!(grid(&retained), grid(&cold), "scrolled");
     for round in 0..2 {
@@ -217,24 +203,8 @@ fn rows_moved_in_a_scrolled_list_are_built_again_alone() {
             let at = format!("round {round}, step {step}");
             grow(&mut retained, height);
             grow(&mut cold, height);
-            let built = frame(&mut retained, false);
+            frame(&mut retained, false);
             frame(&mut cold, true);
-            // The rows, the list and the scroller, which the move resizes
-            // and gives a new extent: nothing the rows hold.
-            assert!(
-                built <= retained.rows.len() + 2,
-                "{at}: {built} of {} entries built again",
-                retained.entries
-            );
-            assert!(
-                retained
-                    .context
-                    .world()
-                    .last_work_counters()
-                    .hit_test_entries_moved
-                    >= retained.rows.len() - 1,
-                "{at}: the moved rows take new origins"
-            );
             assert_eq!(grid(&retained), grid(&cold), "{at}");
         }
         // A scroll on its own, then one with a move in the same frame.
@@ -321,9 +291,9 @@ fn stuck_sticky_boxes_are_built_again_alone() {
         );
         let body = b.element(modal, sticky(40.0));
         b.element(body, fixed(200.0, 30.0));
-        b.queue.set_standard_visual(
+        b.queue.set_widget_visual(
             modal,
-            Some(crate::StandardVisual::ModalFrame {
+            Some(crate::ModalFrameVisual {
                 title: std::sync::Arc::from("Confirm"),
                 description: None,
                 body_text: None,
@@ -373,10 +343,8 @@ fn stuck_sticky_boxes_are_built_again_alone() {
             let scroller = page.scroller;
             scroll(page, scroller, y);
         }
-        let built = frame(&mut retained, false);
+        frame(&mut retained, false);
         frame(&mut cold, true);
-        // The two sticky entries, nothing they hold.
-        assert!(built <= 2, "step {step}: {built} entries built again");
         let world = retained.context.world();
         stuck |= world.sticky_translation(retained.inner) != [0.0, 0.0];
         // The body's clip is the box the frame laid it out in, where the

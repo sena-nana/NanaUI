@@ -78,6 +78,7 @@ pub(super) const BACKDROP_COMPOSITE: &str =
     stripped!(include_str!("shader/backdrop_composite.wgsl"));
 pub(super) const BACKDROP_COPY: &str = stripped!(include_str!("shader/backdrop_copy.wgsl"));
 pub(super) const BLIT: &str = stripped!(include_str!("shader/blit.wgsl"));
+#[cfg(any(test, feature = "charts"))]
 pub(super) const CHART: &str = stripped!(include_str!("shader/chart.wgsl"));
 pub(super) const COLOR: &str = stripped!(include_str!("shader/color.wgsl"));
 pub(super) const LAYER: &str = stripped!(include_str!("shader/layer.wgsl"));
@@ -94,9 +95,65 @@ pub(super) const TRIANGLE_SOLID: &str = stripped!(include_str!("shader/triangle_
 pub(super) const VERTEX: &str = stripped!(include_str!("shader/vertex.wgsl"));
 
 /// `files` in a row with a line break between each.
+#[cfg(any(test, feature = "runtime-wgsl", target_os = "windows"))]
 pub(super) fn joined(files: &[&str]) -> String {
     files.join("\n")
 }
+
+#[cfg(not(any(test, feature = "runtime-wgsl", target_os = "windows")))]
+pub(crate) use super::precompiled::{fnv1a, fnv1a_concat, fnv1a_joined};
+
+/// Built-in WGSL program: retains source when tests, `runtime-wgsl`, or
+/// Windows DXIL validation need it; hashes the source at compile time
+/// otherwise so raw built-in WGSL strings do not enter the binary.
+#[cfg(any(test, feature = "runtime-wgsl", target_os = "windows"))]
+macro_rules! program {
+    ($label:expr, $source:expr) => {
+        $crate::scene_paint::wgsl::Program::new($label, $source)
+    };
+}
+#[cfg(not(any(test, feature = "runtime-wgsl", target_os = "windows")))]
+macro_rules! program {
+    ($label:expr, $source:expr) => {{
+        #[allow(long_running_const_eval)]
+        const HASH: u64 = $crate::scene_paint::wgsl::fnv1a(($source).as_bytes());
+        $crate::scene_paint::wgsl::Program::from_hash($label, HASH)
+    }};
+}
+
+/// Built-in WGSL program assembled by joining `files` with `'\n'`.
+#[cfg(any(test, feature = "runtime-wgsl", target_os = "windows"))]
+macro_rules! program_joined {
+    ($label:expr, [$($file:expr),+ $(,)?]) => {
+        $crate::scene_paint::wgsl::Program::joined($label, &[$($file),+])
+    };
+}
+#[cfg(not(any(test, feature = "runtime-wgsl", target_os = "windows")))]
+macro_rules! program_joined {
+    ($label:expr, [$($file:expr),+ $(,)?]) => {{
+        #[allow(long_running_const_eval)]
+        const HASH: u64 = $crate::scene_paint::wgsl::fnv1a_joined(&[$($file),+]);
+        $crate::scene_paint::wgsl::Program::from_hash($label, HASH)
+    }};
+}
+
+/// Built-in WGSL program assembled by concatenating `parts` directly.
+#[cfg(any(test, feature = "runtime-wgsl", target_os = "windows"))]
+macro_rules! program_concat {
+    ($label:expr, [$($part:expr),+ $(,)?]) => {
+        $crate::scene_paint::wgsl::Program::new($label, [$($part),+].concat())
+    };
+}
+#[cfg(not(any(test, feature = "runtime-wgsl", target_os = "windows")))]
+macro_rules! program_concat {
+    ($label:expr, [$($part:expr),+ $(,)?]) => {{
+        #[allow(long_running_const_eval)]
+        const HASH: u64 = $crate::scene_paint::wgsl::fnv1a_concat(&[$($part),+]);
+        $crate::scene_paint::wgsl::Program::from_hash($label, HASH)
+    }};
+}
+
+pub(crate) use {program, program_concat, program_joined};
 
 /// A framework program, handed to the device as naga IR one entry point at a
 /// time.
@@ -126,9 +183,14 @@ pub(crate) struct Program {
     label: &'static str,
     /// An application's or skin's WGSL is in it: every runtime check stays.
     material: bool,
+    #[cfg(any(test, feature = "runtime-wgsl", target_os = "windows"))]
     source: std::borrow::Cow<'static, str>,
+    source_hash: u64,
+    #[cfg(any(test, feature = "runtime-wgsl"))]
     ir: std::cell::OnceCell<Option<naga::Module>>,
+    #[cfg(any(test, feature = "runtime-wgsl", not(target_vendor = "apple")))]
     stages: std::cell::RefCell<Vec<(String, Stage)>>,
+    #[cfg(any(test, feature = "runtime-wgsl"))]
     whole: std::cell::OnceCell<wgpu::ShaderModule>,
     /// DXIL compiled from this program, while the device takes it; cleared
     /// when the device refuses it.
@@ -137,6 +199,7 @@ pub(crate) struct Program {
 }
 
 /// One entry point's module, from [`Program::stage`].
+#[cfg(any(test, feature = "runtime-wgsl", not(target_vendor = "apple")))]
 #[derive(Clone)]
 pub(crate) struct Stage {
     pub(crate) module: wgpu::ShaderModule,
@@ -144,6 +207,7 @@ pub(crate) struct Stage {
     overrides: Option<Vec<String>>,
 }
 
+#[cfg(any(test, feature = "runtime-wgsl", not(target_vendor = "apple")))]
 impl Stage {
     /// `constants` less those the stage does not use: a cut-down module no
     /// longer declares them, and a pipeline may only set what its module
@@ -162,24 +226,43 @@ impl Stage {
 }
 
 impl Program {
+    #[cfg(any(test, feature = "runtime-wgsl", target_os = "windows"))]
     pub(crate) fn new(
         label: &'static str,
         source: impl Into<std::borrow::Cow<'static, str>>,
     ) -> Self {
+        let source = source.into();
+        let source_hash = super::precompiled::fnv1a(source.as_bytes());
         Self {
             label,
             material: false,
-            source: source.into(),
+            source,
+            source_hash,
+            #[cfg(any(test, feature = "runtime-wgsl"))]
             ir: std::cell::OnceCell::new(),
+            #[cfg(any(test, feature = "runtime-wgsl", not(target_vendor = "apple")))]
             stages: std::cell::RefCell::new(Vec::new()),
+            #[cfg(any(test, feature = "runtime-wgsl"))]
             whole: std::cell::OnceCell::new(),
             #[cfg(target_os = "windows")]
             precompiled: std::cell::Cell::new(None),
         }
     }
 
+    #[cfg(not(any(test, feature = "runtime-wgsl", target_os = "windows")))]
+    pub(crate) fn from_hash(label: &'static str, source_hash: u64) -> Self {
+        Self {
+            label,
+            material: false,
+            source_hash,
+            #[cfg(any(test, feature = "runtime-wgsl", not(target_vendor = "apple")))]
+            stages: std::cell::RefCell::new(Vec::new()),
+        }
+    }
+
     /// A program holding an application's or skin's WGSL, compiled with
     /// every runtime check.
+    #[cfg(feature = "runtime-wgsl")]
     pub(super) fn material(
         label: &'static str,
         source: impl Into<std::borrow::Cow<'static, str>>,
@@ -213,13 +296,19 @@ impl Program {
     /// ones when there are, else cut from the program ([`Self::stage`]).
     /// `build` gets the constants the fragment module takes (none for a
     /// precompiled stage, which was compiled with them).
-    pub(super) fn pipeline(
+    pub(crate) fn pipeline(
         &self,
         device: &wgpu::Device,
         vertex: &str,
         fragment: &str,
         constants: &[(&str, f64)],
-        build: impl Fn(&wgpu::ShaderModule, &wgpu::ShaderModule, &[(&str, f64)]) -> wgpu::RenderPipeline,
+        build: impl Fn(
+            &wgpu::ShaderModule,
+            &str,
+            &wgpu::ShaderModule,
+            &str,
+            &[(&str, f64)],
+        ) -> wgpu::RenderPipeline,
     ) -> wgpu::RenderPipeline {
         #[cfg(target_os = "windows")]
         if let Some(family) = self.precompiled.get()
@@ -230,25 +319,78 @@ impl Program {
                 device,
                 family,
                 [(vertex, &[]), (fragment, constants)],
-                |[vertex, fragment]| build(vertex, fragment, &[]),
+                |[vertex_mod, fragment_mod]| build(vertex_mod, vertex, fragment_mod, fragment, &[]),
             ) {
                 Some(pipeline) => return pipeline,
                 // Refused once, refused for every pipeline of the program.
                 None => self.precompiled.set(None),
             }
         }
-        #[cfg(all(test, target_os = "windows"))]
-        super::precompiled::tests::requesting(&self.source, vertex, fragment, constants);
-        let vertex = self.stage(device, vertex);
-        let fragment = self.stage(device, fragment);
-        build(
-            &vertex.module,
-            &fragment.module,
-            &fragment.constants(constants),
-        )
+        #[cfg(target_vendor = "apple")]
+        if !self.material {
+            #[cfg(test)]
+            let bypass = super::msl_precompiled::bypassing();
+            #[cfg(not(test))]
+            let bypass = false;
+            if !bypass {
+                if let Some(pipeline) = super::msl_precompiled::pipeline(
+                    device,
+                    self.label,
+                    self.source_hash,
+                    vertex,
+                    fragment,
+                    constants,
+                    &build,
+                ) {
+                    return pipeline;
+                }
+            } else {
+                #[cfg(test)]
+                return super::msl_precompiled::tests::recording_pipeline(
+                    self.source_hash,
+                    vertex,
+                    fragment,
+                    constants,
+                    || {
+                        let vertex_stage = self.stage(device, vertex);
+                        let fragment_stage = self.stage(device, fragment);
+                        build(
+                            &vertex_stage.module,
+                            vertex,
+                            &fragment_stage.module,
+                            fragment,
+                            &fragment_stage.constants(constants),
+                        )
+                    },
+                );
+            }
+        }
+        #[cfg(all(target_vendor = "apple", not(any(test, feature = "runtime-wgsl"))))]
+        {
+            let _ = (device, vertex, fragment, constants, build);
+            unreachable!(
+                "missing precompiled MSL stage for built-in shader `{}` or runtime material without `runtime-wgsl`",
+                self.label
+            );
+        }
+        #[cfg(any(test, feature = "runtime-wgsl", not(target_vendor = "apple")))]
+        {
+            #[cfg(all(test, target_os = "windows"))]
+            super::precompiled::tests::requesting(&self.source, vertex, fragment, constants);
+            let vertex_stage = self.stage(device, vertex);
+            let fragment_stage = self.stage(device, fragment);
+            build(
+                &vertex_stage.module,
+                vertex,
+                &fragment_stage.module,
+                fragment,
+                &fragment_stage.constants(constants),
+            )
+        }
     }
 
     /// The program [`joined`] from `files`.
+    #[cfg(any(test, feature = "runtime-wgsl", target_os = "windows"))]
     pub(super) fn joined(label: &'static str, files: &[&str]) -> Self {
         Self::new(label, joined(files))
     }
@@ -259,6 +401,7 @@ impl Program {
         &self.source
     }
 
+    #[cfg(any(test, feature = "runtime-wgsl"))]
     fn ir(&self) -> Option<&naga::Module> {
         self.ir
             .get_or_init(|| {
@@ -276,31 +419,54 @@ impl Program {
             .as_ref()
     }
 
-    /// The module for the stage whose entry point is `entry`: only what it
-    /// reaches, or the whole program as WGSL when that cannot be cut out.
+    #[cfg(any(test, feature = "runtime-wgsl", not(target_vendor = "apple")))]
+    fn stage_from_ir(&self, device: &wgpu::Device, ir: wgpu::naga::Module) -> Stage {
+        let overrides = ir
+            .overrides
+            .iter()
+            .filter_map(|(_, declared)| declared.name.clone())
+            .collect();
+        Stage {
+            module: self.module(
+                device,
+                wgpu::ShaderSource::Naga(std::borrow::Cow::Owned(ir)),
+            ),
+            overrides: Some(overrides),
+        }
+    }
+
+    /// The module for the stage whose entry point is `entry`: precompiled
+    /// compacted IR for built-in shaders, or cut from runtime WGSL when
+    /// `runtime-wgsl` (or test validation) is enabled.
+    #[cfg(any(test, feature = "runtime-wgsl", not(target_vendor = "apple")))]
     pub(crate) fn stage(&self, device: &wgpu::Device, entry: &str) -> Stage {
         if let Some((_, stage)) = self.stages.borrow().iter().find(|(name, _)| name == entry) {
             return stage.clone();
         }
-        let stage = match self.ir().and_then(|ir| cut(ir, entry)) {
-            Some(ir) => {
-                let overrides = ir
-                    .overrides
-                    .iter()
-                    .filter_map(|(_, declared)| declared.name.clone())
-                    .collect();
-                Stage {
-                    module: self.module(
-                        device,
-                        wgpu::ShaderSource::Naga(std::borrow::Cow::Owned(ir)),
-                    ),
-                    overrides: Some(overrides),
-                }
+        #[cfg(any(test, not(target_vendor = "apple")))]
+        let precompiled = if !self.material {
+            super::naga_ir::stage(self.source_hash, entry)
+        } else {
+            None
+        };
+        #[cfg(not(any(test, not(target_vendor = "apple"))))]
+        let precompiled: Option<wgpu::naga::Module> = None;
+        let stage = if let Some(ir) = precompiled {
+            self.stage_from_ir(device, ir)
+        } else {
+            #[cfg(any(test, feature = "runtime-wgsl"))]
+            match self.ir().and_then(|ir| cut(ir, entry)) {
+                Some(ir) => self.stage_from_ir(device, ir),
+                None => Stage {
+                    module: self.whole(device),
+                    overrides: None,
+                },
             }
-            None => Stage {
-                module: self.whole(device),
-                overrides: None,
-            },
+            #[cfg(not(any(test, feature = "runtime-wgsl")))]
+            panic!(
+                "missing precompiled naga IR for built-in shader `{}` entry `{entry}`",
+                self.label
+            )
         };
         self.stages
             .borrow_mut()
@@ -308,6 +474,7 @@ impl Program {
         stage
     }
 
+    #[cfg(any(test, feature = "runtime-wgsl"))]
     fn whole(&self, device: &wgpu::Device) -> wgpu::ShaderModule {
         self.whole
             .get_or_init(|| self.module(device, wgpu::ShaderSource::Wgsl(self.source.clone())))
@@ -315,6 +482,7 @@ impl Program {
     }
 
     /// `source` as a module, with the runtime checks [`Self`] describes.
+    #[cfg(any(test, feature = "runtime-wgsl", not(target_vendor = "apple")))]
     fn module(&self, device: &wgpu::Device, source: wgpu::ShaderSource<'_>) -> wgpu::ShaderModule {
         let descriptor = wgpu::ShaderModuleDescriptor {
             label: Some(self.label),
@@ -334,6 +502,7 @@ impl Program {
 
 /// `module` with `entry` its only entry point and nothing it does not
 /// reach; `None` when it has no such entry point.
+#[cfg(any(test, feature = "runtime-wgsl"))]
 pub(super) fn cut(module: &naga::Module, entry: &str) -> Option<naga::Module> {
     let mut module = module.clone();
     module.entry_points.retain(|point| point.name == entry);
@@ -629,5 +798,19 @@ mod tests {
             samples
         );
         assert!(pollster::block_on(scope.pop()).is_some());
+    }
+
+    #[test]
+    fn compile_time_hashes_match_joined_and_concat_sources() {
+        let joined_src = joined(&[MOTION, COLOR, QUAD]);
+        assert_eq!(
+            super::super::precompiled::fnv1a_joined(&[MOTION, COLOR, QUAD]),
+            super::super::precompiled::fnv1a(joined_src.as_bytes()),
+        );
+        let concat_src = [COLOR, LAYER, LAYER_BLEND].concat();
+        assert_eq!(
+            super::super::precompiled::fnv1a_concat(&[COLOR, LAYER, LAYER_BLEND]),
+            super::super::precompiled::fnv1a(concat_src.as_bytes()),
+        );
     }
 }

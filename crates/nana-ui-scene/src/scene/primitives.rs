@@ -3,55 +3,6 @@
 use super::*;
 use nana_ui_runtime::HOST_TEXTURE_RENDERER;
 
-#[cfg(feature = "calendar")]
-mod calendar;
-#[cfg(feature = "charts")]
-mod charts;
-#[cfg(feature = "controls")]
-mod controls;
-mod controls_base;
-#[cfg(feature = "graph-canvas")]
-mod graph_canvas;
-#[cfg(feature = "image-viewer")]
-mod image_viewer;
-#[cfg(feature = "rich-text")]
-mod markdown_drawing;
-mod overlays;
-#[cfg(feature = "rich-text")]
-mod rich_text;
-mod text;
-
-/// Runs `run` in a frame of its own.
-///
-/// Unoptimized code keeps a stack slot for every local of a function, so a
-/// `match` whose arms each build something large holds all of their locals
-/// at once, whichever arm runs: a debug frame of 70 KiB on the per-frame
-/// path. An arm moved in here takes its locals only when it runs. An
-/// optimized build inlines it, so it costs nothing there.
-#[inline(always)]
-fn own_frame<T>(run: impl FnOnce() -> T) -> T {
-    run()
-}
-
-struct GeometryPaintContext<'a> {
-    node: &'a ExtractedNode,
-    bounds: SceneRect,
-    transform: AffineTransform,
-    clips: &'a Arc<[ClipRegion]>,
-    parent_clips: &'a Arc<[ClipRegion]>,
-    text_input_clips: &'a Arc<[ClipRegion]>,
-    empty_state_content_clips: &'a Arc<[ClipRegion]>,
-    opacity: f32,
-    node_order: usize,
-    focus_ring: nana_ui_core::FocusRingMetrics,
-    /// Where `bounds` is drawn from on the page ([`UiScene::paint_origin`]),
-    /// for the rare geometry put on the page's pixel grid.
-    #[cfg_attr(not(feature = "charts"), allow(dead_code))]
-    page_origin: [f32; 2],
-    overlay_visual_z: i32,
-    overlay_visual_opacity: f32,
-}
-
 impl UiScene {
     fn resolve_overlay_mount_z(&self, node: &ExtractedNode, base_z: i32) -> i32 {
         match crate::scene::effective_overlay_visual_parent(&self.nodes, node) {
@@ -89,14 +40,20 @@ impl UiScene {
         self.offset_bound.remove(&id);
         // Written again below when the node still presents per glyph.
         self.glyph_live.remove(&id);
-        self.chart_live.remove(&id);
+        self.gpu_payload_live.remove(&id);
         self.glyph_objects.remove(&id);
         let Some(node) = self.nodes.get(&id).cloned() else {
+            if !self.widget_vector_paint.is_empty() {
+                self.widget_vector_paint.remove(&id);
+            }
             return;
         };
         if self.inside_ancestor_glyph(&node) {
             if node.custom_paint.is_none() && !self.custom_paint.is_empty() {
                 self.custom_paint.remove(&id);
+            }
+            if !self.widget_vector_paint.is_empty() {
+                self.widget_vector_paint.remove(&id);
             }
             return;
         }
@@ -160,54 +117,16 @@ impl UiScene {
             }
             _ => Arc::clone(&clips),
         };
-        let empty_state_content_clips: Arc<[ClipRegion]> =
-            if let Some(ComponentGeometry::EmptyState { content_clip, .. }) =
-                node.component_geometry.as_deref()
-            {
+        let text_input_clips: Arc<[ClipRegion]> =
+            if let Some(clip) = node.widget_paint.as_deref().and_then(|w| w.content_clip) {
                 let mut content_clips = clips.to_vec();
                 content_clips.push(ClipRegion {
-                    bounds: scene_rect(*content_clip),
+                    bounds: scene_rect(clip),
                     transform,
                     corner_radius: 0.0,
                     polygon_clip: None,
                 });
                 content_clips.into()
-            } else {
-                Arc::clone(&clips)
-            };
-        let text_input_clips: Arc<[ClipRegion]> =
-            if matches!(node.standard_visual, Some(StandardVisual::TextInput { .. })) {
-                let padding = node
-                    .source_style
-                    .layout
-                    .resolved_padding_against(Some(bounds.width));
-                let border = node.source_style.layout.resolved_border_width();
-                let editor_bounds = match node.component_geometry.as_deref() {
-                    Some(ComponentGeometry::TextInput {
-                        character_counter: Some(counter),
-                        ..
-                    }) => Some(counter.editor_bounds),
-                    Some(ComponentGeometry::TextInput {
-                        suffix: Some(suffix),
-                        ..
-                    }) => Some(suffix.editor_bounds),
-                    _ => None,
-                };
-                let mut text_input_clips = clips.to_vec();
-                text_input_clips.push(ClipRegion {
-                    bounds: editor_bounds.map(scene_rect).unwrap_or(SceneRect {
-                        x: bounds.x + border + padding.left,
-                        y: bounds.y + border + padding.top,
-                        width: (bounds.width - border * 2.0 - padding.left - padding.right)
-                            .max(0.0),
-                        height: (bounds.height - border * 2.0 - padding.top - padding.bottom)
-                            .max(0.0),
-                    }),
-                    transform,
-                    corner_radius: 0.0,
-                    polygon_clip: None,
-                });
-                text_input_clips.into()
             } else {
                 Arc::clone(&clips)
             };
@@ -237,78 +156,62 @@ impl UiScene {
                 .as_deref()
                 .is_none_or(|recording| recording.default_phase().is_some())
         {
-            let standard_visual_uses_root_surface = matches!(
-                node.standard_visual,
-                Some(
-                    StandardVisual::Button { .. }
-                        | StandardVisual::TextInput { .. }
-                        | StandardVisual::Icon { .. }
-                        | StandardVisual::Switch { .. }
-                        | StandardVisual::Card { .. }
-                        | StandardVisual::ListItem { .. }
-                        | StandardVisual::StatusBadge { .. }
-                        | StandardVisual::SelectionOption { .. }
-                        | StandardVisual::ModalFrame { .. }
-                        | StandardVisual::Toast { .. }
-                        | StandardVisual::XYPad { .. }
-                        | StandardVisual::Select { .. }
-                        | StandardVisual::ActionMenuItem { .. }
-                        | StandardVisual::TreeView { .. }
-                        | StandardVisual::CommandPalette { .. }
-                )
+            let surface_border_color = node.style.border_color;
+            // Resolve the colour first, then ask for the widths *that colour*
+            // strokes. Asking in the other order took the width from a
+            // CSS-only view that cannot see a `SemanticColorRole`, so a
+            // component that named its border got the colour and a width of
+            // zero.
+            let color = style.resolved_border_color().or(surface_border_color);
+            let edges = style.paint_border_edges_with(color);
+            let (surface_background, surface_border_color, surface_border_width) = (
+                node.style.background,
+                color,
+                edges.top.max(edges.right).max(edges.bottom).max(edges.left),
             );
-            let surface_border_color =
-                if matches!(node.standard_visual, Some(StandardVisual::Switch { .. })) {
-                    None
-                } else {
-                    node.style.border_color
-                };
+            let widget_root = node
+                .widget_paint
+                .as_deref()
+                .and_then(|w| w.root_surface.as_ref());
             let (surface_background, surface_border_color, surface_border_width) =
-                match node.component_geometry.as_deref() {
-                    Some(ComponentGeometry::Button {
-                        background,
-                        border,
-                        border_width,
-                        ..
-                    }) => (*background, *border, *border_width),
-                    Some(ComponentGeometry::TextInput {
-                        background,
-                        border,
-                        border_width,
-                        ..
-                    }) => (*background, *border, *border_width),
-                    Some(ComponentGeometry::StatusBadge { background, .. }) => {
-                        (Some(*background), None, 0.0)
-                    }
-                    _ => {
-                        if matches!(node.standard_visual, Some(StandardVisual::Switch { .. })) {
-                            (node.style.background, None, 0.0)
-                        } else {
-                            // Resolve the colour first, then ask for the
-                            // widths *that colour* strokes. Asking in the other
-                            // order took the width from a CSS-only view that
-                            // cannot see a `SemanticColorRole`, so a component
-                            // that named its border got the colour and a width
-                            // of zero.
-                            let color = style.resolved_border_color().or(surface_border_color);
-                            let edges = style.paint_border_edges_with(color);
-                            (
-                                node.style.background,
-                                color,
-                                edges.top.max(edges.right).max(edges.bottom).max(edges.left),
-                            )
-                        }
-                    }
+                if let Some(rs) = widget_root {
+                    (
+                        rs.background.unwrap_or(surface_background),
+                        rs.border_color.unwrap_or(surface_border_color),
+                        rs.border_width.unwrap_or(surface_border_width),
+                    )
+                } else {
+                    (
+                        surface_background,
+                        surface_border_color,
+                        surface_border_width,
+                    )
                 };
-            if !matches!(
-                node.standard_visual,
-                Some(StandardVisual::MenuSurface { .. })
-            ) && (style.has_surface_paint()
-                || style.paints_any_border()
-                || ((node.standard_visual.is_none() || standard_visual_uses_root_surface)
-                    && (node.style.background.is_some()
-                        || node.style.border_color.is_some()
-                        || style.paints_any_border())))
+            let bg_paint = if widget_root.is_some_and(|rs| rs.background.is_some()) {
+                matching_paint_color(style.paint_colors.background, surface_background)
+            } else {
+                style.paint_colors.background
+            };
+            let border_paint = if widget_root.is_some_and(|rs| rs.border_color.is_some()) {
+                matching_paint_color(style.paint_colors.border, surface_border_color)
+            } else {
+                style.paint_colors.border
+            };
+            if !node
+                .widget_paint
+                .as_deref()
+                .is_some_and(|w| w.suppress_css_root_surface)
+                && (style.has_surface_paint()
+                    || style.paints_any_border()
+                    || (!node
+                        .widget_paint
+                        .as_ref()
+                        .is_some_and(|w| w.suppress_root_surface)
+                        && (node.style.background.is_some()
+                            || surface_background.is_some()
+                            || node.style.border_color.is_some()
+                            || surface_border_color.is_some()
+                            || style.paints_any_border())))
             {
                 self.insert_primitive(ScenePrimitive {
                     id: PrimitiveId { node: id, slot: 0 },
@@ -320,27 +223,15 @@ impl UiScene {
                     z_index: node.z_index,
                     document_order: node_order,
                     kind: ScenePrimitiveKind::Quad {
-                        background: super::slot_color(
-                            style.paint_colors.background,
-                            surface_background,
-                        ),
-                        border_color: super::slot_color(
-                            style.paint_colors.border,
-                            surface_border_color,
-                        ),
+                        background: super::slot_color(bg_paint, surface_background),
+                        border_color: super::slot_color(border_paint, surface_border_color),
                         border_width: surface_border_width,
                         corner_radius: surface_corner_radii(style, bounds.width, bounds.height),
                         shadow: style
                             .paint
                             .primary_box_shadow()
                             .map(ComponentElevation::from_box_shadow)
-                            .or(match node.component_geometry.as_deref() {
-                                Some(
-                                    ComponentGeometry::Card { elevation, .. }
-                                    | ComponentGeometry::Toast { elevation, .. },
-                                ) => *elevation,
-                                _ => None,
-                            }),
+                            .or_else(|| widget_root.and_then(|rs| rs.fallback_elevation)),
                         surface: {
                             let mut surface = quad_surface_from_style(
                                 style,
@@ -351,16 +242,9 @@ impl UiScene {
                             if is_filter_group(&self.nodes, &node) {
                                 surface.filter = None;
                             }
-                            let component_owns_border = matches!(
-                                node.component_geometry.as_deref(),
-                                Some(
-                                    ComponentGeometry::Button { .. }
-                                        | ComponentGeometry::TextInput { .. }
-                                )
-                            ) || matches!(
-                                node.standard_visual,
-                                Some(StandardVisual::Switch { .. })
-                            );
+                            let component_owns_border = widget_root.is_some_and(|rs| {
+                                rs.border_color.is_some() || rs.border_width.is_some()
+                            });
                             if !component_owns_border {
                                 // Same colour the uniform width above was
                                 // taken for. Without it a border named by a
@@ -389,16 +273,18 @@ impl UiScene {
                     },
                 });
             }
-            #[cfg(feature = "image-viewer")]
-            let viewer_owns_content = matches!(
-                node.component_geometry.as_deref(),
-                Some(ComponentGeometry::ImageViewer { .. })
-            );
-            #[cfg(not(feature = "image-viewer"))]
-            let viewer_owns_content = false;
+            let viewer_owns_content = node
+                .widget_paint
+                .as_deref()
+                .is_some_and(|p| p.owns_custom_render);
             if let Some(custom) = node.custom_render.clone()
                 && !viewer_owns_content
             {
+                if let Some(until) = custom.transition_until
+                    && until > std::time::Duration::ZERO
+                {
+                    self.gpu_payload_live.insert(id, until);
+                }
                 let clips = if custom.renderer.as_ref() == HOST_TEXTURE_RENDERER {
                     &surface_clips
                 } else {
@@ -420,8 +306,7 @@ impl UiScene {
                     },
                 });
             }
-            let component_owns_text =
-                component_geometry_owns_text(node.component_geometry.as_deref());
+            let component_owns_text = node.widget_paint.as_ref().is_some_and(|w| w.owns_node_text);
             if let Some(text) = node.text.as_ref().filter(|text| {
                 // An empty rich editor has no glyphs but still its caret.
                 (!text.value.is_empty() || node.rich_editor.is_some())
@@ -436,20 +321,15 @@ impl UiScene {
                     width: (bounds.width - border * 2.0 - padding.left - padding.right).max(0.0),
                     height: (bounds.height - border * 2.0 - padding.top - padding.bottom).max(0.0),
                 };
-                if let Some(ComponentGeometry::ListItem {
-                    content: Some(content),
-                    ..
-                }) = node.component_geometry.as_deref()
-                {
-                    text_bounds = scene_rect(*content);
-                }
                 // A checkbox's label sits where layout published its
                 // `TextContent` part, beside the indicator part; the scene
                 // keeps no copy of the indicator's room.
-                if let Some(ComponentGeometry::Checkbox { label, .. }) =
-                    node.component_geometry.as_deref()
+                if let Some(label_bounds) = node
+                    .widget_paint
+                    .as_deref()
+                    .and_then(|w| w.node_text_bounds)
                 {
-                    text_bounds = scene_rect(label.bounds);
+                    text_bounds = scene_rect(label_bounds);
                 }
                 // A rich editor is a text node, so its own scroll translates
                 // glyphs and marks together; the surrounding chrome stays put.
@@ -638,9 +518,12 @@ impl UiScene {
                             scene_text_spans(&node, None, &text.value),
                         ),
                         text_shadow: style.paint.text_shadow,
-                        underline: style.text_decoration.is_some_and(|d| d.underline),
-                        line_through: style.text_decoration.is_some_and(|d| d.line_through),
-                        font_features: style.font_features.clone().unwrap_or_default(),
+                        underline: style.text_ext.text_decoration.is_some_and(|d| d.underline),
+                        line_through: style
+                            .text_ext
+                            .text_decoration
+                            .is_some_and(|d| d.line_through),
+                        font_features: style.text_ext.font_features.clone().unwrap_or_default(),
                         italic: node.style.italic,
                         wrap_break: style.text_wrap_break(),
                         opentype: SceneTextOpenType {
@@ -740,205 +623,35 @@ impl UiScene {
                     self.insert_primitive(caret);
                 }
             }
-            // Only a dialog whose card a surface painter draws holds a
-            // painted card; a node that stopped being one drops it.
-            if !self.modal_surface_paint.is_empty()
-                && !matches!(
-                    node.component_geometry.as_deref(),
-                    Some(ComponentGeometry::ModalFrame {
-                        surface_paint: Some(_),
-                        ..
-                    })
-                )
-            {
-                self.modal_surface_paint.remove(&id);
-            }
-            // Only a document that draws a diagram holds diagram geometry.
-            if !self.markdown_diagram_paint.is_empty()
-                && !matches!(
-                    node.component_geometry.as_deref(),
-                    Some(ComponentGeometry::NativeMarkdown { .. })
-                )
-            {
-                self.markdown_diagram_paint.remove(&id);
-            }
             let page_origin = self.paint_origin(&node);
-            let pixel_snapped = matches!(
-                node.component_geometry.as_deref(),
-                Some(ComponentGeometry::Chart { hover, .. })
-                    if hover.pointer.is_some()
-            );
-            if pixel_snapped {
-                self.origin_bound.insert(id);
-            }
-            let (overlay_visual_z, overlay_visual_opacity) =
-                match node.component_geometry.as_deref() {
-                    Some(ComponentGeometry::Select { menu: Some(_), .. }) => (
-                        self.resolve_overlay_mount_z(
-                            &node,
-                            node.z_index.max(nana_ui_runtime::MENU_OVERLAY_Z_INDEX),
-                        ),
-                        self.visual_ancestor_opacity(crate::scene::VisualNode::Overlay(id), false),
-                    ),
-                    Some(ComponentGeometry::MenuSurface {
-                        trigger_surface: Some(_),
-                        ..
-                    }) => (
-                        self.resolve_overlay_mount_z(&node, nana_ui_runtime::MENU_OVERLAY_Z_INDEX),
-                        self.visual_ancestor_opacity(crate::scene::VisualNode::Overlay(id), false),
-                    ),
-                    _ => (0, 1.0),
-                };
-            let context = GeometryPaintContext {
-                page_origin,
-                overlay_visual_z,
-                overlay_visual_opacity,
-                node: &node,
-                bounds,
-                transform,
-                clips: &clips,
-                parent_clips: &parent_clips,
-                text_input_clips: &text_input_clips,
-                empty_state_content_clips: &empty_state_content_clips,
-                opacity,
-                node_order,
-                focus_ring: self.focus_ring,
-            };
-            let mut emit = |primitive| self.insert_primitive(primitive);
-            match node.component_geometry.as_deref() {
-                // The ordinary label path and the checkbox visual below use
-                // these resolved regions; neither paints a second copy here.
-                Some(ComponentGeometry::Checkbox { .. }) => {}
-                Some(ComponentGeometry::ModalFrame {
-                    surface,
-                    surface_paint,
-                    ..
-                }) => {
-                    overlays::build(&context, &mut emit);
-                    if let Some(recording) = surface_paint {
-                        let built = self.prepare_modal_surface_paint(id, recording);
-                        self.emit_modal_surface_paint(
-                            &node, *surface, &built, transform, &clips, opacity, node_order,
-                        );
-                    }
-                }
-                Some(ComponentGeometry::Button { .. }) => controls_base::build(&context, &mut emit),
-                Some(ComponentGeometry::TextInput { .. }) => text::build(&context, &mut emit),
-                Some(ComponentGeometry::Switch { .. }) => controls_base::build(&context, &mut emit),
-                Some(ComponentGeometry::Range { .. }) => controls_base::build(&context, &mut emit),
-                Some(ComponentGeometry::Card { .. }) => controls_base::build(&context, &mut emit),
-                Some(ComponentGeometry::ListItem { .. }) => {
-                    controls_base::build(&context, &mut emit)
-                }
-                Some(ComponentGeometry::StatusBadge { .. }) => text::build(&context, &mut emit),
-                Some(ComponentGeometry::ValidationMessage { .. }) => {
-                    text::build(&context, &mut emit)
-                }
-                Some(ComponentGeometry::EmptyState { .. }) => text::build(&context, &mut emit),
-                Some(
-                    ComponentGeometry::PathText { .. } | ComponentGeometry::LabeledValue { .. },
-                ) => text::build(&context, &mut emit),
-                Some(ComponentGeometry::SelectionOption { .. }) => {
-                    controls_base::build(&context, &mut emit)
-                }
-                Some(ComponentGeometry::Progress { .. }) => {
-                    controls_base::build(&context, &mut emit)
-                }
-                Some(ComponentGeometry::FormField { .. }) => {
-                    controls_base::build(&context, &mut emit)
-                }
-                Some(ComponentGeometry::Toast { .. }) => overlays::build(&context, &mut emit),
-                Some(ComponentGeometry::XYPad { .. }) => controls_base::build(&context, &mut emit),
-                Some(ComponentGeometry::QrCode { .. }) => controls_base::build(&context, &mut emit),
-                Some(ComponentGeometry::Select { .. }) => controls_base::build(&context, &mut emit),
-                Some(ComponentGeometry::ActionMenuItem { .. }) => {
-                    overlays::build(&context, &mut emit)
-                }
-                Some(ComponentGeometry::TreeView { .. }) => {
-                    controls_base::build(&context, &mut emit)
-                }
-                Some(ComponentGeometry::CommandPalette { .. }) => {
-                    controls_base::build(&context, &mut emit)
-                }
-                Some(ComponentGeometry::MenuSurface { .. }) => overlays::build(&context, &mut emit),
-                #[cfg(feature = "calendar")]
-                Some(ComponentGeometry::CalendarHeatmap { .. }) => {
-                    calendar::build(&context, &mut emit)
-                }
-                #[cfg(feature = "charts")]
-                Some(ComponentGeometry::Chart { .. })
-                | Some(ComponentGeometry::ChartTooltip { .. }) => {
-                    charts::build(&context, &mut emit)
-                }
-                #[cfg(not(feature = "charts"))]
-                Some(ComponentGeometry::Chart { .. })
-                | Some(ComponentGeometry::ChartTooltip { .. }) => {}
-                #[cfg(feature = "controls")]
-                Some(ComponentGeometry::ReorderList { .. }) => controls::build(&context, &mut emit),
-                #[cfg(feature = "rich-text")]
-                Some(ComponentGeometry::NativeMarkdown { drawing, .. }) => {
-                    rich_text::build(&context, &mut emit);
-                    self.emit_markdown_diagrams(
-                        &node, drawing, transform, &clips, opacity, node_order,
-                    );
-                }
-                #[cfg(feature = "rich-text")]
-                Some(ComponentGeometry::SelectableRichText { .. }) => {
-                    rich_text::build(&context, &mut emit)
-                }
-                #[cfg(feature = "graph-canvas")]
-                Some(ComponentGeometry::GraphCanvas { .. }) => {
-                    graph_canvas::build(&context, &mut emit)
-                }
-                #[cfg(feature = "graph-canvas")]
-                Some(ComponentGeometry::GraphMinimap { .. }) => {
-                    graph_canvas::build(&context, &mut emit)
-                }
-                #[cfg(feature = "image-viewer")]
-                Some(ComponentGeometry::ImageViewer { .. }) => {
-                    image_viewer::build(&context, &mut emit)
-                }
-                Some(ComponentGeometry::KeyCaptureLayer { .. }) => {
-                    controls_base::build(&context, &mut emit)
-                }
-                Some(ComponentGeometry::KeymapLayer { .. }) => {
-                    controls_base::build(&context, &mut emit)
-                }
-                // Scrollbar chrome is emitted with the StandardVisual slots
-                // below, in its own slot namespace, so it draws over
-                // everything the scroll view holds.
-                Some(ComponentGeometry::Scrollbar { .. }) | None => {}
-                #[cfg(not(feature = "calendar"))]
-                Some(ComponentGeometry::CalendarHeatmap { .. }) => {}
-                #[cfg(not(feature = "controls"))]
-                Some(ComponentGeometry::ReorderList { .. }) => {}
-                #[cfg(not(feature = "rich-text"))]
-                Some(ComponentGeometry::NativeMarkdown { .. }) => {}
-                #[cfg(not(feature = "rich-text"))]
-                Some(ComponentGeometry::SelectableRichText { .. }) => {}
-                #[cfg(not(feature = "graph-canvas"))]
-                Some(ComponentGeometry::GraphCanvas { .. }) => {}
-                #[cfg(not(feature = "graph-canvas"))]
-                Some(ComponentGeometry::GraphMinimap { .. }) => {}
-                #[cfg(not(feature = "image-viewer"))]
-                Some(ComponentGeometry::ImageViewer { .. }) => {}
-            }
-            // A chart keeps the host presenting while its marks or emphasis
-            // move.
-            if let Some(ComponentGeometry::Chart { layout, hover, .. }) =
-                node.component_geometry.as_deref()
+            let (overlay_visual_z, overlay_visual_opacity) = if let Some(overlay) = node
+                .widget_paint
+                .as_deref()
+                .and_then(|w| w.floating_overlay.as_ref())
             {
-                let until = layout
-                    .marks
-                    .transition
-                    .map_or(std::time::Duration::ZERO, |motion| motion.end())
-                    .max(hover.live_until());
-                self.chart_live.insert(id, until);
-            }
+                let base_z = match overlay.kind {
+                    nana_ui_runtime::WidgetFloatingOverlayKind::AttachedPopup => {
+                        node.z_index.max(nana_ui_runtime::MENU_OVERLAY_Z_INDEX)
+                    }
+                    nana_ui_runtime::WidgetFloatingOverlayKind::TriggeredSurface => {
+                        nana_ui_runtime::MENU_OVERLAY_Z_INDEX
+                    }
+                };
+                (
+                    self.resolve_overlay_mount_z(&node, base_z),
+                    self.visual_ancestor_opacity(crate::scene::VisualNode::Overlay(id), false),
+                )
+            } else {
+                (0, 1.0)
+            };
             let visual_context = VisualPrimitiveContext {
                 node: id,
                 transform,
-                clips: if matches!(node.standard_visual, Some(StandardVisual::TextInput { .. })) {
+                clips: if node
+                    .widget_paint
+                    .as_deref()
+                    .is_some_and(|w| w.content_clip.is_some())
+                {
                     &text_input_clips
                 } else {
                     &clips
@@ -947,1569 +660,22 @@ impl UiScene {
                 z_index: node.z_index,
                 document_order: node_order,
             };
-            match &node.standard_visual {
-                Some(StandardVisual::Button { loading_phase, .. }) => own_frame(|| {
-                    if let Some(ComponentGeometry::Button {
-                        spinner,
-                        focus_ring,
-                        ..
-                    }) = node.component_geometry.as_deref()
-                    {
-                        if let Some(spinner) = spinner {
-                            self.insert_primitive(ScenePrimitive {
-                                id: PrimitiveId { node: id, slot: 3 },
-                                node: id,
-                                bounds: scene_rect(*spinner),
-                                transform,
-                                clips: clips.clone(),
-                                opacity,
-                                z_index: node.z_index,
-                                document_order: node_order,
-                                kind: ScenePrimitiveKind::Spinner {
-                                    phase: (loading_phase.clamp(0.0, 1.0) * 8.0).floor() as u8 % 8,
-                                    color: super::slot_color(
-                                        node.style.paint_colors.color.filter(|paint| {
-                                            node.standard_visual_foreground == Some(paint.to_srgb())
-                                        }),
-                                        node.standard_visual_foreground.or(node.style.color),
-                                    ),
-                                },
-                            });
-                        }
-                        if let Some(color) = focus_ring {
-                            let (ring_rect, ring_style) =
-                                focus_ring_quad(style, bounds, self.focus_ring, 0.0, *color);
-                            self.insert_primitive(visual_quad(
-                                &VisualPrimitiveContext {
-                                    node: id,
-                                    transform,
-                                    clips: &parent_clips,
-                                    opacity,
-                                    z_index: node.z_index,
-                                    document_order: node_order,
-                                },
-                                7,
-                                ring_rect,
-                                ring_style,
-                            ));
-                        }
-                    }
-                }),
-                Some(StandardVisual::TextInput { .. }) => own_frame(|| {
-                    if let Some(ComponentGeometry::TextInput {
-                        scroll,
-                        caret,
-                        additional_carets,
-                        additional_caret_color,
-                        preedit,
-                        focus_ring,
-                        caret_color,
-                        preedit_color,
-                        diagnostic_markers,
-                        diagnostic_labels,
-                        match_markers,
-                        swatch_markers,
-                        swatch_border_color,
-                        atom_chips,
-                        caret_line,
-                        bracket_markers,
-                        occurrence_markers,
-                        drop_indicator,
-                        whitespace_marks,
-                        whitespace_color,
-                        wrap_guides,
-                        indent_guides,
-                        line_labels,
-                        line_labels_color,
-                        line_labels_font_size,
-                        folds,
-                        git_marks,
-                        completion_popup,
-                        hover_popup,
-                        signature_popup,
-                        minimap,
-                        sticky_line,
-                        ..
-                    }) = node.component_geometry.as_deref()
-                    {
-                        // Gutter, current-line band, minimap and sticky line
-                        // stay on `visual_context`: they don't scroll along x.
-                        let scroll = EditorScroll(*scroll);
-                        let scrolled_context = VisualPrimitiveContext {
-                            transform: scroll.transform(transform),
-                            ..visual_context
-                        };
-                        // git gutter 标记：gutter 最左侧 2px 竖条按种类各一个
-                        // quad 批次（slot 18 新增 / 19 修改 / 8 删除），与折叠
-                        // 箭头同用外层裁剪；空种类不产生批次。位置与颜色由
-                        // 世界按行几何与语义令牌解析。
-                        if !git_marks.added.is_empty()
-                            || !git_marks.modified.is_empty()
-                            || !git_marks.deleted.is_empty()
-                        {
-                            let git_context = VisualPrimitiveContext {
-                                node: id,
-                                transform,
-                                clips: &clips,
-                                opacity,
-                                z_index: node.z_index,
-                                document_order: node_order,
-                            };
-                            for (slot, rects, color) in [
-                                (18, &git_marks.added, git_marks.added_color),
-                                (19, &git_marks.modified, git_marks.modified_color),
-                                (8, &git_marks.deleted, git_marks.deleted_color),
-                            ] {
-                                if rects.is_empty() {
-                                    continue;
-                                }
-                                self.insert_primitive(visual_quad_batch(
-                                    &git_context,
-                                    slot,
-                                    rects.iter().map(|rect| scene_rect(*rect)),
-                                    VisualQuadStyle::solid(color),
-                                ));
-                            }
-                        }
-                        // 折叠 gutter 标记：折叠态（实心，slot 14）与展开态
-                        // （描边，slot 15）各一个 quad 批次，与行号同级的外层
-                        // 裁剪；合批后数量不受 slot 上限约束，点击切换由
-                        // Runtime 指针路径处理。
-                        if !folds.gutters.is_empty() {
-                            let gutter_context = VisualPrimitiveContext {
-                                node: id,
-                                transform,
-                                clips: &clips,
-                                opacity,
-                                z_index: node.z_index,
-                                document_order: node_order,
-                            };
-                            let collapsed: Vec<&TextFoldGutter> = folds
-                                .gutters
-                                .iter()
-                                .filter(|gutter| gutter.collapsed)
-                                .collect();
-                            let expanded: Vec<&TextFoldGutter> = folds
-                                .gutters
-                                .iter()
-                                .filter(|gutter| !gutter.collapsed)
-                                .collect();
-                            if !collapsed.is_empty() {
-                                self.insert_primitive(visual_quad_batch(
-                                    &gutter_context,
-                                    14,
-                                    collapsed.iter().map(|gutter| scene_rect(gutter.bounds)),
-                                    VisualQuadStyle::solid(collapsed[0].color),
-                                ));
-                            }
-                            if !expanded.is_empty() {
-                                self.insert_primitive(visual_quad_batch(
-                                    &gutter_context,
-                                    15,
-                                    expanded.iter().map(|gutter| scene_rect(gutter.bounds)),
-                                    VisualQuadStyle {
-                                        background: None,
-                                        border_color: Some(expanded[0].color),
-                                        border_width: 1.0,
-                                        corner_radius: corner_radii(0.0),
-                                    },
-                                ));
-                            }
-                        }
-                        // 行号标签绘制在左内边距区域，使用外层裁剪。
-                        if !line_labels.is_empty() {
-                            let padding = node
-                                .source_style
-                                .layout
-                                .resolved_padding_against(Some(bounds.width));
-                            let border = node.source_style.layout.resolved_border_width();
-                            let gutter_width = padding.left;
-                            if gutter_width > 4.0 {
-                                for (label_index, label) in line_labels.iter().enumerate() {
-                                    let region = ComponentTextRegion {
-                                        bounds: LayoutBox {
-                                            x: bounds.x + border + 2.0,
-                                            y: label.y,
-                                            width: (gutter_width - 4.0).max(0.0),
-                                            height: label.height,
-                                        },
-                                        content: nana_ui_runtime::TextValue::from(
-                                            label.number.to_string().as_str(),
-                                        ),
-                                        color: Some(*line_labels_color),
-                                        font_size: *line_labels_font_size,
-                                        font_weight: None,
-                                    };
-                                    self.insert_primitive(component_text_primitive(
-                                        id,
-                                        collection_slot(TEXT_LINE_LABELS, label_index),
-                                        &region,
-                                        TextHorizontalAlignment::End,
-                                        false,
-                                        &node,
-                                        transform,
-                                        std::sync::Arc::clone(&clips),
-                                        opacity,
-                                        node_order,
-                                    ));
-                                }
-                            }
-                        }
-                        for (marker_index, (rect, color)) in diagnostic_markers.iter().enumerate() {
-                            self.insert_primitive(visual_quad(
-                                &scrolled_context,
-                                collection_slot(TEXT_DIAGNOSTIC_MARKERS, marker_index),
-                                scroll.rect(*rect),
-                                VisualQuadStyle::solid(*color),
-                            ));
-                        }
-                        for (label_index, region) in diagnostic_labels.iter().enumerate() {
-                            self.insert_primitive(scroll.text(component_text_primitive(
-                                id,
-                                collection_slot(TEXT_DIAGNOSTIC_LABELS, label_index),
-                                region,
-                                TextHorizontalAlignment::Start,
-                                true,
-                                &node,
-                                transform,
-                                std::sync::Arc::clone(&clips),
-                                opacity,
-                                node_order,
-                            )));
-                        }
-                        // 查找匹配高亮：普通匹配（slot 3，文本之上、光标之
-                        // 下）与当前匹配（slot 6，更强）各一个 quad 批次，
-                        // 同类共用世界解析出的统一颜色。
-                        let (normal_matches, current_matches): (Vec<_>, Vec<_>) =
-                            match_markers.iter().partition(|marker| !marker.current);
-                        if !normal_matches.is_empty() {
-                            self.insert_primitive(visual_quad_batch(
-                                &scrolled_context,
-                                3,
-                                normal_matches.iter().map(|marker| scroll.rect(marker.rect)),
-                                VisualQuadStyle::solid(normal_matches[0].color),
-                            ));
-                        }
-                        if !current_matches.is_empty() {
-                            self.insert_primitive(visual_quad_batch(
-                                &scrolled_context,
-                                6,
-                                current_matches
-                                    .iter()
-                                    .map(|marker| scroll.rect(marker.rect)),
-                                VisualQuadStyle::solid(current_matches[0].color),
-                            ));
-                        }
-                        // 颜色装饰 swatch：单个 QuadColorBatch（slot 23，诊断
-                        // 下划线之上、行号之下）承载全部方块，数量与颜色种数
-                        // 都不占用额外 slot（同 IconBatch 的合批先例）；1px
-                        // 细描边，位置与颜色由世界按 span 末行几何解析。
-                        if !swatch_markers.is_empty() {
-                            self.insert_primitive(visual_quad_color_batch(
-                                &scrolled_context,
-                                23,
-                                swatch_markers
-                                    .iter()
-                                    .map(|(rect, color)| (scroll.rect(*rect), *color)),
-                                VisualQuadStyle {
-                                    background: None,
-                                    border_color: Some(*swatch_border_color),
-                                    border_width: 1.0,
-                                    corner_radius: corner_radii(2.0),
-                                },
-                            ));
-                        }
-                        if !atom_chips.is_empty() {
-                            let chip_fg = atom_chips
-                                .iter()
-                                .find_map(|chip| chip.label.color)
-                                .unwrap_or([0.12, 0.12, 0.14, 1.0]);
-                            self.insert_primitive(visual_quad_batch(
-                                &scrolled_context,
-                                22,
-                                atom_chips.iter().map(|chip| scroll.rect(chip.bounds)),
-                                VisualQuadStyle {
-                                    background: Some(atom_chips[0].background),
-                                    border_color: Some(atom_chips[0].border),
-                                    border_width: 1.0,
-                                    corner_radius: corner_radii(4.0),
-                                },
-                            ));
-                            self.insert_primitive(batch_primitive(
-                                &scrolled_context,
-                                25,
-                                atom_chips
-                                    .iter()
-                                    .map(|chip| scroll.rect(chip.close))
-                                    .collect(),
-                                |bounds| ScenePrimitiveKind::IconBatch {
-                                    bounds,
-                                    icon: Icon::Close,
-                                    color: Some(chip_fg),
-                                },
-                            ));
-                            for (index, chip) in atom_chips.iter().enumerate() {
-                                self.insert_primitive(batch_primitive(
-                                    &scrolled_context,
-                                    collection_slot(TEXT_ATOM_ICONS, index),
-                                    vec![scroll.rect(chip.icon_bounds)],
-                                    |bounds| ScenePrimitiveKind::IconBatch {
-                                        bounds,
-                                        icon: chip.icon,
-                                        color: Some(chip_fg),
-                                    },
-                                ));
-                                self.insert_primitive(scroll.text(component_text_primitive(
-                                    id,
-                                    collection_slot(TEXT_ATOM_LABELS, index),
-                                    &chip.label,
-                                    TextHorizontalAlignment::Start,
-                                    true,
-                                    &node,
-                                    transform,
-                                    std::sync::Arc::clone(&clips),
-                                    opacity,
-                                    node_order,
-                                )));
-                            }
-                        }
-                        // 当前行条：slot 1 与选区同一层级（互斥：选区收起时
-                        // 才有当前行条），绘制在文本之下。
-                        if let Some((rect, color)) = caret_line {
-                            self.insert_primitive(visual_quad(
-                                &visual_context,
-                                1,
-                                scene_rect(*rect),
-                                VisualQuadStyle::solid(*color),
-                            ));
-                        }
-                        // 缩进参考线：1px 竖线批次，低对比结构标记。
-                        if !indent_guides.is_empty() {
-                            self.insert_primitive(visual_quad_batch(
-                                &scrolled_context,
-                                10,
-                                indent_guides.iter().map(|(rect, _)| scroll.rect(*rect)),
-                                VisualQuadStyle::solid(indent_guides[0].1),
-                            ));
-                        }
-                        // 出现高亮：淡底色填充批次（slot 11，缩进参考线之
-                        // 上、括号描边之下），弱于查找匹配的两级强调。
-                        if !occurrence_markers.is_empty() {
-                            self.insert_primitive(visual_quad_batch(
-                                &scrolled_context,
-                                11,
-                                occurrence_markers
-                                    .iter()
-                                    .map(|(rect, _)| scroll.rect(*rect)),
-                                VisualQuadStyle::solid(occurrence_markers[0].1),
-                            ));
-                        }
-                        // 空白字符显示：空格画小圆点（slot 16 单一批次），
-                        // Tab 画箭头图标（slot 60 单一批次，镜像折叠箭头
-                        // 14/15 的合批先例——数量不受 slot 上限约束）。
-                        if !whitespace_marks.is_empty() {
-                            let dots: Vec<&LayoutBox> = whitespace_marks
-                                .iter()
-                                .filter_map(|(rect, kind)| {
-                                    (*kind == TextWhitespaceKind::Space).then_some(rect)
-                                })
-                                .collect();
-                            if !dots.is_empty() {
-                                // 圆点直径随行号字号缩放，钳在小尺寸带，
-                                // 保持"标点"观感而不遮挡字形。
-                                let extent = (*line_labels_font_size * 0.2).clamp(2.0, 3.0);
-                                self.insert_primitive(visual_quad_batch(
-                                    &scrolled_context,
-                                    16,
-                                    dots.iter().map(|rect| {
-                                        let cell = scroll.rect(**rect);
-                                        SceneRect {
-                                            x: cell.x + (cell.width - extent) / 2.0,
-                                            y: cell.y + (cell.height - extent) / 2.0,
-                                            width: extent,
-                                            height: extent,
-                                        }
-                                    }),
-                                    VisualQuadStyle {
-                                        background: Some(*whitespace_color),
-                                        border_color: None,
-                                        border_width: 0.0,
-                                        corner_radius: corner_radii(999.0),
-                                    },
-                                ));
-                            }
-                            let arrows: Vec<SceneRect> = whitespace_marks
-                                .iter()
-                                .filter(|(_, kind)| *kind == TextWhitespaceKind::Tab)
-                                .map(|(rect, _)| {
-                                    let cell = scroll.rect(*rect);
-                                    // 箭头尺寸按字符单元高度缩放，居中放置。
-                                    let extent = (cell.height * 0.55).clamp(6.0, 14.0);
-                                    SceneRect {
-                                        x: cell.x + (cell.width - extent) / 2.0,
-                                        y: cell.y + (cell.height - extent) / 2.0,
-                                        width: extent,
-                                        height: extent,
-                                    }
-                                })
-                                .collect();
-                            if !arrows.is_empty() {
-                                self.insert_primitive(batch_primitive(
-                                    &scrolled_context,
-                                    60,
-                                    arrows,
-                                    |bounds| ScenePrimitiveKind::IconBatch {
-                                        bounds,
-                                        icon: Icon::ArrowRight,
-                                        color: Some(*whitespace_color),
-                                    },
-                                ));
-                            }
-                        }
-                        // wrap guide：按列的全高 1px 竖线批次（slot 17）。
-                        // 与缩进参考线（slot 10，行内缩进深度）同为低对比
-                        // 竖线，但贯穿整个内容区高度。
-                        if !wrap_guides.is_empty() {
-                            self.insert_primitive(visual_quad_batch(
-                                &scrolled_context,
-                                17,
-                                wrap_guides.iter().map(|(rect, _)| scroll.rect(*rect)),
-                                VisualQuadStyle::solid(wrap_guides[0].1),
-                            ));
-                        }
-                        // minimap：面板（slot 70）、行条 + 1px 分隔线（slot
-                        // 71，同一 faint 色）、视口指示器（slot 72，半透明
-                        // accent）各一个批次。占用 70-72：位于行号/Tab 批次
-                        // （40+/60）之上、补全弹层（90+）与 hover 浮窗（120+，
-                        // 正文行可用到 131）之下，minimap 不得盖住浮层。
-                        if let Some(minimap) = minimap {
-                            self.insert_primitive(visual_quad(
-                                &visual_context,
-                                70,
-                                scene_rect(minimap.panel),
-                                VisualQuadStyle::solid(minimap.panel_color),
-                            ));
-                            self.insert_primitive(visual_quad_batch(
-                                &visual_context,
-                                71,
-                                std::iter::once(scene_rect(minimap.separator))
-                                    .chain(minimap.bars.iter().map(|bar| scene_rect(*bar))),
-                                VisualQuadStyle::solid(minimap.bar_color),
-                            ));
-                            if let Some(indicator) = minimap.indicator {
-                                self.insert_primitive(visual_quad(
-                                    &visual_context,
-                                    72,
-                                    scene_rect(indicator),
-                                    VisualQuadStyle::solid(minimap.indicator_color),
-                                ));
-                            }
-                        }
-                        // sticky scroll 钉住行：内容区顶部背景条（slot 80）+
-                        // 底缘 1px 分割线（slot 81）+ 头行文本（slot 82），
-                        // 位于 minimap（70-72）之上、补全弹层（90+）之下，
-                        // 覆盖滚动内容之上。纯装饰只读：无命中框、不可交互，
-                        // 复用正文同一 component_text_primitive 字形管线。
-                        if let Some(sticky) = sticky_line {
-                            // 面板条与分割线同形：纯色 Quad，仅 slot/矩形/色不同。
-                            let mut sticky_band = |slot: u64, rect: SceneRect, color: [f32; 4]| {
-                                self.insert_primitive(visual_quad(
-                                    &visual_context,
-                                    slot,
-                                    rect,
-                                    VisualQuadStyle::solid(color),
-                                ));
-                            };
-                            sticky_band(80, scene_rect(sticky.panel), sticky.background);
-                            sticky_band(81, scene_rect(sticky.divider), sticky.divider_color);
-                            self.insert_primitive(component_text_primitive(
-                                id,
-                                82,
-                                &sticky.text,
-                                TextHorizontalAlignment::Start,
-                                false,
-                                &node,
-                                transform,
-                                text_input_clips.clone(),
-                                opacity,
-                                node_order,
-                            ));
-                        }
-                        // 括号匹配：两端各一个 1px accent 描边框，绘制在文本
-                        // 之上（描边不遮挡字形）。
-                        if !bracket_markers.is_empty() {
-                            self.insert_primitive(visual_quad_batch(
-                                &scrolled_context,
-                                12,
-                                bracket_markers.iter().map(|(rect, _)| scroll.rect(*rect)),
-                                VisualQuadStyle {
-                                    background: None,
-                                    border_color: Some(bracket_markers[0].1),
-                                    border_width: 1.0,
-                                    corner_radius: corner_radii(0.0),
-                                },
-                            ));
-                        }
-                        // 拖拽移动选中文本的落点指示线：目标位置的细竖线
-                        // （slot 6，与选区/当前行条同层、正文之上）。
-                        if let Some((rect, color)) = drop_indicator {
-                            self.insert_primitive(visual_quad(
-                                &scrolled_context,
-                                6,
-                                scroll.rect(*rect),
-                                VisualQuadStyle::solid(*color),
-                            ));
-                        }
-                        if let Some(caret) = caret {
-                            self.insert_primitive(visual_quad(
-                                &scrolled_context,
-                                4,
-                                scroll.rect(*caret),
-                                VisualQuadStyle::solid(*caret_color),
-                            ));
-                        }
-                        // 附加多光标：与主光标同形、半透明色的 quad 批次
-                        // （slot 13，与主光标同层）。
-                        if !additional_carets.is_empty() {
-                            self.insert_primitive(visual_quad_batch(
-                                &scrolled_context,
-                                13,
-                                additional_carets.iter().map(|rect| scroll.rect(*rect)),
-                                VisualQuadStyle::solid(*additional_caret_color),
-                            ));
-                        }
-                        if !preedit.is_empty() {
-                            self.insert_primitive(visual_quad_batch(
-                                &scrolled_context,
-                                5,
-                                preedit.iter().map(|preedit| scroll.rect(*preedit)),
-                                VisualQuadStyle::solid(*preedit_color),
-                            ));
-                        }
-                        if let Some(color) = focus_ring {
-                            let (ring_rect, ring_style) =
-                                focus_ring_quad(style, bounds, self.focus_ring, 0.0, *color);
-                            self.insert_primitive(visual_quad(
-                                &VisualPrimitiveContext {
-                                    node: id,
-                                    transform,
-                                    clips: &parent_clips,
-                                    opacity,
-                                    z_index: node.z_index,
-                                    document_order: node_order,
-                                },
-                                7,
-                                ring_rect,
-                                ring_style,
-                            ));
-                        }
-                        // 补全弹层与 hover 浮窗：编辑器覆盖层的最上层
-                        // （面板 slot 90 / 120，其余文本在各自段内递增；
-                        // 补全 label/detail/kind/doc 各占 8 席：92+/100+/
-                        // 108+/132+，doc 带越过 hover 的 120-131——两浮
-                        // 窗独立共存，slot 带不得相交），高于行号（40+）
-                        // 与折叠 gutter（14/15）。面板绘制
-                        // 共用 `overlay_panel_primitive`；行文本不换行，
-                        // 超宽省略号截断。使用与焦点环同级的外层裁剪。
-                        let overlay_context = VisualPrimitiveContext {
-                            node: id,
-                            transform,
-                            clips: &parent_clips,
-                            opacity,
-                            z_index: node.z_index,
-                            document_order: node_order,
-                        };
-                        let overlay_text =
-                            |slot: u64,
-                             region: &ComponentTextRegion,
-                             alignment: TextHorizontalAlignment| {
-                                overlay_text_primitive(
-                                    id,
-                                    slot,
-                                    region,
-                                    alignment,
-                                    &node,
-                                    transform,
-                                    std::sync::Arc::clone(&parent_clips),
-                                    opacity,
-                                    node_order,
-                                )
-                            };
-                        if let Some(popup) = completion_popup {
-                            self.insert_primitive(overlay_panel_primitive(
-                                &overlay_context,
-                                90,
-                                scene_rect(popup.panel),
-                                popup.background,
-                                popup.border,
-                            ));
-                            let selected_in_view = popup
-                                .rows
-                                .iter()
-                                .enumerate()
-                                .find(|(index, _)| popup.first_row + index == popup.selected)
-                                .map(|(index, _)| index);
-                            if let Some(index) = selected_in_view {
-                                self.insert_primitive(visual_quad(
-                                    &overlay_context,
-                                    91,
-                                    scene_rect(popup.rows[index].bounds),
-                                    VisualQuadStyle::solid(popup.selected_background),
-                                ));
-                            }
-                            for (index, row) in popup.rows.iter().enumerate() {
-                                self.insert_primitive(overlay_text(
-                                    92 + index as u64,
-                                    &row.label,
-                                    TextHorizontalAlignment::Start,
-                                ));
-                                if let Some(detail) = row.detail.as_ref() {
-                                    self.insert_primitive(overlay_text(
-                                        100 + index as u64,
-                                        detail,
-                                        TextHorizontalAlignment::Start,
-                                    ));
-                                }
-                                if let Some(kind) = row.kind.as_ref() {
-                                    self.insert_primitive(overlay_text(
-                                        108 + index as u64,
-                                        kind,
-                                        TextHorizontalAlignment::End,
-                                    ));
-                                }
-                                if let Some(doc) = row.doc.as_ref() {
-                                    // 文档行带 132+:hover 浮窗正文可用到
-                                    // 131,两浮窗独立共存,带不得相交
-                                    // (insert_primitive 按 (node,slot)
-                                    // 覆盖,相交即静默丢图元)。
-                                    self.insert_primitive(overlay_text(
-                                        132 + index as u64,
-                                        doc,
-                                        TextHorizontalAlignment::Start,
-                                    ));
-                                }
-                            }
-                        }
-                        if let Some(popup) = hover_popup {
-                            self.insert_primitive(overlay_panel_primitive(
-                                &overlay_context,
-                                120,
-                                scene_rect(popup.panel),
-                                popup.background,
-                                popup.border,
-                            ));
-                            self.insert_primitive(overlay_text(
-                                121,
-                                &popup.title,
-                                TextHorizontalAlignment::Start,
-                            ));
-                            for (index, row) in popup.body_rows.iter().enumerate() {
-                                self.insert_primitive(overlay_text(
-                                    122 + index as u64,
-                                    row,
-                                    TextHorizontalAlignment::Start,
-                                ));
-                            }
-                        }
-                        if let Some(popup) = signature_popup {
-                            self.insert_primitive(overlay_panel_primitive(
-                                &overlay_context,
-                                140,
-                                scene_rect(popup.panel),
-                                popup.background,
-                                popup.border,
-                            ));
-                            if let Some(active) = popup.active.as_ref() {
-                                self.insert_primitive(visual_quad(
-                                    &overlay_context,
-                                    141,
-                                    scene_rect(active.bounds),
-                                    VisualQuadStyle::solid(popup.active_background),
-                                ));
-                            }
-                            self.insert_primitive(overlay_text(
-                                142,
-                                &popup.prefix,
-                                TextHorizontalAlignment::Start,
-                            ));
-                            if let Some(active) = popup.active.as_ref() {
-                                self.insert_primitive(overlay_text(
-                                    143,
-                                    active,
-                                    TextHorizontalAlignment::Start,
-                                ));
-                            }
-                            self.insert_primitive(overlay_text(
-                                144,
-                                &popup.suffix,
-                                TextHorizontalAlignment::Start,
-                            ));
-                            if let Some(doc) = popup.doc.as_ref() {
-                                self.insert_primitive(overlay_text(
-                                    145,
-                                    doc,
-                                    TextHorizontalAlignment::Start,
-                                ));
-                            }
-                        }
-                    }
-                }),
-                Some(StandardVisual::Checkbox {
-                    checked,
-                    indeterminate,
-                    ..
-                }) => own_frame(|| 'checkbox: {
-                    // The indicator is the `Indicator` part layout
-                    // published (#205). A node without component geometry was
-                    // never laid out as a checkbox and has no indicator to
-                    // draw; the scene does not place one of its own.
-                    let Some(ComponentGeometry::Checkbox {
-                        indicator,
-                        border_width,
-                        check_weight,
-                        ..
-                    }) = node.component_geometry.as_deref()
-                    else {
-                        break 'checkbox;
-                    };
-                    let indicator = scene_rect(*indicator);
-                    let (border_width, check_weight) = (*border_width, *check_weight);
-                    let extent = indicator.width;
-                    self.insert_primitive(visual_quad_with_paint(
-                        &visual_context,
-                        3,
-                        indicator,
-                        VisualQuadStyle {
-                            background: node.style.background,
-                            border_color: node.style.border_color,
-                            border_width,
-                            corner_radius: corner_radii(node.chrome_radii.sm),
-                        },
-                        node.style.paint_colors.background,
-                        node.style.paint_colors.border,
-                    ));
-                    if *indeterminate {
-                        let dash_height = (extent / 8.0).max(1.5);
-                        let dash_inset = extent / 4.0;
-                        self.insert_primitive(visual_quad_with_paint(
-                            &visual_context,
-                            4,
-                            SceneRect {
-                                x: indicator.x + dash_inset,
-                                y: indicator.y + (extent - dash_height) / 2.0,
-                                width: (extent - dash_inset * 2.0).max(0.0),
-                                height: dash_height,
-                            },
-                            VisualQuadStyle {
-                                background: node.standard_visual_foreground,
-                                border_color: None,
-                                border_width: 0.0,
-                                corner_radius: corner_radii(dash_height / 2.0),
-                            },
-                            matching_paint_color(
-                                node.style.paint_colors.color,
-                                node.standard_visual_foreground,
-                            ),
-                            None,
-                        ));
-                    } else if *checked {
-                        self.insert_primitive(ScenePrimitive {
-                            id: PrimitiveId { node: id, slot: 4 },
-                            node: id,
-                            bounds: indicator,
-                            transform,
-                            clips: clips.clone(),
-                            opacity,
-                            z_index: node.z_index,
-                            document_order: node_order,
-                            kind: ScenePrimitiveKind::Text {
-                                content: "✓".into(),
-                                color: super::slot_color(
-                                    matching_paint_color(
-                                        node.style.paint_colors.color,
-                                        node.standard_visual_foreground,
-                                    ),
-                                    node.standard_visual_foreground,
-                                ),
-                                size: extent * 0.75,
-                                weight: Some(check_weight),
-                                family: None,
-                                line_height: None,
-                                letter_spacing: 0.0,
-                                wrap: false,
-                                ellipsis: false,
-                                max_lines: None,
-                                shaping: TextShaping::Auto,
-                                horizontal_alignment: TextHorizontalAlignment::Center,
-                                vertical_alignment: TextVerticalAlignment::Center,
-                                spans: Vec::new(),
-                                text_shadow: None,
-                                underline: false,
-                                line_through: false,
-                                font_features: Vec::new(),
-                                italic: false,
-                                wrap_break: nana_ui_core::TextWrapBreak::Word,
-                                opentype: SceneTextOpenType::default(),
-                                layout: None,
-                                rich: None,
-                                presentation: None,
-                            },
-                        });
-                    }
-                }),
-                Some(StandardVisual::Icon { icon, size, .. }) => own_frame(|| {
-                    let extent = size.max(0.0).min(bounds.width).min(bounds.height);
-                    let x = bounds.x + (bounds.width - extent) / 2.0;
-                    let (y, read) = self.icon_y_aligned_to_adjacent_text(&node, bounds, extent);
-                    match read {
-                        super::PlacementRead::None => {}
-                        super::PlacementRead::Offset => {
-                            self.offset_bound.insert(id);
-                        }
-                        super::PlacementRead::Page => {
-                            self.origin_bound.insert(id);
-                        }
-                    }
-                    self.insert_primitive(ScenePrimitive {
-                        id: PrimitiveId { node: id, slot: 3 },
-                        node: id,
-                        bounds: SceneRect {
-                            x,
-                            y,
-                            width: extent,
-                            height: extent,
-                        },
-                        transform,
-                        clips: clips.clone(),
-                        opacity,
-                        z_index: node.z_index,
-                        document_order: node_order,
-                        kind: ScenePrimitiveKind::Icon {
-                            icon: *icon,
-                            color: super::slot_color(
-                                node.style.paint_colors.color.filter(|paint| {
-                                    node.standard_visual_foreground == Some(paint.to_srgb())
-                                }),
-                                node.standard_visual_foreground
-                                    .or_else(|| {
-                                        node.style
-                                            .paint_colors
-                                            .color
-                                            .map(nana_ui_core::PaintColor::to_srgb)
-                                    })
-                                    .or(node.style.color),
-                            ),
-                        },
-                    });
-                }),
-                Some(StandardVisual::Switch {
-                    thumb_progress,
-                    loading,
-                    loading_phase,
-                    ..
-                }) => own_frame(|| 'switch: {
-                    // The track is the part layout published (#205). A node
-                    // without component geometry was never laid out as a
-                    // switch and has no track to draw; the scene does not
-                    // place one of its own.
-                    let Some(ComponentGeometry::Switch {
-                        control,
-                        track_background,
-                        track_border,
-                        thumb_background,
-                        border_width,
-                        ..
-                    }) = node.component_geometry.as_deref()
-                    else {
-                        break 'switch;
-                    };
-                    let (track, track_background, track_border, thumb_background, border_width) = (
-                        scene_rect(*control),
-                        Some(*track_background),
-                        Some(*track_border),
-                        Some(*thumb_background),
-                        *border_width,
-                    );
-                    let inset = track.height * (3.0 / 16.0);
-                    let thumb_extent =
-                        (track.height * (10.0 / 16.0)).min((track.width - 2.0 * inset).max(0.0));
-                    let travel = (track.width - 2.0 * inset - thumb_extent).max(0.0);
-                    // "On" is the track's inline end: its left edge in a
-                    // right-to-left switch (#388).
-                    let rtl = node.style.direction == nana_ui_core::DirSpec::Rtl;
-                    let progress = thumb_progress.clamp(0.0, 1.0);
-                    let progress = if rtl { 1.0 - progress } else { progress };
-                    let thumb = SceneRect {
-                        x: track.x + inset + travel * progress,
-                        y: track.y + (track.height - thumb_extent) / 2.0,
-                        width: thumb_extent,
-                        height: thumb_extent,
-                    };
-                    let track_background_paint =
-                        matching_paint_color(node.style.paint_colors.background, track_background);
-                    let track_border_paint =
-                        matching_paint_color(node.style.paint_colors.border, track_border);
-                    let thumb_background_paint =
-                        matching_paint_color(node.style.paint_colors.color, thumb_background);
-                    self.insert_primitive(visual_quad_with_paint(
-                        &visual_context,
-                        4,
-                        track,
-                        VisualQuadStyle {
-                            background: track_background,
-                            border_color: track_border,
-                            border_width,
-                            corner_radius: corner_radii(track.height / 2.0),
-                        },
-                        track_background_paint,
-                        track_border_paint,
-                    ));
-                    self.insert_primitive(visual_quad_with_paint(
-                        &visual_context,
-                        5,
-                        thumb,
-                        VisualQuadStyle {
-                            background: thumb_background,
-                            border_color: None,
-                            border_width: 0.0,
-                            corner_radius: corner_radii(thumb_extent / 2.0),
-                        },
-                        thumb_background_paint,
-                        None,
-                    ));
-                    if *loading {
-                        self.insert_primitive(ScenePrimitive {
-                            id: PrimitiveId { node: id, slot: 6 },
-                            node: id,
-                            // At the track's inline start, as the thumb is.
-                            bounds: SceneRect {
-                                x: if rtl {
-                                    track.x + track.width - track.height * 15.0 / 16.0
-                                } else {
-                                    track.x + track.height / 16.0
-                                },
-                                y: track.y + track.height / 16.0,
-                                width: track.height * 14.0 / 16.0,
-                                height: track.height * 14.0 / 16.0,
-                            },
-                            transform,
-                            clips: clips.clone(),
-                            opacity,
-                            z_index: node.z_index,
-                            document_order: node_order,
-                            kind: ScenePrimitiveKind::Spinner {
-                                phase: (loading_phase.clamp(0.0, 1.0) * 8.0).floor() as u8 % 8,
-                                color: super::slot_color(
-                                    node.style.paint_colors.color.filter(|paint| {
-                                        node.standard_visual_foreground == Some(paint.to_srgb())
-                                    }),
-                                    node.standard_visual_foreground.or(node.style.color),
-                                ),
-                            },
-                        });
-                    }
-                    if node.focused {
-                        self.insert_primitive(visual_quad_with_paint(
-                            &visual_context,
-                            7,
-                            SceneRect {
-                                x: track.x - 4.0 * border_width,
-                                y: track.y - 4.0 * border_width,
-                                width: track.width + 8.0 * border_width,
-                                height: track.height + 8.0 * border_width,
-                            },
-                            VisualQuadStyle {
-                                background: None,
-                                border_color: node.style.border_color,
-                                border_width: 2.0 * border_width,
-                                corner_radius: corner_radii(
-                                    track.height / 2.0 + 4.0 * border_width,
-                                ),
-                            },
-                            None,
-                            matching_paint_color(
-                                node.style.paint_colors.border,
-                                node.style.border_color,
-                            ),
-                        ));
-                    }
-                }),
-                Some(StandardVisual::Range {
-                    ratio,
-                    markers,
-                    rail: rail_girth,
-                    track_gradient,
-                    ..
-                }) => own_frame(|| {
-                    let ratio = ratio.clamp(0.0, 1.0);
-                    let value_thumb = match node.component_geometry.as_deref() {
-                        Some(ComponentGeometry::Range {
-                            value_thumb: Some(thumb),
-                            ..
-                        }) => Some(thumb),
-                        _ => None,
-                    };
-                    let caution = match node.component_geometry.as_deref() {
-                        Some(ComponentGeometry::Range { caution, .. }) => *caution,
-                        _ => None,
-                    };
-                    let (track_band, thumb_ring, girth, border_width) =
-                        match node.component_geometry.as_deref() {
-                            Some(ComponentGeometry::Range {
-                                track,
-                                thumb_ring,
-                                track_girth,
-                                border_width,
-                                ..
-                            }) => (scene_rect(*track), *thumb_ring, *track_girth, *border_width),
-                            _ => (
-                                SceneRect {
-                                    x: bounds.x + 7.0,
-                                    y: bounds.y + (bounds.height - 14.0) / 2.0,
-                                    width: (bounds.width - 14.0).max(0.0),
-                                    height: 14.0,
-                                },
-                                None,
-                                rail_girth.unwrap_or(4.0),
-                                1.0,
-                            ),
-                        };
-                    // A gradient track is the scale itself: a strip through
-                    // the stops, no fill, and a ring thumb that stands proud
-                    // of it so it reads on every stop.
-                    let gradient = track_gradient
-                        .as_ref()
-                        .filter(|_| rail_girth.is_none())
-                        .zip(thumb_ring);
-                    let thumb_extent = track_band.height.max(0.0).min(bounds.width);
-                    // A rail-only range draws its own girth and shows the
-                    // thumb only while focus is visible on it.
-                    let girth = girth.min(track_band.height).max(0.0);
-                    let rail = SceneRect {
-                        x: track_band.x,
-                        y: track_band.y + (track_band.height - girth) / 2.0,
-                        width: track_band.width,
-                        height: girth,
-                    };
-                    let rail_radius = girth / 2.0;
-                    // Where the caution zone begins: the plain rail stops
-                    // there, cut square, and the zone's own takes over.
-                    let caution = caution.filter(|_| rail_girth.is_none() && gradient.is_none());
-                    let zone_x =
-                        caution.map(|caution| rail.x + rail.width * caution.from.clamp(0.0, 1.0));
-                    let plain_rail = |piece: SceneRect| match zone_x {
-                        Some(zone_x) if zone_x < piece.x + piece.width => (
-                            SceneRect {
-                                width: (zone_x - piece.x).max(0.0),
-                                ..piece
-                            },
-                            [rail_radius, 0.0, 0.0, rail_radius],
-                        ),
-                        _ => (piece, corner_radii(rail_radius)),
-                    };
-                    if let Some(thumb) = value_thumb {
-                        // A value thumb's rail runs the whole lane, the
-                        // capsule's travel and half a capsule past each end,
-                        // and stops a gap short of the capsule on each side,
-                        // so the capsule reads on the fill it sits on. The
-                        // fill reaches the capsule, which marks its end.
-                        let capsule = scene_rect(thumb.capsule);
-                        let half = capsule.width / 2.0;
-                        let lane = SceneRect {
-                            x: rail.x - half,
-                            width: rail.width + capsule.width,
-                            ..rail
-                        };
-                        let cut = if thumb.editing { 0.0 } else { thumb.gap };
-                        let before = SceneRect {
-                            width: (capsule.x - cut - lane.x).max(0.0),
-                            ..lane
-                        };
-                        let after_x = capsule.x + capsule.width + cut;
-                        let after = SceneRect {
-                            x: after_x,
-                            width: (lane.x + lane.width - after_x).max(0.0),
-                            ..lane
-                        };
-                        let (after, after_radius) = plain_rail(after);
-                        self.insert_primitive(visual_quad_with_paint(
-                            &visual_context,
-                            3,
-                            after,
-                            VisualQuadStyle {
-                                background: node.style.border_color,
-                                border_color: None,
-                                border_width: 0.0,
-                                corner_radius: after_radius,
-                            },
-                            matching_paint_color(
-                                node.style.paint_colors.border,
-                                node.style.border_color,
-                            ),
-                            None,
-                        ));
-                        self.insert_primitive(visual_quad_with_paint(
-                            &visual_context,
-                            4,
-                            before,
-                            VisualQuadStyle {
-                                background: node.style.background,
-                                border_color: None,
-                                border_width: 0.0,
-                                corner_radius: corner_radii(rail_radius),
-                            },
-                            node.style.paint_colors.background,
-                            None,
-                        ));
-                    } else if let Some((stops, _)) = gradient {
-                        let mut strip = visual_quad(
-                            &visual_context,
-                            3,
-                            rail,
-                            VisualQuadStyle {
-                                background: None,
-                                border_color: None,
-                                border_width: 0.0,
-                                corner_radius: corner_radii(rail_radius),
-                            },
-                        );
-                        if let ScenePrimitiveKind::Quad { surface, .. } = &mut strip.kind {
-                            surface.background_image = Some(BackgroundImage::Gradient(
-                                nana_ui_core::CssGradient::Linear(nana_ui_core::LinearGradient {
-                                    // CSS `to right`: minimum end to maximum end.
-                                    angle_deg: 90.0,
-                                    stops: stops.to_vec(),
-                                }),
-                            ));
-                        }
-                        self.insert_primitive(strip);
-                    } else {
-                        let (plain, plain_radius) = plain_rail(rail);
-                        self.insert_primitive(visual_quad_with_paint(
-                            &visual_context,
-                            3,
-                            plain,
-                            VisualQuadStyle {
-                                background: node.style.border_color,
-                                border_color: None,
-                                border_width: 0.0,
-                                corner_radius: plain_radius,
-                            },
-                            matching_paint_color(
-                                node.style.paint_colors.border,
-                                node.style.border_color,
-                            ),
-                            None,
-                        ));
-                        self.insert_primitive(visual_quad_with_paint(
-                            &visual_context,
-                            4,
-                            SceneRect {
-                                width: rail.width * ratio,
-                                ..rail
-                            },
-                            VisualQuadStyle {
-                                background: node.style.background,
-                                border_color: None,
-                                border_width: 0.0,
-                                corner_radius: corner_radii(rail_radius),
-                            },
-                            node.style.paint_colors.background,
-                            None,
-                        ));
-                    }
-                    // The caution zone paints its stretch of the rail (in
-                    // place of the plain one, which stopped where it begins)
-                    // and of the fill (over it) in the warning colour, under
-                    // the markers and the thumb: slots 5 and 6, which push
-                    // the markers and the thumb two slots on. Each piece is
-                    // cut square where the zone begins and keeps the rail's
-                    // round end.
-                    let caution_slots = if let Some((caution, from)) = caution.zip(zone_x) {
-                        // The rail and the fill as they were just painted.
-                        let (rail_span, fill_end, rail_start) = match value_thumb {
-                            Some(thumb) => {
-                                let capsule = scene_rect(thumb.capsule);
-                                let half = capsule.width / 2.0;
-                                let cut = if thumb.editing { 0.0 } else { thumb.gap };
-                                (
-                                    (rail.x - half, rail.x + rail.width + half),
-                                    capsule.x - cut,
-                                    capsule.x + capsule.width + cut,
-                                )
-                            }
-                            None => {
-                                let at = rail.x + rail.width * ratio;
-                                ((rail.x, rail.x + rail.width), at, at)
-                            }
-                        };
-                        let pieces = [
-                            (5, from.max(rail_start), rail_span.1, true),
-                            (6, from, fill_end.min(rail_span.1), false),
-                        ];
-                        for (slot, start, end, round_end) in pieces {
-                            if end <= start {
-                                continue;
-                            }
-                            // The piece from where the zone begins is cut
-                            // square there; one that begins at the thumb
-                            // keeps the rail's round start.
-                            let round_start = start > from;
-                            let radius = |round: bool| if round { rail_radius } else { 0.0 };
-                            self.insert_primitive(visual_quad_with_paint(
-                                &visual_context,
-                                slot,
-                                SceneRect {
-                                    x: start,
-                                    width: end - start,
-                                    ..rail
-                                },
-                                VisualQuadStyle {
-                                    background: Some(caution.color),
-                                    border_color: None,
-                                    border_width: 0.0,
-                                    corner_radius: [
-                                        radius(round_start),
-                                        radius(round_end),
-                                        radius(round_end),
-                                        radius(round_start),
-                                    ],
-                                },
-                                None,
-                                None,
-                            ));
-                        }
-                        2
-                    } else {
-                        0
-                    };
-                    // Marker slots sit between the fill (4) and the thumb.
-                    // With none of them, the thumb stays on slot 5 and the
-                    // focus ring on slot 6 (a ring thumb takes 5..=7 and its
-                    // focus ring 8); a caution zone pushes them two on.
-                    let marker_count = markers.len() as u64 + caution_slots;
-                    for (index, marker) in markers.iter().copied().enumerate() {
-                        let marker = marker.clamp(0.0, 1.0);
-                        let tick = SceneRect {
-                            x: track_band.x + track_band.width * marker - girth * 0.375,
-                            y: rail.y - girth / 2.0,
-                            width: girth * 0.75,
-                            height: rail.height + girth,
-                        };
-                        // A marker inside the caution zone, the one where it
-                        // begins among them, is the zone's colour.
-                        let zone_fill = caution
-                            .filter(|caution| marker >= caution.from)
-                            .map(|caution| caution.color);
-                        self.insert_primitive(visual_quad_with_paint(
-                            &visual_context,
-                            5 + caution_slots + index as u64,
-                            tick,
-                            VisualQuadStyle {
-                                background: zone_fill.or(node.style.background),
-                                border_color: node.style.border_color,
-                                border_width,
-                                corner_radius: corner_radii(border_width),
-                            },
-                            if zone_fill.is_some() {
-                                None
-                            } else {
-                                node.style.paint_colors.background
-                            },
-                            node.style.paint_colors.border,
-                        ));
-                    }
-                    let thumb_slot = 5 + marker_count;
-                    // Inside the caution zone the thumb is the warning
-                    // colour in place of the accent.
-                    let caution_thumb = caution
-                        .filter(|caution| caution.thumb)
-                        .map(|caution| caution.color);
-                    let thumb_paint = if caution_thumb.is_some() {
-                        None
-                    } else {
-                        node.style.paint_colors.background
-                    };
-                    let thumb_rect = match value_thumb {
-                        Some(thumb) => scene_rect(thumb.capsule),
-                        None => SceneRect {
-                            x: track_band.x + track_band.width * ratio - thumb_extent / 2.0,
-                            y: track_band.y + (track_band.height - thumb_extent) / 2.0,
-                            width: thumb_extent,
-                            height: thumb_extent,
-                        },
-                    };
-                    let focus_slot = if let Some(thumb) = value_thumb {
-                        // A capsule, the accent filling it; its value is
-                        // written over it with the range's other text.
-                        if !thumb.editing {
-                            self.insert_primitive(visual_quad_with_paint(
-                                &visual_context,
-                                thumb_slot,
-                                thumb_rect,
-                                VisualQuadStyle {
-                                    background: caution_thumb.or(node.style.background),
-                                    border_color: None,
-                                    border_width: 0.0,
-                                    corner_radius: corner_radii(thumb_rect.height / 2.0),
-                                },
-                                thumb_paint,
-                                None,
-                            ));
-                        }
-                        thumb_slot + 1
-                    } else if let Some((_, ring)) = gradient {
-                        for quad in
-                            contrast_ring_quads(&visual_context, thumb_slot, thumb_rect, ring)
-                        {
-                            self.insert_primitive(quad);
-                        }
-                        thumb_slot + 3
-                    } else {
-                        if rail_girth.is_none() || node.focused {
-                            self.insert_primitive(visual_quad_with_paint(
-                                &visual_context,
-                                thumb_slot,
-                                thumb_rect,
-                                VisualQuadStyle {
-                                    background: caution_thumb.or(node.style.background),
-                                    border_color: node.style.border_color,
-                                    border_width,
-                                    corner_radius: corner_radii(thumb_extent / 2.0),
-                                },
-                                thumb_paint,
-                                node.style.paint_colors.border,
-                            ));
-                        }
-                        thumb_slot + 1
-                    };
-                    if node.focused && !value_thumb.is_some_and(|thumb| thumb.editing) {
-                        // Focus marks the thumb (LiliaUI focus-visible outline),
-                        // never the rail: the rail colour stays interaction-free.
-                        // The theme's ring, in the thumb's stroke units.
-                        let (width, offset) = focus_ring_stroke(self.focus_ring);
-                        let ring_width = width * border_width;
-                        let outset = (offset + width) * border_width;
-                        let ring = SceneRect {
-                            x: thumb_rect.x - outset,
-                            y: thumb_rect.y - outset,
-                            width: thumb_rect.width + outset * 2.0,
-                            height: thumb_rect.height + outset * 2.0,
-                        };
-                        self.insert_primitive(visual_quad_with_paint(
-                            &visual_context,
-                            focus_slot,
-                            ring,
-                            VisualQuadStyle {
-                                background: None,
-                                border_color: node.standard_visual_foreground,
-                                border_width: ring_width,
-                                corner_radius: corner_radii(ring.width.min(ring.height) / 2.0),
-                            },
-                            None,
-                            matching_paint_color(
-                                node.style.paint_colors.color,
-                                node.standard_visual_foreground,
-                            ),
-                        ));
-                    }
-                }),
-                Some(StandardVisual::Scrollbar { .. }) => own_frame(|| {
-                    if let Some(ComponentGeometry::Scrollbar {
-                        horizontal,
-                        vertical,
-                    }) = node.component_geometry.as_deref()
-                    {
-                        // Track then thumb, the horizontal bar first: the
-                        // vertical one paints last, as it wins the pointer.
-                        for (first, bar) in [(0, horizontal), (2, vertical)] {
-                            let Some(bar) = bar else {
-                                continue;
-                            };
-                            if let Some(background) = bar.track_background {
-                                self.insert_primitive(visual_quad(
-                                    &visual_context,
-                                    super::scrollbar_chrome_slot(first),
-                                    scene_rect(bar.track),
-                                    VisualQuadStyle {
-                                        background: Some(background),
-                                        border_color: bar.track_border,
-                                        border_width: if bar.track_border.is_some() {
-                                            bar.border_width
-                                        } else {
-                                            0.0
-                                        },
-                                        corner_radius: corner_radii(bar.track_radius),
-                                    },
-                                ));
-                            }
-                            self.insert_primitive(visual_quad(
-                                &visual_context,
-                                super::scrollbar_chrome_slot(first + 1),
-                                scene_rect(bar.thumb),
-                                VisualQuadStyle {
-                                    background: Some(bar.thumb_background),
-                                    border_color: bar.thumb_border,
-                                    border_width: if bar.thumb_border.is_some() {
-                                        bar.border_width
-                                    } else {
-                                        0.0
-                                    },
-                                    corner_radius: corner_radii(bar.thumb_radius),
-                                },
-                            ));
-                        }
-                    }
-                }),
-                Some(StandardVisual::Card {
-                    loading,
-                    loading_phase,
-                    ..
-                }) => own_frame(|| {
-                    if *loading {
-                        let spinner_bounds = match node.component_geometry.as_deref() {
-                            Some(ComponentGeometry::Card {
-                                spinner: Some(spinner),
-                                ..
-                            }) => scene_rect(*spinner),
-                            _ => {
-                                let extent = 20.0_f32.min(bounds.width).min(bounds.height);
-                                SceneRect {
-                                    x: bounds.x + (bounds.width - extent) / 2.0,
-                                    y: bounds.y + (bounds.height - extent) / 2.0,
-                                    width: extent,
-                                    height: extent,
-                                }
-                            }
-                        };
-                        self.insert_primitive(ScenePrimitive {
-                            id: PrimitiveId { node: id, slot: 3 },
-                            node: id,
-                            bounds: spinner_bounds,
-                            transform,
-                            clips: clips.clone(),
-                            opacity,
-                            z_index: node.z_index,
-                            document_order: node_order,
-                            kind: ScenePrimitiveKind::Spinner {
-                                phase: (loading_phase.clamp(0.0, 1.0) * 8.0).floor() as u8 % 8,
-                                color: super::slot_color(
-                                    node.style.paint_colors.color.filter(|paint| {
-                                        node.standard_visual_foreground == Some(paint.to_srgb())
-                                    }),
-                                    node.standard_visual_foreground.or(node.style.color),
-                                ),
-                            },
-                        });
-                    }
-                }),
-                Some(StandardVisual::Spinner { size, phase, label }) => own_frame(|| {
-                    let extent = size.max(0.0).min(bounds.width).min(bounds.height);
-                    // Unlabeled spinners (Thumbnail loading) sit in the box
-                    // center. A labeled Spinner keeps the glyph in the leading
-                    // padding lane so it does not cover the caption.
-                    let x = if label.trim().is_empty() {
-                        bounds.x + (bounds.width - extent) / 2.0
-                    } else {
-                        bounds.x
-                    };
-                    self.insert_primitive(ScenePrimitive {
-                        id: PrimitiveId { node: id, slot: 3 },
-                        node: id,
-                        bounds: SceneRect {
-                            x,
-                            y: bounds.y + (bounds.height - extent) / 2.0,
-                            width: extent,
-                            height: extent,
-                        },
-                        transform,
-                        clips: clips.clone(),
-                        opacity,
-                        z_index: node.z_index,
-                        document_order: node_order,
-                        kind: ScenePrimitiveKind::Spinner {
-                            phase: (phase.clamp(0.0, 1.0) * 8.0).floor() as u8 % 8,
-                            color: super::slot_color(
-                                node.style.paint_colors.color.filter(|paint| {
-                                    node.standard_visual_foreground == Some(paint.to_srgb())
-                                }),
-                                node.standard_visual_foreground.or(node.style.color),
-                            ),
-                        },
-                    });
-                }),
-                Some(
-                    StandardVisual::ListItem { .. }
-                    | StandardVisual::StatusBadge { .. }
-                    | StandardVisual::ValidationMessage { .. }
-                    | StandardVisual::EmptyState { .. }
-                    | StandardVisual::PathText { .. }
-                    | StandardVisual::LabeledValue { .. }
-                    | StandardVisual::SelectionOption { .. }
-                    | StandardVisual::ModalFrame { .. }
-                    | StandardVisual::Progress { .. }
-                    | StandardVisual::LevelMeter { .. }
-                    | StandardVisual::FormField { .. }
-                    | StandardVisual::Toast { .. }
-                    | StandardVisual::XYPad { .. }
-                    | StandardVisual::QrCode { .. }
-                    | StandardVisual::Select { .. }
-                    | StandardVisual::MenuSurface { .. }
-                    | StandardVisual::ActionMenuItem { .. }
-                    | StandardVisual::TreeView { .. }
-                    | StandardVisual::CommandPalette { .. }
-                    | StandardVisual::KeyCaptureLayer { .. }
-                    | StandardVisual::KeymapLayer,
-                ) => own_frame(|| {
-                    // The row surface and fallback label are emitted above;
-                    // typed slots remain ordinary retained child nodes.
-                    //
-                    // ListItem is the framework's generic toolbar/list action
-                    // primitive.  It intentionally uses a focus surface in
-                    // its interaction style, but a caller may replace that
-                    // style (or make the surface transparent) while keeping
-                    // the row focusable.  Keep keyboard focus observable at
-                    // the scene boundary as well: a two-pixel outer outline
-                    // is independent of the row's fill and is clipped by the
-                    // parent's chain rather than by the row itself.
-                    if matches!(node.standard_visual, Some(StandardVisual::ListItem { .. }))
-                        && node.focused
-                        && let Some(color) = node.standard_visual_foreground
-                    {
-                        let (ring_rect, ring_style) =
-                            focus_ring_quad(style, bounds, self.focus_ring, 0.0, color);
-                        self.insert_primitive(visual_quad(
-                            &VisualPrimitiveContext {
-                                node: id,
-                                transform,
-                                clips: &parent_clips,
-                                opacity,
-                                z_index: node.z_index,
-                                document_order: node_order,
-                            },
-                            7,
-                            ring_rect,
-                            ring_style,
-                        ));
-                    }
-                }),
-                #[cfg(feature = "calendar")]
-                Some(StandardVisual::CalendarHeatmap { .. }) => {}
-                #[cfg(feature = "charts")]
-                Some(StandardVisual::Chart { .. }) | Some(StandardVisual::ChartTooltip { .. }) => {}
-                #[cfg(feature = "controls")]
-                Some(StandardVisual::ReorderList { .. }) => {}
-                #[cfg(feature = "rich-text")]
-                Some(StandardVisual::NativeMarkdown { .. }) => {}
-                #[cfg(feature = "rich-text")]
-                Some(StandardVisual::SelectableRichText { .. }) => {}
-                #[cfg(feature = "graph-canvas")]
-                Some(StandardVisual::GraphCanvas { .. }) => {}
-                #[cfg(feature = "graph-canvas")]
-                Some(StandardVisual::GraphMinimap { .. }) => {}
-                #[cfg(feature = "image-viewer")]
-                Some(StandardVisual::ImageViewer { .. }) => {}
-                None => {}
+            if let Some(widget_paint) = node.widget_paint.as_deref() {
+                self.emit_widget_paint(
+                    &node,
+                    widget_paint,
+                    page_origin,
+                    transform,
+                    &clips,
+                    &parent_clips,
+                    &text_input_clips,
+                    opacity,
+                    overlay_visual_z,
+                    overlay_visual_opacity,
+                    node_order,
+                );
+            } else if !self.widget_vector_paint.is_empty() {
+                self.widget_vector_paint.remove(&id);
             }
             if let Some(overlay) = node.drop_hover {
                 let radius = corner_radii(style.border_radius.unwrap_or(0.0));
@@ -2538,6 +704,684 @@ impl UiScene {
                 None => Arc::clone(&parent_clips),
             };
             self.emit_custom_paint(&node, &built, transform, &paint_clips, opacity, node_order);
+        }
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn emit_widget_paint(
+        &mut self,
+        node: &ExtractedNode,
+        paint: &nana_ui_runtime::WidgetPaintOutput,
+        page_origin: [f32; 2],
+        transform: AffineTransform,
+        clips: &Arc<[ClipRegion]>,
+        parent_clips: &Arc<[ClipRegion]>,
+        content_clips: &Arc<[ClipRegion]>,
+        opacity: f32,
+        overlay_visual_z: i32,
+        overlay_visual_opacity: f32,
+        node_order: usize,
+    ) {
+        use nana_ui_runtime::{
+            WidgetBatchColors, WidgetFloatingOverlayKind, WidgetGlyph, WidgetPaintOp,
+            WidgetTaggedOp,
+        };
+
+        let id = node.id;
+        let floating_kind = paint.floating_overlay.as_ref().map(|overlay| overlay.kind);
+        let node_local_opacity = local_opacity(node);
+        let resolve_placement = |tagged: &WidgetTaggedOp,
+                                 force_parent_clips: bool|
+         -> (AffineTransform, Arc<[ClipRegion]>, i32, f32) {
+            let (clip_transform, base_clips, mut op_z, base_opacity) = if tagged.in_floating_overlay
+            {
+                match floating_kind {
+                    Some(WidgetFloatingOverlayKind::TriggeredSurface) => (
+                        AffineTransform::IDENTITY,
+                        Arc::from([]),
+                        overlay_visual_z,
+                        overlay_visual_opacity.clamp(0.0, 1.0),
+                    ),
+                    Some(WidgetFloatingOverlayKind::AttachedPopup) => (
+                        transform,
+                        Arc::clone(parent_clips),
+                        overlay_visual_z,
+                        (node_local_opacity * overlay_visual_opacity).clamp(0.0, 1.0),
+                    ),
+                    None => (transform, Arc::clone(parent_clips), node.z_index, opacity),
+                }
+            } else {
+                let base = if tagged.use_content_clip {
+                    content_clips
+                } else if force_parent_clips || tagged.use_parent_clips {
+                    parent_clips
+                } else {
+                    clips
+                };
+                let mut z = node.z_index.saturating_add(tagged.z_offset);
+                if let Some(min_z) = tagged.min_z_index {
+                    z = z.max(min_z);
+                }
+                (transform, Arc::clone(base), z, opacity)
+            };
+            if tagged.in_floating_overlay && (tagged.z_offset != 0 || tagged.min_z_index.is_some())
+            {
+                op_z = op_z.saturating_add(tagged.z_offset);
+                if let Some(min_z) = tagged.min_z_index {
+                    op_z = op_z.max(min_z);
+                }
+            }
+            let op_clips = if tagged.extra_clip.is_some() || tagged.rounded_extra_clip.is_some() {
+                let mut chain = base_clips.to_vec();
+                if let Some(extra) = tagged.extra_clip {
+                    chain.push(ClipRegion::axis_aligned(scene_rect(extra), clip_transform));
+                }
+                if let Some((clip, radius)) = tagged.rounded_extra_clip {
+                    chain.push(ClipRegion {
+                        bounds: scene_rect(clip),
+                        transform: clip_transform,
+                        corner_radius: radius,
+                        polygon_clip: None,
+                    });
+                }
+                chain.into()
+            } else {
+                base_clips
+            };
+            let op_transform = if let Some([tx, ty]) = tagged.local_translation {
+                clip_transform.then(AffineTransform::from_matrix([1.0, 0.0, 0.0, 1.0, tx, ty]))
+            } else {
+                clip_transform
+            };
+            let op_opacity = if (tagged.opacity_multiplier - 1.0).abs() > f32::EPSILON {
+                (base_opacity * tagged.opacity_multiplier).clamp(0.0, 1.0)
+            } else {
+                base_opacity
+            };
+            (op_transform, op_clips, op_z, op_opacity)
+        };
+        let mut vectors: Vec<(
+            u64,
+            nana_ui_runtime::LayoutBox,
+            Arc<nana_ui_runtime::PaintRecording>,
+        )> = Vec::new();
+        for tagged in &paint.ops {
+            let slot = tagged.slot;
+            match &tagged.op {
+                WidgetPaintOp::Quad(quad) => {
+                    let (op_transform, op_clips, z_index, op_opacity) =
+                        resolve_placement(tagged, quad.use_parent_clips);
+                    let visual_context = VisualPrimitiveContext {
+                        node: id,
+                        transform: op_transform,
+                        clips: &op_clips,
+                        opacity: op_opacity,
+                        z_index,
+                        document_order: node_order,
+                    };
+                    let mut primitive = visual_quad_with_paint(
+                        &visual_context,
+                        slot,
+                        scene_rect(quad.rect),
+                        VisualQuadStyle {
+                            background: quad.fill,
+                            border_color: quad.border.map(|(color, _)| color),
+                            border_width: quad.border.map_or(0.0, |(_, width)| width),
+                            corner_radius: quad.corner_radius,
+                        },
+                        quad.fill_paint,
+                        quad.border_paint,
+                    );
+                    if let ScenePrimitiveKind::Quad {
+                        shadow, surface, ..
+                    } = &mut primitive.kind
+                    {
+                        if let Some(elevation) = quad.elevation {
+                            *shadow = Some(elevation);
+                        }
+                        if let Some(image) = &quad.content_image {
+                            surface.content_image = Some(image.clone());
+                        }
+                        if let Some(image) = &quad.background_image {
+                            surface.background_image = Some(image.clone());
+                        }
+                        if quad.backdrop_blur > 0.0 {
+                            let blur = nana_ui_core::BackdropFilter {
+                                blur_radius: quad
+                                    .backdrop_blur
+                                    .clamp(0.0, nana_ui_core::BackdropFilter::MAX_BLUR_RADIUS),
+                                saturate: 1.0,
+                            };
+                            if blur.is_active() {
+                                surface.backdrop_filter = Some(blur);
+                            }
+                        }
+                    }
+                    self.insert_primitive(primitive);
+                }
+                WidgetPaintOp::QuadBatch(batch) => {
+                    if batch.rects.is_empty() {
+                        continue;
+                    }
+                    let (op_transform, op_clips, z_index, op_opacity) =
+                        resolve_placement(tagged, false);
+                    match &batch.colors {
+                        WidgetBatchColors::Uniform(color) | WidgetBatchColors::Selection(color) => {
+                            let visual_context = VisualPrimitiveContext {
+                                node: id,
+                                transform: op_transform,
+                                clips: &op_clips,
+                                opacity: op_opacity,
+                                z_index,
+                                document_order: node_order,
+                            };
+                            let mut primitive = visual_quad_batch(
+                                &visual_context,
+                                slot,
+                                batch.rects.iter().copied().map(scene_rect),
+                                VisualQuadStyle {
+                                    background: Some(*color),
+                                    border_color: batch.border.map(|(color, _)| color),
+                                    border_width: batch.border.map_or(0.0, |(_, width)| width),
+                                    corner_radius: batch.corner_radius,
+                                },
+                            );
+                            if let ScenePrimitiveKind::QuadBatch { background, .. } =
+                                &mut primitive.kind
+                            {
+                                if let Some(fill_paint) = batch.fill_paint {
+                                    *background = Some(fill_paint);
+                                } else if matches!(batch.colors, WidgetBatchColors::Selection(_))
+                                    && let Some(selection_paint) =
+                                        node.style.paint_colors.selection_background
+                                {
+                                    *background = Some(selection_paint);
+                                }
+                            }
+                            self.insert_primitive(primitive);
+                        }
+                        WidgetBatchColors::None => {
+                            let visual_context = VisualPrimitiveContext {
+                                node: id,
+                                transform: op_transform,
+                                clips: &op_clips,
+                                opacity: op_opacity,
+                                z_index,
+                                document_order: node_order,
+                            };
+                            self.insert_primitive(visual_quad_batch(
+                                &visual_context,
+                                slot,
+                                batch.rects.iter().copied().map(scene_rect),
+                                VisualQuadStyle {
+                                    background: None,
+                                    border_color: batch.border.map(|(color, _)| color),
+                                    border_width: batch.border.map_or(0.0, |(_, width)| width),
+                                    corner_radius: batch.corner_radius,
+                                },
+                            ));
+                        }
+                        WidgetBatchColors::PerQuad(colors) => {
+                            let visual_context = VisualPrimitiveContext {
+                                node: id,
+                                transform: op_transform,
+                                clips: &op_clips,
+                                opacity: op_opacity,
+                                z_index,
+                                document_order: node_order,
+                            };
+                            self.insert_primitive(visual_quad_color_batch(
+                                &visual_context,
+                                slot,
+                                batch
+                                    .rects
+                                    .iter()
+                                    .copied()
+                                    .map(scene_rect)
+                                    .zip(colors.iter().copied()),
+                                VisualQuadStyle {
+                                    background: None,
+                                    border_color: batch.border.map(|(color, _)| color),
+                                    border_width: batch.border.map_or(0.0, |(_, width)| width),
+                                    corner_radius: batch.corner_radius,
+                                },
+                            ));
+                        }
+                    }
+                }
+                WidgetPaintOp::IconBatch {
+                    rects, icon, color, ..
+                } => {
+                    if rects.is_empty() {
+                        continue;
+                    }
+                    let (op_transform, op_clips, z_index, op_opacity) =
+                        resolve_placement(tagged, false);
+                    let visual_context = VisualPrimitiveContext {
+                        node: id,
+                        transform: op_transform,
+                        clips: &op_clips,
+                        opacity: op_opacity,
+                        z_index,
+                        document_order: node_order,
+                    };
+                    self.insert_primitive(batch_primitive(
+                        &visual_context,
+                        slot,
+                        rects.iter().copied().map(scene_rect).collect(),
+                        |bounds| ScenePrimitiveKind::IconBatch {
+                            bounds,
+                            icon: *icon,
+                            color: *color,
+                        },
+                    ));
+                }
+                WidgetPaintOp::Text(text) => {
+                    let (op_transform, mut op_clips, z_index, op_opacity) =
+                        resolve_placement(tagged, false);
+                    let paint_color = text.paint_color.or_else(|| {
+                        node.style
+                            .paint_colors
+                            .color
+                            .filter(|paint| text.color.is_none_or(|c| c == paint.to_srgb()))
+                    });
+                    let fallback_color = text
+                        .color
+                        .or_else(|| {
+                            node.style
+                                .paint_colors
+                                .color
+                                .map(nana_ui_core::PaintColor::to_srgb)
+                        })
+                        .or(node.style.color);
+                    let spans = if text.suppress_spans || text.overlay_chrome {
+                        Vec::new()
+                    } else {
+                        let base = super::scene_text_spans_with_adopt(
+                            node,
+                            None,
+                            text.content.as_str(),
+                            text.adopt_node_text_spans,
+                        );
+                        if let Some(rich) = text.rich_text.as_ref() {
+                            crate::scene::rich_fill_spans(text.content.as_str(), Some(rich), base)
+                        } else {
+                            base
+                        }
+                    };
+                    let unstyled = text.unstyled_glyph;
+                    let unstyled_decor = unstyled || text.overlay_chrome;
+                    let advanced_content = if text.overlay_chrome {
+                        false
+                    } else {
+                        match text.retained_text {
+                            nana_ui_runtime::WidgetRetainedText::None => false,
+                            nana_ui_runtime::WidgetRetainedText::NodeTextIfRich => {
+                                (node.rich_text.is_some() || !node.children.is_empty())
+                                    && node
+                                        .text
+                                        .as_ref()
+                                        .is_some_and(|n| n.value.as_str() == text.content.as_str())
+                            }
+                            nana_ui_runtime::WidgetRetainedText::AlwaysClipOverflow => node
+                                .text
+                                .as_ref()
+                                .is_some_and(|n| n.value.as_str() == text.content.as_str()),
+                        }
+                    };
+                    let retained = advanced_content
+                        .then_some(node.text_layout.as_ref())
+                        .flatten();
+                    let mut text_bounds = scene_rect(text.bounds);
+                    if let Some(retained) = retained
+                        && !retained.layout.is_vertical()
+                        && retained.layout.constraints.max_width_px != Some(text.bounds.width)
+                    {
+                        text_bounds.x -= retained.layout.bounds.x;
+                        text_bounds.width = retained
+                            .layout
+                            .constraints
+                            .max_width_px
+                            .unwrap_or(text_bounds.width);
+                    }
+                    if text.retained_text == nana_ui_runtime::WidgetRetainedText::AlwaysClipOverflow
+                        && retained.is_none_or(|r| r.layout.overflow != Default::default())
+                    {
+                        let mut clipped = op_clips.to_vec();
+                        clipped.push(ClipRegion::axis_aligned(
+                            scene_rect(text.bounds),
+                            op_transform,
+                        ));
+                        op_clips = clipped.into();
+                    }
+                    let mut font_features = if unstyled_decor {
+                        Vec::new()
+                    } else {
+                        node.source_style
+                            .layout
+                            .text_ext
+                            .font_features
+                            .clone()
+                            .unwrap_or_default()
+                    };
+                    if text.tabular_nums
+                        && !font_features.iter().any(|feature| feature.tag == *b"tnum")
+                    {
+                        font_features.push(nana_ui_core::FontFeatureSetting::new(*b"tnum", 1));
+                    }
+                    let mut opentype = if unstyled_decor {
+                        SceneTextOpenType::default()
+                    } else {
+                        SceneTextOpenType {
+                            preserve_lines: text.preserve_lines.unwrap_or(node.text_preserve_lines),
+                            ..SceneTextOpenType::from_computed(&node.style)
+                        }
+                    };
+                    if text.force_horizontal_writing {
+                        opentype.writing_mode = nana_ui_core::WritingModeSpec::HorizontalTb;
+                    }
+                    self.insert_primitive(ScenePrimitive {
+                        id: PrimitiveId { node: id, slot },
+                        node: id,
+                        bounds: text_bounds,
+                        transform: op_transform,
+                        clips: op_clips,
+                        opacity: op_opacity,
+                        z_index,
+                        document_order: node_order,
+                        kind: ScenePrimitiveKind::Text {
+                            content: text.content.clone(),
+                            color: super::slot_color(paint_color, fallback_color),
+                            size: text.font_size,
+                            weight: text.font_weight,
+                            family: (!unstyled)
+                                .then(|| node.style.font_family.as_deref().map(str::to_owned))
+                                .flatten(),
+                            line_height: text.line_height.unwrap_or_else(|| {
+                                (!unstyled).then_some(node.style.line_height).flatten()
+                            }),
+                            letter_spacing: if unstyled {
+                                0.0
+                            } else {
+                                node.style.letter_spacing
+                            },
+                            wrap: text.wrap,
+                            ellipsis: text.ellipsis,
+                            max_lines: text.max_lines.and_then(|n| u16::try_from(n).ok()),
+                            shaping: if text.advanced_shaping || node.editable {
+                                TextShaping::Advanced
+                            } else {
+                                TextShaping::Auto
+                            },
+                            horizontal_alignment: text.horizontal_alignment,
+                            vertical_alignment: text.vertical_alignment,
+                            spans,
+                            text_shadow: if unstyled_decor {
+                                None
+                            } else {
+                                node.source_style.layout.paint.text_shadow
+                            },
+                            underline: if unstyled_decor {
+                                false
+                            } else {
+                                text.underline.unwrap_or_else(|| {
+                                    node.source_style
+                                        .layout
+                                        .text_ext
+                                        .text_decoration
+                                        .is_some_and(|d| d.underline)
+                                })
+                            },
+                            line_through: if unstyled_decor {
+                                false
+                            } else {
+                                text.line_through.unwrap_or_else(|| {
+                                    node.source_style
+                                        .layout
+                                        .text_ext
+                                        .text_decoration
+                                        .is_some_and(|d| d.line_through)
+                                })
+                            },
+                            font_features,
+                            italic: if unstyled_decor {
+                                false
+                            } else {
+                                text.italic.unwrap_or(node.style.italic)
+                            },
+                            wrap_break: if unstyled_decor {
+                                nana_ui_core::TextWrapBreak::Word
+                            } else {
+                                node.source_style.layout.text_wrap_break()
+                            },
+                            opentype,
+                            layout: retained.cloned(),
+                            rich: advanced_content
+                                .then(|| {
+                                    crate::scene::SceneRichPaint::from_base(
+                                        crate::scene::css_text_effects(&node.source_style.layout),
+                                        node.rich_text.as_ref(),
+                                    )
+                                })
+                                .flatten(),
+                            presentation: None,
+                        },
+                    });
+                }
+                WidgetPaintOp::FocusRing {
+                    bounds: ring_bounds,
+                    color,
+                    extra_outset,
+                } => {
+                    let (op_transform, op_clips, z_index, op_opacity) =
+                        resolve_placement(tagged, true);
+                    let (ring_rect, ring_style) = focus_ring_quad(
+                        &node.source_style.layout,
+                        scene_rect(*ring_bounds),
+                        self.focus_ring,
+                        *extra_outset,
+                        *color,
+                    );
+                    let visual_context = VisualPrimitiveContext {
+                        node: id,
+                        transform: op_transform,
+                        clips: &op_clips,
+                        opacity: op_opacity,
+                        z_index,
+                        document_order: node_order,
+                    };
+                    self.insert_primitive(visual_quad_with_paint(
+                        &visual_context,
+                        slot,
+                        ring_rect,
+                        ring_style,
+                        None,
+                        matching_paint_color(node.style.paint_colors.color, Some(*color)).or_else(
+                            || matching_paint_color(node.style.paint_colors.border, Some(*color)),
+                        ),
+                    ));
+                }
+                WidgetPaintOp::Icon(icon) => {
+                    let (op_transform, op_clips, z_index, op_opacity) =
+                        resolve_placement(tagged, false);
+                    let mut icon_bounds = scene_rect(icon.bounds);
+                    if icon.align_to_adjacent_text {
+                        let base = scene_rect(Self::record_box(node));
+                        let (y, read) =
+                            self.icon_y_aligned_to_adjacent_text(node, base, icon_bounds.height);
+                        match read {
+                            super::PlacementRead::None => {}
+                            super::PlacementRead::Offset => {
+                                self.offset_bound.insert(id);
+                            }
+                            super::PlacementRead::Page => {
+                                self.origin_bound.insert(id);
+                            }
+                        }
+                        icon_bounds.y = y - base.y;
+                    }
+                    let paint_color = icon.paint_color.or_else(|| {
+                        node.style
+                            .paint_colors
+                            .color
+                            .filter(|paint| icon.color.is_none_or(|c| c == paint.to_srgb()))
+                    });
+                    let color = super::slot_color(paint_color, icon.color.or(node.style.color));
+                    let kind = match icon.glyph {
+                        WidgetGlyph::Icon(glyph) => ScenePrimitiveKind::Icon { icon: glyph, color },
+                        WidgetGlyph::Spinner { phase } => {
+                            ScenePrimitiveKind::Spinner { phase, color }
+                        }
+                    };
+                    self.insert_primitive(ScenePrimitive {
+                        id: PrimitiveId { node: id, slot },
+                        node: id,
+                        bounds: icon_bounds,
+                        transform: op_transform,
+                        clips: op_clips,
+                        opacity: op_opacity,
+                        z_index,
+                        document_order: node_order,
+                        kind,
+                    });
+                }
+                WidgetPaintOp::Image(image) => {
+                    if image.source.is_empty() {
+                        continue;
+                    }
+                    let (op_transform, op_clips, z_index, op_opacity) =
+                        resolve_placement(tagged, false);
+                    self.insert_primitive(ScenePrimitive {
+                        id: PrimitiveId { node: id, slot },
+                        node: id,
+                        bounds: scene_rect(image.bounds),
+                        transform: op_transform,
+                        clips: op_clips,
+                        opacity: op_opacity * image.opacity,
+                        z_index,
+                        document_order: node_order,
+                        kind: ScenePrimitiveKind::Custom {
+                            node: CustomRenderNode::new(
+                                HOST_TEXTURE_RENDERER,
+                                Arc::clone(&image.source),
+                                0,
+                            )
+                            .with_fit(image.fit)
+                            .with_sampling(image.sampling),
+                            mask: None,
+                            corner_radius: image.corner_radius,
+                        },
+                    });
+                }
+                WidgetPaintOp::Stroke(stroke) => {
+                    if stroke.points.len() < 2 {
+                        continue;
+                    }
+                    let (op_transform, op_clips, z_index, op_opacity) =
+                        resolve_placement(tagged, false);
+                    let points = if stroke.snap_hairline && stroke.points.len() == 2 {
+                        self.origin_bound.insert(id);
+                        let [a, b] = [stroke.points[0], stroke.points[1]];
+                        let crisp_x = |v: f32| (page_origin[0] + v).floor() + 0.5 - page_origin[0];
+                        let crisp_y = |v: f32| (page_origin[1] + v).floor() + 0.5 - page_origin[1];
+                        if (a[0] - b[0]).abs() < 0.01 {
+                            vec![[crisp_x(a[0]), a[1]], [crisp_x(b[0]), b[1]]]
+                        } else if (a[1] - b[1]).abs() < 0.01 {
+                            vec![[a[0], crisp_y(a[1])], [b[0], crisp_y(b[1])]]
+                        } else {
+                            stroke.points.clone()
+                        }
+                    } else {
+                        stroke.points.clone()
+                    };
+                    let (mut min_x, mut min_y, mut max_x, mut max_y) = (
+                        f32::INFINITY,
+                        f32::INFINITY,
+                        f32::NEG_INFINITY,
+                        f32::NEG_INFINITY,
+                    );
+                    for &[x, y] in &points {
+                        min_x = min_x.min(x);
+                        min_y = min_y.min(y);
+                        max_x = max_x.max(x);
+                        max_y = max_y.max(y);
+                    }
+                    let pad = stroke.width.max(1.0);
+                    let stroke_bounds = SceneRect {
+                        x: min_x - pad,
+                        y: min_y - pad,
+                        width: (max_x - min_x) + pad * 2.0,
+                        height: (max_y - min_y) + pad * 2.0,
+                    };
+                    let visual_context = VisualPrimitiveContext {
+                        node: id,
+                        transform: op_transform,
+                        clips: &op_clips,
+                        opacity: op_opacity,
+                        z_index,
+                        document_order: node_order,
+                    };
+                    let mut primitive = visual_stroke(
+                        &visual_context,
+                        slot,
+                        stroke_bounds,
+                        points,
+                        stroke.width,
+                        stroke.color,
+                    );
+                    if let ScenePrimitiveKind::Stroke { cap, pattern, .. } = &mut primitive.kind {
+                        *cap = match stroke.cap {
+                            nana_ui_runtime::LineCap::Butt => StrokeCap::Butt,
+                            nana_ui_runtime::LineCap::Round => StrokeCap::Round,
+                            nana_ui_runtime::LineCap::Square => StrokeCap::Square,
+                        };
+                        if let Some(dash) = &stroke.dash {
+                            *pattern = Some(Box::new(StrokePattern {
+                                dash: dash.clone(),
+                                ..Default::default()
+                            }));
+                        }
+                    }
+                    self.insert_primitive(primitive);
+                }
+                WidgetPaintOp::Vector { bounds, recording } => {
+                    vectors.push((tagged.slot, *bounds, Arc::clone(recording)));
+                }
+                WidgetPaintOp::CustomGpu {
+                    bounds,
+                    node: custom,
+                } => {
+                    let (op_transform, op_clips, z_index, op_opacity) =
+                        resolve_placement(tagged, false);
+                    if let Some(until) = custom.transition_until
+                        && until > std::time::Duration::ZERO
+                    {
+                        self.gpu_payload_live.insert(id, until);
+                    }
+                    self.insert_primitive(ScenePrimitive {
+                        id: PrimitiveId { node: id, slot },
+                        node: id,
+                        bounds: scene_rect(*bounds),
+                        transform: op_transform,
+                        clips: op_clips,
+                        opacity: op_opacity,
+                        z_index,
+                        document_order: node_order,
+                        kind: ScenePrimitiveKind::Custom {
+                            node: custom.clone(),
+                            mask: node.source_style.layout.paint.mask.clone(),
+                            corner_radius: [0.0; 4],
+                        },
+                    });
+                }
+            }
+        }
+        if vectors.is_empty() {
+            if !self.widget_vector_paint.is_empty() {
+                self.widget_vector_paint.remove(&id);
+            }
+        } else {
+            self.emit_widget_vector_paint(node, &vectors, transform, clips, opacity, node_order);
         }
     }
 }

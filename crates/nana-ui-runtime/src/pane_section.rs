@@ -130,8 +130,8 @@ impl PaneSection {
                 },
             );
         }
-        if world.standard_visual(id).is_some() {
-            mutations.set_standard_visual(id, None);
+        if world.widget_visual_ref(id).is_some() {
+            mutations.set_widget_visual_handle(id, None);
         }
         project_common(
             id,
@@ -238,8 +238,8 @@ impl ComponentView for PaneSectionSlot {
                 },
             );
         }
-        if world.standard_visual(id).is_some() {
-            mutations.set_standard_visual(id, None);
+        if world.widget_visual_ref(id).is_some() {
+            mutations.set_widget_visual_handle(id, None);
         }
         project_common(
             id,

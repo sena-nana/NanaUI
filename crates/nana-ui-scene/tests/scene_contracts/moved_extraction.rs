@@ -478,7 +478,7 @@ fn a_moved_subtree_that_reads_the_page_paints_like_a_cold_scene() {
     let column_style = |padding: f32| {
         let mut style = self::column_style(padding);
         let layout = Arc::make_mut(&mut style.layout);
-        layout.transform = Some(PaintTransform {
+        layout.transforms.transform = Some(PaintTransform {
             a: 0.9,
             b: 0.1,
             c: -0.1,
@@ -647,7 +647,7 @@ fn a_moved_subtree_that_reads_the_page_paints_like_a_cold_scene() {
 #[test]
 fn moved_controls_that_read_little_of_the_page_keep_what_they_built() {
     use nana_ui_core::Icon;
-    use nana_ui_runtime::{Popover, Select, SelectOption, StandardVisual};
+    use nana_ui_runtime::{Popover, Select, SelectOption};
     let document_id = DocumentId::new(1).unwrap();
     let mut runtime = document();
     let mut select = Select::new(Some("a"));
@@ -698,9 +698,9 @@ fn moved_controls_that_read_little_of_the_page_keep_what_they_built() {
             None,
         ),
     );
-    queue.set_standard_visual(
+    queue.set_widget_visual(
         icon,
-        Some(StandardVisual::Icon {
+        Some(nana_ui_runtime::IconVisual {
             icon: Icon::Add,
             size: 12.0,
             tooltip: None,
@@ -854,7 +854,7 @@ fn an_open_select_moved_keeps_its_menu_until_it_flips() {
 
 fn open_select_moved(wrapped: bool) {
     use nana_ui_core::OverflowSpec;
-    use nana_ui_runtime::{ComponentGeometry, ScrollOffset, Select, SelectOption};
+    use nana_ui_runtime::{ScrollOffset, Select, SelectOption};
     let document_id = DocumentId::new(1).unwrap();
     let scroller = |height: f32| {
         let mut style = column_style(0.0);
@@ -907,8 +907,8 @@ fn open_select_moved(wrapped: bool) {
     let menu = |runtime: &RuntimeDocument| {
         let world = runtime.context().world();
         let field = world.layout_box(select.stable_id()).unwrap();
-        match world.component_geometry(select.stable_id()) {
-            Some(ComponentGeometry::Select {
+        match world.select_geometry(select.stable_id()) {
+            Some(nana_ui_runtime::SelectGeometry {
                 menu: Some(menu), ..
             }) => (field, menu.surface),
             other => panic!("expected an open menu, got {other:?}"),

@@ -17,15 +17,18 @@
 //! hold the wgpu version), and when the driver refuses them the family
 //! compiles its program as it always did.
 
+#[cfg(any(test, target_os = "windows"))]
 mod generated;
 
 #[cfg(test)]
 pub(super) mod tests;
 
+#[cfg(any(test, target_os = "windows"))]
 pub(super) use generated::{MESH, QUAD, TEXT, TEXT_DUAL_SOURCE};
 
 /// One stage of a family, compiled for shader model 6.0, so any DX12 device
 /// with DXIL support runs it.
+#[cfg(any(test, target_os = "windows"))]
 pub(super) struct Stage {
     pub(super) entry: &'static str,
     /// The pipeline constants it was specialized with, as the family's
@@ -34,6 +37,7 @@ pub(super) struct Stage {
     pub(super) dxil: &'static [u8],
 }
 
+#[cfg(any(test, target_os = "windows"))]
 pub(super) struct Family {
     /// [`fnv1a`] of the program the stages were compiled from, as the
     /// device is given it (the embedded WGSL, without comments).
@@ -43,6 +47,7 @@ pub(super) struct Family {
     pub(super) stages: &'static [Stage],
 }
 
+#[cfg(any(test, target_os = "windows"))]
 impl Family {
     /// Whether the stages were compiled from `wgsl` laid out as `layout`.
     pub(super) fn fresh(&self, wgsl: &str, layout: u64) -> bool {
@@ -66,11 +71,9 @@ impl Family {
     }
 }
 
-/// FNV-1a, 64 bits. Tells a family's WGSL from the one its DXIL was compiled
-/// from; it is not a security check. Carriage returns are skipped: a CRLF
-/// checkout compiles to the same DXIL, and must hash like an LF one.
-pub(super) const fn fnv1a(bytes: &[u8]) -> u64 {
-    let mut hash = 0xcbf2_9ce4_8422_2325_u64;
+/// Incremental FNV-1a, 64 bits. Carriage returns are skipped: a CRLF checkout
+/// compiles to the same DXIL, and must hash like an LF one.
+pub(crate) const fn fnv1a_update(mut hash: u64, bytes: &[u8]) -> u64 {
     let mut index = 0;
     while index < bytes.len() {
         if bytes[index] != b'\r' {
@@ -82,9 +85,44 @@ pub(super) const fn fnv1a(bytes: &[u8]) -> u64 {
     hash
 }
 
+/// FNV-1a, 64 bits. Tells a family's WGSL from the one its DXIL was compiled
+/// from; it is not a security check. Carriage returns are skipped: a CRLF
+/// checkout compiles to the same DXIL, and must hash like an LF one.
+pub(crate) const fn fnv1a(bytes: &[u8]) -> u64 {
+    fnv1a_update(0xcbf2_9ce4_8422_2325_u64, bytes)
+}
+
+/// [`fnv1a`] over `files` joined with `'\n'`, matching [`super::wgsl::joined`].
+#[cfg(any(test, not(any(feature = "runtime-wgsl", target_os = "windows"))))]
+pub(crate) const fn fnv1a_joined(files: &[&str]) -> u64 {
+    let mut hash = 0xcbf2_9ce4_8422_2325_u64;
+    let mut index = 0;
+    while index < files.len() {
+        if index > 0 {
+            hash = fnv1a_update(hash, b"\n");
+        }
+        hash = fnv1a_update(hash, files[index].as_bytes());
+        index += 1;
+    }
+    hash
+}
+
+/// [`fnv1a`] over `parts` concatenated without separators.
+#[cfg(any(test, not(any(feature = "runtime-wgsl", target_os = "windows"))))]
+pub(crate) const fn fnv1a_concat(parts: &[&str]) -> u64 {
+    let mut hash = 0xcbf2_9ce4_8422_2325_u64;
+    let mut index = 0;
+    while index < parts.len() {
+        hash = fnv1a_update(hash, parts[index].as_bytes());
+        index += 1;
+    }
+    hash
+}
+
 /// Whether `device` runs precompiled stages: DX12 with passthrough shaders.
 /// Only Windows has DX12; the platform test lets every other target drop the
 /// DXIL from its binary.
+#[cfg(any(test, target_os = "windows"))]
 pub(super) fn runs_on(gpu: &nana_gpu::GpuContext, device: &wgpu::Device) -> bool {
     cfg!(target_os = "windows")
         && gpu.capabilities().backend() == nana_gpu::GpuBackend::Dx12
@@ -93,9 +131,15 @@ pub(super) fn runs_on(gpu: &nana_gpu::GpuContext, device: &wgpu::Device) -> bool
             .contains(wgpu::Features::PASSTHROUGH_SHADERS)
 }
 
+#[cfg(not(any(test, target_os = "windows")))]
+pub(super) fn runs_on(_gpu: &nana_gpu::GpuContext, _device: &wgpu::Device) -> bool {
+    false
+}
+
 /// The pipeline `build` makes from `family`'s stages for `stages` (entry
 /// point and pipeline constants each), or `None` when the family has no such
 /// stage or the device refused them; the caller then compiles the program.
+#[cfg(any(test, target_os = "windows"))]
 pub(super) fn pipeline<const N: usize>(
     device: &wgpu::Device,
     family: &Family,
@@ -118,6 +162,7 @@ pub(super) fn pipeline<const N: usize>(
                 entry_points: std::borrow::Cow::Owned(vec![wgpu::PassthroughShaderEntryPoint {
                     name: stage.entry.into(),
                     workgroup_size: (0, 0, 0),
+                    metal_sized_bindings: std::borrow::Cow::Borrowed(&[]),
                 }]),
                 dxil: Some(std::borrow::Cow::Borrowed(stage.dxil)),
                 ..Default::default()

@@ -36,6 +36,8 @@ mod glyph;
 mod pipeline;
 #[cfg(test)]
 pub(super) use self::pipeline::precompiled_inputs;
+#[cfg(test)]
+pub(super) use self::pipeline::text_shader;
 mod raster;
 mod raster_cache;
 #[cfg(windows)]
@@ -4043,11 +4045,10 @@ mod tests {
         let mut pipeline = TextPipeline::new(&device, &queue, wgpu::TextureFormat::Rgba8Unorm);
         pipeline.begin_frame([512, 64]);
         let mut shaper = crate::NanaTextShaper::default();
-        let style = ComputedStyle {
-            font_size: 12.0,
-            font_weight: Some(600),
-            ..ComputedStyle::default()
-        };
+        let style = ComputedStyle::with(|s| {
+            s.font_size = 12.0;
+            s.font_weight = Some(600);
+        });
         for (content, shaping) in [
             ("未命名 1", TextShaping::Advanced),
             ("shade", TextShaping::Advanced),
@@ -5604,7 +5605,7 @@ mod tests {
         pipeline: &mut TextPipeline,
         content: &str,
         scale: f32,
-    ) -> nana_ui_core::GpuWorkObservation {
+    ) -> crate::GpuWorkObservation {
         pipeline.begin_frame([256, 64]);
         pipeline
             .prepare(

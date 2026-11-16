@@ -13,10 +13,10 @@ mod external;
 mod planner;
 pub(crate) mod provenance;
 mod trace;
-mod transfer;
+pub(crate) mod transfer;
 pub use trace::{
     OutputRecreateReason, OutputTraceDeferral, OutputTraceRole, OutputTraceSnapshot,
-    OutputTraceState, OutputTraceWait,
+    OutputTraceState, OutputTraceWait, OutputWorkObservation, PresentationWork,
 };
 #[cfg(feature = "hosted")]
 pub(crate) mod window_output;

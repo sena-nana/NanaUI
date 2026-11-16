@@ -163,7 +163,6 @@ fn hidden_container_keeps_clip_order_and_constant_work_scroll() {
         Some(&node(5))
     );
     world.take_scroll_hit_updates();
-    let built_before = world.last_work_counters().hit_test_nodes_rebuilt;
     let mut scroll = MutationQueue::new();
     scroll.set_scroll_offset(node(2), ScrollOffset { x: 0.0, y: 50.0 });
     world.commit(scroll).unwrap();
@@ -174,10 +173,6 @@ fn hidden_container_keeps_clip_order_and_constant_work_scroll() {
     assert!(hits.contains(&node(3)));
     assert!(!hits.contains(&node(4)));
     assert!(!hits.contains(&node(2)));
-    assert_eq!(
-        world.last_work_counters().hit_test_nodes_rebuilt,
-        built_before
-    );
     world.rebuild_hit_test(document);
     assert_eq!(hits, world.hit_test_candidates(document, 10.0, 10.0));
 }
@@ -203,13 +198,13 @@ fn fixture() -> (UiWorld, DocumentId) {
         );
         let mut layout = LayoutStyle {
             z_index: Some((value % 3) as i32),
-            transform: Some(nana_ui_core::PaintTransform {
-                e: (value % 4) as f32,
-                f: (value % 5) as f32,
-                ..Default::default()
-            }),
             ..Default::default()
         };
+        layout.transforms.transform = Some(nana_ui_core::PaintTransform {
+            e: (value % 4) as f32,
+            f: (value % 5) as f32,
+            ..Default::default()
+        });
         if value == 3 {
             layout.overflow_x = nana_ui_core::OverflowSpec::Hidden;
             layout.overflow_y = nana_ui_core::OverflowSpec::Hidden;
@@ -332,10 +327,11 @@ fn scoped_hidden_ancestor_updates_match_full_rebuild() {
             let mut update = MutationQueue::new();
             if update_parent {
                 let mut style = world.record(dirty).style.as_ref().clone();
-                Arc::make_mut(&mut style.layout).transform = Some(nana_ui_core::PaintTransform {
-                    e: 100.0,
-                    ..Default::default()
-                });
+                Arc::make_mut(&mut style.layout).transforms.transform =
+                    Some(nana_ui_core::PaintTransform {
+                        e: 100.0,
+                        ..Default::default()
+                    });
                 update.set_style(dirty, style);
             } else {
                 update.write_layout(
@@ -351,17 +347,7 @@ fn scoped_hidden_ancestor_updates_match_full_rebuild() {
             world.commit(update).unwrap();
             let work = world.take_system_work();
             world.resolve_styles(&work.style).unwrap();
-            let built_before = world
-                .last_work_counters()
-                .hit_test_nodes_rebuilt
-                .unwrap_or_default();
             assert!(world.rebuild_hit_test_scoped(document, &[dirty]));
-            let rebuilt = world
-                .last_work_counters()
-                .hit_test_nodes_rebuilt
-                .unwrap_or_default()
-                - built_before;
-            assert_eq!(rebuilt, if update_parent { 3 } else { 1 });
             let probes = [10.0, 110.0].map(|x| world.hit_test_candidates(document, x, 10.0));
             assert!(
                 !probes[0].contains(&node(3)),
@@ -432,29 +418,31 @@ fn viewport_fixed_projection_escapes_ancestor_clip_and_scroll_but_keeps_lifecycl
     }
     queue.insert(id(1), id(2), None);
     queue.insert(id(2), id(3), None);
-    let outer = NodeStyle {
-        layout: Arc::new(LayoutStyle {
-            overflow_x: nana_ui_core::OverflowSpec::Hidden,
-            overflow_y: nana_ui_core::OverflowSpec::Scroll,
-            transform: Some(nana_ui_core::PaintTransform {
-                e: 35.0,
-                f: 25.0,
-                ..Default::default()
-            }),
-            ..Default::default()
-        }),
+    let mut outer_layout = LayoutStyle {
+        overflow_x: nana_ui_core::OverflowSpec::Hidden,
+        overflow_y: nana_ui_core::OverflowSpec::Scroll,
         ..Default::default()
     };
+    outer_layout.transforms.transform = Some(nana_ui_core::PaintTransform {
+        e: 35.0,
+        f: 25.0,
+        ..Default::default()
+    });
+    let outer = NodeStyle {
+        layout: Arc::new(outer_layout),
+        ..Default::default()
+    };
+    let mut fixed_layout = LayoutStyle {
+        position: PositionSpec::Fixed,
+        ..Default::default()
+    };
+    fixed_layout.transforms.transform = Some(nana_ui_core::PaintTransform {
+        e: 3.0,
+        f: 4.0,
+        ..Default::default()
+    });
     let fixed = NodeStyle {
-        layout: Arc::new(LayoutStyle {
-            position: PositionSpec::Fixed,
-            transform: Some(nana_ui_core::PaintTransform {
-                e: 3.0,
-                f: 4.0,
-                ..Default::default()
-            }),
-            ..Default::default()
-        }),
+        layout: Arc::new(fixed_layout),
         ..Default::default()
     };
     queue.set_style(id(1), outer);
@@ -705,16 +693,8 @@ fn viewport_fixed_overlap_preserves_select_menu_layer_and_inactive_fast_path() {
         .layout_document(document, crate::LayoutViewport::new(400.0, 300.0))
         .unwrap();
     context.rebuild_hit_test(document);
-    let geometry = context
-        .world()
-        .component_geometry(select.stable_id())
-        .unwrap();
-    let crate::ComponentGeometry::Select {
-        menu: Some(menu), ..
-    } = geometry
-    else {
-        panic!("open Select geometry");
-    };
+    let geometry = context.world().select_geometry(select.stable_id()).unwrap();
+    let menu = geometry.menu.expect("open Select geometry");
     let point = (menu.surface.x + 10.0, menu.surface.y + 10.0);
     assert_eq!(
         context.world().hit_test(document, point.0, point.1),

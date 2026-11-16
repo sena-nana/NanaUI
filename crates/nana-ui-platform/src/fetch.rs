@@ -2,23 +2,31 @@
 
 use std::collections::BTreeSet;
 use std::fmt;
+#[cfg(feature = "fetch")]
 use std::io::{self, Read as _, Write as _};
+#[cfg(feature = "fetch")]
 use std::net::{Shutdown, TcpStream};
+use std::sync::Arc;
+#[cfg(feature = "fetch")]
+use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
+#[cfg(feature = "fetch")]
 use ureq::unversioned::resolver::{DefaultResolver, Resolver};
+#[cfg(feature = "fetch")]
 use ureq::unversioned::transport::{
     Buffers, ConnectProxyConnector, ConnectionDetails, Connector, Either, LazyBuffers, NextTimeout,
     RustlsConnector, Transport,
 };
+#[cfg(feature = "fetch")]
 use url::Url;
 
 pub const DEFAULT_FETCH_TIMEOUT: Duration = Duration::from_secs(30);
 pub const DEFAULT_FETCH_BODY_LIMIT: usize = 16 * 1024 * 1024;
 pub const DEFAULT_FETCH_REDIRECTS: usize = 5;
 pub const DEFAULT_FETCH_WORKERS: usize = 4;
+#[cfg(feature = "fetch")]
 const FETCH_CANCEL_POLL_INTERVAL: Duration = Duration::from_millis(50);
 /// Longest one address may spend in the TCP handshake.
 ///
@@ -28,6 +36,7 @@ const FETCH_CANCEL_POLL_INTERVAL: Duration = Duration::from_millis(50);
 /// one slice never connects at all. The handshake therefore runs in one piece;
 /// cancellation is checked between addresses, and this cap bounds how long a
 /// black-holed address can hold the request before the next one gets its turn.
+#[cfg(feature = "fetch")]
 const FETCH_CONNECT_ATTEMPT: Duration = Duration::from_secs(10);
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -98,12 +107,14 @@ pub trait FetchSink {
 }
 
 /// Collects a streamed response back into one buffered [`FetchResponse`].
+#[cfg(feature = "fetch")]
 #[derive(Debug, Default)]
 struct BufferingSink {
     head: Option<FetchHead>,
     body: Vec<u8>,
 }
 
+#[cfg(feature = "fetch")]
 impl FetchSink for BufferingSink {
     fn head(&mut self, head: FetchHead) -> Result<(), FetchError> {
         self.head = Some(head);
@@ -162,6 +173,7 @@ impl std::error::Error for FetchError {}
 #[derive(Debug, Default)]
 struct FetchCancellationState {
     cancelled: AtomicBool,
+    #[cfg(feature = "fetch")]
     sockets: Mutex<Vec<TcpStream>>,
 }
 
@@ -177,6 +189,7 @@ impl FetchCancellation {
 
     pub fn cancel(&self) {
         self.state.cancelled.store(true, Ordering::Release);
+        #[cfg(feature = "fetch")]
         if let Ok(sockets) = self.state.sockets.lock() {
             for socket in sockets.iter() {
                 let _ = socket.shutdown(Shutdown::Both);
@@ -199,6 +212,7 @@ impl FetchCancellation {
         }
     }
 
+    #[cfg(feature = "fetch")]
     fn register_socket(&self, socket: &TcpStream) -> io::Result<()> {
         let registered = socket.try_clone()?;
         if self.is_cancelled() {
@@ -249,19 +263,7 @@ impl Default for FetchPolicy {
 
 impl FetchPolicy {
     pub fn allow_origin(&mut self, origin: &str) -> Result<&mut Self, FetchError> {
-        let url = Url::parse(origin).map_err(|error| {
-            FetchError::new(
-                FetchErrorKind::InvalidRequest,
-                format!("invalid fetch origin `{origin}`: {error}"),
-            )
-        })?;
-        if url.path() != "/" || url.query().is_some() || url.fragment().is_some() {
-            return Err(FetchError::new(
-                FetchErrorKind::InvalidRequest,
-                format!("fetch policy requires an origin, not a URL path: `{origin}`"),
-            ));
-        }
-        let serialized = exact_origin(&url)?;
+        let serialized = parse_http_origin(origin, true)?;
         self.allowed_origins.insert(serialized);
         Ok(self)
     }
@@ -275,9 +277,19 @@ impl FetchPolicy {
         self.allowed_origins.iter().map(String::as_str)
     }
 
+    pub fn authorize_url(&self, url: &str) -> Result<(), FetchError> {
+        let origin = parse_http_origin(url, false)?;
+        self.authorize_normalized_origin(&origin)
+    }
+
+    #[cfg(feature = "fetch")]
     pub fn authorize(&self, url: &Url) -> Result<(), FetchError> {
         let origin = exact_origin(url)?;
-        if self.allowed_origins.contains(&origin) {
+        self.authorize_normalized_origin(&origin)
+    }
+
+    fn authorize_normalized_origin(&self, origin: &str) -> Result<(), FetchError> {
+        if self.allowed_origins.contains(origin) {
             Ok(())
         } else {
             Err(FetchError::new(
@@ -288,6 +300,126 @@ impl FetchPolicy {
     }
 }
 
+fn parse_http_origin(input: &str, origin_only: bool) -> Result<String, FetchError> {
+    let invalid = |msg: String| FetchError::new(FetchErrorKind::InvalidRequest, msg);
+    let trimmed = input.trim_matches(|c: char| c.is_ascii_control());
+    let Some(colon) = trimmed.find(':') else {
+        return Err(invalid(format!(
+            "invalid fetch origin `{input}`: relative URL without a base"
+        )));
+    };
+    let scheme_raw = &trimmed[..colon];
+    if scheme_raw.is_empty()
+        || !scheme_raw
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'+' | b'-' | b'.'))
+    {
+        return Err(invalid(format!(
+            "invalid fetch origin `{input}`: invalid scheme"
+        )));
+    }
+    let scheme = scheme_raw.to_ascii_lowercase();
+    let rest = &trimmed[colon + 1..];
+    if !rest.starts_with("//") {
+        if !matches!(scheme.as_str(), "http" | "https") {
+            return Err(FetchError::new(
+                FetchErrorKind::Policy,
+                format!("fetch only supports HTTP(S) origins: `{input}`"),
+            ));
+        }
+        return Err(invalid(format!(
+            "invalid fetch origin `{input}`: missing `//`"
+        )));
+    }
+    let after_slashes = &rest[2..];
+    let split_at = after_slashes
+        .find(['/', '?', '#'])
+        .unwrap_or(after_slashes.len());
+    let authority = &after_slashes[..split_at];
+    let suffix = &after_slashes[split_at..];
+    if origin_only && !suffix.is_empty() && suffix != "/" {
+        return Err(invalid(format!(
+            "fetch policy requires an origin, not a URL path: `{input}`"
+        )));
+    }
+    if !matches!(scheme.as_str(), "http" | "https") {
+        return Err(FetchError::new(
+            FetchErrorKind::Policy,
+            format!("fetch only supports HTTP(S) origins: `{input}`"),
+        ));
+    }
+    if authority.is_empty() {
+        return Err(FetchError::new(
+            if origin_only {
+                FetchErrorKind::InvalidRequest
+            } else {
+                FetchErrorKind::Policy
+            },
+            format!("fetch origin `{input}` has an empty host"),
+        ));
+    }
+    let host_port = authority.rsplit_once('@').map_or(authority, |(_, hp)| hp);
+    let (host, port) = if host_port.starts_with('[') {
+        let Some(end_bracket) = host_port.find(']') else {
+            return Err(invalid(format!(
+                "invalid fetch origin `{input}`: unclosed IPv6 host"
+            )));
+        };
+        let host = host_port[..=end_bracket].to_ascii_lowercase();
+        let rem = &host_port[end_bracket + 1..];
+        let port = if rem.is_empty() {
+            None
+        } else if let Some(p) = rem.strip_prefix(':') {
+            if p.is_empty() {
+                None
+            } else {
+                Some(
+                    p.parse::<u16>()
+                        .map_err(|_| invalid(format!("invalid port in `{input}`")))?,
+                )
+            }
+        } else {
+            return Err(invalid(format!("invalid host in `{input}`")));
+        };
+        (host, port)
+    } else {
+        match host_port.split_once(':') {
+            Some((h, p)) => {
+                if h.is_empty()
+                    || h.contains(['\\', '[', ']'])
+                    || h.bytes().any(|b| b.is_ascii_whitespace())
+                {
+                    return Err(invalid(format!("invalid host in `{input}`")));
+                }
+                let port = if p.is_empty() {
+                    None
+                } else {
+                    Some(
+                        p.parse::<u16>()
+                            .map_err(|_| invalid(format!("invalid port in `{input}`")))?,
+                    )
+                };
+                (h.to_ascii_lowercase(), port)
+            }
+            None => {
+                if host_port.is_empty()
+                    || host_port.contains(['\\', '[', ']'])
+                    || host_port.bytes().any(|b| b.is_ascii_whitespace())
+                {
+                    return Err(invalid(format!("invalid host in `{input}`")));
+                }
+                (host_port.to_ascii_lowercase(), None)
+            }
+        }
+    };
+    let default_port = if scheme == "http" { 80 } else { 443 };
+    Ok(match port {
+        Some(p) if p != default_port => format!("{scheme}://{host}:{p}"),
+        _ => format!("{scheme}://{host}"),
+    })
+}
+
+#[cfg(feature = "fetch")]
 fn exact_origin(url: &Url) -> Result<String, FetchError> {
     if !matches!(url.scheme(), "http" | "https") || url.host_str().is_none() {
         return Err(FetchError::new(
@@ -357,507 +489,462 @@ pub fn shared_fetch_host(host: impl FetchHost + 'static) -> SharedFetchHost {
     Arc::new(host)
 }
 
-fn cancelled_transport_error() -> ureq::Error {
-    ureq::Error::Io(io::Error::new(
-        io::ErrorKind::Interrupted,
-        "fetch was cancelled",
-    ))
-}
+#[cfg(feature = "fetch")]
+mod native {
+    use super::*;
 
-#[derive(Debug, Clone)]
-struct CancellableResolver {
-    cancellation: FetchCancellation,
-}
-
-impl CancellableResolver {
-    fn new(cancellation: FetchCancellation) -> Self {
-        Self { cancellation }
+    fn cancelled_transport_error() -> ureq::Error {
+        ureq::Error::Io(io::Error::new(
+            io::ErrorKind::Interrupted,
+            "fetch was cancelled",
+        ))
     }
-}
 
-impl Resolver for CancellableResolver {
-    fn resolve(
-        &self,
-        uri: &ureq::http::Uri,
-        config: &ureq::config::Config,
-        timeout: NextTimeout,
-    ) -> Result<ureq::unversioned::resolver::ResolvedSocketAddrs, ureq::Error> {
-        if self.cancellation.is_cancelled() {
-            return Err(cancelled_transport_error());
+    #[derive(Debug, Clone)]
+    struct CancellableResolver {
+        cancellation: FetchCancellation,
+    }
+
+    impl CancellableResolver {
+        fn new(cancellation: FetchCancellation) -> Self {
+            Self { cancellation }
         }
-        let uri = uri.clone();
-        let config = config.clone();
-        let (sender, receiver) = std::sync::mpsc::sync_channel(1);
-        std::thread::Builder::new()
-            .name("nana-fetch-dns".into())
-            .spawn(move || {
-                let result = DefaultResolver::default().resolve(&uri, &config, timeout);
-                let _ = sender.send(result);
-            })
-            .map_err(ureq::Error::Io)?;
-        let deadline = timeout
-            .not_zero()
-            .and_then(|duration| std::time::Instant::now().checked_add(*duration));
-        loop {
+    }
+
+    impl Resolver for CancellableResolver {
+        fn resolve(
+            &self,
+            uri: &ureq::http::Uri,
+            config: &ureq::config::Config,
+            timeout: NextTimeout,
+        ) -> Result<ureq::unversioned::resolver::ResolvedSocketAddrs, ureq::Error> {
             if self.cancellation.is_cancelled() {
                 return Err(cancelled_transport_error());
             }
-            let wait = deadline
-                .map(|deadline| {
-                    deadline
-                        .saturating_duration_since(std::time::Instant::now())
-                        .min(FETCH_CANCEL_POLL_INTERVAL)
+            let uri = uri.clone();
+            let config = config.clone();
+            let (sender, receiver) = std::sync::mpsc::sync_channel(1);
+            std::thread::Builder::new()
+                .name("nana-fetch-dns".into())
+                .spawn(move || {
+                    let result = DefaultResolver::default().resolve(&uri, &config, timeout);
+                    let _ = sender.send(result);
                 })
-                .unwrap_or(FETCH_CANCEL_POLL_INTERVAL);
-            if wait.is_zero() {
-                return Err(ureq::Error::Timeout(timeout.reason));
-            }
-            match receiver.recv_timeout(wait) {
-                Ok(result) => return result,
-                Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {}
-                Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
-                    return Err(ureq::Error::Io(io::Error::other(
-                        "fetch resolver stopped without a result",
-                    )));
+                .map_err(ureq::Error::Io)?;
+            let deadline = timeout
+                .not_zero()
+                .and_then(|duration| std::time::Instant::now().checked_add(*duration));
+            loop {
+                if self.cancellation.is_cancelled() {
+                    return Err(cancelled_transport_error());
+                }
+                let wait = deadline
+                    .map(|deadline| {
+                        deadline
+                            .saturating_duration_since(std::time::Instant::now())
+                            .min(FETCH_CANCEL_POLL_INTERVAL)
+                    })
+                    .unwrap_or(FETCH_CANCEL_POLL_INTERVAL);
+                if wait.is_zero() {
+                    return Err(ureq::Error::Timeout(timeout.reason));
+                }
+                match receiver.recv_timeout(wait) {
+                    Ok(result) => return result,
+                    Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {}
+                    Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
+                        return Err(ureq::Error::Io(io::Error::other(
+                            "fetch resolver stopped without a result",
+                        )));
+                    }
                 }
             }
         }
     }
-}
 
-#[derive(Debug, Clone)]
-struct CancellableTcpConnector {
-    cancellation: FetchCancellation,
-}
-
-impl CancellableTcpConnector {
-    fn new(cancellation: FetchCancellation) -> Self {
-        Self { cancellation }
+    #[derive(Debug, Clone)]
+    struct CancellableTcpConnector {
+        cancellation: FetchCancellation,
     }
-}
 
-impl<In: Transport> Connector<In> for CancellableTcpConnector {
-    type Out = Either<In, CancellableTcpTransport>;
+    impl CancellableTcpConnector {
+        fn new(cancellation: FetchCancellation) -> Self {
+            Self { cancellation }
+        }
+    }
 
-    fn connect(
-        &self,
-        details: &ConnectionDetails<'_>,
-        chained: Option<In>,
-    ) -> Result<Option<Self::Out>, ureq::Error> {
-        if let Some(chained) = chained {
-            return Ok(Some(Either::A(chained)));
-        }
-        if self.cancellation.is_cancelled() {
-            return Err(cancelled_transport_error());
-        }
-        let deadline = details
-            .timeout
-            .not_zero()
-            .and_then(|duration| std::time::Instant::now().checked_add(*duration));
-        let mut last_error = None;
-        for address in &details.addrs {
+    impl<In: Transport> Connector<In> for CancellableTcpConnector {
+        type Out = Either<In, CancellableTcpTransport>;
+
+        fn connect(
+            &self,
+            details: &ConnectionDetails<'_>,
+            chained: Option<In>,
+        ) -> Result<Option<Self::Out>, ureq::Error> {
+            if let Some(chained) = chained {
+                return Ok(Some(Either::A(chained)));
+            }
             if self.cancellation.is_cancelled() {
                 return Err(cancelled_transport_error());
             }
-            let remaining = deadline
-                .map(|deadline| deadline.saturating_duration_since(std::time::Instant::now()));
-            if remaining.is_some_and(|remaining| remaining.is_zero()) {
+            let deadline = details
+                .timeout
+                .not_zero()
+                .and_then(|duration| std::time::Instant::now().checked_add(*duration));
+            let mut last_error = None;
+            for address in &details.addrs {
+                if self.cancellation.is_cancelled() {
+                    return Err(cancelled_transport_error());
+                }
+                let remaining = deadline
+                    .map(|deadline| deadline.saturating_duration_since(std::time::Instant::now()));
+                if remaining.is_some_and(|remaining| remaining.is_zero()) {
+                    return Err(ureq::Error::Timeout(details.timeout.reason));
+                }
+                let attempt = remaining.map_or(FETCH_CONNECT_ATTEMPT, |remaining| {
+                    remaining.min(FETCH_CONNECT_ATTEMPT)
+                });
+                match TcpStream::connect_timeout(address, attempt) {
+                    Ok(stream) => {
+                        if details.config.no_delay() {
+                            stream.set_nodelay(true).map_err(ureq::Error::Io)?;
+                        }
+                        self.cancellation
+                            .register_socket(&stream)
+                            .map_err(ureq::Error::Io)?;
+                        let buffers = LazyBuffers::new(
+                            details.config.input_buffer_size(),
+                            details.config.output_buffer_size(),
+                        );
+                        return Ok(Some(Either::B(CancellableTcpTransport {
+                            stream,
+                            buffers,
+                            cancellation: self.cancellation.clone(),
+                            read_timeout: None,
+                            write_timeout: None,
+                        })));
+                    }
+                    // Every failure moves on to the next resolved address, not just
+                    // a refusal: a dual-stack machine with no IPv6 route gets
+                    // `NetworkUnreachable` on the AAAA record that DNS put first,
+                    // and the A record behind it would have connected.
+                    Err(error) => last_error = Some(error),
+                }
+            }
+            if self.cancellation.is_cancelled() {
+                return Err(cancelled_transport_error());
+            }
+            if deadline.is_some_and(|deadline| deadline <= std::time::Instant::now()) {
                 return Err(ureq::Error::Timeout(details.timeout.reason));
             }
-            let attempt = remaining.map_or(FETCH_CONNECT_ATTEMPT, |remaining| {
-                remaining.min(FETCH_CONNECT_ATTEMPT)
-            });
-            match TcpStream::connect_timeout(address, attempt) {
-                Ok(stream) => {
-                    if details.config.no_delay() {
-                        stream.set_nodelay(true).map_err(ureq::Error::Io)?;
-                    }
-                    self.cancellation
-                        .register_socket(&stream)
-                        .map_err(ureq::Error::Io)?;
-                    let buffers = LazyBuffers::new(
-                        details.config.input_buffer_size(),
-                        details.config.output_buffer_size(),
-                    );
-                    return Ok(Some(Either::B(CancellableTcpTransport {
-                        stream,
-                        buffers,
-                        cancellation: self.cancellation.clone(),
-                        read_timeout: None,
-                        write_timeout: None,
-                    })));
-                }
-                // Every failure moves on to the next resolved address, not just
-                // a refusal: a dual-stack machine with no IPv6 route gets
-                // `NetworkUnreachable` on the AAAA record that DNS put first,
-                // and the A record behind it would have connected.
-                Err(error) => last_error = Some(error),
-            }
+            Err(ureq::Error::Io(last_error.unwrap_or_else(|| {
+                io::Error::new(
+                    io::ErrorKind::ConnectionRefused,
+                    "no fetch address connected",
+                )
+            })))
         }
-        if self.cancellation.is_cancelled() {
-            return Err(cancelled_transport_error());
-        }
-        if deadline.is_some_and(|deadline| deadline <= std::time::Instant::now()) {
-            return Err(ureq::Error::Timeout(details.timeout.reason));
-        }
-        Err(ureq::Error::Io(last_error.unwrap_or_else(|| {
-            io::Error::new(
-                io::ErrorKind::ConnectionRefused,
-                "no fetch address connected",
-            )
-        })))
-    }
-}
-
-struct CancellableTcpTransport {
-    stream: TcpStream,
-    buffers: LazyBuffers,
-    cancellation: FetchCancellation,
-    read_timeout: Option<Duration>,
-    write_timeout: Option<Duration>,
-}
-
-impl fmt::Debug for CancellableTcpTransport {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("CancellableTcpTransport")
-            .field("cancelled", &self.cancellation.is_cancelled())
-            .finish_non_exhaustive()
-    }
-}
-
-fn update_socket_timeout(
-    socket: &TcpStream,
-    previous: &mut Option<Duration>,
-    timeout: Option<Duration>,
-    set: impl FnOnce(&TcpStream, Option<Duration>) -> io::Result<()>,
-) -> Result<(), ureq::Error> {
-    if *previous != timeout {
-        set(socket, timeout).map_err(ureq::Error::Io)?;
-        *previous = timeout;
-    }
-    Ok(())
-}
-
-impl Transport for CancellableTcpTransport {
-    fn buffers(&mut self) -> &mut dyn Buffers {
-        &mut self.buffers
     }
 
-    fn transmit_output(&mut self, amount: usize, timeout: NextTimeout) -> Result<(), ureq::Error> {
-        if self.cancellation.is_cancelled() {
-            return Err(cancelled_transport_error());
-        }
-        update_socket_timeout(
-            &self.stream,
-            &mut self.write_timeout,
-            timeout.not_zero().map(|duration| *duration),
-            TcpStream::set_write_timeout,
-        )?;
-        let result = self.stream.write_all(&self.buffers.output()[..amount]);
-        if self.cancellation.is_cancelled() {
-            return Err(cancelled_transport_error());
-        }
-        result.map_err(|error| match error.kind() {
-            io::ErrorKind::TimedOut | io::ErrorKind::WouldBlock => {
-                ureq::Error::Timeout(timeout.reason)
-            }
-            _ => ureq::Error::Io(error),
-        })
+    pub(super) struct CancellableTcpTransport {
+        pub(super) stream: TcpStream,
+        pub(super) buffers: LazyBuffers,
+        pub(super) cancellation: FetchCancellation,
+        pub(super) read_timeout: Option<Duration>,
+        pub(super) write_timeout: Option<Duration>,
     }
 
-    /// Reads in `FETCH_CANCEL_POLL_INTERVAL` slices: `cancel()` shuts the
-    /// socket down, which Winsock does not guarantee wakes a blocked `recv`.
-    fn await_input(&mut self, timeout: NextTimeout) -> Result<bool, ureq::Error> {
-        let deadline = timeout
-            .not_zero()
-            .and_then(|duration| std::time::Instant::now().checked_add(*duration));
-        loop {
+    impl fmt::Debug for CancellableTcpTransport {
+        fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+            f.debug_struct("CancellableTcpTransport")
+                .field("cancelled", &self.cancellation.is_cancelled())
+                .finish_non_exhaustive()
+        }
+    }
+
+    fn update_socket_timeout(
+        socket: &TcpStream,
+        previous: &mut Option<Duration>,
+        timeout: Option<Duration>,
+        set: impl FnOnce(&TcpStream, Option<Duration>) -> io::Result<()>,
+    ) -> Result<(), ureq::Error> {
+        if *previous != timeout {
+            set(socket, timeout).map_err(ureq::Error::Io)?;
+            *previous = timeout;
+        }
+        Ok(())
+    }
+
+    impl Transport for CancellableTcpTransport {
+        fn buffers(&mut self) -> &mut dyn Buffers {
+            &mut self.buffers
+        }
+
+        fn transmit_output(
+            &mut self,
+            amount: usize,
+            timeout: NextTimeout,
+        ) -> Result<(), ureq::Error> {
             if self.cancellation.is_cancelled() {
                 return Err(cancelled_transport_error());
             }
-            let remaining = deadline
-                .map(|deadline| deadline.saturating_duration_since(std::time::Instant::now()));
-            if remaining.is_some_and(|remaining| remaining.is_zero()) {
-                return Err(ureq::Error::Timeout(timeout.reason));
-            }
-            let attempt = remaining
-                .map(|remaining| remaining.min(FETCH_CANCEL_POLL_INTERVAL))
-                .unwrap_or(FETCH_CANCEL_POLL_INTERVAL);
             update_socket_timeout(
                 &self.stream,
-                &mut self.read_timeout,
-                Some(attempt),
-                TcpStream::set_read_timeout,
+                &mut self.write_timeout,
+                timeout.not_zero().map(|duration| *duration),
+                TcpStream::set_write_timeout,
             )?;
-            let result = self.stream.read(self.buffers.input_append_buf());
+            let result = self.stream.write_all(&self.buffers.output()[..amount]);
             if self.cancellation.is_cancelled() {
                 return Err(cancelled_transport_error());
             }
-            match result {
-                Ok(amount) => {
-                    self.buffers.input_appended(amount);
-                    return Ok(amount > 0);
+            result.map_err(|error| match error.kind() {
+                io::ErrorKind::TimedOut | io::ErrorKind::WouldBlock => {
+                    ureq::Error::Timeout(timeout.reason)
                 }
-                Err(error)
-                    if matches!(
-                        error.kind(),
-                        io::ErrorKind::TimedOut | io::ErrorKind::WouldBlock
-                    ) => {}
-                Err(error) => return Err(ureq::Error::Io(error)),
+                _ => ureq::Error::Io(error),
+            })
+        }
+
+        /// Reads in `FETCH_CANCEL_POLL_INTERVAL` slices: `cancel()` shuts the
+        /// socket down, which Winsock does not guarantee wakes a blocked `recv`.
+        fn await_input(&mut self, timeout: NextTimeout) -> Result<bool, ureq::Error> {
+            let deadline = timeout
+                .not_zero()
+                .and_then(|duration| std::time::Instant::now().checked_add(*duration));
+            loop {
+                if self.cancellation.is_cancelled() {
+                    return Err(cancelled_transport_error());
+                }
+                let remaining = deadline
+                    .map(|deadline| deadline.saturating_duration_since(std::time::Instant::now()));
+                if remaining.is_some_and(|remaining| remaining.is_zero()) {
+                    return Err(ureq::Error::Timeout(timeout.reason));
+                }
+                let attempt = remaining
+                    .map(|remaining| remaining.min(FETCH_CANCEL_POLL_INTERVAL))
+                    .unwrap_or(FETCH_CANCEL_POLL_INTERVAL);
+                update_socket_timeout(
+                    &self.stream,
+                    &mut self.read_timeout,
+                    Some(attempt),
+                    TcpStream::set_read_timeout,
+                )?;
+                let result = self.stream.read(self.buffers.input_append_buf());
+                if self.cancellation.is_cancelled() {
+                    return Err(cancelled_transport_error());
+                }
+                match result {
+                    Ok(amount) => {
+                        self.buffers.input_appended(amount);
+                        return Ok(amount > 0);
+                    }
+                    Err(error)
+                        if matches!(
+                            error.kind(),
+                            io::ErrorKind::TimedOut | io::ErrorKind::WouldBlock
+                        ) => {}
+                    Err(error) => return Err(ureq::Error::Io(error)),
+                }
             }
         }
-    }
 
-    fn is_open(&mut self) -> bool {
-        !self.cancellation.is_cancelled() && self.stream.peer_addr().is_ok()
-    }
-}
-
-/// Blocking `ureq` implementation. Callers must execute it away from the UI
-/// thread.
-#[derive(Clone)]
-pub struct NativeFetchHost {
-    policy: FetchPolicy,
-    config: ureq::config::Config,
-}
-
-impl fmt::Debug for NativeFetchHost {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("NativeFetchHost")
-            .field("policy", &self.policy)
-            .finish_non_exhaustive()
-    }
-}
-
-impl NativeFetchHost {
-    pub fn new(policy: FetchPolicy) -> Self {
-        let config = ureq::Agent::config_builder()
-            .http_status_as_error(false)
-            .max_redirects(0)
-            .max_redirects_will_error(false)
-            .build();
-        Self { policy, config }
-    }
-
-    fn one_request(
-        &self,
-        url: &Url,
-        method: &str,
-        headers: &[(String, String)],
-        body: &[u8],
-        timeout: Duration,
-        cancellation: &FetchCancellation,
-    ) -> Result<ureq::http::Response<ureq::Body>, FetchError> {
-        let method = ureq::http::Method::from_bytes(method.as_bytes()).map_err(|error| {
-            FetchError::new(
-                FetchErrorKind::InvalidRequest,
-                format!("invalid HTTP method `{method}`: {error}"),
-            )
-        })?;
-        if matches!(method.as_str(), "CONNECT" | "TRACE" | "TRACK") {
-            return Err(FetchError::new(
-                FetchErrorKind::InvalidRequest,
-                format!("HTTP method `{method}` is not supported"),
-            ));
+        fn is_open(&mut self) -> bool {
+            !self.cancellation.is_cancelled() && self.stream.peer_addr().is_ok()
         }
-        let mut builder = ureq::http::Request::builder()
-            .method(method)
-            .uri(url.as_str());
-        for (name, value) in headers {
-            builder = builder.header(name, value);
+    }
+
+    /// Blocking `ureq` implementation. Callers must execute it away from the UI
+    /// thread.
+    #[derive(Clone)]
+    pub struct NativeFetchHost {
+        policy: FetchPolicy,
+        config: ureq::config::Config,
+    }
+
+    impl fmt::Debug for NativeFetchHost {
+        fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+            f.debug_struct("NativeFetchHost")
+                .field("policy", &self.policy)
+                .finish_non_exhaustive()
         }
-        let request = builder.body(body.to_vec()).map_err(|error| {
-            FetchError::new(
-                FetchErrorKind::InvalidRequest,
-                format!("invalid fetch request: {error}"),
-            )
-        })?;
-        let connector =
-            ().chain(ConnectProxyConnector::default())
-                .chain(CancellableTcpConnector::new(cancellation.clone()))
-                .chain(RustlsConnector::default());
-        let agent = ureq::Agent::with_parts(
-            self.config.clone(),
-            connector,
-            CancellableResolver::new(cancellation.clone()),
-        );
-        let request = agent
-            .configure_request(request)
-            .timeout_global(Some(timeout))
-            .build();
-        agent.run(request).map_err(|error| {
-            if cancellation.is_cancelled() {
-                FetchError::new(FetchErrorKind::Cancelled, "fetch was cancelled")
-            } else {
-                map_ureq_error(error)
-            }
-        })
     }
 
-    fn fetch_impl(
-        &self,
-        request: FetchRequest,
-        cancellation: &FetchCancellation,
-    ) -> Result<FetchResponse, FetchError> {
-        let mut sink = BufferingSink::default();
-        self.stream_impl(request, cancellation, &mut sink)?;
-        let head = sink.head.ok_or_else(|| {
-            FetchError::new(FetchErrorKind::Network, "fetch produced no response head")
-        })?;
-        Ok(head.with_body(sink.body))
-    }
-
-    /// The one transport path. Buffered fetches run it with a collecting sink,
-    /// so redirect re-authorization, header stripping and the size caps cannot
-    /// drift between the two modes.
-    fn stream_impl(
-        &self,
-        request: FetchRequest,
-        cancellation: &FetchCancellation,
-        sink: &mut dyn FetchSink,
-    ) -> Result<(), FetchError> {
-        cancellation.check()?;
-        if request.body.len() > self.policy.max_request_bytes {
-            return Err(FetchError::new(
-                FetchErrorKind::RequestTooLarge,
-                format!(
-                    "fetch request body exceeds {} bytes",
-                    self.policy.max_request_bytes
-                ),
-            ));
+    impl NativeFetchHost {
+        pub fn new(policy: FetchPolicy) -> Self {
+            let config = ureq::Agent::config_builder()
+                .http_status_as_error(false)
+                .max_redirects(0)
+                .max_redirects_will_error(false)
+                .build();
+            Self { policy, config }
         }
 
-        let mut url = Url::parse(&request.url).map_err(|error| {
-            FetchError::new(
-                FetchErrorKind::InvalidRequest,
-                format!("invalid fetch URL `{}`: {error}", request.url),
-            )
-        })?;
-        let mut method = request.method.to_ascii_uppercase();
-        let mut headers = request.headers;
-        let mut body = request.body;
-        let mut redirects = 0usize;
-        let started = std::time::Instant::now();
-
-        loop {
-            cancellation.check()?;
-            self.policy.authorize(&url)?;
-            let previous_origin = exact_origin(&url)?;
-            let remaining = self
-                .policy
-                .timeout
-                .checked_sub(started.elapsed())
-                .ok_or_else(|| {
-                    FetchError::new(FetchErrorKind::Timeout, "fetch exceeded its total timeout")
-                })?;
-            let mut response =
-                self.one_request(&url, &method, &headers, &body, remaining, cancellation)?;
-            cancellation.check()?;
-            let status = response.status().as_u16();
-            if matches!(status, 301 | 302 | 303 | 307 | 308)
-                && let Some(location) = response.headers().get(ureq::http::header::LOCATION)
-            {
-                if redirects >= self.policy.max_redirects {
-                    return Err(FetchError::new(
-                        FetchErrorKind::Redirect,
-                        format!(
-                            "fetch exceeded the {} redirect limit",
-                            self.policy.max_redirects
-                        ),
-                    ));
-                }
-                let location = location.to_str().map_err(|error| {
-                    FetchError::new(
-                        FetchErrorKind::Redirect,
-                        format!("invalid redirect Location header: {error}"),
-                    )
-                })?;
-                let next = url.join(location).map_err(|error| {
-                    FetchError::new(
-                        FetchErrorKind::Redirect,
-                        format!("invalid redirect URL `{location}`: {error}"),
-                    )
-                })?;
-                self.policy.authorize(&next)?;
-                if exact_origin(&next)? != previous_origin {
-                    headers.retain(|(name, _)| {
-                        !name.eq_ignore_ascii_case("authorization")
-                            && !name.eq_ignore_ascii_case("proxy-authorization")
-                    });
-                }
-                if status == 303 || ((status == 301 || status == 302) && method == "POST") {
-                    method = "GET".into();
-                    body.clear();
-                    headers.retain(|(name, _)| {
-                        !name.eq_ignore_ascii_case("content-length")
-                            && !name.eq_ignore_ascii_case("content-type")
-                    });
-                }
-                url = next;
-                redirects += 1;
-                continue;
-            }
-
-            if let Some(length) = response
-                .headers()
-                .get(ureq::http::header::CONTENT_LENGTH)
-                .and_then(|value| value.to_str().ok())
-                .and_then(|value| value.parse::<usize>().ok())
-                && length > self.policy.max_response_bytes
-            {
+        fn one_request(
+            &self,
+            url: &Url,
+            method: &str,
+            headers: &[(String, String)],
+            body: &[u8],
+            timeout: Duration,
+            cancellation: &FetchCancellation,
+        ) -> Result<ureq::http::Response<ureq::Body>, FetchError> {
+            let method = ureq::http::Method::from_bytes(method.as_bytes()).map_err(|error| {
+                FetchError::new(
+                    FetchErrorKind::InvalidRequest,
+                    format!("invalid HTTP method `{method}`: {error}"),
+                )
+            })?;
+            if matches!(method.as_str(), "CONNECT" | "TRACE" | "TRACK") {
                 return Err(FetchError::new(
-                    FetchErrorKind::ResponseTooLarge,
+                    FetchErrorKind::InvalidRequest,
+                    format!("HTTP method `{method}` is not supported"),
+                ));
+            }
+            let mut builder = ureq::http::Request::builder()
+                .method(method)
+                .uri(url.as_str());
+            for (name, value) in headers {
+                builder = builder.header(name, value);
+            }
+            let request = builder.body(body.to_vec()).map_err(|error| {
+                FetchError::new(
+                    FetchErrorKind::InvalidRequest,
+                    format!("invalid fetch request: {error}"),
+                )
+            })?;
+            let connector =
+                ().chain(ConnectProxyConnector::default())
+                    .chain(CancellableTcpConnector::new(cancellation.clone()))
+                    .chain(RustlsConnector::default());
+            let agent = ureq::Agent::with_parts(
+                self.config.clone(),
+                connector,
+                CancellableResolver::new(cancellation.clone()),
+            );
+            let request = agent
+                .configure_request(request)
+                .timeout_global(Some(timeout))
+                .build();
+            agent.run(request).map_err(|error| {
+                if cancellation.is_cancelled() {
+                    FetchError::new(FetchErrorKind::Cancelled, "fetch was cancelled")
+                } else {
+                    map_ureq_error(error)
+                }
+            })
+        }
+
+        fn fetch_impl(
+            &self,
+            request: FetchRequest,
+            cancellation: &FetchCancellation,
+        ) -> Result<FetchResponse, FetchError> {
+            let mut sink = BufferingSink::default();
+            self.stream_impl(request, cancellation, &mut sink)?;
+            let head = sink.head.ok_or_else(|| {
+                FetchError::new(FetchErrorKind::Network, "fetch produced no response head")
+            })?;
+            Ok(head.with_body(sink.body))
+        }
+
+        /// The one transport path. Buffered fetches run it with a collecting sink,
+        /// so redirect re-authorization, header stripping and the size caps cannot
+        /// drift between the two modes.
+        fn stream_impl(
+            &self,
+            request: FetchRequest,
+            cancellation: &FetchCancellation,
+            sink: &mut dyn FetchSink,
+        ) -> Result<(), FetchError> {
+            cancellation.check()?;
+            if request.body.len() > self.policy.max_request_bytes {
+                return Err(FetchError::new(
+                    FetchErrorKind::RequestTooLarge,
                     format!(
-                        "fetch response body exceeds {} bytes",
-                        self.policy.max_response_bytes
+                        "fetch request body exceeds {} bytes",
+                        self.policy.max_request_bytes
                     ),
                 ));
             }
-            let response_headers = response
-                .headers()
-                .iter()
-                .filter(|(name, _)| !name.as_str().eq_ignore_ascii_case("set-cookie"))
-                .map(|(name, value)| {
-                    (
-                        name.as_str().to_string(),
-                        value.to_str().unwrap_or_default().to_string(),
-                    )
-                })
-                .collect();
-            let status_text = response
-                .status()
-                .canonical_reason()
-                .unwrap_or_default()
-                .to_string();
-            // Hand over the head before reading any body byte: that is the whole
-            // point of streaming, and the buffered sink does not care when it
-            // arrives.
-            sink.head(FetchHead {
-                url: url.to_string(),
-                status,
-                status_text,
-                headers: response_headers,
-                redirected: redirects > 0,
-            })?;
 
-            let mut total = 0usize;
-            let mut reader = response.body_mut().as_reader();
-            let mut chunk = [0_u8; 64 * 1024];
+            let mut url = Url::parse(&request.url).map_err(|error| {
+                FetchError::new(
+                    FetchErrorKind::InvalidRequest,
+                    format!("invalid fetch URL `{}`: {error}", request.url),
+                )
+            })?;
+            let mut method = request.method.to_ascii_uppercase();
+            let mut headers = request.headers;
+            let mut body = request.body;
+            let mut redirects = 0usize;
+            let started = std::time::Instant::now();
+
             loop {
                 cancellation.check()?;
-                let read = reader.read(&mut chunk).map_err(|error| {
-                    FetchError::new(
-                        FetchErrorKind::Network,
-                        format!("fetch body read failed: {error}"),
-                    )
-                })?;
-                if read == 0 {
-                    break;
+                self.policy.authorize(&url)?;
+                let previous_origin = exact_origin(&url)?;
+                let remaining = self
+                    .policy
+                    .timeout
+                    .checked_sub(started.elapsed())
+                    .ok_or_else(|| {
+                        FetchError::new(FetchErrorKind::Timeout, "fetch exceeded its total timeout")
+                    })?;
+                let mut response =
+                    self.one_request(&url, &method, &headers, &body, remaining, cancellation)?;
+                cancellation.check()?;
+                let status = response.status().as_u16();
+                if matches!(status, 301 | 302 | 303 | 307 | 308)
+                    && let Some(location) = response.headers().get(ureq::http::header::LOCATION)
+                {
+                    if redirects >= self.policy.max_redirects {
+                        return Err(FetchError::new(
+                            FetchErrorKind::Redirect,
+                            format!(
+                                "fetch exceeded the {} redirect limit",
+                                self.policy.max_redirects
+                            ),
+                        ));
+                    }
+                    let location = location.to_str().map_err(|error| {
+                        FetchError::new(
+                            FetchErrorKind::Redirect,
+                            format!("invalid redirect Location header: {error}"),
+                        )
+                    })?;
+                    let next = url.join(location).map_err(|error| {
+                        FetchError::new(
+                            FetchErrorKind::Redirect,
+                            format!("invalid redirect URL `{location}`: {error}"),
+                        )
+                    })?;
+                    self.policy.authorize(&next)?;
+                    if exact_origin(&next)? != previous_origin {
+                        headers.retain(|(name, _)| {
+                            !name.eq_ignore_ascii_case("authorization")
+                                && !name.eq_ignore_ascii_case("proxy-authorization")
+                        });
+                    }
+                    if status == 303 || ((status == 301 || status == 302) && method == "POST") {
+                        method = "GET".into();
+                        body.clear();
+                        headers.retain(|(name, _)| {
+                            !name.eq_ignore_ascii_case("content-length")
+                                && !name.eq_ignore_ascii_case("content-type")
+                        });
+                    }
+                    url = next;
+                    redirects += 1;
+                    continue;
                 }
-                total = total.saturating_add(read);
-                // The cap stays cumulative across chunks, so streaming cannot be
-                // used to slip past a limit the buffered path enforces.
-                if total > self.policy.max_response_bytes {
+
+                if let Some(length) = response
+                    .headers()
+                    .get(ureq::http::header::CONTENT_LENGTH)
+                    .and_then(|value| value.to_str().ok())
+                    .and_then(|value| value.parse::<usize>().ok())
+                    && length > self.policy.max_response_bytes
+                {
                     return Err(FetchError::new(
                         FetchErrorKind::ResponseTooLarge,
                         format!(
@@ -866,59 +953,121 @@ impl NativeFetchHost {
                         ),
                     ));
                 }
-                sink.chunk(&chunk[..read])?;
+                let response_headers = response
+                    .headers()
+                    .iter()
+                    .filter(|(name, _)| !name.as_str().eq_ignore_ascii_case("set-cookie"))
+                    .map(|(name, value)| {
+                        (
+                            name.as_str().to_string(),
+                            value.to_str().unwrap_or_default().to_string(),
+                        )
+                    })
+                    .collect();
+                let status_text = response
+                    .status()
+                    .canonical_reason()
+                    .unwrap_or_default()
+                    .to_string();
+                // Hand over the head before reading any body byte: that is the whole
+                // point of streaming, and the buffered sink does not care when it
+                // arrives.
+                sink.head(FetchHead {
+                    url: url.to_string(),
+                    status,
+                    status_text,
+                    headers: response_headers,
+                    redirected: redirects > 0,
+                })?;
+
+                let mut total = 0usize;
+                let mut reader = response.body_mut().as_reader();
+                let mut chunk = [0_u8; 64 * 1024];
+                loop {
+                    cancellation.check()?;
+                    let read = reader.read(&mut chunk).map_err(|error| {
+                        FetchError::new(
+                            FetchErrorKind::Network,
+                            format!("fetch body read failed: {error}"),
+                        )
+                    })?;
+                    if read == 0 {
+                        break;
+                    }
+                    total = total.saturating_add(read);
+                    // The cap stays cumulative across chunks, so streaming cannot be
+                    // used to slip past a limit the buffered path enforces.
+                    if total > self.policy.max_response_bytes {
+                        return Err(FetchError::new(
+                            FetchErrorKind::ResponseTooLarge,
+                            format!(
+                                "fetch response body exceeds {} bytes",
+                                self.policy.max_response_bytes
+                            ),
+                        ));
+                    }
+                    sink.chunk(&chunk[..read])?;
+                }
+                cancellation.check()?;
+                return Ok(());
             }
-            cancellation.check()?;
-            return Ok(());
         }
     }
+
+    impl FetchHost for NativeFetchHost {
+        fn fetch(&self, request: FetchRequest) -> Result<FetchResponse, FetchError> {
+            self.fetch_impl(request, &FetchCancellation::new())
+        }
+
+        fn fetch_cancellable(
+            &self,
+            request: FetchRequest,
+            cancellation: FetchCancellation,
+        ) -> Result<FetchResponse, FetchError> {
+            self.fetch_impl(request, &cancellation)
+        }
+
+        fn fetch_streaming(
+            &self,
+            request: FetchRequest,
+            cancellation: FetchCancellation,
+            sink: &mut dyn FetchSink,
+        ) -> Result<(), FetchError> {
+            self.stream_impl(request, &cancellation, sink)
+        }
+
+        fn policy(&self) -> &FetchPolicy {
+            &self.policy
+        }
+    }
+
+    fn map_ureq_error(error: ureq::Error) -> FetchError {
+        let kind = if matches!(error, ureq::Error::Timeout(_)) {
+            FetchErrorKind::Timeout
+        } else {
+            FetchErrorKind::Network
+        };
+        FetchError::new(kind, format!("fetch network error: {error}"))
+    }
 }
 
-impl FetchHost for NativeFetchHost {
-    fn fetch(&self, request: FetchRequest) -> Result<FetchResponse, FetchError> {
-        self.fetch_impl(request, &FetchCancellation::new())
-    }
-
-    fn fetch_cancellable(
-        &self,
-        request: FetchRequest,
-        cancellation: FetchCancellation,
-    ) -> Result<FetchResponse, FetchError> {
-        self.fetch_impl(request, &cancellation)
-    }
-
-    fn fetch_streaming(
-        &self,
-        request: FetchRequest,
-        cancellation: FetchCancellation,
-        sink: &mut dyn FetchSink,
-    ) -> Result<(), FetchError> {
-        self.stream_impl(request, &cancellation, sink)
-    }
-
-    fn policy(&self) -> &FetchPolicy {
-        &self.policy
-    }
-}
-
-fn map_ureq_error(error: ureq::Error) -> FetchError {
-    let kind = if matches!(error, ureq::Error::Timeout(_)) {
-        FetchErrorKind::Timeout
-    } else {
-        FetchErrorKind::Network
-    };
-    FetchError::new(kind, format!("fetch network error: {error}"))
-}
+#[cfg(feature = "fetch")]
+pub use native::NativeFetchHost;
 
 #[cfg(test)]
 mod tests {
+    #[cfg(feature = "fetch")]
     use std::io::{Read, Write};
+    #[cfg(feature = "fetch")]
     use std::net::{TcpListener, TcpStream};
+    #[cfg(feature = "fetch")]
     use std::sync::mpsc;
+    #[cfg(feature = "fetch")]
     use std::thread;
 
     use super::*;
 
+    #[cfg(feature = "fetch")]
     fn read_request(stream: &mut TcpStream) -> Vec<u8> {
         let mut bytes = Vec::new();
         let mut chunk = [0u8; 2048];
@@ -951,6 +1100,7 @@ mod tests {
         bytes
     }
 
+    #[cfg(feature = "fetch")]
     fn accept_with_timeout(listener: &TcpListener) -> std::net::TcpStream {
         listener.set_nonblocking(true).expect("nonblocking");
         let deadline = std::time::Instant::now() + Duration::from_secs(5);
@@ -973,6 +1123,7 @@ mod tests {
         stream
     }
 
+    #[cfg(feature = "fetch")]
     fn one_response_server(
         response: Vec<u8>,
     ) -> (String, mpsc::Receiver<Vec<u8>>, thread::JoinHandle<()>) {
@@ -993,10 +1144,15 @@ mod tests {
     #[test]
     fn default_policy_denies_every_origin() {
         let policy = FetchPolicy::default();
-        let error = policy
-            .authorize(&Url::parse("https://example.com/a").unwrap())
-            .unwrap_err();
+        let error = policy.authorize_url("https://example.com/a").unwrap_err();
         assert_eq!(error.kind, FetchErrorKind::Policy);
+        #[cfg(feature = "fetch")]
+        {
+            let error = policy
+                .authorize(&Url::parse("https://example.com/a").unwrap())
+                .unwrap_err();
+            assert_eq!(error.kind, FetchErrorKind::Policy);
+        }
     }
 
     #[test]
@@ -1005,13 +1161,24 @@ mod tests {
             .with_allowed_origin("https://example.com:443")
             .unwrap();
         policy
-            .authorize(&Url::parse("https://example.com/path?q=1").unwrap())
+            .authorize_url("https://example.com/path?q=1")
             .unwrap();
         assert!(
             policy
-                .authorize(&Url::parse("https://api.example.com/path").unwrap())
+                .authorize_url("https://api.example.com/path")
                 .is_err()
         );
+        #[cfg(feature = "fetch")]
+        {
+            policy
+                .authorize(&Url::parse("https://example.com/path?q=1").unwrap())
+                .unwrap();
+            assert!(
+                policy
+                    .authorize(&Url::parse("https://api.example.com/path").unwrap())
+                    .is_err()
+            );
+        }
     }
 
     #[test]
@@ -1084,6 +1251,7 @@ mod tests {
         assert_eq!(sink.0, 900);
     }
 
+    #[cfg(feature = "fetch")]
     #[test]
     fn streaming_delivers_head_before_body_and_keeps_the_cap_cumulative() {
         #[derive(Default)]
@@ -1139,6 +1307,7 @@ mod tests {
         );
     }
 
+    #[cfg(feature = "fetch")]
     #[test]
     fn streaming_enforces_the_same_response_cap_as_the_buffered_path() {
         struct CountingSink(usize);
@@ -1179,6 +1348,7 @@ mod tests {
         );
     }
 
+    #[cfg(feature = "fetch")]
     #[test]
     fn native_fetch_preserves_method_headers_body_and_http_error_response() {
         let (origin, request_rx, join) = one_response_server(
@@ -1216,6 +1386,7 @@ mod tests {
         );
     }
 
+    #[cfg(feature = "fetch")]
     #[test]
     fn native_fetch_cancellation_interrupts_a_blocked_response_wait() {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
@@ -1255,6 +1426,7 @@ mod tests {
         server.join().unwrap();
     }
 
+    #[cfg(feature = "fetch")]
     #[test]
     fn native_fetch_follows_authorized_redirect_and_buffers_json() {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
@@ -1292,6 +1464,7 @@ mod tests {
         assert_eq!(json["source"], "nana");
     }
 
+    #[cfg(feature = "fetch")]
     #[test]
     fn redirect_to_another_origin_is_reauthorized() {
         let forbidden = TcpListener::bind("127.0.0.1:0").unwrap();
@@ -1310,6 +1483,7 @@ mod tests {
         assert_eq!(error.kind, FetchErrorKind::Policy);
     }
 
+    #[cfg(feature = "fetch")]
     #[test]
     fn native_fetch_enforces_timeout_and_body_limits() {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
@@ -1363,6 +1537,7 @@ mod tests {
     }
     /// The socket is never registered with the token, standing in for a
     /// platform where `shutdown` does not wake the read.
+    #[cfg(feature = "fetch")]
     #[test]
     fn a_stalled_read_observes_cancellation_without_relying_on_socket_shutdown() {
         let listener =
@@ -1373,7 +1548,7 @@ mod tests {
         let server = accepted.join().expect("accept thread").expect("accept");
 
         let cancellation = FetchCancellation::new();
-        let mut transport = CancellableTcpTransport {
+        let mut transport = native::CancellableTcpTransport {
             stream,
             buffers: LazyBuffers::new(4096, 4096),
             cancellation: cancellation.clone(),

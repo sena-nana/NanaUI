@@ -504,11 +504,11 @@ mod tests {
             .layout_document(id, LayoutViewport::new(300.0, 200.0))
             .unwrap();
         let panel_radius = |context: &AppContext| {
-            let Some(crate::ComponentGeometry::NativeMarkdown { drawing, .. }) =
-                context.world().component_geometry(markdown.stable_id())
-            else {
-                panic!("markdown geometry")
-            };
+            let drawing = context
+                .world()
+                .native_markdown_layout(markdown.stable_id())
+                .expect("markdown layout")
+                .drawing;
             drawing.commands.iter().find_map(|command| match command {
                 MarkdownDrawingCommand::Panel { radius, .. } => Some(*radius),
                 _ => None,

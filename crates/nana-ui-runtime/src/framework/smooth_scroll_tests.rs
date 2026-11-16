@@ -361,10 +361,10 @@ fn dragging_the_thumb_cancels_motion_and_stays_under_the_pointer() {
     .unwrap();
     wheel(&mut cx, &mut input, WheelUnit::Lines, 0.0, -1.0);
     advance(&mut cx, 60);
-    let Some(crate::ComponentGeometry::Scrollbar {
+    let Some(crate::ScrollbarBars {
         vertical: Some(bar),
         ..
-    }) = cx.world.component_geometry(scroll.id)
+    }) = cx.world.scrollbar_bars(scroll.id)
     else {
         panic!("bar")
     };

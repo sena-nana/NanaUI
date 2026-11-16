@@ -19,7 +19,7 @@
 
 use nana_ui_core::{LayoutStyle, PositionSpec};
 
-use crate::{LayoutFrame, NodeKind, StandardVisual};
+use crate::{LayoutFrame, NodeKind};
 
 /// The classification ([module docs](self)). A set of bits; each derived
 /// question below names the consumers it answers for.
@@ -87,14 +87,31 @@ impl NodeSpace {
     const PLACED_ELSEWHERE: Self = Self(Self::OFF_PARENT.0 | Self::FIXED.0 | Self::STICKY.0);
 
     /// The node whose resolved layout is `style`, measured from `frame`, of
-    /// `kind`, showing `visual`.
+    /// `kind`, showing `widget_visual`.
     pub(crate) fn of(
         style: &LayoutStyle,
         frame: LayoutFrame,
         kind: &NodeKind,
-        visual: Option<&StandardVisual>,
+        widget_visual: Option<&crate::WidgetVisualHandle>,
     ) -> Self {
-        let mut space = Self::of_style(style) | Self::of_visual(visual);
+        let mut space = Self::of_style(style);
+        if let Some(widget_visual) = widget_visual {
+            if widget_visual.geometry_reads_page() {
+                space = space | Self::READS_PAGE;
+            }
+            if widget_visual.has_virtual_nodes() {
+                space = space | Self::VIRTUAL;
+            }
+            if widget_visual.is_open_select_menu() {
+                space = space | Self::VIRTUAL | Self::MENU_ROOM;
+            }
+            if widget_visual.is_menu_surface() {
+                space = space | Self::VIRTUAL;
+            }
+            if widget_visual.is_modal_frame() {
+                space = space | Self::VIRTUAL | Self::MODAL;
+            }
+        }
         if frame != LayoutFrame::Parent {
             space = space | Self::OFF_PARENT;
         }
@@ -115,7 +132,8 @@ impl NodeSpace {
             PositionSpec::Sticky => bits |= Self::STICKY.0,
             _ => {}
         }
-        if let Some(turn) = style.transform {
+        let transforms = &*style.transforms;
+        if let Some(turn) = transforms.transform {
             let (a, b, c, d) = (turn.a, turn.b, turn.c, turn.d);
             bits |= if a == 1.0 && b == 0.0 && c == 0.0 && d == 1.0 {
                 Self::MOVES.0
@@ -125,38 +143,17 @@ impl NodeSpace {
                 Self::TURNS.0
             };
         }
-        if style.transform_3d.is_some() {
+        if transforms.transform_3d.is_some() {
             bits |= Self::TRANSFORM_3D.0;
         }
-        if style.css_perspective.is_some() {
+        if transforms.css_perspective.is_some() {
             bits |= Self::PERSPECTIVE.0;
         }
-        if style.preserve_3d {
+        if transforms.preserve_3d {
             bits |= Self::PRESERVE_3D.0;
         }
         if style.clips_overflow() {
             bits |= Self::CLIPS.0;
-        }
-        Self(bits)
-    }
-
-    /// What `visual` decides.
-    pub(crate) fn of_visual(visual: Option<&StandardVisual>) -> Self {
-        let Some(visual) = visual else {
-            return Self::default();
-        };
-        let mut bits = 0;
-        match visual {
-            StandardVisual::Select { opened: true, .. } => {
-                bits |= Self::VIRTUAL.0 | Self::MENU_ROOM.0;
-            }
-            StandardVisual::TreeView { .. } => bits |= Self::VIRTUAL.0,
-            StandardVisual::MenuSurface { .. } => bits |= Self::VIRTUAL.0,
-            StandardVisual::ModalFrame { .. } => bits |= Self::VIRTUAL.0 | Self::MODAL.0,
-            _ => {}
-        }
-        if visual.geometry_reads_page() {
-            bits |= Self::READS_PAGE.0;
         }
         Self(bits)
     }
@@ -300,17 +297,16 @@ mod tests {
     use nana_ui_core::PaintTransform;
 
     fn transformed(a: f32, b: f32, c: f32, d: f32) -> NodeSpace {
-        NodeSpace::of_style(&LayoutStyle {
-            transform: Some(PaintTransform {
-                a,
-                b,
-                c,
-                d,
-                e: 3.0,
-                f: -2.0,
-            }),
-            ..LayoutStyle::default()
-        })
+        let mut style = LayoutStyle::default();
+        style.transforms.transform = Some(PaintTransform {
+            a,
+            b,
+            c,
+            d,
+            e: 3.0,
+            f: -2.0,
+        });
+        NodeSpace::of_style(&style)
     }
 
     #[test]

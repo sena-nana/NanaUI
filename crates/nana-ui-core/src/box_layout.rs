@@ -20,7 +20,7 @@ mod calc;
 pub use calc::{CalcBinOp, CalcExpr, CalcExprRef, intern_calc};
 
 /// Flex 主轴方向（`row` / `column`；`*-reverse` 见 [`LayoutStyle::flex_reverse`]）。
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum FlexDirection {
     #[default]
     Column,
@@ -100,7 +100,7 @@ pub enum TextOrientationSpec {
 ///
 /// `Baseline` 由 Runtime 的 shared intrinsic metrics 提供；没有 shaped
 /// metrics 时才使用 host ascent 或明确的 replaced-content fallback。
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum AlignSpec {
     #[default]
     Start,
@@ -113,7 +113,7 @@ pub enum AlignSpec {
 /// 主轴分布（justify-content）与多行 `align-content`。
 ///
 /// `Stretch` 只对多行 `align-content` 有意义：把剩余交叉空间均分给各行。
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum JustifySpec {
     #[default]
     Start,
@@ -126,7 +126,7 @@ pub enum JustifySpec {
 }
 
 /// overflow / overflow-x / overflow-y。
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum OverflowSpec {
     #[default]
     Visible,
@@ -176,21 +176,17 @@ pub fn overflow_clip_rect(
 }
 
 /// CSS `display` 子集（作为布局意图枚举，非 CSSOM）。
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum DisplaySpec {
     None,
+    #[default]
     Flex,
     InlineFlex,
-    Block,
     Grid,
     /// `inline-grid`：与 [`Self::Grid`] 同属网格容器；轨 / auto-fill 布局消费与 `grid` 相同。
     InlineGrid,
-    /// `display: contents`：自身不生成盒子，子项提升到父级格式化上下文。
-    Contents,
-    /// `display: inline`：行内级；在块容器里参与 IFC 子集。
+    /// `display: inline`：行内级；参与 IFC。
     Inline,
-    /// `display: inline-block`：行内级盒子，可有独立宽高。
-    InlineBlock,
     /// `display: layers`（NanaUI 扩展）：叠层。所有在流子项共用同一块区域，
     /// 后写的盖在先写的上面；子项按 `justify-items` / `align-items`（或自身的
     /// `justify-self` / `align-self`）对齐，容器尺寸随最大的子项。对应 SwiftUI
@@ -198,9 +194,6 @@ pub enum DisplaySpec {
     /// 同一格的单格网格。它按网格排版：轨道固定为一行一列 `auto`，放置时这一格
     /// 撑满容器内容盒；子项自己的网格位置不起作用。
     Layers,
-    /// `display: flow-root`：与 [`Self::Block`] 同为块级块容器，另外自己建立
-    /// 块格式化上下文（BFC），自动高度包住浮动子项。
-    FlowRoot,
 }
 
 /// The one track each axis of a [`DisplaySpec::Layers`] container has: as
@@ -224,19 +217,9 @@ impl DisplaySpec {
         matches!(self, Self::Flex | Self::InlineFlex)
     }
 
-    /// `display: contents`。
-    pub fn is_contents(self) -> bool {
-        matches!(self, Self::Contents)
-    }
-
-    /// `display: flow-root`：自己建立块格式化上下文的块容器。
-    pub fn is_flow_root(self) -> bool {
-        matches!(self, Self::FlowRoot)
-    }
-
-    /// 行内级（`inline` / `inline-block`）。flex/grid 项会被块化。
+    /// 行内级（`inline` / `inline-flex` / `inline-grid`）。flex/grid 项会被块化。
     pub fn is_inline_level(self) -> bool {
-        matches!(self, Self::Inline | Self::InlineBlock)
+        matches!(self, Self::Inline | Self::InlineFlex | Self::InlineGrid)
     }
 }
 
@@ -290,7 +273,7 @@ impl TextAlignSpec {
 }
 
 /// `white-space` 子集。
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum WhiteSpaceSpec {
     #[default]
     Normal,
@@ -344,46 +327,16 @@ pub enum TextWrapBreak {
     Glyph,
 }
 
-/// `float` 子集（块/IFC：左/右浮动 + `clear`）。
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
-pub enum FloatSpec {
-    #[default]
-    None,
-    Left,
-    Right,
-}
-
-impl FloatSpec {
-    pub fn is_none(self) -> bool {
-        matches!(self, Self::None)
-    }
-}
-
-/// `clear` 子集。
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
-pub enum ClearSpec {
-    #[default]
-    None,
-    Left,
-    Right,
-    Both,
-}
-
 /// Track-list syntax the grid resolver will not pretend to honor.
 ///
 /// Successful `repeat(auto-fit|auto-fill)` is stored on [`GridRepeatAuto`] and
-/// expanded at layout; those variants remain as the repeat *kind*. Whole-value
-/// `subgrid` is not here either — it sets `grid_*_subgrid` and inherits parent
-/// tracks at layout. [`Self::Subgrid`] only tags `subgrid` written as one token
-/// inside a track list, which has no meaning to inherit.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+/// expanded at layout; those variants remain as the repeat *kind*.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum GridTrackListUnsupported {
     /// `repeat(auto-fit, …)` (repeat kind; layout expands it).
     RepeatAutoFit,
     /// `repeat(auto-fill, …)` (repeat kind; layout expands it).
     RepeatAutoFill,
-    /// `subgrid` as a track-list token (e.g. `subgrid 80px`) — not a whole value.
-    Subgrid,
     /// `repeat()` inside another `repeat()`. CSS Grid L1 gives `<track-repeat>`
     /// a `<track-size>` body and `<auto-repeat>` a `<fixed-size>` body, so
     /// neither nests; browsers drop the whole declaration.
@@ -395,7 +348,6 @@ impl GridTrackListUnsupported {
         match self {
             Self::RepeatAutoFit => "repeat(auto-fit)",
             Self::RepeatAutoFill => "repeat(auto-fill)",
-            Self::Subgrid => "subgrid",
             Self::NestedRepeat => "nested repeat()",
         }
     }
@@ -409,22 +361,17 @@ impl GridTrackListUnsupported {
 ///
 /// 可与前后固定轨混写：`prefix + repeat*N + suffix`。
 /// 线名按 CSS 在每次重复时复制，接缝处相邻名字合并。
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct GridRepeatAuto {
     pub kind: GridTrackListUnsupported,
     pub tracks: Vec<GridTrack>,
-    #[serde(default)]
     pub prefix: Vec<GridTrack>,
-    #[serde(default)]
     pub suffix: Vec<GridTrack>,
     /// Prefix track list line names (`prefix.len() + 1` 行，可为空)。
-    #[serde(default)]
     pub prefix_line_names: Vec<Vec<String>>,
     /// In-repeat pattern line names (`tracks.len() + 1` 行)；布局按次数展开。
-    #[serde(default)]
     pub pattern_line_names: Vec<Vec<String>>,
     /// Suffix track list line names.
-    #[serde(default)]
     pub suffix_line_names: Vec<Vec<String>>,
 }
 
@@ -572,7 +519,7 @@ impl GridRepeatAuto {
 }
 
 /// `grid-auto-flow`（2D 自动放置：row / column，可选 dense）。
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum GridAutoFlow {
     Row,
     Column,
@@ -591,7 +538,7 @@ impl GridAutoFlow {
 }
 
 /// CSS grid 线：`auto` / 1-based 索引（负值从末尾） / `span N` / 命名线。
-#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub enum GridLine {
     #[default]
     Auto,
@@ -627,14 +574,13 @@ impl GridLine {
 }
 
 /// Item `grid-column` / `grid-row` / `grid-area` placement.
-#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct GridPlacement {
     pub column_start: GridLine,
     pub column_end: GridLine,
     pub row_start: GridLine,
     pub row_end: GridLine,
     /// `grid-area: header` 命名区域（优先于线号）。
-    #[serde(default)]
     pub area: Option<String>,
 }
 
@@ -649,7 +595,7 @@ impl GridPlacement {
 }
 
 /// `grid-template-areas` 行×列名称表。`"."` 是空洞。
-#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct GridTemplateAreas {
     pub cells: Vec<Vec<String>>,
 }
@@ -702,7 +648,7 @@ impl GridTemplateAreas {
 /// side with `alignment` along it, `gap` away. It flips to the other side
 /// when only that side fits, and keeps the box inside `room` met with the
 /// viewport. Its insets are ignored. Coordinates are the viewport's.
-#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub struct AnchorSpec {
     /// `[x, y, width, height]`; a zero-sized rect is a point (a pointer).
     pub rect: [f32; 4],
@@ -711,7 +657,6 @@ pub struct AnchorSpec {
     pub gap: f32,
     /// `[x, y, width, height]` the box stays inside, within the viewport;
     /// `None` is the viewport itself.
-    #[serde(default)]
     pub room: Option<[f32; 4]>,
 }
 
@@ -740,7 +685,7 @@ impl AnchorSpec {
 ///
 /// **与 Nana Overlay 分工**：Dialog/Popover/Drawer/ContextMenu 剥离 CSS
 /// `fixed`/`sticky`，走 Overlay 合同；普通节点的 `position:fixed` 走本视口子集。
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum PositionSpec {
     #[default]
     Static,
@@ -791,7 +736,7 @@ impl PositionSpec {
 
 /// box-sizing：`BorderBox`（默认）声明宽含 padding + border；`ContentBox` 声明宽为内容，
 /// border box = 声明 + padding + border（T-B08/T-B09）。
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum BoxSizing {
     #[default]
     BorderBox,
@@ -801,7 +746,7 @@ pub enum BoxSizing {
 /// flex-wrap 意图。
 ///
 /// `measure_layout`：`Wrap` / `WrapReverse` 按主轴分行兑现（`WrapReverse` 反转行序）。
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum FlexWrap {
     #[default]
     NoWrap,
@@ -810,7 +755,7 @@ pub enum FlexWrap {
 }
 
 /// 网格轨道（轻量；由 CSS 解析填入）。
-#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub enum GridTrack {
     Px(f32),
     /// `%` of the grid container's content size on that axis（布局时相对 `content_w` 兑现）。
@@ -985,7 +930,8 @@ pub fn resolve_grid_track_sizes(
 }
 
 /// 视口相对单位轴（`vw` / `vh` / `vmin` / `vmax`）。
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[repr(u8)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ViewportAxis {
     /// `vw` — 相对 viewport 宽度。
     Width,
@@ -1066,7 +1012,7 @@ impl ViewportAxis {
 /// - `root_px`：根元素 `font-size`（`rem`）
 ///
 /// 缺省均为 CSS initial `medium` ≈ 16px（非 Nana `UI_BASE_TEXT_SIZE`）。
-#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub struct FontSizeContext {
     pub root_px: f32,
     pub element_px: f32,
@@ -1168,7 +1114,7 @@ pub fn icon_y_on_text_glyph_center(
 /// 可参与 `min`/`max`/`clamp` 的轻量长度原子（Copy；简单 calc 在解析期折进这些变体）。
 ///
 /// Nested `calc()` / `min()` beyond two atoms can use [`LengthSpec::Calc`].
-#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub enum LengthAtom {
     Px(f32),
     Percent(f32),
@@ -1269,7 +1215,7 @@ impl LengthAtom {
 /// Simple variants stay `Copy`. Full `calc()` trees are
 /// [`Self::Calc`] — an interned [`Box<CalcExpr>`] handle — so this enum
 /// remains `Copy` and layout can keep copying specs.
-#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub enum LengthSpec {
     Px(f32),
     /// 相对父 content box 的百分比（calc 可超出 0..=100，不钳制）。
@@ -1278,39 +1224,18 @@ pub enum LengthSpec {
     Em(f32),
     /// `Nrem`（相对根 font-size；缺省 16px）。
     Rem(f32),
-    /// 轻量 `calc(P% ± Npx)`（非完整 calc AST）。
-    CalcPercentOffset {
-        percent: f32,
-        offset_px: f32,
-    },
     /// `Nvw` / `Nvh` / `Nvmin` / `Nvmax`。
     Viewport {
         axis: ViewportAxis,
         value: f32,
     },
-    /// 轻量 `calc(Nv* ± Mpx)` / 裸 `100vh - 32px`。
-    CalcViewportOffset {
-        axis: ViewportAxis,
-        value: f32,
-        offset_px: f32,
+    /// 轻量 `calc(P% ± Npx)` 当偏移以 `1/128 px` 对齐并落在 `i16` 范围时内联于 8 字节内；
+    /// 其余表达式退回 [`Self::Calc`]。
+    PercentOffset {
+        offset_q7: i16,
+        percent: f32,
     },
-    /// 轻量 `calc(Nem ± Mpx)`。
-    CalcEmOffset {
-        em: f32,
-        offset_px: f32,
-    },
-    /// 轻量 `calc(Nrem ± Mpx)`。
-    CalcRemOffset {
-        rem: f32,
-        offset_px: f32,
-    },
-    /// `min(a, b)` 两原子。
-    Min2(LengthAtom, LengthAtom),
-    /// `max(a, b)` 两原子（长度上下文；非 grid `minmax`）。
-    Max2(LengthAtom, LengthAtom),
-    /// `clamp(min, val, max)`。
-    Clamp3(LengthAtom, LengthAtom, LengthAtom),
-    /// Full calc AST (`Box<CalcExpr>` interned so this enum stays Copy).
+    /// Full calc AST (`NonZeroU32` interned handle so this enum stays Copy & 8 bytes).
     Calc(CalcExprRef),
     Fill,
     Shrink,
@@ -1323,13 +1248,256 @@ pub enum LengthSpec {
     FitContent,
 }
 
+const _: () = {
+    assert!(std::mem::size_of::<LengthSpec>() == 8);
+    assert!(std::mem::size_of::<Option<LengthSpec>>() == 8);
+};
+
+impl LengthAtom {
+    /// Lift this atom back into a [`LengthSpec`].
+    pub fn into_spec(self) -> LengthSpec {
+        match self {
+            Self::Px(v) => LengthSpec::Px(v),
+            Self::Percent(p) => LengthSpec::Percent(p),
+            Self::Em(v) => LengthSpec::Em(v),
+            Self::Rem(v) => LengthSpec::Rem(v),
+            Self::Viewport { axis, value } => LengthSpec::Viewport { axis, value },
+            Self::CalcPercent { percent, offset_px } => {
+                LengthSpec::percent_offset(percent, offset_px)
+            }
+            Self::CalcViewport {
+                axis,
+                value,
+                offset_px,
+            } => LengthSpec::viewport_offset(axis, value, offset_px),
+            Self::CalcEm { em, offset_px } => LengthSpec::em_offset(em, offset_px),
+            Self::CalcRem { rem, offset_px } => LengthSpec::rem_offset(rem, offset_px),
+        }
+    }
+}
+
+fn quantize_offset_q7(offset_px: f32) -> Option<i16> {
+    if !offset_px.is_finite() {
+        return None;
+    }
+    let normalized = if offset_px == 0.0 { 0.0 } else { offset_px };
+    let q = normalized * 128.0;
+    let rounded = q.round();
+    if (q - rounded).abs() >= 1e-3 {
+        return None;
+    }
+    if rounded < i16::MIN as f32 || rounded > i16::MAX as f32 {
+        return None;
+    }
+    Some(rounded as i16)
+}
+
 impl LengthSpec {
+    fn intern_raw(expr: CalcExpr) -> Self {
+        Self::Calc(intern_calc(Box::new(expr)))
+    }
+
     /// Intern `expr` as [`Self::Calc`], or fold it to a simple Copy variant.
     pub fn from_calc(expr: CalcExpr) -> Self {
         if let Some(simple) = expr.simplify_to_length_spec() {
             return simple;
         }
-        Self::Calc(intern_calc(Box::new(expr)))
+        Self::intern_raw(expr)
+    }
+
+    /// Construct `calc(percent% + offset_px)`, packing inline into 8 bytes
+    /// when `offset_px` fits 1/128px fixed-point `i16` and interning into
+    /// [`Self::Calc`] otherwise.
+    pub fn percent_offset(percent: f32, offset_px: f32) -> Self {
+        let offset_px = if offset_px == 0.0 { 0.0 } else { offset_px };
+        if let Some(offset_q7) = quantize_offset_q7(offset_px) {
+            Self::PercentOffset { offset_q7, percent }
+        } else {
+            Self::intern_raw(CalcExpr::Binary {
+                op: CalcBinOp::Add,
+                left: Box::new(CalcExpr::Percent(percent)),
+                right: Box::new(CalcExpr::Px(offset_px)),
+            })
+        }
+    }
+
+    /// Runtime drag-friendly constructor for `calc(percent% + offset_px)`:
+    /// rounds any finite offset in `[-256, 255.9921875] px` to `1/128 px` (`i16`)
+    /// so continuous pointer updates never intern into the static calc table.
+    pub fn percent_offset_inline(percent: f32, offset_px: f32) -> Self {
+        if offset_px.is_finite() {
+            let normalized = if offset_px == 0.0 { 0.0 } else { offset_px };
+            let rounded = (normalized * 128.0).round();
+            if rounded >= i16::MIN as f32 && rounded <= i16::MAX as f32 {
+                return Self::PercentOffset {
+                    offset_q7: rounded as i16,
+                    percent,
+                };
+            }
+        }
+        Self::percent_offset(percent, offset_px)
+    }
+
+    /// Construct `calc(em + offset_px)` in [`Self::Calc`].
+    pub fn em_offset(em: f32, offset_px: f32) -> Self {
+        Self::intern_raw(CalcExpr::Binary {
+            op: CalcBinOp::Add,
+            left: Box::new(CalcExpr::Em(em)),
+            right: Box::new(CalcExpr::Px(offset_px)),
+        })
+    }
+
+    /// Construct `calc(rem + offset_px)` in [`Self::Calc`].
+    pub fn rem_offset(rem: f32, offset_px: f32) -> Self {
+        Self::intern_raw(CalcExpr::Binary {
+            op: CalcBinOp::Add,
+            left: Box::new(CalcExpr::Rem(rem)),
+            right: Box::new(CalcExpr::Px(offset_px)),
+        })
+    }
+
+    /// Construct `calc(viewport + offset_px)` in [`Self::Calc`].
+    pub fn viewport_offset(axis: ViewportAxis, value: f32, offset_px: f32) -> Self {
+        Self::intern_raw(CalcExpr::Binary {
+            op: CalcBinOp::Add,
+            left: Box::new(CalcExpr::Viewport { axis, value }),
+            right: Box::new(CalcExpr::Px(offset_px)),
+        })
+    }
+
+    /// Construct `min(a, b)` in [`Self::Calc`].
+    pub fn min2(a: LengthAtom, b: LengthAtom) -> Self {
+        Self::intern_raw(CalcExpr::Min(
+            Box::new(a.to_calc_expr()),
+            Box::new(b.to_calc_expr()),
+        ))
+    }
+
+    /// Construct `max(a, b)` in [`Self::Calc`].
+    pub fn max2(a: LengthAtom, b: LengthAtom) -> Self {
+        Self::intern_raw(CalcExpr::Max(
+            Box::new(a.to_calc_expr()),
+            Box::new(b.to_calc_expr()),
+        ))
+    }
+
+    /// Construct `clamp(min, val, max)` in [`Self::Calc`].
+    pub fn clamp3(min: LengthAtom, val: LengthAtom, max: LengthAtom) -> Self {
+        Self::intern_raw(CalcExpr::Clamp {
+            min: Box::new(min.to_calc_expr()),
+            val: Box::new(val.to_calc_expr()),
+            max: Box::new(max.to_calc_expr()),
+        })
+    }
+
+    /// Unpack a single [`LengthAtom`] when this spec represents a scalar/offset unit.
+    pub fn as_atom(self) -> Option<LengthAtom> {
+        match self {
+            Self::Px(v) => Some(LengthAtom::Px(v)),
+            Self::Percent(p) => Some(LengthAtom::Percent(p)),
+            Self::Em(v) => Some(LengthAtom::Em(v)),
+            Self::Rem(v) => Some(LengthAtom::Rem(v)),
+            Self::Viewport { axis, value } => Some(LengthAtom::Viewport { axis, value }),
+            Self::PercentOffset { offset_q7, percent } => Some(LengthAtom::CalcPercent {
+                percent,
+                offset_px: f32::from(offset_q7) / 128.0,
+            }),
+            Self::Calc(expr) => expr.inner().as_length_atom(),
+            Self::Fill
+            | Self::Shrink
+            | Self::Auto
+            | Self::MinContent
+            | Self::MaxContent
+            | Self::FitContent => None,
+        }
+    }
+
+    /// Unpack `calc(percent% + offset_px)` if this spec represents that form.
+    pub fn as_percent_offset(self) -> Option<(f32, f32)> {
+        match self {
+            Self::PercentOffset { offset_q7, percent } => {
+                Some((percent, f32::from(offset_q7) / 128.0))
+            }
+            Self::Calc(expr) => match expr.inner().as_length_atom()? {
+                LengthAtom::CalcPercent { percent, offset_px } => Some((percent, offset_px)),
+                _ => None,
+            },
+            _ => None,
+        }
+    }
+
+    /// Unpack `calc(em + offset_px)` if this spec represents that form.
+    pub fn as_em_offset(self) -> Option<(f32, f32)> {
+        let Self::Calc(expr) = self else {
+            return None;
+        };
+        match expr.inner().as_length_atom()? {
+            LengthAtom::CalcEm { em, offset_px } => Some((em, offset_px)),
+            _ => None,
+        }
+    }
+
+    /// Unpack `calc(rem + offset_px)` if this spec represents that form.
+    pub fn as_rem_offset(self) -> Option<(f32, f32)> {
+        let Self::Calc(expr) = self else {
+            return None;
+        };
+        match expr.inner().as_length_atom()? {
+            LengthAtom::CalcRem { rem, offset_px } => Some((rem, offset_px)),
+            _ => None,
+        }
+    }
+
+    /// Unpack `calc(viewport + offset_px)` if this spec represents that form.
+    pub fn as_viewport_offset(self) -> Option<(ViewportAxis, f32, f32)> {
+        let Self::Calc(expr) = self else {
+            return None;
+        };
+        match expr.inner().as_length_atom()? {
+            LengthAtom::CalcViewport {
+                axis,
+                value,
+                offset_px,
+            } => Some((axis, value, offset_px)),
+            _ => None,
+        }
+    }
+
+    /// Unpack `min(a, b)` when both operands fit [`LengthAtom`].
+    pub fn as_min2(self) -> Option<(LengthAtom, LengthAtom)> {
+        let Self::Calc(expr) = self else {
+            return None;
+        };
+        let CalcExpr::Min(a, b) = expr.inner() else {
+            return None;
+        };
+        Some((a.as_length_atom()?, b.as_length_atom()?))
+    }
+
+    /// Unpack `max(a, b)` when both operands fit [`LengthAtom`].
+    pub fn as_max2(self) -> Option<(LengthAtom, LengthAtom)> {
+        let Self::Calc(expr) = self else {
+            return None;
+        };
+        let CalcExpr::Max(a, b) = expr.inner() else {
+            return None;
+        };
+        Some((a.as_length_atom()?, b.as_length_atom()?))
+    }
+
+    /// Unpack `clamp(min, val, max)` when all operands fit [`LengthAtom`].
+    pub fn as_clamp3(self) -> Option<(LengthAtom, LengthAtom, LengthAtom)> {
+        let Self::Calc(expr) = self else {
+            return None;
+        };
+        let CalcExpr::Clamp { min, val, max } = expr.inner() else {
+            return None;
+        };
+        Some((
+            min.as_length_atom()?,
+            val.as_length_atom()?,
+            max.as_length_atom()?,
+        ))
     }
 
     /// 解析为逻辑像素；无 viewport 时视口单位返回 `None`。
@@ -1346,12 +1514,7 @@ impl LengthSpec {
     /// The sides of the viewport resolution reads.
     pub fn viewport_axes(self) -> ViewportAxes {
         match self {
-            Self::Viewport { axis, .. } | Self::CalcViewportOffset { axis, .. } => axis.reads(),
-            Self::Min2(a, b) | Self::Max2(a, b) => a.viewport_axes().union(b.viewport_axes()),
-            Self::Clamp3(a, b, c) => a
-                .viewport_axes()
-                .union(b.viewport_axes())
-                .union(c.viewport_axes()),
+            Self::Viewport { axis, .. } => axis.reads(),
             Self::Calc(expr) => expr.inner().viewport_axes(),
             _ => ViewportAxes::NONE,
         }
@@ -1379,34 +1542,12 @@ impl LengthSpec {
             Self::Percent(p) => percent_base.map(|base| base * p / 100.0),
             Self::Em(v) => Some(fonts.element_px * v),
             Self::Rem(v) => Some(fonts.root_px * v),
-            Self::CalcPercentOffset { percent, offset_px } => {
+            Self::PercentOffset { offset_q7, percent } => {
+                let offset_px = f32::from(offset_q7) / 128.0;
                 percent_base.map(|base| base * percent / 100.0 + offset_px)
             }
             Self::Viewport { axis, value } => {
                 viewport.map(|(w, h)| axis.base(w, h) * value / 100.0)
-            }
-            Self::CalcViewportOffset {
-                axis,
-                value,
-                offset_px,
-            } => viewport.map(|(w, h)| axis.base(w, h) * value / 100.0 + offset_px),
-            Self::CalcEmOffset { em, offset_px } => Some(fonts.element_px * em + offset_px),
-            Self::CalcRemOffset { rem, offset_px } => Some(fonts.root_px * rem + offset_px),
-            Self::Min2(a, b) => {
-                let av = a.resolve_with_fonts(percent_base, viewport, fonts)?;
-                let bv = b.resolve_with_fonts(percent_base, viewport, fonts)?;
-                Some(av.min(bv))
-            }
-            Self::Max2(a, b) => {
-                let av = a.resolve_with_fonts(percent_base, viewport, fonts)?;
-                let bv = b.resolve_with_fonts(percent_base, viewport, fonts)?;
-                Some(av.max(bv))
-            }
-            Self::Clamp3(min, val, max) => {
-                let lo = min.resolve_with_fonts(percent_base, viewport, fonts)?;
-                let v = val.resolve_with_fonts(percent_base, viewport, fonts)?;
-                let hi = max.resolve_with_fonts(percent_base, viewport, fonts)?;
-                Some(v.clamp(lo.min(hi), lo.max(hi)))
             }
             Self::Calc(expr) => expr
                 .inner()
@@ -1456,14 +1597,8 @@ impl LengthSpec {
                 | Self::Percent(_)
                 | Self::Em(_)
                 | Self::Rem(_)
-                | Self::CalcPercentOffset { .. }
+                | Self::PercentOffset { .. }
                 | Self::Viewport { .. }
-                | Self::CalcViewportOffset { .. }
-                | Self::CalcEmOffset { .. }
-                | Self::CalcRemOffset { .. }
-                | Self::Min2(_, _)
-                | Self::Max2(_, _)
-                | Self::Clamp3(_, _, _)
                 | Self::Calc(_)
         )
     }
@@ -1474,16 +1609,10 @@ impl LengthSpec {
         match self {
             Self::Fill => true,
             Self::Percent(percent) if (percent - 100.0).abs() < 0.5 => true,
-            Self::CalcPercentOffset { percent, offset_px }
-                if (percent - 100.0).abs() < 0.5 && offset_px <= 0.0 =>
+            Self::PercentOffset { offset_q7, percent }
+                if (percent - 100.0).abs() < 0.5 && offset_q7 <= 0 =>
             {
                 true
-            }
-            Self::Min2(a, b) | Self::Max2(a, b) => {
-                a.is_full_percent_fill() && b.is_full_percent_fill()
-            }
-            Self::Clamp3(a, b, c) => {
-                a.is_full_percent_fill() && b.is_full_percent_fill() && c.is_full_percent_fill()
             }
             Self::Calc(expr) => expr.inner().is_full_percent_fill(),
             _ => false,
@@ -1517,14 +1646,14 @@ impl PaddingSpec {
 }
 
 /// 父盒尺寸上下文（百分比 / 定高链）。
-#[derive(Debug, Clone, Copy, PartialEq, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
 pub struct ParentBox {
     pub width: Option<f32>,
     pub height: Option<f32>,
 }
 
 /// CSS `visibility` (layout placeholder vs paint/hit-test).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum VisibilitySpec {
     #[default]
     Visible,
@@ -1535,9 +1664,8 @@ pub enum VisibilitySpec {
 pub const MAX_BOX_SHADOWS: usize = 4;
 
 /// One `box-shadow` layer (physical px after parse).
-#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub struct BoxShadowSpec {
-    #[serde(default)]
     pub paint_color: Option<PaintColor>,
     pub offset_x: f32,
     pub offset_y: f32,
@@ -1545,13 +1673,12 @@ pub struct BoxShadowSpec {
     pub spread_radius: f32,
     pub color: [f32; 4],
     /// CSS `inset`. Outset (false) paints outside the border box.
-    #[serde(default)]
     pub inset: bool,
 }
 
 /// CSS `mix-blend-mode` (Compositing and Blending Level 1). Unknown values
 /// fail closed.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
 pub enum MixBlendMode {
     #[default]
     Normal,
@@ -1613,7 +1740,7 @@ impl MixBlendMode {
 /// [`LayoutStyle::pointer_events`]; used value is [`Self::inherit_from`].
 /// Root initial used value is [`Self::Auto`]. Unknown keywords fail closed
 /// and do not write a specified value.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum PointerEventsSpec {
     #[default]
     Auto,
@@ -1624,7 +1751,7 @@ pub enum PointerEventsSpec {
 ///
 /// The value is inherited. Custom `url(...)` cursors and unknown keywords are
 /// intentionally rejected by the CSS parser.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum CursorSpec {
     #[default]
     Default,
@@ -1679,7 +1806,7 @@ impl CursorSpec {
 /// `contain` is selectable like `text`, but a drag must not jump to a neighbor.
 /// `none` keeps the node (and inherited descendants) out of the selection.
 /// Unknown keywords fail closed.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum UserSelectSpec {
     #[default]
     Auto,
@@ -1732,7 +1859,7 @@ impl PointerEventsSpec {
 /// CSS `container-type`: whether a box answers container-size queries
 /// (Issue #265), and on which axes. A query container is not
 /// size-contained here: its size still follows its content.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
 pub enum ContainerType {
     /// Not a query container.
     #[default]
@@ -1745,7 +1872,7 @@ pub enum ContainerType {
 
 /// CSS `border-style` subset. Dashed/dotted stroke the existing rounded-box
 /// SDF ring; `double` / 3D keywords occupy used width but do not paint.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BorderStyle {
     None,
     Solid,
@@ -1813,7 +1940,7 @@ fn edge_paints_stroke(style: Option<BorderStyle>) -> bool {
 }
 
 /// CSS `outline-style` subset. Dashed/dotted fail closed.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum OutlineStyle {
     #[default]
     None,
@@ -1821,13 +1948,10 @@ pub enum OutlineStyle {
 }
 
 /// Paint-only CSS `outline` (does not affect layout).
-#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
 pub struct OutlineSpec {
-    #[serde(default)]
     pub width: f32,
-    #[serde(default)]
     pub color: Option<[f32; 4]>,
-    #[serde(default)]
     pub style: OutlineStyle,
 }
 
@@ -1838,7 +1962,7 @@ impl OutlineSpec {
 }
 
 /// Single-layer `text-shadow` (physical px after parse; blur is paint-hint only).
-#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub struct TextShadowSpec {
     pub offset_x: f32,
     pub offset_y: f32,
@@ -1847,26 +1971,23 @@ pub struct TextShadowSpec {
     /// Authoring-space color, when the declaration used an explicit color
     /// function such as `oklch()`, `hsv()` or `color-mix()`. The legacy sRGB
     /// field remains populated for theme/API compatibility.
-    #[serde(default)]
     pub paint_color: Option<PaintColor>,
 }
 
 /// `-webkit-text-stroke`: an outline centred on each glyph's outline.
-#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub struct TextStrokeSpec {
     /// Full stroke width in px. Zero draws nothing.
     pub width: f32,
     /// `None` is `currentColor`: the text's own fill.
-    #[serde(default)]
     pub color: Option<[f32; 4]>,
     /// Authoring-space colour, when the declaration used an explicit colour
     /// function.
-    #[serde(default)]
     pub paint_color: Option<PaintColor>,
 }
 
 /// CSS `text-decoration-line` subset Scene can stroke (underline / line-through).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct TextDecorationLine {
     pub underline: bool,
     pub line_through: bool,
@@ -1892,16 +2013,15 @@ impl FontFeatureSetting {
 }
 
 /// One stop in a CSS `linear-gradient` (position 0..=1 along the gradient line).
-#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub struct GradientStop {
-    #[serde(default)]
     pub paint_color: Option<PaintColor>,
     pub position: f32,
     pub color: [f32; 4],
 }
 
 /// CSS `linear-gradient` background / mask (2..=8 stops, angle in degrees).
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct LinearGradient {
     /// CSS angle: `0deg` = to top, `90deg` = to right.
     pub angle_deg: f32,
@@ -1915,7 +2035,7 @@ impl LinearGradient {
 }
 
 /// CSS `radial-gradient` background / mask (2..=8 stops).
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct RadialGradient {
     /// `true` = `circle`, `false` = `ellipse`.
     pub circle: bool,
@@ -1960,7 +2080,7 @@ fn radial_center_axis_frac(spec: LengthSpec, axis: f32) -> Option<f32> {
 }
 
 /// Parsed CSS gradient fill (`linear-gradient` or `radial-gradient`).
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum CssGradient {
     Linear(LinearGradient),
     Radial(RadialGradient),
@@ -1986,7 +2106,7 @@ impl CssGradient {
 pub const MAX_BACKGROUND_LAYERS: usize = 8;
 
 /// `background-size` / `object-fit` mapping for `url()` fills.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum BackgroundImageFit {
     Cover,
     Contain,
@@ -2033,7 +2153,7 @@ impl From<crate::ContentFit> for BackgroundImageFit {
 ///
 /// `space` and mixed `space`/`round`/`repeat` stay [`Self::Unsupported`] so the
 /// url layer is not painted as `repeat`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum BackgroundRepeat {
     NoRepeat,
     /// CSS initial value for unspecified `background-repeat`.
@@ -2052,7 +2172,7 @@ pub enum BackgroundRepeat {
 }
 
 /// `background-position` / `object-position` (percent of free space, or px).
-#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub struct BackgroundPosition {
     pub x: LengthSpec,
     pub y: LengthSpec,
@@ -2077,22 +2197,17 @@ impl BackgroundPosition {
 }
 
 /// Parsed `background-image` (`linear-gradient`, `radial-gradient`, or `url()`).
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum BackgroundImage {
     Gradient(CssGradient),
     Url {
         url: String,
         fit: BackgroundImageFit,
-        #[serde(default)]
         size_width: Option<LengthSpec>,
-        #[serde(default)]
         size_height: Option<LengthSpec>,
-        #[serde(default)]
         position: BackgroundPosition,
-        #[serde(default)]
         repeat: BackgroundRepeat,
         /// Resample to the painted size (default) or keep a mip chain.
-        #[serde(default)]
         sampling: crate::ImageSampling,
     },
 }
@@ -2132,7 +2247,7 @@ impl BackgroundImage {
 }
 
 /// `mask-image` source: gradient alpha or a jailed `url()` texture.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum MaskImage {
     Gradient(CssGradient),
     Url(String),
@@ -2149,7 +2264,7 @@ impl MaskImage {
 
 /// One `border-image-slice` edge. Unitless numbers are source pixels;
 /// percentages are of the source image's corresponding axis.
-#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub enum BorderImageSlice {
     Number(f32),
     Percent(f32),
@@ -2185,7 +2300,7 @@ pub struct BorderImageTile {
 
 /// Minimal CSS `border-image`: `url()` or `linear-gradient` source, slice,
 /// optional `fill`. Width defaults to `1`×slice; outset/repeat stay stretch.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct BorderImageSpec {
     pub source: BackgroundImage,
     /// Top, right, bottom, left.
@@ -2353,7 +2468,7 @@ fn clamp_pair(a: f32, b: f32, max: f32) -> (f32, f32) {
 }
 
 /// `clip-path: inset(...)` components (lengths resolve against the border box).
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct ClipInset {
     pub top: LengthSpec,
     pub right: LengthSpec,
@@ -2397,14 +2512,14 @@ fn resolve_inset_edge(spec: LengthSpec, width: f32, height: f32, vertical: bool)
 }
 
 /// One vertex in `clip-path: polygon(...)` (percent or px against the border box).
-#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub struct ClipPoint {
     pub x: LengthSpec,
     pub y: LengthSpec,
 }
 
 /// `circle()` / `ellipse()` radius: length, or CSS `closest-side` / `farthest-side`.
-#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub enum ClipShapeRadius {
     ClosestSide,
     FarthestSide,
@@ -2412,7 +2527,7 @@ pub enum ClipShapeRadius {
 }
 
 /// `clip-path: circle(...)`.
-#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub struct ClipCircle {
     pub radius: ClipShapeRadius,
     pub cx: LengthSpec,
@@ -2420,7 +2535,7 @@ pub struct ClipCircle {
 }
 
 /// `clip-path: ellipse(...)`.
-#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub struct ClipEllipse {
     pub rx: ClipShapeRadius,
     pub ry: ClipShapeRadius,
@@ -2429,7 +2544,7 @@ pub struct ClipEllipse {
 }
 
 /// Parsed `clip-path` (`inset`, `polygon`, `circle`, or `ellipse`).
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum ClipPath {
     Inset(ClipInset),
     Polygon(Vec<ClipPoint>),
@@ -2538,9 +2653,8 @@ fn resolve_clip_axis(spec: LengthSpec, axis: f32) -> f32 {
 }
 
 /// CSS `filter: drop-shadow()` — alpha silhouette, not border-box geometry.
-#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub struct FilterDropShadow {
-    #[serde(default)]
     pub paint_color: Option<PaintColor>,
     pub offset_x: f32,
     pub offset_y: f32,
@@ -2557,31 +2671,22 @@ pub struct FilterDropShadow {
 /// `sepia()` has no free slot and stays fail-closed (whole list).
 /// `blur` and `drop-shadow` are the element's own filters (dest-group), distinct
 /// from [`BackdropFilter`]. Exotic functions are omitted (fail closed).
-#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub struct ColorFilter {
     pub brightness: f32,
     pub saturate: f32,
     pub contrast: f32,
     /// `hue-rotate()` in degrees.
-    #[serde(default)]
     pub hue_rotate_deg: f32,
     /// `invert()` amount in 0..=1 (packed in existing quad/layer pads).
-    #[serde(default)]
     pub invert: f32,
     /// `opacity()` multiplier (default 1). Packed in existing quad pads;
     /// dest-group multiplies the group opacity uniform.
-    #[serde(default = "color_filter_opacity_default")]
     pub opacity: f32,
     /// Element `blur(Npx)`, clamped at parse time. Not backdrop-filter.
-    #[serde(default)]
     pub blur_radius: f32,
     /// Single `drop-shadow()`; extra layers and spread stay fail-closed.
-    #[serde(default)]
     pub drop_shadow: Option<FilterDropShadow>,
-}
-
-fn color_filter_opacity_default() -> f32 {
-    1.0
 }
 
 impl Default for ColorFilter {
@@ -2625,7 +2730,7 @@ impl ColorFilter {
 }
 
 /// Per-node CSS `backdrop-filter` (dest sampling, not window material).
-#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub struct BackdropFilter {
     /// CSS `blur(Npx)`: the gaussian's standard deviation in logical px, so
     /// the blur reaches about three times as far. Clamped at parse time.
@@ -2656,94 +2761,68 @@ impl BackdropFilter {
 ///
 /// Layout measurement ignores this bucket except [`VisibilitySpec::Hidden`],
 /// which keeps the border box but suppresses paint and hit-testing.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, PartialEq, Default)]
 pub struct PaintStyle {
-    #[serde(default)]
     pub background_material: Option<crate::MaterialRef>,
-    #[serde(default)]
     pub border_material: Option<crate::MaterialRef>,
-    #[serde(default)]
     pub text_material: Option<crate::MaterialRef>,
     /// `None` inherits computed visibility from the parent.
-    #[serde(default)]
     pub visibility: Option<VisibilitySpec>,
     /// Per-corner radii (TL, TR, BR, BL). Overrides uniform
     /// [`LayoutStyle::border_radius`] when set.
-    #[serde(default)]
     pub border_radii: Option<[LengthSpec; 4]>,
     /// `box-shadow` layers in CSS order (first is top-most). Capped at
     /// [`MAX_BOX_SHADOWS`].
-    #[serde(default)]
     pub box_shadows: Vec<BoxShadowSpec>,
     /// `::-webkit-scrollbar` / `::-webkit-scrollbar-thumb` skin. Geometry still
     /// comes from [`crate::scrollbar_track`]; this only overrides thickness and
     /// the default `border_strong` / `muted` / `subtle` colors.
-    #[serde(default)]
     pub scrollbar: Option<ScrollbarSkin>,
     /// Fade a scroll container's content out toward its top and bottom
     /// edges as one composited layer ([`crate::ScrollEdgeFade`]). Read only on
     /// a box whose vertical overflow clips.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub scroll_edge_fade: Option<crate::ScrollEdgeFade>,
-    #[serde(default)]
     pub text_shadow: Option<TextShadowSpec>,
     /// Every `text-shadow` layer in CSS order (the first is drawn on top),
     /// at most [`crate::MAX_TEXT_SHADOWS`]. [`Self::text_shadow`] is the first
     /// of them, kept for readers that only ever drew one.
-    #[serde(default)]
     pub text_shadows: Vec<TextShadowSpec>,
     /// `-webkit-text-stroke`.
-    #[serde(default)]
     pub text_stroke: Option<TextStrokeSpec>,
     /// `paint-order` puts the stroke before the fill: the outline grows
     /// around each glyph instead of eating into it.
-    #[serde(default)]
     pub paint_order_stroke_first: bool,
     /// Extra stroke outside the border box. Does not affect layout.
-    #[serde(default)]
     pub outline: OutlineSpec,
     /// GPU-capable `mix-blend-mode`. Other keywords stay [`MixBlendMode::Normal`].
-    #[serde(default)]
     pub mix_blend: MixBlendMode,
     /// `url()` / `linear-gradient` + slice 9-slice. Other sources/repeat/width
     /// stay fail-closed and sticky; source/slice longhands must not clear it.
-    #[serde(default)]
     pub unsupported_border_image: bool,
     /// Painted 9-slice when [`Self::unsupported_border_image`] is false.
-    #[serde(default)]
     pub border_image: Option<BorderImageSpec>,
-    #[serde(default)]
     pub background_image: Option<BackgroundImage>,
     /// Additional `background-image` layers after the first (CSS comma list).
-    #[serde(default)]
     pub background_layers: Vec<BackgroundImage>,
     /// Last parsed `background-size` list, zipped onto a later `background-image`.
     /// Cleared by the `background` shorthand so leftover longhands do not leak.
-    #[serde(default)]
     pub background_size_list: Vec<BackgroundImageFit>,
     /// Explicit width/height for [`BackgroundImageFit::Length`] entries, parallel
     /// to [`Self::background_size_list`].
-    #[serde(default)]
     pub background_size_lengths: Vec<(Option<LengthSpec>, Option<LengthSpec>)>,
     /// Last parsed `background-position` list.
-    #[serde(default)]
     pub background_position_list: Vec<BackgroundPosition>,
     /// Last parsed `background-repeat` list.
-    #[serde(default)]
     pub background_repeat_list: Vec<BackgroundRepeat>,
     /// `<img src>` replaced content, painted above background layers.
-    #[serde(default)]
     pub content_image: Option<BackgroundImage>,
     /// Replaced media that the CSS path will not pretend to execute (`iframe`, `video`
     /// without a poster, `<canvas>` without a HostTexture slot). Empty means
     /// the node is not an explicit skip.
-    #[serde(default)]
     pub skipped_replaced: Option<String>,
     /// `object-fit` for [`Self::content_image`] (`None` = CSS `fill` / stretch).
-    #[serde(default)]
     pub object_fit: Option<BackgroundImageFit>,
     /// `object-position` for [`Self::content_image`] (`None` = `50% 50%`).
-    #[serde(default)]
     pub object_position: Option<BackgroundPosition>,
     /// `mask-image` / `-webkit-mask-image` (gradient alpha or `url()` texture).
     ///
@@ -2761,13 +2840,9 @@ pub struct PaintStyle {
     ///
     /// Children and the node's own text are not masked: CSS masking of a
     /// whole subtree needs it isolated into a layer, which NanaUI does not do.
-    #[serde(default)]
     pub mask: Option<MaskImage>,
-    #[serde(default)]
     pub clip_path: Option<ClipPath>,
-    #[serde(default)]
     pub filter: Option<ColorFilter>,
-    #[serde(default)]
     pub backdrop_filter: Option<BackdropFilter>,
 }
 
@@ -2817,7 +2892,7 @@ impl PaintStyle {
 /// `matrix3d`) is stored separately as [`PaintMat4`] and painted as the z=0
 /// homography in the existing Scene quad pass. Parent `perspective` /
 /// `preserve-3d` stay fail-closed.
-#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub struct PaintTransform {
     pub a: f32,
     pub b: f32,
@@ -2833,7 +2908,7 @@ const PAINT_MAT4_EPS: f32 = 1e-5;
 ///
 /// Scene paints the z=0 plane as a 3×3 homography in the existing quad pass
 /// (same 4 vertices, perspective divide). Not a second engine.
-#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub struct PaintMat4 {
     pub m: [f32; 16],
 }
@@ -3127,7 +3202,7 @@ impl PaintMat4 {
 /// border box and `fill-box` uses the content box — there is no SVG viewport
 /// origin space. Percent [`TransformOrigin`] is relative to this box; the
 /// resulting pivot is still applied via [`PaintTransform::around_origin`].
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum TransformBox {
     /// CSS initial. Used as the border box for CSS layout boxes.
     #[default]
@@ -3147,7 +3222,7 @@ impl TransformBox {
 
 /// CSS `transform-origin` (2D). Percent is relative to [`LayoutStyle::transform_box`].
 /// A third z length is accepted by the parser and dropped on this 2×3 path.
-#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub struct TransformOrigin {
     pub x: LengthSpec,
     pub y: LengthSpec,
@@ -3197,34 +3272,23 @@ impl ParentBox {
 ///
 /// Cascade order between a logical and a physical declaration of the same edge
 /// is kept with generation stamps: the later one wins, whichever kind it is.
-#[derive(Debug, Clone, Copy, PartialEq, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
 pub struct LogicalEdges {
-    #[serde(default, alias = "start")]
     pub inline_start: Option<LengthSpec>,
-    #[serde(default, alias = "end")]
     pub inline_end: Option<LengthSpec>,
-    #[serde(default)]
     pub block_start: Option<LengthSpec>,
-    #[serde(default)]
     pub block_end: Option<LengthSpec>,
-    #[serde(default)]
     pub phys_top: Option<LengthSpec>,
-    #[serde(default)]
     pub phys_right: Option<LengthSpec>,
-    #[serde(default)]
     pub phys_bottom: Option<LengthSpec>,
-    #[serde(default)]
     pub phys_left: Option<LengthSpec>,
     /// Generation of each field above, in the same order.
-    #[serde(default)]
     pub generations: [u32; 8],
-    #[serde(default)]
     pub next_gen: u32,
     /// Physical edges (top, right, bottom, left as bits 0–3) the last
     /// [`Self::resolve_into`] wrote from a logical edge, so a later context in
     /// which no logical edge lands there clears them instead of leaving the old
     /// value behind.
-    #[serde(default)]
     pub derived: u8,
 }
 
@@ -3416,95 +3480,221 @@ impl LogicalEdges {
     }
 }
 
+/// Cold CSS Grid container and track properties shared out of [`LayoutStyle`].
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct GridStyle {
+    /// `grid-template-columns` 轻量轨道（侧栏|主区）。
+    pub columns: Option<Vec<GridTrack>>,
+    /// `grid-template-rows` 轻量轨道（堆叠区；Column 主轴）。
+    pub rows: Option<Vec<GridTrack>>,
+    /// `grid-template-columns` 无法兑现的语法（嵌套 auto-fit / auto-fill 等）。
+    /// 成功的 `repeat(auto-fit|auto-fill)` **不**走这里，见 [`Self::columns_repeat`]。
+    pub columns_unsupported: Option<GridTrackListUnsupported>,
+    /// 同 [`Self::columns_unsupported`]，针对 `grid-template-rows`。
+    pub rows_unsupported: Option<GridTrackListUnsupported>,
+    /// `grid-auto-columns`：隐式列轨（2D 自动放置超出模板时追加）。
+    pub auto_columns: Option<Vec<GridTrack>>,
+    /// `grid-auto-rows`：隐式行轨（2D 自动放置超出模板时追加）。
+    pub auto_rows: Option<Vec<GridTrack>>,
+    /// `grid-auto-flow`：2D 自动放置方向（缺省 row）。
+    pub auto_flow: Option<GridAutoFlow>,
+    /// `repeat(auto-fit|auto-fill, …)` 列模式；布局按容器展开。
+    pub columns_repeat: Option<crate::shared::Shared<GridRepeatAuto>>,
+    /// 同行模式，针对 `grid-template-rows`。
+    pub rows_repeat: Option<crate::shared::Shared<GridRepeatAuto>>,
+    /// `grid-column` / `grid-row` 项放置。
+    pub placement: crate::shared::Shared<GridPlacement>,
+    /// `grid-template-areas` 命名区域。
+    pub template_areas: Option<GridTemplateAreas>,
+    /// 列线名称（线 i 的名字列表；长度 = 轨数 + 1）。
+    pub column_line_names: Option<Vec<Vec<String>>>,
+    /// 行线名称。
+    pub row_line_names: Option<Vec<Vec<String>>>,
+}
+
+/// Cold 2D/3D paint transform properties shared out of [`LayoutStyle`].
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct TransformStyle {
+    /// Paint-only 2D `transform` subset. It never participates in flex/grid
+    /// measurement. Planar CSS 3D is [`Self::transform_3d`]; parent
+    /// `perspective` / `preserve-3d` are [`Self::css_perspective`] /
+    /// [`Self::preserve_3d`] and fail-close child 3D at paint.
+    pub transform: Option<PaintTransform>,
+    /// Planar 4×4 (`perspective()` + `rotateY`, true `matrix3d`). Additive to
+    /// the 2×3: 2D lists stay on [`Self::transform`].
+    pub transform_3d: Option<PaintMat4>,
+    pub unsupported_transform: Option<String>,
+    /// CSS `transform-origin`. `None` = `50% 50%` (box center).
+    /// Applied to both the 2×3 and the 4×4 planar path.
+    pub origin: Option<TransformOrigin>,
+    /// CSS `perspective` property (not the transform function). Stored so we
+    /// fail closed instead of pretending a parent 3D rendering context exists.
+    pub css_perspective: Option<f32>,
+    /// CSS `transform-style: preserve-3d`. Flattening is not implemented.
+    pub preserve_3d: bool,
+    /// CSS `transform-box`. Default `view-box` (used as border-box for HTML).
+    pub transform_box: TransformBox,
+}
+
+/// Cold typography, text emphasis, writing-orientation and pseudo-element
+/// colors shared out of [`LayoutStyle`].
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct TextStyleExt {
+    /// Preferred named family from `font-family` (generics stripped). `None` = UI default.
+    pub font_family: Option<String>,
+    /// CSS `letter-spacing` in px. `None` = inherit / normal (0).
+    pub letter_spacing: Option<f32>,
+    /// `line-clamp` / `-webkit-line-clamp` (wrap + ellipsis, max N lines).
+    pub line_clamp: Option<u16>,
+    /// CSS `word-break`. `None` = inherit / `normal`.
+    pub word_break: Option<WordBreakSpec>,
+    /// CSS `overflow-wrap` / `word-wrap`. `None` = inherit / `normal`.
+    pub overflow_wrap: Option<OverflowWrapSpec>,
+    /// CSS `text-decoration` / `text-decoration-line`. `None` = inherit / none.
+    pub text_decoration: Option<TextDecorationLine>,
+    /// CSS `text-emphasis-style`. `None` = inherit / `none`.
+    pub text_emphasis_style: Option<crate::typography::TextEmphasisStyle>,
+    /// CSS `text-emphasis-position`. `None` = inherit / `over right`.
+    pub text_emphasis_position: Option<crate::typography::TextEmphasisPosition>,
+    /// CSS `text-emphasis-color`. `None` = inherit / `currentColor`.
+    pub text_emphasis_color: Option<crate::typography::TextEmphasisColor>,
+    /// CSS `font-feature-settings`. `None` = inherit; `Some([])` = `normal`.
+    pub font_features: Option<Vec<FontFeatureSetting>>,
+    /// CSS `font-variation-settings`. `None` = inherit; `Some([])` = `normal`.
+    /// Declared axes are passed to shaping; axes missing from the face are
+    /// ignored. `wght` also merges into [`LayoutStyle::font_weight`].
+    pub font_variation_settings: Option<Vec<FontVariationSetting>>,
+    /// CSS `font-kerning`. `None` = inherit.
+    pub font_kerning: Option<FontKerningSpec>,
+    /// CSS `line-break`. `None` = inherit.
+    pub line_break: Option<LineBreakSpec>,
+    /// CSS `text-spacing-trim`, `text-autospace`, `text-justify` and
+    /// `text-wrap-style`, each inherited when unset (Issue #211).
+    pub text_typography: crate::typography::TextTypography,
+    /// Malformed `font-variation-settings` (unparseable). Declared axes that
+    /// the loaded face does not provide are skipped at shape time and never
+    /// remapped onto `wght`.
+    pub unsupported_font_variation: bool,
+    /// Vertical / sideways `writing-mode` is fail-closed (no axis remap).
+    pub unsupported_writing_mode: bool,
+    /// CSS `text-orientation`. `None` = inherit, then `mixed`.
+    pub text_orientation: Option<TextOrientationSpec>,
+    /// `::placeholder` color on a text input (RGBA 0..=1). Not a generated box.
+    pub placeholder_color: Option<[f32; 4]>,
+    /// `::placeholder` opacity multiplier. Combined with
+    /// [`Self::placeholder_color`] (or theme faint) at TextInput paint.
+    pub placeholder_opacity: Option<f32>,
+    /// Author `::selection` / `::-moz-selection` background (RGBA 0..=1).
+    /// Unset uses the theme accent at document-text highlight paint.
+    pub selection_background: Option<[f32; 4]>,
+    /// Author `::selection` / `::-moz-selection` foreground (RGBA 0..=1).
+    /// Unset keeps the node's ordinary text color.
+    pub selection_color: Option<[f32; 4]>,
+}
+
+impl TextStyleExt {
+    /// Whether any cold text field in this group overrides the node's resolved `ComputedStyle`.
+    pub fn overrides_computed_style(&self) -> bool {
+        self.selection_background.is_some()
+            || self.selection_color.is_some()
+            || self.font_family.is_some()
+            || self.letter_spacing.is_some()
+            || self.font_features.is_some()
+            || self.font_variation_settings.is_some()
+            || self.font_kerning.is_some()
+            || self.word_break.is_some()
+            || self.line_break.is_some()
+            || self.text_typography != crate::typography::TextTypography::default()
+            || self.text_emphasis_style.is_some()
+            || self.text_emphasis_position.is_some()
+            || self.text_emphasis_color.is_some()
+            || self.text_orientation.is_some()
+    }
+}
+
+/// Cold per-side border longhands shared out of [`LayoutStyle`].
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct BorderSides {
+    pub top_width: Option<f32>,
+    pub right_width: Option<f32>,
+    pub bottom_width: Option<f32>,
+    pub left_width: Option<f32>,
+    pub top_color: Option<[f32; 4]>,
+    pub right_color: Option<[f32; 4]>,
+    pub bottom_color: Option<[f32; 4]>,
+    pub left_color: Option<[f32; 4]>,
+    pub top_style: Option<BorderStyle>,
+    pub right_style: Option<BorderStyle>,
+    pub bottom_style: Option<BorderStyle>,
+    pub left_style: Option<BorderStyle>,
+}
+
+/// Cold CSS logical box edges shared out of [`LayoutStyle`].
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct LogicalBoxEdges {
+    /// Specified `padding-inline-*` plus physical left/right they compete with.
+    pub padding: LogicalEdges,
+    pub margin: LogicalEdges,
+    pub inset: LogicalEdges,
+}
+
+/// Cold `@container` query properties shared out of [`LayoutStyle`].
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct ContainerStyle {
+    /// CSS `container-type`: whether container-size rules below this box
+    /// can query it. It moves no box.
+    pub container_type: ContainerType,
+    /// CSS `container-name`: the names a named `@container` query finds
+    /// this box by. Empty, it answers unnamed queries only.
+    pub container_name: Vec<String>,
+}
+
 /// 可测布局意图（Style Model Layout 盒切片）。
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct LayoutStyle {
     /// Typed theme expressions, resolved by Runtime after cascade and responsive rules.
-    #[serde(default)]
     pub theme: crate::shared::Shared<crate::theme::ThemeLayout>,
     /// Explicit authoring-space colors retained alongside compatibility RGBA fields.
-    #[serde(default)]
     pub paint_colors: crate::shared::Shared<crate::style_model::PaintColorSlots>,
     /// Isolate descendant layout invalidation when both authored dimensions
     /// are fixed pixels and the box is in normal flow. Other boxes retain
     /// normal dependency propagation.
-    #[serde(default)]
     pub layout_isolation: bool,
     pub direction: Option<FlexDirection>,
     /// CSS `direction` (`ltr` / `rtl`). `None` = inherit / initial `ltr`.
     /// Not [`Self::direction`] (`flex-direction`). Remaps logical box edges
     /// and `text-align: start | end` only — not flex/grid start or item order.
-    #[serde(default)]
     pub dir: Option<DirSpec>,
     /// CSS `writing-mode`. `None` = inherit, then `horizontal-tb`.
-    /// `sideways-*` stay fail-closed via [`Self::unsupported_writing_mode`].
-    #[serde(default)]
+    /// `sideways-*` stay fail-closed via [`TextStyleExt::unsupported_writing_mode`].
     pub writing_mode: Option<WritingModeSpec>,
-    /// Vertical / sideways `writing-mode` is fail-closed (no axis remap).
-    #[serde(default)]
-    pub unsupported_writing_mode: bool,
-    /// CSS `text-orientation`. `None` = inherit, then `mixed`.
-    #[serde(default)]
-    pub text_orientation: Option<TextOrientationSpec>,
     /// `row-reverse` / `column-reverse`：主轴起点对调（measure 反转子项序）。
-    #[serde(default)]
     pub flex_reverse: bool,
     /// CSS `order`（flex/grid 项）。默认 `0`；可为负。布局按升序，同值保留源序；
     /// 再应用 [`Self::flex_reverse`]。
-    #[serde(default)]
     pub order: i32,
     pub flex_wrap: FlexWrap,
     /// Pack each wrap line by its largest item's intrinsic main size, then
     /// divide the line equally. Opt-in retained layout intent for equal pickers.
-    #[serde(default)]
     pub equal_wrap: bool,
     pub display: Option<DisplaySpec>,
     pub box_sizing: BoxSizing,
     pub position: PositionSpec,
     /// Anchor positioning for a `position: fixed` box; see [`AnchorSpec`].
-    #[serde(default)]
-    pub anchor: Option<AnchorSpec>,
+    pub anchor: Option<std::sync::Arc<AnchorSpec>>,
     /// CSS `z-index`（整数）。`None` = auto；fixed 层默认按树序叠在内容之上。
-    #[serde(default)]
     pub z_index: Option<i32>,
     /// CSS `isolation: isolate`. Paint-order stacking context; not a layout box.
-    #[serde(default)]
     pub isolation: bool,
-    /// Paint-only 2D `transform` subset. It never participates in flex/grid
-    /// measurement. Planar CSS 3D is [`Self::transform_3d`]; parent
-    /// `perspective` / `preserve-3d` are [`Self::css_perspective`] /
-    /// [`Self::preserve_3d`] and fail-close child 3D at paint.
-    #[serde(default)]
-    pub transform: Option<PaintTransform>,
-    /// Planar 4×4 (`perspective()` + `rotateY`, true `matrix3d`). Additive to
-    /// the 2×3: 2D lists stay on [`Self::transform`].
-    #[serde(default)]
-    pub transform_3d: Option<PaintMat4>,
-    #[serde(default)]
-    pub unsupported_transform: Option<String>,
-    /// CSS `transform-origin`. `None` = `50% 50%` (box center).
-    /// Applied to both the 2×3 and the 4×4 planar path.
-    #[serde(default)]
-    pub transform_origin: Option<TransformOrigin>,
-    /// CSS `perspective` property (not the transform function). Stored so we
-    /// fail closed instead of pretending a parent 3D rendering context exists.
-    #[serde(default)]
-    pub css_perspective: Option<f32>,
-    /// CSS `transform-style: preserve-3d`. Flattening is not implemented.
-    #[serde(default)]
-    pub preserve_3d: bool,
-    /// CSS `transform-box`. Default `view-box` (used as border-box for HTML).
-    #[serde(default)]
-    pub transform_box: TransformBox,
+    /// Cold 2D/3D paint transform properties.
+    pub transforms: crate::shared::Shared<TransformStyle>,
     /// Uniform `gap` shorthand residue / class defaults. Axis overrides win.
     /// `%` / calc 保留为 [`LengthSpec`]（同 margin/padding），布局时相对 CB 解析；
     /// 解析期无 CB 时不得收成 px 或静默丢弃。
     pub gap: Option<LengthSpec>,
     /// `row-gap`（或 `gap: row column` 的第一值）。
-    #[serde(default)]
     pub row_gap: Option<LengthSpec>,
     /// `column-gap`（或 `gap: row column` 的第二值）。
-    #[serde(default)]
     pub column_gap: Option<LengthSpec>,
     /// Uniform padding shorthand residue. `%` / calc 保留为 [`LengthSpec`]，
     /// 布局时相对包含块**宽度**解析（含上下边）。
@@ -3513,29 +3703,20 @@ pub struct LayoutStyle {
     pub padding_right: Option<LengthSpec>,
     pub padding_bottom: Option<LengthSpec>,
     pub padding_left: Option<LengthSpec>,
-    /// Specified `padding-inline-*` plus physical left/right they compete with.
-    #[serde(default)]
-    pub logical_padding: crate::shared::Shared<LogicalEdges>,
     /// Uniform margin shorthand residue（`%` 合同同 padding）。
     pub margin: Option<LengthSpec>,
     pub margin_top: Option<LengthSpec>,
     pub margin_right: Option<LengthSpec>,
     pub margin_bottom: Option<LengthSpec>,
     pub margin_left: Option<LengthSpec>,
-    #[serde(default)]
-    pub logical_margin: crate::shared::Shared<LogicalEdges>,
     /// Inset：`relative` / `absolute` / `fixed` 用（`Px` 或 `%`；measure 时相对 CB 解析）。
     /// `Static` 忽略；`sticky` defer。
-    #[serde(default)]
     pub offset_top: Option<LengthSpec>,
-    #[serde(default)]
     pub offset_right: Option<LengthSpec>,
-    #[serde(default)]
     pub offset_bottom: Option<LengthSpec>,
-    #[serde(default)]
     pub offset_left: Option<LengthSpec>,
-    #[serde(default)]
-    pub logical_inset: crate::shared::Shared<LogicalEdges>,
+    /// Cold CSS logical padding/margin/inset edges.
+    pub logical_edges: crate::shared::Shared<LogicalBoxEdges>,
     pub width: Option<LengthSpec>,
     pub height: Option<LengthSpec>,
     /// `min-width`：保留 [`LengthSpec`]（px / `%` / calc / em / viewport），布局时解析。
@@ -3550,17 +3731,13 @@ pub struct LayoutStyle {
     pub allow_shrink: bool,
     pub align_items: AlignSpec,
     /// `align-self`；`None` = `auto`（继承容器 `align-items`）。
-    #[serde(default)]
     pub align_self: Option<AlignSpec>,
     /// `align-content`（多行 flex 线间分布；`stretch`/`normal` 均分剩余交叉空间）。
-    #[serde(default)]
     pub align_content: JustifySpec,
     pub justify_content: JustifySpec,
     /// `justify-items`（Box Alignment；flex 项忽略，供 grid/place-items 第二值）。
-    #[serde(default)]
     pub justify_items: Option<AlignSpec>,
     /// `justify-self`（Box Alignment；flex 项忽略，供 place-self 第二值）。
-    #[serde(default)]
     pub justify_self: Option<AlignSpec>,
     /// `flex-grow`；>0 时主轴随父方向 Fill。
     pub flex_grow: Option<f32>,
@@ -3572,220 +3749,58 @@ pub struct LayoutStyle {
     /// What this box declares about its elasticity, and whether its line
     /// solves overflow by compressing its children's (Issue #207). `None`
     /// declares nothing and solves nothing.
-    #[serde(default)]
-    pub adaptation: Option<crate::shared::Shared<crate::dynamic_layout::AdaptationProfile>>,
+    pub adaptation: Option<std::sync::Arc<crate::dynamic_layout::AdaptationProfile>>,
     pub overflow_x: OverflowSpec,
     pub overflow_y: OverflowSpec,
     /// `text-overflow: ellipsis`（需配合 nowrap / 定宽；Scene text 路径兑现）。
-    #[serde(default)]
     pub text_overflow_ellipsis: bool,
-    /// `line-clamp` / `-webkit-line-clamp` (wrap + ellipsis, max N lines).
-    #[serde(default)]
-    pub line_clamp: Option<u16>,
     /// Specified CSS `pointer-events`. `None` means inherit (not `auto`).
-    #[serde(default)]
     pub pointer_events: Option<PointerEventsSpec>,
     /// CSS `cursor`; unspecified values inherit from the parent.
-    #[serde(default)]
     pub cursor: Option<CursorSpec>,
     /// CSS `user-select`; unspecified values inherit from the parent.
-    #[serde(default)]
     pub user_select: Option<UserSelectSpec>,
     /// `white-space: nowrap`（与 [`Self::white_space`] 同步）。
-    #[serde(default)]
     pub white_space_nowrap: bool,
     /// `white-space` 子集。
-    #[serde(default)]
     pub white_space: WhiteSpaceSpec,
-    /// CSS `word-break`. `None` = inherit / `normal`.
-    #[serde(default)]
-    pub word_break: Option<WordBreakSpec>,
-    /// CSS `overflow-wrap` / `word-wrap`. `None` = inherit / `normal`.
-    #[serde(default)]
-    pub overflow_wrap: Option<OverflowWrapSpec>,
     /// CSS `aspect-ratio` as width/height. `None` = `auto`.
-    #[serde(default)]
     pub aspect_ratio: Option<f32>,
     /// `text-align`（IFC 行对齐）。
-    #[serde(default)]
     pub text_align: TextAlignSpec,
-    /// `float` 子集。
-    #[serde(default)]
-    pub float: FloatSpec,
-    /// `clear` 子集。
-    #[serde(default)]
-    pub clear: ClearSpec,
     /// Computed `font-size` in CSS px. `None` = inherit (then initial / ControlSize).
-    #[serde(default)]
     pub font_size: Option<f32>,
     /// CSS `font-weight` as 100..=900. `None` = inherit / normal.
-    #[serde(default)]
     pub font_weight: Option<u16>,
     /// CSS `font-style: italic` / `oblique`. `None` = inherit / `normal`.
-    #[serde(default)]
     pub font_italic: Option<bool>,
-    /// Preferred named family from `font-family` (generics stripped). `None` = UI default.
-    #[serde(default)]
-    pub font_family: Option<String>,
     /// CSS `line-height` subset. `None` = inherit / engine default.
-    #[serde(default)]
     pub line_height: Option<LineHeightSpec>,
-    /// CSS `letter-spacing` in px. `None` = inherit / normal (0).
-    #[serde(default)]
-    pub letter_spacing: Option<f32>,
     /// Foreground `color` (RGBA 0..=1). `None` = inherit / theme text.
-    #[serde(default)]
     pub color: Option<[f32; 4]>,
-    /// CSS `text-decoration` / `text-decoration-line`. `None` = inherit / none.
-    #[serde(default)]
-    pub text_decoration: Option<TextDecorationLine>,
-    /// CSS `text-emphasis-style`. `None` = inherit / `none`.
-    #[serde(default)]
-    pub text_emphasis_style: Option<crate::typography::TextEmphasisStyle>,
-    /// CSS `text-emphasis-position`. `None` = inherit / `over right`.
-    #[serde(default)]
-    pub text_emphasis_position: Option<crate::typography::TextEmphasisPosition>,
-    /// CSS `text-emphasis-color`. `None` = inherit / `currentColor`.
-    #[serde(default)]
-    pub text_emphasis_color: Option<crate::typography::TextEmphasisColor>,
-    /// CSS `font-feature-settings`. `None` = inherit; `Some([])` = `normal`.
-    #[serde(default)]
-    pub font_features: Option<Vec<FontFeatureSetting>>,
-    /// CSS `font-variation-settings`. `None` = inherit; `Some([])` = `normal`.
-    /// Declared axes are passed to shaping; axes missing from the face are
-    /// ignored. `wght` also merges into [`Self::font_weight`].
-    #[serde(default)]
-    pub font_variation_settings: Option<Vec<FontVariationSetting>>,
-    /// CSS `font-kerning`. `None` = inherit.
-    #[serde(default)]
-    pub font_kerning: Option<FontKerningSpec>,
-    /// CSS `line-break`. `None` = inherit.
-    #[serde(default)]
-    pub line_break: Option<LineBreakSpec>,
-    /// CSS `text-spacing-trim`, `text-autospace`, `text-justify` and
-    /// `text-wrap-style`, each inherited when unset (Issue #211).
-    #[serde(default)]
-    pub text_typography: crate::typography::TextTypography,
-    /// Malformed `font-variation-settings` (unparseable). Declared axes that
-    /// the loaded face does not provide are skipped at shape time and never
-    /// remapped onto `wght`.
-    #[serde(default)]
-    pub unsupported_font_variation: bool,
-    /// `::placeholder` color on a text input (RGBA 0..=1). Not a generated box.
-    #[serde(default)]
-    pub placeholder_color: Option<[f32; 4]>,
-    /// `::placeholder` opacity multiplier. Combined with
-    /// [`Self::placeholder_color`] (or theme faint) at TextInput paint.
-    #[serde(default)]
-    pub placeholder_opacity: Option<f32>,
-    /// Author `::selection` / `::-moz-selection` background (RGBA 0..=1).
-    /// Unset uses the theme accent at document-text highlight paint.
-    #[serde(default)]
-    pub selection_background: Option<[f32; 4]>,
-    /// Author `::selection` / `::-moz-selection` foreground (RGBA 0..=1).
-    /// Unset keeps the node's ordinary text color.
-    #[serde(default)]
-    pub selection_color: Option<[f32; 4]>,
-    /// `grid-template-columns` 轻量轨道（侧栏|主区）。
-    pub grid_columns: Option<Vec<GridTrack>>,
-    /// `grid-template-rows` 轻量轨道（堆叠区；Column 主轴）。
-    #[serde(default)]
-    pub grid_rows: Option<Vec<GridTrack>>,
-    /// `grid-template-columns` 无法兑现的语法（`subgrid`、嵌套 auto-fit / auto-fill）。
-    /// 成功的 `repeat(auto-fit|auto-fill)` **不**走这里，见 [`Self::grid_columns_repeat`]。
-    #[serde(default)]
-    pub grid_columns_unsupported: Option<GridTrackListUnsupported>,
-    /// 同 [`Self::grid_columns_unsupported`]，针对 `grid-template-rows`。
-    #[serde(default)]
-    pub grid_rows_unsupported: Option<GridTrackListUnsupported>,
-    /// `grid-auto-columns`：隐式列轨（2D 自动放置超出模板时追加）。
-    #[serde(default)]
-    pub grid_auto_columns: Option<Vec<GridTrack>>,
-    /// `grid-auto-rows`：隐式行轨（2D 自动放置超出模板时追加）。
-    #[serde(default)]
-    pub grid_auto_rows: Option<Vec<GridTrack>>,
-    /// `grid-auto-flow`：2D 自动放置方向（缺省 row）。
-    #[serde(default)]
-    pub grid_auto_flow: Option<GridAutoFlow>,
-    /// `repeat(auto-fit|auto-fill, …)` 列模式；布局按容器展开。
-    #[serde(default)]
-    pub grid_columns_repeat: Option<crate::shared::Shared<GridRepeatAuto>>,
-    /// 同行模式，针对 `grid-template-rows`。
-    #[serde(default)]
-    pub grid_rows_repeat: Option<crate::shared::Shared<GridRepeatAuto>>,
-    /// `grid-template-columns: subgrid`：布局时继承父网格所跨列轨几何。
-    /// 不是轨列表；没有父轨时该轴按 `none` 处理，不假装成 `auto`。
-    #[serde(default)]
-    pub grid_columns_subgrid: bool,
-    /// `grid-template-rows: subgrid`：继承父网格所跨行轨几何。
-    #[serde(default)]
-    pub grid_rows_subgrid: bool,
-    /// `grid-column` / `grid-row` 项放置。
-    #[serde(default)]
-    pub grid_placement: crate::shared::Shared<GridPlacement>,
-    /// `grid-template-areas` 命名区域。
-    #[serde(default)]
-    pub grid_template_areas: Option<GridTemplateAreas>,
-    /// 列线名称（线 i 的名字列表；长度 = 轨数 + 1）。
-    #[serde(default)]
-    pub grid_column_line_names: Option<Vec<Vec<String>>>,
-    /// 行线名称。
-    #[serde(default)]
-    pub grid_row_line_names: Option<Vec<Vec<String>>>,
+    /// Cold text styling, typography, emphasis, and pseudo-element colors.
+    pub text_ext: crate::shared::Shared<TextStyleExt>,
+    /// Cold CSS Grid template and placement properties.
+    pub grid: crate::shared::Shared<GridStyle>,
     pub hidden: bool,
     /// Paint-only surface: corner radii, box-shadow, CSS visibility.
-    #[serde(default)]
     pub paint: crate::shared::Shared<PaintStyle>,
     /// CSS `opacity` (0..=1). `None` = unset / inherit (treated as 1.0 at paint).
     /// Parsed with other declarations so CSS adapters need not re-scan the style
     /// string.
-    #[serde(default)]
     pub opacity: Option<f32>,
     /// Instance surface paint from CSS style/class (not ThemeTokens).
     /// RGBA 0..=1; applied by Scene paint.
-    #[serde(default)]
     pub background: Option<[f32; 4]>,
-    #[serde(default)]
     pub border_radius: Option<f32>,
-    #[serde(default)]
     pub border_width: Option<f32>,
-    #[serde(default)]
-    pub border_top_width: Option<f32>,
-    #[serde(default)]
-    pub border_right_width: Option<f32>,
-    #[serde(default)]
-    pub border_bottom_width: Option<f32>,
-    #[serde(default)]
-    pub border_left_width: Option<f32>,
-    #[serde(default)]
     pub border_color: Option<[f32; 4]>,
-    #[serde(default)]
-    pub border_top_color: Option<[f32; 4]>,
-    #[serde(default)]
-    pub border_right_color: Option<[f32; 4]>,
-    #[serde(default)]
-    pub border_bottom_color: Option<[f32; 4]>,
-    #[serde(default)]
-    pub border_left_color: Option<[f32; 4]>,
     /// Uniform `border-style` shorthand residue. Longhands override.
-    #[serde(default)]
     pub border_style: Option<BorderStyle>,
-    #[serde(default)]
-    pub border_top_style: Option<BorderStyle>,
-    #[serde(default)]
-    pub border_right_style: Option<BorderStyle>,
-    #[serde(default)]
-    pub border_bottom_style: Option<BorderStyle>,
-    #[serde(default)]
-    pub border_left_style: Option<BorderStyle>,
-    /// CSS `container-type`: whether container-size rules below this box
-    /// can query it. It moves no box.
-    #[serde(default)]
-    pub container_type: ContainerType,
-    /// CSS `container-name`: the names a named `@container` query finds
-    /// this box by. Empty, it answers unnamed queries only.
-    #[serde(default)]
-    pub container_name: Vec<String>,
+    /// Cold per-side border widths, colors, and styles.
+    pub border_sides: crate::shared::Shared<BorderSides>,
+    /// Cold `@container` query properties.
+    pub container: crate::shared::Shared<ContainerStyle>,
 }
 
 impl Default for LayoutStyle {
@@ -3797,8 +3812,6 @@ impl Default for LayoutStyle {
             direction: None,
             dir: None,
             writing_mode: None,
-            unsupported_writing_mode: false,
-            text_orientation: None,
             flex_reverse: false,
             order: 0,
             flex_wrap: FlexWrap::NoWrap,
@@ -3809,13 +3822,7 @@ impl Default for LayoutStyle {
             anchor: None,
             z_index: None,
             isolation: false,
-            transform: None,
-            transform_3d: None,
-            unsupported_transform: None,
-            transform_origin: None,
-            transform_box: TransformBox::ViewBox,
-            css_perspective: None,
-            preserve_3d: false,
+            transforms: Default::default(),
             gap: None,
             row_gap: None,
             column_gap: None,
@@ -3824,18 +3831,16 @@ impl Default for LayoutStyle {
             padding_right: None,
             padding_bottom: None,
             padding_left: None,
-            logical_padding: Default::default(),
             margin: None,
             margin_top: None,
             margin_right: None,
             margin_bottom: None,
             margin_left: None,
-            logical_margin: Default::default(),
             offset_top: None,
             offset_right: None,
             offset_bottom: None,
             offset_left: None,
-            logical_inset: Default::default(),
+            logical_edges: Default::default(),
             width: None,
             height: None,
             min_width: None,
@@ -3856,87 +3861,55 @@ impl Default for LayoutStyle {
             overflow_x: OverflowSpec::Visible,
             overflow_y: OverflowSpec::Visible,
             text_overflow_ellipsis: false,
-            line_clamp: None,
             pointer_events: None,
             cursor: None,
             user_select: None,
             white_space_nowrap: false,
             white_space: WhiteSpaceSpec::Normal,
-            word_break: None,
-            overflow_wrap: None,
             aspect_ratio: None,
             text_align: TextAlignSpec::Start,
-            float: FloatSpec::None,
-            clear: ClearSpec::None,
             font_size: None,
             font_weight: None,
             font_italic: None,
-            font_family: None,
             line_height: None,
-            letter_spacing: None,
             color: None,
-            text_decoration: None,
-            text_emphasis_style: None,
-            text_emphasis_position: None,
-            text_emphasis_color: None,
-            font_features: None,
-            font_variation_settings: None,
-            font_kerning: None,
-            line_break: None,
-            text_typography: crate::typography::TextTypography::INHERIT,
-            unsupported_font_variation: false,
-            placeholder_color: None,
-            placeholder_opacity: None,
-            selection_background: None,
-            selection_color: None,
-            grid_columns: None,
-            grid_rows: None,
-            grid_columns_unsupported: None,
-            grid_rows_unsupported: None,
-            grid_auto_columns: None,
-            grid_auto_rows: None,
-            grid_auto_flow: None,
-            grid_columns_repeat: None,
-            grid_rows_repeat: None,
-            grid_columns_subgrid: false,
-            grid_rows_subgrid: false,
-            grid_placement: Default::default(),
-            grid_template_areas: None,
-            grid_column_line_names: None,
-            grid_row_line_names: None,
+            text_ext: Default::default(),
+            grid: Default::default(),
             hidden: false,
             paint: Default::default(),
             opacity: None,
             background: None,
             border_radius: None,
             border_width: None,
-            border_top_width: None,
-            border_right_width: None,
-            border_bottom_width: None,
-            border_left_width: None,
             border_color: None,
-            border_top_color: None,
-            border_right_color: None,
-            border_bottom_color: None,
-            border_left_color: None,
             border_style: None,
-            border_top_style: None,
-            border_right_style: None,
-            border_bottom_style: None,
-            border_left_style: None,
-            container_type: ContainerType::Normal,
-            container_name: Vec::new(),
+            border_sides: Default::default(),
+            container: Default::default(),
         }
     }
 }
 
 impl LayoutStyle {
+    /// Construct a `LayoutStyle` from `Default` and configure it in place.
+    #[inline]
+    pub fn with(configure: impl FnOnce(&mut Self)) -> Self {
+        let mut style = Self::default();
+        configure(&mut style);
+        style
+    }
     /// Box-local pivot in px, relative to the layout (border) box origin.
     /// Missing origin is CSS `50% 50%`. `content-box` / `fill-box` subtract
     /// border + padding (`resolved_padding`: `%` without a CB is 0).
     pub fn resolved_transform_origin(&self, width: f32, height: f32) -> [f32; 2] {
-        let origin = self.transform_origin.unwrap_or_default();
-        if !self.transform_box.uses_content_box() {
+        let (origin, uses_content) = if self.transforms.is_shared_default() {
+            (TransformOrigin::default(), false)
+        } else {
+            (
+                self.transforms.origin.unwrap_or_default(),
+                self.transforms.transform_box.uses_content_box(),
+            )
+        };
+        if !uses_content {
             return origin.resolve(width, height);
         }
         let border = self.resolved_border_edges();
@@ -3972,20 +3945,27 @@ impl LayoutStyle {
         width: f32,
         height: f32,
     ) -> Option<([f32; 6], [f32; 2])> {
-        if self.transform.is_none() && self.transform_3d.is_none() {
+        if self.transforms.is_shared_default() {
+            return None;
+        }
+        let t = &*self.transforms;
+        if t.transform.is_none() && t.transform_3d.is_none() {
             return None;
         }
         let [ox, oy] = self.resolved_transform_origin(width, height);
-        if let Some(mat4) = self.transform_3d {
+        if let Some(mat4) = t.transform_3d {
             return mat4.around_origin(x, y, ox, oy).planar_homography();
         }
-        let transform = self.transform?;
+        let transform = t.transform?;
         Some((transform.around_origin(x, y, ox, oy), [0.0, 0.0]))
     }
 
     /// True when this node asked for a parent 3D rendering context we do not paint.
     pub fn fails_closed_3d_context(&self) -> bool {
-        self.css_perspective.is_some() || self.preserve_3d
+        if self.transforms.is_shared_default() {
+            return false;
+        }
+        self.transforms.css_perspective.is_some() || self.transforms.preserve_3d
     }
 
     pub fn has_surface_paint(&self) -> bool {
@@ -4042,14 +4022,10 @@ impl LayoutStyle {
         }
     }
 
-    /// Whether this container stacks its children as CSS block layout does
-    /// (see [`Self::child_align_items`]): `display` unset, `block` or
-    /// `flow-root`, not laid along a row.
+    /// Whether this container uses default column stretch semantics:
+    /// `display` unset and not laid along a row.
     pub fn stacks_as_block(&self) -> bool {
-        matches!(
-            self.display,
-            None | Some(DisplaySpec::Block | DisplaySpec::FlowRoot)
-        ) && self.direction != Some(FlexDirection::Row)
+        self.display.is_none() && self.direction != Some(FlexDirection::Row)
     }
 
     pub fn gap_or(&self, default: f32) -> f32 {
@@ -4163,38 +4139,61 @@ impl LayoutStyle {
     pub fn resolved_border_edges(&self) -> PaddingSpec {
         let uniform = self.border_width.unwrap_or(0.0).max(0.0);
         let styles = self.resolved_border_styles();
+        if self.border_sides.is_shared_default() {
+            return PaddingSpec {
+                top: used_border_width(uniform, styles[0]),
+                right: used_border_width(uniform, styles[1]),
+                bottom: used_border_width(uniform, styles[2]),
+                left: used_border_width(uniform, styles[3]),
+            };
+        }
+        let sides = &*self.border_sides;
         PaddingSpec {
-            top: used_border_width(self.border_top_width.unwrap_or(uniform), styles[0]),
-            right: used_border_width(self.border_right_width.unwrap_or(uniform), styles[1]),
-            bottom: used_border_width(self.border_bottom_width.unwrap_or(uniform), styles[2]),
-            left: used_border_width(self.border_left_width.unwrap_or(uniform), styles[3]),
+            top: used_border_width(sides.top_width.unwrap_or(uniform), styles[0]),
+            right: used_border_width(sides.right_width.unwrap_or(uniform), styles[1]),
+            bottom: used_border_width(sides.bottom_width.unwrap_or(uniform), styles[2]),
+            left: used_border_width(sides.left_width.unwrap_or(uniform), styles[3]),
         }
     }
 
     /// Per-side styles. Longhands override [`Self::border_style`].
     pub fn resolved_border_styles(&self) -> [Option<BorderStyle>; 4] {
         let uniform = self.border_style;
+        if self.border_sides.is_shared_default() {
+            return [uniform; 4];
+        }
+        let sides = &*self.border_sides;
         [
-            self.border_top_style.or(uniform),
-            self.border_right_style.or(uniform),
-            self.border_bottom_style.or(uniform),
-            self.border_left_style.or(uniform),
+            sides.top_style.or(uniform),
+            sides.right_style.or(uniform),
+            sides.bottom_style.or(uniform),
+            sides.left_style.or(uniform),
         ]
     }
 
     /// Per-side colors. Longhands override [`Self::border_color`].
     pub fn resolved_border_edge_colors(&self) -> [Option<[f32; 4]>; 4] {
         let uniform = self.border_color;
+        if self.border_sides.is_shared_default() {
+            return [uniform; 4];
+        }
+        let sides = &*self.border_sides;
         [
-            self.border_top_color.or(uniform),
-            self.border_right_color.or(uniform),
-            self.border_bottom_color.or(uniform),
-            self.border_left_color.or(uniform),
+            sides.top_color.or(uniform),
+            sides.right_color.or(uniform),
+            sides.bottom_color.or(uniform),
+            sides.left_color.or(uniform),
         ]
     }
 
     /// First available border color (uniform or any side).
     pub fn resolved_border_color(&self) -> Option<[f32; 4]> {
+        if self.border_color.is_some() {
+            return self.border_color;
+        }
+        if self.border_sides.is_shared_default() {
+            return None;
+        }
         self.resolved_border_edge_colors()
             .into_iter()
             .flatten()
@@ -4499,12 +4498,15 @@ impl LayoutStyle {
 
     /// Ellipsis paint intent (`text-overflow` or `line-clamp`).
     pub fn uses_text_ellipsis(&self) -> bool {
-        self.text_overflow_ellipsis || self.line_clamp.is_some_and(|n| n > 0)
+        self.text_overflow_ellipsis || self.resolved_line_clamp().is_some()
     }
 
     /// `line-clamp` / `-webkit-line-clamp` line cap.
     pub fn resolved_line_clamp(&self) -> Option<u16> {
-        self.line_clamp.filter(|n| *n > 0)
+        if self.text_ext.is_shared_default() {
+            return None;
+        }
+        self.text_ext.line_clamp.filter(|n| *n > 0)
     }
 
     /// Soft wrap for text layout / Scene.
@@ -4523,19 +4525,23 @@ impl LayoutStyle {
 
     /// Wrap break once [`Self::text_wraps`] is true.
     pub fn text_wrap_break(&self) -> TextWrapBreak {
-        if matches!(self.word_break, Some(WordBreakSpec::BreakAll)) {
+        if self.text_ext.is_shared_default() {
+            return TextWrapBreak::Word;
+        }
+        let ext = &*self.text_ext;
+        if matches!(ext.word_break, Some(WordBreakSpec::BreakAll)) {
             TextWrapBreak::Glyph
-        } else if matches!(self.overflow_wrap, Some(OverflowWrapSpec::Anywhere)) {
+        } else if matches!(ext.overflow_wrap, Some(OverflowWrapSpec::Anywhere)) {
             TextWrapBreak::WordOrGlyph
         } else {
             TextWrapBreak::Word
         }
     }
 
-    /// In-flow block-level auto width is stretch-fit (used = containing block),
-    /// not shrink-to-fit. Floats, out-of-flow, and inline-level boxes shrink.
+    /// In-flow container auto width is stretch-fit unless shrink-to-fit.
+    /// Out-of-flow and inline-level boxes shrink.
     pub fn stretch_fit_inline(&self) -> bool {
-        !self.is_inline_level() && !self.is_floated() && !self.is_out_of_flow()
+        !self.is_inline_level() && !self.is_out_of_flow()
     }
 
     /// Apply `aspect-ratio` to used **border-box** extents.
@@ -4588,9 +4594,11 @@ impl LayoutStyle {
     /// True when any padding / margin / inset edge was declared logically,
     /// so its physical edge depends on the writing context.
     pub fn has_logical_box_edges(&self) -> bool {
-        self.logical_padding.has_logical()
-            || self.logical_margin.has_logical()
-            || self.logical_inset.has_logical()
+        if self.logical_edges.is_shared_default() {
+            return false;
+        }
+        let le = &*self.logical_edges;
+        le.padding.has_logical() || le.margin.has_logical() || le.inset.has_logical()
     }
 
     /// Whether a logical edge group holds physical records and no logical
@@ -4599,22 +4607,36 @@ impl LayoutStyle {
     /// the group, the record decides nothing: the physical field holds the
     /// value.
     pub fn has_inert_physical_edges(&self) -> bool {
-        self.logical_padding.has_only_physical()
-            || self.logical_margin.has_only_physical()
-            || self.logical_inset.has_only_physical()
+        if self.logical_edges.is_shared_default() {
+            return false;
+        }
+        let le = &*self.logical_edges;
+        le.padding.has_only_physical()
+            || le.margin.has_only_physical()
+            || le.inset.has_only_physical()
     }
 
     /// Drop the records [`Self::has_inert_physical_edges`] finds, so the
     /// same box states one intent whether CSS or Rust wrote its edges.
     pub fn drop_inert_physical_edges(&mut self) {
-        for group in [
-            &mut self.logical_padding,
-            &mut self.logical_margin,
-            &mut self.logical_inset,
-        ] {
+        if self.logical_edges.is_shared_default() {
+            return;
+        }
+        let le = &*self.logical_edges;
+        if !le.padding.has_only_physical()
+            && !le.margin.has_only_physical()
+            && !le.inset.has_only_physical()
+        {
+            return;
+        }
+        let le_mut = &mut *self.logical_edges;
+        for group in [&mut le_mut.padding, &mut le_mut.margin, &mut le_mut.inset] {
             if group.has_only_physical() {
                 *group = Default::default();
             }
+        }
+        if *self.logical_edges == LogicalBoxEdges::default() {
+            self.logical_edges = crate::shared::Shared::empty();
         }
     }
 
@@ -4622,27 +4644,49 @@ impl LayoutStyle {
     /// one the box inherits when it declares no `writing-mode` / `direction`
     /// of its own.
     pub fn resolve_logical_box_edges_in(&mut self, context: crate::WritingContext) {
-        self.logical_padding.resolve_into(
-            context,
-            &mut self.padding_top,
-            &mut self.padding_right,
-            &mut self.padding_bottom,
-            &mut self.padding_left,
-        );
-        self.logical_margin.resolve_into(
-            context,
-            &mut self.margin_top,
-            &mut self.margin_right,
-            &mut self.margin_bottom,
-            &mut self.margin_left,
-        );
-        self.logical_inset.resolve_into(
-            context,
-            &mut self.offset_top,
-            &mut self.offset_right,
-            &mut self.offset_bottom,
-            &mut self.offset_left,
-        );
+        if self.logical_edges.is_shared_default() {
+            return;
+        }
+        let default_edges = LogicalEdges::default();
+        let (do_pad, do_mar, do_ins) = {
+            let le = &*self.logical_edges;
+            (
+                le.padding != default_edges,
+                le.margin != default_edges,
+                le.inset != default_edges,
+            )
+        };
+        if !do_pad && !do_mar && !do_ins {
+            return;
+        }
+        let le = &mut *self.logical_edges;
+        if do_pad {
+            le.padding.resolve_into(
+                context,
+                &mut self.padding_top,
+                &mut self.padding_right,
+                &mut self.padding_bottom,
+                &mut self.padding_left,
+            );
+        }
+        if do_mar {
+            le.margin.resolve_into(
+                context,
+                &mut self.margin_top,
+                &mut self.margin_right,
+                &mut self.margin_bottom,
+                &mut self.margin_left,
+            );
+        }
+        if do_ins {
+            le.inset.resolve_into(
+                context,
+                &mut self.offset_top,
+                &mut self.offset_right,
+                &mut self.offset_bottom,
+                &mut self.offset_left,
+            );
+        }
     }
 
     /// Fill unset inherited typography from `parent` (CSS inheritance).
@@ -4663,20 +4707,8 @@ impl LayoutStyle {
         if self.font_italic.is_none() {
             self.font_italic = parent.font_italic;
         }
-        if self.word_break.is_none() {
-            self.word_break = parent.word_break;
-        }
-        if self.overflow_wrap.is_none() {
-            self.overflow_wrap = parent.overflow_wrap;
-        }
-        if self.font_family.is_none() {
-            self.font_family = parent.font_family.clone();
-        }
         if self.line_height.is_none() {
             self.line_height = parent.line_height;
-        }
-        if self.letter_spacing.is_none() {
-            self.letter_spacing = parent.letter_spacing;
         }
         let inherit_paint_color = self.color.is_none() && self.paint_colors.color.is_none();
         if self.color.is_none() {
@@ -4689,29 +4721,62 @@ impl LayoutStyle {
         if inherit_paint_color && parent.paint_colors.color.is_some() {
             self.paint_colors.color = parent.paint_colors.color;
         }
-        if self.text_decoration.is_none() {
-            self.text_decoration = parent.text_decoration;
+        if parent.text_ext.is_shared_default() {
+            return;
         }
-        if self.text_emphasis_style.is_none() {
-            self.text_emphasis_style = parent.text_emphasis_style.clone();
+        let p = &*parent.text_ext;
+        let cur = &*self.text_ext;
+        let needs_copy = (p.word_break.is_some() && cur.word_break.is_none())
+            || (p.overflow_wrap.is_some() && cur.overflow_wrap.is_none())
+            || (p.font_family.is_some() && cur.font_family.is_none())
+            || (p.letter_spacing.is_some() && cur.letter_spacing.is_none())
+            || (p.text_decoration.is_some() && cur.text_decoration.is_none())
+            || (p.text_emphasis_style.is_some() && cur.text_emphasis_style.is_none())
+            || (p.text_emphasis_position.is_some() && cur.text_emphasis_position.is_none())
+            || (p.text_emphasis_color.is_some() && cur.text_emphasis_color.is_none())
+            || (p.font_features.is_some() && cur.font_features.is_none())
+            || (p.font_variation_settings.is_some() && cur.font_variation_settings.is_none())
+            || (p.font_kerning.is_some() && cur.font_kerning.is_none())
+            || (p.line_break.is_some() && cur.line_break.is_none());
+        if !needs_copy {
+            return;
         }
-        if self.text_emphasis_position.is_none() {
-            self.text_emphasis_position = parent.text_emphasis_position;
+        let ext = &mut *self.text_ext;
+        if ext.word_break.is_none() {
+            ext.word_break = p.word_break;
         }
-        if self.text_emphasis_color.is_none() {
-            self.text_emphasis_color = parent.text_emphasis_color;
+        if ext.overflow_wrap.is_none() {
+            ext.overflow_wrap = p.overflow_wrap;
         }
-        if self.font_features.is_none() {
-            self.font_features = parent.font_features.clone();
+        if ext.font_family.is_none() {
+            ext.font_family = p.font_family.clone();
         }
-        if self.font_variation_settings.is_none() {
-            self.font_variation_settings = parent.font_variation_settings.clone();
+        if ext.letter_spacing.is_none() {
+            ext.letter_spacing = p.letter_spacing;
         }
-        if self.font_kerning.is_none() {
-            self.font_kerning = parent.font_kerning;
+        if ext.text_decoration.is_none() {
+            ext.text_decoration = p.text_decoration;
         }
-        if self.line_break.is_none() {
-            self.line_break = parent.line_break;
+        if ext.text_emphasis_style.is_none() {
+            ext.text_emphasis_style = p.text_emphasis_style.clone();
+        }
+        if ext.text_emphasis_position.is_none() {
+            ext.text_emphasis_position = p.text_emphasis_position;
+        }
+        if ext.text_emphasis_color.is_none() {
+            ext.text_emphasis_color = p.text_emphasis_color;
+        }
+        if ext.font_features.is_none() {
+            ext.font_features = p.font_features.clone();
+        }
+        if ext.font_variation_settings.is_none() {
+            ext.font_variation_settings = p.font_variation_settings.clone();
+        }
+        if ext.font_kerning.is_none() {
+            ext.font_kerning = p.font_kerning;
+        }
+        if ext.line_break.is_none() {
+            ext.line_break = p.line_break;
         }
     }
 
@@ -4753,12 +4818,7 @@ impl LayoutStyle {
         let viewport = |length: &Option<LengthSpec>| {
             length.map_or(ViewportAxes::NONE, LengthSpec::viewport_axes)
         };
-        // The logical groups are nearly always the shared default: skip them
-        // without reading their 24 lengths.
-        let logical = |edges: &crate::shared::Shared<LogicalEdges>| {
-            if edges.is_shared_default() {
-                return ViewportAxes::NONE;
-            }
+        let logical = |edges: &LogicalEdges| {
             [
                 &edges.inline_start,
                 &edges.inline_end,
@@ -4773,7 +4833,7 @@ impl LayoutStyle {
             .map(viewport)
             .fold(ViewportAxes::NONE, ViewportAxes::union)
         };
-        [
+        let axes = [
             &self.gap,
             &self.row_gap,
             &self.column_gap,
@@ -4801,10 +4861,17 @@ impl LayoutStyle {
         ]
         .into_iter()
         .map(viewport)
-        .fold(ViewportAxes::NONE, ViewportAxes::union)
-        .union(logical(&self.logical_padding))
-        .union(logical(&self.logical_margin))
-        .union(logical(&self.logical_inset))
+        .fold(ViewportAxes::NONE, ViewportAxes::union);
+        // The logical group is nearly always the shared default: skip it
+        // without reading its 24 lengths.
+        if self.logical_edges.is_shared_default() {
+            axes
+        } else {
+            let le = &*self.logical_edges;
+            axes.union(logical(&le.padding))
+                .union(logical(&le.margin))
+                .union(logical(&le.inset))
+        }
     }
 
     /// Internal `hidden` or `display: none` — skip layout flow.
@@ -4815,18 +4882,39 @@ impl LayoutStyle {
         self.hidden || matches!(self.display, Some(DisplaySpec::None))
     }
 
-    /// Generates a layout / paint box. `display:contents` does not.
-    pub fn generates_box(&self) -> bool {
-        !self.omits_box() && !self.display.is_some_and(DisplaySpec::is_contents)
+    /// Whether any field on this `LayoutStyle` can change a node's resolved
+    /// `ComputedStyle`. Layout-only properties (`display: flex`, `gap`,
+    /// `padding`, sizing, radii, borders width, shadows, etc.) leave this
+    /// `false` so children can share their parent's resolved computed style.
+    pub fn overrides_computed_style(&self) -> bool {
+        self.color.is_some()
+            || self.background.is_some()
+            || self.resolved_border_color().is_some()
+            || self.opacity.is_some()
+            || self.paint.visibility.is_some()
+            || self.omits_box()
+            || self.pointer_events.is_some()
+            || self.cursor.is_some()
+            || self.user_select.is_some()
+            || self.font_size.is_some()
+            || self.font_weight.is_some()
+            || self.font_italic.is_some()
+            || self.line_height.is_some()
+            || self.dir.is_some()
+            || self.writing_mode.is_some()
+            || !self.paint_colors.is_shared_default()
+            || !self.theme.is_shared_default()
+            || (!self.text_ext.is_shared_default() && self.text_ext.overrides_computed_style())
     }
 
-    /// 行内级盒子（块容器里走 IFC 子集；flex/grid 项会被块化）。
+    /// Generates a layout / paint box.
+    pub fn generates_box(&self) -> bool {
+        !self.omits_box()
+    }
+
+    /// 行内级盒子（`inline` / `inline-flex` / `inline-grid`；flex/grid 项会被块化）。
     pub fn is_inline_level(&self) -> bool {
         self.display.is_some_and(DisplaySpec::is_inline_level)
-    }
-
-    pub fn is_floated(&self) -> bool {
-        !self.float.is_none() && !self.position.is_out_of_flow()
     }
 
     /// 某边 margin 是否为 `auto`（含 `margin: 0 auto` 简写）。
@@ -4881,10 +4969,15 @@ impl LayoutStyle {
     /// The writing mode and direction this box lays out in: where its
     /// inline and block axes run and start. See [`crate::WritingContext`].
     pub fn writing_context(&self) -> crate::WritingContext {
+        let orientation = if self.text_ext.is_shared_default() {
+            TextOrientationSpec::default()
+        } else {
+            self.text_ext.text_orientation.unwrap_or_default()
+        };
         crate::WritingContext::used(
             self.resolved_writing_mode(),
             self.resolved_direction(),
-            self.text_orientation.unwrap_or_default(),
+            orientation,
         )
     }
 
@@ -4917,10 +5010,10 @@ impl LayoutStyle {
     /// Update CSS `text-orientation` (`None` inherits) and re-resolve logical
     /// edges: `upright` changes the used direction of a vertical box.
     pub fn set_text_orientation(&mut self, next: Option<TextOrientationSpec>) {
-        if self.text_orientation == next {
+        if self.text_ext.text_orientation == next {
             return;
         }
-        self.text_orientation = next;
+        self.text_ext.text_orientation = next;
         self.resolve_logical_box_edges();
     }
 
@@ -4970,10 +5063,11 @@ impl LayoutStyle {
         occurrence: u32,
         names: Option<&[Vec<String>]>,
     ) -> Option<i32> {
+        let grid = &*self.grid;
         lookup_named_line_nth(
             name,
-            names.or(self.grid_column_line_names.as_deref()),
-            self.grid_template_areas.as_ref(),
+            names.or(grid.column_line_names.as_deref()),
+            grid.template_areas.as_ref(),
             true,
             occurrence,
         )
@@ -4992,7 +5086,7 @@ impl LayoutStyle {
     ) -> Option<i32> {
         lookup_named_line_after(
             name,
-            names.or(self.grid_column_line_names.as_deref()),
+            names.or(self.grid.column_line_names.as_deref()),
             after_line,
         )
     }
@@ -5011,10 +5105,11 @@ impl LayoutStyle {
         occurrence: u32,
         names: Option<&[Vec<String>]>,
     ) -> Option<i32> {
+        let grid = &*self.grid;
         lookup_named_line_nth(
             name,
-            names.or(self.grid_row_line_names.as_deref()),
-            self.grid_template_areas.as_ref(),
+            names.or(grid.row_line_names.as_deref()),
+            grid.template_areas.as_ref(),
             false,
             occurrence,
         )
@@ -5032,7 +5127,7 @@ impl LayoutStyle {
     ) -> Option<i32> {
         lookup_named_line_after(
             name,
-            names.or(self.grid_row_line_names.as_deref()),
+            names.or(self.grid.row_line_names.as_deref()),
             after_line,
         )
     }
@@ -5050,11 +5145,10 @@ impl LayoutStyle {
     /// active when `display` is `grid` / `inline-grid` / unset (compat) or other
     /// non-flex values.
     ///
-    /// Implicit columns come from [`Self::grid_auto_columns`] / auto-placement.
-    /// [`Self::grid_columns_repeat`] expands `repeat(auto-fit|auto-fill)` at layout.
-    /// [`Self::grid_columns_subgrid`] inherits parent track sizes at layout; it
-    /// does not populate this list.
-    /// If [`Self::grid_columns_unsupported`] is set, the author wrote
+    /// Explicit columns from `grid-template-columns`, ignoring `repeat(auto-*)` and `flex` tracks.
+    /// Implicit columns come from [`GridStyle::auto_columns`] / auto-placement.
+    /// [`GridStyle::columns_repeat`] expands `repeat(auto-fit|auto-fill)` at layout.
+    /// If [`GridStyle::columns_unsupported`] is set, the author wrote
     /// mixed/unexpandable syntax (not a successful `repeat(auto-fit|fill)`).
     pub fn active_grid_columns(&self) -> Option<&[GridTrack]> {
         if self.display.is_some_and(DisplaySpec::is_flex_container) {
@@ -5063,12 +5157,15 @@ impl LayoutStyle {
         if self.display.is_some_and(DisplaySpec::is_layers) {
             return Some(LAYER_TRACKS);
         }
-        self.grid_columns.as_deref().filter(|t| !t.is_empty())
+        if self.grid.is_shared_default() {
+            return None;
+        }
+        self.grid.columns.as_deref().filter(|t| !t.is_empty())
     }
 
     /// Row tracks that participate in layout (see [`Self::active_grid_columns`]).
     ///
-    /// Implicit rows come from [`Self::grid_auto_rows`] / auto-placement.
+    /// Implicit rows come from [`GridStyle::auto_rows`] / auto-placement.
     pub fn active_grid_rows(&self) -> Option<&[GridTrack]> {
         if self.display.is_some_and(DisplaySpec::is_flex_container) {
             return None;
@@ -5076,40 +5173,32 @@ impl LayoutStyle {
         if self.display.is_some_and(DisplaySpec::is_layers) {
             return Some(LAYER_TRACKS);
         }
-        self.grid_rows.as_deref().filter(|t| !t.is_empty())
-    }
-
-    /// `grid-template-columns: subgrid` on a non-flex grid container.
-    pub fn is_subgrid_columns(&self) -> bool {
-        self.grid_columns_subgrid
-            && !self
-                .display
-                .is_some_and(|d| d.is_flex_container() || d.is_layers())
-    }
-
-    /// `grid-template-rows: subgrid` on a non-flex grid container.
-    pub fn is_subgrid_rows(&self) -> bool {
-        self.grid_rows_subgrid
-            && !self
-                .display
-                .is_some_and(|d| d.is_flex_container() || d.is_layers())
+        if self.grid.is_shared_default() {
+            return None;
+        }
+        self.grid.rows.as_deref().filter(|t| !t.is_empty())
     }
 
     /// Author wrote `grid-auto-*` / `grid-auto-flow` (consumed by 2D placement).
     pub fn has_deferred_grid_auto(&self) -> bool {
-        self.grid_auto_columns
-            .as_ref()
-            .is_some_and(|t| !t.is_empty())
-            || self.grid_auto_rows.as_ref().is_some_and(|t| !t.is_empty())
-            || self.grid_auto_flow.is_some()
+        if self.grid.is_shared_default() {
+            return false;
+        }
+        let g = &*self.grid;
+        g.auto_columns.as_ref().is_some_and(|t| !t.is_empty())
+            || g.auto_rows.as_ref().is_some_and(|t| !t.is_empty())
+            || g.auto_flow.is_some()
     }
 
     /// 作者写了无法展开的模板（`subgrid`、嵌套 auto-fit / auto-fill、混写垃圾等）。
     ///
-    /// 成功的 `repeat(auto-fit|auto-fill)` 写在 [`Self::grid_columns_repeat`] /
-    /// [`Self::grid_rows_repeat`]，**不**置本旗标。
+    /// 成功的 `repeat(auto-fit|auto-fill)` 写在 [`GridStyle::columns_repeat`] /
+    /// [`GridStyle::rows_repeat`]，**不**置本旗标。
     pub fn has_unsupported_grid_template(&self) -> bool {
-        self.grid_columns_unsupported.is_some() || self.grid_rows_unsupported.is_some()
+        if self.grid.is_shared_default() {
+            return false;
+        }
+        self.grid.columns_unsupported.is_some() || self.grid.rows_unsupported.is_some()
     }
 
     /// Paint-order stacking context (not compositing). Opacity groups are
@@ -5477,17 +5566,15 @@ mod tests {
 
     #[test]
     fn four_side_border_widths_and_none_style() {
-        let layout = LayoutStyle {
-            border_top_width: Some(1.0),
-            border_right_width: Some(2.0),
-            border_bottom_width: Some(3.0),
-            border_left_width: Some(4.0),
-            border_top_color: Some([1.0, 0.0, 0.0, 1.0]),
-            border_right_color: Some([0.0, 1.0, 0.0, 1.0]),
-            border_bottom_color: Some([0.0, 0.0, 1.0, 1.0]),
-            border_left_color: Some([1.0, 1.0, 0.0, 1.0]),
-            ..LayoutStyle::default()
-        };
+        let layout = LayoutStyle::default()
+            .border_top_width(1.0)
+            .border_right_width(2.0)
+            .border_bottom_width(3.0)
+            .border_left_width(4.0)
+            .border_top_color([1.0, 0.0, 0.0, 1.0])
+            .border_right_color([0.0, 1.0, 0.0, 1.0])
+            .border_bottom_color([0.0, 0.0, 1.0, 1.0])
+            .border_left_color([1.0, 1.0, 0.0, 1.0]);
         let edges = layout.resolved_border_edges();
         assert!((edges.top - 1.0).abs() < f32::EPSILON);
         assert!((edges.right - 2.0).abs() < f32::EPSILON);
@@ -5500,11 +5587,9 @@ mod tests {
         assert_eq!(colors[2], Some([0.0, 0.0, 1.0, 1.0]));
         assert_eq!(colors[3], Some([1.0, 1.0, 0.0, 1.0]));
 
-        let none_left = LayoutStyle {
-            border_width: Some(5.0),
-            border_left_style: Some(BorderStyle::None),
-            ..LayoutStyle::default()
-        };
+        let none_left = LayoutStyle::default()
+            .border_width(5.0)
+            .border_left_style(BorderStyle::None);
         let used = none_left.resolved_border_edges();
         assert!((used.top - 5.0).abs() < f32::EPSILON);
         assert!(used.left.abs() < f32::EPSILON);
@@ -5821,19 +5906,11 @@ mod tests {
     #[test]
     fn calc_percent_offset_resolve_px() {
         assert_eq!(
-            LengthSpec::CalcPercentOffset {
-                percent: 100.0,
-                offset_px: -40.0,
-            }
-            .resolve_px(Some(400.0)),
+            LengthSpec::percent_offset(100.0, -40.0).resolve_px(Some(400.0)),
             Some(360.0)
         );
         assert_eq!(
-            LengthSpec::CalcPercentOffset {
-                percent: 50.0,
-                offset_px: 10.0,
-            }
-            .resolve_px(Some(200.0)),
+            LengthSpec::percent_offset(50.0, 10.0).resolve_px(Some(200.0)),
             Some(110.0)
         );
     }
@@ -5965,14 +6042,11 @@ mod tests {
 
     #[test]
     fn named_grid_line_nth_skips_first_occurrence() {
-        let layout = LayoutStyle {
-            grid_column_line_names: Some(vec![
-                vec!["foo".into()],
-                vec!["foo".into()],
-                vec!["foo".into()],
-            ]),
-            ..LayoutStyle::default()
-        };
+        let layout = LayoutStyle::default().grid_column_line_names(vec![
+            vec!["foo".into()],
+            vec!["foo".into()],
+            vec!["foo".into()],
+        ]);
         assert_eq!(layout.named_column_line("foo"), Some(1));
         assert_eq!(layout.named_column_line_nth("foo", 2), Some(2));
         assert_eq!(layout.named_column_line_nth("foo", 3), Some(3));
@@ -6096,35 +6170,29 @@ mod tests {
         assert_eq!(center, pct);
         assert_ne!(center, zero);
         assert_eq!(
-            LayoutStyle {
-                transform: Some(rotate_90),
-                ..LayoutStyle::default()
-            }
-            .world_paint_transform(10.0, 20.0, 40.0, 20.0),
+            LayoutStyle::default()
+                .transform(rotate_90)
+                .world_paint_transform(10.0, 20.0, 40.0, 20.0),
             Some(center)
         );
         assert_eq!(
-            LayoutStyle {
-                transform: Some(rotate_90),
-                transform_origin: Some(TransformOrigin {
+            LayoutStyle::default()
+                .transform(rotate_90)
+                .transform_origin(TransformOrigin {
                     x: LengthSpec::Px(0.0),
                     y: LengthSpec::Px(0.0),
-                }),
-                ..LayoutStyle::default()
-            }
-            .world_paint_transform(10.0, 20.0, 40.0, 20.0),
+                })
+                .world_paint_transform(10.0, 20.0, 40.0, 20.0),
             Some(zero)
         );
         assert_eq!(
-            LayoutStyle {
-                transform: Some(rotate_90),
-                transform_origin: Some(TransformOrigin {
+            LayoutStyle::default()
+                .transform(rotate_90)
+                .transform_origin(TransformOrigin {
                     x: LengthSpec::Percent(50.0),
                     y: LengthSpec::Percent(50.0),
-                }),
-                ..LayoutStyle::default()
-            }
-            .world_paint_transform(10.0, 20.0, 40.0, 20.0),
+                })
+                .world_paint_transform(10.0, 20.0, 40.0, 20.0),
             Some(center)
         );
     }
@@ -6142,33 +6210,31 @@ mod tests {
             x: LengthSpec::Px(0.0),
             y: LengthSpec::Px(0.0),
         };
-        let mut style = LayoutStyle {
-            transform: Some(rotate_90),
-            transform_origin: Some(origin),
-            padding: Some(LengthSpec::Px(10.0)),
-            border_width: Some(5.0),
-            border_style: Some(BorderStyle::Solid),
-            ..LayoutStyle::default()
-        };
+        let mut style = LayoutStyle::default()
+            .transform(rotate_90)
+            .transform_origin(origin)
+            .padding(LengthSpec::Px(10.0))
+            .border_width(5.0)
+            .border_style(BorderStyle::Solid);
         let border = style.world_paint_transform(10.0, 20.0, 100.0, 50.0);
         assert_eq!(border, Some(rotate_90.around_origin(10.0, 20.0, 0.0, 0.0)));
-        style.transform_box = TransformBox::ContentBox;
+        style.transforms.transform_box = TransformBox::ContentBox;
         let content = style.world_paint_transform(10.0, 20.0, 100.0, 50.0);
         assert_eq!(
             content,
             Some(rotate_90.around_origin(10.0, 20.0, 15.0, 15.0))
         );
-        style.transform_box = TransformBox::FillBox;
+        style.transforms.transform_box = TransformBox::FillBox;
         assert_eq!(
             style.world_paint_transform(10.0, 20.0, 100.0, 50.0),
             content
         );
-        style.transform_box = TransformBox::ViewBox;
+        style.transforms.transform_box = TransformBox::ViewBox;
         assert_eq!(style.world_paint_transform(10.0, 20.0, 100.0, 50.0), border);
-        style.transform_box = TransformBox::BorderBox;
+        style.transforms.transform_box = TransformBox::BorderBox;
         assert_eq!(style.world_paint_transform(10.0, 20.0, 100.0, 50.0), border);
-        style.transform_box = TransformBox::ContentBox;
-        style.transform_origin = Some(TransformOrigin {
+        style.transforms.transform_box = TransformBox::ContentBox;
+        style.transforms.origin = Some(TransformOrigin {
             x: LengthSpec::Percent(100.0),
             y: LengthSpec::Percent(100.0),
         });
@@ -6177,7 +6243,7 @@ mod tests {
         style.padding = None;
         style.border_width = None;
         style.border_style = None;
-        style.transform_origin = Some(TransformOrigin {
+        style.transforms.origin = Some(TransformOrigin {
             x: LengthSpec::Percent(50.0),
             y: LengthSpec::Percent(50.0),
         });
@@ -6236,14 +6302,11 @@ mod tests {
             (c0[0] - z0[0]).abs() > 1.0,
             "origin must move the projected corner, center={c0:?} zero={z0:?}"
         );
-        let mut style = LayoutStyle {
-            transform_3d: Some(mat),
-            ..LayoutStyle::default()
-        };
+        let mut style = LayoutStyle::default().transform_3d(mat);
         let via_default = style
             .world_scene_transform(0.0, 0.0, 200.0, 80.0)
             .expect("3d");
-        style.transform_origin = Some(TransformOrigin {
+        style.transforms.origin = Some(TransformOrigin {
             x: LengthSpec::Px(0.0),
             y: LengthSpec::Px(0.0),
         });
@@ -6271,25 +6334,25 @@ mod tests {
 
     #[test]
     fn inherit_typography_fills_opentype_fields() {
-        let parent = LayoutStyle {
-            font_features: Some(vec![FontFeatureSetting::new(*b"liga", 0)]),
-            font_variation_settings: Some(vec![FontVariationSetting::new(*b"wght", 600.0)]),
-            font_kerning: Some(FontKerningSpec::None),
-            word_break: Some(WordBreakSpec::BreakAll),
-            line_break: Some(LineBreakSpec::Anywhere),
-            letter_spacing: Some(0.5),
-            ..LayoutStyle::default()
-        };
+        let parent = LayoutStyle::with(|s| {
+            s.text_ext.font_features = Some(vec![FontFeatureSetting::new(*b"liga", 0)]);
+            s.text_ext.font_variation_settings =
+                Some(vec![FontVariationSetting::new(*b"wght", 600.0)]);
+            s.text_ext.font_kerning = Some(FontKerningSpec::None);
+            s.text_ext.word_break = Some(WordBreakSpec::BreakAll);
+            s.text_ext.line_break = Some(LineBreakSpec::Anywhere);
+            s.text_ext.letter_spacing = Some(0.5);
+        });
         let mut child = LayoutStyle::default();
         child.inherit_typography_from(&parent);
-        assert_eq!(child.font_features, parent.font_features);
-        assert_eq!(child.font_kerning, Some(FontKerningSpec::None));
-        assert_eq!(child.word_break, Some(WordBreakSpec::BreakAll));
-        assert_eq!(child.line_break, Some(LineBreakSpec::Anywhere));
-        assert_eq!(child.letter_spacing, Some(0.5));
-        child.word_break = Some(WordBreakSpec::Normal);
+        assert_eq!(child.text_ext.font_features, parent.text_ext.font_features);
+        assert_eq!(child.text_ext.font_kerning, Some(FontKerningSpec::None));
+        assert_eq!(child.text_ext.word_break, Some(WordBreakSpec::BreakAll));
+        assert_eq!(child.text_ext.line_break, Some(LineBreakSpec::Anywhere));
+        assert_eq!(child.text_ext.letter_spacing, Some(0.5));
+        child.text_ext.word_break = Some(WordBreakSpec::Normal);
         child.inherit_typography_from(&parent);
-        assert_eq!(child.word_break, Some(WordBreakSpec::Normal));
+        assert_eq!(child.text_ext.word_break, Some(WordBreakSpec::Normal));
     }
 
     #[test]
@@ -6322,8 +6385,14 @@ mod tests {
     #[test]
     fn logical_padding_rebakes_when_direction_becomes_rtl() {
         let mut layout = LayoutStyle::default();
-        layout.logical_padding.set_start(Some(LengthSpec::Px(12.0)));
-        layout.logical_padding.set_end(Some(LengthSpec::Px(4.0)));
+        layout
+            .logical_edges
+            .padding
+            .set_start(Some(LengthSpec::Px(12.0)));
+        layout
+            .logical_edges
+            .padding
+            .set_end(Some(LengthSpec::Px(4.0)));
         layout.resolve_logical_box_edges();
         assert_eq!(layout.padding_left, Some(LengthSpec::Px(12.0)));
         assert_eq!(layout.padding_right, Some(LengthSpec::Px(4.0)));
@@ -6341,10 +6410,12 @@ mod tests {
             ..Default::default()
         };
         layout
-            .logical_padding
+            .logical_edges
+            .padding
             .set(super::LogicalEdge::BlockStart, Some(LengthSpec::Px(8.0)));
         layout
-            .logical_padding
+            .logical_edges
+            .padding
             .set(super::LogicalEdge::InlineStart, Some(LengthSpec::Px(3.0)));
         layout.bake_logical_edges();
         assert_eq!(layout.padding_right, Some(LengthSpec::Px(8.0)));
@@ -6360,10 +6431,12 @@ mod tests {
             ..Default::default()
         };
         layout
-            .logical_padding
+            .logical_edges
+            .padding
             .set(super::LogicalEdge::BlockStart, Some(LengthSpec::Px(8.0)));
         layout
-            .logical_padding
+            .logical_edges
+            .padding
             .set(super::LogicalEdge::BlockEnd, Some(LengthSpec::Px(2.0)));
         layout.bake_logical_edges();
         assert_eq!(layout.padding_left, Some(LengthSpec::Px(8.0)));
@@ -6380,7 +6453,8 @@ mod tests {
             ..Default::default()
         };
         layout
-            .logical_padding
+            .logical_edges
+            .padding
             .set(super::LogicalEdge::InlineStart, Some(LengthSpec::Px(3.0)));
         layout.bake_logical_edges();
         assert_eq!(layout.padding_top, Some(LengthSpec::Px(5.0)));
@@ -6397,7 +6471,8 @@ mod tests {
     fn writing_mode_rebakes_logical_padding_from_top_to_right() {
         let mut layout = LayoutStyle::default();
         layout
-            .logical_padding
+            .logical_edges
+            .padding
             .set(super::LogicalEdge::BlockStart, Some(LengthSpec::Px(8.0)));
         layout.bake_logical_edges();
         assert_eq!(layout.padding_top, Some(LengthSpec::Px(8.0)));
@@ -6543,4 +6618,15 @@ mod tests {
     }
 }
 
-crate::shared::shared_default!(PaintStyle, LogicalEdges, GridPlacement, GridRepeatAuto);
+crate::shared::shared_default!(
+    PaintStyle,
+    LogicalEdges,
+    GridPlacement,
+    GridRepeatAuto,
+    GridStyle,
+    TransformStyle,
+    TextStyleExt,
+    BorderSides,
+    LogicalBoxEdges,
+    ContainerStyle,
+);

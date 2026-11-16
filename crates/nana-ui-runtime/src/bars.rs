@@ -135,19 +135,21 @@ fn bar_style(chrome: bool, below_content: bool) -> NodeStyle {
             Some(nana_ui_core::ThemeToken::Border(nana_ui_core::BorderWidth::Hairline).into());
         // Only the edge that meets the content is drawn.
         if below_content {
-            layout.border_top_width = Some(nana_ui_core::HAIRLINE);
+            let sides = &mut *layout.border_sides;
+            sides.top_width = Some(nana_ui_core::HAIRLINE);
             layout.theme.border_top_width =
                 Some(nana_ui_core::ThemeToken::Border(nana_ui_core::BorderWidth::Hairline).into());
-            layout.border_right_width = Some(0.0);
-            layout.border_bottom_width = Some(0.0);
-            layout.border_left_width = Some(0.0);
+            sides.right_width = Some(0.0);
+            sides.bottom_width = Some(0.0);
+            sides.left_width = Some(0.0);
         } else {
-            layout.border_top_width = Some(0.0);
-            layout.border_right_width = Some(0.0);
-            layout.border_bottom_width = Some(nana_ui_core::HAIRLINE);
+            let sides = &mut *layout.border_sides;
+            sides.top_width = Some(0.0);
+            sides.right_width = Some(0.0);
+            sides.bottom_width = Some(nana_ui_core::HAIRLINE);
             layout.theme.border_bottom_width =
                 Some(nana_ui_core::ThemeToken::Border(nana_ui_core::BorderWidth::Hairline).into());
-            layout.border_left_width = Some(0.0);
+            sides.left_width = Some(0.0);
         }
     }
     style
@@ -339,6 +341,8 @@ impl ComponentView for ToolGroup {
 }
 
 impl ComponentView for Toolbar {
+    const TYPE_ID: Option<&'static str> = Some(crate::component_descriptors::TOOLBAR.type_id);
+
     fn share_layouts(
         &mut self,
         share: &mut dyn FnMut(&mut std::sync::Arc<nana_ui_core::LayoutStyle>),
@@ -365,6 +369,8 @@ impl ComponentView for Toolbar {
 }
 
 impl ComponentView for StatusBar {
+    const TYPE_ID: Option<&'static str> = Some(crate::component_descriptors::STATUS_BAR.type_id);
+
     fn share_layouts(
         &mut self,
         share: &mut dyn FnMut(&mut std::sync::Arc<nana_ui_core::LayoutStyle>),
@@ -410,7 +416,11 @@ mod tests {
             .unwrap();
 
         let semantics = |id| {
-            let state = cx.world().accessibility(id).cloned().unwrap();
+            let state = cx
+                .world()
+                .accessibility(id)
+                .map(std::borrow::Cow::into_owned)
+                .unwrap();
             (state.role, state.label.map(|label| label.to_string()))
         };
         assert_eq!(
@@ -443,7 +453,11 @@ mod tests {
         let actions = cx.create_component(document(), ToolGroup::new()).unwrap();
 
         let semantics = |id| {
-            let state = cx.world().accessibility(id).cloned().unwrap();
+            let state = cx
+                .world()
+                .accessibility(id)
+                .map(std::borrow::Cow::into_owned)
+                .unwrap();
             (
                 state.role,
                 state.orientation,
@@ -478,17 +492,17 @@ mod tests {
     fn the_hairline_sits_on_the_edge_that_meets_the_content() {
         let toolbar = Toolbar::new();
         assert_eq!(
-            toolbar.style.layout.border_bottom_width,
+            toolbar.style.layout.border_sides.bottom_width,
             Some(nana_ui_core::HAIRLINE)
         );
-        assert_eq!(toolbar.style.layout.border_top_width, Some(0.0));
+        assert_eq!(toolbar.style.layout.border_sides.top_width, Some(0.0));
 
         let status = StatusBar::new();
         assert_eq!(
-            status.style.layout.border_top_width,
+            status.style.layout.border_sides.top_width,
             Some(nana_ui_core::HAIRLINE)
         );
-        assert_eq!(status.style.layout.border_bottom_width, Some(0.0));
+        assert_eq!(status.style.layout.border_sides.bottom_width, Some(0.0));
 
         // Nested in a surface that already draws them, a bar takes no chrome.
         let bare = Toolbar::new().chrome(false);

@@ -57,9 +57,9 @@ fn clamped_text(value: &str, lines: u16) -> Text {
         .typography(TypeRole::Meta)
         .text_weight(TextWeight::Medium);
     let layout = Arc::make_mut(&mut text.style.layout);
-    layout.line_clamp = Some(lines);
+    layout.text_ext.line_clamp = Some(lines);
     layout.min_width = Some(LengthSpec::Px(0.0));
-    layout.word_break = Some(WordBreakSpec::BreakWord);
+    layout.text_ext.word_break = Some(WordBreakSpec::BreakWord);
     text
 }
 
@@ -224,18 +224,28 @@ fn progress_default_track_follows_theme_but_explicit_thickness_keeps_its_geometr
                 cx.world().layout_box(bar.stable_id()).unwrap().height,
                 expected
             );
-            let ComponentGeometry::Progress {
-                track,
-                fill,
-                corner_radius,
-                ..
-            } = cx.world().component_geometry(bar.stable_id()).unwrap()
+            let paint = cx.world().widget_paint(bar.stable_id()).unwrap();
+            let WidgetPaintOp::Quad(track) = &paint
+                .ops
+                .iter()
+                .find(|tagged| tagged.slot == 3)
+                .expect("progress track")
+                .op
             else {
-                panic!("progress paint");
+                panic!("progress track quad");
             };
-            assert_eq!(track.height, expected);
-            assert_eq!(fill.height, expected);
-            assert_eq!(corner_radius, expected / 2.0);
+            let WidgetPaintOp::Quad(fill) = &paint
+                .ops
+                .iter()
+                .find(|tagged| tagged.slot == 4)
+                .expect("progress fill")
+                .op
+            else {
+                panic!("progress fill quad");
+            };
+            assert_eq!(track.rect.height, expected);
+            assert_eq!(fill.rect.height, expected);
+            assert_eq!(track.corner_radius[0], expected / 2.0);
         }
     }
     cx.update_component(transport, |bar, _| {
@@ -276,16 +286,16 @@ fn range_readouts_share_the_installed_typography_with_real_shaping() {
         theme.typography.regular = 450;
         cx.set_theme_definition(&theme).unwrap();
         settle(&mut cx, doc, &mut shaper);
-        let ComponentGeometry::Range {
+        let RangeGeometry {
             label,
             value,
             unit,
             track,
             ..
-        } = cx.world().component_geometry(range.stable_id()).unwrap()
-        else {
-            panic!("range geometry");
-        };
+        } = cx
+            .world()
+            .range_geometry(range.stable_id())
+            .expect("range geometry");
         assert_eq!(
             track.height, body,
             "ordinary thumb follows the control type role"
@@ -340,17 +350,23 @@ fn list_metadata_uses_meta_regular_when_a_mounted_theme_changes() {
         theme.typography.regular = regular;
         cx.set_theme_definition(&theme).unwrap();
         settle(&mut cx, doc, &mut shaper);
-        let ComponentGeometry::ListItem { note, detail, .. } =
-            cx.world().component_geometry(item.stable_id()).unwrap()
-        else {
-            panic!("list geometry");
-        };
-        for region in [
-            note.expect("note remains visible"),
-            detail.expect("detail remains visible"),
-        ] {
-            assert_eq!(region.font_size, meta);
-            assert_eq!(region.font_weight, Some(regular));
+        let paint = cx
+            .world()
+            .widget_paint(item.stable_id())
+            .expect("list paint");
+        for slot in [4_u64, 3] {
+            let text = paint
+                .ops
+                .iter()
+                .find_map(|tagged| match &tagged.op {
+                    nana_ui::runtime::WidgetPaintOp::Text(text) if tagged.slot == slot => {
+                        Some(text)
+                    }
+                    _ => None,
+                })
+                .expect("note/detail text visible");
+            assert_eq!(text.font_size, meta);
+            assert_eq!(text.font_weight, Some(regular));
         }
         let mut scene = UiScene::new();
         scene.apply_delta(cx.world().extract_document(doc), []);

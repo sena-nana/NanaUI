@@ -65,8 +65,8 @@ pub fn root_transform(animation: PathAnimation, frame: usize) -> Option<PaintTra
 
 pub fn with_transform(mut style: NodeStyle, transform: PaintTransform) -> NodeStyle {
     let layout = Arc::make_mut(&mut style.layout);
-    layout.transform = Some(transform);
-    layout.transform_origin = Some(TransformOrigin::default());
+    layout.transforms.transform = Some(transform);
+    layout.transforms.origin = Some(TransformOrigin::default());
     style
 }
 

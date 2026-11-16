@@ -16,7 +16,7 @@ use crate::{
     FrameworkError, InteractionState, InteractionStyle, ListItemSlots, MutationQueue, NodeKind,
     NodeStyle, ScrollAxes, ScrollView, SegmentedControl, SegmentedOption,
     SegmentedSelectionRequested, SemanticPaint, SidebarFrame, SidebarRow, SidebarRowState,
-    StableNodeId, StandardVisual, TextContent, UiWorld,
+    StableNodeId, TextContent, UiWorld,
 };
 
 const ROW_PADDING_Y: f32 = nana_ui_core::space::SM;
@@ -495,10 +495,17 @@ impl SettingsRow {
         // named; the others fall back to the unset uniform width, which is
         // none.
         layout.border_width = None;
-        layout.border_bottom_width = divider.then_some(nana_ui_core::HAIRLINE);
+        if divider
+            || rule_above
+            || layout.border_sides.bottom_width.is_some()
+            || layout.border_sides.top_width.is_some()
+        {
+            let sides = &mut *layout.border_sides;
+            sides.bottom_width = divider.then_some(nana_ui_core::HAIRLINE);
+            sides.top_width = rule_above.then_some(nana_ui_core::HAIRLINE);
+        }
         layout.theme.border_bottom_width = divider
             .then(|| nana_ui_core::ThemeToken::Border(nana_ui_core::BorderWidth::Hairline).into());
-        layout.border_top_width = rule_above.then_some(nana_ui_core::HAIRLINE);
         layout.theme.border_top_width = rule_above
             .then(|| nana_ui_core::ThemeToken::Border(nana_ui_core::BorderWidth::Hairline).into());
         layout.font_size = Some(nana_ui_core::type_scale::BODY);
@@ -560,6 +567,8 @@ impl SettingsRow {
 }
 
 impl ComponentView for SettingsRow {
+    const TYPE_ID: Option<&'static str> = Some(crate::component_descriptors::SETTINGS_ROW.type_id);
+
     const BEHAVIOR: crate::TypeBehavior<Self> = crate::TypeBehavior {
         hooks: Some(|hooks| {
             crate::framework::routes::settings_row(hooks);
@@ -608,8 +617,8 @@ impl ComponentView for SettingsRow {
                 },
             );
         }
-        if world.standard_visual(id).is_some() {
-            mutations.set_standard_visual(id, None);
+        if world.widget_visual_ref(id).is_some() {
+            mutations.set_widget_visual_handle(id, None);
         }
         let stacked = self.effective_stacked(id, world);
         project_common(
@@ -1323,6 +1332,8 @@ impl SettingsCard {
 }
 
 impl ComponentView for SettingsCard {
+    const TYPE_ID: Option<&'static str> = Some(crate::component_descriptors::SETTINGS_CARD.type_id);
+
     const BEHAVIOR: crate::TypeBehavior<Self> = crate::TypeBehavior {
         lifecycle: Some(sync_settings_card),
         ..crate::TypeBehavior::NONE
@@ -1928,6 +1939,7 @@ impl SettingsCollapsibleCard {
                 },
                 ..InteractionStyle::default()
             }
+            .into()
         } else {
             InteractionStyle {
                 hovered: SemanticPaint {
@@ -1941,6 +1953,7 @@ impl SettingsCollapsibleCard {
                 focused: SemanticPaint::FOCUS_SURFACE,
                 ..InteractionStyle::default()
             }
+            .into()
         };
         card.style = style;
         card
@@ -1948,6 +1961,9 @@ impl SettingsCollapsibleCard {
 }
 
 impl ComponentView for SettingsCollapsibleCard {
+    const TYPE_ID: Option<&'static str> =
+        Some(crate::component_descriptors::SETTINGS_COLLAPSIBLE_CARD.type_id);
+
     const BEHAVIOR: crate::TypeBehavior<Self> = crate::TypeBehavior {
         activation: Some(crate::AppContext::activate_settings_collapsible_card),
         slot_assembler: Some(AppContext::assemble_settings_collapsible_card),
@@ -2174,13 +2190,13 @@ impl ComponentView for SettingsDisclosure {
     }
 
     fn project(&self, id: StableNodeId, world: &UiWorld, mutations: &mut MutationQueue) {
-        let visual = StandardVisual::Icon {
+        let visual = crate::IconVisual {
             icon: disclosure_icon_kind(self.expanded),
             size: world.theme().typography().line,
             tooltip: None,
         };
-        if world.standard_visual(id) != Some(visual.clone()) {
-            mutations.set_standard_visual(id, Some(visual));
+        if world.widget_visual_as::<crate::IconVisual>(id) != Some(&visual) {
+            mutations.set_widget_visual(id, Some(visual));
         }
         let mut style = NodeStyle::default();
         style.foreground = Some(SemanticColorRole::Muted);
@@ -2395,7 +2411,7 @@ impl ComponentView for AboutSection {
             description: self.metadata.description.clone(),
             ..AccessibilityState::default()
         };
-        if world.accessibility(id) != Some(&accessibility) {
+        if !world.accessibility_eq(id, &accessibility) {
             mutations.set_accessibility(id, accessibility);
         }
     }
@@ -2559,6 +2575,8 @@ impl SettingsPage {
 }
 
 impl ComponentView for SettingsPage {
+    const TYPE_ID: Option<&'static str> = Some(crate::component_descriptors::SETTINGS_PAGE.type_id);
+
     const BEHAVIOR: crate::TypeBehavior<Self> = crate::TypeBehavior {
         slot_assembler: Some(AppContext::assemble_settings_page),
         ..crate::TypeBehavior::NONE
@@ -2648,13 +2666,13 @@ impl ComponentView for SettingsSidebarLeading {
                 },
             );
         }
-        let visual = self.icon.map(|icon| StandardVisual::Icon {
+        let visual = self.icon.map(|icon| crate::IconVisual {
             icon,
             size: world.theme().typography().meta,
             tooltip: None,
         });
-        if world.standard_visual(id) != visual {
-            mutations.set_standard_visual(id, visual);
+        if world.widget_visual_as::<crate::IconVisual>(id) != visual.as_ref() {
+            mutations.set_widget_visual(id, visual);
         }
         project_common(
             id,
@@ -4627,7 +4645,7 @@ mod tests {
     use super::*;
     use std::sync::{Arc, Mutex};
 
-    use crate::{AppContext, DocumentId, Entity, StandardVisual};
+    use crate::{AppContext, DocumentId, Entity};
     use nana_ui_core::{BackdropTarget, WindowMaterialMode};
 
     fn document() -> DocumentId {
@@ -4917,7 +4935,6 @@ mod tests {
                 tag: "settings-row".into(),
             }
         );
-        assert_eq!(context.world().standard_visual(id), None);
         assert_eq!(context.world().text(id), Some(""));
         let style = context.world().node_style(id).unwrap();
         assert_eq!(style.layout.direction, Some(FlexDirection::Column));
@@ -5207,9 +5224,9 @@ mod tests {
             }
         );
         assert!(matches!(
-            context.world().standard_visual(id),
-            Some(StandardVisual::Card {
-                ref title,
+            context.world().widget_visual_as::<crate::CardVisual>(id),
+            Some(crate::CardVisual {
+                title,
                 kind: CardKind::Surface,
                 loading: false,
                 ..
@@ -5305,9 +5322,11 @@ mod tests {
             }
         );
         assert!(matches!(
-            context.world().standard_visual(section.stable_id()),
-            Some(StandardVisual::Card {
-                ref title,
+            context
+                .world()
+                .widget_visual_as::<crate::CardVisual>(section.stable_id()),
+            Some(crate::CardVisual {
+                title,
                 kind: CardKind::Surface,
                 ..
             }) if title.is_none()
@@ -5623,9 +5642,11 @@ mod tests {
             })
             .collect::<Vec<_>>();
         assert!(matches!(
-            context.world().standard_visual(section.stable_id()),
-            Some(StandardVisual::Card {
-                ref title,
+            context
+                .world()
+                .widget_visual_as::<crate::CardVisual>(section.stable_id()),
+            Some(crate::CardVisual {
+                title,
                 kind: CardKind::Surface,
                 ..
             }) if title.is_none()
@@ -5700,8 +5721,10 @@ mod tests {
             Some(SemanticColorRole::Text)
         );
         assert_eq!(
-            context.world().standard_visual(disclosure.unwrap()),
-            Some(StandardVisual::Icon {
+            context
+                .world()
+                .widget_visual_as::<crate::IconVisual>(disclosure.unwrap()),
+            Some(&crate::IconVisual {
                 icon: Icon::ChevronRight,
                 size: DISCLOSURE_ICON_SIZE,
                 tooltip: None,
@@ -5713,6 +5736,7 @@ mod tests {
                 .node_style(disclosure.unwrap())
                 .unwrap()
                 .layout
+                .transforms
                 .transform
                 .is_none()
         );
@@ -5734,8 +5758,10 @@ mod tests {
         );
         assert!(context.activate_settings_collapsible_card(card).unwrap());
         assert_eq!(
-            context.world().standard_visual(disclosure.unwrap()),
-            Some(StandardVisual::Icon {
+            context
+                .world()
+                .widget_visual_as::<crate::IconVisual>(disclosure.unwrap()),
+            Some(&crate::IconVisual {
                 icon: Icon::ChevronDown,
                 size: DISCLOSURE_ICON_SIZE,
                 tooltip: None,
@@ -5747,6 +5773,7 @@ mod tests {
                 .node_style(disclosure.unwrap())
                 .unwrap()
                 .layout
+                .transforms
                 .transform
                 .is_none()
         );
@@ -5986,14 +6013,14 @@ mod tests {
             .copied()
             .unwrap();
         assert_eq!(
-            context.world().standard_visual(icon),
-            Some(StandardVisual::Icon {
+            context.world().widget_visual_as::<crate::IconVisual>(icon),
+            Some(&crate::IconVisual {
                 icon: Icon::Appearance,
                 size: SETTINGS_SIDEBAR_ICON_SIZE,
                 tooltip: None,
             })
         );
-        assert_eq!(context.world().standard_visual(spacer), None);
+        assert!(context.world().widget_visual(spacer).is_none());
         let spacer_layout = &context.world().node_style(spacer).unwrap().layout;
         assert_eq!(
             spacer_layout.width,
@@ -6329,9 +6356,11 @@ mod spacing_tests {
             .expect("settings page title");
         assert_eq!(context.world().text(title), Some("外观"));
         assert!(matches!(
-            context.world().standard_visual(section.stable_id()),
-            Some(StandardVisual::Card {
-                ref title,
+            context
+                .world()
+                .widget_visual_as::<crate::CardVisual>(section.stable_id()),
+            Some(crate::CardVisual {
+                title,
                 kind: CardKind::Surface,
                 ..
             }) if title.is_none()

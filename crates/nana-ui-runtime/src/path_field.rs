@@ -108,6 +108,8 @@ impl PathField {
 }
 
 impl ComponentView for PathField {
+    const TYPE_ID: Option<&'static str> = Some(crate::component_descriptors::PATH_FIELD.type_id);
+
     const BEHAVIOR: crate::TypeBehavior<Self> = crate::TypeBehavior {
         assembler: Some(crate::AppContext::assemble_path_field),
         ..crate::TypeBehavior::NONE

@@ -16,6 +16,10 @@ macro_rules! descriptors {
             compiled: descriptors!(@compiled $($feature)?),
         };)*
         pub const BUILTIN_COMPONENTS: &[ComponentDescriptor] = &[$($name),*];
+        pub(crate) static BUILTIN_COMPONENT_IDS: &[(&ComponentDescriptor, crate::ComponentTypeId)] = &[
+            $((&$name, crate::ComponentTypeId::from_static($id)),)*
+        ];
+        const _: () = assert!(BUILTIN_COMPONENTS.len() < u8::MAX as usize);
     };
     (@feature) => { None };
     (@feature $feature:literal) => { Some($feature) };
@@ -129,6 +133,20 @@ pub fn builtin_component(tag: &str) -> Option<&'static ComponentDescriptor> {
     BUILTIN_COMPONENTS
         .iter()
         .find(|entry| entry.type_id == tag || entry.tags.contains(&normalized.as_str()))
+}
+
+/// Returns the 1-based inline index of a built-in component type ID (`0` means none/custom).
+pub(crate) fn builtin_component_index(type_id: &str) -> Option<u8> {
+    BUILTIN_COMPONENT_IDS
+        .iter()
+        .position(|(_, id)| id.as_str() == type_id)
+        .map(|index| index as u8 + 1)
+}
+
+/// Resolves a 1-based inline index back to its static [`crate::ComponentTypeId`].
+pub(crate) fn builtin_component_type(index: u8) -> Option<&'static crate::ComponentTypeId> {
+    let slot = usize::from(index.checked_sub(1)?);
+    BUILTIN_COMPONENT_IDS.get(slot).map(|(_, id)| id)
 }
 
 #[cfg(test)]

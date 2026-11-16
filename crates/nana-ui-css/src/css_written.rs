@@ -1,31 +1,22 @@
-//! Which Style Model fields a block of declarations writes.
+//! Records which [`LayoutStyle`] leaves a CSS declaration block wrote
+//! and emits Rust [`StylePatch`](nana_ui_core::StylePatch) statements for them.
 //!
-//! A build-time consumer (the L3 view compiler) turns a rule into a patch
-//! over whatever layout an element is built with. The patch must hold every
-//! field a declaration writes, including a write of the value
-//! [`LayoutStyle::default`] happens to have: `align-items: flex-start` on a
-//! row built centered has to reset it. Comparing the result with the default
-//! cannot see such a write, so the declarations are applied twice: once over
-//! the default and once over a witness layout in which every field differs
-//! from the default. A field is written when either application changes it
-//! and, for the witness, only when it lands on the same value as over the
-//! default: a field whose new value depends on what was there before (a
-//! physical edge re-derived from the base's logical edges after `direction`
-//! changes) is not the declaration's to set.
-//!
-//! Fields are addressed by their path through the Style Model's structs
-//! (`align_items`, `paint.outline.width`); an enum or an `Option` is one
-//! field, replaced whole.
+//! Comparing an applied layout against [`LayoutStyle::default`] alone misses a
+//! declaration that writes the default value itself (`opacity: 1`,
+//! `border-width: 0`) to override an earlier rule or component preset. To catch
+//! those too, declarations are also applied onto a *witness* layout where
+//! every leaf starts away from its default: any leaf whose value changes to
+//! match what was applied was written.
 
 use std::sync::OnceLock;
 
-use nana_ui_core::{LayoutFieldMask, LayoutStyle};
-use serde_json::{Map, Value};
+use nana_ui_core::LayoutFieldMask;
 
+use crate::LayoutStyle;
 use crate::css_map::LayoutStyleCss;
+use crate::rust_expr::emit_patch_stmt;
 
-/// The layout the declarations give a default one, and the fields they
-/// write, as dotted paths into the Style Model.
+/// The layout built by a declaration block and the leaves it wrote.
 #[derive(Debug, Clone)]
 pub struct WrittenLayout {
     pub layout: LayoutStyle,
@@ -37,14 +28,14 @@ pub struct WrittenLayout {
 }
 
 impl WrittenLayout {
-    /// The written fields and their values, as a JSON object keyed by
-    /// dotted path.
-    pub fn patch(&self) -> Map<String, Value> {
-        let layout = layout_json(&self.layout);
-        self.written
-            .iter()
-            .map(|path| (path.clone(), leaf(&layout, path).clone()))
-            .collect()
+    /// Emit Rust setter statements (`{patch_mod}::set::<path>(__nana_layout, ...);`)
+    /// for every leaf path recorded in `self.written`.
+    pub fn patch_rust_stmts(&self, patch_mod: &str) -> String {
+        let mut out = String::new();
+        for path in &self.written {
+            emit_patch_stmt(&self.layout, path, patch_mod, &mut out);
+        }
+        out
     }
 }
 
@@ -53,22 +44,12 @@ impl WrittenLayout {
 /// Custom properties, the viewport and anything else the declarations read
 /// are the caller's to install around this call.
 pub fn written_layout(declarations: impl Fn(&mut LayoutStyle)) -> WrittenLayout {
-    let (default, witness_json) = reference();
+    let (default, witness_layout) = reference();
     let mut layout = LayoutStyle::default();
     declarations(&mut layout);
-    let mut over_witness = witness();
+    let mut over_witness = witness_layout.clone();
     declarations(&mut over_witness);
-    let applied = layout_json(&layout);
-    let applied_witness = layout_json(&over_witness);
-    let written: Vec<String> = leaf_paths(default)
-        .into_iter()
-        .filter(|path| {
-            let value = leaf(&applied, path);
-            value != leaf(default, path)
-                || (leaf(&applied_witness, path) != leaf(witness_json, path)
-                    && leaf(&applied_witness, path) == value)
-        })
-        .collect();
+    let written = layout.collect_written_leaves(default, &over_witness, witness_layout);
     let field_mask = written.iter().fold(LayoutFieldMask::NONE, |mask, path| {
         mask.union(LayoutFieldMask::from_property(path))
     });
@@ -198,8 +179,6 @@ const WITNESS_DECLARATIONS: &[(&str, &str)] = &[
     ("writing-mode", "vertical-rl"),
     ("writing-mode", "sideways-lr"),
     ("text-orientation", "upright"),
-    ("float", "left"),
-    ("clear", "both"),
     ("font-size", "13px"),
     ("font-weight", "700"),
     ("font-style", "italic"),
@@ -217,8 +196,6 @@ const WITNESS_DECLARATIONS: &[(&str, &str)] = &[
     ("color", "red"),
     ("grid-template-columns", "repeat(auto-fill, 10px)"),
     ("grid-template-rows", "repeat(auto-fill, 10px)"),
-    ("grid-template-columns", "subgrid"),
-    ("grid-template-rows", "subgrid"),
     ("grid-template-columns", "repeat(2, repeat(2, 10px))"),
     ("grid-template-rows", "repeat(2, repeat(2, 10px))"),
     ("grid-auto-columns", "10px"),
@@ -234,142 +211,65 @@ const WITNESS_DECLARATIONS: &[(&str, &str)] = &[
     ("user-select", "none"),
 ];
 
-fn layout_json(layout: &LayoutStyle) -> Value {
-    serde_json::to_value(layout).expect("a layout serializes")
-}
-
-/// The default layout's JSON and the witness's.
-fn reference() -> &'static (Value, Value) {
-    static REFERENCE: OnceLock<(Value, Value)> = OnceLock::new();
+/// The default layout and the witness layout (with every leaf moved off default).
+fn reference() -> &'static (LayoutStyle, LayoutStyle) {
+    static REFERENCE: OnceLock<(LayoutStyle, LayoutStyle)> = OnceLock::new();
     REFERENCE.get_or_init(|| {
-        let default = layout_json(&LayoutStyle::default());
-        let mut witness = default.clone();
+        let default = LayoutStyle::default();
+        let mut layout = default.clone();
         for (property, value) in WITNESS_DECLARATIONS {
             let mut alone = LayoutStyle::default();
             alone.apply_css_property(property, value, None, None);
-            let alone = layout_json(&alone);
-            for path in leaf_paths(&default) {
-                if leaf(&witness, &path) == leaf(&default, &path)
-                    && leaf(&alone, &path) != leaf(&default, &path)
-                {
-                    *leaf_mut(&mut witness, &path) = leaf(&alone, &path).clone();
-                }
-            }
+            layout = alone.overlaid(&layout);
         }
-        let mut layout: LayoutStyle =
-            serde_json::from_value(witness).expect("the witness is a layout");
         // What no declaration writes (class hints, replaced elements and
         // pseudo-elements set these) still gets a value of its own, so the
         // witness stays complete should a declaration ever write one.
         layout.border_radius = Some(1.0);
         // Controls anchor their surfaces; no declaration writes this.
-        layout.anchor = Some(nana_ui_core::AnchorSpec::point(
+        layout.anchor = Some(std::sync::Arc::new(nana_ui_core::AnchorSpec::point(
             1.0,
             1.0,
             nana_ui_core::AnchoredMenuPlacement::BottomStart,
+        )));
+        let theme_expr = nana_ui_core::ThemeExpr::token(nana_ui_core::ThemeToken::Space(
+            nana_ui_core::SpacingStep::Md,
         ));
-        layout.theme.gap = Some(nana_ui_core::ThemeExpr::token(
-            nana_ui_core::ThemeToken::Space(nana_ui_core::SpacingStep::Md),
-        ));
-        layout.theme.row_gap = Some(nana_ui_core::ThemeExpr::token(
-            nana_ui_core::ThemeToken::Space(nana_ui_core::SpacingStep::Md),
-        ));
-        layout.theme.column_gap = Some(nana_ui_core::ThemeExpr::token(
-            nana_ui_core::ThemeToken::Space(nana_ui_core::SpacingStep::Md),
-        ));
-        layout.theme.padding = Some(nana_ui_core::ThemeExpr::token(
-            nana_ui_core::ThemeToken::Space(nana_ui_core::SpacingStep::Md),
-        ));
-        layout.theme.padding_top = Some(nana_ui_core::ThemeExpr::token(
-            nana_ui_core::ThemeToken::Space(nana_ui_core::SpacingStep::Md),
-        ));
-        layout.theme.padding_right = Some(nana_ui_core::ThemeExpr::token(
-            nana_ui_core::ThemeToken::Space(nana_ui_core::SpacingStep::Md),
-        ));
-        layout.theme.padding_bottom = Some(nana_ui_core::ThemeExpr::token(
-            nana_ui_core::ThemeToken::Space(nana_ui_core::SpacingStep::Md),
-        ));
-        layout.theme.padding_left = Some(nana_ui_core::ThemeExpr::token(
-            nana_ui_core::ThemeToken::Space(nana_ui_core::SpacingStep::Md),
-        ));
-        layout.theme.margin = Some(nana_ui_core::ThemeExpr::token(
-            nana_ui_core::ThemeToken::Space(nana_ui_core::SpacingStep::Md),
-        ));
-        layout.theme.margin_top = Some(nana_ui_core::ThemeExpr::token(
-            nana_ui_core::ThemeToken::Space(nana_ui_core::SpacingStep::Md),
-        ));
-        layout.theme.margin_right = Some(nana_ui_core::ThemeExpr::token(
-            nana_ui_core::ThemeToken::Space(nana_ui_core::SpacingStep::Md),
-        ));
-        layout.theme.margin_bottom = Some(nana_ui_core::ThemeExpr::token(
-            nana_ui_core::ThemeToken::Space(nana_ui_core::SpacingStep::Md),
-        ));
-        layout.theme.margin_left = Some(nana_ui_core::ThemeExpr::token(
-            nana_ui_core::ThemeToken::Space(nana_ui_core::SpacingStep::Md),
-        ));
-        layout.theme.offset_top = Some(nana_ui_core::ThemeExpr::token(
-            nana_ui_core::ThemeToken::Space(nana_ui_core::SpacingStep::Md),
-        ));
-        layout.theme.offset_right = Some(nana_ui_core::ThemeExpr::token(
-            nana_ui_core::ThemeToken::Space(nana_ui_core::SpacingStep::Md),
-        ));
-        layout.theme.offset_bottom = Some(nana_ui_core::ThemeExpr::token(
-            nana_ui_core::ThemeToken::Space(nana_ui_core::SpacingStep::Md),
-        ));
-        layout.theme.offset_left = Some(nana_ui_core::ThemeExpr::token(
-            nana_ui_core::ThemeToken::Space(nana_ui_core::SpacingStep::Md),
-        ));
-        layout.theme.width = Some(nana_ui_core::ThemeExpr::token(
-            nana_ui_core::ThemeToken::Space(nana_ui_core::SpacingStep::Md),
-        ));
-        layout.theme.height = Some(nana_ui_core::ThemeExpr::token(
-            nana_ui_core::ThemeToken::Space(nana_ui_core::SpacingStep::Md),
-        ));
-        layout.theme.min_width = Some(nana_ui_core::ThemeExpr::token(
-            nana_ui_core::ThemeToken::Space(nana_ui_core::SpacingStep::Md),
-        ));
-        layout.theme.max_width = Some(nana_ui_core::ThemeExpr::token(
-            nana_ui_core::ThemeToken::Space(nana_ui_core::SpacingStep::Md),
-        ));
-        layout.theme.min_height = Some(nana_ui_core::ThemeExpr::token(
-            nana_ui_core::ThemeToken::Space(nana_ui_core::SpacingStep::Md),
-        ));
-        layout.theme.max_height = Some(nana_ui_core::ThemeExpr::token(
-            nana_ui_core::ThemeToken::Space(nana_ui_core::SpacingStep::Md),
-        ));
-        layout.theme.flex_basis = Some(nana_ui_core::ThemeExpr::token(
-            nana_ui_core::ThemeToken::Space(nana_ui_core::SpacingStep::Md),
-        ));
-        layout.theme.font_size = Some(nana_ui_core::ThemeExpr::token(
-            nana_ui_core::ThemeToken::Space(nana_ui_core::SpacingStep::Md),
-        ));
-        layout.theme.font_weight = Some(nana_ui_core::ThemeExpr::token(
-            nana_ui_core::ThemeToken::Space(nana_ui_core::SpacingStep::Md),
-        ));
-        layout.theme.line_height = Some(nana_ui_core::ThemeExpr::token(
-            nana_ui_core::ThemeToken::Space(nana_ui_core::SpacingStep::Md),
-        ));
-        layout.theme.letter_spacing = Some(nana_ui_core::ThemeExpr::token(
-            nana_ui_core::ThemeToken::Space(nana_ui_core::SpacingStep::Md),
-        ));
-        layout.theme.border_width = Some(nana_ui_core::ThemeExpr::token(
-            nana_ui_core::ThemeToken::Space(nana_ui_core::SpacingStep::Md),
-        ));
-        layout.theme.border_top_width = Some(nana_ui_core::ThemeExpr::token(
-            nana_ui_core::ThemeToken::Space(nana_ui_core::SpacingStep::Md),
-        ));
-        layout.theme.border_right_width = Some(nana_ui_core::ThemeExpr::token(
-            nana_ui_core::ThemeToken::Space(nana_ui_core::SpacingStep::Md),
-        ));
-        layout.theme.border_bottom_width = Some(nana_ui_core::ThemeExpr::token(
-            nana_ui_core::ThemeToken::Space(nana_ui_core::SpacingStep::Md),
-        ));
-        layout.theme.border_left_width = Some(nana_ui_core::ThemeExpr::token(
-            nana_ui_core::ThemeToken::Space(nana_ui_core::SpacingStep::Md),
-        ));
-        layout.theme.border_radius = Some(nana_ui_core::ThemeExpr::token(
-            nana_ui_core::ThemeToken::Space(nana_ui_core::SpacingStep::Md),
-        ));
+        layout.theme.gap = Some(theme_expr.clone());
+        layout.theme.row_gap = Some(theme_expr.clone());
+        layout.theme.column_gap = Some(theme_expr.clone());
+        layout.theme.padding = Some(theme_expr.clone());
+        layout.theme.padding_top = Some(theme_expr.clone());
+        layout.theme.padding_right = Some(theme_expr.clone());
+        layout.theme.padding_bottom = Some(theme_expr.clone());
+        layout.theme.padding_left = Some(theme_expr.clone());
+        layout.theme.margin = Some(theme_expr.clone());
+        layout.theme.margin_top = Some(theme_expr.clone());
+        layout.theme.margin_right = Some(theme_expr.clone());
+        layout.theme.margin_bottom = Some(theme_expr.clone());
+        layout.theme.margin_left = Some(theme_expr.clone());
+        layout.theme.offset_top = Some(theme_expr.clone());
+        layout.theme.offset_right = Some(theme_expr.clone());
+        layout.theme.offset_bottom = Some(theme_expr.clone());
+        layout.theme.offset_left = Some(theme_expr.clone());
+        layout.theme.width = Some(theme_expr.clone());
+        layout.theme.height = Some(theme_expr.clone());
+        layout.theme.min_width = Some(theme_expr.clone());
+        layout.theme.max_width = Some(theme_expr.clone());
+        layout.theme.min_height = Some(theme_expr.clone());
+        layout.theme.max_height = Some(theme_expr.clone());
+        layout.theme.flex_basis = Some(theme_expr.clone());
+        layout.theme.font_size = Some(theme_expr.clone());
+        layout.theme.font_weight = Some(theme_expr.clone());
+        layout.theme.line_height = Some(theme_expr.clone());
+        layout.theme.letter_spacing = Some(theme_expr.clone());
+        layout.theme.border_width = Some(theme_expr.clone());
+        layout.theme.border_top_width = Some(theme_expr.clone());
+        layout.theme.border_right_width = Some(theme_expr.clone());
+        layout.theme.border_bottom_width = Some(theme_expr.clone());
+        layout.theme.border_left_width = Some(theme_expr.clone());
+        layout.theme.border_radius = Some(theme_expr.clone());
+        layout.theme.scrollbar_room = Some(theme_expr);
         layout.layout_isolation = true;
         layout.adaptation = Some(nana_ui_core::dynamic_layout::AdaptationProfile::RIGID.into());
         layout.equal_wrap = true;
@@ -379,10 +279,10 @@ fn reference() -> &'static (Value, Value) {
         layout.paint.background_material = Some(material.clone());
         layout.paint.border_material = Some(material.clone());
         layout.paint.text_material = Some(material);
-        layout.placeholder_color = Some([0.5; 4]);
-        layout.placeholder_opacity = Some(0.5);
-        layout.selection_background = Some([0.5; 4]);
-        layout.selection_color = Some([0.5; 4]);
+        layout.text_ext.placeholder_color = Some([0.5; 4]);
+        layout.text_ext.placeholder_opacity = Some(0.5);
+        layout.text_ext.selection_background = Some([0.5; 4]);
+        layout.text_ext.selection_color = Some([0.5; 4]);
         layout.paint_colors.selection_background =
             Some(nana_ui_core::PaintColor::Srgb { rgba: [0.5; 4] });
         layout.paint_colors.selection_color =
@@ -396,54 +296,14 @@ fn reference() -> &'static (Value, Value) {
             thickness: Some(1.0),
             ..Default::default()
         });
+        layout.paint.scroll_edge_fade = Some(nana_ui_core::ScrollEdgeFade {
+            top: 1.0,
+            bottom: 1.0,
+        });
         // Applying anything ends by resolving logical edges; start from a
         // layout that is already resolved, so that alone changes nothing.
         layout.resolve_logical_box_edges();
-        (default, layout_json(&layout))
-    })
-}
-
-fn witness() -> LayoutStyle {
-    serde_json::from_value(reference().1.clone()).expect("the witness is a layout")
-}
-
-/// The paths of the Style Model's fields: a struct is an object in the
-/// default layout's JSON (an enum or `Option` there is a string or null), so
-/// every object is descended into and everything else is a field.
-fn leaf_paths(default: &Value) -> Vec<String> {
-    fn walk(value: &Value, prefix: &str, out: &mut Vec<String>) {
-        match value {
-            Value::Object(fields) => {
-                for (key, field) in fields {
-                    let path = if prefix.is_empty() {
-                        key.clone()
-                    } else {
-                        format!("{prefix}.{key}")
-                    };
-                    walk(field, &path, out);
-                }
-            }
-            _ => out.push(prefix.to_owned()),
-        }
-    }
-    let mut out = Vec::new();
-    walk(default, "", &mut out);
-    out
-}
-
-fn leaf<'a>(value: &'a Value, path: &str) -> &'a Value {
-    path.split('.')
-        .try_fold(value, |value, key| value.get(key))
-        .unwrap_or(&Value::Null)
-}
-
-fn leaf_mut<'a>(value: &'a mut Value, path: &str) -> &'a mut Value {
-    path.split('.').fold(value, |value, key| {
-        value
-            .as_object_mut()
-            .expect("a Style Model path runs through structs")
-            .entry(key)
-            .or_insert(Value::Null)
+        (default, layout)
     })
 }
 
@@ -451,112 +311,50 @@ fn leaf_mut<'a>(value: &'a mut Value, path: &str) -> &'a mut Value {
 mod tests {
     use super::*;
 
-    /// The merge `LayoutStyle::overlaid` replaced: both layouts as JSON,
-    /// `over`'s non-default fields written into `base`'s, struct by struct.
-    fn overlaid_through_json(base: &LayoutStyle, over: &LayoutStyle) -> LayoutStyle {
-        fn overlay(base: &mut Value, default: &Value, over: Value) {
-            let Value::Object(over) = over else {
-                *base = over;
-                return;
-            };
-            for (key, field) in over {
-                let default = default.get(&key).unwrap_or(&Value::Null);
-                if *default == field {
-                    continue;
-                }
-                let slot = base
-                    .as_object_mut()
-                    .expect("a struct")
-                    .entry(key)
-                    .or_insert(Value::Null);
-                let same_shape = match (&*slot, default, &field) {
-                    (Value::Object(slot), Value::Object(default), Value::Object(field)) => {
-                        slot.keys().eq(default.keys()) && field.keys().eq(default.keys())
-                    }
-                    _ => false,
-                };
-                if same_shape {
-                    overlay(slot, default, field);
-                } else {
-                    *slot = field;
-                }
-            }
+    /// The `Overlay` path list is the authority for leaf emission.
+    #[test]
+    fn the_typed_overlay_names_every_leaf_path_and_rust_emitter_covers_them() {
+        let (_, witness_layout) = reference();
+        let paths = LayoutStyle::overlay_leaf_paths();
+        assert_eq!(paths.len(), LayoutStyle::OVERLAY_LEAVES);
+        for path in &paths {
+            let mut stmt = String::new();
+            emit_patch_stmt(witness_layout, path, "__patch", &mut stmt);
+            assert!(
+                stmt.starts_with("__patch::set::") && stmt.ends_with(");"),
+                "unexpected emitted statement for {path}: {stmt}"
+            );
         }
-        let mut value = layout_json(base);
-        overlay(&mut value, &reference().0, layout_json(over));
-        serde_json::from_value(value).expect("an overlaid layout deserializes")
     }
 
-    /// The typed overlay names fields in Rust; the Style Model's leaves are
-    /// read off a serialized layout. They are the same fields, bar the two
-    /// a group leaves out of its JSON while unset.
+    /// A declaration against the default is mirrored in its emitted Rust patch.
     #[test]
-    fn the_typed_overlay_names_every_leaf_of_a_serialized_layout() {
-        let serialized: std::collections::BTreeSet<String> =
-            leaf_paths(&reference().0).into_iter().collect();
-        let named: std::collections::BTreeSet<String> =
-            LayoutStyle::overlay_leaf_paths().into_iter().collect();
-        let only_named: Vec<&String> = named.difference(&serialized).collect();
-        let only_serialized: Vec<&String> = serialized.difference(&named).collect();
-        assert_eq!(
-            only_named,
-            ["paint.scroll_edge_fade", "theme.scrollbar_room"],
-            "a field the overlay names is not a leaf of the serialized layout"
-        );
-        assert!(
-            only_serialized.is_empty(),
-            "the overlay leaves out {only_serialized:?}"
-        );
-    }
-
-    /// One leaf at a time, taken from the witness (where every leaf is away
-    /// from its default): the typed overlay gives what the JSON merge gave,
-    /// over a default layout and over one where every field is set.
-    ///
-    /// Compared as JSON: a material's instance id is not serialized, so the
-    /// JSON merge handed out a new one on every overlay, where the typed one
-    /// keeps the instance it was given.
-    #[test]
-    fn the_typed_overlay_matches_the_json_merge_leaf_by_leaf() {
-        let (default_json, witness_json) = reference();
-        let default = LayoutStyle::default();
-        let full = witness();
-        let same = |base: &LayoutStyle, over: &LayoutStyle| {
-            layout_json(&base.overlaid(over)) == layout_json(&overlaid_through_json(base, over))
-        };
-        assert!(same(&default, &full), "every field over the default");
-        assert!(same(&full, &default), "nothing over every field");
-        let mut moved = 0;
-        for path in leaf_paths(default_json) {
-            if leaf(witness_json, &path) == leaf(default_json, &path) {
-                continue;
-            }
-            moved += 1;
-            let mut over = default_json.clone();
-            *leaf_mut(&mut over, &path) = leaf(witness_json, &path).clone();
-            let over: LayoutStyle = serde_json::from_value(over).expect("one leaf moved");
-            assert!(same(&default, &over), "`{path}` over the default");
-            assert!(same(&full, &over), "`{path}` over every field");
-        }
-        assert_eq!(
-            moved,
-            leaf_paths(default_json).len(),
-            "the witness moves every leaf, so every leaf was compared"
-        );
-    }
-
-    /// A compiled patch assigns `layout.<path> = …` for each path a rule
-    /// writes: every such path has to be a field path in Rust, which the
-    /// typed overlay's exhaustive lists are.
-    #[test]
-    fn every_path_a_declaration_writes_is_a_field_the_overlay_names() {
-        let named: std::collections::BTreeSet<String> =
-            LayoutStyle::overlay_leaf_paths().into_iter().collect();
-        for (property, value) in WITNESS_DECLARATIONS {
-            for path in written(&[(property, value)]) {
+    fn every_path_a_declaration_writes_emits_a_rust_patch_statement() {
+        let (default, _) = reference();
+        for &(property, value) in WITNESS_DECLARATIONS {
+            let result = written_layout(|layout| {
+                layout.apply_css_property(property, value, None, None);
+            });
+            let expected = result.layout.collect_written_leaves(
+                default,
+                &{
+                    let mut over = reference().1.clone();
+                    over.apply_css_property(property, value, None, None);
+                    over
+                },
+                &reference().1,
+            );
+            assert_eq!(result.written, expected, "{property}: {value}");
+            let stmts = result.patch_rust_stmts("__patch");
+            assert!(
+                !stmts.contains(":::"),
+                "{property}: {value} emitted ':::' token glue in {stmts}"
+            );
+            for path in &result.written {
+                let expected_prefix = format!("__patch::set::{}(", path.replace('.', "::"));
                 assert!(
-                    named.contains(&path),
-                    "`{property}: {value}` writes `{path}`"
+                    stmts.contains(&expected_prefix),
+                    "{property}: {value} missing {expected_prefix} in {stmts}"
                 );
             }
         }
@@ -573,41 +371,42 @@ mod tests {
 
     #[test]
     fn every_field_of_the_witness_differs_from_the_default() {
-        let (default, witness) = reference();
-        let same: Vec<String> = leaf_paths(default)
-            .into_iter()
-            .filter(|path| leaf(default, path) == leaf(witness, path))
-            .collect();
-        assert!(same.is_empty(), "the witness keeps the default of {same:?}");
+        let (default, witness_layout) = reference();
+        let unchanged = witness_layout.unchanged_leaf_paths(default);
+        assert!(
+            unchanged.is_empty(),
+            "add to WITNESS_DECLARATIONS: {unchanged:?}"
+        );
     }
 
     #[test]
     fn a_declaration_that_sets_nothing_writes_nothing() {
-        assert!(written(&[("unicode-bidi", "isolate")]).is_empty());
-        assert!(written(&[("align-items", "nonsense")]).is_empty());
+        let w = written(&[("frobnicate", "10px")]);
+        assert!(w.is_empty(), "got {w:?}");
     }
 
     #[test]
     fn a_write_of_the_default_value_is_a_write() {
-        assert_eq!(written(&[("align-items", "flex-start")]), ["align_items"]);
-        assert_eq!(written(&[("position", "static")]), ["position"]);
-        assert_eq!(written(&[("flex-wrap", "nowrap")]), ["flex_wrap"]);
-        assert_eq!(written(&[("outline-width", "0")]), ["paint.outline.width"]);
-        assert_eq!(written(&[("container-type", "normal")]), ["container_type"]);
-        // The shorthand resets the type it leaves out.
-        assert_eq!(
-            written(&[("container", "card")]),
-            ["container_name", "container_type"]
+        // The defaults are not kept out of a patch, or writing
+        // `opacity: 1` could not cancel an earlier rule's `opacity: 0.5`.
+        assert!(written(&[("opacity", "1")]).contains(&"opacity".to_owned()));
+        assert!(written(&[("flex-direction", "column")]).contains(&"direction".to_owned()));
+        assert!(written(&[("flex-wrap", "nowrap")]).contains(&"flex_wrap".to_owned()));
+        // Same inside nested groups (`paint`, `grid.placement`).
+        assert!(written(&[("visibility", "visible")]).contains(&"paint.visibility".to_owned()));
+        assert!(
+            written(&[("grid-column", "auto")]).contains(&"grid.placement.column_start".to_owned())
         );
     }
 
     #[test]
     fn a_field_derived_from_what_was_there_is_not_written() {
-        let fields = written(&[("direction", "rtl")]);
-        assert!(fields.contains(&"dir".to_owned()), "{fields:?}");
-        assert!(
-            !fields.iter().any(|path| path.starts_with("padding")),
-            "{fields:?}"
-        );
+        // A physical padding sets `padding_top` directly; nothing in
+        // `logical_padding` has a logical edge, so re-resolving at the end
+        // does not rewrite any other edge.
+        let w = written(&[("padding-top", "4px")]);
+        assert!(!w.contains(&"padding_right".to_owned()));
+        assert!(!w.contains(&"padding_bottom".to_owned()));
+        assert!(!w.contains(&"padding_left".to_owned()));
     }
 }

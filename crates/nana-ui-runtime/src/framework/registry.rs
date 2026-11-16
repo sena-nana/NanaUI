@@ -21,85 +21,6 @@ impl AppContext {
         self.components.resolve_normalized(normalized_tag)
     }
 
-    /// Whether the component registered under `type_id` reads the
-    /// [`SemanticSpec`] fields a host derives by scanning a widget's children:
-    /// `slots` (probing each child for `data-slot`) and `icon` (probing each
-    /// child for an `Icon` kind).
-    ///
-    /// This lets a host skip both scans for a component that ignores them.
-    /// Unknown types answer `true`.
-    pub fn component_reads_child_derived_spec(&self, type_id: &ComponentTypeId) -> bool {
-        self.components.reads_child_derived_spec(type_id)
-    }
-
-    pub fn bind_semantic(
-        &self,
-        id: StableNodeId,
-        spec: &SemanticSpec<'_>,
-        mutations: &mut MutationQueue,
-    ) -> Result<ComponentBindKind, FrameworkError> {
-        self.prepare_semantic_binding(id, spec, mutations)
-            .map(|binding| binding.kind())
-    }
-
-    /// Stage a registry component once, preserving opted-in interaction state.
-    pub fn prepare_semantic_binding(
-        &self,
-        id: StableNodeId,
-        spec: &SemanticSpec<'_>,
-        mutations: &mut MutationQueue,
-    ) -> Result<crate::PreparedSemanticBinding, FrameworkError> {
-        let mut request = ComponentBindRequest {
-            id,
-            world: &self.world,
-            mutations,
-            spec,
-            previous: self.views.get(&id).map(|view| view.as_ref()),
-            retained: None,
-            finish: None,
-        };
-        let kind = self.components.bind(&mut request)?;
-        request
-            .mutations
-            .set_component_type(id, Some(spec.type_id.clone()));
-        Ok(crate::PreparedSemanticBinding {
-            id,
-            type_id: spec.type_id.clone(),
-            kind,
-            retained: request.retained,
-            finish: request.finish,
-        })
-    }
-
-    /// Install typed state after its UiWorld projection was committed. Does not
-    /// project or parse a second time; optional assembly belongs to the type.
-    pub fn finish_semantic_binding(
-        &mut self,
-        binding: crate::PreparedSemanticBinding,
-    ) -> Result<(), FrameworkError> {
-        if !self.world.contains(binding.id) {
-            return Err(FrameworkError::MissingView(binding.id));
-        }
-        if self.world.component_type(binding.id) != Some(&binding.type_id) {
-            return Err(FrameworkError::ViewType(binding.id));
-        }
-        if let Some(component) = binding.retained {
-            let register = self
-                .components
-                .get_by_rust(component.as_ref().type_id())
-                .and_then(|entry| entry.register);
-            if let Some(register) = register {
-                register(self);
-            }
-            self.views.insert(binding.id, component);
-            self.sync_component_lifecycle(binding.id)?;
-            if let Some(finish) = binding.finish {
-                finish(self, binding.id)?;
-            }
-        }
-        Ok(())
-    }
-
     pub fn install(&mut self, extension: &impl UiExtension) -> Result<(), FrameworkError> {
         let name = extension.name().trim().to_owned();
         if name.is_empty() {
@@ -176,6 +97,20 @@ impl AppContext {
         }
         self.reprojectors.entry(type_id).or_insert(view.update);
         self.behaviors.insert(type_id, (view.behavior)());
+        if view.metrics_reproject {
+            self.metrics_reproject_types.insert(type_id, view.reproject);
+        }
+        if view.recipe_reproject {
+            self.recipe_reproject_types.insert(type_id, view.reproject);
+        }
+        if view.reduced_motion_reproject {
+            self.reduced_motion_reproject_types
+                .insert(type_id, view.reproject);
+        }
+        if view.text_backend_reproject {
+            self.text_backend_reproject_types
+                .insert(type_id, view.reproject);
+        }
         if let Some(install) = view.hooks {
             install(&mut self.type_hooks);
         }
@@ -187,7 +122,15 @@ impl AppContext {
     /// Install the view of a node a composite created itself.
     pub(super) fn install_view<C: ComponentView>(&mut self, id: StableNodeId, view: C) {
         self.register_view_type::<C>();
-        self.views.insert(id, Box::new(view));
+        if TypeId::of::<C>() == TypeId::of::<crate::Stack>() {
+            // SAFETY: `TypeId` matched `Stack`.
+            let stack = unsafe { &*std::ptr::from_ref(&view).cast::<crate::Stack>() };
+            self.views.remove(&id);
+            self.world.set_elided_stack_flags(id, stack.elided_flags());
+        } else {
+            self.world.set_elided_stack_flags(id, 0);
+            self.views.insert(id, Box::new(view));
+        }
     }
 
     pub(super) fn stamp_component_type<C: ComponentView>(
@@ -205,26 +148,15 @@ impl AppContext {
         queue: &mut MutationQueue,
         view: &ViewType,
     ) {
-        if let Some(entry) = self.components.get_by_rust(view.type_id) {
-            queue.set_component_type(id, Some(entry.id.clone()));
+        if let Some(component_id) = view.component_id {
+            queue.set_component_type(id, Some(ComponentTypeId::from_static(component_id)));
+        } else if let Some(component_id) = self.components.type_id_for(view.type_id) {
+            queue.set_component_type(id, Some(component_id.clone()));
         }
         self.register_view_type_erased(view);
 
         if view.child_reproject {
             self.child_reproject_views.insert(id, view.reproject);
-        }
-        if view.metrics_reproject {
-            self.metrics_reproject_views.insert(id, view.reproject);
-        }
-        if view.recipe_reproject {
-            self.recipe_reproject_views.insert(id, view.reproject);
-        }
-        if view.reduced_motion_reproject {
-            self.reduced_motion_reproject_views
-                .insert(id, view.reproject);
-        }
-        if view.text_backend_reproject {
-            self.text_backend_reproject_views.insert(id, view.reproject);
         }
         if view.hover_tracking {
             self.component_lifecycle.hover_cards.entry(id).or_default();
@@ -250,6 +182,7 @@ impl AppContext {
 /// values: the generic entry points only fill this in.
 pub(super) struct ViewType {
     type_id: TypeId,
+    component_id: Option<&'static str>,
     update: UpdateErasedFn,
     reproject: ChildReprojectFn,
     behavior: fn() -> hooks::ErasedBehavior,
@@ -267,6 +200,7 @@ impl ViewType {
     pub(super) fn of<C: ComponentView>() -> Self {
         Self {
             type_id: TypeId::of::<C>(),
+            component_id: C::TYPE_ID,
             update: update_erased::<C>,
             reproject: reproject_typed::<C>,
             behavior: hooks::ErasedBehavior::of::<C>,

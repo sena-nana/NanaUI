@@ -14,24 +14,25 @@ pub enum DialogSize {
     Wide,
     Workspace,
     /// A width of the dialog's own, with CSS length semantics: `Px(560.0)`
-    /// is 560px; `Min2(Px(560.0), Viewport { Width, 92.0 })` is CSS
-    /// `min(560px, 92vw)`. Percentages and viewport units resolve against
-    /// the scrim, which covers the window. A length that names no size
-    /// (`auto`, `fill`) asks for the whole width.
+    /// is 560px; `capped(560.0, 92.0)` is CSS `min(560px, 92vw)`. Percentages
+    /// and viewport units resolve against the scrim, which covers the window.
+    /// A length that names no size (`auto`, `fill`) asks for the whole width.
     Width(LengthSpec),
+    /// Const-constructible `min(px, viewport_vw%)` cap (see [`Self::capped`]).
+    Capped {
+        px: f32,
+        viewport_vw: f32,
+    },
 }
 
 impl DialogSize {
     /// CSS `min(px, viewport%)`: `px` wide, but never more than `viewport`
     /// percent of the window's width.
     pub const fn capped(px: f32, viewport: f32) -> Self {
-        Self::Width(LengthSpec::Min2(
-            crate::box_layout::LengthAtom::Px(px),
-            crate::box_layout::LengthAtom::Viewport {
-                axis: crate::box_layout::ViewportAxis::Width,
-                value: viewport,
-            },
-        ))
+        Self::Capped {
+            px,
+            viewport_vw: viewport,
+        }
     }
 
     /// The card width this size asks for over a scrim of `scrim_width` ×
@@ -43,6 +44,7 @@ impl DialogSize {
             Self::Medium => 600.0,
             Self::Wide => 680.0,
             Self::Workspace => 1080.0,
+            Self::Capped { px, viewport_vw } => px.min(scrim_width.max(0.0) * viewport_vw / 100.0),
             Self::Width(length) => length
                 .resolve_with(Some(scrim_width), Some((scrim_width, scrim_height)))
                 .unwrap_or(scrim_width),

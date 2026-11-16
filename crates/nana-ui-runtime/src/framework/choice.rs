@@ -381,12 +381,12 @@ impl AppContext {
         x: f32,
         y: f32,
     ) -> Result<bool, FrameworkError> {
-        let Some(crate::ComponentGeometry::CommandPalette {
+        let Some(crate::CommandPaletteLayout {
             surface,
             input_box,
             rows,
             ..
-        }) = self.world.component_geometry(entity.id)
+        }) = self.world.command_palette_layout(entity.id)
         else {
             return Ok(false);
         };
@@ -463,8 +463,7 @@ impl AppContext {
         x: f32,
         y: f32,
     ) -> Result<bool, FrameworkError> {
-        let Some(crate::ComponentGeometry::TreeView { rows, .. }) =
-            self.world.component_geometry(entity.id)
+        let Some(crate::TreeViewLayout { rows, .. }) = self.world.tree_view_layout(entity.id)
         else {
             return Ok(false);
         };
@@ -604,9 +603,8 @@ impl AppContext {
                 .event_handlers
                 .contains_key(&(id, TypeId::of::<SecondaryPress>()))
                 && let Some(emit) = self
-                    .views
-                    .get(&id)
-                    .and_then(|view| self.emitters.get(&view.as_ref().type_id()))
+                    .view_type_id(id)
+                    .and_then(|type_id| self.emitters.get(&type_id))
                     .copied()
             {
                 super::emit_erased(self, emit, id, press)?;
@@ -851,7 +849,7 @@ impl AppContext {
         x: f32,
         y: f32,
     ) -> Result<bool, FrameworkError> {
-        let Some(geometry) = self.world.component_geometry(entity.id) else {
+        let Some(geometry) = self.world.menu_surface_geometry(entity.id) else {
             return Ok(false);
         };
         let Some(index) = crate::menus::context_menu_option_at(&geometry, x, y) else {

@@ -12,4 +12,3 @@ path = "src/lib.rs"
 
 [dependencies]
 nana-ui-core.workspace = true
-serde_json.workspace = true

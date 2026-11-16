@@ -446,7 +446,7 @@ fn clone_shaped_text(
 ) -> TextContent {
     let clone = || {
         presentation.as_ref().map_or_else(
-            || world.record(id).text.clone(),
+            || world.nodes.text_content(id).clone(),
             |source| source.text.clone(),
         )
     };
@@ -454,7 +454,6 @@ fn clone_shaped_text(
     let text = crate::text_shape_stats::timed_clone(clone);
     #[cfg(not(any(test, feature = "benchmark")))]
     let text = clone();
-    world.record_string_clone(text.value.len());
     #[cfg(any(test, feature = "benchmark"))]
     crate::text_shape_stats::note_clone(text.value.len());
     text
@@ -462,21 +461,18 @@ fn clone_shaped_text(
 
 pub(super) fn shape_empty_state_text(
     id: StableNodeId,
-    visual: &StandardVisual,
+    visual: &crate::EmptyStateVisual,
     inherited: &ComputedStyle,
     max_width: Option<f32>,
     shaper: &mut impl TextShaper,
     typography: nana_ui_core::TypographyTokens,
 ) -> EmptyStateTextPresentation {
-    let StandardVisual::EmptyState {
+    let crate::EmptyStateVisual {
         title,
         message,
         compact,
         ..
-    } = visual
-    else {
-        return EmptyStateTextPresentation::default();
-    };
+    } = visual;
     let mut title_style = inherited.clone();
     title_style.font_size = if *compact {
         typography.meta
@@ -526,7 +522,7 @@ pub(super) fn shape_empty_state_text(
 /// close button, and under no title cap.
 pub(super) fn shape_modal_text(
     id: StableNodeId,
-    visual: &StandardVisual,
+    visual: &crate::ModalFrameVisual,
     inherited: &ComputedStyle,
     recipe: &nana_ui_core::DialogRecipe,
     max_width: Option<f32>,
@@ -534,16 +530,13 @@ pub(super) fn shape_modal_text(
     shaper: &mut impl TextShaper,
     typography: nana_ui_core::TypographyTokens,
 ) -> ModalTextPresentation {
-    let StandardVisual::ModalFrame {
+    let crate::ModalFrameVisual {
         title,
         description,
         body_text,
         kind,
         ..
-    } = visual
-    else {
-        return ModalTextPresentation::default();
-    };
+    } = visual;
     let constraints = crate::TextShapeConstraints {
         max_width,
         wrap: max_width.is_some(),
@@ -602,129 +595,10 @@ pub(super) fn shape_modal_text(
     }
 }
 
-/// The share of the track an indeterminate sweep's segment covers.
-const PROGRESS_SWEEP_SEGMENT: f32 = 0.35;
-
-/// A bar's fill along its `track` for `value_ratio` in `mode`, and the
-/// geometry around it: a progress bar's label region and cancel target are
-/// the parts layout published (#384), a level meter has neither.
-pub(super) fn progress_geometry(
-    track: LayoutBox,
-    value_ratio: f32,
-    mode: crate::ProgressMode,
-    corner_radius: f32,
-    label: Option<crate::ComponentTextRegion>,
-    cancel: Option<LayoutBox>,
-) -> Option<crate::ComponentGeometry> {
-    let ratio = value_ratio.clamp(0.0, 1.0);
-    let fill = match mode {
-        crate::ProgressMode::Value => LayoutBox {
-            width: track.width * ratio,
-            ..track
-        },
-        // The segment comes in at the start and goes out past the end over
-        // one pass, cut to the track on the way.
-        crate::ProgressMode::Sweep { phase } => {
-            let phase = if phase.is_finite() {
-                phase.clamp(0.0, 1.0)
-            } else {
-                0.0
-            };
-            let lead = (1.0 + PROGRESS_SWEEP_SEGMENT) * phase - PROGRESS_SWEEP_SEGMENT;
-            let start = lead.clamp(0.0, 1.0);
-            let end = (lead + PROGRESS_SWEEP_SEGMENT).clamp(0.0, 1.0);
-            LayoutBox {
-                x: track.x + track.width * start,
-                width: track.width * (end - start),
-                ..track
-            }
-        }
-        crate::ProgressMode::Still => track,
-    };
-    Some(crate::ComponentGeometry::Progress {
-        fill,
-        track,
-        label,
-        cancel,
-        corner_radius: corner_radius.max(0.0),
-    })
-}
-
-pub(super) fn form_field_geometry(
-    bounds: LayoutBox,
-    size: ControlSize,
-    label: &Arc<str>,
-    hint: Option<&Arc<str>>,
-    error: Option<&Arc<str>>,
-    control: Option<crate::StableNodeId>,
-    parts: &crate::layout_engine::parts::ContentParts,
-    layout_box: &dyn Fn(crate::StableNodeId) -> Option<LayoutBox>,
-    model: nana_ui_core::StyleModelRef,
-) -> Option<crate::ComponentGeometry> {
-    let (label_size, _gap, label_role, label_weight) =
-        crate::form_surfaces::form_field_density(size);
-    let label_height = crate::form_surfaces::form_field_label_line(size);
-    let support = error.or(hint);
-    let support_role = if error.is_some() {
-        SemanticColorRole::Danger
-    } else {
-        SemanticColorRole::Muted
-    };
-    let label_bounds =
-        crate::layout_engine::parts::part_bounds(parts, crate::LayoutPartKind::Label).unwrap_or(
-            LayoutBox {
-                x: bounds.x,
-                y: bounds.y,
-                width: bounds.width,
-                height: label_height.min(bounds.height),
-            },
-        );
-    let support_bounds =
-        crate::layout_engine::parts::part_bounds(parts, crate::LayoutPartKind::Hint);
-    let support_height = nana_ui_core::type_scale::META.min(bounds.height);
-    let support_y = (bounds.y + bounds.height - support_height).max(bounds.y);
-    let indicator_lane =
-        crate::layout_engine::parts::part_bounds(parts, crate::LayoutPartKind::LeadingContent);
-    let indicator = error.and(indicator_lane).map(|lane| {
-        let diameter = (lane.width * 10.0 / 24.0).min(lane.height).max(0.0);
-        (
-            LayoutBox {
-                x: lane.x + (lane.width - diameter) / 2.0,
-                y: lane.y + (lane.height - diameter) / 2.0,
-                width: diameter,
-                height: diameter,
-            },
-            model.color(support_role).as_rgba_array(),
-        )
-    });
-    Some(crate::ComponentGeometry::FormField {
-        label: crate::ComponentTextRegion {
-            bounds: label_bounds,
-            content: Arc::clone(label).into(),
-            color: Some(model.color(label_role).as_rgba_array()),
-            font_size: label_size,
-            font_weight: Some(label_weight),
-        },
-        support: support.map(|message| crate::ComponentTextRegion {
-            bounds: support_bounds.unwrap_or(LayoutBox {
-                x: bounds.x,
-                y: support_y,
-                width: bounds.width,
-                height: support_height,
-            }),
-            content: Arc::clone(message).into(),
-            color: Some(model.color(support_role).as_rgba_array()),
-            font_size: nana_ui_core::type_scale::HINT,
-            font_weight: None,
-        }),
-        indicator,
-        control: control.and_then(layout_box),
-    })
-}
-
 pub(super) fn text_input_placeholder_color(layout: &LayoutStyle, faint: [f32; 4]) -> [f32; 4] {
-    let mut color = layout.placeholder_color.unwrap_or(faint);
-    if let Some(opacity) = layout.placeholder_opacity {
+    let text_ext = &*layout.text_ext;
+    let mut color = text_ext.placeholder_color.unwrap_or(faint);
+    if let Some(opacity) = text_ext.placeholder_opacity {
         color[3] = (color[3] * opacity).clamp(0.0, 1.0);
     }
     color
@@ -3357,29 +3231,18 @@ impl UiWorld {
     /// a whole presentation (display text, decorations and all) to learn two
     /// booleans is O(document) per key press.
     pub(super) fn text_input_kind(&self, id: StableNodeId) -> Option<bool> {
-        if !self.nodes.has_visuals() {
+        if !self.nodes.has_widget_visuals() {
             return None;
         }
-        if !matches!(
-            self.nodes.visual(id),
-            Some(StandardVisual::TextInput { .. })
-        ) || self.nodes.text_input(id).is_none()
-        {
+        if self.text_input_visual_ref(id).is_none() || self.nodes.text_input(id).is_none() {
             return None;
         }
-        Some(
-            self.nodes
-                .get(id)
-                .is_some_and(|node| node.accessibility.multiline),
-        )
+        Some(self.nodes.contains(id) && self.nodes.accessibility(id).multiline)
     }
 
     /// Whether the editor draws bullets instead of its value.
     pub(crate) fn text_input_is_secure(&self, id: StableNodeId) -> bool {
-        matches!(
-            self.nodes.visual(id),
-            Some(StandardVisual::TextInput { secure: true, .. })
-        )
+        self.text_input_visual_ref(id).is_some_and(|v| v.secure)
     }
 
     /// [`Self::text_shape_constraints`] for a caller that already knows
@@ -3402,16 +3265,14 @@ impl UiWorld {
         // (#388: one line loses a medium title's meaning, two keep the
         // toast's height bounded), each cut to the lane it paints in. The
         // recipe's `title_max_lines` is the assembled notice's.
-        let card_title = matches!(
-            self.standard_visual_ref(id),
-            Some(StandardVisual::Card { .. })
-        );
-        let clamped = match self.standard_visual_ref(id) {
-            Some(StandardVisual::Card { .. }) => Some(1),
-            Some(StandardVisual::Toast {
-                assembled: false, ..
-            }) => Some(2),
-            _ => None,
+        let card_title = self
+            .widget_visual_ref(id)
+            .is_some_and(crate::WidgetVisualHandle::uses_card_title_typography);
+        let clamped = if card_title {
+            Some(1)
+        } else {
+            self.widget_visual_ref(id)
+                .and_then(crate::WidgetVisualHandle::clamped_node_text_lines)
         };
         let wrap = if let Some(lines) = clamped {
             lines > 1
@@ -3424,8 +3285,8 @@ impl UiWorld {
             clamped.is_none() && Self::preserves_lines(source, text_input_multiline);
         let wrap_break = source.layout.text_wrap_break();
         let ellipsis = clamped.is_some() || (!is_text_input && source.layout.uses_text_ellipsis());
-        let max_lines = if clamped.is_some() {
-            clamped
+        let max_lines = if let Some(lines) = clamped {
+            Some(u16::try_from(lines).unwrap_or(u16::MAX))
         } else {
             (!is_text_input)
                 .then(|| source.layout.resolved_line_clamp())
@@ -3472,64 +3333,13 @@ impl UiWorld {
                     (layout.height - padding.top - padding.bottom - border.top - border.bottom)
                         .max(0.0),
                 );
-                Some(match self.standard_visual_ref(id) {
-                    Some(visual @ StandardVisual::Button { .. }) => {
-                        crate::layout_engine::parts::button_text_budget(visual, content)
-                            .unwrap_or(available)
-                    }
-                    Some(StandardVisual::Checkbox { .. }) => self
-                        .checkbox_parts(id, crate::layout_engine::Size::default())
-                        .map_or(available, |parts| {
-                            crate::layout_engine::parts::text_budget(parts, content)
-                        }),
-                    Some(
-                        StandardVisual::StatusBadge { .. }
-                        | StandardVisual::ValidationMessage { .. },
-                    ) => self
-                        .status_dot_parts(id, crate::layout_engine::Size::default())
-                        .map_or(available, |parts| {
-                            crate::layout_engine::parts::text_budget(parts, content)
-                        }),
-                    Some(StandardVisual::SelectionOption { .. }) => self
-                        .selection_option_parts(id, crate::layout_engine::Size::default())
-                        .map_or(available, |parts| {
-                            crate::layout_engine::parts::text_budget(parts, content)
-                        }),
-                    Some(StandardVisual::Card { .. }) => self
-                        .content_part_box(id, crate::LayoutPartKind::Header)
-                        .map_or(available, |part| part.width.max(0.0)),
-                    // The title's lane between the mark and the dismiss
-                    // target, from the parts placement solves in this box.
-                    Some(StandardVisual::Toast {
-                        assembled: false, ..
-                    }) => self
-                        .toast_inputs(id)
-                        .and_then(|inputs| {
-                            crate::layout_engine::parts::part_bounds(
-                                &crate::layout_engine::parts::toast_parts(layout, inputs),
-                                crate::LayoutPartKind::TextContent,
-                            )
+                Some(
+                    self.widget_visual_ref(id)
+                        .and_then(|v| {
+                            v.node_text_max_width(id, self, layout, available, content.height)
                         })
-                        .map_or(available, |part| part.width.max(0.0)),
-                    // A triggered menu's label lane, from the parts placement
-                    // solves in this box.
-                    Some(StandardVisual::MenuSurface { .. }) => self
-                        .component_content_box(id)
-                        .and_then(|content| {
-                            crate::layout_engine::parts::part_bounds(
-                                &self.solve_content_parts(id, content),
-                                crate::LayoutPartKind::TextContent,
-                            )
-                        })
-                        .map_or(available, |part| part.width.max(0.0)),
-                    Some(
-                        StandardVisual::ActionMenuItem { .. }
-                        | StandardVisual::ListItem { content: None, .. },
-                    ) => self
-                        .content_part_box(id, crate::LayoutPartKind::TextContent)
-                        .map_or(available, |part| part.width.max(0.0)),
-                    _ => available,
-                })
+                        .unwrap_or(available),
+                )
             },
             // A vertical paragraph's lines run down the box, so its height is
             // the line budget the way a horizontal one's width is: always
@@ -3636,28 +3446,6 @@ pub(super) fn same_text_constraint_layouts(
         && a.padding_bottom == b.padding_bottom
         && a.padding_left == b.padding_left
         && a.font_size.map(f32::to_bits) == b.font_size.map(f32::to_bits)
-}
-
-/// What plain text resolution reads from a node's visual: which text path the
-/// node takes and which indicator step it reserves. Pixel values are resolved
-/// from the installed theme when text constraints are built.
-pub(crate) fn text_visual_key(visual: Option<&StandardVisual>) -> (u8, u32) {
-    let path = match visual {
-        Some(StandardVisual::TextInput { .. }) => 1,
-        Some(StandardVisual::EmptyState { .. }) => 2,
-        Some(StandardVisual::ModalFrame { .. }) => 3,
-        // Every other visual leaves plain text on the plain path.
-        None | Some(_) => 0,
-    };
-    let indicator = match visual {
-        Some(StandardVisual::Checkbox { size, .. }) => match size {
-            nana_ui_core::ControlSize::Small => 1,
-            nana_ui_core::ControlSize::Medium => 2,
-            nana_ui_core::ControlSize::Large => 3,
-        },
-        _ => 0,
-    };
-    (path, indicator)
 }
 
 impl UiWorld {
@@ -3773,42 +3561,21 @@ impl UiWorld {
         &self,
         id: StableNodeId,
     ) -> Option<TextInputPresentationSource> {
-        let StandardVisual::TextInput {
-            placeholder,
-            secure,
-            ..
-        } = self.nodes.visual(id)?
-        else {
-            return None;
-        };
+        let visual = self.text_input_visual_ref(id)?;
+        let placeholder = &visual.placeholder;
+        let secure = visual.secure;
         let state = self.nodes.text_input(id)?;
         let ime = self.nodes.ime(id);
-        let multiline = self
-            .nodes
-            .get(id)
-            .is_some_and(|node| node.accessibility.multiline);
-        let extras = match self.nodes.visual(id) {
-            Some(StandardVisual::TextInput {
-                diagnostics,
-                matches,
-                color_swatches,
-                atoms,
-                line_numbers,
-                indent_guides,
-                git_marks,
-                editor_options,
-                ..
-            }) => TextInputEditorExtras {
-                diagnostics: Arc::clone(diagnostics),
-                matches: Arc::clone(matches),
-                color_swatches: Arc::clone(color_swatches),
-                atoms: Arc::clone(atoms),
-                line_numbers: *line_numbers,
-                indent_guides: indent_guides.clone(),
-                git_marks: Arc::clone(git_marks),
-                editor: editor_options.clone(),
-            },
-            _ => TextInputEditorExtras::default(),
+        let multiline = self.nodes.contains(id) && self.nodes.accessibility(id).multiline;
+        let extras = TextInputEditorExtras {
+            diagnostics: Arc::clone(&visual.diagnostics),
+            matches: Arc::clone(&visual.matches),
+            color_swatches: Arc::clone(&visual.color_swatches),
+            atoms: Arc::clone(&visual.atoms),
+            line_numbers: visual.line_numbers,
+            indent_guides: visual.indent_guides.clone(),
+            git_marks: Arc::clone(&visual.git_marks),
+            editor: visual.editor_options.clone(),
         };
         // 焦点随 source 下发：出现高亮只在聚焦编辑器上派生，未聚焦的
         // 多行编辑器零分配跳过整条扫描路径。
@@ -3840,7 +3607,7 @@ impl UiWorld {
             state,
             ime,
             placeholder,
-            *secure,
+            secure,
             multiline,
             extras,
             focused,
@@ -3923,9 +3690,20 @@ impl UiWorld {
         let mut empty_shaped = Vec::new();
         let mut modal_shaped = Vec::new();
         let mut resolved = Vec::new();
-        // Re-resolved text whose exported metrics held: the change stopped
-        // at the text and reached no parent.
-        let mut stopped = 0usize;
+        let mut max_text_id: Option<StableNodeId> = None;
+        let mut text_count = 0usize;
+        for &id in &ids {
+            if let Some(record) = self.nodes.get(id)
+                && (record.has_text || matches!(record.kind.as_ref(), NodeKind::Text))
+            {
+                text_count += 1;
+                max_text_id = Some(max_text_id.map_or(id, |current| current.max(id)));
+            }
+        }
+        if let Some(highest) = max_text_id {
+            self.nodes
+                .reserve_text_nodes_through(highest, self.nodes.text_nodes_len() + text_count);
+        }
         #[cfg(any(test, feature = "benchmark"))]
         crate::text_shape_stats::note_scope(ids.len());
         // Run the loop as one fallible unit so an invalid metric still hands
@@ -3937,17 +3715,16 @@ impl UiWorld {
                 if self.plain_text_is_current(id, backend.epoch, &mut work) {
                     continue;
                 }
-                if matches!(
-                    self.nodes.visual(id),
-                    Some(StandardVisual::EmptyState { .. } | StandardVisual::ModalFrame { .. })
-                ) {
+                if self
+                    .widget_visual_ref(id)
+                    .is_some_and(crate::WidgetVisualHandle::owns_intrinsic_text)
+                {
                     // Its text is the visual's own now; a layout it held as
                     // plain text is not drawn any more.
                     self.nodes.release_text_layout(id);
                 }
                 let computed = self.record(id).resolved.0.as_ref();
-                let visual = self.nodes.visual(id);
-                if let Some(visual @ StandardVisual::EmptyState { .. }) = visual {
+                if let Some(empty_visual) = self.widget_visual_as::<crate::EmptyStateVisual>(id) {
                     if computed.visible {
                         let Some(layout) = self.component_layout_box(id) else {
                             continue;
@@ -3959,7 +3736,7 @@ impl UiWorld {
                         let runs = shaper.runs;
                         let intrinsic = shape_empty_state_text(
                             id,
-                            visual,
+                            empty_visual,
                             computed,
                             Some(width),
                             &mut shaper,
@@ -3978,7 +3755,7 @@ impl UiWorld {
                     }
                     continue;
                 }
-                if let Some(visual @ StandardVisual::ModalFrame { .. }) = visual {
+                if let Some(modal_visual) = self.widget_visual_as::<crate::ModalFrameVisual>(id) {
                     if computed.visible {
                         let Some(root) = self.component_layout_box(id) else {
                             continue;
@@ -3998,7 +3775,7 @@ impl UiWorld {
                         let runs = shaper.runs;
                         let intrinsic = shape_modal_text(
                             id,
-                            visual,
+                            modal_visual,
                             computed,
                             self.theme.recipes().dialog(),
                             Some(wrap_width),
@@ -4023,11 +3800,13 @@ impl UiWorld {
                 if !computed.visible {
                     continue;
                 }
-                let presentation = matches!(visual, Some(StandardVisual::TextInput { .. }))
+                let presentation = self
+                    .widget_visual_ref(id)
+                    .is_some_and(crate::WidgetVisualHandle::is_text_input)
                     .then(|| self.text_input_presentation_source(id))
                     .flatten();
                 let empty = presentation.as_ref().map_or_else(
-                    || self.record(id).text.value.is_empty(),
+                    || self.nodes.text_content(id).value.is_empty(),
                     |source| source.text.value.is_empty(),
                 );
                 if presentation.is_some() {
@@ -4071,7 +3850,6 @@ impl UiWorld {
                         &mut work,
                     );
                     validate_text_metrics(id, metrics)?;
-                    let resolved_before = self.text_resolved_before(id);
                     resolved.push(PlainResolution::text(
                         id,
                         constraints,
@@ -4079,12 +3857,10 @@ impl UiWorld {
                         provisional,
                         host_unbroken,
                     ));
-                    if self.record(id).text_metrics != metrics
+                    if self.nodes.text_metrics(id) != metrics
                         || self.text_natural_width(id) != natural
                     {
                         shaped.push((id, metrics, natural, None));
-                    } else if resolved_before {
-                        stopped += 1;
                     }
                     continue;
                 };
@@ -4112,18 +3888,13 @@ impl UiWorld {
                     &previous_overlays,
                     &mut shaper,
                 );
-                let metrics_held = self.record(id).text_metrics == metrics;
-                if metrics_held && self.text_resolved_before(id) {
-                    stopped += 1;
-                }
+                let metrics_held = self.nodes.text_metrics(id) == metrics;
                 if !metrics_held || self.nodes.text_input_presentation(id) != Some(&presentation) {
                     shaped.push((id, metrics, None, Some(presentation)));
                 }
             }
             Ok(())
         })();
-        let runs = shaper.runs;
-        let wrap_layouts = shaper.wrap_layouts;
         let host_keys = shaper.keys;
         work.text_source_clones += shaper.keys;
         work.text_bytes_hashed += shaper.key_bytes;
@@ -4138,53 +3909,42 @@ impl UiWorld {
             return outcome.map(|()| false);
         }
         self.text_input_adaptive_updates.extend(adaptive_updates);
-        let (mut scaled, mut unbreakable_moved, inline_placement_changed) =
+        let (mut unbreakable_moved, inline_placement_changed) =
             self.apply_plain_resolutions(resolved, backend.epoch, &mut work);
         // Text whose widest line was found not to break, or to break after
         // all, asks layout for another width with the metrics it held: it
         // did not stop at itself, and reaches layout below.
         unbreakable_moved.retain(|id| !shaped.iter().any(|(shaped, ..)| shaped == id));
-        self.note_text_propagations_stopped(stopped.saturating_sub(unbreakable_moved.len()));
         let mut changed = !shaped.is_empty()
             || !modal_shaped.is_empty()
             || !unbreakable_moved.is_empty()
             || inline_placement_changed;
-        let mut scale_parent_reflows = 0usize;
         for id in unbreakable_moved {
             self.note_layout_source_change();
-            if self.propagate_layout_from_node(id) && scaled.contains(&id) {
-                scale_parent_reflows += 1;
-            }
+            self.propagate_layout_from_node(id);
         }
         for (id, metrics, natural, presentation) in shaped {
-            let previous = self.record(id).text_metrics;
+            let previous = self.nodes.text_metrics(id);
             let previous_natural = self.text_natural_width(id);
             if previous != metrics || previous_natural != natural {
                 // Layout reads every metric, not only those that seed it: a
                 // full-layout snapshot taken before this write is stale.
                 self.note_layout_source_change();
             }
-            self.record_mut(id).text_metrics = metrics;
+            self.nodes.set_text_metrics(id, metrics);
             self.nodes.set_text_natural_width(id, natural);
             if let Some(presentation) = presentation {
                 self.nodes
                     .set_text_input_presentation(id, Some(presentation));
-                if self.nodes.take_text_scale_pending(id) {
-                    scaled.insert(id);
-                }
             }
             // Scoped shaping runs after a layout pass. Publish the same typed
             // metric seed as the initial shaping path so a wrapping change is
             // not lost when another node has a pending typed seed in the same
             // post-layout drain.
-            if (text_intrinsic_changed(previous, metrics) || previous_natural != natural)
-                && self.propagate_layout_from_node(id)
-                && scaled.contains(&id)
-            {
-                scale_parent_reflows += 1;
+            if text_intrinsic_changed(previous, metrics) || previous_natural != natural {
+                self.propagate_layout_from_node(id);
             }
         }
-        self.note_text_scale_relayouts(scaled.len(), scale_parent_reflows);
         for (id, presentation) in empty_shaped {
             changed |= self.apply_empty_state_text_presentation(id, presentation);
         }
@@ -4203,31 +3963,19 @@ impl UiWorld {
             );
             self.mark(id, DirtyMask::RENDER);
         }
-        let (hits, misses, evictions) = cache.take_counters();
+        let (hits, misses, _) = cache.take_counters();
         if host_keys > 0 {
             // The host path's layout cache is the Runtime `TextLayoutCache`.
             work.record_layout_cache(hits, misses);
             work.layout_cache_lookups += hits + misses;
         }
-        let glyph_stats = glyphs.take_counters();
+        let _ = glyphs.take_counters();
         self.text_layout_cache = cache;
         self.glyph_cache = glyphs;
         self.refresh_document_text_highlights(host);
         // Taken last: document highlights measure through the host too.
         work.accumulate(host.take_text_work());
-        // This pass lays text out at the boxes layout just gave it: what it
-        // laid out again is what a resize cost text.
-        let (relayouts, reshapes) = (work.constraint_only_relayouts, work.text_nodes_shaped);
-        self.bump_last_counters(|counters| counters.record_resize_text(relayouts, reshapes));
-        self.finish_text_pass(
-            work,
-            runs,
-            hits,
-            misses,
-            evictions,
-            wrap_layouts,
-            glyph_stats,
-        );
+        self.finish_text_pass(work);
         Ok(changed)
     }
 
@@ -4241,7 +3989,7 @@ impl UiWorld {
         work: &mut nana_text::TextWorkCounters,
     ) -> bool {
         let Some(text) = self.nodes.text_node(id) else {
-            return false;
+            return self.nodes.is_empty_text_current(id, backend);
         };
         if !text.is_current(backend) {
             return false;
@@ -4305,21 +4053,20 @@ impl UiWorld {
         let base_style = Arc::clone(&self.record(id).resolved.0);
         // The title has component-owned typography, while the Card's base
         // style continues to inherit normally into its body children.
-        let title_style = matches!(
-            self.standard_visual_ref(id),
-            Some(StandardVisual::Card { .. })
-        )
-        .then(|| {
-            let mut style = base_style.as_ref().clone();
-            style.font_size = crate::view_components::CARD_TITLE_SIZE;
-            style.font_weight = Some(crate::view_components::CARD_TITLE_WEIGHT);
-            style.line_height = Some(nana_ui_core::LineHeightSpec::Absolute(
-                crate::view_components::CARD_TITLE_LINE,
-            ));
-            style
-        });
+        let title_style = self
+            .widget_visual_ref(id)
+            .is_some_and(crate::WidgetVisualHandle::uses_card_title_typography)
+            .then(|| {
+                let mut style = base_style.as_ref().clone();
+                style.font_size = crate::view_components::CARD_TITLE_SIZE;
+                style.font_weight = Some(crate::view_components::CARD_TITLE_WEIGHT);
+                style.line_height = Some(nana_ui_core::LineHeightSpec::Absolute(
+                    crate::view_components::CARD_TITLE_LINE,
+                ));
+                style
+            });
         let style = title_style.as_ref().unwrap_or(base_style.as_ref());
-        let text_bytes = self.record(id).text.value.len();
+        let text_bytes = self.nodes.text_content(id).value.len();
         // A box without text that a scheduled pass still measures is not a
         // text node: its measurement is counted, but not as a node.
         let is_text_node =
@@ -4384,7 +4131,6 @@ impl UiWorld {
                 };
                 if copied {
                     node_work.text_source_clones += 1;
-                    self.record_string_clone(text_bytes);
                 }
                 let (metrics, natural, layout, provisional) = match unwrapped {
                     Some((natural, unwrapped)) if hugged => (natural, None, unwrapped, true),
@@ -4413,7 +4159,7 @@ impl UiWorld {
                 let constraint_only = self.nodes.text_node(id).is_some_and(
                     crate::text_node::TextNodeState::constraint_moved_without_reshaping,
                 );
-                let mut metrics = shaper.shape(id, &self.record(id).text, style, constraints);
+                let mut metrics = shaper.shape(id, self.nodes.text_content(id), style, constraints);
                 let lines_tall = crate::components::resolved_text_line_height(style) * 1.5;
                 // Host-only shapers expose no overflow flags. A clamped run
                 // can end short of its budget because the ellipsis has width.
@@ -4421,14 +4167,9 @@ impl UiWorld {
                 // chrome takes space from a control's old box, preserve the
                 // label's intrinsic width so auto sizing can grow that box.
                 let control_capped = !constraints.wrap
-                    && matches!(
-                        self.standard_visual_ref(id),
-                        Some(
-                            StandardVisual::Button { .. }
-                                | StandardVisual::ActionMenuItem { .. }
-                                | StandardVisual::ListItem { .. }
-                        )
-                    )
+                    && self
+                        .widget_visual_ref(id)
+                        .is_some_and(crate::WidgetVisualHandle::caps_control_text)
                     && constraints
                         .max_width
                         .is_some_and(|max| metrics.width >= max - 0.5);
@@ -4440,7 +4181,14 @@ impl UiWorld {
                                 .is_some_and(|max| metrics.width >= max - 0.5)))
                     || (wraps_to_its_box(&constraints) && metrics.height > lines_tall);
                 let unwrapped = needs_natural
-                    .then(|| shaper.shape(id, &self.record(id).text, style, unbounded(constraints)))
+                    .then(|| {
+                        shaper.shape(
+                            id,
+                            self.nodes.text_content(id),
+                            style,
+                            unbounded(constraints),
+                        )
+                    })
                     .filter(|natural| !constraints.wrap || natural.width > metrics.width);
                 let unwrapped = if !constraints.wrap {
                     if let Some(natural) = unwrapped {
@@ -4503,11 +4251,11 @@ impl UiWorld {
         constraints: crate::TextShapeConstraints,
         shaper: &mut CountingShaper<'_, S>,
     ) -> Option<f32> {
-        let Some(StandardVisual::Select {
+        let Some(crate::SelectVisual {
             fit_options: true,
             options,
             ..
-        }) = self.nodes.visual(id)
+        }) = self.widget_visual_as::<crate::SelectVisual>(id)
         else {
             return None;
         };
@@ -4555,26 +4303,41 @@ impl UiWorld {
             .text_node(id)
             .is_some_and(crate::text_node::TextNodeState::reshapes)
             && self.text_natural_width(id).is_none()
-            && (self.record(id).text_metrics.width - width).abs() <= 0.5
+            && (self.nodes.text_metrics(id).width - width).abs() <= 0.5
     }
 
     /// Applies a successful pass's plain text resolutions: retains or releases
     /// each node's layout, then stamps it at the revisions it was resolved at.
     /// Nothing is applied for a pass that failed, so a retry resolves the same
     /// nodes again rather than skipping them with metrics never written.
-    /// Returns the text among them a typography scale change had reached, and
-    /// the text whose widest line was found not to break, or to break after
+    /// Returns the text whose widest line was found not to break, or to break after
     /// all: the width it asks of layout moved, whether or not its metrics did.
     fn apply_plain_resolutions(
         &mut self,
         resolutions: Vec<PlainResolution>,
         backend: TextBackendEpoch,
         work: &mut nana_text::TextWorkCounters,
-    ) -> (HashSet<StableNodeId>, HashSet<StableNodeId>, bool) {
-        let mut scaled = HashSet::new();
+    ) -> (HashSet<StableNodeId>, bool) {
         let mut unbreakable_moved = HashSet::new();
         let mut fragments_changed = Vec::new();
         let mut inline_placement_changed = false;
+        let mut max_text_id: Option<StableNodeId> = None;
+        let mut text_count = 0usize;
+        for resolution in &resolutions {
+            let needs_text_node = resolution.layout.is_some()
+                || self.nodes.get(resolution.id).is_some_and(|record| {
+                    record.has_text || matches!(record.kind.as_ref(), NodeKind::Text)
+                });
+            if needs_text_node {
+                text_count += 1;
+                max_text_id =
+                    Some(max_text_id.map_or(resolution.id, |current| current.max(resolution.id)));
+            }
+        }
+        if let Some(highest) = max_text_id {
+            self.nodes
+                .reserve_text_nodes_through(highest, self.nodes.text_nodes_len() + text_count);
+        }
         for resolution in resolutions {
             fragments_changed.push(resolution.id);
             // What the metrics this resolution wrote were wrapped against:
@@ -4632,12 +4395,9 @@ impl UiWorld {
                 None => self.nodes.release_text_layout(resolution.id),
             }
             self.nodes.set_text_wrap_limit(resolution.id, wrap_limit);
-            if self
+            let _ = self
                 .nodes
-                .mark_text_resolved(resolution.id, backend, resolution.constraints)
-            {
-                self.bump_last_counters(|counters| counters.record_text_language(0, 1));
-            }
+                .mark_text_resolved(resolution.id, backend, resolution.constraints);
             if resolution.provisional {
                 // Not resolved at its box: stamped one constraint revision
                 // behind, so the pass after layout, which its new metrics
@@ -4645,12 +4405,9 @@ impl UiWorld {
                 self.nodes
                     .invalidate_text(resolution.id, crate::text_node::TextDirty::CONSTRAINT);
             }
-            if self.nodes.take_text_scale_pending(resolution.id) {
-                scaled.insert(resolution.id);
-            }
         }
         self.publish_layout_results(&fragments_changed, crate::LayoutResultSource::RuntimeLayout);
-        (scaled, unbreakable_moved, inline_placement_changed)
+        (unbreakable_moved, inline_placement_changed)
     }
 
     /// Whether the widest line `id` was just laid out to cannot break, so the
@@ -4747,48 +4504,14 @@ impl UiWorld {
             max_width: Some((metrics.width - 0.5).max(0.0)),
             ..constraints
         };
-        shaper.shape(id, &self.record(id).text, style, inside).width >= metrics.width - 0.01
-    }
-
-    /// Counts what a typography scale change cost this pass's text: the text
-    /// it reached that laid out again, and of that the text whose metrics
-    /// moved its parent.
-    fn note_text_scale_relayouts(&mut self, relayouts: usize, parent_reflows: usize) {
-        if relayouts > 0 {
-            self.bump_last_counters(|counters| {
-                counters.record_typography_scale_text(0, relayouts, parent_reflows);
-            });
-        }
+        shaper
+            .shape(id, self.nodes.text_content(id), style, inside)
+            .width
+            >= metrics.width - 0.01
     }
 
     /// Folds one pass's counters into the frame.
-    #[allow(clippy::too_many_arguments)]
-    fn finish_text_pass(
-        &mut self,
-        work: nana_text::TextWorkCounters,
-        runs: usize,
-        hits: usize,
-        misses: usize,
-        evictions: usize,
-        wrap_layouts: usize,
-        glyph_stats: Option<(usize, usize)>,
-    ) {
-        // `WorkCounters` keeps its host-shaper meaning: `TextShaper::shape`
-        // runs and `TextLayoutCache` hits and misses. Engine work is reported
-        // on the text work counters, where its caches are named.
-        self.bump_last_counters(|counters| {
-            counters.record_text_shape(
-                runs,
-                hits,
-                misses,
-                wrap_layouts,
-                work.constraint_only_relayouts,
-            );
-            counters.record_cache_eviction(evictions);
-            if let Some((glyph_hits, glyph_misses)) = glyph_stats {
-                counters.record_glyph_cache(glyph_hits, glyph_misses);
-            }
-        });
+    fn finish_text_pass(&mut self, work: nana_text::TextWorkCounters) {
         record_text_diagnostics(&work);
         self.record_text_work(work);
     }
@@ -4863,16 +4586,14 @@ impl UiWorld {
             // layout scope reaches it and is never stamped; showing it again
             // is not a reason to measure it here as well.
             !scheduled.contains(id)
-                && !matches!(
-                    self.nodes.visual(*id),
-                    Some(
-                        StandardVisual::TextInput { .. }
-                            | StandardVisual::EmptyState { .. }
-                            | StandardVisual::ModalFrame { .. }
-                    )
-                )
+                && !self
+                    .widget_visual_ref(*id)
+                    .is_some_and(crate::WidgetVisualHandle::is_text_input)
+                && !self
+                    .widget_visual_ref(*id)
+                    .is_some_and(crate::WidgetVisualHandle::owns_intrinsic_text)
                 && self.nodes.get(*id).is_some_and(|record| {
-                    matches!(record.kind.as_ref(), NodeKind::Text) || !record.text.value.is_empty()
+                    matches!(record.kind.as_ref(), NodeKind::Text) || record.has_text
                 })
         });
         shown
@@ -4894,7 +4615,10 @@ impl UiWorld {
     /// has seen. Paint and compositor changes never move `content`, `shape`
     /// or `constraint`.
     pub fn text_revisions(&self, id: StableNodeId) -> Option<crate::TextRevisions> {
-        self.nodes.text_node(id).map(|text| text.revisions)
+        self.nodes
+            .text_node(id)
+            .map(|text| text.revisions)
+            .or_else(|| self.nodes.contains(id).then(crate::TextRevisions::default))
     }
 
     /// The `nana-text` layout plain text node `id` retains, with its handle.
@@ -5045,27 +4769,6 @@ impl UiWorld {
 }
 
 impl UiWorld {
-    /// Whether a pass already resolved `id`'s text, so this pass changes text
-    /// that had exported metrics rather than laying it out for the first time.
-    fn text_resolved_before(&self, id: StableNodeId) -> bool {
-        self.nodes
-            .text_node(id)
-            .is_some_and(crate::text_node::TextNodeState::resolved_before)
-            || self.nodes.text_input_presentation(id).is_some()
-    }
-
-    /// Text that kept its exported metrics stops the change there. The
-    /// frontier never sees it, so the stop is counted where it happens.
-    fn note_text_propagations_stopped(&mut self, stopped: usize) {
-        if stopped > 0 {
-            self.bump_last_counters(|counters| {
-                counters.layout_propagations_stopped =
-                    counters.layout_propagations_stopped.saturating_add(stopped);
-                counters.record_text_metrics(0, stopped, 0);
-            });
-        }
-    }
-
     /// Shape only explicitly scheduled text. The runtime owns invalidation and
     /// storage while the renderer adapter supplies its real shaping backend.
     pub fn shape_text(
@@ -5084,21 +4787,25 @@ impl UiWorld {
         let mut cache = std::mem::take(&mut self.text_layout_cache);
         let mut glyphs = std::mem::take(&mut self.glyph_cache);
         let mut shaper = CountingShaper::new(host, &mut cache, &mut glyphs);
-        if !ids.is_empty() {
-            self.record_hot_path_allocation(
-                1,
-                ids.len().saturating_mul(size_of::<(
-                    StableNodeId,
-                    TextMetrics,
-                    Option<TextInputPresentation>,
-                )>()),
-            );
-        }
         let mut shaped = Vec::with_capacity(ids.len());
         let mut adaptive_updates = Vec::new();
         let mut empty_shaped = Vec::new();
         let mut modal_shaped = Vec::new();
         let mut resolved = Vec::new();
+        let mut max_text_id: Option<StableNodeId> = None;
+        let mut text_count = 0usize;
+        for &id in ids.iter().chain(&shown) {
+            if let Some(record) = self.nodes.get(id)
+                && (record.has_text || matches!(record.kind.as_ref(), NodeKind::Text))
+            {
+                text_count += 1;
+                max_text_id = Some(max_text_id.map_or(id, |current| current.max(id)));
+            }
+        }
+        if let Some(highest) = max_text_id {
+            self.nodes
+                .reserve_text_nodes_through(highest, self.nodes.text_nodes_len() + text_count);
+        }
         #[cfg(any(test, feature = "benchmark"))]
         crate::text_shape_stats::note_scope(ids.len());
         let outcome = (|| -> Result<(), UiWorldError> {
@@ -5109,38 +4816,37 @@ impl UiWorld {
                 if self.plain_text_is_current(id, backend.epoch, &mut work) {
                     continue;
                 }
-                if matches!(
-                    self.nodes.visual(id),
-                    Some(StandardVisual::EmptyState { .. } | StandardVisual::ModalFrame { .. })
-                ) {
+                if self
+                    .widget_visual_ref(id)
+                    .is_some_and(crate::WidgetVisualHandle::owns_intrinsic_text)
+                {
                     // Its text is the visual's own now; a layout it held as
                     // plain text is not drawn any more.
                     self.nodes.release_text_layout(id);
                 }
-                let visual = self.nodes.visual(id);
-                let presentation = matches!(visual, Some(StandardVisual::TextInput { .. }))
+                let presentation = self
+                    .widget_visual_ref(id)
+                    .is_some_and(crate::WidgetVisualHandle::is_text_input)
                     .then(|| self.text_input_presentation_source(id))
                     .flatten();
                 // A box whose text went empty has nothing to shape: it resolves
                 // to nothing and gives up the metrics that sized it, which
                 // leaves it as a box laid out cold without text.
                 if presentation.is_none()
-                    && self.record(id).text.value.is_empty()
+                    && !self.record(id).has_text
                     && !matches!(self.record(id).kind.as_ref(), NodeKind::Text)
-                    && !matches!(
-                        visual,
-                        Some(StandardVisual::EmptyState { .. } | StandardVisual::ModalFrame { .. })
-                    )
+                    && !self
+                        .widget_visual_ref(id)
+                        .is_some_and(crate::WidgetVisualHandle::owns_intrinsic_text)
                 {
-                    let resolved_before = self.text_resolved_before(id);
                     resolved.push(PlainResolution::nothing(id));
-                    shaped.push((id, TextMetrics::default(), None, None, resolved_before));
+                    shaped.push((id, TextMetrics::default(), None, None));
                     continue;
                 }
                 let style = Arc::clone(&self.record(id).resolved.0);
                 #[cfg(any(test, feature = "benchmark"))]
                 if presentation.as_ref().map_or_else(
-                    || !self.record(id).text.value.is_empty(),
+                    || self.record(id).has_text,
                     |source| !source.text.value.is_empty(),
                 ) {
                     crate::text_shape_stats::note_nonempty();
@@ -5148,12 +4854,12 @@ impl UiWorld {
                 // EmptyState and ModalFrame own intrinsic text of their own and
                 // re-measure it every pass, so they are never stamped.
                 let mut stampable = true;
-                if let Some(visual @ StandardVisual::EmptyState { .. }) = visual {
+                if let Some(empty_visual) = self.widget_visual_as::<crate::EmptyStateVisual>(id) {
                     stampable = false;
                     let runs = shaper.runs;
                     let intrinsic = shape_empty_state_text(
                         id,
-                        visual,
+                        empty_visual,
                         &style,
                         None,
                         &mut shaper,
@@ -5166,12 +4872,12 @@ impl UiWorld {
                     }
                     empty_shaped.push((id, intrinsic));
                 }
-                if let Some(visual @ StandardVisual::ModalFrame { .. }) = visual {
+                if let Some(modal_visual) = self.widget_visual_as::<crate::ModalFrameVisual>(id) {
                     stampable = false;
                     let runs = shaper.runs;
                     let intrinsic = shape_modal_text(
                         id,
-                        visual,
+                        modal_visual,
                         &style,
                         self.theme.recipes().dialog(),
                         None,
@@ -5206,7 +4912,6 @@ impl UiWorld {
                         &mut work,
                     );
                     validate_text_metrics(id, metrics)?;
-                    let resolved_before = self.text_resolved_before(id);
                     if stampable {
                         resolved.push(PlainResolution::text(
                             id,
@@ -5216,7 +4921,7 @@ impl UiWorld {
                             host_unbroken,
                         ));
                     }
-                    shaped.push((id, metrics, natural, None, resolved_before));
+                    shaped.push((id, metrics, natural, None));
                     continue;
                 };
                 self.nodes.release_text_layout(id);
@@ -5242,13 +4947,10 @@ impl UiWorld {
                     &previous_overlays,
                     &mut shaper,
                 );
-                let resolved_before = self.text_resolved_before(id);
-                shaped.push((id, metrics, None, Some(presentation), resolved_before));
+                shaped.push((id, metrics, None, Some(presentation)));
             }
             Ok(())
         })();
-        let runs = shaper.runs;
-        let wrap_layouts = shaper.wrap_layouts;
         let host_keys = shaper.keys;
         work.text_source_clones += shaper.keys;
         work.text_bytes_hashed += shaper.key_bytes;
@@ -5263,12 +4965,10 @@ impl UiWorld {
             return outcome;
         }
         self.text_input_adaptive_updates.extend(adaptive_updates);
-        let (mut scaled, unbreakable_moved, _) =
+        let (unbreakable_moved, _) =
             self.apply_plain_resolutions(resolved, backend.epoch, &mut work);
-        let mut stopped = 0usize;
-        let mut scale_parent_reflows = 0usize;
-        for (id, metrics, natural, presentation, resolved_before) in shaped {
-            let previous = self.record(id).text_metrics;
+        for (id, metrics, natural, presentation) in shaped {
+            let previous = self.nodes.text_metrics(id);
             let previous_natural = self.text_natural_width(id);
             // A widest line found not to break, or to break after all, moves
             // the width this text asks of layout with the metrics it held.
@@ -5278,7 +4978,7 @@ impl UiWorld {
                 // full-layout snapshot taken before this write is stale.
                 self.note_layout_source_change();
             }
-            self.record_mut(id).text_metrics = metrics;
+            self.nodes.set_text_metrics(id, metrics);
             self.nodes.set_text_natural_width(id, natural);
             if let Some(presentation) = presentation {
                 // minimap 视口钉住随光标移动失效：reveal 恢复权威。上一趟
@@ -5297,53 +4997,34 @@ impl UiWorld {
                 }
                 self.nodes
                     .set_text_input_presentation(id, Some(presentation));
-                if self.nodes.take_text_scale_pending(id) {
-                    scaled.insert(id);
-                }
             }
             if text_intrinsic_changed(previous, metrics)
                 || previous_natural != natural
                 || width_moved
             {
-                if self.propagate_layout_from_node(id) && scaled.contains(&id) {
-                    scale_parent_reflows += 1;
-                }
-            } else if resolved_before {
-                // Re-shaped, and the width, height and baseline it exports
-                // held: the change stops at the text and reaches no parent.
-                stopped += 1;
+                self.propagate_layout_from_node(id);
             }
         }
-        self.note_text_propagations_stopped(stopped);
-        self.note_text_scale_relayouts(scaled.len(), scale_parent_reflows);
         for (id, presentation) in empty_shaped {
             self.apply_empty_state_text_presentation(id, presentation);
         }
         for (id, presentation) in modal_shaped {
             self.nodes.set_modal_text(id, Some(presentation));
         }
-        let (hits, misses, evictions) = cache.take_counters();
+        let (hits, misses, _) = cache.take_counters();
         if host_keys > 0 {
             // The host path's layout cache is the Runtime `TextLayoutCache`.
             work.record_layout_cache(hits, misses);
             work.layout_cache_lookups += hits + misses;
         }
-        let glyph_stats = glyphs.take_counters();
+        let _ = glyphs.take_counters();
         self.text_layout_cache = cache;
         self.glyph_cache = glyphs;
         self.resolve_block_struts(ids, host);
         self.refresh_document_text_highlights(host);
         // Taken last: document highlights measure through the host too.
         work.accumulate(host.take_text_work());
-        self.finish_text_pass(
-            work,
-            runs,
-            hits,
-            misses,
-            evictions,
-            wrap_layouts,
-            glyph_stats,
-        );
+        self.finish_text_pass(work);
         Ok(())
     }
 }
@@ -5379,7 +5060,7 @@ impl UiWorld {
         record.hierarchy.children.iter().any(|&child| {
             self.nodes.get(child).is_some_and(|child| {
                 let child = &child.resolved_layout;
-                child.is_inline_level() && !child.is_floated() && !child.position.is_out_of_flow()
+                child.is_inline_level() && !child.position.is_out_of_flow()
             })
         })
     }
@@ -5468,14 +5149,11 @@ impl UiWorld {
         &self,
         id: StableNodeId,
     ) -> Option<(LayoutBox, ScrollOffset)> {
-        if !matches!(
-            self.nodes.visual(id),
-            Some(StandardVisual::TextInput { .. })
-        ) {
+        if self.text_input_visual_ref(id).is_none() {
             return None;
         }
         let content = self.component_content_box(id)?;
-        Some((content, self.record(id).scroll_offset))
+        Some((content, self.nodes.scroll_offset(id)))
     }
 
     /// Content box and scroll offset used to map pointer coordinates onto
@@ -5587,10 +5265,7 @@ impl UiWorld {
         &self,
         id: StableNodeId,
     ) -> Option<(ComputedStyle, crate::TextShapeConstraints)> {
-        if !matches!(
-            self.nodes.visual(id),
-            Some(StandardVisual::TextInput { .. })
-        ) {
+        if self.text_input_visual_ref(id).is_none() {
             return None;
         }
         let multiline = self.text_input_kind(id)?;
@@ -5735,12 +5410,11 @@ impl UiWorld {
 
     /// 指针是否落在 hover 浮窗面板上（含内边距）。坐标为节点空间。
     pub fn text_hover_panel_hit(&self, id: StableNodeId, x: f32, y: f32) -> bool {
-        let Some(crate::ComponentGeometry::TextInput { hover_popup, .. }) =
-            self.component_geometry(id)
-        else {
+        let Some(geometry) = self.text_input_geometry(id) else {
             return false;
         };
-        hover_popup
+        geometry
+            .hover_popup
             .as_ref()
             .is_some_and(|popup| popup.panel.contains(x, y))
     }
@@ -5750,13 +5424,11 @@ impl UiWorld {
     /// 指针是否落在补全弹层面板上（含内边距）。坐标为节点空间；滚轮
     /// 路由用它把弹层内滚动与编辑器滚动分开。
     pub fn text_completion_panel_hit(&self, id: StableNodeId, x: f32, y: f32) -> bool {
-        let Some(crate::ComponentGeometry::TextInput {
-            completion_popup, ..
-        }) = self.component_geometry(id)
-        else {
+        let Some(geometry) = self.text_input_geometry(id) else {
             return false;
         };
-        completion_popup
+        geometry
+            .completion_popup
             .as_ref()
             .is_some_and(|popup| popup.panel.contains(x, y))
     }
@@ -5766,52 +5438,42 @@ impl UiWorld {
     /// 命中补全弹层的候选行，返回该候选的绝对下标。弹层绘制在折叠
     /// 之上，调用方（框架指针路径）应先于折叠命中查询。坐标为节点空间。
     pub fn text_completion_hit(&self, id: StableNodeId, x: f32, y: f32) -> Option<usize> {
-        match self.component_geometry(id)? {
-            crate::ComponentGeometry::TextInput {
-                completion_popup, ..
-            } => {
-                let popup = completion_popup.as_ref()?;
-                let row = popup
-                    .rows
-                    .iter()
-                    .position(|row| row.bounds.contains(x, y))?;
-                Some(popup.first_row + row)
-            }
-            _ => None,
-        }
+        let geometry = self.text_input_geometry(id)?;
+        let popup = geometry.completion_popup.as_ref()?;
+        let row = popup
+            .rows
+            .iter()
+            .position(|row| row.bounds.contains(x, y))?;
+        Some(popup.first_row + row)
     }
 }
 
 impl UiWorld {
     /// Hit the close control of an atom chip. Coordinates are node space.
     pub fn text_atom_close_hit(&self, id: StableNodeId, x: f32, y: f32) -> Option<Arc<str>> {
-        match self.component_geometry(id)? {
-            crate::ComponentGeometry::TextInput { atom_chips, .. } => atom_chips
-                .iter()
-                .find(|chip| chip.close.contains(x, y))
-                .map(|chip| Arc::clone(&chip.token)),
-            _ => None,
-        }
+        self.text_input_geometry(id)?
+            .atom_chips
+            .iter()
+            .find(|chip| chip.close.contains(x, y))
+            .map(|chip| Arc::clone(&chip.token))
     }
 
     /// 命中折叠交互区域（gutter 箭头优先，其次折叠起始行的摘要标记），
     /// 返回对应折叠区间。坐标为节点空间。
     pub fn text_fold_hit(&self, id: StableNodeId, x: f32, y: f32) -> Option<crate::TextCodeFold> {
-        match self.component_geometry(id)? {
-            crate::ComponentGeometry::TextInput { folds, .. } => folds
-                .gutters
-                .iter()
-                .find(|gutter| gutter.bounds.contains(x, y))
-                .map(|gutter| gutter.fold)
-                .or_else(|| {
-                    folds
-                        .markers
-                        .iter()
-                        .find(|marker| marker.bounds.contains(x, y))
-                        .map(|marker| marker.fold)
-                }),
-            _ => None,
-        }
+        let folds = self.text_input_geometry(id)?.folds;
+        folds
+            .gutters
+            .iter()
+            .find(|gutter| gutter.bounds.contains(x, y))
+            .map(|gutter| gutter.fold)
+            .or_else(|| {
+                folds
+                    .markers
+                    .iter()
+                    .find(|marker| marker.bounds.contains(x, y))
+                    .map(|marker| marker.fold)
+            })
     }
 }
 
@@ -6028,7 +5690,7 @@ impl UiWorld {
         let marks = self.nodes.rich_editor_marks(id)?;
         let content = self.component_content_box(id)?;
         let (_, layout) = self.text_layout(id)?;
-        let requested = self.record(id).scroll_offset;
+        let requested = self.nodes.scroll_offset(id);
         let mut offset = self.clamp_scroll_offset(id, requested);
         if self.text_viewport_pin(id) != Some(requested)
             && let Some(byte) = marks.caret
@@ -6056,7 +5718,7 @@ impl UiWorld {
     /// puts on the right, so there the later columns overflow to the left and
     /// the offset runs negative from 0, like any container's (#59).
     pub(crate) fn text_scroll_metrics(&self, id: StableNodeId) -> Option<ScrollMetrics> {
-        if !self.nodes.get(id)?.accessibility.multiline {
+        if !self.nodes.contains(id) || !self.nodes.accessibility(id).multiline {
             return None;
         }
         if self.nodes.rich_editor_marks(id).is_some() {
@@ -6105,11 +5767,7 @@ impl UiWorld {
         x: f32,
         y: f32,
     ) -> Option<ScrollOffset> {
-        let Some(crate::ComponentGeometry::TextInput {
-            minimap: Some(minimap),
-            ..
-        }) = self.component_geometry(id)
-        else {
+        let Some(minimap) = self.text_input_geometry(id).and_then(|g| g.minimap) else {
             return None;
         };
         if !minimap.panel.contains(x, y) {
@@ -6133,7 +5791,7 @@ impl UiWorld {
             .unwrap_or(line as f32 * line_height);
         let centered = line_top + line_height * 0.5 - content_height * 0.5;
         Some(ScrollOffset {
-            x: self.record(id).scroll_offset.x,
+            x: self.nodes.scroll_offset(id).x,
             y: centered.clamp(0.0, max_scroll),
         })
     }
@@ -6153,13 +5811,10 @@ impl UiWorld {
         offset: usize,
     ) -> Option<ScrollOffset> {
         let state = self.nodes.text_input(id)?;
-        if !self.nodes.get(id)?.accessibility.multiline {
+        if !self.nodes.contains(id) || !self.nodes.accessibility(id).multiline {
             return None;
         }
-        if !matches!(
-            self.nodes.visual(id),
-            Some(StandardVisual::TextInput { .. })
-        ) {
+        if self.text_input_visual_ref(id).is_none() {
             return None;
         }
         let presentation = self.nodes.text_input_presentation(id)?;
@@ -6194,14 +5849,14 @@ impl UiWorld {
                 .max(0.0);
         let total_height = presentation.content_size.height;
         let max_scroll = (total_height - content_height).max(0.0);
-        let mut scroll_y = self.record(id).scroll_offset.y;
+        let mut scroll_y = self.nodes.scroll_offset(id).y;
         if reveal_y < scroll_y {
             scroll_y = reveal_y;
         } else if reveal_y + line_height > scroll_y + content_height {
             scroll_y = reveal_y + line_height - content_height;
         }
         Some(ScrollOffset {
-            x: self.record(id).scroll_offset.x,
+            x: self.nodes.scroll_offset(id).x,
             y: scroll_y.clamp(0.0, max_scroll),
         })
     }
@@ -6482,12 +6137,12 @@ impl UiWorld {
         &self,
         id: StableNodeId,
     ) -> Option<crate::TextInputCharacterCounter> {
-        let StandardVisual::TextInput {
+        let crate::TextInputVisual {
             size,
             character_counter: Some(limit),
             editor_options,
             ..
-        } = self.nodes.visual(id)?
+        } = self.text_input_visual_ref(id)?
         else {
             return None;
         };
@@ -6498,7 +6153,10 @@ impl UiWorld {
         let weight = self.computed_style(id)?.font_weight;
         let measure = self.chrome_text_measure(id);
         // Keep the editor stable throughout the normal 0..=limit range.
-        let multiline = self.nodes.get(id)?.accessibility.multiline;
+        if !self.nodes.contains(id) {
+            return None;
+        }
+        let multiline = self.nodes.accessibility(id).multiline;
         let expanded_footer = multiline && editor_options.expanded_footer;
         let action_extent = if expanded_footer && editor_options.footer_action {
             nana_ui_core::ControlSize::Small.height_in(self.style_model.metrics) + 4.0
@@ -6559,11 +6217,11 @@ impl UiWorld {
     /// The width a single-line field's steppers take off its content box,
     /// with the gap before them; zero without steppers.
     fn text_input_stepper_extent(&self, id: StableNodeId, content: LayoutBox) -> f32 {
-        let Some(StandardVisual::TextInput {
+        let Some(crate::TextInputVisual {
             size,
             steppers: true,
             ..
-        }) = self.nodes.visual(id)
+        }) = self.text_input_visual_ref(id)
         else {
             return 0.0;
         };
@@ -6579,14 +6237,12 @@ impl UiWorld {
     /// muted and at the text's own size, right before the steppers, with the
     /// text's box ending a gap before it.
     pub(crate) fn text_input_suffix(&self, id: StableNodeId) -> Option<crate::TextInputSuffix> {
-        let StandardVisual::TextInput { editor_options, .. } = self.nodes.visual(id)? else {
-            return None;
-        };
+        let editor_options = &self.text_input_visual_ref(id)?.editor_options;
         let suffix = editor_options
             .suffix
             .as_ref()
             .filter(|suffix| !suffix.is_empty())?;
-        if self.nodes.get(id)?.accessibility.multiline {
+        if !self.nodes.contains(id) || self.nodes.accessibility(id).multiline {
             return None;
         }
         let content = self.component_content_box(id)?;
@@ -6629,14 +6285,11 @@ impl UiWorld {
     /// Compare with the hypothetical compact viewport, independent of the
     /// currently expanded layout, so an expanded one-line fit cannot oscillate.
     pub(crate) fn text_input_needs_expanded_footer(&self, id: StableNodeId) -> Option<bool> {
-        let StandardVisual::TextInput {
+        let crate::TextInputVisual {
             character_counter,
             editor_options,
             ..
-        } = self.nodes.visual(id)?
-        else {
-            return None;
-        };
+        } = self.text_input_visual_ref(id)?;
         if !editor_options.adaptive_footer {
             return None;
         }
@@ -6694,11 +6347,9 @@ impl UiWorld {
     /// frame the field was shown in.
     pub(crate) fn editor_frame_as(&self, id: StableNodeId, focused: bool) -> Option<EditorFrame> {
         let writing = self.computed_style(id)?.writing_context();
-        let Some(StandardVisual::TextInput { size, .. }) = self.nodes.visual(id) else {
-            return None;
-        };
+        let size = self.text_input_visual_ref(id)?.size;
         let content = self.text_input_text_box(id)?;
-        let requested = self.record(id).scroll_offset;
+        let requested = self.nodes.scroll_offset(id);
         let vertical = writing.is_vertical();
         // The recorded offset is physical, like every scroll container's. As
         // a displacement it turns into line space mirrored about 0: the block
@@ -6718,10 +6369,7 @@ impl UiWorld {
                 block_scroll,
             });
         };
-        let multiline = self
-            .nodes
-            .get(id)
-            .is_some_and(|node| node.accessibility.multiline);
+        let multiline = self.nodes.contains(id) && self.nodes.accessibility(id).multiline;
         let (content_inline, content_block) = if vertical {
             (content.height, content.width)
         } else {

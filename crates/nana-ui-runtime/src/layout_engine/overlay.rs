@@ -293,6 +293,5 @@ pub(super) fn place_modal_slot(
         intrinsic,
         output,
         scope,
-        None,
     )
 }

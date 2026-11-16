@@ -20,10 +20,11 @@ use nana_ui::runtime::view::{entity_ref, widget, with_refs};
 use nana_ui::runtime::{DocumentId, Entity, RuntimeDocument, Stack, Text};
 use nana_ui::{
     DocumentAccessError, FrameDemand, GpuBackendPolicy, HostFailure, MaterialEffect,
-    RuntimeProgram, RuntimeProgramContext, RuntimeProgramUpdate, WindowDescriptor, WindowHandle,
-    WindowOutputConfig, WindowOutputExtent, WindowOutputFrame, run_runtime,
+    PresentationWork, RuntimeProgram, RuntimeProgramContext, RuntimeProgramUpdate,
+    WindowDescriptor, WindowHandle, WindowOutputConfig, WindowOutputExtent, WindowOutputFrame,
+    run_runtime,
 };
-use nana_ui_core::{LengthSpec, WorkCounters};
+use nana_ui_core::LengthSpec;
 use nana_ui_platform::{WindowEvent, WindowId};
 
 const WARMUP: usize = 30;
@@ -146,7 +147,7 @@ struct Observed {
 }
 
 impl Observed {
-    fn record(&mut self, work: WorkCounters, elapsed: Duration) {
+    fn record(&mut self, work: PresentationWork, elapsed: Duration) {
         if let Some(renders) = work.output_ui_renders.filter(|renders| *renders > 0) {
             let metrics = [
                 work.draw_calls,
@@ -208,7 +209,7 @@ impl Observed {
             "encoded_frames":self.painter_encoded_frames,"skipped_frames":self.painter_skipped_frames,
             "missing_observations":self.missing_painter_observations,
             "work":measured.then_some(&self.painter),
-            "scope":"measured real Window Scene painter encodes from Runtime WorkCounters; setup and warmup excluded; GPU buffer reallocations are not process malloc"})
+            "scope":"measured real Window Scene painter encodes from PresentationWork; setup and warmup excluded; GPU buffer reallocations are not process malloc"})
     }
 
     fn timing(&self) -> serde_json::Value {
@@ -745,7 +746,7 @@ impl RuntimeProgram for Probe {
         }
     }
 
-    fn prepare_window_frame(&mut self, _: WindowId, _: &RuntimeProgramContext<()>) {
+    fn prepare_window_frame(&mut self, _: WindowId, context: &RuntimeProgramContext<()>) {
         if let Some(result) = self
             .surface_request
             .as_mut()
@@ -784,8 +785,7 @@ impl RuntimeProgram for Probe {
                         .as_ref()
                         .map(|producer| producer.0.load(Ordering::Relaxed));
                 }
-                self.observations[5]
-                    .record(self.document.context().last_work_counters(), Duration::ZERO);
+                self.observations[5].record(context.presentation_work(), Duration::ZERO);
             }
             return;
         }
@@ -893,10 +893,8 @@ impl RuntimeProgram for Probe {
             self.observations[self.phase]
                 .heap
                 .observe(self.frame_heap_started, heap_after);
-            self.observations[self.phase].record(
-                self.document.context().last_work_counters(),
-                self.frame_started.elapsed(),
-            );
+            self.observations[self.phase]
+                .record(context.presentation_work(), self.frame_started.elapsed());
             if let Some(samples) = &mut self.timing_samples {
                 samples.phases[self.phase].record(
                     self.phase_frames,

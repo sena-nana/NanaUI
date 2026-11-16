@@ -5,14 +5,13 @@
 
 use crate::box_layout::{
     AlignSpec, BackdropFilter, BackgroundImage, BackgroundImageFit, BackgroundPosition,
-    BackgroundRepeat, BorderImageSpec, BorderStyle, BoxShadowSpec, BoxSizing, ClearSpec, ClipPath,
-    ColorFilter, DirSpec, DisplaySpec, FlexDirection, FlexWrap, FloatSpec, FontFeatureSetting,
-    GridAutoFlow, GridPlacement, GridRepeatAuto, GridTemplateAreas, GridTrack,
-    GridTrackListUnsupported, JustifySpec, LayoutStyle, LengthSpec, LineHeightSpec, LogicalEdges,
-    MaskImage, MixBlendMode, OutlineSpec, OverflowSpec, OverflowWrapSpec, PaintMat4, PaintStyle,
-    PaintTransform, PointerEventsSpec, PositionSpec, TextAlignSpec, TextDecorationLine,
-    TextShadowSpec, TransformBox, TransformOrigin, UserSelectSpec, VisibilitySpec, WhiteSpaceSpec,
-    WordBreakSpec,
+    BackgroundRepeat, BorderImageSpec, BorderStyle, BoxShadowSpec, BoxSizing, ClipPath,
+    ColorFilter, DirSpec, DisplaySpec, FlexDirection, FlexWrap, FontFeatureSetting, GridAutoFlow,
+    GridPlacement, GridRepeatAuto, GridTemplateAreas, GridTrack, GridTrackListUnsupported,
+    JustifySpec, LayoutStyle, LengthSpec, LineHeightSpec, LogicalEdges, MaskImage, MixBlendMode,
+    OutlineSpec, OverflowSpec, OverflowWrapSpec, PaintMat4, PaintStyle, PaintTransform,
+    PointerEventsSpec, PositionSpec, TextAlignSpec, TextDecorationLine, TextShadowSpec,
+    TransformBox, TransformOrigin, UserSelectSpec, VisibilitySpec, WhiteSpaceSpec, WordBreakSpec,
 };
 
 macro_rules! set_opt {
@@ -25,6 +24,18 @@ macro_rules! set_opt {
             }
         )+
     };
+    (@in $group:ident { $($name:ident => $field:ident: $ty:ty),+ $(,)? }) => {
+        $(
+            #[inline]
+            pub fn $name(mut self, value: $ty) -> Self {
+                let v = Some(value.into());
+                if self.$group.$field != v {
+                    self.$group.$field = v;
+                }
+                self
+            }
+        )+
+    };
 }
 
 macro_rules! set_val {
@@ -33,6 +44,18 @@ macro_rules! set_val {
             #[inline]
             pub fn $name(mut self, value: $ty) -> Self {
                 self.$name = value.into();
+                self
+            }
+        )+
+    };
+    (@in $group:ident { $($name:ident => $field:ident: $ty:ty),+ $(,)? }) => {
+        $(
+            #[inline]
+            pub fn $name(mut self, value: $ty) -> Self {
+                let v = value.into();
+                if self.$group.$field != v {
+                    self.$group.$field = v;
+                }
                 self
             }
         )+
@@ -51,6 +74,22 @@ macro_rules! set_color {
                 self.$name = Some(value);
                 self.paint_colors.$slot =
                     Some(crate::style_model::PaintColor::Srgb { rgba: value });
+                self
+            }
+        )+
+    };
+    (@in $group:ident { $($name:ident => $field:ident => $slot:ident),+ $(,)? }) => {
+        $(
+            #[inline]
+            pub fn $name(mut self, value: [f32; 4]) -> Self {
+                let rgba = Some(value);
+                if self.$group.$field != rgba {
+                    self.$group.$field = rgba;
+                }
+                let pc = Some(crate::style_model::PaintColor::Srgb { rgba: value });
+                if self.paint_colors.$slot != pc {
+                    self.paint_colors.$slot = pc;
+                }
                 self
             }
         )+
@@ -93,11 +132,6 @@ impl LayoutStyle {
         dir: DirSpec,
         display: DisplaySpec,
         z_index: i32,
-        transform: PaintTransform,
-        transform_3d: PaintMat4,
-        unsupported_transform: String,
-        transform_origin: TransformOrigin,
-        css_perspective: f32,
         gap: LengthSpec,
         row_gap: LengthSpec,
         column_gap: LengthSpec,
@@ -127,76 +161,93 @@ impl LayoutStyle {
         flex_grow: f32,
         flex_shrink: f32,
         flex_basis: LengthSpec,
-        line_clamp: u16,
         pointer_events: PointerEventsSpec,
         user_select: UserSelectSpec,
-        word_break: WordBreakSpec,
-        overflow_wrap: OverflowWrapSpec,
         aspect_ratio: f32,
         font_size: f32,
         font_weight: u16,
         font_italic: bool,
-        font_family: String,
         line_height: LineHeightSpec,
-        letter_spacing: f32,
-        text_decoration: TextDecorationLine,
-        text_emphasis_style: crate::typography::TextEmphasisStyle,
-        text_emphasis_position: crate::typography::TextEmphasisPosition,
-        text_emphasis_color: crate::typography::TextEmphasisColor,
-        font_features: Vec<FontFeatureSetting>,
-        placeholder_color: [f32; 4],
-        placeholder_opacity: f32,
-        grid_columns: Vec<GridTrack>,
-        grid_rows: Vec<GridTrack>,
-        grid_columns_unsupported: GridTrackListUnsupported,
-        grid_rows_unsupported: GridTrackListUnsupported,
-        grid_auto_columns: Vec<GridTrack>,
-        grid_auto_rows: Vec<GridTrack>,
-        grid_auto_flow: GridAutoFlow,
-        grid_columns_repeat: GridRepeatAuto,
-        grid_rows_repeat: GridRepeatAuto,
-        grid_template_areas: GridTemplateAreas,
-        grid_column_line_names: Vec<Vec<String>>,
-        grid_row_line_names: Vec<Vec<String>>,
         opacity: f32,
         border_radius: f32,
         border_width: f32,
-        border_top_width: f32,
-        border_right_width: f32,
-        border_bottom_width: f32,
-        border_left_width: f32,
         border_style: BorderStyle,
-        border_top_style: BorderStyle,
-        border_right_style: BorderStyle,
-        border_bottom_style: BorderStyle,
-        border_left_style: BorderStyle,
     }
+
+    set_opt!(@in transforms {
+        transform => transform: PaintTransform,
+        transform_3d => transform_3d: PaintMat4,
+        unsupported_transform => unsupported_transform: String,
+        transform_origin => origin: TransformOrigin,
+        css_perspective => css_perspective: f32,
+    });
+
+    set_opt!(@in text_ext {
+        line_clamp => line_clamp: u16,
+        word_break => word_break: WordBreakSpec,
+        overflow_wrap => overflow_wrap: OverflowWrapSpec,
+        font_family => font_family: String,
+        letter_spacing => letter_spacing: f32,
+        text_decoration => text_decoration: TextDecorationLine,
+        text_emphasis_style => text_emphasis_style: crate::typography::TextEmphasisStyle,
+        text_emphasis_position => text_emphasis_position: crate::typography::TextEmphasisPosition,
+        text_emphasis_color => text_emphasis_color: crate::typography::TextEmphasisColor,
+        font_features => font_features: Vec<FontFeatureSetting>,
+        placeholder_color => placeholder_color: [f32; 4],
+        placeholder_opacity => placeholder_opacity: f32,
+    });
+
+    set_opt!(@in grid {
+        grid_columns => columns: Vec<GridTrack>,
+        grid_rows => rows: Vec<GridTrack>,
+        grid_columns_unsupported => columns_unsupported: GridTrackListUnsupported,
+        grid_rows_unsupported => rows_unsupported: GridTrackListUnsupported,
+        grid_auto_columns => auto_columns: Vec<GridTrack>,
+        grid_auto_rows => auto_rows: Vec<GridTrack>,
+        grid_auto_flow => auto_flow: GridAutoFlow,
+        grid_columns_repeat => columns_repeat: GridRepeatAuto,
+        grid_rows_repeat => rows_repeat: GridRepeatAuto,
+        grid_template_areas => template_areas: GridTemplateAreas,
+        grid_column_line_names => column_line_names: Vec<Vec<String>>,
+        grid_row_line_names => row_line_names: Vec<Vec<String>>,
+    });
+
+    set_opt!(@in border_sides {
+        border_top_width => top_width: f32,
+        border_right_width => right_width: f32,
+        border_bottom_width => bottom_width: f32,
+        border_left_width => left_width: f32,
+        border_top_style => top_style: BorderStyle,
+        border_right_style => right_style: BorderStyle,
+        border_bottom_style => bottom_style: BorderStyle,
+        border_left_style => left_style: BorderStyle,
+    });
 
     set_color! {
         color => color,
         background => background,
-        selection_background => selection_background,
-        selection_color => selection_color,
         border_color => border,
-        border_top_color => border_top,
-        border_right_color => border_right,
-        border_bottom_color => border_bottom,
-        border_left_color => border_left,
     }
 
+    set_color!(@in text_ext {
+        selection_background => selection_background => selection_background,
+        selection_color => selection_color => selection_color,
+    });
+
+    set_color!(@in border_sides {
+        border_top_color => top_color => border_top,
+        border_right_color => right_color => border_right,
+        border_bottom_color => bottom_color => border_bottom,
+        border_left_color => left_color => border_left,
+    });
+
     set_val! {
-        unsupported_writing_mode: bool,
         flex_reverse: bool,
         order: i32,
         flex_wrap: FlexWrap,
         box_sizing: BoxSizing,
         position: PositionSpec,
         isolation: bool,
-        transform_box: TransformBox,
-        preserve_3d: bool,
-        logical_padding: LogicalEdges,
-        logical_margin: LogicalEdges,
-        logical_inset: LogicalEdges,
         allow_shrink: bool,
         align_items: AlignSpec,
         align_content: JustifySpec,
@@ -207,12 +258,36 @@ impl LayoutStyle {
         white_space_nowrap: bool,
         white_space: WhiteSpaceSpec,
         text_align: TextAlignSpec,
-        float: FloatSpec,
-        clear: ClearSpec,
-        unsupported_font_variation: bool,
-        grid_placement: GridPlacement,
         hidden: bool,
         paint: PaintStyle,
+    }
+
+    set_val!(@in transforms {
+        transform_box => transform_box: TransformBox,
+        preserve_3d => preserve_3d: bool,
+    });
+
+    set_val!(@in text_ext {
+        unsupported_writing_mode => unsupported_writing_mode: bool,
+        unsupported_font_variation => unsupported_font_variation: bool,
+    });
+
+    set_val!(@in logical_edges {
+        logical_padding => padding: LogicalEdges,
+        logical_margin => margin: LogicalEdges,
+        logical_inset => inset: LogicalEdges,
+    });
+
+    #[inline]
+    pub fn grid_placement(mut self, value: GridPlacement) -> Self {
+        if *self.grid.placement != value {
+            self.grid.placement = if value == GridPlacement::default() {
+                crate::shared::Shared::empty()
+            } else {
+                crate::shared::Shared::new(value)
+            };
+        }
+        self
     }
 }
 
@@ -263,11 +338,10 @@ mod tests {
     use super::*;
     use crate::box_layout::{
         AlignSpec, BackgroundImage, BackgroundImageFit, BorderImageSlice, BorderImageSpec,
-        BorderStyle, BoxShadowSpec, BoxSizing, ClearSpec, ClipInset, ClipPath, DirSpec,
-        DisplaySpec, FlexDirection, FlexWrap, FloatSpec, GridAutoFlow, GridLine, GridPlacement,
-        GridTrack, JustifySpec, LengthSpec, MixBlendMode, OverflowSpec, PaintTransform,
-        PointerEventsSpec, PositionSpec, TextAlignSpec, TransformBox, VisibilitySpec,
-        WhiteSpaceSpec,
+        BorderStyle, BoxShadowSpec, BoxSizing, ClipInset, ClipPath, DirSpec, DisplaySpec,
+        FlexDirection, FlexWrap, GridAutoFlow, GridLine, GridPlacement, GridTrack, JustifySpec,
+        LengthSpec, MixBlendMode, OverflowSpec, PaintTransform, PointerEventsSpec, PositionSpec,
+        TextAlignSpec, TransformBox, VisibilitySpec, WhiteSpaceSpec,
     };
     use crate::style_model::PaintColor;
 
@@ -354,8 +428,6 @@ mod tests {
             .white_space(WhiteSpaceSpec::Pre)
             .aspect_ratio(1.5)
             .text_align(TextAlignSpec::Center)
-            .float(FloatSpec::Left)
-            .clear(ClearSpec::Both)
             .font_size(16.0)
             .font_weight(700)
             .font_italic(true)
@@ -417,7 +489,7 @@ mod tests {
         assert_eq!(styled.display, Some(DisplaySpec::Grid));
         assert_eq!(styled.position, PositionSpec::Relative);
         assert_eq!(
-            styled.grid_columns.as_deref(),
+            styled.grid.columns.as_deref(),
             Some(&[GridTrack::Px(80.0)][..])
         );
         assert_eq!(styled.paint.visibility, Some(VisibilitySpec::Hidden));
@@ -480,7 +552,7 @@ mod tests {
         assert_eq!(style.paint_colors.border_right, Some(stale));
         assert_eq!(style.color, Some(color));
         assert_eq!(style.border_color, Some(border));
-        assert_eq!(style.border_top_color, Some(border_top));
+        assert_eq!(style.border_sides.top_color, Some(border_top));
     }
 
     #[test]

@@ -554,7 +554,7 @@ fn header_style(chrome: AreaChrome) -> NodeStyle {
         if chrome.header_divider {
             // only the edge that meets the content
             layout.border_width = Some(0.0);
-            layout.border_bottom_width = Some(nana_ui_core::HAIRLINE);
+            layout.border_sides.bottom_width = Some(nana_ui_core::HAIRLINE);
             layout.theme.border_bottom_width =
                 Some(nana_ui_core::ThemeToken::Border(nana_ui_core::BorderWidth::Hairline).into());
         }

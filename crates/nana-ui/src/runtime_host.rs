@@ -43,6 +43,7 @@ pub struct RuntimeProgramContext<Message: Send + 'static> {
     /// program cannot read a material and an alpha mode that disagree.
     presentation: crate::ResolvedWindowPresentation,
     composition_work: crate::CompositionWork,
+    presentation_work: crate::PresentationWork,
     dispatch: Arc<dyn Fn(Message) + Send + Sync>,
     tasks: SyncSender<Task<Message>>,
     system_appearance: Option<SystemAppearance>,
@@ -68,6 +69,7 @@ impl<Message: Send + 'static> Clone for RuntimeProgramContext<Message> {
             gpu: self.gpu.clone(),
             presentation: self.presentation,
             composition_work: self.composition_work,
+            presentation_work: self.presentation_work,
             dispatch: Arc::clone(&self.dispatch),
             tasks: self.tasks.clone(),
             system_appearance: self.system_appearance,
@@ -107,6 +109,7 @@ impl<Message: Send + 'static> RuntimeProgramContext<Message> {
             gpu,
             presentation,
             composition_work,
+            presentation_work: crate::PresentationWork::default(),
             dispatch,
             tasks,
             system_appearance,
@@ -163,6 +166,11 @@ impl<Message: Send + 'static> RuntimeProgramContext<Message> {
 
     pub(crate) fn with_window_tag(mut self, tag: Option<Arc<str>>) -> Self {
         self.window_tag = tag;
+        self
+    }
+
+    pub(crate) fn with_presentation_work(mut self, work: crate::PresentationWork) -> Self {
+        self.presentation_work = work;
         self
     }
 
@@ -264,6 +272,11 @@ impl<Message: Send + 'static> RuntimeProgramContext<Message> {
     /// frames it goes on presenting.
     pub const fn composition_work(&self) -> crate::CompositionWork {
         self.composition_work
+    }
+
+    /// Last host-observed GPU and output work counts recorded for this window.
+    pub const fn presentation_work(&self) -> crate::PresentationWork {
+        self.presentation_work
     }
 
     /// The whole resolved presentation: requested and effective material, the

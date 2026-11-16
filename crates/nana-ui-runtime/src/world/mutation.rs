@@ -36,9 +36,7 @@ pub(super) struct ValidationPlan<'a> {
     pub(super) accessibility: NodeMap<AccessibilityState>,
     overlay_dependents: NodeMap<NodeSet>,
     affected_overlay_hosts: NodeSet,
-    /// Nodes visited by whole-set walks during this validation. Reported through
-    /// `UiWorld::validation_nodes_scanned` so a reintroduced world scan fails a
-    /// test instead of silently costing a frame.
+    /// Nodes visited by whole-set walks during this validation.
     pub(super) scanned: usize,
     /// Child-list entries `leaving` filtered, for cost tests.
     #[cfg(test)]
@@ -375,46 +373,6 @@ impl<'a> ValidationPlan<'a> {
                 UiMutation::SetComponentType { id, .. } => {
                     self.require_exists(*id)?;
                 }
-                UiMutation::SetStandardVisual { id, visual } => {
-                    self.require_exists(*id)?;
-                    let invalid_ratio = match visual {
-                        Some(StandardVisual::Range { ratio, markers, .. }) => {
-                            !ratio.is_finite()
-                                || !(0.0..=1.0).contains(ratio)
-                                || markers.iter().any(|marker| {
-                                    !marker.is_finite() || !(0.0..=1.0).contains(marker)
-                                })
-                        }
-                        Some(StandardVisual::Progress {
-                            value_ratio: ratio,
-                            mode,
-                            thickness,
-                            ..
-                        }) => {
-                            let phase = match mode {
-                                crate::ProgressMode::Sweep { phase } => *phase,
-                                _ => 0.0,
-                            };
-                            [*ratio, phase]
-                                .iter()
-                                .any(|share| !share.is_finite() || !(0.0..=1.0).contains(share))
-                                || !thickness.is_finite()
-                                || *thickness <= 0.0
-                        }
-                        Some(StandardVisual::LevelMeter {
-                            value_ratio: ratio, ..
-                        }) => !ratio.is_finite() || !(0.0..=1.0).contains(ratio),
-                        Some(StandardVisual::Scrollbar {
-                            presence, expand, ..
-                        }) => std::iter::once(presence)
-                            .chain(expand)
-                            .any(|value| !value.is_finite() || !(0.0..=1.0).contains(value)),
-                        _ => false,
-                    };
-                    if invalid_ratio {
-                        return Err(UiWorldError::InvalidStandardVisual(*id));
-                    }
-                }
                 UiMutation::SetAccessibility { id, accessibility } => {
                     self.require_exists(*id)?;
                     if overlays {
@@ -429,6 +387,12 @@ impl<'a> ValidationPlan<'a> {
                 }
                 UiMutation::SetLive { id, .. } | UiMutation::SetOverlayMount { id, .. } => {
                     self.require_exists(*id)?;
+                }
+                UiMutation::SetWidgetVisual { id, visual } => {
+                    self.require_exists(*id)?;
+                    if visual.as_ref().is_some_and(|visual| !visual.is_valid()) {
+                        return Err(UiWorldError::InvalidWidgetVisual(*id));
+                    }
                 }
                 UiMutation::SetSurfaceOpen { id, open, .. } => {
                     self.require_exists(*id)?;
@@ -1006,6 +970,7 @@ impl<'a> ValidationPlan<'a> {
                 let accessibility = self
                     .accessibility
                     .get(&active)
+                    .map(std::borrow::Cow::Borrowed)
                     .or_else(|| self.source.accessibility(active));
                 if !accessibility.is_some_and(|accessibility| match accessibility.role {
                     AccessibilityRole::Dialog | AccessibilityRole::AlertDialog => {
@@ -1115,7 +1080,9 @@ impl<'a> ValidationPlan<'a> {
             if layout.is_some_and(|layout| layout.omits_box())
                 || !self.overlay_branch_active(id)?
                 || self.node(id)?.parent.is_some_and(|parent| {
-                    super::closed_menu_hides(self.source.standard_visual_ref(parent), id)
+                    self.source
+                        .widget_visual_ref(parent)
+                        .is_some_and(|w| w.closed_menu_hides(id))
                 })
             {
                 return Ok(false);
@@ -1175,6 +1142,7 @@ impl<'a> ValidationPlan<'a> {
             let modal = self
                 .accessibility
                 .get(&active)
+                .map(std::borrow::Cow::Borrowed)
                 .or_else(|| self.source.accessibility(active))
                 .is_some_and(|state| state.modal);
             if modal {
@@ -1294,51 +1262,6 @@ impl<'a> ValidationPlan<'a> {
     }
 }
 
-// The option labels a select that sizes to its options measures; see
-// `Select::fit_options`. Its text asks layout for the widest of them.
-fn select_fitted_options(visual: Option<&StandardVisual>) -> Option<&[crate::SelectOptionData]> {
-    match visual {
-        Some(StandardVisual::Select {
-            fit_options: true,
-            options,
-            ..
-        }) => Some(options),
-        _ => None,
-    }
-}
-
-fn select_fitted_options_changed(
-    previous: Option<&StandardVisual>,
-    next: Option<&StandardVisual>,
-) -> bool {
-    match (select_fitted_options(previous), select_fitted_options(next)) {
-        (None, None) => false,
-        (Some(previous), Some(next)) => !previous
-            .iter()
-            .map(|option| (&option.label, &option.hint))
-            .eq(next.iter().map(|option| (&option.label, &option.hint))),
-        _ => true,
-    }
-}
-
-// Select options extend the hit region without changing the field layout.
-// The room the menu opens into places its surface. Highlight, scroll and
-// label changes remain paint-only.
-fn select_menu_hit_shape(
-    visual: Option<&StandardVisual>,
-) -> Option<(ControlSize, usize, Option<crate::SelectMenuRoom>)> {
-    match visual {
-        Some(StandardVisual::Select {
-            opened: true,
-            size,
-            options,
-            menu_room,
-            ..
-        }) => Some((*size, options.len(), *menu_room)),
-        _ => None,
-    }
-}
-
 impl UiWorld {
     pub(super) fn apply(&mut self, mutation: &UiMutation, report: &mut CommitReport) {
         // Invalidate before topology writes so old ancestors also lose stale
@@ -1359,20 +1282,28 @@ impl UiWorld {
                 self.invalidate_scroll_topology(*child, Some(*parent));
                 self.scroll_layout_touched = true;
             }
-            UiMutation::SetStandardVisual { id, visual } => {
+            UiMutation::SetWidgetVisual { id, visual } => {
                 let layout = &self.record(*id).style.layout;
-                let was = scroll_container(layout, self.nodes.visual(*id));
+                let current = self.nodes.widget_visual(*id);
+                let was = scroll_container(layout, current);
                 let now = scroll_container(layout, visual.as_ref());
+                let contains_changed = overflow_contained_axes(layout, current)
+                    != overflow_contained_axes(layout, visual.as_ref());
+                let triggered_changed = current != visual.as_ref()
+                    && (current.is_some_and(|w| w.triggered_menu_overlay().is_some())
+                        || visual
+                            .as_ref()
+                            .is_some_and(|w| w.triggered_menu_overlay().is_some()));
                 if was != now {
                     self.track_scroll_container(*id, now);
                 }
+                if contains_changed {
+                    self.invalidate_scroll_content(*id);
+                    self.scroll_layout_touched = true;
+                }
                 // An open triggered menu places its items `fixed`, out of
                 // every scroller's range.
-                let current = self.nodes.visual(*id);
-                if current != visual.as_ref()
-                    && (is_triggered_menu_overlay(current)
-                        || is_triggered_menu_overlay(visual.as_ref()))
-                {
+                if triggered_changed {
                     self.scroll_content_bounds.borrow_mut().relist(self, *id);
                     self.scroll_layout_touched = true;
                 }
@@ -1393,7 +1324,6 @@ impl UiWorld {
                 self.record_topology_invalidation(*id);
                 self.dirty_entities.insert(*id);
                 self.pending_work_revision = self.pending_work_revision.saturating_add(1);
-                self.spawned_since_drain += 1;
                 report.created += 1;
                 self.refresh_root_membership(*id);
             }
@@ -1430,7 +1360,7 @@ impl UiWorld {
                 }
                 self.renumber_children_between(*parent, index, after);
                 self.hierarchy_mut(*child).parent = Some(*parent);
-                let below = self.record(*parent).hierarchy.depth.saturating_add(1);
+                let below = self.record(*parent).depth.saturating_add(1);
                 self.set_subtree_depth(*child, below);
                 self.link_block_extent_reads(*parent, *child, true);
                 if old_parent != Some(*parent) {
@@ -1526,8 +1456,6 @@ impl UiWorld {
                     let snapshot = self.node(id).expect("validated subtree must exist");
                     stack.extend(snapshot.children.iter().rev().copied());
                     self.layout_results.remove(&id);
-                    self.layout_results_suppressed.remove(&id);
-                    self.page_layout_results.get_mut().remove(&id);
                     self.forget_visual_presence(id);
                     self.scroll_content_bounds
                         .get_mut()
@@ -1609,7 +1537,6 @@ impl UiWorld {
                     self.retired.insert(id);
                     self.pending_render_removals.push(id);
                     self.pending_accessibility_removals.push(id);
-                    self.despawned_since_drain += 1;
                     report.despawned += 1;
                 }
             }
@@ -1627,7 +1554,7 @@ impl UiWorld {
                 self.set_localized_text(*id, None);
                 // Re-setting the same text is not a content change: nothing
                 // about the node's shaping or layout moved.
-                if self.record(*id).text != *text
+                if *self.nodes.text_content(*id) != *text
                     || self.nodes.rich_text(*id).is_some()
                     || self.inline_record(*id).is_some()
                 {
@@ -1757,22 +1684,11 @@ impl UiWorld {
                     }
                     _ => false,
                 };
-                let seeds_before = self.layout_seeds_created;
                 self.nodes.set_custom_render(*id, content.clone());
-                if same_resource {
-                    // A frame, a texture generation, a fit: what the node shows
-                    // moved and its size did not. Paint.
-                    self.counters.pending_drain_counts.replaced_content_updates += 1;
-                } else {
+                if !same_resource {
                     self.reindex_replaced(*id);
                 }
                 self.mark(*id, DirtyMask::RENDER);
-                if same_resource {
-                    self.counters
-                        .pending_drain_counts
-                        .replaced_content_only_layout_invalidations +=
-                        (self.layout_seeds_created - seeds_before) as usize;
-                }
             }
             UiMutation::SetPainter { id, painter } => {
                 let changed = match painter {
@@ -1805,558 +1721,311 @@ impl UiWorld {
                     self.nodes.set_component_type(*id, type_id.clone());
                 }
             }
-            UiMutation::SetStandardVisual { id, visual } => {
-                if let (
-                    Some(StandardVisual::Switch {
-                        checked: old,
-                        thumb_progress,
-                        ..
-                    }),
-                    Some(StandardVisual::Switch { checked: next, .. }),
-                ) = (self.nodes.visual(*id), visual.as_ref())
-                    && old != next
-                {
-                    self.start_component_track(
-                        *id,
-                        crate::component_animation_kinds::SWITCH,
-                        self.theme.duration(nana_ui_core::MotionRole::OverlayFade),
-                        self.theme
-                            .motion()
-                            .easing(nana_ui_core::EasingRole::Standard),
-                        crate::AnimatableProperty::Progress,
-                        crate::MotionValue::Scalar(*thumb_progress),
-                        crate::MotionValue::Scalar(f32::from(*next)),
-                        crate::MotionInterrupt::Retarget,
-                        None,
-                    );
-                }
-                #[cfg(feature = "controls")]
-                let reorder_paints_same = match self.nodes.visual(*id) {
-                    previous @ Some(StandardVisual::ReorderList { .. }) => {
-                        let previous = previous.cloned();
-                        self.sync_reorder_list_motion(*id, previous.as_ref(), visual.as_ref());
-                        super::reorder_motion::reorder_list_paints_same(
-                            previous.as_ref(),
-                            visual.as_ref(),
-                        )
-                    }
-                    _ => {
-                        if matches!(visual, Some(StandardVisual::ReorderList { .. })) {
-                            self.sync_reorder_list_motion(*id, None, visual.as_ref());
+            UiMutation::SetWidgetVisual { id, visual } => {
+                if self.nodes.widget_visual(*id) != visual.as_ref() {
+                    #[cfg(feature = "controls")]
+                    let reorder_paints_same = match (
+                        self.nodes
+                            .widget_visual(*id)
+                            .and_then(|visual| visual.downcast_ref::<crate::ReorderListVisual>()),
+                        visual
+                            .as_ref()
+                            .and_then(|visual| visual.downcast_ref::<crate::ReorderListVisual>()),
+                    ) {
+                        (Some(previous), next) => {
+                            let previous = previous.clone();
+                            self.sync_reorder_list_motion(*id, Some(&previous), next);
+                            super::reorder_motion::reorder_list_paints_same(Some(&previous), next)
                         }
-                        false
-                    }
-                };
-                #[cfg(not(feature = "controls"))]
-                let reorder_paints_same = false;
-                if let Some(next @ StandardVisual::Scrollbar { .. }) = visual.as_ref() {
-                    let previous = self
-                        .nodes
-                        .visual(*id)
-                        .and_then(crate::components::ScrollbarTargets::of);
-                    self.sync_scrollbar_motion(*id, previous, next);
-                }
-
-                let content_layout_changed = match (self.nodes.visual(*id), visual.as_ref()) {
-                    (
-                        Some(StandardVisual::Button {
-                            icon: a,
-                            trailing_icon: ta,
-                            icon_size: sa,
-                            icon_gap: ga,
-                            loading: la,
-                            content_align: aa,
-                            ..
-                        }),
-                        Some(StandardVisual::Button {
-                            icon: b,
-                            trailing_icon: tb,
-                            icon_size: sb,
-                            icon_gap: gb,
-                            loading: lb,
-                            content_align: ab,
-                            ..
-                        }),
-                    ) => {
-                        (a.is_some(), ta.is_some(), sa, ga, la, aa)
-                            != (b.is_some(), tb.is_some(), sb, gb, lb, ab)
-                    }
-                    (_, Some(StandardVisual::Button { .. }))
-                    | (Some(StandardVisual::Button { .. }), _) => true,
-                    (
-                        Some(StandardVisual::ActionMenuItem {
-                            hint: a,
-                            icon: ia,
-                            size: sa,
-                            ..
-                        }),
-                        Some(StandardVisual::ActionMenuItem {
-                            hint: b,
-                            icon: ib,
-                            size: sb,
-                            ..
-                        }),
-                    ) => (a, ia.is_some(), sa) != (b, ib.is_some(), sb),
-                    (_, Some(StandardVisual::ActionMenuItem { .. }))
-                    | (Some(StandardVisual::ActionMenuItem { .. }), _) => true,
-                    (
-                        Some(a @ StandardVisual::ListItem { .. }),
-                        Some(b @ StandardVisual::ListItem { .. }),
-                    ) => a != b,
-                    (_, Some(StandardVisual::ListItem { .. }))
-                    | (Some(StandardVisual::ListItem { .. }), _) => true,
-                    (
-                        Some(StandardVisual::LabeledValue {
-                            label: a,
-                            value: va,
-                            value_weight: wa,
-                            compact: ca,
-                            action: aa,
-                            ..
-                        }),
-                        Some(StandardVisual::LabeledValue {
-                            label: b,
-                            value: vb,
-                            value_weight: wb,
-                            compact: cb,
-                            action: ab,
-                            ..
-                        }),
-                    ) => (a, va, wa, ca, aa) != (b, vb, wb, cb, ab),
-                    (_, Some(StandardVisual::LabeledValue { .. }))
-                    | (Some(StandardVisual::LabeledValue { .. }), _) => true,
-                    (
-                        Some(StandardVisual::Card {
-                            title: a,
-                            loading: la,
-                            ..
-                        }),
-                        Some(StandardVisual::Card {
-                            title: b,
-                            loading: lb,
-                            ..
-                        }),
-                    ) => (a, la) != (b, lb),
-                    (_, Some(StandardVisual::Card { .. }))
-                    | (Some(StandardVisual::Card { .. }), _) => true,
-                    (
-                        Some(StandardVisual::Select {
-                            label: la,
-                            hint: ha,
-                            placeholder: pa,
-                            size: sa,
-                            options: oa,
-                            fit_options: fa,
-                            ..
-                        }),
-                        Some(StandardVisual::Select {
-                            label: lb,
-                            hint: hb,
-                            placeholder: pb,
-                            size: sb,
-                            options: ob,
-                            fit_options: fb,
-                            ..
-                        }),
-                    ) => (la, ha, pa, sa, oa, fa) != (lb, hb, pb, sb, ob, fb),
-                    (_, Some(StandardVisual::Select { .. }))
-                    | (Some(StandardVisual::Select { .. }), _) => true,
-                    (
-                        Some(StandardVisual::FormField {
-                            size: sa,
-                            hint: ha,
-                            error: ea,
-                            ..
-                        }),
-                        Some(StandardVisual::FormField {
-                            size: sb,
-                            hint: hb,
-                            error: eb,
-                            ..
-                        }),
-                    ) => (sa, ha.is_some(), ea.is_some()) != (sb, hb.is_some(), eb.is_some()),
-                    (_, Some(StandardVisual::FormField { .. }))
-                    | (Some(StandardVisual::FormField { .. }), _) => true,
-                    // What a switch's parts read (#205), its label and hint
-                    // text too, which count toward its width (#388);
-                    // toggling and the thumb's travel paint only.
-                    (
-                        Some(StandardVisual::Switch {
-                            label: la,
-                            hint: ha,
-                            control_position: pa,
-                            size: sa,
-                            ..
-                        }),
-                        Some(StandardVisual::Switch {
-                            label: lb,
-                            hint: hb,
-                            control_position: pb,
-                            size: sb,
-                            ..
-                        }),
-                    ) => (la, ha, pa, sa) != (lb, hb, pb, sb),
-                    (_, Some(StandardVisual::Switch { .. }))
-                    | (Some(StandardVisual::Switch { .. }), _) => true,
-                    // What a range's parts read (#384): its label, the limits
-                    // its value slot measures, its unit and size, whether it
-                    // draws text at all, whether the value sits in its thumb,
-                    // its bounds and its reset square. The value, the ratio,
-                    // markers, typing and validity paint only, so a drag step
-                    // lays nothing out.
-                    (
-                        Some(StandardVisual::Range {
-                            label: la,
-                            limits: ma,
-                            unit: ua,
-                            size: sa,
-                            rail: ra,
-                            value_thumb: va,
-                            bounds: ba,
-                            reset: za,
-                            ..
-                        }),
-                        Some(StandardVisual::Range {
-                            label: lb,
-                            limits: mb,
-                            unit: ub,
-                            size: sb,
-                            rail: rb,
-                            value_thumb: vb,
-                            bounds: bb,
-                            reset: zb,
-                            ..
-                        }),
-                    ) => {
-                        (la, ma, ua, sa, ra.is_some(), va.is_some(), ba, za)
-                            != (lb, mb, ub, sb, rb.is_some(), vb.is_some(), bb, zb)
-                    }
-                    (_, Some(StandardVisual::Range { .. }))
-                    | (Some(StandardVisual::Range { .. }), _) => true,
-                    // What a progress bar's parts read (#384): whether it has
-                    // a label and a cancel target, and its thickness. The
-                    // value, the sweep, the fill and the label's words paint
-                    // only.
-                    (
-                        Some(StandardVisual::Progress {
-                            label: la,
-                            cancellable: ca,
-                            thickness: ta,
-                            ..
-                        }),
-                        Some(StandardVisual::Progress {
-                            label: lb,
-                            cancellable: cb,
-                            thickness: tb,
-                            ..
-                        }),
-                    ) => (la.is_some(), ca, ta) != (lb.is_some(), cb, tb),
-                    (_, Some(StandardVisual::Progress { .. }))
-                    | (Some(StandardVisual::Progress { .. }), _) => true,
-                    // What a selection option's parts read (#205); selecting,
-                    // disabling and the focus ring paint only.
-                    (
-                        Some(StandardVisual::SelectionOption {
-                            icon: ia,
-                            indicator: ra,
-                            size: sa,
-                            ..
-                        }),
-                        Some(StandardVisual::SelectionOption {
-                            icon: ib,
-                            indicator: rb,
-                            size: sb,
-                            ..
-                        }),
-                    ) => (ia.is_some(), ra, sa) != (ib.is_some(), rb, sb),
-                    // What a toast's parts read (#205): whether it has a
-                    // description line and a dismiss target. Its tone, glyph
-                    // and copy paint only.
-                    (
-                        Some(StandardVisual::Toast {
-                            description: da,
-                            dismissible: xa,
-                            ..
-                        }),
-                        Some(StandardVisual::Toast {
-                            description: db,
-                            dismissible: xb,
-                            ..
-                        }),
-                    ) => (da.is_some(), xa) != (db.is_some(), xb),
-                    // A trigger glyph's square is a part (#205) its style
-                    // does not size.
-                    (
-                        Some(StandardVisual::MenuSurface { overlay: oa, .. }),
-                        Some(StandardVisual::MenuSurface { overlay: ob, .. }),
-                    ) => {
-                        oa.and_then(|overlay| overlay.trigger_icon_size)
-                            != ob.and_then(|overlay| overlay.trigger_icon_size)
-                    }
-                    _ => false,
-                };
-                let (
-                    text_input_presentation_changed,
-                    empty_state_presentation_changed,
-                    modal_presentation_changed,
-                    modal_state_changed,
-                    menu_state_changed,
-                    overlay_mount_changed,
-                    menu_accessibility_changed,
-                    select_hit_changed,
-                    text_folds_changed,
-                ) = {
-                    let previous_visual = self.nodes.visual(*id);
-                    let text_folds_changed = match (previous_visual, visual.as_ref()) {
-                        (
-                            Some(StandardVisual::TextInput {
-                                folds: previous, ..
-                            }),
-                            Some(StandardVisual::TextInput { folds: next, .. }),
-                        ) => previous != next,
-                        (Some(StandardVisual::TextInput { .. }), _) => true,
-                        (_, Some(StandardVisual::TextInput { folds, .. })) => !folds.is_empty(),
-                        _ => false,
+                        (None, Some(next)) => {
+                            self.sync_reorder_list_motion(*id, None, Some(next));
+                            false
+                        }
+                        (None, None) => false,
                     };
-                    (
-                        matches!(previous_visual, Some(StandardVisual::TextInput { .. }))
-                            || matches!(visual, Some(StandardVisual::TextInput { .. })),
-                        matches!(previous_visual, Some(StandardVisual::EmptyState { .. }))
-                            || matches!(visual, Some(StandardVisual::EmptyState { .. })),
-                        matches!(previous_visual, Some(StandardVisual::ModalFrame { .. }))
-                            || matches!(visual, Some(StandardVisual::ModalFrame { .. })),
-                        match (previous_visual, visual) {
-                            (
-                                Some(StandardVisual::ModalFrame {
-                                    busy: old_busy,
-                                    danger: old_danger,
-                                    ..
-                                }),
-                                Some(StandardVisual::ModalFrame { busy, danger, .. }),
-                            ) => old_busy != busy || old_danger != danger,
-                            _ => false,
-                        },
-                        // Whether a menu's items take part in layout follows the
-                        // surface's own open state, so opening it has to reach
-                        // them the way an overlay host reaches its branch.
-                        menu_surface_open(previous_visual) != menu_surface_open(visual.as_ref()),
-                        match (previous_visual, visual.as_ref()) {
-                            (
-                                Some(StandardVisual::MenuSurface {
-                                    open: true,
-                                    overlay: Some(prev),
-                                    ..
-                                }),
-                                Some(StandardVisual::MenuSurface {
-                                    open: true,
-                                    overlay: Some(next),
-                                    ..
-                                }),
-                            ) => prev.overlay_mount != next.overlay_mount,
-                            (
-                                Some(StandardVisual::Select {
-                                    opened: true,
-                                    overlay_mount: prev,
-                                    ..
-                                }),
-                                Some(StandardVisual::Select {
-                                    opened: true,
-                                    overlay_mount: next,
-                                    ..
-                                }),
-                            ) => prev != next,
-                            _ => false,
-                        } || (matches!(previous_visual, Some(StandardVisual::ModalFrame { .. }))
-                            != matches!(visual.as_ref(), Some(StandardVisual::ModalFrame { .. }))),
-                        super::menu_surface_accessibility_changed(previous_visual, visual.as_ref()),
-                        select_menu_hit_shape(previous_visual)
-                            != select_menu_hit_shape(visual.as_ref()),
-                        text_folds_changed,
-                    )
-                };
-                let card_text_style_changed =
-                    matches!(self.nodes.visual(*id), Some(StandardVisual::Card { .. }))
-                        != matches!(visual, Some(StandardVisual::Card { .. }));
-                let labeled_parts_only = matches!(
-                    (self.nodes.visual(*id), visual.as_ref()),
-                    (
-                        Some(StandardVisual::LabeledValue { .. }),
-                        Some(StandardVisual::LabeledValue { .. })
-                    )
-                );
-                let tree_accessibility_changed =
-                    super::tree_view_accessibility_changed(self.nodes.visual(*id), visual.as_ref());
-                let text_path_changed = super::text_visual_key(self.nodes.visual(*id))
-                    != super::text_visual_key(visual.as_ref());
-                let select_fit_changed =
-                    select_fitted_options_changed(self.nodes.visual(*id), visual.as_ref());
-                let markdown_changed =
-                    markdown_blocks_changed(self.nodes.visual(*id), visual.as_ref());
-                self.nodes.set_visual(*id, visual.clone());
-                if card_text_style_changed {
-                    self.nodes
-                        .invalidate_text(*id, crate::text_node::TextDirty::SHAPE_STYLE);
-                    self.mark(*id, DirtyMask::TEXT);
-                }
+                    #[cfg(not(feature = "controls"))]
+                    let reorder_paints_same = false;
 
-                // A value, a switch and a range draw their text from the
-                // visual, not from the node's paragraph.
-                if content_layout_changed
-                    && !matches!(
-                        visual,
-                        Some(
-                            StandardVisual::LabeledValue { .. }
-                                | StandardVisual::Switch { .. }
-                                | StandardVisual::Range { .. }
-                        )
-                    )
-                {
-                    self.nodes
-                        .invalidate_text(*id, crate::text_node::TextDirty::CONSTRAINT);
-                    self.mark(*id, DirtyMask::TEXT);
-                }
-                if text_path_changed {
-                    // The text path or a leading indicator's inset changed; the
-                    // box may not move, so schedule the text explicitly.
-                    self.mark(*id, DirtyMask::TEXT);
-                }
-                if select_fit_changed {
-                    // Its text measures the options now, though the label it
-                    // shows may be the same.
-                    self.nodes
-                        .invalidate_text(*id, crate::text_node::TextDirty::CONTENT);
-                    self.mark(*id, DirtyMask::TEXT);
-                }
-                self.sync_node_presence(*id);
-                if !matches!(visual, Some(StandardVisual::TextInput { .. })) {
-                    self.nodes.set_text_input_presentation(*id, None);
-                    self.nodes.set_text_viewport_pin(*id, None);
-                }
-                if !matches!(visual, Some(StandardVisual::EmptyState { .. })) {
-                    self.nodes.set_empty_state_text(*id, None);
-                }
-                if !matches!(visual, Some(StandardVisual::ModalFrame { .. })) {
-                    self.nodes.set_modal_text(*id, None);
-                }
-                if text_folds_changed {
-                    let offered = match visual.as_ref() {
-                        Some(StandardVisual::TextInput { folds, .. }) if !folds.is_empty() => {
-                            Some(Arc::clone(folds))
+                    if let Some(next) = visual
+                        .as_ref()
+                        .and_then(|v| v.downcast_ref::<crate::ScrollbarVisual>())
+                    {
+                        let previous = self
+                            .nodes
+                            .widget_visual(*id)
+                            .and_then(|v| v.downcast_ref::<crate::ScrollbarVisual>())
+                            .map(crate::ScrollbarVisual::targets);
+                        self.sync_scrollbar_motion(*id, previous, next);
+                    }
+                    let switch_transition = match (
+                        self.nodes
+                            .widget_visual(*id)
+                            .and_then(|v| v.downcast_ref::<crate::SwitchVisual>()),
+                        visual
+                            .as_ref()
+                            .and_then(|v| v.downcast_ref::<crate::SwitchVisual>()),
+                    ) {
+                        (Some(old), Some(next)) if old.checked != next.checked => {
+                            Some((old.thumb_progress, next.checked))
                         }
                         _ => None,
                     };
-                    self.reconcile_text_fold_offered(*id, offered);
-                }
-                let visual_layout_changed = content_layout_changed
-                    || select_fit_changed
-                    || text_input_presentation_changed
-                    || empty_state_presentation_changed
-                    || modal_presentation_changed
-                    || markdown_changed;
-                if visual_layout_changed {
-                    let (kind, fields, footprint) = if labeled_parts_only {
-                        (
-                            InvalidationKind::PLACEMENT,
-                            LayoutFieldMask::FLOW,
-                            LayoutDependencyFootprint::NONE,
-                        )
-                    } else {
-                        (
-                            InvalidationKind::MEASURE.union(InvalidationKind::PLACEMENT),
-                            LayoutFieldMask::INTRINSIC.union(LayoutFieldMask::FLOW),
-                            LayoutDependencyFootprint::intrinsic_container(),
-                        )
+                    if let Some((thumb_progress, next)) = switch_transition {
+                        self.start_component_track(
+                            *id,
+                            crate::component_animation_kinds::SWITCH,
+                            self.theme.duration(nana_ui_core::MotionRole::OverlayFade),
+                            self.theme
+                                .motion()
+                                .easing(nana_ui_core::EasingRole::Standard),
+                            crate::AnimatableProperty::Progress,
+                            crate::MotionValue::Scalar(thumb_progress),
+                            crate::MotionValue::Scalar(f32::from(next)),
+                            crate::MotionInterrupt::Retarget,
+                            None,
+                        );
+                    }
+
+                    let prev = self.nodes.widget_visual(*id).cloned();
+                    let tree_accessibility_changed =
+                        super::tree_view_accessibility_changed(prev.as_ref(), visual.as_ref());
+                    let select_accessibility_changed =
+                        super::select_accessibility_changed(prev.as_ref(), visual.as_ref());
+                    let menu_accessibility_changed =
+                        super::menu_surface_accessibility_changed(prev.as_ref(), visual.as_ref());
+                    let prev_select = prev
+                        .as_ref()
+                        .and_then(|v| v.downcast_ref::<crate::SelectVisual>());
+                    let next_select = visual
+                        .as_ref()
+                        .and_then(|v| v.downcast_ref::<crate::SelectVisual>());
+                    let prev_menu = prev
+                        .as_ref()
+                        .and_then(|v| v.downcast_ref::<crate::MenuSurfaceVisual>());
+                    let next_menu = visual
+                        .as_ref()
+                        .and_then(|v| v.downcast_ref::<crate::MenuSurfaceVisual>());
+                    let prev_modal = prev
+                        .as_ref()
+                        .and_then(|v| v.downcast_ref::<crate::ModalFrameVisual>());
+                    let next_modal = visual
+                        .as_ref()
+                        .and_then(|v| v.downcast_ref::<crate::ModalFrameVisual>());
+                    let prev_text_input = prev
+                        .as_ref()
+                        .and_then(|v| v.downcast_ref::<crate::TextInputVisual>());
+                    let next_text_input = visual
+                        .as_ref()
+                        .and_then(|v| v.downcast_ref::<crate::TextInputVisual>());
+                    let text_input_presentation_changed =
+                        prev_text_input.is_some() || next_text_input.is_some();
+                    let text_folds_changed = match (prev_text_input, next_text_input) {
+                        (Some(old), Some(next)) => old.folds != next.folds,
+                        (Some(_), None) => true,
+                        (None, Some(next)) => !next.folds.is_empty(),
+                        (None, None) => false,
                     };
-                    self.record_layout_invalidation(
-                        *id,
-                        LayoutInvalidation::new(
-                            LayoutInvalidationSource::Component,
-                            if labeled_parts_only {
-                                InvalidationReason::TEXT
-                            } else {
-                                InvalidationReason::CONTEXT
-                            },
-                            kind,
-                            fields,
-                            footprint,
-                        ),
+                    let modal_state_changed = matches!(
+                        (prev_modal, next_modal),
+                        (Some(old), Some(next))
+                            if old.busy != next.busy || old.danger != next.danger
                     );
-                }
-                if menu_state_changed {
-                    self.record_layout_invalidation(
-                        *id,
-                        LayoutInvalidation::new(
-                            LayoutInvalidationSource::Component,
-                            InvalidationReason::CONTEXT,
-                            InvalidationKind::TOPOLOGY
-                                .union(InvalidationKind::MEASURE)
-                                .union(InvalidationKind::PLACEMENT),
-                            LayoutFieldMask::FLOW,
-                            LayoutDependencyFootprint::ALL,
-                        ),
+                    let modal_overlay_mount_changed = prev_modal.is_some() != next_modal.is_some();
+                    let menu_state_changed = prev_menu.map(|m| m.open) != next_menu.map(|m| m.open);
+                    let menu_overlay_mount_changed = matches!(
+                        (prev_menu, next_menu),
+                        (Some(old), Some(next))
+                            if old.open
+                                && next.open
+                                && old
+                                    .overlay
+                                    .zip(next.overlay)
+                                    .is_some_and(|(a, b)| a.overlay_mount != b.overlay_mount)
                     );
-                }
-                // A previewed reorder drag moves its rows' presentation, not
-                // what the list paints: the list is not re-extracted for it.
-                let render = if reorder_paints_same {
-                    0
-                } else {
-                    DirtyMask::RENDER
-                };
-                self.mark(
-                    *id,
-                    render
-                        | if text_input_presentation_changed
-                            || empty_state_presentation_changed
-                            || modal_presentation_changed
+                    let select_fit_changed = match (prev_select, next_select) {
+                        (Some(old), Some(next)) => old.fitted_options_changed(next),
+                        (Some(old), None) => old.fit_options,
+                        (None, Some(next)) => next.fit_options,
+                        (None, None) => false,
+                    };
+                    let select_hit_changed = prev_select
+                        .and_then(crate::SelectVisual::menu_hit_shape)
+                        != next_select.and_then(crate::SelectVisual::menu_hit_shape);
+                    let select_overlay_mount_changed = matches!(
+                        (prev_select, next_select),
+                        (Some(old), Some(next))
+                            if old.opened && next.opened && old.overlay_mount != next.overlay_mount
+                    );
+                    let markdown_changed = markdown_blocks_changed(prev.as_ref(), visual.as_ref());
+                    let content_layout_changed = match (&prev, visual.as_ref()) {
+                        (_, Some(next)) => next.content_layout_changed(prev.as_ref()),
+                        (Some(old), None) => old.clearing_changes_content_layout(),
+                        (None, None) => false,
+                    };
+                    let parts_placement_only = matches!(
+                        (&prev, visual.as_ref()),
+                        (Some(old), Some(next)) if next.parts_placement_only(old)
+                    );
+                    let owns_intrinsic_text = (prev
+                        .as_ref()
+                        .is_some_and(crate::WidgetVisualHandle::owns_intrinsic_text)
+                        || visual
+                            .as_ref()
+                            .is_some_and(crate::WidgetVisualHandle::owns_intrinsic_text))
+                        && prev.as_ref() != visual.as_ref();
+                    let text_path_changed = prev.as_ref().and_then(|v| v.text_visual_key())
+                        != visual.as_ref().and_then(|v| v.text_visual_key());
+                    let card_text_style_changed = prev
+                        .as_ref()
+                        .is_some_and(|v| v.uses_card_title_typography())
+                        != visual
+                            .as_ref()
+                            .is_some_and(|v| v.uses_card_title_typography());
+                    let invalidates_text_constraint = visual
+                        .as_ref()
+                        .is_some_and(|v| v.invalidates_node_text_constraint())
+                        || prev
+                            .as_ref()
+                            .is_some_and(|v| v.invalidates_node_text_constraint());
+                    self.nodes.set_widget_visual(*id, visual.clone());
+                    if !visual
+                        .as_ref()
+                        .is_some_and(|v| v.downcast_ref::<crate::EmptyStateVisual>().is_some())
+                    {
+                        self.nodes.set_empty_state_text(*id, None);
+                    }
+                    if next_modal.is_none() {
+                        self.nodes.set_modal_text(*id, None);
+                    }
+                    if card_text_style_changed {
+                        self.nodes
+                            .invalidate_text(*id, crate::text_node::TextDirty::SHAPE_STYLE);
+                        self.mark(*id, DirtyMask::TEXT);
+                    }
+                    if content_layout_changed && invalidates_text_constraint {
+                        self.nodes
+                            .invalidate_text(*id, crate::text_node::TextDirty::CONSTRAINT);
+                        self.mark(*id, DirtyMask::TEXT);
+                    }
+                    if select_fit_changed {
+                        self.nodes
+                            .invalidate_text(*id, crate::text_node::TextDirty::CONTENT);
+                        self.mark(*id, DirtyMask::TEXT);
+                    }
+                    if text_path_changed || owns_intrinsic_text || text_input_presentation_changed {
+                        self.mark(*id, DirtyMask::TEXT);
+                    }
+                    if owns_intrinsic_text
+                        || select_fit_changed
+                        || menu_state_changed
+                        || text_input_presentation_changed
+                    {
+                        self.invalidate_layout_result(*id);
+                    }
+                    if prev_text_input.is_some() && next_text_input.is_none() {
+                        self.nodes.set_text_input_presentation(*id, None);
+                        self.nodes.set_text_viewport_pin(*id, None);
+                    }
+                    if text_folds_changed {
+                        let offered = next_text_input
+                            .filter(|v| !v.folds.is_empty())
+                            .map(|v| Arc::clone(&v.folds));
+                        self.reconcile_text_fold_offered(*id, offered);
+                    }
+                    self.sync_node_presence(*id);
+                    if markdown_changed
+                        || content_layout_changed
+                        || owns_intrinsic_text
+                        || select_fit_changed
+                        || text_input_presentation_changed
+                    {
+                        let (kind, fields, footprint, reason) = if parts_placement_only
+                            && !markdown_changed
+                            && !owns_intrinsic_text
+                            && !select_fit_changed
                         {
-                            DirtyMask::TEXT
+                            (
+                                InvalidationKind::PLACEMENT,
+                                LayoutFieldMask::FLOW,
+                                LayoutDependencyFootprint::NONE,
+                                InvalidationReason::TEXT,
+                            )
                         } else {
-                            0
-                        },
-                );
-                // Typed content-part invalidation above suppresses the owner
-                // and its dependency chain. Unchanged children retain their
-                // results even when their placements are reused by the pass.
-                if select_fit_changed
-                    || text_input_presentation_changed
-                    || empty_state_presentation_changed
-                    || modal_presentation_changed
-                    || menu_state_changed
-                {
-                    self.invalidate_layout_result(*id);
-                }
-                if select_hit_changed {
-                    self.mark(*id, DirtyMask::INPUT);
-                }
-                if menu_state_changed {
-                    self.mark_subtree(
-                        *id,
-                        DirtyMask::STYLE
-                            | DirtyMask::INPUT
-                            | DirtyMask::FOCUS_IME
-                            | DirtyMask::ACCESSIBILITY
-                            | DirtyMask::RENDER,
-                    );
-                    self.mark_ancestors(*id, DirtyMask::RENDER);
-                } else if overlay_mount_changed {
-                    self.mark_subtree(*id, DirtyMask::STYLE | DirtyMask::INPUT | DirtyMask::RENDER);
-                }
-                if menu_accessibility_changed && !menu_state_changed {
-                    self.mark_subtree(*id, DirtyMask::ACCESSIBILITY);
-                }
-                if tree_accessibility_changed {
-                    self.mark(*id, DirtyMask::ACCESSIBILITY);
-                }
-                if modal_state_changed {
-                    self.mark_subtree(
-                        *id,
-                        DirtyMask::STYLE
-                            | DirtyMask::INPUT
-                            | DirtyMask::FOCUS_IME
-                            | DirtyMask::ACCESSIBILITY
-                            | DirtyMask::RENDER,
-                    );
+                            (
+                                InvalidationKind::MEASURE.union(InvalidationKind::PLACEMENT),
+                                LayoutFieldMask::INTRINSIC.union(LayoutFieldMask::FLOW),
+                                LayoutDependencyFootprint::intrinsic_container(),
+                                InvalidationReason::CONTEXT,
+                            )
+                        };
+                        self.record_layout_invalidation(
+                            *id,
+                            LayoutInvalidation::new(
+                                LayoutInvalidationSource::Component,
+                                reason,
+                                kind,
+                                fields,
+                                footprint,
+                            ),
+                        );
+                    }
+                    if menu_state_changed {
+                        self.record_layout_invalidation(
+                            *id,
+                            LayoutInvalidation::new(
+                                LayoutInvalidationSource::Component,
+                                InvalidationReason::CONTEXT,
+                                InvalidationKind::TOPOLOGY
+                                    .union(InvalidationKind::MEASURE)
+                                    .union(InvalidationKind::PLACEMENT),
+                                LayoutFieldMask::FLOW,
+                                LayoutDependencyFootprint::ALL,
+                            ),
+                        );
+                    }
+                    if tree_accessibility_changed {
+                        self.mark(*id, DirtyMask::ACCESSIBILITY);
+                    }
+                    if select_accessibility_changed
+                        || (menu_accessibility_changed && !menu_state_changed)
+                    {
+                        self.mark_subtree(*id, DirtyMask::ACCESSIBILITY);
+                    }
+                    if select_hit_changed {
+                        self.mark(*id, DirtyMask::INPUT);
+                    }
+                    if modal_state_changed {
+                        self.mark_subtree(
+                            *id,
+                            DirtyMask::STYLE
+                                | DirtyMask::INPUT
+                                | DirtyMask::FOCUS_IME
+                                | DirtyMask::ACCESSIBILITY
+                                | DirtyMask::RENDER,
+                        );
+                    }
+                    if menu_state_changed {
+                        self.mark_subtree(
+                            *id,
+                            DirtyMask::STYLE
+                                | DirtyMask::INPUT
+                                | DirtyMask::FOCUS_IME
+                                | DirtyMask::ACCESSIBILITY
+                                | DirtyMask::RENDER,
+                        );
+                        self.mark_ancestors(*id, DirtyMask::RENDER);
+                    } else if select_overlay_mount_changed
+                        || menu_overlay_mount_changed
+                        || modal_overlay_mount_changed
+                    {
+                        self.mark_subtree(
+                            *id,
+                            DirtyMask::STYLE | DirtyMask::INPUT | DirtyMask::RENDER,
+                        );
+                    }
+                    if !reorder_paints_same {
+                        self.mark(*id, DirtyMask::RENDER);
+                    }
                 }
             }
             UiMutation::SetLabelledBy { id, label } => {
@@ -2378,7 +2047,7 @@ impl UiWorld {
                 }
             }
             UiMutation::SetAccessibility { id, accessibility } => {
-                let previous = &self.record(*id).accessibility;
+                let previous = self.nodes.accessibility(*id);
                 let hidden_changed = previous.hidden != accessibility.hidden;
                 let interaction_style_changed = previous.disabled != accessibility.disabled
                     || previous.checked != accessibility.checked
@@ -2390,8 +2059,7 @@ impl UiWorld {
                     || previous.numeric_value != accessibility.numeric_value
                     || previous.numeric_minimum != accessibility.numeric_minimum
                     || previous.numeric_maximum != accessibility.numeric_maximum;
-                self.record_mut(*id).accessibility =
-                    crate::store::shared_accessibility(accessibility);
+                self.nodes.set_accessibility(*id, accessibility);
                 self.mark_inline_text_owners(*id);
                 if hidden_changed {
                     // `aria-hidden` changes the projected structure for the
@@ -2611,7 +2279,7 @@ impl UiWorld {
                 let Some(state) = state else {
                     self.remove_ime(*id);
                     self.nodes.set_editor(*id, None);
-                    self.record_mut(*id).text = TextContent::default();
+                    self.nodes.set_text_content(*id, TextContent::default());
                     self.invalidate_text_content(*id);
                     self.nodes.set_text_fold_view(*id, None);
                     self.nodes.set_text_inlays(*id, None);
@@ -2670,14 +2338,17 @@ impl UiWorld {
                 if previous
                     .as_ref()
                     .is_some_and(|previous| previous.same_identity(&next))
-                    && self.record(*id).text.value.same_identity(&next)
+                    && self.nodes.text_content(*id).value.same_identity(&next)
                 {
                     self.nodes
                         .invalidate_text(*id, crate::text_node::TextDirty::EDIT_STATE);
                 } else {
-                    self.record_mut(*id).text = TextContent {
-                        value: next.clone(),
-                    };
+                    self.nodes.set_text_content(
+                        *id,
+                        TextContent {
+                            value: next.clone(),
+                        },
+                    );
                     self.invalidate_text_content(*id);
                 }
                 // 值变化后重映射折叠态与 snippet 会话：受影响的折叠自动
@@ -2726,7 +2397,7 @@ impl UiWorld {
                 });
                 let value = editor.session.snapshot();
                 self.pending_edit_work.accumulate(work);
-                self.record_mut(*id).text = TextContent { value };
+                self.nodes.set_text_content(*id, TextContent { value });
                 self.invalidate_text_content(*id);
                 self.mark(
                     *id,
@@ -2745,10 +2416,10 @@ impl UiWorld {
             }
             UiMutation::SetTextInputFoldCollapsed { id, folds } => {
                 // 规范化：仅保留仍在宿主喂入区间内、且确实可折叠的条目。
-                let offered = match self.nodes.visual(*id) {
-                    Some(StandardVisual::TextInput { folds: offered, .. }) => Arc::clone(offered),
-                    _ => Arc::from([]),
-                };
+                let offered = self
+                    .text_input_visual_ref(*id)
+                    .map(|v| Arc::clone(&v.folds))
+                    .unwrap_or_else(|| Arc::from([]));
                 let mut collapsed: Vec<crate::TextCodeFold> = folds
                     .iter()
                     .copied()
@@ -3040,14 +2711,6 @@ impl UiWorld {
         }
     }
 
-    /// A skipped no-op that sets the typography scale a scope already has
-    /// counts as one: nothing is visited for it.
-    pub(crate) fn note_noop_text_scale(&mut self, mutation: &UiMutation) {
-        if matches!(mutation, UiMutation::SetTextScale { .. }) {
-            self.note_equivalent_text_scale();
-        }
-    }
-
     /// Whether committing `queue` would change nothing: every mutation in it
     /// is a structural no-op. A no-op changes nothing, so judging each one
     /// against the state the batch starts from is exact.
@@ -3213,7 +2876,6 @@ impl UiWorld {
         if queue.is_empty() && placements.is_empty() {
             return Ok(report);
         }
-        let mut scanned = 0;
         let mut validated = Ok(());
         // Placements are a layout pass's writeback, validated as
         // `validate_simple_mutation` validates one.
@@ -3228,7 +2890,6 @@ impl UiWorld {
         if !queue.is_empty() && !self.validate_simple_mutation(queue.as_slice())? {
             let mut plan = ValidationPlan::new(self);
             validated = plan.validate(queue.as_slice());
-            scanned = plan.scanned;
             #[cfg(test)]
             let steps = plan.child_list_steps;
             #[cfg(test)]
@@ -3236,7 +2897,6 @@ impl UiWorld {
                 self.child_list_steps += steps;
             }
         }
-        self.validation_nodes_scanned = self.validation_nodes_scanned.saturating_add(scanned);
         validated?;
         // A skipped no-op changes nothing, so the generation moves with the
         // first mutation that does; a batch of nothing but no-ops keeps it.
@@ -3244,6 +2904,18 @@ impl UiWorld {
         let mut layout_inputs_changed = false;
         let mut layout_result_ids = Vec::new();
         let mutations = queue.as_slice();
+        let mut max_create_id: Option<StableNodeId> = None;
+        let mut create_count = 0usize;
+        for mutation in mutations {
+            if let UiMutation::Create { id, .. } = mutation {
+                create_count += 1;
+                max_create_id = Some(max_create_id.map_or(*id, |current| current.max(*id)));
+            }
+        }
+        if let Some(highest) = max_create_id {
+            self.nodes
+                .reserve_nodes_through(highest, self.nodes.len() + create_count);
+        }
         let mut run_end = 0;
         self.renumber_later = Some(Default::default());
         self.result_chain_memo = Some(Default::default());
@@ -3275,7 +2947,6 @@ impl UiWorld {
                         .map_or(1, |rest| self.unlink_removal_run(rest));
             }
             if self.is_structural_noop(mutation) {
-                self.note_noop_text_scale(mutation);
                 continue;
             }
             if !applied {
@@ -3302,16 +2973,7 @@ impl UiWorld {
                 | UiMutation::SetScrollMetrics { id, .. } => Some(*id),
                 _ => None,
             };
-            let seeds_before = self.layout_seeds_created;
             self.apply(mutation, &mut report);
-            if matches!(
-                mutation,
-                UiMutation::RequestFocus { .. }
-                    | UiMutation::SetInteraction { .. }
-                    | UiMutation::SetAccessibility { .. }
-            ) {
-                self.note_state_seeds(seeds_before);
-            }
             if let Some(id) = layout_result_id {
                 layout_result_ids.push(id);
             }
@@ -3434,9 +3096,9 @@ impl UiWorld {
 
     /// Move `id` to `offset` as given: a touch overscroll, or a clamped one.
     fn scroll_to_offset(&mut self, id: StableNodeId, offset: ScrollOffset) {
-        let previous = self.record(id).scroll_offset;
+        let previous = self.nodes.scroll_offset(id);
         if previous != offset {
-            self.record_mut(id).scroll_offset = offset;
+            self.nodes.set_scroll_offset(id, offset);
             // Hit-index patch + Scene extract of this scroller only.
             // Descendants keep LayoutBox; paint uses scroll_offset.
             self.scroll_hit_updates
@@ -3447,18 +3109,13 @@ impl UiWorld {
 
     /// Store `id`'s scrolling area and clamp its offset into it.
     fn store_scroll_metrics(&mut self, id: StableNodeId, metrics: Option<ScrollMetrics>) -> bool {
-        if scroll_viewport_size(self.nodes.scroll_metrics(id).copied())
-            != scroll_viewport_size(metrics)
-        {
-            self.counters.pending_drain_counts.scroll_viewport_updates += 1;
-        }
         self.nodes.set_scroll_metrics(id, metrics);
-        let current = self.record(id).scroll_offset;
+        let current = self.nodes.scroll_offset(id);
         let clamped = self.clamp_scroll_offset(id, current);
         if current == clamped {
             return false;
         }
-        self.record_mut(id).scroll_offset = clamped;
+        self.nodes.set_scroll_offset(id, clamped);
         self.scroll_hit_updates
             .push((id, [current.x - clamped.x, current.y - clamped.y]));
         self.mark_scrolled(id);
@@ -3536,7 +3193,7 @@ impl UiWorld {
         if Arc::ptr_eq(previous, next) {
             return;
         }
-        let visual = self.nodes.visual(id);
+        let visual = self.nodes.widget_visual(id);
         let was = scroll_container(previous, visual);
         let now = scroll_container(next, visual);
         let contains =
@@ -3626,49 +3283,38 @@ impl UiWorld {
         }
         for &id in &parked {
             #[cfg(feature = "charts")]
-            if let Some(mut visual) = self.standard_visual(id) {
+            if let Some(spec) = self
+                .widget_visual_as::<crate::ChartVisual>(id)
+                .filter(|visual| visual.hover != crate::ChartHoverVisual::default())
+                .map(|visual| Arc::clone(&visual.spec))
+            {
                 // A parked chart shows nothing hovered.
-                let cleared = match &mut visual {
-                    StandardVisual::Chart { hover, .. }
-                        if *hover != crate::ChartHoverVisual::default() =>
-                    {
-                        *hover = crate::ChartHoverVisual::default();
-                        true
-                    }
-                    _ => false,
-                };
-                if cleared {
-                    self.apply(
-                        &UiMutation::SetStandardVisual {
-                            id,
-                            visual: Some(visual),
-                        },
-                        &mut report,
-                    );
-                    report.mutations += 1;
-                }
+                self.apply(
+                    &UiMutation::SetWidgetVisual {
+                        id,
+                        visual: Some(crate::WidgetVisualHandle::new(crate::ChartVisual {
+                            spec,
+                            hover: crate::ChartHoverVisual::default(),
+                        })),
+                    },
+                    &mut report,
+                );
+                report.mutations += 1;
             }
-            let Some(StandardVisual::Icon {
-                icon,
-                size,
-                tooltip: Some(mut tooltip),
-            }) = self.standard_visual(id)
-            else {
+            let Some(mut visual) = self.widget_visual_as::<crate::IconVisual>(id).cloned() else {
                 continue;
             };
-            if tooltip.open {
+            if let Some(tooltip) = visual.tooltip.as_mut()
+                && tooltip.open
+            {
                 tooltip.open = false;
                 // This is a derived write to a validated, surviving node. Use
                 // normal mutation application (dirty/extract accounting) within
                 // the same generation, without a second observable commit.
                 self.apply(
-                    &UiMutation::SetStandardVisual {
+                    &UiMutation::SetWidgetVisual {
                         id,
-                        visual: Some(StandardVisual::Icon {
-                            icon,
-                            size,
-                            tooltip: Some(tooltip),
-                        }),
+                        visual: Some(crate::WidgetVisualHandle::new(visual)),
                     },
                     &mut report,
                 );
@@ -3732,13 +3378,13 @@ impl UiWorld {
             }
             open.extend(self.child_ids(id).iter().copied());
             let frame = self.layout_frame_from_styles(id);
-            if self.record(id).layout_frame == frame {
+            if self.record(id).layout_frame() == frame {
                 continue;
             }
             let [x, y] = self.layout_origin(id).unwrap_or_default();
             let [frame_x, frame_y] = self.frame_origin_of(self.record(id), frame);
             let record = self.record_mut(id);
-            record.layout_frame = frame;
+            record.set_layout_frame(frame);
             record.local_layout.x = x - frame_x;
             record.local_layout.y = y - frame_y;
             self.nodes.note_node_space(id);
@@ -3761,13 +3407,13 @@ impl UiWorld {
             || record.local_layout.height.to_bits() != layout.height.to_bits();
         let moved = record.local_layout.x.to_bits() != layout.x.to_bits()
             || record.local_layout.y.to_bits() != layout.y.to_bits()
-            || record.layout_frame != frame;
+            || record.layout_frame() != frame;
         let omission_changed = (record.local_layout.width <= 0.0
             || record.local_layout.height <= 0.0)
             != (layout.width <= 0.0 || layout.height <= 0.0);
-        let reframed = record.layout_frame != frame;
+        let reframed = record.layout_frame() != frame;
         record.local_layout = layout;
-        record.layout_frame = frame;
+        record.set_layout_frame(frame);
         if reframed {
             self.nodes.note_node_space(id);
         }
@@ -3784,8 +3430,7 @@ impl UiWorld {
         if (resized || moved)
             && let Some(parent) = self.parent_id(id)
             && self
-                .nodes
-                .visual(parent)
+                .widget_visual_ref(parent)
                 .is_some_and(|visual| visual.paint_depends_on_child(id))
         {
             self.mark(
@@ -3899,13 +3544,10 @@ impl UiWorld {
                 self.mark(id, DirtyMask::RENDER);
             }
             for id in menus {
-                self.record_mut(id).render_room_epoch = epoch;
+                self.nodes.set_render_room_epoch(id, epoch);
                 self.mark_keeping_render_reason(id, DirtyMask::RENDER);
             }
         }
-        self.bump_last_counters(|counters| {
-            counters.record_layout_translations(roots.len(), 0);
-        });
     }
 }
 
@@ -4012,14 +3654,15 @@ fn edit_keeping_preedit(
 /// Whether a markdown block list changed. Its measured size follows its
 /// blocks -- an image's resolved size among them -- so layout hears of it.
 fn markdown_blocks_changed(
-    previous: Option<&StandardVisual>,
-    next: Option<&StandardVisual>,
+    previous: Option<&crate::WidgetVisualHandle>,
+    next: Option<&crate::WidgetVisualHandle>,
 ) -> bool {
     #[cfg(feature = "rich-text")]
     {
-        let blocks = |visual: Option<&StandardVisual>| match visual {
-            Some(StandardVisual::NativeMarkdown { blocks, .. }) => Some(Arc::clone(blocks)),
-            _ => None,
+        let blocks = |visual: Option<&crate::WidgetVisualHandle>| {
+            visual
+                .and_then(|v| v.downcast_ref::<crate::NativeMarkdownVisual>())
+                .map(|v| Arc::clone(&v.blocks))
         };
         blocks(previous) != blocks(next)
     }
@@ -4117,17 +3760,6 @@ impl UiWorld {
         }
         // A write's own counts; a variant counts as a responsive result.
         if authored.is_some() {
-            if changed.is_empty() && presentation_eq {
-                self.counters
-                    .pending_layout_invalidations_counted
-                    .layout_equivalent_mutations_skipped += 1;
-                self.counters
-                    .pending_drain_counts
-                    .equivalent_style_layout_skips += 1;
-            }
-            if !style_layout_invalidation.is_empty() {
-                self.counters.pending_drain_counts.style_to_layout_seeds += 1;
-            }
             self.release_rewritten_holds(id, &previous_authored, &next_authored);
         }
         self.sync_node_presence(id);
@@ -4141,7 +3773,7 @@ impl UiWorld {
         if let Some(parent) = self.parent_id(id) {
             let context = self
                 .established_layout_context(parent)
-                .unwrap_or(crate::FormattingContextKind::Flow);
+                .unwrap_or(crate::FormattingContextKind::Flex);
             let content = self
                 .layout_content_kind(id)
                 .unwrap_or(crate::LayoutContentKind::Empty);
@@ -4285,7 +3917,7 @@ impl UiWorld {
     pub(super) fn replace_text_content(&mut self, id: StableNodeId, text: TextContent) {
         self.mark_inline_text_owners(id);
         self.nodes.set_inline_atoms(id, Arc::from([]));
-        self.record_mut(id).text = text;
+        self.nodes.set_text_content(id, text);
         // Spans over the old text would style the wrong bytes.
         self.nodes.set_rich_text(id, None);
         self.invalidate_text_content(id);
@@ -4336,6 +3968,7 @@ fn style_is_valid(layout: &nana_ui_core::LayoutStyle) -> bool {
             .font_size
             .is_some_and(|size| !size.is_finite() || size <= 0.0)
         || layout
+            .text_ext
             .letter_spacing
             .is_some_and(|spacing| !spacing.is_finite())
         || layout

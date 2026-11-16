@@ -109,10 +109,7 @@ impl AppContext {
                 layout.theme.offset_right = Some(ThemeExpr::token(ThemeToken::ControlPadding(
                     ControlPadding::Field,
                 )));
-                layout.offset_top = Some(LengthSpec::CalcPercentOffset {
-                    percent: 50.0,
-                    offset_px: -half_square,
-                });
+                layout.offset_top = Some(LengthSpec::percent_offset_inline(50.0, -half_square));
             },
         )?;
         let editing = snapshot.editing && snapshot.draws_value_thumb();
@@ -138,10 +135,8 @@ impl AppContext {
                 let layout = Arc::make_mut(&mut input.style.layout);
                 layout.hidden = !editing;
                 layout.position = PositionSpec::Absolute;
-                layout.offset_top = Some(LengthSpec::CalcPercentOffset {
-                    percent: 50.0,
-                    offset_px: -field_height / 2.0,
-                });
+                layout.offset_top =
+                    Some(LengthSpec::percent_offset_inline(50.0, -field_height / 2.0));
                 if let Some((left, width)) = placement {
                     layout.offset_left = Some(LengthSpec::Px(left));
                     layout.width = Some(LengthSpec::Px(width));
@@ -160,11 +155,7 @@ impl AppContext {
     /// has been laid out.
     fn range_edit_placement(&self, range: Entity<RangeField>) -> Option<(f32, f32)> {
         let id = range.stable_id();
-        let Some(crate::ComponentGeometry::Range {
-            value_thumb: Some(thumb),
-            ..
-        }) = self.world().component_geometry(id)
-        else {
+        let Some(thumb) = self.world().range_geometry(id).and_then(|g| g.value_thumb) else {
             return None;
         };
         let bounds = self.world().component_layout_box(id)?;

@@ -6,7 +6,7 @@
   "tolerance_px": 2,
   "tree": {
     "id": "root",
-    "style": "display:block;width:80px;height:40px",
+    "style": "width:80px;height:40px",
     "children": [
       {
         "id": "box",

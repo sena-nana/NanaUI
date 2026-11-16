@@ -3,9 +3,9 @@ use std::sync::Arc;
 
 use nana_ui_core::{ButtonKind, LengthSpec, OverflowSpec, PaintTransform, SemanticColorRole};
 use nana_ui_runtime::{
-    AppContext, Avatar, Button as RuntimeButton, ComponentGeometry, ComputedStyle,
-    CustomRenderNode, DocumentId, ExtractedNode, GpuTextureView, HoverCard, LayoutBox,
-    MutationQueue, NodeKind, NodeStyle, StableNodeId, StandardVisual, TextContent,
+    AppContext, Avatar, Button as RuntimeButton, ComputedStyle, CustomRenderNode, DocumentId,
+    ExtractedNode, GpuTextureView, HoverCard, LayoutBox, MutationQueue, NodeKind, NodeStyle,
+    StableNodeId, TextContent,
 };
 #[cfg(feature = "graph-canvas")]
 use nana_ui_scene::StrokePattern;
@@ -619,17 +619,7 @@ fn graph_canvas_stroke_node(
         nana_ui_core::LayoutStyle::default(),
         Some(background),
     );
-    node.standard_visual = Some(StandardVisual::GraphCanvas {
-        nodes: Arc::from([]),
-        ports: Arc::from([]),
-        edges: Arc::from([]),
-        connecting: None,
-        grid_spacing: 24.0,
-        viewport_offset_x: 0.0,
-        viewport_offset_y: 0.0,
-        viewport_zoom: 1.0,
-    });
-    node.component_geometry = Some(Box::new(ComponentGeometry::GraphCanvas {
+    let layout = nana_ui_runtime::GraphCanvasLayout {
         nodes: Vec::new(),
         separators: Vec::new(),
         ports: Vec::new(),
@@ -640,7 +630,12 @@ fn graph_canvas_stroke_node(
         background,
         grid_color: [0.0, 0.0, 0.0, 0.0],
         separator_color: [0.0, 0.0, 0.0, 0.0],
-    }));
+    };
+    node.widget_paint = Some(Arc::new(layout.to_widget_paint(
+        node.layout,
+        node.chrome_radii,
+        &node.style,
+    )));
     node
 }
 
@@ -964,7 +959,9 @@ fn non_uniform_affine_stroke_covers_stretched_ellipse_on_gpu() {
     // scale-x 2, scale-y 0.5 about the 64×64 node center. Local disc r=4
     // becomes an ellipse 8 × 2, not a min-axis disc of 2. Affine reaches
     // push_stroke via ScenePrimitive.transform (same path as Quad/Mesh).
-    Arc::make_mut(&mut canvas.source_style.layout).transform = Some(PaintTransform {
+    Arc::make_mut(&mut canvas.source_style.layout)
+        .transforms
+        .transform = Some(PaintTransform {
         a: 2.0,
         b: 0.0,
         c: 0.0,
@@ -1305,7 +1302,11 @@ fn dash_ends_and_dot_rims_stay_one_device_pixel_under_transform_scale() {
             border_width: Some(4.0),
             border_color: Some([1.0, 0.0, 0.0, 1.0]),
             border_style: Some(style),
-            transform: scale_transform(scale),
+            transforms: nana_ui_core::TransformStyle {
+                transform: scale_transform(scale),
+                ..Default::default()
+            }
+            .into(),
             ..Default::default()
         };
         let node = extracted_div(1, &[], 0.0, 0.0, 80.0, 80.0, layout, Some(white));
@@ -1521,12 +1522,23 @@ fn spinner_ticks_paint_capsule_coverage_on_gpu() {
         nana_ui_core::LayoutStyle::default(),
         None,
     );
-    spinner.standard_visual = Some(StandardVisual::Spinner {
-        label: Arc::from(""),
-        size: 24.0,
-        phase: 0.0,
-    });
-    spinner.standard_visual_foreground = Some([1.0, 0.0, 0.0, 1.0]);
+    let mut spinner_paint = nana_ui_runtime::WidgetPaintOutput::new();
+    spinner_paint.push(
+        3,
+        nana_ui_runtime::WidgetPaintOp::Icon(nana_ui_runtime::WidgetIcon {
+            bounds: nana_ui_runtime::LayoutBox {
+                x: 20.0,
+                y: 20.0,
+                width: 24.0,
+                height: 24.0,
+            },
+            glyph: nana_ui_runtime::WidgetGlyph::Spinner { phase: 0 },
+            color: Some([1.0, 0.0, 0.0, 1.0]),
+            paint_color: None,
+            align_to_adjacent_text: false,
+        }),
+    );
+    spinner.widget_paint = Some(Arc::new(spinner_paint));
     scene.apply_delta(
         [
             colored_quad_node(1, 0.0, 0.0, 64.0, 64.0, [0.0, 0.0, 1.0, 1.0]),
@@ -1703,7 +1715,7 @@ fn encode_scene_gpu_work(
     queue: &wgpu::Queue,
     painter: &mut SceneWgpuPainter,
     scene: &UiScene,
-) -> nana_ui_core::GpuWorkObservation {
+) -> crate::GpuWorkObservation {
     let viewport = ScenePaintViewport {
         logical_size: [64.0, 64.0],
         physical_size: [64, 64],
@@ -2713,7 +2725,8 @@ fn paint_accepts_rotation_and_letter_spacing() {
         layout: square_button_layout(),
         ..Default::default()
     };
-    Arc::make_mut(&mut style.layout).transform = Some(nana_ui_core::PaintTransform {
+    let layout_mut = Arc::make_mut(&mut style.layout);
+    layout_mut.transforms.transform = Some(nana_ui_core::PaintTransform {
         a: 0.0,
         b: 1.0,
         c: -1.0,
@@ -2721,8 +2734,8 @@ fn paint_accepts_rotation_and_letter_spacing() {
         e: 0.0,
         f: 0.0,
     });
-    Arc::make_mut(&mut style.layout).letter_spacing = Some(0.5);
-    Arc::make_mut(&mut style.layout).font_family = Some("Noto Sans SC".into());
+    layout_mut.text_ext.letter_spacing = Some(0.5);
+    layout_mut.text_ext.font_family = Some("Noto Sans SC".into());
     layout.set_style(button.stable_id(), style);
     context.commit_mutations(layout).unwrap();
     let scene = commit_scene(&mut context);
@@ -2769,7 +2782,7 @@ fn letter_spacing_changes_painted_pixels() {
         layout: square_button_layout(),
         ..Default::default()
     };
-    Arc::make_mut(&mut style.layout).letter_spacing = Some(8.0);
+    Arc::make_mut(&mut style.layout).text_ext.letter_spacing = Some(8.0);
     layout.set_style(button.stable_id(), style);
     context.commit_mutations(layout).unwrap();
     let tracked = commit_scene(&mut context);
@@ -3256,7 +3269,9 @@ fn a_rounded_clip_edge_stays_one_device_pixel_under_an_anisotropic_transform() {
             },
             None,
         );
-        Arc::make_mut(&mut parent.source_style.layout).transform = Some(PaintTransform {
+        Arc::make_mut(&mut parent.source_style.layout)
+            .transforms
+            .transform = Some(PaintTransform {
             a,
             b,
             c,
@@ -3370,9 +3385,13 @@ fn rectangle_and_polygon_clip_edges_stay_one_device_pixel_under_a_transform() {
         },
         None,
     );
-    Arc::make_mut(&mut rectangle.source_style.layout).transform = transform;
+    Arc::make_mut(&mut rectangle.source_style.layout)
+        .transforms
+        .transform = transform;
     let mut polygon = clip_path_polygon_parent(1, &[2], 16.0, 16.0, 32.0, 32.0);
-    Arc::make_mut(&mut polygon.source_style.layout).transform = transform;
+    Arc::make_mut(&mut polygon.source_style.layout)
+        .transforms
+        .transform = transform;
     let mut own = clip_path_polygon_parent(1, &[], 16.0, 16.0, 32.0, 32.0);
     own.style = Arc::new(ComputedStyle {
         background: Some(green),
@@ -3380,7 +3399,7 @@ fn rectangle_and_polygon_clip_edges_stay_one_device_pixel_under_a_transform() {
     });
     let layout = Arc::make_mut(&mut own.source_style.layout);
     layout.background = Some(green);
-    layout.transform = transform;
+    layout.transforms.transform = transform;
     let quad_child = colored_quad_child(2, 1, 8.0, 8.0, 48.0, 48.0, green);
     let texture_child = host_texture_child(2, 1, 8.0, 8.0, 48.0, 48.0, "fill");
     type Case<'a> = (&'a str, Vec<ExtractedNode>, &'a [[f32; 2]]);
@@ -3465,11 +3484,10 @@ mod chart_gpu {
         write_box(&mut layout, chart.stable_id(), at[0], at[1], SIZE, SIZE);
         context.commit_mutations(layout).unwrap();
         let scene = commit_scene(&mut context);
-        let Some(ComponentGeometry::Chart { layout, .. }) =
-            context.world().component_geometry(chart.stable_id())
-        else {
-            panic!("chart geometry");
-        };
+        let layout = context
+            .world()
+            .chart_layout(chart.stable_id())
+            .expect("chart geometry");
         let (device, queue) = test_device();
         let mut painter = SceneWgpuPainter::for_test(wgpu::TextureFormat::Rgba8Unorm);
         let side = ((SIZE + at[0].max(at[1])) * scale).ceil() as u32 + 2;
@@ -3880,11 +3898,10 @@ mod chart_gpu {
         write_box(&mut boxes, chart.stable_id(), 0.0, 0.0, SIZE, SIZE);
         context.commit_mutations(boxes).unwrap();
         let mut scene = commit_scene(&mut context);
-        let Some(ComponentGeometry::Chart { layout, .. }) =
-            context.world().component_geometry(chart.stable_id())
-        else {
-            panic!("chart geometry");
-        };
+        let layout = context
+            .world()
+            .chart_layout(chart.stable_id())
+            .expect("chart geometry");
         let motion = layout.marks.transition.expect("entry motion");
         let bar = layout
             .marks
@@ -4179,7 +4196,11 @@ fn rounded_quad_edge_stays_one_device_pixel_under_transform_scale() {
         let style = nana_ui_core::LayoutStyle {
             background: Some(green),
             border_radius: Some(w.min(h) * 0.5),
-            transform: scale_transform(scale),
+            transforms: nana_ui_core::TransformStyle {
+                transform: scale_transform(scale),
+                ..Default::default()
+            }
+            .into(),
             ..Default::default()
         };
         scene.apply_delta([extracted_div(1, &[], x, y, w, h, style, Some(green))], []);
@@ -4210,7 +4231,7 @@ fn rounded_host_texture_edge_stays_one_device_pixel_under_scale_and_fractional_d
     {
         let mut context = AppContext::new();
         let mut style = NodeStyle::default();
-        Arc::make_mut(&mut style.layout).transform = scale_transform(scale);
+        Arc::make_mut(&mut style.layout).transforms.transform = scale_transform(scale);
         let preview = context
             .create_component(
                 DocumentId::new(1).unwrap(),
@@ -4321,12 +4342,12 @@ fn rounded_edges_stay_one_device_pixel_under_perspective() {
         let mut quad = colored_quad_node(1, 16.0, 16.0, 32.0, 32.0, green);
         let layout = Arc::make_mut(&mut quad.source_style.layout);
         layout.border_radius = Some(16.0);
-        layout.transform_3d = Some(mat);
+        layout.transforms.transform_3d = Some(mat);
         let mut quad_scene = UiScene::new();
         quad_scene.apply_delta([quad], []);
         let mut context = AppContext::new();
         let mut style = NodeStyle::default();
-        Arc::make_mut(&mut style.layout).transform_3d = Some(mat);
+        Arc::make_mut(&mut style.layout).transforms.transform_3d = Some(mat);
         let preview = context
             .create_component(
                 DocumentId::new(1).unwrap(),
@@ -4441,14 +4462,18 @@ fn square_edges_stay_one_device_pixel_under_any_affine_transform() {
             .map(|[u, v]| [(cx + a * u + c * v) * factor, (cy + b * u + d * v) * factor]);
         let style = nana_ui_core::LayoutStyle {
             background: Some(green),
-            transform: Some(transform),
+            transforms: nana_ui_core::TransformStyle {
+                transform: Some(transform),
+                ..Default::default()
+            }
+            .into(),
             ..Default::default()
         };
         let mut quad = UiScene::new();
         quad.apply_delta([extracted_div(1, &[], x, y, w, w, style, Some(green))], []);
         let mut context = AppContext::new();
         let mut node_style = NodeStyle::default();
-        Arc::make_mut(&mut node_style.layout).transform = Some(transform);
+        Arc::make_mut(&mut node_style.layout).transforms.transform = Some(transform);
         let preview = context
             .create_component(
                 DocumentId::new(1).unwrap(),
@@ -4547,7 +4572,11 @@ fn unblurred_shadow_and_outline_edges_stay_one_device_pixel_under_transform_scal
             let layout = nana_ui_core::LayoutStyle {
                 background: Some(fill),
                 border_radius: Some(w.min(h) * 0.5 - band),
-                transform: scale_transform(scale),
+                transforms: nana_ui_core::TransformStyle {
+                    transform: scale_transform(scale),
+                    ..Default::default()
+                }
+                .into(),
                 paint: paint.into(),
                 ..Default::default()
             };
@@ -4591,7 +4620,11 @@ fn inset_shadow_spread_shrinks_its_shape_inside_the_box() {
         let layout = nana_ui_core::LayoutStyle {
             background: Some(black),
             border_radius: Some(w.min(h) * 0.5),
-            transform: scale_transform(scale),
+            transforms: nana_ui_core::TransformStyle {
+                transform: scale_transform(scale),
+                ..Default::default()
+            }
+            .into(),
             paint: nana_ui_core::PaintStyle {
                 box_shadows: vec![shadow],
                 ..Default::default()
@@ -4900,11 +4933,10 @@ fn label_beside_a_gpu_view(label: &str) -> UiScene {
     text.text = Some(TextContent {
         value: label.into(),
     });
-    text.style = Arc::new(ComputedStyle {
-        color: Some([1.0; 4]),
-        font_size: 14.0,
-        ..ComputedStyle::default()
-    });
+    text.style = Arc::new(ComputedStyle::with(|s| {
+        s.color = Some([1.0; 4]);
+        s.font_size = 14.0;
+    }));
     let mut root = colored_quad_node(1, 0.0, 0.0, 128.0, 96.0, [0.0, 0.0, 1.0, 1.0]);
     root.children = Arc::new(vec![view.id, text.id]);
     let mut scene = UiScene::new();
@@ -5154,18 +5186,17 @@ fn rotated_label_scene() -> UiScene {
     let button = context
         .create_component(
             document,
-            RuntimeButton::new("Hi")
-                .kind(ButtonKind::Selected)
-                .layout(Arc::new(nana_ui_core::LayoutStyle {
-                    transform: Some(PaintTransform {
-                        a: k,
-                        b: k,
-                        c: -k,
-                        d: k,
-                        ..PaintTransform::default()
-                    }),
-                    ..(*square_button_layout()).clone()
-                })),
+            RuntimeButton::new("Hi").kind(ButtonKind::Selected).layout({
+                let mut style = (*square_button_layout()).clone();
+                style.transforms.transform = Some(PaintTransform {
+                    a: k,
+                    b: k,
+                    c: -k,
+                    d: k,
+                    ..PaintTransform::default()
+                });
+                Arc::new(style)
+            }),
         )
         .unwrap();
     let mut layout = MutationQueue::new();
@@ -5466,7 +5497,7 @@ fn overflow_parent(
     transform: Option<PaintTransform>,
 ) -> ExtractedNode {
     ExtractedNode {
-        layout_result: None,
+        extracted_layout: None,
         custom_paint: None,
         chrome_radii: nana_ui_core::ChromeRadii::default(),
         id: StableNodeId::new(value).unwrap(),
@@ -5494,7 +5525,11 @@ fn overflow_parent(
             layout: Arc::new(nana_ui_core::LayoutStyle {
                 overflow_x: OverflowSpec::Hidden,
                 overflow_y: OverflowSpec::Hidden,
-                transform,
+                transforms: nana_ui_core::TransformStyle {
+                    transform,
+                    ..Default::default()
+                }
+                .into(),
                 ..nana_ui_core::LayoutStyle::default()
             }),
             ..NodeStyle::default()
@@ -5508,9 +5543,7 @@ fn overflow_parent(
         focused: false,
         editable: false,
         text_spans: Vec::new(),
-        standard_visual: None,
-        component_geometry: None,
-        standard_visual_foreground: None,
+        widget_paint: None,
         custom_render: None,
         drop_hover: None,
         document_text_selection: Vec::new(),
@@ -5532,7 +5565,7 @@ fn translucent_parent(
     opacity: f32,
 ) -> ExtractedNode {
     ExtractedNode {
-        layout_result: None,
+        extracted_layout: None,
         custom_paint: None,
         chrome_radii: nana_ui_core::ChromeRadii::default(),
         id: StableNodeId::new(value).unwrap(),
@@ -5572,9 +5605,7 @@ fn translucent_parent(
         focused: false,
         editable: false,
         text_spans: Vec::new(),
-        standard_visual: None,
-        component_geometry: None,
-        standard_visual_foreground: None,
+        widget_paint: None,
         custom_render: None,
         drop_hover: None,
         document_text_selection: Vec::new(),
@@ -5596,7 +5627,7 @@ fn overflowing_text_child(
     color: [f32; 4],
 ) -> ExtractedNode {
     ExtractedNode {
-        layout_result: None,
+        extracted_layout: None,
         custom_paint: None,
         chrome_radii: nana_ui_core::ChromeRadii::default(),
         id: StableNodeId::new(value).unwrap(),
@@ -5615,11 +5646,10 @@ fn overflowing_text_child(
         layout_frame: nana_ui_runtime::LayoutFrame::Page,
         scroll_offset: nana_ui_runtime::ScrollOffset::default(),
         source_style: NodeStyle::default(),
-        style: Arc::new(ComputedStyle {
-            color: Some(color),
-            font_size: 64.0,
-            ..ComputedStyle::default()
-        }),
+        style: Arc::new(ComputedStyle::with(|s| {
+            s.color = Some(color);
+            s.font_size = 64.0;
+        })),
         text: Some(TextContent {
             value: "██".into()
         }),
@@ -5630,9 +5660,7 @@ fn overflowing_text_child(
         focused: false,
         editable: false,
         text_spans: Vec::new(),
-        standard_visual: None,
-        component_geometry: None,
-        standard_visual_foreground: None,
+        widget_paint: None,
         custom_render: None,
         drop_hover: None,
         document_text_selection: Vec::new(),
@@ -5668,7 +5696,7 @@ fn host_texture_child(
     resource: &str,
 ) -> ExtractedNode {
     ExtractedNode {
-        layout_result: None,
+        extracted_layout: None,
         custom_paint: None,
         chrome_radii: nana_ui_core::ChromeRadii::default(),
         id: StableNodeId::new(value).unwrap(),
@@ -5696,9 +5724,7 @@ fn host_texture_child(
         focused: false,
         editable: false,
         text_spans: Vec::new(),
-        standard_visual: None,
-        component_geometry: None,
-        standard_visual_foreground: None,
+        widget_paint: None,
         custom_render: Some(CustomRenderNode::new("nana.host-texture", resource, 1)),
         drop_hover: None,
         document_text_selection: Vec::new(),
@@ -5735,7 +5761,7 @@ fn extracted_div(
     background: Option<[f32; 4]>,
 ) -> ExtractedNode {
     ExtractedNode {
-        layout_result: None,
+        extracted_layout: None,
         custom_paint: None,
         chrome_radii: nana_ui_core::ChromeRadii::default(),
         id: StableNodeId::new(value).unwrap(),
@@ -5775,9 +5801,7 @@ fn extracted_div(
         focused: false,
         editable: false,
         text_spans: Vec::new(),
-        standard_visual: None,
-        component_geometry: None,
-        standard_visual_foreground: None,
+        widget_paint: None,
         custom_render: None,
         drop_hover: None,
         document_text_selection: Vec::new(),
@@ -5828,12 +5852,15 @@ fn commit_scene(context: &mut AppContext) -> UiScene {
 
 fn selected_button_fill(context: &AppContext, id: nana_ui_runtime::StableNodeId) -> [f32; 4] {
     let work = context.world().extract_nodes(&[id]);
-    match work[0].component_geometry.as_deref() {
-        Some(ComponentGeometry::Button {
-            background: Some(fill),
-            ..
-        }) => *fill,
-        other => panic!("expected opaque Button geometry fill, got {other:?}"),
+    match work[0]
+        .widget_paint
+        .as_deref()
+        .and_then(|paint| paint.root_surface.as_ref())
+        .and_then(|surface| surface.background)
+        .flatten()
+    {
+        Some(fill) => fill,
+        other => panic!("expected opaque Button root_surface fill, got {other:?}"),
     }
 }
 
@@ -6282,7 +6309,9 @@ fn clip_path_inset_round_parent_rotated(
 ) -> ExtractedNode {
     let mut node =
         clip_path_inset_round_parent(value, children, x, y, width, height, 0.0, round_px);
-    Arc::make_mut(&mut node.source_style.layout).transform = Some(transform);
+    Arc::make_mut(&mut node.source_style.layout)
+        .transforms
+        .transform = Some(transform);
     node
 }
 
@@ -6312,7 +6341,9 @@ fn frost_quad_node_with_fill_and_transform(
     transform: nana_ui_core::PaintTransform,
 ) -> ExtractedNode {
     let mut node = frost_quad_node_with_fill(value, x, y, width, height, fill, filter);
-    Arc::make_mut(&mut node.source_style.layout).transform = Some(transform);
+    Arc::make_mut(&mut node.source_style.layout)
+        .transforms
+        .transform = Some(transform);
     node
 }
 
@@ -6826,7 +6857,9 @@ fn perspective_rotate_y_paints_trapezoid_on_gpu() {
         .projected_corners(x, y, width, height)
         .expect("corners");
     let mut node = colored_quad_node(1, x, y, width, height, [1.0, 0.0, 0.0, 1.0]);
-    Arc::make_mut(&mut node.source_style.layout).transform_3d = Some(mat);
+    Arc::make_mut(&mut node.source_style.layout)
+        .transforms
+        .transform_3d = Some(mat);
     let (device, queue) = test_device();
     let format = wgpu::TextureFormat::Rgba8Unorm;
     let mut painter = SceneWgpuPainter::for_test(format);
@@ -9140,14 +9173,18 @@ fn paint_layout_sample(
 fn four_side_solid_borders_still_paint() {
     let layout = nana_ui_core::LayoutStyle {
         background: Some([0.1, 0.1, 0.1, 1.0]),
-        border_top_width: Some(6.0),
-        border_right_width: Some(6.0),
-        border_bottom_width: Some(6.0),
-        border_left_width: Some(6.0),
-        border_top_color: Some([1.0, 0.0, 0.0, 1.0]),
-        border_right_color: Some([0.0, 1.0, 0.0, 1.0]),
-        border_bottom_color: Some([0.0, 0.0, 1.0, 1.0]),
-        border_left_color: Some([1.0, 1.0, 0.0, 1.0]),
+        border_sides: nana_ui_core::BorderSides {
+            top_width: Some(6.0),
+            right_width: Some(6.0),
+            bottom_width: Some(6.0),
+            left_width: Some(6.0),
+            top_color: Some([1.0, 0.0, 0.0, 1.0]),
+            right_color: Some([0.0, 1.0, 0.0, 1.0]),
+            bottom_color: Some([0.0, 0.0, 1.0, 1.0]),
+            left_color: Some([1.0, 1.0, 0.0, 1.0]),
+            ..Default::default()
+        }
+        .into(),
         ..Default::default()
     };
     let top = paint_layout_sample(layout.clone(), [40.0, 40.0], 20, 2);
@@ -9277,7 +9314,9 @@ fn paint_white_nine_slice(transform: nana_ui_core::PaintTransform) -> Vec<u8> {
     let mut painter = SceneWgpuPainter::for_test(format);
     let mut scene = UiScene::new();
     let mut node = paint_surface_quad_node(1, 10.3, 10.3, 60.0, 40.0, [0.0; 4], surface);
-    Arc::make_mut(&mut node.source_style.layout).transform = Some(transform);
+    Arc::make_mut(&mut node.source_style.layout)
+        .transforms
+        .transform = Some(transform);
     scene.apply_delta([node], []);
     let viewport = ScenePaintViewport {
         logical_size: [80.0, 60.0],
@@ -9740,13 +9779,29 @@ fn an_icon_a_transform_scales_is_rasterized_at_the_size_it_is_seen() {
     let paint = |size: f32, scale: f32| {
         let at = 32.0 - size * 0.5;
         let mut icon = colored_quad_node(1, at, at, size, size, [0.0; 4]);
-        icon.standard_visual = Some(StandardVisual::Icon {
-            icon: nana_ui_core::Icon::Search,
-            size,
-            tooltip: None,
-        });
-        icon.standard_visual_foreground = Some([1.0; 4]);
-        Arc::make_mut(&mut icon.source_style.layout).transform = scale_transform(scale);
+        let mut paint = nana_ui_runtime::WidgetPaintOutput {
+            suppresses_in_flow_descendants: true,
+            ..nana_ui_runtime::WidgetPaintOutput::new()
+        };
+        paint.push(
+            3,
+            nana_ui_runtime::WidgetPaintOp::Icon(nana_ui_runtime::WidgetIcon {
+                bounds: nana_ui_runtime::LayoutBox {
+                    x: 0.0,
+                    y: 0.0,
+                    width: size,
+                    height: size,
+                },
+                glyph: nana_ui_runtime::WidgetGlyph::Icon(nana_ui_core::Icon::Search),
+                color: Some([1.0; 4]),
+                paint_color: None,
+                align_to_adjacent_text: true,
+            }),
+        );
+        icon.widget_paint = Some(Arc::new(paint));
+        Arc::make_mut(&mut icon.source_style.layout)
+            .transforms
+            .transform = scale_transform(scale);
         let mut scene = UiScene::new();
         scene.apply_delta([icon], []);
         let mut painter = SceneWgpuPainter::for_test(wgpu::TextureFormat::Rgba8Unorm);
@@ -9787,13 +9842,29 @@ fn an_icon_squeezed_along_one_axis_keeps_its_ink_at_any_sub_pixel_phase() {
     let (device, queue) = test_device();
     let ink = |phase: f32| {
         let mut icon = colored_quad_node(1, 16.0, 16.0 + phase, 32.0, 32.0, [0.0; 4]);
-        icon.standard_visual = Some(StandardVisual::Icon {
-            icon: nana_ui_core::Icon::Search,
-            size: 32.0,
-            tooltip: None,
-        });
-        icon.standard_visual_foreground = Some([1.0; 4]);
-        Arc::make_mut(&mut icon.source_style.layout).transform = Some(PaintTransform {
+        let mut paint = nana_ui_runtime::WidgetPaintOutput {
+            suppresses_in_flow_descendants: true,
+            ..nana_ui_runtime::WidgetPaintOutput::new()
+        };
+        paint.push(
+            3,
+            nana_ui_runtime::WidgetPaintOp::Icon(nana_ui_runtime::WidgetIcon {
+                bounds: nana_ui_runtime::LayoutBox {
+                    x: 0.0,
+                    y: 0.0,
+                    width: 32.0,
+                    height: 32.0,
+                },
+                glyph: nana_ui_runtime::WidgetGlyph::Icon(nana_ui_core::Icon::Search),
+                color: Some([1.0; 4]),
+                paint_color: None,
+                align_to_adjacent_text: true,
+            }),
+        );
+        icon.widget_paint = Some(Arc::new(paint));
+        Arc::make_mut(&mut icon.source_style.layout)
+            .transforms
+            .transform = Some(PaintTransform {
             d: 0.3,
             ..PaintTransform::default()
         });
@@ -9842,7 +9913,7 @@ fn a_frosted_panel_edge_stays_one_device_pixel_under_transform_scale() {
         let mut panel = frost_quad_node_with_fill(2, x, y, w, h, [0.0; 4], filter);
         let layout = Arc::make_mut(&mut panel.source_style.layout);
         layout.border_radius = Some(w.min(h) * 0.5);
-        layout.transform = scale_transform(scale);
+        layout.transforms.transform = scale_transform(scale);
         let mut scene = UiScene::new();
         scene.apply_delta(
             [
@@ -10131,12 +10202,26 @@ fn adjacent_icons_batch_into_one_draw_whatever_their_glyphs() {
                 None,
             );
             icon.parent = Some(StableNodeId::new(1).unwrap());
-            icon.standard_visual = Some(StandardVisual::Icon {
-                icon: glyph,
-                size,
-                tooltip: None,
-            });
-            icon.standard_visual_foreground = Some([1.0; 4]);
+            let mut icon_paint = nana_ui_runtime::WidgetPaintOutput {
+                suppresses_in_flow_descendants: true,
+                ..nana_ui_runtime::WidgetPaintOutput::new()
+            };
+            icon_paint.push(
+                3,
+                nana_ui_runtime::WidgetPaintOp::Icon(nana_ui_runtime::WidgetIcon {
+                    bounds: nana_ui_runtime::LayoutBox {
+                        x: 0.0,
+                        y: 0.0,
+                        width: size,
+                        height: size,
+                    },
+                    glyph: nana_ui_runtime::WidgetGlyph::Icon(glyph),
+                    color: Some([1.0; 4]),
+                    paint_color: None,
+                    align_to_adjacent_text: true,
+                }),
+            );
+            icon.widget_paint = Some(Arc::new(icon_paint));
             nodes.push(icon);
         }
         let mut root =
@@ -10265,11 +10350,10 @@ fn quad_and_label_rows_keep_a_constant_draw_count() {
                 None,
             );
             label.parent = Some(StableNodeId::new(1).unwrap());
-            label.style = Arc::new(ComputedStyle {
-                color: Some([1.0, 0.9, 0.2, 1.0]),
-                font_size: 11.0,
-                ..ComputedStyle::default()
-            });
+            label.style = Arc::new(ComputedStyle::with(|s| {
+                s.color = Some([1.0, 0.9, 0.2, 1.0]);
+                s.font_size = 11.0;
+            }));
             label.text = Some(TextContent {
                 value: format!("Row {row}").into(),
             });
@@ -10367,11 +10451,10 @@ fn a_quad_over_earlier_text_is_not_folded_ahead_of_it() {
             None,
         );
         label.parent = Some(StableNodeId::new(1).unwrap());
-        label.style = Arc::new(ComputedStyle {
-            color: Some([1.0, 0.95, 0.1, 1.0]),
-            font_size: 16.0,
-            ..ComputedStyle::default()
-        });
+        label.style = Arc::new(ComputedStyle::with(|s| {
+            s.color = Some([1.0, 0.95, 0.1, 1.0]);
+            s.font_size = 16.0;
+        }));
         label.text = Some(TextContent {
             value: "HHHH".into(),
         });
@@ -10449,11 +10532,10 @@ fn batch_merging_does_not_flip_the_dest_sample_count() {
         None,
     );
     label.parent = Some(StableNodeId::new(1).unwrap());
-    label.style = Arc::new(ComputedStyle {
-        color: Some([1.0, 1.0, 1.0, 1.0]),
-        font_size: 10.0,
-        ..ComputedStyle::default()
-    });
+    label.style = Arc::new(ComputedStyle::with(|s| {
+        s.color = Some([1.0, 1.0, 1.0, 1.0]);
+        s.font_size = 10.0;
+    }));
     label.text = Some(TextContent { value: "Hi".into() });
     // Clear of the label, so it folds into the first quad's batch and the
     // merged list ends with the glyphs.
@@ -10521,11 +10603,10 @@ fn open_text_run_survives_shape_cache_eviction() {
             None,
         );
         node.parent = Some(StableNodeId::new(1).unwrap());
-        node.style = Arc::new(ComputedStyle {
-            color: Some([1.0, 1.0, 1.0, 1.0]),
-            font_size: 10.0,
-            ..ComputedStyle::default()
-        });
+        node.style = Arc::new(ComputedStyle::with(|s| {
+            s.color = Some([1.0, 1.0, 1.0, 1.0]);
+            s.font_size = 10.0;
+        }));
         node.text = Some(TextContent {
             value: format!("row-{index}").into(),
         });
@@ -10657,11 +10738,10 @@ fn text_below_the_clip_band_costs_no_draw_and_no_pixels() {
                 None,
             );
             node.parent = Some(StableNodeId::new(1).unwrap());
-            node.style = Arc::new(ComputedStyle {
-                color: Some([1.0, 1.0, 1.0, 1.0]),
-                font_size: 16.0,
-                ..ComputedStyle::default()
-            });
+            node.style = Arc::new(ComputedStyle::with(|s| {
+                s.color = Some([1.0, 1.0, 1.0, 1.0]);
+                s.font_size = 16.0;
+            }));
             node.text = Some(TextContent { value: "AB".into() });
             node
         };
@@ -11108,21 +11188,37 @@ fn alternating_live_targets_keep_prepared_geometry_text_and_bindings() {
                 [],
             );
             let mut icon = colored_quad_node(1000, 4.0, 4.0, 16.0, 16.0, [0.0; 4]);
-            icon.standard_visual = Some(StandardVisual::Icon {
-                icon: if index % 2 == 0 {
-                    nana_ui_core::Icon::Search
-                } else {
-                    nana_ui_core::Icon::Close
-                },
-                size: 16.0,
-                tooltip: None,
-            });
-            icon.standard_visual_foreground = Some([1.0; 4]);
+            let mut icon_paint = nana_ui_runtime::WidgetPaintOutput {
+                suppresses_in_flow_descendants: true,
+                ..nana_ui_runtime::WidgetPaintOutput::new()
+            };
+            icon_paint.push(
+                3,
+                nana_ui_runtime::WidgetPaintOp::Icon(nana_ui_runtime::WidgetIcon {
+                    bounds: nana_ui_runtime::LayoutBox {
+                        x: 0.0,
+                        y: 0.0,
+                        width: 16.0,
+                        height: 16.0,
+                    },
+                    glyph: nana_ui_runtime::WidgetGlyph::Icon(if index % 2 == 0 {
+                        nana_ui_core::Icon::Search
+                    } else {
+                        nana_ui_core::Icon::Close
+                    }),
+                    color: Some([1.0; 4]),
+                    paint_color: None,
+                    align_to_adjacent_text: true,
+                }),
+            );
+            icon.widget_paint = Some(Arc::new(icon_paint));
             let mut label = colored_quad_node(1001, 20.0, 2.0, 40.0, 20.0, [0.0; 4]);
             label.text = Some(TextContent {
                 value: format!("T{index}").into(),
             });
-            Arc::make_mut(&mut label.source_style.layout).transform = Some(PaintTransform {
+            Arc::make_mut(&mut label.source_style.layout)
+                .transforms
+                .transform = Some(PaintTransform {
                 a: 0.94,
                 b: 0.34,
                 c: -0.34,
@@ -11261,11 +11357,10 @@ fn text_follows_ancestor_compositor_opacity_overlay() {
     for node in &mut extracted {
         if node.id == child {
             node.text = Some(TextContent { value: "HI".into() });
-            node.style = Arc::new(ComputedStyle {
-                color: Some([1.0, 1.0, 1.0, 1.0]),
-                font_size: 28.0,
-                ..ComputedStyle::default()
-            });
+            node.style = Arc::new(ComputedStyle::with(|s| {
+                s.color = Some([1.0, 1.0, 1.0, 1.0]);
+                s.font_size = 28.0;
+            }));
             node.layout = LayoutBox {
                 x: 4.0,
                 y: 8.0,
@@ -12484,7 +12579,7 @@ fn retained_paths_paint_what_cpu_transformed_vertices_did_under_any_scale() {
                 wgpu::TextureFormat::Rgba8Unorm,
                 [0.0, 0.0, 0.0, 1.0],
                 |painter| painter.meshes.transform_paths_on_cpu(cpu),
-                |layout| layout.transform = transform,
+                |layout| layout.transforms.transform = transform,
             )
         };
         let retained = paint(false);
@@ -12881,11 +12976,10 @@ fn a_stroked_rectangle_drawn_as_a_quad_straddles_its_outline() {
 /// A 16 px label under `parent`, for the scroll tests below.
 fn scrolled_label(value: u64, parent: u64, x: f32, y: f32, content: &str) -> ExtractedNode {
     let mut node = overflowing_text_child(value, parent, x, y, 64.0, 24.0, [1.0; 4]);
-    node.style = Arc::new(ComputedStyle {
-        color: Some([1.0; 4]),
-        font_size: 16.0,
-        ..ComputedStyle::default()
-    });
+    node.style = Arc::new(ComputedStyle::with(|s| {
+        s.color = Some([1.0; 4]);
+        s.font_size = 16.0;
+    }));
     node.text = Some(TextContent {
         value: content.into(),
     });
@@ -13412,11 +13506,10 @@ fn label_only_scene(label: &str) -> UiScene {
     text.text = Some(TextContent {
         value: label.into(),
     });
-    text.style = Arc::new(ComputedStyle {
-        color: Some([1.0; 4]),
-        font_size: 24.0,
-        ..ComputedStyle::default()
-    });
+    text.style = Arc::new(ComputedStyle::with(|s| {
+        s.color = Some([1.0; 4]);
+        s.font_size = 24.0;
+    }));
     let mut root = colored_quad_node(1, 0.0, 0.0, 96.0, 64.0, [0.0, 0.0, 1.0, 1.0]);
     root.children = Arc::new(vec![text.id]);
     let mut scene = UiScene::new();
@@ -14258,6 +14351,7 @@ fn is_blue(color: [u8; 4]) -> bool {
     color[0] < 40 && color[1] < 40 && color[2] > 200
 }
 
+#[cfg(feature = "runtime-wgsl")]
 fn is_green(color: [u8; 4]) -> bool {
     color[0] < 40 && color[1] > 200 && color[2] < 40
 }
@@ -14266,6 +14360,7 @@ fn is_green(color: [u8; 4]) -> bool {
 /// paints the square natively, the waker says when a material pipeline is
 /// ready, and the frame after paints it shaded, a revision later. The square
 /// compiles one pipeline per sample count, each once.
+#[cfg(feature = "runtime-wgsl")]
 #[test]
 fn a_painter_with_a_material_waker_paints_natively_until_the_material_compiles() {
     let (device, queue) = test_device();
@@ -14321,6 +14416,7 @@ fn a_painter_with_a_material_waker_paints_natively_until_the_material_compiles()
 
 /// With no waker nothing would paint again for a pipeline compiled in the
 /// background: an offscreen painter compiles on the frame that needs it.
+#[cfg(feature = "runtime-wgsl")]
 #[test]
 fn a_painter_without_a_material_waker_shades_its_first_frame() {
     let (device, queue) = test_device();
@@ -14328,6 +14424,19 @@ fn a_painter_without_a_material_waker_shades_its_first_frame() {
     let mut painter = SceneWgpuPainter::for_test(wgpu::TextureFormat::Rgba8Unorm);
     let first = square_centre(&device, &queue, &mut painter, &scene);
     assert!(is_green(first), "the material shades it at once: {first:?}");
+}
+
+#[cfg(not(feature = "runtime-wgsl"))]
+#[test]
+fn a_painter_without_runtime_wgsl_falls_back_to_native_paint() {
+    let (device, queue) = test_device();
+    let scene = green_material_square("no runtime wgsl");
+    let mut painter = SceneWgpuPainter::for_test(wgpu::TextureFormat::Rgba8Unorm);
+    let first = square_centre(&device, &queue, &mut painter, &scene);
+    assert!(
+        is_blue(first),
+        "without runtime-wgsl, custom WGSL material falls back to native fill: {first:?}"
+    );
 }
 
 /// A window's first frame compiles no pipeline of its own: the painter built

@@ -58,10 +58,10 @@ fn lay_out(context: &mut AppContext) {
 }
 
 fn bar(context: &AppContext, scroll: Entity<ScrollView>) -> Option<ScrollbarBar> {
-    match context.world().component_geometry(scroll.stable_id()) {
-        Some(crate::ComponentGeometry::Scrollbar { vertical, .. }) => vertical,
-        _ => None,
-    }
+    context
+        .world()
+        .scrollbar_bars(scroll.stable_id())
+        .and_then(|bars| bars.vertical)
 }
 
 fn held(context: &AppContext, scroll: Entity<ScrollView>) -> bool {
@@ -284,10 +284,12 @@ fn reduced_motion_lands_the_bars_at_once() {
 fn a_fade_reverses_from_where_it_is() {
     let mut context = AppContext::new();
     let scroll = scroll_view(&mut context, None, |_| {});
-    let presence = |context: &AppContext| match context.world().standard_visual(scroll.stable_id())
-    {
-        Some(crate::StandardVisual::Scrollbar { presence, .. }) => presence,
-        other => panic!("not a scrollbar: {other:?}"),
+    let presence = |context: &AppContext| {
+        context
+            .world()
+            .widget_visual_as::<crate::ScrollbarVisual>(scroll.stable_id())
+            .expect("a scrollbar")
+            .presence
     };
     context
         .set_pointer_hover_at(document(), 1, Some(scroll.stable_id()), Duration::ZERO)

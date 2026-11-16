@@ -42,34 +42,39 @@ use crate::{
     ResponsiveRule, StableNodeId, StyleVariant,
 };
 
-/// The Style Model fields one rule's declarations write, as the code that
-/// writes them: produced by the build, one assignment per field
-/// (`layout.paint.outline.width = …`). A field written with the value the
-/// default layout has is among them too, so a class can reset what the
-/// element was built with.
-///
-/// Each value arrives as the field's own JSON and is read as the field's
-/// type ([`__style_value`]), so an application links the decoding of the
-/// field types its styles write and nothing else. A patch used to be one
-/// JSON object applied by serializing the whole layout, patching the tree
-/// and deserializing it again, which linked the entire Style Model's
-/// `Serialize` and `Deserialize` into every application.
-pub struct StylePatch {
-    apply: fn(&mut LayoutStyle),
-}
+pub use nana_ui_core::StylePatch;
 
-impl StylePatch {
-    #[doc(hidden)]
-    pub const fn new(apply: fn(&mut LayoutStyle)) -> Self {
-        Self { apply }
-    }
-}
-
-/// One field's value in a compiled [`StylePatch`], from the JSON the build
-/// wrote for it. The field's type is the one it is assigned to.
+/// Codegen helpers emitted by compiled stylesheet patches; not part of the
+/// supported public API.
 #[doc(hidden)]
-pub fn __style_value<T: serde::de::DeserializeOwned>(json: &str) -> T {
-    serde_json::from_str(json).expect("a compiled style value is the field's JSON")
+pub mod __patch {
+    pub use nana_ui_core::box_layout::intern_calc;
+    pub use nana_ui_core::dynamic_layout::{
+        AdaptationProfile, AxisElasticity, DiscreteAdaptation, DiscreteCandidate, ElasticFloor,
+        ElasticLength, KeepWith, LayoutCost,
+    };
+    pub use nana_ui_core::shared::Shared;
+    pub use nana_ui_core::style_patch::set;
+    pub use nana_ui_core::{
+        AlignSpec, AnchorSpec, BackdropFilter, BackgroundImage, BackgroundImageFit,
+        BackgroundPosition, BackgroundRepeat, BorderImageSlice, BorderImageSpec, BorderStyle,
+        BorderWidth, BoxShadowSpec, BoxSizing, CalcBinOp, CalcExpr, ClipCircle, ClipEllipse,
+        ClipInset, ClipPath, ClipPoint, ClipShapeRadius, ColorFilter, ContainerType,
+        ControlPadding, ControlSize, CssGradient, CursorSpec, DirSpec, DisplaySpec,
+        FilterDropShadow, FlexDirection, FlexWrap, FontFeatureSetting, FontKerningSpec,
+        FontVariationSetting, GradientStop, GridAutoFlow, GridLine, GridRepeatAuto,
+        GridTemplateAreas, GridTrack, GridTrackListUnsupported, ImageSampling, JustifySpec,
+        LengthSpec, LineBreakSpec, LineHeightSpec, LineRole, LinearGradient, MaskImage,
+        MaterialProgram, MaterialRef, MaterialTexture, MixBlendMode, OutlineStyle, OverflowSpec,
+        OverflowWrapSpec, PaintColor, PaintMat4, PaintTransform, PointerEventsSpec,
+        PopoverAlignment, PopoverPlacement, PositionSpec, RadialGradient, RadiusTier,
+        ScrollEdgeFade, ScrollbarSkin, SpacingStep, TextAlignSpec, TextAutospaceSpec,
+        TextDecorationLine, TextEmphasisColor, TextEmphasisPosition, TextEmphasisShape,
+        TextEmphasisStyle, TextJustifySpec, TextOrientationSpec, TextShadowSpec,
+        TextSpacingTrimSpec, TextStrokeSpec, TextWeight, TextWrapStyleSpec, ThemeExpr,
+        ThemeProperty, ThemeToken, TransformBox, TransformOrigin, TypeRole, UserSelectSpec,
+        ViewportAxis, VisibilitySpec, WhiteSpaceSpec, WordBreakSpec, WritingModeSpec,
+    };
 }
 
 /// The CSS `@container` query of a rule, compiled at build time: the
@@ -646,7 +651,7 @@ impl ResponsiveBinding {
 fn apply(base: &LayoutStyle, patches: impl Iterator<Item = &'static StylePatch>) -> LayoutStyle {
     let mut layout = base.clone();
     for patch in patches {
-        (patch.apply)(&mut layout);
+        patch.apply(&mut layout);
     }
     // Every patch is in, so the cascade is settled: a physical edge record
     // with no logical edge to order against decides nothing, and dropping it
@@ -941,7 +946,7 @@ mod site_tests {
     }
 
     static PAD: StylePatch = StylePatch::new(|layout| {
-        layout.padding = __style_value(r#"{"Px":4.0}"#);
+        layout.padding = Some(LengthSpec::Px(4.0));
     });
     static PADDED: [SheetRule; 1] = [SheetRule {
         classes: &[0],
@@ -994,14 +999,14 @@ mod site_tests {
     }
 
     static ROW: StylePatch = StylePatch::new(|layout| {
-        layout.height = __style_value(r#"{"Px":20.0}"#);
+        layout.height = Some(LengthSpec::Px(20.0));
     });
     static NARROW: StylePatch = StylePatch::new(|layout| {
-        layout.height = __style_value(r#"{"Px":40.0}"#);
-        layout.opacity = __style_value(r#"0.5"#);
+        layout.height = Some(LengthSpec::Px(40.0));
+        layout.opacity = Some(0.5);
     });
     static LATER: StylePatch = StylePatch::new(|layout| {
-        layout.height = __style_value(r#"{"Px":30.0}"#);
+        layout.height = Some(LengthSpec::Px(30.0));
     });
     /// `@container card (width < 300px)`.
     static CARD: SheetQuery = SheetQuery::new(

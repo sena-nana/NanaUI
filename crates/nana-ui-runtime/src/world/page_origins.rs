@@ -54,7 +54,7 @@ impl UiWorld {
     /// `record`'s page origin through the remembered frames, when a scope is
     /// open, no component geometry is being derived and the box is deep.
     pub(super) fn remembered_page_origin(&self, record: &NodeRecord) -> Option<[f32; 2]> {
-        if record.hierarchy.depth <= DIRECT_DEPTH || self.geometry_frame.get().is_some() {
+        if record.depth <= DIRECT_DEPTH || self.geometry_frame.get().is_some() {
             return None;
         }
         let mut memo = self.page_origins.try_borrow_mut().ok()?;

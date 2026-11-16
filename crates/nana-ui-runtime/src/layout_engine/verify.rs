@@ -155,13 +155,16 @@ pub(super) fn retained_matches_full_layout(
 /// ([`super::may_move_line_boxes`]). Reading an answer checks it too
 /// (`checked_line_boxes`), but only the ones a pass asks; this checks the
 /// ones a later pass would read. One fresh memo serves every entry, so the
-/// audit walks each box once. It runs under [`skip_layout_verify`] as well:
-/// it costs a walk, not a layout.
+/// audit walks each box once. [`skip_layout_verify`] skips this full-document
+/// walk as well so timing and 100k-node benchmarks keep O(edit) cost.
 pub(super) fn retained_line_boxes_are_fresh(
     world: &UiWorld,
     document: DocumentId,
     retained: &RetainedLayoutCache,
 ) {
+    if SKIPPED.with(Cell::get) {
+        return;
+    }
     let Some(cache) = retained.documents.get(&document) else {
         return;
     };

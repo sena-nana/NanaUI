@@ -31,6 +31,7 @@ pub mod css_motion;
 pub mod css_paint;
 pub mod css_paint_transform;
 pub mod css_written;
+mod rust_expr;
 pub mod shell_contract;
 pub mod style;
 

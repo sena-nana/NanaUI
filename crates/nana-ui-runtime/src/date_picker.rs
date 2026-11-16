@@ -162,6 +162,8 @@ fn grid_style() -> NodeStyle {
 }
 
 impl ComponentView for DatePicker {
+    const TYPE_ID: Option<&'static str> = Some(crate::component_descriptors::DATE_PICKER.type_id);
+
     const BEHAVIOR: crate::TypeBehavior<Self> = crate::TypeBehavior {
         slot_assembler: Some(crate::AppContext::assemble_date_picker),
         ..crate::TypeBehavior::NONE

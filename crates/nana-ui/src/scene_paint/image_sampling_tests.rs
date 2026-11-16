@@ -297,7 +297,7 @@ fn a_single_level_host_texture_shown_smaller_filters_over_the_device_pixel() {
     for (side, scale, inner) in cases {
         let mut context = AppContext::new();
         let mut style = NodeStyle::default();
-        Arc::make_mut(&mut style.layout).transform = scale_transform(scale);
+        Arc::make_mut(&mut style.layout).transforms.transform = scale_transform(scale);
         let preview = context
             .create_component(
                 DocumentId::new(1).unwrap(),

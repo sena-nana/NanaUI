@@ -162,7 +162,7 @@ fn same(warm: &mut Page, at: &str) {
             cold_world.local_layout_result(node),
         ) {
             (Some(ours), Some(theirs)) => assert!(
-                ours.geometry_eq(theirs),
+                ours.geometry_eq(&theirs),
                 "{at}: result of {node:?}: {ours:?} != {theirs:?}"
             ),
             (ours, theirs) => assert_eq!(ours, theirs, "{at}: result of {node:?}"),

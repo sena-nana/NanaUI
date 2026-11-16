@@ -3,7 +3,7 @@
 //! Application code owns tab values, order persistence, and pane/window
 //! identity. This type reports select/reorder/close/transfer results and keeps
 //! retained option order in sync with a successful reorder. Scene paints each
-//! option through [`crate::SegmentedOption`] / [`crate::StandardVisual::SelectionOption`]
+//! option through [`crate::SegmentedOption`] / [`crate::SelectionOptionVisual`]
 //! with [`crate::SelectionChrome::Tabs`]. Close stays a request: the
 //! application owns removal.
 
@@ -382,6 +382,8 @@ impl Default for Tabs {
 }
 
 impl ComponentView for Tabs {
+    const TYPE_ID: Option<&'static str> = Some(crate::component_descriptors::TABS.type_id);
+
     const BEHAVIOR: crate::TypeBehavior<Self> = crate::TypeBehavior {
         hooks: Some(|hooks| {
             crate::framework::routes::segmented(hooks);
@@ -432,7 +434,7 @@ mod tests {
     use super::*;
     use crate::DocumentId;
     use crate::framework::AppContext;
-    use crate::{Entity, NodeKind, SegmentedOption, StandardVisual};
+    use crate::{Entity, NodeKind, SegmentedOption};
     use nana_ui_core::{LogicalPoint, TabDragGroup, TabDragSurface};
 
     fn sample() -> Tabs {
@@ -723,20 +725,24 @@ mod tests {
         );
         assert!(!context.read(split, SegmentedOption::selected).unwrap());
 
-        let Some(StandardVisual::SelectionOption {
+        let Some(crate::SelectionOptionVisual {
             icon,
             selected: false,
             disabled: false,
             show_focus_ring: false,
             ..
-        }) = context.world().standard_visual(children[0])
+        }) = context
+            .world()
+            .widget_visual_as::<crate::SelectionOptionVisual>(children[0])
         else {
             panic!("code option visual");
         };
-        assert_eq!(icon, Some(nana_ui_core::Icon::File));
+        assert_eq!(*icon, Some(nana_ui_core::Icon::File));
         assert!(matches!(
-            context.world().standard_visual(children[1]),
-            Some(StandardVisual::SelectionOption {
+            context
+                .world()
+                .widget_visual_as::<crate::SelectionOptionVisual>(children[1]),
+            Some(crate::SelectionOptionVisual {
                 selected: true,
                 disabled: false,
                 show_focus_ring: false,
@@ -744,8 +750,10 @@ mod tests {
             })
         ));
         assert!(matches!(
-            context.world().standard_visual(children[2]),
-            Some(StandardVisual::SelectionOption {
+            context
+                .world()
+                .widget_visual_as::<crate::SelectionOptionVisual>(children[2]),
+            Some(crate::SelectionOptionVisual {
                 selected: false,
                 disabled: true,
                 show_focus_ring: false,

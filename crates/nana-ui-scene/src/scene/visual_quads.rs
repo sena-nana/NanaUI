@@ -119,62 +119,8 @@ pub(super) fn visual_quad(
     }
 }
 
-/// A row's round picture ([`nana_ui_runtime::ComponentImage`]): the
-/// placeholder circle at slot `backdrop`, and over it, at slot `picture`, the
-/// host texture cover-fitted into the same circle, the `nana.host-texture`
-/// node (revision 0) an `Avatar` of that slot paints, so the two can show
-/// one slot in a frame. An empty slot paints only the circle; a slot the
-/// host has not registered is skipped by the painter and leaves it showing.
-pub(super) fn emit_component_image(
-    context: &VisualPrimitiveContext<'_>,
-    backdrop: u64,
-    picture: u64,
-    image: &nana_ui_runtime::ComponentImage,
-    emit: &mut impl FnMut(ScenePrimitive),
-) {
-    let bounds = scene_rect(image.bounds);
-    let radius = corner_radii(bounds.width.min(bounds.height) * 0.5);
-    emit(visual_quad(
-        context,
-        backdrop,
-        bounds,
-        VisualQuadStyle {
-            background: Some(image.placeholder),
-            border_color: None,
-            border_width: 0.0,
-            corner_radius: radius,
-        },
-    ));
-    if image.resource.is_empty() {
-        return;
-    }
-    emit(ScenePrimitive {
-        id: PrimitiveId {
-            node: context.node,
-            slot: picture,
-        },
-        node: context.node,
-        bounds,
-        transform: context.transform,
-        clips: Arc::clone(context.clips),
-        opacity: context.opacity,
-        z_index: context.z_index,
-        document_order: context.document_order,
-        kind: ScenePrimitiveKind::Custom {
-            node: nana_ui_runtime::CustomRenderNode::new(
-                nana_ui_runtime::HOST_TEXTURE_RENDERER,
-                image.resource.to_resource(),
-                0,
-            )
-            .with_fit(nana_ui_core::ContentFit::Cover),
-            mask: None,
-            corner_radius: radius,
-        },
-    });
-}
-
 /// Build a component quad that keeps an explicit authoring-space colour.
-/// StandardVisual geometry resolves its slots to sRGB in `VisualQuadStyle`;
+/// Component geometry resolves its slots to sRGB in `VisualQuadStyle`;
 /// where the node's authored colour is still that slot's colour, the quad
 /// carries the authored value instead, so the GPU converts it to linear scRGB
 /// without an sRGB round trip.
@@ -199,44 +145,6 @@ pub(super) fn visual_quad_with_paint(
     primitive
 }
 
-/// A [`ContrastRing`] thumb filling `rect`, on three consecutive slots from
-/// `first_slot`: the outer dark edge, the light ring, the inner dark edge.
-/// The middle stays open, so the colour the thumb marks shows through it;
-/// the light ring reads on dark colours, the edges on light ones.
-pub(super) fn contrast_ring_quads(
-    context: &VisualPrimitiveContext<'_>,
-    first_slot: u64,
-    rect: SceneRect,
-    ring: ContrastRing,
-) -> [ScenePrimitive; 3] {
-    let edge = nana_ui_core::HAIRLINE;
-    let band = nana_ui_core::space::XXS;
-    let inset = |rect: SceneRect, by: f32| SceneRect {
-        x: rect.x + by,
-        y: rect.y + by,
-        width: (rect.width - by * 2.0).max(0.0),
-        height: (rect.height - by * 2.0).max(0.0),
-    };
-    let stroke = |slot: u64, rect: SceneRect, color: [f32; 4], width: f32| {
-        visual_quad(
-            context,
-            slot,
-            rect,
-            VisualQuadStyle {
-                background: None,
-                border_color: Some(color),
-                border_width: width,
-                corner_radius: corner_radii(rect.width.max(rect.height) / 2.0),
-            },
-        )
-    };
-    [
-        stroke(first_slot, rect, ring.edge, edge),
-        stroke(first_slot + 1, inset(rect, edge), ring.ring, band),
-        stroke(first_slot + 2, inset(rect, edge + band), ring.edge, edge),
-    ]
-}
-
 /// The one colour a scene slot paints: the authored value when there is one,
 /// else the resolved sRGB colour.
 pub(crate) fn slot_color(
@@ -247,7 +155,7 @@ pub(crate) fn slot_color(
 }
 
 /// Keep explicit metadata only when it describes the resolved legacy colour
-/// used by a component slot.  A StandardVisual often has separate semantic
+/// used by a component slot. A widget visual often has separate semantic
 /// colours for its track, thumb, or indicator, so blindly copying the node's
 /// PaintColor would tint the wrong slot.
 pub(super) fn matching_paint_color(
@@ -336,7 +244,6 @@ pub(super) fn quad_surface_from_style(
     }
 }
 
-#[cfg(any(feature = "charts", feature = "graph-canvas", feature = "rich-text"))]
 pub(super) fn visual_stroke(
     context: &VisualPrimitiveContext<'_>,
     slot: u64,
@@ -366,53 +273,6 @@ pub(super) fn visual_stroke(
             cap: StrokeCap::Round,
             pattern: None,
         },
-    }
-}
-
-/// Markdown inline runs still mark their decorations with box-wide strokes;
-/// plain text nodes draw theirs per line and run in the text painter.
-#[cfg(feature = "rich-text")]
-pub(super) fn insert_text_decoration_strokes(
-    context: &VisualPrimitiveContext<'_>,
-    bounds: SceneRect,
-    color: [f32; 4],
-    deco: nana_ui_core::TextDecorationLine,
-    mut sink: impl FnMut(ScenePrimitive),
-) {
-    let width = 1.0_f32.max(bounds.height * 0.06);
-    let mut emit = |slot: u64, y: f32| {
-        sink(ScenePrimitive {
-            id: PrimitiveId {
-                node: context.node,
-                slot,
-            },
-            node: context.node,
-            bounds: SceneRect {
-                x: bounds.x,
-                y: y - width * 0.5,
-                width: bounds.width,
-                height: width,
-            },
-            transform: context.transform,
-            clips: Arc::clone(context.clips),
-            opacity: context.opacity,
-            z_index: context.z_index,
-            document_order: context.document_order,
-            kind: ScenePrimitiveKind::Stroke {
-                points: vec![[bounds.x, y], [bounds.x + bounds.width, y]],
-                width,
-                color,
-                widths: Vec::new(),
-                cap: StrokeCap::Butt,
-                pattern: None,
-            },
-        });
-    };
-    if deco.underline {
-        emit(12, bounds.y + bounds.height - width);
-    }
-    if deco.line_through {
-        emit(13, bounds.y + bounds.height * 0.5);
     }
 }
 
@@ -494,26 +354,4 @@ pub(super) fn visual_quad_color_batch(
             corner_radius: style.corner_radius,
         }
     })
-}
-
-/// 锚定浮层面板的共享绘制原语（补全弹层 slot 90 与 hover 浮窗 slot 120
-/// 共用）：圆角面板底 + 1px 边框，浮在编辑器内容之上。
-pub(super) fn overlay_panel_primitive(
-    context: &VisualPrimitiveContext<'_>,
-    slot: u64,
-    bounds: SceneRect,
-    background: [f32; 4],
-    border: [f32; 4],
-) -> ScenePrimitive {
-    visual_quad(
-        context,
-        slot,
-        bounds,
-        VisualQuadStyle {
-            background: Some(background),
-            border_color: Some(border),
-            border_width: 1.0,
-            corner_radius: corner_radii(6.0),
-        },
-    )
 }

@@ -6,29 +6,34 @@ use crate::layout_edits::{LayoutEdit, LengthBits, StackPreset, edit_layout};
 use crate::{
     AccessibilityRole, AccessibilityState, HighlightRequest, InteractionState, MutationQueue,
     NodeKind, NodeStyle, OverlayHostState, RovingEdge, ScrollOffset, SemanticPaint, StableNodeId,
-    StandardVisual, TextCodeFold, TextColorSwatchSpan, TextCompletion, TextContent,
-    TextDiagnosticSpan, TextEditorRenderOptions, TextGitMark, TextHorizontalAlignment, TextHover,
-    TextInlay, TextInputState, TextMatchSpan, TextSignatureHelp, TextVerticalAlignment, UiWorld,
+    TextCodeFold, TextColorSwatchSpan, TextCompletion, TextContent, TextDiagnosticSpan,
+    TextEditorRenderOptions, TextGitMark, TextHorizontalAlignment, TextHover, TextInlay,
+    TextInputState, TextMatchSpan, TextSignatureHelp, TextVerticalAlignment, UiWorld,
 };
 
+static CONTROL_LAYOUT: std::sync::LazyLock<Arc<nana_ui_core::LayoutStyle>> =
+    std::sync::LazyLock::new(|| {
+        let mut theme = nana_ui_core::ThemeLayout::default();
+        theme.control_typography(nana_ui_core::ControlSize::Medium);
+        theme.border_width =
+            Some(nana_ui_core::ThemeToken::Border(nana_ui_core::BorderWidth::Hairline).into());
+        Arc::new(nana_ui_core::LayoutStyle {
+            theme: theme.into(),
+            // No `padding_left`/`padding_right` here: the control names its inset
+            // step on its `NodeStyle` (`control_padding_x`), same as the two below.
+            // No `min_height` here either: the control names its size step on its
+            // `NodeStyle`, so the installed metrics decide how tall it is.
+            border_width: Some(nana_ui_core::HAIRLINE),
+            // No `border_radius` here: the tier is named on the `NodeStyle` of
+            // each control that uses this layout, so the installed theme decides
+            // the number. Baking it here is what made the Appearance radius
+            // setting a no-op for controls.
+            ..nana_ui_core::LayoutStyle::default()
+        })
+    });
+
 fn control_layout() -> Arc<nana_ui_core::LayoutStyle> {
-    let mut theme = nana_ui_core::ThemeLayout::default();
-    theme.control_typography(nana_ui_core::ControlSize::Medium);
-    theme.border_width =
-        Some(nana_ui_core::ThemeToken::Border(nana_ui_core::BorderWidth::Hairline).into());
-    Arc::new(nana_ui_core::LayoutStyle {
-        theme: theme.into(),
-        // No `padding_left`/`padding_right` here: the control names its inset
-        // step on its `NodeStyle` (`control_padding_x`), same as the two below.
-        // No `min_height` here either: the control names its size step on its
-        // `NodeStyle`, so the installed metrics decide how tall it is.
-        border_width: Some(nana_ui_core::HAIRLINE),
-        // No `border_radius` here: the tier is named on the `NodeStyle` of
-        // each control that uses this layout, so the installed theme decides
-        // the number. Baking it here is what made the Appearance radius
-        // setting a no-op for controls.
-        ..nana_ui_core::LayoutStyle::default()
-    })
+    Arc::clone(&CONTROL_LAYOUT)
 }
 
 /// Shared page-spacing target (24px by default) for heading icon tools.
@@ -123,7 +128,8 @@ fn range_field_style() -> NodeStyle {
                 ..SemanticPaint::default()
             },
             ..crate::InteractionStyle::default()
-        },
+        }
+        .into(),
         ..NodeStyle::default()
     }
 }
@@ -168,7 +174,8 @@ fn text_field_style(multiline: bool) -> NodeStyle {
                 ..SemanticPaint::default()
             },
             ..crate::InteractionStyle::default()
-        },
+        }
+        .into(),
         text_vertical_alignment: if multiline {
             TextVerticalAlignment::Top
         } else {
@@ -276,6 +283,10 @@ fn project_text_field(
 ///
 /// [`update_component`]: crate::AppContext::update_component
 pub trait ComponentView: Clone + PartialEq + Send + 'static {
+    /// Built-in component identity (`"nana.button"`), stamped onto nodes when
+    /// this view is created or mounted. Non-built-in views leave this `None`.
+    const TYPE_ID: Option<&'static str> = None;
+
     /// What this built-in type brings with its first node; see
     /// [`crate::TypeBehavior`].
     #[doc(hidden)]
@@ -595,6 +606,8 @@ impl Text {
 }
 
 impl ComponentView for Text {
+    const TYPE_ID: Option<&'static str> = Some(crate::component_descriptors::TEXT.type_id);
+
     fn share_layouts(
         &mut self,
         share: &mut dyn FnMut(&mut std::sync::Arc<nana_ui_core::LayoutStyle>),
@@ -677,6 +690,7 @@ pub struct Button {
     pub icon_gap: f32,
     /// Default icon spacing remains a token until projection; numeric setters opt out.
     pub themed_icon_gap: Option<nana_ui_core::ThemeExpr>,
+    pub(crate) icon_gap_uses_theme_default: bool,
     /// Where the glyph–label group sits; centred unless a row-like button
     /// asks for the start edge.
     pub content_align: TextHorizontalAlignment,
@@ -712,6 +726,61 @@ pub(crate) const CARD_TITLE_BAND: f32 = CARD_TITLE_LINE + CARD_TITLE_GAP;
 pub(crate) const CARD_LOADING_RESERVE: f32 =
     nana_ui_core::space::PAGE_TIGHT + nana_ui_core::space::XXS;
 
+static BUTTON_DEFAULT_STYLE: std::sync::LazyLock<NodeStyle> = std::sync::LazyLock::new(|| {
+    let mut layout = (*control_layout()).clone();
+    layout.font_weight = Some(nana_ui_core::type_scale::MEDIUM);
+    layout.theme.font_weight =
+        Some(nana_ui_core::ThemeToken::Weight(nana_ui_core::TextWeight::Medium).into());
+    layout.white_space_nowrap = true;
+    // Declared, not solved: only a strip that solves its overflow reads
+    // it (Issue #212).
+    layout.adaptation = Some(nana_ui_core::dynamic_layout::AdaptationProfile::shared_control());
+    NodeStyle {
+        layout: Arc::new(layout),
+        foreground: Some(nana_ui_core::SemanticColorRole::Text),
+        background: None,
+        border: None,
+        ring: None,
+        radius: None,
+        corner_radii: None,
+        shape: Some(nana_ui_core::ShapeRole::Button),
+        control_height: Some(nana_ui_core::ControlHeight::Min(
+            nana_ui_core::ControlSize::Medium,
+        )),
+        control_padding_x: Some(nana_ui_core::ControlPadding::Standard),
+        control_padding_y: None,
+        surface_padding: None,
+        square: None,
+        type_role: None,
+        type_weight: None,
+        gap_step: None,
+        padding_step: None,
+        interaction: crate::InteractionStyle {
+            hovered: SemanticPaint {
+                background: Some(nana_ui_core::SemanticColorRole::Hover),
+                ..SemanticPaint::default()
+            },
+            pressed: SemanticPaint {
+                background: Some(nana_ui_core::SemanticColorRole::Active),
+                ..SemanticPaint::default()
+            },
+            focused: SemanticPaint::FOCUS_SURFACE,
+            disabled: SemanticPaint {
+                foreground: Some(nana_ui_core::SemanticColorRole::Faint),
+                background: Some(nana_ui_core::SemanticColorRole::Subtle),
+                border: Some(nana_ui_core::SemanticColorRole::Border),
+                ..SemanticPaint::default()
+            },
+            ..crate::InteractionStyle::default()
+        }
+        .into(),
+        text_horizontal_alignment: TextHorizontalAlignment::Center,
+        text_vertical_alignment: TextVerticalAlignment::Center,
+        painter: None,
+        color_overrides: None,
+    }
+});
+
 impl Button {
     /// Text, spans and retained children share the label's content box.
     /// A plain value returns to the allocation-light string representation.
@@ -726,14 +795,6 @@ impl Button {
         self
     }
     pub fn new(label: impl Into<String>) -> Self {
-        let mut layout = (*control_layout()).clone();
-        layout.font_weight = Some(nana_ui_core::type_scale::MEDIUM);
-        layout.theme.font_weight =
-            Some(nana_ui_core::ThemeToken::Weight(nana_ui_core::TextWeight::Medium).into());
-        layout.white_space_nowrap = true;
-        // Declared, not solved: only a strip that solves its overflow reads
-        // it (Issue #212).
-        layout.adaptation = Some(nana_ui_core::dynamic_layout::AdaptationProfile::shared_control());
         Self {
             label: label.into(),
             content: None,
@@ -742,7 +803,8 @@ impl Button {
             trailing_icon: None,
             icon_size: None,
             icon_gap: nana_ui_core::space::SM,
-            themed_icon_gap: Some(crate::theme_intent::space(nana_ui_core::SpacingStep::Sm)),
+            themed_icon_gap: None,
+            icon_gap_uses_theme_default: true,
             content_align: TextHorizontalAlignment::Center,
             kind: nana_ui_core::ButtonKind::Ghost,
             size: nana_ui_core::ControlSize::Medium,
@@ -751,49 +813,7 @@ impl Button {
             loading_phase: 0.0,
             invalid: false,
             has_popup: false,
-            style: NodeStyle {
-                layout: Arc::new(layout),
-                foreground: Some(nana_ui_core::SemanticColorRole::Text),
-                background: None,
-                border: None,
-                ring: None,
-                radius: None,
-                corner_radii: None,
-                shape: Some(nana_ui_core::ShapeRole::Button),
-                control_height: Some(nana_ui_core::ControlHeight::Min(
-                    nana_ui_core::ControlSize::Medium,
-                )),
-                control_padding_x: Some(nana_ui_core::ControlPadding::Standard),
-                control_padding_y: None,
-                surface_padding: None,
-                square: None,
-                type_role: None,
-                type_weight: None,
-                gap_step: None,
-                padding_step: None,
-                interaction: crate::InteractionStyle {
-                    hovered: SemanticPaint {
-                        background: Some(nana_ui_core::SemanticColorRole::Hover),
-                        ..SemanticPaint::default()
-                    },
-                    pressed: SemanticPaint {
-                        background: Some(nana_ui_core::SemanticColorRole::Active),
-                        ..SemanticPaint::default()
-                    },
-                    focused: SemanticPaint::FOCUS_SURFACE,
-                    disabled: SemanticPaint {
-                        foreground: Some(nana_ui_core::SemanticColorRole::Faint),
-                        background: Some(nana_ui_core::SemanticColorRole::Subtle),
-                        border: Some(nana_ui_core::SemanticColorRole::Border),
-                        ..SemanticPaint::default()
-                    },
-                    ..crate::InteractionStyle::default()
-                },
-                text_horizontal_alignment: TextHorizontalAlignment::Center,
-                text_vertical_alignment: TextVerticalAlignment::Center,
-                painter: None,
-                color_overrides: None,
-            },
+            style: BUTTON_DEFAULT_STYLE.clone(),
             style_override: false,
             tool_glyph: false,
         }
@@ -839,6 +859,7 @@ impl Button {
         if gap.is_finite() && gap >= 0.0 {
             self.icon_gap = gap;
             self.themed_icon_gap = None;
+            self.icon_gap_uses_theme_default = false;
         }
         self
     }
@@ -911,6 +932,8 @@ impl Button {
 }
 
 impl ComponentView for Button {
+    const TYPE_ID: Option<&'static str> = Some(crate::component_descriptors::BUTTON.type_id);
+
     const BEHAVIOR: crate::TypeBehavior<Self> = crate::TypeBehavior {
         activation: Some(crate::AppContext::activate_button),
         ..crate::TypeBehavior::NONE
@@ -981,14 +1004,14 @@ impl ComponentView for Button {
             .unwrap_or(glyph_step.text_size_in(world.theme().typography()));
         let icon_gap = if let Some(gap) = &self.themed_icon_gap {
             gap.resolve(world.theme()).max(0.0)
-        } else if self.icon_gap.is_finite() {
-            self.icon_gap.max(0.0)
+        } else if self.icon_gap_uses_theme_default || !self.icon_gap.is_finite() {
+            world.theme().spacing().sm.max(0.0)
         } else {
-            world.theme().spacing().sm
+            self.icon_gap.max(0.0)
         };
         let visual_current = matches!(
-            world.standard_visual_ref(id),
-            Some(StandardVisual::Button {
+            world.widget_visual_as::<ButtonVisual>(id),
+            Some(ButtonVisual {
                 label,
                 icon,
                 trailing_icon,
@@ -1014,9 +1037,9 @@ impl ComponentView for Button {
         );
         if !visual_current {
             let label = shared_label(&mut shared, label_text);
-            mutations.set_standard_visual(
+            mutations.set_widget_visual(
                 id,
-                Some(StandardVisual::Button {
+                Some(ButtonVisual {
                     label,
                     icon: self.icon,
                     trailing_icon: self.trailing_icon,
@@ -1099,8 +1122,8 @@ impl ComponentView for Button {
         } else {
             self.accessible_name.as_str()
         };
-        let label = match world.accessibility(id).and_then(|a11y| a11y.label.as_ref()) {
-            Some(current) if **current == *spoken => Arc::clone(current),
+        let label = match world.accessible_label_arc(id) {
+            Some(current) if *current == *spoken => current,
             _ if self.accessible_name.is_empty() => shared_label(&mut shared, spoken),
             _ => Arc::from(spoken),
         };
@@ -1130,9 +1153,354 @@ impl ComponentView for Button {
     }
 }
 
+/// Retained visual state for [`Button`] and [`crate::Chip`].
+#[derive(Debug, Clone, PartialEq)]
+pub struct ButtonVisual {
+    pub label: Arc<str>,
+    pub icon: Option<nana_ui_core::Icon>,
+    /// A glyph after the label, such as the chevron of a picker. Same
+    /// size and gap as the leading one.
+    pub trailing_icon: Option<nana_ui_core::Icon>,
+    pub icon_size: f32,
+    pub icon_gap: f32,
+    pub kind: nana_ui_core::ButtonKind,
+    pub size: nana_ui_core::ControlSize,
+    pub loading: bool,
+    pub loading_phase: f32,
+    pub invalid: bool,
+    /// Where the glyph–label group sits in the content box.
+    pub content_align: TextHorizontalAlignment,
+}
+
+impl ButtonVisual {
+    /// Effective button kind and loading state inside `world`, folding any ancestor
+    /// [`crate::ConfirmDialog`] action state override.
+    pub fn effective_in(
+        &self,
+        id: StableNodeId,
+        world: &UiWorld,
+    ) -> (nana_ui_core::ButtonKind, bool) {
+        if let Some((busy, danger, true)) = world.confirm_action_effect(id) {
+            (
+                if danger {
+                    nana_ui_core::ButtonKind::Danger
+                } else {
+                    nana_ui_core::ButtonKind::Primary
+                },
+                busy,
+            )
+        } else {
+            (self.kind, self.loading)
+        }
+    }
+}
+
+impl crate::WidgetVisual for ButtonVisual {
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+
+    fn dyn_eq(&self, other: &dyn std::any::Any) -> bool {
+        other.downcast_ref::<Self>().is_some_and(|rhs| self == rhs)
+    }
+
+    fn is_document_select_target(&self) -> bool {
+        true
+    }
+
+    fn offsets_overflowing_inline_text(&self) -> bool {
+        true
+    }
+
+    fn tracks_text_content_part_budget(&self) -> bool {
+        true
+    }
+
+    fn caps_control_text(&self) -> bool {
+        true
+    }
+
+    fn button_label_state(&self) -> Option<bool> {
+        Some(!self.label.is_empty())
+    }
+
+    fn clearing_changes_content_layout(&self) -> bool {
+        true
+    }
+
+    fn invalidates_node_text_constraint(&self) -> bool {
+        true
+    }
+
+    fn content_layout_changed(&self, prev: Option<&dyn std::any::Any>) -> bool {
+        let Some(old) = prev.and_then(|any| any.downcast_ref::<Self>()) else {
+            return true;
+        };
+        (
+            self.icon.is_some(),
+            self.trailing_icon.is_some(),
+            self.icon_size,
+            self.icon_gap,
+            self.loading,
+            self.content_align,
+        ) != (
+            old.icon.is_some(),
+            old.trailing_icon.is_some(),
+            old.icon_size,
+            old.icon_gap,
+            old.loading,
+            old.content_align,
+        )
+    }
+
+    fn advance_loading_phase(&self, phase: f32) -> Option<crate::WidgetVisualHandle> {
+        if self.loading_phase == phase {
+            return None;
+        }
+        let mut next = self.clone();
+        next.loading_phase = phase;
+        Some(crate::WidgetVisualHandle::new(next))
+    }
+
+    fn intrinsic_chrome_content(
+        &self,
+        _id: StableNodeId,
+        _world: &UiWorld,
+    ) -> crate::WidgetVisualContent {
+        let parts =
+            crate::layout_engine::parts::button_parts(self, crate::layout_engine::Size::default());
+        let chrome = crate::layout_engine::parts::chrome_extent(&parts);
+        crate::WidgetVisualContent {
+            width: chrome.width,
+            height: chrome.height,
+            text: 0.0,
+        }
+    }
+
+    fn node_text_max_width(
+        &self,
+        _id: StableNodeId,
+        _world: &UiWorld,
+        _layout: crate::LayoutBox,
+        available_width: f32,
+        available_height: f32,
+    ) -> Option<f32> {
+        Some(crate::layout_engine::parts::button_text_budget(
+            self,
+            crate::layout_engine::Size::new(available_width, available_height),
+        ))
+    }
+
+    fn solve_content_parts(
+        &self,
+        id: StableNodeId,
+        world: &UiWorld,
+        _bounds: crate::LayoutBox,
+        content: crate::LayoutBox,
+        _writing: nana_ui_core::WritingContext,
+        _own_frame: bool,
+    ) -> Option<crate::layout_engine::parts::ContentParts> {
+        let text = world.text_metrics(id).unwrap_or_default();
+        Some(crate::layout_engine::parts::button_content_parts(
+            self,
+            content,
+            crate::layout_engine::Size::new(text.width, text.height),
+        ))
+    }
+
+    fn paint(&self, ctx: &crate::WidgetPaintCtx<'_>) -> crate::WidgetPaintOutput {
+        let leading = ctx.content_part(crate::LayoutPartKind::LeadingContent);
+        let trailing = ctx.content_part(crate::LayoutPartKind::TrailingContent);
+        let spinner = ctx.content_part(crate::LayoutPartKind::Spinner);
+        let label_bounds = ctx
+            .content_part(crate::LayoutPartKind::TextContent)
+            .unwrap_or(crate::LayoutBox {
+                width: 0.0,
+                ..ctx.content
+            });
+        let (_, effective_loading) = self.effective_in(ctx.id, ctx.world);
+        let fg = ctx.text_color();
+        let fg_paint = ctx.matching_text_paint(fg);
+        let background = ctx
+            .style
+            .paint_colors
+            .background
+            .map(nana_ui_core::PaintColor::to_srgb)
+            .or(ctx.style.background);
+        let border_color = ctx
+            .style
+            .paint_colors
+            .border
+            .map(nana_ui_core::PaintColor::to_srgb)
+            .or(ctx.style.border_color);
+        let border_width = if ctx.style.border_color.is_some() {
+            ctx.source_style.layout.resolved_border_width()
+        } else {
+            0.0
+        };
+        let mut out = crate::WidgetPaintOutput {
+            owns_node_text: true,
+            root_surface: Some(crate::WidgetRootSurface {
+                background: Some(background),
+                border_color: Some(border_color),
+                border_width: Some(border_width),
+                fallback_elevation: None,
+            }),
+            ..crate::WidgetPaintOutput::new()
+        };
+        if !effective_loading && let Some((glyph, bounds)) = self.icon.zip(leading) {
+            out.push(
+                4,
+                crate::WidgetPaintOp::Icon(crate::WidgetIcon {
+                    bounds,
+                    glyph: crate::WidgetGlyph::Icon(glyph),
+                    color: Some(fg),
+                    paint_color: fg_paint,
+                    align_to_adjacent_text: false,
+                }),
+            );
+        }
+        if let Some((glyph, bounds)) = self.trailing_icon.zip(trailing) {
+            out.push(
+                5,
+                crate::WidgetPaintOp::Icon(crate::WidgetIcon {
+                    bounds,
+                    glyph: crate::WidgetGlyph::Icon(glyph),
+                    color: Some(fg),
+                    paint_color: fg_paint,
+                    align_to_adjacent_text: false,
+                }),
+            );
+        }
+        out.push(
+            2,
+            crate::WidgetPaintOp::Text(crate::WidgetText {
+                bounds: label_bounds,
+                content: Arc::clone(&self.label).into(),
+                color: Some(fg),
+                paint_color: fg_paint,
+                font_size: ctx.style.font_size,
+                font_weight: ctx.style.font_weight,
+                horizontal_alignment: TextHorizontalAlignment::Center,
+                vertical_alignment: TextVerticalAlignment::Center,
+                ellipsis: true,
+                wrap: false,
+                max_lines: None,
+                italic: None,
+                underline: None,
+                line_through: None,
+                suppress_spans: false,
+                preserve_lines: None,
+                unstyled_glyph: false,
+                line_height: None,
+                retained_text: crate::WidgetRetainedText::NodeTextIfRich,
+                tabular_nums: false,
+                ..Default::default()
+            }),
+        );
+        if let Some(bounds) = spinner {
+            let spinner_fg = ctx
+                .style
+                .paint_colors
+                .color
+                .map(nana_ui_core::PaintColor::to_srgb)
+                .or(ctx.style.color)
+                .unwrap_or_else(|| {
+                    ctx.style_model
+                        .color(
+                            ctx.theme
+                                .recipes()
+                                .foreground(nana_ui_core::ComponentRecipeId::Button, false),
+                        )
+                        .as_rgba_array()
+                });
+            out.push(
+                3,
+                crate::WidgetPaintOp::Icon(crate::WidgetIcon {
+                    bounds,
+                    glyph: crate::WidgetGlyph::Spinner {
+                        phase: (self.loading_phase.clamp(0.0, 1.0) * 8.0).floor() as u8 % 8,
+                    },
+                    color: Some(spinner_fg),
+                    paint_color: ctx.matching_text_paint(spinner_fg),
+                    align_to_adjacent_text: false,
+                }),
+            );
+        }
+        out
+    }
+}
+
 /// `text` as an `Arc<str>`, copied at most once per projection.
 fn shared_label(shared: &mut Option<Arc<str>>, text: &str) -> Arc<str> {
     Arc::clone(shared.get_or_insert_with(|| Arc::from(text)))
+}
+
+/// Retained visual state for an icon host or [`IconButton`]/[`IconGlyph`].
+#[derive(Debug, Clone, PartialEq)]
+pub struct IconVisual {
+    pub icon: nana_ui_core::Icon,
+    pub size: f32,
+    pub tooltip: Option<crate::TooltipVisual>,
+}
+
+impl crate::WidgetVisual for IconVisual {
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+
+    fn dyn_eq(&self, other: &dyn std::any::Any) -> bool {
+        other.downcast_ref::<Self>().is_some_and(|rhs| self == rhs)
+    }
+
+    fn is_icon_visual(&self) -> bool {
+        true
+    }
+
+    fn paint(&self, ctx: &crate::WidgetPaintCtx<'_>) -> crate::WidgetPaintOutput {
+        let extent = self
+            .size
+            .max(0.0)
+            .min(ctx.bounds.width)
+            .min(ctx.bounds.height);
+        let x = ctx.bounds.x + (ctx.bounds.width - extent) / 2.0;
+        let y = ctx.bounds.y + (ctx.bounds.height - extent) / 2.0;
+        let fg = ctx
+            .style
+            .paint_colors
+            .color
+            .map(nana_ui_core::PaintColor::to_srgb)
+            .or(ctx.style.color)
+            .unwrap_or_else(|| {
+                ctx.style_model
+                    .color(
+                        ctx.theme
+                            .recipes()
+                            .foreground(nana_ui_core::ComponentRecipeId::Icon, false),
+                    )
+                    .as_rgba_array()
+            });
+        let mut out = crate::WidgetPaintOutput {
+            suppresses_in_flow_descendants: true,
+            ..crate::WidgetPaintOutput::new()
+        };
+        out.push(
+            3,
+            crate::WidgetPaintOp::Icon(crate::WidgetIcon {
+                bounds: crate::LayoutBox {
+                    x,
+                    y,
+                    width: extent,
+                    height: extent,
+                },
+                glyph: crate::WidgetGlyph::Icon(self.icon),
+                color: Some(fg),
+                paint_color: ctx.matching_text_paint(fg),
+                align_to_adjacent_text: true,
+            }),
+        );
+        out
+    }
 }
 
 /// Compact action whose visible glyph is independent from its accessible name.
@@ -1209,7 +1577,8 @@ impl IconButton {
                     ..SemanticPaint::default()
                 },
                 ..crate::InteractionStyle::default()
-            },
+            }
+            .into(),
             shape: Some(nana_ui_core::ShapeRole::IconButton),
             control_padding_x: Some(nana_ui_core::ControlPadding::Compact),
             square: Some(nana_ui_core::SquareSize::IconButton),
@@ -1343,6 +1712,8 @@ impl IconButton {
 }
 
 impl ComponentView for IconButton {
+    const TYPE_ID: Option<&'static str> = Some(crate::component_descriptors::ICON_BUTTON.type_id);
+
     const BEHAVIOR: crate::TypeBehavior<Self> = crate::TypeBehavior {
         hooks: Some(|hooks| {
             crate::framework::routes::icon_button(hooks);
@@ -1380,7 +1751,7 @@ impl ComponentView for IconButton {
         if self.tooltip.is_some() && world.overlay_host(id).is_none() {
             mutations.set_overlay_host(id, OverlayHostState::default());
         }
-        let visual = StandardVisual::Icon {
+        let visual = IconVisual {
             icon: self.icon,
             size: if let Some(size) = self.icon_size {
                 size
@@ -1395,8 +1766,8 @@ impl ComponentView for IconButton {
                 open: self.tooltip_open,
             }),
         };
-        if world.standard_visual(id) != Some(visual.clone()) {
-            mutations.set_standard_visual(id, Some(visual));
+        if world.widget_visual_as::<IconVisual>(id) != Some(&visual) {
+            mutations.set_widget_visual(id, Some(visual));
         }
         let selected = self.selected || self.kind == nana_ui_core::ButtonKind::Selected;
         let mut effective_style = if self.compact {
@@ -1563,6 +1934,8 @@ impl IconGlyph {
 }
 
 impl ComponentView for IconGlyph {
+    const TYPE_ID: Option<&'static str> = Some(crate::component_descriptors::ICON_GLYPH.type_id);
+
     fn share_layouts(
         &mut self,
         share: &mut dyn FnMut(&mut std::sync::Arc<nana_ui_core::LayoutStyle>),
@@ -1589,7 +1962,7 @@ impl ComponentView for IconGlyph {
                 },
             );
         }
-        let visual = StandardVisual::Icon {
+        let visual = IconVisual {
             icon: self.icon,
             size: self
                 .themed_size
@@ -1597,8 +1970,8 @@ impl ComponentView for IconGlyph {
                 .map_or(self.size, |size| size.resolve(world.theme()).max(0.0)),
             tooltip: None,
         };
-        if world.standard_visual(id) != Some(visual.clone()) {
-            mutations.set_standard_visual(id, Some(visual));
+        if world.widget_visual_as::<IconVisual>(id) != Some(&visual) {
+            mutations.set_widget_visual(id, Some(visual));
         }
         project_common(
             id,
@@ -1695,6 +2068,8 @@ impl Default for Card {
 }
 
 impl ComponentView for Card {
+    const TYPE_ID: Option<&'static str> = Some(crate::component_descriptors::CARD.type_id);
+
     const BEHAVIOR: crate::TypeBehavior<Self> = crate::TypeBehavior {
         hooks: Some(|hooks| {
             crate::framework::routes::card(hooks);
@@ -1724,14 +2099,14 @@ impl ComponentView for Card {
                 },
             );
         }
-        let visual = StandardVisual::Card {
+        let visual = CardVisual {
             title: self.title.clone(),
             kind: self.kind,
             loading: self.loading,
             loading_phase: self.loading_phase,
         };
-        if world.standard_visual(id) != Some(visual.clone()) {
-            mutations.set_standard_visual(id, Some(visual));
+        if world.widget_visual_as::<CardVisual>(id) != Some(&visual) {
+            mutations.set_widget_visual(id, Some(visual));
         }
         let mut effective_style = self.style.clone();
         effective_style.text_vertical_alignment = TextVerticalAlignment::Center;
@@ -1782,6 +2157,246 @@ impl ComponentView for Card {
     }
 }
 
+/// Retained visual state for [`Card`].
+#[derive(Debug, Clone, PartialEq)]
+pub struct CardVisual {
+    pub title: Option<Arc<str>>,
+    pub kind: nana_ui_core::CardKind,
+    pub loading: bool,
+    pub loading_phase: f32,
+}
+
+impl crate::WidgetVisual for CardVisual {
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+
+    fn dyn_eq(&self, other: &dyn std::any::Any) -> bool {
+        other.downcast_ref::<Self>().is_some_and(|rhs| self == rhs)
+    }
+
+    fn uses_card_title_typography(&self) -> bool {
+        true
+    }
+
+    fn tracks_text_content_part_budget(&self) -> bool {
+        true
+    }
+
+    fn clearing_changes_content_layout(&self) -> bool {
+        true
+    }
+
+    fn invalidates_node_text_constraint(&self) -> bool {
+        true
+    }
+
+    fn content_layout_changed(&self, prev: Option<&dyn std::any::Any>) -> bool {
+        let Some(old) = prev.and_then(|any| any.downcast_ref::<Self>()) else {
+            return true;
+        };
+        (&self.title, self.loading) != (&old.title, old.loading)
+    }
+
+    fn advance_loading_phase(&self, phase: f32) -> Option<crate::WidgetVisualHandle> {
+        if self.loading_phase == phase {
+            return None;
+        }
+        let mut next = self.clone();
+        next.loading_phase = phase;
+        Some(crate::WidgetVisualHandle::new(next))
+    }
+
+    fn intrinsic_chrome_content(
+        &self,
+        _id: StableNodeId,
+        _world: &UiWorld,
+    ) -> crate::WidgetVisualContent {
+        crate::WidgetVisualContent {
+            width: if self.loading {
+                CARD_LOADING_RESERVE
+            } else {
+                0.0
+            },
+            height: 0.0,
+            text: 0.0,
+        }
+    }
+
+    fn leading_parts(
+        &self,
+        _id: StableNodeId,
+        _world: &UiWorld,
+    ) -> Option<crate::layout_engine::parts::LeadingParts> {
+        self.title
+            .as_ref()
+            .map(|_| crate::layout_engine::parts::LeadingParts {
+                axis: nana_ui_core::FlexDirection::Column,
+                extent: CARD_TITLE_BAND,
+                breadth: 0.0,
+                end: false,
+            })
+    }
+
+    fn node_text_max_width(
+        &self,
+        id: StableNodeId,
+        world: &UiWorld,
+        _layout: crate::LayoutBox,
+        available_width: f32,
+        _available_height: f32,
+    ) -> Option<f32> {
+        Some(
+            world
+                .content_part_box(id, crate::LayoutPartKind::Header)
+                .map_or(available_width, |part| part.width.max(0.0)),
+        )
+    }
+
+    fn solve_content_parts(
+        &self,
+        id: StableNodeId,
+        world: &UiWorld,
+        bounds: crate::LayoutBox,
+        content: crate::LayoutBox,
+        writing: nana_ui_core::WritingContext,
+        _own_frame: bool,
+    ) -> Option<crate::layout_engine::parts::ContentParts> {
+        let text = world.text_metrics(id).unwrap_or_default();
+        let x = content.x.min(bounds.x + bounds.width).max(bounds.x);
+        let y = content.y.max(bounds.y).min(bounds.y + bounds.height);
+        let header = crate::LayoutBox {
+            x,
+            y,
+            width: content.width.min((bounds.x + bounds.width - x).max(0.0)),
+            height: CARD_TITLE_LINE.min((bounds.y + bounds.height - y).max(0.0)),
+        };
+        Some(crate::layout_engine::parts::card_content_parts(
+            header,
+            self.title.is_some(),
+            self.loading,
+            crate::layout_engine::Size::new(
+                if self.title.as_ref().is_some_and(|title| !title.is_empty()) {
+                    text.width
+                } else {
+                    0.0
+                },
+                text.height,
+            ),
+            writing.direction == nana_ui_core::DirSpec::Rtl,
+        ))
+    }
+
+    fn paint(&self, ctx: &crate::WidgetPaintCtx<'_>) -> crate::WidgetPaintOutput {
+        let mut out = crate::WidgetPaintOutput {
+            owns_node_text: true,
+            child_text_suppression: match &self.title {
+                Some(title) => crate::WidgetChildTextSuppression::Matching(Arc::clone(title)),
+                None => crate::WidgetChildTextSuppression::Allow,
+            },
+            root_surface: (self.kind == nana_ui_core::CardKind::Raised).then(|| {
+                crate::WidgetRootSurface {
+                    background: None,
+                    border_color: None,
+                    border_width: None,
+                    fallback_elevation: Some(crate::ComponentElevation::from_shadow(
+                        ctx.theme.shadow(nana_ui_core::ElevationRole::Surface),
+                    )),
+                }
+            }),
+            ..crate::WidgetPaintOutput::new()
+        };
+        if let Some((title, bounds)) = self
+            .title
+            .as_ref()
+            .zip(ctx.content_part(crate::LayoutPartKind::Header))
+        {
+            let text_color = ctx.text_color();
+            out.push(
+                2,
+                crate::WidgetPaintOp::Text(crate::WidgetText {
+                    bounds,
+                    content: Arc::clone(title).into(),
+                    color: Some(text_color),
+                    paint_color: ctx.matching_text_paint(text_color),
+                    font_size: CARD_TITLE_SIZE,
+                    font_weight: Some(CARD_TITLE_WEIGHT),
+                    horizontal_alignment: TextHorizontalAlignment::Start,
+                    vertical_alignment: TextVerticalAlignment::Center,
+                    ellipsis: true,
+                    wrap: false,
+                    max_lines: Some(1),
+                    italic: None,
+                    underline: None,
+                    line_through: None,
+                    suppress_spans: false,
+                    preserve_lines: Some(false),
+                    unstyled_glyph: false,
+                    line_height: Some(Some(nana_ui_core::LineHeightSpec::Absolute(bounds.height))),
+                    retained_text: crate::WidgetRetainedText::AlwaysClipOverflow,
+                    tabular_nums: false,
+                    ..Default::default()
+                }),
+            );
+        }
+        if self.loading {
+            let spinner_bounds = ctx
+                .content_part(crate::LayoutPartKind::Spinner)
+                .unwrap_or_else(|| {
+                    let extent = 20.0_f32.min(ctx.bounds.width).min(ctx.bounds.height);
+                    crate::LayoutBox {
+                        x: ctx.bounds.x + (ctx.bounds.width - extent) / 2.0,
+                        y: ctx.bounds.y + (ctx.bounds.height - extent) / 2.0,
+                        width: extent,
+                        height: extent,
+                    }
+                });
+            let spinner_fg = ctx
+                .style_model
+                .color(
+                    ctx.theme
+                        .recipes()
+                        .foreground(nana_ui_core::ComponentRecipeId::Card, false),
+                )
+                .as_rgba_array();
+            out.push(
+                3,
+                crate::WidgetPaintOp::Icon(crate::WidgetIcon {
+                    bounds: spinner_bounds,
+                    glyph: crate::WidgetGlyph::Spinner {
+                        phase: (self.loading_phase.clamp(0.0, 1.0) * 8.0).floor() as u8 % 8,
+                    },
+                    color: Some(spinner_fg),
+                    paint_color: ctx.matching_text_paint(spinner_fg),
+                    align_to_adjacent_text: false,
+                }),
+            );
+        }
+        out
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub(crate) struct ListItemAssembled {
+    pub(crate) copy_slot: Option<StableNodeId>,
+    pub(crate) label_line_slot: Option<StableNodeId>,
+    pub(crate) label_slot: Option<StableNodeId>,
+    pub(crate) note_slot: Option<StableNodeId>,
+    pub(crate) detail_slot: Option<StableNodeId>,
+    pub(crate) trailing_auto_margin: Option<StableNodeId>,
+}
+
+impl ListItemAssembled {
+    fn is_empty(&self) -> bool {
+        self.copy_slot.is_none()
+            && self.label_line_slot.is_none()
+            && self.label_slot.is_none()
+            && self.note_slot.is_none()
+            && self.detail_slot.is_none()
+            && self.trailing_auto_margin.is_none()
+    }
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct ListItem {
     pub label: String,
@@ -1804,12 +2419,7 @@ pub struct ListItem {
     /// before [`Self::detail`] and the trailing slot. Ignored when a custom
     /// content slot replaces the label.
     pub after_label: Option<StableNodeId>,
-    pub(crate) copy_slot: Option<StableNodeId>,
-    pub(crate) label_line_slot: Option<StableNodeId>,
-    pub(crate) label_slot: Option<StableNodeId>,
-    pub(crate) note_slot: Option<StableNodeId>,
-    pub(crate) detail_slot: Option<StableNodeId>,
-    pub(crate) trailing_auto_margin: Option<StableNodeId>,
+    pub(crate) assembled: Option<Box<ListItemAssembled>>,
     pub gap: f32,
     pub size: nana_ui_core::ControlSize,
     pub auto_height: bool,
@@ -1935,6 +2545,247 @@ pub enum ListItemRole {
     ToggleButton,
 }
 
+/// Retained visual state for [`ListItem`] rows.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ListItemVisual {
+    pub leading: Option<StableNodeId>,
+    pub content: Option<StableNodeId>,
+    pub trailing: Option<StableNodeId>,
+    pub note: Option<Arc<str>>,
+    pub detail: Option<Arc<str>>,
+}
+
+impl crate::WidgetVisual for ListItemVisual {
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+
+    fn dyn_eq(&self, other: &dyn std::any::Any) -> bool {
+        other.downcast_ref::<Self>().is_some_and(|rhs| self == rhs)
+    }
+
+    fn measures_text(&self) -> bool {
+        true
+    }
+
+    fn tracks_text_content_part_budget(&self) -> bool {
+        self.content.is_none()
+    }
+
+    fn caps_control_text(&self) -> bool {
+        true
+    }
+
+    fn lone_list_trailing_slots(&self) -> Option<(StableNodeId, Option<StableNodeId>)> {
+        self.leading.map(|leading| (leading, self.content))
+    }
+
+    fn content_layout_changed(&self, prev: Option<&dyn std::any::Any>) -> bool {
+        prev.and_then(|p| p.downcast_ref::<Self>()) != Some(self)
+    }
+
+    fn clearing_changes_content_layout(&self) -> bool {
+        true
+    }
+
+    fn invalidates_node_text_constraint(&self) -> bool {
+        true
+    }
+
+    fn node_text_max_width(
+        &self,
+        id: StableNodeId,
+        world: &UiWorld,
+        _layout: crate::LayoutBox,
+        available_width: f32,
+        _available_height: f32,
+    ) -> Option<f32> {
+        self.content.is_none().then(|| {
+            world
+                .content_part_box(id, crate::LayoutPartKind::TextContent)
+                .map_or(available_width, |part| part.width.max(0.0))
+        })
+    }
+
+    fn solve_content_parts(
+        &self,
+        id: StableNodeId,
+        world: &UiWorld,
+        _bounds: crate::LayoutBox,
+        content: crate::LayoutBox,
+        _writing: nana_ui_core::WritingContext,
+        own_frame: bool,
+    ) -> Option<crate::layout_engine::parts::ContentParts> {
+        if self.content.is_some() {
+            return Some(crate::layout_engine::parts::NO_CONTENT_PARTS);
+        }
+        let style = world.computed_style(id)?;
+        let reverse = style.direction == nana_ui_core::DirSpec::Rtl;
+        let gap = world.flex_row_main_gap(id, content.width, content.height);
+        let slot_box = |slot: StableNodeId| {
+            if own_frame {
+                world.layout_box_from(id, slot)
+            } else {
+                world.component_layout_box(slot)
+            }
+        };
+        let mut left = content.x;
+        let mut right = content.x + content.width;
+        for (slot, start) in [(self.leading, true), (self.trailing, false)] {
+            let Some(slot) = slot.filter(|slot| {
+                world
+                    .node_style(*slot)
+                    .is_none_or(|style| !style.layout.omits_box())
+            }) else {
+                continue;
+            };
+            let Some(bounds) = slot_box(slot) else {
+                continue;
+            };
+            if start != reverse {
+                left = left.max(bounds.x + bounds.width + gap);
+            } else {
+                right = right.min(bounds.x - gap);
+            }
+        }
+        let bounds = crate::LayoutBox {
+            x: left,
+            width: (right - left).max(0.0),
+            ..content
+        };
+        if self.note.as_ref().is_none_or(|text| text.is_empty())
+            && self.detail.as_ref().is_none_or(|text| text.is_empty())
+        {
+            return Some(crate::layout_engine::parts::content_parts([Some(
+                crate::LayoutPart::new(crate::LayoutPartKind::TextContent, bounds),
+            )]));
+        }
+        let measure = world.chrome_text_measure(id);
+        let size = world.theme().typography().meta;
+        let height = (size * world.theme().typography().line / world.theme().typography().body)
+            .min(bounds.height.max(size));
+        let secondary = |text: &Option<Arc<str>>| {
+            text.as_ref().filter(|text| !text.is_empty()).map(|text| {
+                crate::layout_engine::Size::new(
+                    measure.width(text, size, Some(world.theme().typography().regular)),
+                    height,
+                )
+            })
+        };
+        Some(crate::layout_engine::parts::list_text_parts(
+            bounds,
+            crate::layout_engine::parts::RowTextMetrics {
+                label_width: measure.width(
+                    world.text(id).unwrap_or_default(),
+                    style.font_size,
+                    style.font_weight,
+                ),
+                note: secondary(&self.note),
+                detail: secondary(&self.detail),
+                note_gap: world.theme().spacing().sm,
+                detail_gap: world.theme().spacing().md,
+                min_secondary_width: world.theme().spacing().xxxl,
+            },
+            reverse,
+        ))
+    }
+
+    fn paint(&self, ctx: &crate::WidgetPaintCtx<'_>) -> crate::WidgetPaintOutput {
+        let parts = ctx.content_parts();
+        let part = |kind| crate::layout_engine::parts::part_bounds(&parts, kind);
+        let primary = ctx.style.color.unwrap_or_else(|| {
+            ctx.style_model
+                .color(nana_ui_core::SemanticColorRole::Text)
+                .as_rgba_array()
+        });
+        let secondary = ctx.world.row_secondary_text_color(ctx.id, primary);
+        let node_text_bounds = self
+            .content
+            .and_then(|slot| ctx.slot_box(slot))
+            .or_else(|| part(crate::LayoutPartKind::TextContent))
+            .or(Some(ctx.content));
+        let mut out = crate::WidgetPaintOutput {
+            aligns_child_icon_to_text: true,
+            node_text_bounds,
+            ..crate::WidgetPaintOutput::default()
+        };
+        let meta_size = ctx.theme.typography().meta;
+        let regular_weight = Some(ctx.theme.typography().regular);
+        let vertical_alignment = ctx.source_style.text_vertical_alignment;
+        let push_secondary =
+            |out: &mut crate::WidgetPaintOutput,
+             slot: u64,
+             text: &Option<Arc<str>>,
+             kind: crate::LayoutPartKind,
+             horizontal_alignment: TextHorizontalAlignment| {
+                let Some((text, bounds)) = text.as_ref().zip(part(kind)) else {
+                    return;
+                };
+                out.push(
+                    slot,
+                    crate::WidgetPaintOp::Text(crate::WidgetText {
+                        bounds,
+                        content: Arc::clone(text).into(),
+                        color: Some(secondary),
+                        paint_color: ctx.matching_text_paint(secondary),
+                        font_size: meta_size,
+                        font_weight: regular_weight,
+                        horizontal_alignment,
+                        vertical_alignment,
+                        ellipsis: true,
+                        wrap: false,
+                        max_lines: None,
+                        italic: None,
+                        underline: None,
+                        line_through: None,
+                        suppress_spans: false,
+                        preserve_lines: None,
+                        unstyled_glyph: false,
+                        line_height: Some(Some(nana_ui_core::LineHeightSpec::Absolute(
+                            bounds.height,
+                        ))),
+                        retained_text: crate::WidgetRetainedText::None,
+                        tabular_nums: false,
+                        ..Default::default()
+                    }),
+                );
+            };
+        push_secondary(
+            &mut out,
+            4,
+            &self.note,
+            crate::LayoutPartKind::Note,
+            TextHorizontalAlignment::Start,
+        );
+        push_secondary(
+            &mut out,
+            3,
+            &self.detail,
+            crate::LayoutPartKind::Detail,
+            TextHorizontalAlignment::End,
+        );
+        if ctx.is_focus_visible() {
+            let ring_color = ctx
+                .style_model
+                .color(
+                    ctx.theme
+                        .recipes()
+                        .foreground(nana_ui_core::ComponentRecipeId::ListItem, false),
+                )
+                .as_rgba_array();
+            out.push(
+                7,
+                crate::WidgetPaintOp::FocusRing {
+                    bounds: ctx.bounds,
+                    color: ring_color,
+                    extra_outset: 0.0,
+                },
+            );
+        }
+        out
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct ListItemSlots {
     pub leading: Option<StableNodeId>,
@@ -1942,23 +2793,69 @@ pub struct ListItemSlots {
     pub trailing: Option<StableNodeId>,
 }
 
+static LIST_ITEM_DEFAULT_STYLE: std::sync::LazyLock<NodeStyle> = std::sync::LazyLock::new(|| {
+    let mut layout = (*control_layout()).clone();
+    layout.direction = Some(nana_ui_core::FlexDirection::Row);
+    layout.align_items = nana_ui_core::AlignSpec::Center;
+    layout.gap = Some(nana_ui_core::LengthSpec::Px(nana_ui_core::space::MD));
+    layout.theme.gap = Some(crate::theme_intent::space(nana_ui_core::SpacingStep::Md));
+    layout.font_size = Some(nana_ui_core::ControlSize::Small.text_size());
+    layout
+        .theme
+        .control_typography(nana_ui_core::ControlSize::Small);
+    layout.line_height = Some(nana_ui_core::LineHeightSpec::Absolute(
+        nana_ui_core::ControlSize::Small.line_height(),
+    ));
+    // 列表行是单行原语：过长文本截断省略，不折行撑破固定行高。
+    layout.white_space_nowrap = true;
+    layout.text_overflow_ellipsis = true;
+    NodeStyle {
+        layout: Arc::new(layout),
+        background: None,
+        shape: Some(nana_ui_core::ShapeRole::ListItem),
+        control_height: Some(nana_ui_core::ControlHeight::Min(
+            nana_ui_core::ControlSize::Large,
+        )),
+        control_padding_x: Some(nana_ui_core::ControlPadding::ListItem),
+        interaction: crate::InteractionStyle {
+            selected: SemanticPaint {
+                background: Some(nana_ui_core::SemanticColorRole::Selected),
+                ..SemanticPaint::default()
+            },
+            selected_hovered: SemanticPaint {
+                background: Some(nana_ui_core::SemanticColorRole::SelectedHover),
+                border: Some(nana_ui_core::SemanticColorRole::BorderStrong),
+                ..SemanticPaint::default()
+            },
+            selected_pressed: SemanticPaint {
+                background: Some(nana_ui_core::SemanticColorRole::SelectedPressed),
+                border: Some(nana_ui_core::SemanticColorRole::Accent),
+                ..SemanticPaint::default()
+            },
+            hovered: SemanticPaint {
+                background: Some(nana_ui_core::SemanticColorRole::Hover),
+                ..SemanticPaint::default()
+            },
+            pressed: SemanticPaint {
+                background: Some(nana_ui_core::SemanticColorRole::Active),
+                ..SemanticPaint::default()
+            },
+            focused: SemanticPaint::FOCUS_SURFACE,
+            disabled: SemanticPaint {
+                foreground: Some(nana_ui_core::SemanticColorRole::Faint),
+                background: Some(nana_ui_core::SemanticColorRole::Subtle),
+                ..SemanticPaint::default()
+            },
+            ..crate::InteractionStyle::default()
+        }
+        .into(),
+        text_vertical_alignment: TextVerticalAlignment::Center,
+        ..NodeStyle::default()
+    }
+});
+
 impl ListItem {
     pub fn new(label: impl Into<String>) -> Self {
-        let mut layout = (*control_layout()).clone();
-        layout.direction = Some(nana_ui_core::FlexDirection::Row);
-        layout.align_items = nana_ui_core::AlignSpec::Center;
-        layout.gap = Some(nana_ui_core::LengthSpec::Px(nana_ui_core::space::MD));
-        layout.theme.gap = Some(crate::theme_intent::space(nana_ui_core::SpacingStep::Md));
-        layout.font_size = Some(nana_ui_core::ControlSize::Small.text_size());
-        layout
-            .theme
-            .control_typography(nana_ui_core::ControlSize::Small);
-        layout.line_height = Some(nana_ui_core::LineHeightSpec::Absolute(
-            nana_ui_core::ControlSize::Small.line_height(),
-        ));
-        // 列表行是单行原语：过长文本截断省略，不折行撑破固定行高。
-        layout.white_space_nowrap = true;
-        layout.text_overflow_ellipsis = true;
         Self {
             label: label.into(),
             note: String::new(),
@@ -1968,12 +2865,7 @@ impl ListItem {
             read_only: false,
             slots: ListItemSlots::default(),
             after_label: None,
-            copy_slot: None,
-            label_line_slot: None,
-            label_slot: None,
-            note_slot: None,
-            detail_slot: None,
-            trailing_auto_margin: None,
+            assembled: None,
             gap: nana_ui_core::space::MD,
             size: nana_ui_core::ControlSize::Small,
             auto_height: false,
@@ -1986,48 +2878,7 @@ impl ListItem {
             keep_tools: false,
             tools_presence: RowToolsPresence::default(),
             tooltip: None,
-            style: NodeStyle {
-                layout: Arc::new(layout),
-                background: None,
-                shape: Some(nana_ui_core::ShapeRole::ListItem),
-                control_height: Some(nana_ui_core::ControlHeight::Min(
-                    nana_ui_core::ControlSize::Large,
-                )),
-                control_padding_x: Some(nana_ui_core::ControlPadding::ListItem),
-                interaction: crate::InteractionStyle {
-                    selected: SemanticPaint {
-                        background: Some(nana_ui_core::SemanticColorRole::Selected),
-                        ..SemanticPaint::default()
-                    },
-                    selected_hovered: SemanticPaint {
-                        background: Some(nana_ui_core::SemanticColorRole::SelectedHover),
-                        border: Some(nana_ui_core::SemanticColorRole::BorderStrong),
-                        ..SemanticPaint::default()
-                    },
-                    selected_pressed: SemanticPaint {
-                        background: Some(nana_ui_core::SemanticColorRole::SelectedPressed),
-                        border: Some(nana_ui_core::SemanticColorRole::Accent),
-                        ..SemanticPaint::default()
-                    },
-                    hovered: SemanticPaint {
-                        background: Some(nana_ui_core::SemanticColorRole::Hover),
-                        ..SemanticPaint::default()
-                    },
-                    pressed: SemanticPaint {
-                        background: Some(nana_ui_core::SemanticColorRole::Active),
-                        ..SemanticPaint::default()
-                    },
-                    focused: SemanticPaint::FOCUS_SURFACE,
-                    disabled: SemanticPaint {
-                        foreground: Some(nana_ui_core::SemanticColorRole::Faint),
-                        background: Some(nana_ui_core::SemanticColorRole::Subtle),
-                        ..SemanticPaint::default()
-                    },
-                    ..crate::InteractionStyle::default()
-                },
-                text_vertical_alignment: TextVerticalAlignment::Center,
-                ..NodeStyle::default()
-            },
+            style: LIST_ITEM_DEFAULT_STYLE.clone(),
         }
     }
 
@@ -2225,7 +3076,7 @@ impl ListItem {
                 layout.theme.margin_bottom = Some(reach);
                 layout.hidden = away;
                 if trailing && push_end {
-                    layout.logical_margin.inline_start = Some(nana_ui_core::LengthSpec::Auto);
+                    layout.logical_edges.margin.inline_start = Some(nana_ui_core::LengthSpec::Auto);
                     layout.resolve_logical_box_edges();
                 }
             })
@@ -2310,15 +3161,15 @@ impl ListItem {
         };
         let wants_auto = has_body && !self.bands_slots();
         if wants_auto {
-            if layout.logical_margin.inline_start.is_none() && layout.margin_left.is_none() {
-                layout.logical_margin.inline_start = Some(nana_ui_core::LengthSpec::Auto);
+            if layout.logical_edges.margin.inline_start.is_none() && layout.margin_left.is_none() {
+                layout.logical_edges.margin.inline_start = Some(nana_ui_core::LengthSpec::Auto);
                 layout.resolve_logical_box_edges();
                 changed = true;
             }
-        } else if self.trailing_auto_margin == Some(trailing)
-            && layout.logical_margin.inline_start == Some(nana_ui_core::LengthSpec::Auto)
+        } else if self.trailing_auto_margin() == Some(trailing)
+            && layout.logical_edges.margin.inline_start == Some(nana_ui_core::LengthSpec::Auto)
         {
-            layout.logical_margin.inline_start = None;
+            layout.logical_edges.margin.inline_start = None;
             layout.margin_left = None;
             layout.margin_right = None;
             layout.resolve_logical_box_edges();
@@ -2329,10 +3180,60 @@ impl ListItem {
         }
     }
 
+    pub(crate) fn copy_slot(&self) -> Option<StableNodeId> {
+        self.assembled
+            .as_ref()
+            .and_then(|assembled| assembled.copy_slot)
+    }
+
+    pub(crate) fn label_line_slot(&self) -> Option<StableNodeId> {
+        self.assembled
+            .as_ref()
+            .and_then(|assembled| assembled.label_line_slot)
+    }
+
+    pub(crate) fn label_slot(&self) -> Option<StableNodeId> {
+        self.assembled
+            .as_ref()
+            .and_then(|assembled| assembled.label_slot)
+    }
+
+    pub(crate) fn note_slot(&self) -> Option<StableNodeId> {
+        self.assembled
+            .as_ref()
+            .and_then(|assembled| assembled.note_slot)
+    }
+
+    pub(crate) fn detail_slot(&self) -> Option<StableNodeId> {
+        self.assembled
+            .as_ref()
+            .and_then(|assembled| assembled.detail_slot)
+    }
+
+    pub(crate) fn trailing_auto_margin(&self) -> Option<StableNodeId> {
+        self.assembled
+            .as_ref()
+            .and_then(|assembled| assembled.trailing_auto_margin)
+    }
+
+    pub(crate) fn assembled_mut(&mut self) -> &mut ListItemAssembled {
+        self.assembled.get_or_insert_with(Default::default)
+    }
+
+    pub(crate) fn clear_assembled_if_empty(&mut self) {
+        if self
+            .assembled
+            .as_ref()
+            .is_some_and(|assembled| assembled.is_empty())
+        {
+            self.assembled = None;
+        }
+    }
+
     /// Whether `id` carries middle child nodes (a content slot, an assembled
     /// `after_label` copy row, or custom `.children(..)`).
     pub(crate) fn has_body_children(&self, id: StableNodeId, world: &UiWorld) -> bool {
-        if self.slots.content.is_some() || self.copy_slot.is_some() {
+        if self.slots.content.is_some() || self.copy_slot().is_some() {
             return true;
         }
         let Some(node) = world.node(id) else {
@@ -2352,7 +3253,7 @@ impl ListItem {
     fn effective_style(&self) -> NodeStyle {
         self.effective_style_in(
             nana_ui_core::UI_METRICS,
-            self.slots.content.is_some() || self.copy_slot.is_some(),
+            self.slots.content.is_some() || self.copy_slot().is_some(),
         )
     }
 
@@ -2497,6 +3398,8 @@ fn assemble_list_item(
 }
 
 impl ComponentView for ListItem {
+    const TYPE_ID: Option<&'static str> = Some(crate::component_descriptors::LIST_ITEM.type_id);
+
     const BEHAVIOR: crate::TypeBehavior<Self> = crate::TypeBehavior {
         hooks: Some(|hooks| {
             crate::framework::routes::tools_row(hooks);
@@ -2529,35 +3432,61 @@ impl ComponentView for ListItem {
         let has_note_part = draws_parts && !self.note.is_empty();
         let has_detail_part = draws_parts && !self.detail.is_empty();
         let visible_label = if draws_parts { self.label.as_str() } else { "" };
+        let exposes_secondary = draws_parts || self.copy_slot().is_some();
+        let shares_plain_label = draws_parts && self.note.is_empty() && self.detail.is_empty();
+        let mut shared = None;
         if world.text(id) != Some(visible_label) {
-            mutations.set_text(
-                id,
-                TextContent {
-                    value: visible_label.to_owned().into(),
-                },
-            );
+            let value = if shares_plain_label {
+                shared_label(&mut shared, visible_label).into()
+            } else {
+                visible_label.to_owned().into()
+            };
+            mutations.set_text(id, TextContent { value });
         }
-        let visual = StandardVisual::ListItem {
-            leading: self.slots.leading,
-            content: self.slots.content.or(self.copy_slot),
-            trailing: self.visible_trailing(),
-            note: has_note_part.then(|| Arc::from(self.note.as_str())),
-            detail: has_detail_part.then(|| Arc::from(self.detail.as_str())),
-        };
-        if world.standard_visual(id) != Some(visual.clone()) {
-            mutations.set_standard_visual(id, Some(visual));
+        let trailing = self.visible_trailing();
+        if self.slots.leading.is_none()
+            && self.slots.content.is_none()
+            && self.copy_slot().is_none()
+            && trailing.is_none()
+            && !has_note_part
+            && !has_detail_part
+        {
+            if world.widget_visual_as::<ListItemVisual>(id) != Some(&ListItemVisual::default()) {
+                mutations.set_widget_visual_handle(
+                    id,
+                    Some(crate::store::EMPTY_LIST_ITEM_VISUAL.clone()),
+                );
+            }
+        } else {
+            let visual = ListItemVisual {
+                leading: self.slots.leading,
+                content: self.slots.content.or(self.copy_slot()),
+                trailing,
+                note: has_note_part.then(|| Arc::from(self.note.as_str())),
+                detail: has_detail_part.then(|| Arc::from(self.detail.as_str())),
+            };
+            if world.widget_visual_as::<ListItemVisual>(id) != Some(&visual) {
+                mutations.set_widget_visual(id, Some(visual));
+            }
         }
         // A note that does not fit is not drawn, but it is still said.
-        let exposes_secondary = draws_parts || self.copy_slot.is_some();
-        let mut accessible = self.label.clone();
-        if exposes_secondary && !self.note.is_empty() {
-            accessible.push(' ');
-            accessible.push_str(&self.note);
-        }
-        if exposes_secondary && !self.detail.is_empty() {
-            accessible.push_str("  ");
-            accessible.push_str(&self.detail);
-        }
+        let label_arc = if shares_plain_label {
+            match world.accessible_label_arc(id) {
+                Some(current) if *current == *self.label => current,
+                _ => shared_label(&mut shared, self.label.as_str()),
+            }
+        } else {
+            let mut accessible = self.label.clone();
+            if exposes_secondary && !self.note.is_empty() {
+                accessible.push(' ');
+                accessible.push_str(&self.note);
+            }
+            if exposes_secondary && !self.detail.is_empty() {
+                accessible.push_str("  ");
+                accessible.push_str(&self.detail);
+            }
+            Arc::from(accessible.as_str())
+        };
         project_common(
             id,
             world,
@@ -2572,7 +3501,7 @@ impl ComponentView for ListItem {
                     ListItemRole::ListItem => AccessibilityRole::ListItem,
                     ListItemRole::Button | ListItemRole::ToggleButton => AccessibilityRole::Button,
                 },
-                label: Some(Arc::from(accessible.as_str())),
+                label: Some(label_arc),
                 disabled: self.disabled,
                 display_only: self.read_only && !self.disabled,
                 // A pressed toggle paints as selected, so the look holds.
@@ -3013,6 +3942,8 @@ impl TextInput {
 }
 
 impl ComponentView for TextInput {
+    const TYPE_ID: Option<&'static str> = Some(crate::component_descriptors::TEXT_INPUT.type_id);
+
     const BEHAVIOR: crate::TypeBehavior<Self> = crate::TypeBehavior {
         editable: Some(&crate::framework::Editable::<Self>::EDITOR_HOOKS),
         ..crate::TypeBehavior::NONE
@@ -3041,7 +3972,7 @@ impl ComponentView for TextInput {
     }
 
     fn project(&self, id: StableNodeId, world: &UiWorld, mutations: &mut MutationQueue) {
-        let visual = StandardVisual::TextInput {
+        let visual = crate::TextInputVisual {
             placeholder: Arc::clone(&self.placeholder),
             size: self.size,
             secure: self.secure,
@@ -3058,8 +3989,8 @@ impl ComponentView for TextInput {
             git_marks: Arc::from([]),
             editor_options: TextEditorRenderOptions::default(),
         };
-        if world.standard_visual(id) != Some(visual.clone()) {
-            mutations.set_standard_visual(id, Some(visual));
+        if world.text_input_visual_ref(id) != Some(&visual) {
+            mutations.set_widget_visual(id, Some(visual));
         }
         let mut effective_style = self.style.clone();
         if self.invalid && !self.style_override {
@@ -3407,6 +4338,8 @@ impl NumberInput {
 }
 
 impl ComponentView for NumberInput {
+    const TYPE_ID: Option<&'static str> = Some(crate::component_descriptors::NUMBER_INPUT.type_id);
+
     const BEHAVIOR: crate::TypeBehavior<Self> = crate::TypeBehavior {
         hooks: Some(|hooks| {
             crate::framework::routes::number_input(hooks);
@@ -3429,7 +4362,7 @@ impl ComponentView for NumberInput {
     }
 
     fn project(&self, id: StableNodeId, world: &UiWorld, mutations: &mut MutationQueue) {
-        let visual = StandardVisual::TextInput {
+        let visual = crate::TextInputVisual {
             placeholder: Arc::clone(&self.placeholder),
             size: self.size,
             secure: false,
@@ -3449,8 +4382,8 @@ impl ComponentView for NumberInput {
                 ..TextEditorRenderOptions::default()
             },
         };
-        if world.standard_visual(id) != Some(visual.clone()) {
-            mutations.set_standard_visual(id, Some(visual));
+        if world.text_input_visual_ref(id) != Some(&visual) {
+            mutations.set_widget_visual(id, Some(visual));
         }
         let mut effective_style = self.style.clone();
         if self.invalid && !self.style_override {
@@ -3771,7 +4704,7 @@ impl TextArea {
             ));
             layout.padding_top = Some(nana_ui_core::LengthSpec::Px((chrome - 2.0 * border) / 2.0));
             layout.padding_bottom = layout.padding_top;
-            layout.word_break = Some(nana_ui_core::WordBreakSpec::BreakAll);
+            layout.text_ext.word_break = Some(nana_ui_core::WordBreakSpec::BreakAll);
             layout.white_space_nowrap = false;
             // Natural rows are a preferred size. A bounded flex parent may
             // reduce the text viewport down to min_rows while the footer stays.
@@ -4123,6 +5056,8 @@ impl TextArea {
 }
 
 impl ComponentView for TextArea {
+    const TYPE_ID: Option<&'static str> = Some(crate::component_descriptors::TEXT_AREA.type_id);
+
     const BEHAVIOR: crate::TypeBehavior<Self> = crate::TypeBehavior {
         hooks: Some(|hooks| {
             crate::framework::routes::text_area(hooks);
@@ -4171,7 +5106,7 @@ impl ComponentView for TextArea {
 
     fn project(&self, id: StableNodeId, world: &UiWorld, mutations: &mut MutationQueue) {
         let size = nana_ui_core::ControlSize::Medium;
-        let visual = StandardVisual::TextInput {
+        let visual = crate::TextInputVisual {
             placeholder: Arc::clone(&self.placeholder),
             size,
             secure: false,
@@ -4204,8 +5139,8 @@ impl ComponentView for TextArea {
                 bracket_pair_colors: true,
             },
         };
-        if world.standard_visual(id) != Some(visual.clone()) {
-            mutations.set_standard_visual(id, Some(visual));
+        if world.text_input_visual_ref(id) != Some(&visual) {
+            mutations.set_widget_visual(id, Some(visual));
         }
         // The field is the request; where the editor is drawn follows it.
         if world.scroll_request(id) != Some(self.scroll_offset) {
@@ -4374,6 +5309,9 @@ impl std::ops::DerefMut for HostedTextarea {
 }
 
 impl ComponentView for HostedTextarea {
+    const TYPE_ID: Option<&'static str> =
+        Some(crate::component_descriptors::HOSTED_TEXTAREA.type_id);
+
     fn node_kind(&self) -> NodeKind {
         NodeKind::Element {
             tag: "hosted-textarea".into(),
@@ -4814,6 +5752,8 @@ impl Dialog {
 }
 
 impl ComponentView for Dialog {
+    const TYPE_ID: Option<&'static str> = Some(crate::component_descriptors::DIALOG.type_id);
+
     const BEHAVIOR: crate::TypeBehavior<Self> = crate::TypeBehavior {
         hooks: Some(|hooks| {
             crate::framework::routes::modal(hooks);
@@ -4910,6 +5850,8 @@ impl Tooltip {
 }
 
 impl ComponentView for Tooltip {
+    const TYPE_ID: Option<&'static str> = Some(crate::component_descriptors::TOOLTIP.type_id);
+
     fn share_layouts(
         &mut self,
         share: &mut dyn FnMut(&mut std::sync::Arc<nana_ui_core::LayoutStyle>),
@@ -4963,30 +5905,31 @@ fn tooltip_surface_style(max_width: f32) -> NodeStyle {
         ..Default::default()
     };
     theme.border_radius = Some(crate::theme_intent::space(nana_ui_core::SpacingStep::Xs));
+    let mut layout = nana_ui_core::LayoutStyle {
+        theme: theme.into(),
+        position: nana_ui_core::PositionSpec::Fixed,
+        max_width: Some(nana_ui_core::LengthSpec::Px(max_width)),
+        padding_left: Some(nana_ui_core::LengthSpec::Px(
+            nana_ui_core::TooltipConfig::PADDING_X,
+        )),
+        padding_right: Some(nana_ui_core::LengthSpec::Px(
+            nana_ui_core::TooltipConfig::PADDING_X,
+        )),
+        padding_top: Some(nana_ui_core::LengthSpec::Px(
+            nana_ui_core::TooltipConfig::PADDING_Y,
+        )),
+        padding_bottom: Some(nana_ui_core::LengthSpec::Px(
+            nana_ui_core::TooltipConfig::PADDING_Y,
+        )),
+        border_width: Some(nana_ui_core::HAIRLINE),
+        border_radius: Some(nana_ui_core::TooltipConfig::RADIUS),
+        font_size: Some(nana_ui_core::TooltipConfig::FONT_SIZE),
+        z_index: Some(1_000),
+        ..nana_ui_core::LayoutStyle::default()
+    };
+    layout.text_ext.overflow_wrap = Some(nana_ui_core::OverflowWrapSpec::Anywhere);
     NodeStyle {
-        layout: Arc::new(nana_ui_core::LayoutStyle {
-            theme: theme.into(),
-            position: nana_ui_core::PositionSpec::Fixed,
-            max_width: Some(nana_ui_core::LengthSpec::Px(max_width)),
-            padding_left: Some(nana_ui_core::LengthSpec::Px(
-                nana_ui_core::TooltipConfig::PADDING_X,
-            )),
-            padding_right: Some(nana_ui_core::LengthSpec::Px(
-                nana_ui_core::TooltipConfig::PADDING_X,
-            )),
-            padding_top: Some(nana_ui_core::LengthSpec::Px(
-                nana_ui_core::TooltipConfig::PADDING_Y,
-            )),
-            padding_bottom: Some(nana_ui_core::LengthSpec::Px(
-                nana_ui_core::TooltipConfig::PADDING_Y,
-            )),
-            border_width: Some(nana_ui_core::HAIRLINE),
-            border_radius: Some(nana_ui_core::TooltipConfig::RADIUS),
-            font_size: Some(nana_ui_core::TooltipConfig::FONT_SIZE),
-            z_index: Some(1_000),
-            overflow_wrap: Some(nana_ui_core::OverflowWrapSpec::Anywhere),
-            ..nana_ui_core::LayoutStyle::default()
-        }),
+        layout: Arc::new(layout),
         background: Some(nana_ui_core::SemanticColorRole::Surface),
         border: Some(nana_ui_core::SemanticColorRole::BorderSoft),
         foreground: Some(nana_ui_core::SemanticColorRole::Text),
@@ -5046,7 +5989,8 @@ fn checkbox_style_for(size: nana_ui_core::ControlSize) -> NodeStyle {
                 ..SemanticPaint::default()
             },
             ..crate::InteractionStyle::default()
-        },
+        }
+        .into(),
         text_vertical_alignment: TextVerticalAlignment::Center,
         ..NodeStyle::default()
     }
@@ -5077,7 +6021,8 @@ fn switch_style() -> NodeStyle {
                 ..SemanticPaint::default()
             },
             ..crate::InteractionStyle::default()
-        },
+        }
+        .into(),
         text_vertical_alignment: TextVerticalAlignment::Center,
         ..NodeStyle::default()
     }
@@ -5137,6 +6082,8 @@ impl Checkbox {
 }
 
 impl ComponentView for Checkbox {
+    const TYPE_ID: Option<&'static str> = Some(crate::component_descriptors::CHECKBOX.type_id);
+
     const BEHAVIOR: crate::TypeBehavior<Self> = crate::TypeBehavior {
         activation: Some(crate::AppContext::toggle_checkbox),
         ..crate::TypeBehavior::NONE
@@ -5164,13 +6111,13 @@ impl ComponentView for Checkbox {
                 },
             );
         }
-        let visual = StandardVisual::Checkbox {
+        let visual = CheckboxVisual {
             checked: self.checked,
             indeterminate: self.indeterminate,
             size: self.size,
         };
-        if world.standard_visual(id) != Some(visual.clone()) {
-            mutations.set_standard_visual(id, Some(visual));
+        if world.widget_visual_as::<CheckboxVisual>(id) != Some(&visual) {
+            mutations.set_widget_visual(id, Some(visual));
         }
         let mut effective_style = self.style.clone();
         if self.invalid {
@@ -5207,6 +6154,192 @@ impl ComponentView for Checkbox {
                 ..AccessibilityState::default()
             },
         );
+    }
+}
+
+/// Visual state for [`Checkbox`] nodes.
+#[derive(Debug, Clone, PartialEq)]
+pub struct CheckboxVisual {
+    pub checked: bool,
+    pub indeterminate: bool,
+    pub size: nana_ui_core::ControlSize,
+}
+
+impl CheckboxVisual {
+    fn parts(
+        &self,
+        id: StableNodeId,
+        world: &UiWorld,
+        text: crate::layout_engine::Size,
+    ) -> [Option<crate::layout_engine::parts::FlexPart>; 3] {
+        crate::layout_engine::parts::checkbox_parts(
+            self.size
+                .indicator_size_in(world.theme().typography(), world.theme().spacing()),
+            self.size.indicator_gap_in(world.theme().spacing()),
+            world.text(id).is_some_and(|label| !label.is_empty()),
+            text,
+        )
+    }
+}
+
+impl crate::WidgetVisual for CheckboxVisual {
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+
+    fn dyn_eq(&self, other: &dyn std::any::Any) -> bool {
+        other.downcast_ref::<Self>().is_some_and(|rhs| self == rhs)
+    }
+
+    fn is_document_select_target(&self) -> bool {
+        true
+    }
+
+    fn text_visual_key(&self) -> Option<(std::any::TypeId, u64)> {
+        let step = match self.size {
+            nana_ui_core::ControlSize::Small => 1,
+            nana_ui_core::ControlSize::Medium => 2,
+            nana_ui_core::ControlSize::Large => 3,
+        };
+        Some((std::any::TypeId::of::<Self>(), step))
+    }
+
+    fn intrinsic_chrome_content(
+        &self,
+        id: StableNodeId,
+        world: &UiWorld,
+    ) -> crate::WidgetVisualContent {
+        let parts = self.parts(id, world, crate::layout_engine::Size::default());
+        let chrome = crate::layout_engine::parts::chrome_extent(&parts);
+        crate::WidgetVisualContent {
+            width: chrome.width,
+            height: chrome.height,
+            text: 0.0,
+        }
+    }
+
+    fn solve_content_parts(
+        &self,
+        id: StableNodeId,
+        world: &UiWorld,
+        _bounds: crate::LayoutBox,
+        content: crate::LayoutBox,
+        _writing: nana_ui_core::WritingContext,
+        _own_frame: bool,
+    ) -> Option<crate::layout_engine::parts::ContentParts> {
+        let text = world.text_metrics(id).unwrap_or_default();
+        let inputs = self.parts(
+            id,
+            world,
+            crate::layout_engine::Size::new(text.width, text.height),
+        );
+        Some(crate::layout_engine::parts::start_row_parts(
+            content,
+            inputs,
+            world.right_to_left(id),
+        ))
+    }
+
+    fn node_text_max_width(
+        &self,
+        id: StableNodeId,
+        world: &UiWorld,
+        _layout: crate::LayoutBox,
+        available_width: f32,
+        available_height: f32,
+    ) -> Option<f32> {
+        let parts = self.parts(id, world, crate::layout_engine::Size::default());
+        Some(crate::layout_engine::parts::text_budget(
+            parts,
+            crate::layout_engine::Size::new(available_width, available_height),
+        ))
+    }
+
+    fn paint(&self, ctx: &crate::WidgetPaintCtx<'_>) -> crate::WidgetPaintOutput {
+        let indicator = ctx
+            .content_part(crate::LayoutPartKind::Indicator)
+            .unwrap_or(crate::LayoutBox {
+                width: 0.0,
+                height: 0.0,
+                ..ctx.content
+            });
+        let label_bounds = ctx
+            .content_part(crate::LayoutPartKind::TextContent)
+            .unwrap_or(ctx.content);
+        let extent = indicator.width;
+        let fg_role = ctx.theme.recipes().foreground(
+            nana_ui_core::ComponentRecipeId::Checkbox,
+            self.checked || self.indeterminate,
+        );
+        let fg = ctx.style_model.color(fg_role).as_rgba_array();
+        let mut out = crate::WidgetPaintOutput {
+            suppress_root_surface: true,
+            owns_node_text: false,
+            node_text_bounds: Some(label_bounds),
+            ..crate::WidgetPaintOutput::new()
+        };
+        out.push(
+            3,
+            crate::WidgetPaintOp::Quad(crate::WidgetQuad {
+                rect: indicator,
+                fill: ctx.style.background,
+                fill_paint: ctx.style.paint_colors.background,
+                border: ctx
+                    .style
+                    .border_color
+                    .map(|color| (color, ctx.theme.border().hairline)),
+                border_paint: ctx.style.paint_colors.border,
+                corner_radius: [ctx.chrome_radii.sm; 4],
+                ..crate::WidgetQuad::default()
+            }),
+        );
+        if self.indeterminate {
+            let dash_height = (extent / 8.0).max(1.5);
+            let dash_inset = extent / 4.0;
+            out.push(
+                4,
+                crate::WidgetPaintOp::Quad(crate::WidgetQuad {
+                    rect: crate::LayoutBox {
+                        x: indicator.x + dash_inset,
+                        y: indicator.y + (extent - dash_height) / 2.0,
+                        width: (extent - dash_inset * 2.0).max(0.0),
+                        height: dash_height,
+                    },
+                    fill: Some(fg),
+                    fill_paint: ctx.matching_text_paint(fg),
+                    corner_radius: [dash_height / 2.0; 4],
+                    ..crate::WidgetQuad::default()
+                }),
+            );
+        } else if self.checked {
+            out.push(
+                4,
+                crate::WidgetPaintOp::Text(crate::WidgetText {
+                    bounds: indicator,
+                    content: crate::TextValue::from("✓"),
+                    color: Some(fg),
+                    paint_color: ctx.matching_text_paint(fg),
+                    font_size: extent * 0.75,
+                    font_weight: Some(ctx.theme.typography().bold),
+                    horizontal_alignment: crate::TextHorizontalAlignment::Center,
+                    vertical_alignment: crate::TextVerticalAlignment::Center,
+                    ellipsis: false,
+                    wrap: false,
+                    max_lines: None,
+                    italic: None,
+                    underline: None,
+                    line_through: None,
+                    suppress_spans: true,
+                    preserve_lines: None,
+                    unstyled_glyph: true,
+                    line_height: None,
+                    retained_text: crate::WidgetRetainedText::None,
+                    tabular_nums: false,
+                    ..Default::default()
+                }),
+            );
+        }
+        out
     }
 }
 
@@ -5358,6 +6491,8 @@ impl Default for Divider {
 }
 
 impl ComponentView for Divider {
+    const TYPE_ID: Option<&'static str> = Some(crate::component_descriptors::DIVIDER.type_id);
+
     fn share_layouts(
         &mut self,
         share: &mut dyn FnMut(&mut std::sync::Arc<nana_ui_core::LayoutStyle>),
@@ -5482,6 +6617,8 @@ impl Switch {
 }
 
 impl ComponentView for Switch {
+    const TYPE_ID: Option<&'static str> = Some(crate::component_descriptors::SWITCH.type_id);
+
     const BEHAVIOR: crate::TypeBehavior<Self> = crate::TypeBehavior {
         hooks: Some(|hooks| {
             crate::framework::routes::switch(hooks);
@@ -5518,20 +6655,20 @@ impl ComponentView for Switch {
                 },
             );
         }
-        let thumb_progress = match world.standard_visual(id) {
-            Some(StandardVisual::Switch {
-                checked,
-                thumb_progress,
-                ..
-            }) if checked != self.checked
-                || crate::component_animation_id(crate::component_animation_kinds::SWITCH, id)
+        let thumb_progress = match world.widget_visual_as::<SwitchVisual>(id) {
+            Some(visual)
+                if visual.checked != self.checked
+                    || crate::component_animation_id(
+                        crate::component_animation_kinds::SWITCH,
+                        id,
+                    )
                     .is_some_and(|animation| world.animation_is_active(animation)) =>
             {
-                thumb_progress
+                visual.thumb_progress
             }
             _ => f32::from(self.checked),
         };
-        let visual = StandardVisual::Switch {
+        let visual = SwitchVisual {
             thumb_progress,
             label: Arc::from(self.label.as_str()),
             hint: self.hint.clone(),
@@ -5542,8 +6679,8 @@ impl ComponentView for Switch {
             loading_phase: self.loading_phase,
             invalid: self.invalid,
         };
-        if world.standard_visual(id) != Some(visual.clone()) {
-            mutations.set_standard_visual(id, Some(visual));
+        if world.widget_visual_as::<SwitchVisual>(id) != Some(&visual) {
+            mutations.set_widget_visual(id, Some(visual));
         }
         // A switch with nothing to say beside it — a row's trailing toggle —
         // is its track. There is no text to give the node a width, so `Fill`
@@ -5631,6 +6768,389 @@ impl ComponentView for Switch {
                 ..AccessibilityState::default()
             },
         );
+    }
+}
+
+/// Visual state for [`Switch`] nodes.
+#[derive(Debug, Clone, PartialEq)]
+pub struct SwitchVisual {
+    pub thumb_progress: f32,
+    pub label: Arc<str>,
+    pub hint: Option<Arc<str>>,
+    pub checked: bool,
+    pub control_position: nana_ui_core::SwitchControlPosition,
+    pub size: nana_ui_core::ControlSize,
+    pub loading: bool,
+    pub loading_phase: f32,
+    pub invalid: bool,
+}
+
+impl SwitchVisual {
+    pub(crate) fn inputs(
+        &self,
+        id: StableNodeId,
+        world: &UiWorld,
+    ) -> crate::layout_engine::parts::SwitchInputs {
+        let track = world.style_model().metrics.switch;
+        let typography = world.theme().typography();
+        let line = |font: f32| (font * typography.line / typography.body).max(font);
+        let measure = world.chrome_text_measure(id);
+        let label_width = if self.label.is_empty() {
+            0.0
+        } else {
+            measure.width(
+                &self.label,
+                self.size.text_size_in(typography),
+                Some(typography.medium),
+            )
+        };
+        let hint_width = self.hint.as_ref().map_or(0.0, |hint| {
+            measure.width(
+                hint,
+                self.size.caption_size_in(typography),
+                Some(typography.regular),
+            )
+        });
+        crate::layout_engine::parts::SwitchInputs {
+            track: crate::layout_engine::Size::new(track.track_width, track.track_height),
+            gap: track.label_gap,
+            end: self.control_position == nana_ui_core::SwitchControlPosition::End,
+            reverse: world.right_to_left(id),
+            labelled: !self.label.is_empty() || self.hint.is_some(),
+            text: label_width.max(hint_width),
+            label_line: line(self.size.text_size_in(typography)),
+            hint: self.hint.as_ref().map(|_| {
+                (
+                    world.theme().spacing().xxs,
+                    line(self.size.caption_size_in(typography)),
+                )
+            }),
+        }
+    }
+}
+
+impl crate::WidgetVisual for SwitchVisual {
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+
+    fn dyn_eq(&self, other: &dyn std::any::Any) -> bool {
+        other.downcast_ref::<Self>().is_some_and(|rhs| self == rhs)
+    }
+
+    fn visual_parts_read_theme(&self) -> bool {
+        true
+    }
+
+    fn is_document_select_target(&self) -> bool {
+        true
+    }
+
+    fn content_layout_changed(&self, prev: Option<&dyn std::any::Any>) -> bool {
+        prev.and_then(|p| p.downcast_ref::<Self>()).is_none_or(|a| {
+            (&a.label, &a.hint, a.control_position, a.size)
+                != (&self.label, &self.hint, self.control_position, self.size)
+        })
+    }
+
+    fn clearing_changes_content_layout(&self) -> bool {
+        true
+    }
+
+    fn advance_loading_phase(&self, phase: f32) -> Option<crate::WidgetVisualHandle> {
+        Some(crate::WidgetVisualHandle::new(Self {
+            loading_phase: phase,
+            ..self.clone()
+        }))
+    }
+
+    fn intrinsic_chrome_content(
+        &self,
+        id: StableNodeId,
+        world: &UiWorld,
+    ) -> crate::WidgetVisualContent {
+        let inputs = self.inputs(id, world);
+        let extent = inputs.extent();
+        crate::WidgetVisualContent {
+            width: extent.width,
+            height: extent.height,
+            text: if inputs.labelled { inputs.text } else { 0.0 },
+        }
+    }
+
+    fn solve_content_parts(
+        &self,
+        id: StableNodeId,
+        world: &UiWorld,
+        _bounds: crate::LayoutBox,
+        content: crate::LayoutBox,
+        _writing: nana_ui_core::WritingContext,
+        _own_frame: bool,
+    ) -> Option<crate::layout_engine::parts::ContentParts> {
+        Some(crate::layout_engine::parts::switch_parts(
+            content,
+            self.inputs(id, world),
+        ))
+    }
+
+    fn paint(&self, ctx: &crate::WidgetPaintCtx<'_>) -> crate::WidgetPaintOutput {
+        use crate::LayoutPartKind;
+        let control = ctx
+            .content_part(
+                if self.control_position == nana_ui_core::SwitchControlPosition::End {
+                    LayoutPartKind::TrailingContent
+                } else {
+                    LayoutPartKind::LeadingContent
+                },
+            )
+            .unwrap_or(crate::LayoutBox {
+                width: 0.0,
+                height: 0.0,
+                ..ctx.content
+            });
+        let label_bounds = ctx
+            .content_part(LayoutPartKind::Label)
+            .unwrap_or(crate::LayoutBox {
+                width: 0.0,
+                ..ctx.content
+            });
+        let hint_bounds = ctx.content_part(LayoutPartKind::Hint);
+        let palette = ctx.style_model;
+        let (hovered, pressed, disabled) = ctx.world.widget_interaction_state(ctx.id);
+        let mix = |foreground: [f32; 4], background: [f32; 4], amount: f32| {
+            let amount = amount.clamp(0.0, 1.0);
+            std::array::from_fn(|channel| {
+                foreground[channel] * amount + background[channel] * (1.0 - amount)
+            })
+        };
+        let fade = |mut color: [f32; 4]| {
+            if disabled {
+                color[3] *= 0.55;
+            }
+            color
+        };
+        let track_background = fade(if self.checked {
+            if pressed {
+                palette
+                    .color(nana_ui_core::SemanticColorRole::AccentStrong)
+                    .as_rgba_array()
+            } else {
+                palette
+                    .color(nana_ui_core::SemanticColorRole::Accent)
+                    .as_rgba_array()
+            }
+        } else {
+            mix(
+                palette
+                    .color(nana_ui_core::SemanticColorRole::Hover)
+                    .as_rgba_array(),
+                palette
+                    .color(nana_ui_core::SemanticColorRole::Background)
+                    .as_rgba_array(),
+                0.78,
+            )
+        });
+        let track_border = fade(if self.invalid {
+            palette
+                .color(nana_ui_core::SemanticColorRole::Danger)
+                .as_rgba_array()
+        } else if self.checked {
+            if hovered || pressed {
+                palette
+                    .color(nana_ui_core::SemanticColorRole::AccentStrong)
+                    .as_rgba_array()
+            } else {
+                palette
+                    .color(nana_ui_core::SemanticColorRole::Accent)
+                    .as_rgba_array()
+            }
+        } else if hovered || pressed {
+            mix(
+                palette
+                    .color(nana_ui_core::SemanticColorRole::Accent)
+                    .as_rgba_array(),
+                palette
+                    .color(nana_ui_core::SemanticColorRole::BorderStrong)
+                    .as_rgba_array(),
+                if pressed { 0.70 } else { 0.42 },
+            )
+        } else {
+            palette
+                .color(nana_ui_core::SemanticColorRole::BorderStrong)
+                .as_rgba_array()
+        });
+        let thumb_background = fade(if self.checked {
+            palette
+                .color(nana_ui_core::SemanticColorRole::AccentText)
+                .as_rgba_array()
+        } else {
+            mix(
+                palette
+                    .color(nana_ui_core::SemanticColorRole::Faint)
+                    .as_rgba_array(),
+                palette
+                    .color(nana_ui_core::SemanticColorRole::Background)
+                    .as_rgba_array(),
+                0.70,
+            )
+        });
+        let border_width = ctx.theme.border().hairline;
+        let inset = control.height * (3.0 / 16.0);
+        let thumb_extent =
+            (control.height * (10.0 / 16.0)).min((control.width - 2.0 * inset).max(0.0));
+        let travel = (control.width - 2.0 * inset - thumb_extent).max(0.0);
+        let rtl = ctx.style.direction == nana_ui_core::DirSpec::Rtl;
+        let progress = self.thumb_progress.clamp(0.0, 1.0);
+        let progress = if rtl { 1.0 - progress } else { progress };
+        let thumb = crate::LayoutBox {
+            x: control.x + inset + travel * progress,
+            y: control.y + (control.height - thumb_extent) / 2.0,
+            width: thumb_extent,
+            height: thumb_extent,
+        };
+        let label_color = ctx.text_color();
+        let mut out = crate::WidgetPaintOutput {
+            owns_node_text: true,
+            root_surface: Some(crate::WidgetRootSurface {
+                border_color: Some(None),
+                border_width: Some(0.0),
+                ..Default::default()
+            }),
+            ..crate::WidgetPaintOutput::new()
+        };
+        out.push(
+            2,
+            crate::WidgetPaintOp::Text(crate::WidgetText {
+                bounds: label_bounds,
+                content: crate::TextValue::from(Arc::clone(&self.label)),
+                color: Some(label_color),
+                paint_color: ctx.matching_text_paint(label_color),
+                font_size: self.size.text_size_in(ctx.theme.typography()),
+                font_weight: Some(ctx.theme.typography().medium),
+                horizontal_alignment: crate::TextHorizontalAlignment::Start,
+                vertical_alignment: crate::TextVerticalAlignment::Center,
+                ellipsis: true,
+                wrap: false,
+                max_lines: None,
+                italic: None,
+                underline: None,
+                line_through: None,
+                suppress_spans: false,
+                preserve_lines: None,
+                unstyled_glyph: false,
+                line_height: Some(Some(nana_ui_core::LineHeightSpec::Absolute(
+                    label_bounds.height,
+                ))),
+                retained_text: crate::WidgetRetainedText::None,
+                tabular_nums: false,
+                ..Default::default()
+            }),
+        );
+        if let Some((hint, hint_bounds)) = self.hint.as_ref().zip(hint_bounds) {
+            let hint_color = ctx.secondary_text_color();
+            out.push(
+                3,
+                crate::WidgetPaintOp::Text(crate::WidgetText {
+                    bounds: hint_bounds,
+                    content: crate::TextValue::from(Arc::clone(hint)),
+                    color: Some(hint_color),
+                    paint_color: ctx.matching_text_paint(hint_color),
+                    font_size: self.size.caption_size_in(ctx.theme.typography()),
+                    font_weight: Some(ctx.theme.typography().regular),
+                    horizontal_alignment: crate::TextHorizontalAlignment::Start,
+                    vertical_alignment: crate::TextVerticalAlignment::Center,
+                    ellipsis: true,
+                    wrap: false,
+                    max_lines: None,
+                    italic: None,
+                    underline: None,
+                    line_through: None,
+                    suppress_spans: false,
+                    preserve_lines: None,
+                    unstyled_glyph: false,
+                    line_height: Some(Some(nana_ui_core::LineHeightSpec::Absolute(
+                        hint_bounds.height,
+                    ))),
+                    retained_text: crate::WidgetRetainedText::None,
+                    tabular_nums: false,
+                    ..Default::default()
+                }),
+            );
+        }
+        out.push(
+            4,
+            crate::WidgetPaintOp::Quad(crate::WidgetQuad {
+                rect: control,
+                fill: Some(track_background),
+                fill_paint: ctx.matching_background_paint(track_background),
+                border: Some((track_border, border_width)),
+                border_paint: ctx.matching_border_paint(track_border),
+                corner_radius: [control.height / 2.0; 4],
+                ..crate::WidgetQuad::default()
+            }),
+        );
+        out.push(
+            5,
+            crate::WidgetPaintOp::Quad(crate::WidgetQuad {
+                rect: thumb,
+                fill: Some(thumb_background),
+                fill_paint: ctx.matching_text_paint(thumb_background),
+                corner_radius: [thumb_extent / 2.0; 4],
+                ..crate::WidgetQuad::default()
+            }),
+        );
+        if self.loading {
+            let spinner_fg = palette
+                .color(
+                    ctx.theme
+                        .recipes()
+                        .foreground(nana_ui_core::ComponentRecipeId::Switch, self.checked),
+                )
+                .as_rgba_array();
+            out.push(
+                6,
+                crate::WidgetPaintOp::Icon(crate::WidgetIcon {
+                    bounds: crate::LayoutBox {
+                        x: if rtl {
+                            control.x + control.width - control.height * 15.0 / 16.0
+                        } else {
+                            control.x + control.height / 16.0
+                        },
+                        y: control.y + control.height / 16.0,
+                        width: control.height * 14.0 / 16.0,
+                        height: control.height * 14.0 / 16.0,
+                    },
+                    glyph: crate::WidgetGlyph::Spinner {
+                        phase: (self.loading_phase.clamp(0.0, 1.0) * 8.0).floor() as u8 % 8,
+                    },
+                    color: Some(spinner_fg),
+                    paint_color: ctx.matching_text_paint(spinner_fg),
+                    align_to_adjacent_text: false,
+                }),
+            );
+        }
+        if ctx.is_focus_visible() {
+            out.push(
+                7,
+                crate::WidgetPaintOp::Quad(crate::WidgetQuad {
+                    rect: crate::LayoutBox {
+                        x: control.x - 4.0 * border_width,
+                        y: control.y - 4.0 * border_width,
+                        width: control.width + 8.0 * border_width,
+                        height: control.height + 8.0 * border_width,
+                    },
+                    fill: None,
+                    border: ctx
+                        .style
+                        .border_color
+                        .map(|color| (color, 2.0 * border_width)),
+                    border_paint: ctx.style.paint_colors.border,
+                    corner_radius: [control.height / 2.0 + 4.0 * border_width; 4],
+                    ..crate::WidgetQuad::default()
+                }),
+            );
+        }
+        out
     }
 }
 
@@ -6059,6 +7579,8 @@ impl RangeField {
 }
 
 impl ComponentView for RangeField {
+    const TYPE_ID: Option<&'static str> = Some(crate::component_descriptors::RANGE_FIELD.type_id);
+
     const BEHAVIOR: crate::TypeBehavior<Self> = crate::TypeBehavior {
         hooks: Some(|hooks| {
             crate::framework::routes::range_field(hooks);
@@ -6101,7 +7623,7 @@ impl ComponentView for RangeField {
         let track_gradient = self.track_gradient.clone().filter(|_| rail.is_none());
         let value_thumb = self.draws_value_thumb();
         let show_value = self.show_value && rail.is_none() && !value_thumb;
-        let visual = StandardVisual::Range {
+        let visual = RangeVisual {
             label: self
                 .label
                 .clone()
@@ -6138,8 +7660,8 @@ impl ComponentView for RangeField {
             }),
             reset: self.default_value.is_some() && rail.is_none(),
         };
-        if world.standard_visual(id) != Some(visual.clone()) {
-            mutations.set_standard_visual(id, Some(visual));
+        if world.widget_visual_as::<RangeVisual>(id) != Some(&visual) {
+            mutations.set_widget_visual(id, Some(visual));
         }
         if world.text(id).is_some_and(|text| !text.is_empty()) {
             mutations.set_text(
@@ -6255,6 +7777,800 @@ impl ComponentView for RangeField {
             },
         );
     }
+}
+
+/// Slot used by [`RangeVisual`] for its minimum-bound label, past marker, thumb and focus-ring slots.
+pub const RANGE_MINIMUM_SLOT: u64 = 1 << 20;
+/// Slot used by [`RangeVisual`] for its maximum-bound label.
+pub const RANGE_MAXIMUM_SLOT: u64 = RANGE_MINIMUM_SLOT + 1;
+/// Slot used by [`RangeVisual`] for its value-thumb capsule label.
+pub const RANGE_THUMB_TEXT_SLOT: u64 = RANGE_MINIMUM_SLOT + 2;
+
+/// Page- or node-local derived geometry for a [`RangeVisual`] node.
+#[derive(Debug, Clone, PartialEq)]
+pub struct RangeGeometry {
+    pub label: Option<crate::ComponentTextRegion>,
+    pub value: crate::ComponentTextRegion,
+    pub unit: Option<crate::ComponentTextRegion>,
+    pub track: crate::LayoutBox,
+    /// Theme-resolved thickness of the painted rail inside the thumb band.
+    pub track_girth: f32,
+    pub border_width: f32,
+    /// The ring a gradient track's thumb is drawn as; `None` for the regular filled track.
+    pub thumb_ring: Option<crate::ContrastRing>,
+    /// The minimum and the maximum written at the track's ends.
+    pub bounds: Option<[crate::ComponentTextRegion; 2]>,
+    /// The capsule a value thumb is drawn as, at the current value.
+    pub value_thumb: Option<crate::RangeValueThumb>,
+    /// The caution zone and its theme-resolved colours.
+    pub caution: Option<crate::RangeCaution>,
+}
+
+/// Widget visual projected by [`RangeField`].
+#[derive(Debug, Clone, PartialEq)]
+pub struct RangeVisual {
+    pub label: Option<Arc<str>>,
+    pub value: Arc<str>,
+    pub limits: Option<[Arc<str>; 2]>,
+    pub unit: Option<Arc<str>>,
+    pub size: nana_ui_core::ControlSize,
+    pub ratio: f32,
+    /// Positions along the track, each in `0.0..=1.0`.
+    pub markers: Arc<[f32]>,
+    /// `Some(ratio)`: the track from there to its end is a caution zone.
+    pub caution: Option<f32>,
+    pub invalid: bool,
+    /// `Some(girth)`, finite and positive: a rail that thick across the whole content box.
+    pub rail: Option<f32>,
+    /// `Some(stops)`: the track is this gradient with a [`crate::ContrastRing`] thumb.
+    pub track_gradient: Option<Arc<[nana_ui_core::GradientStop]>>,
+    /// `Some(text)`: the thumb is a wide capsule with the value written in it.
+    pub value_thumb: Option<Arc<str>>,
+    /// The value is being typed: the capsule makes way for the number field laid over it.
+    pub editing: bool,
+    /// The formatted minimum and maximum written at the ends of the track.
+    pub bounds: Option<[Arc<str>; 2]>,
+    /// The row ends with the reset button's square.
+    pub reset: bool,
+}
+
+impl RangeVisual {
+    pub(crate) fn inputs(
+        &self,
+        id: StableNodeId,
+        world: &UiWorld,
+    ) -> Option<crate::layout_engine::parts::RangeInputs> {
+        if self.rail.is_some() {
+            return None;
+        }
+        let style = world.computed_style(id)?;
+        let typography = world.theme().typography();
+        let measure = world.chrome_text_measure(id);
+        let value = self
+            .limits
+            .as_ref()
+            .filter(|_| self.value_thumb.is_none())
+            .map(|limits| {
+                limits
+                    .iter()
+                    .map(|limit| measure.tabular_width(limit, style.font_size, style.font_weight))
+                    .fold(0.0, f32::max)
+            });
+        let caption = self.size.caption_size_in(typography);
+        Some(crate::layout_engine::parts::RangeInputs {
+            label: self
+                .label
+                .as_ref()
+                .map(|label| measure.width(label, style.font_size, style.font_weight)),
+            value,
+            unit: self
+                .unit
+                .as_ref()
+                .filter(|_| value.is_some())
+                .map(|unit| measure.width(unit, caption, Some(typography.regular))),
+            bounds: self.bounds.as_ref().map(|bounds| {
+                bounds
+                    .each_ref()
+                    .map(|bound| measure.tabular_width(bound, caption, Some(typography.regular)))
+            }),
+            trailing: self.reset.then_some(world.theme().spacing().page),
+            gap: world.range_gap(self.size),
+        })
+    }
+
+    pub(crate) fn geometry_in(
+        &self,
+        id: StableNodeId,
+        world: &UiWorld,
+        content: crate::LayoutBox,
+        style: &crate::ComputedStyle,
+        style_model: nana_ui_core::StyleModelRef,
+        secondary: [f32; 4],
+    ) -> RangeGeometry {
+        let theme = world.theme();
+        let typography = theme.typography();
+        let spacing = theme.spacing();
+        let text_region = |bounds, content: Arc<str>, muted: bool, size: f32, weight| {
+            crate::ComponentTextRegion {
+                bounds,
+                content: content.into(),
+                color: Some(if muted {
+                    secondary
+                } else {
+                    style.color.unwrap_or_else(|| {
+                        style_model
+                            .color(nana_ui_core::SemanticColorRole::Text)
+                            .as_rgba_array()
+                    })
+                }),
+                font_size: size,
+                font_weight: weight,
+            }
+        };
+        if let Some(girth) = self.rail {
+            let thumb_h = self.size.text_size_in(typography).min(content.height);
+            return RangeGeometry {
+                border_width: theme.border().hairline,
+                label: None,
+                value: text_region(
+                    crate::LayoutBox {
+                        x: content.x + content.width,
+                        y: content.y,
+                        height: content.height,
+                        ..crate::LayoutBox::default()
+                    },
+                    Arc::clone(&self.value),
+                    false,
+                    self.size.text_size_in(typography),
+                    Some(typography.medium),
+                ),
+                unit: None,
+                track: crate::LayoutBox {
+                    y: content.y + (content.height - thumb_h) / 2.0,
+                    height: thumb_h,
+                    ..content
+                },
+                track_girth: girth.min(content.height),
+                thumb_ring: None,
+                bounds: None,
+                value_thumb: None,
+                caution: None,
+            };
+        }
+
+        let parts = world.component_content_parts(id);
+        let part = |kind| crate::layout_engine::parts::part_bounds(&parts, kind);
+        let lane = crate::layout_engine::parts::range_track_lane(
+            content,
+            &parts,
+            world.range_gap(self.size),
+        );
+        let thumb = if self.track_gradient.is_some() {
+            spacing.xxxl
+        } else if self.value_thumb.is_some() {
+            crate::world::range_value_thumb_height(self.size, typography, spacing)
+        } else {
+            self.size.text_size_in(typography)
+        }
+        .min(content.height);
+        let capsule_width = self.value_thumb.as_ref().map(|text| {
+            let measure = world.chrome_text_measure(id);
+            let text_width = self
+                .limits
+                .iter()
+                .flatten()
+                .chain(std::iter::once(text))
+                .map(|text| measure.tabular_width(text, style.font_size, style.font_weight))
+                .fold(0.0, f32::max);
+            (text_width + spacing.md + spacing.md)
+                .max(spacing.page + spacing.page)
+                .min(lane.width)
+        });
+        let travel = capsule_width.unwrap_or(thumb);
+        let track = crate::LayoutBox {
+            x: lane.x + travel / 2.0,
+            y: content.y + (content.height - thumb) / 2.0,
+            width: (lane.width - travel).max(0.0),
+            height: thumb.min(content.height),
+        };
+        let disabled = world.accessibility(id).is_some_and(|node| node.disabled);
+        let caution = self.caution.map(|from| crate::RangeCaution {
+            from,
+            color: style_model
+                .color(nana_ui_core::SemanticColorRole::Warning)
+                .as_rgba_array(),
+            thumb: !disabled && self.ratio >= from,
+        });
+        let value_thumb = self
+            .value_thumb
+            .as_ref()
+            .zip(capsule_width)
+            .map(|(text, width)| {
+                let capsule = crate::LayoutBox {
+                    x: track.x + track.width * self.ratio.clamp(0.0, 1.0) - width / 2.0,
+                    width,
+                    ..track
+                };
+                let mut text = text_region(
+                    capsule,
+                    Arc::clone(text),
+                    false,
+                    style.font_size,
+                    style.font_weight,
+                );
+                if !disabled {
+                    let on_accent = style_model
+                        .color(nana_ui_core::SemanticColorRole::AccentText)
+                        .as_rgba_array();
+                    text.color = Some(match caution.filter(|caution| caution.thumb) {
+                        Some(crate::RangeCaution { color: warning, .. }) => {
+                            let body = style_model
+                                .color(nana_ui_core::SemanticColorRole::Text)
+                                .as_rgba_array();
+                            if contrast(body, warning) > contrast(on_accent, warning) {
+                                body
+                            } else {
+                                on_accent
+                            }
+                        }
+                        None => on_accent,
+                    });
+                }
+                crate::RangeValueThumb {
+                    capsule,
+                    text,
+                    gap: spacing.xxs,
+                    editing: self.editing,
+                }
+            });
+        RangeGeometry {
+            caution,
+            border_width: theme.border().hairline,
+            label: self
+                .label
+                .as_ref()
+                .zip(part(crate::LayoutPartKind::Label))
+                .map(|(label, bounds)| {
+                    text_region(
+                        bounds,
+                        Arc::clone(label),
+                        false,
+                        style.font_size,
+                        style.font_weight,
+                    )
+                }),
+            value: text_region(
+                part(crate::LayoutPartKind::Value).unwrap_or(crate::LayoutBox {
+                    x: content.x + content.width,
+                    y: content.y,
+                    height: content.height,
+                    ..crate::LayoutBox::default()
+                }),
+                Arc::clone(&self.value),
+                false,
+                style.font_size,
+                style.font_weight,
+            ),
+            unit: self
+                .unit
+                .as_ref()
+                .zip(part(crate::LayoutPartKind::Detail))
+                .map(|(unit, bounds)| {
+                    text_region(
+                        bounds,
+                        Arc::clone(unit),
+                        true,
+                        self.size.caption_size_in(typography),
+                        Some(typography.regular),
+                    )
+                }),
+            track,
+            track_girth: if self.track_gradient.is_some() {
+                spacing.xl
+            } else {
+                spacing.xs
+            }
+            .min(track.height),
+            thumb_ring: self
+                .track_gradient
+                .is_some()
+                .then(|| crate::ContrastRing::from_effects(theme.effects())),
+            bounds: self.bounds.as_ref().and_then(|[minimum, maximum]| {
+                let caption = self.size.caption_size_in(typography);
+                let regular = Some(typography.regular);
+                Some([
+                    text_region(
+                        part(crate::LayoutPartKind::Minimum)?,
+                        Arc::clone(minimum),
+                        true,
+                        caption,
+                        regular,
+                    ),
+                    text_region(
+                        part(crate::LayoutPartKind::Maximum)?,
+                        Arc::clone(maximum),
+                        true,
+                        caption,
+                        regular,
+                    ),
+                ])
+            }),
+            value_thumb,
+        }
+    }
+
+    #[doc(hidden)]
+    pub fn paint_with_geometry(
+        &self,
+        geometry: &RangeGeometry,
+        bounds_width: f32,
+        style: &crate::ComputedStyle,
+        focused: bool,
+        focus_color: [f32; 4],
+        focus_ring: nana_ui_core::FocusRingMetrics,
+    ) -> crate::WidgetPaintOutput {
+        let mut out = crate::WidgetPaintOutput {
+            owns_node_text: true,
+            suppress_root_surface: true,
+            ..crate::WidgetPaintOutput::new()
+        };
+        if let Some(bounds) = &geometry.bounds {
+            for (slot, (region, alignment)) in
+                [RANGE_MINIMUM_SLOT, RANGE_MAXIMUM_SLOT].into_iter().zip(
+                    bounds
+                        .iter()
+                        .zip([TextHorizontalAlignment::End, TextHorizontalAlignment::Start]),
+                )
+            {
+                let mut text =
+                    crate::widget_visual::styled_text_region(region, style, alignment, true);
+                text.tabular_nums = true;
+                out.push(slot, crate::WidgetPaintOp::Text(text));
+            }
+        }
+        if let Some(thumb) = geometry.value_thumb.as_ref().filter(|thumb| !thumb.editing) {
+            let mut text = crate::widget_visual::styled_text_region(
+                &thumb.text,
+                style,
+                TextHorizontalAlignment::Center,
+                true,
+            );
+            text.tabular_nums = true;
+            out.push(RANGE_THUMB_TEXT_SLOT, crate::WidgetPaintOp::Text(text));
+        }
+        if let Some(label) = &geometry.label {
+            out.push(
+                2,
+                crate::WidgetPaintOp::Text(crate::widget_visual::styled_text_region(
+                    label,
+                    style,
+                    TextHorizontalAlignment::Start,
+                    true,
+                )),
+            );
+        }
+        if !geometry.value.content.is_empty() {
+            out.push(
+                6,
+                crate::WidgetPaintOp::Text(crate::widget_visual::styled_text_region(
+                    &geometry.value,
+                    style,
+                    TextHorizontalAlignment::End,
+                    true,
+                )),
+            );
+        }
+        if let Some(unit) = &geometry.unit {
+            out.push(
+                7,
+                crate::WidgetPaintOp::Text(crate::widget_visual::styled_text_region(
+                    unit,
+                    style,
+                    TextHorizontalAlignment::Start,
+                    true,
+                )),
+            );
+        }
+
+        let ratio = self.ratio.clamp(0.0, 1.0);
+        let value_thumb = geometry.value_thumb.as_ref();
+        let track_band = geometry.track;
+        let gradient = self
+            .track_gradient
+            .as_ref()
+            .filter(|_| self.rail.is_none())
+            .zip(geometry.thumb_ring);
+        let thumb_extent = track_band.height.max(0.0).min(bounds_width);
+        let girth = geometry.track_girth.min(track_band.height).max(0.0);
+        let border_width = geometry.border_width;
+        let rail = crate::LayoutBox {
+            x: track_band.x,
+            y: track_band.y + (track_band.height - girth) / 2.0,
+            width: track_band.width,
+            height: girth,
+        };
+        let rail_radius = girth / 2.0;
+        let caution = geometry
+            .caution
+            .filter(|_| self.rail.is_none() && gradient.is_none());
+        let zone_x = caution.map(|caution| rail.x + rail.width * caution.from.clamp(0.0, 1.0));
+        let plain_rail = |piece: crate::LayoutBox| match zone_x {
+            Some(zone_x) if zone_x < piece.x + piece.width => (
+                crate::LayoutBox {
+                    width: (zone_x - piece.x).max(0.0),
+                    ..piece
+                },
+                [rail_radius, 0.0, 0.0, rail_radius],
+            ),
+            _ => (piece, [rail_radius; 4]),
+        };
+        let border_as_fill_paint = style.border_color.and_then(|color| {
+            crate::widget_visual::matching_paint_color(style.paint_colors.border, color)
+        });
+        if let Some(thumb) = value_thumb {
+            let capsule = thumb.capsule;
+            let half = capsule.width / 2.0;
+            let lane = crate::LayoutBox {
+                x: rail.x - half,
+                width: rail.width + capsule.width,
+                ..rail
+            };
+            let cut = if thumb.editing { 0.0 } else { thumb.gap };
+            let before = crate::LayoutBox {
+                width: (capsule.x - cut - lane.x).max(0.0),
+                ..lane
+            };
+            let after_x = capsule.x + capsule.width + cut;
+            let after = crate::LayoutBox {
+                x: after_x,
+                width: (lane.x + lane.width - after_x).max(0.0),
+                ..lane
+            };
+            let (after, after_radius) = plain_rail(after);
+            out.push(
+                3,
+                crate::WidgetPaintOp::Quad(crate::WidgetQuad {
+                    rect: after,
+                    fill: style.border_color,
+                    fill_paint: border_as_fill_paint,
+                    corner_radius: after_radius,
+                    ..crate::WidgetQuad::default()
+                }),
+            );
+            out.push(
+                4,
+                crate::WidgetPaintOp::Quad(crate::WidgetQuad {
+                    rect: before,
+                    fill: style.background,
+                    fill_paint: style.paint_colors.background,
+                    corner_radius: [rail_radius; 4],
+                    ..crate::WidgetQuad::default()
+                }),
+            );
+        } else if let Some((stops, _)) = gradient {
+            out.push(
+                3,
+                crate::WidgetPaintOp::Quad(crate::WidgetQuad {
+                    rect: rail,
+                    corner_radius: [rail_radius; 4],
+                    background_image: Some(nana_ui_core::BackgroundImage::Gradient(
+                        nana_ui_core::CssGradient::Linear(nana_ui_core::LinearGradient {
+                            angle_deg: 90.0,
+                            stops: stops.to_vec(),
+                        }),
+                    )),
+                    ..crate::WidgetQuad::default()
+                }),
+            );
+        } else {
+            let (plain, plain_radius) = plain_rail(rail);
+            out.push(
+                3,
+                crate::WidgetPaintOp::Quad(crate::WidgetQuad {
+                    rect: plain,
+                    fill: style.border_color,
+                    fill_paint: border_as_fill_paint,
+                    corner_radius: plain_radius,
+                    ..crate::WidgetQuad::default()
+                }),
+            );
+            out.push(
+                4,
+                crate::WidgetPaintOp::Quad(crate::WidgetQuad {
+                    rect: crate::LayoutBox {
+                        width: rail.width * ratio,
+                        ..rail
+                    },
+                    fill: style.background,
+                    fill_paint: style.paint_colors.background,
+                    corner_radius: [rail_radius; 4],
+                    ..crate::WidgetQuad::default()
+                }),
+            );
+        }
+        let caution_slots = if let Some((caution, from)) = caution.zip(zone_x) {
+            let (rail_span, fill_end, rail_start) = match value_thumb {
+                Some(thumb) => {
+                    let capsule = thumb.capsule;
+                    let half = capsule.width / 2.0;
+                    let cut = if thumb.editing { 0.0 } else { thumb.gap };
+                    (
+                        (rail.x - half, rail.x + rail.width + half),
+                        capsule.x - cut,
+                        capsule.x + capsule.width + cut,
+                    )
+                }
+                None => {
+                    let at = rail.x + rail.width * ratio;
+                    ((rail.x, rail.x + rail.width), at, at)
+                }
+            };
+            let pieces = [
+                (5, from.max(rail_start), rail_span.1, true),
+                (6, from, fill_end.min(rail_span.1), false),
+            ];
+            for (slot, start, end, round_end) in pieces {
+                if end <= start {
+                    continue;
+                }
+                let round_start = start > from;
+                let radius = |round: bool| if round { rail_radius } else { 0.0 };
+                out.push(
+                    slot,
+                    crate::WidgetPaintOp::Quad(crate::WidgetQuad {
+                        rect: crate::LayoutBox {
+                            x: start,
+                            width: end - start,
+                            ..rail
+                        },
+                        fill: Some(caution.color),
+                        corner_radius: [
+                            radius(round_start),
+                            radius(round_end),
+                            radius(round_end),
+                            radius(round_start),
+                        ],
+                        ..crate::WidgetQuad::default()
+                    }),
+                );
+            }
+            2
+        } else {
+            0
+        };
+        let marker_count = self.markers.len() as u64 + caution_slots;
+        for (index, marker) in self.markers.iter().copied().enumerate() {
+            let marker = marker.clamp(0.0, 1.0);
+            let tick = crate::LayoutBox {
+                x: track_band.x + track_band.width * marker - girth * 0.375,
+                y: rail.y - girth / 2.0,
+                width: girth * 0.75,
+                height: rail.height + girth,
+            };
+            let zone_fill = caution
+                .filter(|caution| marker >= caution.from)
+                .map(|caution| caution.color);
+            out.push(
+                5 + caution_slots + index as u64,
+                crate::WidgetPaintOp::Quad(crate::WidgetQuad {
+                    rect: tick,
+                    fill: zone_fill.or(style.background),
+                    fill_paint: if zone_fill.is_some() {
+                        None
+                    } else {
+                        style.paint_colors.background
+                    },
+                    border: style.border_color.map(|color| (color, border_width)),
+                    border_paint: style.paint_colors.border,
+                    corner_radius: [border_width; 4],
+                    ..crate::WidgetQuad::default()
+                }),
+            );
+        }
+        let thumb_slot = 5 + marker_count;
+        let caution_thumb = caution
+            .filter(|caution| caution.thumb)
+            .map(|caution| caution.color);
+        let thumb_paint = if caution_thumb.is_some() {
+            None
+        } else {
+            style.paint_colors.background
+        };
+        let thumb_rect = match value_thumb {
+            Some(thumb) => thumb.capsule,
+            None => crate::LayoutBox {
+                x: track_band.x + track_band.width * ratio - thumb_extent / 2.0,
+                y: track_band.y + (track_band.height - thumb_extent) / 2.0,
+                width: thumb_extent,
+                height: thumb_extent,
+            },
+        };
+        let focus_slot = if let Some(thumb) = value_thumb {
+            if !thumb.editing {
+                out.push(
+                    thumb_slot,
+                    crate::WidgetPaintOp::Quad(crate::WidgetQuad {
+                        rect: thumb_rect,
+                        fill: caution_thumb.or(style.background),
+                        fill_paint: thumb_paint,
+                        corner_radius: [thumb_rect.height / 2.0; 4],
+                        ..crate::WidgetQuad::default()
+                    }),
+                );
+            }
+            thumb_slot + 1
+        } else if let Some((_, ring)) = gradient {
+            crate::widget_visual::push_contrast_ring_quads(&mut out, thumb_slot, thumb_rect, ring);
+            thumb_slot + 3
+        } else {
+            if self.rail.is_none() || focused {
+                out.push(
+                    thumb_slot,
+                    crate::WidgetPaintOp::Quad(crate::WidgetQuad {
+                        rect: thumb_rect,
+                        fill: caution_thumb.or(style.background),
+                        fill_paint: thumb_paint,
+                        border: style.border_color.map(|color| (color, border_width)),
+                        border_paint: style.paint_colors.border,
+                        corner_radius: [thumb_extent / 2.0; 4],
+                        ..crate::WidgetQuad::default()
+                    }),
+                );
+            }
+            thumb_slot + 1
+        };
+        if focused && !value_thumb.is_some_and(|thumb| thumb.editing) {
+            let (width, offset) = crate::widget_visual::focus_ring_stroke(focus_ring);
+            let ring_width = width * border_width;
+            let outset = (offset + width) * border_width;
+            let ring = crate::LayoutBox {
+                x: thumb_rect.x - outset,
+                y: thumb_rect.y - outset,
+                width: thumb_rect.width + outset * 2.0,
+                height: thumb_rect.height + outset * 2.0,
+            };
+            out.push(
+                focus_slot,
+                crate::WidgetPaintOp::Quad(crate::WidgetQuad {
+                    rect: ring,
+                    border: Some((focus_color, ring_width)),
+                    border_paint: crate::widget_visual::matching_paint_color(
+                        style.paint_colors.color,
+                        focus_color,
+                    ),
+                    corner_radius: [ring.width.min(ring.height) / 2.0; 4],
+                    ..crate::WidgetQuad::default()
+                }),
+            );
+        }
+        out
+    }
+}
+
+impl crate::WidgetVisual for RangeVisual {
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+
+    fn dyn_eq(&self, other: &dyn std::any::Any) -> bool {
+        other.downcast_ref::<Self>().is_some_and(|rhs| self == rhs)
+    }
+
+    fn is_valid(&self) -> bool {
+        self.ratio.is_finite()
+            && (0.0..=1.0).contains(&self.ratio)
+            && self
+                .markers
+                .iter()
+                .all(|marker| marker.is_finite() && (0.0..=1.0).contains(marker))
+    }
+
+    fn visual_parts_read_theme(&self) -> bool {
+        true
+    }
+
+    fn is_document_select_target(&self) -> bool {
+        true
+    }
+
+    fn content_layout_changed(&self, prev: Option<&dyn std::any::Any>) -> bool {
+        prev.and_then(|p| p.downcast_ref::<Self>()).is_none_or(|a| {
+            (
+                &a.label,
+                &a.limits,
+                &a.unit,
+                a.size,
+                a.rail.is_some(),
+                a.value_thumb.is_some(),
+                &a.bounds,
+                a.reset,
+            ) != (
+                &self.label,
+                &self.limits,
+                &self.unit,
+                self.size,
+                self.rail.is_some(),
+                self.value_thumb.is_some(),
+                &self.bounds,
+                self.reset,
+            )
+        })
+    }
+
+    fn clearing_changes_content_layout(&self) -> bool {
+        true
+    }
+
+    fn intrinsic_chrome_content(
+        &self,
+        id: StableNodeId,
+        world: &UiWorld,
+    ) -> crate::WidgetVisualContent {
+        crate::WidgetVisualContent {
+            width: self.inputs(id, world).map_or(0.0, |inputs| inputs.extent()),
+            ..crate::WidgetVisualContent::default()
+        }
+    }
+
+    fn solve_content_parts(
+        &self,
+        id: StableNodeId,
+        world: &UiWorld,
+        _bounds: crate::LayoutBox,
+        content: crate::LayoutBox,
+        _writing: nana_ui_core::WritingContext,
+        _own_frame: bool,
+    ) -> Option<crate::layout_engine::parts::ContentParts> {
+        Some(
+            self.inputs(id, world)
+                .map_or(crate::layout_engine::parts::NO_CONTENT_PARTS, |inputs| {
+                    crate::layout_engine::parts::range_parts(content, inputs)
+                }),
+        )
+    }
+
+    fn paint(&self, ctx: &crate::WidgetPaintCtx<'_>) -> crate::WidgetPaintOutput {
+        let geometry = self.geometry_in(
+            ctx.id,
+            ctx.world,
+            ctx.content,
+            ctx.style,
+            ctx.style_model,
+            ctx.secondary_text_color(),
+        );
+        let focus_color = ctx
+            .style_model
+            .color(
+                ctx.theme
+                    .recipes()
+                    .foreground(nana_ui_core::ComponentRecipeId::Range, false),
+            )
+            .as_rgba_array();
+        self.paint_with_geometry(
+            &geometry,
+            ctx.bounds.width,
+            ctx.style,
+            ctx.is_focused(),
+            focus_color,
+            ctx.theme.metrics().focus_ring,
+        )
+    }
+}
+
+/// The WCAG contrast ratio between two sRGB colours, their alpha ignored.
+fn contrast(a: [f32; 4], b: [f32; 4]) -> f32 {
+    fn luminance(color: [f32; 4]) -> f32 {
+        let linear = |channel: f32| {
+            if channel <= 0.04045 {
+                channel / 12.92
+            } else {
+                ((channel + 0.055) / 1.055).powf(2.4)
+            }
+        };
+        0.2126 * linear(color[0]) + 0.7152 * linear(color[1]) + 0.0722 * linear(color[2])
+    }
+    let (a, b) = (luminance(a), luminance(b));
+    (a.max(b) + 0.05) / (a.min(b) + 0.05)
 }
 
 /// A scroll offset changed through wheel or scrollbar input, never layout
@@ -6503,6 +8819,213 @@ impl ScrollView {
     }
 }
 
+/// Open [`WidgetVisual`](crate::WidgetVisual) backing a [`ScrollView`].
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct ScrollbarVisual {
+    pub axes: ScrollAxes,
+    pub visibility: nana_ui_core::ScrollbarVisibility,
+    pub shown: bool,
+    pub hot: Option<nana_ui_core::ScrollbarAxis>,
+    pub dragging: Option<nana_ui_core::ScrollbarAxis>,
+    pub presence: f32,
+    pub expand: [f32; 2],
+}
+
+impl ScrollbarVisual {
+    /// Returns `true` when at least auto-hide/resident visibility allows showing a bar.
+    pub fn is_shown(&self) -> bool {
+        match self.visibility {
+            nana_ui_core::ScrollbarVisibility::AutoHide => self.presence > 0.0,
+            nana_ui_core::ScrollbarVisibility::Always => true,
+            nana_ui_core::ScrollbarVisibility::Hidden => false,
+        }
+    }
+
+    pub(crate) fn targets(&self) -> crate::components::ScrollbarTargets {
+        crate::components::ScrollbarTargets::new(
+            self.visibility,
+            self.shown,
+            self.hot,
+            self.dragging,
+        )
+    }
+
+    pub(crate) fn bars_in(
+        &self,
+        id: StableNodeId,
+        world: &UiWorld,
+        bounds: crate::LayoutBox,
+        source_layout: &nana_ui_core::LayoutStyle,
+        style_model: nana_ui_core::StyleModelRef,
+        theme: &crate::CompiledTheme,
+    ) -> Option<crate::ScrollbarBars> {
+        let presence = match self.visibility {
+            nana_ui_core::ScrollbarVisibility::AutoHide => self.presence,
+            nana_ui_core::ScrollbarVisibility::Always => 1.0,
+            nana_ui_core::ScrollbarVisibility::Hidden => return None,
+        };
+        // A bar that has faded out is gone: it neither paints nor takes the pointer.
+        if presence.is_nan() || presence <= 0.0 {
+            return None;
+        }
+        let metrics = world.scroll_metrics(id)?;
+        let offset = world.scroll_offset(id).unwrap_or_default();
+        let skin = source_layout.paint.scrollbar;
+        let base = style_model.metrics.scrollbar;
+        let chrome = skin.map(|skin| skin.metrics(base)).unwrap_or(base);
+        let recipe = theme.recipes().scrollbar();
+        let edges = source_layout.resolved_border_edges();
+        let padding_box = nana_ui_core::ScrollbarRect {
+            x: bounds.x + edges.left,
+            y: bounds.y + edges.top,
+            width: (bounds.width - edges.left - edges.right).max(0.0),
+            height: (bounds.height - edges.top - edges.bottom).max(0.0),
+        };
+        let scrolls = |axis: nana_ui_core::ScrollbarAxis| match axis {
+            nana_ui_core::ScrollbarAxis::Horizontal => {
+                self.axes.horizontal() && metrics.content_width > metrics.viewport_width
+            }
+            nana_ui_core::ScrollbarAxis::Vertical => {
+                self.axes.vertical() && metrics.content_height > metrics.viewport_height
+            }
+        };
+        let layout_box = |rect: nana_ui_core::ScrollbarRect| crate::LayoutBox {
+            x: rect.x,
+            y: rect.y,
+            width: rect.width,
+            height: rect.height,
+        };
+        let bar = |axis: nana_ui_core::ScrollbarAxis| {
+            if !scrolls(axis) {
+                return None;
+            }
+            let horizontal = matches!(axis, nana_ui_core::ScrollbarAxis::Horizontal);
+            let corner = scrolls(if horizontal {
+                nana_ui_core::ScrollbarAxis::Vertical
+            } else {
+                nana_ui_core::ScrollbarAxis::Horizontal
+            });
+            let extent = if horizontal {
+                nana_ui_core::ScrollbarExtent {
+                    viewport: metrics.viewport_width,
+                    content: metrics.content_width,
+                    offset: offset.x,
+                    min_offset: metrics.origin_x,
+                }
+            } else {
+                nana_ui_core::ScrollbarExtent {
+                    viewport: metrics.viewport_height,
+                    content: metrics.content_height,
+                    offset: offset.y,
+                    min_offset: metrics.origin_y,
+                }
+            };
+            let grown = self.expand[usize::from(!horizontal)];
+            let layout =
+                nana_ui_core::scrollbar_layout(axis, padding_box, corner, extent, grown, chrome)?;
+            let paint = recipe.paint(
+                style_model,
+                skin,
+                nana_ui_core::ScrollbarPaintState {
+                    presence,
+                    expand: grown,
+                    dragging: self.dragging == Some(axis),
+                    resident: matches!(self.visibility, nana_ui_core::ScrollbarVisibility::Always),
+                },
+            );
+            Some(crate::ScrollbarBar {
+                lane: layout_box(layout.lane),
+                track: layout_box(layout.track),
+                thumb: layout_box(layout.thumb),
+                track_background: paint.track,
+                thumb_background: paint.thumb,
+                border_width: theme.border().hairline,
+                track_border: paint.track_border,
+                thumb_border: paint.thumb_border,
+                track_radius: layout.track_radius,
+                thumb_radius: layout.thumb_radius,
+                min_offset: layout.axis.min_offset,
+                max_offset: layout.axis.max_offset,
+            })
+        };
+        let horizontal = bar(nana_ui_core::ScrollbarAxis::Horizontal);
+        let vertical = bar(nana_ui_core::ScrollbarAxis::Vertical);
+        (horizontal.is_some() || vertical.is_some()).then_some(crate::ScrollbarBars {
+            horizontal,
+            vertical,
+        })
+    }
+}
+
+impl crate::WidgetVisual for ScrollbarVisual {
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+
+    fn dyn_eq(&self, other: &dyn std::any::Any) -> bool {
+        other.downcast_ref::<Self>().is_some_and(|rhs| self == rhs)
+    }
+
+    fn is_valid(&self) -> bool {
+        std::iter::once(self.presence)
+            .chain(self.expand)
+            .all(|value| value.is_finite() && (0.0..=1.0).contains(&value))
+    }
+
+    fn is_scroll_container(&self) -> bool {
+        true
+    }
+
+    fn has_scrollbar_chrome(&self) -> bool {
+        self.visibility != nana_ui_core::ScrollbarVisibility::Hidden
+    }
+
+    fn paint(&self, ctx: &crate::WidgetPaintCtx<'_>) -> crate::WidgetPaintOutput {
+        let mut out = crate::WidgetPaintOutput {
+            has_scrollbar_chrome: self.has_scrollbar_chrome(),
+            ..crate::WidgetPaintOutput::new()
+        };
+        if let Some(bars) = self.bars_in(
+            ctx.id,
+            ctx.world,
+            ctx.bounds,
+            &ctx.source_style.layout,
+            ctx.style_model,
+            ctx.theme,
+        ) {
+            // Track then thumb, the horizontal bar first: vertical paints last.
+            for (first, bar) in [(0, bars.horizontal), (2, bars.vertical)] {
+                let Some(bar) = bar else {
+                    continue;
+                };
+                if let Some(background) = bar.track_background {
+                    out.push(
+                        crate::scrollbar_chrome_slot(first),
+                        crate::WidgetPaintOp::Quad(crate::WidgetQuad {
+                            rect: bar.track,
+                            fill: Some(background),
+                            border: bar.track_border.map(|color| (color, bar.border_width)),
+                            corner_radius: [bar.track_radius; 4],
+                            ..crate::WidgetQuad::default()
+                        }),
+                    );
+                }
+                out.push(
+                    crate::scrollbar_chrome_slot(first + 1),
+                    crate::WidgetPaintOp::Quad(crate::WidgetQuad {
+                        rect: bar.thumb,
+                        fill: Some(bar.thumb_background),
+                        border: bar.thumb_border.map(|color| (color, bar.border_width)),
+                        corner_radius: [bar.thumb_radius; 4],
+                        ..crate::WidgetQuad::default()
+                    }),
+                );
+            }
+        }
+        out
+    }
+}
+
 impl ScrollView {
     pub(crate) fn project_scrollbar_visual(
         &self,
@@ -6519,14 +9042,14 @@ impl ScrollView {
         // starts, turns or cancels the tracks as this visual moves their
         // targets. They land at once on the first projection and under
         // reduced motion, and only an auto-hiding bar fades.
-        let stored = world.standard_visual(id);
-        let (presence, expand) = match &stored {
-            Some(crate::StandardVisual::Scrollbar {
+        let stored = world.widget_visual_as::<ScrollbarVisual>(id).copied();
+        let (presence, expand) = match stored {
+            Some(ScrollbarVisual {
                 presence, expand, ..
-            }) if !world.reduced_motion() => (*presence, *expand),
+            }) if !world.reduced_motion() => (presence, expand),
             _ => (targets.presence, targets.expand),
         };
-        let visual = crate::StandardVisual::Scrollbar {
+        let visual = ScrollbarVisual {
             axes: self.axes,
             visibility,
             shown,
@@ -6544,12 +9067,14 @@ impl ScrollView {
             },
         };
         if stored.as_ref() != Some(&visual) {
-            mutations.set_standard_visual(id, Some(visual));
+            mutations.set_widget_visual(id, Some(visual));
         }
     }
 }
 
 impl ComponentView for ScrollView {
+    const TYPE_ID: Option<&'static str> = Some(crate::component_descriptors::SCROLL_VIEW.type_id);
+
     const BEHAVIOR: crate::TypeBehavior<Self> = crate::TypeBehavior {
         hooks: Some(|hooks| {
             crate::framework::routes::scroll_view(hooks);
@@ -6624,6 +9149,8 @@ impl Default for List {
 }
 
 impl ComponentView for List {
+    const TYPE_ID: Option<&'static str> = Some(crate::component_descriptors::LIST.type_id);
+
     fn share_layouts(
         &mut self,
         share: &mut dyn FnMut(&mut std::sync::Arc<nana_ui_core::LayoutStyle>),
@@ -6721,6 +9248,20 @@ impl Stack {
         Arc::make_mut(&mut self.style_mut().layout)
     }
 
+    #[inline]
+    pub(crate) fn elided_flags(&self) -> u8 {
+        1 | (u8::from(self.hittable) << 1) | (u8::from(self.structural) << 2)
+    }
+
+    #[inline]
+    pub(crate) fn from_elided(style: Arc<NodeStyle>, flags: u8) -> Self {
+        Self {
+            style,
+            hittable: (flags & 0b010) != 0,
+            structural: (flags & 0b100) != 0,
+        }
+    }
+
     pub(crate) fn style_ref(&self) -> &NodeStyle {
         &self.style
     }
@@ -6736,14 +9277,34 @@ impl Stack {
     }
 
     /// One of the presets below, built as one remembered edit of the shared
-    /// default ([`edit_layout`]): every row a page builds shares one layout.
+    /// default ([`edit_layout`]) and cached per `(preset, gap)`: every row or
+    /// column a page builds shares one `Arc<NodeStyle>` with zero allocation.
     fn preset(preset: StackPreset, gap: f32) -> Self {
         use nana_ui_core::{AlignSpec, FlexDirection, JustifySpec, LengthSpec};
-        let mut style = NodeStyle::default();
+        const SLOTS: usize = 16;
+        thread_local! {
+            static STACK_PRESET_CACHE: std::cell::RefCell<([Option<(StackPreset, u32, Arc<NodeStyle>)>; SLOTS], usize)> =
+                const { std::cell::RefCell::new(([const { None }; SLOTS], 0)) };
+        }
         let gap = gap.max(0.0);
+        let gap_bits = gap.to_bits();
+        let cached = STACK_PRESET_CACHE.with(|cache| {
+            let (entries, _) = &*cache.borrow();
+            entries.iter().flatten().find_map(|(p, g, style)| {
+                (*p == preset && *g == gap_bits).then(|| Arc::clone(style))
+            })
+        });
+        if let Some(style) = cached {
+            return Self {
+                style,
+                hittable: false,
+                structural: false,
+            };
+        }
+        let mut style = NodeStyle::default();
         edit_layout(
             &mut style.layout,
-            LayoutEdit::StackPreset(preset, gap.to_bits()),
+            LayoutEdit::StackPreset(preset, gap_bits),
             |layout| {
                 let (direction, align) = match preset {
                     StackPreset::Row | StackPreset::FillRow | StackPreset::Bar => {
@@ -6787,8 +9348,15 @@ impl Stack {
                 }
             },
         );
+        let style = Arc::new(style);
+        STACK_PRESET_CACHE.with(|cache| {
+            let mut cache = cache.borrow_mut();
+            let slot = cache.1;
+            cache.0[slot] = Some((preset, gap_bits, Arc::clone(&style)));
+            cache.1 = (slot + 1) % SLOTS;
+        });
         Self {
-            style: Arc::new(style),
+            style,
             hittable: false,
             structural: false,
         }
@@ -7133,6 +9701,8 @@ impl Stack {
 }
 
 impl ComponentView for Stack {
+    const TYPE_ID: Option<&'static str> = Some(crate::component_descriptors::STACK.type_id);
+
     fn share_layouts(
         &mut self,
         share: &mut dyn FnMut(&mut std::sync::Arc<nana_ui_core::LayoutStyle>),
@@ -7193,6 +9763,8 @@ impl Table {
 }
 
 impl ComponentView for Table {
+    const TYPE_ID: Option<&'static str> = Some(crate::component_descriptors::TABLE.type_id);
+
     const BEHAVIOR: crate::TypeBehavior<Self> = crate::TypeBehavior {
         hooks: Some(|hooks| {
             crate::framework::routes::table(hooks);
@@ -7255,6 +9827,8 @@ impl TableRow {
 }
 
 impl ComponentView for TableRow {
+    const TYPE_ID: Option<&'static str> = Some(crate::component_descriptors::TABLE_ROW.type_id);
+
     fn share_layouts(
         &mut self,
         share: &mut dyn FnMut(&mut std::sync::Arc<nana_ui_core::LayoutStyle>),
@@ -7324,6 +9898,8 @@ impl TableCell {
 }
 
 impl ComponentView for TableCell {
+    const TYPE_ID: Option<&'static str> = Some(crate::component_descriptors::TABLE_CELL.type_id);
+
     fn share_layouts(
         &mut self,
         share: &mut dyn FnMut(&mut std::sync::Arc<nana_ui_core::LayoutStyle>),
@@ -7383,7 +9959,7 @@ pub(crate) fn project_common(
     if world.interaction(id) != Some(interaction) {
         mutations.set_interaction(id, interaction);
     }
-    if world.accessibility(id) != Some(&accessibility) {
+    if !world.accessibility_eq(id, &accessibility) {
         mutations.set_accessibility(id, accessibility);
     }
 }
@@ -7447,8 +10023,8 @@ mod tests {
         // 行文本只承载 label，detail 由几何端独立成区。
         assert_eq!(world.text(id), Some("模型"));
         assert_eq!(
-            world.standard_visual(id),
-            Some(StandardVisual::ListItem {
+            world.widget_visual_as::<ListItemVisual>(id),
+            Some(&ListItemVisual {
                 leading: None,
                 content: None,
                 trailing: None,
@@ -7469,8 +10045,8 @@ mod tests {
         // 行文本只承载 label；note 与 detail 各自由几何端独立成区。
         assert_eq!(world.text(id), Some("角度X"));
         assert_eq!(
-            world.standard_visual(id),
-            Some(StandardVisual::ListItem {
+            world.widget_visual_as::<ListItemVisual>(id),
+            Some(&ListItemVisual {
                 leading: None,
                 content: None,
                 trailing: None,
@@ -7490,8 +10066,8 @@ mod tests {
         let (world, id) = mount(&ListItem::new("纯标签"));
         assert_eq!(world.text(id), Some("纯标签"));
         assert_eq!(
-            world.standard_visual(id),
-            Some(StandardVisual::ListItem {
+            world.widget_visual_as::<ListItemVisual>(id),
+            Some(&ListItemVisual {
                 leading: None,
                 content: None,
                 trailing: None,
@@ -7514,8 +10090,8 @@ mod tests {
         let (world, id) = mount(&item);
         assert_eq!(world.text(id), Some(""));
         assert_eq!(
-            world.standard_visual(id),
-            Some(StandardVisual::ListItem {
+            world.widget_visual_as::<ListItemVisual>(id),
+            Some(&ListItemVisual {
                 leading: None,
                 content: Some(StableNodeId::new(2).unwrap()),
                 trailing: None,
@@ -7657,8 +10233,11 @@ mod spacing_tests {
         let stack = Stack::column(0.0)
             .padding_xy(12.0, 10.0)
             .with_layout(|layout| {
-                layout.logical_padding.set_start(Some(LengthSpec::Px(30.0)));
-                layout.logical_padding.set(
+                layout
+                    .logical_edges
+                    .padding
+                    .set_start(Some(LengthSpec::Px(30.0)));
+                layout.logical_edges.padding.set(
                     nana_ui_core::LogicalEdge::BlockEnd,
                     Some(LengthSpec::Px(40.0)),
                 );
@@ -7735,7 +10314,9 @@ mod spacing_tests {
 fn replace_padding_xy(layout: &mut nana_ui_core::LayoutStyle, x: f32, y: f32) {
     use nana_ui_core::LengthSpec;
     layout.padding = None;
-    layout.logical_padding = Default::default();
+    if !layout.logical_edges.is_shared_default() {
+        layout.logical_edges.padding = Default::default();
+    }
     layout.padding_left = Some(LengthSpec::Px(x.max(0.0)));
     layout.padding_right = layout.padding_left;
     layout.padding_top = Some(LengthSpec::Px(y.max(0.0)));
@@ -7799,7 +10380,7 @@ mod stack_preset_tests {
     fn unlabelled_controls_take_an_accessible_name_and_description() {
         let spoken = |component: &dyn Fn() -> (UiWorld, StableNodeId)| {
             let (world, id) = component();
-            let a11y = world.accessibility(id).unwrap().clone();
+            let a11y = world.accessibility(id).unwrap().into_owned();
             (
                 a11y.label.as_deref().map(str::to_owned),
                 a11y.description.as_deref().map(str::to_owned),
@@ -7923,13 +10504,10 @@ mod stack_preset_tests {
                 .layout_document(document, crate::LayoutViewport::new(400.0, 100.0))
                 .unwrap();
             let bounds = context.world().layout_box(button.stable_id()).unwrap();
-            let Some(crate::ComponentGeometry::Button {
-                icon: Some((_, icon)),
-                ..
-            }) = context.world().component_geometry(button.stable_id())
-            else {
-                panic!("button geometry");
-            };
+            let icon = context
+                .world()
+                .content_part_box(button.stable_id(), crate::LayoutPartKind::LeadingContent)
+                .expect("button leading icon");
             (bounds, icon.x)
         };
         let (bounds, start) = layout_label_x(TextHorizontalAlignment::Start);
@@ -7998,6 +10576,56 @@ mod stack_preset_tests {
         assert_eq!(
             divider.style.layout.align_self,
             Some(nana_ui_core::AlignSpec::Stretch)
+        );
+    }
+
+    #[test]
+    fn an_unset_flow_axis_is_a_column_but_not_a_row() {
+        use crate::{LayoutViewport, RuntimeLayoutEngine, StyleLayoutNode};
+        use nana_ui_core::{FlexDirection, LayoutStyle, LengthSpec};
+
+        let child = |name: &str| StyleLayoutNode {
+            id: name.into(),
+            style: LayoutStyle {
+                width: Some(LengthSpec::Px(40.0)),
+                height: Some(LengthSpec::Px(10.0)),
+                ..LayoutStyle::default()
+            },
+            children: Vec::new(),
+            text: None,
+        };
+        let laid_out = |direction: Option<FlexDirection>| {
+            let root = StyleLayoutNode {
+                id: "root".into(),
+                style: LayoutStyle {
+                    width: Some(LengthSpec::Px(300.0)),
+                    height: Some(LengthSpec::Px(300.0)),
+                    direction,
+                    ..LayoutStyle::default()
+                },
+                children: vec![child("a"), child("b")],
+                text: None,
+            };
+            RuntimeLayoutEngine
+                .layout_style_tree(
+                    &root,
+                    LayoutViewport::new(320.0, 480.0),
+                    &mut crate::MeasureTextShaper,
+                )
+                .into_iter()
+                .find(|(name, _)| name == "b")
+                .expect("second child")
+                .1
+        };
+        assert_eq!(
+            laid_out(None),
+            laid_out(Some(FlexDirection::Column)),
+            "dropping the nana.column seed has to be inert"
+        );
+        assert_ne!(
+            laid_out(None),
+            laid_out(Some(FlexDirection::Row)),
+            "the nana.row seed has to stay"
         );
     }
 }

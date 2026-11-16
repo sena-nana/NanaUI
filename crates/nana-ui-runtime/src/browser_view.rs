@@ -1,7 +1,6 @@
 //! Retained layout anchor for host-managed native browsing content.
 use std::sync::Arc;
 
-use crate::component_registry::{RegisterableComponent, SemanticSpec};
 use crate::view_components::project_common;
 use crate::{
     AccessibilityRole, AccessibilityState, ComponentView, InteractionState, MutationQueue,
@@ -30,6 +29,8 @@ impl BrowserView {
 }
 
 impl ComponentView for BrowserView {
+    const TYPE_ID: Option<&'static str> = Some(crate::component_descriptors::BROWSER_VIEW.type_id);
+
     fn share_layouts(
         &mut self,
         share: &mut dyn FnMut(&mut std::sync::Arc<nana_ui_core::LayoutStyle>),
@@ -62,15 +63,5 @@ impl ComponentView for BrowserView {
                 ..Default::default()
             },
         );
-    }
-}
-
-impl RegisterableComponent for BrowserView {
-    const TYPE_ID: &'static str = "nana.browser-view";
-    const TAGS: &'static [&'static str] = &["browser-view"];
-    fn from_semantic(spec: &SemanticSpec<'_>) -> Self {
-        let mut view = Self::new(spec.attr("browser-id").unwrap_or("browser"));
-        view.style.layout = Arc::clone(spec.layout);
-        view
     }
 }

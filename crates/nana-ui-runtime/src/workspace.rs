@@ -88,8 +88,8 @@ impl ComponentView for WorkspaceResizeHandle {
                 },
             );
         }
-        if world.standard_visual(id).is_some() {
-            mutations.set_standard_visual(id, None);
+        if world.widget_visual_ref(id).is_some() {
+            mutations.set_widget_visual_handle(id, None);
         }
         project_common(
             id,
@@ -269,8 +269,8 @@ impl Workspace {
                 },
             );
         }
-        if world.standard_visual(id).is_some() {
-            mutations.set_standard_visual(id, None);
+        if world.widget_visual_ref(id).is_some() {
+            mutations.set_widget_visual_handle(id, None);
         }
         project_common(
             id,
@@ -310,8 +310,8 @@ impl Workspace {
                 },
             );
         }
-        if world.standard_visual(id).is_some() {
-            mutations.set_standard_visual(id, None);
+        if world.widget_visual_ref(id).is_some() {
+            mutations.set_widget_visual_handle(id, None);
         }
         project_common(
             id,
@@ -414,8 +414,8 @@ impl Workspace {
                     },
                 );
             }
-            if world.standard_visual(handle).is_some() {
-                mutations.set_standard_visual(handle, None);
+            if world.widget_visual_ref(handle).is_some() {
+                mutations.set_widget_visual_handle(handle, None);
             }
             project_common(
                 handle,
@@ -511,6 +511,8 @@ impl Default for Workspace {
 }
 
 impl ComponentView for Workspace {
+    const TYPE_ID: Option<&'static str> = Some(crate::component_descriptors::WORKSPACE.type_id);
+
     const BEHAVIOR: crate::TypeBehavior<Self> = crate::TypeBehavior {
         lifecycle: Some(crate::framework::lifecycle_hooks::workspace),
         hooks: Some(|hooks| {

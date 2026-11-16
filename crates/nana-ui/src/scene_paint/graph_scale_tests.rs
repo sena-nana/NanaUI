@@ -20,25 +20,30 @@ fn graph_canvas_large_families_survive_gpu_updates_and_shrink() {
         let mut node = graph_canvas_stroke_node(1, Vec::new(), [0.0, 0.0, 1.0, 1.0]);
         node.layout.width = 96.0;
         node.layout.height = 1200.0;
-        let Some(ComponentGeometry::GraphCanvas {
-            nodes,
-            ports,
-            edges,
-            ..
-        }) = node.component_geometry.as_deref_mut()
-        else {
-            unreachable!()
+        let mut layout = nana_ui_runtime::GraphCanvasLayout {
+            nodes: Vec::new(),
+            separators: Vec::new(),
+            ports: Vec::new(),
+            port_labels: Vec::new(),
+            edges: Vec::new(),
+            edge_labels: Vec::new(),
+            grid: Vec::new(),
+            background: [0.0, 0.0, 1.0, 1.0],
+            grid_color: [0.0, 0.0, 0.0, 0.0],
+            separator_color: [0.0, 0.0, 0.0, 0.0],
         };
         for index in 0..count {
             let y = index as f32 * 4.0;
-            edges.push((vec![[4.0, y + 2.5], [28.0, y + 2.5]], [1.0, 0.0, 0.0, 1.0]));
+            layout
+                .edges
+                .push((vec![[4.0, y + 2.5], [28.0, y + 2.5]], [1.0, 0.0, 0.0, 1.0]));
             let bounds = LayoutBox {
                 x: 40.0,
                 y,
                 width: 16.0,
                 height: 4.0,
             };
-            nodes.push((
+            layout.nodes.push((
                 bounds,
                 nana_ui_runtime::ComponentTextRegion {
                     bounds,
@@ -50,7 +55,7 @@ fn graph_canvas_large_families_survive_gpu_updates_and_shrink() {
                 [0.0, 1.0, 0.0, 1.0],
                 None,
             ));
-            ports.push((
+            layout.ports.push((
                 LayoutBox {
                     x: 80.0,
                     y,
@@ -62,6 +67,11 @@ fn graph_canvas_large_families_survive_gpu_updates_and_shrink() {
                 0.0,
             ));
         }
+        node.widget_paint = Some(Arc::new(layout.to_widget_paint(
+            node.layout,
+            node.chrome_radii,
+            &node.style,
+        )));
         scene.apply_delta([node], []);
         let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
             label: Some("large graph families"),

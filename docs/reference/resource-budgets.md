@@ -23,8 +23,8 @@
 
 ### 规则：哪些遍历可以递归
 
-1. **测量**和**视图建树**是仅有的两处按树深递归的地方。测量里尺寸要从约束传下去的子项里算上来，建树时一个元素要在自己的作用域里建子元素，二者都没有不改变语义的迭代写法。每一层都必须经过兜底：测量走 `layout_engine::recursion::level`，建树走 `crate::stack::level`。剩余栈不足 256 KiB 时这一层换到新分配的 4 MiB 栈段上继续（`stacker::grow`）。剩余栈在桌面平台和 OpenHarmony（Linux 目标）由 `stacker` 读取，在 iOS 和 Android 上读线程自己的栈边界（`pthread_get_stackaddr_np` / `pthread_getattr_np`）——`stacker` 读不到这两个平台，此前兜底在那里不生效。所以兜底在框架支持的每个平台上都生效。
-2. **放置**是有界递归：一次调用最多下降 `recursion::SPAN` 层（release 24 层、debug 8 层，两种构建都约 90 KiB），再往下的节点只写下自己的盒子，子树作为边界排进本趟队列，由最外层调用按顺序放完再返回。递归深度与树深无关，放置不需要兜底。见 [布局 · 布局递归与栈](https://github.com/sena-nana/NanaUI/blob/main/docs/reference/layout.md#布局递归与栈)。
+1. **测量**和**视图建树**已全部改为堆上显式工作栈迭代，不再依赖 `stacker`（工作区 `0` 处 `stacker` 依赖）：测量（`measure_node`）在 `layout_engine/measure.rs` 中使用显式 `Vec` 工作栈执行（调用栈深度 O(1)，`stack_budget` 实测每层测量栈固定为 `0 B`）；视图建树（`mount_view*` 经 `ViewBuilder::run_trampoline` 的显式 `ViewTask` 堆栈配合 `enter_nest` / `leave_nest`）同样以迭代方式挂载嵌套视图，不受线程调用栈深度限制。
+2. **放置**是有界递归：一次调用最多下降 `recursion::SPAN` 层（`release` 24 层、`debug` 8 层、测试构建 2 层），再往下的节点只写下自己的盒子，子树作为 `Boundary` 排进 `PassIntrinsicCache::boundaries`，由最外层调用按入队顺序放完再返回。`layout_engine::recursion::level` 通过 `crate::stack::remaining`（原生线程栈边界查询）为放置递归定价并记入 `WorkCounters`。递归深度与树深无关，不需要 `stacker::grow`。见 [布局 · 布局递归与栈](https://github.com/sena-nana/NanaUI/blob/main/docs/reference/layout.md#布局递归与栈)。
 3. **其余所有树遍历**都必须用循环或堆上的显式栈，不得按深度递归。这次改掉的：命中索引建树（`HitIndex::insert_tree`）、命中查询（`HitIndex::visit_hits`）与命中树计数（`count_hit_entries`）、样式解析沿祖先链（`resolve_style`）、行盒查询（`holds_line_box_in`）、原子基线沿祖先上溯（`atom_baseline_reads_content`）。新增遍历时用 `scripts/audit-stack-frames.py` 和下面的门禁验证。
 4. **应用自己的嵌套模型**分两类，见下「应用模型的嵌套」：深度没有上限的（树视图的数据）一律不按深度递归；面板切分树（Dock、PaneTree、区域布局）有结构上限 `MAX_SPLIT_DEPTH`，在上限之内递归。
 5. **解析运行时内容**（Markdown、Mermaid 图、CSS、ICU 消息、绘制脚本）的递归跟着输入的嵌套深度走，所以每一处都有深度上限或改成了循环，见下「运行时内容的嵌套」。超出上限时返回解析错误、跳过那一段或按纯文本降级，不会 panic。
@@ -74,8 +74,8 @@ railroad 的嵌套上限按「括号与调用」数（`MAX_DEPTH` 48 个 primary
 | 门禁 | 守的是什么 | 命令 |
 | --- | --- | --- |
 | `nana-ui-scene/tests/deep_tree_stack.rs` | 508 层（上限减 4）的树在 256 KiB 的线程上（release 与 debug 都是）走完整帧：挂载、布局、提取、命中、无障碍、改最深处的文本再走一帧、析构 | `cargo test -p nana-ui-scene --test deep_tree_stack`，再加 `--release` |
-| `layout_engine::stack_budget` | 测量和放置的每层栈不超预算（debug 16 / 12 KiB，release 4 / 4 KiB），400 层的树在 1 MiB 线程上布局 | `cargo test -p nana-ui-runtime --lib stack_budget` |
-| `view::tests::a_view_deeper_than_the_stack_still_mounts` | 400 层视图在 1 MiB 线程上挂载、布局、析构 | `cargo test -p nana-ui-runtime --lib a_view_deeper` |
+| `layout_engine::stack_budget` | 测量每层 `0 B`、放置每层栈不超预算（`Flex`、`Grid`、`Layers` 三条路线分别量），400 层树在 `1 MiB` 线程上布局，且 `max_tree_depth_fits_in_384_kib_stack` 在 `384 KiB` 线程上完成 `512` 个嵌套节点 | `cargo test -p nana-ui-runtime --lib stack_budget`，再加 `--release` |
+| `view::tests::a_view_deeper_than_the_stack_still_mounts` | 400 层视图在 1 MiB 线程上经 `ViewBuilder::run_trampoline` 迭代挂载、布局、析构 | `cargo test -p nana-ui-runtime --lib a_view_deeper` |
 | `scripts/audit-stack-frames.py` | 单个函数的栈帧 | 见下 |
 | `framework::tests::context_and_world_stay_small_enough_to_move` | 构造时按值搬动的 `AppContext` ≤ 6 KiB、`UiWorld` ≤ 10 KiB | `cargo test -p nana-ui-runtime --lib context_and_world` |
 | `deep_nesting::railroad_at_its_depth_limit_fits_half_the_thread` | railroad 七种嵌套在上限深度下 256 KiB 线程上渲染 | `cargo test -p nana-ui-diagram --test diagram deep_nesting::railroad`，再加 `--release` |
@@ -123,11 +123,11 @@ cd perf/micro/stack-depth && cargo run --release -- report
 | 256 | 116 KiB | 116 KiB | 484 KiB |
 | 500 | 116 KiB | 116 KiB | 916 KiB |
 
-（release，aarch64 macOS，2026-11-02。）NanaUI 要的栈与深度无关：放置在线程栈上最多走 `SPAN` 层（每层约 3.5 KiB），测量和建树在剩余栈不足 256 KiB 时换到新栈段，所以这个数基本就是放置的 `SPAN` 层加上帧路径的固定开销。Taffy 每层约 1.8 KiB，500 层在 512 KiB 的线程上会溢出。
+（历史基线对照：release，aarch64 macOS，2026-11-02；当时仍通过 `stacker` 换栈，见下「五阶段架构基线重置（2026-11-15）」。）当前架构已消除 `stacker`：测量与视图建树改在堆上显式工作栈迭代执行（调用栈深度 O(1)），线程栈开销主要由最多 `SPAN` 层的放置递归（`Boundary` 队列边界截断）及帧固定路径决定，并与树深无关。Taffy 每层约 1.8 KiB，500 层在 512 KiB 的线程上会溢出。
 
 ## 常驻内存
 
-`nana-ui-runtime/tests/node_memory.rs`（`perf/scenarios/catalog.json` 里的 `component-memory` 门禁）量布局后每个节点常驻的堆（分配减释放，按线程计）：Text 不超过 4.2 KB、Button 5.8 KB、ListItem 6.4 KB，1k 与 10k 节点下每节点数不随规模上涨。
+`crates/nana-ui-runtime/tests/perf_contracts/node_memory.rs`（`perf/scenarios/catalog.json` 里的 `component-memory` 门禁）按线程统计「分配减释放」的节点常驻堆：`equal_nodes_share_their_layouts`（`N = 2,000`，未布局）门禁为 `Stack <= 320 B`（实测 `301 B`）、`Text <= 860 B`（`704 B`）、`Button <= 1,150 B`（`935 B`）、`TextInput <= 3,600 B`（`2,937 B`）；`laid_out_nodes_keep_bounded_live_memory`（布局后）在 `N = 1,000` 门禁为 `Stack <= 780 B`（`639 B`）、`Text <= 1,650 B`（`1,338 B`）、`Button <= 2,150 B`（`1,750 B`）、`ListItem <= 2,050 B`（`1,649 B`），在 `N = 10,000` 收紧为 `Stack <= 650 B`（`634 B`）、`Text <= 1,380 B`（`1,121 B`）、`Button <= 1,400 B`（`1,335 B`）、`ListItem <= 1,400 B`（`1,247 B`），且 `10k < 1k * 1.15`。
 
 对照（`cargo run --release -- wide`，一个 1 列 × N 行 × 10 格的页面，每格一列套一行；「布局分配」是 `layout_document` 一次调用里的分配次数）：
 
@@ -217,7 +217,7 @@ cd perf/micro/stack-depth && cargo run --release -- report
 | 系统字体的元数据（929 个字面的名字与字重） | 0.6 MiB |
 | 预留的队列（输入、诊断、窗口请求） | 0.3 MiB |
 
-前两行是系统框架的，任何 AppKit 窗口都有；其余没有像系统字体那样成倍的浪费。这一轮只改了一处：窗口服务的请求队列按最大的请求预留 1 024 个位置，创建窗口与窗口控制两种请求各有三百多字节，一共 400 KiB；这两种请求的内容改为装箱，队列降到约 50 KiB。着色器 IR 随拼进每个模块的 WGSL 总量走（`color.wgsl` 进了九个模块）。此后每个入口点各成一个只带它能到达的函数的模块（见 [两阶段启动 · 按入口点裁剪的着色器 IR](./startup.md#按入口点裁剪的着色器-ir)），这一行在 macOS 上还没有重新量。
+前两行是系统框架的，任何 AppKit 窗口都有；其余没有像系统字体那样成倍的浪费。这一轮只改了一处：窗口服务的请求队列按最大的请求预留 1 024 个位置，创建窗口与窗口控制两种请求各有三百多字节，一共 400 KiB；这两种请求的内容改为装箱，队列降到约 50 KiB。着色器 IR 随拼进每个模块的 WGSL 总量走（`color.wgsl` 进了九个模块）。此后每个入口点各成一个只带它能到达的函数的模块（见 [两阶段启动 · 按入口点裁剪的着色器 IR](./startup.md#按入口点裁剪的着色器-ir)），在 2026-11-15 基线重置中 Apple Metal 进一步改走离线预编译 zlib 压缩 MSL passthrough 路径，macOS 默认构建堆上常驻的 `naga` IR 已降至 `0 B`（见下「五阶段架构基线重置（2026-11-15）」）。
 
 ## CPU 时间
 
@@ -1070,6 +1070,15 @@ x86_64 Windows、release、新旧两个二进制交替跑：
 | 42 001 盒改宽度：布局 / 整帧 | 89.2 / 102.9 | 54.6 / 67.4 |
 | 42 001 盒改高度：布局 / 整帧 | 348.9 / 968.4 | 323.9 / 939.9 |
 | 4 201 盒改宽度：布局 / 整帧 | 22.2 / 33.8 | 18.0 / 29.0 |
+
+### 五阶段架构基线重置（2026-11-15）
+
+本轮围绕热节点体量与槽位紧凑化、栈安全机制、布局模型收拢与着色器/构建发行链路完成架构基线重置（aarch64 macOS 实测验证）：
+
+- **Phase 1（记录、Arena 与保留缓存紧凑化）**：将非高频字段移出主记录、`BlockExtentReads` 压为 `4 B`、`render_*_epoch` 压为 `u32` 并内联 `a11y_preset`，`NodeRecord <= 152 B`、`Hierarchy == 24 B`、`Option<NodePainter> == 8 B`；稀有发布几何移入 `PublishedRareGeometry`（`PublishedLayoutMeta <= 88 B`）；紧缩测量/计划结构（`MeasuredChild <= 40 B`、`PlannedChild <= 56 B`、`Option<RetainedIntrinsic> <= 48 B`、`Option<ContentMetrics> <= 72 B`）；`Slots::grow_run` 在 `> 512` 槽位收敛至 `+12.5%` 扩容；补充 `WidgetVisualHandle::ptr_eq` / `EMPTY_LIST_ITEM_VISUAL`、装箱 `TextNodeState::shaped_language` 与 `text_layout_cache` intern。`crates/nana-ui-runtime/tests/perf_contracts/node_memory.rs` 实测 `2k` 未布局 `Stack 301 B <= 320 B`、`10k` 布局后 `Stack 634 B <= 650 B`、`Text 1,121 B <= 1,380 B`、`Button 1,335 B <= 1,400 B`、`ListItem 1,247 B <= 1,400 B`；`stack-depth wide` `21,001` 盒实测 `943 B / 盒`（对比 Taffy `1,506 B / 盒`）。
+- **Phases 2–3（去 `stacker` 与迭代化）**：彻底移除工作区所有 `stacker` 与 `psm` 依赖（`0` 处残留）；`measure_node` 改用 `Vec` 工作栈迭代（`stack_budget` 在 `debug` 与 `release` 下实测 `Flex` / `Grid` / `Layers` 测量栈均 `0 B`），`mount_view*` 经 `ViewBuilder::run_trampoline`（`ViewTask` 堆栈 + `enter_nest` / `leave_nest`）迭代构建，放置以 `recursion::SPAN` + `Boundary` 队列截断。`max_tree_depth_fits_in_384_kib_stack` 在 `384 KiB` 线程栈完成 `512` 个嵌套节点布局，`deep_tree_stack.rs` 在 `256 KiB` 线程栈跑通 `508` 层（`MAX_TREE_DEPTH - 4`）整帧；`stack-depth report 500` 测得 `nana-layout` / `nana-frame` 深度 `500` 最低栈需求 `52 KiB`（Taffy `900 KiB`）。
+- **Phase 4（纯 `Flex + Grid + Inline + Layers` + 模态 `Overlay`，移除遗留 `Block` 组件）**：去除 `Block` / `FlowRoot` / `InlineBlock` / `Contents` 与 `float` / `clear` 历史包袱，并以 `Stack` 统一容器控件；`taffy-reference -- check` 全树最坏偏差 `0.0000 px`，`--release` 下 `issue259_local_frame_time_scales_flat_to_100k` 测得 `1k p95 25.75µs`、`10k p95 19.875µs`、`100k p95 30.209µs`（`100k / 1k` `p95` 比值 `1.17`，门禁 `<= 1.75`）。
+- **Phase 5（离线预编译着色器 + `[profile.dist]` LTO/strip）**：Apple Metal（非 `runtime-wgsl`）采用离线预编译 zlib 压缩 MSL 归档（`msl_precompiled/stages.msl.zz` + `wgpu::Device::create_shader_module_passthrough`），CPU 堆常驻 `0 B` 未压缩 MSL 与 `0 B` `naga` IR；非 Apple 平台采用按入口裁剪、compact 且逐 stage zlib 压缩的 `naga::Module` IR（`wgpu::ShaderSource::Naga` + 编译期 `const` FNV-1a 散列 `program!` / `program_joined!` / `program_concat!`）。`gpu` / `hosted` 默认不拉入 `wgpu/wgsl` 与 `naga/wgsl-{in,out}`，配合 `[profile.dist]`（`opt-level = "z"`、`lto = "fat"`、`codegen-units = 1`、`panic = "abort"`、`strip = "symbols"`），`target/dist/reactive-sfc` 可执行体积从 `2026-11-11` 基线 `15.80 MiB` 降至 `5.56 MiB`（`5,835,088 B`，`-64.8%`）。
 
 ## 待办
 

@@ -10,7 +10,13 @@
 
 Issue #186 的评估结论为 **NO-GO**：WGPU 仍是 NanaUI 的唯一正式图形后端，正式路径保持 `Logical GPU ABI -> WgpuBackend -> wgpu`（详见 [Issue #186 交付记录](https://github.com/sena-nana/NanaUI/tree/docs-archive/archive/docs-notes/consumer-upgrade-2026-09-25-issue186.md)）。
 
-框架 crate 不会越俎代庖地替应用锁死图形后端：workspace 的 `wgpu` 默认只开启 `std`、`parking_lot` 与 `wgsl`；`nana-ui` 的默认特性 `wgpu-backends` 在启用 `gpu` 时会打开当前平台的全部标准后端（Windows 为 DX12 / Vulkan / GLES，Apple 为 Metal，Linux 为 Vulkan / GLES）。如果需要缩减体积、只发行特定图形后端，请在依赖中设置 `default-features = false`，并在应用自己的 `wgpu` 依赖上按平台显式列出所需后端——`hosted_context` 只会在实际编入的后端中选择适配器。DX12 下着色器编译器（`dxcompiler.dll` vs FXC）的选择规则见 [两阶段启动 · DX12 着色器编译器](https://github.com/sena-nana/NanaUI/blob/main/docs/reference/startup.md#dx12-着色器编译器)。
+框架 crate 不会越俎代庖地替应用锁死图形后端：workspace 的 `wgpu` 默认只开启 `std` 与 `parking_lot`；`nana-ui` 的 `default` 特性为空，单独开启 `gpu` 时仅启用当前平台的主图形后端（Apple 为 `metal`、Windows 为 `dx12`、Unix 为 `vulkan`，并在非 Apple 平台开启 `wgpu/naga-ir`），而 `wgpu-backends`（包含在 `full` 中）则会打开跨平台全部标准后端（DX12 / Vulkan / GLES / Metal）。如果需要进一步按应用需要裁剪后端，可以在应用自己的 `wgpu` 依赖上显式列出所需后端——`hosted_context` 只会在实际编入的后端中选择适配器。DX12 下着色器编译器（`dxcompiler.dll` vs FXC）的选择规则见 [两阶段启动 · DX12 着色器编译器](https://github.com/sena-nana/NanaUI/blob/main/docs/reference/startup.md#dx12-着色器编译器)。
+
+内置着色器以编译期 `const` FNV-1a 散列标识（`program!` / `program_joined!` / `program_concat!`），按目标平台走两条离线预编译路径：
+- **Apple 平台（macOS / iOS Metal，未启用 `runtime-wgsl`）**：离线预编译为按入口裁剪的 Metal Shading Language（MSL），并经 `flate2` zlib 压缩为单个归档（`msl_precompiled/stages.msl.zz`）。`Program::pipeline` 在建管线时临时解压、通过 `wgpu::Device::create_shader_module_passthrough` 注册阶段并立即释放临时缓冲，因此 CPU 堆上常驻 `0 B` 未压缩 MSL 与 `0 B` `naga` IR（默认 Apple `gpu` / `hosted` 依赖图不含 `naga`）。
+- **非 Apple / 非 Metal 后端**：离线预编译为按入口裁剪（entry-point-cut）、compact 且逐 stage 经 zlib 压缩的 `naga::Module` IR，运行时解压后直接经 `wgpu::ShaderSource::Naga`（`wgpu/naga-ir`）提交。
+
+在未开启 `runtime-wgsl`（或 `full`）的 `gpu` / `hosted` 构建中，依赖图不包含 `wgpu/wgsl`、`naga/wgsl-in` 与 `naga/wgsl-out`，非 Windows、非测试构建亦省去内置着色器 WGSL 原文；需要运行期解析用户自定义 WGSL（`MaterialProgram`）时按需启用 `nana-ui/runtime-wgsl`（或 `full`）。
 
 ### 适配器选择
 

@@ -16,7 +16,10 @@ use crate::shared::{Shared, SharedDefault};
 use crate::style_model::PaintColorSlots;
 use crate::theme::ThemeLayout;
 use crate::typography::TextTypography;
-use crate::{GridPlacement, LayoutStyle, LogicalEdges, OutlineSpec, PaintStyle};
+use crate::{
+    BorderSides, ContainerStyle, GridPlacement, GridStyle, LayoutStyle, LogicalBoxEdges,
+    LogicalEdges, OutlineSpec, PaintStyle, TextStyleExt, TransformStyle,
+};
 
 /// A struct of the Style Model whose fields overlay one by one.
 trait Overlay: Sized {
@@ -25,6 +28,20 @@ trait Overlay: Sized {
 
     /// Write over `self` each field `over` holds away from `default`.
     fn overlay(&mut self, default: &Self, over: &Self);
+
+    /// Collect dotted leaf paths where `self` differs from `default`, or where
+    /// applying the declarations onto `witness` changed a field to match `self`.
+    fn collect_written(
+        &self,
+        default: &Self,
+        over_witness: &Self,
+        witness: &Self,
+        prefix: &str,
+        out: &mut Vec<String>,
+    );
+
+    /// Collect dotted leaf paths whose values equal `default`.
+    fn unchanged_leaves(&self, default: &Self, prefix: &str, out: &mut Vec<String>);
 
     /// The dotted path of each leaf field, under `prefix`.
     fn leaf_paths(prefix: &str, out: &mut Vec<String>);
@@ -35,6 +52,29 @@ fn plain<T: Overlay + PartialEq>(base: &mut T, default: &T, over: &T) {
     if over != default {
         base.overlay(default, over);
     }
+}
+
+fn plain_collect_written<T: Overlay + PartialEq>(
+    applied: &T,
+    default: &T,
+    over_witness: &T,
+    witness: &T,
+    prefix: &str,
+    out: &mut Vec<String>,
+) {
+    if applied == default && over_witness == witness {
+        return;
+    }
+    applied.collect_written(default, over_witness, witness, prefix, out);
+}
+
+fn plain_unchanged_leaves<T: Overlay>(
+    applied: &T,
+    default: &T,
+    prefix: &str,
+    out: &mut Vec<String>,
+) {
+    applied.unchanged_leaves(default, prefix, out);
 }
 
 /// A nested struct held as [`Shared`]: untouched, and so still shared,
@@ -49,6 +89,29 @@ fn shared<T: Overlay + SharedDefault + PartialEq>(
     }
     let base: &mut T = base;
     base.overlay(default, over);
+}
+
+fn shared_collect_written<T: Overlay + SharedDefault>(
+    applied: &Shared<T>,
+    default: &Shared<T>,
+    over_witness: &Shared<T>,
+    witness: &Shared<T>,
+    prefix: &str,
+    out: &mut Vec<String>,
+) {
+    if applied.ptr_eq(default) && over_witness.ptr_eq(witness) {
+        return;
+    }
+    (&**applied).collect_written(&**default, &**over_witness, &**witness, prefix, out);
+}
+
+fn shared_unchanged_leaves<T: Overlay + SharedDefault>(
+    applied: &Shared<T>,
+    default: &Shared<T>,
+    prefix: &str,
+    out: &mut Vec<String>,
+) {
+    (&**applied).unchanged_leaves(&**default, prefix, out);
 }
 
 macro_rules! overlay {
@@ -70,6 +133,38 @@ macro_rules! overlay {
                 $( $kind(&mut self.$nested, &default.$nested, &over.$nested); )*
             }
 
+            fn collect_written(
+                &self,
+                default: &Self,
+                over_witness: &Self,
+                witness: &Self,
+                prefix: &str,
+                out: &mut Vec<String>,
+            ) {
+                $(
+                    if self.$leaf != default.$leaf
+                        || (over_witness.$leaf != witness.$leaf
+                            && over_witness.$leaf == self.$leaf)
+                    {
+                        out.push(format!("{prefix}{}", stringify!($leaf)));
+                    }
+                )*
+                $(
+                    overlay!(@collect $kind, &self.$nested, &default.$nested, &over_witness.$nested, &witness.$nested, &format!("{prefix}{}.", stringify!($nested)), out);
+                )*
+            }
+
+            fn unchanged_leaves(&self, default: &Self, prefix: &str, out: &mut Vec<String>) {
+                $(
+                    if self.$leaf == default.$leaf {
+                        out.push(format!("{prefix}{}", stringify!($leaf)));
+                    }
+                )*
+                $(
+                    overlay!(@unchanged $kind, &self.$nested, &default.$nested, &format!("{prefix}{}.", stringify!($nested)), out);
+                )*
+            }
+
             fn leaf_paths(prefix: &str, out: &mut Vec<String>) {
                 $( out.push(format!("{prefix}{}", stringify!($leaf))); )*
                 $(
@@ -81,48 +176,109 @@ macro_rules! overlay {
             }
         }
     };
+    (@collect plain, $a:expr, $d:expr, $ow:expr, $w:expr, $p:expr, $out:expr) => {
+        plain_collect_written($a, $d, $ow, $w, $p, $out)
+    };
+    (@collect shared, $a:expr, $d:expr, $ow:expr, $w:expr, $p:expr, $out:expr) => {
+        shared_collect_written($a, $d, $ow, $w, $p, $out)
+    };
+    (@unchanged plain, $a:expr, $d:expr, $p:expr, $out:expr) => {
+        plain_unchanged_leaves($a, $d, $p, $out)
+    };
+    (@unchanged shared, $a:expr, $d:expr, $p:expr, $out:expr) => {
+        shared_unchanged_leaves($a, $d, $p, $out)
+    };
 }
 
 overlay! {
     LayoutStyle {
-        layout_isolation, direction, dir, writing_mode, unsupported_writing_mode,
-        text_orientation, flex_reverse, order, flex_wrap, equal_wrap, display,
-        box_sizing, position, anchor, z_index, isolation, transform, transform_3d,
-        unsupported_transform, transform_origin, css_perspective, preserve_3d,
-        transform_box, gap, row_gap, column_gap, padding, padding_top,
+        layout_isolation, direction, dir, writing_mode, flex_reverse, order,
+        flex_wrap, equal_wrap, display, box_sizing, position, anchor, z_index,
+        isolation, gap, row_gap, column_gap, padding, padding_top,
         padding_right, padding_bottom, padding_left, margin, margin_top,
         margin_right, margin_bottom, margin_left, offset_top, offset_right,
-        offset_bottom, offset_left, width, height, min_width, max_width, min_height,
-        max_height, allow_shrink, align_items, align_self, align_content,
-        justify_content, justify_items, justify_self, flex_grow, flex_shrink,
-        flex_basis, adaptation, overflow_x, overflow_y, text_overflow_ellipsis,
-        line_clamp, pointer_events, cursor, user_select, white_space_nowrap,
-        white_space, word_break, overflow_wrap, aspect_ratio, text_align, float,
-        clear, font_size, font_weight, font_italic, font_family, line_height,
-        letter_spacing, color, text_decoration, text_emphasis_style,
-        text_emphasis_position, text_emphasis_color, font_features,
-        font_variation_settings, font_kerning, line_break,
-        unsupported_font_variation, placeholder_color, placeholder_opacity,
-        selection_background, selection_color, grid_columns, grid_rows,
-        grid_columns_unsupported, grid_rows_unsupported, grid_auto_columns,
-        grid_auto_rows, grid_auto_flow, grid_columns_repeat, grid_rows_repeat,
-        grid_columns_subgrid, grid_rows_subgrid, grid_template_areas,
-        grid_column_line_names, grid_row_line_names, hidden, opacity, background,
-        border_radius, border_width, border_top_width, border_right_width,
-        border_bottom_width, border_left_width, border_color, border_top_color,
-        border_right_color, border_bottom_color, border_left_color, border_style,
-        border_top_style, border_right_style, border_bottom_style,
-        border_left_style, container_type, container_name,
+        offset_bottom, offset_left, width, height, min_width, max_width,
+        min_height, max_height, allow_shrink, align_items, align_self,
+        align_content, justify_content, justify_items, justify_self, flex_grow,
+        flex_shrink, flex_basis, adaptation, overflow_x, overflow_y,
+        text_overflow_ellipsis, pointer_events, cursor, user_select,
+        white_space_nowrap, white_space, aspect_ratio, text_align,
+        font_size, font_weight, font_italic, line_height, color, hidden,
+        opacity, background, border_radius, border_width, border_color,
+        border_style,
     }
     nested {
         theme: shared ThemeLayout,
         paint_colors: shared PaintColorSlots,
-        logical_padding: shared LogicalEdges,
-        logical_margin: shared LogicalEdges,
-        logical_inset: shared LogicalEdges,
-        text_typography: plain TextTypography,
-        grid_placement: shared GridPlacement,
+        transforms: shared TransformStyle,
+        logical_edges: shared LogicalBoxEdges,
+        text_ext: shared TextStyleExt,
+        grid: shared GridStyle,
         paint: shared PaintStyle,
+        border_sides: shared BorderSides,
+        container: shared ContainerStyle,
+    }
+}
+
+overlay! {
+    TransformStyle {
+        transform, transform_3d, unsupported_transform, origin, css_perspective,
+        preserve_3d, transform_box,
+    }
+    nested {
+    }
+}
+
+overlay! {
+    LogicalBoxEdges {
+    }
+    nested {
+        padding: plain LogicalEdges,
+        margin: plain LogicalEdges,
+        inset: plain LogicalEdges,
+    }
+}
+
+overlay! {
+    TextStyleExt {
+        font_family, letter_spacing, line_clamp, word_break, overflow_wrap,
+        text_decoration, text_emphasis_style, text_emphasis_position,
+        text_emphasis_color, font_features, font_variation_settings,
+        font_kerning, line_break, unsupported_font_variation,
+        unsupported_writing_mode, text_orientation, placeholder_color,
+        placeholder_opacity, selection_background, selection_color,
+    }
+    nested {
+        text_typography: plain TextTypography,
+    }
+}
+
+overlay! {
+    GridStyle {
+        columns, rows, columns_unsupported, rows_unsupported, auto_columns,
+        auto_rows, auto_flow, columns_repeat, rows_repeat,
+        template_areas, column_line_names, row_line_names,
+    }
+    nested {
+        placement: shared GridPlacement,
+    }
+}
+
+overlay! {
+    BorderSides {
+        top_width, right_width, bottom_width, left_width, top_color,
+        right_color, bottom_color, left_color, top_style, right_style,
+        bottom_style, left_style,
+    }
+    nested {
+    }
+}
+
+overlay! {
+    ContainerStyle {
+        container_type, container_name,
+    }
+    nested {
     }
 }
 
@@ -221,6 +377,34 @@ impl LayoutStyle {
         let mut layout = self.clone();
         layout.overlay(&LayoutStyle::default(), over);
         layout
+    }
+
+    /// Collect dotted leaf paths written by a declaration block: fields where
+    /// `self` moved from `default`, plus fields where applying onto `witness`
+    /// changed the value to match `self`.
+    pub fn collect_written_leaves(
+        &self,
+        default: &Self,
+        over_witness: &Self,
+        witness: &Self,
+    ) -> Vec<String> {
+        let mut written = Vec::new();
+        <LayoutStyle as Overlay>::collect_written(
+            self,
+            default,
+            over_witness,
+            witness,
+            "",
+            &mut written,
+        );
+        written
+    }
+
+    /// Collect dotted leaf paths where `self` still equals `default`.
+    pub fn unchanged_leaf_paths(&self, default: &Self) -> Vec<String> {
+        let mut unchanged = Vec::new();
+        <LayoutStyle as Overlay>::unchanged_leaves(self, default, "", &mut unchanged);
+        unchanged
     }
 }
 

@@ -938,17 +938,7 @@ fn l1_supports_property_value(property: &str, value: &str) -> Option<bool> {
     match property.to_ascii_lowercase().as_str() {
         "display" => Some(matches!(
             value.trim().to_ascii_lowercase().as_str(),
-            "flex"
-                | "grid"
-                | "block"
-                | "none"
-                | "contents"
-                | "inline"
-                | "inline-block"
-                | "inline-flex"
-                | "inline-grid"
-                | "flow-root"
-                | "layers"
+            "flex" | "grid" | "none" | "inline" | "inline-flex" | "inline-grid" | "layers"
         )),
         "color" => Some(crate::style::parse_css_color(value).is_some()),
         "width" => Some(LengthSpec::parse(value).is_some()),
@@ -1586,7 +1576,7 @@ mod tests {
     fn supports_tiny_predicate_subset() {
         assert_eq!(evaluate_supports_condition("(display: flex)"), Some(true));
         assert_eq!(evaluate_supports_condition("(display:grid)"), Some(true));
-        assert_eq!(evaluate_supports_condition("(display: block)"), Some(true));
+        assert_eq!(evaluate_supports_condition("(display: block)"), Some(false));
         assert_eq!(evaluate_supports_condition("(width: 10px)"), Some(true));
         assert_eq!(evaluate_supports_condition("(color: red)"), Some(true));
         assert_eq!(

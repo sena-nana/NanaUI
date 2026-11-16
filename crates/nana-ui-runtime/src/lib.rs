@@ -15,7 +15,6 @@ mod area_layout;
 mod avatar;
 mod bars;
 mod breadcrumb;
-mod builtin_components;
 #[cfg(feature = "calendar")]
 mod calendar;
 #[cfg(feature = "charts")]
@@ -55,13 +54,11 @@ mod graph_canvas;
 #[cfg(feature = "graph-canvas")]
 mod graph_minimap;
 mod hover_card;
-mod interaction_request_card;
-mod json_num;
-pub(crate) use json_num::json_u64;
 #[cfg(feature = "image-viewer")]
 mod image_viewer;
 mod inline_content;
 mod inline_flow;
+mod interaction_request_card;
 pub mod intrinsic_cache;
 mod key_layers;
 mod layout_edits;
@@ -77,11 +74,10 @@ pub use inline_flow::InlineFlow;
 pub use world::inline_content::text_layout_origin;
 mod layout_result;
 mod sticky;
-/// Benchmark-only coarse phase clocks for `--profile-layout`. How much work
-/// layout did, plan reuse included, is on [`WorkCounters`].
+/// Benchmark-only coarse phase clocks for `--profile-layout`.
 #[cfg(feature = "benchmark")]
 pub use layout_engine::plan_stats;
-pub use sticky::{StickyAncestor, StickyDependencies, sticky_translation};
+pub use sticky::{StickyAncestor, StickyBoxes, StickyDependencies, sticky_translation};
 mod browser_view;
 pub mod fold;
 mod menus;
@@ -102,7 +98,7 @@ mod pane_section;
 mod panel;
 mod path_field;
 mod path_text;
-pub use path_text::PathText;
+pub use path_text::{PathText, PathTextVisual};
 mod curve_field;
 mod placeholders;
 mod popover;
@@ -174,6 +170,7 @@ mod tree_view;
 mod video;
 pub mod view;
 mod view_components;
+mod widget_visual;
 mod workspace;
 mod world;
 mod xy_pad;
@@ -205,53 +202,57 @@ pub use bars::{StatusBar, ToolGroup, ToolGroupMode, Toolbar};
 pub use breadcrumb::{
     Breadcrumb, BreadcrumbEvent, BreadcrumbItem, BreadcrumbSegment, BreadcrumbTone,
 };
-pub use builtin_components::NanaBuiltinComponents;
 #[cfg(feature = "calendar")]
 pub use calendar::{
     CalendarHeatmap, CalendarHeatmapActiveCell, CalendarHeatmapCell, CalendarHeatmapCellPaint,
     CalendarHeatmapDatum, CalendarHeatmapDayLabel, CalendarHeatmapEvent, CalendarHeatmapLabelPaint,
-    CalendarHeatmapModel, CalendarHeatmapMonthLabel, CalendarHeatmapOptions, CalendarLevelResolver,
-    CalendarLevelStrategy, CalendarMonthFormatter, CalendarTitleFormatter,
-    build_calendar_heatmap_model, build_calendar_heatmap_model_in, calendar_cell_fill,
+    CalendarHeatmapLayout, CalendarHeatmapModel, CalendarHeatmapMonthLabel, CalendarHeatmapOptions,
+    CalendarHeatmapVisual, CalendarHoverGeometry, CalendarLevelResolver, CalendarLevelStrategy,
+    CalendarMonthFormatter, CalendarTitleFormatter, build_calendar_heatmap_model,
+    build_calendar_heatmap_model_in, calendar_cell_fill,
 };
 #[cfg(feature = "charts")]
-pub use charts::{Chart, ChartEvent, ChartHoverVisual, ChartSpec, ChartTooltip};
+pub use charts::{
+    Chart, ChartEvent, ChartHoverVisual, ChartSpec, ChartTooltip, ChartTooltipVisual, ChartVisual,
+};
 pub use chip::{Chip, ChipDismissed};
 pub use color_field::{
     ColorChanged, ColorField, ColorInput, ColorPickRequested, format_hex, hsv_to_rgb, hue_spectrum,
     parse_hex, rgb_to_hsv, sanitize_rgba,
 };
-pub use command_palette::CommandPalette;
+pub use command_palette::{
+    CommandPalette, CommandPaletteLayout, CommandPaletteVisual, PaletteRowData, PaletteRowGeometry,
+};
 pub use component_registry::{
-    ComponentBindKind, ComponentRegistry, ComponentTypeId, PreparedSemanticBinding,
-    RegisterableComponent, SemanticOption, SemanticSpec, normalize_tag,
+    ComponentRegistry, ComponentTypeId, RegisterableComponent, normalize_tag,
 };
 pub use components::ExtractedMove;
 pub use components::{
     AccessibilityAction, AccessibilityActionRequest, AccessibilityDelta, AccessibilityLive,
     AccessibilityNode, AccessibilityPlacements, AccessibilityRole, AccessibilityScrollAxis,
     AccessibilityScrollDirection, AccessibilityScrollUnit, AccessibilityState, AccessibilityUpdate,
-    CalendarHoverGeometry, ComponentElevation, ComponentGeometry, ComponentImage,
-    ComponentTextRegion, ComponentTriggerSurface, ComputedStyle, ContrastRing, CustomRenderNode,
-    DocumentTextSelection, DropHoverOverlay, EventListeners, EventRoute, ExtractedCompositor,
-    ExtractedNode, ExtractedTextSpan, FontStrut, ImeComposition, ImeView, InteractionState,
-    InteractionStyle, LayoutBox, LayoutInput, LineLabel, MeasureTextShaper, MenuItemMark,
-    MenuSurfaceKind, ModalLayoutInput, MountState, NodeStyle, NumberSteppers, OverlayHostState,
-    PointerCaptureChange, RadioIndicator, RangeCaution, RangeValueThumb, RichEditorMarks,
-    ScrollMetrics, ScrollOffset, ScrollbarBar, SelectMenuDrag, SelectMenuGeometry, SelectMenuRoom,
-    SelectMenuScroll, SelectOptionData, SelectOptionGeometry, SemanticPaint, StandardVisual,
+    ComponentElevation, ComponentImage, ComponentTextRegion, ComponentTriggerSurface,
+    ComputedStyle, ContrastRing, CustomRenderNode, DocumentTextSelection, DropHoverOverlay,
+    EventListeners, EventRoute, ExtractedCompositor, ExtractedLayout, ExtractedNode,
+    ExtractedTextSpan, FontStrut, ImeComposition, ImeView, InheritedStyle, InheritedStyleExt,
+    InteractionState, InteractionStyle, LayoutBox, LayoutInput, LineLabel, MeasureTextShaper,
+    MenuItemMark, MenuSurfaceKind, ModalLayoutInput, MountState, NodeStyle, NumberSteppers,
+    OverlayHostState, PointerCaptureChange, RangeCaution, RangeValueThumb, RichEditorMarks,
+    ScrollMetrics, ScrollOffset, ScrollbarBar, ScrollbarBars, SelectMenuDrag, SelectMenuGeometry,
+    SelectMenuRoom, SelectMenuScroll, SelectOptionData, SelectOptionGeometry, SemanticPaint,
     TextAffinity, TextAtomChip, TextAtomClosed, TextAtomSpan, TextCodeFold, TextColorSwatchSpan,
     TextCompletion, TextCompletionEdit, TextCompletionPopup, TextCompletionRow,
     TextCompletionSnapshot, TextContent, TextDiagnosticSeverity, TextDiagnosticSpan,
     TextEditorRenderOptions, TextFoldGeometry, TextFoldGutter, TextGitGutterGeometry, TextGitMark,
     TextGitMarkKind, TextHit, TextHorizontalAlignment, TextHover, TextHoverPopup, TextInlay,
-    TextInputCharacterCounter, TextInputScroll, TextInputState, TextInputSuffix, TextInputView,
-    TextMatchMarker, TextMatchSpan, TextMetrics, TextMinimapGeometry, TextSelection,
-    TextShapeConstraints, TextShaper, TextShaping, TextSignatureHelp, TextSignaturePopup,
-    TextSnippet, TextStickyLineGeometry, TextValue, TextVerticalAlignment, TextWhitespaceKind,
-    TooltipVisual, TriggeredMenuOverlay, VisualParent, decode_virtual_menu_item,
-    decode_virtual_tree_item, decode_virtual_tree_toggle, menu_row_index, menu_row_slots,
-    virtual_listbox_id, virtual_menu_item_id, virtual_tree_item_id, virtual_tree_toggle_id,
+    TextInputCharacterCounter, TextInputGeometry, TextInputScroll, TextInputState, TextInputSuffix,
+    TextInputView, TextInputVisual, TextMatchMarker, TextMatchSpan, TextMetrics,
+    TextMinimapGeometry, TextSelection, TextShapeConstraints, TextShaper, TextShaping,
+    TextSignatureHelp, TextSignaturePopup, TextSnippet, TextStickyLineGeometry, TextValue,
+    TextVerticalAlignment, TextWhitespaceKind, TooltipVisual, TriggeredMenuOverlay, VisualParent,
+    decode_virtual_menu_item, decode_virtual_tree_item, decode_virtual_tree_toggle, menu_row_index,
+    menu_row_slots, virtual_listbox_id, virtual_menu_item_id, virtual_tree_item_id,
+    virtual_tree_toggle_id,
 };
 pub use curve_field::{
     CurveChanged, CurveDragState, CurveDragging, CurveField, CurveInput, CurvePoint,
@@ -277,23 +278,23 @@ pub use dock::{
 pub use dropdown::{Dropdown, DropdownOption};
 pub use dynamic_form::{DynamicForm, DynamicFormEvent, DynamicFormField, DynamicFormOption};
 pub use feedback::{
-    EmptyState, LabeledValue, Progress, ProgressCancelled, ProgressMode, Spinner, StatusBadge,
-    ValidationMessage, ValueEmphasis,
+    EmptyState, EmptyStateGeometry, EmptyStateVisual, LabeledValue, LabeledValueVisual, Progress,
+    ProgressCancelled, ProgressMode, ProgressVisual, Spinner, SpinnerVisual, StatusBadge,
+    StatusBadgeVisual, ValidationMessage, ValidationMessageVisual, ValueEmphasis,
 };
 pub use file_tab::{FileTab, FileTabEvent};
 pub use find_replace::{FindReplaceBar, FindReplaceEvent, TextSearchBar};
-pub use form_surfaces::{FormField, InteractiveCard};
+pub use form_surfaces::{FormField, FormFieldVisual, InteractiveCard};
 pub use framework::MountedView;
 pub(crate) use framework::UiBuilder;
 #[allow(deprecated)]
 pub use framework::{
-    ASSEMBLY_PATH_SEPARATOR, ActiveRuntimeOverlay, AppContext, AssemblyScope, BuiltinComponents,
-    Entity, ExtensionRegistrar, FormValidity, FrameworkError, HeadlessInput, InputBindError,
-    InputCounters, InputRouteError, InputRouteOutcome, NodePointer, NodePointerHooks, NodeWheel,
-    OverlayKey, OverlayPointerDecision, OverlayPointerPhase, RoutedEvent, RuntimeOverlayKind,
-    ScrollPhysics, Subscription, Task, TextDeleteKind, TextEditAction, TextEditOrigin,
-    TextFindScope, UiExtension, View, ViewContext, VirtualListItems, VirtualTableItems,
-    VirtualTreeItems,
+    ASSEMBLY_PATH_SEPARATOR, ActiveRuntimeOverlay, AppContext, AssemblyScope, Entity,
+    ExtensionRegistrar, FormValidity, FrameworkError, HeadlessInput, InputBindError, InputCounters,
+    InputRouteError, InputRouteOutcome, NodePointer, NodePointerHooks, NodeWheel, OverlayKey,
+    OverlayPointerDecision, OverlayPointerPhase, RoutedEvent, RuntimeOverlayKind, ScrollPhysics,
+    Subscription, Task, TextDeleteKind, TextEditAction, TextEditOrigin, TextFindScope, UiExtension,
+    View, ViewContext, VirtualListItems, VirtualTableItems, VirtualTreeItems,
 };
 #[doc(hidden)]
 pub use framework::{EditableHooks, TypeBehavior, TypeHooks};
@@ -306,16 +307,19 @@ pub use gpu_slots::{
 #[cfg(feature = "graph-canvas")]
 pub use graph_canvas::{
     GRAPH_CANVAS_RENDERER, GraphCanvas, GraphCanvasAdjustment, GraphCanvasEvent, GraphCanvasHit,
-    GraphEdgePaint, GraphInteraction, GraphNodeContent, GraphNodePaint, GraphPointerButton,
-    GraphPortPaint, GraphScrollDelta, wheel_zoom_factor,
+    GraphCanvasLayout, GraphCanvasVisual, GraphEdgePaint, GraphInteraction, GraphNodeContent,
+    GraphNodePaint, GraphPointerButton, GraphPortPaint, GraphScrollDelta, wheel_zoom_factor,
 };
 #[cfg(feature = "graph-canvas")]
-pub use graph_minimap::{GraphMinimap, GraphMinimapDrag, GraphMinimapEvent};
+pub use graph_minimap::{
+    GraphMinimap, GraphMinimapDrag, GraphMinimapEvent, GraphMinimapLayout, GraphMinimapVisual,
+};
 pub use hover_card::HoverCard;
 #[cfg(feature = "image-viewer")]
 pub use image_viewer::{
     ImageViewer, ImageViewerContent, ImageViewerDrag, ImageViewerEvent, ImageViewerGeometry,
-    ImageViewerHit, ImageViewerOffset, ImageViewerPosition, ZOOM_MAX, ZOOM_MIN, ZOOM_STEP,
+    ImageViewerHit, ImageViewerLayout, ImageViewerOffset, ImageViewerPosition, ImageViewerVisual,
+    ZOOM_MAX, ZOOM_MIN, ZOOM_STEP,
 };
 pub use interaction_request_card::{InteractionRequestCard, InteractionRequestField};
 pub use intrinsic_cache::{
@@ -325,8 +329,11 @@ pub use intrinsic_cache::{
 };
 pub use key_layers::{
     ActionDescriptor, ActionMatch, ActionRegistry, ActionRegistryError, CapturedStroke, KeyBinding,
-    KeyCaptureEvent, KeyCaptureLayer, KeyModifiers, Keymap, KeymapLayer, KeymapMatch, KeymapState,
+    KeyCaptureEvent, KeyCaptureLayer, KeyCaptureLayerLayout, KeyCaptureLayerVisual, KeyModifiers,
+    Keymap, KeymapLayer, KeymapLayerLayout, KeymapLayerVisual, KeymapMatch, KeymapState,
 };
+#[doc(hidden)]
+pub use layout_engine::parts::{CONTENT_PART_SLOTS, ContentParts, LeadingParts, NO_CONTENT_PARTS};
 pub use layout_engine::{
     LayoutViewport, RetainedLayoutCache, RuntimeLayoutEngine, StyleLayoutNode,
 };
@@ -343,8 +350,8 @@ pub use media_transport::{
     MediaTransportPlacement, MediaTransportSlots, media_clock,
 };
 pub use menus::{
-    ActionMenuItem, AnchoredActionMenu, AnchoredMenuDismissed, ContextMenu, ContextMenuEvent,
-    ContextMenuItem, resolve_anchored_origin,
+    ActionMenuItem, ActionMenuItemGeometry, ActionMenuItemVisual, AnchoredActionMenu,
+    AnchoredMenuDismissed, ContextMenu, ContextMenuEvent, ContextMenuItem, resolve_anchored_origin,
 };
 pub use motion_api::{
     FlipBuilder, FoldBuilder, NodeMotion, SpringBuilder, TimelineBuilder, TransitionBuilder,
@@ -361,30 +368,30 @@ pub use nana_ui_core::{
     DropdownEvent, DropdownSelection, ElevationRole, FileDragKind, FlexDirection, FlexWrap,
     FontFeatureSetting, FontKerningSpec, FontVariationSetting, FrameStage,
     GRAPH_EDGE_HIT_TOLERANCE, GRAPH_MAX_ZOOM, GRAPH_MIN_ZOOM, GRAPH_NODE_TITLE_HEIGHT,
-    GRAPH_PORT_HIT_RADIUS, GRAPH_PORT_INSET, GRAPH_PORT_PITCH, GpuWorkObservation, GraphCanvasId,
-    GraphEdge, GraphEdgeId, GraphEndpoint, GraphModel, GraphModelError, GraphNode, GraphNodeId,
-    GraphPoint, GraphPort, GraphPortId, GraphPortKind, GraphPortSide, GraphRect, GraphSelection,
-    GraphSize, GraphTarget, GraphTargetDescriptor, GraphTargetId, GraphTargetKind, GraphViewport,
-    Icon, IconData, IconPathCommand, IconShape, ImageSampling, JustifySpec, KeyContext,
-    LayoutStyle, LengthAtom, LengthSpec, LineBreakSpec, LineHeightSpec, OverflowSpec, OverlayMount,
+    GRAPH_PORT_HIT_RADIUS, GRAPH_PORT_INSET, GRAPH_PORT_PITCH, GraphCanvasId, GraphEdge,
+    GraphEdgeId, GraphEndpoint, GraphModel, GraphModelError, GraphNode, GraphNodeId, GraphPoint,
+    GraphPort, GraphPortId, GraphPortKind, GraphPortSide, GraphRect, GraphSelection, GraphSize,
+    GraphTarget, GraphTargetDescriptor, GraphTargetId, GraphTargetKind, GraphViewport, Icon,
+    IconData, IconPathCommand, IconShape, ImageSampling, JustifySpec, KeyContext, LayoutStyle,
+    LengthAtom, LengthSpec, LineBreakSpec, LineHeightSpec, OverflowSpec, OverlayMount,
     PaintTransform, PhysicalEdge, PointerEventsSpec, PopoverAlignment, PopoverPlacement,
     PositionSpec, RadiusTier, SemanticColorMix, SemanticColorRole, ShapeRecipe, ShapeRole,
     StatusTone, TITLE_BAR_HEIGHT, TabDragGroup, TabDragLease, TabDragRect, TabDragSurface,
     TabDropIndicator, TabStripPaint, TableCursor, TableNavigation, TextAlignSpec, TextShadowSpec,
-    ThemeAppearance, ThemeId, ThemeRegistry, ThemeWorkCounters, TransformOrigin, TreeNavigation,
-    TreeNode, TreeViewEvent, UserSelectSpec, ValidationIntent, ViewportAxis, VirtualAlignment,
+    ThemeAppearance, ThemeId, ThemeRegistry, TransformOrigin, TreeNavigation, TreeNode,
+    TreeViewEvent, UserSelectSpec, ValidationIntent, ViewportAxis, VirtualAlignment,
     VirtualFrozenWindow, VirtualListLayout, VirtualListMaterialization,
     VirtualListMaterializationError, VirtualListMaterializer, VirtualListMount, VirtualListWindow,
     VirtualScrollAnchor, VirtualTableFrozenWindow, VirtualTableLayout, VirtualTableMaterialization,
     VirtualTableMaterializer, VirtualTableWindow, VirtualTreeLayout, VirtualTreeRow,
     VirtualTreeWindow, VirtualViewport, VisibilitySpec, WINDOW_CONTROL_GAP, WINDOW_CONTROL_WIDTH,
-    WhiteSpaceSpec, WordBreakSpec, WorkCounters, WritingContext, WritingModeSpec,
-    custom_window_controls_width, graph_node_fitted_height, port_tangent, space,
-    tree_navigation_event, type_scale,
+    WhiteSpaceSpec, WordBreakSpec, WritingContext, WritingModeSpec, custom_window_controls_width,
+    graph_node_fitted_height, port_tangent, space, tree_navigation_event, type_scale,
 };
 pub use overlay_surfaces::{
-    ConfirmDialog, ConfirmIntent, ConfirmSlots, Drawer, ModalBehavior, ModalInitialFocus,
-    ModalSlots, ModalSurface, ModalSurfaceKind, ModalSurfaceSections,
+    ConfirmDialog, ConfirmIntent, ConfirmSlots, Drawer, ModalBehavior, ModalFrameGeometry,
+    ModalFrameVisual, ModalInitialFocus, ModalSlots, ModalSurface, ModalSurfaceKind,
+    ModalSurfaceSections,
 };
 pub use overlay_visibility::{
     OVERLAY_IDLE, OverlayLocks, OverlayVisibility, OverlayVisibilityChanged,
@@ -395,10 +402,11 @@ pub use pane::{
 };
 pub use pane_section::PaneSection;
 pub use path_field::{BrowseRequested, PathField};
-pub use placeholders::{LevelMeter, Skeleton};
+pub use placeholders::{LevelMeter, LevelMeterVisual, Skeleton};
 pub use popover::{
-    ActionMenu, AnchorOverflow, MENU_OVERLAY_Z_INDEX, Popover, PopoverClosed, PopoverToggled,
-    TOP_LAYER_Z_INDEX, resolve_anchored_surface, resolve_popover_origin,
+    ActionMenu, AnchorOverflow, MENU_OVERLAY_Z_INDEX, MenuSurfaceGeometry, MenuSurfaceVisual,
+    Popover, PopoverClosed, PopoverToggled, TOP_LAYER_Z_INDEX, resolve_anchored_surface,
+    resolve_popover_origin,
 };
 pub use presence::{PresenceLifecycle, PresencePhase, PresenceSettled};
 pub use presentation::{
@@ -410,7 +418,7 @@ pub use profiler::{FrameProfile, FrameProfiler, StageStatus, StageTiming};
 pub use property_grid::{
     PropertyGrid, PropertyLabelWidthChanged, PropertyRow, PropertySection, PropertySectionToggled,
 };
-pub use qr_code::{QrCode, QrCodeError};
+pub use qr_code::{QrCode, QrCodeError, QrCodeVisual};
 pub use range_span::{
     RangeSpanChanged, RangeSpanDragState, RangeSpanDragging, RangeSpanEntered, RangeSpanField,
     RangeSpanHandle, RangeSpanInput, RangeSpanOrientation, RangeSpanThumb, range_span_thumb_extent,
@@ -419,22 +427,26 @@ pub use range_span::{
 #[cfg(feature = "controls")]
 pub use reorder_list::{
     REORDER_PREVIEW_Z_INDEX, ReorderAccepts, ReorderDragVisual, ReorderDropMark, ReorderItem,
-    ReorderKeyMove, ReorderList, ReorderListEvent, ReorderListPointer, ReorderRowPaint,
+    ReorderKeyMove, ReorderList, ReorderListEvent, ReorderListLayout, ReorderListPointer,
+    ReorderListVisual, ReorderRowPaint,
 };
 #[cfg(feature = "rich-text")]
 pub use rich_text::{
     MarkdownBlock, MarkdownBlockKind, MarkdownImage, MarkdownImageResource, MarkdownSpan,
-    MarkdownTable, MarkdownTableAlignment, NativeMarkdown, RichSpan, RichTextEvent,
-    SelectableRichText, TextSelectionGroup, TextSelectionGroupId, TextSelectionSnapshot,
+    MarkdownTable, MarkdownTableAlignment, NativeMarkdown, NativeMarkdownLayout,
+    NativeMarkdownVisual, RichSpan, RichTextEvent, SelectableRichText, SelectableRichTextLayout,
+    SelectableRichTextVisual, TextSelectionGroup, TextSelectionGroupId, TextSelectionSnapshot,
 };
 pub use schedule::SystemWork;
 pub use scrub_field::{ScrubChanged, ScrubDragging, ScrubField, ScrubInput};
 pub use search_dropdown::{SearchDropdown, SearchDropdownEvent, SearchDropdownOption};
-pub use select::{Select, SelectChanged, SelectOption, SelectToggled};
+pub use select::{
+    Select, SelectChanged, SelectGeometry, SelectOption, SelectToggled, SelectVisual,
+};
 pub use selection::{
     RovingEdge, RovingFocusEdge, RovingFocusGroup, RovingFocusIntent, RovingFocusPolicy,
     SegmentedControl, SegmentedOption, SegmentedOptionChosen, SegmentedSelectionRequested,
-    SelectionChrome, SelectionOrientation,
+    SelectionChrome, SelectionOptionVisual, SelectionOrientation,
 };
 pub use settings::{
     AboutMetadata, AboutSection, AboutSectionAssembly, AppearanceSection,
@@ -477,24 +489,42 @@ pub use timeline::{
     TimelineTick, TimelineTrack, TimelineTrackToggled, TimelineUnit, TimelineView,
     TimelineViewChanged,
 };
-pub use toast::{Toast, ToastAction, ToastDismissed, ToastProgress, ToastTone};
+pub use toast::{Toast, ToastAction, ToastDismissed, ToastProgress, ToastTone, ToastVisual};
 pub use toast_stack::ToastStack;
 pub use tree_view::{
     TreeDragReleased, TreeDropIntent, TreeDropMark, TreeDropPosition, TreeDropRequested,
-    TreeRenameRequested, TreeSelectionChanged, TreeToggleChanged, TreeToggleColumn, TreeView,
+    TreeRenameRequested, TreeRowData, TreeRowGeometry, TreeSelectionChanged, TreeToggleChanged,
+    TreeToggleColumn, TreeView, TreeViewLayout, TreeViewVisual,
 };
 pub use video::Video;
 pub use view_components::{
-    Activate, Button, Card, Checkbox, CodeEditing, ComponentView, Dialog, DialogCloseRequested,
-    DialogToggled, Divider, FileDropEvent, FocusWithinChanged, HostedTextarea, IconButton,
-    IconButtonTooltip, IconGlyph, List, ListItem, ListItemRole, ListItemSlots, NumberChanged,
-    NumberInput, OverlayChanged, OverlayClosing, OverlayHost, PointerDragPhase, PointerDragged,
-    PointerHoverChanged, PointerMoved, RangeAdjustment, RangeChanged, RangeDragState,
-    RangeDragging, RangeField, RangeInput, RangeMarker, RowToolsPresence, RowToolsRest,
-    ScrollAnchor, ScrollAxes, ScrollChanged, ScrollLaidOut, ScrollView, ScrollViewportChanged,
-    ScrollbarDragState, SecondaryPress, SizeChanged, Stack, Switch, Table, TableCell,
-    TableCellFocused, TableRow, Text, TextArea, TextChanged, TextClamped, TextInput, TextSubmitted,
-    ToggleChanged, Tooltip, TrailingAlign, UserScroll,
+    Activate, Button, ButtonVisual, Card, CardVisual, Checkbox, CheckboxVisual, CodeEditing,
+    ComponentView, Dialog, DialogCloseRequested, DialogToggled, Divider, FileDropEvent,
+    FocusWithinChanged, HostedTextarea, IconButton, IconButtonTooltip, IconGlyph, IconVisual, List,
+    ListItem, ListItemRole, ListItemSlots, ListItemVisual, NumberChanged, NumberInput,
+    OverlayChanged, OverlayClosing, OverlayHost, PointerDragPhase, PointerDragged,
+    PointerHoverChanged, PointerMoved, RANGE_MAXIMUM_SLOT, RANGE_MINIMUM_SLOT,
+    RANGE_THUMB_TEXT_SLOT, RangeAdjustment, RangeChanged, RangeDragState, RangeDragging,
+    RangeField, RangeGeometry, RangeInput, RangeMarker, RangeVisual, RowToolsPresence,
+    RowToolsRest, ScrollAnchor, ScrollAxes, ScrollChanged, ScrollLaidOut, ScrollView,
+    ScrollViewportChanged, ScrollbarDragState, ScrollbarVisual, SecondaryPress, SizeChanged, Stack,
+    Switch, SwitchVisual, Table, TableCell, TableCellFocused, TableRow, Text, TextArea,
+    TextChanged, TextClamped, TextInput, TextSubmitted, ToggleChanged, Tooltip, TrailingAlign,
+    UserScroll,
+};
+pub use widget_visual::{
+    CHART_RENDERER, CONTEXT_MENU_HINTS, CONTEXT_MENU_IMAGE_BACKDROPS, CONTEXT_MENU_IMAGES,
+    CustomGpuPayload, MODAL_SCRIM_SLOT, SCROLLBAR_CHROME_SLOT_BASE, SELECT_MENU_BACKGROUNDS,
+    SELECT_MENU_HINTS, SELECT_MENU_IMAGE_BACKDROPS, SELECT_MENU_IMAGES, SELECT_MENU_LABELS,
+    SELECT_MENU_MARKS, SELECT_MENU_SCROLLBAR, SELECT_MENU_SURFACE_SLOT, TEXT_ATOM_ICONS_NS,
+    TEXT_ATOM_LABELS_NS, TEXT_DIAGNOSTIC_LABELS_NS, TEXT_DIAGNOSTIC_MARKERS_NS,
+    TEXT_LINE_LABELS_NS, TRIGGERED_OVERLAY_SURFACE_SLOT, WIDGET_VECTOR_LAYER_BASE,
+    WidgetBatchColors, WidgetChildTextSuppression, WidgetFloatingOverlay,
+    WidgetFloatingOverlayKind, WidgetGlyph, WidgetIcon, WidgetImage, WidgetModalFrame,
+    WidgetPaintCtx, WidgetPaintOp, WidgetPaintOutput, WidgetQuad, WidgetQuadBatch,
+    WidgetRetainedText, WidgetRootSurface, WidgetStroke, WidgetTaggedOp, WidgetText, WidgetVisual,
+    WidgetVisualContent, WidgetVisualHandle, is_floating_overlay_slot, is_select_menu_slot,
+    scrollbar_chrome_slot, widget_collection_slot,
 };
 pub use workspace::{Workspace, WorkspaceRegionSlot, WorkspaceResizeHandle};
 pub use world::{
@@ -503,8 +533,8 @@ pub use world::{
     ReplacedMetadata, ReplacedResource, StableNodeId, UiWorld, UiWorldError,
 };
 pub use xy_pad::{
-    XYPad, XYPadAdjustment, XYPadAxisLock, XYPadDragState, XYPadEvent, XYPadSurface, XYPadValue,
-    xy_pad_height,
+    XYPad, XYPadAdjustment, XYPadAxisLock, XYPadDragState, XYPadEvent, XYPadLayout, XYPadSurface,
+    XYPadValue, XYPadVisual, xy_pad_height,
 };
 
 pub use native_content::{NATIVE_CONTENT_RENDERER, NativeContent};

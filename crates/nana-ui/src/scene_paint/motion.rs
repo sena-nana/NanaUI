@@ -609,45 +609,61 @@ impl MotionEval {
     }
 }
 
+#[cfg(all(test, target_vendor = "apple"))]
+pub(super) fn prewarm_for_msl_regen(device: &wgpu::Device, motion_layout: &wgpu::BindGroupLayout) {
+    let _ = MotionEval::new(
+        device,
+        motion_layout,
+        None,
+        wgpu::TextureFormat::Rgba16Float,
+    );
+}
+
 fn create_eval_pipeline(
     device: &wgpu::Device,
     dummy: &wgpu::BindGroupLayout,
     motion: &wgpu::BindGroupLayout,
     format: wgpu::TextureFormat,
 ) -> Option<wgpu::RenderPipeline> {
-    let shader = super::wgsl::Program::new("nana-ui.scene.motion.eval.shader", super::wgsl::MOTION);
+    let shader = super::wgsl::program!("nana-ui.scene.motion.eval.shader", super::wgsl::MOTION);
     let layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
         label: Some("nana-ui.scene.motion.eval.pipeline"),
         bind_group_layouts: &[Some(dummy), Some(motion)],
         immediate_size: 0,
     });
-    Some(
-        device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-            label: Some("nana-ui.scene.motion.eval"),
-            layout: Some(&layout),
-            vertex: wgpu::VertexState {
-                module: &shader.stage(device, "motion_eval_vs").module,
-                entry_point: Some("motion_eval_vs"),
-                buffers: &[],
-                compilation_options: wgpu::PipelineCompilationOptions::default(),
-            },
-            fragment: Some(wgpu::FragmentState {
-                module: &shader.stage(device, "motion_eval_fs").module,
-                entry_point: Some("motion_eval_fs"),
-                targets: &[Some(wgpu::ColorTargetState {
-                    format,
-                    blend: None,
-                    write_mask: wgpu::ColorWrites::ALL,
-                })],
-                compilation_options: wgpu::PipelineCompilationOptions::default(),
-            }),
-            primitive: wgpu::PrimitiveState::default(),
-            depth_stencil: None,
-            multisample: wgpu::MultisampleState::default(),
-            multiview_mask: None,
-            cache: None,
-        }),
-    )
+    Some(shader.pipeline(
+        device,
+        "motion_eval_vs",
+        "motion_eval_fs",
+        &[],
+        |vs_module, vs_ep, fs_module, fs_ep, _| {
+            device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+                label: Some("nana-ui.scene.motion.eval"),
+                layout: Some(&layout),
+                vertex: wgpu::VertexState {
+                    module: vs_module,
+                    entry_point: Some(vs_ep),
+                    buffers: &[],
+                    compilation_options: wgpu::PipelineCompilationOptions::default(),
+                },
+                fragment: Some(wgpu::FragmentState {
+                    module: fs_module,
+                    entry_point: Some(fs_ep),
+                    targets: &[Some(wgpu::ColorTargetState {
+                        format,
+                        blend: None,
+                        write_mask: wgpu::ColorWrites::ALL,
+                    })],
+                    compilation_options: wgpu::PipelineCompilationOptions::default(),
+                }),
+                primitive: wgpu::PrimitiveState::default(),
+                depth_stencil: None,
+                multisample: wgpu::MultisampleState::default(),
+                multiview_mask: None,
+                cache: None,
+            })
+        },
+    ))
 }
 
 #[cfg_attr(not(test), allow(dead_code))]
@@ -871,7 +887,11 @@ mod tests {
             parent,
             NodeStyle {
                 layout: std::sync::Arc::new(LayoutStyle {
-                    transform_3d: Some(projective),
+                    transforms: nana_ui_core::TransformStyle {
+                        transform_3d: Some(projective),
+                        ..Default::default()
+                    }
+                    .into(),
                     ..LayoutStyle::default()
                 }),
                 ..NodeStyle::default()
@@ -882,10 +902,14 @@ mod tests {
             NodeStyle {
                 layout: std::sync::Arc::new(LayoutStyle {
                     background: Some([1.0, 0.0, 0.0, 1.0]),
-                    transform_origin: Some(nana_ui_core::TransformOrigin {
-                        x: nana_ui_core::LengthSpec::Percent(25.0),
-                        y: nana_ui_core::LengthSpec::Percent(75.0),
-                    }),
+                    transforms: nana_ui_core::TransformStyle {
+                        origin: Some(nana_ui_core::TransformOrigin {
+                            x: nana_ui_core::LengthSpec::Percent(25.0),
+                            y: nana_ui_core::LengthSpec::Percent(75.0),
+                        }),
+                        ..Default::default()
+                    }
+                    .into(),
                     ..LayoutStyle::default()
                 }),
                 ..NodeStyle::default()
@@ -926,7 +950,9 @@ mod tests {
             .iter_mut()
             .find(|extracted_node| extracted_node.id == node)
             .expect("animated node");
-        std::sync::Arc::make_mut(&mut reference.source_style.layout).transform = Some(value);
+        std::sync::Arc::make_mut(&mut reference.source_style.layout)
+            .transforms
+            .transform = Some(value);
         let mut reference_scene = UiScene::new();
         reference_scene.apply_delta(reference_nodes, []);
         (
@@ -1576,10 +1602,14 @@ mod tests {
         extracted[0].source_style = NodeStyle {
             layout: std::sync::Arc::new(LayoutStyle {
                 background: Some([1.0, 0.0, 0.0, 1.0]),
-                transform_origin: Some(nana_ui_core::TransformOrigin {
-                    x: nana_ui_core::LengthSpec::Percent(100.0),
-                    y: nana_ui_core::LengthSpec::Percent(50.0),
-                }),
+                transforms: nana_ui_core::TransformStyle {
+                    origin: Some(nana_ui_core::TransformOrigin {
+                        x: nana_ui_core::LengthSpec::Percent(100.0),
+                        y: nana_ui_core::LengthSpec::Percent(50.0),
+                    }),
+                    ..Default::default()
+                }
+                .into(),
                 ..LayoutStyle::default()
             }),
             ..extracted[0].source_style.clone()
@@ -1719,7 +1749,11 @@ mod tests {
         let mut projective = PaintMat4::IDENTITY;
         projective.m[3] = 0.0052083335;
         let (_, persp) = LayoutStyle {
-            transform_3d: Some(projective),
+            transforms: nana_ui_core::TransformStyle {
+                transform_3d: Some(projective),
+                ..Default::default()
+            }
+            .into(),
             ..LayoutStyle::default()
         }
         .world_scene_transform(0.0, 0.0, 128.0, 96.0)

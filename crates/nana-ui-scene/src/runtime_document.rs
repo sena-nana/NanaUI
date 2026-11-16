@@ -20,6 +20,7 @@ pub struct RuntimeDocument {
     document: DocumentId,
     scene: Arc<UiScene>,
     viewport: Option<LayoutViewport>,
+    accessibility_enabled: bool,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -52,8 +53,7 @@ impl RuntimeDocument {
         Self::with_context(document, AppContext::new())
     }
 
-    /// A document whose built-in components are created from their Rust
-    /// types only; see [`nana_ui_runtime::BuiltinComponents::Typed`].
+    /// Alias for [`Self::new`]; retained for source compatibility.
     pub fn typed(document: DocumentId) -> Self {
         Self::with_context(document, AppContext::typed())
     }
@@ -64,11 +64,25 @@ impl RuntimeDocument {
             document,
             scene: Arc::new(UiScene::new()),
             viewport: None,
+            accessibility_enabled: true,
         }
     }
 
     pub const fn document(&self) -> DocumentId {
         self.document
+    }
+
+    pub const fn accessibility_enabled(&self) -> bool {
+        self.accessibility_enabled
+    }
+
+    /// Enable or disable per-frame accessibility delta projection.
+    ///
+    /// Hosted windows keep this `false` until native assistive technology
+    /// requests the initial tree; the host triggers a full snapshot once
+    /// activated. Headless and test documents default to `true`.
+    pub fn set_accessibility_enabled(&mut self, enabled: bool) {
+        self.accessibility_enabled = enabled;
     }
 
     pub fn context(&self) -> &AppContext {
@@ -235,37 +249,39 @@ impl RuntimeDocument {
                 || !work.transform.is_empty()
                 || !work.transform_kept.is_empty()
                 || !work.state.is_empty();
-            // Same seed rule as `project_accessibility_delta`: hit-test and
-            // transform subtrees moved in viewport space, scheduled-layout
-            // nodes did not. The retained layout writer supplies the exact
-            // moved nodes through `WriteLayout`. A box layout only moved with
-            // its parent is no subtree seed in the pass that moved it.
-            // A box only its own scroll marked keeps what it holds in its
-            // scrolled space: of that, only what does not scroll with it
-            // projects again.
-            for &id in &work.input_hit_test {
-                if work.accessibility_moved.binary_search(&id).is_ok() {
-                    accessibility_moved.insert(id);
-                } else if work.accessibility_scrolled.binary_search(&id).is_ok() {
-                    accessibility_scrolled.insert(id);
-                } else {
-                    accessibility_subtrees.insert(id);
+            if self.accessibility_enabled {
+                // Same seed rule as `project_accessibility_delta`: hit-test and
+                // transform subtrees moved in viewport space, scheduled-layout
+                // nodes did not. The retained layout writer supplies the exact
+                // moved nodes through `WriteLayout`. A box layout only moved with
+                // its parent is no subtree seed in the pass that moved it.
+                // A box only its own scroll marked keeps what it holds in its
+                // scrolled space: of that, only what does not scroll with it
+                // projects again.
+                for &id in &work.input_hit_test {
+                    if work.accessibility_moved.binary_search(&id).is_ok() {
+                        accessibility_moved.insert(id);
+                    } else if work.accessibility_scrolled.binary_search(&id).is_ok() {
+                        accessibility_scrolled.insert(id);
+                    } else {
+                        accessibility_subtrees.insert(id);
+                    }
                 }
-            }
-            // A transform that gave what its box holds the same space is no
-            // subtree seed: its box is in `accessibility_moved` by its INPUT.
-            accessibility_subtrees.extend(
-                work.transform
-                    .iter()
-                    .filter(|id| work.transform_kept.binary_search(id).is_err())
-                    .copied(),
-            );
-            transform_kept.extend(work.transform_kept.iter().copied());
-            layout_moved.extend(work.layout_moved.iter().copied());
-            layout_reshaped.extend(work.layout_reshaped.iter().copied());
+                // A transform that gave what its box holds the same space is no
+                // subtree seed: its box is in `accessibility_moved` by its INPUT.
+                accessibility_subtrees.extend(
+                    work.transform
+                        .iter()
+                        .filter(|id| work.transform_kept.binary_search(id).is_err())
+                        .copied(),
+                );
+                transform_kept.extend(work.transform_kept.iter().copied());
+                layout_moved.extend(work.layout_moved.iter().copied());
+                layout_reshaped.extend(work.layout_reshaped.iter().copied());
 
-            accessibility_dirty.extend(work.accessibility.iter().copied());
-            accessibility_removed.extend(work.accessibility_removals.iter().copied());
+                accessibility_dirty.extend(work.accessibility.iter().copied());
+                accessibility_removed.extend(work.accessibility_removals.iter().copied());
+            }
             render_dirty.extend(work.render_extraction.iter().copied());
             render_removed.extend(work.render_removals.iter().copied());
             consumed.push(work);
@@ -277,11 +293,12 @@ impl RuntimeDocument {
             updated: Vec::new(),
             removed: Vec::new(),
         };
-        if !accessibility_dirty.is_empty()
-            || !accessibility_removed.is_empty()
-            || !accessibility_subtrees.is_empty()
-            || !accessibility_moved.is_empty()
-            || !accessibility_scrolled.is_empty()
+        if self.accessibility_enabled
+            && (!accessibility_dirty.is_empty()
+                || !accessibility_removed.is_empty()
+                || !accessibility_subtrees.is_empty()
+                || !accessibility_moved.is_empty()
+                || !accessibility_scrolled.is_empty())
         {
             let started = std::time::Instant::now();
             // A box one pass moved and another scrolled is neither alone: its
@@ -352,7 +369,6 @@ impl RuntimeDocument {
                 .extract_nodes_reusing(&render_dirty.into_iter().collect::<Vec<_>>(), |id| {
                     held.extracted_node(id)
                 });
-            self.context.record_extract_reusing(&extracted, &moved);
             // Applying the delta to the retained scene is part of Extract, not
             // free: it walks the extracted nodes, rebuilds their primitives,
             // and copy-on-writes the scene when a renderer still holds the
@@ -1371,16 +1387,15 @@ mod tests {
         runtime.flush_with(|_, _| Ok(())).unwrap();
         let mut change = MutationQueue::new();
         change.set_scroll_offset(ids[0], ScrollOffset { x: 0.0, y: 60.0 });
+        let mut layout = LayoutStyle::default();
+        layout.transforms.transform = Some(PaintTransform {
+            f: 60.0,
+            ..Default::default()
+        });
         change.set_style(
             ids[1],
             NodeStyle {
-                layout: Arc::new(LayoutStyle {
-                    transform: Some(PaintTransform {
-                        f: 60.0,
-                        ..Default::default()
-                    }),
-                    ..Default::default()
-                }),
+                layout: Arc::new(layout),
                 ..Default::default()
             },
         );
@@ -1639,11 +1654,10 @@ mod tests {
             let scroll = world.scroll_offset(area.stable_id());
             let box_layout = world.layout_box(area.stable_id());
             let metrics = world.text_metrics(area.stable_id());
-            let counters = runtime.context().last_work_counters();
             println!(
-                "pass {pass}: idle={} changed={} prims={} gen={} scroll={:?} layout={:?} metrics={:?}",
+                "pass {pass}: idle={} updated={} prims={} gen={} scroll={:?} layout={:?} metrics={:?}",
                 update.is_idle(),
-                counters.entities_changed,
+                update.scene.updated_nodes,
                 update.scene.primitive_count,
                 update.generation,
                 scroll,
@@ -1651,9 +1665,9 @@ mod tests {
                 metrics.map(|m| (m.width, m.height)),
             );
             assert!(
-                update.is_idle() || counters.entities_changed == 0,
-                "frame did not settle: changed={}",
-                counters.entities_changed
+                update.is_idle() || update.scene.updated_nodes == 0,
+                "frame did not settle: updated={}",
+                update.scene.updated_nodes
             );
         }
     }
@@ -1704,10 +1718,8 @@ mod tests {
         assert!(layout.width > 0.0);
         assert_eq!(layout.height, 32.0);
         let generation = first.generation;
-        let first_counters = runtime.context().last_work_counters();
-        assert!(first_counters.entities_total >= 1);
-        assert!(first_counters.entities_changed > 0);
-        assert!(first_counters.render_nodes_extracted > 0);
+        assert!(runtime.context().world().len() >= 1);
+        assert!(first.scene.updated_nodes > 0);
         let first_profile = runtime.context().last_frame_profile().clone();
         assert_eq!(
             first_profile
@@ -1744,7 +1756,6 @@ mod tests {
         assert!(idle.is_idle());
         assert_eq!(idle.generation, generation);
         assert_eq!(idle.scene.updated_nodes, 0);
-        assert_eq!(runtime.context().last_work_counters(), first_counters);
         assert_eq!(runtime.context().last_frame_profile(), &first_profile);
         assert_eq!(
             runtime
@@ -2107,28 +2118,19 @@ mod tests {
         let first = runtime
             .flush(LayoutViewport::new(1280.0, 720.0), &mut TestShaper)
             .unwrap();
-        let built = hit_entries_built(&runtime);
-        let live = runtime.context().world().len();
 
         // The settle loop ran several passes. Rebuilding per pass cost the index
-        // once per pass while only the last result was ever observable, so the
-        // frame's total must stay within a single document's worth of entries.
+        // once per pass while only the last result was ever observable.
         assert!(first.passes > 1, "expected a multi-pass settle");
         assert_eq!(first.scene.updated_nodes, runtime.scene().node_count());
         assert_eq!(
             first.scene.rebuilt_primitives,
             runtime.scene().primitive_count()
         );
-        assert!(
-            built <= live,
-            "{} passes built {built} hit entries for {live} nodes",
-            first.passes
-        );
 
-        // Retyping one leaf must patch only what moved. Layout invalidation
-        // propagates to ancestors, so a patch keyed on scheduled layout instead
-        // of written boxes lands back at the document root and rebuilds the
-        // whole index for a single label.
+        // Retyping one leaf must update only what moved rather than rewriting
+        // the entire document.
+        let live = runtime.context().world().len();
         let mut retype = nana_ui_runtime::MutationQueue::new();
         retype.set_text(
             inspector.stable_id(),
@@ -2137,25 +2139,14 @@ mod tests {
             },
         );
         runtime.context_mut().commit_mutations(retype).unwrap();
-        runtime
+        let edit = runtime
             .flush(LayoutViewport::new(1280.0, 720.0), &mut TestShaper)
             .unwrap();
-        let edit_built = hit_entries_built(&runtime);
         assert!(
-            edit_built < live,
-            "one leaf edit built {edit_built} hit entries for {live} nodes; expected a patch, not a rebuild"
+            edit.scene.updated_nodes < live,
+            "one leaf edit updated {} scene nodes for {live} nodes; expected a local update",
+            edit.scene.updated_nodes
         );
-    }
-
-    /// Hit entries the last flush built. Frame counters are scoped to the
-    /// flush, so this covers every settle pass in it.
-    fn hit_entries_built(runtime: &RuntimeDocument) -> usize {
-        runtime
-            .context()
-            .world()
-            .last_work_counters()
-            .hit_test_nodes_rebuilt
-            .unwrap_or_default()
     }
 
     #[test]
@@ -2369,7 +2360,6 @@ mod tests {
         assert_eq!(noop.layout_generation, generation);
         assert_eq!(noop.scene.updated_nodes, 0);
         assert!(noop.accessibility.updated.is_empty());
-        assert_eq!(hit_entries_built(&runtime), 0);
         assert_eq!(
             runtime
                 .scene()
@@ -2399,7 +2389,6 @@ mod tests {
         assert_eq!(painted.layout_generation, generation);
         assert!(painted.scene.updated_nodes >= 1);
         assert!(painted.accessibility.updated.is_empty());
-        assert_eq!(hit_entries_built(&runtime), 0);
         assert_eq!(
             runtime
                 .scene()
@@ -2421,7 +2410,6 @@ mod tests {
                 .iter()
                 .any(|node| node.id == section)
         );
-        assert_eq!(hit_entries_built(&runtime), 0);
 
         let mut widen = runtime
             .context()
@@ -2450,7 +2438,6 @@ mod tests {
                 .iter()
                 .any(|node| node.id == section && (node.bounds.width - 180.0).abs() < 0.01)
         );
-        assert!(hit_entries_built(&runtime) > 0);
         assert_eq!(
             runtime
                 .context()
@@ -2458,6 +2445,85 @@ mod tests {
                 .hit_test(document, outside.0, outside.1),
             Some(section),
             "the point just past the old edge must hit the widened section"
+        );
+    }
+
+    #[test]
+    fn disabled_accessibility_skips_delta_projection_until_full_snapshot() {
+        struct IdleShaper;
+        impl TextShaper for IdleShaper {
+            fn shape(
+                &mut self,
+                _id: StableNodeId,
+                _text: &TextContent,
+                _style: &ComputedStyle,
+                _constraints: nana_ui_runtime::TextShapeConstraints,
+            ) -> TextMetrics {
+                TextMetrics {
+                    width: 0.0,
+                    height: 0.0,
+                    ascent: None,
+                }
+            }
+        }
+
+        let document = DocumentId::new(1).unwrap();
+        let section = StableNodeId::new(1).unwrap();
+        let mut runtime = RuntimeDocument::new(document);
+        runtime.set_accessibility_enabled(false);
+        assert!(!runtime.accessibility_enabled());
+
+        let mut style = NodeStyle::default();
+        Arc::make_mut(&mut style.layout).width = Some(LengthSpec::Px(120.0));
+        Arc::make_mut(&mut style.layout).height = Some(LengthSpec::Px(40.0));
+        let mut queue = MutationQueue::new();
+        queue.create(
+            section,
+            document,
+            NodeKind::Element {
+                tag: "section".into(),
+            },
+        );
+        queue.set_style(section, style);
+        queue.set_accessibility(
+            section,
+            nana_ui_runtime::AccessibilityState {
+                label: Some("Primary section".into()),
+                ..Default::default()
+            },
+        );
+        runtime.context_mut().commit_mutations(queue).unwrap();
+
+        let mut shaper = IdleShaper;
+        let viewport = LayoutViewport::new(800.0, 600.0);
+        let first = runtime.flush(viewport, &mut shaper).unwrap();
+        assert!(first.accessibility.updated.is_empty());
+        assert!(first.accessibility.removed.is_empty());
+
+        let snapshot = runtime.context().world().project_accessibility(document);
+        assert!(
+            snapshot
+                .iter()
+                .any(|node| node.id == section && node.label.as_deref() == Some("Primary section"))
+        );
+
+        runtime.set_accessibility_enabled(true);
+        let mut rename = MutationQueue::new();
+        rename.set_accessibility(
+            section,
+            nana_ui_runtime::AccessibilityState {
+                label: Some("Updated section".into()),
+                ..Default::default()
+            },
+        );
+        runtime.context_mut().commit_mutations(rename).unwrap();
+        let second = runtime.flush(viewport, &mut shaper).unwrap();
+        assert!(
+            second
+                .accessibility
+                .updated
+                .iter()
+                .any(|node| node.id == section && node.label.as_deref() == Some("Updated section"))
         );
     }
 }

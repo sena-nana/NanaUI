@@ -142,7 +142,7 @@ fn records_fresh(runtime: &RuntimeDocument, at: &str) {
             .extracted_node(node.id)
             .unwrap_or_else(|| panic!("{at}: the scene holds no record of {:?}", node.id));
         assert_eq!(
-            held.layout_result, node.layout_result,
+            held.extracted_layout, node.extracted_layout,
             "{at}: the scene holds {:?} with another result than a fresh extraction",
             node.id
         );

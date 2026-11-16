@@ -282,12 +282,11 @@ impl AppContext {
     /// not report its unscrolled layout box. Part of the input key, so a
     /// scroll that moves the caret tells the host.
     fn text_input_caret(&self, node: StableNodeId) -> Option<LayoutBox> {
-        let caret = match self.world.component_geometry(node) {
-            Some(crate::ComponentGeometry::TextInput {
-                caret: Some(caret), ..
-            }) => caret,
-            _ => self.world.component_layout_box(node)?,
-        };
+        let caret = self
+            .world
+            .text_input_geometry(node)
+            .and_then(|g| g.caret)
+            .or_else(|| self.world.component_layout_box(node))?;
         Some(
             self.world
                 .project_input_bounds(node, caret)
@@ -307,10 +306,7 @@ impl AppContext {
     }
 
     fn text_input_purpose(&self, node: StableNodeId) -> TextInputPurpose {
-        if matches!(
-            self.world.standard_visual(node),
-            Some(crate::StandardVisual::TextInput { secure: true, .. })
-        ) {
+        if self.world.text_input_is_secure(node) {
             TextInputPurpose::Password
         } else {
             TextInputPurpose::Normal

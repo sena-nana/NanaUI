@@ -37,12 +37,10 @@
 //! `fixed`/`sticky`；匿名 CSS 盒的 `position:fixed` 走视口子集。
 //!
 //! ## display / grid
-//! `display: contents` → [`DisplaySpec::Contents`]（不生成盒，亦非 `omits_box`）。
 //! `grid-column` / `grid-row` / `grid-area` 写入 [`GridPlacement`]。
 //! `grid-auto-*` 与整表 / 混写 `repeat(auto-fit|auto-fill, <track-list>)` 存入
-//! Style Model（`grid_*_repeat`），由布局展开。整值 `subgrid` 置 `grid_*_subgrid`，
-//! 由布局继承父轨。嵌套 `repeat()`（CSS 文法不允许）、同一轨列表里多于一个
-//! auto-repeat、轨道列表 token 形式的 `subgrid`，或无法展开的语法才置
+//! Style Model（`grid_*_repeat`），由布局展开。嵌套 `repeat()`（CSS 文法不允许）、
+//! 同一轨列表里多于一个 auto-repeat，或无法展开的语法才置
 //! [`GridTrackListUnsupported`]。
 //!
 //! ## margin / padding / gap
@@ -79,13 +77,13 @@ use nana_ui_core::PhysicalEdge;
 #[cfg(test)]
 use nana_ui_core::box_layout::PaintTransform;
 pub use nana_ui_core::box_layout::{
-    AlignSpec, BorderStyle, BoxShadowSpec, BoxSizing, CalcBinOp, CalcExpr, ClearSpec, CursorSpec,
-    DirSpec, DisplaySpec, FlexDirection, FlexWrap, FloatSpec, FontSizeContext, GridAutoFlow,
-    GridLine, GridPlacement, GridRepeatAuto, GridTemplateAreas, GridTrack,
-    GridTrackListUnsupported, JustifySpec, LayoutStyle, LengthAtom, LengthSpec, LineHeightSpec,
-    LogicalEdge, LogicalEdges, OverflowSpec, PaddingSpec, ParentBox, PositionSpec, TextAlignSpec,
-    TextOrientationSpec, TextShadowSpec, UserSelectSpec, ViewportAxis, VisibilitySpec,
-    WhiteSpaceSpec, WritingModeSpec, resolve_grid_column_widths, resolve_grid_track_sizes,
+    AlignSpec, BorderStyle, BoxShadowSpec, BoxSizing, CalcBinOp, CalcExpr, CursorSpec, DirSpec,
+    DisplaySpec, FlexDirection, FlexWrap, FontSizeContext, GridAutoFlow, GridLine, GridPlacement,
+    GridRepeatAuto, GridTemplateAreas, GridTrack, GridTrackListUnsupported, JustifySpec,
+    LayoutStyle, LengthAtom, LengthSpec, LineHeightSpec, LogicalEdge, LogicalEdges, OverflowSpec,
+    PaddingSpec, ParentBox, PositionSpec, TextAlignSpec, TextOrientationSpec, TextShadowSpec,
+    UserSelectSpec, ViewportAxis, VisibilitySpec, WhiteSpaceSpec, WritingModeSpec,
+    resolve_grid_column_widths, resolve_grid_track_sizes,
 };
 pub use nana_ui_core::{
     FontFeatureSetting, FontKerningSpec, FontVariationSetting, LineBreakSpec, TextAutospaceSpec,
@@ -470,38 +468,31 @@ impl CalcSum {
                 axis: ViewportAxis::Max,
                 value: self.vmax,
             }),
-            units if units == UNIT_PX | UNIT_PERCENT => Some(LengthSpec::CalcPercentOffset {
-                percent: self.percent,
-                offset_px: self.px,
-            }),
-            units if units == UNIT_PX | UNIT_EM => Some(LengthSpec::CalcEmOffset {
-                em: self.em,
-                offset_px: self.px,
-            }),
-            units if units == UNIT_PX | UNIT_REM => Some(LengthSpec::CalcRemOffset {
-                rem: self.rem,
-                offset_px: self.px,
-            }),
-            units if units == UNIT_PX | UNIT_VW => Some(LengthSpec::CalcViewportOffset {
-                axis: ViewportAxis::Width,
-                value: self.vw,
-                offset_px: self.px,
-            }),
-            units if units == UNIT_PX | UNIT_VH => Some(LengthSpec::CalcViewportOffset {
-                axis: ViewportAxis::Height,
-                value: self.vh,
-                offset_px: self.px,
-            }),
-            units if units == UNIT_PX | UNIT_VMIN => Some(LengthSpec::CalcViewportOffset {
-                axis: ViewportAxis::Min,
-                value: self.vmin,
-                offset_px: self.px,
-            }),
-            units if units == UNIT_PX | UNIT_VMAX => Some(LengthSpec::CalcViewportOffset {
-                axis: ViewportAxis::Max,
-                value: self.vmax,
-                offset_px: self.px,
-            }),
+            units if units == UNIT_PX | UNIT_PERCENT => {
+                Some(LengthSpec::percent_offset(self.percent, self.px))
+            }
+            units if units == UNIT_PX | UNIT_EM => Some(LengthSpec::em_offset(self.em, self.px)),
+            units if units == UNIT_PX | UNIT_REM => Some(LengthSpec::rem_offset(self.rem, self.px)),
+            units if units == UNIT_PX | UNIT_VW => Some(LengthSpec::viewport_offset(
+                ViewportAxis::Width,
+                self.vw,
+                self.px,
+            )),
+            units if units == UNIT_PX | UNIT_VH => Some(LengthSpec::viewport_offset(
+                ViewportAxis::Height,
+                self.vh,
+                self.px,
+            )),
+            units if units == UNIT_PX | UNIT_VMIN => Some(LengthSpec::viewport_offset(
+                ViewportAxis::Min,
+                self.vmin,
+                self.px,
+            )),
+            units if units == UNIT_PX | UNIT_VMAX => Some(LengthSpec::viewport_offset(
+                ViewportAxis::Max,
+                self.vmax,
+                self.px,
+            )),
             _ => None,
         }
     }
@@ -512,20 +503,22 @@ fn percent_to_spec(p: f32) -> Option<LengthSpec> {
 }
 
 fn calc_sum_from_length_spec(spec: LengthSpec) -> Option<CalcSum> {
-    Some(match spec {
-        LengthSpec::Px(v) => CalcSum::px(v),
-        LengthSpec::Percent(p) => CalcSum::percent(p),
-        LengthSpec::Fill => CalcSum::percent(100.0),
-        LengthSpec::Em(v) => CalcSum::em(v),
-        LengthSpec::Rem(v) => CalcSum::rem(v),
-        LengthSpec::Viewport { axis, value } => CalcSum::viewport(axis, value),
-        LengthSpec::CalcPercentOffset { percent, offset_px } => {
+    if matches!(spec, LengthSpec::Fill) {
+        return Some(CalcSum::percent(100.0));
+    }
+    Some(match spec.as_atom()? {
+        LengthAtom::Px(v) => CalcSum::px(v),
+        LengthAtom::Percent(p) => CalcSum::percent(p),
+        LengthAtom::Em(v) => CalcSum::em(v),
+        LengthAtom::Rem(v) => CalcSum::rem(v),
+        LengthAtom::Viewport { axis, value } => CalcSum::viewport(axis, value),
+        LengthAtom::CalcPercent { percent, offset_px } => {
             let mut s = CalcSum::percent(percent);
             s.px = offset_px;
             s.units |= UNIT_PX;
             s
         }
-        LengthSpec::CalcViewportOffset {
+        LengthAtom::CalcViewport {
             axis,
             value,
             offset_px,
@@ -535,39 +528,30 @@ fn calc_sum_from_length_spec(spec: LengthSpec) -> Option<CalcSum> {
             s.units |= UNIT_PX;
             s
         }
-        LengthSpec::CalcEmOffset { em, offset_px } => {
+        LengthAtom::CalcEm { em, offset_px } => {
             let mut s = CalcSum::em(em);
             s.px = offset_px;
             s.units |= UNIT_PX;
             s
         }
-        LengthSpec::CalcRemOffset { rem, offset_px } => {
+        LengthAtom::CalcRem { rem, offset_px } => {
             let mut s = CalcSum::rem(rem);
             s.px = offset_px;
             s.units |= UNIT_PX;
             s
         }
-        LengthSpec::Min2(_, _)
-        | LengthSpec::Max2(_, _)
-        | LengthSpec::Clamp3(_, _, _)
-        | LengthSpec::Calc(_)
-        | LengthSpec::Shrink
-        | LengthSpec::Auto
-        | LengthSpec::MinContent
-        | LengthSpec::MaxContent
-        | LengthSpec::FitContent => return None,
     })
+}
+
+fn is_cmp_spec(spec: LengthSpec) -> bool {
+    spec.as_min2().is_some() || spec.as_max2().is_some() || spec.as_clamp3().is_some()
 }
 
 fn calc_value_from_length_spec(spec: LengthSpec) -> Option<CalcValue> {
     if let Some(sum) = calc_sum_from_length_spec(spec) {
         return Some(CalcValue::Sum(sum));
     }
-    matches!(
-        spec,
-        LengthSpec::Min2(_, _) | LengthSpec::Max2(_, _) | LengthSpec::Clamp3(_, _, _)
-    )
-    .then_some(CalcValue::Cmp(spec))
+    is_cmp_spec(spec).then_some(CalcValue::Cmp(spec))
 }
 
 /// Calc operand: linear [`CalcSum`], or mixed-unit min/max/clamp kept as Style Model.
@@ -581,11 +565,7 @@ impl CalcValue {
     fn to_length_spec(self) -> Option<LengthSpec> {
         match self {
             Self::Sum(sum) => sum.to_length_spec(),
-            Self::Cmp(spec) => matches!(
-                spec,
-                LengthSpec::Min2(_, _) | LengthSpec::Max2(_, _) | LengthSpec::Clamp3(_, _, _)
-            )
-            .then_some(spec),
+            Self::Cmp(spec) => is_cmp_spec(spec).then_some(spec),
         }
     }
 
@@ -680,37 +660,35 @@ fn scale_cmp_spec(spec: LengthSpec, k: f32) -> Option<LengthSpec> {
         return None;
     }
     let swap = k < 0.0;
-    match spec {
-        LengthSpec::Min2(a, b) => {
-            let a = scale_length_atom(a, k)?;
-            let b = scale_length_atom(b, k)?;
-            Some(if swap {
-                LengthSpec::Max2(a, b)
-            } else {
-                LengthSpec::Min2(a, b)
-            })
-        }
-        LengthSpec::Max2(a, b) => {
-            let a = scale_length_atom(a, k)?;
-            let b = scale_length_atom(b, k)?;
-            Some(if swap {
-                LengthSpec::Min2(a, b)
-            } else {
-                LengthSpec::Max2(a, b)
-            })
-        }
-        LengthSpec::Clamp3(lo, val, hi) => {
-            let lo = scale_length_atom(lo, k)?;
-            let val = scale_length_atom(val, k)?;
-            let hi = scale_length_atom(hi, k)?;
-            Some(if swap {
-                LengthSpec::Clamp3(hi, val, lo)
-            } else {
-                LengthSpec::Clamp3(lo, val, hi)
-            })
-        }
-        _ => None,
+    if let Some((a, b)) = spec.as_min2() {
+        let a = scale_length_atom(a, k)?;
+        let b = scale_length_atom(b, k)?;
+        return Some(if swap {
+            LengthSpec::max2(a, b)
+        } else {
+            LengthSpec::min2(a, b)
+        });
     }
+    if let Some((a, b)) = spec.as_max2() {
+        let a = scale_length_atom(a, k)?;
+        let b = scale_length_atom(b, k)?;
+        return Some(if swap {
+            LengthSpec::min2(a, b)
+        } else {
+            LengthSpec::max2(a, b)
+        });
+    }
+    if let Some((lo, val, hi)) = spec.as_clamp3() {
+        let lo = scale_length_atom(lo, k)?;
+        let val = scale_length_atom(val, k)?;
+        let hi = scale_length_atom(hi, k)?;
+        return Some(if swap {
+            LengthSpec::clamp3(hi, val, lo)
+        } else {
+            LengthSpec::clamp3(lo, val, hi)
+        });
+    }
+    None
 }
 
 /// Full calc AST: nested `calc()` / `min()` / `max()` / `clamp()`, `*`, `/`, parens.
@@ -1449,7 +1427,7 @@ fn parse_min_max_clamp_inner(kind: &str, inner: &str, depth: u8) -> Option<Lengt
             if let Some(folded) = fold_clamp_atoms(lo, val, hi) {
                 return Some(length_atom_to_spec(folded));
             }
-            Some(LengthSpec::Clamp3(lo, val, hi))
+            Some(LengthSpec::clamp3(lo, val, hi))
         }
         _ => None,
     }
@@ -1497,25 +1475,28 @@ fn collect_min_max_operand(
         atoms.push(atom);
         return Some(());
     }
-    match spec {
-        LengthSpec::Min2(a, b) if is_min => {
-            atoms.push(a);
-            atoms.push(b);
-            Some(())
+    if let Some((a, b)) = spec.as_min2()
+        && is_min
+    {
+        atoms.push(a);
+        atoms.push(b);
+        return Some(());
+    }
+    if let Some((a, b)) = spec.as_max2()
+        && !is_min
+    {
+        atoms.push(a);
+        atoms.push(b);
+        return Some(());
+    }
+    if is_cmp_spec(spec) {
+        if opposite.is_some() {
+            return None;
         }
-        LengthSpec::Max2(a, b) if !is_min => {
-            atoms.push(a);
-            atoms.push(b);
-            Some(())
-        }
-        LengthSpec::Min2(_, _) | LengthSpec::Max2(_, _) | LengthSpec::Clamp3(_, _, _) => {
-            if opposite.is_some() {
-                return None;
-            }
-            *opposite = Some(spec);
-            Some(())
-        }
-        _ => None,
+        *opposite = Some(spec);
+        Some(())
+    } else {
+        None
     }
 }
 
@@ -1542,9 +1523,9 @@ fn min_max_two_atoms(a: LengthAtom, b: LengthAtom, is_min: bool) -> LengthSpec {
         return length_atom_to_spec(folded);
     }
     if is_min {
-        LengthSpec::Min2(a, b)
+        LengthSpec::min2(a, b)
     } else {
-        LengthSpec::Max2(a, b)
+        LengthSpec::max2(a, b)
     }
 }
 
@@ -1553,31 +1534,39 @@ fn merge_atom_with_opposite(
     other: LengthSpec,
     is_min: bool,
 ) -> Option<LengthSpec> {
-    match (other, is_min) {
-        (LengthSpec::Max2(x, y), true) => min_atom_and_max2(atom, x, y),
-        (LengthSpec::Min2(x, y), false) => max_atom_and_min2(atom, x, y),
-        (LengthSpec::Clamp3(lo, val, hi), _) => merge_atom_with_clamp3(atom, lo, val, hi, is_min),
-        (LengthSpec::Min2(x, y), true) => reduce_min_max_specs(
-            vec![
-                length_atom_to_spec(atom),
-                length_atom_to_spec(x),
-                length_atom_to_spec(y),
-            ],
-            true,
-        ),
-        (LengthSpec::Max2(x, y), false) => reduce_min_max_specs(
-            vec![
-                length_atom_to_spec(atom),
-                length_atom_to_spec(x),
-                length_atom_to_spec(y),
-            ],
-            false,
-        ),
-        (spec, _) => {
-            let b = length_spec_to_atom(spec)?;
-            Some(min_max_two_atoms(atom, b, is_min))
-        }
+    if let Some((x, y)) = other.as_max2() {
+        return if is_min {
+            min_atom_and_max2(atom, x, y)
+        } else {
+            reduce_min_max_specs(
+                vec![
+                    length_atom_to_spec(atom),
+                    length_atom_to_spec(x),
+                    length_atom_to_spec(y),
+                ],
+                false,
+            )
+        };
     }
+    if let Some((x, y)) = other.as_min2() {
+        return if !is_min {
+            max_atom_and_min2(atom, x, y)
+        } else {
+            reduce_min_max_specs(
+                vec![
+                    length_atom_to_spec(atom),
+                    length_atom_to_spec(x),
+                    length_atom_to_spec(y),
+                ],
+                true,
+            )
+        };
+    }
+    if let Some((lo, val, hi)) = other.as_clamp3() {
+        return merge_atom_with_clamp3(atom, lo, val, hi, is_min);
+    }
+    let b = length_spec_to_atom(other)?;
+    Some(min_max_two_atoms(atom, b, is_min))
 }
 
 fn atom_order_same_dim(a: LengthAtom, b: LengthAtom) -> Option<std::cmp::Ordering> {
@@ -1596,13 +1585,13 @@ fn min_atom_and_max2(a: LengthAtom, x: LengthAtom, y: LengthAtom) -> Option<Leng
     if let Some(ord) = atom_order_same_dim(a, x) {
         return Some(match ord {
             std::cmp::Ordering::Less | std::cmp::Ordering::Equal => length_atom_to_spec(a),
-            std::cmp::Ordering::Greater => LengthSpec::Clamp3(x, y, a),
+            std::cmp::Ordering::Greater => LengthSpec::clamp3(x, y, a),
         });
     }
     if let Some(ord) = atom_order_same_dim(a, y) {
         return Some(match ord {
             std::cmp::Ordering::Less | std::cmp::Ordering::Equal => length_atom_to_spec(a),
-            std::cmp::Ordering::Greater => LengthSpec::Clamp3(y, x, a),
+            std::cmp::Ordering::Greater => LengthSpec::clamp3(y, x, a),
         });
     }
     None
@@ -1613,13 +1602,13 @@ fn max_atom_and_min2(a: LengthAtom, x: LengthAtom, y: LengthAtom) -> Option<Leng
     if let Some(ord) = atom_order_same_dim(a, x) {
         return Some(match ord {
             std::cmp::Ordering::Greater | std::cmp::Ordering::Equal => length_atom_to_spec(a),
-            std::cmp::Ordering::Less => LengthSpec::Clamp3(a, y, x),
+            std::cmp::Ordering::Less => LengthSpec::clamp3(a, y, x),
         });
     }
     if let Some(ord) = atom_order_same_dim(a, y) {
         return Some(match ord {
             std::cmp::Ordering::Greater | std::cmp::Ordering::Equal => length_atom_to_spec(a),
-            std::cmp::Ordering::Less => LengthSpec::Clamp3(a, x, y),
+            std::cmp::Ordering::Less => LengthSpec::clamp3(a, x, y),
         });
     }
     None
@@ -1644,19 +1633,19 @@ fn merge_atom_with_clamp3(
             Some(length_atom_to_spec(atom))
         }
         (true, _, std::cmp::Ordering::Greater | std::cmp::Ordering::Equal) => {
-            Some(LengthSpec::Clamp3(lo_b, val, hi_b))
+            Some(LengthSpec::clamp3(lo_b, val, hi_b))
         }
         (true, std::cmp::Ordering::Greater, std::cmp::Ordering::Less) => {
-            Some(LengthSpec::Clamp3(lo_b, val, atom))
+            Some(LengthSpec::clamp3(lo_b, val, atom))
         }
         (false, std::cmp::Ordering::Less | std::cmp::Ordering::Equal, _) => {
-            Some(LengthSpec::Clamp3(lo_b, val, hi_b))
+            Some(LengthSpec::clamp3(lo_b, val, hi_b))
         }
         (false, _, std::cmp::Ordering::Greater | std::cmp::Ordering::Equal) => {
             Some(length_atom_to_spec(atom))
         }
         (false, std::cmp::Ordering::Greater, std::cmp::Ordering::Less) => {
-            Some(LengthSpec::Clamp3(atom, val, hi_b))
+            Some(LengthSpec::clamp3(atom, val, hi_b))
         }
     }
 }
@@ -1834,48 +1823,23 @@ fn length_atom_to_spec(atom: LengthAtom) -> LengthSpec {
         LengthAtom::Rem(v) => LengthSpec::Rem(v),
         LengthAtom::Viewport { axis, value } => LengthSpec::Viewport { axis, value },
         LengthAtom::CalcPercent { percent, offset_px } => {
-            LengthSpec::CalcPercentOffset { percent, offset_px }
+            LengthSpec::percent_offset(percent, offset_px)
         }
         LengthAtom::CalcViewport {
             axis,
             value,
             offset_px,
-        } => LengthSpec::CalcViewportOffset {
-            axis,
-            value,
-            offset_px,
-        },
-        LengthAtom::CalcEm { em, offset_px } => LengthSpec::CalcEmOffset { em, offset_px },
-        LengthAtom::CalcRem { rem, offset_px } => LengthSpec::CalcRemOffset { rem, offset_px },
+        } => LengthSpec::viewport_offset(axis, value, offset_px),
+        LengthAtom::CalcEm { em, offset_px } => LengthSpec::em_offset(em, offset_px),
+        LengthAtom::CalcRem { rem, offset_px } => LengthSpec::rem_offset(rem, offset_px),
     }
 }
 
 fn length_spec_to_atom(spec: LengthSpec) -> Option<LengthAtom> {
-    match spec {
-        LengthSpec::Px(v) => Some(LengthAtom::Px(v)),
-        LengthSpec::Percent(p) => Some(LengthAtom::Percent(p)),
-        LengthSpec::Em(v) => Some(LengthAtom::Em(v)),
-        LengthSpec::Rem(v) => Some(LengthAtom::Rem(v)),
-        LengthSpec::Fill => Some(LengthAtom::Percent(100.0)),
-        LengthSpec::CalcPercentOffset { percent, offset_px } => {
-            Some(LengthAtom::CalcPercent { percent, offset_px })
-        }
-        LengthSpec::Viewport { axis, value } => Some(LengthAtom::Viewport { axis, value }),
-        LengthSpec::CalcViewportOffset {
-            axis,
-            value,
-            offset_px,
-        } => Some(LengthAtom::CalcViewport {
-            axis,
-            value,
-            offset_px,
-        }),
-        LengthSpec::CalcEmOffset { em, offset_px } => Some(LengthAtom::CalcEm { em, offset_px }),
-        LengthSpec::CalcRemOffset { rem, offset_px } => {
-            Some(LengthAtom::CalcRem { rem, offset_px })
-        }
-        // Nested mixed min/max/clamp that did not fold stay LengthSpec-only.
-        _ => None,
+    if matches!(spec, LengthSpec::Fill) {
+        Some(LengthAtom::Percent(100.0))
+    } else {
+        spec.as_atom()
     }
 }
 
@@ -1953,10 +1917,6 @@ impl LayoutStyleCss for LayoutStyle {
                 self.display = Some(DisplaySpec::None);
                 self.hidden = true;
             }
-            "display" if val.eq_ignore_ascii_case("contents") => {
-                self.display = Some(DisplaySpec::Contents);
-                self.hidden = false;
-            }
             "display"
                 if val.eq_ignore_ascii_case("flex") || val.eq_ignore_ascii_case("inline-flex") =>
             {
@@ -1966,43 +1926,12 @@ impl LayoutStyleCss for LayoutStyle {
                     DisplaySpec::Flex
                 });
                 // CSS: grid tracks do not apply to flex containers.
-                self.grid_columns = None;
-                self.grid_rows = None;
-                self.grid_columns_unsupported = None;
-                self.grid_rows_unsupported = None;
-                self.grid_columns_repeat = None;
-                self.grid_rows_repeat = None;
-                self.grid_columns_subgrid = false;
-                self.grid_rows_subgrid = false;
-                self.grid_auto_columns = None;
-                self.grid_auto_rows = None;
-                self.grid_auto_flow = None;
-                self.grid_template_areas = None;
-                self.grid_column_line_names = None;
-                self.grid_row_line_names = None;
+                clear_grid_container_props(self);
                 if self.direction.is_none() {
                     self.direction = Some(FlexDirection::Row);
                 }
                 // CSS initial `align-items: stretch`. Seed only while still at the
                 // engine default so a later `align-items:` in the same rule wins.
-                if self.align_items == AlignSpec::Start {
-                    self.align_items = AlignSpec::Stretch;
-                }
-            }
-            "display"
-                if val.eq_ignore_ascii_case("block") || val.eq_ignore_ascii_case("flow-root") =>
-            {
-                // `flow-root` is a block container that also establishes a
-                // block formatting context: its auto height contains floats.
-                self.display = Some(if val.eq_ignore_ascii_case("flow-root") {
-                    DisplaySpec::FlowRoot
-                } else {
-                    DisplaySpec::Block
-                });
-                if self.direction.is_none() {
-                    self.direction = Some(FlexDirection::Column);
-                }
-                // Block formatting: width:auto children stretch to the CB.
                 if self.align_items == AlignSpec::Start {
                     self.align_items = AlignSpec::Stretch;
                 }
@@ -2018,10 +1947,6 @@ impl LayoutStyleCss for LayoutStyle {
             }
             "display" if val.eq_ignore_ascii_case("inline") => {
                 self.display = Some(DisplaySpec::Inline);
-                self.hidden = false;
-            }
-            "display" if val.eq_ignore_ascii_case("inline-block") => {
-                self.display = Some(DisplaySpec::InlineBlock);
                 self.hidden = false;
             }
             "display"
@@ -2090,40 +2015,48 @@ impl LayoutStyleCss for LayoutStyle {
                     &mut self.padding_left,
                     parse_box_edge_length,
                 );
-                self.logical_padding
+                self.logical_edges
+                    .padding
                     .set_phys(PhysicalEdge::Top, self.padding_top.or(self.padding));
-                self.logical_padding
+                self.logical_edges
+                    .padding
                     .set_phys(PhysicalEdge::Right, self.padding_right.or(self.padding));
-                self.logical_padding
+                self.logical_edges
+                    .padding
                     .set_phys(PhysicalEdge::Bottom, self.padding_bottom.or(self.padding));
-                self.logical_padding
+                self.logical_edges
+                    .padding
                     .set_phys(PhysicalEdge::Left, self.padding_left.or(self.padding));
             }
             // Longhand margin/padding % — including top/bottom — use containing-block width
             // at layout time (store LengthSpec; do not drop % when percent_w is None).
             "padding-top" => {
                 self.padding_top = parse_box_edge_length(val);
-                self.logical_padding
+                self.logical_edges
+                    .padding
                     .set_phys(PhysicalEdge::Top, self.padding_top);
             }
             "padding-right" => {
                 self.padding_right = parse_box_edge_length(val);
-                self.logical_padding.set_phys_right(self.padding_right);
+                self.logical_edges
+                    .padding
+                    .set_phys_right(self.padding_right);
             }
             "padding-bottom" => {
                 self.padding_bottom = parse_box_edge_length(val);
-                self.logical_padding
+                self.logical_edges
+                    .padding
                     .set_phys(PhysicalEdge::Bottom, self.padding_bottom);
             }
             "padding-left" => {
                 self.padding_left = parse_box_edge_length(val);
-                self.logical_padding.set_phys_left(self.padding_left);
+                self.logical_edges.padding.set_phys_left(self.padding_left);
             }
             // Logical padding kept until used-value resolve (final `direction`).
             "padding-inline" => {
                 apply_logical_edges(
                     val,
-                    &mut self.logical_padding,
+                    &mut self.logical_edges.padding,
                     LogicalEdge::InlineStart,
                     LogicalEdge::InlineEnd,
                     parse_box_edge_length,
@@ -2131,23 +2064,29 @@ impl LayoutStyleCss for LayoutStyle {
             }
             "padding-block" => apply_logical_edges(
                 val,
-                &mut self.logical_padding,
+                &mut self.logical_edges.padding,
                 LogicalEdge::BlockStart,
                 LogicalEdge::BlockEnd,
                 parse_box_edge_length,
             ),
             "padding-inline-start" => {
-                self.logical_padding.set_start(parse_box_edge_length(val));
+                self.logical_edges
+                    .padding
+                    .set_start(parse_box_edge_length(val));
             }
             "padding-inline-end" => {
-                self.logical_padding.set_end(parse_box_edge_length(val));
+                self.logical_edges
+                    .padding
+                    .set_end(parse_box_edge_length(val));
             }
             "padding-block-start" => {
-                self.logical_padding
+                self.logical_edges
+                    .padding
                     .set(LogicalEdge::BlockStart, parse_box_edge_length(val));
             }
             "padding-block-end" => {
-                self.logical_padding
+                self.logical_edges
+                    .padding
                     .set(LogicalEdge::BlockEnd, parse_box_edge_length(val));
             }
             "margin" => {
@@ -2160,37 +2099,43 @@ impl LayoutStyleCss for LayoutStyle {
                     &mut self.margin_left,
                     parse_margin_length,
                 );
-                self.logical_margin
+                self.logical_edges
+                    .margin
                     .set_phys(PhysicalEdge::Top, self.margin_top.or(self.margin));
-                self.logical_margin
+                self.logical_edges
+                    .margin
                     .set_phys(PhysicalEdge::Right, self.margin_right.or(self.margin));
-                self.logical_margin
+                self.logical_edges
+                    .margin
                     .set_phys(PhysicalEdge::Bottom, self.margin_bottom.or(self.margin));
-                self.logical_margin
+                self.logical_edges
+                    .margin
                     .set_phys(PhysicalEdge::Left, self.margin_left.or(self.margin));
             }
             "margin-top" => {
                 self.margin_top = parse_margin_length(val);
-                self.logical_margin
+                self.logical_edges
+                    .margin
                     .set_phys(PhysicalEdge::Top, self.margin_top);
             }
             "margin-right" => {
                 self.margin_right = parse_margin_length(val);
-                self.logical_margin.set_phys_right(self.margin_right);
+                self.logical_edges.margin.set_phys_right(self.margin_right);
             }
             "margin-bottom" => {
                 self.margin_bottom = parse_margin_length(val);
-                self.logical_margin
+                self.logical_edges
+                    .margin
                     .set_phys(PhysicalEdge::Bottom, self.margin_bottom);
             }
             "margin-left" => {
                 self.margin_left = parse_margin_length(val);
-                self.logical_margin.set_phys_left(self.margin_left);
+                self.logical_edges.margin.set_phys_left(self.margin_left);
             }
             "margin-inline" => {
                 apply_logical_edges(
                     val,
-                    &mut self.logical_margin,
+                    &mut self.logical_edges.margin,
                     LogicalEdge::InlineStart,
                     LogicalEdge::InlineEnd,
                     parse_margin_length,
@@ -2198,23 +2143,27 @@ impl LayoutStyleCss for LayoutStyle {
             }
             "margin-block" => apply_logical_edges(
                 val,
-                &mut self.logical_margin,
+                &mut self.logical_edges.margin,
                 LogicalEdge::BlockStart,
                 LogicalEdge::BlockEnd,
                 parse_margin_length,
             ),
             "margin-inline-start" => {
-                self.logical_margin.set_start(parse_margin_length(val));
+                self.logical_edges
+                    .margin
+                    .set_start(parse_margin_length(val));
             }
             "margin-inline-end" => {
-                self.logical_margin.set_end(parse_margin_length(val));
+                self.logical_edges.margin.set_end(parse_margin_length(val));
             }
             "margin-block-start" => {
-                self.logical_margin
+                self.logical_edges
+                    .margin
                     .set(LogicalEdge::BlockStart, parse_margin_length(val));
             }
             "margin-block-end" => {
-                self.logical_margin
+                self.logical_edges
+                    .margin
                     .set(LogicalEdge::BlockEnd, parse_margin_length(val));
             }
             "width" => assign_parsed_length(&mut self.width, val, LengthSpec::parse),
@@ -2456,49 +2405,49 @@ impl LayoutStyleCss for LayoutStyle {
             "border-width" => apply_border_width_shorthand(self, val),
             "border-top-width" => {
                 if let Some(v) = parse_css_length_px(val, None) {
-                    self.border_top_width = Some(v.max(0.0));
+                    self.border_sides.top_width = Some(v.max(0.0));
                 }
             }
             "border-right-width" => {
                 if let Some(v) = parse_css_length_px(val, None) {
-                    self.border_right_width = Some(v.max(0.0));
+                    self.border_sides.right_width = Some(v.max(0.0));
                 }
             }
             "border-bottom-width" => {
                 if let Some(v) = parse_css_length_px(val, None) {
-                    self.border_bottom_width = Some(v.max(0.0));
+                    self.border_sides.bottom_width = Some(v.max(0.0));
                 }
             }
             "border-left-width" => {
                 if let Some(v) = parse_css_length_px(val, None) {
-                    self.border_left_width = Some(v.max(0.0));
+                    self.border_sides.left_width = Some(v.max(0.0));
                 }
             }
             "border-color" => apply_border_color_shorthand(self, val),
             "border-top-color" => {
                 if let Some(c) = resolve_paint_color(val) {
-                    self.border_top_color = Some(c);
+                    self.border_sides.top_color = Some(c);
                     self.paint_colors.border_top =
                         crate::style::resolve_css_paint_color(val).map(|p| p.to_core());
                 }
             }
             "border-right-color" => {
                 if let Some(c) = resolve_paint_color(val) {
-                    self.border_right_color = Some(c);
+                    self.border_sides.right_color = Some(c);
                     self.paint_colors.border_right =
                         crate::style::resolve_css_paint_color(val).map(|p| p.to_core());
                 }
             }
             "border-bottom-color" => {
                 if let Some(c) = resolve_paint_color(val) {
-                    self.border_bottom_color = Some(c);
+                    self.border_sides.bottom_color = Some(c);
                     self.paint_colors.border_bottom =
                         crate::style::resolve_css_paint_color(val).map(|p| p.to_core());
                 }
             }
             "border-left-color" => {
                 if let Some(c) = resolve_paint_color(val) {
-                    self.border_left_color = Some(c);
+                    self.border_sides.left_color = Some(c);
                     self.paint_colors.border_left =
                         crate::style::resolve_css_paint_color(val).map(|p| p.to_core());
                 }
@@ -2536,56 +2485,80 @@ impl LayoutStyleCss for LayoutStyle {
             }
             "container-type" => {
                 if let Some(container_type) = crate::css_container::parse_container_type(val) {
-                    self.container_type = container_type;
+                    if self.container.container_type != container_type {
+                        self.container.container_type = container_type;
+                    }
                 }
             }
             "container-name" => {
                 if let Some(names) = crate::css_container::parse_container_name(val) {
-                    self.container_name = names;
+                    if self.container.container_name != names {
+                        self.container.container_name = names;
+                    }
                 }
             }
             "container" => {
                 if let Some((names, container_type)) =
                     crate::css_container::parse_container_shorthand(val)
                 {
-                    self.container_name = names;
-                    self.container_type = container_type;
+                    if self.container.container_name != names
+                        || self.container.container_type != container_type
+                    {
+                        self.container.container_name = names;
+                        self.container.container_type = container_type;
+                    }
                 }
             }
             "transform" => {
                 if val.trim().eq_ignore_ascii_case("none") {
-                    self.transform = None;
-                    self.transform_3d = None;
-                    self.unsupported_transform = None;
+                    if self.transforms.transform.is_some()
+                        || self.transforms.transform_3d.is_some()
+                        || self.transforms.unsupported_transform.is_some()
+                    {
+                        self.transforms.transform = None;
+                        self.transforms.transform_3d = None;
+                        self.transforms.unsupported_transform = None;
+                    }
                 } else if let Some(parsed) = crate::css_paint_transform::parse_css_transform(val) {
                     match parsed {
                         crate::css_paint_transform::ParsedPaintTransform::Affine(transform) => {
-                            self.transform = (!transform.is_identity()).then_some(transform);
-                            self.transform_3d = None;
+                            let next = (!transform.is_identity()).then_some(transform);
+                            if self.transforms.transform != next
+                                || self.transforms.transform_3d.is_some()
+                                || self.transforms.unsupported_transform.is_some()
+                            {
+                                self.transforms.transform = next;
+                                self.transforms.transform_3d = None;
+                                self.transforms.unsupported_transform = None;
+                            }
                         }
                         crate::css_paint_transform::ParsedPaintTransform::Mat4(mat4) => {
-                            self.transform = None;
-                            self.transform_3d = Some(mat4);
+                            self.transforms.transform = None;
+                            self.transforms.transform_3d = Some(mat4);
+                            self.transforms.unsupported_transform = None;
                         }
                     }
-                    self.unsupported_transform = None;
                 } else {
-                    self.transform = None;
-                    self.transform_3d = None;
-                    self.unsupported_transform = Some(val.trim().to_owned());
+                    self.transforms.transform = None;
+                    self.transforms.transform_3d = None;
+                    self.transforms.unsupported_transform = Some(val.trim().to_owned());
                 }
             }
             "transform-origin" => {
                 let v = val.trim();
                 if v.eq_ignore_ascii_case("initial") || v.eq_ignore_ascii_case("unset") {
-                    self.transform_origin = None;
+                    if self.transforms.origin.is_some() {
+                        self.transforms.origin = None;
+                    }
                 } else if let Some(origin) = crate::css_paint_transform::parse_transform_origin(v) {
-                    self.transform_origin = Some(origin);
+                    self.transforms.origin = Some(origin);
                 }
             }
             "transform-box" => {
-                if let Some(box_) = crate::css_paint_transform::parse_transform_box(val) {
-                    self.transform_box = box_;
+                if let Some(box_) = crate::css_paint_transform::parse_transform_box(val)
+                    && self.transforms.transform_box != box_
+                {
+                    self.transforms.transform_box = box_;
                 }
             }
             // CSS `perspective` property establishes a parent 3D context we do
@@ -2597,35 +2570,42 @@ impl LayoutStyleCss for LayoutStyle {
                     || v.eq_ignore_ascii_case("initial")
                     || v.eq_ignore_ascii_case("unset")
                 {
-                    self.css_perspective = None;
+                    if self.transforms.css_perspective.is_some() {
+                        self.transforms.css_perspective = None;
+                    }
                 } else if let Some(px) = parse_css_length_px(v, None).filter(|d| d.abs() > 1e-5) {
-                    self.css_perspective = Some(px);
+                    self.transforms.css_perspective = Some(px);
                 }
             }
             "transform-style" => {
                 let v = val.trim().to_ascii_lowercase();
-                self.preserve_3d = v == "preserve-3d";
+                let next = v == "preserve-3d";
+                if self.transforms.preserve_3d != next {
+                    self.transforms.preserve_3d = next;
+                }
             }
             // `perspective-origin` skipped: parent perspective is fail-closed,
             // so there is no stored vanishing point to offset.
             "perspective-origin" => {}
             "top" => {
                 self.offset_top = parse_inset_length(val);
-                self.logical_inset
+                self.logical_edges
+                    .inset
                     .set_phys(PhysicalEdge::Top, self.offset_top);
             }
             "right" => {
                 self.offset_right = parse_inset_length(val);
-                self.logical_inset.set_phys_right(self.offset_right);
+                self.logical_edges.inset.set_phys_right(self.offset_right);
             }
             "bottom" => {
                 self.offset_bottom = parse_inset_length(val);
-                self.logical_inset
+                self.logical_edges
+                    .inset
                     .set_phys(PhysicalEdge::Bottom, self.offset_bottom);
             }
             "left" => {
                 self.offset_left = parse_inset_length(val);
-                self.logical_inset.set_phys_left(self.offset_left);
+                self.logical_edges.inset.set_phys_left(self.offset_left);
             }
             "inset" => {
                 apply_position_inset_shorthand(
@@ -2635,20 +2615,24 @@ impl LayoutStyleCss for LayoutStyle {
                     &mut self.offset_bottom,
                     &mut self.offset_left,
                 );
-                self.logical_inset
+                self.logical_edges
+                    .inset
                     .set_phys(PhysicalEdge::Top, self.offset_top);
-                self.logical_inset
+                self.logical_edges
+                    .inset
                     .set_phys(PhysicalEdge::Right, self.offset_right);
-                self.logical_inset
+                self.logical_edges
+                    .inset
                     .set_phys(PhysicalEdge::Bottom, self.offset_bottom);
-                self.logical_inset
+                self.logical_edges
+                    .inset
                     .set_phys(PhysicalEdge::Left, self.offset_left);
             }
             // Logical inset kept until used-value resolve (final `direction`).
             "inset-inline" => {
                 apply_logical_edges(
                     val,
-                    &mut self.logical_inset,
+                    &mut self.logical_edges.inset,
                     LogicalEdge::InlineStart,
                     LogicalEdge::InlineEnd,
                     parse_inset_length,
@@ -2656,23 +2640,25 @@ impl LayoutStyleCss for LayoutStyle {
             }
             "inset-block" => apply_logical_edges(
                 val,
-                &mut self.logical_inset,
+                &mut self.logical_edges.inset,
                 LogicalEdge::BlockStart,
                 LogicalEdge::BlockEnd,
                 parse_inset_length,
             ),
             "inset-inline-start" => {
-                self.logical_inset.set_start(parse_inset_length(val));
+                self.logical_edges.inset.set_start(parse_inset_length(val));
             }
             "inset-inline-end" => {
-                self.logical_inset.set_end(parse_inset_length(val));
+                self.logical_edges.inset.set_end(parse_inset_length(val));
             }
             "inset-block-start" => {
-                self.logical_inset
+                self.logical_edges
+                    .inset
                     .set(LogicalEdge::BlockStart, parse_inset_length(val));
             }
             "inset-block-end" => {
-                self.logical_inset
+                self.logical_edges
+                    .inset
                     .set(LogicalEdge::BlockEnd, parse_inset_length(val));
             }
             "text-overflow" if val.eq_ignore_ascii_case("ellipsis") => {
@@ -2704,18 +2690,21 @@ impl LayoutStyleCss for LayoutStyle {
             "word-break" => {
                 // `keep-all` has no CJK-specific breaking here: it is `normal`.
                 if val.trim().eq_ignore_ascii_case("keep-all") {
-                    self.word_break = Some(nana_ui_core::WordBreakSpec::Normal);
+                    self.text_ext.word_break = Some(nana_ui_core::WordBreakSpec::Normal);
                 } else if let Some(spec) = parse_css_word_break(val) {
-                    self.word_break = Some(spec);
+                    self.text_ext.word_break = Some(spec);
                 }
             }
             "overflow-wrap" | "word-wrap" => {
                 let kw = val.trim().to_ascii_lowercase();
-                self.overflow_wrap = match kw.as_str() {
+                let next = match kw.as_str() {
                     "anywhere" | "break-word" => Some(nana_ui_core::OverflowWrapSpec::Anywhere),
                     "normal" => Some(nana_ui_core::OverflowWrapSpec::Normal),
-                    _ => self.overflow_wrap,
+                    _ => self.text_ext.overflow_wrap,
                 };
+                if self.text_ext.overflow_wrap != next {
+                    self.text_ext.overflow_wrap = next;
+                }
             }
             "aspect-ratio" => {
                 if let Some(ratio) = parse_css_aspect_ratio(val) {
@@ -2737,27 +2726,30 @@ impl LayoutStyleCss for LayoutStyle {
                     self.text_align = align;
                     // Inherited by the text below, as `text-align` is: a
                     // paragraph under a justified box justifies its lines.
-                    self.text_typography.justify_lines = Some(align == TextAlignSpec::Justify);
+                    let next = Some(align == TextAlignSpec::Justify);
+                    if self.text_ext.text_typography.justify_lines != next {
+                        self.text_ext.text_typography.justify_lines = next;
+                    }
                 }
             }
             "text-spacing-trim" => {
                 if let Some(trim) = parse_css_text_spacing_trim(val) {
-                    self.text_typography.spacing_trim = Some(trim);
+                    self.text_ext.text_typography.spacing_trim = Some(trim);
                 }
             }
             "text-autospace" => {
                 if let Some(autospace) = parse_css_text_autospace(val) {
-                    self.text_typography.autospace = Some(autospace);
+                    self.text_ext.text_typography.autospace = Some(autospace);
                 }
             }
             "text-justify" => {
                 if let Some(justify) = parse_css_text_justify(val) {
-                    self.text_typography.justify = Some(justify);
+                    self.text_ext.text_typography.justify = Some(justify);
                 }
             }
             "text-wrap-style" => {
                 if let Some(style) = parse_css_text_wrap_style(val) {
-                    self.text_typography.wrap_style = Some(style);
+                    self.text_ext.text_typography.wrap_style = Some(style);
                 }
             }
             "direction" => apply_css_direction(self, val),
@@ -2765,25 +2757,6 @@ impl LayoutStyleCss for LayoutStyle {
             "text-orientation" => apply_css_text_orientation(self, val),
             // Fail-closed: do not pretend bidi isolation or IFC bidi.
             "unicode-bidi" => {}
-            "float" => {
-                let kw = val.trim().to_ascii_lowercase();
-                self.float = match kw.as_str() {
-                    "left" => FloatSpec::Left,
-                    "right" => FloatSpec::Right,
-                    "none" => FloatSpec::None,
-                    _ => self.float,
-                };
-            }
-            "clear" => {
-                let kw = val.trim().to_ascii_lowercase();
-                self.clear = match kw.as_str() {
-                    "left" => ClearSpec::Left,
-                    "right" => ClearSpec::Right,
-                    "both" => ClearSpec::Both,
-                    "none" => ClearSpec::None,
-                    _ => self.clear,
-                };
-            }
             "font-size" => {
                 if let Some(px) = parse_css_font_size(val) {
                     self.font_size = Some(px);
@@ -2805,7 +2778,7 @@ impl LayoutStyleCss for LayoutStyle {
             "font-variation-settings" => apply_font_variation_settings(self, val),
             "font-family" => {
                 if let Some(name) = parse_css_font_family(val) {
-                    self.font_family = Some(name);
+                    self.text_ext.font_family = Some(name);
                 }
             }
             "line-height" => {
@@ -2815,17 +2788,17 @@ impl LayoutStyleCss for LayoutStyle {
             }
             "letter-spacing" => {
                 if let Some(px) = parse_css_letter_spacing(val) {
-                    self.letter_spacing = Some(px);
+                    self.text_ext.letter_spacing = Some(px);
                 }
             }
             "font-kerning" => {
                 if let Some(kerning) = parse_css_font_kerning(val) {
-                    self.font_kerning = Some(kerning);
+                    self.text_ext.font_kerning = Some(kerning);
                 }
             }
             "line-break" => {
                 if let Some(mode) = parse_css_line_break(val) {
-                    self.line_break = Some(mode);
+                    self.text_ext.line_break = Some(mode);
                 }
             }
             "color" => {
@@ -2861,25 +2834,25 @@ impl LayoutStyleCss for LayoutStyle {
                 if self.display.is_some_and(DisplaySpec::is_flex_container) {
                     // inert under flex
                 } else {
-                    apply_grid_auto_tracks(val, percent_w, &mut self.grid_auto_columns);
+                    apply_grid_auto_tracks(val, percent_w, &mut self.grid.auto_columns);
                 }
             }
             "grid-auto-rows" => {
                 if self.display.is_some_and(DisplaySpec::is_flex_container) {
                 } else {
-                    apply_grid_auto_tracks(val, percent_h, &mut self.grid_auto_rows);
+                    apply_grid_auto_tracks(val, percent_h, &mut self.grid.auto_rows);
                 }
             }
             "grid-auto-flow" => {
                 if self.display.is_some_and(DisplaySpec::is_flex_container) {
                 } else if let Some(flow) = parse_grid_auto_flow(val) {
-                    self.grid_auto_flow = Some(flow);
+                    self.grid.auto_flow = Some(flow);
                 }
             }
             "grid-template-areas" => {
                 if self.display.is_some_and(DisplaySpec::is_flex_container) {
                 } else if let Some(areas) = parse_grid_template_areas(val) {
-                    self.grid_template_areas = Some(areas);
+                    self.grid.template_areas = Some(areas);
                     if self.display.is_none() {
                         self.display = Some(DisplaySpec::Grid);
                     }
@@ -2887,37 +2860,37 @@ impl LayoutStyleCss for LayoutStyle {
             }
             "grid-column" => {
                 if let Some((start, end)) = parse_grid_axis_placement(val) {
-                    self.grid_placement.column_start = start;
-                    self.grid_placement.column_end = end;
+                    self.grid.placement.column_start = start;
+                    self.grid.placement.column_end = end;
                 }
             }
             "grid-row" => {
                 if let Some((start, end)) = parse_grid_axis_placement(val) {
-                    self.grid_placement.row_start = start;
-                    self.grid_placement.row_end = end;
+                    self.grid.placement.row_start = start;
+                    self.grid.placement.row_end = end;
                 }
             }
             "grid-column-start" => {
                 if let Some(line) = parse_grid_line(val) {
-                    self.grid_placement.column_start = line;
+                    self.grid.placement.column_start = line;
                 }
             }
             "grid-column-end" => {
                 if let Some(line) = parse_grid_line(val) {
-                    self.grid_placement.column_end = line;
+                    self.grid.placement.column_end = line;
                 }
             }
             "grid-row-start" => {
                 if let Some(line) = parse_grid_line(val) {
-                    self.grid_placement.row_start = line;
+                    self.grid.placement.row_start = line;
                 }
             }
             "grid-row-end" => {
                 if let Some(line) = parse_grid_line(val) {
-                    self.grid_placement.row_end = line;
+                    self.grid.placement.row_end = line;
                 }
             }
-            "grid-area" => apply_grid_area(&mut self.grid_placement, val),
+            "grid-area" => apply_grid_area(&mut self.grid.placement, val),
             "visibility" if val.eq_ignore_ascii_case("hidden") => {
                 self.paint.visibility = Some(VisibilitySpec::Hidden);
             }
@@ -3081,20 +3054,24 @@ pub fn parse_gap_length(input: &str) -> Option<LengthSpec> {
         LengthSpec::Percent(p) => Some(LengthSpec::Percent(p.clamp(0.0, 100.0))),
         LengthSpec::Em(v) => Some(LengthSpec::Em(v.max(0.0))),
         LengthSpec::Rem(v) => Some(LengthSpec::Rem(v.max(0.0))),
-        LengthSpec::CalcPercentOffset { percent, offset_px } => {
-            Some(LengthSpec::CalcPercentOffset {
-                percent: percent.clamp(0.0, 100.0),
+        LengthSpec::PercentOffset { .. } => {
+            let (percent, offset_px) = spec.as_percent_offset().expect("percent offset");
+            Some(LengthSpec::percent_offset(
+                percent.clamp(0.0, 100.0),
                 offset_px,
-            })
+            ))
         }
-        LengthSpec::Viewport { .. }
-        | LengthSpec::CalcViewportOffset { .. }
-        | LengthSpec::CalcEmOffset { .. }
-        | LengthSpec::CalcRemOffset { .. }
-        | LengthSpec::Min2(_, _)
-        | LengthSpec::Max2(_, _)
-        | LengthSpec::Clamp3(_, _, _)
-        | LengthSpec::Calc(_) => Some(spec),
+        LengthSpec::Calc(_) => {
+            if let Some((percent, offset_px)) = spec.as_percent_offset() {
+                Some(LengthSpec::percent_offset(
+                    percent.clamp(0.0, 100.0),
+                    offset_px,
+                ))
+            } else {
+                Some(spec)
+            }
+        }
+        LengthSpec::Viewport { .. } => Some(spec),
         LengthSpec::Fill
         | LengthSpec::Shrink
         | LengthSpec::Auto
@@ -3222,23 +3199,45 @@ pub fn dir_spec_from_html_attr(raw: &str) -> Option<DirSpec> {
     }
 }
 
+fn clear_grid_container_props(layout: &mut LayoutStyle) {
+    if layout.grid.is_shared_default() {
+        return;
+    }
+    let placement = layout.grid.placement.clone();
+    layout.grid = if placement.is_shared_default() {
+        Default::default()
+    } else {
+        nana_ui_core::GridStyle {
+            placement,
+            ..Default::default()
+        }
+        .into()
+    };
+}
+
 fn apply_css_writing_mode(layout: &mut LayoutStyle, val: &str) {
     let v = val.trim().to_ascii_lowercase();
     match v.as_str() {
         "horizontal-tb" | "initial" | "unset" | "inherit" | "lr-tb" | "lr" => {
             layout.set_writing_mode(WritingModeSpec::HorizontalTb);
-            layout.unsupported_writing_mode = false;
+            if layout.text_ext.unsupported_writing_mode {
+                layout.text_ext.unsupported_writing_mode = false;
+            }
         }
         "vertical-rl" | "tb-rl" | "tb" => {
             layout.set_writing_mode(WritingModeSpec::VerticalRl);
-            layout.unsupported_writing_mode = false;
+            if layout.text_ext.unsupported_writing_mode {
+                layout.text_ext.unsupported_writing_mode = false;
+            }
         }
         "vertical-lr" => {
             layout.set_writing_mode(WritingModeSpec::VerticalLr);
-            layout.unsupported_writing_mode = false;
+            if layout.text_ext.unsupported_writing_mode {
+                layout.text_ext.unsupported_writing_mode = false;
+            }
         }
         "sideways-rl" | "sideways-lr" | "bt" => {
-            layout.unsupported_writing_mode = true;
+            layout.text_ext.unsupported_writing_mode = true;
         }
         _ => {}
     }
@@ -3341,8 +3340,8 @@ fn apply_box_edge_shorthand(
 /// After clearing a template axis, pick remaining tracks / auto-fill:
 /// columns → Row；仅 rows → Column；双边皆空 → `display:grid|inline-grid` 默认 Row（勿残留 Column）。
 fn recompute_grid_axis_direction(layout: &mut LayoutStyle) {
-    let has_cols = layout.grid_columns.as_ref().is_some_and(|t| !t.is_empty());
-    let has_rows = layout.grid_rows.as_ref().is_some_and(|t| !t.is_empty());
+    let has_cols = layout.grid.columns.as_ref().is_some_and(|t| !t.is_empty());
+    let has_rows = layout.grid.rows.as_ref().is_some_and(|t| !t.is_empty());
     if has_cols {
         layout.direction = Some(FlexDirection::Row);
     } else if has_rows {
@@ -3352,14 +3351,12 @@ fn recompute_grid_axis_direction(layout: &mut LayoutStyle) {
     }
 }
 
-/// 解析结果：支持轨列表 / auto-fit|auto-fill 模式 / subgrid / 明确 Unsupported / 非法。
+/// 解析结果：支持轨列表 / auto-fit|auto-fill 模式 / 明确 Unsupported / 非法。
 #[derive(Debug, Clone, PartialEq)]
 pub enum GridTrackListParse {
     Tracks(Vec<GridTrack>),
     /// 整表 `repeat(auto-fit|auto-fill, <track-list>)`；布局按容器展开。
     RepeatAuto(GridRepeatAuto),
-    /// `subgrid`（可跟线名 `[a] [b]`）。布局继承父轨几何，不是轨列表。
-    Subgrid,
     /// 混写 auto-fit/auto-fill 等无法展开的语法；**不是**解析失败、也不是 `none`。
     Unsupported(GridTrackListUnsupported),
     Invalid,
@@ -3373,18 +3370,26 @@ fn set_grid_template_axis(
     repeat: Option<GridRepeatAuto>,
     names: Option<Vec<Vec<String>>>,
 ) {
-    if columns {
-        layout.grid_columns = tracks;
-        layout.grid_columns_unsupported = unsupported;
-        layout.grid_columns_repeat = repeat.map(Into::into);
-        layout.grid_columns_subgrid = false;
-        layout.grid_column_line_names = names;
-    } else {
-        layout.grid_rows = tracks;
-        layout.grid_rows_unsupported = unsupported;
-        layout.grid_rows_repeat = repeat.map(Into::into);
-        layout.grid_rows_subgrid = false;
-        layout.grid_row_line_names = names;
+    let clearing = tracks.is_none() && unsupported.is_none() && repeat.is_none() && names.is_none();
+    if clearing && layout.grid.is_shared_default() {
+        return;
+    }
+    {
+        let grid = &mut *layout.grid;
+        if columns {
+            grid.columns = tracks;
+            grid.columns_unsupported = unsupported;
+            grid.columns_repeat = repeat.map(Into::into);
+            grid.column_line_names = names;
+        } else {
+            grid.rows = tracks;
+            grid.rows_unsupported = unsupported;
+            grid.rows_repeat = repeat.map(Into::into);
+            grid.row_line_names = names;
+        }
+    }
+    if &*layout.grid == &nana_ui_core::GridStyle::default() {
+        layout.grid = Default::default();
     }
 }
 
@@ -3443,19 +3448,6 @@ fn apply_grid_template_axis(
             }
             recompute_grid_axis_direction(layout);
         }
-        GridTrackListParse::Subgrid => {
-            let names = parse_subgrid_line_names(raw);
-            set_grid_template_axis(layout, columns, None, None, None, names);
-            if columns {
-                layout.grid_columns_subgrid = true;
-            } else {
-                layout.grid_rows_subgrid = true;
-            }
-            if layout.display.is_none() {
-                layout.display = Some(DisplaySpec::Grid);
-            }
-            recompute_grid_axis_direction(layout);
-        }
         GridTrackListParse::Invalid => {
             // Do not keep a previous template when the new value fails to parse
             // (`80px repeat(auto-fit, garbage)` must not silently stay `80px`).
@@ -3477,9 +3469,8 @@ fn apply_grid_auto_tracks(raw: &str, percent_base: Option<f32>, dest: &mut Optio
     }
     match parse_grid_track_list_result(trimmed, percent_base) {
         GridTrackListParse::Tracks(tracks) => *dest = Some(tracks),
-        // auto-fit/fill / subgrid on auto tracks: leave unchanged.
+        // auto-fit/fill on auto tracks: leave unchanged.
         GridTrackListParse::RepeatAuto(_)
-        | GridTrackListParse::Subgrid
         | GridTrackListParse::Unsupported(_)
         | GridTrackListParse::Invalid => {}
     }
@@ -3659,58 +3650,6 @@ fn parse_grid_line_names(raw: &str) -> Option<Vec<Vec<String>>> {
     Some(names)
 }
 
-/// Remainder after `subgrid` may only be `[line-name]` groups (no tracks).
-fn is_only_line_name_groups(raw: &str) -> bool {
-    let mut rest = raw.trim();
-    if rest.is_empty() {
-        return true;
-    }
-    while !rest.is_empty() {
-        rest = rest.trim_start();
-        if rest.is_empty() {
-            return true;
-        }
-        if !rest.starts_with('[') {
-            return false;
-        }
-        let Some(end) = rest.find(']') else {
-            return false;
-        };
-        rest = rest[end + 1..].trim_start();
-    }
-    true
-}
-
-/// `subgrid [a] [b]`：每个 `[]` 是一根独立的线（不像普通轨表那样合并相邻名）。
-fn parse_subgrid_line_names(raw: &str) -> Option<Vec<Vec<String>>> {
-    let rest = strip_prefix_ci(raw.trim(), "subgrid")
-        .map(|s| s.trim())
-        .unwrap_or(raw.trim());
-    if rest.is_empty() {
-        return None;
-    }
-    let mut names = Vec::new();
-    let mut leftover = rest;
-    while !leftover.is_empty() {
-        leftover = leftover.trim_start();
-        if leftover.is_empty() {
-            break;
-        }
-        if !leftover.starts_with('[') {
-            break;
-        }
-        let end = leftover.find(']')?;
-        let group: Vec<String> = leftover[1..end]
-            .split_whitespace()
-            .filter(|s| is_css_ident(s))
-            .map(|s| s.to_string())
-            .collect();
-        names.push(group);
-        leftover = leftover[end + 1..].trim_start();
-    }
-    names.iter().any(|line| !line.is_empty()).then_some(names)
-}
-
 /// CSS `<grid-line>` subset: `auto` / integer / `span N` / custom-ident.
 fn parse_grid_line(raw: &str) -> Option<GridLine> {
     let s = raw.trim();
@@ -3844,7 +3783,6 @@ fn apply_grid_area(placement: &mut GridPlacement, raw: &str) {
 /// `fit-content(<length-percentage>)`、`minmax(min, Nfr|px|%|auto|*-content)`、
 /// `repeat(N, …)`（固定次数）。
 ///
-/// 整表 `subgrid`（可跟 `[line]` 名）→ [`GridTrackListParse::Subgrid`]。
 /// 整表或混写 `repeat(auto-fit|auto-fill, <track-list>)` →
 /// [`GridTrackListParse::RepeatAuto`]（`prefix` / pattern / `suffix`）。
 /// 嵌套 auto-fit / auto-fill 或无法展开的 pattern → [`GridTrackListParse::Unsupported`]。
@@ -3872,22 +3810,12 @@ pub fn parse_grid_template_columns(raw: &str, percent_base: Option<f32>) -> Opti
 }
 
 fn parse_grid_track_list(raw: &str, percent_base: Option<f32>) -> GridTrackListParse {
-    if let Some(rest) = strip_prefix_ci(raw.trim(), "subgrid") {
-        let rest = rest.trim_start();
-        if rest.is_empty() || is_only_line_name_groups(rest) {
-            return GridTrackListParse::Subgrid;
-        }
-        return GridTrackListParse::Invalid;
-    }
     let mut tracks = Vec::new();
     let mut rest = raw;
     while !rest.is_empty() {
         rest = rest.trim_start();
         if rest.is_empty() {
             break;
-        }
-        if is_subgrid_track_token(rest) {
-            return GridTrackListParse::Unsupported(GridTrackListUnsupported::Subgrid);
         }
         // repeat(N, tracks…) — fixed N expands；整表 auto-fit/fill 保留 pattern。
         if let Some(after) = strip_prefix_ci(rest, "repeat(") {
@@ -3920,9 +3848,7 @@ fn parse_grid_track_list(raw: &str, percent_base: Option<f32>) -> GridTrackListP
                     GridTrackListParse::RepeatAuto(_) | GridTrackListParse::Unsupported(_) => {
                         return GridTrackListParse::Unsupported(kind);
                     }
-                    GridTrackListParse::Invalid
-                    | GridTrackListParse::Subgrid
-                    | GridTrackListParse::Tracks(_) => {
+                    GridTrackListParse::Invalid | GridTrackListParse::Tracks(_) => {
                         return GridTrackListParse::Invalid;
                     }
                 };
@@ -3932,7 +3858,7 @@ fn parse_grid_track_list(raw: &str, percent_base: Option<f32>) -> GridTrackListP
                     GridTrackListParse::RepeatAuto(_) | GridTrackListParse::Unsupported(_) => {
                         return GridTrackListParse::Unsupported(kind);
                     }
-                    GridTrackListParse::Invalid | GridTrackListParse::Subgrid => {
+                    GridTrackListParse::Invalid => {
                         return GridTrackListParse::Invalid;
                     }
                 };
@@ -3962,7 +3888,7 @@ fn parse_grid_track_list(raw: &str, percent_base: Option<f32>) -> GridTrackListP
                 GridTrackListParse::RepeatAuto(rep) => {
                     return GridTrackListParse::Unsupported(rep.kind);
                 }
-                GridTrackListParse::Subgrid | GridTrackListParse::Tracks(_) => {
+                GridTrackListParse::Tracks(_) => {
                     return GridTrackListParse::Invalid;
                 }
             }
@@ -4143,17 +4069,6 @@ fn contains_repeat_token(pattern: &str) -> bool {
 
 fn is_ident_byte(byte: u8) -> bool {
     byte.is_ascii_alphanumeric() || byte == b'-' || byte == b'_'
-}
-
-fn is_subgrid_track_token(rest: &str) -> bool {
-    let Some(after) = strip_prefix_ci(rest, "subgrid") else {
-        return false;
-    };
-    match after.chars().next() {
-        None => true,
-        Some(c) if c.is_ascii_alphanumeric() || c == '-' || c == '_' => false,
-        Some(_) => true,
-    }
 }
 
 /// Split `inner…)rest` where `inner` is balanced relative to an already-consumed `(`.
@@ -4726,12 +4641,14 @@ pub fn parse_css_font_size(input: &str) -> Option<f32> {
 pub fn apply_font_variation_settings(style: &mut LayoutStyle, val: &str) {
     let trimmed = val.trim();
     if trimmed.is_empty() || trimmed.eq_ignore_ascii_case("normal") {
-        style.unsupported_font_variation = false;
-        style.font_variation_settings = Some(Vec::new());
+        if style.text_ext.unsupported_font_variation {
+            style.text_ext.unsupported_font_variation = false;
+        }
+        style.text_ext.font_variation_settings = Some(Vec::new());
         return;
     }
     let Some(axes) = parse_css_font_variation_settings(trimmed) else {
-        style.unsupported_font_variation = true;
+        style.text_ext.unsupported_font_variation = true;
         return;
     };
     let wght = axes
@@ -4739,8 +4656,10 @@ pub fn apply_font_variation_settings(style: &mut LayoutStyle, val: &str) {
         .rev()
         .find(|axis| axis.tag == *b"wght")
         .map(|axis| axis.value);
-    style.font_variation_settings = Some(axes);
-    style.unsupported_font_variation = false;
+    style.text_ext.font_variation_settings = Some(axes);
+    if style.text_ext.unsupported_font_variation {
+        style.text_ext.unsupported_font_variation = false;
+    }
     if let Some(wght) = wght {
         style.font_weight = Some(wght.round().clamp(1.0, 1000.0) as u16);
     }
@@ -5264,10 +5183,10 @@ fn apply_border_width_shorthand(style: &mut LayoutStyle, val: &str) {
         return;
     };
     style.border_width = Some(top.max(right).max(bottom).max(left));
-    style.border_top_width = Some(top);
-    style.border_right_width = Some(right);
-    style.border_bottom_width = Some(bottom);
-    style.border_left_width = Some(left);
+    style.border_sides.top_width = Some(top);
+    style.border_sides.right_width = Some(right);
+    style.border_sides.bottom_width = Some(bottom);
+    style.border_sides.left_width = Some(left);
 }
 
 fn apply_border_color_shorthand(style: &mut LayoutStyle, val: &str) {
@@ -5283,10 +5202,10 @@ fn apply_border_color_shorthand(style: &mut LayoutStyle, val: &str) {
         return;
     };
     style.border_color = Some(top);
-    style.border_top_color = Some(top);
-    style.border_right_color = Some(right);
-    style.border_bottom_color = Some(bottom);
-    style.border_left_color = Some(left);
+    style.border_sides.top_color = Some(top);
+    style.border_sides.right_color = Some(right);
+    style.border_sides.bottom_color = Some(bottom);
+    style.border_sides.left_color = Some(left);
     if let Some([top, right, bottom, left]) = parts
         .iter()
         .map(|part| crate::style::resolve_css_paint_color(part).map(|p| p.to_core()))
@@ -5314,10 +5233,10 @@ fn apply_border_style_shorthand(style: &mut LayoutStyle, val: &str) {
         return;
     };
     style.border_style = Some(top);
-    style.border_top_style = Some(top);
-    style.border_right_style = Some(right);
-    style.border_bottom_style = Some(bottom);
-    style.border_left_style = Some(left);
+    style.border_sides.top_style = Some(top);
+    style.border_sides.right_style = Some(right);
+    style.border_sides.bottom_style = Some(bottom);
+    style.border_sides.left_style = Some(left);
 }
 
 fn apply_border_side_style(style: &mut LayoutStyle, val: &str, side: usize) {
@@ -5325,10 +5244,10 @@ fn apply_border_side_style(style: &mut LayoutStyle, val: &str, side: usize) {
         return;
     };
     match side {
-        0 => style.border_top_style = Some(parsed),
-        1 => style.border_right_style = Some(parsed),
-        2 => style.border_bottom_style = Some(parsed),
-        _ => style.border_left_style = Some(parsed),
+        0 => style.border_sides.top_style = Some(parsed),
+        1 => style.border_sides.right_style = Some(parsed),
+        2 => style.border_sides.bottom_style = Some(parsed),
+        _ => style.border_sides.left_style = Some(parsed),
     }
 }
 
@@ -5376,15 +5295,15 @@ fn assign_border_side_width(style: &mut LayoutStyle, side: Option<usize>, width:
     match side {
         None => {
             style.border_width = Some(width);
-            style.border_top_width = Some(width);
-            style.border_right_width = Some(width);
-            style.border_bottom_width = Some(width);
-            style.border_left_width = Some(width);
+            style.border_sides.top_width = Some(width);
+            style.border_sides.right_width = Some(width);
+            style.border_sides.bottom_width = Some(width);
+            style.border_sides.left_width = Some(width);
         }
-        Some(0) => style.border_top_width = Some(width),
-        Some(1) => style.border_right_width = Some(width),
-        Some(2) => style.border_bottom_width = Some(width),
-        _ => style.border_left_width = Some(width),
+        Some(0) => style.border_sides.top_width = Some(width),
+        Some(1) => style.border_sides.right_width = Some(width),
+        Some(2) => style.border_sides.bottom_width = Some(width),
+        _ => style.border_sides.left_width = Some(width),
     }
 }
 
@@ -5392,15 +5311,15 @@ fn assign_border_side_color(style: &mut LayoutStyle, side: Option<usize>, color:
     match side {
         None => {
             style.border_color = Some(color);
-            style.border_top_color = Some(color);
-            style.border_right_color = Some(color);
-            style.border_bottom_color = Some(color);
-            style.border_left_color = Some(color);
+            style.border_sides.top_color = Some(color);
+            style.border_sides.right_color = Some(color);
+            style.border_sides.bottom_color = Some(color);
+            style.border_sides.left_color = Some(color);
         }
-        Some(0) => style.border_top_color = Some(color),
-        Some(1) => style.border_right_color = Some(color),
-        Some(2) => style.border_bottom_color = Some(color),
-        _ => style.border_left_color = Some(color),
+        Some(0) => style.border_sides.top_color = Some(color),
+        Some(1) => style.border_sides.right_color = Some(color),
+        Some(2) => style.border_sides.bottom_color = Some(color),
+        _ => style.border_sides.left_color = Some(color),
     }
 }
 
@@ -5444,15 +5363,15 @@ fn assign_border_side_style(style: &mut LayoutStyle, side: Option<usize>, parsed
     match side {
         None => {
             style.border_style = Some(parsed);
-            style.border_top_style = Some(parsed);
-            style.border_right_style = Some(parsed);
-            style.border_bottom_style = Some(parsed);
-            style.border_left_style = Some(parsed);
+            style.border_sides.top_style = Some(parsed);
+            style.border_sides.right_style = Some(parsed);
+            style.border_sides.bottom_style = Some(parsed);
+            style.border_sides.left_style = Some(parsed);
         }
-        Some(0) => style.border_top_style = Some(parsed),
-        Some(1) => style.border_right_style = Some(parsed),
-        Some(2) => style.border_bottom_style = Some(parsed),
-        _ => style.border_left_style = Some(parsed),
+        Some(0) => style.border_sides.top_style = Some(parsed),
+        Some(1) => style.border_sides.right_style = Some(parsed),
+        Some(2) => style.border_sides.bottom_style = Some(parsed),
+        _ => style.border_sides.left_style = Some(parsed),
     }
 }
 
@@ -6007,17 +5926,26 @@ mod tests {
         assert_eq!(layout.padding_bottom, Some(LengthSpec::Px(8.0)));
         // `upright` makes the used direction `ltr`: inline-start is the top.
         layout.apply_css_text("text-orientation: upright", None, None);
-        assert_eq!(layout.text_orientation, Some(TextOrientationSpec::Upright));
+        assert_eq!(
+            layout.text_ext.text_orientation,
+            Some(TextOrientationSpec::Upright)
+        );
         assert_eq!(layout.padding_top, Some(LengthSpec::Px(8.0)));
         assert!(layout.padding_bottom.is_none());
         layout.apply_css_text("text-orientation: sideways-right", None, None);
-        assert_eq!(layout.text_orientation, Some(TextOrientationSpec::Sideways));
+        assert_eq!(
+            layout.text_ext.text_orientation,
+            Some(TextOrientationSpec::Sideways)
+        );
         assert_eq!(layout.padding_bottom, Some(LengthSpec::Px(8.0)));
         // An unknown keyword is dropped; `inherit` goes back to the parent's.
         layout.apply_css_text("text-orientation: diagonal", None, None);
-        assert_eq!(layout.text_orientation, Some(TextOrientationSpec::Sideways));
+        assert_eq!(
+            layout.text_ext.text_orientation,
+            Some(TextOrientationSpec::Sideways)
+        );
         layout.apply_css_text("text-orientation: inherit", None, None);
-        assert_eq!(layout.text_orientation, None);
+        assert_eq!(layout.text_ext.text_orientation, None);
     }
 
     #[test]
@@ -6025,13 +5953,13 @@ mod tests {
         let mut layout = LayoutStyle::default();
         layout.apply_css_text("writing-mode: vertical-rl", None, None);
         assert_eq!(layout.writing_mode, Some(WritingModeSpec::VerticalRl));
-        assert!(!layout.unsupported_writing_mode);
+        assert!(!layout.text_ext.unsupported_writing_mode);
         layout.apply_css_text("writing-mode: vertical-lr", None, None);
         assert_eq!(layout.writing_mode, Some(WritingModeSpec::VerticalLr));
-        assert!(!layout.unsupported_writing_mode);
+        assert!(!layout.text_ext.unsupported_writing_mode);
         layout.apply_css_text("writing-mode: horizontal-tb", None, None);
         assert_eq!(layout.writing_mode, Some(WritingModeSpec::HorizontalTb));
-        assert!(!layout.unsupported_writing_mode);
+        assert!(!layout.text_ext.unsupported_writing_mode);
     }
 
     #[test]
@@ -6043,7 +5971,7 @@ mod tests {
             None,
         );
         assert!(layout.writing_mode.is_none());
-        assert!(layout.unsupported_writing_mode);
+        assert!(layout.text_ext.unsupported_writing_mode);
         assert_eq!(layout.padding_top, Some(LengthSpec::Px(8.0)));
     }
 
@@ -6241,37 +6169,22 @@ mod tests {
     fn calc_percent_minus_px_parses() {
         assert_eq!(
             LengthSpec::parse("calc(100% - 40px)"),
-            Some(LengthSpec::CalcPercentOffset {
-                percent: 100.0,
-                offset_px: -40.0,
-            })
+            Some(LengthSpec::percent_offset(100.0, -40.0))
         );
         assert_eq!(
             LengthSpec::parse("calc(50% + 10px)"),
-            Some(LengthSpec::CalcPercentOffset {
-                percent: 50.0,
-                offset_px: 10.0,
-            })
+            Some(LengthSpec::percent_offset(50.0, 10.0))
         );
         let mut layout = LayoutStyle::default();
         layout.apply_css_text("width: calc(100% - 40px)", None, None);
-        assert_eq!(
-            layout.width,
-            Some(LengthSpec::CalcPercentOffset {
-                percent: 100.0,
-                offset_px: -40.0,
-            })
-        );
+        assert_eq!(layout.width, Some(LengthSpec::percent_offset(100.0, -40.0)));
     }
 
     #[test]
     fn calc_lightweight_extra_forms_parse() {
         assert_eq!(
             LengthSpec::parse("calc(40px + 50%)"),
-            Some(LengthSpec::CalcPercentOffset {
-                percent: 50.0,
-                offset_px: 40.0,
-            })
+            Some(LengthSpec::percent_offset(50.0, 40.0))
         );
         assert_eq!(
             LengthSpec::parse("calc(25% + 25%)"),
@@ -6307,17 +6220,11 @@ mod tests {
         );
         assert_eq!(
             LengthSpec::parse("calc(100% - 12 * 1px)"),
-            Some(LengthSpec::CalcPercentOffset {
-                percent: 100.0,
-                offset_px: -12.0,
-            })
+            Some(LengthSpec::percent_offset(100.0, -12.0))
         );
         assert_eq!(
             LengthSpec::parse("calc((100% - 12px) / 2)"),
-            Some(LengthSpec::CalcPercentOffset {
-                percent: 50.0,
-                offset_px: -6.0,
-            })
+            Some(LengthSpec::percent_offset(50.0, -6.0))
         );
         assert_eq!(
             LengthSpec::parse("calc(calc(10px) + 2px)"),
@@ -6337,7 +6244,7 @@ mod tests {
         );
         assert_eq!(
             LengthSpec::parse("calc(2 * min(10px, 50vw))"),
-            Some(LengthSpec::Min2(
+            Some(LengthSpec::min2(
                 LengthAtom::Px(20.0),
                 LengthAtom::Viewport {
                     axis: ViewportAxis::Width,
@@ -6347,7 +6254,7 @@ mod tests {
         );
         assert_eq!(
             LengthSpec::parse("calc(min(10px, 50vw) / 2)"),
-            Some(LengthSpec::Min2(
+            Some(LengthSpec::min2(
                 LengthAtom::Px(5.0),
                 LengthAtom::Viewport {
                     axis: ViewportAxis::Width,
@@ -6357,7 +6264,7 @@ mod tests {
         );
         assert_eq!(
             LengthSpec::parse("calc(3 * min(50%, 200px))"),
-            Some(LengthSpec::Min2(
+            Some(LengthSpec::min2(
                 LengthAtom::Percent(150.0),
                 LengthAtom::Px(600.0)
             )),
@@ -6365,7 +6272,7 @@ mod tests {
         );
         assert_eq!(
             LengthSpec::parse("calc(-2 * min(10px, 4vw))"),
-            Some(LengthSpec::Max2(
+            Some(LengthSpec::max2(
                 LengthAtom::Px(-20.0),
                 LengthAtom::Viewport {
                     axis: ViewportAxis::Width,
@@ -6406,7 +6313,7 @@ mod tests {
             layout.apply_css_text("width: calc(2 * var(--ds-px))", None, None);
             assert_eq!(
                 layout.width,
-                Some(LengthSpec::Min2(
+                Some(LengthSpec::min2(
                     LengthAtom::Px(20.0),
                     LengthAtom::Viewport {
                         axis: ViewportAxis::Width,
@@ -6469,17 +6376,11 @@ mod tests {
         );
         assert_eq!(
             LengthSpec::parse("calc(-1em + 20px)"),
-            Some(LengthSpec::CalcEmOffset {
-                em: -1.0,
-                offset_px: 20.0,
-            })
+            Some(LengthSpec::em_offset(-1.0, 20.0))
         );
         assert_eq!(
             LengthSpec::parse("calc(1em - 20px)"),
-            Some(LengthSpec::CalcEmOffset {
-                em: 1.0,
-                offset_px: -20.0,
-            })
+            Some(LengthSpec::em_offset(1.0, -20.0))
         );
 
         let mut margin = LayoutStyle::default();
@@ -6508,17 +6409,11 @@ mod tests {
         assert_eq!(LengthSpec::parse("1.5rem"), Some(LengthSpec::Rem(1.5)));
         assert_eq!(
             LengthSpec::parse("calc(2em + 4px)"),
-            Some(LengthSpec::CalcEmOffset {
-                em: 2.0,
-                offset_px: 4.0,
-            })
+            Some(LengthSpec::em_offset(2.0, 4.0))
         );
         assert_eq!(
             LengthSpec::parse("calc(1rem - 2px)"),
-            Some(LengthSpec::CalcRemOffset {
-                rem: 1.0,
-                offset_px: -2.0,
-            })
+            Some(LengthSpec::rem_offset(1.0, -2.0))
         );
         // Default CSS initial font-size = 16px.
         assert_eq!(LengthSpec::Em(2.0).resolve_px(None), Some(32.0));
@@ -6540,19 +6435,17 @@ mod tests {
     #[test]
     fn calc_ast_nested_ops_parens_and_var_expand() {
         let halved = LengthSpec::parse("calc((100% - 40px) / 2)");
-        match halved {
-            Some(LengthSpec::CalcPercentOffset { percent, offset_px }) => {
-                assert!((percent - 50.0).abs() < 1e-5);
-                assert!((offset_px + 20.0).abs() < 1e-5);
-            }
-            Some(LengthSpec::Calc(expr)) => {
-                let px = expr
-                    .inner()
-                    .resolve_with_fonts(Some(100.0), None, FontSizeContext::default())
-                    .expect("calc((100% - 40px) / 2) against 100px");
-                assert!((px - 30.0).abs() < 1e-5);
-            }
-            other => panic!("expected flattened or calc AST, got {other:?}"),
+        if let Some((percent, offset_px)) = halved.and_then(LengthSpec::as_percent_offset) {
+            assert!((percent - 50.0).abs() < 1e-5);
+            assert!((offset_px + 20.0).abs() < 1e-5);
+        } else if let Some(LengthSpec::Calc(expr)) = halved {
+            let px = expr
+                .inner()
+                .resolve_with_fonts(Some(100.0), None, FontSizeContext::default())
+                .expect("calc((100% - 40px) / 2) against 100px");
+            assert!((px - 30.0).abs() < 1e-5);
+        } else {
+            panic!("expected flattened or calc AST, got {halved:?}");
         }
         assert_eq!(
             LengthSpec::parse("calc(2 * 50px)"),
@@ -6596,9 +6489,9 @@ mod tests {
         );
         assert_eq!(layout.font_size, Some(13.0));
         assert_eq!(layout.font_weight, Some(600));
-        assert_eq!(layout.font_family.as_deref(), Some("Noto Sans SC"));
+        assert_eq!(layout.text_ext.font_family.as_deref(), Some("Noto Sans SC"));
         assert_eq!(layout.line_height, Some(LineHeightSpec::Relative(1.55)));
-        assert_eq!(layout.letter_spacing, Some(0.5));
+        assert_eq!(layout.text_ext.letter_spacing, Some(0.5));
         let c = layout.color.expect("color");
         assert!((c[0] - 90.0 / 255.0).abs() < 0.02);
         assert!((c[1] - 97.0 / 255.0).abs() < 0.02);
@@ -6609,7 +6502,7 @@ mod tests {
             let mut child = LayoutStyle::default();
             child.apply_css_text("font-size: 0.65em; letter-spacing: 0.02em", None, None);
             assert!((child.font_size.unwrap() - 13.0).abs() < 0.01);
-            assert!((child.letter_spacing.unwrap() - 0.4).abs() < 0.01);
+            assert!((child.text_ext.letter_spacing.unwrap() - 0.4).abs() < 0.01);
         });
 
         // var(--font-sans) / var(--text) resolve via active custom properties.
@@ -6626,7 +6519,7 @@ mod tests {
                 None,
                 None,
             );
-            assert_eq!(themed.font_family.as_deref(), Some("Noto Sans SC"));
+            assert_eq!(themed.text_ext.font_family.as_deref(), Some("Noto Sans SC"));
             assert_eq!(themed.font_size, Some(18.0));
             assert_eq!(themed.font_weight, Some(700));
             assert!(themed.color.is_some());
@@ -6659,22 +6552,22 @@ mod tests {
             None,
         );
         assert_eq!(
-            layout.font_features,
+            layout.text_ext.font_features,
             Some(vec![
                 FontFeatureSetting::new(*b"liga", 0),
                 FontFeatureSetting::new(*b"tnum", 1),
             ])
         );
         assert_eq!(
-            layout.font_variation_settings,
+            layout.text_ext.font_variation_settings,
             Some(vec![
                 FontVariationSetting::new(*b"wght", 650.0),
                 FontVariationSetting::new(*b"wdth", 125.0),
             ])
         );
-        assert_eq!(layout.font_kerning, Some(FontKerningSpec::None));
-        assert_eq!(layout.word_break, Some(WordBreakSpec::BreakAll));
-        assert_eq!(layout.line_break, Some(LineBreakSpec::Anywhere));
+        assert_eq!(layout.text_ext.font_kerning, Some(FontKerningSpec::None));
+        assert_eq!(layout.text_ext.word_break, Some(WordBreakSpec::BreakAll));
+        assert_eq!(layout.text_ext.line_break, Some(LineBreakSpec::Anywhere));
 
         let mut skipped = LayoutStyle::default();
         skipped.apply_css_text(
@@ -6683,12 +6576,12 @@ mod tests {
             None,
         );
         assert_eq!(
-            skipped.word_break,
+            skipped.text_ext.word_break,
             Some(WordBreakSpec::Normal),
             "origin keep-all maps to normal rather than skipping"
         );
-        assert!(skipped.line_break.is_none());
-        assert!(skipped.font_kerning.is_none());
+        assert!(skipped.text_ext.line_break.is_none());
+        assert!(skipped.text_ext.font_kerning.is_none());
 
         assert_eq!(
             parse_css_font_feature_settings("normal").as_deref(),
@@ -6711,9 +6604,9 @@ mod tests {
             None,
             None,
         );
-        assert_eq!(layout.line_break, Some(LineBreakSpec::Strict));
+        assert_eq!(layout.text_ext.line_break, Some(LineBreakSpec::Strict));
         assert_eq!(layout.text_align, TextAlignSpec::Justify);
-        let typography = layout.text_typography;
+        let typography = layout.text_ext.text_typography;
         assert_eq!(typography.spacing_trim, Some(TextSpacingTrimSpec::Auto));
         assert_eq!(typography.autospace, Some(TextAutospaceSpec::Normal));
         assert_eq!(typography.justify, Some(TextJustifySpec::InterCharacter));
@@ -6725,10 +6618,10 @@ mod tests {
             None,
             None,
         );
-        assert_eq!(layout.text_typography.justify_lines, Some(false));
-        assert_eq!(layout.line_break, Some(LineBreakSpec::Loose));
+        assert_eq!(layout.text_ext.text_typography.justify_lines, Some(false));
+        assert_eq!(layout.text_ext.line_break, Some(LineBreakSpec::Loose));
         assert_eq!(
-            layout.text_typography.spacing_trim,
+            layout.text_ext.text_typography.spacing_trim,
             Some(TextSpacingTrimSpec::Normal)
         );
 
@@ -6739,7 +6632,7 @@ mod tests {
             None,
         );
         assert_eq!(
-            skipped.text_typography,
+            skipped.text_ext.text_typography,
             nana_ui_core::TextTypography::INHERIT
         );
     }
@@ -6757,7 +6650,7 @@ mod tests {
         ] {
             let mut layout = LayoutStyle::default();
             layout.apply_css_property("word-break", value, None, None);
-            assert_eq!(layout.word_break, Some(expected), "{value}");
+            assert_eq!(layout.text_ext.word_break, Some(expected), "{value}");
         }
     }
 
@@ -6770,7 +6663,7 @@ mod tests {
             None,
         );
         assert_eq!(layout.min_width, Some(LengthSpec::Percent(50.0)));
-        assert!(matches!(layout.max_width, Some(LengthSpec::Min2(_, _))));
+        assert!(layout.max_width.and_then(LengthSpec::as_min2).is_some());
         assert_eq!(layout.min_height, Some(LengthSpec::Em(2.0)));
         assert_eq!(layout.resolved_min_width(Some(300.0), None), 150.0);
         assert_eq!(layout.resolved_max_width(Some(300.0), None), Some(120.0));
@@ -6944,18 +6837,18 @@ mod tests {
             None,
             None,
         );
-        assert!(layout.grid_columns.is_some(), "baseline template applied");
+        assert!(layout.grid.columns.is_some(), "baseline template applied");
         layout.apply_css_text(
             "grid-template-columns:repeat(3, repeat(2, 1fr))",
             None,
             None,
         );
         assert_eq!(
-            layout.grid_columns_unsupported,
+            layout.grid.columns_unsupported,
             Some(GridTrackListUnsupported::NestedRepeat)
         );
         assert!(
-            layout.grid_columns.is_none(),
+            layout.grid.columns.is_none(),
             "a rejected value must not leave the previous tracks in place"
         );
 
@@ -6970,22 +6863,6 @@ mod tests {
             parse_grid_track_list_result("repeat(3, minmax(100px, 1fr))", None),
             GridTrackListParse::Tracks(_)
         ));
-    }
-
-    #[test]
-    fn whole_value_subgrid_parses_to_subgrid_not_unsupported() {
-        assert_eq!(
-            parse_grid_track_list_result("subgrid", None),
-            GridTrackListParse::Subgrid
-        );
-        assert_eq!(
-            parse_grid_track_list_result("subgrid [foo] [bar]", None),
-            GridTrackListParse::Subgrid
-        );
-        let mut layout = LayoutStyle::default();
-        layout.apply_css_text("display:grid;grid-template-columns:subgrid", None, None);
-        assert!(layout.grid_columns_subgrid);
-        assert!(layout.grid_columns.is_none());
     }
 
     #[test]
@@ -7092,7 +6969,7 @@ mod tests {
             Some(FlexDirection::Column),
             "flex-row must not override authored grid-template-rows axis"
         );
-        assert!(layout.grid_rows.as_ref().is_some_and(|r| r.len() == 2));
+        assert!(layout.grid.rows.as_ref().is_some_and(|r| r.len() == 2));
     }
 
     /// The utilities follow Tailwind: `flex-col` sets the direction alone
@@ -7131,15 +7008,15 @@ mod tests {
         );
         assert_eq!(
             LengthSpec::parse("calc(100vh - 32px)"),
-            Some(LengthSpec::CalcViewportOffset {
-                axis: ViewportAxis::Height,
-                value: 100.0,
-                offset_px: -32.0
-            })
+            Some(LengthSpec::viewport_offset(
+                ViewportAxis::Height,
+                100.0,
+                -32.0
+            ))
         );
         assert_eq!(
             LengthSpec::parse("min(520px, 92vw)"),
-            Some(LengthSpec::Min2(
+            Some(LengthSpec::min2(
                 LengthAtom::Px(520.0),
                 LengthAtom::Viewport {
                     axis: ViewportAxis::Width,
@@ -7149,7 +7026,7 @@ mod tests {
         );
         assert_eq!(
             LengthSpec::parse("min(600px, 100vw - 32px)"),
-            Some(LengthSpec::Min2(
+            Some(LengthSpec::min2(
                 LengthAtom::Px(600.0),
                 LengthAtom::CalcViewport {
                     axis: ViewportAxis::Width,
@@ -7160,7 +7037,7 @@ mod tests {
         );
         assert_eq!(
             LengthSpec::parse("clamp(176px, 38vw, 260px)"),
-            Some(LengthSpec::Clamp3(
+            Some(LengthSpec::clamp3(
                 LengthAtom::Px(176.0),
                 LengthAtom::Viewport {
                     axis: ViewportAxis::Width,
@@ -7195,14 +7072,14 @@ mod tests {
     fn nested_mixed_min_max_resolves_against_containing_block() {
         assert_eq!(
             LengthSpec::parse("min(1px, 2%)"),
-            Some(LengthSpec::Min2(
+            Some(LengthSpec::min2(
                 LengthAtom::Px(1.0),
                 LengthAtom::Percent(2.0)
             ))
         );
         assert_eq!(
             LengthSpec::parse("min(10px, max(1px, 50%))"),
-            Some(LengthSpec::Clamp3(
+            Some(LengthSpec::clamp3(
                 LengthAtom::Px(1.0),
                 LengthAtom::Percent(50.0),
                 LengthAtom::Px(10.0)
@@ -7210,14 +7087,14 @@ mod tests {
         );
         assert_eq!(
             LengthSpec::parse("min(1px, 2%, 3px)"),
-            Some(LengthSpec::Min2(
+            Some(LengthSpec::min2(
                 LengthAtom::Px(1.0),
                 LengthAtom::Percent(2.0)
             ))
         );
         assert_eq!(
             LengthSpec::parse("max(10px, min(50%, 30px))"),
-            Some(LengthSpec::Clamp3(
+            Some(LengthSpec::clamp3(
                 LengthAtom::Px(10.0),
                 LengthAtom::Percent(50.0),
                 LengthAtom::Px(30.0)
@@ -7225,7 +7102,7 @@ mod tests {
         );
         assert_eq!(
             LengthSpec::parse("calc(min(10px, max(1px, 50%)))"),
-            Some(LengthSpec::Clamp3(
+            Some(LengthSpec::clamp3(
                 LengthAtom::Px(1.0),
                 LengthAtom::Percent(50.0),
                 LengthAtom::Px(10.0)
@@ -7449,16 +7326,17 @@ html[data-theme="dark"], [data-theme="dark"] { --bg: #181818; }
             None,
         );
         assert!(
-            auto_fit_layout.grid_columns_unsupported.is_none(),
+            auto_fit_layout.grid.columns_unsupported.is_none(),
             "successful auto-fit is not unsupported"
         );
-        assert!(auto_fit_layout.grid_columns.is_none());
+        assert!(auto_fit_layout.grid.columns.is_none());
         assert!(
             !auto_fit_layout.has_unsupported_grid_template(),
             "successful auto-fit must not set has_unsupported_grid_template"
         );
         let auto_fit_repeat = auto_fit_layout
-            .grid_columns_repeat
+            .grid
+            .columns_repeat
             .as_ref()
             .expect("auto-fit must store GridRepeatAuto pattern");
         assert_eq!(
@@ -7525,8 +7403,7 @@ html[data-theme="dark"], [data-theme="dark"] { --bg: #181818; }
         assert!(layout.has_inert_physical_edges());
         layout.drop_inert_physical_edges();
         assert!(!layout.has_inert_physical_edges());
-        assert!(layout.logical_inset.is_shared_default());
-        assert!(layout.logical_padding.is_shared_default());
+        assert!(layout.logical_edges.is_shared_default());
         // The physical fields keep the values.
         assert_eq!(layout.offset_top, Some(LengthSpec::Px(0.0)));
         assert_eq!(layout.padding_left, Some(LengthSpec::Px(4.0)));
@@ -7580,18 +7457,18 @@ html[data-theme="dark"], [data-theme="dark"] { --bg: #181818; }
         );
         assert_eq!(layout.display, Some(DisplaySpec::InlineGrid));
         assert!(layout.display.unwrap().is_grid_container());
-        assert_eq!(layout.grid_columns.as_ref().map(|c| c.len()), Some(2));
+        assert_eq!(layout.grid.columns.as_ref().map(|c| c.len()), Some(2));
         assert_eq!(
-            layout.grid_auto_columns.as_ref().map(|c| c.len()),
+            layout.grid.auto_columns.as_ref().map(|c| c.len()),
             Some(1),
             "grid-auto-columns parsed"
         );
         assert_eq!(
-            layout.grid_auto_rows,
+            layout.grid.auto_rows,
             Some(vec![GridTrack::Auto]),
             "grid-auto-rows:auto stored"
         );
-        assert_eq!(layout.grid_auto_flow, Some(GridAutoFlow::ColumnDense));
+        assert_eq!(layout.grid.auto_flow, Some(GridAutoFlow::ColumnDense));
         assert!(
             layout.has_deferred_grid_auto(),
             "grid-auto-* fields stored for layout"
@@ -7629,7 +7506,7 @@ html[data-theme="dark"], [data-theme="dark"] { --bg: #181818; }
         let mut layout = LayoutStyle::default();
         layout.apply_css_text("transform: scale(2) translate(4px, -3px)", None, None);
         assert_eq!(
-            layout.transform,
+            layout.transforms.transform,
             Some(PaintTransform {
                 a: 2.0,
                 b: 0.0,
@@ -7639,19 +7516,19 @@ html[data-theme="dark"], [data-theme="dark"] { --bg: #181818; }
                 f: -6.0,
             })
         );
-        assert_eq!(layout.unsupported_transform, None);
+        assert_eq!(layout.transforms.unsupported_transform, None);
 
         layout.apply_css_text(
             "transform: rotate(90deg) scale(2, -3) skewX(10deg)",
             None,
             None,
         );
-        let transform = layout.transform.expect("2D affine transform");
+        let transform = layout.transforms.transform.expect("2D affine transform");
         assert!(transform.a.abs() < 1e-5);
         assert!((transform.b - 2.0).abs() < 1e-5);
         assert!((transform.c - 3.0).abs() < 1e-5);
         assert!((transform.d - 2.0 * 10_f32.to_radians().tan()).abs() < 1e-5);
-        assert_eq!(layout.unsupported_transform, None);
+        assert_eq!(layout.transforms.unsupported_transform, None);
     }
 
     fn parse_inline_paint_transform(raw: &str) -> Option<PaintTransform> {
@@ -7779,16 +7656,6 @@ html[data-theme="dark"], [data-theme="dark"] { --bg: #181818; }
             assert_eq!(radii[0], LengthSpec::Px(12.0));
             assert_eq!(layout.gap, Some(LengthSpec::Px(8.0)));
         });
-    }
-
-    #[test]
-    fn display_contents_does_not_generate_or_omit_box() {
-        let mut layout = LayoutStyle::default();
-        layout.apply_css_text("display:contents", None, None);
-        assert_eq!(layout.display, Some(DisplaySpec::Contents));
-        assert!(!layout.hidden);
-        assert!(!layout.omits_box());
-        assert!(!layout.generates_box());
     }
 
     #[test]
@@ -8023,7 +7890,7 @@ html[data-theme="dark"], [data-theme="dark"] { --bg: #181818; }
             None,
             None,
         );
-        assert_eq!(layout.border_top_color, Some([0.0, 0.0, 0.0, 1.0]));
+        assert_eq!(layout.border_sides.top_color, Some([0.0, 0.0, 0.0, 1.0]));
         let edges = layout.resolved_border_edges();
         assert!((edges.right).abs() < 0.01, "none style zeros used width");
         assert!((edges.top - 1.0).abs() < 0.01);
@@ -8037,8 +7904,8 @@ html[data-theme="dark"], [data-theme="dark"] { --bg: #181818; }
         let side_edges = sides.resolved_border_edges();
         assert!((side_edges.top - 2.0).abs() < 0.01);
         assert!((side_edges.right - 4.0).abs() < 0.01);
-        assert_eq!(sides.border_top_color, Some([1.0, 0.0, 0.0, 1.0]));
-        assert_eq!(sides.border_right_color, Some([0.0, 0.0, 1.0, 1.0]));
+        assert_eq!(sides.border_sides.top_color, Some([1.0, 0.0, 0.0, 1.0]));
+        assert_eq!(sides.border_sides.right_color, Some([0.0, 0.0, 1.0, 1.0]));
     }
 
     #[test]
@@ -8048,10 +7915,10 @@ html[data-theme="dark"], [data-theme="dark"] { --bg: #181818; }
         assert_eq!(
             (
                 widths.border_width,
-                widths.border_top_width,
-                widths.border_right_width,
-                widths.border_bottom_width,
-                widths.border_left_width,
+                widths.border_sides.top_width,
+                widths.border_sides.right_width,
+                widths.border_sides.bottom_width,
+                widths.border_sides.left_width,
             ),
             (None, None, None, None, None),
             "unknown width token must not collapse 4-value to 3-value (1/2/4/2)"
@@ -8062,10 +7929,10 @@ html[data-theme="dark"], [data-theme="dark"] { --bg: #181818; }
         assert_eq!(
             (
                 styles.border_style,
-                styles.border_top_style,
-                styles.border_right_style,
-                styles.border_bottom_style,
-                styles.border_left_style,
+                styles.border_sides.top_style,
+                styles.border_sides.right_style,
+                styles.border_sides.bottom_style,
+                styles.border_sides.left_style,
             ),
             (None, None, None, None, None),
             "unknown style token must not collapse 4-value to 3-value (solid/dashed/dotted/dashed)"
@@ -8076,10 +7943,10 @@ html[data-theme="dark"], [data-theme="dark"] { --bg: #181818; }
         assert_eq!(
             (
                 colors.border_color,
-                colors.border_top_color,
-                colors.border_right_color,
-                colors.border_bottom_color,
-                colors.border_left_color,
+                colors.border_sides.top_color,
+                colors.border_sides.right_color,
+                colors.border_sides.bottom_color,
+                colors.border_sides.left_color,
             ),
             (None, None, None, None, None),
             "unknown color token must not collapse 4-value to 3-value (red/blue/yellow/blue)"
@@ -8240,38 +8107,38 @@ html[data-theme="dark"], [data-theme="dark"] { --bg: #181818; }
     fn grid_column_start_span() {
         let mut layout = LayoutStyle::default();
         layout.apply_css_text("grid-column: 1 / span 2", None, None);
-        assert_eq!(layout.grid_placement.column_start, GridLine::Index(1));
-        assert_eq!(layout.grid_placement.column_end, GridLine::Span(2));
-        assert!(layout.grid_placement.row_start.is_auto());
-        assert!(layout.grid_placement.row_end.is_auto());
+        assert_eq!(layout.grid.placement.column_start, GridLine::Index(1));
+        assert_eq!(layout.grid.placement.column_end, GridLine::Span(2));
+        assert!(layout.grid.placement.row_start.is_auto());
+        assert!(layout.grid.placement.row_end.is_auto());
 
         layout.apply_css_text("grid-column: none", None, None);
-        assert_eq!(layout.grid_placement.column_start, GridLine::Index(1));
-        assert_eq!(layout.grid_placement.column_end, GridLine::Span(2));
+        assert_eq!(layout.grid.placement.column_start, GridLine::Index(1));
+        assert_eq!(layout.grid.placement.column_end, GridLine::Span(2));
 
         layout.apply_css_text("grid-column: auto", None, None);
-        assert_eq!(layout.grid_placement.column_start, GridLine::Auto);
-        assert_eq!(layout.grid_placement.column_end, GridLine::Auto);
+        assert_eq!(layout.grid.placement.column_start, GridLine::Auto);
+        assert_eq!(layout.grid.placement.column_end, GridLine::Auto);
     }
 
     #[test]
     fn grid_row_span() {
         let mut layout = LayoutStyle::default();
         layout.apply_css_text("grid-row: span 2", None, None);
-        assert_eq!(layout.grid_placement.row_start, GridLine::Span(2));
-        assert_eq!(layout.grid_placement.row_end, GridLine::Auto);
-        assert!(layout.grid_placement.column_start.is_auto());
-        assert!(layout.grid_placement.column_end.is_auto());
+        assert_eq!(layout.grid.placement.row_start, GridLine::Span(2));
+        assert_eq!(layout.grid.placement.row_end, GridLine::Auto);
+        assert!(layout.grid.placement.column_start.is_auto());
+        assert!(layout.grid.placement.column_end.is_auto());
     }
 
     #[test]
     fn grid_area_four_lines() {
         let mut layout = LayoutStyle::default();
         layout.apply_css_text("grid-area: 1 / 2 / 3 / 4", None, None);
-        assert_eq!(layout.grid_placement.row_start, GridLine::Index(1));
-        assert_eq!(layout.grid_placement.column_start, GridLine::Index(2));
-        assert_eq!(layout.grid_placement.row_end, GridLine::Index(3));
-        assert_eq!(layout.grid_placement.column_end, GridLine::Index(4));
+        assert_eq!(layout.grid.placement.row_start, GridLine::Index(1));
+        assert_eq!(layout.grid.placement.column_start, GridLine::Index(2));
+        assert_eq!(layout.grid.placement.row_end, GridLine::Index(3));
+        assert_eq!(layout.grid.placement.column_end, GridLine::Index(4));
     }
 
     #[test]
@@ -8288,7 +8155,8 @@ html[data-theme="dark"], [data-theme="dark"] { --bg: #181818; }
         assert_eq!(layout.named_column_line("end"), Some(3));
         assert_eq!(
             layout
-                .grid_template_areas
+                .grid
+                .template_areas
                 .as_ref()
                 .and_then(|a| a.lookup("header")),
             Some((0, 0, 2, 1))
@@ -8296,14 +8164,14 @@ html[data-theme="dark"], [data-theme="dark"] { --bg: #181818; }
 
         let mut item = LayoutStyle::default();
         item.apply_css_text("grid-area: header", None, None);
-        assert_eq!(item.grid_placement.area.as_deref(), Some("header"));
+        assert_eq!(item.grid.placement.area.as_deref(), Some("header"));
 
         item.apply_css_text("grid-column: start / end", None, None);
         assert_eq!(
-            item.grid_placement.column_start,
+            item.grid.placement.column_start,
             GridLine::Name("start".into())
         );
-        assert_eq!(item.grid_placement.column_end, GridLine::Name("end".into()));
+        assert_eq!(item.grid.placement.column_end, GridLine::Name("end".into()));
     }
 
     #[test]
@@ -8314,14 +8182,15 @@ html[data-theme="dark"], [data-theme="dark"] { --bg: #181818; }
             None,
             None,
         );
-        assert!(layout.grid_columns.is_none());
+        assert!(layout.grid.columns.is_none());
         assert!(
-            layout.grid_columns_unsupported.is_none(),
-            "successful auto-fit is stored on grid_columns_repeat, not the unsupported flag"
+            layout.grid.columns_unsupported.is_none(),
+            "successful auto-fit is stored on grid.columns_repeat, not the unsupported flag"
         );
         assert!(!layout.has_unsupported_grid_template());
         let rep = layout
-            .grid_columns_repeat
+            .grid
+            .columns_repeat
             .as_ref()
             .expect("auto-fit stores GridRepeatAuto, not just the flag");
         assert_eq!(rep.kind, GridTrackListUnsupported::RepeatAutoFit);
@@ -8339,18 +8208,18 @@ html[data-theme="dark"], [data-theme="dark"] { --bg: #181818; }
     fn invalid_mixed_auto_fit_clears_previous_tracks() {
         let mut layout = LayoutStyle::default();
         layout.apply_css_text("display:grid;grid-template-columns:80px", None, None);
-        assert_eq!(layout.grid_columns, Some(vec![GridTrack::Px(80.0)]));
+        assert_eq!(layout.grid.columns, Some(vec![GridTrack::Px(80.0)]));
         layout.apply_css_text(
             "grid-template-columns:80px repeat(auto-fit, garbage)",
             None,
             None,
         );
         assert!(
-            layout.grid_columns.is_none(),
+            layout.grid.columns.is_none(),
             "invalid mixed auto-fit must not keep leftover 80px, got {:?}",
-            layout.grid_columns
+            layout.grid.columns
         );
-        assert!(layout.grid_columns_repeat.is_none());
+        assert!(layout.grid.columns_repeat.is_none());
     }
 
     #[test]
@@ -8362,7 +8231,8 @@ html[data-theme="dark"], [data-theme="dark"] { --bg: #181818; }
             None,
         );
         let names = layout
-            .grid_column_line_names
+            .grid
+            .column_line_names
             .as_ref()
             .expect("prefix + in-repeat names must reach the engine");
         assert!(
@@ -8376,7 +8246,8 @@ html[data-theme="dark"], [data-theme="dark"] { --bg: #181818; }
             "in-repeat [mid] dropped: {names:?}"
         );
         let repeat = layout
-            .grid_columns_repeat
+            .grid
+            .columns_repeat
             .as_ref()
             .expect("mixed auto-fit stores GridRepeatAuto");
         assert!(
@@ -8407,7 +8278,8 @@ html[data-theme="dark"], [data-theme="dark"] { --bg: #181818; }
             None,
         );
         let names = layout
-            .grid_column_line_names
+            .grid
+            .column_line_names
             .as_ref()
             .expect("fixed repeat names");
         let mid_count = names
@@ -8440,55 +8312,12 @@ html[data-theme="dark"], [data-theme="dark"] { --bg: #181818; }
             None,
             None,
         );
-        assert!(layout.grid_columns_repeat.is_some());
+        assert!(layout.grid.columns_repeat.is_some());
         layout.apply_css_text("display:flex", None, None);
         assert_eq!(layout.display, Some(DisplaySpec::Flex));
-        assert!(layout.grid_columns_repeat.is_none());
-        assert!(layout.grid_rows_repeat.is_none());
-        assert!(layout.grid_columns_unsupported.is_none());
-        assert!(!layout.grid_columns_subgrid);
-        assert!(!layout.grid_rows_subgrid);
-    }
-
-    #[test]
-    fn grid_template_subgrid_sets_flag_not_tracks() {
-        let mut layout = LayoutStyle::default();
-        layout.apply_css_text(
-            "display:grid;grid-template-columns:subgrid;grid-template-rows:subgrid [a] [b]",
-            None,
-            None,
-        );
-        assert!(layout.grid_columns_subgrid);
-        assert!(layout.grid_rows_subgrid);
-        assert!(layout.grid_columns.is_none());
-        assert!(layout.grid_rows.is_none());
-        assert!(layout.grid_columns_repeat.is_none());
-        assert!(layout.grid_columns_unsupported.is_none());
-        assert!(layout.is_subgrid_columns());
-        assert!(layout.is_subgrid_rows());
-        assert_eq!(
-            layout.grid_row_line_names.as_ref().map(|n| n.len()),
-            Some(2)
-        );
-        assert_eq!(
-            parse_grid_track_list_result("subgrid", None),
-            GridTrackListParse::Subgrid
-        );
-        assert_eq!(
-            parse_grid_track_list_result("subgrid [start] [end]", None),
-            GridTrackListParse::Subgrid
-        );
-        assert_eq!(
-            parse_grid_track_list_result("masonry", None),
-            GridTrackListParse::Invalid
-        );
-        assert_eq!(
-            parse_grid_track_list_result("subgrid 80px", None),
-            GridTrackListParse::Invalid
-        );
-        layout.apply_css_text("grid-template-columns:none", None, None);
-        assert!(!layout.grid_columns_subgrid);
-        assert!(layout.grid_rows_subgrid);
+        assert!(layout.grid.columns_repeat.is_none());
+        assert!(layout.grid.rows_repeat.is_none());
+        assert!(layout.grid.columns_unsupported.is_none());
     }
 
     #[test]
@@ -8497,11 +8326,10 @@ html[data-theme="dark"], [data-theme="dark"] { --bg: #181818; }
         layout.apply_css_text("display:grid;grid-template-columns:80px 1fr", None, None);
         layout.apply_css_text("grid-template-columns:masonry", None, None);
         assert!(
-            layout.grid_columns.is_none(),
+            layout.grid.columns.is_none(),
             "unknown keyword must not keep the previous track list"
         );
-        assert!(!layout.grid_columns_subgrid);
-        assert!(layout.grid_columns_unsupported.is_none());
+        assert!(layout.grid.columns_unsupported.is_none());
     }
 
     #[test]
@@ -8512,11 +8340,11 @@ html[data-theme="dark"], [data-theme="dark"] { --bg: #181818; }
             None,
             None,
         );
-        assert!(layout.grid_columns.is_some());
+        assert!(layout.grid.columns.is_some());
         layout.apply_css_text("display:flex;flex-direction:row", None, None);
         assert_eq!(layout.display, Some(DisplaySpec::Flex));
-        assert!(layout.grid_columns.is_none());
-        assert!(layout.grid_rows.is_none());
+        assert!(layout.grid.columns.is_none());
+        assert!(layout.grid.rows.is_none());
         // Later grid-template under flex stays inert.
         layout.apply_css_text(
             "grid-template-columns:minmax(180px,220px) minmax(320px,1fr)",
@@ -8524,7 +8352,7 @@ html[data-theme="dark"], [data-theme="dark"] { --bg: #181818; }
             None,
         );
         assert!(
-            layout.grid_columns.is_none(),
+            layout.grid.columns.is_none(),
             "grid-template-columns must not author tracks under display:flex"
         );
         assert!(layout.active_grid_columns().is_none());
@@ -8541,7 +8369,7 @@ html[data-theme="dark"], [data-theme="dark"] { --bg: #181818; }
         assert_eq!(layout.direction, Some(FlexDirection::Column));
         assert_eq!(layout.resolved_row_gap(), 20.0);
         assert_eq!(layout.resolved_column_gap(), 40.0);
-        let rows = layout.grid_rows.as_ref().unwrap();
+        let rows = layout.grid.rows.as_ref().unwrap();
         assert_eq!(rows.len(), 3);
         assert_eq!(rows[0], GridTrack::Px(100.0));
         assert_eq!(rows[1], GridTrack::Fr(1.0));
@@ -8557,8 +8385,8 @@ html[data-theme="dark"], [data-theme="dark"] { --bg: #181818; }
             None,
         );
         assert_eq!(rows_first.direction, Some(FlexDirection::Row));
-        assert!(rows_first.grid_columns.is_some());
-        assert!(rows_first.grid_rows.is_some());
+        assert!(rows_first.grid.columns.is_some());
+        assert!(rows_first.grid.rows.is_some());
 
         let mut cols_first = LayoutStyle::default();
         cols_first.apply_css_text(
@@ -8577,8 +8405,8 @@ html[data-theme="dark"], [data-theme="dark"] { --bg: #181818; }
             None,
             None,
         );
-        assert!(to_rows.grid_columns.is_none());
-        assert!(to_rows.grid_rows.is_some());
+        assert!(to_rows.grid.columns.is_none());
+        assert!(to_rows.grid.rows.is_some());
         assert_eq!(to_rows.direction, Some(FlexDirection::Column));
 
         let mut to_cols = LayoutStyle::default();
@@ -8587,8 +8415,8 @@ html[data-theme="dark"], [data-theme="dark"] { --bg: #181818; }
             None,
             None,
         );
-        assert!(to_cols.grid_rows.is_none());
-        assert!(to_cols.grid_columns.is_some());
+        assert!(to_cols.grid.rows.is_none());
+        assert!(to_cols.grid.columns.is_some());
         assert_eq!(to_cols.direction, Some(FlexDirection::Row));
     }
 
@@ -8600,8 +8428,8 @@ html[data-theme="dark"], [data-theme="dark"] { --bg: #181818; }
             None,
             None,
         );
-        assert!(layout.grid_rows.is_none());
-        assert!(layout.grid_columns.is_none());
+        assert!(layout.grid.rows.is_none());
+        assert!(layout.grid.columns.is_none());
         assert_eq!(
             layout.direction,
             Some(FlexDirection::Row),
@@ -8614,8 +8442,8 @@ html[data-theme="dark"], [data-theme="dark"] { --bg: #181818; }
             None,
             None,
         );
-        assert!(both.grid_columns.is_none());
-        assert!(both.grid_rows.is_none());
+        assert!(both.grid.columns.is_none());
+        assert!(both.grid.rows.is_none());
         assert_eq!(both.direction, Some(FlexDirection::Row));
     }
 
@@ -8851,28 +8679,10 @@ html[data-theme="dark"], [data-theme="dark"] { --bg: #181818; }
     }
 
     #[test]
-    fn display_block_sets_column() {
-        let mut layout = LayoutStyle::default();
-        layout.apply_css_text("display: block", None, None);
-        assert_eq!(layout.display, Some(DisplaySpec::Block));
-        assert_eq!(layout.direction, Some(FlexDirection::Column));
-    }
-
-    /// `flow-root` keeps its own value: a block container that also
-    /// establishes a block formatting context, so its height holds floats.
-    #[test]
-    fn display_flow_root_is_its_own_block_container() {
-        let mut layout = LayoutStyle::default();
-        layout.apply_css_text("display: flow-root", None, None);
-        assert_eq!(layout.display, Some(DisplaySpec::FlowRoot));
-        assert_eq!(layout.direction, Some(FlexDirection::Column));
-    }
-
-    #[test]
     fn white_space_pre_and_font_metrics_parse() {
         let mut layout = LayoutStyle::default();
         layout.apply_css_text(
-            "display:block;width:200px;font-size:16px;line-height:20px;white-space:pre",
+            "width:200px;font-size:16px;line-height:20px;white-space:pre",
             None,
             None,
         );
@@ -8907,11 +8717,11 @@ html[data-theme="dark"], [data-theme="dark"] { --bg: #181818; }
         assert_eq!(layout.aspect_ratio, Some(1.0));
         assert_eq!(layout.font_italic, Some(true));
         assert_eq!(
-            layout.word_break,
+            layout.text_ext.word_break,
             Some(nana_ui_core::WordBreakSpec::BreakAll)
         );
         assert_eq!(
-            layout.overflow_wrap,
+            layout.text_ext.overflow_wrap,
             Some(nana_ui_core::OverflowWrapSpec::Anywhere)
         );
         assert_eq!(layout.text_wrap_break(), nana_ui_core::TextWrapBreak::Glyph);
@@ -8953,7 +8763,7 @@ html[data-theme="dark"], [data-theme="dark"] { --bg: #181818; }
         let mut layout = LayoutStyle::default();
         layout.apply_class_layout_hints(&["nana-workspace-shell__body".into()]);
         assert_eq!(layout.direction, Some(FlexDirection::Row));
-        let cols = layout.grid_columns.as_ref().unwrap();
+        let cols = layout.grid.columns.as_ref().unwrap();
         assert_eq!(cols[0], GridTrack::Px(220.0));
         assert!(layout.grows());
     }
@@ -9090,7 +8900,7 @@ html[data-theme="dark"], [data-theme="dark"] { --bg: #181818; }
             None,
             None,
         );
-        let rows = page.grid_rows.as_ref().expect("grid rows from CSS");
+        let rows = page.grid.rows.as_ref().expect("grid rows from CSS");
         assert_eq!(rows.len(), 4);
         assert!(matches!(rows[3], GridTrack::MinMax { fr, .. } if (fr - 1.0).abs() < 0.01));
         assert_eq!(page.overflow_y, OverflowSpec::Hidden);
@@ -9120,10 +8930,6 @@ html[data-theme="dark"], [data-theme="dark"] { --bg: #181818; }
         assert!(lilia_alias.height.is_none());
         assert!(lilia_alias.direction.is_none());
 
-        let mut block = LayoutStyle::default();
-        block.apply_css_text("display:block", None, None);
-        assert_eq!(block.align_items, AlignSpec::Stretch);
-
         // App class names alone must not invent layout (incl. --row / horizontal).
         let mut orphan = LayoutStyle::default();
         orphan.apply_class_layout_hints(&[
@@ -9134,7 +8940,7 @@ html[data-theme="dark"], [data-theme="dark"] { --bg: #181818; }
             "toolbar--row".into(),
             "panel-horizontal".into(),
         ]);
-        assert!(orphan.grid_rows.is_none());
+        assert!(orphan.grid.rows.is_none());
         assert!(orphan.background.is_none());
         assert!(orphan.height.is_none());
         assert!(orphan.direction.is_none());
@@ -9206,9 +9012,9 @@ html[data-theme="dark"], [data-theme="dark"] { --bg: #181818; }
     fn font_variation_bevl_does_not_become_wght() {
         let mut layout = LayoutStyle::default();
         layout.apply_css_text("font-variation-settings: \"BEVL\" 50", None, None);
-        assert!(!layout.unsupported_font_variation);
+        assert!(!layout.text_ext.unsupported_font_variation);
         assert_eq!(
-            layout.font_variation_settings.as_deref(),
+            layout.text_ext.font_variation_settings.as_deref(),
             Some(&[FontVariationSetting::new(*b"BEVL", 50.0)][..])
         );
         assert_eq!(
@@ -9216,7 +9022,7 @@ html[data-theme="dark"], [data-theme="dark"] { --bg: #181818; }
             "BEVL must not silently become font-weight / wght"
         );
         assert!(
-            layout.font_features.is_none(),
+            layout.text_ext.font_features.is_none(),
             "variation axes must not be stuffed into font-feature-settings"
         );
         layout.apply_css_text(
@@ -9225,7 +9031,7 @@ html[data-theme="dark"], [data-theme="dark"] { --bg: #181818; }
             None,
         );
         assert_eq!(layout.font_weight, Some(600));
-        assert!(!layout.unsupported_font_variation);
+        assert!(!layout.text_ext.unsupported_font_variation);
         layout.apply_css_text(
             "font-variation-settings: \"wght\" 350, \"BEVL\" 50",
             None,
@@ -9233,14 +9039,18 @@ html[data-theme="dark"], [data-theme="dark"] { --bg: #181818; }
         );
         assert_eq!(layout.font_weight, Some(350));
         assert_eq!(
-            layout.font_variation_settings.as_ref().map(|axes| axes
-                .iter()
-                .map(|axis| (axis.tag, axis.value))
-                .collect::<Vec<_>>()),
+            layout
+                .text_ext
+                .font_variation_settings
+                .as_ref()
+                .map(|axes| axes
+                    .iter()
+                    .map(|axis| (axis.tag, axis.value))
+                    .collect::<Vec<_>>()),
             Some(vec![(*b"wght", 350.0), (*b"BEVL", 50.0)])
         );
-        assert!(!layout.unsupported_font_variation);
+        assert!(!layout.text_ext.unsupported_font_variation);
         layout.apply_css_text("font-variation-settings: nope", None, None);
-        assert!(layout.unsupported_font_variation);
+        assert!(layout.text_ext.unsupported_font_variation);
     }
 }

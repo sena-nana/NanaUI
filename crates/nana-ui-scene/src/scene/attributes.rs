@@ -388,7 +388,7 @@ mod tests {
 
     fn node(value: u64, parent: Option<u64>, children: &[u64]) -> ExtractedNode {
         ExtractedNode {
-            layout_result: None,
+            extracted_layout: None,
             custom_paint: None,
             chrome_radii: nana_ui_core::ChromeRadii::default(),
             id: id(value),
@@ -419,9 +419,7 @@ mod tests {
             focused: false,
             editable: false,
             text_spans: Vec::new(),
-            standard_visual: None,
-            component_geometry: None,
-            standard_visual_foreground: None,
+            widget_paint: None,
             custom_render: None,
             drop_hover: None,
             document_text_selection: Vec::new(),
@@ -457,8 +455,21 @@ mod tests {
             height: height / 2.0,
             ..parent.layout
         };
-        parent.component_geometry = Some(Box::new(if modal {
-            ComponentGeometry::ModalFrame {
+        if modal {
+            let modal_visual = nana_ui_runtime::ModalFrameVisual {
+                title: "".into(),
+                description: None,
+                body_text: None,
+                kind: nana_ui_runtime::ModalSurfaceKind::Dialog(Default::default()),
+                busy: false,
+                danger: false,
+                slots: nana_ui_runtime::ModalSlots {
+                    body: body_root,
+                    ..Default::default()
+                },
+                surface_painter: None,
+            };
+            let modal_geom = nana_ui_runtime::ModalFrameGeometry {
                 scrim: parent.layout,
                 surface,
                 body,
@@ -475,30 +486,47 @@ mod tests {
                 scrim_blur: 0.0,
                 scrim_opacity: 1.0,
                 surface_paint: None,
-            }
+            };
+            parent.widget_paint = Some(Arc::new(
+                modal_visual.paint_with_geometry(&modal_geom, parent.layout),
+            ));
         } else {
-            ComponentGeometry::EmptyState {
-                root_clip: surface,
-                content_clip: surface,
-                icon: None,
-                title: title(parent.layout),
-                message: None,
-                action: None,
-            }
-        }));
-        parent.standard_visual = modal.then(|| StandardVisual::ModalFrame {
-            title: "".into(),
-            description: None,
-            body_text: None,
-            kind: nana_ui_runtime::ModalSurfaceKind::Dialog(Default::default()),
-            busy: false,
-            danger: false,
-            slots: nana_ui_runtime::ModalSlots {
-                body: body_root,
-                ..Default::default()
-            },
-            surface_painter: None,
-        });
+            parent.layout = surface;
+            let mut paint = nana_ui_runtime::WidgetPaintOutput {
+                owns_node_text: true,
+                suppress_root_surface: true,
+                clips_descendants: true,
+                ..nana_ui_runtime::WidgetPaintOutput::new()
+            };
+            let title_region = title(parent.layout);
+            paint.push(
+                2,
+                nana_ui_runtime::WidgetPaintOp::Text(nana_ui_runtime::WidgetText {
+                    bounds: title_region.bounds,
+                    content: title_region.content,
+                    color: title_region.color,
+                    paint_color: None,
+                    font_size: title_region.font_size,
+                    font_weight: title_region.font_weight,
+                    horizontal_alignment: nana_ui_runtime::TextHorizontalAlignment::Start,
+                    vertical_alignment: nana_ui_runtime::TextVerticalAlignment::Top,
+                    ellipsis: false,
+                    wrap: true,
+                    max_lines: None,
+                    italic: None,
+                    underline: None,
+                    line_through: None,
+                    suppress_spans: false,
+                    preserve_lines: None,
+                    unstyled_glyph: false,
+                    line_height: Some(None),
+                    retained_text: nana_ui_runtime::WidgetRetainedText::None,
+                    tabular_nums: false,
+                    ..Default::default()
+                }),
+            );
+            parent.widget_paint = Some(Arc::new(paint));
+        }
     }
 
     #[test]
@@ -544,20 +572,25 @@ mod tests {
     fn only_unadjustable_descendants_rebuild_when_the_ancestor_moves_or_scrolls() {
         for projective in [false, true] {
             let mut parent = node(1, None, &[2, 3]);
-            Arc::make_mut(&mut parent.source_style.layout).transform = Some(Default::default());
+            Arc::make_mut(&mut parent.source_style.layout)
+                .transforms
+                .transform = Some(Default::default());
             let mut child = node(2, Some(1), &[]);
             if projective {
-                Arc::make_mut(&mut child.source_style.layout).transform_3d = Some(
+                Arc::make_mut(&mut child.source_style.layout)
+                    .transforms
+                    .transform_3d = Some(
                     nana_ui_core::PaintMat4::perspective(800.0)
                         .unwrap()
                         .then(nana_ui_core::PaintMat4::rotate_y(30_f32.to_radians())),
                 );
             } else {
-                Arc::make_mut(&mut child.source_style.layout).transform =
-                    Some(nana_ui_core::PaintTransform {
-                        a: 0.0,
-                        ..Default::default()
-                    });
+                Arc::make_mut(&mut child.source_style.layout)
+                    .transforms
+                    .transform = Some(nana_ui_core::PaintTransform {
+                    a: 0.0,
+                    ..Default::default()
+                });
             }
             let sibling = node(3, Some(1), &[]);
             let mut scene = UiScene::new();
@@ -577,6 +610,7 @@ mod tests {
                 .unwrap();
             for x in [200.0, 400.0] {
                 Arc::make_mut(&mut parent.source_style.layout)
+                    .transforms
                     .transform
                     .as_mut()
                     .unwrap()
@@ -629,11 +663,12 @@ mod tests {
         let mut parent = node(1, None, &[2]);
         Arc::make_mut(&mut parent.source_style.layout).overflow_y =
             nana_ui_core::OverflowSpec::Hidden;
-        Arc::make_mut(&mut parent.source_style.layout).transform =
-            Some(nana_ui_core::PaintTransform {
-                e: 30.0,
-                ..Default::default()
-            });
+        Arc::make_mut(&mut parent.source_style.layout)
+            .transforms
+            .transform = Some(nana_ui_core::PaintTransform {
+            e: 30.0,
+            ..Default::default()
+        });
         let child = node(2, Some(1), &[]);
         let mut scene = UiScene::new();
         scene.apply_delta([parent, child.clone()], []);
@@ -662,10 +697,14 @@ mod tests {
         let built = |closed: bool| {
             let mut root = node(1, None, &[2]);
             if closed {
-                Arc::make_mut(&mut root.source_style.layout).css_perspective = Some(800.0);
+                Arc::make_mut(&mut root.source_style.layout)
+                    .transforms
+                    .css_perspective = Some(800.0);
             }
             let mut middle = node(2, Some(1), &[3]);
-            Arc::make_mut(&mut middle.source_style.layout).transform_3d = Some(
+            Arc::make_mut(&mut middle.source_style.layout)
+                .transforms
+                .transform_3d = Some(
                 nana_ui_core::PaintMat4::perspective(800.0)
                     .unwrap()
                     .then(nana_ui_core::PaintMat4::rotate_y(30_f32.to_radians())),
@@ -717,7 +756,9 @@ mod tests {
         // instead of reading the one baked into its primitive. The two have to
         // refuse the same transform or the delta between them moves the leaf.
         let mut recoloured = node(1, None, &[2]);
-        Arc::make_mut(&mut recoloured.source_style.layout).css_perspective = Some(800.0);
+        Arc::make_mut(&mut recoloured.source_style.layout)
+            .transforms
+            .css_perspective = Some(800.0);
         Arc::make_mut(&mut recoloured.source_style.layout).background = Some([1.0, 0.0, 0.0, 1.0]);
         scene.apply_delta([recoloured], []);
         assert_eq!(

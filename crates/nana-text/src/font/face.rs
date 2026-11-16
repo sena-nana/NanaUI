@@ -372,3 +372,400 @@ mod blank_glyph_tests {
         }
     }
 }
+
+#[cfg(feature = "raster")]
+mod raster_support {
+    use crate::font::AxisCoord;
+    use skrifa::bitmap::{BitmapData, BitmapFormat, BitmapStrikes, Origin as BitmapOrigin};
+    use skrifa::instance::NormalizedCoord;
+    use skrifa::outline::{
+        DrawSettings, HintingInstance, HintingMode, LcdLayout, OutlineGlyphCollection,
+        OutlineGlyphFormat, OutlinePen,
+    };
+    use skrifa::prelude::{LocationRef, Size};
+    use skrifa::raw::TableProvider;
+    use skrifa::string::StringId;
+    use skrifa::{FontRef, GlyphId, MetadataProvider, Tag};
+
+    /// Maximum cached `HintingInstance` entries per outline format.
+    const MAX_CACHED_HINT_INSTANCES: usize = 8;
+
+    const HINTING_MODE: HintingMode = HintingMode::Smooth {
+        lcd_subpixel: Some(LcdLayout::Horizontal),
+        preserve_linear_metrics: true,
+    };
+
+    /// Receiver for scaled glyph outline contours and optional COLR layer colors.
+    pub(crate) trait FaceOutlineSink {
+        fn begin_layer(&mut self, color: Option<[u8; 4]>);
+        fn move_to(&mut self, x: f32, y: f32);
+        fn line_to(&mut self, x: f32, y: f32);
+        fn quad_to(&mut self, cx0: f32, cy0: f32, x: f32, y: f32);
+        fn curve_to(&mut self, cx0: f32, cy0: f32, cx1: f32, cy1: f32, x: f32, y: f32);
+        fn close(&mut self);
+        fn finish_layer(&mut self);
+    }
+
+    /// Capabilities exposed by a font face for CPU glyph rasterization.
+    #[derive(Clone, Copy, Debug, Default)]
+    pub(crate) struct FaceRasterCaps {
+        pub has_outlines: bool,
+        pub has_color_outlines: bool,
+        pub has_color_bitmaps: bool,
+    }
+
+    /// Borrowed color bitmap bytes stored inside a strike table.
+    pub(crate) enum RawBitmapPayload<'a> {
+        Png(&'a [u8]),
+        Bgra(&'a [u8]),
+    }
+
+    /// Unscaled metadata and raw bytes for one color bitmap strike glyph.
+    pub(crate) struct RawColorBitmap<'a> {
+        pub payload: RawBitmapPayload<'a>,
+        pub ppem: f32,
+        pub width: u32,
+        pub height: u32,
+        pub left: i32,
+        pub top: i32,
+    }
+
+    struct HintingEntry {
+        font_key: u64,
+        size: Size,
+        coords: Vec<NormalizedCoord>,
+        instance: HintingInstance,
+        serial: u64,
+    }
+
+    /// Small LRU cache of `skrifa` hinting instances partitioned by outline format.
+    #[derive(Default)]
+    pub(crate) struct FaceScalerCache {
+        glyf_entries: Vec<HintingEntry>,
+        cff_entries: Vec<HintingEntry>,
+        other_entries: Vec<HintingEntry>,
+        serial: u64,
+    }
+
+    impl FaceScalerCache {
+        fn get(
+            &mut self,
+            font_key: u64,
+            outlines: &OutlineGlyphCollection<'_>,
+            size: Size,
+            coords: &[NormalizedCoord],
+        ) -> Option<&HintingInstance> {
+            let entries = match outlines.format()? {
+                OutlineGlyphFormat::Glyf => &mut self.glyf_entries,
+                OutlineGlyphFormat::Cff | OutlineGlyphFormat::Cff2 => &mut self.cff_entries,
+                #[allow(unreachable_patterns)]
+                _ => &mut self.other_entries,
+            };
+            let mut oldest_serial = u64::MAX;
+            let mut oldest_ix = 0;
+            let mut hit_ix = None;
+            for (ix, entry) in entries.iter().enumerate() {
+                if entry.font_key == font_key && entry.size == size && entry.coords == coords {
+                    hit_ix = Some(ix);
+                    break;
+                }
+                if entry.serial < oldest_serial {
+                    oldest_serial = entry.serial;
+                    oldest_ix = ix;
+                }
+            }
+            self.serial += 1;
+            let serial = self.serial;
+            if let Some(ix) = hit_ix {
+                let entry = entries.get_mut(ix)?;
+                entry.serial = serial;
+                return Some(&entry.instance);
+            }
+            if entries.len() < MAX_CACHED_HINT_INSTANCES {
+                let instance = HintingInstance::new(outlines, size, coords, HINTING_MODE).ok()?;
+                entries.push(HintingEntry {
+                    font_key,
+                    size,
+                    coords: coords.to_vec(),
+                    instance,
+                    serial,
+                });
+                return entries.last().map(|entry| &entry.instance);
+            }
+            let entry = entries.get_mut(oldest_ix)?;
+            entry.font_key = font_key;
+            entry.size = size;
+            entry.coords.clear();
+            entry.coords.extend_from_slice(coords);
+            entry.serial = serial;
+            entry
+                .instance
+                .reconfigure(outlines, size, coords, HINTING_MODE)
+                .ok()?;
+            Some(&entry.instance)
+        }
+    }
+
+    struct PenAdapter<'a, S>(&'a mut S);
+
+    impl<S: FaceOutlineSink> OutlinePen for PenAdapter<'_, S> {
+        fn move_to(&mut self, x: f32, y: f32) {
+            self.0.move_to(x, y);
+        }
+
+        fn line_to(&mut self, x: f32, y: f32) {
+            self.0.line_to(x, y);
+        }
+
+        fn quad_to(&mut self, cx0: f32, cy0: f32, x: f32, y: f32) {
+            self.0.quad_to(cx0, cy0, x, y);
+        }
+
+        fn curve_to(&mut self, cx0: f32, cy0: f32, cx1: f32, cy1: f32, x: f32, y: f32) {
+            self.0.curve_to(cx0, cy0, cx1, cy1, x, y);
+        }
+
+        fn close(&mut self) {
+            self.0.close();
+        }
+    }
+
+    /// Reads whether a face carries scalable outlines, COLR/CPAL layers, or color bitmap strikes.
+    pub(crate) fn read_raster_caps(data: &[u8], index: u32) -> Option<FaceRasterCaps> {
+        let font = FontRef::from_index(data, index).ok()?;
+        let has_outlines = font.outline_glyphs().format().is_some();
+        let has_color_outlines = font.table_data(Tag::new(b"COLR")).is_some()
+            && font.table_data(Tag::new(b"CPAL")).is_some();
+        let has_color_bitmaps = BitmapStrikes::with_format(&font, BitmapFormat::Sbix).is_some()
+            || BitmapStrikes::with_format(&font, BitmapFormat::Cbdt).is_some();
+        Some(FaceRasterCaps {
+            has_outlines,
+            has_color_outlines,
+            has_color_bitmaps,
+        })
+    }
+
+    fn draw_single_layer(
+        outlines: &OutlineGlyphCollection<'_>,
+        hinting: Option<&HintingInstance>,
+        size: Size,
+        coords: &[NormalizedCoord],
+        glyph_id: u16,
+        color: Option<[u8; 4]>,
+        sink: &mut impl FaceOutlineSink,
+    ) -> bool {
+        let Some(glyph) = outlines.get(GlyphId::from(glyph_id)) else {
+            return false;
+        };
+        sink.begin_layer(color);
+        let settings = match hinting {
+            Some(instance) => DrawSettings::hinted(instance, false),
+            None => DrawSettings::unhinted(size, LocationRef::new(coords)),
+        };
+        if glyph.draw(settings, &mut PenAdapter(sink)).is_err() {
+            return false;
+        }
+        sink.finish_layer();
+        true
+    }
+
+    fn resolve_outline_context<'a>(
+        font: &'a FontRef<'a>,
+        font_key: u64,
+        coords: &[AxisCoord],
+        size_px: f32,
+        hint: bool,
+        cache: &'a mut FaceScalerCache,
+    ) -> (
+        OutlineGlyphCollection<'a>,
+        Size,
+        skrifa::instance::Location,
+        Option<&'a HintingInstance>,
+    ) {
+        let outlines = font.outline_glyphs();
+        let upem = font.head().map(|head| head.units_per_em()).unwrap_or(0);
+        let size = if size_px > 0.0 && upem != 0 {
+            Size::new(size_px)
+        } else {
+            Size::unscaled()
+        };
+        let location = if coords.is_empty() {
+            skrifa::instance::Location::default()
+        } else {
+            font.axes().location(
+                coords
+                    .iter()
+                    .map(|coord| (Tag::new(&coord.tag), coord.value)),
+            )
+        };
+        let hinting = if hint && outlines.format().is_some() {
+            cache.get(font_key, &outlines, size, location.coords())
+        } else {
+            None
+        };
+        (outlines, size, location, hinting)
+    }
+
+    /// Scales a plain single-layer glyph outline into `sink`.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn scale_plain_outline(
+        data: &[u8],
+        index: u32,
+        font_key: u64,
+        coords: &[AxisCoord],
+        size_px: f32,
+        hint: bool,
+        glyph_id: u16,
+        cache: &mut FaceScalerCache,
+        sink: &mut impl FaceOutlineSink,
+    ) -> bool {
+        let Ok(font) = FontRef::from_index(data, index) else {
+            return false;
+        };
+        let (outlines, size, location, hinting) =
+            resolve_outline_context(&font, font_key, coords, size_px, hint, cache);
+        if outlines.format().is_none() {
+            return false;
+        }
+        draw_single_layer(
+            &outlines,
+            hinting,
+            size,
+            location.coords(),
+            glyph_id,
+            None,
+            sink,
+        )
+    }
+
+    /// Scales a COLRv0 layered color glyph into `sink` using CPAL palette 0.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn scale_color_outline(
+        data: &[u8],
+        index: u32,
+        font_key: u64,
+        coords: &[AxisCoord],
+        size_px: f32,
+        hint: bool,
+        glyph_id: u16,
+        cache: &mut FaceScalerCache,
+        sink: &mut impl FaceOutlineSink,
+    ) -> bool {
+        let Ok(font) = FontRef::from_index(data, index) else {
+            return false;
+        };
+        if font.table_data(Tag::new(b"CPAL")).is_none() {
+            return false;
+        }
+        let Ok(colr) = font.colr() else {
+            return false;
+        };
+        let Ok(Some(range)) = colr.v0_base_glyph(GlyphId::from(glyph_id)) else {
+            return false;
+        };
+        let palettes = font.color_palettes();
+        let palette = palettes.get(0);
+        let (outlines, size, location, hinting) =
+            resolve_outline_context(&font, font_key, coords, size_px, hint, cache);
+        if outlines.format().is_none() {
+            return false;
+        }
+        for layer_index in range {
+            let Ok((layer_gid, palette_index)) = colr.v0_layer(layer_index) else {
+                return false;
+            };
+            let color = if palette_index == 0xFFFF {
+                None
+            } else {
+                palette.as_ref().map(|pal| {
+                    pal.colors()
+                        .get(usize::from(palette_index))
+                        .map_or([0, 0, 0, 0], |entry| {
+                            [entry.red(), entry.green(), entry.blue(), entry.alpha()]
+                        })
+                })
+            };
+            let Ok(layer_gid_u16) = u16::try_from(layer_gid.to_u32()) else {
+                return false;
+            };
+            if !draw_single_layer(
+                &outlines,
+                hinting,
+                size,
+                location.coords(),
+                layer_gid_u16,
+                color,
+                sink,
+            ) {
+                return false;
+            }
+        }
+        true
+    }
+
+    /// Reads the best-fit `sbix` or `CBDT` color bitmap glyph entry at `size_px`.
+    pub(crate) fn read_color_bitmap(
+        data: &[u8],
+        index: u32,
+        size_px: f32,
+        glyph_id: u16,
+    ) -> Option<RawColorBitmap<'_>> {
+        if size_px <= 0.0 {
+            return None;
+        }
+        let font = FontRef::from_index(data, index).ok()?;
+        let strikes = BitmapStrikes::with_format(&font, BitmapFormat::Sbix)
+            .or_else(|| BitmapStrikes::with_format(&font, BitmapFormat::Cbdt))?;
+        let glyph = strikes.glyph_for_size(Size::new(size_px), GlyphId::from(glyph_id))?;
+        if glyph.ppem_y <= 0.0 {
+            return None;
+        }
+        let payload = match glyph.data {
+            BitmapData::Png(bytes) => RawBitmapPayload::Png(bytes),
+            BitmapData::Bgra(bytes) => RawBitmapPayload::Bgra(bytes),
+            BitmapData::Mask(_) => return None,
+        };
+        let left = glyph.inner_bearing_x as i32;
+        let mut top = glyph.inner_bearing_y as i32;
+        if glyph.placement_origin == BitmapOrigin::BottomLeft {
+            if top == 0
+                && font
+                    .localized_strings(StringId::FAMILY_NAME)
+                    .english_or_first()
+                    .is_some_and(|name| name.chars().eq("Apple Color Emoji".chars()))
+            {
+                let upem = font
+                    .head()
+                    .map(|head| head.units_per_em())
+                    .unwrap_or(1)
+                    .max(1);
+                top = (-100.0 * (glyph.ppem_y / f32::from(upem))).round() as i32;
+            }
+            top += glyph.height as i32;
+        }
+        Some(RawColorBitmap {
+            payload,
+            ppem: glyph.ppem_y,
+            width: glyph.width,
+            height: glyph.height,
+            left,
+            top,
+        })
+    }
+
+    #[cfg(test)]
+    pub(crate) fn map_char_for_test(data: &[u8], ch: char) -> u16 {
+        FontRef::new(data)
+            .ok()
+            .and_then(|font| font.charmap().map(ch))
+            .map_or(0, |glyph| glyph.to_u32() as u16)
+    }
+}
+
+#[cfg(all(test, feature = "raster"))]
+pub(crate) use raster_support::map_char_for_test;
+#[cfg(feature = "raster")]
+pub(crate) use raster_support::{
+    FaceOutlineSink, FaceScalerCache, RawBitmapPayload, read_color_bitmap, read_raster_caps,
+    scale_color_outline, scale_plain_outline,
+};

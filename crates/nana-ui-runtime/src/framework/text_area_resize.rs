@@ -42,10 +42,10 @@ impl AppContext {
         let Some((x, y)) = self.world.pointer_layout_position(target, x, y) else {
             return Ok(false);
         };
-        let Some(crate::ComponentGeometry::TextInput {
-            resize_grip: Some(grip),
-            ..
-        }) = self.world.component_geometry(target)
+        let Some(grip) = self
+            .world
+            .text_input_geometry(target)
+            .and_then(|g| g.resize_grip)
         else {
             return Ok(false);
         };

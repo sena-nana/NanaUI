@@ -7,7 +7,11 @@
 //! below destructure the whole struct: a field added to [`LayoutStyle`]
 //! without a kind here does not compile.
 
-use crate::box_layout::{FlexDirection, LayoutStyle};
+use crate::box_layout::{
+    BorderSides, ContainerStyle, FlexDirection, GridStyle, LayoutStyle, LogicalBoxEdges,
+    TextStyleExt, TransformStyle,
+};
+use crate::shared::Shared;
 
 /// A set of [`LayoutStyle`] field kinds.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
@@ -23,11 +27,11 @@ impl LayoutStyleChange {
     pub const SIZING: Self = Self(1 << 2);
     /// Gaps, padding and margin, physical and logical.
     pub const SPACING: Self = Self(1 << 3);
-    /// Positioning scheme and insets; with [`Self::FLOAT`], float and clear.
+    /// Positioning scheme and insets.
     pub const POSITION: Self = Self(1 << 4);
     /// Alignment and justification.
     pub const ALIGNMENT: Self = Self(1 << 5);
-    /// Every grid template, track, placement and subgrid field.
+    /// Every grid template, track and placement field.
     pub const GRID: Self = Self(1 << 6);
     /// How text wraps, breaks, aligns, ends and clamps.
     pub const TEXT_LAYOUT: Self = Self(1 << 7);
@@ -74,9 +78,6 @@ impl LayoutStyleChange {
     pub const FLEX_SIZING: Self = Self(Self::FLOW.0 | Self::FLEX_FACTOR.0);
     /// Display, order, wrapping, line direction, isolation.
     pub const FLOW_STRUCTURE: Self = Self(Self::FLOW.0 | Self::FLOW_SHAPE.0);
-    /// Float and clear: where the box sits, and what its parent's block
-    /// extent holds -- a float leaves the flow, a clear pushes it down.
-    pub const FLOAT: Self = Self(Self::FLOW_STRUCTURE.0 | Self::POSITION.0);
     /// Whether and by which names the box answers container-size queries.
     /// It moves no box; the rules that query a container find it again.
     pub const CONTAINER: Self = Self(1 << 22);
@@ -171,16 +172,26 @@ impl LayoutFieldSet {
 }
 
 macro_rules! layout_style_fields {
-    ($($field:ident: $kind:ident $(by $eq:path)?,)*) => {
+    (
+        top {
+            $($field:ident: $kind:ident $(by $eq:path)?,)*
+        }
+        $(
+            shared $group:ident : $group_ty:ident {
+                $($gfield:ident => $variant:ident : $gkind:ident $(by $geq:path)?,)*
+            }
+        )*
+    ) => {
         /// Each field's bit in a [`LayoutFieldSet`].
         #[allow(non_camel_case_types, clippy::upper_case_acronyms)]
         #[derive(Clone, Copy)]
         enum Field {
             $($field,)*
+            $($($variant,)*)*
         }
 
         const _: () = assert!(
-            [$(Field::$field),*].len() <= 192,
+            [$(Field::$field,)* $($(Field::$variant,)*)*].len() <= 192,
             "LayoutFieldSet holds 192 fields"
         );
 
@@ -188,11 +199,21 @@ macro_rules! layout_style_fields {
             /// The fields whose values differ between `self` and `other`,
             /// one by one: what a patch from `self` to `other` writes.
             pub fn differing_fields(&self, other: &Self) -> LayoutFieldSet {
-                let Self { $($field),* } = self;
+                let Self { $($field,)* $($group,)* } = self;
                 let mut fields = LayoutFieldSet::EMPTY;
                 $(
                     if *$field != other.$field {
                         fields.insert(Field::$field as usize);
+                    }
+                )*
+                $(
+                    if !$group.ptr_eq(&other.$group) {
+                        let $group_ty { $($gfield,)* } = &**$group;
+                        $(
+                            if *$gfield != other.$group.$gfield {
+                                fields.insert(Field::$variant as usize);
+                            }
+                        )*
                     }
                 )*
                 fields
@@ -205,15 +226,47 @@ macro_rules! layout_style_fields {
                         self.$field = other.$field.clone();
                     }
                 )*
+                $(
+                    if !self.$group.ptr_eq(&other.$group) {
+                        let any_diff = $(
+                            fields.contains(Field::$variant as usize)
+                                && self.$group.$gfield != other.$group.$gfield
+                        )||*;
+                        if any_diff {
+                            {
+                                let target = &mut *self.$group;
+                                let source = &*other.$group;
+                                $(
+                                    if fields.contains(Field::$variant as usize) {
+                                        target.$gfield = source.$gfield.clone();
+                                    }
+                                )*
+                            }
+                            if &*self.$group == &<$group_ty>::default() {
+                                self.$group = Shared::empty();
+                            }
+                        }
+                    }
+                )*
             }
 
             /// The kinds of field that differ between `self` and `other`.
             pub fn changed_fields(&self, other: &Self) -> LayoutStyleChange {
-                let Self { $($field),* } = self;
+                let Self { $($field,)* $($group,)* } = self;
                 let mut changed = LayoutStyleChange::NONE;
                 $(
                     if !layout_style_fields!(@eq $field, &other.$field $(, $eq)?) {
                         changed = changed.union(LayoutStyleChange::$kind);
+                    }
+                )*
+                $(
+                    if !$group.ptr_eq(&other.$group) {
+                        let $group_ty { $($gfield,)* } = &**$group;
+                        $(
+                            if !layout_style_fields!(@eq $gfield, &other.$group.$gfield $(, $geq)?) {
+                                changed = changed.union(LayoutStyleChange::$gkind);
+                            }
+                        )*
                     }
                 )*
                 // A box that leaves its parent's flow or joins it changes
@@ -228,13 +281,39 @@ macro_rules! layout_style_fields {
             /// `self` with every field of a kind in `kinds` taken from
             /// `other`.
             pub fn with_fields_of(&self, other: &Self, kinds: LayoutStyleChange) -> Self {
-                let Self { $($field),* } = self;
+                let Self { $($field,)* $($group,)* } = self;
                 Self {
                     $(
                         $field: if kinds.intersects(LayoutStyleChange::$kind) {
                             other.$field.clone()
                         } else {
                             $field.clone()
+                        },
+                    )*
+                    $(
+                        $group: if $group.ptr_eq(&other.$group) {
+                            $group.clone()
+                        } else {
+                            let group_kinds = LayoutStyleChange::NONE
+                                $(.union(LayoutStyleChange::$gkind))*;
+                            if !kinds.intersects(group_kinds) {
+                                $group.clone()
+                            } else {
+                                let merged = $group_ty {
+                                    $(
+                                        $gfield: if kinds.intersects(LayoutStyleChange::$gkind) {
+                                            other.$group.$gfield.clone()
+                                        } else {
+                                            $group.$gfield.clone()
+                                        },
+                                    )*
+                                };
+                                if merged == <$group_ty>::default() {
+                                    Shared::empty()
+                                } else {
+                                    Shared::new(merged)
+                                }
+                            }
                         },
                     )*
                 }
@@ -246,141 +325,151 @@ macro_rules! layout_style_fields {
 }
 
 layout_style_fields! {
-    theme: NONE,
-    paint_colors: PAINT,
-    layout_isolation: FLOW_STRUCTURE,
-    direction: WRITING by same_direction,
-    dir: WRITING,
-    writing_mode: WRITING,
-    unsupported_writing_mode: WRITING,
-    text_orientation: WRITING,
-    flex_reverse: FLOW_STRUCTURE,
-    order: FLOW_STRUCTURE,
-    flex_wrap: FLOW_STRUCTURE,
-    equal_wrap: FLOW_STRUCTURE,
-    display: FLOW_STRUCTURE,
-    box_sizing: SIZING_BOTH,
-    position: POSITION,
-    anchor: POSITION,
-    z_index: STACKING,
-    isolation: STACKING,
-    transform: TRANSFORM,
-    transform_3d: TRANSFORM,
-    unsupported_transform: TRANSFORM,
-    transform_origin: TRANSFORM,
-    css_perspective: TRANSFORM,
-    preserve_3d: TRANSFORM,
-    transform_box: TRANSFORM,
-    gap: SPACING,
-    row_gap: SPACING,
-    column_gap: SPACING,
-    padding: SPACING,
-    padding_top: SPACING,
-    padding_right: SPACING,
-    padding_bottom: SPACING,
-    padding_left: SPACING,
-    logical_padding: SPACING,
-    margin: SPACING,
-    margin_top: SPACING,
-    margin_right: SPACING,
-    margin_bottom: SPACING,
-    margin_left: SPACING,
-    logical_margin: SPACING,
-    offset_top: POSITION,
-    offset_right: POSITION,
-    offset_bottom: POSITION,
-    offset_left: POSITION,
-    logical_inset: POSITION,
-    width: WIDTH,
-    height: HEIGHT,
-    min_width: WIDTH,
-    max_width: WIDTH,
-    min_height: HEIGHT,
-    max_height: HEIGHT,
-    allow_shrink: SIZING_BOTH,
-    align_items: ALIGNMENT,
-    align_self: ALIGNMENT,
-    align_content: ALIGNMENT,
-    justify_content: ALIGNMENT,
-    justify_items: ALIGNMENT,
-    justify_self: ALIGNMENT,
-    flex_grow: FLEX_SIZING,
-    flex_shrink: FLEX_SIZING,
-    flex_basis: FLEX_SIZING,
-    adaptation: FLEX_SIZING,
-    overflow_x: SCROLL,
-    overflow_y: SCROLL,
-    text_overflow_ellipsis: TEXT_LAYOUT,
-    line_clamp: TEXT_LAYOUT,
-    pointer_events: INTERACTION,
-    cursor: CURSOR,
-    user_select: CURSOR,
-    white_space_nowrap: TEXT_LAYOUT,
-    white_space: TEXT_LAYOUT,
-    word_break: TEXT_LAYOUT,
-    overflow_wrap: TEXT_LAYOUT,
-    aspect_ratio: SIZING_BOTH,
-    text_align: TEXT_LAYOUT,
-    float: FLOAT,
-    clear: FLOAT,
-    font_size: FONT,
-    font_weight: FONT,
-    font_italic: TEXT_LAYOUT,
-    font_family: FONT,
-    line_height: FONT,
-    letter_spacing: FONT,
-    color: PAINT,
-    text_decoration: PAINT,
-    text_emphasis_style: TEXT_LAYOUT,
-    text_emphasis_position: TEXT_LAYOUT,
-    text_emphasis_color: PAINT,
-    font_features: FONT,
-    font_variation_settings: FONT,
-    font_kerning: FONT,
-    line_break: TEXT_LAYOUT,
-    text_typography: TEXT_LAYOUT,
-    unsupported_font_variation: FONT,
-    placeholder_color: PAINT,
-    placeholder_opacity: PAINT,
-    selection_background: PAINT,
-    selection_color: PAINT,
-    grid_columns: GRID,
-    grid_rows: GRID,
-    grid_columns_unsupported: GRID,
-    grid_rows_unsupported: GRID,
-    grid_auto_columns: GRID,
-    grid_auto_rows: GRID,
-    grid_auto_flow: GRID,
-    grid_columns_repeat: GRID,
-    grid_rows_repeat: GRID,
-    grid_columns_subgrid: GRID,
-    grid_rows_subgrid: GRID,
-    grid_placement: GRID,
-    grid_template_areas: GRID,
-    grid_column_line_names: GRID,
-    grid_row_line_names: GRID,
-    hidden: VISIBILITY,
-    paint: PAINT,
-    opacity: PAINT,
-    background: PAINT,
-    border_radius: PAINT,
-    border_width: BORDER_GEOMETRY,
-    border_top_width: BORDER_GEOMETRY,
-    border_right_width: BORDER_GEOMETRY,
-    border_bottom_width: BORDER_GEOMETRY,
-    border_left_width: BORDER_GEOMETRY,
-    border_color: PAINT,
-    border_top_color: PAINT,
-    border_right_color: PAINT,
-    border_bottom_color: PAINT,
-    border_left_color: PAINT,
-    border_style: BORDER_STYLE,
-    border_top_style: BORDER_STYLE,
-    border_right_style: BORDER_STYLE,
-    border_bottom_style: BORDER_STYLE,
-    border_left_style: BORDER_STYLE,
-    container_type: CONTAINER,
-    container_name: CONTAINER,
+    top {
+        theme: NONE,
+        paint_colors: PAINT,
+        layout_isolation: FLOW_STRUCTURE,
+        direction: WRITING by same_direction,
+        dir: WRITING,
+        writing_mode: WRITING,
+        flex_reverse: FLOW_STRUCTURE,
+        order: FLOW_STRUCTURE,
+        flex_wrap: FLOW_STRUCTURE,
+        equal_wrap: FLOW_STRUCTURE,
+        display: FLOW_STRUCTURE,
+        box_sizing: SIZING_BOTH,
+        position: POSITION,
+        anchor: POSITION,
+        z_index: STACKING,
+        isolation: STACKING,
+        gap: SPACING,
+        row_gap: SPACING,
+        column_gap: SPACING,
+        padding: SPACING,
+        padding_top: SPACING,
+        padding_right: SPACING,
+        padding_bottom: SPACING,
+        padding_left: SPACING,
+        margin: SPACING,
+        margin_top: SPACING,
+        margin_right: SPACING,
+        margin_bottom: SPACING,
+        margin_left: SPACING,
+        offset_top: POSITION,
+        offset_right: POSITION,
+        offset_bottom: POSITION,
+        offset_left: POSITION,
+        width: WIDTH,
+        height: HEIGHT,
+        min_width: WIDTH,
+        max_width: WIDTH,
+        min_height: HEIGHT,
+        max_height: HEIGHT,
+        allow_shrink: SIZING_BOTH,
+        align_items: ALIGNMENT,
+        align_self: ALIGNMENT,
+        align_content: ALIGNMENT,
+        justify_content: ALIGNMENT,
+        justify_items: ALIGNMENT,
+        justify_self: ALIGNMENT,
+        flex_grow: FLEX_SIZING,
+        flex_shrink: FLEX_SIZING,
+        flex_basis: FLEX_SIZING,
+        adaptation: FLEX_SIZING,
+        overflow_x: SCROLL,
+        overflow_y: SCROLL,
+        text_overflow_ellipsis: TEXT_LAYOUT,
+        pointer_events: INTERACTION,
+        cursor: CURSOR,
+        user_select: CURSOR,
+        white_space_nowrap: TEXT_LAYOUT,
+        white_space: TEXT_LAYOUT,
+        aspect_ratio: SIZING_BOTH,
+        text_align: TEXT_LAYOUT,
+        font_size: FONT,
+        font_weight: FONT,
+        font_italic: TEXT_LAYOUT,
+        line_height: FONT,
+        color: PAINT,
+        hidden: VISIBILITY,
+        paint: PAINT,
+        opacity: PAINT,
+        background: PAINT,
+        border_radius: PAINT,
+        border_width: BORDER_GEOMETRY,
+        border_color: PAINT,
+        border_style: BORDER_STYLE,
+    }
+    shared transforms: TransformStyle {
+        transform => transforms_transform: TRANSFORM,
+        transform_3d => transforms_transform_3d: TRANSFORM,
+        unsupported_transform => transforms_unsupported_transform: TRANSFORM,
+        origin => transforms_origin: TRANSFORM,
+        css_perspective => transforms_css_perspective: TRANSFORM,
+        preserve_3d => transforms_preserve_3d: TRANSFORM,
+        transform_box => transforms_transform_box: TRANSFORM,
+    }
+    shared logical_edges: LogicalBoxEdges {
+        padding => logical_padding: SPACING,
+        margin => logical_margin: SPACING,
+        inset => logical_inset: POSITION,
+    }
+    shared text_ext: TextStyleExt {
+        font_family => text_ext_font_family: FONT,
+        letter_spacing => text_ext_letter_spacing: FONT,
+        line_clamp => text_ext_line_clamp: TEXT_LAYOUT,
+        word_break => text_ext_word_break: TEXT_LAYOUT,
+        overflow_wrap => text_ext_overflow_wrap: TEXT_LAYOUT,
+        text_decoration => text_ext_text_decoration: PAINT,
+        text_emphasis_style => text_ext_text_emphasis_style: TEXT_LAYOUT,
+        text_emphasis_position => text_ext_text_emphasis_position: TEXT_LAYOUT,
+        text_emphasis_color => text_ext_text_emphasis_color: PAINT,
+        font_features => text_ext_font_features: FONT,
+        font_variation_settings => text_ext_font_variation_settings: FONT,
+        font_kerning => text_ext_font_kerning: FONT,
+        line_break => text_ext_line_break: TEXT_LAYOUT,
+        text_typography => text_ext_text_typography: TEXT_LAYOUT,
+        unsupported_font_variation => text_ext_unsupported_font_variation: FONT,
+        unsupported_writing_mode => text_ext_unsupported_writing_mode: WRITING,
+        text_orientation => text_ext_text_orientation: WRITING,
+        placeholder_color => text_ext_placeholder_color: PAINT,
+        placeholder_opacity => text_ext_placeholder_opacity: PAINT,
+        selection_background => text_ext_selection_background: PAINT,
+        selection_color => text_ext_selection_color: PAINT,
+    }
+    shared grid: GridStyle {
+        columns => grid_columns: GRID,
+        rows => grid_rows: GRID,
+        columns_unsupported => grid_columns_unsupported: GRID,
+        rows_unsupported => grid_rows_unsupported: GRID,
+        auto_columns => grid_auto_columns: GRID,
+        auto_rows => grid_auto_rows: GRID,
+        auto_flow => grid_auto_flow: GRID,
+        columns_repeat => grid_columns_repeat: GRID,
+        rows_repeat => grid_rows_repeat: GRID,
+        placement => grid_placement: GRID,
+        template_areas => grid_template_areas: GRID,
+        column_line_names => grid_column_line_names: GRID,
+        row_line_names => grid_row_line_names: GRID,
+    }
+    shared border_sides: BorderSides {
+        top_width => border_top_width: BORDER_GEOMETRY,
+        right_width => border_right_width: BORDER_GEOMETRY,
+        bottom_width => border_bottom_width: BORDER_GEOMETRY,
+        left_width => border_left_width: BORDER_GEOMETRY,
+        top_color => border_top_color: PAINT,
+        right_color => border_right_color: PAINT,
+        bottom_color => border_bottom_color: PAINT,
+        left_color => border_left_color: PAINT,
+        top_style => border_top_style: BORDER_STYLE,
+        right_style => border_right_style: BORDER_STYLE,
+        bottom_style => border_bottom_style: BORDER_STYLE,
+        left_style => border_left_style: BORDER_STYLE,
+    }
+    shared container: ContainerStyle {
+        container_type => container_type: CONTAINER,
+        container_name => container_name: CONTAINER,
+    }
 }
 
 #[cfg(test)]
@@ -410,12 +499,11 @@ mod tests {
     #[test]
     fn differing_fields_copy_back_field_by_field() {
         let base = LayoutStyle::default();
-        let styled = LayoutStyle {
-            width: Some(LengthSpec::Px(10.0)),
-            background: Some([1.0, 0.0, 0.0, 1.0]),
-            container_name: vec!["card".into()],
-            ..LayoutStyle::default()
-        };
+        let styled = LayoutStyle::with(|s| {
+            s.width = Some(LengthSpec::Px(10.0));
+            s.background = Some([1.0, 0.0, 0.0, 1.0]);
+            s.container.container_name = vec!["card".into()];
+        });
         let fields = base.differing_fields(&styled);
         assert_eq!(fields.len(), 3);
         assert!(base.differing_fields(&base).is_empty());
@@ -516,24 +604,15 @@ mod tests {
 
     /// The fields the old hand-written lists missed are layout now.
     #[test]
-    fn logical_edges_subgrid_and_isolation_are_layout() {
+    fn logical_edges_and_isolation_are_layout() {
         let base = LayoutStyle::default();
-        for (changed, kind) in [
-            (
-                LayoutStyle {
-                    grid_columns_subgrid: true,
-                    ..LayoutStyle::default()
-                },
-                LayoutStyleChange::GRID,
-            ),
-            (
-                LayoutStyle {
-                    layout_isolation: true,
-                    ..LayoutStyle::default()
-                },
-                LayoutStyleChange::FLOW_STRUCTURE,
-            ),
-        ] {
+        for (changed, kind) in [(
+            LayoutStyle {
+                layout_isolation: true,
+                ..LayoutStyle::default()
+            },
+            LayoutStyleChange::FLOW_STRUCTURE,
+        )] {
             let changes = base.changed_fields(&changed);
             assert_eq!(changes, kind);
             assert!(changes.intersects(LayoutStyleChange::LAYOUT));

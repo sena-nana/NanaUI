@@ -65,25 +65,24 @@ Layout splits a node into three things, none of which replaces another:
   It is derived from the parent's context, the node's resolved layout intent, and the node's own content. It is a view,
   not a component, and it is not stored as another tree.
 - **Established context** (`FormattingContextKind`): how this node lays out its children. Layout records the one it
-  actually ran: `Flow` (`display: block` or unset, the same block layout), `Flex`, `Grid`, `Inline` (there are inline-level boxes among the in-flow
+  actually ran: `Flex` (the default `DisplaySpec::Flex`, unset `display` without inline-level children, and `inline-flex`), `Grid` (`grid` / `inline-grid`), `Inline` (an un-pinned container with inline-level boxes among its in-flow
   children), `Layers` (`display: layers`, stacking), `Overlay` (a modal places its children by slot). A leaf with text establishes
   `Inline` for its own text; the glyphs belong to nana-text and do not become layout nodes. An empty leaf establishes no context.
 
 Measure and placement choose the context with the same function, so the two passes cannot choose different algorithms for the same node.
-The algorithms themselves did not change. The context reads only `resolved_layout`, the output of layout intent authority;
+The context reads only `resolved_layout`, the output of layout intent authority;
 it does not parse the style a second time.
 
 | Parent context | Child participation |
 |---|---|
 | `Flex` | `FlexItem` |
 | `Grid` | `GridItem` |
-| `Flow` | `FlowItem`; a floated one is `Float`; an inline element split by a block is `InlineSpan` |
-| `Inline` | Inline text is `NativeText`, an inline element with children is `InlineSpan`, `inline-block`, controls, and replaced content are `AtomicInline`, a block-level box is `FlowItem` (line break) |
+| `Inline` | Inline text (`display: inline` text node) is `NativeText`; `display: inline` with children is `InlineSpan`; replaced/empty inline nodes and `inline-flex` / `inline-grid` controls/containers are `AtomicInline`; container children (`flex` / `grid` / `layers`) are line-breaking `FlexItem`s |
 | `Layers` | `LayerItem` |
 | `Overlay` | `OverlayItem` |
 
-`Absolute` / `Fixed`, `display: contents` (`Contents`), and nodes that generate no box (`NoBox`)
-are the same in every context. Text, images, buttons, containers, and custom render all go through this one table:
+`Absolute` / `Fixed` and nodes that generate no box (`NoBox` from `DisplaySpec::None`)
+are the same in every context outside `Overlay` (`Overlay` places slots as `OverlayItem`). Text, images, buttons, containers, and custom render all go through this one table:
 they differ only in content (`Children`, `Text`, `Replaced`, `Empty`), not in component type. The same
 text node is `NativeText` in `Inline` and, in flex or grid, an item laid out by its intrinsic size.
 Nodes may nest arbitrarily: a grid in a flex parent is a `FlexItem` and is still a `Grid` for its own children.
@@ -117,7 +116,7 @@ listeners, and mounts do not change, and no node is created or destroyed. Each c
 DevTools `inspect`'s `layout_node` gives the node, an intent summary, content, established context, parent
 context, participation, and the three generations: metrics, context, and result.
 
-The gates are in `world/tests/layout_foundations.rs`: the same set of children (a labeled inline-block, inline text, a replaced image,
+The gates are in `world/tests/layout_foundations.rs`: the same set of children (a labeled `inline-flex` control, inline text, a replaced image,
 a nested grid) goes through Flex → Grid → Inline → Flex; each step records exactly one switch, no node is created or destroyed,
 participation follows the parent, and every item matches a cold layout; static, paint-only, and equivalent writes record no switch.
 The component version in `framework/tests.rs` confirms that TextInput's content and focus and Button's handler are all preserved.
@@ -212,7 +211,7 @@ A sequential container (where each child's position depends only on the children
 the common prefix and suffix of the old and new child lists. The measure plan subtracts each departing child's share of size and one gap, and measures each incoming child once and adds it;
 the placement plan replays the suffix from the edit, children before the edit do not move, children after the edit move by the difference of departures and arrivals, and the plan is rebuilt around the
 edit. Adding or removing a box at the end of a long page does only that edit in a frame; adding or removing at the start moves each following box once, which is real output,
-and no subtree is walked whole for measurement. When incoming children change the formatting context (inline-level, float, positioning, `display: contents`,
+and no subtree is walked whole for measurement. When incoming children change the formatting context (inline-level, positioning,
 flex, `order`, auto margin, reading the main-axis length), when all the widest children leave a container whose cross axis follows content, or when the flow becomes empty or starts from empty,
 the children are remeasured and placed as before. After the plan patches out a size, the intrinsic facts the container retained measure the content before the patch;
 they leave the retained cache with this pass, and a later different constraint remeasures rather than reading the old ones.
@@ -496,70 +495,33 @@ Gates in `world/tests/layout_foundations.rs`:
 - E: reporting the same size again produces no work; switching to another resource of the same size gives 0 seeds and 0 measures; switching to a resource of another size
   relays out only the two boxes that read it.
 - F: the fit `Video` and `GpuTextureView` get from markup is the same value as an image's `object-fit`.
-- G: atoms on the same line in ordinary block flow align by baseline: an inline-block without line boxes, an inline-block whose `overflow` is not visible,
-  and an image sit with the bottom margin edge on the baseline; an inline-block with text sits with its last line's baseline on the baseline; and the block's
-  height is the span of the line box from the highest top to the lowest bottom. Swapping in a taller atom, text wrapping into several lines in a box of the same size, and text arriving in a previously empty atom
-  each place the line again, matching cold layout item by item.
-- H: an inline-block whose line boxes are all in descendants sits with the baseline of its last descendant line box on the line's baseline: a fixed box with a label below an empty block,
-  a label wrapped into several lines inside a block (takes the second line, not the first), two inline-block labels each on its own line (takes the second line), and a label inside a fixed-
-  size block. Descendant text wrapping, the block above getting taller, and text wrapping inside a fixed-size block each place the line again; a text change
-  that does not change the line count moves no box. Each step matches cold layout item by item.
-- I: the line boxes of ordinary block flow start from the block's strut: when `line-height` equals the font size, an empty inline-block leaves the font's
-  descent below it, and the default line height adds half a leading; a very short atom's top is no higher than the strut's ascent; a line occupied by a block-level child alone has no
-  strut; lines of a native paragraph likewise leave a gap below atoms.
+- G: inline atoms (`inline-flex` / `inline-grid` or `display: inline` atoms) on the same line in an `Inline` flow align by baseline: an inline atom without line boxes, an inline atom whose `overflow` is not visible, and an image sit with their bottom margin edge on the baseline; an inline container with text sits with its last line's baseline on the baseline; and the container's height is the span of the line box from the highest top to the lowest bottom. Swapping in a taller atom, text wrapping into several lines in a box of the same size, and text arriving in a previously empty atom each place the line again, matching cold layout item by item.
+- H: an inline atom whose line boxes are all in descendants sits with the baseline of its last descendant line box on the line's baseline: a fixed box with a label below an empty container, a label wrapped into several lines inside a container (takes the second line, not the first), two inline labels each on its own line (takes the second line), and a label inside a fixed-size container. Descendant text wrapping, the container above getting taller, and text wrapping inside a fixed-size container each place the line again; a text change that does not change the line count moves no box. Each step matches cold layout item by item.
+- I: line boxes of an `Inline` flow start from the container's strut: when `line-height` equals the font size, an empty inline atom leaves the font's descent below it, and the default line height adds half a leading; a very short atom's top is no higher than the strut's ascent; a line occupied by a non-inline container child (`Flex` / `Grid` / `Layers`) alone has no strut; lines of a native paragraph likewise leave a gap below atoms.
 
 `nana-ui`'s `scene_paint/replaced_context_tests.rs` has two more: a host texture moving across contexts does not rebind
 its texture; under all five fits the `url()` path and the host-texture path give the same target rect.
 
 Baseline: replaced content aligns by its bottom edge (`aligns_by_bottom_edge`), decided by layout, not by the painter correcting y. Inline formatting contexts
-(the line boxes of a native paragraph `InlineFlow`, and line boxes in ordinary block flow sharing a line with inline-block atoms) both align by CSS's default
+(the line boxes of a native paragraph `InlineFlow`, and line boxes in an `Inline` context sharing a line with inline atoms) both align by CSS's default
 `vertical-align: baseline` (CSS 2.1 §10.8.1), and both read the same function
 `LayoutInputMap::atom_line_metrics`:
-- An inline-block sits with the baseline of its last in-flow line box on the line's baseline; the baseline value is the last-line baseline from `baseline_metrics`.
-  An inline-block whose line boxes are all in descendants (`UiWorld::line_boxes_are_descendants_in`: no text, control, or
-  paragraph of its own, only in flow) takes the position of the descendant holding the last line box (CSS 2.1 §10.8.1):
-  `inline::descendant_baselines` reads, from the sizes measured for the children in its content box, where placement will put them:
-  the segment that arranges lines, distributes main-axis free space, aligns on the cross axis, and converts to the page is `placement::arrange_flow`,
-  called by both placement itself and the derivation (#394); the derivation does not arrange separately. The last line box is either the line holding an atom (`ArrangedLine`'s
-  `atom_baseline`) or a block occupying a line alone, in which case its own last-line baseline is taken (recursively, if its line boxes are also in descendants).
-  The same derivation pass also searches forward for the first line box to get the first baseline (#382). First and last line boxes are searched in flow order. Each pass records the result per node and used
-  size in `LayoutInputMap::derived_baselines`; every place that reads an atom's ascent (block measure and placement,
-  measure plan comparison and increments, native paragraphs) calls `prime_atom_baselines` first, and `baseline_metrics` then reads it, so
-  there is only this one derivation. `justify-content`, reversal, wrapping into columns, floats beside the line (gates E, F, G in `world/tests/layout_foundations.rs`,
-  css-parity `T-FL07`), auto margins, equal-width line splitting, and `clear` in block flow all follow placement's result,
-  and there are no remaining cases that fall back to an approximation. For the baselines of flex and grid containers see below; subgrid and vertical writing do not derive and are still the approximation of the first line of their own font;
-- replaced content, inline-blocks whose `overflow` is not visible, and inline-blocks without in-flow line boxes (`UiWorld::atom_sits_on_line_box`)
+- An inline atom (`inline-flex` / `inline-grid`, etc.) sits with the baseline of its last in-flow line box on the line's baseline; the baseline value is the last-line baseline from `baseline_metrics`. An inline atom whose line boxes are all in descendants (`UiWorld::line_boxes_are_descendants_in`: no text, control, or paragraph of its own, only in flow) takes the position of the descendant holding the last line box (CSS 2.1 §10.8.1): `inline::descendant_baselines` reads, from the sizes measured for the children in its content box, where placement will put them: the segment that arranges lines, distributes main-axis free space, aligns on the cross axis, and converts to the page is `placement::arrange_flow`, called by both placement itself and the derivation (#394); the derivation does not arrange separately. The last line box is either the line holding an atom (`ArrangedLine`'s `atom_baseline`) or a container occupying a line alone, in which case its own last-line baseline is taken (recursively, if its line boxes are also in descendants). The same derivation pass also searches forward for the first line box to get the first baseline (#382). First and last line boxes are searched in flow order. Each pass records the result per node and used size in `LayoutInputMap::derived_baselines`; every place that reads an atom's ascent (`Inline` measure and placement, measure plan comparison and increments, native paragraphs) calls `prime_atom_baselines` first, and `baseline_metrics` then reads it, so there is only this one derivation. `justify-content`, reversal, wrapping into columns, auto margins, and equal-width line splitting all follow placement's result, and there are no remaining cases that fall back to an approximation. For the baselines of flex and grid containers see below; subgrid and vertical writing do not derive and are still the approximation of the first line of their own font;
+- replaced content, inline atoms whose `overflow` is not visible, and inline atoms without in-flow line boxes (`UiWorld::atom_sits_on_line_box`)
   sit with the **bottom margin edge** on the baseline, and `margin-bottom` raises them;
-- the line box height is the span, after alignment, from the highest top margin edge to the lowest bottom margin edge; a block-level child occupies a line alone, laid out from the top of the line.
-- Line boxes in ordinary block flow with inline-level children start from the block's **strut** (`inline::line_strut`): a zero-width inline box using the block's
-  own font face, font size, and `line-height`, whose ascent and descent are the real metrics of the block's own face (#382);
-  half the difference between `line-height` and their sum is added above and half below. So an empty inline-block sitting with its bottom edge on the baseline
-  leaves the face's descent plus half a leading below it, and a very short atom's top is no higher than the strut's ascent. A line occupied by a block-level child alone has no
-  strut. `line-height` reads the block's own `LayoutStyle` (on the CSS path inherited through `inherit_typography_from`),
-  not `ComputedStyle`.
-  - The metrics are the same as for native paragraphs (`nana-text`'s `LineStrut`): the text stage asks the shaper on the block's behalf
-    (`TextShaper::strut_metrics`; `NanaTextEngineShaper` reads `NativeTextEngine::strut_metrics`),
-    stores the value per px of the block's font size in `UiWorld::block_strut`, and layout multiplies by the font size to read it. So with the same face and line height, ordinary block flow
-    and native paragraphs leave the same gap below an empty atom. The product UI face Noto Sans SC has ascent / descent
-    1.16em / 0.288em; at 16px with line height 1.2 the strut's descent is about 2.6px (for Chrome measurements see css-parity
-    `T-I04`, `T-I06`, `T-I07`).
-  - Only blocks that need one hold a strut (`UiWorld::wants_block_strut`): not a flex / grid container, no line boxes of its
-    own, and in-flow inline-level boxes among its children. When the shaper reports no metrics (the default implementation returns `None`), it falls back to the shared approximation
-    `TEXT_APPROX_ASCENT_EM` (0.8em), with the remaining 0.2em of the em as descent.
-  - Invalidation: changes to the block's font family, weight, italic, or variable axes, changes to a child's display, position, or float, and adding or removing children all mark the
-    block (and the parent of the changed child) as a candidate; a change to the font set or language hint (`TextBackendEpoch`) rereads every holder.
-    The text stage rereads only candidates and schedules layout through the text-metric-change path only when the value changed; changing only the font size does not reread (the stored value is per px),
-    and language does not take part in choosing the preferred face, so it does not reread a new value either. The IFC measure plan records the strut it used and compares it.
-    In tests and `layout-verify` builds, after each text stage every retained strut is compared with a fresh reread
-    (`UiWorld::audit_block_struts`), and a missed candidate is reported as an error immediately. The gate is B in `world/tests/layout_foundations.rs`.
+- the line box height is the span, after alignment, from the highest top margin edge to the lowest bottom margin edge; a non-inline child occupies a line alone, laid out from the top of the line.
+- Line boxes in an `Inline` context with inline-level children start from the container's **strut** (`inline::line_strut`): a zero-width inline box using the container's own font face, font size, and `line-height`, whose ascent and descent are the real metrics of the container's own face (#382); half the difference between `line-height` and their sum is added above and half below. So an empty inline atom sitting with its bottom edge on the baseline leaves the face's descent plus half a leading below it, and a very short atom's top is no higher than the strut's ascent. A line occupied by a non-inline child alone has no strut. `line-height` reads the container's own `LayoutStyle` (on the CSS path inherited through `inherit_typography_from`), not `ComputedStyle`.
+  - The metrics are the same as for native paragraphs (`nana-text`'s `LineStrut`): the text stage asks the shaper on the container's behalf (`TextShaper::strut_metrics`; `NanaTextEngineShaper` reads `NativeTextEngine::strut_metrics`), stores the value per px of the container's font size in `UiWorld::block_strut`, and layout multiplies by the font size to read it. So with the same face and line height, `Inline` flows and native paragraphs leave the same gap below an empty atom. The product UI face Noto Sans SC has ascent / descent 1.16em / 0.288em; at 16px with line height 1.2 the strut's descent is about 2.6px (for Chrome measurements see css-parity `T-I04`, `T-I06`, `T-I07`).
+  - Only un-pinned containers that need one hold a strut (`UiWorld::wants_block_strut`): not an explicit flex / grid container, no line boxes of its own, and in-flow inline-level boxes among its children. When the shaper reports no metrics (the default implementation returns `None`), it falls back to the shared approximation `TEXT_APPROX_ASCENT_EM` (0.8em), with the remaining 0.2em of the em as descent.
+  - Invalidation: changes to the container's font family, weight, italic, or variable axes, changes to a child's display or position, and adding or removing children all mark the container (and the parent of the changed child) as a candidate; a change to the font set or language hint (`TextBackendEpoch`) rereads every holder. The text stage rereads only candidates and schedules layout through the text-metric-change path only when the value changed; changing only the font size does not reread (the stored value is per px), and language does not take part in choosing the preferred face, so it does not reread a new value either. The IFC measure plan records the strut it used and compares it. In tests and `layout-verify` builds, after each text stage every retained strut is compared with a fresh reread (`UiWorld::audit_block_struts`), and a missed candidate is reported as an error immediately. The gate is B in `world/tests/layout_foundations.rs`.
 
 A flex row with `align-items: baseline` aligns items by their first baseline; replaced content takes the bottom of its border box (CSS Align synthesizes the baseline from the border box in flex / grid).
 An item whose line boxes are all in descendants (`UiWorld::aligns_by_first_baseline` and
-`line_boxes_are_descendants_in`) takes the position of the first in-flow line box, the same derivation as an inline-block's last-line baseline
+`line_boxes_are_descendants_in`) takes the position of the first in-flow line box, the same derivation as an inline atom's last-line baseline
 (`inline::descendant_baselines`): before measure publishes intrinsic facts, before placement reads the line's baseline, and before the flex plan compares
 baselines, `prime_first_baselines` runs first, and `baseline_metrics`' first baseline then reads it; in tests and `layout-verify` builds,
 reading without priming is reported as an error immediately. Such items also read content (`atom_baseline_reads_content`), and a fixed size is no longer a metric boundary:
-changes to the font size or text of descendants inside, or to the height of a block above, realign the line; changes that leave the first line in place move no item. The gate is
+changes to the font size or text of descendants inside, or to the height of a box above, realign the line; changes that leave the first line in place move no item. The gate is
 D in `world/tests/layout_foundations.rs`. When grid items align by baseline, those items in the same starting row share one baseline: each item aligns its own
 first baseline plus top margin to the deepest one in the row (`grid::arrange_grid_2d`, #394). The line's baseline is published on the TextLine fragment of `LayoutResult`. `LayoutStyle` has no
 `vertical-align`; the default `baseline` is the whole behavior. This is not a rule specific to replaced content.
@@ -569,7 +531,7 @@ A flex container's baseline (CSS Flexbox §8.5, per Chrome 152 measurements, #39
 so it is the first arranged line); if the line has items aligned with `align-self: baseline`, take their shared baseline, otherwise take the first baseline of the item
 closest to the inline start in that line; a column flex takes the topmost item in the column closest to the inline start. So `row-reverse`
 takes the leftmost item and `column-reverse` the topmost, not the first in flow. An item without line boxes takes the bottom of its border box.
-A flex container's last baseline is its first baseline: an inline-block ending with a flex container also aligns by its first baseline in Chrome.
+A flex container's last baseline is its first baseline: an inline atom ending with a flex container also aligns by its first baseline in Chrome.
 A box with no text of its own and no line boxes anywhere in its flow has no baseline and takes the bottom of its border box per CSS Align §9.1
 (`baseline_metrics`), no longer the font's approximate ascent. Any in-flow item of a flex container may be the one it takes its baseline from,
 so these items also read content (`atom_baseline_reads_content`), and changing the font size inside a fixed-size item also realigns the outer line.
@@ -578,16 +540,14 @@ A grid container's baseline (CSS Grid 2 §11.8, per Chrome measurements) is like
 the first item in grid order in that row (the smallest column number, rightmost under RTL, regardless of DOM order; an item spanning rows counts in the row it starts in);
 without line boxes take the bottom of its border box; the last baseline is again the first baseline. Grid items likewise read content.
 The gates are in `world/tests/layout_foundations.rs`, and the Chrome measurements are css-parity `T-FX01`–`T-FX03`, `T-GB01`, `T-GB02`. Not done yet:
-inline-flex and inline-grid are still laid out as block-level on a block's line (not as inline atoms); the cross size of a flex row aligned by baseline and the size of grid
-tracks do not account for the space moved out by baseline alignment (CSS's baseline shim); grid's distribution of spanning items to auto row sizes
-and the width of a block-level grid inside an inline-block differ from Chrome.
+the cross size of a flex row aligned by baseline and the size of grid tracks do not account for the space moved out by baseline alignment (CSS's baseline shim), and grid's distribution of spanning items to auto row sizes still has differences from Chrome.
 
-An atom's baseline moves with its content, and invalidation follows it: a fixed-size inline-block whose `overflow` is visible in ordinary block flow
+An atom's baseline moves with its content, and invalidation follows it: a fixed-size inline atom (such as `inline-flex`) whose `overflow` is visible in an `Inline` flow
 is no longer a metric boundary (`UiWorld::atom_baseline_reads_content`), so changes inside it realign the line;
-in-flow blocks in such an atom's flow (and further down) are where the last line box is searched for, so a fixed size is not a boundary there either, and the frontier does not stop
-there (`has_definite_size` reads the same function). Inline-blocks whose `overflow` is not visible and replaced content are positioned only by their own box,
+in-flow boxes in such an atom's flow (and further down) are where the last line box is searched for, so a fixed size is not a boundary there either, and the frontier does not stop
+there (`has_definite_size` reads the same function). Inline atoms whose `overflow` is not visible and replaced content are positioned only by their own box,
 so they are still boundaries, and changes inside them do not relay out the line. The IFC measure plan records each atom's ascent on the line; when the box size does not change
-but the ascent does, the block is remeasured; when the ascent does not change (descendant text changed but the last line did not move), the plan is reused and no box moves.
+but the ascent does, the container is remeasured; when the ascent does not change (descendant text changed but the last line did not move), the plan is reused and no box moves.
 
 #259 added replaced content workloads: at the end of 1k, 10k, and 100k pages, video frames, image natural sizes, and shared images cost the same.
 
@@ -723,33 +683,29 @@ Uncertain structural changes keep the root-level recompute boundary.
 
 For the overall stack contract (runtime environment, tree depth limit, which traversals may recurse, gates and comparisons with peers) see [Resource budgets](https://github.com/sena-nana/NanaUI/blob/main/docs/reference/resource-budgets.md). This section covers only layout's two recursions.
 
-Measure (`measure_node`) recurses by tree depth: sizes are computed upward from children that received constraints passed down. Every level first goes through `layout_engine::recursion::level`:
+Measure (`measure_node`) now runs iteratively in `layout_engine/measure.rs` on an explicit heap `Vec` work-stack: its call-stack depth is O(1) with respect to tree depth, with zero `stacker` usage (per-level measure stack cost in `stack_budget` is `0 B`). `layout_engine::recursion::level` is now used exclusively to price placement recursion:
 
-- It reads the remaining stack of the current thread (`crate::stack::remaining`: read by `stacker` on desktop platforms and OpenHarmony; iOS and Android read the thread's own stack bounds); when less than 256 KiB remains, this level continues on a freshly allocated 4 MiB stack segment (`stacker::grow`). So on every platform the framework supports, debug or release, whatever the thread stack size, no tree depth can make measure run out of stack.
-- The same reading also prices this level: how much less stack remains at this level's entry than at the parent level's entry is the stack this level used. Each pass takes the maximum and publishes it as `WorkCounters::layout_measure_stack_per_level` and `layout_placement_stack_per_level` (bytes, maximum within a frame; 0 when the platform cannot report it).
-- The tests in `layout_engine::stack_budget` set a per-level budget (measured separately for the block, flex column, and grid routes), and lay out a 400-level tree on a 1 MiB thread. The fallback prevents crashes; the budget keeps each level's frame from growing back.
+- It compares remaining native thread stack at entry (`crate::stack::remaining`, queried via OS thread stack bounds) against the parent level, taking the pass maximum and publishing `WorkCounters::layout_measure_stack_per_level` (now `0`) and `layout_placement_stack_per_level` (bytes, maximum within a frame; `0` when the platform cannot report it).
+- The tests in `layout_engine::stack_budget` check measure and placement budgets across the `Flex`, `Grid`, and `Layers` routes, lay out a `400`-level tree on a `1 MiB` thread (`a_tree_deeper_than_the_stack_still_lays_out`), and fit `512` nested nodes within a `384 KiB` thread stack (`max_tree_depth_fits_in_384_kib_stack`).
 
-Placement (`place_node_scoped`) needs no fallback. After measure, every box's size is settled, so any node can serve as a boundary: one call descends at most `recursion::SPAN` levels (24 in release; in debug each level's frame is more than three times release's, so it cuts at 8 levels; both builds use about 90 KiB). A node at that level writes its own box and then queues the rest of its subtree as a `Boundary` in this pass's queue; before returning, the outermost call places the queue in enqueue order, and more can be enqueued while placing. So the recursion depth of placement never exceeds `SPAN`, independent of tree depth, and when the call returns the caller still sees the whole subtree placed. `WorkCounters::layout_placement_boundaries` records how many subtrees this pass placed from the queue. In test builds `SPAN` is 2, so every runtime test goes through boundaries.
+Placement (`place_node_scoped`) uses bounded recursion and needs no `stacker` fallback. After measure, every box's size is settled, so any node can serve as a boundary: one call descends at most `recursion::SPAN` levels (`24` in release, `8` in debug, `2` in test builds; measured `5200 B` per placement level on `aarch64 macOS` debug across `Flex` / `Grid` / `Layers`). A node at that boundary writes its own box and then queues the rest of its subtree as a `Boundary` in `PassIntrinsicCache::boundaries`; before returning, the outermost call drains the queue in enqueue order, and more boundaries can be enqueued while placing. So placement's call-stack depth never exceeds `SPAN`, independent of tree depth, and when the call returns the caller still sees the whole subtree placed. `WorkCounters::layout_placement_boundaries` records how many subtrees this pass placed from the queue.
 
-The precondition for cutting this way is that placing a subtree reads only its own inputs (where it stands, how big it is, containing block, fonts, viewport) and never what sibling subtrees wrote while being placed, so placing it later gives the same result.
+The precondition for cutting this way is that placing a subtree reads only its own inputs (where it stands, how big it is, containing block, fonts, viewport) and never what sibling subtrees wrote while being placed, so deferred draining gives the same result.
 
-Placing one level takes two steps. `lay_out_children` walks the container's children once: measures, packs floats, breaks lines, aligns, solves the 2D grid, settles a box for each in-flow child, and returns the `Descend` list of pending placements and a draft plan; it places no subtree itself. `place_node_body` enters those subtrees in turn only after that frame exits, then records the plan and places floats and positioned children, in the same order as before. The three fast paths that reuse plans (`place_moved_container`, `place_edited_child_list`, `place_from_plan`) are each a function of their own and only take stack when reached.
+Placing one level takes two steps. `lay_out_children` walks the container's children once: measures, breaks lines, aligns, solves the 2D grid, settles a box for each in-flow child, and returns the `Descend` list of pending placements and a draft plan without placing any subtree itself. `place_node_body` enters those subtrees in turn only after that frame exits, then records the plan and places positioned children. `place_node_head` returns before `place_node_body` runs, and `lay_out_children` plus the three plan-reuse fast paths (`place_moved_container`, `place_edited_child_list`, `place_from_plan`) are separate functions so only one frame occupies the call stack at a time.
 
-Per-level stack on x86_64 Windows (MSVC): placement went from 25.8 KiB to 9.0 KiB in debug and from 4.8 KiB to 3.2 KiB in release; measure is 12.2 KiB in debug and 2.5 KiB in release. On aarch64 macOS, release placement was 2.7 KiB per level, and after splitting into a head (`place_node_head`, which writes its own box) and a body (`place_node_body`, where boundaries resume) it is 3.5 KiB; debug placement is 10.9 KiB and measure 11.9 KiB. Placement no longer goes deeper than `SPAN` levels, so the per-level price times `SPAN` is its whole stack (about 86 KiB in release, about 88 KiB in debug). The head returns before the body runs, and the three fast paths and `lay_out_children` are marked `#[inline(never)]`, so a level occupies only one of their frames at a time.
+Building nodes from views (`mount_view*` via `ViewBuilder::run_trampoline` explicit `ViewTask` heap stack with `enter_nest` / `leave_nest` in `view/node.rs`) also runs iteratively with O(1) call-stack depth and zero `stacker`. `view::tests::a_view_deeper_than_the_stack_still_mounts` mounts, lays out, and drops a `400`-level view on a `1 MiB` thread, and `nana-ui-scene/tests/deep_tree_stack.rs` runs a full frame at `MAX_TREE_DEPTH - 4` (`508` levels) on a `256 KiB` thread.
 
-Building nodes from views (`mount_view*` through `ViewBuilder::nest_dyn`, one level per element) also recurses by depth, and every level also goes through the same fallback (`crate::stack::level`, sharing the 256 KiB red zone and the 4 MiB stack segment with measure). `view::tests::a_view_deeper_than_the_stack_still_mounts` mounts, lays out, and drops a 400-level view on a 1 MiB thread.
-
-Several tree-walking queries that layout reads no longer recurse by depth either: the line box query (`UiWorld::holds_line_box_in`) uses an explicit stack on the heap and is memoized per node within a layout pass (`LayoutInputMap::line_boxes`), so a chain of boxes asking level by level is each settled only once instead of each level walking its own subtree again; the upward walk along ancestors for an atom's baseline (`atom_baseline_reads_content`) is a loop; and when publishing layout results, each box's clip and containing block (`layout_anchors`) are memoized per node within one publication and derived from the ancestors' results, instead of each box walking to the root.
+Several tree-walking queries that layout reads also run iteratively: the line box query (`UiWorld::holds_line_box_in`) uses an explicit heap stack and is memoized per node within a layout pass (`LayoutInputMap::line_boxes`); the upward walk along ancestors for an atom's baseline (`atom_baseline_reads_content`) is a loop; and when publishing layout results, each box's clip and containing block (`layout_anchors`) are memoized per node within one publication and derived from the ancestors' results instead of walking to the root per box.
 
 ### Roadmap: subtree-level scheduling, recursion within subtrees
 
-The goal is a hybrid architecture. Measure is bottom-up and keeps using recursion plus caching; placement is managed by a scheduler in units of subtrees, recursing within each subtree. In order:
+The goal is a hybrid architecture. Measure runs iteratively on a heap work-stack with caching (`O(1)` call stack); placement is managed by a scheduler in units of subtrees, using bounded recursion within each subtree. In order:
 
-1. Done: the recursion fallback and per-level stack budgets; placement split into two steps, "settle the boxes" and "enter the subtrees".
-2. Done: placement boundaries. A node reaching `SPAN` levels becomes a scheduler task unit (`Boundary`), and recursion depth within a subtree does not exceed `SPAN`; a boundary's result depends only on its inputs.
-3. Measure levels: move the non-recursive parts of `measure_node_level` out of that frame.
-4. Scheduling: slice by frame budget, with unfinished subtrees reusing the previous frame's results as a whole (double-buffered results); order by distance from the viewport; cancel an unfinished subtree when a new change invalidates it. Queue length and slice count go into `WorkCounters`. Boundaries currently cut only at a fixed depth; scroll containers and `layout_isolation` nodes are the next batch of cut points.
-5. Place mutually independent boundary subtrees in parallel: each subtree writes its own output, merged at the end.
+1. Done: `stacker` removed; measure runs iteratively (`0 B` per level), placement is split into "settle the boxes" (`lay_out_children` / `place_node_head`) and "enter the subtrees" (`place_node_body`) with per-level stack budgets.
+2. Done: placement boundaries. A node reaching `SPAN` levels becomes a queued unit (`Boundary`), and call-stack depth within a subtree never exceeds `SPAN`; a boundary's result depends only on its inputs.
+3. Next: shrink single-level placement frames further and add budget-based scheduling slices (unfinished subtrees reuse the previous frame's double-buffered results, ordered by viewport distance and cancelled on invalidation, with queue length and slice counts in `WorkCounters`; scroll containers and `layout_isolation` nodes as the next cut points).
+4. Parallel: place mutually independent boundary subtrees in parallel, each writing its own output and merged at the end.
 
 The slicing granularity of the measure stage is limited by content dependencies: a container whose size is decided by content passes the dependency all the way up to its ancestors, and such a chain can only be one unit. Very large flat lists rely on virtualization, not scheduling.
 
@@ -884,13 +840,13 @@ Writing `subgrid` as a single token in a track list, such as `subgrid 80px`, sti
 
 When you build `LayoutStyle { display: Grid }` directly, without going through css_map, `align-items` defaults to `start`. Hand-written tests rely on this. `Default` cannot tell "not written" from an explicit `start` by display. Parsed through `display:grid`, it writes `stretch`.
 
-Block layout has no `align-items`. A container with no `display`, `display: block` or `flow-root` that stacks its children down the block axis (`LayoutStyle::stacks_as_block`) lays them out as CSS block layout does: a block-level child with no `align-self` and an `auto` width fills the containing block less its left and right margins (CSS 2.1 §10.3.3), whatever `align_items` says (`LayoutStyle::child_align_items`). So `LayoutStyle::default()`, `LayoutStyle { display: Some(Block) }` built directly (through `Stack::from_layout`, say) and `display: block` parsed by css_map give the same box. Some children keep their own width: one that names `align-self` (it still applies in the flow), one whose width is not `auto` (`Px`, a percentage, `Fill`, `Shrink`, `fit-content` and so on), replaced content with a natural size (an image, say; CSS 2.1 §10.3.4), and a child whose writing mode is orthogonal to the container's (what it has along that axis is its block size, which its content gives; CSS Writing Modes 3 §7.3). A flow laid along a row (`direction: Row`) and every flex, grid and layers container still align by `align_items`. To keep children at their content width, centred or at the end, make the container `display: Flex` (every `Stack` preset is), or give the child `align-self` or `width: Shrink`.
+NanaUI uses a pure `Flex + Grid + Inline + Layers` (plus modal `Overlay`) layout model; separate `DisplaySpec::Block`, `FlowRoot`, `InlineBlock`, `Contents`, and `float` / `clear` were removed. A default column container with unset `display` (`LayoutStyle::stacks_as_block()` is true when `display` is unset and `direction != Some(FlexDirection::Row)`) resolves `child_align_items()` to `Stretch` so in-flow children with `auto` width fill the containing block by default, while children naming `align_self`, non-`auto` widths (`Px`, percentage, `Fill`, `Shrink`, `fit-content`, etc.), replaced content with natural size, or orthogonal writing mode keep their own width. Explicit `display: flex`, `grid`, or `layers` containers follow their own `align_items` (all `Stack` presets are `Flex`).
 
 `display: layers` is a NanaUI extension value; see `Layers` above. It does not write `stretch`: children of a stack align to the start by default, as with ZStack / Box; when `justify-items` is not written they align to the start too, not to grid's `stretch`.
 
-**Inline subset.** `display: inline` and `inline-block` inside a block container go through an inline formatting context, that is, an IFC.
+**Inline subset.** An un-pinned container (not explicit flex, grid, or layers) with in-flow inline-level children (`display: inline`, `inline-flex`, `inline-grid`) establishes an inline formatting context (`FormattingContextKind::Inline` / IFC); text leaves also establish `Inline` for their own text.
 
-Inline children are arranged along the **inline axis**. Rightward under `horizontal-tb`. Downward under `vertical-rl` and `vertical-lr`. A block-level sibling closes the current line and takes a line of its own.
+Inline children are arranged along the **inline axis**. Rightward under `horizontal-tb`. Downward under `vertical-rl` and `vertical-lr`. A non-inline container sibling closes the current line and takes a line of its own as a `FlexItem`.
 
 In vertical writing a box's physical width and height are still width and height. But the main axis of an IFC and of `flex-direction: row` follows the writing-mode's inline axis. `vertical-rl` lines start at the right.
 
@@ -900,23 +856,11 @@ You can use `text-align`. `start` and `end` follow `direction`, horizontally onl
 
 `align-items: baseline` reads the same intrinsic metrics. Text nodes prefer the first- and last-line baseline that `nana-text` retains; the fallback is used only when the host supplies an ascent alone. Replaced content and Custom nodes use the block-axis end as an explicit fallback. Flex, Grid, and IFC do not each estimate their own set of baselines.
 
-Within a line of an IFC, atoms align on the baseline (`vertical-align: baseline`; see the baseline paragraph under "Replaced content" above): an inline-block takes its last-line baseline (when the line box is in a descendant, the actual position of the last line box in the descendant), replaced content, atoms whose `overflow` is not visible, and atoms with no line box take their bottom margin edge, the line starts from the block's strut, and the line height is the aligned span. Lines of native paragraphs and of ordinary block-level flow share this rule.
+Within a line of an IFC, atoms align on the baseline (`vertical-align: baseline`; see the baseline paragraph under "Replaced content" above): an inline atom with in-flow line boxes (`inline-flex` / `inline-grid`, etc.) takes its last-line baseline (when the line box is in a descendant, the actual position of the last line box in the descendant), while replaced content, atoms whose `overflow` is not visible, and atoms with no in-flow line box take their bottom margin edge; the line starts from the container's strut, and the line height is the aligned span. Lines of native paragraphs and `Inline` contexts share this rule.
 
 A flex line's retained plan records the baseline each baseline-aligned child used at the time. In the next pass, if a child's size is unchanged but its baseline changed (the font size changed inside a fixed-size button), the line realigns anyway and does not keep the old position.
 
-**Float subset.** `float: left | right` takes a box out of block flow. Several floats on the same side sit side by side by geometry. When they do not fit they fold to the next line.
-
-`clear` in flow, and `clear` on the float itself, both use the occupied bottom edge after wrapping. Not the pre-arranged height of one box.
-
-An IFC line box narrows by the left and right insets where the current line intersects the margin boxes of **sibling** floats. That is shrink-to-avoid-float. An atomic inline item that does not fit in a line folds to the next line. If it still does not fit after narrowing, the line box moves down below the bottom edge of the nearest occupying float.
-
-An in-flow **block-level** border box does not narrow to avoid floats. That matches a non-BFC block in CSS.
-
-Floats do not take part in the height of normal flow (CSS 2.1 §10.6.3): a block container's `auto` height counts only its in-flow content, plus however far `clear` and line boxes shortened or pushed down by a float push that content. An ordinary block holding nothing but floats is 0 tall, and the floats hang out of its content box. When the container establishes a block formatting context (BFC) of its own, its height contains the packed floats (§10.6.7): one line of floats is one line tall, not the floats stacked and summed. A BFC is established by the document root, a float, `absolute` / `fixed`, `inline-block`, `overflow` other than `visible`, `display: flow-root` (`DisplaySpec::FlowRoot`), and flex, grid, layer and overlay items. Floats sit side by side inline-wise: they give the container a max-content width of their margin boxes' sum and a min-content width of the widest one. Gate: `world/float_containment.rs`, css-parity `T-FL08`.
-
-This is not full exclusion. An ancestor float does not intrude into a child block's IFC. There is no `shape-outside`.
-
-A float on a flex item or grid item is blockified per CSS, then ignored.
+`float` and `clear` were removed from the core layout model.
 
 **Positioning.** You can use `relative`, out-of-flow `absolute`, window-relative `fixed`, and in-flow `sticky`. `sticky` sticks only after the scroll projection. It does not write back into Runtime's `LayoutBox`.
 
@@ -985,11 +929,9 @@ The menus opened by Select, Dropdown, and SearchDropdown also sort into the root
 
 Do not rely on your app raising the whole card's `z_index`.
 
-This is not the full CSS Appendix E. Negative z layers, the float and inline layers, transform creating its own layer, and so on are not all done.
+This is not the full CSS Appendix E. Negative z layers, transform creating its own layer, and so on are not all done.
 
 Hit testing still walks the tree. z inside a group compares only among siblings.
-
-**`display: contents`.** Children are hoisted into the parent's formatting context. The node itself has no box.
 
 **Text.** You can use font size, font weight, font family, line height, letter spacing, and color.
 
@@ -1294,7 +1236,6 @@ Do not expect these:
 - Vertical ruby.
 - Vertical emphasis marks (`text-emphasis-position`'s `right` / `left` are parsed, but no marks are painted in vertical writing).
 - Vertical tables.
-- Vertical writing with float wrapping.
 - Using a whole rotated box to stand in for glyph orientation.
 - Editor decorations in a vertical editor are not painted at all, rather than painted sideways across the columns. That includes the line-number gutter, the minimap, indent and column guides, end-of-line diagnostics, completion, hover, and signature popups. This is #59.
 - `unicode-bidi` isolation, and full bidirectional text in an IFC.
@@ -1306,8 +1247,8 @@ Do not expect these:
 - An unknown `@supports` predicate.
 - `@import … layer()` and `supports()`.
 - Full cascade-layer precedence.
-- Full float exclusion. An ancestor float intruding into a child block, `shape-outside`, and narrowing of in-flow block-level border boxes are all absent.
-- A full IFC. Inline atoms align on the baseline and line boxes have a strut, but there are no other `vertical-align` values and no inline unboxing. When the line box is in a descendant's box, flex / grid containers, equal-width columns, or a block-level flow with auto margins or floats, the first and last line positions are not derived and are still approximated from the font itself.
+- `display: block` / `flow-root` / `inline-block` / `contents`, and CSS `float` / `clear` (the core model is `Flex + Grid + Inline + Layers`; use `inline-flex` / `inline-grid` when you need an inline container box).
+- A full IFC. Inline atoms align on the baseline and line boxes have a strut, but there are no other `vertical-align` values and no inline unboxing. `subgrid` and vertical writing still do not derive descendant first and last line positions and approximate from the box's own font.
 - `subgrid` as a track-list token.
 - Using `position: fixed` as a Dialog or Drawer. Use Nana's overlays.
 - A custom `url()` cursor image.

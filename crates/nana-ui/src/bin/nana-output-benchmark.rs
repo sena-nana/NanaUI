@@ -16,15 +16,14 @@ use nana_gpu::{
 use nana_ui::output::{
     EmbeddedSurfaceNode, ExternalFrame, ExternalRenderOutcome, ExternalSurface,
     ExternalSurfaceConfig, OutputAlpha, OutputConsumer, OutputConsumerId, OutputConsumerKind,
-    OutputOwnership, OutputTextAa, PresentationDriver, PresentationId, PresenterCapabilities,
-    RenderTargetRequirements,
+    OutputOwnership, OutputTextAa, OutputWorkObservation, PresentationDriver, PresentationId,
+    PresentationWork, PresenterCapabilities, RenderTargetRequirements,
 };
 use nana_ui::runtime::{DocumentId, GpuTextureView, LayoutViewport, RuntimeDocument, Text};
 use nana_ui::{
     HostTextureAlphaMode, HostTextureRegistry, NanaTextShaper, ScenePaintViewport,
     ScenePresentationProfile,
 };
-use nana_ui_core::{OutputWorkObservation, WorkCounters};
 use serde_json::{Value, json};
 use std::{
     collections::BTreeMap,
@@ -306,7 +305,7 @@ fn render(
     }
 }
 
-fn work(counters: &WorkCounters) -> BenchResult<BTreeMap<String, usize>> {
+fn work(counters: &PresentationWork) -> BenchResult<BTreeMap<String, usize>> {
     let pairs = [
         ("extra_passes", counters.output_extra_passes),
         ("gpu_copies", counters.output_gpu_copies),
@@ -337,7 +336,7 @@ fn add(total: &mut BTreeMap<String, usize>, current: BTreeMap<String, usize>) {
     }
 }
 fn observation(work: OutputWorkObservation) -> BenchResult<BTreeMap<String, usize>> {
-    let mut counters = WorkCounters::default();
+    let mut counters = PresentationWork::default();
     counters.record_output_work(work);
     self::work(&counters)
 }
@@ -395,7 +394,7 @@ struct MeasuredPainter {
     counts: Option<PainterCounts>,
 }
 impl MeasuredPainter {
-    fn observe(&mut self, work: &WorkCounters) -> BenchResult<()> {
+    fn observe(&mut self, work: &PresentationWork) -> BenchResult<()> {
         let renders = work
             .output_ui_renders
             .ok_or("missing producer render observation")?;

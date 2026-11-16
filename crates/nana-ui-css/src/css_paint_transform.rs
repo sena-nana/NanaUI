@@ -441,10 +441,10 @@ mod tests {
         );
         let mut layout = LayoutStyle::default();
         layout.apply_css_text(&format!("transform: {css}"), None, None);
-        assert_eq!(layout.transform, None);
-        assert_eq!(layout.transform_3d, None);
+        assert_eq!(layout.transforms.transform, None);
+        assert_eq!(layout.transforms.transform_3d, None);
         assert!(
-            layout.unsupported_transform.is_some(),
+            layout.transforms.unsupported_transform.is_some(),
             "expected unsupported_transform for {css}"
         );
     }
@@ -466,8 +466,8 @@ mod tests {
         approx(t.d, 1.0);
         let mut layout = LayoutStyle::default();
         layout.apply_css_text("transform: rotateY(60deg)", None, None);
-        assert!(layout.transform_3d.is_some());
-        assert_eq!(layout.transform, None);
+        assert!(layout.transforms.transform_3d.is_some());
+        assert_eq!(layout.transforms.transform, None);
         assert!(parse_css_transform("rotateY(0deg)").is_some());
         assert!(parse_css_transform("rotateX(45deg)").is_some());
     }
@@ -490,9 +490,9 @@ mod tests {
         );
         let mut layout = LayoutStyle::default();
         layout.apply_css_text("transform: perspective(800px) rotateY(30deg)", None, None);
-        assert!(layout.transform.is_none());
-        assert!(layout.transform_3d.is_some());
-        assert_eq!(layout.unsupported_transform, None);
+        assert!(layout.transforms.transform.is_none());
+        assert!(layout.transforms.transform_3d.is_some());
+        assert_eq!(layout.transforms.unsupported_transform, None);
         let (_, persp) = layout
             .world_scene_transform(0.0, 0.0, 200.0, 80.0)
             .expect("scene");
@@ -542,12 +542,15 @@ mod tests {
     fn translate3d_nonzero_z_is_supported_on_layout() {
         let mut layout = LayoutStyle::default();
         layout.apply_css_text("transform: translate3d(4px, 0, 12px)", None, None);
-        let mat = layout.transform_3d.expect("3D function stays 4×4");
+        let mat = layout
+            .transforms
+            .transform_3d
+            .expect("3D function stays 4×4");
         let transform = mat.as_affine().expect("no perspective");
         approx(transform.e, 4.0);
         approx(transform.f, 0.0);
-        assert_eq!(layout.transform, None);
-        assert_eq!(layout.unsupported_transform, None);
+        assert_eq!(layout.transforms.transform, None);
+        assert_eq!(layout.transforms.unsupported_transform, None);
     }
 
     #[test]
@@ -623,20 +626,11 @@ mod tests {
     #[test]
     fn transform_origin_center_matches_50_percent_not_zero_zero() {
         let rotate = rotate_90();
-        let mut center = LayoutStyle {
-            transform: Some(rotate),
-            ..LayoutStyle::default()
-        };
+        let mut center = LayoutStyle::with(|s| s.transforms.transform = Some(rotate));
         center.apply_css_text("transform-origin: center", None, None);
-        let mut pct = LayoutStyle {
-            transform: Some(rotate),
-            ..LayoutStyle::default()
-        };
+        let mut pct = LayoutStyle::with(|s| s.transforms.transform = Some(rotate));
         pct.apply_css_text("transform-origin: 50% 50%", None, None);
-        let mut zero = LayoutStyle {
-            transform: Some(rotate),
-            ..LayoutStyle::default()
-        };
+        let mut zero = LayoutStyle::with(|s| s.transforms.transform = Some(rotate));
         zero.apply_css_text("transform-origin: 0 0", None, None);
 
         let via_center = rotate.around_center(0.0, 0.0, 80.0, 40.0);
@@ -692,7 +686,7 @@ mod tests {
             None,
         );
         assert_eq!(
-            layout.transform_origin,
+            layout.transforms.origin,
             Some(TransformOrigin {
                 x: LengthSpec::Px(0.0),
                 y: LengthSpec::Px(0.0),
@@ -700,7 +694,7 @@ mod tests {
         );
         layout.apply_css_text("perspective-origin: 0 0", None, None);
         assert_eq!(
-            layout.transform_origin,
+            layout.transforms.origin,
             Some(TransformOrigin {
                 x: LengthSpec::Px(0.0),
                 y: LengthSpec::Px(0.0),
@@ -730,14 +724,14 @@ mod tests {
             None,
             None,
         );
-        assert_eq!(layout.transform_box, TransformBox::ContentBox);
+        assert_eq!(layout.transforms.transform_box, TransformBox::ContentBox);
         let content = layout
             .world_paint_transform(0.0, 0.0, 100.0, 50.0)
             .expect("content-box origin");
         approx_matrix(content, rotate_90().around_origin(0.0, 0.0, 15.0, 15.0));
         approx(content[4], 30.0);
         layout.apply_css_text("transform-box: view-box", None, None);
-        assert_eq!(layout.transform_box, TransformBox::ViewBox);
+        assert_eq!(layout.transforms.transform_box, TransformBox::ViewBox);
         approx_matrix(
             layout
                 .world_paint_transform(0.0, 0.0, 100.0, 50.0)
@@ -757,13 +751,13 @@ mod tests {
     fn parent_perspective_and_preserve_3d_fail_closed() {
         let mut layout = LayoutStyle::default();
         layout.apply_css_text("perspective: 800px", None, None);
-        assert_eq!(layout.css_perspective, Some(800.0));
+        assert_eq!(layout.transforms.css_perspective, Some(800.0));
         assert!(layout.fails_closed_3d_context());
         layout.apply_css_text("transform-style: preserve-3d", None, None);
-        assert!(layout.preserve_3d);
+        assert!(layout.transforms.preserve_3d);
         layout.apply_css_text("transform-style: flat", None, None);
-        assert!(!layout.preserve_3d);
+        assert!(!layout.transforms.preserve_3d);
         layout.apply_css_text("perspective: none", None, None);
-        assert_eq!(layout.css_perspective, None);
+        assert_eq!(layout.transforms.css_perspective, None);
     }
 }

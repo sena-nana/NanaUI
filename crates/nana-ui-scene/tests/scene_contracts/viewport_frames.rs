@@ -93,7 +93,11 @@ fn root_style(transform: Option<PaintTransform>) -> NodeStyle {
         position: PositionSpec::Relative,
         padding_left: px(1.3),
         padding_top: px(2.1),
-        transform,
+        transforms: nana_ui_core::TransformStyle {
+            transform,
+            ..Default::default()
+        }
+        .into(),
         ..LayoutStyle::default()
     })
 }
@@ -105,7 +109,11 @@ fn scaled_style(height: f32, transform: Option<PaintTransform>) -> NodeStyle {
         direction: Some(FlexDirection::Column),
         flex_shrink: Some(0.0),
         padding_top: px(0.7),
-        transform,
+        transforms: nana_ui_core::TransformStyle {
+            transform,
+            ..Default::default()
+        }
+        .into(),
         ..LayoutStyle::default()
     })
 }
@@ -117,7 +125,11 @@ fn placed_style(position: PositionSpec, transform: PaintTransform) -> NodeStyle 
         offset_left: px(7.0),
         width: px(12.0),
         height: px(6.0),
-        transform: Some(transform),
+        transforms: nana_ui_core::TransformStyle {
+            transform: Some(transform),
+            ..Default::default()
+        }
+        .into(),
         ..LayoutStyle::default()
     })
 }

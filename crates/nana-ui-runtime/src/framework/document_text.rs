@@ -6,7 +6,7 @@
 
 use super::*;
 use crate::text_editing::caret_offset_at_point;
-use crate::{AccessibilityRole, DocumentTextSelection, StandardVisual, TextContent, TextShaper};
+use crate::{AccessibilityRole, DocumentTextSelection, TextContent, TextShaper};
 
 impl AppContext {
     /// UTF-8 of the current document selection, or `None` when empty.
@@ -145,18 +145,9 @@ impl AppContext {
         }) {
             return true;
         }
-        matches!(
-            self.world.standard_visual(id),
-            Some(
-                StandardVisual::Button { .. }
-                    | StandardVisual::Checkbox { .. }
-                    | StandardVisual::Switch { .. }
-                    | StandardVisual::Range { .. }
-                    | StandardVisual::TextInput { .. }
-                    | StandardVisual::Select { .. }
-                    | StandardVisual::SelectionOption { .. }
-            )
-        )
+        self.world
+            .widget_visual_ref(id)
+            .is_some_and(|w| w.is_text_input() || w.is_document_select_target())
     }
 
     fn deepest_document_select_target(
@@ -827,8 +818,8 @@ mod tests {
         {
             let layout = Arc::make_mut(&mut style.layout);
             layout.user_select = Some(UserSelectSpec::Text);
-            layout.selection_background = Some([1.0, 0.0, 0.0, 1.0]);
-            layout.selection_color = Some([0.0, 1.0, 0.0, 1.0]);
+            layout.text_ext.selection_background = Some([1.0, 0.0, 0.0, 1.0]);
+            layout.text_ext.selection_color = Some([0.0, 1.0, 0.0, 1.0]);
             layout.paint_colors.selection_color = Some(nana_ui_core::PaintColor::Oklch {
                 l: 0.7,
                 c: 0.15,

@@ -58,8 +58,12 @@ gles = [
     "wgpu-core-deps-windows-linux-android/gles",
     "wgpu-core-deps-emscripten/gles",
 ]
-glsl = ["naga/glsl-in"]
+glsl = [
+    "naga/glsl-in",
+    "naga-translation",
+]
 metal = ["wgpu-core-deps-apple/metal"]
+naga-translation = ["wgpu-hal/naga-translation"]
 noop = []
 observe_locks = [
     "std",
@@ -74,6 +78,7 @@ renderdoc = ["wgpu-core-deps-windows-linux-android/renderdoc"]
 replay = [
     "serde",
     "naga/deserialize",
+    "naga-translation",
 ]
 resource_log_info = []
 serde = [
@@ -84,7 +89,10 @@ serde = [
     "smallvec/serde",
     "macro_rules_attribute",
 ]
-spirv = ["naga/spv-in"]
+spirv = [
+    "naga/spv-in",
+    "naga-translation",
+]
 static-dxc = ["wgpu-hal/static-dxc"]
 std = []
 strict_asserts = ["wgpu-types/strict_asserts"]
@@ -101,7 +109,10 @@ webgl = [
     "wgpu-core-deps-wasm/webgl",
     "wgpu-types/web",
 ]
-wgsl = ["naga/wgsl-in"]
+wgsl = [
+    "naga/wgsl-in",
+    "naga-translation",
+]
 
 [lib]
 name = "wgpu_core"

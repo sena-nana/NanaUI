@@ -54,17 +54,23 @@ fn checkbox_indicator_label_and_check_follow_the_theme_without_losing_focus_or_t
     theme.tokens.metrics.radius_sm = 10.0;
     cx.set_theme_definition(&theme).unwrap();
     settle(&mut cx, doc, &mut shaper);
-    let Some(ComponentGeometry::Checkbox {
-        indicator, label, ..
-    }) = cx.world().component_geometry(checkbox.stable_id())
+    let paint = cx.world().widget_paint(checkbox.stable_id()).unwrap();
+    let WidgetPaintOp::Quad(indicator_quad) = &paint
+        .ops
+        .iter()
+        .find(|tagged| tagged.slot == 3)
+        .expect("checkbox indicator")
+        .op
     else {
-        panic!("resolved checkbox");
+        panic!("checkbox indicator quad");
     };
+    let indicator = indicator_quad.rect;
+    let label_bounds = paint.node_text_bounds.expect("checkbox label bounds");
     let changed = cx.world().layout_box(checkbox.stable_id()).unwrap();
     assert!(changed.width > original.width && changed.height > original.height);
     assert_eq!(cx.world().focused(doc), Some(checkbox.stable_id()));
     assert_eq!(indicator.width, 30.0);
-    assert!((label.bounds.x - changed.x - 42.0).abs() < 0.5);
+    assert!((label_bounds.x - changed.x - 42.0).abs() < 0.5);
     let natural = shaper.shape(
         checkbox.stable_id(),
         &TextContent {
@@ -73,7 +79,7 @@ fn checkbox_indicator_label_and_check_follow_the_theme_without_losing_focus_or_t
         cx.world().computed_style(checkbox.stable_id()).unwrap(),
         TextShapeConstraints::default(),
     );
-    assert!(label.bounds.width + 0.5 >= natural.width);
+    assert!(label_bounds.width + 0.5 >= natural.width);
     let retained = cx
         .world()
         .extract_document(doc)
@@ -82,7 +88,7 @@ fn checkbox_indicator_label_and_check_follow_the_theme_without_losing_focus_or_t
         .unwrap()
         .text_layout
         .unwrap();
-    assert!((retained.layout.constraints.max_width_px.unwrap() - label.bounds.width).abs() < 0.5);
+    assert!((retained.layout.constraints.max_width_px.unwrap() - label_bounds.width).abs() < 0.5);
     let mut scene = UiScene::new();
     scene.apply_delta(cx.world().extract_document(doc), []);
     let painted = primitive(&scene, checkbox.stable_id(), 3);
@@ -103,11 +109,11 @@ fn checkbox_indicator_label_and_check_follow_the_theme_without_losing_focus_or_t
     };
     assert_eq!(*weight, Some(800));
     let label_paint = primitive(&scene, checkbox.stable_id(), 2);
-    assert!((label_paint.bounds.x - label.bounds.x).abs() < 0.5);
+    assert!((label_paint.bounds.x - label_bounds.x).abs() < 0.5);
     let mut input = HeadlessInput::bind(&mut cx, doc);
     let (x, y) = (
-        label.bounds.x + 2.0,
-        label.bounds.y + label.bounds.height / 2.0,
+        label_bounds.x + 2.0,
+        label_bounds.y + label_bounds.height / 2.0,
     );
     input.pointer(&mut cx, PointerPhase::Down, x, y).unwrap();
     input.pointer(&mut cx, PointerPhase::Up, x, y).unwrap();
@@ -182,15 +188,23 @@ fn switch_thumb_and_range_rail_paint_their_resolved_theme_geometry() {
     let mut scene = UiScene::new();
     scene.apply_delta(cx.world().extract_document(doc), []);
     for switch in switches {
-        let Some(ComponentGeometry::Switch {
-            control,
-            label,
-            hint,
-            ..
-        }) = cx.world().component_geometry(switch.stable_id())
-        else {
-            panic!("switch geometry");
+        let paint = cx
+            .world()
+            .widget_paint(switch.stable_id())
+            .expect("switch paint");
+        let track_op = match paint.ops.iter().find(|t| t.slot == 4).map(|t| &t.op) {
+            Some(WidgetPaintOp::Quad(quad)) => quad,
+            other => panic!("switch track op: {other:?}"),
         };
+        let label_op = match paint.ops.iter().find(|t| t.slot == 2).map(|t| &t.op) {
+            Some(WidgetPaintOp::Text(text)) => text,
+            other => panic!("switch label op: {other:?}"),
+        };
+        let hint_op = match paint.ops.iter().find(|t| t.slot == 3).map(|t| &t.op) {
+            Some(WidgetPaintOp::Text(text)) => text,
+            other => panic!("switch hint op: {other:?}"),
+        };
+        let control = track_op.rect;
         assert_eq!((control.width, control.height), (60.0, 32.0));
         let track = primitive(&scene, switch.stable_id(), 4);
         let thumb = primitive(&scene, switch.stable_id(), 5);
@@ -209,7 +223,6 @@ fn switch_thumb_and_range_rail_paint_their_resolved_theme_geometry() {
         };
         assert_eq!(*border_width, 3.0);
         assert_eq!(*corner_radius, [16.0; 4]);
-        let hint = hint.unwrap();
         let ScenePrimitiveKind::Text {
             line_height, size, ..
         } = &primitive(&scene, switch.stable_id(), 3).kind
@@ -218,20 +231,22 @@ fn switch_thumb_and_range_rail_paint_their_resolved_theme_geometry() {
         };
         assert_eq!(
             *line_height,
-            Some(nana_ui_core::LineHeightSpec::Absolute(hint.bounds.height))
+            Some(nana_ui_core::LineHeightSpec::Absolute(
+                hint_op.bounds.height
+            ))
         );
-        assert_eq!(*size, hint.font_size);
+        assert_eq!(*size, hint_op.font_size);
         assert!(
-            label.bounds.x + label.bounds.width <= control.x - 16.0 + 0.5
-                || label.bounds.x >= control.x + control.width + 16.0 - 0.5
+            label_op.bounds.x + label_op.bounds.width <= control.x - 16.0 + 0.5
+                || label_op.bounds.x >= control.x + control.width + 16.0 - 0.5
         );
     }
-    let Some(ComponentGeometry::Range {
+    let RangeGeometry {
         track, track_girth, ..
-    }) = cx.world().component_geometry(range.stable_id())
-    else {
-        panic!("range geometry");
-    };
+    } = cx
+        .world()
+        .range_geometry(range.stable_id())
+        .expect("range geometry");
     assert_eq!(track_girth, 8.0);
     assert_eq!(
         primitive(&scene, range.stable_id(), 3).bounds.height,
@@ -243,12 +258,12 @@ fn switch_thumb_and_range_rail_paint_their_resolved_theme_geometry() {
         panic!("range thumb");
     };
     assert_eq!(*border_width, 3.0);
-    let Some(ComponentGeometry::Range {
+    let RangeGeometry {
         track, track_girth, ..
-    }) = cx.world().component_geometry(rail.stable_id())
-    else {
-        panic!("rail-only geometry");
-    };
+    } = cx
+        .world()
+        .range_geometry(rail.stable_id())
+        .expect("rail-only geometry");
     assert_eq!(track_girth, 2.0);
     assert_eq!(primitive(&scene, rail.stable_id(), 3).bounds.height, 2.0);
     assert_eq!(
@@ -276,14 +291,14 @@ fn a_bare_switch_answers_hover_on_its_track_not_with_a_box_wash() {
     cx.append_child(root, labelled).unwrap();
     let mut shaper = NanaTextShaper::default();
     settle(&mut cx, doc, &mut shaper);
-    let track = |cx: &AppContext, switch: StableNodeId| match cx.world().component_geometry(switch)
-    {
-        Some(ComponentGeometry::Switch {
-            control,
-            track_border,
-            ..
-        }) => (control, track_border),
-        _ => panic!("switch geometry"),
+    let track = |cx: &AppContext, switch: StableNodeId| {
+        let paint = cx.world().widget_paint(switch).expect("switch paint");
+        match paint.ops.iter().find(|t| t.slot == 4).map(|t| &t.op) {
+            Some(WidgetPaintOp::Quad(quad)) => {
+                (quad.rect, quad.border.expect("switch track border").0)
+            }
+            other => panic!("switch track op: {other:?}"),
+        }
     };
     let mut input = HeadlessInput::bind(&mut cx, doc);
     let mut hover = |cx: &mut AppContext, switch: StableNodeId, step: u64| {

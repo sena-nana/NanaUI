@@ -1235,6 +1235,7 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
                 self.apply_window_shadow(parent);
             }
             drop(host);
+            self.last_presentation_work.remove(&id);
             self.retain_active_presentations();
             nana_diagnostics::event!(nana_diagnostics::framework::window::CLOSED, window = id.0);
             let update = self

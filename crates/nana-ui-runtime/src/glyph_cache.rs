@@ -174,16 +174,14 @@ mod tests {
     #[test]
     fn letter_spacing_is_part_of_the_glyph_key() {
         let mut cache = GlyphCache::with_cap(8);
-        let tight = ComputedStyle {
-            font_size: 16.0,
-            letter_spacing: 0.0,
-            ..ComputedStyle::default()
-        };
-        let tracked = ComputedStyle {
-            font_size: 16.0,
-            letter_spacing: 0.5,
-            ..ComputedStyle::default()
-        };
+        let tight = ComputedStyle::with(|s| {
+            s.font_size = 16.0;
+            s.letter_spacing = 0.0;
+        });
+        let tracked = ComputedStyle::with(|s| {
+            s.font_size = 16.0;
+            s.letter_spacing = 0.5;
+        });
         cache.insert('a', &tight, 8.0);
         assert!(cache.peek('a', &tracked).is_none());
         cache.insert('a', &tracked, 8.5);
@@ -194,16 +192,14 @@ mod tests {
     #[test]
     fn font_features_are_part_of_the_glyph_key() {
         let mut cache = GlyphCache::with_cap(8);
-        let liga_off = ComputedStyle {
-            font_size: 16.0,
-            font_features: vec![nana_ui_core::FontFeatureSetting::new(*b"liga", 0)],
-            ..ComputedStyle::default()
-        };
-        let liga_on = ComputedStyle {
-            font_size: 16.0,
-            font_features: vec![nana_ui_core::FontFeatureSetting::new(*b"liga", 1)],
-            ..ComputedStyle::default()
-        };
+        let liga_off = ComputedStyle::with(|s| {
+            s.font_size = 16.0;
+            s.font_features = vec![nana_ui_core::FontFeatureSetting::new(*b"liga", 0)];
+        });
+        let liga_on = ComputedStyle::with(|s| {
+            s.font_size = 16.0;
+            s.font_features = vec![nana_ui_core::FontFeatureSetting::new(*b"liga", 1)];
+        });
         cache.insert('f', &liga_off, 8.0);
         assert!(cache.peek('f', &liga_on).is_none());
     }

@@ -1,6 +1,4 @@
-use nana_ui_core::WorkCounters;
-
-use crate::{ExtractedNode, StableNodeId, layout_frontier::LayoutFrontierSeed};
+use crate::{StableNodeId, layout_frontier::LayoutFrontierSeed};
 
 /// Per-entity invalidation mask. Widened from `u8` because Issue #8 §6.2 STATE
 /// and TRANSFORM are independent bits; packing them into the last unused `u8`
@@ -85,9 +83,7 @@ impl DirtyMask {
 /// Deterministic per-system work produced from entity dirty components.
 ///
 /// PAINT is folded into `RENDER`. STATE and TRANSFORM are independent lists so
-/// hover/transform invalidation is not counted as style or layout. Mapping onto
-/// Issue #8 dirty bits lives on [`nana_ui_core::WorkCounters`]; STATE/TRANSFORM
-/// follow `FOCUS_IME` and stay on this type, not WorkCounters.
+/// hover/transform invalidation is not counted as style or layout.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct SystemWork {
     pub generation: u64,
@@ -148,53 +144,6 @@ pub struct SystemWork {
     pub accessibility_removals: Vec<StableNodeId>,
     pub render_extraction: Vec<StableNodeId>,
     pub render_removals: Vec<StableNodeId>,
-    /// Live retained entity count at drain time.
-    pub entities_total: usize,
-    /// Mounted entities that contributed dirty bits this drain.
-    pub entities_changed: usize,
-    /// Entities created since the previous drain.
-    pub entities_spawned: usize,
-    /// Entities despawned since the previous drain.
-    pub entities_despawned: usize,
-    /// Unique live pointer hover, press, capture, and focus nodes.
-    pub input_targets: usize,
-    /// Nodes whose render extraction was invalidated this drain. Not overwritten
-    /// by [`Self::record_extract`].
-    pub render_nodes_changed: usize,
-    /// Nodes named for render extraction. Overwritten by
-    /// [`Self::record_extract`] with the number actually produced.
-    pub render_nodes_extracted: usize,
-    /// Theme-resolved text spans after [`Self::record_extract`]. Zero until then.
-    pub extracted_text_spans: usize,
-    /// Observed CPU hot-path heap events while draining dirty lists.
-    pub allocations: usize,
-    /// Payload bytes of those drain-list events.
-    pub allocated_bytes: usize,
-    /// `TextShaper::shape` invocations. Zero until Runtime records shaping.
-    pub text_shaped_runs: usize,
-    /// `TextLayoutCache` lookup hits. Zero until shaping records the cache.
-    pub text_layout_cache_hits: usize,
-    /// `TextLayoutCache` inserts after a miss. Zero until shaping.
-    pub text_layout_cache_misses: usize,
-    /// Shape calls that requested wrapping. Zero until shaping.
-    pub text_wrap_layouts: usize,
-    pub intrinsic_measure_requests: usize,
-    pub intrinsic_measure_cache_hits: usize,
-    pub intrinsic_measure_cache_misses: usize,
-    pub intrinsic_measure_full_subtrees: usize,
-    pub intrinsic_generation_bumps: usize,
-    pub baseline_queries: usize,
-    pub cross_context_measure_hits: usize,
-    pub cross_context_measure_misses: usize,
-    /// `GlyphCache` lookup hits. `None` until a glyph backend consults it.
-    pub glyph_cache_hits: Option<usize>,
-    /// `GlyphCache` inserts after a miss. `None` until consulted.
-    pub glyph_cache_misses: Option<usize>,
-    /// `TextLayoutCache` evictions. `None` until a shaping pass consults it.
-    pub cache_eviction: Option<usize>,
-    /// Retained nodes visited validating the mutation batches behind this drain.
-    /// `None` until a commit reports one.
-    pub validation_nodes_scanned: Option<usize>,
 }
 
 impl SystemWork {
@@ -214,120 +163,6 @@ impl SystemWork {
             && self.accessibility_removals.is_empty()
             && self.render_extraction.is_empty()
             && self.render_removals.is_empty()
-    }
-
-    /// Algorithm-level snapshot for Performance Contract assertions.
-    pub fn counters(&self) -> WorkCounters {
-        WorkCounters {
-            entities_total: self.entities_total,
-            entities_changed: self.entities_changed,
-            entities_spawned: self.entities_spawned,
-            entities_despawned: self.entities_despawned,
-            style_processed: self.style.len(),
-            text_shaped: self.text.len(),
-            layout_nodes: self.layout_frontier_seeds.len(),
-            hit_test_candidates: self.input_hit_test.len(),
-            input_targets: self.input_targets,
-            accessibility_nodes_updated: self.accessibility.len(),
-            render_nodes_changed: self.render_nodes_changed,
-            render_nodes_extracted: self.render_nodes_extracted,
-            extracted_text_spans: self.extracted_text_spans,
-            allocations: self.allocations,
-            allocated_bytes: self.allocated_bytes,
-            text_shaped_runs: self.text_shaped_runs,
-            text_layout_cache_hits: self.text_layout_cache_hits,
-            text_layout_cache_misses: self.text_layout_cache_misses,
-            text_wrap_layouts: self.text_wrap_layouts,
-            intrinsic_measure_requests: self.intrinsic_measure_requests,
-            intrinsic_measure_cache_hits: self.intrinsic_measure_cache_hits,
-            intrinsic_measure_cache_misses: self.intrinsic_measure_cache_misses,
-            intrinsic_measure_full_subtrees: self.intrinsic_measure_full_subtrees,
-            intrinsic_generation_bumps: self.intrinsic_generation_bumps,
-            baseline_queries: self.baseline_queries,
-            cross_context_measure_hits: self.cross_context_measure_hits,
-            cross_context_measure_misses: self.cross_context_measure_misses,
-            glyph_cache_hits: self.glyph_cache_hits,
-            glyph_cache_misses: self.glyph_cache_misses,
-            cache_eviction: self.cache_eviction,
-            validation_nodes_scanned: self.validation_nodes_scanned,
-            // Every other count is recorded by the pass, authority or host
-            // that does the work and folded onto the frame's counters. This
-            // coarse dirty-bit drain observes none of it, so its copy reports
-            // zero, or `None` until observed, and cannot claim that every
-            // LAYOUT bit became a frontier node before dependency
-            // classification runs.
-            ..WorkCounters::default()
-        }
-    }
-
-    /// Record extract output. Draw batches and GPU upload bytes are not
-    /// available from node extraction and are not fabricated here.
-    pub fn record_extract(&mut self, extracted: &[ExtractedNode]) {
-        self.render_nodes_extracted = extracted.len();
-        self.extracted_text_spans = extracted.iter().map(|node| node.text_spans.len()).sum();
-    }
-
-    /// Record observed drain/layout/shape heap events. Does not invent GPU bytes.
-    pub fn record_hot_path_allocation(&mut self, count: usize, bytes: usize) {
-        if count == 0 && bytes == 0 {
-            return;
-        }
-        self.allocations = self.allocations.saturating_add(count);
-        self.allocated_bytes = self.allocated_bytes.saturating_add(bytes);
-    }
-
-    /// Record shaping-path stats after the host `TextShaper` ran.
-    pub fn record_text_shape(
-        &mut self,
-        shaped_runs: usize,
-        cache_hits: usize,
-        cache_misses: usize,
-        wrap_layouts: usize,
-    ) {
-        self.text_shaped_runs = self.text_shaped_runs.saturating_add(shaped_runs);
-        self.text_layout_cache_hits = self.text_layout_cache_hits.saturating_add(cache_hits);
-        self.text_layout_cache_misses = self.text_layout_cache_misses.saturating_add(cache_misses);
-        self.text_wrap_layouts = self.text_wrap_layouts.saturating_add(wrap_layouts);
-    }
-
-    #[allow(clippy::too_many_arguments)]
-    pub fn record_intrinsic_measure(
-        &mut self,
-        requests: usize,
-        hits: usize,
-        misses: usize,
-        full_subtrees: usize,
-        generation_bumps: usize,
-        baseline_queries: usize,
-        cross_context_hits: usize,
-        cross_context_misses: usize,
-    ) {
-        self.intrinsic_measure_requests = self.intrinsic_measure_requests.saturating_add(requests);
-        self.intrinsic_measure_cache_hits = self.intrinsic_measure_cache_hits.saturating_add(hits);
-        self.intrinsic_measure_cache_misses =
-            self.intrinsic_measure_cache_misses.saturating_add(misses);
-        self.intrinsic_measure_full_subtrees = self
-            .intrinsic_measure_full_subtrees
-            .saturating_add(full_subtrees);
-        self.intrinsic_generation_bumps = self
-            .intrinsic_generation_bumps
-            .saturating_add(generation_bumps);
-        self.baseline_queries = self.baseline_queries.saturating_add(baseline_queries);
-        self.cross_context_measure_hits = self
-            .cross_context_measure_hits
-            .saturating_add(cross_context_hits);
-        self.cross_context_measure_misses = self
-            .cross_context_measure_misses
-            .saturating_add(cross_context_misses);
-    }
-
-    pub fn record_cache_eviction(&mut self, evictions: usize) {
-        self.cache_eviction = Some(self.cache_eviction.unwrap_or(0).saturating_add(evictions));
-    }
-
-    pub fn record_glyph_cache(&mut self, hits: usize, misses: usize) {
-        self.glyph_cache_hits = Some(self.glyph_cache_hits.unwrap_or(0).saturating_add(hits));
-        self.glyph_cache_misses = Some(self.glyph_cache_misses.unwrap_or(0).saturating_add(misses));
     }
 }
 
@@ -528,61 +363,5 @@ mod tests {
         let mut accessibility = SystemWork::default();
         accessibility.accessibility_removals.push(node(1));
         assert!(!accessibility.is_empty());
-    }
-
-    #[test]
-    fn counters_report_list_lengths_without_inventing_gpu_numbers() {
-        let mut work = SystemWork::default();
-        push_work(&mut work, node(1), DirtyMask::ALL);
-        work.layout_frontier_seeds
-            .push(LayoutFrontierSeed::layout(node(1)));
-        work.layout_frontier_seeds
-            .push(LayoutFrontierSeed::layout(node(2)));
-        push_work(&mut work, node(2), DirtyMask::STATE);
-        work.render_nodes_changed = work.render_extraction.len();
-
-        let counters = work.counters();
-        assert_eq!(counters.style_processed, 1);
-        assert_eq!(counters.layout_nodes, 2);
-        assert_eq!(counters.text_shaped, 1);
-        assert_eq!(counters.hit_test_candidates, 1);
-        assert_eq!(counters.accessibility_nodes_updated, 1);
-        assert_eq!(counters.render_nodes_changed, 1);
-        // STATE and TRANSFORM stay on SystemWork and are not mapped into the
-        // Performance Contract counters.
-        assert_eq!(counters.draw_batches, None);
-        assert_eq!(counters.draw_calls, None);
-        assert_eq!(counters.gpu_upload_bytes, None);
-        assert_eq!(counters.gpu_buffer_reallocations, None);
-        assert_eq!(counters.batch_rebuilds, None);
-    }
-
-    #[test]
-    fn recorded_stats_accumulate_and_ignore_empty_allocation_reports() {
-        let mut work = SystemWork::default();
-        work.record_hot_path_allocation(0, 0);
-        assert_eq!((work.allocations, work.allocated_bytes), (0, 0));
-        work.record_hot_path_allocation(2, 64);
-        work.record_hot_path_allocation(1, 8);
-        assert_eq!((work.allocations, work.allocated_bytes), (3, 72));
-
-        work.record_text_shape(1, 2, 3, 4);
-        work.record_text_shape(1, 1, 1, 1);
-        assert_eq!(work.text_shaped_runs, 2);
-        assert_eq!(work.text_layout_cache_hits, 3);
-        assert_eq!(work.text_layout_cache_misses, 4);
-        assert_eq!(work.text_wrap_layouts, 5);
-
-        assert_eq!(work.glyph_cache_hits, None);
-        work.record_glyph_cache(1, 0);
-        work.record_glyph_cache(2, 1);
-        assert_eq!(work.glyph_cache_hits, Some(3));
-        assert_eq!(work.glyph_cache_misses, Some(1));
-
-        assert_eq!(work.cache_eviction, None);
-        work.record_cache_eviction(0);
-        assert_eq!(work.cache_eviction, Some(0));
-        work.record_cache_eviction(2);
-        assert_eq!(work.cache_eviction, Some(2));
     }
 }

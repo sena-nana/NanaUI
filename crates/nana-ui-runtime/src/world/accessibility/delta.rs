@@ -426,7 +426,7 @@ impl UiWorld {
                 holds(record)
             })
         };
-        if record.hierarchy.depth <= super::page_origins::DIRECT_DEPTH {
+        if record.depth <= super::page_origins::DIRECT_DEPTH {
             return walked();
         }
         passed.clear();

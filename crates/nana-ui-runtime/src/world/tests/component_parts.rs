@@ -7,8 +7,8 @@ mod part_publication {
 
     use crate::world::reflow_oracle::{bundled_face_shaper, product_frame};
     use crate::{
-        ActionMenuItem, AppContext, Button, Chip, ComponentGeometry, DocumentId, LayoutPartKind,
-        LayoutViewport, Stack,
+        ActionMenuItem, ActionMenuItemGeometry, AppContext, Button, Chip, DocumentId,
+        LayoutPartKind, LayoutViewport, Stack,
     };
     use nana_ui_core::{Icon, LengthSpec};
     use std::{sync::Arc, time::Duration};
@@ -42,8 +42,9 @@ mod part_publication {
                 .any(|part| part.kind == LayoutPartKind::TextContent && part.bounds.width > 0.0)
         );
         assert_eq!(cx.world().len(), 2);
-        let ComponentGeometry::Button { label, .. } =
-            cx.world().component_geometry(button.stable_id()).unwrap()
+        let paint = cx.world().widget_paint(button.stable_id()).unwrap();
+        let Some(crate::WidgetPaintOp::Text(label)) =
+            paint.ops.iter().find(|op| op.slot == 2).map(|op| &op.op)
         else {
             panic!("button")
         };
@@ -178,17 +179,29 @@ mod part_publication {
                 .unwrap()
                 .bounds
         };
-        let ComponentGeometry::Button {
-            label,
-            icon: Some((_, icon)),
-            trailing_icon: Some((_, trailing)),
-            ..
-        } = cx.world().component_geometry(button.stable_id()).unwrap()
+        let paint = cx.world().widget_paint(button.stable_id()).unwrap();
+        let origin = cx.world().layout_origin(button.stable_id()).unwrap();
+        let to_page = |bounds: crate::LayoutBox| crate::LayoutBox {
+            x: origin[0] + bounds.x,
+            y: origin[1] + bounds.y,
+            ..bounds
+        };
+        let Some(crate::WidgetPaintOp::Text(label)) =
+            paint.ops.iter().find(|op| op.slot == 2).map(|op| &op.op)
         else {
             panic!("button")
         };
+        let label_bounds = to_page(label.bounds);
+        let icon = match paint.ops.iter().find(|op| op.slot == 4).map(|op| &op.op) {
+            Some(crate::WidgetPaintOp::Icon(icon)) => to_page(icon.bounds),
+            other => panic!("button leading icon: {other:?}"),
+        };
+        let trailing = match paint.ops.iter().find(|op| op.slot == 5).map(|op| &op.op) {
+            Some(crate::WidgetPaintOp::Icon(icon)) => to_page(icon.bounds),
+            other => panic!("button trailing icon: {other:?}"),
+        };
         assert_eq!(
-            label.bounds,
+            label_bounds,
             part(&cx, button.stable_id(), LayoutPartKind::TextContent)
         );
         assert_eq!(
@@ -200,14 +213,17 @@ mod part_publication {
             part(&cx, button.stable_id(), LayoutPartKind::TrailingContent)
         );
         assert!(
-            icon.x + icon.width <= label.bounds.x
-                && label.bounds.x + label.bounds.width <= trailing.x
+            icon.x + icon.width <= label_bounds.x
+                && label_bounds.x + label_bounds.width <= trailing.x
         );
-        let ComponentGeometry::ActionMenuItem {
+        let ActionMenuItemGeometry {
             label,
             hint: Some(hint),
             ..
-        } = cx.world().component_geometry(menu.stable_id()).unwrap()
+        } = cx
+            .world()
+            .action_menu_item_geometry(menu.stable_id())
+            .unwrap()
         else {
             panic!("menu")
         };
@@ -241,7 +257,7 @@ mod part_publication {
         cx.update_component(button, |button, _| button.loading = false)
             .unwrap();
         product_frame(&mut cx, document, viewport, &mut shaper);
-        let snapshot = Arc::clone(&cx.world().layout_results[&button.stable_id()].local);
+        let snapshot_seq = cx.world().layout_results[&button.stable_id()].publish_seq;
         cx.set_pointer_hover_at(
             document,
             1,
@@ -251,13 +267,13 @@ mod part_publication {
         .unwrap();
         let work = product_frame(&mut cx, document, viewport, &mut shaper);
         assert_eq!(
-            (work.layout_measure_nodes, work.layout_placement_nodes),
+            (work.execution.measure_nodes, work.execution.placement_nodes),
             (0, 0)
         );
-        assert!(Arc::ptr_eq(
-            &snapshot,
-            &cx.world().layout_results[&button.stable_id()].local
-        ));
+        assert_eq!(
+            cx.world().layout_results[&button.stable_id()].publish_seq,
+            snapshot_seq
+        );
         let a11y = cx.world().project_accessibility(document);
         assert!(
             a11y.iter()
@@ -299,17 +315,11 @@ mod part_publication {
                 assert!(cx.world().layout_child_placements(id).unwrap().is_empty());
             }
             let generation = cx.world().layout_generation();
-            product_frame(&mut cx, document, viewport, &mut shaper);
+            let idle = product_frame(&mut cx, document, viewport, &mut shaper);
             assert!(cx.take_system_work().is_empty());
-            let idle = cx.world().counters.frame_counters;
             assert_eq!(
-                (
-                    idle.layout_measure_nodes,
-                    idle.layout_placement_nodes,
-                    idle.entities_spawned,
-                    idle.entities_despawned
-                ),
-                (0, 0, 0, 0)
+                (idle.execution.measure_nodes, idle.execution.placement_nodes),
+                (0, 0)
             );
             assert_eq!(cx.world().layout_generation(), generation);
         }
@@ -348,8 +358,7 @@ mod part_publication {
                 row.detail = detail.to_owned();
             })
             .unwrap();
-            let work = product_frame(&mut cx, document, viewport, &mut shaper);
-            assert_eq!((work.entities_spawned, work.entities_despawned), (0, 0));
+            let _work = product_frame(&mut cx, document, viewport, &mut shaper);
             assert!(cx.read(row, |row| row.selected).unwrap());
             assert_eq!(cx.world().focused(document), Some(row.stable_id()));
             let result = cx.world().layout_result(row.stable_id()).unwrap();
@@ -360,27 +369,22 @@ mod part_publication {
                     .find(|part| part.kind == kind)
                     .map(|part| part.bounds)
             };
-            let ComponentGeometry::ListItem {
-                content,
-                note,
-                detail,
-                ..
-            } = cx.world().component_geometry(row.stable_id()).unwrap()
-            else {
-                panic!("row")
+            let paint = cx.world().widget_paint(row.stable_id()).expect("row");
+            let op_bounds = |slot: u64| {
+                paint.ops.iter().find_map(|tagged| match &tagged.op {
+                    crate::WidgetPaintOp::Text(text) if tagged.slot == slot => Some(text.bounds),
+                    _ => None,
+                })
             };
+            let content = paint.node_text_bounds;
+            let note_bounds = op_bounds(4);
+            let detail_bounds = op_bounds(3);
             assert_eq!(content, part(LayoutPartKind::TextContent));
-            assert_eq!(
-                note.as_ref().map(|note| note.bounds),
-                part(LayoutPartKind::Note)
-            );
-            assert_eq!(
-                detail.as_ref().map(|detail| detail.bounds),
-                part(LayoutPartKind::Detail)
-            );
+            assert_eq!(note_bounds, part(LayoutPartKind::Note));
+            assert_eq!(detail_bounds, part(LayoutPartKind::Detail));
             if cx.read(row, |row| row.detail == "1").unwrap() {
                 assert_eq!(
-                    detail.as_ref().unwrap().bounds.width,
+                    detail_bounds.unwrap().width,
                     cx.world()
                         .theme()
                         .spacing()
@@ -413,8 +417,7 @@ mod part_publication {
                 cx.commit_mutations(q).unwrap();
             };
             change(&mut cx);
-            let work = product_frame(&mut cx, document, viewport, &mut shaper);
-            assert_eq!((work.entities_spawned, work.entities_despawned), (0, 0));
+            let _work = product_frame(&mut cx, document, viewport, &mut shaper);
             assert_eq!(cx.world().focused(document), Some(row.stable_id()));
             assert!(cx.read(row, |row| row.selected).unwrap());
             let (mut cold, _) = build(280.0, "Ctrl+O");
@@ -431,9 +434,9 @@ mod part_publication {
         let work = product_frame(&mut cx, document, viewport, &mut shaper);
         assert_eq!(
             (
-                work.layout_measure_nodes,
-                work.layout_placement_nodes,
-                work.text_shaped_runs
+                work.execution.measure_nodes,
+                work.execution.placement_nodes,
+                work.text.text_nodes_shaped
             ),
             (0, 0, 0)
         );
@@ -472,18 +475,15 @@ mod part_publication {
                 assert_eq!(result.parts.len(), 4);
                 assert!(cx.world().layout_child_placements(id).unwrap().is_empty());
             }
-            product_frame(&mut cx, document, viewport, &mut shaper);
+            let idle = product_frame(&mut cx, document, viewport, &mut shaper);
             assert!(cx.take_system_work().is_empty());
-            let idle = cx.world().counters.frame_counters;
             assert_eq!(
                 (
-                    idle.layout_measure_nodes,
-                    idle.layout_placement_nodes,
-                    idle.text_shaped_runs,
-                    idle.entities_spawned,
-                    idle.entities_despawned
+                    idle.execution.measure_nodes,
+                    idle.execution.placement_nodes,
+                    idle.text.text_nodes_shaped,
                 ),
-                (0, 0, 0, 0, 0)
+                (0, 0, 0)
             );
         }
     }
@@ -550,12 +550,7 @@ mod part_publication {
             .unwrap();
         assert!(part.bounds.x + part.bounds.width > label.x + initial_width);
         assert_eq!(world.len(), 3);
-        let ComponentGeometry::ListItem { leading, .. } =
-            world.component_geometry(row.stable_id()).unwrap()
-        else {
-            panic!("row")
-        };
-        assert!(leading.is_none());
+        assert!(world.omits_layout_box(leading.stable_id()));
     }
 
     #[test]
@@ -629,14 +624,23 @@ mod part_publication {
             cx.world().layout_result(control.stable_id()),
             control_result.clone()
         );
-        let ComponentGeometry::FormField {
-            support, indicator, ..
-        } = cx.world().component_geometry(field.stable_id()).unwrap()
+        let paint = cx.world().widget_paint(field.stable_id()).unwrap();
+        let crate::WidgetPaintOp::Text(support) = &paint
+            .ops
+            .iter()
+            .find(|tagged| tagged.slot == 3)
+            .expect("form field support")
+            .op
         else {
-            panic!("form field")
+            panic!("form field support");
         };
-        assert_eq!(support.as_ref().map(|region| region.bounds), Some(hint));
-        assert!(indicator.is_some());
+        let indicator = paint
+            .ops
+            .iter()
+            .find(|tagged| tagged.slot == 4)
+            .map(|tagged| &tagged.op);
+        assert_eq!(support.bounds, hint);
+        assert!(matches!(indicator, Some(crate::WidgetPaintOp::Quad(_))));
 
         let mut style = cx.world().node_style(field.stable_id()).unwrap().clone();
         Arc::make_mut(&mut style.layout).dir = Some(nana_ui_core::DirSpec::Rtl);
@@ -691,15 +695,12 @@ mod part_publication {
         let label = part(LayoutPartKind::TextContent).unwrap();
         let hint = part(LayoutPartKind::Hint).unwrap();
         let handle = part(LayoutPartKind::TrailingContent).unwrap();
-        let ComponentGeometry::Select {
+        let crate::SelectGeometry {
             label: label_region,
             hint: hint_region,
             handle: handle_region,
             ..
-        } = cx.world().component_geometry(select.stable_id()).unwrap()
-        else {
-            panic!("select")
-        };
+        } = cx.world().select_geometry(select.stable_id()).unwrap();
         assert_eq!(label_region.bounds, label);
         assert_eq!(hint_region.as_ref().map(|region| region.bounds), Some(hint));
         assert_eq!(handle_region, handle);
@@ -709,8 +710,8 @@ mod part_publication {
         cx.update_component(select, |select, _| select.highlighted = Some(1))
             .unwrap();
         let work = product_frame(&mut cx, document, viewport, &mut shaper);
-        assert_eq!(work.layout_measure_nodes, 0);
-        assert_eq!(work.layout_placement_nodes, 0);
+        assert_eq!(work.execution.measure_nodes, 0);
+        assert_eq!(work.execution.placement_nodes, 0);
         assert_eq!(cx.world().layout_generation(), generation);
 
         let mut style = cx.world().node_style(select.stable_id()).unwrap().clone();
@@ -784,17 +785,14 @@ mod part_publication {
                 assert_eq!(result.parts.len(), 4);
                 assert!(cx.world().layout_child_placements(id).unwrap().is_empty());
             }
-            product_frame(&mut cx, document, viewport, &mut shaper);
-            let idle = cx.world().counters.frame_counters;
+            let idle = product_frame(&mut cx, document, viewport, &mut shaper);
             assert_eq!(
                 (
-                    idle.layout_measure_nodes,
-                    idle.layout_placement_nodes,
-                    idle.text_shaped_runs,
-                    idle.entities_spawned,
-                    idle.entities_despawned
+                    idle.execution.measure_nodes,
+                    idle.execution.placement_nodes,
+                    idle.text.text_nodes_shaped,
                 ),
-                (0, 0, 0, 0, 0)
+                (0, 0, 0)
             );
         }
     }
@@ -846,10 +844,9 @@ mod part_publication {
                     .unwrap();
                 let work = product_frame(&mut cx, document, viewport, &mut shaper);
                 assert_eq!(
-                    work.layout_measure_nodes, 0,
+                    work.execution.measure_nodes, 0,
                     "a text part does not change the outer metric"
                 );
-                assert_eq!((work.entities_spawned, work.entities_despawned), (0, 0));
                 assert_eq!(cx.world().focused(document), Some(action.stable_id()));
                 assert_eq!(cx.world().len(), 3);
                 let result = cx.world().layout_result(value.stable_id()).unwrap();
@@ -861,17 +858,28 @@ mod part_publication {
                         .unwrap()
                         .bounds
                 };
-                let ComponentGeometry::LabeledValue {
-                    label,
-                    value: region,
-                    action: actual,
-                } = cx.world().component_geometry(value.stable_id()).unwrap()
+                let paint = cx.world().widget_paint(value.stable_id()).unwrap();
+                let crate::WidgetPaintOp::Text(label) = &paint
+                    .ops
+                    .iter()
+                    .find(|tagged| tagged.slot == 2)
+                    .expect("labeled value label")
+                    .op
+                else {
+                    panic!("label")
+                };
+                let crate::WidgetPaintOp::Text(region) = &paint
+                    .ops
+                    .iter()
+                    .find(|tagged| tagged.slot == 3)
+                    .expect("labeled value value")
+                    .op
                 else {
                     panic!("value")
                 };
                 assert_eq!(label.bounds, part(LayoutPartKind::Label));
                 assert_eq!(region.bounds, part(LayoutPartKind::Value));
-                let actual = actual.unwrap();
+                let actual = cx.world().layout_box(action.stable_id()).unwrap();
                 assert!(label.bounds.width > 0.0 && region.bounds.width > 0.0);
                 if rtl {
                     assert!(actual.x + actual.width <= region.bounds.x);
@@ -885,17 +893,18 @@ mod part_publication {
                 assert_matches_cold(&mut cx, &mut cold, document);
             }
             let generation = cx.world().layout_generation();
-            let mut visual = cx.world().standard_visual(value.stable_id()).unwrap();
-            let crate::StandardVisual::LabeledValue { value_role, .. } = &mut visual else {
-                panic!("value")
-            };
-            *value_role = crate::SemanticColorRole::Danger;
+            let mut visual = cx
+                .world()
+                .widget_visual_as::<crate::LabeledValueVisual>(value.stable_id())
+                .unwrap()
+                .clone();
+            visual.value_role = crate::SemanticColorRole::Danger;
             let mut q = MutationQueue::new();
-            q.set_standard_visual(value.stable_id(), Some(visual));
+            q.set_widget_visual(value.stable_id(), Some(visual));
             cx.commit_mutations(q).unwrap();
             let work = product_frame(&mut cx, document, viewport, &mut shaper);
             assert_eq!(
-                (work.layout_measure_nodes, work.layout_placement_nodes),
+                (work.execution.measure_nodes, work.execution.placement_nodes),
                 (0, 0)
             );
             assert_eq!(cx.world().layout_generation(), generation);
@@ -923,11 +932,22 @@ mod part_publication {
         );
         let world = cx.world();
         let result = world.layout_result(value.stable_id()).unwrap();
-        let ComponentGeometry::LabeledValue {
-            label,
-            value: display,
-            ..
-        } = world.component_geometry(value.stable_id()).unwrap()
+        let paint = world.widget_paint(value.stable_id()).unwrap();
+        let crate::WidgetPaintOp::Text(label) = &paint
+            .ops
+            .iter()
+            .find(|tagged| tagged.slot == 2)
+            .expect("labeled value label")
+            .op
+        else {
+            panic!("label")
+        };
+        let crate::WidgetPaintOp::Text(display) = &paint
+            .ops
+            .iter()
+            .find(|tagged| tagged.slot == 3)
+            .expect("labeled value value")
+            .op
         else {
             panic!("value")
         };
@@ -945,11 +965,10 @@ mod part_publication {
                 .as_deref(),
             Some(path)
         );
-        let crate::StandardVisual::LabeledValue { value: stored, .. } =
-            world.standard_visual(value.stable_id()).unwrap()
-        else {
-            panic!("value")
-        };
+        let stored = &world
+            .widget_visual_as::<crate::LabeledValueVisual>(value.stable_id())
+            .unwrap()
+            .value;
         assert_eq!(stored.as_ref(), path);
     }
 
@@ -982,17 +1001,11 @@ mod part_publication {
                 assert_eq!(result.parts.len(), 3);
                 assert!(cx.world().layout_child_placements(id).unwrap().is_empty());
             }
-            product_frame(&mut cx, document, viewport, &mut shaper);
+            let idle = product_frame(&mut cx, document, viewport, &mut shaper);
             assert!(cx.take_system_work().is_empty());
-            let idle = cx.world().counters.frame_counters;
             assert_eq!(
-                (
-                    idle.layout_measure_nodes,
-                    idle.layout_placement_nodes,
-                    idle.entities_spawned,
-                    idle.entities_despawned
-                ),
-                (0, 0, 0, 0)
+                (idle.execution.measure_nodes, idle.execution.placement_nodes),
+                (0, 0)
             );
         }
     }
@@ -1062,16 +1075,33 @@ mod part_publication {
                 .find(|part| part.kind == LayoutPartKind::Spinner)
                 .unwrap()
                 .bounds;
-            let ComponentGeometry::Card {
-                title,
-                content,
-                spinner: actual,
-                ..
-            } = world.component_geometry(card.stable_id()).unwrap()
-            else {
-                panic!("card")
+            let content = world.children_box(
+                card.stable_id(),
+                world.component_content_box(card.stable_id()).unwrap(),
+            );
+            let paint = world.widget_paint(card.stable_id()).unwrap();
+            let origin = world.layout_origin(card.stable_id()).unwrap();
+            let title_bounds = match paint.ops.iter().find(|op| op.slot == 2).map(|op| &op.op) {
+                Some(crate::WidgetPaintOp::Text(text)) => crate::LayoutBox {
+                    x: origin[0] + text.bounds.x,
+                    y: origin[1] + text.bounds.y,
+                    ..text.bounds
+                },
+                other => panic!("card title op: {other:?}"),
             };
-            assert_eq!(title.unwrap().bounds, header);
+            let actual = paint
+                .ops
+                .iter()
+                .find(|op| op.slot == 3)
+                .and_then(|op| match &op.op {
+                    crate::WidgetPaintOp::Icon(icon) => Some(crate::LayoutBox {
+                        x: origin[0] + icon.bounds.x,
+                        y: origin[1] + icon.bounds.y,
+                        ..icon.bounds
+                    }),
+                    _ => None,
+                });
+            assert_eq!(title_bounds, header);
             assert_eq!(actual, Some(spinner));
             assert!(header.y < content.y);
             assert!(
@@ -1107,23 +1137,22 @@ mod part_publication {
                 );
             }
         }
-        let pointer =
-            Arc::as_ptr(cx.world().local_layout_result(card.stable_id()).unwrap()) as usize;
+        let held_layout = cx.world().local_layout_result(card.stable_id()).unwrap();
         let native_id = cx.world().text_layout(card.stable_id()).unwrap().0;
         cx.update_component(card, |card, _| card.loading_phase = 0.13)
             .unwrap();
         let work = product_frame(&mut cx, document, viewport, &mut shaper);
         assert_eq!(
             (
-                work.layout_measure_nodes,
-                work.layout_placement_nodes,
-                work.text_shaped_runs
+                work.execution.measure_nodes,
+                work.execution.placement_nodes,
+                work.text.text_nodes_shaped
             ),
             (0, 0, 0)
         );
         assert_eq!(
-            Arc::as_ptr(cx.world().local_layout_result(card.stable_id()).unwrap()) as usize,
-            pointer
+            cx.world().local_layout_result(card.stable_id()).as_deref(),
+            Some(&*held_layout)
         );
         assert_eq!(
             cx.world().text_layout(card.stable_id()).unwrap().0,
@@ -1183,8 +1212,7 @@ mod part_publication {
                     card.loading = loading;
                 })
                 .unwrap();
-                let work = product_frame(&mut cx, document, viewport, &mut shaper);
-                assert_eq!((work.entities_spawned, work.entities_despawned), (0, 0));
+                let _work = product_frame(&mut cx, document, viewport, &mut shaper);
                 let result = cx.world().layout_result(card.stable_id()).unwrap();
                 for part in result.parts.iter().filter(|part| {
                     matches!(part.kind, LayoutPartKind::Header | LayoutPartKind::Spinner)
@@ -1284,17 +1312,11 @@ mod part_publication {
                 assert_eq!(result.parts.len(), 4);
                 assert!(cx.world().layout_child_placements(id).unwrap().is_empty());
             }
-            product_frame(&mut cx, document, viewport, &mut shaper);
+            let idle = product_frame(&mut cx, document, viewport, &mut shaper);
             assert!(cx.take_system_work().is_empty());
-            let idle = cx.world().counters.frame_counters;
             assert_eq!(
-                (
-                    idle.layout_measure_nodes,
-                    idle.layout_placement_nodes,
-                    idle.entities_spawned,
-                    idle.entities_despawned
-                ),
-                (0, 0, 0, 0)
+                (idle.execution.measure_nodes, idle.execution.placement_nodes),
+                (0, 0)
             );
         }
     }
@@ -1393,16 +1415,14 @@ mod part_publication {
             text.width
         );
         // Paint reads them, nothing else.
-        let ComponentGeometry::Checkbox {
-            indicator: painted,
-            label: painted_label,
-            ..
-        } = world.component_geometry(id).unwrap()
-        else {
-            panic!("checkbox")
+        let paint = world.widget_paint(id).expect("checkbox paint");
+        let painted = match &paint.ops.iter().find(|op| op.slot == 3).unwrap().op {
+            crate::WidgetPaintOp::Quad(quad) => quad.rect,
+            other => panic!("checkbox indicator: {other:?}"),
         };
+        let painted_label = paint.node_text_bounds.expect("checkbox label");
         assert_eq!(painted, indicator);
-        assert_eq!(painted_label.bounds, label);
+        assert_eq!(painted_label, label);
         // The text fragments sit in the label part, not over the indicator.
         let runs: Vec<_> = result
             .fragments
@@ -1472,7 +1492,7 @@ mod part_publication {
         }
         let id = checkbox.stable_id();
         let generation = cx.world().layout_generation();
-        let snapshot = Arc::clone(&cx.world().layout_results[&id].local);
+        let snapshot_seq = cx.world().layout_results[&id].publish_seq;
         cx.update_component(checkbox, |view, _| view.checked = true)
             .unwrap();
         let toggled = product_frame(&mut cx, document, viewport, &mut shaper);
@@ -1481,15 +1501,12 @@ mod part_publication {
         let hovered = product_frame(&mut cx, document, viewport, &mut shaper);
         for work in [toggled, hovered] {
             assert_eq!(
-                (work.layout_measure_nodes, work.layout_placement_nodes),
+                (work.execution.measure_nodes, work.execution.placement_nodes),
                 (0, 0)
             );
         }
         assert_eq!(cx.world().layout_generation(), generation);
-        assert!(Arc::ptr_eq(
-            &snapshot,
-            &cx.world().layout_results[&id].local
-        ));
+        assert_eq!(cx.world().layout_results[&id].publish_seq, snapshot_seq);
         let a11y = cx.world().project_accessibility(document);
         let node = a11y.iter().find(|node| node.id == id).unwrap();
         assert_eq!(node.checked, Some(true));
@@ -1535,18 +1552,17 @@ mod part_publication {
             let mut q = MutationQueue::new();
             q.set_style(root.stable_id(), style);
             cx.commit_mutations(q).unwrap();
-            let work = product_frame(&mut cx, document, viewport, &mut shaper);
-            assert_eq!((work.entities_spawned, work.entities_despawned), (0, 0));
+            product_frame(&mut cx, document, viewport, &mut shaper);
             assert!(cx.read(checkbox, |view| view.checked).unwrap());
             assert_eq!(cx.world().focused(document), Some(id));
-            let ComponentGeometry::Checkbox {
-                indicator, label, ..
-            } = cx.world().component_geometry(id).unwrap()
-            else {
-                panic!("checkbox")
+            let paint = cx.world().widget_paint(id).expect("checkbox paint");
+            let indicator = match &paint.ops.iter().find(|op| op.slot == 3).unwrap().op {
+                crate::WidgetPaintOp::Quad(quad) => quad.rect,
+                other => panic!("checkbox indicator: {other:?}"),
             };
+            let label = paint.node_text_bounds.expect("checkbox label");
             assert_eq!(indicator, part_of(&cx, id, LayoutPartKind::Indicator));
-            assert_eq!(label.bounds, part_of(&cx, id, LayoutPartKind::TextContent));
+            assert_eq!(label, part_of(&cx, id, LayoutPartKind::TextContent));
             let (mut cold, ..) = build(display);
             assert_matches_cold(&mut cx, &mut cold, document);
         }
@@ -1590,17 +1606,11 @@ mod part_publication {
                 assert!(cx.world().layout_child_placements(id).unwrap().is_empty());
             }
             let generation = cx.world().layout_generation();
-            product_frame(&mut cx, document, viewport, &mut shaper);
+            let idle = product_frame(&mut cx, document, viewport, &mut shaper);
             assert!(cx.take_system_work().is_empty());
-            let idle = cx.world().counters.frame_counters;
             assert_eq!(
-                (
-                    idle.layout_measure_nodes,
-                    idle.layout_placement_nodes,
-                    idle.entities_spawned,
-                    idle.entities_despawned
-                ),
-                (0, 0, 0, 0)
+                (idle.execution.measure_nodes, idle.execution.placement_nodes),
+                (0, 0)
             );
             assert_eq!(cx.world().layout_generation(), generation);
         }
@@ -1613,7 +1623,7 @@ mod part_publication {
     #[test]
     fn issue205_menu_room_and_chrome_clips_follow_the_clip_chain() {
         use crate::world::reflow_oracle::{Builder, fixed};
-        use crate::{InteractionState, LayoutBox, MutationQueue, ScrollOffset, StandardVisual};
+        use crate::{InteractionState, LayoutBox, MutationQueue, ScrollOffset};
         use nana_ui_core::{FlexDirection, LayoutStyle, OverflowSpec, PositionSpec};
         let document = DocumentId::new(1).unwrap();
         let viewport = LayoutViewport::new(800.0, 600.0);
@@ -1646,9 +1656,9 @@ mod part_publication {
             empty,
             placed(PositionSpec::Fixed, [300.0, 300.0, 50.0, 20.0]),
         );
-        b.queue.set_standard_visual(
+        b.queue.set_widget_visual(
             empty,
-            Some(StandardVisual::EmptyState {
+            Some(crate::EmptyStateVisual {
                 title: Arc::from("Empty"),
                 message: None,
                 icon: None,
@@ -1764,11 +1774,10 @@ mod part_publication {
         // Nothing is left to shape: the next frame has no work, and lays out
         // nothing.
         let generation = cx.world().layout_generation();
-        product_frame(&mut cx, document, viewport, &mut shaper);
+        let idle = product_frame(&mut cx, document, viewport, &mut shaper);
         assert!(cx.take_system_work().is_empty());
-        let idle = cx.world().counters.frame_counters;
         assert_eq!(
-            (idle.layout_measure_nodes, idle.layout_placement_nodes),
+            (idle.execution.measure_nodes, idle.execution.placement_nodes),
             (0, 0)
         );
         assert_eq!(cx.world().layout_generation(), generation);
@@ -1902,18 +1911,22 @@ mod part_publication {
                 Some(nana_ui_core::ControlHeight::Min(ControlSize::Medium))
             );
             // Paint reads the parts and nothing else.
-            let ComponentGeometry::Switch {
-                control,
-                label: painted_label,
-                hint: painted_hint,
-                ..
-            } = world.component_geometry(id).unwrap()
-            else {
-                panic!("switch")
+            let paint = world.widget_paint(id).unwrap();
+            let control = match paint.ops.iter().find(|t| t.slot == 4).map(|t| &t.op) {
+                Some(crate::WidgetPaintOp::Quad(quad)) => quad.rect,
+                other => panic!("switch track: {other:?}"),
+            };
+            let painted_label = match paint.ops.iter().find(|t| t.slot == 2).map(|t| &t.op) {
+                Some(crate::WidgetPaintOp::Text(text)) => text,
+                other => panic!("switch label: {other:?}"),
+            };
+            let painted_hint = match paint.ops.iter().find(|t| t.slot == 3).map(|t| &t.op) {
+                Some(crate::WidgetPaintOp::Text(text)) => text,
+                other => panic!("switch hint: {other:?}"),
             };
             assert_eq!(control, track);
             assert_eq!(painted_label.bounds, label);
-            assert_eq!(painted_hint.unwrap().bounds, hint);
+            assert_eq!(painted_hint.bounds, hint);
             // One entity; the content box, the track, the label and the hint.
             assert_eq!(world.len(), 2);
             assert_eq!(result.parts.len(), 4);
@@ -2076,7 +2089,7 @@ mod part_publication {
         );
 
         let generation = cx.world().layout_generation();
-        let snapshot = Arc::clone(&cx.world().layout_results[&id].local);
+        let snapshot_seq = cx.world().layout_results[&id].publish_seq;
         cx.update_component(switch, |view, _| view.checked = true)
             .unwrap();
         let toggled = product_frame(&mut cx, document, viewport, &mut shaper);
@@ -2088,15 +2101,12 @@ mod part_publication {
         let hovered = product_frame(&mut cx, document, viewport, &mut shaper);
         for work in [toggled, travelled, hovered] {
             assert_eq!(
-                (work.layout_measure_nodes, work.layout_placement_nodes),
+                (work.execution.measure_nodes, work.execution.placement_nodes),
                 (0, 0)
             );
         }
         assert_eq!(cx.world().layout_generation(), generation);
-        assert!(Arc::ptr_eq(
-            &snapshot,
-            &cx.world().layout_results[&id].local
-        ));
+        assert_eq!(cx.world().layout_results[&id].publish_seq, snapshot_seq);
         let a11y = cx.world().project_accessibility(document);
         let node = a11y.iter().find(|node| node.id == id).unwrap();
         assert_eq!(node.checked, Some(true));
@@ -2145,25 +2155,112 @@ mod part_publication {
             let mut q = MutationQueue::new();
             q.set_style(root.stable_id(), style);
             cx.commit_mutations(q).unwrap();
-            let work = product_frame(&mut cx, document, viewport, &mut shaper);
-            assert_eq!((work.entities_spawned, work.entities_despawned), (0, 0));
+            product_frame(&mut cx, document, viewport, &mut shaper);
             assert!(cx.read(switch, |view| view.checked).unwrap());
             assert_eq!(cx.world().focused(document), Some(id));
-            let ComponentGeometry::Switch {
-                control,
-                label,
-                hint,
-                ..
-            } = cx.world().component_geometry(id).unwrap()
-            else {
-                panic!("switch")
+            let paint = cx.world().widget_paint(id).unwrap();
+            let control = match paint.ops.iter().find(|t| t.slot == 4).map(|t| &t.op) {
+                Some(crate::WidgetPaintOp::Quad(quad)) => quad.rect,
+                other => panic!("switch track: {other:?}"),
+            };
+            let label = match paint.ops.iter().find(|t| t.slot == 2).map(|t| &t.op) {
+                Some(crate::WidgetPaintOp::Text(text)) => text,
+                other => panic!("switch label: {other:?}"),
+            };
+            let hint = match paint.ops.iter().find(|t| t.slot == 3).map(|t| &t.op) {
+                Some(crate::WidgetPaintOp::Text(text)) => text,
+                other => panic!("switch hint: {other:?}"),
             };
             assert_eq!(control, part_of(&cx, id, LayoutPartKind::TrailingContent));
             assert_eq!(label.bounds, part_of(&cx, id, LayoutPartKind::Label));
-            assert_eq!(hint.unwrap().bounds, part_of(&cx, id, LayoutPartKind::Hint));
+            assert_eq!(hint.bounds, part_of(&cx, id, LayoutPartKind::Hint));
             let (mut cold, ..) = build(display);
             assert_matches_cold(&mut cx, &mut cold, document);
         }
+    }
+
+    #[test]
+    fn issue388_a_right_to_left_switch_thumb_is_the_mirror_image() {
+        let mut shaper = bundled_face_shaper();
+        let viewport = LayoutViewport::new(240.0, 80.0);
+        let mut paint = |direction: nana_ui_core::DirSpec, checked: bool, thumb_progress: f32| {
+            let document = DocumentId::new(1).unwrap();
+            let mut cx = AppContext::new();
+            let mut style = crate::NodeStyle::default();
+            Arc::make_mut(&mut style.layout).dir = Some(direction);
+            let switch = cx
+                .create_component(
+                    document,
+                    crate::Switch::new("Enabled", checked)
+                        .loading(true)
+                        .style(style),
+                )
+                .unwrap();
+            let id = switch.stable_id();
+            product_frame(&mut cx, document, viewport, &mut shaper);
+            let mut visual = cx
+                .world()
+                .widget_visual_as::<crate::SwitchVisual>(id)
+                .unwrap()
+                .clone();
+            visual.thumb_progress = thumb_progress;
+            let mut q = crate::MutationQueue::new();
+            q.set_widget_visual(id, Some(visual));
+            cx.commit_mutations(q).unwrap();
+            let paint = cx.world().widget_paint(id).unwrap();
+            let track = match paint.ops.iter().find(|t| t.slot == 4).map(|t| &t.op) {
+                Some(crate::WidgetPaintOp::Quad(quad)) => quad.rect,
+                other => panic!("switch track: {other:?}"),
+            };
+            let thumb = match paint.ops.iter().find(|t| t.slot == 5).map(|t| &t.op) {
+                Some(crate::WidgetPaintOp::Quad(quad)) => quad.rect,
+                other => panic!("switch thumb: {other:?}"),
+            };
+            let spinner = match paint.ops.iter().find(|t| t.slot == 6).map(|t| &t.op) {
+                Some(crate::WidgetPaintOp::Icon(icon)) => icon.bounds,
+                other => panic!("switch spinner: {other:?}"),
+            };
+            (track, thumb, spinner)
+        };
+        let mirror = |track: crate::LayoutBox, rect: crate::LayoutBox| crate::LayoutBox {
+            x: 2.0 * track.x + track.width - rect.x - rect.width,
+            ..rect
+        };
+        for progress in [0.0, 0.25, 1.0] {
+            let (ltr_track, thumb, spinner) =
+                paint(nana_ui_core::DirSpec::Ltr, progress > 0.5, progress);
+            let (rtl_track, rtl_thumb, rtl_spinner) =
+                paint(nana_ui_core::DirSpec::Rtl, progress > 0.5, progress);
+            assert_eq!(ltr_track.width, rtl_track.width);
+            assert_eq!(ltr_track.height, rtl_track.height);
+            // Map RTL rects into LTR track frame before mirroring.
+            let rtl_thumb_rel = crate::LayoutBox {
+                x: rtl_thumb.x - rtl_track.x + ltr_track.x,
+                y: rtl_thumb.y - rtl_track.y + ltr_track.y,
+                ..rtl_thumb
+            };
+            let rtl_spinner_rel = crate::LayoutBox {
+                x: rtl_spinner.x - rtl_track.x + ltr_track.x,
+                y: rtl_spinner.y - rtl_track.y + ltr_track.y,
+                ..rtl_spinner
+            };
+            for (ours, theirs) in [
+                (rtl_thumb_rel, mirror(ltr_track, thumb)),
+                (rtl_spinner_rel, mirror(ltr_track, spinner)),
+            ] {
+                assert!(
+                    (ours.x - theirs.x).abs() < 1e-4
+                        && (ours.y - theirs.y).abs() < 1e-4
+                        && ours.width == theirs.width
+                        && ours.height == theirs.height,
+                    "{progress}: {ours:?} != {theirs:?}"
+                );
+            }
+        }
+        let (ltr_track, on, _) = paint(nana_ui_core::DirSpec::Ltr, true, 1.0);
+        let (rtl_track, rtl_on, _) = paint(nana_ui_core::DirSpec::Rtl, true, 1.0);
+        assert!(on.x > ltr_track.x + ltr_track.width / 2.0);
+        assert!(rtl_on.x + rtl_on.width < rtl_track.x + rtl_track.width / 2.0);
     }
 
     #[test]
@@ -2210,17 +2307,11 @@ mod part_publication {
                 assert!(cx.world().layout_child_placements(id).unwrap().is_empty());
             }
             let generation = cx.world().layout_generation();
-            product_frame(&mut cx, document, viewport, &mut shaper);
+            let idle = product_frame(&mut cx, document, viewport, &mut shaper);
             assert!(cx.take_system_work().is_empty());
-            let idle = cx.world().counters.frame_counters;
             assert_eq!(
-                (
-                    idle.layout_measure_nodes,
-                    idle.layout_placement_nodes,
-                    idle.entities_spawned,
-                    idle.entities_despawned
-                ),
-                (0, 0, 0, 0)
+                (idle.execution.measure_nodes, idle.execution.placement_nodes),
+                (0, 0)
             );
             assert_eq!(cx.world().layout_generation(), generation);
         }
@@ -2368,7 +2459,7 @@ mod part_publication {
                 let result = world.layout_result(id).unwrap();
                 let content = result.content_box;
                 let (slot, gap, inset) = status_dot_metrics(kind, compact);
-                let diameter = slot * crate::world::content_parts::STATUS_DOT_FRACTION;
+                let diameter = slot * (10.0 / 24.0);
                 let dot = part_of(&cx, id, LayoutPartKind::LeadingContent);
                 let label = part_of(&cx, id, LayoutPartKind::TextContent);
                 assert!((dot.x - (content.x + (slot - diameter) / 2.0)).abs() < 1e-4);
@@ -2388,14 +2479,14 @@ mod part_publication {
                     text.width
                 );
                 // Paint reads them, nothing else.
-                let (indicator, painted) = match world.component_geometry(id).unwrap() {
-                    ComponentGeometry::StatusBadge {
-                        indicator, label, ..
-                    }
-                    | ComponentGeometry::ValidationMessage {
-                        indicator, label, ..
-                    } => (indicator, label),
-                    other => panic!("{other:?}"),
+                let paint = world.widget_paint(id).expect("status dot paint");
+                let painted = match &paint.ops.iter().find(|op| op.slot == 2).unwrap().op {
+                    crate::WidgetPaintOp::Text(text) => text,
+                    other => panic!("status dot label: {other:?}"),
+                };
+                let indicator = match &paint.ops.iter().find(|op| op.slot == 3).unwrap().op {
+                    crate::WidgetPaintOp::Quad(quad) => quad.rect,
+                    other => panic!("status dot indicator: {other:?}"),
                 };
                 assert_eq!(indicator, dot);
                 // A badge paints its one centred line across the whole pill.
@@ -2514,7 +2605,7 @@ mod part_publication {
             crate::world::reflow_oracle::assert_matches_cold(&mut cx, &mut cold, document);
 
             let generation = cx.world().layout_generation();
-            let snapshot = Arc::clone(&cx.world().layout_results[&id].local);
+            let snapshot_seq = cx.world().layout_results[&id].publish_seq;
             if kind == 0 {
                 let entity = crate::Entity::<crate::StatusBadge>::from_stable_id(id);
                 cx.update_component(entity, |view, _| {
@@ -2530,14 +2621,11 @@ mod part_publication {
             }
             let work = product_frame(&mut cx, document, viewport, &mut shaper);
             assert_eq!(
-                (work.layout_measure_nodes, work.layout_placement_nodes),
+                (work.execution.measure_nodes, work.execution.placement_nodes),
                 (0, 0)
             );
             assert_eq!(cx.world().layout_generation(), generation);
-            assert!(Arc::ptr_eq(
-                &snapshot,
-                &cx.world().layout_results[&id].local
-            ));
+            assert_eq!(cx.world().layout_results[&id].publish_seq, snapshot_seq);
         }
     }
 
@@ -2576,17 +2664,16 @@ mod part_publication {
             let mut q = MutationQueue::new();
             q.set_style(root.stable_id(), style);
             cx.commit_mutations(q).unwrap();
-            let work = product_frame(&mut cx, document, viewport, &mut shaper);
-            assert_eq!((work.entities_spawned, work.entities_despawned), (0, 0));
+            product_frame(&mut cx, document, viewport, &mut shaper);
             for id in ids {
-                let (indicator, label) = match cx.world().component_geometry(id).unwrap() {
-                    ComponentGeometry::StatusBadge {
-                        indicator, label, ..
-                    }
-                    | ComponentGeometry::ValidationMessage {
-                        indicator, label, ..
-                    } => (indicator, label),
-                    other => panic!("{other:?}"),
+                let paint = cx.world().widget_paint(id).expect("status dot paint");
+                let label = match &paint.ops.iter().find(|op| op.slot == 2).unwrap().op {
+                    crate::WidgetPaintOp::Text(text) => text,
+                    other => panic!("status dot label: {other:?}"),
+                };
+                let indicator = match &paint.ops.iter().find(|op| op.slot == 3).unwrap().op {
+                    crate::WidgetPaintOp::Quad(quad) => quad.rect,
+                    other => panic!("status dot indicator: {other:?}"),
                 };
                 assert_eq!(indicator, part_of(&cx, id, LayoutPartKind::LeadingContent));
                 let part = part_of(&cx, id, LayoutPartKind::TextContent);
@@ -2629,17 +2716,11 @@ mod part_publication {
                 );
             }
             let generation = cx.world().layout_generation();
-            product_frame(&mut cx, document, viewport, &mut shaper);
+            let idle = product_frame(&mut cx, document, viewport, &mut shaper);
             assert!(cx.take_system_work().is_empty());
-            let idle = cx.world().counters.frame_counters;
             assert_eq!(
-                (
-                    idle.layout_measure_nodes,
-                    idle.layout_placement_nodes,
-                    idle.entities_spawned,
-                    idle.entities_despawned
-                ),
-                (0, 0, 0, 0)
+                (idle.execution.measure_nodes, idle.execution.placement_nodes),
+                (0, 0)
             );
             assert_eq!(cx.world().layout_generation(), generation);
         }
@@ -2818,19 +2899,33 @@ mod part_publication {
         Option<crate::LayoutBox>,
         crate::LayoutBox,
     ) {
-        match cx.world().component_geometry(id).unwrap() {
-            ComponentGeometry::SelectionOption {
-                icon,
-                label,
-                indicator,
-                ..
-            } => (
-                indicator.map(|indicator| indicator.ring),
-                icon.map(|(_, bounds, _)| bounds),
-                label.bounds,
-            ),
-            other => panic!("{other:?}"),
-        }
+        let paint = cx.world().widget_paint(id).expect("selection option paint");
+        let ring = paint
+            .ops
+            .iter()
+            .find(|op| op.slot == 8)
+            .map(|op| match &op.op {
+                crate::WidgetPaintOp::Quad(quad) => quad.rect,
+                other => panic!("selection ring: {other:?}"),
+            });
+        let icon = paint
+            .ops
+            .iter()
+            .find(|op| op.slot == 3)
+            .map(|op| match &op.op {
+                crate::WidgetPaintOp::Icon(icon) => icon.bounds,
+                other => panic!("selection icon: {other:?}"),
+            });
+        let label = paint
+            .ops
+            .iter()
+            .find(|op| op.slot == 2)
+            .map(|op| match &op.op {
+                crate::WidgetPaintOp::Text(text) => text.bounds,
+                other => panic!("selection label: {other:?}"),
+            })
+            .expect("selection label");
+        (ring, icon, label)
     }
 
     const OPTION_CHROMES: [crate::SelectionChrome; 3] = [
@@ -3075,7 +3170,7 @@ mod part_publication {
 
             let id = option.stable_id();
             let generation = cx.world().layout_generation();
-            let snapshot = Arc::clone(&cx.world().layout_results[&id].local);
+            let snapshot_seq = cx.world().layout_results[&id].publish_seq;
             cx.update_component(option, |view, _| view.selected = true)
                 .unwrap();
             let selected = product_frame(&mut cx, document, viewport, &mut shaper);
@@ -3084,16 +3179,13 @@ mod part_publication {
             let hovered = product_frame(&mut cx, document, viewport, &mut shaper);
             for work in [selected, hovered] {
                 assert_eq!(
-                    (work.layout_measure_nodes, work.layout_placement_nodes),
+                    (work.execution.measure_nodes, work.execution.placement_nodes),
                     (0, 0),
                     "{chrome:?}"
                 );
             }
             assert_eq!(cx.world().layout_generation(), generation);
-            assert!(Arc::ptr_eq(
-                &snapshot,
-                &cx.world().layout_results[&id].local
-            ));
+            assert_eq!(cx.world().layout_results[&id].publish_seq, snapshot_seq);
             let a11y = cx.world().project_accessibility(document);
             let node = a11y.iter().find(|node| node.id == id).unwrap();
             assert_eq!(node.selected, Some(true));
@@ -3143,8 +3235,7 @@ mod part_publication {
             let mut q = MutationQueue::new();
             q.set_style(root.stable_id(), style);
             cx.commit_mutations(q).unwrap();
-            let work = product_frame(&mut cx, document, viewport, &mut shaper);
-            assert_eq!((work.entities_spawned, work.entities_despawned), (0, 0));
+            product_frame(&mut cx, document, viewport, &mut shaper);
             assert_eq!(cx.world().focused(document), Some(ids[0].stable_id()));
             for option in &ids {
                 let id = option.stable_id();
@@ -3210,17 +3301,11 @@ mod part_publication {
                 assert!(cx.world().layout_child_placements(id).unwrap().is_empty());
             }
             let generation = cx.world().layout_generation();
-            product_frame(&mut cx, document, viewport, &mut shaper);
+            let idle = product_frame(&mut cx, document, viewport, &mut shaper);
             assert!(cx.take_system_work().is_empty());
-            let idle = cx.world().counters.frame_counters;
             assert_eq!(
-                (
-                    idle.layout_measure_nodes,
-                    idle.layout_placement_nodes,
-                    idle.entities_spawned,
-                    idle.entities_despawned
-                ),
-                (0, 0, 0, 0)
+                (idle.execution.measure_nodes, idle.execution.placement_nodes),
+                (0, 0)
             );
             assert_eq!(cx.world().layout_generation(), generation);
         }
@@ -3328,17 +3413,14 @@ mod part_publication {
                             }
                         };
                         let mut y = band.y;
-                        let geometry = world.component_geometry(id).unwrap();
-                        let ComponentGeometry::EmptyState {
+                        let geometry = world.empty_state_geometry(id).unwrap();
+                        let crate::EmptyStateGeometry {
                             content_clip,
                             icon: painted_icon,
                             title: painted_title,
                             message: painted_message,
                             ..
-                        } = geometry
-                        else {
-                            panic!("{geometry:?}")
-                        };
+                        } = geometry;
                         assert_eq!(content_clip, band);
                         if icon {
                             let part = part_of(&cx, id, LayoutPartKind::LeadingContent);
@@ -3529,15 +3611,14 @@ mod part_publication {
             let mut q = MutationQueue::new();
             q.set_style(root.stable_id(), style);
             cx.commit_mutations(q).unwrap();
-            let work = product_frame(&mut cx, document, viewport, &mut shaper);
-            assert_eq!((work.entities_spawned, work.entities_despawned), (0, 0));
+            product_frame(&mut cx, document, viewport, &mut shaper);
             for &id in &ids {
-                let Some(ComponentGeometry::EmptyState {
+                let Some(crate::EmptyStateGeometry {
                     icon,
                     title,
                     message,
                     ..
-                }) = cx.world().component_geometry(id)
+                }) = cx.world().empty_state_geometry(id)
                 else {
                     panic!("empty state")
                 };
@@ -3601,16 +3682,10 @@ mod part_publication {
                 assert_eq!(kinds, expected);
             }
             let generation = cx.world().layout_generation();
-            product_frame(&mut cx, document, viewport, &mut shaper);
-            let idle = cx.world().counters.frame_counters;
+            let idle = product_frame(&mut cx, document, viewport, &mut shaper);
             assert_eq!(
-                (
-                    idle.layout_measure_nodes,
-                    idle.layout_placement_nodes,
-                    idle.entities_spawned,
-                    idle.entities_despawned
-                ),
-                (0, 0, 0, 0)
+                (idle.execution.measure_nodes, idle.execution.placement_nodes),
+                (0, 0)
             );
             assert_eq!(cx.world().layout_generation(), generation);
         }
@@ -3749,16 +3824,26 @@ mod part_publication {
                         let dismiss = recipe.control_size.height_in(world.theme_metrics())
                             * f32::from(dismissible);
                         let close = |a: f32, b: f32| (a - b).abs() < 1e-3;
-                        let ComponentGeometry::Toast {
-                            indicator,
-                            title: painted_title,
-                            description: painted_description,
-                            dismiss: painted_dismiss,
-                            ..
-                        } = world.component_geometry(id).unwrap()
-                        else {
-                            panic!("toast")
-                        };
+                        let paint = world.widget_paint(id).expect("toast paint");
+                        let op_of =
+                            |slot| paint.ops.iter().find(|op| op.slot == slot).map(|op| &op.op);
+                        let indicator = op_of(1).map(|op| match op {
+                            crate::WidgetPaintOp::Quad(quad) => quad.rect,
+                            crate::WidgetPaintOp::Icon(icon) => icon.bounds,
+                            other => panic!("toast indicator: {other:?}"),
+                        });
+                        let painted_title = op_of(2).map(|op| match op {
+                            crate::WidgetPaintOp::Text(text) => text,
+                            other => panic!("toast title: {other:?}"),
+                        });
+                        let painted_description = op_of(3).map(|op| match op {
+                            crate::WidgetPaintOp::Text(text) => text,
+                            other => panic!("toast description: {other:?}"),
+                        });
+                        let painted_dismiss = op_of(4).map(|op| match op {
+                            crate::WidgetPaintOp::Text(text) => text.bounds,
+                            other => panic!("toast dismiss: {other:?}"),
+                        });
                         if mark > 0.0 {
                             let part = part_of(&cx, id, LayoutPartKind::LeadingContent);
                             assert_eq!((part.x, part.width, part.height), (band.x, mark, mark));
@@ -3880,17 +3965,17 @@ mod part_publication {
                 assert_eq!(content.x, padding_box.x + recipe.padding.inline);
                 let copy = world.layout_box(world.child_ids(id)[0]).unwrap();
                 assert_eq!(copy.x, content.x + lead);
-                let ComponentGeometry::Toast {
-                    indicator,
-                    title,
-                    description: painted_description,
-                    dismiss,
-                    ..
-                } = world.component_geometry(id).unwrap()
-                else {
-                    panic!("toast")
-                };
-                assert!(title.is_none() && painted_description.is_none() && dismiss.is_none());
+                let paint = world.widget_paint(id).expect("toast paint");
+                let op_of = |slot| paint.ops.iter().find(|op| op.slot == slot).map(|op| &op.op);
+                let indicator = op_of(1).map(|op| match op {
+                    crate::WidgetPaintOp::Quad(quad) => quad.rect,
+                    crate::WidgetPaintOp::Icon(icon) => icon.bounds,
+                    other => panic!("toast indicator: {other:?}"),
+                });
+                assert!(
+                    op_of(2).is_none() && op_of(3).is_none() && op_of(4).is_none(),
+                    "assembled toast emits no text slots of its own"
+                );
                 let parts = result.parts.iter().count();
                 if mark > 0.0 {
                     let part = part_of(&cx, id, LayoutPartKind::LeadingContent);
@@ -3992,7 +4077,7 @@ mod part_publication {
         );
         let id = toast.stable_id();
         let generation = cx.world().layout_generation();
-        let snapshot = Arc::clone(&cx.world().layout_results[&id].local);
+        let snapshot_seq = cx.world().layout_results[&id].publish_seq;
         cx.update_component(toast, |view, _| view.tone = crate::ToastTone::Danger)
             .unwrap();
         let toned = product_frame(&mut cx, document, viewport, &mut shaper);
@@ -4001,15 +4086,12 @@ mod part_publication {
         let hovered = product_frame(&mut cx, document, viewport, &mut shaper);
         for work in [toned, hovered] {
             assert_eq!(
-                (work.layout_measure_nodes, work.layout_placement_nodes),
+                (work.execution.measure_nodes, work.execution.placement_nodes),
                 (0, 0)
             );
         }
         assert_eq!(cx.world().layout_generation(), generation);
-        assert!(Arc::ptr_eq(
-            &snapshot,
-            &cx.world().layout_results[&id].local
-        ));
+        assert_eq!(cx.world().layout_results[&id].publish_seq, snapshot_seq);
         // An assembled toast under every recipe, reached by a theme change. It
         // hides the description and progress it has none of.
         for theme in toast_themes().into_iter().flatten() {
@@ -4064,19 +4146,27 @@ mod part_publication {
             let mut q = MutationQueue::new();
             q.set_style(root.stable_id(), style);
             cx.commit_mutations(q).unwrap();
-            let work = product_frame(&mut cx, document, viewport, &mut shaper);
-            assert_eq!((work.entities_spawned, work.entities_despawned), (0, 0));
+            product_frame(&mut cx, document, viewport, &mut shaper);
             for (index, &id) in ids.iter().enumerate() {
-                let Some(ComponentGeometry::Toast {
-                    indicator,
-                    title,
-                    description,
-                    dismiss,
-                    ..
-                }) = cx.world().component_geometry(id)
-                else {
-                    panic!("toast")
-                };
+                let paint = cx.world().widget_paint(id).expect("toast paint");
+                let op_of = |slot| paint.ops.iter().find(|op| op.slot == slot).map(|op| &op.op);
+                let indicator = op_of(1).map(|op| match op {
+                    crate::WidgetPaintOp::Quad(quad) => quad.rect,
+                    crate::WidgetPaintOp::Icon(icon) => icon.bounds,
+                    other => panic!("toast indicator: {other:?}"),
+                });
+                let title = op_of(2).map(|op| match op {
+                    crate::WidgetPaintOp::Text(text) => text,
+                    other => panic!("toast title: {other:?}"),
+                });
+                let description = op_of(3).map(|op| match op {
+                    crate::WidgetPaintOp::Text(text) => text,
+                    other => panic!("toast description: {other:?}"),
+                });
+                let dismiss = op_of(4).map(|op| match op {
+                    crate::WidgetPaintOp::Text(text) => text.bounds,
+                    other => panic!("toast dismiss: {other:?}"),
+                });
                 assert_eq!(
                     indicator,
                     Some(part_of(&cx, id, LayoutPartKind::LeadingContent))
@@ -4149,16 +4239,10 @@ mod part_publication {
                 assert_eq!(kinds, expected);
             }
             let generation = cx.world().layout_generation();
-            product_frame(&mut cx, document, viewport, &mut shaper);
-            let idle = cx.world().counters.frame_counters;
+            let idle = product_frame(&mut cx, document, viewport, &mut shaper);
             assert_eq!(
-                (
-                    idle.layout_measure_nodes,
-                    idle.layout_placement_nodes,
-                    idle.entities_spawned,
-                    idle.entities_despawned
-                ),
-                (0, 0, 0, 0)
+                (idle.execution.measure_nodes, idle.execution.placement_nodes),
+                (0, 0)
             );
             assert_eq!(cx.world().layout_generation(), generation);
         }
@@ -4305,11 +4389,11 @@ mod part_publication {
                             let world = cx.world();
                             let result = world.layout_result(id).unwrap();
                             let bounds = result.bounds;
-                            let Some(ComponentGeometry::MenuSurface {
+                            let Some(crate::MenuSurfaceGeometry {
                                 trigger,
                                 trigger_icon,
                                 ..
-                            }) = world.component_geometry(id)
+                            }) = world.menu_surface_geometry(id)
                             else {
                                 panic!("menu surface")
                             };
@@ -4455,19 +4539,19 @@ mod part_publication {
 
             let (mut cx, id) = menu_trigger_page(kind, "Menu", None, None, false, None);
             let generation = cx.world().layout_generation();
-            let snapshot = Arc::clone(&cx.world().layout_results[&id].local);
+            let snapshot_seq = cx.world().layout_results[&id].publish_seq;
             cx.set_pointer_hover_at(document, 1, Some(id), Duration::from_millis(800))
                 .unwrap();
             let hovered = product_frame(&mut cx, document, viewport, &mut shaper);
             assert_eq!(
-                (hovered.layout_measure_nodes, hovered.layout_placement_nodes),
+                (
+                    hovered.execution.measure_nodes,
+                    hovered.execution.placement_nodes
+                ),
                 (0, 0)
             );
             assert_eq!(cx.world().layout_generation(), generation);
-            assert!(Arc::ptr_eq(
-                &snapshot,
-                &cx.world().layout_results[&id].local
-            ));
+            assert_eq!(cx.world().layout_results[&id].publish_seq, snapshot_seq);
         }
     }
 
@@ -4508,14 +4592,13 @@ mod part_publication {
             let mut q = MutationQueue::new();
             q.set_style(root.stable_id(), style);
             cx.commit_mutations(q).unwrap();
-            let work = product_frame(&mut cx, document, viewport, &mut shaper);
-            assert_eq!((work.entities_spawned, work.entities_despawned), (0, 0));
+            product_frame(&mut cx, document, viewport, &mut shaper);
             for (index, &id) in ids.iter().enumerate() {
-                let Some(ComponentGeometry::MenuSurface {
+                let Some(crate::MenuSurfaceGeometry {
                     trigger,
                     trigger_icon,
                     ..
-                }) = cx.world().component_geometry(id)
+                }) = cx.world().menu_surface_geometry(id)
                 else {
                     panic!("menu surface")
                 };
@@ -4582,16 +4665,10 @@ mod part_publication {
                 assert_eq!(kinds, expected);
             }
             let generation = cx.world().layout_generation();
-            product_frame(&mut cx, document, viewport, &mut shaper);
-            let idle = cx.world().counters.frame_counters;
+            let idle = product_frame(&mut cx, document, viewport, &mut shaper);
             assert_eq!(
-                (
-                    idle.layout_measure_nodes,
-                    idle.layout_placement_nodes,
-                    idle.entities_spawned,
-                    idle.entities_despawned
-                ),
-                (0, 0, 0, 0)
+                (idle.execution.measure_nodes, idle.execution.placement_nodes),
+                (0, 0)
             );
             assert_eq!(cx.world().layout_generation(), generation);
         }
@@ -4610,8 +4687,8 @@ mod list_item_hidden_leading {
 
     use crate::world::reflow_oracle::{assert_matches_cold, bundled_face_shaper, product_frame};
     use crate::{
-        AppContext, ComponentGeometry, DocumentId, Entity, LayoutBox, LayoutPartKind,
-        LayoutViewport, ListItem, ListItemSlots, Text,
+        AppContext, DocumentId, Entity, LayoutBox, LayoutPartKind, LayoutViewport, ListItem,
+        ListItemSlots, Text,
     };
 
     fn viewport() -> LayoutViewport {
@@ -4698,15 +4775,10 @@ mod list_item_hidden_leading {
 
     /// The label region the row paints.
     fn painted_label(page: &Page) -> Option<LayoutBox> {
-        match page
-            .cx
+        page.cx
             .world()
-            .component_geometry(page.row.stable_id())
-            .unwrap()
-        {
-            ComponentGeometry::ListItem { content, .. } => content,
-            _ => panic!("row"),
-        }
+            .widget_paint(page.row.stable_id())
+            .and_then(|paint| paint.node_text_bounds)
     }
 
     /// The row with its leading child hidden, as it is laid out: like the same
@@ -4769,8 +4841,8 @@ mod control_parts {
 
     use crate::world::reflow_oracle::{assert_matches_cold, bundled_face_shaper, product_frame};
     use crate::{
-        AppContext, ComponentGeometry, DocumentId, Entity, LayoutPartKind, LayoutViewport,
-        RangeField, StableNodeId, Stack,
+        AppContext, DocumentId, Entity, LayoutPartKind, LayoutViewport, RangeField, StableNodeId,
+        Stack,
     };
     use nana_ui_core::{ControlSize, LengthSpec};
     use std::sync::Arc;
@@ -4861,16 +4933,13 @@ mod control_parts {
         Option<crate::ComponentTextRegion>,
         crate::LayoutBox,
     ) {
-        match cx.world().component_geometry(id).unwrap() {
-            ComponentGeometry::Range {
-                label,
-                value,
-                unit,
-                track,
-                ..
-            } => (label, value, unit, track),
-            other => panic!("{other:?}"),
-        }
+        let geometry = cx.world().range_geometry(id).expect("range geometry");
+        (
+            geometry.label,
+            geometry.value,
+            geometry.unit,
+            geometry.track,
+        )
     }
 
     /// The formatted values a range steps through, from its minimum to its
@@ -4986,7 +5055,7 @@ mod control_parts {
         let mut shaper = bundled_face_shaper();
         let (_, _, _, track) = range_geometry(&cx, id);
         let generation = cx.world().layout_generation();
-        let snapshot = Arc::clone(&cx.world().layout_results[&id].local);
+        let snapshot_seq = cx.world().layout_results[&id].publish_seq;
         let parts = cx.world().layout_result(id).unwrap().parts.clone();
         let mut painted = Vec::new();
         for (step, share) in [0.0_f32, 0.07, 0.5, 0.93, 1.0, 0.31]
@@ -5001,7 +5070,7 @@ mod control_parts {
             }
             let work = product_frame(&mut cx, document(), viewport(), &mut shaper);
             assert_eq!(
-                (work.layout_measure_nodes, work.layout_placement_nodes),
+                (work.execution.measure_nodes, work.execution.placement_nodes),
                 (0, 0),
                 "drag step {step}"
             );
@@ -5011,21 +5080,18 @@ mod control_parts {
         cx.end_range_drag(document(), 1, false).unwrap();
         let work = product_frame(&mut cx, document(), viewport(), &mut shaper);
         assert_eq!(
-            (work.layout_measure_nodes, work.layout_placement_nodes),
+            (work.execution.measure_nodes, work.execution.placement_nodes),
             (0, 0)
         );
         cx.set_pointer_hover_at(document(), 1, Some(id), Duration::from_millis(16))
             .unwrap();
         let work = product_frame(&mut cx, document(), viewport(), &mut shaper);
         assert_eq!(
-            (work.layout_measure_nodes, work.layout_placement_nodes),
+            (work.execution.measure_nodes, work.execution.placement_nodes),
             (0, 0)
         );
         assert_eq!(cx.world().layout_generation(), generation);
-        assert!(Arc::ptr_eq(
-            &snapshot,
-            &cx.world().layout_results[&id].local
-        ));
+        assert_eq!(cx.world().layout_results[&id].publish_seq, snapshot_seq);
         assert_eq!(cx.world().layout_result(id).unwrap().parts, parts);
         assert_eq!(painted, ["0", "7", "50", "93", "100", "31"]);
         assert_eq!(cx.read(range, |range| range.value).unwrap(), 31.0);
@@ -5146,8 +5212,7 @@ mod control_parts {
             let mut q = MutationQueue::new();
             q.set_style(root.stable_id(), style);
             cx.commit_mutations(q).unwrap();
-            let work = product_frame(&mut cx, document(), viewport(), &mut shaper);
-            assert_eq!((work.entities_spawned, work.entities_despawned), (0, 0));
+            product_frame(&mut cx, document(), viewport(), &mut shaper);
             assert_eq!(cx.read(range, |range| range.value).unwrap(), 25.0);
             assert_eq!(cx.world().focused(document()), Some(id));
             let (label, value, unit, _) = range_geometry(&cx, id);
@@ -5205,17 +5270,11 @@ mod control_parts {
                 );
             }
             let generation = cx.world().layout_generation();
-            product_frame(&mut cx, document(), viewport(), &mut shaper);
+            let idle = product_frame(&mut cx, document(), viewport(), &mut shaper);
             assert!(cx.take_system_work().is_empty());
-            let idle = cx.world().counters.frame_counters;
             assert_eq!(
-                (
-                    idle.layout_measure_nodes,
-                    idle.layout_placement_nodes,
-                    idle.entities_spawned,
-                    idle.entities_despawned
-                ),
-                (0, 0, 0, 0)
+                (idle.execution.measure_nodes, idle.execution.placement_nodes),
+                (0, 0)
             );
             assert_eq!(cx.world().layout_generation(), generation);
         }
@@ -5287,19 +5346,28 @@ mod control_parts {
     ) -> (
         crate::LayoutBox,
         crate::LayoutBox,
-        Option<crate::ComponentTextRegion>,
+        Option<crate::WidgetText>,
         Option<crate::LayoutBox>,
     ) {
-        match cx.world().component_geometry(id).unwrap() {
-            ComponentGeometry::Progress {
-                track,
-                fill,
-                label,
-                cancel,
-                ..
-            } => (track, fill, label, cancel),
-            other => panic!("{other:?}"),
-        }
+        let paint = cx.world().widget_paint(id).expect("progress paint");
+        let op_of = |slot| paint.ops.iter().find(|op| op.slot == slot).map(|op| &op.op);
+        let track = match op_of(3).unwrap() {
+            crate::WidgetPaintOp::Quad(quad) => quad.rect,
+            other => panic!("progress track: {other:?}"),
+        };
+        let fill = match op_of(4).unwrap() {
+            crate::WidgetPaintOp::Quad(quad) => quad.rect,
+            other => panic!("progress fill: {other:?}"),
+        };
+        let label = op_of(2).map(|op| match op {
+            crate::WidgetPaintOp::Text(text) => text.clone(),
+            other => panic!("progress label: {other:?}"),
+        });
+        let cancel = op_of(5).map(|op| match op {
+            crate::WidgetPaintOp::Text(text) => text.bounds,
+            other => panic!("progress cancel: {other:?}"),
+        });
+        (track, fill, label, cancel)
     }
 
     /// Paint reads the published label and cancel parts and runs the track
@@ -5457,13 +5525,13 @@ mod control_parts {
 
         let id = progress.stable_id();
         let generation = cx.world().layout_generation();
-        let snapshot = Arc::clone(&cx.world().layout_results[&id].local);
+        let snapshot_seq = cx.world().layout_results[&id].publish_seq;
         for value in [55.0, 90.0, 100.0] {
             cx.update_component(progress, |view, _| view.value = value)
                 .unwrap();
             let work = product_frame(&mut cx, document(), viewport(), &mut shaper);
             assert_eq!(
-                (work.layout_measure_nodes, work.layout_placement_nodes),
+                (work.execution.measure_nodes, work.execution.placement_nodes),
                 (0, 0),
                 "value {value}"
             );
@@ -5478,15 +5546,12 @@ mod control_parts {
         let hovered = product_frame(&mut cx, document(), viewport(), &mut shaper);
         for work in [swept, hovered] {
             assert_eq!(
-                (work.layout_measure_nodes, work.layout_placement_nodes),
+                (work.execution.measure_nodes, work.execution.placement_nodes),
                 (0, 0)
             );
         }
         assert_eq!(cx.world().layout_generation(), generation);
-        assert!(Arc::ptr_eq(
-            &snapshot,
-            &cx.world().layout_results[&id].local
-        ));
+        assert_eq!(cx.world().layout_results[&id].publish_seq, snapshot_seq);
     }
 
     /// A progress bar moved between Grid, Inline and Flex parents keeps its
@@ -5523,8 +5588,7 @@ mod control_parts {
             let mut q = MutationQueue::new();
             q.set_style(root.stable_id(), style);
             cx.commit_mutations(q).unwrap();
-            let work = product_frame(&mut cx, document(), viewport(), &mut shaper);
-            assert_eq!((work.entities_spawned, work.entities_despawned), (0, 0));
+            product_frame(&mut cx, document(), viewport(), &mut shaper);
             assert_eq!(cx.read(progress, |view| view.value).unwrap(), 40.0);
             let (_, _, label, cancel) = progress_geometry(&cx, id);
             assert_eq!(
@@ -5582,17 +5646,11 @@ mod control_parts {
                 );
             }
             let generation = cx.world().layout_generation();
-            product_frame(&mut cx, document(), viewport(), &mut shaper);
+            let idle = product_frame(&mut cx, document(), viewport(), &mut shaper);
             assert!(cx.take_system_work().is_empty());
-            let idle = cx.world().counters.frame_counters;
             assert_eq!(
-                (
-                    idle.layout_measure_nodes,
-                    idle.layout_placement_nodes,
-                    idle.entities_spawned,
-                    idle.entities_despawned
-                ),
-                (0, 0, 0, 0)
+                (idle.execution.measure_nodes, idle.execution.placement_nodes),
+                (0, 0)
             );
             assert_eq!(cx.world().layout_generation(), generation);
         }
@@ -5716,16 +5774,14 @@ mod control_parts {
         Option<crate::ComponentTextRegion>,
         crate::LayoutBox,
     ) {
-        match cx.world().component_geometry(id).unwrap() {
-            ComponentGeometry::ModalFrame {
-                title,
-                description,
-                body_text,
-                surface,
-                ..
-            } => (title, description, body_text, surface),
-            other => panic!("{other:?}"),
-        }
+        let crate::ModalFrameGeometry {
+            title,
+            description,
+            body_text,
+            surface,
+            ..
+        } = cx.world().modal_frame_geometry(id).unwrap();
+        (title, description, body_text, surface)
     }
 
     /// A dialog's title and description and a confirm's body copy are parts
@@ -5826,7 +5882,7 @@ mod control_parts {
             let (mut cx, id, action) = modal_page(first, DisplaySpec::Flex, None);
             // Hovering the action (or the card) lays nothing out.
             let generation = cx.world().layout_generation();
-            let snapshot = Arc::clone(&cx.world().layout_results[&id].local);
+            let snapshot_seq = cx.world().layout_results[&id].publish_seq;
             cx.set_pointer_hover_at(
                 document(),
                 1,
@@ -5836,14 +5892,11 @@ mod control_parts {
             .unwrap();
             let work = product_frame(&mut cx, document(), modal_viewport(), &mut shaper);
             assert_eq!(
-                (work.layout_measure_nodes, work.layout_placement_nodes),
+                (work.execution.measure_nodes, work.execution.placement_nodes),
                 (0, 0)
             );
             assert_eq!(cx.world().layout_generation(), generation);
-            assert!(Arc::ptr_eq(
-                &snapshot,
-                &cx.world().layout_results[&id].local
-            ));
+            assert_eq!(cx.world().layout_results[&id].publish_seq, snapshot_seq);
             for (step, case) in edits.into_iter().enumerate() {
                 let themed = step == 2;
                 if case.confirm {
@@ -5904,8 +5957,7 @@ mod control_parts {
                 let mut q = MutationQueue::new();
                 q.set_style(root, style);
                 cx.commit_mutations(q).unwrap();
-                let work = product_frame(&mut cx, document(), modal_viewport(), &mut shaper);
-                assert_eq!((work.entities_spawned, work.entities_despawned), (0, 0));
+                product_frame(&mut cx, document(), modal_viewport(), &mut shaper);
                 assert_eq!(cx.world().len(), entities);
                 let (title, ..) = modal_text_regions(&cx, id);
                 assert_eq!(Some(title.bounds), part(&cx, id, LayoutPartKind::Header));
@@ -5965,17 +6017,11 @@ mod control_parts {
                 );
             }
             let generation = cx.world().layout_generation();
-            product_frame(&mut cx, document(), modal_viewport(), &mut shaper);
+            let idle = product_frame(&mut cx, document(), modal_viewport(), &mut shaper);
             assert!(cx.take_system_work().is_empty());
-            let idle = cx.world().counters.frame_counters;
             assert_eq!(
-                (
-                    idle.layout_measure_nodes,
-                    idle.layout_placement_nodes,
-                    idle.entities_spawned,
-                    idle.entities_despawned
-                ),
-                (0, 0, 0, 0)
+                (idle.execution.measure_nodes, idle.execution.placement_nodes),
+                (0, 0)
             );
             assert_eq!(cx.world().layout_generation(), generation);
         }
@@ -6541,10 +6587,7 @@ mod indicator_parts {
     //! A checkbox's indicator is the `Indicator` part, as a radio ring's is.
 
     use crate::world::reflow_oracle::{bundled_face_shaper, product_frame};
-    use crate::{
-        AppContext, ComponentGeometry, DocumentId, LayoutPartKind, LayoutViewport, StableNodeId,
-        Stack,
-    };
+    use crate::{AppContext, DocumentId, LayoutPartKind, LayoutViewport, StableNodeId, Stack};
     use nana_ui_core::LengthSpec;
     use std::sync::Arc;
 
@@ -6611,11 +6654,10 @@ mod indicator_parts {
             let indicator = part(&cx, id, LayoutPartKind::Indicator);
             assert!(indicator.width > 0.0 && indicator.height > 0.0);
             let world = cx.world();
-            let Some(ComponentGeometry::Checkbox {
-                indicator: painted, ..
-            }) = world.component_geometry(id)
-            else {
-                panic!("checkbox geometry")
+            let paint = world.widget_paint(id).expect("checkbox paint");
+            let painted = match &paint.ops.iter().find(|op| op.slot == 3).unwrap().op {
+                crate::WidgetPaintOp::Quad(quad) => quad.rect,
+                other => panic!("checkbox indicator: {other:?}"),
             };
             assert_eq!(painted, indicator, "{label:?}");
             assert_eq!(
@@ -6690,7 +6732,10 @@ mod indicator_parts {
             let (cx, switch, after) = switch_row(labelled_switch(label, hint), None);
             let id = switch.stable_id();
             let world = cx.world();
-            let inputs = world.switch_inputs(id).unwrap();
+            let inputs = world
+                .widget_visual_as::<crate::SwitchVisual>(id)
+                .unwrap()
+                .inputs(id, world);
             let measure = world.chrome_text_measure(id);
             let typography = world.theme().typography();
             let size = nana_ui_core::ControlSize::Medium;
@@ -7521,10 +7566,10 @@ mod list_item_first_line_bands {
     }
 
     fn bar_lane(cx: &AppContext, scroll: StableNodeId) -> LayoutBox {
-        let Some(crate::ComponentGeometry::Scrollbar {
+        let Some(crate::ScrollbarBars {
             vertical: Some(bar),
             ..
-        }) = cx.world().component_geometry(scroll)
+        }) = cx.world().scrollbar_bars(scroll)
         else {
             panic!("a vertical bar");
         };
@@ -7674,26 +7719,17 @@ mod dialog_theme_settle {
         step: &str,
     ) {
         let generation = cx.world().layout_generation();
-        let result = std::sync::Arc::clone(&cx.world().layout_results[&id].local);
+        let publish_seq = cx.world().layout_results[&id].publish_seq;
         for frame in 0..8 {
             let work = product_frame(cx, document(), viewport(), shaper);
-            let own = cx.world().counters.frame_counters;
-            for counters in [work, own] {
-                assert_eq!(
-                    (
-                        counters.layout_measure_nodes,
-                        counters.layout_placement_nodes
-                    ),
-                    (0, 0),
-                    "{step}, idle frame {frame}"
-                );
-            }
+            assert_eq!(
+                (work.execution.measure_nodes, work.execution.placement_nodes),
+                (0, 0),
+                "{step}, idle frame {frame}"
+            );
             assert_eq!(cx.world().layout_generation(), generation, "{step}");
         }
-        assert!(std::sync::Arc::ptr_eq(
-            &result,
-            &cx.world().layout_results[&id].local
-        ));
+        assert_eq!(cx.world().layout_results[&id].publish_seq, publish_seq);
     }
 
     /// A confirm whose copy wraps, hovered, edited and then switched to a theme
@@ -7744,7 +7780,7 @@ mod dialog_theme_settle {
             }
             let work = product_frame(&mut cx, document(), viewport(), &mut shaper);
             if step != "dark theme" {
-                assert!(work.layout_measure_nodes > 0, "{step} lays out");
+                assert!(work.execution.measure_nodes > 0, "{step} lays out");
             }
             assert_settled(&mut cx, id, &mut shaper, step);
         }
@@ -7757,7 +7793,7 @@ mod modal_theme_colors {
     //! cold layout under that theme resolves.
 
     use crate::world::reflow_oracle::{bundled_face_shaper, product_frame};
-    use crate::{AppContext, ComponentGeometry, DocumentId, LayoutViewport, StableNodeId, Stack};
+    use crate::{AppContext, DocumentId, LayoutViewport, StableNodeId, Stack};
     use nana_ui_core::{LengthSpec, ThemeDefinition};
 
     fn document() -> DocumentId {
@@ -7819,24 +7855,28 @@ mod modal_theme_colors {
     /// The colours of a modal's title, description and body copy, as the
     /// geometry query reports them and as extraction paints them.
     fn text_colors(cx: &AppContext, id: StableNodeId) -> [[Option<[f32; 4]>; 3]; 2] {
-        let regions = |geometry: &ComponentGeometry| match geometry {
-            ComponentGeometry::ModalFrame {
-                title,
-                description,
-                body_text,
-                ..
-            } => [
-                title.color,
-                description.as_ref().and_then(|region| region.color),
-                body_text.as_ref().and_then(|region| region.color),
-            ],
-            other => panic!("{other:?}"),
+        let queried = {
+            let geometry = cx.world().modal_frame_geometry(id).unwrap();
+            [
+                geometry.title.color,
+                geometry
+                    .description
+                    .as_ref()
+                    .and_then(|region| region.color),
+                geometry.body_text.as_ref().and_then(|region| region.color),
+            ]
         };
-        let queried = regions(&cx.world().component_geometry(id).unwrap());
         let painted = cx.world().extract_nodes(&[id]);
+        let paint = painted[0].widget_paint.as_deref().unwrap();
+        let text_color_at = |slot| {
+            paint.ops.iter().find_map(|op| match &op.op {
+                crate::WidgetPaintOp::Text(text) if op.slot == slot => text.color,
+                _ => None,
+            })
+        };
         [
             queried,
-            regions(painted[0].component_geometry.as_deref().unwrap()),
+            [text_color_at(12), text_color_at(13), text_color_at(14)],
         ]
     }
 

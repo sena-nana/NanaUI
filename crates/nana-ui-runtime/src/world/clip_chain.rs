@@ -17,7 +17,7 @@ impl UiWorld {
     /// `id`'s position as containing blocks and the clip chain read it: an
     /// item a triggered menu places is `fixed`, as its effective style says.
     pub(super) fn clip_position(&self, id: StableNodeId) -> PositionSpec {
-        if self.nodes.has_visuals() && self.parent_triggered_overlay(id).is_some() {
+        if !self.triggered_overlays.is_empty() && self.parent_triggered_overlay(id).is_some() {
             return PositionSpec::Fixed;
         }
         self.nodes.get(id).map_or(PositionSpec::Static, |record| {
@@ -80,8 +80,8 @@ impl UiWorld {
     /// [`crate::LayoutResult::clip_parent`] says, or the same rule before a
     /// result is published.
     pub fn layout_clip_parent(&self, id: StableNodeId) -> Option<StableNodeId> {
-        match self.local_layout_result(id) {
-            Some(result) => result.clip_parent,
+        match self.published_layout_meta(id) {
+            Some(meta) => meta.clip_parent(),
             None => self.clip_parent_of(id),
         }
     }
@@ -89,8 +89,8 @@ impl UiWorld {
     /// `id`'s clip chain, nearest first: every ancestor whose overflow clip
     /// and scroll reach it, read from the published results.
     pub fn layout_clip_chain(&self, id: StableNodeId) -> impl Iterator<Item = StableNodeId> + '_ {
-        let clip = |id| match self.local_layout_result(id) {
-            Some(result) => result.clip,
+        let clip = |id| match self.published_layout_meta(id) {
+            Some(meta) => meta.clip(),
             None => self.overflow_clip_of(id),
         };
         std::iter::successors(clip(id), move |id| clip(*id))

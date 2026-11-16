@@ -1086,6 +1086,7 @@ fn action_to_owned(action: Action<'_, PointerReferences>) -> Action<'static, Poi
                 .map(|ep| wgt::PassthroughShaderEntryPoint {
                     name: Cow::Owned(ep.name.to_string()),
                     workgroup_size: ep.workgroup_size,
+                    metal_sized_bindings: Cow::Owned(ep.metal_sized_bindings.to_vec()),
                 })
                 .collect(),
         },

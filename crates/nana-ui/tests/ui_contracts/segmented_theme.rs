@@ -10,13 +10,17 @@ fn frames(document: &mut RuntimeDocument, shaper: &mut NanaTextShaper) {
     }
 }
 
-fn label(context: &AppContext, id: StableNodeId) -> ComponentTextRegion {
-    let Some(ComponentGeometry::SelectionOption { label, .. }) =
-        context.world().component_geometry(id)
+fn label(context: &AppContext, id: StableNodeId) -> WidgetText {
+    let paint = context.world().widget_paint(id).unwrap();
+    let Some(WidgetPaintOp::Text(label)) = paint
+        .ops
+        .iter()
+        .find(|tagged| tagged.slot == 2)
+        .map(|tagged| &tagged.op)
     else {
-        panic!("selection option geometry");
+        panic!("selection option label");
     };
-    label
+    label.clone()
 }
 
 #[test]

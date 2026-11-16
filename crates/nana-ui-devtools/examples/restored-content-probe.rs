@@ -117,10 +117,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             )?;
             let world = session.document().context().world();
             let initial = world.layout_box(area.stable_id()).unwrap().height;
-            let ComponentGeometry::TextInput {
+            let nana_ui::runtime::TextInputGeometry {
                 resize_grip: Some(grip),
                 ..
-            } = world.component_geometry(area.stable_id()).unwrap()
+            } = world.text_input_geometry(area.stable_id()).unwrap()
             else {
                 panic!("resize grip");
             };
@@ -201,7 +201,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     .radius_px(12.0)
                     .width(LengthSpec::FitContent)
                     .with_layout(|layout| {
-                        layout.max_width = Some(LengthSpec::Min2(
+                        layout.max_width = Some(LengthSpec::min2(
                             nana_ui_core::LengthAtom::Percent(76.0),
                             nana_ui_core::LengthAtom::Px(620.0),
                         ));

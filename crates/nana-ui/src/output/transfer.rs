@@ -40,40 +40,45 @@ impl OutputTransfer {
         });
         // A hardware sRGB view decodes on load and encodes on store. Untyped
         // export textures contain the very same encoded channel values.
-        let conversion = match (source_srgb, format.is_srgb()) {
-            (false, true) => "c = vec4<f32>(decode(c.rgb), c.a);",
-            (true, false) => "c = vec4<f32>(encode(c.rgb), c.a);",
-            _ => "",
+        let fragment_entry = match (source_srgb, format.is_srgb()) {
+            (false, true) => "fs_decode",
+            (true, false) => "fs_encode",
+            _ => "fs_passthrough",
         };
-        let source = format!(
-            "{SHADER}\n@fragment fn fs(@builtin(position) p: vec4<f32>) -> @location(0) vec4<f32> {{ var c = textureLoad(image, vec2<i32>(p.xy), 0); {conversion} return c; }}"
-        );
-        let shader = crate::scene_paint::wgsl::Program::new("nana.output.transfer", source);
-        let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-            label: Some("nana.output.transfer"),
-            layout: Some(&layout_pipeline),
-            vertex: wgpu::VertexState {
-                module: &shader.stage(device, "vs").module,
-                entry_point: Some("vs"),
-                compilation_options: Default::default(),
-                buffers: &[],
+        let shader = crate::scene_paint::wgsl::program!("nana.output.transfer", TRANSFER_WGSL);
+        let pipeline = shader.pipeline(
+            device,
+            "vs",
+            fragment_entry,
+            &[],
+            |vs_module, vs_ep, fs_module, fs_ep, _| {
+                device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+                    label: Some("nana.output.transfer"),
+                    layout: Some(&layout_pipeline),
+                    vertex: wgpu::VertexState {
+                        module: vs_module,
+                        entry_point: Some(vs_ep),
+                        compilation_options: Default::default(),
+                        buffers: &[],
+                    },
+                    primitive: Default::default(),
+                    depth_stencil: None,
+                    multisample: Default::default(),
+                    fragment: Some(wgpu::FragmentState {
+                        module: fs_module,
+                        entry_point: Some(fs_ep),
+                        compilation_options: Default::default(),
+                        targets: &[Some(wgpu::ColorTargetState {
+                            format: raw::format_to_wgpu(format),
+                            blend: None,
+                            write_mask: wgpu::ColorWrites::ALL,
+                        })],
+                    }),
+                    multiview_mask: None,
+                    cache: None,
+                })
             },
-            primitive: Default::default(),
-            depth_stencil: None,
-            multisample: Default::default(),
-            fragment: Some(wgpu::FragmentState {
-                module: &shader.stage(device, "fs").module,
-                entry_point: Some("fs"),
-                compilation_options: Default::default(),
-                targets: &[Some(wgpu::ColorTargetState {
-                    format: raw::format_to_wgpu(format),
-                    blend: None,
-                    write_mask: wgpu::ColorWrites::ALL,
-                })],
-            }),
-            multiview_mask: None,
-            cache: None,
-        });
+        );
         Self {
             generation: gpu.generation(),
             format,
@@ -165,12 +170,23 @@ impl OutputTransfer {
     }
 }
 
-const SHADER: &str = r"
+pub(crate) const TRANSFER_WGSL: &str = r"
 @group(0) @binding(0) var image: texture_2d<f32>;
 fn decode(c: vec3<f32>) -> vec3<f32> { return select(pow((c + vec3<f32>(0.055)) / 1.055, vec3<f32>(2.4)), c / 12.92, c <= vec3<f32>(0.04045)); }
 fn encode(c: vec3<f32>) -> vec3<f32> { return select(1.055 * pow(max(c, vec3<f32>(0.0)), vec3<f32>(1.0 / 2.4)) - vec3<f32>(0.055), c * 12.92, c <= vec3<f32>(0.0031308)); }
 @vertex fn vs(@builtin(vertex_index) i: u32) -> @builtin(position) vec4<f32> {
     let c = vec2<f32>(f32((i << 1u) & 2u), f32(i & 2u));
     return vec4<f32>(c * 2.0 - 1.0, 0.0, 1.0);
+}
+@fragment fn fs_passthrough(@builtin(position) p: vec4<f32>) -> @location(0) vec4<f32> {
+    return textureLoad(image, vec2<i32>(p.xy), 0);
+}
+@fragment fn fs_decode(@builtin(position) p: vec4<f32>) -> @location(0) vec4<f32> {
+    let c = textureLoad(image, vec2<i32>(p.xy), 0);
+    return vec4<f32>(decode(c.rgb), c.a);
+}
+@fragment fn fs_encode(@builtin(position) p: vec4<f32>) -> @location(0) vec4<f32> {
+    let c = textureLoad(image, vec2<i32>(p.xy), 0);
+    return vec4<f32>(encode(c.rgb), c.a);
 }
 ";

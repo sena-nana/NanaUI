@@ -12,20 +12,17 @@ impl UiWorld {
         pages: &mut Vec<LayoutBox>,
         memo: &mut ProjectionMemo,
     ) -> Vec<AccessibilityNode> {
-        let Some(StandardVisual::MenuSurface {
-            kind: crate::MenuSurfaceKind::ContextMenu,
-            open: true,
-            rows,
-            highlighted,
-            ..
-        }) = self.nodes.visual(menu.id)
-        else {
+        let Some(menu_visual) = self.widget_visual_as::<crate::MenuSurfaceVisual>(menu.id) else {
             return Vec::new();
         };
-        let options = match self.component_geometry(menu.id) {
-            Some(crate::ComponentGeometry::MenuSurface { options, .. }) => options,
-            _ => Vec::new(),
-        };
+        if menu_visual.kind != crate::MenuSurfaceKind::ContextMenu || !menu_visual.open {
+            return Vec::new();
+        }
+        let rows = &menu_visual.rows;
+        let highlighted = menu_visual.highlighted;
+        let options = self
+            .menu_surface_geometry(menu.id)
+            .map_or_else(Vec::new, |geometry| geometry.options);
         let count = rows.len().max(1) as f32;
         let slots = crate::menu_row_slots(rows);
         let surface = self.component_layout_box(menu.id).unwrap_or(menu.bounds);
@@ -86,7 +83,7 @@ impl UiWorld {
                     numeric_value: None,
                     scroll_x: None,
                     scroll_y: None,
-                    focused: *highlighted == Some(index),
+                    focused: highlighted == Some(index),
                     bounds,
                     transform: None,
                     scroll: [0.0, 0.0],
@@ -109,19 +106,16 @@ impl UiWorld {
         pages: &mut Vec<LayoutBox>,
         memo: &mut ProjectionMemo,
     ) -> Vec<AccessibilityNode> {
-        let Some(StandardVisual::TreeView {
-            rows,
-            active,
-            column_labels,
-            ..
-        }) = self.nodes.visual(tree.id)
-        else {
+        let Some(visual) = self.widget_visual_as::<crate::TreeViewVisual>(tree.id) else {
             return Vec::new();
         };
-        let geometry = match self.component_geometry(tree.id) {
-            Some(crate::ComponentGeometry::TreeView { rows, .. }) => rows,
-            _ => Vec::new(),
-        };
+        let rows = &visual.rows;
+        let active = &visual.active;
+        let column_labels = &visual.column_labels;
+        let geometry = self
+            .tree_view_layout(tree.id)
+            .map(|layout| layout.rows)
+            .unwrap_or_default();
         let count = rows.len().max(1) as f32;
         let whole = self.component_layout_box(tree.id).unwrap_or(tree.bounds);
         let mut nodes = Vec::with_capacity(rows.len() * (1 + column_labels.len()));
@@ -283,13 +277,13 @@ impl UiWorld {
         pages: &mut Vec<LayoutBox>,
         memo: &mut ProjectionMemo,
     ) -> Vec<AccessibilityNode> {
-        let Some(StandardVisual::Select {
+        let Some(crate::SelectVisual {
             opened,
             options,
             highlighted,
             checkable,
             ..
-        }) = self.nodes.visual(field.id)
+        }) = self.widget_visual_as::<crate::SelectVisual>(field.id)
         else {
             return Vec::new();
         };
@@ -304,12 +298,12 @@ impl UiWorld {
             return Vec::new();
         }
         let (
-            Some(crate::ComponentGeometry::Select {
+            Some(crate::SelectGeometry {
                 menu: Some(menu), ..
             }),
             Some(listbox),
         ) = (
-            self.component_geometry(field.id),
+            self.select_geometry(field.id),
             crate::virtual_listbox_id(field.id),
         )
         else {
@@ -468,15 +462,18 @@ impl UiWorld {
     /// The row of `menu` that holds accessibility `slot` now.
     /// A select field's open menu counts as its menu: its options are rows.
     pub(crate) fn virtual_menu_row_index(&self, menu: StableNodeId, slot: u16) -> Option<usize> {
-        match self.nodes.visual(menu) {
-            Some(StandardVisual::MenuSurface { rows, .. })
-            | Some(StandardVisual::Select {
-                opened: true,
-                options: rows,
-                ..
-            }) => crate::menu_row_index(rows, slot),
-            _ => None,
+        if let Some(crate::SelectVisual {
+            opened: true,
+            options: rows,
+            ..
+        }) = self.widget_visual_as::<crate::SelectVisual>(menu)
+        {
+            return crate::menu_row_index(rows, slot);
         }
+        if let Some(menu) = self.widget_visual_as::<crate::MenuSurfaceVisual>(menu) {
+            return crate::menu_row_index(&menu.rows, slot);
+        }
+        None
     }
 
     /// The visible row of `tree` that holds accessibility `slot` now.
@@ -486,10 +483,8 @@ impl UiWorld {
         slot: u16,
     ) -> Option<crate::tree_view::TreeRowData> {
         let index = usize::from(slot).checked_sub(1)?;
-        match self.nodes.visual(tree) {
-            Some(StandardVisual::TreeView { rows, .. }) => rows.get(index).cloned(),
-            _ => None,
-        }
+        self.widget_visual_as::<crate::TreeViewVisual>(tree)
+            .and_then(|visual| visual.rows.get(index).cloned())
     }
 
     /// The visible row of `tree` in accessibility `slot`, when the tree has
@@ -501,11 +496,8 @@ impl UiWorld {
         column: usize,
     ) -> Option<crate::tree_view::TreeRowData> {
         let index = usize::from(slot).checked_sub(1)?;
-        match self.nodes.visual(tree) {
-            Some(StandardVisual::TreeView { rows, columns, .. }) if column < columns.len() => {
-                rows.get(index).cloned()
-            }
-            _ => None,
-        }
+        self.widget_visual_as::<crate::TreeViewVisual>(tree)
+            .filter(|visual| column < visual.columns.len())
+            .and_then(|visual| visual.rows.get(index).cloned())
     }
 }

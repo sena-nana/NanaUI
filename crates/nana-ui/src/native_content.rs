@@ -322,6 +322,15 @@ pub(crate) struct NativeContentRenderer {
 type PipelineKey = (nana_gpu::DeviceGeneration, nana_gpu::GpuTextureFormat);
 
 #[cfg(feature = "hosted")]
+pub(crate) const NATIVE_CONTENT_WGSL: &str = r#"
+@vertex fn vertex(@builtin(vertex_index) i:u32) -> @builtin(position) vec4<f32> {
+    var p = array<vec2<f32>,3>(vec2(-1.0,-1.0),vec2(3.0,-1.0),vec2(-1.0,3.0));
+    return vec4(p[i],0.0,1.0);
+}
+@fragment fn fragment() -> @location(0) vec4<f32> { return vec4(0.0); }
+"#;
+
+#[cfg(feature = "hosted")]
 impl SceneGpuRenderer for NativeContentRenderer {
     fn prepare(&self, _: &SceneGpuNode, context: SceneGpuPrepareContext<'_>) {
         use crate::gpu_raw::GpuRaw;
@@ -331,41 +340,8 @@ impl SceneGpuRenderer for NativeContentRenderer {
             return;
         }
         let device = context.gpu.raw_device();
-        let shader = crate::scene_paint::wgsl::Program::new(
-            "native content opening",
-            r#"
-@vertex fn vertex(@builtin(vertex_index) i:u32) -> @builtin(position) vec4<f32> {
-    var p = array<vec2<f32>,3>(vec2(-1.0,-1.0),vec2(3.0,-1.0),vec2(-1.0,3.0));
-    return vec4(p[i],0.0,1.0);
-}
-@fragment fn fragment() -> @location(0) vec4<f32> { return vec4(0.0); }
-"#,
-        );
-        let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-            label: Some("native content opening"),
-            layout: None,
-            vertex: wgpu::VertexState {
-                module: &shader.stage(device, "vertex").module,
-                entry_point: Some("vertex"),
-                buffers: &[],
-                compilation_options: Default::default(),
-            },
-            fragment: Some(wgpu::FragmentState {
-                module: &shader.stage(device, "fragment").module,
-                entry_point: Some("fragment"),
-                targets: &[Some(wgpu::ColorTargetState {
-                    format: nana_gpu::__framework::format_to_wgpu(context.target_format),
-                    blend: Some(wgpu::BlendState::REPLACE),
-                    write_mask: wgpu::ColorWrites::ALL,
-                })],
-                compilation_options: Default::default(),
-            }),
-            primitive: Default::default(),
-            depth_stencil: None,
-            multisample: Default::default(),
-            multiview_mask: None,
-            cache: None,
-        });
+        let target_format = nana_gpu::__framework::format_to_wgpu(context.target_format);
+        let pipeline = Self::build_pipeline(device, target_format);
         *cached = Some((key, pipeline));
     }
 
@@ -391,6 +367,63 @@ impl SceneGpuRenderer for NativeContentRenderer {
             raw.set_pipeline(pipeline);
             raw.draw(0..3, 0..1);
         });
+    }
+}
+
+#[cfg(feature = "hosted")]
+impl NativeContentRenderer {
+    fn build_pipeline(
+        device: &wgpu::Device,
+        target_format: wgpu::TextureFormat,
+    ) -> wgpu::RenderPipeline {
+        let shader =
+            crate::scene_paint::wgsl::program!("native content opening", NATIVE_CONTENT_WGSL);
+        let layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label: Some("native content opening layout"),
+            bind_group_layouts: &[],
+            immediate_size: 0,
+        });
+        shader.pipeline(
+            device,
+            "vertex",
+            "fragment",
+            &[],
+            |vs_module, vs_ep, fs_module, fs_ep, _| {
+                device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+                    label: Some("native content opening"),
+                    layout: Some(&layout),
+                    vertex: wgpu::VertexState {
+                        module: vs_module,
+                        entry_point: Some(vs_ep),
+                        buffers: &[],
+                        compilation_options: Default::default(),
+                    },
+                    fragment: Some(wgpu::FragmentState {
+                        module: fs_module,
+                        entry_point: Some(fs_ep),
+                        targets: &[Some(wgpu::ColorTargetState {
+                            format: target_format,
+                            blend: Some(wgpu::BlendState::REPLACE),
+                            write_mask: wgpu::ColorWrites::ALL,
+                        })],
+                        compilation_options: Default::default(),
+                    }),
+                    primitive: Default::default(),
+                    depth_stencil: None,
+                    multisample: Default::default(),
+                    multiview_mask: None,
+                    cache: None,
+                })
+            },
+        )
+    }
+
+    #[cfg(all(test, target_vendor = "apple"))]
+    pub(crate) fn prewarm_for_msl_regen(gpu: &nana_gpu::GpuContext) {
+        let _ = Self::build_pipeline(
+            nana_gpu::__framework::device(gpu),
+            wgpu::TextureFormat::Bgra8UnormSrgb,
+        );
     }
 }
 

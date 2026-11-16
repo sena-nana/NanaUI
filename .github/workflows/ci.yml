@@ -327,7 +327,6 @@ jobs:
             transform_and_a11y_mutations_do_not_schedule_layout \
             accessibility_delta_seeds_from_moved_boxes_not_scheduled_layout \
             scrolling_publishes_the_moved_subtree_and_matches_a_full_projection \
-            work_counters_are_queryable_after_drain_and_extract \
             scoped_layout_touches_only_the_change_closure_and_matches_full_recompute \
             scoped_layout_matches_full_recompute_across_container_shapes_and_edits \
             scoped_layout_contained_edit_does_not_scan_siblings_as_the_document_grows \

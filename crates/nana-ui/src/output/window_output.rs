@@ -457,7 +457,7 @@ pub(crate) struct WindowOutputState {
     straight: Vec<StraightAlpha>,
     planner: super::RenderTargetPlanner,
     transfer: Option<super::transfer::OutputTransfer>,
-    work: nana_ui_core::OutputWorkObservation,
+    work: super::OutputWorkObservation,
     #[cfg(all(windows, feature = "native-export"))]
     native: Option<nana_gpu::NativeExportPool>,
     #[cfg(all(windows, feature = "native-export"))]
@@ -512,7 +512,7 @@ impl WindowOutputState {
         }
     }
 
-    fn trace_work(&mut self, owner: usize, work: nana_ui_core::OutputWorkObservation) {
+    fn trace_work(&mut self, owner: usize, work: super::OutputWorkObservation) {
         if owner != window_trace::PRODUCER {
             super::trace::consumer_metrics(work, None);
         }
@@ -610,7 +610,7 @@ impl WindowOutputState {
             self.work.gpu_convert_passes += 1;
             self.trace_work(
                 window_trace::WINDOW,
-                nana_ui_core::OutputWorkObservation {
+                super::OutputWorkObservation {
                     extra_passes: 1,
                     gpu_convert_passes: 1,
                     ..Default::default()
@@ -626,7 +626,7 @@ impl WindowOutputState {
         if conversions != 0 {
             super::driver::frame_driver::accumulate_gpu_work(
                 &mut encoded.gpu_work,
-                Some(nana_ui_core::GpuWorkObservation {
+                Some(crate::GpuWorkObservation {
                     draw_batches: conversions,
                     draw_calls: conversions,
                     ..Default::default()
@@ -696,7 +696,7 @@ impl WindowOutputState {
         nana_diagnostics::metric!(nana_diagnostics::framework::gpu::OUTPUT_DEFERRED);
         self.trace_work(
             window_trace::PRODUCER,
-            nana_ui_core::OutputWorkObservation {
+            super::OutputWorkObservation {
                 deferred: 1,
                 ..Default::default()
             },
@@ -830,7 +830,7 @@ impl WindowOutputState {
             trace.host_waits = None;
             trace.observe(
                 window_trace::PRODUCER,
-                nana_ui_core::OutputWorkObservation {
+                super::OutputWorkObservation {
                     deferred: 1,
                     ..Default::default()
                 },
@@ -939,7 +939,7 @@ impl WindowOutputState {
         );
         self.work = surface.last_work();
         self.work.target_recreates += recreates;
-        let observed = nana_ui_core::OutputWorkObservation {
+        let observed = super::OutputWorkObservation {
             idle_reuse_frames: self.work.idle_reuse_frames,
             deferred: self.work.deferred,
             ..Default::default()
@@ -1098,7 +1098,7 @@ impl WindowOutputState {
         self.work.ui_renders += 1;
         self.trace_work(
             window_trace::PRODUCER,
-            nana_ui_core::OutputWorkObservation {
+            super::OutputWorkObservation {
                 ui_renders: 1,
                 ..Default::default()
             },
@@ -1121,7 +1121,7 @@ impl WindowOutputState {
                         if let Some(trace) = &mut self.trace {
                             trace.observe(
                                 window_trace::TRANSPORT,
-                                nana_ui_core::OutputWorkObservation {
+                                super::OutputWorkObservation {
                                     target_recreates: 1,
                                     ..Default::default()
                                 },
@@ -1151,7 +1151,7 @@ impl WindowOutputState {
             }
             self.trace_work(
                 window_trace::TRANSPORT,
-                nana_ui_core::OutputWorkObservation {
+                super::OutputWorkObservation {
                     extra_passes: 1,
                     gpu_convert_passes: 1,
                     ..Default::default()
@@ -1311,7 +1311,7 @@ impl WindowOutputState {
                     if let Some(trace) = &mut self.trace {
                         trace.observe(
                             window_trace::TRANSPORT,
-                            nana_ui_core::OutputWorkObservation {
+                            super::OutputWorkObservation {
                                 target_recreates: nana_gpu::NATIVE_EXPORT_SLOTS,
                                 ..Default::default()
                             },
@@ -1349,7 +1349,7 @@ impl WindowOutputState {
                 }
                 self.trace_work(
                     window_trace::TRANSPORT,
-                    nana_ui_core::OutputWorkObservation {
+                    super::OutputWorkObservation {
                         gpu_copies: 1,
                         gpu_copy_bytes: bytes,
                         ..Default::default()
@@ -1372,7 +1372,7 @@ impl WindowOutputState {
                 }
                 self.trace_work(
                     window_trace::TRANSPORT,
-                    nana_ui_core::OutputWorkObservation {
+                    super::OutputWorkObservation {
                         deferred: 1,
                         ..Default::default()
                     },
@@ -1399,7 +1399,7 @@ impl WindowOutputState {
                 }
                 self.trace_work(
                     window_trace::TRANSPORT,
-                    nana_ui_core::OutputWorkObservation {
+                    super::OutputWorkObservation {
                         deferred: 1,
                         ..Default::default()
                     },
@@ -1459,7 +1459,7 @@ impl WindowOutputState {
             trace.versions(resource_generation, content_revision);
             trace.observe(
                 window_trace::PRODUCER,
-                nana_ui_core::OutputWorkObservation {
+                super::OutputWorkObservation {
                     content_revisions: 1,
                     submissions: usize::from(!trace.direct_owns_submission),
                     ..Default::default()
@@ -1521,7 +1521,7 @@ impl WindowOutputState {
     }
 
     /// Work counters of the last output operation (CPU readbacks stay 0).
-    pub(crate) fn last_work(&self) -> nana_ui_core::OutputWorkObservation {
+    pub(crate) fn last_work(&self) -> super::OutputWorkObservation {
         self.work
     }
 }
@@ -1534,7 +1534,7 @@ struct StraightAlpha {
     target: GpuTexture,
 }
 
-const STRAIGHT_ALPHA_WGSL: &str = r"
+pub(crate) const STRAIGHT_ALPHA_WGSL: &str = r"
 @group(0) @binding(0) var source: texture_2d<f32>;
 
 @vertex
@@ -1565,9 +1565,9 @@ impl StraightAlpha {
                 | GpuTextureUsages::COPY_SRC,
         })?;
         let device = nana_gpu::__framework::device(gpu);
-        let shader = crate::scene_paint::wgsl::Program::new(
+        let shader = crate::scene_paint::wgsl::program!(
             "nana-ui.window-output.straight",
-            STRAIGHT_ALPHA_WGSL,
+            STRAIGHT_ALPHA_WGSL
         );
         let layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("nana-ui.window-output.straight"),
@@ -1587,38 +1587,53 @@ impl StraightAlpha {
             bind_group_layouts: &[Some(&layout)],
             immediate_size: 0,
         });
-        let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-            label: Some("nana-ui.window-output.straight"),
-            layout: Some(&pipeline_layout),
-            vertex: wgpu::VertexState {
-                module: &shader.stage(device, "vs").module,
-                entry_point: Some("vs"),
-                compilation_options: Default::default(),
-                buffers: &[],
+        let pipeline = shader.pipeline(
+            device,
+            "vs",
+            "fs",
+            &[],
+            |vs_module, vs_ep, fs_module, fs_ep, _| {
+                device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+                    label: Some("nana-ui.window-output.straight"),
+                    layout: Some(&pipeline_layout),
+                    vertex: wgpu::VertexState {
+                        module: vs_module,
+                        entry_point: Some(vs_ep),
+                        compilation_options: Default::default(),
+                        buffers: &[],
+                    },
+                    primitive: wgpu::PrimitiveState::default(),
+                    depth_stencil: None,
+                    multisample: wgpu::MultisampleState::default(),
+                    fragment: Some(wgpu::FragmentState {
+                        module: fs_module,
+                        entry_point: Some(fs_ep),
+                        compilation_options: Default::default(),
+                        targets: &[Some(wgpu::ColorTargetState {
+                            format: wgpu::TextureFormat::Bgra8Unorm,
+                            blend: None,
+                            write_mask: wgpu::ColorWrites::ALL,
+                        })],
+                    }),
+                    multiview_mask: None,
+                    cache: None,
+                })
             },
-            primitive: wgpu::PrimitiveState::default(),
-            depth_stencil: None,
-            multisample: wgpu::MultisampleState::default(),
-            fragment: Some(wgpu::FragmentState {
-                module: &shader.stage(device, "fs").module,
-                entry_point: Some("fs"),
-                compilation_options: Default::default(),
-                targets: &[Some(wgpu::ColorTargetState {
-                    format: wgpu::TextureFormat::Bgra8Unorm,
-                    blend: None,
-                    write_mask: wgpu::ColorWrites::ALL,
-                })],
-            }),
-            multiview_mask: None,
-            cache: None,
-        });
+        );
         Ok(Self {
             pipeline,
             layout,
             target,
         })
     }
+}
 
+#[cfg(all(test, target_vendor = "apple"))]
+pub(crate) fn prewarm_for_msl_regen(gpu: &GpuContext) {
+    let _ = StraightAlpha::new(gpu, [4, 4]);
+}
+
+impl StraightAlpha {
     fn record(&self, frame: &mut FrameContext, source: &GpuTexture) {
         let device = nana_gpu::__framework::device(frame.gpu()).clone();
         let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {

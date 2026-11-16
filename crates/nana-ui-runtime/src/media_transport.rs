@@ -37,7 +37,6 @@ use nana_ui_core::{
     PointerEventsSpec, PopoverPlacement, PositionSpec, SemanticColorRole, space,
 };
 
-use crate::component_registry::{RegisterableComponent, SemanticSpec};
 use crate::view_components::{
     Activate, IconButton, RangeChanged, RangeDragging, RangeField, RangeInput, RangeMarker, Stack,
     Text, project_common,
@@ -640,6 +639,9 @@ fn bar_style() -> NodeStyle {
 }
 
 impl ComponentView for MediaTransportBar {
+    const TYPE_ID: Option<&'static str> =
+        Some(crate::component_descriptors::MEDIA_TRANSPORT_BAR.type_id);
+
     const BEHAVIOR: crate::TypeBehavior<Self> = crate::TypeBehavior {
         hooks: Some(|hooks| {
             crate::framework::routes::media_transport(hooks);
@@ -737,82 +739,6 @@ impl ComponentView for MediaTransportBar {
             },
         );
     }
-}
-
-impl RegisterableComponent for MediaTransportBar {
-    const TYPE_ID: &'static str = crate::component_descriptors::MEDIA_TRANSPORT_BAR.type_id;
-    const TAGS: &'static [&'static str] = crate::component_descriptors::MEDIA_TRANSPORT_BAR.tags;
-    /// Without this the binding keeps no typed state and `finish_semantic` is
-    /// never installed, so a `<media-transport-bar>` from markup would project
-    /// an empty toolbar: no play button, no seek range, no time readout, no
-    /// volume or settings popover, no fullscreen button.
-    const RETAIN_SEMANTIC_STATE: bool = true;
-    fn from_semantic(spec: &SemanticSpec<'_>) -> Self {
-        let keyword = |name: &str, value: &str| {
-            spec.attr(name)
-                .is_some_and(|raw| raw.trim().eq_ignore_ascii_case(value))
-        };
-        let mut bar = MediaTransportBar::new()
-            .live(
-                spec.attr("live")
-                    .is_some_and(|value| matches!(value, "true" | "1" | "live")),
-            )
-            .max_width(
-                spec.attr("max-width")
-                    .and_then(|value| value.parse().ok())
-                    .unwrap_or(BAR_MAX_WIDTH),
-            );
-        if keyword("density", "compact") {
-            bar.density = MediaTransportDensity::Compact;
-        } else if keyword("density", "stacked") {
-            bar.density = MediaTransportDensity::Stacked;
-        } else if keyword("density", "mini") {
-            bar.density = MediaTransportDensity::Mini;
-        }
-        if keyword("placement", "inline") {
-            bar.placement = MediaTransportPlacement::Inline;
-        }
-        bar.show_play = shown_attr(spec, "show-play");
-        bar.show_settings = shown_attr(spec, "show-settings");
-        bar.show_fullscreen = shown_attr(spec, "show-fullscreen");
-        bar.auto_hide = shown_attr(spec, "auto-hide").unwrap_or(false);
-        bar
-    }
-    /// Markup only carries configuration. Playback state, labels, idle
-    /// visibility and the assembled chrome belong to the live bar, so a
-    /// rebind keeps them instead of assembling a second chrome.
-    fn reconcile_semantic(spec: &SemanticSpec<'_>, previous: Option<&Self>) -> Self {
-        let next = Self::from_semantic(spec);
-        let Some(previous) = previous else {
-            return next;
-        };
-        Self {
-            live: next.live,
-            max_width: next.max_width,
-            density: next.density,
-            placement: next.placement,
-            show_play: next.show_play,
-            show_settings: next.show_settings,
-            show_fullscreen: next.show_fullscreen,
-            auto_hide: next.auto_hide,
-            ..previous.clone()
-        }
-    }
-    fn finish_semantic(
-        context: &mut AppContext,
-        entity: Entity<Self>,
-    ) -> Result<(), FrameworkError> {
-        context.assemble_media_transport_bar(entity).map(|_| ())
-    }
-}
-
-/// A boolean attribute: present without a value means shown.
-fn shown_attr(spec: &SemanticSpec<'_>, name: &str) -> Option<bool> {
-    let raw = spec.attr(name)?.trim();
-    if raw.is_empty() {
-        return Some(true);
-    }
-    crate::builtin_components::parse_tristate_attr(spec, &[name])
 }
 
 impl AppContext {
@@ -1753,51 +1679,6 @@ mod tests {
         DocumentId::new(1).unwrap()
     }
 
-    /// Markup binds through the registry, which only installs `finish` for a
-    /// type that retains its semantic state. Without that the bar projects as
-    /// an empty toolbar: no play button, no seek range, no time readout.
-    #[test]
-    fn a_bar_bound_from_markup_assembles_its_controls() {
-        // Tag-based binding needs `BuiltinComponents::Full`.
-        if crate::framework::typed_builtins_under_test() {
-            return;
-        }
-        let mut cx = AppContext::new();
-        let document = document();
-        let id = StableNodeId::new(42).unwrap();
-        let mut queue = crate::MutationQueue::new();
-        queue.create(
-            id,
-            document,
-            crate::NodeKind::Element {
-                tag: "media-transport-bar".into(),
-            },
-        );
-        cx.commit_mutations(queue).unwrap();
-
-        let type_id = cx
-            .resolve_component_tag("media-transport-bar")
-            .unwrap()
-            .clone();
-        let layout = Arc::new(nana_ui_core::LayoutStyle::default());
-        let spec = crate::SemanticSpec::from_parts(&type_id, &layout);
-        let mut mutations = crate::MutationQueue::new();
-        let binding = cx
-            .prepare_semantic_binding(id, &spec, &mut mutations)
-            .unwrap();
-        cx.commit_mutations(mutations).unwrap();
-        cx.finish_semantic_binding(binding).unwrap();
-
-        let bar = Entity::<MediaTransportBar>::from_stable_id(id);
-        let slots = cx.read(bar, |bar| bar.slots().clone()).unwrap();
-        assert!(
-            slots.play.is_some(),
-            "a bar from markup has no play button: {slots:?}"
-        );
-        assert!(slots.seek.is_some(), "and no seek range");
-        assert!(slots.time.is_some(), "and no time readout");
-    }
-
     #[test]
     fn empty_secondary_stays_a_single_row_until_a_child_is_appended() {
         let mut cx = AppContext::new();
@@ -2285,8 +2166,8 @@ mod tests {
         );
         assert_close(seek.width, strip.width, "the rail spans the bar");
         assert!(matches!(
-            world.standard_visual(slots.seek.unwrap()),
-            Some(crate::StandardVisual::Range {
+            world.widget_visual_as::<crate::RangeVisual>(slots.seek.unwrap()),
+            Some(crate::RangeVisual {
                 rail: Some(MINI_PROGRESS_GIRTH),
                 ..
             })
@@ -2340,8 +2221,8 @@ mod tests {
             );
         }
         assert!(matches!(
-            world.standard_visual(slots.volume.unwrap()),
-            Some(crate::StandardVisual::Range {
+            world.widget_visual_as::<crate::RangeVisual>(slots.volume.unwrap()),
+            Some(crate::RangeVisual {
                 rail: Some(MINI_VOLUME_GIRTH),
                 ..
             })
@@ -2556,11 +2437,12 @@ mod tests {
                 .read(volume, |range| range.markers.is_empty())
                 .unwrap()
         );
-        let Some(crate::ComponentGeometry::Range { track, .. }) =
-            stage.cx.world().component_geometry(seek.stable_id())
-        else {
-            panic!("seek geometry");
-        };
+        let track = stage
+            .cx
+            .world()
+            .range_geometry(seek.stable_id())
+            .expect("seek geometry")
+            .track;
         stage
             .cx
             .begin_range_drag(document, 3, seek.stable_id(), track.x + track.width * 0.5)
@@ -2584,8 +2466,8 @@ mod tests {
         let seek = stage.slots().seek.unwrap();
         let world = stage.cx.world();
         assert!(matches!(
-            world.standard_visual(seek),
-            Some(crate::StandardVisual::Range { label: None, .. })
+            world.widget_visual_as::<crate::RangeVisual>(seek),
+            Some(crate::RangeVisual { label: None, .. })
         ));
         let accessible = world
             .project_accessibility(stage.cx.world().node(seek).unwrap().document)
@@ -2715,11 +2597,12 @@ mod tests {
             })
             .unwrap();
         let seek = slots.seek.unwrap();
-        let Some(crate::ComponentGeometry::Range { track, .. }) =
-            stage.cx.world().component_geometry(seek)
-        else {
-            panic!("seek range geometry");
-        };
+        let track = stage
+            .cx
+            .world()
+            .range_geometry(seek)
+            .expect("seek range geometry")
+            .track;
         let at = |fraction: f32| track.x + track.width * fraction;
 
         stage
@@ -2871,90 +2754,12 @@ mod tests {
     }
 
     #[test]
-    fn rebinding_markup_keeps_one_chrome_and_the_host_state() {
-        // Tag-based binding needs `BuiltinComponents::Full`.
-        if crate::framework::typed_builtins_under_test() {
-            return;
-        }
-        let mut cx = AppContext::new();
-        let id = StableNodeId::new(42).unwrap();
-        let mut queue = crate::MutationQueue::new();
-        queue.create(
-            id,
-            document(),
-            crate::NodeKind::Element {
-                tag: "media-transport-bar".into(),
-            },
-        );
-        cx.commit_mutations(queue).unwrap();
-        let type_id = cx
-            .resolve_component_tag("media-transport-bar")
-            .unwrap()
-            .clone();
-        let layout = Arc::new(nana_ui_core::LayoutStyle::default());
-        let bind = |cx: &mut AppContext, attrs: &[(&str, &str)]| {
-            let spec = crate::SemanticSpec {
-                attrs,
-                ..crate::SemanticSpec::from_parts(&type_id, &layout)
-            };
-            let mut mutations = crate::MutationQueue::new();
-            let binding = cx
-                .prepare_semantic_binding(id, &spec, &mut mutations)
-                .unwrap();
-            cx.commit_mutations(mutations).unwrap();
-            cx.finish_semantic_binding(binding).unwrap();
-        };
-        bind(&mut cx, &[]);
-        let bar = Entity::<MediaTransportBar>::from_stable_id(id);
-        sync_time(&mut cx, bar, 30.0, 60.0);
-        let slots = cx.read(bar, |bar| bar.slots().clone()).unwrap();
-
-        bind(&mut cx, &[("density", "compact")]);
-        assert_eq!(cx.world().node(id).unwrap().children.len(), 1, "one chrome");
-        let rebound = cx.read(bar, Clone::clone).unwrap();
-        assert_eq!(rebound.slots, slots);
-        assert_eq!(rebound.density, MediaTransportDensity::Compact);
-        assert_eq!(rebound.position, 30.0);
-        assert_eq!(readout(&cx, &slots), "0:30 / 1:00");
-        assert!(
-            cx.world()
-                .node_style(slots.fullscreen.unwrap())
-                .unwrap()
-                .layout
-                .hidden,
-            "the new density applies to the kept chrome"
-        );
-    }
-
-    #[test]
     fn readout_comparison_matches_the_formatted_text() {
         assert!(reads_time("1:05 / 1:00:00", 65.2, 3600.0));
         assert!(!reads_time("1:05 / 1:00:0", 65.2, 3600.0));
         assert!(!reads_time("1:05 / 1:00:000", 65.2, 3600.0));
         assert!(!reads_time("", 0.0, 0.0));
         assert!(reads_time(&time_readout(f64::NAN, 59.9), f64::NAN, 59.9));
-    }
-
-    #[test]
-    fn markup_attributes_pick_density_and_placement() {
-        let type_id = crate::ComponentTypeId::new("nana.media-transport-bar").unwrap();
-        let layout = Arc::new(nana_ui_core::LayoutStyle::default());
-        let attrs = [
-            ("density", "compact"),
-            ("placement", "Inline"),
-            ("show-fullscreen", ""),
-            ("show-play", "false"),
-        ];
-        let spec = crate::SemanticSpec {
-            attrs: &attrs,
-            ..crate::SemanticSpec::from_parts(&type_id, &layout)
-        };
-        let bar = MediaTransportBar::from_semantic(&spec);
-        assert_eq!(bar.density, MediaTransportDensity::Compact);
-        assert_eq!(bar.placement, MediaTransportPlacement::Inline);
-        assert_eq!(bar.show_fullscreen, Some(true));
-        assert_eq!(bar.show_settings, None);
-        assert_eq!(bar.show_play, Some(false));
     }
 
     #[test]

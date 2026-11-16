@@ -1,17 +1,10 @@
-//! Unicode properties fallback needs, via ICU4X. The only file allowed to name
-//! `icu_properties`.
-//!
-//! Nothing here is a hand-written table: script, `Emoji_Presentation`,
-//! `Default_Ignorable_Code_Point`, `Vertical_Orientation` (UAX #50) and the
-//! general category come from ICU's compiled data, grapheme clusters from
-//! `unicode-segmentation`.
+//! Unicode properties fallback needs, backed by compact static UCD range
+//! tables generated from the Unicode Character Database (`font/ucd_tables.rs`),
+//! with grapheme clusters from `unicode-segmentation`.
 
+use super::ucd_tables;
 use crate::shape::ScriptTag;
-use icu_properties::props::{
-    DefaultIgnorableCodePoint, EmojiPresentation, GeneralCategory, GeneralCategoryGroup, Script,
-    VerticalOrientation,
-};
-use icu_properties::{CodePointMapData, CodePointSetData, PropertyNamesShort};
+use std::cmp::Ordering;
 use std::ops::Range;
 use unicode_segmentation::UnicodeSegmentation;
 
@@ -33,10 +26,29 @@ pub struct ClusterInfo {
     pub upright: bool,
 }
 
+#[inline]
+fn in_bool_ranges(table: &[u64], ch: char) -> bool {
+    const END_MASK: u64 = (1 << 21) - 1;
+    let cp = u64::from(ch as u32);
+    table
+        .binary_search_by(|&entry| {
+            let start = entry >> 21;
+            let end = entry & END_MASK;
+            if cp < start {
+                Ordering::Greater
+            } else if cp > end {
+                Ordering::Less
+            } else {
+                Ordering::Equal
+            }
+        })
+        .is_ok()
+}
+
 /// True for codepoints a face need not map to render a cluster: ZWJ, variation
 /// selectors, bidi controls and the like.
 pub fn is_default_ignorable(ch: char) -> bool {
-    CodePointSetData::new::<DefaultIgnorableCodePoint>().contains(ch)
+    in_bool_ranges(ucd_tables::DEFAULT_IGNORABLE, ch)
 }
 
 /// True when `ch` is set upright in a vertical line (`text-orientation:
@@ -48,7 +60,7 @@ pub fn is_default_ignorable(ch: char) -> bool {
 /// presentation-form fallback) substitutes on an upright run, and which a
 /// rotated run would never ask for.
 pub fn is_upright_in_vertical(ch: char) -> bool {
-    CodePointMapData::<VerticalOrientation>::new().get(ch) != VerticalOrientation::Rotated
+    in_bool_ranges(ucd_tables::VERTICAL_ROTATED, ch) ^ ucd_tables::VERTICAL_INVERTED
 }
 
 /// Whether a grapheme cluster takes an emphasis mark (CSS Text Decoration 4
@@ -59,25 +71,26 @@ pub fn takes_emphasis(grapheme: &str) -> bool {
     let Some(base) = grapheme.chars().next() else {
         return false;
     };
-    if base == crate::source::OBJECT_REPLACEMENT {
-        return false;
-    }
-    let skipped = GeneralCategoryGroup::Separator
-        .union(GeneralCategoryGroup::Punctuation)
-        .union(GeneralCategoryGroup::Control)
-        .union(GeneralCategoryGroup::Format)
-        .union(GeneralCategoryGroup::Unassigned);
-    !skipped.contains(CodePointMapData::<GeneralCategory>::new().get(base))
+    in_bool_ranges(ucd_tables::EMPHASIS_ALLOWED, base)
 }
 
 fn specific_script(ch: char) -> Option<ScriptTag> {
-    let script = CodePointMapData::<Script>::new().get(ch);
-    if matches!(script, Script::Common | Script::Inherited | Script::Unknown) {
-        return None;
-    }
-    let short = PropertyNamesShort::<Script>::new().get_locale_script(script)?;
-    let bytes: [u8; 4] = short.as_str().as_bytes().try_into().ok()?;
-    Some(ScriptTag(bytes))
+    let cp = u64::from(ch as u32);
+    let idx = ucd_tables::SCRIPT_RANGES
+        .binary_search_by(|&entry| {
+            let start = entry >> 32;
+            let end = (entry >> 8) & 0xFF_FFFF;
+            if cp < start {
+                Ordering::Greater
+            } else if cp > end {
+                Ordering::Less
+            } else {
+                Ordering::Equal
+            }
+        })
+        .ok()?;
+    let tag_idx = (ucd_tables::SCRIPT_RANGES[idx] & 0xFF) as usize;
+    Some(ScriptTag(ucd_tables::SCRIPT_TAGS[tag_idx]))
 }
 
 /// Byte offsets grapheme clusters start at.
@@ -93,7 +106,6 @@ pub fn cluster_starts(text: &str) -> Vec<usize> {
 
 /// Grapheme clusters of `text` in logical order.
 pub fn clusters(text: &str) -> Vec<ClusterInfo> {
-    let emoji_presentation = CodePointSetData::new::<EmojiPresentation>();
     text.grapheme_indices(true)
         .map(|(start, grapheme)| {
             let script = grapheme.chars().find_map(specific_script);
@@ -103,7 +115,7 @@ pub fn clusters(text: &str) -> Vec<ClusterInfo> {
                     && grapheme
                         .chars()
                         .next()
-                        .is_some_and(|base| emoji_presentation.contains(base)));
+                        .is_some_and(|base| in_bool_ranges(ucd_tables::EMOJI_PRESENTATION, base)));
             ClusterInfo {
                 range: start..start + grapheme.len(),
                 script,

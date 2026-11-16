@@ -58,11 +58,11 @@ impl AppContext {
                 row.label.clone(),
                 row.note.clone(),
                 row.detail.clone(),
-                row.copy_slot,
-                row.label_line_slot,
-                row.label_slot,
-                row.note_slot,
-                row.detail_slot,
+                row.copy_slot(),
+                row.label_line_slot(),
+                row.label_slot(),
+                row.note_slot(),
+                row.detail_slot(),
             )
         })?;
         let live = |cx: &Self, id: Option<StableNodeId>| id.filter(|id| cx.world.contains(*id));
@@ -98,11 +98,14 @@ impl AppContext {
                 || detail_slot.is_some()
             {
                 self.update_component(item, |row, _| {
-                    row.copy_slot = None;
-                    row.label_line_slot = None;
-                    row.label_slot = None;
-                    row.note_slot = None;
-                    row.detail_slot = None;
+                    if let Some(assembled) = row.assembled.as_mut() {
+                        assembled.copy_slot = None;
+                        assembled.label_line_slot = None;
+                        assembled.label_slot = None;
+                        assembled.note_slot = None;
+                        assembled.detail_slot = None;
+                        row.clear_assembled_if_empty();
+                    }
                 })?;
                 cleared = true;
             }
@@ -148,7 +151,8 @@ impl AppContext {
             } else {
                 layout.flex_shrink = Some(1024.0);
                 layout.min_width = Some(LengthSpec::Px(0.0));
-                layout.logical_margin.inline_start = Some(LengthSpec::Px(nana_ui_core::space::XXS));
+                layout.logical_edges.margin.inline_start =
+                    Some(LengthSpec::Px(nana_ui_core::space::XXS));
                 layout.resolve_logical_box_edges();
             }
             style
@@ -266,11 +270,12 @@ impl AppContext {
             || detail_slot != detail_id
         {
             self.update_component(item, |row, _| {
-                row.copy_slot = Some(copy_id);
-                row.label_line_slot = Some(line_id);
-                row.label_slot = Some(label_id);
-                row.note_slot = note_id;
-                row.detail_slot = detail_id;
+                let assembled = row.assembled_mut();
+                assembled.copy_slot = Some(copy_id);
+                assembled.label_line_slot = Some(line_id);
+                assembled.label_slot = Some(label_id);
+                assembled.note_slot = note_id;
+                assembled.detail_slot = detail_id;
             })?;
             changed = true;
         }
@@ -282,7 +287,7 @@ impl AppContext {
         item: Entity<ListItem>,
         slots: ListItemSlots,
     ) -> Result<bool, FrameworkError> {
-        let (banded, copy_slot) = self.read(item, |row| (row.bands_slots(), row.copy_slot))?;
+        let (banded, copy_slot) = self.read(item, |row| (row.bands_slots(), row.copy_slot()))?;
         let ordered = [slots.leading, slots.content, slots.trailing]
             .into_iter()
             .flatten()
@@ -376,7 +381,7 @@ impl AppContext {
         let auto_margin_target = if has_body && !banded {
             slots.trailing.filter(|&trailing| {
                 self.world.node_style(trailing).is_none_or(|style| {
-                    style.layout.logical_margin.inline_start.is_none()
+                    style.layout.logical_edges.margin.inline_start.is_none()
                         && style.layout.margin_left.is_none()
                 })
             })
@@ -390,7 +395,7 @@ impl AppContext {
             || self.read(item, |row| {
                 row.slots != slots
                     || (auto_margin_target.is_some()
-                        && row.trailing_auto_margin != auto_margin_target)
+                        && row.trailing_auto_margin() != auto_margin_target)
             })?;
         if !changed {
             return Ok(false);
@@ -413,7 +418,7 @@ impl AppContext {
         self.update_component(item, |row, cx| {
             row.slots = slots;
             if auto_margin_target.is_some() {
-                row.trailing_auto_margin = auto_margin_target;
+                row.assembled_mut().trailing_auto_margin = auto_margin_target;
             }
             let mutations = cx.mutations();
             for &band in &created {
@@ -1509,14 +1514,15 @@ impl AppContext {
         {
             return item.shown_tooltip().cloned();
         }
-        let value = match self.world.standard_visual(id)? {
-            crate::StandardVisual::PathText { value } => value,
-            crate::StandardVisual::LabeledValue {
-                value_is_path: true,
-                value,
-                ..
-            } => value,
-            _ => return None,
+        let value = if let Some(path) = self.world.widget_visual_as::<crate::PathTextVisual>(id) {
+            Arc::clone(&path.value)
+        } else if let Some(lv) = self.world.widget_visual_as::<crate::LabeledValueVisual>(id) {
+            if !lv.value_is_path {
+                return None;
+            }
+            Arc::clone(&lv.value)
+        } else {
+            return None;
         };
         (!value.is_empty()).then_some(crate::IconButtonTooltip {
             label: value,
@@ -1724,10 +1730,10 @@ impl AppContext {
         root: StableNodeId,
         focused: StableNodeId,
     ) -> bool {
-        matches!(
-            self.world.standard_visual(root),
-            Some(crate::StandardVisual::MenuSurface { open: true, .. })
-        ) && self.world.is_overlay_reachable(focused)
+        self.world
+            .widget_visual_as::<crate::MenuSurfaceVisual>(root)
+            .is_some_and(|v| v.open)
+            && self.world.is_overlay_reachable(focused)
             && self
                 .world
                 .interaction(focused)
@@ -1842,9 +1848,9 @@ impl AppContext {
 
     /// Drop lifecycle entries whose component is gone.
     pub(super) fn sweep_hover_cards(&mut self) {
-        self.component_lifecycle
-            .hover_cards
-            .retain(|target, _| self.views.contains_key(target));
+        self.component_lifecycle.hover_cards.retain(|target, _| {
+            self.views.contains_key(target) || self.world.is_elided_stack(*target)
+        });
     }
 
     pub(super) fn position_open_tooltips(

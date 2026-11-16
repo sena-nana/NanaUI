@@ -1,22 +1,95 @@
+use std::any::Any;
 use std::sync::Arc;
 use std::time::Duration;
 
+use crate::widget_visual::{styled_text_region, widget_text_region};
 use crate::{
     AccessibilityRole, AccessibilityState, AlignSpec, AnimationDirection, AnimationFillMode,
-    AnimationIteration, AnimationPlayState, AnimationPlayback, AnimationSpec, ComponentView,
-    Easing, FlexDirection, InteractionState, JustifySpec, LengthSpec, MutationQueue, NodeKind,
-    NodeStyle, SemanticColorRole, StableNodeId, StandardVisual, TextContent, TextVerticalAlignment,
-    UiWorld, component_animation_id, component_animation_kinds,
+    AnimationIteration, AnimationPlayState, AnimationPlayback, AnimationSpec, ComponentTextRegion,
+    ComponentView, Easing, FlexDirection, InteractionState, JustifySpec, LayoutBox, LayoutPartKind,
+    LengthSpec, MutationQueue, NodeKind, NodeStyle, SemanticColorRole, StableNodeId, TextContent,
+    TextHorizontalAlignment, TextValue, TextVerticalAlignment, UiWorld, WidgetIcon, WidgetPaintCtx,
+    WidgetPaintOp, WidgetPaintOutput, WidgetQuad, WidgetRootSurface, WidgetTaggedOp, WidgetVisual,
+    WidgetVisualContent, component_animation_id, component_animation_kinds,
 };
-use nana_ui_core::Icon;
+use nana_ui_core::{ComponentRecipeId, Icon, SemanticColorMix};
 
-fn project_visual(
+const STATUS_DOT_FRACTION: f32 = 10.0 / 24.0;
+const PROGRESS_SWEEP_SEGMENT: f32 = 0.35;
+
+fn status_dot_lane(compact: bool, world: &UiWorld, badge: bool) -> (f32, f32) {
+    let spacing = world.theme().spacing();
+    match (badge, compact) {
+        (true, true) => (spacing.sm, spacing.xs),
+        (true, false) => (spacing.md, spacing.sm),
+        (false, true) => (spacing.xl, spacing.xs),
+        (false, false) => (spacing.xxl, spacing.sm),
+    }
+}
+
+fn status_dot_flex_parts(
+    slot: f32,
+    gap: f32,
+    text: crate::layout_engine::Size,
+) -> [Option<crate::layout_engine::parts::FlexPart>; 3] {
+    crate::layout_engine::parts::status_dot_parts(slot, slot * STATUS_DOT_FRACTION, gap, text)
+}
+
+fn status_dot_intrinsic(compact: bool, world: &UiWorld, badge: bool) -> WidgetVisualContent {
+    let (slot, gap) = status_dot_lane(compact, world, badge);
+    let parts = status_dot_flex_parts(slot, gap, crate::layout_engine::Size::default());
+    let chrome = crate::layout_engine::parts::chrome_extent(&parts);
+    WidgetVisualContent {
+        width: chrome.width,
+        height: chrome.height,
+        text: 0.0,
+    }
+}
+
+fn status_dot_content_parts(
+    compact: bool,
+    badge: bool,
+    id: StableNodeId,
+    world: &UiWorld,
+    content: LayoutBox,
+) -> crate::layout_engine::parts::ContentParts {
+    let (slot, gap) = status_dot_lane(compact, world, badge);
+    let text = world.text_metrics(id).unwrap_or_default();
+    let parts = status_dot_flex_parts(
+        slot,
+        gap,
+        crate::layout_engine::Size::new(text.width, text.height),
+    );
+    // The spacer before the dot is not a part of its own.
+    let [_, dot, label, ..] =
+        crate::layout_engine::parts::start_row_parts(content, parts, world.right_to_left(id));
+    crate::layout_engine::parts::content_parts([dot, label])
+}
+
+fn status_dot_max_width(
+    compact: bool,
+    badge: bool,
+    world: &UiWorld,
+    available_width: f32,
+    available_height: f32,
+) -> f32 {
+    let (slot, gap) = status_dot_lane(compact, world, badge);
+    let parts = status_dot_flex_parts(slot, gap, crate::layout_engine::Size::default());
+    crate::layout_engine::parts::text_budget(
+        parts,
+        crate::layout_engine::Size::new(available_width, available_height),
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn project_widget_visual<V: WidgetVisual + PartialEq + Clone>(
     id: StableNodeId,
     world: &UiWorld,
     mutations: &mut MutationQueue,
     text: &str,
     style: NodeStyle,
-    visual: StandardVisual,
+    visual: V,
+    pointer_events: bool,
     accessibility: AccessibilityState,
 ) {
     if world.text(id) != Some(text) {
@@ -30,9 +103,8 @@ fn project_visual(
     if world.node_style(id) != Some(&style) {
         mutations.set_style(id, style);
     }
-    let pointer_events = matches!(&visual, StandardVisual::LabeledValue { value_is_path: true, value, .. } if !value.is_empty());
-    if world.standard_visual(id) != Some(visual.clone()) {
-        mutations.set_standard_visual(id, Some(visual));
+    if world.widget_visual_as::<V>(id) != Some(&visual) {
+        mutations.set_widget_visual(id, Some(visual));
     }
     let interaction = InteractionState {
         pointer_events,
@@ -50,7 +122,7 @@ fn project_accessibility(
     mutations: &mut MutationQueue,
     accessibility: AccessibilityState,
 ) {
-    if world.accessibility(id) != Some(&accessibility) {
+    if !world.accessibility_eq(id, &accessibility) {
         mutations.set_accessibility(id, accessibility);
     }
 }
@@ -157,6 +229,8 @@ impl StatusBadge {
 }
 
 impl ComponentView for StatusBadge {
+    const TYPE_ID: Option<&'static str> = Some(crate::component_descriptors::STATUS_BADGE.type_id);
+
     fn share_layouts(
         &mut self,
         share: &mut dyn FnMut(&mut std::sync::Arc<nana_ui_core::LayoutStyle>),
@@ -171,23 +245,149 @@ impl ComponentView for StatusBadge {
     }
 
     fn project(&self, id: StableNodeId, world: &UiWorld, mutations: &mut MutationQueue) {
-        project_visual(
+        project_widget_visual(
             id,
             world,
             mutations,
             self.label.as_ref(),
             self.effective_style(),
-            StandardVisual::StatusBadge {
+            StatusBadgeVisual {
                 label: Arc::clone(&self.label),
                 tone: self.tone,
                 compact: self.compact,
             },
+            false,
             AccessibilityState {
                 role: AccessibilityRole::Text,
                 label: Some(Arc::clone(&self.label)),
                 ..AccessibilityState::default()
             },
         );
+    }
+}
+
+/// Visual state for [`StatusBadge`] nodes.
+#[derive(Debug, Clone, PartialEq)]
+pub struct StatusBadgeVisual {
+    pub label: Arc<str>,
+    pub tone: nana_ui_core::StatusTone,
+    pub compact: bool,
+}
+
+impl WidgetVisual for StatusBadgeVisual {
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
+
+    fn dyn_eq(&self, other: &dyn Any) -> bool {
+        other.downcast_ref::<Self>().is_some_and(|rhs| self == rhs)
+    }
+
+    fn visual_parts_read_theme(&self) -> bool {
+        true
+    }
+
+    fn intrinsic_chrome_content(&self, _id: StableNodeId, world: &UiWorld) -> WidgetVisualContent {
+        status_dot_intrinsic(self.compact, world, true)
+    }
+
+    fn solve_content_parts(
+        &self,
+        id: StableNodeId,
+        world: &UiWorld,
+        _bounds: LayoutBox,
+        content: LayoutBox,
+        _writing: nana_ui_core::WritingContext,
+        _own_frame: bool,
+    ) -> Option<crate::layout_engine::parts::ContentParts> {
+        Some(status_dot_content_parts(
+            self.compact,
+            true,
+            id,
+            world,
+            content,
+        ))
+    }
+
+    fn node_text_max_width(
+        &self,
+        _id: StableNodeId,
+        world: &UiWorld,
+        _layout: LayoutBox,
+        available_width: f32,
+        available_height: f32,
+    ) -> Option<f32> {
+        Some(status_dot_max_width(
+            self.compact,
+            true,
+            world,
+            available_width,
+            available_height,
+        ))
+    }
+
+    fn paint(&self, ctx: &WidgetPaintCtx<'_>) -> WidgetPaintOutput {
+        let indicator = ctx
+            .content_part(LayoutPartKind::LeadingContent)
+            .unwrap_or(LayoutBox {
+                width: 0.0,
+                height: 0.0,
+                ..ctx.content
+            });
+        let label_bounds =
+            ctx.content_part(LayoutPartKind::TextContent)
+                .map_or(ctx.content, |part| LayoutBox {
+                    y: ctx.bounds.y,
+                    height: ctx.bounds.height,
+                    ..part
+                });
+        let text_size = if self.compact {
+            ctx.theme.typography().hint
+        } else {
+            ctx.theme.typography().meta
+        };
+        let foreground = ctx
+            .style_model
+            .color(ctx.theme.recipes().status().role(self.tone))
+            .as_rgba_array();
+        let mut background = foreground;
+        background[3] *= 0.12;
+        let mut out = WidgetPaintOutput {
+            suppress_root_surface: false,
+            owns_node_text: true,
+            root_surface: Some(WidgetRootSurface {
+                background: Some(Some(background)),
+                border_color: Some(None),
+                border_width: Some(0.0),
+                ..WidgetRootSurface::default()
+            }),
+            ..WidgetPaintOutput::new()
+        };
+        out.push(
+            2,
+            WidgetPaintOp::Text(widget_text_region(
+                &ComponentTextRegion {
+                    bounds: label_bounds,
+                    content: TextValue::from(Arc::clone(&self.label)),
+                    color: Some(foreground),
+                    font_size: text_size,
+                    font_weight: Some(ctx.theme.typography().medium),
+                },
+                ctx,
+                TextHorizontalAlignment::Start,
+                true,
+            )),
+        );
+        out.push(
+            3,
+            WidgetPaintOp::Quad(WidgetQuad {
+                rect: indicator,
+                fill: Some(foreground),
+                corner_radius: [999.0; 4],
+                ..WidgetQuad::default()
+            }),
+        );
+        out
     }
 }
 
@@ -255,6 +455,9 @@ impl ValidationMessage {
 }
 
 impl ComponentView for ValidationMessage {
+    const TYPE_ID: Option<&'static str> =
+        Some(crate::component_descriptors::VALIDATION_MESSAGE.type_id);
+
     fn share_layouts(
         &mut self,
         share: &mut dyn FnMut(&mut std::sync::Arc<nana_ui_core::LayoutStyle>),
@@ -269,17 +472,18 @@ impl ComponentView for ValidationMessage {
     }
 
     fn project(&self, id: StableNodeId, world: &UiWorld, mutations: &mut MutationQueue) {
-        project_visual(
+        project_widget_visual(
             id,
             world,
             mutations,
             self.message.as_ref(),
             self.effective_style(),
-            StandardVisual::ValidationMessage {
+            ValidationMessageVisual {
                 message: Arc::clone(&self.message),
                 intent: self.intent,
                 compact: self.compact,
             },
+            false,
             AccessibilityState {
                 role: AccessibilityRole::Text,
                 label: Some(Arc::clone(&self.message)),
@@ -287,6 +491,128 @@ impl ComponentView for ValidationMessage {
                 ..AccessibilityState::default()
             },
         );
+    }
+}
+
+/// Visual state for [`ValidationMessage`] nodes.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ValidationMessageVisual {
+    pub message: Arc<str>,
+    pub intent: nana_ui_core::ValidationIntent,
+    pub compact: bool,
+}
+
+impl WidgetVisual for ValidationMessageVisual {
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
+
+    fn dyn_eq(&self, other: &dyn Any) -> bool {
+        other.downcast_ref::<Self>().is_some_and(|rhs| self == rhs)
+    }
+
+    fn visual_parts_read_theme(&self) -> bool {
+        true
+    }
+
+    fn intrinsic_chrome_content(&self, _id: StableNodeId, world: &UiWorld) -> WidgetVisualContent {
+        status_dot_intrinsic(self.compact, world, false)
+    }
+
+    fn solve_content_parts(
+        &self,
+        id: StableNodeId,
+        world: &UiWorld,
+        _bounds: LayoutBox,
+        content: LayoutBox,
+        _writing: nana_ui_core::WritingContext,
+        _own_frame: bool,
+    ) -> Option<crate::layout_engine::parts::ContentParts> {
+        Some(status_dot_content_parts(
+            self.compact,
+            false,
+            id,
+            world,
+            content,
+        ))
+    }
+
+    fn node_text_max_width(
+        &self,
+        _id: StableNodeId,
+        world: &UiWorld,
+        _layout: LayoutBox,
+        available_width: f32,
+        available_height: f32,
+    ) -> Option<f32> {
+        Some(status_dot_max_width(
+            self.compact,
+            false,
+            world,
+            available_width,
+            available_height,
+        ))
+    }
+
+    fn paint(&self, ctx: &WidgetPaintCtx<'_>) -> WidgetPaintOutput {
+        let indicator = ctx
+            .content_part(LayoutPartKind::LeadingContent)
+            .unwrap_or(LayoutBox {
+                width: 0.0,
+                height: 0.0,
+                ..ctx.content
+            });
+        let label_bounds = ctx
+            .content_part(LayoutPartKind::TextContent)
+            .unwrap_or(ctx.content);
+        let foreground = ctx
+            .style_model
+            .color(match self.intent {
+                nana_ui_core::ValidationIntent::Warning => SemanticColorRole::Warning,
+                nana_ui_core::ValidationIntent::Danger => SemanticColorRole::Danger,
+            })
+            .as_rgba_array();
+        let wraps = ctx.source_style.layout.text_wraps();
+        let mut text = widget_text_region(
+            &ComponentTextRegion {
+                bounds: label_bounds,
+                content: TextValue::from(Arc::clone(&self.message)),
+                color: Some(foreground),
+                font_size: ctx.style.font_size,
+                font_weight: ctx.style.font_weight,
+            },
+            ctx,
+            TextHorizontalAlignment::Start,
+            ctx.source_style.layout.uses_text_ellipsis(),
+        );
+        text.wrap = wraps;
+        text.vertical_alignment = if wraps {
+            TextVerticalAlignment::Top
+        } else {
+            TextVerticalAlignment::Center
+        };
+        text.max_lines = ctx
+            .source_style
+            .layout
+            .resolved_line_clamp()
+            .map(usize::from);
+
+        let mut out = WidgetPaintOutput {
+            suppress_root_surface: true,
+            owns_node_text: true,
+            ..WidgetPaintOutput::new()
+        };
+        out.push(2, WidgetPaintOp::Text(text));
+        out.push(
+            3,
+            WidgetPaintOp::Quad(WidgetQuad {
+                rect: indicator,
+                border: Some((foreground, 1.0)),
+                corner_radius: [999.0; 4],
+                ..WidgetQuad::default()
+            }),
+        );
+        out
     }
 }
 
@@ -415,7 +741,220 @@ impl EmptyState {
     }
 }
 
+#[derive(Debug, Clone, PartialEq)]
+pub struct EmptyStateGeometry {
+    pub root_clip: LayoutBox,
+    pub content_clip: LayoutBox,
+    pub icon: Option<(Icon, LayoutBox, [f32; 4])>,
+    pub title: ComponentTextRegion,
+    pub message: Option<ComponentTextRegion>,
+    pub action: Option<LayoutBox>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EmptyStateVisual {
+    pub title: Arc<str>,
+    pub message: Option<Arc<str>>,
+    pub icon: Option<Icon>,
+    pub compact: bool,
+    pub action: Option<StableNodeId>,
+}
+
+impl EmptyStateVisual {
+    pub(crate) fn geometry_in(
+        &self,
+        id: StableNodeId,
+        world: &UiWorld,
+        bounds: LayoutBox,
+        content: LayoutBox,
+        style_model: nana_ui_core::StyleModelRef,
+        secondary: [f32; 4],
+    ) -> EmptyStateGeometry {
+        let band = content;
+        let typography = world.theme().typography();
+        let (title_size, message_size) = if self.compact {
+            (typography.meta, typography.hint)
+        } else {
+            (typography.body, typography.meta)
+        };
+        let part = |kind| {
+            world.content_part_box(id, kind).unwrap_or(LayoutBox {
+                width: 0.0,
+                height: 0.0,
+                ..band
+            })
+        };
+        let icon = self.icon.map(|icon| {
+            (
+                icon,
+                part(LayoutPartKind::LeadingContent),
+                style_model.color(SemanticColorRole::Faint).as_rgba_array(),
+            )
+        });
+        let title = ComponentTextRegion {
+            bounds: part(LayoutPartKind::Header),
+            content: Arc::clone(&self.title).into(),
+            color: Some(if self.compact {
+                secondary
+            } else {
+                style_model.color(SemanticColorRole::Text).as_rgba_array()
+            }),
+            font_size: title_size,
+            font_weight: Some(typography.semibold),
+        };
+        let message = self.message.as_ref().map(|message| ComponentTextRegion {
+            bounds: part(LayoutPartKind::Detail),
+            content: Arc::clone(message).into(),
+            color: Some(secondary),
+            font_size: message_size,
+            font_weight: None,
+        });
+        EmptyStateGeometry {
+            root_clip: bounds,
+            content_clip: band,
+            icon,
+            title,
+            message,
+            action: self
+                .action
+                .and_then(|action| world.component_layout_box(action)),
+        }
+    }
+}
+
+impl WidgetVisual for EmptyStateVisual {
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
+
+    fn dyn_eq(&self, other: &dyn Any) -> bool {
+        other.downcast_ref::<Self>().is_some_and(|rhs| self == rhs)
+    }
+
+    fn measures_text(&self) -> bool {
+        true
+    }
+
+    fn clips_descendants(&self) -> bool {
+        true
+    }
+
+    fn owns_intrinsic_text(&self) -> bool {
+        true
+    }
+
+    fn text_visual_key(&self) -> Option<(std::any::TypeId, u64)> {
+        Some((std::any::TypeId::of::<Self>(), 0))
+    }
+
+    fn solve_content_parts(
+        &self,
+        id: StableNodeId,
+        world: &UiWorld,
+        _bounds: LayoutBox,
+        content: LayoutBox,
+        _writing: nana_ui_core::WritingContext,
+        _own_frame: bool,
+    ) -> Option<crate::layout_engine::parts::ContentParts> {
+        let inputs = world.empty_state_inputs(id)?;
+        let presentation = world.empty_state_text(id).copied().unwrap_or_default();
+        let size = |metrics: crate::TextMetrics| {
+            crate::layout_engine::Size::new(metrics.width, metrics.height)
+        };
+        let message = self
+            .message
+            .as_ref()
+            .map(|_| size(presentation.message.unwrap_or_default()));
+        Some(crate::layout_engine::parts::empty_state_parts(
+            content,
+            inputs,
+            size(presentation.title),
+            message,
+        ))
+    }
+
+    fn leading_parts(
+        &self,
+        id: StableNodeId,
+        world: &UiWorld,
+    ) -> Option<crate::layout_engine::parts::LeadingParts> {
+        let inputs = world.empty_state_inputs(id)?;
+        let presentation = world.empty_state_text(id).copied().unwrap_or_default();
+        let size = |metrics: crate::TextMetrics| {
+            crate::layout_engine::Size::new(metrics.width, metrics.height)
+        };
+        Some(crate::layout_engine::parts::LeadingParts {
+            axis: FlexDirection::Column,
+            extent: inputs.block_height(size(presentation.title), presentation.message.map(size)),
+            breadth: 0.0,
+            end: false,
+        })
+    }
+
+    fn paint(&self, ctx: &WidgetPaintCtx<'_>) -> WidgetPaintOutput {
+        let geom = self.geometry_in(
+            ctx.id,
+            ctx.world,
+            ctx.bounds,
+            ctx.content,
+            ctx.style_model,
+            ctx.secondary_text_color(),
+        );
+        let mut output = WidgetPaintOutput {
+            owns_node_text: true,
+            suppress_root_surface: true,
+            clips_descendants: true,
+            ..Default::default()
+        };
+        let mut title = styled_text_region(
+            &geom.title,
+            ctx.style,
+            TextHorizontalAlignment::Start,
+            false,
+        );
+        title.wrap = true;
+        title.vertical_alignment = TextVerticalAlignment::Top;
+        title.line_height = Some(None);
+        output.push_tagged(
+            WidgetTaggedOp::new(2, WidgetPaintOp::Text(title)).with_extra_clip(geom.content_clip),
+        );
+        if let Some((icon, bounds, color)) = geom.icon {
+            output.push_tagged(
+                WidgetTaggedOp::new(
+                    3,
+                    WidgetPaintOp::Icon(WidgetIcon {
+                        bounds,
+                        glyph: crate::WidgetGlyph::Icon(icon),
+                        color: Some(color),
+                        paint_color: ctx.matching_text_paint(color),
+                        align_to_adjacent_text: false,
+                    }),
+                )
+                .with_extra_clip(geom.content_clip),
+            );
+        }
+        if let Some(message_region) = &geom.message {
+            let mut message = styled_text_region(
+                message_region,
+                ctx.style,
+                TextHorizontalAlignment::Start,
+                false,
+            );
+            message.wrap = true;
+            message.vertical_alignment = TextVerticalAlignment::Top;
+            message.line_height = Some(None);
+            output.push_tagged(
+                WidgetTaggedOp::new(4, WidgetPaintOp::Text(message))
+                    .with_extra_clip(geom.content_clip),
+            );
+        }
+        output
+    }
+}
+
 impl ComponentView for EmptyState {
+    const TYPE_ID: Option<&'static str> = Some(crate::component_descriptors::EMPTY_STATE.type_id);
+
     fn share_layouts(
         &mut self,
         share: &mut dyn FnMut(&mut std::sync::Arc<nana_ui_core::LayoutStyle>),
@@ -430,19 +969,20 @@ impl ComponentView for EmptyState {
     }
 
     fn project(&self, id: StableNodeId, world: &UiWorld, mutations: &mut MutationQueue) {
-        project_visual(
+        project_widget_visual(
             id,
             world,
             mutations,
             "",
             self.effective_style(),
-            StandardVisual::EmptyState {
+            EmptyStateVisual {
                 title: Arc::clone(&self.title),
                 message: self.message.clone(),
                 icon: self.icon,
                 compact: self.compact,
                 action: self.action,
             },
+            false,
             AccessibilityState {
                 role: AccessibilityRole::Generic,
                 label: Some(Arc::clone(&self.title)),
@@ -537,6 +1077,8 @@ impl LabeledValue {
 }
 
 impl ComponentView for LabeledValue {
+    const TYPE_ID: Option<&'static str> = Some(crate::component_descriptors::LABELED_VALUE.type_id);
+
     fn share_layouts(
         &mut self,
         share: &mut dyn FnMut(&mut std::sync::Arc<nana_ui_core::LayoutStyle>),
@@ -560,13 +1102,14 @@ impl ComponentView for LabeledValue {
             ValueEmphasis::Normal => 500,
             ValueEmphasis::Strong => 600,
         };
-        project_visual(
+        let pointer_events = self.value_is_path && !self.value.is_empty();
+        project_widget_visual(
             id,
             world,
             mutations,
             "",
             self.effective_style(),
-            StandardVisual::LabeledValue {
+            LabeledValueVisual {
                 label: Arc::clone(&self.label),
                 value: Arc::clone(&self.value),
                 value_is_path: self.value_is_path,
@@ -575,6 +1118,7 @@ impl ComponentView for LabeledValue {
                 compact: self.compact,
                 action: self.action,
             },
+            pointer_events,
             AccessibilityState {
                 role: AccessibilityRole::Generic,
                 label: Some(Arc::clone(&self.label)),
@@ -582,6 +1126,180 @@ impl ComponentView for LabeledValue {
                 ..AccessibilityState::default()
             },
         );
+    }
+}
+
+/// Visual state for [`LabeledValue`] nodes.
+#[derive(Debug, Clone, PartialEq)]
+pub struct LabeledValueVisual {
+    pub label: Arc<str>,
+    pub value: Arc<str>,
+    pub value_is_path: bool,
+    pub value_role: SemanticColorRole,
+    pub value_weight: u16,
+    pub compact: bool,
+    pub action: Option<StableNodeId>,
+}
+
+impl WidgetVisual for LabeledValueVisual {
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
+
+    fn dyn_eq(&self, other: &dyn Any) -> bool {
+        other.downcast_ref::<Self>().is_some_and(|rhs| self == rhs)
+    }
+
+    fn measures_text(&self) -> bool {
+        true
+    }
+
+    fn content_layout_changed(&self, prev: Option<&dyn Any>) -> bool {
+        match prev.and_then(|any| any.downcast_ref::<Self>()) {
+            Some(old) => {
+                (
+                    &self.label,
+                    &self.value,
+                    self.value_weight,
+                    self.compact,
+                    self.action,
+                ) != (
+                    &old.label,
+                    &old.value,
+                    old.value_weight,
+                    old.compact,
+                    old.action,
+                )
+            }
+            None => true,
+        }
+    }
+
+    fn clearing_changes_content_layout(&self) -> bool {
+        true
+    }
+
+    fn parts_placement_only(&self, prev: &dyn Any) -> bool {
+        prev.is::<Self>()
+    }
+
+    fn solve_content_parts(
+        &self,
+        id: StableNodeId,
+        world: &UiWorld,
+        _bounds: LayoutBox,
+        content: LayoutBox,
+        _writing: nana_ui_core::WritingContext,
+        own_frame: bool,
+    ) -> Option<crate::layout_engine::parts::ContentParts> {
+        let reverse = world.right_to_left(id);
+        let gap = if self.compact {
+            world.theme().spacing().xs
+        } else {
+            world.theme().spacing().md
+        };
+        let action = self
+            .action
+            .filter(|slot| {
+                world
+                    .node_style(*slot)
+                    .is_none_or(|style| !style.layout.omits_box())
+            })
+            .and_then(|slot| world.slot_box_in_frame(id, slot, own_frame));
+        let mut area = content;
+        if let Some(action) = action {
+            if reverse {
+                area.x = (action.x + action.width + gap).min(content.x + content.width);
+                area.width = (content.x + content.width - area.x).max(0.0);
+            } else {
+                area.width = (action.x - gap - content.x).max(0.0).min(content.width);
+            }
+        }
+        let measure = world.chrome_text_measure(id);
+        let label_size = world.theme().typography().hint;
+        let value_size = world.theme().typography().meta;
+        Some(crate::layout_engine::parts::paired_text_parts(
+            area,
+            crate::layout_engine::Size::new(
+                if self.label.is_empty() {
+                    0.0
+                } else {
+                    measure.width(&self.label, label_size, None)
+                },
+                label_size * 1.2,
+            ),
+            crate::layout_engine::Size::new(
+                measure.width(&self.value, value_size, Some(self.value_weight)),
+                value_size * 1.2,
+            ),
+            gap,
+            world.theme().spacing().xxxl,
+            reverse,
+        ))
+    }
+
+    fn paint(&self, ctx: &WidgetPaintCtx<'_>) -> WidgetPaintOutput {
+        let mut out = WidgetPaintOutput {
+            suppress_root_surface: true,
+            owns_node_text: true,
+            ..WidgetPaintOutput::new()
+        };
+        let parts = ctx.content_parts();
+        let Some(label_bounds) =
+            crate::layout_engine::parts::part_bounds(&parts, LayoutPartKind::Label)
+        else {
+            return out;
+        };
+        let Some(value_bounds) =
+            crate::layout_engine::parts::part_bounds(&parts, LayoutPartKind::Value)
+        else {
+            return out;
+        };
+        let value_size = ctx.theme.typography().meta;
+        let value_text: TextValue = if self.value_is_path {
+            let measure = ctx.world.chrome_text_measure(ctx.id);
+            crate::path_text::shorten_path(&self.value, value_bounds.width, |text| {
+                measure.width(text, value_size, Some(self.value_weight))
+            })
+            .into()
+        } else {
+            TextValue::from(Arc::clone(&self.value))
+        };
+        out.push(
+            2,
+            WidgetPaintOp::Text(widget_text_region(
+                &ComponentTextRegion {
+                    bounds: label_bounds,
+                    content: TextValue::from(Arc::clone(&self.label)),
+                    color: Some(
+                        ctx.style_model
+                            .color(SemanticColorRole::Faint)
+                            .as_rgba_array(),
+                    ),
+                    font_size: ctx.theme.typography().hint,
+                    font_weight: None,
+                },
+                ctx,
+                TextHorizontalAlignment::Start,
+                true,
+            )),
+        );
+        out.push(
+            3,
+            WidgetPaintOp::Text(widget_text_region(
+                &ComponentTextRegion {
+                    bounds: value_bounds,
+                    content: value_text,
+                    color: Some(ctx.style_model.color(self.value_role).as_rgba_array()),
+                    font_size: value_size,
+                    font_weight: Some(self.value_weight),
+                },
+                ctx,
+                TextHorizontalAlignment::End,
+                true,
+            )),
+        );
+        out
     }
 }
 
@@ -801,6 +1519,8 @@ impl Progress {
 }
 
 impl ComponentView for Progress {
+    const TYPE_ID: Option<&'static str> = Some(crate::component_descriptors::PROGRESS.type_id);
+
     const BEHAVIOR: crate::TypeBehavior<Self> = crate::TypeBehavior {
         activation: Some(crate::AppContext::cancel_progress),
         ..crate::TypeBehavior::NONE
@@ -858,8 +1578,8 @@ impl ComponentView for Progress {
         } else {
             // The timeline writes the phase straight into the visual; a
             // projection carries it on rather than restarting the pass.
-            match world.standard_visual_ref(id) {
-                Some(StandardVisual::Progress {
+            match world.widget_visual_as::<ProgressVisual>(id) {
+                Some(ProgressVisual {
                     mode: ProgressMode::Sweep { phase },
                     ..
                 }) => ProgressMode::Sweep { phase: *phase },
@@ -887,13 +1607,13 @@ impl ComponentView for Progress {
                 ..AccessibilityState::default()
             }
         };
-        project_visual(
+        project_widget_visual(
             id,
             world,
             mutations,
             "",
             self.effective_style(),
-            StandardVisual::Progress {
+            ProgressVisual {
                 value_ratio: self.value_ratio(),
                 label: self.label.clone(),
                 cancellable: self.cancellable,
@@ -903,6 +1623,7 @@ impl ComponentView for Progress {
                     .unwrap_or(world.theme().spacing().sm),
                 fill: self.fill,
             },
+            false,
             accessibility,
         );
         let interaction = InteractionState {
@@ -912,6 +1633,208 @@ impl ComponentView for Progress {
         if world.interaction(id) != Some(interaction) {
             mutations.set_interaction(id, interaction);
         }
+    }
+}
+
+/// Visual state for [`Progress`] nodes.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ProgressVisual {
+    pub value_ratio: f32,
+    pub label: Option<Arc<str>>,
+    pub cancellable: bool,
+    pub mode: ProgressMode,
+    pub thickness: f32,
+    pub fill: Option<SemanticColorRole>,
+}
+
+impl ProgressVisual {
+    fn inputs(&self, world: &UiWorld) -> crate::layout_engine::parts::ProgressInputs {
+        let spacing = world.theme().spacing();
+        crate::layout_engine::parts::ProgressInputs {
+            label: self.label.as_ref().map(|_| world.theme().typography().meta),
+            cancel: self.cancellable.then_some(spacing.page),
+            cancel_gap: spacing.md,
+            gap: spacing.sm,
+            thickness: if self.thickness.is_finite() && self.thickness > 0.0 {
+                self.thickness
+            } else {
+                spacing.sm
+            },
+        }
+    }
+}
+
+impl WidgetVisual for ProgressVisual {
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
+
+    fn dyn_eq(&self, other: &dyn Any) -> bool {
+        other.downcast_ref::<Self>().is_some_and(|rhs| self == rhs)
+    }
+
+    fn is_valid(&self) -> bool {
+        let phase = match self.mode {
+            ProgressMode::Sweep { phase } => phase,
+            _ => 0.0,
+        };
+        ![self.value_ratio, phase]
+            .iter()
+            .any(|share| !share.is_finite() || !(0.0..=1.0).contains(share))
+            && self.thickness.is_finite()
+            && self.thickness > 0.0
+    }
+
+    fn visual_parts_read_theme(&self) -> bool {
+        true
+    }
+
+    fn content_layout_changed(&self, prev: Option<&dyn Any>) -> bool {
+        match prev.and_then(|any| any.downcast_ref::<Self>()) {
+            Some(old) => {
+                (self.label.is_some(), self.cancellable, self.thickness)
+                    != (old.label.is_some(), old.cancellable, old.thickness)
+            }
+            None => true,
+        }
+    }
+
+    fn clearing_changes_content_layout(&self) -> bool {
+        true
+    }
+
+    fn invalidates_node_text_constraint(&self) -> bool {
+        true
+    }
+
+    fn intrinsic_chrome_content(&self, _id: StableNodeId, world: &UiWorld) -> WidgetVisualContent {
+        WidgetVisualContent {
+            height: self.inputs(world).extent(),
+            ..WidgetVisualContent::default()
+        }
+    }
+
+    fn solve_content_parts(
+        &self,
+        _id: StableNodeId,
+        world: &UiWorld,
+        _bounds: LayoutBox,
+        content: LayoutBox,
+        _writing: nana_ui_core::WritingContext,
+        _own_frame: bool,
+    ) -> Option<crate::layout_engine::parts::ContentParts> {
+        Some(crate::layout_engine::parts::progress_parts(
+            content,
+            self.inputs(world),
+        ))
+    }
+
+    fn paint(&self, ctx: &WidgetPaintCtx<'_>) -> WidgetPaintOutput {
+        let inputs = self.inputs(ctx.world);
+        let track = crate::layout_engine::parts::progress_track(ctx.content, inputs);
+        let corner_radius = (inputs.thickness / 2.0).max(0.0);
+        let ratio = self.value_ratio.clamp(0.0, 1.0);
+        let fill = match self.mode {
+            ProgressMode::Value => LayoutBox {
+                width: track.width * ratio,
+                ..track
+            },
+            ProgressMode::Sweep { phase } => {
+                let phase = if phase.is_finite() {
+                    phase.clamp(0.0, 1.0)
+                } else {
+                    0.0
+                };
+                let lead = (1.0 + PROGRESS_SWEEP_SEGMENT) * phase - PROGRESS_SWEEP_SEGMENT;
+                let start = lead.clamp(0.0, 1.0);
+                let end = (lead + PROGRESS_SWEEP_SEGMENT).clamp(0.0, 1.0);
+                LayoutBox {
+                    x: track.x + track.width * start,
+                    width: track.width * (end - start),
+                    ..track
+                }
+            }
+            ProgressMode::Still => track,
+        };
+        let parts = ctx.content_parts();
+        let part = |kind| crate::layout_engine::parts::part_bounds(&parts, kind);
+        let typography = ctx.theme.typography();
+        let fill_role = self.fill.unwrap_or_else(|| {
+            ctx.theme
+                .recipes()
+                .foreground(ComponentRecipeId::Indicator, false)
+        });
+        let fill_color = match self.mode {
+            ProgressMode::Still => SemanticColorMix::alpha(fill_role, PROGRESS_STILL_ALPHA)
+                .resolve(ctx.style_model)
+                .as_rgba_array(),
+            _ => ctx.style_model.color(fill_role).as_rgba_array(),
+        };
+
+        let mut out = WidgetPaintOutput {
+            suppress_root_surface: true,
+            owns_node_text: true,
+            ..WidgetPaintOutput::new()
+        };
+        if let Some((label, bounds)) = self.label.as_ref().zip(part(LayoutPartKind::Label)) {
+            out.push(
+                2,
+                WidgetPaintOp::Text(widget_text_region(
+                    &ComponentTextRegion {
+                        bounds,
+                        content: TextValue::from(Arc::clone(label)),
+                        color: Some(ctx.style.color.unwrap_or_else(|| {
+                            ctx.style_model
+                                .color(SemanticColorRole::Text)
+                                .as_rgba_array()
+                        })),
+                        font_size: typography.meta,
+                        font_weight: Some(typography.medium),
+                    },
+                    ctx,
+                    TextHorizontalAlignment::Start,
+                    true,
+                )),
+            );
+        }
+        out.push(
+            3,
+            WidgetPaintOp::Quad(WidgetQuad {
+                rect: track,
+                fill: ctx.style.background,
+                fill_paint: ctx.style.paint_colors.background,
+                corner_radius: [corner_radius; 4],
+                ..WidgetQuad::default()
+            }),
+        );
+        out.push(
+            4,
+            WidgetPaintOp::Quad(WidgetQuad {
+                rect: fill,
+                fill: Some(fill_color),
+                fill_paint: ctx.matching_text_paint(fill_color),
+                corner_radius: [corner_radius; 4],
+                ..WidgetQuad::default()
+            }),
+        );
+        if let Some(cancel) = part(LayoutPartKind::TrailingContent) {
+            out.push(
+                5,
+                WidgetPaintOp::Text(widget_text_region(
+                    &ComponentTextRegion {
+                        bounds: cancel,
+                        content: TextValue::from("×"),
+                        color: ctx.style.color,
+                        font_size: 15.0,
+                        font_weight: None,
+                    },
+                    ctx,
+                    TextHorizontalAlignment::Center,
+                    false,
+                )),
+            );
+        }
+        out
     }
 }
 
@@ -1045,7 +1968,82 @@ impl Spinner {
     }
 }
 
+impl Spinner {
+    /// Visual primitive payload projected per spinner node.
+    fn visual(&self) -> SpinnerVisual {
+        SpinnerVisual {
+            label: Arc::from(self.painted_label()),
+            size: self.resolved_size(),
+            phase: self.resolved_phase(),
+        }
+    }
+}
+
+/// Visual state for [`Spinner`] and loading [`crate::Thumbnail`] nodes.
+#[derive(Debug, Clone, PartialEq)]
+pub struct SpinnerVisual {
+    pub label: Arc<str>,
+    pub size: f32,
+    pub phase: f32,
+}
+
+impl crate::WidgetVisual for SpinnerVisual {
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+
+    fn dyn_eq(&self, other: &dyn std::any::Any) -> bool {
+        other.downcast_ref::<Self>().is_some_and(|rhs| self == rhs)
+    }
+
+    fn paint(&self, ctx: &crate::WidgetPaintCtx<'_>) -> crate::WidgetPaintOutput {
+        let extent = self
+            .size
+            .max(0.0)
+            .min(ctx.bounds.width)
+            .min(ctx.bounds.height);
+        // Unlabeled spinners (Thumbnail loading) sit in the box center.
+        // A labeled Spinner keeps the glyph in the leading padding lane so it
+        // does not cover the caption.
+        let x = if self.label.trim().is_empty() {
+            ctx.bounds.x + (ctx.bounds.width - extent) / 2.0
+        } else {
+            ctx.bounds.x
+        };
+        let y = ctx.bounds.y + (ctx.bounds.height - extent) / 2.0;
+        let role = ctx
+            .theme
+            .recipes()
+            .foreground(nana_ui_core::ComponentRecipeId::Indicator, false);
+        let fg = ctx.style_model.color(role).as_rgba_array();
+        let paint_color = ctx.matching_text_paint(fg);
+        let phase = (self.phase.clamp(0.0, 1.0) * 8.0).floor() as u8 % 8;
+        let mut out = crate::WidgetPaintOutput {
+            suppress_root_surface: true,
+            ..crate::WidgetPaintOutput::new()
+        };
+        out.push(
+            3,
+            crate::WidgetPaintOp::Icon(crate::WidgetIcon {
+                bounds: crate::LayoutBox {
+                    x,
+                    y,
+                    width: extent,
+                    height: extent,
+                },
+                glyph: crate::WidgetGlyph::Spinner { phase },
+                color: Some(fg),
+                paint_color,
+                align_to_adjacent_text: false,
+            }),
+        );
+        out
+    }
+}
+
 impl ComponentView for Spinner {
+    const TYPE_ID: Option<&'static str> = Some(crate::component_descriptors::SPINNER.type_id);
+
     const BEHAVIOR: crate::TypeBehavior<Self> = crate::TypeBehavior {
         hooks: Some(|hooks| {
             crate::framework::routes::spinner(hooks);
@@ -1083,17 +2081,34 @@ impl ComponentView for Spinner {
                 mutations.start_animation_with_playback(spec, Self::SPIN_PLAYBACK);
             }
         }
-        project_visual(
+        let text = self.painted_label();
+        if world.text(id) != Some(text) {
+            mutations.set_text(
+                id,
+                TextContent {
+                    value: text.to_owned().into(),
+                },
+            );
+        }
+        let style = self.effective_style();
+        if world.node_style(id) != Some(&style) {
+            mutations.set_style(id, style);
+        }
+        let visual = self.visual();
+        if world.widget_visual_as::<SpinnerVisual>(id) != Some(&visual) {
+            mutations.set_widget_visual(id, Some(visual));
+        }
+        let interaction = InteractionState {
+            pointer_events: false,
+            focusable: false,
+        };
+        if world.interaction(id) != Some(interaction) {
+            mutations.set_interaction(id, interaction);
+        }
+        project_accessibility(
             id,
             world,
             mutations,
-            self.painted_label(),
-            self.effective_style(),
-            StandardVisual::Spinner {
-                label: Arc::from(self.painted_label()),
-                size: self.resolved_size(),
-                phase: self.resolved_phase(),
-            },
             AccessibilityState {
                 role: AccessibilityRole::ProgressIndicator,
                 label: Some(Arc::clone(&self.label)),
@@ -1107,9 +2122,7 @@ impl ComponentView for Spinner {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{
-        AppContext, Button, DocumentId, FrameworkError, ProgressCancelled, StandardVisual,
-    };
+    use crate::{AppContext, Button, DocumentId, FrameworkError, ProgressCancelled};
     use std::sync::{Arc, Mutex};
     use std::time::Duration;
     use unicode_segmentation::UnicodeSegmentation;
@@ -1214,15 +2227,40 @@ mod tests {
             Some("Offline")
         );
         layout(&mut context, id, 96.0, 24.0);
-        let crate::ComponentGeometry::StatusBadge {
-            indicator,
-            label,
-            background,
-            foreground,
-        } = context.world().component_geometry(id).unwrap()
-        else {
-            panic!("status badge geometry")
+        let badge_paint = |context: &AppContext| {
+            let paint = context.world().widget_paint(id).unwrap();
+            let background = paint
+                .root_surface
+                .as_ref()
+                .and_then(|surface| surface.background)
+                .flatten()
+                .expect("status badge background");
+            let WidgetPaintOp::Text(label) = &paint
+                .ops
+                .iter()
+                .find(|tagged| tagged.slot == 2)
+                .expect("status badge label")
+                .op
+            else {
+                panic!("status badge label");
+            };
+            let WidgetPaintOp::Quad(dot) = &paint
+                .ops
+                .iter()
+                .find(|tagged| tagged.slot == 3)
+                .expect("status badge dot")
+                .op
+            else {
+                panic!("status badge dot");
+            };
+            (
+                dot.rect,
+                label.clone(),
+                background,
+                dot.fill.expect("status badge foreground"),
+            )
         };
+        let (indicator, label, background, foreground) = badge_paint(&context);
         assert!(indicator.width > 0.0);
         assert_eq!(label.font_size, nana_ui_core::type_scale::META);
         assert_eq!(label.font_weight, Some(nana_ui_core::type_scale::MEDIUM));
@@ -1237,11 +2275,7 @@ mod tests {
             .compat_world_mut()
             .resolve_styles(&work.style)
             .unwrap();
-        let crate::ComponentGeometry::StatusBadge { foreground, .. } =
-            context.world().component_geometry(id).unwrap()
-        else {
-            panic!("status badge geometry")
-        };
+        let (_, _, _, foreground) = badge_paint(&context);
         assert_ne!(foreground, dark_foreground);
     }
 
@@ -1270,14 +2304,27 @@ mod tests {
             Some("A project is required")
         );
         layout(&mut context, id, 180.0, 18.0);
-        let crate::ComponentGeometry::ValidationMessage {
-            indicator,
-            label,
-            foreground,
-        } = context.world().component_geometry(id).unwrap()
+        let paint = context.world().widget_paint(id).unwrap();
+        let WidgetPaintOp::Text(label) = &paint
+            .ops
+            .iter()
+            .find(|tagged| tagged.slot == 2)
+            .expect("validation label")
+            .op
         else {
-            panic!("validation geometry")
+            panic!("validation label");
         };
+        let WidgetPaintOp::Quad(dot) = &paint
+            .ops
+            .iter()
+            .find(|tagged| tagged.slot == 3)
+            .expect("validation dot")
+            .op
+        else {
+            panic!("validation dot");
+        };
+        let indicator = dot.rect;
+        let (foreground, _) = dot.border.expect("validation foreground");
         assert!(indicator.width > 0.0);
         assert_eq!(label.font_size, nana_ui_core::type_scale::HINT);
         assert_eq!(label.color, Some(foreground));
@@ -1340,14 +2387,14 @@ mod tests {
                 .unwrap()
         );
 
-        let crate::ComponentGeometry::EmptyState {
+        let crate::EmptyStateGeometry {
             title,
             message: Some(message),
             action: Some(action_bounds),
             ..
         } = context
             .world()
-            .component_geometry(empty.stable_id())
+            .empty_state_geometry(empty.stable_id())
             .unwrap()
         else {
             panic!("wrapped empty state geometry")
@@ -1371,14 +2418,14 @@ mod tests {
                 .shape_text_for_layout(document(), &mut shaper)
                 .unwrap()
         );
-        let crate::ComponentGeometry::EmptyState {
+        let crate::EmptyStateGeometry {
             title,
             message: Some(message),
             action: Some(action),
             ..
         } = context
             .world()
-            .component_geometry(empty.stable_id())
+            .empty_state_geometry(empty.stable_id())
             .unwrap()
         else {
             panic!("light empty state geometry")
@@ -1411,7 +2458,7 @@ mod tests {
         context
             .layout_document(document(), crate::LayoutViewport::new(100.0, 100.0))
             .unwrap();
-        let crate::ComponentGeometry::EmptyState {
+        let crate::EmptyStateGeometry {
             icon: None,
             message: None,
             action: None,
@@ -1419,7 +2466,7 @@ mod tests {
             ..
         } = context
             .world()
-            .component_geometry(empty.stable_id())
+            .empty_state_geometry(empty.stable_id())
             .unwrap()
         else {
             panic!("title-only empty state geometry")
@@ -1473,14 +2520,14 @@ mod tests {
             .layout_document(document(), crate::LayoutViewport::new(120.0, 200.0))
             .unwrap();
 
-        let crate::ComponentGeometry::EmptyState {
+        let crate::EmptyStateGeometry {
             content_clip: clip,
             title,
             message: Some(message),
             ..
         } = context
             .world()
-            .component_geometry(empty.stable_id())
+            .empty_state_geometry(empty.stable_id())
             .unwrap()
         else {
             panic!("normal empty state geometry")
@@ -1530,7 +2577,7 @@ mod tests {
             .layout_document(document(), crate::LayoutViewport::new(40.0, 400.0))
             .unwrap();
 
-        let crate::ComponentGeometry::EmptyState {
+        let crate::EmptyStateGeometry {
             content_clip: clip,
             icon: Some((_, icon, _)),
             title,
@@ -1539,7 +2586,7 @@ mod tests {
             ..
         } = context
             .world()
-            .component_geometry(empty.stable_id())
+            .empty_state_geometry(empty.stable_id())
             .unwrap()
         else {
             panic!("narrow empty state geometry")
@@ -1674,13 +2721,13 @@ mod tests {
         context
             .layout_document(document(), crate::LayoutViewport::new(160.0, 120.0))
             .unwrap();
-        let crate::ComponentGeometry::EmptyState {
+        let crate::EmptyStateGeometry {
             message: Some(message),
             action: Some(action),
             ..
         } = context
             .world()
-            .component_geometry(empty.stable_id())
+            .empty_state_geometry(empty.stable_id())
             .unwrap()
         else {
             panic!("compact action geometry")
@@ -1723,12 +2770,15 @@ mod tests {
                 focusable: false,
             })
         );
-        let Some(StandardVisual::EmptyState {
+        let Some(EmptyStateVisual {
             icon,
             message,
             action: None,
             ..
-        }) = context.world().standard_visual(empty.stable_id())
+        }) = context
+            .world()
+            .widget_visual_as::<EmptyStateVisual>(empty.stable_id())
+            .cloned()
         else {
             panic!("empty state visual");
         };
@@ -1806,7 +2856,7 @@ mod tests {
             Some(crate::MountState::Parked)
         );
         layout(&mut context, empty.stable_id(), 240.0, 120.0);
-        let crate::ComponentGeometry::EmptyState {
+        let crate::EmptyStateGeometry {
             icon,
             title,
             message,
@@ -1814,11 +2864,8 @@ mod tests {
             ..
         } = context
             .world()
-            .component_geometry(empty.stable_id())
-            .unwrap()
-        else {
-            panic!("empty state geometry")
-        };
+            .empty_state_geometry(empty.stable_id())
+            .unwrap();
         let Some((kind, _, _)) = icon else {
             panic!("empty state icon");
         };
@@ -1909,8 +2956,8 @@ mod tests {
         );
 
         assert_eq!(
-            context.world().standard_visual(id),
-            Some(StandardVisual::LabeledValue {
+            context.world().widget_visual_as::<LabeledValueVisual>(id),
+            Some(&LabeledValueVisual {
                 label: Arc::from("Revision"),
                 value: Arc::from("42"),
                 value_is_path: false,
@@ -1968,10 +3015,24 @@ mod tests {
         assert_eq!(removed.label, "Copy");
         assert!(!context.world().contains(action.stable_id()));
         layout(&mut context, id, 180.0, 32.0);
-        let crate::ComponentGeometry::LabeledValue { label, value, .. } =
-            context.world().component_geometry(id).unwrap()
+        let paint = context.world().widget_paint(id).unwrap();
+        let WidgetPaintOp::Text(label) = &paint
+            .ops
+            .iter()
+            .find(|tagged| tagged.slot == 2)
+            .expect("labeled value label")
+            .op
         else {
-            panic!("labeled value geometry")
+            panic!("labeled value label")
+        };
+        let WidgetPaintOp::Text(value) = &paint
+            .ops
+            .iter()
+            .find(|tagged| tagged.slot == 3)
+            .expect("labeled value value")
+            .op
+        else {
+            panic!("labeled value value")
         };
         assert_eq!(label.font_size, nana_ui_core::type_scale::HINT);
         assert_eq!(value.font_size, nana_ui_core::type_scale::META);
@@ -2029,11 +3090,29 @@ mod tests {
             .unwrap();
         let id = summary.stable_id();
         layout(&mut context, id, 180.0, 32.0);
-        let crate::ComponentGeometry::LabeledValue { label, value, .. } =
-            context.world().component_geometry(id).unwrap()
-        else {
-            panic!("labeled value geometry")
+        let pair = || {
+            let paint = context.world().widget_paint(id).unwrap();
+            let WidgetPaintOp::Text(label) = &paint
+                .ops
+                .iter()
+                .find(|tagged| tagged.slot == 2)
+                .expect("labeled value label")
+                .op
+            else {
+                panic!("labeled value label")
+            };
+            let WidgetPaintOp::Text(value) = &paint
+                .ops
+                .iter()
+                .find(|tagged| tagged.slot == 3)
+                .expect("labeled value value")
+                .op
+            else {
+                panic!("labeled value value")
+            };
+            (label.clone(), value.clone())
         };
+        let (label, value) = pair();
         let label_natural = estimated_width("路径", label.font_size);
         assert!(
             label.bounds.width + 0.01 >= label_natural,
@@ -2073,10 +3152,24 @@ mod tests {
             .unwrap();
         let id = summary.stable_id();
         layout(&mut context, id, 180.0, 32.0);
-        let crate::ComponentGeometry::LabeledValue { label, value, .. } =
-            context.world().component_geometry(id).unwrap()
+        let paint = context.world().widget_paint(id).unwrap();
+        let WidgetPaintOp::Text(label) = &paint
+            .ops
+            .iter()
+            .find(|tagged| tagged.slot == 2)
+            .expect("labeled value label")
+            .op
         else {
-            panic!("labeled value geometry")
+            panic!("labeled value label")
+        };
+        let WidgetPaintOp::Text(value) = &paint
+            .ops
+            .iter()
+            .find(|tagged| tagged.slot == 3)
+            .expect("labeled value value")
+            .op
+        else {
+            panic!("labeled value value")
         };
         assert!(
             label.bounds.width >= 0.0 && value.bounds.width >= 0.0,
@@ -2218,17 +3311,21 @@ mod tests {
     }
 
     fn progress_ratio(context: &AppContext, id: StableNodeId) -> f32 {
-        match context.world().standard_visual(id) {
-            Some(StandardVisual::Progress { value_ratio, .. }) => value_ratio,
+        match context.world().widget_visual_as::<ProgressVisual>(id) {
+            Some(visual) => visual.value_ratio,
             other => panic!("progress visual: {other:?}"),
         }
     }
 
     fn progress_fill_width(context: &AppContext, id: StableNodeId) -> (f32, f32) {
-        let crate::ComponentGeometry::Progress { track, fill, .. } =
-            context.world().component_geometry(id).unwrap()
-        else {
-            panic!("progress geometry")
+        let paint = context.world().widget_paint(id).expect("progress paint");
+        let track = match &paint.ops.iter().find(|op| op.slot == 3).unwrap().op {
+            crate::WidgetPaintOp::Quad(quad) => quad.rect,
+            other => panic!("progress track: {other:?}"),
+        };
+        let fill = match &paint.ops.iter().find(|op| op.slot == 4).unwrap().op {
+            crate::WidgetPaintOp::Quad(quad) => quad.rect,
+            other => panic!("progress fill: {other:?}"),
         };
         (track.width, fill.width)
     }
@@ -2289,13 +3386,17 @@ mod tests {
             .unwrap();
         let id = progress.stable_id();
         layout(&mut context, id, 160.0, 36.0);
-        let crate::ComponentGeometry::Progress {
-            cancel: Some(cancel),
-            label: Some(label),
-            ..
-        } = context.world().component_geometry(id).unwrap()
-        else {
-            panic!("cancellable progress geometry");
+        let paint = context
+            .world()
+            .widget_paint(id)
+            .expect("cancellable progress paint");
+        let label = match &paint.ops.iter().find(|op| op.slot == 2).unwrap().op {
+            crate::WidgetPaintOp::Text(text) => text,
+            other => panic!("progress label: {other:?}"),
+        };
+        let cancel = match &paint.ops.iter().find(|op| op.slot == 5).unwrap().op {
+            crate::WidgetPaintOp::Text(text) => text.bounds,
+            other => panic!("progress cancel: {other:?}"),
         };
         assert!(cancel.width > 0.0);
         assert!(label.bounds.width < 160.0);
@@ -2359,13 +3460,13 @@ mod tests {
             .unwrap();
         let id = spinner.stable_id();
         assert_eq!(context.world().text(id), Some("Loading"));
-        match context.world().standard_visual(id) {
-            Some(StandardVisual::Spinner { label, size, phase }) => {
-                assert_eq!(&*label, "Loading");
-                assert_eq!(size, 14.0);
-                assert_eq!(phase, 0.0);
+        match context.world().widget_visual_as::<SpinnerVisual>(id) {
+            Some(SpinnerVisual { label, size, phase }) => {
+                assert_eq!(&**label, "Loading");
+                assert_eq!(*size, 14.0);
+                assert_eq!(*phase, 0.0);
             }
-            other => panic!("spinner visual: {other:?}"),
+            None => panic!("spinner visual missing"),
         }
         let accessibility = context.world().accessibility(id).unwrap();
         assert_eq!(accessibility.role, AccessibilityRole::ProgressIndicator);
@@ -2384,9 +3485,9 @@ mod tests {
     #[test]
     fn a_mounted_spinner_turns_without_the_host_ticking_it() {
         fn projected_phase(context: &AppContext, id: StableNodeId) -> f32 {
-            match context.world().standard_visual(id) {
-                Some(StandardVisual::Spinner { phase, .. }) => phase,
-                other => panic!("expected a spinner visual, got {other:?}"),
+            match context.world().widget_visual_as::<SpinnerVisual>(id) {
+                Some(SpinnerVisual { phase, .. }) => *phase,
+                None => panic!("expected a spinner visual"),
             }
         }
 
@@ -2441,17 +3542,21 @@ mod tests {
         context: &AppContext,
         id: StableNodeId,
     ) -> (crate::LayoutBox, crate::LayoutBox) {
-        let crate::ComponentGeometry::Progress { track, fill, .. } =
-            context.world().component_geometry(id).unwrap()
-        else {
-            panic!("progress geometry")
+        let paint = context.world().widget_paint(id).expect("progress paint");
+        let track = match &paint.ops.iter().find(|op| op.slot == 3).unwrap().op {
+            crate::WidgetPaintOp::Quad(quad) => quad.rect,
+            other => panic!("progress track: {other:?}"),
+        };
+        let fill = match &paint.ops.iter().find(|op| op.slot == 4).unwrap().op {
+            crate::WidgetPaintOp::Quad(quad) => quad.rect,
+            other => panic!("progress fill: {other:?}"),
         };
         (track, fill)
     }
 
     fn progress_mode(context: &AppContext, id: StableNodeId) -> ProgressMode {
-        match context.world().standard_visual(id) {
-            Some(StandardVisual::Progress { mode, .. }) => mode,
+        match context.world().widget_visual_as::<ProgressVisual>(id) {
+            Some(visual) => visual.mode,
             other => panic!("progress visual: {other:?}"),
         }
     }
@@ -2477,26 +3582,29 @@ mod tests {
         assert_eq!(style.background, Some(SemanticColorRole::BorderSoft));
         // Measure, not the style, makes it as tall as the thickness (#384).
         assert_eq!(style.layout.height, None);
-        let extent =
-            |context: &AppContext, id| context.world().progress_inputs(id).unwrap().extent();
+        let extent = |context: &AppContext, id| {
+            context
+                .world()
+                .widget_visual_as::<ProgressVisual>(id)
+                .unwrap()
+                .inputs(context.world())
+                .extent()
+        };
         assert_eq!(extent(&context, id), 3.0);
         layout(&mut context, id, 100.0, 3.0);
-        let crate::ComponentGeometry::Progress {
-            track,
-            fill,
-            corner_radius,
-            ..
-        } = context.world().component_geometry(id).unwrap()
-        else {
-            panic!("progress geometry")
+        let paint = context.world().widget_paint(id).unwrap();
+        let (track, corner_radius) = match &paint.ops.iter().find(|op| op.slot == 3).unwrap().op {
+            crate::WidgetPaintOp::Quad(quad) => (quad.rect, quad.corner_radius[0]),
+            other => panic!("progress track: {other:?}"),
+        };
+        let fill = match &paint.ops.iter().find(|op| op.slot == 4).unwrap().op {
+            crate::WidgetPaintOp::Quad(quad) => quad,
+            other => panic!("progress fill: {other:?}"),
         };
         assert_eq!(track.height, 3.0);
         assert_eq!(corner_radius, 1.5, "still a pill");
-        assert!((fill.width - 25.0).abs() < 0.01);
-        assert_eq!(
-            context.world().extract_nodes(&[id])[0].standard_visual_foreground,
-            Some(palette.warning.as_rgba_array())
-        );
+        assert!((fill.rect.width - 25.0).abs() < 0.01);
+        assert_eq!(fill.fill, Some(palette.warning.as_rgba_array()));
 
         context
             .update_component(progress, |progress, _| {
@@ -2512,14 +3620,18 @@ mod tests {
         let plain = context
             .create_component(document(), Progress::new(25.0, 100.0))
             .unwrap();
-        let style = context.world().node_style(plain.stable_id()).unwrap();
+        let plain_id = plain.stable_id();
+        let style = context.world().node_style(plain_id).unwrap();
         assert_eq!(style.background, Some(SemanticColorRole::Subtle));
         assert_eq!(style.layout.height, None);
-        assert_eq!(extent(&context, plain.stable_id()), 6.0);
-        assert_eq!(
-            context.world().extract_nodes(&[plain.stable_id()])[0].standard_visual_foreground,
-            Some(palette.accent.as_rgba_array())
-        );
+        assert_eq!(extent(&context, plain_id), 6.0);
+        layout(&mut context, plain_id, 100.0, 6.0);
+        let plain_paint = context.world().widget_paint(plain_id).unwrap();
+        let plain_fill = match &plain_paint.ops.iter().find(|op| op.slot == 4).unwrap().op {
+            crate::WidgetPaintOp::Quad(quad) => quad.fill,
+            other => panic!("progress fill: {other:?}"),
+        };
+        assert_eq!(plain_fill, Some(palette.accent.as_rgba_array()));
     }
 
     /// An indeterminate bar has no amount to report: assistive technology
@@ -2611,8 +3723,17 @@ mod tests {
         let (track, fill) = progress_boxes(&context, id);
         assert_eq!(fill, track, "a still bar fills the whole track");
         let accent = nana_ui_core::SemanticPalette::dark().accent;
-        let still = context.world().extract_nodes(&[id])[0]
-            .standard_visual_foreground
+        let still = context
+            .world()
+            .widget_paint(id)
+            .and_then(|paint| {
+                paint.ops.iter().find_map(|op| {
+                    (op.slot == 4).then_some(&op.op).and_then(|op| match op {
+                        crate::WidgetPaintOp::Quad(quad) => quad.fill,
+                        _ => None,
+                    })
+                })
+            })
             .unwrap();
         assert!(
             still
@@ -2691,9 +3812,9 @@ mod tests {
         // start, so 27 of its 35 show.
         for (phase, x, width) in [(0.0, 0.0, 0.0), (0.2, 0.0, 27.0), (1.0, 100.0, 0.0)] {
             let mut sample = MutationQueue::new();
-            sample.set_standard_visual(
+            sample.set_widget_visual(
                 id,
-                Some(StandardVisual::Progress {
+                Some(ProgressVisual {
                     value_ratio: 0.0,
                     label: None,
                     cancellable: false,
@@ -2710,9 +3831,9 @@ mod tests {
             );
         }
         let mut broken = MutationQueue::new();
-        broken.set_standard_visual(
+        broken.set_widget_visual(
             id,
-            Some(StandardVisual::Progress {
+            Some(ProgressVisual {
                 value_ratio: 0.0,
                 label: None,
                 cancellable: false,

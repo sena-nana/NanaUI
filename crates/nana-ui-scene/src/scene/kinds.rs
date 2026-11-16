@@ -164,31 +164,6 @@ pub enum ScenePrimitiveKind {
     },
     /// The layer closes, after `mask` has been applied to it.
     LayerEnd { mask: Option<LayerMask> },
-    /// A chart's marks (`nana-ui-charts`), drawn by the chart shaders from
-    /// arrays the painter keeps on the GPU while `marks.revision` holds.
-    /// Marks are node-local; `origin` places them in layout space. Motion
-    /// and hover emphasis are sampled on the motion clock, so neither
-    /// rebuilds anything per frame.
-    Chart {
-        marks: nana_ui_charts::ChartMarks,
-        origin: [f32; 2],
-        hover: SceneChartHover,
-    },
-}
-
-/// What a chart's shaders emphasise, and since when.
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub struct SceneChartHover {
-    /// `(series, index)` emphasised now and before.
-    pub current: [u32; 2],
-    pub previous: [u32; 2],
-    /// Focused series now and before.
-    pub focus: [u32; 2],
-    pub since: std::time::Duration,
-    /// Seconds an emphasis change takes.
-    pub duration: f32,
-    /// px a hovered slice grows.
-    pub growth: f32,
 }
 
 /// A mesh applied to a painter layer before it composites.
@@ -296,8 +271,7 @@ impl ScenePrimitiveKind {
             | Self::IconBatch { .. }
             | Self::Stroke { .. }
             | Self::Custom { .. }
-            | Self::LayerBegin { .. }
-            | Self::Chart { .. } => false,
+            | Self::LayerBegin { .. } => false,
         }
     }
 }

@@ -11,15 +11,6 @@ pub(super) struct GridPlacedItem {
     pub(super) intrinsic: Size,
 }
 
-/// Parent track geometry for a subgrid item (already-resolved sizes, not templates).
-#[derive(Debug, Clone)]
-pub(super) struct InheritedGridTracks {
-    pub(super) columns: Option<Vec<f32>>,
-    pub(super) column_gap: f32,
-    pub(super) rows: Option<Vec<f32>>,
-    pub(super) row_gap: f32,
-}
-
 pub(super) struct Grid2DLayout {
     pub(super) col_sizes: Vec<f32>,
     pub(super) row_sizes: Vec<f32>,
@@ -61,14 +52,13 @@ pub(super) fn explicit_column_tracks(
     content_w: f32,
     col_gap: f32,
 ) -> Vec<GridTrack> {
+    let grid = &*style.grid;
     explicit_tracks(
-        style
-            .grid_columns_repeat
+        grid.columns_repeat
             .as_deref()
             .filter(|_| !style.display.is_some_and(DisplaySpec::is_layers)),
         style.active_grid_columns(),
-        style
-            .grid_template_areas
+        grid.template_areas
             .as_ref()
             .map(GridTemplateAreas::column_count)
             .unwrap_or(0),
@@ -83,14 +73,13 @@ pub(super) fn explicit_row_tracks(
     content_h: f32,
     row_gap: f32,
 ) -> Vec<GridTrack> {
+    let grid = &*style.grid;
     explicit_tracks(
-        style
-            .grid_rows_repeat
+        grid.rows_repeat
             .as_deref()
             .filter(|_| !style.display.is_some_and(DisplaySpec::is_layers)),
         style.active_grid_rows(),
-        style
-            .grid_template_areas
+        grid.template_areas
             .as_ref()
             .map(GridTemplateAreas::row_count)
             .unwrap_or(0),
@@ -201,7 +190,7 @@ pub(super) fn resolve_item_grid_placement(
         return (Some(0), 1, Some(0), 1);
     }
     if let Some(name) = placement.area.as_deref()
-        && let Some(areas) = container.grid_template_areas.as_ref()
+        && let Some(areas) = container.grid.template_areas.as_ref()
         && let Some((col, row, col_span, row_span)) = areas.lookup(name)
     {
         return (
@@ -470,6 +459,60 @@ pub(super) fn collapse_unoccupied_tracks(
 /// item measured (`child_sizes`), then rows from each item laid out at the
 /// inline size of the columns it spans ([`item_block_at_columns`]). Items are
 /// measured, so this takes the pass's measuring context.
+pub(super) struct Grid2dPrepared {
+    col_sizes: Vec<f32>,
+    row_tracks: Vec<GridTrack>,
+    col_gap: f32,
+    row_gap: f32,
+    content_block: f32,
+    writing: nana_ui_core::WritingContext,
+    items: Vec<GridPlacedItem>,
+    margins: Vec<nana_ui_core::PaddingSpec>,
+    row_auto: Vec<f32>,
+    pub(super) queries: Vec<(usize, StableNodeId, Size)>,
+}
+
+pub(super) enum Grid2dStart {
+    Ready(Grid2DLayout),
+    NeedsPass2(Grid2dPrepared),
+}
+
+pub(super) fn layout_grid_2d_finish(mut state: Grid2dPrepared, measured: &[Size]) -> Grid2DLayout {
+    for ((item_index, _, _), measured) in state.queries.iter().zip(measured) {
+        let block = state
+            .writing
+            .logical_size(measured.width, measured.height)
+            .1;
+        let item = &state.items[*item_index];
+        let margin = state.margins[*item_index];
+        let block_margins = margin_at(margin, state.writing.block_start())
+            + margin_at(margin, state.writing.block_end());
+        state.row_auto[item.row] = state.row_auto[item.row].max(block + block_margins);
+    }
+    let mut row_sizes = resolve_grid_track_sizes(
+        &state.row_tracks,
+        state.content_block,
+        state.row_gap,
+        &state.row_auto,
+    );
+    // Leftover definite block extent goes to *empty* auto rows so
+    // `height:100%` / empty stretch have a cell, without inflating
+    // content-sized auto rows.
+    distribute_auto_track_leftover(
+        &state.row_tracks,
+        &mut row_sizes,
+        state.content_block,
+        state.row_gap,
+    );
+    Grid2DLayout {
+        col_sizes: state.col_sizes,
+        row_sizes,
+        col_gap: state.col_gap,
+        row_gap: state.row_gap,
+        items: state.items,
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 pub(super) fn layout_grid_2d(
     style: &LayoutStyle,
@@ -478,82 +521,88 @@ pub(super) fn layout_grid_2d(
     child_sizes: &[Size],
     content: Size,
     fonts: FontSizeContext,
-    inherited: Option<&InheritedGridTracks>,
     viewport: LayoutViewport,
     nodes: &mut LayoutInputMap<'_>,
     cache: &mut PassIntrinsicCache,
     scope: Option<&ScopeContext<'_>>,
 ) -> Result<Grid2DLayout, UiWorldError> {
+    match layout_grid_2d_begin(style, writing, flow, child_sizes, content, fonts, nodes) {
+        Grid2dStart::Ready(layout) => Ok(layout),
+        Grid2dStart::NeedsPass2(state) => {
+            let mut measured = Vec::with_capacity(state.queries.len());
+            for &(_, item_id, avail) in &state.queries {
+                measured.push(intrinsic_size_scoped(
+                    item_id,
+                    avail,
+                    Some(FlexDirection::Row),
+                    viewport,
+                    fonts.element_px,
+                    nodes,
+                    cache,
+                    scope,
+                )?);
+            }
+            Ok(layout_grid_2d_finish(state, &measured))
+        }
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(super) fn layout_grid_2d_begin(
+    style: &LayoutStyle,
+    writing: nana_ui_core::WritingContext,
+    flow: &[StableNodeId],
+    child_sizes: &[Size],
+    content: Size,
+    fonts: FontSizeContext,
+    nodes: &LayoutInputMap<'_>,
+) -> Grid2dStart {
     // Columns are tracks along the inline axis and rows along the block one
     // (CSS Grid §3): the page's width and height in `horizontal-tb`, its
     // height and width in a vertical mode. Everything below sizes tracks on
     // those logical extents; `place_grid_2d_items` turns them onto the page.
     let (content_inline, content_block) = writing.logical_size(content.width, content.height);
-    let mut col_gap = style.resolved_column_gap_against_fonts(
+    let col_gap = style.resolved_column_gap_against_fonts(
         Some(content_inline).filter(|inline| *inline > 0.0),
         fonts,
     );
-    let mut row_gap = style.resolved_row_gap_against_fonts(
+    let row_gap = style.resolved_row_gap_against_fonts(
         Some(content_block)
             .filter(|block| *block > 0.0)
             .or(Some(content_inline).filter(|inline| *inline > 0.0)),
         fonts,
     );
-    let mut col_tracks = if style.is_subgrid_columns() {
-        if let Some(sizes) = inherited
-            .and_then(|grid| grid.columns.as_deref())
-            .filter(|sizes| !sizes.is_empty())
-        {
-            col_gap = inherited.map(|grid| grid.column_gap).unwrap_or(col_gap);
-            sizes.iter().copied().map(GridTrack::Px).collect()
-        } else {
-            // No parent tracks: `subgrid` computes to `none`. Do not invent auto tracks.
-            Vec::new()
-        }
-    } else {
-        explicit_column_tracks(style, content_inline, col_gap)
-    };
-    let mut row_tracks = if style.is_subgrid_rows() {
-        if let Some(sizes) = inherited
-            .and_then(|grid| grid.rows.as_deref())
-            .filter(|sizes| !sizes.is_empty())
-        {
-            row_gap = inherited.map(|grid| grid.row_gap).unwrap_or(row_gap);
-            sizes.iter().copied().map(GridTrack::Px).collect()
-        } else {
-            Vec::new()
-        }
-    } else {
-        explicit_row_tracks(style, content_block, row_gap)
-    };
+    let mut col_tracks = explicit_column_tracks(style, content_inline, col_gap);
+    let mut row_tracks = explicit_row_tracks(style, content_block, row_gap);
     let explicit_cols = col_tracks.len();
     let explicit_rows = row_tracks.len();
-    let auto_cols = style.grid_auto_columns.as_deref().filter(|t| !t.is_empty());
-    let auto_rows = style.grid_auto_rows.as_deref().filter(|t| !t.is_empty());
-    let auto_flow = style.grid_auto_flow.unwrap_or(GridAutoFlow::Row);
+    let style_grid = &*style.grid;
+    let auto_cols = style_grid.auto_columns.as_deref().filter(|t| !t.is_empty());
+    let auto_rows = style_grid.auto_rows.as_deref().filter(|t| !t.is_empty());
+    let auto_flow = style_grid.auto_flow.unwrap_or(GridAutoFlow::Row);
     let column_flow = auto_flow.is_column();
     let dense = auto_flow.is_dense();
 
     let default_placement = GridPlacement::default();
     let col_repeat_names = expanded_repeat_line_names(
-        style.grid_columns_repeat.as_deref(),
+        style_grid.columns_repeat.as_deref(),
         content_inline,
         col_gap,
     );
     let row_repeat_names =
-        expanded_repeat_line_names(style.grid_rows_repeat.as_deref(), content_block, row_gap);
+        expanded_repeat_line_names(style_grid.rows_repeat.as_deref(), content_block, row_gap);
     let col_names = col_repeat_names
         .as_deref()
-        .or(style.grid_column_line_names.as_deref());
+        .or(style_grid.column_line_names.as_deref());
     let row_names = row_repeat_names
         .as_deref()
-        .or(style.grid_row_line_names.as_deref());
+        .or(style_grid.row_line_names.as_deref());
     let mut pending = Vec::with_capacity(flow.len());
     for (id, intrinsic) in flow.iter().copied().zip(child_sizes.iter().copied()) {
         let child_style = nodes.style_ref(id);
         let placement = child_style
             .as_ref()
-            .map(|child| &*child.grid_placement)
+            .map(|child| &*child.grid.placement)
             .unwrap_or(&default_placement);
         let (col_origin, col_span, row_origin, row_span) = resolve_item_grid_placement(
             style,
@@ -701,15 +750,15 @@ pub(super) fn layout_grid_2d(
         }
     }
 
-    if style
-        .grid_columns_repeat
+    if style_grid
+        .columns_repeat
         .as_ref()
         .is_some_and(|repeat| repeat.kind.is_auto_fit())
     {
         col_tracks = collapse_unoccupied_tracks(&col_tracks, &mut items, true);
     }
-    if style
-        .grid_rows_repeat
+    if style_grid
+        .rows_repeat
         .as_ref()
         .is_some_and(|repeat| repeat.kind.is_auto_fit())
     {
@@ -745,87 +794,51 @@ pub(super) fn layout_grid_2d(
     // Rows are sized once the columns are (CSS Grid §11.5): an auto row
     // holds its items as they lay out in their columns.
     let mut row_auto = vec![0.0f32; row_tracks.len()];
-    for (item, margin) in items.iter().zip(&margins) {
+    let mut queries = Vec::new();
+    for (item_index, (item, margin)) in items.iter().zip(&margins).enumerate() {
         if item.row_span != 1 || !matches!(row_tracks.get(item.row), Some(GridTrack::Auto)) {
             continue;
         }
-        let block = item_block_at_columns(
-            item,
-            &col_sizes,
-            col_gap,
-            writing,
-            viewport,
-            fonts.element_px,
-            nodes,
-            cache,
-            scope,
-        )?;
-        let block_margins =
-            margin_at(*margin, writing.block_start()) + margin_at(*margin, writing.block_end());
-        row_auto[item.row] = row_auto[item.row].max(block + block_margins);
+        let (inline, block) = writing.logical_size(item.intrinsic.width, item.intrinsic.height);
+        let area = grid_span_extent(&col_sizes, item.col, item.col_span, col_gap);
+        let block_spec = nodes.style_ref(item.id).map(|child_style| {
+            if writing.is_vertical() {
+                child_style.width
+            } else {
+                child_style.height
+            }
+        });
+        if block_spec.is_none()
+            || inline.to_bits() == area.to_bits()
+            || block_spec
+                .flatten()
+                .is_some_and(LengthSpec::is_definite_declared)
+        {
+            let block_margins =
+                margin_at(*margin, writing.block_start()) + margin_at(*margin, writing.block_end());
+            row_auto[item.row] = row_auto[item.row].max(block + block_margins);
+        } else {
+            let (width, height) = writing.physical_size(area, 0.0);
+            queries.push((item_index, item.id, Size::new(width, height)));
+        }
     }
-    let mut row_sizes = resolve_grid_track_sizes(&row_tracks, content_block, row_gap, &row_auto);
-    // Leftover definite block extent goes to *empty* auto rows so
-    // `height:100%` / empty stretch have a cell, without inflating
-    // content-sized auto rows.
-    distribute_auto_track_leftover(&row_tracks, &mut row_sizes, content_block, row_gap);
-    Ok(Grid2DLayout {
+    let state = Grid2dPrepared {
         col_sizes,
-        row_sizes,
+        row_tracks,
         col_gap,
         row_gap,
+        content_block,
+        writing,
         items,
-    })
-}
-
-/// An item's block size laid out at the inline size of the columns it spans,
-/// with no definite block size yet: what its auto row holds (CSS Grid §11.5,
-/// "use the grid column sizes calculated in the previous step").
-///
-/// Its first measurement was taken before any column was sized: a wrapping
-/// row of chips measured at the width `width: 100%` demotes to (none: one
-/// chip per line), or at the container's (all of them on one line). It
-/// stands only when it already has the columns' inline size, or when its
-/// block size is its own.
-#[allow(clippy::too_many_arguments)]
-fn item_block_at_columns(
-    item: &GridPlacedItem,
-    col_sizes: &[f32],
-    col_gap: f32,
-    writing: nana_ui_core::WritingContext,
-    viewport: LayoutViewport,
-    child_font_px: f32,
-    nodes: &mut LayoutInputMap<'_>,
-    cache: &mut PassIntrinsicCache,
-    scope: Option<&ScopeContext<'_>>,
-) -> Result<f32, UiWorldError> {
-    let (inline, block) = writing.logical_size(item.intrinsic.width, item.intrinsic.height);
-    let area = grid_span_extent(col_sizes, item.col, item.col_span, col_gap);
-    let Some(style) = nodes.style_ref(item.id) else {
-        return Ok(block);
+        margins,
+        row_auto,
+        queries,
     };
-    let block_spec = if writing.is_vertical() {
-        style.width
+    if state.queries.is_empty() {
+        Grid2dStart::Ready(layout_grid_2d_finish(state, &[]))
     } else {
-        style.height
-    };
-    if inline.to_bits() == area.to_bits()
-        || block_spec.is_some_and(LengthSpec::is_definite_declared)
-    {
-        return Ok(block);
+        Grid2dStart::NeedsPass2(state)
     }
-    let (width, height) = writing.physical_size(area, 0.0);
-    let measured = intrinsic_size_scoped(
-        item.id,
-        Size::new(width, height),
-        Some(FlexDirection::Row),
-        viewport,
-        child_font_px,
-        nodes,
-        cache,
-        scope,
-    )?;
-    Ok(writing.logical_size(measured.width, measured.height).1)
 }
 
 pub(super) fn distribute_auto_track_leftover(
@@ -879,14 +892,6 @@ pub(super) fn grid_span_extent(sizes: &[f32], start: usize, span: usize, gap: f3
     let end = start.saturating_add(span).min(sizes.len());
     let sum: f32 = sizes[start..end].iter().copied().sum();
     sum + gap * (end - start).saturating_sub(1) as f32
-}
-
-pub(super) fn spanned_track_sizes(sizes: &[f32], start: usize, span: usize) -> Vec<f32> {
-    if span == 0 || start >= sizes.len() {
-        return Vec::new();
-    }
-    let end = start.saturating_add(span).min(sizes.len());
-    sizes[start..end].to_vec()
 }
 
 pub(super) fn size_is_indefinite(spec: Option<LengthSpec>) -> bool {
@@ -1180,10 +1185,9 @@ pub(super) fn place_grid_2d_items(
                 intrinsic: item.intrinsic,
                 at_main: None,
                 origin: child_origin,
-                offset: Some(offset),
                 size: child_size,
                 cursor_before: 0.0,
-                baseline: placed.baseline,
+                baseline: PackedOptF32::from_opt(placed.baseline),
             });
         }
         if !subtree_unchanged(
@@ -1196,26 +1200,11 @@ pub(super) fn place_grid_2d_items(
             writing,
             scope,
         ) {
-            let inherited = if child_style.is_subgrid_columns() || child_style.is_subgrid_rows() {
-                Some(InheritedGridTracks {
-                    columns: child_style
-                        .is_subgrid_columns()
-                        .then(|| spanned_track_sizes(&grid.col_sizes, item.col, item.col_span)),
-                    column_gap: grid.col_gap,
-                    rows: child_style
-                        .is_subgrid_rows()
-                        .then(|| spanned_track_sizes(&grid.row_sizes, item.row, item.row_span)),
-                    row_gap: grid.row_gap,
-                })
-            } else {
-                None
-            };
             descend.push(Descend {
                 child: item.id,
                 origin: child_origin,
                 size: child_size,
                 containing: cell,
-                inherited,
             });
         }
     }
@@ -1256,28 +1245,39 @@ pub(super) fn grid_intrinsic_size(
     }
 }
 
+pub(super) struct AutoTracksPrepared {
+    sizes: Vec<f32>,
+    pub(super) queries: Vec<(usize, StableNodeId, Size)>,
+    pub(super) direction: FlexDirection,
+    column_main: bool,
+}
+
 #[allow(clippy::too_many_arguments)]
-pub(super) fn auto_track_contributions(
+pub(super) fn auto_track_contributions_begin(
     children: &[StableNodeId],
     tracks: &[GridTrack],
     content: Size,
     column_main: bool,
     viewport: LayoutViewport,
     parent_font_px: f32,
-    nodes: &mut LayoutInputMap<'_>,
-    cache: &mut PassIntrinsicCache,
-    scope: Option<&ScopeContext<'_>>,
-) -> Result<Vec<f32>, UiWorldError> {
+    nodes: &LayoutInputMap<'_>,
+) -> AutoTracksPrepared {
     let n = tracks.len().min(children.len());
     let mut sizes = vec![0.0f32; n];
-    if !tracks.iter().any(|track| matches!(track, GridTrack::Auto)) {
-        return Ok(sizes);
-    }
     let direction = if column_main {
         FlexDirection::Column
     } else {
         FlexDirection::Row
     };
+    let mut queries = Vec::new();
+    if !tracks.iter().any(|track| matches!(track, GridTrack::Auto)) {
+        return AutoTracksPrepared {
+            sizes,
+            queries,
+            direction,
+            column_main,
+        };
+    }
     for index in 0..n {
         if !matches!(tracks[index], GridTrack::Auto) {
             continue;
@@ -1310,24 +1310,66 @@ pub(super) fn auto_track_contributions(
         } else {
             Size::new(0.0, content.height)
         };
-        let measured = intrinsic_size_demoted(
+        queries.push((index, child, available));
+    }
+    AutoTracksPrepared {
+        sizes,
+        queries,
+        direction,
+        column_main,
+    }
+}
+
+pub(super) fn auto_track_contributions_finish(
+    mut state: AutoTracksPrepared,
+    measured: &[Size],
+) -> Vec<f32> {
+    for ((index, _, _), size) in state.queries.iter().zip(measured) {
+        state.sizes[*index] = if state.column_main {
+            size.height
+        } else {
+            size.width
+        };
+    }
+    state.sizes
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(super) fn auto_track_contributions(
+    children: &[StableNodeId],
+    tracks: &[GridTrack],
+    content: Size,
+    column_main: bool,
+    viewport: LayoutViewport,
+    parent_font_px: f32,
+    nodes: &mut LayoutInputMap<'_>,
+    cache: &mut PassIntrinsicCache,
+    scope: Option<&ScopeContext<'_>>,
+) -> Result<Vec<f32>, UiWorldError> {
+    let state = auto_track_contributions_begin(
+        children,
+        tracks,
+        content,
+        column_main,
+        viewport,
+        parent_font_px,
+        nodes,
+    );
+    let mut measured = Vec::with_capacity(state.queries.len());
+    for &(_, child, available) in &state.queries {
+        measured.push(intrinsic_size_demoted(
             child,
             available,
-            Some(direction),
+            Some(state.direction),
             viewport,
             parent_font_px,
             nodes,
             cache,
             scope,
-            column_main,
-        )?;
-        sizes[index] = if column_main {
-            measured.height
-        } else {
-            measured.width
-        };
+            state.column_main,
+        )?);
     }
-    Ok(sizes)
+    Ok(auto_track_contributions_finish(state, &measured))
 }
 
 #[allow(clippy::too_many_arguments)]

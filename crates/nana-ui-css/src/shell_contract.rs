@@ -220,8 +220,8 @@ pub fn apply_class_layout_hints(layout: &mut LayoutStyle, class_names: &[String]
             "nana-workspace-shell__body" => {
                 // grid: 220px 1fr → Row + Fixed + Fill（P0-6）
                 layout.direction = Some(FlexDirection::Row);
-                if layout.grid_columns.is_none() {
-                    layout.grid_columns = Some(vec![
+                if layout.grid.columns.is_none() {
+                    layout.grid.columns = Some(vec![
                         GridTrack::Px(220.0),
                         GridTrack::MinMax {
                             min_px: 0.0,
@@ -499,8 +499,8 @@ fn apply_class_uniform_gap(layout: &mut LayoutStyle, px: f32) {
 /// Stylesheet already set `display:grid` / `inline-grid` or non-empty template tracks.
 fn has_authored_grid_axis(layout: &LayoutStyle) -> bool {
     layout.display.is_some_and(DisplaySpec::is_grid_container)
-        || layout.grid_columns.as_ref().is_some_and(|t| !t.is_empty())
-        || layout.grid_rows.as_ref().is_some_and(|t| !t.is_empty())
+        || layout.grid.columns.as_ref().is_some_and(|t| !t.is_empty())
+        || layout.grid.rows.as_ref().is_some_and(|t| !t.is_empty())
 }
 
 /// Host WebView may mark `<nana-gpu>` with slate `#1e293b` until a texture

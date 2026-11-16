@@ -94,7 +94,7 @@ fn borrowed_workspace_scrollport_preserves_region_surface_through_hover_and_drag
         .world()
         .accessibility(scroll.stable_id())
         .unwrap()
-        .clone();
+        .into_owned();
     let interaction = cx.world().interaction(scroll.stable_id()).unwrap();
     let bounds = cx.world().layout_box(scroll.stable_id()).unwrap();
     assert_eq!(style.background, Some(SemanticColorRole::Background));
@@ -145,10 +145,10 @@ fn borrowed_workspace_scrollport_preserves_region_surface_through_hover_and_drag
     // The bar fades in rather than appearing at once.
     cx.advance_animations(std::time::Duration::from_millis(300));
     assert!(cx.scrollbars_visible(scroll));
-    let ComponentGeometry::Scrollbar {
+    let ScrollbarBars {
         vertical: Some(bar),
         ..
-    } = cx.world().component_geometry(scroll.stable_id()).unwrap()
+    } = cx.world().scrollbar_bars(scroll.stable_id()).unwrap()
     else {
         panic!("visible scrollbar")
     };
@@ -180,7 +180,7 @@ fn borrowed_workspace_scrollport_preserves_region_surface_through_hover_and_drag
     assert!(!cx.scrollbars_visible(scroll));
     assert_eq!(cx.world().node_style(scroll.stable_id()), Some(&style));
     assert_eq!(
-        cx.world().accessibility(scroll.stable_id()),
+        cx.world().accessibility(scroll.stable_id()).as_deref(),
         Some(&accessibility)
     );
     assert_eq!(

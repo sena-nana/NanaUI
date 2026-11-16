@@ -12,7 +12,7 @@ use super::super::reflow_oracle::{
 };
 use crate::{
     AccessibilityNode, AppContext, DocumentId, LayoutViewport, MutationQueue, ScrollOffset,
-    StableNodeId, StandardVisual,
+    StableNodeId,
 };
 
 fn document() -> DocumentId {
@@ -286,13 +286,14 @@ fn pinned_boxes_under_moved_rows_match_a_full_projection() {
         ..fixed(10.0, 10.0)
     };
     let pins = [
-        LayoutStyle {
-            transform: Some(PaintTransform {
+        {
+            let mut style = fixed(40.0, 8.0);
+            style.transforms.transform = Some(PaintTransform {
                 e: 3.25,
                 f: 1.5,
                 ..Default::default()
-            }),
-            ..fixed(40.0, 8.0)
+            });
+            style
         },
         LayoutStyle {
             position: PositionSpec::Sticky,
@@ -319,7 +320,7 @@ fn pinned_boxes_under_moved_rows_match_a_full_projection() {
         pinned.push((pin, inside));
     }
     b.queue
-        .set_standard_visual(rows[11][2], Some(StandardVisual::KeymapLayer));
+        .set_widget_visual(rows[11][2], Some(crate::KeymapLayerVisual));
     let mut context = AppContext::new();
     context.commit_mutations(b.queue).unwrap();
     product_frame(
@@ -410,7 +411,7 @@ fn boxes_moved_by_an_uneven_step_keep_a_cold_projection_to_the_bit() {
         }
         if visual {
             b.queue
-                .set_standard_visual(rows[11][2], Some(StandardVisual::KeymapLayer));
+                .set_widget_visual(rows[11][2], Some(crate::KeymapLayerVisual));
         }
         let mut context = AppContext::new();
         context.commit_mutations(b.queue).unwrap();
@@ -547,7 +548,7 @@ fn boxes_moved_in_a_scrolled_list_keep_a_cold_projection_to_the_bit() {
         let rows = uneven_rows(&mut b, list, 12);
         if visual {
             b.queue
-                .set_standard_visual(rows[11][2], Some(StandardVisual::KeymapLayer));
+                .set_widget_visual(rows[11][2], Some(crate::KeymapLayerVisual));
         }
         let mut page = laid_out(b, rows, list);
         let mut retained = snapshot(&page.context);
@@ -636,13 +637,9 @@ fn boxes_moved_under_a_transformed_ancestor_match_a_cold_projection() {
         ),
     ] {
         let (mut b, root) = Builder::page(document(), 1, 400.0);
-        let wrapper = b.element(
-            root,
-            LayoutStyle {
-                transform: Some(transform),
-                ..fixed(320.0, 500.0)
-            },
-        );
+        let mut wrapper_style = fixed(320.0, 500.0);
+        wrapper_style.transforms.transform = Some(transform);
+        let wrapper = b.element(root, wrapper_style);
         let list = b.element(wrapper, column(Some(300.0)));
         let rows = uneven_rows(&mut b, list, 12);
         let mut page = laid_out(b, rows, list);
@@ -709,14 +706,15 @@ fn pins_under_boxes_that_hand_offsets_are_found_from_the_pins() {
     let list = b.element(root, column(Some(300.0)));
     let rows = uneven_rows(&mut b, list, 12);
     let holders = [
-        LayoutStyle {
-            transform: Some(PaintTransform {
+        {
+            let mut style = fixed(40.0, 8.0);
+            style.transforms.transform = Some(PaintTransform {
                 a: 2.0,
                 d: 0.5,
                 e: 1.25,
                 ..Default::default()
-            }),
-            ..fixed(40.0, 8.0)
+            });
+            style
         },
         LayoutStyle {
             position: PositionSpec::Sticky,
@@ -909,15 +907,13 @@ fn turned_page(transforms: &[PaintTransform], hanging: bool) -> (Page, Vec<Stabl
     let mut wrappers = Vec::new();
     for (depth, &transform) in transforms.iter().enumerate() {
         let side = 10.0 * depth as f32;
-        parent = b.element(
-            parent,
-            LayoutStyle {
-                transform: Some(transform),
-                padding_left: Some(LengthSpec::Px(1.3)),
-                padding_top: Some(LengthSpec::Px(2.1)),
-                ..fixed(340.0 - side, 520.0 - side)
-            },
-        );
+        let mut wrapper_style = LayoutStyle {
+            padding_left: Some(LengthSpec::Px(1.3)),
+            padding_top: Some(LengthSpec::Px(2.1)),
+            ..fixed(340.0 - side, 520.0 - side)
+        };
+        wrapper_style.transforms.transform = Some(transform);
+        parent = b.element(parent, wrapper_style);
         wrappers.push(parent);
     }
     let list = b.element(parent, column(Some(300.0)));
@@ -1094,15 +1090,13 @@ fn a_turn_changed_while_rows_move_matches_a_cold_projection() {
         let at = format!("step {step}");
         let before = retained[&wrapper].transform;
         let mut queue = MutationQueue::new();
-        queue.set_style(
-            wrapper,
-            styled(LayoutStyle {
-                transform: Some(turn("rotated", angle)),
-                padding_left: Some(LengthSpec::Px(1.3)),
-                padding_top: Some(LengthSpec::Px(2.1)),
-                ..fixed(340.0, 520.0)
-            }),
-        );
+        let mut wrapper_style = LayoutStyle {
+            padding_left: Some(LengthSpec::Px(1.3)),
+            padding_top: Some(LengthSpec::Px(2.1)),
+            ..fixed(340.0, 520.0)
+        };
+        wrapper_style.transforms.transform = Some(turn("rotated", angle));
+        queue.set_style(wrapper, styled(wrapper_style));
         if step % 2 == 0 {
             height += 1.37;
             row_height(&mut queue, page.rows[0][0], height);
@@ -1288,15 +1282,13 @@ fn a_turned_box_resized_in_place_moves_its_space() {
         height += 1.37;
         let at = format!("step {step}");
         let mut queue = MutationQueue::new();
-        queue.set_style(
-            turned,
-            styled(LayoutStyle {
-                flex_shrink: Some(0.0),
-                position: PositionSpec::Relative,
-                transform: Some(turn("rotated", 0.3)),
-                ..fixed(300.0, height)
-            }),
-        );
+        let mut turned_style = LayoutStyle {
+            flex_shrink: Some(0.0),
+            position: PositionSpec::Relative,
+            ..fixed(300.0, height)
+        };
+        turned_style.transforms.transform = Some(turn("rotated", 0.3));
+        queue.set_style(turned, styled(turned_style));
         let updated = edit(&mut page, &mut retained, queue, &at);
         assert!(updated.contains(&turned), "{at}: its turn moved");
         assert!(
@@ -1330,23 +1322,29 @@ struct ViewportPage {
 }
 
 fn placed_style(position: PositionSpec, transform: Option<PaintTransform>) -> LayoutStyle {
-    LayoutStyle {
+    let mut layout = LayoutStyle {
         position,
         offset_top: Some(LengthSpec::Px(1.0)),
         offset_left: Some(LengthSpec::Px(7.0)),
-        transform,
         ..fixed(12.0, 6.0)
+    };
+    if transform.is_some() {
+        layout.transforms.transform = transform;
     }
+    layout
 }
 
 fn root_style(transform: Option<PaintTransform>) -> LayoutStyle {
-    LayoutStyle {
+    let mut layout = LayoutStyle {
         position: PositionSpec::Relative,
         padding_left: Some(LengthSpec::Px(1.3)),
         padding_top: Some(LengthSpec::Px(2.1)),
-        transform,
         ..column(Some(360.0))
+    };
+    if transform.is_some() {
+        layout.transforms.transform = transform;
     }
+    layout
 }
 
 /// A root page box of its own (no document node above it, as an
@@ -1646,18 +1644,28 @@ fn scale(a: f32, d: f32) -> PaintTransform {
 #[test]
 fn a_scale_changed_again_and_again_projects_the_box_alone() {
     let (mut b, root) = Builder::page(document(), 1, 400.0);
-    let wrapper_style = |transform: Option<PaintTransform>| LayoutStyle {
-        transform,
-        padding_left: Some(LengthSpec::Px(1.3)),
-        padding_top: Some(LengthSpec::Px(2.1)),
-        ..fixed(340.0, 520.0)
+    let wrapper_style = |transform: Option<PaintTransform>| {
+        let mut layout = LayoutStyle {
+            padding_left: Some(LengthSpec::Px(1.3)),
+            padding_top: Some(LengthSpec::Px(2.1)),
+            ..fixed(340.0, 520.0)
+        };
+        if transform.is_some() {
+            layout.transforms.transform = transform;
+        }
+        layout
     };
-    let inner_style = |transform: Option<PaintTransform>| LayoutStyle {
-        transform,
-        padding_top: Some(LengthSpec::Px(0.7)),
-        direction: Some(FlexDirection::Column),
-        flex_shrink: Some(0.0),
-        ..fixed(300.0, 90.0)
+    let inner_style = |transform: Option<PaintTransform>| {
+        let mut layout = LayoutStyle {
+            padding_top: Some(LengthSpec::Px(0.7)),
+            direction: Some(FlexDirection::Column),
+            flex_shrink: Some(0.0),
+            ..fixed(300.0, 90.0)
+        };
+        if transform.is_some() {
+            layout.transforms.transform = transform;
+        }
+        layout
     };
     let wrapper = b.element(root, wrapper_style(Some(scale(1.5, 1.25))));
     let list = b.element(wrapper, column(Some(300.0)));
@@ -1807,14 +1815,12 @@ fn children_under_a_scroll_chain_are_kept_as_their_viewport_boxes_say() {
     let held = b.element(header, fixed(30.0, 4.0));
     let rows = uneven_rows(&mut b, list, 8);
     let cell = rows[2][1];
-    let scaled = b.element(
-        rows[3][1],
-        LayoutStyle {
-            transform: Some(scale(4.0, 4.0)),
-            direction: Some(FlexDirection::Column),
-            ..fixed(20.0, 10.0)
-        },
-    );
+    let mut scaled_style = LayoutStyle {
+        direction: Some(FlexDirection::Column),
+        ..fixed(20.0, 10.0)
+    };
+    scaled_style.transforms.transform = Some(scale(4.0, 4.0));
+    let scaled = b.element(rows[3][1], scaled_style);
     let wide = b.element(scaled, fixed(3e38, 5.0));
     let beside = b.element(scaled, fixed(5.0, 5.0));
     let hidden = b.element(cell, fixed(10.0, 10.0));
@@ -1965,13 +1971,21 @@ fn a_scale_under_a_3d_context_projects_what_it_holds_again() {
     let context = b.element(
         root,
         LayoutStyle {
-            preserve_3d: true,
+            transforms: nana_ui_core::TransformStyle {
+                preserve_3d: true,
+                ..Default::default()
+            }
+            .into(),
             direction: Some(FlexDirection::Column),
             ..fixed(340.0, 400.0)
         },
     );
     let scaled_style = |transform| LayoutStyle {
-        transform: Some(transform),
+        transforms: nana_ui_core::TransformStyle {
+            transform: Some(transform),
+            ..Default::default()
+        }
+        .into(),
         direction: Some(FlexDirection::Column),
         padding_top: Some(LengthSpec::Px(0.7)),
         ..fixed(300.0, 200.0)
@@ -2010,7 +2024,11 @@ fn a_scale_under_a_3d_context_projects_what_it_holds_again() {
         queue.set_style(
             list,
             styled(LayoutStyle {
-                transform,
+                transforms: nana_ui_core::TransformStyle {
+                    transform,
+                    ..Default::default()
+                }
+                .into(),
                 ..column(Some(300.0))
             }),
         );

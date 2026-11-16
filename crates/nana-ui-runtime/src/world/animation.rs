@@ -62,16 +62,16 @@ impl UiWorld {
                 crate::component_animation_kinds::SWITCH,
                 sample.target,
             ) == Some(sample.id)
-                && let Some(mut visual @ StandardVisual::Switch { .. }) =
-                    self.standard_visual(sample.target)
+                && let Some(mut visual) = self
+                    .widget_visual_as::<crate::SwitchVisual>(sample.target)
+                    .cloned()
             {
-                if let StandardVisual::Switch { thumb_progress, .. } = &mut visual {
-                    *thumb_progress = match sample.value {
-                        crate::MotionValue::Scalar(value) => value.clamp(0.0, 1.0),
-                        _ => sample.progress,
-                    };
-                }
-                self.nodes.set_visual(sample.target, Some(visual));
+                visual.thumb_progress = match sample.value {
+                    crate::MotionValue::Scalar(value) => value.clamp(0.0, 1.0),
+                    _ => sample.progress,
+                };
+                self.nodes
+                    .set_widget_visual(sample.target, Some(crate::WidgetVisualHandle::new(visual)));
                 self.mark(sample.target, DirtyMask::RENDER);
                 self.account_animation_dirty(DirtyMask::RENDER);
                 component_updates.push(sample.target);
@@ -88,23 +88,22 @@ impl UiWorld {
                 ),
             ] {
                 if crate::component_animation_id(kind, sample.target) == Some(sample.id)
-                    && let Some(mut visual @ StandardVisual::Scrollbar { .. }) =
-                        self.standard_visual(sample.target)
+                    && let Some(mut visual) = self
+                        .widget_visual_as::<crate::ScrollbarVisual>(sample.target)
+                        .copied()
                 {
                     let value = match sample.value {
                         crate::MotionValue::Scalar(value) => value.clamp(0.0, 1.0),
                         _ => sample.progress,
                     };
-                    if let StandardVisual::Scrollbar {
-                        presence, expand, ..
-                    } = &mut visual
-                    {
-                        match axis {
-                            None => *presence = value,
-                            Some(index) => expand[index] = value,
-                        }
+                    match axis {
+                        None => visual.presence = value,
+                        Some(index) => visual.expand[index] = value,
                     }
-                    self.nodes.set_visual(sample.target, Some(visual));
+                    self.nodes.set_widget_visual(
+                        sample.target,
+                        Some(crate::WidgetVisualHandle::new(visual)),
+                    );
                     self.mark(sample.target, DirtyMask::RENDER);
                     self.account_animation_dirty(DirtyMask::RENDER);
                     component_updates.push(sample.target);
@@ -127,13 +126,13 @@ impl UiWorld {
                 crate::component_animation_kinds::SPINNER,
                 sample.target,
             ) == Some(sample.id)
-                && let Some(mut visual @ StandardVisual::Spinner { .. }) =
-                    self.standard_visual(sample.target)
+                && let Some(mut visual) = self
+                    .widget_visual_as::<crate::SpinnerVisual>(sample.target)
+                    .cloned()
             {
-                if let StandardVisual::Spinner { phase, .. } = &mut visual {
-                    *phase = sample.progress;
-                }
-                self.nodes.set_visual(sample.target, Some(visual));
+                visual.phase = sample.progress;
+                self.nodes
+                    .set_widget_visual(sample.target, Some(crate::WidgetVisualHandle::new(visual)));
                 self.mark(sample.target, DirtyMask::RENDER);
                 self.account_animation_dirty(DirtyMask::RENDER);
                 component_updates.push(sample.target);
@@ -144,19 +143,16 @@ impl UiWorld {
                 crate::component_animation_kinds::PROGRESS,
                 sample.target,
             ) == Some(sample.id)
-                && let Some(
-                    mut visual @ StandardVisual::Progress {
-                        mode: crate::ProgressMode::Sweep { .. },
-                        ..
-                    },
-                ) = self.standard_visual(sample.target)
+                && let Some(mut visual) = self
+                    .widget_visual_as::<crate::ProgressVisual>(sample.target)
+                    .filter(|v| matches!(v.mode, crate::ProgressMode::Sweep { .. }))
+                    .cloned()
             {
-                if let StandardVisual::Progress { mode, .. } = &mut visual {
-                    *mode = crate::ProgressMode::Sweep {
-                        phase: sample.progress,
-                    };
-                }
-                self.nodes.set_visual(sample.target, Some(visual));
+                visual.mode = crate::ProgressMode::Sweep {
+                    phase: sample.progress,
+                };
+                self.nodes
+                    .set_widget_visual(sample.target, Some(crate::WidgetVisualHandle::new(visual)));
                 self.mark(sample.target, DirtyMask::RENDER);
                 self.account_animation_dirty(DirtyMask::RENDER);
                 component_updates.push(sample.target);
@@ -628,26 +624,29 @@ impl UiWorld {
         let Some(target) = MotionTargetId::new(id.get()) else {
             return;
         };
-        let rewritten: Vec<crate::AnimatableProperty> =
-            self.presentation
-                .properties_of(target)
-                .filter(|property| match property {
-                    crate::AnimatableProperty::Opacity => previous.opacity != next.opacity,
-                    crate::AnimatableProperty::Transform => {
-                        previous.transform != next.transform
-                            || previous.transform_3d != next.transform_3d
-                    }
-                    crate::AnimatableProperty::FontAxis(tag) => {
-                        let axis = |layout: &nana_ui_core::LayoutStyle| {
-                            layout.font_variation_settings.as_deref().map(|axes| {
-                                nana_ui_core::FontVariationSetting::axis_value(axes, *tag)
-                            })
-                        };
-                        axis(previous) != axis(next)
-                    }
-                    _ => false,
-                })
-                .collect();
+        let rewritten: Vec<crate::AnimatableProperty> = self
+            .presentation
+            .properties_of(target)
+            .filter(|property| match property {
+                crate::AnimatableProperty::Opacity => previous.opacity != next.opacity,
+                crate::AnimatableProperty::Transform => {
+                    !previous.transforms.ptr_eq(&next.transforms)
+                        && (previous.transforms.transform != next.transforms.transform
+                            || previous.transforms.transform_3d != next.transforms.transform_3d)
+                }
+                crate::AnimatableProperty::FontAxis(tag) => {
+                    let axis = |layout: &nana_ui_core::LayoutStyle| {
+                        layout
+                            .text_ext
+                            .font_variation_settings
+                            .as_deref()
+                            .map(|axes| nana_ui_core::FontVariationSetting::axis_value(axes, *tag))
+                    };
+                    axis(previous) != axis(next)
+                }
+                _ => false,
+            })
+            .collect();
         if rewritten.is_empty() {
             return;
         }

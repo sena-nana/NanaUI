@@ -11,8 +11,8 @@ use crate::view_components::project_common;
 use crate::{
     AccessibilityRole, AccessibilityState, AppContext, ComponentView, DocumentId, Entity,
     FrameworkError, IconButton, InteractionState, MutationQueue, NodeKind, NodeStyle, OverlayHost,
-    SidebarFrame, StableNodeId, StandardVisual, Text, TextContent, TextHorizontalAlignment,
-    TextVerticalAlignment, UiWorld, Workspace, WorkspaceRegionSlot,
+    SidebarFrame, StableNodeId, Text, TextContent, TextHorizontalAlignment, TextVerticalAlignment,
+    UiWorld, Workspace, WorkspaceRegionSlot,
 };
 
 const SLOT_PADDING: f32 = nana_ui_core::space::SM;
@@ -444,6 +444,8 @@ impl AppTitleBar {
 }
 
 impl ComponentView for AppTitleBar {
+    const TYPE_ID: Option<&'static str> = Some(crate::component_descriptors::APP_TITLE_BAR.type_id);
+
     const BEHAVIOR: crate::TypeBehavior<Self> = crate::TypeBehavior {
         hooks: Some(|hooks| {
             crate::framework::routes::title_bar(hooks);
@@ -482,8 +484,8 @@ impl ComponentView for AppTitleBar {
                 },
             );
         }
-        if world.standard_visual(id).is_some() {
-            mutations.set_standard_visual(id, None);
+        if world.widget_visual_ref(id).is_some() {
+            mutations.set_widget_visual_handle(id, None);
         }
         project_common(
             id,
@@ -568,8 +570,8 @@ impl ComponentView for AppTitleBarSlot {
                 },
             );
         }
-        if world.standard_visual(id).is_some() {
-            mutations.set_standard_visual(id, None);
+        if world.widget_visual_ref(id).is_some() {
+            mutations.set_widget_visual_handle(id, None);
         }
         project_common(
             id,
@@ -757,8 +759,8 @@ impl ComponentView for AppTitleBarControls {
                 },
             );
         }
-        if world.standard_visual(id).is_some() {
-            mutations.set_standard_visual(id, None);
+        if world.widget_visual_ref(id).is_some() {
+            mutations.set_widget_visual_handle(id, None);
         }
         project_common(
             id,
@@ -920,6 +922,8 @@ impl Default for AppShell {
 }
 
 impl ComponentView for AppShell {
+    const TYPE_ID: Option<&'static str> = Some(crate::component_descriptors::APP_SHELL.type_id);
+
     const BEHAVIOR: crate::TypeBehavior<Self> = crate::TypeBehavior {
         slot_assembler: Some(AppContext::assemble_app_shell),
         ..crate::TypeBehavior::NONE
@@ -956,8 +960,8 @@ impl ComponentView for AppShell {
                 },
             );
         }
-        if world.standard_visual(id).is_some() {
-            mutations.set_standard_visual(id, None);
+        if world.widget_visual_ref(id).is_some() {
+            mutations.set_widget_visual_handle(id, None);
         }
         project_common(
             id,
@@ -1170,6 +1174,8 @@ impl Default for DesktopShell {
 }
 
 impl ComponentView for DesktopShell {
+    const TYPE_ID: Option<&'static str> = Some(crate::component_descriptors::DESKTOP_SHELL.type_id);
+
     const BEHAVIOR: crate::TypeBehavior<Self> = crate::TypeBehavior {
         slot_assembler: Some(AppContext::assemble_desktop_shell),
         ..crate::TypeBehavior::NONE
@@ -1788,10 +1794,10 @@ fn is_reserved_shell_slot(
 fn is_title_bar_chrome(context: &AppContext, id: StableNodeId) -> bool {
     view_is::<IconButton>(context, id)
         || view_is::<AppTitleBarControls>(context, id)
-        || matches!(
-            context.world().standard_visual(id),
-            Some(StandardVisual::Icon { .. })
-        )
+        || context
+            .world()
+            .widget_visual_as::<crate::IconVisual>(id)
+            .is_some()
         || context
             .world()
             .accessibility(id)
@@ -2287,13 +2293,13 @@ fn project_window_control(
             },
         );
     }
-    let visual = StandardVisual::Icon {
+    let visual = crate::IconVisual {
         icon: action.icon(maximized),
         size: ControlSize::Small.icon_size(),
         tooltip: None,
     };
-    if world.standard_visual(id) != Some(visual.clone()) {
-        mutations.set_standard_visual(id, Some(visual));
+    if world.widget_visual_as::<crate::IconVisual>(id) != Some(&visual) {
+        mutations.set_widget_visual(id, Some(visual));
     }
     project_common(
         id,
@@ -2473,7 +2479,7 @@ mod tests {
 
     use crate::{
         AppContext, Card, DocumentId, Entity, IconButton, LayoutViewport, MountState, SidebarFrame,
-        StableNodeId, StandardVisual, Text, TextHorizontalAlignment, UiWorld,
+        StableNodeId, Text, TextHorizontalAlignment, UiWorld,
     };
     use nana_ui_core::{
         RegionId, RegionPlacement, RegionRole, RegionScope, RegionState, WorkspaceLayout,
@@ -2495,11 +2501,8 @@ mod tests {
         false
     }
 
-    fn icon_of(visual: Option<StandardVisual>) -> Option<Icon> {
-        match visual {
-            Some(StandardVisual::Icon { icon, .. }) => Some(icon),
-            _ => None,
-        }
+    fn icon_of(visual: Option<&crate::IconVisual>) -> Option<Icon> {
+        visual.map(|visual| visual.icon)
     }
 
     #[test]
@@ -3560,15 +3563,27 @@ mod tests {
             }
         );
         assert_eq!(
-            icon_of(context.world().standard_visual(minimize.stable_id())),
+            icon_of(
+                context
+                    .world()
+                    .widget_visual_as::<crate::IconVisual>(minimize.stable_id())
+            ),
             Some(Icon::Minimize)
         );
         assert_eq!(
-            icon_of(context.world().standard_visual(maximize.stable_id())),
+            icon_of(
+                context
+                    .world()
+                    .widget_visual_as::<crate::IconVisual>(maximize.stable_id())
+            ),
             Some(Icon::Maximize)
         );
         assert_eq!(
-            icon_of(context.world().standard_visual(close.stable_id())),
+            icon_of(
+                context
+                    .world()
+                    .widget_visual_as::<crate::IconVisual>(close.stable_id())
+            ),
             Some(Icon::Close)
         );
         assert_eq!(
@@ -3596,7 +3611,11 @@ mod tests {
             })
             .unwrap();
         assert_eq!(
-            icon_of(context.world().standard_visual(maximize.stable_id())),
+            icon_of(
+                context
+                    .world()
+                    .widget_visual_as::<crate::IconVisual>(maximize.stable_id())
+            ),
             Some(Icon::Restore)
         );
         assert_eq!(
@@ -3609,7 +3628,11 @@ mod tests {
             Some("还原")
         );
         assert_eq!(
-            icon_of(context.world().standard_visual(minimize.stable_id())),
+            icon_of(
+                context
+                    .world()
+                    .widget_visual_as::<crate::IconVisual>(minimize.stable_id())
+            ),
             Some(Icon::Minimize)
         );
         assert_eq!(
@@ -3675,7 +3698,6 @@ mod tests {
                 .layout
                 .hidden
         );
-        assert_eq!(context.world().standard_visual(bar.stable_id()), None);
         assert!(
             context
                 .world()
@@ -3700,7 +3722,11 @@ mod tests {
                 .hidden
         );
         assert_eq!(
-            icon_of(context.world().standard_visual(maximize.stable_id())),
+            icon_of(
+                context
+                    .world()
+                    .widget_visual_as::<crate::IconVisual>(maximize.stable_id())
+            ),
             Some(Icon::Restore)
         );
     }
@@ -3956,7 +3982,8 @@ mod tests {
             context
                 .world()
                 .accessibility(title.stable_id())
-                .and_then(|state| state.label.as_deref()),
+                .and_then(|state| state.label.clone())
+                .as_deref(),
             Some("Nana")
         );
         let columns = context.world().node(title.stable_id()).unwrap().children;

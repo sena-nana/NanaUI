@@ -305,3 +305,23 @@ impl ChartMarks {
         })
     }
 }
+
+/// Hover emphasis animation state forwarded with [`ChartGpuPayload`].
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct ChartGpuHover {
+    pub current: [u32; 2],
+    pub previous: [u32; 2],
+    pub focus: [u32; 2],
+    pub since: Duration,
+    pub duration: f32,
+    pub growth: f32,
+}
+
+/// Backend-neutral chart marks and hover payload carried across [`nana_ui_runtime`]
+/// and [`nana_ui_scene`] without exposing chart types to the scene crate.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ChartGpuPayload {
+    pub origin: [f32; 2],
+    pub marks: ChartMarks,
+    pub hover: ChartGpuHover,
+}

@@ -1,32 +1,15 @@
-//! One level of a layout recursion, on a stack that cannot run out.
+//! Bounded layout recursion helpers and stack-usage pricing.
 //!
-//! Measure recurses once per tree level: a size comes up from the children a
-//! constraint goes down to. Each level first reads how much stack it has
-//! left: below [`RED_ZONE`] it carries on in a fresh [`SEGMENT`]
-//! (`stacker::grow`), so no tree is too deep for the thread laying it out,
-//! whatever the build and whatever that thread's stack (see `crate::stack`).
+//! Measure runs iteratively on an explicit heap `Vec` work-stack in `measure.rs`,
+//! so it uses O(1) call-stack depth regardless of tree depth.
 //!
-//! Placement needs no such guard. Once measured, every box's size is known,
-//! so any node can be a boundary: a level [`SPAN`] below the outermost writes
-//! its own box and queues the rest of its subtree as a [`Boundary`], and the
-//! outermost call places the queue in order before it returns. A subtree's
-//! placement reads only its own inputs (where it stands, its size, its
-//! containing block, its font and the viewport), never a sibling subtree's
-//! output, so placing it later places it the same. The recursion is never
-//! deeper than [`SPAN`] levels, whatever the tree; the stack it takes is
-//! bounded by the span, not the depth.
-//!
-//! The same reading prices a level: the stack its entry has less than its
-//! parent's entry had. The pass keeps the largest, per recursion
-//! (`LayoutExecutionStats::{measure,placement}_stack_per_level`, published as
-//! `WorkCounters::layout_{measure,placement}_stack_per_level`), and the
-//! `stack_budget` tests hold it to a budget: the guard keeps a deep tree from
-//! crashing, the budget keeps each level from growing back.
+//! Placement descends at most [`SPAN`] levels before queuing remaining subtrees
+//! as [`Boundary`] items, so placement call-stack depth is independent of tree
+//! depth. Each pass records peak per-level stack usage in
+//! `LayoutExecutionStats::{measure,placement}_stack_per_level`.
 
-use super::grid::InheritedGridTracks;
 use super::{PassIntrinsicCache, Size};
 use crate::StableNodeId;
-use crate::stack::{RED_ZONE, SEGMENT};
 
 /// Placement levels one call descends before the rest of a subtree waits in
 /// the pass's queue: about 90 KiB of placement stack in either build, an
@@ -47,21 +30,18 @@ pub(super) struct Boundary {
     pub(super) size: Size,
     pub(super) containing: Size,
     pub(super) parent_font_px: f32,
-    pub(super) inherited: Option<InheritedGridTracks>,
 }
 
 #[derive(Clone, Copy)]
 pub(super) enum Recursion {
-    Measure,
     Placement,
 }
 
 /// The open levels of one recursion in a pass.
 #[derive(Default)]
 pub(super) struct LevelStack {
-    /// Stack left at each open level's entry. `None` where the platform
-    /// cannot tell, and for a level that moved: its children run on another
-    /// segment and are not priced against it.
+    /// Stack left at each open level's entry, or `None` where the platform
+    /// cannot report it.
     open: Vec<Option<usize>>,
     /// Most stack one level took this pass, in bytes.
     pub(super) per_level: usize,
@@ -73,13 +53,13 @@ impl LevelStack {
         self.open.len()
     }
 
-    fn enter(&mut self, remaining: Option<usize>, moves: bool) {
+    fn enter(&mut self, remaining: Option<usize>) {
         if let (Some(Some(parent)), Some(here)) = (self.open.last(), remaining)
             && let Some(level) = parent.checked_sub(here)
         {
             self.per_level = self.per_level.max(level);
         }
-        self.open.push(if moves { None } else { remaining });
+        self.open.push(remaining);
     }
 
     fn exit(&mut self) {
@@ -87,23 +67,15 @@ impl LevelStack {
     }
 }
 
-/// Runs one level of `recursion` and prices it. A measure level moves to a
-/// new segment when this stack is nearly used up; a placement level always
-/// runs here, its depth bounded by [`SPAN`].
+/// Runs one level of `recursion` and prices its stack consumption.
 pub(super) fn level<T>(
     cache: &mut PassIntrinsicCache,
     recursion: Recursion,
     run: impl FnOnce(&mut PassIntrinsicCache) -> T,
 ) -> T {
     let remaining = crate::stack::remaining();
-    let moves =
-        matches!(recursion, Recursion::Measure) && remaining.is_some_and(|left| left < RED_ZONE);
-    cache.levels(recursion).enter(remaining, moves);
-    let out = if moves {
-        stacker::grow(SEGMENT, || run(cache))
-    } else {
-        run(cache)
-    };
+    cache.levels(recursion).enter(remaining);
+    let out = run(cache);
     cache.levels(recursion).exit();
     out
 }

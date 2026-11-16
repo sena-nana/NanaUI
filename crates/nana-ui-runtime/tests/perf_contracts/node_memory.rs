@@ -44,12 +44,13 @@ fn equal_nodes_share_their_layouts() {
         "live bytes per node: text {text:.0}, stack {stack:.0}, button {button:.0}, \
          text input {input:.0}"
     );
-    // Each would be at least one ~2 KB layout above these if every node
-    // kept its own (a button kept three: its own, its projection's and its
-    // resolved one).
-    assert!(stack < 2_400.0, "{stack:.0} B per stack");
-    assert!(button < 3_000.0, "{button:.0} B per button");
-    assert!(input < 4_400.0, "{input:.0} B per text input");
+    // Equal nodes share resolved layouts, styles, and default component visuals
+    // rather than retaining per-node clones. Baselines at N=2,000 are ~301 B
+    // (stack), ~704 B (text), ~935 B (button), and ~2,937 B (text input).
+    assert!(stack <= 320.0, "{stack:.0} B per stack");
+    assert!(text <= 860.0, "{text:.0} B per text");
+    assert!(button <= 1_150.0, "{button:.0} B per button");
+    assert!(input <= 3_600.0, "{input:.0} B per text input");
 }
 
 /// Run frames until style, text and layout work settle, so every node holds
@@ -95,20 +96,29 @@ fn live_per_laid_out_node<C: ComponentView>(
 fn laid_out_nodes_keep_bounded_live_memory() {
     let mut per_size = Vec::new();
     for n in [1_000, 10_000] {
+        let stack = live_per_laid_out_node(n, |_| Stack::column(0.0));
         let text = live_per_laid_out_node(n, |i| Text::new(format!("行 {i}")));
         let button = live_per_laid_out_node(n, |i| Button::new(format!("按钮 {i}")));
         let item = live_per_laid_out_node(n, |i| ListItem::new(format!("条目 {i}")));
         eprintln!(
-            "{n} laid-out nodes, live bytes per node: text {text:.0}, button {button:.0}, \
-             list item {item:.0}"
+            "{n} laid-out nodes, live bytes per node: stack {stack:.0}, text {text:.0}, \
+             button {button:.0}, list item {item:.0}"
         );
-        // About a quarter above what they hold today (3.4 / 4.6 / 5.1 KB at
-        // 1k): a second retained copy of a layout or of the parts per node
-        // crosses these.
-        assert!(text < 4_200.0, "{text:.0} B per laid-out text");
-        assert!(button < 5_800.0, "{button:.0} B per laid-out button");
-        assert!(item < 6_400.0, "{item:.0} B per laid-out list item");
-        per_size.push([text, button, item]);
+        // Baselines after hot/cold split and slot packing:
+        // - n=1,000: stack ~639 B, text ~1,338 B, button ~1,750 B, list item ~1,649 B
+        // - n=10,000: stack ~634 B, text ~1,121 B, button ~1,335 B, list item ~1,247 B
+        if n == 1_000 {
+            assert!(stack <= 780.0, "{stack:.0} B per 1k laid-out stack");
+            assert!(text <= 1_650.0, "{text:.0} B per 1k laid-out text");
+            assert!(button <= 2_150.0, "{button:.0} B per 1k laid-out button");
+            assert!(item <= 2_050.0, "{item:.0} B per 1k laid-out list item");
+        } else {
+            assert!(stack <= 650.0, "{stack:.0} B per 10k laid-out stack");
+            assert!(text <= 1_380.0, "{text:.0} B per 10k laid-out text");
+            assert!(button <= 1_400.0, "{button:.0} B per 10k laid-out button");
+            assert!(item <= 1_400.0, "{item:.0} B per 10k laid-out list item");
+        }
+        per_size.push([stack, text, button, item]);
     }
     // Per-node cost does not rise with the document: no per-node table that
     // grows with every other node.

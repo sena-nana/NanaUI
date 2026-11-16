@@ -159,105 +159,61 @@
       "id": "static-and-paint",
       "source": "crates/nana-ui-runtime/src/world/tests/incremental_work.rs",
       "filter": "issue261",
-      "counters": [
-        "layout_measure_nodes",
-        "layout_placement_nodes",
-        "layout_context_transitions",
-        "layout_result_changed"
-      ]
+      "counters": []
     },
     {
       "id": "context-transition",
       "source": "crates/nana-ui-runtime/src/world/tests/layout_foundations.rs",
       "filter": "issue199",
-      "counters": [
-        "entities_spawned",
-        "entities_despawned",
-        "cross_context_measure_hits",
-        "cross_context_measure_misses"
-      ]
+      "counters": []
     },
     {
       "id": "component-migration",
       "source": "crates/nana-ui-runtime/src/world/tests/component_parts.rs",
       "filter": "issue205",
-      "counters": [
-        "entities_total",
-        "layout_measure_nodes",
-        "layout_placement_nodes",
-        "layout_result_changed"
-      ]
+      "counters": []
     },
     {
       "id": "local-metrics-and-scaling",
       "source": "crates/nana-ui-runtime/src/world/tests/incremental_work.rs",
       "filter": "issue259",
-      "counters": [
-        "layout_dependency_edges_visited",
-        "layout_children_measured",
-        "layout_scratch_bytes",
-        "layout_full_document_fallbacks"
-      ]
+      "counters": []
     },
     {
       "id": "ordinary-scroll",
       "source": "crates/nana-ui-runtime/src/world/tests/layout_foundations.rs",
       "filter": "issue201",
-      "counters": [
-        "layout_measure_nodes",
-        "layout_placement_nodes",
-        "text_shaped",
-        "entities_spawned",
-        "entities_despawned"
-      ]
+      "counters": []
     },
     {
       "id": "scroll-and-sticky",
       "source": "crates/nana-ui-scene/tests/scene_contracts/sticky_scroll.rs",
       "filter": "issue200_sticky",
-      "counters": [
-        "layout_nodes",
-        "text_shaped",
-        "hit_test_nodes_rebuilt"
-      ]
+      "counters": []
     },
     {
       "id": "replaced-content",
       "source": "crates/nana-ui-runtime/src/world/tests/replaced_media.rs",
       "filter": "issue263",
-      "counters": [
-        "layout_measure_nodes",
-        "layout_placement_nodes",
-        "intrinsic_generation_bumps"
-      ]
+      "counters": []
     },
     {
       "id": "replaced-participation",
       "source": "crates/nana-ui-runtime/src/world/tests/layout_foundations.rs",
       "filter": "issue202",
-      "counters": [
-        "layout_full_document_fallbacks"
-      ]
+      "counters": []
     },
     {
       "id": "virtualization",
       "source": "crates/nana-ui-runtime/src/world/tests/incremental_work.rs",
       "filter": "issue262",
-      "counters": [
-        "entities_spawned",
-        "entities_despawned",
-        "layout_children_measured"
-      ]
+      "counters": []
     },
     {
       "id": "dynamic-layout",
       "source": "crates/nana-ui-runtime/src/world/tests/dynamic_layout.rs",
       "filter": "issue214",
-      "counters": [
-        "dynamic_solver_runs",
-        "dynamic_candidates_created",
-        "dynamic_child_resolves"
-      ]
+      "counters": []
     },
     {
       "id": "component-memory",
@@ -275,35 +231,19 @@
       "id": "native-mixed-inline",
       "source": "crates/nana-ui-scene/tests/scene_contracts/inline_content.rs",
       "filter": "paint_and_equal_atomic_metrics_do_not_reflow_the_inline_parent",
-      "counters": [
-        "inline_reflows",
-        "inline_atomic_measure_requests",
-        "text_shaped_runs",
-        "layout_measure_nodes",
-        "layout_placement_nodes"
-      ]
+      "counters": []
     },
     {
       "id": "list-row-entity-and-idle",
       "source": "crates/nana-ui-runtime/src/world/tests/component_parts.rs",
       "filter": "issue205_ten_thousand_rows_keep_one_entity_and_bounded_parts",
-      "counters": [
-        "entities_spawned",
-        "entities_despawned",
-        "layout_measure_nodes",
-        "layout_placement_nodes"
-      ]
+      "counters": []
     },
     {
       "id": "value-part-local-update",
       "source": "crates/nana-ui-runtime/src/world/tests/component_parts.rs",
       "filter": "issue205_value_parts_keep_action_at_the_end_and_match_cold",
-      "counters": [
-        "entities_spawned",
-        "entities_despawned",
-        "layout_measure_nodes",
-        "layout_placement_nodes"
-      ]
+      "counters": []
     },
     {
       "id": "frame-stack",

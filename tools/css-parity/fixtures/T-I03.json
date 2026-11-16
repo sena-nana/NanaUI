@@ -6,7 +6,7 @@
   "tolerance_px": 2,
   "tree": {
     "id": "root",
-    "style": "display:block;width:200px;font-size:16px;line-height:20px;white-space:pre",
+    "style": "width:200px;font-size:16px;line-height:20px;white-space:pre",
     "text": "ab\ncd"
   },
   "expected": [

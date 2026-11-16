@@ -292,6 +292,7 @@ pub(super) fn dest_filter_applies(nodes: &SceneNodes, node: &ExtractedNode) -> b
             .as_ref()
             .is_some_and(|text| !text.value.is_empty())
         || node.custom_render.is_some()
+        || node.widget_paint.is_some()
 }
 
 /// The only thing [`is_opacity_group`] — and so every descendant's paint-order
@@ -368,9 +369,8 @@ fn edge_fade_mask(node: &ExtractedNode, placed: LayoutBox) -> Option<EdgeFadeMas
     // whichever edge the axis starts at: the content above the scrollport
     // is the distance from the first, and below it the distance to the last.
     let [top, bottom] = node
-        .layout_result
-        .as_ref()
-        .and_then(|result| result.scroll_metrics)
+        .extracted_layout
+        .and_then(|layout| layout.scroll_metrics)
         .map_or([0.0, 0.0], |metrics| {
             let offset = node.scroll_offset.y;
             fade.resolve(

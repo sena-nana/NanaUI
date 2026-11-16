@@ -67,8 +67,12 @@ fn assert_equal_lines(
                 "{rect:?} != {first:?}"
             );
             assert!(rect.y >= track.y && rect.y + rect.height <= track.y + track.height + 0.5);
-            if let Some(crate::ComponentGeometry::SelectionOption { label, .. }) =
-                cx.world().component_geometry(option.stable_id())
+            let paint = cx.world().widget_paint(option.stable_id()).unwrap();
+            if let Some(crate::WidgetPaintOp::Text(label)) = paint
+                .ops
+                .iter()
+                .find(|tagged| tagged.slot == 2)
+                .map(|tagged| &tagged.op)
             {
                 let text = cx.world().text_metrics(option.stable_id()).unwrap();
                 assert!(
@@ -80,7 +84,7 @@ fn assert_equal_lines(
                     "label height clipped"
                 );
             } else {
-                panic!("missing option geometry");
+                panic!("missing option label");
             }
         }
         start = end;

@@ -168,6 +168,7 @@ impl super::Device {
         naga_stage: naga::ShaderStage,
     ) -> Result<CompiledShader, crate::PipelineError> {
         match stage.module.source {
+            #[cfg(feature = "naga-translation")]
             ShaderModuleSource::Naga(ref naga_shader) => {
                 let stage_bit = map_naga_stage(naga_stage);
                 let (module, module_info) = naga::back::pipeline_constants::process_overrides(
@@ -370,6 +371,27 @@ impl super::Device {
                     }
                 }
 
+                if log::log_enabled!(target: "wgpu_hal::metal::stage_meta", log::Level::Debug) {
+                    let bindings = sized_bindings
+                        .iter()
+                        .map(|(br, idx)| alloc::format!("{},{},{}", br.group, br.binding, idx))
+                        .collect::<Vec<_>>()
+                        .join(";");
+                    log::debug!(
+                        target: "wgpu_hal::metal::stage_meta",
+                        "entry={}\tstage={:?}\ttranslated={}\twg={},{},{}\tsized={}\nmsl_len={}\n{}",
+                        stage.entry_point,
+                        naga_stage,
+                        translated_ep_name,
+                        wg_size.width,
+                        wg_size.height,
+                        wg_size.depth,
+                        bindings,
+                        source.len(),
+                        source
+                    );
+                }
+
                 Ok(CompiledShader {
                     library,
                     function,
@@ -379,8 +401,17 @@ impl super::Device {
                     immutable_buffer_mask,
                 })
             }
+            #[cfg(not(feature = "naga-translation"))]
+            ShaderModuleSource::Naga(_) => {
+                let _ = (vertex_buffer_mappings, layout, primitive_class);
+                unreachable!("naga-translation feature is disabled")
+            }
             ShaderModuleSource::Passthrough(ref shader) => {
-                let size = shader.num_workgroups[stage.entry_point];
+                let size = shader
+                    .num_workgroups
+                    .get(stage.entry_point)
+                    .copied()
+                    .unwrap_or((0, 0, 0));
                 Ok(CompiledShader {
                     library: shader.library.clone(),
                     function: shader
@@ -393,7 +424,11 @@ impl super::Device {
                         depth: size.2 as usize,
                     },
                     wg_memory_sizes: vec![],
-                    sized_bindings: vec![],
+                    sized_bindings: shader
+                        .sized_bindings
+                        .get(stage.entry_point)
+                        .cloned()
+                        .unwrap_or_default(),
                     immutable_buffer_mask: 0,
                 })
             }
@@ -1292,6 +1327,7 @@ impl crate::Device for super::Device {
                     source: ShaderModuleSource::Passthrough(PassthroughShader {
                         library,
                         num_workgroups,
+                        sized_bindings: Default::default(),
                     }),
                     // This goes unused for passthrough shaders
                     runtime_checks: wgt::ShaderRuntimeChecks::unchecked(),
@@ -1300,8 +1336,13 @@ impl crate::Device for super::Device {
             crate::ShaderInput::Msl {
                 shader: source,
                 num_workgroups,
-            } => {
+                sized_bindings,
+            } => autoreleasepool(|_| {
                 let options = MTLCompileOptions::new();
+                options.setLanguageVersion(self.shared.private_caps.msl_version);
+                if available!(macos = 11.0, ios = 13.0, tvos = 14.0, visionos = 1.0) {
+                    options.setPreserveInvariance(true);
+                }
                 // Obtain the device from shared
                 let device = &self.shared.device;
                 let library = device
@@ -1312,10 +1353,11 @@ impl crate::Device for super::Device {
                     source: ShaderModuleSource::Passthrough(PassthroughShader {
                         library,
                         num_workgroups,
+                        sized_bindings,
                     }),
                     runtime_checks: desc.runtime_checks,
                 })
-            }
+            }),
             crate::ShaderInput::SpirV(_)
             | crate::ShaderInput::Dxil { .. }
             | crate::ShaderInput::Hlsl { .. }
@@ -1809,7 +1851,11 @@ impl crate::Device for super::Device {
 
             let module = desc.stage.module;
             let cs = if let ShaderModuleSource::Passthrough(passthrough_desc) = &module.source {
-                let size = passthrough_desc.num_workgroups[desc.stage.entry_point];
+                let size = passthrough_desc
+                    .num_workgroups
+                    .get(desc.stage.entry_point)
+                    .copied()
+                    .unwrap_or((1, 1, 1));
                 CompiledShader {
                     library: passthrough_desc.library.clone(),
                     function: passthrough_desc
@@ -1822,7 +1868,11 @@ impl crate::Device for super::Device {
                         depth: size.2 as usize,
                     },
                     wg_memory_sizes: vec![],
-                    sized_bindings: vec![],
+                    sized_bindings: passthrough_desc
+                        .sized_bindings
+                        .get(desc.stage.entry_point)
+                        .cloned()
+                        .unwrap_or_default(),
                     immutable_buffer_mask: 0,
                 }
             } else {

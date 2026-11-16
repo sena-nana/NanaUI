@@ -2,9 +2,8 @@ use crate::{
     AccessibilityLive, AccessibilityState, AnimationId, AnimationPlayback, AnimationSpec,
     ComponentTypeId, CustomRenderNode, DocumentId, HighlightRequest, ImeComposition,
     InteractionState, LayoutBox, NodeKind, NodeStyle, OverlayHostState, ScrollMetrics,
-    ScrollOffset, StableNodeId, StandardVisual, TextCodeFold, TextCompletion, TextContent,
-    TextHover, TextInlay, TextInputState, TextSelection, TextSignatureHelp,
-    components::TextSnippetSession,
+    ScrollOffset, StableNodeId, TextCodeFold, TextCompletion, TextContent, TextHover, TextInlay,
+    TextInputState, TextSelection, TextSignatureHelp, components::TextSnippetSession,
 };
 use nana_ui_core::ThemeAppearance;
 use std::{sync::Arc, time::Duration};
@@ -183,9 +182,9 @@ pub enum UiMutation {
         id: StableNodeId,
         type_id: Option<ComponentTypeId>,
     },
-    SetStandardVisual {
+    SetWidgetVisual {
         id: StableNodeId,
-        visual: Option<StandardVisual>,
+        visual: Option<crate::WidgetVisualHandle>,
     },
     SetAccessibility {
         id: StableNodeId,
@@ -626,6 +625,23 @@ impl MutationQueue {
             .push(UiMutation::SetCustomRender { id, content });
     }
 
+    pub fn set_widget_visual<V: crate::WidgetVisual>(
+        &mut self,
+        id: StableNodeId,
+        visual: Option<V>,
+    ) {
+        self.set_widget_visual_handle(id, visual.map(crate::WidgetVisualHandle::new));
+    }
+
+    pub fn set_widget_visual_handle(
+        &mut self,
+        id: StableNodeId,
+        visual: Option<crate::WidgetVisualHandle>,
+    ) {
+        self.mutations
+            .push(UiMutation::SetWidgetVisual { id, visual });
+    }
+
     /// Paint `id` with `painter`, whatever its style says. See
     /// [`UiMutation::SetPainter`].
     pub fn set_painter(&mut self, id: StableNodeId, painter: Option<crate::NodePainter>) {
@@ -657,11 +673,6 @@ impl MutationQueue {
 
     pub fn take(&mut self) -> Self {
         std::mem::take(self)
-    }
-
-    pub fn set_standard_visual(&mut self, id: StableNodeId, visual: Option<StandardVisual>) {
-        self.mutations
-            .push(UiMutation::SetStandardVisual { id, visual });
     }
 
     pub fn set_accessibility(&mut self, id: StableNodeId, accessibility: AccessibilityState) {

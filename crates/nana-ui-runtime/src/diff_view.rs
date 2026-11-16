@@ -7,7 +7,6 @@ use nana_ui_core::{
     SemanticColorRole,
 };
 
-use crate::component_registry::{RegisterableComponent, SemanticSpec};
 use crate::view_components::{Activate, Button, Stack, Text, project_common};
 use crate::{
     AccessibilityRole, AccessibilityState, AppContext, ComponentView, Entity, FrameworkError,
@@ -116,7 +115,7 @@ impl DiffView {
         layout.min_height = Some(LengthSpec::Px(0.0));
         layout.overflow_x = OverflowSpec::Hidden;
         layout.overflow_y = OverflowSpec::Hidden;
-        layout.font_family = Some("Cascadia Mono".to_owned());
+        layout.text_ext.font_family = Some("Cascadia Mono".to_owned());
         layout.font_size = Some(nana_ui_core::type_scale::META);
         Self {
             hunks: hunks.into(),
@@ -151,6 +150,8 @@ impl DiffView {
 }
 
 impl ComponentView for DiffView {
+    const TYPE_ID: Option<&'static str> = Some(crate::component_descriptors::DIFF.type_id);
+
     const BEHAVIOR: crate::TypeBehavior<Self> = crate::TypeBehavior {
         assembler: Some(crate::AppContext::assemble_diff_view),
         ..crate::TypeBehavior::NONE
@@ -184,41 +185,6 @@ impl ComponentView for DiffView {
                 ..Default::default()
             },
         );
-    }
-}
-
-impl RegisterableComponent for DiffView {
-    const TYPE_ID: &'static str = crate::component_descriptors::DIFF.type_id;
-    const TAGS: &'static [&'static str] = crate::component_descriptors::DIFF.tags;
-    const RETAIN_SEMANTIC_STATE: bool = true;
-    fn from_semantic(spec: &SemanticSpec<'_>) -> Self {
-        let hunks = hunks_from_spec(spec);
-        let mut view = Self::new(hunks);
-        view.disabled = spec.disabled;
-        view.layout = match spec
-            .attr("layout")
-            .unwrap_or("")
-            .trim()
-            .to_ascii_lowercase()
-            .as_str()
-        {
-            "split" | "side-by-side" => DiffLayout::Split,
-            _ => DiffLayout::Unified,
-        };
-        view
-    }
-    fn reconcile_semantic(spec: &SemanticSpec<'_>, previous: Option<&Self>) -> Self {
-        let mut view = Self::from_semantic(spec);
-        if let Some(previous) = previous {
-            view.wired = previous.wired.clone();
-        }
-        view
-    }
-    fn finish_semantic(
-        context: &mut AppContext,
-        entity: Entity<Self>,
-    ) -> Result<(), FrameworkError> {
-        context.assemble_diff_view(entity).map(|_| ())
     }
 }
 
@@ -638,64 +604,6 @@ fn muted_text() -> NodeStyle {
     let mut style = NodeStyle::default();
     style.foreground = Some(SemanticColorRole::Muted);
     style
-}
-
-fn hunks_from_spec(spec: &SemanticSpec<'_>) -> Arc<[DiffHunk]> {
-    let Some(raw) = spec.attr("hunks") else {
-        return Arc::from([]);
-    };
-    let Ok(value) = serde_json::from_str::<serde_json::Value>(raw) else {
-        return Arc::from([]);
-    };
-    let Some(items) = value.as_array() else {
-        return Arc::from([]);
-    };
-    items
-        .iter()
-        .filter_map(parse_hunk)
-        .collect::<Vec<_>>()
-        .into()
-}
-
-fn parse_hunk(value: &serde_json::Value) -> Option<DiffHunk> {
-    let object = value.as_object()?;
-    let header = object.get("header").and_then(|value| value.as_str())?;
-    let lines = object
-        .get("lines")
-        .and_then(|value| value.as_array())
-        .into_iter()
-        .flatten()
-        .filter_map(parse_line)
-        .collect::<Vec<_>>();
-    Some(DiffHunk::new(header, lines))
-}
-
-fn parse_line(value: &serde_json::Value) -> Option<DiffLine> {
-    let object = value.as_object()?;
-    let text = object.get("text").and_then(|value| value.as_str())?;
-    let kind = match object
-        .get("kind")
-        .and_then(|value| value.as_str())
-        .unwrap_or("context")
-    {
-        "added" | "add" => DiffLineKind::Added,
-        "removed" | "deleted" => DiffLineKind::Removed,
-        _ => DiffLineKind::Context,
-    };
-    Some(DiffLine {
-        old_number: object
-            .get("old")
-            .or_else(|| object.get("old_number"))
-            .and_then(|value| value.as_u64())
-            .map(|value| value as u32),
-        new_number: object
-            .get("new")
-            .or_else(|| object.get("new_number"))
-            .and_then(|value| value.as_u64())
-            .map(|value| value as u32),
-        kind,
-        text: Arc::from(text),
-    })
 }
 
 #[cfg(test)]

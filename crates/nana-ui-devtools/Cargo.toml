@@ -67,6 +67,10 @@ serde_json = { workspace = true, optional = true }
 wgpu = { workspace = true, optional = true }
 nana-gpu = { workspace = true, optional = true }
 
+[dev-dependencies]
+nana-ui-platform = { workspace = true, features = ["fetch"] }
+nana-ui = { workspace = true, features = ["runtime-wgsl"] }
+
 
 [[example]]
 name = "restored-content-probe"

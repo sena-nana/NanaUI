@@ -2,7 +2,6 @@
 
 #[cfg(feature = "clipboard")]
 mod clipboard;
-#[cfg(feature = "fetch")]
 mod fetch;
 mod locale;
 pub mod path;
@@ -30,10 +29,10 @@ pub use clipboard::{
     shared_clipboard_change_count, write_shared_clipboard,
 };
 #[cfg(feature = "fetch")]
+pub use fetch::NativeFetchHost;
 pub use fetch::{
     DEFAULT_FETCH_TIMEOUT, FetchCancellation, FetchError, FetchErrorKind, FetchHead, FetchHost,
-    FetchPolicy, FetchRequest, FetchResponse, FetchSink, NativeFetchHost, SharedFetchHost,
-    shared_fetch_host,
+    FetchPolicy, FetchRequest, FetchResponse, FetchSink, SharedFetchHost, shared_fetch_host,
 };
 pub use locale::{negotiate_language, preferred_languages};
 #[doc(hidden)]
@@ -120,10 +119,10 @@ mod tests {
     fn experimental_android_shares_layout_fields() {
         let style = nana_ui_core::LayoutStyle::default();
         let _pointer_events: Option<nana_ui_core::PointerEventsSpec> = style.pointer_events;
-        let _transform_3d: Option<nana_ui_core::PaintMat4> = style.transform_3d;
-        let _logical_padding: nana_ui_core::LogicalEdges = *style.logical_padding;
-        let _logical_margin: nana_ui_core::LogicalEdges = *style.logical_margin;
-        let _logical_inset: nana_ui_core::LogicalEdges = *style.logical_inset;
+        let _transform_3d: Option<nana_ui_core::PaintMat4> = style.transforms.transform_3d;
+        let _logical_padding: nana_ui_core::LogicalEdges = style.logical_edges.padding;
+        let _logical_margin: nana_ui_core::LogicalEdges = style.logical_edges.margin;
+        let _logical_inset: nana_ui_core::LogicalEdges = style.logical_edges.inset;
     }
 
     /// Compile cfg: Android is an experimental host OS, not a product UI target.

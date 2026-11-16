@@ -8,10 +8,10 @@ use nana_ui_core::{
 use crate::popover::{menu_surface_style, project_anchored_menu};
 use crate::view_components::project_common;
 use crate::{
-    AccessibilityRole, AccessibilityState, AppContext, ComponentElevation, ComponentGeometry,
-    ComponentImage, ComponentTextRegion, ComputedStyle, Entity, FrameworkError, InteractionState,
-    InteractionStyle, LayoutBox, MenuSurfaceKind, MutationQueue, NodeKind, NodePointer,
-    NodePointerHooks, NodeStyle, SelectOptionData, SemanticPaint, StableNodeId, StandardVisual,
+    AccessibilityRole, AccessibilityState, AppContext, ComponentElevation, ComponentImage,
+    ComponentTextRegion, ComputedStyle, Entity, FrameworkError, InteractionState, InteractionStyle,
+    LayoutBox, MenuSurfaceGeometry, MenuSurfaceKind, MenuSurfaceVisual, MutationQueue, NodeKind,
+    NodePointer, NodePointerHooks, NodeStyle, SelectOptionData, SemanticPaint, StableNodeId,
     TextContent, TextInputState, TextVerticalAlignment, TextureSlotName, UiWorld,
 };
 
@@ -188,6 +188,9 @@ impl ActionMenuItem {
 }
 
 impl crate::ComponentView for ActionMenuItem {
+    const TYPE_ID: Option<&'static str> =
+        Some(crate::component_descriptors::ACTION_MENU_ITEM.type_id);
+
     const BEHAVIOR: crate::TypeBehavior<Self> = crate::TypeBehavior {
         activation: Some(crate::AppContext::activate_action_menu_item),
         ..crate::TypeBehavior::NONE
@@ -211,7 +214,7 @@ impl crate::ComponentView for ActionMenuItem {
             .content
             .as_deref()
             .map_or(&self.label, crate::InlineContent::shared_text);
-        let visual = StandardVisual::ActionMenuItem {
+        let visual = ActionMenuItemVisual {
             label: Arc::clone(label),
             hint: self.hint.clone(),
             icon: self.leading,
@@ -221,8 +224,8 @@ impl crate::ComponentView for ActionMenuItem {
             disabled: self.disabled,
             size: self.size,
         };
-        if world.standard_visual(id) != Some(visual.clone()) {
-            mutations.set_standard_visual(id, Some(visual));
+        if world.widget_visual_as::<ActionMenuItemVisual>(id) != Some(&visual) {
+            mutations.set_widget_visual(id, Some(visual));
         }
         if !crate::world::inline_content::project_control_content(
             id,
@@ -364,7 +367,7 @@ impl AnchoredActionMenu {
         self.apply_anchor();
         let layout = Arc::make_mut(&mut self.style.layout);
         if let Some(anchor) = layout.anchor.as_mut() {
-            anchor.room = Some(layout_box_array(viewport));
+            Arc::make_mut(anchor).room = Some(layout_box_array(viewport));
         }
     }
 
@@ -373,14 +376,14 @@ impl AnchoredActionMenu {
     /// [`Self::place_in`] gave, which this keeps).
     pub(crate) fn apply_anchor(&mut self) {
         let layout = Arc::make_mut(&mut self.style.layout);
-        let room = layout.anchor.and_then(|anchor| anchor.room);
+        let room = layout.anchor.as_deref().and_then(|anchor| anchor.room);
         layout.position = PositionSpec::Fixed;
         layout.offset_left = None;
         layout.offset_top = None;
-        layout.anchor = Some(nana_ui_core::AnchorSpec {
+        layout.anchor = Some(Arc::new(nana_ui_core::AnchorSpec {
             room,
             ..nana_ui_core::AnchorSpec::point(self.x, self.y, self.placement)
-        });
+        }));
         layout.height = (self.height > 0.0).then_some(LengthSpec::Px(self.height));
     }
 }
@@ -695,7 +698,7 @@ impl ContextMenu {
         layout.position = PositionSpec::Fixed;
         layout.offset_left = None;
         layout.offset_top = None;
-        layout.anchor = Some(anchor);
+        layout.anchor = Some(Arc::new(anchor));
     }
 
     /// Hung below and after the pointer; layout flips it above or before
@@ -781,7 +784,7 @@ fn context_menu_moved(
 ) -> Result<bool, FrameworkError> {
     let world = cx.world();
     let (Some(geometry), Some(origin)) = (
-        world.component_geometry(menu.stable_id()),
+        world.menu_surface_geometry(menu.stable_id()),
         world.component_layout_box(menu.stable_id()),
     ) else {
         return Ok(false);
@@ -796,6 +799,8 @@ fn context_menu_moved(
 }
 
 impl crate::ComponentView for ContextMenu {
+    const TYPE_ID: Option<&'static str> = Some(crate::component_descriptors::CONTEXT_MENU.type_id);
+
     const BEHAVIOR: crate::TypeBehavior<Self> = crate::TypeBehavior {
         hooks: Some(|hooks| {
             crate::framework::routes::context_menu(hooks);
@@ -846,7 +851,7 @@ impl crate::ComponentView for ContextMenu {
             mutations.set_overlay_mount(id, Some(self.overlay_mount));
         }
         if open {
-            let visual = StandardVisual::MenuSurface {
+            let visual = MenuSurfaceVisual {
                 kind: MenuSurfaceKind::ContextMenu,
                 open: true,
                 trigger: None,
@@ -858,11 +863,11 @@ impl crate::ComponentView for ContextMenu {
                 rows,
                 highlighted: self.highlighted,
             };
-            if world.standard_visual(id) != Some(visual.clone()) {
-                mutations.set_standard_visual(id, Some(visual));
+            if world.widget_visual_as::<MenuSurfaceVisual>(id) != Some(&visual) {
+                mutations.set_widget_visual(id, Some(visual));
             }
-        } else if world.standard_visual(id).is_some() {
-            mutations.set_standard_visual(id, None);
+        } else if world.widget_visual(id).is_some() {
+            mutations.set_widget_visual::<MenuSurfaceVisual>(id, None);
         }
         if self.searchable && self.open {
             if world
@@ -889,7 +894,7 @@ impl crate::ComponentView for ContextMenu {
             // that moved `anchor_x` / `anchor_y` directly needs no re-anchor.
             layout.offset_left = None;
             layout.offset_top = None;
-            layout.anchor = Some(self.anchor_spec());
+            layout.anchor = Some(Arc::new(self.anchor_spec()));
         }
         project_common(
             id,
@@ -927,7 +932,7 @@ pub(crate) fn action_menu_item_geometry(
     palette: &SemanticPalette,
     metrics: ThemeMetrics,
     measure: crate::text_width::ChromeTextMeasure<'_>,
-) -> ComponentGeometry {
+) -> ActionMenuItemGeometry {
     action_menu_item_geometry_in(
         bounds,
         label,
@@ -953,7 +958,7 @@ pub(crate) fn context_menu_geometry(
     palette: &SemanticPalette,
     metrics: ThemeMetrics,
     search_placeholder: &Arc<str>,
-) -> ComponentGeometry {
+) -> MenuSurfaceGeometry {
     context_menu_geometry_in(
         bounds,
         query,
@@ -967,7 +972,221 @@ pub(crate) fn context_menu_geometry(
     )
 }
 
+/// Open visual contract attached to an [`ActionMenuItem`] node.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ActionMenuItemVisual {
+    pub label: Arc<str>,
+    pub hint: Option<Arc<str>>,
+    pub icon: Option<Icon>,
+    /// A round picture in the icon's place; see [`ActionMenuItem::leading_image`].
+    pub image: Option<TextureSlotName>,
+    pub danger: bool,
+    pub active: bool,
+    pub disabled: bool,
+    pub size: ControlSize,
+}
+
+/// Page-space or local geometry projected by [`ActionMenuItemVisual`].
+#[derive(Debug, Clone, PartialEq)]
+pub struct ActionMenuItemGeometry {
+    pub icon: Option<(Icon, LayoutBox, [f32; 4])>,
+    pub image: Option<ComponentImage>,
+    pub label: ComponentTextRegion,
+    pub hint: Option<ComponentTextRegion>,
+    pub background: Option<[f32; 4]>,
+}
+
+impl ActionMenuItemVisual {
+    pub(crate) fn content_parts_for(
+        &self,
+        id: StableNodeId,
+        world: &UiWorld,
+        bounds: LayoutBox,
+    ) -> crate::layout_engine::parts::ContentParts {
+        // A picture takes the icon's lane, a line box across.
+        let leading = if self.image.is_some() {
+            Some(row_image_size(self.size, world.theme().typography()))
+        } else {
+            self.icon
+                .map(|_| self.size.text_size_in(world.theme().typography()))
+        };
+        crate::layout_engine::parts::menu_content_parts(
+            bounds,
+            self.size.padding_x_in(world.style_model().metrics),
+            world.theme().spacing().md,
+            leading,
+            self.hint.as_ref().map(|hint| {
+                world
+                    .chrome_text_measure(id)
+                    .width(hint, world.theme().typography().hint, None)
+            }),
+        )
+    }
+
+    pub(crate) fn geometry_from_parts(
+        &self,
+        style: &ComputedStyle,
+        palette: &SemanticPalette,
+        theme: &nana_ui_core::CompiledTheme,
+        parts: &crate::layout_engine::parts::ContentParts,
+    ) -> ActionMenuItemGeometry {
+        action_menu_item_geometry_from_parts(
+            &self.label,
+            self.hint.as_ref(),
+            self.icon,
+            self.image.as_ref(),
+            self.danger,
+            self.disabled,
+            self.size,
+            style,
+            palette,
+            theme,
+            parts,
+        )
+    }
+}
+
+impl crate::WidgetVisual for ActionMenuItemVisual {
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+
+    fn dyn_eq(&self, other: &dyn std::any::Any) -> bool {
+        other.downcast_ref::<Self>().is_some_and(|rhs| self == rhs)
+    }
+
+    fn measures_text(&self) -> bool {
+        true
+    }
+
+    fn offsets_overflowing_inline_text(&self) -> bool {
+        true
+    }
+
+    fn tracks_text_content_part_budget(&self) -> bool {
+        true
+    }
+
+    fn caps_control_text(&self) -> bool {
+        true
+    }
+
+    fn clearing_changes_content_layout(&self) -> bool {
+        true
+    }
+
+    fn content_layout_changed(&self, prev: Option<&dyn std::any::Any>) -> bool {
+        let Some(old) = prev.and_then(|any| any.downcast_ref::<Self>()) else {
+            return true;
+        };
+        (
+            self.hint.as_deref(),
+            self.icon.is_some(),
+            self.image.is_some(),
+            self.size,
+        ) != (
+            old.hint.as_deref(),
+            old.icon.is_some(),
+            old.image.is_some(),
+            old.size,
+        )
+    }
+
+    fn solve_content_parts(
+        &self,
+        id: StableNodeId,
+        world: &UiWorld,
+        bounds: LayoutBox,
+        _content: LayoutBox,
+        _writing: nana_ui_core::WritingContext,
+        _own_frame: bool,
+    ) -> Option<crate::layout_engine::parts::ContentParts> {
+        Some(self.content_parts_for(id, world, bounds))
+    }
+
+    fn node_text_max_width(
+        &self,
+        id: StableNodeId,
+        world: &UiWorld,
+        _layout: LayoutBox,
+        available_width: f32,
+        _available_height: f32,
+    ) -> Option<f32> {
+        Some(
+            world
+                .content_part_box(id, crate::LayoutPartKind::TextContent)
+                .map_or(available_width, |part| part.width.max(0.0)),
+        )
+    }
+
+    fn paint(&self, ctx: &crate::WidgetPaintCtx<'_>) -> crate::WidgetPaintOutput {
+        let parts = ctx.content_parts();
+        let geometry =
+            self.geometry_from_parts(ctx.style, &ctx.style_model.palette, ctx.theme, &parts);
+        let mut out = crate::WidgetPaintOutput {
+            owns_node_text: true,
+            ..crate::WidgetPaintOutput::new()
+        };
+        if let Some(image) = geometry.image.as_ref() {
+            // Slots 2..=4 are the label, the icon and the hint.
+            crate::widget_visual::push_component_image(&mut out, 5, 6, image, |op| op);
+        }
+        if let Some((icon, bounds, color)) = geometry.icon {
+            out.push(
+                3,
+                crate::WidgetPaintOp::Icon(crate::WidgetIcon {
+                    bounds,
+                    glyph: crate::WidgetGlyph::Icon(icon),
+                    color: Some(color),
+                    paint_color: ctx.matching_text_paint(color),
+                    align_to_adjacent_text: false,
+                }),
+            );
+        }
+        let label_paint = geometry
+            .label
+            .color
+            .and_then(|color| ctx.matching_text_paint(color));
+        out.push(
+            2,
+            crate::WidgetPaintOp::Text(crate::WidgetText {
+                bounds: geometry.label.bounds,
+                content: geometry.label.content,
+                color: geometry.label.color,
+                paint_color: label_paint,
+                font_size: geometry.label.font_size,
+                font_weight: geometry.label.font_weight,
+                horizontal_alignment: crate::TextHorizontalAlignment::Start,
+                vertical_alignment: TextVerticalAlignment::Center,
+                ellipsis: true,
+                retained_text: crate::WidgetRetainedText::NodeTextIfRich,
+                ..Default::default()
+            }),
+        );
+        if let Some(hint) = geometry.hint {
+            let hint_paint = hint.color.and_then(|color| ctx.matching_text_paint(color));
+            out.push(
+                4,
+                crate::WidgetPaintOp::Text(crate::WidgetText {
+                    bounds: hint.bounds,
+                    content: hint.content,
+                    color: hint.color,
+                    paint_color: hint_paint,
+                    font_size: hint.font_size,
+                    font_weight: hint.font_weight,
+                    horizontal_alignment: crate::TextHorizontalAlignment::End,
+                    vertical_alignment: TextVerticalAlignment::Center,
+                    ellipsis: true,
+                    ..Default::default()
+                }),
+            );
+        }
+        out
+    }
+}
+
 #[cfg(test)]
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn action_menu_item_geometry_in(
     bounds: LayoutBox,
     label: &Arc<str>,
@@ -981,7 +1200,7 @@ pub(crate) fn action_menu_item_geometry_in(
     metrics: ThemeMetrics,
     measure: crate::text_width::ChromeTextMeasure<'_>,
     theme: &nana_ui_core::CompiledTheme,
-) -> ComponentGeometry {
+) -> ActionMenuItemGeometry {
     use crate::layout_engine::parts::menu_content_parts;
     let parts = menu_content_parts(
         bounds,
@@ -1008,7 +1227,7 @@ pub(crate) fn action_menu_item_geometry_from_parts(
     palette: &SemanticPalette,
     theme: &nana_ui_core::CompiledTheme,
     parts: &crate::layout_engine::parts::ContentParts,
-) -> ComponentGeometry {
+) -> ActionMenuItemGeometry {
     use crate::LayoutPartKind;
     use crate::layout_engine::parts::part_bounds;
     let icon_color = if disabled {
@@ -1035,7 +1254,7 @@ pub(crate) fn action_menu_item_geometry_from_parts(
     } else {
         style.color.unwrap_or_else(|| palette.text.as_rgba_array())
     };
-    ComponentGeometry::ActionMenuItem {
+    ActionMenuItemGeometry {
         icon,
         image,
         label: ComponentTextRegion {
@@ -1130,7 +1349,7 @@ pub(crate) fn context_menu_geometry_in(
     search_placeholder: &Arc<str>,
     measure: crate::text_width::ChromeTextMeasure<'_>,
     theme: &nana_ui_core::CompiledTheme,
-) -> ComponentGeometry {
+) -> MenuSurfaceGeometry {
     let is_light = palette.background.as_rgba_array()[0] > 0.5;
     let searchable = query.is_some();
     let search_height = search_field_height(metrics);
@@ -1253,7 +1472,7 @@ pub(crate) fn context_menu_geometry_in(
             }
         })
         .collect();
-    ComponentGeometry::MenuSurface {
+    MenuSurfaceGeometry {
         trigger_surface: None,
         trigger: None,
         trigger_icon: None,
@@ -1281,14 +1500,12 @@ pub(crate) fn context_menu_geometry_in(
 }
 
 pub(crate) fn context_menu_option_at(
-    geometry: &ComponentGeometry,
+    geometry: &MenuSurfaceGeometry,
     x: f32,
     y: f32,
 ) -> Option<usize> {
-    let ComponentGeometry::MenuSurface { options, .. } = geometry else {
-        return None;
-    };
-    options
+    geometry
+        .options
         .iter()
         .position(|option| !option.disabled && option.bounds.contains(x, y))
 }
@@ -1432,7 +1649,8 @@ fn item_style(size: ControlSize) -> NodeStyle {
                 ..SemanticPaint::default()
             },
             ..InteractionStyle::default()
-        },
+        }
+        .into(),
         text_vertical_alignment: TextVerticalAlignment::Center,
         ..NodeStyle::default()
     }
@@ -1442,7 +1660,7 @@ fn item_style(size: ControlSize) -> NodeStyle {
 mod tests {
     use super::*;
     use crate::framework::AppContext;
-    use crate::{Activate, DocumentId, StandardVisual};
+    use crate::{Activate, DocumentId};
 
     fn document() -> DocumentId {
         DocumentId::new(1).unwrap()
@@ -1462,8 +1680,8 @@ mod tests {
             .unwrap();
         let id = item.stable_id();
         assert!(matches!(
-            context.world().standard_visual(id),
-            Some(StandardVisual::ActionMenuItem { danger: true, .. })
+            context.world().widget_visual_as::<ActionMenuItemVisual>(id),
+            Some(ActionMenuItemVisual { danger: true, .. })
         ));
         assert_eq!(context.world().text(id), Some("Delete"));
         assert_eq!(
@@ -1633,11 +1851,14 @@ mod tests {
                 ]),
             )
             .unwrap();
-        match context.world().standard_visual(menu.stable_id()) {
-            Some(StandardVisual::MenuSurface { rows, .. }) => {
-                assert_eq!(rows.len(), 2);
-                assert_eq!(rows[0].icon, Some(Icon::Add));
-                assert_eq!(rows[1].icon, None);
+        match context
+            .world()
+            .widget_visual_as::<MenuSurfaceVisual>(menu.stable_id())
+        {
+            Some(visual) => {
+                assert_eq!(visual.rows.len(), 2);
+                assert_eq!(visual.rows[0].icon, Some(Icon::Add));
+                assert_eq!(visual.rows[1].icon, None);
             }
             other => panic!("context menu visual: {other:?}"),
         }
@@ -2041,7 +2262,7 @@ mod tests {
                 mark: crate::MenuItemMark::Command,
             },
         ];
-        let ComponentGeometry::MenuSurface { options, .. } = context_menu_geometry(
+        let options = context_menu_geometry(
             LayoutBox {
                 x: 0.0,
                 y: 0.0,
@@ -2054,9 +2275,8 @@ mod tests {
             &palette,
             nana_ui_core::UI_METRICS,
             &Arc::from("搜索操作"),
-        ) else {
-            panic!("context menu geometry");
-        };
+        )
+        .options;
         assert_eq!(options.len(), 2);
         let Some((kind, icon_box, _)) = options[0].icon else {
             panic!("expected Add icon geometry");
@@ -2092,8 +2312,8 @@ mod tests {
             Some("del")
         );
         assert!(context.world().interaction(id).unwrap().focusable);
-        match context.world().standard_visual(id) {
-            Some(StandardVisual::MenuSurface {
+        match context.world().widget_visual_as::<MenuSurfaceVisual>(id) {
+            Some(MenuSurfaceVisual {
                 query: Some(query),
                 rows,
                 ..
@@ -2177,23 +2397,21 @@ mod tests {
         };
         let style = ComputedStyle::default();
         let palette = SemanticPalette::dark();
-        let geometry = |hint: &Arc<str>| match action_menu_item_geometry(
-            bounds,
-            &Arc::from("复制到剪贴板"),
-            Some(hint),
-            None,
-            false,
-            false,
-            ControlSize::Medium,
-            &style,
-            &palette,
-            nana_ui_core::UI_METRICS,
-            crate::text_width::ChromeTextMeasure::ESTIMATE,
-        ) {
-            ComponentGeometry::ActionMenuItem { label, hint, .. } => {
-                (label, hint.expect("hint region"))
-            }
-            _ => panic!("action menu item geometry"),
+        let geometry = |hint: &Arc<str>| {
+            let geom = action_menu_item_geometry(
+                bounds,
+                &Arc::from("复制到剪贴板"),
+                Some(hint),
+                None,
+                false,
+                false,
+                ControlSize::Medium,
+                &style,
+                &palette,
+                nana_ui_core::UI_METRICS,
+                crate::text_width::ChromeTextMeasure::ESTIMATE,
+            );
+            (geom.label, geom.hint.expect("hint region"))
         };
         let (short_label, short_hint) = geometry(&Arc::from("⌘C"));
         let (long_label, long_hint) = geometry(&Arc::from("Ctrl+Shift+P"));
@@ -2285,7 +2503,7 @@ mod tests {
     /// with its box.
     fn laid_out_items(
         items: Vec<ActionMenuItem>,
-    ) -> (AppContext, Vec<(ComponentGeometry, LayoutBox)>) {
+    ) -> (AppContext, Vec<(ActionMenuItemGeometry, LayoutBox)>) {
         let mut context = AppContext::new();
         let column = context
             .create_component(
@@ -2310,7 +2528,7 @@ mod tests {
             .iter()
             .map(|id| {
                 (
-                    context.world().component_geometry(*id).unwrap(),
+                    context.world().action_menu_item_geometry(*id).unwrap(),
                     context.world().layout_box(*id).unwrap(),
                 )
             })
@@ -2332,11 +2550,9 @@ mod tests {
         let extent = row_image_size(ControlSize::Small, theme.typography());
         let gap = theme.spacing().md;
         let padding = ControlSize::Small.padding_x_in(context.world().theme_metrics());
-        let parts = |index: usize| match &items[index].0 {
-            ComponentGeometry::ActionMenuItem {
-                icon, image, label, ..
-            } => (*icon, image.clone(), label.bounds),
-            other => panic!("expected an action menu item, got {other:?}"),
+        let parts = |index: usize| {
+            let item = &items[index].0;
+            (item.icon, item.image.clone(), item.label.bounds)
         };
 
         // The picture wins over the icon, sits where the icon would start,
@@ -2419,13 +2635,16 @@ mod tests {
                 ]),
             )
             .unwrap();
-        match context.world().standard_visual(menu.stable_id()) {
-            Some(StandardVisual::MenuSurface { rows, .. }) => {
+        match context
+            .world()
+            .widget_visual_as::<MenuSurfaceVisual>(menu.stable_id())
+        {
+            Some(visual) => {
                 assert_eq!(
-                    rows[0].image.as_ref().map(TextureSlotName::as_str),
+                    visual.rows[0].image.as_ref().map(TextureSlotName::as_str),
                     Some("thumb.alice")
                 );
-                assert_eq!(rows[1].image, None);
+                assert_eq!(visual.rows[1].image, None);
             }
             other => panic!("context menu visual: {other:?}"),
         }
@@ -2457,7 +2676,7 @@ mod tests {
             width: 220.0,
             height: 160.0,
         };
-        let ComponentGeometry::MenuSurface { options, .. } = context_menu_geometry(
+        let options = context_menu_geometry(
             bounds,
             None,
             &rows,
@@ -2465,9 +2684,8 @@ mod tests {
             &palette,
             metrics,
             &Arc::from("Search"),
-        ) else {
-            panic!("expected context menu geometry");
-        };
+        )
+        .options;
         let extent = row_image_size(ControlSize::Small, theme.typography());
         let gap = theme.spacing().md;
         let lane = options[3].label.bounds.x;

@@ -125,8 +125,8 @@ impl SplitPane {
                 },
             );
         }
-        if world.standard_visual(id).is_some() {
-            mutations.set_standard_visual(id, None);
+        if world.widget_visual_ref(id).is_some() {
+            mutations.set_widget_visual_handle(id, None);
         }
         project_common(
             id,
@@ -221,8 +221,8 @@ impl SplitPane {
                 },
             );
         }
-        if world.standard_visual(id).is_some() {
-            mutations.set_standard_visual(id, None);
+        if world.widget_visual_ref(id).is_some() {
+            mutations.set_widget_visual_handle(id, None);
         }
         let color = self.handle_color();
         let mut style = NodeStyle::default();
@@ -287,8 +287,8 @@ impl SplitPane {
                 },
             );
         }
-        if world.standard_visual(id).is_some() {
-            mutations.set_standard_visual(id, None);
+        if world.widget_visual_ref(id).is_some() {
+            mutations.set_widget_visual_handle(id, None);
         }
         let mut style = NodeStyle::default();
         style.background = Some(color);
@@ -338,6 +338,8 @@ pub(crate) fn split_direction(axis: SplitAxis) -> FlexDirection {
 }
 
 impl ComponentView for SplitPane {
+    const TYPE_ID: Option<&'static str> = Some(crate::component_descriptors::SPLIT_PANE.type_id);
+
     const BEHAVIOR: crate::TypeBehavior<Self> = crate::TypeBehavior {
         hooks: Some(|hooks| {
             crate::framework::routes::split_pane(hooks);
@@ -712,6 +714,9 @@ impl ComponentView for SplitHandle {
                 },
             );
         }
+        if world.widget_visual_ref(id).is_some() {
+            mutations.set_widget_visual_handle(id, None);
+        }
         project_common(
             id,
             world,
@@ -748,6 +753,9 @@ impl ComponentView for SplitHandleMark {
                     value: String::new().into(),
                 },
             );
+        }
+        if world.widget_visual_ref(id).is_some() {
+            mutations.set_widget_visual_handle(id, None);
         }
         project_common(
             id,
@@ -788,8 +796,8 @@ impl ComponentView for SplitPaneSlot {
                 },
             );
         }
-        if world.standard_visual(id).is_some() {
-            mutations.set_standard_visual(id, None);
+        if world.widget_visual_ref(id).is_some() {
+            mutations.set_widget_visual_handle(id, None);
         }
         project_common(
             id,

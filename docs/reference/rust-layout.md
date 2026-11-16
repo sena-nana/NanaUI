@@ -109,7 +109,7 @@ let card = Stack::column(0.0)
 `LayoutStyle` 的字段命名对齐 CSS，但其缺省值是**显式收敛（fail-closed）**的，直接套用浏览器 CSS 的 initial 值假设会出错：
 
 1. **`flex-shrink` 缺省为 `0`（浏览器 CSS 为 `1`）**：定宽行溢出时子项保持原有尺寸，不会被静默压扁；需要随容器收缩时必须显式调用 `.shrink(1.0)`。
-2. **`align-items` 缺省为 `Start`（浏览器 CSS 为 `stretch`）**：子项不会自动沿交叉轴拉伸铺满（`Stack` 预设已按常见用途配好对齐方式，手动构造 `LayoutStyle` 时需留意）。块容器例外：不写 `display`（`LayoutStyle::default()`、`NodeStyle::default()`）、写 `display: Block` 或 `FlowRoot`、不沿行排的容器按 CSS 块布局排，没有 `align-items`，`auto` 宽的块级子项和 CSS 一样撑满包含块（写了 `align-self` 或自己宽度的子项、图片等替换内容、书写模式正交的子项除外）。要子项按内容收缩或按 `align_items` 居中，把容器写成 `display: Flex`（`Stack` 预设都是），或给子项写 `align-self` / `width: Shrink`。
+2. **`align-items` 缺省为 `Start`（浏览器 CSS 为 `stretch`）**：子项不会自动沿交叉轴拉伸铺满（`Stack` 预设已按常见用途配好对齐方式，手动构造 `LayoutStyle` 时需留意）。未写 `display`（`LayoutStyle::default()`、`NodeStyle::default()`）且流内不含行内子项的竖向容器也会回到 `Flex` 列布局，且默认不额外改写子项交叉轴拉伸语义；要确保子项按内容收缩或按 `align_items` 居中，请显式保留 `DisplaySpec::Flex`（所有 `Stack` 预设均已开启）或为子项声明 `align_self` / `width: Shrink`（图片等替换内容与正交书写模式子项仍保持各自固有交叉轴规则）。
 3. **`flex-direction` 缺省为 `Column`（浏览器 CSS 为 `row`）**：未指定方向的容器默认自上而下竖排，需要水平排列请显式使用 `Stack::row`。
 
 与 CSS Flexbox 保持一致的关键行为：一行中的子项会按该行实际分配给它的**主轴使用尺寸（used main size）**去排版内部内容并测量交叉轴高度。例如当 `Fill` 列在定宽侧栏旁被收窄时，其内部的 16:9 缩略图与自动换行文本都会按收窄后的宽度重新算出真实高度，绝不会残留按整窗宽度量出的旧高度（除非子项自身显式锁死了交叉轴 `height` 或自带 `aspect_ratio`）。

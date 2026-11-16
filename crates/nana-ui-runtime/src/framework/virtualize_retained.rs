@@ -2,7 +2,6 @@
 
 use super::*;
 use crate::Stack;
-use crate::world::VirtualRowCounts;
 use nana_ui_core::{PositionSpec, VirtualViewport};
 use std::cell::Cell;
 
@@ -245,7 +244,6 @@ impl AppContext {
         // previous top.
         let mut patched_containers = Vec::new();
         // Rows given a new imposed height, which lay out again at it.
-        let mut remeasured = 0;
         for (&index, key) in plan.indices.iter().zip(&plan.order) {
             let top = layout.extent(0..index);
             let height = layout.extent(index..index + 1);
@@ -263,7 +261,6 @@ impl AppContext {
                     mutations.patch_placement(entity.id, top, imposed_height);
                     patched_containers.push(entity.id);
                     items.pending_measure |= items.measured;
-                    remeasured += usize::from(!height_held);
                 }
             } else {
                 let container = placement_container(top, imposed_height);
@@ -303,16 +300,10 @@ impl AppContext {
         content_layout.min_height = content_layout.height;
         content_layout.max_height = content_layout.height;
         content_layout.flex_shrink = Some(0.0);
-        let (restyled, extent_moved) = self.read(list, |old| {
-            (
-                old.style.layout != content.style.layout,
-                old.style.layout.height != content.style.layout.height,
-            )
-        })?;
+        let restyled = self.read(list, |old| old.style.layout != content.style.layout)?;
         if restyled {
             content.project(list.id, &self.world, &mut mutations);
         }
-        let repositioned = patched_containers.len();
 
         // Publish external identities and component data only after atomic commit.
         if !mutations.is_empty() {
@@ -356,23 +347,6 @@ impl AppContext {
             .map_err(|_| FrameworkError::InvalidVirtualization)?;
         items.publish_list(layout, &window, activity, 0);
         items.placed_under = placed_under;
-        // Row index writes since the list last placed its rows: its own
-        // measurements, and the caller's inserts, removals and measurements.
-        // A layout younger than the one last seen counts all it holds.
-        let touched = layout.index_entries_touched();
-        let index_writes = touched
-            .checked_sub(items.index_writes_seen)
-            .unwrap_or(touched);
-        items.index_writes_seen = touched;
-        self.world.note_virtual_rows(VirtualRowCounts {
-            prefix_index_updates: usize::try_from(index_writes).unwrap_or(usize::MAX),
-            rows_remeasured: remeasured,
-            rows_repositioned: repositioned,
-            logical_rows_scanned: scanned.get(),
-            scroll_extent_updates: usize::from(extent_moved),
-            rows_materialized: mounted_now.len(),
-            ..VirtualRowCounts::default()
-        });
         for (id, index, key) in mounted_now {
             on_mount(self, Entity::from_stable_id(id), index, &key)?;
         }
@@ -615,7 +589,7 @@ impl AppContext {
         }
         let before = viewport.offset[1];
         let mut unmeasured = false;
-        let mut counts = VirtualRowCounts::default();
+        let mut any_metric_updated = false;
         // Rows sit at the indices they were placed at while the data they
         // were placed under holds; otherwise each is looked up again.
         let trusted = items.placed_under == Some((fingerprint, layout.len()));
@@ -624,7 +598,6 @@ impl AppContext {
             let index = match placed.get(at) {
                 Some(&index) if trusted => index,
                 _ => {
-                    counts.logical_rows_scanned += 1;
                     let Some(index) = index_of_key(key) else {
                         continue;
                     };
@@ -638,15 +611,13 @@ impl AppContext {
             {
                 Some(bounds) if bounds.height > 0.0 => {
                     if layout.measure_anchored(index, bounds.height, &mut viewport) {
-                        counts.metric_updates += 1;
-                        counts.rows_remeasured += 1;
+                        any_metric_updated = true;
                     }
                 }
                 _ => unmeasured = true,
             }
         }
-        self.world.note_virtual_rows(counts);
-        if counts.metric_updates > 0 {
+        if any_metric_updated {
             // Rows move with the new extents even when the window is the same.
             items.published = None;
             items.measurements = items.measurements.wrapping_add(1);
@@ -1061,32 +1032,37 @@ impl AppContext {
         let mut staged_rows = Vec::new();
         let mut staged_cells = Vec::new();
         for entity in items.rows.values().copied() {
-            let Some(transform) = self.read(entity, |row| row.style.layout.transform)? else {
+            let Some(transform) = self.read(entity, |row| row.style.layout.transforms.transform)?
+            else {
                 continue;
             };
             if transform.f == viewport.offset[1] {
                 continue;
             }
             let mut row = self.read(entity, Clone::clone)?;
-            Arc::make_mut(&mut row.style.layout).transform = Some(nana_ui_core::PaintTransform {
-                f: viewport.offset[1],
-                ..transform
-            });
+            Arc::make_mut(&mut row.style.layout).transforms.transform =
+                Some(nana_ui_core::PaintTransform {
+                    f: viewport.offset[1],
+                    ..transform
+                });
             row.project(entity.id, &self.world, &mut mutations);
             staged_rows.push((entity.id, row));
         }
         for entity in items.cells.values().copied() {
-            let Some(transform) = self.read(entity, |cell| cell.style.layout.transform)? else {
+            let Some(transform) =
+                self.read(entity, |cell| cell.style.layout.transforms.transform)?
+            else {
                 continue;
             };
             if transform.e == viewport.offset[0] {
                 continue;
             }
             let mut cell = self.read(entity, Clone::clone)?;
-            Arc::make_mut(&mut cell.style.layout).transform = Some(nana_ui_core::PaintTransform {
-                e: viewport.offset[0],
-                ..transform
-            });
+            Arc::make_mut(&mut cell.style.layout).transforms.transform =
+                Some(nana_ui_core::PaintTransform {
+                    e: viewport.offset[0],
+                    ..transform
+                });
             cell.project(entity.id, &self.world, &mut mutations);
             staged_cells.push((entity.id, cell));
         }
@@ -1182,10 +1158,14 @@ pub(super) fn position_table_row(
     style.height = Some(LengthSpec::Px(layout.row_layout().extent(index..index + 1)));
     style.flex_shrink = Some(0.0);
     style.z_index = Some(if index < frozen[1] { 2 } else { 0 });
-    style.transform = (index < frozen[1]).then_some(nana_ui_core::PaintTransform {
-        f: viewport.offset[1],
-        ..Default::default()
-    });
+    if index < frozen[1] {
+        style.transforms.transform = Some(nana_ui_core::PaintTransform {
+            f: viewport.offset[1],
+            ..Default::default()
+        });
+    } else if style.transforms.transform.is_some() {
+        style.transforms.transform = None;
+    }
 }
 
 pub(super) fn position_table_cell(
@@ -1206,10 +1186,14 @@ pub(super) fn position_table_cell(
     style.height = Some(LengthSpec::Px(layout.row_layout().extent(row..row + 1)));
     style.flex_shrink = Some(0.0);
     style.z_index = Some(if column < frozen[0] { 1 } else { 0 });
-    style.transform = (column < frozen[0]).then_some(nana_ui_core::PaintTransform {
-        e: viewport.offset[0],
-        ..Default::default()
-    });
+    if column < frozen[0] {
+        style.transforms.transform = Some(nana_ui_core::PaintTransform {
+            e: viewport.offset[0],
+            ..Default::default()
+        });
+    } else if style.transforms.transform.is_some() {
+        style.transforms.transform = None;
+    }
     cell.style
         .background
         .get_or_insert(nana_ui_core::SemanticColorRole::Surface);

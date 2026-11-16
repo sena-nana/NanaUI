@@ -7,7 +7,9 @@ impl UiScene {
     /// What a frame plan reads out of a primitive beyond its identity.
     fn custom_binding(kind: &ScenePrimitiveKind) -> Option<(&Arc<str>, &Arc<str>)> {
         match kind {
-            ScenePrimitiveKind::Custom { node, .. } => Some((&node.renderer, &node.resource)),
+            ScenePrimitiveKind::Custom { node, .. } if node.payload.is_none() => {
+                Some((&node.renderer, &node.resource))
+            }
             _ => None,
         }
     }
@@ -16,7 +18,8 @@ impl UiScene {
 impl UiScene {
     pub(super) fn remove_node_primitives(&mut self, id: StableNodeId) {
         self.glyph_live.remove(&id);
-        self.chart_live.remove(&id);
+        self.gpu_payload_live.remove(&id);
+        self.widget_vector_paint.remove(&id);
         self.glyph_objects.remove(&id);
         self.retire_node_primitives(id, |_| true);
     }

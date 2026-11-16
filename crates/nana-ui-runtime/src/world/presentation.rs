@@ -46,9 +46,9 @@ impl UiWorld {
         let layout = style.layout.as_ref();
         match property {
             AnimatableProperty::Opacity => Some(MotionValue::Scalar(layout.opacity.unwrap_or(1.0))),
-            AnimatableProperty::Transform => {
-                Some(MotionValue::Transform(layout.transform.unwrap_or_default()))
-            }
+            AnimatableProperty::Transform => Some(MotionValue::Transform(
+                layout.transforms.transform.unwrap_or_default(),
+            )),
             AnimatableProperty::Background => layout.background.map(MotionValue::Color),
             AnimatableProperty::Width => length_px(layout.width),
             AnimatableProperty::Height => length_px(layout.height),
@@ -313,13 +313,15 @@ impl UiWorld {
         // The refusal comes first: an overlay is not a way around a closed 3D
         // context, or the pointer keeps a projection paint gave up and a click
         // lands where the node is not drawn.
-        if blocks_3d && style.transform_3d.is_some() {
+        if blocks_3d && style.transforms.transform_3d.is_some() {
             return (IDENTITY_AFFINE, [0.0, 0.0]);
         }
         // A triggered menu's overlay moves its hanging surface, not the
-        // trigger: see `hanging_branch_transform`.
+        // trigger: see `hanging_branch_transform`. Keep suppressing the
+        // node's own compositor transform once closed while FillMode::Forwards
+        // still retains the closing pop sample on `id`.
         if let Some(transform) = self.sampled_compositor_transform(id)
-            && !self.is_triggered_menu(id)
+            && !self.has_triggered_menu_chrome(id)
         {
             let [ox, oy] = self
                 .modal_pivot(id, bounds)
@@ -337,19 +339,22 @@ impl UiWorld {
     /// A modal frame's presentation pivot: its card's centre. Only a modal
     /// frame is asked for its geometry here, and only while it moves.
     fn modal_pivot(&self, id: StableNodeId, bounds: LayoutBox) -> Option<[f32; 2]> {
-        if !matches!(
-            self.nodes.visual(id),
-            Some(StandardVisual::ModalFrame { .. })
-        ) {
-            return None;
-        }
-        self.component_geometry(id)?.presentation_pivot(bounds)
+        crate::WidgetVisual::presentation_pivot(
+            self.widget_visual_as::<crate::ModalFrameVisual>(id)?,
+            id,
+            self,
+            bounds,
+        )
     }
 
     fn is_triggered_menu(&self, id: StableNodeId) -> bool {
-        self.nodes
-            .visual(id)
+        self.widget_visual_ref(id)
             .is_some_and(|visual| visual.triggered_menu_overlay().is_some())
+    }
+
+    fn has_triggered_menu_chrome(&self, id: StableNodeId) -> bool {
+        self.widget_visual_as::<crate::MenuSurfaceVisual>(id)
+            .is_some_and(|visual| visual.overlay.is_some() && visual.has_trigger())
     }
 
     /// Where the viewport-fixed branch rooted at `fixed` starts: the identity,
@@ -361,7 +366,7 @@ impl UiWorld {
             .get(fixed)
             .and_then(|node| node.hierarchy.parent)
             .and_then(|menu| {
-                let overlay = self.nodes.visual(menu)?.triggered_menu_overlay()?;
+                let overlay = self.widget_visual_ref(menu)?.triggered_menu_overlay()?;
                 (overlay.trigger_content != Some(fixed)).then_some(menu)
             })
             .and_then(|menu| self.hanging_surface_transform(menu))
@@ -379,7 +384,9 @@ impl UiWorld {
         }
         let transform = self.sampled_compositor_transform(menu)?;
         let bounds = self.component_layout_box(menu)?;
-        let [ox, oy] = self.component_geometry(menu)?.presentation_pivot(bounds)?;
+        let [ox, oy] = self
+            .widget_visual_ref(menu)?
+            .presentation_pivot(menu, self, bounds)?;
         Some((
             transform.around_origin(bounds.x, bounds.y, ox, oy),
             [0.0, 0.0],
@@ -400,22 +407,32 @@ impl UiWorld {
     /// For anchoring a floating toolbar to a selection. Ask after the update
     /// that changed the selection returns, and again after a scroll moves it.
     pub fn text_selection_bounds(&self, id: StableNodeId) -> Option<LayoutBox> {
-        let selection = match self.component_geometry(id)? {
-            crate::ComponentGeometry::NativeMarkdown { selection, .. }
-            | crate::ComponentGeometry::SelectableRichText { selection, .. } => selection,
-            _ => return None,
-        };
-        let enclosing = selection.into_iter().reduce(|a, b| {
-            let left = a.x.min(b.x);
-            let top = a.y.min(b.y);
-            LayoutBox {
-                x: left,
-                y: top,
-                width: (a.x + a.width).max(b.x + b.width) - left,
-                height: (a.y + a.height).max(b.y + b.height) - top,
-            }
-        })?;
-        self.project_input_bounds(id, enclosing)
+        #[cfg(not(feature = "rich-text"))]
+        {
+            let _ = id;
+            None
+        }
+        #[cfg(feature = "rich-text")]
+        {
+            let selection = if let Some(layout) = self.native_markdown_layout(id) {
+                layout.selection
+            } else if let Some(layout) = self.selectable_rich_text_paint_layout(id) {
+                layout.selection
+            } else {
+                return None;
+            };
+            let enclosing = selection.into_iter().reduce(|a, b| {
+                let left = a.x.min(b.x);
+                let top = a.y.min(b.y);
+                LayoutBox {
+                    x: left,
+                    y: top,
+                    width: (a.x + a.width).max(b.x + b.width) - left,
+                    height: (a.y + a.height).max(b.y + b.height) - top,
+                }
+            })?;
+            self.project_input_bounds(id, enclosing)
+        }
     }
 
     /// Focus geometry follows compositor presentation, not the logical rest

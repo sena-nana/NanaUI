@@ -14,10 +14,10 @@ such a crate. nana-text (Issue #89) additionally must not name those engines
 anywhere under src/, and may borrow only the typography vocabulary from
 nana-ui-core.
 
-nana-text's font layer (Issue #90), shaper (Issue #91) and layout engine
-(Issue #92) use fontdb, skrifa, icu_properties, harfrust, unicode-bidi and
-unicode-linebreak, each from exactly one private module, so none of their types
-can leak into the public text API.
+nana-text's font layer (Issue #90), shaper (Issue #91), layout engine
+(Issue #92), and rasterizer use fontdb, skrifa, harfrust, unicode-bidi,
+unicode-linebreak, zeno, and png, each from its owning private module, so none of
+their types can leak into the public text API.
 
 WGPU is the only GPU backend, but not the extension contract (Issue #183): the
 crates that carry the contract (nana-gpu, nana-frame-exchange, nana-ui) may
@@ -102,11 +102,13 @@ NANA_TEXT_PRIVATE_BACKENDS = {
     "skrifa": "font/face.rs",
     "read_fonts": None,
     "ttf_parser": None,
-    "icu_properties": "font/unicode.rs",
+    "icu_properties": None,
     "harfrust": "shaping/opentype.rs",
     "unicode_bidi": "shaping/bidi.rs",
     "unicode_linebreak": "layout/breaks.rs",
-    "swash": "raster/outline.rs",
+    "swash": None,
+    "zeno": "raster/outline.rs",
+    "png": "raster/outline.rs",
 }
 
 # NanaUI's wgpu fork (`third_party/wgpu`, upstream names kept): every copy of

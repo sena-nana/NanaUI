@@ -18,21 +18,20 @@ mod order;
 mod placement;
 use placement::{offset_rect, record_on_page};
 mod primitives;
-#[cfg(test)]
-use nana_ui_core::ControlSize;
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::sync::{Arc, OnceLock};
 
+#[cfg(test)]
+use nana_ui_core::DrawerSide;
 use nana_ui_core::{
-    BackgroundImage, BorderImageSpec, ClipPath, ColorFilter, DirSpec, DrawerSide,
-    FontFeatureSetting, FontKerningSpec, FontVariationSetting, Icon, LineBreakSpec, LineHeightSpec,
-    MixBlendMode, WordBreakSpec, WritingModeSpec, icon_y_on_text_glyph_center,
+    BackgroundImage, BorderImageSpec, ClipPath, ColorFilter, DirSpec, FontFeatureSetting,
+    FontKerningSpec, FontVariationSetting, Icon, LineBreakSpec, LineHeightSpec, MixBlendMode,
+    WordBreakSpec, WritingModeSpec, icon_y_on_text_glyph_center,
 };
 use nana_ui_runtime::{
-    ComponentElevation, ComponentGeometry, ComponentTextRegion, ContrastRing, CustomRenderNode,
-    ExtractedMove, ExtractedNode, LayoutBox, NodeKind, NodeMap, NodeSet, StableNodeId,
-    StandardVisual, TextFoldGutter, TextHorizontalAlignment, TextInputScroll, TextShaping,
-    TextVerticalAlignment, TextWhitespaceKind,
+    ComponentElevation, ComponentTextRegion, CustomRenderNode, ExtractedMove, ExtractedNode,
+    LayoutBox, NodeKind, NodeMap, NodeSet, StableNodeId, TextHorizontalAlignment, TextShaping,
+    TextVerticalAlignment,
 };
 
 use crate::{
@@ -70,11 +69,12 @@ pub use delta::{SceneDelta, SceneDeltaStats};
 pub use geometry::{AffineTransform, ClipRegion, SceneRect};
 pub use groups::{EdgeFadeMask, FilterGroup, InsetShadowOverlay, OpacityGroup};
 pub use kinds::{
-    LayerMask, LayerMaskMode, NodeMask, QuadSurfacePaint, SceneChartHover, ScenePrimitive,
-    ScenePrimitiveKind, StrokeCap, StrokePattern,
+    LayerMask, LayerMaskMode, NodeMask, QuadSurfacePaint, ScenePrimitive, ScenePrimitiveKind,
+    StrokeCap, StrokePattern,
 };
 pub use slots::PrimitiveId;
-pub(super) use slots::TRIGGERED_OVERLAY_SURFACE_SLOT;
+#[allow(unused_imports)]
+pub(crate) use slots::TRIGGERED_OVERLAY_SURFACE_SLOT;
 pub use text_effects::{
     SceneGlyphPresentation, SceneRichPaint, SceneRichRun, SceneTextEffects, SceneTextOpenType,
     SceneTextSpan, css_text_effects,
@@ -179,14 +179,6 @@ pub struct UiScene {
     /// the runtime hands back the same recording. Empty unless a node has a
     /// `Painter`.
     custom_paint: NodeMap<custom_paint::BuiltPaint>,
-    /// Geometry built from each modal frame's card surface recording
-    /// ([`nana_ui_runtime::Dialog::surface_painter`]), kept apart from the
-    /// node's own painter's. Empty unless a dialog paints its own card.
-    modal_surface_paint: NodeMap<custom_paint::BuiltPaint>,
-    /// Geometry built from each Markdown document's native diagrams, one
-    /// recording per diagram, reused while the runtime hands back the same
-    /// recordings. Empty unless a document holds a diagram.
-    markdown_diagram_paint: NodeMap<Arc<[custom_paint::BuiltPaint]>>,
     /// Nodes that [`may_be_dest_group`] admits. Paint asks
     /// [`UiScene::opacity_groups`] once per primitive, and even the memoized
     /// walk behind it has to read a cold `ExtractedNode` and its style for the
@@ -197,8 +189,11 @@ pub struct UiScene {
     /// changing (`None`: a looping effect). What keeps frames coming while a
     /// reveal plays and stops them once it has finished.
     glyph_live: NodeMap<Option<std::time::Duration>>,
-    /// Charts in motion, by node: until when their marks or emphasis move.
-    chart_live: NodeMap<std::time::Duration>,
+    /// Charts and inline custom-GPU payloads in motion, by node: until when
+    /// their marks or emphasis move.
+    gpu_payload_live: NodeMap<std::time::Duration>,
+    /// Vector recordings emitted via [`ExtractedNode::widget_paint`], reused per node.
+    widget_vector_paint: NodeMap<Arc<[custom_paint::BuiltPaint]>>,
     /// Inline objects of presenting text nodes, as laid out, so each
     /// compositor tick can move, scale and fade them the way the glyphs
     /// around them are (the text shader cannot reach them: they are images).
@@ -250,11 +245,10 @@ impl Default for UiScene {
             compositor_projection_dirty: false,
             compositor: CompositorRegistry::default(),
             custom_paint: NodeMap::default(),
-            modal_surface_paint: NodeMap::default(),
-            markdown_diagram_paint: NodeMap::default(),
+            widget_vector_paint: NodeMap::default(),
             dest_group_candidates: 0,
             glyph_live: NodeMap::default(),
-            chart_live: NodeMap::default(),
+            gpu_payload_live: NodeMap::default(),
             glyph_objects: NodeMap::default(),
             instance: next_scene_instance(),
             corner_shape: nana_ui_core::CornerShape::Round,
@@ -306,11 +300,10 @@ impl Clone for UiScene {
             compositor_projection_dirty: self.compositor_projection_dirty,
             compositor: self.compositor.clone(),
             custom_paint: self.custom_paint.clone(),
-            modal_surface_paint: self.modal_surface_paint.clone(),
-            markdown_diagram_paint: self.markdown_diagram_paint.clone(),
+            widget_vector_paint: self.widget_vector_paint.clone(),
             dest_group_candidates: self.dest_group_candidates,
             glyph_live: self.glyph_live.clone(),
-            chart_live: self.chart_live.clone(),
+            gpu_payload_live: self.gpu_payload_live.clone(),
             glyph_objects: self.glyph_objects.clone(),
             instance: next_scene_instance(),
             corner_shape: self.corner_shape,

@@ -260,13 +260,15 @@ fn declared_live_rows_never_project_self_painted_rows() {
         .flush(LayoutViewport::new(240.0, 400.0), &mut shaper)
         .unwrap();
 
-    let visual = runtime.context().world().standard_visual(list.stable_id());
-    match visual {
-        Some(nana_ui_runtime::StandardVisual::ReorderList { rows, .. }) => {
-            assert!(rows.is_empty(), "declared live rows must not self-paint");
-        }
-        other => panic!("unexpected visual: {other:?}"),
-    }
+    let visual = runtime
+        .context()
+        .world()
+        .widget_visual_as::<nana_ui_runtime::ReorderListVisual>(list.stable_id())
+        .expect("reorder list visual");
+    assert!(
+        visual.rows.is_empty(),
+        "declared live rows must not self-paint"
+    );
 }
 
 #[test]

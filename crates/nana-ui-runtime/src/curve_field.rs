@@ -394,10 +394,8 @@ impl CurvePoint {
         let inset = curve_plot_inset(self.size);
         // The node is the point plus its ring, centred on the plot point
         // `inset + ratio * (extent - 2 * inset)` of the field's box.
-        let along = |ratio: f32| LengthSpec::CalcPercentOffset {
-            percent: ratio * 100.0,
-            offset_px: -2.0 * ratio * inset,
-        };
+        let along =
+            |ratio: f32| LengthSpec::percent_offset_inline(ratio * 100.0, -2.0 * ratio * inset);
         NodeStyle {
             layout: Arc::new(nana_ui_core::LayoutStyle {
                 position: PositionSpec::Absolute,

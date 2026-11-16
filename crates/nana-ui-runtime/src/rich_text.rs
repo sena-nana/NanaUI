@@ -7,9 +7,9 @@
 //! projected drawing; images and formula SVGs share its normal texture path.
 //!
 //! [`ComponentView`] projection keeps [`TextContent`] as fallback text and
-//! writes [`StandardVisual::NativeMarkdown`] /
-//! [`StandardVisual::SelectableRichText`]. Selection ranges are half-open
-//! grapheme offsets, the same convention as [`TextSelectionSnapshot`].
+//! writes [`NativeMarkdownVisual`] / [`SelectableRichTextVisual`]. Selection
+//! ranges are half-open grapheme offsets, the same convention as
+//! [`TextSelectionSnapshot`].
 //!
 //! Fenced mermaid, display-math, and code blocks stay on the leaf model.
 //! [`AppContext::assemble_markdown`] allocates one hidden text child per fence
@@ -22,6 +22,9 @@ use std::collections::HashSet;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
+use nana_ui_core::{
+    BackgroundImage, BackgroundImageFit, BackgroundRepeat, SemanticPalette, ThemeMetrics,
+};
 use pulldown_cmark::{
     Alignment as CmarkAlignment, CodeBlockKind, Event, HeadingLevel, Options, Parser, Tag, TagEnd,
 };
@@ -29,9 +32,12 @@ use unicode_segmentation::UnicodeSegmentation;
 
 use crate::view_components::project_common;
 use crate::{
-    AccessibilityRole, AccessibilityState, AppContext, ComponentView, DocumentId, Entity,
-    FrameworkError, HighlightRequest, InteractionState, LayoutBox, LengthSpec, MutationQueue,
-    NodeKind, NodeStyle, SemanticColorRole, StableNodeId, StandardVisual, TextContent, UiWorld,
+    AccessibilityRole, AccessibilityState, AppContext, ComponentTextRegion, ComponentView,
+    ComputedStyle, DocumentId, Entity, FrameworkError, HighlightRequest, InteractionState,
+    LayoutBox, LengthSpec, LineCap, MutationQueue, NodeKind, NodeStyle, SemanticColorRole,
+    StableNodeId, TextContent, TextHorizontalAlignment, TextVerticalAlignment, UiWorld,
+    WidgetBatchColors, WidgetPaintCtx, WidgetPaintOp, WidgetPaintOutput, WidgetQuad,
+    WidgetQuadBatch, WidgetStroke, WidgetText, WidgetVisual,
 };
 
 mod span_color;
@@ -97,6 +103,566 @@ pub enum MarkdownTableAlignment {
     Left,
     Center,
     Right,
+}
+
+/// Resolved geometry and drawing commands for a [`NativeMarkdown`] component.
+#[derive(Clone, Debug, PartialEq)]
+pub struct NativeMarkdownLayout {
+    pub drawing: crate::MarkdownDrawing,
+    pub text: ComponentTextRegion,
+    pub selection: Vec<LayoutBox>,
+    pub selection_color: [f32; 4],
+}
+
+/// Visual payload projected by [`NativeMarkdown`].
+#[derive(Clone, Debug, PartialEq)]
+pub struct NativeMarkdownVisual {
+    pub text: Arc<str>,
+    pub blocks: Arc<[MarkdownBlock]>,
+    pub selection: Option<(usize, usize)>,
+}
+
+/// Resolved geometry and selection highlights for a [`SelectableRichText`] component.
+#[derive(Clone, Debug, PartialEq)]
+pub struct SelectableRichTextLayout {
+    pub text: ComponentTextRegion,
+    pub selection: Vec<LayoutBox>,
+    pub selection_color: [f32; 4],
+}
+
+/// Visual payload projected by [`SelectableRichText`].
+#[derive(Clone, Debug, PartialEq)]
+pub struct SelectableRichTextVisual {
+    pub text: Arc<str>,
+    pub selection: Option<(usize, usize)>,
+}
+
+fn selectable_text_regions(
+    content: LayoutBox,
+    text: &Arc<str>,
+    style: &ComputedStyle,
+    palette: &SemanticPalette,
+) -> (ComponentTextRegion, [f32; 4]) {
+    let region = ComponentTextRegion {
+        bounds: content,
+        content: Arc::clone(text).into(),
+        color: Some(
+            style
+                .paint_colors
+                .color
+                .map(nana_ui_core::PaintColor::to_srgb)
+                .or(style.color)
+                .unwrap_or_else(|| palette.text.as_rgba_array()),
+        ),
+        font_size: style.font_size,
+        font_weight: style.font_weight,
+    };
+    (
+        region,
+        style
+            .paint_colors
+            .selection_background
+            .map(nana_ui_core::PaintColor::to_srgb)
+            .or(style.selection_background)
+            .unwrap_or_else(|| palette.accent_soft.as_rgba_array()),
+    )
+}
+
+impl NativeMarkdownVisual {
+    /// Resolves `content`-relative markdown drawing commands and selection boxes.
+    #[must_use]
+    pub fn layout_at(
+        &self,
+        world: &UiWorld,
+        id: StableNodeId,
+        content: LayoutBox,
+        style: &ComputedStyle,
+        palette: &SemanticPalette,
+        metrics: ThemeMetrics,
+    ) -> NativeMarkdownLayout {
+        let (text, selection_color) = selectable_text_regions(content, &self.text, style, palette);
+        let geometry = world.markdown_layout(id, &self.blocks, content);
+        NativeMarkdownLayout {
+            drawing: crate::markdown_drawing::document_with_geometry(
+                &self.blocks,
+                content,
+                &geometry,
+                metrics,
+                &|scene, scale| world.diagram_drawing(scene, scale),
+            ),
+            text,
+            selection: match self.selection {
+                Some((start, end)) => geometry
+                    .blocks
+                    .into_iter()
+                    .flat_map(|block| block.graphemes)
+                    .filter(|g| g.index >= start.min(end) && g.index < start.max(end))
+                    .map(|g| g.bounds)
+                    .collect(),
+                _ => Vec::new(),
+            },
+            selection_color,
+        }
+    }
+}
+
+impl WidgetVisual for NativeMarkdownVisual {
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+
+    fn dyn_eq(&self, other: &dyn std::any::Any) -> bool {
+        other.downcast_ref::<Self>() == Some(self)
+    }
+
+    fn paint(&self, ctx: &WidgetPaintCtx<'_>) -> WidgetPaintOutput {
+        self.layout_at(
+            ctx.world,
+            ctx.id,
+            ctx.content,
+            ctx.style,
+            &ctx.style_model.palette,
+            ctx.style_model.metrics,
+        )
+        .to_widget_paint(ctx.style)
+    }
+}
+
+impl NativeMarkdownLayout {
+    /// Lowers this resolved layout into node-local widget paint operations.
+    #[must_use]
+    pub fn to_widget_paint(&self, style: &ComputedStyle) -> WidgetPaintOutput {
+        let mut out = WidgetPaintOutput::new();
+        out.owns_node_text = true;
+        out.suppress_root_surface = true;
+
+        if !self.selection.is_empty() {
+            out.push(
+                1,
+                WidgetPaintOp::QuadBatch(WidgetQuadBatch {
+                    bounds: crate::widget_visual::union_layout_rects(&self.selection),
+                    rects: Arc::from(self.selection.as_slice()),
+                    colors: WidgetBatchColors::Uniform(self.selection_color),
+                    fill_paint: style.paint_colors.selection_background,
+                    border: None,
+                    corner_radius: [0.0; 4],
+                }),
+            );
+        }
+        let color = self.text.color.unwrap_or([0.8, 0.8, 0.8, 1.0]);
+        for (index, command) in self.drawing.commands.iter().enumerate() {
+            let base_slot = (index as u64).saturating_mul(4);
+            let slot = 1025u64.saturating_add(base_slot);
+            match command {
+                crate::MarkdownDrawingCommand::Diagram { bounds, drawing } => {
+                    out.push(
+                        slot,
+                        WidgetPaintOp::Vector {
+                            bounds: *bounds,
+                            recording: Arc::clone(&drawing.recording),
+                        },
+                    );
+                }
+                crate::MarkdownDrawingCommand::Image { bounds, source } => {
+                    let mut image =
+                        BackgroundImage::url_with_fit(source.as_ref(), BackgroundImageFit::Contain);
+                    if let BackgroundImage::Url { repeat, .. } = &mut image {
+                        *repeat = BackgroundRepeat::NoRepeat;
+                    }
+                    out.push(
+                        slot,
+                        WidgetPaintOp::Quad(WidgetQuad {
+                            rect: *bounds,
+                            content_image: Some(image),
+                            ..WidgetQuad::default()
+                        }),
+                    );
+                }
+                crate::MarkdownDrawingCommand::Svg { bounds, source } => {
+                    let ink = format!(
+                        "rgb({},{},{})",
+                        (color[0].clamp(0.0, 1.0) * 255.0).round() as u8,
+                        (color[1].clamp(0.0, 1.0) * 255.0).round() as u8,
+                        (color[2].clamp(0.0, 1.0) * 255.0).round() as u8
+                    );
+                    let svg = source.replace("#010203", &ink).replace("rgb(1,2,3)", &ink);
+                    let mut url = String::from("data:image/svg+xml,");
+                    use std::fmt::Write as _;
+                    for byte in svg.bytes() {
+                        if byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.' | b'~')
+                        {
+                            url.push(byte as char);
+                        } else {
+                            let _ = write!(url, "%{byte:02X}");
+                        }
+                    }
+                    let mut image = BackgroundImage::url_with_fit(url, BackgroundImageFit::Contain);
+                    if let BackgroundImage::Url { repeat, .. } = &mut image {
+                        *repeat = BackgroundRepeat::NoRepeat;
+                    }
+                    out.push(
+                        slot,
+                        WidgetPaintOp::Quad(WidgetQuad {
+                            rect: *bounds,
+                            content_image: Some(image),
+                            ..WidgetQuad::default()
+                        }),
+                    );
+                }
+                crate::MarkdownDrawingCommand::Text {
+                    bounds,
+                    text,
+                    size,
+                    weight,
+                    italic,
+                    line_through,
+                    underline,
+                    code,
+                } => {
+                    if *code {
+                        let mut tint = color;
+                        tint[3] *= 0.10;
+                        out.push(
+                            1024u64.saturating_add(base_slot),
+                            WidgetPaintOp::Quad(WidgetQuad {
+                                rect: *bounds,
+                                fill: Some(tint),
+                                corner_radius: [2.0; 4],
+                                ..WidgetQuad::default()
+                            }),
+                        );
+                    }
+                    let width = 1.0_f32.max(bounds.height * 0.06);
+                    if *underline {
+                        let y = bounds.y + bounds.height - width;
+                        out.push(
+                            1026u64.saturating_add(base_slot),
+                            WidgetPaintOp::Stroke(WidgetStroke {
+                                points: vec![[bounds.x, y], [bounds.x + bounds.width, y]],
+                                width,
+                                color,
+                                cap: LineCap::Butt,
+                                dash: None,
+                                snap_hairline: false,
+                            }),
+                        );
+                    }
+                    if *line_through {
+                        let y = bounds.y + bounds.height * 0.5;
+                        out.push(
+                            1027u64.saturating_add(base_slot),
+                            WidgetPaintOp::Stroke(WidgetStroke {
+                                points: vec![[bounds.x, y], [bounds.x + bounds.width, y]],
+                                width,
+                                color,
+                                cap: LineCap::Butt,
+                                dash: None,
+                                snap_hairline: false,
+                            }),
+                        );
+                    }
+                    out.push(
+                        slot,
+                        WidgetPaintOp::Text(WidgetText {
+                            bounds: *bounds,
+                            content: text.clone().into(),
+                            color: Some(color),
+                            paint_color: crate::widget_visual::matching_paint_color(
+                                style.paint_colors.color,
+                                color,
+                            ),
+                            font_size: *size,
+                            font_weight: Some(*weight),
+                            horizontal_alignment: TextHorizontalAlignment::Start,
+                            vertical_alignment: TextVerticalAlignment::Top,
+                            ellipsis: false,
+                            wrap: false,
+                            max_lines: None,
+                            italic: Some(*italic),
+                            underline: Some(*underline),
+                            line_through: Some(*line_through),
+                            suppress_spans: true,
+                            preserve_lines: None,
+                            unstyled_glyph: false,
+                            line_height: None,
+                            retained_text: crate::WidgetRetainedText::None,
+                            tabular_nums: false,
+                            ..Default::default()
+                        }),
+                    );
+                }
+                crate::MarkdownDrawingCommand::Line { points, width } => {
+                    out.push(
+                        slot,
+                        WidgetPaintOp::Stroke(WidgetStroke {
+                            points: points.clone(),
+                            width: *width,
+                            color,
+                            cap: LineCap::Round,
+                            dash: None,
+                            snap_hairline: false,
+                        }),
+                    );
+                }
+                crate::MarkdownDrawingCommand::Panel { bounds, radius } => {
+                    let mut fill = color;
+                    fill[3] *= 0.06;
+                    let mut edge = color;
+                    edge[3] *= 0.12;
+                    out.push(
+                        slot,
+                        WidgetPaintOp::Quad(WidgetQuad {
+                            rect: *bounds,
+                            fill: Some(fill),
+                            border: Some((edge, 1.0)),
+                            corner_radius: [*radius; 4],
+                            ..WidgetQuad::default()
+                        }),
+                    );
+                }
+                crate::MarkdownDrawingCommand::Box { bounds, radius } => {
+                    out.push(
+                        slot,
+                        WidgetPaintOp::Quad(WidgetQuad {
+                            rect: *bounds,
+                            fill: None,
+                            border: Some((color, 1.0)),
+                            corner_radius: [*radius; 4],
+                            ..WidgetQuad::default()
+                        }),
+                    );
+                }
+            }
+        }
+        out
+    }
+}
+
+impl SelectableRichTextVisual {
+    /// Resolves `content`-relative rich-text region and selection highlights.
+    #[must_use]
+    pub fn layout_at(
+        &self,
+        world: &UiWorld,
+        id: StableNodeId,
+        content: LayoutBox,
+        style: &ComputedStyle,
+        palette: &SemanticPalette,
+    ) -> SelectableRichTextLayout {
+        let selection =
+            world.selectable_rich_text_highlights(id, content, &self.text, self.selection);
+        let (text, selection_color) = selectable_text_regions(content, &self.text, style, palette);
+        SelectableRichTextLayout {
+            text,
+            selection,
+            selection_color,
+        }
+    }
+}
+
+impl WidgetVisual for SelectableRichTextVisual {
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+
+    fn dyn_eq(&self, other: &dyn std::any::Any) -> bool {
+        other.downcast_ref::<Self>() == Some(self)
+    }
+
+    fn paint(&self, ctx: &WidgetPaintCtx<'_>) -> WidgetPaintOutput {
+        let layout = self.layout_at(
+            ctx.world,
+            ctx.id,
+            ctx.content,
+            ctx.style,
+            &ctx.style_model.palette,
+        );
+        let mut out = WidgetPaintOutput::new();
+        out.owns_node_text = true;
+        out.suppress_root_surface = true;
+
+        if !layout.selection.is_empty() {
+            out.push(
+                1,
+                WidgetPaintOp::QuadBatch(WidgetQuadBatch {
+                    bounds: crate::widget_visual::union_layout_rects(&layout.selection),
+                    rects: Arc::from(layout.selection),
+                    colors: WidgetBatchColors::Uniform(layout.selection_color),
+                    fill_paint: ctx.style.paint_colors.selection_background,
+                    border: None,
+                    corner_radius: [0.0; 4],
+                }),
+            );
+        }
+        let mut text = crate::widget_visual::widget_text_region(
+            &layout.text,
+            ctx,
+            TextHorizontalAlignment::Start,
+            false,
+        );
+        text.vertical_alignment = TextVerticalAlignment::Top;
+        text.wrap = true;
+        out.push(2, WidgetPaintOp::Text(text));
+        out
+    }
+}
+
+impl UiWorld {
+    /// Resolves `id`'s markdown drawing commands and selection geometry.
+    #[must_use]
+    pub fn native_markdown_layout(&self, id: StableNodeId) -> Option<NativeMarkdownLayout> {
+        let visual = self.widget_visual_as::<NativeMarkdownVisual>(id)?;
+        let content = self.component_content_box(id)?;
+        let style = self.computed_style(id)?;
+        let style_model = self.node_style_model(id);
+        Some(visual.layout_at(
+            self,
+            id,
+            content,
+            style,
+            &style_model.palette,
+            style_model.metrics,
+        ))
+    }
+
+    /// Resolves `id`'s selectable rich-text region and selection highlights.
+    #[must_use]
+    pub fn selectable_rich_text_paint_layout(
+        &self,
+        id: StableNodeId,
+    ) -> Option<SelectableRichTextLayout> {
+        let visual = self.widget_visual_as::<SelectableRichTextVisual>(id)?;
+        let content = self.component_content_box(id)?;
+        let style = self.computed_style(id)?;
+        let style_model = self.node_style_model(id);
+        Some(visual.layout_at(self, id, content, style, &style_model.palette))
+    }
+
+    /// The horizontal `nana-text` layout a `SelectableRichText` showing
+    /// `text` was measured with and is painted from. `None` when a host shaper
+    /// measured it, it is a vertical column, or it holds other text.
+    fn selectable_rich_text_retained(
+        &self,
+        id: StableNodeId,
+        text: &str,
+    ) -> Option<&Arc<nana_text::TextLayout>> {
+        let (_, layout) = self.text_layout(id)?;
+        (!layout.is_vertical() && self.text(id) == Some(text)).then_some(layout)
+    }
+
+    /// Hit geometry of a `SelectableRichText` at content box `bounds`, where
+    /// its text is painted; the fixed-advance estimate without a retained
+    /// layout.
+    pub(crate) fn selectable_rich_text_layout(
+        &self,
+        id: StableNodeId,
+        view: &SelectableRichText,
+        bounds: LayoutBox,
+    ) -> RichTextGeometry {
+        match self.selectable_rich_text_retained(id, &view.plain_text()) {
+            Some(layout) => layout_rich_spans_shaped(view.spans(), bounds, layout),
+            None => view.layout(bounds),
+        }
+    }
+
+    /// Highlight of a `SelectableRichText` selection (grapheme offsets): the
+    /// selected part of each painted line; the whole content box without a
+    /// retained layout.
+    pub(crate) fn selectable_rich_text_highlights(
+        &self,
+        id: StableNodeId,
+        content: LayoutBox,
+        text: &str,
+        selection: Option<(usize, usize)>,
+    ) -> Vec<LayoutBox> {
+        let Some((anchor, focus)) = selection else {
+            return Vec::new();
+        };
+        let Some(layout) = self.selectable_rich_text_retained(id, text) else {
+            return vec![content];
+        };
+        let byte = |grapheme: usize| {
+            text.grapheme_indices(true)
+                .nth(grapheme)
+                .map_or(text.len(), |(offset, _)| offset)
+        };
+        layout
+            .selection_rects(byte(anchor.min(focus))..byte(anchor.max(focus)))
+            .into_iter()
+            .map(|rect| text_rect_at(content, rect))
+            .collect()
+    }
+
+    /// Markdown geometry measured by the engine that shaped this world, the
+    /// one the painter draws the runs with. A world no engine has shaped (a
+    /// host shaper without one) keeps the em estimate.
+    pub(crate) fn markdown_layout(
+        &self,
+        id: StableNodeId,
+        blocks: &[MarkdownBlock],
+        bounds: LayoutBox,
+    ) -> MarkdownGeometry {
+        let (Some(style), Some(engine)) =
+            (self.computed_style(id), self.paint_text_engine.as_ref())
+        else {
+            return layout_markdown(blocks, bounds);
+        };
+        // What the advances depend on besides the text: the engine, its face
+        // set and the node's family and spacing. Diagrams cache under it.
+        let key = {
+            use std::hash::{Hash, Hasher};
+            let mut hasher = std::collections::hash_map::DefaultHasher::new();
+            (Arc::as_ptr(engine) as usize).hash(&mut hasher);
+            {
+                use nana_text::TextEngine as _;
+                nana_text::lock_text_engine(engine)
+                    .font_generation()
+                    .get()
+                    .hash(&mut hasher);
+            }
+            style.font_family.hash(&mut hasher);
+            style.letter_spacing.to_bits().hash(&mut hasher);
+            hasher.finish()
+        };
+        layout_markdown_measured(
+            blocks,
+            bounds,
+            Some(&|text, size, weight, italic| {
+                let mut measured = style.clone();
+                measured.font_size = size;
+                measured.font_weight = Some(weight);
+                measured.italic = italic;
+                // A markdown run is one unwrapped horizontal line.
+                measured.writing_mode = nana_ui_core::WritingModeSpec::HorizontalTb;
+                crate::text_engine_shaper::grapheme_advances(engine, text, &measured)
+            }),
+            key,
+        )
+    }
+
+    /// A laid-out diagram recorded against the installed theme, reused
+    /// until the palette epoch moves.
+    pub(crate) fn diagram_drawing(
+        &self,
+        scene: &Arc<nana_ui_diagram::DiagramScene>,
+        scale: f32,
+    ) -> crate::markdown_diagram::DiagramDrawing {
+        let epoch = self.palette_epoch;
+        let mut held = self.diagram_recordings.borrow_mut();
+        held.retain(|(e, _)| *e == epoch);
+        if let Some((_, drawing)) = held
+            .iter()
+            .find(|(_, d)| Arc::ptr_eq(&d.scene, scene) && d.scale == scale)
+        {
+            return drawing.clone();
+        }
+        let drawing = crate::markdown_diagram::record(scene, self.theme(), scale);
+        if held.len() >= 64 {
+            held.remove(0);
+        }
+        held.push((epoch, drawing.clone()));
+        drawing
+    }
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -877,6 +1443,9 @@ fn normalize_math_delimiters(source: &str) -> String {
 }
 
 impl ComponentView for NativeMarkdown {
+    const TYPE_ID: Option<&'static str> =
+        Some(crate::component_descriptors::NATIVE_MARKDOWN.type_id);
+
     const BEHAVIOR: crate::TypeBehavior<Self> = crate::TypeBehavior {
         slot_assembler: Some(crate::AppContext::assemble_markdown),
         ..crate::TypeBehavior::NONE
@@ -908,13 +1477,13 @@ impl ComponentView for NativeMarkdown {
                 },
             );
         }
-        let visual = StandardVisual::NativeMarkdown {
+        let visual = NativeMarkdownVisual {
             blocks: self.blocks.clone().into(),
             text: Arc::from(plain),
             selection: projected_selection(&self.selection),
         };
-        if world.standard_visual(id) != Some(visual.clone()) {
-            mutations.set_standard_visual(id, Some(visual));
+        if world.widget_visual_as::<NativeMarkdownVisual>(id) != Some(&visual) {
+            mutations.set_widget_visual(id, Some(visual));
         }
         let mut style = self.style.clone();
         let layout = Arc::make_mut(&mut style.layout);
@@ -968,8 +1537,8 @@ impl ComponentView for MarkdownFenceChild {
         if world.highlight_request(id) != self.highlight.as_ref() {
             mutations.set_highlight_request(id, self.highlight.clone());
         }
-        if world.standard_visual(id).is_some() {
-            mutations.set_standard_visual(id, None);
+        if world.widget_visual_ref(id).is_some() {
+            mutations.set_widget_visual_handle(id, None);
         }
         let mut style = NodeStyle::default();
         Arc::make_mut(&mut style.layout).hidden = true;
@@ -1197,8 +1766,8 @@ impl RichSpan {
 ///
 /// Offsets count Unicode grapheme clusters, not UTF-8 bytes. Markdown block
 /// separators (`\n\n`, `\n`, `\t`) appear in [`Self::text`] but are not
-/// graphemes and do not advance `start`/`end`. [`StandardVisual::NativeMarkdown`]
-/// and [`StandardVisual::SelectableRichText`] project this same range.
+/// graphemes and do not advance `start`/`end`. [`NativeMarkdownVisual`]
+/// and [`SelectableRichTextVisual`] project this same range.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct TextSelectionSnapshot {
     pub start: usize,
@@ -1484,12 +2053,12 @@ impl ComponentView for SelectableRichText {
             );
         }
         let empty = plain.is_empty();
-        let visual = StandardVisual::SelectableRichText {
+        let visual = SelectableRichTextVisual {
             text: Arc::from(plain),
             selection: projected_selection(&self.selection),
         };
-        if world.standard_visual(id) != Some(visual.clone()) {
-            mutations.set_standard_visual(id, Some(visual));
+        if world.widget_visual_as::<SelectableRichTextVisual>(id) != Some(&visual) {
+            mutations.set_widget_visual(id, Some(visual));
         }
         let colors = span_color::color_request(&self.spans);
         if world.highlight_request(id) != colors.as_ref() {
@@ -2802,8 +3371,8 @@ mod tests {
         let id = markdown.stable_id();
         assert_eq!(context.world().text(id), Some("Title\n\nBody"));
         assert_eq!(
-            context.world().standard_visual(id),
-            Some(StandardVisual::NativeMarkdown {
+            context.world().widget_visual_as::<NativeMarkdownVisual>(id),
+            Some(&NativeMarkdownVisual {
                 blocks: NativeMarkdown::from_source("## Title\n\nBody")
                     .blocks
                     .into(),
@@ -2829,8 +3398,10 @@ mod tests {
         let id = text.stable_id();
         assert_eq!(context.world().text(id), Some("See docs"));
         assert_eq!(
-            context.world().standard_visual(id),
-            Some(StandardVisual::SelectableRichText {
+            context
+                .world()
+                .widget_visual_as::<SelectableRichTextVisual>(id),
+            Some(&SelectableRichTextVisual {
                 text: Arc::from("See docs"),
                 selection: None,
             })
@@ -2860,8 +3431,8 @@ mod tests {
             })
             .unwrap();
         assert_eq!(
-            context.world().standard_visual(id),
-            Some(StandardVisual::NativeMarkdown {
+            context.world().widget_visual_as::<NativeMarkdownVisual>(id),
+            Some(&NativeMarkdownVisual {
                 blocks: NativeMarkdown::from_source("Hello\n\nWorld").blocks.into(),
                 text: Arc::from("Hello\n\nWorld"),
                 selection: Some((0, 10)),
@@ -2969,8 +3540,10 @@ mod tests {
             })
             .unwrap();
         assert_eq!(
-            context.world().standard_visual(id),
-            Some(StandardVisual::SelectableRichText {
+            context
+                .world()
+                .widget_visual_as::<SelectableRichTextVisual>(id),
+            Some(&SelectableRichTextVisual {
                 text: Arc::from("A你e\u{301}Hello"),
                 selection: Some((0, 3)),
             })
@@ -3045,10 +3618,10 @@ mod tests {
         let id = markdown.stable_id();
         assert!(context.world().node(id).unwrap().children.is_empty());
         assert!(
-            matches!(
-                context.world().standard_visual(id),
-                Some(StandardVisual::NativeMarkdown { .. })
-            ),
+            context
+                .world()
+                .widget_visual_as::<NativeMarkdownVisual>(id)
+                .is_some(),
             "project stays a NativeMarkdown leaf before assembly"
         );
 
@@ -3102,7 +3675,7 @@ mod tests {
                     .is_some_and(|style| style.layout.hidden),
                 "fence children are identity slots and must not paint Scene text"
             );
-            assert_eq!(context.world().standard_visual(*child), None);
+            assert!(context.world().widget_visual_ref(*child).is_none());
             assert_eq!(
                 context.world().interaction(*child),
                 Some(InteractionState {
@@ -3113,13 +3686,13 @@ mod tests {
         }
         assert!(
             matches!(
-                context.world().standard_visual(id),
-                Some(StandardVisual::NativeMarkdown { text, selection: None, .. })
+                context.world().widget_visual_as::<NativeMarkdownVisual>(id),
+                Some(NativeMarkdownVisual { text, selection: None, .. })
                     if text.contains("flowchart LR")
                         && text.contains("\\frac{1}{2}")
                         && text.contains("fn main() {}")
             ),
-            "parent still projects StandardVisual::NativeMarkdown after assembly"
+            "parent still projects NativeMarkdownVisual after assembly"
         );
         assert!(context.world().highlight_request(id).is_none());
     }
@@ -3193,7 +3766,7 @@ mod tests {
                     .is_some_and(|style| style.layout.hidden),
                 "re-assembled fence children stay hidden identity slots"
             );
-            assert_eq!(context.world().standard_visual(*child), None);
+            assert!(context.world().widget_visual_ref(*child).is_none());
         }
         assert!(
             !children.contains(&dropped),
@@ -3203,9 +3776,11 @@ mod tests {
             !context.world().contains(dropped),
             "stale fence children must be despawned"
         );
-        assert!(matches!(
-            context.world().standard_visual(markdown.stable_id()),
-            Some(StandardVisual::NativeMarkdown { .. })
-        ));
+        assert!(
+            context
+                .world()
+                .widget_visual_as::<NativeMarkdownVisual>(markdown.stable_id())
+                .is_some()
+        );
     }
 }

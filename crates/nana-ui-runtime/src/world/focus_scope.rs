@@ -98,6 +98,7 @@ impl ValidationPlan<'_> {
             if self
                 .accessibility
                 .get(&node)
+                .map(std::borrow::Cow::Borrowed)
                 .or_else(|| self.source.accessibility(node))
                 .is_some_and(|state| state.disabled)
             {

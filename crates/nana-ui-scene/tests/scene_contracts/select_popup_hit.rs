@@ -1,7 +1,7 @@
 use nana_ui_core::ControlSize;
 use nana_ui_runtime::{
-    Button, ComponentGeometry, DocumentId, Entity, LayoutViewport, Select, SelectChanged,
-    SelectOption, SettingsRow, Stack,
+    Button, DocumentId, Entity, LayoutViewport, Select, SelectChanged, SelectOption, SettingsRow,
+    Stack,
 };
 use nana_ui_scene::{PrimitiveId, RuntimeDocument, ScenePrimitive, SceneRect};
 use std::sync::{Arc, Mutex};
@@ -105,16 +105,12 @@ fn option_count_and_size_refresh_menu_hits_but_highlighting_does_not() {
         })
         .unwrap();
     flush(&mut doc);
-    let ComponentGeometry::Select {
-        menu: Some(menu), ..
-    } = doc
+    let menu = doc
         .context()
         .world()
-        .component_geometry(select.stable_id())
-        .unwrap()
-    else {
-        panic!("opened menu")
-    };
+        .select_geometry(select.stable_id())
+        .and_then(|geometry| geometry.menu)
+        .expect("opened menu");
     let last = menu.options.last().unwrap().bounds;
     let point = [last.x + last.width * 0.5, last.y + last.height * 0.5];
     assert_eq!(
@@ -142,8 +138,8 @@ const MENU_SCROLLBAR: u64 = 13;
 const MENU_SURFACE: u64 = 8;
 
 fn open_menu(doc: &RuntimeDocument, select: Entity<Select>) -> nana_ui_runtime::SelectMenuGeometry {
-    match doc.context().world().component_geometry(select.stable_id()) {
-        Some(ComponentGeometry::Select {
+    match doc.context().world().select_geometry(select.stable_id()) {
+        Some(nana_ui_runtime::SelectGeometry {
             menu: Some(menu), ..
         }) => menu,
         other => panic!("expected an open menu, got {other:?}"),

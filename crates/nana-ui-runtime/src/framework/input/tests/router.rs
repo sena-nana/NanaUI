@@ -1142,8 +1142,8 @@ fn a_number_input_spinner_shows_the_default_cursor() {
         .shape_text(&work.text, &mut crate::MeasureTextShaper)
         .unwrap();
     context.rebuild_hit_test(doc);
-    let increment = match context.world().component_geometry(input) {
-        Some(crate::ComponentGeometry::TextInput {
+    let increment = match context.world().text_input_geometry(input) {
+        Some(crate::TextInputGeometry {
             steppers: Some(steppers),
             ..
         }) => steppers.increment,
@@ -1265,12 +1265,27 @@ fn the_focused_editors_caret_blinks_and_typing_shows_it() {
         .unwrap();
     // Due at once: the first advance starts the shown half.
     assert_eq!(context.next_animation_deadline(), Some(Duration::ZERO));
-    let caret = |context: &AppContext| match context.world().extract_nodes(&[node])[0]
-        .component_geometry
-        .as_deref()
-    {
-        Some(crate::ComponentGeometry::TextInput { caret, .. }) => caret.is_some(),
-        _ => false,
+    let caret_rect = context
+        .world()
+        .text_input_geometry(node)
+        .and_then(|g| g.caret)
+        .expect("caret geometry before blink");
+    let bounds = context.world().layout_box(node).expect("editor layout box");
+    let local_caret = LayoutBox {
+        x: caret_rect.x - bounds.x,
+        y: caret_rect.y - bounds.y,
+        ..caret_rect
+    };
+    let caret = |context: &AppContext| {
+        context.world().extract_nodes(&[node])[0]
+            .widget_paint
+            .as_ref()
+            .is_some_and(|wp| {
+                wp.ops.iter().any(|op| {
+                    op.slot == 4
+                        && matches!(op.op, crate::WidgetPaintOp::Quad(ref q) if q.rect == local_caret)
+                })
+            })
     };
     let frame = context.advance_animations(ms(1000));
     assert!(!frame.component_updates.contains(&node));

@@ -332,6 +332,8 @@ impl Default for DynamicForm {
 }
 
 impl ComponentView for DynamicForm {
+    const TYPE_ID: Option<&'static str> = Some(crate::component_descriptors::DYNAMIC_FORM.type_id);
+
     const BEHAVIOR: crate::TypeBehavior<Self> = crate::TypeBehavior {
         assembler: Some(AppContext::assemble_dynamic_form),
         ..crate::TypeBehavior::NONE

@@ -456,10 +456,11 @@ fn range_list() -> (
 #[test]
 fn a_sideways_drag_moves_the_range_and_not_the_list() {
     let (mut cx, scroll, range, changes) = range_list();
-    let track = match cx.world().component_geometry(range.stable_id()) {
-        Some(crate::ComponentGeometry::Range { track, .. }) => track,
-        _ => panic!("range geometry expected"),
-    };
+    let track = cx
+        .world()
+        .range_geometry(range.stable_id())
+        .expect("range geometry expected")
+        .track;
     let start = track.x + track.width * 0.5;
     let mut touch = Touch::new(&mut cx);
     touch.send(&mut cx, 0, PointerPhase::Down, start, 26.0);
@@ -475,10 +476,11 @@ fn a_sideways_drag_moves_the_range_and_not_the_list() {
 #[test]
 fn an_upward_drag_on_the_range_scrolls_the_list_and_restores_the_range() {
     let (mut cx, scroll, range, changes) = range_list();
-    let track = match cx.world().component_geometry(range.stable_id()) {
-        Some(crate::ComponentGeometry::Range { track, .. }) => track,
-        _ => panic!("range geometry expected"),
-    };
+    let track = cx
+        .world()
+        .range_geometry(range.stable_id())
+        .expect("range geometry expected")
+        .track;
     // Pressing off-centre jumps the value, as a press on a track does.
     let start = track.x + track.width * 0.8;
     let mut touch = Touch::new(&mut cx);

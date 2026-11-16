@@ -11,12 +11,15 @@ use std::collections::BTreeMap;
 use std::fmt;
 use std::sync::Arc;
 
-use nana_ui_core::{ActionId, ContextPredicate, KeyContext, LengthSpec};
+use nana_ui_core::{
+    ActionId, ContextPredicate, KeyContext, LengthSpec, SemanticColorRole, StyleModelRef,
+};
 
 use crate::view_components::project_common;
 use crate::{
-    AccessibilityRole, AccessibilityState, ComponentView, InteractionState, MutationQueue,
-    NodeKind, NodeStyle, StableNodeId, StandardVisual, UiWorld,
+    AccessibilityRole, AccessibilityState, ComponentTextRegion, ComponentView, InteractionState,
+    LayoutBox, MutationQueue, NodeKind, NodeStyle, StableNodeId, TextHorizontalAlignment,
+    TextValue, UiWorld, WidgetPaintCtx, WidgetPaintOp, WidgetPaintOutput, WidgetQuad, WidgetVisual,
 };
 
 /// The modifiers of a stored shortcut chord: the same bits a live key event
@@ -166,11 +169,11 @@ impl ComponentView for KeyCaptureLayer {
     }
 
     fn project(&self, id: StableNodeId, world: &UiWorld, mutations: &mut MutationQueue) {
-        let visual = StandardVisual::KeyCaptureLayer {
+        let visual = KeyCaptureLayerVisual {
             recording: self.recording,
         };
-        if world.standard_visual(id) != Some(visual.clone()) {
-            mutations.set_standard_visual(id, Some(visual));
+        if world.widget_visual_as::<KeyCaptureLayerVisual>(id) != Some(&visual) {
+            mutations.set_widget_visual(id, Some(visual));
         }
         project_common(
             id,
@@ -638,9 +641,9 @@ impl ComponentView for KeymapLayer {
     }
 
     fn project(&self, id: StableNodeId, world: &UiWorld, mutations: &mut MutationQueue) {
-        let visual = StandardVisual::KeymapLayer;
-        if world.standard_visual(id) != Some(visual.clone()) {
-            mutations.set_standard_visual(id, Some(visual));
+        let visual = KeymapLayerVisual;
+        if world.widget_visual_as::<KeymapLayerVisual>(id) != Some(&visual) {
+            mutations.set_widget_visual(id, Some(visual));
         }
         project_common(
             id,
@@ -656,6 +659,214 @@ impl ComponentView for KeymapLayer {
                 ..AccessibilityState::default()
             },
         );
+    }
+}
+
+/// Resolved layout and surface tint for a mounted [`KeyCaptureLayer`].
+#[derive(Debug, Clone, PartialEq)]
+pub struct KeyCaptureLayerLayout {
+    pub badge: ComponentTextRegion,
+    pub background: Option<[f32; 4]>,
+}
+
+/// Widget visual projected by [`KeyCaptureLayer`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct KeyCaptureLayerVisual {
+    pub recording: bool,
+}
+
+impl KeyCaptureLayerVisual {
+    fn layout_at(
+        &self,
+        content: LayoutBox,
+        style_model: StyleModelRef,
+        measure: crate::text_width::ChromeTextMeasure<'_>,
+    ) -> KeyCaptureLayerLayout {
+        let label = if self.recording { "Recording" } else { "Idle" };
+        KeyCaptureLayerLayout {
+            badge: key_badge_region(content, label, !self.recording, style_model, measure),
+            background: Some(if self.recording {
+                style_model
+                    .color(SemanticColorRole::AccentSoft)
+                    .as_rgba_array()
+            } else {
+                style_model.color(SemanticColorRole::Subtle).as_rgba_array()
+            }),
+        }
+    }
+}
+
+impl WidgetVisual for KeyCaptureLayerVisual {
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+
+    fn dyn_eq(&self, other: &dyn std::any::Any) -> bool {
+        other.downcast_ref::<Self>() == Some(self)
+    }
+
+    fn measures_text(&self) -> bool {
+        true
+    }
+
+    fn paint(&self, ctx: &WidgetPaintCtx<'_>) -> WidgetPaintOutput {
+        let layout = self.layout_at(
+            ctx.content,
+            ctx.style_model,
+            ctx.world.chrome_text_measure(ctx.id),
+        );
+        let mut out = WidgetPaintOutput {
+            owns_node_text: true,
+            suppress_root_surface: true,
+            ..WidgetPaintOutput::new()
+        };
+        if let Some(background) = layout.background {
+            out.push(
+                10,
+                WidgetPaintOp::Quad(WidgetQuad {
+                    rect: layout.badge.bounds,
+                    fill: Some(background),
+                    fill_paint: ctx.matching_background_paint(background),
+                    corner_radius: [ctx.chrome_radii.sm; 4],
+                    ..WidgetQuad::default()
+                }),
+            );
+        }
+        out.push(
+            11,
+            WidgetPaintOp::Text(crate::widget_visual::widget_text_region(
+                &layout.badge,
+                ctx,
+                TextHorizontalAlignment::Center,
+                false,
+            )),
+        );
+        out
+    }
+}
+
+/// Resolved layout for a mounted [`KeymapLayer`].
+#[derive(Debug, Clone, PartialEq)]
+pub struct KeymapLayerLayout {
+    pub badge: ComponentTextRegion,
+}
+
+/// Widget visual projected by [`KeymapLayer`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct KeymapLayerVisual;
+
+impl KeymapLayerVisual {
+    fn layout_at(
+        &self,
+        content: LayoutBox,
+        style_model: StyleModelRef,
+        measure: crate::text_width::ChromeTextMeasure<'_>,
+    ) -> KeymapLayerLayout {
+        KeymapLayerLayout {
+            badge: key_badge_region(content, "Keymap", false, style_model, measure),
+        }
+    }
+}
+
+impl WidgetVisual for KeymapLayerVisual {
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+
+    fn dyn_eq(&self, other: &dyn std::any::Any) -> bool {
+        other.downcast_ref::<Self>() == Some(self)
+    }
+
+    fn measures_text(&self) -> bool {
+        true
+    }
+
+    fn paint(&self, ctx: &WidgetPaintCtx<'_>) -> WidgetPaintOutput {
+        let layout = self.layout_at(
+            ctx.content,
+            ctx.style_model,
+            ctx.world.chrome_text_measure(ctx.id),
+        );
+        let mut out = WidgetPaintOutput {
+            owns_node_text: true,
+            suppress_root_surface: true,
+            ..WidgetPaintOutput::new()
+        };
+        out.push(
+            10,
+            WidgetPaintOp::Quad(WidgetQuad {
+                rect: layout.badge.bounds,
+                fill: ctx.style.background.or(layout
+                    .badge
+                    .color
+                    .map(|color| [color[0], color[1], color[2], 0.12])),
+                corner_radius: [ctx.chrome_radii.sm; 4],
+                ..WidgetQuad::default()
+            }),
+        );
+        out.push(
+            11,
+            WidgetPaintOp::Text(crate::widget_visual::widget_text_region(
+                &layout.badge,
+                ctx,
+                TextHorizontalAlignment::Center,
+                false,
+            )),
+        );
+        out
+    }
+}
+
+fn key_badge_region(
+    origin: LayoutBox,
+    label: &str,
+    muted: bool,
+    palette: StyleModelRef,
+    measure: crate::text_width::ChromeTextMeasure<'_>,
+) -> ComponentTextRegion {
+    let metrics = palette.metrics;
+    let height = nana_ui_core::ControlSize::Small.height_in(metrics);
+    const PAD: f32 = nana_ui_core::space::MD;
+    // Four of the widest spacing step: the narrowest badge still has to read
+    // as a key cap rather than as a letter with a box round it.
+    const MIN_WIDTH: f32 = nana_ui_core::space::XXXL * 4.0;
+    let font_size = nana_ui_core::type_scale::META;
+    const FONT_WEIGHT: u16 = 600;
+    ComponentTextRegion {
+        bounds: LayoutBox {
+            x: origin.x,
+            y: origin.y,
+            width: (measure.width(label, font_size, Some(FONT_WEIGHT)) + PAD * 2.0).max(MIN_WIDTH),
+            height: height.min(origin.height.max(height)),
+        },
+        content: TextValue::from(label),
+        color: Some(if muted {
+            palette.color(SemanticColorRole::Muted).as_rgba_array()
+        } else {
+            palette.color(SemanticColorRole::Text).as_rgba_array()
+        }),
+        font_size,
+        font_weight: Some(FONT_WEIGHT),
+    }
+}
+
+impl UiWorld {
+    /// Resolves `id`'s key-capture badge region and surface tint when mounted as a [`KeyCaptureLayer`].
+    #[must_use]
+    pub fn key_capture_layer_layout(&self, id: StableNodeId) -> Option<KeyCaptureLayerLayout> {
+        let visual = self.widget_visual_as::<KeyCaptureLayerVisual>(id)?;
+        let content = self.component_content_box(id)?;
+        let style_model = self.node_style_model(id);
+        Some(visual.layout_at(content, style_model, self.chrome_text_measure(id)))
+    }
+
+    /// Resolves `id`'s keymap badge region when mounted as a [`KeymapLayer`].
+    #[must_use]
+    pub fn keymap_layer_layout(&self, id: StableNodeId) -> Option<KeymapLayerLayout> {
+        let visual = self.widget_visual_as::<KeymapLayerVisual>(id)?;
+        let content = self.component_content_box(id)?;
+        let style_model = self.node_style_model(id);
+        Some(visual.layout_at(content, style_model, self.chrome_text_measure(id)))
     }
 }
 
@@ -856,8 +1067,10 @@ mod tests {
             Some(NodeKind::Element { tag }) if tag == "key-capture-layer"
         ));
         assert_eq!(
-            context.world().standard_visual(idle_id),
-            Some(StandardVisual::KeyCaptureLayer { recording: false })
+            context
+                .world()
+                .widget_visual_as::<KeyCaptureLayerVisual>(idle_id),
+            Some(&KeyCaptureLayerVisual { recording: false })
         );
         assert_eq!(
             context.world().interaction(idle_id),
@@ -870,7 +1083,8 @@ mod tests {
             context
                 .world()
                 .accessibility(idle_id)
-                .and_then(|state| state.label.as_deref()),
+                .and_then(|state| state.label.clone())
+                .as_deref(),
             Some("Shortcut capture")
         );
         assert_eq!(
@@ -886,8 +1100,10 @@ mod tests {
             .unwrap();
         let recording_id = recording.stable_id();
         assert_eq!(
-            context.world().standard_visual(recording_id),
-            Some(StandardVisual::KeyCaptureLayer { recording: true })
+            context
+                .world()
+                .widget_visual_as::<KeyCaptureLayerVisual>(recording_id),
+            Some(&KeyCaptureLayerVisual { recording: true })
         );
         assert_eq!(
             context.world().interaction(recording_id),
@@ -900,7 +1116,8 @@ mod tests {
             context
                 .world()
                 .accessibility(recording_id)
-                .and_then(|state| state.label.as_deref()),
+                .and_then(|state| state.label.clone())
+                .as_deref(),
             Some("Recording shortcut")
         );
     }
@@ -917,8 +1134,8 @@ mod tests {
             Some(NodeKind::Element { tag }) if tag == "keymap-layer"
         ));
         assert_eq!(
-            context.world().standard_visual(id),
-            Some(StandardVisual::KeymapLayer)
+            context.world().widget_visual_as::<KeymapLayerVisual>(id),
+            Some(&KeymapLayerVisual)
         );
         assert_eq!(
             context.world().interaction(id),

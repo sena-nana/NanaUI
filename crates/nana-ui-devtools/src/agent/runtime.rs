@@ -1009,7 +1009,7 @@ mod tests {
     #[test]
     fn opaque_rows_do_not_cover_the_scrollbar_thumb() {
         use nana_ui::runtime::{
-            ComponentGeometry, LengthSpec, NodeStyle, ScrollAxes, ScrollView, Stack,
+            LengthSpec, NodeStyle, ScrollAxes, ScrollView, ScrollbarBars, Stack,
         };
         use nana_ui_core::ScrollbarVisibility;
 
@@ -1053,14 +1053,14 @@ mod tests {
             .expect("scroll view");
         let mut session = RuntimeAgentSession::new(document, WIDTH, HEIGHT).expect("session");
         session.flush().expect("flush");
-        let Some(ComponentGeometry::Scrollbar {
+        let Some(ScrollbarBars {
             vertical: Some(bar),
             ..
         }) = session
             .document()
             .context()
             .world()
-            .component_geometry(scroll.stable_id())
+            .scrollbar_bars(scroll.stable_id())
         else {
             panic!("a resident bar");
         };

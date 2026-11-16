@@ -137,17 +137,6 @@ impl ResponsiveIndex {
     }
 }
 
-/// What one evaluation cost.
-#[derive(Debug, Default, Clone, Copy)]
-struct Evaluation {
-    size_changes: usize,
-    evaluated: usize,
-    changed: usize,
-    unchanged: usize,
-    downstream: usize,
-    fallbacks: usize,
-}
-
 impl UiWorld {
     /// The rule `id` follows, if it follows one.
     pub fn responsive_rule(&self, id: StableNodeId) -> Option<&Arc<ResponsiveRule>> {
@@ -195,7 +184,8 @@ impl UiWorld {
         let record = self.record(node);
         let layout = &record.resolved_layout;
         let vertical = record.resolved.0.writing_mode.is_vertical();
-        let axis_answered = match layout.container_type {
+        let container = &*layout.container;
+        let axis_answered = match container.container_type {
             ContainerType::Normal => false,
             ContainerType::Size => true,
             ContainerType::InlineSize => match axis {
@@ -205,7 +195,8 @@ impl UiWorld {
                 ResponsiveAxis::Height => vertical,
             },
         };
-        axis_answered && name.is_none_or(|name| layout.container_name.iter().any(|own| own == name))
+        axis_answered
+            && name.is_none_or(|name| container.container_name.iter().any(|own| own == name))
     }
 
     /// Set or clear the rule `id` follows. A container already measured is
@@ -238,7 +229,7 @@ impl UiWorld {
             );
         }
         if before != self.responsive_variant(id).cloned() {
-            self.apply_responsive_variant(id);
+            self.restyle(id, None);
         }
     }
 
@@ -384,7 +375,7 @@ impl UiWorld {
         }
         let mut containers = std::mem::take(&mut self.responsive.pending);
         containers.sort_unstable();
-        let mut cost = Evaluation::default();
+        let mut changed = false;
         for container in containers {
             let Some(extents) = self.responsive_extents(container) else {
                 continue;
@@ -392,7 +383,6 @@ impl UiWorld {
             let read = self.responsive.read.insert(container, extents);
             let width_moved = read.is_none_or(|read| read.width != extents.width);
             let height_moved = read.is_none_or(|read| read.height != extents.height);
-            cost.size_changes += usize::from(width_moved) + usize::from(height_moved);
             if !width_moved && !height_moved {
                 continue;
             }
@@ -411,11 +401,9 @@ impl UiWorld {
                 if read.is_some_and(|read| read.on(axis) == extents.on(axis)) {
                     continue;
                 }
-                cost.evaluated += 1;
                 let bucket = dependent.rule.bucket_for(extents.on(axis));
                 let current = dependent.bucket;
                 if current == Some(bucket) {
-                    cost.unchanged += 1;
                     continue;
                 }
                 // A bucket the node already left this frame, or a frame
@@ -426,8 +414,6 @@ impl UiWorld {
                     .get(&id)
                     .is_some_and(|left| left.contains(&bucket));
                 if returning || self.responsive.rounds >= MAX_ROUNDS {
-                    cost.unchanged += 1;
-                    cost.fallbacks += 1;
                     continue;
                 }
                 if let Some(current) = current {
@@ -437,31 +423,13 @@ impl UiWorld {
                 if let Some(dependent) = self.responsive.dependents.get_mut(&id) {
                     dependent.bucket = Some(bucket);
                 }
-                cost.changed += 1;
+                changed = true;
                 if before != self.responsive_variant(id).cloned() {
-                    cost.downstream += self.apply_responsive_variant(id);
+                    self.restyle(id, None);
                 }
             }
         }
-        let round = usize::from(cost.changed > 0);
-        self.responsive.rounds += round;
-        self.bump_last_counters(|counters| {
-            counters.record_container_query_evaluation(
-                cost.size_changes,
-                cost.evaluated,
-                cost.changed,
-                cost.unchanged,
-            );
-            counters.record_container_query_results(cost.downstream, round, cost.fallbacks);
-        });
-    }
-
-    /// `id`'s variant changed: restyle it as a style write that moved its
-    /// layout the same way would. Returns the layout seeds queued.
-    fn apply_responsive_variant(&mut self, id: StableNodeId) -> usize {
-        let seeds_before = self.layout_seeds_created;
-        self.restyle(id, None);
-        (self.layout_seeds_created - seeds_before) as usize
+        self.responsive.rounds += usize::from(changed);
     }
 }
 
@@ -496,13 +464,9 @@ mod tests {
         let mut queue = MutationQueue::new();
         queue.create(node(1), document, NodeKind::Document);
         element(&mut queue, document, 1, 2);
-        queue.set_style(
-            node(2),
-            styled(LayoutStyle {
-                container_type: ContainerType::InlineSize,
-                ..LayoutStyle::default()
-            }),
-        );
+        let mut container_style = LayoutStyle::default();
+        container_style.container.container_type = ContainerType::InlineSize;
+        queue.set_style(node(2), styled(container_style));
         for id in 10..10 + PAGE {
             element(&mut queue, document, 2, id);
             follow_nearest(&mut queue, id);

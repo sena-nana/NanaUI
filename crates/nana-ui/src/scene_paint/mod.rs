@@ -7,6 +7,7 @@
 
 mod backdrop;
 mod buffer_upload;
+#[cfg(feature = "charts")]
 mod chart;
 mod clip;
 mod color;
@@ -19,6 +20,10 @@ pub(crate) mod image_url;
 mod material;
 mod mesh;
 mod motion;
+#[cfg(target_vendor = "apple")]
+mod msl_precompiled;
+#[cfg(any(test, not(target_vendor = "apple")))]
+mod naga_ir;
 mod natural_sizes;
 // Only a Windows build loads the stages. The others compile the module for
 // its freshness checks, which run wherever the tests do.
@@ -68,13 +73,12 @@ use nana_gpu::{
     __framework, FrameContext, GpuContext, GpuRenderTarget, GpuSubmission, GpuTextureFormat,
     RetainedWrites,
 };
-use nana_ui_core::GpuWorkObservation;
 use nana_ui_platform::SharedFetchHost;
 use nana_ui_scene::{RenderOperation, ScenePrimitiveKind, UiScene};
 use url_texture_cache::{UrlTextureCache, egress_of};
 
 use crate::{
-    HostTextureRegistry, PhysicalRect,
+    GpuWorkObservation, HostTextureRegistry, PhysicalRect,
     gpu_work::{GpuStageTimings, GpuWorkSink},
     scene_gpu::{
         SceneGpuBatchNode, SceneGpuBatchPassContext, SceneGpuNode, SceneGpuPassContext,
@@ -521,8 +525,10 @@ pub struct SceneWgpuPainter {
     url_cache: UrlTextureCache,
     backdrop: BackdropPipeline,
     /// Built on the first chart this painter draws.
+    #[cfg(feature = "charts")]
     charts: Option<chart::ChartPipeline>,
     /// The active target's chart arrays.
+    #[cfg(feature = "charts")]
     chart_target: chart::ChartPipelineTarget,
     dest: Option<DestTarget>,
     /// Built with the other pipeline families, for the dest of this
@@ -603,6 +609,7 @@ struct TargetState {
     icons: Option<icon::IconPipelineTarget>,
     text: Option<text::TextPipelineTarget>,
     backdrop: Option<backdrop::BackdropPipelineTarget>,
+    #[cfg(feature = "charts")]
     charts: chart::ChartPipelineTarget,
     host_textures: crate::gpu_texture::GpuTextureTarget,
     dest: Option<DestTarget>,
@@ -640,6 +647,7 @@ struct PipelineSet {
     text: TextProgram,
     host_textures: HostTexturePipeline,
     backdrop: BackdropPipeline,
+    #[cfg(feature = "charts")]
     charts: Option<chart::ChartPipeline>,
 }
 
@@ -684,6 +692,7 @@ enum DrawCommand {
         scissor: PhysicalRect,
     },
     /// Draw `draw` of the chart in batch slot `slot`.
+    #[cfg(feature = "charts")]
     Chart {
         slot: u32,
         draw: u32,
@@ -853,7 +862,9 @@ impl SceneWgpuPainter {
                 cache
             },
             backdrop,
+            #[cfg(feature = "charts")]
             charts: None,
+            #[cfg(feature = "charts")]
             chart_target: chart::ChartPipelineTarget::default(),
             dest: None,
             dest_pipelines: Some(dest_pipelines),
@@ -971,6 +982,7 @@ impl SceneWgpuPainter {
                 text: text.join(),
                 host_textures: host_textures.join(),
                 backdrop: backdrop.join(),
+                #[cfg(feature = "charts")]
                 charts: None,
             }
         })
@@ -984,6 +996,7 @@ impl SceneWgpuPainter {
         self.text.swap_program(&self.device, &mut set.text);
         std::mem::swap(&mut self.host_textures, &mut set.host_textures);
         std::mem::swap(&mut self.backdrop, &mut set.backdrop);
+        #[cfg(feature = "charts")]
         std::mem::swap(&mut self.charts, &mut set.charts);
     }
 
@@ -1344,6 +1357,7 @@ impl SceneWgpuPainter {
         self.icons.swap_target(&mut state.icons, &self.device);
         self.text.swap_target(&mut state.text, &self.device);
         self.backdrop.swap_target(&mut state.backdrop, &self.device);
+        #[cfg(feature = "charts")]
         std::mem::swap(&mut self.chart_target, &mut state.charts);
         self.host_textures.swap_target(&mut state.host_textures);
     }
@@ -1560,8 +1574,8 @@ impl SceneWgpuPainter {
             .iter()
             .any(|descriptor| descriptor.is_live());
         let glyph_live = scene.glyph_presentation_live();
-        let chart_live = scene.chart_presentation_live();
-        let gpu_motion_live = motion_live || glyph_live || chart_live;
+        let gpu_payload_live = scene.gpu_payload_live();
+        let gpu_motion_live = motion_live || glyph_live || gpu_payload_live;
         self.text
             .write_motion(&self.queue, scene.motion_gpu_now(), Some(&gpu_work));
         if self.painted == Some(painted)
@@ -1656,6 +1670,7 @@ impl SceneWgpuPainter {
             self.icons.begin_frame(dest_physical);
             self.text.begin_frame(dest_physical);
             self.backdrop.begin_frame();
+            #[cfg(feature = "charts")]
             self.chart_target.begin_frame();
             self.quads.set_corner_exponent(corner_exponent);
             self.meshes.set_corner_exponent(corner_exponent);
@@ -2406,74 +2421,89 @@ impl SceneWgpuPainter {
                             );
                         }
                     }
-                    ScenePrimitiveKind::Chart {
-                        marks,
-                        origin: chart_origin,
-                        hover,
-                    } => {
-                        let chart_origin = &[
-                            primitive.origin[0] + chart_origin[0],
-                            primitive.origin[1] + chart_origin[1],
-                        ];
-                        let pipeline = self.charts.get_or_insert_with(|| {
-                            chart::ChartPipeline::new(
-                                &self.device,
-                                self.format,
-                                self.quads.motion_layout(),
-                            )
-                        });
-                        let chart_affine = mesh_affine(affine, persp);
-                        if let Some(slot) = self.chart_target.push(
-                            pipeline,
-                            &self.device,
-                            &self.queue,
-                            primitive.id,
-                            chart::ChartPlacement {
-                                marks,
-                                origin: *chart_origin,
-                                hover,
-                                affine: chart_affine,
-                                opacity,
-                                clip: frag_clip,
-                                viewport_scale: scale,
-                            },
-                            corner_exponent,
-                            dest_physical,
-                            Some(&gpu_work),
-                        ) {
-                            let drawn = marks.extent.map_or(bounds, |[x0, y0, x1, y1]| {
-                                LogicalRect::from_xywh(
-                                    chart_origin[0] + x0,
-                                    chart_origin[1] + y0,
-                                    x1 - x0,
-                                    y1 - y0,
-                                )
-                            });
-                            let painted = painted_bounds(
-                                drawn,
-                                hover.growth + 2.0,
-                                chart_affine,
-                                [0.0, 0.0],
-                                scale,
-                                scissor,
-                            );
-                            for draw in 0..self.chart_target.draw_count(slot) {
-                                batching.note_geometry();
-                                batching.open(commands.len(), painted);
-                                commands.push(DrawCommand::Chart {
-                                    slot,
-                                    draw,
-                                    scissor,
-                                });
-                            }
-                        }
-                    }
                     ScenePrimitiveKind::Custom {
                         node: custom,
                         mask,
                         corner_radius,
                     } => {
-                        if custom.renderer.as_ref() == "nana.host-texture" {
+                        let handled_builtin = {
+                            #[cfg(feature = "charts")]
+                            if custom.renderer.as_ref() == nana_ui_runtime::CHART_RENDERER {
+                                if let Some(payload) = custom.payload.as_ref().and_then(|p| {
+                                    p.downcast_ref::<nana_ui_charts::ChartGpuPayload>()
+                                }) {
+                                    let chart_origin = [
+                                        primitive.origin[0] + payload.origin[0],
+                                        primitive.origin[1] + payload.origin[1],
+                                    ];
+                                    let pipeline = self.charts.get_or_insert_with(|| {
+                                        chart::ChartPipeline::new(
+                                            &self.device,
+                                            self.format,
+                                            self.quads.motion_layout(),
+                                        )
+                                    });
+                                    let chart_affine = mesh_affine(affine, persp);
+                                    if let Some(slot) = self.chart_target.push(
+                                        pipeline,
+                                        &self.device,
+                                        &self.queue,
+                                        primitive.id,
+                                        chart::ChartPlacement {
+                                            marks: &payload.marks,
+                                            origin: chart_origin,
+                                            hover: &payload.hover,
+                                            affine: chart_affine,
+                                            opacity,
+                                            clip: frag_clip,
+                                            viewport_scale: scale,
+                                        },
+                                        corner_exponent,
+                                        dest_physical,
+                                        Some(&gpu_work),
+                                    ) {
+                                        let drawn = payload.marks.extent.map_or(
+                                            bounds,
+                                            |[x0, y0, x1, y1]| {
+                                                LogicalRect::from_xywh(
+                                                    chart_origin[0] + x0,
+                                                    chart_origin[1] + y0,
+                                                    x1 - x0,
+                                                    y1 - y0,
+                                                )
+                                            },
+                                        );
+                                        let painted = painted_bounds(
+                                            drawn,
+                                            payload.hover.growth + 2.0,
+                                            chart_affine,
+                                            [0.0, 0.0],
+                                            scale,
+                                            scissor,
+                                        );
+                                        for draw in 0..self.chart_target.draw_count(slot) {
+                                            batching.note_geometry();
+                                            batching.open(commands.len(), painted);
+                                            commands.push(DrawCommand::Chart {
+                                                slot,
+                                                draw,
+                                                scissor,
+                                            });
+                                        }
+                                    }
+                                }
+                                true
+                            } else {
+                                false
+                            }
+                            #[cfg(not(feature = "charts"))]
+                            {
+                                false
+                            }
+                        };
+                        if handled_builtin {
+                            // Built-in inline GPU payload already emitted into batch.
+                        } else if custom.renderer.as_ref() == "nana.host-texture" {
                             // The registry is a shared RwLock: an entry validated at
                             // frame start can be removed before prepare. Skip the
                             // node for this frame instead of panicking.
@@ -2519,12 +2549,9 @@ impl SceneWgpuPainter {
                             );
                             self.painted_demand.note(&custom.resource, prepared.painted);
                             commands.push(DrawCommand::HostTexture(prepared));
-                        } else {
-                            let Some(renderer) = gpu_renderers
-                                .and_then(|registry| registry.get(custom.renderer.as_ref()))
-                            else {
-                                continue;
-                            };
+                        } else if let Some(renderer) = gpu_renderers
+                            .and_then(|registry| registry.get(custom.renderer.as_ref()))
+                        {
                             let node = SceneGpuNode {
                                 id: primitive.id,
                                 custom: custom.clone(),
@@ -2550,6 +2577,10 @@ impl SceneWgpuPainter {
                                 bounds: physical_bounds(custom_bounds, scale, scissor),
                                 clip: scissor,
                             });
+                        } else if custom.payload.is_some() {
+                            return Err(ScenePaintError::UnsupportedCustomRenderer(primitive.id));
+                        } else {
+                            continue;
                         }
                     }
                 }
@@ -2598,6 +2629,7 @@ impl SceneWgpuPainter {
             // Text prepare stays inside the batch window: it is the same
             // work the per-primitive prepare did, only once per run.
             self.text.flush_runs();
+            #[cfg(feature = "charts")]
             self.chart_target.finish_frame();
             self.painted_demand.commit(host_textures);
             self.url_cache.commit_demand(self.painted_demand.id());
@@ -2702,7 +2734,7 @@ impl SceneWgpuPainter {
         // and the batch is the last frame's, the dest as it stood before its
         // first text draw is the last frame's too: put that back instead of
         // drawing it again.
-        let split = if glyph_live && !motion_live && !chart_live {
+        let split = if glyph_live && !motion_live && !gpu_payload_live {
             prefix_split(&commands, gpu_interleaved, viewport.clear)
         } else {
             None
@@ -2749,7 +2781,9 @@ impl SceneWgpuPainter {
             let mut ordered = EncodeOrdered {
                 quads: &self.quads,
                 meshes: &self.meshes,
+                #[cfg(feature = "charts")]
                 charts: self.charts.as_ref(),
+                #[cfg(feature = "charts")]
                 chart_target: &self.chart_target,
                 icons: &self.icons,
                 text: &self.text,
@@ -2832,6 +2866,7 @@ impl SceneWgpuPainter {
                             Some(&gpu_work),
                         );
                     }
+                    #[cfg(feature = "charts")]
                     DrawCommand::Chart {
                         slot,
                         draw,
@@ -2990,17 +3025,20 @@ fn clip_dests_for(
     // built-ins wrap extras only.
     let keep_innermost = matches!(
         kind,
-        ScenePrimitiveKind::Custom { node: custom, .. } if custom.renderer.as_ref() != "nana.host-texture"
+        ScenePrimitiveKind::Custom { node: custom, .. }
+            if custom.renderer.as_ref() != "nana.host-texture" && custom.payload.is_none()
     );
     if keep_innermost {
         clip::all_fragment_clips(clips, origin)
     } else if matches!(
         kind,
-        ScenePrimitiveKind::Stroke { .. }
+        ScenePrimitiveKind::Text { .. }
+            | ScenePrimitiveKind::Stroke { .. }
             | ScenePrimitiveKind::Spinner { .. }
             | ScenePrimitiveKind::Path { .. }
-            | ScenePrimitiveKind::Chart { .. }
-            | ScenePrimitiveKind::Text { .. }
+    ) || matches!(
+        kind,
+        ScenePrimitiveKind::Custom { node: custom, .. } if custom.payload.is_some()
     ) {
         // Their shaders test the innermost polygon or ellipse themselves.
         mesh_extra_fragment_clips(clips, origin)
@@ -3026,15 +3064,17 @@ fn clip_dests_cutting(
         return clip_dests;
     }
     let all_batched = drawn.iter().all(|command| {
-        matches!(
+        let batched = matches!(
             command,
             DrawCommand::Quads { .. }
                 | DrawCommand::Mesh { .. }
                 | DrawCommand::Path { .. }
-                | DrawCommand::Chart { .. }
                 | DrawCommand::Text { .. }
                 | DrawCommand::Icon { .. }
-        )
+        );
+        #[cfg(feature = "charts")]
+        let batched = batched || matches!(command, DrawCommand::Chart { .. });
+        batched
     });
     let Some(area) = painted.iter().copied().reduce(union_physical) else {
         return clip_dests;
@@ -3546,7 +3586,9 @@ fn push_path_draw(
 struct EncodeOrdered<'a> {
     quads: &'a QuadPipeline,
     meshes: &'a MeshPipeline,
+    #[cfg(feature = "charts")]
     charts: Option<&'a chart::ChartPipeline>,
+    #[cfg(feature = "charts")]
     chart_target: &'a chart::ChartPipelineTarget,
     icons: &'a IconPipeline,
     text: &'a TextPipeline,
@@ -3603,9 +3645,12 @@ fn group_extents(
             DrawCommand::Quads { .. }
             | DrawCommand::Mesh { .. }
             | DrawCommand::Path { .. }
-            | DrawCommand::Chart { .. }
             | DrawCommand::Text { .. }
             | DrawCommand::Icon { .. } => batched
+                .next()
+                .map_or(GroupExtent::All, |rect| GroupExtent::Rect(*rect)),
+            #[cfg(feature = "charts")]
+            DrawCommand::Chart { .. } => batched
                 .next()
                 .map_or(GroupExtent::All, |rect| GroupExtent::Rect(*rect)),
             // A mask only takes away from the layer it is applied to.
@@ -3918,6 +3963,7 @@ fn encode_ordered(
                                 Some(pipelines.gpu_work),
                             );
                         }
+                        #[cfg(feature = "charts")]
                         DrawCommand::Chart {
                             slot,
                             draw,

@@ -6,7 +6,7 @@ use std::sync::Arc;
 
 fn quad(layout: LayoutStyle) -> ExtractedNode {
     ExtractedNode {
-        layout_result: None,
+        extracted_layout: None,
         custom_paint: None,
         chrome_radii: Default::default(),
         id: StableNodeId::new(1).unwrap(),
@@ -40,9 +40,7 @@ fn quad(layout: LayoutStyle) -> ExtractedNode {
         focused: false,
         editable: false,
         text_spans: Vec::new(),
-        standard_visual: None,
-        component_geometry: None,
-        standard_visual_foreground: None,
+        widget_paint: None,
         custom_render: None,
         drop_hover: None,
         document_text_selection: Vec::new(),

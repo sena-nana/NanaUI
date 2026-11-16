@@ -282,7 +282,7 @@ impl UiScene {
             })
             || !self.compositor.pending.is_empty()
             || self.glyph_presentation_live()
-            || self.chart_presentation_live()
+            || self.gpu_payload_live()
     }
 
     pub(super) fn compositor_now(&self) -> Duration {
@@ -376,7 +376,7 @@ impl UiScene {
             .glyph_live
             .values()
             .any(|until| until.is_some_and(ended))
-            || self.chart_live.values().any(|until| ended(*until))
+            || self.gpu_payload_live.values().any(|until| ended(*until))
         {
             self.compositor.presentation_epoch = self.compositor.presentation_epoch.wrapping_add(1);
         }
@@ -450,7 +450,7 @@ impl UiScene {
             if snapshot.has_opacity
                 && (super::has_extracted_child(&self.nodes, extracted)
                     || extracted.custom_paint.is_some()
-                    || extracted.standard_visual.is_some()
+                    || extracted.widget_paint.is_some()
                     || self.node_primitive_count(node) > 1)
             {
                 opacity_groups.insert(node);
@@ -709,7 +709,7 @@ impl UiScene {
         // one node, and the answer is about the ancestors above it — so the
         // refusal is made here too, or promoting a layer (an opacity fade is
         // enough) hands back the projection the ancestor walk denied.
-        if block_3d && node.source_style.layout.transform_3d.is_some() {
+        if block_3d && node.source_style.layout.transforms.transform_3d.is_some() {
             return self.with_sticky_translation(node, AffineTransform::IDENTITY);
         }
         // A triggered menu's presentation moves its hanging surface, not its
@@ -730,10 +730,8 @@ impl UiScene {
 
     /// What a triggered menu's presentation does to its hanging surface and
     /// the items it places, which are viewport-fixed: its transform overlay
-    /// about the surface's pivot ([`ComponentGeometry::presentation_pivot`]).
+    /// about the surface's pivot (`WidgetPaintOutput::presentation_pivot`).
     /// `None` for any other node, or while the menu has no transform overlay.
-    ///
-    /// [`ComponentGeometry::presentation_pivot`]: nana_ui_runtime::ComponentGeometry::presentation_pivot
     pub(super) fn hanging_transform(&self, menu: StableNodeId) -> Option<AffineTransform> {
         let node = self
             .nodes
@@ -789,13 +787,12 @@ impl UiScene {
 
     /// Whether `primitive` is a modal frame's scrim.
     pub(super) fn is_modal_scrim(&self, primitive: &super::ScenePrimitive) -> bool {
-        primitive.id.slot == super::MODAL_SCRIM_SLOT
-            && self.nodes.get(&primitive.node).is_some_and(|node| {
-                matches!(
-                    node.component_geometry.as_deref(),
-                    Some(nana_ui_runtime::ComponentGeometry::ModalFrame { .. })
-                )
-            })
+        self.nodes.get(&primitive.node).is_some_and(|node| {
+            node.widget_paint
+                .as_deref()
+                .and_then(|w| w.modal_frame.as_ref())
+                .is_some_and(|modal| modal.scrim_slot == Some(primitive.id.slot))
+        })
     }
 
     fn layered_paint_opacity(&self, vn: super::VisualNode, logical_opacity: f32, own: bool) -> f32 {
@@ -966,7 +963,12 @@ impl UiScene {
         if transform != 0
             && let super::VisualNode::Node(node) = vn
             && let Some(extracted) = self.nodes.get(&node)
-            && extracted.source_style.layout.transform_3d.is_some()
+            && extracted
+                .source_style
+                .layout
+                .transforms
+                .transform_3d
+                .is_some()
             && self.draw_ancestor_state(extracted).3
         {
             transform = 0;
@@ -1332,9 +1334,9 @@ fn affine_from_paint(
     transform: PaintTransform,
 ) -> AffineTransform {
     let mut layout = (*node.source_style.layout).clone();
-    layout.transform = Some(transform);
+    layout.transforms.transform = Some(transform);
     if let Some([x, y]) = presentation_pivot(node) {
-        layout.transform_origin = Some(nana_ui_core::TransformOrigin {
+        layout.transforms.origin = Some(nana_ui_core::TransformOrigin {
             x: nana_ui_core::LengthSpec::Px(x),
             y: nana_ui_core::LengthSpec::Px(y),
         });
@@ -1345,9 +1347,9 @@ fn affine_from_paint(
 /// Where a presentation transform of `node` pivots, when its geometry says
 /// so rather than its `transform-origin`: a modal frame turns about its card.
 fn presentation_pivot(node: &ExtractedNode) -> Option<[f32; 2]> {
-    node.component_geometry
-        .as_deref()?
-        .presentation_pivot(super::UiScene::record_box(node))
+    node.widget_paint
+        .as_deref()
+        .and_then(|w| w.presentation_pivot)
 }
 
 /// Whether `track` samples differently at some clock after `now`: not
@@ -1373,7 +1375,7 @@ mod tests {
 
     fn node(value: u64, parent: Option<u64>, children: &[u64]) -> ExtractedNode {
         ExtractedNode {
-            layout_result: None,
+            extracted_layout: None,
             custom_paint: None,
             chrome_radii: nana_ui_core::ChromeRadii::default(),
             id: id(value),
@@ -1404,9 +1406,7 @@ mod tests {
             focused: false,
             editable: false,
             text_spans: Vec::new(),
-            standard_visual: None,
-            component_geometry: None,
-            standard_visual_foreground: None,
+            widget_paint: None,
             custom_render: None,
             drop_hover: None,
             document_text_selection: Vec::new(),
@@ -2347,11 +2347,10 @@ mod tests {
             }
             if node.id == child {
                 node.text = Some(TextContent { value: "Hi".into() });
-                node.style = Arc::new(ComputedStyle {
-                    color: Some([1.0, 1.0, 1.0, 1.0]),
-                    font_size: 16.0,
-                    ..ComputedStyle::default()
-                });
+                node.style = Arc::new(ComputedStyle::with(|s| {
+                    s.color = Some([1.0, 1.0, 1.0, 1.0]);
+                    s.font_size = 16.0;
+                }));
                 node.layout = LayoutBox {
                     x: 8.0,
                     y: 8.0,
@@ -2926,16 +2925,24 @@ mod tests {
         use nana_ui_core::{LayoutStyle, PaintMat4};
         let mut parent = node(1, None, &[2]);
         parent.source_style.layout = Arc::new(LayoutStyle {
-            css_perspective: Some(800.0),
+            transforms: nana_ui_core::TransformStyle {
+                css_perspective: Some(800.0),
+                ..Default::default()
+            }
+            .into(),
             ..LayoutStyle::default()
         });
         let mut child = node(2, Some(1), &[]);
         child.source_style.layout = Arc::new(LayoutStyle {
-            transform_3d: Some(
-                PaintMat4::perspective(800.0)
-                    .unwrap()
-                    .then(PaintMat4::rotate_y(30_f32.to_radians())),
-            ),
+            transforms: nana_ui_core::TransformStyle {
+                transform_3d: Some(
+                    PaintMat4::perspective(800.0)
+                        .unwrap()
+                        .then(PaintMat4::rotate_y(30_f32.to_radians())),
+                ),
+                ..Default::default()
+            }
+            .into(),
             ..LayoutStyle::default()
         });
         let mut scene = UiScene::new();
@@ -3217,7 +3224,9 @@ mod tests {
             f: 100.0,
             ..PaintTransform::default()
         };
-        Arc::make_mut(&mut accent.source_style.layout).transform = Some(rest);
+        Arc::make_mut(&mut accent.source_style.layout)
+            .transforms
+            .transform = Some(rest);
         let slide = transform_track(7, 1, 0, 180, PaintTransform::default(), rest);
         // Extracted mid-slide, as the runtime does: the binding outlives the
         // slide until the node extracts again.

@@ -2,15 +2,17 @@ use std::sync::Arc;
 
 use nana_ui_core::{
     ButtonKind, ControlSize, Icon, JustifySpec, LengthSpec, OverflowSpec, PaintTransform,
-    PositionSpec, RadiusTier, SemanticColorRole, ThemeMetrics,
+    PositionSpec, RadiusTier, SemanticColor, SemanticColorRole, SemanticPalette, ThemeMetrics,
 };
 
 use crate::overlay_surfaces::modal_root_style;
 use crate::view_components::{Activate, IconButton, Stack, Text, project_common};
 use crate::{
-    AccessibilityRole, AccessibilityState, AppContext, ComponentView, CustomRenderNode, Entity,
-    FrameworkError, HOST_TEXTURE_RENDERER, InteractionState, LayoutBox, MutationQueue, NodeKind,
-    NodeStyle, StableNodeId, StandardVisual, TextContent, UiWorld,
+    AccessibilityRole, AccessibilityState, AppContext, ComponentTextRegion, ComponentView,
+    CustomRenderNode, Entity, FrameworkError, HOST_TEXTURE_RENDERER, InteractionState, LayoutBox,
+    MutationQueue, NodeKind, NodeStyle, StableNodeId, TextContent, TextHorizontalAlignment,
+    UiWorld, WidgetPaintCtx, WidgetPaintOp, WidgetPaintOutput, WidgetQuad, WidgetTaggedOp,
+    WidgetVisual,
 };
 
 /// Zoom scale step and clamp for the viewer surface.
@@ -43,6 +45,192 @@ pub enum ImageViewerEvent {
     Interaction,
     Previous,
     Next,
+}
+
+/// Resolved geometry and colours for an [`ImageViewer`] component.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ImageViewerLayout {
+    pub scrim: LayoutBox,
+    pub surface: LayoutBox,
+    pub stage: LayoutBox,
+    pub name: Option<ComponentTextRegion>,
+    pub metadata: Option<ComponentTextRegion>,
+    pub content: LayoutBox,
+    pub scrim_color: [f32; 4],
+    pub surface_color: [f32; 4],
+    pub stage_color: [f32; 4],
+}
+
+/// Visual payload projected by [`ImageViewer`].
+#[derive(Debug, Clone, PartialEq)]
+pub struct ImageViewerVisual {
+    pub intrinsic_size: Option<(u32, u32)>,
+    pub name: Option<Arc<str>>,
+    pub metadata: Option<Arc<str>>,
+    pub zoom: f32,
+    pub offset_x: f32,
+    pub offset_y: f32,
+}
+
+impl ImageViewerVisual {
+    /// Resolves `bounds`-relative scrim, surface, stage, content, and labels.
+    #[must_use]
+    pub fn layout_at(
+        &self,
+        bounds: LayoutBox,
+        palette: &SemanticPalette,
+        scrim: SemanticColor,
+        metrics: ThemeMetrics,
+    ) -> ImageViewerLayout {
+        let mut viewer = ImageViewer::new(ImageViewerContent::None);
+        viewer.intrinsic_size = self.intrinsic_size;
+        if let Some(name) = &self.name {
+            viewer = viewer.name(Arc::clone(name));
+        }
+        if let Some(metadata) = &self.metadata {
+            viewer = viewer.metadata(Arc::clone(metadata));
+        }
+        viewer.zoom = self.zoom;
+        viewer.offset = ImageViewerOffset::new(self.offset_x, self.offset_y);
+        let geometry = viewer.geometry(bounds, metrics);
+        let mut stage = palette.background.as_rgba_array();
+        stage[3] = 0.34;
+        ImageViewerLayout {
+            scrim: geometry.scrim,
+            surface: geometry.surface,
+            stage: geometry.stage,
+            name: self
+                .name
+                .as_ref()
+                .zip(geometry.name)
+                .map(|(text, region)| ComponentTextRegion {
+                    bounds: region,
+                    content: Arc::clone(text).into(),
+                    color: Some(palette.text.as_rgba_array()),
+                    font_size: nana_ui_core::type_scale::META,
+                    font_weight: Some(nana_ui_core::type_scale::SEMIBOLD),
+                }),
+            metadata: self
+                .metadata
+                .as_ref()
+                .zip(geometry.metadata)
+                .map(|(text, region)| ComponentTextRegion {
+                    bounds: region,
+                    content: Arc::clone(text).into(),
+                    color: Some(palette.muted.as_rgba_array()),
+                    font_size: nana_ui_core::type_scale::HINT,
+                    font_weight: None,
+                }),
+            content: geometry.content,
+            scrim_color: scrim.as_rgba_array(),
+            surface_color: palette.surface.as_rgba_array(),
+            stage_color: stage,
+        }
+    }
+}
+
+impl WidgetVisual for ImageViewerVisual {
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+
+    fn dyn_eq(&self, other: &dyn std::any::Any) -> bool {
+        other.downcast_ref::<Self>() == Some(self)
+    }
+
+    fn aligns_by_bottom_edge(&self) -> bool {
+        true
+    }
+
+    fn paint(&self, ctx: &WidgetPaintCtx<'_>) -> WidgetPaintOutput {
+        let layout = self.layout_at(
+            ctx.bounds,
+            &ctx.style_model.palette,
+            ctx.world.theme().effects().media_scrim,
+            ctx.style_model.metrics,
+        );
+        let mut out = WidgetPaintOutput::new();
+        out.owns_node_text = true;
+        out.suppress_root_surface = true;
+        out.owns_custom_render = true;
+
+        out.push(
+            10,
+            WidgetPaintOp::Quad(WidgetQuad {
+                rect: layout.scrim,
+                fill: Some(layout.scrim_color),
+                ..WidgetQuad::default()
+            }),
+        );
+        out.push(
+            11,
+            WidgetPaintOp::Quad(WidgetQuad {
+                rect: layout.surface,
+                fill: Some(layout.surface_color),
+                corner_radius: [ctx.chrome_radii.md; 4],
+                ..WidgetQuad::default()
+            }),
+        );
+        out.push(
+            12,
+            WidgetPaintOp::Quad(WidgetQuad {
+                rect: layout.stage,
+                fill: Some(layout.stage_color),
+                ..WidgetQuad::default()
+            }),
+        );
+        if let Some(custom) = ctx.world.custom_render(ctx.id) {
+            out.push_tagged(
+                WidgetTaggedOp::new(
+                    13,
+                    WidgetPaintOp::CustomGpu {
+                        bounds: layout.content,
+                        node: custom.clone(),
+                    },
+                )
+                .with_extra_clip(layout.stage),
+            );
+        }
+        if let Some(name) = &layout.name {
+            out.push(
+                15,
+                WidgetPaintOp::Text(crate::widget_visual::widget_text_region(
+                    name,
+                    ctx,
+                    TextHorizontalAlignment::Start,
+                    true,
+                )),
+            );
+        }
+        if let Some(metadata) = &layout.metadata {
+            out.push(
+                16,
+                WidgetPaintOp::Text(crate::widget_visual::widget_text_region(
+                    metadata,
+                    ctx,
+                    TextHorizontalAlignment::Start,
+                    true,
+                )),
+            );
+        }
+        out
+    }
+}
+
+impl UiWorld {
+    /// Resolves `id`'s image-viewer scrim, surface, stage, content, and label geometry.
+    #[must_use]
+    pub fn image_viewer_layout(&self, id: StableNodeId) -> Option<ImageViewerLayout> {
+        let visual = self.widget_visual_as::<ImageViewerVisual>(id)?;
+        let bounds = self.component_layout_box(id)?;
+        let style_model = self.node_style_model(id);
+        Some(visual.layout_at(
+            bounds,
+            &style_model.palette,
+            self.theme().effects().media_scrim,
+            style_model.metrics,
+        ))
+    }
 }
 
 /// Where the image on screen sits in the gallery the application shows:
@@ -514,6 +702,8 @@ impl Default for ImageViewer {
 }
 
 impl ComponentView for ImageViewer {
+    const TYPE_ID: Option<&'static str> = Some(crate::component_descriptors::IMAGE_VIEWER.type_id);
+
     const BEHAVIOR: crate::TypeBehavior<Self> = crate::TypeBehavior {
         assembler: Some(AppContext::assemble_image_viewer),
         ..crate::TypeBehavior::NONE
@@ -539,7 +729,7 @@ impl ComponentView for ImageViewer {
     }
 
     fn project(&self, id: StableNodeId, world: &UiWorld, mutations: &mut MutationQueue) {
-        let visual = StandardVisual::ImageViewer {
+        let visual = ImageViewerVisual {
             intrinsic_size: self.intrinsic_size,
             name: self.name.clone(),
             metadata: self.metadata.clone(),
@@ -547,8 +737,8 @@ impl ComponentView for ImageViewer {
             offset_x: self.offset.x,
             offset_y: self.offset.y,
         };
-        if world.standard_visual(id) != Some(visual.clone()) {
-            mutations.set_standard_visual(id, Some(visual));
+        if world.widget_visual_as::<ImageViewerVisual>(id) != Some(&visual) {
+            mutations.set_widget_visual(id, Some(visual));
         }
         let label = self.name.clone();
         let text = label.as_deref().unwrap_or_default();
@@ -1232,19 +1422,19 @@ mod tests {
             NodeKind::Element { tag } if tag == "image-viewer"
         ));
         assert!(matches!(
-            context.world().standard_visual(viewer.stable_id()),
-            Some(StandardVisual::ImageViewer {
+            context.world().widget_visual_as::<ImageViewerVisual>(viewer.stable_id()),
+            Some(ImageViewerVisual {
                 intrinsic_size: None,
-                ref name,
-                ref metadata,
+                name,
+                metadata,
                 zoom,
                 offset_x,
                 offset_y,
             }) if name.as_deref() == Some("NanaUI 渲染预览")
                 && metadata.is_none()
-                && zoom == ZOOM_MIN
-                && offset_x == 0.0
-                && offset_y == 0.0
+                && *zoom == ZOOM_MIN
+                && *offset_x == 0.0
+                && *offset_y == 0.0
         ));
 
         let child = context
@@ -1257,10 +1447,12 @@ mod tests {
             )
             .unwrap();
         assert!(context.world().custom_render(slotted.stable_id()).is_none());
-        assert!(matches!(
-            context.world().standard_visual(slotted.stable_id()),
-            Some(StandardVisual::ImageViewer { .. })
-        ));
+        assert!(
+            context
+                .world()
+                .widget_visual_as::<ImageViewerVisual>(slotted.stable_id())
+                .is_some()
+        );
     }
 
     fn close_control(context: &AppContext, viewer: crate::Entity<ImageViewer>) -> StableNodeId {
@@ -1427,7 +1619,7 @@ mod tests {
             .unwrap();
         assert!(!hidden(&context));
         assert_eq!(context.world().text(counter), Some("3 / 9"));
-        let accessibility = |id| context.world().accessibility(id).unwrap().clone();
+        let accessibility = |id| context.world().accessibility(id).unwrap().into_owned();
         assert_eq!(accessibility(previous).label.as_deref(), Some("上一张"));
         assert_eq!(accessibility(next).label.as_deref(), Some("下一张"));
         assert_eq!(
@@ -1516,11 +1708,11 @@ mod tests {
             context
                 .set_style_tokens(mode, nana_ui_core::UI_METRICS, palette, palette.surface)
                 .unwrap();
-            let Some(crate::ComponentGeometry::ImageViewer { scrim_color, .. }) =
-                context.world().component_geometry(viewer.stable_id())
-            else {
-                panic!("image viewer geometry");
-            };
+            let scrim_color = context
+                .world()
+                .image_viewer_layout(viewer.stable_id())
+                .expect("image viewer layout")
+                .scrim_color;
             assert_eq!(
                 scrim_color,
                 nana_ui_core::EffectTokens::for_appearance(mode)

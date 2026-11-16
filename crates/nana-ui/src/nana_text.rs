@@ -749,11 +749,10 @@ mod tests {
             let metrics = shaper.shape(
                 node(),
                 &TextContent { value: "H".into() },
-                &ComputedStyle {
-                    font_family: Some("NanaVfRangeFace".into()),
-                    font_weight: Some(weight),
-                    ..ComputedStyle::default()
-                },
+                &ComputedStyle::with(|s| {
+                    s.font_family = Some("NanaVfRangeFace".into());
+                    s.font_weight = Some(weight);
+                }),
                 TextShapeConstraints::default(),
             );
             assert_positive_finite(metrics);
@@ -790,10 +789,9 @@ mod tests {
         let _font_test = FONT_TESTS.lock().unwrap_or_else(|e| e.into_inner());
         let mut shaper = NanaTextShaper::default();
         let mut glyphs = GlyphCache::default();
-        let style = ComputedStyle {
-            font_size: 14.0,
-            ..ComputedStyle::default()
-        };
+        let style = ComputedStyle::with(|s| {
+            s.font_size = 14.0;
+        });
         let id = StableNodeId::new(1).unwrap();
         let text = TextContent { value: "A".into() };
         let constraints = TextShapeConstraints::default();
@@ -901,11 +899,10 @@ mod tests {
     fn highlight_rects_are_ordered_and_finite() {
         let _font_test = FONT_TESTS.lock().unwrap_or_else(|e| e.into_inner());
         let mut shaper = NanaTextShaper::default();
-        let style = ComputedStyle {
-            font_size: 16.0,
-            line_height: Some(LineHeightSpec::Absolute(20.0)),
-            ..ComputedStyle::default()
-        };
+        let style = ComputedStyle::with(|s| {
+            s.font_size = 16.0;
+            s.line_height = Some(LineHeightSpec::Absolute(20.0));
+        });
         let two_cjk = shaper.shape(
             node(),
             &TextContent {
@@ -950,10 +947,9 @@ mod tests {
             &TextContent {
                 value: "Hello".into(),
             },
-            &ComputedStyle {
-                font_family: Some("DefinitelyNotARealFamily".into()),
-                ..ComputedStyle::default()
-            },
+            &ComputedStyle::with(|s| {
+                s.font_family = Some("DefinitelyNotARealFamily".into());
+            }),
             TextShapeConstraints::default(),
         );
         assert_positive_finite(unknown);
@@ -966,19 +962,19 @@ mod tests {
         let text = TextContent {
             value: "标题文字".into(),
         };
-        let base = ComputedStyle {
-            font_size: 16.0,
-            font_family: Some("Noto Sans SC".into()),
-            ..ComputedStyle::default()
-        };
+        let base = ComputedStyle::with(|s| {
+            s.font_size = 16.0;
+            s.font_family = Some("Noto Sans SC".into());
+        });
         let tight =
             NanaTextShaper::default().shape(node(), &text, &base, TextShapeConstraints::default());
         let tracked = NanaTextShaper::default().shape(
             node(),
             &text,
-            &ComputedStyle {
-                letter_spacing: 0.5,
-                ..base
+            &{
+                let mut s = base.clone();
+                s.letter_spacing = 0.5;
+                s
             },
             TextShapeConstraints::default(),
         );
@@ -997,13 +993,13 @@ mod tests {
     fn vertical_text_measures_as_a_column() {
         let _font_test = FONT_TESTS.lock().unwrap_or_else(|e| e.into_inner());
         let mut shaper = NanaTextShaper::default();
-        let horizontal = ComputedStyle {
-            font_size: 16.0,
-            ..ComputedStyle::default()
-        };
-        let vertical = ComputedStyle {
-            writing_mode: nana_ui_core::WritingModeSpec::VerticalRl,
-            ..horizontal.clone()
+        let horizontal = ComputedStyle::with(|s| {
+            s.font_size = 16.0;
+        });
+        let vertical = {
+            let mut s = horizontal.clone();
+            s.writing_mode = nana_ui_core::WritingModeSpec::VerticalRl;
+            s
         };
         let constraints = TextShapeConstraints {
             shaping: TextShaping::Advanced,
@@ -1108,15 +1104,15 @@ mod tests {
             used.iter().any(|name| name == "NanaTestVF"),
             "shaper must hit NanaTestVF, used={used:?}"
         );
-        let base = ComputedStyle {
-            font_family: Some("NanaTestVF".into()),
-            font_size: 20.0,
-            font_weight: Some(400),
-            ..ComputedStyle::default()
-        };
-        let with = |axis: [u8; 4], value: f32| ComputedStyle {
-            font_variations: vec![FontVariationSetting::new(axis, value)],
-            ..base.clone()
+        let base = ComputedStyle::with(|s| {
+            s.font_family = Some("NanaTestVF".into());
+            s.font_size = 20.0;
+            s.font_weight = Some(400);
+        });
+        let with = |axis: [u8; 4], value: f32| {
+            let mut s = base.clone();
+            s.font_variations = vec![FontVariationSetting::new(axis, value)];
+            s
         };
         let narrow = first_glyph_advance(&with(*b"wdth", 50.0));
         let wide = first_glyph_advance(&with(*b"wdth", 200.0));
@@ -1143,9 +1139,9 @@ mod tests {
         queue.set_text(id, TextContent { value: "A".into() });
         let mut style = nana_ui_runtime::NodeStyle::default();
         let layout = std::sync::Arc::make_mut(&mut style.layout);
-        layout.font_family = Some("NanaTestVF".into());
+        layout.text_ext.font_family = Some("NanaTestVF".into());
         layout.font_size = Some(20.0);
-        layout.font_variation_settings = Some(vec![
+        layout.text_ext.font_variation_settings = Some(vec![
             FontVariationSetting::new(*b"BEVL", 100.0),
             FontVariationSetting::new(*b"XXXX", 5.0),
         ]);
@@ -1192,9 +1188,9 @@ mod tests {
         queue.set_text(id, TextContent { value: "AA".into() });
         let mut style = nana_ui_runtime::NodeStyle::default();
         let layout = std::sync::Arc::make_mut(&mut style.layout);
-        layout.font_family = Some("NanaTestVF".into());
+        layout.text_ext.font_family = Some("NanaTestVF".into());
         layout.font_size = Some(20.0);
-        layout.font_variation_settings = Some(vec![
+        layout.text_ext.font_variation_settings = Some(vec![
             FontVariationSetting::new(*b"wdth", 50.0),
             FontVariationSetting::new(*b"BEVL", 0.0),
         ]);
@@ -1270,9 +1266,10 @@ mod tests {
         queue.set_text(id, TextContent { value: "A".into() });
         let mut style = nana_ui_runtime::NodeStyle::default();
         let layout = std::sync::Arc::make_mut(&mut style.layout);
-        layout.font_family = Some("NanaTestVF".into());
+        layout.text_ext.font_family = Some("NanaTestVF".into());
         layout.font_size = Some(20.0);
-        layout.font_variation_settings = Some(vec![FontVariationSetting::new(*b"XXXX", 0.0)]);
+        layout.text_ext.font_variation_settings =
+            Some(vec![FontVariationSetting::new(*b"XXXX", 0.0)]);
         queue.set_style(id, style);
         world.commit(queue).unwrap();
         let mut shaper = NanaTextShaper::default();
@@ -1327,12 +1324,11 @@ mod tests {
     fn nowrap_ellipsis_keeps_exact_fit_and_truncates_narrow_labels() {
         let _font_test = FONT_TESTS.lock().unwrap_or_else(|e| e.into_inner());
         let mut shaper = NanaTextShaper::default();
-        let style = ComputedStyle {
-            font_size: 12.0,
-            font_weight: Some(600),
-            font_family: Some("Noto Sans SC".into()),
-            ..ComputedStyle::default()
-        };
+        let style = ComputedStyle::with(|s| {
+            s.font_size = 12.0;
+            s.font_weight = Some(600);
+            s.font_family = Some("Noto Sans SC".into());
+        });
         let constraints = TextShapeConstraints {
             wrap: false,
             shaping: TextShaping::Advanced,

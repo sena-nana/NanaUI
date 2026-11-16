@@ -80,24 +80,19 @@ impl UiWorld {
         &mut self,
         id: StableNodeId,
         previous: Option<crate::components::ScrollbarTargets>,
-        next: &StandardVisual,
+        next: &crate::ScrollbarVisual,
     ) {
         use crate::component_animation_kinds::{
             SCROLLBAR_EXPAND_X, SCROLLBAR_EXPAND_Y, SCROLLBAR_FADE,
         };
         use nana_ui_core::ScrollbarVisibility;
-        let StandardVisual::Scrollbar {
+        let crate::ScrollbarVisual {
             visibility,
             presence,
             expand,
             ..
-        } = next
-        else {
-            return;
-        };
-        let Some(targets) = crate::components::ScrollbarTargets::of(next) else {
-            return;
-        };
+        } = next;
+        let targets = next.targets();
         let motion = self.theme.recipes().scrollbar().motion;
         let fades = matches!(visibility, ScrollbarVisibility::AutoHide) && !self.reduced_motion;
         let grows = !matches!(visibility, ScrollbarVisibility::Hidden) && !self.reduced_motion;
@@ -167,15 +162,13 @@ impl UiWorld {
     /// The motion a modal frame comes and goes with: a dialog's from its
     /// theme recipe, a drawer's the fade overlays have always had.
     fn modal_motion(&self, id: StableNodeId) -> Option<(nana_ui_core::DialogMotion, bool)> {
-        match self.nodes.visual(id) {
-            Some(StandardVisual::ModalFrame {
+        match self.widget_visual_as::<crate::ModalFrameVisual>(id) {
+            Some(crate::ModalFrameVisual {
                 kind: crate::ModalSurfaceKind::Drawer(_),
                 ..
             }) => Some((nana_ui_core::DialogMotion::DEFAULT, false)),
-            Some(StandardVisual::ModalFrame { .. }) => {
-                Some((self.theme.recipes().dialog().motion, true))
-            }
-            _ => None,
+            Some(_) => Some((self.theme.recipes().dialog().motion, true)),
+            None => None,
         }
     }
 
@@ -517,7 +510,7 @@ impl UiWorld {
             return Vec::new();
         }
         let record = self.record(id);
-        if let Some(axes) = &record.style.layout.font_variation_settings {
+        if let Some(axes) = &record.style.layout.text_ext.font_variation_settings {
             return axes.clone();
         }
         record
@@ -601,6 +594,7 @@ impl UiWorld {
                         self.record(*child)
                             .style
                             .layout
+                            .text_ext
                             .font_variation_settings
                             .is_none()
                     }),
@@ -760,20 +754,15 @@ impl UiWorld {
     }
 
     pub(super) fn advance_loading_phase(&mut self, sample: &crate::AnimationSample) {
-        let Some(mut visual) = self.standard_visual(sample.target) else {
-            return;
-        };
-        match &mut visual {
-            StandardVisual::Button { loading_phase, .. }
-            | StandardVisual::Switch { loading_phase, .. }
-            | StandardVisual::Card { loading_phase, .. } => {
-                *loading_phase = sample.progress;
-            }
-            _ => return,
+        if let Some(next) = self
+            .nodes
+            .widget_visual(sample.target)
+            .and_then(|visual| visual.advance_loading_phase(sample.progress))
+        {
+            self.nodes.set_widget_visual(sample.target, Some(next));
+            self.mark(sample.target, DirtyMask::RENDER);
+            self.account_animation_dirty(DirtyMask::RENDER);
         }
-        self.nodes.set_visual(sample.target, Some(visual));
-        self.mark(sample.target, DirtyMask::RENDER);
-        self.account_animation_dirty(DirtyMask::RENDER);
     }
 }
 
@@ -868,10 +857,11 @@ mod tests {
         cx.update_component(menu, |menu, _| menu.popover.open = false)
             .unwrap();
         assert_eq!(alpha(&cx, menu.stable_id()), opening);
-        assert!(matches!(
-            cx.world().standard_visual(menu.stable_id()),
-            Some(StandardVisual::MenuSurface { open: true, .. })
-        ));
+        assert!(
+            cx.world()
+                .widget_visual_as::<crate::MenuSurfaceVisual>(menu.stable_id())
+                .is_some_and(|v| v.open)
+        );
         tick(&mut cx, 120);
         let closing = alpha(&cx, menu.stable_id());
         assert!(closing < opening);
@@ -879,17 +869,22 @@ mod tests {
             .unwrap();
         assert_eq!(alpha(&cx, menu.stable_id()), closing);
         tick(&mut cx, 260);
-        assert!(matches!(
-            cx.world().standard_visual(menu.stable_id()),
-            Some(StandardVisual::MenuSurface { open: true, .. })
-        ));
+        assert!(
+            cx.world()
+                .widget_visual_as::<crate::MenuSurfaceVisual>(menu.stable_id())
+                .is_some_and(|v| v.open)
+        );
         tick(&mut cx, 300);
         assert_eq!(alpha(&cx, menu.stable_id()), 1.0);
         assert_eq!(cx.next_animation_deadline(), None);
         cx.update_component(menu, |menu, _| menu.popover.open = false)
             .unwrap();
         tick(&mut cx, 480);
-        assert_eq!(cx.world().standard_visual(menu.stable_id()), None);
+        assert_eq!(
+            cx.world()
+                .widget_visual_as::<crate::MenuSurfaceVisual>(menu.stable_id()),
+            None
+        );
         assert_eq!(cx.next_animation_deadline(), None);
     }
 
@@ -994,10 +989,10 @@ mod tests {
     }
 
     fn thumb(cx: &AppContext, switch: Entity<Switch>) -> f32 {
-        match cx.world().standard_visual(switch.stable_id()).unwrap() {
-            StandardVisual::Switch { thumb_progress, .. } => thumb_progress,
-            _ => unreachable!(),
-        }
+        cx.world()
+            .widget_visual_as::<crate::SwitchVisual>(switch.stable_id())
+            .unwrap()
+            .thumb_progress
     }
 
     #[test]
@@ -1437,7 +1432,9 @@ mod tests {
             },
         );
         let mut style = NodeStyle::default();
-        Arc::make_mut(&mut style.layout).font_variation_settings = Some(vec![
+        Arc::make_mut(&mut style.layout)
+            .text_ext
+            .font_variation_settings = Some(vec![
             nana_ui_core::FontVariationSetting::new(BEVL, 0.0),
             nana_ui_core::FontVariationSetting::new(WDTH, 100.0),
         ]);
@@ -1458,7 +1455,7 @@ mod tests {
     fn authored_axis(world: &UiWorld, id: StableNodeId, tag: [u8; 4]) -> Option<f32> {
         world
             .node_style(id)
-            .and_then(|style| style.layout.font_variation_settings.as_deref())
+            .and_then(|style| style.layout.text_ext.font_variation_settings.as_deref())
             .and_then(|axes| nana_ui_core::FontVariationSetting::axis_value(axes, tag))
     }
 
@@ -1545,6 +1542,7 @@ mod tests {
                 .node_style(text)
                 .unwrap()
                 .layout
+                .text_ext
                 .font_variation_settings,
             None,
             "the child still inherits"
@@ -1562,7 +1560,9 @@ mod tests {
 
         let mut write = MutationQueue::new();
         let mut style = world.node_style(paragraph).unwrap().clone();
-        Arc::make_mut(&mut style.layout).font_variation_settings = Some(vec![
+        Arc::make_mut(&mut style.layout)
+            .text_ext
+            .font_variation_settings = Some(vec![
             nana_ui_core::FontVariationSetting::new(BEVL, 30.0),
             nana_ui_core::FontVariationSetting::new(WDTH, 100.0),
         ]);

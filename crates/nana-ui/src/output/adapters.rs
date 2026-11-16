@@ -227,7 +227,7 @@ impl<T: OverlayTransport> OverlayHostAdapter<T> {
         self.trace
     }
 
-    fn trace_work(&mut self, work: nana_ui_core::OutputWorkObservation, emit_metrics: bool) {
+    fn trace_work(&mut self, work: super::trace::OutputWorkObservation, emit_metrics: bool) {
         if emit_metrics {
             super::trace::consumer_metrics(work, None);
         }
@@ -331,7 +331,7 @@ impl<T: OverlayTransport> OverlayHostAdapter<T> {
             || self.slots.iter().any(|slot| matches!(&slot.usage, SlotUse::Reserved(active) if active.upgrade().is_some_and(|active| !active.discarded.load(Ordering::Acquire) && active.revision.matches(&revision))))
         {
             self.last_state = OverlayAdapterState::Reused;
-            self.trace_work(nana_ui_core::OutputWorkObservation { idle_reuse_frames: 1, ..Default::default() }, true);
+            self.trace_work(super::trace::OutputWorkObservation { idle_reuse_frames: 1, ..Default::default() }, true);
             return Ok(None);
         }
         let Some(index) = self
@@ -344,7 +344,7 @@ impl<T: OverlayTransport> OverlayHostAdapter<T> {
                 trace.deferral_reason = super::trace::OutputTraceDeferral::ConsumerSlots;
             }
             self.trace_work(
-                nana_ui_core::OutputWorkObservation {
+                super::trace::OutputWorkObservation {
                     deferred: 1,
                     ..Default::default()
                 },
@@ -370,7 +370,7 @@ impl<T: OverlayTransport> OverlayHostAdapter<T> {
         // present_to emitted the consumer pass metrics. This local snapshot
         // observes the same operation without emitting it a second time.
         self.trace_work(
-            nana_ui_core::OutputWorkObservation {
+            super::trace::OutputWorkObservation {
                 extra_passes: 1,
                 gpu_convert_passes: 1,
                 ..Default::default()
@@ -426,7 +426,7 @@ impl<T: OverlayTransport> OverlayHostAdapter<T> {
         }
         self.last_state = OverlayAdapterState::Pending;
         self.trace_work(
-            nana_ui_core::OutputWorkObservation {
+            super::trace::OutputWorkObservation {
                 submissions: 1,
                 ..Default::default()
             },

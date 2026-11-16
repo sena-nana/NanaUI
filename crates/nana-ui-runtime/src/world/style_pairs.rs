@@ -44,6 +44,7 @@ pub(super) struct LayoutPairFacts {
 impl LayoutPairFacts {
     pub(super) fn compute(previous: &Arc<LayoutStyle>, next: &Arc<LayoutStyle>) -> Self {
         let (p, n) = (previous.as_ref(), next.as_ref());
+        let text_ext_diff = !p.text_ext.ptr_eq(&n.text_ext);
         Self {
             changed: if Arc::ptr_eq(previous, next) {
                 LayoutStyleChange::NONE
@@ -56,28 +57,34 @@ impl LayoutPairFacts {
             inherited_text: p.font_size != n.font_size
                 || p.font_weight != n.font_weight
                 || p.font_italic != n.font_italic
-                || p.font_family != n.font_family
                 || p.line_height != n.line_height
-                || p.letter_spacing != n.letter_spacing
-                || p.font_features != n.font_features
-                || p.font_variation_settings != n.font_variation_settings
-                || p.font_kerning != n.font_kerning
-                || p.word_break != n.word_break
-                || p.line_break != n.line_break
-                || p.text_typography != n.text_typography
-                || p.text_emphasis_style != n.text_emphasis_style
-                || p.text_emphasis_position != n.text_emphasis_position
                 // Writing mode and direction inherit into layout, not just
                 // text: a descendant container lays out along them too, and
                 // the INPUT bit re-projects the accessibility nodes that
                 // report which way their text reads.
                 || p.dir != n.dir
                 || p.writing_mode != n.writing_mode
-                || p.text_orientation != n.text_orientation,
+                || (text_ext_diff && {
+                    let (pt, nt) = (&*p.text_ext, &*n.text_ext);
+                    pt.font_family != nt.font_family
+                        || pt.letter_spacing != nt.letter_spacing
+                        || pt.font_features != nt.font_features
+                        || pt.font_variation_settings != nt.font_variation_settings
+                        || pt.font_kerning != nt.font_kerning
+                        || pt.word_break != nt.word_break
+                        || pt.line_break != nt.line_break
+                        || pt.text_typography != nt.text_typography
+                        || pt.text_emphasis_style != nt.text_emphasis_style
+                        || pt.text_emphasis_position != nt.text_emphasis_position
+                        || pt.text_orientation != nt.text_orientation
+                }),
             inherited_paint: p.color != n.color
-                || p.text_emphasis_color != n.text_emphasis_color
-                || p.selection_background != n.selection_background
-                || p.selection_color != n.selection_color
+                || (text_ext_diff && {
+                    let (pt, nt) = (&*p.text_ext, &*n.text_ext);
+                    pt.text_emphasis_color != nt.text_emphasis_color
+                        || pt.selection_background != nt.selection_background
+                        || pt.selection_color != nt.selection_color
+                })
                 || p.paint_colors.color != n.paint_colors.color
                 || p.paint_colors.selection_background != n.paint_colors.selection_background
                 || p.paint_colors.selection_color != n.paint_colors.selection_color,

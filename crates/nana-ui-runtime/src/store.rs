@@ -11,8 +11,8 @@ use crate::component_registry::ComponentTypeId;
 use crate::components::{
     AccessibilityState, CustomRenderNode, EmptyStateTextPresentation, EventListeners, ImeView,
     InteractionState, LayoutBox, ModalTextPresentation, MountState, NodeStyle, OverlayHostState,
-    ScrollMetrics, ScrollOffset, StandardVisual, TextCodeFold, TextContent, TextInputPresentation,
-    TextInputView, TextMetrics, TextSnippetSession,
+    ScrollMetrics, ScrollOffset, TextCodeFold, TextContent, TextInputPresentation, TextInputView,
+    TextMetrics, TextSnippetSession,
 };
 use crate::presentation::{HighlightRequest, TextPresentation};
 use crate::schedule::DirtyMask;
@@ -28,6 +28,8 @@ static INTERNED_KIND_DIV: LazyLock<Arc<NodeKind>> =
     LazyLock::new(|| Arc::new(NodeKind::Element { tag: "div".into() }));
 static INTERNED_DEFAULT_STYLE: LazyLock<Arc<ComputedStyle>> =
     LazyLock::new(|| Arc::new(ComputedStyle::default()));
+pub(crate) static EMPTY_LIST_ITEM_VISUAL: LazyLock<crate::WidgetVisualHandle> =
+    LazyLock::new(|| crate::WidgetVisualHandle::new(crate::ListItemVisual::default()));
 
 /// How many element tags a store shares kinds for ([`NodeStore::intern_kind`]).
 const KINDS: usize = 256;
@@ -61,11 +63,6 @@ pub(crate) struct Hierarchy {
     /// edit that shifts a block of the children moves this instead of
     /// writing each of them a new number.
     pub children_base: u32,
-    /// Levels from the root down to this node, counting it: 1 for a root.
-    /// Moving a subtree renumbers it (`UiWorld::set_subtree_depth`), so
-    /// checking an insert against `MAX_TREE_DEPTH` reads its parent's depth
-    /// instead of walking to the root.
-    pub depth: u16,
 }
 
 impl Default for Hierarchy {
@@ -75,17 +72,26 @@ impl Default for Hierarchy {
             children: Arc::clone(&EMPTY_CHILDREN),
             index_in_parent: 0,
             children_base: 0,
-            depth: 1,
         }
     }
 }
 
+/// `(own, palette_epoch, inherited_unpainted)`: `.0` holds the node's own
+/// resolved style (with any local background/border/ring paint); `.2` strips
+/// non-inherited local box paint so descendants inside painted containers can
+/// share it directly via `Arc::clone`.
 #[derive(Clone)]
-pub(crate) struct ResolvedStyle(pub Arc<ComputedStyle>, pub u64);
+pub(crate) struct ResolvedStyle(pub Arc<ComputedStyle>, pub u32, pub Arc<ComputedStyle>);
+
+const _: () = assert!(std::mem::size_of::<Hierarchy>() == 24);
 
 impl ResolvedStyle {
     fn interned_default() -> Self {
-        Self(Arc::clone(&INTERNED_DEFAULT_STYLE), 0)
+        Self(
+            Arc::clone(&INTERNED_DEFAULT_STYLE),
+            0,
+            Arc::clone(&INTERNED_DEFAULT_STYLE),
+        )
     }
 }
 
@@ -95,7 +101,41 @@ pub(crate) fn interned_default_style() -> Arc<ComputedStyle> {
     Arc::clone(&INTERNED_DEFAULT_STYLE)
 }
 
-#[repr(align(64))]
+/// Compact inline state of a container's far-start axes (`Option<[bool; 2]>`).
+#[derive(Clone, Copy, Default, PartialEq, Eq)]
+#[repr(u8)]
+pub(crate) enum LayoutFarStart {
+    #[default]
+    Unset = 0,
+    FalseFalse = 1,
+    TrueFalse = 2,
+    FalseTrue = 3,
+    TrueTrue = 4,
+}
+
+impl LayoutFarStart {
+    #[inline]
+    fn from_pair(far: [bool; 2]) -> Self {
+        match far {
+            [false, false] => Self::FalseFalse,
+            [true, false] => Self::TrueFalse,
+            [false, true] => Self::FalseTrue,
+            [true, true] => Self::TrueTrue,
+        }
+    }
+
+    #[inline]
+    fn to_option(self) -> Option<[bool; 2]> {
+        match self {
+            Self::Unset => None,
+            Self::FalseFalse => Some([false, false]),
+            Self::TrueFalse => Some([true, false]),
+            Self::FalseTrue => Some([false, true]),
+            Self::TrueTrue => Some([true, true]),
+        }
+    }
+}
+
 pub(crate) struct NodeRecord {
     pub document: DocumentId,
     pub kind: Arc<NodeKind>,
@@ -132,57 +172,163 @@ pub(crate) struct NodeRecord {
     /// lookup or an `Arc` deref.
     pub inherited_writing: nana_ui_core::WritingContext,
     pub inherited_orientation: nana_ui_core::TextOrientationSpec,
-    pub text: TextContent,
-    pub text_metrics: TextMetrics,
+    /// Whether [`NodeStore::text_content`] holds non-empty text for this node.
+    pub has_text: bool,
+    /// 1-based index into `BUILTIN_COMPONENT_IDS`, or `0` for none/extension.
+    pub builtin_component: u8,
+    /// 1-based index into `NodeStore::empty_text_backends` for empty non-`Text` nodes.
+    pub empty_text_backend: u8,
+    /// `0` = unset, `1` = `PaddingSpec::default()`, `2..=254` = distinct table slot, `255` = sparse map.
+    pub layout_padding_slot: u8,
+    /// Inline accessibility preset:
+    /// `0` = default, `1` = plain `Text`, `2` = decorative `Text`, `3` = sparse map,
+    /// `4` = plain `Button` (label = node text),
+    /// `5` = plain unselected `ListItem` (label = node text),
+    /// `6` = plain selected `ListItem` (label = node text).
+    pub a11y_preset: u8,
+    /// Non-zero when a `Stack` component view was elided from `AppContext::views`.
+    pub elided_stack_flags: u8,
+    /// Inline widget visual preset (`0` = none/map, `1` = shared default [`ListItemVisual`]).
+    pub visual_preset: u8,
+    pub layout_far_start: LayoutFarStart,
+    /// Inline formatting-context change counter (`255` spills to `layout_context_generations`).
+    pub layout_context_gen: u8,
+    /// Positional auto-view slot (`#v{slot}`) when declared under its world parent; `u16::MAX` = none.
+    pub auto_view_slot: u16,
+    /// Levels from the root down to this node, counting it: 1 for a root.
+    /// Moving a subtree renumbers it (`UiWorld::set_subtree_depth`), so
+    /// checking an insert against `MAX_TREE_DEPTH` reads its parent's depth
+    /// instead of walking to the root.
+    pub depth: u16,
     /// The box layout last wrote, measured from [`Self::layout_frame`]'s
     /// origin. Its document box is derived ([`crate::UiWorld::layout_box`]):
     /// a subtree that moves keeps every box under its root.
     pub local_layout: LayoutBox,
-    pub layout_frame: crate::LayoutFrame,
+    layout_frame: PackedLayoutFrame,
     /// How this node stands to the coordinate spaces around it, from
     /// [`Self::resolved_layout`], [`Self::layout_frame`], its kind and its
     /// visual ([`crate::node_space::NodeSpace::of`]). Kept up to date by
     /// [`NodeStore::note_node_space`] wherever one of those is written.
     pub space: crate::node_space::NodeSpace,
-    pub layout_padding: Option<nana_ui_core::PaddingSpec>,
-    /// Page axes the last layout placed the children from the far end.
-    pub layout_far_start: Option<[bool; 2]>,
     /// The formatting context the last layout ran for the children.
     pub layout_context: Option<crate::FormattingContextKind>,
-    /// Bumped each time [`Self::layout_context`] changes.
-    pub layout_context_generation: u64,
-    pub scroll_offset: ScrollOffset,
     pub interaction: InteractionState,
-    /// Shared: most nodes keep the default, one allocation for all of them
-    /// ([`shared_accessibility`]), which keeps the record in a smaller
-    /// allocation size class.
-    pub accessibility: Arc<AccessibilityState>,
     pub dirty: DirtyMask,
     /// Why the node is marked for render extraction, in the world's
     /// extraction epochs: the last epoch anything but a move marked it
     /// (or it was made), and the last one a layout move marked it. Only a
     /// node a move marked and nothing else did since the epoch began may
     /// reuse its last extracted record.
-    pub render_full_epoch: u64,
-    pub render_moved_epoch: u64,
-    /// The last epoch a move above an open select field marked it only to
-    /// ask whether its menu's surface still lands where its record has it
-    /// (`UiWorld::local_select_menu_surface`): if so, and nothing else
-    /// marked it since the epoch began, its record is kept.
-    pub render_room_epoch: u64,
+    pub render_full_epoch: u32,
+    pub render_moved_epoch: u32,
 }
+
+/// Compact 8-byte encoding of [`crate::LayoutFrame`].
+///
+/// `0` encodes [`crate::LayoutFrame::Parent`], `u64::MAX` encodes
+/// [`crate::LayoutFrame::Page`], and any non-zero `n` encodes
+/// [`crate::LayoutFrame::Block`] for `StableNodeId(n)`.
+#[derive(Clone, Copy, PartialEq, Eq, Default)]
+struct PackedLayoutFrame(u64);
+
+impl PackedLayoutFrame {
+    #[inline]
+    const fn from_frame(frame: crate::LayoutFrame) -> Self {
+        match frame {
+            crate::LayoutFrame::Parent => Self(0),
+            crate::LayoutFrame::Page => Self(u64::MAX),
+            crate::LayoutFrame::Block(id) => {
+                debug_assert!(id.get() != u64::MAX);
+                Self(id.get())
+            }
+        }
+    }
+
+    #[inline]
+    const fn get(self) -> crate::LayoutFrame {
+        match self.0 {
+            0 => crate::LayoutFrame::Parent,
+            u64::MAX => crate::LayoutFrame::Page,
+            n => match StableNodeId::new(n) {
+                Some(id) => crate::LayoutFrame::Block(id),
+                None => crate::LayoutFrame::Parent,
+            },
+        }
+    }
+}
+
+const _: () = assert!(std::mem::size_of::<NodeRecord>() <= 152);
 
 static DEFAULT_ACCESSIBILITY: std::sync::LazyLock<Arc<AccessibilityState>> =
     std::sync::LazyLock::new(|| Arc::new(AccessibilityState::default()));
+static TEXT_ACCESSIBILITY: std::sync::LazyLock<Arc<AccessibilityState>> = LazyLock::new(|| {
+    Arc::new(AccessibilityState {
+        role: crate::AccessibilityRole::Text,
+        hidden: false,
+        ..AccessibilityState::default()
+    })
+});
+static DECORATIVE_TEXT_ACCESSIBILITY: std::sync::LazyLock<Arc<AccessibilityState>> =
+    LazyLock::new(|| {
+        Arc::new(AccessibilityState {
+            role: crate::AccessibilityRole::Text,
+            hidden: true,
+            ..AccessibilityState::default()
+        })
+    });
+static DEFAULT_TEXT_CONTENT: std::sync::LazyLock<TextContent> =
+    std::sync::LazyLock::new(TextContent::default);
 
 /// `state` as a record holds it: the one shared default when it is the
 /// default, its own allocation otherwise.
 pub(crate) fn shared_accessibility(state: &AccessibilityState) -> Arc<AccessibilityState> {
     if *state == **DEFAULT_ACCESSIBILITY {
         Arc::clone(&DEFAULT_ACCESSIBILITY)
+    } else if *state == **TEXT_ACCESSIBILITY {
+        Arc::clone(&TEXT_ACCESSIBILITY)
+    } else if *state == **DECORATIVE_TEXT_ACCESSIBILITY {
+        Arc::clone(&DECORATIVE_TEXT_ACCESSIBILITY)
     } else {
         Arc::new(state.clone())
     }
+}
+
+fn preset_control_accessibility(preset: u8, label: Arc<str>) -> AccessibilityState {
+    match preset {
+        4 => AccessibilityState {
+            role: crate::AccessibilityRole::Button,
+            label: Some(label),
+            ..AccessibilityState::default()
+        },
+        5 => AccessibilityState {
+            role: crate::AccessibilityRole::ListItem,
+            label: Some(label),
+            selected: Some(false),
+            ..AccessibilityState::default()
+        },
+        6 => AccessibilityState {
+            role: crate::AccessibilityRole::ListItem,
+            label: Some(label),
+            selected: Some(true),
+            ..AccessibilityState::default()
+        },
+        _ => AccessibilityState::default(),
+    }
+}
+
+fn matching_control_preset(state: &AccessibilityState, node_text: &str) -> Option<u8> {
+    let label = state.label.as_ref()?;
+    if label.as_ref() != node_text {
+        return None;
+    }
+    let preset = match (state.role, state.selected) {
+        (crate::AccessibilityRole::Button, None) => 4,
+        (crate::AccessibilityRole::ListItem, Some(false)) => 5,
+        (crate::AccessibilityRole::ListItem, Some(true)) => 6,
+        _ => return None,
+    };
+    let candidate = preset_control_accessibility(preset, Arc::clone(label));
+    (*state == candidate).then_some(preset)
 }
 
 impl NodeRecord {
@@ -222,23 +368,36 @@ impl NodeRecord {
             block_reads: crate::world::BlockExtentReads::default(),
             inherited_writing: nana_ui_core::WritingContext::default(),
             inherited_orientation: nana_ui_core::TextOrientationSpec::Mixed,
-            text: TextContent::default(),
-            text_metrics: TextMetrics::default(),
+            has_text: false,
+            builtin_component: 0,
+            empty_text_backend: 0,
+            layout_padding_slot: 0,
+            a11y_preset: 0,
+            elided_stack_flags: 0,
+            visual_preset: 0,
+            layout_far_start: LayoutFarStart::Unset,
+            layout_context_gen: 0,
+            auto_view_slot: u16::MAX,
+            depth: 1,
             local_layout: LayoutBox::default(),
-            layout_frame: crate::LayoutFrame::Parent,
+            layout_frame: PackedLayoutFrame::from_frame(crate::LayoutFrame::Parent),
             space,
-            layout_padding: None,
-            layout_far_start: None,
             layout_context: None,
-            layout_context_generation: 0,
-            scroll_offset: ScrollOffset::default(),
             interaction,
-            accessibility: Arc::clone(&DEFAULT_ACCESSIBILITY),
             dirty: DirtyMask::all(),
             render_full_epoch: 0,
-            render_moved_epoch: u64::MAX,
-            render_room_epoch: u64::MAX,
+            render_moved_epoch: u32::MAX,
         }
+    }
+
+    #[inline]
+    pub(crate) const fn layout_frame(&self) -> crate::LayoutFrame {
+        self.layout_frame.get()
+    }
+
+    #[inline]
+    pub(crate) fn set_layout_frame(&mut self, frame: crate::LayoutFrame) {
+        self.layout_frame = PackedLayoutFrame::from_frame(frame);
     }
 }
 
@@ -532,6 +691,9 @@ impl<V> DenseNodeMap<V> {
             from.clear();
             return;
         }
+        if let Some(highest) = from.iter().map(|(id, _)| id).max() {
+            self.reserve_through(highest, self.len() + from.len());
+        }
         self.extend(from.drain());
     }
 
@@ -550,6 +712,11 @@ impl<V> DenseNodeMap<V> {
             paged: self.paged.iter(),
             overflow: self.overflow.iter(),
         }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn keys(&self) -> impl Iterator<Item = StableNodeId> + '_ {
+        self.iter().map(|(id, _)| id)
     }
 
     #[cfg(test)]
@@ -728,6 +895,12 @@ impl NodeTable {
         };
     }
 
+    fn reserve_through(&mut self, highest: StableNodeId, entries: usize) {
+        if let Some(highest) = paged_index(highest) {
+            self.paged.reserve_through(highest, entries);
+        }
+    }
+
     fn remove(&mut self, id: StableNodeId) -> Option<NodeRecord> {
         match paged_index(id) {
             Some(index) => self.paged.remove(index),
@@ -748,6 +921,13 @@ impl NodeTable {
             .filter_map(|(index, _)| StableNodeId::new(index as u64))
             .chain(self.overflow.keys().copied())
     }
+
+    fn entries(&self) -> impl Iterator<Item = (StableNodeId, &NodeRecord)> + '_ {
+        self.paged
+            .iter()
+            .filter_map(|(index, record)| StableNodeId::new(index as u64).map(|id| (id, record)))
+            .chain(self.overflow.iter().map(|(&id, record)| (id, record)))
+    }
 }
 
 #[derive(Default)]
@@ -757,7 +937,9 @@ pub(crate) struct NodeStore {
     kinds: HashMap<String, Arc<NodeKind>>,
     /// The style every new node starts with, one for all of them.
     default_style: Arc<NodeStyle>,
-    visuals: HashMap<StableNodeId, StandardVisual>,
+    widget_visuals: crate::NodeMap<crate::WidgetVisualHandle>,
+    /// Number of live nodes using an inline widget-visual preset (`visual_preset != 0`).
+    preset_visual_count: usize,
     /// Nodes whose space ([`NodeRecord::space`]) pins accessibility
     /// ([`crate::node_space::NodeSpace::pins_accessibility`]): their
     /// accessible bounds, or those of the boxes under them, may not keep
@@ -833,6 +1015,26 @@ pub(crate) struct NodeStore {
     rich_editor_marks: HashMap<StableNodeId, crate::RichEditorMarks>,
     /// Per-glyph presentation of rich text nodes.
     glyph_presentations: HashMap<StableNodeId, nana_ui_core::GlyphPresentation>,
+    /// Cold optional text content; absent means empty unstamped text.
+    texts: crate::NodeMap<TextContent>,
+    /// Cold shaped text metrics; absent means `TextMetrics::default()`.
+    text_metrics: crate::NodeMap<TextMetrics>,
+    /// Distinct non-zero layout padding specs (`layout_padding_slot` 2..=254).
+    distinct_layout_paddings: Vec<nana_ui_core::PaddingSpec>,
+    /// Overflow layout paddings beyond `distinct_layout_paddings` capacity.
+    layout_paddings: crate::NodeMap<nana_ui_core::PaddingSpec>,
+    /// Bumped each time `layout_context` changes on a container (overflow beyond `u8::MAX - 1`).
+    layout_context_generations: HashMap<StableNodeId, u64>,
+    /// Distinct text backend epochs observed on empty non-`Text` nodes (indexed by `empty_text_backend`).
+    empty_text_backends: Vec<crate::text_node::TextBackendEpoch>,
+    /// Non-zero scroll offsets; absent means `(0.0, 0.0)`.
+    scroll_offsets: HashMap<StableNodeId, ScrollOffset>,
+    /// Non-preset accessibility states (`a11y_preset == 3`).
+    accessibilities: crate::NodeMap<Arc<AccessibilityState>>,
+    /// Number of live nodes using inline decorative-text preset (`a11y_preset == 2`).
+    decorative_a11y_count: usize,
+    /// Epoch a move above an open select field asked if its room stayed valid; absent means `u32::MAX`.
+    render_room_epochs: HashMap<StableNodeId, u32>,
     /// Revisions, resolution stamp and retained layout handle of every node's
     /// text (Issue #95), one entry per node. Kept apart from the dense records
     /// on purpose: a large relayout scope decides "no text work" for every
@@ -915,8 +1117,6 @@ impl NodeStore {
     }
 
     pub fn insert(&mut self, id: StableNodeId, record: NodeRecord) {
-        self.text_nodes
-            .insert(id, crate::text_node::TextNodeState::default());
         self.nodes.insert(id, record);
         self.note_node_space(id);
     }
@@ -926,16 +1126,19 @@ impl NodeStore {
     /// [`Self::page_bound`]). Called wherever a field that decides it is
     /// written: style resolution, the layout frame, the visual, an insert.
     pub(crate) fn note_node_space(&mut self, id: StableNodeId) {
-        let visual = self.visuals.get(&id);
-        let Some(record) = self.nodes.get_mut(id) else {
+        let visual = self.widget_visual(id);
+        let Some(record) = self.nodes.get(id) else {
             return;
         };
         let space = crate::node_space::NodeSpace::of(
             &record.resolved_layout,
-            record.layout_frame,
+            record.layout_frame(),
             &record.kind,
             visual,
         );
+        let Some(record) = self.nodes.get_mut(id) else {
+            return;
+        };
         record.space = space;
         if space.pins_accessibility() {
             self.space_pins.insert(id);
@@ -993,9 +1196,9 @@ impl NodeStore {
             let record = self.nodes.get(id).expect("a key has a record");
             let space = crate::node_space::NodeSpace::of(
                 &record.resolved_layout,
-                record.layout_frame,
+                record.layout_frame(),
                 &record.kind,
-                self.visuals.get(&id),
+                self.widget_visual(id),
             );
             assert_eq!(record.space, space, "{id:?}: its space is stale");
             assert_eq!(
@@ -1022,7 +1225,13 @@ impl NodeStore {
     /// Drop the dense record and every sparse entry. The only despawn path.
     pub fn remove(&mut self, id: StableNodeId) -> Option<NodeRecord> {
         let record = self.nodes.remove(id)?;
-        self.visuals.remove(&id);
+        if record.a11y_preset == 2 {
+            self.decorative_a11y_count -= 1;
+        }
+        if record.visual_preset != 0 {
+            self.preset_visual_count -= 1;
+        }
+        self.widget_visuals.remove(&id);
         self.space_pins.remove(&id);
         self.page_bound.remove(&id);
         self.custom_render.remove(&id);
@@ -1055,18 +1264,17 @@ impl NodeStore {
         self.inline_parents.remove(&id);
         self.rich_editor_marks.remove(&id);
         self.glyph_presentations.remove(&id);
+        self.texts.remove(&id);
+        self.text_metrics.remove(&id);
+        self.layout_paddings.remove(&id);
+        self.layout_context_generations.remove(&id);
+        self.scroll_offsets.remove(&id);
+        self.accessibilities.remove(&id);
+        self.render_room_epochs.remove(&id);
         if let Some(text) = self.text_nodes.remove(&id) {
             self.text_layouts.remove(text.layout);
         }
         Some(record)
-    }
-
-    pub fn visual(&self, id: StableNodeId) -> Option<&StandardVisual> {
-        self.visuals.get(&id)
-    }
-
-    pub(crate) fn has_visuals(&self) -> bool {
-        !self.visuals.is_empty()
     }
 
     pub(crate) fn has_text_inputs(&self) -> bool {
@@ -1077,19 +1285,387 @@ impl NodeStore {
         !self.custom_render.is_empty()
     }
 
-    /// Sets a node's visual. A visual change that moves what plain text
-    /// resolution reads — which path the text takes, or the inset a leading
-    /// indicator takes from its box — is a constraint change for its text;
-    /// any other visual change (a sampled progress value) is not.
-    pub fn set_visual(&mut self, id: StableNodeId, value: Option<StandardVisual>) {
-        let before = crate::world::text_visual_key(self.visuals.get(&id));
-        let after = crate::world::text_visual_key(value.as_ref());
-        if let Some(value) = value {
-            self.visuals.insert(id, value);
-        } else {
-            self.visuals.remove(&id);
+    pub(crate) fn has_widget_visuals(&self) -> bool {
+        self.preset_visual_count > 0 || !self.widget_visuals.is_empty()
+    }
+
+    pub(crate) fn text_content(&self, id: StableNodeId) -> &TextContent {
+        if self.texts.is_empty() {
+            return &DEFAULT_TEXT_CONTENT;
         }
-        if before != after {
+        self.texts.get(&id).unwrap_or(&DEFAULT_TEXT_CONTENT)
+    }
+
+    pub(crate) fn set_text_content(&mut self, id: StableNodeId, text: TextContent) {
+        let materialize = if let Some(record) = self.nodes.get(id)
+            && record.a11y_preset >= 4
+        {
+            let current = self.text_content(id);
+            (current.value.as_str() != text.value.as_str())
+                .then(|| (record.a11y_preset, current.value.to_shared_str()))
+        } else {
+            None
+        };
+        if let Some((preset, old_label)) = materialize {
+            self.accessibilities.insert(
+                id,
+                Arc::new(preset_control_accessibility(preset, old_label)),
+            );
+            if let Some(record) = self.nodes.get_mut(id) {
+                record.a11y_preset = 3;
+            }
+        }
+        let non_empty = !text.value.is_empty();
+        if let Some(record) = self.nodes.get_mut(id) {
+            record.has_text = non_empty;
+            if non_empty {
+                record.empty_text_backend = 0;
+            }
+        }
+        if non_empty || text.value.stamp().is_some() {
+            self.texts.insert(id, text);
+        } else {
+            self.texts.remove(&id);
+        }
+    }
+
+    pub(crate) fn text_metrics(&self, id: StableNodeId) -> TextMetrics {
+        if self.text_metrics.is_empty() {
+            return TextMetrics::default();
+        }
+        self.text_metrics.get(&id).copied().unwrap_or_default()
+    }
+
+    pub(crate) fn set_text_metrics(&mut self, id: StableNodeId, metrics: TextMetrics) {
+        if metrics == TextMetrics::default() {
+            self.text_metrics.remove(&id);
+        } else {
+            self.text_metrics.insert(id, metrics);
+        }
+    }
+
+    pub(crate) fn layout_padding(&self, id: StableNodeId) -> Option<nana_ui_core::PaddingSpec> {
+        let record = self.nodes.get(id)?;
+        match record.layout_padding_slot {
+            0 => None,
+            1 => Some(nana_ui_core::PaddingSpec::default()),
+            slot if slot < u8::MAX => self
+                .distinct_layout_paddings
+                .get(usize::from(slot - 2))
+                .copied(),
+            _ => self.layout_paddings.get(&id).copied(),
+        }
+    }
+
+    pub(crate) fn set_layout_padding(
+        &mut self,
+        id: StableNodeId,
+        padding: nana_ui_core::PaddingSpec,
+    ) {
+        let Some(record) = self.nodes.get_mut(id) else {
+            return;
+        };
+        let previous_slot = record.layout_padding_slot;
+        if padding == nana_ui_core::PaddingSpec::default() {
+            record.layout_padding_slot = 1;
+            if previous_slot == u8::MAX {
+                self.layout_paddings.remove(&id);
+            }
+            return;
+        }
+        if let Some(index) = self
+            .distinct_layout_paddings
+            .iter()
+            .position(|existing| *existing == padding)
+        {
+            record.layout_padding_slot = (index + 2) as u8;
+            if previous_slot == u8::MAX {
+                self.layout_paddings.remove(&id);
+            }
+            return;
+        }
+        if self.distinct_layout_paddings.len() < usize::from(u8::MAX) - 2 {
+            self.distinct_layout_paddings.push(padding);
+            record.layout_padding_slot = (self.distinct_layout_paddings.len() + 1) as u8;
+            if previous_slot == u8::MAX {
+                self.layout_paddings.remove(&id);
+            }
+        } else {
+            record.layout_padding_slot = u8::MAX;
+            self.layout_paddings.insert(id, padding);
+        }
+    }
+
+    pub(crate) fn layout_far_start(&self, id: StableNodeId) -> Option<[bool; 2]> {
+        self.nodes.get(id)?.layout_far_start.to_option()
+    }
+
+    pub(crate) fn set_layout_far_start(&mut self, id: StableNodeId, far: [bool; 2]) {
+        if let Some(record) = self.nodes.get_mut(id) {
+            record.layout_far_start = LayoutFarStart::from_pair(far);
+        }
+    }
+
+    #[inline]
+    pub(crate) fn auto_view_slot(&self, id: StableNodeId) -> Option<u16> {
+        let slot = self.nodes.get(id)?.auto_view_slot;
+        (slot != u16::MAX).then_some(slot)
+    }
+
+    #[inline]
+    pub(crate) fn set_auto_view_slot(&mut self, id: StableNodeId, slot: Option<u16>) {
+        if let Some(record) = self.nodes.get_mut(id) {
+            record.auto_view_slot = slot.unwrap_or(u16::MAX);
+        }
+    }
+
+    pub(crate) fn layout_context_generation(&self, id: StableNodeId) -> u64 {
+        let Some(record) = self.nodes.get(id) else {
+            return 0;
+        };
+        if record.layout_context_gen < u8::MAX {
+            return u64::from(record.layout_context_gen);
+        }
+        if self.layout_context_generations.is_empty() {
+            return u64::from(u8::MAX);
+        }
+        self.layout_context_generations
+            .get(&id)
+            .copied()
+            .unwrap_or(u64::from(u8::MAX))
+    }
+
+    pub(crate) fn bump_layout_context_generation(&mut self, id: StableNodeId) {
+        let Some(record) = self.nodes.get_mut(id) else {
+            return;
+        };
+        if record.layout_context_gen < u8::MAX - 1 {
+            record.layout_context_gen += 1;
+            return;
+        }
+        if record.layout_context_gen == u8::MAX - 1 {
+            record.layout_context_gen = u8::MAX;
+            self.layout_context_generations
+                .insert(id, u64::from(u8::MAX));
+            return;
+        }
+        let entry = self
+            .layout_context_generations
+            .entry(id)
+            .or_insert(u64::from(u8::MAX));
+        *entry = entry.wrapping_add(1);
+    }
+
+    pub(crate) fn has_scroll_offsets(&self) -> bool {
+        !self.scroll_offsets.is_empty()
+    }
+
+    pub(crate) fn scroll_offset(&self, id: StableNodeId) -> ScrollOffset {
+        if self.scroll_offsets.is_empty() {
+            return ScrollOffset::default();
+        }
+        self.scroll_offsets.get(&id).copied().unwrap_or_default()
+    }
+
+    pub(crate) fn set_scroll_offset(&mut self, id: StableNodeId, offset: ScrollOffset) {
+        if offset == ScrollOffset::default() {
+            self.scroll_offsets.remove(&id);
+        } else {
+            self.scroll_offsets.insert(id, offset);
+        }
+    }
+
+    #[inline]
+    pub(crate) fn elided_stack_flags(&self, id: StableNodeId) -> u8 {
+        self.nodes
+            .get(id)
+            .map_or(0, |record| record.elided_stack_flags)
+    }
+
+    #[inline]
+    pub(crate) fn set_elided_stack_flags(&mut self, id: StableNodeId, flags: u8) {
+        if let Some(record) = self.nodes.get_mut(id) {
+            record.elided_stack_flags = flags;
+        }
+    }
+
+    pub(crate) fn reserve_nodes_through(&mut self, highest: StableNodeId, entries: usize) {
+        self.nodes.reserve_through(highest, entries);
+    }
+
+    pub(crate) fn reserve_text_nodes_through(&mut self, highest: StableNodeId, entries: usize) {
+        self.text_nodes.reserve_through(highest, entries);
+    }
+
+    pub(crate) fn text_nodes_len(&self) -> usize {
+        self.text_nodes.len()
+    }
+
+    pub(crate) fn any_hidden_accessibility(&self) -> bool {
+        self.decorative_a11y_count > 0 || self.accessibilities.values().any(|state| state.hidden)
+    }
+
+    pub(crate) fn accessibility(
+        &self,
+        id: StableNodeId,
+    ) -> std::borrow::Cow<'_, AccessibilityState> {
+        use std::borrow::Cow;
+        if let Some(record) = self.nodes.get(id) {
+            return match record.a11y_preset {
+                0 => Cow::Borrowed(DEFAULT_ACCESSIBILITY.as_ref()),
+                1 => Cow::Borrowed(TEXT_ACCESSIBILITY.as_ref()),
+                2 => Cow::Borrowed(DECORATIVE_TEXT_ACCESSIBILITY.as_ref()),
+                preset @ 4..=6 => Cow::Owned(preset_control_accessibility(
+                    preset,
+                    self.text_content(id).value.to_shared_str(),
+                )),
+                _ => Cow::Borrowed(
+                    self.accessibilities
+                        .get(&id)
+                        .unwrap_or(&DEFAULT_ACCESSIBILITY)
+                        .as_ref(),
+                ),
+            };
+        }
+        if self.accessibilities.is_empty() {
+            return Cow::Borrowed(DEFAULT_ACCESSIBILITY.as_ref());
+        }
+        Cow::Borrowed(
+            self.accessibilities
+                .get(&id)
+                .unwrap_or(&DEFAULT_ACCESSIBILITY)
+                .as_ref(),
+        )
+    }
+
+    pub(crate) fn accessibility_eq(&self, id: StableNodeId, expected: &AccessibilityState) -> bool {
+        let Some(record) = self.nodes.get(id) else {
+            return false;
+        };
+        match record.a11y_preset {
+            0 => *expected == **DEFAULT_ACCESSIBILITY,
+            1 => *expected == **TEXT_ACCESSIBILITY,
+            2 => *expected == **DECORATIVE_TEXT_ACCESSIBILITY,
+            preset @ 4..=6 => {
+                matching_control_preset(expected, self.text_content(id).value.as_str())
+                    == Some(preset)
+            }
+            _ => {
+                *expected
+                    == **self
+                        .accessibilities
+                        .get(&id)
+                        .unwrap_or(&DEFAULT_ACCESSIBILITY)
+            }
+        }
+    }
+
+    pub(crate) fn accessible_label_arc(&self, id: StableNodeId) -> Option<Arc<str>> {
+        let record = self.nodes.get(id)?;
+        match record.a11y_preset {
+            0..=2 => None,
+            4..=6 => Some(self.text_content(id).value.to_shared_str()),
+            _ => self
+                .accessibilities
+                .get(&id)
+                .and_then(|state| state.label.as_ref().map(Arc::clone)),
+        }
+    }
+
+    pub(crate) fn set_accessibility(&mut self, id: StableNodeId, state: &AccessibilityState) {
+        let preset = if *state == **DEFAULT_ACCESSIBILITY {
+            0
+        } else if *state == **TEXT_ACCESSIBILITY {
+            1
+        } else if *state == **DECORATIVE_TEXT_ACCESSIBILITY {
+            2
+        } else if self.nodes.get(id).is_some_and(|record| record.has_text)
+            && let Some(control_preset) =
+                matching_control_preset(state, self.text_content(id).value.as_str())
+        {
+            control_preset
+        } else {
+            3
+        };
+        if let Some(record) = self.nodes.get_mut(id) {
+            if record.a11y_preset == 2 && preset != 2 {
+                self.decorative_a11y_count -= 1;
+            } else if record.a11y_preset != 2 && preset == 2 {
+                self.decorative_a11y_count += 1;
+            }
+            record.a11y_preset = preset;
+        }
+        if preset == 3 {
+            self.accessibilities.insert(id, shared_accessibility(state));
+        } else {
+            self.accessibilities.remove(&id);
+        }
+    }
+
+    pub(crate) fn render_room_epoch(&self, id: StableNodeId) -> u32 {
+        if self.render_room_epochs.is_empty() {
+            return u32::MAX;
+        }
+        self.render_room_epochs
+            .get(&id)
+            .copied()
+            .unwrap_or(u32::MAX)
+    }
+
+    pub(crate) fn set_render_room_epoch(&mut self, id: StableNodeId, epoch: u32) {
+        if epoch == u32::MAX {
+            self.render_room_epochs.remove(&id);
+        } else {
+            self.render_room_epochs.insert(id, epoch);
+        }
+    }
+
+    pub fn widget_visual(&self, id: StableNodeId) -> Option<&crate::WidgetVisualHandle> {
+        if self
+            .nodes
+            .get(id)
+            .is_some_and(|record| record.visual_preset == 1)
+        {
+            return Some(&EMPTY_LIST_ITEM_VISUAL);
+        }
+        self.widget_visuals.get(&id)
+    }
+
+    pub fn set_widget_visual(
+        &mut self,
+        id: StableNodeId,
+        value: Option<crate::WidgetVisualHandle>,
+    ) {
+        let text_key_changed = self.widget_visual(id).and_then(|v| v.text_visual_key())
+            != value.as_ref().and_then(|v| v.text_visual_key());
+        let is_empty_list_item_preset = value
+            .as_ref()
+            .is_some_and(|handle| handle.ptr_eq(&EMPTY_LIST_ITEM_VISUAL));
+        let Some(record) = self.nodes.get_mut(id) else {
+            return;
+        };
+        let prev_preset = record.visual_preset;
+        if is_empty_list_item_preset {
+            record.visual_preset = 1;
+            if prev_preset == 0 {
+                self.preset_visual_count += 1;
+            }
+            self.widget_visuals.remove(&id);
+        } else {
+            if prev_preset != 0 {
+                record.visual_preset = 0;
+                self.preset_visual_count -= 1;
+            }
+            match value {
+                Some(value) => {
+                    self.widget_visuals.insert(id, value);
+                }
+                None => {
+                    self.widget_visuals.remove(&id);
+                }
+            }
+        }
+        if text_key_changed {
             self.invalidate_text(id, crate::text_node::TextDirty::CONSTRAINT);
         }
         self.note_node_space(id);
@@ -1106,12 +1682,38 @@ impl NodeStore {
         event_listeners,
         set_event_listeners
     );
-    sparse!(
-        component_types,
-        ComponentTypeId,
-        component_type,
-        set_component_type
-    );
+    pub fn component_type(&self, id: StableNodeId) -> Option<&ComponentTypeId> {
+        let record = self.nodes.get(id)?;
+        if record.builtin_component != 0 {
+            return crate::component_descriptors::builtin_component_type(record.builtin_component);
+        }
+        self.component_types.get(&id)
+    }
+
+    pub fn set_component_type(&mut self, id: StableNodeId, value: Option<ComponentTypeId>) {
+        match value {
+            Some(value) => {
+                if let Some(index) =
+                    crate::component_descriptors::builtin_component_index(value.as_str())
+                    && let Some(record) = self.nodes.get_mut(id)
+                {
+                    record.builtin_component = index;
+                    self.component_types.remove(&id);
+                    return;
+                }
+                if let Some(record) = self.nodes.get_mut(id) {
+                    record.builtin_component = 0;
+                }
+                self.component_types.insert(id, value);
+            }
+            None => {
+                if let Some(record) = self.nodes.get_mut(id) {
+                    record.builtin_component = 0;
+                }
+                self.component_types.remove(&id);
+            }
+        }
+    }
     sparse!(
         overlay_hosts,
         OverlayHostState,
@@ -1282,27 +1884,63 @@ impl NodeStore {
         }
     }
 
+    fn intern_empty_text_backend(&mut self, backend: crate::text_node::TextBackendEpoch) -> u8 {
+        if let Some(index) = self
+            .empty_text_backends
+            .iter()
+            .position(|existing| *existing == backend)
+        {
+            return (index + 1) as u8;
+        }
+        if self.empty_text_backends.len() < u8::MAX as usize {
+            self.empty_text_backends.push(backend);
+            return self.empty_text_backends.len() as u8;
+        }
+        0
+    }
+
+    pub(crate) fn is_empty_text_current(
+        &self,
+        id: StableNodeId,
+        backend: crate::text_node::TextBackendEpoch,
+    ) -> bool {
+        let Some(record) = self.nodes.get(id) else {
+            return false;
+        };
+        if record.has_text
+            || matches!(record.kind.as_ref(), crate::world::NodeKind::Text)
+            || record.empty_text_backend == 0
+        {
+            return false;
+        }
+        self.empty_text_backends
+            .get(usize::from(record.empty_text_backend) - 1)
+            .copied()
+            == Some(backend)
+    }
+
     /// Records a change to `id`'s text. See [`crate::text_node::TextDirty`].
     pub(crate) fn invalidate_text(&mut self, id: StableNodeId, dirty: crate::text_node::TextDirty) {
+        if dirty.is_empty() {
+            return;
+        }
         if let Some(text) = self.text_nodes.get_mut(&id) {
             text.invalidate(dirty);
+            return;
         }
-    }
-
-    /// Notes that a typography scale change reached `id`'s text; see
-    /// [`crate::text_node::TextNodeState::note_scale`].
-    pub(crate) fn note_text_scale(&mut self, id: StableNodeId) -> bool {
-        self.text_nodes
-            .get_mut(&id)
-            .is_some_and(crate::text_node::TextNodeState::note_scale)
-    }
-
-    /// Whether a typography scale change reached `id`'s text since it last
-    /// resolved, clearing it.
-    pub(crate) fn take_text_scale_pending(&mut self, id: StableNodeId) -> bool {
-        self.text_nodes
-            .get_mut(&id)
-            .is_some_and(crate::text_node::TextNodeState::take_scale_pending)
+        let Some(record) = self.nodes.get_mut(id) else {
+            return;
+        };
+        let work = dirty.work();
+        if dirty.intersects(crate::text_node::TextDirty::CONTENT)
+            || work.intersects(crate::text_node::TextWork::SHAPE)
+            || work.intersects(crate::text_node::TextWork::LAYOUT)
+        {
+            record.empty_text_backend = 0;
+        }
+        if record.has_text || matches!(record.kind.as_ref(), crate::world::NodeKind::Text) {
+            self.text_nodes.entry(id).or_default().invalidate(dirty);
+        }
     }
 
     /// Stamps `id`'s text as resolved at its current revisions. Returns
@@ -1317,14 +1955,24 @@ impl NodeStore {
         let Some(record) = self.nodes.get(id) else {
             return false;
         };
-        let text_node = !record.text.value.is_empty()
-            || matches!(record.kind.as_ref(), crate::world::NodeKind::Text);
+        let text_node =
+            record.has_text || matches!(record.kind.as_ref(), crate::world::NodeKind::Text);
+        if !text_node && !self.text_nodes.contains_key(&id) {
+            let backend_index = self.intern_empty_text_backend(backend);
+            if let Some(record) = self.nodes.get_mut(id) {
+                record.empty_text_backend = backend_index;
+            }
+            return false;
+        }
         let constraints =
             constraints.map(|constraints| (constraints, record.style.text_horizontal_alignment));
         let language = record.resolved.0.language.clone();
-        self.text_nodes.get_mut(&id).is_some_and(|text| {
-            text.mark_resolved(backend, constraints, text_node, language.as_ref())
-        })
+        self.text_nodes.entry(id).or_default().mark_resolved(
+            backend,
+            constraints,
+            text_node,
+            language.as_ref(),
+        )
     }
 
     /// The `nana-text` source for `id`'s current text, built once per content
@@ -1334,10 +1982,13 @@ impl NodeStore {
         id: StableNodeId,
         style: &crate::ComputedStyle,
     ) -> Option<(&nana_text::TextSource, bool)> {
-        let text = &self.nodes.get(id)?.text;
+        if !self.nodes.contains(id) {
+            return None;
+        }
+        let text = self.texts.get(&id).unwrap_or(&DEFAULT_TEXT_CONTENT);
         let rich = self.rich_texts.get(&id);
         Some(
-            self.text_nodes.get_mut(&id)?.source_for_objects(
+            self.text_nodes.entry(id).or_default().source_for_objects(
                 &text.value,
                 rich,
                 style,
@@ -1453,9 +2104,10 @@ impl NodeStore {
         id: StableNodeId,
         layout: Arc<nana_text::TextLayout>,
     ) -> bool {
-        let Some(text) = self.text_nodes.get_mut(&id) else {
+        if !self.nodes.contains(id) {
             return false;
-        };
+        }
+        let text = self.text_nodes.entry(id).or_default();
         if self
             .text_layouts
             .get(text.layout)
@@ -1489,12 +2141,21 @@ impl NodeStore {
             .iter()
             .filter(|(_, text)| text.stamp().is_some_and(|stamp| stamp.measured))
             .map(|(id, _)| id);
-        let measuring = self
-            .visuals
+        let widget_measuring = self
+            .widget_visuals
             .iter()
-            .filter(|(_, visual)| measures_text_each_pass(visual))
+            .filter(|(_, visual)| visual.measures_text())
             .map(|(id, _)| *id);
-        resolved.chain(measuring)
+        let preset_measuring = (self.preset_visual_count > 0)
+            .then(|| {
+                self.nodes
+                    .entries()
+                    .filter(|(_, record)| record.visual_preset == 1)
+                    .map(|(id, _)| id)
+            })
+            .into_iter()
+            .flatten();
+        resolved.chain(widget_measuring).chain(preset_measuring)
     }
 
     pub(crate) fn text_completion_view_mut(
@@ -1517,26 +2178,6 @@ impl NodeStore {
             .filter(|(_, state)| state.diagnostic)
             .map(|(id, _)| *id)
             .collect()
-    }
-}
-
-/// Visuals that measure text of their own every pass — intrinsic text, or
-/// chrome sized to the text painted into it — and so are never stamped.
-fn measures_text_each_pass(visual: &StandardVisual) -> bool {
-    match visual {
-        StandardVisual::EmptyState { .. }
-        | StandardVisual::ModalFrame { .. }
-        | StandardVisual::TextInput { .. }
-        | StandardVisual::KeyCaptureLayer { .. }
-        | StandardVisual::KeymapLayer
-        | StandardVisual::ListItem { .. }
-        | StandardVisual::PathText { .. }
-        | StandardVisual::LabeledValue { .. }
-        | StandardVisual::ActionMenuItem { .. }
-        | StandardVisual::CommandPalette { .. } => true,
-        #[cfg(feature = "calendar")]
-        StandardVisual::CalendarHeatmap { .. } => true,
-        _ => false,
     }
 }
 
@@ -1588,12 +2229,51 @@ mod tests {
                 ..EditorRecord::new(nana_text::EditSession::new("a"))
             }),
         );
+        store.set_text_content(id, TextContent { value: "hi".into() });
+        store.set_text_metrics(
+            id,
+            TextMetrics {
+                width: 12.0,
+                height: 16.0,
+                ascent: Some(12.0),
+            },
+        );
+        store.set_layout_padding(id, nana_ui_core::PaddingSpec::uniform(4.0));
+        store.set_layout_far_start(id, [true, false]);
+        store.bump_layout_context_generation(id);
+        store.set_scroll_offset(id, ScrollOffset { x: 0.0, y: 8.0 });
+        store.set_accessibility(
+            id,
+            &AccessibilityState {
+                hidden: true,
+                ..AccessibilityState::default()
+            },
+        );
+        store.set_render_room_epoch(id, 42);
         assert!(store.scroll_metrics(id).is_some());
         assert!(store.remove(id).is_some());
         assert!(!store.contains(id));
         assert!(store.scroll_metrics(id).is_none());
         assert!(store.component_type(id).is_none());
         assert!(store.ime(id).is_none());
+        assert_eq!(store.text_content(id).value, "");
+        assert_eq!(store.text_metrics(id), TextMetrics::default());
+        assert_eq!(store.layout_padding(id), None);
+        assert_eq!(store.layout_far_start(id), None);
+        assert_eq!(store.layout_context_generation(id), 0);
+        assert_eq!(store.scroll_offset(id), ScrollOffset::default());
+        assert!(!store.accessibility(id).hidden);
+        assert_eq!(store.render_room_epoch(id), u32::MAX);
+    }
+
+    #[test]
+    fn node_record_fits_size_budget() {
+        let size = std::mem::size_of::<NodeRecord>();
+        eprintln!("size_of::<NodeRecord>() = {size}");
+        assert!(
+            size <= 152,
+            "NodeRecord grew to {size} bytes (budget <= 152 bytes)"
+        );
     }
 
     #[test]

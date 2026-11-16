@@ -790,7 +790,7 @@ pub fn footer_bar() -> Stack {
         .with_layout(|layout| {
             layout.flex_grow = Some(0.0);
             layout.padding_top = Some(LengthSpec::Px(nana_ui_core::space::XL));
-            layout.border_top_width = Some(nana_ui_core::HAIRLINE);
+            layout.border_sides.top_width = Some(nana_ui_core::HAIRLINE);
         });
     let mut style = stack.node_style();
     style.border = Some(SemanticColorRole::BorderSoft);

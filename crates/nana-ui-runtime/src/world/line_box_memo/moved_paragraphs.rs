@@ -39,7 +39,6 @@ fn style(layout: LayoutStyle) -> NodeStyle {
 
 fn header(height: f32) -> LayoutStyle {
     LayoutStyle {
-        display: Some(DisplaySpec::Block),
         height: Some(LengthSpec::Px(height)),
         ..LayoutStyle::default()
     }
@@ -103,7 +102,6 @@ fn page(height: f32, run: &str, positioned_page: bool) -> (AppContext, NanaTextE
             let holder = b.element(
                 page,
                 LayoutStyle {
-                    display: Some(DisplaySpec::Block),
                     position: PositionSpec::Relative,
                     ..LayoutStyle::default()
                 },
@@ -116,7 +114,6 @@ fn page(height: f32, run: &str, positioned_page: bool) -> (AppContext, NanaTextE
         let paragraph = b.element(
             holder,
             LayoutStyle {
-                display: Some(DisplaySpec::Block),
                 width: Some(LengthSpec::Px(160.0)),
                 position: if hung == Hung::InParagraph {
                     PositionSpec::Relative
@@ -130,7 +127,7 @@ fn page(height: f32, run: &str, positioned_page: bool) -> (AppContext, NanaTextE
         b.element(
             paragraph,
             LayoutStyle {
-                display: Some(DisplaySpec::InlineBlock),
+                display: Some(DisplaySpec::InlineFlex),
                 width: Some(LengthSpec::Px(24.0)),
                 height: Some(LengthSpec::Px(16.0)),
                 ..LayoutStyle::default()

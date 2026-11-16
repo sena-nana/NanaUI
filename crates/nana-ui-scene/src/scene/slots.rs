@@ -38,43 +38,6 @@ pub(super) const TEXT_INLINE_OBJECTS: u32 = 7;
 /// A rich text editor's caret, over its glyphs.
 pub(super) const TEXT_EDITOR_CARET: u32 = 8;
 
-/// An open select menu's rows, one slot per option in each namespace. A
-/// long menu outgrew fixed slots: the highlight of its 31st row took the
-/// first row's label slot. The namespaces paint in this order, so a row's
-/// highlight stays under its texts.
-pub(super) const SELECT_MENU_BACKGROUNDS: u32 = 9;
-
-pub(super) const SELECT_MENU_MARKS: u32 = 10;
-
-pub(super) const SELECT_MENU_LABELS: u32 = 11;
-
-pub(super) const SELECT_MENU_HINTS: u32 = 12;
-
-/// An open select menu's scrollbar over its rows: the track (0), the thumb
-/// (1).
-pub(super) const SELECT_MENU_SCROLLBAR: u32 = 13;
-
-/// A context menu row's hint at its end, one slot per row. Fixed row slots
-/// below 256 are already shared by backgrounds, labels and icons.
-pub(super) const CONTEXT_MENU_HINTS: u32 = 14;
-
-/// A context menu row's picture: its placeholder circle, then the host
-/// texture over it, one slot per row in each.
-pub(super) const CONTEXT_MENU_IMAGE_BACKDROPS: u32 = 15;
-
-pub(super) const CONTEXT_MENU_IMAGES: u32 = 16;
-
-/// An open select menu's row pictures, as a context menu's. They belong to
-/// the menu's layer with its other namespaces (`is_select_menu_slot`).
-pub(super) const SELECT_MENU_IMAGE_BACKDROPS: u32 = 17;
-
-pub(super) const SELECT_MENU_IMAGES: u32 = 18;
-
-/// An open select menu's surface, under its rows. Slots 3..=6 are the
-/// field's arrow and 7 its hint: the surface used to take slot 4 and hid an
-/// arrow stroke for as long as the menu was open.
-pub(super) const SELECT_MENU_SURFACE_SLOT: u64 = 8;
-
 /// Rich text span backgrounds share the document selection's paint layer
 /// below every selection: one batch per span, indices up to the document
 /// selection's.
@@ -87,10 +50,6 @@ pub(super) const RICH_EDITOR_SELECTION_BASE: usize = 1 << 16;
 /// Rich text tag backgrounds share that paint layer too (under the glyphs,
 /// over a selection), from this index on.
 pub(crate) const RICH_TAG_BASE: usize = 1 << 17;
-
-/// The primitive slot a modal frame paints its scrim in. The scrim fades on
-/// its own clock: its node's own opacity layer is the card's.
-pub(crate) const MODAL_SCRIM_SLOT: u64 = 10;
 
 /// The surface of an open triggered menu (Popover, ActionMenu, HoverCard).
 /// It is the trigger's primitive, but it wraps content Runtime lays out
@@ -111,21 +70,15 @@ pub(crate) const TRIGGERED_OVERLAY_SURFACE_SLOT: u64 = (TRIGGERED_OVERLAY_SURFAC
 /// the pointer where the two meet.
 pub(super) const SCROLLBAR_CHROME: u32 = 0xFFFF_FFF8;
 
-pub(super) const fn scrollbar_chrome_slot(index: u64) -> u64 {
-    ((SCROLLBAR_CHROME as u64) << 32) | index
-}
-
 pub(super) fn is_scrollbar_chrome_slot(slot: u64) -> bool {
     slot >> 32 == SCROLLBAR_CHROME as u64
 }
 
 /// A scroll view whose bars can show; it paints them over its descendants.
 pub(super) fn has_scrollbar_chrome(node: &ExtractedNode) -> bool {
-    matches!(
-        node.standard_visual,
-        Some(StandardVisual::Scrollbar { visibility, .. })
-            if visibility != nana_ui_core::ScrollbarVisibility::Hidden
-    )
+    node.widget_paint
+        .as_deref()
+        .is_some_and(|paint| paint.has_scrollbar_chrome)
 }
 
 pub(super) fn is_triggered_overlay_surface(id: PrimitiveId) -> bool {
@@ -138,28 +91,23 @@ pub(super) fn is_triggered_overlay_surface(id: PrimitiveId) -> bool {
 /// ([`UiScene::hanging_transform`]); the trigger and its trigger content keep
 /// their logical opacity and transform.
 pub(super) fn is_triggered_menu(node: &ExtractedNode) -> bool {
-    node.standard_visual
-        .as_ref()
-        .is_some_and(|visual| visual.triggered_menu_overlay().is_some())
+    node.widget_paint
+        .as_deref()
+        .and_then(|w| w.floating_overlay.as_ref())
+        .is_some_and(|overlay| {
+            overlay.kind == nana_ui_runtime::WidgetFloatingOverlayKind::TriggeredSurface
+        })
 }
 
 /// Whether `child` draws the trigger of the triggered menu `menu`.
 pub(super) fn is_trigger_content(menu: &ExtractedNode, child: StableNodeId) -> bool {
-    menu.standard_visual
-        .as_ref()
-        .and_then(StandardVisual::triggered_menu_overlay)
-        .is_some_and(|overlay| overlay.trigger_content == Some(child))
-}
-
-/// An open select menu's surface, rows and bar: the surface slot and the
-/// menu's namespaces, `SELECT_MENU_BACKGROUNDS` to `SELECT_MENU_SCROLLBAR`
-/// and its row pictures'.
-pub(super) fn is_select_menu_slot(slot: u64) -> bool {
-    slot == SELECT_MENU_SURFACE_SLOT
-        || (u64::from(SELECT_MENU_BACKGROUNDS)..=u64::from(SELECT_MENU_SCROLLBAR))
-            .contains(&(slot >> 32))
-        || (u64::from(SELECT_MENU_IMAGE_BACKDROPS)..=u64::from(SELECT_MENU_IMAGES))
-            .contains(&(slot >> 32))
+    menu.widget_paint
+        .as_deref()
+        .and_then(|w| w.floating_overlay.as_ref())
+        .is_some_and(|overlay| {
+            overlay.kind == nana_ui_runtime::WidgetFloatingOverlayKind::TriggeredSurface
+                && overlay.trigger_content == Some(child)
+        })
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -177,11 +125,14 @@ impl VisualNode {
 }
 
 pub(super) fn primitive_visual_node(nodes: &SceneNodes, primitive: &ScenePrimitive) -> VisualNode {
-    let is_overlay = is_triggered_overlay_surface(primitive.id)
-        || (is_select_menu_slot(primitive.id.slot)
-            && nodes.get(&primitive.node).is_some_and(|node| {
-                matches!(node.standard_visual, Some(StandardVisual::Select { .. }))
-            }));
+    let is_overlay = nodes.get(&primitive.node).is_some_and(|node| {
+        if let Some(paint) = node.widget_paint.as_deref()
+            && nana_ui_runtime::is_floating_overlay_slot(paint, primitive.id.slot)
+        {
+            return true;
+        }
+        is_triggered_overlay_surface(primitive.id)
+    }) || is_triggered_overlay_surface(primitive.id);
     if is_overlay {
         VisualNode::Overlay(primitive.node)
     } else {
@@ -190,13 +141,9 @@ pub(super) fn primitive_visual_node(nodes: &SceneNodes, primitive: &ScenePrimiti
 }
 
 fn is_modal_frame_node(node: &ExtractedNode) -> bool {
-    matches!(
-        node.standard_visual,
-        Some(StandardVisual::ModalFrame { .. })
-    ) || matches!(
-        node.component_geometry.as_deref(),
-        Some(nana_ui_runtime::ComponentGeometry::ModalFrame { .. })
-    )
+    node.widget_paint
+        .as_deref()
+        .is_some_and(|w| w.modal_frame.is_some())
 }
 
 fn resolve_scene_overlay_mount(
@@ -257,15 +204,14 @@ pub(super) fn effective_overlay_visual_parent(
     node: &ExtractedNode,
 ) -> nana_ui_runtime::VisualParent {
     node.overlay_visual_parent.unwrap_or_else(|| {
-        let mount = match node.standard_visual.as_ref() {
-            Some(StandardVisual::MenuSurface {
-                overlay: Some(overlay),
-                ..
-            }) => overlay.overlay_mount,
-            Some(StandardVisual::Select { overlay_mount, .. }) => *overlay_mount,
-            _ => nana_ui_core::OverlayMount::NearestModal,
-        };
-        resolve_scene_overlay_mount(nodes, node, mount)
+        if let Some(overlay) = node
+            .widget_paint
+            .as_deref()
+            .and_then(|w| w.floating_overlay.as_ref())
+        {
+            return resolve_scene_overlay_mount(nodes, node, overlay.overlay_mount);
+        }
+        resolve_scene_overlay_mount(nodes, node, nana_ui_core::OverlayMount::NearestModal)
     })
 }
 

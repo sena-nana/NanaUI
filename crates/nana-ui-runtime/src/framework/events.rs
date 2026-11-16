@@ -191,8 +191,10 @@ impl AppContext {
         if !self.world.contains(id) {
             return Err(FrameworkError::MissingView(id));
         }
-        let held = self.views.get(&id).ok_or(FrameworkError::MissingView(id))?;
-        if held.as_ref().type_id() != view {
+        let Some(actual) = self.view_type_id(id) else {
+            return Err(FrameworkError::MissingView(id));
+        };
+        if actual != view {
             return Err(FrameworkError::ViewType(id));
         }
         Ok(())
@@ -416,8 +418,15 @@ impl AppContext {
                     );
                     continue;
                 }
-                let Some(mut observer) = self.views.remove(&handler.observer) else {
-                    continue;
+                let (mut observer, before_stack) = match self.views.remove(&handler.observer) {
+                    Some(observer) => (observer, None),
+                    None => match self.world.elided_stack(handler.observer) {
+                        Some(stack) => {
+                            let before = stack.clone();
+                            (Box::new(stack) as Box<dyn Any + Send>, Some(before))
+                        }
+                        None => continue,
+                    },
                 };
                 let asked = (handler.callback)(
                     handler.observer,
@@ -428,6 +437,11 @@ impl AppContext {
                     program_messages,
                     self.component_lifecycle.now,
                 );
+                if before_stack.as_ref().is_some_and(|before| {
+                    !asked && observer.downcast_ref::<crate::Stack>() == Some(before)
+                }) {
+                    continue;
+                }
                 let observer_type = (*observer).type_id();
                 match touched.iter_mut().find(|seen| seen.id == handler.observer) {
                     Some(seen) => seen.reassemble |= asked,

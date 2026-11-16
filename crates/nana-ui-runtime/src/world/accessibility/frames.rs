@@ -277,7 +277,7 @@ impl UiWorld {
         memo: &mut ProjectionMemo,
     ) -> Option<(LayoutBox, Option<nana_ui_core::PaintTransform>)> {
         let record = self.nodes.get(entry.id)?;
-        if record.layout_frame != crate::LayoutFrame::Parent
+        if record.layout_frame() != crate::LayoutFrame::Parent
             || record.hierarchy.parent != Some(parent)
             || matches!(record.kind.as_ref(), NodeKind::Document)
             || self.geometry_frame.get().is_some()
@@ -321,7 +321,9 @@ impl UiWorld {
         }
         // A box under a scroll stands off its layout box, and its offset is
         // not in the space the scroll moves.
-        if self.nodes.get(parent)?.scroll_offset != ScrollOffset::default() {
+        if !self.nodes.contains(parent)
+            || self.nodes.scroll_offset(parent) != ScrollOffset::default()
+        {
             return None;
         }
         let own = self.record_layout_origin(record);

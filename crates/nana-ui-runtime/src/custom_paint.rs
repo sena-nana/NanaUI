@@ -62,25 +62,29 @@ pub trait Painter: Send + Sync + 'static {
 }
 
 /// 挂在 [`NodeStyle`](crate::NodeStyle) 上的 [`Painter`]。
+struct NodePainterInner {
+    type_id: TypeId,
+    painter: Box<dyn Painter>,
+}
+
 ///
 /// 相等按（painter 类型，`paint_key`）比较：视图每帧重建出一个同键的新
 /// painter 不算样式变化，不会让节点重新抽取；换了键才重录。
 #[derive(Clone)]
-pub struct NodePainter {
-    painter: Arc<dyn Painter>,
-    type_id: TypeId,
-}
+pub struct NodePainter(Arc<NodePainterInner>);
+
+const _: () = assert!(std::mem::size_of::<Option<NodePainter>>() == 8);
 
 impl NodePainter {
     pub fn new<P: Painter>(painter: P) -> Self {
-        Self {
-            painter: Arc::new(painter),
+        Self(Arc::new(NodePainterInner {
             type_id: TypeId::of::<P>(),
-        }
+            painter: Box::new(painter),
+        }))
     }
 
     pub fn painter(&self) -> &dyn Painter {
-        self.painter.as_ref()
+        self.0.painter.as_ref()
     }
 
     pub(crate) fn cache_key(
@@ -90,8 +94,8 @@ impl NodePainter {
         state: PaintState,
     ) -> PaintCacheKey {
         PaintCacheKey {
-            painter: self.type_id,
-            paint_key: self.painter.paint_key(),
+            painter: self.0.type_id,
+            paint_key: self.0.painter.paint_key(),
             size: [size[0].to_bits(), size[1].to_bits()],
             theme_epoch,
             state,
@@ -123,16 +127,16 @@ impl<P: Painter> From<P> for NodePainter {
 
 impl PartialEq for NodePainter {
     fn eq(&self, other: &Self) -> bool {
-        self.type_id == other.type_id
-            && (Arc::ptr_eq(&self.painter, &other.painter)
-                || self.painter.paint_key() == other.painter.paint_key())
+        Arc::ptr_eq(&self.0, &other.0)
+            || (self.0.type_id == other.0.type_id
+                && self.0.painter.paint_key() == other.0.painter.paint_key())
     }
 }
 
 impl fmt::Debug for NodePainter {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("NodePainter")
-            .field("paint_key", &self.painter.paint_key())
+            .field("paint_key", &self.0.painter.paint_key())
             .finish_non_exhaustive()
     }
 }
@@ -2657,7 +2661,7 @@ mod tests {
         // Another family measures differently.
         restyle(&mut world, &|layout| {
             layout.color = Some([1.0, 0.0, 0.0, 1.0]);
-            layout.font_family = Some("Serif".into());
+            layout.text_ext.font_family = Some("Serif".into());
         });
         assert_eq!(calls.load(Ordering::SeqCst), 2);
     }

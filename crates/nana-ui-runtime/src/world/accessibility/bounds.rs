@@ -57,7 +57,7 @@ impl UiWorld {
     ) -> bool {
         if let Some(transform) = handed
             && record.hierarchy.parent == Some(parent)
-            && record.resolved_layout.transform.is_none()
+            && record.resolved_layout.transforms.transform.is_none()
             && self.offset_placed_under(id, record, above)
         {
             let ([a, b, c, d, e, f], [g, h]) = transform.children;
@@ -110,14 +110,14 @@ impl UiWorld {
         id: StableNodeId,
         memo: &mut ProjectionMemo,
     ) -> Option<LayoutBox> {
-        let local = if self.nodes.has_visuals()
-            && matches!(
-                self.nodes.visual(id),
-                Some(StandardVisual::ModalFrame { .. })
-            ) {
-            match self.component_geometry(id) {
-                Some(crate::ComponentGeometry::ModalFrame { surface, .. }) => surface,
-                _ => self.component_layout_box(id)?,
+        let local = if self.modal_frames != 0
+            && self
+                .widget_visual_as::<crate::ModalFrameVisual>(id)
+                .is_some()
+        {
+            match self.modal_frame_geometry(id) {
+                Some(crate::ModalFrameGeometry { surface, .. }) => surface,
+                None => self.component_layout_box(id)?,
             }
         } else {
             self.component_layout_box(id)?
@@ -131,10 +131,10 @@ impl UiWorld {
         // `id` or one above it, ends the chain, as in paint and hit testing.
         let mut below = id;
         for ancestor in self.clip_ancestors(id) {
-            if matches!(
-                self.nodes.visual(ancestor),
-                Some(StandardVisual::EmptyState { .. })
-            ) {
+            if self
+                .widget_visual_ref(ancestor)
+                .is_some_and(crate::WidgetVisualHandle::clips_descendants)
+            {
                 bounds = intersect_layout_boxes(
                     bounds,
                     self.accessibility_viewport_bounds(
@@ -144,15 +144,15 @@ impl UiWorld {
                     )?,
                 )?;
             }
-            if let Some(StandardVisual::ModalFrame { slots, .. }) = self.nodes.visual(ancestor)
-                && let Some(crate::ComponentGeometry::ModalFrame { surface, body, .. }) =
-                    self.component_geometry(ancestor)
+            if let Some(modal) = self.widget_visual_as::<crate::ModalFrameVisual>(ancestor)
+                && let Some(crate::ModalFrameGeometry { surface, body, .. }) =
+                    self.modal_frame_geometry(ancestor)
             {
                 bounds = intersect_layout_boxes(
                     bounds,
                     self.accessibility_viewport_bounds(ancestor, surface, memo)?,
                 )?;
-                if slots.body == Some(below) {
+                if modal.slots.body == Some(below) {
                     bounds = intersect_layout_boxes(
                         bounds,
                         self.accessibility_viewport_bounds(ancestor, body, memo)?,
@@ -203,7 +203,11 @@ impl UiWorld {
             && self.overlay_host_nodes.is_empty()
             && self.z_index_nodes == 0
             && self.detached_mounted.is_empty()
-            && !self.nodes.has_visuals()
+            && !self.nodes.has_widget_visuals()
+            && self.modal_frames == 0
+            && self.menu_surfaces == 0
+            && self.triggered_overlays.is_empty()
+            && self.select_menus.is_empty()
             && self.presentation.is_empty()
             && self.geometry_frame.get().is_none();
         while let Some(node) = memo.chain.pop() {
@@ -235,7 +239,7 @@ impl UiWorld {
                 }
                 cumulative = then_hit(cumulative, (IDENTITY_AFFINE, [0.0, 0.0]));
                 let own = cumulative;
-                let scroll = record.scroll_offset;
+                let scroll = self.nodes.scroll_offset(node);
                 cumulative = then_hit(
                     cumulative,
                     ([1.0, 0.0, 0.0, 1.0, -scroll.x, -scroll.y], [0.0, 0.0]),
@@ -279,7 +283,7 @@ impl UiWorld {
             let local = self.input_local_scene_transform(node, &layout, bounds, blocks_3d);
             cumulative = then_hit(cumulative, self.with_sticky_translation(node, local));
             let own = cumulative;
-            let scroll = record.scroll_offset;
+            let scroll = self.nodes.scroll_offset(node);
             cumulative = then_hit(
                 cumulative,
                 ([1.0, 0.0, 0.0, 1.0, -scroll.x, -scroll.y], [0.0, 0.0]),
@@ -308,14 +312,14 @@ impl UiWorld {
     /// resolved style is its effective one) and no transform of its own.
     fn plain_transform_step(record: &NodeRecord) -> bool {
         let style = record.resolved_layout.as_ref();
-        record.layout_frame == crate::LayoutFrame::Parent
+        record.layout_frame() == crate::LayoutFrame::Parent
             && record.mount == crate::MountState::Mounted
             && matches!(
                 style.position,
                 PositionSpec::Static | PositionSpec::Relative
             )
-            && style.transform.is_none()
-            && style.transform_3d.is_none()
+            && style.transforms.transform.is_none()
+            && style.transforms.transform_3d.is_none()
             && !style.omits_box()
             && !style.has_logical_box_edges()
     }

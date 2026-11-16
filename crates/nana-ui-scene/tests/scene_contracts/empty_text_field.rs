@@ -9,8 +9,8 @@ use nana_text::{NativeTextEngine, SharedTextEngine};
 use nana_ui_core::SemanticColorRole;
 use nana_ui_runtime::view::widget;
 use nana_ui_runtime::{
-    ComponentGeometry, DocumentId, ImeComposition, LayoutViewport, MutationQueue,
-    NanaTextEngineShaper, SemanticPaint, StableNodeId, TextInput,
+    DocumentId, ImeComposition, LayoutViewport, MutationQueue, NanaTextEngineShaper, SemanticPaint,
+    StableNodeId, TextInput,
 };
 use nana_ui_scene::RuntimeDocument;
 
@@ -56,9 +56,9 @@ fn focused(field: TextInput) -> (RuntimeDocument, StableNodeId, NanaTextEngineSh
 fn a_focused_field_deepens_its_fill_and_takes_the_focus_border() {
     let (runtime, id, _) = focused(TextInput::new(""));
     let world = runtime.context().world();
-    let Some(ComponentGeometry::TextInput {
+    let Some(nana_ui_runtime::TextInputGeometry {
         background, border, ..
-    }) = world.component_geometry(id)
+    }) = world.text_input_geometry(id)
     else {
         panic!("the focused field has no geometry");
     };
@@ -87,8 +87,8 @@ fn a_focused_field_shows_its_caret_with_or_without_text() {
         ("value", TextInput::new("Nana")),
     ] {
         let (runtime, id, _) = focused(field);
-        let geometry = runtime.context().world().component_geometry(id);
-        let Some(ComponentGeometry::TextInput {
+        let geometry = runtime.context().world().text_input_geometry(id);
+        let Some(nana_ui_runtime::TextInputGeometry {
             caret: Some(caret), ..
         }) = geometry
         else {
@@ -113,8 +113,8 @@ fn an_empty_field_draws_the_ime_preedit() {
     );
     runtime.context_mut().commit_mutations(ime).unwrap();
     runtime.flush(viewport(), &mut shaper).unwrap();
-    let geometry = runtime.context().world().component_geometry(id);
-    let Some(ComponentGeometry::TextInput { preedit, .. }) = &geometry else {
+    let geometry = runtime.context().world().text_input_geometry(id);
+    let Some(nana_ui_runtime::TextInputGeometry { preedit, .. }) = &geometry else {
         panic!("no geometry: {geometry:?}");
     };
     assert!(!preedit.is_empty(), "the preedit is not drawn");

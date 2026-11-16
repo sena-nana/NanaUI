@@ -3156,19 +3156,6 @@
       ]
     },
     {
-      "file": "crates/nana-ui-runtime/src/builtin_components.rs",
-      "counts": {
-        "color_role": 0,
-        "color_literal": 0,
-        "design_number": 1,
-        "motion": 0,
-        "elevation": 0
-      },
-      "local_values": 1,
-      "token_reads": 5,
-      "roles": []
-    },
-    {
       "file": "crates/nana-ui-runtime/src/command_palette.rs",
       "counts": {
         "color_role": 0,
@@ -4382,22 +4369,6 @@
           "name": "MAX_MENU_WIDTH",
           "type": "f32",
           "value": 480.0
-        }
-      ],
-      "count": 2
-    },
-    {
-      "file": "crates/nana-ui-runtime/src/builtin_components.rs",
-      "constants": [
-        {
-          "name": "DEFAULT_GRAPH_NODE_WIDTH",
-          "type": "f32",
-          "value": 160.0
-        },
-        {
-          "name": "DEFAULT_GRAPH_NODE_HEIGHT",
-          "type": "f32",
-          "value": 80.0
         }
       ],
       "count": 2

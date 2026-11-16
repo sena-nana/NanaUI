@@ -226,6 +226,21 @@ mod pending_tests {
 }
 
 impl<Program: RuntimeProgram> WindowManager<Program> {
+    pub(super) fn is_accessibility_activated(&self, id: WindowId) -> bool {
+        #[cfg(not(target_os = "android"))]
+        {
+            self.window_contexts
+                .get(&id)
+                .and_then(|host| host.accessibility.as_ref())
+                .is_some_and(HostedAccessibility::is_activated)
+        }
+        #[cfg(target_os = "android")]
+        {
+            let _ = id;
+            false
+        }
+    }
+
     #[cfg(not(target_os = "android"))]
     pub(super) fn take_accessibility_actions(
         &self,
@@ -244,6 +259,13 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
             .get(&id)
             .is_some_and(|host| host.accessibility.is_some());
         if !has_adapter {
+            return;
+        }
+        if !self.is_accessibility_activated(id) {
+            if let Some(pending) = self.accessibility_pending_mut(id) {
+                let _ = pending.take_for_publication();
+            }
+            let _ = self.program.take_accessibility_update(id);
             return;
         }
         let scale_factor_changed = self

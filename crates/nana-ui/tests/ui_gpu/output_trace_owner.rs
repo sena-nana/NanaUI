@@ -235,7 +235,7 @@ fn explicit_trace_capture_round_trips_nlog_without_per_frame_events() {
     // platform conformance. Ordinary observe/query calls must emit no event.
     for _ in 0..128 {
         snapshot.observe(
-            nana_ui_core::OutputWorkObservation {
+            nana_ui::output::OutputWorkObservation {
                 idle_reuse_frames: 1,
                 ..Default::default()
             },
@@ -244,7 +244,7 @@ fn explicit_trace_capture_round_trips_nlog_without_per_frame_events() {
         assert_eq!(snapshot.consumer, OutputConsumerId(91));
     }
     snapshot.observe(
-        nana_ui_core::OutputWorkObservation {
+        nana_ui::output::OutputWorkObservation {
             extra_passes: 2,
             gpu_copies: 1,
             gpu_copy_bytes: 128 * 96 * 4,

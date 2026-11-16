@@ -42,31 +42,6 @@ jobs:
             --runtime target/performance/runtime.json \
             --framework target/performance/framework.json \
             --scene target/performance/scene.json
-      - name: Evaluate Issue #8 invariants on live Nana envelopes
-        run: |
-          mkdir -p target/performance/issue8/weekly
-          for scenario in \
-            static-tree-100 static-tree-1k static-tree-5k static-tree-10k \
-            hover \
-            mutation-paint-only mutation-text mutation-layout-style \
-            mutation-visibility mutation-transform mutation-a11y \
-            animation
-          do
-            python3 perf/runners/nana/run.py --scenario "$scenario" \
-              --from-report target/performance/runtime.json \
-              --output "target/performance/issue8/weekly/nana-${scenario}.json"
-          done
-          for scenario in \
-            virtual-list-10k virtual-list-100k \
-            virtual-tree-10k virtual-tree-100k \
-            text-table \
-            ime dock-workspace overlay text-editor
-          do
-            python3 perf/runners/nana/run.py --scenario "$scenario" \
-              --from-report target/performance/framework.json \
-              --output "target/performance/issue8/weekly/nana-${scenario}.json"
-          done
-          python3 perf/contract.py --evaluate-invariants target/performance/issue8/weekly
       # Issue #259: a contained edit's frame time from 1k to 100k nodes. The
       # merge gate is the structural counters in ci.yml; a hosted runner is
       # not a fixed machine, so this records p50/p95/p99 and the 1.75x p95

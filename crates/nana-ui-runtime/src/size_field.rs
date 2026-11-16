@@ -155,6 +155,8 @@ impl SizeField {
 }
 
 impl ComponentView for SizeField {
+    const TYPE_ID: Option<&'static str> = Some(crate::component_descriptors::SIZE_FIELD.type_id);
+
     const BEHAVIOR: crate::TypeBehavior<Self> = crate::TypeBehavior {
         assembler: Some(AppContext::assemble_size_field),
         ..crate::TypeBehavior::NONE
@@ -402,7 +404,8 @@ fn number(field: &SizeField, axis: usize) -> NumberInput {
             ..Default::default()
         },
         ..Default::default()
-    };
+    }
+    .into();
     input.style_override = true;
     let layout = Arc::make_mut(&mut input.style.layout);
     layout.border_width = Some(0.0);
@@ -734,8 +737,8 @@ mod tests {
                 assert_eq!((style.background, style.border), (None, None));
                 assert!(
                     matches!(
-                        cx.world().component_geometry(id),
-                        Some(crate::ComponentGeometry::TextInput { steppers: None, .. })
+                        cx.world().text_input_geometry(id),
+                        Some(crate::TextInputGeometry { steppers: None, .. })
                     ),
                     "compound inputs have no spinner paint, hit regions or reserved width"
                 );

@@ -14,9 +14,14 @@ fn layout(cx: &mut AppContext, doc: DocumentId, ids: &[StableNodeId]) {
 }
 
 fn label_box(cx: &AppContext, id: StableNodeId) -> LayoutBox {
-    let Some(ComponentGeometry::SelectionOption { label, .. }) = cx.world().component_geometry(id)
+    let paint = cx.world().widget_paint(id).unwrap();
+    let Some(WidgetPaintOp::Text(label)) = paint
+        .ops
+        .iter()
+        .find(|tagged| tagged.slot == 2)
+        .map(|tagged| &tagged.op)
     else {
-        panic!("selection option geometry")
+        panic!("selection option label")
     };
     label.bounds
 }

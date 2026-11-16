@@ -125,11 +125,11 @@ fn wrapped_rich_text_box_is_as_tall_as_its_measured_lines_and_hits_them() {
 
     // The highlight covers the selected glyphs line by line, not the box.
     settle(&mut cx, doc, &[root.stable_id(), id]);
-    let Some(ComponentGeometry::SelectableRichText { selection, .. }) =
-        cx.world().component_geometry(id)
-    else {
-        panic!("selectable rich text geometry")
-    };
+    let selection = cx
+        .world()
+        .selectable_rich_text_paint_layout(id)
+        .expect("selectable rich text geometry")
+        .selection;
     assert_eq!(
         selection.len(),
         layout.lines.len() - 1,
@@ -199,10 +199,10 @@ fn a_markdown_span_is_as_wide_as_the_run_the_painter_shapes() {
     settle(&mut cx, doc, &[id]);
 
     let world = cx.world();
-    let Some(ComponentGeometry::NativeMarkdown { drawing, .. }) = world.component_geometry(id)
-    else {
-        panic!("a markdown node has markdown geometry");
-    };
+    let drawing = world
+        .native_markdown_layout(id)
+        .expect("a markdown node has markdown geometry")
+        .drawing;
     let runs = drawing
         .commands
         .iter()

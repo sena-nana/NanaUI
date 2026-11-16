@@ -13,8 +13,8 @@ use super::*;
 use nana_ui_runtime::AppContext;
 use nana_ui_runtime::ResponsiveAxis;
 use nana_ui_runtime::view::{
-    __style_value, Class, IntoView, Sheet, SheetQuery, SheetRule, Signal, StylePatch, button,
-    column, row, signal, text,
+    Class, IntoView, Sheet, SheetQuery, SheetRule, Signal, StylePatch, button, column, row, signal,
+    text,
 };
 
 const ROWS: usize = 4_000;
@@ -88,12 +88,12 @@ fn sheet(rules: usize, shape: Shape) -> Styled {
     macro_rules! padding {
         ($($px:literal),*) => {
             [$(|layout: &mut nana_ui_runtime::LayoutStyle| {
-                layout.padding = __style_value(concat!(r#"{"Px":"#, $px, "}"));
+                layout.padding = Some(nana_ui_runtime::LengthSpec::Px($px));
             }),*]
         };
     }
     const PADDINGS: [fn(&mut nana_ui_runtime::LayoutStyle); 8] =
-        padding!("0.0", "1.0", "2.0", "3.0", "4.0", "5.0", "6.0", "7.0");
+        padding!(0.0, 1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0);
     let patches: &'static [StylePatch] = (0..rules)
         .map(|rule| StylePatch::new(PADDINGS[rule % 8]))
         .collect::<Vec<_>>()

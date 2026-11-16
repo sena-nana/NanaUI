@@ -266,3 +266,52 @@ compositing and backdrop save/restore).
     `return`s inside structured control flow remain valid.
   - **MSL**: appends `, raster_order_group(0)` to fragment entry point texture
     binding attributes (`[[texture(N), raster_order_group(0)]]`, MSL 2.0+).
+
+### Creating devices without `wgpu-core/wgsl`
+
+Upstream `wgpu-core` enables indirect-call validation and automatic timestamp
+normalization from `InstanceFlags` even when compiled without the `wgsl`
+feature, then panics inside `IndirectValidation::new` and
+`TimestampNormalizer::new` because those internal helpers parse WGSL at runtime.
+
+- **`wgpu-core`**: `Device::new` guards `enable_indirect_validation` with
+  `cfg!(feature = "wgsl")`, and `TimestampNormalizer::new` returns
+  `Ok(Self { state: None })` early when `!cfg!(feature = "wgsl")`. Builds using
+  `wgpu/naga-ir` without `wgpu/wgsl` can create devices without disabling default
+  `InstanceFlags`; public `wgpu::` API is unchanged.
+- **`wgpu` manifest**: removes the unconditional `"wgsl"` feature from
+  `[target.'cfg(not(target_arch = "wasm32"))'.dependencies.wgpu-core]` so
+  `default-features = false` omits `wgpu-core/wgsl` and `naga/wgsl-in` on native
+  targets unless `wgpu/wgsl` is requested (`default` still includes `"wgsl"`).
+
+### Metal MSL passthrough and `naga-translation` gating
+
+NanaUI compiles its built-in render shaders on Apple hosts from precompiled
+Metal Shading Language via `Device::create_shader_module_passthrough`, omitting
+runtime Naga WGSL/IR translation from default Apple builds.
+
+- **`wgt::PassthroughShaderEntryPoint::metal_sized_bindings`** (new field
+  `Cow<'a, [(u32, u32, u32)]>`, `(group, binding, array_index)`, plus
+  `Default` impl; breaking for struct literals constructed without
+  `..Default::default()`). Preserves Metal unsized storage-array buffer length
+  binding metadata (`sized_bindings`) across `ShaderInput::Msl` and
+  `wgpu_hal::metal::PassthroughShader` into `MTLComputePipelineDescriptor` and
+  `MTLRenderPipelineDescriptor` stage infos.
+- **`wgpu-hal` Metal**: `ShaderInput::Msl` now wraps compilation in
+  `autoreleasepool`, configures `MTLCompileOptions::setLanguageVersion` to
+  `private_caps.msl_version` and `setPreserveInvariance(true)`, and matches
+  `load_shader`'s safe `.get(...).unwrap_or(...)` lookups in both
+  `load_shader` and `create_compute_pipeline`. When `wgpu_hal::metal::stage_meta`
+  is enabled at `debug` level alongside `naga-translation`, `load_shader` logs
+  the translated entry-point name, workgroup size, sized bindings and MSL
+  source per stage for offline capture.
+- **`wgpu-core`**: `Device::create_shader_module_passthrough` allows Metal
+  passthrough modules without requiring `Features::PASSTHROUGH_SHADERS`,
+  enabling `wgpu-interop` devices created with default features to adopt
+  precompiled MSL stages.
+- **`naga-translation` feature** (added to `wgpu-hal`, `wgpu-core` and `wgpu`,
+  enabled automatically by `wgsl`, `spirv`, `glsl`, `replay` and `naga-ir`):
+  gates runtime `ShaderModuleSource::Naga` / `Device::create_shader_module`
+  translation so precompiled-passthrough builds (`default-features = false`
+  with only `metal`) strip runtime Naga validation and translation code under
+  LTO.

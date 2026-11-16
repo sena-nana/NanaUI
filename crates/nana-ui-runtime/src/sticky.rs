@@ -3,7 +3,7 @@
 use nana_ui_core::{DisplaySpec, FontSizeContext, LayoutStyle, PositionSpec};
 
 use crate::StableNodeId;
-use crate::{LayoutBox, LayoutResult, ScrollOffset};
+use crate::{LayoutBox, ScrollOffset};
 use std::collections::{HashMap, HashSet};
 
 /// Dependency index for sticky branches. A scroll visits its own dependents,
@@ -57,15 +57,23 @@ impl StickyDependencies {
     }
 }
 
+/// The three layout boxes of a sticky ancestor's result in its own
+/// coordinates: its padding box, content box, and scrollable extent.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct StickyBoxes {
+    pub padding_box: LayoutBox,
+    pub content_box: LayoutBox,
+    pub scroll_extent: LayoutBox,
+}
+
 /// One ancestor, nearest first, from the authoritative retained layout.
 /// Runtime input and Scene paint feed the same projection with these facts.
 pub struct StickyAncestor<'a> {
     pub style: &'a LayoutStyle,
     pub bounds: LayoutBox,
-    /// The ancestor's result in its own coordinates, its border box at the
-    /// origin, as [`crate::UiWorld::local_layout_result`] keeps it: placed
-    /// at `bounds`' origin here.
-    pub result: Option<&'a LayoutResult>,
+    /// The ancestor's sticky boxes in its own coordinates, its border box at
+    /// the origin: placed at `bounds`' origin here.
+    pub boxes: Option<StickyBoxes>,
     pub scroll: ScrollOffset,
     pub font_size: f32,
     pub writing: nana_ui_core::WritingContext,
@@ -99,8 +107,8 @@ pub fn sticky_translation<'a>(
         return [0.0; 2];
     };
     let viewport = root
-        .result
-        .map_or(root.bounds, |result| at_bounds(&root, result.padding_box));
+        .boxes
+        .map_or(root.bounds, |boxes| at_bounds(&root, boxes.padding_box));
     let mut containing = sticky_containing_box(&root);
     let mut writing = root.writing;
     let mut scroll = [root.scroll.x, root.scroll.y];
@@ -122,10 +130,7 @@ pub fn sticky_translation<'a>(
         }
         scroll[0] += ancestor.scroll.x;
         scroll[1] += ancestor.scroll.y;
-        if !matches!(
-            ancestor.style.display,
-            Some(DisplaySpec::Contents | DisplaySpec::Inline)
-        ) {
+        if ancestor.style.display != Some(DisplaySpec::Inline) {
             containing = sticky_containing_box(&ancestor);
             writing = ancestor.writing;
         }
@@ -143,13 +148,13 @@ pub fn sticky_translation<'a>(
 }
 
 fn sticky_containing_box(ancestor: &StickyAncestor<'_>) -> LayoutBox {
-    ancestor.result.map_or(ancestor.bounds, |result| {
+    ancestor.boxes.map_or(ancestor.bounds, |boxes| {
         at_bounds(
             ancestor,
             if ancestor.style.overflow_x.clips() || ancestor.style.overflow_y.clips() {
-                result.scroll_extent
+                boxes.scroll_extent
             } else {
-                result.content_box
+                boxes.content_box
             },
         )
     })

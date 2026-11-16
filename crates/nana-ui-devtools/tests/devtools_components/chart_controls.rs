@@ -132,19 +132,14 @@ fn charts_render_and_hover_in_both_themes() {
             .world()
             .layout_box(trend.stable_id())
             .unwrap();
-        let plot = {
-            let nodes = session
-                .document()
-                .context()
-                .world()
-                .extract_nodes(&[trend.stable_id()]);
-            match nodes[0].component_geometry.as_deref() {
-                Some(nana_ui::runtime::ComponentGeometry::Chart { layout, .. }) => {
-                    layout.plot.unwrap()
-                }
-                other => panic!("chart geometry, got {other:?}"),
-            }
-        };
+        let plot = session
+            .document()
+            .context()
+            .world()
+            .chart_layout(trend.stable_id())
+            .expect("chart geometry")
+            .plot
+            .unwrap();
         session
             .hover_xy(
                 bounds.x + plot[0] + (plot[2] - plot[0]) * 0.7,
@@ -241,12 +236,10 @@ fn a_translucent_ring_has_no_join_cracks_or_overdraw() {
         let (size, pixels) = session.screenshot_rgba().unwrap();
         let cx = session.document().context();
         let bounds = cx.world().layout_box(chart.stable_id()).unwrap();
-        let nodes = cx.world().extract_nodes(&[chart.stable_id()]);
-        let Some(nana_ui::runtime::ComponentGeometry::Chart { layout, .. }) =
-            nodes[0].component_geometry.as_deref()
-        else {
-            panic!("chart geometry");
-        };
+        let layout = cx
+            .world()
+            .chart_layout(chart.stable_id())
+            .expect("chart geometry");
         let slice_at = |x: f32, y: f32| {
             layout.hit.items.iter().position(|item| match item.region {
                 ItemRegion::Sector {

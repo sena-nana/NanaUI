@@ -8,9 +8,8 @@
 //! root's new local box ([`ExtractedMove`]) and nothing for what it holds:
 //! every record under it is drawn at its new origin, and nothing is rebuilt.
 //!
-//! A visual whose geometry reads the page
-//! ([`StandardVisual::geometry_reads_page`]) is the exception: its record is
-//! on the page, and the runtime extracts it again whenever it moves.
+//! A widget visual whose geometry reads the page is the exception: its record
+//! is on the page, and the runtime extracts it again whenever it moves.
 use super::*;
 
 impl UiScene {
@@ -131,9 +130,9 @@ pub(super) fn offset_rect(rect: SceneRect, [x, y]: [f32; 2]) -> SceneRect {
 /// Whether `node`'s record -- its component geometry and so its primitives
 /// -- is on the page rather than in its own coordinates.
 pub(super) fn record_on_page(node: &ExtractedNode) -> bool {
-    node.standard_visual
-        .as_ref()
-        .is_some_and(StandardVisual::geometry_reads_page)
+    node.widget_paint
+        .as_deref()
+        .is_some_and(|w| w.geometry_on_page)
 }
 
 /// [`UiScene::placed_origin`] against `memo`, stamped with `epoch`.

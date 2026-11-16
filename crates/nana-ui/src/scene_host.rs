@@ -312,6 +312,8 @@ struct WindowManager<Program: RuntimeProgram> {
     producer_frames: production::WindowProducerCache,
     /// Allocated only for windows that opt in to output diagnostics.
     direct_output_traces: HashMap<WindowId, crate::output::OutputTraceSnapshot>,
+    /// Last GPU and output work counts observed when presenting each window.
+    last_presentation_work: HashMap<WindowId, crate::PresentationWork>,
     /// Host-texture slots each window's scene samples, with the subscription
     /// that wakes it; re-subscribed only when the slot set or registry changes.
     texture_subscriptions: HashMap<WindowId, (HashSet<Arc<str>>, crate::TextureSubscription)>,
@@ -1375,6 +1377,7 @@ fn complete_startup<Program: RuntimeProgram>(
         window_outputs: HashMap::new(),
         producer_frames: production::WindowProducerCache::default(),
         direct_output_traces: HashMap::new(),
+        last_presentation_work: HashMap::new(),
         texture_subscriptions: HashMap::new(),
         texture_redraws: Arc::new(Mutex::new(HashSet::new())),
         startup_painter: None,
@@ -1542,6 +1545,12 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
         .with_reduced_transparency(self.reduced_transparency)
         .with_text_scale(self.text_scale)
         .with_content_zoom(self.content_zoom_of(id))
+        .with_presentation_work(
+            self.last_presentation_work
+                .get(&id)
+                .copied()
+                .unwrap_or_default(),
+        )
         .with_store(Arc::clone(&self.program_store))
     }
 
@@ -1701,6 +1710,20 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
         for id in self.known_window_ids() {
             self.request_redraw(id);
         }
+    }
+
+    pub(super) fn record_presentation_work(
+        &mut self,
+        id: WindowId,
+        output_work: crate::OutputWorkObservation,
+        gpu_work: Option<crate::GpuWorkObservation>,
+    ) {
+        let mut work = crate::PresentationWork::default();
+        work.record_output_work(output_work);
+        if let Some(gpu_work) = gpu_work {
+            work.record_gpu_work(gpu_work);
+        }
+        self.last_presentation_work.insert(id, work);
     }
 }
 

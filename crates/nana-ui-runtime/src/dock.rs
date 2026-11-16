@@ -1612,6 +1612,8 @@ impl Dock {
 }
 
 impl ComponentView for Dock {
+    const TYPE_ID: Option<&'static str> = Some(crate::component_descriptors::DOCK.type_id);
+
     const BEHAVIOR: crate::TypeBehavior<Self> = crate::TypeBehavior {
         hooks: Some(|hooks| hooks.dock = Some(&DOCK_HOOKS)),
         slot_assembler: Some(crate::AppContext::assemble_dock_panels),
@@ -2151,7 +2153,8 @@ fn handle_style(axis: DockAxis) -> NodeStyle {
             ..SemanticPaint::default()
         },
         ..InteractionStyle::default()
-    };
+    }
+    .into();
     let layout = Arc::make_mut(&mut style.layout);
     layout.direction = Some(split_direction(axis));
     layout.align_items = AlignSpec::Center;
@@ -2384,8 +2387,8 @@ impl ComponentView for DockPanel {
                 },
             );
         }
-        if world.standard_visual(id).is_some() {
-            mutations.set_standard_visual(id, None);
+        if world.widget_visual_ref(id).is_some() {
+            mutations.set_widget_visual_handle(id, None);
         }
         project_common(
             id,

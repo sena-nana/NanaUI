@@ -88,9 +88,10 @@ impl TimestampNormalizer {
         timestamp_period: f32,
     ) -> Result<Self, TimestampNormalizerInitError> {
         unsafe {
-            if !device
-                .instance_flags
-                .contains(wgt::InstanceFlags::AUTOMATIC_TIMESTAMP_NORMALIZATION)
+            if !cfg!(feature = "wgsl")
+                || !device
+                    .instance_flags
+                    .contains(wgt::InstanceFlags::AUTOMATIC_TIMESTAMP_NORMALIZATION)
             {
                 return Ok(Self { state: None });
             }

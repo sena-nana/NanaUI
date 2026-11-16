@@ -670,15 +670,10 @@ impl AppContext {
         id: StableNodeId,
         axis: nana_ui_core::ScrollbarAxis,
     ) -> Option<crate::ScrollbarBar> {
-        match self.world.component_geometry(id) {
-            Some(crate::ComponentGeometry::Scrollbar {
-                horizontal,
-                vertical,
-            }) => match axis {
-                nana_ui_core::ScrollbarAxis::Horizontal => horizontal,
-                nana_ui_core::ScrollbarAxis::Vertical => vertical,
-            },
-            _ => None,
+        let bars = self.world.scrollbar_bars(id)?;
+        match axis {
+            nana_ui_core::ScrollbarAxis::Horizontal => bars.horizontal,
+            nana_ui_core::ScrollbarAxis::Vertical => bars.vertical,
         }
     }
 
@@ -693,28 +688,17 @@ impl AppContext {
         x: f32,
         y: f32,
     ) -> Option<nana_ui_core::ScrollbarAxis> {
-        let shown = match self.world.standard_visual(id) {
-            Some(crate::StandardVisual::Scrollbar {
-                visibility,
-                presence,
-                ..
-            }) => match visibility {
-                nana_ui_core::ScrollbarVisibility::AutoHide => presence > 0.0,
-                nana_ui_core::ScrollbarVisibility::Always => true,
-                nana_ui_core::ScrollbarVisibility::Hidden => false,
-            },
-            _ => false,
-        };
+        let shown = self
+            .world
+            .widget_visual_as::<crate::ScrollbarVisual>(id)
+            .is_some_and(crate::ScrollbarVisual::is_shown);
         if !shown {
             return None;
         }
-        let Some(crate::ComponentGeometry::Scrollbar {
+        let crate::ScrollbarBars {
             horizontal,
             vertical,
-        }) = self.world.component_geometry(id)
-        else {
-            return None;
-        };
+        } = self.world.scrollbar_bars(id)?;
         if vertical.is_some_and(|bar| bar.contains(x, y)) {
             Some(nana_ui_core::ScrollbarAxis::Vertical)
         } else if horizontal.is_some_and(|bar| bar.contains(x, y)) {
@@ -1064,9 +1048,6 @@ impl AppContext {
     /// Whether `scroll`'s bars are drawn now: present on at least one axis
     /// that can scroll. Auto-hiding bars count while they fade.
     pub fn scrollbars_visible(&self, scroll: Entity<ScrollView>) -> bool {
-        matches!(
-            self.world.component_geometry(scroll.stable_id()),
-            Some(crate::ComponentGeometry::Scrollbar { .. })
-        )
+        self.world.scrollbar_bars(scroll.stable_id()).is_some()
     }
 }

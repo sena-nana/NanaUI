@@ -14,7 +14,7 @@ impl UiScene {
             .map(|(_, ancestor)| nana_ui_runtime::StickyAncestor {
                 style: &ancestor.source_style.layout,
                 bounds: self.placed_layout(ancestor),
-                result: ancestor.layout_result.as_deref(),
+                boxes: ancestor.extracted_layout.map(|layout| layout.sticky_boxes),
                 scroll: ancestor.scroll_offset,
                 font_size: ancestor.style.font_size,
                 writing: ancestor.style.writing_context(),

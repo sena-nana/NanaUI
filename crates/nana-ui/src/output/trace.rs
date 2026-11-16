@@ -5,9 +5,127 @@
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use nana_gpu::{DeviceGeneration, GpuSubmission, GpuTextureFormat};
-use nana_ui_core::OutputWorkObservation;
 
 use super::{OutputConsumerId, OutputPath};
+
+/// Work counts for the Window-independent presentation boundary (Issue
+/// #242). An observation is emitted by an output producer, not by a consumer
+/// merely sampling an already completed texture.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct OutputWorkObservation {
+    pub extra_passes: usize,
+    pub gpu_copies: usize,
+    pub target_recreates: usize,
+    pub content_revisions: usize,
+    pub idle_reuse_frames: usize,
+    pub resolve_count: usize,
+    pub gpu_copy_bytes: usize,
+    pub gpu_convert_passes: usize,
+    pub plan_rebuilds: usize,
+    pub ui_renders: usize,
+    pub submissions: usize,
+    pub cpu_readbacks: usize,
+    pub deferred: usize,
+}
+
+impl OutputWorkObservation {
+    pub fn accumulate(&mut self, other: Self) {
+        macro_rules! add { ($($field:ident),* $(,)?) => { $(self.$field = self.$field.saturating_add(other.$field);)* }; }
+        add!(
+            extra_passes,
+            gpu_copies,
+            target_recreates,
+            content_revisions,
+            idle_reuse_frames,
+            resolve_count,
+            gpu_copy_bytes,
+            gpu_convert_passes,
+            plan_rebuilds,
+            ui_renders,
+            submissions,
+            cpu_readbacks,
+            deferred
+        );
+    }
+
+    pub fn record_target_recreate(&mut self) {
+        self.target_recreates = self.target_recreates.saturating_add(1);
+    }
+
+    pub fn record_content_revision(&mut self) {
+        self.content_revisions = self.content_revisions.saturating_add(1);
+    }
+
+    pub fn record_idle_reuse(&mut self) {
+        self.idle_reuse_frames = self.idle_reuse_frames.saturating_add(1);
+    }
+
+    pub fn record_gpu_copy(&mut self, bytes: usize) {
+        self.gpu_copies = self.gpu_copies.saturating_add(1);
+        self.gpu_copy_bytes = self.gpu_copy_bytes.saturating_add(bytes);
+    }
+}
+
+/// Host-observed GPU and output presentation counts for one frame.
+/// `None` means the host path did not record that stage for the frame.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct PresentationWork {
+    pub batch_rebuilds: Option<usize>,
+    pub draw_batches: Option<usize>,
+    pub draw_calls: Option<usize>,
+    pub gpu_upload_bytes: Option<usize>,
+    pub gpu_buffer_reallocations: Option<usize>,
+    pub output_extra_passes: Option<usize>,
+    pub output_gpu_copies: Option<usize>,
+    pub output_target_recreates: Option<usize>,
+    pub output_content_revisions: Option<usize>,
+    pub output_idle_reuse_frames: Option<usize>,
+    pub output_resolve_count: Option<usize>,
+    pub output_gpu_copy_bytes: Option<usize>,
+    pub output_gpu_convert_passes: Option<usize>,
+    pub output_plan_rebuilds: Option<usize>,
+    pub output_ui_renders: Option<usize>,
+    pub output_submissions: Option<usize>,
+    pub output_cpu_readbacks: Option<usize>,
+    pub output_deferred: Option<usize>,
+}
+
+impl PresentationWork {
+    pub fn record_gpu_work(&mut self, work: crate::GpuWorkObservation) {
+        fn add(slot: &mut Option<usize>, delta: usize) {
+            let value = slot.get_or_insert(0);
+            *value = value.saturating_add(delta);
+        }
+        add(&mut self.batch_rebuilds, work.batch_rebuilds);
+        add(&mut self.draw_batches, work.draw_batches);
+        add(&mut self.draw_calls, work.draw_calls);
+        add(&mut self.gpu_upload_bytes, work.gpu_upload_bytes);
+        add(
+            &mut self.gpu_buffer_reallocations,
+            work.gpu_buffer_reallocations,
+        );
+    }
+
+    pub fn record_output_work(&mut self, work: OutputWorkObservation) {
+        fn add(slot: &mut Option<usize>, delta: usize) {
+            let value = slot.get_or_insert(0);
+            *value = value.saturating_add(delta);
+        }
+        add(&mut self.output_extra_passes, work.extra_passes);
+        add(&mut self.output_gpu_copies, work.gpu_copies);
+        add(&mut self.output_target_recreates, work.target_recreates);
+        add(&mut self.output_content_revisions, work.content_revisions);
+        add(&mut self.output_idle_reuse_frames, work.idle_reuse_frames);
+        add(&mut self.output_resolve_count, work.resolve_count);
+        add(&mut self.output_gpu_copy_bytes, work.gpu_copy_bytes);
+        add(&mut self.output_gpu_convert_passes, work.gpu_convert_passes);
+        add(&mut self.output_plan_rebuilds, work.plan_rebuilds);
+        add(&mut self.output_ui_renders, work.ui_renders);
+        add(&mut self.output_submissions, work.submissions);
+        add(&mut self.output_cpu_readbacks, work.cpu_readbacks);
+        add(&mut self.output_deferred, work.deferred);
+    }
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u64)]

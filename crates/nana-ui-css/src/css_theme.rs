@@ -304,7 +304,7 @@ mod tests {
         assert_eq!(layout.padding_top, Some(LengthSpec::Px(14.0)));
         assert_eq!(layout.padding_right, Some(LengthSpec::Px(0.0)));
         assert_eq!(layout.padding_bottom, Some(LengthSpec::Px(14.0)));
-        assert_eq!(layout.border_top_width, Some(2.0));
+        assert_eq!(layout.border_sides.top_width, Some(2.0));
         assert_eq!(layout.border_radius, Some(theme.metrics().radius_lg));
         assert_eq!(layout.min_height, Some(LengthSpec::Px(61.0)));
     }
@@ -315,13 +315,14 @@ mod tests {
             layout.apply_css_property("padding-left", "0px", None, None);
             layout.apply_css_property("font-size", "13px", None, None);
         });
-        assert_eq!(
-            written.patch().get("theme.padding_left"),
-            Some(&serde_json::Value::Null)
-        );
-        assert_eq!(
-            written.patch().get("theme.font_size"),
-            Some(&serde_json::Value::Null)
+        assert!(written.written.contains(&"theme.padding_left".to_owned()));
+        assert!(written.layout.theme.padding_left.is_none());
+        assert!(written.written.contains(&"theme.font_size".to_owned()));
+        assert!(written.layout.theme.font_size.is_none());
+        assert!(
+            written
+                .patch_rust_stmts("__M")
+                .contains("__M::set::theme::padding_left(__nana_layout,None);")
         );
         let mut layout = LayoutStyle::default();
         layout.apply_css_text("gap: theme(space-md); row-gap: 0px", None, None);

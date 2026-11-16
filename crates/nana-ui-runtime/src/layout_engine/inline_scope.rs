@@ -29,7 +29,6 @@ fn column_style() -> LayoutStyle {
 
 fn ifc_style(padding_top: Option<f32>) -> LayoutStyle {
     LayoutStyle {
-        display: Some(DisplaySpec::Block),
         width: Some(LengthSpec::Px(200.0)),
         padding_top: padding_top.map(LengthSpec::Px),
         ..LayoutStyle::default()
@@ -38,7 +37,7 @@ fn ifc_style(padding_top: Option<f32>) -> LayoutStyle {
 
 fn atomic(width: f32) -> LayoutStyle {
     LayoutStyle {
-        display: Some(DisplaySpec::InlineBlock),
+        display: Some(DisplaySpec::InlineFlex),
         width: Some(LengthSpec::Px(width)),
         height: Some(LengthSpec::Px(24.0)),
         ..LayoutStyle::default()
@@ -47,7 +46,6 @@ fn atomic(width: f32) -> LayoutStyle {
 
 fn block_box(width: f32, height: f32) -> LayoutStyle {
     LayoutStyle {
-        display: Some(DisplaySpec::Block),
         width: Some(LengthSpec::Px(width)),
         height: Some(LengthSpec::Px(height)),
         ..LayoutStyle::default()
@@ -386,13 +384,12 @@ fn inline_intrinsic_width_change_reflows_only_its_context() {
             "the next line moved to {}",
             box_y(&world, id(12))
         );
-        let shaped_before = world.last_work_counters().text_shaped_runs;
         world
             .shape_text(&[id(300), id(500)], &mut crate::MeasureTextShaper)
             .unwrap();
         assert_eq!(
-            world.last_work_counters().text_shaped_runs,
-            shaped_before,
+            world.last_text_work_counters().text_nodes_shaped,
+            0,
             "unrelated text runs were reshaped"
         );
         measured.push(step.measure_nodes);

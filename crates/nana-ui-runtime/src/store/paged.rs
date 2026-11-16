@@ -344,12 +344,30 @@ impl<T> Slots<T> {
         slots <= entries.saturating_mul(SPARSE) + SPARSE_SLACK
     }
 
+    /// Grows `run` to hold at least `required_len` slots with bounded slack (+25% above 256 slots,
+    /// +12.5% above 512 slots) so large dense tables do not keep 2x doubling slop in resident heap.
+    fn grow_run(&mut self, required_len: usize) {
+        let cap = self.run.capacity();
+        if required_len <= cap {
+            return;
+        }
+        let target = if cap == 0 && required_len >= 256 {
+            required_len
+        } else if cap < 256 {
+            required_len.max(cap.saturating_mul(2)).max(16)
+        } else if cap < 512 {
+            required_len.max(cap + (cap >> 2))
+        } else {
+            required_len.max(cap + (cap >> 3))
+        };
+        self.run.reserve_exact(target - self.run.len());
+    }
+
     /// Room for the slots up to `highest` when the table is one run and
     /// `entries` entries keep it dense; pages are made as entries arrive.
     pub(crate) fn reserve_through(&mut self, highest: usize, entries: usize) {
         if !self.on_pages && Self::dense(highest + 1, entries) {
-            self.run
-                .reserve((highest + 1).saturating_sub(self.run.len()));
+            self.grow_run(highest + 1);
         }
     }
 
@@ -369,6 +387,7 @@ impl<T> Slots<T> {
     fn insert_past_run(&mut self, index: usize, value: T) -> Option<T> {
         if !self.on_pages {
             if Self::dense(index + 1, self.held + 1) {
+                self.grow_run(index + 1);
                 self.run.resize_with(index, || None);
                 self.run.push(Some(value));
                 self.held += 1;

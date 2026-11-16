@@ -12,8 +12,7 @@ use nana_ui_core::{
 use crate::view_components::{Activate, IconButton, project_common};
 use crate::{
     AccessibilityRole, AccessibilityState, AppContext, ComponentView, Entity, FrameworkError,
-    InteractionState, MutationQueue, NodeKind, NodeStyle, StableNodeId, StandardVisual,
-    TextContent, UiWorld,
+    InteractionState, MutationQueue, NodeKind, NodeStyle, StableNodeId, TextContent, UiWorld,
 };
 
 /// Request to remove a dismissible chip. Closing stays host-owned.
@@ -163,6 +162,8 @@ impl Chip {
 }
 
 impl ComponentView for Chip {
+    const TYPE_ID: Option<&'static str> = Some(crate::component_descriptors::CHIP.type_id);
+
     const BEHAVIOR: crate::TypeBehavior<Self> = crate::TypeBehavior {
         activation: Some(crate::AppContext::activate_chip),
         assembler: Some(crate::AppContext::assemble_chip),
@@ -200,7 +201,7 @@ impl ComponentView for Chip {
                 },
             );
         }
-        let visual = StandardVisual::Button {
+        let visual = crate::ButtonVisual {
             icon: None,
             trailing_icon: None,
             icon_size: self.size.icon_size(),
@@ -213,8 +214,8 @@ impl ComponentView for Chip {
             invalid: false,
             content_align: crate::TextHorizontalAlignment::Center,
         };
-        if world.standard_visual(id) != Some(visual.clone()) {
-            mutations.set_standard_visual(id, Some(visual));
+        if world.widget_visual_as::<crate::ButtonVisual>(id) != Some(&visual) {
+            mutations.set_widget_visual(id, Some(visual));
         }
         project_common(
             id,
@@ -345,10 +346,14 @@ mod tests {
         context
             .layout_document(document(), LayoutViewport::new(240.0, 80.0))
             .unwrap();
-        let visual = context.world().standard_visual(chip.stable_id()).unwrap();
+        let visual = context
+            .world()
+            .widget_visual_as::<crate::ButtonVisual>(chip.stable_id())
+            .unwrap()
+            .clone();
         assert_eq!(
             visual,
-            StandardVisual::Button {
+            crate::ButtonVisual {
                 icon: None,
                 trailing_icon: None,
                 icon_size: ControlSize::Small.icon_size(),

@@ -15,10 +15,9 @@ use crate::{
     Activate, AnimationId, AnimationSpec, Button, Card, Checkbox, Easing, IconButton, List,
     ListItem, NodeStyle, RangeAdjustment, RangeChanged, RangeField, RangeInput, RangeMarker,
     ScrollAxes, ScrollChanged, ScrollView, SegmentedControl, SegmentedOption,
-    SegmentedSelectionRequested, Select, SelectOption, Stack, StandardVisual, Switch, TabOption,
-    Table, TableCell, TableCellFocused, TableNavigation, TableRow, Tabs, Text, TextArea,
-    TextCaretIntent, TextChanged, TextCodeFold, TextContent, TextInlay, TextInput, TextSelection,
-    ToggleChanged,
+    SegmentedSelectionRequested, Select, SelectOption, Stack, Switch, TabOption, Table, TableCell,
+    TableCellFocused, TableNavigation, TableRow, Tabs, Text, TextArea, TextCaretIntent,
+    TextChanged, TextCodeFold, TextContent, TextInlay, TextInput, TextSelection, ToggleChanged,
 };
 
 fn seeds(ids: &[StableNodeId]) -> Vec<crate::LayoutFrontierSeed> {
@@ -929,9 +928,6 @@ fn plugin_pointer_hooks_hear_hover_drags_and_wheel() {
     impl crate::RegisterableComponent for Pad {
         const TYPE_ID: &'static str = "test.pad";
         const TAGS: &'static [&'static str] = &["pad"];
-        fn from_semantic(_: &crate::SemanticSpec<'_>) -> Self {
-            Pad
-        }
     }
     fn moved(_: &mut AppContext, _: Entity<Pad>, p: NodePointer) -> Result<bool, FrameworkError> {
         note(format!("move {} {} {}", p.x, p.y, p.captured));
@@ -1078,9 +1074,6 @@ fn plugin_pointer_hooks_hear_every_button_modifiers_and_clicks() {
     impl crate::RegisterableComponent for Canvas {
         const TYPE_ID: &'static str = "test.canvas";
         const TAGS: &'static [&'static str] = &["canvas"];
-        fn from_semantic(_: &crate::SemanticSpec<'_>) -> Self {
-            Canvas
-        }
     }
     fn moved(
         _: &mut AppContext,
@@ -1959,8 +1952,8 @@ fn tree_view_selects_toggles_drags_and_renames() {
     };
     relayout(&mut context);
     let take = || std::mem::take(&mut *HEARD.lock().unwrap());
-    let rows = |context: &AppContext| match context.world().component_geometry(tree.stable_id()) {
-        Some(crate::ComponentGeometry::TreeView { rows, drop }) => (rows, drop),
+    let rows = |context: &AppContext| match context.world().tree_view_layout(tree.stable_id()) {
+        Some(crate::TreeViewLayout { rows, drop }) => (rows, drop),
         _ => panic!("tree geometry"),
     };
     let row = |context: &AppContext, name: &str| {
@@ -2261,7 +2254,7 @@ fn area_layout_chrome_paints_every_frame_and_header() {
             assert_eq!(header.background, Some(SemanticColorRole::Surface));
             assert_eq!(header.border, Some(SemanticColorRole::BorderSoft));
             assert_eq!(
-                header.layout.border_bottom_width,
+                header.layout.border_sides.bottom_width,
                 Some(nana_ui_core::HAIRLINE)
             );
             assert_eq!(header.layout.border_width, Some(0.0));
@@ -3271,9 +3264,6 @@ fn plugin_register_activation_reaches_activate_node() {
     impl crate::RegisterableComponent for Ping {
         const TYPE_ID: &'static str = "test.ping";
         const TAGS: &'static [&'static str] = &["ping"];
-        fn from_semantic(_: &crate::SemanticSpec<'_>) -> Self {
-            Ping
-        }
     }
     fn activate_ping(
         context: &mut AppContext,
@@ -3498,8 +3488,10 @@ fn loading_button_owns_size_semantics_animation_and_activation_gate() {
     assert!(accessibility.busy);
     assert!(accessibility.invalid);
     assert!(matches!(
-        context.world().standard_visual(button.stable_id()),
-        Some(StandardVisual::Button {
+        context
+            .world()
+            .widget_visual_as::<crate::ButtonVisual>(button.stable_id()),
+        Some(crate::ButtonVisual {
             kind: nana_ui_core::ButtonKind::Warning,
             size: nana_ui_core::ControlSize::Large,
             loading: true,
@@ -3512,8 +3504,10 @@ fn loading_button_owns_size_semantics_animation_and_activation_gate() {
     assert_eq!(frame.component_updates, vec![button.stable_id()]);
     assert_eq!(frame.next_deadline, Some(Duration::from_millis(416)));
     assert!(matches!(
-        context.world().standard_visual(button.stable_id()),
-        Some(StandardVisual::Button {
+        context
+            .world()
+            .widget_visual_as::<crate::ButtonVisual>(button.stable_id()),
+        Some(crate::ButtonVisual {
             loading_phase,
             ..
         }) if (loading_phase - 0.5).abs() < f32::EPSILON
@@ -3630,8 +3624,8 @@ fn text_input_placeholder_uses_layout_color_and_opacity() {
     let mut field = TextInput::new("").placeholder("Hint");
     {
         let layout = Arc::make_mut(&mut field.style.layout);
-        layout.placeholder_color = Some([1.0, 0.0, 0.0, 1.0]);
-        layout.placeholder_opacity = Some(0.5);
+        layout.text_ext.placeholder_color = Some([1.0, 0.0, 0.0, 1.0]);
+        layout.text_ext.placeholder_opacity = Some(0.5);
     }
     let input = context.create_component(document, field).unwrap();
     let mut mutations = MutationQueue::new();
@@ -3654,8 +3648,8 @@ fn text_input_placeholder_uses_layout_color_and_opacity() {
         .shape_text(&[input.stable_id()], &mut crate::MeasureTextShaper)
         .unwrap();
 
-    match context.world().component_geometry(input.stable_id()) {
-        Some(crate::ComponentGeometry::TextInput { text, .. }) => {
+    match context.world().text_input_geometry(input.stable_id()) {
+        Some(crate::TextInputGeometry { text, .. }) => {
             assert_eq!(text.color, Some([1.0, 0.0, 0.0, 0.5]));
         }
         other => panic!("expected text input geometry, got {other:?}"),
@@ -3695,8 +3689,10 @@ fn card_icon_button_and_list_item_keep_visual_and_semantic_content_distinct() {
     assert!(context.activate_list_item(item).unwrap());
     assert_eq!(context.world().text(icon.stable_id()), Some(""));
     assert_eq!(
-        context.world().standard_visual(icon.stable_id()),
-        Some(StandardVisual::Icon {
+        context
+            .world()
+            .widget_visual_as::<crate::IconVisual>(icon.stable_id()),
+        Some(&crate::IconVisual {
             icon: nana_ui_core::Icon::Add,
             size: nana_ui_core::ControlSize::Medium.icon_size(),
             tooltip: None,
@@ -3797,11 +3793,10 @@ fn text_area_projects_git_gutter_marks_into_the_visual() {
         )
         .unwrap();
 
-    let Some(StandardVisual::TextInput { git_marks, .. }) =
-        context.world().standard_visual(area.stable_id())
-    else {
+    let Some(visual) = context.world().text_input_visual(area.stable_id()) else {
         panic!("expected text input visual");
     };
+    let git_marks = &visual.git_marks;
     assert_eq!(
         git_marks.as_ref(),
         &[
@@ -3828,8 +3823,8 @@ fn text_area_projects_visual_state_and_deletes_a_whole_grapheme() {
         .unwrap();
 
     assert!(matches!(
-        context.world().standard_visual(area.stable_id()),
-        Some(StandardVisual::TextInput {
+        context.world().text_input_visual_ref(area.stable_id()),
+        Some(crate::TextInputVisual {
             placeholder,
             secure: false,
             invalid: true,
@@ -3995,8 +3990,10 @@ fn native_toggle_and_slider_state_share_events_visuals_and_accessibility() {
     assert_eq!(*toggles.lock().unwrap(), vec![true]);
     assert_eq!(*slider_values.lock().unwrap(), vec![100.0]);
     assert_eq!(
-        context.world().standard_visual(checkbox.stable_id()),
-        Some(StandardVisual::Checkbox {
+        context
+            .world()
+            .widget_visual_as::<crate::CheckboxVisual>(checkbox.stable_id()),
+        Some(&crate::CheckboxVisual {
             checked: true,
             indeterminate: false,
             size: nana_ui_core::ControlSize::Medium,
@@ -4012,8 +4009,10 @@ fn native_toggle_and_slider_state_share_events_visuals_and_accessibility() {
         ))
     );
     assert_eq!(
-        context.world().standard_visual(switch.stable_id()),
-        Some(StandardVisual::Switch {
+        context
+            .world()
+            .widget_visual_as::<crate::SwitchVisual>(switch.stable_id()),
+        Some(&crate::SwitchVisual {
             thumb_progress: 1.0,
             label: Arc::from("Auto build"),
             hint: None,
@@ -4026,8 +4025,10 @@ fn native_toggle_and_slider_state_share_events_visuals_and_accessibility() {
         })
     );
     assert_eq!(
-        context.world().standard_visual(slider.stable_id()),
-        Some(StandardVisual::Range {
+        context
+            .world()
+            .widget_visual_as::<crate::RangeVisual>(slider.stable_id()),
+        Some(&crate::RangeVisual {
             caution: None,
             label: Some(Arc::from("Volume")),
             value: Arc::from("100"),
@@ -4108,8 +4109,10 @@ fn an_indeterminate_checkbox_reads_mixed_and_paints_as_engaged() {
         )
         .unwrap();
     assert_eq!(
-        context.world().standard_visual(mixed.stable_id()),
-        Some(StandardVisual::Checkbox {
+        context
+            .world()
+            .widget_visual_as::<crate::CheckboxVisual>(mixed.stable_id()),
+        Some(&crate::CheckboxVisual {
             checked: false,
             indeterminate: true,
             size: nana_ui_core::ControlSize::Large,
@@ -4327,8 +4330,8 @@ fn pressing_the_spinner_steps_and_pressing_the_text_does_not() {
         .shape_text(&work.text, &mut crate::MeasureTextShaper)
         .unwrap();
 
-    let steppers = match context.world().component_geometry(input.stable_id()) {
-        Some(crate::ComponentGeometry::TextInput {
+    let steppers = match context.world().text_input_geometry(input.stable_id()) {
+        Some(crate::TextInputGeometry {
             steppers: Some(steppers),
             ..
         }) => steppers,
@@ -4474,8 +4477,8 @@ fn the_spinner_follows_the_draft_and_owns_presses_on_its_inert_half() {
             .compat_world_mut()
             .shape_text(&work.text, &mut crate::MeasureTextShaper)
             .unwrap();
-        match context.world().component_geometry(node) {
-            Some(crate::ComponentGeometry::TextInput {
+        match context.world().text_input_geometry(node) {
+            Some(crate::TextInputGeometry {
                 steppers: Some(steppers),
                 ..
             }) => steppers,
@@ -4660,10 +4663,10 @@ fn a_read_only_number_input_draws_an_inert_spinner() {
         .compat_world_mut()
         .shape_text(&work.text, &mut crate::MeasureTextShaper)
         .unwrap();
-    let Some(crate::ComponentGeometry::TextInput {
+    let Some(crate::TextInputGeometry {
         steppers: Some(steppers),
         ..
-    }) = context.world().component_geometry(input.stable_id())
+    }) = context.world().text_input_geometry(input.stable_id())
     else {
         panic!("expected spinner geometry");
     };
@@ -4984,7 +4987,7 @@ fn failed_component_projection_keeps_typed_state_and_world_unchanged() {
         .create_component(document, RangeField::new(25.0, 0.0, 100.0, 1.0))
         .unwrap();
     let generation = context.world().generation();
-    let visual = context.world().standard_visual(slider.stable_id());
+    let visual = context.world().widget_visual(slider.stable_id());
 
     assert!(
         context
@@ -4993,7 +4996,7 @@ fn failed_component_projection_keeps_typed_state_and_world_unchanged() {
     );
     assert_eq!(context.read(slider, |slider| slider.value).unwrap(), 25.0);
     assert_eq!(context.world().generation(), generation);
-    assert_eq!(context.world().standard_visual(slider.stable_id()), visual);
+    assert_eq!(context.world().widget_visual(slider.stable_id()), visual);
 }
 
 #[test]
@@ -6672,10 +6675,10 @@ fn overflowing_scroll_view(
 }
 
 fn vertical_bar(context: &AppContext, scroll: Entity<ScrollView>) -> Option<crate::ScrollbarBar> {
-    match context.world().component_geometry(scroll.stable_id()) {
-        Some(crate::ComponentGeometry::Scrollbar { vertical, .. }) => vertical,
-        _ => None,
-    }
+    context
+        .world()
+        .scrollbar_bars(scroll.stable_id())
+        .and_then(|bars| bars.vertical)
 }
 
 #[test]
@@ -7038,9 +7041,12 @@ fn an_icon_buttons_icon_size_sets_the_glyph_not_the_box() {
                 .icon_size(f32::NAN),
         )
         .unwrap();
-    let glyph = |id: crate::StableNodeId| match context.world().standard_visual(id) {
-        Some(StandardVisual::Icon { size, .. }) => size,
-        other => panic!("expected an icon visual, got {other:?}"),
+    let glyph = |id: crate::StableNodeId| {
+        context
+            .world()
+            .widget_visual_as::<crate::IconVisual>(id)
+            .unwrap_or_else(|| panic!("expected an icon visual on {id:?}"))
+            .size
     };
     assert_eq!(
         glyph(plain.stable_id()),
@@ -7374,16 +7380,15 @@ fn an_installed_compact_height_reaches_a_context_menu_search_field() {
     context
         .layout_document(document, crate::LayoutViewport::new(400.0, 400.0))
         .unwrap();
-    let search_height =
-        |context: &AppContext| match context.world().extract_nodes(&[menu.stable_id()])[0]
-            .component_geometry
-            .as_deref()
-        {
-            Some(crate::ComponentGeometry::MenuSurface { search, .. }) => {
-                search.as_ref().map(|region| region.bounds.height)
-            }
-            other => panic!("menu geometry, got {other:?}"),
-        };
+    let search_height = |context: &AppContext| {
+        context
+            .world()
+            .menu_surface_geometry(menu.stable_id())
+            .expect("menu geometry")
+            .search
+            .as_ref()
+            .map(|region| region.bounds.height)
+    };
     assert_eq!(
         search_height(&context),
         Some(nana_ui_core::UI_METRICS.compact_control_height)
@@ -8520,12 +8525,17 @@ fn a_switch_with_no_label_is_its_track() {
             .layout_box(switch.stable_id())
             .unwrap()
             .width;
-        let control = match context.world().extract_nodes(&[switch.stable_id()])[0]
-            .component_geometry
-            .as_deref()
+        let control = match context
+            .world()
+            .widget_paint(switch.stable_id())
+            .expect("switch paint")
+            .ops
+            .iter()
+            .find(|t| t.slot == 4)
+            .map(|t| &t.op)
         {
-            Some(crate::ComponentGeometry::Switch { control, .. }) => control.width,
-            other => panic!("a switch derives switch geometry, got {other:?}"),
+            Some(crate::WidgetPaintOp::Quad(quad)) => quad.rect.width,
+            other => panic!("a switch derives switch paint, got {other:?}"),
         };
         (node, control)
     };
@@ -8569,13 +8579,15 @@ fn an_installed_switch_track_reaches_the_switch() {
         .layout_document(document, crate::LayoutViewport::new(320.0, 80.0))
         .unwrap();
 
-    let track_of = |context: &AppContext| match context.world().extract_nodes(&[switch.stable_id()])
-        [0]
-    .component_geometry
-    .as_deref()
-    {
-        Some(crate::ComponentGeometry::Switch { control, .. }) => (control.width, control.x),
-        other => panic!("a switch derives switch geometry, got {other:?}"),
+    let track_of = |context: &AppContext| {
+        let paint = context
+            .world()
+            .widget_paint(switch.stable_id())
+            .expect("switch paint");
+        match paint.ops.iter().find(|t| t.slot == 4).map(|t| &t.op) {
+            Some(crate::WidgetPaintOp::Quad(quad)) => (quad.rect.width, quad.rect.x),
+            other => panic!("a switch derives switch paint, got {other:?}"),
+        }
     };
     let (width, x) = track_of(&context);
     assert_eq!(width, nana_ui_core::SWITCH_METRICS.track_width);
@@ -8637,14 +8649,12 @@ fn a_switch_that_authored_its_inset_keeps_its_track() {
         .layout_document(document, crate::LayoutViewport::new(320.0, 120.0))
         .unwrap();
 
-    let control_width = |context: &AppContext, id: crate::StableNodeId| match context
-        .world()
-        .extract_nodes(&[id])[0]
-        .component_geometry
-        .as_deref()
-    {
-        Some(crate::ComponentGeometry::Switch { control, .. }) => control.width,
-        other => panic!("a switch derives switch geometry, got {other:?}"),
+    let control_width = |context: &AppContext, id: crate::StableNodeId| {
+        let paint = context.world().widget_paint(id).expect("switch paint");
+        match paint.ops.iter().find(|t| t.slot == 4).map(|t| &t.op) {
+            Some(crate::WidgetPaintOp::Quad(quad)) => quad.rect.width,
+            other => panic!("a switch derives switch paint, got {other:?}"),
+        }
     };
     assert_eq!(
         control_width(&context, bare.stable_id()),
@@ -8694,19 +8704,22 @@ fn a_rows_note_follows_its_label_and_gives_way_first() {
     context
         .layout_document(document, crate::LayoutViewport::new(480.0, 200.0))
         .unwrap();
-    let geometry = |row: crate::Entity<crate::ListItem>| match context
-        .world()
-        .extract_nodes(&[row.stable_id()])[0]
-        .component_geometry
-        .as_deref()
-    {
-        Some(crate::ComponentGeometry::ListItem {
-            content,
-            note,
-            detail,
-            ..
-        }) => (content.expect("a label box"), note.clone(), detail.clone()),
-        other => panic!("a list item derives list-item geometry, got {other:?}"),
+    let geometry = |row: crate::Entity<crate::ListItem>| {
+        let paint = context.world().extract_nodes(&[row.stable_id()])[0]
+            .widget_paint
+            .clone()
+            .expect("a list item paints via WidgetPaintOutput");
+        let text_op = |slot: u64| {
+            paint.ops.iter().find_map(|tagged| match &tagged.op {
+                crate::WidgetPaintOp::Text(text) if tagged.slot == slot => Some(text.clone()),
+                _ => None,
+            })
+        };
+        (
+            paint.node_text_bounds.expect("a label box"),
+            text_op(4),
+            text_op(3),
+        )
     };
     let (label, note, detail) = geometry(rows[0]);
     let note = note.expect("a wide row draws its note");
@@ -8746,14 +8759,20 @@ fn a_focused_rows_secondary_text_follows_its_label() {
         .layout_document(document, crate::LayoutViewport::new(320.0, 80.0))
         .unwrap();
 
-    let colors = |context: &AppContext| match context.world().extract_nodes(&[row.stable_id()])[0]
-        .component_geometry
-        .as_deref()
-    {
-        Some(crate::ComponentGeometry::ListItem { detail, .. }) => {
-            detail.as_ref().expect("the row declares a detail").color
-        }
-        other => panic!("a list item derives list-item geometry, got {other:?}"),
+    let colors = |context: &AppContext| {
+        let paint = context.world().extract_nodes(&[row.stable_id()])[0]
+            .widget_paint
+            .clone()
+            .expect("a list item paints via WidgetPaintOutput");
+        paint
+            .ops
+            .iter()
+            .find_map(|tagged| match &tagged.op {
+                crate::WidgetPaintOp::Text(text) if tagged.slot == 3 => Some(text.clone()),
+                _ => None,
+            })
+            .expect("the row declares a detail")
+            .color
     };
     let palette = nana_ui_core::SemanticPalette::dark();
     let step_back = |color: nana_ui_core::SemanticColor| {
@@ -8799,15 +8818,18 @@ fn a_disabled_rows_secondary_text_fades_with_its_label() {
         .layout_document(document, crate::LayoutViewport::new(320.0, 80.0))
         .unwrap();
 
-    let detail = match context.world().extract_nodes(&[row.stable_id()])[0]
-        .component_geometry
-        .as_deref()
-    {
-        Some(crate::ComponentGeometry::ListItem { detail, .. }) => {
-            detail.as_ref().expect("the row declares a detail").color
-        }
-        other => panic!("a list item derives list-item geometry, got {other:?}"),
-    };
+    let detail = context.world().extract_nodes(&[row.stable_id()])[0]
+        .widget_paint
+        .clone()
+        .expect("a list item paints via WidgetPaintOutput")
+        .ops
+        .iter()
+        .find_map(|tagged| match &tagged.op {
+            crate::WidgetPaintOp::Text(text) if tagged.slot == 3 => Some(text.clone()),
+            _ => None,
+        })
+        .expect("the row declares a detail")
+        .color;
     let [r, g, b, a] = nana_ui_core::SemanticPalette::dark().faint.as_rgba_array();
     assert_eq!(
         detail,
@@ -9565,8 +9587,10 @@ fn parked_icon_button_closes_tooltip_projection_and_does_not_reopen_on_remount()
         .unwrap();
     assert!(context.read(button, |button| button.tooltip_open).unwrap());
     assert!(matches!(
-        context.world().standard_visual(button.stable_id()),
-        Some(StandardVisual::Icon {
+        context
+            .world()
+            .widget_visual_as::<crate::IconVisual>(button.stable_id()),
+        Some(crate::IconVisual {
             tooltip: Some(crate::TooltipVisual { open: true, .. }),
             ..
         })
@@ -9577,8 +9601,10 @@ fn parked_icon_button_closes_tooltip_projection_and_does_not_reopen_on_remount()
     context.commit_mutations(park).unwrap();
     assert!(!context.read(button, |button| button.tooltip_open).unwrap());
     assert!(matches!(
-        context.world().standard_visual(button.stable_id()),
-        Some(StandardVisual::Icon {
+        context
+            .world()
+            .widget_visual_as::<crate::IconVisual>(button.stable_id()),
+        Some(crate::IconVisual {
             tooltip: Some(crate::TooltipVisual { open: false, .. }),
             ..
         })
@@ -9622,8 +9648,10 @@ fn parked_icon_button_closes_tooltip_projection_and_does_not_reopen_on_remount()
         .unwrap();
     assert!(!context.read(button, |button| button.tooltip_open).unwrap());
     assert!(matches!(
-        context.world().standard_visual(button.stable_id()),
-        Some(StandardVisual::Icon {
+        context
+            .world()
+            .widget_visual_as::<crate::IconVisual>(button.stable_id()),
+        Some(crate::IconVisual {
             tooltip: Some(crate::TooltipVisual { open: false, .. }),
             ..
         })
@@ -10021,34 +10049,38 @@ fn composite_geometry_separates_text_controls_and_range_drag_axis() {
         .layout_document(document, crate::LayoutViewport::new(640.0, 480.0))
         .unwrap();
 
-    let crate::ComponentGeometry::Switch {
-        label,
-        hint: Some(hint),
-        control,
-        ..
-    } = context
+    let paint = context
         .world()
-        .component_geometry(switch.stable_id())
-        .unwrap()
-    else {
-        panic!("switch geometry must include label, hint, and control");
+        .widget_paint(switch.stable_id())
+        .expect("switch paint");
+    let label = match paint.ops.iter().find(|t| t.slot == 2).map(|t| &t.op) {
+        Some(crate::WidgetPaintOp::Text(text)) => text,
+        other => panic!("switch label op: {other:?}"),
+    };
+    let hint = match paint.ops.iter().find(|t| t.slot == 3).map(|t| &t.op) {
+        Some(crate::WidgetPaintOp::Text(text)) => text,
+        other => panic!("switch hint op: {other:?}"),
+    };
+    let control = match paint.ops.iter().find(|t| t.slot == 4).map(|t| &t.op) {
+        Some(crate::WidgetPaintOp::Quad(quad)) => quad.rect,
+        other => panic!("switch track op: {other:?}"),
     };
     assert!(label.bounds.x + label.bounds.width <= control.x);
     assert!(label.bounds.y + label.bounds.height <= hint.bounds.y);
 
-    let crate::ComponentGeometry::Card {
-        title: Some(title),
-        content,
-        ..
-    } = context
+    let title = context
         .world()
-        .component_geometry(card.stable_id())
-        .unwrap()
-    else {
-        panic!("card geometry must include title and content");
-    };
-    assert!(title.bounds.y + title.bounds.height <= content.y);
-    assert!(title.bounds.width >= content.width - 0.01);
+        .content_part_box(card.stable_id(), crate::LayoutPartKind::Header)
+        .expect("card geometry must include title");
+    let content = context.world().children_box(
+        card.stable_id(),
+        context
+            .world()
+            .component_content_box(card.stable_id())
+            .expect("card content"),
+    );
+    assert!(title.y + title.height <= content.y);
+    assert!(title.width >= content.width - 0.01);
     assert!(context.world().layout_box(body.stable_id()).unwrap().y >= content.y);
     let card_layout = context
         .world()
@@ -10059,13 +10091,11 @@ fn composite_geometry_separates_text_controls_and_range_drag_axis() {
     assert_eq!(card_layout.padding_top, Some(LengthSpec::Px(28.0)));
     assert_eq!(card_layout.padding_bottom, Some(LengthSpec::Px(28.0)));
 
-    let crate::ComponentGeometry::Range { track, .. } = context
+    let track = context
         .world()
-        .component_geometry(range.stable_id())
-        .unwrap()
-    else {
-        panic!("range geometry must expose the interaction axis");
-    };
+        .range_geometry(range.stable_id())
+        .expect("range geometry must expose the interaction axis")
+        .track;
     assert!(track.x > context.world().layout_box(range.stable_id()).unwrap().x);
     context
         .begin_range_drag(document, 7, range.stable_id(), track.x)
@@ -10124,11 +10154,11 @@ fn laid_out_range(
         },
     );
     context.commit_mutations(layout).unwrap();
-    let Some(crate::ComponentGeometry::Range { track, .. }) =
-        context.world().component_geometry(range.stable_id())
-    else {
-        panic!("range geometry must expose the interaction axis");
-    };
+    let track = context
+        .world()
+        .range_geometry(range.stable_id())
+        .expect("range geometry must expose the interaction axis")
+        .track;
     (range, track.x, track.width)
 }
 
@@ -10258,14 +10288,11 @@ fn a_range_caution_zone_is_measured_along_the_track_in_the_warning_colour() {
         context
             .layout_document(document, crate::LayoutViewport::new(640.0, 480.0))
             .unwrap();
-        let crate::ComponentGeometry::Range { caution, .. } = context
+        context
             .world()
-            .component_geometry(range.stable_id())
-            .unwrap()
-        else {
-            panic!("range geometry expected");
-        };
-        caution
+            .range_geometry(range.stable_id())
+            .expect("range geometry expected")
+            .caution
     };
     let zone = caution(
         &mut context,
@@ -10465,23 +10492,28 @@ fn component_size_kind_and_fallback_geometry_preserve_design_contracts() {
                 .width,
             380.0
         );
-        let crate::ComponentGeometry::Switch { label, control, .. } = context
+        let switch_paint = context
             .world()
-            .component_geometry(switch.stable_id())
-            .unwrap()
-        else {
-            panic!("switch geometry expected");
+            .widget_paint(switch.stable_id())
+            .expect("switch paint");
+        let label = match switch_paint.ops.iter().find(|t| t.slot == 2).map(|t| &t.op) {
+            Some(crate::WidgetPaintOp::Text(text)) => text,
+            other => panic!("switch label expected, got {other:?}"),
+        };
+        let control = match switch_paint.ops.iter().find(|t| t.slot == 4).map(|t| &t.op) {
+            Some(crate::WidgetPaintOp::Quad(quad)) => quad.rect,
+            other => panic!("switch track expected, got {other:?}"),
         };
         assert_eq!(label.font_size, size.text_size());
         assert!(label.bounds.x + label.bounds.width <= control.x);
-        let switch_interaction = context
+        let switch_interaction = &context
             .world()
             .node_style(switch.stable_id())
             .unwrap()
             .interaction;
         assert_ne!(switch_interaction.hovered, switch_interaction.pressed);
         assert_ne!(switch_interaction.pressed, switch_interaction.focused);
-        let crate::ComponentGeometry::Range {
+        let crate::RangeGeometry {
             label: Some(label),
             value,
             unit: Some(unit),
@@ -10489,8 +10521,8 @@ fn component_size_kind_and_fallback_geometry_preserve_design_contracts() {
             ..
         } = context
             .world()
-            .component_geometry(range.stable_id())
-            .unwrap()
+            .range_geometry(range.stable_id())
+            .expect("range geometry expected")
         else {
             panic!("range geometry expected");
         };
@@ -10499,8 +10531,10 @@ fn component_size_kind_and_fallback_geometry_preserve_design_contracts() {
         assert!(track.x + track.width <= value.bounds.x);
         assert!(value.bounds.x + value.bounds.width <= unit.bounds.x + 0.01);
         assert_eq!(
-            context.world().standard_visual(range.stable_id()),
-            Some(StandardVisual::Range {
+            context
+                .world()
+                .widget_visual_as::<crate::RangeVisual>(range.stable_id()),
+            Some(&crate::RangeVisual {
                 caution: None,
                 label: Some(Arc::from("Opacity")),
                 value: Arc::from("0.7"),
@@ -10539,13 +10573,15 @@ fn component_size_kind_and_fallback_geometry_preserve_design_contracts() {
         context
             .layout_document(document, crate::LayoutViewport::new(240.0, 120.0))
             .unwrap();
-        let crate::ComponentGeometry::Card { elevation, .. } = context
+        let elevation = context
             .world()
-            .component_geometry(card.stable_id())
-            .unwrap()
-        else {
-            panic!("card geometry expected");
-        };
+            .widget_paint(card.stable_id())
+            .and_then(|paint| {
+                paint
+                    .root_surface
+                    .as_ref()
+                    .and_then(|surface| surface.fallback_elevation)
+            });
         assert_eq!(
             elevation,
             (kind == nana_ui_core::CardKind::Raised).then_some(
@@ -10581,7 +10617,7 @@ fn component_size_kind_and_fallback_geometry_preserve_design_contracts() {
     let item = context
         .create_component(document, ListItem::new("Camera"))
         .unwrap();
-    let item_interaction = context
+    let item_interaction = &context
         .world()
         .node_style(item.stable_id())
         .unwrap()
@@ -10604,19 +10640,21 @@ fn component_size_kind_and_fallback_geometry_preserve_design_contracts() {
     context
         .layout_document(document, crate::LayoutViewport::new(240.0, 120.0))
         .unwrap();
-    let crate::ComponentGeometry::ListItem {
-        leading: Some(leading),
-        content: Some(content),
-        trailing: Some(trailing),
-        note: None,
-        detail: None,
-    } = context
+    let paint = context
         .world()
-        .component_geometry(item.stable_id())
-        .unwrap()
-    else {
-        panic!("list item fallback geometry expected");
-    };
+        .widget_paint(item.stable_id())
+        .expect("list item widget paint expected");
+    let leading = context
+        .world()
+        .layout_box(leading.stable_id())
+        .expect("leading layout box expected");
+    let content = paint
+        .node_text_bounds
+        .expect("list item text bounds expected");
+    let trailing = context
+        .world()
+        .layout_box(trailing.stable_id())
+        .expect("trailing layout box expected");
     assert!(leading.x + leading.width <= content.x);
     assert!(content.x + content.width <= trailing.x);
 
@@ -10663,15 +10701,12 @@ fn range_field_can_hide_the_value_readout_and_still_expose_the_numeric_value() {
         .layout_document(document, crate::LayoutViewport::new(640.0, 480.0))
         .unwrap();
     let bounds = context.world().layout_box(range.stable_id()).unwrap();
-    let crate::ComponentGeometry::Range {
+    let crate::RangeGeometry {
         value, unit, track, ..
     } = context
         .world()
-        .component_geometry(range.stable_id())
-        .unwrap()
-    else {
-        panic!("range geometry expected");
-    };
+        .range_geometry(range.stable_id())
+        .expect("range geometry expected");
     assert!(value.content.is_empty());
     assert!(unit.is_none());
     assert!(
@@ -10679,8 +10714,10 @@ fn range_field_can_hide_the_value_readout_and_still_expose_the_numeric_value() {
         "track={track:?} bounds={bounds:?}"
     );
     assert_eq!(
-        context.world().standard_visual(range.stable_id()),
-        Some(StandardVisual::Range {
+        context
+            .world()
+            .widget_visual_as::<crate::RangeVisual>(range.stable_id()),
+        Some(&crate::RangeVisual {
             caution: None,
             label: Some(Arc::from("Seek")),
             value: Arc::from(""),
@@ -10732,7 +10769,7 @@ fn a_gradient_range_is_a_bare_strip_with_a_ring_thumb_and_keeps_its_slider_seman
         .layout_document(document, crate::LayoutViewport::new(640.0, 480.0))
         .unwrap();
     let bounds = context.world().layout_box(range.stable_id()).unwrap();
-    let crate::ComponentGeometry::Range {
+    let crate::RangeGeometry {
         label,
         value,
         unit,
@@ -10741,11 +10778,8 @@ fn a_gradient_range_is_a_bare_strip_with_a_ring_thumb_and_keeps_its_slider_seman
         ..
     } = context
         .world()
-        .component_geometry(range.stable_id())
-        .unwrap()
-    else {
-        panic!("range geometry expected");
-    };
+        .range_geometry(range.stable_id())
+        .expect("range geometry expected");
     assert!(label.is_none() && unit.is_none() && value.content.is_empty());
     // No field padding: the band is inset only by half the ring, so the
     // ring stays in the box at either end.
@@ -10766,13 +10800,15 @@ fn a_gradient_range_is_a_bare_strip_with_a_ring_thumb_and_keeps_its_slider_seman
         "a light ring with dark edges reads on any stop: {ring:?}"
     );
     assert!(matches!(
-        context.world().standard_visual(range.stable_id()),
-        Some(StandardVisual::Range {
+        context
+            .world()
+            .widget_visual_as::<crate::RangeVisual>(range.stable_id()),
+        Some(crate::RangeVisual {
             value,
             track_gradient: Some(stops),
             rail: None,
             ..
-        }) if value.is_empty() && stops == spectrum
+        }) if value.is_empty() && stops == &spectrum
     ));
     // Still a slider: pointer, keyboard and the numeric value all work.
     context
@@ -10822,18 +10858,17 @@ fn a_rail_range_maps_its_whole_box_and_names_itself_only_for_assistive_technolog
         .layout_document(document, crate::LayoutViewport::new(640.0, 480.0))
         .unwrap();
     let bounds = context.world().layout_box(range.stable_id()).unwrap();
-    let crate::ComponentGeometry::Range { label, track, .. } = context
+    let crate::RangeGeometry { label, track, .. } = context
         .world()
-        .component_geometry(range.stable_id())
-        .unwrap()
-    else {
-        panic!("range geometry expected");
-    };
+        .range_geometry(range.stable_id())
+        .expect("range geometry expected");
     assert!(label.is_none());
     assert_eq!((track.x, track.width), (bounds.x, bounds.width));
     assert!(matches!(
-        context.world().standard_visual(range.stable_id()),
-        Some(StandardVisual::Range {
+        context
+            .world()
+            .widget_visual_as::<crate::RangeVisual>(range.stable_id()),
+        Some(crate::RangeVisual {
             label: None,
             rail: Some(2.0),
             ..
@@ -11189,14 +11224,6 @@ fn builtin_and_plugin_components_share_one_registry() {
     impl crate::RegisterableComponent for ProbeCard {
         const TYPE_ID: &'static str = "test.probe-card";
         const TAGS: &'static [&'static str] = &["nana-probe-card", "probe-card"];
-        fn from_semantic(spec: &crate::SemanticSpec<'_>) -> Self {
-            Self {
-                title: spec
-                    .attr("handle")
-                    .unwrap_or_else(|| spec.display_label())
-                    .to_owned(),
-            }
-        }
     }
     struct ProbePlugin;
     impl UiExtension for ProbePlugin {
@@ -11227,11 +11254,8 @@ fn builtin_and_plugin_components_share_one_registry() {
             .map(ComponentTypeId::as_str),
         Some("nana.button")
     );
-    let select_type = context.resolve_component_tag("select").unwrap().clone();
-    let select_layout = std::sync::Arc::new(nana_ui_core::LayoutStyle::default());
-    let select_spec = crate::SemanticSpec::from_parts(&select_type, &select_layout);
     let select = context
-        .create_component(document, Select::from_semantic(&select_spec))
+        .create_component(document, Select::new(None::<&str>))
         .unwrap();
     assert_eq!(
         context
@@ -11254,33 +11278,25 @@ fn builtin_and_plugin_components_share_one_registry() {
         Some("nana.dock")
     );
 
-    let id = StableNodeId::new(42).unwrap();
-    let mut queue = MutationQueue::new();
-    queue.create(
-        id,
-        document,
-        NodeKind::Element {
-            tag: "probe-card".into(),
-        },
-    );
-    context.commit_mutations(queue).unwrap();
-    let type_id = context.resolve_component_tag("probe-card").unwrap().clone();
-    let layout = std::sync::Arc::new(nana_ui_core::LayoutStyle::default());
-    let spec = crate::SemanticSpec {
-        label: "User",
-        ..crate::SemanticSpec::from_parts(&type_id, &layout)
-    };
-    let mut mutations = MutationQueue::new();
     assert_eq!(
-        context.bind_semantic(id, &spec, &mut mutations).unwrap(),
-        crate::ComponentBindKind::Projected
+        context
+            .resolve_component_tag("probe-card")
+            .map(ComponentTypeId::as_str),
+        Some("test.probe-card")
     );
-    context.commit_mutations(mutations).unwrap();
-    assert_eq!(context.world().text(id), Some("User"));
+    let probe = context
+        .create_component(
+            document,
+            ProbeCard {
+                title: "User".into(),
+            },
+        )
+        .unwrap();
+    assert_eq!(context.world().text(probe.stable_id()), Some("User"));
     assert_eq!(
         context
             .world()
-            .component_type(id)
+            .component_type(probe.stable_id())
             .map(ComponentTypeId::as_str),
         Some("test.probe-card")
     );
@@ -11299,6 +11315,7 @@ fn documented_containers_and_chrome_carry_a_type_identity() {
         ("table", "nana.table"),
         ("tr", "nana.table-row"),
         ("td", "nana.table-cell"),
+        #[cfg(feature = "controls")]
         ("reorder-list", "nana.reorder-list"),
         ("desktop-shell", "nana.desktop-shell"),
         ("app-title-bar", "nana.app-title-bar"),
@@ -11373,9 +11390,6 @@ fn plugin_component_registration_is_atomic_on_conflict() {
     impl crate::RegisterableComponent for StealButton {
         const TYPE_ID: &'static str = "nana.button";
         const TAGS: &'static [&'static str] = &["stolen"];
-        fn from_semantic(_spec: &crate::SemanticSpec<'_>) -> Self {
-            Self
-        }
     }
     struct Conflict;
     impl UiExtension for Conflict {
@@ -12637,16 +12651,20 @@ fn a_formatting_context_transition_keeps_child_components_and_their_state() {
     let children = context.world.node(parent.id).unwrap().children;
 
     for (display, established, participation) in [
-        (nana_ui_core::DisplaySpec::Grid, Ctx::Grid, Part::GridItem),
         (
-            nana_ui_core::DisplaySpec::Block,
-            Ctx::Inline,
-            Part::FlowItem,
+            Some(nana_ui_core::DisplaySpec::Grid),
+            Ctx::Grid,
+            Part::GridItem,
         ),
-        (nana_ui_core::DisplaySpec::Flex, Ctx::Flex, Part::FlexItem),
+        (None, Ctx::Inline, Part::FlexItem),
+        (
+            Some(nana_ui_core::DisplaySpec::Flex),
+            Ctx::Flex,
+            Part::FlexItem,
+        ),
     ] {
         let mut style = context.world.node_style(parent.id).unwrap().clone();
-        Arc::make_mut(&mut style.layout).display = Some(display);
+        Arc::make_mut(&mut style.layout).display = display;
         let mut queue = MutationQueue::new();
         queue.set_style(parent.id, style);
         context.commit_mutations(queue).unwrap();
@@ -12746,8 +12764,8 @@ fn retained_child_reconciliation_preserves_extracted_tooltip_and_loading_lifecyc
     assert!(!context.world.is_mounted(old.id));
     assert!(context.read(icon, |icon| icon.tooltip_open).unwrap());
     assert!(matches!(
-        context.world.standard_visual(icon.id),
-        Some(StandardVisual::Icon {
+        context.world.widget_visual_as::<crate::IconVisual>(icon.id),
+        Some(crate::IconVisual {
             tooltip: Some(crate::TooltipVisual { open: true, .. }),
             ..
         })
@@ -12772,8 +12790,8 @@ fn retained_child_reconciliation_preserves_extracted_tooltip_and_loading_lifecyc
     assert_eq!(report.generation, generation + 1);
     assert!(!context.read(icon, |icon| icon.tooltip_open).unwrap());
     assert!(matches!(
-        context.world.standard_visual(icon.id),
-        Some(StandardVisual::Icon {
+        context.world.widget_visual_as::<crate::IconVisual>(icon.id),
+        Some(crate::IconVisual {
             tooltip: Some(crate::TooltipVisual { open: false, .. }),
             ..
         })
@@ -13053,9 +13071,22 @@ fn an_installed_family_recipe_reaches_a_live_node_without_reprojecting_it() {
     let bar = context
         .create_component(document, crate::Progress::new(0.5, 1.0))
         .unwrap();
+    context
+        .layout_document(document, crate::LayoutViewport::new(200.0, 40.0))
+        .unwrap();
 
     let foreground = |context: &AppContext| {
-        context.world().extract_nodes(&[bar.stable_id()])[0].standard_visual_foreground
+        context
+            .world()
+            .widget_paint(bar.stable_id())
+            .and_then(|paint| {
+                paint.ops.iter().find_map(|op| {
+                    (op.slot == 4).then_some(&op.op).and_then(|op| match op {
+                        crate::WidgetPaintOp::Quad(quad) => quad.fill,
+                        _ => None,
+                    })
+                })
+            })
     };
     let palette = nana_ui_core::SemanticPalette::dark();
     assert_eq!(foreground(&context), Some(palette.accent.as_rgba_array()));
@@ -13591,7 +13622,7 @@ fn closing_a_search_dropdown_leaves_its_label_as_the_node_text() {
     assert_eq!(context.world().text(search.stable_id()), Some("Alpha"));
 }
 
-/// `BuiltinComponents::Typed` installs identities up front and each type's
+/// Built-in components carry static identities and install each type's
 /// hooks when its first node is created, from any creation path.
 #[test]
 fn a_typed_context_installs_hooks_with_the_types_it_creates() {
@@ -13654,46 +13685,6 @@ fn a_typed_context_installs_hooks_with_the_types_it_creates() {
         .update_component(chip, |chip, _| chip.dismissible = true)
         .unwrap();
     assert!(context.read(chip, |chip| chip.close).unwrap().is_some());
-}
-
-#[test]
-fn a_typed_context_refuses_to_build_a_builtin_from_a_tag() {
-    let mut context = AppContext::typed();
-    let document = DocumentId::new(1).unwrap();
-    let id = StableNodeId::new(42).unwrap();
-    let mut create = MutationQueue::new();
-    create.create(
-        id,
-        document,
-        NodeKind::Element {
-            tag: "button".into(),
-        },
-    );
-    context.commit_mutations(create).unwrap();
-    let type_id = context.resolve_component_tag("button").unwrap().clone();
-    let layout = Arc::new(nana_ui_core::LayoutStyle::default());
-    let spec = crate::SemanticSpec::from_parts(&type_id, &layout);
-    let mut mutations = MutationQueue::new();
-    assert!(matches!(
-        context.prepare_semantic_binding(id, &spec, &mut mutations),
-        Err(FrameworkError::InvalidComponentType)
-    ));
-    // The full context builds it (`from_world` is full under every test mode).
-    let mut full = AppContext::from_world(crate::UiWorld::new());
-    let mut create = MutationQueue::new();
-    create.create(
-        id,
-        document,
-        NodeKind::Element {
-            tag: "button".into(),
-        },
-    );
-    full.commit_mutations(create).unwrap();
-    let mut mutations = MutationQueue::new();
-    assert!(
-        full.prepare_semantic_binding(id, &spec, &mut mutations)
-            .is_ok()
-    );
 }
 
 #[test]
@@ -13862,8 +13853,8 @@ fn character_counter_tracks_committed_unicode_edits_without_limiting_them() {
         cx.resolve_styles(&[node]).unwrap();
         cx.shape_text(&[node], &mut crate::MeasureTextShaper)
             .unwrap();
-        match cx.world().component_geometry(node).unwrap() {
-            crate::ComponentGeometry::TextInput {
+        match cx.world().text_input_geometry(node).unwrap() {
+            crate::TextInputGeometry {
                 character_counter: Some(counter),
                 ..
             } => counter,
@@ -13921,9 +13912,8 @@ fn a_short_single_line_value_sits_where_text_align_puts_it() {
         cx.resolve_styles(&[node]).unwrap();
         cx.shape_text(&[node], &mut crate::MeasureTextShaper)
             .unwrap();
-        let text = match cx.world().component_geometry(node).unwrap() {
-            crate::ComponentGeometry::TextInput { text, .. } => text,
-            other => panic!("missing editor geometry: {other:?}"),
+        let text = match cx.world().text_input_geometry(node).unwrap() {
+            crate::TextInputGeometry { text, .. } => text,
         };
         let content = cx.world().text_input_text_box(node).unwrap();
         (content, text.bounds)
@@ -13965,8 +13955,8 @@ fn character_counter_reserves_the_editor_frame_for_scroll_pointer_and_ime() {
     cx.resolve_styles(&[node]).unwrap();
     cx.shape_text(&[node], &mut crate::MeasureTextShaper)
         .unwrap();
-    let (counter, text, caret) = match cx.world().component_geometry(node).unwrap() {
-        crate::ComponentGeometry::TextInput {
+    let (counter, text, caret) = match cx.world().text_input_geometry(node).unwrap() {
+        crate::TextInputGeometry {
             character_counter: Some(counter),
             text,
             caret: Some(caret),
@@ -14008,12 +13998,12 @@ fn character_counter_reserves_the_editor_frame_for_scroll_pointer_and_ime() {
         .unwrap();
     cx.shape_text(&[node], &mut crate::MeasureTextShaper)
         .unwrap();
-    let crate::ComponentGeometry::TextInput {
+    let crate::TextInputGeometry {
         caret: Some(ime_caret),
         character_counter: Some(ime_counter),
         preedit,
         ..
-    } = cx.world().component_geometry(node).unwrap()
+    } = cx.world().text_input_geometry(node).unwrap()
     else {
         panic!("missing IME geometry");
     };
@@ -14024,8 +14014,8 @@ fn character_counter_reserves_the_editor_frame_for_scroll_pointer_and_ime() {
     cx.update_component(input, |input, _| input.character_counter = None)
         .unwrap();
     assert!(matches!(
-        cx.world().component_geometry(node),
-        Some(crate::ComponentGeometry::TextInput {
+        cx.world().text_input_geometry(node),
+        Some(crate::TextInputGeometry {
             character_counter: None,
             ..
         })
@@ -14044,10 +14034,10 @@ fn character_counter_reserves_the_editor_frame_for_scroll_pointer_and_ime() {
         },
     );
     cx.commit_mutations(layout).unwrap();
-    let crate::ComponentGeometry::TextInput {
+    let crate::TextInputGeometry {
         character_counter: Some(narrow),
         ..
-    } = cx.world().component_geometry(node).unwrap()
+    } = cx.world().text_input_geometry(node).unwrap()
     else {
         panic!("missing narrow counter");
     };
@@ -14085,11 +14075,11 @@ fn composer_footer_preserves_the_full_editor_width_for_pointer_selection_and_ime
         cx.shape_text(&[node], &mut crate::MeasureTextShaper)
             .unwrap();
     }
-    let crate::ComponentGeometry::TextInput {
+    let crate::TextInputGeometry {
         character_counter: Some(counter),
         caret: Some(caret),
         ..
-    } = cx.world().component_geometry(node).unwrap()
+    } = cx.world().text_input_geometry(node).unwrap()
     else {
         panic!("missing editor")
     };
@@ -14123,11 +14113,7 @@ fn composer_footer_preserves_the_full_editor_width_for_pointer_selection_and_ime
     cx.select_all_focused_text(document).unwrap();
     cx.shape_text(&[node], &mut crate::MeasureTextShaper)
         .unwrap();
-    let crate::ComponentGeometry::TextInput { selection, .. } =
-        cx.world().component_geometry(node).unwrap()
-    else {
-        unreachable!()
-    };
+    let crate::TextInputGeometry { selection, .. } = cx.world().text_input_geometry(node).unwrap();
     assert!(
         selection
             .iter()
@@ -14140,12 +14126,12 @@ fn composer_footer_preserves_the_full_editor_width_for_pointer_selection_and_ime
     cx.set_ime_preedit(document, "预编辑".into(), None).unwrap();
     cx.shape_text(&[node], &mut crate::MeasureTextShaper)
         .unwrap();
-    let crate::ComponentGeometry::TextInput {
+    let crate::TextInputGeometry {
         character_counter: Some(ime_counter),
         caret: Some(ime_caret),
         preedit,
         ..
-    } = cx.world().component_geometry(node).unwrap()
+    } = cx.world().text_input_geometry(node).unwrap()
     else {
         unreachable!()
     };
@@ -14266,11 +14252,11 @@ fn auto_growing_text_area_shrinks_under_parent_constraints_and_scrolls_above_its
         }
         let frame = cx.world().component_layout_box(area.stable_id()).unwrap();
         assert_eq!(frame.height, expected_height, "shrink={shrink:?}");
-        let crate::ComponentGeometry::TextInput {
+        let crate::TextInputGeometry {
             character_counter: Some(counter),
             caret: Some(caret),
             ..
-        } = cx.world().component_geometry(area.stable_id()).unwrap()
+        } = cx.world().text_input_geometry(area.stable_id()).unwrap()
         else {
             panic!("missing editor")
         };
@@ -14321,7 +14307,7 @@ fn auto_growing_text_area_follows_nested_composer_constraints_without_losing_its
                     layout.flex_shrink = Some(1.0);
                     layout.flex_basis = Some(LengthSpec::Auto);
                     layout.padding = Some(LengthSpec::Px(12.0));
-                    layout.border_top_width = Some(1.0);
+                    layout.border_sides.top_width = Some(1.0);
                 }),
             )
             .unwrap();
@@ -14373,10 +14359,10 @@ fn auto_growing_text_area_follows_nested_composer_constraints_without_losing_its
         assert!(field.y >= composer.y + 13.0);
         assert!(field.y + field.height <= composer.y + composer.height - 12.0);
         assert!(action.y + action.height <= field.y + field.height);
-        let crate::ComponentGeometry::TextInput {
+        let crate::TextInputGeometry {
             character_counter: Some(counter),
             ..
-        } = cx.world().component_geometry(area.stable_id()).unwrap()
+        } = cx.world().text_input_geometry(area.stable_id()).unwrap()
         else {
             panic!("missing editor")
         };
@@ -14653,12 +14639,13 @@ fn equal_stacks_share_one_style_with_their_records() {
         .unwrap();
     context.append_child(root, other).unwrap();
     let other = other.id;
+    assert!(!context.views.contains_key(&cells[0]));
+    assert!(!context.views.contains_key(&other));
     let view_style = |id: StableNodeId| {
         context
-            .views
-            .get(&id)
-            .and_then(|view| view.downcast_ref::<Stack>())
-            .map(|stack| stack.style_ref() as *const NodeStyle)
+            .read(Entity::<Stack>::from_stable_id(id), |stack| {
+                stack.style_ref() as *const NodeStyle
+            })
             .unwrap()
     };
     let record_style =

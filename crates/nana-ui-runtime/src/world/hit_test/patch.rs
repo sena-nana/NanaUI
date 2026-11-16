@@ -148,7 +148,7 @@ impl UiWorld {
 
         // The parent's own entry supplies the inherited transform. Its scroll is
         // read live because scroll never invalidates the parent entry itself.
-        let scroll = self.record(parent).scroll_offset;
+        let scroll = self.nodes.scroll_offset(parent);
         let Some((child_transform, _)) = self
             .hit_test_index
             .get(&document)
@@ -198,7 +198,7 @@ impl UiWorld {
         root: StableNodeId,
         anchor: StableNodeId,
     ) -> Option<Vec<StableNodeId>> {
-        let scroll = self.record(anchor).scroll_offset;
+        let scroll = self.nodes.scroll_offset(anchor);
         let Some((base, _)) = self
             .hit_test_index
             .get(&document)

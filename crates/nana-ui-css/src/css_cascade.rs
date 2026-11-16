@@ -360,6 +360,18 @@ pub struct OwnedMatchTree {
     pub children: Vec<OwnedMatchTree>,
 }
 
+impl Drop for OwnedMatchTree {
+    fn drop(&mut self) {
+        if self.children.is_empty() {
+            return;
+        }
+        let mut stack = std::mem::take(&mut self.children);
+        while let Some(mut node) = stack.pop() {
+            stack.append(&mut node.children);
+        }
+    }
+}
+
 impl OwnedMatchTree {
     pub fn as_node(&self) -> MatchNode<'_> {
         MatchNode {
@@ -537,10 +549,10 @@ struct UnsupportedCssFlags {
 impl UnsupportedCssFlags {
     fn of(layout: &LayoutStyle) -> Self {
         Self {
-            grid_track_list: layout.grid_columns_unsupported.is_some()
-                || layout.grid_rows_unsupported.is_some(),
-            writing_mode: layout.unsupported_writing_mode,
-            font_variation: layout.unsupported_font_variation,
+            grid_track_list: layout.grid.columns_unsupported.is_some()
+                || layout.grid.rows_unsupported.is_some(),
+            writing_mode: layout.text_ext.unsupported_writing_mode,
+            font_variation: layout.text_ext.unsupported_font_variation,
             container_query: false,
         }
     }
@@ -3527,7 +3539,7 @@ pub(crate) mod tests {
         assert_eq!(page.direction, Some(FlexDirection::Column));
         assert_eq!(page.height, Some(LengthSpec::Fill));
         assert_eq!(page.gap, Some(LengthSpec::Px(12.0)));
-        assert!(page.grid_rows.as_ref().is_some_and(|r| r.len() == 3));
+        assert!(page.grid.rows.as_ref().is_some_and(|r| r.len() == 3));
 
         let tray_classes = vec!["anon-tray".into()];
         let tray_ctx = ctx("div", "", &tray_classes, &attrs, &[]);
@@ -3556,7 +3568,7 @@ pub(crate) mod tests {
         // `sideways-*` parses but layout has no sideways glyph orientation.
         let mut sideways = LayoutStyle::default();
         sideways.apply_css_text("writing-mode: sideways-rl", None, None);
-        assert!(sideways.unsupported_writing_mode);
+        assert!(sideways.text_ext.unsupported_writing_mode);
         tally.observe(1, &sideways);
 
         // Nested auto-fit parses but the track list cannot be expanded.
@@ -3566,13 +3578,13 @@ pub(crate) mod tests {
             None,
             None,
         );
-        assert!(nested.grid_columns_unsupported.is_some());
+        assert!(nested.grid.columns_unsupported.is_some());
         tally.observe(2, &nested);
 
         // A malformed variation declaration fails closed on that declaration only.
         let mut variation = LayoutStyle::default();
         variation.apply_css_text("font-variation-settings: nope", None, None);
-        assert!(variation.unsupported_font_variation);
+        assert!(variation.text_ext.unsupported_font_variation);
         tally.observe(3, &variation);
 
         assert_eq!(tally.report().grid_track_lists, 1);

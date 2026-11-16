@@ -124,16 +124,17 @@ fn mounted_glyph_and_button_icons_follow_size_roles_without_losing_focus_or_nume
                     < 0.5
             );
             assert_eq!(painted_sizes(&scene, button.stable_id()), vec![expected; 2]);
-            let ComponentGeometry::Button {
-                icon: Some((_, lead)),
-                label,
-                ..
-            } = cx.world().component_geometry(button.stable_id()).unwrap()
-            else {
-                panic!("button geometry")
-            };
-            assert!((label.bounds.x - lead.x - lead.width - theme.tokens.spacing.sm).abs() < 0.5);
-            assert_eq!(label.font_size, expected);
+            let lead = cx
+                .world()
+                .content_part_box(button.stable_id(), LayoutPartKind::LeadingContent)
+                .expect("button leading part");
+            let label_bounds = cx
+                .world()
+                .content_part_box(button.stable_id(), LayoutPartKind::TextContent)
+                .expect("button label part");
+            let label_style = cx.world().computed_style(button.stable_id()).unwrap();
+            assert!((label_bounds.x - lead.x - lead.width - theme.tokens.spacing.sm).abs() < 0.5);
+            assert_eq!(label_style.font_size, expected);
             assert!(
                 (cx.world().layout_box(overridden.stable_id()).unwrap().width
                     - plain_box.width

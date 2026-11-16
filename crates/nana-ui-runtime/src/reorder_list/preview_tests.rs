@@ -210,16 +210,12 @@ fn a_live_drag_moves_rows_only_on_the_presentation_layer() {
     }
 
     // The list draws no outline or line; the gap says where the row lands.
-    match rows
+    let layout = rows
         .context
         .world()
-        .component_geometry(rows.list.stable_id())
-    {
-        Some(crate::ComponentGeometry::ReorderList {
-            insert, dragged, ..
-        }) => assert_eq!((insert, dragged), (None, None)),
-        other => panic!("not reorder list geometry: {other:?}"),
-    }
+        .reorder_list_layout(rows.list.stable_id())
+        .expect("reorder list layout");
+    assert_eq!((layout.insert, layout.dragged), (None, None));
 
     // The carried row and what it holds stack over the other rows, under an
     // open menu.
@@ -337,14 +333,10 @@ fn a_tree_drop_keeps_its_marks_and_moves_no_row() {
     rows.move_to(x, rows.boxes[2].y + 38.0);
     assert_eq!(rows.row_overlays(), 0);
     assert_eq!(rows.z_index(rows.rows[0]), 0);
-    match rows
+    let layout = rows
         .context
         .world()
-        .component_geometry(rows.list.stable_id())
-    {
-        Some(crate::ComponentGeometry::ReorderList { dragged, .. }) => {
-            assert_eq!(dragged.map(|(row, _)| row), Some(rows.boxes[0]));
-        }
-        other => panic!("not reorder list geometry: {other:?}"),
-    }
+        .reorder_list_layout(rows.list.stable_id())
+        .expect("reorder list layout");
+    assert_eq!(layout.dragged.map(|(row, _)| row), Some(rows.boxes[0]));
 }

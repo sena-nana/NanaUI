@@ -8,7 +8,7 @@ pub(super) fn node_scene_transform(
     layout: LayoutBox,
     block_3d: bool,
 ) -> AffineTransform {
-    if block_3d && style.transform_3d.is_some() {
+    if block_3d && style.transforms.transform_3d.is_some() {
         return AffineTransform::IDENTITY;
     }
     style
@@ -292,21 +292,30 @@ impl UiScene {
         }) {
             clips.push(region);
         }
-        if let Some(ComponentGeometry::EmptyState { root_clip, .. }) =
-            ancestor.component_geometry.as_deref()
+        if ancestor
+            .widget_paint
+            .as_deref()
+            .is_some_and(|w| w.clips_descendants)
         {
             clips.push(ClipRegion {
-                bounds: offset_rect(scene_rect(*root_clip), geometry_origin),
+                bounds: SceneRect {
+                    x: layout.x,
+                    y: layout.y,
+                    width: layout.width,
+                    height: layout.height,
+                },
                 transform,
                 corner_radius: 0.0,
                 polygon_clip: None,
             });
         }
-        if let Some(ComponentGeometry::ModalFrame { surface, body, .. }) =
-            ancestor.component_geometry.as_deref()
+        if let Some(modal) = ancestor
+            .widget_paint
+            .as_deref()
+            .and_then(|w| w.modal_frame.as_ref())
         {
             node_dependent = true;
-            let surface = offset_rect(scene_rect(*surface), geometry_origin);
+            let surface = offset_rect(scene_rect(modal.surface), geometry_origin);
             let focus_inset = if node.is_some_and(|node| node.focused) {
                 3.0
             } else {
@@ -323,15 +332,13 @@ impl UiScene {
                 corner_radius: 0.0,
                 polygon_clip: None,
             });
-            if let Some(StandardVisual::ModalFrame { slots, .. }) =
-                ancestor.standard_visual.as_ref()
-                && let Some(node) = node
-                && slots
-                    .body
+            if let Some(node) = node
+                && modal
+                    .body_root
                     .is_some_and(|body_root| self.node_descends_from(node.id, body_root))
             {
                 clips.push(ClipRegion {
-                    bounds: offset_rect(scene_rect(*body), geometry_origin),
+                    bounds: offset_rect(scene_rect(modal.body), geometry_origin),
                     transform,
                     corner_radius: 0.0,
                     polygon_clip: None,
@@ -576,7 +583,11 @@ fn rasterized_svg_decides(ancestor: &ExtractedNode) -> Option<bool> {
 /// Whether the walk for [`is_descendant_of_icon_visual`] ends at `ancestor`,
 /// and with which answer.
 fn icon_visual_decides(ancestor: &ExtractedNode) -> Option<bool> {
-    if matches!(ancestor.standard_visual, Some(StandardVisual::Icon { .. })) {
+    if ancestor
+        .widget_paint
+        .as_deref()
+        .is_some_and(|w| w.suppresses_in_flow_descendants)
+    {
         Some(true)
     } else if ancestor.source_style.layout.is_out_of_flow() {
         Some(false)
@@ -658,8 +669,8 @@ pub(super) fn ancestor_ids(
 /// publishes it (#201): its parent, or the clip parent an escaping absolute
 /// box hangs from. A node without a result hangs from its parent.
 pub(super) fn clip_link(node: &ExtractedNode) -> Option<StableNodeId> {
-    match node.layout_result.as_deref() {
-        Some(result) => result.clip_parent,
+    match node.extracted_layout {
+        Some(layout) => layout.clip_parent,
         None if node.source_style.layout.position == nana_ui_core::PositionSpec::Fixed => None,
         None => node.parent,
     }

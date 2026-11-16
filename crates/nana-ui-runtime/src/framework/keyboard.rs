@@ -49,12 +49,18 @@ impl AppContext {
         {
             return false;
         }
-        let Some(view) = self.views.get(&target) else {
+        if let Some(view) = self.views.get(&target) {
+            return self
+                .key_handlers
+                .get_mut(&target)
+                .is_some_and(|handler| handler(view.as_ref(), key));
+        }
+        let Some(stack) = self.world.elided_stack(target) else {
             return false;
         };
         self.key_handlers
             .get_mut(&target)
-            .is_some_and(|handler| handler(view.as_ref(), key))
+            .is_some_and(|handler| handler(&stack, key))
     }
 }
 

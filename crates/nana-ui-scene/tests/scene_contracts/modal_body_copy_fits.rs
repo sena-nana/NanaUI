@@ -7,7 +7,7 @@ use std::sync::{Arc, Mutex};
 use nana_text::font::{FaceDescriptor, FallbackPolicy, FontSystem, GenericFamily, font_blob};
 use nana_text::{NativeTextEngine, SharedTextEngine};
 use nana_ui_runtime::{
-    ComponentGeometry, ComputedStyle, ConfirmDialog, DocumentId, LayoutBox, LayoutViewport,
+    ComputedStyle, ConfirmDialog, DocumentId, LayoutBox, LayoutViewport, ModalFrameGeometry,
     NanaTextEngineShaper, OverlayHost, StableNodeId, TextContent, TextShapeConstraints, TextShaper,
 };
 use nana_ui_scene::{RuntimeDocument, ScenePrimitiveKind};
@@ -55,12 +55,10 @@ fn open(message: &str) -> (RuntimeDocument, StableNodeId, NanaTextEngineShaper) 
 
 /// The card and the message's region.
 fn regions(runtime: &RuntimeDocument, id: StableNodeId) -> (LayoutBox, LayoutBox) {
-    match runtime.context().world().component_geometry(id).unwrap() {
-        ComponentGeometry::ModalFrame {
-            surface, body_text, ..
-        } => (surface, body_text.expect("the message").bounds),
-        other => panic!("{other:?}"),
-    }
+    let ModalFrameGeometry {
+        surface, body_text, ..
+    } = runtime.context().world().modal_frame_geometry(id).unwrap();
+    (surface, body_text.expect("the message").bounds)
 }
 
 /// The height the message takes shaped as the scene paints it, and the
@@ -91,12 +89,11 @@ fn painted_height(
         unreachable!()
     };
     assert!(wrap, "the message wraps");
-    let style = ComputedStyle {
-        font_size: *size,
-        line_height: *line_height,
-        letter_spacing: *letter_spacing,
-        ..ComputedStyle::default()
-    };
+    let style = ComputedStyle::with(|s| {
+        s.font_size = *size;
+        s.line_height = *line_height;
+        s.letter_spacing = *letter_spacing;
+    });
     let bounds = LayoutBox {
         x: primitive.bounds.x,
         y: primitive.bounds.y,

@@ -1015,8 +1015,12 @@ fn panel_style(transform: Option<PaintTransform>) -> NodeStyle {
             height: Some(LengthSpec::Px(LABEL[1])),
             direction: Some(FlexDirection::Row),
             flex_wrap: FlexWrap::Wrap,
-            transform,
-            transform_origin: transform.is_some().then(TransformOrigin::default),
+            transforms: nana_ui_core::TransformStyle {
+                transform,
+                origin: transform.is_some().then(TransformOrigin::default),
+                ..Default::default()
+            }
+            .into(),
             ..LayoutStyle::default()
         }),
         ..NodeStyle::default()
@@ -1064,8 +1068,12 @@ fn column_style(opacity: Option<f32>, transform: Option<PaintTransform>) -> Node
             direction: Some(FlexDirection::Row),
             flex_wrap: FlexWrap::Wrap,
             opacity,
-            transform,
-            transform_origin: transform.is_some().then(TransformOrigin::default),
+            transforms: nana_ui_core::TransformStyle {
+                transform,
+                origin: transform.is_some().then(TransformOrigin::default),
+                ..Default::default()
+            }
+            .into(),
             ..LayoutStyle::default()
         }),
         ..NodeStyle::default()

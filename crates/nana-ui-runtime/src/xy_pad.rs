@@ -1,11 +1,13 @@
 use std::sync::Arc;
 
-use nana_ui_core::{ControlSize, LengthSpec, SemanticColorRole};
+use nana_ui_core::{ControlSize, LengthSpec, SemanticColorRole, StyleModelRef};
 
 use crate::view_components::project_common;
 use crate::{
-    AccessibilityRole, AccessibilityState, ComponentView, InteractionState, InteractionStyle,
-    LayoutBox, MutationQueue, NodeKind, NodeStyle, SemanticPaint, StableNodeId, UiWorld,
+    AccessibilityRole, AccessibilityState, CompiledTheme, ComponentView, ComputedStyle,
+    ContrastRing, InteractionState, InteractionStyle, LayoutBox, MutationQueue, NodeKind,
+    NodeStyle, SemanticPaint, StableNodeId, UiWorld, WidgetPaintCtx, WidgetPaintOp,
+    WidgetPaintOutput, WidgetQuad, WidgetVisual,
 };
 
 pub use nana_ui_core::{XYPadEvent, XYPadValue};
@@ -306,6 +308,8 @@ impl XYPad {
 }
 
 impl ComponentView for XYPad {
+    const TYPE_ID: Option<&'static str> = Some(crate::component_descriptors::X_Y_PAD.type_id);
+
     const BEHAVIOR: crate::TypeBehavior<Self> = crate::TypeBehavior {
         hooks: Some(|hooks| {
             crate::framework::routes::xy_pad(hooks);
@@ -330,7 +334,7 @@ impl ComponentView for XYPad {
         let inactive = self.inactive();
         let x_span = (self.x_max - self.x_min).max(f32::EPSILON);
         let y_span = (self.y_max - self.y_min).max(f32::EPSILON);
-        let visual = crate::StandardVisual::XYPad {
+        let visual = XYPadVisual {
             value: self.value,
             nx: ((self.value.x - self.x_min) / x_span).clamp(0.0, 1.0),
             ny: (1.0 - (self.value.y - self.y_min) / y_span).clamp(0.0, 1.0),
@@ -339,8 +343,8 @@ impl ComponentView for XYPad {
             disabled: inactive,
             picture: self.surface == XYPadSurface::Picture,
         };
-        if world.standard_visual(id) != Some(visual.clone()) {
-            mutations.set_standard_visual(id, Some(visual));
+        if world.widget_visual_as::<XYPadVisual>(id) != Some(&visual) {
+            mutations.set_widget_visual(id, Some(visual));
         }
         project_common(
             id,
@@ -365,6 +369,213 @@ impl ComponentView for XYPad {
                 ..AccessibilityState::default()
             },
         );
+    }
+}
+
+/// Resolved geometry and surface colors for a mounted [`XYPad`].
+#[derive(Debug, Clone, PartialEq)]
+pub struct XYPadLayout {
+    pub pad: LayoutBox,
+    pub thumb: LayoutBox,
+    /// The centre axes; `None` on a picture pad.
+    pub h_axis: Option<LayoutBox>,
+    pub v_axis: Option<LayoutBox>,
+    /// `Some` on a picture pad: the thumb is this ring, not a dot in
+    /// `thumb_color`, and the frame is stroked again above the pad's paint.
+    pub thumb_ring: Option<ContrastRing>,
+    pub background: Option<[f32; 4]>,
+    pub border: Option<[f32; 4]>,
+    pub border_width: f32,
+    pub thumb_color: [f32; 4],
+    pub axis_color: [f32; 4],
+}
+
+impl XYPadLayout {
+    /// Lowers this resolved layout into node-local widget paint operations.
+    #[must_use]
+    pub fn to_widget_paint(
+        &self,
+        style: &ComputedStyle,
+        source_style: &NodeStyle,
+    ) -> WidgetPaintOutput {
+        let mut out = WidgetPaintOutput::new();
+        for (slot, axis) in [(1, self.h_axis), (2, self.v_axis)] {
+            if let Some(axis) = axis {
+                out.push(
+                    slot,
+                    WidgetPaintOp::Quad(WidgetQuad {
+                        rect: axis,
+                        fill: Some(self.axis_color),
+                        fill_paint: crate::widget_visual::matching_paint_color(
+                            style.paint_colors.color,
+                            self.axis_color,
+                        ),
+                        ..WidgetQuad::default()
+                    }),
+                );
+            }
+        }
+        match self.thumb_ring {
+            Some(ring) => {
+                // The pad's paint is the picture, and its later
+                // background layers cover the frame the surface quad
+                // stroked under them: stroke it again on top so hover,
+                // focus and `invalid` show on every edge.
+                if let Some(color) = style.border_color.or(self.border)
+                    && self.border_width > 0.0
+                {
+                    let frame = self.pad;
+                    let mut corner_radius = source_style
+                        .layout
+                        .resolved_border_radii(frame.width, frame.height);
+                    if let Some(nana_ui_core::ClipPath::Inset(inset)) =
+                        source_style.layout.paint.clip_path.as_ref()
+                    {
+                        let round = inset.resolve_round(frame.width, frame.height);
+                        if round > 0.0 {
+                            corner_radius = corner_radius.map(|radius| radius.max(round));
+                        }
+                    }
+                    out.push(
+                        1,
+                        WidgetPaintOp::Quad(WidgetQuad {
+                            rect: frame,
+                            fill: None,
+                            border: Some((color, self.border_width)),
+                            border_paint: crate::widget_visual::matching_paint_color(
+                                style.paint_colors.border,
+                                color,
+                            ),
+                            corner_radius,
+                            ..WidgetQuad::default()
+                        }),
+                    );
+                }
+                crate::widget_visual::push_contrast_ring_quads(&mut out, 3, self.thumb, ring);
+            }
+            None => out.push(
+                3,
+                WidgetPaintOp::Quad(WidgetQuad {
+                    rect: self.thumb,
+                    fill: Some(self.thumb_color),
+                    fill_paint: crate::widget_visual::matching_paint_color(
+                        style.paint_colors.color,
+                        self.thumb_color,
+                    ),
+                    corner_radius: [999.0; 4],
+                    ..WidgetQuad::default()
+                }),
+            ),
+        }
+        out
+    }
+}
+
+/// Widget visual projected by [`XYPad`].
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct XYPadVisual {
+    pub value: XYPadValue,
+    pub nx: f32,
+    pub ny: f32,
+    pub size: ControlSize,
+    pub invalid: bool,
+    pub disabled: bool,
+    /// The pad's own paint is the picture (`XYPadSurface::Picture`): no
+    /// axes, a [`ContrastRing`] thumb, the frame stroked above the paint.
+    pub picture: bool,
+}
+
+impl XYPadVisual {
+    pub fn layout_at(
+        &self,
+        bounds: LayoutBox,
+        style: &ComputedStyle,
+        border_width: f32,
+        style_model: StyleModelRef,
+        theme: &CompiledTheme,
+    ) -> XYPadLayout {
+        let pad = bounds;
+        // A ring has to be wide enough to stay open around the colour
+        // it marks; a dot only has to be seen.
+        let thumb = if self.picture {
+            theme.spacing().xxl
+        } else {
+            theme.spacing().md
+        };
+        let nx = self.nx.clamp(0.0, 1.0);
+        let ny = self.ny.clamp(0.0, 1.0);
+        XYPadLayout {
+            pad,
+            thumb: LayoutBox {
+                x: pad.x + nx * pad.width - thumb / 2.0,
+                y: pad.y + ny * pad.height - thumb / 2.0,
+                width: thumb,
+                height: thumb,
+            },
+            h_axis: (!self.picture).then(|| LayoutBox {
+                x: pad.x,
+                y: pad.y + pad.height / 2.0 - nana_ui_core::HAIRLINE / 2.0,
+                width: pad.width,
+                height: nana_ui_core::HAIRLINE,
+            }),
+            v_axis: (!self.picture).then(|| LayoutBox {
+                x: pad.x + pad.width / 2.0 - nana_ui_core::HAIRLINE / 2.0,
+                y: pad.y,
+                width: nana_ui_core::HAIRLINE,
+                height: pad.height,
+            }),
+            thumb_ring: self
+                .picture
+                .then(|| ContrastRing::from_effects(theme.effects())),
+            background: style.background,
+            border: style.border_color,
+            border_width,
+            thumb_color: style_model.color(SemanticColorRole::Accent).as_rgba_array(),
+            axis_color: style_model.color(SemanticColorRole::Border).as_rgba_array(),
+        }
+    }
+}
+
+impl WidgetVisual for XYPadVisual {
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+
+    fn dyn_eq(&self, other: &dyn std::any::Any) -> bool {
+        other.downcast_ref::<Self>() == Some(self)
+    }
+
+    fn paint(&self, ctx: &WidgetPaintCtx<'_>) -> WidgetPaintOutput {
+        let border_width = if ctx.style.border_color.is_some() {
+            ctx.source_style.layout.resolved_border_width()
+        } else {
+            0.0
+        };
+        let layout = self.layout_at(
+            ctx.bounds,
+            ctx.style,
+            border_width,
+            ctx.style_model,
+            ctx.theme,
+        );
+        layout.to_widget_paint(ctx.style, ctx.source_style)
+    }
+}
+
+impl UiWorld {
+    /// Resolves `id`'s two-axis pad geometry and surface colors when mounted as an [`XYPad`].
+    #[must_use]
+    pub fn xy_pad_layout(&self, id: StableNodeId) -> Option<XYPadLayout> {
+        let visual = self.widget_visual_as::<XYPadVisual>(id)?;
+        let bounds = self.component_layout_box(id)?;
+        let style = self.computed_style(id)?;
+        let border_width = if style.border_color.is_some() {
+            self.resolved_border_width(id)
+        } else {
+            0.0
+        };
+        let style_model = self.scoped_style_model(style.color_scope.as_deref());
+        Some(visual.layout_at(bounds, style, border_width, style_model, self.theme()))
     }
 }
 
@@ -421,7 +632,8 @@ fn field_style(size: ControlSize) -> NodeStyle {
                 ..SemanticPaint::default()
             },
             ..InteractionStyle::default()
-        },
+        }
+        .into(),
         ..NodeStyle::default()
     }
 }
@@ -655,8 +867,10 @@ mod tests {
         assert_eq!(accessibility.label.as_deref(), Some("Pan"));
         assert_eq!(accessibility.role, AccessibilityRole::Slider);
         assert!(matches!(
-            context.world().standard_visual(pad.stable_id()),
-            Some(crate::StandardVisual::XYPad { invalid: true, .. })
+            context
+                .world()
+                .widget_visual_as::<XYPadVisual>(pad.stable_id()),
+            Some(XYPadVisual { invalid: true, .. })
         ));
     }
 
@@ -684,12 +898,12 @@ mod tests {
             .unwrap();
         let world = context.world();
 
-        let Some(crate::ComponentGeometry::XYPad {
+        let Some(XYPadLayout {
             h_axis,
             v_axis,
             thumb_ring,
             ..
-        }) = world.component_geometry(plain.stable_id())
+        }) = world.xy_pad_layout(plain.stable_id())
         else {
             panic!("plain pad geometry");
         };
@@ -699,19 +913,19 @@ mod tests {
         );
         assert!(thumb_ring.is_none(), "and its accent dot");
         assert!(matches!(
-            world.standard_visual(plain.stable_id()),
-            Some(crate::StandardVisual::XYPad { picture: false, .. })
+            world.widget_visual_as::<XYPadVisual>(plain.stable_id()),
+            Some(XYPadVisual { picture: false, .. })
         ));
 
         let bounds = world.layout_box(picture.stable_id()).unwrap();
         assert_eq!(bounds.height, 120.0, "the height overrides the size's");
-        let Some(crate::ComponentGeometry::XYPad {
+        let Some(XYPadLayout {
             thumb,
             h_axis,
             v_axis,
             thumb_ring,
             ..
-        }) = world.component_geometry(picture.stable_id())
+        }) = world.xy_pad_layout(picture.stable_id())
         else {
             panic!("picture pad geometry");
         };
@@ -725,8 +939,8 @@ mod tests {
         assert!((thumb.x + thumb.width / 2.0 - (bounds.x + bounds.width * 0.25)).abs() < 0.01);
         assert!((thumb.y + thumb.height / 2.0 - (bounds.y + bounds.height * 0.25)).abs() < 0.01);
         assert!(matches!(
-            world.standard_visual(picture.stable_id()),
-            Some(crate::StandardVisual::XYPad { picture: true, .. })
+            world.widget_visual_as::<XYPadVisual>(picture.stable_id()),
+            Some(XYPadVisual { picture: true, .. })
         ));
         // Still the same slider for assistive technology.
         assert_eq!(

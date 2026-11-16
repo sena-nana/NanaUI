@@ -45,7 +45,7 @@ impl Spec {
             // Laid along the row: no stretch on the main axis.
             return (CONTENT, MARGIN_LEFT);
         }
-        let block = matches!(self.display, None | Some(DisplaySpec::Block));
+        let block = self.display.is_none();
         let align = self.align_self.unwrap_or(if block {
             AlignSpec::Stretch
         } else {
@@ -153,7 +153,7 @@ fn an_unset_display_stacks_as_a_block_through_every_edit() {
     let mut warm = page(spec);
     assert_child(&warm, spec);
     let mut shaper = bundled_face_shaper();
-    let steps: [fn(&mut Spec); 18] = [
+    let steps: [fn(&mut Spec); 17] = [
         // A block has no `align-items`.
         |spec| spec.align_items = AlignSpec::Center,
         |spec| spec.align_items = AlignSpec::End,
@@ -163,10 +163,9 @@ fn an_unset_display_stacks_as_a_block_through_every_edit() {
         // Laid along a row, and back to the block axis.
         |spec| spec.direction = Some(FlexDirection::Row),
         |spec| spec.direction = Some(FlexDirection::Column),
-        // A flex column aligns by `align_items`; a block does not.
+        // A flex column aligns by `align_items`; an unset container does not.
         |spec| spec.display = Some(DisplaySpec::Flex),
         |spec| spec.align_items = AlignSpec::Start,
-        |spec| spec.display = Some(DisplaySpec::Block),
         |spec| spec.display = None,
         |spec| spec.direction = None,
         // The fill follows the container's width.

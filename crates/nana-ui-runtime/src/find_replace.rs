@@ -9,7 +9,6 @@ use std::sync::Arc;
 
 use nana_ui_core::{ButtonKind, ControlSize, FlexDirection, LengthSpec};
 
-use crate::component_registry::{RegisterableComponent, SemanticSpec};
 use crate::view_components::{Activate, Button, Stack, Text, TextChanged, TextInput};
 use crate::{
     AccessibilityRole, AccessibilityState, AppContext, ComponentView, Entity, FrameworkError,
@@ -175,6 +174,9 @@ impl Default for FindReplaceBar {
 pub type TextSearchBar = FindReplaceBar;
 
 impl ComponentView for FindReplaceBar {
+    const TYPE_ID: Option<&'static str> =
+        Some(crate::component_descriptors::FIND_REPLACE_BAR.type_id);
+
     const BEHAVIOR: crate::TypeBehavior<Self> = crate::TypeBehavior {
         assembler: Some(crate::AppContext::assemble_find_replace_bar),
         ..crate::TypeBehavior::NONE
@@ -219,49 +221,6 @@ impl ComponentView for FindReplaceBar {
                 ..AccessibilityState::default()
             },
         );
-    }
-}
-
-impl RegisterableComponent for FindReplaceBar {
-    const TYPE_ID: &'static str = crate::component_descriptors::FIND_REPLACE_BAR.type_id;
-    const TAGS: &'static [&'static str] = crate::component_descriptors::FIND_REPLACE_BAR.tags;
-    const RETAIN_SEMANTIC_STATE: bool = true;
-
-    fn from_semantic(spec: &SemanticSpec<'_>) -> Self {
-        let mut bar = Self::new()
-            .query(spec.value)
-            .read_only(spec.read_only)
-            .disabled(spec.disabled)
-            .expanded(spec.active);
-        if !spec.placeholder.is_empty() {
-            bar.query_placeholder = Some(Arc::from(spec.placeholder));
-        }
-        if !spec.label.is_empty() {
-            bar.label = Some(Arc::from(spec.label));
-        }
-        if let Some(replacement) = spec.attr("replacement") {
-            bar.replacement = replacement.to_owned();
-        }
-        if let Some(placeholder) = spec.attr("replacement-placeholder") {
-            bar.replacement_placeholder = Some(Arc::from(placeholder));
-        }
-        bar.style.layout = Arc::clone(spec.layout);
-        bar
-    }
-
-    fn reconcile_semantic(spec: &SemanticSpec<'_>, previous: Option<&Self>) -> Self {
-        let mut next = Self::from_semantic(spec);
-        if let Some(previous) = previous {
-            next.retained = previous.retained.clone();
-        }
-        next
-    }
-
-    fn finish_semantic(
-        context: &mut AppContext,
-        entity: Entity<Self>,
-    ) -> Result<(), FrameworkError> {
-        context.assemble_find_replace_bar(entity).map(|_| ())
     }
 }
 

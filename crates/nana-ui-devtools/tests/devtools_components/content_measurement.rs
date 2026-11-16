@@ -1,6 +1,4 @@
-use nana_ui::runtime::{
-    Button, ComponentGeometry, DocumentId, LengthSpec, NativeMarkdown, RuntimeDocument, Stack,
-};
+use nana_ui::runtime::{Button, DocumentId, LengthSpec, NativeMarkdown, RuntimeDocument, Stack};
 use nana_ui_devtools::agent::RuntimeAgentSession;
 use std::sync::Arc;
 
@@ -50,11 +48,10 @@ fn native_markdown_wrapped_bubble_keeps_copy_below_its_drawing() {
         let world = session.document().context().world();
         let bounds = world.layout_box(markdown.stable_id()).unwrap();
         let action = world.layout_box(copy.stable_id()).unwrap();
-        let ComponentGeometry::NativeMarkdown { drawing, .. } =
-            world.component_geometry(markdown.stable_id()).unwrap()
-        else {
-            panic!("expected markdown drawing")
-        };
+        let drawing = world
+            .native_markdown_layout(markdown.stable_id())
+            .expect("expected markdown drawing")
+            .drawing;
         assert!(
             drawing.height <= bounds.height + 0.01,
             "real font drawing exceeds layout at {width}: {bounds:?}, drawing height {}",

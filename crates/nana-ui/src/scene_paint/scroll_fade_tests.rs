@@ -171,12 +171,8 @@ fn the_bars_are_not_faded() {
     let paint_bars = |fade| {
         let (mut runtime, scroll) = scroll_view(fade, ScrollbarVisibility::Always, 3, None);
         scroll_to(&mut runtime, scroll, 50.0);
-        let thumb = match runtime
-            .context()
-            .world()
-            .component_geometry(scroll.stable_id())
-        {
-            Some(nana_ui_runtime::ComponentGeometry::Scrollbar {
+        let thumb = match runtime.context().world().scrollbar_bars(scroll.stable_id()) {
+            Some(nana_ui_runtime::ScrollbarBars {
                 vertical: Some(bar),
                 ..
             }) => bar.thumb,

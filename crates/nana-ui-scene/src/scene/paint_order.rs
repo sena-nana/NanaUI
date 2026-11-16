@@ -26,14 +26,10 @@ fn is_stacking_group(nodes: &SceneNodes, node: &ExtractedNode) -> bool {
     // `OverlayMount::NearestModal`.
     node.custom_paint.is_some()
         || is_opacity_group(nodes, node)
-        || matches!(
-            node.standard_visual,
-            Some(StandardVisual::ModalFrame { .. })
-        )
-        || matches!(
-            node.component_geometry.as_deref(),
-            Some(ComponentGeometry::ModalFrame { .. })
-        )
+        || node
+            .widget_paint
+            .as_deref()
+            .is_some_and(|w| w.modal_frame.is_some())
         || (has_extracted_child(nodes, node)
             && (node.source_style.layout.creates_paint_stacking_context()
                 // Its bars paint over everything it holds: see
@@ -57,7 +53,14 @@ fn visual_node_z_and_stops(nodes: &SceneNodes, vn: VisualNode) -> (i32, bool) {
             let Some(node) = nodes.get(&id) else {
                 return (0, true);
             };
-            let base_z = if matches!(node.standard_visual, Some(StandardVisual::Select { .. })) {
+            let attached_popup = node
+                .widget_paint
+                .as_deref()
+                .and_then(|w| w.floating_overlay.as_ref())
+                .is_some_and(|overlay| {
+                    overlay.kind == nana_ui_runtime::WidgetFloatingOverlayKind::AttachedPopup
+                });
+            let base_z = if attached_popup {
                 node.z_index.max(nana_ui_runtime::MENU_OVERLAY_Z_INDEX)
             } else {
                 nana_ui_runtime::MENU_OVERLAY_Z_INDEX
@@ -218,9 +221,13 @@ pub(super) fn primitive_paint_layer(slot: u64) -> u64 {
         namespace if namespace == u64::from(TEXT_DIAGNOSTIC_LABELS) => 58,
         namespace if namespace == u64::from(TEXT_ATOM_ICONS) => 27,
         namespace if namespace == u64::from(TEXT_ATOM_LABELS) => 32,
-        // A dialog's own card, painted by its surface painter: the card
-        // quad's layer, over the scrim (10), under the title (12).
-        namespace if namespace == u64::from(custom_paint::MODAL_SURFACE_PAINT) => 11,
+        namespace
+            if (u64::from(nana_ui_runtime::WIDGET_VECTOR_LAYER_BASE)
+                ..=u64::from(nana_ui_runtime::WIDGET_VECTOR_LAYER_BASE | 0xFF))
+                .contains(&namespace) =>
+        {
+            namespace & 0xFF
+        }
         _ => slot,
     }
 }
@@ -357,8 +364,11 @@ impl UiScene {
         (!self.custom_paint.is_empty() && has_custom_paint(&self.nodes, node))
             || self.nodes.get(&node).is_some_and(|node| {
                 has_scrollbar_chrome(node)
+                    || node
+                        .widget_paint
+                        .as_deref()
+                        .is_some_and(|w| w.floating_overlay.is_some())
                     || is_triggered_menu(node)
-                    || matches!(node.standard_visual, Some(StandardVisual::Select { .. }))
             })
     }
 

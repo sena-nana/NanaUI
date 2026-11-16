@@ -60,25 +60,6 @@ impl UiScene {
             "painted geometry held for a node that no longer paints"
         );
         assert!(
-            self.modal_surface_paint
-                .keys()
-                .all(|id| self.nodes.get(id).is_some_and(|node| matches!(
-                    node.component_geometry.as_deref(),
-                    Some(ComponentGeometry::ModalFrame {
-                        surface_paint: Some(_),
-                        ..
-                    })
-                ))),
-            "a painted card held for a dialog that no longer paints it"
-        );
-        assert!(
-            self.markdown_diagram_paint.keys().all(|id| self
-                .nodes
-                .get(id)
-                .is_some_and(|node| node_has_markdown_diagram(node))),
-            "diagram geometry held for a document without diagrams"
-        );
-        assert!(
             self.primitives.values().all(|held| !matches!(
                 held.primitive.kind,
                 ScenePrimitiveKind::Path { .. }
@@ -87,10 +68,7 @@ impl UiScene {
             ) || self
                 .custom_paint
                 .contains_key(&held.primitive.node)
-                || self.modal_surface_paint.contains_key(&held.primitive.node)
-                || self
-                    .markdown_diagram_paint
-                    .contains_key(&held.primitive.node)),
+                || self.widget_vector_paint.contains_key(&held.primitive.node)),
             "a painted primitive without its geometry"
         );
         assert!(
@@ -226,19 +204,3 @@ impl UiScene {
 /// scenes are thousands, and auditing those on every delta would slow debug
 /// builds without testing anything the small scenes do not.
 pub(super) const RETAINED_AUDIT_LIMIT: usize = 512;
-
-/// Whether a node's Markdown drawing holds a native diagram.
-#[cfg(debug_assertions)]
-fn node_has_markdown_diagram(node: &ExtractedNode) -> bool {
-    #[cfg(feature = "rich-text")]
-    if let Some(ComponentGeometry::NativeMarkdown { drawing, .. }) =
-        node.component_geometry.as_deref()
-    {
-        return drawing
-            .commands
-            .iter()
-            .any(|c| matches!(c, nana_ui_runtime::MarkdownDrawingCommand::Diagram { .. }));
-    }
-    let _ = node;
-    false
-}

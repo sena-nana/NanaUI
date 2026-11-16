@@ -1,11 +1,9 @@
-//! Work counts for a text pass. Not `nana_ui_core::WorkCounters`, and not a
-//! timing profile.
+//! Work counts for a text pass, distinct from a timing profile.
 //!
-//! The field convention is taken from `nana_ui_core::work::WorkCounters`:
-//! a `usize` field is one the owning pass always measures, and an
-//! `Option<usize>` field is one nothing has observed yet — it must stay `None`
-//! rather than become a fake `0`, because a fake zero reads as "this work did
-//! not happen" when it means "nobody looked".
+//! Field convention: a `usize` field is one the owning pass always measures,
+//! and an `Option<usize>` field is one nothing has observed yet — it must stay
+//! `None` rather than become a fake `0`, because a fake zero reads as "this work
+//! did not happen" when it means "nobody looked".
 //!
 //! #89 reserved the first seven fields. #95 gave them a product producer — the
 //! UiWorld text pass — and added the ones that explain what a pass that shaped

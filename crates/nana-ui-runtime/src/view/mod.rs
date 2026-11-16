@@ -108,10 +108,8 @@ pub use store::{
 pub use store::{Paths, StoreKey};
 pub use structural::{Dynamic, Each, EachExt, EachIn, When, WhenExt, dynamic, each, when};
 #[doc(hidden)]
-pub use style::ComposedLayout;
-pub use style::{__style_value, Class, InlineStyle, Sheet, StylePatch, StyleSite};
-#[doc(hidden)]
-pub use style::{SheetQuery, SheetRule, SheetTransition};
+pub use style::{__patch, ComposedLayout, SheetQuery, SheetRule, SheetTransition};
+pub use style::{Class, InlineStyle, Sheet, StylePatch, StyleSite};
 pub use task::{
     Task, has_woken_tasks, poll_tasks, set_task_wake, spawn_blocking, spawn_local, task_count,
 };

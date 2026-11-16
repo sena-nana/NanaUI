@@ -1,5 +1,4 @@
 //! Zero-work TextShape attribution for tests and `feature = "benchmark"`.
-//! Not `WorkCounters`: those stay the scheduled TEXT / cache hit-miss fields.
 
 use std::cell::Cell;
 #[cfg(feature = "benchmark")]

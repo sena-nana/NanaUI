@@ -671,11 +671,11 @@ fn runtime_fixture(
             if fixture.state == "emphasis" {
                 // Chinese sets its dots under the text; the Japanese span
                 // overrides them with sesame marks over it in its own colour.
-                layout.text_emphasis_style = Some(TextEmphasisStyle::Mark {
+                layout.text_ext.text_emphasis_style = Some(TextEmphasisStyle::Mark {
                     shape: Some(TextEmphasisShape::Dot),
                     open: false,
                 });
-                layout.text_emphasis_position = Some(TextEmphasisPosition::UNDER);
+                layout.text_ext.text_emphasis_position = Some(TextEmphasisPosition::UNDER);
             }
             let text = document
                 .context_mut()
@@ -1919,8 +1919,8 @@ fn exercise_outliner_tree(
     let document_id = document.document();
     let tree = nana_ui::runtime::Entity::<RuntimeTreeView>::from_stable_id(target);
     let mut adapter = SnapshotInput::default();
-    let Some(nana_ui::runtime::ComponentGeometry::TreeView { rows, .. }) =
-        document.context().world().component_geometry(target)
+    let Some(nana_ui::runtime::TreeViewLayout { rows, .. }) =
+        document.context().world().tree_view_layout(target)
     else {
         return Ok(false);
     };
@@ -2295,8 +2295,8 @@ fn apply_runtime_state(
     let bounds = context.world().layout_box(target).expect("target layout");
     let center_x = bounds.x + bounds.width / 2.0;
     let center_y = bounds.y + bounds.height / 2.0;
-    let (drag_x, drag_width, drag_y) = match context.world().component_geometry(target) {
-        Some(nana_ui::runtime::ComponentGeometry::Range { track, .. }) => {
+    let (drag_x, drag_width, drag_y) = match context.world().range_geometry(target) {
+        Some(nana_ui::runtime::RangeGeometry { track, .. }) => {
             (track.x, track.width, track.y + track.height / 2.0)
         }
         _ => (bounds.x, bounds.width, center_y),

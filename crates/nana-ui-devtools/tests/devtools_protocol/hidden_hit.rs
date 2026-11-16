@@ -176,7 +176,9 @@ fn visible_editor_in_hidden_container_moves_with_its_hit_target() {
         .draw_node_bounds(editor.stable_id())
         .unwrap();
 
-    Arc::make_mut(&mut container_style.layout).transform = Some(PaintTransform {
+    Arc::make_mut(&mut container_style.layout)
+        .transforms
+        .transform = Some(PaintTransform {
         e: 160.0,
         ..Default::default()
     });

@@ -37,10 +37,10 @@ fn layout(cx: &mut AppContext, doc: DocumentId, area: Entity<TextArea>) {
     cx.rebuild_hit_test(doc);
 }
 fn grip(cx: &AppContext, area: Entity<TextArea>) -> (f32, f32) {
-    let ComponentGeometry::TextInput {
+    let TextInputGeometry {
         resize_grip: Some(rect),
         ..
-    } = cx.world().component_geometry(area.stable_id()).unwrap()
+    } = cx.world().text_input_geometry(area.stable_id()).unwrap()
     else {
         panic!("resize geometry")
     };
@@ -187,7 +187,7 @@ fn textarea_resize_uses_transformed_logical_coordinates_and_content_box_chrome()
     style.width = Some(nana_ui_core::LengthSpec::Px(150.0));
     style.box_sizing = nana_ui_core::BoxSizing::ContentBox;
     style.min_height = None;
-    style.transform = Some(nana_ui_core::PaintTransform {
+    style.transforms.transform = Some(nana_ui_core::PaintTransform {
         a: 2.0,
         d: 2.0,
         ..Default::default()

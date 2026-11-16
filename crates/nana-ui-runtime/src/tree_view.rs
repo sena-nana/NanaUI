@@ -33,7 +33,8 @@ use crate::{
     AccessibilityRole, AccessibilityState, AppContext, ComponentTextRegion, ComponentView,
     DocumentId, Entity, FocusWithinChanged, FrameworkError, InteractionState, LayoutBox,
     MutationQueue, NodeKind, NodePointer, NodePointerHooks, NodeStyle, StableNodeId,
-    StandardVisual, UiWorld,
+    TextHorizontalAlignment, TextValue, UiWorld, WidgetGlyph, WidgetIcon, WidgetPaintCtx,
+    WidgetPaintOp, WidgetPaintOutput, WidgetQuad, WidgetVisual,
 };
 
 /// A press that moves less than this is a click, px.
@@ -378,6 +379,8 @@ impl TreeView {
 }
 
 impl ComponentView for TreeView {
+    const TYPE_ID: Option<&'static str> = Some(crate::component_descriptors::TREE_VIEW.type_id);
+
     const BEHAVIOR: crate::TypeBehavior<Self> = crate::TypeBehavior {
         activate_at: Some(crate::AppContext::activate_tree_at),
         assembler: Some(AppContext::assemble_tree_rename),
@@ -424,7 +427,7 @@ impl ComponentView for TreeView {
 
     fn project(&self, id: StableNodeId, world: &UiWorld, mutations: &mut MutationQueue) {
         let rows = self.visible_rows();
-        let visual = StandardVisual::TreeView {
+        let visual = TreeViewVisual {
             rows: rows.into(),
             size: self.size,
             columns: self.columns.iter().map(|column| column.icon).collect(),
@@ -436,8 +439,8 @@ impl ComponentView for TreeView {
             drop: self.drop.clone(),
             active: self.active_id().cloned(),
         };
-        if world.standard_visual(id) != Some(visual.clone()) {
-            mutations.set_standard_visual(id, Some(visual));
+        if world.widget_visual_as::<TreeViewVisual>(id) != Some(&visual) {
+            mutations.set_widget_visual(id, Some(visual));
         }
         let mut style = self.style.clone();
         let layout = Arc::make_mut(&mut style.layout);
@@ -608,6 +611,166 @@ fn select_node(nodes: &mut [TreeNode<Arc<str>>], id: &Arc<str>) -> bool {
     changed
 }
 
+const TREE_TOGGLE_SLOTS: u64 = 1 << 32;
+
+/// Resolved flattened rows and drop mark for a mounted [`TreeView`].
+#[derive(Debug, Clone, PartialEq)]
+pub struct TreeViewLayout {
+    pub rows: Vec<TreeRowGeometry>,
+    pub drop: Option<TreeDropMark>,
+}
+
+/// Widget visual projected by [`TreeView`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TreeViewVisual {
+    pub rows: Arc<[TreeRowData]>,
+    pub size: ControlSize,
+    /// The toggle columns' icons.
+    pub columns: Arc<[Icon]>,
+    /// The toggle columns' names: what assistive technology calls each button.
+    pub column_labels: Arc<[Arc<str>]>,
+    pub drop: Option<TreeDropIntent>,
+    /// The active row: the one assistive technology is on while the tree has focus.
+    pub active: Option<Arc<str>>,
+}
+
+impl WidgetVisual for TreeViewVisual {
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+
+    fn dyn_eq(&self, other: &dyn std::any::Any) -> bool {
+        other.downcast_ref::<Self>() == Some(self)
+    }
+
+    fn has_virtual_nodes(&self) -> bool {
+        true
+    }
+
+    fn paint(&self, ctx: &WidgetPaintCtx<'_>) -> WidgetPaintOutput {
+        let layout = tree_view_geometry(
+            ctx.bounds,
+            &self.rows,
+            self.size,
+            &self.columns,
+            self.drop.as_ref(),
+            &ctx.style_model.palette,
+            ctx.style_model.metrics,
+        );
+        let mut out = WidgetPaintOutput {
+            owns_node_text: true,
+            ..WidgetPaintOutput::new()
+        };
+        for (index, row) in layout.rows.iter().enumerate() {
+            let index = u64::try_from(index).unwrap_or(u64::MAX);
+            // toggle columns: a slot range of their own, eight per row
+            for (column, (icon, icon_bounds, color)) in row.toggles.iter().enumerate() {
+                // a column this row has no toggle in
+                if icon_bounds.width <= 0.0 {
+                    continue;
+                }
+                let column = u64::try_from(column).unwrap_or(7).min(7);
+                out.push(
+                    TREE_TOGGLE_SLOTS
+                        .saturating_add(index.saturating_mul(8))
+                        .saturating_add(column),
+                    WidgetPaintOp::Icon(WidgetIcon {
+                        bounds: *icon_bounds,
+                        glyph: WidgetGlyph::Icon(*icon),
+                        color: Some(*color),
+                        paint_color: ctx.matching_text_paint(*color),
+                        align_to_adjacent_text: false,
+                    }),
+                );
+            }
+            if let Some(background) = row.background {
+                out.push(
+                    10u64.saturating_add(index),
+                    WidgetPaintOp::Quad(WidgetQuad {
+                        rect: row.bounds,
+                        fill: Some(background),
+                        fill_paint: ctx.matching_background_paint(background),
+                        corner_radius: [ctx.chrome_radii.tree_row; 4],
+                        ..WidgetQuad::default()
+                    }),
+                );
+            }
+            if let Some(disclosure) = row.disclosure {
+                let region = ComponentTextRegion {
+                    bounds: disclosure,
+                    content: TextValue::from(if row.expanded { "▾" } else { "▸" }),
+                    color: row.label.color,
+                    font_size: row.label.font_size,
+                    font_weight: None,
+                };
+                out.push(
+                    40u64.saturating_add(index),
+                    WidgetPaintOp::Text(crate::widget_visual::widget_text_region(
+                        &region,
+                        ctx,
+                        TextHorizontalAlignment::Center,
+                        false,
+                    )),
+                );
+            }
+            if let Some((icon, icon_bounds, color)) = row.icon {
+                out.push(
+                    80u64.saturating_add(index),
+                    WidgetPaintOp::Icon(WidgetIcon {
+                        bounds: icon_bounds,
+                        glyph: WidgetGlyph::Icon(icon),
+                        color: Some(color),
+                        paint_color: ctx.matching_text_paint(color),
+                        align_to_adjacent_text: false,
+                    }),
+                );
+            }
+            out.push(
+                110u64.saturating_add(index),
+                WidgetPaintOp::Text(crate::widget_visual::widget_text_region(
+                    &row.label,
+                    ctx,
+                    TextHorizontalAlignment::Start,
+                    true,
+                )),
+            );
+        }
+        // where a dragged row would land: a line between rows, or the row it would go into outlined
+        if let Some(mark) = layout.drop {
+            out.push(
+                TREE_TOGGLE_SLOTS - 1,
+                WidgetPaintOp::Quad(WidgetQuad {
+                    rect: mark.bounds,
+                    fill: (!mark.inside).then_some(mark.color),
+                    border: mark.inside.then_some((mark.color, 2.0)),
+                    corner_radius: [ctx.chrome_radii.tree_row; 4],
+                    ..WidgetQuad::default()
+                }),
+            );
+        }
+        out
+    }
+}
+
+impl UiWorld {
+    /// Resolves `id`'s flattened tree row and drop-indicator layout when mounted as a [`TreeView`].
+    #[must_use]
+    pub fn tree_view_layout(&self, id: StableNodeId) -> Option<TreeViewLayout> {
+        let visual = self.widget_visual_as::<TreeViewVisual>(id)?;
+        let bounds = self.component_layout_box(id)?;
+        let style_model = self.node_style_model(id);
+        Some(tree_view_geometry(
+            bounds,
+            &visual.rows,
+            visual.size,
+            &visual.columns,
+            visual.drop.as_ref(),
+            &style_model.palette,
+            style_model.metrics,
+        ))
+    }
+}
+
 pub(crate) fn tree_view_geometry(
     bounds: LayoutBox,
     rows: &[TreeRowData],
@@ -616,7 +779,7 @@ pub(crate) fn tree_view_geometry(
     drop: Option<&TreeDropIntent>,
     palette: &nana_ui_core::SemanticPalette,
     metrics: nana_ui_core::ThemeMetrics,
-) -> crate::ComponentGeometry {
+) -> TreeViewLayout {
     let row_height = size.height_in(metrics);
     let tree = metrics.tree;
     // the toggle columns take the row's end, one icon and one inset each
@@ -743,7 +906,7 @@ pub(crate) fn tree_view_geometry(
             color: palette.accent.as_rgba_array(),
         })
     });
-    crate::ComponentGeometry::TreeView {
+    TreeViewLayout {
         rows: geometry,
         drop,
     }
@@ -797,11 +960,7 @@ fn tree_rows(
     tree: Entity<TreeView>,
     pointer: &NodePointer,
 ) -> Option<(Vec<TreeRowGeometry>, (f32, f32))> {
-    let crate::ComponentGeometry::TreeView { rows, .. } =
-        cx.world().component_geometry(tree.stable_id())?
-    else {
-        return None;
-    };
+    let TreeViewLayout { rows, .. } = cx.world().tree_view_layout(tree.stable_id())?;
     let origin = cx.world().component_layout_box(tree.stable_id())?;
     Some((rows, (pointer.x + origin.x, pointer.y + origin.y)))
 }
@@ -1307,10 +1466,10 @@ impl AppContext {
             .unwrap_or_default();
         // the label's box, in the tree's own px
         let bounds = match (
-            self.world().component_geometry(tree.stable_id()),
+            self.world().tree_view_layout(tree.stable_id()),
             self.world().component_layout_box(tree.stable_id()),
         ) {
-            (Some(crate::ComponentGeometry::TreeView { rows, .. }), Some(origin)) => {
+            (Some(TreeViewLayout { rows, .. }), Some(origin)) => {
                 rows.iter().find(|row| row.id == id).map(|row| LayoutBox {
                     x: row.label.bounds.x - origin.x,
                     y: row.bounds.y - origin.y,
@@ -1451,8 +1610,7 @@ mod tests {
             .layout_document(document(), crate::LayoutViewport::new(300.0, 300.0))
             .unwrap();
         let height = context.world().layout_box(tree.stable_id()).unwrap().height;
-        let Some(crate::ComponentGeometry::TreeView { rows, .. }) =
-            context.world().component_geometry(tree.stable_id())
+        let Some(TreeViewLayout { rows, .. }) = context.world().tree_view_layout(tree.stable_id())
         else {
             panic!("tree geometry");
         };
@@ -1564,10 +1722,11 @@ mod tests {
     }
 
     fn row_geometry(context: &AppContext, tree: Entity<TreeView>) -> Vec<TreeRowGeometry> {
-        match context.world().component_geometry(tree.stable_id()) {
-            Some(crate::ComponentGeometry::TreeView { rows, .. }) => rows,
-            _ => panic!("tree geometry"),
-        }
+        context
+            .world()
+            .tree_view_layout(tree.stable_id())
+            .expect("tree geometry")
+            .rows
     }
 
     fn mid(bounds: LayoutBox) -> (f32, f32) {
@@ -2246,8 +2405,8 @@ mod tests {
         let tree = context.create_component(document(), sample()).unwrap();
         let id = tree.stable_id();
         assert!(matches!(
-            context.world().standard_visual(id),
-            Some(StandardVisual::TreeView { ref rows, .. }) if rows.len() == 4
+            context.world().widget_visual_as::<TreeViewVisual>(id),
+            Some(TreeViewVisual { rows, .. }) if rows.len() == 4
         ));
     }
 }

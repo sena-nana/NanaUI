@@ -170,9 +170,9 @@ pub use output::{
     EmbeddedBindError, EmbeddedFrameBinding, EmbeddedInputMapping, EmbeddedMetadataError,
     EmbeddedOutputMetadata, EmbeddedSurfaceNode, ExternalFrame, ExternalRenderOutcome,
     ExternalSurface, ExternalSurfaceConfig, ExternalSurfaceError, OutputProvenance,
-    OutputSurfaceId, OverlayAdapterError, OverlayAdapterState, OverlayFramePlan,
-    OverlayHostAdapter, OverlayRelease, OverlayTransport, OverlayTransportError,
-    PresentationDriver, PresentationError,
+    OutputSurfaceId, OutputWorkObservation, OverlayAdapterError, OverlayAdapterState,
+    OverlayFramePlan, OverlayHostAdapter, OverlayRelease, OverlayTransport, OverlayTransportError,
+    PresentationDriver, PresentationError, PresentationWork,
 };
 #[cfg(all(feature = "gpu", feature = "hosted"))]
 pub use output::{
@@ -223,7 +223,7 @@ pub use gpu_texture::{
 #[cfg(feature = "gpu")]
 pub use gpu_view::RenderSlot;
 #[cfg(feature = "gpu")]
-pub use gpu_work::{GpuStageTimings, GpuWorkSink};
+pub use gpu_work::{GpuStageTimings, GpuWorkObservation, GpuWorkSink};
 #[cfg(feature = "graph-canvas")]
 pub use graph::{
     GRAPH_EDGE_HIT_TOLERANCE, GRAPH_MAX_ZOOM, GRAPH_MIN_ZOOM, GRAPH_NODE_TITLE_HEIGHT,
@@ -291,8 +291,6 @@ pub use nana_text::{
 };
 pub use nana_ui_core::ContentFit;
 pub use nana_ui_core::ControlSize;
-#[cfg(feature = "gpu")]
-pub use nana_ui_core::GpuWorkObservation;
 pub use nana_ui_core::ImageSampling;
 /// Which side of its row a `Switch` draws its track on (`Switch::control_position`).
 pub use nana_ui_core::SwitchControlPosition;
@@ -304,6 +302,8 @@ pub use nana_ui_core::{
     WorkspaceModel, WorkspaceMutation,
 };
 pub use nana_ui_core::{XYPadEvent, XYPadValue};
+#[cfg(all(feature = "gpu", feature = "http-fetch"))]
+pub use nana_ui_platform::NativeFetchHost;
 /// Canonical input: what hosts deliver and programs observe in
 /// [`RoutedInput`], routed through the context each source is bound to.
 pub use nana_ui_platform::{
@@ -323,7 +323,7 @@ pub use nana_ui_platform::{
 #[cfg(feature = "gpu")]
 pub use nana_ui_platform::{
     FetchCancellation, FetchError, FetchErrorKind, FetchHost, FetchPolicy, FetchRequest,
-    FetchResponse, NativeFetchHost, SharedFetchHost, shared_fetch_host,
+    FetchResponse, SharedFetchHost, shared_fetch_host,
 };
 pub use nana_ui_runtime::{
     AccessibilityActionRequest, AccessibilityNode, AccessibilityRole, AccessibilityUpdate,

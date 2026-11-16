@@ -196,6 +196,8 @@ impl ColorField {
 }
 
 impl ComponentView for ColorField {
+    const TYPE_ID: Option<&'static str> = Some(crate::component_descriptors::COLOR_FIELD.type_id);
+
     const BEHAVIOR: crate::TypeBehavior<Self> = crate::TypeBehavior {
         assembler: Some(crate::AppContext::assemble_color_field),
         ..crate::TypeBehavior::NONE
@@ -567,7 +569,8 @@ fn hex_input(field: &ColorField) -> TextInput {
             ..crate::SemanticPaint::default()
         },
         ..crate::InteractionStyle::default()
-    };
+    }
+    .into();
     // Its own invalid border is the frame's now.
     input.style_override = true;
     let layout = std::sync::Arc::make_mut(&mut input.style.layout);
@@ -1021,8 +1024,10 @@ mod tests {
             )
         );
         assert!(matches!(
-            context.world().standard_visual(pad.stable_id()),
-            Some(crate::StandardVisual::XYPad { picture: true, .. })
+            context
+                .world()
+                .widget_visual_as::<crate::XYPadVisual>(pad.stable_id()),
+            Some(crate::XYPadVisual { picture: true, .. })
         ));
         let (show_value, gradient) = context
             .read(hue, |range| {
@@ -1032,9 +1037,14 @@ mod tests {
         assert!(!show_value, "no numeric readout");
         assert_eq!(gradient, Some(hue_spectrum()));
         assert!(matches!(
-            context.world().standard_visual(hue.stable_id()),
-            Some(crate::StandardVisual::Range { value, track_gradient: Some(_), .. })
-                if value.is_empty()
+            context
+                .world()
+                .widget_visual_as::<crate::RangeVisual>(hue.stable_id()),
+            Some(crate::RangeVisual {
+                value,
+                track_gradient: Some(_),
+                ..
+            }) if value.is_empty()
         ));
 
         // A new hue repaints the square; saturation and value stay put.

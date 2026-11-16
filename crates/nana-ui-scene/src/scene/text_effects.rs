@@ -431,13 +431,14 @@ pub fn css_text_effects(style: &nana_ui_core::LayoutStyle) -> SceneTextEffects {
                 },
             })
         });
+    let text_ext = &*style.text_ext;
     SceneTextEffects {
         material: style.paint.text_material.clone(),
-        decoration: style.text_decoration.unwrap_or_default(),
+        decoration: text_ext.text_decoration.unwrap_or_default(),
         decoration_color: None,
         stroke,
         shadows,
-        emphasis_color: style
+        emphasis_color: text_ext
             .text_emphasis_color
             .and_then(nana_ui_core::TextEmphasisColor::paint),
     }

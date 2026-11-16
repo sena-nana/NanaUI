@@ -131,6 +131,8 @@ impl Default for Avatar {
 }
 
 impl ComponentView for Avatar {
+    const TYPE_ID: Option<&'static str> = Some(crate::component_descriptors::AVATAR.type_id);
+
     fn share_layouts(
         &mut self,
         share: &mut dyn FnMut(&mut std::sync::Arc<nana_ui_core::LayoutStyle>),

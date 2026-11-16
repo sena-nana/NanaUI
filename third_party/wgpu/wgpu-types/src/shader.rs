@@ -111,6 +111,20 @@ pub struct PassthroughShaderEntryPoint<'a> {
     /// Number of workgroups in each dimension x, y and z. Only used for metal with
     /// compute-like shader stages.
     pub workgroup_size: (u32, u32, u32),
+    /// Sized buffer bindings `(group, binding, array_index)` required for Metal buffers
+    /// containing runtime-sized arrays.
+    #[cfg_attr(feature = "serde", serde(default))]
+    pub metal_sized_bindings: Cow<'a, [(u32, u32, u32)]>,
+}
+
+impl Default for PassthroughShaderEntryPoint<'_> {
+    fn default() -> Self {
+        Self {
+            name: Cow::Borrowed(""),
+            workgroup_size: (0, 0, 0),
+            metal_sized_bindings: Cow::Borrowed(&[]),
+        }
+    }
 }
 
 /// Descriptor for a shader module given by any of several sources.

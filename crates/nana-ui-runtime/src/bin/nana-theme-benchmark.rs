@@ -15,7 +15,7 @@ use std::time::{Duration, Instant};
 
 use nana_ui_runtime::{
     AppContext, Button, DocumentId, MutationQueue, NodeKind, NodeStyle, StableNodeId, Stack,
-    SystemWork, ThemeWorkCounters, UiWorld, WorkCounters,
+    SystemWork, UiWorld,
 };
 use serde::Serialize;
 
@@ -51,77 +51,7 @@ struct Case {
     /// Retained nodes those controls projected to.
     nodes: usize,
     iterations: usize,
-    work: ThemeWork,
-    /// The #8 frame counters of the same window, so the theme attribution can
-    /// be checked against what the frame actually scheduled.
-    frame_work: FrameWork,
     elapsed_ms: Distribution,
-}
-
-/// [`ThemeWorkCounters`] as reported. Every field is one the pass measures, so
-/// none is optional.
-#[derive(Serialize, Clone, Copy, Default)]
-struct ThemeWork {
-    style_nodes_considered: usize,
-    style_nodes_resolved: usize,
-    style_nodes_skipped: usize,
-    theme_reads: usize,
-    style_allocations: usize,
-    style_allocated_bytes: usize,
-    layout_copies: usize,
-    layout_copied_bytes: usize,
-    layout_nodes_from_style: usize,
-    text_nodes_from_style: usize,
-    paint_nodes_from_style: usize,
-}
-
-impl From<ThemeWorkCounters> for ThemeWork {
-    fn from(counters: ThemeWorkCounters) -> Self {
-        Self {
-            style_nodes_considered: counters.style_nodes_considered,
-            style_nodes_resolved: counters.style_nodes_resolved,
-            style_nodes_skipped: counters.style_nodes_skipped,
-            theme_reads: counters.theme_reads,
-            style_allocations: counters.style_allocations,
-            style_allocated_bytes: counters.style_allocated_bytes,
-            layout_copies: counters.layout_copies,
-            layout_copied_bytes: counters.layout_copied_bytes,
-            layout_nodes_from_style: counters.layout_nodes_from_style,
-            text_nodes_from_style: counters.text_nodes_from_style,
-            paint_nodes_from_style: counters.paint_nodes_from_style,
-        }
-    }
-}
-
-/// The subset of [`WorkCounters`] a theme change can move, taken from the
-/// drain inside the measured window ([`SystemWork::counters`]) rather than
-/// from `last_work_counters`: an idle frame deliberately does not replace
-/// that snapshot, so the idle row would otherwise report the numbers of the
-/// last frame that did something. GPU and cache fields are omitted rather
-/// than reported as a fake zero — this binary paints nothing.
-#[derive(Serialize, Clone, Copy, Default)]
-struct FrameWork {
-    entities_total: usize,
-    style_processed: usize,
-    text_shaped: usize,
-    layout_nodes: usize,
-    render_nodes_changed: usize,
-    allocations: usize,
-    allocated_bytes: usize,
-}
-
-impl From<WorkCounters> for FrameWork {
-    fn from(counters: WorkCounters) -> Self {
-        Self {
-            entities_total: counters.entities_total,
-            style_processed: counters.style_processed,
-            text_shaped: counters.text_shaped,
-            layout_nodes: counters.layout_nodes,
-            render_nodes_changed: counters.render_nodes_changed,
-            allocations: counters.allocations,
-            allocated_bytes: counters.allocated_bytes,
-        }
-    }
 }
 
 #[derive(Serialize, Clone, Copy, Default)]
@@ -169,8 +99,6 @@ fn main() {
 fn control_scale_case(id: &'static str, controls: usize) -> Case {
     let (warmup, iterations) = iteration_budget(controls);
     let mut samples = Vec::with_capacity(iterations);
-    let mut work = ThemeWork::default();
-    let mut frame_work = FrameWork::default();
     let mut nodes = 0;
     for iteration in 0..(warmup + iterations) {
         let Fixture {
@@ -178,16 +106,14 @@ fn control_scale_case(id: &'static str, controls: usize) -> Case {
             document,
             ..
         } = control_fixture(controls);
-        context.compat_world_mut().begin_frame_counters();
+        context.compat_world_mut().begin_frame();
         let started = Instant::now();
         let scheduled = context.take_system_work();
         run_systems(&mut context, document, &scheduled);
         let elapsed = started.elapsed();
-        context.compat_world_mut().end_frame_counters();
+        context.compat_world_mut().end_frame();
         if iteration >= warmup {
             samples.push(elapsed);
-            work = context.world().last_theme_work_counters().into();
-            frame_work = scheduled.counters().into();
             nodes = context.world().len();
         }
     }
@@ -198,8 +124,6 @@ fn control_scale_case(id: &'static str, controls: usize) -> Case {
         controls,
         nodes,
         iterations,
-        work,
-        frame_work,
         elapsed_ms: summarize(&samples),
     }
 }
@@ -214,10 +138,8 @@ fn static_idle_case() -> Case {
     } = settled_fixture(FIXTURE_CONTROLS);
     let nodes = context.world().len();
     let mut samples = Vec::with_capacity(ITERATIONS);
-    let mut work = ThemeWork::default();
-    let mut frame_work = FrameWork::default();
     for iteration in 0..(WARMUP + ITERATIONS) {
-        context.compat_world_mut().begin_frame_counters();
+        context.compat_world_mut().begin_frame();
         let started = Instant::now();
         let scheduled = context.take_system_work();
         assert!(
@@ -226,11 +148,9 @@ fn static_idle_case() -> Case {
         );
         run_systems(&mut context, document, &scheduled);
         let elapsed = started.elapsed();
-        context.compat_world_mut().end_frame_counters();
+        context.compat_world_mut().end_frame();
         if iteration >= WARMUP {
             samples.push(elapsed);
-            work = context.world().last_theme_work_counters().into();
-            frame_work = scheduled.counters().into();
         }
     }
     assert_eq!(
@@ -247,8 +167,6 @@ fn static_idle_case() -> Case {
         controls: FIXTURE_CONTROLS,
         nodes,
         iterations: ITERATIONS,
-        work,
-        frame_work,
         elapsed_ms: summarize(&samples),
     }
 }
@@ -265,14 +183,12 @@ fn hover_case() -> Case {
     } = fixture;
     let nodes = context.world().len();
     let mut samples = Vec::with_capacity(ITERATIONS);
-    let mut work = ThemeWork::default();
-    let mut frame_work = FrameWork::default();
     for iteration in 0..(WARMUP + ITERATIONS) {
         // Leave the node before measuring, so every measured pass is the same
         // enter and not an already-hovered no-op.
         context.set_pointer_hover(document, 1, None).unwrap();
         let _ = context.take_system_work();
-        context.compat_world_mut().begin_frame_counters();
+        context.compat_world_mut().begin_frame();
         let started = Instant::now();
         context
             .set_pointer_hover(document, 1, Some(target))
@@ -280,11 +196,9 @@ fn hover_case() -> Case {
         let scheduled = context.take_system_work();
         run_systems(&mut context, document, &scheduled);
         let elapsed = started.elapsed();
-        context.compat_world_mut().end_frame_counters();
+        context.compat_world_mut().end_frame();
         if iteration >= WARMUP {
             samples.push(elapsed);
-            work = context.world().last_theme_work_counters().into();
-            frame_work = scheduled.counters().into();
         }
     }
     Case {
@@ -294,8 +208,6 @@ fn hover_case() -> Case {
         controls: FIXTURE_CONTROLS,
         nodes,
         iterations: ITERATIONS,
-        work,
-        frame_work,
         elapsed_ms: summarize(&samples),
     }
 }
@@ -311,22 +223,18 @@ fn focus_case() -> Case {
     } = fixture;
     let nodes = context.world().len();
     let mut samples = Vec::with_capacity(ITERATIONS);
-    let mut work = ThemeWork::default();
-    let mut frame_work = FrameWork::default();
     for iteration in 0..(WARMUP + ITERATIONS) {
         context.clear_focus(document).unwrap();
         let _ = context.take_system_work();
-        context.compat_world_mut().begin_frame_counters();
+        context.compat_world_mut().begin_frame();
         let started = Instant::now();
         context.focus_node(document, target).unwrap();
         let scheduled = context.take_system_work();
         run_systems(&mut context, document, &scheduled);
         let elapsed = started.elapsed();
-        context.compat_world_mut().end_frame_counters();
+        context.compat_world_mut().end_frame();
         if iteration >= WARMUP {
             samples.push(elapsed);
-            work = context.world().last_theme_work_counters().into();
-            frame_work = scheduled.counters().into();
         }
     }
     Case {
@@ -336,8 +244,6 @@ fn focus_case() -> Case {
         controls: FIXTURE_CONTROLS,
         nodes,
         iterations: ITERATIONS,
-        work,
-        frame_work,
         elapsed_ms: summarize(&samples),
     }
 }
@@ -421,20 +327,16 @@ fn theme_install_case(
     } = settled_fixture(FIXTURE_CONTROLS);
     let nodes = context.world().len();
     let mut samples = Vec::with_capacity(ITERATIONS);
-    let mut work = ThemeWork::default();
-    let mut frame_work = FrameWork::default();
     for iteration in 0..(WARMUP + ITERATIONS) {
-        context.compat_world_mut().begin_frame_counters();
+        context.compat_world_mut().begin_frame();
         let started = Instant::now();
         install(&mut context, iteration);
         let scheduled = context.take_system_work();
         run_systems(&mut context, document, &scheduled);
         let elapsed = started.elapsed();
-        context.compat_world_mut().end_frame_counters();
+        context.compat_world_mut().end_frame();
         if iteration >= WARMUP {
             samples.push(elapsed);
-            work = context.world().last_theme_work_counters().into();
-            frame_work = scheduled.counters().into();
         }
     }
     Case {
@@ -444,8 +346,6 @@ fn theme_install_case(
         controls: FIXTURE_CONTROLS,
         nodes,
         iterations: ITERATIONS,
-        work,
-        frame_work,
         elapsed_ms: summarize(&samples),
     }
 }
@@ -462,10 +362,8 @@ fn head_mutation_case() -> Case {
     let _ = world.extract_nodes(&work.render_extraction);
     let nodes = world.len();
     let mut samples = Vec::with_capacity(LARGE_ITERATIONS);
-    let mut theme_work = ThemeWork::default();
-    let mut frame_work = FrameWork::default();
     for iteration in 0..(LARGE_WARMUP + LARGE_ITERATIONS) {
-        world.begin_frame_counters();
+        world.begin_frame();
         let started = Instant::now();
         let mut queue = MutationQueue::new();
         queue.set_style(
@@ -477,11 +375,9 @@ fn head_mutation_case() -> Case {
         world.resolve_styles(&scheduled.style).unwrap();
         let _ = world.extract_nodes(&scheduled.render_extraction);
         let elapsed = started.elapsed();
-        world.end_frame_counters();
+        world.end_frame();
         if iteration >= LARGE_WARMUP {
             samples.push(elapsed);
-            theme_work = world.last_theme_work_counters().into();
-            frame_work = scheduled.counters().into();
         }
     }
     Case {
@@ -491,8 +387,6 @@ fn head_mutation_case() -> Case {
         controls: 0,
         nodes,
         iterations: LARGE_ITERATIONS,
-        work: theme_work,
-        frame_work,
         elapsed_ms: summarize(&samples),
     }
 }

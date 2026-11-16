@@ -55,9 +55,9 @@ fn settle(cx: &mut AppContext, doc: DocumentId, ids: &[StableNodeId]) {
 }
 
 fn caret(cx: &AppContext, node: StableNodeId) -> LayoutBox {
-    let Some(ComponentGeometry::TextInput {
+    let Some(TextInputGeometry {
         caret: Some(caret), ..
-    }) = cx.world().component_geometry(node)
+    }) = cx.world().text_input_geometry(node)
     else {
         panic!("a focused editor draws a caret")
     };
@@ -260,11 +260,11 @@ fn a_vertical_rl_editor_hands_its_column_scroll_to_the_painter() {
     let node = area.stable_id();
     settle(&mut cx, doc, &[node]);
     let scroll = |cx: &AppContext| {
-        let Some(ComponentGeometry::TextInput {
+        let Some(TextInputGeometry {
             text,
             scroll: Some(scroll),
             ..
-        }) = cx.world().component_geometry(node)
+        }) = cx.world().text_input_geometry(node)
         else {
             panic!("a multiline editor hands its scroll over")
         };
@@ -328,8 +328,7 @@ fn a_vertical_text_input_centres_its_column() {
         (centre - (content.x + content.width / 2.0)).abs() < 0.5,
         "the column sits in the middle of the field: {at:?} in {content:?}"
     );
-    let Some(ComponentGeometry::TextInput { text, .. }) = cx.world().component_geometry(node)
-    else {
+    let Some(TextInputGeometry { text, .. }) = cx.world().text_input_geometry(node) else {
         panic!("an editor");
     };
     assert!(
@@ -372,8 +371,7 @@ fn a_vertical_rtl_editor_starts_its_lines_at_the_bottom() {
     cx.select_focused_text_range(doc, 0, 0).unwrap();
     settle(&mut cx, doc, &[node]);
     let (content, _) = cx.world().text_input_pointer_context(node).unwrap();
-    let Some(ComponentGeometry::TextInput { text, .. }) = cx.world().component_geometry(node)
-    else {
+    let Some(TextInputGeometry { text, .. }) = cx.world().text_input_geometry(node) else {
         panic!("an editor")
     };
     let bottom = content.y + content.height;

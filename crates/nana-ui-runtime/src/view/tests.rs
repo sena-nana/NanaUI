@@ -1896,11 +1896,11 @@ fn a_store_with_history_undoes_one_handler_at_a_time() {
 }
 
 static CARD: StylePatch = StylePatch::new(|layout| {
-    layout.opacity = crate::view::__style_value(r#"0.8"#);
-    layout.padding = crate::view::__style_value(r#"{"Px":12.0}"#);
+    layout.opacity = Some(0.8);
+    layout.padding = Some(LengthSpec::Px(12.0));
 });
 static DIM: StylePatch = StylePatch::new(|layout| {
-    layout.opacity = crate::view::__style_value(r#"0.4"#);
+    layout.opacity = Some(0.4);
 });
 static CARD_SHEET: Sheet = Sheet::new(
     &[
@@ -1962,13 +1962,13 @@ fn compiled_styles_compose_once_per_class_set_and_follow_conditional_classes() {
 }
 
 static QUERY_ROW: StylePatch = StylePatch::new(|layout| {
-    layout.height = crate::view::__style_value(r#"{"Px":20.0}"#);
+    layout.height = Some(LengthSpec::Px(20.0));
 });
 static QUERY_NARROW: StylePatch = StylePatch::new(|layout| {
-    layout.height = crate::view::__style_value(r#"{"Px":40.0}"#);
+    layout.height = Some(LengthSpec::Px(40.0));
 });
 static QUERY_DIM: StylePatch = StylePatch::new(|layout| {
-    layout.opacity = crate::view::__style_value(r#"0.5"#);
+    layout.opacity = Some(0.5);
 });
 /// `@container card (width < 300px)`.
 static NARROW_CARD: SheetQuery = SheetQuery::new(
@@ -4653,7 +4653,8 @@ fn a_title_content_view_stands_between_the_icon_and_the_close_action() {
     assert_eq!(
         cx.world()
             .accessibility(dialog.stable_id())
-            .and_then(|state| state.label.as_deref()),
+            .and_then(|state| state.label.clone())
+            .as_deref(),
         Some("资源库"),
         "the dialog is still named by its title"
     );
@@ -6374,7 +6375,10 @@ fn a_footer_bar_and_an_expansion_body_keep_their_lines() {
     };
     let (bar_box, one, two) = (rect(bar), rect(one), rect(two));
     let style = cx.world().node_style(bar).unwrap();
-    assert_eq!(style.layout.border_top_width, Some(nana_ui_core::HAIRLINE));
+    assert_eq!(
+        style.layout.border_sides.top_width,
+        Some(nana_ui_core::HAIRLINE)
+    );
     assert_eq!(
         style.border,
         Some(nana_ui_core::SemanticColorRole::BorderSoft)
@@ -6421,8 +6425,8 @@ fn a_settings_group_rules_a_row_under_other_content() {
                 Some((
                     row.0,
                     row.1,
-                    layout.border_top_width,
-                    layout.border_bottom_width,
+                    layout.border_sides.top_width,
+                    layout.border_sides.bottom_width,
                 ))
             })
             .collect()
@@ -6649,7 +6653,8 @@ fn list_item_after_label_places_a_mark_between_name_and_detail_and_updates_copy(
     assert_eq!(
         cx.world()
             .accessibility(item)
-            .and_then(|state| state.label.as_deref()),
+            .and_then(|state| state.label.clone())
+            .as_deref(),
         Some("双机直播 LAN  未开启")
     );
     let mark_box = cx.world().layout_box(mark).unwrap();
@@ -6671,7 +6676,8 @@ fn list_item_after_label_places_a_mark_between_name_and_detail_and_updates_copy(
     assert_eq!(
         cx.world()
             .accessibility(item)
-            .and_then(|state| state.label.as_deref()),
+            .and_then(|state| state.label.clone())
+            .as_deref(),
         Some("双机接收 LAN  已连接")
     );
 
@@ -6688,11 +6694,13 @@ fn list_item_after_label_places_a_mark_between_name_and_detail_and_updates_copy(
     cx.layout_document(document, LayoutViewport::new(240.0, 80.0))
         .unwrap();
     let label_node = cx
-        .read(Entity::<ListItem>::from_stable_id(item), |r| r.label_slot)
+        .read(Entity::<ListItem>::from_stable_id(item), |r| r.label_slot())
         .unwrap()
         .unwrap();
     let detail_node = cx
-        .read(Entity::<ListItem>::from_stable_id(item), |r| r.detail_slot)
+        .read(Entity::<ListItem>::from_stable_id(item), |r| {
+            r.detail_slot()
+        })
         .unwrap()
         .unwrap();
     let label_box = cx.world().layout_box(label_node).unwrap();

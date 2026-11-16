@@ -262,35 +262,11 @@ pub(crate) struct TextNodeState {
     /// The language the node last resolved in, and whether a language change
     /// invalidated it since: together they say whether that change was one
     /// the text depends on.
-    shaped_language: Option<nana_text::font::LanguageTag>,
+    shaped_language: Option<Box<nana_text::font::LanguageTag>>,
     language_pending: bool,
-    /// Whether a typography scale change reached this text since it last
-    /// resolved: the pass that lays it out again counts that as the scale's.
-    scale_pending: bool,
 }
 
 impl TextNodeState {
-    /// Whether a pass has resolved this node before: a later resolution is a
-    /// change to text that already exported metrics, not its first layout.
-    pub(crate) fn resolved_before(&self) -> bool {
-        self.stamp.is_some()
-    }
-
-    /// A typography scale change reached this text, if it had resolved
-    /// before: text laid out for the first time under a scale is not one a
-    /// change reached. Returns whether it had.
-    pub(crate) fn note_scale(&mut self) -> bool {
-        let resolved = self.resolved_before();
-        self.scale_pending |= resolved;
-        resolved
-    }
-
-    /// Whether a typography scale change reached this text since it last
-    /// resolved, clearing it.
-    pub(crate) fn take_scale_pending(&mut self) -> bool {
-        std::mem::take(&mut self.scale_pending)
-    }
-
     /// Applies `dirty` as revision bumps, through [`TextDirty::work`]: a
     /// revision moves exactly when its work is implied. Classes that imply no
     /// text work bump nothing, so they cannot make a resolved node stale.
@@ -366,8 +342,8 @@ impl TextNodeState {
     ) -> bool {
         let wasted_language = std::mem::take(&mut self.language_pending)
             && self.stamp.is_some()
-            && self.shaped_language.as_ref() == language;
-        self.shaped_language = language.cloned();
+            && self.shaped_language.as_deref() == language;
+        self.shaped_language = language.cloned().map(Box::new);
         let measured = constraints.is_some();
         self.stamp = Some(TextStamp {
             content: self.revisions.content,
@@ -761,6 +737,11 @@ pub(crate) fn classify_computed_style_change(
     previous: &ComputedStyle,
     next: &ComputedStyle,
 ) -> TextDirty {
+    if std::sync::Arc::ptr_eq(&previous.inherited, &next.inherited)
+        && previous.paint_colors.ptr_eq(&next.paint_colors)
+    {
+        return TextDirty::NONE;
+    }
     let mut dirty = TextDirty::NONE;
     if previous.font_size.to_bits() != next.font_size.to_bits()
         || previous.font_weight != next.font_weight
@@ -1112,11 +1093,10 @@ mod tests {
 
     #[test]
     fn a_rich_source_resolves_its_shaping_spans_over_the_node_style() {
-        let style = ComputedStyle {
-            font_size: 16.0,
-            line_height: Some(LineHeightSpec::Absolute(20.0)),
-            ..ComputedStyle::default()
-        };
+        let style = ComputedStyle::with(|s| {
+            s.font_size = 16.0;
+            s.line_height = Some(LineHeightSpec::Absolute(20.0));
+        });
         let rich = RichText::new("big word")
             .with_span(0..3, RichSpanStyle::new().size(32.0).bold())
             .with_span(

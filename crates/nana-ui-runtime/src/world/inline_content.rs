@@ -28,20 +28,13 @@ impl UiWorld {
     }
     pub(crate) fn single_text_baseline(&self, id: StableNodeId, bounds: LayoutBox) -> Option<f32> {
         let node = self.nodes.get(id)?;
+        let metrics = self.nodes.text_metrics(id);
         if self.text_layout(id).is_none() {
-            return node
-                .text_metrics
-                .ascent
-                .map(|ascent| bounds.y + ascent.max(0.0));
+            return metrics.ascent.map(|ascent| bounds.y + ascent.max(0.0));
         }
-        let origin = crate::text_layout_origin(
-            bounds,
-            node.style.text_vertical_alignment,
-            node.text_metrics.height,
-        );
-        node.text_metrics
-            .ascent
-            .map(|ascent| origin[1] + ascent.max(0.0))
+        let origin =
+            crate::text_layout_origin(bounds, node.style.text_vertical_alignment, metrics.height);
+        metrics.ascent.map(|ascent| origin[1] + ascent.max(0.0))
     }
     pub(super) fn native_text_fragments(
         &self,
@@ -118,10 +111,9 @@ impl UiWorld {
         };
         if !layout.is_vertical()
             && layout.constraints.max_width_px != Some(bounds.width)
-            && matches!(
-                self.standard_visual_ref(id),
-                Some(StandardVisual::Button { .. } | StandardVisual::ActionMenuItem { .. })
-            )
+            && self
+                .widget_visual_ref(id)
+                .is_some_and(crate::WidgetVisualHandle::offsets_overflowing_inline_text)
         {
             origin[0] -= layout.bounds.x;
         }
@@ -156,19 +148,9 @@ impl UiWorld {
         self.custom_render(id).is_some()
             || style.paint.content_image.is_some()
             || style.paint.skipped_replaced.is_some()
-            || {
-                #[cfg(feature = "image-viewer")]
-                {
-                    matches!(
-                        self.standard_visual_ref(id),
-                        Some(StandardVisual::ImageViewer { .. })
-                    )
-                }
-                #[cfg(not(feature = "image-viewer"))]
-                {
-                    false
-                }
-            }
+            || self
+                .widget_visual_ref(id)
+                .is_some_and(crate::WidgetVisualHandle::aligns_by_bottom_edge)
     }
 
     /// Whether atomic inline `id` sits on its line by the baseline of its
@@ -233,7 +215,7 @@ impl UiWorld {
             } else if style.is_inline_level() {
                 return !style.overflow_x.clips() && !style.overflow_y.clips();
             } else {
-                !style.position.is_out_of_flow() && !style.is_floated()
+                !style.position.is_out_of_flow()
             };
             if !reads_parent {
                 return false;
@@ -268,7 +250,7 @@ impl UiWorld {
     /// control or paragraph that lays text out. Its baselines are then that
     /// text's.
     pub(crate) fn lays_out_own_line(&self, id: StableNodeId) -> bool {
-        self.standard_visual_ref(id).is_some()
+        self.widget_visual_ref(id).is_some()
             || self.text(id).is_some_and(|text| !text.is_empty())
             || self.text_layout(id).is_some()
             || self.inline_record(id).is_some()
@@ -307,13 +289,20 @@ impl UiWorld {
             Holds,
             IfItHolds,
         }
-        let bears = |child: StableNodeId| {
+        let creates_ifc = |node: StableNodeId| {
+            self.layout_style(node).is_none_or(|style| {
+                !style
+                    .display
+                    .is_some_and(|d| d.is_flex_container() || d.is_grid_container())
+            })
+        };
+        let bears = |parent_ifc: bool, child: StableNodeId| {
             let Some(style) = self.layout_style(child) else {
                 return Bears::No;
             };
-            if style.omits_box() || style.position.is_out_of_flow() || style.is_floated() {
+            if style.omits_box() || style.position.is_out_of_flow() {
                 Bears::No
-            } else if style.is_inline_level() {
+            } else if parent_ifc && style.is_inline_level() {
                 Bears::Holds
             } else if self.aligns_by_bottom_edge(child, &style) {
                 Bears::No
@@ -332,8 +321,9 @@ impl UiWorld {
         // settled already, or a leaf, which holds a line box exactly when it
         // lays one out itself: then it settles here, with no walk to set up.
         let mut deeper = false;
+        let id_ifc = creates_ifc(id);
         for &child in self.child_ids(id) {
-            let holds = match bears(child) {
+            let holds = match bears(id_ifc, child) {
                 Bears::No => false,
                 Bears::Holds => true,
                 Bears::IfItHolds => match memo.get(&child) {
@@ -383,8 +373,9 @@ impl UiWorld {
             }
             let from = unknown.len();
             let mut holds = false;
+            let node_ifc = creates_ifc(node);
             for &child in self.child_ids(node).iter() {
-                match bears(child) {
+                match bears(node_ifc, child) {
                     Bears::No => {}
                     Bears::Holds => holds = true,
                     Bears::IfItHolds => match memo.get(&child) {
@@ -444,15 +435,18 @@ impl UiWorld {
     /// One canonical view of plain text, styled text and ordinary atomic
     /// children. No builder/Vue/range-edit history is retained.
     pub fn inline_content(&self, id: StableNodeId) -> Option<InlineContent> {
-        let node = self.nodes.get(id)?;
+        if !self.nodes.contains(id) {
+            return None;
+        }
+        let value = &self.nodes.text_content(id).value;
         if self.nodes.rich_text(id).is_none() && self.inline_record(id).is_none() {
-            return Some(InlineContent::PlainText(node.text.value.to_shared_str()));
+            return Some(InlineContent::PlainText(value.to_shared_str()));
         }
         let text = self
             .nodes
             .rich_text(id)
             .cloned()
-            .unwrap_or_else(|| nana_ui_core::RichText::new(node.text.value.to_shared_str()));
+            .unwrap_or_else(|| nana_ui_core::RichText::new(value.to_shared_str()));
         Some(InlineContent::from_parts(
             text,
             self.nodes
@@ -589,31 +583,34 @@ impl UiWorld {
         range: std::ops::Range<usize>,
         accessible: bool,
     ) -> Option<String> {
-        let node = self.nodes.get(id)?;
-        if accessible && let Some(label) = &node.accessibility.label {
+        if !self.nodes.contains(id) {
+            return None;
+        }
+        if accessible && let Some(label) = &self.nodes.accessibility(id).label {
             return Some(label.to_string());
         }
         if self.text_input_is_secure(id) {
             return Some(String::new());
         }
+        let value = &self.nodes.text_content(id).value;
         if range.start > range.end
-            || range.end > node.text.value.len()
-            || !node.text.value.is_char_boundary(range.start)
-            || !node.text.value.is_char_boundary(range.end)
+            || range.end > value.len()
+            || !value.is_char_boundary(range.start)
+            || !value.is_char_boundary(range.end)
         {
             return None;
         }
         let Some(inline) = self.inline_record(id) else {
-            return Some(node.text.value[range].to_owned());
+            return Some(value[range].to_owned());
         };
-        let mut result = String::with_capacity(node.text.value.len());
+        let mut result = String::with_capacity(value.len());
         let mut start = range.start;
         for atom in inline
             .atoms
             .iter()
             .filter(|atom| range.contains(&atom.offset))
         {
-            result.push_str(&node.text.value[start..atom.offset]);
+            result.push_str(&value[start..atom.offset]);
             let explicit = if accessible {
                 &atom.text.accessible_text
             } else {
@@ -621,15 +618,15 @@ impl UiWorld {
             };
             if let Some(text) = explicit {
                 result.push_str(text);
-            } else if let Some(child) = self.nodes.get(atom.node)
-                && (!accessible || !child.accessibility.hidden)
+            } else if self.nodes.contains(atom.node)
+                && (!accessible || !self.nodes.accessibility(atom.node).hidden)
                 && let Some(text) = self.inline_text(atom.node, accessible)
             {
                 result.push_str(&text);
             }
             start = atom.offset + '\u{fffc}'.len_utf8();
         }
-        result.push_str(&node.text.value[start..range.end]);
+        result.push_str(&value[start..range.end]);
         Some(result)
     }
 }
@@ -809,8 +806,7 @@ impl super::mutation::ValidationPlan<'_> {
                             .node_style(atom.node)
                             .map(|style| style.layout.as_ref())
                     });
-                if style.is_some_and(|style| style.position.is_out_of_flow() || style.is_floated())
-                {
+                if style.is_some_and(|style| style.position.is_out_of_flow()) {
                     return Err(UiWorldError::InvalidInlineContent(id));
                 }
                 if inline_control(role(id, self.source)) || focusable(id, self.source) {

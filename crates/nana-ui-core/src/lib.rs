@@ -17,6 +17,7 @@ pub mod dynamic_layout;
 pub mod expansion;
 pub mod file_dialog;
 pub mod fonts;
+pub mod frame_stage;
 pub mod framework_strings;
 pub mod geometry;
 pub mod graph;
@@ -29,6 +30,7 @@ mod layout_overlay;
 mod layout_style_api;
 pub mod layout_style_change;
 pub mod material;
+pub mod style_patch;
 pub use material::{
     MATERIAL_ABI, MaterialInstance, MaterialProgram, MaterialRef, MaterialTexture,
     PresentationMask, PresentationMaskSample, PresentationMaskSpace,
@@ -57,7 +59,6 @@ pub mod url_jail;
 pub mod virtual_list;
 pub mod virtual_table;
 pub mod virtual_tree;
-pub mod work;
 pub mod workspace_model;
 pub mod writing;
 
@@ -67,21 +68,21 @@ pub use action::{
 };
 pub use box_layout::{
     AlignSpec, AnchorSpec, BackdropFilter, BackgroundImage, BackgroundImageFit, BackgroundPosition,
-    BackgroundRepeat, BorderImageSlice, BorderImageSpec, BorderImageTile, BorderStyle,
-    BoxShadowSpec, BoxSizing, CalcBinOp, CalcExpr, CalcExprRef, ClearSpec, ClipCircle, ClipEllipse,
-    ClipInset, ClipPath, ClipPoint, ClipShapeRadius, ColorFilter, ContainerType, CssGradient,
-    CursorSpec, DirSpec, DisplaySpec, FilterDropShadow, FlexDirection, FlexWrap, FloatSpec,
+    BackgroundRepeat, BorderImageSlice, BorderImageSpec, BorderImageTile, BorderSides, BorderStyle,
+    BoxShadowSpec, BoxSizing, CalcBinOp, CalcExpr, CalcExprRef, ClipCircle, ClipEllipse, ClipInset,
+    ClipPath, ClipPoint, ClipShapeRadius, ColorFilter, ContainerStyle, ContainerType, CssGradient,
+    CursorSpec, DirSpec, DisplaySpec, FilterDropShadow, FlexDirection, FlexWrap,
     FontFeatureSetting, FontSizeContext, GradientStop, GridAutoFlow, GridLine, GridPlacement,
-    GridRepeatAuto, GridTemplateAreas, GridTrack, GridTrackListUnsupported, JustifySpec,
-    LayoutStyle, LengthAtom, LengthSpec, LineHeightSpec, LinearGradient, LogicalEdge, LogicalEdges,
-    MAX_BACKGROUND_LAYERS, MAX_BOX_SHADOWS, MaskImage, MixBlendMode, OutlineSpec, OutlineStyle,
-    OverflowSpec, OverflowWrapSpec, PaddingSpec, PaintMat4, PaintStyle, PaintTransform, ParentBox,
-    PointerEventsSpec, PositionSpec, RadialGradient, TEXT_APPROX_ASCENT_EM, TextAlignSpec,
-    TextDecorationLine, TextOrientationSpec, TextShadowSpec, TextStrokeSpec, TextWrapBreak,
-    TransformBox, TransformOrigin, UserSelectSpec, ViewportAxes, ViewportAxis, VisibilitySpec,
-    WhiteSpaceSpec, WordBreakSpec, WritingModeSpec, glyph_box_center_from_line_top,
-    icon_y_on_text_glyph_center, resolve_grid_column_widths, resolve_grid_track_sizes,
-    text_line_box_height_px,
+    GridRepeatAuto, GridStyle, GridTemplateAreas, GridTrack, GridTrackListUnsupported, JustifySpec,
+    LayoutStyle, LengthAtom, LengthSpec, LineHeightSpec, LinearGradient, LogicalBoxEdges,
+    LogicalEdge, LogicalEdges, MAX_BACKGROUND_LAYERS, MAX_BOX_SHADOWS, MaskImage, MixBlendMode,
+    OutlineSpec, OutlineStyle, OverflowSpec, OverflowWrapSpec, PaddingSpec, PaintMat4, PaintStyle,
+    PaintTransform, ParentBox, PointerEventsSpec, PositionSpec, RadialGradient,
+    TEXT_APPROX_ASCENT_EM, TextAlignSpec, TextDecorationLine, TextOrientationSpec, TextShadowSpec,
+    TextStrokeSpec, TextStyleExt, TextWrapBreak, TransformBox, TransformOrigin, TransformStyle,
+    UserSelectSpec, ViewportAxes, ViewportAxis, VisibilitySpec, WhiteSpaceSpec, WordBreakSpec,
+    WritingModeSpec, glyph_box_center_from_line_top, icon_y_on_text_glyph_center,
+    resolve_grid_column_widths, resolve_grid_track_sizes, text_line_box_height_px,
 };
 pub use date::{CivilDate, DayCell, MonthGrid, WeekStart, Weekday, days_in_month, is_leap_year};
 pub use dialog::{DialogClosePolicy, DialogCloseTrigger, DialogSize};
@@ -90,6 +91,7 @@ pub use expansion::ExpansionState;
 pub use file_dialog::{
     FileDialogError, FileDialogKind, FileDialogRequest, FileDialogResult, FileFilter,
 };
+pub use frame_stage::FrameStage;
 pub use framework_strings::FrameworkStrings;
 pub use geometry::{
     ContentFit, ImageSampling, LogicalPoint, LogicalRect, PhysicalRect, RESIZE_HANDLE_SIZE,
@@ -109,9 +111,7 @@ pub use layout::{
     NarrowBehavior, RegionId, RegionPlacement, RegionRole, RegionScope, RegionState,
     WorkspaceLayout, WorkspaceLayoutError,
 };
-pub use layout_authority::{
-    LayoutFieldMask, LayoutIntent, LayoutOrigin, LayoutOwnership, resolve_layout_intent,
-};
+pub use layout_authority::LayoutFieldMask;
 pub use layout_frontier::{
     InvalidationKind, InvalidationReason, LayoutDependencyFootprint, LayoutInvalidation,
     LayoutInvalidationSource, LayoutMetricDelta,
@@ -179,6 +179,7 @@ pub use style_model::{
     ColorOverrides, ControlSemantics, PaintColor, PaintColorSlots, SemanticColor, SemanticColorMix,
     SemanticColorRole, SemanticPalette, StyleModelRef,
 };
+pub use style_patch::StylePatch;
 pub use tab_drag::{
     TabDragGroup, TabDragLease, TabDragRect, TabDragSurface, TabDropIndicator, TabStripPaint,
     drop_before_index, reorder_changes_position, tab_at,
@@ -227,10 +228,6 @@ pub use virtual_table::{
     VirtualTableLayout, VirtualTableMaterialization, VirtualTableMaterializer, VirtualTableWindow,
 };
 pub use virtual_tree::{VirtualTreeLayout, VirtualTreeRow, VirtualTreeWindow};
-pub use work::{
-    DynamicLayoutCounters, FrameStage, GpuWorkObservation, I18nCounters, OutputWorkObservation,
-    ThemeWorkCounters, WorkCounters,
-};
 pub use workspace_model::{
     WORKSPACE_REGION_TRANSITION_DURATION, WorkspaceModel, WorkspaceMutation,
 };

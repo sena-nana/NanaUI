@@ -7,7 +7,7 @@ use std::time::Duration;
 use nana_ui_core::{LengthSpec, ScrollbarAxis, ScrollbarVisibility};
 
 use super::*;
-use crate::{ComponentGeometry, Entity, NodeStyle, ScrollAxes, ScrollView, ScrollbarBar, Stack};
+use crate::{Entity, NodeStyle, ScrollAxes, ScrollView, ScrollbarBar, Stack};
 
 fn document() -> DocumentId {
     DocumentId::new(1).unwrap()
@@ -88,8 +88,8 @@ fn scroll_with_rows(
 }
 
 fn bar(context: &AppContext, scroll: Entity<ScrollView>) -> ScrollbarBar {
-    match context.world().component_geometry(scroll.stable_id()) {
-        Some(ComponentGeometry::Scrollbar {
+    match context.world().scrollbar_bars(scroll.stable_id()) {
+        Some(crate::ScrollbarBars {
             vertical: Some(bar),
             ..
         }) => bar,

@@ -1,5 +1,4 @@
 //! Layout and input identity for host-composited native content.
-use crate::component_registry::{RegisterableComponent, SemanticSpec};
 use crate::view_components::project_common;
 use crate::{
     AccessibilityRole, AccessibilityState, ComponentView, CustomRenderNode, InteractionState,
@@ -55,6 +54,9 @@ impl NativeContent {
 }
 
 impl ComponentView for NativeContent {
+    const TYPE_ID: Option<&'static str> =
+        Some(crate::component_descriptors::NATIVE_CONTENT.type_id);
+
     fn share_layouts(
         &mut self,
         share: &mut dyn FnMut(&mut std::sync::Arc<nana_ui_core::LayoutStyle>),
@@ -93,14 +95,6 @@ impl ComponentView for NativeContent {
                 ..Default::default()
             },
         );
-    }
-}
-
-impl RegisterableComponent for NativeContent {
-    const TYPE_ID: &'static str = NATIVE_CONTENT_RENDERER;
-    const TAGS: &'static [&'static str] = &["native-content"];
-    fn from_semantic(_spec: &SemanticSpec<'_>) -> Self {
-        Self::new("")
     }
 }
 

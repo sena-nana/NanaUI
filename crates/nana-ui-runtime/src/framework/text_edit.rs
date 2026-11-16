@@ -4918,11 +4918,11 @@ mod minimap_tests {
     }
 
     fn minimap_panel(context: &AppContext, node: StableNodeId) -> crate::LayoutBox {
-        match context.world().component_geometry(node).unwrap() {
-            crate::ComponentGeometry::TextInput {
+        match context.world().text_input_geometry(node) {
+            Some(crate::TextInputGeometry {
                 minimap: Some(minimap),
                 ..
-            } => minimap.panel,
+            }) => minimap.panel,
             other => panic!("expected minimap geometry, got {other:?}"),
         }
     }
@@ -5076,12 +5076,7 @@ mod minimap_tests {
         // 重跑几何：视口不回弹到光标处（视口钉住生效）——文本区随滚动
         // 停在导航位置。
         let (content, _) = context.world().text_input_pointer_context(node).unwrap();
-        let extracted = &context.world().extract_nodes(&[node])[0];
-        let crate::ComponentGeometry::TextInput { text, .. } =
-            extracted.component_geometry.as_deref().unwrap()
-        else {
-            panic!("expected text input geometry");
-        };
+        let text = context.world().text_input_geometry(node).unwrap().text;
         assert!((text.bounds.y - (content.y - navigated)).abs() < 0.01);
 
         // 光标移动（选区写入）：钉住失效，reveal 恢复权威——视口回到光标。
@@ -5094,12 +5089,7 @@ mod minimap_tests {
             .compat_world_mut()
             .shape_text(&[node], &mut MeasureTextShaper)
             .unwrap();
-        let extracted = &context.world().extract_nodes(&[node])[0];
-        let crate::ComponentGeometry::TextInput { text, .. } =
-            extracted.component_geometry.as_deref().unwrap()
-        else {
-            panic!("expected text input geometry");
-        };
+        let text = context.world().text_input_geometry(node).unwrap().text;
         // 光标在第 0 行（y=0），reveal 后视口回顶部：文本区 y 回到内容顶。
         assert!((text.bounds.y - content.y).abs() < 0.01);
     }
@@ -5108,12 +5098,7 @@ mod minimap_tests {
     /// box.
     fn drawn_scroll_y(context: &AppContext, node: StableNodeId) -> f32 {
         let (content, _) = context.world().text_input_pointer_context(node).unwrap();
-        let extracted = &context.world().extract_nodes(&[node])[0];
-        let crate::ComponentGeometry::TextInput { text, .. } =
-            extracted.component_geometry.as_deref().unwrap()
-        else {
-            panic!("expected text input geometry");
-        };
+        let text = context.world().text_input_geometry(node).unwrap().text;
         content.y - text.bounds.y
     }
 

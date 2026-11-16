@@ -69,9 +69,8 @@ impl AppContext {
         event: E,
     ) -> Result<(), FrameworkError> {
         let emit = self
-            .views
-            .get(&id)
-            .and_then(|view| self.emitters.get(&view.as_ref().type_id()))
+            .view_type_id(id)
+            .and_then(|type_id| self.emitters.get(&type_id))
             .copied();
         match emit {
             Some(emit) => emit_erased(self, emit, id, event),

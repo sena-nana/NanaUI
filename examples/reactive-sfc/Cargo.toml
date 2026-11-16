@@ -22,7 +22,7 @@ path = "src/bin/sfc-benchmark.rs"
 test = false
 
 [dependencies]
-nana-ui = { path = "../../crates/nana-ui", default-features = false, features = ["hosted", "bundled-fonts", "view-macro", "wgpu-backends"] }
+nana-ui = { path = "../../crates/nana-ui", default-features = false, features = ["hosted", "view-macro"] }
 nana-ui-platform.workspace = true
 
 [build-dependencies]

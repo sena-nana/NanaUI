@@ -12,8 +12,9 @@ use crate::query::query_matches;
 use crate::view_components::project_common;
 use crate::{
     AccessibilityRole, AccessibilityState, ComponentElevation, ComponentTextRegion, ComponentView,
-    InteractionState, LayoutBox, MutationQueue, NodeKind, NodeStyle, StableNodeId, StandardVisual,
-    TextInputState, UiWorld,
+    ComputedStyle, InteractionState, LayoutBox, MutationQueue, NodeKind, NodeStyle, StableNodeId,
+    TextHorizontalAlignment, TextInputState, UiWorld, WidgetPaintCtx, WidgetPaintOp,
+    WidgetPaintOutput, WidgetQuad, WidgetTaggedOp, WidgetVisual,
 };
 
 const MAX_VISIBLE_ROWS: usize = 12;
@@ -217,6 +218,9 @@ impl CommandPalette {
 }
 
 impl ComponentView for CommandPalette {
+    const TYPE_ID: Option<&'static str> =
+        Some(crate::component_descriptors::COMMAND_PALETTE.type_id);
+
     const BEHAVIOR: crate::TypeBehavior<Self> = crate::TypeBehavior {
         activate_at: Some(crate::AppContext::activate_command_palette_at),
         hooks: Some(|hooks| hooks.command_palette = Some(&COMMAND_PALETTE_HOOKS)),
@@ -245,7 +249,7 @@ impl ComponentView for CommandPalette {
                 .clone()
                 .unwrap_or_else(|| Arc::clone(&strings.command_palette_empty))
         });
-        let visual = StandardVisual::CommandPalette {
+        let visual = CommandPaletteVisual {
             title: Arc::clone(&self.title),
             query: Arc::from(self.query_text()),
             placeholder: self
@@ -255,8 +259,8 @@ impl ComponentView for CommandPalette {
             empty,
             rows: rows.into(),
         };
-        if world.standard_visual(id) != Some(visual.clone()) {
-            mutations.set_standard_visual(id, Some(visual));
+        if world.widget_visual_as::<CommandPaletteVisual>(id) != Some(&visual) {
+            mutations.set_widget_visual(id, Some(visual));
         }
         if world
             .text_input(id)
@@ -285,6 +289,240 @@ impl ComponentView for CommandPalette {
     }
 }
 
+/// Resolved layout and surface colors for a mounted [`CommandPalette`].
+#[derive(Debug, Clone, PartialEq)]
+pub struct CommandPaletteLayout {
+    pub scrim: LayoutBox,
+    pub surface: LayoutBox,
+    pub title: ComponentTextRegion,
+    /// The search field's frame: its background, border and hit area.
+    pub input_box: LayoutBox,
+    /// The query (or placeholder) text, inset inside `input_box` by the
+    /// field's horizontal control padding.
+    pub input: ComponentTextRegion,
+    pub empty: Option<ComponentTextRegion>,
+    pub rows: Vec<PaletteRowGeometry>,
+    pub background: [f32; 4],
+    pub input_background: [f32; 4],
+    pub input_border: [f32; 4],
+    pub elevation: ComponentElevation,
+}
+
+impl CommandPaletteLayout {
+    /// Lowers this resolved layout into node-local widget paint operations.
+    #[must_use]
+    pub fn to_widget_paint(
+        &self,
+        chrome_radii: nana_ui_core::ChromeRadii,
+        style: &ComputedStyle,
+    ) -> WidgetPaintOutput {
+        let overlay = |slot: u64, op: WidgetPaintOp| {
+            WidgetTaggedOp::new(slot, op)
+                .with_min_z_index(1_000)
+                .with_parent_clips()
+        };
+        let mut out = WidgetPaintOutput {
+            owns_node_text: true,
+            ..WidgetPaintOutput::new()
+        };
+        out.push_tagged(overlay(
+            10,
+            WidgetPaintOp::Quad(WidgetQuad {
+                rect: self.scrim,
+                fill: Some([0.0, 0.0, 0.0, 0.45]),
+                use_parent_clips: true,
+                ..WidgetQuad::default()
+            }),
+        ));
+        out.push_tagged(overlay(
+            11,
+            WidgetPaintOp::Quad(WidgetQuad {
+                rect: self.surface,
+                fill: Some(self.background),
+                fill_paint: crate::widget_visual::matching_paint_color(
+                    style.paint_colors.background,
+                    self.background,
+                ),
+                corner_radius: [chrome_radii.md; 4],
+                elevation: Some(self.elevation),
+                use_parent_clips: true,
+                ..WidgetQuad::default()
+            }),
+        ));
+        out.push_tagged(overlay(
+            20,
+            WidgetPaintOp::Text(crate::widget_visual::styled_text_region(
+                &self.title,
+                style,
+                TextHorizontalAlignment::Start,
+                true,
+            )),
+        ));
+        out.push_tagged(overlay(
+            12,
+            WidgetPaintOp::Quad(WidgetQuad {
+                rect: self.input_box,
+                fill: Some(self.input_background),
+                fill_paint: crate::widget_visual::matching_paint_color(
+                    style.paint_colors.background,
+                    self.input_background,
+                ),
+                border: Some((self.input_border, 1.0)),
+                border_paint: crate::widget_visual::matching_paint_color(
+                    style.paint_colors.border,
+                    self.input_border,
+                ),
+                corner_radius: [chrome_radii.field; 4],
+                use_parent_clips: true,
+                ..WidgetQuad::default()
+            }),
+        ));
+        out.push_tagged(overlay(
+            21,
+            WidgetPaintOp::Text(crate::widget_visual::styled_text_region(
+                &self.input,
+                style,
+                TextHorizontalAlignment::Start,
+                true,
+            )),
+        ));
+        if let Some(empty) = &self.empty {
+            out.push_tagged(overlay(
+                22,
+                WidgetPaintOp::Text(crate::widget_visual::styled_text_region(
+                    empty,
+                    style,
+                    TextHorizontalAlignment::Start,
+                    true,
+                )),
+            ));
+        }
+        for (index, row) in self.rows.iter().enumerate() {
+            let index = u64::try_from(index).unwrap_or(u64::MAX);
+            if let Some(background) = row.background {
+                out.push_tagged(overlay(
+                    23u64.saturating_add(index),
+                    WidgetPaintOp::Quad(WidgetQuad {
+                        rect: row.bounds,
+                        fill: Some(background),
+                        fill_paint: crate::widget_visual::matching_paint_color(
+                            style.paint_colors.background,
+                            background,
+                        ),
+                        corner_radius: [chrome_radii.menu_row; 4],
+                        use_parent_clips: true,
+                        ..WidgetQuad::default()
+                    }),
+                ));
+            }
+            out.push_tagged(overlay(
+                40u64.saturating_add(index),
+                WidgetPaintOp::Text(crate::widget_visual::styled_text_region(
+                    &row.label,
+                    style,
+                    TextHorizontalAlignment::Start,
+                    true,
+                )),
+            ));
+            if let Some(category) = &row.category {
+                out.push_tagged(overlay(
+                    70u64.saturating_add(index),
+                    WidgetPaintOp::Text(crate::widget_visual::styled_text_region(
+                        category,
+                        style,
+                        TextHorizontalAlignment::Start,
+                        true,
+                    )),
+                ));
+            }
+            if let Some(shortcut) = &row.shortcut {
+                out.push_tagged(overlay(
+                    100u64.saturating_add(index),
+                    WidgetPaintOp::Text(crate::widget_visual::styled_text_region(
+                        shortcut,
+                        style,
+                        TextHorizontalAlignment::End,
+                        true,
+                    )),
+                ));
+            }
+        }
+        out
+    }
+}
+
+/// Widget visual projected by [`CommandPalette`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CommandPaletteVisual {
+    pub title: Arc<str>,
+    pub query: Arc<str>,
+    pub placeholder: Arc<str>,
+    pub empty: Option<Arc<str>>,
+    pub rows: Arc<[PaletteRowData]>,
+}
+
+impl CommandPaletteVisual {
+    fn layout_at(
+        &self,
+        bounds: LayoutBox,
+        palette: &nana_ui_core::SemanticPalette,
+        metrics: nana_ui_core::ThemeMetrics,
+        measure: crate::text_width::ChromeTextMeasure<'_>,
+    ) -> CommandPaletteLayout {
+        command_palette_geometry(
+            bounds,
+            &self.title,
+            &self.query,
+            &self.placeholder,
+            self.empty.as_ref(),
+            &self.rows,
+            palette,
+            metrics,
+            measure,
+        )
+    }
+}
+
+impl WidgetVisual for CommandPaletteVisual {
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+
+    fn dyn_eq(&self, other: &dyn std::any::Any) -> bool {
+        other.downcast_ref::<Self>() == Some(self)
+    }
+
+    fn measures_text(&self) -> bool {
+        true
+    }
+
+    fn paint(&self, ctx: &WidgetPaintCtx<'_>) -> WidgetPaintOutput {
+        let layout = self.layout_at(
+            ctx.bounds,
+            &ctx.style_model.palette,
+            ctx.style_model.metrics,
+            ctx.world.chrome_text_measure(ctx.id),
+        );
+        layout.to_widget_paint(ctx.chrome_radii, ctx.style)
+    }
+}
+
+impl UiWorld {
+    /// Resolves `id`'s modal surface, search field, and row layout when mounted as a [`CommandPalette`].
+    #[must_use]
+    pub fn command_palette_layout(&self, id: StableNodeId) -> Option<CommandPaletteLayout> {
+        let visual = self.widget_visual_as::<CommandPaletteVisual>(id)?;
+        let bounds = self.component_layout_box(id)?;
+        let style_model = self.node_style_model(id);
+        Some(visual.layout_at(
+            bounds,
+            &style_model.palette,
+            style_model.metrics,
+            self.chrome_text_measure(id),
+        ))
+    }
+}
+
 pub(crate) fn command_palette_geometry(
     bounds: LayoutBox,
     title: &Arc<str>,
@@ -295,7 +533,7 @@ pub(crate) fn command_palette_geometry(
     palette: &nana_ui_core::SemanticPalette,
     metrics: nana_ui_core::ThemeMetrics,
     measure: crate::text_width::ChromeTextMeasure<'_>,
-) -> crate::ComponentGeometry {
+) -> CommandPaletteLayout {
     let input_height = ControlSize::Medium.height_in(metrics);
     let row_height = palette_row_height(metrics);
     let list_height = if rows.is_empty() {
@@ -437,7 +675,7 @@ pub(crate) fn command_palette_geometry(
             }
         })
         .collect();
-    crate::ComponentGeometry::CommandPalette {
+    CommandPaletteLayout {
         scrim: bounds,
         surface,
         title: title_region,
@@ -566,8 +804,10 @@ mod tests {
         let palette = context.create_component(document(), sample()).unwrap();
         let id = palette.stable_id();
         assert!(matches!(
-            context.world().standard_visual(id),
-            Some(StandardVisual::CommandPalette { ref rows, .. }) if rows.len() == 3
+            context
+                .world()
+                .widget_visual_as::<CommandPaletteVisual>(id),
+            Some(CommandPaletteVisual { rows, .. }) if rows.len() == 3
         ));
         assert!(context.world().text_input(id).is_some());
     }
@@ -620,9 +860,7 @@ mod tests {
             nana_ui_core::UI_METRICS,
             crate::text_width::ChromeTextMeasure::ESTIMATE,
         );
-        let crate::ComponentGeometry::CommandPalette { rows, .. } = geometry else {
-            panic!("command palette geometry");
-        };
+        let CommandPaletteLayout { rows, .. } = geometry;
         let row = &rows[0];
         let shortcut = row.shortcut.as_ref().expect("shortcut region");
         // "Ctrl+Alt+Delete" at 10px ≈ 93px, far past the old fixed 70px box.
@@ -660,12 +898,9 @@ mod tests {
             nana_ui_core::UI_METRICS,
             crate::text_width::ChromeTextMeasure::ESTIMATE,
         );
-        let crate::ComponentGeometry::CommandPalette {
+        let CommandPaletteLayout {
             input_box, input, ..
-        } = geometry
-        else {
-            panic!("command palette geometry");
-        };
+        } = geometry;
         let pad = ControlSize::Medium.padding_x_in(nana_ui_core::UI_METRICS);
         assert!(pad > 0.0);
         assert_eq!(input.bounds.x, input_box.x + pad);

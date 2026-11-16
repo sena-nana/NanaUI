@@ -74,8 +74,18 @@ pub(super) fn equal_wrap_share(
         .max(0.0)
 }
 
+pub(super) struct EqualWrapPrepared {
+    line_counts: Vec<usize>,
+    pub(super) queries: Vec<(StableNodeId, f32)>,
+    margins: Vec<nana_ui_core::PaddingSpec>,
+    direction: FlexDirection,
+    available: f32,
+    cross_gap: f32,
+    empty: bool,
+}
+
 #[allow(clippy::too_many_arguments)]
-pub(super) fn measure_equal_wrap(
+pub(super) fn measure_equal_wrap_begin(
     children: &[StableNodeId],
     sizes: &[Size],
     direction: FlexDirection,
@@ -83,12 +93,9 @@ pub(super) fn measure_equal_wrap(
     edge_base: f32,
     gap: f32,
     cross_gap: f32,
-    viewport: LayoutViewport,
     parent_font_px: f32,
-    nodes: &mut LayoutInputMap<'_>,
-    cache: &mut PassIntrinsicCache,
-    scope: Option<&ScopeContext<'_>>,
-) -> Result<Size, UiWorldError> {
+    nodes: &LayoutInputMap<'_>,
+) -> EqualWrapPrepared {
     let available = main_extent(content, direction);
     let lines = pack_equal_wrap_lines(
         children,
@@ -100,8 +107,10 @@ pub(super) fn measure_equal_wrap(
         parent_font_px,
         nodes,
     );
-    let mut cross = 0.0;
-    for (line_index, range) in lines.into_iter().enumerate() {
+    let mut line_counts = Vec::with_capacity(lines.len());
+    let mut queries = Vec::with_capacity(children.len());
+    let mut margins = Vec::with_capacity(children.len());
+    for range in lines {
         let line = &children[range];
         let share = equal_wrap_share(
             line,
@@ -112,39 +121,50 @@ pub(super) fn measure_equal_wrap(
             parent_font_px,
             nodes,
         );
-        let mut line_cross = 0.0_f32;
+        line_counts.push(line.len());
         for child in line {
-            let measured = intrinsic_size_at_main(
-                *child,
-                share,
-                direction,
-                content,
-                viewport,
-                parent_font_px,
-                nodes,
-                cache,
-                scope,
-            )?;
+            queries.push((*child, share));
             let margin = nodes.style_ref(*child).map_or_default(|style| {
                 style.resolved_margin_against_fonts(
                     Some(edge_base),
                     fonts_of(&style, parent_font_px),
                 )
             });
-            line_cross =
-                line_cross.max(cross_extent(measured, direction) + cross_margin(margin, direction));
-        }
-        cross += line_cross;
-        if line_index > 0 {
-            cross += cross_gap;
+            margins.push(margin);
         }
     }
-    Ok(match direction {
-        FlexDirection::Row => Size::new(if children.is_empty() { 0.0 } else { available }, cross),
-        FlexDirection::Column => {
-            Size::new(cross, if children.is_empty() { 0.0 } else { available })
+    EqualWrapPrepared {
+        line_counts,
+        queries,
+        margins,
+        direction,
+        available,
+        cross_gap,
+        empty: children.is_empty(),
+    }
+}
+
+pub(super) fn measure_equal_wrap_finish(state: EqualWrapPrepared, measured: &[Size]) -> Size {
+    let mut cross = 0.0;
+    let mut cursor = 0usize;
+    for (line_index, count) in state.line_counts.into_iter().enumerate() {
+        let mut line_cross = 0.0_f32;
+        for idx in cursor..cursor + count {
+            line_cross = line_cross.max(
+                cross_extent(measured[idx], state.direction)
+                    + cross_margin(state.margins[idx], state.direction),
+            );
         }
-    })
+        cursor += count;
+        cross += line_cross;
+        if line_index > 0 {
+            cross += state.cross_gap;
+        }
+    }
+    match state.direction {
+        FlexDirection::Row => Size::new(if state.empty { 0.0 } else { state.available }, cross),
+        FlexDirection::Column => Size::new(cross, if state.empty { 0.0 } else { state.available }),
+    }
 }
 
 /// What a line's Dynamic Layout solve changed: the gap its items now sit
@@ -358,7 +378,6 @@ pub(super) fn distribute_flex_main(
         // A line that overflows gives up its items' declared elasticity,
         // cheapest first, before any shrink factor clips them.
         let inline = direction == FlexDirection::Row;
-        line.pass.counters.contexts_considered += 1;
         let occupied = mains.iter().sum::<f32>() + margin_mains.iter().sum::<f32>() + gap_total;
         let overflow = LayoutUnits::from_px(occupied - content_main);
         if overflow.is_positive() {
@@ -412,8 +431,6 @@ pub(super) fn distribute_flex_main(
                     gap_total = adjust.gap * (n - 1) as f32;
                 }
             }
-        } else {
-            line.pass.counters.fast_fit += 1;
         }
         if line.commit {
             line.pass.commit_line(
@@ -630,15 +647,6 @@ pub(super) fn justify_offsets(
             (extra, base_gap + extra)
         }
         _ => (0.0, base_gap),
-    }
-}
-
-pub(super) fn clear_offset(clear: ClearSpec, left_bottom: f32, right_bottom: f32) -> f32 {
-    match clear {
-        ClearSpec::None => 0.0,
-        ClearSpec::Left => left_bottom,
-        ClearSpec::Right => right_bottom,
-        ClearSpec::Both => left_bottom.max(right_bottom),
     }
 }
 

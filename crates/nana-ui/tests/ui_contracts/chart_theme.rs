@@ -25,12 +25,9 @@ fn settle(cx: &mut AppContext, doc: DocumentId, shaper: &mut NanaTextShaper) {
 }
 
 fn layout(cx: &AppContext, chart: Entity<Chart>) -> Arc<ChartLayout> {
-    let nodes = cx.world().extract_nodes(&[chart.stable_id()]);
-    let Some(ComponentGeometry::Chart { layout, .. }) = nodes[0].component_geometry.as_deref()
-    else {
-        panic!("chart geometry");
-    };
-    Arc::clone(layout)
+    cx.world()
+        .chart_layout(chart.stable_id())
+        .expect("chart geometry")
 }
 
 fn check_labels(

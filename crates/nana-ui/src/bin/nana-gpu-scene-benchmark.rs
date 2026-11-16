@@ -14,12 +14,12 @@ use std::time::{Duration, Instant};
 use nana_gpu::__framework;
 use nana_ui::runtime::{
     Button, DocumentId, Entity, FlexDirection, FlexWrap, FrameProfile, FrameProfiler,
-    GpuTextureView, GpuView, GpuViewPalette, GpuWorkObservation, HOST_TEXTURE_RENDERER, IconGlyph,
-    LayoutStyle, LayoutViewport, LengthSpec, List, NodeStyle, RuntimeDocument, SemanticColorRole,
-    StageStatus, Text,
+    GpuTextureView, GpuView, GpuViewPalette, HOST_TEXTURE_RENDERER, IconGlyph, LayoutStyle,
+    LayoutViewport, LengthSpec, List, NodeStyle, RuntimeDocument, SemanticColorRole, StageStatus,
+    Text,
 };
 use nana_ui::{
-    ButtonKind, GpuContext, GpuStageTimings, HostTexture, HostTextureAlphaMode,
+    ButtonKind, GpuContext, GpuStageTimings, GpuWorkObservation, HostTexture, HostTextureAlphaMode,
     HostTextureRegistry, Icon, NanaTextShaper, SceneGpuRendererRegistry, ScenePaintViewport,
     SceneWgpuPainter, default_scene_gpu_renderers,
 };
@@ -686,11 +686,7 @@ fn run_ui_only(mut scenario: ScenarioFile, args: &Args) -> Report {
         path_animation: params.path_animation,
         serialized: args.serialize,
         host_texture_resources: resource_count,
-        ui_entity_count: document
-            .context()
-            .world()
-            .last_work_counters()
-            .entities_total,
+        ui_entity_count: document.context().world().len(),
         scene_primitive_kinds: scene_primitive_kinds(document.scene(), slot),
     };
     let graph = measure_frame_graph(document.scene());
@@ -1026,14 +1022,14 @@ fn animate_text(
             let (sin, cos) = angle.sin_cos();
             let mut style = root_style();
             let layout = Arc::make_mut(&mut style.layout);
-            layout.transform = Some(PaintTransform {
+            layout.transforms.transform = Some(PaintTransform {
                 a: cos,
                 b: sin,
                 c: -sin,
                 d: cos,
                 ..PaintTransform::default()
             });
-            layout.transform_origin = Some(TransformOrigin::default());
+            layout.transforms.origin = Some(TransformOrigin::default());
             document
                 .context_mut()
                 .set_component(handles.root, List::new().label(ROOT_LABEL).style(style))
@@ -1046,7 +1042,7 @@ fn animate_text(
             // translation of everything under the scroller. Eight pixels of
             // travel keeps every label as much on screen as it started.
             let mut style = root_style();
-            Arc::make_mut(&mut style.layout).transform = Some(PaintTransform {
+            Arc::make_mut(&mut style.layout).transforms.transform = Some(PaintTransform {
                 e: -(frame as f32 * 0.37 % 8.0),
                 ..PaintTransform::default()
             });
@@ -1364,8 +1360,13 @@ fn primitive_kind_name(kind: &ScenePrimitiveKind, _slot: &str) -> &'static str {
         ScenePrimitiveKind::Spinner { .. } => "spinner",
         ScenePrimitiveKind::Stroke { .. } => "stroke",
         ScenePrimitiveKind::Path { .. } => "path",
-        ScenePrimitiveKind::Chart { .. } => "chart",
         ScenePrimitiveKind::LayerBegin { .. } | ScenePrimitiveKind::LayerEnd { .. } => "layer",
+        #[cfg(feature = "charts")]
+        ScenePrimitiveKind::Custom { node: custom, .. }
+            if custom.renderer.as_ref() == nana_ui::runtime::CHART_RENDERER =>
+        {
+            "chart"
+        }
         ScenePrimitiveKind::Custom { node: custom, .. }
             if custom.renderer.as_ref() == HOST_TEXTURE_RENDERER =>
         {
@@ -1483,7 +1484,9 @@ impl HostSlotContent {
         let device = __framework::device(gpu);
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("nana-gpu-scene-benchmark slot"),
-            source: wgpu::ShaderSource::Wgsl(SLOT_SHADER.into()),
+            source: wgpu::ShaderSource::Wgsl(std::borrow::Cow::Borrowed(include_str!(
+                "../scene_paint/shader/benchmark_slot.wgsl"
+            ))),
         });
         let layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("nana-gpu-scene-benchmark slot layout"),
@@ -1603,31 +1606,6 @@ impl HostSlotContent {
         }
     }
 }
-
-const SLOT_SHADER: &str = r#"
-struct SceneUniform {
-    parameters: vec4<f32>,
-}
-
-@group(0) @binding(0)
-var<uniform> scene: SceneUniform;
-
-@vertex
-fn vertex_main(@builtin(vertex_index) index: u32) -> @builtin(position) vec4<f32> {
-    var positions = array<vec2<f32>, 3>(
-        vec2<f32>(-1.0, -1.0),
-        vec2<f32>(3.0, -1.0),
-        vec2<f32>(-1.0, 3.0),
-    );
-    return vec4<f32>(positions[index], 0.0, 1.0);
-}
-
-@fragment
-fn fragment_main() -> @location(0) vec4<f32> {
-    let seed = scene.parameters.x;
-    return vec4<f32>(0.12 + seed * 0.01, 0.28, 0.46, 1.0);
-}
-"#;
 
 fn summarize(samples: &[Duration]) -> Distribution {
     let mut values = samples

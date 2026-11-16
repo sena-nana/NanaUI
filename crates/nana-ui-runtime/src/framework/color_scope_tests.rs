@@ -25,24 +25,28 @@ fn layout(context: &mut AppContext, document: DocumentId) {
 }
 
 fn switch_track(context: &AppContext, id: StableNodeId) -> [f32; 4] {
-    match context.world().extract_nodes(&[id])[0]
-        .component_geometry
-        .as_deref()
+    let paint = context.world().widget_paint(id).unwrap();
+    match paint
+        .ops
+        .iter()
+        .find(|tagged| tagged.slot == 4)
+        .map(|tagged| &tagged.op)
     {
-        Some(crate::ComponentGeometry::Switch {
-            track_background, ..
-        }) => *track_background,
-        other => panic!("not a switch geometry: {other:?}"),
+        Some(crate::WidgetPaintOp::Quad(quad)) => quad.fill.expect("switch track fill"),
+        other => panic!("not a switch track quad: {other:?}"),
     }
 }
 
 fn badge_foreground(context: &AppContext, id: StableNodeId) -> [f32; 4] {
-    match context.world().extract_nodes(&[id])[0]
-        .component_geometry
-        .as_deref()
+    let paint = context.world().widget_paint(id).unwrap();
+    match paint
+        .ops
+        .iter()
+        .find(|tagged| tagged.slot == 3)
+        .map(|tagged| &tagged.op)
     {
-        Some(crate::ComponentGeometry::StatusBadge { foreground, .. }) => *foreground,
-        other => panic!("not a badge geometry: {other:?}"),
+        Some(crate::WidgetPaintOp::Quad(quad)) => quad.fill.expect("badge dot fill"),
+        other => panic!("not a badge dot quad: {other:?}"),
     }
 }
 

@@ -264,74 +264,11 @@ struct Cell {
     /// Frames the flush found nothing to do.
     idle_flushes: usize,
     stages_p50_ms: Vec<(String, f64)>,
-    children_measured: f64,
-    plans_reused: f64,
-    layout_nodes: usize,
+    scene_updated_nodes: usize,
     layout_frontier_seeds: usize,
-    layout_frontier_seed_merges: usize,
     layout_frontier_nodes_measure: usize,
     layout_frontier_nodes_placement: usize,
-    layout_frontier_contexts: usize,
-    layout_dependency_edges_visited: usize,
-    layout_propagations_stopped: usize,
-    layout_local_subtree_fallbacks: usize,
-    layout_full_document_fallbacks: usize,
-    layout_suffixes_replayed: usize,
-    layout_children_measured: usize,
-    inline_reflows: usize,
-    inline_atomic_measure_requests: usize,
-    layout_containers_uncacheable: usize,
-    layout_result_children_visited: usize,
-    layout_placement_plans_reused: usize,
-    layout_measure_plans_reused: usize,
-    layout_plan_misses: usize,
-    layout_plan_rebuilds: usize,
-    layout_scratch_entries: usize,
-    layout_scratch_bytes: usize,
-    intrinsic_measure_requests: usize,
-    layout_context_transitions: usize,
-    intrinsic_measure_cache_hits: usize,
-    intrinsic_measure_cache_misses: usize,
-    intrinsic_generation_bumps: usize,
-    baseline_queries: usize,
-    cross_context_measure_hits: usize,
-    cross_context_measure_misses: usize,
-    intrinsic_measure_full_subtrees: usize,
-    constraint_change_seeds: usize,
-    constraint_dependents_considered: usize,
-    constraint_dependents_remeasured: usize,
-    constraint_dependents_skipped: usize,
-    resize_text_relayouts: usize,
-    resize_text_reshapes: usize,
-    dynamic_contexts_considered: usize,
-    dynamic_solver_runs: usize,
-    dynamic_fast_fit: usize,
-    dynamic_fast_adjust: usize,
-    dynamic_break_comparisons: usize,
-    dynamic_opportunities_considered: usize,
-    dynamic_envelope_queries: usize,
-    dynamic_envelope_hits: usize,
-    dynamic_envelope_misses: usize,
-    dynamic_envelope_rebuilds: usize,
-    dynamic_cost_segments_visited: usize,
-    dynamic_candidates_created: usize,
-    dynamic_candidates_pruned: usize,
-    dynamic_deep_expansions: usize,
-    dynamic_beam_states: usize,
-    dynamic_child_resolves: usize,
-    dynamic_child_reflows: usize,
-    dynamic_structural_adaptations: usize,
-    dynamic_budget_fallbacks: usize,
-    dynamic_allocations: usize,
-    dynamic_temp_bytes: usize,
-    dynamic_solver_reuses: usize,
-    dynamic_previous_result_hits: usize,
-    dynamic_incremental_assignments: usize,
-    dynamic_cold_solves: usize,
-    dynamic_pruned_candidates: usize,
-    hit_test_nodes_rebuilt: Option<usize>,
     accessibility_projected: usize,
-    render_nodes_extracted: usize,
 }
 
 #[derive(Serialize)]
@@ -379,9 +316,7 @@ fn measure(
     let mut stage_ran = [false; FrameStage::ALL.len()];
     let mut generations = 0u64;
     let mut idle = 0usize;
-    let mut measured = 0usize;
-    let mut reused = 0usize;
-    let mut last = None;
+    let mut last: Option<(usize, usize, usize, usize, usize)> = None;
     for iteration in 0..(warmup + samples) {
         let toggled = iteration % 2 == 0;
         let generation = card.runtime.context().world().generation();
@@ -423,15 +358,16 @@ fn measure(
         writes.push(write);
         flushes.push(flush);
         generations += bumped;
-        // Counters survive an idle flush unchanged; an idle frame did no
+        // Frontier stats survive an idle flush unchanged; an idle frame did no
         // layout work, so it adds nothing.
         if update.is_idle() {
             idle += 1;
             continue;
         }
-        let work = card.runtime.context().last_work_counters();
-        measured += work.layout_children_measured;
-        reused += work.layout_placement_plans_reused;
+        let frontier = card
+            .runtime
+            .context()
+            .layout_frontier_stats(DocumentId::new(DOCUMENT).unwrap());
         let profile = card.runtime.context().last_frame_profile();
         for (index, stage) in FrameStage::ALL.into_iter().enumerate() {
             let timing = profile.stage(stage).unwrap();
@@ -439,7 +375,10 @@ fn measure(
             stage_ran[index] |= timing.status == StageStatus::Ran;
         }
         last = Some((
-            card.runtime.context().last_work_counters(),
+            update.scene.updated_nodes,
+            frontier.seeds,
+            frontier.nodes_measure,
+            frontier.nodes_placement,
             update.accessibility.updated.len(),
         ));
     }
@@ -450,7 +389,13 @@ fn measure(
         .filter(|((index, _), samples)| stage_ran[*index] && !samples.is_empty())
         .map(|((_, stage), samples)| (format!("{stage:?}"), Stat::from_durations(samples).p50))
         .collect();
-    let (counters, accessibility_projected) = last.unwrap_or_default();
+    let (
+        scene_updated_nodes,
+        layout_frontier_seeds,
+        layout_frontier_nodes_measure,
+        layout_frontier_nodes_placement,
+        accessibility_projected,
+    ) = last.unwrap_or_default();
     Cell {
         operation: operation.name(),
         rows,
@@ -463,74 +408,11 @@ fn measure(
         generations: generations as f64 / samples as f64,
         idle_flushes: idle,
         stages_p50_ms,
-        children_measured: measured as f64 / samples as f64,
-        plans_reused: reused as f64 / samples as f64,
-        layout_nodes: counters.layout_nodes,
-        layout_frontier_seeds: counters.layout_frontier_seeds,
-        layout_frontier_seed_merges: counters.layout_frontier_seed_merges,
-        layout_frontier_nodes_measure: counters.layout_frontier_nodes_measure,
-        layout_frontier_nodes_placement: counters.layout_frontier_nodes_placement,
-        layout_frontier_contexts: counters.layout_frontier_contexts,
-        layout_dependency_edges_visited: counters.layout_dependency_edges_visited,
-        layout_propagations_stopped: counters.layout_propagations_stopped,
-        layout_local_subtree_fallbacks: counters.layout_local_subtree_fallbacks,
-        layout_full_document_fallbacks: counters.layout_full_document_fallbacks,
-        layout_suffixes_replayed: counters.layout_suffixes_replayed,
-        layout_children_measured: counters.layout_children_measured,
-        inline_reflows: counters.inline_reflows,
-        inline_atomic_measure_requests: counters.inline_atomic_measure_requests,
-        layout_containers_uncacheable: counters.layout_containers_uncacheable,
-        layout_result_children_visited: counters.layout_result_children_visited,
-        layout_placement_plans_reused: counters.layout_placement_plans_reused,
-        layout_measure_plans_reused: counters.layout_measure_plans_reused,
-        layout_plan_misses: counters.layout_plan_misses,
-        layout_plan_rebuilds: counters.layout_plan_rebuilds,
-        layout_scratch_entries: counters.layout_scratch_entries,
-        layout_scratch_bytes: counters.layout_scratch_bytes,
-        intrinsic_measure_requests: counters.intrinsic_measure_requests,
-        layout_context_transitions: counters.layout_context_transitions,
-        intrinsic_measure_cache_hits: counters.intrinsic_measure_cache_hits,
-        intrinsic_measure_cache_misses: counters.intrinsic_measure_cache_misses,
-        intrinsic_generation_bumps: counters.intrinsic_generation_bumps,
-        baseline_queries: counters.baseline_queries,
-        cross_context_measure_hits: counters.cross_context_measure_hits,
-        cross_context_measure_misses: counters.cross_context_measure_misses,
-        intrinsic_measure_full_subtrees: counters.intrinsic_measure_full_subtrees,
-        constraint_change_seeds: counters.constraint_change_seeds,
-        constraint_dependents_considered: counters.constraint_dependents_considered,
-        constraint_dependents_remeasured: counters.constraint_dependents_remeasured,
-        constraint_dependents_skipped: counters.constraint_dependents_skipped,
-        resize_text_relayouts: counters.resize_text_relayouts,
-        resize_text_reshapes: counters.resize_text_reshapes,
-        dynamic_contexts_considered: counters.dynamic.contexts_considered,
-        dynamic_solver_runs: counters.dynamic.solver_runs,
-        dynamic_fast_fit: counters.dynamic.fast_fit,
-        dynamic_fast_adjust: counters.dynamic.fast_adjust,
-        dynamic_break_comparisons: counters.dynamic.break_comparisons,
-        dynamic_opportunities_considered: counters.dynamic.opportunities_considered,
-        dynamic_envelope_queries: counters.dynamic.envelope_queries,
-        dynamic_envelope_hits: counters.dynamic.envelope_hits,
-        dynamic_envelope_misses: counters.dynamic.envelope_misses,
-        dynamic_envelope_rebuilds: counters.dynamic.envelope_rebuilds,
-        dynamic_cost_segments_visited: counters.dynamic.cost_segments_visited,
-        dynamic_candidates_created: counters.dynamic.candidates_created,
-        dynamic_candidates_pruned: counters.dynamic.candidates_pruned,
-        dynamic_deep_expansions: counters.dynamic.deep_expansions,
-        dynamic_beam_states: counters.dynamic.beam_states,
-        dynamic_child_resolves: counters.dynamic.child_resolves,
-        dynamic_child_reflows: counters.dynamic.child_reflows,
-        dynamic_structural_adaptations: counters.dynamic.structural_adaptations,
-        dynamic_budget_fallbacks: counters.dynamic.budget_fallbacks,
-        dynamic_allocations: counters.dynamic.allocations,
-        dynamic_temp_bytes: counters.dynamic.temp_bytes,
-        dynamic_solver_reuses: counters.dynamic.solver_reuses,
-        dynamic_previous_result_hits: counters.dynamic.previous_result_hits,
-        dynamic_incremental_assignments: counters.dynamic.incremental_assignments,
-        dynamic_cold_solves: counters.dynamic.cold_solves,
-        dynamic_pruned_candidates: counters.dynamic.pruned_candidates,
-        hit_test_nodes_rebuilt: counters.hit_test_nodes_rebuilt,
+        scene_updated_nodes,
+        layout_frontier_seeds,
+        layout_frontier_nodes_measure,
+        layout_frontier_nodes_placement,
         accessibility_projected,
-        render_nodes_extracted: counters.render_nodes_extracted,
     }
 }
 
@@ -577,7 +459,7 @@ fn main() {
                 for filler in fillers.iter().copied() {
                     let cell = measure(operation, rows, filler, parked, append, samples, warmup);
                     eprintln!(
-                        "{:<6} parked={:<5} rows={:<4} filler={:<5} nodes={:<6} write min={:.4} p50={:.4}  flush min={:.4} p50={:.4}  gen={:.1} idle={} measured={:.1} reused={:.1} layout={} hit={:?} a11y={} render={}",
+                        "{:<6} parked={:<5} rows={:<4} filler={:<5} nodes={:<6} write min={:.4} p50={:.4}  flush min={:.4} p50={:.4}  gen={:.1} idle={} seeds={} frontier={}/{} a11y={} scene_nodes={}",
                         cell.operation,
                         cell.parked,
                         cell.rows,
@@ -589,12 +471,11 @@ fn main() {
                         cell.flush_ms.p50,
                         cell.generations,
                         cell.idle_flushes,
-                        cell.children_measured,
-                        cell.plans_reused,
-                        cell.layout_nodes,
-                        cell.hit_test_nodes_rebuilt,
+                        cell.layout_frontier_seeds,
+                        cell.layout_frontier_nodes_measure,
+                        cell.layout_frontier_nodes_placement,
                         cell.accessibility_projected,
-                        cell.render_nodes_extracted,
+                        cell.scene_updated_nodes,
                     );
                     for (stage, p50) in &cell.stages_p50_ms {
                         if *p50 > 0.0005 {

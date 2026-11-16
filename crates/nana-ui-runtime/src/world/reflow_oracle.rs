@@ -23,12 +23,172 @@ use std::sync::{Arc, Mutex};
 
 use nana_text::NativeTextEngine;
 use nana_text::font::{FaceDescriptor, FallbackPolicy, FontSystem, GenericFamily};
-use nana_ui_core::{FlexDirection, InvalidationKind, LayoutStyle, LengthSpec, WorkCounters};
+use nana_ui_core::{FlexDirection, InvalidationKind, LayoutStyle, LengthSpec};
 
 use super::{DocumentId, NodeKind, StableNodeId, UiWorld};
 use crate::{
     AppContext, LayoutViewport, MutationQueue, NanaTextEngineShaper, NodeStyle, TextContent,
 };
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(super) struct FrameStats {
+    pub(super) execution: crate::layout_engine::LayoutExecutionStats,
+    pub(super) frontier: crate::LayoutFrontierStats,
+    pub(super) text: nana_text::TextWorkCounters,
+    pub(super) layout_passes: usize,
+}
+
+impl FrameStats {
+    fn record_layout_pass(
+        &mut self,
+        execution: crate::layout_engine::LayoutExecutionStats,
+        frontier: crate::LayoutFrontierStats,
+    ) {
+        self.layout_passes = self.layout_passes.saturating_add(1);
+        self.execution.measure_nodes = self
+            .execution
+            .measure_nodes
+            .saturating_add(execution.measure_nodes);
+        self.execution.measure_cache_hits = self
+            .execution
+            .measure_cache_hits
+            .saturating_add(execution.measure_cache_hits);
+        self.execution.measure_cache_misses = self
+            .execution
+            .measure_cache_misses
+            .saturating_add(execution.measure_cache_misses);
+        self.execution.placement_nodes = self
+            .execution
+            .placement_nodes
+            .saturating_add(execution.placement_nodes);
+        self.execution.origin_only_updates = self
+            .execution
+            .origin_only_updates
+            .saturating_add(execution.origin_only_updates);
+        self.execution.moved_subtrees_kept = self
+            .execution
+            .moved_subtrees_kept
+            .saturating_add(execution.moved_subtrees_kept);
+        self.execution.placement_plans_reused = self
+            .execution
+            .placement_plans_reused
+            .saturating_add(execution.placement_plans_reused);
+        self.execution.measure_plans_reused = self
+            .execution
+            .measure_plans_reused
+            .saturating_add(execution.measure_plans_reused);
+        self.execution.suffixes_replayed = self
+            .execution
+            .suffixes_replayed
+            .saturating_add(execution.suffixes_replayed);
+        self.execution.children_measured = self
+            .execution
+            .children_measured
+            .saturating_add(execution.children_measured);
+        self.execution.inline_reflows = self
+            .execution
+            .inline_reflows
+            .saturating_add(execution.inline_reflows);
+        self.execution.inline_atomic_measure_requests = self
+            .execution
+            .inline_atomic_measure_requests
+            .saturating_add(execution.inline_atomic_measure_requests);
+        self.execution.containers_uncacheable = self
+            .execution
+            .containers_uncacheable
+            .saturating_add(execution.containers_uncacheable);
+        self.execution.plan_misses = self
+            .execution
+            .plan_misses
+            .saturating_add(execution.plan_misses);
+        self.execution.plan_rebuilds = self
+            .execution
+            .plan_rebuilds
+            .saturating_add(execution.plan_rebuilds);
+        self.execution.local_context_fallbacks = self
+            .execution
+            .local_context_fallbacks
+            .saturating_add(execution.local_context_fallbacks);
+        self.execution.retain_sweeps = self
+            .execution
+            .retain_sweeps
+            .saturating_add(execution.retain_sweeps);
+        self.execution.measure_stack_per_level = self
+            .execution
+            .measure_stack_per_level
+            .max(execution.measure_stack_per_level);
+        self.execution.placement_stack_per_level = self
+            .execution
+            .placement_stack_per_level
+            .max(execution.placement_stack_per_level);
+        self.execution.placement_boundaries = self
+            .execution
+            .placement_boundaries
+            .saturating_add(execution.placement_boundaries);
+        self.execution.line_boxes_settled = self
+            .execution
+            .line_boxes_settled
+            .saturating_add(execution.line_boxes_settled);
+
+        self.frontier.seeds = self.frontier.seeds.saturating_add(frontier.seeds);
+        self.frontier.seed_merges = self
+            .frontier
+            .seed_merges
+            .saturating_add(frontier.seed_merges);
+        self.frontier.nodes_measure = self
+            .frontier
+            .nodes_measure
+            .saturating_add(frontier.nodes_measure);
+        self.frontier.nodes_placement = self
+            .frontier
+            .nodes_placement
+            .saturating_add(frontier.nodes_placement);
+        self.frontier.contexts = self.frontier.contexts.saturating_add(frontier.contexts);
+        self.frontier.nodes_writing = self
+            .frontier
+            .nodes_writing
+            .saturating_add(frontier.nodes_writing);
+        self.frontier.dependency_edges_visited = self
+            .frontier
+            .dependency_edges_visited
+            .saturating_add(frontier.dependency_edges_visited);
+        self.frontier.propagations_stopped = self
+            .frontier
+            .propagations_stopped
+            .saturating_add(frontier.propagations_stopped);
+        self.frontier.local_subtree_fallbacks = self
+            .frontier
+            .local_subtree_fallbacks
+            .saturating_add(frontier.local_subtree_fallbacks);
+        self.frontier.full_document_fallbacks = self
+            .frontier
+            .full_document_fallbacks
+            .saturating_add(frontier.full_document_fallbacks);
+        self.frontier.graph_edges = self
+            .frontier
+            .graph_edges
+            .saturating_add(frontier.graph_edges);
+        self.frontier.scratch_entries = self
+            .frontier
+            .scratch_entries
+            .saturating_add(frontier.scratch_entries);
+        self.frontier.constraint.seeds = self
+            .frontier
+            .constraint
+            .seeds
+            .saturating_add(frontier.constraint.seeds);
+        self.frontier.constraint.considered = self
+            .frontier
+            .constraint
+            .considered
+            .saturating_add(frontier.constraint.considered);
+        self.frontier.constraint.remeasured = self
+            .frontier
+            .constraint
+            .remeasured
+            .saturating_add(frontier.constraint.remeasured);
+    }
+}
 
 pub(super) fn node(value: u64) -> StableNodeId {
     StableNodeId::new(value).unwrap()
@@ -165,13 +325,13 @@ pub(super) fn bundled_face_shaper() -> NanaTextEngineShaper {
 
 /// One product frame, in the order `RuntimeDocument::flush` runs it: shape
 /// scheduled text, merge what shaping queued, lay out, re-shape the laid-out
-/// scope. Returns the frame's work counters; an idle frame reports its own.
+/// scope. Returns the frame's layout and text stats; an idle frame returns zero.
 pub(super) fn product_frame(
     context: &mut AppContext,
     document: DocumentId,
     viewport: LayoutViewport,
     shaper: &mut NanaTextEngineShaper,
-) -> WorkCounters {
+) -> FrameStats {
     frame(context, document, viewport, shaper, false, None, None)
 }
 
@@ -181,9 +341,9 @@ pub(super) fn product_frame_seeded(
     document: DocumentId,
     viewport: LayoutViewport,
     shaper: &mut NanaTextEngineShaper,
-) -> (WorkCounters, HashSet<StableNodeId>) {
+) -> (FrameStats, HashSet<StableNodeId>) {
     let mut seeded = HashSet::new();
-    let counters = frame(
+    let stats = frame(
         context,
         document,
         viewport,
@@ -192,7 +352,7 @@ pub(super) fn product_frame_seeded(
         Some(&mut seeded),
         None,
     );
-    (counters, seeded)
+    (stats, seeded)
 }
 
 /// A product frame whose viewport changed: its first layout is the viewport
@@ -203,7 +363,7 @@ pub(super) fn resize_frame(
     document: DocumentId,
     viewport: LayoutViewport,
     shaper: &mut NanaTextEngineShaper,
-) -> WorkCounters {
+) -> FrameStats {
     frame(context, document, viewport, shaper, true, None, None)
 }
 
@@ -238,10 +398,11 @@ fn frame(
     mut resized: bool,
     mut seeded: Option<&mut HashSet<StableNodeId>>,
     mut accessible: Option<&mut crate::SystemWork>,
-) -> WorkCounters {
+) -> FrameStats {
     context.compat_world_mut().observe_text_shaper(shaper);
     context.begin_frame_profile();
     let mut drained_any = false;
+    let mut stats = FrameStats::default();
     // Nodes some pass marked INPUT for more than a layout move, as
     // `RuntimeDocument::flush` keeps them apart.
     let mut seeded_input = HashSet::new();
@@ -284,12 +445,20 @@ fn frame(
                 .layout_document_for_viewport(document, viewport, &seeds)
                 .unwrap();
             resized = false;
+            stats.record_layout_pass(
+                context.layout_execution_stats(document),
+                context.layout_frontier_stats(document),
+            );
         } else if seeds.is_empty() {
             continue;
         } else {
             context
                 .layout_document_with_frontier(document, viewport, &seeds)
                 .unwrap();
+            stats.record_layout_pass(
+                context.layout_execution_stats(document),
+                context.layout_frontier_stats(document),
+            );
         }
         let mut scope = context.take_last_layout_scope();
         for _ in 0..4 {
@@ -309,6 +478,10 @@ fn frame(
             context
                 .layout_document_with_frontier(document, viewport, &seeds)
                 .unwrap();
+            stats.record_layout_pass(
+                context.layout_execution_stats(document),
+                context.layout_frontier_stats(document),
+            );
             scope = context.take_last_layout_scope();
         }
     }
@@ -343,14 +516,10 @@ fn frame(
         drained.transform_kept.sort_unstable();
         drained.transform_kept.dedup();
     }
-    // `last_work_counters` keeps the last frame that drained work across idle
-    // frames, which reads as that work repeating (#397); an idle frame
-    // reports its own counters.
     if drained_any {
-        context.last_work_counters()
-    } else {
-        context.world().counters.frame_counters
+        stats.text = context.world().last_text_work_counters();
     }
+    stats
 }
 
 /// Whether the last layout pass of `id`'s document admitted it.
@@ -434,7 +603,7 @@ pub(super) fn assert_matches_cold(
         assert_eq!(ours.layout_box(id), theirs.layout_box(id), "box of {id:?}");
         match (ours.local_layout_result(id), theirs.local_layout_result(id)) {
             (Some(ours), Some(theirs)) => assert!(
-                ours.geometry_eq(theirs),
+                ours.geometry_eq(&theirs),
                 "local result of {id:?}: {ours:?} != {theirs:?}"
             ),
             (None, None) => {}

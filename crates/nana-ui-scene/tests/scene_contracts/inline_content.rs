@@ -357,7 +357,13 @@ fn rtl_and_vertical_objects_follow_the_text_engine_and_width_changes_reuse_shape
             (object.x, object.y),
             "resized {mode:?}/{dir:?}"
         );
-        assert_eq!(doc.context().last_work_counters().text_shaped_runs, 0);
+        assert_eq!(
+            doc.context()
+                .world()
+                .last_text_work_counters()
+                .text_nodes_shaped,
+            0
+        );
         assert!(doc.flush(viewport, &mut shaper).unwrap().is_idle());
     }
 }
@@ -384,7 +390,11 @@ fn ellipsis_omits_atomic_subtrees_without_destructing_or_reflow_oscillation() {
             .style(nana_ui_runtime::NodeStyle {
                 layout: Arc::new(LayoutStyle {
                     width: Some(LengthSpec::Px(55.0)),
-                    line_clamp: Some(1),
+                    text_ext: nana_ui_core::TextStyleExt {
+                        line_clamp: Some(1),
+                        ..Default::default()
+                    }
+                    .into(),
                     ..Default::default()
                 }),
                 ..Default::default()
@@ -465,12 +475,12 @@ fn paint_and_equal_atomic_metrics_do_not_reflow_the_inline_parent() {
     let mut shaper = shaper();
     let viewport = LayoutViewport::new(400.0, 300.0);
     doc.flush(viewport, &mut shaper).unwrap();
+    let layout_gen = doc.context().world().layout_generation();
     let result = doc
         .context()
         .world()
         .local_layout_result(paragraph.stable_id())
-        .map(std::sync::Arc::as_ptr)
-        .unwrap() as usize;
+        .unwrap();
     let mut queue = MutationQueue::new();
     let mut style = doc
         .context()
@@ -482,32 +492,17 @@ fn paint_and_equal_atomic_metrics_do_not_reflow_the_inline_parent() {
     queue.set_style(child.stable_id(), style);
     doc.context_mut().commit_mutations(queue).unwrap();
     doc.flush(viewport, &mut shaper).unwrap();
-    let work = doc.context().last_work_counters();
-    assert_eq!(
-        (
-            work.inline_reflows,
-            work.inline_atomic_measure_requests,
-            work.layout_measure_nodes,
-            work.layout_placement_nodes
-        ),
-        (0, 0, 0, 0)
-    );
+    assert_eq!(doc.context().world().layout_generation(), layout_gen);
     doc.context_mut()
         .update_component(child, |button, _| button.label = "two".into())
         .unwrap();
     doc.flush(viewport, &mut shaper).unwrap();
-    let work = doc.context().last_work_counters();
-    assert_eq!(
-        work.inline_reflows, 0,
-        "fixed metrics stop at the child: {work:?}"
-    );
     assert_eq!(
         doc.context()
             .world()
             .local_layout_result(paragraph.stable_id())
-            .map(std::sync::Arc::as_ptr)
-            .unwrap() as usize,
-        result
+            .as_deref(),
+        Some(&*result)
     );
     assert!(doc.flush(viewport, &mut shaper).unwrap().is_idle());
 }
@@ -667,10 +662,6 @@ fn native_inline_work_is_bounded_by_atomic_entries_and_idle_is_empty() {
         let mut shaper = shaper();
         let viewport = LayoutViewport::new(400.0, 300.0);
         doc.flush(viewport, &mut shaper).unwrap();
-        let counters = doc.context().last_work_counters();
-        assert!(counters.inline_reflows <= 4, "{count}: {counters:?}");
-        assert!(counters.inline_atomic_measure_requests <= 4 * count);
-        assert!(counters.layout_children_measured <= 16 * count);
         assert_eq!(doc.context().world().len(), count + 1);
         assert!(doc.flush(viewport, &mut shaper).unwrap().is_idle());
     }
@@ -701,8 +692,7 @@ fn a_plain_single_run_keeps_box_fragments_when_only_its_advance_changes() {
         .context()
         .world()
         .local_layout_result(label.stable_id())
-        .map(std::sync::Arc::as_ptr)
-        .unwrap() as usize;
+        .unwrap();
     let old_text = doc
         .context()
         .world()
@@ -716,8 +706,8 @@ fn a_plain_single_run_keeps_box_fragments_when_only_its_advance_changes() {
     let world = doc.context().world();
     assert_ne!(world.text_layout(label.stable_id()).unwrap().0, old_text);
     assert_eq!(
-        std::sync::Arc::as_ptr(world.local_layout_result(label.stable_id()).unwrap()) as usize,
-        before
+        world.local_layout_result(label.stable_id()).as_deref(),
+        Some(&*before)
     );
     assert_eq!(
         world
@@ -795,9 +785,10 @@ fn canonical_control_content_overrides_legacy_label_and_can_return_to_plain() {
         .unwrap();
     let world = doc.context().world();
     assert_eq!(world.text(button.stable_id()), Some("current"));
-    assert!(
-        matches!(world.standard_visual(button.stable_id()),Some(nana_ui_runtime::StandardVisual::Button {label,..}) if label.as_ref()=="current")
-    );
+    assert!(matches!(
+        world.widget_visual_as::<nana_ui_runtime::ButtonVisual>(button.stable_id()),
+        Some(nana_ui_runtime::ButtonVisual { label, .. }) if label.as_ref() == "current"
+    ));
     doc.context_mut()
         .update_component(button, |button, _| {
             *button = button.clone().content("plain")
@@ -972,6 +963,7 @@ fn control_paint_spans_keep_plain_geometry_and_native_budget() {
         .text_layout(button.stable_id())
         .unwrap()
         .0;
+    let layout_gen = doc.context().world().layout_generation();
     let styled = InlineContent::from("Save").with_span(
         0..4,
         RichSpanStyle::new().color(PaintColor::Srgb {
@@ -988,17 +980,8 @@ fn control_paint_spans_keep_plain_geometry_and_native_budget() {
         let world = doc.context().world();
         assert_eq!(world.text_layout(button.stable_id()).unwrap().0, layout);
         assert!(before.geometry_eq(&world.layout_result(button.stable_id()).unwrap()));
-        let work = doc.context().last_work_counters();
-        assert_eq!(
-            (
-                work.text_shaped_runs,
-                work.text_wrap_layouts,
-                work.inline_reflows,
-                work.layout_measure_nodes,
-                work.layout_placement_nodes
-            ),
-            (0, 0, 0, 0, 0)
-        );
+        assert_eq!(world.layout_generation(), layout_gen);
+        assert_eq!(world.last_text_work_counters().text_nodes_shaped, 0);
         assert!(doc.flush(viewport, &mut shaper).unwrap().is_idle());
     }
     let cold = doc

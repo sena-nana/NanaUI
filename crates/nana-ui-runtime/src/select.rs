@@ -4,11 +4,10 @@ use nana_ui_core::{ControlSize, LengthSpec, SemanticColorRole, SemanticPalette};
 
 use crate::view_components::project_common;
 use crate::{
-    AccessibilityRole, AccessibilityState, ComponentElevation, ComponentGeometry,
-    ComponentTextRegion, ComputedStyle, InteractionState, InteractionStyle, LayoutBox,
-    MutationQueue, NodeKind, NodeStyle, SelectMenuGeometry, SelectMenuScroll, SelectOptionData,
-    SemanticPaint, StableNodeId, StandardVisual, TextContent, TextVerticalAlignment,
-    TextureSlotName, UiWorld,
+    AccessibilityRole, AccessibilityState, ComponentElevation, ComponentImage, ComponentTextRegion,
+    ComputedStyle, InteractionState, InteractionStyle, LayoutBox, MutationQueue, NodeKind,
+    NodeStyle, SelectMenuGeometry, SelectMenuScroll, SelectOptionData, SemanticPaint, StableNodeId,
+    TextContent, TextHorizontalAlignment, TextVerticalAlignment, TextureSlotName, UiWorld,
 };
 
 /// Width of the drop-down arrow at the end of the field.
@@ -443,6 +442,8 @@ impl Select {
 }
 
 impl crate::ComponentView for Select {
+    const TYPE_ID: Option<&'static str> = Some(crate::component_descriptors::SELECT.type_id);
+
     const BEHAVIOR: crate::TypeBehavior<Self> = crate::TypeBehavior {
         activation: Some(crate::AppContext::toggle_select),
         activate_at: Some(crate::AppContext::activate_select_at),
@@ -501,7 +502,7 @@ impl crate::ComponentView for Select {
     fn project(&self, id: StableNodeId, world: &UiWorld, mutations: &mut MutationQueue) {
         let (label, placeholder) = self.display_label();
         let hint = self.display_hint();
-        let visual = StandardVisual::Select {
+        let visual = SelectVisual {
             label: Arc::clone(&label),
             hint: hint.clone(),
             image: self.display_image(),
@@ -535,8 +536,8 @@ impl crate::ComponentView for Select {
             fit_options: self.fit_options,
             overlay_mount: self.overlay_mount,
         };
-        if world.standard_visual(id) != Some(visual.clone()) {
-            mutations.set_standard_visual(id, Some(visual));
+        if world.widget_visual_as::<SelectVisual>(id) != Some(&visual) {
+            mutations.set_widget_visual(id, Some(visual));
         }
         if world.text(id) != Some(label.as_ref()) {
             mutations.set_text(
@@ -578,6 +579,480 @@ impl crate::ComponentView for Select {
     }
 }
 
+/// Retained visual state for `Select`, `Dropdown`, and `SearchDropdown`.
+#[derive(Debug, Clone, PartialEq)]
+pub struct SelectVisual {
+    pub label: Arc<str>,
+    /// The quieter text drawn after `label` in the field: the hint of the
+    /// option it shows. See [`SelectOption::hint`].
+    pub hint: Option<Arc<str>>,
+    /// The round picture in front of `label`: the image of the option it
+    /// shows. See [`SelectOption::image`].
+    pub image: Option<TextureSlotName>,
+    pub placeholder: bool,
+    pub size: ControlSize,
+    pub opened: bool,
+    pub invalid: bool,
+    pub loading: bool,
+    pub options: Arc<[SelectOptionData]>,
+    pub highlighted: Option<usize>,
+    /// How the open menu's rows are scrolled and its scrollbar held.
+    pub menu_scroll: SelectMenuScroll,
+    /// Where the open menu can be seen, taken when the field last
+    /// projected and again after each layout pass that moves it;
+    /// `None` before it has been laid out.
+    pub menu_room: Option<crate::SelectMenuRoom>,
+    /// Whether this menu can ever draw check marks (a multi-select
+    /// dropdown). The check lane is reserved for the whole menu when it
+    /// can, so labels do not shift as options are checked and unchecked.
+    pub checkable: bool,
+    /// Whether the field's content holds its widest option and its arrow,
+    /// as a native `<select>` sizes itself, rather than only the label it
+    /// shows. See [`Select::fit_options`].
+    pub fit_options: bool,
+    /// Visual mounting scope of the open dropdown menu (`NearestModal`,
+    /// `TopLayer`, or `Inline`). The closed field remains in-flow.
+    pub overlay_mount: nana_ui_core::OverlayMount,
+}
+
+/// Resolved geometry for a select / dropdown trigger and its open menu.
+#[derive(Debug, Clone, PartialEq)]
+pub struct SelectGeometry {
+    pub label: ComponentTextRegion,
+    /// The shown option's hint after the label, when there is room.
+    pub hint: Option<ComponentTextRegion>,
+    /// The shown option's picture in front of the label.
+    pub image: Option<ComponentImage>,
+    pub handle: LayoutBox,
+    pub handle_color: [f32; 4],
+    pub menu: Option<SelectMenuGeometry>,
+}
+
+impl SelectVisual {
+    pub(crate) fn content_parts_for(
+        &self,
+        id: StableNodeId,
+        world: &UiWorld,
+        content: LayoutBox,
+    ) -> crate::layout_engine::parts::ContentParts {
+        let reverse = world
+            .computed_style(id)
+            .is_some_and(|style| style.direction == nana_ui_core::DirSpec::Rtl);
+        let measure = world.chrome_text_measure(id);
+        let natural_label = self.fit_options.then(|| {
+            self.options
+                .iter()
+                .map(|option| measure.width(&option.label, self.size.text_size(), None))
+                .fold(0.0, f32::max)
+        });
+        crate::layout_engine::parts::select_trigger_parts(
+            content,
+            self.size,
+            &self.label,
+            self.hint.as_deref(),
+            self.image.is_some(),
+            self.placeholder,
+            |text, size| measure.width(text, size, None),
+            natural_label.or_else(|| world.text_natural_width(id)),
+            reverse,
+        )
+    }
+
+    pub(crate) fn geometry_from_parts(
+        &self,
+        bounds: LayoutBox,
+        menu_room: Option<crate::SelectMenuRoom>,
+        viewport: Option<crate::LayoutViewport>,
+        style: &ComputedStyle,
+        style_model: nana_ui_core::StyleModelRef,
+        scrollbars: &nana_ui_core::ScrollbarRecipe,
+        parts: &crate::layout_engine::parts::ContentParts,
+        measure: crate::text_width::ChromeTextMeasure<'_>,
+        fitted_options: Option<f32>,
+    ) -> SelectGeometry {
+        select_geometry(
+            bounds,
+            &self.label,
+            self.hint.as_ref(),
+            self.image.as_ref(),
+            self.placeholder,
+            self.size,
+            self.opened,
+            &self.options,
+            self.highlighted,
+            self.menu_scroll,
+            menu_room,
+            style,
+            style_model,
+            scrollbars,
+            viewport,
+            self.checkable,
+            parts,
+            measure,
+            fitted_options,
+        )
+    }
+
+    pub(crate) fn fitted_options_changed(&self, other: &Self) -> bool {
+        match (self.fit_options, other.fit_options) {
+            (false, false) => false,
+            (true, true) => !self
+                .options
+                .iter()
+                .map(|option| (&option.label, &option.hint))
+                .eq(other
+                    .options
+                    .iter()
+                    .map(|option| (&option.label, &option.hint))),
+            _ => true,
+        }
+    }
+
+    pub(crate) fn menu_hit_shape(
+        &self,
+    ) -> Option<(ControlSize, usize, Option<crate::SelectMenuRoom>)> {
+        self.opened
+            .then_some((self.size, self.options.len(), self.menu_room))
+    }
+}
+
+impl crate::WidgetVisual for SelectVisual {
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+
+    fn dyn_eq(&self, other: &dyn std::any::Any) -> bool {
+        other.downcast_ref::<Self>() == Some(self)
+    }
+
+    fn measures_text(&self) -> bool {
+        true
+    }
+
+    fn has_virtual_nodes(&self) -> bool {
+        self.opened
+    }
+
+    fn caps_control_text(&self) -> bool {
+        true
+    }
+
+    fn offsets_overflowing_inline_text(&self) -> bool {
+        true
+    }
+
+    fn tracks_text_content_part_budget(&self) -> bool {
+        true
+    }
+
+    fn clearing_changes_content_layout(&self) -> bool {
+        true
+    }
+
+    fn invalidates_node_text_constraint(&self) -> bool {
+        true
+    }
+
+    fn is_document_select_target(&self) -> bool {
+        true
+    }
+
+    fn is_open_select_menu(&self) -> bool {
+        self.opened
+    }
+
+    fn overlay_mount(&self) -> Option<nana_ui_core::OverlayMount> {
+        Some(self.overlay_mount)
+    }
+
+    fn intrinsic_chrome_content(
+        &self,
+        _id: StableNodeId,
+        _world: &UiWorld,
+    ) -> crate::WidgetVisualContent {
+        if !self.fit_options {
+            return crate::WidgetVisualContent::default();
+        }
+        crate::WidgetVisualContent {
+            width: HANDLE_WIDTH
+                + if self.options.iter().any(|option| option.image.is_some()) {
+                    image_size(self.size) + IMAGE_GAP
+                } else {
+                    0.0
+                },
+            ..crate::WidgetVisualContent::default()
+        }
+    }
+
+    fn content_layout_changed(&self, prev: Option<&dyn std::any::Any>) -> bool {
+        let Some(old) = prev.and_then(|any| any.downcast_ref::<Self>()) else {
+            return true;
+        };
+        (
+            &self.label,
+            &self.hint,
+            self.placeholder,
+            self.size,
+            &self.options,
+            self.fit_options,
+        ) != (
+            &old.label,
+            &old.hint,
+            old.placeholder,
+            old.size,
+            &old.options,
+            old.fit_options,
+        )
+    }
+
+    fn solve_content_parts(
+        &self,
+        id: StableNodeId,
+        world: &UiWorld,
+        _bounds: LayoutBox,
+        content: LayoutBox,
+        _writing: nana_ui_core::WritingContext,
+        _own_frame: bool,
+    ) -> Option<crate::layout_engine::parts::ContentParts> {
+        Some(self.content_parts_for(id, world, content))
+    }
+
+    fn paint(&self, ctx: &crate::WidgetPaintCtx<'_>) -> crate::WidgetPaintOutput {
+        let parts = ctx.content_parts();
+        let (menu_room, viewport) =
+            ctx.world
+                .select_menu_paint_room(ctx.id, self.opened, self.menu_room);
+        let fitted = ctx
+            .world
+            .select_fitted_options_width(ctx.id, self.fit_options);
+        let geometry = self.geometry_from_parts(
+            ctx.bounds,
+            menu_room,
+            viewport,
+            ctx.style,
+            ctx.style_model,
+            ctx.theme.recipes().scrollbar(),
+            &parts,
+            ctx.world.chrome_text_measure(ctx.id),
+            fitted,
+        );
+        let mut out = crate::WidgetPaintOutput {
+            owns_node_text: true,
+            ..crate::WidgetPaintOutput::new()
+        };
+        if let Some(image) = geometry.image.as_ref() {
+            // Slots 2..=7 are the label, the arrow and the hint; 8 is
+            // the open menu's surface.
+            crate::widget_visual::push_component_image(&mut out, 9, 10, image, |op| op);
+        }
+        out.push(
+            2,
+            crate::WidgetPaintOp::Text(crate::WidgetText {
+                bounds: geometry.label.bounds,
+                content: geometry.label.content,
+                color: geometry.label.color,
+                paint_color: geometry
+                    .label
+                    .color
+                    .and_then(|color| ctx.matching_text_paint(color)),
+                font_size: geometry.label.font_size,
+                font_weight: geometry.label.font_weight,
+                horizontal_alignment: TextHorizontalAlignment::Start,
+                vertical_alignment: TextVerticalAlignment::Center,
+                ellipsis: true,
+                ..Default::default()
+            }),
+        );
+        if let Some(hint) = geometry.hint {
+            // Slots 3..=6 are the handle's strokes.
+            out.push(
+                7,
+                crate::WidgetPaintOp::Text(crate::WidgetText {
+                    bounds: hint.bounds,
+                    content: hint.content,
+                    color: hint.color,
+                    paint_color: hint.color.and_then(|color| ctx.matching_text_paint(color)),
+                    font_size: hint.font_size,
+                    font_weight: hint.font_weight,
+                    horizontal_alignment: TextHorizontalAlignment::Start,
+                    vertical_alignment: TextVerticalAlignment::Center,
+                    ellipsis: true,
+                    ..Default::default()
+                }),
+            );
+        }
+        let center_x = geometry.handle.x + geometry.handle.width / 2.0;
+        let center_y = geometry.handle.y + geometry.handle.height / 2.0;
+        for (index, width) in [8.0_f32, 6.0, 4.0, 2.0].into_iter().enumerate() {
+            out.push(
+                3 + index as u64,
+                crate::WidgetPaintOp::Quad(crate::WidgetQuad {
+                    rect: LayoutBox {
+                        x: center_x - width / 2.0,
+                        y: center_y - 1.5 + index as f32,
+                        width,
+                        height: 1.0,
+                    },
+                    fill: Some(geometry.handle_color),
+                    ..Default::default()
+                }),
+            );
+        }
+        if let Some(menu) = geometry.menu {
+            out.floating_overlay = Some(crate::WidgetFloatingOverlay {
+                kind: crate::WidgetFloatingOverlayKind::AttachedPopup,
+                overlay_mount: self.overlay_mount,
+                trigger_content: None,
+            });
+            out.push_tagged(
+                crate::WidgetTaggedOp::new(
+                    crate::SELECT_MENU_SURFACE_SLOT,
+                    crate::WidgetPaintOp::Quad(crate::WidgetQuad {
+                        rect: menu.surface,
+                        fill: Some(menu.background),
+                        fill_paint: ctx.matching_background_paint(menu.background),
+                        border: Some((menu.border, menu.border_width)),
+                        border_paint: ctx.matching_border_paint(menu.border),
+                        corner_radius: [ctx.chrome_radii.md; 4],
+                        elevation: Some(menu.elevation),
+                        ..Default::default()
+                    }),
+                )
+                .with_floating_overlay(),
+            );
+            let clip_radius = (ctx.chrome_radii.md - menu.border_width).max(0.0);
+            let menu_foreground = ctx
+                .style_model
+                .color(
+                    ctx.theme
+                        .recipes()
+                        .foreground(nana_ui_core::ComponentRecipeId::Menu, false),
+                )
+                .as_rgba_array();
+            let clip_op = |op: crate::WidgetTaggedOp| {
+                op.with_floating_overlay()
+                    .with_rounded_extra_clip(menu.viewport, clip_radius)
+            };
+            for (index, option) in menu.options.iter().enumerate() {
+                if option.bounds.y >= menu.viewport.y + menu.viewport.height
+                    || option.bounds.y + option.bounds.height <= menu.viewport.y
+                {
+                    continue;
+                }
+                if option.checked {
+                    out.push_tagged(clip_op(crate::WidgetTaggedOp::new(
+                        crate::widget_collection_slot(crate::SELECT_MENU_MARKS, index),
+                        crate::WidgetPaintOp::Text(crate::WidgetText {
+                            bounds: LayoutBox {
+                                x: option.bounds.x,
+                                y: option.bounds.y,
+                                width: 16.0,
+                                height: option.bounds.height,
+                            },
+                            content: crate::TextValue::from("✓"),
+                            color: Some(menu_foreground),
+                            paint_color: ctx.matching_text_paint(menu_foreground),
+                            font_size: option.label.font_size,
+                            font_weight: Some(700),
+                            horizontal_alignment: TextHorizontalAlignment::Center,
+                            vertical_alignment: TextVerticalAlignment::Center,
+                            ellipsis: false,
+                            ..Default::default()
+                        }),
+                    )));
+                }
+                if let Some(background) = option.background {
+                    out.push_tagged(clip_op(crate::WidgetTaggedOp::new(
+                        crate::widget_collection_slot(crate::SELECT_MENU_BACKGROUNDS, index),
+                        crate::WidgetPaintOp::Quad(crate::WidgetQuad {
+                            rect: option.bounds,
+                            fill: Some(background),
+                            fill_paint: ctx.matching_background_paint(background),
+                            corner_radius: [ctx.chrome_radii.menu_row; 4],
+                            ..Default::default()
+                        }),
+                    )));
+                }
+                if let Some(image) = option.image.as_ref() {
+                    crate::widget_visual::push_component_image(
+                        &mut out,
+                        crate::widget_collection_slot(crate::SELECT_MENU_IMAGE_BACKDROPS, index),
+                        crate::widget_collection_slot(crate::SELECT_MENU_IMAGES, index),
+                        image,
+                        clip_op,
+                    );
+                }
+                out.push_tagged(clip_op(crate::WidgetTaggedOp::new(
+                    crate::widget_collection_slot(crate::SELECT_MENU_LABELS, index),
+                    crate::WidgetPaintOp::Text(crate::WidgetText {
+                        bounds: option.label.bounds,
+                        content: option.label.content.clone(),
+                        color: option.label.color,
+                        paint_color: option
+                            .label
+                            .color
+                            .and_then(|color| ctx.matching_text_paint(color)),
+                        font_size: option.label.font_size,
+                        font_weight: option.label.font_weight,
+                        horizontal_alignment: TextHorizontalAlignment::Start,
+                        vertical_alignment: TextVerticalAlignment::Center,
+                        ellipsis: true,
+                        rich_text: option
+                            .rich_content
+                            .as_ref()
+                            .and_then(|content| content.rich_text().cloned()),
+                        ..Default::default()
+                    }),
+                )));
+                if let Some(hint) = option.hint.as_ref() {
+                    out.push_tagged(clip_op(crate::WidgetTaggedOp::new(
+                        crate::widget_collection_slot(crate::SELECT_MENU_HINTS, index),
+                        crate::WidgetPaintOp::Text(crate::WidgetText {
+                            bounds: hint.bounds,
+                            content: hint.content.clone(),
+                            color: hint.color,
+                            paint_color: hint
+                                .color
+                                .and_then(|color| ctx.matching_text_paint(color)),
+                            font_size: hint.font_size,
+                            font_weight: hint.font_weight,
+                            horizontal_alignment: TextHorizontalAlignment::End,
+                            vertical_alignment: TextVerticalAlignment::Center,
+                            ellipsis: true,
+                            ..Default::default()
+                        }),
+                    )));
+                }
+            }
+            if let Some(bar) = menu.scrollbar.as_ref() {
+                if let Some(background) = bar.track_background {
+                    out.push_tagged(clip_op(crate::WidgetTaggedOp::new(
+                        crate::widget_collection_slot(crate::SELECT_MENU_SCROLLBAR, 0),
+                        crate::WidgetPaintOp::Quad(crate::WidgetQuad {
+                            rect: bar.track,
+                            fill: Some(background),
+                            border: bar.track_border.map(|c| (c, bar.border_width)),
+                            corner_radius: [bar.track_radius; 4],
+                            ..Default::default()
+                        }),
+                    )));
+                }
+                out.push_tagged(clip_op(crate::WidgetTaggedOp::new(
+                    crate::widget_collection_slot(crate::SELECT_MENU_SCROLLBAR, 1),
+                    crate::WidgetPaintOp::Quad(crate::WidgetQuad {
+                        rect: bar.thumb,
+                        fill: Some(bar.thumb_background),
+                        border: bar.thumb_border.map(|c| (c, bar.border_width)),
+                        corner_radius: [bar.thumb_radius; 4],
+                        ..Default::default()
+                    }),
+                )));
+            }
+        }
+        out
+    }
+}
+
 /// Geometry for a select / dropdown trigger and its open menu.
 ///
 /// `padding` is the inset the node was **laid out** with, not the one it
@@ -586,6 +1061,7 @@ impl crate::ComponentView for Select {
 /// instead of spending it — so re-deriving the inset from `source.layout` here
 /// reported 0 and left the trigger's label flush against its own border. The
 /// caller has already resolved it through `UiWorld::used_layout_padding`.
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn select_geometry(
     bounds: LayoutBox,
     label: &Arc<str>,
@@ -599,7 +1075,6 @@ pub(crate) fn select_geometry(
     menu_scroll: SelectMenuScroll,
     menu_room: Option<crate::SelectMenuRoom>,
     style: &ComputedStyle,
-    source: &NodeStyle,
     model: nana_ui_core::StyleModelRef,
     scrollbars: &nana_ui_core::ScrollbarRecipe,
     viewport: Option<crate::LayoutViewport>,
@@ -607,9 +1082,8 @@ pub(crate) fn select_geometry(
     parts: &crate::layout_engine::parts::ContentParts,
     measure: crate::text_width::ChromeTextMeasure<'_>,
     fitted_options: Option<f32>,
-) -> ComponentGeometry {
+) -> SelectGeometry {
     let palette = &model.palette;
-    let border = source.layout.resolved_border_width();
     let text_color = if placeholder || matches!(style.foreground, SemanticColorRole::Faint) {
         palette.faint.as_rgba_array()
     } else {
@@ -661,7 +1135,7 @@ pub(crate) fn select_geometry(
         crate::layout_engine::parts::part_bounds(parts, crate::LayoutPartKind::LeadingContent)
             .map(|bounds| crate::menus::row_image(slot, bounds, palette))
     });
-    ComponentGeometry::Select {
+    SelectGeometry {
         label: ComponentTextRegion {
             bounds: label_box,
             content: Arc::clone(label).into(),
@@ -673,9 +1147,6 @@ pub(crate) fn select_geometry(
         image,
         handle,
         handle_color,
-        background: style.background,
-        border: style.border_color,
-        border_width: border,
         menu,
     }
 }
@@ -1249,7 +1720,8 @@ pub(crate) fn field_style_for_size(size: ControlSize) -> NodeStyle {
                 ..SemanticPaint::default()
             },
             ..InteractionStyle::default()
-        },
+        }
+        .into(),
         text_vertical_alignment: TextVerticalAlignment::Center,
         ..NodeStyle::default()
     }
@@ -1265,12 +1737,13 @@ pub(crate) static SELECT_HOOKS: crate::framework::ChoiceHooks = crate::framework
 mod tests {
     #[test]
     fn only_a_multi_select_dropdown_reserves_the_check_lane() {
-        use crate::{Dropdown, DropdownOption, StandardVisual};
+        use crate::{Dropdown, DropdownOption, SelectVisual};
 
-        let checkable_of = |context: &AppContext, id| match context.world().standard_visual(id) {
-            Some(StandardVisual::Select { checkable, .. }) => checkable,
-            other => panic!("expected a Select visual, got {other:?}"),
-        };
+        let checkable_of =
+            |context: &AppContext, id| match context.world().widget_visual_as::<SelectVisual>(id) {
+                Some(visual) => visual.checkable,
+                other => panic!("expected a Select visual, got {other:?}"),
+            };
         let options = [DropdownOption::new("a", "A"), DropdownOption::new("b", "B")];
 
         let mut context = AppContext::new();
@@ -1477,8 +1950,8 @@ mod tests {
             NodeKind::Element { tag } if tag == "select"
         ));
         assert!(matches!(
-            context.world().standard_visual(id),
-            Some(StandardVisual::Select {
+            context.world().widget_visual_as::<SelectVisual>(id),
+            Some(SelectVisual {
                 placeholder: false,
                 opened: false,
                 ..
@@ -1498,10 +1971,11 @@ mod tests {
                 .border_radius,
             Some(nana_ui_core::UI_METRICS.radius_sm)
         );
-        let visual = match context.world().standard_visual(id) {
-            Some(StandardVisual::Select { options, .. }) => options,
-            _ => panic!("select visual"),
-        };
+        let visual = &context
+            .world()
+            .widget_visual_as::<SelectVisual>(id)
+            .expect("select visual")
+            .options;
         assert_eq!(visual.len(), 3);
         assert!(visual[1].disabled);
     }
@@ -1519,8 +1993,8 @@ mod tests {
             )
             .unwrap();
         let id = select.stable_id();
-        let Some(StandardVisual::Select { hint, options, .. }) =
-            context.world().standard_visual(id)
+        let Some(SelectVisual { hint, options, .. }) =
+            context.world().widget_visual_as::<SelectVisual>(id)
         else {
             panic!("select visual");
         };
@@ -1574,8 +2048,10 @@ mod tests {
         assert_eq!(style.border, Some(SemanticColorRole::Danger));
         assert_eq!(style.layout.border_width, Some(2.0));
         assert!(matches!(
-            context.world().standard_visual(select.stable_id()),
-            Some(StandardVisual::Select {
+            context
+                .world()
+                .widget_visual_as::<SelectVisual>(select.stable_id()),
+            Some(SelectVisual {
                 opened: true,
                 invalid: true,
                 ..
@@ -1743,8 +2219,8 @@ mod tests {
             .text_metrics(selects[1].stable_id())
             .unwrap()
             .width;
-        let Some(ComponentGeometry::Select { label, handle, .. }) =
-            context.world().component_geometry(selects[0].stable_id())
+        let Some(SelectGeometry { label, handle, .. }) =
+            context.world().select_geometry(selects[0].stable_id())
         else {
             panic!("select geometry");
         };
@@ -1770,9 +2246,9 @@ mod tests {
             narrow,
         ]);
         let muted = Some(nana_ui_core::SemanticPalette::dark().muted.as_rgba_array());
-        let Some(ComponentGeometry::Select {
+        let Some(SelectGeometry {
             label, hint, menu, ..
-        }) = context.world().component_geometry(selects[0].stable_id())
+        }) = context.world().select_geometry(selects[0].stable_id())
         else {
             panic!("select geometry");
         };
@@ -1797,8 +2273,8 @@ mod tests {
         );
         assert!(menu.options[1].hint.is_none());
         // A field with no room left for the hint leaves it out.
-        let Some(ComponentGeometry::Select { hint, .. }) =
-            context.world().component_geometry(selects[1].stable_id())
+        let Some(SelectGeometry { hint, .. }) =
+            context.world().select_geometry(selects[1].stable_id())
         else {
             panic!("select geometry");
         };
@@ -2179,8 +2655,8 @@ mod tests {
     }
 
     fn open_menu(context: &AppContext, select: crate::Entity<Select>) -> SelectMenuGeometry {
-        match context.world().component_geometry(select.stable_id()) {
-            Some(ComponentGeometry::Select {
+        match context.world().select_geometry(select.stable_id()) {
+            Some(SelectGeometry {
                 menu: Some(menu), ..
             }) => menu,
             other => panic!("expected an open select menu, got {other:?}"),
@@ -2380,11 +2856,9 @@ mod tests {
             Select::new(Some("c")).options(options),
         ]);
         let extent = image_size(ControlSize::Medium);
-        let field = |index: usize| match context
-            .world()
-            .component_geometry(selects[index].stable_id())
+        let field = |index: usize| match context.world().select_geometry(selects[index].stable_id())
         {
-            Some(ComponentGeometry::Select { label, image, .. }) => (label.bounds, image),
+            Some(SelectGeometry { label, image, .. }) => (label.bounds, image),
             other => panic!("expected a select, got {other:?}"),
         };
         let frame = |index: usize| {

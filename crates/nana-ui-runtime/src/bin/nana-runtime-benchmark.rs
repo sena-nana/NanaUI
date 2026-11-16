@@ -12,7 +12,7 @@ use std::{
 use nana_ui_runtime::{
     AccessibilityRole, AccessibilityState, AnimationId, AnimationSpec, DocumentId, Easing,
     InteractionStyle, MutationQueue, NodeKind, NodeStyle, SemanticPaint, StableNodeId, SystemWork,
-    TextContent, UiWorld, WorkCounters,
+    TextContent, UiWorld,
 };
 use serde::Serialize;
 
@@ -85,12 +85,6 @@ struct Case {
     due_animation_samples: Option<usize>,
     pointer_hover_transition_ms: Distribution,
     pointer_hover_work_nodes: usize,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    initial_work: Option<WorkSnapshot>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    local_paint_work: Option<WorkSnapshot>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pointer_hover_work: Option<WorkSnapshot>,
     /// Single-node mutation drains at 5k (Issue #8 §3.2 remaining kinds).
     #[serde(skip_serializing_if = "Option::is_none")]
     single_node_mutations: Option<BTreeMap<&'static str, MutationDrain>>,
@@ -119,118 +113,11 @@ struct AnimationAdvanceWork {
     animations_considered: usize,
 }
 
-/// Algorithm counts from [`SystemWork::counters`] / [`UiWorld::last_work_counters`].
-/// GPU upload / draw-batch bytes stay omitted: this binary does not observe
-/// renderer uploads. `allocations` are CPU hot-path observations, not malloc.
-#[derive(Serialize, Clone, Copy)]
-struct WorkSnapshot {
-    entities_total: usize,
-    entities_changed: usize,
-    entities_spawned: usize,
-    entities_despawned: usize,
-    style_processed: usize,
-    text_shaped: usize,
-    layout_nodes: usize,
-    layout_frontier_seeds: usize,
-    layout_frontier_seed_merges: usize,
-    layout_frontier_nodes_measure: usize,
-    layout_frontier_nodes_placement: usize,
-    layout_frontier_contexts: usize,
-    layout_dependency_edges_visited: usize,
-    layout_propagations_stopped: usize,
-    layout_local_subtree_fallbacks: usize,
-    layout_full_document_fallbacks: usize,
-    layout_suffixes_replayed: usize,
-    layout_children_measured: usize,
-    inline_reflows: usize,
-    inline_atomic_measure_requests: usize,
-    layout_containers_uncacheable: usize,
-    layout_result_children_visited: usize,
-    layout_placement_plans_reused: usize,
-    layout_measure_plans_reused: usize,
-    layout_plan_misses: usize,
-    layout_plan_rebuilds: usize,
-    layout_scratch_entries: usize,
-    layout_scratch_bytes: usize,
-    intrinsic_measure_requests: usize,
-    layout_context_transitions: usize,
-    intrinsic_measure_cache_hits: usize,
-    intrinsic_measure_cache_misses: usize,
-    intrinsic_generation_bumps: usize,
-    baseline_queries: usize,
-    cross_context_measure_hits: usize,
-    cross_context_measure_misses: usize,
-    intrinsic_measure_full_subtrees: usize,
-    constraint_change_seeds: usize,
-    constraint_dependents_considered: usize,
-    constraint_dependents_remeasured: usize,
-    constraint_dependents_skipped: usize,
-    resize_text_relayouts: usize,
-    resize_text_reshapes: usize,
-    dynamic_contexts_considered: usize,
-    dynamic_solver_runs: usize,
-    dynamic_fast_fit: usize,
-    dynamic_fast_adjust: usize,
-    dynamic_break_comparisons: usize,
-    dynamic_opportunities_considered: usize,
-    dynamic_envelope_queries: usize,
-    dynamic_envelope_hits: usize,
-    dynamic_envelope_misses: usize,
-    dynamic_envelope_rebuilds: usize,
-    dynamic_cost_segments_visited: usize,
-    dynamic_candidates_created: usize,
-    dynamic_candidates_pruned: usize,
-    dynamic_deep_expansions: usize,
-    dynamic_beam_states: usize,
-    dynamic_child_resolves: usize,
-    dynamic_child_reflows: usize,
-    dynamic_structural_adaptations: usize,
-    dynamic_budget_fallbacks: usize,
-    dynamic_allocations: usize,
-    dynamic_temp_bytes: usize,
-    dynamic_solver_reuses: usize,
-    dynamic_previous_result_hits: usize,
-    dynamic_incremental_assignments: usize,
-    dynamic_cold_solves: usize,
-    dynamic_pruned_candidates: usize,
-    layout_measure_nodes: usize,
-    layout_measure_cache_hits: usize,
-    layout_measure_cache_misses: usize,
-    layout_placement_nodes: usize,
-    layout_result_reused: usize,
-    layout_result_changed: usize,
-    layout_origin_only_updates: usize,
-    layout_delta_commits: usize,
-    hit_test_candidates: usize,
-    input_targets: usize,
-    accessibility_nodes_updated: usize,
-    render_nodes_changed: usize,
-    render_nodes_extracted: usize,
-    extracted_text_spans: usize,
-    allocations: usize,
-    allocated_bytes: usize,
-    text_shaped_runs: usize,
-    text_layout_cache_hits: usize,
-    text_layout_cache_misses: usize,
-    text_wrap_layouts: usize,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    glyph_cache_hits: Option<usize>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    glyph_cache_misses: Option<usize>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    cache_eviction: Option<usize>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    validation_nodes_scanned: Option<usize>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    hit_test_nodes_rebuilt: Option<usize>,
-}
-
 #[derive(Serialize, Clone)]
 struct MutationDrain {
     commit_ms: Distribution,
     schedule_ms: Distribution,
     systems_ms: Distribution,
-    work: WorkSnapshot,
 }
 
 #[derive(Serialize, Clone, Copy)]
@@ -312,13 +199,11 @@ fn bench_full(nodes: usize, document: DocumentId, warmup: usize, iterations: usi
     let mut scheduled_animation_deadline = Vec::with_capacity(iterations);
     let mut sparse_animation_sample = Vec::with_capacity(iterations);
     let mut pointer_hover_transition = Vec::with_capacity(iterations);
-    let mut last_initial_work = None;
-    let mut last_paint_work = None;
-    let mut last_hover_work = None;
+    let mut last_paint_work_nodes = 0;
+    let mut last_hover_work_nodes = 0;
     let mut mutation_commits: BTreeMap<&'static str, Vec<Duration>> = BTreeMap::new();
     let mut mutation_schedules: BTreeMap<&'static str, Vec<Duration>> = BTreeMap::new();
     let mut mutation_systems: BTreeMap<&'static str, Vec<Duration>> = BTreeMap::new();
-    let mut last_mutations: BTreeMap<&'static str, WorkSnapshot> = BTreeMap::new();
     let mut steady_world = UiWorld::new();
     steady_world
         .commit(tree_mutations(nodes, document))
@@ -346,7 +231,6 @@ fn bench_full(nodes: usize, document: DocumentId, warmup: usize, iterations: usi
         let started = Instant::now();
         run_systems(&mut world, document, &initial_work);
         let initial_systems_elapsed = started.elapsed();
-        let initial_snapshot = work_snapshot(&initial_work, &world);
         let started = Instant::now();
         let deadline = world.next_animation_deadline();
         let idle_animation_deadline_elapsed = started.elapsed();
@@ -422,7 +306,7 @@ fn bench_full(nodes: usize, document: DocumentId, warmup: usize, iterations: usi
         let started = Instant::now();
         run_systems(&mut steady_world, document, &paint_work);
         let local_paint_systems_elapsed = started.elapsed();
-        let paint_snapshot = work_snapshot(&paint_work, &steady_world);
+        let paint_work_nodes = paint_work.render_extraction.len();
         let started = Instant::now();
         let idle = steady_world.take_system_work();
         let idle_schedule_elapsed = started.elapsed();
@@ -440,7 +324,7 @@ fn bench_full(nodes: usize, document: DocumentId, warmup: usize, iterations: usi
         let hover_work = steady_world.take_system_work();
         assert!((1..=2).contains(&hover_work.style.len()));
         assert_eq!(hover_work.style, hover_work.render_extraction);
-        let hover_snapshot = work_snapshot(&hover_work, &steady_world);
+        let hover_work_nodes = hover_work.render_extraction.len();
         steady_world.resolve_styles(&hover_work.style).unwrap();
         let mutation_drains = (nodes == 5_000)
             .then(|| measure_single_node_mutations(&mut steady_world, document, nodes, iteration));
@@ -460,9 +344,8 @@ fn bench_full(nodes: usize, document: DocumentId, warmup: usize, iterations: usi
             scheduled_animation_deadline.push(scheduled_animation_deadline_elapsed);
             sparse_animation_sample.push(sparse_animation_sample_elapsed);
             pointer_hover_transition.push(pointer_hover_transition_elapsed);
-            last_initial_work = Some(initial_snapshot);
-            last_paint_work = Some(paint_snapshot);
-            last_hover_work = Some(hover_snapshot);
+            last_paint_work_nodes = paint_work_nodes;
+            last_hover_work_nodes = hover_work_nodes;
         }
         if let Some(drains) = mutation_drains
             && iteration >= warmup
@@ -471,21 +354,20 @@ fn bench_full(nodes: usize, document: DocumentId, warmup: usize, iterations: usi
                 mutation_commits.entry(kind).or_default().push(drain.0);
                 mutation_schedules.entry(kind).or_default().push(drain.1);
                 mutation_systems.entry(kind).or_default().push(drain.2);
-                last_mutations.insert(kind, drain.3);
             }
         }
     }
     let single_node_mutations = (nodes == 5_000).then(|| {
-        last_mutations
-            .into_iter()
-            .map(|(kind, work)| {
+        mutation_commits
+            .keys()
+            .copied()
+            .map(|kind| {
                 (
                     kind,
                     MutationDrain {
                         commit_ms: summarize(&mutation_commits[&kind]),
                         schedule_ms: summarize(&mutation_schedules[&kind]),
                         systems_ms: summarize(&mutation_systems[&kind]),
-                        work,
                     },
                 )
             })
@@ -506,7 +388,7 @@ fn bench_full(nodes: usize, document: DocumentId, warmup: usize, iterations: usi
         local_paint_commit_ms: summarize(&local_paint_commit),
         local_paint_schedule_ms: Some(summarize(&local_paint_schedule)),
         local_paint_systems_ms: Some(summarize(&local_paint_systems)),
-        local_paint_work_nodes: render_work_nodes(&last_paint_work),
+        local_paint_work_nodes: last_paint_work_nodes,
         idle_schedule_ms: summarize(&idle_schedule),
         frames_after_idle: Some(measure_frames_after_idle(nodes, document)),
         idle_animation_deadline_ms: Some(summarize(&idle_animation_deadline)),
@@ -515,10 +397,7 @@ fn bench_full(nodes: usize, document: DocumentId, warmup: usize, iterations: usi
         scheduled_animations: Some(nodes),
         due_animation_samples: Some(1),
         pointer_hover_transition_ms: summarize(&pointer_hover_transition),
-        pointer_hover_work_nodes: render_work_nodes(&last_hover_work),
-        initial_work: last_initial_work,
-        local_paint_work: last_paint_work,
-        pointer_hover_work: last_hover_work,
+        pointer_hover_work_nodes: last_hover_work_nodes,
         single_node_mutations,
     }
 }
@@ -534,9 +413,8 @@ fn bench_construction(
     let mut local_paint_commit = Vec::with_capacity(iterations);
     let mut idle_schedule = Vec::with_capacity(iterations);
     let mut pointer_hover_transition = Vec::with_capacity(iterations);
-    let mut last_initial_work = None;
-    let mut last_paint_work = None;
-    let mut last_hover_work = None;
+    let mut last_paint_work_nodes = 0;
+    let mut last_hover_work_nodes = 0;
     let mut steady_world = UiWorld::new();
     steady_world
         .commit(tree_mutations(nodes, document))
@@ -559,7 +437,6 @@ fn bench_construction(
         let initial_work = world.take_system_work();
         assert_eq!(initial_work.style.len(), nodes);
         assert!(world.take_system_work().is_empty());
-        let initial_snapshot = work_snapshot(&initial_work, &world);
 
         let mut queue = MutationQueue::new();
         queue.set_style(
@@ -577,7 +454,7 @@ fn bench_construction(
         assert_eq!(paint_work.style.len(), 1);
         assert_eq!(paint_work.render_extraction.len(), 1);
         assert!(paint_work.layout_frontier_seeds.is_empty());
-        let paint_snapshot = work_snapshot(&paint_work, &steady_world);
+        let paint_work_nodes = paint_work.render_extraction.len();
         let started = Instant::now();
         let idle = steady_world.take_system_work();
         let idle_schedule_elapsed = started.elapsed();
@@ -595,16 +472,15 @@ fn bench_construction(
         let hover_work = steady_world.take_system_work();
         assert!((1..=2).contains(&hover_work.style.len()));
         assert_eq!(hover_work.style, hover_work.render_extraction);
-        let hover_snapshot = work_snapshot(&hover_work, &steady_world);
+        let hover_work_nodes = hover_work.render_extraction.len();
         if iteration >= warmup {
             enqueue.push(enqueue_elapsed);
             initial_commit.push(initial_commit_elapsed);
             local_paint_commit.push(local_paint_commit_elapsed);
             idle_schedule.push(idle_schedule_elapsed);
             pointer_hover_transition.push(pointer_hover_transition_elapsed);
-            last_initial_work = Some(initial_snapshot);
-            last_paint_work = Some(paint_snapshot);
-            last_hover_work = Some(hover_snapshot);
+            last_paint_work_nodes = paint_work_nodes;
+            last_hover_work_nodes = hover_work_nodes;
         }
     }
     Case {
@@ -622,7 +498,7 @@ fn bench_construction(
         local_paint_commit_ms: summarize(&local_paint_commit),
         local_paint_schedule_ms: None,
         local_paint_systems_ms: None,
-        local_paint_work_nodes: render_work_nodes(&last_paint_work),
+        local_paint_work_nodes: last_paint_work_nodes,
         idle_schedule_ms: summarize(&idle_schedule),
         frames_after_idle: None,
         idle_animation_deadline_ms: None,
@@ -631,15 +507,12 @@ fn bench_construction(
         scheduled_animations: None,
         due_animation_samples: None,
         pointer_hover_transition_ms: summarize(&pointer_hover_transition),
-        pointer_hover_work_nodes: render_work_nodes(&last_hover_work),
-        initial_work: last_initial_work,
-        local_paint_work: last_paint_work,
-        pointer_hover_work: last_hover_work,
+        pointer_hover_work_nodes: last_hover_work_nodes,
         single_node_mutations: None,
     }
 }
 
-type TimedMutationWork = (Duration, Duration, Duration, WorkSnapshot);
+type TimedMutationWork = (Duration, Duration, Duration);
 
 fn measure_single_node_mutations(
     world: &mut UiWorld,
@@ -698,10 +571,14 @@ fn measure_single_node_mutations(
         transform_target,
         NodeStyle {
             layout: Arc::new(nana_ui_core::LayoutStyle {
-                transform: Some(nana_ui_core::PaintTransform {
-                    e: if even { 4.0 } else { 8.0 },
+                transforms: nana_ui_core::TransformStyle {
+                    transform: Some(nana_ui_core::PaintTransform {
+                        e: if even { 4.0 } else { 8.0 },
+                        ..Default::default()
+                    }),
                     ..Default::default()
-                }),
+                }
+                .into(),
                 ..Default::default()
             }),
             ..NodeStyle::default()
@@ -739,7 +616,7 @@ fn drain_mutation(
     let started = Instant::now();
     run_systems(world, document, &work);
     let systems = started.elapsed();
-    (commit, schedule, systems, work_snapshot(&work, world))
+    (commit, schedule, systems)
 }
 
 fn interactive_style(background: Option<[f32; 4]>) -> NodeStyle {
@@ -754,109 +631,9 @@ fn interactive_style(background: Option<[f32; 4]>) -> NodeStyle {
                 ..SemanticPaint::default()
             },
             ..InteractionStyle::default()
-        },
-        ..NodeStyle::default()
-    }
-}
-
-impl From<WorkCounters> for WorkSnapshot {
-    fn from(counters: WorkCounters) -> Self {
-        Self {
-            entities_total: counters.entities_total,
-            entities_changed: counters.entities_changed,
-            entities_spawned: counters.entities_spawned,
-            entities_despawned: counters.entities_despawned,
-            style_processed: counters.style_processed,
-            text_shaped: counters.text_shaped,
-            layout_nodes: counters.layout_nodes,
-            layout_frontier_seeds: counters.layout_frontier_seeds,
-            layout_frontier_seed_merges: counters.layout_frontier_seed_merges,
-            layout_frontier_nodes_measure: counters.layout_frontier_nodes_measure,
-            layout_frontier_nodes_placement: counters.layout_frontier_nodes_placement,
-            layout_frontier_contexts: counters.layout_frontier_contexts,
-            layout_dependency_edges_visited: counters.layout_dependency_edges_visited,
-            layout_propagations_stopped: counters.layout_propagations_stopped,
-            layout_local_subtree_fallbacks: counters.layout_local_subtree_fallbacks,
-            layout_full_document_fallbacks: counters.layout_full_document_fallbacks,
-            layout_suffixes_replayed: counters.layout_suffixes_replayed,
-            layout_children_measured: counters.layout_children_measured,
-            inline_reflows: counters.inline_reflows,
-            inline_atomic_measure_requests: counters.inline_atomic_measure_requests,
-            layout_containers_uncacheable: counters.layout_containers_uncacheable,
-            layout_result_children_visited: counters.layout_result_children_visited,
-            layout_placement_plans_reused: counters.layout_placement_plans_reused,
-            layout_measure_plans_reused: counters.layout_measure_plans_reused,
-            layout_plan_misses: counters.layout_plan_misses,
-            layout_plan_rebuilds: counters.layout_plan_rebuilds,
-            layout_scratch_entries: counters.layout_scratch_entries,
-            layout_scratch_bytes: counters.layout_scratch_bytes,
-            intrinsic_measure_requests: counters.intrinsic_measure_requests,
-            layout_context_transitions: counters.layout_context_transitions,
-            intrinsic_measure_cache_hits: counters.intrinsic_measure_cache_hits,
-            intrinsic_measure_cache_misses: counters.intrinsic_measure_cache_misses,
-            intrinsic_generation_bumps: counters.intrinsic_generation_bumps,
-            baseline_queries: counters.baseline_queries,
-            cross_context_measure_hits: counters.cross_context_measure_hits,
-            cross_context_measure_misses: counters.cross_context_measure_misses,
-            intrinsic_measure_full_subtrees: counters.intrinsic_measure_full_subtrees,
-            constraint_change_seeds: counters.constraint_change_seeds,
-            constraint_dependents_considered: counters.constraint_dependents_considered,
-            constraint_dependents_remeasured: counters.constraint_dependents_remeasured,
-            constraint_dependents_skipped: counters.constraint_dependents_skipped,
-            resize_text_relayouts: counters.resize_text_relayouts,
-            resize_text_reshapes: counters.resize_text_reshapes,
-            dynamic_contexts_considered: counters.dynamic.contexts_considered,
-            dynamic_solver_runs: counters.dynamic.solver_runs,
-            dynamic_fast_fit: counters.dynamic.fast_fit,
-            dynamic_fast_adjust: counters.dynamic.fast_adjust,
-            dynamic_break_comparisons: counters.dynamic.break_comparisons,
-            dynamic_opportunities_considered: counters.dynamic.opportunities_considered,
-            dynamic_envelope_queries: counters.dynamic.envelope_queries,
-            dynamic_envelope_hits: counters.dynamic.envelope_hits,
-            dynamic_envelope_misses: counters.dynamic.envelope_misses,
-            dynamic_envelope_rebuilds: counters.dynamic.envelope_rebuilds,
-            dynamic_cost_segments_visited: counters.dynamic.cost_segments_visited,
-            dynamic_candidates_created: counters.dynamic.candidates_created,
-            dynamic_candidates_pruned: counters.dynamic.candidates_pruned,
-            dynamic_deep_expansions: counters.dynamic.deep_expansions,
-            dynamic_beam_states: counters.dynamic.beam_states,
-            dynamic_child_resolves: counters.dynamic.child_resolves,
-            dynamic_child_reflows: counters.dynamic.child_reflows,
-            dynamic_structural_adaptations: counters.dynamic.structural_adaptations,
-            dynamic_budget_fallbacks: counters.dynamic.budget_fallbacks,
-            dynamic_allocations: counters.dynamic.allocations,
-            dynamic_temp_bytes: counters.dynamic.temp_bytes,
-            dynamic_solver_reuses: counters.dynamic.solver_reuses,
-            dynamic_previous_result_hits: counters.dynamic.previous_result_hits,
-            dynamic_incremental_assignments: counters.dynamic.incremental_assignments,
-            dynamic_cold_solves: counters.dynamic.cold_solves,
-            dynamic_pruned_candidates: counters.dynamic.pruned_candidates,
-            layout_measure_nodes: counters.layout_measure_nodes,
-            layout_measure_cache_hits: counters.layout_measure_cache_hits,
-            layout_measure_cache_misses: counters.layout_measure_cache_misses,
-            layout_placement_nodes: counters.layout_placement_nodes,
-            layout_result_reused: counters.layout_result_reused,
-            layout_result_changed: counters.layout_result_changed,
-            layout_origin_only_updates: counters.layout_origin_only_updates,
-            layout_delta_commits: counters.layout_delta_commits,
-            hit_test_candidates: counters.hit_test_candidates,
-            input_targets: counters.input_targets,
-            accessibility_nodes_updated: counters.accessibility_nodes_updated,
-            render_nodes_changed: counters.render_nodes_changed,
-            render_nodes_extracted: counters.render_nodes_extracted,
-            extracted_text_spans: counters.extracted_text_spans,
-            allocations: counters.allocations,
-            allocated_bytes: counters.allocated_bytes,
-            text_shaped_runs: counters.text_shaped_runs,
-            text_layout_cache_hits: counters.text_layout_cache_hits,
-            text_layout_cache_misses: counters.text_layout_cache_misses,
-            text_wrap_layouts: counters.text_wrap_layouts,
-            glyph_cache_hits: counters.glyph_cache_hits,
-            glyph_cache_misses: counters.glyph_cache_misses,
-            cache_eviction: counters.cache_eviction,
-            validation_nodes_scanned: counters.validation_nodes_scanned,
-            hit_test_nodes_rebuilt: counters.hit_test_nodes_rebuilt,
         }
+        .into(),
+        ..NodeStyle::default()
     }
 }
 
@@ -937,36 +714,6 @@ fn bench_catalog_animation(document: DocumentId) -> CatalogAnimationCase {
         idle_animation_deadline_ms: summarize(&idle_deadline),
         scheduled_animation_deadline_ms: summarize(&scheduled_deadline),
         sparse_animation_sample_ms: summarize(&sparse_sample),
-    }
-}
-
-fn render_work_nodes(work: &Option<WorkSnapshot>) -> usize {
-    work.as_ref()
-        .map(|work| work.render_nodes_changed)
-        .unwrap_or(0)
-}
-
-fn work_snapshot(work: &SystemWork, world: &UiWorld) -> WorkSnapshot {
-    let from_work = WorkSnapshot::from(work.counters());
-    let last = world.last_work_counters();
-    WorkSnapshot {
-        render_nodes_extracted: if last.render_nodes_extracted > 0 {
-            last.render_nodes_extracted
-        } else {
-            from_work.render_nodes_extracted
-        },
-        extracted_text_spans: last.extracted_text_spans,
-        allocations: last.allocations,
-        allocated_bytes: last.allocated_bytes,
-        text_shaped_runs: last.text_shaped_runs,
-        text_layout_cache_hits: last.text_layout_cache_hits,
-        text_layout_cache_misses: last.text_layout_cache_misses,
-        text_wrap_layouts: last.text_wrap_layouts,
-        glyph_cache_hits: last.glyph_cache_hits,
-        glyph_cache_misses: last.glyph_cache_misses,
-        cache_eviction: last.cache_eviction,
-        hit_test_nodes_rebuilt: last.hit_test_nodes_rebuilt,
-        ..from_work
     }
 }
 

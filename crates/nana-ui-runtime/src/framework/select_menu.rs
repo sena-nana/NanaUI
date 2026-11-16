@@ -5,8 +5,8 @@
 //! field's activation ([`AppContext::activate_select_at`] and its siblings).
 use super::*;
 use crate::{
-    ComponentGeometry, Dropdown, NodePointer, NodePointerHooks, NodeWheel, SearchDropdown, Select,
-    SelectMenuDrag, SelectMenuGeometry, SelectMenuScroll,
+    Dropdown, NodePointer, NodePointerHooks, NodeWheel, SearchDropdown, Select, SelectMenuDrag,
+    SelectMenuGeometry, SelectMenuScroll,
 };
 
 type HandledResult = Result<bool, FrameworkError>;
@@ -119,12 +119,7 @@ pub(crate) const SEARCH_DROPDOWN_MENU_POINTER: NodePointerHooks<SearchDropdown> 
 impl AppContext {
     /// `id`'s open Select menu as it is drawn.
     pub(crate) fn open_select_menu(&self, id: StableNodeId) -> Option<SelectMenuGeometry> {
-        match self.world.component_geometry(id)? {
-            ComponentGeometry::Select {
-                menu: Some(menu), ..
-            } => Some(menu),
-            _ => None,
-        }
+        self.world.select_geometry(id).and_then(|g| g.menu)
     }
 
     /// After a layout pass of `document`: every open menu whose room the
@@ -143,7 +138,7 @@ impl AppContext {
         }
         let mut mutations = MutationQueue::new();
         for (id, visual) in stale {
-            mutations.set_standard_visual(id, Some(visual));
+            mutations.set_widget_visual(id, Some(visual));
         }
         self.commit_mutations(mutations)?;
         Ok(())

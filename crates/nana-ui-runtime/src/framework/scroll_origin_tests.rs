@@ -258,8 +258,8 @@ fn an_rtl_scroll_view_puts_its_thumb_at_the_start_edge() {
         0.0
     );
 
-    let bar = match context.world().component_geometry(scroll.stable_id()) {
-        Some(crate::ComponentGeometry::Scrollbar {
+    let bar = match context.world().scrollbar_bars(scroll.stable_id()) {
+        Some(crate::ScrollbarBars {
             horizontal: Some(bar),
             ..
         }) => bar,

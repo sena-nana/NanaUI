@@ -4,7 +4,7 @@ use crate::{
     AccessibilityRole, AccessibilityState, AnimationDirection, AnimationFillMode,
     AnimationIteration, AnimationPlayState, AnimationPlayback, AnimationSpec, ComponentView,
     Easing, InteractionState, LengthSpec, MutationQueue, NodeKind, NodeStyle, SemanticColorRole,
-    StableNodeId, StandardVisual, UiWorld, component_animation_id, component_animation_kinds,
+    StableNodeId, UiWorld, component_animation_id, component_animation_kinds,
     view_components::project_common,
 };
 
@@ -121,6 +121,8 @@ impl Skeleton {
 }
 
 impl ComponentView for Skeleton {
+    const TYPE_ID: Option<&'static str> = Some(crate::component_descriptors::SKELETON.type_id);
+
     fn share_layouts(
         &mut self,
         share: &mut dyn FnMut(&mut std::sync::Arc<nana_ui_core::LayoutStyle>),
@@ -213,7 +215,94 @@ impl LevelMeter {
     }
 }
 
+/// Visual state for [`LevelMeter`] nodes.
+#[derive(Debug, Clone, PartialEq)]
+pub struct LevelMeterVisual {
+    pub value_ratio: f32,
+    pub girth: f32,
+    pub tone: nana_ui_core::StatusTone,
+}
+
+impl crate::WidgetVisual for LevelMeterVisual {
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+
+    fn dyn_eq(&self, other: &dyn std::any::Any) -> bool {
+        other.downcast_ref::<Self>().is_some_and(|rhs| self == rhs)
+    }
+
+    fn is_valid(&self) -> bool {
+        self.value_ratio.is_finite() && (0.0..=1.0).contains(&self.value_ratio)
+    }
+
+    fn paint(&self, ctx: &crate::WidgetPaintCtx<'_>) -> crate::WidgetPaintOutput {
+        let girth = if self.girth.is_finite() && self.girth > 0.0 {
+            self.girth
+        } else {
+            ctx.theme.spacing().xs
+        };
+        let track = crate::LayoutBox {
+            x: ctx.bounds.x,
+            y: ctx.bounds.y + (ctx.bounds.height - girth).max(0.0) / 2.0,
+            width: ctx.bounds.width,
+            height: girth.min(ctx.bounds.height),
+        };
+        let ratio = self.value_ratio.clamp(0.0, 1.0);
+        let fill = crate::LayoutBox {
+            width: track.width * ratio,
+            ..track
+        };
+        let radius = (girth / 2.0).max(0.0);
+        let corner_radius = [radius; 4];
+        let fg = ctx
+            .style_model
+            .color(ctx.theme.recipes().status().role(self.tone))
+            .as_rgba_array();
+        let fg_paint = ctx.matching_text_paint(fg);
+        let mut out = crate::WidgetPaintOutput {
+            suppress_root_surface: true,
+            ..crate::WidgetPaintOutput::new()
+        };
+        out.push(
+            3,
+            crate::WidgetPaintOp::Quad(crate::WidgetQuad {
+                rect: track,
+                fill: ctx.style.background,
+                fill_paint: ctx.style.paint_colors.background,
+                border: None,
+                border_paint: None,
+                corner_radius,
+                elevation: None,
+                use_parent_clips: false,
+                content_image: None,
+                background_image: None,
+                ..Default::default()
+            }),
+        );
+        out.push(
+            4,
+            crate::WidgetPaintOp::Quad(crate::WidgetQuad {
+                rect: fill,
+                fill: Some(fg),
+                fill_paint: fg_paint,
+                border: None,
+                border_paint: None,
+                corner_radius,
+                elevation: None,
+                use_parent_clips: false,
+                content_image: None,
+                background_image: None,
+                ..Default::default()
+            }),
+        );
+        out
+    }
+}
+
 impl ComponentView for LevelMeter {
+    const TYPE_ID: Option<&'static str> = Some(crate::component_descriptors::LEVEL_METER.type_id);
+
     fn share_layouts(
         &mut self,
         share: &mut dyn FnMut(&mut std::sync::Arc<nana_ui_core::LayoutStyle>),
@@ -230,13 +319,13 @@ impl ComponentView for LevelMeter {
     fn project(&self, id: StableNodeId, world: &UiWorld, mutations: &mut MutationQueue) {
         let value = clamp_level(self.value);
         let girth = self.girth();
-        let visual = StandardVisual::LevelMeter {
+        let visual = LevelMeterVisual {
             value_ratio: value,
             girth,
             tone: self.tone,
         };
-        if world.standard_visual(id) != Some(visual.clone()) {
-            mutations.set_standard_visual(id, Some(visual));
+        if world.widget_visual_as::<LevelMeterVisual>(id) != Some(&visual) {
+            mutations.set_widget_visual(id, Some(visual));
         }
         let percent = (f64::from(value) * 100.0).round();
         project_common(
@@ -283,7 +372,7 @@ mod tests {
             context.world().node(id).unwrap().kind,
             NodeKind::Element { tag } if tag == "skeleton"
         ));
-        assert_eq!(context.world().standard_visual(id), None);
+        assert!(context.world().widget_visual_ref(id).is_none());
         assert_eq!(context.world().text(id), Some(""));
         let style = context.world().node_style(id).unwrap();
         assert_eq!(style.background, Some(SemanticColorRole::Subtle));
@@ -419,8 +508,8 @@ mod tests {
             NodeKind::Element { tag } if tag == "level-meter"
         ));
         assert_eq!(
-            context.world().standard_visual(id),
-            Some(StandardVisual::LevelMeter {
+            context.world().widget_visual_as::<LevelMeterVisual>(id),
+            Some(&LevelMeterVisual {
                 value_ratio: 0.0,
                 girth: 4.0,
                 tone: nana_ui_core::StatusTone::Success,
@@ -448,8 +537,8 @@ mod tests {
             })
             .unwrap();
         assert_eq!(
-            context.world().standard_visual(id),
-            Some(StandardVisual::LevelMeter {
+            context.world().widget_visual_as::<LevelMeterVisual>(id),
+            Some(&LevelMeterVisual {
                 value_ratio: 1.0,
                 girth: 8.0,
                 tone: nana_ui_core::StatusTone::Danger,
@@ -470,8 +559,8 @@ mod tests {
             })
             .unwrap();
         assert_eq!(
-            context.world().standard_visual(id),
-            Some(StandardVisual::LevelMeter {
+            context.world().widget_visual_as::<LevelMeterVisual>(id),
+            Some(&LevelMeterVisual {
                 value_ratio: 0.0,
                 girth: 8.0,
                 tone: nana_ui_core::StatusTone::Info,

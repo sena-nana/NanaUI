@@ -9,8 +9,8 @@ use crate::select::{field_style_for_size, menu_option_label, select_option_at};
 use crate::view_components::project_common;
 use crate::{
     AccessibilityRole, AccessibilityState, ComponentView, InteractionState, MutationQueue,
-    NodeKind, NodeStyle, SelectMenuScroll, SelectOptionData, SemanticPaint, StableNodeId,
-    StandardVisual, TextContent, TextInputState, UiWorld,
+    NodeKind, NodeStyle, SelectMenuScroll, SelectOptionData, SelectVisual, SemanticPaint,
+    StableNodeId, TextContent, TextInputState, UiWorld,
 };
 
 #[derive(Debug, Clone, PartialEq)]
@@ -355,6 +355,9 @@ impl SearchDropdown {
 }
 
 impl ComponentView for SearchDropdown {
+    const TYPE_ID: Option<&'static str> =
+        Some(crate::component_descriptors::SEARCH_DROPDOWN.type_id);
+
     const BEHAVIOR: crate::TypeBehavior<Self> = crate::TypeBehavior {
         activation: Some(crate::AppContext::toggle_search_dropdown),
         activate_at: Some(crate::AppContext::activate_search_dropdown_at),
@@ -409,7 +412,7 @@ impl ComponentView for SearchDropdown {
 
     fn project(&self, id: StableNodeId, world: &UiWorld, mutations: &mut MutationQueue) {
         let (label, placeholder) = self.display_label();
-        let visual = StandardVisual::Select {
+        let visual = SelectVisual {
             // The field shows what it searches, label and hint as one line.
             label: Arc::clone(&label),
             hint: None,
@@ -427,8 +430,8 @@ impl ComponentView for SearchDropdown {
             fit_options: false,
             overlay_mount: self.overlay_mount,
         };
-        if world.standard_visual(id) != Some(visual.clone()) {
-            mutations.set_standard_visual(id, Some(visual));
+        if world.widget_visual_as::<SelectVisual>(id) != Some(&visual) {
+            mutations.set_widget_visual(id, Some(visual));
         }
         // While open the query input owns the node text; `SetTextInput`
         // rewrites it either way, so the label goes in after the input is gone.
@@ -585,11 +588,11 @@ mod tests {
         let id = dropdown.stable_id();
         assert_eq!(context.world().text(id), Some("Be"));
         assert!(context.world().text_input(id).is_some());
-        let Some(StandardVisual::Select {
+        let Some(SelectVisual {
             opened: true,
             options,
             ..
-        }) = context.world().standard_visual(id)
+        }) = context.world().widget_visual_as::<SelectVisual>(id)
         else {
             panic!("search visual");
         };

@@ -102,12 +102,6 @@ impl UiScene {
                 if !self.custom_paint.is_empty() {
                     self.custom_paint.remove(&id);
                 }
-                if !self.modal_surface_paint.is_empty() {
-                    self.modal_surface_paint.remove(&id);
-                }
-                if !self.markdown_diagram_paint.is_empty() {
-                    self.markdown_diagram_paint.remove(&id);
-                }
             }
         }
         let mut updated_nodes = 0;
@@ -160,7 +154,7 @@ impl UiScene {
             let bits = |layout: &LayoutBox| {
                 [layout.x, layout.y, layout.width, layout.height].map(f32::to_bits)
             };
-            let same_result = same_layout_result(&held.layout_result, &moved.layout_result);
+            let same_result = held.extracted_layout == moved.extracted_layout;
             if bits(&held.local_layout) == bits(&moved.local_layout)
                 && held.layout_frame == moved.layout_frame
                 && same_result
@@ -175,7 +169,7 @@ impl UiScene {
             let node = Arc::make_mut(self.nodes.get_mut(&id).expect("held above"));
             node.local_layout = moved.local_layout;
             node.layout_frame = moved.layout_frame;
-            node.layout_result = moved.layout_result;
+            node.extracted_layout = moved.extracted_layout;
             if resized {
                 node.layout.width = moved.layout.width;
                 node.layout.height = moved.layout.height;
@@ -222,9 +216,7 @@ impl UiScene {
             let sticky_geometry_changed = self.sticky_nodes.has_dependents(node.id)
                 && previous.is_some_and(|old| {
                     let facts = |node: &ExtractedNode| {
-                        node.layout_result.as_ref().map(|result| {
-                            (result.content_box, result.padding_box, result.scroll_extent)
-                        })
+                        node.extracted_layout.map(|layout| layout.sticky_boxes)
                     };
                     facts(old) != facts(&node)
                 });
@@ -714,7 +706,7 @@ fn collect_unextracted_descendants(
 
 #[derive(PartialEq)]
 pub(super) enum InheritedComponentClip {
-    EmptyState(LayoutBox),
+    Descendants(LayoutBox),
     ModalFrame {
         surface: LayoutBox,
         body: LayoutBox,
@@ -723,23 +715,21 @@ pub(super) enum InheritedComponentClip {
 }
 
 fn inherited_component_clip(node: &ExtractedNode) -> Option<InheritedComponentClip> {
-    match node.component_geometry.as_deref() {
-        Some(ComponentGeometry::EmptyState { root_clip, .. }) => {
-            Some(InheritedComponentClip::EmptyState(*root_clip))
-        }
-        Some(ComponentGeometry::ModalFrame { surface, body, .. }) => {
-            let body_root = match node.standard_visual.as_ref() {
-                Some(StandardVisual::ModalFrame { slots, .. }) => slots.body,
-                _ => None,
-            };
-            Some(InheritedComponentClip::ModalFrame {
-                surface: *surface,
-                body: *body,
-                body_root,
-            })
-        }
-        _ => None,
+    if let Some(modal) = node
+        .widget_paint
+        .as_deref()
+        .and_then(|w| w.modal_frame.as_ref())
+    {
+        return Some(InheritedComponentClip::ModalFrame {
+            surface: modal.surface,
+            body: modal.body,
+            body_root: modal.body_root,
+        });
     }
+    node.widget_paint
+        .as_deref()
+        .is_some_and(|w| w.clips_descendants)
+        .then(|| InheritedComponentClip::Descendants(UiScene::record_box(node)))
 }
 
 /// Whether re-extracting this node can move a *retained descendant's* projected
@@ -820,20 +810,7 @@ pub(super) struct PaintOrderFacts {
 /// [`moved_only`], with the same result: what the node paints is in its own
 /// coordinates, so it paints the same primitives wherever it stands.
 fn moved_in_place(old: &ExtractedNode, new: &ExtractedNode) -> bool {
-    same_layout_result(&old.layout_result, &new.layout_result) && moved_only(old, new)
-}
-
-/// Whether two records hold the same layout result: the same allocation,
-/// as a node that only moved shares it, or one equal to it.
-fn same_layout_result(
-    old: &Option<Arc<nana_ui_runtime::LayoutResult>>,
-    new: &Option<Arc<nana_ui_runtime::LayoutResult>>,
-) -> bool {
-    match (old, new) {
-        (Some(old), Some(new)) => Arc::ptr_eq(old, new) || old == new,
-        (None, None) => true,
-        _ => false,
-    }
+    old.extracted_layout == new.extracted_layout && moved_only(old, new)
 }
 
 /// Whether `new` is `old` moved: the same node in every respect but where
@@ -852,7 +829,7 @@ fn moved_only(old: &ExtractedNode, new: &ExtractedNode) -> bool {
     probe.layout = old.layout;
     probe.local_layout = old.local_layout;
     probe.layout_frame = old.layout_frame;
-    probe.layout_result = old.layout_result.clone();
+    probe.extracted_layout = old.extracted_layout;
     probe == *old
 }
 

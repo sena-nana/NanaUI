@@ -125,11 +125,11 @@ impl UiScene {
 
     /// Whether a text node's per-glyph presentation still changes what is
     /// drawn at the motion clock's time.
-    /// Whether a chart's marks or emphasis are still moving: the painter
-    /// cannot reuse the painted frame, and the host keeps presenting.
-    pub fn chart_presentation_live(&self) -> bool {
+    /// Whether an inline GPU payload's marks or emphasis are still moving:
+    /// the painter cannot reuse the painted frame, and the host keeps presenting.
+    pub fn gpu_payload_live(&self) -> bool {
         let now = self.compositor_now();
-        self.chart_live.values().any(|until| *until > now)
+        self.gpu_payload_live.values().any(|until| *until > now)
     }
 
     pub fn glyph_presentation_live(&self) -> bool {

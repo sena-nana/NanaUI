@@ -37,10 +37,9 @@ use std::sync::Arc;
 
 use nana_ui_core::box_layout::text_line_box_height_px;
 use nana_ui_core::{
-    AlignSpec, BoxSizing, ClearSpec, DisplaySpec, FlexDirection, FlexWrap, FloatSpec,
-    FontSizeContext, GridAutoFlow, GridLine, GridPlacement, GridRepeatAuto, GridTemplateAreas,
-    GridTrack, JustifySpec, LayoutStyle, LengthSpec, PositionSpec, TextAlignSpec,
-    resolve_grid_track_sizes,
+    AlignSpec, BoxSizing, DisplaySpec, FlexDirection, FlexWrap, FontSizeContext, GridAutoFlow,
+    GridLine, GridPlacement, GridRepeatAuto, GridTemplateAreas, GridTrack, JustifySpec,
+    LayoutStyle, LengthSpec, PositionSpec, TextAlignSpec, resolve_grid_track_sizes,
 };
 
 use crate::layout_frontier::{LayoutFrontier, LayoutFrontierSeed, LayoutFrontierStats};
@@ -290,17 +289,21 @@ impl RuntimeLayoutEngine {
                         (
                             snapshot.emitted.clone(),
                             snapshot.used_padding.clone(),
+                            snapshot.omitted_boxes.clone(),
                             snapshot.far_start.clone(),
                             snapshot.contexts.clone(),
                             snapshot.frames.clone(),
                         )
                     })
             });
-            if let Some((emitted, used_padding, far_start, contexts, frames)) = reused {
+            if let Some((emitted, used_padding, omitted_boxes, far_start, contexts, frames)) =
+                reused
+            {
                 retained.boxes.clear();
                 retained.boxes.extend(emitted.iter().copied());
                 retained.frames = frames;
                 retained.used_padding = used_padding;
+                retained.omitted_boxes = omitted_boxes;
                 retained.far_start = far_start;
                 retained.contexts = contexts;
                 retained.intrinsics.clear();
@@ -477,7 +480,7 @@ impl RuntimeLayoutEngine {
                     id,
                     border,
                     parent_box,
-                    retained.used_padding.get(&parent).copied(),
+                    retained.used_padding_of(parent),
                 ) {
                     islands.push((id, origin, containing, font));
                 }
@@ -545,7 +548,6 @@ impl RuntimeLayoutEngine {
                 &mut intrinsic,
                 &mut output,
                 scope_ref,
-                None,
             )?;
         }
         for root in roots {
@@ -582,7 +584,6 @@ impl RuntimeLayoutEngine {
                 &mut intrinsic,
                 &mut output,
                 scope_ref,
-                None,
             )?;
             #[cfg(feature = "benchmark")]
             phase.lap(2);
@@ -603,7 +604,17 @@ impl RuntimeLayoutEngine {
         output.move_into(&mut retained.boxes);
         // A first layout's retained tables are empty: they take the pass's
         // tables whole instead of copying them entry by entry.
+        for id in nodes.cleared_padding.drain() {
+            retained.used_padding.remove(&id);
+        }
         retained.used_padding.absorb(&mut nodes.used_padding);
+        for id in nodes.unomitted_boxes.drain() {
+            retained.omitted_boxes.remove(&id);
+        }
+        for id in nodes.omitted_boxes.drain() {
+            retained.used_padding.remove(&id);
+            retained.omitted_boxes.insert(id);
+        }
         retained.line_boxes = nodes.line_boxes.take();
         retained.far_start.absorb(&mut nodes.far_start);
         retained.contexts.absorb(&mut nodes.contexts);
@@ -712,8 +723,7 @@ impl RuntimeLayoutEngine {
                 }
             }
         }
-        intrinsic.execution_stats.dynamic = intrinsic.dynamic.counters;
-        intrinsic.execution_stats.measure_stack_per_level = intrinsic.measure_levels.per_level;
+        intrinsic.execution_stats.measure_stack_per_level = 0;
         intrinsic.execution_stats.placement_stack_per_level = intrinsic.placement_levels.per_level;
         let intrinsic_counters = intrinsic.counters();
         intrinsic.execution_stats.line_boxes_settled = nodes.line_boxes_settled.get();
@@ -721,13 +731,20 @@ impl RuntimeLayoutEngine {
         let universe = if force_full { nodes.len() } else { world.len() };
         if let Some(highest) = highest {
             retained.intrinsics.reserve_through(highest, universe);
+            retained
+                .intrinsic_metrics
+                .reserve_through(highest, universe);
         }
         for (key, size) in std::mem::take(&mut intrinsic.used_order) {
-            retained
-                .intrinsics
-                .entry(key.id)
-                .or_default()
-                .insert(key, size);
+            let stored = key.stored();
+            match retained.intrinsics.get_mut(&key.id) {
+                Some(memo) => memo.insert(stored, size),
+                None => {
+                    retained
+                        .intrinsics
+                        .insert(key.id, RetainedIntrinsic::new(stored, size));
+                }
+            }
         }
         // Four constraint variants a live node, never a fixed count: a cap
         // below the document's working set evicts facts the next frame reads,
@@ -779,6 +796,10 @@ impl RuntimeLayoutEngine {
             retained.remote_overlays.retain(|id| world.contains(*id));
             swept = true;
         }
+        if retained.omitted_boxes.len() > crowded {
+            retained.omitted_boxes.retain(|id| world.contains(*id));
+            swept = true;
+        }
         if swept {
             retained.execution_stats.retain_sweeps =
                 retained.execution_stats.retain_sweeps.saturating_add(1);
@@ -800,6 +821,7 @@ impl RuntimeLayoutEngine {
                 epoch: world.layout_source_epoch(),
                 emitted: emitted.clone(),
                 used_padding: retained.used_padding.clone(),
+                omitted_boxes: retained.omitted_boxes.clone(),
                 far_start: retained.far_start.clone(),
                 contexts: retained.contexts.clone(),
                 frames: retained.frames.clone(),
@@ -1031,6 +1053,7 @@ impl RetainedLayoutCache {
             cache.frames.remove(&id);
             cache.placements.remove(&id);
             cache.used_padding.remove(&id);
+            cache.omitted_boxes.remove(&id);
             cache.far_start.remove(&id);
             cache.contexts.remove(&id);
             cache.container_plans.remove(&id);
@@ -1043,6 +1066,7 @@ impl RetainedLayoutCache {
         }
     }
 
+    #[cfg(test)]
     pub(crate) fn execution_stats(&self, document: DocumentId) -> LayoutExecutionStats {
         self.documents
             .get(&document)
@@ -1124,25 +1148,15 @@ impl RetainedLayoutCache {
         self.documents
             .get(&document)?
             .intrinsic_metrics
-            .by_content
-            .get(&id.get())?
-            .iter()
-            .map(|(_, metrics)| metrics.generation)
-            .max()
+            .max_generation(id)
     }
 
     /// The last baseline `id` published, the one an atom sits on its line by.
     pub(crate) fn intrinsic_baseline(&self, document: DocumentId, id: StableNodeId) -> Option<f32> {
-        let metrics = &self
-            .documents
+        self.documents
             .get(&document)?
             .intrinsic_metrics
-            .by_content
-            .get(&id.get())?
-            .iter()
-            .max_by_key(|(_, metrics)| metrics.generation)?
-            .1;
-        metrics.last_baseline.or(metrics.first_baseline)
+            .latest_baseline(id)
     }
     /// What the box the last pass gave `id` is measured from.
     pub(crate) fn frame(&self, document: DocumentId, id: StableNodeId) -> crate::LayoutFrame {
@@ -1168,39 +1182,52 @@ impl RetainedLayoutCache {
         document: DocumentId,
         id: StableNodeId,
     ) -> Option<nana_ui_core::PaddingSpec> {
-        self.documents
-            .get(&document)?
-            .used_padding
-            .get(&id)
-            .copied()
+        self.documents.get(&document)?.used_padding_of(id)
     }
 }
 
 /// Two used-size variants per node allow measure/place reuse without
 /// accumulating a new entry for every pixel of an interactive resize. The
 /// content-derived facts live in the generation-aware authority beside it.
-#[derive(Default)]
 struct RetainedIntrinsic {
-    measurements: [Option<(MeasurementKey, Size)>; 2],
+    first: (StoredMeasurementKey, Size),
+    second: Option<Box<(StoredMeasurementKey, Size)>>,
 }
 
 impl RetainedIntrinsic {
+    fn new(key: StoredMeasurementKey, size: Size) -> Self {
+        Self {
+            first: (key, size),
+            second: None,
+        }
+    }
+
     fn get(&self, key: MeasurementKey) -> Option<Size> {
-        self.measurements
-            .iter()
-            .flatten()
-            .find(|(held, _)| *held == key)
+        let key = key.stored();
+        if self.first.0 == key {
+            return Some(self.first.1);
+        }
+        self.second
+            .as_deref()
+            .filter(|(held, _)| *held == key)
             .map(|(_, size)| *size)
     }
 
-    fn insert(&mut self, key: MeasurementKey, size: Size) {
-        let next = Some((key, size));
-        if self.measurements[0].is_some_and(|(held, _)| held == key) {
-            self.measurements[0] = next;
+    fn insert(&mut self, key: StoredMeasurementKey, size: Size) {
+        if self.first.0 == key {
+            self.first.1 = size;
             return;
         }
-        self.measurements[1] = self.measurements[0];
-        self.measurements[0] = next;
+        match self.second.as_deref_mut() {
+            Some(second) => *second = self.first,
+            None => self.second = Some(Box::new(self.first)),
+        }
+        self.first = (key, size);
+    }
+
+    #[cfg(test)]
+    fn len(&self) -> usize {
+        1 + usize::from(self.second.is_some())
     }
 }
 
@@ -1218,6 +1245,7 @@ struct DocumentLayoutCache {
     materialized_inputs: usize,
     placements: crate::store::DenseNodeMap<(Point, Size, f32)>,
     pub(crate) used_padding: crate::store::DenseNodeMap<nana_ui_core::PaddingSpec>,
+    omitted_boxes: crate::NodeSet,
     /// Per container, the page axes placement starts at the far end.
     far_start: crate::store::DenseNodeMap<[bool; 2]>,
     /// Per container, the formatting context its last placement ran.
@@ -1291,9 +1319,232 @@ struct FullLayoutSnapshot {
     epoch: u64,
     emitted: Vec<(StableNodeId, LayoutBox)>,
     used_padding: crate::store::DenseNodeMap<nana_ui_core::PaddingSpec>,
+    omitted_boxes: crate::NodeSet,
     far_start: crate::store::DenseNodeMap<[bool; 2]>,
     contexts: crate::store::DenseNodeMap<crate::FormattingContextKind>,
     frames: crate::NodeMap<crate::LayoutFrame>,
+}
+
+#[derive(Clone, Copy)]
+struct PackedOptF32(f32);
+
+impl PackedOptF32 {
+    const NONE: Self = Self(f32::NAN);
+
+    #[inline]
+    fn from_opt(value: Option<f32>) -> Self {
+        match value {
+            Some(v) if !v.is_nan() => Self(v),
+            _ => Self::NONE,
+        }
+    }
+
+    #[inline]
+    fn get(self) -> Option<f32> {
+        (!self.0.is_nan()).then_some(self.0)
+    }
+
+    #[inline]
+    fn is_some(self) -> bool {
+        !self.0.is_nan()
+    }
+}
+
+#[derive(Clone, Copy)]
+struct PackedOptSize(Size);
+
+impl PackedOptSize {
+    const NONE: Self = Self(Size {
+        width: f32::NAN,
+        height: 0.0,
+    });
+
+    #[inline]
+    fn from_size(size: Size) -> Self {
+        debug_assert!(!size.width.is_nan());
+        Self(size)
+    }
+
+    #[inline]
+    fn from_opt(value: Option<Size>) -> Self {
+        match value {
+            Some(s) if !s.width.is_nan() => Self(s),
+            _ => Self::NONE,
+        }
+    }
+
+    #[inline]
+    fn get(self) -> Option<Size> {
+        (!self.0.width.is_nan()).then_some(self.0)
+    }
+
+    #[inline]
+    fn is_none(self) -> bool {
+        self.0.width.is_nan()
+    }
+
+    #[inline]
+    fn is_some(self) -> bool {
+        !self.0.width.is_nan()
+    }
+}
+
+#[derive(Clone, Copy)]
+struct StoredIntrinsicMetricVariant {
+    style: u64,
+    generation: u64,
+    constraint_a: u32,
+    constraint_b: u32,
+    min_inline: f32,
+    max_inline: f32,
+    min_block: f32,
+    preferred_inline: f32,
+    preferred_block: f32,
+    max_block: PackedOptF32,
+    first_baseline: PackedOptF32,
+    last_baseline: PackedOptF32,
+    aspect_ratio: PackedOptF32,
+    constraint_tag: u8,
+    truncatable: bool,
+}
+
+impl StoredIntrinsicMetricVariant {
+    fn from_key_metrics(key: &crate::IntrinsicCacheKey, metrics: crate::IntrinsicMetrics) -> Self {
+        let (constraint_tag, (constraint_a, constraint_b)) = key.constraints.canonical();
+        Self {
+            style: key.style,
+            generation: metrics.generation,
+            constraint_a,
+            constraint_b,
+            min_inline: metrics.min_inline,
+            max_inline: metrics.max_inline,
+            min_block: metrics.min_block,
+            preferred_inline: metrics.preferred.inline,
+            preferred_block: metrics.preferred.block,
+            max_block: PackedOptF32::from_opt(metrics.max_block),
+            first_baseline: PackedOptF32::from_opt(metrics.first_baseline),
+            last_baseline: PackedOptF32::from_opt(metrics.last_baseline),
+            aspect_ratio: PackedOptF32::from_opt(metrics.aspect_ratio),
+            constraint_tag,
+            truncatable: metrics.truncatable,
+        }
+    }
+
+    fn set_metrics(&mut self, metrics: crate::IntrinsicMetrics) {
+        self.generation = metrics.generation;
+        self.min_inline = metrics.min_inline;
+        self.max_inline = metrics.max_inline;
+        self.min_block = metrics.min_block;
+        self.preferred_inline = metrics.preferred.inline;
+        self.preferred_block = metrics.preferred.block;
+        self.max_block = PackedOptF32::from_opt(metrics.max_block);
+        self.first_baseline = PackedOptF32::from_opt(metrics.first_baseline);
+        self.last_baseline = PackedOptF32::from_opt(metrics.last_baseline);
+        self.aspect_ratio = PackedOptF32::from_opt(metrics.aspect_ratio);
+        self.truncatable = metrics.truncatable;
+    }
+
+    fn metrics(self) -> crate::IntrinsicMetrics {
+        crate::IntrinsicMetrics {
+            min_inline: self.min_inline,
+            max_inline: self.max_inline,
+            min_block: self.min_block,
+            max_block: self.max_block.get(),
+            preferred: crate::UsedSize {
+                inline: self.preferred_inline,
+                block: self.preferred_block,
+            },
+            first_baseline: self.first_baseline.get(),
+            last_baseline: self.last_baseline.get(),
+            aspect_ratio: self.aspect_ratio.get(),
+            truncatable: self.truncatable,
+            generation: self.generation,
+        }
+    }
+
+    fn matches(self, key: &crate::IntrinsicCacheKey) -> bool {
+        self.style == key.style
+            && (self.constraint_tag, (self.constraint_a, self.constraint_b))
+                == key.constraints.canonical()
+    }
+}
+
+struct ContentMetrics {
+    first: StoredIntrinsicMetricVariant,
+    rest: Option<Box<Vec<StoredIntrinsicMetricVariant>>>,
+}
+
+const _: () = assert!(std::mem::size_of::<Option<ContentMetrics>>() <= 72);
+
+impl ContentMetrics {
+    fn new(key: &crate::IntrinsicCacheKey, metrics: crate::IntrinsicMetrics) -> Self {
+        Self {
+            first: StoredIntrinsicMetricVariant::from_key_metrics(key, metrics),
+            rest: None,
+        }
+    }
+
+    fn variant_count(&self) -> usize {
+        1 + self.rest.as_deref().map_or(0, Vec::len)
+    }
+
+    fn get(&self, key: &crate::IntrinsicCacheKey) -> Option<crate::IntrinsicMetrics> {
+        if self.first.matches(key) {
+            return Some(self.first.metrics());
+        }
+        self.rest
+            .as_deref()?
+            .iter()
+            .find(|variant| variant.matches(key))
+            .map(|variant| variant.metrics())
+    }
+
+    fn insert(
+        &mut self,
+        key: &crate::IntrinsicCacheKey,
+        metrics: crate::IntrinsicMetrics,
+    ) -> usize {
+        if self.first.matches(key) {
+            self.first.set_metrics(metrics);
+            return 0;
+        }
+        let rest = self.rest.get_or_insert_with(|| Box::new(Vec::new()));
+        if let Some(slot) = rest.iter_mut().find(|variant| variant.matches(key)) {
+            slot.set_metrics(metrics);
+            return 0;
+        }
+        // Most contents hold one or two variants: grow by one, not to
+        // the four a first push reserves.
+        rest.reserve_exact(1);
+        rest.push(StoredIntrinsicMetricVariant::from_key_metrics(key, metrics));
+        1
+    }
+
+    fn max_generation(&self) -> u64 {
+        self.rest
+            .as_deref()
+            .into_iter()
+            .flatten()
+            .fold(self.first.generation, |acc, variant| {
+                acc.max(variant.generation)
+            })
+    }
+
+    fn latest_baseline(&self) -> Option<f32> {
+        let latest =
+            self.rest
+                .as_deref()
+                .into_iter()
+                .flatten()
+                .fold(self.first, |best, &variant| {
+                    if variant.generation >= best.generation {
+                        variant
+                    } else {
+                        best
+                    }
+                });
+        latest.last_baseline.get().or(latest.first_baseline.get())
+    }
 }
 
 /// Retained intrinsic facts, grouped by the content they describe. A node has
@@ -1301,17 +1552,43 @@ struct FullLayoutSnapshot {
 /// those variants and nothing else, so neither costs the document.
 #[derive(Default)]
 struct RetainedIntrinsicMetrics {
-    by_content: HashMap<u64, Vec<(crate::IntrinsicCacheKey, crate::IntrinsicMetrics)>>,
+    by_node: crate::store::DenseNodeMap<ContentMetrics>,
+    by_other: HashMap<u64, ContentMetrics>,
     len: usize,
 }
 
 impl RetainedIntrinsicMetrics {
+    fn reserve_through(&mut self, highest: StableNodeId, expected: usize) {
+        self.by_node.reserve_through(highest, expected);
+    }
+
+    fn content_count(&self) -> usize {
+        self.by_node.len() + self.by_other.len()
+    }
+
+    #[cfg(test)]
+    pub(super) fn contains_content(&self, content: u64) -> bool {
+        match StableNodeId::new(content) {
+            Some(id) => self.by_node.contains_key(&id),
+            None => self.by_other.contains_key(&content),
+        }
+    }
+
+    fn max_generation(&self, id: StableNodeId) -> Option<u64> {
+        self.by_node.get(&id).map(ContentMetrics::max_generation)
+    }
+
+    fn latest_baseline(&self, id: StableNodeId) -> Option<f32> {
+        self.by_node
+            .get(&id)
+            .and_then(ContentMetrics::latest_baseline)
+    }
+
     fn get(&self, key: &crate::IntrinsicCacheKey) -> Option<crate::IntrinsicMetrics> {
-        self.by_content
-            .get(&key.content)?
-            .iter()
-            .find(|(held, _)| held == key)
-            .map(|(_, metrics)| *metrics)
+        match StableNodeId::new(key.content) {
+            Some(id) => self.by_node.get(&id)?.get(key),
+            None => self.by_other.get(&key.content)?.get(key),
+        }
     }
 
     fn len(&self) -> usize {
@@ -1319,39 +1596,55 @@ impl RetainedIntrinsicMetrics {
     }
 
     fn clear(&mut self) {
-        self.by_content.clear();
+        self.by_node.clear();
+        self.by_other.clear();
         self.len = 0;
     }
 
     fn insert(&mut self, key: crate::IntrinsicCacheKey, metrics: crate::IntrinsicMetrics) {
-        let variants = self.by_content.entry(key.content).or_default();
-        if let Some(slot) = variants.iter_mut().find(|(held, _)| *held == key) {
-            slot.1 = metrics;
-        } else {
-            // Most contents hold one or two variants: grow by one, not to
-            // the four a first push reserves.
-            variants.reserve_exact(1);
-            variants.push((key, metrics));
-            self.len += 1;
-        }
+        let added = match StableNodeId::new(key.content) {
+            Some(id) => match self.by_node.get_mut(&id) {
+                Some(entry) => entry.insert(&key, metrics),
+                None => {
+                    self.by_node.insert(id, ContentMetrics::new(&key, metrics));
+                    1
+                }
+            },
+            None => match self.by_other.get_mut(&key.content) {
+                Some(entry) => entry.insert(&key, metrics),
+                None => {
+                    self.by_other
+                        .insert(key.content, ContentMetrics::new(&key, metrics));
+                    1
+                }
+            },
+        };
+        self.len += added;
     }
 
-    /// Drop every variant of one content's facts.
-    fn remove_content(
-        &mut self,
-        content: u64,
-    ) -> Option<Vec<(crate::IntrinsicCacheKey, crate::IntrinsicMetrics)>> {
-        let removed = self.by_content.remove(&content)?;
-        self.len -= removed.len();
-        Some(removed)
+    /// Drop every variant of one content's facts and return its highest generation.
+    fn remove_content(&mut self, content: u64) -> Option<u64> {
+        let removed = match StableNodeId::new(content) {
+            Some(id) => self.by_node.remove(&id),
+            None => self.by_other.remove(&content),
+        }?;
+        self.len -= removed.variant_count();
+        Some(removed.max_generation())
     }
 
     fn retain_contents(&mut self, mut keep: impl FnMut(u64) -> bool) {
         let mut dropped = 0;
-        self.by_content.retain(|content, variants| {
+        self.by_node.retain(|id, entry| {
+            let kept = keep(id.get());
+            if !kept {
+                dropped += entry.variant_count();
+            }
+            kept
+        });
+        self.by_other.retain(|content, entry| {
             let kept = keep(*content);
             if !kept {
-                dropped += variants.len();
+                dropped += entry.variant_count();
             }
             kept
         });
@@ -1369,12 +1662,19 @@ impl RetainedIntrinsicMetrics {
         // removal rescans the emptied front of the table each time.
         let mut victims = Vec::new();
         let mut covered = 0;
-        for (content, variants) in &self.by_content {
+        for (content, entry) in &self.by_other {
             if covered >= excess {
                 break;
             }
-            covered += variants.len();
+            covered += entry.variant_count();
             victims.push(*content);
+        }
+        for (id, entry) in self.by_node.iter() {
+            if covered >= excess {
+                break;
+            }
+            covered += entry.variant_count();
+            victims.push(id.get());
         }
         for content in victims {
             self.remove_content(content);
@@ -1393,6 +1693,13 @@ fn intrinsic_facts_changed(
 }
 
 impl DocumentLayoutCache {
+    pub(super) fn used_padding_of(&self, id: StableNodeId) -> Option<nana_ui_core::PaddingSpec> {
+        if !self.boxes.contains_key(&id) || self.omitted_boxes.contains(&id) {
+            return None;
+        }
+        Some(self.used_padding.get(&id).copied().unwrap_or_default())
+    }
+
     fn record_intrinsic_counters(&mut self, counters: crate::IntrinsicCacheCounters) {
         self.intrinsic_counters.accumulate(counters);
     }
@@ -1415,7 +1722,7 @@ impl DocumentLayoutCache {
             self.intrinsic_counters.generation_bumps = self
                 .intrinsic_counters
                 .generation_bumps
-                .saturating_add(self.intrinsic_metrics.by_content.len());
+                .saturating_add(self.intrinsic_metrics.content_count());
             let evicted = self.intrinsic_metrics.evict_to(max_entries);
             self.intrinsic_counters.evictions =
                 self.intrinsic_counters.evictions.saturating_add(evicted);
@@ -1437,7 +1744,6 @@ impl DocumentLayoutCache {
             let generation = self
                 .intrinsic_metrics
                 .remove_content(key.content)
-                .and_then(|variants| variants.iter().map(|(_, held)| held.generation).max())
                 .unwrap_or(0);
             next_generation.insert(key.content, generation);
         }
@@ -1509,11 +1815,7 @@ impl DocumentLayoutCache {
         RetainedLayoutFootprint {
             boxes: self.boxes.len(),
             placements: self.placements.len(),
-            intrinsics: self
-                .intrinsics
-                .values()
-                .map(|slots| slots.measurements.iter().flatten().count())
-                .sum(),
+            intrinsics: self.intrinsics.values().map(RetainedIntrinsic::len).sum(),
             intrinsic_metrics: self.intrinsic_metrics.len(),
             container_plans: self.container_plans.len(),
             measure_plans: self.measure_plans.len(),
@@ -1539,6 +1841,7 @@ impl DocumentLayoutCache {
         self.boxes.clear();
         self.frames.clear();
         self.used_padding.clear();
+        self.omitted_boxes.clear();
         self.far_start.clear();
         self.contexts.clear();
         self.container_plans.clear();
@@ -1669,15 +1972,8 @@ struct PlannedChild {
     /// The main size the line gave this child when it differs from the
     /// intrinsic one, and the child measured at it: its cross size is then
     /// the line's input, and an edit can change it while the intrinsic stays.
-    at_main: Option<(f32, Size)>,
+    at_main: Option<Box<(f32, Size)>>,
     origin: Point,
-    /// What placement added to the content origin to get `origin`: a
-    /// container that only moved puts the child at its new content origin
-    /// plus this, the sum a fresh pass computes there (see
-    /// [`ContainerPlan::moved_to`]). `None` once a replay moved the child by
-    /// a difference instead -- the far edge of a reversed axis, a wrap line
-    /// before it -- which a fresh pass need not reproduce to the bit.
-    offset: Option<Point>,
     size: Size,
     /// Main-axis cursor before this child, i.e. the prefix sum of every
     /// preceding child's outer main extent plus gaps. Lets a suffix replay
@@ -1686,8 +1982,10 @@ struct PlannedChild {
     /// The first baseline the child's line aligned it by, when it aligns by
     /// baseline. A child whose baseline moves moves the rest of its line,
     /// even when no size changed: its text grew inside a fixed box.
-    baseline: Option<f32>,
+    baseline: PackedOptF32,
 }
+
+const _: () = assert!(std::mem::size_of::<PlannedChild>() <= 56);
 
 /// One grid item's occupied tracks and the intrinsic contribution those
 /// tracks were solved from. Spans are the placement result, not a second
@@ -1759,25 +2057,20 @@ impl GridTrackPlan {
 }
 
 fn grid_child_in_flow(style: &LayoutStyle) -> bool {
-    !style.omits_box()
-        && !style.position.is_out_of_flow()
-        && !style.display.is_some_and(DisplaySpec::is_contents)
+    !style.omits_box() && !style.position.is_out_of_flow()
 }
 
 /// Both axes are a length that does not read the grid content box, so a
 /// sibling-driven change of that box does not change this item's contribution.
 fn grid_contribution_ignores_content_box(style: &LayoutStyle) -> bool {
     fn fixed(spec: Option<LengthSpec>) -> bool {
-        matches!(
-            spec,
-            Some(
-                LengthSpec::Px(_)
-                    | LengthSpec::Em(_)
-                    | LengthSpec::Rem(_)
-                    | LengthSpec::CalcEmOffset { .. }
-                    | LengthSpec::CalcRemOffset { .. }
-            )
-        )
+        spec.is_some_and(|spec| {
+            matches!(
+                spec,
+                LengthSpec::Px(_) | LengthSpec::Em(_) | LengthSpec::Rem(_)
+            ) || spec.as_em_offset().is_some()
+                || spec.as_rem_offset().is_some()
+        })
     }
     style.aspect_ratio.is_none()
         && fixed(style.width)
@@ -1932,11 +2225,11 @@ struct ContainerPlan {
     /// changed one moves with that edge. The replay shifts them by the
     /// difference and records the new extent here.
     placed_main: Cell<f32>,
-    /// `(child, index into entries)`, sorted by child, so the pass can ask
-    /// "which of my children are in the change closure?" without walking every
-    /// entry. Scanning the entries instead would leave the fast path O(number
-    /// of children), which is the cost it exists to remove.
-    by_child: Vec<(StableNodeId, u32)>,
+    /// `(child, index into entries)`, sorted by child for large containers so
+    /// the pass can probe the change closure without scanning every entry.
+    /// Small containers (`<= BY_CHILD_LINEAR_CAP` children) omit the side
+    /// index and search `entries` directly.
+    by_child: Option<Box<[(StableNodeId, u32)]>>,
     /// Occupied tracks, contributions, and the resolved track sizes. `None`
     /// on every flex and block plan.
     grid: Option<Box<GridTrackPlan>>,
@@ -2112,15 +2405,22 @@ impl ContainerPlan {
     }
 
     fn child_count(&self) -> usize {
-        self.by_child.len()
+        self.entries.borrow().len()
     }
 
     /// The index in `entries` of `child`'s recorded placement.
     fn entry_index(&self, child: StableNodeId) -> Option<u32> {
-        self.by_child
-            .binary_search_by_key(&child, |(child, _)| *child)
-            .ok()
-            .map(|slot| self.by_child[slot].1)
+        if let Some(by_child) = self.by_child.as_deref() {
+            return by_child
+                .binary_search_by_key(&child, |(child, _)| *child)
+                .ok()
+                .map(|slot| by_child[slot].1);
+        }
+        self.entries
+            .borrow()
+            .iter()
+            .position(|entry| entry.child == child)
+            .map(|index| index as u32)
     }
 
     /// Every affected direct child still has the role this plan recorded:
@@ -2148,7 +2448,6 @@ impl ContainerPlan {
             // Only a container that lays no lines out records a plan: an
             // inline-level child in its flow now makes it one that does.
             if style.is_inline_level()
-                && !style.is_floated()
                 && !style.position.is_out_of_flow()
                 && !self.style.display.is_some_and(|display| {
                     display.is_flex_container() || display.is_grid_container()
@@ -2156,23 +2455,12 @@ impl ContainerPlan {
             {
                 return false;
             }
-            let was_in_flow = self
-                .by_child
-                .binary_search_by_key(&child, |(entry, _)| *entry)
-                .is_ok();
+            let was_in_flow = self.entry_index(child).is_some();
             let was_positioned = self.overlay.iter().any(|entry| entry.child == child);
             if style.omits_box() {
                 !was_in_flow && !was_positioned
             } else if style.position.is_out_of_flow() {
                 was_positioned
-            } else if style.is_floated()
-                && !self.style.display.is_some_and(|display| {
-                    display.is_flex_container() || display.is_grid_container()
-                })
-            {
-                // A block with floats records no plan: a child that floats
-                // now leaves the flow this plan places.
-                false
             } else {
                 was_in_flow
             }
@@ -2304,7 +2592,6 @@ fn child_blocks_flex_line_local(style: &LayoutStyle) -> bool {
         || style.flex_shrink.unwrap_or(0.0) > 0.0
         || style.order != 0
         || style.aspect_ratio.is_some()
-        || style.clear != ClearSpec::None
         || style
             .align_self
             .is_some_and(|align| align != AlignSpec::Start)
@@ -2340,16 +2627,18 @@ struct MeasuredChild {
     /// contributes nothing to the container's measurement, and it cannot start
     /// contributing without its own style changing -- which the style compare
     /// above catches.
-    intrinsic: Option<Size>,
+    intrinsic: PackedOptSize,
     /// The main size the line gave this child when it differs from the
     /// measured one, and the child measured at it (its cross size is the
     /// container's input then).
-    at_main: Option<(f32, Size)>,
+    at_main: Option<Box<(f32, Size)>>,
     /// An atom on a line of an ordinary block: its ascent on the line
     /// ([`inline::ifc_atom_metrics`]). The line's height reads it, so it
     /// can move while the atom's size stays.
-    baseline: Option<f32>,
+    baseline: PackedOptF32,
 }
+
+const _: () = assert!(std::mem::size_of::<MeasuredChild>() <= 40);
 
 /// A container's own intrinsic measurement, cached across passes.
 ///
@@ -2992,6 +3281,9 @@ struct LayoutInputMap<'a> {
     scratch: PassScratch<'a>,
     placements: crate::store::DenseNodeMap<(Point, Size, f32)>,
     used_padding: crate::store::DenseNodeMap<nana_ui_core::PaddingSpec>,
+    omitted_boxes: crate::NodeSet,
+    unomitted_boxes: crate::NodeSet,
+    cleared_padding: crate::NodeSet,
     far_start: crate::store::DenseNodeMap<[bool; 2]>,
     /// Formatting context each container measured or placed this pass ran.
     contexts: crate::store::DenseNodeMap<crate::FormattingContextKind>,
@@ -3122,6 +3414,9 @@ impl<'a> LayoutInputMap<'a> {
             scratch: PassScratch::default(),
             placements: Default::default(),
             used_padding: Default::default(),
+            omitted_boxes: Default::default(),
+            unomitted_boxes: Default::default(),
+            cleared_padding: Default::default(),
             far_start: Default::default(),
             contexts: Default::default(),
             container_plans: PassContainerPlans::default(),
@@ -3142,13 +3437,6 @@ impl<'a> LayoutInputMap<'a> {
         // then moving every input into a HashMap doubles the container work on
         // the cold path that large documents pay most often.
         debug_assert!(self.nodes.is_empty());
-        if !ids.is_empty() {
-            self.world.record_hot_path_allocation(
-                1,
-                ids.len()
-                    .saturating_mul(std::mem::size_of::<PassInput<'_>>()),
-            );
-        }
         let mut nodes = crate::store::DenseNodeMap::with_highest_of(ids);
         let mut containers = 0;
         for &id in ids {
@@ -3160,15 +3448,6 @@ impl<'a> LayoutInputMap<'a> {
         }
         self.materialized = nodes.len();
         self.nodes = nodes;
-        // A full pass writes every box's padding and every container's
-        // context and plans: size the tables once rather than regrowing them.
-        // The dense ones index ids up to the highest, whatever holds a slot.
-        if let Some(&highest) = ids.iter().max() {
-            self.used_padding.reserve_through(highest, ids.len());
-            self.contexts.reserve_through(highest, ids.len());
-            self.far_start.reserve_through(highest, ids.len());
-            self.measure_plans.reserve_through(highest, ids.len());
-        }
         self.container_plans.reserve(containers);
         Ok(())
     }
@@ -3395,11 +3674,11 @@ impl<'a> LayoutInputMap<'a> {
         let font = fonts_of(&style, fallback_font_px).element_px;
         let chrome_top =
             style.resolved_padding_against(inline_base).top + style.resolved_border_width();
-        if matches!(
-            self.world.standard_visual_ref(id),
-            Some(crate::StandardVisual::Card { .. })
-        ) && self.world.text(id).is_none_or(str::is_empty)
-        {
+        let uses_card_title = self
+            .world
+            .widget_visual_ref(id)
+            .is_some_and(crate::WidgetVisualHandle::uses_card_title_typography);
+        if uses_card_title && self.world.text(id).is_none_or(str::is_empty) {
             return BaselineMetrics::default();
         }
         if self.aligns_by_bottom_edge(id, &style) {
@@ -3418,11 +3697,7 @@ impl<'a> LayoutInputMap<'a> {
                 last: block,
             };
         }
-        if matches!(
-            self.world.standard_visual_ref(id),
-            Some(crate::StandardVisual::Card { .. })
-        ) && let Some(used) = used
-        {
+        if uses_card_title && let Some(used) = used {
             let padding = style
                 .resolved_padding_against_fonts(inline_base, fonts_of(&style, fallback_font_px));
             let border = style.resolved_border_edges();
@@ -3508,10 +3783,11 @@ impl<'a> LayoutInputMap<'a> {
                 .map(|line| top + line.metrics.baseline_y_px);
             return BaselineMetrics { first, last };
         }
-        if matches!(
-            self.world.standard_visual_ref(id),
-            Some(crate::StandardVisual::Button { label, .. }) if label.is_empty()
-        ) {
+        let button_label = self
+            .world
+            .widget_visual_ref(id)
+            .and_then(crate::WidgetVisualHandle::button_label_state);
+        if button_label == Some(false) {
             let block = used.map(|used| {
                 let writing = self
                     .nodes
@@ -3540,10 +3816,7 @@ impl<'a> LayoutInputMap<'a> {
                 last: block,
             };
         }
-        let button_with_label = matches!(
-            self.world.standard_visual_ref(id),
-            Some(crate::StandardVisual::Button { label, .. }) if !label.is_empty()
-        );
+        let button_with_label = button_label == Some(true);
         let ascent = self
             .nodes
             .get(&id)
@@ -3638,6 +3911,8 @@ fn collapse_omitted_boxes(
         let mut stack = vec![id];
         while let Some(node) = stack.pop() {
             retained.contexts.remove(&node);
+            retained.used_padding.remove(&node);
+            retained.omitted_boxes.insert(node);
             retained.container_plans.remove(&node);
             retained.remote_overlays.remove(&node);
             // No box, and so no frame other than a cold layout's.
@@ -3827,7 +4102,7 @@ fn subtree_unchanged(
         Some(containing.height),
         child_fonts,
     );
-    scope.retained.used_padding.get(&child).copied()
+    scope.retained.used_padding_of(child)
         == Some(child_style.resolved_padding_against_fonts(
             Some(writing.inline_size(containing.width, containing.height)),
             child_fonts,
@@ -3855,32 +4130,38 @@ fn uses_2d_grid(style: &LayoutStyle, flow: &[StableNodeId], nodes: &LayoutInputM
     if !style.display.is_some_and(DisplaySpec::is_grid_container) {
         return false;
     }
-    if style.active_grid_columns().is_some()
-        || style.active_grid_rows().is_some()
-        || style.grid_columns_repeat.is_some()
-        || style.grid_rows_repeat.is_some()
-        || style.is_subgrid_columns()
-        || style.is_subgrid_rows()
-        || style.grid_auto_flow.is_some()
-        || style
-            .grid_auto_columns
-            .as_ref()
-            .is_some_and(|tracks| !tracks.is_empty())
-        || style
-            .grid_auto_rows
-            .as_ref()
-            .is_some_and(|tracks| !tracks.is_empty())
-        || style
-            .grid_template_areas
-            .as_ref()
-            .is_some_and(|areas| !areas.cells.is_empty())
-    {
+    if style.display.is_some_and(DisplaySpec::is_layers) {
         return true;
+    }
+    if !style.grid.is_shared_default() {
+        let grid = &*style.grid;
+        if grid.columns.is_some()
+            || grid.rows.is_some()
+            || grid.columns_unsupported.is_some()
+            || grid.rows_unsupported.is_some()
+            || grid.columns_repeat.is_some()
+            || grid.rows_repeat.is_some()
+            || grid.auto_flow.is_some()
+            || grid
+                .auto_columns
+                .as_ref()
+                .is_some_and(|tracks| !tracks.is_empty())
+            || grid
+                .auto_rows
+                .as_ref()
+                .is_some_and(|tracks| !tracks.is_empty())
+            || grid
+                .template_areas
+                .as_ref()
+                .is_some_and(|areas| !areas.cells.is_empty())
+        {
+            return true;
+        }
     }
     flow.iter().any(|id| {
         nodes
             .style(*id)
-            .is_some_and(|child| !child.grid_placement.is_auto())
+            .is_some_and(|child| !child.grid.is_shared_default() && !child.grid.placement.is_auto())
     })
 }
 
@@ -3905,6 +4186,34 @@ pub(crate) struct Size {
 /// parent flow are carried alongside it so a compatible constraint cannot
 /// accidentally reuse a result from another layout environment.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+struct StoredMeasurementKey {
+    width: u32,
+    height: u32,
+    viewport_width: u32,
+    viewport_height: u32,
+    parent_font: u32,
+    constraint_a: u32,
+    constraint_b: u32,
+    /// Bits `0..2`: `parent_direction`; bit `2`: `direction_sensitive`;
+    /// bits `3..6`: `writing`; bits `6..9`: `containing_writing`;
+    /// bits `9..13`: `constraint_tag`; bit `15`: `1` (NonZeroU16 niche for `Option<RetainedIntrinsic>`).
+    flags: std::num::NonZeroU16,
+}
+
+const _: () = assert!(std::mem::size_of::<Option<RetainedIntrinsic>>() <= 48);
+
+#[inline]
+const fn writing_context_bits(writing: nana_ui_core::WritingContext) -> u16 {
+    let mode = match writing.mode {
+        nana_ui_core::WritingModeSpec::HorizontalTb => 0,
+        nana_ui_core::WritingModeSpec::VerticalRl => 1,
+        nana_ui_core::WritingModeSpec::VerticalLr => 2,
+    };
+    let rtl = if writing.direction.is_rtl() { 1 } else { 0 };
+    mode | (rtl << 2)
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 struct MeasurementKey {
     id: StableNodeId,
     width: u32,
@@ -3920,6 +4229,26 @@ struct MeasurementKey {
 }
 
 impl MeasurementKey {
+    fn stored(self) -> StoredMeasurementKey {
+        let (constraint_tag, (constraint_a, constraint_b)) = self.constraint.canonical();
+        let bits = (u16::from(self.parent_direction) & 0b11)
+            | (u16::from(self.direction_sensitive) << 2)
+            | (writing_context_bits(self.writing) << 3)
+            | (writing_context_bits(self.containing_writing) << 6)
+            | (u16::from(constraint_tag & 0b1111) << 9)
+            | (1u16 << 15);
+        StoredMeasurementKey {
+            width: self.width,
+            height: self.height,
+            viewport_width: self.viewport_width,
+            viewport_height: self.viewport_height,
+            parent_font: self.parent_font,
+            constraint_a,
+            constraint_b,
+            flags: std::num::NonZeroU16::new(bits).expect("sentinel bit keeps flags nonzero"),
+        }
+    }
+
     fn new(
         id: StableNodeId,
         available: Size,
@@ -3989,8 +4318,6 @@ pub(crate) struct LayoutExecutionStats {
     pub local_context_fallbacks: usize,
     /// Retained-cache sweeps that dropped despawned ids.
     pub retain_sweeps: usize,
-    /// What Dynamic Layout did this pass.
-    pub dynamic: nana_ui_core::DynamicLayoutCounters,
     /// Most stack one level of the measure recursion took, in bytes; 0 where
     /// the platform cannot tell. See `recursion`.
     pub measure_stack_per_level: usize,
@@ -4042,8 +4369,7 @@ struct PassIntrinsicCache {
     records_measure_plans: bool,
     /// Dynamic Layout state for the pass.
     dynamic: dynamic::DynamicPass,
-    /// The open levels of the measure and placement recursions.
-    measure_levels: recursion::LevelStack,
+    /// The open levels of the placement recursion.
     placement_levels: recursion::LevelStack,
     /// Subtrees placement queued at its span, placed before the outermost
     /// placement call returns. See `recursion`.
@@ -4066,7 +4392,6 @@ impl PassIntrinsicCache {
             execution_stats: LayoutExecutionStats::default(),
             records_measure_plans: false,
             dynamic: dynamic::DynamicPass::default(),
-            measure_levels: recursion::LevelStack::default(),
             placement_levels: recursion::LevelStack::default(),
             boundaries: std::collections::VecDeque::new(),
         }
@@ -4081,7 +4406,6 @@ impl PassIntrinsicCache {
 
     fn levels(&mut self, recursion: recursion::Recursion) -> &mut recursion::LevelStack {
         match recursion {
-            recursion::Recursion::Measure => &mut self.measure_levels,
             recursion::Recursion::Placement => &mut self.placement_levels,
         }
     }
@@ -4811,8 +5135,27 @@ fn dedupe_plan_rows<T: Clone>(rows: &mut Vec<T>, child_of: impl Fn(&T) -> Stable
     *rows = kept;
 }
 
+const BY_CHILD_LINEAR_CAP: usize = 32;
+
+fn build_by_child_index(entries: &[PlannedChild]) -> Option<Box<[(StableNodeId, u32)]>> {
+    if entries.len() <= BY_CHILD_LINEAR_CAP {
+        return None;
+    }
+    let mut by_child: Vec<(StableNodeId, u32)> = entries
+        .iter()
+        .enumerate()
+        .map(|(index, entry)| (entry.child, index as u32))
+        .collect();
+    by_child.sort_unstable_by_key(|(child, _)| *child);
+    Some(by_child.into_boxed_slice())
+}
+
 fn bound_container_plan(plan: &mut ContainerPlan) {
+    let before = plan.entries.borrow().len();
     dedupe_plan_rows(&mut plan.entries.borrow_mut(), |entry| entry.child);
+    if plan.entries.borrow().len() != before {
+        plan.by_child = build_by_child_index(&plan.entries.borrow());
+    }
     dedupe_plan_rows(&mut plan.overlay, |entry| entry.child);
     if let Some(grid) = plan.grid.as_mut() {
         dedupe_plan_rows(&mut grid.items, |item| item.child);

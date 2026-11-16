@@ -14,20 +14,28 @@ path = "src/lib.rs"
 
 [features]
 
-default = ["wgpu-backends", "icu", "snippet-transforms", "svg"]
+default = []
 # Every WGPU backend the platform has (DX12/Vulkan/GLES on Windows, Metal on
-# Apple, Vulkan/GLES on Linux). Only takes effect with `gpu`. An application
-# that ships a narrower set turns default features off and enables the
-# backends it wants on its own `wgpu` dependency.
+# Apple, Vulkan/GLES on Linux). Only takes effect with `gpu`. By default `gpu`
+# enables only the platform's primary backend (Metal on Apple, DX12 on Windows,
+# Vulkan on Unix).
 wgpu-backends = ["wgpu?/dx12", "wgpu?/gles", "wgpu?/metal", "wgpu?/vulkan"]
+http-fetch = ["nana-ui-platform/fetch"]
+qr-code = ["nana-ui-runtime/qr-code"]
+vector-boolean = ["nana-ui-scene/vector-boolean"]
+image-codecs-extra = ["image?/jpeg", "image?/gif", "image?/webp"]
 full = [
     "bundled-fonts",
     "components",
     "hosted",
-    "syntax-highlighting",
+    "http-fetch",
     "icu",
+    "image-codecs-extra",
+    "runtime-wgsl",
     "snippet-transforms",
     "svg",
+    "syntax-highlighting",
+    "wgpu-backends",
 ]
 # Locale-aware CLDR number/date/plural formatting. PlainFormatter remains
 # available when a host opts out of default features.
@@ -52,10 +60,12 @@ components = [
     "controls",
     "graph-canvas",
     "image-viewer",
+    "qr-code",
     "rich-text",
+    "vector-boolean",
 ]
 calendar = ["nana-ui-runtime/calendar", "nana-ui-scene/calendar"]
-charts = ["nana-ui-runtime/charts", "nana-ui-scene/charts"]
+charts = ["dep:nana-ui-charts", "nana-ui-runtime/charts", "nana-ui-scene/charts"]
 controls = ["nana-ui-runtime/controls", "nana-ui-scene/controls"]
 syntax-highlighting = [
     "nana-ui-runtime/syntax-highlighting",
@@ -77,7 +87,12 @@ icons-tabler = ["dep:nana-icons-tabler"]
 # manifest, and answer `NANA_PACKAGE_VALIDATE` self-checks. Opt-in: embedded
 # hosts that do their own packaging never link `nana-package`.
 packaged-resources = ["dep:nana-package"]
-gpu = ["dep:naga", "wgpu?/naga-ir", "dep:bytemuck", "dep:nana-frame-exchange", "dep:nana-gpu", "dep:base64", "dep:etagere", "dep:image", "dep:pollster", "nana-text/raster", "nana-ui-platform/fetch", "dep:wgpu", "dep:windows"]
+gpu = ["dep:flate2", "dep:bytemuck", "dep:nana-frame-exchange", "dep:nana-gpu", "dep:base64", "dep:etagere", "dep:image", "dep:pollster", "nana-text/raster", "dep:wgpu", "dep:bincode", "dep:windows"]
+# Runtime WGSL shader parsing for custom user `MaterialProgram` hooks and probes.
+# Built-in shaders ship as precompiled, entry-point-cut MSL on Apple (`stages.msl.zz`)
+# and compacted `naga::Module` IR elsewhere; keeping this off omits WGSL front-end/back-end
+# parsing from production binaries and falls back cleanly when a runtime WGSL material is set.
+runtime-wgsl = ["gpu", "dep:naga", "wgpu?/wgsl", "wgpu?/naga-ir", "naga?/wgsl-in", "naga?/wgsl-out", "naga?/deserialize"]
 # Explicit escape hatch to the WGPU objects behind the GPU contract
 # (`GpuContext::wgpu()`, `FrameContext::wgpu_encoder()`, `nana_ui::wgpu`, …).
 # Hosts that bring their own device and renderers that record their own
@@ -107,7 +122,8 @@ hosted = [
 ]
 
 [dependencies]
-naga = { workspace = true, features = ["wgsl-in", "wgsl-out"], optional = true }
+naga = { workspace = true, optional = true }
+flate2 = { version = "1.1", optional = true }
 accesskit = { workspace = true, optional = true }
 bytemuck = { version = "1.24", features = ["derive"], optional = true }
 base64 = { workspace = true, optional = true }
@@ -127,7 +143,7 @@ nana-ui-runtime.workspace = true
 # Issue #96: IME surrounding-text rules come from the editable text path.
 nana-text.workspace = true
 nana-ui-scene.workspace = true
-nana-ui-charts.workspace = true
+nana-ui-charts = { workspace = true, optional = true }
 nana-ui-platform = { workspace = true, features = ["clipboard"] }
 nana-window = { workspace = true, optional = true }
 raw-window-handle = { workspace = true, optional = true }
@@ -141,8 +157,23 @@ winit = { workspace = true, optional = true }
 [target.'cfg(target_os = "macos")'.dependencies]
 accesskit_macos = { workspace = true, optional = true }
 
+[target.'cfg(target_vendor = "apple")'.dependencies]
+wgpu = { workspace = true, optional = true, features = ["metal"] }
+
+[target.'cfg(not(target_vendor = "apple"))'.dependencies]
+bincode = { version = "1.3.3", optional = true }
+wgpu = { workspace = true, optional = true, features = ["naga-ir"] }
+
+[target.'cfg(all(unix, not(target_vendor = "apple")))'.dependencies]
+wgpu = { workspace = true, optional = true, features = ["vulkan"] }
+
 [dev-dependencies]
+nana-ui-platform = { workspace = true, features = ["fetch"] }
 pollster = { workspace = true }
+wgpu = { workspace = true, features = ["wgsl", "naga-ir"] }
+naga = { workspace = true, features = ["wgsl-in", "wgsl-out", "deserialize", "serialize"] }
+bincode = "1.3.3"
+flate2 = "1.1"
 # `egui-in-nanaui` mixes an egui panel into the tree. egui-wgpu 0.37 is on
 # the same WGPU major and builds against the fork through the workspace
 # `[patch.crates-io]`; default features off so it picks no backends.
@@ -183,14 +214,15 @@ accesskit_windows = { workspace = true, optional = true }
 # `gpu`: DirectWrite glyph rasterization and the system's ClearType settings
 # (`scene_paint/text/raster_dwrite.rs`). `hosted`: DirectComposition.
 windows = { version = "0.62", optional = true, features = ["Win32_Foundation", "Win32_Graphics_DirectComposition", "Win32_Graphics_Direct2D_Common", "Win32_Graphics_DirectWrite", "Win32_Graphics_Dxgi", "Win32_UI_WindowsAndMessaging"] }
+wgpu = { workspace = true, optional = true, features = ["dx12"] }
 
 [[example]]
 name = "surface-resize-probe"
-required-features = ["gpu"]
+required-features = ["gpu", "runtime-wgsl"]
 
 [[example]]
 name = "hosted-gpu-demo"
-required-features = ["hosted", "bundled-fonts", "wgpu-interop"]
+required-features = ["hosted", "bundled-fonts", "wgpu-interop", "runtime-wgsl"]
 
 [[example]]
 name = "egui-in-nanaui"
@@ -237,7 +269,7 @@ test = false
 [[bin]]
 name = "nana-gpu-scene-benchmark"
 path = "src/bin/nana-gpu-scene-benchmark.rs"
-required-features = ["gpu"]
+required-features = ["gpu", "runtime-wgsl"]
 
 [[bin]]
 name = "nana-text-paint-benchmark"

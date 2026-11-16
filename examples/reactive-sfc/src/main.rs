@@ -2,7 +2,7 @@
 
 use std::collections::HashMap;
 
-use nana_ui::runtime::{BuiltinComponents, FrameworkError, MountedView};
+use nana_ui::runtime::{FrameworkError, MountedView};
 use nana_ui::{
     ApplicationIdentity, ApplicationState, ApplicationWindow, DiagnosticsConfig, NanaApplication,
     RuntimeApplication, RuntimeProgramContext, RuntimeProgramUpdate, WindowDescriptor,
@@ -18,9 +18,6 @@ struct Sfc {
 impl ApplicationState for Sfc {
     type Message = ();
     type Error = FrameworkError;
-    // Views are compiled Rust: nothing builds a component from a tag, so the
-    // built-in components this app never creates are not linked.
-    const BUILTINS: BuiltinComponents = BuiltinComponents::Typed;
 
     fn initialize(_: &RuntimeProgramContext<Self::Message>) -> Result<Self, Self::Error> {
         Ok(Self::default())

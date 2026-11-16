@@ -42,11 +42,11 @@ fn an_rtl_text_input_sits_at_the_right_and_its_caret_is_on_its_text() {
     settle(&mut cx, doc, &[node]);
 
     let (content, _) = cx.world().text_input_pointer_context(node).unwrap();
-    let Some(ComponentGeometry::TextInput {
+    let Some(TextInputGeometry {
         text,
         caret: Some(caret),
         ..
-    }) = cx.world().component_geometry(node)
+    }) = cx.world().text_input_geometry(node)
     else {
         panic!("a focused editor")
     };
@@ -110,11 +110,11 @@ fn an_rtl_text_area_aligns_its_lines_to_the_right_in_geometry_and_paint() {
     cx.select_focused_text_range(doc, 0, 0).unwrap();
     settle(&mut cx, doc, &[node]);
     let (content, _) = cx.world().text_input_pointer_context(node).unwrap();
-    let Some(ComponentGeometry::TextInput {
+    let Some(TextInputGeometry {
         text,
         caret: Some(caret),
         ..
-    }) = cx.world().component_geometry(node)
+    }) = cx.world().text_input_geometry(node)
     else {
         panic!("a focused editor")
     };
@@ -131,8 +131,7 @@ fn an_rtl_text_area_aligns_its_lines_to_the_right_in_geometry_and_paint() {
 
 fn text_and_content(cx: &AppContext, node: StableNodeId) -> (LayoutBox, LayoutBox) {
     let (content, _) = cx.world().text_input_pointer_context(node).unwrap();
-    let Some(ComponentGeometry::TextInput { text, .. }) = cx.world().component_geometry(node)
-    else {
+    let Some(TextInputGeometry { text, .. }) = cx.world().text_input_geometry(node) else {
         panic!("an editor")
     };
     (text.bounds, content)
@@ -224,9 +223,9 @@ fn an_overflowing_vertical_rtl_field_keeps_either_end_of_its_column_in_view() {
             text.height > content.height,
             "the fixture overflows: {text:?}"
         );
-        let Some(ComponentGeometry::TextInput {
+        let Some(TextInputGeometry {
             caret: Some(caret), ..
-        }) = cx.world().component_geometry(node)
+        }) = cx.world().text_input_geometry(node)
         else {
             panic!("a focused editor")
         };

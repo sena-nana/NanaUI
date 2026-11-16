@@ -2,7 +2,7 @@
 //! Parts have no entity, lifecycle, text engine or independent geometry store.
 
 use super::*;
-use crate::{LayoutPart, LayoutPartKind, StandardVisual, TextHorizontalAlignment};
+use crate::{LayoutPart, LayoutPartKind, TextHorizontalAlignment};
 
 #[derive(Clone, Copy)]
 pub(crate) struct FlexPart {
@@ -29,14 +29,14 @@ impl FlexPart {
 
 /// How many semantic parts one component's content publishes at most: a
 /// toast's mark, title, description and dismiss target.
-pub(crate) const CONTENT_PART_SLOTS: usize = 6;
+pub const CONTENT_PART_SLOTS: usize = 6;
 
 /// A fixed number of semantic slots, held inline; absent slots cost no
 /// retained allocation, and only the parts present are published.
-pub(crate) type ContentParts = [Option<LayoutPart>; CONTENT_PART_SLOTS];
+pub type ContentParts = [Option<LayoutPart>; CONTENT_PART_SLOTS];
 
 /// No content parts.
-pub(crate) const NO_CONTENT_PARTS: ContentParts = [None; CONTENT_PART_SLOTS];
+pub const NO_CONTENT_PARTS: ContentParts = [None; CONTENT_PART_SLOTS];
 
 /// `parts` in the first slots, the rest empty.
 pub(crate) fn content_parts<const N: usize>(parts: [Option<LayoutPart>; N]) -> ContentParts {
@@ -53,7 +53,7 @@ pub(crate) fn content_parts<const N: usize>(parts: [Option<LayoutPart>; N]) -> C
 /// beside them; placement starts the children past the extent; the
 /// component solves its parts at the start of its content box.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
-pub(crate) struct LeadingParts {
+pub struct LeadingParts {
     /// `Column` puts the band above the children, `Row` at their inline
     /// start. It is the component's own axis, whatever direction its
     /// children run in.
@@ -67,7 +67,7 @@ pub(crate) struct LeadingParts {
 
 impl LeadingParts {
     /// What the band takes from the content box, across and down.
-    pub fn inset(&self) -> Size {
+    pub(crate) fn inset(&self) -> Size {
         let extent = self.extent.max(0.0);
         match self.axis {
             FlexDirection::Column => Size::new(0.0, extent),
@@ -77,7 +77,7 @@ impl LeadingParts {
 
     /// How far the children's box starts from the content box's origin,
     /// across and down: past the band, unless the band is at the end.
-    pub fn offset(&self) -> Size {
+    pub(crate) fn offset(&self) -> Size {
         if self.end {
             Size::default()
         } else {
@@ -86,7 +86,7 @@ impl LeadingParts {
     }
 
     /// The least the content box spans beside the band, across and down.
-    pub fn floor(&self) -> Size {
+    pub(crate) fn floor(&self) -> Size {
         let breadth = self.breadth.max(0.0);
         match self.axis {
             FlexDirection::Column => Size::new(breadth, 0.0),
@@ -171,42 +171,30 @@ pub(crate) fn flex_parts<const N: usize>(
     })
 }
 
-pub(crate) fn button_parts(visual: &StandardVisual, text: Size) -> Option<[Option<FlexPart>; 3]> {
-    let StandardVisual::Button {
-        label,
-        loading,
-        icon,
-        trailing_icon,
-        icon_size,
-        icon_gap,
-        ..
-    } = visual
-    else {
-        return None;
-    };
-    let leading = *loading || icon.is_some();
-    let trailing = trailing_icon.is_some();
-    let glyph = Size::new(*icon_size, *icon_size);
+pub(crate) fn button_parts(visual: &crate::ButtonVisual, text: Size) -> [Option<FlexPart>; 3] {
+    let leading = visual.loading || visual.icon.is_some();
+    let trailing = visual.trailing_icon.is_some();
+    let glyph = Size::new(visual.icon_size, visual.icon_size);
     let mut label_part = FlexPart::new(LayoutPartKind::TextContent, text);
     label_part.shrink = 1.0;
     label_part.align = AlignSpec::Stretch;
-    label_part.gap_after = if trailing && !label.is_empty() {
-        *icon_gap
+    label_part.gap_after = if trailing && !visual.label.is_empty() {
+        visual.icon_gap
     } else {
         0.0
     };
-    Some([
+    [
         leading.then(|| {
             let mut part = FlexPart::new(
-                if *loading {
+                if visual.loading {
                     LayoutPartKind::Spinner
                 } else {
                     LayoutPartKind::LeadingContent
                 },
                 glyph,
             );
-            part.gap_after = if !label.is_empty() || trailing {
-                *icon_gap
+            part.gap_after = if !visual.label.is_empty() || trailing {
+                visual.icon_gap
             } else {
                 0.0
             };
@@ -214,7 +202,7 @@ pub(crate) fn button_parts(visual: &StandardVisual, text: Size) -> Option<[Optio
         }),
         Some(label_part),
         trailing.then(|| FlexPart::new(LayoutPartKind::TrailingContent, glyph)),
-    ])
+    ]
 }
 
 /// A checkbox's row: its `indicator` square, then its label, which takes
@@ -934,11 +922,8 @@ pub(crate) fn text_budget(mut parts: [Option<FlexPart>; 3], available: Size) -> 
     (available.width - chrome_extent(&parts).width).max(0.0)
 }
 
-pub(crate) fn button_text_budget(visual: &StandardVisual, available: Size) -> Option<f32> {
-    Some(text_budget(
-        button_parts(visual, Size::default())?,
-        available,
-    ))
+pub(crate) fn button_text_budget(visual: &crate::ButtonVisual, available: Size) -> f32 {
+    text_budget(button_parts(visual, Size::default()), available)
 }
 
 /// `inputs` placed as a row of `bounds` from its inline start (the right
@@ -977,27 +962,24 @@ fn fit_button_glyphs(inputs: &mut [Option<FlexPart>; 3], available: Size) {
 }
 
 pub(crate) fn button_content_parts(
-    visual: &StandardVisual,
+    visual: &crate::ButtonVisual,
     bounds: LayoutBox,
     text: Size,
-) -> Option<ContentParts> {
-    let StandardVisual::Button { content_align, .. } = visual else {
-        return None;
-    };
-    let mut inputs = button_parts(visual, text)?;
+) -> ContentParts {
+    let mut inputs = button_parts(visual, text);
     fit_button_glyphs(&mut inputs, Size::new(bounds.width, bounds.height));
-    let justify = match content_align {
+    let justify = match visual.content_align {
         TextHorizontalAlignment::Start => JustifySpec::Start,
         TextHorizontalAlignment::Center => JustifySpec::Center,
         TextHorizontalAlignment::End => JustifySpec::End,
     };
-    Some(content_parts(flex_parts(
+    content_parts(flex_parts(
         bounds,
         FlexDirection::Row,
         justify,
         false,
         inputs,
-    )))
+    ))
 }
 
 pub(crate) fn part_bounds(parts: &ContentParts, kind: LayoutPartKind) -> Option<LayoutBox> {

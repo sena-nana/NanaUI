@@ -6,13 +6,20 @@
 //! cluster *should* use by cmap coverage, and shaping may still retry a
 //! cluster that shapes to `.notdef`.
 //!
-//! `fontdb`, `skrifa` and `icu_properties` are implementation details of the
-//! private `discovery`, `face` and `unicode` modules. Nothing public names
-//! them, and `scripts/check-engine-boundary.py` keeps it that way.
+//! `fontdb` and `skrifa` are implementation details of the private
+//! `discovery` and `face` modules. Nothing public names them, and
+//! `scripts/check-engine-boundary.py` keeps it that way.
 
 mod coverage;
 mod discovery;
 mod face;
+#[cfg(all(test, feature = "raster"))]
+pub(crate) use face::map_char_for_test;
+#[cfg(feature = "raster")]
+pub(crate) use face::{
+    FaceOutlineSink, FaceScalerCache, RawBitmapPayload, read_color_bitmap, read_raster_caps,
+    scale_color_outline, scale_plain_outline,
+};
 mod fallback;
 mod mapped;
 mod matching;
@@ -20,6 +27,7 @@ mod matching;
 mod ohos;
 mod query;
 mod system;
+mod ucd_tables;
 pub(crate) mod unicode;
 mod variations;
 

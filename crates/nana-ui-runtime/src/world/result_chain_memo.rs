@@ -71,8 +71,12 @@ fn page(boundary: bool, memo: bool) -> AppContext {
 /// The two result tables: what is published, and what of it is hidden.
 fn tables(cx: &AppContext) -> (Vec<StableNodeId>, Vec<StableNodeId>) {
     let world = cx.world();
-    let mut published: Vec<_> = world.layout_results.keys().copied().collect();
-    let mut hidden: Vec<_> = world.layout_results_suppressed.iter().copied().collect();
+    let mut published: Vec<_> = world.layout_results.keys().collect();
+    let mut hidden: Vec<_> = world
+        .layout_results
+        .iter()
+        .filter_map(|(id, meta)| meta.suppressed.then_some(id))
+        .collect();
     published.sort_unstable();
     hidden.sort_unstable();
     (published, hidden)

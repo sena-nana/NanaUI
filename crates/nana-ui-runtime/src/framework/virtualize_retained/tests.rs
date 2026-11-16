@@ -246,10 +246,13 @@ fn retained_virtual_list_tracks_descendant_focus_and_cleans_descendant_views() {
     fill(&mut cx, &mut items, 1000.0);
     assert!(!cx.world().contains(editor.id));
     assert!(!cx.views.contains_key(&editor.id));
+    let remaining_row = items.entity(&50).unwrap();
+    assert!(cx.world().is_elided_stack(remaining_row.id));
+    assert!(!cx.views.contains_key(&remaining_row.id));
     assert_eq!(
         cx.views.len(),
-        11,
-        "five components and placement containers plus list"
+        1,
+        "list stays in views while retained row Stacks and placement containers are elided"
     );
 }
 
@@ -436,6 +439,7 @@ fn retained_virtual_table_freezes_both_axes_and_preserves_nested_editor() {
             .node_style(header.id)
             .unwrap()
             .layout
+            .transforms
             .transform
             .unwrap()
             .f,
@@ -447,6 +451,7 @@ fn retained_virtual_table_freezes_both_axes_and_preserves_nested_editor() {
             .node_style(frozen_column.id)
             .unwrap()
             .layout
+            .transforms
             .transform
             .unwrap()
             .e,
@@ -668,6 +673,7 @@ fn sync_virtual_table_pins_frozen_cells_without_remounting_an_unchanged_range() 
             .node_style(header.id)
             .unwrap()
             .layout
+            .transforms
             .transform
             .unwrap()
             .f,

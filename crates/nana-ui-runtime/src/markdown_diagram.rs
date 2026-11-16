@@ -228,7 +228,7 @@ pub(crate) fn record(
     };
     let painter = DiagramPainter {
         scene: Arc::clone(scene),
-        series: nana_ui_charts::theme::series_palette(&theme.palette()).into(),
+        series: theme.palette().series_palette().into(),
         palette: theme.palette(),
         hairline: theme.border().hairline,
         scale,

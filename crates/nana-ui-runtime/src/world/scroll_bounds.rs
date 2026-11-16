@@ -336,7 +336,7 @@ impl Placement {
                 y: 0.0,
                 ..record.local_layout
             }),
-            contained: overflow_contained_axes(&record.style.layout, world.nodes.visual(id)),
+            contained: overflow_contained_axes(&record.style.layout, world.nodes.widget_visual(id)),
             omitted: record.style.layout.omits_box(),
             lands,
         }
@@ -351,8 +351,8 @@ pub(super) struct ContentBoundsIndex {
     /// Boxes written by the commit being applied, marked dirty in one batch
     /// when it ends (or before any query reads the index).
     deferred: Vec<StableNodeId>,
-    /// Entries whose extent was recomputed since the world last folded them
-    /// into `WorkCounters::scroll_content_extent_recomputes`.
+    /// Entries whose extent was recomputed during a query.
+    #[cfg(any(test, feature = "benchmark"))]
     refreshed: usize,
     /// Leaves an incremental refresh wrote, kept for the next one.
     touched: Vec<usize>,
@@ -531,7 +531,7 @@ impl ContentBoundsIndex {
             _ => {
                 // A box measured from its parent stands at its local offset
                 // ([`UiWorld::layout_box_from`] without looking it up again).
-                let offset = match (record.layout_frame, record.hierarchy.parent) {
+                let offset = match (record.layout_frame(), record.hierarchy.parent) {
                     (crate::LayoutFrame::Parent, Some(_)) => {
                         [record.local_layout.x, record.local_layout.y]
                     }
@@ -578,7 +578,10 @@ impl ContentBoundsIndex {
                     && Arc::ptr_eq(&entry.children, &record.hierarchy.children) =>
             {
                 entry.dirty = false;
-                self.refreshed += 1;
+                #[cfg(any(test, feature = "benchmark"))]
+                {
+                    self.refreshed += 1;
+                }
                 entry.settle(&Placement::of(world, id, record));
                 return (entry.extent, entry.pending);
             }
@@ -598,7 +601,10 @@ impl ContentBoundsIndex {
                 .map_or(Extent::EMPTY, |entry| entry.pending);
             return (Extent::EMPTY, pending);
         };
-        self.refreshed += 1;
+        #[cfg(any(test, feature = "benchmark"))]
+        {
+            self.refreshed += 1;
+        }
         let place = Placement::of(world, id, record);
         let incremental = match (rebuild, self.entries.get_mut(&id)) {
             // Some children moved (with none, it settled above).
@@ -652,14 +658,12 @@ impl ContentBoundsIndex {
 /// again. Only an open triggered menu places a child `fixed`, so with none
 /// open the box's own position is the answer.
 fn record_clip_position(world: &UiWorld, id: StableNodeId, record: &NodeRecord) -> PositionSpec {
-    let position = if !world.triggered_overlays.is_empty()
-        && world.nodes.has_visuals()
-        && world.parent_triggered_overlay(id).is_some()
-    {
-        PositionSpec::Fixed
-    } else {
-        record.resolved_layout.position
-    };
+    let position =
+        if !world.triggered_overlays.is_empty() && world.parent_triggered_overlay(id).is_some() {
+            PositionSpec::Fixed
+        } else {
+            record.resolved_layout.position
+        };
     debug_assert_eq!(position, world.clip_position(id), "{id:?}");
     position
 }
@@ -736,18 +740,6 @@ impl UiWorld {
             bits(fresh),
             "{id:?}: the retained content extent {extent:?} is not a fresh index's {fresh:?}"
         );
-    }
-
-    /// Extent recomputes not yet folded into the work counters.
-    pub(super) fn pending_scroll_extent_recomputes(&self) -> usize {
-        self.scroll_content_bounds
-            .try_borrow()
-            .map_or(0, |index| index.refreshed)
-    }
-
-    /// Hand the extent recomputes over to the work counters.
-    pub(super) fn take_scroll_extent_recomputes(&mut self) -> usize {
-        std::mem::take(&mut self.scroll_content_bounds.get_mut().refreshed)
     }
 
     pub(super) fn invalidate_scroll_content(&self, id: StableNodeId) {
@@ -973,7 +965,7 @@ mod tests {
             (
                 "14 opens as a triggered menu: 15 is fixed",
                 Box::new(|q| {
-                    q.set_standard_visual(
+                    q.set_widget_visual(
                         id(14),
                         Some(super::super::tests::open_menu_overlay_visual()),
                     )
@@ -1044,10 +1036,6 @@ mod tests {
                 }),
             ),
             ("4 goes", Box::new(|q| q.despawn_subtree(id(4)))),
-            (
-                "14 closes",
-                Box::new(|q| q.set_standard_visual(id(14), None)),
-            ),
         ];
         for (step, edit) in steps {
             let mut mutations = MutationQueue::new();

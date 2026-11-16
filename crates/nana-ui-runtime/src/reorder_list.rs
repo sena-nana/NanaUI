@@ -15,7 +15,7 @@ use nana_ui_core::{ControlSize, FlexDirection, LengthSpec};
 use crate::view_components::project_common;
 use crate::{
     AccessibilityRole, AccessibilityState, ComponentView, InteractionState, LayoutBox,
-    MutationQueue, NodeKind, NodeStyle, StableNodeId, StandardVisual, UiWorld,
+    MutationQueue, NodeKind, NodeStyle, StableNodeId, UiWorld,
 };
 
 const DRAG_THRESHOLD: f32 = nana_ui_core::space::XS;
@@ -733,6 +733,234 @@ pub struct ReorderRowPaint {
     pub disabled: bool,
 }
 
+/// Resolved geometry and row paints for a [`ReorderList`] component.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ReorderListLayout {
+    pub rows: Vec<(LayoutBox, crate::ComponentTextRegion, Option<[f32; 4]>)>,
+    pub insert: Option<(LayoutBox, [f32; 4])>,
+    pub inside: Option<(LayoutBox, [f32; 4])>,
+    pub dragged: Option<(LayoutBox, [f32; 4])>,
+}
+
+/// Visual payload projected by [`ReorderList`].
+#[derive(Debug, Clone, PartialEq)]
+pub struct ReorderListVisual {
+    pub rows: Arc<[ReorderRowPaint]>,
+    pub size: ControlSize,
+    pub spacing: f32,
+    pub drag: Option<ReorderDragVisual>,
+}
+
+impl ReorderListVisual {
+    fn layout_at(
+        &self,
+        world: &crate::UiWorld,
+        id: StableNodeId,
+        bounds: LayoutBox,
+        palette: &nana_ui_core::SemanticPalette,
+        metrics: nana_ui_core::ThemeMetrics,
+    ) -> ReorderListLayout {
+        // Live row children own their label painting; a stale retained `rows`
+        // (projected before the children were attached) must not paint a second
+        // copy underneath them. They also own the row boxes the drag feedback
+        // is placed against.
+        let children = world.child_ids(id);
+        let live = !children.is_empty();
+        let painted: &[ReorderRowPaint] = if live { &[] } else { &self.rows };
+        let row_boxes = |count: usize| -> Vec<LayoutBox> {
+            if live {
+                children
+                    .iter()
+                    .filter_map(|child| world.component_layout_box(*child))
+                    .collect()
+            } else {
+                let height = self.size.height_in(metrics);
+                let step = height + self.spacing.max(0.0);
+                (0..count)
+                    .map(|index| LayoutBox {
+                        x: bounds.x,
+                        y: bounds.y + index as f32 * step,
+                        width: bounds.width,
+                        height,
+                    })
+                    .collect()
+            }
+        };
+        // A previewed drag shows itself on its rows' presentation:
+        // the carried rows follow the pointer, the rest make room.
+        let (mark, dragged) = self
+            .drag
+            .as_ref()
+            .filter(|drag| !drag.preview)
+            .map(|drag| {
+                let boxes = row_boxes(drag.rows());
+                (drag.drop_mark(bounds, &boxes), drag.carried_box(&boxes))
+            })
+            .unwrap_or((None, None));
+        let height = self.size.height_in(metrics);
+        let spacing = self.spacing.max(0.0);
+        let pad = nana_ui_core::space::MD;
+        let rows = painted
+            .iter()
+            .enumerate()
+            .map(|(index, row)| {
+                let row_bounds = LayoutBox {
+                    x: bounds.x,
+                    y: bounds.y + index as f32 * (height + spacing),
+                    width: bounds.width,
+                    height,
+                };
+                let label = crate::ComponentTextRegion {
+                    bounds: LayoutBox {
+                        x: row_bounds.x + pad,
+                        y: row_bounds.y,
+                        width: (row_bounds.width - pad * 2.0).max(0.0),
+                        height: row_bounds.height,
+                    },
+                    content: Arc::clone(&row.label).into(),
+                    color: Some(if row.disabled {
+                        palette.muted.as_rgba_array()
+                    } else {
+                        palette.text.as_rgba_array()
+                    }),
+                    font_size: self.size.text_size(),
+                    font_weight: None,
+                };
+                let fill = row.selected.then_some(palette.selected.as_rgba_array());
+                (row_bounds, label, fill)
+            })
+            .collect();
+        ReorderListLayout {
+            rows,
+            insert: match mark {
+                Some(ReorderDropMark::Line(line)) => Some((line, palette.accent.as_rgba_array())),
+                _ => None,
+            },
+            inside: match mark {
+                Some(ReorderDropMark::Inside(row)) => Some((row, palette.accent.as_rgba_array())),
+                _ => None,
+            },
+            dragged: dragged.map(|row| (row, palette.accent.as_rgba_array())),
+        }
+    }
+}
+
+impl crate::WidgetVisual for ReorderListVisual {
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+
+    fn dyn_eq(&self, other: &dyn std::any::Any) -> bool {
+        other.downcast_ref::<Self>() == Some(self)
+    }
+
+    fn paint(&self, ctx: &crate::WidgetPaintCtx<'_>) -> crate::WidgetPaintOutput {
+        let layout = self.layout_at(
+            ctx.world,
+            ctx.id,
+            ctx.bounds,
+            &ctx.style_model.palette,
+            ctx.style_model.metrics,
+        );
+        let mut out = crate::WidgetPaintOutput::new();
+        out.owns_node_text = true;
+        out.suppress_root_surface = true;
+
+        let selected: Vec<_> = layout
+            .rows
+            .iter()
+            .filter_map(|(row, _, fill)| fill.map(|color| (*row, color)))
+            .collect();
+        if let Some(&(_, color)) = selected.first() {
+            let rects: Vec<_> = selected.iter().map(|(rect, _)| *rect).collect();
+            out.push(
+                10,
+                crate::WidgetPaintOp::QuadBatch(crate::WidgetQuadBatch {
+                    bounds: crate::widget_visual::union_layout_rects(&rects),
+                    rects: Arc::from(rects),
+                    colors: crate::WidgetBatchColors::Uniform(color),
+                    fill_paint: None,
+                    border: None,
+                    corner_radius: [ctx.chrome_radii.list_item; 4],
+                }),
+            );
+        }
+        // The dragged row is outlined where it was, so the row being
+        // moved stays apparent while the insert line shows where it goes.
+        // Both paint one level above the list, over live row children:
+        // a selected row's fill would hide them otherwise.
+        if let Some((row, color)) = layout.dragged {
+            out.push_tagged(
+                crate::WidgetTaggedOp::new(
+                    12,
+                    crate::WidgetPaintOp::Quad(crate::WidgetQuad {
+                        rect: row,
+                        fill: None,
+                        border: Some((color, 1.5)),
+                        corner_radius: [ctx.chrome_radii.list_item; 4],
+                        ..crate::WidgetQuad::default()
+                    }),
+                )
+                .with_z_offset(1),
+            );
+        }
+        // The row a drop goes into: a ring and a faint wash of the
+        // accent, so its own label stays readable under it.
+        if let Some((row, color)) = layout.inside {
+            let [r, g, b, a] = color;
+            out.push_tagged(
+                crate::WidgetTaggedOp::new(
+                    13,
+                    crate::WidgetPaintOp::Quad(crate::WidgetQuad {
+                        rect: row,
+                        fill: Some([r, g, b, a * 0.12]),
+                        border: Some((color, 2.0)),
+                        corner_radius: [ctx.chrome_radii.list_item; 4],
+                        ..crate::WidgetQuad::default()
+                    }),
+                )
+                .with_z_offset(1),
+            );
+        }
+        if let Some((line, color)) = layout.insert {
+            out.push_tagged(
+                crate::WidgetTaggedOp::new(
+                    11,
+                    crate::WidgetPaintOp::Quad(crate::WidgetQuad {
+                        rect: line,
+                        fill: Some(color),
+                        ..crate::WidgetQuad::default()
+                    }),
+                )
+                .with_z_offset(1),
+            );
+        }
+        for (index, (_, label, _)) in layout.rows.iter().enumerate() {
+            out.push(
+                40u64.saturating_add(index as u64),
+                crate::WidgetPaintOp::Text(crate::widget_visual::widget_text_region(
+                    label,
+                    ctx,
+                    crate::TextHorizontalAlignment::Start,
+                    true,
+                )),
+            );
+        }
+        out
+    }
+}
+
+impl crate::UiWorld {
+    /// Resolves `id`'s reorder-list row boxes and active drop indicators.
+    #[must_use]
+    pub fn reorder_list_layout(&self, id: StableNodeId) -> Option<ReorderListLayout> {
+        let visual = self.widget_visual_as::<ReorderListVisual>(id)?;
+        let bounds = self.component_layout_box(id)?;
+        let style_model = self.node_style_model(id);
+        Some(visual.layout_at(self, id, bounds, &style_model.palette, style_model.metrics))
+    }
+}
+
 /// Vertical list. NanaUI does not mutate item order on reorder or tree drop.
 #[derive(Debug, Clone, PartialEq)]
 pub struct ReorderList {
@@ -1183,6 +1411,8 @@ impl Default for ReorderList {
 }
 
 impl ComponentView for ReorderList {
+    const TYPE_ID: Option<&'static str> = Some(crate::component_descriptors::REORDER_LIST.type_id);
+
     fn share_layouts(
         &mut self,
         share: &mut dyn FnMut(&mut std::sync::Arc<nana_ui_core::LayoutStyle>),
@@ -1208,7 +1438,7 @@ impl ComponentView for ReorderList {
         // Live row children paint themselves; retained items only feed
         // hit testing and reorder events.
         let live_rows = self.live_rows;
-        let visual = StandardVisual::ReorderList {
+        let visual = ReorderListVisual {
             rows: if live_rows {
                 Arc::<[ReorderRowPaint]>::from([])
             } else {
@@ -1218,8 +1448,8 @@ impl ComponentView for ReorderList {
             spacing: self.spacing,
             drag: self.drag_visual(),
         };
-        if world.standard_visual(id) != Some(visual.clone()) {
-            mutations.set_standard_visual(id, Some(visual));
+        if world.widget_visual_as::<ReorderListVisual>(id) != Some(&visual) {
+            mutations.set_widget_visual(id, Some(visual));
         }
         let mut style = self.style.clone();
         let layout = Arc::make_mut(&mut style.layout);
@@ -2555,8 +2785,8 @@ mod tests {
             })
         );
         assert_eq!(
-            context.world().standard_visual(id),
-            Some(StandardVisual::ReorderList {
+            context.world().widget_visual_as::<ReorderListVisual>(id),
+            Some(&ReorderListVisual {
                 rows: sample().paint_rows(),
                 size: ControlSize::Small,
                 spacing: DEFAULT_SPACING,
@@ -2653,13 +2883,16 @@ mod tests {
             .iter()
             .map(|row| context.world().layout_box(*row).unwrap())
             .collect();
-        let geometry =
-            |context: &AppContext| match context.world().component_geometry(list.stable_id()) {
-                Some(crate::ComponentGeometry::ReorderList {
-                    insert, dragged, ..
-                }) => (insert.map(|(line, _)| line), dragged.map(|(row, _)| row)),
-                other => panic!("not reorder list geometry: {other:?}"),
-            };
+        let geometry = |context: &AppContext| {
+            let layout = context
+                .world()
+                .reorder_list_layout(list.stable_id())
+                .expect("reorder list layout");
+            (
+                layout.insert.map(|(line, _)| line),
+                layout.dragged.map(|(row, _)| row),
+            )
+        };
         assert_eq!(geometry(&context), (None, None));
 
         let x = boxes[0].x + 20.0;
@@ -2701,8 +2934,8 @@ mod tests {
             .unwrap();
         let id = list.stable_id();
         assert_eq!(
-            context.world().standard_visual(id),
-            Some(StandardVisual::ReorderList {
+            context.world().widget_visual_as::<ReorderListVisual>(id),
+            Some(&ReorderListVisual {
                 rows: Arc::from([]),
                 size: ControlSize::Small,
                 spacing: DEFAULT_SPACING,

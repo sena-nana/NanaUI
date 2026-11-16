@@ -69,16 +69,10 @@ impl UiWorld {
         overlay_surface: bool,
     ) -> Option<crate::VisualParent> {
         if overlay_surface {
-            match self.nodes.visual(id) {
-                Some(StandardVisual::MenuSurface {
-                    overlay: Some(overlay),
-                    ..
-                }) => Some(self.resolve_overlay_mount(id, overlay.overlay_mount)),
-                Some(StandardVisual::Select { overlay_mount, .. }) => {
-                    Some(self.resolve_overlay_mount(id, *overlay_mount))
-                }
-                _ => None,
-            }
+            self.widget_visual_ref(id)
+                .and_then(crate::WidgetVisualHandle::overlay_mount)
+                .or_else(|| self.overlay_mount(id))
+                .map(|mount| self.resolve_overlay_mount(id, mount))
         } else if let Some(mount) = self.overlay_mount(id) {
             Some(self.resolve_overlay_mount(id, mount))
         } else {
@@ -248,20 +242,19 @@ impl UiWorld {
                     filter.blur_radius > 0.0
                         || filter.drop_shadow.is_some()
                         || children
-                        || !node.text.value.is_empty()
+                        || node.has_text
                         || self.nodes.custom_render(id).is_some()
                 });
             // A scroll view whose bars can show groups what it holds, so its
             // bars paint over it: hit order cuts there too.
-            let scrollbar_chrome = matches!(
-                self.nodes.visual(id),
-                Some(StandardVisual::Scrollbar { visibility, .. })
-                    if *visibility != nana_ui_core::ScrollbarVisibility::Hidden
-            );
-            let modal_frame = matches!(
-                self.nodes.visual(id),
-                Some(StandardVisual::ModalFrame { .. })
-            );
+            let scrollbar_chrome = self
+                .nodes
+                .widget_visual(id)
+                .is_some_and(crate::WidgetVisualHandle::has_scrollbar_chrome);
+            let modal_frame = self
+                .nodes
+                .widget_visual(id)
+                .is_some_and(crate::WidgetVisualHandle::is_modal_frame);
             let group = modal_frame
                 || (children
                     && (style.creates_paint_stacking_context()
@@ -365,9 +358,9 @@ impl UiWorld {
         if self.motion_blocks_input(id) || self.inline_box_omitted(id) {
             return false;
         }
-        let Some(record) = self.nodes.get(id) else {
+        if !self.nodes.contains(id) {
             return false;
-        };
+        }
         let style = self.hit_motion_layout(id);
         let (parent_hit, parent_blocks_3d) = if style.position == PositionSpec::Fixed {
             (self.hanging_branch_transform(id), false)
@@ -402,19 +395,10 @@ impl UiWorld {
             .child_clips
             .iter()
             .all(|(bounds, _)| transformed_contains(*bounds, own.0, own.1, x, y));
+        let scroll = self.nodes.scroll_offset(id);
         let child_transform = then_hit(
             (transform, persp),
-            (
-                [
-                    1.0,
-                    0.0,
-                    0.0,
-                    1.0,
-                    -record.scroll_offset.x,
-                    -record.scroll_offset.y,
-                ],
-                [0.0, 0.0],
-            ),
+            ([1.0, 0.0, 0.0, 1.0, -scroll.x, -scroll.y], [0.0, 0.0]),
         );
         let child_blocks_3d = parent_blocks_3d || style.fails_closed_3d_context();
         let menu_z = node.z_index.max(1000);

@@ -66,26 +66,22 @@ transform、hover 和 accessibility 更新不会 bump。
   它由父级的 context、节点解析后的布局意图和节点自己的内容推出来，是一个视图，
   不是组件，也不另存一棵树。
 - **建立的 context**（`FormattingContextKind`）：这个节点怎么排自己的子项。布局记下它
-  实际跑的那一种：`Flow`（`display: block` 或不写，两者是同一种块布局）、`Flex`、`Grid`、`Inline`（在流
-  子项里有行内级盒子）、`Layers`（`display: layers`，叠层）、`Overlay`（模态框按槽位放
-  子项）。有文字的叶子为自己的文字建立
-  `Inline`，字形归 nana-text，不变成布局节点；空叶子不建立 context。
+  实际跑的那一种：`Flex`（`display` 默认 `Flex` 或未写且无行内级子项时均走弹性列/行布局，与 `inline-flex` 同属弹性算法）、`Grid`（`grid` / `inline-grid`）、`Inline`（未显式固定为 flex / grid / layers 且在流子项里有行内级盒子时）、`Layers`（`display: layers`，叠层）、`Overlay`（模态框按槽位放子项）。有文字的叶子为自己的文字建立 `Inline`，字形归 nana-text，不变成布局节点；空叶子不建立 context。
 
 measure 和 placement 用同一个函数选 context，两趟不会对同一个节点选出不同的算法。
-算法本身没有变。context 只读 `resolved_layout`，也就是 layout intent authority 的输出；
+context 只读 `resolved_layout`，也就是 layout intent authority 的输出；
 它不再解析一次样式。
 
 | 父级 context | 子项的参与方式 |
 |---|---|
 | `Flex` | `FlexItem` |
 | `Grid` | `GridItem` |
-| `Flow` | `FlowItem`；浮动的是 `Float`；被块拆开的行内元素是 `InlineSpan` |
-| `Inline` | 行内文字是 `NativeText`，有子项的行内元素是 `InlineSpan`，`inline-block`、控件和替换内容是 `AtomicInline`，块级盒子是 `FlowItem`（断行） |
+| `Inline` | 行内文字（`display: inline` 文本节点）是 `NativeText`，有子项的 `display: inline` 是 `InlineSpan`，替换内容 / 空行内节点以及 `inline-flex` / `inline-grid` 等控件容器是 `AtomicInline`，块级/容器子项（如 `flex` / `grid` / `layers`）是断行的 `FlexItem` |
 | `Layers` | `LayerItem` |
 | `Overlay` | `OverlayItem` |
 
-`Absolute` / `Fixed`、`display: contents`（`Contents`）和不生成盒子的节点（`NoBox`）
-在任何 context 里都一样。文本、图片、按钮、容器和 custom render 都走这一张表：
+`Absolute` / `Fixed` 和不生成盒子的节点（`DisplaySpec::None` 对应的 `NoBox`）
+在任何 context 里都一样（在 `Overlay` 之外；`Overlay` 统一按 `OverlayItem` 摆放槽位）。文本、图片、按钮、容器和 custom render 都走这一张表：
 它们的区别只在内容（`Children`、`Text`、`Replaced`、`Empty`），不在组件类型。同一个
 文本节点在 `Inline` 里是 `NativeText`，在 flex 或 grid 里就是一个按内在尺寸排的 item。
 节点可以任意嵌套：一个 grid 在 flex 父级里是 `FlexItem`，对自己的子项仍然是 `Grid`。
@@ -119,7 +115,7 @@ context 切换（同一组子项 Flex → Grid → Inline）只换 context 记�
 DevTools `inspect` 的 `layout_node` 给出节点、意图摘要、内容、建立的 context、父级
 context、参与方式，以及 metrics、context 和结果三个 generation。
 
-门禁在 `world/tests/layout_foundations.rs`：同一组子项（带标签的 inline-block、行内文本、替换图片、
+门禁在 `world/tests/layout_foundations.rs`：同一组子项（带标签的 `inline-flex` 控件、行内文本、替换图片、
 嵌套 grid）经过 Flex → Grid → Inline → Flex，每一步只记一次切换、没有节点生灭、
 参与方式随父级变化，并与冷布局逐项相同；静态、只改绘制和等价写入不记切换。
 `framework/tests.rs` 里的组件版本确认 TextInput 的内容、焦点和 Button 的处理函数都保留。
@@ -214,7 +210,7 @@ typed cause 记在 `layout_invalidations_created`。一个节点最多挂一个�
 之间就是这次编辑。measure plan 里离开的子项减去自己那一份尺寸和一道间距，新来的子项测一次再加上；
 placement plan 从编辑处重放后缀，编辑前的子项不动，编辑后的子项按离开和到来的差移动，plan 围绕编辑
 重建。长页面末尾增删一个盒子，一帧只做这次编辑；开头增删时后面每个盒子各移动一次，这是真实输出，
-没有子树为测量被整棵遍历。新来的子项会改变格式化上下文（行内级、浮动、定位、`display: contents`、
+没有子树为测量被整棵遍历。新来的子项会改变格式化上下文（行内级、定位、
 伸缩、`order`、auto margin、读主轴长度）、交叉轴随内容的容器里最宽的子项全部离开、流变空或从空开始
 时，照旧重新测量和摆放子项。plan 修补出一个尺寸之后，容器保留的 intrinsic facts 量的是修补前的内容，
 随这一趟退出保留缓存，之后别的约束要重新测量，不读旧的。
@@ -498,98 +494,28 @@ fit 只有一份数学：`ContentFit::fitted_size`（`nana-ui-core`）。fit 是
 - E：同一尺寸再报一次不产生任何工作；换成同尺寸的另一个资源 0 seed、0 measure；换成另一尺寸的
   资源只重排读它的两个盒子。
 - F：`Video` 与 `GpuTextureView` 从标记得到的 fit 与图片的 `object-fit` 是同一个值。
-- G：普通块级流里同一行的原子按基线对齐：没有行盒的 inline-block、`overflow` 非 visible 的
-  inline-block 和图片以底外边距边落在基线上，带文字的 inline-block 以末行基线落在基线上，块的
-  高度就是行盒从最高顶到最低底的跨度。换一个更高的原子、同尺寸盒子里文字折成多行、原本空的原子
-  里来了文字，每一步都重新摆放这一行，并与冷布局逐项相同。
-- H：行盒都在后代里的 inline-block 以末个后代行盒的基线落在行的基线上：标签在空块下面的固定盒子、
-  块里折成多行的标签（取第二行，不取首行）、两个各占一行的 inline-block 标签（取第二行）、固定
-  尺寸块里的标签。后代文字折行、上方的块变高、固定尺寸块里的文字折行都重新摆放这一行；行数不变的
-  文字改动不移动任何盒子。每一步与冷布局逐项相同。
-- I：普通块级流的行盒从块的 strut 起算：`line-height` 等于字号时空 inline-block 下面留出字体的
-  descent，默认行高再加半个 leading；很矮的原子顶不高于 strut 的 ascent；块级子项独占的行没有
-  strut；原生段落的行同样在原子下面留出空隙。
+- G：行内流（`Inline` 上下文）里同一行的行内原子（`inline-flex` / `inline-grid` 或 `display: inline` 原子）按基线对齐：没有行盒的行内原子、`overflow` 非 visible 的行内原子和图片以底外边距边落在基线上，带文字的行内容器以末行基线落在基线上，容器高度就是行盒从最高顶到最低底的跨度。换一个更高的原子、同尺寸盒子里文字折成多行、原本空的原子里来了文字，每一步都重新摆放这一行，并与冷布局逐项相同。
+- H：行盒都在后代里的行内原子以末个后代行盒的基线落在行的基线上：标签在空子容器下面的固定盒子、容器里折成多行的标签（取第二行，不取首行）、两个各占一行的行内标签（取第二行）、固定尺寸子容器里的标签。后代文字折行、上方的子容器变高、固定尺寸子容器里的文字折行都重新摆放这一行；行数不变的文字改动不移动任何盒子。每一步与冷布局逐项相同。
+- I：行内流的行盒从容器的 strut 起算：`line-height` 等于字号时空行内原子下面留出字体的 descent，默认行高再加半个 leading；很矮的原子顶不高于 strut 的 ascent；非行内容器子项（`Flex` / `Grid` / `Layers`）独占的行没有 strut；原生段落的行同样在原子下面留出空隙。
 
-`nana-ui` 的 `scene_paint/replaced_context_tests.rs` 另有两项：host texture 跨 context 移动不重新绑定
-纹理；五种 fit 下 `url()` 路径与 host-texture 路径给出相同的目标矩形。
+`nana-ui` 的 `scene_paint/replaced_context_tests.rs` 另有两项：host texture 跨 context 移动不重新绑定纹理；五种 fit 下 `url()` 路径与 host-texture 路径给出相同的目标矩形。
 
-基线：替换内容按底边对齐（`aligns_by_bottom_edge`），由布局决定，不由画家修正 y。行内格式化上下文
-（原生段落 `InlineFlow` 的行盒，和普通块级流里 inline-block 原子同行的行盒）都按 CSS 默认的
-`vertical-align: baseline`（CSS 2.1 §10.8.1）对齐，两者读同一个函数
-`LayoutInputMap::atom_line_metrics`：
-- inline-block 以末个流内行盒的基线落在行的基线上，基线值取 `baseline_metrics` 的末行基线。
-  行盒都在后代里的 inline-block（`UiWorld::line_boxes_are_descendants_in`：没有自己的文字、控件或
-  段落，只在流里有）取持有末个行盒的后代所在的位置（CSS 2.1 §10.8.1）：
-  `inline::descendant_baselines` 从子项在它内容盒里量出的尺寸，读 placement 会把它们放在哪里：
-  placement 排行、分配主轴空余、交叉轴对齐并转到页面上的那一段是 `placement::arrange_flow`，
-  placement 自己和推导都调它（#394），推导不另排一遍。末个行盒要么是原子所在的一行（`ArrangedLine`
-  的 `atom_baseline`），要么是独占一行的块，后者再取它自己的末行基线（行盒也在后代里就递归）。
-  同一趟推导也正着找首个行盒，得出首个基线（#382）。找首末行盒的顺序是流的顺序。每趟按节点和所用
-  尺寸记在 `LayoutInputMap::derived_baselines`，读原子 ascent 的每一处（块的测量与 placement、
-  measure plan 的比对与增量、原生段落）先 `prime_atom_baselines`，`baseline_metrics` 再读它，所以
-  只有这一份推导。`justify-content`、反向、换行成列、行旁的浮动（门禁 `world/tests/layout_foundations.rs` 的
-  E、F、G，css-parity `T-FL07`）、自动 margin、等宽分行和块级流里的 `clear` 都按 placement 的结果，
-  不再有退回近似的情形。flex、grid 容器的基线见下文；subgrid 和竖排不推导，仍是自身字体首行的近似；
-- 替换内容、`overflow` 非 visible 的 inline-block、没有流内行盒的 inline-block（`UiWorld::atom_sits_on_line_box`）
-  以**底外边距边**落在基线上，`margin-bottom` 把它抬高；
-- 行盒高度是对齐之后从最高的顶外边距边到最低的底外边距边的跨度，块级子项独占一行、从行顶排起。
-- 普通块级流里有行内级子项的行盒从块的 **strut** 起算（`inline::line_strut`）：一个零宽、用块
-  自己的字面、字号和 `line-height` 的行内盒，ascent 和 descent 是块自己字面的真实度量（#382），
-  `line-height` 与两者之和的差一半加在上、一半加在下。所以以底边落在基线上的空 inline-block 下面
-  留出字面的 descent 加半个 leading，很矮的原子顶不高于 strut 的 ascent。块级子项独占的行没有
-  strut。`line-height` 读块自己的 `LayoutStyle`（CSS 路径由 `inherit_typography_from` 继承下来），
-  不读 `ComputedStyle`。
-  - 度量和原生段落（`nana-text` 的 `LineStrut`）是同一份：文字阶段替块问 shaper
-    （`TextShaper::strut_metrics`，`NanaTextEngineShaper` 读 `NativeTextEngine::strut_metrics`），
-    按块字号的每 px 存在 `UiWorld::block_strut`，布局乘上字号读它。所以同字面、同行高下，普通块级流
-    和原生段落在空原子下面留的空隙相同。产品 UI 字面 Noto Sans SC 的 ascent / descent 是
-    1.16em / 0.288em，16px、行高 1.2 时 strut 的 descent 约 2.6px（Chrome 实测见 css-parity
-    `T-I04`、`T-I06`、`T-I07`）。
-  - 只有要它的块持有 strut（`UiWorld::wants_block_strut`）：不是 flex / grid 容器、没有自己的
-    行盒、子项里有流内的行内级盒子。shaper 不报度量时（默认实现返回 `None`），退回共享近似
-    `TEXT_APPROX_ASCENT_EM`（0.8em），descent 是 em 的其余 0.2em。
-  - 失效：块的字体族、字重、斜体、可变轴变化，子项的 display、position、float 变化，子项增删，都把
-    块（和变化子项的父级）记为候选；字体集或语言提示变化（`TextBackendEpoch`）重读每个持有者。
-    文字阶段只重读候选，值变了才按文字度量变化的路径排布局；只改字号不重读（存的是每 px 的值），
-    语言不参与首选字面的选择，也不重读出新值。IFC 的 measure plan 记下它用的 strut 并比对。
-    测试与 `layout-verify` 构建里，每趟文字阶段后把每个保留的 strut 和重读的比一遍
-    （`UiWorld::audit_block_struts`），漏掉的候选直接报错。门禁在 `world/tests/layout_foundations.rs` 的 B。
+基线：替换内容按底边对齐（`aligns_by_bottom_edge`），由布局决定，不由画家修正 y。行内格式化上下文（原生段落 `InlineFlow` 的行盒，和 `Inline` 上下文里与行内原子同行的行盒）都按 CSS 默认的 `vertical-align: baseline`（CSS 2.1 §10.8.1）对齐，两者读同一个函数 `LayoutInputMap::atom_line_metrics`：
+- 带流内行盒的行内原子（`inline-flex` / `inline-grid` 等）以末个流内行盒的基线落在行的基线上，基线值取 `baseline_metrics` 的末行基线。行盒都在后代里的行内原子（`UiWorld::line_boxes_are_descendants_in`：没有自己的文字、控件或段落，只在流里有）取持有末个行盒的后代所在的位置（CSS 2.1 §10.8.1）：`inline::descendant_baselines` 从子项在它内容盒里量出的尺寸，读 placement 会把它们放在哪里：placement 排行、分配主轴空余、交叉轴对齐并转到页面上的那一段是 `placement::arrange_flow`，placement 自己和推导都调它（#394），推导不另排一遍。末个行盒要么是原子所在的一行（`ArrangedLine` 的 `atom_baseline`），要么是独占一行的子容器，后者再取它自己的末行基线（行盒也在后代里就递归）。同一趟推导也正着找首个行盒，得出首个基线（#382）。找首末行盒的顺序是流的顺序。每趟按节点和所用尺寸记在 `LayoutInputMap::derived_baselines`，读原子 ascent 的每一处（`Inline` 测量与 placement、measure plan 的比对与增量、原生段落）先 `prime_atom_baselines`，`baseline_metrics` 再读它，所以只有这一份推导。`justify-content`、反向、换行成列、自动 margin 和等宽分行都按 placement 的结果，不再有退回近似的情形。flex、grid 容器的基线见下文；subgrid 和竖排不推导，仍是自身字体首行的近似；
+- 替换内容、`overflow` 非 visible 的行内原子、没有流内行盒的行内原子（`UiWorld::atom_sits_on_line_box`）以**底外边距边**落在基线上，`margin-bottom` 把它抬高；
+- 行盒高度是对齐之后从最高的顶外边距边到最低的底外边距边的跨度，非行内原子子项独占一行、从行顶排起。
+- 带行内级子项的 `Inline` 上下文行盒从容器的 **strut** 起算（`inline::line_strut`）：一个零宽、用容器自己的字面、字号和 `line-height` 的行内盒，ascent 和 descent 是容器自己字面的真实度量（#382），`line-height` 与两者之和的差一半加在上、一半加在下。所以以底边落在基线上的空行内原子下面留出字面的 descent 加半个 leading，很矮的原子顶不高于 strut 的 ascent。非行内子项独占的行没有 strut。`line-height` 读容器自己的 `LayoutStyle`（CSS 路径由 `inherit_typography_from` 继承下来），不读 `ComputedStyle`。
+  - 度量和原生段落（`nana-text` 的 `LineStrut`）是同一份：文字阶段替容器问 shaper（`TextShaper::strut_metrics`，`NanaTextEngineShaper` 读 `NativeTextEngine::strut_metrics`），按容器字号的每 px 存在 `UiWorld::block_strut`，布局乘上字号读它。所以同字面、同行高下，`Inline` 上下文与原生段落在空原子下面留的空隙相同。产品 UI 字面 Noto Sans SC 的 ascent / descent 是 1.16em / 0.288em，16px、行高 1.2 时 strut 的 descent 约 2.6px（Chrome 实测见 css-parity `T-I04`、`T-I06`、`T-I07`）。
+  - 只有要它的容器持有 strut（`UiWorld::wants_block_strut`）：不是显式 flex / grid 容器、没有自己的行盒、子项里有流内的行内级盒子。shaper 不报度量时（默认实现返回 `None`），退回共享近似 `TEXT_APPROX_ASCENT_EM`（0.8em），descent 是 em 的其余 0.2em。
+  - 失效：容器的字体族、字重、斜体、可变轴变化，子项的 display、position 变化，子项增删，都把容器（和变化子项的父级）记为候选；字体集或语言提示变化（`TextBackendEpoch`）重读每个持有者。文字阶段只重读候选，值变了才按文字度量变化的路径排布局；只改字号不重读（存的是每 px 的值），语言不参与首选字面的选择，也不重读出新值。IFC 的 measure plan 记下它用的 strut 并比对。测试与 `layout-verify` 构建里，每趟文字阶段后把每个保留的 strut 和重读的比一遍（`UiWorld::audit_block_struts`），漏掉的候选直接报错。门禁在 `world/tests/layout_foundations.rs` 的 B。
 
-`align-items: baseline` 的 flex 行按项目的首个基线对齐，替换内容取边框盒底边（CSS Align 在 flex / grid
-里从边框盒合成基线）。行盒都在后代里的项目（`UiWorld::aligns_by_first_baseline` 且
-`line_boxes_are_descendants_in`）取首个流内行盒所在的位置，和 inline-block 的末行基线是同一份推导
-（`inline::descendant_baselines`）：测量发布 intrinsic facts 前、placement 读行的基线前、flex 计划比对
-基线前都先 `prime_first_baselines`，`baseline_metrics` 的首个基线再读它；测试与 `layout-verify` 构建里
-没预备就读会直接报错。这样的项目也读内容（`atom_baseline_reads_content`），固定尺寸不再是度量边界，
-里面后代的字号、文字、上方块的高度变化会让这一行重新对齐；首行没动的变化不移动任何项目。门禁在
-`world/tests/layout_foundations.rs` 的 D。grid 项目按基线对齐时，同一起始行里的这些项目共享一条基线：每个项目按自己的
-首个基线加上方 margin，对齐到这一行里最深的那个（`grid::arrange_grid_2d`，#394）。行的基线发布在 `LayoutResult` 的 TextLine 片段上。`LayoutStyle` 没有
-`vertical-align`，默认的 `baseline` 就是全部行为。这不是 replaced 专有的规则。
+`align-items: baseline` 的 flex 行按项目的首个基线对齐，替换内容取边框盒底边（CSS Align 在 flex / grid 里从边框盒合成基线）。行盒都在后代里的项目（`UiWorld::aligns_by_first_baseline` 且 `line_boxes_are_descendants_in`）取首个流内行盒所在的位置，和行内原子的末行基线是同一份推导（`inline::descendant_baselines`）：测量发布 intrinsic facts 前、placement 读行的基线前、flex 计划比对基线前都先 `prime_first_baselines`，`baseline_metrics` 的首个基线再读它；测试与 `layout-verify` 构建里没预备就读会直接报错。这样的项目也读内容（`atom_baseline_reads_content`），固定尺寸不再是度量边界，里面后代的字号、文字、上方盒子的高度变化会让这一行重新对齐；首行没动的变化不移动任何项目。门禁在 `world/tests/layout_foundations.rs` 的 D。grid 项目按基线对齐时，同一起始行里的这些项目共享一条基线：每个项目按自己的首个基线加上方 margin，对齐到这一行里最深的那个（`grid::arrange_grid_2d`，#394）。行的基线发布在 `LayoutResult` 的 TextLine 片段上。`LayoutStyle` 没有 `vertical-align`，默认的 `baseline` 就是全部行为。这不是 replaced 专有的规则。
 
-flex 容器的基线（CSS Flexbox §8.5，按 Chrome 152 实测，#394）从 `arrange_flow` 给出的项目位置读
-（`inline::flex_first_baseline`）：取画面上最上面的一行——placement 排 `wrap-reverse` 时先排末行，
-所以就是排好的第一行——行里有按 `align-self: baseline` 对齐的项目时取它们共享的基线，否则取这一行
-里最靠行内起点的项目的首个基线；纵向的 flex 取最靠行内起点的一列里最上面的项目。所以 `row-reverse`
-取最左边的项目、`column-reverse` 取最上面的，不是流里的第一个。项目没有行盒时取它的边框盒底边。
-flex 容器的末基线就是首基线：以 flex 容器结尾的 inline-block 在 Chrome 里也按它的首基线对齐。
-一个盒子自己没有文字、流里也没有任何行盒时没有基线，按 CSS Align §9.1 取边框盒底边
-（`baseline_metrics`），不再用字体的近似 ascent。flex 容器的任何流内项目都可能是它取基线的那一个，
-所以这些项目也读内容（`atom_baseline_reads_content`），固定尺寸的项目里换字号也会让外面的行重新对齐。
-grid 容器的基线（CSS Grid 2 §11.8，按 Chrome 实测）同样从项目的位置读（`grid::arrange_grid_2d`、
-`inline::grid_first_baseline`）：取有项目起始的第一行，行里有按基线对齐的项目时取它们共享的基线，否则取
-这一行里 grid 顺序的第一个项目（列号最小的，RTL 下在最右边，不看 DOM 顺序；跨行的项目算在它起始的那一行），
-没有行盒时取它的边框盒底边；末基线也就是首基线。grid 项目同样读内容。
-门禁在 `world/tests/layout_foundations.rs`，Chrome 实测是 css-parity `T-FX01`–`T-FX03`、`T-GB01`、`T-GB02`。还没做的：
-inline-flex、inline-grid 在块的行上仍排成块级（不是行内原子）；按基线对齐的 flex 行的交叉尺寸、grid
-轨道的尺寸都没把基线对齐挪出来的空间算进去（CSS 的 baseline shim）；grid 里跨行项目对 auto 行的尺寸
-分配、inline-block 里块级 grid 的宽度和 Chrome 有出入。
+flex 容器的基线（CSS Flexbox §8.5，按 Chrome 152 实测，#394）从 `arrange_flow` 给出的项目位置读（`inline::flex_first_baseline`）：取画面上最上面的一行——placement 排 `wrap-reverse` 时先排末行，所以就是排好的第一行——行里有按 `align-self: baseline` 对齐的项目时取它们共享的基线，否则取这一行里最靠行内起点的项目的首个基线；纵向的 flex 取最靠行内起点的一列里最上面的项目。所以 `row-reverse` 取最左边的项目、`column-reverse` 取最上面的，不是流里的第一个。项目没有行盒时取它的边框盒底边。flex 容器的末基线就是首基线：以 flex 容器结尾的行内原子也按它的首基线对齐。一个盒子自己没有文字、流里也没有任何行盒时没有基线，按 CSS Align §9.1 取边框盒底边（`baseline_metrics`），不再用字体的近似 ascent。flex 容器的任何流内项目都可能是它取基线的那一个，所以这些项目也读内容（`atom_baseline_reads_content`），固定尺寸的项目里换字号也会让外面的行重新对齐。
+grid 容器的基线（CSS Grid 2 §11.8，按 Chrome 实测）同样从项目的位置读（`grid::arrange_grid_2d`、`inline::grid_first_baseline`）：取有项目起始的第一行，行里有按基线对齐的项目时取它们共享的基线，否则取这一行里 grid 顺序的第一个项目（列号最小的，RTL 下在最右边，不看 DOM 顺序；跨行的项目算在它起始的那一行），没有行盒时取它的边框盒底边；末基线也就是首基线。grid 项目同样读内容。
+门禁在 `world/tests/layout_foundations.rs`，Chrome 实测是 css-parity `T-FX01`–`T-FX03`、`T-GB01`、`T-GB02`。还没做的：按基线对齐的 flex 行的交叉尺寸、grid 轨道的尺寸都没把基线对齐挪出来的空间算进去（CSS 的 baseline shim）；grid 里跨行项目对 auto 行的尺寸分配仍存在差异。
 
-原子的基线随内容移动，失效也跟着走：`overflow` 为 visible 的固定尺寸 inline-block 在普通块级流里
-不再是度量边界（`UiWorld::atom_baseline_reads_content`），它里面的变化会让这一行重新对齐；
-这样的原子流里的流内块（再往下也一样）是找末个行盒的地方，固定尺寸也不是边界，frontier 也不在它
-那里停（`has_definite_size` 读同一个函数）。`overflow` 非 visible 的和替换内容的位置只看自己的盒子，
-仍然是边界，里面的变化不重排这一行。IFC 的 measure plan 记下每个原子在行上的 ascent，盒子尺寸没变
-但 ascent 变了时重新测量这个块；ascent 没变（后代文字改了但末行没动）时沿用计划，盒子都不动。
+原子的基线随内容移动，失效也跟着走：`overflow` 为 visible 的固定尺寸行内原子（如 `inline-flex`）在 `Inline` 上下文里不再是度量边界（`UiWorld::atom_baseline_reads_content`），它里面的变化会让这一行重新对齐；这样的原子流里的流内子项（再往下也一样）是找末个行盒的地方，固定尺寸也不是边界，frontier 也不在它那里停（`has_definite_size` 读同一个函数）。`overflow` 非 visible 的和替换内容的位置只看自己的盒子，仍然是边界，里面的变化不重排这一行。IFC 的 measure plan 记下每个原子在行上的 ascent，盒子尺寸没变但 ascent 变了时重新测量该容器；ascent 没变（后代文字改了但末行没动）时沿用计划，盒子都不动。
 
 #259 加了替换内容负载：在 1k、10k、100k 页面末尾，视频帧、图片自然尺寸、共享图片的开销相同。
 
@@ -725,33 +651,29 @@ CSS 路径只产出数据，不量容器（见下文「`@container`」）。
 
 栈的总合同（运行环境、树深上限、哪些遍历可以递归、门禁与同类对照）见 [资源预算](https://github.com/sena-nana/NanaUI/blob/main/docs/reference/resource-budgets.md)。这里只讲布局的两条递归。
 
-测量（`measure_node`）按树的深度递归：尺寸要从约束传下去的子项里算上来。每一层都先经过 `layout_engine::recursion::level`：
+测量（`measure_node`）已改为在 `layout_engine/measure.rs` 中使用堆上显式 `Vec` 工作栈迭代执行：函数调用栈深度对树深为 O(1)，不使用 `stacker`（`stack_budget` 中每层测量栈消耗固定为 `0 B`）。`layout_engine::recursion::level` 现在专用于为放置递归定价：
 
-- 读取当前线程剩下的栈（`crate::stack::remaining`：桌面平台和 OpenHarmony 由 `stacker` 读，iOS 和 Android 读线程自己的栈边界）；不足 256 KiB 时，这一层改到新分配的 4 MiB 栈段上继续（`stacker::grow`）。所以在框架支持的每个平台上，不论 debug 还是 release、线程栈多大，任何深度的树都不会让测量把栈用完。
-- 同一次读数也给这一层定价：入口处的剩余栈比父层入口少了多少，就是这一层用掉的栈。每趟取最大值，发布为 `WorkCounters::layout_measure_stack_per_level` 和 `layout_placement_stack_per_level`（字节，一帧内取最大；平台报告不了时为 0）。
-- `layout_engine::stack_budget` 的测试给每层定了预算（block、flex 列、grid 三条路线分别量），并在 1 MiB 的线程上布局 400 层的树。兜底防崩溃，预算防止每层的帧再长回去。
+- 通过 `crate::stack::remaining`（原生线程栈边界查询）对比父层与本层入口的剩余栈，每趟取最大值，发布为 `WorkCounters::layout_measure_stack_per_level`（现为 `0`）和 `layout_placement_stack_per_level`（字节，一帧内取最大；平台无法报告时为 `0`）。
+- `layout_engine::stack_budget` 的测试分别在 `Flex`、`Grid`、`Layers` 三条路线上检查每层测量与放置的栈预算，并在 `1 MiB` 线程上布局 `400` 层的树（`a_tree_deeper_than_the_stack_still_lays_out`）以及在 `384 KiB` 线程上完成 `512` 个嵌套节点的布局（`max_tree_depth_fits_in_384_kib_stack`）。
 
-放置（`place_node_scoped`）不需要兜底。测量之后每个盒子的尺寸都已确定，所以任何节点都可以作为边界：一次调用最多下降 `recursion::SPAN` 层（release 24 层；debug 每层的帧是 release 的三倍多，切在 8 层，两种构建都约 90 KiB），到这一层的节点写下自己的盒子后，把子树的其余部分作为 `Boundary` 排进本趟的队列；最外层的那次调用在返回前按入队顺序把队列放完，放的过程中还可以再入队。所以放置的递归深度不超过 `SPAN`，与树深无关，调用方在调用返回时看到的仍是整棵子树都已放好。`WorkCounters::layout_placement_boundaries` 记本趟从队列里放了几棵子树。测试构建里 `SPAN` 是 2，每一条运行时测试都经过边界。
+放置（`place_node_scoped`）采用有界递归，不需要 `stacker` 换栈。测量之后每个盒子的尺寸都已确定，所以任何节点都可以作为边界：一次调用最多下降 `recursion::SPAN` 层（`release` 24 层、`debug` 8 层、测试构建 2 层，将受控调用栈上界维持在约 90 KiB 量级；实测 `aarch64 macOS` debug 构建 `Flex` / `Grid` / `Layers` 每层放置为 `5200 B`），到这一层的节点写下自己的盒子后，把子树的其余部分作为 `Boundary` 排进本趟队列（`PassIntrinsicCache::boundaries`）；最外层调用在返回前按入队顺序放完队列，放的过程中还可以继续入队。所以放置的调用栈深度不超过 `SPAN`，与树深无关，调用方在调用返回时看到的仍是整棵子树都已放好。`WorkCounters::layout_placement_boundaries` 记本趟从队列里放了几棵子树。
 
-能这样切的前提是：一棵子树的放置只读它自己的输入（站在哪、多大、包含块、字体、视口），不读兄弟子树放置时写下的东西，所以晚一点放结果相同。
+能这样切的前提是：一棵子树的放置只读它自己的输入（站在哪、多大、包含块、字体、视口），不读兄弟子树放置时写下的东西，所以延后调度队列放完后结果相同。
 
-一层的放置分两步。`lay_out_children` 走一遍容器的子项：测量、打包浮动、分行、对齐、求解 2D grid，给每个流内子项定好盒子，返回待放置的 `Descend` 列表和计划草稿，自己不放置任何子树。`place_node_body` 等这一帧退出后再依次进入这些子树，然后记录计划、放置浮动和定位子项，顺序和以前一样。复用计划的三条快速路径（`place_moved_container`、`place_edited_child_list`、`place_from_plan`）也各是一个函数，只在走到时才占栈。
+一层的放置分两步：`lay_out_children` 走一遍容器的子项：测量、分行、对齐、求解 2D grid，给每个流内子项定好盒子，返回待放置的 `Descend` 列表和计划草稿，自己不放置任何子树；`place_node_body` 等这一帧退出后再依次进入这些子树，然后记录计划并放置定位子项。`place_node_head` 在 `place_node_body` 运行前返回，复用计划的三条快速路径（`place_moved_container`、`place_edited_child_list`、`place_from_plan`）与 `lay_out_children` 各自成函数，避免同时把所有局部变量留在同一递归栈帧内。
 
-x86_64 Windows（MSVC）上每层的栈：放置 debug 从 25.8 KiB 降到 9.0 KiB，release 从 4.8 KiB 降到 3.2 KiB；测量 debug 12.2 KiB，release 2.5 KiB。aarch64 macOS 上 release 放置每层原是 2.7 KiB，拆成头部（`place_node_head`，写下自己的盒子）和主体（`place_node_body`，边界从这里续上）之后是 3.5 KiB；debug 放置 10.9 KiB、测量 11.9 KiB。放置不再深于 `SPAN` 层，所以每层的价格乘以 `SPAN` 就是它的全部栈（release 约 86 KiB，debug 约 88 KiB）。头部在主体运行前返回，三条快速路径和 `lay_out_children` 标了 `#[inline(never)]`，一层只同时占其中之一的帧。
+视图建成节点（`mount_view*` 经 `ViewBuilder::run_trampoline` 的显式 `ViewTask` 堆栈，配合 `enter_nest` / `leave_nest`）同样改为迭代执行，不消耗与视图深度成正比的调用栈，也不依赖 `stacker`；`view::tests::a_view_deeper_than_the_stack_still_mounts` 在 `1 MiB` 线程上挂载、布局并析构 400 层视图，`nana-ui-scene/tests/deep_tree_stack.rs` 在 `256 KiB` 线程上完成 `MAX_TREE_DEPTH - 4`（508 层）整帧验证。
 
-视图建成节点（`mount_view*` 经 `ViewBuilder::nest_dyn`，每个元素下降一层）同样按深度递归，每层也经过同一个兜底（`crate::stack::level`，与测量共用 256 KiB 警戒线和 4 MiB 栈段）。`view::tests::a_view_deeper_than_the_stack_still_mounts` 在 1 MiB 的线程上挂载、布局并析构 400 层视图。
-
-布局读到的几条按树走的查询也不再按深度递归：行盒查询（`UiWorld::holds_line_box_in`）用堆上的显式栈，并在一趟布局里按节点记忆（`LayoutInputMap::line_boxes`），一串逐层询问的盒子各只结算一次，不再每层把自己的子树走一遍；原子的基线沿祖先上溯（`atom_baseline_reads_content`）是循环；发布布局结果时每个盒子的裁剪与包含块（`layout_anchors`）在一次发布里按节点记忆，从祖先的结果推出来，不再每个盒子走到根。
+布局读到的几条按树走的查询也全部迭代化：行盒查询（`UiWorld::holds_line_box_in`）用堆上的显式栈，并在一趟布局里按节点记忆（`LayoutInputMap::line_boxes`）；原子的基线沿祖先上溯（`atom_baseline_reads_content`）是循环；发布布局结果时每个盒子的裁剪与包含块（`layout_anchors`）在一次发布里按节点记忆，从祖先的结果推出来，不再每个盒子走到根。
 
 ### 路线：子树级调度，子树内递归
 
-目标是混合架构。测量自下而上，继续用递归加缓存；放置由调度器以子树为单位管理，子树内部递归。按顺序：
+目标是混合架构。测量已改为堆工作栈迭代加保留缓存（calls O(1)）；放置由调度器以子树为单位管理，子树内部做有界递归。按顺序：
 
-1. 已完成：递归兜底和每层栈预算；放置分成“定盒子”和“进入子树”两步。
-2. 已完成：放置边界。到达 `SPAN` 层的节点成为调度器的任务单元（`Boundary`），子树内的递归深度不超过 `SPAN`；边界的结果只取决于它的输入。
-3. 测量层：把 `measure_node_level` 里不递归的部分移出这一帧。
-4. 调度：按帧预算分片，没做完的子树整体沿用上一帧的结果（结果双缓冲）；按离视口的距离排序；新的变更让没做完的子树失效时取消它。队列长度和分片次数计入 `WorkCounters`。边界目前只在固定深度切；滚动容器和 `layout_isolation` 节点是下一批切点。
-5. 互相独立的边界子树并行放置：每棵子树写自己的输出，最后合并。
+1. 已完成：`stacker` 彻底退出；测量迭代化（`0 B`/层），放置分成“定盒子”（`lay_out_children` / `place_node_head`）与“进入子树”（`place_node_body`）并立每层栈预算。
+2. 已完成：放置边界。到达 `SPAN` 层的节点成为队列中的任务单元（`Boundary`），调用栈深度不超过 `SPAN`；边界的结果只取决于它的输入。
+3. 后续：继续压缩单层放置栈帧与调度切片——按帧预算分片（未完成子树整体沿用双缓冲结果）、按视口距离排序、变更失效时取消在途边界，并将队列长度和分片次数计入 `WorkCounters`；滚动容器和 `layout_isolation` 节点可作为自然边界切点。
+4. 并行：互相独立的边界子树并行放置：每棵子树写自己的输出，最后合并。
 
 测量阶段的分片粒度受内容依赖限制：尺寸由内容决定的容器会把依赖一直传给祖先，这样的一串只能作为一个单元。超大的扁平列表靠虚拟化，不靠调度。
 
@@ -912,13 +834,13 @@ grid 的列是 inline 轴上的轨道。行是 block 轴上的轨道。这是 CS
 
 直接构造 `LayoutStyle { display: Grid }`、不经 css_map 时，`align-items` 默认 `start`。手写测试依赖此项。Default 无法按 display 区分「未写」和显式 `start`。经 `display:grid` 解析，会写成 `stretch`。
 
-块布局没有 `align-items`。不写 `display`、写 `display: block` 或 `flow-root`、沿块轴排子项的容器（`LayoutStyle::stacks_as_block`），按 CSS 块布局排：没写 `align-self` 的块级子项 `auto` 宽撑满包含块，减去左右外边距（CSS 2.1 §10.3.3），不论 `align_items` 是什么（`LayoutStyle::child_align_items`）。所以 `LayoutStyle::default()`、直接构造的 `LayoutStyle { display: Some(Block) }`（例如经 `Stack::from_layout`）和经 css_map 解析的 `display: block` 得到同一个盒子。三种子项保留自己的宽度：写了 `align-self` 的（流里照样生效）、宽度不是 `auto` 的（`Px`、百分比、`Fill`、`Shrink`、`fit-content` 等）、有自然尺寸的替换内容（图片等，CSS 2.1 §10.3.4）和书写模式与容器正交的子项（它在这一轴上的是块尺寸，由内容定，CSS Writing Modes 3 §7.3）。沿行排（`direction: Row`）的流和 flex、grid、叠层容器仍按 `align_items` 对齐。要子项按内容收缩、居中或靠后，把容器写成 `display: Flex`（`Stack` 预设都是），或给子项写 `align-self` / `width: Shrink`。
+NanaUI 采用纯 `Flex + Grid + Inline + Layers`（及模态槽位 `Overlay`）布局模型，不再保留独立的 `DisplaySpec::Block`、`FlowRoot`、`InlineBlock`、`Contents` 或 `float` / `clear`。默认未显式指定 `display` 且非横排的容器（`LayoutStyle::stacks_as_block()` 为真，即 `display` 未写且 `direction != Some(FlexDirection::Row)`）沿块轴排列并将 `child_align_items()` 解析为 `Stretch`，使常规列容器内的常规子项默认撑满可用宽；写了 `align_self`、明确尺寸（`Px` / 百分比 / `Fill` / `Shrink` / `fit-content` 等）、有自然尺寸的替换内容（图片等）和与容器正交书写模式的子项仍按各自尺寸收窄。显式写 `display: flex`、`grid` 或 `layers` 时直接遵循自身的 `align_items`（`Stack` 预设即 `Flex`）。
 
 `display: layers` 是 NanaUI 的扩展值，见上文 `Layers`。它不写入 `stretch`：叠层的子项默认按起点对齐，和 ZStack / Box 一样；`justify-items` 没写时也按起点，不按网格的 `stretch`。
 
-**行内子集。** 块容器里的 `display: inline` 和 `inline-block` 走一行内格式化上下文，也就是 IFC。
+**行内子集。** 未固定为 flex / grid / layers 的容器在流内出现行内级子项（`display: inline`、`inline-flex`、`inline-grid`）时建立行内格式化上下文，也就是 IFC（`FormattingContextKind::Inline`）；文字叶子也为其自身文本建立 `Inline`。
 
-行内子项按 **inline 轴** 排列。`horizontal-tb` 向右。`vertical-rl` 和 `vertical-lr` 向下。块级兄弟会关掉当前行，并独占一行。
+行内子项按 **inline 轴** 排列。`horizontal-tb` 向右。`vertical-rl` 和 `vertical-lr` 向下。非行内的容器兄弟会关掉当前行，并作为 `FlexItem` 独占一行。
 
 竖排时，盒子的物理宽高仍是 width 和 height。但 IFC 和 `flex-direction: row` 的主轴跟着 writing-mode 的 inline 轴走。`vertical-rl` 的行从右边起排。
 
@@ -926,32 +848,13 @@ grid 的列是 inline 轴上的轨道。行是 block 轴上的轨道。这是 CS
 
 `white-space: pre` 在量测里保留换行和空格。
 
-`align-items: baseline` 读取同一份 intrinsic metrics。文本节点优先使用
-`nana-text` 保留的首行和末行 baseline；宿主只提供 ascent 时才使用该
-fallback。替换内容和 Custom 节点以 block 轴末端作为明确 fallback。Flex、Grid
-和 IFC 不各自估算一套基线。
+`align-items: baseline` 读取同一份 intrinsic metrics。文本节点优先使用 `nana-text` 保留的首行和末行 baseline；宿主只提供 ascent 时才使用该 fallback。替换内容和 Custom 节点以 block 轴末端作为明确 fallback。Flex、Grid 和 IFC 不各自估算一套基线。
 
-IFC 的行里，原子按基线对齐（`vertical-align: baseline`，见上文「替换内容」的基线一段）：
-inline-block 取末行基线（行盒在后代里时取后代末个行盒的实际位置），替换内容、`overflow` 非
-visible 和没有行盒的原子取底外边距边，行从块的 strut 起算，行高是对齐后的跨度。原生段落和普通
-块级流的行共用这条规则。
+IFC 的行里，原子按基线对齐（`vertical-align: baseline`，见上文「替换内容」的基线一段）：带流内行盒的行内原子（`inline-flex` / `inline-grid` 等）取末行基线（行盒在后代里时取后代末个行盒的实际位置），替换内容、`overflow` 非 visible 和没有流内行盒的原子取底外边距边，行从容器的 strut 起算，行高是对齐后的跨度。原生段落和 `Inline` 上下文的行共用这条规则。
 
-flex 行的保留计划记下每个按基线对齐的子项当时用的基线。下一趟里，子项的尺寸没变
-但基线变了（固定尺寸的按钮里字号变了），这一行照样重新对齐，不沿用旧位置。
+flex 行的保留计划记下每个按基线对齐的子项当时用的基线。下一趟里，子项的尺寸没变但基线变了（固定尺寸的按钮里字号变了），这一行照样重新对齐，不沿用旧位置。
 
-**浮动子集。** `float: left | right` 把盒子从块流里拿出来。同侧多个浮动按几何并排。放不下就折到下一行。
-
-流内的 `clear`，和浮动自身的 `clear`，都用折行之后的占用底边。不是单盒的预排高度。
-
-IFC 行盒按当前行与**兄弟**浮动外边距盒相交的左右 inset 缩窄。这是 shrink-to-avoid-float。一行里放不下的原子行内项折到下一行。缩短后仍放不下，就把行盒下移到最近那个占用浮动的底边之下。
-
-流内**块级**边框盒不会缩窄去绕开浮动。这和 CSS 里非 BFC 的块一致。
-
-浮动不参与普通流的高度（CSS 2.1 §10.6.3）：块容器 `auto` 高只算流内内容，`clear` 和被浮动缩短、下移的行盒把流内内容推多远就加多高。只含浮动的普通块高 0，浮动从内容盒下面伸出去。容器自己建立块格式化上下文（BFC）时，高度包住打包后的浮动（§10.6.7），一行浮动就是一行高，不是逐个竖排相加。建立 BFC 的有：文档根、浮动、`absolute` / `fixed`、`inline-block`、`overflow` 非 `visible`、`display: flow-root`（`DisplaySpec::FlowRoot`），以及 flex、grid、叠层和浮层的项目。浮动在行内方向并排，给容器的 max-content 宽是它们外边距盒宽之和、min-content 是最宽的那个。门禁 `world/float_containment.rs`，css-parity `T-FL08`。
-
-这不是完整排除。祖先浮动不侵入子块的 IFC。没有 `shape-outside`。
-
-flex 项和 grid 项上的 float，按 CSS 被块化，然后忽略。
+`float` 与 `clear` 已从核心布局模型中移除，样式声明不会将盒子脱离常规文档流。
 
 **定位。** 你可以用 `relative`、脱流的 `absolute`、相对窗口的 `fixed`，以及文档流内的 `sticky`。`sticky` 在滚动投影之后才贴住。它不写回 Runtime 的 `LayoutBox`。
 
@@ -1020,11 +923,9 @@ Select、Dropdown、SearchDropdown 打开的菜单也排在根层叠上下文。
 
 不要靠你的应用给整张卡抬 `z_index`。
 
-这不是完整的 CSS Appendix E。负 z 分层、float 和 inline 层、transform 单独成层等，未全做。
+这不是完整的 CSS Appendix E。负 z 分层、transform 单独成层等，未全做。
 
 命中仍走树结构。组内的 z 只在兄弟之间比。
-
-**`display: contents`。** 子节点提升到父级的格式化上下文。该节点自己没有盒子。
 
 **文字。** 你可以用字号、字重、字体、行高、字距、颜色。
 
@@ -1329,7 +1230,6 @@ prelude 是 `[名字] 条件`：
 - 竖排 ruby。
 - 竖排着重号（`text-emphasis-position` 的 `right` / `left` 会被解析，但竖排不画记号）。
 - 竖排 table。
-- 竖排加上 float 绕排。
 - 用旋转整盒冒充 glyph 朝向。
 - 竖排编辑器里的代码编辑器装饰不画，而不是横着画在列上。那包括行号栏、minimap、缩进和列参考线、行尾诊断、补全、hover、签名浮窗。这是 #59。
 - `unicode-bidi` 隔离，以及完整 IFC 双向文字。
@@ -1341,10 +1241,8 @@ prelude 是 `[名字] 条件`：
 - 未知的 `@supports` 谓词。
 - `@import … layer()` 和 `supports()`。
 - 完整的 cascade-layer 优先级。
-- 完整的浮动排除。祖先浮动侵入子块、`shape-outside`、流内块级边框盒缩窄，都没有。
-- 完整 IFC。行内原子按基线对齐、行盒有 strut，但没有 `vertical-align` 的其他取值，也没有行内
-  拆箱。行盒在后代里的盒子里，flex / grid 容器、等宽分行或有自动 margin、浮动的块级流不推导首末行位置，
-  仍按自身字体近似。
+- `display: block` / `flow-root` / `inline-block` / `contents`，以及 CSS `float` / `clear`（核心模型为 `Flex + Grid + Inline + Layers`；需要流内并排容器时请用 `inline-flex` / `inline-grid`）。
+- 完整 IFC。行内原子按基线对齐、行盒有 strut，但没有 `vertical-align` 的其他取值，也没有行内拆箱。`subgrid` 和竖排仍不推导后代首末行位置，继续按自身字体近似。
 - 轨道列表 token 形式的 `subgrid`。
 - 用 `position: fixed` 当 Dialog 或 Drawer。走 Nana 的浮层。
 - 自定义 `url()` 光标图。

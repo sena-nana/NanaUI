@@ -130,10 +130,10 @@ pub fn measure_grid_auto_contribution(
     parent.height = Some(LengthSpec::Px(content_h.max(0.0)));
     if column_main {
         parent.direction = Some(FlexDirection::Column);
-        parent.grid_rows = Some(vec![GridTrack::Auto]);
+        parent.grid.rows = Some(vec![GridTrack::Auto]);
     } else {
         parent.direction = Some(FlexDirection::Row);
-        parent.grid_columns = Some(vec![GridTrack::Auto]);
+        parent.grid.columns = Some(vec![GridTrack::Auto]);
     }
     let root = LayoutNode::with_children("grid", parent, vec![node.clone()]);
     let id = node.id.clone();
@@ -598,7 +598,7 @@ mod tests {
              grid-template-rows:minmax(0, 1fr)",
         );
         assert_eq!(root.display, Some(DisplaySpec::Flex));
-        assert!(root.grid_columns.is_none());
+        assert!(root.grid.columns.is_none());
         assert!(root.active_grid_columns().is_none());
 
         let tree = LayoutNode::with_children(
@@ -636,7 +636,7 @@ mod tests {
             ("pre-wrap", WhiteSpaceSpec::PreWrap),
         ] {
             let s = style(&format!(
-                "display:block;width:200px;font-size:16px;line-height:20px;white-space:{keyword}"
+                "width:200px;font-size:16px;line-height:20px;white-space:{keyword}"
             ));
             assert_eq!(s.white_space, expected);
             let mut node = LayoutNode::with_children("root", s, Vec::new());

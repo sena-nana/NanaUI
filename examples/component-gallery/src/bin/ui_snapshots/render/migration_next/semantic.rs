@@ -190,26 +190,35 @@ fn describe_primitive(primitive: &nana_ui_scene::ScenePrimitive) -> String {
             mask.as_ref()
                 .map_or_else(|| "none".to_owned(), |mask| format!("{:?}", mask.mode)),
         ),
-        // A custom node's contents are the host's, not the theme's.
-        ScenePrimitiveKind::Custom { .. } => format!("custom {head}"),
         // A chart's marks: what they draw and the theme colours they draw
-        // with.
-        ScenePrimitiveKind::Chart { marks, .. } => format!(
-            "chart {head} draws={} points={} shapes={} styles=[{}]",
-            marks.draws.len(),
-            marks.points.len(),
-            marks.shapes.len(),
-            marks
-                .styles
-                .iter()
-                .map(|style| rgba(Some(if style.fill[3] > 0.0 {
-                    style.fill
-                } else {
-                    style.stroke
-                })))
-                .collect::<Vec<_>>()
-                .join(" "),
-        ),
+        // with; other custom nodes are the host's contents, not the theme's.
+        ScenePrimitiveKind::Custom { node, .. } => {
+            if node.renderer.as_ref() == nana_ui::runtime::CHART_RENDERER
+                && let Some(payload) = node.payload.as_ref().and_then(|payload| {
+                    payload.downcast_ref::<nana_ui::runtime::chart::ChartGpuPayload>()
+                })
+            {
+                let marks = &payload.marks;
+                format!(
+                    "chart {head} draws={} points={} shapes={} styles=[{}]",
+                    marks.draws.len(),
+                    marks.points.len(),
+                    marks.shapes.len(),
+                    marks
+                        .styles
+                        .iter()
+                        .map(|style| rgba(Some(if style.fill[3] > 0.0 {
+                            style.fill
+                        } else {
+                            style.stroke
+                        })))
+                        .collect::<Vec<_>>()
+                        .join(" "),
+                )
+            } else {
+                format!("custom {head}")
+            }
+        }
     }
 }
 

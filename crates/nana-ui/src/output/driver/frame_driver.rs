@@ -5,7 +5,6 @@
 use std::collections::HashMap;
 
 use nana_gpu::{FrameContext, GpuContext, GpuRenderTarget, GpuSubmission, GpuTexture};
-use nana_ui_core::GpuWorkObservation;
 use nana_ui_platform::SharedFetchHost;
 use nana_ui_scene::UiScene;
 
@@ -14,6 +13,7 @@ use super::super::{
     ExternalFrame, ExternalFramePlan, ExternalPrepare, ExternalRenderOutcome, ExternalSurface,
     ExternalSurfaceError, OutputPlan,
 };
+use crate::GpuWorkObservation;
 use crate::scene_paint::SubpixelOrder;
 use crate::{
     AlphaEncoding, HostTextureRegistry, RenderTargetId, SceneGpuRendererRegistry,

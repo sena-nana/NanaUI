@@ -123,23 +123,32 @@ pub fn apply_css_paint_property(style: &mut nana_ui_core::LayoutStyle, name: &st
         "text-emphasis" | "-webkit-text-emphasis" => apply_text_emphasis_shorthand(style, val),
         "text-emphasis-style" | "-webkit-text-emphasis-style" => {
             if let Some(value) = css_global(val) {
-                style.text_emphasis_style = value.then_some(TextEmphasisStyle::None);
+                let next = value.then_some(TextEmphasisStyle::None);
+                if style.text_ext.text_emphasis_style != next {
+                    style.text_ext.text_emphasis_style = next;
+                }
             } else if let Some(emphasis) = parse_text_emphasis_style(val) {
-                style.text_emphasis_style = Some(emphasis);
+                style.text_ext.text_emphasis_style = Some(emphasis);
             }
         }
         "text-emphasis-position" | "-webkit-text-emphasis-position" => {
             if let Some(value) = css_global(val) {
-                style.text_emphasis_position = value.then_some(TextEmphasisPosition::OVER);
+                let next = value.then_some(TextEmphasisPosition::OVER);
+                if style.text_ext.text_emphasis_position != next {
+                    style.text_ext.text_emphasis_position = next;
+                }
             } else if let Some(position) = parse_text_emphasis_position(val) {
-                style.text_emphasis_position = Some(position);
+                style.text_ext.text_emphasis_position = Some(position);
             }
         }
         "text-emphasis-color" | "-webkit-text-emphasis-color" => {
             if let Some(value) = css_global(val) {
-                style.text_emphasis_color = value.then_some(TextEmphasisColor::CurrentColor);
+                let next = value.then_some(TextEmphasisColor::CurrentColor);
+                if style.text_ext.text_emphasis_color != next {
+                    style.text_ext.text_emphasis_color = next;
+                }
             } else if let Some(color) = parse_text_emphasis_color(val) {
-                style.text_emphasis_color = Some(color);
+                style.text_ext.text_emphasis_color = Some(color);
             }
         }
         "font-feature-settings" => apply_font_feature_settings(style, val),
@@ -1055,8 +1064,14 @@ fn css_global(val: &str) -> Option<bool> {
 /// it.
 fn apply_text_emphasis_shorthand(style: &mut nana_ui_core::LayoutStyle, val: &str) {
     if let Some(value) = css_global(val) {
-        style.text_emphasis_style = value.then_some(TextEmphasisStyle::None);
-        style.text_emphasis_color = value.then_some(TextEmphasisColor::CurrentColor);
+        let next_style = value.then_some(TextEmphasisStyle::None);
+        if style.text_ext.text_emphasis_style != next_style {
+            style.text_ext.text_emphasis_style = next_style;
+        }
+        let next_color = value.then_some(TextEmphasisColor::CurrentColor);
+        if style.text_ext.text_emphasis_color != next_color {
+            style.text_ext.text_emphasis_color = next_color;
+        }
         return;
     }
     let mut marks = Vec::new();
@@ -1078,8 +1093,8 @@ fn apply_text_emphasis_shorthand(style: &mut nana_ui_core::LayoutStyle, val: &st
     let Some(emphasis) = emphasis else {
         return;
     };
-    style.text_emphasis_style = Some(emphasis);
-    style.text_emphasis_color = Some(color.unwrap_or_default());
+    style.text_ext.text_emphasis_style = Some(emphasis);
+    style.text_ext.text_emphasis_color = Some(color.unwrap_or_default());
 }
 
 /// `none | [filled | open] || [dot | circle | double-circle | triangle |
@@ -1153,7 +1168,7 @@ fn apply_text_decoration_line(style: &mut nana_ui_core::LayoutStyle, val: &str) 
         return;
     }
     if trimmed.eq_ignore_ascii_case("none") {
-        style.text_decoration = Some(TextDecorationLine::default());
+        style.text_ext.text_decoration = Some(TextDecorationLine::default());
         return;
     }
     let mut deco = TextDecorationLine::default();
@@ -1177,20 +1192,20 @@ fn apply_text_decoration_line(style: &mut nana_ui_core::LayoutStyle, val: &str) 
         }
     }
     if saw {
-        style.text_decoration = Some(deco);
+        style.text_ext.text_decoration = Some(deco);
     }
 }
 
 fn apply_font_feature_settings(style: &mut nana_ui_core::LayoutStyle, val: &str) {
     let trimmed = val.trim();
     if trimmed.eq_ignore_ascii_case("normal") {
-        style.font_features = Some(Vec::new());
+        style.text_ext.font_features = Some(Vec::new());
         return;
     }
     let Some(features) = parse_font_feature_settings(trimmed) else {
         return;
     };
-    style.font_features = Some(features);
+    style.text_ext.font_features = Some(features);
 }
 
 fn parse_font_feature_settings(raw: &str) -> Option<Vec<FontFeatureSetting>> {
@@ -1256,17 +1271,21 @@ fn apply_font_variation_settings(style: &mut nana_ui_core::LayoutStyle, val: &st
 fn apply_line_clamp(style: &mut nana_ui_core::LayoutStyle, val: &str) {
     let trimmed = val.trim();
     if trimmed.eq_ignore_ascii_case("none") || trimmed == "0" {
-        style.line_clamp = None;
+        if style.text_ext.line_clamp.is_some() {
+            style.text_ext.line_clamp = None;
+        }
         return;
     }
     let Ok(n) = trimmed.parse::<u16>() else {
         return;
     };
     if n == 0 {
-        style.line_clamp = None;
+        if style.text_ext.line_clamp.is_some() {
+            style.text_ext.line_clamp = None;
+        }
         return;
     }
-    style.line_clamp = Some(n);
+    style.text_ext.line_clamp = Some(n);
     style.text_overflow_ellipsis = true;
     style.white_space_nowrap = false;
     style.overflow_x = OverflowSpec::Hidden;
@@ -2176,18 +2195,12 @@ fn is_position_keyword(token: &str) -> bool {
 }
 
 fn invert_from_end(spec: LengthSpec) -> Option<LengthSpec> {
+    if let Some((percent, offset_px)) = spec.as_percent_offset() {
+        return Some(LengthSpec::percent_offset(100.0 - percent, -offset_px));
+    }
     match spec {
-        LengthSpec::Px(v) => Some(LengthSpec::CalcPercentOffset {
-            percent: 100.0,
-            offset_px: -v,
-        }),
+        LengthSpec::Px(v) => Some(LengthSpec::percent_offset(100.0, -v)),
         LengthSpec::Percent(p) => Some(LengthSpec::Percent(100.0 - p)),
-        LengthSpec::CalcPercentOffset { percent, offset_px } => {
-            Some(LengthSpec::CalcPercentOffset {
-                percent: 100.0 - percent,
-                offset_px: -offset_px,
-            })
-        }
         _ => None,
     }
 }
@@ -2781,13 +2794,7 @@ mod tests {
         );
         match layout.paint.background_image.clone() {
             Some(BackgroundImage::Url { position, .. }) => {
-                assert_eq!(
-                    position.x,
-                    LengthSpec::CalcPercentOffset {
-                        percent: 100.0,
-                        offset_px: -8.0,
-                    }
-                );
+                assert_eq!(position.x, LengthSpec::percent_offset(100.0, -8.0));
                 assert_eq!(position.y, LengthSpec::Percent(50.0));
             }
             other => panic!("expected positioned url, got {other:?}"),
@@ -2795,10 +2802,7 @@ mod tests {
         assert_eq!(
             layout.paint.background_position_list,
             vec![BackgroundPosition {
-                x: LengthSpec::CalcPercentOffset {
-                    percent: 100.0,
-                    offset_px: -8.0,
-                },
+                x: LengthSpec::percent_offset(100.0, -8.0),
                 y: LengthSpec::Percent(50.0),
             }]
         );
@@ -3106,30 +3110,33 @@ mod tests {
     fn line_clamp_enables_ellipsis_and_wrap() {
         let mut layout = LayoutStyle::default();
         layout.apply_css_text("-webkit-line-clamp: 2", None, None);
-        assert_eq!(layout.line_clamp, Some(2));
+        assert_eq!(layout.text_ext.line_clamp, Some(2));
         assert!(layout.uses_text_ellipsis());
         assert!(!layout.white_space_nowrap);
         assert_eq!(layout.overflow_x, OverflowSpec::Hidden);
         assert_eq!(layout.overflow_y, OverflowSpec::Hidden);
         layout.apply_css_text("line-clamp: none", None, None);
-        assert!(layout.line_clamp.is_none());
+        assert!(layout.text_ext.line_clamp.is_none());
     }
 
     #[test]
     fn text_decoration_underline_and_line_through() {
         let mut layout = LayoutStyle::default();
         layout.apply_css_text("text-decoration: underline", None, None);
-        let deco = layout.text_decoration.expect("underline");
+        let deco = layout.text_ext.text_decoration.expect("underline");
         assert!(deco.underline);
         assert!(!deco.line_through);
         layout.apply_css_text("text-decoration: underline line-through", None, None);
-        let deco = layout.text_decoration.expect("both");
+        let deco = layout.text_ext.text_decoration.expect("both");
         assert!(deco.underline && deco.line_through);
         layout.apply_css_text("text-decoration: none", None, None);
-        assert_eq!(layout.text_decoration, Some(TextDecorationLine::default()));
+        assert_eq!(
+            layout.text_ext.text_decoration,
+            Some(TextDecorationLine::default())
+        );
         layout.apply_css_text("text-decoration: overline", None, None);
         assert_eq!(
-            layout.text_decoration,
+            layout.text_ext.text_decoration,
             Some(TextDecorationLine::default()),
             "overline fails closed (Scene stroke is underline / line-through only)"
         );
@@ -3140,7 +3147,7 @@ mod tests {
         let style = |css: &str| {
             let mut layout = LayoutStyle::default();
             layout.apply_css_text(css, None, None);
-            layout.text_emphasis_style
+            layout.text_ext.text_emphasis_style.clone()
         };
         let mark = |shape, open| Some(TextEmphasisStyle::Mark { shape, open });
         assert_eq!(
@@ -3225,12 +3232,12 @@ mod tests {
         let mut layout = LayoutStyle::default();
         layout.apply_css_text("text-emphasis-position: under", None, None);
         assert_eq!(
-            layout.text_emphasis_position,
+            layout.text_ext.text_emphasis_position,
             Some(TextEmphasisPosition::UNDER)
         );
         layout.apply_css_text("text-emphasis-position: left over", None, None);
         assert_eq!(
-            layout.text_emphasis_position,
+            layout.text_ext.text_emphasis_position,
             Some(TextEmphasisPosition {
                 under: false,
                 left: true
@@ -3238,7 +3245,7 @@ mod tests {
         );
         layout.apply_css_text("text-emphasis-position: right", None, None);
         assert_eq!(
-            layout.text_emphasis_position,
+            layout.text_ext.text_emphasis_position,
             Some(TextEmphasisPosition {
                 under: false,
                 left: true
@@ -3247,14 +3254,14 @@ mod tests {
         );
         layout.apply_css_text("text-emphasis-color: #ff0000", None, None);
         assert_eq!(
-            layout.text_emphasis_color,
+            layout.text_ext.text_emphasis_color,
             Some(TextEmphasisColor::Color(nana_ui_core::PaintColor::srgb([
                 1.0, 0.0, 0.0, 1.0
             ])))
         );
         layout.apply_css_text("text-emphasis-color: currentColor", None, None);
         assert_eq!(
-            layout.text_emphasis_color,
+            layout.text_ext.text_emphasis_color,
             Some(TextEmphasisColor::CurrentColor)
         );
     }
@@ -3265,36 +3272,36 @@ mod tests {
         layout.apply_css_text("text-emphasis-position: under", None, None);
         layout.apply_css_text("text-emphasis: open triangle #00ff00", None, None);
         assert_eq!(
-            layout.text_emphasis_style,
+            layout.text_ext.text_emphasis_style,
             Some(TextEmphasisStyle::Mark {
                 shape: Some(TextEmphasisShape::Triangle),
                 open: true
             })
         );
         assert_eq!(
-            layout.text_emphasis_color,
+            layout.text_ext.text_emphasis_color,
             Some(TextEmphasisColor::Color(nana_ui_core::PaintColor::srgb([
                 0.0, 1.0, 0.0, 1.0
             ])))
         );
         assert_eq!(
-            layout.text_emphasis_position,
+            layout.text_ext.text_emphasis_position,
             Some(TextEmphasisPosition::UNDER),
             "the shorthand leaves the position alone"
         );
         layout.apply_css_text("-webkit-text-emphasis: '\u{203B}'", None, None);
         assert_eq!(
-            layout.text_emphasis_style,
+            layout.text_ext.text_emphasis_style,
             Some(TextEmphasisStyle::String("\u{203B}".into()))
         );
         assert_eq!(
-            layout.text_emphasis_color,
+            layout.text_ext.text_emphasis_color,
             Some(TextEmphasisColor::CurrentColor),
             "what it leaves out is reset"
         );
         layout.apply_css_text("text-emphasis: dot nonsense", None, None);
         assert_eq!(
-            layout.text_emphasis_style,
+            layout.text_ext.text_emphasis_style,
             Some(TextEmphasisStyle::String("\u{203B}".into())),
             "an invalid shorthand changes nothing"
         );
@@ -3311,32 +3318,38 @@ mod tests {
         let mut child = LayoutStyle::default();
         child.apply_css_text("text-emphasis-color: blue", None, None);
         child.inherit_typography_from(&parent);
-        assert_eq!(child.text_emphasis_style, parent.text_emphasis_style);
         assert_eq!(
-            child.text_emphasis_position,
+            child.text_ext.text_emphasis_style,
+            parent.text_ext.text_emphasis_style
+        );
+        assert_eq!(
+            child.text_ext.text_emphasis_position,
             Some(TextEmphasisPosition::UNDER)
         );
-        assert_ne!(child.text_emphasis_color, parent.text_emphasis_color);
+        assert_ne!(
+            child.text_ext.text_emphasis_color,
+            parent.text_ext.text_emphasis_color
+        );
     }
 
     #[test]
     fn font_feature_settings_parse_and_variation_fails_closed() {
         let mut layout = LayoutStyle::default();
         layout.apply_css_text("font-feature-settings: \"liga\" 1, 'kern' off", None, None);
-        let features = layout.font_features.as_ref().expect("features");
+        let features = layout.text_ext.font_features.as_ref().expect("features");
         assert_eq!(features.len(), 2);
         assert_eq!(features[0].tag, *b"liga");
         assert_eq!(features[0].value, 1);
         assert_eq!(features[1].tag, *b"kern");
         assert_eq!(features[1].value, 0);
         layout.apply_css_text("font-feature-settings: normal", None, None);
-        assert_eq!(layout.font_features.as_deref(), Some(&[][..]));
+        assert_eq!(layout.text_ext.font_features.as_deref(), Some(&[][..]));
 
         layout.apply_css_text("font-variation-settings: \"wght\" 700", None, None);
-        assert!(!layout.unsupported_font_variation);
+        assert!(!layout.text_ext.unsupported_font_variation);
         assert_eq!(layout.font_weight, Some(700));
         layout.apply_css_text("font-variation-settings: \"BEVL\" 1", None, None);
-        assert!(!layout.unsupported_font_variation);
+        assert!(!layout.text_ext.unsupported_font_variation);
         assert_eq!(
             layout.font_weight,
             Some(700),
@@ -3347,10 +3360,10 @@ mod tests {
             None,
             None,
         );
-        assert!(!layout.unsupported_font_variation);
+        assert!(!layout.text_ext.unsupported_font_variation);
         assert_eq!(layout.font_weight, Some(400));
         layout.apply_css_text("font-variation-settings: normal", None, None);
-        assert!(!layout.unsupported_font_variation);
+        assert!(!layout.text_ext.unsupported_font_variation);
     }
 
     #[test]

@@ -1,8 +1,8 @@
 //! The application presentation driver shared by native and windowless hosts.
 //! Application state and the retained document remain owned by the caller.
 
+use super::trace::{OutputWorkObservation, PresentationWork};
 use nana_gpu::{FrameContext, GpuContext, GpuRenderTarget};
-use nana_ui_core::{OutputWorkObservation, WorkCounters};
 use nana_ui_runtime::{FrameworkError, LayoutViewport};
 use nana_ui_scene::{RuntimeDocument, RuntimeFrameUpdate, UiScene};
 use std::hash::{Hash, Hasher};
@@ -51,7 +51,7 @@ pub struct PresentationDriver {
     planner: RenderTargetPlanner,
     targets: Vec<Target>,
     text: NanaTextShaper,
-    work: WorkCounters,
+    work: PresentationWork,
     pending_plan_rebuilds: usize,
     pending_target_recreates: usize,
     /// One painter for every group: profiles share its atlases and caches,
@@ -120,7 +120,7 @@ impl PresentationDriver {
             planner: RenderTargetPlanner::new(),
             targets: Vec::new(),
             text: NanaTextShaper::default(),
-            work: WorkCounters::default(),
+            work: PresentationWork::default(),
             pending_plan_rebuilds: 0,
             pending_target_recreates: 0,
             painter: None,
@@ -345,7 +345,7 @@ impl PresentationDriver {
     /// producer work; use owner-attributed `output_traces` or capture this
     /// snapshot before consumer recording to evaluate producer idleness.
     /// Caller-owned consumer submits are not inferred from a recorded pass.
-    pub fn work(&self) -> &WorkCounters {
+    pub fn work(&self) -> &PresentationWork {
         &self.work
     }
 
@@ -557,7 +557,7 @@ impl PresentationDriver {
         {
             return Err(PresentationError::InvalidViewport);
         }
-        self.work = WorkCounters::default();
+        self.work = PresentationWork::default();
         self.work.record_output_work(OutputWorkObservation {
             plan_rebuilds: std::mem::take(&mut self.pending_plan_rebuilds),
             target_recreates: std::mem::take(&mut self.pending_target_recreates),
@@ -754,7 +754,7 @@ impl PresentationDriver {
             nana_diagnostics::metric!(nana_diagnostics::framework::gpu::OUTPUT_SUBMISSIONS);
         }
         for target in &self.targets {
-            target.surface.record_last_work(&mut self.work);
+            self.work.record_output_work(target.surface.last_work());
         }
         self.trace_outcomes(&outcomes, trace_submission, false);
         Ok(outcomes)

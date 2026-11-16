@@ -160,6 +160,8 @@ impl Panel {
 }
 
 impl ComponentView for Panel {
+    const TYPE_ID: Option<&'static str> = Some(crate::component_descriptors::PANEL.type_id);
+
     fn share_layouts(
         &mut self,
         share: &mut dyn FnMut(&mut std::sync::Arc<nana_ui_core::LayoutStyle>),

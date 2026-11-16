@@ -32,9 +32,8 @@ use crate::{
     },
     command, conv,
     device::{
-        bgl, create_validator, features_to_naga_capabilities, life::WaitIdleError, map_buffer,
-        AttachmentData, DeviceLostInvocation, HostMap, MissingDownlevelFlags, MissingFeatures,
-        RenderPassContext,
+        bgl, life::WaitIdleError, map_buffer, AttachmentData, DeviceLostInvocation, HostMap,
+        MissingDownlevelFlags, MissingFeatures, RenderPassContext,
     },
     hal_label,
     init_tracker::{
@@ -503,8 +502,8 @@ impl Device {
         let downlevel = adapter.raw.capabilities.downlevel.clone();
         let limits = &adapter.raw.capabilities.limits;
 
-        let enable_indirect_validation = instance_flags
-            .contains(wgt::InstanceFlags::VALIDATION_INDIRECT_CALL)
+        let enable_indirect_validation = cfg!(feature = "wgsl")
+            && instance_flags.contains(wgt::InstanceFlags::VALIDATION_INDIRECT_CALL)
             && downlevel.flags.contains(
                 wgt::DownlevelFlags::INDIRECT_EXECUTION | wgt::DownlevelFlags::COMPUTE_SHADERS,
             )
@@ -2414,130 +2413,143 @@ impl Device {
     ) -> Result<Arc<pipeline::ShaderModule>, pipeline::CreateShaderModuleError> {
         self.check_is_valid()?;
 
-        let (module, source) = match source {
-            #[cfg(feature = "wgsl")]
-            pipeline::ShaderModuleSource::Wgsl(code) => {
-                profiling::scope!("naga::front::wgsl::parse");
-                let capabilities =
-                    features_to_naga_capabilities(self.features, self.downlevel.flags);
-                let mut options = naga::front::wgsl::Options::new();
-                options.capabilities = capabilities;
-                let mut frontend = naga::front::wgsl::Frontend::new_with_options(options);
-                let module = frontend.parse(&code).map_err(|inner| {
-                    pipeline::CreateShaderModuleError::Parsing(naga::error::ShaderError {
-                        source: code.to_string(),
-                        label: desc.label.as_ref().map(|l| l.to_string()),
-                        inner: Box::new(inner),
-                    })
-                })?;
-                (Cow::Owned(module), code.into_owned())
-            }
-            #[cfg(feature = "spirv")]
-            pipeline::ShaderModuleSource::SpirV(spv, options) => {
-                let parser = naga::front::spv::Frontend::new(spv.iter().cloned(), &options);
-                profiling::scope!("naga::front::spv::Frontend");
-                let module = parser.parse().map_err(|inner| {
-                    pipeline::CreateShaderModuleError::ParsingSpirV(naga::error::ShaderError {
-                        source: String::new(),
-                        label: desc.label.as_ref().map(|l| l.to_string()),
-                        inner: Box::new(inner),
-                    })
-                })?;
-                (Cow::Owned(module), String::new())
-            }
-            #[cfg(feature = "glsl")]
-            pipeline::ShaderModuleSource::Glsl(code, options) => {
-                let mut parser = naga::front::glsl::Frontend::default();
-                profiling::scope!("naga::front::glsl::Frontend.parse");
-                let module = parser.parse(&options, &code).map_err(|inner| {
-                    pipeline::CreateShaderModuleError::ParsingGlsl(naga::error::ShaderError {
-                        source: code.to_string(),
-                        label: desc.label.as_ref().map(|l| l.to_string()),
-                        inner: Box::new(inner),
-                    })
-                })?;
-                (Cow::Owned(module), code.into_owned())
-            }
-            pipeline::ShaderModuleSource::Naga(module) => (module, String::new()),
-            pipeline::ShaderModuleSource::Dummy(_) => panic!("found `ShaderModuleSource::Dummy`"),
-        };
-        for (_, var) in module.global_variables.iter() {
-            match var.binding {
-                Some(br) if br.group >= self.limits.max_bind_groups => {
-                    return Err(pipeline::CreateShaderModuleError::InvalidGroupIndex {
-                        bind: br,
-                        group: br.group,
-                        limit: self.limits.max_bind_groups,
-                    });
-                }
-                _ => continue,
-            };
+        #[cfg(not(feature = "naga-translation"))]
+        {
+            let _ = (desc, source);
+            panic!("runtime shader compilation requires the naga-translation feature");
         }
 
-        profiling::scope!("naga::validate");
-        let debug_source =
-            if self.instance_flags.contains(wgt::InstanceFlags::DEBUG) && !source.is_empty() {
-                Some(hal::DebugSource {
-                    file_name: Cow::Owned(
-                        desc.label
-                            .as_ref()
-                            .map_or("shader".to_string(), |l| l.to_string()),
-                    ),
-                    source_code: Cow::Owned(source.clone()),
+        #[cfg(feature = "naga-translation")]
+        {
+            let (module, source) = match source {
+                #[cfg(feature = "wgsl")]
+                pipeline::ShaderModuleSource::Wgsl(code) => {
+                    profiling::scope!("naga::front::wgsl::parse");
+                    let capabilities = crate::device::features_to_naga_capabilities(
+                        self.features,
+                        self.downlevel.flags,
+                    );
+                    let mut options = naga::front::wgsl::Options::new();
+                    options.capabilities = capabilities;
+                    let mut frontend = naga::front::wgsl::Frontend::new_with_options(options);
+                    let module = frontend.parse(&code).map_err(|inner| {
+                        pipeline::CreateShaderModuleError::Parsing(naga::error::ShaderError {
+                            source: code.to_string(),
+                            label: desc.label.as_ref().map(|l| l.to_string()),
+                            inner: Box::new(inner),
+                        })
+                    })?;
+                    (Cow::Owned(module), code.into_owned())
+                }
+                #[cfg(feature = "spirv")]
+                pipeline::ShaderModuleSource::SpirV(spv, options) => {
+                    let parser = naga::front::spv::Frontend::new(spv.iter().cloned(), &options);
+                    profiling::scope!("naga::front::spv::Frontend");
+                    let module = parser.parse().map_err(|inner| {
+                        pipeline::CreateShaderModuleError::ParsingSpirV(naga::error::ShaderError {
+                            source: String::new(),
+                            label: desc.label.as_ref().map(|l| l.to_string()),
+                            inner: Box::new(inner),
+                        })
+                    })?;
+                    (Cow::Owned(module), String::new())
+                }
+                #[cfg(feature = "glsl")]
+                pipeline::ShaderModuleSource::Glsl(code, options) => {
+                    let mut parser = naga::front::glsl::Frontend::default();
+                    profiling::scope!("naga::front::glsl::Frontend.parse");
+                    let module = parser.parse(&options, &code).map_err(|inner| {
+                        pipeline::CreateShaderModuleError::ParsingGlsl(naga::error::ShaderError {
+                            source: code.to_string(),
+                            label: desc.label.as_ref().map(|l| l.to_string()),
+                            inner: Box::new(inner),
+                        })
+                    })?;
+                    (Cow::Owned(module), code.into_owned())
+                }
+                pipeline::ShaderModuleSource::Naga(module) => (module, String::new()),
+                pipeline::ShaderModuleSource::Dummy(_) => {
+                    panic!("found `ShaderModuleSource::Dummy`")
+                }
+            };
+            for (_, var) in module.global_variables.iter() {
+                match var.binding {
+                    Some(br) if br.group >= self.limits.max_bind_groups => {
+                        return Err(pipeline::CreateShaderModuleError::InvalidGroupIndex {
+                            bind: br,
+                            group: br.group,
+                            limit: self.limits.max_bind_groups,
+                        });
+                    }
+                    _ => continue,
+                };
+            }
+
+            profiling::scope!("naga::validate");
+            let debug_source =
+                if self.instance_flags.contains(wgt::InstanceFlags::DEBUG) && !source.is_empty() {
+                    Some(hal::DebugSource {
+                        file_name: Cow::Owned(
+                            desc.label
+                                .as_ref()
+                                .map_or("shader".to_string(), |l| l.to_string()),
+                        ),
+                        source_code: Cow::Owned(source.clone()),
+                    })
+                } else {
+                    None
+                };
+
+            let info = crate::device::create_validator(
+                self.features,
+                self.downlevel.flags,
+                naga::valid::ValidationFlags::all(),
+            )
+            .validate(&module)
+            .map_err(|inner| {
+                pipeline::CreateShaderModuleError::Validation(naga::error::ShaderError {
+                    source,
+                    label: desc.label.as_ref().map(|l| l.to_string()),
+                    inner: Box::new(inner),
                 })
-            } else {
-                None
+            })?;
+
+            let interface = validation::Interface::new(&module, &info, self.limits.clone());
+            let hal_shader = hal::ShaderInput::Naga(hal::NagaShader {
+                module,
+                info,
+                debug_source,
+            });
+            let hal_desc = hal::ShaderModuleDescriptor {
+                label: desc.label.to_hal(self.instance_flags),
+                runtime_checks: desc.runtime_checks,
+            };
+            let raw = match unsafe { self.raw().create_shader_module(&hal_desc, hal_shader) } {
+                Ok(raw) => raw,
+                Err(error) => {
+                    return Err(match error {
+                        hal::ShaderError::Device(error) => {
+                            pipeline::CreateShaderModuleError::Device(self.handle_hal_error(error))
+                        }
+                        hal::ShaderError::Compilation(ref msg) => {
+                            log::error!("Shader error: {msg}");
+                            pipeline::CreateShaderModuleError::Generation
+                        }
+                    })
+                }
             };
 
-        let info = create_validator(
-            self.features,
-            self.downlevel.flags,
-            naga::valid::ValidationFlags::all(),
-        )
-        .validate(&module)
-        .map_err(|inner| {
-            pipeline::CreateShaderModuleError::Validation(naga::error::ShaderError {
-                source,
-                label: desc.label.as_ref().map(|l| l.to_string()),
-                inner: Box::new(inner),
-            })
-        })?;
+            let module = pipeline::ShaderModule {
+                raw: ManuallyDrop::new(raw),
+                device: self.clone(),
+                interface: ShaderMetaData::Interface(interface),
+                label: desc.label.to_string(),
+            };
 
-        let interface = validation::Interface::new(&module, &info, self.limits.clone());
-        let hal_shader = hal::ShaderInput::Naga(hal::NagaShader {
-            module,
-            info,
-            debug_source,
-        });
-        let hal_desc = hal::ShaderModuleDescriptor {
-            label: desc.label.to_hal(self.instance_flags),
-            runtime_checks: desc.runtime_checks,
-        };
-        let raw = match unsafe { self.raw().create_shader_module(&hal_desc, hal_shader) } {
-            Ok(raw) => raw,
-            Err(error) => {
-                return Err(match error {
-                    hal::ShaderError::Device(error) => {
-                        pipeline::CreateShaderModuleError::Device(self.handle_hal_error(error))
-                    }
-                    hal::ShaderError::Compilation(ref msg) => {
-                        log::error!("Shader error: {msg}");
-                        pipeline::CreateShaderModuleError::Generation
-                    }
-                })
-            }
-        };
+            let module = Arc::new(module);
 
-        let module = pipeline::ShaderModule {
-            raw: ManuallyDrop::new(raw),
-            device: self.clone(),
-            interface: ShaderMetaData::Interface(interface),
-            label: desc.label.to_string(),
-        };
-
-        let module = Arc::new(module);
-
-        Ok(module)
+            Ok(module)
+        }
     }
 
     /// Not a public API. For use by `player` only.
@@ -2548,7 +2560,9 @@ impl Device {
         descriptor: &pipeline::ShaderModuleDescriptorPassthrough<'a>,
     ) -> Result<Arc<pipeline::ShaderModule>, pipeline::CreateShaderModuleError> {
         self.check_is_valid()?;
-        self.require_features(wgt::Features::PASSTHROUGH_SHADERS)?;
+        if self.backend() != wgt::Backend::Metal {
+            self.require_features(wgt::Features::PASSTHROUGH_SHADERS)?;
+        }
 
         // Mainly important for GLSL or SPIR-V or DXIL, which each take exactly 1 entry point.
         if (descriptor.dxil.is_some() || descriptor.glsl.is_some())
@@ -2562,6 +2576,24 @@ impl Device {
                 .entry_points
                 .iter()
                 .map(|e| (e.name.to_string(), e.workgroup_size))
+                .collect()
+        };
+
+        let sized_bindings_hashmap = || {
+            descriptor
+                .entry_points
+                .iter()
+                .filter(|e| !e.metal_sized_bindings.is_empty())
+                .map(|e| {
+                    let list = e
+                        .metal_sized_bindings
+                        .iter()
+                        .map(|&(group, binding, array_index)| {
+                            (naga::ResourceBinding { group, binding }, array_index)
+                        })
+                        .collect();
+                    (e.name.to_string(), list)
+                })
                 .collect()
         };
 
@@ -2591,6 +2623,7 @@ impl Device {
                     hal::ShaderInput::Msl {
                         shader: msl,
                         num_workgroups: entry_point_hashmap(),
+                        sized_bindings: sized_bindings_hashmap(),
                     }
                 } else {
                     return Err(pipeline::CreateShaderModuleError::NotCompiledForBackend);

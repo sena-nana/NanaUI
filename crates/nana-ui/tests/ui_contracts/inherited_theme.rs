@@ -131,19 +131,19 @@ fn chip_keeps_its_focus_actions_and_natural_label_when_theme_metrics_change() {
     let original = cx.world().layout_box(chip.stable_id()).unwrap();
     let original_children = cx.world().node(chip.stable_id()).unwrap().children;
     assert_eq!(original_children.len(), 1, "dismiss close is assembled");
-    let label = match cx.world().component_geometry(chip.stable_id()).unwrap() {
-        ComponentGeometry::Button { label, .. } => label,
-        _ => panic!("chip must paint its button geometry"),
-    };
+    let label_bounds = cx
+        .world()
+        .content_part_box(chip.stable_id(), LayoutPartKind::TextContent)
+        .expect("chip must lay out its label part");
     let mut input = HeadlessInput::bind(&mut cx, doc);
     let (x, y) = (
-        label.bounds.x + 5.0,
-        label.bounds.y + label.bounds.height / 2.0,
+        label_bounds.x + 5.0,
+        label_bounds.y + label_bounds.height / 2.0,
     );
     assert_eq!(
         cx.pointer_target(doc, x, y),
         Some(chip.stable_id()),
-        "chip={original:?} label={label:?} close={:?}",
+        "chip={original:?} label={label_bounds:?} close={:?}",
         cx.world().layout_box(original_children[0])
     );
     input.pointer(&mut cx, PointerPhase::Down, x, y).unwrap();
@@ -169,13 +169,14 @@ fn chip_keeps_its_focus_actions_and_natural_label_when_theme_metrics_change() {
         cx.world().node(chip.stable_id()).unwrap().children,
         original_children
     );
-    let label = match cx.world().component_geometry(chip.stable_id()).unwrap() {
-        ComponentGeometry::Button { label, .. } => label,
-        _ => unreachable!(),
-    };
-    assert_eq!(label.font_size, 24.0);
-    assert_eq!(label.font_weight, Some(700));
-    assert!(label.bounds.width + 0.5 >= natural_width(&cx, chip.stable_id(), &mut shaper));
+    let label_bounds = cx
+        .world()
+        .content_part_box(chip.stable_id(), LayoutPartKind::TextContent)
+        .expect("chip label part");
+    let label_style = cx.world().computed_style(chip.stable_id()).unwrap();
+    assert_eq!(label_style.font_size, 24.0);
+    assert_eq!(label_style.font_weight, Some(700));
+    assert!(label_bounds.width + 0.5 >= natural_width(&cx, chip.stable_id(), &mut shaper));
     let close = cx.world().layout_box(original_children[0]).unwrap();
     assert_eq!(close.width, theme.tokens.metrics.compact_control_height);
     assert!(close.y >= changed.y);
@@ -189,17 +190,17 @@ fn chip_keeps_its_focus_actions_and_natural_label_when_theme_metrics_change() {
         );
     }
     let inset = theme.tokens.metrics.compact_control_padding_x + theme.tokens.border.hairline;
-    assert!((label.bounds.x - changed.x - inset).abs() < 0.5);
+    assert!((label_bounds.x - changed.x - inset).abs() < 0.5);
     assert!(
         (changed.x + changed.width - close.x - close.width - inset).abs() < 0.5,
-        "chip={changed:?} label={label:?} close={close:?} inset={inset}"
+        "chip={changed:?} label={label_bounds:?} close={close:?} inset={inset}"
     );
-    assert!((close.x - label.bounds.x - label.bounds.width - theme.tokens.spacing.xs).abs() < 0.5);
+    assert!((close.x - label_bounds.x - label_bounds.width - theme.tokens.spacing.xs).abs() < 0.5);
     input
         .pointer(
             &mut cx,
             PointerPhase::Down,
-            label.bounds.x + 5.0,
+            label_bounds.x + 5.0,
             changed.y + changed.height / 2.0,
         )
         .unwrap();
@@ -207,7 +208,7 @@ fn chip_keeps_its_focus_actions_and_natural_label_when_theme_metrics_change() {
         .pointer(
             &mut cx,
             PointerPhase::Up,
-            label.bounds.x + 5.0,
+            label_bounds.x + 5.0,
             changed.y + changed.height / 2.0,
         )
         .unwrap();

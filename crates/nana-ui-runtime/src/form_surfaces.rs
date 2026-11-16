@@ -7,8 +7,7 @@ use nana_ui_core::{
 use crate::view_components::project_common;
 use crate::{
     AccessibilityRole, AccessibilityState, ComponentView, InteractionState, InteractionStyle,
-    MutationQueue, NodeKind, NodeStyle, SemanticPaint, StableNodeId, StandardVisual, TextContent,
-    UiWorld,
+    MutationQueue, NodeKind, NodeStyle, SemanticPaint, StableNodeId, TextContent, UiWorld,
 };
 
 const SUPPORT_SIZE: f32 = nana_ui_core::type_scale::HINT;
@@ -129,6 +128,8 @@ impl FormField {
 }
 
 impl ComponentView for FormField {
+    const TYPE_ID: Option<&'static str> = Some(crate::component_descriptors::FORM_FIELD.type_id);
+
     fn share_layouts(
         &mut self,
         share: &mut dyn FnMut(&mut std::sync::Arc<nana_ui_core::LayoutStyle>),
@@ -151,15 +152,15 @@ impl ComponentView for FormField {
                 },
             );
         }
-        let visual = StandardVisual::FormField {
+        let visual = FormFieldVisual {
             label: Arc::clone(&self.label),
             hint: self.hint.clone(),
             error: self.error.clone(),
             size: self.size,
             control: self.control,
         };
-        if world.standard_visual(id) != Some(visual.clone()) {
-            mutations.set_standard_visual(id, Some(visual));
+        if world.widget_visual_as::<FormFieldVisual>(id) != Some(&visual) {
+            mutations.set_widget_visual(id, Some(visual));
         }
         project_common(
             id,
@@ -178,6 +179,161 @@ impl ComponentView for FormField {
                 ..AccessibilityState::default()
             },
         );
+    }
+}
+
+/// Visual state for [`FormField`] nodes.
+#[derive(Debug, Clone, PartialEq)]
+pub struct FormFieldVisual {
+    pub label: Arc<str>,
+    pub hint: Option<Arc<str>>,
+    pub error: Option<Arc<str>>,
+    pub size: ControlSize,
+    pub control: Option<StableNodeId>,
+}
+
+impl crate::WidgetVisual for FormFieldVisual {
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+
+    fn dyn_eq(&self, other: &dyn std::any::Any) -> bool {
+        other.downcast_ref::<Self>().is_some_and(|rhs| self == rhs)
+    }
+
+    fn content_layout_changed(&self, prev: Option<&dyn std::any::Any>) -> bool {
+        match prev.and_then(|any| any.downcast_ref::<Self>()) {
+            Some(old) => {
+                (self.size, self.hint.is_some(), self.error.is_some())
+                    != (old.size, old.hint.is_some(), old.error.is_some())
+            }
+            None => true,
+        }
+    }
+
+    fn clearing_changes_content_layout(&self) -> bool {
+        true
+    }
+
+    fn invalidates_node_text_constraint(&self) -> bool {
+        true
+    }
+
+    fn solve_content_parts(
+        &self,
+        id: StableNodeId,
+        world: &UiWorld,
+        bounds: crate::LayoutBox,
+        _content: crate::LayoutBox,
+        _writing: nana_ui_core::WritingContext,
+        _own_frame: bool,
+    ) -> Option<crate::layout_engine::parts::ContentParts> {
+        let support = self.error.as_ref().or(self.hint.as_ref());
+        let support_measure = support.map(|support| {
+            world
+                .chrome_text_measure(id)
+                .width(support, world.theme().typography().hint, None)
+        });
+        let reverse = world.right_to_left(id);
+        Some(crate::layout_engine::parts::form_field_parts(
+            bounds,
+            self.size,
+            support.map(|text| &**text),
+            self.error.is_some(),
+            support_measure,
+            reverse,
+        ))
+    }
+
+    fn paint(&self, ctx: &crate::WidgetPaintCtx<'_>) -> crate::WidgetPaintOutput {
+        let (label_size, _gap, label_role, label_weight) = form_field_density(self.size);
+        let label_height = form_field_label_line(self.size);
+        let support = self.error.as_ref().or(self.hint.as_ref());
+        let support_role = if self.error.is_some() {
+            SemanticColorRole::Danger
+        } else {
+            SemanticColorRole::Muted
+        };
+        let parts = ctx.content_parts();
+        let label_bounds =
+            crate::layout_engine::parts::part_bounds(&parts, crate::LayoutPartKind::Label)
+                .unwrap_or(crate::LayoutBox {
+                    x: ctx.bounds.x,
+                    y: ctx.bounds.y,
+                    width: ctx.bounds.width,
+                    height: label_height.min(ctx.bounds.height),
+                });
+        let support_bounds =
+            crate::layout_engine::parts::part_bounds(&parts, crate::LayoutPartKind::Hint);
+        let support_height = nana_ui_core::type_scale::META.min(ctx.bounds.height);
+        let support_y = (ctx.bounds.y + ctx.bounds.height - support_height).max(ctx.bounds.y);
+        let indicator_lane =
+            crate::layout_engine::parts::part_bounds(&parts, crate::LayoutPartKind::LeadingContent);
+
+        let mut out = crate::WidgetPaintOutput {
+            suppress_root_surface: true,
+            owns_node_text: true,
+            ..crate::WidgetPaintOutput::new()
+        };
+        out.push(
+            2,
+            crate::WidgetPaintOp::Text(crate::widget_visual::widget_text_region(
+                &crate::ComponentTextRegion {
+                    bounds: label_bounds,
+                    content: crate::TextValue::from(Arc::clone(&self.label)),
+                    color: Some(ctx.style_model.color(label_role).as_rgba_array()),
+                    font_size: label_size,
+                    font_weight: Some(label_weight),
+                },
+                ctx,
+                crate::TextHorizontalAlignment::Start,
+                true,
+            )),
+        );
+        if let Some(message) = support {
+            out.push(
+                3,
+                crate::WidgetPaintOp::Text(crate::widget_visual::widget_text_region(
+                    &crate::ComponentTextRegion {
+                        bounds: support_bounds.unwrap_or(crate::LayoutBox {
+                            x: ctx.bounds.x,
+                            y: support_y,
+                            width: ctx.bounds.width,
+                            height: support_height,
+                        }),
+                        content: crate::TextValue::from(Arc::clone(message)),
+                        color: Some(ctx.style_model.color(support_role).as_rgba_array()),
+                        font_size: SUPPORT_SIZE,
+                        font_weight: None,
+                    },
+                    ctx,
+                    crate::TextHorizontalAlignment::Start,
+                    true,
+                )),
+            );
+        }
+        if let (Some(_), Some(lane)) = (&self.error, indicator_lane) {
+            let diameter = (lane.width * 10.0 / 24.0).min(lane.height).max(0.0);
+            let indicator_color = ctx.style_model.color(support_role).as_rgba_array();
+            out.push(
+                4,
+                crate::WidgetPaintOp::Quad(crate::WidgetQuad {
+                    rect: crate::LayoutBox {
+                        x: lane.x + (lane.width - diameter) / 2.0,
+                        y: lane.y + (lane.height - diameter) / 2.0,
+                        width: diameter,
+                        height: diameter,
+                    },
+                    border: Some((indicator_color, 1.0)),
+                    border_paint: ctx
+                        .matching_text_paint(indicator_color)
+                        .or_else(|| ctx.matching_border_paint(indicator_color)),
+                    corner_radius: [999.0; 4],
+                    ..crate::WidgetQuad::default()
+                }),
+            );
+        }
+        out
     }
 }
 
@@ -259,7 +415,8 @@ impl InteractiveCard {
                 ..SemanticPaint::default()
             },
             ..InteractionStyle::default()
-        };
+        }
+        .into();
         {
             let layout = Arc::make_mut(&mut style.layout);
             layout.width = Some(LengthSpec::Fill);
@@ -290,6 +447,9 @@ impl Default for InteractiveCard {
 }
 
 impl ComponentView for InteractiveCard {
+    const TYPE_ID: Option<&'static str> =
+        Some(crate::component_descriptors::INTERACTIVE_CARD.type_id);
+
     fn share_layouts(
         &mut self,
         share: &mut dyn FnMut(&mut std::sync::Arc<nana_ui_core::LayoutStyle>),
@@ -304,7 +464,7 @@ impl ComponentView for InteractiveCard {
     }
 
     fn project(&self, id: StableNodeId, world: &UiWorld, mutations: &mut MutationQueue) {
-        let visual = StandardVisual::Card {
+        let visual = crate::CardVisual {
             title: None,
             kind: if self.selected {
                 CardKind::Selected
@@ -314,8 +474,8 @@ impl ComponentView for InteractiveCard {
             loading: false,
             loading_phase: 0.0,
         };
-        if world.standard_visual(id) != Some(visual.clone()) {
-            mutations.set_standard_visual(id, Some(visual));
+        if world.widget_visual_as::<crate::CardVisual>(id) != Some(&visual) {
+            mutations.set_widget_visual(id, Some(visual));
         }
         project_common(
             id,
@@ -366,8 +526,8 @@ mod tests {
         );
         assert_eq!(context.world().text(id), Some(""));
         assert_eq!(
-            context.world().standard_visual(id),
-            Some(StandardVisual::FormField {
+            context.world().widget_visual_as::<FormFieldVisual>(id),
+            Some(&FormFieldVisual {
                 label: Arc::from("Email"),
                 hint: Some(Arc::from("Work email")),
                 error: Some(Arc::from("Invalid email")),
@@ -480,8 +640,8 @@ mod tests {
             .unwrap();
         let id = selected.stable_id();
         assert!(matches!(
-            context.world().standard_visual(id),
-            Some(StandardVisual::Card {
+            context.world().widget_visual_as::<crate::CardVisual>(id),
+            Some(crate::CardVisual {
                 kind: CardKind::Selected,
                 title: None,
                 loading: false,
@@ -507,8 +667,10 @@ mod tests {
             .unwrap();
         let disabled_id = disabled.stable_id();
         assert!(matches!(
-            context.world().standard_visual(disabled_id),
-            Some(StandardVisual::Card {
+            context
+                .world()
+                .widget_visual_as::<crate::CardVisual>(disabled_id),
+            Some(crate::CardVisual {
                 kind: CardKind::Surface,
                 ..
             })
@@ -546,14 +708,26 @@ mod tests {
             .compat_world_mut()
             .resolve_styles(&work.style)
             .unwrap();
-        let crate::ComponentGeometry::FormField {
-            support, indicator, ..
-        } = context.world().component_geometry(id).unwrap()
+        let paint = context.world().widget_paint(id).unwrap();
+        let crate::WidgetPaintOp::Text(support) = &paint
+            .ops
+            .iter()
+            .find(|tagged| tagged.slot == 3)
+            .expect("error text")
+            .op
         else {
-            panic!("form field geometry");
+            panic!("form field support text");
         };
-        let support = support.expect("error text");
-        let (indicator, _) = indicator.expect("error indicator");
+        let crate::WidgetPaintOp::Quad(indicator_quad) = &paint
+            .ops
+            .iter()
+            .find(|tagged| tagged.slot == 4)
+            .expect("error indicator")
+            .op
+        else {
+            panic!("form field error indicator");
+        };
+        let indicator = indicator_quad.rect;
         let text_center = support.bounds.y + support.bounds.height / 2.0;
         let indicator_center = indicator.y + indicator.height / 2.0;
         assert!((text_center - indicator_center).abs() < 0.01);

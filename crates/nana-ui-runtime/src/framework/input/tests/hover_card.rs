@@ -38,10 +38,7 @@ impl Fixture {
             .create_component(doc, Stack::column(8.0).hittable())
             .unwrap();
         let qr = cx
-            .create_component(
-                doc,
-                QrCode::encode("https://example.com/login", 100.0).unwrap(),
-            )
+            .create_component(doc, QrCode::from_modules(vec![true; 4], 2, 100.0).unwrap())
             .unwrap();
         let refresh = cx.create_component(doc, Button::new("refresh")).unwrap();
         let other = cx.create_component(doc, TextInput::new("other")).unwrap();
@@ -334,7 +331,7 @@ fn hover_card_close_validates_restore_target_after_the_whole_update() {
         } else {
             Arc::make_mut(&mut hidden.layout).display = Some(nana_ui_core::DisplaySpec::None);
         }
-        let mut disabled = f.cx.world().accessibility(editor).unwrap().clone();
+        let mut disabled = f.cx.world().accessibility(editor).unwrap().into_owned();
         disabled.disabled = true;
         f.cx.update_component(f.card, |card, cx| {
             card.open = false;

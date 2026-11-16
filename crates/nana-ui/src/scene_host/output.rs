@@ -243,7 +243,7 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
     ) {
         if let Some(trace) = self.direct_output_traces.get_mut(&id) {
             trace.observe(
-                nana_ui_core::OutputWorkObservation {
+                crate::output::OutputWorkObservation {
                     deferred: 1,
                     ..Default::default()
                 },
@@ -305,7 +305,7 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
         trace.state = crate::output::OutputTraceState::Submitted;
         trace.deferral_reason = crate::output::OutputTraceDeferral::None;
         trace.observe(
-            nana_ui_core::OutputWorkObservation {
+            crate::output::OutputWorkObservation {
                 ui_renders: 1,
                 submissions: 1,
                 ..Default::default()
@@ -379,7 +379,9 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
         self.sync_compositor_clock(id);
         let geometry = self.content_geometry_of(id);
         let viewport = LayoutViewport::new(geometry.logical_size.0, geometry.logical_size.1);
+        let a11y_enabled = self.is_accessibility_activated(id);
         let Some(flush) = self.program.write_document(id, |document| {
+            document.set_accessibility_enabled(a11y_enabled);
             crate::output::driver::flush_presentation(document, viewport, &mut self.text)
         }) else {
             return false;
@@ -432,11 +434,7 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
             // An unchanged output and no producers: nothing to record.
             if let Some(state) = self.window_outputs.get(&id) {
                 let work = state.last_work();
-                self.program.write_document(id, |document| {
-                    let context = document.context_mut();
-                    context.record_output_work(work);
-                    context.record_presentation_gpu_work(None);
-                });
+                self.record_presentation_work(id, work, None);
             }
             self.flush_window_output(id);
             self.deliver_output_traces(id);
@@ -455,11 +453,7 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
             if let Some(state) = self.window_outputs.get_mut(&id) {
                 state.defer_frame(Instant::now());
                 let work = state.last_work();
-                self.program.write_document(id, |document| {
-                    let context = document.context_mut();
-                    context.record_output_work(work);
-                    context.record_presentation_gpu_work(None);
-                });
+                self.record_presentation_work(id, work, None);
             }
             self.retry_frame_soon(id);
             self.deliver_output_traces(id);
@@ -520,11 +514,7 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
         if let Some(state) = self.window_outputs.get(&id) {
             let mut work = state.last_work();
             work.submissions = 1;
-            self.program.write_document(id, |document| {
-                let context = document.context_mut();
-                context.record_output_work(work);
-                context.record_presentation_gpu_work(gpu_work);
-            });
+            self.record_presentation_work(id, work, gpu_work);
         }
         // Only the output painted the scene: its images' sizes are the
         // window's too.

@@ -1,6 +1,7 @@
 //! Style resolution and semantic palette inheritance.
 
 use super::*;
+use crate::InheritedStyle;
 
 impl UiWorld {
     /// A node with no local computed overrides publishes its parent's style.
@@ -13,7 +14,6 @@ impl UiWorld {
         &mut self,
         id: StableNodeId,
         parent: Option<StableNodeId>,
-        work: &mut ThemeWorkCounters,
     ) -> Result<bool, UiWorldError> {
         let Some(parent) = parent else {
             return Ok(false);
@@ -21,7 +21,6 @@ impl UiWorld {
         if self.layout_length_tracks.contains_key(&id)
             || !self.overlay_branch_active(id)
             || !self.menu_branch_open(id)
-            || self.nodes.visual(id).is_some()
             || (!self.presentation.is_empty() && !self.font_axis_overlay(id).is_empty())
             || self.hover_transitions.contains_key(&id)
         {
@@ -29,29 +28,27 @@ impl UiWorld {
         }
         let parent_style = {
             let parent_record = self.record(parent);
-            if parent_record.resolved.1 != self.palette_epoch {
+            if parent_record.resolved.1 != self.resolved_palette_epoch() {
                 return Ok(false);
             }
-            Arc::clone(&parent_record.resolved.0)
+            Arc::clone(&parent_record.resolved.2)
         };
-        // Sharing hands the child every field of the parent's style. That is
-        // the child's own answer only while the parent sets none of the
-        // non-inherited ones; a child of a painted box resolves its own.
-        if carries_non_inherited_paint(&parent_style) {
-            return Ok(false);
-        }
         let writing_mode = parent_style.writing_mode;
         let direction = parent_style.direction;
         let text_orientation = parent_style.text_orientation;
+        let has_visual = self.widget_visual_ref(id).is_some();
         let (inherited, same, has_text, show_text) = {
             let record = self.record(id);
-            let inherited = record.style.computed_style_is_inherited();
+            let inherited = record.style.computed_style_is_inherited()
+                && (crate::components::layout_style_is_default(&record.resolved_layout)
+                    || !record.resolved_layout.overrides_computed_style());
             (
                 inherited,
                 inherited
                     && Arc::ptr_eq(&record.resolved.0, &parent_style)
-                    && record.resolved.1 == self.palette_epoch,
-                !record.text.value.is_empty() || matches!(record.kind.as_ref(), NodeKind::Text),
+                    && Arc::ptr_eq(&record.resolved.2, &parent_style)
+                    && record.resolved.1 == self.resolved_palette_epoch(),
+                has_visual || record.has_text || matches!(record.kind.as_ref(), NodeKind::Text),
                 !record.resolved.0.visible && parent_style.visible,
             )
         };
@@ -72,17 +69,19 @@ impl UiWorld {
             record.inherited_orientation = text_orientation;
         }
         if same {
-            work.record_skipped();
             return Ok(true);
         }
         if has_text {
-            self.invalidate_text_for_style(id, &parent_style, work);
+            self.invalidate_text_for_style(id, &parent_style);
         }
         if show_text {
             self.text_shown.push(id);
         }
-        work.record_resolved();
-        self.record_mut(id).resolved = ResolvedStyle(parent_style, self.palette_epoch);
+        self.record_mut(id).resolved = ResolvedStyle(
+            Arc::clone(&parent_style),
+            self.resolved_palette_epoch(),
+            parent_style,
+        );
         Ok(true)
     }
 
@@ -93,7 +92,6 @@ impl UiWorld {
         &mut self,
         id: StableNodeId,
         resolved: &mut HashSet<StableNodeId>,
-        work: &mut ThemeWorkCounters,
     ) -> Result<(), UiWorldError> {
         let mut chain = Vec::new();
         let mut cursor = Some(id);
@@ -108,7 +106,7 @@ impl UiWorld {
             cursor = self.record(node).hierarchy.parent;
         }
         for node in chain.into_iter().rev() {
-            self.resolve_one_style::<SHARE>(node, work)?;
+            self.resolve_one_style::<SHARE>(node)?;
         }
         Ok(())
     }
@@ -117,10 +115,9 @@ impl UiWorld {
     fn resolve_one_style<const SHARE: bool>(
         &mut self,
         id: StableNodeId,
-        work: &mut ThemeWorkCounters,
     ) -> Result<(), UiWorldError> {
         let parent = self.record(id).hierarchy.parent;
-        if SHARE && self.publish_inherited_computed_style(id, parent, work)? {
+        if SHARE && self.publish_inherited_computed_style(id, parent)? {
             return Ok(());
         }
         // The layout the pipeline reads: design intent and a responsive
@@ -198,6 +195,8 @@ impl UiWorld {
                 ))
             }
         });
+        let has_text_ext = !layout.text_ext.is_shared_default();
+        let text_ext = &*layout.text_ext;
         let paint_colors = if layout.paint_colors.is_shared_default()
             && inherited.paint_colors.is_shared_default()
         {
@@ -221,14 +220,14 @@ impl UiWorld {
                 border_left: layout.paint_colors.border_left,
                 outline: layout.paint_colors.outline,
                 selection_background: layout.paint_colors.selection_background.or_else(|| {
-                    layout
+                    text_ext
                         .selection_background
                         .is_none()
                         .then_some(inherited.paint_colors.selection_background)
                         .flatten()
                 }),
                 selection_color: layout.paint_colors.selection_color.or_else(|| {
-                    layout
+                    text_ext
                         .selection_color
                         .is_none()
                         .then_some(inherited.paint_colors.selection_color)
@@ -241,13 +240,88 @@ impl UiWorld {
                 slots.into()
             }
         };
-        let next = ComputedStyle {
-            paint_colors,
+        // Its own language; else, for localized text, the language its
+        // locale shapes in; else its parent's.
+        let language = match self.nodes.language(id) {
+            Some(own) => Some(own.clone()),
+            None => match self.localized_language(id) {
+                Some(localized) => Some(localized),
+                None if parent.is_some() => inherited.ext.language.clone(),
+                None => self.root_language(),
+            },
+        };
+        let selection_background = text_ext
+            .selection_background
+            .or(inherited.ext.selection_background);
+        let selection_color = text_ext.selection_color.or(inherited.ext.selection_color);
+        let text_typography = text_ext
+            .text_typography
+            .inherit_from(inherited.ext.text_typography);
+        let text_emphasis = if has_text_ext {
+            nana_ui_core::TextEmphasis {
+                style: text_ext
+                    .text_emphasis_style
+                    .clone()
+                    .unwrap_or_else(|| inherited.ext.text_emphasis.style.clone()),
+                position: text_ext
+                    .text_emphasis_position
+                    .unwrap_or(inherited.ext.text_emphasis.position),
+                color: text_ext
+                    .text_emphasis_color
+                    .unwrap_or(inherited.ext.text_emphasis.color),
+            }
+        } else {
+            inherited.ext.text_emphasis.clone()
+        };
+        let ext_same_base = inherited.ext.language == language
+            && inherited.ext.color_scope == color_scope
+            && (self.presentation.is_empty() || self.font_axis_overlay(id).is_empty())
+            && (!has_text_ext
+                || (inherited.ext.selection_background == selection_background
+                    && inherited.ext.selection_color == selection_color
+                    && inherited.ext.text_typography == text_typography
+                    && inherited.ext.text_emphasis == text_emphasis
+                    && (text_ext.font_features.is_none()
+                        || text_ext.font_features.as_deref()
+                            == Some(inherited.ext.font_features.as_slice()))
+                    && (text_ext.font_variation_settings.is_none()
+                        || text_ext.font_variation_settings.as_deref()
+                            == Some(inherited.ext.font_variations.as_slice()))));
+        let ext = if ext_same_base {
+            inherited.ext.clone()
+        } else {
+            crate::InheritedStyleExt {
+                selection_background,
+                selection_color,
+                font_features: text_ext
+                    .font_features
+                    .clone()
+                    .unwrap_or_else(|| inherited.ext.font_features.clone()),
+                font_variations: {
+                    let mut axes = text_ext
+                        .font_variation_settings
+                        .clone()
+                        .unwrap_or_else(|| inherited.ext.font_variations.clone());
+                    for (tag, value) in self.font_axis_overlay(id) {
+                        match value {
+                            Some(value) => {
+                                nana_ui_core::FontVariationSetting::set_axis(&mut axes, tag, value)
+                            }
+                            None => axes.retain(|axis| axis.tag != tag),
+                        }
+                    }
+                    axes
+                },
+                text_typography,
+                text_emphasis,
+                language,
+                color_scope,
+            }
+            .into()
+        };
+        let next_inherited = crate::InheritedStyle {
             foreground,
             color,
-            background,
-            border_color,
-            ring_color: self.palette_ring_color(id, model),
             opacity: layout.opacity.unwrap_or(1.0) * inherited.opacity,
             visibility,
             box_visible,
@@ -256,77 +330,30 @@ impl UiWorld {
             cursor: layout.cursor.unwrap_or(inherited.cursor),
             cursor_specified: layout.cursor.is_some() || inherited.cursor_specified,
             user_select: layout.user_select.unwrap_or(inherited.user_select),
-            selection_background: layout
-                .selection_background
-                .or(inherited.selection_background),
-            selection_color: layout.selection_color.or(inherited.selection_color),
             font_size: font_size_base * text_scale,
             font_weight,
             italic: layout.font_italic.unwrap_or(inherited.italic),
-            font_family: layout
+            font_family: text_ext
                 .font_family
                 .as_deref()
                 .map(Arc::<str>::from)
                 .or_else(|| inherited.font_family.clone()),
             line_height: line_height_base.map(|spec| scaled_line_height(spec, text_scale)),
-            letter_spacing: layout.letter_spacing.unwrap_or(inherited.letter_spacing),
-            font_features: layout
-                .font_features
-                .clone()
-                .unwrap_or_else(|| inherited.font_features.clone()),
-            font_variations: {
-                let mut axes = layout
-                    .font_variation_settings
-                    .clone()
-                    .unwrap_or_else(|| inherited.font_variations.clone());
-                for (tag, value) in self.font_axis_overlay(id) {
-                    match value {
-                        Some(value) => {
-                            nana_ui_core::FontVariationSetting::set_axis(&mut axes, tag, value)
-                        }
-                        None => axes.retain(|axis| axis.tag != tag),
-                    }
-                }
-                axes
-            },
-            font_kerning: layout.font_kerning.unwrap_or(inherited.font_kerning),
-            word_break: layout.word_break.unwrap_or(inherited.word_break),
-            line_break: layout.line_break.unwrap_or(inherited.line_break),
-            text_typography: layout
-                .text_typography
-                .inherit_from(inherited.text_typography),
-            text_emphasis: nana_ui_core::TextEmphasis {
-                style: layout
-                    .text_emphasis_style
-                    .clone()
-                    .unwrap_or_else(|| inherited.text_emphasis.style.clone()),
-                position: layout
-                    .text_emphasis_position
-                    .unwrap_or(inherited.text_emphasis.position),
-                color: layout
-                    .text_emphasis_color
-                    .unwrap_or(inherited.text_emphasis.color),
-            },
+            letter_spacing: text_ext.letter_spacing.unwrap_or(inherited.letter_spacing),
+            font_kerning: text_ext.font_kerning.unwrap_or(inherited.font_kerning),
+            word_break: text_ext.word_break.unwrap_or(inherited.word_break),
+            line_break: text_ext.line_break.unwrap_or(inherited.line_break),
             direction: layout.dir.unwrap_or(inherited.direction),
             writing_mode: layout.writing_mode.unwrap_or(inherited.writing_mode),
-            text_orientation: layout
+            text_orientation: text_ext
                 .text_orientation
                 .unwrap_or(inherited.text_orientation),
-            // Its own language; else, for localized text, the language its
-            // locale shapes in; else its parent's.
-            language: match self.nodes.language(id) {
-                Some(own) => Some(own.clone()),
-                None => match self.localized_language(id) {
-                    Some(localized) => Some(localized),
-                    None if parent.is_some() => inherited.language.clone(),
-                    None => self.root_language(),
-                },
-            },
             text_scale,
             font_size_base,
             line_height_base,
-            color_scope,
+            ext,
         };
+        let ring_color = self.palette_ring_color(id, model);
         // Written before the early return: a node that declares its own
         // writing mode resolves to the same style when its parent's changes,
         // but its containing block is still the parent.
@@ -343,40 +370,79 @@ impl UiWorld {
         };
         {
             let resolved = &self.record(id).resolved;
-            if resolved.0.as_ref() == &next && resolved.1 == self.palette_epoch {
-                work.record_skipped();
+            let cur = resolved.0.as_ref();
+            if resolved.1 == self.resolved_palette_epoch()
+                && cur.background == background
+                && cur.border_color == border_color
+                && cur.ring_color == ring_color
+                && cur.paint_colors == paint_colors
+                && *cur.inherited == next_inherited
+            {
                 return Ok(());
             }
         }
-        work.record_resolved();
-        // Identical inherited results can share immutable paint state. Local
-        // authored style remains on the node; future changes publish a new Arc.
-        let shared = if SHARE {
-            parent
-                .map(|parent| &self.record(parent).resolved.0)
-                .filter(|inherited| inherited.as_ref() == &next)
-                .map(Arc::clone)
+        let inherited_arc = if SHARE && *inherited_style.inherited == next_inherited {
+            Arc::clone(&inherited_style.inherited)
+        } else if SHARE {
+            self.inherited_styles.intern(next_inherited)
         } else {
-            None
+            Arc::new(next_inherited)
         };
-        let next = match shared {
-            Some(shared) => shared,
-            None => {
-                // One `ComputedStyle` behind one `Arc`. A node that inherits
-                // its parent's result verbatim borrows that allocation instead.
-                work.record_allocation(1, size_of::<ComputedStyle>());
+        let next = ComputedStyle {
+            inherited: inherited_arc,
+            paint_colors,
+            background,
+            border_color,
+            ring_color,
+        };
+        // Identical inherited results can share immutable paint state. Painted
+        // boxes publish an unpainted companion Arc (`resolved.2`) so descendants
+        // inside them still share via `Arc::clone`.
+        let (next_arc, next_unpainted) = if !next.has_local_paint() {
+            let shared = if SHARE {
+                parent
+                    .map(|parent| &self.record(parent).resolved.2)
+                    .filter(|inherited| inherited.as_ref() == &next)
+                    .map(Arc::clone)
+            } else {
+                None
+            };
+            let arc = shared.unwrap_or_else(|| {
+                if SHARE {
+                    self.computed_styles.intern(next)
+                } else {
+                    Arc::new(next)
+                }
+            });
+            (Arc::clone(&arc), arc)
+        } else {
+            let arc = if SHARE {
+                self.computed_styles.intern(next)
+            } else {
                 Arc::new(next)
-            }
+            };
+            let unpainted = if SHARE {
+                let clean = arc.without_local_paint();
+                parent
+                    .map(|parent| &self.record(parent).resolved.2)
+                    .filter(|parent_unpainted| parent_unpainted.as_ref() == &clean)
+                    .map(Arc::clone)
+                    .unwrap_or_else(|| self.computed_styles.intern(clean))
+            } else {
+                Arc::clone(&arc)
+            };
+            (arc, unpainted)
         };
-        self.invalidate_text_for_style(id, &next, work);
-        if !self.record(id).resolved.0.visible && next.visible {
+        self.invalidate_text_for_style(id, &next_arc);
+        if !self.record(id).resolved.0.visible && next_arc.visible {
             // Text passes skip hidden nodes without resolving them, so a node
             // whose box changed while hidden comes back stale. The scheduled
             // text pass of this same frame picks it up; marking it dirty here,
             // after the drain, would cost the frame another pass.
             self.text_shown.push(id);
         }
-        self.record_mut(id).resolved = ResolvedStyle(next, self.palette_epoch);
+        self.record_mut(id).resolved =
+            ResolvedStyle(next_arc, self.resolved_palette_epoch(), next_unpainted);
         Ok(())
     }
 }
@@ -694,7 +760,6 @@ impl UiWorld {
     ) -> Arc<nana_ui_core::LayoutStyle> {
         let (mut resolved, copied) = self.node_layout(id, style);
         if copied {
-            self.record_resolved_layout_copy();
             self.layouts.intern(&mut resolved);
         }
         resolved
@@ -720,7 +785,6 @@ impl UiWorld {
                 continue;
             }
             if copied {
-                self.record_resolved_layout_copy();
                 self.layouts.intern(&mut resolved);
             }
             self.record_mut(id).resolved_layout = resolved;
@@ -752,16 +816,13 @@ impl UiWorld {
     }
 
     /// Read one role out of `model` (the token authority under a node's
-    /// colour scope), counted for Issue #101 §4.
+    /// colour scope).
     fn theme_color(&self, model: StyleModelRef, role: SemanticColorRole) -> [f32; 4] {
-        self.record_theme_read();
         model.color(role).as_rgba_array()
     }
 
-    /// Resolve a palette mix. One question asked of the theme, so one read —
-    /// the roles it blends are the mix's own business.
+    /// Resolve a palette mix.
     fn theme_mix(&self, model: StyleModelRef, mix: nana_ui_core::SemanticColorMix) -> [f32; 4] {
-        self.record_theme_read();
         mix.resolve(model).as_rgba_array()
     }
 
@@ -928,7 +989,7 @@ impl UiWorld {
             ..crate::SemanticPaint::default()
         }
         .overlay(local.interaction.base);
-        let accessibility = &self.record(id).accessibility;
+        let accessibility = self.nodes.accessibility(id);
         let selected = accessibility.checked == Some(true)
             || accessibility.mixed
             || accessibility.selected == Some(true);
@@ -984,7 +1045,7 @@ impl UiWorld {
     /// grey stays resolved against the surface the row no longer has. The
     /// role still defaults to `Muted`, so a component that says nothing paints
     /// exactly what it painted before.
-    pub(super) fn secondary_text_color(&self, id: StableNodeId) -> [f32; 4] {
+    pub(crate) fn secondary_text_color(&self, id: StableNodeId) -> [f32; 4] {
         let local = &self.record(id).style;
         let role = self
             .semantic_paint(id, local)
@@ -1002,12 +1063,11 @@ impl UiWorld {
     /// still wins. Focus does: light mode's focus fill is nearly solid and its
     /// label is already the weakest text on it, so the detail keeps the
     /// label's full colour there rather than fading under it.
-    pub(super) fn row_secondary_text_color(&self, id: StableNodeId, primary: [f32; 4]) -> [f32; 4] {
+    pub(crate) fn row_secondary_text_color(&self, id: StableNodeId, primary: [f32; 4]) -> [f32; 4] {
         let local = &self.record(id).style;
         if let Some(role) = self.semantic_paint(id, local).foreground_secondary {
             return self.theme_color(self.node_style_model(id), role);
         }
-        self.record_theme_read();
         let [r, g, b, a] = primary;
         [r, g, b, a * self.style_model.opacity.secondary_text]
     }
@@ -1048,14 +1108,12 @@ impl UiWorld {
         // A painter reads the state it is in, so it re-records on it.
         let painted = record.style.painter.is_some()
             || (!self.painter_overrides.is_empty() && self.painter_overrides.contains_key(&id));
-        let styled = !record.style.interaction.is_empty();
+        let styled =
+            !record.style.interaction.is_shared_default() && !record.style.interaction.is_empty();
         if painted {
             self.mark_repaint(id);
         }
         if styled {
-            let mut work = ThemeWorkCounters::default();
-            work.record_paint_invalidation(1);
-            self.record_theme_work(work);
             if self.record(id).hierarchy.children.is_empty() {
                 self.mark(id, DirtyMask::STYLE | DirtyMask::RENDER);
             } else {
@@ -1073,11 +1131,9 @@ impl UiWorld {
         // once so parent-chain deduplication does not repeatedly rehash large
         // initial documents.
         let mut resolved = HashSet::with_capacity(ids.len());
-        let mut work = ThemeWorkCounters::default();
         for &id in ids {
-            self.resolve_style::<true>(id, &mut resolved, &mut work)?;
+            self.resolve_style::<true>(id, &mut resolved)?;
         }
-        self.record_theme_work(work);
         self.reconcile_focus(ids);
         self.drop_invalid_document_text_selections();
         Ok(())
@@ -1092,11 +1148,9 @@ impl UiWorld {
         ids: &[StableNodeId],
     ) -> Result<(), UiWorldError> {
         let mut resolved = HashSet::new();
-        let mut work = ThemeWorkCounters::default();
         for &id in ids {
-            self.resolve_style::<false>(id, &mut resolved, &mut work)?;
+            self.resolve_style::<false>(id, &mut resolved)?;
         }
-        self.record_theme_work(work);
         self.reconcile_focus(ids);
         Ok(())
     }
@@ -1185,7 +1239,6 @@ impl UiWorld {
         // names a step moves when its scale does.
         let metrics_changed = !self.style_model.metrics.same_layout(&previous_metrics)
             || previous_scales != (self.theme.typography(), self.theme.spacing());
-        let seeds_before = self.layout_seeds_created;
         let mut ids = Vec::new();
         for roots in self.live_document_roots.values() {
             for &root in roots {
@@ -1201,10 +1254,11 @@ impl UiWorld {
             ids.iter()
                 .copied()
                 .filter(|id| {
-                    matches!(
-                        self.nodes.visual(*id),
-                        Some(StandardVisual::ModalFrame { .. } | StandardVisual::EmptyState { .. })
-                    )
+                    self.widget_visual_as::<crate::ModalFrameVisual>(*id)
+                        .is_some()
+                        || self
+                            .widget_visual_as::<crate::EmptyStateVisual>(*id)
+                            .is_some()
                 })
                 .collect::<Vec<_>>()
         } else {
@@ -1216,25 +1270,20 @@ impl UiWorld {
             ids.iter()
                 .copied()
                 .filter(|id| {
-                    let visual = self.nodes.visual(*id);
-                    (token_layout_changed && super::content_parts::visual_parts_read_theme(visual))
-                        || (toast_changed && matches!(visual, Some(StandardVisual::Toast { .. })))
+                    let widget_visual = self.nodes.widget_visual(*id);
+                    (token_layout_changed
+                        && widget_visual.is_some_and(|w| w.visual_parts_read_theme()))
+                        || (toast_changed && widget_visual.is_some_and(|w| w.reads_toast_recipe()))
                 })
                 .collect::<Vec<_>>()
         } else {
             Vec::new()
         };
-        let mut work = ThemeWorkCounters::default();
-        work.record_paint_invalidation(ids.len());
-        if !ids.is_empty() {
-            work.record_allocation(1, ids.len().saturating_mul(size_of::<StableNodeId>()));
-        }
-        let mut dependents = 0;
         if metrics_changed || token_layout_changed || shape_changed {
             // Design intent resolves against the metrics, so a metrics install
             // is the one event that has to re-run it. Doing it here, once, is
             // what keeps it off every frame's read path.
-            dependents = self.reresolve_layout_intent();
+            self.reresolve_layout_intent();
             // An unstyled root has no authored token intent to re-resolve. Its
             // inherited defaults nevertheless changed and must shape this frame.
             let default_roots = self
@@ -1260,12 +1309,8 @@ impl UiWorld {
                         ..classified
                     },
                 );
-                dependents += 1;
             }
-            work.record_layout_invalidation(dependents);
         }
-        work.record_layout_invalidation(modal_frames.len() + part_readers.len());
-        self.record_theme_work(work);
         for id in modal_frames {
             // These visuals shape several internal typography roles. A
             // description or message can change while the root's own font
@@ -1307,14 +1352,6 @@ impl UiWorld {
         }
         for id in ids {
             self.mark(id, DirtyMask::RENDER);
-        }
-        let seeds = (self.layout_seeds_created - seeds_before) as usize;
-        let counts = &mut self.counters.pending_drain_counts;
-        if metrics_changed || token_layout_changed || shape_changed {
-            counts.theme_to_layout_seeds += seeds;
-            counts.theme_metric_dependents_invalidated += dependents;
-        } else {
-            counts.theme_palette_layout_invalidations += seeds;
         }
     }
 }
@@ -1566,22 +1603,55 @@ impl LayoutInterner {
     }
 }
 
-/// Whether `style` sets a property children do not inherit: a background,
-/// a border or an outline color.
-fn carries_non_inherited_paint(style: &ComputedStyle) -> bool {
-    style.background.is_some()
-        || style.border_color.is_some()
-        || style.ring_color.is_some()
-        || (!style.paint_colors.is_shared_default() && {
-            let slots = &style.paint_colors;
-            slots.background.is_some()
-                || slots.border.is_some()
-                || slots.border_top.is_some()
-                || slots.border_right.is_some()
-                || slots.border_bottom.is_some()
-                || slots.border_left.is_some()
-                || slots.outline.is_some()
-        })
+const RECENT_INHERITED_STYLES: usize = 16;
+
+/// Recently resolved inherited styles, so siblings that diverge from a shared
+/// parent share one `Arc<InheritedStyle>` instead of allocating one each.
+#[derive(Default)]
+pub(crate) struct InheritedStyleInterner {
+    recent: [Option<Arc<InheritedStyle>>; RECENT_INHERITED_STYLES],
+    next: usize,
+}
+
+impl InheritedStyleInterner {
+    pub(crate) fn intern(&mut self, value: InheritedStyle) -> Arc<InheritedStyle> {
+        if let Some(kept) = self.recent.iter().flatten().find(|kept| ***kept == value) {
+            return Arc::clone(kept);
+        }
+        let arc = Arc::new(value);
+        self.recent[self.next] = Some(Arc::clone(&arc));
+        self.next = (self.next + 1) % RECENT_INHERITED_STYLES;
+        arc
+    }
+}
+
+const RECENT_COMPUTED_STYLES: usize = 32;
+
+/// Recently resolved computed styles, so painted controls (`Button`,
+/// `ListItem`, badges) share one `Arc<ComputedStyle>` instead of allocating
+/// per node.
+#[derive(Default)]
+pub(crate) struct ComputedStyleInterner {
+    recent: [Option<Arc<ComputedStyle>>; RECENT_COMPUTED_STYLES],
+    next: usize,
+}
+
+impl ComputedStyleInterner {
+    pub(crate) fn intern(&mut self, value: ComputedStyle) -> Arc<ComputedStyle> {
+        if let Some(kept) = self.recent.iter().flatten().find(|kept| {
+            (Arc::ptr_eq(&kept.inherited, &value.inherited) || *kept.inherited == *value.inherited)
+                && kept.background == value.background
+                && kept.border_color == value.border_color
+                && kept.ring_color == value.ring_color
+                && kept.paint_colors == value.paint_colors
+        }) {
+            return Arc::clone(kept);
+        }
+        let arc = Arc::new(value);
+        self.recent[self.next] = Some(Arc::clone(&arc));
+        self.next = (self.next + 1) % RECENT_COMPUTED_STYLES;
+        arc
+    }
 }
 
 impl UiWorld {
@@ -1628,23 +1698,9 @@ impl UiWorld {
 
     /// `id`'s computed style is going from the one it holds to `next`: what
     /// that costs its text, by the class of change.
-    fn invalidate_text_for_style(
-        &mut self,
-        id: StableNodeId,
-        next: &ComputedStyle,
-        work: &mut ThemeWorkCounters,
-    ) {
+    fn invalidate_text_for_style(&mut self, id: StableNodeId, next: &ComputedStyle) {
         let previous = Arc::clone(&self.record(id).resolved.0);
         let dirty = crate::text_node::classify_computed_style_change(&previous, next);
-        // What this class costs the text pipeline is `TextDirty::work`'s
-        // answer, not a second copy of that mapping here. A colour-only change
-        // implies SCENE_PAINT, so a palette switch stays paint work.
-        let text_work = dirty.work();
-        if text_work.intersects(crate::text_node::TextWork::SHAPE)
-            || text_work.intersects(crate::text_node::TextWork::LAYOUT)
-        {
-            work.record_text_invalidation(1);
-        }
         self.note_language_invalidation(id, dirty);
         self.note_text_scale_change(id, previous.text_scale, next.text_scale);
         self.nodes.invalidate_text(id, dirty);
@@ -1654,7 +1710,6 @@ impl UiWorld {
     /// It shapes again, and the scene takes its new layout and language.
     fn note_language_invalidation(&mut self, id: StableNodeId, dirty: crate::text_node::TextDirty) {
         if dirty.intersects(crate::text_node::TextDirty::LANGUAGE) && self.shows_text(id) {
-            self.bump_last_counters(|counters| counters.record_text_language(1, 0));
             self.mark(id, DirtyMask::RENDER);
         }
     }
@@ -1679,7 +1734,6 @@ impl UiWorld {
             return;
         }
         if self.default_text_scale == scale {
-            self.note_equivalent_text_scale();
             return;
         }
         self.default_text_scale = scale;
@@ -1712,7 +1766,6 @@ impl UiWorld {
             }
         }
         if self.root_text_scale(document) == before {
-            self.note_equivalent_text_scale();
             return;
         }
         self.mark_document_text_scale(document);
@@ -1739,10 +1792,8 @@ impl UiWorld {
     /// again and their text is considered again; text whose size moved is
     /// laid out again, and layout hears of it only from metrics that moved.
     pub(super) fn mark_text_scale_scope(&mut self, root: StableNodeId) {
-        let mut scanned = 0usize;
         let mut stack = vec![root];
         while let Some(id) = stack.pop() {
-            scanned += 1;
             let record = self.record(id);
             stack.extend(
                 record
@@ -1755,32 +1806,18 @@ impl UiWorld {
             );
             let _ = self.mark(id, DirtyMask::STYLE | DirtyMask::TEXT);
         }
-        self.counters
-            .pending_drain_counts
-            .typography_scale_scope_nodes_scanned += scanned;
-    }
-
-    /// A typography scale was set to the one it already was: nothing visited.
-    pub(super) fn note_equivalent_text_scale(&mut self) {
-        self.counters
-            .pending_drain_counts
-            .typography_scale_equivalent_skips += 1;
     }
 
     /// `id`'s computed typography scale is going from `previous` to `next`.
-    /// What it paints from its font size paints again; text of it that had
-    /// resolved counts as reached, and its next layout as the scale's.
+    /// What it paints from its font size paints again.
     fn note_text_scale_change(&mut self, id: StableNodeId, previous: f32, next: f32) {
         if previous == next {
             return;
         }
-        if !self.shows_text(id) && self.standard_visual_ref(id).is_none() {
+        if !self.shows_text(id) && self.widget_visual_ref(id).is_none() {
             return;
         }
         let _ = self.mark(id, DirtyMask::RENDER);
-        if self.nodes.note_text_scale(id) {
-            self.bump_last_counters(|counters| counters.record_typography_scale_text(1, 0, 0));
-        }
     }
 
     /// Every live root inherits the root language: resolve the styles under
@@ -1802,9 +1839,9 @@ impl UiWorld {
     /// A node with text of its own to shape: a text node, or an element
     /// that holds text.
     fn shows_text(&self, id: StableNodeId) -> bool {
-        self.nodes.get(id).is_some_and(|record| {
-            !record.text.value.is_empty() || matches!(record.kind.as_ref(), NodeKind::Text)
-        })
+        self.nodes
+            .get(id)
+            .is_some_and(|record| record.has_text || matches!(record.kind.as_ref(), NodeKind::Text))
     }
 }
 

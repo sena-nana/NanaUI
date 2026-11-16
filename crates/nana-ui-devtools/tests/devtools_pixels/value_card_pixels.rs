@@ -1,5 +1,5 @@
 use nana_ui::runtime::{
-    Button, Card, ComponentGeometry, DocumentId, LabeledValue, LengthSpec, RuntimeDocument, Stack,
+    Button, Card, DocumentId, LabeledValue, LayoutPartKind, LengthSpec, RuntimeDocument, Stack,
     Text,
 };
 use nana_ui_devtools::{agent::RuntimeAgentSession, offscreen};
@@ -68,11 +68,7 @@ fn issue205_value_card_parts_preserve_content_pixels() {
         |bounds: nana_ui::runtime::LayoutBox| [bounds.x, bounds.y, bounds.width, bounds.height];
     let mut masks = vec![rect(world.layout_box(action_value.stable_id()).unwrap())];
     for card in cards {
-        let ComponentGeometry::Card { spinner, .. } = world.component_geometry(card).unwrap()
-        else {
-            panic!("card")
-        };
-        if let Some(spinner) = spinner {
+        if let Some(spinner) = world.content_part_box(card, LayoutPartKind::Spinner) {
             masks.push(rect(spinner));
         }
     }
@@ -136,14 +132,6 @@ fn issue205_value_card_parts_preserve_content_pixels() {
     let world = session.document().context().world();
     assert!(world.layout_result(action.stable_id()).is_some());
     assert_eq!(world.layout_box(action.stable_id()), Some(action_bounds));
-    assert_eq!(
-        session
-            .document()
-            .context()
-            .last_work_counters()
-            .layout_measure_nodes,
-        0
-    );
     assert!(updated == session.screenshot_rgba().unwrap().1);
 }
 

@@ -122,7 +122,6 @@ pub(super) fn place_native_inline(
             cache,
             output,
             scope,
-            None,
         )?;
     }
     nodes.inline_objects.insert(
@@ -175,7 +174,7 @@ pub(super) fn pack_wrap_lines(
         };
         let block_break = break_on_blocks
             && nodes.participation(*child, &style, crate::FormattingContextKind::Inline)
-                == crate::ParticipationKind::FlowItem;
+                == crate::ParticipationKind::FlexItem;
         if block_break && !current.is_empty() {
             lines.push(std::mem::take(&mut current));
             line_main = 0.0;
@@ -409,16 +408,10 @@ fn derive_baselines(
         return Ok(BaselineMetrics::default());
     };
     let (child_ids, writing) = (node.children, node.writing);
-    // A subgrid's tracks are its parent's.
-    if writing.is_vertical()
-        || style.omits_box()
-        || style.is_subgrid_columns()
-        || style.is_subgrid_rows()
-    {
+    if writing.is_vertical() || style.omits_box() {
         return Ok(BaselineMetrics::default());
     }
     let flex = style.display.is_some_and(DisplaySpec::is_flex_container);
-    let grid = style.display.is_some_and(DisplaySpec::is_grid_container);
     let fonts = fonts_of(&style, parent_font_px);
     let child_font_px = fonts.element_px;
     let padding = style.resolved_padding_against_fonts(Some(inline_base), fonts);
@@ -429,16 +422,7 @@ fn derive_baselines(
         used.width - padding.left - padding.right - border.left - border.right,
         used.height - padding.top - padding.bottom - border.top - border.bottom,
     );
-    // Floats leave a block's flow, as placement takes them out of it.
     let (mut flow, _) = collect_flow_children_reporting(child_ids, nodes, &style)?;
-    let floated = if flex || grid {
-        Vec::new()
-    } else {
-        collect_floated_children(child_ids, nodes)?
-    };
-    if !floated.is_empty() {
-        flow.retain(|id| !floated.contains(id));
-    }
     sort_by_order(&mut flow, nodes);
     let context = establish_context(id, &style, &flow, nodes);
     if context.grid_2d {
@@ -460,7 +444,7 @@ fn derive_baselines(
             )?);
         }
         let mut solved = layout_grid_2d(
-            &style, writing, &flow, &sizes, content, fonts, None, viewport, nodes, cache, scope,
+            &style, writing, &flow, &sizes, content, fonts, viewport, nodes, cache, scope,
         )?;
         solved.fill_layer_cell(&style, writing, content);
         let arranged = arrange_grid_2d(
@@ -499,21 +483,6 @@ fn derive_baselines(
             scope,
         )?);
     }
-    let packed_floats = if floated.is_empty() {
-        PackedFloats::default()
-    } else {
-        pack_floated_children(
-            &floated,
-            Point { x: 0.0, y: 0.0 },
-            content,
-            child_edge_base,
-            viewport,
-            child_font_px,
-            nodes,
-            cache,
-            scope,
-        )?
-    };
     // Where placement puts every child: one arrangement, read here rather
     // than laid out again.
     let arranged = arrange_flow(
@@ -530,7 +499,6 @@ fn derive_baselines(
         ifc,
         direction,
         flow_axes_reversed(&style, writing, direction, ifc, false),
-        &packed_floats,
         viewport,
         child_font_px,
         nodes,
@@ -823,7 +791,6 @@ pub(super) fn ifc_line_metrics(
 pub(super) fn pack_ifc_line_boxes(
     children: &[StableNodeId],
     sizes: &[Size],
-    content_origin: Point,
     content_width: f32,
     gap: f32,
     cross_gap: f32,
@@ -831,26 +798,16 @@ pub(super) fn pack_ifc_line_boxes(
     parent_font_px: f32,
     strut: LineStrut,
     nodes: &LayoutInputMap<'_>,
-    packed_floats: &PackedFloats,
 ) -> Vec<LineBoxSlot> {
     let mut lines = Vec::new();
     let mut current = Vec::new();
     let mut line_main = 0.0f32;
     let mut line_y = 0.0f32;
-    let mut left_inset = 0.0f32;
-    let mut available = content_width;
-    let refresh = |line_y: f32, left_inset: &mut f32, available: &mut f32| {
-        let (left, right) = packed_floats.insets_at_y(content_origin, content_width, line_y);
-        *left_inset = left;
-        *available = (content_width - left - right).max(0.0);
-    };
-    refresh(line_y, &mut left_inset, &mut available);
+    let available = content_width;
     let flush = |lines: &mut Vec<LineBoxSlot>,
                  current: &mut Vec<usize>,
                  line_main: &mut f32,
-                 line_y: &mut f32,
-                 left_inset: &mut f32,
-                 available: &mut f32| {
+                 line_y: &mut f32| {
         if current.is_empty() {
             return;
         }
@@ -864,48 +821,23 @@ pub(super) fn pack_ifc_line_boxes(
         );
         lines.push(LineBoxSlot {
             indices: std::mem::take(current),
-            main_start: *left_inset,
-            main_available: *available,
+            main_start: 0.0,
+            main_available: available,
             cross_y: *line_y,
             pin_cross: true,
             baseline_aligned: true,
         });
         *line_main = 0.0;
         *line_y += line_cross + cross_gap;
-        refresh(*line_y, left_inset, available);
     };
     for (index, child) in children.iter().enumerate() {
         let Some(style) = nodes.style_ref(*child) else {
             continue;
         };
         let style_ref = style.as_ref();
-        let clear_y = clear_offset(
-            style_ref.clear,
-            packed_floats.left_bottom,
-            packed_floats.right_bottom,
-        );
-        if clear_y > line_y + 0.5 {
-            flush(
-                &mut lines,
-                &mut current,
-                &mut line_main,
-                &mut line_y,
-                &mut left_inset,
-                &mut available,
-            );
-            line_y = clear_y;
-            refresh(line_y, &mut left_inset, &mut available);
-        }
         let block_break = !style_ref.is_inline_level();
         if block_break {
-            flush(
-                &mut lines,
-                &mut current,
-                &mut line_main,
-                &mut line_y,
-                &mut left_inset,
-                &mut available,
-            );
+            flush(&mut lines, &mut current, &mut line_main, &mut line_y);
             let (_, outer_cross) = ifc_item_outer(
                 style_ref,
                 sizes[index],
@@ -922,7 +854,6 @@ pub(super) fn pack_ifc_line_boxes(
                 baseline_aligned: false,
             });
             line_y += outer_cross + cross_gap;
-            refresh(line_y, &mut left_inset, &mut available);
             continue;
         }
         let (outer, _) = ifc_item_outer(
@@ -938,25 +869,7 @@ pub(super) fn pack_ifc_line_boxes(
             line_main + gap + outer
         };
         if !current.is_empty() && need > available + 0.5 {
-            flush(
-                &mut lines,
-                &mut current,
-                &mut line_main,
-                &mut line_y,
-                &mut left_inset,
-                &mut available,
-            );
-        }
-        if current.is_empty() && outer > available + 0.5 {
-            while outer > available + 0.5 {
-                match packed_floats.next_bottom_after(content_origin, line_y) {
-                    Some(next) if next > line_y + 0.5 => {
-                        line_y = next;
-                        refresh(line_y, &mut left_inset, &mut available);
-                    }
-                    _ => break,
-                }
-            }
+            flush(&mut lines, &mut current, &mut line_main, &mut line_y);
         }
         if current.is_empty() {
             line_main = outer;
@@ -965,14 +878,7 @@ pub(super) fn pack_ifc_line_boxes(
         }
         current.push(index);
     }
-    flush(
-        &mut lines,
-        &mut current,
-        &mut line_main,
-        &mut line_y,
-        &mut left_inset,
-        &mut available,
-    );
+    flush(&mut lines, &mut current, &mut line_main, &mut line_y);
     if lines.is_empty() {
         lines.push(LineBoxSlot {
             indices: Vec::new(),
@@ -1125,22 +1031,21 @@ fn ifc_plan_style(style: &LayoutStyle, writing: nana_ui_core::WritingContext) ->
 }
 
 fn box_chrome_is_zero(style: &LayoutStyle) -> bool {
+    let sides = &*style.border_sides;
     style.padding.is_none()
         && style.padding_top.is_none()
         && style.padding_right.is_none()
         && style.padding_bottom.is_none()
         && style.padding_left.is_none()
         && style.border_width.is_none()
-        && style.border_top_width.is_none()
-        && style.border_right_width.is_none()
-        && style.border_bottom_width.is_none()
-        && style.border_left_width.is_none()
+        && sides.top_width.is_none()
+        && sides.right_width.is_none()
+        && sides.bottom_width.is_none()
+        && sides.left_width.is_none()
 }
 
 fn ifc_local_child(style: &LayoutStyle) -> bool {
     style.is_inline_level()
-        && !style.is_floated()
-        && style.clear == ClearSpec::None
         && style.order == 0
         && style.flex_grow.unwrap_or(0.0) <= 0.0
         && style.flex_shrink.unwrap_or(0.0) <= 0.0
@@ -1157,15 +1062,92 @@ fn flow_is_subsequence(flow: &[StableNodeId], children: &[StableNodeId]) -> bool
     index == flow.len()
 }
 
+pub(super) struct IfcLineDeltaPrepared {
+    flow: Vec<StableNodeId>,
+    sizes: Vec<Size>,
+    pub(super) queries: Vec<(usize, StableNodeId)>,
+}
+
 /// Recompute one inline formatting context from cached line contributions.
 ///
 /// Returns `None` when a nested edit, a float, or a child whose size depends
 /// on line membership means the break is not local. The caller then measures
 /// this formatting context, not the document.
-#[allow(clippy::too_many_arguments)]
-pub(super) fn ifc_line_measure_delta(
+pub(super) fn ifc_line_measure_delta_begin(
     id: StableNodeId,
     plan: &MeasurePlan,
+    nodes: &LayoutInputMap<'_>,
+    scope: &ScopeContext<'_>,
+) -> Option<IfcLineDeltaPrepared> {
+    let style = plan.style.as_ref();
+    if plan.sequential
+        || plan.child_direction != FlexDirection::Row
+        || !ifc_plan_style(style, plan.writing)
+        || plan.text_metrics().is_some()
+        || nodes.world.widget_visual_ref(id).is_some()
+    {
+        return None;
+    }
+    if !affected_edits_are_direct(id, plan, scope, nodes) {
+        return None;
+    }
+    let mut flow = Vec::new();
+    let mut sizes = Vec::new();
+    for child in plan.children.iter().copied() {
+        let entry = plan.entry(child)?;
+        let Some(intrinsic) = entry.intrinsic.get() else {
+            if scope.affected.contains(&child) {
+                return None;
+            }
+            continue;
+        };
+        let child_style = entry.style.as_deref()?;
+        if !ifc_local_child(child_style) {
+            return None;
+        }
+        flow.push(child);
+        sizes.push(intrinsic);
+    }
+    if flow.is_empty() {
+        return None;
+    }
+    let mut queries = Vec::new();
+    for (index, &child) in flow.iter().enumerate() {
+        if !scope.affected.contains(&child) {
+            continue;
+        }
+        let current = nodes.style(child);
+        let Some(child_style) = current.as_deref() else {
+            return None;
+        };
+        if !ifc_local_child(child_style) {
+            return None;
+        }
+        let cached_style = plan.entry(child).and_then(|entry| entry.style.clone());
+        if !scope.measure.contains(&child) {
+            if !retained_style_matches(&current, &cached_style) {
+                return None;
+            }
+            continue;
+        }
+        queries.push((index, child));
+    }
+    if queries.is_empty() {
+        return None;
+    }
+    Some(IfcLineDeltaPrepared {
+        flow,
+        sizes,
+        queries,
+    })
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(super) fn ifc_line_measure_delta_finish(
+    id: StableNodeId,
+    plan: &MeasurePlan,
+    state: IfcLineDeltaPrepared,
+    measured: &[Size],
     viewport: LayoutViewport,
     child_font_px: f32,
     nodes: &mut LayoutInputMap<'_>,
@@ -1173,73 +1155,15 @@ pub(super) fn ifc_line_measure_delta(
     scope: &ScopeContext<'_>,
 ) -> Result<Option<Size>, UiWorldError> {
     let style = plan.style.as_ref();
-    if plan.sequential
-        || plan.child_direction != FlexDirection::Row
-        || !ifc_plan_style(style, plan.writing)
-        || plan.text_metrics().is_some()
-        || nodes.world.standard_visual_ref(id).is_some()
-    {
-        return Ok(None);
-    }
-    if !affected_edits_are_direct(id, plan, scope, nodes) {
-        return Ok(None);
-    }
-    let mut flow = Vec::new();
-    let mut sizes = Vec::new();
-    for child in plan.children.iter().copied() {
-        let Some(entry) = plan.entry(child) else {
-            return Ok(None);
-        };
-        let Some(intrinsic) = entry.intrinsic else {
-            if scope.affected.contains(&child) {
-                return Ok(None);
-            }
-            continue;
-        };
-        let Some(child_style) = entry.style.as_deref() else {
-            return Ok(None);
-        };
-        if !ifc_local_child(child_style) {
-            return Ok(None);
-        }
-        flow.push(child);
-        sizes.push(intrinsic);
-    }
-    if flow.is_empty() {
-        return Ok(None);
-    }
+    let IfcLineDeltaPrepared {
+        flow,
+        mut sizes,
+        queries,
+    } = state;
     let mut patched = false;
-    for index in 0..flow.len() {
-        let child = flow[index];
-        if !scope.affected.contains(&child) {
-            continue;
-        }
-        let current = nodes.style(child);
-        let Some(child_style) = current.as_deref() else {
-            return Ok(None);
-        };
-        if !ifc_local_child(child_style) {
-            return Ok(None);
-        }
-        let cached_style = plan.entry(child).and_then(|entry| entry.style.clone());
-        if !scope.measure.contains(&child) {
-            if !retained_style_matches(&current, &cached_style) {
-                return Ok(None);
-            }
-            continue;
-        }
-        let measured = intrinsic_size_scoped(
-            child,
-            plan.child_available,
-            Some(plan.child_direction),
-            viewport,
-            child_font_px,
-            nodes,
-            cache,
-            Some(scope),
-        )?;
-        if measured != sizes[index] {
-            sizes[index] = measured;
+    for ((index, _), &size) in queries.into_iter().zip(measured) {
+        if size != sizes[index] {
+            sizes[index] = size;
             patched = true;
         }
     }
@@ -1292,17 +1216,19 @@ pub(super) fn ifc_line_measure_delta(
         else {
             continue;
         };
-        updated.entries[slot].intrinsic = Some(measured);
+        updated.entries[slot].intrinsic = PackedOptSize::from_size(measured);
         if let Some(child_style) = nodes.style(child) {
-            updated.entries[slot].baseline = ifc_atom_metrics(
-                child,
-                &child_style,
-                measured,
-                edge_base,
-                child_font_px,
-                nodes,
-            )
-            .map(|(ascent, _)| ascent);
+            updated.entries[slot].baseline = PackedOptF32::from_opt(
+                ifc_atom_metrics(
+                    child,
+                    &child_style,
+                    measured,
+                    edge_base,
+                    child_font_px,
+                    nodes,
+                )
+                .map(|(ascent, _)| ascent),
+            );
             updated.entries[slot].style = Some(child_style);
         }
     }
@@ -1399,8 +1325,10 @@ fn fixed_inline_block(
     style: &LayoutStyle,
     parent: &LayoutStyle,
 ) -> bool {
-    style.display == Some(DisplaySpec::InlineBlock)
-        && !world.atom_baseline_reads_content(id)
+    matches!(
+        style.display,
+        Some(DisplaySpec::InlineFlex | DisplaySpec::InlineGrid)
+    ) && !world.atom_baseline_reads_content(id)
         && matches!(style.width, Some(LengthSpec::Px(value)) if value.is_finite() && value >= 0.0)
         && matches!(style.height, Some(LengthSpec::Px(value)) if value.is_finite() && value >= 0.0)
         && style.min_width.is_none()

@@ -315,7 +315,8 @@ fn field_style(size: ControlSize) -> NodeStyle {
             ..crate::SemanticPaint::default()
         },
         ..crate::InteractionStyle::default()
-    };
+    }
+    .into();
     style
 }
 

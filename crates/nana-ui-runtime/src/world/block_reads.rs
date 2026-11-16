@@ -18,48 +18,91 @@ use super::*;
 
 /// How a parent's measurement sees a child, for the block extent it offers.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[repr(u8)]
 pub(crate) enum BlockExtentRole {
     /// Measured against the extent the parent offers.
     #[default]
-    Normal,
+    Normal = 0,
     /// Sizes its own height: what it offers its children is its own.
-    Cut,
+    Cut = 1,
     /// Has no box of its own in the parent's flow (`display: contents`, an
     /// inline that may hoist a block): its children are the parent's.
-    Pass,
+    Pass = 2,
     /// Not part of the parent's flow measurement: no box, or out of flow.
-    Excluded,
+    Excluded = 3,
 }
 
 /// A node's part in whether its ancestors' measurements read the block
 /// extent they are offered.
+///
+/// Packed into 4 bytes: bit `0` is `local`, bits `1..=2` hold [`BlockExtentRole`],
+/// and bits `3..32` hold the saturating `reading_children` count.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub(crate) struct BlockExtentReads {
-    /// The node's own measurement reads its offered block extent.
-    pub(crate) local: bool,
-    pub(crate) role: BlockExtentRole,
-    /// Children whose subtree passes a read up to this node.
-    pub(crate) reading_children: u32,
-}
+pub(crate) struct BlockExtentReads(u32);
+
+const _: () = assert!(std::mem::size_of::<BlockExtentReads>() == 4);
 
 impl BlockExtentReads {
+    const LOCAL_BIT: u32 = 1 << 0;
+    const ROLE_SHIFT: u32 = 1;
+    const ROLE_MASK: u32 = 0b11 << Self::ROLE_SHIFT;
+    const COUNT_SHIFT: u32 = 3;
+    const MAX_CHILDREN: u32 = u32::MAX >> Self::COUNT_SHIFT;
+
+    #[inline]
+    const fn new(local: bool, role: BlockExtentRole, reading_children: u32) -> Self {
+        let local_bits = if local { Self::LOCAL_BIT } else { 0 };
+        let role_bits = (role as u32) << Self::ROLE_SHIFT;
+        let count = if reading_children > Self::MAX_CHILDREN {
+            Self::MAX_CHILDREN
+        } else {
+            reading_children
+        };
+        Self(local_bits | role_bits | (count << Self::COUNT_SHIFT))
+    }
+
     /// What `style` says, with no children counted.
     pub(crate) fn of(style: &nana_ui_core::LayoutStyle) -> Self {
-        Self {
-            local: crate::layout_engine::reads_offered_block_extent(style),
-            role: role_of(style),
-            reading_children: 0,
+        Self::new(
+            crate::layout_engine::reads_offered_block_extent(style),
+            role_of(style),
+            0,
+        )
+    }
+
+    #[inline]
+    pub(crate) const fn local(self) -> bool {
+        (self.0 & Self::LOCAL_BIT) != 0
+    }
+
+    #[inline]
+    pub(crate) const fn role(self) -> BlockExtentRole {
+        match (self.0 & Self::ROLE_MASK) >> Self::ROLE_SHIFT {
+            0 => BlockExtentRole::Normal,
+            1 => BlockExtentRole::Cut,
+            2 => BlockExtentRole::Pass,
+            _ => BlockExtentRole::Excluded,
         }
+    }
+
+    #[inline]
+    pub(crate) const fn reading_children(self) -> u32 {
+        self.0 >> Self::COUNT_SHIFT
+    }
+
+    #[inline]
+    pub(crate) const fn with_reading_children(self, reading_children: u32) -> Self {
+        Self::new(self.local(), self.role(), reading_children)
     }
 
     /// Whether this node's subtree reads the block extent it is offered.
     pub(crate) fn reads(self) -> bool {
-        self.local || self.reading_children > 0
+        self.local() || self.reading_children() > 0
     }
 
     /// Whether this node passes a read up to its parent.
     pub(crate) fn contributes(self) -> bool {
-        matches!(self.role, BlockExtentRole::Normal | BlockExtentRole::Pass) && self.reads()
+        matches!(self.role(), BlockExtentRole::Normal | BlockExtentRole::Pass) && self.reads()
     }
 }
 
@@ -68,9 +111,6 @@ fn role_of(style: &nana_ui_core::LayoutStyle) -> BlockExtentRole {
     use nana_ui_core::DisplaySpec;
     if style.omits_box() {
         return BlockExtentRole::Excluded;
-    }
-    if style.display.is_some_and(DisplaySpec::is_contents) {
-        return BlockExtentRole::Pass;
     }
     if style.position.is_out_of_flow() {
         return BlockExtentRole::Excluded;
@@ -95,10 +135,10 @@ impl UiWorld {
             return true;
         };
         debug_assert_eq!(
-            (record.block_reads.local, record.block_reads.role),
+            (record.block_reads.local(), record.block_reads.role()),
             {
                 let fresh = BlockExtentReads::of(record.resolved_layout.as_ref());
-                (fresh.local, fresh.role)
+                (fresh.local(), fresh.role())
             },
             "{id:?}'s block extent reads went stale: a resolved layout write skipped refresh_block_extent_reads"
         );
@@ -122,14 +162,11 @@ impl UiWorld {
         };
         let before = record.block_reads;
         let fresh = BlockExtentReads::of(record.resolved_layout.as_ref());
-        if (before.local, before.role) == (fresh.local, fresh.role) {
+        if (before.local(), before.role()) == (fresh.local(), fresh.role()) {
             return;
         }
         let parent = record.hierarchy.parent;
-        let after = BlockExtentReads {
-            reading_children: before.reading_children,
-            ..fresh
-        };
+        let after = fresh.with_reading_children(before.reading_children());
         self.record_mut(id).block_reads = after;
         if let Some(parent) = parent
             && before.contributes() != after.contributes()
@@ -167,13 +204,14 @@ impl UiWorld {
                 return;
             };
             let before = record.block_reads.contributes();
-            let count = &mut record.block_reads.reading_children;
-            if up {
-                *count += 1;
+            let count = record.block_reads.reading_children();
+            let next_count = if up {
+                count + 1
             } else {
-                debug_assert!(*count > 0, "{parent:?}'s reading children went negative");
-                *count = count.saturating_sub(1);
-            }
+                debug_assert!(count > 0, "{parent:?}'s reading children went negative");
+                count.saturating_sub(1)
+            };
+            record.block_reads = record.block_reads.with_reading_children(next_count);
             if record.block_reads.contributes() == before {
                 return;
             }
@@ -211,13 +249,14 @@ impl UiWorld {
                     );
                     continue;
                 }
-                let mut reads = BlockExtentReads::of(record.resolved_layout.as_ref());
-                reads.reading_children = record
+                let reading_children = record
                     .hierarchy
                     .children
                     .iter()
                     .filter(|child| fresh[*child].contributes())
                     .count() as u32;
+                let reads = BlockExtentReads::of(record.resolved_layout.as_ref())
+                    .with_reading_children(reading_children);
                 assert_eq!(
                     record.block_reads, reads,
                     "{id:?}'s kept block extent reads drifted from its subtree"

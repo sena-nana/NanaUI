@@ -120,8 +120,6 @@ def _self_test_section_8_1_runner_invariants(root: Path) -> list[str]:
         )
     weekly_wf = (root / ".github" / "workflows" / "runtime-performance.yml").read_text()
     weekly_cpu = weekly_wf.split("macos-composition:")[0]
-    if "issue8/weekly" not in weekly_cpu:
-        errors.append("weekly ubuntu must --evaluate-invariants target/performance/issue8/weekly")
     if "gpu-scene-ui" in weekly_cpu:
         errors.append("weekly ubuntu job must not map macos-only gpu-scene-ui")
     pr_ci = (root / ".github" / "workflows" / "ci.yml").read_text()

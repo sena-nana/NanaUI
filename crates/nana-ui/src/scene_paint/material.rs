@@ -2,9 +2,11 @@
 use crate::gpu_work::GpuWorkSink;
 use nana_gpu::{LogicalBinding, LogicalBindingType, ResourceTable, ShaderInterface, ShaderStage};
 use nana_ui_core::{MATERIAL_ABI, MaterialRef};
+#[cfg(feature = "runtime-wgsl")]
+use std::sync::OnceLock;
 use std::{
     collections::HashMap,
-    sync::{Arc, LazyLock, Mutex, OnceLock, RwLock, Weak},
+    sync::{Arc, LazyLock, Mutex, RwLock, Weak},
 };
 
 /// The host's say over the material programs it hands the painter, for hosts
@@ -62,12 +64,14 @@ pub(super) type MaterialWaker = Arc<dyn Fn() + Send + Sync>;
 type PipelineKey = (u64, wgpu::TextureFormat, u32, u64, u64);
 struct PipelineEntry {
     owners: Vec<Weak<nana_ui_core::MaterialProgram>>,
+    #[cfg(feature = "runtime-wgsl")]
     compile: Arc<Compile>,
 }
 /// One pipeline's compile, wherever it runs.
+#[cfg(feature = "runtime-wgsl")]
 struct Compile {
     /// Empty while it compiles; `None` inside for a program the driver
-    /// rejected.
+    /// rejected (or always `None` when `runtime-wgsl` is disabled).
     pipeline: OnceLock<Option<wgpu::RenderPipeline>>,
     /// Who to wake once it is ready. Locked around filling `pipeline`, so a
     /// waker is either taken or sees the pipeline.
@@ -79,6 +83,7 @@ pub(super) enum MaterialPipeline {
     Ready(Option<wgpu::RenderPipeline>),
     /// Still compiling: paint natively for now, and ask again once
     /// [`MaterialDevice::ready`] moves.
+    #[cfg_attr(not(feature = "runtime-wgsl"), allow(dead_code))]
     Compiling,
 }
 impl MaterialDevice {
@@ -238,6 +243,9 @@ impl MaterialDevice {
     /// and every frame of every window keeps coming, until `wake` says the
     /// pipeline is ready. Without one, nothing would paint again for it, so
     /// the pipeline is compiled, or waited for, in place.
+    /// Wait for `runtime-wgsl` to compile custom WGSL pipelines; when
+    /// `runtime-wgsl` is off, reject once per unique key and fall back natively.
+    #[cfg(feature = "runtime-wgsl")]
     pub(super) fn pipeline(
         &self,
         key: (u64, wgpu::TextureFormat, u32, u64, u64),
@@ -289,7 +297,32 @@ impl MaterialDevice {
         }
     }
 
+    #[cfg(not(feature = "runtime-wgsl"))]
+    pub(super) fn pipeline(
+        &self,
+        key: (u64, wgpu::TextureFormat, u32, u64, u64),
+        programs: &[&Arc<nana_ui_core::MaterialProgram>],
+        _device: &wgpu::Device,
+        _wake: Option<&MaterialWaker>,
+        _create: impl FnOnce() -> Option<wgpu::RenderPipeline> + Send + 'static,
+    ) -> MaterialPipeline {
+        let key = (key.0 ^ self.interface.key(), key.1, key.2, key.3, key.4);
+        let mut pipelines = self.pipelines.lock().unwrap_or_else(|e| e.into_inner());
+        pipelines.retain(|_, entry| entry.owners.iter().all(|owner| owner.strong_count() > 0));
+        if !pipelines.contains_key(&key) {
+            pipelines.insert(
+                key,
+                PipelineEntry {
+                    owners: programs.iter().map(|p| Arc::downgrade(p)).collect(),
+                },
+            );
+            nana_diagnostics::event!(&nana_diagnostics::framework::gpu::MATERIAL_REJECTED);
+        }
+        MaterialPipeline::Ready(None)
+    }
+
     /// Start `compile` on a thread of its own. `false` when none started.
+    #[cfg(feature = "runtime-wgsl")]
     fn compile_off_thread(
         &self,
         compile: &Arc<Compile>,
@@ -483,6 +516,7 @@ fn texture_entry(binding: u32) -> wgpu::BindGroupLayoutEntry {
 }
 
 /// Driver validation is scoped: an invalid extension falls back to native paint.
+#[cfg(feature = "runtime-wgsl")]
 pub(super) fn compile(
     device: &wgpu::Device,
     create: impl FnOnce() -> Option<wgpu::RenderPipeline>,
@@ -508,6 +542,7 @@ pub(super) fn compile(
 
 /// Namespace the WGSL IR, rather than replacing text: a helper named `color`
 /// must never rename `input.color`, and comments/local names are irrelevant.
+#[cfg(feature = "runtime-wgsl")]
 pub(super) fn program_source(
     program: &nana_ui_core::MaterialProgram,
     prefix: &str,
@@ -515,6 +550,7 @@ pub(super) fn program_source(
 ) -> Option<String> {
     program_source_at(program, prefix, group, 0)
 }
+#[cfg(feature = "runtime-wgsl")]
 pub(super) fn program_source_at(
     program: &nana_ui_core::MaterialProgram,
     prefix: &str,

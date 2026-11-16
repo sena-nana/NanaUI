@@ -18,7 +18,7 @@ path = "src/lib.rs"
 doctest = false
 
 [dependencies]
-wgpu = { workspace = true, features = ["dx12", "vulkan"] }
+wgpu = { workspace = true, features = ["dx12", "vulkan", "wgsl"] }
 pollster.workspace = true
 # Same as wgpu-hal's, for the module `tests/dx12_cache_format.rs` includes.
 hashbrown = { version = "0.17", default-features = false, features = ["default-hasher"] }

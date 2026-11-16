@@ -241,9 +241,8 @@ impl AppContext {
         event: crate::FileDropEvent,
     ) -> Result<(), FrameworkError> {
         let Some(emit) = self
-            .views
-            .get(&id)
-            .and_then(|view| self.emitters.get(&view.as_ref().type_id()))
+            .view_type_id(id)
+            .and_then(|type_id| self.emitters.get(&type_id))
             .copied()
         else {
             return Ok(());

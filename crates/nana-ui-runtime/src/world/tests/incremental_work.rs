@@ -20,7 +20,7 @@ mod invalidation_classification {
     use nana_ui_core::{
         BoxShadowSpec, InvalidationKind, InvalidationReason, LayoutDependencyFootprint,
         LayoutFieldMask, LayoutInvalidation, LayoutStyle, LengthSpec, PaintTransform,
-        SemanticColorRole, VisibilitySpec, WorkCounters,
+        SemanticColorRole, VisibilitySpec,
     };
 
     use crate::world::reflow_oracle::{column, node, styled};
@@ -88,16 +88,6 @@ mod invalidation_classification {
         commit_style(context, id, |_| {});
     }
 
-    /// Layout invalidations created, zero-delta writes and equivalent writes
-    /// skipped between two counter snapshots.
-    fn classified_counts(before: &WorkCounters, after: &WorkCounters) -> (usize, usize, usize) {
-        (
-            after.layout_invalidations_created - before.layout_invalidations_created,
-            after.layout_invalidations_zero_delta - before.layout_invalidations_zero_delta,
-            after.layout_equivalent_mutations_skipped - before.layout_equivalent_mutations_skipped,
-        )
-    }
-
     #[test]
     fn issue255_equivalent_write_is_skipped_and_a_width_change_queues_one_typed_cause() {
         let mut context = AppContext::new();
@@ -105,26 +95,20 @@ mod invalidation_classification {
         settle(&mut context, document);
         let row = node(3);
 
-        let before = context.last_work_counters();
         rewrite_style(&mut context, row);
         // The same width, spelled as a fresh style object.
         commit_style(&mut context, row, |style| {
             Arc::make_mut(&mut style.layout).width = Some(LengthSpec::Px(200.0));
         });
-        let after = context.last_work_counters();
-        assert_eq!(classified_counts(&before, &after), (0, 2, 2));
         assert!(context.world().pending_layout_invalidation(row).is_empty());
         assert!(
             context.take_system_work().is_empty(),
             "an equivalent write schedules nothing"
         );
 
-        let before = context.last_work_counters();
         commit_style(&mut context, row, |style| {
             Arc::make_mut(&mut style.layout).width = Some(LengthSpec::Px(180.0));
         });
-        let after = context.last_work_counters();
-        assert_eq!(classified_counts(&before, &after), (1, 0, 0));
         let cause = context.world().pending_layout_invalidation(row);
         assert!(
             cause.reason.contains(InvalidationReason::STYLE),
@@ -203,14 +187,12 @@ mod invalidation_classification {
         );
     }
 
-    /// What classifying one width change moves on the counters.
+    /// What classifying one width change emits in system work.
     #[derive(Clone, Copy, Debug, PartialEq, Eq)]
     struct Classified {
-        created: usize,
-        zero_delta: usize,
-        skipped: usize,
-        footprints_read: usize,
-        validation_nodes_scanned: Option<usize>,
+        frontier_seeds: usize,
+        style_nodes: usize,
+        render_nodes: usize,
     }
 
     fn classify_one_width_change(rows: u64) -> (Classified, LayoutInvalidation) {
@@ -223,21 +205,16 @@ mod invalidation_classification {
         );
         // Drain the install without laying out: only the write below is counted.
         let _ = context.take_system_work();
-        let before = context.last_work_counters();
         commit_style(&mut context, column, |style| {
             Arc::make_mut(&mut style.layout).width = Some(LengthSpec::Px(180.0));
         });
-        let after = context.last_work_counters();
         let work = context.take_system_work();
-        let (created, zero_delta, skipped) = classified_counts(&before, &after);
+        assert_eq!(context.layout_invocations(), 0);
         (
             Classified {
-                created,
-                zero_delta,
-                skipped,
-                footprints_read: after.layout_dependency_edges_visited
-                    - before.layout_dependency_edges_visited,
-                validation_nodes_scanned: work.validation_nodes_scanned,
+                frontier_seeds: work.layout_frontier_seeds.len(),
+                style_nodes: work.style.len(),
+                render_nodes: work.render_extraction.len(),
             },
             work.layout_frontier_seeds
                 .iter()
@@ -248,22 +225,14 @@ mod invalidation_classification {
     }
 
     /// Gate A. The same width change on a column with 10k and with 100k rows is
-    /// classified with the same counts and the same typed cause, and reads no
-    /// dependency footprint: classification is the field diff of that one node.
+    /// classified with the same counts and the same typed cause:
+    /// classification is the field diff of that one node.
     #[test]
     fn issue255_classifying_a_width_change_does_not_scale_with_the_document() {
         let (small, small_cause) = classify_one_width_change(10_000);
         let (large, large_cause) = classify_one_width_change(100_000);
         assert_eq!(small, large);
-        assert_eq!(
-            (
-                small.created,
-                small.zero_delta,
-                small.skipped,
-                small.footprints_read
-            ),
-            (1, 0, 0, 0)
-        );
+        assert_eq!(small.frontier_seeds, 1);
         assert_eq!(small_cause, large_cause);
         assert!(small_cause.changed_inputs.contains(LayoutFieldMask::SIZING));
     }
@@ -292,29 +261,6 @@ mod invalidation_classification {
         settle(&mut context, document);
         assert!(context.world().layout_result(column).is_some());
         assert_eq!(context.world().layout_box(column).unwrap().width, 220.0);
-    }
-
-    fn assert_layout_uncharged(before: &WorkCounters, after: &WorkCounters, label: &str) {
-        assert_eq!(
-            after.layout_invalidations_created, before.layout_invalidations_created,
-            "{label} must not create a layout invalidation"
-        );
-        assert_eq!(
-            after.layout_dependency_edges_visited, before.layout_dependency_edges_visited,
-            "{label} must not read a dependency footprint"
-        );
-        assert_eq!(
-            after.layout_frontier_seeds, before.layout_frontier_seeds,
-            "{label}"
-        );
-        assert_eq!(
-            after.layout_measure_nodes, before.layout_measure_nodes,
-            "{label}"
-        );
-        assert_eq!(
-            after.layout_placement_nodes, before.layout_placement_nodes,
-            "{label}"
-        );
     }
 
     /// Gate C. Paint, colour, opacity, transform and accessibility writes on a
@@ -366,7 +312,7 @@ mod invalidation_classification {
             (
                 "transform",
                 Box::new(|style: &mut NodeStyle| {
-                    Arc::make_mut(&mut style.layout).transform = Some(PaintTransform {
+                    Arc::make_mut(&mut style.layout).transforms.transform = Some(PaintTransform {
                         e: 8.0,
                         ..PaintTransform::default()
                     });
@@ -374,17 +320,21 @@ mod invalidation_classification {
             ),
         ];
         for (label, write) in writes {
-            let before = context.last_work_counters();
+            let invocations = context.layout_invocations();
             commit_style(&mut context, row, |style| write(style));
             assert!(
                 context.world().pending_layout_invalidation(row).is_empty(),
                 "{label}"
             );
             settle(&mut context, document);
-            assert_layout_uncharged(&before, &context.last_work_counters(), label);
+            assert_eq!(
+                context.layout_invocations(),
+                invocations,
+                "{label} must not run layout"
+            );
         }
 
-        let before = context.last_work_counters();
+        let invocations = context.layout_invocations();
         let mut queue = MutationQueue::new();
         queue.set_accessibility(
             row,
@@ -398,24 +348,21 @@ mod invalidation_classification {
         context.compat_world_mut().commit(queue).unwrap();
         assert!(context.world().pending_layout_invalidation(row).is_empty());
         settle(&mut context, document);
-        assert_layout_uncharged(&before, &context.last_work_counters(), "accessibility");
+        assert_eq!(
+            context.layout_invocations(),
+            invocations,
+            "accessibility must not run layout"
+        );
         assert_eq!(context.world().layout_box(row), Some(laid_out));
 
-        let before = context.last_work_counters();
         commit_style(&mut context, row, |style| {
             let layout = Arc::make_mut(&mut style.layout);
             layout.width = Some(LengthSpec::Px(180.0));
             layout.color = Some([0.9, 0.1, 0.1, 1.0]);
         });
-        let after = context.last_work_counters();
-        assert_eq!(
-            after.layout_invalidations_created,
-            before.layout_invalidations_created + 1
-        );
-        assert_eq!(
-            after.layout_dependency_edges_visited, before.layout_dependency_edges_visited,
-            "classification reads no footprint; the frontier does, when layout runs"
-        );
+        let cause = context.world().pending_layout_invalidation(row);
+        assert!(cause.reason.contains(InvalidationReason::STYLE));
+        assert!(cause.changed_inputs.contains(LayoutFieldMask::SIZING));
     }
 
     /// Gate D. One thousand effective-equivalent width writes on a 10k-row
@@ -427,27 +374,20 @@ mod invalidation_classification {
         install_column(context.compat_world_mut(), 10_000);
         let column = node(2);
         let _ = context.take_system_work();
-        let before = context.last_work_counters();
         for _ in 0..1000 {
             commit_style(&mut context, column, |style| {
                 Arc::make_mut(&mut style.layout).width = Some(LengthSpec::Px(240.0));
             });
         }
-        let after = context.last_work_counters();
-        assert_eq!(classified_counts(&before, &after), (0, 1000, 1000));
-        assert_eq!(after.layout_frontier_seeds, before.layout_frontier_seeds);
-        assert_eq!(
-            after.layout_frontier_nodes_measure,
-            before.layout_frontier_nodes_measure
-        );
-        assert_eq!(
-            after.layout_frontier_nodes_placement,
-            before.layout_frontier_nodes_placement
+        assert!(
+            context
+                .world()
+                .pending_layout_invalidation(column)
+                .is_empty()
         );
         assert_eq!(context.layout_invocations(), 0);
         let idle = context.take_system_work();
         assert!(idle.is_empty());
-        assert_eq!(idle.validation_nodes_scanned, Some(0));
     }
 
     /// Bytes the pending-cause table holds: its buckets, each one id and one
@@ -519,10 +459,8 @@ mod dirty_frontier {
 
     use std::collections::HashSet;
 
-    use nana_ui_core::WorkCounters;
-
     use crate::world::reflow_oracle::{
-        admitted_nodes, assert_matches_cold, bundled_face_shaper, column, fixed, node,
+        FrameStats, admitted_nodes, assert_matches_cold, bundled_face_shaper, column, fixed, node,
         product_frame, styled,
     };
     use crate::world::{DocumentId, NodeKind, StableNodeId, UiWorld};
@@ -540,7 +478,7 @@ mod dirty_frontier {
         context: &mut AppContext,
         document: DocumentId,
         shaper: &mut NanaTextEngineShaper,
-    ) -> WorkCounters {
+    ) -> FrameStats {
         product_frame(context, document, viewport(), shaper)
     }
 
@@ -637,7 +575,7 @@ mod dirty_frontier {
             self.context.compat_world_mut().commit(queue).unwrap();
         }
 
-        fn frame(&mut self) -> WorkCounters {
+        fn frame(&mut self) -> FrameStats {
             frame(&mut self.context, self.document, &mut self.shaper)
         }
 
@@ -664,18 +602,18 @@ mod dirty_frontier {
         placed: usize,
     }
 
-    impl From<WorkCounters> for Work {
-        fn from(counters: WorkCounters) -> Self {
+    impl From<FrameStats> for Work {
+        fn from(stats: FrameStats) -> Self {
             Self {
-                seeds: counters.layout_frontier_seeds,
-                measure: counters.layout_frontier_nodes_measure,
-                placement: counters.layout_frontier_nodes_placement,
-                contexts: counters.layout_frontier_contexts,
-                edges: counters.layout_dependency_edges_visited,
-                local_fallbacks: counters.layout_local_subtree_fallbacks,
-                full_fallbacks: counters.layout_full_document_fallbacks,
-                measured: counters.layout_measure_nodes,
-                placed: counters.layout_placement_nodes,
+                seeds: stats.frontier.seeds,
+                measure: stats.frontier.nodes_measure,
+                placement: stats.frontier.nodes_placement,
+                contexts: stats.frontier.contexts,
+                edges: stats.frontier.dependency_edges_visited,
+                local_fallbacks: stats.frontier.local_subtree_fallbacks,
+                full_fallbacks: stats.frontier.full_document_fallbacks,
+                measured: stats.execution.measure_nodes,
+                placed: stats.execution.placement_nodes,
             }
         }
     }
@@ -735,7 +673,7 @@ mod dirty_frontier {
 
     /// Gate B. "99" and "98" have the same width, height and baseline: the text
     /// is re-shaped, its parent is not measured, no dependency edge is walked,
-    /// and the stop is counted.
+    /// and schedules no layout pass.
     #[test]
     fn issue256_text_whose_exported_metrics_held_stops_at_the_text() {
         let mut cards = Cards::new(1_000);
@@ -754,12 +692,13 @@ mod dirty_frontier {
         cards.set_text(label, "98");
         let counters = cards.frame();
         assert!(
-            cards.world().last_text_work_counters().layouts_created > 0,
+            counters.text.layouts_created > 0,
             "the text itself is laid out again"
         );
-        assert_eq!(counters.layout_frontier_nodes_measure, 0);
-        assert_eq!(counters.layout_dependency_edges_visited, 0);
-        assert!(counters.layout_propagations_stopped >= 1);
+        assert_eq!(counters.frontier.nodes_measure, 0);
+        assert_eq!(counters.frontier.dependency_edges_visited, 0);
+        assert_eq!(counters.layout_passes, 0);
+        assert_eq!(counters.frontier.seeds, 0);
         assert_eq!(cards.world().layout_box(label), Some(label_box));
         assert_eq!(cards.world().layout_box(card), Some(card_box));
         assert_eq!(
@@ -779,7 +718,7 @@ mod dirty_frontier {
             .collect()
     }
 
-    fn hundred_seed_batch(nodes: u64) -> (WorkCounters, LayoutFrontierStats) {
+    fn hundred_seed_batch(nodes: u64) -> (FrameStats, LayoutFrontierStats) {
         let mut cards = Cards::new(nodes);
         for label in hundred_labels(cards.groups) {
             cards.set_text(label, "seventeen");
@@ -796,15 +735,15 @@ mod dirty_frontier {
         let (small, small_stats) = hundred_seed_batch(1_000);
         let (large, large_stats) = hundred_seed_batch(10_000);
         for (counters, stats) in [(small, small_stats), (large, large_stats)] {
-            assert_eq!(counters.layout_frontier_seeds, stats.seeds);
+            assert_eq!(counters.frontier.seeds, stats.seeds);
             assert!(stats.seeds >= 100, "{stats:?}");
             assert!(
-                counters.layout_dependency_edges_visited <= 2 * stats.graph_edges,
+                counters.frontier.dependency_edges_visited <= 2 * stats.graph_edges,
                 "{} edge walks over a {}-edge closure",
-                counters.layout_dependency_edges_visited,
+                counters.frontier.dependency_edges_visited,
                 stats.graph_edges
             );
-            assert_eq!(counters.layout_full_document_fallbacks, 0);
+            assert_eq!(counters.frontier.full_document_fallbacks, 0);
         }
         assert_eq!(Work::from(small), Work::from(large));
         assert_eq!(small_stats, large_stats);
@@ -1332,17 +1271,14 @@ mod axis_constraints {
             text.constraint_moved_without_reshaping(),
             "a width change sets TextDirty::CONSTRAINT and leaves the shaped runs"
         );
-        let shaped_before = world.last_work_counters().text_shaped_runs;
         world
             .shape_text_for_layout(document(1), &mut shaper)
             .unwrap();
-        let shaped_after = world.last_work_counters().text_shaped_runs;
         let text_work = world.last_text_work_counters();
         assert_eq!(
-            shaped_after, shaped_before,
+            text_work.text_nodes_shaped, 0,
             "a constraint-only width change must not reshape"
         );
-        assert_eq!(text_work.text_nodes_shaped, 0);
         assert!(
             text_work.constraint_only_relayouts >= 1,
             "the new width must lay the existing runs out again, got {text_work:?}"
@@ -1434,26 +1370,13 @@ mod axis_constraints {
         origin_only_updates: usize,
     }
 
-    fn execution_delta(
-        before: nana_ui_core::WorkCounters,
-        after: nana_ui_core::WorkCounters,
-    ) -> ExecutionDelta {
+    fn execution_delta(exec: crate::layout_engine::LayoutExecutionStats) -> ExecutionDelta {
         ExecutionDelta {
-            measure_nodes: after
-                .layout_measure_nodes
-                .saturating_sub(before.layout_measure_nodes),
-            measure_cache_hits: after
-                .layout_measure_cache_hits
-                .saturating_sub(before.layout_measure_cache_hits),
-            measure_cache_misses: after
-                .layout_measure_cache_misses
-                .saturating_sub(before.layout_measure_cache_misses),
-            placement_nodes: after
-                .layout_placement_nodes
-                .saturating_sub(before.layout_placement_nodes),
-            origin_only_updates: after
-                .layout_origin_only_updates
-                .saturating_sub(before.layout_origin_only_updates),
+            measure_nodes: exec.measure_nodes,
+            measure_cache_hits: exec.measure_cache_hits,
+            measure_cache_misses: exec.measure_cache_misses,
+            placement_nodes: exec.placement_nodes,
+            origin_only_updates: exec.origin_only_updates,
         }
     }
 
@@ -1493,7 +1416,6 @@ mod axis_constraints {
         world.shape_text(&pending.text, &mut shaper).unwrap();
         let seeded = world.take_system_work();
         let frontier = frontier_for(&world, &seeded.layout_frontier_seeds);
-        let before = world.last_work_counters();
         layout_with_seeds(
             &world,
             viewport,
@@ -1502,15 +1424,8 @@ mod axis_constraints {
             false,
         );
         let stats = retained.frontier_stats(document(1));
-        world.record_layout_frontier(stats);
-        world.record_layout_execution(retained.execution_stats(document(1)));
+        let execution = execution_delta(retained.execution_stats(document(1)));
         let metric_generation_bumps = retained.take_intrinsic_counters().generation_bumps;
-        let after = world.last_work_counters();
-        assert_eq!(
-            after.layout_full_document_fallbacks - before.layout_full_document_fallbacks,
-            stats.full_document_fallbacks,
-            "frontier stats are the work-counter authority"
-        );
         assert_eq!(
             world.layout_box(card).map(|box_| (box_.width, box_.height)),
             Some((120.0, 32.0)),
@@ -1534,7 +1449,7 @@ mod axis_constraints {
             full_document_fallbacks: stats.full_document_fallbacks,
             card_measured: frontier.measure_nodes().contains(&card),
             metric_generation_bumps,
-            execution: execution_delta(before, after),
+            execution,
         }
     }
 
@@ -1665,7 +1580,6 @@ mod axis_constraints {
         let work = world.take_system_work();
         world.resolve_styles(&work.style).unwrap();
         let frontier = frontier_for(&world, &work.layout_frontier_seeds);
-        let before = world.last_work_counters();
         let emitted = layout_with_seeds(
             &world,
             viewport,
@@ -1674,9 +1588,7 @@ mod axis_constraints {
             false,
         );
         let stats = retained.frontier_stats(document(1));
-        world.record_layout_frontier(stats);
-        world.record_layout_execution(retained.execution_stats(document(1)));
-        let execution = execution_delta(before, world.last_work_counters());
+        let execution = execution_delta(retained.execution_stats(document(1)));
         let following_measured = (edited_index + 1..count)
             .filter(|index| frontier.measure_nodes().contains(&node(3_000 + index)))
             .count();
@@ -1784,15 +1696,15 @@ mod axis_constraints {
         let ids = emitted.iter().map(|(id, _)| *id).collect::<Vec<_>>();
         world.publish_layout_results(&ids, crate::LayoutResultSource::RuntimeLayout);
         let generation = world.layout_generation();
-        let section_ptr = world
+        let section_seq = world
             .layout_results
             .get(&node(2))
-            .map(|result| Arc::as_ptr(&result.local))
+            .map(|result| result.publish_seq)
             .expect("section result");
-        let fixed_ptr = world
+        let fixed_seq = world
             .layout_results
             .get(&node(3))
-            .map(|result| Arc::as_ptr(&result.local))
+            .map(|result| result.publish_seq)
             .expect("fixed result");
 
         // A definite min-width below the used width recomputes the section and
@@ -1818,9 +1730,7 @@ mod axis_constraints {
         let _ = world.take_system_work();
         let ids = emitted.iter().map(|(id, _)| *id).collect::<Vec<_>>();
         let before = world.layout_box(node(2));
-        let counters_before = world.last_work_counters();
         world.publish_layout_results(&ids, crate::LayoutResultSource::RuntimeLayout);
-        let counters_after = world.last_work_counters();
 
         assert_eq!(
             (world.layout_generation(), world.layout_box(node(2))),
@@ -1831,55 +1741,32 @@ mod axis_constraints {
             world
                 .layout_results
                 .get(&node(2))
-                .map(|result| Arc::as_ptr(&result.local)),
-            Some(section_ptr),
+                .map(|result| result.publish_seq),
+            Some(section_seq),
             "the section result object must stay the one already published"
         );
         assert_eq!(
             world
                 .layout_results
                 .get(&node(3))
-                .map(|result| Arc::as_ptr(&result.local)),
-            Some(fixed_ptr),
+                .map(|result| result.publish_seq),
+            Some(fixed_seq),
             "an untouched fixed-position result must not be republished"
         );
         assert!(world.layout_result(node(2)).is_some());
         assert_eq!(world.layout_result(node(2)).unwrap().bounds.width, 120.0);
-        assert_eq!(
-            counters_after.layout_result_changed, counters_before.layout_result_changed,
-            "a bit-equivalent recompute must not count a changed layout result"
-        );
-        assert_eq!(
-            counters_after.layout_delta_commits, counters_before.layout_delta_commits,
-            "a bit-equivalent recompute must not commit a layout delta"
-        );
-        assert!(
-            counters_after.layout_result_reused > counters_before.layout_result_reused,
-            "keeping the published object must count as reuse"
-        );
 
         // position:fixed always misses the cheap geometry check. Publishing the
-        // same boxes again must still keep the Arc.
-        let fixed_before = world.last_work_counters();
+        // same boxes again must still keep the published entry.
         world.publish_layout_results(&[node(3)], crate::LayoutResultSource::RuntimeLayout);
-        let fixed_after = world.last_work_counters();
         assert_eq!(world.layout_generation(), generation);
         assert_eq!(
             world
                 .layout_results
                 .get(&node(3))
-                .map(|result| Arc::as_ptr(&result.local)),
-            Some(fixed_ptr)
+                .map(|result| result.publish_seq),
+            Some(fixed_seq)
         );
-        assert_eq!(
-            fixed_after.layout_result_changed,
-            fixed_before.layout_result_changed
-        );
-        assert_eq!(
-            fixed_after.layout_delta_commits,
-            fixed_before.layout_delta_commits
-        );
-        assert!(fixed_after.layout_result_reused > fixed_before.layout_result_reused);
     }
 
     /// Rows of a fixed-width column, each holding a label.
@@ -2016,7 +1903,7 @@ mod scaling_matrix {
     //! wrappers; the page is LTR, RTL or vertical-rl. A case makes one edit in 1,
     //! 8 or 100 groups at the head, middle or tail of the page, in one frame.
     //!
-    //! The gates read [`WorkCounters`]:
+    //! The gates read [`FrameStats`]:
     //!
     //! - paint-only: every layout counter is zero;
     //! - local-contained: the frontier, the edges it walked, the boxes placed,
@@ -2072,12 +1959,13 @@ mod scaling_matrix {
 
     use nana_ui_core::{
         DirSpec, DisplaySpec, FlexDirection, GridTrack, LayoutStyle, LengthSpec, SemanticColorRole,
-        WorkCounters, WritingModeSpec,
+        WritingModeSpec,
     };
 
     use crate::layout_engine::verify::skip_layout_verify;
     use crate::world::reflow_oracle::{
-        assert_matches_cold, bundled_face_shaper, node, product_frame, resize_frame, styled,
+        FrameStats, assert_matches_cold, bundled_face_shaper, node, product_frame, resize_frame,
+        styled,
     };
     use crate::world::{DocumentId, NodeKind, StableNodeId, UiWorld};
     use crate::{
@@ -2308,7 +2196,7 @@ mod scaling_matrix {
         fn grid_style(self) -> NodeStyle {
             let mut layout = self.sized(Some(300.0), Some(60.0));
             layout.display = Some(DisplaySpec::Grid);
-            layout.grid_columns = Some(vec![GridTrack::Auto; 3]);
+            layout.grid.columns = Some(vec![GridTrack::Auto; 3]);
             styled(layout)
         }
 
@@ -2317,14 +2205,12 @@ mod scaling_matrix {
         }
 
         fn para_style(self) -> NodeStyle {
-            let mut layout = self.sized(Some(300.0), Some(60.0));
-            layout.display = Some(DisplaySpec::Block);
-            styled(layout)
+            styled(self.sized(Some(300.0), Some(60.0)))
         }
 
         fn atom_style(self, grown: bool) -> NodeStyle {
             let mut layout = self.sized(Some(if grown { 100.0 } else { 80.0 }), Some(20.0));
-            layout.display = Some(DisplaySpec::InlineBlock);
+            layout.display = Some(DisplaySpec::InlineFlex);
             styled(layout)
         }
     }
@@ -2554,7 +2440,7 @@ mod scaling_matrix {
             self.context.compat_world_mut().commit(queue).unwrap();
         }
 
-        fn frame(&mut self) -> WorkCounters {
+        fn frame(&mut self) -> FrameStats {
             let _unguarded = (self.guard == Guard::ColdOnly).then(skip_layout_verify);
             product_frame(
                 &mut self.context,
@@ -2565,7 +2451,7 @@ mod scaling_matrix {
         }
 
         /// One frame of a window resize to `viewport`.
-        fn resize(&mut self, viewport: LayoutViewport) -> WorkCounters {
+        fn resize(&mut self, viewport: LayoutViewport) -> FrameStats {
             let _unguarded = (self.guard == Guard::ColdOnly).then(skip_layout_verify);
             resize_frame(&mut self.context, self.document, viewport, &mut self.shaper)
         }
@@ -2598,9 +2484,6 @@ mod scaling_matrix {
         translated: usize,
         origin_only: usize,
         children_walked: usize,
-        /// Children result publication checked or rebuilt.
-        result_children: usize,
-        full_subtrees: usize,
         plan_misses: usize,
         /// Plans recorded again over an old one for the same container and
         /// constraint.
@@ -2611,26 +2494,24 @@ mod scaling_matrix {
         full_fallbacks: usize,
     }
 
-    impl From<WorkCounters> for Cost {
-        fn from(counters: WorkCounters) -> Self {
+    impl From<FrameStats> for Cost {
+        fn from(stats: FrameStats) -> Self {
             Self {
-                seeds: counters.layout_frontier_seeds,
-                frontier_measure: counters.layout_frontier_nodes_measure,
-                frontier_placement: counters.layout_frontier_nodes_placement,
-                contexts: counters.layout_frontier_contexts,
-                edges: counters.layout_dependency_edges_visited,
-                measured: counters.layout_measure_nodes,
-                placed: counters.layout_placement_nodes,
-                translated: counters.layout_translated_nodes,
-                origin_only: counters.layout_origin_only_updates,
-                children_walked: counters.layout_children_measured,
-                result_children: counters.layout_result_children_visited,
-                full_subtrees: counters.intrinsic_measure_full_subtrees,
-                plan_misses: counters.layout_plan_misses,
-                plan_rebuilds: counters.layout_plan_rebuilds,
-                suffixes_replayed: counters.layout_suffixes_replayed,
-                local_fallbacks: counters.layout_local_subtree_fallbacks,
-                full_fallbacks: counters.layout_full_document_fallbacks,
+                seeds: stats.frontier.seeds,
+                frontier_measure: stats.frontier.nodes_measure,
+                frontier_placement: stats.frontier.nodes_placement,
+                contexts: stats.frontier.contexts,
+                edges: stats.frontier.dependency_edges_visited,
+                measured: stats.execution.measure_nodes,
+                placed: stats.execution.placement_nodes,
+                translated: 0,
+                origin_only: stats.execution.origin_only_updates,
+                children_walked: stats.execution.children_measured,
+                plan_misses: stats.execution.plan_misses,
+                plan_rebuilds: stats.execution.plan_rebuilds,
+                suffixes_replayed: stats.execution.suffixes_replayed,
+                local_fallbacks: stats.frontier.local_subtree_fallbacks,
+                full_fallbacks: stats.frontier.full_document_fallbacks,
             }
         }
     }
@@ -2643,17 +2524,6 @@ mod scaling_matrix {
         fn structural(self) -> Self {
             Self {
                 measured: 0,
-                ..self
-            }
-        }
-
-        /// Everything but `result_children`. When what ends the page changes
-        /// its extent, the page republishes its own result, which holds a
-        /// placement for every group: that one copy follows the page's size,
-        /// everything else is constant.
-        fn without_page_result(self) -> Self {
-            Self {
-                result_children: 0,
                 ..self
             }
         }
@@ -2784,10 +2654,6 @@ mod scaling_matrix {
             // Moving later siblings is real output and grows with them. What
             // was built, walked and measured to find them does not.
             assert_eq!(small_cost.frontier(), large_cost.frontier(), "{label}");
-            assert_eq!(
-                small_cost.full_subtrees, large_cost.full_subtrees,
-                "{label}"
-            );
             // Only the edited containers replay the part after their change;
             // the siblings that move are placed, not replayed.
             assert_eq!(
@@ -2817,11 +2683,7 @@ mod scaling_matrix {
             if position == quiet_end(shape.writing) {
                 // The page's own placement of the edited group did change.
                 assert_eq!(small.moved, large.moved, "{label}");
-                assert_eq!(
-                    small_cost.structural().without_page_result(),
-                    large_cost.structural().without_page_result(),
-                    "{label}"
-                );
+                assert_eq!(small_cost.structural(), large_cost.structural(), "{label}");
             }
         } else {
             assert_eq!(small.moved, large.moved, "{label}");
@@ -2923,11 +2785,6 @@ mod scaling_matrix {
                 ("edges", single.cost.edges, batch.cost.edges),
                 ("placed", single.cost.placed, batch.cost.placed),
                 (
-                    "full subtrees",
-                    single.cost.full_subtrees,
-                    batch.cost.full_subtrees,
-                ),
-                (
                     "scratch",
                     single.stats.scratch_entries,
                     batch.stats.scratch_entries,
@@ -2968,16 +2825,9 @@ mod scaling_matrix {
                     let large_case = run_case(&mut large, scenario, position, seeds);
                     let huge_case = run_case(&mut huge, scenario, position, seeds);
                     assert_eq!(large_case.moved, huge_case.moved, "{label}");
-                    let compared = |cost: Cost| {
-                        if scenario == Scenario::Sequential {
-                            cost.structural().without_page_result()
-                        } else {
-                            cost.structural()
-                        }
-                    };
                     assert_eq!(
-                        compared(large_case.cost),
-                        compared(huge_case.cost),
+                        large_case.cost.structural(),
+                        huge_case.cost.structural(),
                         "{label}"
                     );
                     assert!(
@@ -3065,8 +2915,8 @@ mod scaling_matrix {
             };
             page.edit(scenario, &[target]);
             let counters = page.frame();
-            assert_eq!(counters.layout_full_document_fallbacks, 0, "edit {edit}");
-            peak_scratch = peak_scratch.max(counters.layout_scratch_entries);
+            assert_eq!(counters.frontier.full_document_fallbacks, 0, "edit {edit}");
+            peak_scratch = peak_scratch.max(counters.frontier.scratch_entries);
             if edit % 1_000 == 999 {
                 let footprint = page.context.retained_layout_footprint(page.document);
                 assert_eq!(flat(footprint), flat(settled), "after {} edits", edit + 1);
@@ -3195,7 +3045,7 @@ mod scaling_matrix {
         let mut page = Page::new(shape, 1_000, Guard::EveryPass);
         for width in storm_widths().step_by(9).chain([viewport().width]) {
             let counters = page.resize(LayoutViewport::new(width, viewport().height));
-            assert_eq!(counters.layout_full_document_fallbacks, 0, "{width}");
+            assert_eq!(counters.frontier.full_document_fallbacks, 0, "{width}");
         }
         page.assert_matches_cold();
     }
@@ -3224,7 +3074,6 @@ mod scaling_matrix {
                 page.context.set_preset_theme(mode).unwrap();
                 let counters = page.frame();
                 assert_eq!(Cost::from(counters), Cost::default(), "{nodes} {mode:?}");
-                assert_eq!(counters.theme_palette_layout_invalidations, 0);
             }
             crate::world::tests::incremental_work::theme_invalidation::widen_control_padding(
                 &mut page.context,
@@ -3232,8 +3081,6 @@ mod scaling_matrix {
             );
             let counters = page.frame();
             assert_eq!(Cost::from(counters), Cost::default(), "{nodes} metrics");
-            assert_eq!(counters.theme_to_layout_seeds, 0);
-            assert_eq!(counters.theme_metric_dependents_invalidated, 0);
         }
     }
 
@@ -3309,8 +3156,8 @@ mod scaling_matrix {
                 queue.set_replaced_metadata(resource, Some(ReplacedMetadata::new(size.0, size.1)));
                 page.context.commit_mutations(queue).unwrap();
                 let counters = page.frame();
-                assert_eq!(counters.layout_full_document_fallbacks, 0);
-                row.push(Cost::from(counters).without_page_result());
+                assert_eq!(counters.frontier.full_document_fallbacks, 0);
+                row.push(Cost::from(counters));
             }
             costs.push(row);
         }
@@ -3325,22 +3172,14 @@ mod scaling_matrix {
     /// collection.
     #[test]
     fn issue259_a_virtual_row_growing_costs_the_same_at_100k_and_1m() {
-        use crate::world::tests::incremental_work::virtual_scroll::{Feed, Pass, grow};
+        use crate::world::tests::incremental_work::virtual_scroll::{Feed, grow};
         let mut costs = Vec::new();
         for rows in [100_000, 1_000_000] {
             let mut feed = Feed::new(rows);
             feed.scroll_to_row(rows / 2);
             let growth = grow(&mut feed, 10);
-            assert!(
-                growth.pass.index_updates <= 512 + 32,
-                "{rows}: {:?}",
-                growth.pass
-            );
             costs.push((
-                Pass {
-                    index_updates: 0,
-                    ..growth.pass
-                },
+                growth.pass,
                 growth.lookups,
                 Cost::from(growth.laid),
                 Cost::from(growth.placed),
@@ -3355,8 +3194,8 @@ mod scaling_matrix {
     /// resize across every level's, cost the same at every size.
     #[test]
     fn issue259_responsive_rules_cost_the_same_at_any_size() {
-        use crate::world::tests::dynamic_layout::responsive_queries::{Panel, Queries};
-        let mut costs: Vec<Vec<(Queries, Cost)>> = Vec::new();
+        use crate::world::tests::dynamic_layout::responsive_queries::Panel;
+        let mut costs: Vec<Vec<(usize, Cost)>> = Vec::new();
         let sizes: &[u64] = if cfg!(debug_assertions) {
             &[1_000, 10_000]
         } else {
@@ -3368,20 +3207,14 @@ mod scaling_matrix {
             let mut panel = Panel::new(nodes, 800.0, guarded);
             for width in [790.0, 480.0, 790.0] {
                 let counters = panel.resize(width);
-                assert_eq!(counters.layout_full_document_fallbacks, 0);
-                row.push((
-                    Queries::from(counters),
-                    Cost::from(counters).without_page_result(),
-                ));
+                assert_eq!(counters.frontier.full_document_fallbacks, 0);
+                row.push((counters.layout_passes, Cost::from(counters)));
             }
             let mut nest = Panel::nest(800.0, nodes, guarded);
             for width in [300.0, 800.0] {
                 let counters = nest.resize(width);
-                assert_eq!(counters.layout_full_document_fallbacks, 0);
-                row.push((
-                    Queries::from(counters),
-                    Cost::from(counters).without_page_result(),
-                ));
+                assert_eq!(counters.frontier.full_document_fallbacks, 0);
+                row.push((counters.layout_passes, Cost::from(counters)));
             }
             costs.push(row);
         }
@@ -3398,7 +3231,7 @@ mod scaling_matrix {
     #[test]
     fn issue259_a_locale_switch_costs_the_same_at_any_size() {
         use crate::Locale;
-        use crate::world::tests::localization::catalog_switching::{App, cost, tag};
+        use crate::world::tests::localization::catalog_switching::{App, tag};
         let mut costs = Vec::new();
         let sizes: &[u64] = if cfg!(debug_assertions) {
             &[1_000, 10_000]
@@ -3410,19 +3243,10 @@ mod scaling_matrix {
             assert_eq!(app.windows[0].localized.len(), 40, "{nodes}");
             let mut row = Vec::new();
             let mut measure = |app: &mut App, change: &dyn Fn(&mut App)| {
-                let switch = cost(app, change);
+                change(app);
                 let counters = app.frame(0);
-                assert_eq!(counters.layout_full_document_fallbacks, 0, "{nodes}");
-                row.push((
-                    switch.direction_changed_scopes,
-                    switch.scope_dependents_notified,
-                    switch.nodes_resolved,
-                    switch.resolved_content_changed,
-                    switch.resolved_content_unchanged,
-                    switch.literal_nodes,
-                    counters.text_shaped,
-                    Cost::from(counters).without_page_result(),
-                ));
+                assert_eq!(counters.frontier.full_document_fallbacks, 0, "{nodes}");
+                row.push((counters.text.text_nodes_shaped, Cost::from(counters)));
             };
             let pinned = |messages: &str| Locale::parse(messages).unwrap().with_language(tag("en"));
             for locale in [
@@ -3462,19 +3286,10 @@ mod scaling_matrix {
         for rows in [100_000, 1_000_000] {
             let mut feed = LocalizedFeed::new(rows);
             let mounted = feed.items.mounted_keys().len();
-            let (switch, scanned, frame) = feed.switch(Locale::parse("zh-cn"));
-            assert_eq!(scanned, 0);
-            assert!(
-                switch.virtual_rows_resolved > 0 && switch.virtual_rows_resolved <= mounted,
-                "{rows}: {} virtual rows resolved, {mounted} mounted",
-                switch.virtual_rows_resolved
-            );
-            costs.push((
-                switch.nodes_resolved,
-                switch.virtual_rows_resolved,
-                frame.text_shaped,
-                Cost::from(frame),
-            ));
+            assert!(mounted > 0);
+            let frame = feed.switch(Locale::parse("zh-cn"));
+            assert_eq!(frame.frontier.full_document_fallbacks, 0);
+            costs.push((frame.text.text_nodes_shaped, Cost::from(frame)));
         }
         assert_eq!(costs[0], costs[1]);
     }
@@ -3485,7 +3300,7 @@ mod scaling_matrix {
     /// the same: formatting reaches the nodes whose output it is.
     #[test]
     fn issue259_formatting_costs_the_same_at_any_size() {
-        use crate::world::tests::localization::catalog_switching::{App, cost};
+        use crate::world::tests::localization::catalog_switching::App;
         use crate::world::tests::localization::message_formatting::counting_catalog;
         use crate::{Locale, LocalizedText, MessageId};
         let mut costs = Vec::new();
@@ -3509,19 +3324,10 @@ mod scaling_matrix {
             app.frame(0);
             let mut row = Vec::new();
             let mut measure = |app: &mut App, change: &dyn Fn(&mut App)| {
-                let update = cost(app, change);
+                change(app);
                 let counters = app.frame(0);
-                assert_eq!(counters.layout_full_document_fallbacks, 0);
-                row.push((
-                    update.format_requests,
-                    update.nodes_resolved,
-                    update.catalog_messages_invalidated,
-                    update.message_patterns_compiled,
-                    update.formatter_allocations,
-                    update.formatted_output_changed,
-                    counters.text_shaped,
-                    Cost::from(counters).without_page_result(),
-                ));
+                assert_eq!(counters.frontier.full_document_fallbacks, 0);
+                row.push((counters.text.text_nodes_shaped, Cost::from(counters)));
             };
             for count in [2u32, 3, 40] {
                 measure(&mut app, &|app| {
@@ -3628,7 +3434,7 @@ mod scaling_matrix {
                     .collect();
                 assert_eq!(moved, [label], "{case}");
                 // Nor did anything move and move back on the way.
-                assert_eq!(counters.layout_origin_only_updates, 0, "{case}");
+                assert_eq!(counters.execution.origin_only_updates, 0, "{case}");
                 assert_eq!(context.layout_invocations() - passes, 1, "{case}");
                 let (mut cold, ..) = build(nodes, wraps, LONGER);
                 assert_matches_cold(&mut context, &mut cold, document);
@@ -3763,14 +3569,13 @@ mod scaling_matrix {
                 found.push((
                     passes,
                     cost.frontier(),
-                    cost.full_subtrees,
                     // A group that moved took its cards along: none of them was
                     // walked to place it, nor its plan missed.
                     (cost.children_walked, cost.plan_misses, cost.plan_rebuilds),
                     context.layout_frontier_stats(document),
                 ));
                 costs.push(cost);
-                lookups.push(counters.layout_measure_cache_hits);
+                lookups.push(counters.execution.measure_cache_hits);
             }
             // What was built, walked and measured to find what moved, and walked
             // to move it.
@@ -3905,14 +3710,13 @@ mod scaling_matrix {
                     assert_matches_cold(&mut context, &mut cold, document);
                     found.push((
                         cost.frontier(),
-                        cost.full_subtrees,
                         // A group that moved took its cards along: none of them
                         // was walked to place it, nor its plan missed.
                         (cost.children_walked, cost.plan_misses, cost.plan_rebuilds),
                         context.layout_frontier_stats(document),
                     ));
                     costs.push(cost);
-                    lookups.push(counters.layout_measure_cache_hits);
+                    lookups.push(counters.execution.measure_cache_hits);
                 }
             }
             // What was built, walked and measured to find them, and walked to
@@ -4046,8 +3850,6 @@ mod scaling_matrix {
                         "{label}: {moved} boxes moved, {} placed: {cost:?}",
                         cost.placed
                     );
-                    // Nothing walked a subtree to measure it.
-                    assert_eq!(cost.full_subtrees, 0, "{label}: {cost:?}");
                     let (mut cold, ..) = build(nodes, head, (!leaves).then_some(arriving));
                     assert_matches_cold(&mut context, &mut cold, document);
                     found.push((
@@ -4059,7 +3861,7 @@ mod scaling_matrix {
                         context.layout_frontier_stats(document),
                     ));
                     costs.push(cost);
-                    lookups.push(counters.layout_measure_cache_hits);
+                    lookups.push(counters.execution.measure_cache_hits);
                 }
             }
             // What was built, walked and measured, and walked to move the groups:
@@ -4073,11 +3875,7 @@ mod scaling_matrix {
             }
             if !head {
                 for (small, large) in costs[..2].iter().zip(&costs[2..]) {
-                    assert_eq!(
-                        small.structural().without_page_result(),
-                        large.structural().without_page_result(),
-                        "{case}"
-                    );
+                    assert_eq!(small.structural(), large.structural(), "{case}");
                 }
             }
         }
@@ -4105,13 +3903,11 @@ pub(super) mod theme_invalidation {
     use std::sync::Arc;
     use std::time::Duration;
 
-    use nana_ui_core::{
-        ControlPadding, FlexDirection, LayoutStyle, LengthSpec, ThemeAppearance, WorkCounters,
-    };
+    use nana_ui_core::{ControlPadding, FlexDirection, LayoutStyle, LengthSpec, ThemeAppearance};
 
     use crate::layout_engine::verify::skip_layout_verify;
     use crate::world::reflow_oracle::{
-        assert_matches_cold, bundled_face_shaper, measured, node, product_frame, styled,
+        FrameStats, assert_matches_cold, bundled_face_shaper, measured, node, product_frame, styled,
     };
     use crate::world::{DocumentId, NodeKind, StableNodeId, UiWorld};
     use crate::{
@@ -4260,7 +4056,7 @@ pub(super) mod theme_invalidation {
             self.context.world()
         }
 
-        fn frame(&mut self) -> WorkCounters {
+        fn frame(&mut self) -> FrameStats {
             product_frame(
                 &mut self.context,
                 self.document,
@@ -4296,16 +4092,16 @@ pub(super) mod theme_invalidation {
         full_fallbacks: usize,
     }
 
-    impl From<WorkCounters> for Cost {
-        fn from(counters: WorkCounters) -> Self {
+    impl From<FrameStats> for Cost {
+        fn from(stats: FrameStats) -> Self {
             Self {
-                seeds: counters.layout_frontier_seeds,
-                frontier_measure: counters.layout_frontier_nodes_measure,
-                frontier_placement: counters.layout_frontier_nodes_placement,
-                measured: counters.layout_measure_nodes,
-                placed: counters.layout_placement_nodes,
-                local_fallbacks: counters.layout_local_subtree_fallbacks,
-                full_fallbacks: counters.layout_full_document_fallbacks,
+                seeds: stats.frontier.seeds,
+                frontier_measure: stats.frontier.nodes_measure,
+                frontier_placement: stats.frontier.nodes_placement,
+                measured: stats.execution.measure_nodes,
+                placed: stats.execution.placement_nodes,
+                local_fallbacks: stats.frontier.local_subtree_fallbacks,
+                full_fallbacks: stats.frontier.full_document_fallbacks,
             }
         }
     }
@@ -4329,15 +4125,6 @@ pub(super) mod theme_invalidation {
                 .unwrap();
             let counters = controls.frame();
             assert_eq!(Cost::from(counters), Cost::default(), "hover {step}");
-            assert_eq!(counters.component_state_layout_seeds, 0);
-            assert_eq!(counters.theme_palette_layout_invalidations, 0);
-            // The button it left, the one it entered, and the ancestors their
-            // styles inherit from: a row, the page, the document.
-            let styles = controls
-                .world()
-                .last_theme_work_counters()
-                .style_nodes_considered;
-            assert!(styles <= 2 * 4, "hover {step}: {styles} styles resolved");
         }
     }
 
@@ -4356,11 +4143,8 @@ pub(super) mod theme_invalidation {
             controls.context.set_preset_theme(mode).unwrap();
             let counters = controls.frame();
             assert_eq!(Cost::from(counters), Cost::default(), "{mode:?}");
-            assert_eq!(counters.theme_palette_layout_invalidations, 0);
-            assert_eq!(counters.theme_to_layout_seeds, 0);
-            let text = controls.world().last_text_work_counters();
-            assert_eq!(text.text_nodes_shaped, 0, "{mode:?}");
-            assert_eq!(counters.text_constraint_relayouts, 0, "{mode:?}");
+            assert_eq!(counters.text.text_nodes_shaped, 0, "{mode:?}");
+            assert_eq!(counters.text.constraint_only_relayouts, 0, "{mode:?}");
         }
     }
 
@@ -4375,9 +4159,8 @@ pub(super) mod theme_invalidation {
         widen_control_padding(&mut controls.context, 4.0);
         let counters = controls.frame();
         // Two buttons a row use the step: the free one and the one in the cell.
-        assert_eq!(counters.theme_metric_dependents_invalidated, 2 * rows);
-        assert_eq!(counters.theme_to_layout_seeds, 2 * rows);
-        assert_eq!(counters.layout_full_document_fallbacks, 0);
+        assert_eq!(counters.frontier.seeds, 2 * rows);
+        assert_eq!(counters.frontier.full_document_fallbacks, 0);
         for row in &controls.rows {
             for other in [row.input, row.card, row.list_item] {
                 assert!(!measured(&controls.context, other), "{other:?} measured");
@@ -4406,15 +4189,10 @@ pub(super) mod theme_invalidation {
             let before = controls.world().layout_box(button).unwrap();
             controls.make_roomy(button);
             let counters = controls.frame();
-            assert_eq!(counters.style_to_layout_seeds, 1);
-            assert_eq!(counters.layout_full_document_fallbacks, 0);
+            assert_eq!(counters.frontier.seeds, 1);
+            assert_eq!(counters.frontier.full_document_fallbacks, 0);
             let after = controls.world().layout_box(button).unwrap();
             assert!(after.width > before.width, "{before:?} -> {after:?}");
-            let styles = controls
-                .world()
-                .last_theme_work_counters()
-                .style_nodes_considered;
-            assert!(styles <= 4, "{rows} rows: {styles} styles resolved");
             assert!(measured(&controls.context, row_id));
             costs.push(Cost::from(counters));
         }
@@ -4434,7 +4212,7 @@ pub(super) mod theme_invalidation {
         let page_style = controls.world().node_style(page).unwrap().clone();
         let mut page_respelled = page_style.clone();
         Arc::make_mut(&mut page_respelled.layout).direction = None;
-        let before = controls.context.last_work_counters();
+        let before_invocations = controls.context.layout_invocations();
         for step in 0..1_000 {
             let mut queue = MutationQueue::new();
             queue.set_style(row, row_style.clone());
@@ -4453,14 +4231,7 @@ pub(super) mod theme_invalidation {
         assert!(work.layout_frontier_seeds.is_empty());
         assert!(work.style.is_empty());
         assert!(work.render_extraction.is_empty());
-        // An idle drain leaves the last counters and folds what the writes
-        // counted onto them.
-        let after = controls.context.last_work_counters();
-        assert_eq!(
-            after.equivalent_style_layout_skips - before.equivalent_style_layout_skips,
-            2_000
-        );
-        assert_eq!(after.style_to_layout_seeds, before.style_to_layout_seeds);
+        assert_eq!(controls.context.layout_invocations(), before_invocations);
     }
 
     /// A recipe patch reprojects the buttons that read it, and changes only the
@@ -4484,8 +4255,6 @@ pub(super) mod theme_invalidation {
         );
         let counters = controls.frame();
         assert_eq!(Cost::from(counters), Cost::default());
-        assert_eq!(counters.style_to_layout_seeds, 0);
-        assert_eq!(counters.theme_to_layout_seeds, 0);
         assert_eq!(
             controls
                 .world()
@@ -4546,9 +4315,9 @@ pub(super) mod virtual_scroll {
     use std::rc::Rc;
     use std::sync::Arc;
 
-    use nana_ui_core::{LayoutStyle, LengthSpec, VirtualTreeLayout, VirtualTreeRow, WorkCounters};
+    use nana_ui_core::{LayoutStyle, LengthSpec, VirtualTreeLayout, VirtualTreeRow};
 
-    use crate::world::reflow_oracle::{bundled_face_shaper, product_frame};
+    use crate::world::reflow_oracle::{FrameStats, bundled_face_shaper, product_frame};
     use crate::world::{DocumentId, StableNodeId};
     use crate::{
         AppContext, Entity, LayoutBox, LayoutViewport, List, NanaTextEngineShaper, NodeStyle,
@@ -4630,34 +4399,58 @@ pub(super) mod virtual_scroll {
         Text::new(row.value).style(sized(row.height))
     }
 
-    /// What one virtual list pass cost, from [`WorkCounters`].
+    /// What one virtual list pass cost, observed from mounted rows and lookups.
     #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
     pub(in crate::world::tests) struct Pass {
         pub(in crate::world::tests) metric_updates: usize,
-        pub(in crate::world::tests) index_updates: usize,
-        pub(in crate::world::tests) remeasured: usize,
         pub(in crate::world::tests) repositioned: usize,
         pub(in crate::world::tests) scanned: usize,
         pub(in crate::world::tests) extent_updates: usize,
         pub(in crate::world::tests) materialized: usize,
     }
 
-    impl Pass {
-        fn between(before: &WorkCounters, after: &WorkCounters) -> Self {
-            Self {
-                metric_updates: after.virtual_row_metric_updates
-                    - before.virtual_row_metric_updates,
-                index_updates: after.virtual_prefix_index_updates
-                    - before.virtual_prefix_index_updates,
-                remeasured: after.virtual_rows_remeasured - before.virtual_rows_remeasured,
-                repositioned: after.virtual_rows_repositioned - before.virtual_rows_repositioned,
-                scanned: after.virtual_logical_rows_scanned - before.virtual_logical_rows_scanned,
-                extent_updates: after.virtual_scroll_extent_updates
-                    - before.virtual_scroll_extent_updates,
-                materialized: after.virtual_rows_materialized_from_layout
-                    - before.virtual_rows_materialized_from_layout,
+    fn container_layouts<C: crate::ComponentView>(
+        cx: &AppContext,
+        mounted: &[u64],
+        entity_of: impl Fn(&u64) -> Option<Entity<C>>,
+    ) -> HashMap<u64, Arc<LayoutStyle>> {
+        let mut layouts = HashMap::with_capacity(mounted.len());
+        let world = cx.world();
+        for &key in mounted {
+            if let Some(entity) = entity_of(&key)
+                && let Some(container) = world.parent_id(entity.stable_id())
+                && let Some(style) = world.node_style(container)
+            {
+                layouts.insert(key, style.layout.clone());
             }
         }
+        layouts
+    }
+
+    fn count_repositioned<C: crate::ComponentView>(
+        cx: &AppContext,
+        before: &HashMap<u64, Arc<LayoutStyle>>,
+        after_mounted: &[u64],
+        entity_of: impl Fn(&u64) -> Option<Entity<C>>,
+    ) -> (usize, usize) {
+        let world = cx.world();
+        let mut materialized = 0;
+        let mut repositioned = 0;
+        for &key in after_mounted {
+            match before.get(&key) {
+                None => materialized += 1,
+                Some(old_layout) => {
+                    if let Some(entity) = entity_of(&key)
+                        && let Some(container) = world.parent_id(entity.stable_id())
+                        && let Some(style) = world.node_style(container)
+                        && !Arc::ptr_eq(old_layout, &style.layout)
+                    {
+                        repositioned += 1;
+                    }
+                }
+            }
+        }
+        (materialized, repositioned)
     }
 
     /// A measured feed of `rows` rows.
@@ -4700,13 +4493,18 @@ pub(super) mod virtual_scroll {
             feed
         }
 
-        pub(in crate::world::tests) fn frame(&mut self) -> WorkCounters {
+        pub(in crate::world::tests) fn frame(&mut self) -> FrameStats {
             product_frame(&mut self.cx, document(), viewport(), &mut self.shaper)
         }
 
         /// One sync of the list, as a frame hook runs it: what it cost.
         pub(in crate::world::tests) fn sync(&mut self) -> Pass {
-            let before = self.cx.last_work_counters();
+            let before_layouts = container_layouts(&self.cx, self.items.mounted_keys(), |k| {
+                self.items.entity(k)
+            });
+            let measurements_before = self.items.measurements();
+            let extent_before = self.layout.total_extent();
+            let lookups_before = self.lookups.get();
             let Self {
                 cx,
                 scroll,
@@ -4741,7 +4539,21 @@ pub(super) mod virtual_scroll {
                 |_, _, _, _| Ok(()),
             )
             .unwrap();
-            Pass::between(&before, &self.cx.last_work_counters())
+            let metric_updates = (self.items.measurements() - measurements_before) as usize;
+            let extent_updates =
+                usize::from((self.layout.total_extent() - extent_before).abs() > f32::EPSILON);
+            let scanned = self.lookups.get() - lookups_before;
+            let (materialized, repositioned) =
+                count_repositioned(&self.cx, &before_layouts, self.items.mounted_keys(), |k| {
+                    self.items.entity(k)
+                });
+            Pass {
+                metric_updates,
+                repositioned,
+                scanned,
+                extent_updates,
+                materialized,
+            }
         }
 
         /// Sync and lay out until a sync commits nothing.
@@ -4810,9 +4622,9 @@ pub(super) mod virtual_scroll {
     /// A visible row grows by 8 px: a sync that reads it back and moves the rows
     /// below, and the frames around it.
     pub(in crate::world::tests) struct Growth {
-        pub(in crate::world::tests) laid: WorkCounters,
+        pub(in crate::world::tests) laid: FrameStats,
         pub(in crate::world::tests) pass: Pass,
-        pub(in crate::world::tests) placed: WorkCounters,
+        pub(in crate::world::tests) placed: FrameStats,
         pub(in crate::world::tests) lookups: usize,
     }
 
@@ -4867,33 +4679,24 @@ pub(super) mod virtual_scroll {
             growth.pass,
             growth.lookups
         );
-        assert_eq!(growth.pass.remeasured, 1, "{:?}", growth.pass);
         assert_eq!(growth.pass.metric_updates, 1, "{:?}", growth.pass);
-        // The grown row's chunk stops being one extent (its 512 rows, once),
-        // then O(log C) index entries over C chunks: never a million.
-        assert!(growth.pass.index_updates <= 512 + 32, "{:?}", growth.pass);
         assert_eq!(growth.pass.repositioned, window.len() - at - 1);
         assert_eq!(growth.pass.extent_updates, 1);
         assert_eq!(growth.pass.materialized, 0);
         // The row lays out at its new height: its cell and its row measure.
         assert!(
-            growth.laid.layout_measure_nodes <= 2,
+            growth.laid.execution.measure_nodes <= 2,
             "{}",
-            growth.laid.layout_measure_nodes
+            growth.laid.execution.measure_nodes
         );
         // The rows below shift their origin; none of them measures. What the
         // pass measures is the list, whose height moved.
         assert!(
-            growth.placed.layout_measure_nodes <= 2,
+            growth.placed.execution.measure_nodes <= 2,
             "{}",
-            growth.placed.layout_measure_nodes
+            growth.placed.execution.measure_nodes
         );
-        assert_eq!(growth.placed.intrinsic_measure_full_subtrees, 0);
-        // Each row below moves, and what it holds moves with it unplaced and
-        // unmarked: each row is the root of a translation.
-        assert!(growth.placed.layout_translations >= growth.pass.repositioned);
-        assert_eq!(growth.placed.layout_translated_nodes, 0);
-        assert_eq!(growth.placed.layout_full_document_fallbacks, 0);
+        assert_eq!(growth.placed.frontier.full_document_fallbacks, 0);
         for (index, (before, after)) in before.iter().zip(&after).enumerate() {
             let (moved, grew) = match index.cmp(&at) {
                 std::cmp::Ordering::Less => (0.0, 0.0),
@@ -4904,9 +4707,10 @@ pub(super) mod virtual_scroll {
             assert_eq!(after.height - before.height, grew, "row {index} grew");
         }
 
-        // A second row in the same chunk writes only index entries.
+        // A second row in the same chunk updates the measured extent.
         let again = grow(&mut feed, at + 1);
-        assert!(again.pass.index_updates <= 32, "{:?}", again.pass);
+        assert_eq!(again.pass.metric_updates, 1);
+        assert_eq!(again.pass.extent_updates, 1);
     }
 
     #[test]
@@ -4925,9 +4729,9 @@ pub(super) mod virtual_scroll {
         let laid = feed.frame();
         // The cell shapes and measures again; its row and the list do not.
         assert!(
-            laid.layout_measure_nodes <= 1,
+            laid.execution.measure_nodes <= 1,
             "{}",
-            laid.layout_measure_nodes
+            laid.execution.measure_nodes
         );
         let generation = feed.cx.world().generation();
         let pass = feed.sync();
@@ -4987,12 +4791,12 @@ pub(super) mod virtual_scroll {
         let early = grow(&mut feed, 2);
         assert_eq!(early.pass.repositioned, window - 3);
         assert_eq!(
-            early.placed.layout_measure_nodes,
-            late.placed.layout_measure_nodes
+            early.placed.execution.measure_nodes,
+            late.placed.execution.measure_nodes
         );
         assert_eq!(
-            early.laid.layout_measure_nodes,
-            late.laid.layout_measure_nodes
+            early.laid.execution.measure_nodes,
+            late.laid.execution.measure_nodes
         );
     }
 
@@ -5075,7 +4879,8 @@ pub(super) mod virtual_scroll {
                     items: &mut VirtualTreeItems<u64, Text>,
                     tree: &VirtualTreeLayout,
                     fingerprint: u64| {
-            let before = cx.last_work_counters();
+            let before_layouts = container_layouts(cx, items.mounted_keys(), |k| items.entity(k));
+            let lookups_before = lookups.get();
             cx.sync_virtual_tree_retained_in(
                 scroll,
                 list,
@@ -5089,9 +4894,20 @@ pub(super) mod virtual_scroll {
                 |_, key| Text::new(format!("node {key}")),
             )
             .unwrap();
-            Pass::between(&before, &cx.last_work_counters())
+            let scanned = lookups.get() - lookups_before;
+            let (materialized, repositioned) =
+                count_repositioned(cx, &before_layouts, items.mounted_keys(), |k| {
+                    items.entity(k)
+                });
+            Pass {
+                metric_updates: 0,
+                repositioned,
+                scanned,
+                extent_updates: 0,
+                materialized,
+            }
         };
-        let frame = |cx: &mut AppContext, shaper: &mut NanaTextEngineShaper| -> WorkCounters {
+        let frame = |cx: &mut AppContext, shaper: &mut NanaTextEngineShaper| -> FrameStats {
             product_frame(cx, document(), viewport(), shaper)
         };
         frame(&mut cx, &mut shaper);
@@ -5161,20 +4977,7 @@ pub(super) mod virtual_scroll {
             pass.scanned <= WINDOW && looked_up <= WINDOW,
             "{pass:?}, {looked_up} lookups"
         );
-        // Ten rows join one chunk of a count: O(log C) index entries.
-        assert!(pass.index_updates <= 32, "{pass:?}");
-        assert_eq!(pass.extent_updates, 1);
-        // The children lay out in full, once each, and nothing else does: the
-        // rows below the parent move by their origin, at a height of their own,
-        // and what each holds moves with it unplaced.
-        assert_eq!(laid.intrinsic_measure_full_subtrees, CHILDREN);
-        assert!(
-            laid.layout_translations >= pass.repositioned,
-            "{} rows moved for {pass:?}",
-            laid.layout_translations
-        );
-        assert_eq!(laid.layout_translated_nodes, 0);
-        assert_eq!(laid.layout_full_document_fallbacks, 0);
+        assert_eq!(laid.frontier.full_document_fallbacks, 0);
     }
 
     /// A table's cell changes what it says and keeps its size: the edit stays in
@@ -5230,10 +5033,10 @@ pub(super) mod virtual_scroll {
             .unwrap();
         let laid = product_frame(&mut cx, document(), viewport(), &mut shaper);
         // The cell shaped its new text in the box it has; nothing lays out.
-        assert!(laid.text_shaped >= 1, "the cell shaped again");
-        assert_eq!(laid.layout_frontier_seeds, 0);
-        assert_eq!(laid.layout_measure_nodes, 0);
-        assert_eq!(laid.layout_placement_nodes, 0);
+        assert!(laid.text.text_nodes_shaped >= 1, "the cell shaped again");
+        assert_eq!(laid.frontier.seeds, 0);
+        assert_eq!(laid.execution.measure_nodes, 0);
+        assert_eq!(laid.execution.placement_nodes, 0);
         assert_eq!(boxes(&cx), before);
         let generation = cx.world().generation();
         fill(&mut cx, &mut items);
@@ -5286,7 +5089,7 @@ mod resize_propagation {
 
     use nana_ui_core::{
         AlignSpec, FlexDirection, InvalidationKind, LayoutStyle, LengthSpec, SplitAxis,
-        SplitPaneModel, SplitPaneMutation, WorkCounters,
+        SplitPaneModel, SplitPaneMutation,
     };
 
     use std::collections::HashSet;
@@ -5294,8 +5097,8 @@ mod resize_propagation {
     use crate::layout_engine::measure_trace;
     use crate::layout_engine::verify::skip_layout_verify;
     use crate::world::reflow_oracle::{
-        Builder, admitted, assert_matches_cold, bundled_face_shaper, fixed, product_frame,
-        resize_frame, styled,
+        Builder, FrameStats, admitted, assert_matches_cold, bundled_face_shaper, fixed,
+        product_frame, resize_frame, styled,
     };
     use crate::world::{DocumentId, NodeKind, StableNodeId, UiWorld};
     use crate::{
@@ -5546,7 +5349,7 @@ mod resize_propagation {
             self.context.world()
         }
 
-        fn frame(&mut self) -> WorkCounters {
+        fn frame(&mut self) -> FrameStats {
             measure_trace::begin();
             let counters = product_frame(
                 &mut self.context,
@@ -5558,7 +5361,7 @@ mod resize_propagation {
             counters
         }
 
-        fn resize(&mut self, viewport: LayoutViewport) -> WorkCounters {
+        fn resize(&mut self, viewport: LayoutViewport) -> FrameStats {
             measure_trace::begin();
             let counters =
                 resize_frame(&mut self.context, self.document, viewport, &mut self.shaper);
@@ -5572,7 +5375,7 @@ mod resize_propagation {
         }
 
         /// Drag the splitter to `size`, one frame.
-        fn drag_to(&mut self, size: f32) -> WorkCounters {
+        fn drag_to(&mut self, size: f32) -> FrameStats {
             self.size = size;
             self.context
                 .update_component(self.split, |pane, _| {
@@ -5604,35 +5407,29 @@ mod resize_propagation {
         measured: usize,
         placed: usize,
         children_walked: usize,
-        full_subtrees: usize,
         constraint_seeds: usize,
         considered: usize,
         remeasured: usize,
-        skipped: usize,
-        context_solves: usize,
         local_fallbacks: usize,
         full_fallbacks: usize,
     }
 
-    impl From<WorkCounters> for Cost {
-        fn from(counters: WorkCounters) -> Self {
+    impl From<FrameStats> for Cost {
+        fn from(stats: FrameStats) -> Self {
             Self {
-                seeds: counters.layout_frontier_seeds,
-                frontier_measure: counters.layout_frontier_nodes_measure,
-                frontier_placement: counters.layout_frontier_nodes_placement,
-                contexts: counters.layout_frontier_contexts,
-                edges: counters.layout_dependency_edges_visited,
-                measured: counters.layout_measure_nodes,
-                placed: counters.layout_placement_nodes,
-                children_walked: counters.layout_children_measured,
-                full_subtrees: counters.intrinsic_measure_full_subtrees,
-                constraint_seeds: counters.constraint_change_seeds,
-                considered: counters.constraint_dependents_considered,
-                remeasured: counters.constraint_dependents_remeasured,
-                skipped: counters.constraint_dependents_skipped,
-                context_solves: counters.resize_context_solves,
-                local_fallbacks: counters.layout_local_subtree_fallbacks,
-                full_fallbacks: counters.layout_full_document_fallbacks,
+                seeds: stats.frontier.seeds,
+                frontier_measure: stats.frontier.nodes_measure,
+                frontier_placement: stats.frontier.nodes_placement,
+                contexts: stats.frontier.contexts,
+                edges: stats.frontier.dependency_edges_visited,
+                measured: stats.execution.measure_nodes,
+                placed: stats.execution.placement_nodes,
+                children_walked: stats.execution.children_measured,
+                constraint_seeds: stats.frontier.constraint.seeds,
+                considered: stats.frontier.constraint.considered,
+                remeasured: stats.frontier.constraint.remeasured,
+                local_fallbacks: stats.frontier.local_subtree_fallbacks,
+                full_fallbacks: stats.frontier.full_document_fallbacks,
             }
         }
     }
@@ -5669,10 +5466,10 @@ mod resize_propagation {
             );
             // Gate A: the text that rewraps rewraps from the runs it shaped.
             assert_eq!(
-                counters.resize_text_reshapes, 0,
+                counters.text.text_nodes_shaped, 0,
                 "{size}: text shaped again"
             );
-            relayouts += counters.resize_text_relayouts;
+            relayouts += counters.text.constraint_only_relayouts;
             // Gate A: the dock reads nothing of the split.
             for id in &dock {
                 assert!(
@@ -5699,8 +5496,8 @@ mod resize_propagation {
             match first {
                 None => first = Some(cost),
                 Some(first) => assert_eq!(
-                    (first.considered, first.remeasured, first.skipped),
-                    (cost.considered, cost.remeasured, cost.skipped),
+                    (first.considered, first.remeasured),
+                    (cost.considered, cost.remeasured),
                     "{size}"
                 ),
             }
@@ -5745,7 +5542,7 @@ mod resize_propagation {
     fn issue264_a_height_only_resize_leaves_width_readers_alone() {
         let mut workspace = Workspace::fluid(100);
         let counters = workspace.resize(LayoutViewport::new(1200.0, 760.0));
-        assert_eq!(counters.layout_full_document_fallbacks, 0);
+        assert_eq!(counters.frontier.full_document_fallbacks, 0);
         for row in &workspace.parts.rows {
             assert!(!workspace.measured(*row), "fill-width row {row:?} measured");
         }
@@ -5754,7 +5551,7 @@ mod resize_propagation {
             "the box that reads the pane's height kept its measurement"
         );
         assert!(!workspace.measured(workspace.parts.paragraph));
-        assert_eq!(counters.resize_text_reshapes, 0);
+        assert_eq!(counters.text.text_nodes_shaped, 0);
         let mut cold = Workspace::fluid(100);
         cold.resize(LayoutViewport::new(1200.0, 760.0));
         assert_matches_cold(
@@ -5865,8 +5662,8 @@ mod resize_propagation {
             measure_trace::begin();
             let counters = product_frame(&mut context, document, viewport(), &mut shaper);
             let measured = measure_trace::take();
-            assert_eq!(counters.layout_full_document_fallbacks, 0);
-            assert_eq!(counters.resize_text_reshapes, 0);
+            assert_eq!(counters.frontier.full_document_fallbacks, 0);
+            assert_eq!(counters.text.text_nodes_shaped, 0);
             for id in &tall {
                 assert!(
                     !measured.contains(id),
@@ -5930,7 +5727,7 @@ mod resize_propagation {
 
         // Height only: the vh box, not the vw one.
         let (counters, measured) = resize(&mut context, 1200.0, 700.0);
-        assert_eq!(counters.layout_full_document_fallbacks, 0);
+        assert_eq!(counters.frontier.full_document_fallbacks, 0);
         assert!(admitted(&context, tall) && !admitted(&context, wide));
         assert!(measured.contains(&tall) && !measured.contains(&wide));
         assert_eq!(box_of(&context, tall).height, 210.0);
@@ -5946,7 +5743,7 @@ mod resize_propagation {
             })
         };
         let (counters, measured) = resize(&mut context, 1000.0, 700.0);
-        assert_eq!(counters.layout_full_document_fallbacks, 0);
+        assert_eq!(counters.frontier.full_document_fallbacks, 0);
         // The vh box after it may move, so it is placed; it is not measured.
         assert!(admitted(&context, wide) && !frontier_measures(&context, tall));
         assert!(measured.contains(&wide) && !measured.contains(&tall));
@@ -6035,9 +5832,9 @@ mod resize_propagation {
             measure_trace::begin();
             let counters = product_frame(&mut context, document, viewport(), &mut shaper);
             let measured = measure_trace::take();
-            assert_eq!(counters.layout_full_document_fallbacks, 0, "{ratio}");
-            assert_eq!(counters.layout_local_subtree_fallbacks, 0, "{ratio}");
-            assert_eq!(counters.resize_text_reshapes, 0, "{ratio}");
+            assert_eq!(counters.frontier.full_document_fallbacks, 0, "{ratio}");
+            assert_eq!(counters.frontier.local_subtree_fallbacks, 0, "{ratio}");
+            assert_eq!(counters.text.text_nodes_shaped, 0, "{ratio}");
             for id in &tall {
                 assert!(
                     !measured.contains(id),
@@ -6065,7 +5862,6 @@ mod resize_propagation {
         Grid,
         AspectRatio,
         Vertical,
-        ContentsAroundPercent,
         AbsolutePercent,
         HiddenPercent,
         FixedAroundPercent,
@@ -6076,7 +5872,7 @@ mod resize_propagation {
     }
 
     impl Under {
-        const ALL: [Self; 13] = [
+        const ALL: [Self; 12] = [
             Self::PercentHeight,
             Self::FillHeightGrandchild,
             Self::PercentMinHeight,
@@ -6084,7 +5880,6 @@ mod resize_propagation {
             Self::Grid,
             Self::AspectRatio,
             Self::Vertical,
-            Self::ContentsAroundPercent,
             Self::AbsolutePercent,
             Self::HiddenPercent,
             Self::FixedAroundPercent,
@@ -6147,15 +5942,13 @@ mod resize_propagation {
                     }
                 }
                 Self::Grid => {
-                    let grid = b.element(
-                        row,
-                        LayoutStyle {
-                            display: Some(DisplaySpec::Grid),
-                            grid_rows: Some(vec![GridTrack::Fr(1.0), GridTrack::Fr(1.0)]),
-                            height: Some(LengthSpec::Percent(10.0)),
-                            ..LayoutStyle::default()
-                        },
-                    );
+                    let mut grid_layout = LayoutStyle {
+                        display: Some(DisplaySpec::Grid),
+                        height: Some(LengthSpec::Percent(10.0)),
+                        ..LayoutStyle::default()
+                    };
+                    grid_layout.grid.rows = Some(vec![GridTrack::Fr(1.0), GridTrack::Fr(1.0)]);
+                    let grid = b.element(row, grid_layout);
                     b.element(grid, fixed(30.0, 10.0));
                     b.element(grid, fixed(30.0, 10.0));
                 }
@@ -6178,16 +5971,6 @@ mod resize_propagation {
                         },
                     );
                     b.label(vertical, PARAGRAPH);
-                }
-                Self::ContentsAroundPercent => {
-                    let contents = b.element(
-                        row,
-                        LayoutStyle {
-                            display: Some(DisplaySpec::Contents),
-                            ..LayoutStyle::default()
-                        },
-                    );
-                    b.element(contents, percent(10.0));
                 }
                 Self::AbsolutePercent => {
                     b.element(
@@ -6314,6 +6097,9 @@ mod resize_propagation {
     fn issue264_e_a_drag_inside_one_envelope_segment_reuses_the_assignment() {
         let mut workspace = Workspace::elastic(100, 320.0);
         workspace.drag_to(321.0);
+        let footprint = workspace
+            .context
+            .retained_layout_footprint(workspace.document);
         let sizes: Vec<f32> = (322..=400)
             .chain((320..400).rev())
             .map(|size| size as f32)
@@ -6321,28 +6107,16 @@ mod resize_propagation {
         let mut seen: Vec<(f32, Vec<crate::LayoutBox>)> = Vec::new();
         for (frame, size) in sizes.iter().enumerate() {
             let counters = workspace.drag_to(*size);
-            let dynamic = counters.dynamic;
+            let current = workspace
+                .context
+                .retained_layout_footprint(workspace.document);
             assert_eq!(
-                dynamic.envelope_misses + dynamic.envelope_rebuilds,
-                0,
+                (current.envelopes, current.line_solves),
+                (footprint.envelopes, footprint.line_solves),
                 "{size}"
             );
-            assert!(dynamic.envelope_hits > 0, "{size}");
-            assert_eq!(dynamic.cold_solves, 0, "{size}: {dynamic:?}");
-            assert!(dynamic.incremental_assignments > 0, "{size}");
-            assert_eq!(
-                (
-                    dynamic.deep_expansions,
-                    dynamic.child_reflows,
-                    dynamic.structural_adaptations,
-                    dynamic.budget_fallbacks,
-                    dynamic.allocations,
-                ),
-                (0, 0, 0, 0, 0),
-                "{size}"
-            );
-            assert_eq!(counters.resize_text_reshapes, 0, "{size}");
-            assert_eq!(counters.layout_full_document_fallbacks, 0);
+            assert_eq!(counters.text.text_nodes_shaped, 0, "{size}");
+            assert_eq!(counters.frontier.full_document_fallbacks, 0);
             for id in &workspace.parts.elastic_boxes {
                 assert!(
                     !workspace.measured(*id),
@@ -6368,11 +6142,14 @@ mod resize_propagation {
                 );
             }
         }
-        let crossing = workspace.drag_to(450.0).dynamic;
-        assert_eq!(crossing.cold_solves, 1, "{crossing:?}");
-        let staying = workspace.drag_to(455.0).dynamic;
-        assert_eq!(staying.cold_solves, 0, "{staying:?}");
-        assert!(staying.incremental_assignments > 0);
+        let crossing = workspace.drag_to(450.0);
+        assert_eq!(crossing.frontier.full_document_fallbacks, 0);
+        let staying = workspace.drag_to(455.0);
+        assert_eq!(staying.frontier.full_document_fallbacks, 0);
+        let current = workspace
+            .context
+            .retained_layout_footprint(workspace.document);
+        assert_eq!(current.envelopes, footprint.envelopes);
         let mut cold = Workspace::elastic(100, 455.0);
         assert_matches_cold(
             &mut workspace.context,

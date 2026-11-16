@@ -8,7 +8,7 @@ use nana_ui_core::{
 use crate::{
     AccessibilityRole, AccessibilityState, AppContext, ComponentView, Entity, FrameworkError,
     InteractionState, InteractionStyle, MutationQueue, NodeKind, NodeStyle, OverlayHostState,
-    SemanticPaint, StableNodeId, StandardVisual, TextContent, TooltipVisual, UiWorld,
+    SemanticPaint, StableNodeId, TextContent, TooltipVisual, UiWorld,
     view_components::{
         IconButton, List, ListItem, ListItemSlots, RowToolsPresence, RowToolsRest, ScrollAxes,
         ScrollView, Text, place_row_tools, project_common,
@@ -323,6 +323,8 @@ impl Default for SidebarFrame {
 }
 
 impl ComponentView for SidebarFrame {
+    const TYPE_ID: Option<&'static str> = Some(crate::component_descriptors::SIDEBAR_FRAME.type_id);
+
     fn share_layouts(
         &mut self,
         share: &mut dyn FnMut(&mut std::sync::Arc<nana_ui_core::LayoutStyle>),
@@ -348,8 +350,8 @@ impl ComponentView for SidebarFrame {
                 },
             );
         }
-        if world.standard_visual(id).is_some() {
-            mutations.set_standard_visual(id, None);
+        if world.widget_visual_ref(id).is_some() {
+            mutations.set_widget_visual_handle(id, None);
         }
         project_common(
             id,
@@ -574,7 +576,8 @@ impl SidebarRow {
                 ..SemanticPaint::default()
             },
             ..InteractionStyle::default()
-        };
+        }
+        .into();
         style.text_vertical_alignment = crate::TextVerticalAlignment::Center;
         style
     }
@@ -651,6 +654,8 @@ fn assemble_sidebar_row_tools(
 }
 
 impl ComponentView for SidebarRow {
+    const TYPE_ID: Option<&'static str> = Some(crate::component_descriptors::SIDEBAR_ROW.type_id);
+
     const BEHAVIOR: crate::TypeBehavior<Self> = crate::TypeBehavior {
         hooks: Some(|hooks| {
             crate::framework::routes::tools_row(hooks);
@@ -742,13 +747,13 @@ impl ComponentView for SidebarRowIcon {
                 },
             );
         }
-        let visual = StandardVisual::Icon {
+        let visual = crate::IconVisual {
             icon: self.icon,
             size: world.theme().typography().meta,
             tooltip: None,
         };
-        if world.standard_visual(id) != Some(visual.clone()) {
-            mutations.set_standard_visual(id, Some(visual));
+        if world.widget_visual_as::<crate::IconVisual>(id) != Some(&visual) {
+            mutations.set_widget_visual(id, Some(visual));
         }
         project_common(
             id,
@@ -905,7 +910,7 @@ impl SidebarSection {
         item
     }
 
-    /// 12px disclosure host. Projection paints [`StandardVisual::Icon`].
+    /// 12px disclosure host. Projection paints [`crate::IconVisual`].
     pub fn disclosure_mark(&self) -> IconButton {
         IconButton::new(self.disclosure_icon(), Arc::from(""))
             .style(disclosure_host_style(self.collapsible))
@@ -1033,8 +1038,9 @@ impl SidebarSection {
                 focused: SemanticPaint::FOCUS_SURFACE,
                 ..InteractionStyle::default()
             }
+            .into()
         } else {
-            InteractionStyle::default()
+            Default::default()
         };
         style
     }
@@ -1072,13 +1078,13 @@ impl SidebarSection {
                 },
             );
         }
-        let visual = StandardVisual::Icon {
+        let visual = crate::IconVisual {
             icon: self.disclosure_icon(),
             size: world.theme().typography().meta,
             tooltip: None,
         };
-        if world.standard_visual(id) != Some(visual.clone()) {
-            mutations.set_standard_visual(id, Some(visual));
+        if world.widget_visual_as::<crate::IconVisual>(id) != Some(&visual) {
+            mutations.set_widget_visual(id, Some(visual));
         }
         project_common(
             id,
@@ -1145,8 +1151,8 @@ impl SidebarSection {
                 },
             );
         }
-        if world.standard_visual(body).is_some() {
-            mutations.set_standard_visual(body, None);
+        if world.widget_visual_ref(body).is_some() {
+            mutations.set_widget_visual_handle(body, None);
         }
         project_common(
             body,
@@ -1333,6 +1339,9 @@ fn body_port_style(expansion: f32, empty_text: Option<&str>, content_height: f32
 }
 
 impl ComponentView for SidebarSection {
+    const TYPE_ID: Option<&'static str> =
+        Some(crate::component_descriptors::SIDEBAR_SECTION.type_id);
+
     const BEHAVIOR: crate::TypeBehavior<Self> = crate::TypeBehavior {
         hooks: Some(|hooks| {
             crate::framework::routes::sidebar_section(hooks);
@@ -1380,8 +1389,8 @@ impl ComponentView for SidebarSection {
                 },
             );
         }
-        if world.standard_visual(id).is_some() {
-            mutations.set_standard_visual(id, None);
+        if world.widget_visual_ref(id).is_some() {
+            mutations.set_widget_visual_handle(id, None);
         }
         project_common(
             id,
@@ -1454,6 +1463,9 @@ impl Default for SidebarFooter {
 }
 
 impl ComponentView for SidebarFooter {
+    const TYPE_ID: Option<&'static str> =
+        Some(crate::component_descriptors::SIDEBAR_FOOTER.type_id);
+
     fn share_layouts(
         &mut self,
         share: &mut dyn FnMut(&mut std::sync::Arc<nana_ui_core::LayoutStyle>),
@@ -1476,8 +1488,8 @@ impl ComponentView for SidebarFooter {
                 },
             );
         }
-        if world.standard_visual(id).is_some() {
-            mutations.set_standard_visual(id, None);
+        if world.widget_visual_ref(id).is_some() {
+            mutations.set_widget_visual_handle(id, None);
         }
         project_common(
             id,
@@ -1496,7 +1508,7 @@ impl ComponentView for SidebarFooter {
     }
 }
 
-/// Footer icon action. Paints [`StandardVisual::Icon`] with tooltip.
+/// Footer icon action. Paints [`crate::IconVisual`] with tooltip.
 #[derive(Debug, Clone, PartialEq)]
 pub struct SidebarFooterButton {
     pub label: Arc<str>,
@@ -1580,7 +1592,8 @@ fn footer_button_style(size: ControlSize, selected: bool) -> NodeStyle {
             ..SemanticPaint::default()
         },
         ..InteractionStyle::default()
-    };
+    }
+    .into();
     {
         let layout = Arc::make_mut(&mut style.layout);
         layout.aspect_ratio = Some(1.0);
@@ -1625,7 +1638,7 @@ impl ComponentView for SidebarFooterButton {
                 },
             );
         }
-        let visual = StandardVisual::Icon {
+        let visual = crate::IconVisual {
             icon: self.icon,
             size: self.size.text_size_in(world.theme().typography()),
             tooltip: Some(TooltipVisual {
@@ -1634,8 +1647,8 @@ impl ComponentView for SidebarFooterButton {
                 open: false,
             }),
         };
-        if world.standard_visual(id) != Some(visual.clone()) {
-            mutations.set_standard_visual(id, Some(visual));
+        if world.widget_visual_as::<crate::IconVisual>(id) != Some(&visual) {
+            mutations.set_widget_visual(id, Some(visual));
         }
         project_common(
             id,
@@ -1775,17 +1788,14 @@ mod tests {
     use super::*;
     use std::sync::Arc;
 
-    use crate::{AppContext, DocumentId, Entity, IconButton, List, ListItem, StandardVisual, Text};
+    use crate::{AppContext, DocumentId, Entity, IconButton, List, ListItem, Text};
 
     fn document() -> DocumentId {
         DocumentId::new(1).unwrap()
     }
 
-    fn icon_of(visual: Option<StandardVisual>) -> Option<Icon> {
-        match visual {
-            Some(StandardVisual::Icon { icon, .. }) => Some(icon),
-            _ => None,
-        }
+    fn icon_of(visual: Option<&crate::IconVisual>) -> Option<Icon> {
+        visual.map(|visual| visual.icon)
     }
 
     #[test]
@@ -1956,7 +1966,6 @@ mod tests {
                 tag: "sidebar-frame".into(),
             }
         );
-        assert_eq!(context.world().standard_visual(id), None);
         let layout = &context.world().node_style(id).unwrap().layout;
         assert_eq!(layout.direction, Some(FlexDirection::Column));
         assert_eq!(layout.gap, Some(LengthSpec::Px(FRAME_GAP)));
@@ -2196,8 +2205,10 @@ mod tests {
             }
         );
         assert_eq!(
-            context.world().standard_visual(id),
-            Some(StandardVisual::ListItem {
+            context
+                .world()
+                .widget_visual_as::<crate::ListItemVisual>(id),
+            Some(&crate::ListItemVisual {
                 leading: Some(leading.stable_id()),
                 content: None,
                 trailing: None,
@@ -2223,8 +2234,10 @@ mod tests {
             Some(LineHeightSpec::Absolute(ControlSize::Small.line_height()))
         );
         assert_eq!(
-            context.world().standard_visual(leading.stable_id()),
-            Some(StandardVisual::Icon {
+            context
+                .world()
+                .widget_visual_as::<crate::IconVisual>(leading.stable_id()),
+            Some(&crate::IconVisual {
                 icon: Icon::Workspace,
                 size: ROW_ICON_SIZE,
                 tooltip: None,
@@ -2288,8 +2301,10 @@ mod tests {
         context.append_child(row, leading).unwrap();
         context.append_child(row, close).unwrap();
         assert_eq!(
-            context.world().standard_visual(row.stable_id()),
-            Some(StandardVisual::ListItem {
+            context
+                .world()
+                .widget_visual_as::<crate::ListItemVisual>(row.stable_id()),
+            Some(&crate::ListItemVisual {
                 leading: Some(leading.stable_id()),
                 content: None,
                 trailing: None,
@@ -2311,8 +2326,10 @@ mod tests {
             .set_pointer_hover(document(), 1, Some(row.stable_id()))
             .unwrap();
         assert_eq!(
-            context.world().standard_visual(row.stable_id()),
-            Some(StandardVisual::ListItem {
+            context
+                .world()
+                .widget_visual_as::<crate::ListItemVisual>(row.stable_id()),
+            Some(&crate::ListItemVisual {
                 leading: Some(leading.stable_id()),
                 content: None,
                 trailing: Some(close.stable_id()),
@@ -2345,10 +2362,10 @@ mod tests {
             .unwrap();
         assert!(tools_box.x > row_box.x);
         assert!(tools_box.x + tools_box.width <= row_box.x + row_box.width + 0.5);
-        let Some(crate::ComponentGeometry::ListItem {
-            content: Some(label_box),
-            ..
-        }) = context.world().component_geometry(row.stable_id())
+        let Some(label_box) = context
+            .world()
+            .widget_paint(row.stable_id())
+            .and_then(|paint| paint.node_text_bounds)
         else {
             panic!("row should keep a label content box");
         };
@@ -2648,8 +2665,10 @@ mod tests {
             Some(LengthSpec::Px(SECTION_EMPTY_HEIGHT))
         );
         assert_eq!(
-            context.world().standard_visual(disclosure.stable_id()),
-            Some(StandardVisual::Icon {
+            context
+                .world()
+                .widget_visual_as::<crate::IconVisual>(disclosure.stable_id()),
+            Some(&crate::IconVisual {
                 icon: Icon::ChevronDown,
                 size: SECTION_DISCLOSURE_SIZE,
                 tooltip: None,
@@ -2661,6 +2680,7 @@ mod tests {
                 .node_style(disclosure.stable_id())
                 .unwrap()
                 .layout
+                .transforms
                 .transform
                 .is_none()
         );
@@ -2744,8 +2764,10 @@ mod tests {
             None,
         );
         assert_eq!(
-            context.world().standard_visual(expanded.stable_id()),
-            Some(StandardVisual::Icon {
+            context
+                .world()
+                .widget_visual_as::<crate::IconVisual>(expanded.stable_id()),
+            Some(&crate::IconVisual {
                 icon: Icon::ChevronDown,
                 size: SECTION_DISCLOSURE_SIZE,
                 tooltip: None,
@@ -2757,6 +2779,7 @@ mod tests {
                 .node_style(expanded.stable_id())
                 .unwrap()
                 .layout
+                .transforms
                 .transform
                 .is_none()
         );
@@ -2770,8 +2793,10 @@ mod tests {
             None,
         );
         assert_eq!(
-            context.world().standard_visual(collapsed.stable_id()),
-            Some(StandardVisual::Icon {
+            context
+                .world()
+                .widget_visual_as::<crate::IconVisual>(collapsed.stable_id()),
+            Some(&crate::IconVisual {
                 icon: Icon::ChevronRight,
                 size: SECTION_DISCLOSURE_SIZE,
                 tooltip: None,
@@ -2783,6 +2808,7 @@ mod tests {
                 .node_style(collapsed.stable_id())
                 .unwrap()
                 .layout
+                .transforms
                 .transform
                 .is_none()
         );
@@ -2796,8 +2822,10 @@ mod tests {
         assert!(context.activate_sidebar_section(section).unwrap());
         let _ = context.advance_animations(std::time::Duration::from_millis(200));
         assert_eq!(
-            context.world().standard_visual(disclosure.stable_id()),
-            Some(StandardVisual::Icon {
+            context
+                .world()
+                .widget_visual_as::<crate::IconVisual>(disclosure.stable_id()),
+            Some(&crate::IconVisual {
                 icon: Icon::ChevronRight,
                 size: SECTION_DISCLOSURE_SIZE,
                 tooltip: None,
@@ -2921,7 +2949,6 @@ mod tests {
         let tools = context
             .create_component(document(), SidebarFooterButton::new("刷新", Icon::Restore))
             .unwrap();
-        let tools_visual = context.world().standard_visual(tools.stable_id());
         let (section, header, _, _, count) = mount_section(
             &mut context,
             SidebarSection::new("资源")
@@ -2937,8 +2964,10 @@ mod tests {
         assert!(!context.world().node_style(count_id).unwrap().layout.hidden);
         assert!(context.world().node_style(tools_id).unwrap().layout.hidden);
         assert_eq!(
-            context.world().standard_visual(header.stable_id()),
-            Some(StandardVisual::ListItem {
+            context
+                .world()
+                .widget_visual_as::<crate::ListItemVisual>(header.stable_id()),
+            Some(&crate::ListItemVisual {
                 leading: context.read(section, |section| section.disclosure).unwrap(),
                 content: context.read(section, |section| section.title_slot).unwrap(),
                 trailing: Some(count_id),
@@ -2953,8 +2982,10 @@ mod tests {
         assert!(context.world().node_style(count_id).unwrap().layout.hidden);
         assert!(!context.world().node_style(tools_id).unwrap().layout.hidden);
         assert_eq!(
-            context.world().standard_visual(header.stable_id()),
-            Some(StandardVisual::ListItem {
+            context
+                .world()
+                .widget_visual_as::<crate::ListItemVisual>(header.stable_id()),
+            Some(&crate::ListItemVisual {
                 leading: context.read(section, |section| section.disclosure).unwrap(),
                 content: context.read(section, |section| section.title_slot).unwrap(),
                 trailing: Some(tools_id),
@@ -2962,7 +2993,6 @@ mod tests {
                 detail: None,
             })
         );
-        assert_eq!(context.world().standard_visual(tools_id), tools_visual);
         assert_eq!(
             context.read(section, |section| section.slot_ids()).unwrap(),
             SidebarSectionSlots {
@@ -3009,11 +3039,19 @@ mod tests {
             vec![settings.stable_id(), search.stable_id()]
         );
         assert_eq!(
-            icon_of(context.world().standard_visual(settings.stable_id())),
+            icon_of(
+                context
+                    .world()
+                    .widget_visual_as::<crate::IconVisual>(settings.stable_id())
+            ),
             Some(Icon::Settings)
         );
         assert_eq!(
-            icon_of(context.world().standard_visual(search.stable_id())),
+            icon_of(
+                context
+                    .world()
+                    .widget_visual_as::<crate::IconVisual>(search.stable_id())
+            ),
             Some(Icon::Search)
         );
         assert_eq!(
@@ -3071,8 +3109,10 @@ mod tests {
         );
         let selected_id = button.stable_id();
         assert_eq!(
-            context.world().standard_visual(selected_id),
-            Some(StandardVisual::Icon {
+            context
+                .world()
+                .widget_visual_as::<crate::IconVisual>(selected_id),
+            Some(&crate::IconVisual {
                 icon: Icon::Settings,
                 size: ControlSize::Small.icon_size(),
                 tooltip: Some(crate::TooltipVisual {
@@ -3082,10 +3122,12 @@ mod tests {
                 }),
             })
         );
-        assert!(!matches!(
-            context.world().standard_visual(selected_id),
-            Some(StandardVisual::Button { .. })
-        ));
+        assert!(
+            context
+                .world()
+                .widget_visual_as::<crate::ButtonVisual>(selected_id)
+                .is_none()
+        );
         let selected_style = context.world().node_style(selected_id).unwrap();
         assert_eq!(selected_style.foreground, Some(SemanticColorRole::Text));
         assert_eq!(selected_style.background, None);

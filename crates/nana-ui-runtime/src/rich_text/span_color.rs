@@ -40,7 +40,9 @@ pub(super) fn color_request(spans: &[RichSpan]) -> Option<HighlightRequest> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{AppContext, DocumentId, SelectableRichText, SemanticColorRole, StandardVisual};
+    use crate::{
+        AppContext, DocumentId, SelectableRichText, SelectableRichTextVisual, SemanticColorRole,
+    };
 
     fn document() -> DocumentId {
         DocumentId::new(1).unwrap()
@@ -70,8 +72,8 @@ mod tests {
         let world = context.world();
         assert_eq!(world.text(id), Some(plain));
         assert!(matches!(
-            world.standard_visual(id),
-            Some(StandardVisual::SelectableRichText { text, .. }) if text.as_ref() == plain
+            world.widget_visual_as::<SelectableRichTextVisual>(id),
+            Some(SelectableRichTextVisual { text, .. }) if text.as_ref() == plain
         ));
         let request = world.highlight_request(id).expect("an overlay request");
         assert_eq!(request.presenter.as_ref(), SPAN_COLOR_PRESENTER);

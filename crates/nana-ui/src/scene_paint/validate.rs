@@ -499,16 +499,17 @@ mod tests {
             },
         );
         let mut style = nana_ui_runtime::NodeStyle::default();
-        Arc::make_mut(&mut style.layout).transform = Some(nana_ui_core::PaintTransform {
-            a: 0.0,
-            b: 1.0,
-            c: -1.0,
-            d: 0.0,
-            e: 0.0,
-            f: 0.0,
-        });
-        Arc::make_mut(&mut style.layout).letter_spacing = Some(0.5);
-        Arc::make_mut(&mut style.layout).font_family = Some("Noto Sans SC".into());
+        Arc::make_mut(&mut style.layout).transforms.transform =
+            Some(nana_ui_core::PaintTransform {
+                a: 0.0,
+                b: 1.0,
+                c: -1.0,
+                d: 0.0,
+                e: 0.0,
+                f: 0.0,
+            });
+        Arc::make_mut(&mut style.layout).text_ext.letter_spacing = Some(0.5);
+        Arc::make_mut(&mut style.layout).text_ext.font_family = Some("Noto Sans SC".into());
         mutations.set_style(button.stable_id(), style);
         context.commit_mutations(mutations).unwrap();
         let work = context.take_system_work();

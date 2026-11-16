@@ -2,16 +2,16 @@
 //!
 //! Taffy is the reference: a layout engine that keeps a style, a cache and a
 //! box per node and nothing else. `compare` lays the same boxes out in both
-//! (block, flex and grid) and reports the gap; `features` measures what
+//! (flex and grid) and reports the gap; `features` measures what
 //! NanaUI does that Taffy has no counterpart for, NanaUI alone; `check`
 //! confirms both engines put every box of the compared pages in the same
 //! place. The numbers and what they mean are in
 //! `docs/reference/taffy-reference.md`.
 //!
 //! ```text
-//! cargo run --release -- compare            # 1000 rows (21 001 boxes), block / flex / grid
+//! cargo run --release -- compare            # 1000 rows (21 001 boxes), flex / grid
 //! cargo run --release -- compare 100,1000   # row counts (10 cells a row)
-//! cargo run --release -- features           # inline text, float / sticky / fixed, moves,
+//! cargo run --release -- features           # inline text, sticky / fixed, moves,
 //!                                           # hit testing and accessibility, deep trees
 //! cargo run --release -- check              # both engines place every box alike
 //! ROUNDS=12 cargo run --release -- compare  # rounds to take the least of (8)
@@ -42,8 +42,8 @@ use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
 use nana_ui_core::{
-    AlignSpec, DisplaySpec, FlexDirection, FloatSpec, GridTrack, LayoutStyle, LengthSpec,
-    OverflowSpec, PositionSpec,
+    AlignSpec, DisplaySpec, FlexDirection, GridStyle, GridTrack, LayoutStyle, LengthSpec,
+    OverflowSpec, PositionSpec, shared::Shared,
 };
 use nana_ui_runtime::{
     AppContext, ComputedStyle, DocumentId, Entity, FrameStage, LayoutViewport, MutationQueue,
@@ -177,8 +177,6 @@ fn bundled_face_shaper() -> NanaTextEngineShaper {
 /// Which formatting context the page's containers use.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum Kind {
-    /// Block flow: rows stack, a row's cells stack.
-    Block,
     /// Flex: a column of rows, each row a line of cells with a 4 px gap.
     Flex,
     /// Grid: a column of rows, each row a grid of ten `1fr` columns with a
@@ -187,11 +185,10 @@ enum Kind {
 }
 
 impl Kind {
-    const ALL: [Self; 3] = [Self::Block, Self::Flex, Self::Grid];
+    const ALL: [Self; 2] = [Self::Flex, Self::Grid];
 
     fn name(self) -> &'static str {
         match self {
-            Self::Block => "block",
             Self::Flex => "flex",
             Self::Grid => "grid",
         }
@@ -199,7 +196,6 @@ impl Kind {
 
     fn parse(name: &str) -> Self {
         match name {
-            "block" => Self::Block,
             "flex" => Self::Flex,
             "grid" => Self::Grid,
             other => panic!("unknown layout {other}"),
@@ -292,25 +288,20 @@ fn nana_style(kind: Kind, role: Role) -> LayoutStyle {
         align_items: AlignSpec::Stretch,
         ..LayoutStyle::default()
     };
-    // A block's `auto` width fills its containing block, as in CSS and in
-    // Taffy; `check` confirms the boxes match.
-    let block = || LayoutStyle {
-        display: Some(DisplaySpec::Block),
-        ..LayoutStyle::default()
-    };
     let mut style = match (kind, role) {
-        (Kind::Block, _) => block(),
         (Kind::Flex, Role::Row) => LayoutStyle {
             gap: Some(LengthSpec::Px(4.0)),
             ..flex(FlexDirection::Row)
         },
         (Kind::Grid, Role::Row) => LayoutStyle {
             display: Some(DisplaySpec::Grid),
-            grid_columns: Some(vec![GridTrack::Fr(1.0); 10]),
+            grid: Shared::new(GridStyle {
+                columns: Some(vec![GridTrack::Fr(1.0); 10]),
+                ..GridStyle::default()
+            }),
             column_gap: Some(LengthSpec::Px(4.0)),
             ..LayoutStyle::default()
         },
-        (Kind::Flex | Kind::Grid, Role::Leaf) => block(),
         (Kind::Flex | Kind::Grid, _) => flex(FlexDirection::Column),
     };
     match role {
@@ -329,7 +320,7 @@ fn taffy_style(kind: Kind, role: Role) -> taffy::Style {
     use taffy::prelude::*;
     let quarter = length(0.25_f32);
     let mut style = match (kind, role) {
-        (Kind::Block, _) | (Kind::Flex | Kind::Grid, Role::Leaf) => Style {
+        (Kind::Flex | Kind::Grid, Role::Leaf) => Style {
             display: Display::Block,
             ..Style::default()
         },
@@ -863,19 +854,19 @@ fn inline_page(
         .create_component(
             document,
             Stack::from_layout(LayoutStyle {
-                display: Some(DisplaySpec::Block),
+                display: Some(DisplaySpec::Flex),
                 width: Some(LengthSpec::Px(1280.0)),
                 ..LayoutStyle::default()
             }),
         )
         .unwrap();
     let paragraph = Arc::new(LayoutStyle {
-        display: Some(DisplaySpec::Block),
+        display: Some(DisplaySpec::Flex),
         width: Some(LengthSpec::Px(400.0)),
         ..LayoutStyle::default()
     });
     let atom = Arc::new(LayoutStyle {
-        display: Some(DisplaySpec::InlineBlock),
+        display: Some(DisplaySpec::InlineFlex),
         width: Some(LengthSpec::Px(24.0)),
         height: Some(LengthSpec::Px(16.0)),
         ..LayoutStyle::default()
@@ -970,16 +961,15 @@ fn inline_text(rows: usize, rounds: usize) {
         });
     }
     if std::env::var_os("SHOW").is_some() {
-        let w = runtime.context().last_work_counters();
+        let f = runtime.context().layout_frontier_stats(document);
         eprintln!(
-            "inline edit: measured {} placed {} full {} local {} seeds {} results changed {} origin-only {}",
-            w.layout_measure_nodes,
-            w.layout_placement_nodes,
-            w.layout_full_document_fallbacks,
-            w.layout_local_subtree_fallbacks,
-            w.layout_frontier_seeds,
-            w.layout_result_changed,
-            w.layout_origin_only_updates,
+            "inline edit: seeds {} contexts {} measure {} place {} full {} local {}",
+            f.seeds,
+            f.contexts,
+            f.nodes_measure,
+            f.nodes_placement,
+            f.full_document_fallbacks,
+            f.local_subtree_fallbacks,
         );
         for timing in &runtime.context().last_frame_profile().stages {
             eprintln!(
@@ -999,73 +989,6 @@ fn inline_text(rows: usize, rounds: usize) {
         edit.layout,
         edit.frame,
         edit.instructions as f64 / 1e6,
-    );
-}
-
-/// A box page whose cells float left in block rows: the float layout CSS
-/// pages use for lines of boxes, beside the plain block page.
-fn floats(rows: usize, rounds: usize) {
-    let spec = spec(rows, 10);
-    let document = DocumentId::new(1).unwrap();
-    let run = |float: bool| {
-        let mut cx = AppContext::new();
-        let ids = nana_build(&mut cx, document, Kind::Block, &spec);
-        if float {
-            let mut queue = MutationQueue::new();
-            for (index, &(_, role)) in spec.nodes.iter().enumerate() {
-                if role == Role::Row {
-                    // A row of floats: its own block formatting context
-                    // (`overflow: hidden`), so its height contains them.
-                    let mut style = cx.world().node_style(ids[index]).unwrap().clone();
-                    let layout = Arc::make_mut(&mut style.layout);
-                    layout.overflow_x = OverflowSpec::Hidden;
-                    layout.overflow_y = OverflowSpec::Hidden;
-                    queue.set_style(ids[index], style);
-                }
-                if role == Role::Cell {
-                    let mut style = cx.world().node_style(ids[index]).unwrap().clone();
-                    let layout = Arc::make_mut(&mut style.layout);
-                    layout.float = FloatSpec::Left;
-                    queue.set_style(ids[index], style);
-                }
-            }
-            cx.commit_mutations(queue).unwrap();
-        }
-        let start = Instant::now();
-        let start_instructions = instructions();
-        cx.layout_document_for_viewport(document, viewport(), &[])
-            .unwrap();
-        let spent = instructions() - start_instructions;
-        let took = us(start);
-        let row = cx.world().layout_box(ids[1]).unwrap();
-        (took, spent, row.height)
-    };
-    let (mut plain, mut floated) = (
-        (f64::INFINITY, u64::MAX, 0.0),
-        (f64::INFINITY, u64::MAX, 0.0),
-    );
-    for round in 0..rounds {
-        let order = if round % 2 == 0 {
-            [false, true]
-        } else {
-            [true, false]
-        };
-        for float in order {
-            let (took, spent, height) = run(float);
-            let slot = if float { &mut floated } else { &mut plain };
-            *slot = (slot.0.min(took), slot.1.min(spent), height);
-        }
-    }
-    let b = boxes(rows) as f64;
-    println!(
-        "| float: block rows, every cell `float: left` ({} boxes, a row {} px tall; stacked {} px) | layout {:.2} µs / box, {:.1} k instr / box | the same page stacked (no float): {:.2} µs / box, {:.1} k instr / box |",
-        boxes(rows),
-        floated.2,
-        plain.2,
-        floated.0 / b,
-        floated.1 as f64 / b / 1e3,
-        plain.0 / b,
-        plain.1 as f64 / b / 1e3,
     );
 }
 
@@ -1115,7 +1038,7 @@ fn sticky_fixed(rows: usize, rounds: usize) {
                     .create_detached_component(
                         document,
                         Stack::from_layout(LayoutStyle {
-                            display: Some(DisplaySpec::Block),
+                            display: Some(DisplaySpec::Flex),
                             position: PositionSpec::Fixed,
                             offset_top: Some(LengthSpec::Px(8.0 + 30.0 * badge as f32)),
                             offset_right: Some(LengthSpec::Px(8.0)),
@@ -1153,16 +1076,9 @@ fn sticky_fixed(rows: usize, rounds: usize) {
         std::hint::black_box(runtime.scene().visible_operations(rect).unwrap());
         let spent = instructions() - start_instructions;
         if std::env::var_os("SHOW").is_some() {
-            let w = runtime.context().last_work_counters();
             eprintln!(
-                "scroll {y}: offset {:?}, extracted {} changed {} a11y {} scroll viewport {} clip {} hit moved {}",
+                "scroll {y}: offset {:?}",
                 runtime.context().world().scroll_offset(root),
-                w.render_nodes_extracted,
-                w.render_nodes_changed,
-                w.accessibility_nodes_updated,
-                w.scroll_viewport_updates,
-                w.scroll_clip_updates,
-                w.hit_test_entries_moved,
             );
             for timing in &runtime.context().last_frame_profile().stages {
                 if !timing.duration.is_zero() {
@@ -1247,15 +1163,18 @@ fn moves(rows: usize, rounds: usize) {
                 }
             }
         }
-        let w = nana_page.runtime.context().last_work_counters();
+        let f = nana_page
+            .runtime
+            .context()
+            .layout_frontier_stats(DocumentId::new(1).unwrap());
         println!(
-            "| move: a header above the rows grows; the column below moves with {} boxes in it | NanaUI layout {:.1} µs, frame {:.1} µs (layout, hit index, accessibility, scene), {:.3} M instr; measured {} boxes, placed {} | Taffy layout {:.1} µs, {:.3} M instr |",
+            "| move: a header above the rows grows; the column below moves with {} boxes in it | NanaUI layout {:.1} µs, frame {:.1} µs (layout, hit index, accessibility, scene), {:.3} M instr; frontier {} measure / {} place | Taffy layout {:.1} µs, {:.3} M instr |",
             spec.nodes.len() - 3,
             nana.layout,
             nana.frame,
             nana.instructions as f64 / 1e6,
-            w.layout_measure_nodes,
-            w.layout_placement_nodes,
+            f.nodes_measure,
+            f.nodes_placement,
             taffy.layout,
             taffy.instructions as f64 / 1e6,
         );
@@ -1447,7 +1366,6 @@ fn features(rows: usize) {
     println!("| scene | cost | incremental |");
     println!("| --- | --- | --- |");
     inline_text(rows, rounds);
-    floats(rows, rounds);
     sticky_fixed(rows, rounds);
     moves(rows, rounds);
     hit_and_accessibility(rows, rounds);
@@ -1488,7 +1406,7 @@ fn main() {
         }
         Some("reps") => {
             // A fixed amount of work for `/usr/bin/time -l`:
-            // `reps <block|flex|grid> <nana|taffy> <rows> <runs>`.
+            // `reps <flex|grid> <nana|taffy> <rows> <runs>`.
             let kind = Kind::parse(arg(1).unwrap());
             let taffy = arg(2) == Some("taffy");
             let spec = spec(arg(3).unwrap().parse().unwrap(), 10);
