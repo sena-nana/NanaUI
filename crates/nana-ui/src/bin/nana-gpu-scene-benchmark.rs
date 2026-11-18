@@ -697,7 +697,16 @@ fn run_ui_only(mut scenario: ScenarioFile, args: &Args) -> Report {
     let renderers: Option<SceneGpuRendererRegistry> =
         (params.node_count("gpu-view") > 0).then(default_scene_gpu_renderers);
 
-    let mut painter = SceneWgpuPainter::new(&gpu, __framework::format_from_wgpu(FORMAT));
+    let mut painter = match SceneWgpuPainter::try_new(&gpu, __framework::format_from_wgpu(FORMAT)) {
+        Ok(painter) => painter,
+        Err(error) => {
+            return unsupported(
+                Some(scenario.id),
+                "UiOnly",
+                format!("scene painter failed to initialize: {error}"),
+            );
+        }
+    };
     let target = __framework::render_target(
         &gpu,
         color_target(&device, params.viewport[0], params.viewport[1]),

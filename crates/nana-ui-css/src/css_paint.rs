@@ -262,10 +262,6 @@ fn clear_border_image(style: &mut nana_ui_core::LayoutStyle, unsupported: bool) 
     style.paint.unsupported_border_image = unsupported;
 }
 
-#[expect(
-    clippy::large_enum_variant,
-    reason = "Transient parse result avoids allocating the owned paint value"
-)]
 enum BorderImageSourceParse {
     Supported(BackgroundImage, String),
     Unsupported,

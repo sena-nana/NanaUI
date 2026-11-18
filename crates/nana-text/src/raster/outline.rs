@@ -87,6 +87,7 @@ impl ScaledOutline {
         self.layers.len()
     }
 
+    #[allow(clippy::type_complexity)]
     fn layer(&self, index: usize) -> Option<((&[zeno::Point], &[zeno::Verb]), Option<[u8; 4]>)> {
         let layer = self.layers.get(index)?;
         let points = self.points.get(layer.points.0..layer.points.1)?;
@@ -595,7 +596,7 @@ fn drawn(
 /// Decodes and scales a best-fit color bitmap strike glyph into straight RGBA.
 fn color_bitmap(data: &[u8], index: u32, size_px: f32, glyph_id: u16) -> Option<GlyphImage> {
     let raw = read_color_bitmap(data, index, size_px, glyph_id)?;
-    let (mut src_w, mut src_h, rgba) = match raw.payload {
+    let (src_w, src_h, rgba) = match raw.payload {
         RawBitmapPayload::Png(bytes) => decode_png_rgba(bytes)?,
         RawBitmapPayload::Bgra(bytes) => (
             raw.width,
@@ -619,8 +620,6 @@ fn color_bitmap(data: &[u8], index: u32, size_px: f32, glyph_id: u16) -> Option<
             data: scaled,
         });
     }
-    src_w = src_w.max(0);
-    src_h = src_h.max(0);
     Some(GlyphImage {
         format: GlyphImageFormat::ColorRgba,
         width: src_w,
@@ -657,7 +656,7 @@ fn decode_png_rgba(bytes: &[u8]) -> Option<(u32, u32, Vec<u8>)> {
                 return None;
             }
             let mut out = Vec::with_capacity(pixel_count * 4);
-            for px in frame[..pixel_count * 3].chunks_exact(3) {
+            for px in frame[..pixel_count * 3].as_chunks::<3>().0 {
                 out.extend_from_slice(&[px[0], px[1], px[2], 255]);
             }
             out
@@ -667,7 +666,7 @@ fn decode_png_rgba(bytes: &[u8]) -> Option<(u32, u32, Vec<u8>)> {
                 return None;
             }
             let mut out = Vec::with_capacity(pixel_count * 4);
-            for px in frame[..pixel_count * 2].chunks_exact(2) {
+            for px in frame[..pixel_count * 2].as_chunks::<2>().0 {
                 out.extend_from_slice(&[px[0], px[0], px[0], px[1]]);
             }
             out
@@ -698,8 +697,10 @@ fn decode_premul_bgra(bytes: &[u8], width: u32, height: u32) -> Option<Vec<u8>> 
     }
     let mut out = vec![0u8; byte_len];
     for (src, dst) in bytes[..byte_len]
-        .chunks_exact(4)
-        .zip(out.chunks_exact_mut(4))
+        .as_chunks::<4>()
+        .0
+        .iter()
+        .zip(out.as_chunks_mut::<4>().0)
     {
         let a = src[3];
         if a == 0 {
@@ -1300,7 +1301,7 @@ mod tests {
             .expect("glyph renders");
             if image.format == GlyphImageFormat::ColorRgba {
                 assert!(!image.is_empty());
-                assert!(image.data.chunks_exact(4).any(|px| px[3] > 0));
+                assert!(image.data.as_chunks::<4>().0.iter().any(|px| px[3] > 0));
                 let stroke_image = drawn(
                     COLOR,
                     0,
@@ -1353,7 +1354,7 @@ mod tests {
         );
         let scaled = resize_rgba(&rgba, w, h, 4, 4).expect("resize rgba");
         assert_eq!(scaled.len(), 4 * 4 * 4);
-        assert!(scaled.chunks_exact(4).any(|px| px[3] > 200));
+        assert!(scaled.as_chunks::<4>().0.iter().any(|px| px[3] > 200));
 
         // 2x1 CBDT premultiplied BGRA -> straight RGBA check.
         let unpremul = decode_premul_bgra(&[64, 0, 128, 128, 0, 255, 0, 255], 2, 1)

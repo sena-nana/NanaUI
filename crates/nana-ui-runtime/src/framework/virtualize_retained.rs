@@ -2,6 +2,7 @@
 
 use super::*;
 use crate::Stack;
+use crate::world::VirtualRowCounts;
 use nana_ui_core::{PositionSpec, VirtualViewport};
 use std::cell::Cell;
 
@@ -244,6 +245,7 @@ impl AppContext {
         // previous top.
         let mut patched_containers = Vec::new();
         // Rows given a new imposed height, which lay out again at it.
+        let mut remeasured = 0;
         for (&index, key) in plan.indices.iter().zip(&plan.order) {
             let top = layout.extent(0..index);
             let height = layout.extent(index..index + 1);
@@ -261,6 +263,7 @@ impl AppContext {
                     mutations.patch_placement(entity.id, top, imposed_height);
                     patched_containers.push(entity.id);
                     items.pending_measure |= items.measured;
+                    remeasured += usize::from(!height_held);
                 }
             } else {
                 let container = placement_container(top, imposed_height);
@@ -300,10 +303,16 @@ impl AppContext {
         content_layout.min_height = content_layout.height;
         content_layout.max_height = content_layout.height;
         content_layout.flex_shrink = Some(0.0);
-        let restyled = self.read(list, |old| old.style.layout != content.style.layout)?;
+        let (restyled, extent_moved) = self.read(list, |old| {
+            (
+                old.style.layout != content.style.layout,
+                old.style.layout.height != content.style.layout.height,
+            )
+        })?;
         if restyled {
             content.project(list.id, &self.world, &mut mutations);
         }
+        let repositioned = patched_containers.len();
 
         // Publish external identities and component data only after atomic commit.
         if !mutations.is_empty() {
@@ -347,6 +356,23 @@ impl AppContext {
             .map_err(|_| FrameworkError::InvalidVirtualization)?;
         items.publish_list(layout, &window, activity, 0);
         items.placed_under = placed_under;
+        // Row index writes since the list last placed its rows: its own
+        // measurements, and the caller's inserts, removals and measurements.
+        // A layout younger than the one last seen counts all it holds.
+        let touched = layout.index_entries_touched();
+        let index_writes = touched
+            .checked_sub(items.index_writes_seen)
+            .unwrap_or(touched);
+        items.index_writes_seen = touched;
+        self.world.note_virtual_rows(VirtualRowCounts {
+            prefix_index_updates: usize::try_from(index_writes).unwrap_or(usize::MAX),
+            rows_remeasured: remeasured,
+            rows_repositioned: repositioned,
+            logical_rows_scanned: scanned.get(),
+            scroll_extent_updates: usize::from(extent_moved),
+            rows_materialized: mounted_now.len(),
+            ..VirtualRowCounts::default()
+        });
         for (id, index, key) in mounted_now {
             on_mount(self, Entity::from_stable_id(id), index, &key)?;
         }
@@ -589,7 +615,7 @@ impl AppContext {
         }
         let before = viewport.offset[1];
         let mut unmeasured = false;
-        let mut any_metric_updated = false;
+        let mut counts = VirtualRowCounts::default();
         // Rows sit at the indices they were placed at while the data they
         // were placed under holds; otherwise each is looked up again.
         let trusted = items.placed_under == Some((fingerprint, layout.len()));
@@ -611,13 +637,15 @@ impl AppContext {
             {
                 Some(bounds) if bounds.height > 0.0 => {
                     if layout.measure_anchored(index, bounds.height, &mut viewport) {
-                        any_metric_updated = true;
+                        counts.metric_updates += 1;
+                        counts.rows_remeasured += 1;
                     }
                 }
                 _ => unmeasured = true,
             }
         }
-        if any_metric_updated {
+        self.world.note_virtual_rows(counts);
+        if counts.metric_updates > 0 {
             // Rows move with the new extents even when the window is the same.
             items.published = None;
             items.measurements = items.measurements.wrapping_add(1);

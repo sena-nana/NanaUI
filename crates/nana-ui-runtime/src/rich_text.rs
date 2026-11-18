@@ -845,6 +845,7 @@ impl NativeMarkdown {
         markdown
     }
 
+    #[allow(dead_code)]
     pub(crate) fn source(&self) -> Option<&str> {
         self.source.as_deref()
     }

@@ -1780,16 +1780,12 @@ fn local_area(rect: SceneRect, reach: f32, t: Affine) -> Option<SceneRect> {
 fn erase_outside(area: SceneRect, shapes: &Shapes) -> Option<Arc<PathMesh>> {
     let bounds = rect_shapes(area);
     let outside = if shapes.is_empty() {
-        bounds.clone()
+        bounds
     } else {
         difference_shapes(&bounds, shapes)
     };
     let mut mesh = MeshBuilder::default();
     mesh.fill(&outside, [0.0, 0.0, 0.0, 1.0]);
-    #[cfg(not(feature = "vector-boolean"))]
-    if !shapes.is_empty() {
-        mesh.clip_to(&triangulate(&bounds));
-    }
     mesh.finish().map(Arc::new)
 }
 
@@ -1834,17 +1830,12 @@ fn fill_mesh(
     gradient_space: Option<Affine>,
     clip: Option<&ActiveClip>,
 ) -> Option<PathMesh> {
-    #[cfg(feature = "vector-boolean")]
     let shapes = match clip {
         Some(clip) => intersect(&shapes, &clip.built.shapes),
         None => shapes,
     };
     let mut mesh = MeshBuilder::default();
     mesh.fill(&shapes, color);
-    #[cfg(not(feature = "vector-boolean"))]
-    if let Some(clip) = clip {
-        mesh.clip_to(&triangulate(&clip.built.shapes));
-    }
     if let Some(inverse) = gradient_space.and_then(affine_inverse) {
         for vertex in &mut mesh.vertices {
             vertex.paint_pos = affine_apply(inverse, vertex.position);
@@ -2218,7 +2209,7 @@ fn simplify_contours(contours: Vec<Contour>, rule: FillRule) -> Shapes {
     contours.simplify_shape(rule)
 }
 
-#[cfg(not(feature = "vector-boolean"))]
+#[cfg(any(not(feature = "vector-boolean"), test))]
 fn contour_signed_area(contour: &[Point]) -> f64 {
     let n = contour.len();
     if n < 3 {
@@ -2233,7 +2224,7 @@ fn contour_signed_area(contour: &[Point]) -> f64 {
     area * 0.5
 }
 
-#[cfg(not(feature = "vector-boolean"))]
+#[cfg(any(not(feature = "vector-boolean"), test))]
 fn orient_contour(mut contour: Contour, positive: bool) -> Contour {
     let area = contour_signed_area(&contour);
     if (positive && area < 0.0) || (!positive && area > 0.0) {
@@ -2242,7 +2233,7 @@ fn orient_contour(mut contour: Contour, positive: bool) -> Contour {
     contour
 }
 
-#[cfg(not(feature = "vector-boolean"))]
+#[cfg(any(not(feature = "vector-boolean"), test))]
 fn point_in_contour(p: Point, contour: &[Point]) -> bool {
     let mut inside = false;
     let n = contour.len();
@@ -2261,53 +2252,683 @@ fn point_in_contour(p: Point, contour: &[Point]) -> bool {
     inside
 }
 
-#[cfg(not(feature = "vector-boolean"))]
-fn simplify_contours(contours: Vec<Contour>, rule: FillRule) -> Shapes {
-    let mut cleaned: Vec<(f64, Contour)> = contours
-        .into_iter()
-        .filter_map(|contour| {
-            if contour.len() < 3 {
-                return None;
-            }
-            let area = contour_signed_area(&contour);
-            (area.abs() > 1e-9).then_some((area, contour))
-        })
-        .collect();
-    if cleaned.is_empty() {
-        return Vec::new();
+#[cfg(any(not(feature = "vector-boolean"), test))]
+type GPoint = [i64; 2];
+
+#[cfg(any(not(feature = "vector-boolean"), test))]
+const GRID_SCALE: f64 = 100_000.0;
+
+#[cfg(any(not(feature = "vector-boolean"), test))]
+fn quantize_point(p: Point) -> Option<GPoint> {
+    if !p[0].is_finite() || !p[1].is_finite() {
+        return None;
     }
-    if cleaned.len() == 1 {
-        let (_, contour) = cleaned.pop().expect("len is 1");
-        return vec![vec![orient_contour(contour, true)]];
+    let sx = p[0] * GRID_SCALE;
+    let sy = p[1] * GRID_SCALE;
+    if sx.abs() > 1.0e14 || sy.abs() > 1.0e14 {
+        return None;
     }
-    // Larger contours first so outers are placed before their holes.
-    cleaned.sort_by(|a, b| b.0.abs().total_cmp(&a.0.abs()));
-    let mut shapes: Shapes = Vec::new();
-    let mut outer_signs: Vec<bool> = Vec::new();
-    for (area, contour) in cleaned {
-        let probe = contour[0];
-        let mut enclosing: Vec<usize> = shapes
-            .iter()
-            .enumerate()
-            .filter_map(|(idx, shape)| point_in_contour(probe, &shape[0]).then_some(idx))
-            .collect();
-        if let Some(&parent) = enclosing.last() {
-            let is_hole = match rule {
-                FillRule::EvenOdd => enclosing.len() % 2 == 1,
-                FillRule::NonZero => {
-                    (area >= 0.0) != outer_signs[parent] && enclosing.len() % 2 == 1
-                }
-            };
-            if is_hole {
-                shapes[parent].push(orient_contour(contour, false));
-                continue;
+    Some([sx.round() as i64, sy.round() as i64])
+}
+
+#[cfg(any(not(feature = "vector-boolean"), test))]
+fn dequantize_point(p: GPoint) -> Point {
+    [p[0] as f64 / GRID_SCALE, p[1] as f64 / GRID_SCALE]
+}
+
+#[cfg(any(not(feature = "vector-boolean"), test))]
+fn gvec(a: GPoint, b: GPoint) -> [i128; 2] {
+    [
+        i128::from(b[0]) - i128::from(a[0]),
+        i128::from(b[1]) - i128::from(a[1]),
+    ]
+}
+
+#[cfg(any(not(feature = "vector-boolean"), test))]
+fn icross(a: [i128; 2], b: [i128; 2]) -> i128 {
+    a[0] * b[1] - a[1] * b[0]
+}
+
+#[cfg(any(not(feature = "vector-boolean"), test))]
+fn idot(a: [i128; 2], b: [i128; 2]) -> i128 {
+    a[0] * b[0] + a[1] * b[1]
+}
+
+#[cfg(any(not(feature = "vector-boolean"), test))]
+#[derive(Clone, Copy)]
+struct Seg {
+    u: GPoint,
+    v: GPoint,
+    subj: i32,
+    clip: i32,
+}
+
+#[cfg(any(not(feature = "vector-boolean"), test))]
+impl Seg {
+    fn from_directed(a: GPoint, b: GPoint, subj: i32, clip: i32) -> Option<Self> {
+        if a == b || (subj == 0 && clip == 0) {
+            return None;
+        }
+        if a < b {
+            Some(Self {
+                u: a,
+                v: b,
+                subj,
+                clip,
+            })
+        } else {
+            Some(Self {
+                u: b,
+                v: a,
+                subj: -subj,
+                clip: -clip,
+            })
+        }
+    }
+
+    fn min_x(self) -> i64 {
+        self.u[0].min(self.v[0])
+    }
+
+    fn max_x(self) -> i64 {
+        self.u[0].max(self.v[0])
+    }
+
+    fn min_y(self) -> i64 {
+        self.u[1].min(self.v[1])
+    }
+
+    fn max_y(self) -> i64 {
+        self.u[1].max(self.v[1])
+    }
+}
+
+#[cfg(any(not(feature = "vector-boolean"), test))]
+fn push_contour_segs(contour: &[Point], is_clip: bool, segs: &mut Vec<Seg>) {
+    if contour.len() < 3 {
+        return;
+    }
+    let mut ring = Vec::with_capacity(contour.len());
+    for &p in contour {
+        let Some(g) = quantize_point(p) else {
+            return;
+        };
+        if ring.last() != Some(&g) {
+            ring.push(g);
+        }
+    }
+    while ring.len() > 1 && ring.first() == ring.last() {
+        ring.pop();
+    }
+    if ring.len() < 3 {
+        return;
+    }
+    let (subj, clip) = if is_clip { (0, 1) } else { (1, 0) };
+    let n = ring.len();
+    for i in 0..n {
+        if let Some(seg) = Seg::from_directed(ring[i], ring[(i + 1) % n], subj, clip) {
+            segs.push(seg);
+        }
+    }
+}
+
+#[cfg(any(not(feature = "vector-boolean"), test))]
+fn push_shapes_segs(shapes: &Shapes, is_clip: bool, segs: &mut Vec<Seg>) {
+    for shape in shapes {
+        if let Some((outer, holes)) = shape.split_first() {
+            let normalized_outer = orient_contour(outer.clone(), true);
+            push_contour_segs(&normalized_outer, is_clip, segs);
+            for hole in holes {
+                let normalized_hole = orient_contour(hole.clone(), false);
+                push_contour_segs(&normalized_hole, is_clip, segs);
             }
         }
-        enclosing.clear();
-        outer_signs.push(area >= 0.0);
-        shapes.push(vec![orient_contour(contour, true)]);
+    }
+}
+
+#[cfg(any(not(feature = "vector-boolean"), test))]
+fn merge_segs(segs: &mut Vec<Seg>) {
+    segs.retain(|s| s.u != s.v && (s.subj != 0 || s.clip != 0));
+    if segs.len() <= 1 {
+        return;
+    }
+    segs.sort_unstable_by(|a, b| a.u.cmp(&b.u).then_with(|| a.v.cmp(&b.v)));
+    let mut write = 0usize;
+    for read in 0..segs.len() {
+        let cur = segs[read];
+        if write > 0 && segs[write - 1].u == cur.u && segs[write - 1].v == cur.v {
+            segs[write - 1].subj += cur.subj;
+            segs[write - 1].clip += cur.clip;
+        } else {
+            segs[write] = cur;
+            write += 1;
+        }
+    }
+    segs.truncate(write);
+    segs.retain(|s| s.subj != 0 || s.clip != 0);
+}
+
+#[cfg(any(not(feature = "vector-boolean"), test))]
+fn point_splits_seg(p: GPoint, u: GPoint, v: GPoint) -> bool {
+    if p == u || p == v {
+        return false;
+    }
+    let d = gvec(u, v);
+    let dp = gvec(u, p);
+    let dq = gvec(v, p);
+    let len2 = idot(d, d);
+    let dot = idot(d, dp);
+    if dot <= 0 || dot >= len2 {
+        return false;
+    }
+    if idot(dp, dp) >= len2 || idot(dq, dq) >= len2 {
+        return false;
+    }
+    let max_span = d[0].unsigned_abs().max(d[1].unsigned_abs());
+    icross(d, dp).unsigned_abs().saturating_mul(2) <= max_span
+}
+
+#[cfg(any(not(feature = "vector-boolean"), test))]
+fn seg_cross_point(u1: GPoint, v1: GPoint, u2: GPoint, v2: GPoint) -> Option<GPoint> {
+    if u1 == u2 || u1 == v2 || v1 == u2 || v1 == v2 {
+        return None;
+    }
+    let d1 = gvec(u1, v1);
+    let d2 = gvec(u2, v2);
+    let u1_to_u2 = gvec(u1, u2);
+    let u1_to_v2 = gvec(u1, v2);
+    let c1 = icross(d1, u1_to_u2);
+    let c2 = icross(d1, u1_to_v2);
+    if !((c1 > 0 && c2 < 0) || (c1 < 0 && c2 > 0)) {
+        return None;
+    }
+    let u2_to_u1 = [-u1_to_u2[0], -u1_to_u2[1]];
+    let u2_to_v1 = gvec(u2, v1);
+    let c3 = icross(d2, u2_to_u1);
+    let c4 = icross(d2, u2_to_v1);
+    if !((c3 > 0 && c4 < 0) || (c3 < 0 && c4 > 0)) {
+        return None;
+    }
+    let mut denom = icross(d1, d2);
+    let mut num = icross(u1_to_u2, d2);
+    if denom == 0 {
+        return None;
+    }
+    if denom < 0 {
+        denom = -denom;
+        num = -num;
+    }
+    let mut out = [0i64; 2];
+    for (k, slot) in out.iter_mut().enumerate() {
+        let off = num
+            .checked_mul(d1[k])
+            .and_then(|prod| {
+                if prod >= 0 {
+                    prod.checked_add(denom / 2).map(|s| s / denom)
+                } else {
+                    prod.checked_neg()
+                        .and_then(|n| n.checked_add(denom / 2))
+                        .map(|s| -(s / denom))
+                }
+            })
+            .unwrap_or_else(|| ((num as f64 / denom as f64) * (d1[k] as f64)).round() as i128);
+        *slot = (i128::from(u1[k]) + off) as i64;
+    }
+    Some(out)
+}
+
+#[cfg(any(not(feature = "vector-boolean"), test))]
+fn split_and_merge(mut segs: Vec<Seg>) -> Vec<Seg> {
+    merge_segs(&mut segs);
+    for _pass in 0..24 {
+        if segs.len() <= 1 {
+            break;
+        }
+        segs.sort_unstable_by(|a, b| {
+            a.min_x()
+                .cmp(&b.min_x())
+                .then_with(|| a.min_y().cmp(&b.min_y()))
+                .then_with(|| a.max_x().cmp(&b.max_x()))
+                .then_with(|| a.max_y().cmp(&b.max_y()))
+        });
+        let mut splits: Vec<Vec<GPoint>> = vec![Vec::new(); segs.len()];
+        let mut any_split = false;
+        for i in 0..segs.len() {
+            let a = segs[i];
+            let ax1 = a.max_x();
+            let ay0 = a.min_y();
+            let ay1 = a.max_y();
+            for j in (i + 1)..segs.len() {
+                let b = segs[j];
+                if b.min_x() > ax1.saturating_add(1) {
+                    break;
+                }
+                if b.max_y().saturating_add(1) < ay0 || b.min_y().saturating_sub(1) > ay1 {
+                    continue;
+                }
+                if let Some(ix) = seg_cross_point(a.u, a.v, b.u, b.v) {
+                    if ix != a.u && ix != a.v {
+                        splits[i].push(ix);
+                        any_split = true;
+                    }
+                    if ix != b.u && ix != b.v {
+                        splits[j].push(ix);
+                        any_split = true;
+                    }
+                }
+                for p in [b.u, b.v] {
+                    if point_splits_seg(p, a.u, a.v) {
+                        splits[i].push(p);
+                        any_split = true;
+                    }
+                }
+                for p in [a.u, a.v] {
+                    if point_splits_seg(p, b.u, b.v) {
+                        splits[j].push(p);
+                        any_split = true;
+                    }
+                }
+            }
+        }
+        if !any_split {
+            break;
+        }
+        let mut next = Vec::with_capacity(segs.len());
+        for (seg, mut pts) in segs.into_iter().zip(splits) {
+            pts.retain(|&p| p != seg.u && p != seg.v);
+            if pts.is_empty() {
+                next.push(seg);
+                continue;
+            }
+            let d = gvec(seg.u, seg.v);
+            pts.sort_unstable_by(|&p, &q| {
+                let dp = idot(d, gvec(seg.u, p));
+                let dq = idot(d, gvec(seg.u, q));
+                dp.cmp(&dq).then_with(|| p.cmp(&q))
+            });
+            pts.dedup();
+            let mut prev = seg.u;
+            for p in pts {
+                if let Some(sub) = Seg::from_directed(prev, p, seg.subj, seg.clip) {
+                    next.push(sub);
+                }
+                prev = p;
+            }
+            if let Some(sub) = Seg::from_directed(prev, seg.v, seg.subj, seg.clip) {
+                next.push(sub);
+            }
+        }
+        merge_segs(&mut next);
+        segs = next;
+    }
+    segs
+}
+
+#[cfg(any(not(feature = "vector-boolean"), test))]
+#[derive(Clone, Copy)]
+enum BooleanOp {
+    Simplify(FillRule),
+    PositiveWinding,
+    Intersect,
+    Difference,
+}
+
+#[cfg(any(not(feature = "vector-boolean"), test))]
+impl BooleanOp {
+    fn contains(self, subj: i32, clip: i32) -> bool {
+        match self {
+            Self::Simplify(FillRule::EvenOdd) => (subj & 1) != 0,
+            Self::Simplify(FillRule::NonZero) => subj != 0,
+            Self::PositiveWinding => subj > 0,
+            Self::Intersect => subj != 0 && clip != 0,
+            Self::Difference => subj != 0 && clip == 0,
+        }
+    }
+}
+
+#[cfg(any(not(feature = "vector-boolean"), test))]
+fn collect_boundary_half_edges(segs: &[Seg], op: BooleanOp) -> Vec<(GPoint, GPoint)> {
+    if segs.is_empty() {
+        return Vec::new();
+    }
+    // Sweep in 2x integer coordinates so every midpoint (u + v) is exact and
+    // symbolic horizontal rays at y = my + eps_y cross segments cleanly.
+    let mut events: Vec<(i64, u8, usize)> = Vec::with_capacity(segs.len() * 3);
+    for (idx, seg) in segs.iter().enumerate() {
+        if seg.u[1] != seg.v[1] {
+            let y_min = seg.min_y().saturating_mul(2);
+            let y_max = seg.max_y().saturating_mul(2);
+            events.push((y_max, 0, idx));
+            events.push((y_min, 1, idx));
+        }
+        let m_y = seg.u[1].saturating_add(seg.v[1]);
+        events.push((m_y, 2, idx));
+    }
+    events.sort_unstable_by(|a, b| a.0.cmp(&b.0).then_with(|| a.1.cmp(&b.1)));
+
+    let mut active: Vec<usize> = Vec::new();
+    let mut pos_in_active = vec![usize::MAX; segs.len()];
+    let mut half_edges = Vec::new();
+
+    for (_, kind, idx) in events {
+        match kind {
+            0 => {
+                let pos = pos_in_active[idx];
+                if pos != usize::MAX {
+                    active.swap_remove(pos);
+                    if pos < active.len() {
+                        pos_in_active[active[pos]] = pos;
+                    }
+                    pos_in_active[idx] = usize::MAX;
+                }
+            }
+            1 => {
+                pos_in_active[idx] = active.len();
+                active.push(idx);
+            }
+            _ => {
+                let e = segs[idx];
+                let mx = i128::from(e.u[0]) + i128::from(e.v[0]);
+                let my = i128::from(e.u[1]) + i128::from(e.v[1]);
+                let mut w_subj = 0i32;
+                let mut w_clip = 0i32;
+                for &s_idx in &active {
+                    if s_idx == idx {
+                        continue;
+                    }
+                    let s = segs[s_idx];
+                    let smax_x = i128::from(s.max_x()) * 2;
+                    if smax_x <= mx {
+                        continue;
+                    }
+                    let ax = i128::from(s.u[0]) * 2;
+                    let ay = i128::from(s.u[1]) * 2;
+                    let bx = i128::from(s.v[0]) * 2;
+                    let by = i128::from(s.v[1]) * 2;
+                    let cr = (bx - ax) * (my - ay) - (by - ay) * (mx - ax);
+                    if ay < by && cr > 0 {
+                        w_subj += s.subj;
+                        w_clip += s.clip;
+                    } else if ay > by && cr < 0 {
+                        w_subj -= s.subj;
+                        w_clip -= s.clip;
+                    }
+                }
+                let (subj_pos, clip_pos, subj_neg, clip_neg) = if e.v[1] <= e.u[1] {
+                    (w_subj, w_clip, w_subj - e.subj, w_clip - e.clip)
+                } else {
+                    (w_subj + e.subj, w_clip + e.clip, w_subj, w_clip)
+                };
+                let in_pos = op.contains(subj_pos, clip_pos);
+                let in_neg = op.contains(subj_neg, clip_neg);
+                if in_pos != in_neg {
+                    if in_pos {
+                        half_edges.push((e.u, e.v));
+                    } else {
+                        half_edges.push((e.v, e.u));
+                    }
+                }
+            }
+        }
+    }
+    half_edges
+}
+
+#[cfg(any(not(feature = "vector-boolean"), test))]
+fn dir_rank(r: [i128; 2], d: [i128; 2]) -> u8 {
+    let cr = icross(r, d);
+    if cr < 0 {
+        0
+    } else if cr == 0 && idot(r, d) < 0 {
+        1
+    } else if cr > 0 {
+        2
+    } else {
+        3
+    }
+}
+
+#[cfg(any(not(feature = "vector-boolean"), test))]
+fn dir_cmp(r: [i128; 2], d1: [i128; 2], d2: [i128; 2]) -> std::cmp::Ordering {
+    let k1 = dir_rank(r, d1);
+    let k2 = dir_rank(r, d2);
+    if k1 != k2 {
+        return k1.cmp(&k2);
+    }
+    let cr = icross(d1, d2);
+    if cr < 0 {
+        std::cmp::Ordering::Less
+    } else if cr > 0 {
+        std::cmp::Ordering::Greater
+    } else {
+        std::cmp::Ordering::Equal
+    }
+}
+
+#[cfg(any(not(feature = "vector-boolean"), test))]
+fn trace_cycles(half_edges: &[(GPoint, GPoint)]) -> Vec<Vec<GPoint>> {
+    if half_edges.is_empty() {
+        return Vec::new();
+    }
+    let mut verts: Vec<GPoint> = Vec::with_capacity(half_edges.len() * 2);
+    for &(a, b) in half_edges {
+        verts.push(a);
+        verts.push(b);
+    }
+    verts.sort_unstable();
+    verts.dedup();
+
+    struct OutEdge {
+        to: usize,
+        used: bool,
+    }
+    let mut out_edges: Vec<Vec<OutEdge>> = (0..verts.len()).map(|_| Vec::new()).collect();
+    for &(a, b) in half_edges {
+        let from = verts.binary_search(&a).expect("endpoint exists");
+        let to = verts.binary_search(&b).expect("endpoint exists");
+        out_edges[from].push(OutEdge { to, used: false });
+    }
+
+    let mut raw_rings: Vec<Vec<usize>> = Vec::new();
+    let mut stack: Vec<usize> = Vec::new();
+    let mut stack_pos = vec![usize::MAX; verts.len()];
+
+    for start_v in 0..verts.len() {
+        while let Some(first_pos) = out_edges[start_v].iter().position(|e| !e.used) {
+            out_edges[start_v][first_pos].used = true;
+            stack.clear();
+            stack.push(start_v);
+            stack_pos[start_v] = 0;
+            let mut prev = start_v;
+            let mut cur = out_edges[start_v][first_pos].to;
+
+            loop {
+                if stack_pos[cur] != usize::MAX {
+                    let start_idx = stack_pos[cur];
+                    let ring = stack[start_idx..].to_vec();
+                    for &v in &stack[start_idx + 1..] {
+                        stack_pos[v] = usize::MAX;
+                    }
+                    stack.truncate(start_idx + 1);
+                    if ring.len() >= 3 {
+                        raw_rings.push(ring);
+                    }
+                } else {
+                    stack_pos[cur] = stack.len();
+                    stack.push(cur);
+                }
+
+                let back = gvec(verts[cur], verts[prev]);
+                let mut best_idx = None;
+                let mut best_dir = [0i128; 2];
+                for (edge_idx, edge) in out_edges[cur].iter().enumerate() {
+                    if edge.used {
+                        continue;
+                    }
+                    let d = gvec(verts[cur], verts[edge.to]);
+                    if best_idx.is_none() || dir_cmp(back, d, best_dir) == std::cmp::Ordering::Less
+                    {
+                        best_idx = Some(edge_idx);
+                        best_dir = d;
+                    }
+                }
+                let Some(next_edge_idx) = best_idx else {
+                    for &v in &stack {
+                        stack_pos[v] = usize::MAX;
+                    }
+                    stack.clear();
+                    break;
+                };
+                out_edges[cur][next_edge_idx].used = true;
+                prev = cur;
+                cur = out_edges[cur][next_edge_idx].to;
+            }
+        }
+    }
+
+    let mut vertex_ring_count = vec![0usize; verts.len()];
+    for ring in &raw_rings {
+        for &v in ring {
+            vertex_ring_count[v] += 1;
+        }
+    }
+
+    let mut out = Vec::with_capacity(raw_rings.len());
+    for mut ring in raw_rings {
+        let mut changed = true;
+        while changed && ring.len() > 3 {
+            changed = false;
+            let mut i = 0;
+            while i < ring.len() && ring.len() > 3 {
+                let v = ring[i];
+                if vertex_ring_count[v] == 1 {
+                    let prev_p = verts[ring[(i + ring.len() - 1) % ring.len()]];
+                    let cur_p = verts[v];
+                    let next_p = verts[ring[(i + 1) % ring.len()]];
+                    let d1 = gvec(prev_p, cur_p);
+                    let d2 = gvec(cur_p, next_p);
+                    if icross(d1, d2) == 0 && idot(d1, d2) > 0 {
+                        ring.remove(i);
+                        changed = true;
+                        continue;
+                    }
+                }
+                i += 1;
+            }
+        }
+        if ring.len() >= 3 {
+            out.push(ring.into_iter().map(|v| verts[v]).collect());
+        }
+    }
+    out
+}
+
+#[cfg(any(not(feature = "vector-boolean"), test))]
+fn interior_point_in_contour(contour: &[Point]) -> Option<Point> {
+    if contour.len() < 3 {
+        return None;
+    }
+    let mut ys: Vec<f64> = contour.iter().map(|p| p[1]).collect();
+    ys.sort_by(f64::total_cmp);
+    ys.dedup_by(|a, b| (*a - *b).abs() <= 1e-12);
+    if ys.len() < 2 {
+        return None;
+    }
+    let mut gaps: Vec<(f64, f64)> = ys
+        .windows(2)
+        .filter_map(|w| {
+            let span = w[1] - w[0];
+            (span > 1e-12).then_some((span, 0.5 * (w[0] + w[1])))
+        })
+        .collect();
+    gaps.sort_by(|a, b| b.0.total_cmp(&a.0));
+    let n = contour.len();
+    for (_, y_mid) in gaps {
+        let mut xs = Vec::new();
+        for i in 0..n {
+            let a = contour[i];
+            let b = contour[(i + 1) % n];
+            if (a[1] > y_mid) != (b[1] > y_mid) {
+                let t = (y_mid - a[1]) / (b[1] - a[1]);
+                xs.push(a[0] + (b[0] - a[0]) * t);
+            }
+        }
+        xs.sort_by(f64::total_cmp);
+        let mut best: Option<(f64, f64)> = None;
+        for pair in xs.as_chunks::<2>().0 {
+            let width = pair[1] - pair[0];
+            if width > best.map_or(0.0, |(w, _)| w) {
+                best = Some((width, 0.5 * (pair[0] + pair[1])));
+            }
+        }
+        if let Some((_, x_mid)) = best {
+            return Some([x_mid, y_mid]);
+        }
+    }
+    None
+}
+
+#[cfg(any(not(feature = "vector-boolean"), test))]
+fn planar_boolean(segs: Vec<Seg>, op: BooleanOp) -> Shapes {
+    let segs = split_and_merge(segs);
+    let half_edges = collect_boundary_half_edges(&segs, op);
+    let g_rings = trace_cycles(&half_edges);
+
+    let mut outers: Vec<(f64, Contour)> = Vec::new();
+    let mut holes: Vec<(f64, Contour)> = Vec::new();
+    for g_ring in g_rings {
+        let contour: Contour = g_ring.into_iter().map(dequantize_point).collect();
+        if contour.len() < 3 {
+            continue;
+        }
+        let area = contour_signed_area(&contour);
+        if area.abs() <= 1e-6 {
+            continue;
+        }
+        if area > 0.0 {
+            outers.push((area, contour));
+        } else {
+            holes.push((area.abs(), contour));
+        }
+    }
+    if outers.is_empty() {
+        return Vec::new();
+    }
+    // Smallest outer first so holes attach to their immediate enclosing shape,
+    // preserving depth >= 2 islands as independent positive-area outer shapes.
+    outers.sort_by(|a, b| a.0.total_cmp(&b.0));
+    let mut shapes: Shapes = outers
+        .iter()
+        .map(|(_, outer)| vec![outer.clone()])
+        .collect();
+    for (hole_area, hole) in holes {
+        let Some(probe) = interior_point_in_contour(&hole) else {
+            continue;
+        };
+        if let Some((parent_idx, _)) = outers.iter().enumerate().find(|(_, (outer_area, outer))| {
+            *outer_area > hole_area && point_in_contour(probe, outer)
+        }) {
+            shapes[parent_idx].push(hole);
+        }
     }
     shapes
+}
+
+#[cfg(any(not(feature = "vector-boolean"), test))]
+fn planar_simplify_contours(contours: Vec<Contour>, rule: FillRule) -> Shapes {
+    let mut segs = Vec::new();
+    for contour in &contours {
+        push_contour_segs(contour, false, &mut segs);
+    }
+    if segs.is_empty() {
+        return Vec::new();
+    }
+    planar_boolean(segs, BooleanOp::Simplify(rule))
+}
+
+#[cfg(not(feature = "vector-boolean"))]
+fn simplify_contours(contours: Vec<Contour>, rule: FillRule) -> Shapes {
+    planar_simplify_contours(contours, rule)
 }
 
 #[cfg(feature = "vector-boolean")]
@@ -2318,27 +2939,26 @@ fn difference_shapes(outer: &Shapes, inner: &Shapes) -> Shapes {
     outer.overlay(inner, OverlayRule::Difference, OverlayFill::NonZero)
 }
 
-#[cfg(not(feature = "vector-boolean"))]
-fn difference_shapes(outer: &Shapes, inner: &Shapes) -> Shapes {
+#[cfg(any(not(feature = "vector-boolean"), test))]
+fn planar_difference_shapes(outer: &Shapes, inner: &Shapes) -> Shapes {
+    if outer.is_empty() {
+        return Vec::new();
+    }
     if inner.is_empty() {
         return outer.clone();
     }
-    outer
-        .iter()
-        .map(|outer_shape| {
-            let mut combined = outer_shape.clone();
-            let outer_positive = shape_outward_sign(outer_shape) >= 0.0;
-            for inner_shape in inner {
-                if let Some((first, holes)) = inner_shape.split_first() {
-                    combined.push(orient_contour(first.clone(), !outer_positive));
-                    for hole in holes {
-                        combined.push(orient_contour(hole.clone(), outer_positive));
-                    }
-                }
-            }
-            combined
-        })
-        .collect()
+    let mut segs = Vec::new();
+    push_shapes_segs(outer, false, &mut segs);
+    push_shapes_segs(inner, true, &mut segs);
+    if segs.is_empty() {
+        return Vec::new();
+    }
+    planar_boolean(segs, BooleanOp::Difference)
+}
+
+#[cfg(not(feature = "vector-boolean"))]
+fn difference_shapes(outer: &Shapes, inner: &Shapes) -> Shapes {
+    planar_difference_shapes(outer, inner)
 }
 
 #[cfg(feature = "vector-boolean")]
@@ -2346,23 +2966,30 @@ fn outline_shapes(shapes: Shapes, offset: f32) -> Shapes {
     shapes.outline(&OutlineStyle::new(f64::from(offset)).line_join(OverlayJoin::Round(0.1)))
 }
 
-#[cfg(not(feature = "vector-boolean"))]
-fn outline_shapes(shapes: Shapes, offset: f32) -> Shapes {
+#[cfg(any(not(feature = "vector-boolean"), test))]
+fn planar_outline_shapes(shapes: Shapes, offset: f32) -> Shapes {
+    if shapes.is_empty() || !offset.is_finite() || offset == 0.0 {
+        return shapes;
+    }
     let offset64 = f64::from(offset);
-    shapes
-        .into_iter()
-        .filter_map(|shape| {
-            let sign = shape_outward_sign(&shape);
-            let mut out_contours = Vec::with_capacity(shape.len());
-            for (idx, contour) in shape.into_iter().enumerate() {
-                if contour.len() < 3 {
-                    continue;
-                }
-                let orig_area = contour_signed_area(&contour);
-                let points: Vec<[f32; 2]> =
-                    contour.iter().map(|p| [p[0] as f32, p[1] as f32]).collect();
-                let ms = miters(&points, sign);
-                let shifted: Contour = contour
+    let mut per_shape_results: Shapes = Vec::new();
+    for shape in shapes {
+        let Some((outer, holes)) = shape.split_first() else {
+            continue;
+        };
+        if outer.len() < 3 {
+            continue;
+        }
+        let sign = shape_outward_sign(&shape);
+        let shift_ring = |contour: &Contour| -> Option<Contour> {
+            if contour.len() < 3 {
+                return None;
+            }
+            let points: Vec<[f32; 2]> =
+                contour.iter().map(|p| [p[0] as f32, p[1] as f32]).collect();
+            let ms = miters(&points, sign);
+            Some(
+                contour
                     .iter()
                     .zip(ms.iter())
                     .map(|(p, m)| {
@@ -2371,19 +2998,61 @@ fn outline_shapes(shapes: Shapes, offset: f32) -> Shapes {
                             p[1] + f64::from(m[1]) * offset64,
                         ]
                     })
-                    .collect();
-                let new_area = contour_signed_area(&shifted);
-                if orig_area * new_area <= 1e-9 {
-                    if idx == 0 {
-                        return None;
-                    }
-                    continue;
-                }
-                out_contours.push(shifted);
+                    .collect(),
+            )
+        };
+
+        let Some(mut shifted_outer) = shift_ring(outer) else {
+            continue;
+        };
+        if sign < 0.0 {
+            shifted_outer.reverse();
+        }
+        let mut outer_segs = Vec::new();
+        push_contour_segs(&shifted_outer, false, &mut outer_segs);
+        if outer_segs.is_empty() {
+            continue;
+        }
+        let outer_clean = planar_boolean(outer_segs, BooleanOp::PositiveWinding);
+        if outer_clean.is_empty() {
+            continue;
+        }
+
+        if holes.is_empty() {
+            per_shape_results.extend(outer_clean);
+            continue;
+        }
+        let mut hole_segs = Vec::new();
+        for hole in holes {
+            let Some(mut shifted_hole) = shift_ring(hole) else {
+                continue;
+            };
+            if sign > 0.0 {
+                shifted_hole.reverse();
             }
-            (!out_contours.is_empty()).then_some(out_contours)
-        })
-        .collect()
+            push_contour_segs(&shifted_hole, false, &mut hole_segs);
+        }
+        if hole_segs.is_empty() {
+            per_shape_results.extend(outer_clean);
+        } else {
+            let holes_clean = planar_boolean(hole_segs, BooleanOp::PositiveWinding);
+            per_shape_results.extend(planar_difference_shapes(&outer_clean, &holes_clean));
+        }
+    }
+    if per_shape_results.len() <= 1 {
+        return per_shape_results;
+    }
+    let mut union_segs = Vec::new();
+    push_shapes_segs(&per_shape_results, false, &mut union_segs);
+    if union_segs.is_empty() {
+        return Vec::new();
+    }
+    planar_boolean(union_segs, BooleanOp::PositiveWinding)
+}
+
+#[cfg(not(feature = "vector-boolean"))]
+fn outline_shapes(shapes: Shapes, offset: f32) -> Shapes {
+    planar_outline_shapes(shapes, offset)
 }
 
 /// The region a path fills, as clean polygons: outer contours one way round,
@@ -2463,10 +3132,13 @@ fn stroke_shapes(path: &PaintPath, stroke: &StrokeStyle, t: Affine) -> Shapes {
     shapes
 }
 
-#[cfg(not(feature = "vector-boolean"))]
-fn stroke_polyline_open(points: &[Point], hw: f64, stroke: &StrokeStyle) -> Option<Vec<Contour>> {
+#[cfg(any(not(feature = "vector-boolean"), test))]
+fn dedup_stroke_points(points: &[Point], closed: bool) -> Vec<Point> {
     let mut dedup: Vec<Point> = Vec::with_capacity(points.len());
     for &p in points {
+        if !p[0].is_finite() || !p[1].is_finite() {
+            continue;
+        }
         if let Some(last) = dedup.last()
             && ((p[0] - last[0]).powi(2) + (p[1] - last[1]).powi(2)).sqrt() <= 1e-7
         {
@@ -2474,21 +3146,165 @@ fn stroke_polyline_open(points: &[Point], hw: f64, stroke: &StrokeStyle) -> Opti
         }
         dedup.push(p);
     }
-    if dedup.len() < 2 {
-        return None;
-    }
-    let dir = |a: Point, b: Point| -> [f64; 2] {
-        let [dx, dy] = [b[0] - a[0], b[1] - a[1]];
-        let len = (dx * dx + dy * dy).sqrt();
-        if len > 1e-12 {
-            [dx / len, dy / len]
-        } else {
-            [1.0, 0.0]
+    if closed {
+        while dedup.len() > 1 {
+            let first = dedup[0];
+            let last = dedup[dedup.len() - 1];
+            if ((first[0] - last[0]).powi(2) + (first[1] - last[1]).powi(2)).sqrt() <= 1e-7 {
+                dedup.pop();
+            } else {
+                break;
+            }
         }
-    };
+    }
+    dedup
+}
+
+#[cfg(any(not(feature = "vector-boolean"), test))]
+fn unit_dir(a: Point, b: Point) -> [f64; 2] {
+    let dx = b[0] - a[0];
+    let dy = b[1] - a[1];
+    let len = (dx * dx + dy * dy).sqrt();
+    if len > 1e-12 {
+        [dx / len, dy / len]
+    } else {
+        [1.0, 0.0]
+    }
+}
+
+#[cfg(any(not(feature = "vector-boolean"), test))]
+fn round_arc_steps(hw: f64, span: f64, min_steps: usize) -> usize {
+    let sagitta = (0.08 / hw.max(0.2)).min(0.5);
+    let step_angle = (2.0 * (1.0 - sagitta).acos()).max(0.08);
+    ((span.abs() / step_angle).ceil() as usize).clamp(min_steps, 32)
+}
+
+#[cfg(any(not(feature = "vector-boolean"), test))]
+fn push_stroke_segment(pieces: &mut Vec<Contour>, a: Point, b: Point, hw: f64) {
+    let d = unit_dir(a, b);
+    let n = [-d[1], d[0]];
+    pieces.push(orient_contour(
+        vec![
+            [a[0] - n[0] * hw, a[1] - n[1] * hw],
+            [b[0] - n[0] * hw, b[1] - n[1] * hw],
+            [b[0] + n[0] * hw, b[1] + n[1] * hw],
+            [a[0] + n[0] * hw, a[1] + n[1] * hw],
+        ],
+        true,
+    ));
+}
+
+#[cfg(any(not(feature = "vector-boolean"), test))]
+fn push_round_cap(pieces: &mut Vec<Contour>, center: Point, outward_dir: [f64; 2], hw: f64) {
+    let nl = [-outward_dir[1], outward_dir[0]];
+    let steps = round_arc_steps(hw, std::f64::consts::PI, 8);
+    let base_angle = nl[1].atan2(nl[0]);
+    let mut cap = Vec::with_capacity(steps + 1);
+    cap.push([center[0] + nl[0] * hw, center[1] + nl[1] * hw]);
+    for step in 1..steps {
+        let angle = base_angle - std::f64::consts::PI * (step as f64 / steps as f64);
+        let (s, c) = angle.sin_cos();
+        cap.push([center[0] + c * hw, center[1] + s * hw]);
+    }
+    cap.push([center[0] - nl[0] * hw, center[1] - nl[1] * hw]);
+    pieces.push(orient_contour(cap, true));
+}
+
+#[cfg(any(not(feature = "vector-boolean"), test))]
+fn push_stroke_join(
+    pieces: &mut Vec<Contour>,
+    p: Point,
+    d1: [f64; 2],
+    d2: [f64; 2],
+    hw: f64,
+    join: LineJoin,
+    miter_limit: f64,
+) {
+    let turn = d1[0] * d2[1] - d1[1] * d2[0];
+    let dot = d1[0] * d2[0] + d1[1] * d2[1];
+    if turn.abs() <= 1e-12 {
+        if dot < 0.0 && join == LineJoin::Round {
+            push_round_cap(pieces, p, d1, hw);
+        }
+        return;
+    }
+    let n1 = [-d1[1], d1[0]];
+    let n2 = [-d2[1], d2[0]];
+    let side = if turn > 0.0 { -1.0 } else { 1.0 };
+    let o1 = [n1[0] * side, n1[1] * side];
+    let o2 = [n2[0] * side, n2[1] * side];
+    let q1 = [p[0] + o1[0] * hw, p[1] + o1[1] * hw];
+    let q2 = [p[0] + o2[0] * hw, p[1] + o2[1] * hw];
+
+    match join {
+        LineJoin::Bevel => {
+            pieces.push(orient_contour(vec![p, q1, q2], true));
+        }
+        LineJoin::Miter => {
+            let denom = 1.0 + o1[0] * o2[0] + o1[1] * o2[1];
+            if denom > 1e-12 {
+                let m = [(o1[0] + o2[0]) / denom, (o1[1] + o2[1]) / denom];
+                if (m[0] * m[0] + m[1] * m[1]).sqrt() <= miter_limit {
+                    let tip = [p[0] + m[0] * hw, p[1] + m[1] * hw];
+                    pieces.push(orient_contour(vec![p, q1, tip, q2], true));
+                    return;
+                }
+            }
+            pieces.push(orient_contour(vec![p, q1, q2], true));
+        }
+        LineJoin::Round => {
+            let a1 = o1[1].atan2(o1[0]);
+            let a2 = o2[1].atan2(o2[0]);
+            let mut da = a2 - a1;
+            while da <= -std::f64::consts::PI {
+                da += std::f64::consts::TAU;
+            }
+            while da > std::f64::consts::PI {
+                da -= std::f64::consts::TAU;
+            }
+            if turn > 0.0 && da < 0.0 {
+                da += std::f64::consts::TAU;
+            } else if turn < 0.0 && da > 0.0 {
+                da -= std::f64::consts::TAU;
+            }
+            let steps = round_arc_steps(hw, da, 3);
+            let mut fan = Vec::with_capacity(steps + 2);
+            fan.push(p);
+            fan.push(q1);
+            for step in 1..steps {
+                let angle = a1 + da * (step as f64 / steps as f64);
+                let (s, c) = angle.sin_cos();
+                fan.push([p[0] + c * hw, p[1] + s * hw]);
+            }
+            fan.push(q2);
+            pieces.push(orient_contour(fan, true));
+        }
+    }
+}
+
+#[cfg(any(not(feature = "vector-boolean"), test))]
+fn stroke_miter_limit(stroke: &StrokeStyle) -> f64 {
+    if stroke.miter_limit.is_finite() {
+        f64::from(stroke.miter_limit.max(1.0))
+    } else {
+        10.0
+    }
+}
+
+#[cfg(any(not(feature = "vector-boolean"), test))]
+fn stroke_polyline_open(
+    points: &[Point],
+    hw: f64,
+    stroke: &StrokeStyle,
+    pieces: &mut Vec<Contour>,
+) {
+    let mut dedup = dedup_stroke_points(points, false);
+    if dedup.len() < 2 {
+        return;
+    }
     let n = dedup.len();
-    let d_start = dir(dedup[0], dedup[1]);
-    let d_end = dir(dedup[n - 2], dedup[n - 1]);
+    let d_start = unit_dir(dedup[0], dedup[1]);
+    let d_end = unit_dir(dedup[n - 2], dedup[n - 1]);
     if stroke.cap == LineCap::Square {
         dedup[0] = [dedup[0][0] - d_start[0] * hw, dedup[0][1] - d_start[1] * hw];
         dedup[n - 1] = [
@@ -2496,100 +3312,56 @@ fn stroke_polyline_open(points: &[Point], hw: f64, stroke: &StrokeStyle) -> Opti
             dedup[n - 1][1] + d_end[1] * hw,
         ];
     }
-    let miter_limit = if stroke.miter_limit.is_finite() {
-        stroke.miter_limit.max(1.0) as f64
-    } else {
-        10.0
-    };
-    let mut left: Vec<Point> = Vec::with_capacity(n + 4);
-    let mut right: Vec<Point> = Vec::with_capacity(n + 4);
+    for i in 0..n - 1 {
+        push_stroke_segment(pieces, dedup[i], dedup[i + 1], hw);
+    }
+    let miter_limit = stroke_miter_limit(stroke);
+    for i in 1..n - 1 {
+        let d1 = unit_dir(dedup[i - 1], dedup[i]);
+        let d2 = unit_dir(dedup[i], dedup[i + 1]);
+        push_stroke_join(pieces, dedup[i], d1, d2, hw, stroke.join, miter_limit);
+    }
+    if stroke.cap == LineCap::Round {
+        push_round_cap(pieces, dedup[0], [-d_start[0], -d_start[1]], hw);
+        push_round_cap(pieces, dedup[n - 1], d_end, hw);
+    }
+}
+
+#[cfg(any(not(feature = "vector-boolean"), test))]
+fn stroke_polyline_closed(
+    points: &[Point],
+    hw: f64,
+    stroke: &StrokeStyle,
+    pieces: &mut Vec<Contour>,
+) {
+    let dedup = dedup_stroke_points(points, true);
+    let n = dedup.len();
+    if n < 2 {
+        return;
+    }
     for i in 0..n {
-        if i == 0 {
-            let nl = [-d_start[1], d_start[0]];
-            left.push([dedup[0][0] + nl[0] * hw, dedup[0][1] + nl[1] * hw]);
-            right.push([dedup[0][0] - nl[0] * hw, dedup[0][1] - nl[1] * hw]);
-        } else if i + 1 == n {
-            let nl = [-d_end[1], d_end[0]];
-            left.push([dedup[i][0] + nl[0] * hw, dedup[i][1] + nl[1] * hw]);
-            right.push([dedup[i][0] - nl[0] * hw, dedup[i][1] - nl[1] * hw]);
-        } else {
-            let d1 = dir(dedup[i - 1], dedup[i]);
-            let d2 = dir(dedup[i], dedup[i + 1]);
-            let n1 = [-d1[1], d1[0]];
-            let n2 = [-d2[1], d2[0]];
-            let denom = 1.0 + n1[0] * n2[0] + n1[1] * n2[1];
-            if stroke.join == LineJoin::Miter && denom > 1e-3 {
-                let m = [(n1[0] + n2[0]) / denom, (n1[1] + n2[1]) / denom];
-                if (m[0] * m[0] + m[1] * m[1]).sqrt() <= miter_limit {
-                    left.push([dedup[i][0] + m[0] * hw, dedup[i][1] + m[1] * hw]);
-                    right.push([dedup[i][0] - m[0] * hw, dedup[i][1] - m[1] * hw]);
-                    continue;
-                }
-            }
-            left.push([dedup[i][0] + n1[0] * hw, dedup[i][1] + n1[1] * hw]);
-            left.push([dedup[i][0] + n2[0] * hw, dedup[i][1] + n2[1] * hw]);
-            right.push([dedup[i][0] - n1[0] * hw, dedup[i][1] - n1[1] * hw]);
-            right.push([dedup[i][0] - n2[0] * hw, dedup[i][1] - n2[1] * hw]);
-        }
+        push_stroke_segment(pieces, dedup[i], dedup[(i + 1) % n], hw);
     }
-    let mut ring = left;
-    if stroke.cap == LineCap::Round {
-        let base_angle = (-d_end[1]).atan2(d_end[0]);
-        let center = dedup[n - 1];
-        for step in 1..6 {
-            let angle = base_angle - std::f64::consts::PI * (step as f64 / 6.0);
-            let (s, c) = angle.sin_cos();
-            ring.push([center[0] + c * hw, center[1] - s * hw]);
-        }
-    }
-    ring.extend(right.into_iter().rev());
-    if stroke.cap == LineCap::Round {
-        let base_angle = d_start[1].atan2(-d_start[0]);
-        let center = dedup[0];
-        for step in 1..6 {
-            let angle = base_angle - std::f64::consts::PI * (step as f64 / 6.0);
-            let (s, c) = angle.sin_cos();
-            ring.push([center[0] + c * hw, center[1] - s * hw]);
-        }
-    }
-    Some(vec![orient_contour(ring, true)])
-}
-
-#[cfg(not(feature = "vector-boolean"))]
-fn stroke_polyline_closed(points: &[Point], hw: f64) -> Option<Vec<Contour>> {
-    if points.len() < 3 {
-        return None;
-    }
-    let ring = orient_contour(points.to_vec(), true);
-    let f32_pts: Vec<[f32; 2]> = ring.iter().map(|p| [p[0] as f32, p[1] as f32]).collect();
-    let ms = miters(&f32_pts, 1.0);
-    let outer: Contour = ring
-        .iter()
-        .zip(ms.iter())
-        .map(|(p, m)| [p[0] + f64::from(m[0]) * hw, p[1] + f64::from(m[1]) * hw])
-        .collect();
-    let mut inner: Contour = ring
-        .iter()
-        .zip(ms.iter())
-        .map(|(p, m)| [p[0] - f64::from(m[0]) * hw, p[1] - f64::from(m[1]) * hw])
-        .collect();
-    inner.reverse();
-    if contour_signed_area(&inner) < -1e-6 {
-        Some(vec![orient_contour(outer, true), inner])
-    } else {
-        Some(vec![orient_contour(outer, true)])
+    let miter_limit = stroke_miter_limit(stroke);
+    for i in 0..n {
+        let prev = dedup[(i + n - 1) % n];
+        let cur = dedup[i];
+        let next = dedup[(i + 1) % n];
+        let d1 = unit_dir(prev, cur);
+        let d2 = unit_dir(cur, next);
+        push_stroke_join(pieces, cur, d1, d2, hw, stroke.join, miter_limit);
     }
 }
 
-#[cfg(not(feature = "vector-boolean"))]
-fn stroke_shapes(path: &PaintPath, stroke: &StrokeStyle, t: Affine) -> Shapes {
+#[cfg(any(not(feature = "vector-boolean"), test))]
+fn planar_stroke_shapes(path: &PaintPath, stroke: &StrokeStyle, t: Affine) -> Shapes {
     if !stroke.width.is_finite() || stroke.width <= 0.0 || !path_is_drawable(path, t) {
         return Vec::new();
     }
     let hw = f64::from(stroke.width.min(MAX_LENGTH)) * 0.5;
     let tolerance = TOLERANCE / affine_scale(t).max(1e-3);
     let dash = dash_pattern(&stroke.dash);
-    let mut shapes: Shapes = Vec::new();
+    let mut pieces: Vec<Contour> = Vec::new();
     for (points, closed) in flatten(path, AFFINE_IDENTITY, tolerance) {
         if points.len() < 2 {
             continue;
@@ -2597,28 +3369,28 @@ fn stroke_shapes(path: &PaintPath, stroke: &StrokeStyle, t: Affine) -> Shapes {
         match &dash {
             Some(pattern) if !too_many_dashes(&points, closed, pattern) => {
                 for piece in dashes(&points, closed, pattern, stroke.dash_offset) {
-                    if let Some(shape) = stroke_polyline_open(&piece, hw, stroke) {
-                        shapes.push(shape);
-                    }
+                    stroke_polyline_open(&piece, hw, stroke, &mut pieces);
                 }
             }
             _ if closed => {
-                if let Some(shape) = stroke_polyline_closed(&points, hw) {
-                    shapes.push(shape);
-                }
+                stroke_polyline_closed(&points, hw, stroke, &mut pieces);
             }
             _ => {
-                if let Some(shape) = stroke_polyline_open(&points, hw, stroke) {
-                    shapes.push(shape);
-                }
+                stroke_polyline_open(&points, hw, stroke, &mut pieces);
             }
         }
     }
-    if shapes.is_empty() {
+    if pieces.is_empty() {
         return Vec::new();
     }
+    let mut shapes = planar_simplify_contours(pieces, FillRule::NonZero);
     transform_stroke_shapes(&mut shapes, t);
     shapes
+}
+
+#[cfg(not(feature = "vector-boolean"))]
+fn stroke_shapes(path: &PaintPath, stroke: &StrokeStyle, t: Affine) -> Shapes {
+    planar_stroke_shapes(path, stroke, t)
 }
 
 fn transform_stroke_shapes(shapes: &mut Shapes, t: Affine) {
@@ -2731,130 +3503,23 @@ fn intersect(subject: &Shapes, clip: &Shapes) -> Shapes {
     subject.overlay(clip, OverlayRule::Intersect, OverlayFill::NonZero)
 }
 
-#[cfg(not(feature = "vector-boolean"))]
-fn is_convex_contour(contour: &[Point]) -> bool {
-    if contour.len() < 3 {
-        return false;
+#[cfg(any(not(feature = "vector-boolean"), test))]
+fn planar_intersect(subject: &Shapes, clip: &Shapes) -> Shapes {
+    if subject.is_empty() || clip.is_empty() {
+        return Vec::new();
     }
-    let mut sign = 0i8;
-    let n = contour.len();
-    for i in 0..n {
-        let a = contour[i];
-        let b = contour[(i + 1) % n];
-        let c = contour[(i + 2) % n];
-        let z = (b[0] - a[0]) * (c[1] - b[1]) - (b[1] - a[1]) * (c[0] - b[0]);
-        if z.abs() > 1e-9 {
-            let s = if z > 0.0 { 1 } else { -1 };
-            if sign == 0 {
-                sign = s;
-            } else if sign != s {
-                return false;
-            }
-        }
+    let mut segs = Vec::new();
+    push_shapes_segs(subject, false, &mut segs);
+    push_shapes_segs(clip, true, &mut segs);
+    if segs.is_empty() {
+        return Vec::new();
     }
-    sign != 0
-}
-
-#[cfg(not(feature = "vector-boolean"))]
-fn clip_contour_to_convex(subject: &[Point], positive_convex: &[Point]) -> Contour {
-    let mut output = subject.to_vec();
-    let m = positive_convex.len();
-    for edge in 0..m {
-        if output.is_empty() {
-            break;
-        }
-        let a = positive_convex[edge];
-        let b = positive_convex[(edge + 1) % m];
-        let inside =
-            |p: Point| (b[0] - a[0]) * (p[1] - a[1]) - (b[1] - a[1]) * (p[0] - a[0]) >= -1e-9;
-        let line_intersect = |p1: Point, p2: Point| -> Point {
-            let d1 = (b[0] - a[0]) * (p1[1] - a[1]) - (b[1] - a[1]) * (p1[0] - a[0]);
-            let d2 = (b[0] - a[0]) * (p2[1] - a[1]) - (b[1] - a[1]) * (p2[0] - a[0]);
-            let denom = d1 - d2;
-            if denom.abs() <= 1e-12 {
-                p1
-            } else {
-                let t = d1 / denom;
-                [p1[0] + (p2[0] - p1[0]) * t, p1[1] + (p2[1] - p1[1]) * t]
-            }
-        };
-        let input = std::mem::take(&mut output);
-        let n = input.len();
-        for i in 0..n {
-            let cur = input[i];
-            let prev = input[(i + n - 1) % n];
-            let cur_in = inside(cur);
-            let prev_in = inside(prev);
-            if cur_in {
-                if !prev_in {
-                    output.push(line_intersect(prev, cur));
-                }
-                output.push(cur);
-            } else if prev_in {
-                output.push(line_intersect(prev, cur));
-            }
-        }
-    }
-    output
-}
-
-#[cfg(not(feature = "vector-boolean"))]
-fn clip_shapes_to_convex(shapes: &Shapes, convex: &[Point]) -> Shapes {
-    let positive_convex = orient_contour(convex.to_vec(), true);
-    shapes
-        .iter()
-        .filter_map(|shape| {
-            let (outer, holes) = shape.split_first()?;
-            let clipped_outer = clip_contour_to_convex(outer, &positive_convex);
-            if clipped_outer.len() < 3 || contour_signed_area(&clipped_outer).abs() <= 1e-9 {
-                return None;
-            }
-            let mut out = vec![orient_contour(clipped_outer, true)];
-            for hole in holes {
-                let clipped_hole = clip_contour_to_convex(hole, &positive_convex);
-                if clipped_hole.len() >= 3 && contour_signed_area(&clipped_hole).abs() > 1e-9 {
-                    out.push(orient_contour(clipped_hole, false));
-                }
-            }
-            Some(out)
-        })
-        .collect()
+    planar_boolean(segs, BooleanOp::Intersect)
 }
 
 #[cfg(not(feature = "vector-boolean"))]
 fn intersect(subject: &Shapes, clip: &Shapes) -> Shapes {
-    if subject.is_empty() || clip.is_empty() {
-        return Vec::new();
-    }
-    if clip.len() == 1 && clip[0].len() == 1 && is_convex_contour(&clip[0][0]) {
-        return clip_shapes_to_convex(subject, &clip[0][0]);
-    }
-    if subject.len() == 1 && subject[0].len() == 1 && is_convex_contour(&subject[0][0]) {
-        return clip_shapes_to_convex(clip, &subject[0][0]);
-    }
-    let subject_tris = triangulate(subject);
-    let clip_tris = triangulate(clip);
-    let mut out = Vec::new();
-    for s_tri in &subject_tris {
-        let s_poly: Contour = s_tri
-            .iter()
-            .map(|p| [f64::from(p[0]), f64::from(p[1])])
-            .collect();
-        for c_tri in &clip_tris {
-            let c_poly = orient_contour(
-                c_tri
-                    .iter()
-                    .map(|p| [f64::from(p[0]), f64::from(p[1])])
-                    .collect(),
-                true,
-            );
-            let piece = clip_contour_to_convex(&s_poly, &c_poly);
-            if piece.len() >= 3 && contour_signed_area(&piece).abs() > 1e-9 {
-                out.push(vec![orient_contour(piece, true)]);
-            }
-        }
-    }
-    out
+    planar_intersect(subject, clip)
 }
 
 fn rounded_shapes(rect: SceneRect, radii: [f32; 4], t: Affine) -> Shapes {
@@ -3355,7 +4020,7 @@ impl MeshBuilder {
             #[cfg(feature = "vector-boolean")]
             let grown = reach.simplify_shape(OverlayFill::NonZero);
             #[cfg(not(feature = "vector-boolean"))]
-            let grown = reach;
+            let grown = simplify_contours(reach.into_iter().flatten().collect(), FillRule::NonZero);
             let beyond = difference_shapes(&shapes, &grown);
             for shape in &beyond {
                 if let Some(Tessellation {
@@ -4662,5 +5327,691 @@ mod tests {
             assert_eq!(*recoloured[index], *fresh[index]);
         }
         assert!(Arc::ptr_eq(&first[2], &recoloured[2]));
+    }
+
+    fn stroke_mesh(path: PaintPath, stroke: StrokeStyle) -> PathMesh {
+        let built = build_ops(&[PaintOp::StrokePath {
+            path: Arc::new(path),
+            paint: ResolvedPaint::Solid([1.0, 0.2, 0.2, 1.0]),
+            stroke,
+        }]);
+        only_mesh(&built).clone()
+    }
+
+    fn fill_mesh_only(path: PaintPath) -> PathMesh {
+        let built = build_ops(&[PaintOp::FillPath {
+            path: Arc::new(path),
+            paint: ResolvedPaint::Solid([0.2, 0.4, 0.9, 1.0]),
+        }]);
+        only_mesh(&built).clone()
+    }
+
+    #[test]
+    fn round_caps_extend_along_horizontal_vertical_and_diagonal_strokes() {
+        let mut horiz = PaintPath::new();
+        horiz.move_to(20.0, 50.0).line_to(80.0, 50.0);
+        let h_mesh = stroke_mesh(horiz, StrokeStyle::new(20.0).cap(LineCap::Round));
+        for p in [[12.7, 50.3], [87.3, 49.7], [16.3, 43.9], [50.3, 50.7]] {
+            let (cov, hits) = coverage_at(&h_mesh, p);
+            assert_eq!(hits, 1, "horiz inside cap {p:?}: hits={hits} cov={cov}");
+            assert!((cov - 1.0).abs() < 1e-4, "horiz {p:?}: cov={cov}");
+        }
+        assert_eq!(coverage_at(&h_mesh, [11.3, 42.1]).1, 0);
+
+        let mut vert = PaintPath::new();
+        vert.move_to(50.0, 20.0).line_to(50.0, 80.0);
+        let v_mesh = stroke_mesh(vert, StrokeStyle::new(20.0).cap(LineCap::Round));
+        for p in [[50.3, 12.7], [49.7, 87.3]] {
+            let (cov, hits) = coverage_at(&v_mesh, p);
+            assert_eq!(hits, 1, "vert inside cap {p:?}");
+            assert!((cov - 1.0).abs() < 1e-4);
+        }
+        assert_eq!(coverage_at(&v_mesh, [42.1, 11.3]).1, 0);
+
+        let mut diag = PaintPath::new();
+        diag.move_to(20.0, 20.0).line_to(80.0, 80.0);
+        let d_mesh = stroke_mesh(diag, StrokeStyle::new(20.0).cap(LineCap::Round));
+        for p in [[14.9, 15.3], [85.1, 84.7]] {
+            let (cov, hits) = coverage_at(&d_mesh, p);
+            assert_eq!(hits, 1, "diag inside cap {p:?}");
+            assert!((cov - 1.0).abs() < 1e-4);
+        }
+        assert_eq!(coverage_at(&d_mesh, [11.3, 27.1]).1, 0);
+    }
+
+    #[test]
+    fn open_stroke_joins_honor_miter_limit_bevel_round_and_avoid_inner_bowties() {
+        let bend = || {
+            let mut p = PaintPath::new();
+            p.move_to(20.0, 50.0)
+                .line_to(60.0, 50.0)
+                .line_to(60.0, 90.0);
+            p
+        };
+
+        let miter = stroke_mesh(
+            bend(),
+            StrokeStyle::new(20.0)
+                .join(LineJoin::Miter)
+                .miter_limit(4.0),
+        );
+        assert_eq!(coverage_at(&miter, [67.3, 42.9]), (1.0, 1));
+        assert_eq!(coverage_at(&miter, [69.1, 40.6]), (1.0, 1));
+        assert_eq!(coverage_at(&miter, [54.3, 55.9]), (1.0, 1));
+
+        let clipped_miter = stroke_mesh(
+            bend(),
+            StrokeStyle::new(20.0)
+                .join(LineJoin::Miter)
+                .miter_limit(1.2),
+        );
+        assert_eq!(coverage_at(&clipped_miter, [69.1, 40.6]).1, 0);
+        assert_eq!(coverage_at(&clipped_miter, [61.7, 48.1]), (1.0, 1));
+
+        let bevel = stroke_mesh(bend(), StrokeStyle::new(20.0).join(LineJoin::Bevel));
+        assert_eq!(coverage_at(&bevel, [67.3, 42.9]).1, 0);
+        assert_eq!(coverage_at(&bevel, [61.7, 48.1]), (1.0, 1));
+
+        let round = stroke_mesh(bend(), StrokeStyle::new(20.0).join(LineJoin::Round));
+        assert_eq!(coverage_at(&round, [65.3, 44.3]), (1.0, 1));
+        assert_eq!(coverage_at(&round, [68.9, 41.1]).1, 0);
+
+        let mut hairpin = PaintPath::new();
+        hairpin
+            .move_to(20.0, 30.0)
+            .line_to(70.0, 45.0)
+            .line_to(20.0, 60.0);
+        for join in [LineJoin::Miter, LineJoin::Bevel, LineJoin::Round] {
+            let mesh = stroke_mesh(hairpin.clone(), StrokeStyle::new(24.0).join(join));
+            for p in [[52.31, 45.73], [42.71, 44.37], [34.13, 45.91]] {
+                let (cov, hits) = coverage_at(&mesh, p);
+                assert!(cov <= 1.0 + 1e-4, "hairpin {join:?} {p:?}: cov={cov}");
+                if cov > 0.5 {
+                    assert_eq!(hits, 1, "hairpin {join:?} {p:?} should hit once");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn closed_stroke_honors_round_bevel_miter_joins_without_overlap() {
+        let tri = || {
+            let mut p = PaintPath::new();
+            p.move_to(30.0, 70.0)
+                .line_to(90.0, 70.0)
+                .line_to(60.0, 20.0)
+                .close();
+            p
+        };
+
+        let miter = stroke_mesh(
+            tri(),
+            StrokeStyle::new(16.0)
+                .join(LineJoin::Miter)
+                .miter_limit(4.0),
+        );
+        assert_eq!(coverage_at(&miter, [60.13, 8.37]), (1.0, 1));
+
+        let round = stroke_mesh(tri(), StrokeStyle::new(16.0).join(LineJoin::Round));
+        assert_eq!(coverage_at(&round, [60.13, 8.37]).1, 0);
+        assert_eq!(coverage_at(&round, [60.13, 14.17]), (1.0, 1));
+        assert_eq!(coverage_at(&round, [60.13, 70.37]), (1.0, 1));
+
+        let bevel = stroke_mesh(tri(), StrokeStyle::new(16.0).join(LineJoin::Bevel));
+        assert_eq!(coverage_at(&bevel, [60.13, 14.17]).1, 0);
+        assert_eq!(coverage_at(&bevel, [60.13, 70.37]), (1.0, 1));
+    }
+
+    #[test]
+    fn dashed_and_crossing_subpath_strokes_merge_without_double_hits() {
+        let mut cross_path = PaintPath::new();
+        cross_path
+            .move_to(20.0, 50.0)
+            .line_to(80.0, 50.0)
+            .move_to(50.0, 20.0)
+            .line_to(50.0, 80.0);
+        let cross_mesh = stroke_mesh(cross_path, StrokeStyle::new(16.0));
+        assert_eq!(coverage_at(&cross_mesh, [47.3, 52.7]), (1.0, 1));
+        assert_eq!(coverage_at(&cross_mesh, [52.1, 47.9]), (1.0, 1));
+
+        let mut dashed_path = PaintPath::new();
+        dashed_path.move_to(10.0, 50.0).line_to(110.0, 50.0);
+        let dashed_mesh = stroke_mesh(
+            dashed_path,
+            StrokeStyle::new(10.0).dash(vec![20.0, 10.0], 0.0),
+        );
+        assert_eq!(coverage_at(&dashed_mesh, [20.3, 50.7]), (1.0, 1));
+        assert_eq!(coverage_at(&dashed_mesh, [35.3, 50.7]).1, 0);
+        assert_eq!(coverage_at(&dashed_mesh, [50.3, 50.7]), (1.0, 1));
+    }
+
+    #[test]
+    fn bowtie_and_double_loop_fills_match_contains_under_evenodd_and_nonzero() {
+        let mut bowtie = PaintPath::new();
+        bowtie
+            .move_to(20.0, 20.0)
+            .line_to(80.0, 80.0)
+            .line_to(80.0, 20.0)
+            .line_to(20.0, 80.0)
+            .close();
+
+        for rule in [FillRule::EvenOdd, FillRule::NonZero] {
+            let path = bowtie.clone().with_fill_rule(rule);
+            let mesh = fill_mesh_only(path.clone());
+            for p in [[31.3, 50.7], [68.7, 49.3], [50.3, 28.7], [49.7, 71.3]] {
+                let want = path.contains(p);
+                let (cov, hits) = coverage_at(&mesh, p);
+                assert_eq!(cov > 0.5, want, "bowtie {rule:?} {p:?}");
+                assert_eq!(hits, usize::from(want), "bowtie {rule:?} {p:?} hits");
+            }
+        }
+
+        let mut concentric = PaintPath::new();
+        concentric
+            .move_to(10.0, 10.0)
+            .line_to(90.0, 10.0)
+            .line_to(90.0, 90.0)
+            .line_to(10.0, 90.0)
+            .close()
+            .move_to(30.0, 30.0)
+            .line_to(70.0, 30.0)
+            .line_to(70.0, 70.0)
+            .line_to(30.0, 70.0)
+            .close();
+
+        for rule in [FillRule::EvenOdd, FillRule::NonZero] {
+            let path = concentric.clone().with_fill_rule(rule);
+            let mesh = fill_mesh_only(path.clone());
+            for p in [[18.3, 50.7], [51.3, 49.7]] {
+                let want = path.contains(p);
+                let (cov, hits) = coverage_at(&mesh, p);
+                assert_eq!(cov > 0.5, want, "concentric {rule:?} {p:?}");
+                assert_eq!(hits, usize::from(want), "concentric {rule:?} {p:?} hits");
+            }
+        }
+    }
+
+    #[test]
+    fn depth_two_island_inside_hole_fills_and_extrudes_outward() {
+        let mut nested = PaintPath::new();
+        nested
+            .rect(LayoutBox {
+                x: 0.0,
+                y: 0.0,
+                width: 100.0,
+                height: 100.0,
+            })
+            .rect(LayoutBox {
+                x: 20.0,
+                y: 20.0,
+                width: 60.0,
+                height: 60.0,
+            })
+            .rect(LayoutBox {
+                x: 35.0,
+                y: 35.0,
+                width: 30.0,
+                height: 30.0,
+            })
+            .rect(LayoutBox {
+                x: 45.0,
+                y: 45.0,
+                width: 10.0,
+                height: 10.0,
+            });
+        let path = nested.with_fill_rule(FillRule::EvenOdd);
+        let mesh = fill_mesh_only(path.clone());
+
+        for p in [[10.3, 50.7], [27.3, 50.7], [40.3, 50.7], [50.3, 49.7]] {
+            let want = path.contains(p);
+            let (cov, hits) = coverage_at(&mesh, p);
+            assert_eq!(cov > 0.5, want, "nested depth point {p:?}");
+            assert_eq!(hits, usize::from(want), "nested depth hits {p:?}");
+        }
+
+        // Depth-2 island corner (35, 35) must extrude outward into the moat (-x, -y).
+        let island_outer_corner = mesh.vertices.iter().find(|v| {
+            v.coverage == 0.0
+                && (v.position[0] - 35.0).abs() < 0.05
+                && (v.position[1] - 35.0).abs() < 0.05
+        });
+        let corner = island_outer_corner.expect("island corner AA outer vertex");
+        assert!(
+            corner.extrude[0] < -0.5 && corner.extrude[1] < -0.5,
+            "island corner should extrude outward into surrounding hole: {:?}",
+            corner.extrude
+        );
+    }
+
+    #[test]
+    fn clipped_fill_path_erase_outside_and_inset_shadow_hole_parity() {
+        let mut diamond = PaintPath::new();
+        diamond
+            .move_to(50.0, 10.0)
+            .line_to(90.0, 50.0)
+            .line_to(50.0, 90.0)
+            .line_to(10.0, 50.0)
+            .close();
+        let clipped_built = build_ops(&[
+            PaintOp::PushClip {
+                path: Arc::new(circle(50.0, 50.0, 25.0)),
+            },
+            PaintOp::FillPath {
+                path: Arc::new(diamond.clone()),
+                paint: ResolvedPaint::Solid([0.1, 0.8, 0.3, 1.0]),
+            },
+            PaintOp::PopClip,
+        ]);
+        let clipped_mesh = only_mesh(&clipped_built);
+        assert_eq!(coverage_at(clipped_mesh, [50.3, 50.7]), (1.0, 1));
+        assert_eq!(coverage_at(clipped_mesh, [82.3, 50.7]).1, 0);
+        let clipped_aa = clipped_mesh.vertices.iter().any(|v| {
+            v.coverage == 0.0
+                && (v.position[0] - 75.0).abs() < 0.3
+                && (v.position[1] - 50.0).abs() < 2.0
+                && v.extrude[0] > 0.5
+        });
+        assert!(clipped_aa, "clipped boundary must retain outward AA fringe");
+
+        let mut hollow_diamond = diamond;
+        hollow_diamond
+            .move_to(50.0, 30.0)
+            .line_to(70.0, 50.0)
+            .line_to(50.0, 70.0)
+            .line_to(30.0, 50.0)
+            .close();
+        let hollow_diamond = hollow_diamond.with_fill_rule(FillRule::EvenOdd);
+        let masked = build_ops(&[
+            PaintOp::PushClip {
+                path: Arc::new(hollow_diamond),
+            },
+            text_op(ResolvedPaint::Solid([1.0; 4])),
+            PaintOp::PopClip,
+        ]);
+        let BuiltOp::LayerEnd {
+            mask: Some((erase, _)),
+        } = &masked[2]
+        else {
+            panic!("expected masked layer erase: {masked:?}");
+        };
+        assert_eq!(coverage_at(erase, [14.3, 14.7]), (1.0, 1));
+        assert_eq!(coverage_at(erase, [22.3, 50.7]).1, 0);
+        assert_eq!(coverage_at(erase, [50.3, 49.7]), (1.0, 1));
+
+        let mut hollow_box = PaintPath::new();
+        hollow_box
+            .rect(LayoutBox {
+                x: 0.0,
+                y: 0.0,
+                width: 100.0,
+                height: 100.0,
+            })
+            .rect(LayoutBox {
+                x: 35.0,
+                y: 35.0,
+                width: 30.0,
+                height: 30.0,
+            });
+        let shadow_built = build_ops(&[PaintOp::Shadow {
+            path: Arc::new(hollow_box.with_fill_rule(FillRule::EvenOdd)),
+            shadow: ComponentElevation {
+                color: nana_ui_core::PaintColor::Srgb {
+                    rgba: [0.0, 0.0, 0.0, 0.5],
+                },
+                offset_x: 0.0,
+                offset_y: 0.0,
+                blur_radius: 6.0,
+                spread_radius: 0.0,
+                inset: true,
+            },
+        }]);
+        let shadow_mesh = only_mesh(&shadow_built);
+        assert_eq!(coverage_at(shadow_mesh, [50.3, 49.7]).1, 0);
+        let (edge_cov, edge_hits) = coverage_at(shadow_mesh, [2.3, 50.7]);
+        assert_eq!(edge_hits, 1);
+        assert!(edge_cov > 0.3, "edge inset coverage: {edge_cov}");
+    }
+
+    #[cfg(feature = "vector-boolean")]
+    fn shapes_contain(shapes: &Shapes, point: Point) -> bool {
+        shapes.iter().any(|shape| {
+            let Some((outer, holes)) = shape.split_first() else {
+                return false;
+            };
+            point_in_contour(point, outer)
+                && !holes.iter().any(|hole| point_in_contour(point, hole))
+        })
+    }
+
+    #[cfg(feature = "vector-boolean")]
+    fn assert_shapes_grid_parity(
+        label: &str,
+        expected: &Shapes,
+        actual: &Shapes,
+        max_mismatch: usize,
+    ) {
+        let mut mismatches = 0usize;
+        for gy in 0..32 {
+            let y = (f64::from(gy) + 0.37) / 32.0 * 100.0;
+            for gx in 0..32 {
+                let x = (f64::from(gx) + 0.61) / 32.0 * 100.0;
+                if shapes_contain(expected, [x, y]) != shapes_contain(actual, [x, y]) {
+                    mismatches += 1;
+                }
+            }
+        }
+        assert!(
+            mismatches <= max_mismatch,
+            "{label}: {mismatches}/1024 grid samples differed (limit {max_mismatch})"
+        );
+    }
+
+    fn concave_l_path() -> PaintPath {
+        let mut l_shape = PaintPath::new();
+        l_shape
+            .move_to(10.0, 10.0)
+            .line_to(90.0, 10.0)
+            .line_to(90.0, 35.0)
+            .line_to(40.0, 35.0)
+            .line_to(40.0, 90.0)
+            .line_to(10.0, 90.0)
+            .close();
+        l_shape
+    }
+
+    #[cfg(feature = "vector-boolean")]
+    #[test]
+    fn planar_fallback_matches_i_overlay_and_runtime_hit_testing_across_complex_cases() {
+        // 1. Self-intersecting 5-point pentagram star under EvenOdd & NonZero
+        let mut star = PaintPath::new();
+        for i in 0..5 {
+            let angle = (i as f32 * 144.0 - 90.0).to_radians();
+            let p = [50.0 + 40.0 * angle.cos(), 50.0 + 40.0 * angle.sin()];
+            if i == 0 {
+                star.move_to(p[0], p[1]);
+            } else {
+                star.line_to(p[0], p[1]);
+            }
+        }
+        star.close();
+        for rule in [FillRule::EvenOdd, FillRule::NonZero] {
+            let p = star.clone().with_fill_rule(rule);
+            let flat: Vec<Contour> = flatten(&p, AFFINE_IDENTITY, TOLERANCE)
+                .into_iter()
+                .map(|(c, _)| c)
+                .collect();
+            let io_shapes = fill_shapes(&p, AFFINE_IDENTITY);
+            let pl_shapes = planar_simplify_contours(flat, rule);
+            assert_shapes_grid_parity(&format!("star {rule:?}"), &io_shapes, &pl_shapes, 0);
+            let mut runtime_diff = 0usize;
+            for gy in 0..32 {
+                let y = (f64::from(gy) + 0.37) / 32.0 * 100.0;
+                for gx in 0..32 {
+                    let x = (f64::from(gx) + 0.61) / 32.0 * 100.0;
+                    if shapes_contain(&pl_shapes, [x, y]) != p.contains([x as f32, y as f32]) {
+                        runtime_diff += 1;
+                    }
+                }
+            }
+            assert!(
+                runtime_diff <= 2,
+                "star {rule:?} vs PaintPath::contains: {runtime_diff}"
+            );
+        }
+
+        // 2. Self-crossing cubic Bezier loop under EvenOdd & NonZero
+        let mut cubic = PaintPath::new();
+        cubic
+            .move_to(15.0, 50.0)
+            .cubic_to(90.0, 5.0, 90.0, 95.0, 50.0, 50.0)
+            .cubic_to(10.0, 5.0, 10.0, 95.0, 85.0, 50.0)
+            .close();
+        for rule in [FillRule::EvenOdd, FillRule::NonZero] {
+            let p = cubic.clone().with_fill_rule(rule);
+            let flat: Vec<Contour> = flatten(&p, AFFINE_IDENTITY, TOLERANCE)
+                .into_iter()
+                .map(|(c, _)| c)
+                .collect();
+            let io_shapes = fill_shapes(&p, AFFINE_IDENTITY);
+            let pl_shapes = planar_simplify_contours(flat, rule);
+            assert_shapes_grid_parity(&format!("cubic {rule:?}"), &io_shapes, &pl_shapes, 0);
+            let mut runtime_diff = 0usize;
+            for gy in 0..32 {
+                let y = (f64::from(gy) + 0.37) / 32.0 * 100.0;
+                for gx in 0..32 {
+                    let x = (f64::from(gx) + 0.61) / 32.0 * 100.0;
+                    if shapes_contain(&pl_shapes, [x, y]) != p.contains([x as f32, y as f32]) {
+                        runtime_diff += 1;
+                    }
+                }
+            }
+            assert!(
+                runtime_diff <= 8,
+                "cubic {rule:?} vs PaintPath::contains: {runtime_diff}"
+            );
+        }
+
+        // 3. Outer ring + hole + inner island: simplify, difference, intersect
+        let outer_ring: Contour = vec![[10.0, 10.0], [90.0, 10.0], [90.0, 90.0], [10.0, 90.0]];
+        let hole_ring: Contour = vec![[24.0, 76.0], [76.0, 76.0], [76.0, 24.0], [24.0, 24.0]];
+        let island_ring: Contour = vec![[38.0, 38.0], [62.0, 38.0], [62.0, 62.0], [38.0, 62.0]];
+        let nested_contours = vec![outer_ring, hole_ring, island_ring];
+        let io_nested = simplify_contours(nested_contours.clone(), FillRule::EvenOdd);
+        let pl_nested = planar_simplify_contours(nested_contours, FillRule::EvenOdd);
+        assert_shapes_grid_parity("nested island simplify", &io_nested, &pl_nested, 0);
+
+        let clip_band = vec![vec![vec![
+            [5.0, 20.0],
+            [95.0, 20.0],
+            [95.0, 80.0],
+            [5.0, 80.0],
+        ]]];
+        let io_diff = difference_shapes(&io_nested, &clip_band);
+        let pl_diff = planar_difference_shapes(&pl_nested, &clip_band);
+        assert_shapes_grid_parity("nested difference", &io_diff, &pl_diff, 0);
+
+        let io_inter = intersect(&io_nested, &clip_band);
+        let pl_inter = planar_intersect(&pl_nested, &clip_band);
+        assert_shapes_grid_parity("nested intersect", &io_inter, &pl_inter, 0);
+
+        // 4. Strokes across caps, joins, closed & dashed paths + stroke_contains
+        let mut zig = PaintPath::new();
+        zig.move_to(14.0, 22.0)
+            .line_to(82.0, 26.0)
+            .line_to(24.0, 56.0)
+            .line_to(84.0, 80.0);
+        let stroke_cases = [
+            (
+                "round_solid",
+                StrokeStyle::new(9.0)
+                    .cap(LineCap::Round)
+                    .join(LineJoin::Round),
+                &zig,
+                true,
+            ),
+            (
+                "butt_miter_dashed",
+                StrokeStyle::new(8.0)
+                    .cap(LineCap::Butt)
+                    .join(LineJoin::Miter)
+                    .dash(vec![14.0, 8.0], 3.0),
+                &zig,
+                false,
+            ),
+            (
+                "square_bevel_closed",
+                StrokeStyle::new(8.0)
+                    .cap(LineCap::Square)
+                    .join(LineJoin::Bevel)
+                    .dash(vec![12.0, 6.0], 0.0),
+                &star,
+                false,
+            ),
+        ];
+        for (label, style, path, check_runtime_hit) in stroke_cases {
+            let io_stroke = stroke_shapes(path, &style, AFFINE_IDENTITY);
+            let pl_stroke = planar_stroke_shapes(path, &style, AFFINE_IDENTITY);
+            assert_shapes_grid_parity(label, &io_stroke, &pl_stroke, 12);
+            if check_runtime_hit {
+                let mut rt_diff = 0usize;
+                for gy in 0..32 {
+                    let y = (f64::from(gy) + 0.37) / 32.0 * 100.0;
+                    for gx in 0..32 {
+                        let x = (f64::from(gx) + 0.61) / 32.0 * 100.0;
+                        if shapes_contain(&pl_stroke, [x, y])
+                            != path.stroke_contains([x as f32, y as f32], &style)
+                        {
+                            rt_diff += 1;
+                        }
+                    }
+                }
+                assert!(rt_diff <= 12, "{label} vs stroke_contains: {rt_diff}");
+            }
+        }
+
+        // 5. Concave L-shape + hole outline (+4.0 and -3.0) + non-overlapping tessellation
+        let mut l_with_hole = concave_l_path();
+        l_with_hole
+            .move_to(18.0, 18.0)
+            .line_to(18.0, 28.0)
+            .line_to(28.0, 28.0)
+            .line_to(28.0, 18.0)
+            .close();
+        let l_shapes = fill_shapes(
+            &l_with_hole.with_fill_rule(FillRule::EvenOdd),
+            AFFINE_IDENTITY,
+        );
+        for offset in [4.0f32, -3.0f32] {
+            let io_out = outline_shapes(l_shapes.clone(), offset);
+            let pl_out = planar_outline_shapes(l_shapes.clone(), offset);
+            assert_shapes_grid_parity(&format!("concave L outline {offset}"), &io_out, &pl_out, 20);
+            let mut mesh = MeshBuilder::default();
+            mesh.fill(&pl_out, [1.0, 1.0, 1.0, 1.0]);
+            let built_mesh = mesh.finish().expect("outline mesh");
+            for gy in 0..32 {
+                let y = ((f64::from(gy) + 0.37) / 32.0 * 100.0) as f32;
+                for gx in 0..32 {
+                    let x = ((f64::from(gx) + 0.61) / 32.0 * 100.0) as f32;
+                    let (_, hits) = coverage_at(&built_mesh, [x, y]);
+                    assert!(
+                        hits <= 1,
+                        "planar_outline({offset}) overlap at [{x}, {y}]: {hits}"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn concave_clip_erase_outside_spread_shadow_and_recording_contains_stay_consistent() {
+        let mut l_holed = concave_l_path();
+        l_holed
+            .move_to(18.0, 18.0)
+            .line_to(18.0, 28.0)
+            .line_to(28.0, 28.0)
+            .line_to(28.0, 18.0)
+            .close();
+        let l_arc = Arc::new(l_holed.with_fill_rule(FillRule::EvenOdd));
+        let ops = vec![
+            PaintOp::Shadow {
+                path: Arc::clone(&l_arc),
+                shadow: ComponentElevation {
+                    color: nana_ui_core::PaintColor::Srgb {
+                        rgba: [0.0, 0.0, 0.0, 0.5],
+                    },
+                    offset_x: 0.0,
+                    offset_y: 0.0,
+                    blur_radius: 0.0,
+                    spread_radius: 4.0,
+                    inset: false,
+                },
+            },
+            PaintOp::Shadow {
+                path: Arc::clone(&l_arc),
+                shadow: ComponentElevation {
+                    color: nana_ui_core::PaintColor::Srgb {
+                        rgba: [0.0, 0.0, 0.0, 0.5],
+                    },
+                    offset_x: 0.0,
+                    offset_y: 0.0,
+                    blur_radius: 4.0,
+                    spread_radius: 4.0,
+                    inset: false,
+                },
+            },
+            PaintOp::PushClip {
+                path: Arc::clone(&l_arc),
+            },
+            PaintOp::Text {
+                rect: LayoutBox {
+                    x: 0.0,
+                    y: 0.0,
+                    width: 100.0,
+                    height: 100.0,
+                },
+                content: Arc::from("clipped"),
+                paint: ResolvedPaint::Solid([1.0; 4]),
+                size: 13.0,
+                weight: None,
+                family: None,
+                italic: false,
+                line_height: None,
+                wrap: false,
+                max_lines: None,
+                horizontal: Default::default(),
+                vertical: Default::default(),
+            },
+            PaintOp::PopClip,
+        ];
+        let recording = PaintRecording {
+            behind_children: ops.clone(),
+            over_children: Vec::new(),
+        };
+        let built = build_ops(&ops);
+        let BuiltOp::Mesh(spread_sharp) = &built[0] else {
+            panic!("expected sharp spread shadow mesh: {built:?}");
+        };
+        let BuiltOp::Mesh(spread_blurred) = &built[1] else {
+            panic!("expected blurred spread shadow mesh: {built:?}");
+        };
+        let BuiltOp::LayerEnd {
+            mask: Some((erase, _)),
+        } = &built[4]
+        else {
+            panic!("expected masked layer erase: {built:?}");
+        };
+
+        // 1. Inside concave L arm: clipped content hits, erase mask stays clear, spread shadows don't overlap.
+        assert!(recording.contains([14.3, 55.7], [100.0, 100.0]));
+        assert_eq!(coverage_at(erase, [14.3, 55.7]).1, 0);
+        assert!(coverage_at(spread_sharp, [14.3, 55.7]).1 <= 1);
+        assert!(coverage_at(spread_blurred, [14.3, 55.7]).1 <= 1);
+
+        // 2. Interior hole: recording does not hit, erase mask covers completely.
+        assert!(!recording.contains([23.3, 23.7], [100.0, 100.0]));
+        let (hole_cov, hole_hits) = coverage_at(erase, [23.3, 23.7]);
+        assert_eq!(hole_hits, 1);
+        assert!((hole_cov - 1.0).abs() < 1e-5, "hole erase cov={hole_cov}");
+
+        // 3. Spread band outside L right edge (x = 92.3, y = 20.7): spread sharp covers 1 triangle.
+        assert!(!recording.contains([92.3, 20.7], [100.0, 100.0]));
+        let (spread_cov, spread_hits) = coverage_at(spread_sharp, [92.3, 20.7]);
+        assert_eq!(spread_hits, 1);
+        assert!(
+            (spread_cov - 1.0).abs() < 1e-5,
+            "spread sharp cov={spread_cov}"
+        );
+        assert!(coverage_at(spread_blurred, [92.3, 20.7]).1 <= 1);
+
+        // 4. Concave L exterior notch (60.3, 60.7): erase mask covers, recording/shadows do not hit.
+        assert!(!recording.contains([60.3, 60.7], [100.0, 100.0]));
+        let (notch_cov, notch_hits) = coverage_at(erase, [60.3, 60.7]);
+        assert_eq!(notch_hits, 1);
+        assert!(
+            (notch_cov - 1.0).abs() < 1e-5,
+            "notch erase cov={notch_cov}"
+        );
+        assert_eq!(coverage_at(spread_sharp, [60.3, 60.7]).1, 0);
+        assert_eq!(coverage_at(spread_blurred, [60.3, 60.7]).1, 0);
     }
 }

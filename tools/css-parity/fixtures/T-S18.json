@@ -1,6 +1,6 @@
 {
   "id": "T-S18",
-  "title": "width:fit-content 钳到可用宽度",
+  "title": "单行 flex 容器 width:fit-content 不低于子项 min-content 之和（Chrome 152 实测）",
   "status": "pass",
   "viewport": [80, 40],
   "tolerance_px": 2,
@@ -20,6 +20,8 @@
   },
   "expected": [
     { "id": "root", "x": 0, "y": 0, "w": 80, "h": 40 },
-    { "id": "box", "x": 0, "y": 0, "w": 80, "h": 40 }
+    { "id": "box", "x": 0, "y": 0, "w": 120, "h": 40 },
+    { "id": "a", "x": 0, "y": 0, "w": 60, "h": 40 },
+    { "id": "b", "x": 60, "y": 0, "w": 60, "h": 40 }
   ]
 }

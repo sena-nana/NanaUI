@@ -17,6 +17,7 @@
 //! deficit stays in that level only re-shares it, which is the last step of
 //! the cold solve, so incremental and cold answers are the same.
 
+use nana_ui_core::DynamicLayoutCounters;
 use nana_ui_core::dynamic_layout::{
     AdaptationProfile, EnvelopeShape, ExecutionClass, LayoutUnits, Participant, SolveFrontier,
     SolverBudget, SolverPolicy, SolverScratch, aggregate_sequential, lower_box,
@@ -96,6 +97,7 @@ struct LineAnswer {
 /// Dynamic Layout state for one pass.
 #[derive(Default)]
 pub(super) struct DynamicPass {
+    pub(super) counters: DynamicLayoutCounters,
     scratch: SolverScratch,
     envelopes: HashMap<StableNodeId, RetainedEnvelope>,
     lines: HashMap<(StableNodeId, i32), LineAnswer>,
@@ -196,7 +198,9 @@ impl DynamicPass {
         if style.adaptation.is_none() {
             return EnvelopeShape::RIGID;
         }
+        self.counters.envelope_queries += 1;
         if let Some(held) = self.envelopes.get(&id) {
+            self.counters.envelope_hits += 1;
             return held.shape;
         }
         let parts = self.parts(
@@ -214,8 +218,14 @@ impl DynamicPass {
         if let Some(kept) = kept
             && kept.inputs == parts.inputs
         {
+            self.counters.envelope_hits += 1;
             self.envelopes.insert(id, kept.clone());
             return kept.shape;
+        }
+        if kept.is_some() {
+            self.counters.envelope_rebuilds += 1;
+        } else {
+            self.counters.envelope_misses += 1;
         }
         let mut shape = aggregate_sequential(&parts.padding, [&parts.line]);
         shape.generation = match kept {
@@ -320,6 +330,7 @@ impl DynamicPass {
     ) -> (Vec<LayoutUnits>, LayoutUnits) {
         let key = (container, deficit.0);
         if let Some(answer) = self.lines.get(&key) {
+            self.counters.solver_reuses += 1;
             return (answer.amounts.clone(), answer.own_gap);
         }
         let ids: Vec<(StableNodeId, u64)> = children
@@ -332,8 +343,16 @@ impl DynamicPass {
         let mut amounts = Vec::new();
         let frontier = match held {
             Some(held)
-                if reassign_within_frontier(&held.frontier, deficit, &mut amounts).is_some() =>
+                if reassign_within_frontier(
+                    &held.frontier,
+                    deficit,
+                    &mut amounts,
+                    &mut self.counters,
+                )
+                .is_some() =>
             {
+                self.counters.previous_result_hits += 1;
+                self.counters.solver_reuses += 1;
                 #[cfg(any(test, feature = "layout-verify"))]
                 {
                     let cold = self.cold_line(&own_gap, children, deficit);
@@ -345,7 +364,15 @@ impl DynamicPass {
                 held.frontier.clone()
             }
             _ => {
-                let outcome = Self::solve_cold(&own_gap, children, deficit, &mut self.scratch);
+                let mut counters = std::mem::take(&mut self.counters);
+                let outcome = Self::solve_cold(
+                    &own_gap,
+                    children,
+                    deficit,
+                    &mut self.scratch,
+                    &mut counters,
+                );
+                self.counters = counters;
                 amounts.clone_from(&self.scratch.amounts);
                 outcome.frontier
             }
@@ -379,6 +406,7 @@ impl DynamicPass {
         children: &[LineChild],
         deficit: LayoutUnits,
         scratch: &mut SolverScratch,
+        counters: &mut DynamicLayoutCounters,
     ) -> nana_ui_core::dynamic_layout::SolveOutcome {
         let mut participants = Vec::with_capacity(children.len() + 1);
         participants.push(Participant::new(own_gap, LayoutUnits(i32::MAX)));
@@ -387,7 +415,14 @@ impl DynamicPass {
                 .iter()
                 .map(|child| Participant::new(&child.shape, child.limit)),
         );
-        solve_deficit(&participants, deficit, &line_policy(), scratch, None)
+        solve_deficit(
+            &participants,
+            deficit,
+            &line_policy(),
+            scratch,
+            None,
+            counters,
+        )
     }
 
     /// What a cold solve gives, for the checks that a re-shared one matches.
@@ -399,7 +434,13 @@ impl DynamicPass {
         deficit: LayoutUnits,
     ) -> Vec<LayoutUnits> {
         let mut scratch = SolverScratch::default();
-        Self::solve_cold(own_gap, children, deficit, &mut scratch);
+        Self::solve_cold(
+            own_gap,
+            children,
+            deficit,
+            &mut scratch,
+            &mut DynamicLayoutCounters::default(),
+        );
         scratch.amounts
     }
 
@@ -436,6 +477,7 @@ impl DynamicPass {
         {
             return padding;
         }
+        self.counters.child_resolves += 1;
         let inline = assignment.inline;
         let (start, end) = if inline {
             (padding.left, padding.right)
@@ -458,12 +500,14 @@ impl DynamicPass {
             Participant::new(&line, LayoutUnits(i32::MAX)),
         ];
         let policy = line_policy();
+        let mut stats = DynamicLayoutCounters::default();
         solve_deficit(
             &participants,
             assignment.amount,
             &policy,
             &mut self.scratch,
             None,
+            &mut stats,
         );
         let closed = self.scratch.amounts[0].min(own.total_capacity());
         // Both edges close up evenly; an odd unit goes to the end edge.

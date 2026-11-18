@@ -98,7 +98,7 @@ Note: **writing direction (`direction` / `dir`) and writing mode (`writing-mode`
 
 ## Parity verification with `tools/css-parity`
 
-The workspace's `tools/css-parity` (package name `nana-css-parity`) uses **149 standard JSON test fixtures** (grouped as Flexbox `T-F`, sizing and `calc` `T-S`, box model `T-B`, Grid `T-G`, inline `T-I`, layout `T-L`, positioning `T-P`, floats `T-FL`) to lock the accuracy of "CSS declaration → `LayoutStyle` → `RuntimeLayoutEngine` → geometry box" end to end:
+The workspace's `tools/css-parity` (package name `nana-css-parity`) uses **147 standard JSON test fixtures** (grouped as Flexbox `T-F`, sizing and `calc` `T-S`, box model `T-B`, Grid `T-G`, inline `T-I`, layout `T-L`, positioning `T-P`) to lock the accuracy of "CSS declaration → `LayoutStyle` → `RuntimeLayoutEngine` → geometry box" end to end:
 
 ```bash
 cargo run -p nana-css-parity -- compare
@@ -119,7 +119,7 @@ Each fixture gives a styled node tree, a viewport size and expected box coordina
 | `crates/nana-ui-css/src/css_motion.rs` | `transition` shorthand syntax parsing |
 | `crates/nana-ui-css/src/shell_contract.rs` | Host built-in utility class mapping (`gap-sm`, etc.) |
 | `crates/nana-ui-view-codegen/src/style.rs` | Build-time consumer: compiles class rules into static `StylePatch` |
-| `tools/css-parity/` | 149 CSS box model parity fixtures and the comparison CLI |
+| `tools/css-parity/` | 147 CSS box model parity fixtures and the comparison CLI |
 
 ## Further reading
 

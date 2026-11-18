@@ -61,7 +61,7 @@ fn corpus() -> &'static BTreeMap<String, Vec<u8>> {
                         chunk.copy_from_slice(&CSS_PATTERN[..chunk.len()]);
                     }
                 } else {
-                    for chunk in bytes.chunks_exact_mut(8) {
+                    for chunk in bytes.as_chunks_mut::<8>().0 {
                         chunk.copy_from_slice(&next().to_le_bytes());
                     }
                     let rem = bytes.len() % 8;
@@ -244,7 +244,7 @@ fn steam_delta_is_bounded_for_small_changes() {
     let signer = SigningKey::from_bytes(&[0x11; 32]);
     let files = corpus();
     let v1 = dir.0.join("v1.nrpack");
-    let first = build(&files, &v1, None, None, 1, &signer);
+    let first = build(files, &v1, None, None, 1, &signer);
     // S6: without a baseline the builder says the delta will be full.
     assert!(
         first
@@ -257,7 +257,7 @@ fn steam_delta_is_bounded_for_small_changes() {
 
     // S0: nothing changed.
     let v0 = dir.0.join("v0.nrpack");
-    let same = build(&files, &v0, Some(&v1), None, 1, &signer);
+    let same = build(files, &v0, Some(&v1), None, 1, &signer);
     let d = delta(&v1_bytes, &std::fs::read(&v0).unwrap(), STEAM_CHUNK);
     record("s0-unchanged", 0, d, &same);
     assert_eq!(d.changed_chunks, 0);
@@ -342,7 +342,7 @@ fn steam_delta_is_bounded_for_small_changes() {
 
     // S5: key rotation — allowed to change everything, and says so.
     let v6 = dir.0.join("v6.nrpack");
-    let built = build(&files, &v6, Some(&v1), None, 2, &signer);
+    let built = build(files, &v6, Some(&v1), None, 2, &signer);
     let d = delta(&v1_bytes, &std::fs::read(&v6).unwrap(), STEAM_CHUNK);
     record("s5-key-rotation", 0, d, &built);
     assert!(built.report.key_rotation);

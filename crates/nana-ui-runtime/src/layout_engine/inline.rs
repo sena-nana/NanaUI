@@ -118,6 +118,7 @@ pub(super) fn place_native_inline(
             content,
             viewport,
             font,
+            None,
             nodes,
             cache,
             output,
@@ -408,7 +409,12 @@ fn derive_baselines(
         return Ok(BaselineMetrics::default());
     };
     let (child_ids, writing) = (node.children, node.writing);
-    if writing.is_vertical() || style.omits_box() {
+    // A subgrid's tracks are its parent's.
+    if writing.is_vertical()
+        || style.omits_box()
+        || style.is_subgrid_columns()
+        || style.is_subgrid_rows()
+    {
         return Ok(BaselineMetrics::default());
     }
     let flex = style.display.is_some_and(DisplaySpec::is_flex_container);
@@ -444,7 +450,7 @@ fn derive_baselines(
             )?);
         }
         let mut solved = layout_grid_2d(
-            &style, writing, &flow, &sizes, content, fonts, viewport, nodes, cache, scope,
+            &style, writing, &flow, &sizes, content, fonts, None, viewport, nodes, cache, scope,
         )?;
         solved.fill_layer_cell(&style, writing, content);
         let arranged = arrange_grid_2d(
@@ -506,7 +512,7 @@ fn derive_baselines(
         scope,
         false,
     )?;
-    if flex {
+    if flex || context.kind == crate::FormattingContextKind::Grid {
         let first = flex_first_baseline(
             &arranged,
             direction,
@@ -1117,9 +1123,7 @@ pub(super) fn ifc_line_measure_delta_begin(
             continue;
         }
         let current = nodes.style(child);
-        let Some(child_style) = current.as_deref() else {
-            return None;
-        };
+        let child_style = current.as_deref()?;
         if !ifc_local_child(child_style) {
             return None;
         }

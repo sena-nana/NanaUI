@@ -689,19 +689,20 @@ fn spawn_device_request(
                 if let Some(store) = &pipeline_cache {
                     gpu.restore_pipeline_cache(store.as_ref());
                 }
-                let painter = SceneWgpuPainter::new_with_presentation(&gpu, profile);
-                // Timed as part of the build, which is what it would save.
-                if let Some(store) = &pipeline_cache {
-                    gpu.persist_pipeline_cache(store.as_ref());
-                }
-                if painter_sender
-                    .send(StartupPainter {
-                        painter,
-                        build: built.elapsed(),
-                    })
-                    .is_ok()
-                {
-                    proxy.wake_up();
+                if let Ok(painter) = SceneWgpuPainter::try_new_with_presentation(&gpu, profile) {
+                    // Timed as part of the build, which is what it would save.
+                    if let Some(store) = &pipeline_cache {
+                        gpu.persist_pipeline_cache(store.as_ref());
+                    }
+                    if painter_sender
+                        .send(StartupPainter {
+                            painter,
+                            build: built.elapsed(),
+                        })
+                        .is_ok()
+                    {
+                        proxy.wake_up();
+                    }
                 }
             }
         })

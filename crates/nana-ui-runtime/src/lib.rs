@@ -74,7 +74,8 @@ pub use inline_flow::InlineFlow;
 pub use world::inline_content::text_layout_origin;
 mod layout_result;
 mod sticky;
-/// Benchmark-only coarse phase clocks for `--profile-layout`.
+/// Benchmark-only coarse phase clocks for `--profile-layout`. How much work
+/// layout did, plan reuse included, is on [`WorkCounters`].
 #[cfg(feature = "benchmark")]
 pub use layout_engine::plan_stats;
 pub use sticky::{StickyAncestor, StickyBoxes, StickyDependencies, sticky_translation};
@@ -365,28 +366,30 @@ pub use nana_ui_core::{
     ActionId, ActionPickerNavigation, AlignSpec, ClipCircle, ClipEllipse, ClipInset, ClipPath,
     ClipPoint, ClipShapeRadius, CommandPaletteEvent, CommandPaletteItem, CompiledTheme, ContentFit,
     ContextPredicate, CursorSpec, DirSpec, DisplaySpec, DropAccepts, DropEffect, DropKind,
-    DropdownEvent, DropdownSelection, ElevationRole, FileDragKind, FlexDirection, FlexWrap,
-    FontFeatureSetting, FontKerningSpec, FontVariationSetting, FrameStage,
+    DropdownEvent, DropdownSelection, DynamicLayoutCounters, ElevationRole, FileDragKind,
+    FlexDirection, FlexWrap, FontFeatureSetting, FontKerningSpec, FontVariationSetting, FrameStage,
     GRAPH_EDGE_HIT_TOLERANCE, GRAPH_MAX_ZOOM, GRAPH_MIN_ZOOM, GRAPH_NODE_TITLE_HEIGHT,
-    GRAPH_PORT_HIT_RADIUS, GRAPH_PORT_INSET, GRAPH_PORT_PITCH, GraphCanvasId, GraphEdge,
-    GraphEdgeId, GraphEndpoint, GraphModel, GraphModelError, GraphNode, GraphNodeId, GraphPoint,
-    GraphPort, GraphPortId, GraphPortKind, GraphPortSide, GraphRect, GraphSelection, GraphSize,
-    GraphTarget, GraphTargetDescriptor, GraphTargetId, GraphTargetKind, GraphViewport, Icon,
-    IconData, IconPathCommand, IconShape, ImageSampling, JustifySpec, KeyContext, LayoutStyle,
-    LengthAtom, LengthSpec, LineBreakSpec, LineHeightSpec, OverflowSpec, OverlayMount,
-    PaintTransform, PhysicalEdge, PointerEventsSpec, PopoverAlignment, PopoverPlacement,
-    PositionSpec, RadiusTier, SemanticColorMix, SemanticColorRole, ShapeRecipe, ShapeRole,
-    StatusTone, TITLE_BAR_HEIGHT, TabDragGroup, TabDragLease, TabDragRect, TabDragSurface,
-    TabDropIndicator, TabStripPaint, TableCursor, TableNavigation, TextAlignSpec, TextShadowSpec,
-    ThemeAppearance, ThemeId, ThemeRegistry, TransformOrigin, TreeNavigation, TreeNode,
-    TreeViewEvent, UserSelectSpec, ValidationIntent, ViewportAxis, VirtualAlignment,
-    VirtualFrozenWindow, VirtualListLayout, VirtualListMaterialization,
-    VirtualListMaterializationError, VirtualListMaterializer, VirtualListMount, VirtualListWindow,
-    VirtualScrollAnchor, VirtualTableFrozenWindow, VirtualTableLayout, VirtualTableMaterialization,
+    GRAPH_PORT_HIT_RADIUS, GRAPH_PORT_INSET, GRAPH_PORT_PITCH, GpuWorkObservation, GraphCanvasId,
+    GraphEdge, GraphEdgeId, GraphEndpoint, GraphModel, GraphModelError, GraphNode, GraphNodeId,
+    GraphPoint, GraphPort, GraphPortId, GraphPortKind, GraphPortSide, GraphRect, GraphSelection,
+    GraphSize, GraphTarget, GraphTargetDescriptor, GraphTargetId, GraphTargetKind, GraphViewport,
+    I18nCounters, Icon, IconData, IconPathCommand, IconShape, ImageSampling, JustifySpec,
+    KeyContext, LayoutStyle, LengthAtom, LengthSpec, LineBreakSpec, LineHeightSpec,
+    OutputWorkObservation, OverflowSpec, OverlayMount, PaintTransform, PhysicalEdge,
+    PointerEventsSpec, PopoverAlignment, PopoverPlacement, PositionSpec, RadiusTier,
+    SemanticColorMix, SemanticColorRole, ShapeRecipe, ShapeRole, StatusTone, TITLE_BAR_HEIGHT,
+    TabDragGroup, TabDragLease, TabDragRect, TabDragSurface, TabDropIndicator, TabStripPaint,
+    TableCursor, TableNavigation, TextAlignSpec, TextShadowSpec, ThemeAppearance, ThemeId,
+    ThemeRegistry, ThemeWorkCounters, TransformOrigin, TreeNavigation, TreeNode, TreeViewEvent,
+    UserSelectSpec, ValidationIntent, ViewportAxis, VirtualAlignment, VirtualFrozenWindow,
+    VirtualListLayout, VirtualListMaterialization, VirtualListMaterializationError,
+    VirtualListMaterializer, VirtualListMount, VirtualListWindow, VirtualScrollAnchor,
+    VirtualTableFrozenWindow, VirtualTableLayout, VirtualTableMaterialization,
     VirtualTableMaterializer, VirtualTableWindow, VirtualTreeLayout, VirtualTreeRow,
     VirtualTreeWindow, VirtualViewport, VisibilitySpec, WINDOW_CONTROL_GAP, WINDOW_CONTROL_WIDTH,
-    WhiteSpaceSpec, WordBreakSpec, WritingContext, WritingModeSpec, custom_window_controls_width,
-    graph_node_fitted_height, port_tangent, space, tree_navigation_event, type_scale,
+    WhiteSpaceSpec, WordBreakSpec, WorkCounters, WritingContext, WritingModeSpec,
+    custom_window_controls_width, graph_node_fitted_height, port_tangent, space,
+    tree_navigation_event, type_scale,
 };
 pub use overlay_surfaces::{
     ConfirmDialog, ConfirmIntent, ConfirmSlots, Drawer, ModalBehavior, ModalFrameGeometry,

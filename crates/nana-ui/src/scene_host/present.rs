@@ -522,12 +522,21 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
             prepared.submitted(&submission);
         }
         let submit = submission.cpu_duration();
-        let painter = self.painter_mut(if shared_paint {
+        let target_profile = if shared_paint {
             crate::output::window_output::output_profile()
         } else {
             profile
-        });
-        painter.record_submit(&submission);
+        };
+        match self.try_painter_mut(target_profile) {
+            Ok(painter) => painter.record_submit(&submission),
+            Err(error) => {
+                self.program
+                    .report_host_failure(HostFailure::UnpaintableScene {
+                        window: id,
+                        error: error.to_string(),
+                    });
+            }
+        }
         stage_clock.mark(&stage::PRESENTATION_POST_SUBMIT_NS);
         self.graphics.present_frame(frame);
         self.note_window_presented(id);
@@ -858,10 +867,10 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
     /// One shared painter serves every presentation profile, sharing glyph and
     /// icon atlases, text caches, URL textures and skin materials while
     /// switching working-format pipeline sets on demand.
-    pub(super) fn painter_mut(
+    pub(super) fn try_painter_mut(
         &mut self,
         profile: crate::ScenePresentationProfile,
-    ) -> &mut SceneWgpuPainter {
+    ) -> Result<&mut SceneWgpuPainter, crate::ScenePaintError> {
         if self.painter.is_none() && self.startup_painter.is_some() {
             self.take_startup_painter(true);
         }
@@ -876,12 +885,13 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
             self.painter = None;
         }
         if self.painter.is_none() {
-            let painter = SceneWgpuPainter::new_with_presentation(self.graphics.gpu(), profile);
+            let painter =
+                SceneWgpuPainter::try_new_with_presentation(self.graphics.gpu(), profile)?;
             self.adopt_painter(painter);
         }
         let painter = self.painter.as_mut().expect("painter was just inserted");
-        painter.select_presentation(profile);
-        painter
+        painter.try_select_presentation(profile)?;
+        Ok(painter)
     }
 
     pub(super) fn retain_active_presentations(&mut self) {

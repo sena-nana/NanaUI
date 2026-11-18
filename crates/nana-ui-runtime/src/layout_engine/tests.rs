@@ -7227,3 +7227,343 @@ fn block_children_with_auto_width_fill_the_containing_block() {
         "a flex column aligned to the start keeps its child at its content width, got {child:?}"
     );
 }
+
+#[test]
+fn subgrid_inherits_parent_column_and_row_tracks_gaps_and_nested_levels() {
+    let cell = |id: &str| StyleLayoutNode {
+        id: id.into(),
+        style: LayoutStyle {
+            width: Some(LengthSpec::Fill),
+            height: Some(LengthSpec::Fill),
+            ..LayoutStyle::default()
+        },
+        children: Vec::new(),
+        text: None,
+    };
+    let sub = StyleLayoutNode {
+        id: "sub".into(),
+        style: LayoutStyle {
+            display: Some(DisplaySpec::Grid),
+            align_items: AlignSpec::Stretch,
+            grid: nana_ui_core::GridStyle {
+                columns_subgrid: true,
+                placement: GridPlacement {
+                    column_start: GridLine::Index(1),
+                    column_end: GridLine::Index(-1),
+                    ..GridPlacement::default()
+                }
+                .into(),
+                ..Default::default()
+            }
+            .into(),
+            ..LayoutStyle::default()
+        },
+        children: vec![cell("a"), cell("b")],
+        text: None,
+    };
+    let tree = StyleLayoutNode {
+        id: "root".into(),
+        style: LayoutStyle {
+            display: Some(DisplaySpec::Grid),
+            width: Some(LengthSpec::Px(210.0)),
+            height: Some(LengthSpec::Px(40.0)),
+            column_gap: Some(LengthSpec::Px(10.0)),
+            align_items: AlignSpec::Stretch,
+            grid: nana_ui_core::GridStyle {
+                columns: Some(vec![GridTrack::Px(80.0), GridTrack::Px(120.0)]),
+                ..Default::default()
+            }
+            .into(),
+            ..LayoutStyle::default()
+        },
+        children: vec![sub],
+        text: None,
+    };
+    let boxes = box_map(&tree, 210.0, 40.0);
+    assert!(
+        (boxes["a"].width - 80.0).abs() < 0.5 && (boxes["a"].x - 0.0).abs() < 0.5,
+        "subgrid col 1 must inherit 80px, not split evenly, got {:?}",
+        boxes["a"]
+    );
+    assert!(
+        (boxes["b"].width - 120.0).abs() < 0.5 && (boxes["b"].x - 90.0).abs() < 0.5,
+        "subgrid col 2 must inherit 120px + 10px parent column-gap, got {:?}",
+        boxes["b"]
+    );
+
+    // 2D + nested subgrid: grand-subgrid inherits both axes and row-gap.
+    let inner_sub = StyleLayoutNode {
+        id: "inner-sub".into(),
+        style: LayoutStyle {
+            display: Some(DisplaySpec::Grid),
+            align_items: AlignSpec::Stretch,
+            grid: nana_ui_core::GridStyle {
+                columns_subgrid: true,
+                rows_subgrid: true,
+                placement: GridPlacement {
+                    column_start: GridLine::Index(1),
+                    column_end: GridLine::Index(-1),
+                    row_start: GridLine::Index(1),
+                    row_end: GridLine::Index(-1),
+                    ..GridPlacement::default()
+                }
+                .into(),
+                ..Default::default()
+            }
+            .into(),
+            ..LayoutStyle::default()
+        },
+        children: vec![cell("c1"), cell("c2"), cell("c3"), cell("c4")],
+        text: None,
+    };
+    let outer_sub = StyleLayoutNode {
+        id: "outer-sub".into(),
+        style: LayoutStyle {
+            display: Some(DisplaySpec::Grid),
+            align_items: AlignSpec::Stretch,
+            grid: nana_ui_core::GridStyle {
+                columns_subgrid: true,
+                rows_subgrid: true,
+                placement: GridPlacement {
+                    column_start: GridLine::Index(2),
+                    column_end: GridLine::Index(4),
+                    row_start: GridLine::Index(1),
+                    row_end: GridLine::Index(3),
+                    ..GridPlacement::default()
+                }
+                .into(),
+                ..Default::default()
+            }
+            .into(),
+            ..LayoutStyle::default()
+        },
+        children: vec![inner_sub],
+        text: None,
+    };
+    let nested_tree = StyleLayoutNode {
+        id: "root".into(),
+        style: LayoutStyle {
+            display: Some(DisplaySpec::Grid),
+            width: Some(LengthSpec::Px(300.0)),
+            height: Some(LengthSpec::Px(120.0)),
+            column_gap: Some(LengthSpec::Px(10.0)),
+            row_gap: Some(LengthSpec::Px(8.0)),
+            align_items: AlignSpec::Stretch,
+            grid: nana_ui_core::GridStyle {
+                columns: Some(vec![
+                    GridTrack::Px(40.0),
+                    GridTrack::Px(70.0),
+                    GridTrack::Px(170.0),
+                ]),
+                rows: Some(vec![GridTrack::Px(30.0), GridTrack::Px(82.0)]),
+                ..Default::default()
+            }
+            .into(),
+            ..LayoutStyle::default()
+        },
+        children: vec![outer_sub],
+        text: None,
+    };
+    let nboxes = box_map(&nested_tree, 300.0, 120.0);
+    assert!(
+        (nboxes["c1"].x - 50.0).abs() < 0.5
+            && (nboxes["c1"].y - 0.0).abs() < 0.5
+            && (nboxes["c1"].width - 70.0).abs() < 0.5
+            && (nboxes["c1"].height - 30.0).abs() < 0.5,
+        "c1 = {:?}",
+        nboxes["c1"]
+    );
+    assert!(
+        (nboxes["c4"].x - 130.0).abs() < 0.5
+            && (nboxes["c4"].y - 38.0).abs() < 0.5
+            && (nboxes["c4"].width - 170.0).abs() < 0.5
+            && (nboxes["c4"].height - 82.0).abs() < 0.5,
+        "c4 = {:?}",
+        nboxes["c4"]
+    );
+
+    // Standalone subgrid without a parent grid computes `subgrid` to `none`.
+    let orphan = StyleLayoutNode {
+        id: "root".into(),
+        style: LayoutStyle {
+            display: Some(DisplaySpec::Grid),
+            width: Some(LengthSpec::Px(200.0)),
+            height: Some(LengthSpec::Px(60.0)),
+            grid: nana_ui_core::GridStyle {
+                columns_subgrid: true,
+                rows_subgrid: true,
+                ..Default::default()
+            }
+            .into(),
+            ..LayoutStyle::default()
+        },
+        children: vec![cell("only")],
+        text: None,
+    };
+    let oboxes = box_map(&orphan, 200.0, 60.0);
+    assert!(
+        (oboxes["only"].width - 200.0).abs() < 0.5 && (oboxes["only"].height - 60.0).abs() < 0.5,
+        "orphan = {:?}",
+        oboxes["only"]
+    );
+
+    // 1-value `gap` shorthand on a subgrid overrides `parent_gap` rather than
+    // being clobbered because `column_gap` / `row_gap` remain `None`.
+    let custom_gap_sub = StyleLayoutNode {
+        id: "sub-gap".into(),
+        style: LayoutStyle {
+            display: Some(DisplaySpec::Grid),
+            gap: Some(LengthSpec::Px(4.0)),
+            align_items: AlignSpec::Stretch,
+            grid: nana_ui_core::GridStyle {
+                columns_subgrid: true,
+                placement: GridPlacement {
+                    column_start: GridLine::Index(1),
+                    column_end: GridLine::Index(-1),
+                    ..GridPlacement::default()
+                }
+                .into(),
+                ..Default::default()
+            }
+            .into(),
+            ..LayoutStyle::default()
+        },
+        children: vec![cell("ga"), cell("gb")],
+        text: None,
+    };
+    let custom_gap_tree = StyleLayoutNode {
+        id: "root".into(),
+        style: LayoutStyle {
+            display: Some(DisplaySpec::Grid),
+            width: Some(LengthSpec::Px(216.0)),
+            height: Some(LengthSpec::Px(40.0)),
+            gap: Some(LengthSpec::Px(16.0)),
+            align_items: AlignSpec::Stretch,
+            grid: nana_ui_core::GridStyle {
+                columns: Some(vec![GridTrack::Px(80.0), GridTrack::Px(120.0)]),
+                ..Default::default()
+            }
+            .into(),
+            ..LayoutStyle::default()
+        },
+        children: vec![custom_gap_sub],
+        text: None,
+    };
+    let gboxes = box_map(&custom_gap_tree, 216.0, 40.0);
+    let inner_gap = gboxes["gb"].x - (gboxes["ga"].x + gboxes["ga"].width);
+    assert!(
+        (inner_gap - 4.0).abs() < 0.5,
+        "subgrid 1-value gap=4px must separate items by 4px (not parent 16px), got gap={inner_gap} ({:?}, {:?})",
+        gboxes["ga"],
+        gboxes["gb"]
+    );
+    assert!(
+        (gboxes["ga"].width - 86.0).abs() < 0.5 && (gboxes["gb"].width - 126.0).abs() < 0.5,
+        "tracks must absorb half the (16 - 4) gap delta each: ga={:?}, gb={:?}",
+        gboxes["ga"],
+        gboxes["gb"]
+    );
+}
+
+#[test]
+fn fit_content_row_respects_non_shrinkable_min_content_and_clamps_when_wrapping() {
+    let fixed_child = |name: &str| StyleLayoutNode {
+        id: name.into(),
+        style: LayoutStyle {
+            width: Some(LengthSpec::Px(60.0)),
+            height: Some(LengthSpec::Px(40.0)),
+            flex_shrink: Some(0.0),
+            ..LayoutStyle::default()
+        },
+        children: Vec::new(),
+        text: None,
+    };
+    let nowrap_root = StyleLayoutNode {
+        id: "root".into(),
+        style: LayoutStyle {
+            display: Some(DisplaySpec::Flex),
+            direction: Some(FlexDirection::Column),
+            align_items: AlignSpec::Start,
+            width: Some(LengthSpec::Px(80.0)),
+            height: Some(LengthSpec::Px(80.0)),
+            ..LayoutStyle::default()
+        },
+        children: vec![StyleLayoutNode {
+            id: "box".into(),
+            style: LayoutStyle {
+                display: Some(DisplaySpec::Flex),
+                direction: Some(FlexDirection::Row),
+                width: Some(LengthSpec::FitContent),
+                height: Some(LengthSpec::Px(40.0)),
+                flex_shrink: Some(0.0),
+                ..LayoutStyle::default()
+            },
+            children: vec![fixed_child("a"), fixed_child("b")],
+            text: None,
+        }],
+        text: None,
+    };
+    let nowrap_boxes = box_map(&nowrap_root, 80.0, 80.0);
+    assert!(
+        (nowrap_boxes["box"].width - 120.0).abs() < 0.5,
+        "nowrap fit-content row with two non-shrinkable 60px children must be 120px, got {:?}",
+        nowrap_boxes["box"]
+    );
+
+    let wrap_root = StyleLayoutNode {
+        id: "root".into(),
+        style: nowrap_root.style.clone(),
+        children: vec![StyleLayoutNode {
+            id: "box".into(),
+            style: LayoutStyle {
+                display: Some(DisplaySpec::Flex),
+                direction: Some(FlexDirection::Row),
+                flex_wrap: nana_ui_core::FlexWrap::Wrap,
+                width: Some(LengthSpec::FitContent),
+                height: Some(LengthSpec::Px(80.0)),
+                ..LayoutStyle::default()
+            },
+            children: vec![fixed_child("a"), fixed_child("b")],
+            text: None,
+        }],
+        text: None,
+    };
+    let wrap_boxes = box_map(&wrap_root, 80.0, 80.0);
+    assert!(
+        (wrap_boxes["box"].width - 60.0).abs() < 0.5,
+        "wrapping fit-content row with two 60px children wraps to 60px lines, got {:?}",
+        wrap_boxes["box"]
+    );
+
+    let shrink_text_root = StyleLayoutNode {
+        id: "root".into(),
+        style: nowrap_root.style,
+        children: vec![StyleLayoutNode {
+            id: "box".into(),
+            style: LayoutStyle {
+                display: Some(DisplaySpec::Flex),
+                direction: Some(FlexDirection::Row),
+                width: Some(LengthSpec::FitContent),
+                ..LayoutStyle::default()
+            },
+            children: vec![StyleLayoutNode {
+                id: "copy".into(),
+                style: LayoutStyle {
+                    flex_shrink: Some(1.0),
+                    min_width: Some(LengthSpec::Px(0.0)),
+                    ..LayoutStyle::default()
+                },
+                children: Vec::new(),
+                text: Some("A very long single line label that must wrap within 80px".into()),
+            }],
+            text: None,
+        }],
+        text: None,
+    };
+    let shrink_boxes = box_map(&shrink_text_root, 80.0, 80.0);
+    assert!(
+        shrink_boxes["box"].width <= 80.5,
+        "nowrap fit-content row with shrinkable copy must clamp within 80px, got {:?}",
+        shrink_boxes["box"]
+    );
+}

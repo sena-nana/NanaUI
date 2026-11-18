@@ -263,15 +263,12 @@ impl UiWorld {
     /// from the installed theme: what the band layout keeps above the
     /// action and placement both read.
     pub(crate) fn empty_state_inputs(&self, id: StableNodeId) -> Option<EmptyStateInputs> {
-        let Some(crate::EmptyStateVisual {
+        let crate::EmptyStateVisual {
             icon,
             compact,
             action,
             ..
-        }) = self.widget_visual_as::<crate::EmptyStateVisual>(id)
-        else {
-            return None;
-        };
+        } = self.widget_visual_as::<crate::EmptyStateVisual>(id)?;
         let spacing = self.theme.spacing();
         let gap = if *compact { spacing.xxs } else { spacing.sm };
         Some(EmptyStateInputs {

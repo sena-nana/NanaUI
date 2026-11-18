@@ -294,18 +294,25 @@ impl PresentationDriver {
             .map(|group| group.requirements.profile)
             .collect();
         if let Some(&first) = profiles.first() {
-            let painter = self.painter.get_or_insert_with(|| {
-                let mut painter = crate::SceneWgpuPainter::new_with_presentation(&self.gpu, first);
-                painter.set_resource_fetch_host(self.fetch_host.clone());
-                if let Some(wake) = self.image_waker.clone() {
-                    painter.set_image_update_waker(wake);
+            let painter = match self.painter.as_mut() {
+                Some(painter) => painter,
+                None => {
+                    let mut painter =
+                        crate::SceneWgpuPainter::try_new_with_presentation(&self.gpu, first)
+                            .map_err(|e| PresentationError::Surface(e.into()))?;
+                    painter.set_resource_fetch_host(self.fetch_host.clone());
+                    if let Some(wake) = self.image_waker.clone() {
+                        painter.set_image_update_waker(wake);
+                    }
+                    self.painter.insert(painter)
                 }
-                painter
-            });
+            };
             // Build every group's pipelines here, at the structural boundary,
             // rather than on its first frame.
             for &profile in &profiles {
-                painter.select_presentation(profile);
+                painter
+                    .try_select_presentation(profile)
+                    .map_err(|e| PresentationError::Surface(e.into()))?;
             }
             painter.retain_presentations(&profiles);
         } else {
@@ -815,9 +822,9 @@ impl PresentationDriver {
         {
             Some(index) => &mut target.transfers[index],
             None => {
-                target
-                    .transfers
-                    .push(OutputTransfer::new(&self.gpu, destination.format(), srgb));
+                let built = OutputTransfer::try_new(&self.gpu, destination.format(), srgb)
+                    .map_err(|e| PresentationError::Surface(e.into()))?;
+                target.transfers.push(built);
                 target.transfers.last_mut().expect("inserted transfer")
             }
         };

@@ -50,7 +50,8 @@ pub fn run() -> BenchmarkReport {
     // The benchmark brings its own device: that is the WGPU escape hatch.
     let gpu = GpuContext::from_wgpu(adapter, device, queue);
     let format = GpuTextureFormat::BGRA8_UNORM_SRGB;
-    let painter = SceneWgpuPainter::new(&gpu, format);
+    let painter =
+        SceneWgpuPainter::try_new(&gpu, format).expect("benchmark must build scene painter");
     let target = gpu
         .create_texture(&GpuTextureDescriptor {
             label: Some("nana-ui benchmark target"),

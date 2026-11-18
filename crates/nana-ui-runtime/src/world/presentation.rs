@@ -416,10 +416,9 @@ impl UiWorld {
         {
             let selection = if let Some(layout) = self.native_markdown_layout(id) {
                 layout.selection
-            } else if let Some(layout) = self.selectable_rich_text_paint_layout(id) {
-                layout.selection
             } else {
-                return None;
+                let layout = self.selectable_rich_text_paint_layout(id)?;
+                layout.selection
             };
             let enclosing = selection.into_iter().reduce(|a, b| {
                 let left = a.x.min(b.x);

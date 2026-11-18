@@ -175,6 +175,17 @@ pub fn render_pipeline_state(
     policy.pipeline(key, create)
 }
 
+/// [`render_pipeline_state`] with a fallible factory: a factory error is
+/// handed back and never cached, so a later request for `key` compiles again
+/// instead of sharing an invalid pipeline.
+pub fn try_render_pipeline_state<E>(
+    policy: &crate::GpuDeviceState,
+    key: crate::PipelineKey,
+    create: impl FnOnce() -> Result<wgpu::RenderPipeline, E>,
+) -> Result<Result<wgpu::RenderPipeline, E>, crate::GpuError> {
+    policy.try_pipeline(key, create)
+}
+
 /// The writes a frame submits ahead of its own commands. Renderers record
 /// into it instead of calling `queue.write_*`: the frame stages them all
 /// through one mapped chunk and copies them in one upload command buffer.

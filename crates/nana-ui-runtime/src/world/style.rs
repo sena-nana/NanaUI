@@ -14,6 +14,7 @@ impl UiWorld {
         &mut self,
         id: StableNodeId,
         parent: Option<StableNodeId>,
+        work: &mut ThemeWorkCounters,
     ) -> Result<bool, UiWorldError> {
         let Some(parent) = parent else {
             return Ok(false);
@@ -69,14 +70,16 @@ impl UiWorld {
             record.inherited_orientation = text_orientation;
         }
         if same {
+            work.record_skipped();
             return Ok(true);
         }
         if has_text {
-            self.invalidate_text_for_style(id, &parent_style);
+            self.invalidate_text_for_style(id, &parent_style, work);
         }
         if show_text {
             self.text_shown.push(id);
         }
+        work.record_resolved();
         self.record_mut(id).resolved = ResolvedStyle(
             Arc::clone(&parent_style),
             self.resolved_palette_epoch(),
@@ -92,6 +95,7 @@ impl UiWorld {
         &mut self,
         id: StableNodeId,
         resolved: &mut HashSet<StableNodeId>,
+        work: &mut ThemeWorkCounters,
     ) -> Result<(), UiWorldError> {
         let mut chain = Vec::new();
         let mut cursor = Some(id);
@@ -106,7 +110,7 @@ impl UiWorld {
             cursor = self.record(node).hierarchy.parent;
         }
         for node in chain.into_iter().rev() {
-            self.resolve_one_style::<SHARE>(node)?;
+            self.resolve_one_style::<SHARE>(node, work)?;
         }
         Ok(())
     }
@@ -115,9 +119,10 @@ impl UiWorld {
     fn resolve_one_style<const SHARE: bool>(
         &mut self,
         id: StableNodeId,
+        work: &mut ThemeWorkCounters,
     ) -> Result<(), UiWorldError> {
         let parent = self.record(id).hierarchy.parent;
-        if SHARE && self.publish_inherited_computed_style(id, parent)? {
+        if SHARE && self.publish_inherited_computed_style(id, parent, work)? {
             return Ok(());
         }
         // The layout the pipeline reads: design intent and a responsive
@@ -378,14 +383,17 @@ impl UiWorld {
                 && cur.paint_colors == paint_colors
                 && *cur.inherited == next_inherited
             {
+                work.record_skipped();
                 return Ok(());
             }
         }
+        work.record_resolved();
         let inherited_arc = if SHARE && *inherited_style.inherited == next_inherited {
             Arc::clone(&inherited_style.inherited)
         } else if SHARE {
-            self.inherited_styles.intern(next_inherited)
+            self.inherited_styles.intern(next_inherited, work)
         } else {
+            work.record_allocation(1, size_of::<InheritedStyle>());
             Arc::new(next_inherited)
         };
         let next = ComputedStyle {
@@ -409,16 +417,18 @@ impl UiWorld {
             };
             let arc = shared.unwrap_or_else(|| {
                 if SHARE {
-                    self.computed_styles.intern(next)
+                    self.computed_styles.intern(next, work)
                 } else {
+                    work.record_allocation(1, size_of::<ComputedStyle>());
                     Arc::new(next)
                 }
             });
             (Arc::clone(&arc), arc)
         } else {
             let arc = if SHARE {
-                self.computed_styles.intern(next)
+                self.computed_styles.intern(next, work)
             } else {
+                work.record_allocation(1, size_of::<ComputedStyle>());
                 Arc::new(next)
             };
             let unpainted = if SHARE {
@@ -427,13 +437,13 @@ impl UiWorld {
                     .map(|parent| &self.record(parent).resolved.2)
                     .filter(|parent_unpainted| parent_unpainted.as_ref() == &clean)
                     .map(Arc::clone)
-                    .unwrap_or_else(|| self.computed_styles.intern(clean))
+                    .unwrap_or_else(|| self.computed_styles.intern(clean, work))
             } else {
                 Arc::clone(&arc)
             };
             (arc, unpainted)
         };
-        self.invalidate_text_for_style(id, &next_arc);
+        self.invalidate_text_for_style(id, &next_arc, work);
         if !self.record(id).resolved.0.visible && next_arc.visible {
             // Text passes skip hidden nodes without resolving them, so a node
             // whose box changed while hidden comes back stale. The scheduled
@@ -760,6 +770,7 @@ impl UiWorld {
     ) -> Arc<nana_ui_core::LayoutStyle> {
         let (mut resolved, copied) = self.node_layout(id, style);
         if copied {
+            self.record_resolved_layout_copy();
             self.layouts.intern(&mut resolved);
         }
         resolved
@@ -785,6 +796,7 @@ impl UiWorld {
                 continue;
             }
             if copied {
+                self.record_resolved_layout_copy();
                 self.layouts.intern(&mut resolved);
             }
             self.record_mut(id).resolved_layout = resolved;
@@ -816,13 +828,16 @@ impl UiWorld {
     }
 
     /// Read one role out of `model` (the token authority under a node's
-    /// colour scope).
+    /// colour scope), counted for Issue #101 §4.
     fn theme_color(&self, model: StyleModelRef, role: SemanticColorRole) -> [f32; 4] {
+        self.record_theme_read();
         model.color(role).as_rgba_array()
     }
 
-    /// Resolve a palette mix.
+    /// Resolve a palette mix. One question asked of the theme, so one read —
+    /// the roles it blends are the mix's own business.
     fn theme_mix(&self, model: StyleModelRef, mix: nana_ui_core::SemanticColorMix) -> [f32; 4] {
+        self.record_theme_read();
         mix.resolve(model).as_rgba_array()
     }
 
@@ -1068,6 +1083,7 @@ impl UiWorld {
         if let Some(role) = self.semantic_paint(id, local).foreground_secondary {
             return self.theme_color(self.node_style_model(id), role);
         }
+        self.record_theme_read();
         let [r, g, b, a] = primary;
         [r, g, b, a * self.style_model.opacity.secondary_text]
     }
@@ -1114,6 +1130,9 @@ impl UiWorld {
             self.mark_repaint(id);
         }
         if styled {
+            let mut work = ThemeWorkCounters::default();
+            work.record_paint_invalidation(1);
+            self.record_theme_work(work);
             if self.record(id).hierarchy.children.is_empty() {
                 self.mark(id, DirtyMask::STYLE | DirtyMask::RENDER);
             } else {
@@ -1131,9 +1150,11 @@ impl UiWorld {
         // once so parent-chain deduplication does not repeatedly rehash large
         // initial documents.
         let mut resolved = HashSet::with_capacity(ids.len());
+        let mut work = ThemeWorkCounters::default();
         for &id in ids {
-            self.resolve_style::<true>(id, &mut resolved)?;
+            self.resolve_style::<true>(id, &mut resolved, &mut work)?;
         }
+        self.record_theme_work(work);
         self.reconcile_focus(ids);
         self.drop_invalid_document_text_selections();
         Ok(())
@@ -1148,9 +1169,11 @@ impl UiWorld {
         ids: &[StableNodeId],
     ) -> Result<(), UiWorldError> {
         let mut resolved = HashSet::new();
+        let mut work = ThemeWorkCounters::default();
         for &id in ids {
-            self.resolve_style::<false>(id, &mut resolved)?;
+            self.resolve_style::<false>(id, &mut resolved, &mut work)?;
         }
+        self.record_theme_work(work);
         self.reconcile_focus(ids);
         Ok(())
     }
@@ -1239,6 +1262,7 @@ impl UiWorld {
         // names a step moves when its scale does.
         let metrics_changed = !self.style_model.metrics.same_layout(&previous_metrics)
             || previous_scales != (self.theme.typography(), self.theme.spacing());
+        let seeds_before = self.layout_seeds_created;
         let mut ids = Vec::new();
         for roots in self.live_document_roots.values() {
             for &root in roots {
@@ -1279,11 +1303,17 @@ impl UiWorld {
         } else {
             Vec::new()
         };
+        let mut work = ThemeWorkCounters::default();
+        work.record_paint_invalidation(ids.len());
+        if !ids.is_empty() {
+            work.record_allocation(1, ids.len().saturating_mul(size_of::<StableNodeId>()));
+        }
+        let mut dependents = 0;
         if metrics_changed || token_layout_changed || shape_changed {
             // Design intent resolves against the metrics, so a metrics install
             // is the one event that has to re-run it. Doing it here, once, is
             // what keeps it off every frame's read path.
-            self.reresolve_layout_intent();
+            dependents = self.reresolve_layout_intent();
             // An unstyled root has no authored token intent to re-resolve. Its
             // inherited defaults nevertheless changed and must shape this frame.
             let default_roots = self
@@ -1309,8 +1339,12 @@ impl UiWorld {
                         ..classified
                     },
                 );
+                dependents += 1;
             }
+            work.record_layout_invalidation(dependents);
         }
+        work.record_layout_invalidation(modal_frames.len() + part_readers.len());
+        self.record_theme_work(work);
         for id in modal_frames {
             // These visuals shape several internal typography roles. A
             // description or message can change while the root's own font
@@ -1352,6 +1386,14 @@ impl UiWorld {
         }
         for id in ids {
             self.mark(id, DirtyMask::RENDER);
+        }
+        let seeds = (self.layout_seeds_created - seeds_before) as usize;
+        let counts = &mut self.counters.pending_drain_counts;
+        if metrics_changed || token_layout_changed || shape_changed {
+            counts.theme_to_layout_seeds += seeds;
+            counts.theme_metric_dependents_invalidated += dependents;
+        } else {
+            counts.theme_palette_layout_invalidations += seeds;
         }
     }
 }
@@ -1614,10 +1656,15 @@ pub(crate) struct InheritedStyleInterner {
 }
 
 impl InheritedStyleInterner {
-    pub(crate) fn intern(&mut self, value: InheritedStyle) -> Arc<InheritedStyle> {
+    pub(crate) fn intern(
+        &mut self,
+        value: InheritedStyle,
+        work: &mut ThemeWorkCounters,
+    ) -> Arc<InheritedStyle> {
         if let Some(kept) = self.recent.iter().flatten().find(|kept| ***kept == value) {
             return Arc::clone(kept);
         }
+        work.record_allocation(1, size_of::<InheritedStyle>());
         let arc = Arc::new(value);
         self.recent[self.next] = Some(Arc::clone(&arc));
         self.next = (self.next + 1) % RECENT_INHERITED_STYLES;
@@ -1637,7 +1684,11 @@ pub(crate) struct ComputedStyleInterner {
 }
 
 impl ComputedStyleInterner {
-    pub(crate) fn intern(&mut self, value: ComputedStyle) -> Arc<ComputedStyle> {
+    pub(crate) fn intern(
+        &mut self,
+        value: ComputedStyle,
+        work: &mut ThemeWorkCounters,
+    ) -> Arc<ComputedStyle> {
         if let Some(kept) = self.recent.iter().flatten().find(|kept| {
             (Arc::ptr_eq(&kept.inherited, &value.inherited) || *kept.inherited == *value.inherited)
                 && kept.background == value.background
@@ -1647,6 +1698,7 @@ impl ComputedStyleInterner {
         }) {
             return Arc::clone(kept);
         }
+        work.record_allocation(1, size_of::<ComputedStyle>());
         let arc = Arc::new(value);
         self.recent[self.next] = Some(Arc::clone(&arc));
         self.next = (self.next + 1) % RECENT_COMPUTED_STYLES;
@@ -1698,9 +1750,23 @@ impl UiWorld {
 
     /// `id`'s computed style is going from the one it holds to `next`: what
     /// that costs its text, by the class of change.
-    fn invalidate_text_for_style(&mut self, id: StableNodeId, next: &ComputedStyle) {
+    fn invalidate_text_for_style(
+        &mut self,
+        id: StableNodeId,
+        next: &ComputedStyle,
+        work: &mut ThemeWorkCounters,
+    ) {
         let previous = Arc::clone(&self.record(id).resolved.0);
         let dirty = crate::text_node::classify_computed_style_change(&previous, next);
+        // What this class costs the text pipeline is `TextDirty::work`'s
+        // answer, not a second copy of that mapping here. A colour-only change
+        // implies SCENE_PAINT, so a palette switch stays paint work.
+        let text_work = dirty.work();
+        if text_work.intersects(crate::text_node::TextWork::SHAPE)
+            || text_work.intersects(crate::text_node::TextWork::LAYOUT)
+        {
+            work.record_text_invalidation(1);
+        }
         self.note_language_invalidation(id, dirty);
         self.note_text_scale_change(id, previous.text_scale, next.text_scale);
         self.nodes.invalidate_text(id, dirty);
@@ -1710,6 +1776,7 @@ impl UiWorld {
     /// It shapes again, and the scene takes its new layout and language.
     fn note_language_invalidation(&mut self, id: StableNodeId, dirty: crate::text_node::TextDirty) {
         if dirty.intersects(crate::text_node::TextDirty::LANGUAGE) && self.shows_text(id) {
+            self.bump_last_counters(|counters| counters.record_text_language(1, 0));
             self.mark(id, DirtyMask::RENDER);
         }
     }
@@ -1734,6 +1801,7 @@ impl UiWorld {
             return;
         }
         if self.default_text_scale == scale {
+            self.note_equivalent_text_scale();
             return;
         }
         self.default_text_scale = scale;
@@ -1766,6 +1834,7 @@ impl UiWorld {
             }
         }
         if self.root_text_scale(document) == before {
+            self.note_equivalent_text_scale();
             return;
         }
         self.mark_document_text_scale(document);
@@ -1793,7 +1862,9 @@ impl UiWorld {
     /// laid out again, and layout hears of it only from metrics that moved.
     pub(super) fn mark_text_scale_scope(&mut self, root: StableNodeId) {
         let mut stack = vec![root];
+        let mut scanned = 0usize;
         while let Some(id) = stack.pop() {
+            scanned += 1;
             let record = self.record(id);
             stack.extend(
                 record
@@ -1806,10 +1877,21 @@ impl UiWorld {
             );
             let _ = self.mark(id, DirtyMask::STYLE | DirtyMask::TEXT);
         }
+        self.counters
+            .pending_drain_counts
+            .typography_scale_scope_nodes_scanned += scanned;
+    }
+
+    /// A typography scale was set to the one it already was: nothing visited.
+    pub(super) fn note_equivalent_text_scale(&mut self) {
+        self.counters
+            .pending_drain_counts
+            .typography_scale_equivalent_skips += 1;
     }
 
     /// `id`'s computed typography scale is going from `previous` to `next`.
-    /// What it paints from its font size paints again.
+    /// What it paints from its font size paints again; text of it that had
+    /// resolved counts as reached, and its next layout as the scale's.
     fn note_text_scale_change(&mut self, id: StableNodeId, previous: f32, next: f32) {
         if previous == next {
             return;
@@ -1818,6 +1900,9 @@ impl UiWorld {
             return;
         }
         let _ = self.mark(id, DirtyMask::RENDER);
+        if self.nodes.note_text_scale(id) {
+            self.bump_last_counters(|counters| counters.record_typography_scale_text(1, 0, 0));
+        }
     }
 
     /// Every live root inherits the root language: resolve the styles under

@@ -8,9 +8,7 @@ Rust 1.98+ is required. The repository is currently referenced by path or git an
 
 ## Add the dependency
 
-`nana-ui` enables `wgpu-backends` by default (effective only when `gpu` is enabled). Without `hosted` there is no
-`run_runtime`; without `gpu` there is no painter. To choose graphics backends yourself, use
-`default-features = false`. A desktop application needs at least this:
+`nana-ui` has `default = []`: without `hosted` there is no `run_runtime`, and without `gpu` there is no painter. Enabling `hosted` implies `gpu` and pulls only the platform's primary graphics backend (`metal` on Apple, `dx12` on Windows, `vulkan` on Unix); add `wgpu-backends` if you need all cross-platform backends, or enable `full`. See the [Migration Guide](migration-layout-and-features.md) for opt-in features. A minimal desktop application needs at least this:
 
 ```toml
 [dependencies]

@@ -125,7 +125,7 @@ pub(crate) fn auto_view_key_str(slot: u16) -> &'static str {
     let mut guard = AUTO_VIEW_STRS
         .lock()
         .unwrap_or_else(|poison| poison.into_inner());
-    *guard
+    guard
         .entry(slot)
         .or_insert_with(|| Box::leak(format!("#v{slot}").into_boxed_str()))
 }

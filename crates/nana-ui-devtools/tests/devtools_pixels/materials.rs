@@ -87,14 +87,18 @@ fn shapes_and_text_share_materials_and_keep_their_coverage() {
     );
     let text = &pixels[78 * 200 * 4..];
     assert!(
-        text.chunks_exact(4)
+        text.as_chunks::<4>()
+            .0
+            .iter()
             .filter(|p| p[0] > 200 && p[1] < 40 && p[3] > 200)
             .count()
             > 50,
         "base text material missing"
     );
     assert!(
-        text.chunks_exact(4)
+        text.as_chunks::<4>()
+            .0
+            .iter()
             .filter(|p| p[1] > 200 && p[0] < 40 && p[3] > 200)
             .count()
             > 30,
@@ -144,7 +148,9 @@ fn materials_are_optional_and_invalid_programs_fall_back_to_native_paint() {
     assert_ne!(native, grain, "second material example was ignored");
     let colored = |p: &[u8]| {
         p[78 * 200 * 4..]
-            .chunks_exact(4)
+            .as_chunks::<4>()
+            .0
+            .iter()
             .filter(|p| p[3] > 150 && p[0].max(p[1]).max(p[2]) - p[0].min(p[1]).min(p[2]) > 80)
             .count()
     };
@@ -233,21 +239,25 @@ fn presentation_masks_preserve_color_and_erase_the_whole_text_target() {
     let native = session.screenshot_rgba().unwrap().1;
     assert!(
         native
-            .chunks_exact(4)
+            .as_chunks::<4>()
+            .0
+            .iter()
             .filter(|p| p[0] > 200 && p[1] < 50 && p[2] < 50 && p[3] > 200)
             .count()
             > 100,
         "the inline image fixture was not actually visible"
     );
-    let mut presentation = GlyphPresentation::default();
-    presentation.transitions = TextTransitions {
-        exit: Some(PresentationMask {
-            material: mask,
-            space: PresentationMaskSpace::Target,
-            start: Duration::ZERO,
-            duration: Duration::from_secs(1),
-        }),
-        viewport: Some(nana_ui_core::LogicalRect::new(20., 0., 180., 130.)),
+    let presentation = GlyphPresentation {
+        transitions: TextTransitions {
+            exit: Some(PresentationMask {
+                material: mask,
+                space: PresentationMaskSpace::Target,
+                start: Duration::ZERO,
+                duration: Duration::from_secs(1),
+            }),
+            viewport: Some(nana_ui_core::LogicalRect::new(20., 0., 180., 130.)),
+            ..Default::default()
+        },
         ..Default::default()
     };
     let mut queue = MutationQueue::new();
@@ -301,7 +311,7 @@ fn presentation_masks_preserve_color_and_erase_the_whole_text_target() {
         .sync_presentation_clock(Duration::from_secs(1));
     let erased = session.screenshot_rgba().unwrap().1;
     assert!(
-        erased.chunks_exact(4).all(|p| p[3] == 0),
+        erased.as_chunks::<4>().0.iter().all(|p| p[3] == 0),
         "glyph, ruby, stroke or emoji survived final mask"
     );
 }

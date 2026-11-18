@@ -11,6 +11,27 @@ pub(super) struct GridPlacedItem {
     pub(super) intrinsic: Size,
 }
 
+pub(super) struct InheritedGridTracks {
+    /// Inline size of the subgrid's grid area in the parent (spanned
+    /// columns plus their gaps): the base for the subgrid's percentage
+    /// margins and padding in both axes (CSS Grid §6.4), also when only its
+    /// rows are subgridded.
+    pub(super) area_inline: f32,
+    pub(super) columns: Option<Vec<f32>>,
+    pub(super) column_gap: f32,
+    pub(super) rows: Option<Vec<f32>>,
+    pub(super) row_gap: f32,
+}
+
+pub(super) fn spanned_track_sizes(sizes: &[f32], start: usize, span: usize) -> Vec<f32> {
+    let end = start.saturating_add(span).min(sizes.len());
+    if start >= end {
+        Vec::new()
+    } else {
+        sizes[start..end].to_vec()
+    }
+}
+
 pub(super) struct Grid2DLayout {
     pub(super) col_sizes: Vec<f32>,
     pub(super) row_sizes: Vec<f32>,
@@ -521,12 +542,22 @@ pub(super) fn layout_grid_2d(
     child_sizes: &[Size],
     content: Size,
     fonts: FontSizeContext,
+    inherited: Option<&InheritedGridTracks>,
     viewport: LayoutViewport,
     nodes: &mut LayoutInputMap<'_>,
     cache: &mut PassIntrinsicCache,
     scope: Option<&ScopeContext<'_>>,
 ) -> Result<Grid2DLayout, UiWorldError> {
-    match layout_grid_2d_begin(style, writing, flow, child_sizes, content, fonts, nodes) {
+    match layout_grid_2d_begin(
+        style,
+        writing,
+        flow,
+        child_sizes,
+        content,
+        fonts,
+        inherited,
+        nodes,
+    ) {
         Grid2dStart::Ready(layout) => Ok(layout),
         Grid2dStart::NeedsPass2(state) => {
             let mut measured = Vec::with_capacity(state.queries.len());
@@ -547,6 +578,37 @@ pub(super) fn layout_grid_2d(
     }
 }
 
+fn subgrid_axis_tracks(
+    parent_sizes: &[f32],
+    parent_gap: f32,
+    subgrid_gap: f32,
+    start_inset: f32,
+    end_inset: f32,
+) -> Vec<GridTrack> {
+    if parent_sizes.len() == 1 {
+        return vec![GridTrack::Px(
+            (parent_sizes[0] - start_inset - end_inset).max(0.0),
+        )];
+    }
+    let gap_diff = parent_gap - subgrid_gap;
+    let half_diff = 0.5 * gap_diff;
+    let last = parent_sizes.len() - 1;
+    parent_sizes
+        .iter()
+        .enumerate()
+        .map(|(index, &size)| {
+            let adjusted = if index == 0 {
+                size - start_inset + half_diff
+            } else if index == last {
+                size - end_inset + half_diff
+            } else {
+                size + gap_diff
+            };
+            GridTrack::Px(adjusted.max(0.0))
+        })
+        .collect()
+}
+
 #[allow(clippy::too_many_arguments)]
 pub(super) fn layout_grid_2d_begin(
     style: &LayoutStyle,
@@ -555,6 +617,7 @@ pub(super) fn layout_grid_2d_begin(
     child_sizes: &[Size],
     content: Size,
     fonts: FontSizeContext,
+    inherited: Option<&InheritedGridTracks>,
     nodes: &LayoutInputMap<'_>,
 ) -> Grid2dStart {
     // Columns are tracks along the inline axis and rows along the block one
@@ -562,18 +625,77 @@ pub(super) fn layout_grid_2d_begin(
     // height and width in a vertical mode. Everything below sizes tracks on
     // those logical extents; `place_grid_2d_items` turns them onto the page.
     let (content_inline, content_block) = writing.logical_size(content.width, content.height);
-    let col_gap = style.resolved_column_gap_against_fonts(
+    let mut col_gap = style.resolved_column_gap_against_fonts(
         Some(content_inline).filter(|inline| *inline > 0.0),
         fonts,
     );
-    let row_gap = style.resolved_row_gap_against_fonts(
+    let mut row_gap = style.resolved_row_gap_against_fonts(
         Some(content_block)
             .filter(|block| *block > 0.0)
             .or(Some(content_inline).filter(|inline| *inline > 0.0)),
         fonts,
     );
-    let mut col_tracks = explicit_column_tracks(style, content_inline, col_gap);
-    let mut row_tracks = explicit_row_tracks(style, content_block, row_gap);
+    let mut col_tracks = if style.is_subgrid_columns() {
+        if let Some(sizes) = inherited
+            .and_then(|grid| grid.columns.as_deref())
+            .filter(|sizes| !sizes.is_empty())
+        {
+            let parent_gap = inherited.map_or(col_gap, |grid| grid.column_gap);
+            if style.column_gap.is_none() && style.gap.is_none() {
+                col_gap = parent_gap;
+            }
+            let base = inherited
+                .map(|grid| grid.area_inline)
+                .filter(|extent| *extent > 0.0);
+            let margin = style.resolved_margin_against_fonts(base, fonts);
+            let padding = style.resolved_padding_against_fonts(base, fonts);
+            let border = style.resolved_border_edges();
+            let start_edge = writing.inline_start();
+            let end_edge = writing.inline_end();
+            let start_inset = margin_at(margin, start_edge)
+                + margin_at(padding, start_edge)
+                + margin_at(border, start_edge);
+            let end_inset = margin_at(margin, end_edge)
+                + margin_at(padding, end_edge)
+                + margin_at(border, end_edge);
+            subgrid_axis_tracks(sizes, parent_gap, col_gap, start_inset, end_inset)
+        } else {
+            // No parent tracks: `subgrid` computes to `none`. Do not invent auto tracks.
+            Vec::new()
+        }
+    } else {
+        explicit_column_tracks(style, content_inline, col_gap)
+    };
+    let mut row_tracks = if style.is_subgrid_rows() {
+        if let Some(sizes) = inherited
+            .and_then(|grid| grid.rows.as_deref())
+            .filter(|sizes| !sizes.is_empty())
+        {
+            let parent_gap = inherited.map_or(row_gap, |grid| grid.row_gap);
+            if style.row_gap.is_none() && style.gap.is_none() {
+                row_gap = parent_gap;
+            }
+            let base = inherited
+                .map(|grid| grid.area_inline)
+                .filter(|extent| *extent > 0.0);
+            let margin = style.resolved_margin_against_fonts(base, fonts);
+            let padding = style.resolved_padding_against_fonts(base, fonts);
+            let border = style.resolved_border_edges();
+            let start_edge = writing.block_start();
+            let end_edge = writing.block_end();
+            let start_inset = margin_at(margin, start_edge)
+                + margin_at(padding, start_edge)
+                + margin_at(border, start_edge);
+            let end_inset = margin_at(margin, end_edge)
+                + margin_at(padding, end_edge)
+                + margin_at(border, end_edge);
+            subgrid_axis_tracks(sizes, parent_gap, row_gap, start_inset, end_inset)
+        } else {
+            Vec::new()
+        }
+    } else {
+        explicit_row_tracks(style, content_block, row_gap)
+    };
     let explicit_cols = col_tracks.len();
     let explicit_rows = row_tracks.len();
     let style_grid = &*style.grid;
@@ -790,7 +912,8 @@ pub(super) fn layout_grid_2d_begin(
             col_auto[item.col] = col_auto[item.col].max(inline + inline_margins);
         }
     }
-    let col_sizes = resolve_grid_track_sizes(&col_tracks, content_inline, col_gap, &col_auto);
+    let mut col_sizes = resolve_grid_track_sizes(&col_tracks, content_inline, col_gap, &col_auto);
+    distribute_auto_track_leftover(&col_tracks, &mut col_sizes, content_inline, col_gap);
     // Rows are sized once the columns are (CSS Grid §11.5): an auto row
     // holds its items as they lay out in their columns.
     let mut row_auto = vec![0.0f32; row_tracks.len()];
@@ -1190,21 +1313,44 @@ pub(super) fn place_grid_2d_items(
                 baseline: PackedOptF32::from_opt(placed.baseline),
             });
         }
-        if !subtree_unchanged(
-            item.id,
-            child_origin,
-            child_size,
-            cell,
-            child_style,
-            child_fonts,
-            writing,
-            scope,
-        ) {
+        let inherited = if child_style.is_subgrid_columns() || child_style.is_subgrid_rows() {
+            Some(Box::new(InheritedGridTracks {
+                area_inline: grid_span_extent(
+                    &grid.col_sizes,
+                    item.col,
+                    item.col_span,
+                    grid.col_gap,
+                ),
+                columns: child_style
+                    .is_subgrid_columns()
+                    .then(|| spanned_track_sizes(&grid.col_sizes, item.col, item.col_span)),
+                column_gap: grid.col_gap,
+                rows: child_style
+                    .is_subgrid_rows()
+                    .then(|| spanned_track_sizes(&grid.row_sizes, item.row, item.row_span)),
+                row_gap: grid.row_gap,
+            }))
+        } else {
+            None
+        };
+        if inherited.is_some()
+            || !subtree_unchanged(
+                item.id,
+                child_origin,
+                child_size,
+                cell,
+                child_style,
+                child_fonts,
+                writing,
+                scope,
+            )
+        {
             descend.push(Descend {
                 child: item.id,
                 origin: child_origin,
                 size: child_size,
                 containing: cell,
+                inherited,
             });
         }
     }

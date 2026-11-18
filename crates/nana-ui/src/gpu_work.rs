@@ -1,7 +1,7 @@
-//! Observed GPU work for frame instrumentation.
+//! Observed GPU work for frame instrumentation and Issue #8 counters.
 //!
 //! Values are recorded only on a real encode/submit path. CPU-only paths
-//! never construct this sink, so `PresentationWork` GPU fields stay `None`.
+//! never construct this sink, so GPU fields stay `None`.
 
 use std::cell::RefCell;
 use std::ops::{Deref, DerefMut};
@@ -10,49 +10,8 @@ use std::time::Duration;
 
 use nana_gpu::{GpuContext, GpuDeviceState, TransientResourceKey};
 use nana_ui_core::FrameStage;
+pub use nana_ui_core::GpuWorkObservation;
 use nana_ui_runtime::FrameProfiler;
-
-/// Host-observed GPU encode/submit/upload counts for one Scene/WGPU frame.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub struct GpuWorkObservation {
-    pub batch_rebuilds: usize,
-    pub draw_batches: usize,
-    pub draw_calls: usize,
-    pub gpu_upload_bytes: usize,
-    pub gpu_buffer_reallocations: usize,
-}
-
-impl GpuWorkObservation {
-    pub fn record_upload(&mut self, bytes: usize) {
-        self.gpu_upload_bytes = self.gpu_upload_bytes.saturating_add(bytes);
-    }
-
-    pub fn record_realloc(&mut self) {
-        self.gpu_buffer_reallocations = self.gpu_buffer_reallocations.saturating_add(1);
-    }
-
-    pub fn record_batch_rebuild(&mut self) {
-        self.batch_rebuilds = self.batch_rebuilds.saturating_add(1);
-    }
-
-    pub fn record_draw_batch(&mut self) {
-        self.draw_batches = self.draw_batches.saturating_add(1);
-    }
-
-    pub fn record_draw_call(&mut self) {
-        self.draw_calls = self.draw_calls.saturating_add(1);
-    }
-
-    pub fn accumulate(&mut self, other: Self) {
-        self.batch_rebuilds = self.batch_rebuilds.saturating_add(other.batch_rebuilds);
-        self.draw_batches = self.draw_batches.saturating_add(other.draw_batches);
-        self.draw_calls = self.draw_calls.saturating_add(other.draw_calls);
-        self.gpu_upload_bytes = self.gpu_upload_bytes.saturating_add(other.gpu_upload_bytes);
-        self.gpu_buffer_reallocations = self
-            .gpu_buffer_reallocations
-            .saturating_add(other.gpu_buffer_reallocations);
-    }
-}
 
 pub(crate) type TransientBufferRegistry = Arc<Mutex<Vec<(TransientResourceKey, wgpu::Buffer)>>>;
 

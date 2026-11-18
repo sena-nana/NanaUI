@@ -74,6 +74,7 @@ pub mod runtime {
     // 28 runtime.host_requests.rejected, 29 runtime.host_requests.drained,
     // 30 runtime.host_requests.stale, 32 runtime.input.mapping,
     // 38 runtime.input.routing_cache_hits, 39 runtime.input.routing_cache_misses.
+    // 47–49 reserved.
 
     /// Reactive view flushes that ran at least one effect.
     pub static REACTIVE_FLUSHES: Metric =
@@ -95,6 +96,18 @@ pub mod runtime {
     /// painter's output does not take: it draws unmasked.
     pub static PAINT_MASK_UNSUPPORTED: Metric =
         Metric::counter(D, 46, "runtime.paint.mask_unsupported", "count");
+    /// Style nodes resolved during style pass.
+    pub static STYLE_NODES_RESOLVED: Metric =
+        Metric::counter(D, 50, "runtime.style.nodes_resolved", "count");
+    /// Hit-test entries rebuilt or updated.
+    pub static HIT_TEST_NODES_REBUILT: Metric =
+        Metric::counter(D, 51, "runtime.hit_test.nodes_rebuilt", "count");
+    /// Scene nodes extracted in frame delta.
+    pub static SCENE_NODES_EXTRACTED: Metric =
+        Metric::counter(D, 52, "runtime.extract.nodes_extracted", "count");
+    /// Scene nodes whose extracted state changed.
+    pub static SCENE_NODES_CHANGED: Metric =
+        Metric::counter(D, 53, "runtime.extract.nodes_changed", "count");
 
     /// Fault: effects kept re-queueing each other past the round limit; the
     /// rest of the queue was dropped.
@@ -139,6 +152,15 @@ pub mod runtime {
         Severity::Warn,
         &[F::u64("breakpoints")],
     );
+    /// A snippet regex transform was invoked without the `snippet-transforms`
+    /// feature enabled; placeholder value passed through unchanged.
+    pub static SNIPPET_TRANSFORM_UNAVAILABLE: EventDescriptor = EventDescriptor::new(
+        D,
+        6,
+        "runtime.snippet.transform_unavailable",
+        Severity::Warn,
+        &[],
+    );
 }
 
 pub mod layout {
@@ -161,6 +183,10 @@ pub mod layout {
     histogram!(
         /// Line solves that hit a budget and shared a class by capacity.
         pub DYNAMIC_BUDGET_FALLBACKS, D, 8, "layout.dynamic.budget_fallbacks", "count");
+    /// Nodes measured during layout passes.
+    pub static MEASURE_NODES: Metric = Metric::counter(D, 9, "layout.measure_nodes", "count");
+    /// Nodes placed during layout passes.
+    pub static PLACEMENT_NODES: Metric = Metric::counter(D, 10, "layout.placement_nodes", "count");
 }
 
 pub mod text {
@@ -236,13 +262,6 @@ pub mod text {
 }
 
 pub mod gpu {
-    pub static MATERIAL_REJECTED: EventDescriptor = EventDescriptor::new(
-        Domain::GPU,
-        21,
-        "gpu.material.rejected",
-        Severity::Warn,
-        &[],
-    );
     use super::*;
     const D: Domain = Domain::GPU;
 
@@ -533,6 +552,32 @@ pub mod gpu {
         Severity::Warn,
         &[F::u64("lane")],
     );
+    /// Precompiled Metal shader archive decompressions performed during
+    /// pipeline initialization.
+    pub static MSL_ARCHIVE_DECOMPRESSIONS: Metric =
+        Metric::counter(D, 68, "gpu.shader.msl_decompressions", "count");
+    histogram!(
+        /// Wall time of each precompiled Metal shader archive decompression.
+        pub MSL_ARCHIVE_DECOMPRESS_NS, D, 69, "gpu.shader.msl_decompress", "ns"
+    );
+    /// Uncompressed bytes produced by precompiled Metal shader archive
+    /// decompressions.
+    pub static MSL_ARCHIVE_DECOMPRESSED_BYTES: Metric =
+        Metric::counter(D, 70, "gpu.shader.msl_decompressed_bytes", "bytes");
+    /// Precompiled shader stage missing or rejected; fell back to runtime WGSL.
+    pub static SHADER_PRECOMPILED_FALLBACK: EventDescriptor = EventDescriptor::new(
+        D,
+        30,
+        "gpu.shader.precompiled_fallback",
+        Severity::Warn,
+        &[],
+    );
+    /// Built-in shader stage could not be loaded or compiled without WGSL fallback.
+    pub static SHADER_BUILD_FAILED: EventDescriptor =
+        EventDescriptor::new(D, 31, "gpu.shader.build_failed", Severity::Error, &[]);
+    /// Custom `MaterialProgram` could not be compiled (e.g. `runtime-wgsl` disabled).
+    pub static MATERIAL_REJECTED: EventDescriptor =
+        EventDescriptor::new(D, 32, "gpu.material.rejected", Severity::Warn, &[]);
 }
 
 pub mod window {
@@ -570,6 +615,14 @@ pub mod window {
         "window.occluded",
         Severity::Debug,
         &[F::u64("window"), F::bool("occluded")],
+    );
+    /// Native screen color sampler failed or reported platform unsupport.
+    pub static COLOR_SAMPLER_FAILED: EventDescriptor = EventDescriptor::new(
+        D,
+        5,
+        "window.color_sampler.failed",
+        Severity::Warn,
+        &[F::u64("window"), F::bool("unsupported")],
     );
 }
 
@@ -662,8 +715,9 @@ pub mod host {
         EventDescriptor::new(D, 6, "host.startup_failed", Severity::Error, &[]);
 
     /// Longest single event-loop callback between host entry and handoff.
+    /// (ID 5 belongs to `FRAMES_SERVED_WITHOUT_PAINT`; append at free ID 9.)
     pub static STARTUP_LONGEST_BLOCK_NS: Metric =
-        Metric::gauge(D, 5, "host.startup.longest_block", "ns");
+        Metric::gauge(D, 9, "host.startup.longest_block", "ns");
     /// Reading a packaged Early Splash logo out of the package's
     /// `early-splash` pack, on the event thread before the window is shown.
     pub static STARTUP_SPLASH_LOGO_READ_NS: Metric =
@@ -837,6 +891,25 @@ pub mod resource {
         Severity::Error,
         &[F::u64("code")],
     );
+    /// An `http(s)://` image or resource fetch was requested without `http-fetch`
+    /// enabled and no custom `FetchHost` provided.
+    pub static FETCH_UNAVAILABLE: EventDescriptor =
+        EventDescriptor::new(D, 4, "resource.fetch_unavailable", Severity::Warn, &[]);
+    /// A network or `FetchHost` resource fetch returned an error.
+    pub static FETCH_FAILED: EventDescriptor =
+        EventDescriptor::new(D, 5, "resource.fetch_failed", Severity::Warn, &[]);
+    /// Decoding an image format (JPEG/GIF/WebP/SVG) failed because its optional
+    /// codec feature (`image-codecs-extra` or `svg`) is disabled or unsupported.
+    pub static IMAGE_CODEC_UNAVAILABLE: EventDescriptor = EventDescriptor::new(
+        D,
+        6,
+        "resource.image_codec_unavailable",
+        Severity::Warn,
+        &[],
+    );
+    /// Locale-sensitive message formatting fell back to `PlainFormatter` because the `icu` feature is disabled.
+    pub static ICU_UNAVAILABLE: EventDescriptor =
+        EventDescriptor::new(D, 7, "resource.icu_unavailable", Severity::Warn, &[]);
 }
 
 pub mod package {
@@ -866,4 +939,292 @@ pub mod package {
     /// Fault: the running binary's identity differs from the manifest's.
     pub static IDENTITY_MISMATCH: EventDescriptor =
         EventDescriptor::new(D, 4, "package.identity_mismatch", Severity::Error, &[]);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::collections::HashMap;
+
+    #[test]
+    fn framework_event_and_metric_keys_and_names_are_unique() {
+        let events: &[&EventDescriptor] = &[
+            &runtime::REACTIVE_DID_NOT_SETTLE,
+            &runtime::REACTIVE_DISPOSED_ACCESS,
+            &runtime::REACTIVE_STATIC_DEPS_MISMATCH,
+            &runtime::VIEW_ERROR_UNHANDLED,
+            &runtime::VIEW_CONTAINER_QUERY_UNSUPPORTED,
+            &runtime::SNIPPET_TRANSFORM_UNAVAILABLE,
+            &text::ATLAS_PAGE_OPENED,
+            &text::ATLAS_BUDGET_EXHAUSTED,
+            &text::ATLAS_COMPACTED,
+            &text::INSTANCE_LIMIT_EXCEEDED,
+            &text::I18N_MESSAGE_MISSING,
+            &text::I18N_PATTERN_INVALID,
+            &text::I18N_ARGUMENT_INVALID,
+            &gpu::OUTPUT_TRACE_ROUTE,
+            &gpu::OUTPUT_TRACE_TARGET,
+            &gpu::OUTPUT_TRACE_VERSION,
+            &gpu::OUTPUT_TRACE_WORK,
+            &gpu::OUTPUT_TRACE_WAIT,
+            &gpu::OUTPUT_TRACE_RECREATE,
+            &gpu::OUTPUT_TRACE_TRANSPORT,
+            &gpu::OUTPUT_TRACE_PRODUCER,
+            &gpu::OUTPUT_TRACE_STATE,
+            &gpu::FRAME_BINDING_TRANSITION,
+            &gpu::SURFACE_LOST_EVENT,
+            &gpu::DEVICE_LOST,
+            &gpu::DEVICE_RECOVERED,
+            &gpu::DEVICE_RECOVERY_FAILED,
+            &gpu::SURFACE_SUSPENDED,
+            &gpu::RETAINED_FRAME_DISCARDED,
+            &gpu::FRAME_SLOTS_EXHAUSTED,
+            &gpu::SUBMISSION_BUDGET_OVERRUN,
+            &gpu::SHADER_PRECOMPILED_FALLBACK,
+            &gpu::SHADER_BUILD_FAILED,
+            &gpu::MATERIAL_REJECTED,
+            &window::OPENED,
+            &window::CLOSED,
+            &window::SCALE_FACTOR_CHANGED,
+            &window::OCCLUDED,
+            &window::COLOR_SAMPLER_FAILED,
+            &host::FAILURE,
+            &host::RUN_FAILED,
+            &host::EVENT_LOOP_EXITED,
+            &host::STARTUP_PHASE,
+            &host::SPLASH_OUTCOME,
+            &host::STARTUP_FAILED,
+            &host::SPLASH_LOGO_FAILED,
+            &host::TASK_PANICKED,
+            &persistence::FAILURE,
+            &persistence::FLUSH_TIMED_OUT,
+            &diagnostics::PANIC,
+            &diagnostics::MAIN_THREAD_STALLED,
+            &diagnostics::MAIN_THREAD_RECOVERED,
+            &diagnostics::UNCLEAN_EXIT,
+            &diagnostics::NATIVE_CRASH,
+            &resource::PACK_MOUNTED,
+            &resource::PACK_OPEN_FAILED,
+            &resource::INTEGRITY_FAILED,
+            &resource::FETCH_UNAVAILABLE,
+            &resource::FETCH_FAILED,
+            &resource::IMAGE_CODEC_UNAVAILABLE,
+            &resource::ICU_UNAVAILABLE,
+            &package::MANIFEST_LOADED,
+            &package::MANIFEST_MISSING,
+            &package::MANIFEST_INVALID,
+            &package::IDENTITY_MISMATCH,
+        ];
+
+        let metrics: &[&Metric] = &[
+            &runtime::FRAME_CPU_NS,
+            &runtime::FLUSHES,
+            &runtime::FLUSH_PASSES,
+            &runtime::FLUSH_DID_NOT_SETTLE,
+            &runtime::FLUSH_FAILED,
+            &runtime::STAGE_INPUT_NS,
+            &runtime::STAGE_RECONCILE_NS,
+            &runtime::STAGE_STYLE_NS,
+            &runtime::STAGE_TEXT_SHAPE_NS,
+            &runtime::STAGE_LAYOUT_NS,
+            &runtime::STAGE_HIT_TEST_NS,
+            &runtime::STAGE_ACCESSIBILITY_NS,
+            &runtime::STAGE_ANIMATION_NS,
+            &runtime::STAGE_EXTRACT_NS,
+            &runtime::INPUT_EVENTS,
+            &runtime::INPUT_COALESCED,
+            &runtime::INPUT_PAYLOAD_BYTES,
+            &runtime::INPUT_ROUTE_REJECTED,
+            &runtime::INPUT_CLIP_REJECTIONS,
+            &runtime::INPUT_ROUTE_NS,
+            &runtime::INPUT_HIT_TESTS,
+            &runtime::INPUT_ROUTED_DISPATCHES,
+            &runtime::INPUT_FOCUS_CHANGES,
+            &runtime::INPUT_CAPTURE_CHANGES,
+            &runtime::INPUT_HOVER_CHANGES,
+            &runtime::REACTIVE_FLUSHES,
+            &runtime::REACTIVE_SIGNAL_WRITES,
+            &runtime::REACTIVE_EFFECTS_RUN,
+            &runtime::REACTIVE_NODES_PATCHED,
+            &runtime::REACTIVE_COMMITS,
+            &runtime::REACTIVE_FLUSH_NS,
+            &runtime::PAINT_MASK_UNSUPPORTED,
+            &runtime::STYLE_NODES_RESOLVED,
+            &runtime::HIT_TEST_NODES_REBUILT,
+            &runtime::SCENE_NODES_EXTRACTED,
+            &runtime::SCENE_NODES_CHANGED,
+            &layout::PASS_NS,
+            &layout::INVOCATIONS,
+            &layout::FULL_INVOCATIONS,
+            &layout::DIRTY_ROOTS,
+            &layout::BOXES_LAID_OUT,
+            &layout::DYNAMIC_SOLVES,
+            &layout::DYNAMIC_ENVELOPE_REBUILDS,
+            &layout::DYNAMIC_BUDGET_FALLBACKS,
+            &layout::MEASURE_NODES,
+            &layout::PLACEMENT_NODES,
+            &text::SHAPE_HITS,
+            &text::SHAPE_MISSES,
+            &text::LAYOUT_HITS,
+            &text::LAYOUT_MISSES,
+            &text::GLYPHS_RESOLVED,
+            &text::ATLAS_EVICTIONS,
+            &text::ATLAS_BUDGET_REFUSALS,
+            &text::INSTANCE_LIMIT_FRAMES,
+            &gpu::UPLOAD_BYTES,
+            &gpu::DRAW_CALLS,
+            &gpu::FRAMES_PRESENTED,
+            &gpu::FRAMES_SKIPPED,
+            &gpu::SUBMIT_NS,
+            &gpu::BUFFER_REALLOCATIONS,
+            &gpu::SURFACE_OUTDATED,
+            &gpu::SURFACE_LOST,
+            &gpu::SURFACE_TIMEOUT,
+            &gpu::COMPLETION_NS,
+            &gpu::FRAMES_DISCARDED,
+            &gpu::TRANSIENT_POOL_HITS,
+            &gpu::TRANSIENT_POOL_MISSES,
+            &gpu::PIPELINE_REGISTRY_HITS,
+            &gpu::PIPELINE_REGISTRY_MISSES,
+            &gpu::FRAME_SLOT_STALLS,
+            &gpu::RETIRED_RESOURCES,
+            &gpu::REALIZATION_HITS,
+            &gpu::REALIZATION_MISSES,
+            &gpu::UPLOAD_WRITES,
+            &gpu::UPLOAD_COPIES,
+            &gpu::UPLOAD_FLUSHES,
+            &gpu::UPLOAD_RING_ALLOCATIONS,
+            &gpu::UPLOAD_RING_WAITS,
+            &gpu::FRAME_SLOT_WAITS,
+            &gpu::SUBMISSION_BUDGET_WAITS,
+            &gpu::FRAME_BINDING_REPLACEMENT_GAPS,
+            &gpu::FRAME_BINDING_PLACEHOLDER_BINDS,
+            &gpu::FRAME_BINDING_REPLACEMENTS,
+            &gpu::FRAME_BINDING_REJECTIONS,
+            &gpu::OUTPUT_EXTRA_PASSES,
+            &gpu::OUTPUT_GPU_COPIES,
+            &gpu::OUTPUT_TARGET_RECREATES,
+            &gpu::OUTPUT_CONTENT_REVISIONS,
+            &gpu::OUTPUT_IDLE_REUSE_FRAMES,
+            &gpu::OUTPUT_RESOLVES,
+            &gpu::OUTPUT_GPU_COPY_BYTES,
+            &gpu::OUTPUT_GPU_CONVERT_PASSES,
+            &gpu::OUTPUT_PLAN_REBUILDS,
+            &gpu::OUTPUT_UI_RENDERS,
+            &gpu::OUTPUT_SUBMISSIONS,
+            &gpu::OUTPUT_CPU_READBACKS,
+            &gpu::OUTPUT_DEFERRED,
+            &gpu::OUTPUT_CONSUMER_PASSES,
+            &gpu::OUTPUT_CONSUMER_COPIES,
+            &gpu::OUTPUT_CONSUMER_COPY_BYTES,
+            &gpu::OUTPUT_CONSUMER_READBACKS,
+            &gpu::OUTPUT_CONSUMER_DEFERRED,
+            &gpu::OUTPUT_CONSUMER_SUBMISSIONS,
+            &gpu::OUTPUT_CONSUMER_WAITS,
+            &gpu::OUTPUT_CONSUMER_STALLS,
+            &gpu::OUTPUT_CONSUMER_REUSES,
+            &gpu::MSL_ARCHIVE_DECOMPRESSIONS,
+            &gpu::MSL_ARCHIVE_DECOMPRESS_NS,
+            &gpu::MSL_ARCHIVE_DECOMPRESSED_BYTES,
+            &window::RESIZES,
+            &window::SHADOW_SYNC_SKIPPED,
+            &window::SHADOW_SYNC_APPLIED,
+            &host::REDRAW_NS,
+            &host::FAILURES,
+            &host::FRAMES_DROPPED,
+            &host::MESSAGE_QUEUE_DEPTH,
+            &host::FRAMES_SERVED_WITHOUT_PAINT,
+            &host::PRESENTATION_PREPARE_NS,
+            &host::PRESENTATION_SETTLE_NS,
+            &host::PRESENTATION_RESERVE_NS,
+            &host::PRESENTATION_ACQUIRE_NS,
+            &host::PRESENTATION_RESOURCES_NS,
+            &host::PRESENTATION_PLAN_NS,
+            &host::PRESENTATION_ENCODE_NS,
+            &host::PRESENTATION_SUBMIT_NS,
+            &host::PRESENTATION_POST_SUBMIT_NS,
+            &host::PRESENTATION_PRESENT_NS,
+            &host::PRESENTATION_FINISH_NS,
+            &host::STARTUP_LONGEST_BLOCK_NS,
+            &host::STARTUP_SPLASH_LOGO_READ_NS,
+            &host::STARTUP_DEVICE_REQUEST_NS,
+            &host::STARTUP_PAINTER_BUILD_NS,
+            &persistence::PENDING_GENERATION,
+            &persistence::WRITES_STARTED,
+            &persistence::WRITES_COMPLETED,
+            &persistence::WRITES_COALESCED,
+            &persistence::BYTES_WRITTEN,
+            &persistence::FLUSH_NS,
+            &persistence::ENCODED_BYTES,
+            &persistence::RESTORE_HITS,
+            &persistence::RESTORE_MISSES,
+            &persistence::MIGRATIONS,
+            &persistence::SCHEMA_MISMATCHES,
+            &persistence::CORRUPTIONS,
+            &resource::PACK_MOUNT_NS,
+            &resource::PACK_TOC_BYTES,
+            &resource::ENTRY_READ_NS,
+            &resource::ENTRY_AUTH_NS,
+            &resource::ENTRY_DECOMPRESS_NS,
+            &resource::BYTES_READ,
+            &resource::READS,
+            &resource::MISSES,
+            &resource::INTEGRITY_FAILURES,
+            &package::MANIFEST_READ_NS,
+        ];
+
+        let mut event_keys = HashMap::new();
+        let mut event_names = HashMap::new();
+        for event in events {
+            assert!(
+                event.domain.is_framework(),
+                "framework event `{}` has non-framework domain {:?}",
+                event.name,
+                event.domain
+            );
+            if let Some(prev) = event_keys.insert(event.key(), event.name) {
+                panic!(
+                    "duplicate framework event key {:?}: `{prev}` and `{}`",
+                    event.key(),
+                    event.name
+                );
+            }
+            if let Some(prev) = event_names.insert(event.name, event.key()) {
+                panic!(
+                    "duplicate framework event name `{}`: {:?} and {:?}",
+                    event.name,
+                    prev,
+                    event.key()
+                );
+            }
+        }
+
+        let mut metric_keys = HashMap::new();
+        let mut metric_names = HashMap::new();
+        for metric in metrics {
+            assert!(
+                metric.descriptor.domain.is_framework(),
+                "framework metric `{}` has non-framework domain {:?}",
+                metric.descriptor.name,
+                metric.descriptor.domain
+            );
+            if let Some(prev) = metric_keys.insert(metric.descriptor.key(), metric.descriptor.name)
+            {
+                panic!(
+                    "duplicate framework metric key {:?}: `{prev}` and `{}`",
+                    metric.descriptor.key(),
+                    metric.descriptor.name
+                );
+            }
+            if let Some(prev) = metric_names.insert(metric.descriptor.name, metric.descriptor.key())
+            {
+                panic!(
+                    "duplicate framework metric name `{}`: {:?} and {:?}",
+                    metric.descriptor.name,
+                    prev,
+                    metric.descriptor.key()
+                );
+            }
+        }
+    }
 }

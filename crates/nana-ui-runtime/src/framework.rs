@@ -1234,6 +1234,8 @@ pub struct VirtualListItems<K, C: ComponentView> {
     /// under. While both hold, the indices they were placed at are current
     /// and a pass looks none of their keys up again.
     placed_under: Option<(u64, usize)>,
+    /// The layout's row index writes already counted (Issue #262).
+    index_writes_seen: u64,
 }
 
 /// Application-owned visible row/cell identities for a virtual Table. The
@@ -1365,6 +1367,7 @@ impl<K, C: ComponentView> Default for VirtualListItems<K, C> {
             pending_measure: false,
             measurements: 0,
             placed_under: None,
+            index_writes_seen: 0,
         }
     }
 }
@@ -1640,12 +1643,18 @@ impl AppContext {
         if !self.world.set_eyedropper_supported(supported) {
             return;
         }
+        if !supported {
+            self.color_pick_requests.clear();
+        }
         let ids: Vec<StableNodeId> = self
             .views
             .iter()
             .filter_map(|(&id, view)| view.is::<crate::ColorField>().then_some(id))
             .collect();
         for id in ids {
+            if !supported {
+                let _ = self.complete_color_pick(id, None);
+            }
             let _ = self.reproject_component(Entity::<crate::ColorField>::from_stable_id(id));
         }
     }
@@ -1656,9 +1665,24 @@ impl AppContext {
         }
     }
 
+    /// Returns whether `id` refers to a live, enabled [`crate::ColorField`]
+    /// currently in screen color sampling mode while the host supports it.
+    pub fn color_pick_active(&self, id: StableNodeId) -> bool {
+        self.world.eyedropper_supported()
+            && self
+                .views
+                .get(&id)
+                .and_then(|view| view.downcast_ref::<crate::ColorField>())
+                .is_some_and(|field| field.sampling && !field.disabled && field.eyedropper)
+    }
+
     /// Takes queued [`crate::ColorField`] node ids requesting native screen color sampling.
     pub fn take_color_pick_requests(&mut self) -> Vec<StableNodeId> {
-        std::mem::take(&mut self.color_pick_requests)
+        let requests = std::mem::take(&mut self.color_pick_requests);
+        requests
+            .into_iter()
+            .filter(|&id| self.color_pick_active(id))
+            .collect()
     }
 
     /// Whether the last layout pass dropped lines of this text to honour its

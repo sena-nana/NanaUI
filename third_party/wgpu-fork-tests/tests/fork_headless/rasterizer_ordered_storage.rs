@@ -112,9 +112,11 @@ fn naga_hlsl_writer_emits_rov_for_fragment_and_omits_for_vertex() {
     let caps = naga::valid::Capabilities::TEXTURE_STORAGE_RASTERIZER_ORDER;
     let (module, info) = parse_and_validate(COMBINED_WGSL, caps).unwrap();
 
-    let mut bind_map = naga::back::hlsl::BindTarget::default();
-    bind_map.register = 0;
-    bind_map.space = 0;
+    let bind_map = naga::back::hlsl::BindTarget {
+        register: 0,
+        space: 0,
+        ..Default::default()
+    };
     let mut binding_map = naga::back::hlsl::BindingMap::default();
     binding_map.insert(
         naga::ResourceBinding {
@@ -134,7 +136,6 @@ fn naga_hlsl_writer_emits_rov_for_fragment_and_omits_for_vertex() {
     let mut fs_hlsl = String::new();
     let fs_pipeline = naga::back::hlsl::PipelineOptions {
         entry_point: Some((naga::ShaderStage::Fragment, "fs".into())),
-        ..Default::default()
     };
     naga::back::hlsl::Writer::new(&mut fs_hlsl, &options, &fs_pipeline)
         .write(&module, &info, None)
@@ -152,7 +153,6 @@ fn naga_hlsl_writer_emits_rov_for_fragment_and_omits_for_vertex() {
     let mut vs_hlsl = String::new();
     let vs_pipeline = naga::back::hlsl::PipelineOptions {
         entry_point: Some((naga::ShaderStage::Vertex, "vs".into())),
-        ..Default::default()
     };
     naga::back::hlsl::Writer::new(&mut vs_hlsl, &options, &vs_pipeline)
         .write(&module, &info, None)
@@ -932,9 +932,9 @@ fn run_pixel_ordering_case(
             for y in q.y0..q.y1 {
                 for x in q.x0..q.x1 {
                     let dst = &mut grid[(y * SIZE + x) as usize];
-                    for c in 0..4 {
-                        let v = q.color[c] + dst[c] * (1.0 - q.color[3]);
-                        dst[c] = if format == wgpu::TextureFormat::Rgba8Unorm {
+                    for (dst_slot, &src_c) in dst.iter_mut().zip(&q.color) {
+                        let v = src_c + *dst_slot * (1.0 - q.color[3]);
+                        *dst_slot = if format == wgpu::TextureFormat::Rgba8Unorm {
                             // Quantize each store to unorm8 just like Rgba8Unorm UAV store/load.
                             ((v.clamp(0.0, 1.0) * 255.0).round()) / 255.0
                         } else {

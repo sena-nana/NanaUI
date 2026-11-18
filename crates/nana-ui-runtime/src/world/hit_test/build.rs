@@ -640,8 +640,22 @@ impl UiWorld {
 }
 
 impl UiWorld {
-    /// Kept as a hook for hit-test rebuild paths.
-    pub(in crate::world) fn note_hit_nodes_built(&mut self, _forest: &[HitEntry]) {}
+    /// Every build path funnels through here, so recording once keeps the
+    /// sentinel honest for both a scoped patch and a full rebuild.
+    pub(in crate::world) fn note_hit_nodes_built(&mut self, forest: &[HitEntry]) {
+        let built = forest.iter().map(count_hit_entries).sum::<usize>();
+        self.record_hit_test_nodes_built(built);
+    }
+
+    pub(in crate::world) fn record_hit_test_nodes_built(&mut self, built: usize) {
+        if built > 0 {
+            nana_diagnostics::metric!(
+                nana_diagnostics::framework::runtime::HIT_TEST_NODES_REBUILT,
+                built
+            );
+        }
+        self.bump_last_counters(|counters| counters.record_hit_test_rebuild(built));
+    }
 }
 
 impl UiWorld {
@@ -672,6 +686,7 @@ impl UiWorld {
             .filter(|node| node.parent.is_none() && self.parent_id(node.entry.id).is_some())
             .map(|node| node.entry.id)
             .collect();
+        self.record_hit_test_nodes_built(entries.len());
         let mut index = HitIndex::from_entries(entries);
         index.viewport_roots = viewport_roots;
         self.hit_test_index.insert(document, index);

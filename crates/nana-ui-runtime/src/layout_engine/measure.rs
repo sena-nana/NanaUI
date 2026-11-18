@@ -140,6 +140,8 @@ pub(crate) fn reads_offered_block_extent(style: &nana_ui_core::LayoutStyle) -> b
             let grid = &*style.grid;
             grid.rows.is_some()
                 || grid.columns.is_some()
+                || grid.rows_subgrid
+                || grid.columns_subgrid
                 || grid.rows_unsupported.is_some()
                 || grid.columns_unsupported.is_some()
                 || grid.rows_repeat.is_some()
@@ -1777,7 +1779,9 @@ fn step_container_frame<'w, 's>(
             state: grid_prep,
         } => {
             let grid = layout_grid_2d_finish(grid_prep, &results);
-            let recorded_grid = Some(Box::new(GridTrackPlan::from_layout(&grid)));
+            let subgrid =
+                state.common.style.is_subgrid_columns() || state.common.style.is_subgrid_rows();
+            let recorded_grid = (!subgrid).then(|| Box::new(GridTrackPlan::from_layout(&grid)));
             let (width, height) = state.common.writing.physical_size(
                 grid_axis_extent(&grid.col_sizes, grid.col_gap),
                 grid_axis_extent(&grid.row_sizes, grid.row_gap),
@@ -1923,10 +1927,12 @@ fn after_flow_children_step<'w, 's>(
             &child_sizes,
             content_available,
             fonts,
+            None,
             nodes,
         ) {
             super::grid::Grid2dStart::Ready(grid) => {
-                let recorded_grid = Some(Box::new(GridTrackPlan::from_layout(&grid)));
+                let subgrid = style.is_subgrid_columns() || style.is_subgrid_rows();
+                let recorded_grid = (!subgrid).then(|| Box::new(GridTrackPlan::from_layout(&grid)));
                 let (width, height) = writing.physical_size(
                     grid_axis_extent(&grid.col_sizes, grid.col_gap),
                     grid_axis_extent(&grid.row_sizes, grid.row_gap),
@@ -2451,6 +2457,48 @@ fn finish_measure_container(
         .fold(lead_floor.width, f32::max)
         + lead_inset.width
         + chrome.width;
+    let fit_min_w = if !state.context.grid_2d && !wrapping && !direction.is_column() {
+        let gap_box = gap_containing_block(style, content_available);
+        let gap = style.main_gap_against_fonts(direction, gap_box, fonts);
+        let vp = Some((viewport.width, viewport.height));
+        let children_min_sum: f32 = child_sizes
+            .iter()
+            .zip(&flow_children)
+            .map(|(size, &child)| {
+                let margin = child_margin_of(child, child_edge_base, child_font_px, nodes);
+                let base_w = match nodes.style_ref(child) {
+                    Some(child_style)
+                        if child_style.flex_shrink.unwrap_or(0.0) > 0.0
+                            && child_style
+                                .width
+                                .is_none_or(|w| !matches!(w, LengthSpec::Px(_))) =>
+                    {
+                        let child_fonts = fonts_of(child_style.as_ref(), child_font_px);
+                        child_style
+                            .resolved_min_width_fonts(
+                                Some(content_available.width),
+                                vp,
+                                child_fonts,
+                            )
+                            .min(size.width)
+                    }
+                    _ => size.width,
+                };
+                base_w + margin.left + margin.right
+            })
+            .sum();
+        let gaps_w = if flow_children.len() > 1 {
+            gap * (flow_children.len() - 1) as f32
+        } else {
+            0.0
+        };
+        let visual_w = if !header_chrome { visual.width } else { 0.0 };
+        (children_min_sum + gaps_w + visual_w).max(lead_floor.width)
+            + lead_inset.width
+            + chrome.width
+    } else {
+        stacked_min_w
+    };
     let min_content_w = if wrapping || direction.is_column() {
         stacked_min_w
     } else {
@@ -2459,7 +2507,7 @@ fn finish_measure_container(
     let default_width = match style.width {
         Some(LengthSpec::MinContent) => min_content_w,
         Some(LengthSpec::MaxContent) | Some(LengthSpec::Shrink) => max_content_w,
-        Some(LengthSpec::FitContent) => max_content_w.min(available.width).max(stacked_min_w),
+        Some(LengthSpec::FitContent) => max_content_w.min(available.width).max(fit_min_w),
         _ if parent_direction.is_none()
             && !style.width.is_some_and(LengthSpec::is_content_sized)
             && !flow_children.is_empty() =>
@@ -3698,6 +3746,9 @@ fn try_plan_grid<'w, 's>(
         return Ok(PlanStart::Fallthrough(common));
     }
     let style = plan.style.as_ref();
+    if style.is_subgrid_columns() || style.is_subgrid_rows() {
+        return Ok(PlanStart::Fallthrough(common));
+    }
     if plan.text_metrics().is_some() || nodes.world.widget_visual_ref(id).is_some() {
         return Ok(PlanStart::Fallthrough(common));
     }
@@ -3808,6 +3859,7 @@ fn start_grid_delta_pass2<'w, 's>(
         &grid_state.sizes,
         plan.child_available,
         fonts,
+        None,
         nodes,
     ) {
         Grid2dStart::Ready(solved) => finish_grid_delta(

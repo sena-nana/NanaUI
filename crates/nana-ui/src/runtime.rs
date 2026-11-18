@@ -36,12 +36,13 @@ pub mod rich {
     };
 }
 
-/// Frame profiler and system work schedule for benches — not view state.
+/// Work counters and frame profiler for benches and Issue #8 — not view state.
 pub mod perf {
     #[cfg(feature = "gpu")]
     pub use crate::GpuWorkObservation;
     pub use nana_ui_runtime::{
         FrameProfile, FrameProfiler, FrameStage, StageStatus, StageTiming, SystemWork,
+        ThemeWorkCounters, WorkCounters,
     };
 }
 

@@ -24,3 +24,5 @@ mod text_input_max_length;
 mod theme_intrinsic;
 mod validation_text;
 mod vertical_editing;
+#[cfg(all(feature = "hosted", feature = "wgpu-interop"))]
+mod work_counters;

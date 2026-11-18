@@ -738,3 +738,11 @@ Surface 创建、验证或材质 alpha 配置失败只暂停对应窗口。并�
 创建描述符的尺寸必须有限且为正。位置必须有限。模态窗口必须指定父窗口。`WindowService::create_window` 对这些错误直接完成为 `InvalidParameter`。不入队、不唤醒宿主。standalone/embedded 的初始窗口同样在分配原生资源前校验。并且不能指定父窗口。有父窗口的窗口通过服务创建。
 
 宿主直接销毁 `EmbeddedRuntime` 时。会先关闭请求队列并完成等待中的请求。再销毁应用状态。因此应用析构可以等待正在等待窗口请求的工作线程。未处理和后续请求均得到 `HostStopped`。`embedded-window-lifecycle --probe-host-stop` 覆盖这一退出顺序。
+
+### 屏幕取色（ColorSampler）
+
+`nana-window` 提供跨平台一次性屏幕取色边界 `color_sampler_support()` 与 `pick_screen_color(owner, request_id, completion)`，输出归一化为 `[0.0, 1.0]` sRGB（alpha 固定 `1.0`），并按 `ColorSamplerResult::{Picked, Cancelled, Failed}` 回传（失败记入 `window.color_sampler.failed`）：
+
+- **macOS**：校验 AppKit `NSView` / `NSWindow` 属主句柄后调用系统 `NSColorSampler`。
+- **Linux（Wayland 与 X11 严格分离）**：Wayland 会话（`WAYLAND_DISPLAY` 非空或 `XDG_SESSION_TYPE=wayland`）必须具备 `org.freedesktop.portal.Screenshot`（v2+ `PickColor`），**即使存在 XWayland `DISPLAY` 也不会在 Wayland 会话或 `RawWindowHandle::Wayland` 下回退到 X11**，Portal 不可用时显式返回 `ColorSamplerSupport::Unsupported` / `ColorSamplerError::Unsupported`。纯 X11 会话通过根窗口抓屏与 1×1 `XGetImage` 读取像素，优先按 `red_mask`/`green_mask`/`blue_mask` 位掩码解码（兼容 TrueColor/BGRX/5-6-5/10-bit visual），掩码为零时（如 indexed visual）再回退到 `XQueryColor`。
+- **Windows**：专用 worker 线程启用 `DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2` 并带 `catch_unwind` 兜底；通过 `MonitorFromPoint` + `GetDpiForMonitor` 随光标移动实时按显示器 DPI 重算放大镜尺寸与偏移（并处理 `WM_DPICHANGED`）。overlay 与放大镜均默认请求 `WDA_EXCLUDEFROMCAPTURE`，仅在其不被会话/驱动支持时才在 `ShowWindow` 前延迟采集一次虚拟桌面快照作为回退。

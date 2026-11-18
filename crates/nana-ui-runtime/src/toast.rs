@@ -1886,7 +1886,7 @@ mod tests {
         let glyph = |context: &AppContext, id| {
             let paint = context.world().widget_paint(id).expect("toast paint");
             assert!(
-                paint.ops.iter().all(|op| !matches!(op.slot, 2 | 3 | 4)),
+                paint.ops.iter().all(|op| !matches!(op.slot, 2..=4)),
                 "assembled toast does not emit parts"
             );
             match paint.ops.iter().find(|op| op.slot == 1).map(|op| &op.op) {

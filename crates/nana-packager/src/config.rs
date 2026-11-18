@@ -108,7 +108,7 @@ impl Default for MacosConfig {
 }
 
 fn default_minimum_macos() -> String {
-    "11.0".into()
+    "14.0".into()
 }
 
 fn yes() -> bool {

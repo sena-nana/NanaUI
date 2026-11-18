@@ -447,6 +447,8 @@ layout_style_fields! {
         auto_flow => grid_auto_flow: GRID,
         columns_repeat => grid_columns_repeat: GRID,
         rows_repeat => grid_rows_repeat: GRID,
+        columns_subgrid => grid_columns_subgrid: GRID,
+        rows_subgrid => grid_rows_subgrid: GRID,
         placement => grid_placement: GRID,
         template_areas => grid_template_areas: GRID,
         column_line_names => grid_column_line_names: GRID,
@@ -606,16 +608,12 @@ mod tests {
     #[test]
     fn logical_edges_and_isolation_are_layout() {
         let base = LayoutStyle::default();
-        for (changed, kind) in [(
-            LayoutStyle {
-                layout_isolation: true,
-                ..LayoutStyle::default()
-            },
-            LayoutStyleChange::FLOW_STRUCTURE,
-        )] {
-            let changes = base.changed_fields(&changed);
-            assert_eq!(changes, kind);
-            assert!(changes.intersects(LayoutStyleChange::LAYOUT));
-        }
+        let changed = LayoutStyle {
+            layout_isolation: true,
+            ..LayoutStyle::default()
+        };
+        let changes = base.changed_fields(&changed);
+        assert_eq!(changes, LayoutStyleChange::FLOW_STRUCTURE);
+        assert!(changes.intersects(LayoutStyleChange::LAYOUT));
     }
 }

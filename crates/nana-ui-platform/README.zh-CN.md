@@ -11,7 +11,7 @@ NanaUI 与宿主平台之间不含原生句柄的那一层：窗口合同、路�
 ## Features
 
 - `clipboard`（默认开启）：系统剪贴板，桌面上基于 `arboard`。
-- `fetch`（默认开启）：`FetchHost` 和基于 `ureq` 的 `NativeFetchHost`。默认不放行任何源，由应用的 `FetchPolicy` 决定。
+- `fetch`（可选）：`FetchHost` 和基于 `ureq` 的 `NativeFetchHost`。默认不放行任何源，由应用的 `FetchPolicy` 决定。
 - `ws`：`WebSocketHost` 和基于 `tungstenite` 的 `NativeWebSocketHost`。
 - `experimental-android`：实验性 Android 宿主的平台能力。
 

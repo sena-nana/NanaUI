@@ -23,7 +23,7 @@ Read [`docs/reference/architecture.md`](../../../docs/reference/architecture.md)
 - `nana-ui-scene` owns extraction and the drawable scene. It stays independent of WGPU.
 - `nana-ui` owns the host adapter and painter; it does not become a second tree.
 - `nana-text` is the only product text measurement and shaping authority.
-- Runtime locale formatting is opt-in through the facades' `icu` feature (included in their defaults and `full`). Internal runtime/scene workspace dependencies disable defaults so hosts can choose PlainFormatter without pulling CLDR data back in.
+- Runtime locale formatting is opt-in through the facades' `icu` feature (included in `full`, off by default). Internal runtime/scene workspace dependencies disable defaults so hosts can choose PlainFormatter without pulling CLDR data back in.
 - Applications own business state, persistence, routes, and Region content.
 
 Keep Rust controls, `.vue`-dialect views, and L3 component creation on the same `ComponentRegistry`, `Style Model`, `UiWorld`, and `UiScene`. `MutationQueue` batches commit atomically at the frame boundary; layout output is a projection and scrolling must not mutate Runtime layout boxes.

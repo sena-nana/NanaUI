@@ -1,0 +1,232 @@
+{
+  "id": "T-FX03",
+  "title": "纵向 flex 与 overflow:hidden / 无行盒列容器在基线对齐行中的首基线计算",
+  "status": "pass",
+  "viewport": [
+    600,
+    320
+  ],
+  "tolerance_px": 2,
+  "tree": {
+    "id": "root",
+    "style": "width:600px;font-size:16px;line-height:20px",
+    "children": [
+      {
+        "id": "f3-line",
+        "style": "width:600px",
+        "children": [
+          {
+            "id": "f3-ref",
+            "style": "display:inline-flex;width:30px;height:30px"
+          },
+          {
+            "id": "f3-h",
+            "style": "display:inline-flex;width:130px",
+            "children": [
+              {
+                "id": "f3-flex",
+                "style": "display:flex;flex-direction:column;width:130px",
+                "children": [
+                  {
+                    "id": "f3-p",
+                    "style": "width:60px",
+                    "children": [
+                      {
+                        "id": "f3-pa",
+                        "style": "display:inline-flex;width:20px;height:20px"
+                      }
+                    ]
+                  },
+                  {
+                    "id": "f3-q",
+                    "style": "width:60px",
+                    "children": [
+                      {
+                        "id": "f3-qa",
+                        "style": "display:inline-flex;width:40px;height:40px"
+                      }
+                    ]
+                  },
+                  {
+                    "id": "f3-s",
+                    "style": "width:60px",
+                    "children": [
+                      {
+                        "id": "f3-sa",
+                        "style": "display:inline-flex;width:10px;height:10px"
+                      }
+                    ]
+                  }
+                ]
+              }
+            ]
+          }
+        ]
+      },
+      {
+        "id": "f4-row",
+        "style": "display:flex;align-items:baseline;width:600px",
+        "children": [
+          {
+            "id": "f4-ref",
+            "style": "width:40px",
+            "text": "Ref"
+          },
+          {
+            "id": "f4-hidden",
+            "style": "display:flex;overflow:hidden;padding-top:14px;width:110px;height:80px",
+            "children": [
+              {
+                "id": "f4-hidden-text",
+                "style": "width:90px",
+                "text": "Overflow"
+              }
+            ]
+          },
+          {
+            "id": "f4-noline-col",
+            "style": "display:flex;flex-direction:column;padding-top:6px;width:80px;height:70px",
+            "children": [
+              {
+                "id": "f4-nl-1",
+                "style": "width:50px;height:22px"
+              },
+              {
+                "id": "f4-nl-2",
+                "style": "width:50px;height:14px"
+              }
+            ]
+          }
+        ]
+      }
+    ]
+  },
+  "expected": [
+    {
+      "id": "root",
+      "x": 0,
+      "y": 0,
+      "w": 600,
+      "h": 176
+    },
+    {
+      "id": "f3-line",
+      "x": 0,
+      "y": 0,
+      "w": 600,
+      "h": 96
+    },
+    {
+      "id": "f3-ref",
+      "x": 0,
+      "y": 0,
+      "w": 30,
+      "h": 30
+    },
+    {
+      "id": "f3-h",
+      "x": 30,
+      "y": 10,
+      "w": 130,
+      "h": 86
+    },
+    {
+      "id": "f3-flex",
+      "x": 30,
+      "y": 10,
+      "w": 130,
+      "h": 86
+    },
+    {
+      "id": "f3-p",
+      "x": 30,
+      "y": 10,
+      "w": 60,
+      "h": 23
+    },
+    {
+      "id": "f3-pa",
+      "x": 30,
+      "y": 10,
+      "w": 20,
+      "h": 20
+    },
+    {
+      "id": "f3-q",
+      "x": 30,
+      "y": 33,
+      "w": 60,
+      "h": 43
+    },
+    {
+      "id": "f3-qa",
+      "x": 30,
+      "y": 33,
+      "w": 40,
+      "h": 40
+    },
+    {
+      "id": "f3-s",
+      "x": 30,
+      "y": 76,
+      "w": 60,
+      "h": 20
+    },
+    {
+      "id": "f3-sa",
+      "x": 30,
+      "y": 83,
+      "w": 10,
+      "h": 10
+    },
+    {
+      "id": "f4-row",
+      "x": 0,
+      "y": 96,
+      "w": 600,
+      "h": 80
+    },
+    {
+      "id": "f4-ref",
+      "x": 0,
+      "y": 110,
+      "w": 40,
+      "h": 20
+    },
+    {
+      "id": "f4-hidden",
+      "x": 40,
+      "y": 96,
+      "w": 110,
+      "h": 80
+    },
+    {
+      "id": "f4-hidden-text",
+      "x": 40,
+      "y": 110,
+      "w": 90,
+      "h": 66
+    },
+    {
+      "id": "f4-noline-col",
+      "x": 150,
+      "y": 99,
+      "w": 80,
+      "h": 70
+    },
+    {
+      "id": "f4-nl-1",
+      "x": 150,
+      "y": 105,
+      "w": 50,
+      "h": 22
+    },
+    {
+      "id": "f4-nl-2",
+      "x": 150,
+      "y": 127,
+      "w": 50,
+      "h": 14
+    }
+  ]
+}

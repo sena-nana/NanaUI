@@ -106,4 +106,9 @@ mod tests {
             "a newline is the paragraph structure's break, not this one"
         );
     }
+
+    #[test]
+    fn unicode_linebreak_version_matches_manifest_pin() {
+        assert_eq!(unicode_linebreak::UNICODE_VERSION, (15, 0, 0));
+    }
 }

@@ -984,12 +984,9 @@ impl GlyphAtlasManager {
                 if self.placeholders.contains(&(index as u32)) {
                     continue;
                 }
-                let reclaimable = self.pages[index]
-                    .as_ref()
-                    .map(|page| {
-                        (page.live_slots == 0 && page.empty_frames >= 1).then_some(page.bytes())
-                    })
-                    .flatten();
+                let reclaimable = self.pages[index].as_ref().and_then(|page| {
+                    (page.live_slots == 0 && page.empty_frames >= 1).then_some(page.bytes())
+                });
                 if let Some(freed) = reclaimable
                     && self.close_page(index)
                 {

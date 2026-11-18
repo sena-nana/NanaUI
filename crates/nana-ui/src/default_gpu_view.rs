@@ -165,15 +165,21 @@ impl SceneGpuRenderer for DefaultGpuViewRenderer {
         let mut state = self.state.lock().expect("default gpu-view pipeline");
         // Everything built on a replaced device goes with it.
         state.retain(|(device, _), _| *device == generation);
-        let prepared = state
-            .entry((generation, context.target_format))
-            .or_insert_with(|| {
-                PreparedGpuView::new(
+        let prepared = match state.get_mut(&(generation, context.target_format)) {
+            Some(prepared) => prepared,
+            None => {
+                let Ok(built) = PreparedGpuView::try_new(
                     device,
                     __framework::format_to_wgpu(context.target_format),
                     context.gpu,
-                )
-            });
+                ) else {
+                    return;
+                };
+                state
+                    .entry((generation, context.target_format))
+                    .or_insert(built)
+            }
+        };
         prepared.begin_prepare_pass();
         let scale = if context.scale_factor.is_finite() && context.scale_factor > 0.0 {
             context.scale_factor
@@ -332,17 +338,28 @@ struct PreparedGpuView {
 }
 
 impl PreparedGpuView {
-    fn new(device: &wgpu::Device, format: wgpu::TextureFormat, gpu: &nana_gpu::GpuContext) -> Self {
+    fn try_new(
+        device: &wgpu::Device,
+        format: wgpu::TextureFormat,
+        gpu: &nana_gpu::GpuContext,
+    ) -> Result<Self, crate::scene_paint::ScenePaintError> {
         let shader_interface = nana_gpu::ShaderInterface::new(
             nana_gpu::ResourceTable::empty().for_generation(gpu.generation()),
             GPU_VIEW_SHADER,
         );
         gpu.validate_shader_interface(&shader_interface)
             .expect("default gpu-view shader interface fits the device");
-        let pipeline = __framework::render_pipeline(
-            gpu,
-            PipelineKey {
-                generation: gpu.generation(),
+        let shader =
+            crate::scene_paint::wgsl::program!("nana-ui default gpu-view shader", GPU_VIEW_SHADER);
+        let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label: Some("nana-ui default gpu-view pipeline layout"),
+            bind_group_layouts: &[],
+            immediate_size: 0,
+        });
+        let pipeline = shader.try_cached_pipeline(
+            Some(gpu.policy()),
+            |policy| PipelineKey {
+                generation: policy.generation(),
                 target_format: __framework::format_from_wgpu(format),
                 sample_count: 1,
                 shader: shader_interface.pipeline_identity(),
@@ -353,63 +370,48 @@ impl PreparedGpuView {
                 depth: 0,
                 vertex_layout: std::mem::size_of::<GpuViewInstance>() as u64,
             },
-            || {
-                let shader = crate::scene_paint::wgsl::program!(
-                    "nana-ui default gpu-view shader",
-                    GPU_VIEW_SHADER
-                );
-                let pipeline_layout =
-                    device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-                        label: Some("nana-ui default gpu-view pipeline layout"),
-                        bind_group_layouts: &[],
-                        immediate_size: 0,
-                    });
-                shader.pipeline(
-                    device,
-                    "vertex_main",
-                    "fragment_main",
-                    &[],
-                    |vs_module, vs_ep, fs_module, fs_ep, _| {
-                        device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-                            label: Some("nana-ui default gpu-view pipeline"),
-                            layout: Some(&pipeline_layout),
-                            vertex: wgpu::VertexState {
-                                module: vs_module,
-                                entry_point: Some(vs_ep),
-                                buffers: &[Some(wgpu::VertexBufferLayout {
-                                    array_stride: std::mem::size_of::<GpuViewInstance>() as u64,
-                                    step_mode: wgpu::VertexStepMode::Instance,
-                                    attributes: &wgpu::vertex_attr_array![
-                                        0 => Float32x4,
-                                        1 => Float32x4,
-                                        2 => Float32x4,
-                                        3 => Float32x4,
-                                    ],
-                                })],
-                                compilation_options: wgpu::PipelineCompilationOptions::default(),
-                            },
-                            fragment: Some(wgpu::FragmentState {
-                                module: fs_module,
-                                entry_point: Some(fs_ep),
-                                targets: &[Some(wgpu::ColorTargetState {
-                                    format,
-                                    blend: Some(wgpu::BlendState::REPLACE),
-                                    write_mask: wgpu::ColorWrites::ALL,
-                                })],
-                                compilation_options: wgpu::PipelineCompilationOptions::default(),
-                            }),
-                            primitive: wgpu::PrimitiveState::default(),
-                            depth_stencil: None,
-                            multisample: wgpu::MultisampleState::default(),
-                            multiview_mask: None,
-                            cache: None,
-                        })
+            device,
+            "vertex_main",
+            "fragment_main",
+            &[],
+            |vs_module, vs_ep, fs_module, fs_ep, _| {
+                device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+                    label: Some("nana-ui default gpu-view pipeline"),
+                    layout: Some(&pipeline_layout),
+                    vertex: wgpu::VertexState {
+                        module: vs_module,
+                        entry_point: Some(vs_ep),
+                        buffers: &[Some(wgpu::VertexBufferLayout {
+                            array_stride: std::mem::size_of::<GpuViewInstance>() as u64,
+                            step_mode: wgpu::VertexStepMode::Instance,
+                            attributes: &wgpu::vertex_attr_array![
+                                0 => Float32x4,
+                                1 => Float32x4,
+                                2 => Float32x4,
+                                3 => Float32x4,
+                            ],
+                        })],
+                        compilation_options: wgpu::PipelineCompilationOptions::default(),
                     },
-                )
+                    fragment: Some(wgpu::FragmentState {
+                        module: fs_module,
+                        entry_point: Some(fs_ep),
+                        targets: &[Some(wgpu::ColorTargetState {
+                            format,
+                            blend: Some(wgpu::BlendState::REPLACE),
+                            write_mask: wgpu::ColorWrites::ALL,
+                        })],
+                        compilation_options: wgpu::PipelineCompilationOptions::default(),
+                    }),
+                    primitive: wgpu::PrimitiveState::default(),
+                    depth_stencil: None,
+                    multisample: wgpu::MultisampleState::default(),
+                    multiview_mask: None,
+                    cache: None,
+                })
             },
-        )
-        .expect("pipeline uses this context generation");
-        Self {
+        )?;
+        Ok(Self {
             pipeline,
             dest_size: [0, 0],
             instances: ManagedBuffer::new(device.create_buffer(&wgpu::BufferDescriptor {
@@ -425,13 +427,13 @@ impl PreparedGpuView {
             next_index: 0,
             prepare_pass: 0,
             drawn: false,
-        }
+        })
     }
 }
 
 #[cfg(all(test, target_vendor = "apple"))]
 pub(crate) fn prewarm_for_msl_regen(gpu: &nana_gpu::GpuContext) {
-    let _ = PreparedGpuView::new(
+    let _ = PreparedGpuView::try_new(
         __framework::device(gpu),
         wgpu::TextureFormat::Rgba16Float,
         gpu,

@@ -4203,6 +4203,7 @@ mod intrinsic_sizing {
         image: StableNodeId,
         /// 50x30, `overflow: hidden`, holding a label.
         clipped: StableNodeId,
+        clipped_label: StableNodeId,
         /// A 60x60 text node of its own.
         text: StableNodeId,
         /// A 30x20 text node of its own, that neither sets the line's baseline
@@ -4250,7 +4251,7 @@ mod intrinsic_sizing {
                     ..atom(50.0, 30.0)
                 },
             );
-            b.label(clipped, "Clipped");
+            let clipped_label = b.label(clipped, "Clipped");
             let text = b.label(block, text);
             b.queue.set_style(text, styled(atom(60.0, 60.0)));
             let note = b.label(block, note);
@@ -4269,6 +4270,7 @@ mod intrinsic_sizing {
                 tall,
                 image,
                 clipped,
+                clipped_label,
                 text,
                 note,
             };
@@ -4290,29 +4292,33 @@ mod intrinsic_sizing {
             self.frame();
         }
 
-        /// The line's baseline, as the text atom's last line puts it.
+        /// The line's baseline, as the text atom's first line puts it (CSS Flexbox §8.5).
         fn text_baseline(&self) -> f32 {
-            self.last_baseline(self.text)
+            self.first_baseline(self.text)
         }
 
-        /// Where text atom `id` puts its last line's baseline, kept inside its
+        /// Where text atom `id` puts its first line's baseline, kept inside its
         /// box.
-        fn last_baseline(&self, id: StableNodeId) -> f32 {
+        fn first_baseline(&self, id: StableNodeId) -> f32 {
             let world = self.context.world();
             let (_, layout) = world.text_layout(id).expect("shaped text");
-            let last = layout.lines.last().expect("a line").metrics.baseline_y_px;
+            let first = layout.lines.first().expect("a line").metrics.baseline_y_px;
             let bounds = world.layout_box(id).unwrap();
-            bounds.y + last.min(bounds.height)
+            let style = world.node_style(id).unwrap().layout.clone();
+            let top = style.resolved_padding().top + style.resolved_border_width();
+            bounds.y + (top + first).min(bounds.height)
         }
 
         /// Every atom on one baseline, and the line box around them. `short`
-        /// sits by its bottom edge while it has no line box.
+        /// sits by its bottom edge while it has no line box; `clipped` still
+        /// exports its first baseline because `overflow: hidden` does not
+        /// suppress an `inline-flex` baseline.
         fn check(&self, short_empty: bool) {
             let world = self.context.world();
             let bounds = |id| world.layout_box(id).unwrap();
             let baseline = self.text_baseline();
             let lines = world.text_layout(self.text).unwrap().1.lines.len();
-            let mut on_edge = vec![(self.tall, 6.0), (self.image, 4.0), (self.clipped, 0.0)];
+            let mut on_edge = vec![(self.tall, 6.0), (self.image, 4.0)];
             if short_empty {
                 on_edge.push((self.short, 0.0));
             }
@@ -4320,15 +4326,17 @@ mod intrinsic_sizing {
                 let edge = bounds(id).y + bounds(id).height + below;
                 assert!(
                     (edge - baseline).abs() < 0.01,
-                    "{id:?}: bottom margin edge {edge} vs the text's last baseline {baseline} \
+                    "{id:?}: bottom margin edge {edge} vs the text's first baseline {baseline} \
                      ({lines} lines)"
                 );
             }
-            let note = self.last_baseline(self.note);
-            assert!(
-                (note - baseline).abs() < 0.01,
-                "the note's last baseline {note} vs {baseline}"
-            );
+            for text_atom in [self.clipped_label, self.note] {
+                let b = self.first_baseline(text_atom);
+                assert!(
+                    (b - baseline).abs() < 0.01,
+                    "{text_atom:?}: first baseline {b} vs {baseline}"
+                );
+            }
             // Not top-aligned: the atoms' tops differ.
             assert!(bounds(self.short).y > bounds(self.tall).y + 1.0);
             // The line box: highest top to lowest bottom, margins included.
@@ -4399,8 +4407,8 @@ mod intrinsic_sizing {
             line.document,
         );
 
-        // Text that wraps in a box of the same size moves its last baseline:
-        // the box rises to keep that baseline on the line's.
+        // Wrapping adds later lines while the inline-flex container stays
+        // aligned by its FIRST baseline: the baseline stays put.
         let before = line.context.world().layout_box(line.text).unwrap().y;
         let mut queue = MutationQueue::new();
         queue.set_text(
@@ -4425,55 +4433,139 @@ mod intrinsic_sizing {
             60.0
         );
         line.check(true);
-        assert!(line.context.world().layout_box(line.text).unwrap().y < before - 1.0);
+        assert!(
+            (line.context.world().layout_box(line.text).unwrap().y - before).abs() < 0.01,
+            "wrapping must not move inline-flex first baseline"
+        );
         assert_matches_cold(
             &mut line.context,
             &mut AtomLine::new(70.0, "Word word word", "a", false).context,
             line.document,
         );
 
-        // A baseline that moves in a box of the same size, under a line of the
-        // same height: the line's box and size stay, the atom moves.
+        // Moving the first baseline inside a fixed box (padding-top on `note`)
+        // shifts `note` upward while keeping the line box identical.
         let block = line.context.world().layout_box(line.block).unwrap();
         let note = line.context.world().layout_box(line.note).unwrap();
         let mut queue = MutationQueue::new();
-        queue.set_text(
+        queue.set_style(
             line.note,
-            crate::TextContent {
-                value: "aa aa aa aa".into(),
-            },
+            styled(LayoutStyle {
+                display: Some(DisplaySpec::InlineFlex),
+                width: Some(LengthSpec::Px(30.0)),
+                height: Some(LengthSpec::Px(20.0)),
+                padding_top: Some(LengthSpec::Px(8.0)),
+                ..LayoutStyle::default()
+            }),
         );
         line.commit(queue);
-        assert!(
-            line.context
-                .world()
-                .text_layout(line.note)
-                .unwrap()
-                .1
-                .lines
-                .len()
-                > 1
-        );
         line.check(true);
         assert_eq!(line.context.world().layout_box(line.block).unwrap(), block);
         let moved = line.context.world().layout_box(line.note).unwrap();
         assert_eq!((moved.width, moved.height), (note.width, note.height));
         assert!(moved.y < note.y - 1.0, "{moved:?} vs {note:?}");
-        assert_matches_cold(
-            &mut line.context,
-            &mut AtomLine::new(70.0, "Word word word", "aa aa aa aa", false).context,
-            line.document,
-        );
 
-        // A line box arriving in an empty atom gives it a baseline of its own.
+        // Restore default `note` before adding label to `short`.
         let mut queue = MutationQueue::new();
+        queue.set_style(
+            line.note,
+            styled(LayoutStyle {
+                display: Some(DisplaySpec::InlineFlex),
+                width: Some(LengthSpec::Px(30.0)),
+                height: Some(LengthSpec::Px(20.0)),
+                ..LayoutStyle::default()
+            }),
+        );
         short_label_into(&mut queue, line.document, line.short);
         line.commit(queue);
         line.check(false);
         assert_matches_cold(
             &mut line.context,
-            &mut AtomLine::new(70.0, "Word word word", "aa aa aa aa", true).context,
+            &mut AtomLine::new(70.0, "Word word word", "a", true).context,
             line.document,
+        );
+    }
+
+    /// Empty `inline-flex` and `inline-grid` boxes align by their bottom margin edge,
+    /// whereas non-empty ones whose first item has no line box synthesize a baseline from
+    /// that item's bottom border edge (CSS Flexbox §8.5, CSS Grid §11.8), and `overflow: hidden`
+    /// never suppresses their baseline.
+    #[test]
+    fn inline_flex_and_grid_synthesize_baseline_from_empty_first_item() {
+        let document = DocumentId::new(1).unwrap();
+        let (mut b, page) = Builder::page(document, 1, 800.0);
+        let block = b.element(
+            page,
+            LayoutStyle {
+                width: Some(LengthSpec::Px(600.0)),
+                ..LayoutStyle::default()
+            },
+        );
+        let ref_box = b.element(
+            block,
+            LayoutStyle {
+                display: Some(DisplaySpec::InlineFlex),
+                width: Some(LengthSpec::Px(20.0)),
+                height: Some(LengthSpec::Px(40.0)),
+                ..LayoutStyle::default()
+            },
+        );
+        let flex_container = b.element(
+            block,
+            LayoutStyle {
+                display: Some(DisplaySpec::InlineFlex),
+                width: Some(LengthSpec::Px(60.0)),
+                height: Some(LengthSpec::Px(100.0)),
+                align_items: AlignSpec::Start,
+                overflow_x: nana_ui_core::OverflowSpec::Hidden,
+                overflow_y: nana_ui_core::OverflowSpec::Hidden,
+                ..LayoutStyle::default()
+            },
+        );
+        let flex_item = b.element(
+            flex_container,
+            LayoutStyle {
+                width: Some(LengthSpec::Px(30.0)),
+                height: Some(LengthSpec::Px(25.0)),
+                ..LayoutStyle::default()
+            },
+        );
+        let grid_container = b.element(
+            block,
+            LayoutStyle {
+                display: Some(DisplaySpec::InlineGrid),
+                width: Some(LengthSpec::Px(60.0)),
+                height: Some(LengthSpec::Px(100.0)),
+                overflow_y: nana_ui_core::OverflowSpec::Hidden,
+                ..LayoutStyle::default()
+            },
+        );
+        let grid_item = b.element(
+            grid_container,
+            LayoutStyle {
+                width: Some(LengthSpec::Px(30.0)),
+                height: Some(LengthSpec::Px(30.0)),
+                ..LayoutStyle::default()
+            },
+        );
+        let mut context = AppContext::new();
+        context.commit_mutations(b.queue).unwrap();
+        let mut shaper = bundled_face_shaper();
+        product_frame(&mut context, document, viewport(), &mut shaper);
+        let world = context.world();
+        let r = world.layout_box(ref_box).unwrap();
+        let fi = world.layout_box(flex_item).unwrap();
+        let gi = world.layout_box(grid_item).unwrap();
+        let line_baseline = r.y + r.height;
+        assert!(
+            ((fi.y + fi.height) - line_baseline).abs() < 0.01,
+            "non-empty inline-flex item bottom {} vs baseline {line_baseline}",
+            fi.y + fi.height
+        );
+        assert!(
+            ((gi.y + gi.height) - line_baseline).abs() < 0.01,
+            "non-empty inline-grid item bottom {} vs baseline {line_baseline}",
+            gi.y + gi.height
         );
     }
 
@@ -4912,6 +5004,60 @@ mod intrinsic_sizing {
             "{tall:?} in {line:?}"
         );
         assert!((line.height - font).abs() < 0.01, "{line:?}");
+    }
+
+    #[test]
+    fn issue433_inline_flex_atom_in_native_inline_flow_syncs_first_baseline() {
+        let build = |atom_text: &str| {
+            let document = DocumentId::new(1).unwrap();
+            let (mut b, _page) = Builder::page(document, 1, 600.0);
+            let atom = b.detached(LayoutStyle {
+                display: Some(DisplaySpec::InlineFlex),
+                width: Some(LengthSpec::Px(48.0)),
+                height: Some(LengthSpec::Px(64.0)),
+                padding_top: Some(LengthSpec::Px(4.0)),
+                ..LayoutStyle::default()
+            });
+            let atom_label = b.label(atom, atom_text);
+            let mut context = AppContext::new();
+            context.commit_mutations(b.queue).unwrap();
+            let flow = context
+                .create_component(
+                    document,
+                    InlineFlow::new(InlineContent::builder().text("Lead ").child(atom).build())
+                        .width(LengthSpec::Px(400.0)),
+                )
+                .unwrap()
+                .stable_id();
+            (context, document, flow, atom, atom_label)
+        };
+
+        let (mut cx, document, _flow, _atom, atom_label) = build("One");
+        let mut shaper = bundled_face_shaper();
+        product_frame(&mut cx, document, viewport(), &mut shaper);
+
+        // Grow the fixed-size inline-flex atom's label from 1 line to 2 lines:
+        // incremental `sync_inline_metrics` must keep the first line's baseline,
+        // matching a cold build rather than switching to `last_baseline`.
+        let mut q = MutationQueue::new();
+        q.set_text(
+            atom_label,
+            crate::TextContent {
+                value: "One Two Three Four".into(),
+            },
+        );
+        cx.commit_mutations(q).unwrap();
+        product_frame(&mut cx, document, viewport(), &mut shaper);
+        let (_, atom_layout) = cx.world().text_layout(atom_label).expect("shaped text");
+        assert!(
+            atom_layout.lines.len() >= 2,
+            "expected multi-line wrap inside inline-flex atom, got {}",
+            atom_layout.lines.len()
+        );
+
+        let (mut cold, _, _, _, _) = build("One Two Three Four");
+        product_frame(&mut cold, document, viewport(), &mut bundled_face_shaper());
+        assert_matches_cold(&mut cx, &mut cold, document);
     }
 }
 
@@ -7829,5 +7975,97 @@ mod baseline_alignment {
             assert_matches_cold(&mut warm, &mut cold, document());
             previous = step;
         }
+    }
+
+    #[test]
+    fn incremental_subgrid_matches_cold_when_parent_tracks_change() {
+        use nana_ui_core::{GridLine, GridPlacement, GridTrack};
+        let mut shaper = bundled_face_shaper();
+        let make = |cols: [f32; 2], shaper: &mut crate::NanaTextEngineShaper| {
+            let document = DocumentId::new(1).unwrap();
+            let (mut b, page) = Builder::page(document, 1, 400.0);
+            let root = b.element(
+                page,
+                LayoutStyle {
+                    display: Some(DisplaySpec::Grid),
+                    width: Some(LengthSpec::Px(200.0)),
+                    height: Some(LengthSpec::Px(40.0)),
+                    align_items: AlignSpec::Stretch,
+                    grid: nana_ui_core::GridStyle {
+                        columns: Some(vec![GridTrack::Px(cols[0]), GridTrack::Px(cols[1])]),
+                        ..Default::default()
+                    }
+                    .into(),
+                    ..LayoutStyle::default()
+                },
+            );
+            let sub = b.element(
+                root,
+                LayoutStyle {
+                    display: Some(DisplaySpec::Grid),
+                    align_items: AlignSpec::Stretch,
+                    grid: nana_ui_core::GridStyle {
+                        columns_subgrid: true,
+                        placement: GridPlacement {
+                            column_start: GridLine::Index(1),
+                            column_end: GridLine::Index(-1),
+                            ..GridPlacement::default()
+                        }
+                        .into(),
+                        ..Default::default()
+                    }
+                    .into(),
+                    ..LayoutStyle::default()
+                },
+            );
+            let a = b.element(
+                sub,
+                LayoutStyle {
+                    width: Some(LengthSpec::Fill),
+                    height: Some(LengthSpec::Fill),
+                    ..LayoutStyle::default()
+                },
+            );
+            let b_cell = b.element(
+                sub,
+                LayoutStyle {
+                    width: Some(LengthSpec::Fill),
+                    height: Some(LengthSpec::Fill),
+                    ..LayoutStyle::default()
+                },
+            );
+            let mut context = AppContext::new();
+            context.commit_mutations(b.queue).unwrap();
+            product_frame(&mut context, document, viewport(), shaper);
+            (context, document, root, a, b_cell)
+        };
+        let (mut warm, doc, root, a, b_cell) = make([80.0, 120.0], &mut shaper);
+        assert!((warm.world().layout_box(a).unwrap().width - 80.0).abs() < 0.01);
+        assert!((warm.world().layout_box(b_cell).unwrap().x - 80.0).abs() < 0.01);
+
+        // Same total parent width (200px), different column split ([100, 100]):
+        // subgrid cell bounds stay 200x40, yet subgrid children must re-align.
+        let mut queue = MutationQueue::new();
+        queue.set_style(
+            root,
+            styled(LayoutStyle {
+                display: Some(DisplaySpec::Grid),
+                width: Some(LengthSpec::Px(200.0)),
+                height: Some(LengthSpec::Px(40.0)),
+                align_items: AlignSpec::Stretch,
+                grid: nana_ui_core::GridStyle {
+                    columns: Some(vec![GridTrack::Px(100.0), GridTrack::Px(100.0)]),
+                    ..Default::default()
+                }
+                .into(),
+                ..LayoutStyle::default()
+            }),
+        );
+        warm.commit_mutations(queue).unwrap();
+        product_frame(&mut warm, doc, viewport(), &mut shaper);
+        assert!((warm.world().layout_box(a).unwrap().width - 100.0).abs() < 0.01);
+        assert!((warm.world().layout_box(b_cell).unwrap().x - 100.0).abs() < 0.01);
+        let (mut cold, _, _, _, _) = make([100.0, 100.0], &mut shaper);
+        assert_matches_cold(&mut warm, &mut cold, doc);
     }
 }

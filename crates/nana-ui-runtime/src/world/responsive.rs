@@ -137,6 +137,17 @@ impl ResponsiveIndex {
     }
 }
 
+/// What one evaluation cost.
+#[derive(Debug, Default, Clone, Copy)]
+struct Evaluation {
+    size_changes: usize,
+    evaluated: usize,
+    changed: usize,
+    unchanged: usize,
+    downstream: usize,
+    fallbacks: usize,
+}
+
 impl UiWorld {
     /// The rule `id` follows, if it follows one.
     pub fn responsive_rule(&self, id: StableNodeId) -> Option<&Arc<ResponsiveRule>> {
@@ -229,7 +240,7 @@ impl UiWorld {
             );
         }
         if before != self.responsive_variant(id).cloned() {
-            self.restyle(id, None);
+            self.apply_responsive_variant(id);
         }
     }
 
@@ -375,7 +386,7 @@ impl UiWorld {
         }
         let mut containers = std::mem::take(&mut self.responsive.pending);
         containers.sort_unstable();
-        let mut changed = false;
+        let mut cost = Evaluation::default();
         for container in containers {
             let Some(extents) = self.responsive_extents(container) else {
                 continue;
@@ -383,6 +394,7 @@ impl UiWorld {
             let read = self.responsive.read.insert(container, extents);
             let width_moved = read.is_none_or(|read| read.width != extents.width);
             let height_moved = read.is_none_or(|read| read.height != extents.height);
+            cost.size_changes += usize::from(width_moved) + usize::from(height_moved);
             if !width_moved && !height_moved {
                 continue;
             }
@@ -401,9 +413,11 @@ impl UiWorld {
                 if read.is_some_and(|read| read.on(axis) == extents.on(axis)) {
                     continue;
                 }
+                cost.evaluated += 1;
                 let bucket = dependent.rule.bucket_for(extents.on(axis));
                 let current = dependent.bucket;
                 if current == Some(bucket) {
+                    cost.unchanged += 1;
                     continue;
                 }
                 // A bucket the node already left this frame, or a frame
@@ -414,6 +428,8 @@ impl UiWorld {
                     .get(&id)
                     .is_some_and(|left| left.contains(&bucket));
                 if returning || self.responsive.rounds >= MAX_ROUNDS {
+                    cost.unchanged += 1;
+                    cost.fallbacks += 1;
                     continue;
                 }
                 if let Some(current) = current {
@@ -423,13 +439,31 @@ impl UiWorld {
                 if let Some(dependent) = self.responsive.dependents.get_mut(&id) {
                     dependent.bucket = Some(bucket);
                 }
-                changed = true;
+                cost.changed += 1;
                 if before != self.responsive_variant(id).cloned() {
-                    self.restyle(id, None);
+                    cost.downstream += self.apply_responsive_variant(id);
                 }
             }
         }
-        self.responsive.rounds += usize::from(changed);
+        let round = usize::from(cost.changed > 0);
+        self.responsive.rounds += round;
+        self.bump_last_counters(|counters| {
+            counters.record_container_query_evaluation(
+                cost.size_changes,
+                cost.evaluated,
+                cost.changed,
+                cost.unchanged,
+            );
+            counters.record_container_query_results(cost.downstream, round, cost.fallbacks);
+        });
+    }
+
+    /// `id`'s variant changed: restyle it as a style write that moved its
+    /// layout the same way would. Returns the layout seeds queued.
+    fn apply_responsive_variant(&mut self, id: StableNodeId) -> usize {
+        let seeds_before = self.layout_seeds_created;
+        self.restyle(id, None);
+        (self.layout_seeds_created - seeds_before) as usize
     }
 }
 

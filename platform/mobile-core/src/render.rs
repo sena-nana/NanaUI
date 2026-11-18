@@ -91,7 +91,9 @@ impl MobileRenderer {
             surface_config(&surface, &adapter, physical_size, options)?;
         surface.configure(gpu.wgpu().device(), &config);
         let format = config.format;
-        let mut painter = SceneWgpuPainter::new_with_presentation(&gpu, profile.scene_profile());
+        let mut painter =
+            SceneWgpuPainter::try_new_with_presentation(&gpu, profile.scene_profile())
+                .map_err(|error| format!("painter: {error}"))?;
         configure_painter_for_surface(&mut painter, &config, profile, &hdr_info);
         Ok(Self {
             painter,
@@ -126,7 +128,8 @@ impl MobileRenderer {
         surface.configure(self.gpu.wgpu().device(), &config);
         if profile.scene_profile() != self.profile.scene_profile() {
             self.painter =
-                SceneWgpuPainter::new_with_presentation(&self.gpu, profile.scene_profile());
+                SceneWgpuPainter::try_new_with_presentation(&self.gpu, profile.scene_profile())
+                    .map_err(|error| format!("painter: {error}"))?;
         }
         self.profile = profile;
         self.format = config.format;

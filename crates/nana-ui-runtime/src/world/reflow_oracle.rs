@@ -36,6 +36,8 @@ pub(super) struct FrameStats {
     pub(super) frontier: crate::LayoutFrontierStats,
     pub(super) text: nana_text::TextWorkCounters,
     pub(super) layout_passes: usize,
+    pub(super) entities_spawned: usize,
+    pub(super) entities_despawned: usize,
 }
 
 impl FrameStats {
@@ -408,6 +410,10 @@ fn frame(
     let mut seeded_input = HashSet::new();
     for _ in 0..8 {
         let work = context.take_system_work_for(document);
+        stats.entities_spawned = stats.entities_spawned.saturating_add(work.entities_spawned);
+        stats.entities_despawned = stats
+            .entities_despawned
+            .saturating_add(work.entities_despawned);
         drained_any |= !work.is_empty() || resized;
         if let Some(drained) = accessible.as_deref_mut() {
             drained.generation = work.generation;

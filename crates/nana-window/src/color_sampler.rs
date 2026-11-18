@@ -156,6 +156,20 @@ impl Drop for ColorSamplerHandle {
     }
 }
 
+#[cfg(target_os = "macos")]
+fn validate_owner_window(window: Option<&dyn HasWindowHandle>) -> Result<(), ColorSamplerError> {
+    let Some(window) = window else {
+        return Ok(());
+    };
+    let handle = window
+        .window_handle()
+        .map_err(|_| ColorSamplerError::InvalidWindow)?;
+    match handle.as_raw() {
+        raw_window_handle::RawWindowHandle::AppKit(_) => Ok(()),
+        _ => Err(ColorSamplerError::InvalidWindow),
+    }
+}
+
 /// Starts a native screen color sampler without blocking the caller, invoking
 /// `completion` at most once when a color is picked, cancelled, or failed.
 ///
@@ -177,7 +191,7 @@ where
 
     #[cfg(target_os = "macos")]
     {
-        let _ = window;
+        validate_owner_window(window)?;
         crate::platform::pick_screen_color(request_id, completion)
     }
 
@@ -280,5 +294,77 @@ mod tests {
 
         #[cfg(not(any(target_os = "macos", target_os = "windows", target_os = "linux")))]
         assert_eq!(color_sampler_support(), ColorSamplerSupport::Unsupported);
+    }
+
+    #[test]
+    fn result_helpers_and_error_display_classify_outcomes() {
+        let failed = ColorSamplerResult::failed(7, ColorSamplerError::Unsupported);
+        assert_eq!(failed.request_id(), 7);
+        assert!(!failed.is_cancelled());
+        assert_eq!(
+            ColorSamplerError::Unsupported.to_string(),
+            "screen color sampling is unsupported"
+        );
+        assert_eq!(
+            ColorSamplerError::InvalidWindow.to_string(),
+            "invalid owner window for screen color sampling"
+        );
+        assert_eq!(
+            ColorSamplerError::Platform("boom".into()).to_string(),
+            "screen color sampling failed: boom"
+        );
+
+        let nan_picked = ColorSamplerResult::picked(2, [f32::NAN, f32::INFINITY, -1.0]);
+        assert_eq!(
+            nan_picked,
+            ColorSamplerResult::Picked {
+                request_id: 2,
+                rgba: [0.0, 0.0, 0.0, 1.0],
+            }
+        );
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn macos_owner_window_validation_accepts_appkit_and_rejects_others() {
+        use std::num::NonZeroIsize;
+        use std::ptr::NonNull;
+
+        use raw_window_handle::{
+            AppKitWindowHandle, HandleError, RawWindowHandle, Win32WindowHandle, WindowHandle,
+        };
+
+        struct UnavailableWindow;
+        impl HasWindowHandle for UnavailableWindow {
+            fn window_handle(&self) -> Result<WindowHandle<'_>, HandleError> {
+                Err(HandleError::Unavailable)
+            }
+        }
+
+        struct RawFixture(RawWindowHandle);
+        impl HasWindowHandle for RawFixture {
+            fn window_handle(&self) -> Result<WindowHandle<'_>, HandleError> {
+                // SAFETY: Fixture handle is only inspected for its discriminant in this test.
+                Ok(unsafe { WindowHandle::borrow_raw(self.0) })
+            }
+        }
+
+        assert_eq!(validate_owner_window(None), Ok(()));
+        assert_eq!(
+            validate_owner_window(Some(&UnavailableWindow)),
+            Err(ColorSamplerError::InvalidWindow)
+        );
+        let win32 = RawFixture(RawWindowHandle::Win32(Win32WindowHandle::new(
+            NonZeroIsize::new(1).unwrap(),
+        )));
+        assert_eq!(
+            validate_owner_window(Some(&win32)),
+            Err(ColorSamplerError::InvalidWindow)
+        );
+        let mut dummy = 0u8;
+        let appkit = RawFixture(RawWindowHandle::AppKit(AppKitWindowHandle::new(
+            NonNull::from(&mut dummy).cast(),
+        )));
+        assert_eq!(validate_owner_window(Some(&appkit)), Ok(()));
     }
 }

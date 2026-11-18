@@ -832,20 +832,20 @@ pub(super) struct TextProgram(TextGpu);
 impl TextProgram {
     /// A program for targets of `format`, over the atlas pages a pipeline's
     /// [`TextPipeline::atlas_layout`] binds.
-    pub(super) fn new(
+    pub(super) fn try_new(
         device: &wgpu::Device,
         format: wgpu::TextureFormat,
         atlas_layout: &wgpu::BindGroupLayout,
         policy: &nana_gpu::GpuDeviceState,
         precompiled: bool,
-    ) -> Self {
-        Self(TextGpu::new_with_policy(
+    ) -> Result<Self, super::validate::ScenePaintError> {
+        Ok(Self(TextGpu::try_new_with_policy(
             device,
             format,
             atlas_layout,
             Some(policy),
             precompiled,
-        ))
+        )?))
     }
 }
 
@@ -918,17 +918,18 @@ impl TextPipeline {
         _queue: &wgpu::Queue,
         format: wgpu::TextureFormat,
     ) -> Self {
-        Self::with_atlas_limits_policy(device, format, GlyphAtlasLimits::default(), None, false)
+        Self::try_with_atlas_limits_policy(device, format, GlyphAtlasLimits::default(), None, false)
+            .expect("text test pipeline")
     }
 
-    pub(super) fn new_with_policy(
+    pub(super) fn try_new_with_policy(
         device: &wgpu::Device,
         _queue: &wgpu::Queue,
         format: wgpu::TextureFormat,
         policy: &nana_gpu::GpuDeviceState,
         precompiled: bool,
-    ) -> Self {
-        Self::with_atlas_limits_policy(
+    ) -> Result<Self, super::validate::ScenePaintError> {
+        Self::try_with_atlas_limits_policy(
             device,
             format,
             GlyphAtlasLimits::default(),
@@ -949,7 +950,7 @@ impl TextPipeline {
         byte_budget: usize,
         policy: &nana_gpu::GpuDeviceState,
     ) -> Self {
-        Self::with_atlas_limits_policy(
+        Self::try_with_atlas_limits_policy(
             device,
             format,
             GlyphAtlasLimits {
@@ -959,6 +960,7 @@ impl TextPipeline {
             Some(policy),
             false,
         )
+        .expect("text test pipeline")
     }
 
     #[cfg(test)]
@@ -967,21 +969,23 @@ impl TextPipeline {
         format: wgpu::TextureFormat,
         limits: GlyphAtlasLimits,
     ) -> Self {
-        Self::with_atlas_limits_policy(device, format, limits, None, false)
+        Self::try_with_atlas_limits_policy(device, format, limits, None, false)
+            .expect("text test pipeline")
     }
 
-    fn with_atlas_limits_policy(
+    fn try_with_atlas_limits_policy(
         device: &wgpu::Device,
         format: wgpu::TextureFormat,
         limits: GlyphAtlasLimits,
         policy: Option<&nana_gpu::GpuDeviceState>,
         precompiled: bool,
-    ) -> Self {
+    ) -> Result<Self, super::validate::ScenePaintError> {
         let raster = GlyphRasterCache::default();
         let atlas = GlyphAtlasManager::new(device, raster.generation(), limits, policy);
-        let gpu = TextGpu::new_with_policy(device, format, atlas.layout(), policy, precompiled);
+        let gpu =
+            TextGpu::try_new_with_policy(device, format, atlas.layout(), policy, precompiled)?;
         let target = TextPipelineTarget::new(gpu.new_target(device));
-        Self {
+        Ok(Self {
             engine: crate::text_engine::nana_text_engine(),
             rasterizer: PlatformRasterizer::new(crate::text_engine::nana_text_engine()),
             raster,
@@ -1008,7 +1012,7 @@ impl TextPipeline {
             linear_color_override: None,
             paint_color_override: None,
             corner_exponent: 2.0,
-        }
+        })
     }
 
     /// Set the linear color for the next [`Self::prepare`] call. This keeps
@@ -1089,9 +1093,12 @@ impl TextPipeline {
         self.gpu.subpixel_prewarmed()
     }
 
-    /// See [`TextGpu::prewarm_subpixel`].
-    pub(super) fn prewarm_subpixel(&mut self, device: &wgpu::Device) {
-        self.gpu.prewarm_subpixel(device);
+    /// See [`TextGpu::try_prewarm_subpixel`].
+    pub(super) fn try_prewarm_subpixel(
+        &mut self,
+        device: &wgpu::Device,
+    ) -> Result<(), super::validate::ScenePaintError> {
+        self.gpu.try_prewarm_subpixel(device)
     }
 
     pub(super) fn set_subpixel(

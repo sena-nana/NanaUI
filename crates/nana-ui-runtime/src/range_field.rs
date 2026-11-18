@@ -155,9 +155,10 @@ impl AppContext {
     /// has been laid out.
     fn range_edit_placement(&self, range: Entity<RangeField>) -> Option<(f32, f32)> {
         let id = range.stable_id();
-        let Some(thumb) = self.world().range_geometry(id).and_then(|g| g.value_thumb) else {
-            return None;
-        };
+        let thumb = self
+            .world()
+            .range_geometry(id)
+            .and_then(|g| g.value_thumb)?;
         let bounds = self.world().component_layout_box(id)?;
         let border = self
             .world()

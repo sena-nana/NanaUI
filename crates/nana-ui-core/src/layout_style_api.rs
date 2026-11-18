@@ -278,6 +278,11 @@ impl LayoutStyle {
         logical_inset => inset: LogicalEdges,
     });
 
+    set_val!(@in grid {
+        grid_columns_subgrid => columns_subgrid: bool,
+        grid_rows_subgrid => rows_subgrid: bool,
+    });
+
     #[inline]
     pub fn grid_placement(mut self, value: GridPlacement) -> Self {
         if *self.grid.placement != value {

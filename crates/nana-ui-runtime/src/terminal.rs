@@ -705,6 +705,7 @@ impl AppContext {
 /// `TerminalScreen::blank` answers an oversized grid with *no* cells, which
 /// fails `valid()`, which would reject an oversized `<terminal columns="1500" rows="1500">`. Rows give way first: a terminal is read top to bottom,
 /// so the visible window keeps its width.
+#[cfg(test)]
 fn clamped_grid(columns: u16, rows: u16) -> (u16, u16) {
     let columns = columns.max(1);
     let rows = rows.max(1);

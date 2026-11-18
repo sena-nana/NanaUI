@@ -56,6 +56,7 @@ const EN: Record<string, string> = {
   "工作台层": "Workspace, Shell and Dock",
   "工具链": "Toolchain",
   "布局与文本": "Layout and text",
+  "布局与特性迁移指南": "Layout and feature migration",
   "布局与界面合同": "Layout and UI contracts",
   "布局引擎": "Layout engine",
   "布局结果合同": "Layout result contract",
@@ -152,6 +153,7 @@ const zhSidebar = {
         { text: "快速开始", link: "/guide/quick-start" },
         { text: "从 Vue 过来", link: "/guide/from-vue" },
         { text: "示例", link: "/guide/examples" },
+        { text: "布局与特性迁移指南", link: "/guide/migration-layout-and-features" },
       ],
     },
     {

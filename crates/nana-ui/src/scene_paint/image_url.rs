@@ -55,9 +55,16 @@ fn fetch_resource_bytes(
     max_bytes: usize,
     cancellation: &FetchCancellation,
 ) -> Option<Vec<u8>> {
-    let response = host?
-        .fetch_cancellable(FetchRequest::get(url), cancellation.clone())
-        .ok()?;
+    let host = host?;
+    let response = match host.fetch_cancellable(FetchRequest::get(url), cancellation.clone()) {
+        Ok(response) => response,
+        Err(error) => {
+            if error.kind != nana_ui_platform::FetchErrorKind::Cancelled {
+                nana_diagnostics::event!(nana_diagnostics::framework::resource::FETCH_FAILED);
+            }
+            return None;
+        }
+    };
     if !(200..300).contains(&response.status) {
         return None;
     }
@@ -277,6 +284,11 @@ fn decode_image_bytes_with_hint(bytes: &[u8], prefer_svg: bool) -> Option<(u32, 
             None => {}
         }
     }
+    #[cfg(not(feature = "image-codecs-extra"))]
+    if is_extra_codec_image(bytes) {
+        nana_diagnostics::event!(nana_diagnostics::framework::resource::IMAGE_CODEC_UNAVAILABLE);
+        return None;
+    }
     let mut reader = image::ImageReader::new(std::io::Cursor::new(bytes))
         .with_guessed_format()
         .ok()?;
@@ -323,6 +335,14 @@ impl PathExt<'_> {
     }
 }
 
+#[cfg(not(feature = "image-codecs-extra"))]
+fn is_extra_codec_image(bytes: &[u8]) -> bool {
+    bytes.starts_with(&[0xFF, 0xD8, 0xFF])
+        || bytes.starts_with(b"GIF87a")
+        || bytes.starts_with(b"GIF89a")
+        || (bytes.len() >= 12 && bytes.starts_with(b"RIFF") && &bytes[8..12] == b"WEBP")
+}
+
 #[cfg(feature = "svg")]
 const MAX_SVG_EDGE: u32 = 2048;
 
@@ -330,6 +350,7 @@ const MAX_SVG_EDGE: u32 = 2048;
 /// that cannot be decoded.
 #[cfg(not(feature = "svg"))]
 fn decode_svg_rgba(_bytes: &[u8]) -> Option<(u32, u32, Vec<u8>)> {
+    nana_diagnostics::event!(nana_diagnostics::framework::resource::IMAGE_CODEC_UNAVAILABLE);
     None
 }
 
@@ -955,5 +976,179 @@ mod tests {
                 "{text}: Bold is visibly heavier than Regular: {inks:?}"
             );
         }
+    }
+
+    #[derive(Debug)]
+    struct FailingFetchHost {
+        policy: nana_ui_platform::FetchPolicy,
+        cancelled: bool,
+    }
+
+    impl nana_ui_platform::FetchHost for FailingFetchHost {
+        fn fetch(
+            &self,
+            _request: FetchRequest,
+        ) -> Result<nana_ui_platform::FetchResponse, nana_ui_platform::FetchError> {
+            let kind = if self.cancelled {
+                nana_ui_platform::FetchErrorKind::Cancelled
+            } else {
+                nana_ui_platform::FetchErrorKind::Network
+            };
+            Err(nana_ui_platform::FetchError::new(
+                kind,
+                "simulated fetch failure",
+            ))
+        }
+
+        fn fetch_cancellable(
+            &self,
+            request: FetchRequest,
+            _cancellation: FetchCancellation,
+        ) -> Result<nana_ui_platform::FetchResponse, nana_ui_platform::FetchError> {
+            self.fetch(request)
+        }
+
+        fn policy(&self) -> &nana_ui_platform::FetchPolicy {
+            &self.policy
+        }
+    }
+
+    fn count_events_named(dir: &std::path::Path, event_name: &str, body: impl FnOnce()) -> usize {
+        let guard = nana_diagnostics::install(
+            nana_diagnostics::DiagnosticsConfig {
+                min_severity: nana_diagnostics::Severity::Debug,
+                persist: nana_diagnostics::PersistMode::All,
+                poll_interval: std::time::Duration::from_millis(5),
+                panic_hook: false,
+                ..nana_diagnostics::DiagnosticsConfig::default()
+            },
+            nana_diagnostics::SessionMetadata::new(
+                "dev.nana.image-url-test",
+                "Image URL diagnostics",
+                "0",
+            ),
+            nana_diagnostics::DiagnosticsPaths::new(dir.join("logs"), dir.join("crash")),
+        )
+        .expect("isolated child owns global diagnostics");
+        nana_diagnostics::register_thread();
+
+        body();
+
+        assert!(
+            guard
+                .diagnostics()
+                .flush(false, std::time::Duration::from_secs(5))
+        );
+        let log = guard.diagnostics().current_log();
+        drop(guard);
+
+        let file = nana_diagnostics::nlog::read_file(log.expect("session log was opened")).unwrap();
+        let count = file
+            .entries
+            .iter()
+            .filter(|entry| {
+                matches!(
+                    entry,
+                    nana_diagnostics::nlog::Entry::Event { key, .. }
+                        if file.event_name(*key) == Some(event_name)
+                )
+            })
+            .count();
+        let _ = std::fs::remove_dir_all(dir);
+        count
+    }
+
+    #[test]
+    fn failed_fetch_host_emits_fetch_failed_unless_cancelled() {
+        const CHILD: &str = "NANA_UI_TEST_IMAGE_URL_FETCH_FAILED_CHILD";
+        if std::env::var_os(CHILD).is_none() {
+            crate::test_gpu::run_child_with_timeout(
+                "scene_paint::image_url::tests::failed_fetch_host_emits_fetch_failed_unless_cancelled",
+                CHILD,
+                "1",
+            );
+            return;
+        }
+
+        let dir = unique_test_dir("nana-image-url-fetch-failed");
+        let count = count_events_named(&dir, "resource.fetch_failed", || {
+            let network_host = nana_ui_platform::shared_fetch_host(FailingFetchHost {
+                policy: nana_ui_platform::FetchPolicy::default(),
+                cancelled: false,
+            });
+            let cancelled_host = nana_ui_platform::shared_fetch_host(FailingFetchHost {
+                policy: nana_ui_platform::FetchPolicy::default(),
+                cancelled: true,
+            });
+            let token = FetchCancellation::new();
+            assert!(
+                fetch_remote_bytes(
+                    "https://example.invalid/fail.png",
+                    Some(&network_host),
+                    &token
+                )
+                .is_none()
+            );
+            assert!(
+                fetch_remote_bytes(
+                    "https://example.invalid/cancel.png",
+                    Some(&cancelled_host),
+                    &token
+                )
+                .is_none()
+            );
+        });
+        assert_eq!(
+            count, 1,
+            "only non-cancelled fetch failures emit fetch_failed"
+        );
+    }
+
+    #[cfg(not(feature = "image-codecs-extra"))]
+    #[test]
+    fn extra_codec_images_without_feature_emit_codec_unavailable() {
+        const CHILD: &str = "NANA_UI_TEST_IMAGE_URL_EXTRA_CODEC_CHILD";
+        if std::env::var_os(CHILD).is_none() {
+            crate::test_gpu::run_child_with_timeout(
+                "scene_paint::image_url::tests::extra_codec_images_without_feature_emit_codec_unavailable",
+                CHILD,
+                "1",
+            );
+            return;
+        }
+
+        let dir = unique_test_dir("nana-image-url-extra-codec");
+        let count = count_events_named(&dir, "resource.image_codec_unavailable", || {
+            assert!(decode_image_bytes(b"\xFF\xD8\xFF\xE0\x00\x10JFIF").is_none());
+            assert!(decode_image_bytes(b"GIF87a\x01\x00\x01\x00").is_none());
+            assert!(decode_image_bytes(b"GIF89a\x01\x00\x01\x00").is_none());
+            assert!(decode_image_bytes(b"RIFF\x18\x00\x00\x00WEBP").is_none());
+            assert!(decode_image_bytes(b"NOT-AN-IMAGE").is_none());
+        });
+        assert_eq!(
+            count, 4,
+            "JPEG, GIF87a, GIF89a, and WebP should emit codec_unavailable"
+        );
+    }
+
+    #[cfg(not(feature = "svg"))]
+    #[test]
+    fn svg_image_without_feature_emits_codec_unavailable() {
+        const CHILD: &str = "NANA_UI_TEST_IMAGE_URL_SVG_CODEC_CHILD";
+        if std::env::var_os(CHILD).is_none() {
+            crate::test_gpu::run_child_with_timeout(
+                "scene_paint::image_url::tests::svg_image_without_feature_emits_codec_unavailable",
+                CHILD,
+                "1",
+            );
+            return;
+        }
+
+        let dir = unique_test_dir("nana-image-url-svg-codec");
+        let count = count_events_named(&dir, "resource.image_codec_unavailable", || {
+            let svg = br#"<svg xmlns="http://www.w3.org/2000/svg" width="4" height="4"/>"#;
+            assert!(decode_image_bytes(svg).is_none());
+        });
+        assert_eq!(count, 1);
     }
 }

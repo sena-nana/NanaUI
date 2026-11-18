@@ -15,15 +15,59 @@ use nana_ui_core::BackdropFilter;
 use super::clip::FragmentClip;
 use crate::gpu_work::ManagedBuffer;
 
-fn cached_fullscreen_pipeline(
+#[allow(clippy::too_many_arguments)]
+fn fullscreen_pipeline_desc(
+    device: &wgpu::Device,
+    layout: &wgpu::PipelineLayout,
+    format: wgpu::TextureFormat,
+    blend: wgpu::BlendState,
+    label: &str,
+    vs_module: &wgpu::ShaderModule,
+    vs_ep: &str,
+    fs_module: &wgpu::ShaderModule,
+    fs_ep: &str,
+) -> wgpu::RenderPipeline {
+    device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+        label: Some(label),
+        layout: Some(layout),
+        vertex: wgpu::VertexState {
+            module: vs_module,
+            entry_point: Some(vs_ep),
+            buffers: &[],
+            compilation_options: wgpu::PipelineCompilationOptions::default(),
+        },
+        fragment: Some(wgpu::FragmentState {
+            module: fs_module,
+            entry_point: Some(fs_ep),
+            targets: &[Some(wgpu::ColorTargetState {
+                format,
+                blend: Some(blend),
+                write_mask: wgpu::ColorWrites::ALL,
+            })],
+            compilation_options: wgpu::PipelineCompilationOptions::default(),
+        }),
+        primitive: wgpu::PrimitiveState::default(),
+        depth_stencil: None,
+        multisample: wgpu::MultisampleState::default(),
+        multiview_mask: None,
+        cache: None,
+    })
+}
+
+#[allow(clippy::too_many_arguments)]
+fn try_cached_fullscreen_pipeline(
     policy: &nana_gpu::GpuDeviceState,
     format: wgpu::TextureFormat,
     material: u64,
-    create: impl FnOnce() -> wgpu::RenderPipeline,
-) -> wgpu::RenderPipeline {
-    nana_gpu::__framework::render_pipeline_state(
-        policy,
-        nana_gpu::PipelineKey {
+    shader: &super::wgsl::Program,
+    device: &wgpu::Device,
+    layout: &wgpu::PipelineLayout,
+    blend: wgpu::BlendState,
+    label: &str,
+) -> Result<wgpu::RenderPipeline, super::validate::ScenePaintError> {
+    shader.try_cached_pipeline(
+        Some(policy),
+        |policy| nana_gpu::PipelineKey {
             generation: policy.generation(),
             target_format: nana_gpu::__framework::format_from_wgpu(format),
             sample_count: 1,
@@ -35,9 +79,16 @@ fn cached_fullscreen_pipeline(
             depth: 0,
             vertex_layout: 0,
         },
-        create,
+        device,
+        "vs_main",
+        "fs_main",
+        &[],
+        |vs_module, vs_ep, fs_module, fs_ep, _| {
+            fullscreen_pipeline_desc(
+                device, layout, format, blend, label, vs_module, vs_ep, fs_module, fs_ep,
+            )
+        },
     )
-    .expect("backdrop pipeline uses this context generation")
 }
 
 #[repr(C)]
@@ -212,11 +263,11 @@ pub(super) struct BackdropPipeline {
 }
 
 impl BackdropPipeline {
-    pub(super) fn new(
+    pub(super) fn try_new(
         device: &wgpu::Device,
         format: wgpu::TextureFormat,
         policy: &nana_gpu::GpuDeviceState,
-    ) -> Self {
+    ) -> Result<Self, super::validate::ScenePaintError> {
         let sampler = device.create_sampler(&wgpu::SamplerDescriptor {
             label: Some("nana-ui.scene.backdrop.sampler"),
             mag_filter: wgpu::FilterMode::Linear,
@@ -326,68 +377,55 @@ impl BackdropPipeline {
                 super::wgsl::BACKDROP_COMPOSITE,
             ]
         );
-        let copy_pipeline = cached_fullscreen_pipeline(policy, format, 1, || {
-            Self::fullscreen_pipeline(
-                device,
-                &copy_shader,
-                &copy_bind_layout,
-                format,
-                "nana-ui.scene.backdrop.copy",
-            )
+        let copy_pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label: Some("nana-ui.scene.backdrop.copy.pipeline"),
+            bind_group_layouts: &[Some(&copy_bind_layout)],
+            immediate_size: 0,
         });
-        let blur_pipeline = cached_fullscreen_pipeline(policy, format, 2, || {
-            Self::fullscreen_pipeline(
-                device,
-                &blur_shader,
-                &blur_bind_layout,
-                format,
-                "nana-ui.scene.backdrop.blur",
-            )
+        let copy_pipeline = try_cached_fullscreen_pipeline(
+            policy,
+            format,
+            1,
+            &copy_shader,
+            device,
+            &copy_pipeline_layout,
+            wgpu::BlendState::REPLACE,
+            "nana-ui.scene.backdrop.copy.pipeline",
+        )?;
+        let blur_pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label: Some("nana-ui.scene.backdrop.blur.pipeline"),
+            bind_group_layouts: &[Some(&blur_bind_layout)],
+            immediate_size: 0,
         });
+        let blur_pipeline = try_cached_fullscreen_pipeline(
+            policy,
+            format,
+            2,
+            &blur_shader,
+            device,
+            &blur_pipeline_layout,
+            wgpu::BlendState::REPLACE,
+            "nana-ui.scene.backdrop.blur.pipeline",
+        )?;
         let composite_pipeline_layout =
             device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
                 label: Some("nana-ui.scene.backdrop.composite.pipeline"),
                 bind_group_layouts: &[Some(&composite_bind_layout)],
                 immediate_size: 0,
             });
-        let composite_pipeline = cached_fullscreen_pipeline(policy, format, 3, || {
-            composite_shader.pipeline(
-                device,
-                "vs_main",
-                "fs_main",
-                &[],
-                |vs_module, vs_ep, fs_module, fs_ep, _| {
-                    device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-                        label: Some("nana-ui.scene.backdrop.composite.pipeline"),
-                        layout: Some(&composite_pipeline_layout),
-                        vertex: wgpu::VertexState {
-                            module: vs_module,
-                            entry_point: Some(vs_ep),
-                            buffers: &[],
-                            compilation_options: wgpu::PipelineCompilationOptions::default(),
-                        },
-                        fragment: Some(wgpu::FragmentState {
-                            module: fs_module,
-                            entry_point: Some(fs_ep),
-                            targets: &[Some(wgpu::ColorTargetState {
-                                format,
-                                blend: Some(wgpu::BlendState::PREMULTIPLIED_ALPHA_BLENDING),
-                                write_mask: wgpu::ColorWrites::ALL,
-                            })],
-                            compilation_options: wgpu::PipelineCompilationOptions::default(),
-                        }),
-                        primitive: wgpu::PrimitiveState::default(),
-                        depth_stencil: None,
-                        multisample: wgpu::MultisampleState::default(),
-                        multiview_mask: None,
-                        cache: None,
-                    })
-                },
-            )
-        });
+        let composite_pipeline = try_cached_fullscreen_pipeline(
+            policy,
+            format,
+            3,
+            &composite_shader,
+            device,
+            &composite_pipeline_layout,
+            wgpu::BlendState::PREMULTIPLIED_ALPHA_BLENDING,
+            "nana-ui.scene.backdrop.composite.pipeline",
+        )?;
         let uniform_usage = wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST;
         let initial_passes = INITIAL_FROST_SLOTS * PASSES_PER_FROST;
-        Self {
+        Ok(Self {
             ping: None,
             pong: None,
             width: 0,
@@ -411,7 +449,7 @@ impl BackdropPipeline {
             uniform_slab_passes: initial_passes,
             pending: Vec::new(),
             corner_exponent: 2.0,
-        }
+        })
     }
 
     fn uniform_offset(slot: u32, pass: u64) -> u64 {
@@ -526,53 +564,6 @@ impl BackdropPipeline {
                 },
             ],
         })
-    }
-
-    fn fullscreen_pipeline(
-        device: &wgpu::Device,
-        shader: &super::wgsl::Program,
-        bind_layout: &wgpu::BindGroupLayout,
-        format: wgpu::TextureFormat,
-        label: &str,
-    ) -> wgpu::RenderPipeline {
-        let layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-            label: Some(&format!("{label}.pipeline")),
-            bind_group_layouts: &[Some(bind_layout)],
-            immediate_size: 0,
-        });
-        shader.pipeline(
-            device,
-            "vs_main",
-            "fs_main",
-            &[],
-            |vs_module, vs_ep, fs_module, fs_ep, _| {
-                device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-                    label: Some(&format!("{label}.pipeline")),
-                    layout: Some(&layout),
-                    vertex: wgpu::VertexState {
-                        module: vs_module,
-                        entry_point: Some(vs_ep),
-                        buffers: &[],
-                        compilation_options: wgpu::PipelineCompilationOptions::default(),
-                    },
-                    fragment: Some(wgpu::FragmentState {
-                        module: fs_module,
-                        entry_point: Some(fs_ep),
-                        targets: &[Some(wgpu::ColorTargetState {
-                            format,
-                            blend: Some(wgpu::BlendState::REPLACE),
-                            write_mask: wgpu::ColorWrites::ALL,
-                        })],
-                        compilation_options: wgpu::PipelineCompilationOptions::default(),
-                    }),
-                    primitive: wgpu::PrimitiveState::default(),
-                    depth_stencil: None,
-                    multisample: wgpu::MultisampleState::default(),
-                    multiview_mask: None,
-                    cache: None,
-                })
-            },
-        )
     }
 
     fn scratch_extent(&self, device: &wgpu::Device) -> Option<[u32; 2]> {

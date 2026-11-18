@@ -1,0 +1,14 @@
+# cargo-deny policy for the standalone css-parity-webview reference tool (excluded from main workspace).
+# CI runs it with `cargo-deny-action` and `manifest-path: tools/css-parity-webview/Cargo.toml`.
+#
+# The tool links tao/wry, whose Linux backend still sits on the gtk-rs 0.18
+# line. The current RustSec database flags only proc-macro-error on that path
+# (the gtk-rs 0.18 unmaintained notices and the glib 0.18 `VariantStrIter`
+# advisory no longer match this lockfile); keep ignores limited to IDs that
+# `cargo deny check advisories` actually reports so a stale entry warns.
+
+[advisories]
+unmaintained = "all"
+ignore = [
+    { id = "RUSTSEC-2024-0370", reason = "proc-macro-error 1.0.4 arrives solely via tao's Linux/GTK gtk-rs 0.18 proc-macro dependency path (gtk3-macros / glib-macros) inside this isolated macOS WKWebView reference tool, which NanaUI product crates never link. Remove when tao/wry move off gtk-rs 0.18." },
+]

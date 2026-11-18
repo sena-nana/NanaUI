@@ -56,6 +56,12 @@ Issue #186 的评估结论为 **NO-GO**：WGPU 仍是 NanaUI 的唯一正式图�
 
 设备带 `PIPELINE_CACHE`（宿主设备在适配器提供时都会请求）的每个 `GpuContext` 自有一个管线缓存，并通过 fork 的 `wgpu::Device::set_default_pipeline_cache` 设为设备默认缓存。所有不指名缓存创建的管线都经过它——各场景家族、表面与文字材质、图表程序，以及在原始设备上自建管线的渲染器。DX12 上它存放编译好的着色器字节码，缓存里有的阶段不再交给 DXC/FXC 编译 naga 写出的 HLSL；Vulkan 上它就是驱动的 `VkPipelineCache`。Metal 与 GL 没有（`pipeline_cache_key()` 为 `None`）。
 
+预编译着色器与非 panic 失败路径：
+
+- **三条内置预编译路径与 Apple 基线**：Windows DX12 使用 `scene_paint::precompiled`（DXIL）；Apple Metal 使用 `scene_paint::msl_precompiled`（单份压缩存档 `stages.msl.zz`，最低基线为 macOS 14.0+ / iOS 17.0+ 的 `MSL 3.1`，`nana-packager` 的 `minimum_system_version` 默认也是 `"14.0"`）；其余平台使用自包含二进制 `NAGA1` 编解码（`scene_paint::naga_ir::codec`，不依赖 `bincode`）序列化的入口点裁剪 `naga_ir`。运行时若检测到 Metal 设备的 MSL 版本低于 `(3, 1)`，不会直接喂入 3.1 MSL；`wgpu_hal::metal::Device` 尊重源头声明 `// language: metal<maj>.<min>` 并以适配器能力上限封顶。
+- **惰性作用域共享解压（`ArchiveScope` + `ArchiveLease`）**：`msl_precompiled::archive_scope()` 创建零开销作用域，`lease_archive()` 通过 `Weak` 缓存让 `SceneWgpuPainter::try_new_with_presentation` / `try_build_pipeline_set` 并发建造工作线程仅在冷构建未命中时共享一次解压（热管线缓存命中时 `0` 次解压，计入 `gpu::MSL_ARCHIVE_DECOMPRESSIONS` / `gpu::MSL_ARCHIVE_DECOMPRESS_NS` / `gpu::MSL_ARCHIVE_DECOMPRESSED_BYTES`）；离开最外层 `ArchiveScope` 后释放强引用，稳态常驻未压缩 MSL 归零为 `0 B`。
+- **错误作用域与 `try_new*`**：预编译模块/管线创建置于 `OutOfMemory` / `Internal` / `Validation` 错误作用域内；`Program::try_pipeline` 在启用 `runtime-wgsl`（或测试）时降级回 WGSL 并记录 `gpu::SHADER_PRECOMPILED_FALLBACK`，在无 WGSL 回退的构建中记录 `gpu::SHADER_BUILD_FAILED` 并返回 `Err(ScenePaintError::ShaderUnavailable)`（自定义 WGSL 材质被拒发出 `gpu.material.rejected`）。宿主与渲染驱动通过 `SceneWgpuPainter::try_new` / `try_new_with_presentation`（返回 `Result<Self, ScenePainterError>`）显式报告失败而非 panic；具体重新生成与新鲜度检查见 [启动、尺寸、帧与性能](startup.md)。
+
 框架只交出、收回字节，放在哪里由宿主决定：
 
 - `GpuContext::pipeline_cache_key()` 说明字节属于谁；`file_stem()` 为 `dx12`（字节码与适配器无关）或 `vulkan-<vendor>-<device>`。

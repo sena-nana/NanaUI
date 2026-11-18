@@ -1587,39 +1587,43 @@ impl StraightAlpha {
             bind_group_layouts: &[Some(&layout)],
             immediate_size: 0,
         });
-        let pipeline = shader.pipeline(
-            device,
-            "vs",
-            "fs",
-            &[],
-            |vs_module, vs_ep, fs_module, fs_ep, _| {
-                device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-                    label: Some("nana-ui.window-output.straight"),
-                    layout: Some(&pipeline_layout),
-                    vertex: wgpu::VertexState {
-                        module: vs_module,
-                        entry_point: Some(vs_ep),
-                        compilation_options: Default::default(),
-                        buffers: &[],
-                    },
-                    primitive: wgpu::PrimitiveState::default(),
-                    depth_stencil: None,
-                    multisample: wgpu::MultisampleState::default(),
-                    fragment: Some(wgpu::FragmentState {
-                        module: fs_module,
-                        entry_point: Some(fs_ep),
-                        compilation_options: Default::default(),
-                        targets: &[Some(wgpu::ColorTargetState {
-                            format: wgpu::TextureFormat::Bgra8Unorm,
-                            blend: None,
-                            write_mask: wgpu::ColorWrites::ALL,
-                        })],
-                    }),
-                    multiview_mask: None,
-                    cache: None,
-                })
-            },
-        );
+        let pipeline = shader
+            .try_pipeline(
+                device,
+                "vs",
+                "fs",
+                &[],
+                |vs_module, vs_ep, fs_module, fs_ep, _| {
+                    device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+                        label: Some("nana-ui.window-output.straight"),
+                        layout: Some(&pipeline_layout),
+                        vertex: wgpu::VertexState {
+                            module: vs_module,
+                            entry_point: Some(vs_ep),
+                            compilation_options: Default::default(),
+                            buffers: &[],
+                        },
+                        primitive: wgpu::PrimitiveState::default(),
+                        depth_stencil: None,
+                        multisample: wgpu::MultisampleState::default(),
+                        fragment: Some(wgpu::FragmentState {
+                            module: fs_module,
+                            entry_point: Some(fs_ep),
+                            compilation_options: Default::default(),
+                            targets: &[Some(wgpu::ColorTargetState {
+                                format: wgpu::TextureFormat::Bgra8Unorm,
+                                blend: None,
+                                write_mask: wgpu::ColorWrites::ALL,
+                            })],
+                        }),
+                        multiview_mask: None,
+                        cache: None,
+                    })
+                },
+            )
+            .map_err(|_| {
+                GpuError::UnsupportedCapability("straight-alpha shader unavailable on device")
+            })?;
         Ok(Self {
             pipeline,
             layout,

@@ -54,21 +54,21 @@ corpus/golden/TX-*.layout.json  签入的基线(Phase 0 由 cosmic 参照引擎�
 | 行布局编排（断行策略、行盒合并、对齐、省略号、layout cache） | **nana-text** | 产品语义与缓存合同，必须与 `TextConstraints` 同一套词汇 |
 | 结构化 diff 与容差 | **nana-text** | 迁移验收合同，必须比 cosmic 活得久——它做到了：参照引擎删了，golden 和 `compare` 还在 |
 | 排版词汇（变体轴 / kerning / line-break / word-break / text-align / direction / writing-mode / wrap-break / line-height / feature） | **nana-ui-core** | 已是后端中立令牌；重造一套只会在 UiWorld 接缝上长出一个有损转换器 |
-| OpenType 表解析、字形轮廓、变体插值 | **成熟 crate**（skrifa / ttf-parser） | #89 非目标明确写了不重实现 |
-| 复杂文字整形（GSUB/GPOS、Arabic joining、印度系重排） | **成熟 crate**（harfrust，仅 `shaping/opentype.rs`） | 同上 |
-| Unicode BiDi 算法（P–I 规则、L2 重排） | **成熟 crate**（unicode-bidi，仅 `shaping/bidi.rs`） | 同上 |
-| UAX #14 断行机会 | **成熟 crate**（unicode-linebreak，仅 `layout/breaks.rs`） | #92 非目标明确写了不自研断行标准表 |
+| OpenType 表解析、字形轮廓、变体插值 | **成熟 crate**（`skrifa`，仅 `font/face.rs`） | #89 非目标明确写了不重实现 |
+| 复杂文字整形（GSUB/GPOS、Arabic joining、印度系重排） | **成熟 crate**（`harfrust`，仅 `shaping/opentype.rs`） | 同上 |
+| Unicode BiDi 算法（P–I 规则、L2 重排） | **成熟 crate**（`unicode-bidi`，仅 `shaping/bidi.rs`） | 同上 |
+| UAX #14 断行机会 | **成熟 crate**（`unicode-linebreak`，仅 `layout/breaks.rs`） | #92 非目标明确写了不自研断行标准表 |
 | 分段、span 规范化、fallback 重试、ShapeKey 与 ShapeRun cache、`ShapedText` | **nana-text**（`shaping` 模块） | 何时重塑形、塑形结果能被谁复用的权威 |
-| Unicode 算法（BiDi、断行、字素簇、script / emoji 属性） | **成熟 crate**（unicode-bidi / unicode-linebreak / unicode-segmentation / icu_properties） | 同上 |
+| Unicode 算法与字符属性表（BiDi、断行、字素簇、script / emoji / 竖排 / 着重号过滤） | **成熟 crate + 生成静态表**（`unicode-bidi` 16.0.0 / `unicode-linebreak` 15.0.0 / `unicode-segmentation` 17.0.0 / `font/ucd_tables.rs` Unicode 17.0.0） | `font/ucd_tables.rs` 由 `scripts/generate-ucd-tables.py` 从 Unicode 17.0.0 UCD 生成，替代 `icu_properties`；各版本基线详见 `third-party.md` |
 | 字体注册、代际、`FontId` 签发、face 匹配、fallback 策略与候选、覆盖率缓存、变体坐标解析 | **nana-text**（`font` 模块） | 缓存失效与「为什么用了这个字体」的权威；不能交给第三方 query |
-| 系统字体目录扫描、name / OS/2 元数据读取 | **成熟 crate**（fontdb，仅 `font/discovery.rs`） | 不用它的 query 和 fallback |
-| 轴、命名实例、彩色表、cmap 读取 | **成熟 crate**（skrifa，仅 `font/face.rs`） | 与 Phase 2 的 harfrust 0.12 同一条 read-fonts 线 |
+| 系统字体目录扫描、name / OS/2 元数据读取 | **成熟 crate**（`fontdb`，仅 `font/discovery.rs`） | 不用它的 query 和 fallback |
+| 轴、命名实例、彩色表、`cmap` 与字形轮廓/位图 strike 读取 | **成熟 crate**（`skrifa`，仅 `font/face.rs`） | 与 Phase 2 的 `harfrust` 0.12 同一条 `read-fonts` 线 |
 | 字形落位（`TextLayout::glyph_placements`）、栅格键、CPU 字形栅格化（`raster` 特性） | **nana-text**（`layout/placement.rs`、`raster` 模块） | 画字的人都要走同一遍笔位置与取整，栅格要用排版时那份字体实例；见「字形落位与 CPU 栅格」一节 |
 | glyph IR、raster cache、atlas 策略与生命周期、上传、text pipeline | **SceneWgpuPainter::text**（`nana-ui` 的 `scene_paint/text/`） | #97：renderer 侧的合同，见下节；不属于 `nana-text`，因为它是 device 状态 |
-| 字形轮廓栅格化 | **成熟 crate**（swash，只在 `nana-text` 的 `raster/outline.rs` 后面） | #97 非目标明确写了不重写 TrueType 栅格器 |
-| 矩形打包 | **成熟 crate**（etagere，只在 `scene_paint/text/atlas.rs` 后面） | 同上；Nana 拥有的是 atlas 策略，不是打包算法 |
+| 字形轮廓栅格化与彩色位图 strike 解码 | **成熟 crate**（`zeno` + `png`，只在 `nana-text` 的 `raster/outline.rs` 后面） | #97 非目标明确写了不重写路径栅格器；轮廓缩放由 `skrifa` 在 `font/face.rs` 完成，替代过去的 `swash` |
+| 矩形打包 | **成熟 crate**（`etagere`，只在 `scene_paint/text/atlas.rs` 后面） | 同上；Nana 拥有的是 atlas 策略，不是打包算法 |
 
-`nana-text` 只许 import 这些 `nana_ui_core` 项：`DirSpec`、`FontFeatureSetting`、`FontKerningSpec`、`FontVariationSetting`、`LineBreakSpec`、`LineHeightSpec`、`TextAlignSpec`、`TextWrapBreak`、`WordBreakSpec`、`WritingModeSpec`。完整清单以 `scripts/check-engine-boundary.py` 的 `NANA_TEXT_CORE_ALLOWLIST` 为准。其中 `nana_ui_core::sort` 不是词汇，是框架各调用点共用的那一份排序例程：在这里再放一份，就又回到每个调用点 6 KiB。
+`nana-text` 只许 import `scripts/check-engine-boundary.py` 的 `NANA_TEXT_CORE_ALLOWLIST` 中列出的 `nana_ui_core` 项（含 `DirSpec`、`FontFeatureSetting`、`FontKerningSpec`、`FontVariationSetting`、`LineBreakSpec`、`LineHeightSpec`、`TextAlignSpec`、`TextAutospaceSpec`、`TextEmphasisPosition`、`TextJustifySpec`、`TextOrientationSpec`、`TextSpacingTrimSpec`、`TextWrapBreak`、`TextWrapStyleSpec`、`WordBreakSpec`、`WritingContext`、`WritingModeSpec`，以及 `dynamic_layout` 和全框架共用的排序例程 `nana_ui_core::sort`——在这里再放一份排序，就又回到每个调用点 6 KiB）。
 
 其余是边界违规。例如 `LayoutStyle`、`ComputedStyle`、语义色、几何。见「边界如何被机器守住」。
 
@@ -242,14 +242,13 @@ Phase 0 没有产品生产者。这是设计如此。当时防止它们变成摆
    手段（依赖图说不了。因为那时它是一条合法的 dev 依赖）。引擎删掉之后它守的是不许有人
    把它的类型再带回来。注释会被剥掉再扫。所以 `lib.rs` 可以正常地把边界写清楚。
 3. **allowlist**：`crates/nana-text/src/**` 引用 `nana_ui_core::` 时。只许命中上面那张表里的项。
-4. **字体层后端**（#90）：`fontdb` 只许出现在 `src/font/discovery.rs`。`skrifa` 只许出现在
-   `src/font/face.rs`。`icu_properties` 只许出现在 `src/font/unicode.rs`。`memmap2` 只许出现在
-   `src/font/mapped.rs`。`read_fonts` /
-   `ttf_parser` 哪都不许点名。这三个模块在 `font/mod.rs` 里不得是 `pub mod`。公开 API 因此
-   不可能带出 `fontdb::ID` 之类的第三方 ID。#91 同理：`harfrust` 只许出现在
-   `src/shaping/opentype.rs`。`unicode_bidi` 只许出现在 `src/shaping/bidi.rs`。模块不叫
-   `harfrust`。就是因为模块名本身也会被这条规则扫到。#92 同理：`unicode_linebreak` 只许出现在
-   `src/layout/breaks.rs`。
+4. **字体层、整形、排版与栅格后端**（#90 / #91 / #92）：`fontdb` 只许出现在 `src/font/discovery.rs`；`skrifa` 只许出现在
+   `src/font/face.rs`；`memmap2` 只许出现在 `src/font/mapped.rs`；`harfrust` 只许出现在
+   `src/shaping/opentype.rs`；`unicode_bidi` 只许出现在 `src/shaping/bidi.rs`；`unicode_linebreak` 只许出现在
+   `src/layout/breaks.rs`；`zeno` 与 `png` 只许出现在 `src/raster/outline.rs`（`raster` 特性）；而 `read_fonts`、
+   `ttf_parser`、`icu_properties`、`swash` 哪都不许点名（Unicode 静态属性表改为由 `scripts/generate-ucd-tables.py` 生成在
+   `src/font/ucd_tables.rs` 供 `src/font/unicode.rs` 查询）。模块名本身也会被这条规则扫到（例如模块不叫 `harfrust`），
+   且这些封装模块在各自父 `mod.rs` 里不得是 `pub mod`，公开 API 因此不可能带出 `fontdb::ID` 之类的第三方类型。
 
 ### 参照引擎去哪了
 
@@ -1180,9 +1179,9 @@ locale 作用域有三层：
 参数是带类型的 `MessageArgs`：文字、数字、货币（金额和 ISO 4217 代码）、日期时间。
 
 格式化走 `LocaleFormatter` 这个后端无关的接口：
-- 运行时默认装的是 `IcuFormatter`（`icu` 特性，默认开启），用 ICU4X 和它编译进来的 CLDR 数据：复数规则、数字、日期和时间；
-- 关掉这个特性时用 `PlainFormatter`：英语复数规则、`.` 作小数点的数字、ISO 日期；
-- `nana-ui` 和 `nana-ui-scene` 显式转发 `icu`，并在默认 feature 中保留它；`nana-ui` 的 `full` 也包含它。应用可以使用 `default-features = false` 并只启用实际组件，以省去 ICU 格式化和 CLDR 数据。工作区内部的 runtime/scene 依赖不继承默认 feature，避免重新开启它；`nana-text` 的 Unicode 属性和 URL 处理所需的 ICU 不受此开关影响。
+- 启用 `icu`（可选，含于 `nana-ui` 的 `full`；各内部 crate `default = []`）后安装 `IcuFormatter`，用 ICU4X 和它编译进来的 CLDR 数据格式化复数规则、数字、日期和时间；
+- 关掉该特性时默认用 `PlainFormatter`：英语复数规则、`.` 作小数点的数字、ISO 日期；
+- `nana-ui` 和 `nana-ui-scene` 显式按需转发 `icu`（不列入默认 feature），`nana-ui` 的 `full` 包含它。工作区内部的 runtime/scene 依赖关闭默认 feature，避免其它依赖无意重新开启 ICU；`nana-text` 的 Unicode 属性已改用编译期静态表（`font/ucd_tables.rs`），不依赖 ICU；`url` / `idna` 的网址处理链路所需 ICU 不受此开关影响。
 - 应用也可以装自己的实现：`UiWorld::set_locale_formatter`。ICU 的类型不出这个接口。
 - 货币目前写成「代码 + 按 locale 分组的两位小数」（`USD 1,234.50`）。ICU4X 的货币格式化还在 experimental 里，没有用。
 
@@ -1647,7 +1646,7 @@ span 的填充色不在 `rich` 里，而是并进已有的 `spans`（`rich_fill_
 
 实例的 `pad[1]` 低两位记它的角色（填充、阴影、描边、实心）。下划线和删除线是 `ROLE_SOLID` 的实心四边形：不采样 atlas，atlas 搬家时不用修。它们按行、按 run 走 glyph cell，同色同装饰的相邻字合成一段；位置和粗细是 `RunMetrics` 里从 `post` / `OS/2` 读来的值，取整到整像素。没写 `decoration_color` 的线跟随填充色；和段落本色相同时继承 run 行，改色不用重建。竖排段落目前不画装饰线。
 
-`Stroke` 和 `Blur` 只从轮廓栅格（swash），彩色字形也一样。被描边的字形，填充也带 `GlyphSynthesis::OUTLINE_RASTER` 走 swash：Windows 上 DirectWrite 画的填充和 swash 画的描边差半个像素就会露边。阴影不需要，填充照旧走平台栅格器。
+`Stroke` 和 `Blur` 只从轮廓栅格（`OutlineRasterizer`：`skrifa` 缩放轮廓 + `zeno` 栅格），彩色字形也一样。被描边的字形，填充也带 `GlyphSynthesis::OUTLINE_RASTER` 走 `OutlineRasterizer`：Windows 上 DirectWrite 画的填充和 `OutlineRasterizer` 画的描边差半个像素就会露边。阴影不需要，填充照旧走平台栅格器。
 
 模糊在 CPU 上对 8 位覆盖率做可分离高斯：四周按 3σ 补边，核归一化，总覆盖率守恒（测试要求偏差 < 2%）。半径超过 8 个栅格像素时先 2×2 降采样、用一半的 σ 模糊、再双线性放大。逻辑半径封顶 24px。模糊结果和普通位图一样进栅格缓存和 atlas，键里有半径和扩散，没有颜色。
 
@@ -1819,7 +1818,7 @@ cutover 之后仍有几条路径不经过 `nana-text` 量字。或者量了但�
 `raster` 特性（`nana-ui` 的 `gpu` 打开它）带来 `nana_text::raster`：
 
 - **栅格键**：`GlyphRasterKey` 及其各部分（`GlyphFontId`、`GlyphVariationId`、`GlyphSynthesis`、`GlyphRenderMode`、四分之一像素的 `SubpixelBin`、按位存的字号）。颜色、不透明度和变换不在键里。
-- **`OutlineRasterizer`**：在 CPU 上把一个键栅格成 `GlyphImage`——灰度覆盖率、彩色位图或子像素覆盖率，以及描边与模糊的派生覆盖率。face 取自同一个引擎的字体层，所以栅格用的就是塑形时那份实例。swash 只在 `raster/outline.rs` 里出现。
+- **`OutlineRasterizer`**：在 CPU 上把一个键栅格成 `GlyphImage`——灰度覆盖率、彩色位图或子像素覆盖率，以及描边与模糊的派生覆盖率。face 取自同一个引擎的字体层，所以栅格用的就是塑形时那份实例。轮廓缩放与位图 strike 提取经 `font/face.rs` 调用 `skrifa`，路径光栅化与 PNG 位图解码使用 `zeno` 和 `png`（两者只在 `raster/outline.rs` 里出现）。
 - **`rasterize_layout`**：一段文字的所有字形，栅格好并放到位（位图左上角的栅格像素），给自己合成文字、不走 renderer atlas 的宿主用。它每次都重新栅格；常常重画的调用方自己在 `OutlineRasterizer::rasterize` 上面做缓存。
 
 这里没有 GPU：上传、atlas 和合成都归调用方。renderer 在它上面实现自己的 `GlyphRasterizer` 边界、raster cache 与 atlas；Windows 上 DirectWrite 接管轮廓字形，其余仍交给 `OutlineRasterizer`。
@@ -2725,14 +2724,9 @@ alpha 用。黑字白底一个半覆盖的边缘像素显示成 sRGB 0.74。笔�
 效果（`gamma.rs` 单测钉住）：黑字白底半覆盖像素 0.74 → 0.54。白字黑底反而略细于线性
 混合。与 DirectWrite 一致。彩色字形（emoji）不校正。
 
-### 2. hinting：不需要改
+### 2. hinting：直接走 `skrifa`（已去除 `swash`）
 
-原计划换成 skrifa 的「只竖直方向」light hinting。核查后不需要：swash 0.2.10 内部已经是
-skrifa。且固定用 `Lcd + preserve_linear_metrics`（即只竖直方向、保留线性 advance。CFF
-也走 PostScript hinter）。与 Vello 的唯一差别是 `symmetric_rendering: true`。它只作用于
-TrueType 字节码解释器。默认的 NotoSansSC 不带 hinting 指令。走 autohinter。不受影响。
-受影响的 Segoe UI / 微软雅黑这类 ClearType 调校字体在 Windows 上已由下一节的
-DirectWrite 接管。竖直方向本来就对齐：baseline 取整、行框顶边整像素。y 亚像素档恒为 0。
+原计划从 `swash` 切到 `skrifa`；核查发现旧版 `swash` 内部本就使用相同的 `skrifa` hinting 管线，现已直接在 `font/face.rs` 调用 `skrifa`（`HintingMode::Smooth { lcd_subpixel: Some(LcdLayout::Horizontal), preserve_linear_metrics: true }`，CFF 也走 PostScript hinter），再由 `raster/outline.rs` 用 `zeno` 栅格化。与 Vello 的唯一差别是 `symmetric_rendering: true`（在 `skrifa` 下不启用独立开关），它只作用于 TrueType 字节码解释器；默认的 NotoSansSC 不带 hinting 指令，走 autohinter，不受影响。受影响的 Segoe UI / 微软雅黑这类 ClearType 调校字体在 Windows 上已由下一节的 DirectWrite 接管。竖直方向本来就对齐：baseline 取整、行框顶边整像素，y 亚像素档恒为 0。
 
 ### 3. Windows：DirectWrite 栅格化（`text/raster_dwrite.rs`）
 
@@ -2743,8 +2737,8 @@ DirectWrite。字干、竖直 grid-fit 与系统原生应用一致。face 仍是
 取 `GetRecommendedRenderingMode` 但只保留 `NATURAL_SYMMETRIC` / `OUTLINE`：GDI 兼容与
 aliased 模式会把字形吸到整像素。跟不上四分之一像素的亚像素档。
 
-交回 swash 的：彩色字体（`IsColorFont`）、纯位图字体、竖排里横躺的字形（`ROTATE_CW`）、
-`PIXEL_FONT`。以及 DirectWrite 任何一步失败。face 表仍由 swash 那一侧持有。两个后端
+交回 `OutlineRasterizer`（`raster/outline.rs`）的：彩色字体（`IsColorFont`）、纯位图字体、竖排里横躺的字形（`ROTATE_CW`）、
+`PIXEL_FONT`。以及 DirectWrite 任何一步失败。face 表仍由 `OutlineRasterizer` 那一侧持有。两个后端
 发出的 `GlyphFontId` 不会漂开。
 
 ### 4. ClearType 子像素渲染
@@ -2788,7 +2782,7 @@ aliased 模式会把字形吸到整像素。跟不上四分之一像素的亚像
 | 系统设置变化后刷新 | ClearType 开关 / 面板排列 / gamma 在进程内读一次（painter 创建时）；改了 ClearType 调谐器要重启应用 |
 | 多显示器各自的参数 | 用的是主显示器的 `CreateRenderingParams`，没有按窗口所在显示器取 `CreateMonitorRenderingParams` |
 | 透明窗口上的 ClearType | 故意不做，理由见上 |
-| DirectWrite 彩色字形 | 走 swash；`TranslateColorGlyphRun` 未接 |
+| DirectWrite 彩色字形 | 走 `OutlineRasterizer`（`raster/outline.rs`）；`TranslateColorGlyphRun` 未接 |
 | 缩小变换下的模糊 | scale < 1（按压动画）仍从 device scale 的位图双线性采样，未按缩放重栅格化 |
 | macOS 的调参 | 用 DirectWrite 出厂值；没有逐项对照 CoreText |
 

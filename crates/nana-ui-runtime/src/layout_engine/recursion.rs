@@ -30,6 +30,7 @@ pub(super) struct Boundary {
     pub(super) size: Size,
     pub(super) containing: Size,
     pub(super) parent_font_px: f32,
+    pub(super) inherited: Option<Box<super::grid::InheritedGridTracks>>,
 }
 
 #[derive(Clone, Copy)]

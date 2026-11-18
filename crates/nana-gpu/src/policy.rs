@@ -233,8 +233,10 @@ struct PolicyState {
     pipelines: StampedCache<PipelineKey, wgpu::RenderPipeline>,
     /// Pipelines some thread is compiling right now. The compile runs outside
     /// this state's lock; a second request for the same key waits on the
-    /// first one's cell instead of compiling it again.
-    compiling: HashMap<PipelineKey, Arc<OnceLock<wgpu::RenderPipeline>>>,
+    /// first one's cell instead of compiling it again. `None` records a
+    /// failed compile: waiters then retry with their own factory, and the
+    /// failure is never stored in `pipelines`.
+    compiling: HashMap<PipelineKey, Arc<OnceLock<Option<wgpu::RenderPipeline>>>>,
     retired_pipelines: Vec<(u64, wgpu::RenderPipeline)>,
     layouts: StampedCache<u64, Arc<wgpu::BindGroupLayout>>,
     retired_layouts: Vec<(u64, Arc<wgpu::BindGroupLayout>)>,
@@ -676,51 +678,102 @@ impl GpuDeviceState {
         key: PipelineKey,
         create: impl FnOnce() -> wgpu::RenderPipeline,
     ) -> Result<wgpu::RenderPipeline, crate::GpuError> {
+        match self.try_pipeline(key, || Ok::<_, std::convert::Infallible>(create()))? {
+            Ok(pipeline) => Ok(pipeline),
+            Err(never) => match never {},
+        }
+    }
+
+    /// [`Self::pipeline`] with a fallible factory. A factory error is
+    /// returned to its caller and never stored: the next request for `key`
+    /// compiles again instead of receiving an invalid pipeline. The outer
+    /// error is the registry's own (a device generation mismatch).
+    pub(crate) fn try_pipeline<E>(
+        &self,
+        key: PipelineKey,
+        create: impl FnOnce() -> Result<wgpu::RenderPipeline, E>,
+    ) -> Result<Result<wgpu::RenderPipeline, E>, crate::GpuError> {
         if key.generation != self.generation {
             return Err(crate::GpuError::DeviceMismatch {
                 expected: self.generation,
                 found: key.generation,
             });
         }
-        // A compile can take hundreds of milliseconds (seconds under FXC), so
-        // it runs outside the lock: independent pipelines compile in parallel,
-        // and frame slots, uploads and pools are not held up meanwhile.
-        // Concurrent cold requests for one key share one cell and compile it
-        // once. The factory may itself use this registry.
-        let cell = {
+        let mut create = Some(create);
+        loop {
+            // A compile can take hundreds of milliseconds (seconds under
+            // FXC), so it runs outside the lock: independent pipelines
+            // compile in parallel, and frame slots, uploads and pools are not
+            // held up meanwhile. Concurrent cold requests for one key share
+            // one cell and compile it once. The factory may itself use this
+            // registry.
+            let cell = {
+                let mut state = self.inner.lock().unwrap_or_else(|e| e.into_inner());
+                if let Some(pipeline) = state.pipelines.get(&key).cloned() {
+                    state.stats.pipeline_registry_hits += 1;
+                    nana_diagnostics::metric!(
+                        nana_diagnostics::framework::gpu::PIPELINE_REGISTRY_HITS
+                    );
+                    return Ok(Ok(pipeline));
+                }
+                Arc::clone(state.compiling.entry(key).or_default())
+            };
+            let mut outcome: Option<Result<(), E>> = None;
+            let pipeline = cell
+                .get_or_init(|| {
+                    let create = create
+                        .take()
+                        .expect("a request compiles at most once before returning");
+                    match create() {
+                        Ok(pipeline) => {
+                            outcome = Some(Ok(()));
+                            Some(pipeline)
+                        }
+                        Err(error) => {
+                            outcome = Some(Err(error));
+                            None
+                        }
+                    }
+                })
+                .clone();
             let mut state = self.inner.lock().unwrap_or_else(|e| e.into_inner());
-            if let Some(pipeline) = state.pipelines.get(&key).cloned() {
-                state.stats.pipeline_registry_hits += 1;
-                nana_diagnostics::metric!(nana_diagnostics::framework::gpu::PIPELINE_REGISTRY_HITS);
-                return Ok(pipeline);
+            let Some(outcome) = outcome else {
+                match pipeline {
+                    // Another request compiled it while this one waited.
+                    Some(pipeline) => {
+                        state.stats.pipeline_registry_hits += 1;
+                        nana_diagnostics::metric!(
+                            nana_diagnostics::framework::gpu::PIPELINE_REGISTRY_HITS
+                        );
+                        return Ok(Ok(pipeline));
+                    }
+                    // Another request's compile failed; that failure is not
+                    // this request's answer, so compile with this factory.
+                    None => continue,
+                }
+            };
+            if state
+                .compiling
+                .get(&key)
+                .is_some_and(|current| Arc::ptr_eq(current, &cell))
+            {
+                state.compiling.remove(&key);
             }
-            Arc::clone(state.compiling.entry(key).or_default())
-        };
-        let mut compiled = false;
-        let pipeline = cell
-            .get_or_init(|| {
-                compiled = true;
-                create()
-            })
-            .clone();
-        let mut state = self.inner.lock().unwrap_or_else(|e| e.into_inner());
-        if !compiled {
-            // Another request compiled it while this one waited.
-            state.stats.pipeline_registry_hits += 1;
-            nana_diagnostics::metric!(nana_diagnostics::framework::gpu::PIPELINE_REGISTRY_HITS);
-            return Ok(pipeline);
+            if let Err(error) = outcome {
+                return Ok(Err(error));
+            }
+            let pipeline = pipeline.expect("a successful compile stores its pipeline");
+            let mut evicted = Vec::new();
+            state.pipelines.insert(key, pipeline.clone(), &mut evicted);
+            // Keep evicted backend objects alive until a queue completion
+            // callback drains this list: a command buffer may still use them.
+            state
+                .retired_pipelines
+                .extend(evicted.into_iter().map(|pipeline| (0, pipeline)));
+            state.stats.pipeline_registry_misses += 1;
+            nana_diagnostics::metric!(nana_diagnostics::framework::gpu::PIPELINE_REGISTRY_MISSES);
+            return Ok(Ok(pipeline));
         }
-        state.compiling.remove(&key);
-        let mut evicted = Vec::new();
-        state.pipelines.insert(key, pipeline.clone(), &mut evicted);
-        // Keep evicted backend objects alive until a queue completion
-        // callback drains this list: a command buffer may still use them.
-        state
-            .retired_pipelines
-            .extend(evicted.into_iter().map(|pipeline| (0, pipeline)));
-        state.stats.pipeline_registry_misses += 1;
-        nana_diagnostics::metric!(nana_diagnostics::framework::gpu::PIPELINE_REGISTRY_MISSES);
-        Ok(pipeline)
     }
 
     pub(crate) fn resource_layout(
@@ -899,6 +952,31 @@ mod tests {
             "the factory waited on the policy lock its caller held"
         );
         assert_eq!(policy.stats().pipeline_registry_misses, 1);
+    }
+
+    /// A factory that fails is not cached: the next request for the key runs
+    /// its own factory instead of receiving an invalid pipeline.
+    #[test]
+    fn a_failed_pipeline_compile_is_not_cached() {
+        let device = test_device();
+        let policy = state();
+        let key = pipeline_key(&policy, 0);
+        let failed = policy.try_pipeline(key, || Err::<wgpu::RenderPipeline, _>("refused"));
+        assert!(matches!(failed, Ok(Err("refused"))));
+        assert_eq!(policy.stats().pipeline_registry_misses, 0);
+        assert_eq!(policy.stats().pipeline_registry_hits, 0);
+
+        let mut ran = false;
+        let compiled = policy.try_pipeline(key, || {
+            ran = true;
+            Ok::<_, &str>(test_pipeline(&device))
+        });
+        assert!(matches!(compiled, Ok(Ok(_))));
+        assert!(ran, "the failed compile answered a later request");
+        assert_eq!(policy.stats().pipeline_registry_misses, 1);
+        let hit = policy.try_pipeline(key, || Err::<wgpu::RenderPipeline, _>("unused"));
+        assert!(matches!(hit, Ok(Ok(_))));
+        assert_eq!(policy.stats().pipeline_registry_hits, 1);
     }
 
     #[test]

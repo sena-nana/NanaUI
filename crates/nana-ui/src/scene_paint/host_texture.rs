@@ -31,23 +31,23 @@ impl HostTexturePipeline {
     ) {
         GpuTexturePipeline::invalidate_target_image_bindings(target);
     }
-    pub(super) fn new(
+    pub(super) fn try_new(
         device: &wgpu::Device,
         queue: &wgpu::Queue,
         format: wgpu::TextureFormat,
         policy: &nana_gpu::GpuDeviceState,
         gpu: &nana_gpu::GpuContext,
-    ) -> Self {
-        Self {
-            pipeline: GpuTexturePipeline::new_with_policy(
+    ) -> Result<Self, super::validate::ScenePaintError> {
+        Ok(Self {
+            pipeline: GpuTexturePipeline::try_new_with_policy(
                 device,
                 queue,
                 format,
                 Some(policy),
                 Some(gpu),
-            ),
+            )?,
             corner_exponent: 2.0,
-        }
+        })
     }
 
     /// The scene's corner curve exponent, for the host textures prepared

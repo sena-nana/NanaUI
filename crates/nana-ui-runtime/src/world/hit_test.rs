@@ -25,7 +25,7 @@ pub(super) use candidates::HitScratch;
 pub(super) use clip::HitPathClip;
 #[cfg(test)]
 pub(super) use index::find_hit_transform;
-pub(super) use index::{HitIndex, retain_hit_tree, sort_hit_children};
+pub(super) use index::{HitIndex, count_hit_entries, retain_hit_tree, sort_hit_children};
 pub(super) use space::{project_transformed_box, then_hit, transformed_contains};
 
 #[cfg(test)]

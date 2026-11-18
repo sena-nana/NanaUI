@@ -1,0 +1,21 @@
+# cargo-deny policy for the main NanaUI workspace.
+#
+# Every ignore below names the crate, the path it arrives on and why it cannot
+# be removed yet. Vulnerabilities with a semver-compatible fix are resolved by
+# `cargo update -p <crate>` instead of an ignore. See
+# docs/reference/third-party.md (zh) and docs/en/reference/third-party.md.
+
+[graph]
+# Check the graph with every optional feature (`syntax-highlighting`,
+# `rich-text`, `icu`, ...) so feature-gated dependencies are gated too.
+all-features = true
+
+[advisories]
+unmaintained = "all"
+ignore = [
+    { id = "RUSTSEC-2025-0141", reason = "bincode 1.3.3 (unmaintained) is only pulled transitively via two-face -> syntect for optional `syntax-highlighting` theme/syntax dump loading; NanaUI has no direct `bincode` dependency and uses `scene_paint::naga_ir::codec` for precompiled shaders until upstream `syntect` drops `bincode 1.x`." },
+    { id = "RUSTSEC-2026-0192", reason = "ttf-parser 0.25.1 (unmaintained) is only pulled transitively via the pinned ratex =0.1.14 math renderer (fontdb / ab_glyph / owned_ttf_parser) for optional `rich-text` LaTeX fences; NanaUI's own font parsing in nana-text uses skrifa. Remove when ratex moves to skrifa." },
+    { id = "RUSTSEC-2026-0370", reason = "zvariant 5.x (unmaintained as a standalone crate, merged into zbus 6) is only pulled via zbus 5 from accesskit_unix / atspi (Linux accessibility) and ashpd (portals); no fix exists on the zbus 5 line. Remove when accesskit_unix and ashpd move to zbus 6." },
+    { id = "RUSTSEC-2026-0371", reason = "zbus_names 4.x (unmaintained as a standalone crate, merged into zbus 6) arrives on the same zbus 5 path as zvariant: accesskit_unix / atspi and ashpd on Linux. Remove with the zbus 6 migration." },
+    { id = "RUSTSEC-2026-0372", reason = "zvariant_derive 5.x (unmaintained as a standalone crate, merged into zbus 6) arrives on the same zbus 5 path as zvariant: accesskit_unix / atspi and ashpd on Linux. Remove with the zbus 6 migration." },
+]

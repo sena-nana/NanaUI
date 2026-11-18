@@ -1,6 +1,6 @@
 {
   "id": "T-I01",
-  "title": "display:inline-block 在块容器里并排",
+  "title": "display:inline-flex 在块容器里并排（Chrome 152 + Noto Sans SC 实测）",
   "status": "pass",
   "viewport": [300, 40],
   "tolerance_px": 2,

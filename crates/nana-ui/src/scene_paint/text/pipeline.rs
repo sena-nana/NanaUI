@@ -684,23 +684,23 @@ impl TextGpu {
     /// The text program for targets of `format`, sampling atlas pages bound
     /// through `atlas_layout`. The atlas itself is not part of it, so one
     /// atlas serves every format.
-    pub(super) fn new_with_policy(
+    pub(super) fn try_new_with_policy(
         device: &wgpu::Device,
         format: wgpu::TextureFormat,
         atlas_layout: &wgpu::BindGroupLayout,
         policy: Option<&nana_gpu::GpuDeviceState>,
         precompiled: bool,
-    ) -> Self {
-        Self::new_inner(device, format, atlas_layout, policy, precompiled)
+    ) -> Result<Self, super::super::validate::ScenePaintError> {
+        Self::try_new_inner(device, format, atlas_layout, policy, precompiled)
     }
 
-    fn new_inner(
+    fn try_new_inner(
         device: &wgpu::Device,
         format: wgpu::TextureFormat,
         atlas_layout: &wgpu::BindGroupLayout,
         policy: Option<&nana_gpu::GpuDeviceState>,
         precompiled: bool,
-    ) -> Self {
+    ) -> Result<Self, super::super::validate::ScenePaintError> {
         let globals_layout = if let Some(policy) = policy {
             let vertex_fragment = &[
                 nana_gpu::ShaderStage::Vertex,
@@ -783,41 +783,22 @@ impl TextGpu {
             bind_group_layouts: &[Some(&globals_layout), Some(atlas_layout)],
             immediate_size: 0,
         });
-        let create = || {
-            build_pipeline(
-                device,
-                &layout,
-                format,
-                &text_program(false, precompiled),
-                wgpu::BlendState::ALPHA_BLENDING,
-            )
-        };
-        let pipeline = if let Some(policy) = policy {
-            nana_gpu::__framework::render_pipeline_state(
-                policy,
-                nana_gpu::PipelineKey {
-                    generation: policy.generation(),
-                    target_format: nana_gpu::__framework::format_from_wgpu(format),
-                    sample_count: 1,
-                    shader: 0x7465_7874_6d61_696e,
-                    layout: text_layout_key(),
-                    material: 0,
-                    primitive: 1,
-                    blend: 1,
-                    depth: 0,
-                    vertex_layout: INDEX_BYTES,
-                },
-                create,
-            )
-            .expect("text pipeline uses this context generation")
-        } else {
-            create()
-        };
+        let pipeline = try_cached_text_pipeline(
+            policy,
+            device,
+            &layout,
+            format,
+            &text_program(false, precompiled),
+            0x7465_7874_6d61_696e,
+            0,
+            1,
+            wgpu::BlendState::ALPHA_BLENDING,
+        )?;
         let limits = device.limits();
         let instance_bytes = limits
             .max_storage_buffer_binding_size
             .min(limits.max_buffer_size);
-        Self {
+        Ok(Self {
             materials: Default::default(),
             material_bindings: Default::default(),
             material_pipelines: Default::default(),
@@ -839,7 +820,7 @@ impl TextGpu {
             policy: policy.cloned(),
             instance_slots: u32::try_from(instance_bytes / INSTANCE_BYTES).unwrap_or(u32::MAX),
             precompiled,
-        }
+        })
     }
 
     pub(super) fn register_material(&mut self, material: &nana_ui_core::MaterialRef) {
@@ -988,7 +969,7 @@ fn shade(input:VsOut)->TextShade {
                     let blend=if dual {let c=wgpu::BlendComponent{src_factor:wgpu::BlendFactor::Src1,dst_factor:wgpu::BlendFactor::OneMinusSrc1,operation:wgpu::BlendOperation::Add};wgpu::BlendState{color:c,alpha:c}}else{wgpu::BlendState::ALPHA_BLENDING};
                     let program =
                         super::super::wgsl::Program::material("nana-ui.scene.text.shader", source);
-                    Some(build_pipeline(&device,&layout,format,&program,blend))
+                    try_build_pipeline(&device,&layout,format,&program,blend).ok()
                 })
             };
             #[cfg(not(feature = "runtime-wgsl"))]
@@ -1042,20 +1023,26 @@ fn shade(input:VsOut)->TextShade {
     }
 
     pub(super) fn set_subpixel(&mut self, device: &wgpu::Device, enabled: bool) {
-        self.dual_source = enabled.then(|| {
-            self.prewarmed_dual_source
-                .clone()
-                .unwrap_or_else(|| self.dual_source_pipeline(device))
-        });
+        self.dual_source = enabled
+            .then(|| {
+                self.prewarmed_dual_source
+                    .clone()
+                    .or_else(|| self.try_dual_source_pipeline(device).ok())
+            })
+            .flatten();
     }
 
     /// Compile the subpixel program before the frame that turns it on. It is
     /// the text shader again, as slow to compile, and that frame, a window's
     /// first, would wait for it.
-    pub(super) fn prewarm_subpixel(&mut self, device: &wgpu::Device) {
+    pub(super) fn try_prewarm_subpixel(
+        &mut self,
+        device: &wgpu::Device,
+    ) -> Result<(), super::super::validate::ScenePaintError> {
         if Self::supports_subpixel(device) {
-            self.prewarmed_dual_source = Some(self.dual_source_pipeline(device));
+            self.prewarmed_dual_source = Some(self.try_dual_source_pipeline(device)?);
         }
+        Ok(())
     }
 
     /// Whether the subpixel program was compiled ahead, and is the one in
@@ -1069,46 +1056,30 @@ fn shade(input:VsOut)->TextShade {
                 .is_none_or(|in_use| Some(in_use) == self.prewarmed_dual_source.as_ref())
     }
 
-    fn dual_source_pipeline(&self, device: &wgpu::Device) -> wgpu::RenderPipeline {
+    fn try_dual_source_pipeline(
+        &self,
+        device: &wgpu::Device,
+    ) -> Result<wgpu::RenderPipeline, super::super::validate::ScenePaintError> {
         // `src0 * src1 + dst * (1 - src1)`, channel by channel.
         let per_channel = wgpu::BlendComponent {
             src_factor: wgpu::BlendFactor::Src1,
             dst_factor: wgpu::BlendFactor::OneMinusSrc1,
             operation: wgpu::BlendOperation::Add,
         };
-        let create = || {
-            build_pipeline(
-                device,
-                &self.layout,
-                self.format,
-                &text_program(true, self.precompiled),
-                wgpu::BlendState {
-                    color: per_channel,
-                    alpha: per_channel,
-                },
-            )
-        };
-        if let Some(policy) = &self.policy {
-            nana_gpu::__framework::render_pipeline_state(
-                policy,
-                nana_gpu::PipelineKey {
-                    generation: policy.generation(),
-                    target_format: nana_gpu::__framework::format_from_wgpu(self.format),
-                    sample_count: 1,
-                    shader: 0x7465_7874_6475_616c,
-                    layout: text_layout_key(),
-                    material: 1,
-                    primitive: 1,
-                    blend: 3,
-                    depth: 0,
-                    vertex_layout: INDEX_BYTES,
-                },
-                create,
-            )
-            .expect("dual-source text pipeline uses this context generation")
-        } else {
-            create()
-        }
+        try_cached_text_pipeline(
+            self.policy.as_ref(),
+            device,
+            &self.layout,
+            self.format,
+            &text_program(true, self.precompiled),
+            0x7465_7874_6475_616c,
+            1,
+            3,
+            wgpu::BlendState {
+                color: per_channel,
+                alpha: per_channel,
+            },
+        )
     }
 
     pub(super) fn new_target(&self, device: &wgpu::Device) -> TextTargetGpu {
@@ -1508,53 +1479,108 @@ pub(super) struct TextUploadBytes {
     pub lost: bool,
 }
 
-fn build_pipeline(
+#[allow(clippy::too_many_arguments)]
+fn try_cached_text_pipeline(
+    policy: Option<&nana_gpu::GpuDeviceState>,
     device: &wgpu::Device,
     layout: &wgpu::PipelineLayout,
     format: wgpu::TextureFormat,
     program: &super::super::wgsl::Program,
+    shader_key: u64,
+    material: u64,
+    blend_key: u64,
     blend: wgpu::BlendState,
-) -> wgpu::RenderPipeline {
-    program.pipeline(
+) -> Result<wgpu::RenderPipeline, super::super::validate::ScenePaintError> {
+    program.try_cached_pipeline(
+        policy,
+        |policy| nana_gpu::PipelineKey {
+            generation: policy.generation(),
+            target_format: nana_gpu::__framework::format_from_wgpu(format),
+            sample_count: 1,
+            shader: shader_key,
+            layout: text_layout_key(),
+            material,
+            primitive: 1,
+            blend: blend_key,
+            depth: 0,
+            vertex_layout: INDEX_BYTES,
+        },
         device,
         "vs_main",
         "fs_main",
         &[],
         |vertex, vs_ep, fragment, fs_ep, _| {
-            device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-                label: Some("nana-ui.scene.text.pipeline"),
-                layout: Some(layout),
-                vertex: wgpu::VertexState {
-                    module: vertex,
-                    entry_point: Some(vs_ep),
-                    buffers: &[Some(wgpu::VertexBufferLayout {
-                        array_stride: INDEX_BYTES,
-                        step_mode: wgpu::VertexStepMode::Instance,
-                        attributes: &wgpu::vertex_attr_array!(0 => Uint32),
-                    })],
-                    compilation_options: wgpu::PipelineCompilationOptions::default(),
-                },
-                fragment: Some(wgpu::FragmentState {
-                    module: fragment,
-                    entry_point: Some(fs_ep),
-                    targets: &[Some(wgpu::ColorTargetState {
-                        format,
-                        blend: Some(blend),
-                        write_mask: wgpu::ColorWrites::ALL,
-                    })],
-                    compilation_options: wgpu::PipelineCompilationOptions::default(),
-                }),
-                primitive: wgpu::PrimitiveState {
-                    topology: wgpu::PrimitiveTopology::TriangleStrip,
-                    ..Default::default()
-                },
-                depth_stencil: None,
-                multisample: wgpu::MultisampleState::default(),
-                multiview_mask: None,
-                cache: None,
-            })
+            build_text_pipeline_desc(
+                device, layout, format, blend, vertex, vs_ep, fragment, fs_ep,
+            )
         },
     )
+}
+
+#[cfg(feature = "runtime-wgsl")]
+fn try_build_pipeline(
+    device: &wgpu::Device,
+    layout: &wgpu::PipelineLayout,
+    format: wgpu::TextureFormat,
+    program: &super::super::wgsl::Program,
+    blend: wgpu::BlendState,
+) -> Result<wgpu::RenderPipeline, super::super::validate::ScenePaintError> {
+    program.try_pipeline(
+        device,
+        "vs_main",
+        "fs_main",
+        &[],
+        |vertex, vs_ep, fragment, fs_ep, _| {
+            build_text_pipeline_desc(
+                device, layout, format, blend, vertex, vs_ep, fragment, fs_ep,
+            )
+        },
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn build_text_pipeline_desc(
+    device: &wgpu::Device,
+    layout: &wgpu::PipelineLayout,
+    format: wgpu::TextureFormat,
+    blend: wgpu::BlendState,
+    vertex: &wgpu::ShaderModule,
+    vs_ep: &str,
+    fragment: &wgpu::ShaderModule,
+    fs_ep: &str,
+) -> wgpu::RenderPipeline {
+    device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+        label: Some("nana-ui.scene.text.pipeline"),
+        layout: Some(layout),
+        vertex: wgpu::VertexState {
+            module: vertex,
+            entry_point: Some(vs_ep),
+            buffers: &[Some(wgpu::VertexBufferLayout {
+                array_stride: INDEX_BYTES,
+                step_mode: wgpu::VertexStepMode::Instance,
+                attributes: &wgpu::vertex_attr_array!(0 => Uint32),
+            })],
+            compilation_options: wgpu::PipelineCompilationOptions::default(),
+        },
+        fragment: Some(wgpu::FragmentState {
+            module: fragment,
+            entry_point: Some(fs_ep),
+            targets: &[Some(wgpu::ColorTargetState {
+                format,
+                blend: Some(blend),
+                write_mask: wgpu::ColorWrites::ALL,
+            })],
+            compilation_options: wgpu::PipelineCompilationOptions::default(),
+        }),
+        primitive: wgpu::PrimitiveState {
+            topology: wgpu::PrimitiveTopology::TriangleStrip,
+            ..Default::default()
+        },
+        depth_stencil: None,
+        multisample: wgpu::MultisampleState::default(),
+        multiview_mask: None,
+        cache: None,
+    })
 }
 
 const INSTANCE_BYTES: u64 = std::mem::size_of::<GlyphInstance>() as u64;

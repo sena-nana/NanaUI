@@ -548,7 +548,14 @@ fn run(
 
     let viewport = LayoutViewport::new(logical[0] as f32, logical[1] as f32);
     let mut shaper = NanaTextShaper::default();
-    let mut painter = SceneWgpuPainter::new(context, __framework::format_from_wgpu(FORMAT));
+    let mut painter =
+        match SceneWgpuPainter::try_new(context, __framework::format_from_wgpu(FORMAT)) {
+            Ok(painter) => painter,
+            Err(error) => {
+                eprintln!("scene painter failed to initialize: {error}");
+                std::process::exit(2);
+            }
+        };
     let target = color_target(context, physical);
     // The second window of `MultiWindow`: its own surface, the same device,
     // the same painter — so the same atlas and the same shaped paragraphs.

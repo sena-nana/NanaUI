@@ -264,9 +264,33 @@ pub(crate) struct TextNodeState {
     /// the text depends on.
     shaped_language: Option<Box<nana_text::font::LanguageTag>>,
     language_pending: bool,
+    /// Whether a typography scale change reached this text since it last
+    /// resolved: the pass that lays it out again counts that as the scale's.
+    scale_pending: bool,
 }
 
 impl TextNodeState {
+    /// Whether a pass has resolved this node before: a later resolution is a
+    /// change to text that already exported metrics, not its first layout.
+    pub(crate) fn resolved_before(&self) -> bool {
+        self.stamp.is_some()
+    }
+
+    /// A typography scale change reached this text, if it had resolved
+    /// before: text laid out for the first time under a scale is not one a
+    /// change reached. Returns whether it had.
+    pub(crate) fn note_scale(&mut self) -> bool {
+        let resolved = self.resolved_before();
+        self.scale_pending |= resolved;
+        resolved
+    }
+
+    /// Whether a typography scale change reached this text since it last
+    /// resolved, clearing it.
+    pub(crate) fn take_scale_pending(&mut self) -> bool {
+        std::mem::take(&mut self.scale_pending)
+    }
+
     /// Applies `dirty` as revision bumps, through [`TextDirty::work`]: a
     /// revision moves exactly when its work is implied. Classes that imply no
     /// text work bump nothing, so they cannot make a resolved node stale.

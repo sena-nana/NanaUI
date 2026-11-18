@@ -300,6 +300,8 @@ pub mod set {
             auto_flow: Option<GridAutoFlow>,
             columns_repeat: Option<Shared<GridRepeatAuto>>,
             rows_repeat: Option<Shared<GridRepeatAuto>>,
+            columns_subgrid: bool,
+            rows_subgrid: bool,
             template_areas: Option<GridTemplateAreas>,
             column_line_names: Option<Vec<Vec<String>>>,
             row_line_names: Option<Vec<Vec<String>>>,

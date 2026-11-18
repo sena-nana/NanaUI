@@ -135,11 +135,18 @@ impl ColorField {
 
     pub fn disabled(mut self, disabled: bool) -> Self {
         self.disabled = disabled;
+        if disabled {
+            self.opened = false;
+            self.sampling = false;
+        }
         self
     }
 
     pub fn eyedropper(mut self, enabled: bool) -> Self {
         self.eyedropper = enabled;
+        if !enabled {
+            self.sampling = false;
+        }
         self
     }
 
@@ -203,6 +210,13 @@ impl ComponentView for ColorField {
         ..crate::TypeBehavior::NONE
     };
 
+    fn fit_framework_limits(&mut self) {
+        if self.disabled || !self.eyedropper {
+            self.opened = false;
+            self.sampling = false;
+        }
+    }
+
     fn share_layouts(
         &mut self,
         share: &mut dyn FnMut(&mut std::sync::Arc<nana_ui_core::LayoutStyle>),
@@ -221,9 +235,9 @@ impl ComponentView for ColorField {
             next.hue = self.hue;
             next.sat = self.sat;
             next.val = self.val;
-            next.sampling = self.sampling;
+            next.sampling = self.sampling && next.eyedropper;
         } else {
-            next.sampling = self.sampling;
+            next.sampling = self.sampling && next.eyedropper;
         }
         // Child identities are runtime-owned either way.
         next.swatch = self.swatch;
@@ -441,6 +455,7 @@ impl AppContext {
             *popover =
                 picker_popover(&snapshot, swatch, name).open(snapshot.opened && !snapshot.disabled);
         })?;
+        let sampling_allowed = !snapshot.disabled && show_eyedropper;
         self.update_component(field, |field, _| {
             field.swatch = Some(swatch.stable_id());
             field.hex = Some(hex.stable_id());
@@ -449,6 +464,9 @@ impl AppContext {
             field.hue_slider = Some(hue.stable_id());
             field.eyedropper_button = eyedropper.map(|b| b.stable_id());
             field.bottom_row = Some(bottom_row.stable_id());
+            if !sampling_allowed {
+                field.sampling = false;
+            }
         })?;
 
         if show_eyedropper && let Some(button) = eyedropper {
@@ -1377,5 +1395,66 @@ mod tests {
         let evs = events.lock().unwrap();
         let kinds: Vec<_> = evs.iter().map(|(k, _)| *k).collect();
         assert_eq!(kinds, ["input", "changed"]);
+    }
+
+    #[test]
+    fn disabling_field_or_eyedropper_while_sampling_clears_sampling_and_requests() {
+        let mut context = AppContext::new();
+        context.set_eyedropper_supported(true);
+        let document = DocumentId::new(1).unwrap();
+        let field = context
+            .create_component(document, ColorField::new([1.0, 0.0, 0.0, 1.0]))
+            .unwrap();
+        context.assemble_color_field(field).unwrap();
+        let btn_id = context
+            .read(field, |f| f.eyedropper_button)
+            .unwrap()
+            .unwrap();
+
+        // Start sampling, then disable via set_component (reconcile) before host drains.
+        assert!(context.activate_node(btn_id).unwrap());
+        assert!(context.color_pick_active(field.stable_id()));
+        context
+            .set_component(field, ColorField::new([1.0, 0.0, 0.0, 1.0]).disabled(true))
+            .unwrap();
+        assert!(!context.read(field, |f| f.sampling).unwrap());
+        assert!(!context.color_pick_active(field.stable_id()));
+        assert!(!context.overlay_locks(document, field.stable_id()).menu_open);
+        assert!(context.take_color_pick_requests().is_empty());
+
+        // Re-enable, start sampling, and disable via direct update_component mutation.
+        context
+            .set_component(field, ColorField::new([1.0, 0.0, 0.0, 1.0]).disabled(false))
+            .unwrap();
+        let btn_id = context
+            .read(field, |f| f.eyedropper_button)
+            .unwrap()
+            .unwrap();
+        assert!(context.activate_node(btn_id).unwrap());
+        let drained = context.take_color_pick_requests();
+        assert_eq!(drained, vec![field.stable_id()]);
+        assert!(context.color_pick_active(field.stable_id()));
+
+        context
+            .update_component(field, |f, _| f.disabled = true)
+            .unwrap();
+        assert!(!context.read(field, |f| f.sampling).unwrap());
+        assert!(!context.color_pick_active(field.stable_id()));
+
+        // Re-enable, start sampling, then turn off host eyedropper support.
+        context
+            .set_component(field, ColorField::new([1.0, 0.0, 0.0, 1.0]).disabled(false))
+            .unwrap();
+        let btn_id = context
+            .read(field, |f| f.eyedropper_button)
+            .unwrap()
+            .unwrap();
+        assert!(context.activate_node(btn_id).unwrap());
+        assert!(context.color_pick_active(field.stable_id()));
+        context.set_eyedropper_supported(false);
+        assert!(!context.read(field, |f| f.sampling).unwrap());
+        assert!(!context.color_pick_active(field.stable_id()));
+        assert!(!context.overlay_locks(document, field.stable_id()).menu_open);
+        assert!(context.take_color_pick_requests().is_empty());
     }
 }

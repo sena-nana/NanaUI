@@ -117,18 +117,24 @@ There is exactly one `ActionDescriptor`. It is defined in Runtime (`nana_ui::run
 
 ## Cargo features
 
-`nana-ui` enables `wgpu-backends` (effective only when `gpu` is enabled), `icu`, `snippet-transforms` and `svg` by default. Applications that choose their own graphics backends use `default-features = false` and enable features by responsibility:
+`nana-ui` has `default = []` (no features are enabled by default). Enabling `gpu` (directly or via `hosted`) pulls in only the platform's primary backend; enable individual capabilities explicitly or use `full`. See [Layout, Feature Defaults, and Runtime Migration](../guide/migration-layout-and-features.md):
 
 | feature | Effect |
 | --- | --- |
 | `hosted` | `run_runtime`, winit 0.31-line (workspace git pin, not crates.io 0.31.0), AccessKit; implies `gpu` |
-| `gpu` | `SceneWgpuPainter`, `HostTexture`, `GpuTextureView`, `GpuView` |
+| `gpu` | `SceneWgpuPainter`, `HostTexture`, `GpuTextureView`, `GpuView` (platform primary backend only) |
+| `wgpu-backends` | Enables all standard cross-platform WGPU backends (`dx12`, `vulkan`, `gles`, `metal`) when `gpu` is enabled; included in `full` |
+| `runtime-wgsl` | Runtime WGSL shader compilation fallback (`naga` / `wgpu` WGSL); when disabled, loads precompiled pipelines only and emits `gpu.shader.build_failed` if built-in stages are missing or rejected, and `gpu.material.rejected` for custom WGSL `MaterialProgram`s |
 | `bundled-fonts` | Embeds the Noto Sans SC variable font (`wght` 400–700, about 4.2 MiB) and registers it as the UI font. Without it interface text and SVG text use system fonts; see [Look](look.md#bundled-font-or-system-fonts) for what is traded |
-| `components` | Aggregate of the component families below |
-| `full` | fonts + components + hosted + syntax-highlighting + icu + snippet-transforms + svg |
-| `svg` | SVG images: SVG documents in `url()` textures and `Image`, and a host icon wrapped with an SVG and no shapes. Icons are drawn from their own geometry and do not need it. When disabled, an SVG image is handled like any unreadable file, and `usvg`, `resvg` and `tiny-skia` (about 0.8 MiB) are not linked. Effective only with `gpu` |
-| `snippet-transforms` | Regular-expression transforms in snippets (`${1/(.*)/${1:/upcase}/}`). When disabled, a snippet still parses, expands and links its placeholders, and a transform returns its value unchanged; the regular-expression engine (about 0.7 MiB) is not linked |
-| `calendar` / `charts` / `controls` / `graph-canvas` / `image-viewer` / `rich-text` | Enables the matching runtime/scene `cfg` and re-exports that family. When disabled, the family is not compiled. Historical no-op aliases (`overlays`, `selects`, `qr-code`, etc.) have been removed; use `components` / `full` |
+| `components` | Aggregate of the component families below (including `qr-code`) and `nana-ui-scene/vector-boolean` |
+| `full` | `bundled-fonts` + `components` + `hosted` + `http-fetch` + `icu` + `image-codecs-extra` + `runtime-wgsl` + `snippet-transforms` + `svg` + `syntax-highlighting` + `wgpu-backends` |
+| `icu` | Opt-in ICU4X locale formatting; falls back to `PlainFormatter` when disabled and emits `resource.icu_unavailable` on first localized formatting use |
+| `http-fetch` | Opt-in `nana-ui-platform/fetch` for `http(s)://` fetches; without it or a custom `FetchHost`, remote requests are skipped and emit `resource.fetch_unavailable` |
+| `image-codecs-extra` | Opt-in JPEG / GIF / WebP decoding in `image`; when disabled, PNG stays available and excluded formats emit `resource.image_codec_unavailable` |
+| `svg` | Opt-in SVG images: SVG documents in `url()` textures and `Image`, and a host icon wrapped with an SVG and no shapes. Icons are drawn from their own geometry and do not need it. When disabled, an SVG image is treated as unreadable with `resource.image_codec_unavailable`, and `usvg`, `resvg`, and `tiny-skia` (about 0.8 MiB) are not linked. Effective only with `gpu` |
+| `snippet-transforms` | Opt-in regular-expression transforms in snippets (`${1/(.*)/${1:/upcase}/}`). When disabled, a snippet still parses, expands and links its placeholders, transforms return values unchanged with a one-shot `runtime.snippet.transform_unavailable` event, and `fancy-regex` (about 0.7 MiB) is not linked |
+| `vector-boolean` | Opt-in `i_overlay` path boolean simplification in `nana-ui-scene` (enabled by `components` / `rich-text`; otherwise uses the built-in integer planar sweep-line boolean solver handling self-intersections, nested holes/islands, clips, strokes, and mitered outlines) |
+| `calendar` / `charts` / `controls` / `graph-canvas` / `image-viewer` / `qr-code` / `rich-text` | Enables the matching runtime/scene `cfg` and re-exports that family. When disabled, the family is not compiled. Historical no-op aliases (`overlays`, `selects`, etc.) have been removed; use `components` / `full` |
 | `syntax-highlighting` | The `"highlight"` presenter for `TextArea` |
 | `no-default-app-icon` | The application always registers its own icon: the default icon marker is not linked, and windows without an icon keep the platform default. Enabled only by applications |
 | `accesskit-tree` | Exports the TreeUpdate projection of `AccessTreeProjector` for hosts that wire their own platform adapter (such as Android `accesskit_android`); implied by `hosted` |
@@ -148,8 +154,7 @@ each window's `RuntimeDocument` and the resource registry. For a minimal runnabl
 `crates/nana-ui/examples/application-counter.rs`.
 The lower-level contract below is for embedded hosts that manage windows/documents themselves.
 
-Applications that create controls only from Rust types (`mount` / declarative views / `.vue`)
-can set `const BUILTINS: BuiltinComponents = BuiltinComponents::Typed;`: built-in controls register only their identity, and controls the program never created are not linked in. Hosts that construct controls by tag keep the default `Full`. See [Declarative views](reactive-view.md#control-level-tree-shaking-builtincomponentstyped).
+When controls are built from typed Rust builders, `view!`, or `.vue`, built-in controls enter `ComponentRegistry` on demand where referenced (unused built-in controls are tree-shaken out of the final binary); custom controls register through `ComponentView` and `RegisterableComponent`. See [Layout Model, Feature Defaults, and Runtime Migration](../guide/migration-layout-and-features.md#4-removed-public-apis).
 
 `ApplicationWindow::demand` and the low-level `RuntimeProgram::frame_demand` use the same
 `FrameDemand`: `OnDemand` by default, a one-shot deadline `At(Instant)`, or continuous refresh
@@ -204,7 +209,7 @@ Some programs cannot be built yet when the host starts: they read settings and o
 
 Offscreen acceptance has to run the real program, not a document extracted from it. `nana_ui::headless::HeadlessRuntime<P>` calls `P::initialize` with a `GpuContext` and the main window geometry, then drives the hooks in the Scene host's order; the program holds its own documents, and the host reads and writes them through `with_document` instead of moving a document into a session and back.
 
-- `turn()` is one host iteration: window requests, queued messages (`update`), due `wake`s and animation frames, then one frame per visible window: `prepare_window_frame`, layout, `window_frame_presented`, and `bind_window` once there are messages. The main window is bound once after the first frame, which corresponds to the message that installs the program in the native host.
+- `turn()` is one host iteration (returning `HeadlessTurn { work: WorkCounters, did_work: bool }`): window requests, queued messages (`update`), due `wake`s and animation frames, then one frame per visible window: `prepare_window_frame`, layout, `window_frame_presented`, and `bind_window` once there are messages (`present(id)` returns `Option<WorkCounters>` for a single frame). The main window is bound once after the first frame, which corresponds to the message that installs the program in the native host.
 - `input(id, payload, text)` routes into the document through that window's own input source, then hands off to `input_event`; `accessibility_action`, `window_event`, and `resize` likewise go through hooks. `update`, `dispatch`, and `wake` let an acceptance script add a message or a wakeup.
 - Windows: `WindowService::create_window` and `WindowCommand::Open` create a virtual window and call `initialize_window`; `set_visible` and `set_size` change it and send the matching events; `Close` closes it and its child windows. Other commands only go into `take_window_commands()`. File dialogs immediately answer `FileDialogCompleted` with the answer set by `set_file_dialog`, which reverts to cancel after one use.
 - `take_report()` reports the merged redraw target, whether exit was requested, and how many times messages, wakes, input, and window events requested a redraw (frame callbacks are not counted; `set_quiet_messages` can exclude messages that arrive every frame).

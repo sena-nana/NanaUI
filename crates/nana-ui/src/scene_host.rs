@@ -1438,10 +1438,14 @@ fn complete_startup<Program: RuntimeProgram>(
         }
         Some((built, painter)) => {
             ready.startup_painter = Some((built, painter));
-            let _ = ready.painter_mut(profile);
+            ready
+                .try_painter_mut(profile)
+                .map_err(|error| error.to_string())?;
         }
         None => {
-            let _ = ready.painter_mut(profile);
+            ready
+                .try_painter_mut(profile)
+                .map_err(|error| error.to_string())?;
             ready.watch_pipeline_cache();
         }
     }
@@ -1724,6 +1728,11 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
             work.record_gpu_work(gpu_work);
         }
         self.last_presentation_work.insert(id, work);
+        self.program.write_document(id, |document| {
+            let context = document.context_mut();
+            context.record_output_work(output_work);
+            context.record_presentation_gpu_work(gpu_work);
+        });
     }
 }
 

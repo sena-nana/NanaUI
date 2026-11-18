@@ -198,7 +198,7 @@ pub(crate) struct Program {
     precompiled: std::cell::Cell<Option<&'static super::precompiled::Family>>,
 }
 
-/// One entry point's module, from [`Program::stage`].
+/// One entry point's module, prepared for [`Program::try_pipeline`].
 #[cfg(any(test, feature = "runtime-wgsl", not(target_vendor = "apple")))]
 #[derive(Clone)]
 pub(crate) struct Stage {
@@ -292,11 +292,11 @@ impl Program {
     }
 
     /// The pipeline `build` makes from the stages for `vertex` and
-    /// `fragment`, with `constants` for the fragment stage: the precompiled
-    /// ones when there are, else cut from the program ([`Self::stage`]).
+    /// `fragment`, with `constants` for the fragment stage: precompiled
+    /// stages when available, else cut from the program.
     /// `build` gets the constants the fragment module takes (none for a
     /// precompiled stage, which was compiled with them).
-    pub(crate) fn pipeline(
+    pub(crate) fn try_pipeline(
         &self,
         device: &wgpu::Device,
         vertex: &str,
@@ -309,7 +309,252 @@ impl Program {
             &str,
             &[(&str, f64)],
         ) -> wgpu::RenderPipeline,
-    ) -> wgpu::RenderPipeline {
+    ) -> Result<wgpu::RenderPipeline, super::validate::ScenePaintError> {
+        self.try_pipeline_inner(
+            wgsl_fallback_allowed(),
+            device,
+            vertex,
+            fragment,
+            constants,
+            &build,
+        )
+    }
+
+    /// Cached variant of [`Self::try_pipeline`]: preflights shader assets before
+    /// querying `policy`'s pipeline registry so missing or incompatible stages fail
+    /// without panicking inside the cache closure.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn try_cached_pipeline(
+        &self,
+        policy: Option<&nana_gpu::GpuDeviceState>,
+        key: impl FnOnce(&nana_gpu::GpuDeviceState) -> nana_gpu::PipelineKey,
+        device: &wgpu::Device,
+        vertex: &str,
+        fragment: &str,
+        constants: &[(&str, f64)],
+        build: impl Fn(
+            &wgpu::ShaderModule,
+            &str,
+            &wgpu::ShaderModule,
+            &str,
+            &[(&str, f64)],
+        ) -> wgpu::RenderPipeline,
+    ) -> Result<wgpu::RenderPipeline, super::validate::ScenePaintError> {
+        let Some(policy) = policy else {
+            return self.try_pipeline(device, vertex, fragment, constants, build);
+        };
+        let allow_wgsl_fallback = wgsl_fallback_allowed();
+        // Every factory below returns its error instead of a placeholder
+        // pipeline: the registry never stores a failure, so a later request
+        // for the same key compiles again rather than sharing an invalid
+        // pipeline. Shader assets (the MSL archive in particular) are only
+        // touched inside the factory, so registry hits never inflate them.
+        let flatten = |result: Result<
+            Result<wgpu::RenderPipeline, super::validate::ScenePaintError>,
+            nana_gpu::GpuError,
+        >| {
+            result.unwrap_or_else(|error| {
+                Err(super::validate::ScenePaintError::ShaderUnavailable {
+                    label: self.label,
+                    detail: error.to_string(),
+                })
+            })
+        };
+        #[cfg(target_vendor = "apple")]
+        {
+            #[cfg(test)]
+            let bypass = super::msl_precompiled::bypassing();
+            #[cfg(not(test))]
+            let bypass = false;
+
+            if !self.material && !bypass {
+                return flatten(nana_gpu::__framework::try_render_pipeline_state(
+                    policy,
+                    key(policy),
+                    || {
+                        // Registry check passed: attempt compilation.
+                        // MSL preparation moves after registry hit check.
+                        match super::msl_precompiled::prepare(
+                            device,
+                            self.label,
+                            self.source_hash,
+                            vertex,
+                            fragment,
+                            constants,
+                        ) {
+                            Ok(prepared) => {
+                                let (res, pipeline) = prepared.build(device, &build);
+                                match res {
+                                    Ok(()) => return Ok(pipeline),
+                                    Err(detail) => {
+                                        self.precompiled_failed(allow_wgsl_fallback, detail)?
+                                    }
+                                }
+                            }
+                            Err(detail) => self.precompiled_failed(allow_wgsl_fallback, detail)?,
+                        }
+                        #[cfg(any(test, feature = "runtime-wgsl"))]
+                        {
+                            let vs = self.try_stage_wgsl(device, vertex)?;
+                            let fs = self.try_stage_wgsl(device, fragment)?;
+                            let constants = fs.constants(constants);
+                            build_pipeline_scoped(device, self.label, "wgsl-cached", || {
+                                build(&vs.module, vertex, &fs.module, fragment, &constants)
+                            })
+                        }
+                        #[cfg(not(any(test, feature = "runtime-wgsl")))]
+                        {
+                            Err(super::validate::ScenePaintError::ShaderUnavailable {
+                                label: self.label,
+                                detail: String::from("runtime WGSL shader compiler is disabled"),
+                            })
+                        }
+                    },
+                ));
+            } else if self.material && !allow_wgsl_fallback {
+                nana_diagnostics::event!(nana_diagnostics::framework::gpu::SHADER_BUILD_FAILED);
+                return Err(super::validate::ScenePaintError::ShaderUnavailable {
+                    label: self.label,
+                    detail: String::from(
+                        "runtime material shaders require the `runtime-wgsl` feature",
+                    ),
+                });
+            }
+        }
+
+        #[cfg(not(target_vendor = "apple"))]
+        {
+            if !self.material {
+                #[cfg(target_os = "windows")]
+                let has_dxil = self.precompiled.get().is_some_and(|family| {
+                    family.stage(vertex, &[]).is_some()
+                        && family.stage(fragment, constants).is_some()
+                });
+                #[cfg(not(target_os = "windows"))]
+                let has_dxil = false;
+
+                if !has_dxil
+                    && !allow_wgsl_fallback
+                    && (!super::naga_ir::has_stage(self.source_hash, vertex)
+                        || !super::naga_ir::has_stage(self.source_hash, fragment))
+                {
+                    nana_diagnostics::event!(nana_diagnostics::framework::gpu::SHADER_BUILD_FAILED);
+                    return Err(super::validate::ScenePaintError::ShaderUnavailable {
+                        label: self.label,
+                        detail: format!(
+                            "missing precompiled naga IR stages `{vertex}`/`{fragment}` for `{}` without `runtime-wgsl`",
+                            self.label
+                        ),
+                    });
+                }
+            } else if !allow_wgsl_fallback {
+                nana_diagnostics::event!(nana_diagnostics::framework::gpu::SHADER_BUILD_FAILED);
+                return Err(super::validate::ScenePaintError::ShaderUnavailable {
+                    label: self.label,
+                    detail: String::from(
+                        "runtime material shaders require the `runtime-wgsl` feature",
+                    ),
+                });
+            }
+        }
+
+        #[cfg(any(test, feature = "runtime-wgsl", not(target_vendor = "apple")))]
+        {
+            flatten(nana_gpu::__framework::try_render_pipeline_state(
+                policy,
+                key(policy),
+                || {
+                    // On Apple a built-in program only gets here when a test
+                    // bypasses the precompiled MSL.
+                    #[cfg(all(target_vendor = "apple", any(test, feature = "runtime-wgsl")))]
+                    if !self.material {
+                        #[cfg(test)]
+                        if super::msl_precompiled::bypassing() {
+                            return super::msl_precompiled::tests::recording_pipeline(
+                                self.source_hash,
+                                vertex,
+                                fragment,
+                                constants,
+                                || {
+                                    let vs = self.try_stage_wgsl(device, vertex)?;
+                                    let fs = self.try_stage_wgsl(device, fragment)?;
+                                    let constants = fs.constants(constants);
+                                    build_pipeline_scoped(
+                                        device,
+                                        self.label,
+                                        "wgsl-capture",
+                                        || {
+                                            build(
+                                                &vs.module, vertex, &fs.module, fragment,
+                                                &constants,
+                                            )
+                                        },
+                                    )
+                                },
+                            );
+                        }
+                        let vs = self.try_stage_wgsl(device, vertex)?;
+                        let fs = self.try_stage_wgsl(device, fragment)?;
+                        let constants = fs.constants(constants);
+                        return build_pipeline_scoped(device, self.label, "wgsl-apple", || {
+                            build(&vs.module, vertex, &fs.module, fragment, &constants)
+                        });
+                    }
+                    self.try_pipeline_inner(
+                        allow_wgsl_fallback,
+                        device,
+                        vertex,
+                        fragment,
+                        constants,
+                        &build,
+                    )
+                },
+            ))
+        }
+        #[cfg(not(any(test, feature = "runtime-wgsl", not(target_vendor = "apple"))))]
+        {
+            let _ = (key, flatten);
+            Err(super::validate::ScenePaintError::ShaderUnavailable {
+                label: self.label,
+                detail: String::from("runtime WGSL shader compiler is disabled"),
+            })
+        }
+    }
+
+    /// The precompiled MSL for a pipeline was missing or refused: an error
+    /// without a WGSL fallback, else the fallback event and `Ok` to go on.
+    #[cfg(target_vendor = "apple")]
+    fn precompiled_failed(
+        &self,
+        allow_wgsl_fallback: bool,
+        detail: String,
+    ) -> Result<(), super::validate::ScenePaintError> {
+        if !allow_wgsl_fallback {
+            nana_diagnostics::event!(nana_diagnostics::framework::gpu::SHADER_BUILD_FAILED);
+            return Err(super::validate::ScenePaintError::ShaderUnavailable {
+                label: self.label,
+                detail,
+            });
+        }
+        nana_diagnostics::event!(nana_diagnostics::framework::gpu::SHADER_PRECOMPILED_FALLBACK);
+        Ok(())
+    }
+
+    fn try_pipeline_inner(
+        &self,
+        allow_wgsl_fallback: bool,
+        device: &wgpu::Device,
+        vertex: &str,
+        fragment: &str,
+        constants: &[(&str, f64)],
+        build: &impl Fn(
+            &wgpu::ShaderModule,
+            &str,
+            &wgpu::ShaderModule,
+            &str,
+            &[(&str, f64)],
+        ) -> wgpu::RenderPipeline,
+    ) -> Result<wgpu::RenderPipeline, super::validate::ScenePaintError> {
         #[cfg(target_os = "windows")]
         if let Some(family) = self.precompiled.get()
             && family.stage(vertex, &[]).is_some()
@@ -321,9 +566,14 @@ impl Program {
                 [(vertex, &[]), (fragment, constants)],
                 |[vertex_mod, fragment_mod]| build(vertex_mod, vertex, fragment_mod, fragment, &[]),
             ) {
-                Some(pipeline) => return pipeline,
+                Some(pipeline) => return Ok(pipeline),
                 // Refused once, refused for every pipeline of the program.
-                None => self.precompiled.set(None),
+                None => {
+                    self.precompiled.set(None);
+                    nana_diagnostics::event!(
+                        nana_diagnostics::framework::gpu::SHADER_PRECOMPILED_FALLBACK
+                    );
+                }
             }
         }
         #[cfg(target_vendor = "apple")]
@@ -333,16 +583,50 @@ impl Program {
             #[cfg(not(test))]
             let bypass = false;
             if !bypass {
-                if let Some(pipeline) = super::msl_precompiled::pipeline(
+                match super::msl_precompiled::prepare(
                     device,
                     self.label,
                     self.source_hash,
                     vertex,
                     fragment,
                     constants,
-                    &build,
                 ) {
-                    return pipeline;
+                    Ok(prepared) => {
+                        let (res, pipeline) = prepared.build(device, build);
+                        match res {
+                            Ok(()) => return Ok(pipeline),
+                            Err(detail) => {
+                                if !allow_wgsl_fallback {
+                                    nana_diagnostics::event!(
+                                        nana_diagnostics::framework::gpu::SHADER_BUILD_FAILED
+                                    );
+                                    return Err(
+                                        super::validate::ScenePaintError::ShaderUnavailable {
+                                            label: self.label,
+                                            detail,
+                                        },
+                                    );
+                                }
+                                nana_diagnostics::event!(
+                                    nana_diagnostics::framework::gpu::SHADER_PRECOMPILED_FALLBACK
+                                );
+                            }
+                        }
+                    }
+                    Err(detail) => {
+                        if !allow_wgsl_fallback {
+                            nana_diagnostics::event!(
+                                nana_diagnostics::framework::gpu::SHADER_BUILD_FAILED
+                            );
+                            return Err(super::validate::ScenePaintError::ShaderUnavailable {
+                                label: self.label,
+                                detail,
+                            });
+                        }
+                        nana_diagnostics::event!(
+                            nana_diagnostics::framework::gpu::SHADER_PRECOMPILED_FALLBACK
+                        );
+                    }
                 }
             } else {
                 #[cfg(test)]
@@ -352,40 +636,61 @@ impl Program {
                     fragment,
                     constants,
                     || {
-                        let vertex_stage = self.stage(device, vertex);
-                        let fragment_stage = self.stage(device, fragment);
-                        build(
-                            &vertex_stage.module,
-                            vertex,
-                            &fragment_stage.module,
-                            fragment,
-                            &fragment_stage.constants(constants),
-                        )
+                        let vertex_stage =
+                            self.try_stage_with_fallback(allow_wgsl_fallback, device, vertex)?;
+                        let fragment_stage =
+                            self.try_stage_with_fallback(allow_wgsl_fallback, device, fragment)?;
+                        let constants = fragment_stage.constants(constants);
+                        build_pipeline_scoped(device, self.label, "wgsl", || {
+                            build(
+                                &vertex_stage.module,
+                                vertex,
+                                &fragment_stage.module,
+                                fragment,
+                                &constants,
+                            )
+                        })
                     },
                 );
             }
         }
-        #[cfg(all(target_vendor = "apple", not(any(test, feature = "runtime-wgsl"))))]
+        #[cfg(not(any(test, feature = "runtime-wgsl")))]
+        #[cfg(target_vendor = "apple")]
         {
-            let _ = (device, vertex, fragment, constants, build);
-            unreachable!(
-                "missing precompiled MSL stage for built-in shader `{}` or runtime material without `runtime-wgsl`",
-                self.label
+            let _ = (
+                allow_wgsl_fallback,
+                device,
+                vertex,
+                fragment,
+                constants,
+                build,
             );
+            nana_diagnostics::event!(nana_diagnostics::framework::gpu::SHADER_BUILD_FAILED);
+            Err(super::validate::ScenePaintError::ShaderUnavailable {
+                label: self.label,
+                detail: format!(
+                    "missing precompiled MSL stage for built-in shader `{}` or runtime material without `runtime-wgsl`",
+                    self.label
+                ),
+            })
         }
         #[cfg(any(test, feature = "runtime-wgsl", not(target_vendor = "apple")))]
         {
             #[cfg(all(test, target_os = "windows"))]
             super::precompiled::tests::requesting(&self.source, vertex, fragment, constants);
-            let vertex_stage = self.stage(device, vertex);
-            let fragment_stage = self.stage(device, fragment);
-            build(
-                &vertex_stage.module,
-                vertex,
-                &fragment_stage.module,
-                fragment,
-                &fragment_stage.constants(constants),
-            )
+            let vertex_stage = self.try_stage_with_fallback(allow_wgsl_fallback, device, vertex)?;
+            let fragment_stage =
+                self.try_stage_with_fallback(allow_wgsl_fallback, device, fragment)?;
+            let constants = fragment_stage.constants(constants);
+            build_pipeline_scoped(device, self.label, "pipeline", || {
+                build(
+                    &vertex_stage.module,
+                    vertex,
+                    &fragment_stage.module,
+                    fragment,
+                    &constants,
+                )
+            })
         }
     }
 
@@ -435,13 +740,70 @@ impl Program {
         }
     }
 
+    #[cfg(any(test, feature = "runtime-wgsl"))]
+    fn try_stage_wgsl(
+        &self,
+        device: &wgpu::Device,
+        entry: &str,
+    ) -> Result<Stage, super::validate::ScenePaintError> {
+        self.try_stage_wgsl_inner(device, entry, true)
+    }
+
+    #[cfg(any(test, feature = "runtime-wgsl"))]
+    fn try_stage_wgsl_inner(
+        &self,
+        device: &wgpu::Device,
+        entry: &str,
+        scoped: bool,
+    ) -> Result<Stage, super::validate::ScenePaintError> {
+        if let Some((_, stage)) = self.stages.borrow().iter().find(|(name, _)| name == entry) {
+            return Ok(stage.clone());
+        }
+        let build_stage = || match self.ir().and_then(|ir| cut(ir, entry)) {
+            Some(ir) => self.stage_from_ir(device, ir),
+            None => Stage {
+                module: if scoped {
+                    self.module(device, wgpu::ShaderSource::Wgsl(self.source.clone()))
+                } else {
+                    self.whole(device)
+                },
+                overrides: None,
+            },
+        };
+        let stage = if scoped {
+            build_pipeline_scoped(device, self.label, "wgsl stage", build_stage)?
+        } else {
+            build_stage()
+        };
+        self.stages
+            .borrow_mut()
+            .push((entry.to_owned(), stage.clone()));
+        Ok(stage)
+    }
+
     /// The module for the stage whose entry point is `entry`: precompiled
     /// compacted IR for built-in shaders, or cut from runtime WGSL when
     /// `runtime-wgsl` (or test validation) is enabled.
     #[cfg(any(test, feature = "runtime-wgsl", not(target_vendor = "apple")))]
-    pub(crate) fn stage(&self, device: &wgpu::Device, entry: &str) -> Stage {
+    fn try_stage_with_fallback(
+        &self,
+        allow_wgsl_fallback: bool,
+        device: &wgpu::Device,
+        entry: &str,
+    ) -> Result<Stage, super::validate::ScenePaintError> {
+        self.try_stage_with_fallback_inner(allow_wgsl_fallback, device, entry, true)
+    }
+
+    #[cfg(any(test, feature = "runtime-wgsl", not(target_vendor = "apple")))]
+    fn try_stage_with_fallback_inner(
+        &self,
+        allow_wgsl_fallback: bool,
+        device: &wgpu::Device,
+        entry: &str,
+        scoped: bool,
+    ) -> Result<Stage, super::validate::ScenePaintError> {
         if let Some((_, stage)) = self.stages.borrow().iter().find(|(name, _)| name == entry) {
-            return stage.clone();
+            return Ok(stage.clone());
         }
         #[cfg(any(test, not(target_vendor = "apple")))]
         let precompiled = if !self.material {
@@ -452,26 +814,75 @@ impl Program {
         #[cfg(not(any(test, not(target_vendor = "apple"))))]
         let precompiled: Option<wgpu::naga::Module> = None;
         let stage = if let Some(ir) = precompiled {
-            self.stage_from_ir(device, ir)
-        } else {
+            let built = if scoped {
+                build_pipeline_scoped(device, self.label, "naga-ir stage", || {
+                    self.stage_from_ir(device, ir)
+                })
+            } else {
+                Ok(self.stage_from_ir(device, ir))
+            };
+            match built {
+                Ok(stage) => stage,
+                Err(error) => {
+                    if allow_wgsl_fallback {
+                        #[cfg(any(test, feature = "runtime-wgsl"))]
+                        {
+                            if cfg!(not(target_vendor = "apple")) && !self.material {
+                                nana_diagnostics::event!(
+                                    nana_diagnostics::framework::gpu::SHADER_PRECOMPILED_FALLBACK
+                                );
+                            }
+                            return self.try_stage_wgsl_inner(device, entry, scoped);
+                        }
+                    }
+                    nana_diagnostics::event!(nana_diagnostics::framework::gpu::SHADER_BUILD_FAILED);
+                    return Err(error);
+                }
+            }
+        } else if allow_wgsl_fallback {
             #[cfg(any(test, feature = "runtime-wgsl"))]
-            match self.ir().and_then(|ir| cut(ir, entry)) {
-                Some(ir) => self.stage_from_ir(device, ir),
-                None => Stage {
-                    module: self.whole(device),
-                    overrides: None,
-                },
+            {
+                if cfg!(not(target_vendor = "apple")) && !self.material {
+                    nana_diagnostics::event!(
+                        nana_diagnostics::framework::gpu::SHADER_PRECOMPILED_FALLBACK
+                    );
+                }
+                return self.try_stage_wgsl_inner(device, entry, scoped);
             }
             #[cfg(not(any(test, feature = "runtime-wgsl")))]
-            panic!(
-                "missing precompiled naga IR for built-in shader `{}` entry `{entry}`",
-                self.label
-            )
+            {
+                nana_diagnostics::event!(nana_diagnostics::framework::gpu::SHADER_BUILD_FAILED);
+                return Err(super::validate::ScenePaintError::ShaderUnavailable {
+                    label: self.label,
+                    detail: format!(
+                        "missing precompiled naga IR for built-in shader `{}` entry `{entry}`",
+                        self.label
+                    ),
+                });
+            }
+        } else {
+            nana_diagnostics::event!(nana_diagnostics::framework::gpu::SHADER_BUILD_FAILED);
+            return Err(super::validate::ScenePaintError::ShaderUnavailable {
+                label: self.label,
+                detail: format!(
+                    "missing precompiled naga IR for built-in shader `{}` entry `{entry}`",
+                    self.label
+                ),
+            });
         };
         self.stages
             .borrow_mut()
             .push((entry.to_owned(), stage.clone()));
-        stage
+        Ok(stage)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn try_stage(
+        &self,
+        device: &wgpu::Device,
+        entry: &str,
+    ) -> Result<Stage, super::validate::ScenePaintError> {
+        self.try_stage_with_fallback_inner(true, device, entry, false)
     }
 
     #[cfg(any(test, feature = "runtime-wgsl"))]
@@ -498,6 +909,52 @@ impl Program {
         // each one is counted against a bound it cannot overflow).
         unsafe { device.create_shader_module_trusted(descriptor, checks) }
     }
+}
+
+#[cfg(test)]
+pub(super) static FORBID_WGSL_FALLBACK: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+
+#[cfg(any(test, feature = "runtime-wgsl", not(target_vendor = "apple")))]
+fn build_pipeline_scoped<R>(
+    device: &wgpu::Device,
+    label: &'static str,
+    phase: &str,
+    build: impl FnOnce() -> R,
+) -> Result<R, super::validate::ScenePaintError> {
+    let oom = device.push_error_scope(wgpu::ErrorFilter::OutOfMemory);
+    let internal = device.push_error_scope(wgpu::ErrorFilter::Internal);
+    let validation = device.push_error_scope(wgpu::ErrorFilter::Validation);
+    let output = build();
+    let gpu_error = pollster::block_on(validation.pop())
+        .or_else(|| pollster::block_on(internal.pop()))
+        .or_else(|| pollster::block_on(oom.pop()));
+    if let Some(error) = gpu_error {
+        nana_diagnostics::event!(nana_diagnostics::framework::gpu::SHADER_BUILD_FAILED);
+        return Err(super::validate::ScenePaintError::ShaderUnavailable {
+            label,
+            detail: format!("{phase} `{label}` rejected by device: {error}"),
+        });
+    }
+    Ok(output)
+}
+
+/// Whether a built-in program may fall back to runtime WGSL when its
+/// precompiled stage is missing or refused: only with `runtime-wgsl` (or
+/// test validation, unless a test asks for the release behaviour).
+fn wgsl_fallback_allowed() -> bool {
+    if std::env::var_os("NANA_EXPECT_NO_RUNTIME_WGSL").is_some() {
+        return false;
+    }
+    #[cfg(test)]
+    if FORBID_WGSL_FALLBACK.load(std::sync::atomic::Ordering::SeqCst) {
+        return false;
+    }
+    #[cfg(all(test, target_vendor = "apple"))]
+    if super::msl_precompiled::wgsl_fallback_forbidden() {
+        return false;
+    }
+    cfg!(any(test, feature = "runtime-wgsl"))
 }
 
 /// `module` with `entry` its only entry point and nothing it does not
@@ -783,21 +1240,223 @@ mod tests {
         let mesh = Program::joined("mesh", &[TRIANGLE, TRIANGLE_SOLID, PATH, COLOR]);
         let samples = [("PATH_SAMPLES", 4.0)];
         assert_eq!(
-            mesh.stage(&device, "path_fs_main").constants(&samples),
+            mesh.try_stage(&device, "path_fs_main")
+                .expect("mesh vertex/fragment stage")
+                .constants(&samples),
             samples
         );
         assert!(
-            mesh.stage(&device, "path_keep_fs_main")
+            mesh.try_stage(&device, "path_keep_fs_main")
+                .expect("mesh keep stage")
                 .constants(&samples)
                 .is_empty()
         );
         let broken = Program::new("broken", "fn nope( {");
         let scope = device.push_error_scope(wgpu::ErrorFilter::Validation);
         assert_eq!(
-            broken.stage(&device, "fs_main").constants(&samples),
+            broken
+                .try_stage(&device, "fs_main")
+                .expect("wgsl validation propagates to caller scope")
+                .constants(&samples),
             samples
         );
         assert!(pollster::block_on(scope.pop()).is_some());
+    }
+
+    #[test]
+    fn missing_precompiled_stage_falls_back_with_wgsl_or_errors_without_fallback() {
+        let (device, _queue) = crate::test_gpu::device();
+        let format = wgpu::TextureFormat::Bgra8UnormSrgb;
+        let layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label: Some("wgsl.fallback.test.layout"),
+            bind_group_layouts: &[],
+            immediate_size: 0,
+        });
+        let build = |vs: &wgpu::ShaderModule,
+                     vs_ep: &str,
+                     fs: &wgpu::ShaderModule,
+                     fs_ep: &str,
+                     _: &[(&str, f64)]| {
+            device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+                label: Some("wgsl.fallback.test"),
+                layout: Some(&layout),
+                vertex: wgpu::VertexState {
+                    module: vs,
+                    entry_point: Some(vs_ep),
+                    buffers: &[],
+                    compilation_options: wgpu::PipelineCompilationOptions::default(),
+                },
+                fragment: Some(wgpu::FragmentState {
+                    module: fs,
+                    entry_point: Some(fs_ep),
+                    targets: &[Some(wgpu::ColorTargetState {
+                        format,
+                        blend: None,
+                        write_mask: wgpu::ColorWrites::ALL,
+                    })],
+                    compilation_options: wgpu::PipelineCompilationOptions::default(),
+                }),
+                primitive: wgpu::PrimitiveState::default(),
+                depth_stencil: None,
+                multisample: wgpu::MultisampleState::default(),
+                multiview_mask: None,
+                cache: None,
+            })
+        };
+
+        let missing_hash_src = "@vertex fn vs_main() -> @builtin(position) vec4<f32> { return vec4<f32>(0.0, 0.0, 0.0, 1.0); }\n\
+             @fragment fn fs_main() -> @location(0) vec4<f32> { return vec4<f32>(1.0); }\n// missing precompiled probe";
+        let probe = Program::new("wgsl fallback probe", missing_hash_src);
+
+        // Runtime WGSL fallback active: succeeds without panicking.
+        let pipeline = probe
+            .try_pipeline(&device, "vs_main", "fs_main", &[], build)
+            .expect("missing precompiled stage falls back to runtime WGSL cleanly");
+        drop(pipeline);
+
+        // Corrupt/invalid WGSL through `try_pipeline`: error scopes absorb validation
+        // errors and return explicit `ShaderUnavailable` rather than panicking.
+        let broken = Program::new("broken wgsl probe", "fn nope( {");
+        let broken_err = broken
+            .try_pipeline(&device, "vs_main", "fs_main", &[], build)
+            .unwrap_err();
+        assert!(matches!(
+            broken_err,
+            super::super::validate::ScenePaintError::ShaderUnavailable {
+                label: "broken wgsl probe",
+                ..
+            }
+        ));
+
+        // Pure-precompiled path (`allow_wgsl_fallback = false`): returns explicit error without panicking.
+        let err = probe
+            .try_pipeline_inner(false, &device, "vs_main", "fs_main", &[], &build)
+            .unwrap_err();
+        assert!(matches!(
+            err,
+            super::super::validate::ScenePaintError::ShaderUnavailable {
+                label: "wgsl fallback probe",
+                ..
+            }
+        ));
+
+        {
+            struct ForbidGuard;
+            impl Drop for ForbidGuard {
+                fn drop(&mut self) {
+                    FORBID_WGSL_FALLBACK.store(false, std::sync::atomic::Ordering::SeqCst);
+                }
+            }
+            assert!(wgsl_fallback_allowed());
+            FORBID_WGSL_FALLBACK.store(true, std::sync::atomic::Ordering::SeqCst);
+            let _forbid_guard = ForbidGuard;
+            assert!(!wgsl_fallback_allowed());
+            let err = probe
+                .try_pipeline(&device, "vs_main", "fs_main", &[], build)
+                .unwrap_err();
+            assert!(matches!(
+                err,
+                super::super::validate::ScenePaintError::ShaderUnavailable {
+                    label: "wgsl fallback probe",
+                    ..
+                }
+            ));
+        }
+
+        #[cfg(target_vendor = "apple")]
+        {
+            struct MissingGuard;
+            impl Drop for MissingGuard {
+                fn drop(&mut self) {
+                    super::super::msl_precompiled::set_force_missing_stage(false);
+                }
+            }
+            let _gpu_guard = crate::test_gpu::lock();
+            super::super::msl_precompiled::set_force_missing_stage(true);
+            let _missing_guard = MissingGuard;
+
+            let builtin = Program::joined("nana-ui.scene.group.shader", &[COLOR, LAYER]);
+            let layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+                label: Some("wgsl.fallback.group.layout"),
+                entries: &[
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 0,
+                        visibility: wgpu::ShaderStages::FRAGMENT,
+                        ty: wgpu::BindingType::Texture {
+                            sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                            view_dimension: wgpu::TextureViewDimension::D2,
+                            multisampled: false,
+                        },
+                        count: None,
+                    },
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 1,
+                        visibility: wgpu::ShaderStages::FRAGMENT,
+                        ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                        count: None,
+                    },
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 2,
+                        visibility: wgpu::ShaderStages::FRAGMENT,
+                        ty: wgpu::BindingType::Buffer {
+                            ty: wgpu::BufferBindingType::Uniform,
+                            has_dynamic_offset: false,
+                            min_binding_size: None,
+                        },
+                        count: None,
+                    },
+                ],
+            });
+            let pipe_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+                label: Some("wgsl.fallback.group.pipeline"),
+                bind_group_layouts: &[Some(&layout)],
+                immediate_size: 0,
+            });
+            let group_build = |vs: &wgpu::ShaderModule,
+                               vs_ep: &str,
+                               fs: &wgpu::ShaderModule,
+                               fs_ep: &str,
+                               _: &[(&str, f64)]| {
+                device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+                    label: Some("wgsl.fallback.group"),
+                    layout: Some(&pipe_layout),
+                    vertex: wgpu::VertexState {
+                        module: vs,
+                        entry_point: Some(vs_ep),
+                        buffers: &[],
+                        compilation_options: wgpu::PipelineCompilationOptions::default(),
+                    },
+                    fragment: Some(wgpu::FragmentState {
+                        module: fs,
+                        entry_point: Some(fs_ep),
+                        targets: &[Some(wgpu::ColorTargetState {
+                            format,
+                            blend: Some(wgpu::BlendState::PREMULTIPLIED_ALPHA_BLENDING),
+                            write_mask: wgpu::ColorWrites::ALL,
+                        })],
+                        compilation_options: wgpu::PipelineCompilationOptions::default(),
+                    }),
+                    primitive: wgpu::PrimitiveState::default(),
+                    depth_stencil: None,
+                    multisample: wgpu::MultisampleState::default(),
+                    multiview_mask: None,
+                    cache: None,
+                })
+            };
+            let _fallback_ok = builtin
+                .try_pipeline(&device, "vs_main", "fs_main", &[], group_build)
+                .expect("simulated missing MSL stage falls back to WGSL");
+            let err = builtin
+                .try_pipeline_inner(false, &device, "vs_main", "fs_main", &[], &group_build)
+                .unwrap_err();
+            assert!(matches!(
+                err,
+                super::super::validate::ScenePaintError::ShaderUnavailable {
+                    label: "nana-ui.scene.group.shader",
+                    ..
+                }
+            ));
+        }
     }
 
     #[test]

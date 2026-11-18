@@ -39,8 +39,10 @@
 //! ## display / grid
 //! `grid-column` / `grid-row` / `grid-area` 写入 [`GridPlacement`]。
 //! `grid-auto-*` 与整表 / 混写 `repeat(auto-fit|auto-fill, <track-list>)` 存入
-//! Style Model（`grid_*_repeat`），由布局展开。嵌套 `repeat()`（CSS 文法不允许）、
-//! 同一轨列表里多于一个 auto-repeat，或无法展开的语法才置
+//! Style Model（`grid.columns_repeat` / `grid.rows_repeat`），由布局展开。
+//! 整值 `subgrid` 置 `grid.columns_subgrid` / `grid.rows_subgrid`，由布局继承父轨。
+//! 嵌套 `repeat()`（CSS 文法不允许）、同一轨列表里多于一个 auto-repeat、
+//! 轨道列表 token 形式的 `subgrid`，或无法展开的语法才置
 //! [`GridTrackListUnsupported`]。
 //!
 //! ## margin / padding / gap
@@ -2484,29 +2486,27 @@ impl LayoutStyleCss for LayoutStyle {
                 }
             }
             "container-type" => {
-                if let Some(container_type) = crate::css_container::parse_container_type(val) {
-                    if self.container.container_type != container_type {
-                        self.container.container_type = container_type;
-                    }
+                if let Some(container_type) = crate::css_container::parse_container_type(val)
+                    && self.container.container_type != container_type
+                {
+                    self.container.container_type = container_type;
                 }
             }
             "container-name" => {
-                if let Some(names) = crate::css_container::parse_container_name(val) {
-                    if self.container.container_name != names {
-                        self.container.container_name = names;
-                    }
+                if let Some(names) = crate::css_container::parse_container_name(val)
+                    && self.container.container_name != names
+                {
+                    self.container.container_name = names;
                 }
             }
             "container" => {
                 if let Some((names, container_type)) =
                     crate::css_container::parse_container_shorthand(val)
+                    && (self.container.container_name != names
+                        || self.container.container_type != container_type)
                 {
-                    if self.container.container_name != names
-                        || self.container.container_type != container_type
-                    {
-                        self.container.container_name = names;
-                        self.container.container_type = container_type;
-                    }
+                    self.container.container_name = names;
+                    self.container.container_type = container_type;
                 }
             }
             "transform" => {
@@ -3340,8 +3340,12 @@ fn apply_box_edge_shorthand(
 /// After clearing a template axis, pick remaining tracks / auto-fill:
 /// columns → Row；仅 rows → Column；双边皆空 → `display:grid|inline-grid` 默认 Row（勿残留 Column）。
 fn recompute_grid_axis_direction(layout: &mut LayoutStyle) {
-    let has_cols = layout.grid.columns.as_ref().is_some_and(|t| !t.is_empty());
-    let has_rows = layout.grid.rows.as_ref().is_some_and(|t| !t.is_empty());
+    let has_cols = layout.grid.columns.as_ref().is_some_and(|t| !t.is_empty())
+        || layout.grid.columns_subgrid
+        || layout.grid.columns_repeat.is_some();
+    let has_rows = layout.grid.rows.as_ref().is_some_and(|t| !t.is_empty())
+        || layout.grid.rows_subgrid
+        || layout.grid.rows_repeat.is_some();
     if has_cols {
         layout.direction = Some(FlexDirection::Row);
     } else if has_rows {
@@ -3351,13 +3355,15 @@ fn recompute_grid_axis_direction(layout: &mut LayoutStyle) {
     }
 }
 
-/// 解析结果：支持轨列表 / auto-fit|auto-fill 模式 / 明确 Unsupported / 非法。
+/// 解析结果：支持轨列表 / auto-fit|auto-fill 模式 / subgrid / 明确 Unsupported / 非法。
 #[derive(Debug, Clone, PartialEq)]
 pub enum GridTrackListParse {
     Tracks(Vec<GridTrack>),
     /// 整表 `repeat(auto-fit|auto-fill, <track-list>)`；布局按容器展开。
     RepeatAuto(GridRepeatAuto),
-    /// 混写 auto-fit/auto-fill 等无法展开的语法；**不是**解析失败、也不是 `none`。
+    /// `subgrid`（可跟线名 `[a] [b]`）。布局继承父轨几何，不是轨列表。
+    Subgrid,
+    /// 混写 auto-fit/auto-fill 或轨道列表 token `subgrid` 等无法展开的语法；**不是**解析失败、也不是 `none`。
     Unsupported(GridTrackListUnsupported),
     Invalid,
 }
@@ -3380,15 +3386,17 @@ fn set_grid_template_axis(
             grid.columns = tracks;
             grid.columns_unsupported = unsupported;
             grid.columns_repeat = repeat.map(Into::into);
+            grid.columns_subgrid = false;
             grid.column_line_names = names;
         } else {
             grid.rows = tracks;
             grid.rows_unsupported = unsupported;
             grid.rows_repeat = repeat.map(Into::into);
+            grid.rows_subgrid = false;
             grid.row_line_names = names;
         }
     }
-    if &*layout.grid == &nana_ui_core::GridStyle::default() {
+    if *layout.grid == nana_ui_core::GridStyle::default() {
         layout.grid = Default::default();
     }
 }
@@ -3448,6 +3456,19 @@ fn apply_grid_template_axis(
             }
             recompute_grid_axis_direction(layout);
         }
+        GridTrackListParse::Subgrid => {
+            let names = parse_subgrid_line_names(raw);
+            set_grid_template_axis(layout, columns, None, None, None, names);
+            if columns {
+                layout.grid.columns_subgrid = true;
+            } else {
+                layout.grid.rows_subgrid = true;
+            }
+            if layout.display.is_none() {
+                layout.display = Some(DisplaySpec::Grid);
+            }
+            recompute_grid_axis_direction(layout);
+        }
         GridTrackListParse::Invalid => {
             // Do not keep a previous template when the new value fails to parse
             // (`80px repeat(auto-fit, garbage)` must not silently stay `80px`).
@@ -3469,8 +3490,9 @@ fn apply_grid_auto_tracks(raw: &str, percent_base: Option<f32>, dest: &mut Optio
     }
     match parse_grid_track_list_result(trimmed, percent_base) {
         GridTrackListParse::Tracks(tracks) => *dest = Some(tracks),
-        // auto-fit/fill on auto tracks: leave unchanged.
+        // auto-fit/fill / subgrid on auto tracks: leave unchanged.
         GridTrackListParse::RepeatAuto(_)
+        | GridTrackListParse::Subgrid
         | GridTrackListParse::Unsupported(_)
         | GridTrackListParse::Invalid => {}
     }
@@ -3650,6 +3672,58 @@ fn parse_grid_line_names(raw: &str) -> Option<Vec<Vec<String>>> {
     Some(names)
 }
 
+/// Remainder after `subgrid` may only be `[line-name]` groups (no tracks).
+fn is_only_line_name_groups(raw: &str) -> bool {
+    let mut rest = raw.trim();
+    if rest.is_empty() {
+        return true;
+    }
+    while !rest.is_empty() {
+        rest = rest.trim_start();
+        if rest.is_empty() {
+            return true;
+        }
+        if !rest.starts_with('[') {
+            return false;
+        }
+        let Some(end) = rest.find(']') else {
+            return false;
+        };
+        rest = rest[end + 1..].trim_start();
+    }
+    true
+}
+
+/// `subgrid [a] [b]`：每个 `[]` 是一根独立的线（不像普通轨表那样合并相邻名）。
+fn parse_subgrid_line_names(raw: &str) -> Option<Vec<Vec<String>>> {
+    let rest = strip_prefix_ci(raw.trim(), "subgrid")
+        .map(|s| s.trim())
+        .unwrap_or(raw.trim());
+    if rest.is_empty() {
+        return None;
+    }
+    let mut names = Vec::new();
+    let mut leftover = rest;
+    while !leftover.is_empty() {
+        leftover = leftover.trim_start();
+        if leftover.is_empty() {
+            break;
+        }
+        if !leftover.starts_with('[') {
+            break;
+        }
+        let end = leftover.find(']')?;
+        let group: Vec<String> = leftover[1..end]
+            .split_whitespace()
+            .filter(|s| is_css_ident(s))
+            .map(|s| s.to_string())
+            .collect();
+        names.push(group);
+        leftover = leftover[end + 1..].trim_start();
+    }
+    names.iter().any(|line| !line.is_empty()).then_some(names)
+}
+
 /// CSS `<grid-line>` subset: `auto` / integer / `span N` / custom-ident.
 fn parse_grid_line(raw: &str) -> Option<GridLine> {
     let s = raw.trim();
@@ -3783,9 +3857,11 @@ fn apply_grid_area(placement: &mut GridPlacement, raw: &str) {
 /// `fit-content(<length-percentage>)`、`minmax(min, Nfr|px|%|auto|*-content)`、
 /// `repeat(N, …)`（固定次数）。
 ///
+/// 整表 `subgrid`（可跟 `[line]` 名）→ [`GridTrackListParse::Subgrid`]。
 /// 整表或混写 `repeat(auto-fit|auto-fill, <track-list>)` →
 /// [`GridTrackListParse::RepeatAuto`]（`prefix` / pattern / `suffix`）。
-/// 嵌套 auto-fit / auto-fill 或无法展开的 pattern → [`GridTrackListParse::Unsupported`]。
+/// 嵌套 auto-fit / auto-fill、track-list token `subgrid` 或无法展开的 pattern →
+/// [`GridTrackListParse::Unsupported`]。
 /// `percent_base` 用于把轨上的 `%` 收成 px。
 ///
 /// 未解析的 `var(--token)`（无 lookup / 无 fallback）在该轨位置降级为
@@ -3810,12 +3886,25 @@ pub fn parse_grid_template_columns(raw: &str, percent_base: Option<f32>) -> Opti
 }
 
 fn parse_grid_track_list(raw: &str, percent_base: Option<f32>) -> GridTrackListParse {
+    let trimmed = raw.trim();
+    if is_subgrid_track_token(trimmed) {
+        let rest = strip_prefix_ci(trimmed, "subgrid")
+            .unwrap_or("")
+            .trim_start();
+        if rest.is_empty() || is_only_line_name_groups(rest) {
+            return GridTrackListParse::Subgrid;
+        }
+        return GridTrackListParse::Unsupported(GridTrackListUnsupported::Subgrid);
+    }
     let mut tracks = Vec::new();
     let mut rest = raw;
     while !rest.is_empty() {
         rest = rest.trim_start();
         if rest.is_empty() {
             break;
+        }
+        if is_subgrid_track_token(rest) {
+            return GridTrackListParse::Unsupported(GridTrackListUnsupported::Subgrid);
         }
         // repeat(N, tracks…) — fixed N expands；整表 auto-fit/fill 保留 pattern。
         if let Some(after) = strip_prefix_ci(rest, "repeat(") {
@@ -3848,7 +3937,9 @@ fn parse_grid_track_list(raw: &str, percent_base: Option<f32>) -> GridTrackListP
                     GridTrackListParse::RepeatAuto(_) | GridTrackListParse::Unsupported(_) => {
                         return GridTrackListParse::Unsupported(kind);
                     }
-                    GridTrackListParse::Invalid | GridTrackListParse::Tracks(_) => {
+                    GridTrackListParse::Invalid
+                    | GridTrackListParse::Subgrid
+                    | GridTrackListParse::Tracks(_) => {
                         return GridTrackListParse::Invalid;
                     }
                 };
@@ -3858,7 +3949,7 @@ fn parse_grid_track_list(raw: &str, percent_base: Option<f32>) -> GridTrackListP
                     GridTrackListParse::RepeatAuto(_) | GridTrackListParse::Unsupported(_) => {
                         return GridTrackListParse::Unsupported(kind);
                     }
-                    GridTrackListParse::Invalid => {
+                    GridTrackListParse::Invalid | GridTrackListParse::Subgrid => {
                         return GridTrackListParse::Invalid;
                     }
                 };
@@ -3888,7 +3979,7 @@ fn parse_grid_track_list(raw: &str, percent_base: Option<f32>) -> GridTrackListP
                 GridTrackListParse::RepeatAuto(rep) => {
                     return GridTrackListParse::Unsupported(rep.kind);
                 }
-                GridTrackListParse::Tracks(_) => {
+                GridTrackListParse::Subgrid | GridTrackListParse::Tracks(_) => {
                     return GridTrackListParse::Invalid;
                 }
             }
@@ -4069,6 +4160,17 @@ fn contains_repeat_token(pattern: &str) -> bool {
 
 fn is_ident_byte(byte: u8) -> bool {
     byte.is_ascii_alphanumeric() || byte == b'-' || byte == b'_'
+}
+
+fn is_subgrid_track_token(rest: &str) -> bool {
+    let Some(after) = strip_prefix_ci(rest, "subgrid") else {
+        return false;
+    };
+    match after.chars().next() {
+        None => true,
+        Some(c) if c.is_ascii_alphanumeric() || c == '-' || c == '_' => false,
+        Some(_) => true,
+    }
 }
 
 /// Split `inner…)rest` where `inner` is balanced relative to an already-consumed `(`.
@@ -7394,6 +7496,57 @@ html[data-theme="dark"], [data-theme="dark"] { --bg: #181818; }
                 max_px: None,
             }
         ));
+
+        assert_eq!(
+            parse_grid_track_list_result("subgrid", None),
+            GridTrackListParse::Subgrid
+        );
+        assert_eq!(
+            parse_grid_track_list_result("subgrid [a] [b]", None),
+            GridTrackListParse::Subgrid
+        );
+        assert_eq!(
+            parse_grid_track_list_result("subgrid 80px", None),
+            GridTrackListParse::Unsupported(GridTrackListUnsupported::Subgrid)
+        );
+        assert_eq!(
+            parse_grid_track_list_result("80px subgrid", None),
+            GridTrackListParse::Unsupported(GridTrackListUnsupported::Subgrid)
+        );
+
+        let mut subgrid_style = LayoutStyle::default();
+        subgrid_style.apply_css_text(
+            "display:grid;grid-template-columns:subgrid [col-a] [col-b];grid-template-rows:subgrid",
+            None,
+            None,
+        );
+        assert!(subgrid_style.is_subgrid_columns());
+        assert!(subgrid_style.is_subgrid_rows());
+        assert!(subgrid_style.grid.columns.is_none());
+        assert!(subgrid_style.grid.rows.is_none());
+        assert!(subgrid_style.grid.columns_unsupported.is_none());
+        assert!(subgrid_style.grid.rows_unsupported.is_none());
+        assert!(!subgrid_style.has_unsupported_grid_template());
+
+        subgrid_style.apply_css_text("grid-template-columns:120px 1fr", None, None);
+        assert!(!subgrid_style.is_subgrid_columns());
+        assert!(subgrid_style.is_subgrid_rows());
+
+        subgrid_style.apply_css_text("grid-template-rows:none", None, None);
+        assert!(!subgrid_style.is_subgrid_rows());
+
+        let mut mixed_subgrid = LayoutStyle::default();
+        mixed_subgrid.apply_css_text(
+            "display:grid;grid-template-columns:subgrid 80px",
+            None,
+            None,
+        );
+        assert!(!mixed_subgrid.is_subgrid_columns());
+        assert_eq!(
+            mixed_subgrid.grid.columns_unsupported,
+            Some(GridTrackListUnsupported::Subgrid)
+        );
+        assert!(mixed_subgrid.has_unsupported_grid_template());
     }
 
     #[test]

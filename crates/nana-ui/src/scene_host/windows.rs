@@ -994,7 +994,9 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
             true,
         );
         let profile = surface.profile().scene_profile();
-        let _ = self.painter_mut(profile);
+        let _ = self
+            .try_painter_mut(profile)
+            .map_err(|error| error.to_string())?;
         // An underlay repeats part of its parent's picture; the parent's tree
         // is the one assistive technology reads.
         #[cfg(not(target_os = "android"))]

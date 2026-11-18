@@ -189,16 +189,33 @@ fn check_field(
 }
 
 /// 生成 WebView 参照用 HTML（`data-id` + inline style + box-sizing:border-box）。
+fn bundled_font_file_url() -> String {
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../crates/nana-ui/assets/fonts/NotoSansSC-Variable.ttf");
+    let resolved = std::fs::canonicalize(&path).unwrap_or(path);
+    let normalized = resolved.to_string_lossy().replace('\\', "/");
+    if normalized.starts_with('/') {
+        format!("file://{normalized}")
+    } else {
+        format!("file:///{normalized}")
+    }
+}
+
 pub fn fixture_to_html(case: &FixtureCase) -> String {
     let mut body = String::new();
     render_html_node(&case.tree, &mut body);
+    let font_url = html_escape(&bundled_font_file_url());
     format!(
         r#"<!DOCTYPE html>
 <html>
 <head>
 <meta charset="utf-8"/>
 <style>
-  html, body {{ margin: 0; padding: 0; width: {w}px; height: {h}px; }}
+  @font-face {{
+    font-family: 'Noto Sans SC';
+    src: url('{font_url}') format('truetype');
+  }}
+  html, body {{ margin: 0; padding: 0; font-family: 'Noto Sans SC', sans-serif; font-size: 16px; line-height: 1.2; width: {w}px; height: {h}px; }}
   * {{ box-sizing: border-box; }}
 </style>
 </head>
@@ -207,6 +224,7 @@ pub fn fixture_to_html(case: &FixtureCase) -> String {
 </body>
 </html>
 "#,
+        font_url = font_url,
         w = case.viewport[0],
         h = case.viewport[1],
         body = body
@@ -221,6 +239,9 @@ fn render_html_node(node: &FixtureNode, out: &mut String) {
         class = html_escape(&class),
         style = html_escape(&node.style),
     ));
+    if let Some(text) = &node.text {
+        out.push_str(&html_escape(text));
+    }
     for child in &node.children {
         render_html_node(child, out);
     }
@@ -300,4 +321,38 @@ pub fn format_report(report: &CompareReport) -> String {
         ));
     }
     lines.join("\n")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn fixture_to_html_embeds_bundled_font_and_escapes_node_text() {
+        let case = FixtureCase {
+            id: "T-HTML".into(),
+            title: "html".into(),
+            status: CaseStatus::Pass,
+            gap: None,
+            gap_note: None,
+            viewport: [200.0, 100.0],
+            tolerance_px: 2.0,
+            tree: FixtureNode {
+                id: "root".into(),
+                class: Vec::new(),
+                style: "width:200px".into(),
+                text: Some("a < b & \"c\"".into()),
+                children: Vec::new(),
+            },
+            expected: Vec::new(),
+        };
+        let html = fixture_to_html(&case);
+        assert!(html.contains("@font-face"), "{html}");
+        assert!(html.contains("NotoSansSC-Variable.ttf"), "{html}");
+        assert!(
+            html.contains("font-family: 'Noto Sans SC', sans-serif"),
+            "{html}"
+        );
+        assert!(html.contains("a &lt; b &amp; &quot;c&quot;"), "{html}");
+    }
 }

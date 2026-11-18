@@ -56,6 +56,23 @@ fn t_g34_auto_fill_nth_named_line_expanded() {
 }
 
 #[test]
+fn t_g35_subgrid_inherits_parent_tracks() {
+    let case = load_fixture(&fixture_path("T-G35")).unwrap();
+    let a = case
+        .expected
+        .iter()
+        .find(|box_| box_.id == "a")
+        .expect("T-G35 item a");
+    assert!(
+        (a.w - 80.0).abs() < 0.5 && a.x.abs() < 0.5,
+        "T-G35 must expect the parent's first 80px column track, got x={} w={}",
+        a.x,
+        a.w
+    );
+    assert_pass_case("T-G35");
+}
+
+#[test]
 fn t_i03_white_space_pre() {
     let case = load_fixture(&fixture_path("T-I03")).unwrap();
     let node = nana_css_parity::fixture_to_layout_node(&case.tree);
@@ -88,6 +105,37 @@ fn catalog_covers_priority_ids() {
             "{id} priority fixture must remain Status::Pass so all_pass_fixtures_succeed runs it"
         );
     }
+}
+
+#[test]
+fn catalog_and_fixtures_directory_are_bijective() {
+    let catalog_ids: BTreeSet<_> = catalog().iter().map(|(id, _, _)| *id).collect();
+    assert_eq!(
+        catalog_ids.len(),
+        catalog().len(),
+        "duplicate ID in cases::catalog()"
+    );
+    let fixtures_dir = fixture_path("T-F01").parent().unwrap().to_path_buf();
+    let mut disk_ids = BTreeSet::new();
+    for entry in std::fs::read_dir(&fixtures_dir).expect("read fixtures dir") {
+        let entry = entry.expect("dir entry");
+        let path = entry.path();
+        if path.extension().and_then(|ext| ext.to_str()) == Some("json") {
+            let stem = path
+                .file_stem()
+                .and_then(|s| s.to_str())
+                .expect("utf-8 stem")
+                .to_owned();
+            disk_ids.insert(stem);
+        }
+    }
+    let catalog_owned: BTreeSet<String> = catalog_ids.into_iter().map(str::to_owned).collect();
+    let missing_on_disk: Vec<_> = catalog_owned.difference(&disk_ids).collect();
+    let extra_on_disk: Vec<_> = disk_ids.difference(&catalog_owned).collect();
+    assert!(
+        missing_on_disk.is_empty() && extra_on_disk.is_empty(),
+        "catalog <-> fixtures mismatch: missing_on_disk={missing_on_disk:?}, extra_on_disk={extra_on_disk:?}"
+    );
 }
 
 #[test]

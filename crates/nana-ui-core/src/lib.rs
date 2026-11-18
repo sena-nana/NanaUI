@@ -59,6 +59,7 @@ pub mod url_jail;
 pub mod virtual_list;
 pub mod virtual_table;
 pub mod virtual_tree;
+pub mod work;
 pub mod workspace_model;
 pub mod writing;
 
@@ -228,6 +229,10 @@ pub use virtual_table::{
     VirtualTableLayout, VirtualTableMaterialization, VirtualTableMaterializer, VirtualTableWindow,
 };
 pub use virtual_tree::{VirtualTreeLayout, VirtualTreeRow, VirtualTreeWindow};
+pub use work::{
+    DynamicLayoutCounters, GpuWorkObservation, I18nCounters, OutputWorkObservation,
+    ThemeWorkCounters, WorkCounters,
+};
 pub use workspace_model::{
     WORKSPACE_REGION_TRANSITION_DURATION, WorkspaceModel, WorkspaceMutation,
 };

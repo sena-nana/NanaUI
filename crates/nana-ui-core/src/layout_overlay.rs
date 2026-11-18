@@ -102,7 +102,7 @@ fn shared_collect_written<T: Overlay + SharedDefault>(
     if applied.ptr_eq(default) && over_witness.ptr_eq(witness) {
         return;
     }
-    (&**applied).collect_written(&**default, &**over_witness, &**witness, prefix, out);
+    (**applied).collect_written(&**default, &**over_witness, &**witness, prefix, out);
 }
 
 fn shared_unchanged_leaves<T: Overlay + SharedDefault>(
@@ -111,7 +111,7 @@ fn shared_unchanged_leaves<T: Overlay + SharedDefault>(
     prefix: &str,
     out: &mut Vec<String>,
 ) {
-    (&**applied).unchanged_leaves(&**default, prefix, out);
+    (**applied).unchanged_leaves(&**default, prefix, out);
 }
 
 macro_rules! overlay {
@@ -256,8 +256,8 @@ overlay! {
 overlay! {
     GridStyle {
         columns, rows, columns_unsupported, rows_unsupported, auto_columns,
-        auto_rows, auto_flow, columns_repeat, rows_repeat,
-        template_areas, column_line_names, row_line_names,
+        auto_rows, auto_flow, columns_repeat, rows_repeat, columns_subgrid,
+        rows_subgrid, template_areas, column_line_names, row_line_names,
     }
     nested {
         placement: shared GridPlacement,

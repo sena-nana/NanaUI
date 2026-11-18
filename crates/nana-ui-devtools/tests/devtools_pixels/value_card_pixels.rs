@@ -91,8 +91,10 @@ fn issue205_value_card_parts_preserve_content_pixels() {
         masks.extend(before_masks);
         assert_eq!(initial.len(), expected.len());
         let changed = initial
-            .chunks_exact(4)
-            .zip(expected.chunks_exact(4))
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .zip(expected.as_chunks::<4>().0)
             .enumerate()
             .filter(|(index, (a, b))| {
                 if a == b {

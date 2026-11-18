@@ -1,8 +1,8 @@
 use std::ffi::c_void;
 use std::mem::size_of;
 use std::ptr;
-use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, AtomicIsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicIsize, AtomicU64, Ordering};
+use std::sync::{Arc, Mutex};
 
 use raw_window_handle::{HasWindowHandle, RawWindowHandle};
 use windows_sys::Win32::Foundation::{COLORREF, HINSTANCE, HWND, LPARAM, LRESULT, POINT, WPARAM};
@@ -11,12 +11,14 @@ use windows_sys::Win32::Graphics::Gdi::{
     CreateCompatibleBitmap, CreateCompatibleDC, CreateFontW, CreatePen, CreateSolidBrush,
     DEFAULT_CHARSET, DIB_RGB_COLORS, DeleteDC, DeleteObject, Ellipse, EndPaint, FW_MEDIUM, GetDC,
     GetDIBits, GetDeviceCaps, GetStockObject, HBRUSH, HFONT, InvalidateRect, LOGPIXELSX, LineTo,
-    MoveToEx, NULL_BRUSH, PAINTSTRUCT, PS_SOLID, Rectangle, ReleaseDC, SRCCOPY, SelectObject,
-    SetBkMode, SetTextColor, StretchDIBits, TRANSPARENT, TextOutW, WHITE_PEN,
+    MONITOR_DEFAULTTONEAREST, MonitorFromPoint, MoveToEx, NULL_BRUSH, PAINTSTRUCT, PS_SOLID,
+    Rectangle, ReleaseDC, SRCCOPY, SelectObject, SetBkMode, SetTextColor, StretchDIBits,
+    TRANSPARENT, TextOutW, WHITE_PEN,
 };
 use windows_sys::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows_sys::Win32::UI::HiDpi::{
-    DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2, SetThreadDpiAwarenessContext,
+    DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2, GetDpiForMonitor, MDT_EFFECTIVE_DPI,
+    SetThreadDpiAwarenessContext,
 };
 use windows_sys::Win32::UI::Input::KeyboardAndMouse::{
     GetKeyState, ReleaseCapture, SetCapture, VK_DOWN, VK_ESCAPE, VK_LEFT, VK_RETURN, VK_RIGHT,
@@ -30,9 +32,9 @@ use windows_sys::Win32::UI::WindowsAndMessaging::{
     SW_SHOWNA, SWP_NOACTIVATE, SWP_SHOWWINDOW, SetCursor, SetCursorPos, SetForegroundWindow,
     SetLayeredWindowAttributes, SetWindowDisplayAffinity, SetWindowLongPtrW, SetWindowPos,
     ShowWindow, TranslateMessage, UnregisterClassW, WDA_EXCLUDEFROMCAPTURE, WM_CLOSE, WM_CREATE,
-    WM_DESTROY, WM_ERASEBKGND, WM_KEYDOWN, WM_KILLFOCUS, WM_LBUTTONDOWN, WM_MOUSEMOVE, WM_NCCREATE,
-    WM_PAINT, WM_RBUTTONDOWN, WM_SETCURSOR, WNDCLASSEXW, WS_EX_LAYERED, WS_EX_NOACTIVATE,
-    WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_EX_TRANSPARENT, WS_POPUP,
+    WM_DESTROY, WM_DPICHANGED, WM_ERASEBKGND, WM_KEYDOWN, WM_KILLFOCUS, WM_LBUTTONDOWN,
+    WM_MOUSEMOVE, WM_NCCREATE, WM_PAINT, WM_RBUTTONDOWN, WM_SETCURSOR, WNDCLASSEXW, WS_EX_LAYERED,
+    WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_EX_TRANSPARENT, WS_POPUP,
 };
 
 use crate::color_sampler::{
@@ -45,6 +47,22 @@ const LOUPE_CELL_BASE: i32 = 12;
 const LOUPE_PAD_BASE: i32 = 10;
 const LOUPE_FOOTER_BASE: i32 = 34;
 const LOUPE_OFFSET_BASE: i32 = 20;
+
+static CLASS_SEQUENCE: AtomicU64 = AtomicU64::new(1);
+
+type CompletionFn = Box<dyn FnOnce(ColorSamplerResult) + Send>;
+type SharedCompletion = Arc<Mutex<Option<CompletionFn>>>;
+
+fn class_names(request_id: u64, seq: u64) -> (String, String) {
+    (
+        format!("NanaColorSamplerOverlay_{request_id}_{seq}"),
+        format!("NanaColorSamplerLoupe_{request_id}_{seq}"),
+    )
+}
+
+fn take_completion(slot: &SharedCompletion) -> Option<CompletionFn> {
+    slot.lock().map_or(None, |mut guard| guard.take())
+}
 
 struct CancelState {
     cancelled: AtomicBool,
@@ -64,6 +82,7 @@ impl CancelState {
     }
 }
 
+#[derive(Clone, Copy)]
 struct VirtualRect {
     x: i32,
     y: i32,
@@ -254,12 +273,12 @@ struct SamplerWindowState {
     cursor_x: i32,
     cursor_y: i32,
     crosshair_cursor: *mut c_void,
-    completion: Option<Box<dyn FnOnce(ColorSamplerResult) + Send>>,
+    completion: SharedCompletion,
 }
 
 impl SamplerWindowState {
     fn finish(&mut self, result: ColorSamplerResult) {
-        if let Some(done) = self.completion.take() {
+        if let Some(done) = take_completion(&self.completion) {
             done(result);
         }
         // SAFETY: Runs on the owning Win32 thread to release mouse capture and close both sampler windows.
@@ -289,6 +308,13 @@ impl SamplerWindowState {
         self.finish(ColorSamplerResult::cancelled(self.request_id));
     }
 
+    fn update_scale_for_dpi(&mut self, dpi: i32) {
+        let (scale, loupe_w, loupe_h) = scale_and_loupe_size_for_dpi(dpi);
+        self.scale = scale;
+        self.loupe_w = loupe_w;
+        self.loupe_h = loupe_h;
+    }
+
     fn move_cursor_to(&mut self, x: i32, y: i32) {
         self.cursor_x = x.clamp(
             self.virtual_rect.x,
@@ -298,6 +324,7 @@ impl SamplerWindowState {
             self.virtual_rect.y,
             self.virtual_rect.y + self.virtual_rect.h - 1,
         );
+        self.update_scale_for_dpi(dpi_at_point(self.cursor_x, self.cursor_y));
         if self.loupe_hwnd.is_null() {
             return;
         }
@@ -352,9 +379,9 @@ impl SamplerWindowState {
                 let grid_px = LOUPE_GRID * cell;
 
                 let bg_brush = CreateSolidBrush(rgb_ref(24, 24, 27));
-                let border_pen = CreatePen(PS_SOLID as i32, scale, rgb_ref(63, 63, 70));
-                let old_brush = SelectObject(mem_dc, bg_brush as *mut c_void);
-                let old_pen = SelectObject(mem_dc, border_pen as *mut c_void);
+                let border_pen = CreatePen(PS_SOLID, scale, rgb_ref(63, 63, 70));
+                let old_brush = SelectObject(mem_dc, bg_brush);
+                let old_pen = SelectObject(mem_dc, border_pen);
                 Rectangle(mem_dc, 0, 0, self.loupe_w, self.loupe_h);
 
                 let (patch, rgb) = capture_patch(
@@ -382,8 +409,8 @@ impl SamplerWindowState {
                 );
 
                 // subtle grid lines
-                let grid_pen = CreatePen(PS_SOLID as i32, 1, rgb_ref(46, 46, 52));
-                SelectObject(mem_dc, grid_pen as *mut c_void);
+                let grid_pen = CreatePen(PS_SOLID, 1, rgb_ref(46, 46, 52));
+                SelectObject(mem_dc, grid_pen);
                 for i in 1..LOUPE_GRID {
                     let gx = pad + i * cell;
                     MoveToEx(mem_dc, gx, pad, ptr::null_mut());
@@ -392,29 +419,29 @@ impl SamplerWindowState {
                     MoveToEx(mem_dc, pad, gy, ptr::null_mut());
                     LineTo(mem_dc, pad + grid_px, gy);
                 }
-                DeleteObject(grid_pen as *mut c_void);
+                DeleteObject(grid_pen);
 
                 // center cell highlight
                 let center = LOUPE_GRID / 2;
                 let cx0 = pad + center * cell;
                 let cy0 = pad + center * cell;
-                let null_brush = GetStockObject(NULL_BRUSH as i32);
+                let null_brush = GetStockObject(NULL_BRUSH);
                 SelectObject(mem_dc, null_brush);
-                let white_pen = GetStockObject(WHITE_PEN as i32);
+                let white_pen = GetStockObject(WHITE_PEN);
                 SelectObject(mem_dc, white_pen);
                 Rectangle(mem_dc, cx0, cy0, cx0 + cell, cy0 + cell);
-                let black_pen = CreatePen(PS_SOLID as i32, 1, rgb_ref(0, 0, 0));
-                SelectObject(mem_dc, black_pen as *mut c_void);
+                let black_pen = CreatePen(PS_SOLID, 1, rgb_ref(0, 0, 0));
+                SelectObject(mem_dc, black_pen);
                 Rectangle(mem_dc, cx0 + 1, cy0 + 1, cx0 + cell - 1, cy0 + cell - 1);
-                DeleteObject(black_pen as *mut c_void);
+                DeleteObject(black_pen);
 
                 // footer: swatch + hex label
                 let footer_top = pad + grid_px + 8 * scale;
                 let swatch_size = 18 * scale;
                 let swatch_brush = CreateSolidBrush(rgb_ref(rgb[0], rgb[1], rgb[2]));
-                let swatch_pen = CreatePen(PS_SOLID as i32, 1, rgb_ref(82, 82, 91));
-                SelectObject(mem_dc, swatch_brush as *mut c_void);
-                SelectObject(mem_dc, swatch_pen as *mut c_void);
+                let swatch_pen = CreatePen(PS_SOLID, 1, rgb_ref(82, 82, 91));
+                SelectObject(mem_dc, swatch_brush);
+                SelectObject(mem_dc, swatch_pen);
                 Ellipse(
                     mem_dc,
                     pad,
@@ -422,8 +449,8 @@ impl SamplerWindowState {
                     pad + swatch_size,
                     footer_top + swatch_size,
                 );
-                DeleteObject(swatch_brush as *mut c_void);
-                DeleteObject(swatch_pen as *mut c_void);
+                DeleteObject(swatch_brush);
+                DeleteObject(swatch_pen);
 
                 let face = wide("Consolas");
                 let font: HFONT = CreateFontW(
@@ -443,7 +470,7 @@ impl SamplerWindowState {
                     face.as_ptr(),
                 );
                 let old_font = if !font.is_null() {
-                    SelectObject(mem_dc, font as *mut c_void)
+                    SelectObject(mem_dc, font)
                 } else {
                     ptr::null_mut()
                 };
@@ -460,19 +487,19 @@ impl SamplerWindowState {
                 );
                 if !font.is_null() {
                     SelectObject(mem_dc, old_font);
-                    DeleteObject(font as *mut c_void);
+                    DeleteObject(font);
                 }
 
                 SelectObject(mem_dc, old_pen);
                 SelectObject(mem_dc, old_brush);
-                DeleteObject(border_pen as *mut c_void);
-                DeleteObject(bg_brush as *mut c_void);
+                DeleteObject(border_pen);
+                DeleteObject(bg_brush);
 
                 BitBlt(hdc, 0, 0, self.loupe_w, self.loupe_h, mem_dc, 0, 0, SRCCOPY);
                 SelectObject(mem_dc, prev_bmp);
             }
             if !mem_bmp.is_null() {
-                DeleteObject(mem_bmp as *mut c_void);
+                DeleteObject(mem_bmp);
             }
             if !mem_dc.is_null() {
                 DeleteDC(mem_dc);
@@ -588,14 +615,24 @@ unsafe extern "system" fn overlay_wnd_proc(
             }
             0
         }
+        WM_DPICHANGED => {
+            if let Some(state) = window_state_mut(hwnd) {
+                let dpi = (wparam & 0xffff) as i32;
+                state.update_scale_for_dpi(dpi);
+            }
+            0
+        }
         WM_DESTROY => {
             if let Some(state) = window_state_mut(hwnd) {
                 state.cancel_state.overlay_hwnd.store(0, Ordering::Release);
-                if let Some(done) = state.completion.take() {
+                if let Some(done) = take_completion(&state.completion) {
                     done(ColorSamplerResult::cancelled(state.request_id));
                 }
             }
-            unsafe { PostQuitMessage(0) };
+            unsafe {
+                SetWindowLongPtrW(hwnd, GWLP_USERDATA, 0);
+                PostQuitMessage(0);
+            }
             0
         }
         _ => unsafe { DefWindowProcW(hwnd, msg, wparam, lparam) },
@@ -623,7 +660,50 @@ unsafe extern "system" fn loupe_wnd_proc(
             }
             unsafe { DefWindowProcW(hwnd, msg, wparam, lparam) }
         }
+        WM_DPICHANGED => {
+            if let Some(state) = window_state_mut(hwnd) {
+                let dpi = (wparam & 0xffff) as i32;
+                state.update_scale_for_dpi(dpi);
+            }
+            0
+        }
+        WM_DESTROY => {
+            unsafe { SetWindowLongPtrW(hwnd, GWLP_USERDATA, 0) };
+            0
+        }
         _ => unsafe { DefWindowProcW(hwnd, msg, wparam, lparam) },
+    }
+}
+
+fn scale_and_loupe_size_for_dpi(dpi: i32) -> (i32, i32, i32) {
+    let scale = ((dpi.max(96) + 48) / 96).clamp(1, 3);
+    let loupe_w = (LOUPE_PAD_BASE * 2 + LOUPE_GRID * LOUPE_CELL_BASE) * scale;
+    let loupe_h = (LOUPE_PAD_BASE * 2 + LOUPE_GRID * LOUPE_CELL_BASE + LOUPE_FOOTER_BASE) * scale;
+    (scale, loupe_w, loupe_h)
+}
+
+fn dpi_at_point(x: i32, y: i32) -> i32 {
+    // SAFETY: Queries effective DPI of the monitor containing `(x, y)`, falling back to the screen DC DPI.
+    unsafe {
+        let monitor = MonitorFromPoint(POINT { x, y }, MONITOR_DEFAULTTONEAREST);
+        if !monitor.is_null() {
+            let mut dpi_x: u32 = 0;
+            let mut dpi_y: u32 = 0;
+            if GetDpiForMonitor(monitor, MDT_EFFECTIVE_DPI, &mut dpi_x, &mut dpi_y) == 0
+                && dpi_x > 0
+            {
+                return (dpi_x as i32).max(96);
+            }
+        }
+        let dc = GetDC(ptr::null_mut());
+        let d = if dc.is_null() {
+            96
+        } else {
+            let v = GetDeviceCaps(dc, LOGPIXELSX as i32);
+            ReleaseDC(ptr::null_mut(), dc);
+            v
+        };
+        d.max(96)
     }
 }
 
@@ -640,13 +720,11 @@ fn validate_owner_window(window: Option<&dyn HasWindowHandle>) -> Result<(), Col
     }
 }
 
-fn run_sampler(
-    request_id: u64,
-    cancel_state: Arc<CancelState>,
-    completion: Box<dyn FnOnce(ColorSamplerResult) + Send>,
-) {
+fn run_sampler(request_id: u64, cancel_state: Arc<CancelState>, completion: SharedCompletion) {
     if cancel_state.cancelled.load(Ordering::Acquire) {
-        completion(ColorSamplerResult::cancelled(request_id));
+        if let Some(done) = take_completion(&completion) {
+            done(ColorSamplerResult::cancelled(request_id));
+        }
         return;
     }
 
@@ -660,10 +738,12 @@ fn run_sampler(
     let vw = unsafe { GetSystemMetrics(SM_CXVIRTUALSCREEN) };
     let vh = unsafe { GetSystemMetrics(SM_CYVIRTUALSCREEN) };
     if vw <= 0 || vh <= 0 {
-        completion(ColorSamplerResult::failed(
-            request_id,
-            ColorSamplerError::Platform("empty virtual screen bounds".into()),
-        ));
+        if let Some(done) = take_completion(&completion) {
+            done(ColorSamplerResult::failed(
+                request_id,
+                ColorSamplerError::Platform("empty virtual screen bounds".into()),
+            ));
+        }
         return;
     }
     let virtual_rect = VirtualRect {
@@ -679,39 +759,19 @@ fn run_sampler(
     };
     unsafe { GetCursorPos(&mut pt) };
 
-    let dpi = unsafe {
-        let dc = GetDC(ptr::null_mut());
-        let d = if dc.is_null() {
-            96
-        } else {
-            let v = GetDeviceCaps(dc, LOGPIXELSX as i32);
-            ReleaseDC(ptr::null_mut(), dc);
-            v
-        };
-        d.max(96)
-    };
-    let scale = ((dpi + 48) / 96).clamp(1, 3);
-    let loupe_w = (LOUPE_PAD_BASE * 2 + LOUPE_GRID * LOUPE_CELL_BASE) * scale;
-    let loupe_h = (LOUPE_PAD_BASE * 2 + LOUPE_GRID * LOUPE_CELL_BASE + LOUPE_FOOTER_BASE) * scale;
-
-    // Pre-capture the virtual screen before showing any sampler window as a fallback when
-    // `SetWindowDisplayAffinity(WDA_EXCLUDEFROMCAPTURE)` is unsupported by the session/driver.
-    let pre_snapshot = ScreenBuffer::capture(VirtualRect {
-        x: vx,
-        y: vy,
-        w: vw,
-        h: vh,
-    });
+    let (scale, loupe_w, loupe_h) = scale_and_loupe_size_for_dpi(dpi_at_point(pt.x, pt.y));
 
     let hinstance: HINSTANCE = unsafe { GetModuleHandleW(ptr::null()) };
-    let overlay_class = wide(&format!("NanaColorSamplerOverlay_{request_id}"));
-    let loupe_class = wide(&format!("NanaColorSamplerLoupe_{request_id}"));
+    let seq = CLASS_SEQUENCE.fetch_add(1, Ordering::Relaxed);
+    let (overlay_name, loupe_name) = class_names(request_id, seq);
+    let overlay_class = wide(&overlay_name);
+    let loupe_class = wide(&loupe_name);
     let crosshair = unsafe { LoadCursorW(ptr::null_mut(), IDC_CROSS) };
 
     let mut state = Box::new(SamplerWindowState {
         request_id,
         virtual_rect,
-        fallback: pre_snapshot,
+        fallback: None,
         cancel_state: Arc::clone(&cancel_state),
         overlay_hwnd: ptr::null_mut(),
         loupe_hwnd: ptr::null_mut(),
@@ -721,7 +781,7 @@ fn run_sampler(
         cursor_x: pt.x,
         cursor_y: pt.y,
         crosshair_cursor: crosshair,
-        completion: Some(completion),
+        completion,
     });
 
     // SAFETY: Registers temporary window classes on this worker thread, runs a modal loop, and unregisters before returning.
@@ -731,10 +791,10 @@ fn run_sampler(
         wc_overlay.lpfnWndProc = Some(overlay_wnd_proc);
         wc_overlay.hInstance = hinstance;
         wc_overlay.hCursor = crosshair;
-        wc_overlay.hbrBackground = GetStockObject(BLACK_BRUSH as i32) as HBRUSH;
+        wc_overlay.hbrBackground = GetStockObject(BLACK_BRUSH) as HBRUSH;
         wc_overlay.lpszClassName = overlay_class.as_ptr();
         if RegisterClassExW(&wc_overlay) == 0 {
-            if let Some(done) = state.completion.take() {
+            if let Some(done) = take_completion(&state.completion) {
                 done(ColorSamplerResult::failed(
                     request_id,
                     ColorSamplerError::Platform("failed to register overlay class".into()),
@@ -770,7 +830,7 @@ fn run_sampler(
             if loupe_registered {
                 UnregisterClassW(loupe_class.as_ptr(), hinstance);
             }
-            if let Some(done) = state.completion.take() {
+            if let Some(done) = take_completion(&state.completion) {
                 done(ColorSamplerResult::failed(
                     request_id,
                     ColorSamplerError::Platform("failed to create overlay window".into()),
@@ -782,6 +842,7 @@ fn run_sampler(
         SetLayeredWindowAttributes(overlay, 0, 1, LWA_ALPHA);
 
         let excluded_overlay = SetWindowDisplayAffinity(overlay, WDA_EXCLUDEFROMCAPTURE) != 0;
+        let mut excluded_loupe = true;
         if loupe_registered {
             let loupe = CreateWindowExW(
                 WS_EX_TOPMOST | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE | WS_EX_TRANSPARENT,
@@ -798,14 +859,14 @@ fn run_sampler(
                 state_ptr.cast(),
             );
             if !loupe.is_null() {
-                let excluded_loupe = SetWindowDisplayAffinity(loupe, WDA_EXCLUDEFROMCAPTURE) != 0;
-                if excluded_overlay && excluded_loupe {
-                    state.fallback = None;
-                }
+                excluded_loupe = SetWindowDisplayAffinity(loupe, WDA_EXCLUDEFROMCAPTURE) != 0;
                 state.loupe_hwnd = loupe;
             }
-        } else if excluded_overlay {
-            state.fallback = None;
+        }
+        // Defer virtual-screen snapshot until `WDA_EXCLUDEFROMCAPTURE` is unavailable, while both
+        // temporary sampler windows are still hidden prior to `ShowWindow`.
+        if !excluded_overlay || !excluded_loupe {
+            state.fallback = ScreenBuffer::capture(state.virtual_rect);
         }
 
         ShowWindow(overlay, SW_SHOW);
@@ -834,7 +895,6 @@ fn run_sampler(
             DestroyWindow(state.overlay_hwnd);
             state.overlay_hwnd = ptr::null_mut();
         }
-        SetWindowLongPtrW(overlay, GWLP_USERDATA, 0);
         if loupe_registered {
             UnregisterClassW(loupe_class.as_ptr(), hinstance);
         }
@@ -855,12 +915,66 @@ where
         cancelled: AtomicBool::new(false),
         overlay_hwnd: AtomicIsize::new(0),
     });
+    let shared_completion: SharedCompletion = Arc::new(Mutex::new(Some(Box::new(completion))));
+    let worker_completion = Arc::clone(&shared_completion);
     let thread_cancel = Arc::clone(&cancel_state);
     let handle_cancel = Arc::clone(&cancel_state);
 
     std::thread::Builder::new()
         .name("nana-color-sampler".into())
-        .spawn(move || run_sampler(request_id, thread_cancel, Box::new(completion)))
+        .spawn(move || {
+            let panic_res = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                run_sampler(request_id, thread_cancel, worker_completion);
+            }));
+            if let Some(done) = take_completion(&shared_completion) {
+                let result = match panic_res {
+                    Ok(()) => ColorSamplerResult::cancelled(request_id),
+                    Err(_) => ColorSamplerResult::failed(
+                        request_id,
+                        ColorSamplerError::Platform("color sampler worker panicked".into()),
+                    ),
+                };
+                done(result);
+            }
+        })
         .map(|_| ColorSamplerHandle::new(move || handle_cancel.cancel()))
         .map_err(|error| ColorSamplerError::Platform(error.to_string()))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn class_names_include_unique_sequence_for_same_request_id() {
+        let seq1 = CLASS_SEQUENCE.fetch_add(1, Ordering::Relaxed);
+        let seq2 = CLASS_SEQUENCE.fetch_add(1, Ordering::Relaxed);
+        assert_ne!(seq1, seq2);
+        assert_ne!(class_names(42, seq1), class_names(42, seq2));
+    }
+
+    #[test]
+    fn shared_completion_runs_at_most_once() {
+        let count = Arc::new(AtomicU64::new(0));
+        let count_cb = Arc::clone(&count);
+        let slot: SharedCompletion = Arc::new(Mutex::new(Some(Box::new(move |_| {
+            count_cb.fetch_add(1, Ordering::SeqCst);
+        }))));
+        let first = take_completion(&slot).expect("first take");
+        first(ColorSamplerResult::cancelled(1));
+        assert!(take_completion(&slot).is_none());
+        assert_eq!(count.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn loupe_scale_and_dimensions_track_per_monitor_dpi() {
+        let (s1, w1, h1) = scale_and_loupe_size_for_dpi(96);
+        let (s2, w2, h2) = scale_and_loupe_size_for_dpi(192);
+        let (s3, w3, h3) = scale_and_loupe_size_for_dpi(288);
+        let (s_clamped, w_clamped, h_clamped) = scale_and_loupe_size_for_dpi(480);
+        assert_eq!((s1, s2, s3, s_clamped), (1, 2, 3, 3));
+        assert_eq!((w2, h2), (w1 * 2, h1 * 2));
+        assert_eq!((w3, h3), (w1 * 3, h1 * 3));
+        assert_eq!((w_clamped, h_clamped), (w3, h3));
+    }
 }

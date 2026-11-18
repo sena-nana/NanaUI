@@ -119,6 +119,7 @@ pub fn resolve_surface_profile(
     resolve_surface_profile_internal(requested, capabilities, transparent)
 }
 
+#[cfg_attr(not(feature = "hosted"), allow(dead_code))]
 pub(crate) fn resolve_surface_profile_internal(
     requested: SurfacePresentationPolicy,
     capabilities: &wgpu::SurfaceCapabilities,

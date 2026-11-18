@@ -20,6 +20,7 @@
 //! ([`reassign_within_frontier`]), which is the last step of the cold solve
 //! and so gives the same answer.
 
+use crate::DynamicLayoutCounters;
 use crate::sort::CompactSort as _;
 
 use super::{DiscreteCandidate, EnvelopeShape, ExecutionClass, LayoutCost, LayoutUnits, TotalCost};
@@ -115,17 +116,35 @@ pub struct SolverScratch {
 }
 
 impl SolverScratch {
-    fn prepare(&mut self, participants: usize) {
+    fn prepare(&mut self, participants: usize, stats: &mut DynamicLayoutCounters) {
+        let grew =
+            self.amounts.capacity() < participants || self.expanded.capacity() < participants;
         self.amounts.clear();
         self.amounts.resize(participants, LayoutUnits::ZERO);
         self.expanded.clear();
         self.expanded.resize(participants, None);
         self.entries.clear();
         self.discrete.clear();
+        if grew {
+            stats.allocations += 1;
+        }
+        stats.temp_bytes = stats.temp_bytes.max(self.bytes());
     }
 
-    fn push_entry(&mut self, entry: Entry) {
+    fn bytes(&self) -> usize {
+        self.amounts.capacity() * std::mem::size_of::<LayoutUnits>()
+            + self.entries.capacity() * std::mem::size_of::<Entry>()
+            + self.expanded.capacity() * std::mem::size_of::<Option<EnvelopeShape>>()
+            + self.discrete.capacity()
+                * std::mem::size_of::<(usize, usize, LayoutUnits, LayoutCost)>()
+    }
+
+    fn push_entry(&mut self, entry: Entry, stats: &mut DynamicLayoutCounters) {
+        if self.entries.len() == self.entries.capacity() {
+            stats.allocations += 1;
+        }
         self.entries.push(entry);
+        stats.temp_bytes = stats.temp_bytes.max(self.bytes());
     }
 }
 
@@ -184,11 +203,14 @@ pub fn solve_deficit(
     policy: &SolverPolicy,
     scratch: &mut SolverScratch,
     source: Option<&mut (dyn ParticipantSource + '_)>,
+    stats: &mut DynamicLayoutCounters,
 ) -> SolveOutcome {
-    scratch.prepare(participants.len());
-    let mut outcome = solve_continuous(participants, deficit, policy, scratch, source);
+    stats.solver_runs += 1;
+    stats.cold_solves += 1;
+    scratch.prepare(participants.len(), stats);
+    let mut outcome = solve_continuous(participants, deficit, policy, scratch, source, stats);
     if policy.allow_structural && deficit.is_positive() {
-        choose_discrete(participants, deficit, policy, scratch, &mut outcome);
+        choose_discrete(participants, deficit, policy, scratch, &mut outcome, stats);
     }
     outcome
 }
@@ -200,10 +222,13 @@ pub fn reassign_within_frontier(
     frontier: &SolveFrontier,
     deficit: LayoutUnits,
     out: &mut Vec<LayoutUnits>,
+    stats: &mut DynamicLayoutCounters,
 ) -> Option<TotalCost> {
     if !frontier.holds(deficit) {
         return None;
     }
+    stats.solver_runs += 1;
+    stats.incremental_assignments += 1;
     out.clear();
     out.extend_from_slice(&frontier.base);
     let remaining = deficit - frontier.cum_before;
@@ -262,6 +287,7 @@ fn solve_continuous(
     policy: &SolverPolicy,
     scratch: &mut SolverScratch,
     source: Option<&mut (dyn ParticipantSource + '_)>,
+    stats: &mut DynamicLayoutCounters,
 ) -> SolveOutcome {
     let mut outcome = SolveOutcome::default();
     if !deficit.is_positive() {
@@ -318,7 +344,6 @@ fn solve_continuous(
         && let Some(source) = source
     {
         let mut considered = 0;
-        let mut deep_expansions = 0;
         for (at, participant) in participants.iter().enumerate() {
             let coarse = participant.shape.segments().iter().any(|segment| {
                 segment.coarse && segment.execution_class == ExecutionClass::LocalReflow
@@ -327,9 +352,7 @@ fn solve_continuous(
                 continue;
             }
             considered += 1;
-            if considered > policy.budget.max_reflow_candidates
-                || deep_expansions >= policy.budget.max_deep_expansions
-            {
+            if considered > policy.budget.max_reflow_candidates || stats_expansions(stats, policy) {
                 break;
             }
             if let Some(shape) = source.expand(at) {
@@ -341,7 +364,7 @@ fn solve_continuous(
                     "a refined shape keeps its class capacity"
                 );
                 scratch.expanded[at] = Some(shape);
-                deep_expansions += 1;
+                stats.deep_expansions += 1;
             }
         }
     }
@@ -349,6 +372,7 @@ fn solve_continuous(
     for (at, participant) in participants.iter().enumerate() {
         let shape = scratch.expanded[at].unwrap_or(*participant.shape);
         if clipped_class_capacity(participant, &shape, chosen) == LayoutUnits::ZERO {
+            stats.pruned_candidates += 1;
             continue;
         }
         let mut left = participant.limit;
@@ -363,17 +387,22 @@ fn solve_continuous(
             if segment.execution_class != chosen || !take.is_positive() {
                 continue;
             }
-            scratch.push_entry(Entry {
-                cost: segment.marginal_cost,
-                participant: at as u32,
-                segment: index as u8,
-                capacity: take,
-            });
+            stats.cost_segments_visited += 1;
+            scratch.push_entry(
+                Entry {
+                    cost: segment.marginal_cost,
+                    participant: at as u32,
+                    segment: index as u8,
+                    capacity: take,
+                },
+                stats,
+            );
         }
     }
     outcome.frontier.class = chosen;
     if scratch.entries.len() > policy.budget.max_states {
         // Shared by class capacity: one level, the same way every time.
+        stats.budget_fallbacks += 1;
         outcome.fallback = true;
         let mut per_participant: Vec<(u32, LayoutUnits)> = Vec::new();
         let mut dearest = LayoutCost::ZERO;
@@ -405,12 +434,14 @@ fn solve_continuous(
         .entries
         .compact_sort_by_key(|entry| (entry.cost, entry.participant, entry.segment));
     let mut start = 0;
+    let mut levels = 0;
     while start < scratch.entries.len() {
         let cost = scratch.entries[start].cost;
         let end = scratch.entries[start..]
             .iter()
             .position(|entry| entry.cost != cost)
             .map_or(scratch.entries.len(), |offset| start + offset);
+        levels += 1;
         let level: LayoutUnits = scratch.entries[start..end]
             .iter()
             .map(|entry| entry.capacity)
@@ -441,10 +472,19 @@ fn solve_continuous(
         };
         share(remaining, &outcome.frontier.tied, &mut scratch.amounts);
         outcome.total.add(cost, remaining);
+        if levels == 1 && chosen == classes[0] {
+            stats.fast_adjust += 1;
+        }
         return outcome;
     }
     debug_assert!(false, "a feasible class covers its deficit");
     outcome
+}
+
+fn stats_expansions(stats: &DynamicLayoutCounters, policy: &SolverPolicy) -> bool {
+    // Counted per solve by the caller's fresh counters; a shared counter only
+    // ever makes this stricter.
+    stats.deep_expansions >= policy.budget.max_deep_expansions
 }
 
 /// Share `amount` over `tied` by capacity: floor of each share, then the
@@ -486,6 +526,7 @@ fn choose_discrete(
     policy: &SolverPolicy,
     scratch: &mut SolverScratch,
     outcome: &mut SolveOutcome,
+    stats: &mut DynamicLayoutCounters,
 ) {
     scratch.discrete.clear();
     for (at, participant) in participants.iter().enumerate() {
@@ -514,19 +555,29 @@ fn choose_discrete(
         });
     let beam =
         (policy.budget.max_states / participants.len().max(1)).clamp(1, scratch.discrete.len());
+    stats.beam_states = stats.beam_states.max(beam);
     let mut best: (bool, TotalCost) = (outcome.residual.is_positive(), outcome.total);
     let mut chosen = None;
     let candidates: Vec<_> = scratch.discrete[..beam].to_vec();
     let mut scratch_inner = SolverScratch::default();
     for (at, index, saves, cost) in candidates {
+        stats.candidates_created += 1;
         let mut fixed = TotalCost::ZERO;
         fixed.add(cost, LayoutUnits(LayoutUnits::PER_PX));
         if (false, fixed) >= best {
+            stats.candidates_pruned += 1;
             continue;
         }
         let left = deficit - saves;
-        scratch_inner.prepare(participants.len());
-        let rest = solve_continuous(participants, left, policy, &mut scratch_inner, None);
+        scratch_inner.prepare(participants.len(), &mut DynamicLayoutCounters::default());
+        let rest = solve_continuous(
+            participants,
+            left,
+            policy,
+            &mut scratch_inner,
+            None,
+            &mut DynamicLayoutCounters::default(),
+        );
         let candidate = (rest.residual.is_positive(), fixed.plus(rest.total));
         if candidate < best {
             best = candidate;
@@ -534,6 +585,7 @@ fn choose_discrete(
         }
     }
     if let Some((at, index, rest, amounts)) = chosen {
+        stats.structural_adaptations += 1;
         scratch.amounts = amounts;
         *outcome = SolveOutcome {
             residual: rest.residual,
@@ -565,20 +617,25 @@ mod tests {
         }))
     }
 
-    fn solve(shapes: &[EnvelopeShape], deficit: f32) -> (SolveOutcome, Vec<LayoutUnits>) {
+    fn solve(
+        shapes: &[EnvelopeShape],
+        deficit: f32,
+    ) -> (SolveOutcome, Vec<LayoutUnits>, DynamicLayoutCounters) {
         let participants: Vec<_> = shapes
             .iter()
             .map(|shape| Participant::new(shape, px(1e6)))
             .collect();
         let mut scratch = SolverScratch::default();
+        let mut stats = DynamicLayoutCounters::default();
         let outcome = solve_deficit(
             &participants,
             px(deficit),
             &SolverPolicy::default(),
             &mut scratch,
             None,
+            &mut stats,
         );
-        (outcome, scratch.amounts)
+        (outcome, scratch.amounts, stats)
     }
 
     use ExecutionClass::{LocalBox, LocalReflow, PlacementOnly};
@@ -593,19 +650,21 @@ mod tests {
             ]),
             shape(&[(4.0, 10, PlacementOnly), (8.0, 20, LocalBox)]),
         ];
-        let (outcome, amounts) = solve(&shapes, 1.0);
+        let (outcome, amounts, stats) = solve(&shapes, 1.0);
         assert_eq!(amounts.iter().copied().sum::<LayoutUnits>(), px(1.0));
         assert_eq!(outcome.frontier.class, PlacementOnly);
+        assert_eq!(stats.cost_segments_visited, 2);
+        assert_eq!(stats.fast_adjust, 1);
         assert_eq!(outcome.residual, LayoutUnits::ZERO);
     }
 
     #[test]
     fn a_level_is_shared_by_capacity_and_the_remainder_goes_in_order() {
         let shapes = vec![shape(&[(2.0, 10, LocalBox)]), shape(&[(4.0, 10, LocalBox)])];
-        let (_, amounts) = solve(&shapes, 3.0);
+        let (_, amounts, _) = solve(&shapes, 3.0);
         assert_eq!(amounts, vec![px(1.0), px(2.0)]);
         // 1/64 px left over goes to the first that is not full.
-        let (_, amounts) = solve(&shapes, 3.0 + 1.0 / 64.0);
+        let (_, amounts, _) = solve(&shapes, 3.0 + 1.0 / 64.0);
         assert_eq!(amounts[0] + amounts[1], px(3.0) + LayoutUnits(1));
     }
 
@@ -615,7 +674,7 @@ mod tests {
             shape(&[(2.0, 10, LocalBox), (10.0, 30, LocalBox)]),
             shape(&[(2.0, 10, LocalBox)]),
         ];
-        let (outcome, amounts) = solve(&shapes, 6.0);
+        let (outcome, amounts, _) = solve(&shapes, 6.0);
         assert_eq!(amounts, vec![px(4.0), px(2.0)]);
         assert_eq!(outcome.frontier.cost, LayoutCost::Finite(30));
         assert_eq!(outcome.total.finite, (10 * 4 * 64 + 30 * 2 * 64) as u64);
@@ -624,7 +683,7 @@ mod tests {
     #[test]
     fn an_infeasible_deficit_takes_everything_and_reports_the_rest() {
         let shapes = vec![shape(&[(2.0, 10, LocalBox)])];
-        let (outcome, amounts) = solve(&shapes, 5.0);
+        let (outcome, amounts, _) = solve(&shapes, 5.0);
         assert_eq!(amounts, vec![px(2.0)]);
         assert_eq!(outcome.residual, px(3.0));
         assert!(!outcome.frontier.reusable);
@@ -635,12 +694,14 @@ mod tests {
         let shape = shape(&[(2.0, 10, PlacementOnly), (10.0, 20, LocalBox)]);
         let participants = [Participant::new(&shape, px(5.0))];
         let mut scratch = SolverScratch::default();
+        let mut stats = DynamicLayoutCounters::default();
         let outcome = solve_deficit(
             &participants,
             px(9.0),
             &SolverPolicy::default(),
             &mut scratch,
             None,
+            &mut stats,
         );
         assert_eq!(scratch.amounts, vec![px(5.0)]);
         assert_eq!(outcome.residual, px(4.0));
@@ -655,20 +716,27 @@ mod tests {
             shape(&[(2.0, 20, LocalBox), (5.0, 40, LocalBox)]),
             shape(&[(0.5, 20, LocalBox)]),
         ];
-        let (start, _) = solve(&shapes, 2.0);
+        let (start, _, _) = solve(&shapes, 2.0);
         assert!(start.frontier.reusable);
         let frontier = start.frontier.clone();
         let mut out = Vec::new();
         for units in (frontier.cum_before.0 + 1)..=frontier.cum_through.0 {
             let deficit = LayoutUnits(units);
-            let total = reassign_within_frontier(&frontier, deficit, &mut out).unwrap();
-            let (cold, amounts) = solve(&shapes, deficit.to_px());
+            let mut stats = DynamicLayoutCounters::default();
+            let total = reassign_within_frontier(&frontier, deficit, &mut out, &mut stats).unwrap();
+            let (cold, amounts, _) = solve(&shapes, deficit.to_px());
             assert_eq!(out, amounts, "{units}");
             assert_eq!(total, cold.total, "{units}");
+            assert_eq!(stats.incremental_assignments, 1);
         }
         assert!(
-            reassign_within_frontier(&frontier, frontier.cum_through + LayoutUnits(1), &mut out)
-                .is_none()
+            reassign_within_frontier(
+                &frontier,
+                frontier.cum_through + LayoutUnits(1),
+                &mut out,
+                &mut DynamicLayoutCounters::default()
+            )
+            .is_none()
         );
     }
 
@@ -691,8 +759,17 @@ mod tests {
         let mut runs = Vec::new();
         for _ in 0..3 {
             let mut scratch = SolverScratch::default();
-            let outcome = solve_deficit(&participants, px(13.0), &policy, &mut scratch, None);
+            let mut stats = DynamicLayoutCounters::default();
+            let outcome = solve_deficit(
+                &participants,
+                px(13.0),
+                &policy,
+                &mut scratch,
+                None,
+                &mut stats,
+            );
             assert!(outcome.fallback);
+            assert_eq!(stats.budget_fallbacks, 1);
             assert_eq!(
                 scratch.amounts.iter().copied().sum::<LayoutUnits>(),
                 px(13.0)
@@ -754,12 +831,14 @@ mod tests {
         let policy = SolverPolicy::default();
         let mut source = Refine(0);
         let mut scratch = SolverScratch::default();
+        let mut stats = DynamicLayoutCounters::default();
         solve_deficit(
             &participants,
             px(10.0),
             &policy,
             &mut scratch,
             Some(&mut source),
+            &mut stats,
         );
         assert_eq!(source.0, 0, "a placement-only deficit refined something");
         solve_deficit(
@@ -768,8 +847,10 @@ mod tests {
             &policy,
             &mut scratch,
             Some(&mut source),
+            &mut stats,
         );
         assert_eq!(source.0, policy.budget.max_deep_expansions);
+        assert_eq!(stats.deep_expansions, policy.budget.max_deep_expansions);
     }
 
     #[test]
@@ -793,8 +874,28 @@ mod tests {
                 ..Participant::new(&shape, px(1e6))
             }];
             let mut scratch = SolverScratch::default();
-            let outcome = solve_deficit(&participants, px(8.0), &policy, &mut scratch, None);
+            let mut stats = DynamicLayoutCounters::default();
+            let outcome = solve_deficit(
+                &participants,
+                px(8.0),
+                &policy,
+                &mut scratch,
+                None,
+                &mut stats,
+            );
             assert_eq!(outcome.discrete.is_some(), wins);
+            assert_eq!(stats.candidates_pruned, usize::from(!wins));
+        }
+    }
+
+    /// A thousand participants cost a solve a thousand segment reads, not a
+    /// million: work follows the direct opportunities.
+    #[test]
+    fn a_solve_reads_each_opportunity_once() {
+        for count in [1_000usize, 2_000] {
+            let shapes = vec![shape(&[(1.0, 10, LocalBox), (5.0, 50, LocalReflow)]); count];
+            let (_, _, stats) = solve(&shapes, count as f32 / 2.0);
+            assert_eq!(stats.cost_segments_visited, count);
         }
     }
 }

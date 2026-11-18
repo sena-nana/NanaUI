@@ -22,37 +22,43 @@ use crate::{
 
 /// Where [`PresentationFrameDriver::encode`] finds the painter of a profile.
 pub(crate) trait PresentationPainters {
-    fn painter(
+    fn try_painter(
         &mut self,
         gpu: &GpuContext,
         profile: ScenePresentationProfile,
-    ) -> &mut SceneWgpuPainter;
+    ) -> Result<&mut SceneWgpuPainter, crate::ScenePaintError>;
 }
 
 /// A painter per profile.
 impl PresentationPainters for HashMap<ScenePresentationProfile, SceneWgpuPainter> {
-    fn painter(
+    fn try_painter(
         &mut self,
         gpu: &GpuContext,
         profile: ScenePresentationProfile,
-    ) -> &mut SceneWgpuPainter {
-        self.entry(profile)
-            .or_insert_with(|| SceneWgpuPainter::new_with_presentation(gpu, profile))
+    ) -> Result<&mut SceneWgpuPainter, crate::ScenePaintError> {
+        match self.entry(profile) {
+            std::collections::hash_map::Entry::Occupied(entry) => Ok(entry.into_mut()),
+            std::collections::hash_map::Entry::Vacant(entry) => {
+                Ok(entry.insert(SceneWgpuPainter::try_new_with_presentation(gpu, profile)?))
+            }
+        }
     }
 }
 
 /// One painter for every profile: the glyph and icon atlases, text caches
 /// and URL images are shared, and each working format keeps its pipelines.
 impl PresentationPainters for Option<SceneWgpuPainter> {
-    fn painter(
+    fn try_painter(
         &mut self,
         gpu: &GpuContext,
         profile: ScenePresentationProfile,
-    ) -> &mut SceneWgpuPainter {
-        let painter =
-            self.get_or_insert_with(|| SceneWgpuPainter::new_with_presentation(gpu, profile));
-        painter.select_presentation(profile);
-        painter
+    ) -> Result<&mut SceneWgpuPainter, crate::ScenePaintError> {
+        let painter = match self {
+            Some(painter) => painter,
+            None => self.insert(SceneWgpuPainter::try_new_with_presentation(gpu, profile)?),
+        };
+        painter.try_select_presentation(profile)?;
+        Ok(painter)
     }
 }
 
@@ -255,7 +261,7 @@ impl PresentationFrameDriver {
         if let Some((plan, request)) = prepared.retained {
             let surface = surface.as_mut().expect("retained route has a producer");
             let profile = surface.config().presentation;
-            let painter = painters.painter(gpu, profile);
+            let painter = painters.try_painter(gpu, profile)?;
             painter.set_resource_fetch_host(fetch_host.clone());
             let result = Self::encode_retained(
                 surface,
@@ -312,11 +318,11 @@ impl PresentationFrameDriver {
             if !transfer.as_ref().is_some_and(|transfer| {
                 transfer.matches(gpu, target.format(), source.format().is_srgb())
             }) {
-                *transfer = Some(OutputTransfer::new(
+                *transfer = Some(OutputTransfer::try_new(
                     gpu,
                     target.format(),
                     source.format().is_srgb(),
-                ));
+                )?);
             }
             transfer
                 .as_mut()
@@ -348,7 +354,7 @@ impl PresentationFrameDriver {
         renderers: Option<&SceneGpuRendererRegistry>,
         fetch_host: Option<SharedFetchHost>,
     ) -> Result<Option<GpuWorkObservation>, ExternalSurfaceError> {
-        let painter = painters.painter(gpu, direct.profile);
+        let painter = painters.try_painter(gpu, direct.profile)?;
         painter.set_resource_fetch_host(fetch_host);
         painter.set_alpha_encoding(direct.alpha);
         painter.set_subpixel_text(direct.text_aa);

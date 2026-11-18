@@ -15,8 +15,11 @@ use crate::{
 
 pub(crate) const HANDLE_SIZE: f32 = nana_ui_core::space::MD;
 pub(crate) const INDICATOR_SIZE: f32 = nana_ui_core::space::XXS;
+#[allow(dead_code)]
 pub(crate) const DEFAULT_SIZE: f32 = 240.0;
+#[allow(dead_code)]
 pub(crate) const DEFAULT_MIN: f32 = 120.0;
+#[allow(dead_code)]
 pub(crate) const DEFAULT_MAX: f32 = 800.0;
 
 /// Two children and an 8px resize handle. Size comes from [`SplitPaneModel`].

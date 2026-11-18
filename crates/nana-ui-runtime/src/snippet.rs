@@ -351,9 +351,16 @@ fn known_variable(name: &str) -> bool {
 impl SnippetTransform {
     /// Without `snippet-transforms` there is no regular-expression engine:
     /// the value comes through as it is, the same as for a pattern that
-    /// does not compile.
+    /// does not compile, and diagnostics note the disabled feature once.
     #[cfg(not(feature = "snippet-transforms"))]
     fn apply(&self, value: &str) -> String {
+        use std::sync::atomic::{AtomicBool, Ordering};
+        static WARNED: AtomicBool = AtomicBool::new(false);
+        if !WARNED.swap(true, Ordering::Relaxed) {
+            nana_diagnostics::event!(
+                nana_diagnostics::framework::runtime::SNIPPET_TRANSFORM_UNAVAILABLE
+            );
+        }
         value.into()
     }
 
@@ -716,5 +723,95 @@ mod tests {
             .unwrap();
         assert_eq!(value, "蓝色 蓝色 r,g r,g");
         assert_eq!(next.selection_ends[0], 6);
+    }
+}
+
+#[cfg(test)]
+mod fallback_tests {
+    #[cfg(not(feature = "snippet-transforms"))]
+    #[test]
+    fn snippet_transform_unavailable_emits_once_without_feature() {
+        use super::*;
+        const CHILD: &str = "NANA_RUNTIME_TEST_SNIPPET_TRANSFORM_CHILD";
+        if std::env::var_os(CHILD).is_none() {
+            let exe = std::env::current_exe().expect("test binary");
+            let mut child = std::process::Command::new(exe)
+                .args([
+                    "--exact",
+                    "snippet::fallback_tests::snippet_transform_unavailable_emits_once_without_feature",
+                    "--nocapture",
+                    "--test-threads=1",
+                ])
+                .env(CHILD, "1")
+                .spawn()
+                .expect("spawn child");
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(15);
+            loop {
+                if let Some(status) = child.try_wait().expect("wait child") {
+                    assert!(status.success(), "child test failed: {status}");
+                    return;
+                }
+                if std::time::Instant::now() >= deadline {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    panic!("child test timed out after 15s");
+                }
+                std::thread::sleep(std::time::Duration::from_millis(20));
+            }
+        }
+
+        static SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        let seq = SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let dir = std::env::temp_dir().join(format!(
+            "nana-snippet-fallback-{}-{seq}",
+            std::process::id()
+        ));
+        let guard = nana_diagnostics::install(
+            nana_diagnostics::DiagnosticsConfig {
+                min_severity: nana_diagnostics::Severity::Debug,
+                persist: nana_diagnostics::PersistMode::All,
+                poll_interval: std::time::Duration::from_millis(5),
+                panic_hook: false,
+                ..nana_diagnostics::DiagnosticsConfig::default()
+            },
+            nana_diagnostics::SessionMetadata::new("dev.nana.test", "snippet-fallback", "0"),
+            nana_diagnostics::DiagnosticsPaths::new(dir.join("logs"), dir.join("crash")),
+        )
+        .expect("isolated child owns global diagnostics");
+        nana_diagnostics::register_thread();
+
+        let expanded = expand_text_snippet("${1:hello} ${1/(.*)/${1:/upcase}/}").unwrap();
+        assert_eq!(expanded.text, "hello hello");
+        let again = expand_text_snippet("${1:world} ${1/(.*)/${1:/upcase}/}").unwrap();
+        assert_eq!(again.text, "world world");
+
+        assert!(
+            guard
+                .diagnostics()
+                .flush(false, std::time::Duration::from_secs(5))
+        );
+        let log = guard
+            .diagnostics()
+            .current_log()
+            .expect("session log opened");
+        drop(guard);
+
+        let file = nana_diagnostics::nlog::read_file(&log).unwrap();
+        let _ = std::fs::remove_dir_all(&dir);
+        let count = file
+            .entries
+            .iter()
+            .filter(|entry| {
+                matches!(
+                    entry,
+                    nana_diagnostics::nlog::Entry::Event { key, .. }
+                        if file.event_name(*key) == Some("runtime.snippet.transform_unavailable")
+                )
+            })
+            .count();
+        assert_eq!(
+            count, 1,
+            "expected one runtime.snippet.transform_unavailable event"
+        );
     }
 }

@@ -31,8 +31,8 @@
 //!   labels through a real `nana-text` engine holding the bundled UI face, so
 //!   every label retains a laid-out `TextLayout` (Issue #95).
 //!
-//! `last_frame_profile` retains the last NON-IDLE frame,
-//! so reading it after an idle flush silently returns the mount frame. Every
+//! `last_frame_profile` / `last_work_counters` retain the last NON-IDLE frame,
+//! so reading them after an idle flush silently returns the mount frame. Every
 //! sample here asserts the frame did work.
 
 use std::fs;
@@ -44,7 +44,7 @@ use nana_ui_core::{DirSpec, FlexDirection, LayoutStyle, LengthSpec, SemanticColo
 use nana_ui_runtime::{
     AppContext, DocumentId, FrameStage, LayoutViewport, MeasureTextShaper, MutationQueue,
     NanaTextEngineShaper, NodeKind, NodeStyle, StableNodeId, StageStatus, TextContent, TextShaper,
-    text_shape_stats,
+    WorkCounters, text_shape_stats,
 };
 use nana_ui_scene::RuntimeDocument;
 use serde::Serialize;
@@ -73,9 +73,14 @@ struct Cell {
     dirty_rows: usize,
     flush_ms: Stat,
     stages_ms: Vec<StageCell>,
-    /// Ground truth from the returned frame update.
+    counters: Counters,
+    /// Ground truth from the returned frame update, not from the counters.
+    /// `accessibility_nodes_updated` reports the SCHEDULED dirty set
+    /// (`schedule.rs`: `self.accessibility.len()`), so it cannot see the
+    /// subtree expansion `project_accessibility_delta` performs internally.
     projected: Projected,
     layout_substages_ms: LayoutSubstages,
+    layout_plan: LayoutPlan,
     text_shape: TextShapePass,
     text_work: TextWork,
 }
@@ -108,6 +113,17 @@ struct Projected {
     passes: usize,
 }
 
+/// Attribution inside the single `FrameStage::Layout` number.
+/// What the layout engine's retained container plans saved, per frame (mean
+/// over samples). `children_measured` is the sibling scan a plan exists to
+/// avoid: constant when the plan held, O(rows) when the container relaid out.
+#[derive(Serialize)]
+struct LayoutPlan {
+    children_measured: f64,
+    plans_reused: f64,
+    suffixes_replayed: f64,
+}
+
 #[derive(Serialize)]
 struct LayoutSubstages {
     tooltips_ms: f64,
@@ -124,7 +140,174 @@ struct StageCell {
     mean_ms: f64,
 }
 
-/// Attribution inside the single `FrameStage::TextShape` number.
+#[derive(Serialize)]
+struct Counters {
+    entities_total: usize,
+    entities_changed: usize,
+    style_processed: usize,
+    text_shaped: usize,
+    text_shaped_runs: usize,
+    text_layout_cache_hits: usize,
+    text_layout_cache_misses: usize,
+    text_wrap_layouts: usize,
+    cache_eviction: Option<usize>,
+    allocations: usize,
+    allocated_bytes: usize,
+    layout_nodes: usize,
+    layout_frontier_seeds: usize,
+    layout_frontier_seed_merges: usize,
+    layout_frontier_nodes_measure: usize,
+    layout_frontier_nodes_placement: usize,
+    layout_frontier_contexts: usize,
+    layout_dependency_edges_visited: usize,
+    layout_propagations_stopped: usize,
+    layout_local_subtree_fallbacks: usize,
+    layout_full_document_fallbacks: usize,
+    layout_suffixes_replayed: usize,
+    layout_children_measured: usize,
+    inline_reflows: usize,
+    inline_atomic_measure_requests: usize,
+    layout_containers_uncacheable: usize,
+    layout_result_children_visited: usize,
+    layout_placement_plans_reused: usize,
+    layout_measure_plans_reused: usize,
+    layout_plan_misses: usize,
+    layout_plan_rebuilds: usize,
+    layout_scratch_entries: usize,
+    layout_scratch_bytes: usize,
+    intrinsic_measure_requests: usize,
+    layout_context_transitions: usize,
+    intrinsic_measure_cache_hits: usize,
+    intrinsic_measure_cache_misses: usize,
+    intrinsic_generation_bumps: usize,
+    baseline_queries: usize,
+    cross_context_measure_hits: usize,
+    cross_context_measure_misses: usize,
+    intrinsic_measure_full_subtrees: usize,
+    constraint_change_seeds: usize,
+    constraint_dependents_considered: usize,
+    constraint_dependents_remeasured: usize,
+    constraint_dependents_skipped: usize,
+    resize_text_relayouts: usize,
+    resize_text_reshapes: usize,
+    dynamic_contexts_considered: usize,
+    dynamic_solver_runs: usize,
+    dynamic_fast_fit: usize,
+    dynamic_fast_adjust: usize,
+    dynamic_break_comparisons: usize,
+    dynamic_opportunities_considered: usize,
+    dynamic_envelope_queries: usize,
+    dynamic_envelope_hits: usize,
+    dynamic_envelope_misses: usize,
+    dynamic_envelope_rebuilds: usize,
+    dynamic_cost_segments_visited: usize,
+    dynamic_candidates_created: usize,
+    dynamic_candidates_pruned: usize,
+    dynamic_deep_expansions: usize,
+    dynamic_beam_states: usize,
+    dynamic_child_resolves: usize,
+    dynamic_child_reflows: usize,
+    dynamic_structural_adaptations: usize,
+    dynamic_budget_fallbacks: usize,
+    dynamic_allocations: usize,
+    dynamic_temp_bytes: usize,
+    dynamic_solver_reuses: usize,
+    dynamic_previous_result_hits: usize,
+    dynamic_incremental_assignments: usize,
+    dynamic_cold_solves: usize,
+    dynamic_pruned_candidates: usize,
+    hit_test_candidates: usize,
+    accessibility_nodes_updated: usize,
+    render_nodes_changed: usize,
+    render_nodes_extracted: usize,
+}
+
+impl From<WorkCounters> for Counters {
+    fn from(value: WorkCounters) -> Self {
+        Self {
+            entities_total: value.entities_total,
+            entities_changed: value.entities_changed,
+            style_processed: value.style_processed,
+            text_shaped: value.text_shaped,
+            text_shaped_runs: value.text_shaped_runs,
+            text_layout_cache_hits: value.text_layout_cache_hits,
+            text_layout_cache_misses: value.text_layout_cache_misses,
+            text_wrap_layouts: value.text_wrap_layouts,
+            cache_eviction: value.cache_eviction,
+            allocations: value.allocations,
+            allocated_bytes: value.allocated_bytes,
+            layout_nodes: value.layout_nodes,
+            layout_frontier_seeds: value.layout_frontier_seeds,
+            layout_frontier_seed_merges: value.layout_frontier_seed_merges,
+            layout_frontier_nodes_measure: value.layout_frontier_nodes_measure,
+            layout_frontier_nodes_placement: value.layout_frontier_nodes_placement,
+            layout_frontier_contexts: value.layout_frontier_contexts,
+            layout_dependency_edges_visited: value.layout_dependency_edges_visited,
+            layout_propagations_stopped: value.layout_propagations_stopped,
+            layout_local_subtree_fallbacks: value.layout_local_subtree_fallbacks,
+            layout_full_document_fallbacks: value.layout_full_document_fallbacks,
+            layout_suffixes_replayed: value.layout_suffixes_replayed,
+            layout_children_measured: value.layout_children_measured,
+            inline_reflows: value.inline_reflows,
+            inline_atomic_measure_requests: value.inline_atomic_measure_requests,
+            layout_containers_uncacheable: value.layout_containers_uncacheable,
+            layout_result_children_visited: value.layout_result_children_visited,
+            layout_placement_plans_reused: value.layout_placement_plans_reused,
+            layout_measure_plans_reused: value.layout_measure_plans_reused,
+            layout_plan_misses: value.layout_plan_misses,
+            layout_plan_rebuilds: value.layout_plan_rebuilds,
+            layout_scratch_entries: value.layout_scratch_entries,
+            layout_scratch_bytes: value.layout_scratch_bytes,
+            intrinsic_measure_requests: value.intrinsic_measure_requests,
+            layout_context_transitions: value.layout_context_transitions,
+            intrinsic_measure_cache_hits: value.intrinsic_measure_cache_hits,
+            intrinsic_measure_cache_misses: value.intrinsic_measure_cache_misses,
+            intrinsic_generation_bumps: value.intrinsic_generation_bumps,
+            baseline_queries: value.baseline_queries,
+            cross_context_measure_hits: value.cross_context_measure_hits,
+            cross_context_measure_misses: value.cross_context_measure_misses,
+            intrinsic_measure_full_subtrees: value.intrinsic_measure_full_subtrees,
+            constraint_change_seeds: value.constraint_change_seeds,
+            constraint_dependents_considered: value.constraint_dependents_considered,
+            constraint_dependents_remeasured: value.constraint_dependents_remeasured,
+            constraint_dependents_skipped: value.constraint_dependents_skipped,
+            resize_text_relayouts: value.resize_text_relayouts,
+            resize_text_reshapes: value.resize_text_reshapes,
+            dynamic_contexts_considered: value.dynamic.contexts_considered,
+            dynamic_solver_runs: value.dynamic.solver_runs,
+            dynamic_fast_fit: value.dynamic.fast_fit,
+            dynamic_fast_adjust: value.dynamic.fast_adjust,
+            dynamic_break_comparisons: value.dynamic.break_comparisons,
+            dynamic_opportunities_considered: value.dynamic.opportunities_considered,
+            dynamic_envelope_queries: value.dynamic.envelope_queries,
+            dynamic_envelope_hits: value.dynamic.envelope_hits,
+            dynamic_envelope_misses: value.dynamic.envelope_misses,
+            dynamic_envelope_rebuilds: value.dynamic.envelope_rebuilds,
+            dynamic_cost_segments_visited: value.dynamic.cost_segments_visited,
+            dynamic_candidates_created: value.dynamic.candidates_created,
+            dynamic_candidates_pruned: value.dynamic.candidates_pruned,
+            dynamic_deep_expansions: value.dynamic.deep_expansions,
+            dynamic_beam_states: value.dynamic.beam_states,
+            dynamic_child_resolves: value.dynamic.child_resolves,
+            dynamic_child_reflows: value.dynamic.child_reflows,
+            dynamic_structural_adaptations: value.dynamic.structural_adaptations,
+            dynamic_budget_fallbacks: value.dynamic.budget_fallbacks,
+            dynamic_allocations: value.dynamic.allocations,
+            dynamic_temp_bytes: value.dynamic.temp_bytes,
+            dynamic_solver_reuses: value.dynamic.solver_reuses,
+            dynamic_previous_result_hits: value.dynamic.previous_result_hits,
+            dynamic_incremental_assignments: value.dynamic.incremental_assignments,
+            dynamic_cold_solves: value.dynamic.cold_solves,
+            dynamic_pruned_candidates: value.dynamic.pruned_candidates,
+            hit_test_candidates: value.hit_test_candidates,
+            accessibility_nodes_updated: value.accessibility_nodes_updated,
+            render_nodes_changed: value.render_nodes_changed,
+            render_nodes_extracted: value.render_nodes_extracted,
+        }
+    }
+}
+
+/// Attribution inside the single `FrameStage::TextShape` number. Not `WorkCounters`.
 /// Instruments the host-shaper path only; under `--engine nana-text` engine
 /// copies, hashing and lookups are reported in `text_work` instead.
 #[derive(Serialize)]
@@ -517,6 +700,8 @@ fn measure_with(
     let mut stage_samples: Vec<Vec<Duration>> =
         (0..13).map(|_| Vec::with_capacity(samples)).collect();
     let mut stage_status = [StageStatus::Skipped; 13];
+    let mut counters = WorkCounters::default();
+    let mut plan_totals = [0usize; 3];
     let mut substage_totals = [Duration::ZERO; 4];
     let mut text_shape_totals = text_shape_stats::TextShapePassStats::default();
     let mut text_work_totals = TextWorkCounters::default();
@@ -536,15 +721,24 @@ fn measure_with(
         let started = Instant::now();
         let update = runtime.flush(viewport, shaper).unwrap();
         let elapsed = started.elapsed();
-        // The profile accessor retains the last NON-IDLE frame, so a
+        // The profile/counter accessors retain the last NON-IDLE frame, so a
         // sample that did no work would silently report the mount frame.
         assert!(
             !update.is_idle(),
             "dirty frame reported idle at rows={rows} dirty={dirty_rows}"
         );
         let substages = runtime.context_mut().take_layout_substage_totals();
+        let work = runtime.context().last_work_counters();
+        let plan = [
+            work.layout_children_measured,
+            work.layout_placement_plans_reused,
+            work.layout_suffixes_replayed,
+        ];
         if iteration < warmup {
             continue;
+        }
+        for (total, count) in plan_totals.iter_mut().zip(plan) {
+            *total += count;
         }
         for (total, elapsed) in substage_totals.iter_mut().zip(substages) {
             *total += elapsed;
@@ -597,6 +791,7 @@ fn measure_with(
             stage_samples[index].push(timing.duration);
             stage_status[index] = timing.status;
         }
+        counters = runtime.context().last_work_counters();
     }
 
     let stages_ms = FrameStage::ALL
@@ -624,7 +819,13 @@ fn measure_with(
         dirty_rows,
         flush_ms: Stat::from_durations(flushes),
         stages_ms,
+        counters: counters.into(),
         projected,
+        layout_plan: LayoutPlan {
+            children_measured: plan_totals[0] as f64 / samples as f64,
+            plans_reused: plan_totals[1] as f64 / samples as f64,
+            suffixes_replayed: plan_totals[2] as f64 / samples as f64,
+        },
         layout_substages_ms: LayoutSubstages {
             tooltips_ms: ms_mean(substage_totals[0], samples),
             engine_ms: ms_mean(substage_totals[1], samples),
@@ -758,13 +959,21 @@ fn main() {
                     }
                     let cell = measure(engine, shape, position, rows, dirty_rows, samples, warmup);
                     eprintln!(
-                        "{:<7} {:<6} rows={:<5} nodes={:<5} dirty={:<4} flush p50={:.4} ms  a11y={} scene_nodes={} prims={} passes={}",
+                        "{:<7} {:<6} rows={:<5} nodes={:<5} dirty={:<4} flush p50={:.4} ms  style={} layout={} hit={} a11y={} render={}",
                         cell.shape,
                         cell.position,
                         cell.rows,
                         cell.nodes,
                         cell.dirty_rows,
                         cell.flush_ms.p50,
+                        cell.counters.style_processed,
+                        cell.counters.layout_nodes,
+                        cell.counters.hit_test_candidates,
+                        cell.counters.accessibility_nodes_updated,
+                        cell.counters.render_nodes_changed,
+                    );
+                    eprintln!(
+                        "        projected: a11y={} scene_nodes={} prims={} passes={}",
                         cell.projected.accessibility_updated,
                         cell.projected.scene_updated_nodes,
                         cell.projected.scene_rebuilt_primitives,
@@ -776,6 +985,17 @@ fn main() {
                         cell.layout_substages_ms.engine_ms,
                         cell.layout_substages_ms.writeback_commit_ms,
                         cell.layout_substages_ms.scroll_metrics_ms,
+                    );
+                    eprintln!(
+                        "        text: shaped={} runs={} cache hit/miss/evict={}/{}/{:?} wrap={} allocs={} bytes={}",
+                        cell.counters.text_shaped,
+                        cell.counters.text_shaped_runs,
+                        cell.counters.text_layout_cache_hits,
+                        cell.counters.text_layout_cache_misses,
+                        cell.counters.cache_eviction,
+                        cell.counters.text_wrap_layouts,
+                        cell.counters.allocations,
+                        cell.counters.allocated_bytes,
                     );
                     eprintln!(
                         "        text shape pass: scope={} nonempty={} clones={} clone_bytes={} keys={} lookups={} skipped={}",

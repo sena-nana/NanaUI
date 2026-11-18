@@ -96,6 +96,8 @@ pub use presentation_color::{
     pq_oetf, tone_map_headroom_rgb,
 };
 pub use validate::ScenePaintError;
+#[allow(dead_code)]
+pub type ScenePainterError = ScenePaintError;
 use validate::validate_scene;
 
 /// The colour a text run takes in its own space: one that is not plain sRGB.
@@ -765,45 +767,46 @@ impl<T> Beside<'_, T> {
 impl SceneWgpuPainter {
     /// A painter for targets of `format` on `gpu`. Every frame it paints must
     /// come from the same device.
-    pub fn new(gpu: &GpuContext, format: GpuTextureFormat) -> Self {
-        Self::new_with_presentation(gpu, ScenePresentationProfile::legacy_linear(format))
+    pub fn try_new(gpu: &GpuContext, format: GpuTextureFormat) -> Result<Self, ScenePaintError> {
+        Self::try_new_with_presentation(gpu, ScenePresentationProfile::legacy_linear(format))
     }
 
-    pub fn new_with_presentation(gpu: &GpuContext, presentation: ScenePresentationProfile) -> Self {
+    pub fn try_new_with_presentation(
+        gpu: &GpuContext,
+        presentation: ScenePresentationProfile,
+    ) -> Result<Self, ScenePaintError> {
         let device = __framework::device(gpu);
         let queue = __framework::queue(gpu);
         let format = __framework::format_to_wgpu(presentation.working_format());
         let policy = gpu.policy();
-        // Every pipeline below goes through the device's default pipeline
-        // cache when the host enabled one (`nana_gpu::GpuContext::load_pipeline_cache`).
-        // The pipeline families compile side by side: each owns its shaders
-        // and pipelines, and a compile is CPU work in the shader compiler and
-        // the driver, so the painter costs its slowest family instead of the
-        // sum of all of them. The quad family, the slowest, stays on this
-        // thread. The motion resources need the quad layout and compile
-        // nothing (their evaluator is test-only and built on first use).
-        //
-        // Two more are compiled here for the first frame, which would
-        // otherwise compile them while a window waits: the dest's blits and
-        // group composites, and the subpixel text program. Both stay in the
-        // device's pipeline registry for that frame to find.
+        // Lazy archive scope: 0 decompressions on warm SharedPipelineRegistry hits,
+        // and at most 1 shared decompression across all worker threads when cold.
+        #[cfg(target_vendor = "apple")]
+        let _msl_scope = msl_precompiled::ArchiveScope::new();
         let precompiled = precompiled::runs_on(gpu, device);
         let (quads, meshes, icons, text, host_textures, backdrop, dest_pipelines) =
             std::thread::scope(|scope| {
                 let meshes = beside!(scope, "nana-paint-mesh", {
-                    MeshPipeline::new_with_policy(device, format, Some(policy), precompiled)
+                    MeshPipeline::try_new_with_policy(device, format, Some(policy), precompiled)
                 });
                 let icons = beside!(scope, "nana-paint-icon", {
-                    IconPipeline::new_with_policy(device, format, Some(policy))
+                    IconPipeline::try_new_with_policy(device, format, Some(policy))
                 });
                 let text = beside!(scope, "nana-paint-text", {
-                    let mut text =
-                        TextPipeline::new_with_policy(device, queue, format, policy, precompiled);
-                    text.prewarm_subpixel(device);
-                    text
+                    (|| -> Result<_, ScenePaintError> {
+                        let mut text = TextPipeline::try_new_with_policy(
+                            device,
+                            queue,
+                            format,
+                            policy,
+                            precompiled,
+                        )?;
+                        text.try_prewarm_subpixel(device)?;
+                        Ok(text)
+                    })()
                 });
                 let dest = beside!(scope, "nana-paint-dest", {
-                    dest::DestPipelines::new(
+                    dest::DestPipelines::try_new(
                         device,
                         format,
                         __framework::format_to_wgpu(presentation.target_format),
@@ -812,13 +815,13 @@ impl SceneWgpuPainter {
                     )
                 });
                 let host_textures = beside!(scope, "nana-paint-host-texture", {
-                    HostTexturePipeline::new(device, queue, format, policy, gpu)
+                    HostTexturePipeline::try_new(device, queue, format, policy, gpu)
                 });
                 let backdrop = beside!(scope, "nana-paint-backdrop", {
-                    BackdropPipeline::new(device, format, policy)
+                    BackdropPipeline::try_new(device, format, policy)
                 });
                 let quads =
-                    QuadPipeline::new_with_policy(device, format, Some(policy), precompiled);
+                    QuadPipeline::try_new_with_policy(device, format, Some(policy), precompiled);
                 (
                     quads,
                     meshes.join(),
@@ -829,13 +832,20 @@ impl SceneWgpuPainter {
                     dest.join(),
                 )
             });
+        let quads = quads?;
+        let meshes = meshes?;
+        let icons = icons?;
+        let text = text?;
+        let host_textures = host_textures?;
+        let backdrop = backdrop?;
+        let dest_pipelines = dest_pipelines?;
         let motion = MotionGpuResources::new_with_policy(
             device,
             quads.motion_layout(),
             Some(policy),
             eval_format_for_gpu(gpu),
         );
-        Self {
+        Ok(Self {
             targets: std::collections::HashMap::new(),
             pipeline_sets: std::collections::HashMap::new(),
             prepared_batch: None,
@@ -885,7 +895,18 @@ impl SceneWgpuPainter {
             alpha_encoding: AlphaEncoding::Linear,
             #[cfg(test)]
             _test_gpu_guard: None,
-        }
+        })
+    }
+
+    /// A painter for targets of `format` on `gpu`. Every frame it paints must
+    /// come from the same device.
+    pub fn new(gpu: &GpuContext, format: GpuTextureFormat) -> Self {
+        Self::try_new(gpu, format).expect("built-in scene painter pipelines initialize")
+    }
+
+    pub fn new_with_presentation(gpu: &GpuContext, presentation: ScenePresentationProfile) -> Self {
+        Self::try_new_with_presentation(gpu, presentation)
+            .expect("built-in scene painter pipelines initialize")
     }
 
     /// Format of the surface/target view passed to [`Self::paint`]. Wide and
@@ -901,6 +922,7 @@ impl SceneWgpuPainter {
         __framework::format_from_wgpu(self.working_format)
     }
 
+    #[allow(clippy::misnamed_getters)]
     pub fn presentation(&self) -> ScenePresentationProfile {
         self.configured_presentation
     }
@@ -911,22 +933,34 @@ impl SceneWgpuPainter {
     /// A profile of the working format in use changes only the final
     /// transfer. One of another format swaps that format's [`PipelineSet`]
     /// in, building it on first use; atlases and caches carry over.
-    pub(crate) fn select_presentation(&mut self, presentation: ScenePresentationProfile) {
+    pub(crate) fn try_select_presentation(
+        &mut self,
+        presentation: ScenePresentationProfile,
+    ) -> Result<(), ScenePaintError> {
         self.configured_presentation = presentation;
-        self.apply_presentation(presentation);
+        self.try_apply_presentation(presentation)
     }
 
-    fn apply_presentation(&mut self, presentation: ScenePresentationProfile) {
+    #[cfg(test)]
+    pub(crate) fn select_presentation(&mut self, presentation: ScenePresentationProfile) {
+        self.try_select_presentation(presentation)
+            .expect("select presentation pipelines");
+    }
+
+    fn try_apply_presentation(
+        &mut self,
+        presentation: ScenePresentationProfile,
+    ) -> Result<(), ScenePaintError> {
         if presentation == self.presentation {
-            return;
+            return Ok(());
         }
         let current = PipelineSetKey::of(self.presentation);
         let next = PipelineSetKey::of(presentation);
         if next != current {
-            let mut set = self
-                .pipeline_sets
-                .remove(&next)
-                .unwrap_or_else(|| self.build_pipeline_set(next.working_format));
+            let mut set = match self.pipeline_sets.remove(&next) {
+                Some(set) => set,
+                None => self.try_build_pipeline_set(next.working_format)?,
+            };
             self.swap_pipeline_set(&mut set);
             self.pipeline_sets.insert(current, set);
             self.adopt_material_waker();
@@ -935,56 +969,71 @@ impl SceneWgpuPainter {
             self.url_cache.set_srgb_source(next.srgb_source);
         }
         self.presentation = presentation;
+        Ok(())
     }
 
-    fn sync_effective_presentation(
+    fn try_sync_effective_presentation(
         &mut self,
         scene: &UiScene,
         viewport: &ScenePaintViewport,
         host_textures: Option<&HostTextureRegistry>,
-    ) {
+    ) -> Result<(), ScenePaintError> {
         let effective = self.configured_presentation.effective_for_frame(
             scene,
             viewport.clear_color,
             host_textures,
         );
-        self.apply_presentation(effective);
+        self.try_apply_presentation(effective)
     }
 
     /// The pipeline families for targets of `format`, over this painter's
-    /// atlases, compiled side by side as [`Self::new_with_presentation`] does.
-    fn build_pipeline_set(&self, format: wgpu::TextureFormat) -> PipelineSet {
+    /// atlases, compiled side by side as [`Self::try_new_with_presentation`] does.
+    fn try_build_pipeline_set(
+        &self,
+        format: wgpu::TextureFormat,
+    ) -> Result<PipelineSet, ScenePaintError> {
         let device = &self.device;
         let queue = &self.queue;
         let gpu = &self.gpu;
         let policy = gpu.policy();
         let atlas_layout = self.text.atlas_layout();
+        #[cfg(target_vendor = "apple")]
+        let _msl_scope = msl_precompiled::ArchiveScope::new();
         let precompiled = precompiled::runs_on(gpu, device);
-        std::thread::scope(|scope| {
+        let (quads, meshes, icons, text, host_textures, backdrop) = std::thread::scope(|scope| {
             let meshes = beside!(scope, "nana-paint-mesh", {
-                MeshPipeline::new_with_policy(device, format, Some(policy), precompiled)
+                MeshPipeline::try_new_with_policy(device, format, Some(policy), precompiled)
             });
             let text = beside!(scope, "nana-paint-text", {
-                TextProgram::new(device, format, atlas_layout, policy, precompiled)
+                TextProgram::try_new(device, format, atlas_layout, policy, precompiled)
             });
             let host_textures = beside!(scope, "nana-paint-host-texture", {
-                HostTexturePipeline::new(device, queue, format, policy, gpu)
+                HostTexturePipeline::try_new(device, queue, format, policy, gpu)
             });
             let backdrop = beside!(scope, "nana-paint-backdrop", {
-                BackdropPipeline::new(device, format, policy)
+                BackdropPipeline::try_new(device, format, policy)
             });
-            let quads = QuadPipeline::new_with_policy(device, format, Some(policy), precompiled);
-            let icons = self.icons.pipeline_for(device, format, Some(policy));
-            PipelineSet {
+            let quads =
+                QuadPipeline::try_new_with_policy(device, format, Some(policy), precompiled);
+            let icons = self.icons.try_pipeline_for(device, format, Some(policy));
+            (
                 quads,
-                meshes: meshes.join(),
+                meshes.join(),
                 icons,
-                text: text.join(),
-                host_textures: host_textures.join(),
-                backdrop: backdrop.join(),
-                #[cfg(feature = "charts")]
-                charts: None,
-            }
+                text.join(),
+                host_textures.join(),
+                backdrop.join(),
+            )
+        });
+        Ok(PipelineSet {
+            quads: quads?,
+            meshes: meshes?,
+            icons: icons?,
+            text: text?,
+            host_textures: host_textures?,
+            backdrop: backdrop?,
+            #[cfg(feature = "charts")]
+            charts: None,
         })
     }
 
@@ -1315,7 +1364,7 @@ impl SceneWgpuPainter {
         gpu_renderers: Option<&SceneGpuRendererRegistry>,
     ) -> Result<(), ScenePaintError> {
         self.begin_frame(Some(id), frame, target)?;
-        self.sync_effective_presentation(scene, &viewport, host_textures);
+        self.try_sync_effective_presentation(scene, &viewport, host_textures)?;
         let mut state = self.targets.remove(&id).unwrap_or_default();
         if state.image_revision != self.image_revision {
             state.painted = None;
@@ -1456,7 +1505,7 @@ impl SceneWgpuPainter {
         gpu_renderers: Option<&SceneGpuRendererRegistry>,
     ) -> Result<(), ScenePaintError> {
         self.begin_frame(None, frame, target)?;
-        self.sync_effective_presentation(scene, &viewport, host_textures);
+        self.try_sync_effective_presentation(scene, &viewport, host_textures)?;
         let link = crate::gpu_work::FrameLink::of(frame);
         let result = self.paint_recorded(
             scene,
@@ -2436,13 +2485,17 @@ impl SceneWgpuPainter {
                                         primitive.origin[0] + payload.origin[0],
                                         primitive.origin[1] + payload.origin[1],
                                     ];
-                                    let pipeline = self.charts.get_or_insert_with(|| {
-                                        chart::ChartPipeline::new(
-                                            &self.device,
-                                            self.format,
-                                            self.quads.motion_layout(),
-                                        )
-                                    });
+                                    let pipeline = match self.charts.as_mut() {
+                                        Some(pipeline) => pipeline,
+                                        None => {
+                                            let built = chart::ChartPipeline::try_new(
+                                                &self.device,
+                                                self.format,
+                                                self.quads.motion_layout(),
+                                            )?;
+                                            self.charts.insert(built)
+                                        }
+                                    };
                                     let chart_affine = mesh_affine(affine, persp);
                                     if let Some(slot) = self.chart_target.push(
                                         pipeline,
@@ -2692,7 +2745,7 @@ impl SceneWgpuPainter {
                 )
             })
             || self.backdrop.needs_backdrop();
-        DestTarget::ensure(
+        DestTarget::try_ensure(
             &mut self.dest,
             self.dest_pipelines.as_ref(),
             &self.device,
@@ -2703,7 +2756,7 @@ impl SceneWgpuPainter {
             dest_physical[1],
             !gpu_interleaved,
             self.gpu.policy(),
-        );
+        )?;
         self.dest
             .as_mut()
             .expect("dest target")
@@ -2713,14 +2766,17 @@ impl SceneWgpuPainter {
                 Some(&gpu_work),
             );
         if max_group_depth > 0 {
-            self.dest.as_mut().expect("dest target").prepare_groups(
-                &self.device,
-                &self.queue,
-                max_group_depth,
-                &group_slots_uniforms,
-                corner_exponent,
-                Some(&gpu_work),
-            );
+            self.dest
+                .as_mut()
+                .expect("dest target")
+                .try_prepare_groups(
+                    &self.device,
+                    &self.queue,
+                    max_group_depth,
+                    &group_slots_uniforms,
+                    corner_exponent,
+                    Some(&gpu_work),
+                )?;
         } else {
             self.dest.as_mut().expect("dest target").trim_idle_groups(
                 &self.device,
@@ -4312,7 +4368,7 @@ impl SceneWgpuPainter {
         gpu_renderers: Option<&SceneGpuRendererRegistry>,
     ) -> Result<(), ScenePaintError> {
         self.outside_frames();
-        self.sync_effective_presentation(scene, &viewport, host_textures);
+        self.try_sync_effective_presentation(scene, &viewport, host_textures)?;
         self.paint_recorded(
             scene,
             encoder,
@@ -4343,7 +4399,7 @@ impl SceneWgpuPainter {
         gpu_renderers: Option<&SceneGpuRendererRegistry>,
     ) -> Result<(), ScenePaintError> {
         self.outside_frames();
-        self.sync_effective_presentation(scene, &viewport, host_textures);
+        self.try_sync_effective_presentation(scene, &viewport, host_textures)?;
         let mut state = self.targets.remove(&id).unwrap_or_default();
         if state.image_revision != self.image_revision {
             state.painted = None;

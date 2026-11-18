@@ -98,7 +98,7 @@ title: CSS 引擎：nana-ui-css
 
 ## 与 `tools/css-parity` 的一致性验证
 
-工作区内的 `tools/css-parity`（包名 `nana-css-parity`）使用 **149 个标准 JSON 测试夹具**（按 Flexbox `T-F`、尺寸与 `calc` `T-S`、盒模型 `T-B`、Grid `T-G`、内联 `T-I`、布局 `T-L`、定位 `T-P`、浮动 `T-FL` 分族）端到端锁定「CSS 声明 → `LayoutStyle` → `RuntimeLayoutEngine` → 几何盒」的准确性：
+工作区内的 `tools/css-parity`（包名 `nana-css-parity`）使用 **147 个标准 JSON 测试夹具**（按 Flexbox `T-F`、尺寸与 `calc` `T-S`、盒模型 `T-B`、Grid `T-G`、内联 `T-I`、布局 `T-L`、定位 `T-P` 分族）端到端锁定「CSS 声明 → `LayoutStyle` → `RuntimeLayoutEngine` → 几何盒」的准确性：
 
 ```bash
 cargo run -p nana-css-parity -- compare
@@ -119,7 +119,7 @@ cargo run -p nana-css-parity -- compare
 | `crates/nana-ui-css/src/css_motion.rs` | `transition` 简写语法解析 |
 | `crates/nana-ui-css/src/shell_contract.rs` | 宿主内置工具类映射（`gap-sm` 等） |
 | `crates/nana-ui-view-codegen/src/style.rs` | 构建期消费者：将类规则编译为静态 `StylePatch` |
-| `tools/css-parity/` | 149 组 CSS 盒模型一致性夹具与比对 CLI |
+| `tools/css-parity/` | 147 组 CSS 盒模型一致性夹具与比对 CLI |
 
 ## 延伸阅读
 

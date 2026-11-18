@@ -331,6 +331,10 @@ pub enum TextWrapBreak {
 ///
 /// Successful `repeat(auto-fit|auto-fill)` is stored on [`GridRepeatAuto`] and
 /// expanded at layout; those variants remain as the repeat *kind*.
+/// Whole-value `subgrid` sets [`GridStyle::columns_subgrid`] /
+/// [`GridStyle::rows_subgrid`] and inherits parent tracks at layout;
+/// [`Self::Subgrid`] tags `subgrid` written as a track-list token (e.g.
+/// `subgrid 80px`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum GridTrackListUnsupported {
     /// `repeat(auto-fit, …)` (repeat kind; layout expands it).
@@ -341,6 +345,8 @@ pub enum GridTrackListUnsupported {
     /// a `<track-size>` body and `<auto-repeat>` a `<fixed-size>` body, so
     /// neither nests; browsers drop the whole declaration.
     NestedRepeat,
+    /// `subgrid` as a track-list token (e.g. `subgrid 80px`) — not a whole value.
+    Subgrid,
 }
 
 impl GridTrackListUnsupported {
@@ -349,6 +355,7 @@ impl GridTrackListUnsupported {
             Self::RepeatAutoFit => "repeat(auto-fit)",
             Self::RepeatAutoFill => "repeat(auto-fill)",
             Self::NestedRepeat => "nested repeat()",
+            Self::Subgrid => "subgrid",
         }
     }
 
@@ -3502,6 +3509,10 @@ pub struct GridStyle {
     pub columns_repeat: Option<crate::shared::Shared<GridRepeatAuto>>,
     /// 同行模式，针对 `grid-template-rows`。
     pub rows_repeat: Option<crate::shared::Shared<GridRepeatAuto>>,
+    /// `grid-template-columns: subgrid`：布局时继承父网格所跨列轨几何。
+    pub columns_subgrid: bool,
+    /// `grid-template-rows: subgrid`：继承父网格所跨行轨几何。
+    pub rows_subgrid: bool,
     /// `grid-column` / `grid-row` 项放置。
     pub placement: crate::shared::Shared<GridPlacement>,
     /// `grid-template-areas` 命名区域。
@@ -5190,10 +5201,25 @@ impl LayoutStyle {
             || g.auto_flow.is_some()
     }
 
-    /// 作者写了无法展开的模板（`subgrid`、嵌套 auto-fit / auto-fill、混写垃圾等）。
+    /// `grid-template-columns: subgrid` on a grid container (`grid` / `inline-grid`).
+    pub fn is_subgrid_columns(&self) -> bool {
+        self.display.is_some_and(DisplaySpec::is_grid_container)
+            && !self.grid.is_shared_default()
+            && self.grid.columns_subgrid
+    }
+
+    /// `grid-template-rows: subgrid` on a grid container (`grid` / `inline-grid`).
+    pub fn is_subgrid_rows(&self) -> bool {
+        self.display.is_some_and(DisplaySpec::is_grid_container)
+            && !self.grid.is_shared_default()
+            && self.grid.rows_subgrid
+    }
+
+    /// 作者写了无法展开的模板（track-list token `subgrid`、嵌套 auto-fit / auto-fill、混写语法等）。
     ///
+    /// 成功的整值 `subgrid` 写在 [`GridStyle::columns_subgrid`] / [`GridStyle::rows_subgrid`]，
     /// 成功的 `repeat(auto-fit|auto-fill)` 写在 [`GridStyle::columns_repeat`] /
-    /// [`GridStyle::rows_repeat`]，**不**置本旗标。
+    /// [`GridStyle::rows_repeat`]，**均不**置本旗标。
     pub fn has_unsupported_grid_template(&self) -> bool {
         if self.grid.is_shared_default() {
             return false;
@@ -6615,6 +6641,21 @@ mod tests {
             ..LayoutStyle::default()
         };
         assert!(flat.paint_border_edges_with(Some(semantic)).is_zero());
+    }
+
+    #[test]
+    fn subgrid_requires_grid_display_container() {
+        let mut style = LayoutStyle::default().grid_columns_subgrid(true);
+        assert!(
+            !style.is_subgrid_columns(),
+            "subgrid must require display: grid or inline-grid"
+        );
+        style = style.display(DisplaySpec::Inline);
+        assert!(!style.is_subgrid_columns());
+        style = style.display(DisplaySpec::Grid);
+        assert!(style.is_subgrid_columns());
+        style = style.display(DisplaySpec::InlineGrid);
+        assert!(style.is_subgrid_columns());
     }
 }
 

@@ -14,21 +14,49 @@ NanaUI 自身代码采用 **MIT 或 Apache-2.0** 双许可发布（详见仓库�
 
 | 外部 crate | 版本（以 `Cargo.lock` 为准） | 许可证 | 职责与唯一允许引用的私有模块 |
 | --- | --- | --- | --- |
-| `harfrust` | `0.12.0` | MIT | OpenType 整形（GSUB / GPOS），仅限 `shaping/opentype.rs` |
-| `skrifa` | `0.44.0` | MIT OR Apache-2.0 | 可变字体轴、命名实例、彩色字形表与 `cmap`，仅限 `font/face.rs` |
+| `harfrust` | `0.12.0` | MIT | OpenType 整形（GSUB / GPOS，Unicode 17.0.0），仅限 `shaping/opentype.rs` |
+| `skrifa` | `0.44.0` | MIT OR Apache-2.0 | 可变字体轴、命名实例、彩色字形表、`cmap` 与字形轮廓/位图 strike 读取，仅限 `font/face.rs` |
 | `read-fonts` | `0.41.0` | MIT OR Apache-2.0 | `skrifa` 与 `harfrust` 共用的底层字表读取 |
 | `fontdb` | `0.24.0` | MIT | 系统字体目录扫描与 `name` / `OS/2` 元数据读取，仅限 `font/discovery.rs` |
-| `ttf-parser` | `0.25.1` | MIT OR Apache-2.0 | `fontdb` 使用的字表解析器 |
+| `ttf-parser` | `0.25.1` | MIT OR Apache-2.0 | `nana-text` 不使用：仅为 `ratex` 数学公式链路中 `fontdb 0.23` / `ab_glyph` 的字表解析器（见下方注释与“依赖安全公告与豁免”） |
 | `memmap2` | `0.9.11` | MIT OR Apache-2.0 | 系统字体文件的只读内存映射，仅限 `font/mapped.rs`（`fontdb` 也用它） |
-| `icu_properties` | `2.3.0` | Unicode-3.0 | Unicode Script、`Emoji_Presentation`、`Default_Ignorable` 属性，仅限 `font/unicode.rs` |
-| `unicode-bidi` | `0.3.18` | MIT OR Apache-2.0 | Unicode 双向文本算法（UBA），仅限 `shaping/bidi.rs` |
-| `unicode-linebreak` | `0.1.5` | Apache-2.0 | UAX #14 断行机会表，仅限 `layout/breaks.rs` |
-| `unicode-segmentation` | `1.13.3` | MIT OR Apache-2.0 | 字素簇（grapheme cluster）与词边界切分 |
-| `swash` / `zeno` / `yazi` | `0.2.10` / `0.3.3` / `0.2.1` | Apache-2.0 OR MIT | 字形轮廓缩放、路径栅格化与 WOFF2 解压，仅限 `nana-ui` 的 `scene_paint/text/raster.rs` |
-| `windows` | `0.62.2` | MIT OR Apache-2.0 | 仅 Windows：DirectWrite 轮廓栅格化与读取系统 ClearType 配置，仅限 `scene_paint/text/raster_dwrite.rs`（彩色/位图/侧卧字形及回退仍走 `swash`） |
-| `etagere` | `0.2.15` | MIT OR Apache-2.0 | 字形图集（glyph atlas）矩形装箱，仅限 `scene_paint/text/atlas.rs` |
+| `unicode-bidi` | `0.3.18` | MIT OR Apache-2.0 | Unicode 双向文本算法（UBA，Unicode 16.0.0），仅限 `shaping/bidi.rs` |
+| `unicode-linebreak` | `0.1.5` | Apache-2.0 | UAX #14 断行机会表（Unicode 15.0.0），仅限 `layout/breaks.rs` |
+| `unicode-segmentation` | `1.13.3` | MIT OR Apache-2.0 | 字素簇（grapheme cluster）与词边界切分（Unicode 17.0.0） |
+| `zeno` | `0.3.3` | Apache-2.0 OR MIT | 字形路径填充与描边栅格化，仅限 `nana-text` 的 `raster/outline.rs`（`raster` 可选特性） |
+| `png` | `0.18.1` | MIT OR Apache-2.0 | 彩色位图 strike 的 PNG 解码，仅限 `nana-text` 的 `raster/outline.rs`（`raster` 可选特性） |
+| `windows` | `0.62.2` | MIT OR Apache-2.0 | 仅 Windows：DirectWrite 轮廓栅格化与读取系统 ClearType 配置，仅限 `nana-ui` 的 `scene_paint/text/raster_dwrite.rs`（彩色/位图/侧卧字形及回退仍走 `nana-text` 的 `OutlineRasterizer` / `raster/outline.rs`） |
+| `etagere` | `0.3.0` | MIT OR Apache-2.0 | 字形图集（glyph atlas）矩形装箱，仅限 `nana-ui` 的 `scene_paint/text/atlas.rs` |
 
-（注：锁文件中同时存在的 `fontdb 0.23.0` 由数学公式渲染链路 `ratex-svg → ratex-font-loader → ratex-unicode-font` 引入，与 `nana-text` 互不可见。）
+（注：锁文件中同时存在的 `fontdb 0.23.0` 由数学公式渲染链路 `ratex-svg → ratex-font-loader → ratex-unicode-font` 引入，与 `nana-text` 互不可见。`nana-text` 已移除对 `icu_properties`、`swash` 与 `yazi` 的依赖：字形轮廓缩放由 `skrifa` 在 `font/face.rs` 完成，字符属性由 `crates/nana-text/src/font/ucd_tables.rs` 承载。）
+
+### Unicode 数据与版本对齐矩阵
+
+`crates/nana-text/src/font/ucd_tables.rs` 由 `scripts/generate-ucd-tables.py` 从官方 Unicode 17.0.0 UCD（`Unicode-3.0` 数据许可）生成，包含 `DEFAULT_IGNORABLE`、`VERTICAL_ROTATED`、`EMPHASIS_ALLOWED`、`EMOJI_PRESENTATION`、`SCRIPT_TAGS` / `SCRIPT_RANGES` 与 `UNICODE_VERSION`：
+
+| 文本栈数据来源 | Unicode 版本基线 | 覆盖范围 |
+| --- | --- | --- |
+| `font/ucd_tables.rs`（`scripts/generate-ucd-tables.py`） | `17.0.0` | `Default_Ignorable_Code_Point`、`Vertical_Orientation`（UAX #50）、`General_Category`（着重号过滤）、`Emoji_Presentation`、`Script` |
+| Rust 标准库 `char::UNICODE_VERSION` | `>= 17.0.0`（随工具链） | 核心标量属性；`nana-text` 测试要求工具链版本不低于 `ucd_tables.rs`，更新的工具链兼容 |
+| `harfrust` `0.12.0` | `17.0.0` | OpenType 整形内建 UCD 表 |
+| `unicode-segmentation` `1.13.3` | `17.0.0` | 字素簇与词边界 |
+| `unicode-bidi` `0.3.18` | `16.0.0` | Unicode 双向文本算法（UBA） |
+| `unicode-linebreak` `0.1.5` | `15.0.0` | UAX #14 断行机会表 |
+
+`scripts/generate-ucd-tables.py --check` 校验生成表的来源 SHA-256 与结构不变量，同时核对根目录 `Cargo.lock` 中 `PINNED_UNICODE_CRATES`（`harfrust`、`unicode-segmentation`、`unicode-bidi`、`unicode-linebreak`）的锁版本未偏移（缓存存在时做全量重算比对）。
+
+## 依赖安全公告与豁免
+
+CI 在 Linux 上分别进入全部 **5 个** 独立 `Cargo.lock` 工作目录执行 `cargo deny check advisories`（每个目录自带 `deny.toml`，避免工作目录不同步引起规则误判）：根工作区 `.`（含 `tools/css-parity`，策略见根目录 `deny.toml`，`[graph] all-features = true`，因此可选 feature 引入的依赖同样受检）、`tools/css-parity-webview`、`crates/nana-icons-tabler`、`perf/micro/stack-depth` 与 `perf/micro/taffy-reference`。所有策略均设 `unmaintained = "all"`。有 semver 兼容修复版本的漏洞一律通过 `cargo update -p <crate>` 解决，不加豁免；下表是仅有的豁免，每条都注明引入路径与移除条件：
+
+| 公告 | Crate | 引入路径 | 移除条件 |
+| --- | --- | --- | --- |
+| `RUSTSEC-2025-0141`（unmaintained） | `bincode 1.3.3` | 仅可选 feature `syntax-highlighting`：`nana-ui-runtime → two-face → syntect` 加载语法/主题 dump。NanaUI 自身不直接依赖 `bincode`；预编译着色器使用自研确定性编解码器 `scene_paint::naga_ir::codec`（`NAGA1` 格式），默认依赖图中不含 `bincode` | 上游 `syntect` 移除 `bincode 1.x` |
+| `RUSTSEC-2026-0192`（unmaintained） | `ttf-parser 0.25.1` | 仅可选 feature `rich-text`：固定版本的 `ratex =0.1.14` 数学公式渲染（`fontdb 0.23` / `ab_glyph` / `owned_ttf_parser`）。`nana-text` 的字体解析使用 `skrifa` | `ratex` 迁移到 `skrifa` |
+| `RUSTSEC-2026-0370` / `0371` / `0372`（unmaintained） | `zvariant`、`zbus_names`、`zvariant_derive` 5.x/4.x | Linux 上 `zbus 5`：`accesskit_unix` / `atspi`（无障碍）与 `ashpd`（portal）。这些 crate 已并入 `zbus 6`，`zbus 5` 线上没有修复版本 | `accesskit_unix` 与 `ashpd` 升级到 `zbus 6` |
+| `RUSTSEC-2024-0370`（unmaintained，仅 `css-parity-webview`） | `proc-macro-error 1.0.4` | `tao` / `wry` 的 Linux GTK 后端（gtk-rs 0.18 的 `glib-macros` / `gtk3-macros`）；该工具是 macOS WKWebView 参照工具，NanaUI 产品 crate 从不链接 | `tao` / `wry` 脱离 gtk-rs 0.18 |
+
+不再命中的豁免会产生 `advisory-not-detected` 警告，届时应从 `deny.toml` 删除对应条目。
 
 ## 已移除的两个历史 Fork 状态
 
@@ -49,7 +77,7 @@ NanaUI 自身代码采用 **MIT 或 Apache-2.0** 双许可发布（详见仓库�
 2. **DirectWrite 灰度 / ClearType 覆盖率 Gamma 校正（`crates/nana-ui/src/scene_paint/text/gamma.rs` 与 `shader/text_atlas.wgsl`）**：
    `GAMMA_INCORRECT_TARGET_RATIOS` 系数表、`gamma_ratios` 归一化以及着色器中的 `enhance_contrast`、`apply_alpha_correction` 与亮色字对比度衰减（`corrected_coverage`），移植自 Windows Terminal AtlasEngine 的 `dwrite.cpp` 与 `dwrite.hlsl`（`https://github.com/microsoft/terminal`）。原始版权：`Copyright (c) Microsoft Corporation`，许可证为 `MIT`。后续将 gamma 空间结果转换为线性混合所需覆盖率的步骤为本仓库自研实现。
 
-此外，合成斜体的 `14°` 斜切角（`raster.rs` 中的 `OBLIQUE_DEGREES`）以及将图集划分为 mask 与 color 两类页面的设计，属于常见的行业行为兼容与架构思路，并非源码复制。
+此外，合成斜体的 `14°` 斜切角（`crates/nana-text/src/raster/outline.rs` 中的 `OBLIQUE_DEGREES`）以及将图集划分为 mask 与 color 两类页面的设计，属于常见的行业行为兼容与架构思路，并非源码复制。
 
 ## 复核命令
 
@@ -57,7 +85,15 @@ NanaUI 自身代码采用 **MIT 或 Apache-2.0** 双许可发布（详见仓库�
 # 1. 验证依赖图中无被替换的旧引擎、nana-text/src 中无禁用标识符及 wgpu 边界（CI 必跑）
 python3 scripts/check-engine-boundary.py
 
-# 2. 导出全平台 normal + build 依赖图的外部 crate 与许可证清单
+# 2. 校验 UCD 静态表生成物、版本与来源 SHA-256
+python3 scripts/generate-ucd-tables.py --check
+
+# 3. 导出全平台 normal + build 依赖图的外部 crate 与许可证清单
 cargo tree --edges normal,build --workspace --locked --target all --prefix none -f '{p}|{l}' \
   | sed 's/ (\*)//' | sort -u | grep -v "(/"
+
+# 4. 检查全部 5 个独立 lockfile 目录的依赖安全公告（CI 必跑）
+for dir in . tools/css-parity-webview crates/nana-icons-tabler perf/micro/stack-depth perf/micro/taffy-reference; do
+  (cd "$dir" && cargo deny check advisories) || exit 1
+done
 ```

@@ -119,6 +119,6 @@ Rust 声明式视图（`nana_ui::runtime` 构建器与 `view!`）和 `.vue` 方�
 
 ## Cargo Feature 与编译边界
 
-`nana-ui` 的默认 feature 仅有 `wgpu-backends`（且只在同时启用 `gpu` 时选择平台图形后端），不会创建第二套宿主或 GPU 所有者。需要打开桌面窗口时必须显式启用 `hosted`；需要自选图形后端时设置 `default-features = false`。
+`nana-ui` 默认不开启任何 feature（`default = []`）：打开桌面窗口必须显式启用 `hosted`（隐含 `gpu` 并仅拉起当前平台主图形后端）；需要全部跨平台标准后端时加 `wgpu-backends`，或直接启用 `full`。它绝不会创建第二套宿主或 GPU 所有者。
 
 控件族 feature（`calendar`、`charts`、`controls`、`graph-canvas`、`image-viewer`、`rich-text`）同步控制 `nana-ui-runtime` 与 `nana-ui-scene` 的条件编译，并决定 `ComponentSupport::compiled`。未启用的控件族及其专属依赖不参与编译，`nana_ui::runtime` 仅导出当前构建实际编入的控件（完整对照表见 [应用 API](https://github.com/sena-nana/NanaUI/blob/main/docs/reference/application-api.md)）。`component-gallery` 是独立的示例 crate，其分类导航与演示状态不属于 `nana-ui` 的公共 API。

@@ -318,8 +318,13 @@ mod part_publication {
             let idle = product_frame(&mut cx, document, viewport, &mut shaper);
             assert!(cx.take_system_work().is_empty());
             assert_eq!(
-                (idle.execution.measure_nodes, idle.execution.placement_nodes),
-                (0, 0)
+                (
+                    idle.execution.measure_nodes,
+                    idle.execution.placement_nodes,
+                    idle.entities_spawned,
+                    idle.entities_despawned
+                ),
+                (0, 0, 0, 0)
             );
             assert_eq!(cx.world().layout_generation(), generation);
         }
@@ -358,7 +363,8 @@ mod part_publication {
                 row.detail = detail.to_owned();
             })
             .unwrap();
-            let _work = product_frame(&mut cx, document, viewport, &mut shaper);
+            let work = product_frame(&mut cx, document, viewport, &mut shaper);
+            assert_eq!((work.entities_spawned, work.entities_despawned), (0, 0));
             assert!(cx.read(row, |row| row.selected).unwrap());
             assert_eq!(cx.world().focused(document), Some(row.stable_id()));
             let result = cx.world().layout_result(row.stable_id()).unwrap();
@@ -417,7 +423,8 @@ mod part_publication {
                 cx.commit_mutations(q).unwrap();
             };
             change(&mut cx);
-            let _work = product_frame(&mut cx, document, viewport, &mut shaper);
+            let work = product_frame(&mut cx, document, viewport, &mut shaper);
+            assert_eq!((work.entities_spawned, work.entities_despawned), (0, 0));
             assert_eq!(cx.world().focused(document), Some(row.stable_id()));
             assert!(cx.read(row, |row| row.selected).unwrap());
             let (mut cold, _) = build(280.0, "Ctrl+O");
@@ -1212,7 +1219,8 @@ mod part_publication {
                     card.loading = loading;
                 })
                 .unwrap();
-                let _work = product_frame(&mut cx, document, viewport, &mut shaper);
+                let work = product_frame(&mut cx, document, viewport, &mut shaper);
+                assert_eq!((work.entities_spawned, work.entities_despawned), (0, 0));
                 let result = cx.world().layout_result(card.stable_id()).unwrap();
                 for part in result.parts.iter().filter(|part| {
                     matches!(part.kind, LayoutPartKind::Header | LayoutPartKind::Spinner)
@@ -1609,8 +1617,13 @@ mod part_publication {
             let idle = product_frame(&mut cx, document, viewport, &mut shaper);
             assert!(cx.take_system_work().is_empty());
             assert_eq!(
-                (idle.execution.measure_nodes, idle.execution.placement_nodes),
-                (0, 0)
+                (
+                    idle.execution.measure_nodes,
+                    idle.execution.placement_nodes,
+                    idle.entities_spawned,
+                    idle.entities_despawned
+                ),
+                (0, 0, 0, 0)
             );
             assert_eq!(cx.world().layout_generation(), generation);
         }
@@ -2310,8 +2323,13 @@ mod part_publication {
             let idle = product_frame(&mut cx, document, viewport, &mut shaper);
             assert!(cx.take_system_work().is_empty());
             assert_eq!(
-                (idle.execution.measure_nodes, idle.execution.placement_nodes),
-                (0, 0)
+                (
+                    idle.execution.measure_nodes,
+                    idle.execution.placement_nodes,
+                    idle.entities_spawned,
+                    idle.entities_despawned
+                ),
+                (0, 0, 0, 0)
             );
             assert_eq!(cx.world().layout_generation(), generation);
         }
@@ -2719,8 +2737,13 @@ mod part_publication {
             let idle = product_frame(&mut cx, document, viewport, &mut shaper);
             assert!(cx.take_system_work().is_empty());
             assert_eq!(
-                (idle.execution.measure_nodes, idle.execution.placement_nodes),
-                (0, 0)
+                (
+                    idle.execution.measure_nodes,
+                    idle.execution.placement_nodes,
+                    idle.entities_spawned,
+                    idle.entities_despawned
+                ),
+                (0, 0, 0, 0)
             );
             assert_eq!(cx.world().layout_generation(), generation);
         }
@@ -3304,8 +3327,13 @@ mod part_publication {
             let idle = product_frame(&mut cx, document, viewport, &mut shaper);
             assert!(cx.take_system_work().is_empty());
             assert_eq!(
-                (idle.execution.measure_nodes, idle.execution.placement_nodes),
-                (0, 0)
+                (
+                    idle.execution.measure_nodes,
+                    idle.execution.placement_nodes,
+                    idle.entities_spawned,
+                    idle.entities_despawned
+                ),
+                (0, 0, 0, 0)
             );
             assert_eq!(cx.world().layout_generation(), generation);
         }

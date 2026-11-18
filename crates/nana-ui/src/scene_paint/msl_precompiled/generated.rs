@@ -5,6 +5,12 @@ use super::MslStage;
 #[cfg(test)]
 pub(super) const WGPU: &str = "30.0.1";
 
+#[cfg(test)]
+pub(super) const FORK_MSL_HASH: u64 = 0x94acf329298d90d1;
+
+#[cfg(test)]
+pub(super) const MSL_LANG_VERSION: (u8, u8) = (3, 1);
+
 pub(super) const UNCOMPRESSED_LEN: usize = 929665;
 
 pub(super) static STAGES: &[MslStage] = &[

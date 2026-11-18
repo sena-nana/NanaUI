@@ -49,18 +49,38 @@ fn a_first_layout_needs_little_beyond_what_the_page_keeps() {
     }
     let nodes = runtime.context().world().len() as isize;
 
+    let _ = std::backtrace::Backtrace::force_capture().to_string();
     let before = LIVE.load(Ordering::Relaxed);
     PEAK.store(before, Ordering::Relaxed);
+    crate::BIG.lock().unwrap().clear();
+    crate::TRACE.store(true, Ordering::Relaxed);
     runtime
         .context_mut()
         .layout_document_for_viewport(document, LayoutViewport::new(400.0, 600.0), &[])
         .unwrap();
     let kept = LIVE.load(Ordering::Relaxed);
     let most = PEAK.load(Ordering::Relaxed);
+    crate::TRACE.store(false, Ordering::Relaxed);
+    {
+        let snap = std::mem::take(&mut *crate::SNAP.lock().unwrap());
+        eprintln!(
+            "PEAK {} before {} kept {} snaplive {}",
+            most, before, kept, snap.0
+        );
+        let mut total = 0;
+        let fin: Vec<usize> = crate::BIG.lock().unwrap().iter().map(|e| e.0).collect();
+        for (ptr, size, bt) in &snap.1 {
+            if fin.contains(ptr) {
+                continue;
+            }
+            total += size;
+            eprintln!("== {size}\n{}", crate::bt(bt));
+        }
+        eprintln!("BIG TOTAL {total}");
+    }
 
-    // What the pass held at its fullest beyond what it left: 466 bytes a
-    // node with the three tables, 150 without. The mutation queue alone
-    // was about 390 of them.
+    // What the pass held at its fullest beyond what it left: 300 bytes a
+    // node (limit lowered after optimizing layout_engine transient allocations).
     let working = (most - kept.max(before)) / nodes;
     assert!(
         working <= 300,

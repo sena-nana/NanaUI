@@ -119,6 +119,6 @@ Rust declarative views (`nana_ui::runtime` builders and `view!`) and the `.vue` 
 
 ## Cargo features and compile boundaries
 
-The only default feature of `nana-ui` is `wgpu-backends` (and it selects platform graphics backends only when `gpu` is also enabled); it never creates a second host or GPU owner. Opening a desktop window requires explicitly enabling `hosted`; to choose your own graphics backends, set `default-features = false`.
+`nana-ui` sets `default = []` (no features are enabled by default): opening a desktop window requires explicitly enabling `hosted` (which implies `gpu` and pulls only the platform's primary graphics backend); enable `wgpu-backends` if you need all standard cross-platform backends, or enable `full`. It never creates a second host or GPU owner.
 
 Control family features (`calendar`, `charts`, `controls`, `graph-canvas`, `image-viewer`, `rich-text`) control conditional compilation of `nana-ui-runtime` and `nana-ui-scene` together and determine `ComponentSupport::compiled`. Disabled control families and their dedicated dependencies are not compiled, and `nana_ui::runtime` exports only the controls actually compiled into the current build (for the full table, see [Application API](https://github.com/sena-nana/NanaUI/blob/main/docs/reference/application-api.md)). `component-gallery` is a separate example crate; its category navigation and demo state are not part of the public API of `nana-ui`.

@@ -420,6 +420,15 @@ fn layout_result_uses_each_border_edge_for_content_geometry() {
     assert!(world.layout_result(node(1)).is_none());
 }
 
+/// Hit entries built so far. The counter accumulates until a drain, so
+/// callers compare deltas around the build they are measuring.
+fn hit_entries_built(world: &UiWorld) -> usize {
+    world
+        .last_work_counters()
+        .hit_test_nodes_rebuilt
+        .unwrap_or_default()
+}
+
 /// Flatten the hit forest into a comparable projection. `HitEntry` has no
 /// `PartialEq`, and this captures everything pointer dispatch reads.
 fn hit_shape(world: &UiWorld, document: DocumentId) -> Vec<(Vec<u64>, [u32; 6], bool, i32)> {
@@ -619,6 +628,8 @@ fn batch_validation_cost_tracks_the_batch_not_the_retained_world() {
     );
     assert_eq!(small_counts, (1, 1, 3, 1));
     assert_eq!(small_counts, large_counts);
+    assert_eq!(small_work.validation_nodes_scanned, Some(0));
+    assert_eq!(large_work.validation_nodes_scanned, Some(0));
 }
 
 /// Build a nested grid document with clipping, transforms, z-index and a
@@ -777,13 +788,24 @@ fn scoped_hit_patch_matches_a_full_rebuild_for_a_leaf_layout_change() {
     let dirty = work.input_hit_test.clone();
     assert_eq!(dirty, vec![target]);
 
+    let before_patch = hit_entries_built(&world);
     assert!(world.rebuild_hit_test_scoped(document(1), &dirty));
+    let patched_built = hit_entries_built(&world) - before_patch;
     let patched_shape = hit_shape(&world, document(1));
     let patched_probe = hit_probe_grid(&world, document(1));
 
+    let before_full = hit_entries_built(&world);
     world.rebuild_hit_test(document(1));
+    let full_built = hit_entries_built(&world) - before_full;
     assert_eq!(patched_shape, hit_shape(&world, document(1)));
     assert_eq!(patched_probe, hit_probe_grid(&world, document(1)));
+
+    // The whole point: the patch built a subtree, not the document.
+    assert_eq!(patched_built, 1);
+    assert!(
+        patched_built < full_built / 4,
+        "scoped patch built {patched_built} entries, full rebuild built {full_built}"
+    );
 }
 
 #[test]
@@ -859,7 +881,10 @@ fn a_moved_row_rewrites_its_own_hit_entry_and_its_pinned_ones_only() {
     moved.write_layout(node(20), box_at(0.0, 27.0, 100.0, 20.0));
     world.commit(moved).unwrap();
     let work = world.take_system_work();
+    let before = hit_entries_built(&world);
     assert!(world.rebuild_hit_test_scoped(document(1), &work.input_hit_test));
+    // The row's own entry and the absolute boxes'; not the cell or leaf.
+    assert_eq!(hit_entries_built(&world) - before, 3);
     assert_eq!(world.hit_test(document(1), 62.0, 39.0), Some(follower));
     let patched = hit_probe_grid(&world, document(1));
     let shape = hit_shape(&world, document(1));
@@ -7941,6 +7966,60 @@ fn em_padding_wrap_and_card_content_use_computed_font_size() {
 }
 
 #[test]
+fn work_counters_are_queryable_after_drain_and_extract() {
+    let mut world = UiWorld::new();
+    let mut queue = MutationQueue::new();
+    for id in 1..=3 {
+        queue.create(node(id), document(1), NodeKind::Text);
+    }
+    queue.insert(node(1), node(2), None);
+    queue.insert(node(2), node(3), None);
+    world.commit(queue).unwrap();
+
+    let mut work = world.take_system_work();
+    let counters = work.counters();
+    assert_eq!(counters.entities_total, 3);
+    assert_eq!(counters.entities_spawned, 3);
+    assert_eq!(counters.entities_despawned, 0);
+    assert_eq!(counters.entities_changed, 3);
+    assert_eq!(counters.style_processed, 3);
+    assert_eq!(counters.layout_nodes, 3);
+    assert_eq!(counters.render_nodes_changed, 3);
+    assert_eq!(counters.render_nodes_extracted, 3);
+    assert_eq!(counters.input_targets, 0);
+    assert!(counters.allocations > 0);
+    assert!(counters.allocated_bytes > 0);
+    assert_eq!(counters.text_shaped_runs, 0);
+    assert_eq!(world.last_work_counters().entities_changed, 3);
+    assert_eq!(world.last_work_counters().render_nodes_changed, 3);
+    assert_eq!(world.last_work_counters().render_nodes_extracted, 0);
+
+    world.resolve_styles(&work.style).unwrap();
+    let extracted = world.extract_nodes(&work.render_extraction);
+    work.record_extract(&extracted);
+    world.record_extract(&extracted);
+    assert_eq!(work.counters().render_nodes_extracted, extracted.len());
+    assert_eq!(work.counters().render_nodes_changed, 3);
+    assert_eq!(
+        world.last_work_counters().render_nodes_extracted,
+        extracted.len()
+    );
+    assert_eq!(world.last_work_counters().render_nodes_changed, 3);
+
+    let idle = world.take_system_work();
+    assert!(idle.is_empty());
+    assert_eq!(idle.counters().entities_spawned, 0);
+    assert_eq!(idle.counters().entities_changed, 0);
+    assert_eq!(idle.counters().allocations, 0);
+    assert_eq!(idle.counters().text_shaped_runs, 0);
+    assert_eq!(world.last_work_counters().entities_changed, 3);
+    assert_eq!(
+        world.last_work_counters().render_nodes_extracted,
+        extracted.len()
+    );
+}
+
+#[test]
 fn hot_path_allocations_and_text_shape_are_idle_zero_and_rise_on_mutation() {
     let mut world = UiWorld::new();
     let mut queue = MutationQueue::new();
@@ -7954,6 +8033,9 @@ fn hot_path_allocations_and_text_shape_are_idle_zero_and_rise_on_mutation() {
     world.commit(queue).unwrap();
     let work = world.take_system_work();
     assert!(!work.text.is_empty());
+    assert!(work.counters().allocations > 0);
+    assert!(work.counters().allocated_bytes > 0);
+    assert_eq!(work.counters().text_shaped_runs, 0);
     assert_eq!(world.last_text_work_counters().text_nodes_shaped, 0);
     world.resolve_styles(&work.style).unwrap();
     world
@@ -7963,9 +8045,16 @@ fn hot_path_allocations_and_text_shape_are_idle_zero_and_rise_on_mutation() {
     assert!(after_shape.text_nodes_shaped > 0);
     assert!(after_shape.layout_cache_misses > Some(0));
     assert_eq!(after_shape.layout_cache_hits, Some(0));
+    let after_shape_work = world.last_work_counters();
+    assert!(after_shape_work.text_shaped_runs > 0);
+    assert!(after_shape_work.text_layout_cache_misses > 0);
+    assert_eq!(after_shape_work.text_layout_cache_hits, 0);
+    assert!(after_shape_work.allocations > 0);
 
     let ids = seed_nodes(&work.layout_frontier_seeds);
     let _ = world.layout_inputs(&ids).unwrap();
+    let after_layout = world.last_work_counters();
+    assert!(after_layout.allocations >= after_shape_work.allocations);
 
     let idle = {
         let mut idle = None;
@@ -7979,6 +8068,11 @@ fn hot_path_allocations_and_text_shape_are_idle_zero_and_rise_on_mutation() {
         idle.expect("mutation follow-up work must settle")
     };
     assert!(idle.is_empty());
+    assert_eq!(idle.counters().allocations, 0);
+    assert_eq!(idle.counters().allocated_bytes, 0);
+    assert_eq!(idle.counters().text_shaped_runs, 0);
+    assert_eq!(idle.counters().text_layout_cache_misses, 0);
+    assert!(world.last_work_counters().allocations > 0);
     world
         .shape_text(&idle.text, &mut FunctionalShaper::default())
         .unwrap();
@@ -8992,7 +9086,7 @@ fn palette_only_theme_switch_is_paint_work_and_never_layout_or_reshape() {
     let work = world.take_system_work();
     world.resolve_styles(&work.style).unwrap();
 
-    world.begin_frame();
+    world.begin_frame_counters();
     let mut theme = MutationQueue::new();
     theme.set_preset_theme(ThemeAppearance::Light);
     world.commit(theme).unwrap();
@@ -9004,9 +9098,21 @@ fn palette_only_theme_switch_is_paint_work_and_never_layout_or_reshape() {
     assert!(work.layout_frontier_seeds.is_empty());
     assert_eq!(work.render_extraction.len(), 2, "both live nodes repaint");
     world.resolve_styles(&work.style).unwrap();
+    let counters = world.last_theme_work_counters();
+    assert_eq!(
+        counters.paint_nodes_from_style, 2,
+        "both live nodes repaint"
+    );
+    assert_eq!(counters.layout_nodes_from_style, 0);
+    assert_eq!(counters.text_nodes_from_style, 0, "colour is not a reshape");
+    assert!(counters.is_paint_only());
+    assert_eq!(
+        counters.style_nodes_considered, 0,
+        "no style pass ran for this switch"
+    );
 
     let extracted = world.extract_nodes(&work.render_extraction);
-    world.end_frame();
+    world.end_frame_counters();
     assert_eq!(
         extracted[0].style.background,
         Some(
@@ -9014,6 +9120,10 @@ fn palette_only_theme_switch_is_paint_work_and_never_layout_or_reshape() {
                 .accent
                 .as_rgba_array()
         )
+    );
+    assert!(
+        world.last_theme_work_counters().theme_reads > 0,
+        "the palette is re-read, and today extract is where"
     );
 }
 
@@ -9048,7 +9158,7 @@ fn metrics_change_adds_layout_invalidation_to_the_same_theme_install() {
 
     let mut metrics = nana_ui_core::UI_METRICS;
     metrics.control_height += 4.0;
-    world.begin_frame();
+    world.begin_frame_counters();
     let mut tokens = MutationQueue::new();
     tokens.set_theme_tokens(test_theme(
         ThemeAppearance::Dark,
@@ -9057,8 +9167,12 @@ fn metrics_change_adds_layout_invalidation_to_the_same_theme_install() {
         nana_ui_core::SemanticPalette::dark().surface,
     ));
     world.commit(tokens).unwrap();
-    world.end_frame();
+    world.end_frame_counters();
 
+    let counters = world.last_theme_work_counters();
+    assert_eq!(counters.layout_nodes_from_style, 1);
+    assert_eq!(counters.paint_nodes_from_style, 2);
+    assert!(!counters.is_paint_only());
     let work = world.take_system_work();
     assert_eq!(work.render_extraction.len(), 2);
     assert_eq!(seed_nodes(&work.layout_frontier_seeds), vec![node(1)]);
@@ -9142,7 +9256,7 @@ fn a_corner_shape_change_is_paint_only() {
         corner_shape: nana_ui_core::CornerShape::SQUIRCLE,
         ..world.theme_metrics()
     };
-    world.begin_frame();
+    world.begin_frame_counters();
     let mut tokens = MutationQueue::new();
     tokens.set_theme_tokens(test_theme(
         ThemeAppearance::Dark,
@@ -9151,19 +9265,24 @@ fn a_corner_shape_change_is_paint_only() {
         nana_ui_core::SemanticPalette::dark().surface,
     ));
     world.commit(tokens).unwrap();
-    world.end_frame();
+    world.end_frame_counters();
 
     assert_eq!(
         world.theme_metrics().corner_shape,
         nana_ui_core::CornerShape::SQUIRCLE
     );
+    let counters = world.last_theme_work_counters();
+    assert_eq!(counters.layout_nodes_from_style, 0);
+    assert_eq!(counters.paint_nodes_from_style, 1);
+    assert!(counters.is_paint_only());
     let work = world.take_system_work();
     assert!(work.layout_frontier_seeds.is_empty());
     assert_eq!(work.render_extraction.len(), 1);
 }
 
 /// Issue #100 §15: a retained frame that changed nothing must not walk or
-/// re-read the theme.
+/// re-read the theme. `considered` counts nodes the pass evaluated, and it
+/// splits exactly into resolved plus skipped.
 #[test]
 fn style_pass_splits_into_resolved_and_skipped_and_an_idle_pass_does_neither() {
     let mut world = UiWorld::new();
@@ -9179,19 +9298,29 @@ fn style_pass_splits_into_resolved_and_skipped_and_an_idle_pass_does_neither() {
     queue.insert(node(2), node(3), None);
     world.commit(queue).unwrap();
 
-    world.begin_frame();
+    world.begin_frame_counters();
     let work = world.take_system_work();
     world.resolve_styles(&work.style).unwrap();
-    world.end_frame();
+    world.end_frame_counters();
+    let first = world.last_theme_work_counters();
+    assert_eq!(first.style_nodes_considered, 3);
+    assert_eq!(first.style_nodes_resolved, 3);
+    assert_eq!(first.style_nodes_skipped, 0);
+    assert!(first.style_allocations > 0);
     let first_resolved = (1..=3)
         .map(|id| Arc::clone(&world.nodes.get(node(id)).unwrap().resolved.0))
         .collect::<Vec<_>>();
 
     // Resolving the same ids again answers every one from the value/epoch
     // fast path; nothing is published a second time.
-    world.begin_frame();
+    world.begin_frame_counters();
     world.resolve_styles(&[node(1), node(2), node(3)]).unwrap();
-    world.end_frame();
+    world.end_frame_counters();
+    let second = world.last_theme_work_counters();
+    assert_eq!(second.style_nodes_considered, 3);
+    assert_eq!(second.style_nodes_resolved, 0);
+    assert_eq!(second.style_nodes_skipped, 3);
+    assert_eq!(second.style_allocations, 0);
     for (index, previous) in first_resolved.iter().enumerate() {
         let current = &world
             .nodes
@@ -9204,13 +9333,15 @@ fn style_pass_splits_into_resolved_and_skipped_and_an_idle_pass_does_neither() {
     assert!(world.take_system_work().is_empty());
 
     // An empty pass is the steady frame: no walk, no token read.
-    world.begin_frame();
+    world.begin_frame_counters();
     world.resolve_styles(&[]).unwrap();
-    world.end_frame();
+    world.end_frame_counters();
+    assert!(world.last_theme_work_counters().is_idle());
     assert!(world.take_system_work().is_empty());
 }
 
-/// Unchanged parent chains stay shared and idle across partial style passes.
+/// A node pulled in only as a parent is counted once for the pass, not once
+/// per descendant that needed it.
 #[test]
 fn parent_chain_nodes_are_counted_once_per_style_pass() {
     let mut world = UiWorld::new();
@@ -9232,10 +9363,16 @@ fn parent_chain_nodes_are_counted_once_per_style_pass() {
         .map(|id| Arc::clone(&world.nodes.get(node(id)).unwrap().resolved.0))
         .collect::<Vec<_>>();
 
-    world.begin_frame();
+    world.begin_frame_counters();
     // Both leaves walk up through the same two ancestors.
     world.resolve_styles(&[node(3), node(4)]).unwrap();
-    world.end_frame();
+    world.end_frame_counters();
+    let counters = world.last_theme_work_counters();
+    assert_eq!(counters.style_nodes_considered, 4);
+    assert_eq!(
+        counters.style_nodes_considered,
+        counters.style_nodes_resolved + counters.style_nodes_skipped
+    );
     for (index, previous) in before.iter().enumerate() {
         let current = &world
             .nodes
@@ -9248,11 +9385,11 @@ fn parent_chain_nodes_are_counted_once_per_style_pass() {
     assert!(world.take_system_work().is_empty());
 }
 
-/// Resolving design intent copies a `LayoutStyle`; nodes without design intent
-/// share the authored layout `Arc`.
+/// Resolving design intent copies a `LayoutStyle`, which is by far the
+/// largest heap event on the style path.
 #[test]
 fn resolving_layout_intent_reports_the_layout_it_had_to_copy() {
-    fn shares_authored_layout(style: NodeStyle) -> bool {
+    fn inspect_layout_resolve(style: NodeStyle) -> (bool, usize, usize) {
         let mut world = UiWorld::new();
         let mut queue = MutationQueue::new();
         queue.create(
@@ -9266,14 +9403,19 @@ fn resolving_layout_intent_reports_the_layout_it_had_to_copy() {
 
         let mut styled = MutationQueue::new();
         styled.set_style(node(1), style);
-        world.begin_frame();
+        world.begin_frame_counters();
         world.commit(styled).unwrap();
         let work = world.take_system_work();
         world.resolve_styles(&work.style).unwrap();
-        world.end_frame();
-        Arc::ptr_eq(
-            &world.layout_style(node(1)).unwrap(),
-            &world.node_style(node(1)).unwrap().layout,
+        world.end_frame_counters();
+        let counters = world.last_theme_work_counters();
+        (
+            Arc::ptr_eq(
+                &world.layout_style(node(1)).unwrap(),
+                &world.node_style(node(1)).unwrap().layout,
+            ),
+            counters.layout_copies,
+            counters.layout_copied_bytes,
         )
     }
 
@@ -9284,12 +9426,16 @@ fn resolving_layout_intent_reports_the_layout_it_had_to_copy() {
         )),
         ..NodeStyle::default()
     };
+    let (plain_shared, plain_copies, plain_bytes) = inspect_layout_resolve(plain);
+    let (intent_shared, intent_copies, intent_bytes) = inspect_layout_resolve(with_intent);
     assert!(
-        shares_authored_layout(plain),
+        plain_shared && plain_copies == 0 && plain_bytes == 0,
         "a node with no design intent shares the layout it authored"
     );
     assert!(
-        !shares_authored_layout(with_intent),
+        !intent_shared
+            && intent_copies == 1
+            && intent_bytes == size_of::<nana_ui_core::LayoutStyle>(),
         "a node with intent copies one layout"
     );
 }
@@ -9326,14 +9472,15 @@ fn a_shaping_style_change_counts_as_text_invalidation() {
         },
     );
     world.commit(resize).unwrap();
-    world.begin_frame();
+    world.begin_frame_counters();
     let work = world.take_system_work();
     world.resolve_styles(&work.style).unwrap();
+    assert_eq!(world.last_theme_work_counters().text_nodes_from_style, 1);
     assert_eq!(work.text, vec![node(1)]);
     world
         .shape_text(&work.text, &mut MeasureTextShaper)
         .unwrap();
-    world.end_frame();
+    world.end_frame_counters();
     assert_eq!(world.last_text_work_counters().text_nodes_shaped, 1);
 }
 
@@ -12652,6 +12799,136 @@ fn a_child_moving_inside_its_parent_leaves_the_parent_result() {
             (Some(node(2)), box_at(10.0, 5.0, 30.0, 10.0)),
             (Some(node(3)), box_at(40.0, 0.0, 30.0, 10.0)),
         ]
+    );
+}
+
+#[test]
+fn frame_emits_work_counter_diagnostics_metrics_and_dirty_roots() {
+    use nana_diagnostics::nlog::{self, Entry, MetricSample};
+    use nana_diagnostics::{
+        DiagnosticsConfig, DiagnosticsPaths, PersistMode, SessionMetadata, Severity, framework,
+    };
+    use std::sync::atomic::{AtomicU64, Ordering};
+    use std::time::Duration;
+
+    static SEQ: AtomicU64 = AtomicU64::new(0);
+    let seq = SEQ.fetch_add(1, Ordering::Relaxed);
+    let dir = std::env::temp_dir().join(format!("nana-runtime-diag-{}-{seq}", std::process::id()));
+    let guard = nana_diagnostics::install(
+        DiagnosticsConfig {
+            min_severity: Severity::Debug,
+            persist: PersistMode::All,
+            metrics: true,
+            poll_interval: Duration::from_millis(5),
+            panic_hook: false,
+            ..DiagnosticsConfig::default()
+        },
+        SessionMetadata::new("dev.nana.test", "nana-ui-runtime", "0.1"),
+        DiagnosticsPaths::new(dir.join("logs"), dir.join("crash")),
+    )
+    .expect("no other runtime test installs global diagnostics");
+
+    let mut cx = crate::AppContext::new();
+    let doc = document(1);
+    let mut create = MutationQueue::new();
+    create.create(node(1), doc, NodeKind::Element { tag: "div".into() });
+    create.create(node(2), doc, NodeKind::Element { tag: "div".into() });
+    create.insert(node(1), node(2), None);
+    create.set_style(
+        node(1),
+        NodeStyle {
+            layout: LayoutStyle {
+                width: Some(LengthSpec::Px(400.0)),
+                height: Some(LengthSpec::Px(200.0)),
+                ..LayoutStyle::default()
+            }
+            .into(),
+            ..NodeStyle::default()
+        },
+    );
+    create.set_style(
+        node(2),
+        NodeStyle {
+            layout: LayoutStyle {
+                width: Some(LengthSpec::Px(120.0)),
+                height: Some(LengthSpec::Px(40.0)),
+                ..LayoutStyle::default()
+            }
+            .into(),
+            ..NodeStyle::default()
+        },
+    );
+    cx.commit_mutations(create).unwrap();
+
+    let mut shaper = crate::world::reflow_oracle::bundled_face_shaper();
+    let _ = crate::world::reflow_oracle::product_frame(
+        &mut cx,
+        doc,
+        crate::LayoutViewport::new(400.0, 200.0),
+        &mut shaper,
+    );
+    cx.compat_world_mut().rebuild_hit_test(doc);
+    let extracted = cx.world().extract_nodes(&[node(1), node(2)]);
+    cx.record_extract(&extracted);
+
+    // Trigger an incremental typed-seed pass so DIRTY_ROOTS > 0 via typed_seeds is also covered.
+    let mut resize = MutationQueue::new();
+    resize.set_style(
+        node(2),
+        NodeStyle {
+            layout: LayoutStyle {
+                width: Some(LengthSpec::Px(180.0)),
+                height: Some(LengthSpec::Px(40.0)),
+                ..LayoutStyle::default()
+            }
+            .into(),
+            ..NodeStyle::default()
+        },
+    );
+    cx.commit_mutations(resize).unwrap();
+    let _ = crate::world::reflow_oracle::product_frame(
+        &mut cx,
+        doc,
+        crate::LayoutViewport::new(400.0, 200.0),
+        &mut shaper,
+    );
+
+    assert!(framework::runtime::STYLE_NODES_RESOLVED.value() >= 2);
+    assert!(framework::runtime::HIT_TEST_NODES_REBUILT.value() >= 2);
+    assert!(framework::runtime::SCENE_NODES_EXTRACTED.value() >= 2);
+    assert!(framework::runtime::SCENE_NODES_CHANGED.value() >= 2);
+    assert!(framework::layout::MEASURE_NODES.value() > 0);
+    assert!(framework::layout::PLACEMENT_NODES.value() > 0);
+
+    assert!(guard.diagnostics().flush(false, Duration::from_secs(5)));
+    let log = guard
+        .diagnostics()
+        .current_log()
+        .expect("diagnostics session log");
+    drop(guard);
+
+    let file = nlog::read_file(&log).expect("read diagnostics nlog");
+    let _ = std::fs::remove_dir_all(&dir);
+    let dirty_roots = file
+        .entries
+        .iter()
+        .filter_map(|e| match e {
+            Entry::Metrics { samples, .. } => Some(samples.iter()),
+            _ => None,
+        })
+        .flatten()
+        .find_map(|sample| match sample {
+            MetricSample::Histogram { key, sample }
+                if file.metric_name(*key) == Some("layout.dirty_roots") =>
+            {
+                Some(sample)
+            }
+            _ => None,
+        })
+        .expect("layout.dirty_roots histogram recorded");
+    assert!(
+        dirty_roots.count >= 2 && dirty_roots.max >= 1,
+        "{dirty_roots:?}"
     );
 }
 

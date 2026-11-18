@@ -314,7 +314,7 @@ mod tests {
         assert!(plist.contains("<string>Nana &amp; Fixture</string>"));
         assert!(plist.contains("<string>nanafixture</string>"));
         assert!(plist.contains("<string>nfx</string>"));
-        assert!(plist.contains("<string>11.0</string>"));
+        assert!(plist.contains("<string>14.0</string>"));
     }
 
     #[test]
@@ -407,7 +407,7 @@ mod tests {
         })
         .unwrap();
         assert!(plist.contains("<string>13.0</string>"));
-        assert!(!plist.contains("<string>11.0</string>"));
+        assert!(!plist.contains("<string>14.0</string>"));
         assert!(plist.contains("NSCameraUsageDescription"));
 
         let bad = "<key>CFBundleIdentifier</key><string>evil</string>";

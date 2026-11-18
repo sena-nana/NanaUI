@@ -5,66 +5,9 @@
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use nana_gpu::{DeviceGeneration, GpuSubmission, GpuTextureFormat};
+pub use nana_ui_core::OutputWorkObservation;
 
 use super::{OutputConsumerId, OutputPath};
-
-/// Work counts for the Window-independent presentation boundary (Issue
-/// #242). An observation is emitted by an output producer, not by a consumer
-/// merely sampling an already completed texture.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub struct OutputWorkObservation {
-    pub extra_passes: usize,
-    pub gpu_copies: usize,
-    pub target_recreates: usize,
-    pub content_revisions: usize,
-    pub idle_reuse_frames: usize,
-    pub resolve_count: usize,
-    pub gpu_copy_bytes: usize,
-    pub gpu_convert_passes: usize,
-    pub plan_rebuilds: usize,
-    pub ui_renders: usize,
-    pub submissions: usize,
-    pub cpu_readbacks: usize,
-    pub deferred: usize,
-}
-
-impl OutputWorkObservation {
-    pub fn accumulate(&mut self, other: Self) {
-        macro_rules! add { ($($field:ident),* $(,)?) => { $(self.$field = self.$field.saturating_add(other.$field);)* }; }
-        add!(
-            extra_passes,
-            gpu_copies,
-            target_recreates,
-            content_revisions,
-            idle_reuse_frames,
-            resolve_count,
-            gpu_copy_bytes,
-            gpu_convert_passes,
-            plan_rebuilds,
-            ui_renders,
-            submissions,
-            cpu_readbacks,
-            deferred
-        );
-    }
-
-    pub fn record_target_recreate(&mut self) {
-        self.target_recreates = self.target_recreates.saturating_add(1);
-    }
-
-    pub fn record_content_revision(&mut self) {
-        self.content_revisions = self.content_revisions.saturating_add(1);
-    }
-
-    pub fn record_idle_reuse(&mut self) {
-        self.idle_reuse_frames = self.idle_reuse_frames.saturating_add(1);
-    }
-
-    pub fn record_gpu_copy(&mut self, bytes: usize) {
-        self.gpu_copies = self.gpu_copies.saturating_add(1);
-        self.gpu_copy_bytes = self.gpu_copy_bytes.saturating_add(bytes);
-    }
-}
 
 /// Host-observed GPU and output presentation counts for one frame.
 /// `None` means the host path did not record that stage for the frame.

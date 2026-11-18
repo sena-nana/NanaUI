@@ -8,9 +8,7 @@
 
 ## 添加依赖
 
-`nana-ui` 默认启用 `wgpu-backends`（仅在启用 `gpu` 时生效）；不启用 `hosted` 就没有
-`run_runtime`，不启用 `gpu` 就没有 painter。需要自选图形后端时使用
-`default-features = false`。一个桌面应用至少写成这样：
+`nana-ui` 的 `default = []` 不默认开启任何特性：启用 `hosted` 会带上 `gpu` 与当前平台的主图形后端（Apple 为 `metal`、Windows 为 `dx12`、Unix 为 `vulkan`），需要全部跨平台后端时再加 `wgpu-backends`，或直接用 `full`。更多特性说明见[迁移指南](migration-layout-and-features.md)。一个最小桌面应用至少写成这样：
 
 ```toml
 [dependencies]

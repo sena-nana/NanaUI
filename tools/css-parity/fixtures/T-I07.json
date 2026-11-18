@@ -1,0 +1,145 @@
+{
+  "id": "T-I07",
+  "title": "IFC 中 inline-flex 首基线：后代行盒、overflow:hidden 不抑制首行基线、无行盒首项合成基线（Chrome 152 + Noto Sans SC 实测）",
+  "status": "pass",
+  "viewport": [
+    480,
+    120
+  ],
+  "tolerance_px": 2,
+  "tree": {
+    "id": "root",
+    "style": "width:480px;font-size:20px;line-height:20px",
+    "children": [
+      {
+        "id": "a",
+        "style": "display:inline-flex;width:40px;height:20px"
+      },
+      {
+        "id": "b",
+        "style": "display:inline-flex;width:80px",
+        "children": [
+          {
+            "id": "b-wrap",
+            "style": "width:80px",
+            "children": [
+              {
+                "id": "b-spacer",
+                "style": "width:80px;height:14px"
+              },
+              {
+                "id": "b-inner",
+                "style": "width:80px;line-height:20px",
+                "text": "Alpha"
+              }
+            ]
+          }
+        ]
+      },
+      {
+        "id": "c",
+        "style": "display:inline-flex;overflow:hidden;padding-top:10px;height:56px;width:90px",
+        "children": [
+          {
+            "id": "c-inner",
+            "style": "width:80px;line-height:20px;white-space:pre",
+            "text": "Alpha\nBeta"
+          }
+        ]
+      },
+      {
+        "id": "d",
+        "style": "display:inline-flex;flex-direction:column;height:50px;padding-top:6px;width:60px",
+        "children": [
+          {
+            "id": "d-first",
+            "style": "width:50px;height:16px"
+          },
+          {
+            "id": "d-second",
+            "style": "width:50px;height:12px"
+          }
+        ]
+      }
+    ]
+  },
+  "expected": [
+    {
+      "id": "root",
+      "x": 0,
+      "y": 0,
+      "w": 480,
+      "h": 60
+    },
+    {
+      "id": "a",
+      "x": 0,
+      "y": 12,
+      "w": 40,
+      "h": 20
+    },
+    {
+      "id": "b",
+      "x": 40,
+      "y": 0,
+      "w": 80,
+      "h": 34
+    },
+    {
+      "id": "b-wrap",
+      "x": 40,
+      "y": 0,
+      "w": 80,
+      "h": 34
+    },
+    {
+      "id": "b-spacer",
+      "x": 40,
+      "y": 0,
+      "w": 80,
+      "h": 14
+    },
+    {
+      "id": "b-inner",
+      "x": 40,
+      "y": 14,
+      "w": 80,
+      "h": 20
+    },
+    {
+      "id": "c",
+      "x": 120,
+      "y": 4,
+      "w": 90,
+      "h": 56
+    },
+    {
+      "id": "c-inner",
+      "x": 120,
+      "y": 14,
+      "w": 80,
+      "h": 46
+    },
+    {
+      "id": "d",
+      "x": 210,
+      "y": 10,
+      "w": 60,
+      "h": 50
+    },
+    {
+      "id": "d-first",
+      "x": 210,
+      "y": 16,
+      "w": 50,
+      "h": 16
+    },
+    {
+      "id": "d-second",
+      "x": 210,
+      "y": 32,
+      "w": 50,
+      "h": 12
+    }
+  ]
+}

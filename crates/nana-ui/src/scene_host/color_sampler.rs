@@ -4,7 +4,8 @@ use std::sync::{Arc, Mutex};
 use nana_ui_platform::WindowId;
 use nana_ui_runtime::StableNodeId;
 use nana_window::{
-    ColorSamplerHandle, ColorSamplerResult, color_sampler_support, pick_screen_color,
+    ColorSamplerError, ColorSamplerHandle, ColorSamplerResult, color_sampler_support,
+    pick_screen_color,
 };
 use winit::event_loop::ActiveEventLoop;
 
@@ -103,6 +104,19 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
         event_loop: &dyn ActiveEventLoop,
         id: WindowId,
     ) {
+        if !self.color_samplers.shutting_down
+            && let Some(&(_, active_node)) = self.color_samplers.active.get(&id)
+        {
+            let still_active = self
+                .program
+                .read_document(id, |document| {
+                    document.context().color_pick_active(active_node)
+                })
+                .unwrap_or(false);
+            if !still_active {
+                self.close_color_sampler(event_loop, id);
+            }
+        }
         let Some(mut requests) = self.program.write_document(id, |document| {
             document.context_mut().take_color_pick_requests()
         }) else {
@@ -115,8 +129,17 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
             self.apply_color_pick_result(event_loop, id, superseded, None);
         }
 
-        if self.color_samplers.shutting_down || !color_sampler_support().is_supported() {
+        if self.color_samplers.shutting_down {
             self.apply_color_pick_result(event_loop, id, node, None);
+            return;
+        }
+        if !color_sampler_support().is_supported() {
+            nana_diagnostics::event!(
+                nana_diagnostics::framework::window::COLOR_SAMPLER_FAILED,
+                window = id.0,
+                unsupported = true
+            );
+            self.apply_color_pick_result_with_support(event_loop, id, node, None, false);
             return;
         }
         let Some(window) = self.window(id).cloned() else {
@@ -149,11 +172,23 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
                 self.color_samplers.native.insert(id, handle);
             }
             Err(error) => {
+                let unsupported = matches!(error, ColorSamplerError::Unsupported);
+                nana_diagnostics::event!(
+                    nana_diagnostics::framework::window::COLOR_SAMPLER_FAILED,
+                    window = id.0,
+                    unsupported = unsupported
+                );
                 if let Some((failed_node, _)) =
                     self.color_samplers
                         .finish(id, token, ColorSamplerResult::failed(token, error))
                 {
-                    self.apply_color_pick_result(event_loop, id, failed_node, None);
+                    self.apply_color_pick_result_with_support(
+                        event_loop,
+                        id,
+                        failed_node,
+                        None,
+                        !unsupported,
+                    );
                 }
             }
         }
@@ -177,8 +212,29 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
             std::mem::take(&mut *guard)
         };
         for (id, token, result) in completed {
+            let failed_unsupported = match &result {
+                ColorSamplerResult::Failed { error, .. } => {
+                    Some(matches!(error, ColorSamplerError::Unsupported))
+                }
+                _ => None,
+            };
             if let Some((node, picked)) = self.color_samplers.finish(id, token, result) {
-                self.apply_color_pick_result(event_loop, id, node, picked);
+                if let Some(unsupported) = failed_unsupported {
+                    nana_diagnostics::event!(
+                        nana_diagnostics::framework::window::COLOR_SAMPLER_FAILED,
+                        window = id.0,
+                        unsupported = unsupported
+                    );
+                    self.apply_color_pick_result_with_support(
+                        event_loop,
+                        id,
+                        node,
+                        picked,
+                        !unsupported,
+                    );
+                } else {
+                    self.apply_color_pick_result(event_loop, id, node, picked);
+                }
             }
         }
     }
@@ -204,10 +260,27 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
         node: StableNodeId,
         rgb: Option<[f32; 3]>,
     ) {
+        self.apply_color_pick_result_with_support(event_loop, id, node, rgb, true);
+    }
+
+    fn apply_color_pick_result_with_support(
+        &mut self,
+        event_loop: &dyn ActiveEventLoop,
+        id: WindowId,
+        node: StableNodeId,
+        rgb: Option<[f32; 3]>,
+        supported: bool,
+    ) {
         let updated = self
             .program
             .write_document(id, |document| {
-                document.context_mut().complete_color_pick(node, rgb)
+                let context = document.context_mut();
+                let mut changed = context.complete_color_pick(node, rgb);
+                if !supported && context.world().eyedropper_supported() {
+                    context.set_eyedropper_supported(false);
+                    changed = true;
+                }
+                changed
             })
             .unwrap_or(false);
         if !updated || event_loop.exiting() {
@@ -301,5 +374,22 @@ mod tests {
 
         first.shutting_down = true;
         assert!(first.begin(WindowId(1), node(6)).is_none());
+    }
+
+    #[test]
+    fn failed_completion_clears_active_sampler_and_yields_none_color() {
+        let mut samplers = ColorSamplers::default();
+        let win = WindowId(2);
+        let started = samplers.begin(win, node(42)).unwrap();
+        let done = samplers
+            .finish(
+                win,
+                started.token,
+                ColorSamplerResult::failed(started.token, ColorSamplerError::Unsupported),
+            )
+            .unwrap();
+        assert_eq!(done, (node(42), None));
+        assert!(samplers.active.is_empty());
+        assert!(samplers.native.is_empty());
     }
 }

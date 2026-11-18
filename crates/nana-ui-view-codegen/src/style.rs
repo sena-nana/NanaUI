@@ -37,10 +37,10 @@ use nana_ui_css::css_motion::{
 };
 use nana_ui_css::{
     CompoundSelector, ContainerAxis, ContainerPlanUnsupported, ContainerQuery,
-    ContainerQueryUnsupported, DeclarationEntry, LayoutStyleCss, MAX_CONTAINER_BREAKPOINTS,
-    MotionDeclarations, Selector, Specificity, StyleRule,
-    collect_document_custom_properties_from_rules, parse_container_prelude, parse_stylesheet_full,
-    plan_container_queries, written_layout,
+    ContainerQueryUnsupported, DeclarationEntry, GridTrackListParse, GridTrackListUnsupported,
+    LayoutStyleCss, MAX_CONTAINER_BREAKPOINTS, MotionDeclarations, Selector, Specificity,
+    StyleRule, collect_document_custom_properties_from_rules, parse_container_prelude,
+    parse_grid_track_list_result, parse_stylesheet_full, plan_container_queries, written_layout,
 };
 use proc_macro2::{Span, TokenStream};
 use quote::{format_ident, quote};
@@ -673,8 +673,10 @@ fn check_block(
         }
         nana_ui_css::css_map::with_active_css_vars(vars, || {
             for entry in entries {
-                if patch(&[entry]).is_empty() {
-                    let property = entry.property.to_ascii_lowercase();
+                let property = entry.property.to_ascii_lowercase();
+                if let Some(message) = unsupported_or_removed_css_warning(&property, entry) {
+                    warn(declaration(Some(entry.index), &|p| p == property), message);
+                } else if patch(&[entry]).is_empty() {
                     warn(
                         declaration(Some(entry.index), &|p| p == property),
                         format!(
@@ -735,6 +737,74 @@ fn check_block(
                 check_block(css, &inner, vars, in_container, warnings);
             }
         }
+    }
+}
+
+fn unsupported_or_removed_css_warning(property: &str, entry: &DeclarationEntry) -> Option<String> {
+    let trimmed = entry.value.trim();
+    let lower = trimmed.to_ascii_lowercase();
+    if matches!(
+        lower.as_str(),
+        "initial" | "inherit" | "unset" | "revert" | "revert-layer"
+    ) || lower.contains("var(")
+    {
+        return None;
+    }
+    match property {
+        "display" => match lower.as_str() {
+            "block" | "flow-root" => Some(format!(
+                "`{}`: legacy block display (`{lower}`) was removed; use `display: flex; \
+                 flex-direction: column` (or `grid` / `layers`) instead; it is ignored",
+                entry.text()
+            )),
+            "inline-block" => Some(format!(
+                "`{}`: `inline-block` was removed; use `display: inline-flex` or \
+                 `display: inline-grid` instead; it is ignored",
+                entry.text()
+            )),
+            "contents" => Some(format!(
+                "`{}`: `display: contents` is not supported in NanaUI's retained Style Model; \
+                 remove the wrapper or move layout styles onto its children; it is ignored",
+                entry.text()
+            )),
+            _ => None,
+        },
+        "float" | "clear" => Some(format!(
+            "`{}`: CSS floats (`float` / `clear`) were removed; use `display: flex` or \
+             `display: grid` instead; it is ignored",
+            entry.text()
+        )),
+        "grid-template-columns" | "grid-template-rows" if !lower.eq("none") => {
+            match parse_grid_track_list_result(trimmed, None) {
+                GridTrackListParse::Tracks(_)
+                | GridTrackListParse::RepeatAuto(_)
+                | GridTrackListParse::Subgrid => None,
+                GridTrackListParse::Unsupported(GridTrackListUnsupported::Subgrid) => {
+                    Some(format!(
+                        "`{}`: mixing `subgrid` with explicit tracks is not supported in \
+                         `{property}`; use standalone `subgrid` (with optional `[line-name]` \
+                         groups); it is ignored",
+                        entry.text()
+                    ))
+                }
+                GridTrackListParse::Unsupported(GridTrackListUnsupported::NestedRepeat) => {
+                    Some(format!(
+                        "`{}`: nested `repeat(...)` in `{property}` is not supported; it is ignored",
+                        entry.text()
+                    ))
+                }
+                GridTrackListParse::Unsupported(kind) => Some(format!(
+                    "`{}`: unsupported grid track syntax (`{kind:?}`) in `{property}`; it is \
+                     ignored",
+                    entry.text()
+                )),
+                GridTrackListParse::Invalid => Some(format!(
+                    "`{}`: `{property}` could not parse this track list and is ignored",
+                    entry.text()
+                )),
+            }
+        }
+        _ => None,
     }
 }
 
@@ -1744,6 +1814,62 @@ mod tests {
         );
         assert!(
             compact.contains("__nana_patch::set::paint_colors::color("),
+            "{compact}"
+        );
+    }
+
+    #[test]
+    fn removed_css_and_subgrid_diagnostics_cover_migration_cases() {
+        let warnings = located(
+            ".legacy { display: block; display: inline-block; display: flow-root; \
+             display: contents; float: left; clear: both; }\n\
+             .grid-bad { grid-template-columns: subgrid 80px; grid-template-rows: masonry; }\n\
+             .grid-ok { display: grid; grid-template-columns: subgrid [a] [b]; \
+             grid-template-rows: subgrid; }",
+        );
+        assert!(at(&warnings, "legacy block display").contains("display: block"));
+        assert!(at(&warnings, "inline-block").contains("display: inline-block"));
+        assert!(at(&warnings, "display: flow-root").contains("flow-root"));
+        assert!(at(&warnings, "display: contents").contains("display: contents"));
+        assert!(at(&warnings, "CSS floats").contains("float: left"));
+        assert!(
+            warnings
+                .iter()
+                .any(|(text, msg)| *text == "clear: both" && msg.contains("CSS floats"))
+        );
+        assert!(at(&warnings, "mixing `subgrid`").contains("subgrid 80px"));
+        assert!(at(&warnings, "could not parse").contains("masonry"));
+        assert!(
+            !warnings
+                .iter()
+                .any(|(text, _)| text.contains("subgrid [a] [b]")
+                    || *text == "grid-template-rows: subgrid"),
+            "valid standalone subgrid must not emit warnings: {warnings:?}"
+        );
+
+        let (inline_tokens, inline_warnings) = compile_inline(
+            "display: grid; grid-template-columns: subgrid; float: right;",
+            &quote!(x),
+        );
+        assert!(
+            inline_warnings
+                .iter()
+                .any(|w| w.message.contains("CSS floats")),
+            "{inline_warnings:?}"
+        );
+        assert!(
+            !inline_warnings
+                .iter()
+                .any(|w| w.message.contains("subgrid")),
+            "{inline_warnings:?}"
+        );
+        let compact: String = inline_tokens
+            .to_string()
+            .chars()
+            .filter(|c| !c.is_whitespace())
+            .collect();
+        assert!(
+            compact.contains("__nana_patch::set::grid::columns_subgrid(__nana_layout,true);"),
             "{compact}"
         );
     }

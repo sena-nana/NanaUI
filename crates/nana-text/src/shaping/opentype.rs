@@ -89,10 +89,11 @@ impl FaceShapers {
     ) -> Option<Vec<RawGlyph>> {
         self.tick = self.tick.wrapping_add(1);
         let tick = self.tick;
-        if !self.faces.contains_key(&font) && self.faces.len() >= MAX_SHAPER_FACES {
-            if let Some((&evict, _)) = self.faces.iter().min_by_key(|(_, face)| face.last_used) {
-                self.faces.remove(&evict);
-            }
+        if !self.faces.contains_key(&font)
+            && self.faces.len() >= MAX_SHAPER_FACES
+            && let Some((&evict, _)) = self.faces.iter().min_by_key(|(_, face)| face.last_used)
+        {
+            self.faces.remove(&evict);
         }
         let face = match self.faces.entry(font) {
             std::collections::hash_map::Entry::Occupied(entry) => {

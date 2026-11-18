@@ -1894,6 +1894,7 @@ fn drop_allocated_content(
     Ok(())
 }
 
+#[allow(dead_code)]
 pub(crate) fn graph_node_slot_name(name: &str, model: &GraphModel) -> Option<GraphNodeId> {
     let trimmed = name.trim();
     if trimmed.is_empty() {

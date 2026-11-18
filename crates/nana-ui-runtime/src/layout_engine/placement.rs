@@ -21,6 +21,7 @@ pub(super) fn place_node(
         containing,
         viewport,
         parent_font_px,
+        None,
         nodes,
         intrinsic,
         output,
@@ -84,6 +85,11 @@ fn place_unvisited_reaching(
         if output.contains_key(&child) {
             continue;
         }
+        let inherited = plan.grid.as_deref().and_then(|grid| {
+            nodes
+                .style_ref(child)
+                .and_then(|child_style| grid.inherited_tracks_for(child, child_style.as_ref()))
+        });
         place_node_scoped(
             child,
             origin,
@@ -91,6 +97,7 @@ fn place_unvisited_reaching(
             plan.content,
             viewport,
             plan.child_font_px,
+            inherited,
             nodes,
             intrinsic,
             output,
@@ -481,6 +488,7 @@ fn replay_sequential_run(
                 plan.content,
                 viewport,
                 plan.child_font_px,
+                None,
                 nodes,
                 intrinsic,
                 output,
@@ -569,6 +577,7 @@ fn shift_reversed_prefix(
             plan.content,
             viewport,
             plan.child_font_px,
+            None,
             nodes,
             intrinsic,
             output,
@@ -969,6 +978,7 @@ fn replay_wrapped_flex_line(
             plan.content,
             viewport,
             plan.child_font_px,
+            None,
             nodes,
             intrinsic,
             output,
@@ -1012,6 +1022,9 @@ fn replay_grid(
         return Ok(false);
     };
     let style = plan.style.as_ref();
+    if style.is_subgrid_columns() || style.is_subgrid_rows() {
+        return Ok(false);
+    }
     let entries = plan.entries.borrow().clone();
     let entry_of = |child: StableNodeId| {
         plan.entry_index(child)
@@ -1063,6 +1076,7 @@ fn replay_grid(
         &sizes,
         content,
         fonts,
+        None,
         viewport,
         nodes,
         intrinsic,
@@ -1166,6 +1180,7 @@ pub(super) fn place_node_scoped(
     containing: Size,
     viewport: LayoutViewport,
     parent_font_px: f32,
+    inherited: Option<Box<super::grid::InheritedGridTracks>>,
     nodes: &mut LayoutInputMap<'_>,
     intrinsic: &mut PassIntrinsicCache,
     output: &mut PassOutput,
@@ -1179,6 +1194,7 @@ pub(super) fn place_node_scoped(
             containing,
             viewport,
             parent_font_px,
+            inherited,
             nodes,
             intrinsic,
             output,
@@ -1192,6 +1208,7 @@ pub(super) fn place_node_scoped(
         containing,
         viewport,
         parent_font_px,
+        inherited,
         nodes,
         intrinsic,
         output,
@@ -1211,6 +1228,7 @@ fn place_subtree(
     containing: Size,
     viewport: LayoutViewport,
     parent_font_px: f32,
+    inherited: Option<Box<super::grid::InheritedGridTracks>>,
     nodes: &mut LayoutInputMap<'_>,
     intrinsic: &mut PassIntrinsicCache,
     output: &mut PassOutput,
@@ -1223,6 +1241,7 @@ fn place_subtree(
         containing,
         viewport,
         parent_font_px,
+        inherited,
         nodes,
         intrinsic,
         output,
@@ -1242,6 +1261,7 @@ fn place_level(
     containing: Size,
     viewport: LayoutViewport,
     parent_font_px: f32,
+    inherited: Option<Box<super::grid::InheritedGridTracks>>,
     nodes: &mut LayoutInputMap<'_>,
     intrinsic: &mut PassIntrinsicCache,
     output: &mut PassOutput,
@@ -1268,15 +1288,19 @@ fn place_level(
             else {
                 return Ok(());
             };
-            if keeps_moved_subtree(
-                id,
-                &head.facts,
-                size,
-                containing,
-                parent_font_px,
-                nodes,
-                scope,
-            ) {
+            if inherited.is_none()
+                && !head.facts.style.is_subgrid_columns()
+                && !head.facts.style.is_subgrid_rows()
+                && keeps_moved_subtree(
+                    id,
+                    &head.facts,
+                    size,
+                    containing,
+                    parent_font_px,
+                    nodes,
+                    scope,
+                )
+            {
                 intrinsic.note_moved_subtree_kept();
                 #[cfg(any(test, feature = "layout-verify"))]
                 super::verify::note_kept_subtree(id);
@@ -1293,6 +1317,7 @@ fn place_level(
                         size,
                         containing,
                         parent_font_px,
+                        inherited,
                     },
                 );
                 return Ok(());
@@ -1304,6 +1329,7 @@ fn place_level(
                 containing,
                 viewport,
                 parent_font_px,
+                inherited.as_deref(),
                 nodes,
                 intrinsic,
                 output,
@@ -1435,6 +1461,7 @@ fn place_boundaries(
                     boundary.containing,
                     viewport,
                     boundary.parent_font_px,
+                    boundary.inherited.as_deref(),
                     nodes,
                     intrinsic,
                     output,
@@ -1565,6 +1592,7 @@ fn place_node_body<'a>(
     containing: Size,
     viewport: LayoutViewport,
     parent_font_px: f32,
+    inherited: Option<&super::grid::InheritedGridTracks>,
     nodes: &mut LayoutInputMap<'a>,
     intrinsic: &mut PassIntrinsicCache,
     output: &mut PassOutput,
@@ -1682,48 +1710,53 @@ fn place_node_body<'a>(
         );
     }
     let had_plan = scope.is_some_and(|scope| scope.retained.container_plans.contains_key(&id));
-    if place_edited_child_list(
-        id,
-        origin,
-        size,
-        containing,
-        viewport,
-        parent_font_px,
-        child_font_px,
-        style_arc.arc(),
-        child_ids,
-        writing,
-        content_origin,
-        content,
-        nodes,
-        intrinsic,
-        output,
-        scope,
-    )? {
+    let subgrid = style.is_subgrid_columns() || style.is_subgrid_rows();
+    if !subgrid
+        && place_edited_child_list(
+            id,
+            origin,
+            size,
+            containing,
+            viewport,
+            parent_font_px,
+            child_font_px,
+            style_arc.arc(),
+            child_ids,
+            writing,
+            content_origin,
+            content,
+            nodes,
+            intrinsic,
+            output,
+            scope,
+        )?
+    {
         return Ok(());
     }
     // A container whose own inputs and whose children's styles and intrinsic
     // sizes are all unchanged places its children exactly where it did last
     // pass. Reuse that and touch only the children the change closure reaches;
     // otherwise a one-child edit pays a full sibling scan. See `ContainerPlan`.
-    if place_from_plan(
-        id,
-        origin,
-        size,
-        containing,
-        viewport,
-        parent_font_px,
-        child_font_px,
-        style_arc.arc(),
-        child_ids,
-        writing,
-        content_origin,
-        content,
-        nodes,
-        intrinsic,
-        output,
-        scope,
-    )? {
+    if !subgrid
+        && place_from_plan(
+            id,
+            origin,
+            size,
+            containing,
+            viewport,
+            parent_font_px,
+            child_font_px,
+            style_arc.arc(),
+            child_ids,
+            writing,
+            content_origin,
+            content,
+            nodes,
+            intrinsic,
+            output,
+            scope,
+        )?
+    {
         return Ok(());
     }
 
@@ -1752,6 +1785,7 @@ fn place_node_body<'a>(
         child_font_px,
         viewport,
         had_plan,
+        inherited,
         nodes,
         intrinsic,
         output,
@@ -2011,6 +2045,11 @@ fn place_from_plan(
                         let entry = &entries[index as usize];
                         (entry.child, entry.origin, entry.size)
                     };
+                    let inherited = plan.grid.as_deref().and_then(|grid| {
+                        nodes.style_ref(child).and_then(|child_style| {
+                            grid.inherited_tracks_for(child, child_style.as_ref())
+                        })
+                    });
                     place_node_scoped(
                         child,
                         origin,
@@ -2018,6 +2057,7 @@ fn place_from_plan(
                         plan.content,
                         viewport,
                         plan.child_font_px,
+                        inherited,
                         nodes,
                         intrinsic,
                         output,
@@ -2140,6 +2180,7 @@ pub(super) struct Descend {
     pub(super) size: Size,
     /// Its containing block: the container's content box, or its grid cell.
     pub(super) containing: Size,
+    pub(super) inherited: Option<Box<super::grid::InheritedGridTracks>>,
 }
 
 /// Places each of `children` in order, and hands the emptied list back to
@@ -2161,6 +2202,7 @@ fn place_descendants(
             child.containing,
             viewport,
             child_font_px,
+            child.inherited,
             nodes,
             intrinsic,
             output,
@@ -2208,6 +2250,7 @@ fn lay_out_children(
     child_font_px: f32,
     viewport: LayoutViewport,
     had_plan: bool,
+    inherited: Option<&super::grid::InheritedGridTracks>,
     nodes: &mut LayoutInputMap<'_>,
     intrinsic: &mut PassIntrinsicCache,
     output: &mut PassOutput,
@@ -2327,7 +2370,7 @@ fn lay_out_children(
     // cannot answer "is this affected id one of my entries?".
     // Recorded on full passes too, so the first scoped pass after a mount or a
     // viewport change already has a plan to reuse.
-    let grid_recordable = grid_2d;
+    let grid_recordable = grid_2d && !style.is_subgrid_columns() && !style.is_subgrid_rows();
     let cacheable = !descendant_dependent_flow
         && (grid_recordable || !grid_2d)
         && !ifc
@@ -2378,6 +2421,7 @@ fn lay_out_children(
             &child_sizes,
             content,
             fonts,
+            inherited,
             viewport,
             nodes,
             intrinsic,
@@ -2494,6 +2538,7 @@ fn lay_out_children(
                     origin: child_origin,
                     size: child_size,
                     containing: content,
+                    inherited: None,
                 });
             }
         }
@@ -3453,6 +3498,7 @@ pub(super) fn place_positioned_child(
             base,
             viewport,
             child_font_px,
+            None,
             nodes,
             intrinsic,
             output,
@@ -4141,6 +4187,7 @@ fn place_triggered_menu_items(
                 available,
                 viewport,
                 parent_font_px,
+                None,
                 nodes,
                 intrinsic,
                 output,

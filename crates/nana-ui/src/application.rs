@@ -44,6 +44,7 @@ impl ApplicationWindow {
     // to that world; WindowId handles host routing.
     const DOCUMENT: nana_ui_runtime::DocumentId = nana_ui_runtime::DocumentId::new(1).unwrap();
 
+    #[allow(clippy::extra_unused_type_parameters)]
     fn for_state<S: ApplicationState>() -> Self {
         Self::new()
     }

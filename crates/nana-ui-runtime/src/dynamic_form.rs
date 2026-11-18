@@ -577,18 +577,18 @@ fn mount_dynamic_field(
             ..
         } => {
             let view = scope.child(
-                id.to_string(),
+                &id,
                 Switch::new(label.to_string(), *checked).disabled(*disabled),
             )?;
             Ok(MountedField::interactive(id, FormControl::Toggle(view)))
         }
         DynamicFormField::Text { value, .. } => {
-            let view = scope.child(id.to_string(), Text::new(value.to_string()))?;
+            let view = scope.child(&id, Text::new(value.to_string()))?;
             Ok(MountedField::new(id, view.stable_id()))
         }
         DynamicFormField::Error { value, .. } => {
             let view = scope.child(
-                id.to_string(),
+                &id,
                 ValidationMessage::new(value.to_string(), ValidationIntent::Danger),
             )?;
             Ok(MountedField::new(id, view.stable_id()))
@@ -605,7 +605,7 @@ fn mount_dynamic_field(
                 ButtonKind::Subtle
             };
             let view = scope.child(
-                id.to_string(),
+                &id,
                 Button::new(label.to_string())
                     .kind(kind)
                     .disabled(!*enabled),
@@ -680,7 +680,7 @@ fn mount_settings_control<C: ComponentView>(
 ) -> Result<MountedField, FrameworkError> {
     let mut mounted = None;
     let row = scope.with_child(
-        id.to_string(),
+        &id,
         SettingsRow::new(label.clone())
             .hint(hint.clone().unwrap_or_default())
             .stack_below(900.0),

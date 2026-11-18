@@ -38,7 +38,37 @@ impl AppContext {
         self.world.take_window_cursor_dirty()
     }
 
-    /// Open a product-frame profiler and per-frame accumulator.
+    /// Algorithm-level counters from the last drained system batch.
+    pub fn last_work_counters(&self) -> crate::WorkCounters {
+        self.world.last_work_counters()
+    }
+
+    /// The presentation host records actual encode/submit work after flush.
+    /// This replaces the previous output observation, including on idle reuse.
+    pub fn record_output_work(&mut self, work: nana_ui_core::OutputWorkObservation) {
+        self.world.record_output_work(work);
+    }
+
+    /// Replace the last presentation's actual painter observation. `None`
+    /// clears unsupported or skipped observations instead of retaining old work.
+    pub fn record_presentation_gpu_work(&mut self, work: Option<nana_ui_core::GpuWorkObservation>) {
+        self.world.record_presentation_gpu_work(work);
+    }
+
+    /// Record extract output onto the last drained work counters.
+    pub fn record_extract(&mut self, extracted: &[crate::ExtractedNode]) {
+        self.world.record_extract(extracted);
+    }
+
+    pub fn record_extract_reusing(
+        &mut self,
+        extracted: &[crate::ExtractedNode],
+        moved: &[crate::ExtractedMove],
+    ) {
+        self.world.record_extract_reusing(extracted, moved);
+    }
+
+    /// Open a product-frame profiler and work-counter accumulator.
     pub fn begin_frame_profile(&mut self) {
         self.frame_profiler = FrameProfiler::new();
         self.frame_profiler.mark_runtime_unsupported();
@@ -50,7 +80,8 @@ impl AppContext {
         self.world.end_frame();
         self.profiling = false;
         let profile = std::mem::take(&mut self.frame_profiler).finish();
-        // An idle flush (no stage ran) must not wipe the last non-empty product profile.
+        // Match last_work_counters: an idle flush (no stage ran) must not wipe
+        // the last non-empty product profile.
         if profile.any_stage_ran() {
             record_frame_diagnostics(&profile);
             self.last_profile = profile;
@@ -405,7 +436,25 @@ impl AppContext {
                 &mut self.layout_cache,
                 force_full,
             )?;
-            let _ = self.layout_cache.take_intrinsic_counters();
+            let intrinsic_counters = self.layout_cache.take_intrinsic_counters();
+            self.world
+                .record_intrinsic_measure_counters(intrinsic_counters);
+            let frontier = self.layout_cache.frontier_stats(document);
+            let execution = self.layout_cache.execution_stats(document);
+            self.world.record_layout_frontier(frontier);
+            self.world.record_layout_execution(execution);
+            if execution.dynamic.contexts_considered > 0 {
+                use nana_diagnostics::{framework::layout, metric};
+                let dynamic = execution.dynamic;
+                metric!(layout::DYNAMIC_SOLVES, dynamic.solver_runs);
+                metric!(layout::DYNAMIC_ENVELOPE_REBUILDS, dynamic.envelope_rebuilds);
+                metric!(layout::DYNAMIC_BUDGET_FALLBACKS, dynamic.budget_fallbacks);
+            }
+            if frontier.constraint.seeds > 0 {
+                self.world.record_resize_context_solves(
+                    execution.plan_misses + execution.containers_uncacheable,
+                );
+            }
             completed(1);
             #[cfg(feature = "benchmark")]
             let mut phase = crate::layout_engine::plan_stats::PhaseClock::start();
@@ -494,7 +543,10 @@ impl AppContext {
             let inline_objects = self.layout_cache.take_inline_objects(document);
             self.world.sync_inline_metrics(
                 &scope,
-                |id| self.layout_cache.intrinsic_baseline(document, id),
+                |id, first_only| {
+                    self.layout_cache
+                        .intrinsic_baseline(document, id, first_only)
+                },
                 inline_objects,
             );
             #[cfg(feature = "benchmark")]
@@ -535,9 +587,17 @@ impl AppContext {
             if force_full {
                 metric!(layout::FULL_INVOCATIONS);
             }
-            metric!(layout::DIRTY_ROOTS, dirty.len());
+            let dirty_roots = if typed_seeds.is_empty() {
+                dirty.len()
+            } else {
+                typed_seeds.len()
+            };
+            metric!(layout::DIRTY_ROOTS, dirty_roots);
             if result.is_ok() {
+                let execution = self.layout_cache.execution_stats(document);
                 metric!(layout::BOXES_LAID_OUT, self.last_layout_scope.len());
+                metric!(layout::MEASURE_NODES, execution.measure_nodes);
+                metric!(layout::PLACEMENT_NODES, execution.placement_nodes);
             }
         }
         result
@@ -1014,5 +1074,62 @@ fn record_frame_diagnostics(profile: &FrameProfile) {
             }
         };
         metric.record(timing.duration.to_metric());
+    }
+}
+
+#[cfg(test)]
+mod output_observation_tests {
+    use super::*;
+
+    #[test]
+    fn presentation_gpu_work_replaces_and_clears_previous_frame_counters() {
+        let mut context = AppContext::new();
+        assert_eq!(context.last_work_counters().draw_calls, None);
+        context.record_presentation_gpu_work(Some(nana_ui_core::GpuWorkObservation {
+            draw_calls: 3,
+            draw_batches: 2,
+            batch_rebuilds: 1,
+            gpu_upload_bytes: 64,
+            gpu_buffer_reallocations: 1,
+        }));
+        let work = context.last_work_counters();
+        assert_eq!(work.draw_calls, Some(3));
+        assert_eq!(work.draw_batches, Some(2));
+        assert_eq!(work.batch_rebuilds, Some(1));
+        assert_eq!(work.gpu_upload_bytes, Some(64));
+        assert_eq!(work.gpu_buffer_reallocations, Some(1));
+        context.record_presentation_gpu_work(Some(Default::default()));
+        let work = context.last_work_counters();
+        assert_eq!(work.draw_calls, Some(0));
+        assert_eq!(work.gpu_upload_bytes, Some(0));
+        context.record_presentation_gpu_work(None);
+        let work = context.last_work_counters();
+        assert_eq!(work.draw_calls, None);
+        assert_eq!(work.draw_batches, None);
+        assert_eq!(work.batch_rebuilds, None);
+        assert_eq!(work.gpu_upload_bytes, None);
+        assert_eq!(work.gpu_buffer_reallocations, None);
+    }
+
+    #[test]
+    fn idle_host_output_observation_replaces_the_previous_rendered_frame() {
+        let mut context = AppContext::new();
+        assert_eq!(context.last_work_counters().output_ui_renders, None);
+        context.record_output_work(nana_ui_core::OutputWorkObservation {
+            ui_renders: 2,
+            submissions: 1,
+            gpu_copies: 1,
+            ..Default::default()
+        });
+        assert_eq!(context.last_work_counters().output_ui_renders, Some(2));
+        context.record_output_work(nana_ui_core::OutputWorkObservation {
+            idle_reuse_frames: 1,
+            ..Default::default()
+        });
+        let work = context.last_work_counters();
+        assert_eq!(work.output_ui_renders, Some(0));
+        assert_eq!(work.output_submissions, Some(0));
+        assert_eq!(work.output_gpu_copies, Some(0));
+        assert_eq!(work.output_idle_reuse_frames, Some(1));
     }
 }

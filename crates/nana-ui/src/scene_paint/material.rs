@@ -309,13 +309,10 @@ impl MaterialDevice {
         let key = (key.0 ^ self.interface.key(), key.1, key.2, key.3, key.4);
         let mut pipelines = self.pipelines.lock().unwrap_or_else(|e| e.into_inner());
         pipelines.retain(|_, entry| entry.owners.iter().all(|owner| owner.strong_count() > 0));
-        if !pipelines.contains_key(&key) {
-            pipelines.insert(
-                key,
-                PipelineEntry {
-                    owners: programs.iter().map(|p| Arc::downgrade(p)).collect(),
-                },
-            );
+        if let std::collections::hash_map::Entry::Vacant(slot) = pipelines.entry(key) {
+            slot.insert(PipelineEntry {
+                owners: programs.iter().map(|p| Arc::downgrade(p)).collect(),
+            });
             nana_diagnostics::event!(&nana_diagnostics::framework::gpu::MATERIAL_REJECTED);
         }
         MaterialPipeline::Ready(None)

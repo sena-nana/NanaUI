@@ -190,7 +190,7 @@ impl<T: EmitRust + nana_ui_core::shared::SharedDefault> EmitRust for Shared<T> {
             let _ = write!(out, "{m}::Shared::empty()");
         } else {
             let _ = write!(out, "{m}::Shared::new(");
-            (&**self).emit_rust(m, out);
+            (**self).emit_rust(m, out);
             out.push(')');
         }
     }
@@ -247,7 +247,7 @@ impl_unit_enum!(TextEmphasisShape, "TextEmphasisShape" => {
     Dot, Circle, DoubleCircle, Triangle, Sesame
 });
 impl_unit_enum!(GridTrackListUnsupported, "GridTrackListUnsupported" => {
-    RepeatAutoFit, RepeatAutoFill, NestedRepeat
+    RepeatAutoFit, RepeatAutoFill, NestedRepeat, Subgrid
 });
 impl_unit_enum!(GridAutoFlow, "GridAutoFlow" => { Row, Column, RowDense, ColumnDense });
 impl_unit_enum!(BorderStyle, "BorderStyle" => { None, Solid, Dashed, Dotted, Unsupported });
@@ -1471,6 +1471,8 @@ pub(crate) fn emit_patch_stmt(layout: &LayoutStyle, path: &str, m: &str, out: &m
             "auto_flow" => emit_set(&setter, &g.auto_flow, m, out),
             "columns_repeat" => emit_set(&setter, &g.columns_repeat, m, out),
             "rows_repeat" => emit_set(&setter, &g.rows_repeat, m, out),
+            "columns_subgrid" => emit_set(&setter, &g.columns_subgrid, m, out),
+            "rows_subgrid" => emit_set(&setter, &g.rows_subgrid, m, out),
             "template_areas" => emit_set(&setter, &g.template_areas, m, out),
             "column_line_names" => emit_set(&setter, &g.column_line_names, m, out),
             "row_line_names" => emit_set(&setter, &g.row_line_names, m, out),

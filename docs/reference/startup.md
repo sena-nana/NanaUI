@@ -89,13 +89,16 @@ startup.cancel_takeover(ticket)?;    // 撤回接管请求并使旧 ticket 作�
 - 当可执行文件（`.exe`）同目录下存在 x64 的 `dxcompiler.dll`（建议 DXC `v1.8.2502` 或更新版本，来自 [DirectXShaderCompiler releases](https://github.com/microsoft/DirectXShaderCompiler/releases) 或 Windows SDK `10.0.26100`，无需附带 `dxil.dll`）时，宿主会按完整绝对路径优先加载它（不受 `PATH` 或当前工作目录污染）；
 - 未携带 `dxcompiler.dll` 时自动回退到系统内置的 FXC，也可通过环境变量 `WGPU_DX12_COMPILER`（`fxc` / `dxc` / `staticdxc` / `auto`）显式指定。
 
-### 预编译的 DXIL
+### 预编译的着色器产物（DXIL / Metal MSL 3.1 / Naga IR）
 
-quad、mesh/path 与 text（含双源混合的子像素程序）三个家族的着色器阶段在框架内预先编译成 DXIL（shader model 6.0），随二进制发布（`scene_paint::precompiled`）。宿主在 DX12 适配器支持时请求 `PASSTHROUGH_SHADERS`，这些家族就直接加载 DXIL，不再经过 naga → HLSL → DXC；驱动只把 DXIL 降为自己的代码并跨启动缓存。实测（RTX 5060 Ti，release，DXC）：quad 家族 `1.26–1.30 s` → `1.4–1.6 ms`，mesh `199–248 ms` → `2 ms`，text `126–160 ms` → `2 ms`；painter 整体从全部编译 WGSL 的 `1.40–1.74 s`、只预编译 quad 时的约 `250 ms` 降到 `75–84 ms`，此时最慢的是 backdrop 与 dest 家族（约 `90–105 ms`）。
-
-- 只用框架自己的、编进二进制的 DXIL：passthrough 模块不经 naga 解析与校验，所以 DXIL 从不来自文件、皮肤或插件，应用与皮肤的着色器仍是 WGSL。
-- 每个家族记录 DXIL 是从哪段程序（设备实际拿到的、去掉注释的 WGSL 的哈希）和哪个资源布局编出来的；不一致、找不到对应阶段（入口点加管线常量），或驱动拒绝时，该家族照常编译 WGSL。测试同时锁定 wgpu 版本。
-- 着色器或布局改了之后重新生成：`NANA_DXC_PATH=<dxcompiler.dll> cargo test -p nana-ui --lib --features gpu,hosted,full -- --ignored regenerate_precompiled_dxil --test-threads=1`。它按 wgpu 在 DX12 上的方式逐家族建管线、截下 naga 写出的 HLSL、用 DXC 编译并经 DXIL 校验器检查，再写出 `generated.rs`；`precompiled_families_paint_what_their_programs_paint`（`--ignored`，需要 DX12）确认 DXIL 与 WGSL 画出的像素一致。
+- **DXIL（Windows DX12，`scene_paint::precompiled`）**：quad、mesh/path 与 text（含双源混合的子像素程序）三个家族的着色器阶段在框架内预先编译成 DXIL（shader model 6.0），随二进制发布。宿主在 DX12 适配器支持时请求 `PASSTHROUGH_SHADERS`，这些家族就直接加载 DXIL，不再经过 naga → HLSL → DXC；驱动只把 DXIL 降为自己的代码并跨启动缓存。实测（RTX 5060 Ti，release，DXC）：quad 家族 `1.26–1.30 s` → `1.4–1.6 ms`，mesh `199–248 ms` → `2 ms`，text `126–160 ms` → `2 ms`；painter 整体从全部编译 WGSL 的 `1.40–1.74 s`、只预编译 quad 时的约 `250 ms` 降到 `75–84 ms`，此时最慢的是 backdrop 与 dest 家族（约 `90–105 ms`）。
+- **Metal MSL 3.1（Apple，`scene_paint::msl_precompiled`）**：最低支持版本为 macOS 14.0+ / iOS 17.0+（`MSL 3.1`，与 `nana-packager` 默认的 `minimum_system_version = "14.0"` 一致），通过内部 `wgpu_hal::metal::Device` 对齐并保留前置 `// language: metal3.1` 声明（且按适配器能力上限封顶，同时拒绝低于 `(3, 1)` 的设备），不随宿主 macOS 版本漂移；所有内置程序汇总成单份压缩存档 `stages.msl.zz`。构建 painter 时使用惰性 `ArchiveScope` + `ArchiveLease`（`archive_scope()` / `lease_archive()`）：作用域创建零开销，热管线缓存命中时 `0` 次解压；冷构建发生未命中时多线程共享单次解压并上报 `gpu::MSL_ARCHIVE_DECOMPRESSIONS`、`gpu::MSL_ARCHIVE_DECOMPRESS_NS` 与 `gpu::MSL_ARCHIVE_DECOMPRESSED_BYTES`，最外层 `ArchiveScope` 释放后强引用归零，使稳态常驻未压缩 MSL 保持 `0 B`。
+- **二进制 Naga IR（非 Apple / 其余后端回退，`scene_paint::naga_ir`）**：按入口点裁剪后的 IR 使用自包含确定性二进制编解码器 `naga_ir::codec`（`NAGA1` 魔数 + LEB128 变长整数 + 小端定长基元，不依赖 `bincode`，无运行时 panic）写入 `*.naga`；`builtin_programs_cover_every_production_shader` 测试扫描 `crates/nana-ui/src/` 生产着色器调用确保 manifest 完整。
+- **非 panic 降级与恢复**：只加载编入框架二进制的产物；所有预编译加载均包裹 `OutOfMemory` / `Internal` / `Validation` 错误作用域。阶段缺失、版本不匹配或设备拒绝时，`Program::try_pipeline` 在开启 `runtime-wgsl`（或测试）时记录 `gpu::SHADER_PRECOMPILED_FALLBACK` 并编译 WGSL，否则记录 `gpu::SHADER_BUILD_FAILED` 并返回 `Err(ScenePaintError::ShaderUnavailable)`（自定义材质被拒记录 `gpu.material.rejected`）；`SceneWgpuPainter::try_new` / `try_new_with_presentation` 将该错误向上交给 `scene_host` 启动/呈现流程而不是 panic。
+- **重新生成与新鲜度校验**：
+  - Metal MSL（macOS）：`cargo test -j 8 -p nana-ui --lib --features full -- --ignored regenerate_precompiled_msl --test-threads=1`（`precompiled_msl_stages_are_fresh` 校验 `WGPU`、`FORK_MSL_HASH`、`MSL_LANG_VERSION == (3, 1)`、`UNCOMPRESSED_LEN` 及 `builtin_programs()` 全覆盖；`precompiled_msl_stages_pass_metal_syntax_check` 在存在 `xcrun` 时对 macOS 3.1 与可用的 iOS Simulator 3.1 进行 `-fsyntax-only` 语法校验）。
+  - Naga IR（任意宿主）：`cargo test -j 8 -p nana-ui --lib --features full -- --ignored regenerate_precompiled_naga_ir --test-threads=1`。
+  - DXIL（Windows + DXC）：`NANA_DXC_PATH=<dxcompiler.dll> cargo test -p nana-ui --lib --features gpu,hosted,full -- --ignored regenerate_precompiled_dxil --test-threads=1`（需要 DX12 时可用 `precompiled_families_paint_what_their_programs_paint` 逐像素核对）。
 
 ### 跨启动的着色器与管线缓存
 

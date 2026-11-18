@@ -39,6 +39,7 @@ use std::{
     cell::{Cell, RefCell},
     collections::{BTreeSet, HashMap, HashSet},
     fmt,
+    mem::size_of,
     sync::Arc,
     time::Duration,
 };
@@ -47,6 +48,7 @@ use nana_ui_core::{
     InvalidationKind, InvalidationReason, LayoutDependencyFootprint, LayoutFieldMask,
     LayoutInvalidation, LayoutInvalidationSource, LayoutStyle, LengthSpec, PointerEventsSpec,
     PositionSpec, SemanticColorRole, SemanticPalette, StyleModelRef, ThemeAppearance,
+    ThemeWorkCounters,
 };
 
 #[cfg(all(test, feature = "graph-canvas"))]
@@ -59,7 +61,7 @@ use crate::{
     HighlightRequest, ImeComposition, InteractionState, LayoutBox, LayoutInput, MotionWorkCounters,
     MountState, MutationQueue, NodeStyle, OverlayHostState, PointerCaptureChange, ScrollMetrics,
     ScrollOffset, TextContent, TextMetrics, TextPresentation, TextPresenter, TextShaper,
-    TextVerticalAlignment, UiMutation,
+    TextVerticalAlignment, UiMutation, WorkCounters,
     animation::ActiveAnimation,
     components::{
         EmptyStateTextPresentation, ModalTextPresentation, TextColorSwatchSpan,
@@ -1072,6 +1074,22 @@ pub enum InputModality {
     Pointer,
 }
 
+/// The work counters a world keeps: the last drain's, the frame's being
+/// accumulated, and two sets counted between drains. Boxed in [`UiWorld`].
+#[derive(Default)]
+struct WorldCounters {
+    last_counters: WorkCounters,
+    frame_counters: WorkCounters,
+    /// What the layout mutation authority classified since the last fold.
+    /// An effective-equivalent write dirties nothing, so its count cannot
+    /// wait for a non-empty drain to be seen.
+    pending_layout_invalidations_counted: WorkCounters,
+    /// What changes made between frames cost, counted when they were made.
+    /// Their cost belongs to the frame that resolves them: these wait for
+    /// that frame's first drain, not for the start of the frame.
+    pending_drain_counts: WorkCounters,
+}
+
 /// The sole authoritative retained identity and hierarchy store.
 pub struct UiWorld {
     input: input::WorldInputState,
@@ -1256,7 +1274,21 @@ pub struct UiWorld {
     /// Cursor declarations changed since the last system-work drain.
     cursor_style_dirty: bool,
     presenters: HashMap<String, Box<dyn TextPresenter>>,
+    spawned_since_drain: usize,
+    despawned_since_drain: usize,
+    /// Boxed with the other two sets below them: each is 1.7 KiB, and inline
+    /// the four were almost half of the world, which every construction of
+    /// a context moves.
+    counters: Box<WorldCounters>,
+    frame_extracted_nodes: usize,
+    frame_extracted_spans: usize,
     accumulating_frame: bool,
+    /// Layout/document-order allocs recorded from `&self` hot paths.
+    pending_hot_allocations: Cell<usize>,
+    pending_hot_allocated_bytes: Cell<usize>,
+    /// Layout seeds queued since the world was made: a running count the
+    /// paths that make them read before and after, to say whose they were.
+    layout_seeds_created: u64,
     /// Nodes whose style declares design intent (a radius tier, a control
     /// height or padding step, a surface inset): the only ones a metrics
     /// install can resolve differently.
@@ -1299,6 +1331,21 @@ pub struct UiWorld {
     /// Nodes style resolution turned visible since the last scheduled text
     /// pass, which re-resolves them alongside its own work.
     text_shown: Vec<StableNodeId>,
+    /// Theme/style work (Issue #101) of the last style pass or theme install,
+    /// or of the last frame that ran one.
+    theme_work: ThemeWorkCounters,
+    /// Theme/style work of the frame being accumulated.
+    theme_frame_work: ThemeWorkCounters,
+    /// Token-authority reads recorded from the `&self` palette paths. Folded
+    /// into `theme_work` by the pass that made them. Counted in its own
+    /// `Cell` rather than through a pending `ThemeWorkCounters`: this is the
+    /// hottest observation on the style path — once per role a resolve reads
+    /// — and a whole-struct read-modify-write per read is measurable.
+    pending_theme_reads: Cell<usize>,
+    /// `LayoutStyle` copies recorded from the style-write paths, folded on
+    /// the same boundary. Separate from the reads because a write is rare
+    /// and the two are never observed together.
+    pending_layout_copies: Cell<usize>,
     /// Recently written layouts, shared by nodes whose layouts are equal.
     layouts: style::LayoutInterner,
     /// Recently written node styles, shared by records whose styles are equal.
@@ -1418,6 +1465,10 @@ pub struct UiWorld {
     /// Live regions and how they announce, as the composites that own them
     /// set them ([`MutationQueue::set_live`]).
     live_regions: HashMap<StableNodeId, AccessibilityLive, BuildIdHasher>,
+    /// Nodes visited by mutation validation since the last drain, summed over
+    /// every commit the next frame will consume. Validation must scale with the
+    /// batch, not the retained world; this is the sentinel for that invariant.
+    validation_nodes_scanned: usize,
     /// Bumped on `SetTheme`; extract skips a second palette walk when it matches.
     pub(crate) palette_epoch: u64,
     /// Parents whose child list changed since the last drain (insert, detach,
@@ -1528,7 +1579,15 @@ impl UiWorld {
             layout_anchor_roots: HashSet::new(),
             cursor_style_dirty: false,
             presenters: HashMap::new(),
+            spawned_since_drain: 0,
+            despawned_since_drain: 0,
+            counters: Box::default(),
+            frame_extracted_nodes: 0,
+            frame_extracted_spans: 0,
             accumulating_frame: false,
+            pending_hot_allocations: Cell::new(0),
+            pending_hot_allocated_bytes: Cell::new(0),
+            layout_seeds_created: 0,
             intent_nodes: HashSet::default(),
             replaced: replaced::ReplacedIndex::default(),
             responsive: responsive::ResponsiveIndex::default(),
@@ -1546,6 +1605,10 @@ impl UiWorld {
             text_frame_work: nana_text::TextWorkCounters::default(),
             pending_edit_work: nana_text::TextWorkCounters::default(),
             text_shown: Vec::new(),
+            theme_work: ThemeWorkCounters::default(),
+            theme_frame_work: ThemeWorkCounters::default(),
+            pending_theme_reads: Cell::new(0),
+            pending_layout_copies: Cell::new(0),
             layouts: style::LayoutInterner::default(),
             node_styles: style::NodeStyleInterner::default(),
             inherited_styles: style::InheritedStyleInterner::default(),
@@ -1590,6 +1653,7 @@ impl UiWorld {
             labelled_by: HashMap::default(),
             labels: HashMap::default(),
             live_regions: HashMap::default(),
+            validation_nodes_scanned: 0,
             palette_epoch: 1,
             structural_change_parents: Vec::new(),
             strut_candidates: Vec::new(),
@@ -1677,7 +1741,19 @@ impl UiWorld {
             return;
         }
         if invalidation.is_empty() {
+            self.counters
+                .pending_layout_invalidations_counted
+                .layout_invalidations_zero_delta += 1;
             return;
+        }
+        self.counters
+            .pending_layout_invalidations_counted
+            .layout_invalidations_created += 1;
+        self.layout_seeds_created += 1;
+        if invalidation.source == LayoutInvalidationSource::Text {
+            self.counters
+                .pending_layout_invalidations_counted
+                .text_reflow_seeds += 1;
         }
         self.queue_layout_invalidation(id, invalidation);
         // A fixed border box absorbs an inner metric. Drop that box so a
@@ -1693,6 +1769,27 @@ impl UiWorld {
             || invalidation.affected_axes.intersects(metric_export);
         self.suppress_layout_result_chain(id, changes_border);
         let _ = self.mark_scroll_compatible(id, crate::schedule::DirtyMask::LAYOUT);
+    }
+
+    /// A virtual list's pass cost `rows`.
+    pub(crate) fn note_virtual_rows(&mut self, rows: VirtualRowCounts) {
+        let pending = &mut self.counters.pending_drain_counts;
+        pending.virtual_row_metric_updates += rows.metric_updates;
+        pending.virtual_prefix_index_updates += rows.prefix_index_updates;
+        pending.virtual_rows_remeasured += rows.rows_remeasured;
+        pending.virtual_rows_repositioned += rows.rows_repositioned;
+        pending.virtual_logical_rows_scanned += rows.logical_rows_scanned;
+        pending.virtual_scroll_extent_updates += rows.scroll_extent_updates;
+        pending.virtual_rows_materialized_from_layout += rows.rows_materialized;
+    }
+
+    /// The layout seeds queued since `before` were a component state
+    /// change's.
+    pub(crate) fn note_state_seeds(&mut self, before: u64) {
+        let seeds = (self.layout_seeds_created - before) as usize;
+        self.counters
+            .pending_drain_counts
+            .component_state_layout_seeds += seeds;
     }
 
     /// Queue `invalidation` for `id`, merged into a cause already pending:
@@ -2534,27 +2631,37 @@ impl UiWorld {
         // against: every result is built, and only how many children it
         // covers is counted.
         let first_publish = self.layout_results.is_empty();
-        let covered = if first_publish {
-            Vec::new()
+        let (covered, mut children_visited) = if first_publish {
+            let count = unique
+                .iter()
+                .filter(|&&id| self.parent_id(id).is_some())
+                .count();
+            (Vec::new(), count)
         } else {
             let mut covered: Vec<(StableNodeId, StableNodeId)> = unique
                 .iter()
                 .filter_map(|&id| Some((self.parent_id(id)?, id)))
                 .collect();
             covered.sort_unstable();
-            covered
+            (covered, 0)
         };
         let covered_ids: Vec<StableNodeId> = covered.iter().map(|&(_, id)| id).collect();
         #[cfg(feature = "benchmark")]
         let mut phase = crate::layout_engine::plan_stats::PhaseClock::start();
         let mut built = Vec::with_capacity(unique.len());
         let mut scratch = ResultScratch::default();
+        let mut reused = 0usize;
         for &id in &unique {
             if boxless.contains(&id) {
                 self.layout_results.remove(&id);
                 continue;
             }
             if first_publish {
+                children_visited = children_visited.saturating_add(
+                    self.nodes
+                        .get(id)
+                        .map_or(0, |node| node.hierarchy.children.len()),
+                );
                 if let Some(result) = self.build_layout_result(id, source, &mut scratch) {
                     built.push((id, result));
                 }
@@ -2563,12 +2670,19 @@ impl UiWorld {
             let start = covered.partition_point(|&(parent, _)| parent < id);
             let end = start + covered[start..].partition_point(|&(parent, _)| parent == id);
             let covered = &covered_ids[start..end];
+            children_visited = children_visited.saturating_add(covered.len());
             if self.layout_result_geometry_current(id, covered) {
                 if let Some(meta) = self.layout_results.get_mut(&id) {
                     meta.suppressed = false;
                 }
+                reused = reused.saturating_add(1);
                 continue;
             }
+            children_visited = children_visited.saturating_add(
+                self.nodes
+                    .get(id)
+                    .map_or(0, |node| node.hierarchy.children.len()),
+            );
             if let Some(result) = self.build_layout_result(id, source, &mut scratch) {
                 built.push((id, result));
             }
@@ -2590,19 +2704,23 @@ impl UiWorld {
                 if let Some(meta) = self.layout_results.get_mut(id) {
                     meta.suppressed = false;
                 }
+                reused = reused.saturating_add(1);
                 return false;
             }
             true
         });
         if published.is_empty() {
+            self.note_layout_result_publish(reused, 0, 0, children_visited);
             return;
         }
+        let changed = published.len();
         // Size the dense table once up to the highest published ID instead of
         // letting per-entry inserts double the backing buffer repeatedly.
         if let Some(&(highest, _)) = published.last() {
             self.layout_results
-                .reserve_through(highest, self.layout_results.len() + published.len());
+                .reserve_through(highest, self.layout_results.len() + changed);
         }
+        self.note_layout_result_publish(reused, changed, 1, children_visited);
         self.layout_generation = self.layout_generation.wrapping_add(1);
         let generation = self.layout_generation;
         // `published` and `requested` are both sorted: one cursor walks
@@ -3460,36 +3578,380 @@ impl UiWorld {
         self.pending_work_revision
     }
 
+    /// Algorithm-level counters from the last non-empty drain, or the current
+    /// frame accumulator while a product flush is running. An idle
+    /// [`Self::take_system_work`] does not replace this snapshot.
+    pub fn last_work_counters(&self) -> WorkCounters {
+        let mut counters = self.counters.last_counters;
+        counters.record_hot_path_allocation(
+            self.pending_hot_allocations.get(),
+            self.pending_hot_allocated_bytes.get(),
+        );
+        add_pending_counts(
+            &mut counters,
+            self.counters.pending_layout_invalidations_counted,
+        );
+        add_pending_counts(&mut counters, self.counters.pending_drain_counts);
+        counters.scroll_content_extent_recomputes += self.pending_scroll_extent_recomputes();
+        counters.i18n.accumulate(self.i18n_gauges());
+        counters
+    }
+
+    pub fn record_presentation_gpu_work(&mut self, work: Option<nana_ui_core::GpuWorkObservation>) {
+        let mut observed = WorkCounters::default();
+        if let Some(work) = work {
+            observed.record_gpu_work(work);
+        }
+        self.counters.last_counters.batch_rebuilds = observed.batch_rebuilds;
+        self.counters.last_counters.draw_batches = observed.draw_batches;
+        self.counters.last_counters.draw_calls = observed.draw_calls;
+        self.counters.last_counters.gpu_upload_bytes = observed.gpu_upload_bytes;
+        self.counters.last_counters.gpu_buffer_reallocations = observed.gpu_buffer_reallocations;
+    }
+
+    pub fn record_output_work(&mut self, work: nana_ui_core::OutputWorkObservation) {
+        let mut observed = WorkCounters::default();
+        observed.record_output_work(work);
+        macro_rules! replace { ($($field:ident),* $(,)?) => { $(self.counters.last_counters.$field = observed.$field;)* }; }
+        replace!(
+            output_extra_passes,
+            output_gpu_copies,
+            output_target_recreates,
+            output_content_revisions,
+            output_idle_reuse_frames,
+            output_resolve_count,
+            output_gpu_copy_bytes,
+            output_gpu_convert_passes,
+            output_plan_rebuilds,
+            output_ui_renders,
+            output_submissions,
+            output_cpu_readbacks,
+            output_deferred
+        );
+    }
+
     /// Start a multi-pass frame accumulator. Idle drains still leave the
     /// previous snapshot in place until a non-empty pass runs.
     pub fn begin_frame(&mut self) {
+        self.begin_frame_counters();
+    }
+
+    pub fn begin_frame_counters(&mut self) {
         self.begin_responsive_frame();
+        self.commit_pending_hot_allocs();
+        self.commit_pending_layout_invalidation_counts();
+        self.commit_pending_theme_work();
+        self.counters.frame_counters = WorkCounters::default();
         self.text_frame_work = nana_text::TextWorkCounters::default();
+        self.theme_frame_work = ThemeWorkCounters::default();
+        self.frame_extracted_nodes = 0;
+        self.frame_extracted_spans = 0;
         self.accumulating_frame = true;
     }
 
     pub fn end_frame(&mut self) {
+        self.end_frame_counters();
+    }
+
+    pub fn end_frame_counters(&mut self) {
         self.accumulating_frame = false;
     }
 
+    /// Record extract output onto the last drained work counters. Draw batches
+    /// and GPU upload bytes are omitted; extraction does not measure them.
+    pub fn record_extract(&mut self, extracted: &[ExtractedNode]) {
+        let spans = extracted.iter().map(|node| node.text_spans.len()).sum();
+        self.record_extracted(extracted.len(), spans);
+    }
+
+    /// [`Self::record_extract`] for what
+    /// [`Self::extract_nodes_reusing`] gave: a move counts as an extracted
+    /// node, and its spans are the ones the renderer already holds.
+    pub fn record_extract_reusing(&mut self, extracted: &[ExtractedNode], moved: &[ExtractedMove]) {
+        let spans = extracted.iter().map(|node| node.text_spans.len()).sum();
+        self.record_extracted(extracted.len() + moved.len(), spans);
+    }
+
+    fn record_extracted(&mut self, nodes: usize, spans: usize) {
+        if nodes > 0 {
+            nana_diagnostics::metric!(
+                nana_diagnostics::framework::runtime::SCENE_NODES_EXTRACTED,
+                nodes
+            );
+        }
+        if self.accumulating_frame {
+            self.frame_extracted_nodes = self.frame_extracted_nodes.saturating_add(nodes);
+            self.frame_extracted_spans = self.frame_extracted_spans.saturating_add(spans);
+            self.counters.last_counters.render_nodes_extracted = self.frame_extracted_nodes;
+            self.counters.last_counters.extracted_text_spans = self.frame_extracted_spans;
+        } else {
+            self.counters.last_counters.render_nodes_extracted = nodes;
+            self.counters.last_counters.extracted_text_spans = spans;
+        }
+    }
+
+    /// Observe a CPU hot-path heap event from a `&self` path (layout inputs,
+    /// document order). Folded into [`Self::last_work_counters`].
+    pub fn record_hot_path_allocation(&self, count: usize, bytes: usize) {
+        if count == 0 && bytes == 0 {
+            return;
+        }
+        self.pending_hot_allocations
+            .set(self.pending_hot_allocations.get().saturating_add(count));
+        self.pending_hot_allocated_bytes
+            .set(self.pending_hot_allocated_bytes.get().saturating_add(bytes));
+    }
+
+    fn commit_pending_hot_allocs(&mut self) {
+        let count = self.pending_hot_allocations.replace(0);
+        let bytes = self.pending_hot_allocated_bytes.replace(0);
+        self.counters
+            .last_counters
+            .record_hot_path_allocation(count, bytes);
+        if self.accumulating_frame {
+            self.counters
+                .frame_counters
+                .record_hot_path_allocation(count, bytes);
+        }
+    }
+
+    fn commit_pending_layout_invalidation_counts(&mut self) {
+        let counted = std::mem::take(&mut self.counters.pending_layout_invalidations_counted);
+        self.bump_last_counters(|counters| add_pending_counts(counters, counted));
+    }
+
     /// Text work (Issue #95) of the last shaping pass, or of every pass of
-    /// the last frame [`Self::begin_frame`] accumulated that ran one: nodes
+    /// the last frame [`Self::begin_frame_counters`] accumulated that ran one: nodes
     /// considered, skipped on revision alone, shaped, and what the passes
     /// cloned, hashed and looked up to get there.
     pub fn last_text_work_counters(&self) -> nana_text::TextWorkCounters {
         self.text_work
     }
 
+    /// Theme/style work (Issue #101 §4) of the last style pass or theme
+    /// install, or of every pass of the last frame
+    /// [`Self::begin_frame_counters`] accumulated that ran one: nodes
+    /// considered, resolved and skipped, token reads, and what the pass cost
+    /// Layout, Text and Paint.
+    ///
+    /// An idle frame leaves the previous snapshot in place, like
+    /// [`Self::last_work_counters`].
+    pub fn last_theme_work_counters(&self) -> ThemeWorkCounters {
+        let mut counters = self.theme_work;
+        counters.accumulate(self.pending_theme_work());
+        counters
+    }
+
+    /// The theme/style work observed since the last fold, as counters.
+    fn pending_theme_work(&self) -> ThemeWorkCounters {
+        let mut pending = ThemeWorkCounters::default();
+        pending.record_theme_reads(self.pending_theme_reads.get());
+        pending.record_layout_copy(
+            self.pending_layout_copies.get(),
+            self.pending_layout_copies
+                .get()
+                .saturating_mul(size_of::<nana_ui_core::LayoutStyle>()),
+        );
+        pending
+    }
+
+    /// Take that work, leaving nothing behind for the next window.
+    fn take_pending_theme_work(&self) -> ThemeWorkCounters {
+        let pending = self.pending_theme_work();
+        self.pending_theme_reads.set(0);
+        self.pending_layout_copies.set(0);
+        pending
+    }
+
+    /// Observe one read of the token authority from a `&self` palette path.
+    fn record_theme_read(&self) {
+        self.pending_theme_reads
+            .set(self.pending_theme_reads.get().saturating_add(1));
+    }
+
+    /// Observe the `LayoutStyle` a style write had to copy to hold the
+    /// resolved value beside the authored intent.
+    fn record_resolved_layout_copy(&self) {
+        self.pending_layout_copies
+            .set(self.pending_layout_copies.get().saturating_add(1));
+    }
+
+    /// Close the pending work onto the window it was observed in.
+    fn commit_pending_theme_work(&mut self) {
+        let pending = self.take_pending_theme_work();
+        if pending == ThemeWorkCounters::default() {
+            return;
+        }
+        self.theme_work.accumulate(pending);
+        if self.accumulating_frame {
+            self.theme_frame_work.accumulate(pending);
+        }
+    }
+
+    fn record_theme_work(&mut self, mut work: ThemeWorkCounters) {
+        if work.style_nodes_resolved > 0 {
+            nana_diagnostics::metric!(
+                nana_diagnostics::framework::runtime::STYLE_NODES_RESOLVED,
+                work.style_nodes_resolved
+            );
+        }
+        work.accumulate(self.take_pending_theme_work());
+        if self.accumulating_frame {
+            self.theme_frame_work.accumulate(work);
+            self.theme_work = self.theme_frame_work;
+        } else {
+            self.theme_work = work;
+        }
+    }
+
     fn record_text_work(&mut self, mut work: nana_text::TextWorkCounters) {
         work.accumulate(std::mem::take(&mut self.pending_edit_work));
+        // The CJK line decision is Dynamic Layout's text side (Issue #211).
+        if work.line_opportunities_considered > 0 || work.line_break_comparisons > 0 {
+            self.bump_last_counters(|counters| {
+                let dynamic = &mut counters.dynamic;
+                dynamic.opportunities_considered += work.line_opportunities_considered;
+                dynamic.break_comparisons += work.line_break_comparisons;
+                dynamic.beam_states = dynamic.beam_states.max(work.line_beam_states);
+                dynamic.budget_fallbacks += work.line_budget_fallbacks;
+            });
+        }
         if self.accumulating_frame {
             // Published as the frame goes, so an idle frame (no text pass)
-            // leaves the last frame that had one in place.
+            // leaves the last frame that had one in place, as
+            // `last_work_counters` does.
             self.text_frame_work.accumulate(work);
             self.text_work = self.text_frame_work;
         } else {
             self.text_work = work;
         }
+    }
+
+    fn bump_last_counters(&mut self, update: impl Fn(&mut WorkCounters)) {
+        update(&mut self.counters.last_counters);
+        if self.accumulating_frame {
+            update(&mut self.counters.frame_counters);
+        }
+    }
+
+    pub(crate) fn record_intrinsic_measure_counters(
+        &mut self,
+        counters: crate::IntrinsicCacheCounters,
+    ) {
+        self.bump_last_counters(|work| {
+            work.record_intrinsic_measure(
+                counters.intrinsic_measure_requests,
+                counters.intrinsic_measure_cache_hits,
+                counters.intrinsic_measure_cache_misses,
+                counters.intrinsic_measure_full_subtrees,
+                counters.generation_bumps,
+                counters.baseline_queries,
+                counters.cross_context_hits,
+                counters.cross_context_misses,
+            );
+        });
+    }
+
+    /// Fold structural layout-frontier observations from the retained engine
+    /// into the same frame counters as the coarse dirty drain.
+    pub(crate) fn record_layout_execution(
+        &mut self,
+        stats: crate::layout_engine::LayoutExecutionStats,
+    ) {
+        self.bump_last_counters(|counters| {
+            counters.record_layout_execution(
+                stats.measure_nodes,
+                stats.measure_cache_hits,
+                stats.measure_cache_misses,
+                stats.placement_nodes,
+                stats.origin_only_updates,
+            );
+            counters.record_layout_stack_per_level(
+                stats.measure_stack_per_level,
+                stats.placement_stack_per_level,
+            );
+            counters.record_layout_placement_boundaries(stats.placement_boundaries);
+            counters.record_layout_plans(
+                stats.placement_plans_reused,
+                stats.measure_plans_reused,
+                stats.suffixes_replayed,
+                stats.children_measured,
+                stats.containers_uncacheable,
+                stats.plan_misses,
+                stats.plan_rebuilds,
+                stats.local_context_fallbacks,
+                stats.retain_sweeps,
+            );
+            counters.inline_reflows += stats.inline_reflows;
+            counters.inline_atomic_measure_requests += stats.inline_atomic_measure_requests;
+            counters.dynamic.accumulate(stats.dynamic);
+        });
+    }
+
+    fn note_layout_result_publish(
+        &mut self,
+        reused: usize,
+        changed: usize,
+        delta_commits: usize,
+        children_visited: usize,
+    ) {
+        self.bump_last_counters(|counters| {
+            counters.record_layout_result_publish(reused, changed, delta_commits, children_visited);
+        });
+    }
+
+    pub(crate) fn record_layout_frontier(&mut self, stats: crate::LayoutFrontierStats) {
+        self.bump_last_counters(|counters| {
+            counters.record_constraint_dependents(
+                stats.constraint.seeds,
+                stats.constraint.considered,
+                stats.constraint.remeasured,
+                stats.constraint.considered - stats.constraint.remeasured,
+            );
+            counters.record_layout_frontier(
+                stats.seeds,
+                stats.seed_merges,
+                stats.nodes_measure,
+                stats.nodes_placement,
+                stats.contexts,
+                stats.nodes_writing,
+                stats.dependency_edges_visited,
+                stats.propagations_stopped,
+                stats.local_subtree_fallbacks,
+                stats.full_document_fallbacks,
+            );
+            counters.record_layout_scratch(
+                stats.scratch_entries,
+                stats
+                    .scratch_entries
+                    .saturating_mul(crate::LayoutDependencyGraph::ENTRY_BYTES),
+            );
+        });
+    }
+
+    /// A pass a constraint change seeded solved `solves` formatting contexts
+    /// from scratch.
+    pub(crate) fn record_resize_context_solves(&mut self, solves: usize) {
+        if solves > 0 {
+            self.bump_last_counters(|counters| {
+                counters.resize_context_solves =
+                    counters.resize_context_solves.saturating_add(solves);
+            });
+        }
+    }
+
+    fn record_id_list_alloc(&self, len: usize) {
+        if len == 0 {
+            return;
+        }
+        self.record_hot_path_allocation(1, len.saturating_mul(size_of::<StableNodeId>()));
+    }
+
+    fn record_string_clone(&self, len: usize) {
+        if len == 0 {
+            return;
+        }
+        self.record_hot_path_allocation(1, len);
     }
 
     pub fn theme_appearance(&self) -> nana_ui_core::ThemeAppearance {
@@ -3556,10 +4018,14 @@ impl UiWorld {
         let ours = |world: &Self, id: StableNodeId| {
             document.is_none_or(|document| world.document_of(id) == Some(document))
         };
+        self.counters
+            .pending_drain_counts
+            .scroll_content_extent_recomputes += self.take_scroll_extent_recomputes();
         let mut ids = std::mem::take(&mut self.dirty_entities)
             .into_iter()
             .collect::<Vec<_>>();
         ids.sort_unstable();
+        let dirty_len = ids.len();
         let mut work = SystemWork {
             generation: self.generation,
             style: Vec::new(),
@@ -3580,6 +4046,34 @@ impl UiWorld {
             )),
             render_extraction: Vec::new(),
             render_removals: sorted_unique(std::mem::take(&mut self.pending_render_removals)),
+            entities_total: self.nodes.len(),
+            entities_changed: 0,
+            entities_spawned: std::mem::take(&mut self.spawned_since_drain),
+            entities_despawned: std::mem::take(&mut self.despawned_since_drain),
+            input_targets: self.live_input_target_count(),
+            render_nodes_changed: 0,
+            render_nodes_extracted: 0,
+            extracted_text_spans: 0,
+            allocations: 0,
+            allocated_bytes: 0,
+            text_shaped_runs: 0,
+            text_layout_cache_hits: 0,
+            text_layout_cache_misses: 0,
+            text_wrap_layouts: 0,
+            intrinsic_measure_requests: 0,
+            intrinsic_measure_cache_hits: 0,
+            intrinsic_measure_cache_misses: 0,
+            intrinsic_measure_full_subtrees: 0,
+            intrinsic_generation_bumps: 0,
+            baseline_queries: 0,
+            cross_context_measure_hits: 0,
+            cross_context_measure_misses: 0,
+            glyph_cache_hits: None,
+            glyph_cache_misses: None,
+            cache_eviction: None,
+            // A drain always follows the commits it drains, so 0 here is an
+            // observed "validated nothing", not a missing measurement.
+            validation_nodes_scanned: Some(std::mem::take(&mut self.validation_nodes_scanned)),
         };
         work.render_removals.sort_unstable();
         work.accessibility_removals.sort_unstable();
@@ -3621,6 +4115,9 @@ impl UiWorld {
                 }
                 bits & !DirtyMask::TEXT
             };
+            if bits != 0 {
+                work.entities_changed += 1;
+            }
             push_work(&mut work, id, bits);
         }
         // Retain any typed entry queued by a post-drain authority. Sorting
@@ -3645,6 +4142,66 @@ impl UiWorld {
             .collect::<Vec<_>>();
         remaining.compact_sort_by_key(|seed| seed.node);
         work.layout_frontier_seeds.extend(remaining);
+        work.render_nodes_changed = work.render_extraction.len();
+        work.render_nodes_extracted = work.render_extraction.len();
+        if work.render_nodes_changed > 0 {
+            nana_diagnostics::metric!(
+                nana_diagnostics::framework::runtime::SCENE_NODES_CHANGED,
+                work.render_nodes_changed
+            );
+        }
+        let mut drain_allocs = 0usize;
+        let mut drain_bytes = 0usize;
+        let mut bump_list = |len: usize| {
+            if len > 0 {
+                drain_allocs = drain_allocs.saturating_add(1);
+                drain_bytes =
+                    drain_bytes.saturating_add(len.saturating_mul(size_of::<StableNodeId>()));
+            }
+        };
+        bump_list(dirty_len);
+        bump_list(work.style.len());
+        bump_list(work.state.len());
+        bump_list(work.text.len());
+        bump_list(work.layout_frontier_seeds.len());
+        bump_list(work.transform.len());
+        bump_list(work.transform_kept.len());
+        bump_list(work.input_hit_test.len());
+        bump_list(work.focus_ime.len());
+        bump_list(work.accessibility.len());
+        bump_list(work.accessibility_removals.len());
+        bump_list(work.render_extraction.len());
+        bump_list(work.render_removals.len());
+        work.record_hot_path_allocation(drain_allocs, drain_bytes);
+        if !work.is_empty() {
+            self.pending_hot_allocations.set(0);
+            self.pending_hot_allocated_bytes.set(0);
+            let mut counters = work.counters();
+            let counted = std::mem::take(&mut self.counters.pending_layout_invalidations_counted);
+            add_pending_counts(&mut counters, counted);
+            add_pending_counts(
+                &mut counters,
+                std::mem::take(&mut self.counters.pending_drain_counts),
+            );
+            counters.i18n.accumulate(self.i18n_gauges());
+            // Extracted node/span fields are filled by [`Self::record_extract`]
+            // on the product path, not by the planned render list.
+            counters.render_nodes_extracted = 0;
+            counters.extracted_text_spans = 0;
+            if self.accumulating_frame {
+                self.counters.frame_counters.accumulate(counters);
+                self.counters.last_counters = self.counters.frame_counters;
+                self.counters.last_counters.render_nodes_extracted = self.frame_extracted_nodes;
+                self.counters.last_counters.extracted_text_spans = self.frame_extracted_spans;
+            } else {
+                self.counters.last_counters = counters;
+            }
+        } else {
+            self.commit_pending_hot_allocs();
+            self.commit_pending_layout_invalidation_counts();
+            let pending = std::mem::take(&mut self.counters.pending_drain_counts);
+            self.bump_last_counters(|counters| add_pending_counts(counters, pending));
+        }
         work
     }
 
@@ -3708,6 +4265,12 @@ impl UiWorld {
         self.pending_render_removals.extend(work.render_removals);
         self.pending_render_removals.sort_unstable();
         self.pending_render_removals.dedup();
+        self.spawned_since_drain = self
+            .spawned_since_drain
+            .saturating_add(work.entities_spawned);
+        self.despawned_since_drain = self
+            .despawned_since_drain
+            .saturating_add(work.entities_despawned);
     }
 
     /// Whether `id` is a document root node.
@@ -4860,6 +5423,9 @@ impl UiWorld {
     }
 
     pub fn layout_inputs(&self, ids: &[StableNodeId]) -> Result<Vec<LayoutInput>, UiWorldError> {
+        if !ids.is_empty() {
+            self.record_hot_path_allocation(1, ids.len().saturating_mul(size_of::<LayoutInput>()));
+        }
         ids.iter().map(|&id| self.layout_input(id)).collect()
     }
 
@@ -5055,6 +5621,9 @@ impl UiWorld {
             return false;
         }
         self.nodes.bump_layout_context_generation(id);
+        if previous.is_some() && context.is_some() {
+            self.bump_last_counters(|counters| counters.record_layout_context_transitions(1));
+        }
         previous.is_some()
     }
 
@@ -5505,6 +6074,15 @@ impl UiWorld {
         self.nodes
             .get(id)
             .map_or(&[], |node| node.hierarchy.children.as_slice())
+    }
+
+    fn live_input_target_count(&self) -> usize {
+        let mut ids = HashSet::new();
+        ids.extend(self.input.focused.values().copied());
+        ids.extend(self.input.pointer_hover.values().copied());
+        ids.extend(self.input.pointer_press.values().copied());
+        ids.extend(self.input.pointer_captures.values().copied());
+        ids.len()
     }
 
     pub(crate) fn presence_live(&self, id: StableNodeId) -> bool {
@@ -6402,6 +6980,7 @@ impl UiWorld {
             order.push(id);
             stack.extend(self.record(id).hierarchy.children.iter().rev().copied());
         }
+        self.record_id_list_alloc(order.len());
         order
     }
 
@@ -7417,6 +7996,7 @@ impl UiWorld {
                 ),
             );
             self.mark_scroll_compatible(id, DirtyMask::RENDER);
+            self.bump_last_counters(|counters| counters.record_text_metrics(1, 0, 0));
             return false;
         }
         self.record_layout_invalidation(
@@ -7432,7 +8012,7 @@ impl UiWorld {
         // Keep the original paint invalidation for the node whose shaped
         // metrics changed; the typed layout cause above remains narrow.
         self.mark_scroll_compatible(id, DirtyMask::RENDER);
-        let mut parent_reflows = false;
+        let mut parent_reflows = 0;
         if let Some(parent) = self.parent_id(id) {
             if self.is_fixed_metric_boundary(parent) {
                 self.record_layout_invalidation(
@@ -7464,11 +8044,39 @@ impl UiWorld {
                     ),
                 );
                 self.mark_ancestors(parent, DirtyMask::LAYOUT | DirtyMask::RENDER);
-                parent_reflows = true;
+                parent_reflows = 1;
             }
         }
-        parent_reflows
+        self.bump_last_counters(|counters| counters.record_text_metrics(1, 0, parent_reflows));
+        parent_reflows > 0
     }
+}
+
+/// Adds counts observed between drains onto `counters`. They carry no live
+/// entity count, so `counters` keeps its own.
+fn add_pending_counts(counters: &mut WorkCounters, mut pending: WorkCounters) {
+    pending.entities_total = counters.entities_total;
+    counters.accumulate(pending);
+}
+
+/// What a virtual list's pass cost (Issue #262). Counted into the next
+/// drain: the frame that lays the pass's commits out.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(crate) struct VirtualRowCounts {
+    /// Row extents that moved in the row index.
+    pub(crate) metric_updates: usize,
+    /// Row index entries written since the list last placed its rows.
+    pub(crate) prefix_index_updates: usize,
+    /// Mounted rows the list took a new height from.
+    pub(crate) rows_remeasured: usize,
+    /// Mounted rows whose placement the list patched.
+    pub(crate) rows_repositioned: usize,
+    /// Logical rows looked up, by index or by key.
+    pub(crate) logical_rows_scanned: usize,
+    /// Moves of the list's total height.
+    pub(crate) scroll_extent_updates: usize,
+    /// Rows created for the window.
+    pub(crate) rows_materialized: usize,
 }
 
 /// A typography scale text can be set at: a positive finite number.

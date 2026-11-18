@@ -196,10 +196,12 @@ fn grouped_escaped_and_queried_rows_leave_nothing_behind() {
                 .unwrap();
             cx.append_child(clip_box, label).unwrap();
 
-            let mut badge_layout = LayoutStyle::default();
-            badge_layout.position = PositionSpec::Absolute;
-            badge_layout.offset_left = Some(LengthSpec::Px(8.0));
-            badge_layout.offset_top = Some(LengthSpec::Px(2.0));
+            let badge_layout = LayoutStyle {
+                position: PositionSpec::Absolute,
+                offset_left: Some(LengthSpec::Px(8.0)),
+                offset_top: Some(LengthSpec::Px(2.0)),
+                ..Default::default()
+            };
             let badge = cx
                 .create_detached_component(
                     document,

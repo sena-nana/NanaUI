@@ -269,7 +269,7 @@ impl OffscreenSnapshots {
             }
         };
         let gpu = __framework::adopt(adapter, raw_device, raw_queue);
-        let mut painter = SceneWgpuPainter::new(&gpu, FORMAT);
+        let mut painter = SceneWgpuPainter::try_new(&gpu, FORMAT)?;
         let (wake, image_ready) = std::sync::mpsc::sync_channel(1);
         painter.set_image_waker(std::sync::Arc::new(move || {
             let _ = wake.try_send(());

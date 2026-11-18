@@ -15,6 +15,10 @@
 
 选择器画出它取值的颜色。饱和度/明度是一块画面垫（`XYPadSurface::Picture`，高度是大号垫子的两倍）：底色是当前色相的纯色，上面一层白色从左往右淡出（饱和度），再上面一层黑色从上往下渐入（明度），就是标准的 HSV 方块；色相变了，方块跟着换底色。色相是一条不带读数的光谱条（`RangeField::track_gradient(hue_spectrum())`，0 到 360 度：红、黄、绿、青、蓝、品红、回到红）。两处都用对比色圆环标出当前值，没有十字轴，也没有强调色填充。色相条仍是读屏 `Slider`，可以用键盘步进。当宿主支持屏幕取色且未关闭 `.eyedropper` 时，色相条左侧摆一颗吸管 `IconButton`（`[ 吸管 | 色相条 ]`）；点一下会立即关上弹出层并启动平台原生屏幕取色器，把拾取到的 sRGB 颜色写回字段、保留原本的透明度（按 Esc 或右键取消时不改变颜色）。
 
+### 屏幕取色可用性
+
+`ColorField` 颜色吸管（eyedropper）的可用性取决于宿主平台与会话的屏幕读取权限，宿主通过 `color_sampler_support()` 查询：当返回 `ColorSamplerSupport::Native` 时，吸管可见并可调用；返回 `ColorSamplerSupport::Unsupported`（例如无 Portal v2+ 的 Wayland 或不支持屏幕采样的平台）时自动隐藏；若运行中因权限或会话原因失败，通过 `ColorSamplerResult::Failed` 返回错误，同时保持字段当前颜色值不变。各平台底层行为与限制见 [窗口管理与原生边界](../reference/window.md)。
+
 控件表里没有 `<ColorField>`。
 
 ## 基本用法

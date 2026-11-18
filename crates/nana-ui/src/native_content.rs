@@ -341,7 +341,9 @@ impl SceneGpuRenderer for NativeContentRenderer {
         }
         let device = context.gpu.raw_device();
         let target_format = nana_gpu::__framework::format_to_wgpu(context.target_format);
-        let pipeline = Self::build_pipeline(device, target_format);
+        let Ok(pipeline) = Self::try_build_pipeline(device, target_format) else {
+            return;
+        };
         *cached = Some((key, pipeline));
     }
 
@@ -372,10 +374,10 @@ impl SceneGpuRenderer for NativeContentRenderer {
 
 #[cfg(feature = "hosted")]
 impl NativeContentRenderer {
-    fn build_pipeline(
+    fn try_build_pipeline(
         device: &wgpu::Device,
         target_format: wgpu::TextureFormat,
-    ) -> wgpu::RenderPipeline {
+    ) -> Result<wgpu::RenderPipeline, crate::scene_paint::ScenePaintError> {
         let shader =
             crate::scene_paint::wgsl::program!("native content opening", NATIVE_CONTENT_WGSL);
         let layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
@@ -383,7 +385,7 @@ impl NativeContentRenderer {
             bind_group_layouts: &[],
             immediate_size: 0,
         });
-        shader.pipeline(
+        shader.try_pipeline(
             device,
             "vertex",
             "fragment",
@@ -420,7 +422,7 @@ impl NativeContentRenderer {
 
     #[cfg(all(test, target_vendor = "apple"))]
     pub(crate) fn prewarm_for_msl_regen(gpu: &nana_gpu::GpuContext) {
-        let _ = Self::build_pipeline(
+        let _ = Self::try_build_pipeline(
             nana_gpu::__framework::device(gpu),
             wgpu::TextureFormat::Bgra8UnormSrgb,
         );

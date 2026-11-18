@@ -13,10 +13,10 @@ pub const PRIORITY_CASE_IDS: &[&str] = &[
     "T-G03", "T-G04", "T-G05", "T-G06", "T-G07", "T-G08", "T-G09", "T-G10", "T-G11", "T-G12",
     "T-G13", "T-G14", "T-G15", "T-G16", "T-G17", "T-G18", "T-G19", "T-G20", "T-G21", "T-G22",
     "T-G23", "T-G24", "T-G25", "T-G26", "T-G27", "T-G28", "T-G29", "T-G30", "T-G31", "T-G32",
-    "T-G33", "T-G34", "T-G36", "T-P01", "T-P02", "T-P03", "T-P04", "T-P05", "T-P06", "T-P07",
-    "T-P08", "T-P09", "T-P10", "T-P11", "T-P12", "T-P13", "T-P14", "T-P15", "T-P16", "T-P17",
-    "T-P18", "T-P19", "T-P20", "T-P21", "T-I01", "T-I02", "T-I03", "T-I04", "T-I05", "T-I06",
-    "T-FX01", "T-GB01",
+    "T-G33", "T-G34", "T-G35", "T-G36", "T-P01", "T-P02", "T-P03", "T-P04", "T-P05", "T-P06",
+    "T-P07", "T-P08", "T-P09", "T-P10", "T-P11", "T-P12", "T-P13", "T-P14", "T-P15", "T-P16",
+    "T-P17", "T-P18", "T-P19", "T-P20", "T-P21", "T-I01", "T-I02", "T-I03", "T-I04", "T-I05",
+    "T-I06", "T-I07", "T-FX01", "T-FX02", "T-FX03", "T-GB01", "T-GB02",
 ];
 
 /// `(id, status_pass, gap)` — `gap` 仅仍 ignore 的用例有值。
@@ -66,7 +66,7 @@ pub fn catalog() -> &'static [(&'static str, bool, Option<&'static str>)] {
         ("T-S15", true, None), // vh / min() / calc(100vw-Npx) / clamp
         ("T-S16", true, None), // em / rem / calc(em±px)
         ("T-S17", true, None), // width:max-content vs column stretch
-        ("T-S18", true, None), // width:fit-content clamp to available
+        ("T-S18", true, None), // width:fit-content min-content floor vs Chrome 152 (120px)
         ("T-S19", true, None), // width:min-content wrap = widest child
         ("T-S20", true, None), // width:fit-content vs column stretch Fill
         ("T-S21", true, None), // calc * / + nested min/max + var 展开后再算；更复杂式走 Calc AST
@@ -91,7 +91,6 @@ pub fn catalog() -> &'static [(&'static str, bool, Option<&'static str>)] {
         ("T-B13", true, None), // margin:0 auto block center
         ("T-V01", true, None),
         ("T-V02", true, None),  // visibility:hidden → CSS 占位（仍测量）
-        ("T-D01", true, None),  // display:contents hoist into flex row
         ("T-W01", true, None),  // flex-wrap measure；Wrap 多行拆分
         ("T-W02", true, None),  // wrap-reverse 行序；borrowed+owned 路径
         ("T-W03", true, None),  // wrap 双值 gap：行内 column-gap / 行间 row-gap
@@ -158,25 +157,17 @@ pub fn catalog() -> &'static [(&'static str, bool, Option<&'static str>)] {
         ("T-P19", true, None),  // sticky inside overflow:auto still unstuck at rest
         ("T-P20", true, None),  // fixed auto height + max-height% 相对视口，不压成 0
         ("T-P21", true, None),  // absolute aspect-ratio 跟随夹取后 / inset 给出的宽度
-        ("T-I01", true, None),  // inline-block side by side
-        ("T-I02", true, None),  // text-align:center on IFC
-        ("T-I03", true, None),  // white-space:pre preserves newlines
-        ("T-I04", true, None),  // IFC block-level sibling starts a new line
-        ("T-I05", true, None),  // mixed-height inline-blocks share a baseline
-        ("T-I06", true, None),  // a line box starts from the block's strut
-        ("T-I07", true, None),  // an inline-block's last line box is a descendant's
-        ("T-FL01", true, None), // float left/right + clear:both
-        ("T-FL02", true, None), // two float:left wrap, no overlap
-        ("T-FL03", true, None), // clear:both after wrapping same-side floats uses packed bottom
-        ("T-FL04", true, None), // float's own clear:left starts below packed left
-        ("T-FL05", true, None), // IFC line box shrinks beside float:left; inlines wrap in remainder
-        ("T-FL06", true, None), // oversized inline drops below float (no overlap)
-        ("T-FL07", true, None), // lines beside a float give a box's first and last baselines
-        ("T-FL08", true, None), // a BFC's auto height contains its floats, a plain block's does not
-        ("T-FX01", true, None), // a flex container on a baseline row sits by its top line's or start item's baseline
-        ("T-FX02", true, None), // an inline-block ending in a wrapping flex container sits by that container's first baseline
-        ("T-FX03", true, None), // an inline-block ending in a column flex container sits by its first item's baseline
-        ("T-GB01", true, None), // grid items share a baseline per row; a grid sits by its first row's
-        ("T-GB02", true, None), // an inline-block ending in a grid sits by the grid's first row
+        ("T-I01", true, None),  // inline-flex side by side (Chrome 152 实测)
+        ("T-I02", true, None),  // text-align:center on IFC (Chrome 152 实测)
+        ("T-I03", true, None),  // white-space:pre preserves newlines (Chrome 152 实测)
+        ("T-I04", true, None),  // IFC block-level sibling starts a new line (Chrome 152 实测)
+        ("T-I05", true, None),  // mixed-height inline-flex atoms share a baseline (Chrome 152 实测)
+        ("T-I06", true, None),  // a line box starts from the block's strut (Chrome 152 实测)
+        ("T-I07", true, None), // an inline container's baseline comes from its descendant line box (Chrome 152 实测)
+        ("T-FX01", true, None), // a flex container on a baseline row sits by its top line's or start item's baseline (Chrome 152 实测)
+        ("T-FX02", true, None), // an inline-flex/container ending in a wrapping flex container sits by that container's first baseline (Chrome 152 实测)
+        ("T-FX03", true, None), // an inline container ending in a column flex container sits by its first item's baseline (Chrome 152 实测)
+        ("T-GB01", true, None), // grid items share a baseline per row; a grid sits by its first row's (Chrome 152 实测)
+        ("T-GB02", true, None), // an inline container ending in a grid sits by the grid's first row (Chrome 152 实测)
     ]
 }

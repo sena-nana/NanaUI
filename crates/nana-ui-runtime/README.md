@@ -1,14 +1,16 @@
 # nana-ui-runtime
 
-NanaUI 的保留式运行时，与渲染后端无关。
+English · [简体中文](README.zh-CN.md)
 
-`UiWorld` 是界面树的唯一权威：节点身份、拓扑和逻辑状态都在这里，对外只暴露 `StableNodeId`。修改以 `UiMutation` 排进 `MutationQueue`，在帧边界整批校验、原子提交。在这棵树上，本 crate 实现了布局、输入路由、焦点、IME、无障碍、动效，以及全部内置控件和 Shell、Workspace、Dock、浮层等桌面组件。`CustomRenderNode`、`GpuView` 这类 GPU 内容节点也在这里声明，和其他节点一样参与布局和命中测试。
+NanaUI's retained, renderer-independent UI runtime.
 
-`view` 模块提供声明式写法：信号直接更新它绑定的节点字段，不重新渲染，也不做 diff。
+`UiWorld` is the single authority for the UI tree: node identity, topology, and logical state live here and expose only `StableNodeId`. Mutations are queued as `UiMutation` in a `MutationQueue`, validated in batch at the frame boundary, and committed atomically. Built on this tree are layout, input routing, focus, IME, accessibility, motion, built-in controls, and desktop components (`Shell`, `Workspace`, `Dock`, overlays). GPU content nodes (`CustomRenderNode`, `GpuView`) are declared here and participate in layout and hit testing alongside ordinary nodes.
 
-本 crate 不持有窗口、Surface 或 GPU 设备，也不解析 CSS。场景抽取在 [`nana-ui-scene`](../nana-ui-scene)，绘制和宿主在 [`nana-ui`](../nana-ui)，应用通常经 `nana_ui::runtime` 使用这里的类型。
+The `view` module offers declarative ergonomics: signals directly update the bound node fields without re-rendering or tree diffing.
 
-## 示例
+This crate holds no native window, surface, or GPU device, and does not parse CSS. Scene extraction lives in [`nana-ui-scene`](../nana-ui-scene), painting and hosting in [`nana-ui`](../nana-ui), and applications typically import these types via `nana_ui::runtime`.
+
+## Example
 
 ```rust
 use nana_ui_runtime::view::{IntoView, button, column, signal};
@@ -17,8 +19,8 @@ use nana_ui_runtime::{AppContext, DocumentId};
 fn counter() -> impl IntoView {
     let count = signal(0u64);
     column().gap(12.0).children((
-        nana_ui_runtime::text!("计数 {count}"),
-        button("加一").on_activate(move || count.update(|c| *c += 1)),
+        nana_ui_runtime::text!("Count {count}"),
+        button("Add").on_activate(move || count.update(|c| *c += 1)),
     ))
 }
 
@@ -29,28 +31,30 @@ let view = cx.mount_view_root(document, counter).unwrap();
 
 ## Features
 
-- `icu`（默认）：用 ICU4X 和编译进来的 CLDR 数据格式化数字、日期和复数；关闭后用 `PlainFormatter`。
-- `calendar`、`charts`、`controls`、`graph-canvas`、`image-viewer`、`rich-text`：可选的控件族，`components` 一次打开全部。`rich-text` 包含 Markdown、Mermaid 图和数学公式。
-- `snippet-transforms`（默认）：snippet 里的正则变换；关闭后变换原样返回，不链接正则引擎。
-- `syntax-highlighting`：代码块语法高亮。
-- `view-macro`：`view!` 模板宏。
-- `reactive-trace`：记录响应式更新的因果链，回答“为什么更新”。
+No features are enabled by default (`default = []`).
 
-`layout-verify` 和 `benchmark` 只用于测试与基准。
+- `icu` (opt-in): formats numbers, dates, and plurals with ICU4X and compiled CLDR data; when disabled, `PlainFormatter` is used.
+- `calendar`, `charts`, `controls`, `graph-canvas`, `image-viewer`, `qr-code`, `rich-text`: optional control families; `components` enables all of them. `rich-text` includes Markdown, Mermaid diagrams, and math formulas.
+- `snippet-transforms` (opt-in): regular-expression transforms in snippets; when disabled, transforms return the input unchanged without linking `fancy-regex` and emit `runtime.snippet.transform_unavailable`.
+- `syntax-highlighting`: syntax highlighting for code blocks.
+- `view-macro`: `view!` template macro.
+- `reactive-trace`: records causal chains for reactive updates to answer "why did this update?".
 
-## 测试
+`layout-verify` and `benchmark` are for tests and benchmarks only.
+
+## Tests
 
 ```bash
 cargo test -p nana-ui-runtime
 cargo test -p nana-ui-runtime --features view-macro --test contracts --test perf_contracts -- view_macro view_stack theme_layout
 ```
 
-`view_macro`、`view_stack` 和 `theme_layout` 不带 `view-macro` 时会编译为空并显示通过。基准需要 `benchmark` feature：
+`view_macro`, `view_stack`, and `theme_layout` compile empty and report passing without `view-macro`. Benchmarks require `benchmark`:
 
 ```bash
 cargo run --release -p nana-ui-runtime --features benchmark --bin nana-runtime-benchmark
 ```
 
-其余命令见 [`.github/workflows/ci.yml`](../../.github/workflows/ci.yml)。
+Remaining commands are in [`.github/workflows/ci.yml`](../../.github/workflows/ci.yml).
 
-更多内容见 [运行时保留树](../../docs/learn/runtime-tree.md)、[响应式视图](../../docs/reference/reactive-view.md) 和 [Runtime 与 Scene 合同](../../docs/reference/runtime-scene.md)。
+See also [Retained Runtime Tree](../../docs/en/learn/runtime-tree.md), [Declarative Views](../../docs/en/reference/reactive-view.md), [Layout and Feature Migration](../../docs/en/guide/migration-layout-and-features.md), and [Runtime and Scene Contracts](../../docs/en/reference/runtime-scene.md).

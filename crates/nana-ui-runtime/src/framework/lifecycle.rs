@@ -1516,13 +1516,14 @@ impl AppContext {
         }
         let value = if let Some(path) = self.world.widget_visual_as::<crate::PathTextVisual>(id) {
             Arc::clone(&path.value)
-        } else if let Some(lv) = self.world.widget_visual_as::<crate::LabeledValueVisual>(id) {
+        } else {
+            let lv = self
+                .world
+                .widget_visual_as::<crate::LabeledValueVisual>(id)?;
             if !lv.value_is_path {
                 return None;
             }
             Arc::clone(&lv.value)
-        } else {
-            return None;
         };
         (!value.is_empty()).then_some(crate::IconButtonTooltip {
             label: value,

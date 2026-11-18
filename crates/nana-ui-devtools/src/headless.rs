@@ -67,7 +67,8 @@ impl<P: RuntimeProgram> HeadlessHost<P> {
         geometry: WindowGeometry,
         options: HeadlessOptions,
     ) -> Result<Self, AgentError> {
-        let painter = SceneWgpuPainter::new(&gpu, FORMAT);
+        let painter = SceneWgpuPainter::try_new(&gpu, FORMAT)
+            .map_err(|error| AgentError(error.to_string()))?;
         let runtime = HeadlessRuntime::new(gpu, primary, geometry, options).map_err(AgentError)?;
         Ok(Self { runtime, painter })
     }

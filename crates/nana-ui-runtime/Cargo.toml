@@ -74,7 +74,7 @@ unicode-segmentation.workspace = true
 unicode-width.workspace = true
 serde = { workspace = true, features = ["derive"] }
 serde_json.workspace = true
-two-face = { version = "0.5", default-features = false, features = ["syntect-default-fancy"], optional = true }
+two-face = { version = "0.5", default-features = false, features = ["syntect-fancy"], optional = true }
 icu_calendar = { version = "2.3", optional = true }
 icu_datetime = { version = "2.3", optional = true }
 icu_decimal = { version = "2.3", features = ["ryu"], optional = true }

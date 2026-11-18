@@ -286,104 +286,94 @@ pub(super) fn icon_shader() -> String {
 
 /// The icon program for targets of `format`: the only part of
 /// [`IconPipeline`] that depends on the working format.
-fn icon_pipeline(
+fn try_icon_pipeline(
     device: &wgpu::Device,
     format: wgpu::TextureFormat,
     policy: Option<&nana_gpu::GpuDeviceState>,
     uniform_layout: &wgpu::BindGroupLayout,
     atlas_layout: &wgpu::BindGroupLayout,
-) -> wgpu::RenderPipeline {
+) -> Result<wgpu::RenderPipeline, super::validate::ScenePaintError> {
     let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
         label: Some("nana-ui.scene.icon.pipeline"),
         bind_group_layouts: &[Some(uniform_layout), Some(atlas_layout)],
         immediate_size: 0,
     });
-    let create_pipeline = || {
-        let shader = super::wgsl::program_concat!(
-            "nana-ui.scene.icon.shader",
-            [super::wgsl::COLOR, ICON_STAGES]
-        );
-        shader.pipeline(
-            device,
-            "vs_main",
-            "fs_main",
-            &[],
-            |vs_module, vs_ep, fs_module, fs_ep, _| {
-                device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-                    label: Some("nana-ui.scene.icon.pipeline"),
-                    layout: Some(&pipeline_layout),
-                    vertex: wgpu::VertexState {
-                        module: vs_module,
-                        entry_point: Some(vs_ep),
-                        buffers: &[Some(wgpu::VertexBufferLayout {
-                            array_stride: std::mem::size_of::<IconVertex>() as u64,
-                            step_mode: wgpu::VertexStepMode::Vertex,
-                            attributes: &wgpu::vertex_attr_array!(
-                                0 => Float32x2,
-                                1 => Float32x2,
-                                2 => Float32x4,
-                                3 => Float32x4,
-                                4 => Float32x4,
-                                5 => Float32x3,
-                                6 => Float32x4,
-                            ),
-                        })],
-                        compilation_options: wgpu::PipelineCompilationOptions::default(),
-                    },
-                    fragment: Some(wgpu::FragmentState {
-                        module: fs_module,
-                        entry_point: Some(fs_ep),
-                        targets: &[Some(wgpu::ColorTargetState {
-                            format,
-                            blend: Some(wgpu::BlendState::ALPHA_BLENDING),
-                            write_mask: wgpu::ColorWrites::ALL,
-                        })],
-                        compilation_options: wgpu::PipelineCompilationOptions::default(),
-                    }),
-                    primitive: wgpu::PrimitiveState {
-                        topology: wgpu::PrimitiveTopology::TriangleList,
-                        ..Default::default()
-                    },
-                    depth_stencil: None,
-                    multisample: wgpu::MultisampleState::default(),
-                    multiview_mask: None,
-                    cache: None,
-                })
-            },
-        )
-    };
-    if let Some(policy) = policy {
-        nana_gpu::__framework::render_pipeline_state(
-            policy,
-            nana_gpu::PipelineKey {
-                generation: policy.generation(),
-                target_format: nana_gpu::__framework::format_from_wgpu(format),
-                sample_count: 1,
-                shader: 0x6963_6f6e_7069_7065,
-                layout: icon_layout_key(),
-                material: 0,
-                primitive: 0,
-                blend: 1,
-                depth: 0,
-                vertex_layout: std::mem::size_of::<IconVertex>() as u64,
-            },
-            create_pipeline,
-        )
-        .expect("icon pipeline uses this context generation")
-    } else {
-        create_pipeline()
-    }
+    let shader = super::wgsl::program_concat!(
+        "nana-ui.scene.icon.shader",
+        [super::wgsl::COLOR, ICON_STAGES]
+    );
+    shader.try_cached_pipeline(
+        policy,
+        |policy| nana_gpu::PipelineKey {
+            generation: policy.generation(),
+            target_format: nana_gpu::__framework::format_from_wgpu(format),
+            sample_count: 1,
+            shader: 0x6963_6f6e_7069_7065,
+            layout: icon_layout_key(),
+            material: 0,
+            primitive: 0,
+            blend: 1,
+            depth: 0,
+            vertex_layout: std::mem::size_of::<IconVertex>() as u64,
+        },
+        device,
+        "vs_main",
+        "fs_main",
+        &[],
+        |vs_module, vs_ep, fs_module, fs_ep, _| {
+            device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+                label: Some("nana-ui.scene.icon.pipeline"),
+                layout: Some(&pipeline_layout),
+                vertex: wgpu::VertexState {
+                    module: vs_module,
+                    entry_point: Some(vs_ep),
+                    buffers: &[Some(wgpu::VertexBufferLayout {
+                        array_stride: std::mem::size_of::<IconVertex>() as u64,
+                        step_mode: wgpu::VertexStepMode::Vertex,
+                        attributes: &wgpu::vertex_attr_array!(
+                            0 => Float32x2,
+                            1 => Float32x2,
+                            2 => Float32x4,
+                            3 => Float32x4,
+                            4 => Float32x4,
+                            5 => Float32x3,
+                            6 => Float32x4,
+                        ),
+                    })],
+                    compilation_options: wgpu::PipelineCompilationOptions::default(),
+                },
+                fragment: Some(wgpu::FragmentState {
+                    module: fs_module,
+                    entry_point: Some(fs_ep),
+                    targets: &[Some(wgpu::ColorTargetState {
+                        format,
+                        blend: Some(wgpu::BlendState::ALPHA_BLENDING),
+                        write_mask: wgpu::ColorWrites::ALL,
+                    })],
+                    compilation_options: wgpu::PipelineCompilationOptions::default(),
+                }),
+                primitive: wgpu::PrimitiveState {
+                    topology: wgpu::PrimitiveTopology::TriangleList,
+                    ..Default::default()
+                },
+                depth_stencil: None,
+                multisample: wgpu::MultisampleState::default(),
+                multiview_mask: None,
+                cache: None,
+            })
+        },
+    )
 }
 
 impl IconPipeline {
     /// The icon program for another working format, for the same atlas.
-    pub(super) fn pipeline_for(
+    pub(super) fn try_pipeline_for(
         &self,
         device: &wgpu::Device,
         format: wgpu::TextureFormat,
         policy: Option<&nana_gpu::GpuDeviceState>,
-    ) -> wgpu::RenderPipeline {
-        icon_pipeline(
+    ) -> Result<wgpu::RenderPipeline, super::validate::ScenePaintError> {
+        try_icon_pipeline(
             device,
             format,
             policy,
@@ -404,14 +394,14 @@ impl IconPipeline {
     }
     #[cfg(test)]
     pub(super) fn new(device: &wgpu::Device, format: wgpu::TextureFormat) -> Self {
-        Self::new_with_policy(device, format, None)
+        Self::try_new_with_policy(device, format, None).expect("icon test pipeline")
     }
 
-    pub(super) fn new_with_policy(
+    pub(super) fn try_new_with_policy(
         device: &wgpu::Device,
         format: wgpu::TextureFormat,
         policy: Option<&nana_gpu::GpuDeviceState>,
-    ) -> Self {
+    ) -> Result<Self, super::validate::ScenePaintError> {
         let uniform_layout = if let Some(policy) = policy {
             let table = ResourceTable::new(vec![
                 LogicalBinding::new(0, LogicalBindingType::UniformBuffer, &[ShaderStage::Vertex])
@@ -497,8 +487,8 @@ impl IconPipeline {
             mipmap_filter: wgpu::MipmapFilterMode::Nearest,
             ..Default::default()
         });
-        let pipeline = icon_pipeline(device, format, policy, &uniform_layout, &atlas_layout);
-        Self {
+        let pipeline = try_icon_pipeline(device, format, policy, &uniform_layout, &atlas_layout)?;
+        Ok(Self {
             pipeline,
             uniform_layout,
             atlas_layout,
@@ -524,7 +514,7 @@ impl IconPipeline {
             exhausted: false,
             shrink_frames: 0,
             vertex_shrink_frames: 0,
-        }
+        })
     }
 
     pub(super) fn begin_frame(&mut self, physical_size: [u32; 2]) {

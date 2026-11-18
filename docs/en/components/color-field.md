@@ -15,6 +15,10 @@ The whole field has one frame, the way Ant Design's ColorPicker and Mantine's Co
 
 The picker paints the color it takes its value from. Saturation / value is a picture pad (`XYPadSurface::Picture`, twice the height of a large pad): the background is the solid color of the current hue, a white layer fades out from left to right above it (saturation), then a black layer fades in from top to bottom above that (value) — the standard HSV square; when the hue changes, the square changes its background with it. Hue is a spectrum bar without a readout (`RangeField::track_gradient(hue_spectrum())`, 0 to 360 degrees: red, yellow, green, cyan, blue, magenta, back to red). Both mark the current value with a contrasting ring, with no crosshair axes and no accent fill. The hue bar is still a screen-reader `Slider` and can be stepped with the keyboard. When the host supports screen color sampling and `.eyedropper(false)` has not been set, an eyedropper `IconButton` sits to the left of the hue bar (`[ eyedropper | hue ]`); clicking it immediately closes the popover and invokes the platform screen color sampler, writing the picked sRGB color back while preserving the field's alpha (cancelling via Esc or right-click leaves the color unchanged).
 
+### Eyedropper availability
+
+Whether the `ColorField` eyedropper is shown depends on the host platform and session screen-capture support checked via `color_sampler_support()`: when it returns `ColorSamplerSupport::Native`, the button is shown and active; when it returns `ColorSamplerSupport::Unsupported` (for example on Wayland sessions without Portal v2+ or platforms without screen picking), the button is hidden automatically. If a sampling session fails due to revoked permission or session termination, `ColorSamplerResult::Failed` reports the platform error while leaving the field's current color unchanged; see [Window management and native boundaries](../reference/window.md) for platform behavior and limits.
+
 The control table has no `<ColorField>`.
 
 ## Basic usage

@@ -351,8 +351,8 @@ pub(super) struct ContentBoundsIndex {
     /// Boxes written by the commit being applied, marked dirty in one batch
     /// when it ends (or before any query reads the index).
     deferred: Vec<StableNodeId>,
-    /// Entries whose extent was recomputed during a query.
-    #[cfg(any(test, feature = "benchmark"))]
+    /// Entries whose extent was recomputed since the world last folded them
+    /// into `WorkCounters::scroll_content_extent_recomputes`.
     refreshed: usize,
     /// Leaves an incremental refresh wrote, kept for the next one.
     touched: Vec<usize>,
@@ -578,10 +578,7 @@ impl ContentBoundsIndex {
                     && Arc::ptr_eq(&entry.children, &record.hierarchy.children) =>
             {
                 entry.dirty = false;
-                #[cfg(any(test, feature = "benchmark"))]
-                {
-                    self.refreshed += 1;
-                }
+                self.refreshed += 1;
                 entry.settle(&Placement::of(world, id, record));
                 return (entry.extent, entry.pending);
             }
@@ -601,10 +598,7 @@ impl ContentBoundsIndex {
                 .map_or(Extent::EMPTY, |entry| entry.pending);
             return (Extent::EMPTY, pending);
         };
-        #[cfg(any(test, feature = "benchmark"))]
-        {
-            self.refreshed += 1;
-        }
+        self.refreshed += 1;
         let place = Placement::of(world, id, record);
         let incremental = match (rebuild, self.entries.get_mut(&id)) {
             // Some children moved (with none, it settled above).
@@ -740,6 +734,18 @@ impl UiWorld {
             bits(fresh),
             "{id:?}: the retained content extent {extent:?} is not a fresh index's {fresh:?}"
         );
+    }
+
+    /// Extent recomputes not yet folded into the work counters.
+    pub(super) fn pending_scroll_extent_recomputes(&self) -> usize {
+        self.scroll_content_bounds
+            .try_borrow()
+            .map_or(0, |index| index.refreshed)
+    }
+
+    /// Hand the extent recomputes over to the work counters.
+    pub(super) fn take_scroll_extent_recomputes(&mut self) -> usize {
+        std::mem::take(&mut self.scroll_content_bounds.get_mut().refreshed)
     }
 
     pub(super) fn invalidate_scroll_content(&self, id: StableNodeId) {

@@ -14,11 +14,20 @@ pub(crate) struct OutputTransfer {
 }
 
 impl OutputTransfer {
+    #[cfg(test)]
     pub(crate) fn new(
         gpu: &GpuContext,
         format: nana_gpu::GpuTextureFormat,
         source_srgb: bool,
     ) -> Self {
+        Self::try_new(gpu, format, source_srgb).expect("output transfer test pipeline")
+    }
+
+    pub(crate) fn try_new(
+        gpu: &GpuContext,
+        format: nana_gpu::GpuTextureFormat,
+        source_srgb: bool,
+    ) -> Result<Self, crate::scene_paint::ScenePaintError> {
         let device = raw::device(gpu);
         let layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("nana.output.transfer"),
@@ -46,7 +55,7 @@ impl OutputTransfer {
             _ => "fs_passthrough",
         };
         let shader = crate::scene_paint::wgsl::program!("nana.output.transfer", TRANSFER_WGSL);
-        let pipeline = shader.pipeline(
+        let pipeline = shader.try_pipeline(
             device,
             "vs",
             fragment_entry,
@@ -78,15 +87,15 @@ impl OutputTransfer {
                     cache: None,
                 })
             },
-        );
-        Self {
+        )?;
+        Ok(Self {
             generation: gpu.generation(),
             format,
             source_srgb,
             layout,
             pipeline,
             bindings: Vec::new(),
-        }
+        })
     }
 
     pub(crate) fn matches(

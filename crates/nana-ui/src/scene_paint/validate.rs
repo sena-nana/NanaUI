@@ -31,6 +31,11 @@ pub enum ScenePaintError {
     /// An earlier frame painted this target and is neither submitted nor
     /// dropped yet. `None` is the state behind `SceneWgpuPainter::paint`.
     TargetInFlight(Option<super::RenderTargetId>),
+    /// A built-in shader or pipeline could not be built on the active GPU device.
+    ShaderUnavailable {
+        label: &'static str,
+        detail: String,
+    },
 }
 
 impl fmt::Display for ScenePaintError {
@@ -77,6 +82,10 @@ impl fmt::Display for ScenePaintError {
             Self::TargetInFlight(None) => {
                 formatter.write_str("the painter's target is still held by an unsubmitted frame")
             }
+            Self::ShaderUnavailable { label, detail } => write!(
+                formatter,
+                "shader `{label}` is unavailable on the active GPU device: {detail}"
+            ),
         }
     }
 }

@@ -439,7 +439,7 @@ impl ExternalSurface {
         if gpu.is_lost() {
             return Err(ExternalSurfaceError::DeviceLost);
         }
-        let painter = SceneWgpuPainter::new_with_presentation(gpu, config.presentation);
+        let painter = SceneWgpuPainter::try_new_with_presentation(gpu, config.presentation)?;
         Self::build(gpu, config, Some(painter), 0)
     }
 
@@ -584,10 +584,14 @@ impl ExternalSurface {
             });
         }
         let slots = create_slots(gpu, config)?;
-        let painter = self
-            .painter
-            .is_some()
-            .then(|| SceneWgpuPainter::new_with_presentation(gpu, config.presentation));
+        let painter = if self.painter.is_some() {
+            Some(SceneWgpuPainter::try_new_with_presentation(
+                gpu,
+                config.presentation,
+            )?)
+        } else {
+            None
+        };
         self.drain_events();
         self.config = config;
         self.gpu = gpu.clone();
@@ -620,10 +624,14 @@ impl ExternalSurface {
             return Ok(());
         }
         let slots = create_slots(gpu, self.config)?;
-        let painter = self
-            .painter
-            .is_some()
-            .then(|| SceneWgpuPainter::new_with_presentation(gpu, self.config.presentation));
+        let painter = if self.painter.is_some() {
+            Some(SceneWgpuPainter::try_new_with_presentation(
+                gpu,
+                self.config.presentation,
+            )?)
+        } else {
+            None
+        };
         self.gpu = gpu.clone();
         self.painter = painter;
         self.slots = slots;
@@ -920,7 +928,7 @@ impl ExternalSurface {
                 .as_mut()
                 .ok_or(ExternalSurfaceError::NoPainter)?,
         };
-        painter.select_presentation(self.config.presentation);
+        painter.try_select_presentation(self.config.presentation)?;
         painter.set_alpha_encoding(encoding);
         painter.paint_target(
             id,

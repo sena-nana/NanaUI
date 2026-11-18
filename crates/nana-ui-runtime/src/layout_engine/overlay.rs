@@ -289,6 +289,7 @@ pub(super) fn place_modal_slot(
         containing,
         viewport,
         parent_font_px,
+        None,
         nodes,
         intrinsic,
         output,

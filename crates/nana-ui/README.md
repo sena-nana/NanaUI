@@ -1,12 +1,14 @@
 # nana-ui
 
-NanaUI 的门面 crate，也是应用直接依赖的那一个。
+English · [简体中文](README.zh-CN.md)
 
-它提供应用入口（`NanaApplication`、`RuntimeApplication`、`RuntimeProgram`）、基于 winit 和 `nana-window` 的桌面宿主，以及把 `UiScene` 画进宿主 WGPU 帧的 `SceneWgpuPainter`。控件、视图和 `AppContext` 经 `nana_ui::runtime` 重新导出，`nana-gpu` 的 `GpuContext`、`FrameContext` 等合同类型也从这里拿。宿主纹理和 `CustomRenderNode` 让 GPU 画面作为普通节点进入界面树。
+NanaUI's facade crate and the single crate applications depend on directly.
 
-保留树、组件和布局在 [`nana-ui-runtime`](../nana-ui-runtime)，场景在 [`nana-ui-scene`](../nana-ui-scene)，本 crate 只负责把它们接到窗口和 GPU 上。
+It provides application entry points (`NanaApplication`, `RuntimeApplication`, `RuntimeProgram`), the desktop host built on `winit` and `nana-window`, and `SceneWgpuPainter` for painting a `UiScene` into host WGPU frames. Controls, declarative views, and `AppContext` are re-exported through `nana_ui::runtime`, and `nana-gpu` contract types such as `GpuContext` and `FrameContext` are exposed here as well. Host textures and `CustomRenderNode` let GPU content enter the UI tree as ordinary nodes.
 
-## 示例
+The retained tree, components, and layout live in [`nana-ui-runtime`](../nana-ui-runtime), and scene extraction lives in [`nana-ui-scene`](../nana-ui-scene); this crate wires them to native windows and the GPU.
+
+## Example
 
 ```rust
 fn main() -> Result<(), nana_ui::HostedRunError> {
@@ -23,7 +25,7 @@ fn main() -> Result<(), nana_ui::HostedRunError> {
 }
 ```
 
-`Counter` 实现了 `ApplicationState`，完整代码见 `examples/application-counter.rs`：
+`Counter` implements `ApplicationState`; the full example is in `examples/application-counter.rs`:
 
 ```bash
 cargo run -p nana-ui --example application-counter --features hosted,bundled-fonts
@@ -31,33 +33,37 @@ cargo run -p nana-ui --example application-counter --features hosted,bundled-fon
 
 ## Features
 
-默认开启 `wgpu-backends`、`icu`、`snippet-transforms` 和 `svg`，桌面应用通常再加 `hosted`，或直接用 `full`。用 `default-features = false` 的应用要自己点名用到的那几项。
+No features are enabled by default (`default = []`). Desktop applications typically enable `hosted` (plus `bundled-fonts`, `view-macro`, or any needed optional capabilities), or use `full` for the convenience desktop bundle.
 
-- `hosted`：桌面宿主，包括窗口、Surface、帧调度和平台无障碍适配，隐含 `gpu`。
-- `gpu`：`SceneWgpuPainter`、宿主纹理、帧交换和无窗口输出。
-- `wgpu-backends`（默认）：打开平台上的全部 WGPU 后端，只在 `gpu` 开启时生效。
-- `icu`（默认）：用 ICU4X 做数字、日期和复数格式化。
-- `snippet-transforms`（默认）：snippet 里的正则变换（`${1/(.*)/${1:/upcase}/}`）。关闭后 snippet 照常展开和联动，变换原样返回，正则引擎（约 0.7 MiB）不进二进制。
-- `svg`（默认）：SVG 图片，即 `url()` 纹理和 `Image` 里的 SVG 文档，以及宿主包的只有 SVG、没有 shapes 的图标。图标按自己的几何绘制，不需要它。关闭后 SVG 图片按无法读取的文件处理，`usvg`、`resvg`、`tiny-skia`（约 0.8 MiB）不进二进制。只在 `gpu` 开启时生效。
-- `full`：`bundled-fonts`、`components`、`hosted`、`syntax-highlighting`、`icu`、`snippet-transforms` 和 `svg`。
-- `bundled-fonts`：注册内置的 Noto Sans SC 并设为界面默认字体（约 4.2 MiB）。不开则界面文字与 SVG 文字都用系统字体；缺中日韩字体的 Linux 上会显示不出中文。
-- `components`：打开 `calendar`、`charts`、`controls`、`graph-canvas`、`image-viewer`、`rich-text` 六个控件族，也可以单独开启。
-- `syntax-highlighting`：代码块语法高亮。
-- `view-macro`：`view!`、`css!` 和 `stylesheet!` 宏。
-- `icons-tabler`：完整的 Tabler 图标目录（`nana_ui::icons_tabler`）。
-- `packaged-resources`：挂载 `.nrpack` 资源包并响应 `NANA_PACKAGE_VALIDATE` 自检。
-- `wgpu-interop`：访问 `GpuContext` 背后的 WGPU 对象，自己录制管线时才需要。
-- `native-export`（仅 Windows）：把窗口输出导出为 DX12 共享纹理。
-- `accesskit-tree`：只产出 AccessKit `TreeUpdate`，给自己接平台适配器的宿主用。
-- `reactive-trace`：记录响应式更新的因果链，用于调试。
-- `no-default-app-icon`：不链接默认应用图标，只应由应用二进制打开。
+- `hosted`: desktop host including windows, surfaces, frame scheduling, and platform accessibility, implying `gpu`.
+- `gpu`: `SceneWgpuPainter`, host textures, frame exchange, and windowless output. Uses the platform's primary backend (`metal` on Apple, `dx12` on Windows, `vulkan` on Unix) unless combined with `wgpu-backends` or custom `wgpu` backend features.
+- `wgpu-backends`: enables the standard cross-platform WGPU backends (`dx12`, `vulkan`, `gles`, `metal`) when `gpu` is enabled.
+- `icu`: opt-in ICU4X locale formatting for numbers, dates, and plurals (`PlainFormatter` when disabled).
+- `snippet-transforms`: opt-in regular-expression transforms in snippets (`${1/(.*)/${1:/upcase}/}`). When disabled, snippets still expand and link placeholders cleanly and transforms return values unchanged without linking the regex engine (saving about 0.7 MiB), emitting a one-shot `runtime.snippet.transform_unavailable` diagnostic event when invoked.
+- `svg`: opt-in SVG image decoding for `url()` textures, `Image`, and SVG-backed host icons (`usvg`/`resvg`/`tiny-skia`, saving about 0.8 MiB when off; vector icons render from their own geometry without it). Effective only with `gpu`. Emits `resource.image_codec_unavailable` if an SVG is loaded while disabled.
+- `http-fetch`: opt-in built-in `http(s)://` image/resource fetching (forwards `nana-ui-platform/fetch`). Without it (or a custom `FetchHost`), remote `http(s)://` requests are skipped and emit `resource.fetch_unavailable`.
+- `image-codecs-extra`: opt-in JPEG, GIF, and WebP decoding in `image` (PNG stays available). Emits `resource.image_codec_unavailable` when an excluded format is decoded.
+- `runtime-wgsl`: opt-in runtime WGSL compilation (`naga` / `wgpu` WGSL fallback; implied by `full`). Without it, `gpu` loads precompiled shader archives (`stages.msl.zz` on macOS 14+ / iOS 17+ and compressed Naga IR elsewhere).
+- `vector-boolean`: opt-in `i_overlay` polygon boolean simplification in `nana-ui-scene` (included in `components` and `rich-text`). When disabled, custom paint uses the built-in integer planar sweep-line boolean solver cleanly for self-intersections, nested holes/islands, clips, strokes, and mitered outlines.
+- `full`: convenience desktop bundle enabling `bundled-fonts`, `components`, `hosted`, `http-fetch`, `icu`, `image-codecs-extra`, `runtime-wgsl`, `snippet-transforms`, `svg`, `syntax-highlighting`, and `wgpu-backends`.
+- `bundled-fonts`: embeds and registers Noto Sans SC as the default UI font (about 4.2 MiB); without it, text falls back to system fonts.
+- `components`: enables `calendar`, `charts`, `controls`, `graph-canvas`, `image-viewer`, `qr-code`, `rich-text`, and `vector-boolean`.
+- `syntax-highlighting`: syntax highlighting for code blocks.
+- `view-macro`: `view!`, `css!`, and `stylesheet!` macros.
+- `icons-tabler`: full Tabler icon catalog (`nana_ui::icons_tabler`).
+- `packaged-resources`: `.nrpack` resource pack mounting and `NANA_PACKAGE_VALIDATE` self-check.
+- `wgpu-interop`: exposes underlying WGPU objects on `GpuContext` for custom render pipelines.
+- `native-export` (Windows only): exports window output as a DX12 shared texture.
+- `accesskit-tree`: exports AccessKit `TreeUpdate` only, for hosts wiring their own platform adapter.
+- `reactive-trace`: records reactive causality chains for debugging.
+- `no-default-app-icon`: skips linking the default application icon (for final application binaries only).
 
-## 测试
+## Tests
 
 ```bash
-cargo test -p nana-ui --lib --features hosted,gpu
+cargo test -p nana-ui --lib --features hosted,gpu -- --test-threads=1
 ```
 
-不带 `gpu` / `hosted` 时，这两个 feature 后面的模块不会编译，测试也不会运行。GPU 相关测试需要可用的适配器，其余命令见 [`.github/workflows/ci.yml`](../../.github/workflows/ci.yml)。
+Without `gpu` or `hosted`, modules gated behind those features are skipped and their tests do not run. GPU tests require an available adapter; see [`.github/workflows/ci.yml`](../../.github/workflows/ci.yml) for the full matrix.
 
-更多内容见 [快速开始](../../docs/guide/quick-start.md)、[应用 API](../../docs/reference/application-api.md) 和 [实时画面与 GPU 集成](../../docs/reference/gpu.md)。
+See also [Quick Start](../../docs/en/guide/quick-start.md), [Application API](../../docs/en/reference/application-api.md), [Layout and Feature Migration](../../docs/en/guide/migration-layout-and-features.md), and [Live GPU Content](../../docs/en/reference/gpu.md).

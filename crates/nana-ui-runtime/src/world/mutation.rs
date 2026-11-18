@@ -36,7 +36,9 @@ pub(super) struct ValidationPlan<'a> {
     pub(super) accessibility: NodeMap<AccessibilityState>,
     overlay_dependents: NodeMap<NodeSet>,
     affected_overlay_hosts: NodeSet,
-    /// Nodes visited by whole-set walks during this validation.
+    /// Nodes visited by whole-set walks during this validation. Reported through
+    /// `UiWorld::validation_nodes_scanned` so a reintroduced world scan fails a
+    /// test instead of silently costing a frame.
     pub(super) scanned: usize,
     /// Child-list entries `leaving` filtered, for cost tests.
     #[cfg(test)]
@@ -1324,6 +1326,7 @@ impl UiWorld {
                 self.record_topology_invalidation(*id);
                 self.dirty_entities.insert(*id);
                 self.pending_work_revision = self.pending_work_revision.saturating_add(1);
+                self.spawned_since_drain += 1;
                 report.created += 1;
                 self.refresh_root_membership(*id);
             }
@@ -1684,11 +1687,22 @@ impl UiWorld {
                     }
                     _ => false,
                 };
+                let seeds_before = self.layout_seeds_created;
                 self.nodes.set_custom_render(*id, content.clone());
-                if !same_resource {
+                if same_resource {
+                    // A frame, a texture generation, a fit: what the node shows
+                    // moved and its size did not. Paint.
+                    self.counters.pending_drain_counts.replaced_content_updates += 1;
+                } else {
                     self.reindex_replaced(*id);
                 }
                 self.mark(*id, DirtyMask::RENDER);
+                if same_resource {
+                    self.counters
+                        .pending_drain_counts
+                        .replaced_content_only_layout_invalidations +=
+                        (self.layout_seeds_created - seeds_before) as usize;
+                }
             }
             UiMutation::SetPainter { id, painter } => {
                 let changed = match painter {
@@ -2711,6 +2725,14 @@ impl UiWorld {
         }
     }
 
+    /// A skipped no-op that sets the typography scale a scope already has
+    /// counts as one: nothing is visited for it.
+    pub(crate) fn note_noop_text_scale(&mut self, mutation: &UiMutation) {
+        if matches!(mutation, UiMutation::SetTextScale { .. }) {
+            self.note_equivalent_text_scale();
+        }
+    }
+
     /// Whether committing `queue` would change nothing: every mutation in it
     /// is a structural no-op. A no-op changes nothing, so judging each one
     /// against the state the batch starts from is exact.
@@ -2887,9 +2909,11 @@ impl UiWorld {
                 return Err(UiWorldError::InvalidLayout(placement.id));
             }
         }
+        let mut scanned = 0usize;
         if !queue.is_empty() && !self.validate_simple_mutation(queue.as_slice())? {
             let mut plan = ValidationPlan::new(self);
             validated = plan.validate(queue.as_slice());
+            scanned = plan.scanned;
             #[cfg(test)]
             let steps = plan.child_list_steps;
             #[cfg(test)]
@@ -2897,6 +2921,7 @@ impl UiWorld {
                 self.child_list_steps += steps;
             }
         }
+        self.validation_nodes_scanned = self.validation_nodes_scanned.saturating_add(scanned);
         validated?;
         // A skipped no-op changes nothing, so the generation moves with the
         // first mutation that does; a batch of nothing but no-ops keeps it.
@@ -2947,6 +2972,7 @@ impl UiWorld {
                         .map_or(1, |rest| self.unlink_removal_run(rest));
             }
             if self.is_structural_noop(mutation) {
+                self.note_noop_text_scale(mutation);
                 continue;
             }
             if !applied {
@@ -2973,7 +2999,16 @@ impl UiWorld {
                 | UiMutation::SetScrollMetrics { id, .. } => Some(*id),
                 _ => None,
             };
+            let seeds_before = self.layout_seeds_created;
             self.apply(mutation, &mut report);
+            if matches!(
+                mutation,
+                UiMutation::RequestFocus { .. }
+                    | UiMutation::SetInteraction { .. }
+                    | UiMutation::SetAccessibility { .. }
+            ) {
+                self.note_state_seeds(seeds_before);
+            }
             if let Some(id) = layout_result_id {
                 layout_result_ids.push(id);
             }
@@ -3109,6 +3144,11 @@ impl UiWorld {
 
     /// Store `id`'s scrolling area and clamp its offset into it.
     fn store_scroll_metrics(&mut self, id: StableNodeId, metrics: Option<ScrollMetrics>) -> bool {
+        if scroll_viewport_size(self.nodes.scroll_metrics(id).copied())
+            != scroll_viewport_size(metrics)
+        {
+            self.counters.pending_drain_counts.scroll_viewport_updates += 1;
+        }
         self.nodes.set_scroll_metrics(id, metrics);
         let current = self.nodes.scroll_offset(id);
         let clamped = self.clamp_scroll_offset(id, current);
@@ -3548,6 +3588,9 @@ impl UiWorld {
                 self.mark_keeping_render_reason(id, DirtyMask::RENDER);
             }
         }
+        self.bump_last_counters(|counters| {
+            counters.record_layout_translations(roots.len(), 0);
+        });
     }
 }
 
@@ -3760,6 +3803,17 @@ impl UiWorld {
         }
         // A write's own counts; a variant counts as a responsive result.
         if authored.is_some() {
+            if changed.is_empty() && presentation_eq {
+                self.counters
+                    .pending_layout_invalidations_counted
+                    .layout_equivalent_mutations_skipped += 1;
+                self.counters
+                    .pending_drain_counts
+                    .equivalent_style_layout_skips += 1;
+            }
+            if !style_layout_invalidation.is_empty() {
+                self.counters.pending_drain_counts.style_to_layout_seeds += 1;
+            }
             self.release_rewritten_holds(id, &previous_authored, &next_authored);
         }
         self.sync_node_presence(id);

@@ -41,12 +41,31 @@ pub(super) fn white_mask(icon: Icon, pixel_size: u32) -> Option<Vec<u8>> {
     Some(rgba)
 }
 
+#[cfg(not(feature = "svg"))]
+fn emit_svg_codec_unavailable_once(icon: Icon) {
+    use std::collections::HashSet;
+    use std::sync::{Mutex, OnceLock};
+
+    static REPORTED: OnceLock<Mutex<HashSet<usize>>> = OnceLock::new();
+    let set = REPORTED.get_or_init(|| Mutex::new(HashSet::new()));
+    let Ok(mut guard) = set.lock() else {
+        return;
+    };
+    if guard.len() < 1024 && guard.insert(icon.as_ptr() as usize) {
+        nana_diagnostics::event!(nana_diagnostics::framework::resource::IMAGE_CODEC_UNAVAILABLE);
+    }
+}
+
 /// An icon a host wrapped with no shapes is drawn from its SVG, when the
 /// application reads SVG at all.
 fn from_svg(icon: Icon, pixel_size: u32) -> Option<Vec<u8>> {
     #[cfg(feature = "svg")]
     if !icon.svg().is_empty() {
         return nana_svg_raster::rasterize_white_mask(icon.svg(), pixel_size, pixel_size);
+    }
+    #[cfg(not(feature = "svg"))]
+    if !icon.svg().is_empty() {
+        emit_svg_codec_unavailable_once(icon);
     }
     let _ = (icon, pixel_size);
     None
@@ -510,5 +529,88 @@ mod tests {
         assert_eq!(mask[(2 * 24 + 2) * 4 + 3], 0, "the corner is outside");
         assert_eq!(ink(&mask, 24), (6, 6, 17, 17));
         assert!(white_mask(Icon::from_data(&EMPTY), 24).is_none());
+    }
+}
+
+#[cfg(all(test, not(feature = "svg")))]
+mod diagnostic_tests {
+    use super::*;
+
+    #[test]
+    fn svg_only_icon_without_feature_emits_codec_unavailable_once_per_key() {
+        const CHILD: &str = "NANA_UI_TEST_ICON_RASTER_SVG_CHILD";
+        if std::env::var_os(CHILD).is_none() {
+            crate::test_gpu::run_child_with_timeout(
+                "scene_paint::icon_raster::diagnostic_tests::svg_only_icon_without_feature_emits_codec_unavailable_once_per_key",
+                CHILD,
+                "1",
+            );
+            return;
+        }
+
+        static NEXT_DIR: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+        let seq = NEXT_DIR.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let dir = std::env::temp_dir().join(format!(
+            "nana-icon-raster-diag-{}-{seq}",
+            std::process::id()
+        ));
+        let guard = nana_diagnostics::install(
+            nana_diagnostics::DiagnosticsConfig {
+                min_severity: nana_diagnostics::Severity::Debug,
+                persist: nana_diagnostics::PersistMode::All,
+                poll_interval: std::time::Duration::from_millis(5),
+                panic_hook: false,
+                ..nana_diagnostics::DiagnosticsConfig::default()
+            },
+            nana_diagnostics::SessionMetadata::new(
+                "dev.nana.icon-raster-test",
+                "Icon raster diagnostics",
+                "0",
+            ),
+            nana_diagnostics::DiagnosticsPaths::new(dir.join("logs"), dir.join("crash")),
+        )
+        .expect("isolated child owns global diagnostics");
+        nana_diagnostics::register_thread();
+
+        static SVG_ONLY: nana_ui_core::IconData = nana_ui_core::IconData {
+            name: "svg-only",
+            shapes: &[],
+            svg: r#"<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24"/>"#,
+        };
+        static EMPTY: nana_ui_core::IconData = nana_ui_core::IconData {
+            name: "empty",
+            shapes: &[],
+            svg: "",
+        };
+
+        assert!(white_mask(Icon::from_data(&SVG_ONLY), 24).is_none());
+        assert!(white_mask(Icon::from_data(&SVG_ONLY), 32).is_none());
+        assert!(white_mask(Icon::from_data(&EMPTY), 24).is_none());
+
+        assert!(
+            guard
+                .diagnostics()
+                .flush(false, std::time::Duration::from_secs(5))
+        );
+        let log = guard.diagnostics().current_log();
+        drop(guard);
+
+        let file = nana_diagnostics::nlog::read_file(log.expect("session log was opened")).unwrap();
+        let count = file
+            .entries
+            .iter()
+            .filter(|entry| {
+                matches!(
+                    entry,
+                    nana_diagnostics::nlog::Entry::Event { key, .. }
+                        if file.event_name(*key) == Some("resource.image_codec_unavailable")
+                )
+            })
+            .count();
+        let _ = std::fs::remove_dir_all(&dir);
+        assert_eq!(
+            count, 1,
+            "expected one image_codec_unavailable per svg icon key"
+        );
     }
 }

@@ -1919,6 +1919,18 @@ impl NodeStore {
             == Some(backend)
     }
 
+    pub(crate) fn note_text_scale(&mut self, id: StableNodeId) -> bool {
+        self.text_nodes
+            .get_mut(&id)
+            .is_some_and(crate::text_node::TextNodeState::note_scale)
+    }
+
+    pub(crate) fn take_text_scale_pending(&mut self, id: StableNodeId) -> bool {
+        self.text_nodes
+            .get_mut(&id)
+            .is_some_and(crate::text_node::TextNodeState::take_scale_pending)
+    }
+
     /// Records a change to `id`'s text. See [`crate::text_node::TextDirty`].
     pub(crate) fn invalidate_text(&mut self, id: StableNodeId, dirty: crate::text_node::TextDirty) {
         if dirty.is_empty() {

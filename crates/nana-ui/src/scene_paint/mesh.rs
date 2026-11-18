@@ -1194,12 +1194,23 @@ impl MeshPipeline {
     pub(super) fn cached_pipeline(&self) -> &wgpu::RenderPipeline {
         &self.pipeline
     }
+    #[cfg(test)]
+    #[allow(dead_code)]
     pub(super) fn new_with_policy(
         device: &wgpu::Device,
         format: wgpu::TextureFormat,
         policy: Option<&nana_gpu::GpuDeviceState>,
         precompiled: bool,
     ) -> Self {
+        Self::try_new_with_policy(device, format, policy, precompiled).expect("mesh test pipeline")
+    }
+
+    pub(super) fn try_new_with_policy(
+        device: &wgpu::Device,
+        format: wgpu::TextureFormat,
+        policy: Option<&nana_gpu::GpuDeviceState>,
+        precompiled: bool,
+    ) -> Result<Self, super::validate::ScenePaintError> {
         let shader = super::wgsl::program_joined!(
             "nana-ui.scene.triangle.solid.shader",
             [
@@ -1291,11 +1302,33 @@ impl MeshPipeline {
             bind_group_layouts: &[Some(&bind_layout)],
             immediate_size: 0,
         });
-        let pipeline = cached_mesh_pipeline(policy, device, &shader, &layout, format, 1, 1);
-        let pipeline_msaa = cached_mesh_pipeline(policy, device, &shader, &layout, format, 4, 2);
-        let path_pipeline = cached_path_pipeline(policy, device, &shader, &layout, format, 1, 3);
-        let path_pipeline_msaa =
-            cached_path_pipeline(policy, device, &shader, &layout, format, 4, 4);
+        let pipeline = try_cached_mesh_pipeline(policy, device, &shader, &layout, format, 1, 1)?;
+        let pipeline_msaa =
+            try_cached_mesh_pipeline(policy, device, &shader, &layout, format, 4, 2)?;
+        let path_pipeline = try_cached_path_pipeline(
+            policy,
+            device,
+            &shader,
+            &layout,
+            format,
+            1,
+            "path_fs_main",
+            wgpu::BlendState::PREMULTIPLIED_ALPHA_BLENDING,
+            3,
+            2,
+        )?;
+        let path_pipeline_msaa = try_cached_path_pipeline(
+            policy,
+            device,
+            &shader,
+            &layout,
+            format,
+            4,
+            "path_fs_main",
+            wgpu::BlendState::PREMULTIPLIED_ALPHA_BLENDING,
+            4,
+            2,
+        )?;
         // dst · (1 − coverage)
         let erase = wgpu::BlendComponent {
             src_factor: wgpu::BlendFactor::Zero,
@@ -1308,7 +1341,8 @@ impl MeshPipeline {
             dst_factor: wgpu::BlendFactor::Zero,
             operation: wgpu::BlendOperation::Add,
         };
-        let erase_pipeline = create_path_pipeline(
+        let erase_pipeline = try_cached_path_pipeline(
+            policy,
             device,
             &shader,
             &layout,
@@ -1319,8 +1353,11 @@ impl MeshPipeline {
                 color: erase,
                 alpha: erase,
             },
-        );
-        let tint_pipeline = create_path_pipeline(
+            5,
+            3,
+        )?;
+        let tint_pipeline = try_cached_path_pipeline(
+            policy,
             device,
             &shader,
             &layout,
@@ -1331,9 +1368,12 @@ impl MeshPipeline {
                 color: tint,
                 alpha: tint,
             },
-        );
+            6,
+            4,
+        )?;
         // Erases what the node's mask takes away.
-        let keep_pipeline = create_path_pipeline(
+        let keep_pipeline = try_cached_path_pipeline(
+            policy,
             device,
             &shader,
             &layout,
@@ -1344,8 +1384,10 @@ impl MeshPipeline {
                 color: erase,
                 alpha: erase,
             },
-        );
-        Self {
+            7,
+            5,
+        )?;
+        Ok(Self {
             pipeline,
             pipeline_msaa,
             path_pipeline,
@@ -1373,7 +1415,7 @@ impl MeshPipeline {
             clip_intern: HashMap::new(),
             uploaded_clips: Vec::new(),
             corner_exponent: 2.0,
-        }
+        })
     }
 
     /// The scene's corner curve exponent, for the clips of the meshes and
@@ -1863,7 +1905,7 @@ fn mesh_bind_group(
     })
 }
 
-fn cached_mesh_pipeline(
+fn try_cached_mesh_pipeline(
     policy: Option<&nana_gpu::GpuDeviceState>,
     device: &wgpu::Device,
     shader: &super::wgsl::Program,
@@ -1871,76 +1913,43 @@ fn cached_mesh_pipeline(
     format: wgpu::TextureFormat,
     sample_count: u32,
     material: u64,
-) -> wgpu::RenderPipeline {
-    let create = || mesh_pipeline(device, shader, layout, format, sample_count);
-    if let Some(policy) = policy {
-        nana_gpu::__framework::render_pipeline_state(
-            policy,
-            nana_gpu::PipelineKey {
-                generation: policy.generation(),
-                target_format: nana_gpu::__framework::format_from_wgpu(format),
-                sample_count,
-                shader: 0x6d65_7368_736f_6c69,
-                layout: mesh_layout_key(),
-                material,
-                primitive: 0,
-                blend: 1,
-                depth: 0,
-                vertex_layout: std::mem::size_of::<MeshInstance>() as u64,
-            },
-            create,
-        )
-        .expect("mesh pipeline uses this context generation")
-    } else {
-        create()
-    }
-}
-
-fn cached_path_pipeline(
-    policy: Option<&nana_gpu::GpuDeviceState>,
-    device: &wgpu::Device,
-    shader: &super::wgsl::Program,
-    layout: &wgpu::PipelineLayout,
-    format: wgpu::TextureFormat,
-    sample_count: u32,
-    material: u64,
-) -> wgpu::RenderPipeline {
-    let create = || {
-        create_path_pipeline(
-            device,
-            shader,
-            layout,
-            format,
+) -> Result<wgpu::RenderPipeline, super::validate::ScenePaintError> {
+    shader.try_cached_pipeline(
+        policy,
+        |policy| nana_gpu::PipelineKey {
+            generation: policy.generation(),
+            target_format: nana_gpu::__framework::format_from_wgpu(format),
             sample_count,
-            "path_fs_main",
-            wgpu::BlendState::PREMULTIPLIED_ALPHA_BLENDING,
-        )
-    };
-    if let Some(policy) = policy {
-        nana_gpu::__framework::render_pipeline_state(
-            policy,
-            nana_gpu::PipelineKey {
-                generation: policy.generation(),
-                target_format: nana_gpu::__framework::format_from_wgpu(format),
+            shader: 0x6d65_7368_736f_6c69,
+            layout: mesh_layout_key(),
+            material,
+            primitive: 0,
+            blend: 1,
+            depth: 0,
+            vertex_layout: std::mem::size_of::<MeshInstance>() as u64,
+        },
+        device,
+        "solid_vs_main",
+        "solid_fs_main",
+        &[],
+        |vertex, vs_ep, fragment, fs_ep, _| {
+            build_mesh_pipeline_desc(
+                device,
+                layout,
+                format,
                 sample_count,
-                shader: 0x6d65_7368_7061_7468,
-                layout: mesh_layout_key(),
-                material,
-                primitive: 0,
-                blend: 2,
-                depth: 0,
-                vertex_layout: (std::mem::size_of::<GpuPathVertex>() as u64) << 32
-                    | std::mem::size_of::<GpuPathInstance>() as u64,
-            },
-            create,
-        )
-        .expect("path pipeline uses this context generation")
-    } else {
-        create()
-    }
+                vertex,
+                vs_ep,
+                fragment,
+                fs_ep,
+            )
+        },
+    )
 }
 
-fn create_path_pipeline(
+#[allow(clippy::too_many_arguments)]
+fn try_cached_path_pipeline(
+    policy: Option<&nana_gpu::GpuDeviceState>,
     device: &wgpu::Device,
     shader: &super::wgsl::Program,
     layout: &wgpu::PipelineLayout,
@@ -1948,143 +1957,182 @@ fn create_path_pipeline(
     sample_count: u32,
     fragment_entry: &str,
     blend: wgpu::BlendState,
-) -> wgpu::RenderPipeline {
-    shader.pipeline(
+    material: u64,
+    blend_key: u64,
+) -> Result<wgpu::RenderPipeline, super::validate::ScenePaintError> {
+    shader.try_cached_pipeline(
+        policy,
+        |policy| nana_gpu::PipelineKey {
+            generation: policy.generation(),
+            target_format: nana_gpu::__framework::format_from_wgpu(format),
+            sample_count,
+            shader: 0x6d65_7368_7061_7468,
+            layout: mesh_layout_key(),
+            material,
+            primitive: 0,
+            blend: blend_key,
+            depth: 0,
+            vertex_layout: (std::mem::size_of::<GpuPathVertex>() as u64) << 32
+                | std::mem::size_of::<GpuPathInstance>() as u64,
+        },
         device,
         "path_vs_main",
         fragment_entry,
         &[("PATH_SAMPLES", f64::from(sample_count))],
         |vertex, vertex_entry, fragment, resolved_fragment_entry, constants| {
-            device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-                label: Some("nana-ui.scene.path.pipeline"),
-                layout: Some(layout),
-                vertex: wgpu::VertexState {
-                    module: vertex,
-                    entry_point: Some(vertex_entry),
-                    buffers: &[
-                        Some(wgpu::VertexBufferLayout {
-                            array_stride: std::mem::size_of::<GpuPathVertex>() as u64,
-                            step_mode: wgpu::VertexStepMode::Vertex,
-                            attributes: &wgpu::vertex_attr_array!(
-                                0 => Float32x2,
-                                1 => Float32x2,
-                                2 => Float32x2,
-                                3 => Float32,
-                                4 => Float32x4,
-                            ),
-                        }),
-                        Some(wgpu::VertexBufferLayout {
-                            array_stride: std::mem::size_of::<GpuPathInstance>() as u64,
-                            step_mode: wgpu::VertexStepMode::Instance,
-                            attributes: &wgpu::vertex_attr_array!(
-                                5 => Float32x4,
-                                6 => Float32x4,
-                                7 => Float32,
-                                8 => Uint32,
-                                9 => Uint32,
-                                10 => Uint32,
-                            ),
-                        }),
-                    ],
-                    compilation_options: wgpu::PipelineCompilationOptions::default(),
-                },
-                fragment: Some(wgpu::FragmentState {
-                    module: fragment,
-                    entry_point: Some(resolved_fragment_entry),
-                    targets: &[Some(wgpu::ColorTargetState {
-                        format,
-                        blend: Some(blend),
-                        write_mask: wgpu::ColorWrites::ALL,
-                    })],
-                    compilation_options: wgpu::PipelineCompilationOptions {
-                        constants,
-                        ..Default::default()
-                    },
-                }),
-                // Tessellated triangles come in either winding.
-                primitive: wgpu::PrimitiveState {
-                    topology: wgpu::PrimitiveTopology::TriangleList,
-                    cull_mode: None,
-                    ..Default::default()
-                },
-                depth_stencil: None,
-                multisample: wgpu::MultisampleState {
-                    count: sample_count,
-                    mask: !0,
-                    alpha_to_coverage_enabled: false,
-                },
-                multiview_mask: None,
-                cache: None,
-            })
+            build_path_pipeline_desc(
+                device,
+                layout,
+                format,
+                sample_count,
+                blend,
+                vertex,
+                vertex_entry,
+                fragment,
+                resolved_fragment_entry,
+                constants,
+            )
         },
     )
 }
 
-fn mesh_pipeline(
+#[allow(clippy::too_many_arguments)]
+fn build_path_pipeline_desc(
     device: &wgpu::Device,
-    shader: &super::wgsl::Program,
     layout: &wgpu::PipelineLayout,
     format: wgpu::TextureFormat,
     sample_count: u32,
+    blend: wgpu::BlendState,
+    vertex: &wgpu::ShaderModule,
+    vertex_entry: &str,
+    fragment: &wgpu::ShaderModule,
+    resolved_fragment_entry: &str,
+    constants: &[(&str, f64)],
 ) -> wgpu::RenderPipeline {
-    shader.pipeline(
-        device,
-        "solid_vs_main",
-        "solid_fs_main",
-        &[],
-        |vertex, vs_ep, fragment, fs_ep, _| {
-            device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-                label: Some("nana-ui.scene.triangle.solid.pipeline"),
-                layout: Some(layout),
-                vertex: wgpu::VertexState {
-                    module: vertex,
-                    entry_point: Some(vs_ep),
-                    buffers: &[Some(wgpu::VertexBufferLayout {
-                        array_stride: std::mem::size_of::<MeshInstance>() as u64,
-                        step_mode: wgpu::VertexStepMode::Instance,
-                        attributes: &wgpu::vertex_attr_array!(
-                            0 => Float32x4,
-                            1 => Float32x2,
-                            2 => Float32x2,
-                            3 => Float32x2,
-                            4 => Uint32,
-                            5 => Float32,
-                            6 => Float32x4,
-                            7 => Float32x2,
-                        ),
-                    })],
-                    compilation_options: wgpu::PipelineCompilationOptions::default(),
-                },
-                fragment: Some(wgpu::FragmentState {
-                    module: fragment,
-                    // Both sample counts share the analytic-coverage fragment: MSAA
-                    // samples geometry, not the SDF, so it cannot own the edge.
-                    entry_point: Some(fs_ep),
-                    targets: &[Some(wgpu::ColorTargetState {
-                        format,
-                        // Premultiplied alpha, not BlendState::MAX (MAX would also
-                        // combine against dest quads in this pass).
-                        blend: Some(wgpu::BlendState::PREMULTIPLIED_ALPHA_BLENDING),
-                        write_mask: wgpu::ColorWrites::ALL,
-                    })],
-                    compilation_options: wgpu::PipelineCompilationOptions::default(),
+    device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+        label: Some("nana-ui.scene.path.pipeline"),
+        layout: Some(layout),
+        vertex: wgpu::VertexState {
+            module: vertex,
+            entry_point: Some(vertex_entry),
+            buffers: &[
+                Some(wgpu::VertexBufferLayout {
+                    array_stride: std::mem::size_of::<GpuPathVertex>() as u64,
+                    step_mode: wgpu::VertexStepMode::Vertex,
+                    attributes: &wgpu::vertex_attr_array!(
+                        0 => Float32x2,
+                        1 => Float32x2,
+                        2 => Float32x2,
+                        3 => Float32,
+                        4 => Float32x4,
+                    ),
                 }),
-                primitive: wgpu::PrimitiveState {
-                    topology: wgpu::PrimitiveTopology::TriangleList,
-                    front_face: wgpu::FrontFace::Cw,
-                    ..Default::default()
-                },
-                depth_stencil: None,
-                multisample: wgpu::MultisampleState {
-                    count: sample_count,
-                    mask: !0,
-                    alpha_to_coverage_enabled: false,
-                },
-                multiview_mask: None,
-                cache: None,
-            })
+                Some(wgpu::VertexBufferLayout {
+                    array_stride: std::mem::size_of::<GpuPathInstance>() as u64,
+                    step_mode: wgpu::VertexStepMode::Instance,
+                    attributes: &wgpu::vertex_attr_array!(
+                        5 => Float32x4,
+                        6 => Float32x4,
+                        7 => Float32,
+                        8 => Uint32,
+                        9 => Uint32,
+                        10 => Uint32,
+                    ),
+                }),
+            ],
+            compilation_options: wgpu::PipelineCompilationOptions::default(),
         },
-    )
+        fragment: Some(wgpu::FragmentState {
+            module: fragment,
+            entry_point: Some(resolved_fragment_entry),
+            targets: &[Some(wgpu::ColorTargetState {
+                format,
+                blend: Some(blend),
+                write_mask: wgpu::ColorWrites::ALL,
+            })],
+            compilation_options: wgpu::PipelineCompilationOptions {
+                constants,
+                ..Default::default()
+            },
+        }),
+        // Tessellated triangles come in either winding.
+        primitive: wgpu::PrimitiveState {
+            topology: wgpu::PrimitiveTopology::TriangleList,
+            cull_mode: None,
+            ..Default::default()
+        },
+        depth_stencil: None,
+        multisample: wgpu::MultisampleState {
+            count: sample_count,
+            mask: !0,
+            alpha_to_coverage_enabled: false,
+        },
+        multiview_mask: None,
+        cache: None,
+    })
+}
+
+#[allow(clippy::too_many_arguments)]
+fn build_mesh_pipeline_desc(
+    device: &wgpu::Device,
+    layout: &wgpu::PipelineLayout,
+    format: wgpu::TextureFormat,
+    sample_count: u32,
+    vertex: &wgpu::ShaderModule,
+    vs_ep: &str,
+    fragment: &wgpu::ShaderModule,
+    fs_ep: &str,
+) -> wgpu::RenderPipeline {
+    device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+        label: Some("nana-ui.scene.triangle.solid.pipeline"),
+        layout: Some(layout),
+        vertex: wgpu::VertexState {
+            module: vertex,
+            entry_point: Some(vs_ep),
+            buffers: &[Some(wgpu::VertexBufferLayout {
+                array_stride: std::mem::size_of::<MeshInstance>() as u64,
+                step_mode: wgpu::VertexStepMode::Instance,
+                attributes: &wgpu::vertex_attr_array!(
+                    0 => Float32x4,
+                    1 => Float32x2,
+                    2 => Float32x2,
+                    3 => Float32x2,
+                    4 => Uint32,
+                    5 => Float32,
+                    6 => Float32x4,
+                    7 => Float32x2,
+                ),
+            })],
+            compilation_options: wgpu::PipelineCompilationOptions::default(),
+        },
+        fragment: Some(wgpu::FragmentState {
+            module: fragment,
+            // Both sample counts share the analytic-coverage fragment: MSAA
+            // samples geometry, not the SDF, so it cannot own the edge.
+            entry_point: Some(fs_ep),
+            targets: &[Some(wgpu::ColorTargetState {
+                format,
+                // Premultiplied alpha, not BlendState::MAX (MAX would also
+                // combine against dest quads in this pass).
+                blend: Some(wgpu::BlendState::PREMULTIPLIED_ALPHA_BLENDING),
+                write_mask: wgpu::ColorWrites::ALL,
+            })],
+            compilation_options: wgpu::PipelineCompilationOptions::default(),
+        }),
+        primitive: wgpu::PrimitiveState {
+            topology: wgpu::PrimitiveTopology::TriangleList,
+            front_face: wgpu::FrontFace::Cw,
+            ..Default::default()
+        },
+        depth_stencil: None,
+        multisample: wgpu::MultisampleState {
+            count: sample_count,
+            mask: !0,
+            alpha_to_coverage_enabled: false,
+        },
+        multiview_mask: None,
+        cache: None,
+    })
 }
 
 /// Graph / TimeSeries (`pattern: None`: empty dash, empty colors, cap != Square)

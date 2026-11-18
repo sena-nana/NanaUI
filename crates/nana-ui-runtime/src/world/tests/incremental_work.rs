@@ -20,7 +20,7 @@ mod invalidation_classification {
     use nana_ui_core::{
         BoxShadowSpec, InvalidationKind, InvalidationReason, LayoutDependencyFootprint,
         LayoutFieldMask, LayoutInvalidation, LayoutStyle, LengthSpec, PaintTransform,
-        SemanticColorRole, VisibilitySpec,
+        SemanticColorRole, VisibilitySpec, WorkCounters,
     };
 
     use crate::world::reflow_oracle::{column, node, styled};
@@ -88,6 +88,16 @@ mod invalidation_classification {
         commit_style(context, id, |_| {});
     }
 
+    /// Layout invalidations created, zero-delta writes and equivalent writes
+    /// skipped between two counter snapshots.
+    fn classified_counts(before: &WorkCounters, after: &WorkCounters) -> (usize, usize, usize) {
+        (
+            after.layout_invalidations_created - before.layout_invalidations_created,
+            after.layout_invalidations_zero_delta - before.layout_invalidations_zero_delta,
+            after.layout_equivalent_mutations_skipped - before.layout_equivalent_mutations_skipped,
+        )
+    }
+
     #[test]
     fn issue255_equivalent_write_is_skipped_and_a_width_change_queues_one_typed_cause() {
         let mut context = AppContext::new();
@@ -95,20 +105,26 @@ mod invalidation_classification {
         settle(&mut context, document);
         let row = node(3);
 
+        let before = context.last_work_counters();
         rewrite_style(&mut context, row);
         // The same width, spelled as a fresh style object.
         commit_style(&mut context, row, |style| {
             Arc::make_mut(&mut style.layout).width = Some(LengthSpec::Px(200.0));
         });
+        let after = context.last_work_counters();
+        assert_eq!(classified_counts(&before, &after), (0, 2, 2));
         assert!(context.world().pending_layout_invalidation(row).is_empty());
         assert!(
             context.take_system_work().is_empty(),
             "an equivalent write schedules nothing"
         );
 
+        let before = context.last_work_counters();
         commit_style(&mut context, row, |style| {
             Arc::make_mut(&mut style.layout).width = Some(LengthSpec::Px(180.0));
         });
+        let after = context.last_work_counters();
+        assert_eq!(classified_counts(&before, &after), (1, 0, 0));
         let cause = context.world().pending_layout_invalidation(row);
         assert!(
             cause.reason.contains(InvalidationReason::STYLE),
@@ -187,9 +203,14 @@ mod invalidation_classification {
         );
     }
 
-    /// What classifying one width change emits in system work.
+    /// What classifying one width change moves on the counters.
     #[derive(Clone, Copy, Debug, PartialEq, Eq)]
     struct Classified {
+        created: usize,
+        zero_delta: usize,
+        skipped: usize,
+        footprints_read: usize,
+        validation_nodes_scanned: Option<usize>,
         frontier_seeds: usize,
         style_nodes: usize,
         render_nodes: usize,
@@ -205,13 +226,22 @@ mod invalidation_classification {
         );
         // Drain the install without laying out: only the write below is counted.
         let _ = context.take_system_work();
+        let before = context.last_work_counters();
         commit_style(&mut context, column, |style| {
             Arc::make_mut(&mut style.layout).width = Some(LengthSpec::Px(180.0));
         });
+        let after = context.last_work_counters();
         let work = context.take_system_work();
+        let (created, zero_delta, skipped) = classified_counts(&before, &after);
         assert_eq!(context.layout_invocations(), 0);
         (
             Classified {
+                created,
+                zero_delta,
+                skipped,
+                footprints_read: after.layout_dependency_edges_visited
+                    - before.layout_dependency_edges_visited,
+                validation_nodes_scanned: work.validation_nodes_scanned,
                 frontier_seeds: work.layout_frontier_seeds.len(),
                 style_nodes: work.style.len(),
                 render_nodes: work.render_extraction.len(),
@@ -232,6 +262,11 @@ mod invalidation_classification {
         let (small, small_cause) = classify_one_width_change(10_000);
         let (large, large_cause) = classify_one_width_change(100_000);
         assert_eq!(small, large);
+        assert_eq!(small.created, 1);
+        assert_eq!(small.zero_delta, 0);
+        assert_eq!(small.skipped, 0);
+        assert_eq!(small.footprints_read, 0);
+        assert_eq!(small.validation_nodes_scanned, Some(0));
         assert_eq!(small.frontier_seeds, 1);
         assert_eq!(small_cause, large_cause);
         assert!(small_cause.changed_inputs.contains(LayoutFieldMask::SIZING));
@@ -321,6 +356,7 @@ mod invalidation_classification {
         ];
         for (label, write) in writes {
             let invocations = context.layout_invocations();
+            let before = context.last_work_counters();
             commit_style(&mut context, row, |style| write(style));
             assert!(
                 context.world().pending_layout_invalidation(row).is_empty(),
@@ -332,9 +368,31 @@ mod invalidation_classification {
                 invocations,
                 "{label} must not run layout"
             );
+            let after = context.last_work_counters();
+            assert_eq!(
+                after.layout_invalidations_created, before.layout_invalidations_created,
+                "{label}"
+            );
+            assert_eq!(
+                after.layout_dependency_edges_visited, before.layout_dependency_edges_visited,
+                "{label}"
+            );
+            assert_eq!(
+                after.layout_frontier_seeds, before.layout_frontier_seeds,
+                "{label}"
+            );
+            assert_eq!(
+                after.layout_measure_nodes, before.layout_measure_nodes,
+                "{label}"
+            );
+            assert_eq!(
+                after.layout_placement_nodes, before.layout_placement_nodes,
+                "{label}"
+            );
         }
 
         let invocations = context.layout_invocations();
+        let before = context.last_work_counters();
         let mut queue = MutationQueue::new();
         queue.set_accessibility(
             row,
@@ -353,13 +411,32 @@ mod invalidation_classification {
             invocations,
             "accessibility must not run layout"
         );
+        let after = context.last_work_counters();
+        assert_eq!(
+            after.layout_invalidations_created, before.layout_invalidations_created,
+            "accessibility"
+        );
+        assert_eq!(
+            after.layout_dependency_edges_visited, before.layout_dependency_edges_visited,
+            "accessibility"
+        );
         assert_eq!(context.world().layout_box(row), Some(laid_out));
 
+        let before = context.last_work_counters();
         commit_style(&mut context, row, |style| {
             let layout = Arc::make_mut(&mut style.layout);
             layout.width = Some(LengthSpec::Px(180.0));
             layout.color = Some([0.9, 0.1, 0.1, 1.0]);
         });
+        let after = context.last_work_counters();
+        assert_eq!(
+            after.layout_invalidations_created,
+            before.layout_invalidations_created + 1
+        );
+        assert_eq!(
+            after.layout_dependency_edges_visited,
+            before.layout_dependency_edges_visited
+        );
         let cause = context.world().pending_layout_invalidation(row);
         assert!(cause.reason.contains(InvalidationReason::STYLE));
         assert!(cause.changed_inputs.contains(LayoutFieldMask::SIZING));
@@ -374,11 +451,23 @@ mod invalidation_classification {
         install_column(context.compat_world_mut(), 10_000);
         let column = node(2);
         let _ = context.take_system_work();
+        let before = context.last_work_counters();
         for _ in 0..1000 {
             commit_style(&mut context, column, |style| {
                 Arc::make_mut(&mut style.layout).width = Some(LengthSpec::Px(240.0));
             });
         }
+        let after = context.last_work_counters();
+        assert_eq!(classified_counts(&before, &after), (0, 1000, 1000));
+        assert_eq!(after.layout_frontier_seeds, before.layout_frontier_seeds);
+        assert_eq!(
+            after.layout_frontier_nodes_measure,
+            before.layout_frontier_nodes_measure
+        );
+        assert_eq!(
+            after.layout_frontier_nodes_placement,
+            before.layout_frontier_nodes_placement
+        );
         assert!(
             context
                 .world()
@@ -388,6 +477,7 @@ mod invalidation_classification {
         assert_eq!(context.layout_invocations(), 0);
         let idle = context.take_system_work();
         assert!(idle.is_empty());
+        assert_eq!(idle.validation_nodes_scanned, Some(0));
     }
 
     /// Bytes the pending-cause table holds: its buckets, each one id and one
@@ -695,10 +785,12 @@ mod dirty_frontier {
             counters.text.layouts_created > 0,
             "the text itself is laid out again"
         );
+        let work_counters = cards.context.last_work_counters();
         assert_eq!(counters.frontier.nodes_measure, 0);
         assert_eq!(counters.frontier.dependency_edges_visited, 0);
         assert_eq!(counters.layout_passes, 0);
         assert_eq!(counters.frontier.seeds, 0);
+        assert!(work_counters.layout_propagations_stopped >= 1);
         assert_eq!(cards.world().layout_box(label), Some(label_box));
         assert_eq!(cards.world().layout_box(card), Some(card_box));
         assert_eq!(
@@ -4125,6 +4217,14 @@ pub(super) mod theme_invalidation {
                 .unwrap();
             let counters = controls.frame();
             assert_eq!(Cost::from(counters), Cost::default(), "hover {step}");
+            let work_counters = controls.context.last_work_counters();
+            assert_eq!(work_counters.component_state_layout_seeds, 0);
+            assert_eq!(work_counters.theme_palette_layout_invalidations, 0);
+            let styles = controls
+                .world()
+                .last_theme_work_counters()
+                .style_nodes_considered;
+            assert!(styles <= 2 * 4, "hover {step}: {styles} styles resolved");
         }
     }
 
@@ -4191,8 +4291,16 @@ pub(super) mod theme_invalidation {
             let counters = controls.frame();
             assert_eq!(counters.frontier.seeds, 1);
             assert_eq!(counters.frontier.full_document_fallbacks, 0);
+            let work_counters = controls.context.last_work_counters();
+            assert_eq!(work_counters.style_to_layout_seeds, 1);
+            assert_eq!(work_counters.layout_full_document_fallbacks, 0);
             let after = controls.world().layout_box(button).unwrap();
             assert!(after.width > before.width, "{before:?} -> {after:?}");
+            let styles = controls
+                .world()
+                .last_theme_work_counters()
+                .style_nodes_considered;
+            assert!(styles <= 4, "{rows} rows: {styles} styles resolved");
             assert!(measured(&controls.context, row_id));
             costs.push(Cost::from(counters));
         }
@@ -4212,6 +4320,7 @@ pub(super) mod theme_invalidation {
         let page_style = controls.world().node_style(page).unwrap().clone();
         let mut page_respelled = page_style.clone();
         Arc::make_mut(&mut page_respelled.layout).direction = None;
+        let before = controls.context.last_work_counters();
         let before_invocations = controls.context.layout_invocations();
         for step in 0..1_000 {
             let mut queue = MutationQueue::new();
@@ -4232,6 +4341,12 @@ pub(super) mod theme_invalidation {
         assert!(work.style.is_empty());
         assert!(work.render_extraction.is_empty());
         assert_eq!(controls.context.layout_invocations(), before_invocations);
+        let after = controls.context.last_work_counters();
+        assert_eq!(
+            after.equivalent_style_layout_skips - before.equivalent_style_layout_skips,
+            2_000
+        );
+        assert_eq!(after.style_to_layout_seeds, before.style_to_layout_seeds);
     }
 
     /// A recipe patch reprojects the buttons that read it, and changes only the

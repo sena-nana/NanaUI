@@ -298,13 +298,24 @@ runtime Naga WGSL/IR translation from default Apple builds.
   `wgpu_hal::metal::PassthroughShader` into `MTLComputePipelineDescriptor` and
   `MTLRenderPipelineDescriptor` stage infos.
 - **`wgpu-hal` Metal**: `ShaderInput::Msl` now wraps compilation in
-  `autoreleasepool`, configures `MTLCompileOptions::setLanguageVersion` to
-  `private_caps.msl_version` and `setPreserveInvariance(true)`, and matches
+  `autoreleasepool`, configures `MTLCompileOptions::setLanguageVersion` from a
+  leading `// language: metal<maj>.<min>` header when present (clamped to
+  `private_caps.msl_version`, falling back to `private_caps.msl_version`) and
+  sets `setPreserveInvariance(true)`, and matches
   `load_shader`'s safe `.get(...).unwrap_or(...)` lookups in both
   `load_shader` and `create_compute_pipeline`. When `wgpu_hal::metal::stage_meta`
   is enabled at `debug` level alongside `naga-translation`, `load_shader` logs
   the translated entry-point name, workgroup size, sized bindings and MSL
-  source per stage for offline capture.
+  source per stage for offline capture. To keep checked-in precompiled shaders
+  pinned to NanaUI's Metal 3.1 minimum floor (macOS 14.0+ / iOS 17.0+) even
+  when regenerated on newer Apple OS releases (macOS 15/26+), `wgpu_hal::metal::Device`
+  adds two internal HAL helpers without touching the public `wgpu::` API:
+  `Device::msl_version(&self) -> (u8, u8)` (used at runtime to refuse precompiled
+  MSL 3.1 stages cleanly on older OS runtimes) and
+  `Device::set_precompile_msl_lang_version(Option<(u8, u8)>)` (plus optional
+  `NANA_WGPU_MSL_LANG_VERSION="3.1"` env hook during `naga-translation` in
+  `load_shader` to pin `naga::back::msl::Options::lang_version` and
+  `MTLCompileOptions::setLanguageVersion`).
 - **`wgpu-core`**: `Device::create_shader_module_passthrough` allows Metal
   passthrough modules without requiring `Features::PASSTHROUGH_SHADERS`,
   enabling `wgpu-interop` devices created with default features to adopt

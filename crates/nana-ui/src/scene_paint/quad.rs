@@ -220,17 +220,28 @@ impl QuadPipeline {
     }
     #[cfg(test)]
     pub(super) fn new(device: &wgpu::Device, format: wgpu::TextureFormat) -> Self {
-        Self::new_with_policy(device, format, None, false)
+        Self::try_new_with_policy(device, format, None, false).expect("quad test pipeline")
     }
 
-    /// `precompiled`: the device runs [`super::precompiled`] stages, which
-    /// spare it compiling the family's WGSL when they are still current.
+    #[cfg(test)]
+    #[allow(dead_code)]
     pub(super) fn new_with_policy(
         device: &wgpu::Device,
         format: wgpu::TextureFormat,
         policy: Option<&nana_gpu::GpuDeviceState>,
         precompiled: bool,
     ) -> Self {
+        Self::try_new_with_policy(device, format, policy, precompiled).expect("quad test pipeline")
+    }
+
+    /// `precompiled`: the device runs [`super::precompiled`] stages, which
+    /// spare it compiling the family's WGSL when they are still current.
+    pub(super) fn try_new_with_policy(
+        device: &wgpu::Device,
+        format: wgpu::TextureFormat,
+        policy: Option<&nana_gpu::GpuDeviceState>,
+        precompiled: bool,
+    ) -> Result<Self, super::validate::ScenePaintError> {
         // Parsed only when a pipeline compiles from WGSL after all.
         let program = super::wgsl::program_joined!(
             "nana-ui.scene.quad.solid.shader",
@@ -415,9 +426,9 @@ impl QuadPipeline {
             bind_group_layouts: &[Some(&bind_layout), Some(&motion_layout)],
             immediate_size: 0,
         });
-        let solid = |samples| solid_pipeline(device, &program, &layout, format, samples);
-        let pipeline = cached_solid_pipeline(policy, format, 1, 1, || solid(1));
-        let pipeline_msaa = cached_solid_pipeline(policy, format, 4, 2, || solid(4));
+        let pipeline = try_cached_solid_pipeline(policy, device, &program, &layout, format, 1, 1)?;
+        let pipeline_msaa =
+            try_cached_solid_pipeline(policy, device, &program, &layout, format, 4, 2)?;
         let instance_capacity = INITIAL_INSTANCES;
         let instances = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("nana-ui.scene.quad.instances"),
@@ -425,7 +436,7 @@ impl QuadPipeline {
             usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
-        Self {
+        Ok(Self {
             material_device: super::material::MaterialDevice::shared(device, policy),
             material_waker: None,
             material_bindings: Default::default(),
@@ -457,7 +468,7 @@ impl QuadPipeline {
             grid_scale: 1.0,
             corner_exponent: 2.0,
             shrink_frames: 0,
-        }
+        })
     }
 
     fn prepare_material_pipeline(
@@ -525,7 +536,7 @@ impl QuadPipeline {
                     let [bind, motion, material] = &layouts;
                     let layout=device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor { label:Some("surface material"), bind_group_layouts:&[Some(bind), Some(motion), Some(material), Some(material)], immediate_size:0 });
                     let program = super::wgsl::Program::material("surface material", source);
-                    Some(solid_pipeline(&device, &program, &layout, format, samples))
+                    try_solid_pipeline(&device, &program, &layout, format, samples).ok()
                 })
             };
             #[cfg(not(feature = "runtime-wgsl"))]
@@ -2192,43 +2203,57 @@ fn position_origin(spec: LengthSpec, box_len: f32, image_len: f32) -> f32 {
     }
 }
 
-fn cached_solid_pipeline(
+fn try_cached_solid_pipeline(
     policy: Option<&nana_gpu::GpuDeviceState>,
-    format: wgpu::TextureFormat,
-    sample_count: u32,
-    material: u64,
-    create: impl FnOnce() -> wgpu::RenderPipeline,
-) -> wgpu::RenderPipeline {
-    if let Some(policy) = policy {
-        return nana_gpu::__framework::render_pipeline_state(
-            policy,
-            nana_gpu::PipelineKey {
-                generation: policy.generation(),
-                target_format: nana_gpu::__framework::format_from_wgpu(format),
-                sample_count,
-                shader: 0x7175_6164_736f_6c69,
-                layout: quad_layout_key(),
-                material,
-                primitive: 0,
-                blend: 1,
-                depth: 0,
-                vertex_layout: std::mem::size_of::<SolidInstance>() as u64,
-            },
-            create,
-        )
-        .expect("quad pipeline uses this context generation");
-    }
-    create()
-}
-
-fn solid_pipeline(
     device: &wgpu::Device,
     program: &super::wgsl::Program,
     layout: &wgpu::PipelineLayout,
     format: wgpu::TextureFormat,
     sample_count: u32,
-) -> wgpu::RenderPipeline {
-    program.pipeline(
+    material: u64,
+) -> Result<wgpu::RenderPipeline, super::validate::ScenePaintError> {
+    program.try_cached_pipeline(
+        policy,
+        |policy| nana_gpu::PipelineKey {
+            generation: policy.generation(),
+            target_format: nana_gpu::__framework::format_from_wgpu(format),
+            sample_count,
+            shader: 0x7175_6164_736f_6c69,
+            layout: quad_layout_key(),
+            material,
+            primitive: 0,
+            blend: 1,
+            depth: 0,
+            vertex_layout: std::mem::size_of::<SolidInstance>() as u64,
+        },
+        device,
+        "solid_vs_main",
+        "solid_fs_main",
+        &[],
+        |vertex, vs_ep, fragment, fs_ep, _| {
+            solid_pipeline_from(
+                device,
+                vertex,
+                vs_ep,
+                fragment,
+                fs_ep,
+                layout,
+                format,
+                sample_count,
+            )
+        },
+    )
+}
+
+#[cfg(feature = "runtime-wgsl")]
+fn try_solid_pipeline(
+    device: &wgpu::Device,
+    program: &super::wgsl::Program,
+    layout: &wgpu::PipelineLayout,
+    format: wgpu::TextureFormat,
+    sample_count: u32,
+) -> Result<wgpu::RenderPipeline, super::validate::ScenePaintError> {
+    program.try_pipeline(
         device,
         "solid_vs_main",
         "solid_fs_main",
@@ -2270,6 +2295,7 @@ const SOLID_ATTRIBUTES: [wgpu::VertexAttribute; 16] = wgpu::vertex_attr_array!(
 
 /// [`solid_pipeline`] with its vertex and fragment stages in modules of their
 /// own, as precompiled stages come.
+#[allow(clippy::too_many_arguments)]
 fn solid_pipeline_from(
     device: &wgpu::Device,
     vertex: &wgpu::ShaderModule,

@@ -113,4 +113,9 @@ mod tests {
         assert_eq!(visual_order(&[0, 1, 1, 0]), vec![0, 2, 1, 3]);
         assert_eq!(visual_order(&[1, 2, 1]), vec![2, 1, 0]);
     }
+
+    #[test]
+    fn unicode_bidi_version_matches_manifest_pin() {
+        assert_eq!(unicode_bidi::UNICODE_VERSION, (16, 0, 0));
+    }
 }

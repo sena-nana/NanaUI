@@ -1,5 +1,9 @@
 use alloc::{borrow::ToOwned as _, sync::Arc, vec::Vec};
-use core::{mem::align_of, ptr::NonNull};
+use core::{
+    mem::align_of,
+    ptr::NonNull,
+    sync::atomic::{AtomicU16, Ordering},
+};
 
 use bytemuck::TransparentWrapper;
 use objc2::{
@@ -36,6 +40,69 @@ type DeviceResult<T> = Result<T, crate::DeviceError>;
 /// devices (Apple Watch S4–S9, SE, Ultra). Several AGXMetalS4 driver bugs
 /// require workarounds gated on this flag.
 const IS_WATCHOS_ILP32: bool = cfg!(target_pointer_width = "32");
+
+static PRECOMPILE_MSL_LANG_VERSION: AtomicU16 = AtomicU16::new(0);
+
+fn msl_lang_version_tuple(version: MTLLanguageVersion) -> (u8, u8) {
+    match version {
+        #[allow(deprecated)]
+        MTLLanguageVersion::Version1_0 => (1, 0),
+        MTLLanguageVersion::Version1_1 => (1, 1),
+        MTLLanguageVersion::Version1_2 => (1, 2),
+        MTLLanguageVersion::Version2_0 => (2, 0),
+        MTLLanguageVersion::Version2_1 => (2, 1),
+        MTLLanguageVersion::Version2_2 => (2, 2),
+        MTLLanguageVersion::Version2_3 => (2, 3),
+        MTLLanguageVersion::Version2_4 => (2, 4),
+        MTLLanguageVersion::Version3_0 => (3, 0),
+        MTLLanguageVersion::Version3_1 => (3, 1),
+        MTLLanguageVersion::Version3_2 => (3, 2),
+        MTLLanguageVersion::Version4_0 => (4, 0),
+        // Newer version, keep explicit fallback aligned with the latest variant.
+        _ => (4, 0),
+    }
+}
+
+fn mtl_lang_version_from_tuple(version: (u8, u8)) -> Option<MTLLanguageVersion> {
+    match version {
+        #[allow(deprecated)]
+        (1, 0) => Some(MTLLanguageVersion::Version1_0),
+        (1, 1) => Some(MTLLanguageVersion::Version1_1),
+        (1, 2) => Some(MTLLanguageVersion::Version1_2),
+        (2, 0) => Some(MTLLanguageVersion::Version2_0),
+        (2, 1) => Some(MTLLanguageVersion::Version2_1),
+        (2, 2) => Some(MTLLanguageVersion::Version2_2),
+        (2, 3) => Some(MTLLanguageVersion::Version2_3),
+        (2, 4) => Some(MTLLanguageVersion::Version2_4),
+        (3, 0) => Some(MTLLanguageVersion::Version3_0),
+        (3, 1) => Some(MTLLanguageVersion::Version3_1),
+        (3, 2) => Some(MTLLanguageVersion::Version3_2),
+        (4, 0) => Some(MTLLanguageVersion::Version4_0),
+        _ => None,
+    }
+}
+
+fn msl_header_lang_version(source: &str) -> Option<(u8, u8)> {
+    let first_line = source.lines().next()?.trim();
+    let rest = first_line.strip_prefix("// language: metal")?;
+    let (maj, min) = rest.split_once('.')?;
+    let maj = maj.parse::<u8>().ok()?;
+    let min = min.parse::<u8>().ok()?;
+    Some((maj, min))
+}
+
+#[cfg(feature = "naga-translation")]
+fn pinned_msl_lang_version() -> Option<(u8, u8)> {
+    let packed = PRECOMPILE_MSL_LANG_VERSION.load(Ordering::Acquire);
+    if packed != 0 {
+        return Some(((packed >> 8) as u8, (packed & 0xFF) as u8));
+    }
+    let raw = std::env::var("NANA_WGPU_MSL_LANG_VERSION").ok()?;
+    let (major, minor) = raw.trim().split_once('.')?;
+    let major = major.parse::<u8>().ok()?;
+    let minor = minor.parse::<u8>().ok()?;
+    (major > 0).then_some((major, minor))
+}
 
 struct CompiledShader {
     library: Retained<ProtocolObject<dyn MTLLibrary>>,
@@ -189,24 +256,12 @@ impl super::Device {
                     naga::proc::BoundsCheckPolicy::Unchecked
                 };
 
+                let lang_version = pinned_msl_lang_version().unwrap_or_else(|| {
+                    msl_lang_version_tuple(self.shared.private_caps.msl_version)
+                });
+
                 let options = naga::back::msl::Options {
-                    lang_version: match self.shared.private_caps.msl_version {
-                        #[allow(deprecated)]
-                        MTLLanguageVersion::Version1_0 => (1, 0),
-                        MTLLanguageVersion::Version1_1 => (1, 1),
-                        MTLLanguageVersion::Version1_2 => (1, 2),
-                        MTLLanguageVersion::Version2_0 => (2, 0),
-                        MTLLanguageVersion::Version2_1 => (2, 1),
-                        MTLLanguageVersion::Version2_2 => (2, 2),
-                        MTLLanguageVersion::Version2_3 => (2, 3),
-                        MTLLanguageVersion::Version2_4 => (2, 4),
-                        MTLLanguageVersion::Version3_0 => (3, 0),
-                        MTLLanguageVersion::Version3_1 => (3, 1),
-                        MTLLanguageVersion::Version3_2 => (3, 2),
-                        MTLLanguageVersion::Version4_0 => (4, 0),
-                        // Newer version, fall back to 3.2
-                        _ => (4, 0),
-                    },
+                    lang_version,
                     inline_samplers: Default::default(),
                     spirv_cross_compatibility: false,
                     fake_missing_bindings: false,
@@ -271,7 +326,10 @@ impl super::Device {
                 );
 
                 let options = MTLCompileOptions::new();
-                options.setLanguageVersion(self.shared.private_caps.msl_version);
+                let compile_version = mtl_lang_version_from_tuple(lang_version)
+                    .filter(|&pinned| pinned <= self.shared.private_caps.msl_version)
+                    .unwrap_or(self.shared.private_caps.msl_version);
+                options.setLanguageVersion(compile_version);
 
                 // https://developer.apple.com/documentation/metal/mtlcompileoptions/preserveinvariance
                 if available!(macos = 11.0, ios = 13.0, tvos = 14.0, visionos = 1.0) {
@@ -491,6 +549,18 @@ impl super::Device {
 
     pub fn raw_device(&self) -> &Retained<ProtocolObject<dyn MTLDevice>> {
         &self.shared.device
+    }
+
+    pub fn msl_version(&self) -> (u8, u8) {
+        msl_lang_version_tuple(self.shared.private_caps.msl_version)
+    }
+
+    pub fn set_precompile_msl_lang_version(version: Option<(u8, u8)>) {
+        let packed = match version {
+            Some((major, minor)) if major > 0 => (u16::from(major) << 8) | u16::from(minor),
+            _ => 0,
+        };
+        PRECOMPILE_MSL_LANG_VERSION.store(packed, Ordering::Release);
     }
 }
 
@@ -1339,7 +1409,14 @@ impl crate::Device for super::Device {
                 sized_bindings,
             } => autoreleasepool(|_| {
                 let options = MTLCompileOptions::new();
-                options.setLanguageVersion(self.shared.private_caps.msl_version);
+                let device_ver = self.shared.private_caps.msl_version;
+                let effective_ver = msl_header_lang_version(source)
+                    .and_then(|requested| {
+                        let cap = msl_lang_version_tuple(device_ver);
+                        mtl_lang_version_from_tuple(requested.min(cap))
+                    })
+                    .unwrap_or(device_ver);
+                options.setLanguageVersion(effective_ver);
                 if available!(macos = 11.0, ios = 13.0, tvos = 14.0, visionos = 1.0) {
                     options.setPreserveInvariance(true);
                 }

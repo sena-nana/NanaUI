@@ -369,6 +369,7 @@ impl RuntimeDocument {
                 .extract_nodes_reusing(&render_dirty.into_iter().collect::<Vec<_>>(), |id| {
                     held.extracted_node(id)
                 });
+            self.context.record_extract_reusing(&extracted, &moved);
             // Applying the delta to the retained scene is part of Extract, not
             // free: it walks the extracted nodes, rebuilds their primitives,
             // and copy-on-writes the scene when a renderer still holds the
@@ -1654,10 +1655,11 @@ mod tests {
             let scroll = world.scroll_offset(area.stable_id());
             let box_layout = world.layout_box(area.stable_id());
             let metrics = world.text_metrics(area.stable_id());
+            let counters = runtime.context().last_work_counters();
             println!(
-                "pass {pass}: idle={} updated={} prims={} gen={} scroll={:?} layout={:?} metrics={:?}",
+                "pass {pass}: idle={} changed={} prims={} gen={} scroll={:?} layout={:?} metrics={:?}",
                 update.is_idle(),
-                update.scene.updated_nodes,
+                counters.entities_changed,
                 update.scene.primitive_count,
                 update.generation,
                 scroll,
@@ -1665,9 +1667,9 @@ mod tests {
                 metrics.map(|m| (m.width, m.height)),
             );
             assert!(
-                update.is_idle() || update.scene.updated_nodes == 0,
-                "frame did not settle: updated={}",
-                update.scene.updated_nodes
+                update.is_idle() || counters.entities_changed == 0,
+                "frame did not settle: changed={}",
+                counters.entities_changed
             );
         }
     }
@@ -1718,8 +1720,10 @@ mod tests {
         assert!(layout.width > 0.0);
         assert_eq!(layout.height, 32.0);
         let generation = first.generation;
-        assert!(runtime.context().world().len() >= 1);
-        assert!(first.scene.updated_nodes > 0);
+        let first_counters = runtime.context().last_work_counters();
+        assert!(first_counters.entities_total >= 1);
+        assert!(first_counters.entities_changed > 0);
+        assert!(first_counters.render_nodes_extracted > 0);
         let first_profile = runtime.context().last_frame_profile().clone();
         assert_eq!(
             first_profile
@@ -1756,6 +1760,7 @@ mod tests {
         assert!(idle.is_idle());
         assert_eq!(idle.generation, generation);
         assert_eq!(idle.scene.updated_nodes, 0);
+        assert_eq!(runtime.context().last_work_counters(), first_counters);
         assert_eq!(runtime.context().last_frame_profile(), &first_profile);
         assert_eq!(
             runtime
@@ -2118,19 +2123,28 @@ mod tests {
         let first = runtime
             .flush(LayoutViewport::new(1280.0, 720.0), &mut TestShaper)
             .unwrap();
+        let built = hit_entries_built(&runtime);
+        let live = runtime.context().world().len();
 
         // The settle loop ran several passes. Rebuilding per pass cost the index
-        // once per pass while only the last result was ever observable.
+        // once per pass while only the last result was ever observable, so the
+        // frame's total must stay within a single document's worth of entries.
         assert!(first.passes > 1, "expected a multi-pass settle");
         assert_eq!(first.scene.updated_nodes, runtime.scene().node_count());
         assert_eq!(
             first.scene.rebuilt_primitives,
             runtime.scene().primitive_count()
         );
+        assert!(
+            built <= live,
+            "{} passes built {built} hit entries for {live} nodes",
+            first.passes
+        );
 
-        // Retyping one leaf must update only what moved rather than rewriting
-        // the entire document.
-        let live = runtime.context().world().len();
+        // Retyping one leaf must patch only what moved. Layout invalidation
+        // propagates to ancestors, so a patch keyed on scheduled layout instead
+        // of written boxes lands back at the document root and rebuilds the
+        // whole index for a single label.
         let mut retype = nana_ui_runtime::MutationQueue::new();
         retype.set_text(
             inspector.stable_id(),
@@ -2139,14 +2153,25 @@ mod tests {
             },
         );
         runtime.context_mut().commit_mutations(retype).unwrap();
-        let edit = runtime
+        runtime
             .flush(LayoutViewport::new(1280.0, 720.0), &mut TestShaper)
             .unwrap();
+        let edit_built = hit_entries_built(&runtime);
         assert!(
-            edit.scene.updated_nodes < live,
-            "one leaf edit updated {} scene nodes for {live} nodes; expected a local update",
-            edit.scene.updated_nodes
+            edit_built < live,
+            "one leaf edit built {edit_built} hit entries for {live} nodes; expected a patch, not a rebuild"
         );
+    }
+
+    /// Hit entries the last flush built. Frame counters are scoped to the
+    /// flush, so this covers every settle pass in it.
+    fn hit_entries_built(runtime: &RuntimeDocument) -> usize {
+        runtime
+            .context()
+            .world()
+            .last_work_counters()
+            .hit_test_nodes_rebuilt
+            .unwrap_or_default()
     }
 
     #[test]
@@ -2360,6 +2385,7 @@ mod tests {
         assert_eq!(noop.layout_generation, generation);
         assert_eq!(noop.scene.updated_nodes, 0);
         assert!(noop.accessibility.updated.is_empty());
+        assert_eq!(hit_entries_built(&runtime), 0);
         assert_eq!(
             runtime
                 .scene()
@@ -2389,6 +2415,7 @@ mod tests {
         assert_eq!(painted.layout_generation, generation);
         assert!(painted.scene.updated_nodes >= 1);
         assert!(painted.accessibility.updated.is_empty());
+        assert_eq!(hit_entries_built(&runtime), 0);
         assert_eq!(
             runtime
                 .scene()
@@ -2410,6 +2437,7 @@ mod tests {
                 .iter()
                 .any(|node| node.id == section)
         );
+        assert_eq!(hit_entries_built(&runtime), 0);
 
         let mut widen = runtime
             .context()
@@ -2438,6 +2466,7 @@ mod tests {
                 .iter()
                 .any(|node| node.id == section && (node.bounds.width - 180.0).abs() < 0.01)
         );
+        assert!(hit_entries_built(&runtime) > 0);
         assert_eq!(
             runtime
                 .context()

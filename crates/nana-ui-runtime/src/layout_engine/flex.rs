@@ -149,10 +149,13 @@ pub(super) fn measure_equal_wrap_finish(state: EqualWrapPrepared, measured: &[Si
     let mut cursor = 0usize;
     for (line_index, count) in state.line_counts.into_iter().enumerate() {
         let mut line_cross = 0.0_f32;
-        for idx in cursor..cursor + count {
+        for (&item_size, &item_margin) in measured[cursor..cursor + count]
+            .iter()
+            .zip(&state.margins[cursor..cursor + count])
+        {
             line_cross = line_cross.max(
-                cross_extent(measured[idx], state.direction)
-                    + cross_margin(state.margins[idx], state.direction),
+                cross_extent(item_size, state.direction)
+                    + cross_margin(item_margin, state.direction),
             );
         }
         cursor += count;
@@ -378,6 +381,7 @@ pub(super) fn distribute_flex_main(
         // A line that overflows gives up its items' declared elasticity,
         // cheapest first, before any shrink factor clips them.
         let inline = direction == FlexDirection::Row;
+        line.pass.counters.contexts_considered += 1;
         let occupied = mains.iter().sum::<f32>() + margin_mains.iter().sum::<f32>() + gap_total;
         let overflow = LayoutUnits::from_px(occupied - content_main);
         if overflow.is_positive() {
@@ -431,6 +435,8 @@ pub(super) fn distribute_flex_main(
                     gap_total = adjust.gap * (n - 1) as f32;
                 }
             }
+        } else {
+            line.pass.counters.fast_fit += 1;
         }
         if line.commit {
             line.pass.commit_line(

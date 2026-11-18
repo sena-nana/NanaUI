@@ -77,7 +77,17 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
             .map(|(_, revision)| revision);
         let volatile = renderer_revision.is_some_and(|revision| revision.is_none())
             || producer_revision == Some(None);
-        let painter = self.painter_mut(output_profile());
+        let painter = match self.try_painter_mut(output_profile()) {
+            Ok(painter) => painter,
+            Err(error) => {
+                self.program
+                    .report_host_failure(crate::HostFailure::UnpaintableScene {
+                        window: id,
+                        error: error.to_string(),
+                    });
+                return None;
+            }
+        };
         let image_revision =
             crate::output::driver::frame_driver::PresentationFrameDriver::refresh_image_revision(
                 painter,
@@ -129,10 +139,12 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
     > {
         use crate::output::driver::frame_driver::PresentationFrameDriver;
         if let Some(direct) = direct {
-            self.painter_mut(direct.profile);
+            self.try_painter_mut(direct.profile)
+                .map_err(crate::ExternalSurfaceError::Paint)?;
         }
         if self.window_outputs.contains_key(&id) {
-            self.painter_mut(output_profile());
+            self.try_painter_mut(output_profile())
+                .map_err(crate::ExternalSurfaceError::Paint)?;
         }
         let gpu = self.graphics.gpu();
         if let Some(state) = self.window_outputs.get_mut(&id) {

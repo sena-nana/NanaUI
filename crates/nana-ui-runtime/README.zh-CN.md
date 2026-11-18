@@ -31,9 +31,11 @@ let view = cx.mount_view_root(document, counter).unwrap();
 
 ## Features
 
-- `icu`（默认）：用 ICU4X 和编译进来的 CLDR 数据格式化数字、日期和复数；关闭后用 `PlainFormatter`。
-- `calendar`、`charts`、`controls`、`graph-canvas`、`image-viewer`、`rich-text`：可选的控件族，`components` 一次打开全部。`rich-text` 包含 Markdown、Mermaid 图和数学公式。
-- `snippet-transforms`（默认）：snippet 里的正则变换；关闭后变换原样返回，不链接正则引擎。
+默认不开启任何 feature（`default = []`）。
+
+- `icu`（可选）：用 ICU4X 和编译进来的 CLDR 数据格式化数字、日期和复数；关闭后用 `PlainFormatter`。
+- `calendar`、`charts`、`controls`、`graph-canvas`、`image-viewer`、`qr-code`、`rich-text`：可选的控件族，`components` 一次打开全部。`rich-text` 包含 Markdown、Mermaid 图和数学公式。
+- `snippet-transforms`（可选）：snippet 里的正则变换；关闭后变换原样返回、不链接 `fancy-regex`，并在首次触发时发出 `runtime.snippet.transform_unavailable`。
 - `syntax-highlighting`：代码块语法高亮。
 - `view-macro`：`view!` 模板宏。
 - `reactive-trace`：记录响应式更新的因果链，回答“为什么更新”。
@@ -55,4 +57,4 @@ cargo run --release -p nana-ui-runtime --features benchmark --bin nana-runtime-b
 
 其余命令见 [`.github/workflows/ci.yml`](../../.github/workflows/ci.yml)。
 
-更多内容见 [运行时保留树](../../docs/learn/runtime-tree.md)、[响应式视图](../../docs/reference/reactive-view.md) 和 [Runtime 与 Scene 合同](../../docs/reference/runtime-scene.md)。
+更多内容见 [运行时保留树](../../docs/learn/runtime-tree.md)、[响应式视图](../../docs/reference/reactive-view.md)、[布局与特性迁移指南](../../docs/guide/migration-layout-and-features.md) 和 [Runtime 与 Scene 合同](../../docs/reference/runtime-scene.md)。

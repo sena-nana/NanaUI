@@ -544,6 +544,7 @@ impl RuntimeLayoutEngine {
                 containing,
                 viewport,
                 font,
+                None,
                 &mut nodes,
                 &mut intrinsic,
                 &mut output,
@@ -580,6 +581,7 @@ impl RuntimeLayoutEngine {
                 available,
                 viewport,
                 ROOT_FONT_PX,
+                None,
                 &mut nodes,
                 &mut intrinsic,
                 &mut output,
@@ -723,6 +725,7 @@ impl RuntimeLayoutEngine {
                 }
             }
         }
+        intrinsic.execution_stats.dynamic = intrinsic.dynamic.counters;
         intrinsic.execution_stats.measure_stack_per_level = 0;
         intrinsic.execution_stats.placement_stack_per_level = intrinsic.placement_levels.per_level;
         let intrinsic_counters = intrinsic.counters();
@@ -1066,7 +1069,6 @@ impl RetainedLayoutCache {
         }
     }
 
-    #[cfg(test)]
     pub(crate) fn execution_stats(&self, document: DocumentId) -> LayoutExecutionStats {
         self.documents
             .get(&document)
@@ -1151,12 +1153,17 @@ impl RetainedLayoutCache {
             .max_generation(id)
     }
 
-    /// The last baseline `id` published, the one an atom sits on its line by.
-    pub(crate) fn intrinsic_baseline(&self, document: DocumentId, id: StableNodeId) -> Option<f32> {
+    /// The first or last baseline `id` published, the one an atom sits on its line by.
+    pub(crate) fn intrinsic_baseline(
+        &self,
+        document: DocumentId,
+        id: StableNodeId,
+        first_only: bool,
+    ) -> Option<f32> {
         self.documents
             .get(&document)?
             .intrinsic_metrics
-            .latest_baseline(id)
+            .latest_baseline(id, first_only)
     }
     /// What the box the last pass gave `id` is measured from.
     pub(crate) fn frame(&self, document: DocumentId, id: StableNodeId) -> crate::LayoutFrame {
@@ -1471,6 +1478,7 @@ impl StoredIntrinsicMetricVariant {
 
 struct ContentMetrics {
     first: StoredIntrinsicMetricVariant,
+    #[allow(clippy::box_collection)] // Keeps `Option<ContentMetrics>` <= 72 bytes.
     rest: Option<Box<Vec<StoredIntrinsicMetricVariant>>>,
 }
 
@@ -1530,7 +1538,7 @@ impl ContentMetrics {
             })
     }
 
-    fn latest_baseline(&self) -> Option<f32> {
+    fn latest_baseline(&self, first_only: bool) -> Option<f32> {
         let latest =
             self.rest
                 .as_deref()
@@ -1543,7 +1551,11 @@ impl ContentMetrics {
                         best
                     }
                 });
-        latest.last_baseline.get().or(latest.first_baseline.get())
+        if first_only {
+            latest.first_baseline.get().or(latest.last_baseline.get())
+        } else {
+            latest.last_baseline.get().or(latest.first_baseline.get())
+        }
     }
 }
 
@@ -1578,10 +1590,10 @@ impl RetainedIntrinsicMetrics {
         self.by_node.get(&id).map(ContentMetrics::max_generation)
     }
 
-    fn latest_baseline(&self, id: StableNodeId) -> Option<f32> {
+    fn latest_baseline(&self, id: StableNodeId, first_only: bool) -> Option<f32> {
         self.by_node
             .get(&id)
-            .and_then(ContentMetrics::latest_baseline)
+            .and_then(|metrics| metrics.latest_baseline(first_only))
     }
 
     fn get(&self, key: &crate::IntrinsicCacheKey) -> Option<crate::IntrinsicMetrics> {
@@ -2053,6 +2065,41 @@ impl GridTrackPlan {
                 self.row_gap,
             ),
         )
+    }
+
+    fn inherited_tracks_for(
+        &self,
+        child: StableNodeId,
+        child_style: &LayoutStyle,
+    ) -> Option<Box<grid::InheritedGridTracks>> {
+        if !child_style.is_subgrid_columns() && !child_style.is_subgrid_rows() {
+            return None;
+        }
+        let item = self.items.iter().find(|item| item.child == child)?;
+        Some(Box::new(grid::InheritedGridTracks {
+            area_inline: grid::grid_span_extent(
+                &self.col_sizes,
+                item.col as usize,
+                item.col_span as usize,
+                self.col_gap,
+            ),
+            columns: child_style.is_subgrid_columns().then(|| {
+                grid::spanned_track_sizes(
+                    &self.col_sizes,
+                    item.col as usize,
+                    item.col_span as usize,
+                )
+            }),
+            column_gap: self.col_gap,
+            rows: child_style.is_subgrid_rows().then(|| {
+                grid::spanned_track_sizes(
+                    &self.row_sizes,
+                    item.row as usize,
+                    item.row_span as usize,
+                )
+            }),
+            row_gap: self.row_gap,
+        }))
     }
 }
 
@@ -3437,6 +3484,13 @@ impl<'a> LayoutInputMap<'a> {
         // then moving every input into a HashMap doubles the container work on
         // the cold path that large documents pay most often.
         debug_assert!(self.nodes.is_empty());
+        if !ids.is_empty() {
+            self.world.record_hot_path_allocation(
+                ids.len(),
+                ids.len()
+                    .saturating_mul(std::mem::size_of::<PassInput<'_>>()),
+            );
+        }
         let mut nodes = crate::store::DenseNodeMap::with_highest_of(ids);
         let mut containers = 0;
         for &id in ids {
@@ -3615,13 +3669,12 @@ impl<'a> LayoutInputMap<'a> {
     /// Where atomic inline `id` sits on a line box: its ascent and descent
     /// about the line's baseline, margins included. Native paragraphs and
     /// the lines of an ordinary block both read this, so the two cannot
-    /// disagree (CSS 2.1 §10.8.1, `vertical-align: baseline`).
+    /// disagree (`vertical-align: baseline`).
     ///
-    /// An inline-block sits by the baseline of its last line box, read from
-    /// [`Self::baseline_metrics`] like every other context reads a baseline.
-    /// Replaced content, an inline-block whose overflow is not visible and
-    /// one with no in-flow line box sit by their bottom margin edge
-    /// ([`UiWorld::atom_sits_on_line_box`]).
+    /// An `inline-flex` / `inline-grid` atom sits by the first baseline read
+    /// from [`Self::baseline_metrics`]; non-container inline atoms fall back to
+    /// their last line box. Replaced content and atoms with no in-flow line box
+    /// (or empty flex/grid bottom synthesis) follow [`UiWorld::atom_sits_on_line_box`].
     fn atom_line_metrics(
         &self,
         id: StableNodeId,
@@ -3643,13 +3696,21 @@ impl<'a> LayoutInputMap<'a> {
                 || self
                     .derived_baselines
                     .contains_key(&derived_baseline_key(id, used)),
-            "{id:?} at {used:?}: its descendants' last baseline was not derived"
+            "{id:?} at {used:?}: its descendants' baseline was not derived"
         );
+        let first_only = self.style(id).is_some_and(|s| {
+            s.display
+                .is_some_and(|d| d.is_flex_container() || d.is_grid_container())
+        });
         let baseline = on_line_box
             .then(|| {
                 let metrics =
                     self.baseline_metrics(id, fallback_font_px, Some(inline_base), Some(used));
-                metrics.last.or(metrics.first)
+                if first_only {
+                    metrics.first.or(metrics.last)
+                } else {
+                    metrics.last.or(metrics.first)
+                }
             })
             .flatten()
             .map(|baseline| baseline.clamp(0.0, block));
@@ -3804,6 +3865,7 @@ impl<'a> LayoutInputMap<'a> {
         // no baseline: one is synthesized from its border-box bottom (CSS
         // Align 3 §9.1), as a flex container takes from such an item (#394).
         if !self.holds_line_box(id)
+            && !self.world.has_in_flow_flex_or_grid_item(id, &style)
             && let Some(used) = used
         {
             let writing = self
@@ -4137,6 +4199,8 @@ fn uses_2d_grid(style: &LayoutStyle, flow: &[StableNodeId], nodes: &LayoutInputM
         let grid = &*style.grid;
         if grid.columns.is_some()
             || grid.rows.is_some()
+            || grid.columns_subgrid
+            || grid.rows_subgrid
             || grid.columns_unsupported.is_some()
             || grid.rows_unsupported.is_some()
             || grid.columns_repeat.is_some()
@@ -4318,6 +4382,8 @@ pub(crate) struct LayoutExecutionStats {
     pub local_context_fallbacks: usize,
     /// Retained-cache sweeps that dropped despawned ids.
     pub retain_sweeps: usize,
+    /// What Dynamic Layout did this pass.
+    pub dynamic: nana_ui_core::DynamicLayoutCounters,
     /// Most stack one level of the measure recursion took, in bytes; 0 where
     /// the platform cannot tell. See `recursion`.
     pub measure_stack_per_level: usize,

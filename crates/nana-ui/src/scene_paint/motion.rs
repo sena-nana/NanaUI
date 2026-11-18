@@ -578,30 +578,7 @@ impl MotionEval {
                 resource: dummy_uniform.as_entire_binding(),
             }],
         });
-        let pipeline = if let Some(policy) = policy {
-            nana_gpu::__framework::render_pipeline_state(
-                policy,
-                nana_gpu::PipelineKey {
-                    generation: policy.generation(),
-                    target_format: nana_gpu::__framework::format_from_wgpu(format),
-                    sample_count: 1,
-                    shader: 0x6d6f_7469_6f6e_6576,
-                    layout: 5,
-                    material: 0,
-                    primitive: 0,
-                    blend: 0,
-                    depth: 0,
-                    vertex_layout: 0,
-                },
-                || {
-                    create_eval_pipeline(device, &dummy_layout, motion, format)
-                        .expect("motion pipeline")
-                },
-            )
-            .ok()
-        } else {
-            create_eval_pipeline(device, &dummy_layout, motion, format)
-        }?;
+        let pipeline = try_create_eval_pipeline(policy, device, &dummy_layout, motion, format)?;
         Some(Self {
             pipeline,
             dummy_group,
@@ -619,7 +596,8 @@ pub(super) fn prewarm_for_msl_regen(device: &wgpu::Device, motion_layout: &wgpu:
     );
 }
 
-fn create_eval_pipeline(
+fn try_create_eval_pipeline(
+    policy: Option<&nana_gpu::GpuDeviceState>,
     device: &wgpu::Device,
     dummy: &wgpu::BindGroupLayout,
     motion: &wgpu::BindGroupLayout,
@@ -631,39 +609,54 @@ fn create_eval_pipeline(
         bind_group_layouts: &[Some(dummy), Some(motion)],
         immediate_size: 0,
     });
-    Some(shader.pipeline(
-        device,
-        "motion_eval_vs",
-        "motion_eval_fs",
-        &[],
-        |vs_module, vs_ep, fs_module, fs_ep, _| {
-            device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-                label: Some("nana-ui.scene.motion.eval"),
-                layout: Some(&layout),
-                vertex: wgpu::VertexState {
-                    module: vs_module,
-                    entry_point: Some(vs_ep),
-                    buffers: &[],
-                    compilation_options: wgpu::PipelineCompilationOptions::default(),
-                },
-                fragment: Some(wgpu::FragmentState {
-                    module: fs_module,
-                    entry_point: Some(fs_ep),
-                    targets: &[Some(wgpu::ColorTargetState {
-                        format,
-                        blend: None,
-                        write_mask: wgpu::ColorWrites::ALL,
-                    })],
-                    compilation_options: wgpu::PipelineCompilationOptions::default(),
-                }),
-                primitive: wgpu::PrimitiveState::default(),
-                depth_stencil: None,
-                multisample: wgpu::MultisampleState::default(),
-                multiview_mask: None,
-                cache: None,
-            })
-        },
-    ))
+    shader
+        .try_cached_pipeline(
+            policy,
+            |policy| nana_gpu::PipelineKey {
+                generation: policy.generation(),
+                target_format: nana_gpu::__framework::format_from_wgpu(format),
+                sample_count: 1,
+                shader: 0x6d6f_7469_6f6e_6576,
+                layout: 5,
+                material: 0,
+                primitive: 0,
+                blend: 0,
+                depth: 0,
+                vertex_layout: 0,
+            },
+            device,
+            "motion_eval_vs",
+            "motion_eval_fs",
+            &[],
+            |vs_module, vs_ep, fs_module, fs_ep, _| {
+                device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+                    label: Some("nana-ui.scene.motion.eval"),
+                    layout: Some(&layout),
+                    vertex: wgpu::VertexState {
+                        module: vs_module,
+                        entry_point: Some(vs_ep),
+                        buffers: &[],
+                        compilation_options: wgpu::PipelineCompilationOptions::default(),
+                    },
+                    fragment: Some(wgpu::FragmentState {
+                        module: fs_module,
+                        entry_point: Some(fs_ep),
+                        targets: &[Some(wgpu::ColorTargetState {
+                            format,
+                            blend: None,
+                            write_mask: wgpu::ColorWrites::ALL,
+                        })],
+                        compilation_options: wgpu::PipelineCompilationOptions::default(),
+                    }),
+                    primitive: wgpu::PrimitiveState::default(),
+                    depth_stencil: None,
+                    multisample: wgpu::MultisampleState::default(),
+                    multiview_mask: None,
+                    cache: None,
+                })
+            },
+        )
+        .ok()
 }
 
 #[cfg_attr(not(test), allow(dead_code))]

@@ -13,7 +13,7 @@ use nana_ui_runtime::{
     DocumentId, KeyContext, LayoutViewport, List, MeasureTextShaper, NodeKind, NodeStyle,
     OverlayHost, Popover, ScrollAxes, ScrollOffset, ScrollView, StableNodeId, SystemWork, Table,
     TableCell, TableRow, Text, TextArea, TextContent, TextInput, Tooltip, VirtualListItems,
-    VirtualTableItems, VirtualTreeItems,
+    VirtualTableItems, VirtualTreeItems, WorkCounters,
 };
 use serde::Serialize;
 
@@ -216,7 +216,51 @@ fn measure_virtual_table_text(
         LayoutViewport::new(table.viewport.0, table.viewport.1),
     );
     let _ = context.shape_text_for_layout(document, &mut shaper);
-    std::hint::black_box(context.world().extract_nodes(&work.render_extraction));
+    let extracted = context.world().extract_nodes(&work.render_extraction);
+    context.record_extract(&extracted);
+}
+
+/// Own AppContext so table shaping cannot dirty the shared list/scroll drain.
+fn isolated_table_text_work(
+    logical_rows: usize,
+    logical_columns: usize,
+    table: TableWindow,
+) -> ScaleWork {
+    let document = DocumentId::new(1).unwrap();
+    let mut context = AppContext::new();
+    let host = context.create_component(document, Table::new()).unwrap();
+    let mut items = VirtualTableItems::<usize, usize>::default();
+    let layout = VirtualTableLayout::new(
+        std::iter::repeat_n(table.row_extent, logical_rows),
+        (0..logical_columns)
+            .map(|index| TableColumn::new(format!("column-{index}"), table.column_extent)),
+    );
+    let _ = context.take_system_work();
+    // Benchmarks exercise the product retained path. The old unplaced
+    // materializer remains covered by framework compatibility tests only.
+    context
+        .materialize_virtual_table_retained_in(
+            host,
+            &mut items,
+            &layout,
+            VirtualViewport {
+                offset: [0.0, 0.0],
+                extent: [table.viewport.0, table.viewport.1],
+                overscan: [table.overscan.0, table.overscan.1],
+            },
+            [0, 0],
+            &[],
+            |index| index,
+            |key| Some(*key),
+            |index| index,
+            |key| Some(*key),
+            |_index, _| TableRow::new(),
+            |row, _, column, _| text_table_cell(row, column),
+        )
+        .unwrap();
+    let work = context.take_system_work();
+    measure_virtual_table_text(&mut context, document, &work, table);
+    ScaleWork::from(context.last_work_counters())
 }
 
 #[derive(Default)]
@@ -290,6 +334,111 @@ struct VirtualScaleCase {
     window_ms: Option<Distribution>,
     #[serde(skip_serializing_if = "Option::is_none")]
     materialize_ms: Option<Distribution>,
+    /// Existing WorkCounters from the last table/list drain.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    work: Option<ScaleWork>,
+}
+
+/// Subset of [`WorkCounters`] that this binary already observes.
+#[derive(Serialize, Clone, Copy)]
+struct ScaleWork {
+    entities_total: usize,
+    entities_changed: usize,
+    entities_spawned: usize,
+    entities_despawned: usize,
+    style_processed: usize,
+    text_shaped: usize,
+    layout_nodes: usize,
+    layout_frontier_seeds: usize,
+    layout_frontier_seed_merges: usize,
+    layout_frontier_nodes_measure: usize,
+    layout_frontier_nodes_placement: usize,
+    layout_frontier_contexts: usize,
+    layout_dependency_edges_visited: usize,
+    layout_propagations_stopped: usize,
+    layout_local_subtree_fallbacks: usize,
+    layout_full_document_fallbacks: usize,
+    layout_suffixes_replayed: usize,
+    layout_children_measured: usize,
+    inline_reflows: usize,
+    inline_atomic_measure_requests: usize,
+    layout_containers_uncacheable: usize,
+    layout_result_children_visited: usize,
+    layout_placement_plans_reused: usize,
+    layout_measure_plans_reused: usize,
+    layout_plan_misses: usize,
+    layout_plan_rebuilds: usize,
+    layout_scratch_entries: usize,
+    layout_scratch_bytes: usize,
+    intrinsic_measure_requests: usize,
+    layout_context_transitions: usize,
+    intrinsic_measure_cache_hits: usize,
+    intrinsic_measure_cache_misses: usize,
+    intrinsic_generation_bumps: usize,
+    baseline_queries: usize,
+    cross_context_measure_hits: usize,
+    cross_context_measure_misses: usize,
+    intrinsic_measure_full_subtrees: usize,
+    constraint_change_seeds: usize,
+    constraint_dependents_considered: usize,
+    constraint_dependents_remeasured: usize,
+    constraint_dependents_skipped: usize,
+    resize_text_relayouts: usize,
+    resize_text_reshapes: usize,
+    dynamic_contexts_considered: usize,
+    dynamic_solver_runs: usize,
+    dynamic_fast_fit: usize,
+    dynamic_fast_adjust: usize,
+    dynamic_break_comparisons: usize,
+    dynamic_opportunities_considered: usize,
+    dynamic_envelope_queries: usize,
+    dynamic_envelope_hits: usize,
+    dynamic_envelope_misses: usize,
+    dynamic_envelope_rebuilds: usize,
+    dynamic_cost_segments_visited: usize,
+    dynamic_candidates_created: usize,
+    dynamic_candidates_pruned: usize,
+    dynamic_deep_expansions: usize,
+    dynamic_beam_states: usize,
+    dynamic_child_resolves: usize,
+    dynamic_child_reflows: usize,
+    dynamic_structural_adaptations: usize,
+    dynamic_budget_fallbacks: usize,
+    dynamic_allocations: usize,
+    dynamic_temp_bytes: usize,
+    dynamic_solver_reuses: usize,
+    dynamic_previous_result_hits: usize,
+    dynamic_incremental_assignments: usize,
+    dynamic_cold_solves: usize,
+    dynamic_pruned_candidates: usize,
+    layout_measure_nodes: usize,
+    layout_measure_cache_hits: usize,
+    layout_measure_cache_misses: usize,
+    layout_placement_nodes: usize,
+    layout_result_reused: usize,
+    layout_result_changed: usize,
+    layout_origin_only_updates: usize,
+    layout_delta_commits: usize,
+    hit_test_candidates: usize,
+    input_targets: usize,
+    accessibility_nodes_updated: usize,
+    render_nodes_changed: usize,
+    render_nodes_extracted: usize,
+    extracted_text_spans: usize,
+    text_shaped_runs: usize,
+    text_layout_cache_hits: usize,
+    text_layout_cache_misses: usize,
+    text_wrap_layouts: usize,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    glyph_cache_hits: Option<usize>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    glyph_cache_misses: Option<usize>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    cache_eviction: Option<usize>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    validation_nodes_scanned: Option<usize>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    hit_test_nodes_rebuilt: Option<usize>,
 }
 
 /// Issue #8 catalog workloads that reuse existing Runtime APIs (IME, dock,
@@ -327,6 +476,107 @@ struct CatalogWorkloadCase {
     activate_ms: Option<Distribution>,
     #[serde(skip_serializing_if = "Option::is_none")]
     local_edit_ms: Option<Distribution>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    work: Option<ScaleWork>,
+}
+
+impl From<WorkCounters> for ScaleWork {
+    fn from(counters: WorkCounters) -> Self {
+        Self {
+            entities_total: counters.entities_total,
+            entities_changed: counters.entities_changed,
+            entities_spawned: counters.entities_spawned,
+            entities_despawned: counters.entities_despawned,
+            style_processed: counters.style_processed,
+            text_shaped: counters.text_shaped,
+            layout_nodes: counters.layout_nodes,
+            layout_frontier_seeds: counters.layout_frontier_seeds,
+            layout_frontier_seed_merges: counters.layout_frontier_seed_merges,
+            layout_frontier_nodes_measure: counters.layout_frontier_nodes_measure,
+            layout_frontier_nodes_placement: counters.layout_frontier_nodes_placement,
+            layout_frontier_contexts: counters.layout_frontier_contexts,
+            layout_dependency_edges_visited: counters.layout_dependency_edges_visited,
+            layout_propagations_stopped: counters.layout_propagations_stopped,
+            layout_local_subtree_fallbacks: counters.layout_local_subtree_fallbacks,
+            layout_full_document_fallbacks: counters.layout_full_document_fallbacks,
+            layout_suffixes_replayed: counters.layout_suffixes_replayed,
+            layout_children_measured: counters.layout_children_measured,
+            inline_reflows: counters.inline_reflows,
+            inline_atomic_measure_requests: counters.inline_atomic_measure_requests,
+            layout_containers_uncacheable: counters.layout_containers_uncacheable,
+            layout_result_children_visited: counters.layout_result_children_visited,
+            layout_placement_plans_reused: counters.layout_placement_plans_reused,
+            layout_measure_plans_reused: counters.layout_measure_plans_reused,
+            layout_plan_misses: counters.layout_plan_misses,
+            layout_plan_rebuilds: counters.layout_plan_rebuilds,
+            layout_scratch_entries: counters.layout_scratch_entries,
+            layout_scratch_bytes: counters.layout_scratch_bytes,
+            intrinsic_measure_requests: counters.intrinsic_measure_requests,
+            layout_context_transitions: counters.layout_context_transitions,
+            intrinsic_measure_cache_hits: counters.intrinsic_measure_cache_hits,
+            intrinsic_measure_cache_misses: counters.intrinsic_measure_cache_misses,
+            intrinsic_generation_bumps: counters.intrinsic_generation_bumps,
+            baseline_queries: counters.baseline_queries,
+            cross_context_measure_hits: counters.cross_context_measure_hits,
+            cross_context_measure_misses: counters.cross_context_measure_misses,
+            intrinsic_measure_full_subtrees: counters.intrinsic_measure_full_subtrees,
+            constraint_change_seeds: counters.constraint_change_seeds,
+            constraint_dependents_considered: counters.constraint_dependents_considered,
+            constraint_dependents_remeasured: counters.constraint_dependents_remeasured,
+            constraint_dependents_skipped: counters.constraint_dependents_skipped,
+            resize_text_relayouts: counters.resize_text_relayouts,
+            resize_text_reshapes: counters.resize_text_reshapes,
+            dynamic_contexts_considered: counters.dynamic.contexts_considered,
+            dynamic_solver_runs: counters.dynamic.solver_runs,
+            dynamic_fast_fit: counters.dynamic.fast_fit,
+            dynamic_fast_adjust: counters.dynamic.fast_adjust,
+            dynamic_break_comparisons: counters.dynamic.break_comparisons,
+            dynamic_opportunities_considered: counters.dynamic.opportunities_considered,
+            dynamic_envelope_queries: counters.dynamic.envelope_queries,
+            dynamic_envelope_hits: counters.dynamic.envelope_hits,
+            dynamic_envelope_misses: counters.dynamic.envelope_misses,
+            dynamic_envelope_rebuilds: counters.dynamic.envelope_rebuilds,
+            dynamic_cost_segments_visited: counters.dynamic.cost_segments_visited,
+            dynamic_candidates_created: counters.dynamic.candidates_created,
+            dynamic_candidates_pruned: counters.dynamic.candidates_pruned,
+            dynamic_deep_expansions: counters.dynamic.deep_expansions,
+            dynamic_beam_states: counters.dynamic.beam_states,
+            dynamic_child_resolves: counters.dynamic.child_resolves,
+            dynamic_child_reflows: counters.dynamic.child_reflows,
+            dynamic_structural_adaptations: counters.dynamic.structural_adaptations,
+            dynamic_budget_fallbacks: counters.dynamic.budget_fallbacks,
+            dynamic_allocations: counters.dynamic.allocations,
+            dynamic_temp_bytes: counters.dynamic.temp_bytes,
+            dynamic_solver_reuses: counters.dynamic.solver_reuses,
+            dynamic_previous_result_hits: counters.dynamic.previous_result_hits,
+            dynamic_incremental_assignments: counters.dynamic.incremental_assignments,
+            dynamic_cold_solves: counters.dynamic.cold_solves,
+            dynamic_pruned_candidates: counters.dynamic.pruned_candidates,
+            layout_measure_nodes: counters.layout_measure_nodes,
+            layout_measure_cache_hits: counters.layout_measure_cache_hits,
+            layout_measure_cache_misses: counters.layout_measure_cache_misses,
+            layout_placement_nodes: counters.layout_placement_nodes,
+            layout_result_reused: counters.layout_result_reused,
+            layout_result_changed: counters.layout_result_changed,
+            layout_origin_only_updates: counters.layout_origin_only_updates,
+            layout_delta_commits: counters.layout_delta_commits,
+            hit_test_candidates: counters.hit_test_candidates,
+            input_targets: counters.input_targets,
+            accessibility_nodes_updated: counters.accessibility_nodes_updated,
+            render_nodes_changed: counters.render_nodes_changed,
+            render_nodes_extracted: counters.render_nodes_extracted,
+            extracted_text_spans: counters.extracted_text_spans,
+            text_shaped_runs: counters.text_shaped_runs,
+            text_layout_cache_hits: counters.text_layout_cache_hits,
+            text_layout_cache_misses: counters.text_layout_cache_misses,
+            text_wrap_layouts: counters.text_wrap_layouts,
+            glyph_cache_hits: counters.glyph_cache_hits,
+            glyph_cache_misses: counters.glyph_cache_misses,
+            cache_eviction: counters.cache_eviction,
+            validation_nodes_scanned: counters.validation_nodes_scanned,
+            hit_test_nodes_rebuilt: counters.hit_test_nodes_rebuilt,
+        }
+    }
 }
 
 #[derive(Serialize)]
@@ -701,6 +951,7 @@ fn main() {
             construction_ms: None,
             window_ms: Some(summarize(&virtual_list_windows)),
             materialize_ms: Some(summarize(&virtual_list_materializations)),
+            work: None,
         },
         VirtualScaleCase {
             kind: "table",
@@ -725,6 +976,7 @@ fn main() {
             construction_ms: None,
             window_ms: Some(summarize(&virtual_table_windows)),
             materialize_ms: Some(summarize(&virtual_table_materializations)),
+            work: Some(isolated_table_text_work(10_000, 100, table)),
         },
         bench_virtual_list_scale(
             100_000,
@@ -1124,6 +1376,7 @@ fn skipped_scale(
         construction_ms: None,
         window_ms: None,
         materialize_ms: None,
+        work: None,
     }
 }
 
@@ -1227,6 +1480,7 @@ fn bench_virtual_list_scale(
         construction_ms: Some((construction_ms * 1_000.0).round() / 1_000.0),
         window_ms: Some(summarize(&windows)),
         materialize_ms: Some(summarize(&materializations)),
+        work: None,
     }
 }
 
@@ -1265,6 +1519,7 @@ fn bench_virtual_table_scale(
     let mut last_visible = 0;
     let mut last_overscan = 0;
     let mut last_live = 0;
+    let mut last_work = None;
     let table_bound = table_live_entity_bound(table);
     for iteration in 0..(warmup + iterations) {
         if timeout.is_some_and(|limit| loop_started.elapsed() > limit) {
@@ -1354,6 +1609,7 @@ fn bench_virtual_table_scale(
             last_visible = visible;
             last_overscan = overscan;
             last_live = live;
+            last_work = Some(ScaleWork::from(context.last_work_counters()));
         }
     }
     VirtualScaleCase {
@@ -1379,6 +1635,7 @@ fn bench_virtual_table_scale(
         construction_ms: Some((construction_ms * 1_000.0).round() / 1_000.0),
         window_ms: Some(summarize(&windows)),
         materialize_ms: Some(summarize(&materializations)),
+        work: last_work,
     }
 }
 
@@ -1516,6 +1773,7 @@ fn bench_virtual_tree_scale(
         construction_ms: Some((construction_ms * 1_000.0).round() / 1_000.0),
         window_ms: Some(summarize(&windows)),
         materialize_ms: Some(summarize(&materializations)),
+        work: None,
     }
 }
 
@@ -1529,7 +1787,8 @@ fn drain_text(
     let _ = context.resolve_styles(&work.style);
     let _ = context.shape_text(&work.text, &mut shaper);
     let _ = context.layout_document(document, viewport);
-    std::hint::black_box(context.world().extract_nodes(&work.render_extraction));
+    let extracted = context.world().extract_nodes(&work.render_extraction);
+    context.record_extract(&extracted);
 }
 
 fn bench_ime() -> CatalogWorkloadCase {
@@ -1542,6 +1801,7 @@ fn bench_ime() -> CatalogWorkloadCase {
     let _ = context.take_system_work();
     let mut preedits = Vec::with_capacity(WORKLOAD_ITERATIONS);
     let mut commits = Vec::with_capacity(WORKLOAD_ITERATIONS);
+    let mut last_work = None;
     for iteration in 0..(WORKLOAD_WARMUP + WORKLOAD_ITERATIONS) {
         let (script, preedit, commit) = IME_SCRIPTS[iteration % IME_SCRIPTS.len()];
         let started = Instant::now();
@@ -1569,6 +1829,7 @@ fn bench_ime() -> CatalogWorkloadCase {
         if iteration >= WORKLOAD_WARMUP {
             preedits.push(preedit_elapsed);
             commits.push(commit_elapsed);
+            last_work = Some(ScaleWork::from(context.last_work_counters()));
         }
     }
     CatalogWorkloadCase {
@@ -1589,6 +1850,7 @@ fn bench_ime() -> CatalogWorkloadCase {
         resize_ms: None,
         activate_ms: None,
         local_edit_ms: None,
+        work: last_work,
     }
 }
 
@@ -1670,6 +1932,7 @@ fn bench_dock_workspace() -> CatalogWorkloadCase {
     }
     let _ = context.take_system_work();
     let mut resizes = Vec::with_capacity(WORKLOAD_ITERATIONS);
+    let mut last_work = None;
     for iteration in 0..(WORKLOAD_WARMUP + WORKLOAD_ITERATIONS) {
         let direction = if iteration.is_multiple_of(2) {
             1.0
@@ -1699,6 +1962,7 @@ fn bench_dock_workspace() -> CatalogWorkloadCase {
         );
         if iteration >= WORKLOAD_WARMUP {
             resizes.push(resize_elapsed);
+            last_work = Some(ScaleWork::from(context.last_work_counters()));
         }
     }
     let live = context.world().document_order(document).len();
@@ -1720,6 +1984,7 @@ fn bench_dock_workspace() -> CatalogWorkloadCase {
         resize_ms: Some(summarize(&resizes)),
         activate_ms: None,
         local_edit_ms: None,
+        work: last_work,
     }
 }
 
@@ -1746,6 +2011,7 @@ fn bench_overlay() -> CatalogWorkloadCase {
     context.append_child(host, dialog).unwrap();
     let _ = context.take_system_work();
     let mut activates = Vec::with_capacity(WORKLOAD_ITERATIONS);
+    let mut last_work = None;
     for iteration in 0..(WORKLOAD_WARMUP + WORKLOAD_ITERATIONS) {
         let kind = OVERLAY_KINDS[iteration % OVERLAY_KINDS.len()];
         let started = Instant::now();
@@ -1766,6 +2032,7 @@ fn bench_overlay() -> CatalogWorkloadCase {
         );
         if iteration >= WORKLOAD_WARMUP {
             activates.push(activate_elapsed);
+            last_work = Some(ScaleWork::from(context.last_work_counters()));
         }
         match kind {
             "popup" => assert!(context.toggle_popover(popover).unwrap()),
@@ -1793,6 +2060,7 @@ fn bench_overlay() -> CatalogWorkloadCase {
         resize_ms: None,
         activate_ms: Some(summarize(&activates)),
         local_edit_ms: None,
+        work: last_work,
     }
 }
 
@@ -1830,6 +2098,7 @@ fn bench_text_editor() -> CatalogWorkloadCase {
         ),
     );
     let mut edits = Vec::with_capacity(WORKLOAD_ITERATIONS);
+    let mut last_work = None;
     for iteration in 0..(WORKLOAD_WARMUP + WORKLOAD_ITERATIONS) {
         let patch = if iteration.is_multiple_of(2) {
             "x"
@@ -1851,6 +2120,7 @@ fn bench_text_editor() -> CatalogWorkloadCase {
         );
         if iteration >= WORKLOAD_WARMUP {
             edits.push(edit_elapsed);
+            last_work = Some(ScaleWork::from(context.last_work_counters()));
         }
     }
     CatalogWorkloadCase {
@@ -1871,5 +2141,6 @@ fn bench_text_editor() -> CatalogWorkloadCase {
         resize_ms: None,
         activate_ms: None,
         local_edit_ms: Some(summarize(&edits)),
+        work: last_work,
     }
 }

@@ -112,11 +112,13 @@ fn uniform(binding: u32, size: usize) -> wgpu::BindGroupLayoutEntry {
 }
 
 impl ChartPipeline {
-    pub(super) fn new(
+    pub(super) fn try_new(
         device: &wgpu::Device,
         format: wgpu::TextureFormat,
         motion_layout: &wgpu::BindGroupLayout,
-    ) -> Self {
+    ) -> Result<Self, super::validate::ScenePaintError> {
+        #[cfg(target_vendor = "apple")]
+        let _msl_scope = super::msl_precompiled::ArchiveScope::new();
         let shader = super::wgsl::program_joined!(
             "nana-ui.scene.chart.shader",
             [super::wgsl::CHART, super::wgsl::COLOR]
@@ -139,7 +141,7 @@ impl ChartPipeline {
             immediate_size: 0,
         });
         let build = |vs: &str, fs: &str, samples: u32| {
-            shader.pipeline(
+            shader.try_pipeline(
                 device,
                 vs,
                 fs,
@@ -182,13 +184,21 @@ impl ChartPipeline {
                 },
             )
         };
-        let family = |vs: &str, fs: &str| SAMPLE_COUNTS.map(|samples| build(vs, fs, samples));
-        Self {
-            line: family("chart_line_vs", "chart_line_fs"),
-            area: family("chart_area_vs", "chart_area_fs"),
-            shape: family("chart_shape_vs", "chart_shape_fs"),
+        let family =
+            |vs: &str,
+             fs: &str|
+             -> Result<[wgpu::RenderPipeline; 2], super::validate::ScenePaintError> {
+                Ok([
+                    build(vs, fs, SAMPLE_COUNTS[0])?,
+                    build(vs, fs, SAMPLE_COUNTS[1])?,
+                ])
+            };
+        Ok(Self {
+            line: family("chart_line_vs", "chart_line_fs")?,
+            area: family("chart_area_vs", "chart_area_fs")?,
+            shape: family("chart_shape_vs", "chart_shape_fs")?,
             layout,
-        }
+        })
     }
 }
 

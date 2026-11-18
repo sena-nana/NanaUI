@@ -239,6 +239,10 @@ fn issue263_video_frames_lay_nothing_out() {
         });
         let counters = media.frame();
         assert_eq!(Cost::from(counters), Cost::default(), "frame {frame}");
+        let work_counters = media.context.last_work_counters();
+        assert_eq!(work_counters.replaced_content_updates, 2, "frame {frame}");
+        assert_eq!(work_counters.replaced_content_only_layout_invalidations, 0);
+        assert_eq!(work_counters.intrinsic_generation_bumps, 0, "frame {frame}");
     }
 }
 
@@ -255,6 +259,12 @@ fn issue263_an_image_natural_size_lays_out_only_its_box() {
     let counters = media.frame();
     assert_eq!(counters.frontier.seeds, 1);
     assert_eq!(counters.frontier.full_document_fallbacks, 0);
+    let work_counters = media.context.last_work_counters();
+    assert_eq!(work_counters.replaced_intrinsic_metadata_updates, 1);
+    assert_eq!(work_counters.resource_intrinsic_dependents_notified, 1);
+    assert_eq!(work_counters.replaced_layout_seeds, 1);
+    assert_eq!(work_counters.layout_frontier_seeds, 1);
+    assert_eq!(work_counters.layout_full_document_fallbacks, 0);
     let hero_box = media.world().layout_box(hero).unwrap();
     assert_eq!((hero_box.width, hero_box.height), (1920.0, 1080.0));
 
@@ -269,6 +279,7 @@ fn issue263_an_image_natural_size_lays_out_only_its_box() {
     // The 400-wide one takes its height from the aspect ratio.
     media.report(url("wide"), ReplacedMetadata::new(800.0, 300.0));
     let _counters = media.frame();
+    assert_eq!(media.context.last_work_counters().replaced_layout_seeds, 1);
     let wide_box = media.world().layout_box(wide).unwrap();
     assert_eq!((wide_box.width, wide_box.height), (400.0, 150.0));
 
@@ -296,6 +307,14 @@ fn issue263_a_shared_image_reaches_its_dependents_through_the_index() {
         media.report(url("shared"), ReplacedMetadata::new(48.0, 32.0));
         let counters = media.frame();
         assert_eq!(counters.frontier.full_document_fallbacks, 0);
+        let work_counters = media.context.last_work_counters();
+        let half = media.parts.shared_fixed.len();
+        assert_eq!(
+            work_counters.resource_intrinsic_dependents_notified,
+            half * 2
+        );
+        assert_eq!(work_counters.replaced_layout_seeds, half);
+        assert_eq!(work_counters.layout_full_document_fallbacks, 0);
         for id in &media.parts.shared_fixed {
             assert_eq!(
                 media

@@ -1,11 +1,13 @@
 //! Locale-aware formatting (Issue #270): plural rules, numbers, currency,
 //! dates and times, behind one backend-neutral trait.
 //!
-//! [`LocaleFormatter`] is what messages format through. With the `icu`
-//! feature (on by default) the runtime installs [`IcuFormatter`], ICU4X with
-//! its compiled CLDR data; an application can install its own. ICU types
-//! stay behind the trait. Formatters are built once per locale and options
-//! and kept: formatting the same kind of value again builds nothing.
+//! [`LocaleFormatter`] is what messages format through. With the opt-in `icu`
+//! feature (included in the facades' `full` feature) the runtime installs
+//! [`IcuFormatter`], ICU4X with its compiled CLDR data; when `icu` is off,
+//! [`default_formatter`] installs [`PlainFormatter`] and emits
+//! `resource.icu_unavailable` once, and an application can install its own.
+//! ICU types stay behind the trait. Formatters are built once per locale and
+//! options and kept: formatting the same kind of value again builds nothing.
 
 use std::fmt::Write;
 
@@ -406,8 +408,53 @@ mod icu {
     }
 }
 
+#[cfg(not(feature = "icu"))]
+#[derive(Debug, Clone, Copy, Default)]
+struct FallbackPlainFormatter;
+
+#[cfg(not(feature = "icu"))]
+impl FallbackPlainFormatter {
+    fn note_unavailable() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+        static WARNED: AtomicBool = AtomicBool::new(false);
+        if !WARNED.swap(true, Ordering::Relaxed) {
+            nana_diagnostics::event!(nana_diagnostics::framework::resource::ICU_UNAVAILABLE);
+        }
+    }
+}
+
+#[cfg(not(feature = "icu"))]
+impl LocaleFormatter for FallbackPlainFormatter {
+    fn plural(&self, locale: &LanguageTag, value: f64, ordinal: bool) -> PluralCategory {
+        Self::note_unavailable();
+        PlainFormatter.plural(locale, value, ordinal)
+    }
+
+    fn number(&self, locale: &LanguageTag, value: f64, style: NumberStyle, out: &mut String) {
+        Self::note_unavailable();
+        PlainFormatter.number(locale, value, style, out);
+    }
+
+    fn currency(&self, locale: &LanguageTag, amount: f64, currency: &str, out: &mut String) {
+        Self::note_unavailable();
+        PlainFormatter.currency(locale, amount, currency, out);
+    }
+
+    fn date_time(
+        &self,
+        locale: &LanguageTag,
+        value: MessageDateTime,
+        date: Option<DateStyle>,
+        time: Option<DateStyle>,
+        out: &mut String,
+    ) {
+        Self::note_unavailable();
+        PlainFormatter.date_time(locale, value, date, time, out);
+    }
+}
+
 /// The formatter a world starts with: ICU4X with the `icu` feature, else
-/// [`PlainFormatter`].
+/// [`PlainFormatter`] with one-shot `resource.icu_unavailable` diagnostics.
 pub(crate) fn default_formatter() -> std::sync::Arc<dyn LocaleFormatter> {
     #[cfg(feature = "icu")]
     {
@@ -415,7 +462,94 @@ pub(crate) fn default_formatter() -> std::sync::Arc<dyn LocaleFormatter> {
     }
     #[cfg(not(feature = "icu"))]
     {
-        std::sync::Arc::new(PlainFormatter)
+        std::sync::Arc::new(FallbackPlainFormatter)
+    }
+}
+
+#[cfg(test)]
+mod fallback_tests {
+    #[cfg(not(feature = "icu"))]
+    #[test]
+    fn default_formatter_without_icu_emits_icu_unavailable_once() {
+        use super::*;
+        const CHILD: &str = "NANA_RUNTIME_TEST_ICU_UNAVAILABLE_CHILD";
+        if std::env::var_os(CHILD).is_none() {
+            let exe = std::env::current_exe().expect("test binary");
+            let mut child = std::process::Command::new(exe)
+                .args([
+                    "--exact",
+                    "i18n::format::fallback_tests::default_formatter_without_icu_emits_icu_unavailable_once",
+                    "--nocapture",
+                    "--test-threads=1",
+                ])
+                .env(CHILD, "1")
+                .spawn()
+                .expect("spawn child");
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(15);
+            loop {
+                if let Some(status) = child.try_wait().expect("wait child") {
+                    assert!(status.success(), "child test failed: {status}");
+                    return;
+                }
+                if std::time::Instant::now() >= deadline {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    panic!("child test timed out after 15s");
+                }
+                std::thread::sleep(std::time::Duration::from_millis(20));
+            }
+        }
+
+        static SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        let seq = SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let dir =
+            std::env::temp_dir().join(format!("nana-icu-fallback-{}-{seq}", std::process::id()));
+        let guard = nana_diagnostics::install(
+            nana_diagnostics::DiagnosticsConfig {
+                min_severity: nana_diagnostics::Severity::Debug,
+                persist: nana_diagnostics::PersistMode::All,
+                poll_interval: std::time::Duration::from_millis(5),
+                panic_hook: false,
+                ..nana_diagnostics::DiagnosticsConfig::default()
+            },
+            nana_diagnostics::SessionMetadata::new("dev.nana.test", "i18n-fallback", "0"),
+            nana_diagnostics::DiagnosticsPaths::new(dir.join("logs"), dir.join("crash")),
+        )
+        .expect("isolated child owns global diagnostics");
+        nana_diagnostics::register_thread();
+
+        let formatter = default_formatter();
+        let tag = LanguageTag::new("en-US").unwrap();
+        let mut out = String::new();
+        formatter.number(&tag, 42.0, NumberStyle::Decimal, &mut out);
+        formatter.currency(&tag, 12.5, "USD", &mut out);
+        assert_eq!(out, "42USD 12.50");
+
+        assert!(
+            guard
+                .diagnostics()
+                .flush(false, std::time::Duration::from_secs(5))
+        );
+        let log = guard
+            .diagnostics()
+            .current_log()
+            .expect("session log opened");
+        drop(guard);
+
+        let file = nana_diagnostics::nlog::read_file(&log).unwrap();
+        let _ = std::fs::remove_dir_all(&dir);
+        let count = file
+            .entries
+            .iter()
+            .filter(|entry| {
+                matches!(
+                    entry,
+                    nana_diagnostics::nlog::Entry::Event { key, .. }
+                        if file.event_name(*key) == Some("resource.icu_unavailable")
+                )
+            })
+            .count();
+        assert_eq!(count, 1, "expected one resource.icu_unavailable event");
     }
 }
 

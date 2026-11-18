@@ -13994,9 +13994,7 @@ fn a_short_single_line_value_sits_where_text_align_puts_it() {
         cx.resolve_styles(&[node]).unwrap();
         cx.shape_text(&[node], &mut crate::MeasureTextShaper)
             .unwrap();
-        let text = match cx.world().text_input_geometry(node).unwrap() {
-            crate::TextInputGeometry { text, .. } => text,
-        };
+        let crate::TextInputGeometry { text, .. } = cx.world().text_input_geometry(node).unwrap();
         let content = cx.world().text_input_text_box(node).unwrap();
         (content, text.bounds)
     };

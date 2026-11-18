@@ -175,4 +175,31 @@ mod tests {
         assert!(is_default_ignorable(VS16_EMOJI));
         assert!(!is_default_ignorable('A'));
     }
+
+    #[test]
+    fn unicode_versions_align_with_ucd_tables() {
+        assert_eq!(ucd_tables::UNICODE_VERSION, (17, 0, 0));
+        // `char::UNICODE_VERSION` follows the toolchain, and there is no
+        // `rust-toolchain` pin: a newer stable Rust may move to a newer Unicode
+        // release. Code points assigned after the table version only gain
+        // std-side properties (`char::is_alphanumeric` etc.) that our tables
+        // treat as unassigned, which is the same answer older UCD data gives,
+        // so a newer std is compatible. A toolchain *older* than the tables
+        // would disagree on code points our tables already know, so that stays
+        // a failure. Regenerate with `python3 scripts/generate-ucd-tables.py`
+        // when moving the table baseline.
+        assert!(
+            char::UNICODE_VERSION >= ucd_tables::UNICODE_VERSION,
+            "toolchain Unicode {:?} is older than ucd_tables {:?}",
+            char::UNICODE_VERSION,
+            ucd_tables::UNICODE_VERSION
+        );
+        assert_eq!(unicode_segmentation::UNICODE_VERSION, (17, 0, 0));
+        // `harfrust` 0.12.0 exposes no Unicode version constant; its built-in
+        // shaping tables are Unicode 17.0.0 (recorded in
+        // docs/reference/third-party.md and checked when bumping harfrust).
+        // `unicode_bidi::UNICODE_VERSION` (16.0.0) and `unicode_linebreak::UNICODE_VERSION`
+        // (15.0.0) are confined by `scripts/check-engine-boundary.py` to
+        // `shaping/bidi.rs` and `layout/breaks.rs` respectively.
+    }
 }

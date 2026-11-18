@@ -171,6 +171,9 @@ pub(super) mod toolbar_fixture {
             ..Bar::new(600.0)
         });
         assert_eq!(elastic.item_boxes(), rigid.item_boxes());
+        let counters = elastic.context.last_work_counters().dynamic;
+        assert_eq!(counters.envelope_queries, 0);
+        assert_eq!(counters.solver_runs, 0);
     }
 
     /// 32 px short: the gaps close first (30 px at the gap price), then the
@@ -237,6 +240,11 @@ pub(super) mod toolbar_fixture {
             ..Bar::new(300.0)
         });
         assert_eq!(declared.item_boxes(), plain.item_boxes());
+        let counters = declared.context.last_work_counters().dynamic;
+        assert_eq!(
+            (counters.contexts_considered, counters.envelope_queries),
+            (0, 0)
+        );
     }
 
     /// Resizing through fitting, gap-only, padding and infeasible widths: every
@@ -331,7 +339,7 @@ pub(super) mod toolbar_fixture {
                 .collect();
             (context, bar, boxes)
         };
-        let (_context, bar, solved) = build(true);
+        let (context, bar, solved) = build(true);
         let (_, _, rigid) = build(false);
         let end = |boxes: &[LayoutBox]| boxes.last().map(|last| last.x + last.width).unwrap();
         assert!(
@@ -345,6 +353,7 @@ pub(super) mod toolbar_fixture {
         for (solved, rigid) in solved.iter().zip(&rigid) {
             assert!(solved.width < rigid.width);
         }
+        assert!(context.last_work_counters().dynamic.child_resolves >= 6);
     }
 }
 
@@ -535,6 +544,8 @@ mod structural_gates {
     #[test]
     fn issue214_a_static_frame_and_a_paint_change_solve_nothing() {
         let mut toolbar = Toolbar::new(Bar::new(330.0));
+        let first = toolbar.context.last_work_counters().dynamic;
+        assert!(first.solver_runs > 0);
         let applied_before = toolbar.item_boxes();
         // A static frame has no work at all, so no layout and no solve.
         assert!(toolbar.context.take_system_work().is_empty());
@@ -569,10 +580,24 @@ mod structural_gates {
         for count in [1_000usize, 2_000] {
             // Short by half of what the padding covers.
             let mut row = Row::new(count, count as f32 * 24.0);
+            let first = row.context.last_work_counters().dynamic;
+            assert_eq!(first.cost_segments_visited, count, "{count}");
+            assert_eq!(
+                (
+                    first.deep_expansions,
+                    first.child_reflows,
+                    first.budget_fallbacks
+                ),
+                (0, 0, 0)
+            );
+            assert_eq!(first.child_resolves, count);
             // A resize inside the level: no leaf's content measured again.
             measure_trace::begin();
             row.resize(count as f32 * 24.0 + 7.0);
             let measured = measure_trace::take();
+            let next = row.context.last_work_counters().dynamic;
+            assert_eq!((next.cold_solves, next.allocations), (0, 0), "{next:?}");
+            assert!(next.incremental_assignments > 0);
             for leaf in &row.leaves {
                 let content = row.context.world().node(*leaf).unwrap().children[0];
                 assert!(
@@ -700,6 +725,9 @@ mod structural_gates {
         let mut runs = Vec::new();
         for _ in 0..2 {
             let row = Row::new(count, width);
+            let dynamic = row.context.last_work_counters().dynamic;
+            assert_eq!(dynamic.budget_fallbacks, 1, "{dynamic:?}");
+            assert!(dynamic.cost_segments_visited <= count);
             runs.push(
                 row.leaves
                     .iter()

@@ -18,7 +18,7 @@ use nana_ui_core::sort::CompactSort as _;
 use std::{
     borrow::Cow,
     cell::Cell,
-    collections::HashMap,
+    collections::{HashMap, HashSet},
     sync::{
         Arc,
         atomic::{AtomicBool, Ordering},
@@ -487,6 +487,9 @@ pub(crate) struct UrlTextureCache {
     /// the sRGB texture view; legacy raw-linear offscreen callers retain the
     /// historical unorm upload for compatibility.
     srgb_source: bool,
+    /// Remote URLs already reported via `FETCH_UNAVAILABLE` so a missing
+    /// `FetchHost` never re-emits across repeated frames or trims.
+    reported_fetch_unavailable: HashSet<String>,
 }
 
 impl UrlTextureCache {
@@ -694,6 +697,13 @@ impl UrlTextureCache {
         if is_remote(url) {
             // No host means no egress: refused here, before any socket.
             let Some(host) = self.fetch_host.clone() else {
+                if self.reported_fetch_unavailable.len() < 1024
+                    && self.reported_fetch_unavailable.insert(url.to_owned())
+                {
+                    nana_diagnostics::event!(
+                        nana_diagnostics::framework::resource::FETCH_UNAVAILABLE
+                    );
+                }
                 self.insert(key.into_owned(), None);
                 return None;
             };
@@ -1769,5 +1779,115 @@ mod tests {
             wgpu::TextureFormat::Rgba16Float
         );
         assert_eq!(texture.bytes, 8);
+    }
+
+    #[test]
+    fn remote_url_without_fetch_host_emits_fetch_unavailable_once() {
+        const CHILD: &str = "NANA_UI_TEST_URL_CACHE_FETCH_UNAVAILABLE_CHILD";
+        if std::env::var_os(CHILD).is_none() {
+            let _guard = crate::test_gpu::lock();
+            crate::test_gpu::run_child_with_timeout(
+                "scene_paint::url_texture_cache::tests::remote_url_without_fetch_host_emits_fetch_unavailable_once",
+                CHILD,
+                "1",
+            );
+            return;
+        }
+
+        static NEXT_DIR: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+        let seq = NEXT_DIR.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let dir =
+            std::env::temp_dir().join(format!("nana-url-cache-diag-{}-{seq}", std::process::id()));
+        let guard = nana_diagnostics::install(
+            nana_diagnostics::DiagnosticsConfig {
+                min_severity: nana_diagnostics::Severity::Debug,
+                persist: nana_diagnostics::PersistMode::All,
+                poll_interval: std::time::Duration::from_millis(5),
+                panic_hook: false,
+                ..nana_diagnostics::DiagnosticsConfig::default()
+            },
+            nana_diagnostics::SessionMetadata::new(
+                "dev.nana.url-cache-test",
+                "URL cache diagnostics",
+                "0",
+            ),
+            nana_diagnostics::DiagnosticsPaths::new(dir.join("logs"), dir.join("crash")),
+        )
+        .expect("isolated child owns global diagnostics");
+        nana_diagnostics::register_thread();
+
+        let (device, queue) = crate::test_gpu::device();
+        let mut cache = UrlTextureCache::default();
+        assert!(
+            cache
+                .load_image(
+                    &device,
+                    &queue,
+                    "https://example.invalid/a.png",
+                    ImageSampling::Resample,
+                    Demand::Waiting,
+                    None,
+                )
+                .is_none()
+        );
+        assert!(
+            cache
+                .load_image(
+                    &device,
+                    &queue,
+                    "https://example.invalid/a.png",
+                    ImageSampling::Mipmap,
+                    Demand::Waiting,
+                    None,
+                )
+                .is_none()
+        );
+        assert!(
+            cache
+                .load_image(
+                    &device,
+                    &queue,
+                    "https://example.invalid/a.png",
+                    ImageSampling::Resample,
+                    Demand::Waiting,
+                    None,
+                )
+                .is_none()
+        );
+        assert!(
+            cache
+                .load_image(
+                    &device,
+                    &queue,
+                    "https://example.invalid/b.png",
+                    ImageSampling::Resample,
+                    Demand::Waiting,
+                    None,
+                )
+                .is_none()
+        );
+
+        assert!(
+            guard
+                .diagnostics()
+                .flush(false, std::time::Duration::from_secs(5))
+        );
+        let log = guard.diagnostics().current_log();
+        drop(guard);
+
+        let file = nana_diagnostics::nlog::read_file(log.expect("session log was opened")).unwrap();
+        let count = file
+            .entries
+            .iter()
+            .filter(|entry| {
+                matches!(
+                    entry,
+                    nana_diagnostics::nlog::Entry::Event { key, .. }
+                        if file.event_name(*key) == Some("resource.fetch_unavailable")
+                )
+            })
+            .count();
+        let _ = std::fs::remove_dir_all(&dir);
+        assert_eq!(count, 2, "expected one fetch_unavailable per missing URL");
     }
 }

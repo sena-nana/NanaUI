@@ -82,9 +82,10 @@ tungstenite = { version = "0.30", default-features = false, features = ["handsha
 # versions kept); every graph holds that one copy. A git dependency on this
 # repository brings the fork along; an application that also uses wgpu
 # ecosystem crates patches crates.io wgpu onto it (see third_party/wgpu).
-# Framework crates never pick graphics backends. `nana-ui` turns
-# them all on through their default `wgpu-backends` feature; an application
-# that builds with `default-features = false` names its own backends on `wgpu`.
+# Framework crates never pick graphics backends by default (`default = []` on
+# `nana-ui`, so only the platform primary backend compiles unless `wgpu-backends`
+# or `full` is enabled). Applications with `default-features = false` or custom
+# `wgpu` backend selections choose their own backends explicitly.
 wgpu = { version = "30.0.1", path = "third_party/wgpu/wgpu", default-features = false, features = ["std", "parking_lot"] }
 naga = { version = "30.0.1", path = "third_party/wgpu/naga", default-features = false }
 # Hosted desktop windowing. winit 0.31-line git rev, not the iced-rs fork.

@@ -153,10 +153,32 @@ impl UiWorld {
                 .is_some_and(crate::WidgetVisualHandle::aligns_by_bottom_edge)
     }
 
-    /// Whether atomic inline `id` sits on its line by the baseline of its
-    /// last in-flow line box. Otherwise its bottom margin edge sits on the
-    /// baseline: replaced content, an inline-block whose overflow is not
-    /// visible, and one with no in-flow line box (CSS 2.1 §10.8.1).
+    /// Whether `id` is a non-subgrid flex or grid container that holds at least
+    /// one in-flow item (synthesizing a first baseline even if the item has no
+    /// line box, CSS Flexbox §8.5 / CSS Grid §11.8).
+    pub(crate) fn has_in_flow_flex_or_grid_item(
+        &self,
+        id: StableNodeId,
+        style: &nana_ui_core::LayoutStyle,
+    ) -> bool {
+        style
+            .display
+            .is_some_and(|d| d.is_flex_container() || d.is_grid_container())
+            && !style.is_subgrid_columns()
+            && !style.is_subgrid_rows()
+            && !self.lays_out_own_line(id)
+            && !self.aligns_by_bottom_edge(id, style)
+            && self.child_ids(id).iter().any(|&child| {
+                self.layout_style(child)
+                    .is_some_and(|cs| !cs.omits_box() && !cs.position.is_out_of_flow())
+            })
+    }
+
+    /// Whether atomic inline `id` sits on its line by a content baseline
+    /// (`inline-flex` / `inline-grid` first baseline per CSS Flexbox §8.5 and
+    /// CSS Grid §11.8; overflow does not suppress their baseline). Empty flex/grid
+    /// containers without in-flow items and replaced elements sit on their bottom
+    /// margin edge.
     pub(crate) fn atom_sits_on_line_box(&self, id: StableNodeId) -> bool {
         self.atom_sits_on_line_box_in(id, &mut NodeMap::default())
     }
@@ -169,10 +191,13 @@ impl UiWorld {
         memo: &mut NodeMap<bool>,
     ) -> bool {
         self.layout_style(id).is_some_and(|style| {
+            let flex_or_grid = style
+                .display
+                .is_some_and(|d| d.is_flex_container() || d.is_grid_container());
             !self.aligns_by_bottom_edge(id, &style)
-                && !style.overflow_x.clips()
-                && !style.overflow_y.clips()
-                && self.holds_line_box_in(id, memo)
+                && (flex_or_grid || (!style.overflow_x.clips() && !style.overflow_y.clips()))
+                && (self.holds_line_box_in(id, memo)
+                    || self.has_in_flow_flex_or_grid_item(id, &style))
         })
     }
 
@@ -213,7 +238,10 @@ impl UiWorld {
             {
                 !style.position.is_out_of_flow() && !style.omits_box()
             } else if style.is_inline_level() {
-                return !style.overflow_x.clips() && !style.overflow_y.clips();
+                let flex_or_grid = style
+                    .display
+                    .is_some_and(|d| d.is_flex_container() || d.is_grid_container());
+                return flex_or_grid || (!style.overflow_x.clips() && !style.overflow_y.clips());
             } else {
                 !style.position.is_out_of_flow()
             };
@@ -266,10 +294,11 @@ impl UiWorld {
         memo: &mut NodeMap<bool>,
     ) -> bool {
         !self.lays_out_own_line(id)
-            && self
-                .layout_style(id)
-                .is_some_and(|style| !self.aligns_by_bottom_edge(id, &style))
-            && self.holds_line_box_in(id, memo)
+            && self.layout_style(id).is_some_and(|style| {
+                !self.aligns_by_bottom_edge(id, &style)
+                    && (self.holds_line_box_in(id, memo)
+                        || self.has_in_flow_flex_or_grid_item(id, &style))
+            })
     }
 
     /// Whether `id` holds an in-flow line box: text of its own, a control
@@ -479,7 +508,7 @@ impl UiWorld {
     pub(crate) fn sync_inline_metrics(
         &mut self,
         scope: &[StableNodeId],
-        baseline_of: impl Fn(StableNodeId) -> Option<f32>,
+        baseline_of: impl Fn(StableNodeId, bool) -> Option<f32>,
         mut solved: hashbrown::HashMap<StableNodeId, Arc<[nana_text::InlineObject]>>,
     ) {
         let mut parents = NodeSet::default();
@@ -524,9 +553,14 @@ impl UiWorld {
                     let block_size = writing.logical_size(bounds.width, bounds.height).1;
                     let retained =
                         (!writing.is_vertical()).then_some(previous.metrics.ascent_px - margin.top);
+                    let first_only = self.layout_style(atom.node).is_some_and(|style| {
+                        style.display.is_some_and(|display| {
+                            display.is_flex_container() || display.is_grid_container()
+                        })
+                    });
                     let baseline = self
                         .atom_sits_on_line_box(atom.node)
-                        .then(|| baseline_of(atom.node).or(retained))
+                        .then(|| baseline_of(atom.node, first_only).or(retained))
                         .flatten()
                         .map(|baseline| baseline.clamp(0.0, block_size.max(0.0)));
                     let metrics = crate::inline_content::atomic_metrics(

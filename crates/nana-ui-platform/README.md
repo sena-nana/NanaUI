@@ -11,7 +11,7 @@ Native windows, system materials, and title bars are carried out in [`nana-windo
 ## Features
 
 - `clipboard` (on by default): the system clipboard, based on `arboard` on desktop.
-- `fetch` (on by default): `FetchHost` and the `ureq`-based `NativeFetchHost`. No origin is allowed by default; the application's `FetchPolicy` decides.
+- `fetch` (opt-in): `FetchHost` and the `ureq`-based `NativeFetchHost`. No origin is allowed by default; the application's `FetchPolicy` decides.
 - `ws`: `WebSocketHost` and the `tungstenite`-based `NativeWebSocketHost`.
 - `experimental-android`: platform capabilities for the experimental Android host.
 

@@ -117,18 +117,24 @@ Android、XR 与 accessibility provider 的设备验收。
 
 ## Cargo feature
 
-`nana-ui` 默认打开 `wgpu-backends`（仅在启用 `gpu` 时生效）、`icu`、`snippet-transforms` 和 `svg`。需要自选图形后端的应用使用 `default-features = false`，再按职责打开：
+`nana-ui` 默认不开启任何 feature（`default = []`）。启用 `gpu`（或隐含它的 `hosted`）仅编入当前平台主图形后端；全部可按职责按需打开，或直接用 `full`。详见 [布局与特性迁移指南](../guide/migration-layout-and-features.md)：
 
 | feature | 作用 |
 | --- | --- |
 | `hosted` | `run_runtime`、winit 0.31-line（workspace git pin，非 crates.io 0.31.0）、AccessKit；隐含 `gpu` |
-| `gpu` | `SceneWgpuPainter`、`HostTexture`、`GpuTextureView`、`GpuView` |
+| `gpu` | `SceneWgpuPainter`、`HostTexture`、`GpuTextureView`、`GpuView`（仅含平台主图形后端） |
+| `wgpu-backends` | 在启用 `gpu` 时打开跨平台全部标准 WGPU 后端（`dx12`、`vulkan`、`gles`、`metal`）；含于 `full` |
+| `runtime-wgsl` | 启用运行时 WGSL 编译回退（`naga` / `wgpu` WGSL）；关闭时仅加载预编译管线并在内置阶段缺失/失败时发出 `gpu.shader.build_failed`，自定义 WGSL `MaterialProgram` 发出 `gpu.material.rejected` |
 | `bundled-fonts` | 嵌入 Noto Sans SC 可变字体（`wght` 400–700，约 4.2 MiB）并注册为界面字体。不开则界面文字与 SVG 文字都用系统字体，取舍见[外观](look.md#内置字体还是系统字体) |
-| `components` | 下面组件族的聚合 |
-| `full` | fonts + components + hosted + syntax-highlighting + icu + snippet-transforms + svg |
-| `svg` | SVG 图片：`url()` 纹理和 `Image` 里的 SVG 文档，以及宿主包的只有 SVG、没有 shapes 的图标。图标按自己的几何绘制，不需要它。关闭后 SVG 图片按无法读取的文件处理，`usvg`、`resvg`、`tiny-skia`（约 0.8 MiB）不链接。只在 `gpu` 开启时生效 |
-| `snippet-transforms` | snippet 里的正则变换（`${1/(.*)/${1:/upcase}/}`）。关闭后 snippet 照常解析、展开、联动占位符，变换原样返回；正则引擎（约 0.7 MiB）不链接 |
-| `calendar` / `charts` / `controls` / `graph-canvas` / `image-viewer` / `rich-text` | 打开对应 runtime/scene `cfg` 并再导出该族。未启用则该族不参与编译。历史 no-op 别名（`overlays`、`selects`、`qr-code` 等）已删除，改用 `components` / `full` |
+| `components` | 下面组件族（含 `qr-code`）及 `nana-ui-scene/vector-boolean` 的聚合 |
+| `full` | `bundled-fonts` + `components` + `hosted` + `http-fetch` + `icu` + `image-codecs-extra` + `runtime-wgsl` + `snippet-transforms` + `svg` + `syntax-highlighting` + `wgpu-backends` |
+| `icu` | 用 ICU4X 编译期本地化格式化；关闭时回退 `PlainFormatter` 并在首次请求本地化格式化时发出 `resource.icu_unavailable` |
+| `http-fetch` | 打开 `nana-ui-platform/fetch` 支持 `http(s)://` 资源拉取；关闭且未提供自定义 `FetchHost` 时并发出 `resource.fetch_unavailable` |
+| `image-codecs-extra` | 打开 `image` 的 JPEG / GIF / WebP 解码；关闭时仅保留 PNG，遇到对应格式并发出 `resource.image_codec_unavailable` |
+| `svg` | SVG 图片：`url()` 纹理和 `Image` 里的 SVG 文档，以及宿主包的只有 SVG、没有 shapes 的图标。图标按自己的几何绘制，不需要它。关闭后 SVG 图片按无法读取的文件处理并发出 `resource.image_codec_unavailable`，`usvg`、`resvg`、`tiny-skia`（约 0.8 MiB）不链接。只在 `gpu` 开启时生效 |
+| `snippet-transforms` | snippet 里的正则变换（`${1/(.*)/${1:/upcase}/}`）。关闭后 snippet 照常解析、展开、联动占位符，变换原样返回并在首次触发时发出 `runtime.snippet.transform_unavailable`；正则引擎（约 0.7 MiB）不链接 |
+| `vector-boolean` | `nana-ui-scene` 中基于 `i_overlay` 的路径布尔化简（默认关闭，开启 `components` / `rich-text` 时自动打开；关闭时使用内置整数平面扫描线布尔回退求解器处理自交、孔洞/孤岛、裁剪、描边与 miter 轮廓化简） |
+| `calendar` / `charts` / `controls` / `graph-canvas` / `image-viewer` / `qr-code` / `rich-text` | 打开对应 runtime/scene `cfg` 并再导出该族。未启用则该族不参与编译。历史 no-op 别名（`overlays`、`selects` 等）已删除，改用 `components` / `full` |
 | `syntax-highlighting` | `TextArea` 的 `"highlight"` presenter |
 | `no-default-app-icon` | 应用总是注册自己的图标：不链接默认图标标记，没有图标的窗口沿用平台默认。只由应用打开 |
 | `accesskit-tree` | `AccessTreeProjector` 的 TreeUpdate 投影导出，给自接平台适配器的宿主（如 Android `accesskit_android`）；`hosted` 已隐含 |
@@ -148,7 +154,7 @@ Cargo 不会因你写了 `CalendarHeatmap` 就自动打开 `calendar`。
 `crates/nana-ui/examples/application-counter.rs`。
 下列低层合同用于自行管理窗口/文档的嵌入式宿主。
 
-只从 Rust 类型创建控件（`mount` / 声明式视图 / `.vue`）的应用。可以设 `const BUILTINS: BuiltinComponents = BuiltinComponents::Typed;`：内置控件只注册标识。程序没创建过的控件不会被链接进来。按标签构造控件的宿主保持默认的 `Full`。详见 [声明式视图](https://github.com/sena-nana/NanaUI/blob/main/docs/reference/reactive-view.md#控件级摇树builtincomponentstyped)。
+只从 Rust 类型、`view!` 或 `.vue` 创建控件时，内置控件在引用处按需进入 `ComponentRegistry`（未创建过的内置控件不会链接进最终二进制）；自定义控件通过 `ComponentView` 与 `RegisterableComponent` 注册。详见 [布局与特性迁移指南](../guide/migration-layout-and-features.md#4-已移除的公开-api)。
 
 `ApplicationWindow::demand` 与低层 `RuntimeProgram::frame_demand` 使用同一
 `FrameDemand`：默认 `OnDemand`。单次截止时间 `At(Instant)`。持续刷新
@@ -203,7 +209,7 @@ device/surface 丢失后宿主调用 `RuntimeDocument::set_surface_generation`�
 
 离屏验收要跑的是真实程序，不是摘出来的一份文档。`nana_ui::headless::HeadlessRuntime<P>` 用 `GpuContext` 和主窗口几何 `P::initialize`，再按 Scene 宿主的顺序驱动钩子；程序自己持有文档，宿主经 `with_document` 读写，不把文档搬进会话再搬回来。
 
-- `turn()` 是宿主的一轮：窗口请求、排队的消息（`update`）、到期的 `wake` 与动画帧，然后每个可见窗口一帧：`prepare_window_frame`、布局、`window_frame_presented`，有消息后再 `bind_window`。主窗口在第一帧后 bind 一次，相当于原生宿主里装上程序的那条消息。
+- `turn()` 是宿主的一轮（返回 `HeadlessTurn { work: WorkCounters, did_work: bool }`）：窗口请求、排队的消息（`update`）、到期的 `wake` 与动画帧，然后每个可见窗口一帧：`prepare_window_frame`、布局、`window_frame_presented`，有消息后再 `bind_window`（单窗重绘 `present(id)` 返回 `Option<WorkCounters>`）。主窗口在第一帧后 bind 一次，相当于原生宿主里装上程序的那条消息。
 - `input(id, payload, text)` 经该窗口自己的输入源路由进文档，再交给 `input_event`；`accessibility_action`、`window_event`、`resize` 同理走钩子。`update`、`dispatch`、`wake` 给验收脚本补一条消息或唤醒。
 - 窗口：`WindowService::create_window` 与 `WindowCommand::Open` 建虚拟窗口并调 `initialize_window`，`set_visible`、`set_size` 改它并发对应事件，`Close` 关掉它和子窗口；其余命令只进 `take_window_commands()`。文件对话框立即按 `set_file_dialog` 设的答案回 `FileDialogCompleted`，用一次后恢复为取消。
 - `take_report()` 给出合并的重绘目标、是否要求退出，以及消息、wake、输入和窗口事件里要求重绘的次数（帧回调不计；`set_quiet_messages` 可排除逐帧到达的消息）。

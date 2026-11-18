@@ -65,7 +65,7 @@ app_id = 480
 depots = { windows = 481, macos = 482, linux = 483 }
 
 [platform.macos]
-minimum_system_version = "11.0"
+minimum_system_version = "14.0"
 url_schemes = ["nanafixture"]
 document_types = [{ name = "Fixture Doc", extensions = ["nfx"], role = "Editor" }]
 info_plist_extra = "packaging/Info.extra.plist"

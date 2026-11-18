@@ -198,6 +198,8 @@ const WITNESS_DECLARATIONS: &[(&str, &str)] = &[
     ("grid-template-rows", "repeat(auto-fill, 10px)"),
     ("grid-template-columns", "repeat(2, repeat(2, 10px))"),
     ("grid-template-rows", "repeat(2, repeat(2, 10px))"),
+    ("grid-template-columns", "subgrid"),
+    ("grid-template-rows", "subgrid"),
     ("grid-auto-columns", "10px"),
     ("grid-auto-rows", "10px"),
     ("grid-auto-flow", "column"),

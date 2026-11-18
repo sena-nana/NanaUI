@@ -28,8 +28,39 @@ jobs:
         run: python3 scripts/check-package-boundary.py
       - name: Check test target and anti-hang hygiene
         run: python3 scripts/check-test-hygiene.py
+      - name: Check generated Unicode tables provenance and invariants
+        run: python3 scripts/generate-ucd-tables.py --check
       - name: Self-test repository gate scripts
         run: python3 -m unittest discover -s scripts/tests -v
+      - name: Check dependency advisories
+        if: runner.os == 'Linux'
+        uses: EmbarkStudios/cargo-deny-action@v2
+        with:
+          command: check advisories
+      - name: Check css-parity-webview dependency advisories
+        if: runner.os == 'Linux'
+        working-directory: tools/css-parity-webview
+        uses: EmbarkStudios/cargo-deny-action@v2
+        with:
+          command: check advisories
+      - name: Check nana-icons-tabler dependency advisories
+        if: runner.os == 'Linux'
+        working-directory: crates/nana-icons-tabler
+        uses: EmbarkStudios/cargo-deny-action@v2
+        with:
+          command: check advisories
+      - name: Check stack-depth microbench dependency advisories
+        if: runner.os == 'Linux'
+        working-directory: perf/micro/stack-depth
+        uses: EmbarkStudios/cargo-deny-action@v2
+        with:
+          command: check advisories
+      - name: Check taffy-reference dependency advisories
+        if: runner.os == 'Linux'
+        working-directory: perf/micro/taffy-reference
+        uses: EmbarkStudios/cargo-deny-action@v2
+        with:
+          command: check advisories
 
   check:
     strategy:
@@ -241,10 +272,23 @@ jobs:
           cargo check -p nana-ui-scene --all-targets --features benchmark --locked
           # Issue #227: the diagnostics hot-path benchmark, same reason.
           cargo check -p nana-diagnostics --all-targets --features benchmark --locked
+      - name: Check macOS precompiled MSL syntax
+        if: runner.os == 'macOS'
+        run: cargo test -p nana-ui --lib --features full --locked precompiled_msl_stages_pass_metal_syntax_check -- --ignored --test-threads=1
+      - name: Paint minimal scene from precompiled shaders without runtime-wgsl
+        env:
+          NANA_EXPECT_NO_RUNTIME_WGSL: "1"
+        run: cargo test -p nana-ui --test ui_gpu --features hosted,components,wgpu-interop --locked precompiled_without_runtime_wgsl -- --test-threads=1
+      - name: Check and test nana-ui-scene without vector-boolean
+        run: |
+          cargo clippy -p nana-ui-scene --all-targets --no-default-features --locked --no-deps -- -D warnings
+          cargo test -p nana-ui-scene --lib --no-default-features --locked
       - name: Check macOS WebView reference
         if: runner.os == 'macOS'
         working-directory: tools/css-parity-webview
         run: cargo check --all-targets --locked
+      - name: Run CSS layout parity suite
+        run: cargo test --manifest-path tools/css-parity/Cargo.toml --locked
       - name: Enforce workspace Clippy
         run: cargo clippy --workspace --all-targets --locked --no-deps -- -D warnings
       - name: Enforce NanaUI and Gallery Clippy
@@ -327,6 +371,7 @@ jobs:
             transform_and_a11y_mutations_do_not_schedule_layout \
             accessibility_delta_seeds_from_moved_boxes_not_scheduled_layout \
             scrolling_publishes_the_moved_subtree_and_matches_a_full_projection \
+            work_counters_are_queryable_after_drain_and_extract \
             scoped_layout_touches_only_the_change_closure_and_matches_full_recompute \
             scoped_layout_matches_full_recompute_across_container_shapes_and_edits \
             scoped_layout_contained_edit_does_not_scan_siblings_as_the_document_grows \
