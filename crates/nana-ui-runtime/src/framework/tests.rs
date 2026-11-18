@@ -6099,6 +6099,88 @@ fn focusing_a_descendant_below_the_viewport_scrolls_it_into_view() {
     assert!(offset > 0.0);
 }
 
+#[test]
+fn focusing_an_unlaid_out_child_reveals_its_laid_out_ancestor_without_jumping_to_origin() {
+    let mut context = AppContext::new();
+    let document = DocumentId::new(1).unwrap();
+    let mut viewport = NodeStyle::default();
+    {
+        let layout = Arc::make_mut(&mut viewport.layout);
+        layout.width = Some(LengthSpec::Px(200.0));
+        layout.height = Some(LengthSpec::Px(120.0));
+    }
+    let scroll = context
+        .create_component(
+            document,
+            ScrollView::new(ScrollAxes::Vertical).style(viewport),
+        )
+        .unwrap();
+    let mut buttons = Vec::new();
+    for index in 0..6 {
+        let row = Stack::column(0.0).with_layout(|layout| {
+            layout.width = Some(LengthSpec::Fill);
+            layout.height = Some(LengthSpec::Px(40.0));
+            layout.min_height = Some(LengthSpec::Px(40.0));
+            layout.max_height = Some(LengthSpec::Px(40.0));
+        });
+        let row = context.create_component(document, row).unwrap();
+        context.append_child(scroll, row).unwrap();
+
+        let mut btn = Button::new(format!("Btn {index}"));
+        Arc::make_mut(&mut btn.style.layout).hidden = true;
+        let btn = context.create_component(document, btn).unwrap();
+        context.append_child(row, btn).unwrap();
+        buttons.push(btn);
+    }
+    context
+        .layout_document(document, crate::LayoutViewport::new(200.0, 120.0))
+        .unwrap();
+
+    assert!(
+        context
+            .scroll_to(scroll, ScrollOffset { x: 0.0, y: 80.0 })
+            .unwrap()
+    );
+    assert_eq!(
+        context.world().scroll_offset(scroll.stable_id()).unwrap().y,
+        80.0
+    );
+
+    // Un-hide the child in visible row 3 (y = 120..160) without relayout first.
+    context
+        .update_component(buttons[3], |btn, _| {
+            Arc::make_mut(&mut btn.style.layout).hidden = false;
+        })
+        .unwrap();
+    assert!(
+        context
+            .focus_node(document, buttons[3].stable_id())
+            .unwrap()
+    );
+    assert_eq!(
+        context.world().scroll_offset(scroll.stable_id()).unwrap().y,
+        80.0,
+        "focusing an unlaid-out child of a visible row must not jump to origin"
+    );
+
+    // Un-hide the child in offscreen row 5 (y = 200..240) without relayout first.
+    context
+        .update_component(buttons[5], |btn, _| {
+            Arc::make_mut(&mut btn.style.layout).hidden = false;
+        })
+        .unwrap();
+    assert!(
+        context
+            .focus_node(document, buttons[5].stable_id())
+            .unwrap()
+    );
+    assert_eq!(
+        context.world().scroll_offset(scroll.stable_id()).unwrap().y,
+        120.0,
+        "focusing an unlaid-out child of an offscreen row must reveal that row's full box"
+    );
+}
+
 /// Hidden scrollbars still clip overflow. The accessibility node has to carry
 /// the real viewport offset and a positive range, and focusing a row that is
 /// already inside the clip must not move that offset.

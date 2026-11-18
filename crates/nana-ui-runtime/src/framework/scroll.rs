@@ -248,7 +248,7 @@ impl AppContext {
     /// viewport. The outer content holds that viewport, not the unscrolled
     /// layout position of a descendant clipped inside it. Text editors keep
     /// their own caret reveal and are revealed as a whole.
-    pub(super) fn reveal_focused_target(
+    pub(crate) fn reveal_focused_target(
         &mut self,
         target: StableNodeId,
     ) -> Result<(), FrameworkError> {
@@ -256,19 +256,32 @@ impl AppContext {
         let mut current = self.world.parent_id(target);
         while let Some(id) = current {
             let parent = self.world.parent_id(id);
+            if self.has_empty_layout_box(revealed) {
+                revealed = id;
+            }
             if self.owns_text_scroll(id) {
                 revealed = id;
             } else if self.is_scroll_view(id) || self.overflow_scrolls(id) {
-                match self.scroll_node_into_view(id, revealed, 0.0) {
-                    Ok(_) => {}
-                    Err(FrameworkError::MissingView(_)) => {}
-                    Err(error) => return Err(error),
+                if !self.has_empty_layout_box(revealed) && revealed != id {
+                    match self.scroll_node_into_view(id, revealed, 0.0) {
+                        Ok(_) => {}
+                        Err(FrameworkError::MissingView(_)) => {}
+                        Err(error) => return Err(error),
+                    }
                 }
                 revealed = id;
             }
             current = parent;
         }
         Ok(())
+    }
+
+    /// True until layout has given `id` a non-empty box (e.g. a newly shown
+    /// inline edit child focused before the next layout pass).
+    pub(crate) fn has_empty_layout_box(&self, id: StableNodeId) -> bool {
+        self.world
+            .local_layout_box(id)
+            .is_none_or(|bounds| bounds.width <= 0.0 && bounds.height <= 0.0)
     }
 
     fn owns_text_scroll(&self, id: StableNodeId) -> bool {

@@ -1034,7 +1034,7 @@ fn tree_pressed(
     })?;
     if rename && cx.read(tree, |tree| tree.renamable)? {
         cx.update_component(tree, |tree, _| tree.gesture = None)?;
-        cx.begin_tree_rename(tree, &id)?;
+        cx.begin_tree_rename_focus(tree, &id, false)?;
     }
     Ok(true)
 }
@@ -1333,6 +1333,15 @@ impl AppContext {
         tree: Entity<TreeView>,
         id: &Arc<str>,
     ) -> Result<bool, FrameworkError> {
+        self.begin_tree_rename_focus(tree, id, true)
+    }
+
+    fn begin_tree_rename_focus(
+        &mut self,
+        tree: Entity<TreeView>,
+        id: &Arc<str>,
+        reveal: bool,
+    ) -> Result<bool, FrameworkError> {
         let document = self.document_of_node(tree.stable_id())?;
         let started = self.update_component(tree, |tree, _| {
             if !tree.renamable || find_node(&tree.nodes, id).is_none_or(|node| node.disabled) {
@@ -1350,7 +1359,11 @@ impl AppContext {
         else {
             return Ok(false);
         };
-        self.focus_node(document, input)?;
+        if reveal {
+            self.focus_node(document, input)?;
+        } else {
+            self.focus_node_in_place(document, input)?;
+        }
         self.select_all_focused_text(document)?;
         Ok(true)
     }
@@ -1504,6 +1517,7 @@ impl AppContext {
                 input.stable_id()
             }
         };
+        self.append_children(tree.stable_id(), &[input])?;
         if let Some(bounds) = bounds {
             self.update_component(Entity::<TextInput>::from_stable_id(input), |input, _| {
                 let layout = Arc::make_mut(&mut input.style.layout);
@@ -1515,7 +1529,6 @@ impl AppContext {
                 layout.z_index = Some(1);
             })?;
         }
-        self.append_children(tree.stable_id(), &[input])?;
         Ok(created)
     }
 }

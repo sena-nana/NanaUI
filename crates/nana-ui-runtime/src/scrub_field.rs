@@ -408,7 +408,7 @@ fn scrub_released(
         return Ok(false);
     };
     if !drag.moved {
-        cx.begin_scrub_edit(field)?;
+        cx.begin_scrub_edit_focus(field, false)?;
     }
     Ok(true)
 }
@@ -523,6 +523,14 @@ impl AppContext {
     /// Switch `field` to typing: the input shows the value, selected, with
     /// the focus.
     pub fn begin_scrub_edit(&mut self, field: Entity<ScrubField>) -> Result<bool, FrameworkError> {
+        self.begin_scrub_edit_focus(field, true)
+    }
+
+    fn begin_scrub_edit_focus(
+        &mut self,
+        field: Entity<ScrubField>,
+        reveal: bool,
+    ) -> Result<bool, FrameworkError> {
         let document = self.document_of_node(field.stable_id())?;
         let Some((value, mixed)) = self.update_component(field, |field, _| {
             if field.disabled || field.editing {
@@ -544,7 +552,11 @@ impl AppContext {
                 input.state.replace_value(String::new());
             }
         })?;
-        self.focus_node(document, parts.input)?;
+        if reveal {
+            self.focus_node(document, parts.input)?;
+        } else {
+            self.focus_node_in_place(document, parts.input)?;
+        }
         self.select_all_focused_text(document)?;
         Ok(true)
     }

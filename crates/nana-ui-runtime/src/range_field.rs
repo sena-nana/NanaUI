@@ -95,6 +95,10 @@ impl AppContext {
         let reset_shown = snapshot.default_value.is_some() && snapshot.rail.is_none();
         let reset_disabled = snapshot.disabled || snapshot.at_default();
         let half_square = self.world().theme().spacing().page / 2.0;
+        self.append_children(range.stable_id(), &[parts.reset, parts.input])?;
+        if created {
+            self.update_component(range, |range, _| range.parts = Some(parts))?;
+        }
         self.update_component(
             Entity::<IconButton>::from_stable_id(parts.reset),
             |button, _| {
@@ -143,10 +147,6 @@ impl AppContext {
                 }
             },
         )?;
-        if created {
-            self.update_component(range, |range, _| range.parts = Some(parts))?;
-        }
-        self.append_children(range.stable_id(), &[parts.reset, parts.input])?;
         Ok(created)
     }
 
@@ -174,6 +174,23 @@ impl AppContext {
     /// number field, which shows the value, selected, with the focus.
     /// Refused unless the range draws a value thumb and is enabled.
     pub fn begin_range_edit(&mut self, range: Entity<RangeField>) -> Result<bool, FrameworkError> {
+        self.begin_range_edit_focus(range, true)
+    }
+
+    /// Like [`Self::begin_range_edit`], without scrolling ancestor scrollports:
+    /// used when a pointer click on the already-visible value thumb starts typing.
+    pub(crate) fn begin_range_edit_in_place(
+        &mut self,
+        range: Entity<RangeField>,
+    ) -> Result<bool, FrameworkError> {
+        self.begin_range_edit_focus(range, false)
+    }
+
+    fn begin_range_edit_focus(
+        &mut self,
+        range: Entity<RangeField>,
+        reveal: bool,
+    ) -> Result<bool, FrameworkError> {
         let document = self.document_of_node(range.stable_id())?;
         let Some(value) = self.update_component(range, |range, _| {
             if range.disabled || range.editing || !range.draws_value_thumb() {
@@ -192,7 +209,11 @@ impl AppContext {
         self.update_component(input, |input, _| {
             input.assign(value);
         })?;
-        self.focus_node(document, parts.input)?;
+        if reveal {
+            self.focus_node(document, parts.input)?;
+        } else {
+            self.focus_node_in_place(document, parts.input)?;
+        }
         self.select_all_focused_text(document)?;
         Ok(true)
     }

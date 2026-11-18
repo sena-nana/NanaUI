@@ -1333,7 +1333,7 @@ impl AppContext {
         })?;
         if let Some(thumb) = clicked {
             // A click on a value thumb types a value.
-            self.begin_range_span_edit(field, thumb)?;
+            self.begin_range_span_edit_focus(field, thumb, false)?;
         }
         Ok(ended)
     }
@@ -1545,6 +1545,15 @@ impl AppContext {
         field: Entity<RangeSpanField>,
         thumb: RangeSpanThumb,
     ) -> Result<bool, FrameworkError> {
+        self.begin_range_span_edit_focus(field, thumb, true)
+    }
+
+    fn begin_range_span_edit_focus(
+        &mut self,
+        field: Entity<RangeSpanField>,
+        thumb: RangeSpanThumb,
+        reveal: bool,
+    ) -> Result<bool, FrameworkError> {
         let document = self.document_of_node(field.stable_id())?;
         let Some(value) = self.update_component(field, |field, _| {
             if field.disabled || field.value_capsule().is_none() {
@@ -1562,7 +1571,14 @@ impl AppContext {
         self.update_component(Entity::<NumberInput>::from_stable_id(input), |input, _| {
             input.assign(value);
         })?;
-        self.focus_node(document, input)?;
+        let moved = self.focus_node_in_place(document, input)?;
+        if reveal && moved {
+            let target = self
+                .read(field, |field| field.thumb_node(thumb))?
+                .filter(|node| !self.has_empty_layout_box(*node))
+                .unwrap_or(field.stable_id());
+            self.reveal_focused_target(target)?;
+        }
         self.select_all_focused_text(document)?;
         Ok(true)
     }

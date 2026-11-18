@@ -534,7 +534,7 @@ impl AppContext {
             })?;
         if clicked_thumb {
             // A click on the value thumb types a value.
-            self.begin_range_edit(Entity::from_stable_id(target))?;
+            self.begin_range_edit_in_place(Entity::from_stable_id(target))?;
         }
         Ok(ended)
     }

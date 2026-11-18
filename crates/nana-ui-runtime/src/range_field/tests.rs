@@ -497,3 +497,184 @@ fn a_view_binds_the_default_value_and_assembles_the_button() {
             .unwrap()
     );
 }
+
+#[test]
+fn clicking_or_activating_a_value_thumb_in_a_scrolled_list_preserves_scroll_offset() {
+    use crate::{LengthSpec, NodeStyle, ScrollAxes, ScrollOffset, ScrollView};
+
+    let mut cx = AppContext::new();
+    let mut viewport = NodeStyle::default();
+    {
+        let layout = Arc::make_mut(&mut viewport.layout);
+        layout.width = Some(LengthSpec::Px(320.0));
+        layout.height = Some(LengthSpec::Px(120.0));
+    }
+    let scroll = cx
+        .create_component(
+            document(),
+            ScrollView::new(ScrollAxes::Vertical).style(viewport),
+        )
+        .unwrap();
+    let mut ranges = Vec::new();
+    for _ in 0..10 {
+        let range = cx
+            .create_component(
+                document(),
+                RangeField::new(30.0, 0.0, 100.0, 1.0)
+                    .label("音量")
+                    .value_thumb(true),
+            )
+            .unwrap();
+        cx.append_child(scroll, range).unwrap();
+        cx.assemble_range_field(range).unwrap();
+        ranges.push(range);
+    }
+    let relayout_list = |cx: &mut AppContext| {
+        let work = cx.take_system_work_for(document());
+        cx.resolve_styles(&work.style).unwrap();
+        cx.layout_document(document(), LayoutViewport::new(320.0, 120.0))
+            .unwrap();
+        cx.rebuild_hit_test(document());
+    };
+    relayout_list(&mut cx);
+
+    assert!(
+        cx.scroll_to(scroll, ScrollOffset { x: 0.0, y: 160.0 })
+            .unwrap()
+    );
+    cx.rebuild_hit_test(document());
+    assert_eq!(
+        cx.world().scroll_offset(scroll.stable_id()).unwrap().y,
+        160.0
+    );
+
+    let visible = *ranges
+        .iter()
+        .find(|&&range| {
+            let bounds = cx.world().layout_box(range.stable_id()).unwrap();
+            bounds.y >= 160.0 && bounds.y + bounds.height <= 280.0
+        })
+        .expect("a slider fully inside the scrolled viewport");
+    let (_, thumb) = geometry(&cx, visible);
+    let capsule = thumb.unwrap().capsule;
+    let x = capsule.x + capsule.width / 2.0;
+    let screen_y = capsule.y + capsule.height / 2.0 - 160.0;
+
+    let mut input = HeadlessInput::bind(&mut cx, document());
+    let pointer =
+        |phase, px: f32, py: f32| InputPayload::Pointer(PointerInput::mouse(phase, px, py));
+    let key = |name: &'static str| {
+        InputPayload::Key(KeyInput {
+            physical: PhysicalKey(name.into()),
+            logical: LogicalKey(name.into()),
+            state: KeyState::Pressed,
+            repeat: false,
+            modifiers: InputModifiers::empty(),
+        })
+    };
+
+    // First click on the value thumb: starts editing without scrolling back to top.
+    input
+        .route(&mut cx, pointer(PointerPhase::Down, x, screen_y))
+        .unwrap();
+    input
+        .route(&mut cx, pointer(PointerPhase::Up, x, screen_y))
+        .unwrap();
+    let parts = cx.read(visible, |range| range.parts).unwrap().unwrap();
+    assert!(cx.read(visible, |range| range.editing).unwrap());
+    assert_eq!(cx.world().focused(document()), Some(parts.input));
+    assert_eq!(
+        cx.world().scroll_offset(scroll.stable_id()).unwrap().y,
+        160.0
+    );
+
+    // Lay out while editing, press Escape, lay out again (collapses `parts.input`
+    // back to zero), then click the thumb a second time.
+    relayout_list(&mut cx);
+    input.route(&mut cx, key("Escape")).unwrap();
+    assert!(!cx.read(visible, |range| range.editing).unwrap());
+    relayout_list(&mut cx);
+    input
+        .route(&mut cx, pointer(PointerPhase::Down, x, screen_y))
+        .unwrap();
+    input
+        .route(&mut cx, pointer(PointerPhase::Up, x, screen_y))
+        .unwrap();
+    assert!(cx.read(visible, |range| range.editing).unwrap());
+    assert_eq!(cx.world().focused(document()), Some(parts.input));
+    assert_eq!(
+        cx.world().scroll_offset(scroll.stable_id()).unwrap().y,
+        160.0
+    );
+
+    // Keyboard activation (Enter) while the focused slider is already in view keeps 160.0.
+    input.route(&mut cx, key("Escape")).unwrap();
+    relayout_list(&mut cx);
+    assert_eq!(cx.world().focused(document()), Some(visible.stable_id()));
+    input.route(&mut cx, key("Enter")).unwrap();
+    assert!(cx.read(visible, |range| range.editing).unwrap());
+    assert_eq!(
+        cx.world().scroll_offset(scroll.stable_id()).unwrap().y,
+        160.0
+    );
+
+    // Keyboard activation (Enter) while the focused slider is offscreen below reveals
+    // the full height of the slider rather than leaving it offscreen or jumping to 0.
+    input.route(&mut cx, key("Escape")).unwrap();
+    relayout_list(&mut cx);
+    cx.scroll_to(scroll, ScrollOffset { x: 0.0, y: 0.0 })
+        .unwrap();
+    cx.rebuild_hit_test(document());
+    assert_eq!(cx.world().scroll_offset(scroll.stable_id()).unwrap().y, 0.0);
+    input.route(&mut cx, key("Enter")).unwrap();
+    assert!(cx.read(visible, |range| range.editing).unwrap());
+    let offset = cx.world().scroll_offset(scroll.stable_id()).unwrap().y;
+    let visible_box = cx.world().layout_box(visible.stable_id()).unwrap();
+    assert!(
+        offset > 0.0,
+        "expected scroll to reveal offscreen slider, got {offset}"
+    );
+    assert!(
+        visible_box.y + 0.01 >= offset
+            && visible_box.y + visible_box.height <= offset + 120.0 + 0.01,
+        "expected full slider {visible_box:?} inside viewport [0, 120] at offset {offset}"
+    );
+
+    // Clicking the visible thumb capsule of a slider partially clipped at the bottom edge
+    // focuses in place without scrolling.
+    input.route(&mut cx, key("Escape")).unwrap();
+    relayout_list(&mut cx);
+    let partial = ranges[8];
+    let partial_box = cx.world().layout_box(partial.stable_id()).unwrap();
+    let (_, partial_thumb) = geometry(&cx, partial);
+    let partial_capsule = partial_thumb.unwrap().capsule;
+    let partial_scroll_y =
+        (partial_capsule.y + partial_capsule.height / 2.0 + 2.0 - 120.0).max(0.0);
+    assert!(
+        partial_box.y + partial_box.height > partial_scroll_y + 120.0,
+        "expected bottom of {partial_box:?} to be clipped below {}",
+        partial_scroll_y + 120.0
+    );
+    cx.scroll_to(
+        scroll,
+        ScrollOffset {
+            x: 0.0,
+            y: partial_scroll_y,
+        },
+    )
+    .unwrap();
+    cx.rebuild_hit_test(document());
+    let px = partial_capsule.x + partial_capsule.width / 2.0;
+    let py = partial_capsule.y + partial_capsule.height / 2.0 - partial_scroll_y;
+    input
+        .route(&mut cx, pointer(PointerPhase::Down, px, py))
+        .unwrap();
+    input
+        .route(&mut cx, pointer(PointerPhase::Up, px, py))
+        .unwrap();
+    assert!(cx.read(partial, |range| range.editing).unwrap());
+    assert_eq!(
+        cx.world().scroll_offset(scroll.stable_id()).unwrap().y,
+        partial_scroll_y
+    );
+}
