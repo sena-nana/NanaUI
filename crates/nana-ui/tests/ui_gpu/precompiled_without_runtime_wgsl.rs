@@ -52,6 +52,7 @@ fn minimal_scene() -> UiScene {
 
 #[test]
 fn precompiled_shaders_build_and_paint_without_runtime_wgsl() {
+    let _gpu_guard = crate::gpu_lock();
     #[cfg(feature = "runtime-wgsl")]
     if std::env::var_os("NANA_EXPECT_NO_RUNTIME_WGSL").is_some() {
         panic!("NANA_EXPECT_NO_RUNTIME_WGSL is set, so `runtime-wgsl` must be disabled");

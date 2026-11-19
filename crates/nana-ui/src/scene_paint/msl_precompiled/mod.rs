@@ -827,8 +827,8 @@ pub(in crate::scene_paint) mod tests {
 
     #[test]
     fn scene_wgpu_painter_decompresses_msl_once_per_build_and_zero_on_warm_hit() {
-        let gpu = crate::test_gpu::fresh_context();
         let _gpu_guard = crate::test_gpu::lock();
+        let gpu = crate::test_gpu::fresh_context();
         let device = nana_gpu::__framework::device(&gpu);
         assert_eq!(
             archive_resident_bytes(),
@@ -879,8 +879,8 @@ pub(in crate::scene_paint) mod tests {
     #[cfg(feature = "charts")]
     #[test]
     fn chart_pipeline_decompresses_msl_at_most_once() {
-        let gpu = crate::test_gpu::fresh_context();
         let _gpu_guard = crate::test_gpu::lock();
+        let gpu = crate::test_gpu::fresh_context();
         let device = nana_gpu::__framework::device(&gpu);
         let motion_layout =
             super::super::motion::motion_bind_layout_with_policy(device, Some(gpu.policy()));
@@ -1041,6 +1041,7 @@ pub(in crate::scene_paint) mod tests {
         log::set_max_level(log::LevelFilter::Debug);
         CAPTURED.lock().unwrap().clear();
 
+        let _gpu_guard = crate::test_gpu::lock();
         let gpu = crate::test_gpu::fresh_context();
         assert!(
             is_metal(nana_gpu::__framework::device(&gpu)),

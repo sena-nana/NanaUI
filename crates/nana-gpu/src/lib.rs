@@ -36,6 +36,9 @@ mod realization;
 mod texture;
 mod upload;
 
+#[cfg(test)]
+mod test_gpu;
+
 #[doc(hidden)]
 pub mod __framework;
 

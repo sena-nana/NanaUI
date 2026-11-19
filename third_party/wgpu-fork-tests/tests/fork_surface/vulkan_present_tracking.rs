@@ -228,6 +228,7 @@ fn resize_with_frames_in_flight(window: HWND, limit: &str) -> Option<Run> {
 
 #[test]
 fn retired_swapchains_are_freed_after_their_presents() {
+    let _gpu_guard = nana_wgpu_fork_tests::gpu_lock();
     if !nana_wgpu_fork_tests::adapter_required() {
         eprintln!(
             "retired_swapchains_are_freed_after_their_presents: skipped \

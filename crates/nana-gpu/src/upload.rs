@@ -490,21 +490,13 @@ pub(crate) fn merge(into: &mut UploadBatch, from: &mut UploadBatch) {
 mod tests {
     use super::*;
 
-    fn device() -> wgpu::Device {
-        device_and_queue().0
+    fn device() -> (crate::test_gpu::GpuTestGuard, wgpu::Device) {
+        let (guard, device, _queue) = device_and_queue();
+        (guard, device)
     }
 
-    fn device_and_queue() -> (wgpu::Device, wgpu::Queue) {
-        let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
-            backends: wgpu::Backends::from_env().unwrap_or_default(),
-            ..wgpu::InstanceDescriptor::new_without_display_handle()
-        });
-        let adapter = pollster::block_on(wgpu::util::initialize_adapter_from_env_or_default(
-            &instance, None,
-        ))
-        .expect("upload tests require a WGPU adapter");
-        pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor::default()))
-            .expect("upload tests require a WGPU device")
+    fn device_and_queue() -> (crate::test_gpu::GpuTestGuard, wgpu::Device, wgpu::Queue) {
+        crate::test_gpu::device_and_queue()
     }
 
     fn buffer(device: &wgpu::Device, size: u64) -> wgpu::Buffer {
@@ -525,7 +517,7 @@ mod tests {
 
     #[test]
     fn adjacent_writes_to_one_buffer_are_one_copy_and_lengths_pad() {
-        let device = device();
+        let (_gpu_guard, device) = device();
         let target = buffer(&device, 64);
         let other = buffer(&device, 64);
         let mut batch = UploadBatch::default();
@@ -542,7 +534,7 @@ mod tests {
 
     #[test]
     fn texture_rows_repack_to_the_copy_pitch_at_an_aligned_offset() {
-        let device = device();
+        let (_gpu_guard, device) = device();
         let texture = device.create_texture(&wgpu::TextureDescriptor {
             label: None,
             size: wgpu::Extent3d {
@@ -585,7 +577,7 @@ mod tests {
     /// nothing else is, so the next frame reuses it instead of allocating.
     #[test]
     fn an_oversized_chunk_is_kept_while_the_pool_is_empty() {
-        let device = device();
+        let (_gpu_guard, device) = device();
         let ring = UploadRing::new();
         let chunk = |size| {
             device.create_buffer(&wgpu::BufferDescriptor {
@@ -607,7 +599,7 @@ mod tests {
     /// forgets it once the chunk is back.
     #[test]
     fn a_chunk_in_flight_names_its_submission_until_it_returns() {
-        let (device, queue) = device_and_queue();
+        let (_gpu_guard, device, queue) = device_and_queue();
         let ring = UploadRing::new();
         let policy = GpuDeviceState::new(crate::DeviceGeneration::next());
         let target = buffer(&device, 64);
@@ -628,7 +620,7 @@ mod tests {
 
     #[test]
     fn appending_rebases_the_source_offsets() {
-        let device = device();
+        let (_gpu_guard, device) = device();
         let target = buffer(&device, 64);
         let mut first = UploadBatch::default();
         first.write_buffer(&target, 0, &[1; 4]);
@@ -648,7 +640,7 @@ mod tests {
 
     #[test]
     fn recycled_batch_caps_spare_cpu_capacity() {
-        let device = device();
+        let (_gpu_guard, device) = device();
         let ring = UploadRing::new();
         let target = buffer(&device, 4 << 20);
         let mut batch = ring.batch();

@@ -36,6 +36,12 @@ NanaUI 对测试目标数量、调试符号体积、并发隔离与反卡死规�
 - **`gpu-serial`（`max-threads = 1`）**：覆盖 `nana-gpu`、`nana-frame-exchange`、`nana-ui`、`nana-ui-devtools`、`nana-wgpu-fork-tests`、`runtime-host-fixture`、`nana-mobile-probe` 与 `binary(ui-snapshots)`。
 - **`os-global`（`max-threads = 1`）**：覆盖 `nana-window`、`nana-diagnostics` 与 `nana-ui-platform`，避免进程级全局单例、环境变量或原生窗口句柄状态相互干扰。
 
+## 共享 GPU 测试设备、生命周期与 Linux 崩溃诊断
+
+- **禁止跨 `libtest` 线程并发创建或销毁 `wgpu::Instance` / `wgpu::Device`**：Ubuntu 26.04 上的 Mesa 26.0 Lavapipe/LLVMpipe 在多线程并发构造或析构设备时容易触发 `SIGSEGV`，Windows NVIDIA Vulkan ICD 亦会与 `libtest` 线程退出发生加载器死锁。GPU 测试夹具须将 `wgpu::Instance`（及共享设备）缓存在 `OnceLock` 中跨测试进程常驻，使用可重入互斥守卫串行化 GPU 执行，并保证守卫声明在测试持有的 `GpuContext` / `Device` 之前，确保在设备析构及后台回收线程排空后再释放锁。
+- **CI 串行边界**：`.github/workflows/ci.yml` 的 `Run default-feature tests` 按 `.config/nextest.toml` 对上述 10 个 `gpu-serial` / `os-global` 包显式以 `-- --test-threads=1` 串行运行（`Run Gallery snapshot-gate tests` 同理）。
+- **Linux Core Dump 与 GDB 回溯保留**：Linux CI 会安装 `gdb`、放开 `ulimit -c unlimited` 并调用 [ci-linux-crash-capture.py](https://github.com/sena-nana/NanaUI/blob/main/scripts/ci-linux-crash-capture.py)；若发生原生崩溃，失败阶段会提取完整线程回溯至日志并上传 `linux-crash-diagnostics` 工件。
+
 ## 本地安全执行方式
 
 - **不要并行启动多个 `cargo test` 或 GPU 负载**：同一时间只跑一个 Cargo 测试命令，并显式限制 `-j`（例如 `-j 6`）。

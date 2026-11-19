@@ -147,6 +147,7 @@ mod tests {
     /// saved over the store.
     #[test]
     fn a_device_replaced_after_a_loss_starts_from_the_store() {
+        let _gpu_guard = crate::test_gpu::lock();
         let lost = fresh_context();
         let Some(key) = lost.pipeline_cache_key() else {
             // This backend keeps no pipeline cache.
@@ -190,13 +191,15 @@ mod tests {
     /// down, and a shutdown with nothing new saves nothing.
     #[test]
     fn shutdown_saves_late_pipelines_and_only_them() {
+        let _gpu_guard = crate::test_gpu::lock();
         let gpu = fresh_context();
-        if gpu.pipeline_cache_key().is_none() {
+        let Some(key) = gpu.pipeline_cache_key() else {
             return;
-        }
+        };
         let store = Arc::new(CountingStore::default());
         let _painter = SceneWgpuPainter::new(&gpu, GpuTextureFormat::BGRA8_UNORM_SRGB);
         assert!(gpu.persist_pipeline_cache(store.as_ref()));
+        let before_late = gpu.pipeline_cache_data().map_or(0, |bytes| bytes.len());
         // Long enough that only `finish` saves.
         let mut host = HostPipelineCache::with_interval(store.clone(), Duration::from_secs(3600));
         host.watch(&gpu);
@@ -205,7 +208,12 @@ mod tests {
 
         host.watch(&gpu);
         build_pipeline(&gpu, 0.5);
+        let after_late = gpu.pipeline_cache_data().map_or(0, |bytes| bytes.len());
         host.finish();
+        if after_late <= before_late && key.backend() != crate::GpuBackend::Dx12 {
+            assert_eq!(store.saves(), 1);
+            return;
+        }
         assert_eq!(store.saves(), 2, "the late pipelines were not saved");
     }
 }

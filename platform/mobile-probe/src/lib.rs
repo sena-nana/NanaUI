@@ -328,9 +328,10 @@ mod tests {
     /// It is held to the iOS Simulator's 15 inter-stage variables (Metal's
     /// Apple2 family), so a shader that outgrows them fails here as well.
     fn headless_gpu() -> Option<GpuContext> {
-        static DEVICE: std::sync::OnceLock<Option<(wgpu::Adapter, wgpu::Device, wgpu::Queue)>> =
-            std::sync::OnceLock::new();
-        let (adapter, device, queue) = DEVICE
+        static DEVICE: std::sync::OnceLock<
+            Option<(wgpu::Instance, wgpu::Adapter, wgpu::Device, wgpu::Queue)>,
+        > = std::sync::OnceLock::new();
+        let (_instance, adapter, device, queue) = DEVICE
             .get_or_init(|| {
                 let instance =
                     wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle());
@@ -347,7 +348,7 @@ mod tests {
                         ..wgpu::DeviceDescriptor::default()
                     }))
                     .ok()?;
-                Some((adapter, device, queue))
+                Some((instance, adapter, device, queue))
             })
             .clone()?;
         Some(GpuContext::from_wgpu(adapter, device, queue))

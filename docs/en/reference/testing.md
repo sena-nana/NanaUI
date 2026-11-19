@@ -36,6 +36,12 @@ The gate script lives in [check-test-hygiene.py](https://github.com/sena-nana/Na
 - **`gpu-serial` (`max-threads = 1`)**: serializes `nana-gpu`, `nana-frame-exchange`, `nana-ui`, `nana-ui-devtools`, `nana-wgpu-fork-tests`, `runtime-host-fixture`, `nana-mobile-probe`, and `binary(ui-snapshots)`.
 - **`os-global` (`max-threads = 1`)**: serializes `nana-window`, `nana-diagnostics`, and `nana-ui-platform` so process-global singletons, environment variables, and native window state do not race.
 
+## Shared GPU Test Devices, Lifetimes, and Linux Crash Diagnostics
+
+- **Do not concurrently create or destroy `wgpu::Instance` / `wgpu::Device` across `libtest` worker threads**: concurrent device/instance lifecycle churn triggers `SIGSEGV` in Mesa 26.0 Lavapipe/LLVMpipe on Ubuntu 26.04 and loader deadlocks in the Windows NVIDIA Vulkan ICD during `libtest` thread exit. GPU test fixtures must retain `wgpu::Instance` (and shared devices) in a process-wide `OnceLock`, serialize GPU execution with a thread-reentrant test guard, and declare the guard before any owned `GpuContext` / `Device` so the lock is released only after device teardown and any detached retirement threads finish draining.
+- **CI serialization boundary**: `Run default-feature tests` in `.github/workflows/ci.yml` runs the 10 `gpu-serial` and `os-global` packages from `.config/nextest.toml` serially with `-- --test-threads=1` (as does `Run Gallery snapshot-gate tests`).
+- **Linux core dump and GDB backtrace capture**: Linux CI installs `gdb`, sets `ulimit -c unlimited`, and runs [ci-linux-crash-capture.py](https://github.com/sena-nana/NanaUI/blob/main/scripts/ci-linux-crash-capture.py); on failure, it prints a backtrace summary to the job log and uploads the `linux-crash-diagnostics` artifact.
+
 ## Running Tests Safely Locally
 
 - **Never run two `cargo test` commands or GPU loads at once**: keep one Cargo invocation active at a time and cap build concurrency with `-j` (for example `-j 6`).

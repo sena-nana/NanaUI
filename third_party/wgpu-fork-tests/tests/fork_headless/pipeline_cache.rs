@@ -89,6 +89,7 @@ fn refused(device: &wgpu::Device, data: &[u8]) -> bool {
 
 #[test]
 fn the_default_cache_serves_pipelines_created_without_one() {
+    let _gpu_guard = nana_wgpu_fork_tests::gpu_lock();
     let Some(device) = dx12("the_default_cache_serves_pipelines_created_without_one") else {
         return;
     };
@@ -122,6 +123,7 @@ fn the_default_cache_serves_pipelines_created_without_one() {
 
 #[test]
 fn saved_bytes_load_back_with_every_stage() {
+    let _gpu_guard = nana_wgpu_fork_tests::gpu_lock();
     let Some(device) = dx12("saved_bytes_load_back_with_every_stage") else {
         return;
     };
@@ -142,6 +144,7 @@ fn saved_bytes_load_back_with_every_stage() {
 
 #[test]
 fn bytes_from_another_compiler_are_refused() {
+    let _gpu_guard = nana_wgpu_fork_tests::gpu_lock();
     let Some(device) = dx12("bytes_from_another_compiler_are_refused") else {
         return;
     };
@@ -158,6 +161,7 @@ fn bytes_from_another_compiler_are_refused() {
 
 #[test]
 fn damaged_bytes_are_refused_or_lose_only_the_damaged_stage() {
+    let _gpu_guard = nana_wgpu_fork_tests::gpu_lock();
     let Some(device) = dx12("damaged_bytes_are_refused_or_lose_only_the_damaged_stage") else {
         return;
     };
@@ -181,6 +185,7 @@ fn damaged_bytes_are_refused_or_lose_only_the_damaged_stage() {
 
 #[test]
 fn pipelines_built_counts_pipelines_through_the_cache() {
+    let _gpu_guard = nana_wgpu_fork_tests::gpu_lock();
     let Some(device) = dx12("pipelines_built_counts_pipelines_through_the_cache") else {
         return;
     };

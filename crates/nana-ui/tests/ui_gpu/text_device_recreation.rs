@@ -191,6 +191,7 @@ fn paint(gpu: &GpuContext, painter: &mut SceneWgpuPainter, scene: &UiScene, scal
 
 #[test]
 fn a_replacement_device_draws_the_retained_paragraphs_without_laying_them_out() {
+    let _gpu_guard = crate::gpu_lock();
     let scene = retained_scene();
 
     let lost = device();

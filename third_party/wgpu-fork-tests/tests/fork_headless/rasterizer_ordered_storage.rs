@@ -1035,12 +1035,14 @@ fn pixel_ordering_on_backend(test: &str, backend: wgpu::Backends) {
 
 #[test]
 fn dx12_rasterizer_ordered_storage() {
+    let _gpu_guard = nana_wgpu_fork_tests::gpu_lock();
     validation_checks_on_backend("dx12_rasterizer_ordered_storage", wgpu::Backends::DX12);
     pixel_ordering_on_backend("dx12_rasterizer_ordered_storage", wgpu::Backends::DX12);
 }
 
 #[test]
 fn vulkan_rasterizer_ordered_storage() {
+    let _gpu_guard = nana_wgpu_fork_tests::gpu_lock();
     validation_checks_on_backend("vulkan_rasterizer_ordered_storage", wgpu::Backends::VULKAN);
     pixel_ordering_on_backend("vulkan_rasterizer_ordered_storage", wgpu::Backends::VULKAN);
 }
@@ -1048,6 +1050,7 @@ fn vulkan_rasterizer_ordered_storage() {
 #[cfg(target_vendor = "apple")]
 #[test]
 fn metal_rasterizer_ordered_storage() {
+    let _gpu_guard = nana_wgpu_fork_tests::gpu_lock();
     validation_checks_on_backend("metal_rasterizer_ordered_storage", wgpu::Backends::METAL);
     pixel_ordering_on_backend("metal_rasterizer_ordered_storage", wgpu::Backends::METAL);
 }

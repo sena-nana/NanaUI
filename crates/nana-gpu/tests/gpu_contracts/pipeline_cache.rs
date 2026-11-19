@@ -9,15 +9,9 @@ use nana_gpu::{
     PipelineCacheStore,
 };
 
-fn context(pipeline_cache: bool) -> GpuContext {
-    let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
-        backends: wgpu::Backends::from_env().unwrap_or_default(),
-        ..wgpu::InstanceDescriptor::new_without_display_handle()
-    });
-    let adapter = pollster::block_on(wgpu::util::initialize_adapter_from_env_or_default(
-        &instance, None,
-    ))
-    .expect("pipeline cache tests require a WGPU adapter");
+fn context(pipeline_cache: bool) -> crate::TestGpu {
+    let guard = crate::gpu_lock();
+    let adapter = crate::shared_adapter();
     let required_features = if pipeline_cache {
         adapter.features() & wgpu::Features::PIPELINE_CACHE
     } else {
@@ -28,7 +22,7 @@ fn context(pipeline_cache: bool) -> GpuContext {
         ..Default::default()
     }))
     .expect("pipeline cache tests require a WGPU device");
-    __framework::adopt(adapter, device, queue)
+    crate::TestGpu::new(__framework::adopt(adapter.clone(), device, queue), guard)
 }
 
 /// A pipeline built the way every framework family builds one: without

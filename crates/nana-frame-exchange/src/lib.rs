@@ -357,9 +357,13 @@ impl Drop for Retirement {
         );
         // If the thread cannot be spawned the closure is dropped here, which
         // destroys the resources on this thread instead.
+        #[cfg(test)]
+        let retire_track = tests::enter_retirement();
         let _ = std::thread::Builder::new()
             .name("nana-frame-exchange-retire".into())
             .spawn(move || {
+                #[cfg(test)]
+                let _retire_track = retire_track;
                 let _ = __framework::poll(
                     &gpu,
                     wgpu::PollType::Wait {
@@ -1044,24 +1048,79 @@ mod tests {
         GpuTestGuard
     }
 
+    static ACTIVE_RETIREMENTS: std::sync::Mutex<usize> = std::sync::Mutex::new(0);
+    static RETIREMENTS_IDLE: std::sync::Condvar = std::sync::Condvar::new();
+
+    pub(super) struct RetirementTracker;
+
+    impl Drop for RetirementTracker {
+        fn drop(&mut self) {
+            let mut count = ACTIVE_RETIREMENTS
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            *count = count.saturating_sub(1);
+            if *count == 0 {
+                RETIREMENTS_IDLE.notify_all();
+            }
+        }
+    }
+
+    pub(super) fn enter_retirement() -> RetirementTracker {
+        let mut count = ACTIVE_RETIREMENTS
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        *count += 1;
+        RetirementTracker
+    }
+
+    fn wait_retirements() {
+        let mut count = ACTIVE_RETIREMENTS
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while *count > 0 {
+            let Some(remaining) = deadline.checked_duration_since(std::time::Instant::now()) else {
+                break;
+            };
+            let (next, result) = RETIREMENTS_IDLE
+                .wait_timeout(count, remaining)
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            count = next;
+            if result.timed_out() {
+                break;
+            }
+        }
+    }
+
     struct TestGpu {
-        gpu: GpuContext,
+        gpu: Option<GpuContext>,
         _guard: GpuTestGuard,
+    }
+
+    impl Drop for TestGpu {
+        fn drop(&mut self) {
+            drop(self.gpu.take());
+            wait_retirements();
+        }
     }
 
     impl std::ops::Deref for TestGpu {
         type Target = GpuContext;
 
         fn deref(&self) -> &Self::Target {
-            &self.gpu
+            self.gpu.as_ref().expect("TestGpu live until drop")
         }
     }
 
     fn test_gpu() -> TestGpu {
-        static DEVICE: std::sync::OnceLock<(wgpu::Adapter, wgpu::Device, wgpu::Queue)> =
-            std::sync::OnceLock::new();
+        static DEVICE: std::sync::OnceLock<(
+            wgpu::Instance,
+            wgpu::Adapter,
+            wgpu::Device,
+            wgpu::Queue,
+        )> = std::sync::OnceLock::new();
         let guard = lock_test_gpu();
-        let (adapter, device, queue) = DEVICE.get_or_init(|| {
+        let (_instance, adapter, device, queue) = DEVICE.get_or_init(|| {
             let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
                 backends: wgpu::Backends::from_env().unwrap_or_default(),
                 ..wgpu::InstanceDescriptor::new_without_display_handle()
@@ -1073,10 +1132,14 @@ mod tests {
             let (device, queue) =
                 pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor::default()))
                     .expect("frame exchange test requires a WGPU device");
-            (adapter, device, queue)
+            (instance, adapter, device, queue)
         });
         TestGpu {
-            gpu: __framework::adopt(adapter.clone(), device.clone(), queue.clone()),
+            gpu: Some(__framework::adopt(
+                adapter.clone(),
+                device.clone(),
+                queue.clone(),
+            )),
             _guard: guard,
         }
     }

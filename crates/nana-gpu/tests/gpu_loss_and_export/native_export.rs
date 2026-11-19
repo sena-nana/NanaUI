@@ -210,6 +210,7 @@ impl Consumer {
 
 #[test]
 fn a_dx12_device_advertises_native_export() {
+    let _gpu_guard = crate::gpu_lock();
     let gpu = dx12_or_skip!();
     assert!(
         gpu.capabilities()
@@ -219,6 +220,7 @@ fn a_dx12_device_advertises_native_export() {
 
 #[test]
 fn exported_frames_reach_a_d3d11_device_and_the_fence_completes() {
+    let _gpu_guard = crate::gpu_lock();
     let gpu = dx12_or_skip!();
     let bytes = pattern();
     let source = source(&gpu, &bytes);
@@ -241,6 +243,7 @@ fn exported_frames_reach_a_d3d11_device_and_the_fence_completes() {
 
 #[test]
 fn an_unreleased_frame_defers_the_next_and_a_dropped_token_releases_itself() {
+    let _gpu_guard = crate::gpu_lock();
     let gpu = dx12_or_skip!();
     let source = source(&gpu, &pattern());
     let mut pool = NativeExportPool::new(&gpu, EXTENT).unwrap();
@@ -264,6 +267,7 @@ fn an_unreleased_frame_defers_the_next_and_a_dropped_token_releases_itself() {
 
 #[test]
 fn a_discarded_frame_releases_its_slot_without_reusing_its_fence_value() {
+    let _gpu_guard = crate::gpu_lock();
     let gpu = dx12_or_skip!();
     let source = source(&gpu, &pattern());
     let mut pool = NativeExportPool::new(&gpu, EXTENT).unwrap();
@@ -283,6 +287,7 @@ fn a_discarded_frame_releases_its_slot_without_reusing_its_fence_value() {
 
 #[test]
 fn a_staged_copy_exclusively_reserves_its_slot_until_finish_or_discard() {
+    let _gpu_guard = crate::gpu_lock();
     let gpu = dx12_or_skip!();
     let source = source(&gpu, &pattern());
     let mut pool = NativeExportPool::new(&gpu, EXTENT).unwrap();
@@ -311,6 +316,7 @@ fn a_staged_copy_exclusively_reserves_its_slot_until_finish_or_discard() {
 
 #[test]
 fn a_submitted_stage_stays_reserved_until_its_token_is_finished() {
+    let _gpu_guard = crate::gpu_lock();
     let gpu = dx12_or_skip!();
     let source = source(&gpu, &pattern());
     let mut pool = NativeExportPool::new(&gpu, EXTENT).unwrap();
@@ -332,6 +338,7 @@ fn a_submitted_stage_stays_reserved_until_its_token_is_finished() {
 
 #[test]
 fn an_abandoned_submitted_stage_cannot_make_the_next_ready_wait_pass_early() {
+    let _gpu_guard = crate::gpu_lock();
     let gpu = dx12_or_skip!();
     let bytes = pattern();
     let first_source = source(&gpu, &bytes);
@@ -369,6 +376,7 @@ fn an_abandoned_submitted_stage_cannot_make_the_next_ready_wait_pass_early() {
 
 #[test]
 fn retiring_closes_the_handles_once_the_last_token_is_gone() {
+    let _gpu_guard = crate::gpu_lock();
     let gpu = dx12_or_skip!();
     let source = source(&gpu, &pattern());
     let mut pool = NativeExportPool::new(&gpu, EXTENT).unwrap();
@@ -404,6 +412,7 @@ fn retiring_closes_the_handles_once_the_last_token_is_gone() {
 
 #[test]
 fn retirement_waits_for_an_accepted_consumers_gpu_release_after_token_drop() {
+    let _gpu_guard = crate::gpu_lock();
     let gpu = dx12_or_skip!();
     let source = source(&gpu, &pattern());
     let mut pool = NativeExportPool::new(&gpu, EXTENT).unwrap();
@@ -446,6 +455,7 @@ fn retirement_waits_for_an_accepted_consumers_gpu_release_after_token_drop() {
 
 #[test]
 fn incompatible_sources_are_refused_before_recording() {
+    let _gpu_guard = crate::gpu_lock();
     let gpu = dx12_or_skip!();
     let mut pool = NativeExportPool::new(&gpu, EXTENT).unwrap();
     let wrong = gpu

@@ -21,6 +21,7 @@ fn snapshots(dir: &std::path::Path) -> Vec<PathBuf> {
 
 #[test]
 fn a_lost_device_is_recorded_synchronously_once() {
+    let _gpu_guard = crate::gpu_lock();
     let nanos = SystemTime::now()
         .duration_since(SystemTime::UNIX_EPOCH)
         .unwrap()

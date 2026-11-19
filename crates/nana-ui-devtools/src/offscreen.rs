@@ -237,36 +237,66 @@ pub struct OffscreenSnapshots {
     image_ready: std::sync::mpsc::Receiver<()>,
 }
 
-fn gpu_serial_lock() -> std::sync::MutexGuard<'static, ()> {
-    static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
-    LOCK.lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
+struct GpuSerialGuard;
+
+static GPU_SERIAL_STATE: std::sync::Mutex<(u64, usize)> = std::sync::Mutex::new((0, 0));
+static GPU_SERIAL_FREE: std::sync::Condvar = std::sync::Condvar::new();
+
+thread_local! {
+    static GPU_SERIAL_TOKEN: u64 = {
+        static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+        NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+    };
+}
+
+impl Drop for GpuSerialGuard {
+    fn drop(&mut self) {
+        let mut state = GPU_SERIAL_STATE
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        state.1 = state.1.saturating_sub(1);
+        if state.1 == 0 {
+            state.0 = 0;
+            GPU_SERIAL_FREE.notify_one();
+        }
+    }
+}
+
+fn gpu_serial_lock() -> GpuSerialGuard {
+    let token = GPU_SERIAL_TOKEN.with(|token| *token);
+    let mut state = GPU_SERIAL_STATE
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    while state.1 > 0 && state.0 != token {
+        state = GPU_SERIAL_FREE
+            .wait(state)
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+    }
+    state.0 = token;
+    state.1 += 1;
+    GpuSerialGuard
 }
 
 impl OffscreenSnapshots {
     pub fn new() -> Result<Self, Box<dyn std::error::Error>> {
         static SHARED_DEVICE: std::sync::OnceLock<(wgpu::Adapter, wgpu::Device, wgpu::Queue)> =
             std::sync::OnceLock::new();
+        let _serial = gpu_serial_lock();
         let (adapter, raw_device, raw_queue) = if let Some(cached) = SHARED_DEVICE.get() {
             cached.clone()
         } else {
-            let _serial = gpu_serial_lock();
-            if let Some(cached) = SHARED_DEVICE.get() {
-                cached.clone()
-            } else {
-                let (_instance, adapter) = request_adapter()?;
-                let (raw_device, raw_queue) =
-                    pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
-                        label: Some("nana-ui snapshot device"),
-                        required_features: wgpu::Features::empty(),
-                        required_limits: wgpu::Limits::default(),
-                        memory_hints: wgpu::MemoryHints::MemoryUsage,
-                        trace: wgpu::Trace::Off,
-                        experimental_features: wgpu::ExperimentalFeatures::disabled(),
-                    }))?;
-                let created = (adapter, raw_device, raw_queue);
-                SHARED_DEVICE.get_or_init(|| created).clone()
-            }
+            let adapter = shared_adapter()?;
+            let (raw_device, raw_queue) =
+                pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
+                    label: Some("nana-ui snapshot device"),
+                    required_features: wgpu::Features::empty(),
+                    required_limits: wgpu::Limits::default(),
+                    memory_hints: wgpu::MemoryHints::MemoryUsage,
+                    trace: wgpu::Trace::Off,
+                    experimental_features: wgpu::ExperimentalFeatures::disabled(),
+                }))?;
+            let created = (adapter, raw_device, raw_queue);
+            SHARED_DEVICE.get_or_init(|| created).clone()
         };
         let gpu = __framework::adopt(adapter, raw_device, raw_queue);
         let mut painter = SceneWgpuPainter::try_new(&gpu, FORMAT)?;
@@ -396,14 +426,18 @@ impl OffscreenSnapshots {
         if size.width == 0 || size.height == 0 {
             return Err("snapshot size must be non-zero".into());
         }
-        let texture = self.gpu.create_texture(&GpuTextureDescriptor {
-            label: Some("nana-ui snapshot offscreen"),
-            width: size.width,
-            height: size.height,
-            format: FORMAT,
-            usage: GpuTextureUsages::RENDER_TARGET | GpuTextureUsages::COPY_SRC,
-        })?;
-        let target = texture.render_target()?;
+        let (texture, target) = {
+            let _serial = gpu_serial_lock();
+            let texture = self.gpu.create_texture(&GpuTextureDescriptor {
+                label: Some("nana-ui snapshot offscreen"),
+                width: size.width,
+                height: size.height,
+                format: FORMAT,
+                usage: GpuTextureUsages::RENDER_TARGET | GpuTextureUsages::COPY_SRC,
+            })?;
+            let target = texture.render_target()?;
+            (texture, target)
+        };
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(35);
         loop {
             if std::time::Instant::now() >= deadline {
@@ -512,24 +546,40 @@ pub struct GpuProbe {
     pub reason: Option<String>,
 }
 
-fn request_adapter() -> Result<(wgpu::Instance, wgpu::Adapter), Box<dyn std::error::Error>> {
-    let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
-        backends: wgpu::Backends::from_env().unwrap_or_default(),
-        ..wgpu::InstanceDescriptor::new_without_display_handle()
+fn shared_adapter() -> Result<wgpu::Adapter, String> {
+    static SHARED_ADAPTER: std::sync::OnceLock<Result<(wgpu::Instance, wgpu::Adapter), String>> =
+        std::sync::OnceLock::new();
+    if let Some(cached) = SHARED_ADAPTER.get() {
+        return cached
+            .as_ref()
+            .map(|(_, adapter)| adapter.clone())
+            .map_err(Clone::clone);
+    }
+    let _serial = gpu_serial_lock();
+    let cached = SHARED_ADAPTER.get_or_init(|| {
+        let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
+            backends: wgpu::Backends::from_env().unwrap_or_default(),
+            ..wgpu::InstanceDescriptor::new_without_display_handle()
+        });
+        pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
+            power_preference: wgpu::PowerPreference::HighPerformance,
+            compatible_surface: None,
+            force_fallback_adapter: false,
+            apply_limit_buckets: false,
+        }))
+        .map(|adapter| (instance, adapter))
+        .map_err(|error| error.to_string())
     });
-    let adapter = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
-        power_preference: wgpu::PowerPreference::HighPerformance,
-        compatible_surface: None,
-        force_fallback_adapter: false,
-        apply_limit_buckets: false,
-    }))?;
-    Ok((instance, adapter))
+    cached
+        .as_ref()
+        .map(|(_, adapter)| adapter.clone())
+        .map_err(Clone::clone)
 }
 
 /// Report the snapshot adapter without creating a device or a painter.
 pub fn gpu_probe() -> GpuProbe {
-    match request_adapter() {
-        Ok((_instance, adapter)) => {
+    match shared_adapter() {
+        Ok(adapter) => {
             let info = adapter.get_info();
             GpuProbe {
                 available: true,

@@ -934,12 +934,12 @@ mod tests {
     /// the compile would never return.
     #[test]
     fn a_compiling_pipeline_leaves_the_policy_free() {
-        let device = test_device();
+        let (_gpu_guard, device) = test_device();
         let policy = state();
         let key = pipeline_key(&policy, 0);
         let (done, finished) = std::sync::mpsc::channel();
         let worker = policy.clone();
-        std::thread::spawn(move || {
+        let handle = std::thread::spawn(move || {
             let compiled = worker.pipeline(key, || {
                 let _ = worker.stats();
                 test_pipeline(&device)
@@ -951,6 +951,7 @@ mod tests {
             Ok(true),
             "the factory waited on the policy lock its caller held"
         );
+        let _ = handle.join();
         assert_eq!(policy.stats().pipeline_registry_misses, 1);
     }
 
@@ -958,7 +959,7 @@ mod tests {
     /// its own factory instead of receiving an invalid pipeline.
     #[test]
     fn a_failed_pipeline_compile_is_not_cached() {
-        let device = test_device();
+        let (_gpu_guard, device) = test_device();
         let policy = state();
         let key = pipeline_key(&policy, 0);
         let failed = policy.try_pipeline(key, || Err::<wgpu::RenderPipeline, _>("refused"));
@@ -1086,23 +1087,9 @@ mod tests {
 
     /// One device for every GPU test here: creating devices while other tests
     /// run can deadlock in some drivers' loaders (see nana-ui's `test_gpu`).
-    fn test_device() -> wgpu::Device {
-        static DEVICE: OnceLock<wgpu::Device> = OnceLock::new();
-        DEVICE
-            .get_or_init(|| {
-                let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
-                    backends: wgpu::Backends::from_env().unwrap_or_default(),
-                    ..wgpu::InstanceDescriptor::new_without_display_handle()
-                });
-                let adapter = pollster::block_on(
-                    wgpu::util::initialize_adapter_from_env_or_default(&instance, None),
-                )
-                .expect("GPU policy tests require a WGPU adapter");
-                pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor::default()))
-                    .expect("GPU policy tests require a WGPU device")
-                    .0
-            })
-            .clone()
+    fn test_device() -> (crate::test_gpu::GpuTestGuard, wgpu::Device) {
+        let (guard, device, _queue) = crate::test_gpu::device_and_queue();
+        (guard, device)
     }
 
     fn test_pipeline(device: &wgpu::Device) -> wgpu::RenderPipeline {
@@ -1157,7 +1144,7 @@ mod tests {
     /// never lets happen.
     #[test]
     fn independent_pipelines_compile_in_parallel() {
-        let device = test_device();
+        let (_gpu_guard, device) = test_device();
         let state = state();
         let (first_started, first_seen) = std::sync::mpsc::channel();
         let (second_started, second_seen) = std::sync::mpsc::channel();
@@ -1194,7 +1181,7 @@ mod tests {
     /// compile instead of starting its own.
     #[test]
     fn a_pipeline_being_compiled_is_compiled_once() {
-        let device = test_device();
+        let (_gpu_guard, device) = test_device();
         let state = state();
         let key = pipeline_key(&state, 3);
         let (started, compiling) = std::sync::mpsc::channel();
@@ -1234,7 +1221,7 @@ mod tests {
 
     #[test]
     fn real_transient_buffer_pool_reuses_matching_descriptors() {
-        let device = test_device();
+        let (_gpu_guard, device) = test_device();
         let state = GpuDeviceState::new(DeviceGeneration::next());
         let usage = wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST;
         let key = TransientResourceKey::buffer(state.generation(), usage.bits(), 256);

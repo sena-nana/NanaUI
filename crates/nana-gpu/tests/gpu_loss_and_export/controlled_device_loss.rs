@@ -22,6 +22,7 @@ fn until(mut ready: impl FnMut() -> bool) {
 
 #[test]
 fn callback_ownership_and_replacement_follow_real_device_destruction() {
+    let _gpu_guard = crate::gpu_lock();
     let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
         backends: wgpu::Backends::from_env().unwrap_or_default(),
         ..wgpu::InstanceDescriptor::new_without_display_handle()

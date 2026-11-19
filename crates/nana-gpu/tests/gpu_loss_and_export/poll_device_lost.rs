@@ -19,6 +19,7 @@ use std::time::{Duration, Instant};
 
 #[test]
 fn a_poll_that_finds_the_device_lost_marks_the_context_lost() {
+    let _gpu_guard = crate::gpu_lock();
     let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
         backends: wgpu::Backends::VULKAN,
         ..wgpu::InstanceDescriptor::new_without_display_handle()

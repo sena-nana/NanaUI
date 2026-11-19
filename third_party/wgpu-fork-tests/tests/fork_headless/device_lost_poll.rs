@@ -41,6 +41,7 @@ fn copy(device: &wgpu::Device, queue: &wgpu::Queue, from: &wgpu::Buffer, to: &wg
 /// Lose `device` with `lose`, then check what polls report and which
 /// callbacks ran.
 fn check(test: &str, backend: wgpu::Backends, lose: impl FnOnce(&wgpu::Device) -> bool) {
+    let _gpu_guard = nana_wgpu_fork_tests::gpu_lock();
     let Some((_, device, queue)) = device(backend, wgpu::Features::empty()) else {
         no_adapter(test, backend);
         return;
@@ -161,6 +162,7 @@ fn vulkan_poll_reports_device_lost() {
 #[cfg(windows)]
 #[test]
 fn dx12_poll_reports_removed_device() {
+    let _gpu_guard = nana_wgpu_fork_tests::gpu_lock();
     use windows::Win32::Graphics::Direct3D12::ID3D12Device5;
     use windows::core::Interface as _;
 

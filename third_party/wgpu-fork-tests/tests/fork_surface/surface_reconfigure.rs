@@ -167,6 +167,7 @@ fn reconfigure_under_submission(backend: wgpu::Backends, window: HWND) -> bool {
 
 #[test]
 fn reconfigure_does_not_fail_while_another_thread_submits() {
+    let _gpu_guard = nana_wgpu_fork_tests::gpu_lock();
     if !nana_wgpu_fork_tests::adapter_required() {
         eprintln!(
             "reconfigure_does_not_fail_while_another_thread_submits: skipped \

@@ -108,6 +108,7 @@ fn run_child_test(name: &str, env_key: &str) {
 
 #[test]
 fn deferred_group_cannot_take_another_producers_submission_acquisition() {
+    let _gpu_guard = crate::gpu_lock();
     const CHILD: &str = "NANA_TRACE_MIXED_OWNER_CHILD";
     if std::env::var_os(CHILD).is_none() {
         run_child_test(
@@ -176,6 +177,7 @@ fn deferred_group_cannot_take_another_producers_submission_acquisition() {
 
 #[test]
 fn explicit_trace_capture_round_trips_nlog_without_per_frame_events() {
+    let _gpu_guard = crate::gpu_lock();
     const CHILD: &str = "NANA_OUTPUT_TRACE_NLOG_CHILD";
     if std::env::var_os(CHILD).is_none() {
         run_child_test(

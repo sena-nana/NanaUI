@@ -1,3 +1,10 @@
+#[allow(dead_code)]
+pub(crate) fn gpu_lock() -> std::sync::MutexGuard<'static, ()> {
+    static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    LOCK.lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
 #[cfg(feature = "wgpu-interop")]
 mod controlled_device_loss;
 #[cfg(feature = "wgpu-interop")]

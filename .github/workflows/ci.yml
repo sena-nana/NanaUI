@@ -39,28 +39,28 @@ jobs:
           command: check advisories
       - name: Check css-parity-webview dependency advisories
         if: runner.os == 'Linux'
-        working-directory: tools/css-parity-webview
         uses: EmbarkStudios/cargo-deny-action@v2
         with:
           command: check advisories
+          manifest-path: tools/css-parity-webview/Cargo.toml
       - name: Check nana-icons-tabler dependency advisories
         if: runner.os == 'Linux'
-        working-directory: crates/nana-icons-tabler
         uses: EmbarkStudios/cargo-deny-action@v2
         with:
           command: check advisories
+          manifest-path: crates/nana-icons-tabler/Cargo.toml
       - name: Check stack-depth microbench dependency advisories
         if: runner.os == 'Linux'
-        working-directory: perf/micro/stack-depth
         uses: EmbarkStudios/cargo-deny-action@v2
         with:
           command: check advisories
+          manifest-path: perf/micro/stack-depth/Cargo.toml
       - name: Check taffy-reference dependency advisories
         if: runner.os == 'Linux'
-        working-directory: perf/micro/taffy-reference
         uses: EmbarkStudios/cargo-deny-action@v2
         with:
           command: check advisories
+          manifest-path: perf/micro/taffy-reference/Cargo.toml
 
   check:
     strategy:
@@ -92,7 +92,10 @@ jobs:
           sudo apt-get install --no-install-recommends -y \
             libx11-dev libx11-xcb-dev libxkbcommon-dev libxkbcommon-x11-dev \
             libwayland-dev libxrandr-dev libxinerama-dev libxcursor-dev libxi-dev \
-            libvulkan1 mesa-vulkan-drivers
+            libvulkan1 mesa-vulkan-drivers gdb
+      - name: Prepare Linux core dump capture
+        if: runner.os == 'Linux'
+        run: python3 scripts/ci-linux-crash-capture.py prepare target/crash-dumps/cores
       - name: Check formatting
         run: cargo fmt --all -- --check
       - name: Check minimal feature set
@@ -102,8 +105,38 @@ jobs:
         run: python3 scripts/check-component-features.py
       - name: Check Gallery package boundary
         run: cargo check -p component-gallery --bin component-gallery --features bundled-fonts --locked
+      # Issue #411: keep `.config/nextest.toml`'s `gpu-serial` and `os-global`
+      # packages serialized so libtest worker threads never churn Vulkan/Lavapipe
+      # devices or process-wide OS/diagnostics singletons concurrently.
       - name: Run default-feature tests
-        run: cargo test --workspace --locked
+        shell: bash
+        run: |
+          if [ "${RUNNER_OS:-}" = "Linux" ]; then
+            ulimit -c unlimited || true
+          fi
+          cargo test --workspace --locked \
+            --exclude nana-gpu \
+            --exclude nana-frame-exchange \
+            --exclude nana-ui \
+            --exclude nana-ui-devtools \
+            --exclude nana-wgpu-fork-tests \
+            --exclude runtime-host-fixture \
+            --exclude nana-mobile-probe \
+            --exclude nana-window \
+            --exclude nana-diagnostics \
+            --exclude nana-ui-platform
+          cargo test --locked \
+            -p nana-gpu \
+            -p nana-frame-exchange \
+            -p nana-ui \
+            -p nana-ui-devtools \
+            -p nana-wgpu-fork-tests \
+            -p runtime-host-fixture \
+            -p nana-mobile-probe \
+            -p nana-window \
+            -p nana-diagnostics \
+            -p nana-ui-platform \
+            -- --test-threads=1
       # `scene_paint::precompiled`: the quad family from its DXIL paints what
       # it paints from WGSL. The DXIL's freshness against the WGSL, layout and
       # locked wgpu is checked by the default-feature tests on every OS.
@@ -124,6 +157,9 @@ jobs:
       - name: Exercise retained output and judge live GPU work
         shell: bash
         run: |
+          if [ "${RUNNER_OS:-}" = "Linux" ]; then
+            ulimit -c unlimited || true
+          fi
           cargo test -p nana-ui --lib --features gpu --locked output:: -- --test-threads=1
           cargo test -p nana-ui --test ui_gpu --features gpu,wgpu-interop --locked output_trace_owner -- --test-threads=1
           cargo test -p nana-gpu --features wgpu-interop --test gpu_loss_and_export --locked controlled_device_loss -- --test-threads=1
@@ -216,7 +252,12 @@ jobs:
       # the offscreen pixel tests genuinely execute there; elsewhere they skip
       # visibly through `offscreen::pixels_available`.
       - name: Run headless Agent tests
-        run: cargo test -p nana-ui-devtools --features runtime-agent,nana-ui/components --locked -- --test-threads=1
+        shell: bash
+        run: |
+          if [ "${RUNNER_OS:-}" = "Linux" ]; then
+            ulimit -c unlimited || true
+          fi
+          cargo test -p nana-ui-devtools --features runtime-agent,nana-ui/components --locked -- --test-threads=1
       # Self-verifying real-window hosts: one event loop, shared device, close and
       # re-create. Windows runners have a desktop and the WARP adapter.
       - name: Run multi-window lifecycle hosts
@@ -239,7 +280,12 @@ jobs:
       # resolved style rather than pixels, which needs no adapter and would
       # otherwise be checked nowhere.
       - name: Run Gallery snapshot-gate tests
-        run: cargo test -p component-gallery --bin ui-snapshots --features snapshots --locked
+        shell: bash
+        run: |
+          if [ "${RUNNER_OS:-}" = "Linux" ]; then
+            ulimit -c unlimited || true
+          fi
+          cargo test -p component-gallery --bin ui-snapshots --features snapshots --locked -- --test-threads=1
       # `nana-ui-dev` refuses to compile without `debug_assertions`, which
       # `[profile.dist]` turns off. A product crate that grows a dependency on
       # the dev watcher fails here instead of shipping one to users. `check`
@@ -276,9 +322,14 @@ jobs:
         if: runner.os == 'macOS'
         run: cargo test -p nana-ui --lib --features full --locked precompiled_msl_stages_pass_metal_syntax_check -- --ignored --test-threads=1
       - name: Paint minimal scene from precompiled shaders without runtime-wgsl
+        shell: bash
         env:
           NANA_EXPECT_NO_RUNTIME_WGSL: "1"
-        run: cargo test -p nana-ui --test ui_gpu --features hosted,components,wgpu-interop --locked precompiled_without_runtime_wgsl -- --test-threads=1
+        run: |
+          if [ "${RUNNER_OS:-}" = "Linux" ]; then
+            ulimit -c unlimited || true
+          fi
+          cargo test -p nana-ui --test ui_gpu --features hosted,components,wgpu-interop --locked precompiled_without_runtime_wgsl -- --test-threads=1
       - name: Check and test nana-ui-scene without vector-boolean
         run: |
           cargo clippy -p nana-ui-scene --all-targets --no-default-features --locked --no-deps -- -D warnings
@@ -293,6 +344,16 @@ jobs:
         run: cargo clippy --workspace --all-targets --locked --no-deps -- -D warnings
       - name: Enforce NanaUI and Gallery Clippy
         run: cargo clippy -p nana-ui -p component-gallery -p nana-diagnostics --all-targets --all-features --locked --no-deps -- -D warnings
+      - name: Collect Linux native crash backtraces
+        if: failure() && runner.os == 'Linux'
+        run: python3 scripts/ci-linux-crash-capture.py collect target/crash-dumps/cores target/crash-dumps/reports --target-dir target/debug
+      - name: Upload Linux native crash backtraces
+        if: failure() && runner.os == 'Linux'
+        uses: actions/upload-artifact@v7
+        with:
+          name: linux-crash-diagnostics
+          path: target/crash-dumps/reports
+          if-no-files-found: ignore
       # Headroom left on the runner disk, so the next growth shows up here
       # before it becomes an ENOSPC in whichever step happens to be last.
       - name: Report disk use

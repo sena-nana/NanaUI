@@ -1,7 +1,7 @@
 //! Device-backed checks of the GPU contract.
 
 use std::sync::{
-    Arc, Mutex, MutexGuard, OnceLock, PoisonError,
+    Arc, OnceLock,
     atomic::{AtomicU64, Ordering},
     mpsc,
 };
@@ -21,8 +21,9 @@ use nana_gpu::{
 /// once per process: creating one per test, in parallel, hangs device creation
 /// on Windows with the NVIDIA Vulkan ICD and fails it outright under memory
 /// pressure.
-fn context() -> GpuContext {
-    adopt(&devices().shared)
+fn context() -> crate::TestGpu {
+    let guard = crate::gpu_lock();
+    crate::TestGpu::new(adopt(&devices().shared), guard)
 }
 
 /// A context on a device no other running test polls, held until the guard
@@ -30,10 +31,9 @@ fn context() -> GpuContext {
 /// the polling thread, so on the shared device another test's poll can take
 /// this test's callbacks and run them only after this test's own poll has
 /// returned. A test asserting on what its own poll released uses this one.
-fn solo_context() -> (MutexGuard<'static, ()>, GpuContext) {
-    static SOLO: Mutex<()> = Mutex::new(());
-    let guard = SOLO.lock().unwrap_or_else(PoisonError::into_inner);
-    (guard, adopt(&devices().solo))
+fn solo_context() -> crate::TestGpu {
+    let guard = crate::gpu_lock();
+    crate::TestGpu::new(adopt(&devices().solo), guard)
 }
 
 type Device = (wgpu::Adapter, wgpu::Device, wgpu::Queue);
@@ -46,15 +46,9 @@ struct Devices {
 /// Both devices, created together the first time any test asks.
 fn devices() -> &'static Devices {
     static DEVICES: OnceLock<Devices> = OnceLock::new();
+    let _guard = crate::gpu_lock();
     DEVICES.get_or_init(|| {
-        let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
-            backends: wgpu::Backends::from_env().unwrap_or_default(),
-            ..wgpu::InstanceDescriptor::new_without_display_handle()
-        });
-        let adapter = pollster::block_on(wgpu::util::initialize_adapter_from_env_or_default(
-            &instance, None,
-        ))
-        .expect("GPU contract tests require a WGPU adapter");
+        let adapter = crate::shared_adapter();
         let device = || {
             let (device, queue) =
                 pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor::default()))
@@ -709,7 +703,7 @@ fn writes_outside_a_frame_and_from_a_discarded_frame_land_at_the_next_submit() {
 
 #[test]
 fn steady_frames_reuse_their_staging_chunks() {
-    let (_solo, gpu) = solo_context();
+    let gpu = solo_context();
     let target = raw_buffer(&gpu, 4096);
     let device = __framework::device(&gpu);
     for frame_index in 0..20u8 {
@@ -729,7 +723,7 @@ fn steady_frames_reuse_their_staging_chunks() {
 
 #[test]
 fn a_full_pipeline_blocks_on_the_oldest_frame_and_unsubmitted_slots_never_deadlock() {
-    let (_solo, gpu) = solo_context();
+    let gpu = solo_context();
     for _ in 0..3 {
         gpu.begin_frame("in flight").submit();
     }
@@ -759,13 +753,14 @@ fn a_full_pipeline_blocks_on_the_oldest_frame_and_unsubmitted_slots_never_deadlo
     assert!(held.iter().all(Option::is_some));
     let (done_tx, done_rx) = mpsc::channel();
     let starter = gpu.clone();
-    thread::spawn(move || {
+    let starter_thread = thread::spawn(move || {
         let frame = starter.begin_frame("unslotted");
         done_tx.send((frame.id(), frame.acquisition())).unwrap();
     });
     let (_, acquisition) = done_rx
         .recv_timeout(Duration::from_secs(5))
         .expect("begin_frame must not wait on frames that were never submitted");
+    starter_thread.join().unwrap();
     assert_eq!(
         acquisition,
         nana_gpu::FrameAcquisition {

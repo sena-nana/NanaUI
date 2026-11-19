@@ -89,6 +89,7 @@ fn paint(gpu: &GpuContext, painter: &mut SceneWgpuPainter, scene: &UiScene) {
 
 #[test]
 fn a_frame_painted_on_a_lost_device_returns() {
+    let _gpu_guard = crate::gpu_lock();
     let gpu = device();
     let mut painter = SceneWgpuPainter::new(&gpu, GpuTextureFormat::from_wgpu(FORMAT));
     let labels = (0..40).map(|row| format!("Row {row}")).collect::<Vec<_>>();

@@ -39,6 +39,7 @@ fn buffer(device: &wgpu::Device, usage: wgpu::BufferUsages) -> wgpu::Buffer {
 }
 
 fn race(test: &str, backend: wgpu::Backends) {
+    let _gpu_guard = nana_wgpu_fork_tests::gpu_lock();
     let Some((_, device, queue)) = device(backend, wgpu::Features::empty()) else {
         no_adapter(test, backend);
         return;
