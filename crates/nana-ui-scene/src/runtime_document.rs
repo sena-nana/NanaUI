@@ -53,11 +53,6 @@ impl RuntimeDocument {
         Self::with_context(document, AppContext::new())
     }
 
-    /// Alias for [`Self::new`]; retained for source compatibility.
-    pub fn typed(document: DocumentId) -> Self {
-        Self::with_context(document, AppContext::typed())
-    }
-
     fn with_context(document: DocumentId, context: AppContext) -> Self {
         Self {
             context,

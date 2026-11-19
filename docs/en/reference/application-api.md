@@ -100,20 +100,34 @@ or an explicit host compatibility module.
 
 ### Capability authority
 
-Each item has exactly one owner and one recommended call. Menu/Action conversion and dispatch are accepted under #287, Theme under #108 / #110, and the migration guide for the recommended style under #291.
+Each item has exactly one owner and one recommended call. Action/Menu conversion and dispatch (`ActionRegistry` + `Keymap` + `MenuActionMap` + `AppContext`) are settled, Theme is accepted under #108 / #110, and the migration guide for the recommended style under #291.
 
 | Capability | Owner and recommended call | Retained entry point | Removal condition |
 | --- | --- | --- | --- |
 | Component update | `update_component` / `set_component` / `create_component` | `create_view` (`doc(hidden)` host primitive; does not run the component projection) | Host adapters no longer need unprojected placeholder nodes |
 | CSS color | `nana-ui-css` parses strings. PaintScript accepts only semantic roles and typed RGBA | Caller-supplied color parser | Runtime never gets a second CSS parser |
-| Virtual list / table / tree | `materialize_virtual_*_retained_in` | legacy `materialize_virtual_*` (`doc(hidden)` + deprecated; not mixed with retained) | No unpositioned calls remain outside the repo. New calls in this repo are rejected by `scripts/check-api-convergence.py` |
+| Virtual list / table / tree | `materialize_virtual_*_retained_in` | None (legacy `materialize_virtual_*` removed) | Removed; `scripts/check-api-convergence.py` rejects reintroduction |
 | Query editing | `TextInputState`, through `query_text()` / `set_query()` | No second query field | The query authority stays this one |
 | Virtual row identity | `each_virtual::Unit::Row { columns, keys }` | No hash identity | Row identity stays a structured key |
-| Event subscription | The host's own stream | `Subscription<T>` (`doc(hidden)` + deprecated) | Removed once no product calls remain. New `Subscription::new` calls in this repo are rejected by the same script |
+| Event subscription | The host's own stream | None (`Subscription<T>` removed) | Removed; `scripts/check-api-convergence.py` rejects `Subscription::new` |
 | GPU surface | `HostedGpuShared::resize_surface` / `prepare_surface_frame` | `HostedGpuSurface::resize` / `prepare_frame` (`doc(hidden)` advanced) | Kept while some host still holds the surface and device separately |
 | Default GPU renderer | `scene_gpu_renderers`: neither `None` nor an empty list installs the demo renderer. Return `default_scene_gpu_renderers()` explicitly when needed | No implicit `"gpu-view"` | The demo painter stays opt-in |
 
-There is exactly one `ActionDescriptor`. It is defined in Runtime (`nana_ui::runtime`; `nana_ui` re-exports the same type): the keymap reads `id` / `enabled` / `when`. The command palette also reads `label` / `category` / `keywords`. Hosts that only bind shortcuts use `ActionDescriptor::new(id)`. Actions that should appear in the palette use `ActionDescriptor::labeled(id, label)`. There is likewise exactly one `ActionRegistry`. It preserves registration order. `search` / `available` serve palette lookup.
+### Actions, shortcuts, and menu dispatch
+
+There is exactly one `ActionDescriptor`, defined in Runtime (`nana_ui::runtime`; `nana_ui` re-exports the same type): the keymap reads `id` / `enabled` / `when`, while command palettes and menu adapters also read `label` / `category` / `keywords`. Hosts that only bind shortcuts use `ActionDescriptor::new(id)`, and actions that belong in palettes or menus use `ActionDescriptor::labeled(id, label)`.
+
+- **ID normalization**: `ActionId::normalized()` trims surrounding whitespace and rejects empty or whitespace-only IDs across `ActionRegistry`, `KeyBinding`, `Keymap`, `MenuActionMap`, and `AppContext` registration, binding, and lookup.
+- **Single registry and dynamic bindings**: `ActionRegistry` preserves registration order. Beyond static `set_enabled` / `set_label`, `bind_enabled` / `clear_enabled_binding` and `bind_label` / `clear_label_binding` compute live availability and labels from context and application state (such as dynamic undo/redo labels paired with `store_with_history`), read via `resolved_label`. `is_available`, `available`, `search`, `palette_items`, `action_menu_item`, and `MenuActionMap::sync_menu_bar` share this same evaluation.
+- **Thin DTO adapters**:
+  - `ActionRegistry::palette_items(query, context, keymap)` builds `nana_ui::runtime::CommandPaletteItem` entries.
+  - `ActionRegistry::action_menu_item(id, context, keymap)` builds one `nana_ui::runtime::ActionMenuItem` with resolved label, `.disabled(...)`, and shortcut hint (formatted via `Keymap::display_binding`).
+  - `MenuActionMap` maintains a `u32 <-> ActionId` bijection (`bind` / `unbind_menu_id` / `unbind_action` / `action_for` / `menu_id_for`), constructs a `MenuEntry` via `menu_entry`, and keeps `MenuBar` labels, enabled states, and platform shortcuts in sync via `sync_menu_bar` (using `Keymap::menu_shortcut`).
+- **`AppContext` dispatch and route ordering**:
+  - `bind_action_handler` / `unbind_action_handler` / `has_action_handler` register handlers (`register_action` remains for handler-level `when` predicates); `can_dispatch_registered_action` checks both registry availability and handler presence; `dispatch_registered_action` is the single adapter that validates registry availability before invoking the handler.
+  - `dispatch_keymap_key` and `dispatch_routed_key` connect keyboard input to `Keymap::resolve` and `dispatch_registered_action`. `dispatch_routed_key` checks `disposition.prevent_default` first so modal overlay barriers, active IME composition, an open `AppMenuBar`, `AppContext::on_key`, and focused text editors consume their handled keys before global keymap shortcuts fire.
+  - `dispatch_menu_action` (resolving numeric `menu_id` via `MenuActionMap`) and `dispatch_palette_event` (handling `Select`) also dispatch through `dispatch_registered_action`.
+- **Document key context**: `AppContext::document_key_context(document, base)` augments `base` with `CONTEXT_MODAL`, `CONTEXT_TEXT_INPUT`, and `CONTEXT_IME_COMPOSING` from the document's live Runtime state.
 
 ## Cargo features
 
@@ -501,14 +515,10 @@ Components that handle the pointer themselves can use `UiWorld::pointer_layout_p
 ## Rust virtual lists and trees
 
 When you need real scroll space and retention of offscreen edits, put the List inside a ScrollView and use
-`materialize_virtual_list_retained_in`. Trees use `materialize_virtual_tree_retained_in`
-with a `VirtualTreeLayout` that contains only expanded rows. List example (`list` is already mounted; `items` is kept across frames):
-
-`materialize_virtual_list[_in]`, `materialize_virtual_tree[_in]`, and
-`materialize_virtual_table[_in]` are the old unpositioned compatibility entry points, now hidden and marked deprecated.
-They only mount and unmount visible keys; the caller must arrange positions, total content height, and focus/IME
-retention itself. The same `Virtual*Items` instance must not be mixed with the retained entry points. New code uses the
-retained entry points below throughout; the old ones remain only as a transition for hosts not yet migrated.
+`materialize_virtual_list_retained_in` (`materialize_virtual_table_retained_in` for tables, and
+`materialize_virtual_tree_retained_in` with a `VirtualTreeLayout` that contains only expanded rows for trees). The old
+unpositioned `materialize_virtual_{list,table,tree}[_in]` compatibility entry points have been removed. List example
+(`list` is already mounted; `items` is kept across frames):
 
 ```rust
 cx.materialize_virtual_list_retained_in(

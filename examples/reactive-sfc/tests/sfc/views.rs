@@ -20,7 +20,7 @@ fn children(cx: &AppContext, id: StableNodeId) -> Vec<StableNodeId> {
 #[test]
 fn the_counter_and_the_todo_list_work_as_written() {
     let before = reactive_stats();
-    let mut cx = AppContext::typed();
+    let mut cx = AppContext::new();
     let document = DocumentId::new(1).unwrap();
     let page = cx.mount_view_root(document, views::app).unwrap().roots()[0];
 
@@ -117,7 +117,7 @@ fn counter_by_hand() -> impl IntoView {
 #[test]
 fn folding_saves_the_effects_constants_would_have_needed() {
     let effects_of = |view: fn() -> nana_ui::runtime::view::AnyView| {
-        let mut cx = AppContext::typed();
+        let mut cx = AppContext::new();
         let before = reactive_stats().effects;
         let _mounted = cx
             .mount_view_root(DocumentId::new(1).unwrap(), view)
@@ -158,7 +158,7 @@ fn static_text_is_swapped_in_the_running_tree() {
         .position(|text| text == "添加")
         .unwrap();
 
-    let mut cx = AppContext::typed();
+    let mut cx = AppContext::new();
     let document = DocumentId::new(1).unwrap();
     let page = cx.mount_view_root(document, views::app).unwrap().roots()[0];
     let add = cx
@@ -199,7 +199,7 @@ fn static_text_is_swapped_in_the_running_tree() {
 fn view_styles_apply_and_follow_their_classes() {
     use std::time::Duration;
     let start = Duration::from_secs(5);
-    let mut cx = AppContext::typed();
+    let mut cx = AppContext::new();
     let document = DocumentId::new(1).unwrap();
     cx.advance_animations(start);
     let page = cx.mount_view_root(document, views::app).unwrap().roots()[0];
@@ -281,7 +281,7 @@ fn tree(view: impl FnOnce() -> AnyView) -> Vec<String> {
             walk(cx, child, out);
         }
     }
-    let mut cx = AppContext::typed();
+    let mut cx = AppContext::new();
     let root = cx
         .mount_view_root(DocumentId::new(1).unwrap(), view)
         .unwrap()
@@ -359,7 +359,7 @@ mod test_views {
 /// background and height once the card is 280 px wide, and gives them back.
 #[test]
 fn a_container_rule_follows_its_card_across_the_breakpoint() {
-    let mut cx = AppContext::typed();
+    let mut cx = AppContext::new();
     let document = DocumentId::new(1).unwrap();
     let narrow = std::cell::Cell::new(None);
     let card = cx
@@ -408,7 +408,7 @@ fn a_container_rule_follows_its_card_across_the_breakpoint() {
 fn localized_text_follows_its_arguments_and_its_scope() {
     use nana_ui::runtime::{Locale, MessageTable};
     let before = reactive_stats();
-    let mut cx = AppContext::typed();
+    let mut cx = AppContext::new();
     cx.set_message_catalog(Some(std::sync::Arc::new(
         MessageTable::new()
             .with("en", "title", "Files")

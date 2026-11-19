@@ -77,7 +77,7 @@ action_menu("Presets").children((
 
 ## Items
 
-An item is `ActionMenuItem::new(label)`.
+An item is `ActionMenuItem::new(label)`. For actions registered in `ActionRegistry`, call `ActionRegistry::action_menu_item(&id, &context, Some(&keymap))` to construct an `ActionMenuItem` carrying the live resolved label, disabled state, and shortcut hint.
 
 `.hint` is one line of supplementary text; an empty string is dropped.
 

@@ -51,16 +51,6 @@ REMOVED_ROOT_NAMES = frozenset(
 SCANNED_ROOTS = ("crates", "examples", "platform", "packages", "tools", "docs")
 SCANNED_SUFFIXES = {".rs", ".md", ".vue", ".ts", ".js"}
 SKIPPED_PARTS = {"target", "node_modules", "dist", ".git"}
-# Legacy unplaced virtualizers and the unused Subscription wrapper may keep
-# their definitions and the tests that pin that compatibility behavior.
-# Product code uses the retained materializers and the host's own stream.
-LEGACY_MATERIALIZE_FILES = {
-    "crates/nana-ui-runtime/src/framework/virtualize.rs",
-    "crates/nana-ui-runtime/src/framework/tests.rs",
-}
-LEGACY_SUBSCRIPTION_FILES = {
-    "crates/nana-ui-runtime/src/framework/tests.rs",
-}
 LEGACY_MATERIALIZE = re.compile(
     r"\bmaterialize_virtual_(?:list|table|tree)(?:_in)?(?!_retained)\b"
 )
@@ -93,7 +83,7 @@ def stale_root_paths() -> list[str]:
 
 
 def legacy_compat_calls(root: Path) -> list[str]:
-    """Return new callers of the legacy virtualizers and Subscription::new."""
+    """Return any callers or definitions of removed legacy virtualizers or Subscription::new."""
     hits = []
     for top in RUST_SCAN_ROOTS:
         base = root / top
@@ -105,9 +95,9 @@ def legacy_compat_calls(root: Path) -> list[str]:
             rel = path.relative_to(root).as_posix()
             text = path.read_text(encoding="utf-8", errors="ignore")
             for number, line in enumerate(text.splitlines(), 1):
-                if LEGACY_MATERIALIZE.search(line) and rel not in LEGACY_MATERIALIZE_FILES:
+                if LEGACY_MATERIALIZE.search(line):
                     hits.append(f"{rel}:{number}: legacy virtual materializer")
-                if LEGACY_SUBSCRIPTION.search(line) and rel not in LEGACY_SUBSCRIPTION_FILES:
+                if LEGACY_SUBSCRIPTION.search(line):
                     hits.append(f"{rel}:{number}: Subscription::new")
     return hits
 
@@ -122,6 +112,14 @@ def main() -> int:
     framework = (
         ROOT / "crates/nana-ui-runtime/src/framework.rs"
     ).read_text(encoding="utf-8")
+    runtime_document = (
+        ROOT / "crates/nana-ui-scene/src/runtime_document.rs"
+    ).read_text(encoding="utf-8")
+    application = (ROOT / "crates/nana-ui/src/application.rs").read_text(encoding="utf-8")
+    wgpu_interop = (ROOT / "crates/nana-gpu/src/wgpu_interop.rs").read_text(
+        encoding="utf-8"
+    )
+    task_workbench_path = ROOT / "examples/task-workbench/src/lib.rs"
     gpu_slots = (
         ROOT / "crates/nana-ui-runtime/src/gpu_slots.rs"
     ).read_text(encoding="utf-8")
@@ -138,6 +136,24 @@ def main() -> int:
         fail("deprecated AppContext::world_mut must be removed")
     if "pub fn compat_world_mut" not in framework:
         fail("AppContext::compat_world_mut is missing")
+    if "pub struct Subscription" in framework:
+        fail("removed Subscription wrapper must stay removed")
+    if "pub fn typed" in framework:
+        fail("removed AppContext::typed alias must stay removed")
+    if "pub fn typed" in runtime_document:
+        fail("removed RuntimeDocument::typed alias must stay removed")
+    if "pub fn typed" in application:
+        fail("removed ApplicationWindow::typed alias must stay removed")
+    if "fn for_state" in application:
+        fail("removed ApplicationWindow::for_state alias must stay removed")
+    if "fn lock_submission" in wgpu_interop:
+        fail("removed WgpuInterop::lock_submission must stay removed")
+    if not task_workbench_path.is_file():
+        fail("examples/task-workbench/src/lib.rs golden example is missing")
+    task_workbench = task_workbench_path.read_text(encoding="utf-8")
+    for required in ("Store", "each_virtual", "validity_of", "ValidationMessage", "ActionRegistry"):
+        if required not in task_workbench:
+            fail(f"examples/task-workbench/src/lib.rs must exercise {required}")
     if "TextArea as Textarea" in nana_ui:
         fail("deprecated nana_ui::Textarea alias must be removed")
     if "应用内打开网页" in architecture and "未实现" in architecture:
@@ -162,7 +178,7 @@ def main() -> int:
     legacy = legacy_compat_calls(ROOT)
     if legacy:
         fail(
-            "legacy virtual materializers and Subscription::new must not gain callers:\n  "
+            "removed legacy virtual materializers and Subscription::new must stay absent:\n  "
             + "\n  ".join(legacy)
         )
 

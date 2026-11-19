@@ -48,7 +48,7 @@ title: GPU 与帧生命周期
 ### 1. `nana-gpu` 核心合同：设备代际、粘性丢失与提交顺序
 
 - **设备代际（`DeviceGeneration`）与粘性丢失**：每个 `GpuContext` 分配唯一的 `DeviceGeneration`（`context.rs:19`），`GpuContext::check_device`（`:715`）在遇到其他代际的纹理或渲染目标时直接返回 `GpuError::DeviceMismatch`。设备丢失原因记录在粘性的 `LossState` 中（仅保留**首次**丢失报告，`:312-325`，防止驱动回调风暴）。
-- **提交顺序**：队列提交不再需要与 `Surface::configure` 串行化——NanaUI 的 wgpu fork 让重配置只等仍在使用该 surface 交换链图像的工作，而不是整个设备空闲，所以另一条线程同时提交不会触发 `GpuWaitTimeout`（见 `third_party/wgpu/README.md`）。`GpuInner.submission_order: Mutex<()>` 只负责让帧提交、上传批与 native-export 的 signal 按真实队列顺序排列；`wgpu-interop` 的 `lock_submission` 已弃用。
+- **提交顺序**：队列提交不再需要与 `Surface::configure` 串行化——NanaUI 的 wgpu fork 让重配置只等仍在使用该 surface 交换链图像的工作，而不是整个设备空闲，所以另一条线程同时提交不会触发 `GpuWaitTimeout`（见 `third_party/wgpu/README.md`）。`GpuInner.submission_order: Mutex<()>` 只负责让帧提交、上传批与 native-export 的 signal 按真实队列顺序排列；`wgpu-interop` 原有的 `lock_submission` 守卫已移除。
 - **前置参数校验**：`create_texture`（`context.rs:459`）在调用底层 WGPU 前完成尺寸、usage、块对齐与格式用途校验，将所有非法输入转化为可恢复的 `GpuError`，绝不触发 WGPU 校验 panic。
 
 ### 2. `FrameContext`：独占编码器、合并上传环与丢弃回滚

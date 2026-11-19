@@ -1,5 +1,6 @@
 #[cfg(feature = "accesskit-tree")]
 mod accessibility_hidden;
+mod action_dispatch;
 mod adaptive_composer;
 mod application_diagnostics;
 mod button_icon;

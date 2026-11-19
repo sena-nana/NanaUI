@@ -597,7 +597,7 @@ Static dependencies are currently **only verified in debug. They are not used to
 
 ## Control-level tree shaking (on-demand registration)
 
-`AppContext::new()` and `RuntimeDocument::new(document)` use on-demand registration by default: they no longer pre-register tag-based binder or reprojection tables for all built-in controls, and no compile-time `BuiltinComponents::Typed` / `ApplicationState::BUILTINS` switch is needed (`AppContext::typed()` and `RuntimeDocument::typed(document)` remain only as source-compatibility aliases for `new()`):
+`AppContext::new()` and `RuntimeDocument::new(document)` use on-demand registration by default: they no longer pre-register tag-based binder or reprojection tables for all built-in controls, and no compile-time `BuiltinComponents::Typed` / `ApplicationState::BUILTINS` switch is needed:
 
 - Built-in controls register only static identities and tag metadata in `component_descriptors::BUILTIN_COMPONENT_IDS`. Nodes still carry the component type stamp as usual, and `ComponentTypeId` can still be resolved from tags.
 - Each type's behavior is written in `ComponentView::BEHAVIOR` (`TypeBehavior`: activation, assembler, activation at a point, dismissing popups, maintenance after writes, input routing hooks `TypeHooks`). It is installed when the first node of that type is created. Every creation path goes through this step (`stamp_component_type`, `install_view` for composite controls). For types the program never created, none of this code is referenced anywhere. Input routing calls subsystems through `hooked!`. When a hook is not installed, the result is the same as when the document has no such node.

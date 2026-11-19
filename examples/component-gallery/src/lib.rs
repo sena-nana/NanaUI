@@ -981,25 +981,7 @@ impl GalleryState {
     fn palette_items(&self) -> Vec<CommandPaletteItem> {
         let context = self.action_context();
         self.action_registry
-            .search(self.action_picker.query(), &context)
-            .into_iter()
-            .map(|matched| {
-                let mut item = CommandPaletteItem::new(
-                    matched.action.id.clone(),
-                    matched.action.label.clone(),
-                );
-                if let Some(category) = &matched.action.category {
-                    item = item.category(category.clone());
-                }
-                if let Some(shortcut) =
-                    self.keymap
-                        .binding_label(&matched.action.id, &context, &self.action_registry)
-                {
-                    item = item.shortcut(shortcut);
-                }
-                item
-            })
-            .collect()
+            .palette_items(self.action_picker.query(), &context, Some(&self.keymap))
     }
 
     fn toggle_command_palette(&mut self) {

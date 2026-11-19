@@ -12,8 +12,9 @@ pub use nana_ui_core::{
 /// The host-facing name for a single recorded stroke.
 pub use nana_ui_runtime::CapturedStroke as KeyStroke;
 pub use nana_ui_runtime::{
-    ActionDescriptor, ActionMatch, ActionRegistry, ActionRegistryError, KeyBinding, KeyModifiers,
-    Keymap, KeymapMatch, KeymapState,
+    ActionDescriptor, ActionMatch, ActionRegistry, ActionRegistryError, CONTEXT_IME_COMPOSING,
+    CONTEXT_MODAL, CONTEXT_TEXT_INPUT, KeyBinding, KeyModifiers, Keymap, KeymapMatch, KeymapState,
+    MenuActionMap, MenuActionMapError,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]

@@ -68,7 +68,7 @@ When open, the palette is a direct child of `OverlayHost`, opened with `activate
 
 Close it with `dismiss_overlay(host)`, or collect it yourself in `Dismiss`.
 
-`ActionRegistry` registers actions and shortcut contexts; this panel only displays the list you hand it.
+`ActionRegistry` registers actions, dynamic availability/labels, and shortcut contexts; call `ActionRegistry::palette_items(query, &context, Some(&keymap))` to produce the item list handed to the palette, and forward palette events to `AppContext::dispatch_palette_event(&registry, &event, &context)` for unified validation and dispatch. The panel itself only displays the list you hand it.
 
 ## Properties
 

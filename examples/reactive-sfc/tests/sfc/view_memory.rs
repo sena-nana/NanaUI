@@ -47,7 +47,7 @@ static GLOBAL: Counting = Counting;
 /// Live bytes per row after mounting `n` rows from `row`.
 fn live_per_row<V: IntoView>(n: usize, row: fn(usize, Signal<usize>) -> V) -> f64 {
     let document = DocumentId::new(1).unwrap();
-    let mut cx = AppContext::typed();
+    let mut cx = AppContext::new();
     let mount = |cx: &mut AppContext, n: usize| {
         cx.mount_view_root(document, move || {
             let selected = signal(0);
@@ -57,7 +57,7 @@ fn live_per_row<V: IntoView>(n: usize, row: fn(usize, Signal<usize>) -> V) -> f6
     };
     // Grow the thread's signal runtime, the context's tables and the
     // process-wide defaults first.
-    drop(mount(&mut AppContext::typed(), n));
+    drop(mount(&mut AppContext::new(), n));
     let warm = mount(&mut cx, 8);
     let before = LIVE.with(Cell::get);
     let rows = mount(&mut cx, n);

@@ -84,7 +84,7 @@ The `dist` profile used for release is `panic = "abort"`. A panic in a factory t
 
 ## Unused built-in controls are tree-shaken automatically
 
-When building trees from Rust types, `view!`, or `.vue`, built-in controls no longer carry by-tag binders; `AppContext::new()` installs each built-in control's behavior on demand when a node of that type is first created. Built-in controls that your program never creates are tree-shaken out of the final binary (`AppContext::typed()` and `RuntimeDocument::typed(document)` remain only as compatibility aliases).
+When building trees from Rust types, `view!`, or `.vue`, built-in controls no longer carry by-tag binders; `AppContext::new()` installs each built-in control's behavior on demand when a node of that type is first created. Built-in controls that your program never creates are tree-shaken out of the final binary.
 
 With `[profile.dist]` (`opt-level = "z"`, fat LTO, `panic = "abort"`, strip) and precompiled shaders, the hosted `examples/reactive-sfc` ships at `5.56 MiB` (`5,835,088 B`). Most of the remaining size is GPU, text, and built-in fonts.
 

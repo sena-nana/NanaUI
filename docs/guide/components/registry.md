@@ -84,7 +84,7 @@ mutations.set_custom_render(
 
 ## 未用到的内置控件自动摇树裁剪
 
-从 Rust 类型、`view!` 或 `.vue` 建树时，内置控件不再携带按标签构造的绑定器；`AppContext::new()` 默认只在首次创建某类控件时按需安装其行为。未创建的内置控件不会被链接进最终二进制（`AppContext::typed()` 与 `RuntimeDocument::typed(document)` 仅保留为兼容别名）。
+从 Rust 类型、`view!` 或 `.vue` 建树时，内置控件不再携带按标签构造的绑定器；`AppContext::new()` 默认只在首次创建某类控件时按需安装其行为。未创建的内置控件不会被链接进最终二进制。
 
 在 `[profile.dist]`（`opt-level = "z"`、fat LTO、`panic = "abort"`、strip）与预编译着色器下，托管窗口 `examples/reactive-sfc` 的发布体积为 `5.56 MiB`（`5,835,088 B`）。剩余体积主要在 GPU、文字和内置字体。
 

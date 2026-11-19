@@ -1,0 +1,21 @@
+[package]
+name = "task-workbench"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.98"
+publish = false
+description = "Golden L3 example combining #[derive(Store)], each_virtual, form validation, and unified ActionRegistry dispatch"
+
+[lib]
+name = "task_workbench"
+path = "src/lib.rs"
+doctest = false
+
+[[bin]]
+name = "task-workbench"
+path = "src/main.rs"
+test = false
+
+[dependencies]
+nana-ui = { path = "../../crates/nana-ui", default-features = false, features = ["hosted", "bundled-fonts", "view-macro"] }
+nana-ui-platform.workspace = true

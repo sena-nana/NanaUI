@@ -4,8 +4,6 @@
 //! own pipelines until Nana has a logical shader ABI. Everything here hands
 //! out the same objects the contract wraps; it never creates a second device.
 
-use std::sync::{RwLock, RwLockReadGuard};
-
 use crate::{
     FrameContext, GpuContext, GpuError, GpuRenderTarget, GpuSubmission, GpuTexture,
     GpuTextureFormat, GpuTextureUsages,
@@ -34,19 +32,6 @@ impl<'a> WgpuInterop<'a> {
 
     pub fn queue(self) -> &'a wgpu::Queue {
         &self.gpu.inner.queue
-    }
-
-    /// No longer needed: raw queue work may run on any thread without a
-    /// guard. Surface reconfiguration used to wait for the whole device to go
-    /// idle, so a submit racing it failed; NanaUI's wgpu fork now waits only
-    /// for the work that used that surface. The returned guard locks nothing
-    /// anyone else takes.
-    #[deprecated(
-        note = "surface reconfiguration no longer waits for the device; raw queue work needs no guard"
-    )]
-    pub fn lock_submission(self) -> RwLockReadGuard<'a, ()> {
-        static UNUSED: RwLock<()> = RwLock::new(());
-        UNUSED.read().unwrap_or_else(|error| error.into_inner())
     }
 }
 

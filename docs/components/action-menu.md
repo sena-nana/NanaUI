@@ -77,7 +77,7 @@ action_menu("预设").children((
 
 ## 条目
 
-条目是 `ActionMenuItem::new(label)`。
+条目是 `ActionMenuItem::new(label)`。若条目对应 `ActionRegistry` 中的已登记动作，可用 `ActionRegistry::action_menu_item(&id, &context, Some(&keymap))` 直接生成带动态标签、禁用状态与快捷键提示的 `ActionMenuItem`。
 
 `.hint` 是一行补充，空字符串会被丢掉。
 

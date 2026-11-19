@@ -2725,7 +2725,6 @@ dependencies = [
  "fancy-regex 0.16.2",
  "fixed_decimal",
  "foldhash",
- "futures-core",
  "hashbrown 0.17.1",
  "icu_calendar",
  "icu_datetime",
@@ -4455,6 +4454,14 @@ dependencies = [
  "fontdb 0.23.0",
  "sys-locale",
  "web-sys",
+]
+
+[[package]]
+name = "task-workbench"
+version = "0.1.0"
+dependencies = [
+ "nana-ui",
+ "nana-ui-platform",
 ]
 
 [[package]]

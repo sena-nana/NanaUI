@@ -25,7 +25,7 @@ The `id` of a chosen item has two outlets:
 - It enters the same queue the native menu uses, read with `take_menu_activations()`.
 - The menu bar also emits `MenuBarActivated { id }`.
 
-The application just dispatches by id, without telling the native menu and the in-app menu apart.
+When using the unified action registry, use `MenuActionMap` (`menu_entry`, `sync_menu_bar`) to map numeric menu `id`s to `ActionId`s and keep labels, enabled state, and shortcut text in sync with `ActionRegistry` and `Keymap`, then route activations through `AppContext::dispatch_menu_action(&registry, &menu_map, menu_id, &context)`. Consume either `take_menu_activations()` or `MenuBarActivated`—not both—to avoid dispatching the same menu activation twice.
 
 ## Pointer
 

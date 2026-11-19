@@ -138,7 +138,7 @@ fn mounts(scenario: &str, n: usize, variants: &[(&str, Mount)]) {
         .iter()
         .map(|(name, make)| {
             let run = move || {
-                let mut cx = AppContext::typed();
+                let mut cx = AppContext::new();
                 let started = Instant::now();
                 black_box(make(&mut cx, n));
                 started.elapsed()
@@ -161,7 +161,7 @@ fn updates<H: Copy + 'static>(
     let runs = variants
         .iter()
         .map(|(name, make)| {
-            let mut cx = AppContext::typed();
+            let mut cx = AppContext::new();
             let kept = make(&mut cx, n);
             let handle = handle();
             let mut tick = 0;
@@ -186,8 +186,8 @@ fn updates<H: Copy + 'static>(
 fn memory(n: usize, variants: &[(&str, Mount)]) {
     for (name, make) in variants {
         // Otherwise whichever variant runs first grows the thread's tables.
-        drop(make(&mut AppContext::typed(), n));
-        let mut cx = AppContext::typed();
+        drop(make(&mut AppContext::new(), n));
+        let mut cx = AppContext::new();
         let warm = make(&mut cx, 8);
         let (live, effects) = (LIVE.get(), reactive_stats().effects);
         let kept = make(&mut cx, n);

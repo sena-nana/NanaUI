@@ -59,12 +59,11 @@ use std::{
     time::{Duration, Instant},
 };
 
-use futures_core::Stream;
 use nana_ui_core::{
     ActionId, ActionPickerNavigation, CommandPaletteEvent, ContextPredicate, KeyContext,
     LengthSpec, ThemeAppearance, TooltipConfig, TooltipPlacement, VirtualListLayout,
-    VirtualListMaterializationError, VirtualListMaterializer, VirtualListWindow,
-    VirtualTableLayout, VirtualTableMaterializer, VirtualTableWindow, VirtualTreeLayout,
+    VirtualListMaterializer, VirtualListWindow, VirtualTableLayout, VirtualTableMaterializer,
+    VirtualTableWindow, VirtualTreeLayout,
 };
 
 #[cfg(test)]
@@ -1452,11 +1451,6 @@ impl Default for AppContext {
 impl AppContext {
     pub fn new() -> Self {
         Self::from_world(UiWorld::new())
-    }
-
-    /// Alias for [`Self::new`]; retained for source compatibility.
-    pub fn typed() -> Self {
-        Self::new()
     }
 
     /// Wrap an existing retained tree.
@@ -4775,13 +4769,7 @@ pub trait UiExtension {
 }
 
 fn normalized_action_id(id: impl Into<ActionId>) -> Result<ActionId, FrameworkError> {
-    let id = id.into();
-    let id = ActionId::new(id.as_str().trim());
-    if id.as_str().is_empty() {
-        Err(FrameworkError::InvalidAction)
-    } else {
-        Ok(id)
-    }
+    id.into().normalized().ok_or(FrameworkError::InvalidAction)
 }
 
 fn insert_action(
@@ -4832,44 +4820,6 @@ impl<T> Task<T> {
         T: Send + 'static,
     {
         Task::new(async move { map(self.future.await) })
-    }
-}
-
-/// Compatibility wrapper for a host-owned event stream.
-///
-/// No runtime host currently consumes this type. It remains available for
-/// source compatibility with early adapters, but new integrations should use
-/// the host's native stream/subscription contract instead. Keeping it hidden
-/// prevents it from becoming a second runtime subscription API while existing
-/// callers migrate.
-///
-/// Platform adapters own execution and cancellation; the core runtime does
-/// not create a competing executor.
-#[doc(hidden)]
-#[deprecated(
-    note = "Subscription is an unconsumed compatibility API; use the host-owned stream contract"
-)]
-#[must_use = "subscriptions do nothing until a host consumes their stream"]
-pub struct Subscription<T> {
-    id: String,
-    stream: Pin<Box<dyn Stream<Item = T> + Send + 'static>>,
-}
-
-#[allow(deprecated)]
-impl<T> Subscription<T> {
-    pub fn new(id: impl Into<String>, stream: impl Stream<Item = T> + Send + 'static) -> Self {
-        Self {
-            id: id.into(),
-            stream: Box::pin(stream),
-        }
-    }
-
-    pub fn id(&self) -> &str {
-        &self.id
-    }
-
-    pub fn into_stream(self) -> Pin<Box<dyn Stream<Item = T> + Send + 'static>> {
-        self.stream
     }
 }
 

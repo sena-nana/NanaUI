@@ -358,22 +358,189 @@ impl AppContext {
         insert_action(&mut self.actions, id, when, handler)
     }
 
+    /// Binds an execution handler to `id` with an always-true predicate.
+    ///
+    /// Availability (`enabled` / `when` / dynamic checks) lives in [`ActionRegistry`];
+    /// use [`Self::dispatch_registered_action`] (or the keymap / menu / palette
+    /// adapters) to evaluate descriptor availability before running the handler.
+    pub fn bind_action_handler(
+        &mut self,
+        id: impl Into<ActionId>,
+        handler: impl FnMut(&mut AppContext) -> Result<(), FrameworkError> + Send + 'static,
+    ) -> Result<(), FrameworkError> {
+        insert_action(&mut self.actions, id, ContextPredicate::always(), handler)
+    }
+
+    /// Removes the execution handler registered for `id`.
+    pub fn unbind_action_handler(&mut self, id: &ActionId) -> bool {
+        let Some(id) = id.normalized() else {
+            return false;
+        };
+        self.actions.remove(&id).is_some()
+    }
+
+    /// Returns whether an execution handler is currently bound for `id`.
+    pub fn has_action_handler(&self, id: &ActionId) -> bool {
+        let Some(id) = id.normalized() else {
+            return false;
+        };
+        self.actions.contains_key(&id)
+    }
+
+    /// Augments `base` with Runtime focus, modal, editable text-input, and IME
+    /// composition tags for `document`.
+    pub fn document_key_context(&self, document: DocumentId, mut base: KeyContext) -> KeyContext {
+        if self.has_blocking_runtime_overlay(document) {
+            base.insert(crate::CONTEXT_MODAL);
+        }
+        if self.editable_focused_text_input(document).is_some() {
+            base.insert(crate::CONTEXT_TEXT_INPUT);
+        }
+        if self
+            .world
+            .focused(document)
+            .is_some_and(|focused| self.world.ime(focused).is_some())
+        {
+            base.insert(crate::CONTEXT_IME_COMPOSING);
+        }
+        base
+    }
+
+    /// Returns whether `id` is available in `registry` AND has a matching handler here.
+    pub fn can_dispatch_registered_action(
+        &self,
+        registry: &crate::ActionRegistry,
+        id: &ActionId,
+        context: &KeyContext,
+    ) -> bool {
+        let Some(id) = id.normalized() else {
+            return false;
+        };
+        registry.is_available(&id, context)
+            && self
+                .actions
+                .get(&id)
+                .is_some_and(|action| action.when.matches(context))
+    }
+
     pub fn dispatch_action(
         &mut self,
         id: &ActionId,
         context: &KeyContext,
     ) -> Result<(), FrameworkError> {
+        let id = normalized_action_id(id.clone())?;
         let mut action = self
             .actions
-            .remove(id)
+            .remove(&id)
             .ok_or_else(|| FrameworkError::MissingAction(id.clone()))?;
         if !action.when.matches(context) {
             self.actions.insert(id.clone(), action);
-            return Err(FrameworkError::ActionUnavailable(id.clone()));
+            return Err(FrameworkError::ActionUnavailable(id));
         }
         let result = (action.handler)(self);
-        self.actions.insert(id.clone(), action);
+        self.actions.insert(id, action);
         result
+    }
+
+    /// Single canonical adapter between [`ActionRegistry`] availability and
+    /// `AppContext` handler execution.
+    pub fn dispatch_registered_action(
+        &mut self,
+        registry: &crate::ActionRegistry,
+        id: &ActionId,
+        context: &KeyContext,
+    ) -> Result<(), FrameworkError> {
+        let id = normalized_action_id(id.clone())?;
+        if registry.get(&id).is_none() {
+            return Err(FrameworkError::MissingAction(id));
+        }
+        if !registry.is_available(&id, context) {
+            return Err(FrameworkError::ActionUnavailable(id));
+        }
+        self.dispatch_action(&id, context)
+    }
+
+    /// Resolves `key` through `keymap` against `registry` and, on dispatch,
+    /// invokes the matching handler through [`Self::dispatch_registered_action`].
+    pub fn dispatch_keymap_key(
+        &mut self,
+        keymap: &crate::Keymap,
+        state: &mut crate::KeymapState,
+        registry: &crate::ActionRegistry,
+        key: &nana_ui_input::KeyInput,
+        context: &KeyContext,
+    ) -> Result<crate::KeymapMatch, FrameworkError> {
+        if !key.is_pressed() {
+            return Ok(crate::KeymapMatch::NoMatch);
+        }
+        let Some(stroke) = crate::CapturedStroke::from_canonical(key) else {
+            return Ok(crate::KeymapMatch::NoMatch);
+        };
+        let matched = keymap.resolve(state, stroke, context, registry);
+        if let crate::KeymapMatch::Dispatch(ref action) = matched {
+            self.dispatch_registered_action(registry, action, context)?;
+        }
+        Ok(matched)
+    }
+
+    /// Routes an already-routed canonical input event through `keymap` only when
+    /// no modal barrier, IME composition, menu bar, `on_key`, or focused editor
+    /// consumed its default action (`disposition.prevent_default`).
+    pub fn dispatch_routed_key(
+        &mut self,
+        keymap: &crate::Keymap,
+        state: &mut crate::KeymapState,
+        registry: &crate::ActionRegistry,
+        event: &nana_ui_input::CanonicalInputEvent,
+        disposition: nana_ui_input::InputDisposition,
+        context: &KeyContext,
+    ) -> Result<crate::KeymapMatch, FrameworkError> {
+        if disposition.prevent_default {
+            return Ok(crate::KeymapMatch::NoMatch);
+        }
+        match &event.payload {
+            nana_ui_input::InputPayload::Key(key) => {
+                self.dispatch_keymap_key(keymap, state, registry, key, context)
+            }
+            _ => Ok(crate::KeymapMatch::NoMatch),
+        }
+    }
+
+    /// Resolves `menu_id` via `menu_map` and executes the action through
+    /// [`Self::dispatch_registered_action`].
+    pub fn dispatch_menu_action(
+        &mut self,
+        registry: &crate::ActionRegistry,
+        menu_map: &crate::MenuActionMap,
+        menu_id: u32,
+        context: &KeyContext,
+    ) -> Result<ActionId, FrameworkError> {
+        let action = menu_map
+            .action_for(menu_id)
+            .cloned()
+            .ok_or(FrameworkError::InvalidAction)?;
+        self.dispatch_registered_action(registry, &action, context)?;
+        Ok(action)
+    }
+
+    /// Handles a [`CommandPaletteEvent`] through [`Self::dispatch_registered_action`]
+    /// when an item is selected.
+    pub fn dispatch_palette_event(
+        &mut self,
+        registry: &crate::ActionRegistry,
+        event: &CommandPaletteEvent,
+        context: &KeyContext,
+    ) -> Result<Option<ActionId>, FrameworkError> {
+        match event {
+            CommandPaletteEvent::Select(id) => {
+                let normalized = normalized_action_id(id.clone())?;
+                self.dispatch_registered_action(registry, &normalized, context)?;
+                Ok(Some(normalized))
+            }
+            CommandPaletteEvent::Search(_)
+            | CommandPaletteEvent::Navigate(_)
+            | CommandPaletteEvent::Dismiss => Ok(None),
+        }
     }
 
     /// Runs the handlers for queued events. Returns every other view a

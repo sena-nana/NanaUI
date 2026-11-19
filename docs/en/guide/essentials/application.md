@@ -15,7 +15,7 @@ let document_id = DocumentId::allocate();
 let mut document = RuntimeDocument::new(document_id);
 ```
 
-`DocumentId::allocate` returns an id that is unique within the process every time, and each document in the application takes one. Tests and fixtures that need a hard-coded number use `DocumentId::new`, which does not accept `0` and returns `None` for it. `RuntimeDocument::new` registers built-in control behavior on demand so controls that were never created are not linked in (`RuntimeDocument::typed` is retained only as a compatibility alias for `new`).
+`DocumentId::allocate` returns an id that is unique within the process every time, and each document in the application takes one. Tests and fixtures that need a hard-coded number use `DocumentId::new`, which does not accept `0` and returns `None` for it. `RuntimeDocument::new` registers built-in control behavior on demand so controls that were never created are not linked in.
 
 `document()` reads back this id. `context()` / `context_mut()` hand out the `AppContext`. Views mount on that context:
 

@@ -100,20 +100,34 @@ Android、XR 与 accessibility provider 的设备验收。
 
 ### 能力权威
 
-每项只有一个 owner 和一条推荐调用。Menu/Action 的转换与 dispatch 由 #287 验收，Theme 由 #108 / #110 验收，推荐写法的迁移指南由 #291 验收。
+每项只有一个 owner 和一条推荐调用。Action/Menu 的转换与分发（`ActionRegistry` + `Keymap` + `MenuActionMap` + `AppContext`）已收口，Theme 由 #108 / #110 验收，推荐写法的迁移指南由 #291 验收。
 
 | 能力 | Owner 与推荐调用 | 保留入口 | 删除条件 |
 | --- | --- | --- | --- |
 | 组件更新 | `update_component` / `set_component` / `create_component` | `create_view`（`doc(hidden)` host primitive，不跑 component project） | 宿主适配器不再需要未投影的占位节点 |
 | CSS 颜色 | `nana-ui-css` 解析字符串。PaintScript 只接受 semantic role 与 typed RGBA | 调用方传入的 color parser | 不在 Runtime 再写一套 CSS parser |
-| 虚拟列表 / 表 / 树 | `materialize_virtual_*_retained_in` | legacy `materialize_virtual_*`（`doc(hidden)` + deprecated，不与 retained 混用） | 仓库外不再有未放置调用。本仓库的新调用由 `scripts/check-api-convergence.py` 拒绝 |
+| 虚拟列表 / 表 / 树 | `materialize_virtual_*_retained_in` | 无（legacy `materialize_virtual_*` 已删除） | 已删除；`scripts/check-api-convergence.py` 拒绝重新引入 |
 | 查询编辑 | `TextInputState`，经 `query_text()` / `set_query()` | 无第二份 query 字段 | 查询权威保持这一份 |
 | 虚拟行身份 | `each_virtual::Unit::Row { columns, keys }` | 无哈希身份 | 行身份保持结构化 key |
-| 事件订阅 | 宿主自己的 stream | `Subscription<T>`（`doc(hidden)` + deprecated） | 无产品调用后删除。本仓库的新 `Subscription::new` 由同一脚本拒绝 |
+| 事件订阅 | 宿主自己的 stream | 无（`Subscription<T>` 已删除） | 已删除；`scripts/check-api-convergence.py` 拒绝 `Subscription::new` |
 | GPU surface | `HostedGpuShared::resize_surface` / `prepare_surface_frame` | `HostedGpuSurface::resize` / `prepare_frame`（`doc(hidden)` advanced） | 仍有宿主把 surface 与 device 拆开持有时保留 |
 | 默认 GPU renderer | `scene_gpu_renderers`：`None` 与空表都不安装演示 renderer。需要时显式返回 `default_scene_gpu_renderers()` | 无隐式 `"gpu-view"` | 演示 painter 保持 opt-in |
 
-`ActionDescriptor` 只有一个。定义在 Runtime（`nana_ui::runtime`。`nana_ui` 再导出同一个类型）：keymap 读 `id` / `enabled` / `when`。命令面板另外读 `label` / `category` / `keywords`。只绑快捷键的宿主用 `ActionDescriptor::new(id)`。要进面板的用 `ActionDescriptor::labeled(id, label)`。`ActionRegistry` 同样只有一个。按注册顺序保序。`search` / `available` 供面板检索。
+### 动作、快捷键与菜单分发
+
+`ActionDescriptor` 只有一个，定义在 Runtime（`nana_ui::runtime`，`nana_ui` 再导出同一个类型）：keymap 读 `id` / `enabled` / `when`，命令面板与菜单适配器另外读 `label` / `category` / `keywords`。只绑快捷键的宿主用 `ActionDescriptor::new(id)`，要进面板或菜单的用 `ActionDescriptor::labeled(id, label)`。
+
+- **ID 规范化**：`ActionId::normalized()` 会裁剪首尾空白并拒绝空或纯空白 ID。`ActionRegistry`、`KeyBinding`、`Keymap`、`MenuActionMap` 与 `AppContext` 在注册、绑定和查找时统一走这一规范化。
+- **单一注册表与动态属性**：`ActionRegistry` 按注册顺序保序。除了静态 `set_enabled` / `set_label`，可用 `bind_enabled` / `clear_enabled_binding` 与 `bind_label` / `clear_label_binding` 绑定随上下文与历史状态变化的可选判断和动态文案（例如配合 `store_with_history` 的 `"撤销: ..."` / `"重做: ..."`），并用 `resolved_label` 读取。`is_available`、`available`、`search`、`palette_items`、`action_menu_item` 与 `MenuActionMap::sync_menu_bar` 共用这套求值。
+- **薄 DTO 转换适配器**：
+  - `ActionRegistry::palette_items(query, context, keymap)` 生成 `nana_ui::runtime::CommandPaletteItem` 列表。
+  - `ActionRegistry::action_menu_item(id, context, keymap)` 生成单个 `nana_ui::runtime::ActionMenuItem`（带动态标签、`.disabled(...)` 与快捷键提示，快捷键文案通过 `Keymap::display_binding` 获取）。
+  - `MenuActionMap` 维护数字菜单项 ID（`u32`）与规范化 `ActionId` 的双射（`bind` / `unbind_menu_id` / `unbind_action` / `action_for` / `menu_id_for`），通过 `menu_entry` 构造 `MenuEntry`，并用 `sync_menu_bar`（借助 `Keymap::menu_shortcut`）同步 `MenuBar` 中的标签、启用状态与快捷键展示。
+- **`AppContext` 分发与路由顺序**：
+  - `bind_action_handler` / `unbind_action_handler` / `has_action_handler` 绑定动作执行闭包，`can_dispatch_registered_action` 查询 `ActionRegistry` 与处理器是否都可用，`dispatch_registered_action` 统一做可用性校验与执行。
+  - `dispatch_keymap_key` 与 `dispatch_routed_key` 将键盘输入接入 `Keymap::resolve` 与 `dispatch_registered_action`。其中 `dispatch_routed_key` 先检查 `disposition.prevent_default`——模态遮罩（`OverlayHost`）、IME 组字、展开的 `AppMenuBar`、`AppContext::on_key` 或聚焦编辑框已消费默认行为时直接放过，避免快捷键越层误触。
+  - `dispatch_menu_action`（按 `MenuActionMap` 与 `menu_id`）与 `dispatch_palette_event`（响应命令面板 `Select`）同样经 `dispatch_registered_action` 分发。
+- **文档上下文采集**：`AppContext::document_key_context(document, base)` 在应用传入的 `base` 上自动补全 `CONTEXT_MODAL`（存在阻断模态层）、`CONTEXT_TEXT_INPUT`（焦点在可编辑文本控件）与 `CONTEXT_IME_COMPOSING`（正在 IME 组字）。
 
 ## Cargo feature
 
@@ -502,14 +516,9 @@ HostTexture 的像素归宿主：默认仍只采样第 0 层。宿主按 `painte
 ## Rust 虚拟列表和树
 
 需要真实滚动占位与屏外编辑保留时。将 List 放在 ScrollView 内。使用
-`materialize_virtual_list_retained_in`。树使用 `materialize_virtual_tree_retained_in`
-和只含展开行的 `VirtualTreeLayout`。列表示例（`list` 已挂载。`items` 跨帧保存）：
-
-`materialize_virtual_list[_in]`、`materialize_virtual_tree[_in]` 和
-`materialize_virtual_table[_in]` 是旧的非定位兼容入口，已隐藏并标记为 deprecated。
-它们只负责可见 key 的挂载和卸载，调用方必须自己安排位置、内容总高度以及焦点/IME
-保留；同一个 `Virtual*Items` 实例不能与 retained 入口混用。新代码统一使用下面的
-retained 入口，旧入口只给尚未迁移的宿主保留过渡期。
+`materialize_virtual_list_retained_in`（表格用 `materialize_virtual_table_retained_in`，树用
+`materialize_virtual_tree_retained_in` 和只含展开行的 `VirtualTreeLayout`）。旧的非定位兼容入口
+`materialize_virtual_{list,table,tree}[_in]` 已删除。列表示例（`list` 已挂载，`items` 跨帧保存）：
 
 ```rust
 cx.materialize_virtual_list_retained_in(

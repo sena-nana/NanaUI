@@ -288,14 +288,13 @@ pub use find_replace::{FindReplaceBar, FindReplaceEvent, TextSearchBar};
 pub use form_surfaces::{FormField, FormFieldVisual, InteractiveCard};
 pub use framework::MountedView;
 pub(crate) use framework::UiBuilder;
-#[allow(deprecated)]
 pub use framework::{
     ASSEMBLY_PATH_SEPARATOR, ActiveRuntimeOverlay, AppContext, AssemblyScope, Entity,
     ExtensionRegistrar, FormValidity, FrameworkError, HeadlessInput, InputBindError, InputCounters,
     InputRouteError, InputRouteOutcome, NodePointer, NodePointerHooks, NodeWheel, OverlayKey,
     OverlayPointerDecision, OverlayPointerPhase, RoutedEvent, RuntimeOverlayKind, ScrollPhysics,
-    Subscription, Task, TextDeleteKind, TextEditAction, TextEditOrigin, TextFindScope, UiExtension,
-    View, ViewContext, VirtualListItems, VirtualTableItems, VirtualTreeItems,
+    Task, TextDeleteKind, TextEditAction, TextEditOrigin, TextFindScope, UiExtension, View,
+    ViewContext, VirtualListItems, VirtualTableItems, VirtualTreeItems,
 };
 #[doc(hidden)]
 pub use framework::{EditableHooks, TypeBehavior, TypeHooks};
@@ -329,9 +328,11 @@ pub use intrinsic_cache::{
     InvalidationReason, MaxBlockInput, UsedSize,
 };
 pub use key_layers::{
-    ActionDescriptor, ActionMatch, ActionRegistry, ActionRegistryError, CapturedStroke, KeyBinding,
-    KeyCaptureEvent, KeyCaptureLayer, KeyCaptureLayerLayout, KeyCaptureLayerVisual, KeyModifiers,
-    Keymap, KeymapLayer, KeymapLayerLayout, KeymapLayerVisual, KeymapMatch, KeymapState,
+    ActionDescriptor, ActionMatch, ActionRegistry, ActionRegistryError, CONTEXT_IME_COMPOSING,
+    CONTEXT_MODAL, CONTEXT_TEXT_INPUT, CapturedStroke, KeyBinding, KeyCaptureEvent,
+    KeyCaptureLayer, KeyCaptureLayerLayout, KeyCaptureLayerVisual, KeyModifiers, Keymap,
+    KeymapLayer, KeymapLayerLayout, KeymapLayerVisual, KeymapMatch, KeymapState, MenuActionMap,
+    MenuActionMapError,
 };
 #[doc(hidden)]
 pub use layout_engine::parts::{CONTENT_PART_SLOTS, ContentParts, LeadingParts, NO_CONTENT_PARTS};

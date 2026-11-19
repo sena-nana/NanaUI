@@ -266,7 +266,7 @@ impl AppContext {
     }
 
     /// The focused text input when it takes typing.
-    pub(super) fn editable_focused_text_input(
+    pub(crate) fn editable_focused_text_input(
         &self,
         document: DocumentId,
     ) -> Option<(StableNodeId, crate::TextInputView<'_>)> {

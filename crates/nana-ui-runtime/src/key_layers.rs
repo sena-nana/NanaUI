@@ -7,12 +7,14 @@
 //! and modifier bits. This file stays free of platform types.
 
 use nana_ui_core::sort::CompactSort as _;
+use std::borrow::Cow;
 use std::collections::BTreeMap;
 use std::fmt;
 use std::sync::Arc;
 
 use nana_ui_core::{
-    ActionId, ContextPredicate, KeyContext, LengthSpec, SemanticColorRole, StyleModelRef,
+    ActionId, ContextPredicate, KeyContext, LengthSpec, MenuBar, MenuEntry, MenuShortcut,
+    SemanticColorRole, StyleModelRef,
 };
 
 use crate::view_components::project_common;
@@ -21,6 +23,16 @@ use crate::{
     LayoutBox, MutationQueue, NodeKind, NodeStyle, StableNodeId, TextHorizontalAlignment,
     TextValue, UiWorld, WidgetPaintCtx, WidgetPaintOp, WidgetPaintOutput, WidgetQuad, WidgetVisual,
 };
+
+/// Focus-scope tag inserted by [`AppContext::document_key_context`](crate::AppContext::document_key_context)
+/// when a blocking modal overlay (`Dialog` / `Drawer`) covers the document.
+pub const CONTEXT_MODAL: &str = "modal";
+/// Focus-scope tag inserted by [`AppContext::document_key_context`](crate::AppContext::document_key_context)
+/// when an editable text field holds document focus.
+pub const CONTEXT_TEXT_INPUT: &str = "text-input";
+/// Focus-scope tag inserted by [`AppContext::document_key_context`](crate::AppContext::document_key_context)
+/// when the focused node has an active IME preedit composition.
+pub const CONTEXT_IME_COMPOSING: &str = "ime-composing";
 
 /// The modifiers of a stored shortcut chord: the same bits a live key event
 /// carries, so a chord copies them as they are.
@@ -41,7 +53,8 @@ impl CapturedStroke {
         }
     }
 
-    fn from_canonical(event: &nana_ui_input::KeyInput) -> Option<Self> {
+    /// Converts a canonical [`nana_ui_input::KeyInput`] into a normalized shortcut stroke.
+    pub fn from_canonical(event: &nana_ui_input::KeyInput) -> Option<Self> {
         let stroke = Self::new(event.logical.0.as_ref(), event.modifiers);
         (!stroke.key.is_empty()).then_some(stroke)
     }
@@ -274,12 +287,66 @@ impl fmt::Display for ActionRegistryError {
 
 impl std::error::Error for ActionRegistryError {}
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+type DynamicEnabled = Arc<dyn Fn(&KeyContext) -> bool + Send + Sync>;
+type DynamicLabel = Arc<dyn Fn(&KeyContext) -> String + Send + Sync>;
+
+fn option_arc_ptr_eq<T: ?Sized>(left: &Option<Arc<T>>, right: &Option<Arc<T>>) -> bool {
+    match (left, right) {
+        (None, None) => true,
+        (Some(left), Some(right)) => Arc::ptr_eq(left, right),
+        _ => false,
+    }
+}
+
+#[derive(Clone)]
 struct RegisteredAction {
     descriptor: ActionDescriptor,
+    enabled_when: Option<DynamicEnabled>,
+    dynamic_label: Option<DynamicLabel>,
     /// Registration order, so a palette lists actions the way the host declared
     /// them rather than alphabetically by id.
     order: u64,
+}
+
+impl fmt::Debug for RegisteredAction {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("RegisteredAction")
+            .field("descriptor", &self.descriptor)
+            .field("has_enabled_binding", &self.enabled_when.is_some())
+            .field("has_label_binding", &self.dynamic_label.is_some())
+            .field("order", &self.order)
+            .finish()
+    }
+}
+
+impl PartialEq for RegisteredAction {
+    fn eq(&self, other: &Self) -> bool {
+        self.descriptor == other.descriptor
+            && self.order == other.order
+            && option_arc_ptr_eq(&self.enabled_when, &other.enabled_when)
+            && option_arc_ptr_eq(&self.dynamic_label, &other.dynamic_label)
+    }
+}
+
+impl Eq for RegisteredAction {}
+
+impl RegisteredAction {
+    fn is_available(&self, context: &KeyContext) -> bool {
+        self.descriptor.enabled
+            && self.descriptor.when.matches(context)
+            && self
+                .enabled_when
+                .as_ref()
+                .is_none_or(|check| check(context))
+    }
+
+    fn resolve_label(&self, context: &KeyContext) -> Cow<'_, str> {
+        match &self.dynamic_label {
+            Some(resolve) => Cow::Owned(resolve(context)),
+            None => Cow::Borrowed(self.descriptor.label.as_str()),
+        }
+    }
 }
 
 /// Every action the application registers: the keymap reads `enabled` / `when`,
@@ -300,10 +367,10 @@ impl ActionRegistry {
         &mut self,
         mut descriptor: ActionDescriptor,
     ) -> Result<(), ActionRegistryError> {
-        descriptor.id = ActionId::new(descriptor.id.as_str().trim());
-        if descriptor.id.as_str().is_empty() {
+        let Some(id) = descriptor.id.normalized() else {
             return Err(ActionRegistryError::EmptyId);
-        }
+        };
+        descriptor.id = id;
         if self.actions.contains_key(&descriptor.id) {
             return Err(ActionRegistryError::Duplicate { id: descriptor.id });
         }
@@ -311,38 +378,129 @@ impl ActionRegistry {
         self.next_order += 1;
         self.actions.insert(
             descriptor.id.clone(),
-            RegisteredAction { descriptor, order },
+            RegisteredAction {
+                descriptor,
+                enabled_when: None,
+                dynamic_label: None,
+                order,
+            },
         );
         Ok(())
     }
 
     pub fn unregister(&mut self, id: &ActionId) -> Option<ActionDescriptor> {
-        self.actions.remove(id).map(|action| action.descriptor)
+        let id = id.normalized()?;
+        self.actions.remove(&id).map(|action| action.descriptor)
     }
 
     pub fn set_enabled(&mut self, id: &ActionId, enabled: bool) -> bool {
-        let Some(action) = self.actions.get_mut(id) else {
+        let Some(id) = id.normalized() else {
+            return false;
+        };
+        let Some(action) = self.actions.get_mut(&id) else {
             return false;
         };
         action.descriptor.enabled = enabled;
         true
     }
 
+    /// Updates the static fallback label of a registered action.
+    pub fn set_label(&mut self, id: &ActionId, label: impl Into<String>) -> bool {
+        let Some(id) = id.normalized() else {
+            return false;
+        };
+        let Some(action) = self.actions.get_mut(&id) else {
+            return false;
+        };
+        action.descriptor.label = label.into();
+        true
+    }
+
+    /// Binds a dynamic availability check evaluated alongside `enabled` and `when`.
+    pub fn bind_enabled(
+        &mut self,
+        id: &ActionId,
+        enabled: impl Fn(&KeyContext) -> bool + Send + Sync + 'static,
+    ) -> bool {
+        let Some(id) = id.normalized() else {
+            return false;
+        };
+        let Some(action) = self.actions.get_mut(&id) else {
+            return false;
+        };
+        action.enabled_when = Some(Arc::new(enabled));
+        true
+    }
+
+    /// Removes any dynamic availability binding on `id`, restoring static evaluation.
+    pub fn clear_enabled_binding(&mut self, id: &ActionId) -> bool {
+        let Some(id) = id.normalized() else {
+            return false;
+        };
+        let Some(action) = self.actions.get_mut(&id) else {
+            return false;
+        };
+        action.enabled_when = None;
+        true
+    }
+
+    /// Binds a dynamic label resolver (for example, `"撤销: 移动节点"`).
+    pub fn bind_label(
+        &mut self,
+        id: &ActionId,
+        label: impl Fn(&KeyContext) -> String + Send + Sync + 'static,
+    ) -> bool {
+        let Some(id) = id.normalized() else {
+            return false;
+        };
+        let Some(action) = self.actions.get_mut(&id) else {
+            return false;
+        };
+        action.dynamic_label = Some(Arc::new(label));
+        true
+    }
+
+    /// Removes any dynamic label binding on `id`, falling back to `descriptor.label`.
+    pub fn clear_label_binding(&mut self, id: &ActionId) -> bool {
+        let Some(id) = id.normalized() else {
+            return false;
+        };
+        let Some(action) = self.actions.get_mut(&id) else {
+            return false;
+        };
+        action.dynamic_label = None;
+        true
+    }
+
     pub fn get(&self, id: &ActionId) -> Option<&ActionDescriptor> {
-        self.actions.get(id).map(|action| &action.descriptor)
+        let id = id.normalized()?;
+        self.actions.get(&id).map(|action| &action.descriptor)
     }
 
     pub fn is_available(&self, id: &ActionId, context: &KeyContext) -> bool {
-        self.get(id)
-            .is_some_and(|action| action.enabled && action.when.matches(context))
+        let Some(id) = id.normalized() else {
+            return false;
+        };
+        self.actions
+            .get(&id)
+            .is_some_and(|action| action.is_available(context))
     }
 
-    /// Enabled actions whose `when` matches, in registration order.
+    /// Resolves an action's display label for `context` (dynamic binding if set,
+    /// otherwise `descriptor.label`).
+    pub fn resolved_label(&self, id: &ActionId, context: &KeyContext) -> Option<String> {
+        let id = id.normalized()?;
+        self.actions
+            .get(&id)
+            .map(|action| action.resolve_label(context).into_owned())
+    }
+
+    /// Enabled actions whose `when` and dynamic availability match, in registration order.
     pub fn available(&self, context: &KeyContext) -> Vec<&ActionDescriptor> {
         let mut actions = self
             .actions
             .values()
-            .filter(|action| action.descriptor.enabled && action.descriptor.when.matches(context))
+            .filter(|action| action.is_available(context))
             .collect::<Vec<_>>();
         actions.compact_sort_by_key(|action| action.order);
         actions
@@ -351,16 +509,17 @@ impl ActionRegistry {
             .collect()
     }
 
-    /// Fuzzy-matches `query` against label, id, category and keywords.
+    /// Fuzzy-matches `query` against resolved label, id, category and keywords.
     /// Best match first; ties keep registration order.
     pub fn search<'a>(&'a self, query: &str, context: &KeyContext) -> Vec<ActionMatch<'a>> {
         let query = query.trim().to_lowercase();
         let mut matches = self
             .actions
             .values()
-            .filter(|action| action.descriptor.enabled && action.descriptor.when.matches(context))
+            .filter(|action| action.is_available(context))
             .filter_map(|action| {
-                action_score(&action.descriptor, &query).map(|score| ActionMatch {
+                let label = action.resolve_label(context);
+                action_score(&action.descriptor, label.as_ref(), &query).map(|score| ActionMatch {
                     action: &action.descriptor,
                     score,
                     order: action.order,
@@ -369,6 +528,54 @@ impl ActionRegistry {
             .collect::<Vec<_>>();
         matches.compact_sort_by_key(|matched| (matched.score, matched.order));
         matches
+    }
+
+    /// Official DTO adapter from this registry (plus an optional [`Keymap`]) to
+    /// [`CommandPaletteItem`]s for [`CommandPalette`](crate::CommandPalette).
+    pub fn palette_items(
+        &self,
+        query: &str,
+        context: &KeyContext,
+        keymap: Option<&Keymap>,
+    ) -> Vec<nana_ui_core::CommandPaletteItem> {
+        self.search(query, context)
+            .into_iter()
+            .map(|matched| {
+                let label = self
+                    .resolved_label(&matched.action.id, context)
+                    .unwrap_or_else(|| matched.action.label.clone());
+                let mut item =
+                    nana_ui_core::CommandPaletteItem::new(matched.action.id.clone(), label);
+                if let Some(category) = &matched.action.category {
+                    item = item.category(category.clone());
+                }
+                if let Some(shortcut) = keymap
+                    .and_then(|keymap| keymap.binding_label(&matched.action.id, context, self))
+                {
+                    item = item.shortcut(shortcut);
+                }
+                item
+            })
+            .collect()
+    }
+
+    /// Official DTO adapter projecting one registered action into an [`ActionMenuItem`](crate::ActionMenuItem).
+    ///
+    /// Reflects dynamic label, availability (`.disabled(...)`), and shortcut hint.
+    pub fn action_menu_item(
+        &self,
+        id: &ActionId,
+        context: &KeyContext,
+        keymap: Option<&Keymap>,
+    ) -> Option<crate::ActionMenuItem> {
+        let id = id.normalized()?;
+        let label = self.resolved_label(&id, context)?;
+        let mut item = crate::ActionMenuItem::new(label).disabled(!self.is_available(&id, context));
+        if let Some(shortcut) = keymap.and_then(|keymap| keymap.display_binding(&id, context, self))
+        {
+            item = item.hint(shortcut);
+        }
+        Some(item)
     }
 }
 
@@ -380,11 +587,11 @@ pub struct ActionMatch<'a> {
     order: u64,
 }
 
-fn action_score(action: &ActionDescriptor, query: &str) -> Option<u32> {
+fn action_score(action: &ActionDescriptor, resolved_label: &str, query: &str) -> Option<u32> {
     if query.is_empty() {
         return Some(0);
     }
-    let candidates = std::iter::once(action.label.as_str())
+    let candidates = std::iter::once(resolved_label)
         .chain(std::iter::once(action.id.as_str()))
         .chain(action.category.as_deref())
         .chain(action.keywords.iter().map(String::as_str))
@@ -439,8 +646,10 @@ pub struct KeyBinding {
 
 impl KeyBinding {
     pub fn new(action: impl Into<ActionId>, stroke: CapturedStroke) -> Self {
+        let action = action.into();
+        let action = action.normalized().unwrap_or(action);
         Self {
-            action: action.into(),
+            action,
             sequence: vec![stroke],
             when: ContextPredicate::always(),
         }
@@ -450,8 +659,10 @@ impl KeyBinding {
         action: impl Into<ActionId>,
         sequence: impl IntoIterator<Item = CapturedStroke>,
     ) -> Self {
+        let action = action.into();
+        let action = action.normalized().unwrap_or(action);
         Self {
-            action: action.into(),
+            action,
             sequence: sequence.into_iter().collect(),
             when: ContextPredicate::always(),
         }
@@ -520,16 +731,66 @@ impl Keymap {
         context: &KeyContext,
         registry: &ActionRegistry,
     ) -> Option<String> {
+        let action = action.normalized()?;
+        if !registry.is_available(&action, context) {
+            return None;
+        }
         self.bindings
             .iter()
             .rev()
             .find(|binding| {
-                binding.action == *action
+                binding.action.normalized().as_ref() == Some(&action)
                     && !binding.sequence.is_empty()
                     && binding.when.matches(context)
-                    && registry.is_available(action, context)
             })
             .map(KeyBinding::display)
+    }
+
+    /// Shortcut text for display beside `action` even while the action is
+    /// disabled, provided its binding and descriptor `when` predicates match.
+    pub fn display_binding(
+        &self,
+        action: &ActionId,
+        context: &KeyContext,
+        registry: &ActionRegistry,
+    ) -> Option<String> {
+        let action = action.normalized()?;
+        let descriptor = registry.get(&action)?;
+        if !descriptor.when.matches(context) {
+            return None;
+        }
+        self.bindings
+            .iter()
+            .rev()
+            .find(|binding| {
+                binding.action.normalized().as_ref() == Some(&action)
+                    && !binding.sequence.is_empty()
+                    && binding.when.matches(context)
+            })
+            .map(KeyBinding::display)
+    }
+
+    /// Converts the active single-stroke binding of `action` into a [`MenuShortcut`].
+    pub fn menu_shortcut(
+        &self,
+        action: &ActionId,
+        context: &KeyContext,
+        registry: &ActionRegistry,
+    ) -> Option<MenuShortcut> {
+        let action = action.normalized()?;
+        let descriptor = registry.get(&action)?;
+        if !descriptor.when.matches(context) {
+            return None;
+        }
+        self.bindings
+            .iter()
+            .rev()
+            .find(|binding| {
+                binding.action.normalized().as_ref() == Some(&action)
+                    && binding.sequence.len() == 1
+                    && binding.when.matches(context)
+            })
+            .and_then(|binding| stroke_to_menu_shortcut(&binding.sequence[0]))
     }
 
     pub fn push(&mut self, binding: KeyBinding) {
@@ -560,15 +821,16 @@ impl Keymap {
         context: &KeyContext,
         registry: &ActionRegistry,
     ) -> KeymapMatch {
-        let candidates = self.bindings.iter().rev().filter(|binding| {
-            binding.sequence.starts_with(&state.pending)
+        let candidates = self.bindings.iter().rev().filter_map(|binding| {
+            let action = binding.action.normalized()?;
+            (binding.sequence.starts_with(&state.pending)
                 && binding.when.matches(context)
-                && registry.is_available(&binding.action, context)
+                && registry.is_available(&action, context))
+            .then_some((binding, action))
         });
         let mut has_prefix = false;
-        for binding in candidates {
+        for (binding, action) in candidates {
             if binding.sequence.len() == state.pending.len() {
-                let action = binding.action.clone();
                 state.pending.clear();
                 return KeymapMatch::Dispatch(action);
             }
@@ -579,6 +841,178 @@ impl Keymap {
         } else {
             state.pending.clear();
             KeymapMatch::NoMatch
+        }
+    }
+}
+
+fn stroke_to_menu_shortcut(stroke: &CapturedStroke) -> Option<MenuShortcut> {
+    if stroke.key.chars().count() != 1 {
+        return None;
+    }
+    let modifiers = stroke.modifiers;
+    let (primary, non_primary_platform_mod) = if cfg!(target_os = "macos") {
+        (modifiers.meta, modifiers.control)
+    } else {
+        (modifiers.control, modifiers.meta)
+    };
+    if non_primary_platform_mod {
+        return None;
+    }
+    Some(MenuShortcut {
+        key: stroke.key.to_string(),
+        primary,
+        shift: modifiers.shift,
+        alt: modifiers.alt,
+    })
+}
+
+/// Rejection reasons when binding numeric [`MenuEntry::Item`](nana_ui_core::MenuEntry::Item) ids to [`ActionId`]s.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum MenuActionMapError {
+    EmptyActionId,
+    DuplicateMenuId(u32),
+    DuplicateActionId(ActionId),
+}
+
+impl fmt::Display for MenuActionMapError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::EmptyActionId => formatter.write_str("action id must not be empty"),
+            Self::DuplicateMenuId(id) => write!(formatter, "menu id {id} is already mapped"),
+            Self::DuplicateActionId(id) => {
+                write!(formatter, "action `{id}` is already mapped to a menu id")
+            }
+        }
+    }
+}
+
+impl std::error::Error for MenuActionMapError {}
+
+/// Thin bidirectional conversion between numeric menu item ids (`u32`) and
+/// normalized [`ActionId`]s.
+///
+/// Stores only the validated id bijection; action descriptors and availability
+/// stay in [`ActionRegistry`], and handlers stay in [`AppContext`](crate::AppContext).
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct MenuActionMap {
+    id_to_action: BTreeMap<u32, ActionId>,
+    action_to_id: BTreeMap<ActionId, u32>,
+}
+
+impl MenuActionMap {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn bind(
+        &mut self,
+        menu_id: u32,
+        action: impl Into<ActionId>,
+    ) -> Result<(), MenuActionMapError> {
+        let Some(action) = action.into().normalized() else {
+            return Err(MenuActionMapError::EmptyActionId);
+        };
+        if self.id_to_action.contains_key(&menu_id) {
+            return Err(MenuActionMapError::DuplicateMenuId(menu_id));
+        }
+        if self.action_to_id.contains_key(&action) {
+            return Err(MenuActionMapError::DuplicateActionId(action));
+        }
+        self.id_to_action.insert(menu_id, action.clone());
+        self.action_to_id.insert(action, menu_id);
+        Ok(())
+    }
+
+    pub fn unbind_menu_id(&mut self, menu_id: u32) -> Option<ActionId> {
+        let action = self.id_to_action.remove(&menu_id)?;
+        self.action_to_id.remove(&action);
+        Some(action)
+    }
+
+    pub fn unbind_action(&mut self, action: &ActionId) -> Option<u32> {
+        let action = action.normalized()?;
+        let menu_id = self.action_to_id.remove(&action)?;
+        self.id_to_action.remove(&menu_id);
+        Some(menu_id)
+    }
+
+    pub fn action_for(&self, menu_id: u32) -> Option<&ActionId> {
+        self.id_to_action.get(&menu_id)
+    }
+
+    pub fn menu_id_for(&self, action: &ActionId) -> Option<u32> {
+        let action = action.normalized()?;
+        self.action_to_id.get(&action).copied()
+    }
+
+    /// Projects a mapped action into a [`MenuEntry::Item`] using the live label,
+    /// availability, and optional shortcut from `registry` / `keymap`.
+    pub fn menu_entry(
+        &self,
+        action: &ActionId,
+        registry: &ActionRegistry,
+        context: &KeyContext,
+        keymap: Option<&Keymap>,
+    ) -> Option<MenuEntry> {
+        let action = action.normalized()?;
+        let menu_id = self.menu_id_for(&action)?;
+        let label = registry.resolved_label(&action, context)?;
+        let mut entry =
+            MenuEntry::item(menu_id, label).enabled(registry.is_available(&action, context));
+        if let Some(shortcut) =
+            keymap.and_then(|keymap| keymap.menu_shortcut(&action, context, registry))
+        {
+            entry = entry.shortcut(shortcut);
+        }
+        Some(entry)
+    }
+
+    /// Synchronizes every mapped item inside `bar` (including nested submenus)
+    /// against `registry` (label + enabled) and `keymap` (when provided).
+    pub fn sync_menu_bar(
+        &self,
+        bar: &mut MenuBar,
+        registry: &ActionRegistry,
+        context: &KeyContext,
+        keymap: Option<&Keymap>,
+    ) {
+        for menu in &mut bar.menus {
+            self.sync_menu(menu, registry, context, keymap);
+        }
+    }
+
+    fn sync_menu(
+        &self,
+        menu: &mut nana_ui_core::Menu,
+        registry: &ActionRegistry,
+        context: &KeyContext,
+        keymap: Option<&Keymap>,
+    ) {
+        for entry in &mut menu.entries {
+            match entry {
+                MenuEntry::Item {
+                    id,
+                    label,
+                    shortcut,
+                    enabled,
+                    ..
+                } => {
+                    let Some(action) = self.action_for(*id) else {
+                        continue;
+                    };
+                    if let Some(resolved) = registry.resolved_label(action, context) {
+                        *label = resolved;
+                    }
+                    *enabled = registry.is_available(action, context);
+                    if let Some(keymap) = keymap {
+                        *shortcut = keymap.menu_shortcut(action, context, registry);
+                    }
+                }
+                MenuEntry::Submenu(submenu) => {
+                    self.sync_menu(submenu, registry, context, keymap);
+                }
+                MenuEntry::Separator => {}
+            }
         }
     }
 }
@@ -1150,6 +1584,197 @@ mod tests {
                 .node_style(id)
                 .and_then(|style| style.layout.min_height),
             Some(LengthSpec::Px(28.0))
+        );
+    }
+
+    #[test]
+    fn normalized_action_ids_match_across_registry_keymap_and_menu_map() {
+        let mut registry = ActionRegistry::new();
+        assert_eq!(
+            registry.register(ActionDescriptor::new("   \t\n")),
+            Err(ActionRegistryError::EmptyId)
+        );
+        registry
+            .register(ActionDescriptor::labeled("  edit.undo \n", "撤销"))
+            .unwrap();
+        assert_eq!(
+            registry.register(ActionDescriptor::new("edit.undo")),
+            Err(ActionRegistryError::Duplicate {
+                id: ActionId::new("edit.undo"),
+            })
+        );
+
+        let untrimmed = ActionId::new("  edit.undo ");
+        let canonical = ActionId::new("edit.undo");
+        assert_eq!(
+            registry.get(&untrimmed).map(|d| d.id.clone()),
+            Some(canonical.clone())
+        );
+        assert!(registry.is_available(&untrimmed, &KeyContext::default()));
+        assert!(registry.set_label(&untrimmed, "撤销操作"));
+        assert_eq!(
+            registry.resolved_label(&canonical, &KeyContext::default()),
+            Some("撤销操作".to_owned())
+        );
+
+        let keymap = Keymap::new([KeyBinding::new(
+            "  edit.undo ",
+            CapturedStroke::new("z", ctrl()),
+        )]);
+        let mut state = KeymapState::default();
+        assert_eq!(
+            keymap.resolve(
+                &mut state,
+                CapturedStroke::new("z", ctrl()),
+                &KeyContext::default(),
+                &registry,
+            ),
+            KeymapMatch::Dispatch(canonical.clone())
+        );
+        assert_eq!(
+            keymap.binding_label(&untrimmed, &KeyContext::default(), &registry),
+            Some("Ctrl+Z".to_owned())
+        );
+
+        let mut menu_map = MenuActionMap::new();
+        assert_eq!(
+            menu_map.bind(1, "   "),
+            Err(MenuActionMapError::EmptyActionId)
+        );
+        menu_map.bind(10, " edit.undo ").unwrap();
+        assert_eq!(
+            menu_map.bind(10, "edit.redo"),
+            Err(MenuActionMapError::DuplicateMenuId(10))
+        );
+        assert_eq!(
+            menu_map.bind(11, "edit.undo"),
+            Err(MenuActionMapError::DuplicateActionId(canonical.clone()))
+        );
+        assert_eq!(menu_map.action_for(10), Some(&canonical));
+        assert_eq!(menu_map.menu_id_for(&untrimmed), Some(10));
+        assert!(registry.set_enabled(&untrimmed, false));
+        assert!(!registry.is_available(&canonical, &KeyContext::default()));
+        assert_eq!(menu_map.unbind_action(&untrimmed), Some(10));
+        assert!(registry.unregister(&untrimmed).is_some());
+    }
+
+    #[test]
+    fn dynamic_enabled_and_label_stay_consistent_across_palette_action_menu_and_menu_bar() {
+        let can_undo = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let undo_target = Arc::new(std::sync::Mutex::new(String::from("移动节点")));
+        let mut registry = ActionRegistry::new();
+        registry
+            .register(
+                ActionDescriptor::labeled("edit.undo", "撤销")
+                    .category("编辑")
+                    .when(ContextPredicate::always().none_of([CONTEXT_MODAL])),
+            )
+            .unwrap();
+        let flag = Arc::clone(&can_undo);
+        assert!(
+            registry.bind_enabled(&ActionId::new(" edit.undo "), move |_| {
+                flag.load(std::sync::atomic::Ordering::Relaxed)
+            })
+        );
+        let target = Arc::clone(&undo_target);
+        assert!(
+            registry.bind_label(&ActionId::new("edit.undo"), move |ctx| {
+                let suffix = target.lock().unwrap().clone();
+                if ctx.contains("canvas") {
+                    format!("撤销: {suffix}")
+                } else {
+                    format!("撤销（全局）: {suffix}")
+                }
+            })
+        );
+
+        let primary = KeyModifiers::primary();
+        let keymap = Keymap::new([KeyBinding::new(
+            "edit.undo",
+            CapturedStroke::new("z", primary),
+        )]);
+        let mut menu_map = MenuActionMap::new();
+        menu_map.bind(101, "edit.undo").unwrap();
+
+        let canvas = KeyContext::new(["canvas"]);
+        let mut bar = nana_ui_core::MenuBar::new([nana_ui_core::Menu::new(
+            "编辑",
+            [
+                nana_ui_core::MenuEntry::item(101, "占位"),
+                nana_ui_core::MenuEntry::Submenu(nana_ui_core::Menu::new(
+                    "更多",
+                    [nana_ui_core::MenuEntry::item(101, "占位子项")],
+                )),
+            ],
+        )]);
+
+        // Initially disabled dynamically.
+        assert!(!registry.is_available(&ActionId::new("edit.undo"), &canvas));
+        assert!(
+            registry
+                .palette_items("", &canvas, Some(&keymap))
+                .is_empty()
+        );
+        let menu_item = registry
+            .action_menu_item(&ActionId::new("edit.undo"), &canvas, Some(&keymap))
+            .unwrap();
+        assert_eq!(menu_item.label.as_ref(), "撤销: 移动节点");
+        assert!(menu_item.disabled);
+        assert!(menu_item.hint.is_some());
+
+        menu_map.sync_menu_bar(&mut bar, &registry, &canvas, Some(&keymap));
+        match &bar.menus[0].entries[0] {
+            nana_ui_core::MenuEntry::Item {
+                label,
+                enabled,
+                shortcut,
+                ..
+            } => {
+                assert_eq!(label, "撤销: 移动节点");
+                assert!(!enabled);
+                assert!(shortcut.is_some());
+            }
+            other => panic!("expected item, got {other:?}"),
+        }
+
+        // Enable dynamically and update dynamic target name.
+        can_undo.store(true, std::sync::atomic::Ordering::Relaxed);
+        *undo_target.lock().unwrap() = String::from("改色");
+        assert!(registry.is_available(&ActionId::new("edit.undo"), &canvas));
+
+        // Search matches the live dynamic label ("改色").
+        let palette = registry.palette_items("改色", &canvas, Some(&keymap));
+        assert_eq!(palette.len(), 1);
+        assert_eq!(palette[0].label, "撤销: 改色");
+        assert_eq!(palette[0].category.as_deref(), Some("编辑"));
+        assert!(palette[0].shortcut.is_some());
+
+        let menu_item = registry
+            .action_menu_item(&ActionId::new("edit.undo"), &canvas, Some(&keymap))
+            .unwrap();
+        assert_eq!(menu_item.label.as_ref(), "撤销: 改色");
+        assert!(!menu_item.disabled);
+
+        // Nested submenu item also syncs.
+        let global = KeyContext::default();
+        menu_map.sync_menu_bar(&mut bar, &registry, &global, Some(&keymap));
+        match &bar.menus[0].entries[1] {
+            nana_ui_core::MenuEntry::Submenu(sub) => match &sub.entries[0] {
+                nana_ui_core::MenuEntry::Item { label, enabled, .. } => {
+                    assert_eq!(label, "撤销（全局）: 改色");
+                    assert!(*enabled);
+                }
+                other => panic!("expected nested item, got {other:?}"),
+            },
+            other => panic!("expected submenu, got {other:?}"),
+        }
+
+        // Clearing bindings falls back to static descriptor fields.
+        assert!(registry.clear_enabled_binding(&ActionId::new("edit.undo")));
+        assert!(registry.clear_label_binding(&ActionId::new("edit.undo")));
+        assert_eq!(
+            registry.resolved_label(&ActionId::new("edit.undo"), &canvas),
+            Some("撤销".to_owned())
         );
     }
 }

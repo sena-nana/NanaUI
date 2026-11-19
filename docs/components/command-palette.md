@@ -68,7 +68,7 @@ widget(CommandPalette::new(
 
 关上用 `dismiss_overlay(host)`，或在 `Dismiss` 里自己收。
 
-`ActionRegistry` 登记动作和快捷键上下文；这份面板只负责把你交来的列表显示出来。
+`ActionRegistry` 登记动作、动态启用/标签和快捷键上下文；可直接用 `ActionRegistry::palette_items(query, &context, Some(&keymap))` 生成传给调色板的条目列表，选中项事件交由 `AppContext::dispatch_palette_event(&registry, &event, &context)` 统一校验与分发。这份面板本身只负责把交来的列表显示出来。
 
 ## 属性
 

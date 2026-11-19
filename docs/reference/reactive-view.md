@@ -597,7 +597,7 @@ pub mod views {
 
 ## 控件级摇树（按需注册）
 
-`AppContext::new()` 与 `RuntimeDocument::new(document)` 默认就是按需注册：不再预登记全量内置控件的按标签构造表或重投影闭包，也不再需要 `BuiltinComponents::Typed` 或 `ApplicationState::BUILTINS` 编译期切换开关（`AppContext::typed()` 与 `RuntimeDocument::typed(document)` 仅保留为指向 `new()` 的源码兼容别名）：
+`AppContext::new()` 与 `RuntimeDocument::new(document)` 默认就是按需注册：不再预登记全量内置控件的按标签构造表或重投影闭包，也不再需要 `BuiltinComponents::Typed` 或 `ApplicationState::BUILTINS` 编译期切换开关：
 
 - 内置控件仅在 `component_descriptors::BUILTIN_COMPONENT_IDS` 登记静态身份与标签元数据。节点照常带上组件类型标记。按标签也能解析出 `ComponentTypeId`。
 - 每个类型的行为写在 `ComponentView::BEHAVIOR`（`TypeBehavior`：激活、组装器、在某一点上激活、关闭弹出的选项、写入后的维护、输入路由钩子 `TypeHooks`）。在该类型第一个节点被创建时安装。所有创建路径都经过这一步（`stamp_component_type`、复合控件的 `install_view`）。程序没创建过的类型。这些代码一处都不被引用。输入路由经 `hooked!` 调用子系统。钩子没装时的结果和文档里没有这种节点时一样。

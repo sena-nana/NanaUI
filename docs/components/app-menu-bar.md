@@ -25,7 +25,7 @@ widget(AppMenuBar::new(bar)).on(|e: &MenuBarActivated| { /* e.id */ })
 - 进入原生菜单使用的同一个队列，用 `take_menu_activations()` 取出。
 - 菜单栏同时发出 `MenuBarActivated { id }`。
 
-应用按 id 分派即可，不用区分原生菜单和应用内菜单。
+若使用单一动作注册表，可用 `MenuActionMap`（`menu_entry`、`sync_menu_bar`）把数字菜单项 `id` 映射到 `ActionId`，并把启用状态、动态标签与快捷键提示与 `ActionRegistry` / `Keymap` 保持同步，激活时经 `AppContext::dispatch_menu_action(&registry, &menu_map, menu_id, &context)` 分发。应用消费 `take_menu_activations()` 或监听 `MenuBarActivated` 二选一即可，不要同时分发以免同一菜单点击触发两次。
 
 ## 指针
 

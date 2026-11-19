@@ -35,19 +35,9 @@ impl ApplicationWindow {
         Self::with_document(RuntimeDocument::new(Self::DOCUMENT))
     }
 
-    /// Alias for [`Self::new`]; retained for source compatibility.
-    pub fn typed() -> Self {
-        Self::new()
-    }
-
     // Each window owns an independent UiWorld. Document identities are local
     // to that world; WindowId handles host routing.
     const DOCUMENT: nana_ui_runtime::DocumentId = nana_ui_runtime::DocumentId::new(1).unwrap();
-
-    #[allow(clippy::extra_unused_type_parameters)]
-    fn for_state<S: ApplicationState>() -> Self {
-        Self::new()
-    }
 
     fn with_document(document: RuntimeDocument) -> Self {
         Self {
@@ -288,7 +278,7 @@ impl<State: ApplicationState> RuntimeProgram for RuntimeApplication<State> {
         context: &RuntimeProgramContext<Self::Message>,
     ) -> Result<(Self, Vec<Self::Message>), Self::Error> {
         let mut state = State::initialize(context)?;
-        let mut window = ApplicationWindow::for_state::<State>();
+        let mut window = ApplicationWindow::new();
         state.build(&mut window, context)?;
         let _ = window
             .document
@@ -405,7 +395,7 @@ impl<State: ApplicationState> RuntimeProgram for RuntimeApplication<State> {
         id: WindowId,
         context: &RuntimeProgramContext<Self::Message>,
     ) -> Result<(), String> {
-        let mut window = ApplicationWindow::for_state::<State>();
+        let mut window = ApplicationWindow::new();
         self.state
             .build(&mut window, context)
             .map_err(|error| error.to_string())?;

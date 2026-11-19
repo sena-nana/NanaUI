@@ -199,9 +199,9 @@ pub mod runtime;
 pub use accessibility_tree::AccessTreeProjector;
 pub use command::{
     ActionDescriptor, ActionId, ActionMatch, ActionPickerNavigation, ActionPickerSelection,
-    ActionPickerState, ActionRegistry, ActionRegistryError, ContextPredicate, KeyBinding,
-    KeyContext, KeyModifiers, KeyStroke, Keymap, KeymapMatch, KeymapState,
-    action_picker_from_key_name,
+    ActionPickerState, ActionRegistry, ActionRegistryError, CONTEXT_IME_COMPOSING, CONTEXT_MODAL,
+    CONTEXT_TEXT_INPUT, ContextPredicate, KeyBinding, KeyContext, KeyModifiers, KeyStroke, Keymap,
+    KeymapMatch, KeymapState, MenuActionMap, MenuActionMapError, action_picker_from_key_name,
 };
 pub use component_support::{
     ComponentCapability, ComponentFamily, ComponentId, ComponentSupport, component_catalog,

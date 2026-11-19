@@ -1,12 +1,5 @@
-//! Compatibility coverage for the legacy unplaced virtual materializer lives
-//! here intentionally. Product behavior is covered by
-//! `framework::virtualize_retained::tests`; these tests ensure hosts that have
-//! not adopted placement containers still get the documented old contract.
-#![allow(deprecated)]
-
 use super::*;
 use std::{
-    pin::Pin,
     sync::{Arc, Mutex},
     task::{Context, Poll, Waker},
 };
@@ -11530,28 +11523,12 @@ fn new_context_installs_the_official_highlight_presenter() {
     );
 }
 
-struct One<T>(Option<T>);
-
-impl<T: Unpin> Stream for One<T> {
-    type Item = T;
-
-    fn poll_next(mut self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<Option<T>> {
-        Poll::Ready(self.0.take())
-    }
-}
-
 #[test]
-fn task_and_subscription_preserve_host_owned_async_work() {
+fn task_preserves_host_owned_async_work() {
     let waker = Waker::noop();
     let mut cx = Context::from_waker(waker);
     let mut future = Task::ready(2).map(|value| value + 1).into_future();
     assert_eq!(future.as_mut().poll(&mut cx), Poll::Ready(3));
-
-    let subscription = Subscription::new("window.events", One(Some(7)));
-    assert_eq!(subscription.id(), "window.events");
-    let mut stream = subscription.into_stream();
-    assert_eq!(stream.as_mut().poll_next(&mut cx), Poll::Ready(Some(7)));
-    assert_eq!(stream.as_mut().poll_next(&mut cx), Poll::Ready(None));
 }
 
 #[test]
@@ -11563,14 +11540,18 @@ fn virtual_list_materializes_only_visible_items_and_reuses_overlap() {
     let mut items = VirtualListItems::<usize, Text>::default();
 
     let first = context
-        .materialize_virtual_list(
+        .materialize_virtual_list_retained_in(
             list,
             &mut items,
             &layout,
-            0.0,
-            100.0,
-            20.0,
+            nana_ui_core::VirtualViewport {
+                offset: [0.0, 0.0],
+                extent: [200.0, 100.0],
+                overscan: [0.0, 20.0],
+            },
+            &[],
             |index| index,
+            |key| Some(*key),
             |index, _| Text::new(format!("row {index}")),
         )
         .unwrap();
@@ -11590,14 +11571,18 @@ fn virtual_list_materializes_only_visible_items_and_reuses_overlap() {
     let removed_entity = items.entity(&removed_key).unwrap();
 
     let next = context
-        .materialize_virtual_list(
+        .materialize_virtual_list_retained_in(
             list,
             &mut items,
             &layout,
-            80.0,
-            100.0,
-            20.0,
+            nana_ui_core::VirtualViewport {
+                offset: [0.0, 80.0],
+                extent: [200.0, 100.0],
+                overscan: [0.0, 20.0],
+            },
+            &[],
             |index| index,
+            |key| Some(*key),
             |index, _| Text::new(format!("row {index}")),
         )
         .unwrap();
@@ -11608,14 +11593,18 @@ fn virtual_list_materializes_only_visible_items_and_reuses_overlap() {
     let generation = context.world().generation();
 
     context
-        .materialize_virtual_list(
+        .materialize_virtual_list_retained_in(
             list,
             &mut items,
             &layout,
-            80.0,
-            100.0,
-            20.0,
+            nana_ui_core::VirtualViewport {
+                offset: [0.0, 80.0],
+                extent: [200.0, 100.0],
+                overscan: [0.0, 20.0],
+            },
+            &[],
             |index| index,
+            |key| Some(*key),
             |index, _| Text::new(format!("row {index}")),
         )
         .unwrap();
@@ -11632,14 +11621,18 @@ fn virtual_list_rejects_foreign_item_ownership_without_mutating() {
     let mut items = VirtualListItems::<usize, Text>::default();
 
     let first = context
-        .materialize_virtual_list(
+        .materialize_virtual_list_retained_in(
             list,
             &mut items,
             &layout,
-            0.0,
-            100.0,
-            0.0,
+            nana_ui_core::VirtualViewport {
+                offset: [0.0, 0.0],
+                extent: [200.0, 100.0],
+                overscan: [0.0, 0.0],
+            },
+            &[],
             |index| index,
+            |key| Some(*key),
             |index, _| Text::new(format!("row {index}")),
         )
         .unwrap();
@@ -11648,14 +11641,18 @@ fn virtual_list_rejects_foreign_item_ownership_without_mutating() {
     let generation = context.world().generation();
 
     assert_eq!(
-        context.materialize_virtual_list(
+        context.materialize_virtual_list_retained_in(
             list,
             &mut items,
             &layout,
-            200.0,
-            100.0,
-            0.0,
+            nana_ui_core::VirtualViewport {
+                offset: [0.0, 200.0],
+                extent: [200.0, 100.0],
+                overscan: [0.0, 0.0],
+            },
+            &[],
             |index| index,
+            |key| Some(*key),
             |index, _| Text::new(format!("row {index}")),
         ),
         Err(FrameworkError::InvalidVirtualization)
@@ -11680,15 +11677,21 @@ fn virtual_table_materializes_a_bounded_grid_and_reuses_both_axes() {
     let mut items = VirtualTableItems::<usize, usize>::default();
 
     let first = context
-        .materialize_virtual_table(
+        .materialize_virtual_table_retained_in(
             table,
             &mut items,
             &layout,
-            (0.0, 0.0),
-            (160.0, 100.0),
-            (0.0, 20.0),
+            nana_ui_core::VirtualViewport {
+                offset: [0.0, 0.0],
+                extent: [160.0, 100.0],
+                overscan: [0.0, 20.0],
+            },
+            [0, 0],
+            &[],
             |index| index,
+            |key| Some(*key),
             |index| index,
+            |key| Some(*key),
             |_index, _| TableRow::new(),
             |row, _, column, _| TableCell::new(format!("{row}:{column}")),
         )
@@ -11705,15 +11708,21 @@ fn virtual_table_materializes_a_bounded_grid_and_reuses_both_axes() {
         .unwrap();
 
     let next = context
-        .materialize_virtual_table(
+        .materialize_virtual_table_retained_in(
             table,
             &mut items,
             &layout,
-            (80.0, 40.0),
-            (160.0, 100.0),
-            (0.0, 20.0),
+            nana_ui_core::VirtualViewport {
+                offset: [80.0, 40.0],
+                extent: [160.0, 100.0],
+                overscan: [0.0, 20.0],
+            },
+            [0, 0],
+            &[],
             |index| index,
+            |key| Some(*key),
             |index| index,
+            |key| Some(*key),
             |_index, _| TableRow::new(),
             |row, _, column, _| TableCell::new(format!("{row}:{column}")),
         )
@@ -11748,15 +11757,21 @@ fn virtual_table_materializes_a_bounded_grid_and_reuses_both_axes() {
     );
     let generation = context.world().generation();
     context
-        .materialize_virtual_table(
+        .materialize_virtual_table_retained_in(
             table,
             &mut items,
             &layout,
-            (80.0, 40.0),
-            (160.0, 100.0),
-            (0.0, 20.0),
+            nana_ui_core::VirtualViewport {
+                offset: [80.0, 40.0],
+                extent: [160.0, 100.0],
+                overscan: [0.0, 20.0],
+            },
+            [0, 0],
+            &[],
             |index| index,
+            |key| Some(*key),
             |index| index,
+            |key| Some(*key),
             |_index, _| TableRow::new(),
             |row, _, column, _| TableCell::new(format!("{row}:{column}")),
         )
@@ -11776,15 +11791,21 @@ fn virtual_table_rejects_foreign_row_ownership_without_mutating() {
     );
     let mut items = VirtualTableItems::<usize, usize>::default();
     let window = context
-        .materialize_virtual_table(
+        .materialize_virtual_table_retained_in(
             table,
             &mut items,
             &layout,
-            (0.0, 0.0),
-            (160.0, 100.0),
-            (0.0, 0.0),
+            nana_ui_core::VirtualViewport {
+                offset: [0.0, 0.0],
+                extent: [160.0, 100.0],
+                overscan: [0.0, 0.0],
+            },
+            [0, 0],
+            &[],
             |index| index,
+            |key| Some(*key),
             |index| index,
+            |key| Some(*key),
             |_index, _| TableRow::new(),
             |row, _, column, _| TableCell::new(format!("{row}:{column}")),
         )
@@ -11794,15 +11815,21 @@ fn virtual_table_rejects_foreign_row_ownership_without_mutating() {
     let generation = context.world().generation();
 
     assert_eq!(
-        context.materialize_virtual_table(
+        context.materialize_virtual_table_retained_in(
             table,
             &mut items,
             &layout,
-            (0.0, 200.0),
-            (160.0, 100.0),
-            (0.0, 0.0),
+            nana_ui_core::VirtualViewport {
+                offset: [0.0, 200.0],
+                extent: [160.0, 100.0],
+                overscan: [0.0, 0.0],
+            },
+            [0, 0],
+            &[],
             |index| index,
+            |key| Some(*key),
             |index| index,
+            |key| Some(*key),
             |_index, _| TableRow::new(),
             |row, _, column, _| TableCell::new(format!("{row}:{column}")),
         ),
@@ -11829,16 +11856,21 @@ fn virtual_tree_materializes_only_visible_rows_and_reuses_overlap_on_scroll_and_
     let mut keys = (0..10_000).collect::<Vec<_>>();
     let mut layout = VirtualTreeLayout::uniform(ROW, std::iter::repeat_n(0, keys.len()));
     let mut items = VirtualTreeItems::<usize, Text>::default();
+    let key_index = |keys: &[usize], target: &usize| keys.iter().position(|key| key == target);
 
     let first = context
-        .materialize_virtual_tree(
+        .materialize_virtual_tree_retained_in(
             tree,
             &mut items,
             &layout,
-            0.0,
-            VIEWPORT,
-            OVERSCAN,
+            nana_ui_core::VirtualViewport {
+                offset: [0.0, 0.0],
+                extent: [200.0, VIEWPORT],
+                overscan: [0.0, OVERSCAN],
+            },
+            &[],
             |index| keys[index],
+            |key| key_index(&keys, key),
             |index, _| Text::new(format!("row {index}")),
         )
         .unwrap();
@@ -11858,14 +11890,18 @@ fn virtual_tree_materializes_only_visible_rows_and_reuses_overlap_on_scroll_and_
     let removed_entity = items.entity(&removed_key).unwrap();
 
     let next = context
-        .materialize_virtual_tree(
+        .materialize_virtual_tree_retained_in(
             tree,
             &mut items,
             &layout,
-            80.0,
-            VIEWPORT,
-            OVERSCAN,
+            nana_ui_core::VirtualViewport {
+                offset: [0.0, 80.0],
+                extent: [200.0, VIEWPORT],
+                overscan: [0.0, OVERSCAN],
+            },
+            &[],
             |index| keys[index],
+            |key| key_index(&keys, key),
             |index, _| Text::new(format!("row {index}")),
         )
         .unwrap();
@@ -11892,14 +11928,18 @@ fn virtual_tree_materializes_only_visible_rows_and_reuses_overlap_on_scroll_and_
     ));
     keys.splice(parent + 1..parent + 1, child_keys);
     let expanded = context
-        .materialize_virtual_tree(
+        .materialize_virtual_tree_retained_in(
             tree,
             &mut items,
             &layout,
-            80.0,
-            VIEWPORT,
-            OVERSCAN,
+            nana_ui_core::VirtualViewport {
+                offset: [0.0, 80.0],
+                extent: [200.0, VIEWPORT],
+                overscan: [0.0, OVERSCAN],
+            },
+            &[],
             |index| keys[index],
+            |key| key_index(&keys, key),
             |index, _| Text::new(format!("row {index}")),
         )
         .unwrap();
@@ -11917,14 +11957,18 @@ fn virtual_tree_materializes_only_visible_rows_and_reuses_overlap_on_scroll_and_
     assert!(items.entity(&child_keys[0]).is_some());
     let generation = context.world().generation();
     context
-        .materialize_virtual_tree(
+        .materialize_virtual_tree_retained_in(
             tree,
             &mut items,
             &layout,
-            80.0,
-            VIEWPORT,
-            OVERSCAN,
+            nana_ui_core::VirtualViewport {
+                offset: [0.0, 80.0],
+                extent: [200.0, VIEWPORT],
+                overscan: [0.0, OVERSCAN],
+            },
+            &[],
             |index| keys[index],
+            |key| key_index(&keys, key),
             |index, _| Text::new(format!("row {index}")),
         )
         .unwrap();
@@ -11946,16 +11990,21 @@ fn virtual_tree_expand_keeps_live_children_below_geometric_cap() {
     let mut keys = vec![0usize, 1, 2];
     let mut layout = VirtualTreeLayout::uniform(ROW, [0, 0, 0]);
     let mut items = VirtualTreeItems::<usize, Text>::default();
+    let key_index = |keys: &[usize], target: &usize| keys.iter().position(|key| key == target);
 
     context
-        .materialize_virtual_tree(
+        .materialize_virtual_tree_retained_in(
             tree,
             &mut items,
             &layout,
-            0.0,
-            VIEWPORT,
-            OVERSCAN,
+            nana_ui_core::VirtualViewport {
+                offset: [0.0, 0.0],
+                extent: [200.0, VIEWPORT],
+                overscan: [0.0, OVERSCAN],
+            },
+            &[],
             |index| keys[index],
+            |key| key_index(&keys, key),
             |index, _| Text::new(format!("row {index}")),
         )
         .unwrap();
@@ -11975,14 +12024,18 @@ fn virtual_tree_expand_keeps_live_children_below_geometric_cap() {
     assert_eq!(descendant_count, DESCENDANTS);
 
     context
-        .materialize_virtual_tree(
+        .materialize_virtual_tree_retained_in(
             tree,
             &mut items,
             &layout,
-            0.0,
-            VIEWPORT,
-            OVERSCAN,
+            nana_ui_core::VirtualViewport {
+                offset: [0.0, 0.0],
+                extent: [200.0, VIEWPORT],
+                overscan: [0.0, OVERSCAN],
+            },
+            &[],
             |index| keys[index],
+            |key| key_index(&keys, key),
             |index, _| Text::new(format!("row {index}")),
         )
         .unwrap();
@@ -13708,7 +13761,7 @@ fn closing_a_search_dropdown_leaves_its_label_as_the_node_text() {
 /// hooks when its first node is created, from any creation path.
 #[test]
 fn a_typed_context_installs_hooks_with_the_types_it_creates() {
-    let mut context = AppContext::typed();
+    let mut context = AppContext::new();
     let document = DocumentId::new(1).unwrap();
 
     // A button built from its type: stamped, and activatable.

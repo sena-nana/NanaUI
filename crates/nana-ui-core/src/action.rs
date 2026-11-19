@@ -15,6 +15,12 @@ impl ActionId {
     pub fn as_str(&self) -> &str {
         &self.0
     }
+
+    /// Returns a whitespace-trimmed copy, or `None` when the id is blank.
+    pub fn normalized(&self) -> Option<Self> {
+        let trimmed = self.0.trim();
+        (!trimmed.is_empty()).then(|| Self(trimmed.to_owned()))
+    }
 }
 
 impl fmt::Display for ActionId {
@@ -143,5 +149,24 @@ impl ContextPredicate {
         self.all.iter().all(|tag| context.contains(tag))
             && (self.any.is_empty() || self.any.iter().any(|tag| context.contains(tag)))
             && self.none.iter().all(|tag| !context.contains(tag))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn action_id_normalized_trims_whitespace_and_rejects_blank_ids() {
+        assert_eq!(
+            ActionId::new("  edit.undo \t\n").normalized(),
+            Some(ActionId::new("edit.undo"))
+        );
+        assert_eq!(
+            ActionId::new("file.save").normalized(),
+            Some(ActionId::new("file.save"))
+        );
+        assert_eq!(ActionId::new("").normalized(), None);
+        assert_eq!(ActionId::new("   \t\n  ").normalized(), None);
     }
 }

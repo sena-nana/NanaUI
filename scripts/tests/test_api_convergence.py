@@ -36,8 +36,10 @@ class LegacyCompatCallTests(unittest.TestCase):
         )
 
         self.assertEqual(
-            convergence.legacy_compat_calls(root),
+            sorted(convergence.legacy_compat_calls(root)),
             [
+                "crates/nana-ui-runtime/src/framework/tests.rs:1: Subscription::new",
+                "crates/nana-ui-runtime/src/framework/virtualize.rs:1: legacy virtual materializer",
                 "examples/app/src/main.rs:1: legacy virtual materializer",
                 "examples/app/src/main.rs:3: Subscription::new",
             ],
